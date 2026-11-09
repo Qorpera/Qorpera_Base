@@ -1,8 +1,9 @@
 import { CloudRpcError } from "../cloud/client.ts";
-import type { InterfacePageCalls, MemberInterfacePages } from "../cloud/interface-pages.ts";
+import type { InterfacePageCalls, InterfacePageName, MemberInterfacePages } from "../cloud/interface-pages.ts";
 
 /* Which pages the company shows (Interfaces C6a; supabase/CLIENT-CONTRACT.md "Pages"). They are read when the company
- * opens, when the window comes back into focus, each minute while it shows, and after Settings switches one. A cloud
+ * opens, when the window comes back into focus, and each minute while it shows; a member hides or shows one on their own
+ * rail (views/shell.ts), and the answer is published at once. A cloud
  * without the calls, or a member the calls don't answer, publishes nothing, so no page shows. A read that fails keeps
  * what was read before. */
 
@@ -12,7 +13,7 @@ const POLL_MS = 60_000;
 
 export class CompanyInterfacePages {
 	readonly #calls: InterfacePageCalls;
-	readonly #publish: (state: InterfacePagesState | undefined) => void;
+	readonly #publishTo: (state: InterfacePagesState | undefined) => void;
 	readonly #stop = new AbortController();
 	#poll?: ReturnType<typeof setInterval>;
 	/** The read on its way. */
@@ -21,6 +22,10 @@ export class CompanyInterfacePages {
 	#again: Promise<void> | null = null;
 	/** What was last published, as JSON; nothing is published while it stays the same. */
 	#shown: string | undefined;
+	/** Counts changes: a read that a change overtook is dropped, so the change's answer stays the last word. */
+	#changes = 0;
+	/** The last change asked for, settled: the next one starts after it. */
+	#changing: Promise<void> = Promise.resolve();
 
 	constructor(
 		calls: InterfacePageCalls,
@@ -28,7 +33,7 @@ export class CompanyInterfacePages {
 		signal: AbortSignal,
 	) {
 		this.#calls = calls;
-		this.#publish = publish;
+		this.#publishTo = publish;
 		signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#stop.signal });
 	}
 
@@ -49,6 +54,39 @@ export class CompanyInterfacePages {
 		clearInterval(this.#poll);
 	}
 
+	/** Hides a page from the member's own rail, or shows it again. Changes run one at a time, each after the last has answered
+	 * (or failed and been read again), so an older answer never lands over a newer one. A change that fails reads the
+	 * pages again (it may still have landed) and throws. */
+	hide(page: InterfacePageName, hidden: boolean): Promise<void> {
+		const run = () => this.#change(page, hidden);
+		const next = this.#changing.then(run, run);
+		this.#changing = next.catch(() => {});
+		return next;
+	}
+
+	async #change(page: InterfacePageName, hidden: boolean): Promise<void> {
+		if (this.#stop.signal.aborted) return;
+		this.#changes++;
+		let state: InterfacePagesState;
+		try {
+			state = await this.#calls.hide(page, hidden);
+		} catch (error) {
+			this.#changes++;
+			await this.refresh();
+			throw error;
+		}
+		if (this.#stop.signal.aborted) return;
+		this.#changes++;
+		this.#publish(state);
+	}
+
+	#publish(state: InterfacePagesState | undefined): void {
+		const shown = JSON.stringify(state ?? null);
+		if (shown === this.#shown) return;
+		this.#shown = shown;
+		this.#publishTo(state);
+	}
+
 	refresh(): Promise<void> {
 		if (this.#stop.signal.aborted) return Promise.resolve();
 		if (this.#reading) {
@@ -66,6 +104,7 @@ export class CompanyInterfacePages {
 	}
 
 	async #read(): Promise<void> {
+		const changes = this.#changes;
 		let state: InterfacePagesState | undefined;
 		try {
 			state = await this.#calls.list();
@@ -74,10 +113,7 @@ export class CompanyInterfacePages {
 			if (!(error instanceof CloudRpcError && (error.missing || error.denied))) return;
 			state = undefined;
 		}
-		if (this.#stop.signal.aborted) return;
-		const shown = JSON.stringify(state ?? null);
-		if (shown === this.#shown) return;
-		this.#shown = shown;
+		if (this.#stop.signal.aborted || changes !== this.#changes) return;
 		this.#publish(state);
 	}
 }

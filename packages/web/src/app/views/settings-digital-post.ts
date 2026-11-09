@@ -32,6 +32,8 @@ export class DigitalPostView {
 	readonly el = h("section", { class: "settings-group services digital-post" });
 	readonly #client: DigitalPostClient;
 	readonly #access: DigitalPostAccess;
+	/** Told after a key was saved or the connection removed, so the Mailbox reads its state again. */
+	readonly #changed: () => void;
 	readonly #lifetime = new AbortController();
 	#connection: DigitalPostConnection | undefined;
 	#loading = true;
@@ -44,9 +46,14 @@ export class DigitalPostView {
 	#drawnManage: boolean | undefined;
 	#outcome: { tone: "ok" | "error"; text: string } | undefined;
 
-	constructor(client: DigitalPostClient, signal: AbortSignal, options: { access: DigitalPostAccess }) {
+	constructor(
+		client: DigitalPostClient,
+		signal: AbortSignal,
+		options: { access: DigitalPostAccess; changed?: () => void },
+	) {
 		this.#client = client;
 		this.#access = options.access;
+		this.#changed = options.changed ?? (() => {});
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.#draw();
@@ -100,6 +107,7 @@ export class DigitalPostView {
 				tone: "ok",
 				text: t("Digital Post is connected. Letters arrive in the Mailbox within a few minutes."),
 			};
+			this.#changed();
 		} catch {
 			if (this.#lifetime.signal.aborted) return;
 			this.#outcome = { tone: "error", text: t("The key could not be saved. Check it and try again.") };
@@ -116,6 +124,7 @@ export class DigitalPostView {
 		this.#draw();
 		try {
 			await this.#client.disconnect(secretId, this.#lifetime.signal);
+			if (!this.#lifetime.signal.aborted) this.#changed();
 			if (!this.#lifetime.signal.aborted)
 				this.#outcome = {
 					tone: "ok",

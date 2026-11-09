@@ -74,7 +74,7 @@ describe("interface size", () => {
 	it("offers both sizes in Appearance, persists changes and synchronizes mounted controls", () => {
 		const first = appearance();
 		const second = appearance();
-		expect(first.group.closest("section")?.querySelector("h1")?.textContent).toBe("Appearance");
+		expect(first.group.closest("section")?.querySelector("h2")?.textContent).toBe("Appearance");
 		expect(
 			first.group.parentElement?.previousElementSibling?.querySelector("fieldset")?.getAttribute("aria-label"),
 		).toBe("Composer color");
@@ -130,18 +130,18 @@ describe("interface size", () => {
 		const frame = h("div", null, aside);
 		document.body.append(frame);
 		rail = new RailLayout(frame, aside);
-		expect(Number.parseFloat(aside.style.getPropertyValue("--rail-width"))).toBeCloseTo(575.9);
+		expect(Number.parseFloat(aside.style.getPropertyValue("--rail-width"))).toBeCloseTo(527.8);
 		setUiSizePreference("small");
-		expect(aside.style.getPropertyValue("--rail-width")).toBe("547px");
+		expect(aside.style.getPropertyValue("--rail-width")).toBe("502px");
 		rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
-		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBe("563");
+		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBe("518");
 		setUiSizePreference("big");
-		expect(Number.parseFloat(aside.style.getPropertyValue("--rail-width"))).toBeCloseTo(731.9);
+		expect(Number.parseFloat(aside.style.getPropertyValue("--rail-width"))).toBeCloseTo(673.4);
 		setUiSizePreference("small");
 		rail.el.dispatchEvent(new MouseEvent("dblclick"));
 		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBeNull();
 		setUiSizePreference("big");
-		expect(Number.parseFloat(aside.style.getPropertyValue("--rail-width"))).toBeCloseTo(575.9);
+		expect(Number.parseFloat(aside.style.getPropertyValue("--rail-width"))).toBeCloseTo(527.8);
 		vi.stubGlobal("innerWidth", 900);
 		expect(isPhoneLayout()).toBe(true);
 		setUiSizePreference("small");

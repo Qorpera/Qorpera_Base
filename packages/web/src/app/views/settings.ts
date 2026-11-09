@@ -1,15 +1,10 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { describeError } from "../../cloud/client.ts";
-import { createWebCodingEnvironment } from "../../cloud/coding-environment.ts";
 import { WebCompanyFiles } from "../../cloud/company-files.ts";
 import { COMPANY_BRAND_FOLDER } from "../../cloud/company-logos.ts";
 import { createWebConnectors } from "../../cloud/connectors.ts";
-import { createDigitalPostKeys, readDigitalPost } from "../../cloud/digital-post.ts";
-import { createWebEventHooks } from "../../cloud/event-hooks.ts";
-import { interfacePageCalls } from "../../cloud/interface-pages.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
 import { createWebReviewRules } from "../../cloud/review-rules.ts";
-import { createWebSites } from "../../cloud/sites.ts";
 import type { HostedCompanyFile, HostedProfile } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { companyLogos } from "../../ui/company-logos.ts";
@@ -27,16 +22,11 @@ import type { HubController } from "./hub.ts";
 import { LeaderboardView } from "./leaderboard.ts";
 import { AccountSubscriptionsView } from "./settings-ai-subscriptions.ts";
 import { CompanyBrandView } from "./settings-brand.ts";
-import { CodingEnvironmentView } from "./settings-coding-environment.ts";
 import { ConnectionsView, memberPlanSignIn, memberProviderSignIns } from "./settings-connections.ts";
-import { DigitalPostView } from "./settings-digital-post.ts";
 import { GoodWillView, MyGoodWillView } from "./settings-good-will.ts";
-import { HooksView } from "./settings-hooks.ts";
 import { MemoryView } from "./settings-memory.ts";
-import { PagesView } from "./settings-pages.ts";
 import { RulesView } from "./settings-rules.ts";
 import { ServicesView } from "./settings-services.ts";
-import { SitesView } from "./settings-sites.ts";
 import { storageSummary } from "./storage-summary.ts";
 import { renderTeam, type TeamFeedback } from "./team.ts";
 
@@ -46,21 +36,14 @@ const TABS = [
 		label: phrase("General"),
 		icon: "settings",
 		keywords:
-			"account language region time zone timezone good will goodwill rules auto-review review approval approve ask first allow automatically safety agents actions permissions generelt konto sprog dansk engelsk område tidszone regler godkendelse godkend spørg først tillad automatisk sikkerhed agenter handlinger tilladelser",
-	},
-	{
-		id: "appearance",
-		label: phrase("Appearance"),
-		icon: "appearance",
-		keywords:
-			"theme composer color colour blue green grey gray interface size big small udseende tema lys mørk skrivefelt farve blå grøn grå grænseflade størrelse stor lille",
+			"account language region time zone timezone good will goodwill appearance theme light dark composer color colour blue green grey gray interface size big small generelt konto sprog dansk engelsk område tidszone udseende tema lys mørk skrivefelt farve blå grøn grå grænseflade størrelse stor lille",
 	},
 	{
 		id: "company",
 		label: phrase("Company"),
 		icon: "company",
 		keywords:
-			"people team members invitations staff memory notebooks shared context beta file delete leave pages mailbox interfaces good will goodwill tax invoices card payment sales virksomhed personer medlemmer invitationer agenter hukommelse notesbøger delt kontekst virksomhedsfilen roller slet forlad sider postkasse grænseflader skat fakturaer kort betaling salg",
+			"people team members invitations staff memory notebooks shared context beta delete leave good will goodwill tax invoices card payment sales rules agent rules auto-review review approval approve ask first allow automatically safety agents actions permissions virksomhed personer medlemmer invitationer agenter hukommelse notesbøger delt kontekst roller slet forlad skat fakturaer kort betaling salg regler agentregler godkendelse godkend spørg først tillad automatisk sikkerhed handlinger tilladelser",
 	},
 	{
 		id: "leaderboard",
@@ -74,29 +57,25 @@ const TABS = [
 		label: phrase("AI subscriptions"),
 		icon: "key",
 		keywords:
-			"ai subscriptions my connections model accounts providers sign in openai chatgpt codex anthropic claude usage environment variables ai-abonnementer mine forbindelser modelkonti udbydere abonnementer log ind forbrug miljøvariabler",
+			"ai subscriptions my connections model accounts providers sign in openai chatgpt codex anthropic claude usage ai-abonnementer mine forbindelser modelkonti udbydere abonnementer log ind forbrug",
 	},
 	{
 		id: "company-connections",
 		label: phrase("Company connections"),
 		icon: "connections",
 		keywords:
-			"services accounts gmail google drive github token secrets agents environment variables webhooks hooks mailboxes mail email events virksomhedens forbindelser tjenester konti hemmeligheder agenter miljøvariabler postkasser hændelser",
-	},
-	{
-		id: "sites",
-		label: phrase("Sites"),
-		icon: "globe",
-		keywords:
-			"sites websites website web link url password share shop preview publish published unpublish offline hjemmesider hjemmeside websted link adgangskode kodeord del webshop udgiv udgivet",
+			"services accounts gmail google drive github token secrets agents virksomhedens forbindelser tjenester konti hemmeligheder agenter",
 	},
 ] as const;
 type SettingsCategory = (typeof TABS)[number]["id"];
-/** "my-connections" is AI subscriptions' old name: Settings opened on it show AI subscriptions. */
-export type SettingsTab = SettingsCategory | "storage" | "recents" | "my-connections";
+/** "my-connections" is AI subscriptions' old name: Settings opened on it show AI subscriptions. "appearance" was a
+ * tab of its own: it is part of General now. Sites, webhooks, mailboxes and Digital Post left Settings (Jonas, 9 Nov
+ * 2026): Sites is a page of the apps drawer, webhooks are under an agent's routines, and the Mailbox makes its own
+ * addresses and connects Digital Post. */
+export type SettingsTab = SettingsCategory | "storage" | "recents" | "my-connections" | "appearance";
 /** Pages of the open company. Settings with no company open (from the company list with several) show only the
  * account's pages: these are hidden, and one asked for shows General until a company is open. Storage too. */
-const COMPANY_TABS: ReadonlySet<SettingsCategory> = new Set(["company", "company-connections", "sites"]);
+const COMPANY_TABS: ReadonlySet<SettingsCategory> = new Set(["company", "company-connections"]);
 
 /** AI subscriptions' lead, with or without a company open. */
 const subscriptionsLead = () =>
@@ -116,13 +95,11 @@ export class SettingsView {
 	readonly #friends: FriendsController;
 	readonly #hub: HubController;
 	readonly #close: () => void;
-	/** Opens the Friends window (Settings close first). */
+	/** Opens the Friends window over Settings. */
 	readonly #openFriends: () => void;
 	/** Leaderboard, read once its tab shows. */
 	#leaderboard: LeaderboardView | undefined;
 	readonly #companyRemoved: (profileId: string) => void;
-	/** Told after a page was switched on or off, with the company's environment. */
-	readonly #pagesChanged: (environmentId: string) => void;
 	readonly #lifetime = new AbortController();
 	readonly #content = h("div", { class: "settings-content", id: "settings-content", role: "tabpanel", tabindex: "0" });
 	readonly #search = h("input", {
@@ -181,37 +158,18 @@ export class SettingsView {
 	#connections: ConnectionsView | undefined;
 	/** AI subscriptions with no company open: the member's account logins. */
 	#accountSubscriptions: AccountSubscriptionsView | undefined;
-	/** The member's own coding environment variables, on AI subscriptions. */
-	#memberEnvironment: CodingEnvironmentView | undefined;
 	#services: ServicesView | undefined;
-	#digitalPost: DigitalPostView | undefined;
-	/** The company's coding environment variables, on Company connections. */
-	#companyEnvironment: CodingEnvironmentView | undefined;
-	#hooks: HooksView | undefined;
-	/** The company's websites, on Sites. */
-	#sites: SitesView | undefined;
 	#rules: RulesView | undefined;
 	/** Company: the company's memory, Agent notebooks or the Shared context beta. */
 	#memory: MemoryView | undefined;
-	/** The company's pages, on the Company tab. */
-	#pages: PagesView | undefined;
-	/** The company's name and logo, at the head of the Company tab. */
 	#brand: CompanyBrandView | undefined;
 	/** The company's good will, on the Company tab. */
 	#goodWill: GoodWillView | undefined;
 	/** General with no company open: the good will of the member's companies. */
 	#myGoodWill: MyGoodWillView | undefined;
-	/** General: the account's settings, then the rules of the company Settings show. */
+	/** General: the account's settings, then how the app looks. */
 	readonly #accountPanel = h("div");
-	readonly #rulesSlot = h("div");
 	readonly #myGoodWillSlot = h("div");
-	/** In the rules' place when Settings show no company (opened from the company list with several,
-	 * or over a company page whose company is not available). */
-	readonly #noCompanyRules = h(
-		"section",
-		{ class: "settings-group settings-rules", "aria-label": t("Rules") },
-		h("p", { class: "settings-rule-note" }, t("Open a company to see its rules.")),
-	);
 	#feedback: TeamFeedback = {};
 	#file: HostedCompanyFile | undefined;
 	#fileLoading = false;
@@ -226,7 +184,6 @@ export class SettingsView {
 		close: () => void,
 		companyRemoved: (profileId: string) => void,
 		tab: SettingsTab = "general",
-		pagesChanged: (environmentId: string) => void = () => {},
 		openFriends: () => void = () => {},
 	) {
 		this.#api = api;
@@ -235,7 +192,6 @@ export class SettingsView {
 		this.#hub = hub;
 		this.#close = close;
 		this.#companyRemoved = companyRemoved;
-		this.#pagesChanged = pagesChanged;
 		this.#openFriends = openFriends;
 		this.#borrowedCompany = company;
 		const route = currentRoute();
@@ -402,9 +358,13 @@ export class SettingsView {
 			),
 		);
 		document.addEventListener("keydown", this.#onKey, { signal: this.#lifetime.signal });
-		// The tab asked for is drawn first: General's rules load only if Settings opens on General.
+		// The tab asked for is drawn first: the Company tab's rules load only if Settings opens on it.
 		this.#tab =
-			tab === "storage" || tab === "recents" ? "general" : tab === "my-connections" ? "ai-subscriptions" : tab;
+			tab === "storage" || tab === "recents" || tab === "appearance"
+				? "general"
+				: tab === "my-connections"
+					? "ai-subscriptions"
+					: tab;
 		this.#mode = tab === "storage" || tab === "recents" ? "storage" : "settings";
 		this.#storageSection = tab === "recents" ? "recents" : "documents";
 		this.#setCompany(company, false);
@@ -419,6 +379,11 @@ export class SettingsView {
 		});
 		void this.#friends.refresh();
 		this.#switchMode(this.#mode);
+	}
+
+	/** The account's friends: the Friends window opened over Settings shares this list with the invitation picker. */
+	get friends(): FriendsController {
+		return this.#friends;
 	}
 
 	/** The open tab, so a language change can reopen Settings where it was. */
@@ -490,15 +455,9 @@ export class SettingsView {
 		this.#unsubscribe?.();
 		this.#connections?.dispose();
 		this.#accountSubscriptions?.dispose();
-		this.#memberEnvironment?.dispose();
 		this.#services?.dispose();
-		this.#digitalPost?.dispose();
-		this.#companyEnvironment?.dispose();
-		this.#hooks?.dispose();
-		this.#sites?.dispose();
 		this.#rules?.dispose();
 		this.#memory?.dispose();
-		this.#pages?.dispose();
 		this.#goodWill?.dispose();
 		this.#myGoodWill?.dispose();
 		this.#friends.dispose();
@@ -625,6 +584,8 @@ export class SettingsView {
 		if (this.#mode !== "storage") return;
 		this.#storageCompany.textContent = company?.profile.profileName ?? t("Storage");
 		this.#drawStorageUsage();
+		// Shown again after a failed read, Storage reads its usage again.
+		if (shown && this.#fileError && !this.#fileLoading) this.#fileError = undefined;
 		if (company && !this.#file && !this.#fileLoading && !this.#fileError) void this.#loadFile();
 		this.#markStorageSection(this.#storageSection);
 		if (!company) {
@@ -738,7 +699,21 @@ export class SettingsView {
 			replace(this.#storageUsage);
 			return;
 		}
-		replace(this.#storageUsage, h("small", null, storageSummary(this.#file, this.#fileError)));
+		replace(
+			this.#storageUsage,
+			h("small", null, storageSummary(this.#file, this.#fileError)),
+			this.#fileError
+				? button(
+						uiText("Retry"),
+						() => {
+							this.#fileError = undefined;
+							void this.#loadFile();
+							this.#drawStorageUsage();
+						},
+						{ small: true },
+					)
+				: null,
+		);
 	}
 
 	#select(choice: SettingsCategory): void {
@@ -749,7 +724,6 @@ export class SettingsView {
 			button.tabIndex = tab === id ? 0 : -1;
 		}
 		if (tab === "general") this.#general();
-		else if (tab === "appearance") this.#panels.set(tab, renderAppearance());
 		else if (tab === "leaderboard") this.#drawLeaderboard();
 		else if (tab === "company") this.#drawCompany();
 		else if (tab === "ai-subscriptions" && !this.#company) this.#drawAccountSubscriptions();
@@ -789,24 +763,12 @@ export class SettingsView {
 					undefined,
 					memberPlanSignIn(memberId, company.profile.profileId),
 				);
-				// The member's own coding environment variables: anyone who may write sets their own.
-				this.#memberEnvironment = new CodingEnvironmentView(
-					createWebCodingEnvironment(this.#api.cloud, environment, memberId),
-					lifetime,
-					{ owner: "member", access: { canManage: () => company.store.get().team?.capabilities.write === true } },
-				);
-				this.#panels.set(
-					tab,
-					connectionsPage(
-						t("AI subscriptions"),
-						subscriptionsLead(),
-						this.#connections.el,
-						this.#memberEnvironment.el,
-					),
-				);
+				// Coding values (environment variables a coding session gets) are no longer drawn here (Jonas, 9 Nov 2026:
+				// not something to show founders); the cloud keeps them.
+				this.#panels.set(tab, connectionsPage(t("AI subscriptions"), subscriptionsLead(), this.#connections.el));
 			} else if (tab === "company-connections" && !this.#services) {
-				// Step 7 connectors, the company's coding environment variables, then its webhooks and
-				// mailboxes. Company first: owners and admins manage them, everyone sees them.
+				// Step 7 connectors. Owners and admins manage them, everyone sees them. The company's coding values are no
+				// longer drawn here (Jonas, 9 Nov 2026); the cloud keeps them.
 				const canManage = () => {
 					const role = company.store.get().team?.role;
 					return role === "owner" || role === "admin";
@@ -819,60 +781,12 @@ export class SettingsView {
 							undefined,
 					},
 				});
-				// The company's public post (RUNTIME-DIGITAL-POST.md): its state, and the key an owner or admin saves.
-				const cloud = this.#api.cloud;
-				const keys = createDigitalPostKeys(cloud, environment);
-				this.#digitalPost = new DigitalPostView(
-					{
-						read: () => readDigitalPost(cloud, environment.environmentId),
-						save: (apiKey, existingSecretId, abort) => keys.save(apiKey, existingSecretId, abort),
-						disconnect: (secretId, abort) => keys.disconnect(secretId, abort),
-					},
-					signal(),
-					{ access: { canManage } },
-				);
-				// Where a company variable is given decides where a member's own of that name is used, so AI
-				// subscriptions reads its list again after each change here (opened later, it reads one anyway).
-				this.#companyEnvironment = new CodingEnvironmentView(
-					createWebCodingEnvironment(this.#api.cloud, environment, memberId),
-					signal(),
-					{ owner: "company", access: { canManage }, onChange: () => this.#memberEnvironment?.reload() },
-				);
-				this.#hooks = new HooksView(createWebEventHooks(this.#api.cloud, environment), signal(), {
-					access: { canManage },
-				});
 				this.#panels.set(
 					tab,
 					connectionsPage(
 						t("Company connections"),
-						t(
-							"The company's own accounts, webhooks and mailboxes. Every agent can use them, and they stay when someone leaves.",
-						),
+						t("The company's own accounts. Every agent can use them, and they stay when someone leaves."),
 						this.#services.el,
-						this.#digitalPost.el,
-						this.#companyEnvironment.el,
-						this.#hooks.el,
-					),
-				);
-			} else if (tab === "sites" && !this.#sites) {
-				// Every member sees the company's sites and their links; owners and admins also read and change their
-				// passwords and take them offline (the kernel enforces the same rule).
-				this.#sites = new SitesView(createWebSites(this.#api.cloud, environment), signal(), {
-					access: {
-						canManage: () => {
-							const role = company.store.get().team?.role;
-							return role === "owner" || role === "admin";
-						},
-					},
-				});
-				this.#panels.set(
-					tab,
-					connectionsPage(
-						t("Sites"),
-						t(
-							"Websites the company's agents published. Each has its own link and password; share both with the people who should see it.",
-						),
-						this.#sites.el,
 					),
 				);
 			}
@@ -939,20 +853,13 @@ export class SettingsView {
 	#general(): void {
 		if (this.#lifetime.signal.aborted) return;
 		if (!this.#panels.has("general"))
-			this.#panels.set("general", h("div", null, this.#accountPanel, this.#myGoodWillSlot, this.#rulesSlot));
+			this.#panels.set("general", h("div", null, this.#accountPanel, renderAppearance(), this.#myGoodWillSlot));
 		renderAccount(this.#auth, this.#accountPanel, this.#account, (next) => {
 			if (this.#lifetime.signal.aborted) return;
 			this.#account = { ...this.#account, ...next };
 			this.#general();
 		});
-		// The open company's rules sit under the account's settings, loaded once General is shown.
 		const company = this.#company;
-		if (company && !this.#rules && this.#tab === "general")
-			this.#rules = new RulesView(
-				createWebReviewRules(this.#api.cloud, company.profile.profileId),
-				AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]),
-				() => company.store.get().team?.role,
-			);
 		// With no company open, the good will of the member's companies, read once General shows.
 		if (!company && !this.#myGoodWill && this.#tab === "general")
 			this.#myGoodWill = new MyGoodWillView(
@@ -961,14 +868,6 @@ export class SettingsView {
 			);
 		const mine = company ? undefined : this.#myGoodWill?.el;
 		if (this.#myGoodWillSlot.firstChild !== (mine ?? null)) replace(this.#myGoodWillSlot, mine);
-		// Moved only when it changes: moving it would take the focus out of a field in use.
-		const rules = company ? this.#rules?.el : this.#noCompanyRules;
-		if (this.#rulesSlot.firstChild !== (rules ?? null)) {
-			const focused = this.#rulesSlot.contains(document.activeElement);
-			replace(this.#rulesSlot, rules);
-			// A field in the old company's rules had the keyboard: keep it in Settings.
-			if (focused) this.#content.focus({ preventScroll: true });
-		}
 	}
 
 	#drawLeaderboard(): void {
@@ -994,24 +893,12 @@ export class SettingsView {
 		this.#connections = undefined;
 		this.#accountSubscriptions?.dispose();
 		this.#accountSubscriptions = undefined;
-		this.#memberEnvironment?.dispose();
-		this.#memberEnvironment = undefined;
 		this.#services?.dispose();
 		this.#services = undefined;
-		this.#digitalPost?.dispose();
-		this.#digitalPost = undefined;
-		this.#companyEnvironment?.dispose();
-		this.#companyEnvironment = undefined;
-		this.#hooks?.dispose();
-		this.#hooks = undefined;
-		this.#sites?.dispose();
-		this.#sites = undefined;
 		this.#rules?.dispose();
 		this.#rules = undefined;
 		this.#memory?.dispose();
 		this.#memory = undefined;
-		this.#pages?.dispose();
-		this.#pages = undefined;
 		this.#brand = undefined;
 		this.#goodWill?.dispose();
 		this.#goodWill = undefined;
@@ -1024,23 +911,16 @@ export class SettingsView {
 		this.#file = undefined;
 		this.#fileLoading = false;
 		this.#fileError = undefined;
-		for (const tab of ["company", "ai-subscriptions", "company-connections", "sites"] as const)
-			this.#panels.delete(tab);
+		for (const tab of ["company", "ai-subscriptions", "company-connections"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
 				if (company.store.get().accessLost) {
 					this.#close();
 					return;
 				}
-				this.#memberEnvironment?.update();
 				this.#services?.update();
-				this.#digitalPost?.update();
-				this.#companyEnvironment?.update();
-				this.#hooks?.update();
-				this.#sites?.update();
 				this.#rules?.update();
 				this.#memory?.update();
-				this.#pages?.update();
 				this.#drawCompany();
 				if (this.#folder || this.#mode === "storage") this.#drawStorage();
 			});
@@ -1053,10 +933,9 @@ export class SettingsView {
 	#drawCompany(): void {
 		if (this.#lifetime.signal.aborted || !this.#company) return;
 		const company = this.#company;
-		if (this.#tab === "company" && !this.#file && !this.#fileLoading && !this.#fileError) void this.#loadFile();
 		let panel = this.#panels.get("company");
 		if (!panel) {
-			panel = h("div");
+			panel = h("div", { class: "settings-company", "data-profile-id": company.profile.profileId });
 			this.#panels.set("company", panel);
 		}
 		let team = panel.querySelector<HTMLElement>(".settings-team");
@@ -1073,9 +952,8 @@ export class SettingsView {
 					h("div", { class: "settings-staff" }),
 				),
 				h("div", { class: "settings-good-will-slot" }),
+				h("div", { class: "settings-rules-slot" }),
 				h("div", { class: "settings-memory-slot" }),
-				h("div", { class: "settings-pages-slot" }),
-				h("div", { class: "settings-file" }),
 				h("div", { class: "settings-company-exit" }),
 			);
 		}
@@ -1140,20 +1018,17 @@ export class SettingsView {
 		}
 		const goodWillSlot = panel.querySelector<HTMLElement>(".settings-good-will-slot")!;
 		if (this.#goodWill && goodWillSlot.firstChild !== this.#goodWill.el) replace(goodWillSlot, this.#goodWill.el);
-		const memorySlot = panel.querySelector<HTMLElement>(".settings-memory-slot")!;
-		if (this.#memory && memorySlot.firstChild !== this.#memory.el) replace(memorySlot, this.#memory.el);
-		// The pages are read once the Company tab shows, and kept until the company changes.
-		if (!this.#pages && this.#tab === "company") {
-			const environmentId = company.profile.environmentId;
-			this.#pages = new PagesView(
-				interfacePageCalls(this.#api.cloud, environmentId),
+		// The agent rules, under good will: read once the Company tab shows, kept until the company changes.
+		if (this.#tab === "company" && !this.#rules)
+			this.#rules = new RulesView(
+				createWebReviewRules(this.#api.cloud, company.profile.profileId),
 				AbortSignal.any([this.#companyLifetime.signal, this.#lifetime.signal, company.signal]),
 				() => company.store.get().team?.role,
-				() => this.#pagesChanged(environmentId),
 			);
-		}
-		const pagesSlot = panel.querySelector<HTMLElement>(".settings-pages-slot")!;
-		if (this.#pages && pagesSlot.firstChild !== this.#pages.el) replace(pagesSlot, this.#pages.el);
+		const rulesSlot = panel.querySelector<HTMLElement>(".settings-rules-slot")!;
+		if (this.#rules && rulesSlot.firstChild !== this.#rules.el) replace(rulesSlot, this.#rules.el);
+		const memorySlot = panel.querySelector<HTMLElement>(".settings-memory-slot")!;
+		if (this.#memory && memorySlot.firstChild !== this.#memory.el) replace(memorySlot, this.#memory.el);
 		const staffList = panel.querySelector<HTMLElement>(".settings-staff")!;
 		const staffFocus = staffList.contains(document.activeElement)
 			? document.activeElement?.closest("a")?.getAttribute("href")
@@ -1171,29 +1046,6 @@ export class SettingsView {
 						h("small", null, agent.displayName),
 					),
 				),
-		);
-		replace(
-			panel.querySelector(".settings-file")!,
-			h(
-				"button",
-				{
-					type: "button",
-					class: "settings-card settings-file-card",
-					"data-profile-id": company.profile.profileId,
-					onclick: () => this.#switchMode("storage"),
-				},
-				icon("folder"),
-				h(
-					"div",
-					{ class: "settings-copy" },
-					h("strong", null, uiText("Storage")),
-					h("small", null, storageSummary(this.#file, this.#fileError)),
-				),
-				icon("chevron"),
-			),
-			this.#fileError
-				? button(uiText("Retry"), () => void this.#loadFile(true), { small: true, disabled: this.#fileLoading })
-				: null,
 		);
 		if (staffFocus)
 			[...staffList.querySelectorAll("a")]
@@ -1214,7 +1066,7 @@ export class SettingsView {
 				signal: this.#companyLifetime.signal,
 				embedded: true,
 				exit: panel.querySelector<HTMLElement>(".settings-company-exit")!,
-				// Friends are a window of their own: Settings close and it opens on its search field.
+				// Friends are a window of their own: it opens over Settings, on its search field.
 				addFriend: () => this.#openFriends(),
 				onCompanyRemoved: (profileId) => {
 					if (!this.#lifetime.signal.aborted && this.#company === company) this.#close();
@@ -1224,13 +1076,12 @@ export class SettingsView {
 		);
 	}
 
-	/** `redraw` (a retry) repaints at once so the Retry button disables while the load runs. */
-	async #loadFile(redraw = false): Promise<void> {
+	/** The company's file, for the storage it uses under Storage's navigation. */
+	async #loadFile(): Promise<void> {
 		const company = this.#company;
 		if (!company || this.#fileLoading) return;
 		const signal = this.#companyLifetime.signal;
 		this.#fileLoading = true;
-		if (redraw) this.#drawCompany();
 		try {
 			const file = await this.#api.getCompanyFile(company.profile.environmentId);
 			if (signal.aborted || this.#lifetime.signal.aborted) return;
@@ -1242,7 +1093,6 @@ export class SettingsView {
 		} finally {
 			if (!signal.aborted && !this.#lifetime.signal.aborted) {
 				this.#fileLoading = false;
-				this.#drawCompany();
 				if (this.#mode === "storage") this.#drawStorageUsage();
 			}
 		}

@@ -53,7 +53,7 @@ describe("composer color preference", () => {
 	it("offers blue, green and grey as cards in Appearance and remembers changes when settings reopen", () => {
 		const view = appearance();
 		expect(view.group()).not.toBeNull();
-		expect(view.group().closest("section")?.querySelector("h1")?.textContent).toBe("Appearance");
+		expect(view.group().closest("section")?.querySelector("h2")?.textContent).toBe("Appearance");
 		expect(view.radios().map((radio) => radio.value)).toEqual(["blue", "green", "grey"]);
 		expect(view.radios().map((radio) => radio.closest("label")?.querySelector(".color-swatch")?.className)).toEqual([
 			"settings-swatch color-swatch color-swatch-blue",

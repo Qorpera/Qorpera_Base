@@ -57,6 +57,8 @@ function rpcs(f: ReturnType<typeof fixture>): string[] {
 				!name.startsWith("qorpera_member_mail_") &&
 				name !== "qorpera_member_digital_post" &&
 				name !== "qorpera_member_interface_offers" &&
+				// The apps drawer's Sites entry.
+				name !== "qorpera_list_company_sites" &&
 				name !== "qorpera_member_interface_supervisions" &&
 				name !== "qorpera_member_interface_pages" &&
 				// The account marks itself online for its friends (online-mark.ts).

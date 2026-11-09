@@ -343,8 +343,9 @@ An unset rail width follows the size: 369 design pixels for Big, the original
 456 for Small. An explicitly resized width is kept across size changes; resetting
 the rail clears that choice and follows the current size's default again.
 
-**9 Nov 2026 (Jonas):** the rail is a fifth wider: 443 design pixels for Big,
-547 for Small, and it may take up to 48% of the window (was two fifths). Stored
+**9 Nov 2026 (Jonas):** the rail is a tenth wider: 406 design pixels for Big,
+502 for Small, and it may take up to 44% of the window (was two fifths). A fifth
+wider (443, 547, 48%) was tried first and was too much. Stored
 widths moved to `qorpera.web.rail-width.v5`, so every member starts once from
 the new default.
 

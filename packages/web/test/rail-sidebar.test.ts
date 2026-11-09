@@ -366,6 +366,27 @@ describe("rail sections and pins", () => {
 		draw();
 		expect(groups(rail)).toEqual([["Unassigned", "Cy"]]);
 	});
+	it("lists everyone in a section, pinned and hidden ones too, when a search names it", async () => {
+		const placements = { ...demo().placements, [dee.id]: { sectionId: research, position: 2 } };
+		const { rail, draw, ready } = companyWith({ ...demo(), placements, hidden: [ada.id] });
+		await ready;
+		await settle();
+		rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
+		const input = rail.querySelector<HTMLInputElement>(".rail-search input")!;
+		input.value = "resea";
+		draw();
+		expect(groups(rail)).toEqual([["Research", "Bo", "Ada"]]);
+		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual(["Dee"]);
+		// "Unassigned" names what is in no section.
+		input.value = "unassigned";
+		draw();
+		expect(groups(rail)).toEqual([["Unassigned", "Cy", "Fixture conversation"]]);
+		expect(rail.querySelectorAll(".rail-pin")).toHaveLength(0);
+		// A name still finds one agent, wherever it sits.
+		input.value = "bo";
+		draw();
+		expect(groups(rail)).toEqual([["Research", "Bo"]]);
+	});
 	it("folds hidden agents at the foot of the list, where they can be shown again", async () => {
 		localStorage.removeItem("qorpera.web.rail-hidden-open");
 		const { rail, manage, openCard, ready } = companyWith({ ...demo(), hidden: [cy.id, dee.id], pinned: [] });
@@ -427,6 +448,27 @@ describe("rail sections and pins", () => {
 			await settle();
 			expect(divided(rail)).toEqual(expected);
 		}
+	});
+	it("marks Unassigned empty when every agent is in a section, so its title shows only while dragging", async () => {
+		const unassigned = (rail: HTMLElement) =>
+			[...rail.querySelectorAll<HTMLElement>(".rail-section")].find(
+				(group) => group.querySelector(".rail-section-title")!.textContent === "Unassigned",
+			)!;
+		const everyone: CompanySidebar = {
+			...demo(),
+			placements: Object.fromEntries(roster.map((itemId, position) => [itemId, { sectionId: research, position }])),
+			pinned: [],
+		};
+		const { rail, company, ready } = companyWith(everyone);
+		company.store.set({ ...company.store.get(), sessions: [] });
+		await ready;
+		await settle();
+		expect(unassigned(rail).classList.contains("is-empty")).toBe(true);
+		expect(unassigned(rail).querySelector(".rail-section-list")!.children).toHaveLength(0);
+		// An open conversation in no agent's thread lands in Unassigned, and the title is back.
+		company.store.set({ ...company.store.get(), sessions: [session] });
+		await settle();
+		expect(unassigned(rail).classList.contains("is-empty")).toBe(false);
 	});
 });
 

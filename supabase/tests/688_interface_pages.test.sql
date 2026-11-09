@@ -37,13 +37,19 @@ begin
 	if p_answer ->> 'error' is distinct from p_state then
 		raise exception 'Expected SQLSTATE %, got %', p_state, p_answer using errcode = 'QTF01'; end if;
 end $$;
--- The answer for Mailbox, Members and Bank on or off.
-create function pg_temp.c6_pages(p_mailbox boolean, p_members boolean, p_may boolean, p_bank boolean default true)
-returns jsonb language sql as $$
+-- The answer for Mailbox, Members and Bank on or off, with the pages the caller hid (20260930697000).
+create function pg_temp.c6_pages(p_mailbox boolean, p_members boolean, p_may boolean, p_bank boolean default true,
+	p_hidden text[] default '{}') returns jsonb language sql as $$
 	select jsonb_build_object('schema', 'qorpera.member-interface-pages/v1', 'pages', jsonb_build_array(
-		jsonb_build_object('page', 'mailbox', 'on', p_mailbox), jsonb_build_object('page', 'members', 'on', p_members),
-		jsonb_build_object('page', 'bank', 'on', p_bank)),
+		jsonb_build_object('page', 'mailbox', 'on', p_mailbox, 'hidden', 'mailbox' = any(p_hidden)),
+		jsonb_build_object('page', 'members', 'on', p_members, 'hidden', 'members' = any(p_hidden)),
+		jsonb_build_object('page', 'bank', 'on', p_bank, 'hidden', 'bank' = any(p_hidden))),
 		'mayChange', p_may)
+$$;
+create function pg_temp.c6_hide(p_by integer, p_page text, p_hidden boolean,
+	p_env uuid default '63400000-0000-4000-8000-000000000020') returns jsonb language sql as $$
+	select pg_temp.c6_call(pg_temp.c6_user(p_by), format('select public.qorpera_set_interface_page_hidden(%L, %L, %L)',
+		p_env, p_page, p_hidden))
 $$;
 -- Everything a switch must leave alone, for 634's company: its folder and commits, the areas' consents and offers,
 -- its members, its notifications, and who pays.
@@ -67,7 +73,8 @@ do $$
 declare f text;
 begin
 	foreach f in array array['public.qorpera_member_interface_pages(uuid)',
-		'public.qorpera_set_interface_page(uuid,text,boolean)'] loop
+		'public.qorpera_set_interface_page(uuid,text,boolean)',
+		'public.qorpera_set_interface_page_hidden(uuid,text,boolean)'] loop
 		if not has_function_privilege('authenticated', f, 'execute') or has_function_privilege('anon', f, 'execute')
 			or has_function_privilege('service_role', f, 'execute') then raise exception 'The grants of %', f; end if;
 	end loop;
@@ -79,6 +86,11 @@ begin
 		or has_table_privilege('anon', 'public.qorpera_interface_pages', 'select,insert,update,delete')
 		or has_table_privilege('service_role', 'public.qorpera_interface_pages', 'select,insert,update,delete') then
 		raise exception 'The pages table''s grants'; end if;
+	if has_table_privilege('authenticated', 'public.qorpera_member_hidden_interface_pages', 'select,insert,update,delete')
+		or has_table_privilege('anon', 'public.qorpera_member_hidden_interface_pages', 'select,insert,update,delete')
+		or has_table_privilege('service_role', 'public.qorpera_member_hidden_interface_pages',
+			'select,insert,update,delete') then
+		raise exception 'The hidden pages table''s grants'; end if;
 end $$;
 
 -- 1. Both pages start off, for every member; only the owner and the admin may switch them. Someone who is not a member
@@ -193,6 +205,46 @@ begin
 		raise exception 'The other company''s switch reached 634''s: %', pg_temp.c6_list(1); end if;
 end $$;
 
+-- 4b. Hiding is each member's own (20260930697000). A viewer hides Members and Bank: their own list says so, the
+-- owner's and a contributor's don't, and the company's switch is as it was. Hiding again changes nothing; showing
+-- again takes the row away. No other page, no null, and nobody outside the company. None of it touches the data.
+do $$
+declare v_data text := pg_temp.c6_data(); v_switches jsonb; v_page text;
+begin
+	select jsonb_agg(to_jsonb(p) order by p.environment_id, p.page) into v_switches from public.qorpera_interface_pages p;
+	if pg_temp.c6_hide(3, 'members', true) is distinct from pg_temp.c6_pages(true, true, false, false, '{members}')
+		then raise exception 'The viewer hides Members: %', pg_temp.c6_list(3); end if;
+	if pg_temp.c6_hide(3, 'bank', true) is distinct from pg_temp.c6_pages(true, true, false, false, '{members,bank}')
+		or pg_temp.c6_hide(3, 'bank', true) is distinct from pg_temp.c6_pages(true, true, false, false, '{members,bank}')
+		then raise exception 'The viewer hides Bank, twice'; end if;
+	if pg_temp.c6_list(1) is distinct from pg_temp.c6_pages(true, true, true, false)
+		or pg_temp.c6_list(2) is distinct from pg_temp.c6_pages(true, true, false, false) then
+		raise exception 'Another member sees the viewer''s hidden pages: %', pg_temp.c6_list(1); end if;
+	if (select count(*) from public.qorpera_member_hidden_interface_pages
+		where user_id = pg_temp.c6_user(3)) is distinct from 2::bigint then raise exception 'The viewer''s rows'; end if;
+	foreach v_page in array array['pulse', 'Mailbox', 'members ', ''] loop
+		perform pg_temp.c6_error(pg_temp.c6_hide(3, v_page, true), '22023');
+	end loop;
+	perform pg_temp.c6_error(pg_temp.c6_hide(3, null, true), '22023');
+	perform pg_temp.c6_error(pg_temp.c6_hide(3, 'members', null), '22023');
+	perform pg_temp.c6_error(pg_temp.c6_hide(99, 'members', true), '42501');
+	perform pg_temp.c6_error(pg_temp.c6_hide(101, 'members', true), '42501');
+	-- The other company's owner hides Mailbox in their own company only.
+	if pg_temp.c6_hide(101, 'mailbox', true, '68800000-0000-4000-8000-000000000020')
+		is distinct from pg_temp.c6_pages(false, false, true, true, '{mailbox}') then
+		raise exception 'The other owner hides Mailbox'; end if;
+	if pg_temp.c6_list(1) is distinct from pg_temp.c6_pages(true, true, true, false) then
+		raise exception 'The other company''s hiding reached 634''s'; end if;
+	if pg_temp.c6_hide(3, 'members', false) is distinct from pg_temp.c6_pages(true, true, false, false, '{bank}')
+		or pg_temp.c6_hide(3, 'members', false) is distinct from pg_temp.c6_pages(true, true, false, false, '{bank}') then
+		raise exception 'The viewer shows Members again, twice'; end if;
+	if exists (select 1 from public.qorpera_member_hidden_interface_pages
+		where user_id = pg_temp.c6_user(3) and page = 'members') then raise exception 'Shown, the row stays'; end if;
+	if pg_temp.c6_data() is distinct from v_data then raise exception 'Hiding changed the company''s data'; end if;
+	if (select jsonb_agg(to_jsonb(p) order by p.environment_id, p.page) from public.qorpera_interface_pages p)
+		is distinct from v_switches then raise exception 'Hiding changed the company''s switch'; end if;
+end $$;
+
 -- 5. An admin made a contributor switches nothing more; an owner of a company being deleted neither. The list still
 -- answers, and the pages stay as they were.
 do $$
@@ -204,6 +256,7 @@ begin
 		raise exception 'The former admin''s list: %', pg_temp.c6_list(5); end if;
 	insert into public.qorpera_company_deletions(profile_id) values ('63400000-0000-4000-8000-000000000010');
 	perform pg_temp.c6_error(pg_temp.c6_set(1, 'members', false), '55000');
+	perform pg_temp.c6_error(pg_temp.c6_hide(3, 'members', true), '55000');
 	if pg_temp.c6_list(1) is distinct from pg_temp.c6_pages(true, true, true, false) then
 		raise exception 'The list while deleting: %', pg_temp.c6_list(1); end if;
 end $$;
