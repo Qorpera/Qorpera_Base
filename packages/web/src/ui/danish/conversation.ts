@@ -423,8 +423,8 @@ export const CONVERSATION: Record<string, string> = {
 		"Krypteret i virksomhedens boks. Agenten ser aldrig værdien, kun at den blev gemt.",
 	"Encrypted in the company vault. Coding sessions in {repository} get it as {variable}; it never shows in the chat.":
 		"Krypteret i virksomhedens boks. Kodesessioner i {repository} får den som {variable}; den vises aldrig i chatten.",
-	"Encrypted in the company vault. Your coding sessions get it as {variable}; it never shows in the chat.":
-		"Krypteret i virksomhedens boks. Dine kodesessioner får den som {variable}; den vises aldrig i chatten.",
+	"Saved as your own in the company vault: your coding sessions in every repository get it as {variable}. It never shows in the chat.":
+		"Gemt som din egen i virksomhedens boks: dine kodesessioner i alle repositorier får den som {variable}. Den vises aldrig i chatten.",
 	"{variable} is saved, but it could not be given to {repository}: {error} Try again.":
 		"{variable} er gemt, men den kunne ikke gives til {repository}: {error} Prøv igen.",
 	"Saving a secret to the company vault is unavailable here. Do not paste it into chat.":

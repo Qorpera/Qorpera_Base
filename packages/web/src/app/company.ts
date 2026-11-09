@@ -2390,6 +2390,14 @@ export class CompanyController {
 	 * admin saves it for the company; without a repository it is the member's
 	 * own, which reaches their coding sessions in every repository (a company
 	 * value reaches none until it is given to one). */
+	/** Whether this member's save of a secret card is the company's (an owner or admin, and for a coding value only one
+	 * that names its repository) or their own: what the card says and what provideSecret saves. */
+	secretSavedForCompany(request: InteractionRequest): boolean {
+		const role = this.store.get().team?.role;
+		const coding = request.payload.connectorId === "environment";
+		return (role === "owner" || role === "admin") && (!coding || typeof request.payload.repository === "string");
+	}
+
 	async provideSecret(
 		sessionId: string,
 		interactionId: string,
@@ -2401,10 +2409,9 @@ export class CompanyController {
 		const name = typeof request.payload.name === "string" ? request.payload.name : "";
 		const connectorId = typeof request.payload.connectorId === "string" ? request.payload.connectorId : "vault";
 		const purpose = typeof request.payload.purpose === "string" ? request.payload.purpose : request.title;
-		const role = this.store.get().team?.role;
 		const coding = connectorId === "environment";
 		const repository = typeof request.payload.repository === "string" ? request.payload.repository : undefined;
-		const company = (role === "owner" || role === "admin") && (!coding || repository !== undefined);
+		const company = this.secretSavedForCompany(request);
 		store.set({ interactionError: undefined });
 		try {
 			// Never store a value whose answer could not be sent.

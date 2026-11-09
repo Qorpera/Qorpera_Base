@@ -61,6 +61,9 @@ export interface InteractionCardContext {
 	/** Saves a secret card's value into the company vault and marks the card provided;
 	 * absent when this context cannot reach the vault. */
 	provideSecret?: (value: string) => Promise<void>;
+	/** A secret saved from this card is the company's, not the member's own (app/company.ts secretSavedForCompany): for a
+	 * coding value it decides which repositories' sessions get it, which the card says. */
+	savesForCompany?: boolean;
 	emailDraft?: EmailDraftEditor;
 	loadEmailDraft?: () => Promise<EmailDraftState>;
 	actEmailDraft?: (action: "save" | "send" | "discard", content: EmailDraftContent) => Promise<EmailDraftState>;
@@ -435,16 +438,14 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 					icon("lock"),
 					` ${
 						coding
-							? repository
+							? repository && context.savesForCompany
 								? t(
 										"Encrypted in the company vault. Coding sessions in {repository} get it as {variable}; it never shows in the chat.",
 										{ repository, variable },
 									)
 								: t(
-										"Encrypted in the company vault. Your coding sessions get it as {variable}; it never shows in the chat.",
-										{
-											variable,
-										},
+										"Saved as your own in the company vault: your coding sessions in every repository get it as {variable}. It never shows in the chat.",
+										{ variable },
 									)
 							: t("Encrypted in the company vault. The agent never sees the value, only that it was saved.")
 					}`,

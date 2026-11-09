@@ -33,6 +33,50 @@ const REPOSITORY_PATTERN = /^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9_][a-z0-
  * names a coding machine sets itself or that name a provider's login; the capture refuses them too. */
 const CODING_VALUE_NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 const CODING_VALUE_NAME_REFUSED = /^(lc|git|ld|dyld|qorpera|ssh|xdg|docker|anthropic|claude|codex|openai)_/;
+/** The names a coding machine sets itself, as qorpera_coding_environment_name_allowed lists them: refused here too, so
+ * the agent hears why before the card is sent. */
+const CODING_VALUE_NAMES_RESERVED: ReadonlySet<string> = new Set([
+	"home",
+	"path",
+	"tmpdir",
+	"tmp",
+	"temp",
+	"user",
+	"logname",
+	"shell",
+	"pwd",
+	"oldpwd",
+	"term",
+	"colorterm",
+	"columns",
+	"lines",
+	"lang",
+	"language",
+	"tz",
+	"bash_env",
+	"env",
+	"ifs",
+	"ps1",
+	"ps2",
+	"ps4",
+	"prompt_command",
+	"shellopts",
+	"bashopts",
+	"cdpath",
+	"globignore",
+	"hostname",
+	"shlvl",
+	"mail",
+	"mailpath",
+	"http_proxy",
+	"https_proxy",
+	"no_proxy",
+	"all_proxy",
+	"ftp_proxy",
+	"ssl_cert_file",
+	"ssl_cert_dir",
+	"node_extra_ca_certs",
+]);
 const HOST_PATTERN = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)+$/;
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
 // NUL too: PostgreSQL text cannot hold it, and the final send of a card's sentence refuses it.
@@ -334,7 +378,9 @@ function payloadValid(surface: CloudInteractionSurface, payload: Record<string, 
 					(typeof payload.connectorId === "string" && VAULT_NAME_PATTERN.test(payload.connectorId))) &&
 				// A coding value (20260930693000): a name the capture takes, and the repository only beside it.
 				(!coding ||
-					(CODING_VALUE_NAME_PATTERN.test(payload.name) && !CODING_VALUE_NAME_REFUSED.test(payload.name))) &&
+					(CODING_VALUE_NAME_PATTERN.test(payload.name) &&
+						!CODING_VALUE_NAME_REFUSED.test(payload.name) &&
+						!CODING_VALUE_NAMES_RESERVED.has(payload.name))) &&
 				(!("repository" in payload) ||
 					(coding && typeof payload.repository === "string" && REPOSITORY_PATTERN.test(payload.repository))) &&
 				text(payload.label, 1, 80) &&

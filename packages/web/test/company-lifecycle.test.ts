@@ -432,6 +432,17 @@ describe("answering a card", () => {
 		);
 		expect(begin.mock.calls[0]![0]).toMatchObject({ ownerKind: "member", ownerUserId: userA.id });
 		expect(f.cloud.rpc).not.toHaveBeenCalledWith("qorpera_grant_coding_environment_secret", expect.anything());
+		expect(f.controller.secretSavedForCompany(request)).toBe(true);
+		expect(f.controller.secretSavedForCompany({ ...request, payload: anywhere })).toBe(false);
+
+		// A contributor on a card with a repository saves their own, with no grant: the card tells them so.
+		f.controller.store.set({ team: { ...team, role: "contributor" } });
+		expect(f.controller.secretSavedForCompany(request)).toBe(false);
+		vi.mocked(f.cloud.rpc).mockClear();
+		begin.mockClear();
+		await f.controller.provideSecret(thread.sessionId, id(595), request, "npm_value_123456");
+		expect(begin.mock.calls[0]![0]).toMatchObject({ ownerKind: "member", ownerUserId: userA.id });
+		expect(f.cloud.rpc).not.toHaveBeenCalledWith("qorpera_grant_coding_environment_secret", expect.anything());
 	});
 
 	it("keeps a coding value's card open, saying so, when the value is saved but not given to the repository", async () => {

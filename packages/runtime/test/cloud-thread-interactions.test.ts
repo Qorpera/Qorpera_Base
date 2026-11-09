@@ -64,6 +64,11 @@ describe("thread interaction requests", () => {
 			{ name: "npm-token" },
 			{ name: "git_token" },
 			{ name: "openai_api_key" },
+			// The names a coding machine sets itself, as the kernel lists them.
+			{ name: "path" },
+			{ name: "https_proxy" },
+			{ name: "node_extra_ca_certs" },
+			{ name: "home" },
 		])
 			expect(() => parseCloudInteractionRequestData(card(payload))).toThrow(/Invalid interaction request/);
 		const plain = card({ connectorId: undefined, repository: "acme/web" });

@@ -2761,6 +2761,7 @@ export class ConversationView {
 									? {
 											provideSecret: (value: string) =>
 												this.#company.provideSecret(this.#sessionId, item.id, item.request, value),
+											savesForCompany: this.#company.secretSavedForCompany(item.request),
 										}
 									: {}),
 							},
