@@ -214,4 +214,15 @@ begin
 		raise exception 'the ask to B is not void'; end if;
 end $$;
 
+-- 7. C's account is deleted: the asks C made stay, with no one named as their asker, and Hugo and Jens work for nobody.
+delete from auth.users where id = '11900000-0000-4000-8000-00000000000c';
+do $$
+begin
+	if not exists (select 1 from public.qorpera_agent_works_for_asks where profile_id = '11900000-0000-4000-8000-000000000101'
+		and asked_by_user_id is null and asked_by_staff_agent_id is null) then
+		raise exception 'the asks of a deleted account are gone'; end if;
+	if exists (select 1 from public.qorpera_agent_works_for where profile_id = '11900000-0000-4000-8000-000000000101'
+		and user_id = '11900000-0000-4000-8000-00000000000c') then raise exception 'an agent works for a deleted account'; end if;
+end $$;
+
 rollback;

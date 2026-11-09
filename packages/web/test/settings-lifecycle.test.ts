@@ -82,6 +82,8 @@ function sdkRpcs(f: { cloud: Cloud }): string[] {
 			name !== "qorpera_member_interface_offers" &&
 			name !== "qorpera_member_interface_supervisions" &&
 			name !== "qorpera_member_interface_pages" &&
+			// Leaving reads how many agents work for the member, so the confirmation can say it.
+			name !== "qorpera_read_works_for" &&
 			// The apps drawer's Sites entry: the company's sites are read once it opens.
 			name !== "qorpera_list_company_sites",
 	);
@@ -136,9 +138,11 @@ function storageFixture() {
 	return { source, list, history };
 }
 
-function confirmCompanyRemoval(root: Element, deleting: boolean, profile = profileA) {
+async function confirmCompanyRemoval(root: Element, deleting: boolean, profile = profileA) {
 	expect(root.querySelector(".company-exit")?.textContent).toBe(deleting ? "Delete company" : "Leave company");
 	click(root, ".company-exit");
+	// Leaving first reads how many agents work for the member.
+	await settle();
 	const dialog = document.querySelector('[role="alertdialog"]')!;
 	if (deleting) {
 		const input = dialog.querySelector("input")!;
@@ -2016,7 +2020,7 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		click(f.root, "#settings-tab-company");
 		await draw();
-		confirmCompanyRemoval(f.root, action === "delete");
+		await confirmCompanyRemoval(f.root, action === "delete");
 		await draw();
 		expect(removal).toHaveBeenCalledExactlyOnceWith(profileA.profileId);
 		expect(location.hash).toBe("#/");
@@ -2034,7 +2038,7 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		click(f.root, "#settings-tab-company");
 		await draw();
-		confirmCompanyRemoval(f.root, true);
+		await confirmCompanyRemoval(f.root, true);
 		await draw();
 		expect(f.root.querySelector(".settings-company-exit")!.textContent).toContain("Deletion unavailable");
 		expect(f.root.querySelector<HTMLElement>(".frame")!.inert).toBe(true);
@@ -2049,7 +2053,7 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		click(f.root, "#settings-tab-company");
 		await draw();
-		confirmCompanyRemoval(f.root, true);
+		await confirmCompanyRemoval(f.root, true);
 		await draw();
 		vi.mocked(f.api.getTeam).mockRejectedValue(
 			new CloudRpcError("getTeam", { code: "42501", message: "Access revoked" }),
@@ -2072,7 +2076,7 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		click(f.root, "#settings-tab-company");
 		await draw();
-		confirmCompanyRemoval(f.root, true);
+		await confirmCompanyRemoval(f.root, true);
 		await draw();
 		vi.mocked(f.api.listProfiles).mockResolvedValue([profileB]);
 		f.auth(userB);
@@ -2100,7 +2104,7 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		click(f.root, "#settings-tab-company");
 		await draw();
-		confirmCompanyRemoval(f.root, true);
+		await confirmCompanyRemoval(f.root, true);
 		await draw();
 		click(f.root, ".settings-close");
 		open(f.root);
@@ -2123,7 +2127,7 @@ describe("settings session lifecycle", () => {
 			vi.mocked(fixtureState.api.listProfiles).mockResolvedValue([]);
 		});
 		const f = await setup(fixtureState);
-		confirmCompanyRemoval(f.root, false);
+		await confirmCompanyRemoval(f.root, false);
 		await draw();
 		expect(location.hash).toBe("#/");
 		expect(f.root.querySelector(".team")).toBeNull();
@@ -2142,7 +2146,7 @@ describe("settings session lifecycle", () => {
 			click(f.root, "#settings-tab-company");
 			await draw();
 		}
-		confirmCompanyRemoval(f.root, true);
+		await confirmCompanyRemoval(f.root, true);
 		await draw();
 		const exit = f.root.querySelector(".company-exit")!;
 		expect(exit.nextElementSibling?.matches(".notice-danger")).toBe(true);
@@ -2163,12 +2167,12 @@ describe("settings session lifecycle", () => {
 		open(f.root);
 		click(f.root, "#settings-tab-company");
 		await draw();
-		confirmCompanyRemoval(f.root, true);
+		await confirmCompanyRemoval(f.root, true);
 		await draw();
 		open(f.root);
 		click(f.root, "#settings-tab-company");
 		await draw();
-		confirmCompanyRemoval(f.root, true, profileB);
+		await confirmCompanyRemoval(f.root, true, profileB);
 		await draw();
 		pending.resolve([profileB]);
 		await draw();

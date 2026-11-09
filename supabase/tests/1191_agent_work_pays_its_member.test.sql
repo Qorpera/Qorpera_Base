@@ -59,3 +59,47 @@ begin
 		raise exception 'a hand-off to an agent of nobody left the chain starter: %', row_to_json(v_wake); end if;
 end
 $$;
+
+-- 5. Bob works for the contributor again, but their login is a ChatGPT plan login (the check stands in here, in this
+--    rolled-back transaction): a plan pays only for work its member starts, so the hand-off stays the chain starter's.
+alter function public.qorpera_sponsor_version_is_chatgpt_plan(uuid, bigint) rename to qorpera_sponsor_version_is_chatgpt_plan_1191;
+create function public.qorpera_sponsor_version_is_chatgpt_plan(p_binding_id uuid, p_version bigint)
+returns boolean language sql stable security definer set search_path = '' as $$
+	select p_binding_id = (current_setting('qorpera_test.pays_sponsor')::jsonb ->> 'binding_id')::uuid
+$$;
+do $$
+declare v_wake public.qorpera_wake_occurrences%rowtype;
+begin
+	perform pg_temp.bob_works_for('92400000-0000-4000-8000-000000000002');
+	v_wake := pg_temp.hand_to_bob('works-5');
+	if v_wake.requested_by_user_id <> '92400000-0000-4000-8000-000000000001'
+		or v_wake.sponsor_binding_id <> (current_setting('qorpera_test.base_sponsor')::jsonb ->> 'binding_id')::uuid then
+		raise exception 'a hand-off moved onto a plan login: %', row_to_json(v_wake); end if;
+end
+$$;
+drop function public.qorpera_sponsor_version_is_chatgpt_plan(uuid, bigint);
+alter function public.qorpera_sponsor_version_is_chatgpt_plan_1191(uuid, bigint) rename to qorpera_sponsor_version_is_chatgpt_plan;
+
+-- 6. Bob works for the viewer, and the login picker offers a login that is not theirs (the owner's, standing in for a
+--    company account): only the member's own login takes a hand-off over, so it stays the chain starter's.
+alter function public.qorpera_starter_sponsor(uuid, uuid, uuid, uuid) rename to qorpera_starter_sponsor_1191;
+create function public.qorpera_starter_sponsor(p_profile_id uuid, p_requester uuid, p_staff_agent_id uuid,
+	p_prefer_binding_id uuid)
+returns table (binding_id uuid, version bigint) language sql stable security definer set search_path = '' as $$
+	select (current_setting('qorpera_test.base_sponsor')::jsonb ->> 'binding_id')::uuid, 1::bigint
+	where p_requester = '92400000-0000-4000-8000-000000000003'
+	union all
+	select * from public.qorpera_starter_sponsor_1191(p_profile_id, p_requester, p_staff_agent_id, p_prefer_binding_id)
+	where p_requester <> '92400000-0000-4000-8000-000000000003'
+$$;
+do $$
+declare v_wake public.qorpera_wake_occurrences%rowtype;
+begin
+	perform pg_temp.bob_works_for('92400000-0000-4000-8000-000000000003');
+	v_wake := pg_temp.hand_to_bob('works-6');
+	if v_wake.requested_by_user_id <> '92400000-0000-4000-8000-000000000001' then
+		raise exception 'a hand-off moved to a member on a login not theirs: %', row_to_json(v_wake); end if;
+end
+$$;
+
+rollback;

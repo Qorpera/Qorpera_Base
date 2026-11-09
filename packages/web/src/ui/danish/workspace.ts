@@ -175,8 +175,8 @@ export const WORKSPACE: Record<string, string> = {
 	"{agent} now works for {member}.": "{agent} arbejder nu for {member}.",
 	"{agent} stays where it is.": "{agent} bliver, hvor den er.",
 	"{asker} asks to take {agent} from you.": "{asker} spørger, om de må tage {agent} fra dig.",
-	"{asker} asks you to take {agent}. Your ChatGPT then carries {agent}'s own work.":
-		"{asker} spørger, om du vil tage {agent}. Så bærer din ChatGPT {agent}s eget arbejde.",
+	"{asker} asks you to take {agent}. Your ChatGPT then carries the work handed to {agent}.":
+		"{asker} spørger, om du vil tage {agent}. Så bærer din ChatGPT det arbejde, {agent} får.",
 	"{member} carries {n} agents and {other} none. Shall {other} take {area}?":
 		"{member} bærer {n} agenter og {other} ingen. Skal {other} tage {area}?",
 	"{member}: ChatGPT is full until {time}, so {agents} wait. Shall {other} take them for now?":

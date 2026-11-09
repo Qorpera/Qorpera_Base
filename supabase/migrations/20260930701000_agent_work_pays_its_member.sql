@@ -6,16 +6,34 @@
 -- two-founder company, all six hired agents ran on one founder's login.
 --
 -- * A coworker wake (one agent hands work to another, qorpera_pin_wake_occurrence's agent branch) is now requested by
---   the member the receiving agent works for, when that member has a login that may pay for it
---   (qorpera_starter_sponsor finds one for them). Its payer is then that member's own login, by the existing rule that
---   a member's login serves only that member's work; every follow-up of the receiver's run copies that requester, as
---   before. The hand-off's run is new work, so nothing running changes payer.
--- * With nobody, the same member, or no login of theirs that may pay (none connected, or only a ChatGPT plan login,
---   which pays only for follow-ups of runs it pays for, 20260928359950), the wake keeps the sender's requester: the
---   chain starter's login, as before.
+--   the member the receiving agent works for and paid by that member's own login: the login qorpera_starter_sponsor
+--   picks for new work of theirs (most room first), only when it is theirs (never a company account) and not a ChatGPT
+--   plan login (a plan pays only for work its member starts and for follow-ups of runs it pays for, 20260928359950).
+--   Every follow-up of the receiver's run copies that requester and login, as before. The hand-off's run is new work,
+--   so nothing running changes payer.
+-- * With nobody, the same member, or no such login of theirs, the wake is paid as before: the chain starter's.
 -- * A member's own message to an agent (a room wake), a routine (its saver), a human task, a first run, a worker or a
 --   machine event of the same run are unchanged.
 -- Locks: none new; the changed trigger body only reads more. Every changed body carries 20260930701000.
+
+-- The member a hand-off to the agent now belongs to, and the login of theirs that pays for it; no row when the
+-- hand-off stays with the chain starter (see the header).
+create function public.qorpera_works_for_hand_off(p_profile_id uuid, p_staff_agent_id uuid, p_starter uuid)
+returns table(user_id uuid, binding_id uuid, version bigint)
+language sql stable security definer set search_path = '' as $$
+	-- 20260930701000
+	with works as (select public.qorpera_agent_works_for_user(p_profile_id, p_staff_agent_id) as user_id)
+	select works.user_id, payer.binding_id, payer.version
+	from works
+	cross join lateral public.qorpera_starter_sponsor(p_profile_id, works.user_id, p_staff_agent_id, null) as payer
+	join public.qorpera_provider_connections as connection
+		on connection.id = public.qorpera_sponsor_binding_connection(payer.binding_id)
+	where works.user_id is not null and works.user_id <> p_starter
+		and connection.owner_user_id = works.user_id
+		and not public.qorpera_sponsor_version_is_chatgpt_plan(payer.binding_id, payer.version)
+	limit 1
+$$;
+revoke all on function public.qorpera_works_for_hand_off(uuid, uuid, uuid) from public, anon, authenticated, service_role;
 
 create function pg_temp.wf701_patch(p_target regprocedure, p_old text, p_new text)
 returns void language plpgsql as $$
@@ -29,15 +47,21 @@ begin
 end $$;
 
 select pg_temp.wf701_patch('public.qorpera_pin_wake_occurrence()'::regprocedure,
-	$old$  new.requested_by_user_id:=v_run.requested_by_user_id;$old$,
-	$new$  new.requested_by_user_id:=v_run.requested_by_user_id;
-		-- 20260930701000: work handed to an agent is requested by the member it works for, when a login of theirs may pay.
-		if new.source_kind = 'coworker'
-			and public.qorpera_agent_works_for_user(new.profile_id, new.staff_agent_id) <> v_run.requested_by_user_id
-			and exists (select 1 from public.qorpera_starter_sponsor(new.profile_id,
-					public.qorpera_agent_works_for_user(new.profile_id, new.staff_agent_id), new.staff_agent_id, null) as payer
-				where payer.binding_id is not null) then
-			new.requested_by_user_id := public.qorpera_agent_works_for_user(new.profile_id, new.staff_agent_id);
-		end if;$new$);
+	$old$		select payer.binding_id, payer.version into new.sponsor_binding_id, new.sponsor_version
+		from public.qorpera_starter_sponsor(new.profile_id, new.requested_by_user_id, new.staff_agent_id,
+			v_run.sponsor_binding_id) as payer;
+$old$,
+	$new$		select payer.binding_id, payer.version into new.sponsor_binding_id, new.sponsor_version
+		from public.qorpera_starter_sponsor(new.profile_id, new.requested_by_user_id, new.staff_agent_id,
+			v_run.sponsor_binding_id) as payer;
+		-- 20260930701000: work handed to an agent belongs to the member it works for, on their own login, when they have
+		-- one that may pay for it (qorpera_works_for_hand_off).
+		if new.source_kind = 'coworker' and exists (select 1 from public.qorpera_works_for_hand_off(new.profile_id,
+				new.staff_agent_id, v_run.requested_by_user_id)) then
+			select hand.user_id, hand.binding_id, hand.version
+			into new.requested_by_user_id, new.sponsor_binding_id, new.sponsor_version
+			from public.qorpera_works_for_hand_off(new.profile_id, new.staff_agent_id, v_run.requested_by_user_id) as hand;
+		end if;
+$new$);
 
 drop function pg_temp.wf701_patch(regprocedure, text, text);
