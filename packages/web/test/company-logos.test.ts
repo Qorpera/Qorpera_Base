@@ -8,6 +8,7 @@ import {
 	COMPANY_BRAND_FOLDER,
 	COMPANY_LOGO_PATH,
 	type CompanyLogo,
+	type CompanyLogoChange,
 	companyLogoName,
 	companyLogoSource,
 	parseCompanyLogos,
@@ -44,11 +45,15 @@ function row(extra: Partial<CompanyLogo> = {}): CompanyLogo {
 
 function fakeApi(rows: () => CompanyLogo[]) {
 	return {
-		listCompanyLogos: vi.fn(async () => rows()),
-		downloadCompanyLogo: vi.fn(async () => new Blob(["png"], { type: "image/png" })),
-		uploadCompanyLogo: vi.fn(async () => true),
-		deleteCompanyLogo: vi.fn(async () => {}),
-		publishCompanyLogo: vi.fn(async () => ({ previousObjectName: companyLogoName(COMPANY, OLD) })),
+		listCompanyLogos: vi.fn(async (_ids: readonly string[]) => rows()),
+		downloadCompanyLogo: vi.fn(async (_name: string) => new Blob(["png"], { type: "image/png" })),
+		uploadCompanyLogo: vi.fn(async (_name: string, _png: Blob) => true),
+		deleteCompanyLogo: vi.fn(async (_name: string) => {}),
+		publishCompanyLogo: vi.fn(
+			async (_profileId: string, _name: string | null): Promise<CompanyLogoChange> => ({
+				previousObjectName: companyLogoName(COMPANY, OLD),
+			}),
+		),
 		listCompanyLogoObjects: vi.fn(async (): Promise<{ objectName: string; createdAt: number }[]> => []),
 	};
 }
