@@ -1264,6 +1264,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	}
 	zone(parts.unassigned.el, Boolean(sidebar));
 	parts.unassigned.title.hidden = !sectioned;
+	// With no one in it, Unassigned is not a category: its title shows only while an agent
+	// is dragged, so it can still be dropped there (styles/app.css).
+	parts.unassigned.el.classList.toggle("is-empty", !unassignedRows.length);
 	// Without sections the list is not a group: nothing would name it but a hidden title.
 	if (sectioned) {
 		parts.unassigned.el.setAttribute("role", "group");
