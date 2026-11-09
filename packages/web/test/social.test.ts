@@ -224,6 +224,27 @@ describe("leaderboard page", () => {
 		);
 	});
 
+	it("keeps a saved visibility when an older board read lands after it", async () => {
+		const hidden = parseLeaderboard({ ...BOARD, hidden: true });
+		const { view, api } = await mount(hidden);
+		let answer: (board: Leaderboard) => void = () => {};
+		api.getFriendsLeaderboard.mockImplementationOnce(() => new Promise<Leaderboard>((resolve) => (answer = resolve)));
+		view.el.querySelector<HTMLButtonElement>('[data-days="30"]')!.click();
+		const visible = view.el.querySelector<HTMLInputElement>(".leaderboard-visible input")!;
+		expect(visible.checked).toBe(false);
+		visible.checked = true;
+		visible.dispatchEvent(new Event("change"));
+		await vi.waitFor(() => expect(api.setLeaderboardHidden).toHaveBeenCalledWith(false));
+		// The 30-day read was asked before the save and answers after it, with the old choice.
+		answer({ ...hidden, days: 30 });
+		await vi.waitFor(() =>
+			expect(view.el.querySelector('[data-days="30"]')?.getAttribute("aria-pressed")).toBe("true"),
+		);
+		await vi.waitFor(() => expect(view.el.querySelector(".leaderboard-list")?.hasAttribute("aria-busy")).toBe(false));
+		expect(visible.checked).toBe(true);
+		expect(view.el.querySelector(".leaderboard-visible small")?.textContent).toContain("Your friends see your row");
+	});
+
 	it("asks for friends when there are none", async () => {
 		const alone = parseLeaderboard({ ...BOARD, people: [person(ME, "Jonas", 12)] });
 		const { view, openFriends } = await mount(alone);

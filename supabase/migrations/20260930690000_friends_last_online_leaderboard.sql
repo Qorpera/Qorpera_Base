@@ -129,8 +129,10 @@ revoke all on function public.qorpera_set_leaderboard_hidden(boolean) from publi
 grant execute on function public.qorpera_set_leaderboard_hidden(boolean) to authenticated;
 
 -- The board over the last `p_days` days (7 or 30): people, companies and agents.
--- Agents are the 30 with the most runs. Sales are the good will months that
--- overlap the period, in øre.
+-- Runs, hours and messages count from exactly `p_days` days ago; active days are
+-- the last `p_days` UTC calendar days, today included. Every agent with a run in
+-- the period is listed, so any figure the page ranks by finds its winner. Sales
+-- are the good will months that overlap the period, in øre.
 create function public.qorpera_friends_leaderboard(p_days integer)
 returns jsonb
 language plpgsql
@@ -185,7 +187,8 @@ begin
 			left(public.qorpera_account_display_name(account.raw_user_meta_data), 160) as display_name,
 			coalesce(presence.last_seen_at, account.last_sign_in_at) as last_seen_at,
 			(select count(*) from public.qorpera_account_active_days active
-				where active.user_id = account.id and active.day >= (v_since at time zone 'UTC')::date) as active_days,
+				where active.user_id = account.id
+					and active.day > (statement_timestamp() at time zone 'UTC')::date - p_days) as active_days,
 			(select count(*) from public.qorpera_session_inputs input
 				where input.author_user_id = account.id and input.kind = 'user_message'
 					and input.created_at >= v_since) as messages,
@@ -220,8 +223,6 @@ begin
 		join public.qorpera_profile_staff staff
 			on staff.profile_id = work.profile_id and staff.staff_agent_id = work.staff_agent_id
 		join companies on companies.profile_id = work.profile_id
-		order by work.runs desc, work.saved desc, staff.display_name
-		limit 30
 	)
 	select jsonb_build_object(
 		'days', p_days,

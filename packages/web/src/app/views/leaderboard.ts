@@ -124,6 +124,8 @@ export class LeaderboardView {
 	#error: string | undefined;
 	#missing = false;
 	#saving = false;
+	/** The visibility this page last saved: a board read before the save landed must not show the old one. */
+	#savedHidden: boolean | undefined;
 	#turn = 0;
 
 	constructor(api: CloudApi, signal: AbortSignal, openFriends: () => void) {
@@ -201,7 +203,7 @@ export class LeaderboardView {
 		try {
 			const data = await this.#api.getFriendsLeaderboard(this.#days);
 			if (this.#signal.aborted || turn !== this.#turn) return;
-			this.#data = data;
+			this.#data = this.#savedHidden === undefined ? data : { ...data, hidden: this.#savedHidden };
 		} catch (error) {
 			if (this.#signal.aborted || turn !== this.#turn) return;
 			if (error instanceof CloudRpcError && error.missing) this.#missing = true;
@@ -220,6 +222,7 @@ export class LeaderboardView {
 		this.#draw();
 		try {
 			await this.#api.setLeaderboardHidden(!visible);
+			this.#savedHidden = !visible;
 			if (this.#data) this.#data = { ...this.#data, hidden: !visible };
 		} catch (error) {
 			if (!this.#signal.aborted) this.#error = describeError(error);

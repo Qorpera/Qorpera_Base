@@ -64,6 +64,12 @@ begin
 end
 $$;
 
+-- A was also online 6, 7, 29 and 30 UTC days ago: a 7-day board counts today and 6 days ago, a 30-day board
+-- today, 6, 7 and 29 days ago (the last 7 or 30 calendar days, today included).
+insert into public.qorpera_account_active_days (user_id, day)
+select '11800000-0000-4000-8000-00000000000a', (clock_timestamp() at time zone 'UTC')::date - back
+from unnest(array[6, 7, 29, 30]) back;
+
 -- C asks A: a pending request shows no last online time either way.
 select set_config('request.jwt.claims', '{"sub":"11800000-0000-4000-8000-00000000000c","email":"board-c@example.test","role":"authenticated","user_metadata":{}}', true);
 set local role authenticated;
@@ -111,9 +117,14 @@ begin
 			where p ->> 'user_id' = '11800000-0000-4000-8000-00000000000b' and (p ->> 'me')::boolean)
 		or not exists (select 1 from jsonb_array_elements(v -> 'people') p
 			where p ->> 'user_id' = '11800000-0000-4000-8000-00000000000a' and not (p ->> 'me')::boolean
-				and (p ->> 'active_days')::int = 1 and p ->> 'last_seen_at' is not null
+				and (p ->> 'active_days')::int = 4 and p ->> 'last_seen_at' is not null
 				and (p ->> 'agent_runs')::int = 0) then
 		raise exception 'B''s board is not as expected: %', v;
+	end if;
+	select public.qorpera_friends_leaderboard(7) into v;
+	if not exists (select 1 from jsonb_array_elements(v -> 'people') p
+		where p ->> 'user_id' = '11800000-0000-4000-8000-00000000000a' and (p ->> 'active_days')::int = 2) then
+		raise exception 'B''s 7-day board does not count A''s last 7 calendar days: %', v;
 	end if;
 	-- B leaves its friends' boards; B still sees itself.
 	perform public.qorpera_set_leaderboard_hidden(true);
