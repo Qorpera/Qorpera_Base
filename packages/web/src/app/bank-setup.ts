@@ -31,7 +31,7 @@ export interface BankSetup {
 const TEXT_MAX = 200;
 
 /** A part of the file as an object, or an empty one: an agent's mistake reads as nothing said. */
-function record(value: unknown): Record<string, unknown> {
+function part(value: unknown): Record<string, unknown> {
 	try {
 		return parseRecord(value, "bank setup");
 	} catch {
@@ -60,10 +60,10 @@ export function parseBankSetup(text: string | undefined): BankSetup | null {
 	} catch {
 		return null;
 	}
-	const file = record(value);
+	const file = part(value);
 	if (file.schema !== BANK_SETUP_SCHEMA) return null;
-	const company = record(file.company);
-	const account = record(file.account);
+	const company = part(file.company);
+	const account = part(file.account);
 	const cvr = typeof company.cvr === "string" ? company.cvr.replace(/\s/g, "") : undefined;
 	const bank = line(account.bank);
 	const yourTurn = line(file.yourTurn);
