@@ -8,6 +8,8 @@ vi.mock("../public/assets/avatars/status-2d-v1/recorded-motion.mjs", () => ({
 	loadRecordedMotion: vi.fn(async () => {}),
 	drawRecordedEyes: vi.fn(),
 	drawWorkingStrokes: vi.fn(),
+	// The eyes cover this box of the 100-unit figure (in 512px: about 154 to 361 across, 205 to 307 down).
+	recordedEyesBox: vi.fn(() => [30, 40, 70, 60]),
 }));
 // The recorded motion is its own chunk; here it arrives when a test says so.
 const motionArrives = vi.hoisted(() => {
@@ -50,6 +52,8 @@ const context = Object.fromEntries(
 		"closePath",
 		"arc",
 		"stroke",
+		"rect",
+		"clip",
 	].map((key) => [key, vi.fn()]),
 );
 const artwork: FigureArtwork = {
@@ -303,14 +307,55 @@ describe("2D studio playback in the shell", () => {
 		show([host]);
 		advance(16);
 		const side = host.querySelector("canvas")!.width;
-		// The last two draws onto the figure's canvas: the body, then the eyes.
-		const finals = context.drawImage!.mock.calls.filter((call) => call.slice(1).join() === "0,0,100,100");
-		expect(finals.length).toBeGreaterThanOrEqual(2);
-		for (const [source] of finals) {
-			// A 512px surface drawn there in one step would turn jagged (figure-levels.ts).
-			expect((source as HTMLCanvasElement).width).toBeGreaterThanOrEqual(side);
-			expect((source as HTMLCanvasElement).width).toBeLessThanOrEqual(side * 2);
-		}
+		// The body: a whole surface onto the figure's 100 units.
+		const body = context.drawImage!.mock.calls.filter((call) => call.slice(1).join() === "0,0,100,100");
+		expect(body).toHaveLength(1);
+		// A 512px surface drawn there in one step would turn jagged (figure-levels.ts).
+		expect((body[0]![0] as HTMLCanvasElement).width).toBeGreaterThanOrEqual(side);
+		expect((body[0]![0] as HTMLCanvasElement).width).toBeLessThanOrEqual(side * 2);
+		// The eyes, drawn last: their box, at the body's level, onto the part of the figure the box covers.
+		const eyes = context.drawImage!.mock.calls.filter((call) => call.length === 9).at(-1)!;
+		const [, , , width, height, x, y, toWidth, toHeight] = eyes as number[];
+		const level = Math.min(512, 2 ** Math.ceil(Math.log2(Math.max(32, side))));
+		expect([toWidth! / 100, toHeight! / 100]).toEqual([width! / level, height! / level]);
+		expect(x! / 100).toBeLessThanOrEqual(0.3);
+		expect((x! + toWidth!) / 100).toBeGreaterThanOrEqual(0.7);
+		expect(y! / 100).toBeLessThanOrEqual(0.4);
+		expect((y! + toHeight!) / 100).toBeGreaterThanOrEqual(0.6);
+		expect(width).toBeLessThanOrEqual(side * 2);
+	});
+	it("cuts the eyes in the layer's own pixels at the 512px level, where nothing is halved", async () => {
+		let resized: ResizeObserverCallback | undefined;
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				constructor(callback: ResizeObserverCallback) {
+					resized = callback;
+				}
+				observe() {}
+				unobserve() {}
+				disconnect() {}
+			},
+		);
+		vi.stubGlobal("devicePixelRatio", 3);
+		const host = mount("Idle", "large");
+		await settle();
+		show([host]);
+		for (const fn of Object.values(context)) if (typeof fn?.mockClear === "function") fn.mockClear();
+		// 120 CSS px at 3x: a side above 256, so the body's level and the eye layer are 512 (repainted at once).
+		resized!([{ target: host, contentRect: { width: 120 } } as unknown as ResizeObserverEntry], {} as ResizeObserver);
+		expect(host.querySelector("canvas")!.width).toBeGreaterThan(256);
+		// The eye layer was drawn under 5.12x and its box's offset; the clip and the cut must not be.
+		const order = (fn: (typeof context)[string]) => fn.mock.invocationCallOrder;
+		const clip = order(context.clip!).at(-1)!;
+		const save = order(context.save!)
+			.filter((at) => at < clip)
+			.at(-1)!;
+		const resets = context
+			.setTransform!.mock.calls.map((args, index) => [args.join(), order(context.setTransform!)[index]!] as const)
+			.filter(([args, at]) => args === "1,0,0,1,0,0" && at > save && at < clip);
+		expect(resets).toHaveLength(1);
+		expect(context.rect).toHaveBeenLastCalledWith(0, 0, expect.any(Number), expect.any(Number));
 	});
 	it("retains the studio's holds and symbolic states", () => {
 		expect(localTime("Idle", 90)).toBeCloseTo(221 / 60);

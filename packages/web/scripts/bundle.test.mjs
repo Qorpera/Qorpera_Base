@@ -163,8 +163,10 @@ test("index.html points at the hashed files and preloads what main.js imports", 
 	// fetched by its content hash: /assets/ is cached for a day.
 	for (const file of VENDORED_SCRIPTS) assert.ok(html.includes(`<script src="./${file}?v=${versions[file]}"></script>`), file);
 	assert.ok(html.indexOf("avatar-appearance.js") < html.indexOf(layout.script));
+	// avatar-appearance.js reads the light field's global as it loads.
+	assert.ok(html.indexOf("light-field.js") < html.indexOf("avatar-appearance.js"));
 	assert.throws(() => rewriteIndex(template.replace('src="./main.js"', ""), layout, versions, api), /main\.js/);
-	assert.throws(() => rewriteIndex(template, layout, { ...versions, [VENDORED_SCRIPTS[1]]: undefined }, api), /avatar-appearance\.js/);
+	assert.throws(() => rewriteIndex(template, layout, { ...versions, [VENDORED_SCRIPTS[2]]: undefined }, api), /avatar-appearance\.js/);
 });
 
 test("the deployment manifest checksums every script and stylesheet the build made", async () => {
