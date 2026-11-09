@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ElementHandle, Locator, Page } from "playwright-core";
+import { codingValueFinder, codingValueMatches, codingValuePattern } from "./cloud-coding-value-capture-box.ts";
 import { COMPANY_ACCOUNT_FILLED_ATTRIBUTE, companyAccountFillHost } from "./cloud-company-computer-account-fill.ts";
 import { EVENT_HOOK_CAPTURE_LIFETIME_MS, EVENT_HOOK_CAPTURE_SECRET } from "./cloud-event-hook-capture-box.ts";
 
@@ -12,7 +13,17 @@ import { EVENT_HOOK_CAPTURE_LIFETIME_MS, EVENT_HOOK_CAPTURE_SECRET } from "./clo
  * the cover, never the value. The value must then show alone, twice the same 300 ms apart, and whole. After the read,
  * whether it was taken or refused, the clipboard is cleared and the page reloaded, so Stripe masks the value again;
  * only a page that no longer shows it is uncovered. A human check the click brought up is read before that reload and
- * stops the read. The value is sealed to the vault by the caller. */
+ * stops the read. The value is sealed to the vault by the caller.
+ *
+ * A coding value (20260930695000) is read the same way off its service's site (npm, GitHub, Stripe, Resend: the
+ * database names the site and the whole value's pattern), with every protection but the hook's address, which only a
+ * hook has. Two things differ, both in what counts as a value the page shows (`companyCodingValuesShown`):
+ * - Only text the service's pattern matches counts. Those pages list the keys made before, cut or masked
+ *   (`sk_live_…4xYz`, `re_c1tp…`); such a listing shows no value, so it neither stops the read nor counts as a second
+ *   value. A match cut off by an ellipsis or a mask still counts, as not whole.
+ * - Most of these services show a new key once, right after it is made, and never again: the control the agent names
+ *   is the one that makes it (or reveals it), so it first appears under the cover. After the reload such a key is gone,
+ *   which is what masked again means here as well: a page that shows no value. */
 
 export type CompanyHookCaptureRefusal =
 	| "VAULT_CAPTURE_WRONG_SITE"
@@ -49,6 +60,24 @@ const TIMING: CompanyHookCaptureTiming = { revealMs: 5_000, settleMs: 300, pollM
 
 /** After a secret's letters, what shows it is cut off: an ellipsis, or a masking character. */
 const CUT = /^(?:…|\.\.|[•●○◦∙·⋅*▪■█])/u;
+/** After a coding value, what shows it goes on: letters, digits, or a mark a key's text uses. */
+const GOES_ON = /^[A-Za-z0-9_+/=-]/;
+
+/** One value of the kind read that a page's text shows, and whether it is whole: neither cut off nor going on. */
+export interface CompanyPageValueShown {
+	readonly value: string;
+	readonly whole: boolean;
+}
+
+/** What a capture reads, and where. */
+export interface CompanyPageCaptureTarget {
+	/** The page must be on this host, over https. */
+	readonly site: string;
+	/** A hook's address: the page must show it as a word of its own (the hook's endpoint page, not another's). */
+	readonly address?: string;
+	/** Each value of the kind read that `text` shows. */
+	readonly shown: (text: string) => readonly CompanyPageValueShown[];
+}
 
 /**
  * Reads the one signing secret Stripe shows on `page` after a click on `control`, the hook's page (`hook.site`,
@@ -59,7 +88,7 @@ const CUT = /^(?:…|\.\.|[•●○◦∙·⋅*▪■█])/u;
  * read or not, `stopShown` says (and the caller records) whether the page shows a human check, before the reload can
  * take it away; one that does refuses with VAULT_CAPTURE_STOPPED, never a value.
  */
-export async function captureCompanyHookSecret(
+export function captureCompanyHookSecret(
 	page: Page,
 	control: Locator,
 	hook: { readonly address: string; readonly site: string },
@@ -67,12 +96,36 @@ export async function captureCompanyHookSecret(
 	timing: CompanyHookCaptureTiming = TIMING,
 	stopShown: () => Promise<boolean> = async () => false,
 ): Promise<string> {
-	if (companyAccountFillHost(page.url(), [hook.site]) === null)
+	return captureCompanyPageValue(
+		page,
+		control,
+		{ site: hook.site, address: hook.address, shown: shownSecrets },
+		seen,
+		timing,
+		stopShown,
+	);
+}
+
+/**
+ * The one value of `target`'s kind the page shows after a click on `control`, read as a hook's signing secret is
+ * (`captureCompanyHookSecret`): on the target's site, with nothing of the kind shown before the click, under a cover,
+ * alone, steady and whole, then masked again or left covered for the caller to close.
+ */
+export async function captureCompanyPageValue(
+	page: Page,
+	control: Locator,
+	target: CompanyPageCaptureTarget,
+	seen: (value: string) => void,
+	timing: CompanyHookCaptureTiming = TIMING,
+	stopShown: () => Promise<boolean> = async () => false,
+): Promise<string> {
+	if (companyAccountFillHost(page.url(), [target.site]) === null)
 		throw new CompanyHookCaptureRefusedError("VAULT_CAPTURE_WRONG_SITE");
-	// Nothing shown yet: a secret already on the page is masked again by a reload, or it is not Stripe's reveal.
-	if (shownSecrets(await hookPage(page, hook)).length > 0) {
+	// Nothing shown yet: a value already on the page is masked again by a reload (or gone, for a key a service shows
+	// once), or it is not the reveal's.
+	if (target.shown(await capturePage(page, target)).length > 0) {
 		await page.reload({ waitUntil: "domcontentloaded", timeout: 5_000 });
-		if (shownSecrets(await hookPage(page, hook)).length > 0)
+		if (target.shown(await capturePage(page, target)).length > 0)
 			throw new CompanyHookCaptureRefusedError("VAULT_CAPTURE_AMBIGUOUS");
 	}
 	const handle = await control.elementHandle({ timeout: 2_000 });
@@ -81,7 +134,7 @@ export async function captureCompanyHookSecret(
 		// Only the page's own document: a frame could be another website inside Stripe's.
 		if ((await handle.ownerFrame()) !== page.mainFrame())
 			throw new CompanyHookCaptureRefusedError("VAULT_CAPTURE_IN_FRAME");
-		return await covered(page, handle, hook, seen, timing, stopShown);
+		return await covered(page, handle, target, seen, timing, stopShown);
 	} finally {
 		await handle.dispose().catch(() => undefined);
 	}
@@ -91,7 +144,7 @@ export async function captureCompanyHookSecret(
 async function covered(
 	page: Page,
 	handle: ElementHandle,
-	hook: { readonly address: string; readonly site: string },
+	target: CompanyPageCaptureTarget,
 	seen: (value: string) => void,
 	timing: CompanyHookCaptureTiming,
 	stopShown: () => Promise<boolean>,
@@ -110,14 +163,14 @@ async function covered(
 		clicked = true;
 		// Every wait is short: the whole capture, masked again, fits the native host's 25 s for one action.
 		await handle.click({ timeout: 3_000 });
-		outcome = { value: await revealed(page, hook, seen, timing) };
+		outcome = { value: await revealed(page, target, seen, timing) };
 	} catch (error) {
 		outcome = { error };
 	}
 	// A check the click brought up (a CAPTCHA instead of the value, or over it) stops the read, taken or not. It is
 	// read now: the reload that masks the value again may take it away.
 	const stopped = clicked && (await stopShown().catch(() => false));
-	const hidden = !clicked || (await maskedAgain(page, session, seen, timing));
+	const hidden = !clicked || (await maskedAgain(page, session, target, seen, timing));
 	if (script !== undefined)
 		await session.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: script }).catch(() => undefined);
 	// A page that still shows the value keeps its cover until the caller closes it.
@@ -130,23 +183,35 @@ async function covered(
 	return outcome.value;
 }
 
-/** The one value the click made the page show: alone, the same 300 ms later, and whole. */
+/**
+ * The one value the click made the page show: alone, the same 300 ms later, and whole. A click that loads another
+ * document (a form sent, a redirect) leaves the page unreadable for a moment: while the value is awaited, such a read
+ * counts as none shown yet; after it, as a value that changed.
+ */
 async function revealed(
 	page: Page,
-	hook: { readonly address: string; readonly site: string },
+	target: CompanyPageCaptureTarget,
 	seen: (value: string) => void,
 	timing: CompanyHookCaptureTiming,
 ): Promise<string> {
 	const deadline = Date.now() + timing.revealMs;
-	let shown = secretShown(await hookPage(page, hook), seen);
-	while (shown === "none" && Date.now() < deadline) {
+	const look = async () =>
+		capturePage(page, target).then(
+			(text) => valueShown(text, target, seen),
+			(error: unknown) => {
+				if (error instanceof CompanyHookCaptureRefusedError) throw error;
+				return "unread" as const;
+			},
+		);
+	let shown = await look();
+	while ((shown === "none" || shown === "unread") && Date.now() < deadline) {
 		await delay(timing.pollMs);
-		shown = secretShown(await hookPage(page, hook), seen);
+		shown = await look();
 	}
-	if (shown === "none") throw new CompanyHookCaptureRefusedError("VAULT_CAPTURE_NOT_SHOWN");
+	if (shown === "none" || shown === "unread") throw new CompanyHookCaptureRefusedError("VAULT_CAPTURE_NOT_SHOWN");
 	if (shown === "many") throw new CompanyHookCaptureRefusedError("VAULT_CAPTURE_AMBIGUOUS");
 	await delay(timing.settleMs);
-	const again = secretShown(await hookPage(page, hook), seen);
+	const again = await look();
 	if (typeof again !== "object" || again.value !== shown.value || again.whole !== shown.whole)
 		throw new CompanyHookCaptureRefusedError("VAULT_CAPTURE_UNSTABLE");
 	if (!shown.whole) throw new CompanyHookCaptureRefusedError("VAULT_CAPTURE_PARTIAL");
@@ -160,6 +225,7 @@ async function revealed(
 async function maskedAgain(
 	page: Page,
 	session: Awaited<ReturnType<ReturnType<Page["context"]>["newCDPSession"]>>,
+	target: CompanyPageCaptureTarget,
 	seen: (value: string) => void,
 	timing: CompanyHookCaptureTiming,
 ): Promise<boolean> {
@@ -172,7 +238,7 @@ async function maskedAgain(
 		await page.reload({ waitUntil: "domcontentloaded", timeout: 6_000 });
 		await page.waitForLoadState("load", { timeout: 1_500 }).catch(() => undefined);
 		await delay(timing.settleMs);
-		const shown = shownSecrets((await readTopDocument(page)).text);
+		const shown = target.shown((await readTopDocument(page)).text);
 		for (const { value } of shown) seen(value);
 		return shown.length === 0;
 	} catch {
@@ -180,12 +246,13 @@ async function maskedAgain(
 	}
 }
 
-/** The page's text, once it is still the hook's site and shows the hook's address. */
-async function hookPage(page: Page, hook: { readonly address: string; readonly site: string }): Promise<string> {
+/** The page's text, once it is still the target's site and shows a hook's address. */
+async function capturePage(page: Page, target: CompanyPageCaptureTarget): Promise<string> {
 	const { url, text } = await readTopDocument(page);
-	if (companyAccountFillHost(url, [hook.site]) === null)
+	if (companyAccountFillHost(url, [target.site]) === null)
 		throw new CompanyHookCaptureRefusedError("VAULT_CAPTURE_WRONG_SITE");
-	if (!addressShown(text, hook.address)) throw new CompanyHookCaptureRefusedError("VAULT_CAPTURE_WRONG_HOOK");
+	if (target.address !== undefined && !addressShown(text, target.address))
+		throw new CompanyHookCaptureRefusedError("VAULT_CAPTURE_WRONG_HOOK");
 	return text;
 }
 
@@ -311,8 +378,8 @@ function addressShown(text: string, address: string): boolean {
  * Each value shaped like a signing secret that `text` shows (`whsec_` and letters, digits, `+`, `/` or `=`), and
  * whether it is whole: of a secret's length and not cut off. A bare `whsec_` (the rest masked) shows no value.
  */
-function shownSecrets(text: string): { value: string; whole: boolean }[] {
-	const shown: { value: string; whole: boolean }[] = [];
+function shownSecrets(text: string): CompanyPageValueShown[] {
+	const shown: CompanyPageValueShown[] = [];
 	const pattern = /whsec_[A-Za-z0-9+/=]*/g;
 	for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
 		if (match[0].length === "whsec_".length) continue;
@@ -325,9 +392,43 @@ function shownSecrets(text: string): { value: string; whole: boolean }[] {
 	return shown;
 }
 
+/**
+ * Each value of a service's that `text` shows (20260930695000): each match of its pattern that does not continue a word
+ * on its left. What the pattern does not match (a listing's `sk_live_…4xYz`) shows no value. A value is whole when the
+ * whole of it matches, no place shows it cut off (an ellipsis or a mask after it), and some place shows it ending: with
+ * nothing after it that the key could go on with. The page's text is read twice (rendered, and as the browser draws
+ * it), and only the second sets a button's label beside the key apart (`npm_…Copy` in the first): a key that goes on
+ * everywhere is longer than the pattern says, or glued to its neighbour, and is never cut short.
+ */
+export function companyCodingValuesShown(valuePattern: string): (text: string) => CompanyPageValueShown[] {
+	const whole = codingValuePattern(valuePattern);
+	const finder = codingValueFinder(valuePattern);
+	return (text) => {
+		const found = [...text.matchAll(finder)].map((match) => {
+			const end = match.index + match[0].length;
+			const after = text.slice(end, end + 2);
+			return { value: match[0], cut: CUT.test(after), ends: !GOES_ON.test(after) };
+		});
+		return found.map(({ value }) => {
+			const places = found.filter((place) => place.value === value);
+			return {
+				value,
+				whole:
+					codingValueMatches(value, whole) &&
+					places.every((place) => !place.cut) &&
+					places.some((place) => place.ends),
+			};
+		});
+	};
+}
+
 /** One read: no value, the one value shown (wherever it shows, whole everywhere or not), or more than one. */
-function secretShown(text: string, seen: (value: string) => void): { value: string; whole: boolean } | "none" | "many" {
-	const shown = shownSecrets(text);
+function valueShown(
+	text: string,
+	target: CompanyPageCaptureTarget,
+	seen: (value: string) => void,
+): CompanyPageValueShown | "none" | "many" {
+	const shown = target.shown(text);
 	const values = new Set(shown.map(({ value }) => value));
 	for (const value of values) seen(value);
 	if (values.size === 0) return "none";

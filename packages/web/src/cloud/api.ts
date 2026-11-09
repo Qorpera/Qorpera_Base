@@ -39,7 +39,6 @@ import {
 	parseMemberPictureObjects,
 	parseMemberPictures,
 } from "./member-pictures.ts";
-import { type CompanyMemory, type CompanyMemoryMode, chooseCompanyMemory, readCompanyMemory } from "./memory-mode.ts";
 import { listMemberMentions, type MemberMentions, markMentionsSeen } from "./mentions.ts";
 import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "./organization.ts";
 import { collectPages, type PageCursor } from "./pagination.ts";
@@ -142,11 +141,6 @@ export class CloudApi {
 		return this.cloud.rpc("qorpera_get_account_entitlement").then(parseAccountEntitlement);
 	}
 
-	/** The company's memory: Agent notebooks or the Shared context beta (C5). Any member may read it. */
-	getCompanyMemory(profileId: string): Promise<CompanyMemory> {
-		return readCompanyMemory(this.cloud, requiredUuid(profileId, "Profile id"));
-	}
-
 	/** The company's good will: its months, invoices and the card that pays them. Any member may read it. */
 	getCompanyGoodWill(profileId: string): Promise<CompanyGoodWill> {
 		return readCompanyGoodWill(this.cloud, requiredUuid(profileId, "Profile id"));
@@ -160,11 +154,6 @@ export class CloudApi {
 	/** Stripe's page where a founder saves the card that pays the company's good will. */
 	startGoodWillCard(profileId: string): Promise<string> {
 		return startGoodWillCard(this.cloud, requiredUuid(profileId, "Profile id"));
-	}
-
-	/** Owners and admins choose the memory of runs that start from now on. */
-	setCompanyMemory(profileId: string, mode: CompanyMemoryMode): Promise<CompanyMemory> {
-		return chooseCompanyMemory(this.cloud, requiredUuid(profileId, "Profile id"), mode);
 	}
 
 	/** Whether the company is out of computer hours, so new work waits until hours are added

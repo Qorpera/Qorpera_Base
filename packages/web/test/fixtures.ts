@@ -243,10 +243,6 @@ export function fixture() {
 		new CloudRpcError("qorpera_list_member_waiting_approvals", { message: "missing", code: "PGRST202" }, 404),
 	);
 	vi.spyOn(api, "companyWaitingForHours").mockResolvedValue(false);
-	// A cloud before the memory choice (C5): Settings show no Memory section.
-	vi.spyOn(api, "getCompanyMemory").mockRejectedValue(
-		new CloudRpcError("qorpera_company_memory_mode", { message: "missing", code: "PGRST202" }, 404),
-	);
 	vi.spyOn(api, "readSessionEvents").mockResolvedValue([]);
 	// No message of the fixture's conversations was ever erased.
 	vi.spyOn(api, "readSessionMemoryGeneration").mockResolvedValue(0);

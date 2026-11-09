@@ -9,6 +9,13 @@ are copied unchanged. Keep their clocks, contours, and trajectories together.
 `recorded-motion.mjs` changes only initialization/loading: it creates scratch
 canvases lazily, loads only the selected activity, accepts the static asset
 base URL (the product JS is bundled), and permits retry after a failed load.
+Its two read-back canvases are created with `willReadFrequently` (9 Nov 2026), so
+the per-frame `getImageData` calls do not stall on a GPU canvas.
+It keeps its last six prepared frames rather than one (several figures paint each
+frame; views of one agent no longer decode its frame again), and `recordedEyesBox`
+returns where `drawRecordedEyes` puts a frame's eyes, in the caller's units (the
+figure's 100), so the compositor draws, halves and cuts only that box (9 Nov 2026).
+A decode reads back only the eyes' and strokes' boxes. The decoded pixels are unchanged.
 Its eye extraction, placement, and stroke compositing remain the studio's.
 
 The TypeScript compositor in `src/ui/figure-motion.ts` ports the studio's

@@ -1235,7 +1235,7 @@ describe("group chats in the rail", () => {
 		const cards = pinned.rail.querySelectorAll<HTMLElement>(".rail-pin");
 		expect(names(cards)).toEqual(["Launch", "Dee"]);
 		expect(cards[0]!.dataset.roomId).toBe(launchRoom);
-		expect(cards[0]!.getAttribute("href")).toBe(`#/c/${profileA.profileId}/chat/${launchSession.sessionId}`);
+		expect(cards[0]!.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/chat/${launchSession.sessionId}`);
 	});
 	it("shows '@' on a pinned group chat where the member was mentioned", async () => {
 		const [, actions, extra] = launchCompany();
@@ -1248,7 +1248,7 @@ describe("group chats in the rail", () => {
 		pinned.company.store.set({ mentions: { [launchSession.sessionId]: 1 } });
 		await settle();
 		expect(card().querySelector(".rail-mention")?.textContent).toBe("@");
-		expect(card().title).toContain("You were mentioned");
+		expect(card().getAttribute("aria-label")).toContain("You were mentioned");
 	});
 	it("opens a group chat's card beside its row, with Copy, Hide and Delete, instead of a menu", async () => {
 		localStorage.removeItem("qorpera.web.rail-hidden-open");

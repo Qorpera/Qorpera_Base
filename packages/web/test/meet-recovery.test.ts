@@ -112,7 +112,7 @@ describe("appearance save recovery", () => {
 		expect(f.container.querySelector('[aria-label="rocket"]')?.getAttribute("aria-checked")).toBe("true");
 		const link = f.container.querySelector("a")!;
 		expect(link.textContent).toBe("Open the company");
-		expect(link.getAttribute("href")).toBe(`#/c/${profileA.profileId}`);
+		expect(link.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}`);
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/meet`);
 	});
 

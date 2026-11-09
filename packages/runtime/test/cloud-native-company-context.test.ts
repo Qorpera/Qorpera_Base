@@ -669,6 +669,11 @@ it.each(["cofounder", "employee"] as const)(
 			company: { path: "QorperaOS/skills", skills: [] },
 		});
 		expect(instructions).toContain("\n# Skills\nWhen update_skill is offered, keep your know-how as skills.");
+		// The notebook is explained, not pushed: what it is, when to use it, and that a run with nothing to note is fine.
+		expect(instructions).toContain(
+			"\n# Your notebook\nWhen update_memory is offered, you have a notebook of your own.",
+		);
+		expect(instructions).toContain("many runs have nothing to note, and that is fine.");
 		expect(instructions).toContain("- skills: step-by-step procedures you can follow, never permissions.");
 		// A member calls a skill from the composer as /name; the agent loads it before acting.
 		expect(instructions).toContain("such as /monthly-vat-report: load that skill with read_skill before you act");
@@ -715,7 +720,13 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 	expect(cofounder).not.toContain("proposes a new name");
 	expect(cofounder).toContain("brand and identity, suppliers and stock");
 	expect(cofounder).toContain("In that run, set up your daily plan routine");
-	expect(cofounder).toContain("the team's work runs on the model login of the founder whose conversation started it");
+	// v11 (Jonas, 9 November 2026): each agent works for one member; with two or more founders the team is dealt out.
+	expect(cofounder).not.toContain(
+		"the team's work runs on the model login of the founder whose conversation started it",
+	);
+	expect(cofounder).toContain("Each agent works for one member, whose ChatGPT carries the work handed to it");
+	expect(cofounder).toContain("With two or more founders, deal the team out between them by area");
+	expect(cofounder).toContain("offer agents to another member with offer_agents_to_member");
 	expect(cofounder).toContain("Hire freely for continuing work; never hire for a one-off task");
 	// v8 (Jonas, 4 November 2026): the team grows like a company of employees, not only once the vision is agreed.
 	expect(cofounder).toContain("Continuing work appears as soon as it exists, not only once the vision is agreed");
@@ -1525,31 +1536,32 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // level follows the agent's place ("the higher up the chain ... the less technical"; Jonas, 5 November 2026), and for
 // interface apps (what an agent wants members to see is an app beside the chat; Jonas, 5 November 2026), and for
 // the wall (status kept in place above the thread instead of messages; Jonas, 5 November 2026), and for readable
-// cards and overlay v10 ("approval cards are completely unreadable"; Jonas, 5 November 2026). A change to
+// cards and overlay v10 ("approval cards are completely unreadable"; Jonas, 5 November 2026), and for overlay v11
+// (each agent works for one member and the Co-Founder deals the team out; Jonas, 9 November 2026). A change to
 // either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "c5d00fc273b402a42c2642ee394afd113e055541083df6517b1406455ecb59c3",
-			prompt: "b977f3f5470e4ccbc6447ff08181b2c2f87af2c060f75ac4701d2ff6bcfae503",
+			instructions: "cde6025096b48ceb011ea9b3e5b526658a48c04acbe7b07b9e8cea211cb0149a",
+			prompt: "f270ecb8dda2f1851f7f607a361aba17a10fd852a6025c3adec2a265a22963e7",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "929cea482bfa54940c20612ee214dff3bd9c08419e55642355f54b5a908ecd1a",
-			prompt: "66f25cc5ef4d70fcc0b6bd5d99f380af44ada6767d268949c7a76651db9615f3",
+			instructions: "916a65cba65be334b3edd39d546761ebc6307776d0343cf6f44016fb090520f6",
+			prompt: "3b2a8421dedf5f10551deebf86ab9703250273b80d5c2be9077a8db82a7c8f33",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "c5d00fc273b402a42c2642ee394afd113e055541083df6517b1406455ecb59c3",
-			prompt: "40c00e9827e26a1f3748104a3e26aaf9c5a0dc84232933d429374350dc1251db",
+			instructions: "cde6025096b48ceb011ea9b3e5b526658a48c04acbe7b07b9e8cea211cb0149a",
+			prompt: "09fef8853b34037c0009a40069bd9400e73cff3b8d2623c51b6c3ca501d09ad5",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {

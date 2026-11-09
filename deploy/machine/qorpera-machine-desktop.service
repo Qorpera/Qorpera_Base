@@ -1,0 +1,18 @@
+[Unit]
+Description=Qorpera machine desktop on display :1 (started by desktop start)
+# Only `desktop start` starts it (no [Install]): a machine without a screen job runs no desktop. It stops with
+# `desktop stop`, when the watchdog stops the machine's slice, and when the machine sleeps.
+After=basic.target
+
+[Service]
+Type=simple
+Slice=qorpera-machine.slice
+User=desktop
+Group=desktop
+WorkingDirectory=/home/desktop
+Environment=HOME=/home/desktop XDG_RUNTIME_DIR=/run/qorpera-desktop
+RuntimeDirectory=qorpera-desktop
+RuntimeDirectoryMode=0700
+ExecStart=/opt/qorpera-machine/desktop-session
+Restart=no
+TimeoutStopSec=10

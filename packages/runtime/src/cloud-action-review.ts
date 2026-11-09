@@ -236,6 +236,7 @@ export function cloudActionEffect(
 		case "list_hooks":
 		// Good will (20260930566000): the payments the company's bank shows, gathered for the month.
 		case "good_will_list":
+		case "crew_and_members":
 		case "read_event":
 		case "find_mail":
 		// Interfaces (I8): a table, read with the run's own authority.
@@ -257,6 +258,8 @@ export function cloudActionEffect(
 		case "add_review_rule":
 		// Sorting a payment changes only what Qorpera charges the company; members see and can change each one.
 		case "good_will_mark":
+		// An offer of agents moves nothing until the member says yes on the Members page.
+		case "offer_agents_to_member":
 		case "send_message":
 		case "ask_member":
 		case "report_work":
@@ -736,7 +739,9 @@ export function describeCloudAction(
 							? "Type a hook's signing secret into a web page"
 							: "Type a company account's sign-in into a web page"
 						: verb === "vault_capture"
-							? "Read a hook's signing secret off a web page into the vault"
+							? action.codingValue
+								? "Save a key for coding sessions from a web page into the vault"
+								: "Read a hook's signing secret off a web page into the vault"
 							: verb === "press"
 								? "Press a key in the browser"
 								: "Click in the browser";
@@ -748,6 +753,12 @@ export function describeCloudAction(
 		add("account", action.account);
 		add("hook", action.hook);
 		add("field", action.field);
+		// A coding value (20260930695000): its service, the variable a coding session gets it as, and where.
+		const value = record(action.codingValue ?? null);
+		add("service", value.service);
+		add("variable", typeof value.variable === "string" ? value.variable.toUpperCase() : undefined);
+		add("repository", value.repository);
+		add("purpose", value.purpose);
 	} else if (tool.name === "computer_desktop") {
 		const verb = text(action.action);
 		title =

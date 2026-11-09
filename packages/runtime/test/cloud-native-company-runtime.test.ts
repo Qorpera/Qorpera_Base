@@ -1113,6 +1113,8 @@ it.each([
 				"update_memory",
 				"update_skill",
 				"update_wall",
+				// The Co-Founder deals the team out between the members (20260930702000).
+				...(agentKind === "cofounder" ? ["crew_and_members", "offer_agents_to_member"] : []),
 			].sort(),
 		);
 		expect(evidence.threadParameters.runtimeWorkspaceRoots).toEqual([]);
@@ -1125,7 +1127,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v11",
+			schema: "qorpera.hire-overlay/v12",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -2414,6 +2416,8 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# Standing work");
 	// A read-only worker follows skills but writes none, so it gets no guidance on keeping them.
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# Skills");
+	// Nor on its notebook: it reports to its agent, which keeps the notebook.
+	expect(evidence.threadParameters.developerInstructions).not.toContain("# Your notebook");
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# This wake: a message from a coworker");
 });
 
@@ -3130,6 +3134,11 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// Later on 8 November 2026 save_app's manifest takes concept and cover (the Concepts viewer), so they moved again.
 	// On 9 November 2026 ask_member's secret card takes a coding value's repository (20260930693000), and its schema
 	// says when to ask for one; the names and descriptions are as before, so only the catalog text moved.
+	// Later on 9 November 2026 that schema says a key an agent can make on npm, GitHub, Stripe or Resend is taken with
+	// computer_browser vault_capture instead (20260930695000); the names and descriptions are as before, so only the
+	// catalog text moved again.
+	// On 9 November 2026 the Co-Founder's crew_and_members and offer_agents_to_member (20260930702000) came after
+	// good_will_mark, so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3151,6 +3160,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"add_review_rule",
 		"good_will_list",
 		"good_will_mark",
+		"crew_and_members",
+		"offer_agents_to_member",
 		"list_hooks",
 		"read_event",
 		"send_mail",
@@ -3172,9 +3183,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"191f2be753041608873dbce02cc6f32cf9312cef670a8267e34fcf178ec2277b",
+		"ce5d20ab168c29e85e223dd7c0a47c2e0572702777a9ea7c4db9f85ad6dfe932",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"405176760e6a0efc6ea0fd4ddf728fd5dbad816e0160768bc8bf05d810f674f4",
+		"10413103d1c0a82ff68526c25f5d6cba3b97d4cf7dbea8ca451b4a730f545d55",
 	);
 });

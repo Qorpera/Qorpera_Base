@@ -1,4 +1,4 @@
-import { h, icon, replace } from "../../ui/dom.ts";
+import { h, icon, linkHref, replace, setLinkHref } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { t } from "../../ui/preferences.ts";
 import { forgetPictureUrl, pictureUrl } from "../folder-images.ts";
@@ -244,7 +244,7 @@ export class ConceptsView {
 		const company = this.#host.companyName();
 		const backLabel = t("Back to {name}", { name: company });
 		const href = this.#host.back();
-		if (this.#back.getAttribute("href") !== href) this.#back.setAttribute("href", href);
+		if (linkHref(this.#back) !== href) setLinkHref(this.#back, href);
 		if (this.#back.getAttribute("aria-label") !== backLabel) {
 			this.#back.setAttribute("aria-label", backLabel);
 			this.#back.title = backLabel;

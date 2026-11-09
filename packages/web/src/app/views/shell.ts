@@ -823,18 +823,19 @@ function statusDisc(look: AgentLook, className: string): HTMLElement | null {
 	return h("span", { class: className, "aria-hidden": "true" });
 }
 
-/** The tooltip. Any state also goes into the link's name, which the compact rail
- * needs: it hides the text beside the figure and the disc says nothing aloud. */
+/** The link's name. No tooltip: the row already shows the name and role, and a hover
+ * popup over every row was noise (Jonas, 9 Nov 2026). Any state also goes into the name,
+ * which the compact rail needs: it hides the text beside the figure and the disc says
+ * nothing aloud. */
 function railLabel(
 	agent: Pick<HostedStaffAgent, "displayName" | "role"> & { mentioned?: boolean },
 	look: AgentLook,
-): { title: string; "aria-label"?: string } {
+): { "aria-label": string } {
 	// AGENT_LOOK keeps the English words; they are translated where they are drawn.
 	const words = look.note ?? look.line;
 	const state = words ? t(words) : undefined;
 	const mention = agent.mentioned ? t("You were mentioned") : undefined;
-	const label = [agent.displayName, agent.role, state, mention].filter(Boolean).join(" · ");
-	return state || mention ? { title: label, "aria-label": label } : { title: label };
+	return { "aria-label": [agent.displayName, agent.role, state, mention].filter(Boolean).join(" · ") };
 }
 
 /** "@" on a conversation where someone mentioned this member and they have not looked yet. */
@@ -885,7 +886,7 @@ function groupPinCard(model: SessionModel, href: string): HTMLElement {
 			href,
 			draggable: "false",
 			"data-room-id": model.roomId,
-			title: [model.title, model.subtitle, model.mentioned ? t("You were mentioned") : ""]
+			"aria-label": [model.title, model.subtitle, model.mentioned ? t("You were mentioned") : ""]
 				.filter(Boolean)
 				.join(" · "),
 		},
@@ -957,7 +958,7 @@ function sessionRow(model: SessionModel, href: string): HTMLElement {
 		{
 			class: model.kind === "Group chat" ? "rail-row rail-row-group" : "rail-row",
 			href,
-			title: [model.title, model.subtitle, model.mentioned ? t("You were mentioned") : ""]
+			"aria-label": [model.title, model.subtitle, model.mentioned ? t("You were mentioned") : ""]
 				.filter(Boolean)
 				.join(" · "),
 			...(model.roomId ? { draggable: "false", "data-room-id": model.roomId } : {}),
@@ -1047,7 +1048,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const cofounder = cofounderId ? company.staffById(cofounderId) : undefined;
 	// Keyboard focus in the list stays on its element. A rebuilt row hands it to the row
 	// built in its place; an element that left hands it to whatever now stands where it stood.
-	const focusables = () => [...parts.list.querySelectorAll<HTMLElement>("a[href], button, [tabindex='0']")];
+	const focusables = () => [
+		...parts.list.querySelectorAll<HTMLElement>("a[href], a[data-href], button, [tabindex='0']"),
+	];
 	const focused =
 		document.activeElement instanceof HTMLElement && parts.list.contains(document.activeElement)
 			? document.activeElement
@@ -1500,7 +1503,7 @@ function drawInterfaces(
 		const key = "concepts";
 		const model = JSON.stringify([key, t("Concepts"), concepts]);
 		const kept = parts.interfaceRows.get(key);
-		const element = kept?.shown === model ? kept.element : conceptsIcon(conceptsHash(profileId), concepts);
+		const element = kept?.shown === model ? kept.element : conceptsIcon(conceptsHash(profileId));
 		rows.set(key, { shown: model, element });
 		element.dataset.appKey = key;
 		const open = route.name === "company" && route.section === "concepts";
@@ -1514,7 +1517,7 @@ function drawInterfaces(
 		const key = "sites";
 		const model = JSON.stringify([key, t("Sites"), sites]);
 		const kept = parts.interfaceRows.get(key);
-		const element = kept?.shown === model ? kept.element : sitesIcon(`#/c/${profileId}/sites`, sites);
+		const element = kept?.shown === model ? kept.element : sitesIcon(`#/c/${profileId}/sites`);
 		rows.set(key, { shown: model, element });
 		// Its key, as every drawer entry has: the member's drag and Alt-arrow order it, and the order is kept.
 		element.dataset.appKey = key;
@@ -1553,7 +1556,6 @@ function appIcon(entry: CompanyInterface, href: string, count: number): HTMLElem
 			href,
 			draggable: "false",
 			"data-interface-page": entry.name,
-			title: file.about ? `${file.name} · ${file.about}` : file.name,
 			...(waiting ? { "aria-label": `${file.name}, ${waiting}` } : {}),
 		},
 		h(
@@ -1574,7 +1576,6 @@ function agentAppIcon(manifest: AppManifest, href: string): HTMLElement {
 			class: "rail-app",
 			href,
 			draggable: "false",
-			title: manifest.about ? `${manifest.name} · ${manifest.about}` : manifest.name,
 		},
 		h("span", { class: "rail-app-stand" }, interfaceEmblem(manifest.emblem, 34)),
 		h("span", { class: "rail-app-name" }, manifest.name),
@@ -1582,7 +1583,7 @@ function agentAppIcon(manifest: AppManifest, href: string): HTMLElement {
 }
 
 /** The Concepts entry in the drawer: the concepts' emblem with "Concepts" under it, a link to the Concepts viewer. */
-function conceptsIcon(href: string, count: number): HTMLElement {
+function conceptsIcon(href: string): HTMLElement {
 	const label = t("Concepts");
 	return h(
 		"a",
@@ -1590,7 +1591,6 @@ function conceptsIcon(href: string, count: number): HTMLElement {
 			class: "rail-app rail-concepts",
 			href,
 			draggable: "false",
-			title: count === 1 ? t("1 concept") : t("{count} concepts", { count }),
 		},
 		h("span", { class: "rail-app-stand" }, interfaceEmblem("board", 34)),
 		h("span", { class: "rail-app-name" }, label),
@@ -1598,14 +1598,13 @@ function conceptsIcon(href: string, count: number): HTMLElement {
 }
 
 /** The Sites entry in the drawer: a globe with "Sites" under it, a link to the Sites page. */
-function sitesIcon(href: string, count: number): HTMLElement {
+function sitesIcon(href: string): HTMLElement {
 	return h(
 		"a",
 		{
 			class: "rail-app rail-sites",
 			href,
 			draggable: "false",
-			title: count === 1 ? t("1 site") : t("{count} sites", { count }),
 		},
 		h("span", { class: "rail-app-stand" }, interfaceEmblem("globe", 34)),
 		h("span", { class: "rail-app-name" }, t("Sites")),
@@ -1934,7 +1933,7 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 		label = t("{name} actions", { name: titleElement.textContent ?? t("Section") });
 		opener = titleElement;
 		findOpener = () => parts.list.querySelector<HTMLElement>(`.rail-section-title[data-section-id="${sectionId}"]`);
-	} else if (!target.closest("a[href], button, input") && canOrganize(company)) {
+	} else if (!target.closest("a[href], a[data-href], button, input") && canOrganize(company)) {
 		items = [{ label: t("New section"), icon: "folder_plus", select: () => void askSectionName(company) }];
 	}
 	// Nothing to offer: the browser's own menu stays.

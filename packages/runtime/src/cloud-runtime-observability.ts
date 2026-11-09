@@ -92,6 +92,8 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"post_app",
 	// The agent's wall above its thread (5 November 2026).
 	"update_wall",
+	"crew_and_members",
+	"offer_agents_to_member",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

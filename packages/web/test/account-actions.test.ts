@@ -75,7 +75,7 @@ describe("account actions with the shared stylesheets", () => {
 		root.querySelector<HTMLButtonElement>(".account-trigger")!.click();
 		const menuItem = root.querySelector<HTMLButtonElement>('[data-account-action="friends"]')!;
 		expect(menuItem.querySelector(".account-count")?.textContent).toBe("1");
-		expect(root.querySelector('.account-popover a[href="#/invitations"]')).toBeNull();
+		expect(root.querySelector('.account-popover a[data-href="#/invitations"]')).toBeNull();
 		menuItem.click();
 		await settle();
 		// Friends open as a window of their own, not in Settings.

@@ -94,7 +94,8 @@ describe("shared agent activity", () => {
 			expect(caption.querySelectorAll(".status-wave-letter")).toHaveLength(sentence.replace(/\s/g, "").length);
 			expect(f.rail.querySelector(".rail-row-copy small")?.textContent).toBe(label);
 			expect(f.rail.querySelectorAll(".rail-row-copy small .status-wave-letter")).toHaveLength(label.length);
-			expect(f.rail.querySelector(".rail-row")?.getAttribute("title")).toContain(label);
+			expect(f.rail.querySelector(".rail-row")?.getAttribute("aria-label")).toContain(label);
+			expect(f.rail.querySelector(".rail-row")?.hasAttribute("title")).toBe(false);
 			expect(indicator.querySelector(".bubble, .typing")).toBeNull();
 			const calls = f.mount.mock.calls.filter(([, , , , options]) => options?.identity === staff.id);
 			expect(calls).toHaveLength(2);
@@ -140,7 +141,7 @@ describe("shared agent activity", () => {
 		expect(waiting).toHaveBeenCalledWith(profileA.profileId);
 		expect(f.company.agentState(staff.id)).toBe("decision");
 		expect(f.rail.querySelector(".rail-row-copy small")?.textContent).toBe("Needs you");
-		expect(f.rail.querySelector(".rail-row")?.getAttribute("title")).toContain("Needs you");
+		expect(f.rail.querySelector(".rail-row")?.getAttribute("aria-label")).toContain("Needs you");
 		// Work of its own comes first; the card shows again once the agent is idle, and goes once it is answered.
 		f.company.store.set({ activity: [working] });
 		expect(f.company.agentState(staff.id)).toBe("working");

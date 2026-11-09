@@ -6,8 +6,23 @@ import { preserveFormDrafts } from "../../ui/forms.ts";
 import { t } from "../../ui/preferences.ts";
 import { listSkeleton } from "../../ui/skeleton.ts";
 import type { CompanyController } from "../company.ts";
+import { worksForCount } from "./members.ts";
 
 const ROLES: HostedProfileRole[] = ["viewer", "contributor", "admin", "owner"];
+
+/** The companies whose Delete/Leave company confirmation is being prepared. */
+const confirming = new WeakSet<CompanyController>();
+
+/** How many agents work for the member: read now, or the Members page's last read when the read fails or is slow. */
+async function agentsWorkingFor(company: CompanyController): Promise<number> {
+	const read = company
+		.worksFor()
+		.read()
+		.then((works) => works.agents.filter((agent) => agent.userId === company.userId).length)
+		.catch(() => worksForCount(company) ?? 0);
+	const slow = new Promise<number>((resolve) => setTimeout(() => resolve(worksForCount(company) ?? 0), 2000));
+	return Promise.race([read, slow]);
+}
 
 /** `exitError` is a failed Delete/Leave company, shown under that button rather than at the top. */
 export type TeamFeedback = { message?: string; error?: string; exitError?: string };
@@ -385,14 +400,33 @@ export function renderTeam(
 			deleting ? t("Delete company") : t("Leave company"),
 			() =>
 				void (async () => {
+					// Agents that work for a member who leaves go to the open pile (migration 20260930700000): read how
+					// many before asking, so they can be handed over on the Members page first. A cloud without the read,
+					// or one that does not answer within two seconds, counts none.
+					// One confirmation at a time: a second click while the count is read (the button may be drawn again
+					// meanwhile) opens no second dialog.
+					if (confirming.has(company)) return;
+					confirming.add(company);
+					let carried = 0;
+					try {
+						carried = deleting ? 0 : await agentsWorkingFor(company);
+					} finally {
+						confirming.delete(company);
+					}
+					if (!current()) return;
 					const confirmed = await confirmDialog(
 						deleting
 							? t("Delete {company}? Type the company name to confirm.", {
 									company: profile.profileName,
 								})
-							: t("Leave {company}? You lose access until someone invites you again.", {
-									company: profile.profileName,
-								}),
+							: carried
+								? t(
+										"Leave {company}? You lose access until someone invites you again. {n} agents work for you: they go to the open pile, where another member can take them. To hand them over first, use the Members page.",
+										{ company: profile.profileName, n: String(carried) },
+									)
+								: t("Leave {company}? You lose access until someone invites you again.", {
+										company: profile.profileName,
+									}),
 						deleting ? t("Delete company") : t("Leave"),
 						true,
 						deleting ? profile.profileName : undefined,

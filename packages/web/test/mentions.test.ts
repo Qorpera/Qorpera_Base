@@ -300,10 +300,10 @@ describe("mentions in a group chat", () => {
 			openFeedback: () => {},
 			openFriends: () => {},
 		});
-		const row = rail.querySelector<HTMLAnchorElement>(`a[href$="/chat/${other.sessionId}"]`)!;
+		const row = rail.querySelector<HTMLAnchorElement>(`a[data-href$="/chat/${other.sessionId}"]`)!;
 		expect(row.querySelector(".rail-mention")?.textContent).toBe("@");
-		expect(row.title).toContain("You were mentioned");
-		expect(rail.querySelector(`a[href$="/chat/${session.sessionId}"] .rail-mention`)).toBeNull();
+		expect(row.getAttribute("aria-label")).toContain("You were mentioned");
+		expect(rail.querySelector(`a[data-href$="/chat/${session.sessionId}"] .rail-mention`)).toBeNull();
 		auth.dispose();
 	});
 });

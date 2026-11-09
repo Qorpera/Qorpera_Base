@@ -296,7 +296,7 @@ describe("live presence at the founding table", () => {
 		expect(named("qorpera_update_company_founding")[1]).toMatchObject({ p_vision: "Specialty coffee and cake." });
 	});
 
-	it("keeps a writer's words in the idea box when they move to their role line, for the hold", async () => {
+	it("keeps a writer's words in the idea box when they move to the name, for the hold", async () => {
 		const { presence } = mount();
 		await settle();
 		presence().health("connected");
@@ -305,13 +305,12 @@ describe("live presence at the founding table", () => {
 		await settle();
 		presence().live(live());
 		await settle();
-		// Bo leaves the idea box for his role line; his idea is on its way to the table.
-		presence().tabs([tab({ field: "role" })]);
+		// Bo leaves the idea box for the name; his idea is on its way to the table.
+		presence().tabs([tab({ field: "name" })]);
 		await settle();
-		presence().live(live({ field: "role", text: "Wholesale.", caret: 10, typing: false, own: false }));
+		presence().live(live({ field: "name", text: "Nordlys Kaffe", caret: 13, typing: false, own: false }));
 		await settle();
 		expect(box().value).toBe("Specialty coffee. Roasted in Aarhus.");
-		expect(container.querySelector(".founding-line .founding-caret")).not.toBeNull();
 		await vi.advanceTimersByTimeAsync(5000);
 		expect(box().value).toBe("Specialty coffee. Roasted in Aarhus.");
 		// His save never showed: after the hold the box shows the table's words again.
@@ -361,10 +360,10 @@ describe("live presence at the founding table", () => {
 		expect(handle.sendLive.mock.invocationCallOrder[0]!).toBeLessThan(handle.setState.mock.invocationCallOrder[0]!);
 		await vi.advanceTimersByTimeAsync(10_000);
 		expect(handle.sendLive).toHaveBeenCalledTimes(1);
-		// Your role line goes out the same way.
-		const role = container.querySelector<HTMLTextAreaElement>("textarea.founding-role-mine")!;
-		role.focus();
-		expect(handle.sendLive).toHaveBeenLastCalledWith("role", "", 0, false, false);
+		// The name goes out the same way.
+		const name = container.querySelector<HTMLInputElement>("input.founding-name")!;
+		name.focus();
+		expect(handle.sendLive).toHaveBeenLastCalledWith("name", name.value, name.value.length, false, false);
 	});
 
 	it("never follows words a tab only shows: its caret stands in your box, its words do not", async () => {
@@ -440,24 +439,6 @@ describe("live presence at the founding table", () => {
 		await controller!.refresh();
 		expect(controller!.store.get().liveText?.[0]?.unsaved).toBe(false);
 		expect(box().value).toBe("Specialty coffee. Roasted.");
-	});
-
-	it("shows Bo's role line as he writes it, with his caret", async () => {
-		const { presence } = mount();
-		await settle();
-		presence().health("connected");
-		await settle();
-		presence().tabs([tab({ field: "role" })]);
-		await settle();
-		presence().live(live({ field: "role", text: "Wholesale and cafés.", caret: 9 }));
-		await settle();
-		const line = container.querySelector<HTMLElement>(".founding-line")!;
-		expect(line.textContent).toBe("BoWholesale and cafés.");
-		const caret = line.querySelector<HTMLElement>(".founding-caret")!;
-		const before = document.createRange();
-		before.setStart(line.lastElementChild!, 0);
-		before.setEndBefore(caret);
-		expect(before.toString()).toBe("Wholesale");
 	});
 
 	it("shows an invited person who is writing and where, and sends nothing of theirs", async () => {

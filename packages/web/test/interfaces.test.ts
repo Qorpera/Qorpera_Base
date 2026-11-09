@@ -166,11 +166,9 @@ describe("which interfaces a company lists", () => {
 });
 
 describe("the shipped pages (C6a)", () => {
-	const people = (main: HTMLElement) =>
-		[...main.querySelectorAll(".interface-table tbody tr")].map((row) => row.querySelector("td")?.textContent);
 	const missing = (main: HTMLElement) => {
 		expect(main.textContent).toContain("This page isn't available here yet.");
-		expect(main.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}`);
+		expect(main.querySelector("a")?.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}`);
 		expect(main.querySelector(".interface-block")).toBeNull();
 	};
 
@@ -179,12 +177,10 @@ describe("the shipped pages (C6a)", () => {
 		const main = h("main");
 		document.body.append(main);
 		renderInterface(main, controller, "members");
+		// The Members page draws itself (views/members.ts, test/members.test.ts): no tabs, no blocks.
 		expect(main.querySelector(".interface-title h1")?.textContent).toBe("Members");
-		// Without the folder, only the People view's members can be read: the board and the rules file wait for it, so
-		// there is one view and no tabs.
 		expect(main.querySelector("[role=tablist]")).toBeNull();
-		expect(main.querySelectorAll(".interface-block")).toHaveLength(1);
-		expect(people(main)).toEqual(["Ann", "Ben", "Cat"]);
+		expect(main.querySelector(".members-page")).not.toBeNull();
 		const page = main.firstElementChild;
 		renderInterface(main, controller, "members");
 		expect(main.firstElementChild).toBe(page);
@@ -195,7 +191,6 @@ describe("the shipped pages (C6a)", () => {
 		controller.store.set({ team: { ...current, members } });
 		renderInterface(main, controller, "members");
 		expect(main.firstElementChild).not.toBe(page);
-		expect(people(main)).toEqual(["Ann", "Bea", "Cat"]);
 		// Switched off, the page is gone at its own address too.
 		controller.store.set({ interfacePages: pages(false, false) });
 		renderInterface(main, controller, "members");
@@ -245,7 +240,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 	const icons = (element: HTMLElement) =>
 		[...element.querySelectorAll<HTMLAnchorElement>(".rail-apps-drawer a.rail-app")].map((icon) => [
 			icon.querySelector(".rail-app-name")?.textContent,
-			icon.getAttribute("href"),
+			icon.getAttribute("data-href"),
 		]);
 	const menuItems = () =>
 		[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")].map((item) => [
@@ -351,8 +346,8 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		controller.store.set({ siteCount: 2 });
 		draw();
 		const entry = element.querySelector<HTMLAnchorElement>(".rail-app.rail-sites")!;
-		expect(entry.getAttribute("href")).toBe(`#/c/${profileA.profileId}/sites`);
-		expect(entry.title).toBe("2 sites");
+		expect(entry.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/sites`);
+		expect(entry.hasAttribute("title")).toBe(false);
 		expect(entry.querySelector(".rail-app-name")?.textContent).toBe("Sites");
 		draw({ name: "company", profileId: profileA.profileId, section: "sites" });
 		expect(entry.getAttribute("aria-current")).toBe("page");
@@ -483,8 +478,8 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		]);
 		// A link, as the pages' icons are: no button the chat answers beside itself.
 		expect(element.querySelector(".rail-apps-drawer [data-app-name], .rail-apps-drawer button.rail-app")).toBeNull();
-		const app = () => element.querySelector<HTMLAnchorElement>(`.rail-app[href$="/a/sales-board"]`)!;
-		expect(app().title).toBe("Sales board · This week's sales");
+		const app = () => element.querySelector<HTMLAnchorElement>(`.rail-app[data-href$="/a/sales-board"]`)!;
+		expect(app().hasAttribute("title")).toBe(false);
 		expect(app().hasAttribute("aria-current")).toBe(false);
 		expect(drawer(element).classList.contains("is-open")).toBe(false);
 		draw({ name: "company", profileId: profileA.profileId, section: "app", id: "sales-board" });
@@ -537,7 +532,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			["Concepts", `#/c/${profileA.profileId}/concepts`],
 		]);
 		const entry = () => element.querySelector<HTMLAnchorElement>(".rail-app.rail-concepts")!;
-		expect(entry().title).toBe("2 concepts");
+		expect(entry().hasAttribute("title")).toBe(false);
 		expect(entry().hasAttribute("aria-current")).toBe(false);
 		draw({ name: "company", profileId: profileA.profileId, section: "concepts", id: "shop-a" });
 		expect(entry().getAttribute("aria-current")).toBe("page");
@@ -713,9 +708,8 @@ figure = "agent"
 		expect(element.querySelector(".rail-search input")?.getAttribute("placeholder")).toBe("Search agents");
 		expect(element.querySelector(".rail-search-toggle")?.getAttribute("aria-label")).toBe("Search agents");
 		expect(element.querySelector("[role=tablist], [role=tab]")).toBeNull();
-		expect(element.querySelector(".rail-app")?.getAttribute("title")).toBe(
-			"Members · Who owns, supervises and does what.",
-		);
+		// The icon's name is under it; no hover popup repeats it (Jonas, 9 Nov 2026).
+		expect(element.querySelector(".rail-app")?.hasAttribute("title")).toBe(false);
 	});
 });
 
@@ -890,11 +884,11 @@ text = "Hi"
 		const { main } = desk({ members: 2, pages: pages(false, true) });
 		const first = main.querySelector(".interface-item-row")!;
 		expect(titles(first as HTMLElement, ".interface-actions > *")).toEqual(["Answer", "Ask Bo", "See", "Board"]);
-		expect(first.querySelector("a.interface-button")?.getAttribute("href")).toBe(
+		expect(first.querySelector("a.interface-button")?.getAttribute("data-href")).toBe(
 			`#/c/${profileA.profileId}/staff/${bo.id}`,
 		);
 		const links = [...first.querySelectorAll<HTMLAnchorElement>("a.interface-button")].map((link) =>
-			link.getAttribute("href"),
+			link.getAttribute("data-href"),
 		);
 		expect(links).toEqual([
 			`#/c/${profileA.profileId}/staff/${bo.id}`,
@@ -1079,7 +1073,7 @@ from = "mail"
 		const main = mount();
 		renderInterfaceFile(main, controller, `dead-${Math.random()}`, file);
 		expect(main.querySelector("button.interface-item")).toBeNull();
-		expect(main.querySelector("a.interface-item")?.getAttribute("href")).toBe(
+		expect(main.querySelector("a.interface-item")?.getAttribute("data-href")).toBe(
 			`#/c/${profileA.profileId}/staff/${cy.id}`,
 		);
 	});
@@ -1105,7 +1099,7 @@ from = "waiting"
 		renderInterfaceFile(main, controller, `mail-from-${Math.random()}`, file);
 		expect(main.querySelector(".interface-mail")).toBeNull();
 		expect(main.querySelector("button.interface-item")).toBeNull();
-		expect(main.querySelector("a.interface-item")?.getAttribute("href")).toBe(
+		expect(main.querySelector("a.interface-item")?.getAttribute("data-href")).toBe(
 			`#/c/${profileA.profileId}/staff/${cy.id}`,
 		);
 	});

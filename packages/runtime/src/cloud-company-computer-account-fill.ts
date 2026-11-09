@@ -187,7 +187,9 @@ export class CompanyComputerFilledValues {
 		this.#now = now;
 	}
 
-	add(value: string, field: CompanyAccountFill["field"]): void {
+	/** A login is no secret; a code is hidden for a while; anything else (a password, a hook's or a coding value's secret
+	 * read off a page) for the service's lifetime. */
+	add(value: string, field: CompanyAccountFill["field"] | "coding_value"): void {
 		if (field === "login") return;
 		this.current();
 		this.#values.delete(value);

@@ -21,6 +21,72 @@ function append(parent: Node, children: Child[]): void {
 	}
 }
 
+/* In-app links carry their place in data-href, not href. A real href makes the browser show the address in a
+ * bubble at the bottom of the window on every hover (Jonas, 9 Nov 2026: "can I get rid of this?"), and no page
+ * can turn that off. So an in-app link is an <a role="link" tabindex="0"> that one listener on the document
+ * follows: a click or Enter goes there, Cmd/Ctrl/Shift-click or a middle click opens it in a new tab. A
+ * handler that prevents the click's default still stops it, as it would stop a real link. Links that leave the
+ * app (http, mailto, blob) keep their href, so the browser still shows where they go. */
+const isInAppHref = (href: string) => href.startsWith("#");
+
+/** Where a link goes, in-app (data-href) or out (href). */
+export function linkHref(link: Element): string | null {
+	return link.getAttribute("data-href") ?? link.getAttribute("href");
+}
+
+/** Points a link somewhere, the way h() would have. */
+export function setLinkHref(link: HTMLAnchorElement, href: string): void {
+	if (!isInAppHref(href)) {
+		link.removeAttribute("data-href");
+		link.setAttribute("href", href);
+		return;
+	}
+	link.removeAttribute("href");
+	link.setAttribute("data-href", href);
+	link.setAttribute("role", "link");
+	if (!link.hasAttribute("tabindex")) link.setAttribute("tabindex", "0");
+	followInAppLinks(link.ownerDocument);
+}
+
+const following = new WeakSet<Document>();
+function followInAppLinks(doc: Document): void {
+	if (following.has(doc)) return;
+	following.add(doc);
+	const view = doc.defaultView;
+	const target = (event: Event) =>
+		event.target instanceof Element ? event.target.closest<HTMLElement>("a[data-href]") : null;
+	const go = (link: HTMLElement, newTab: boolean) => {
+		const url = new URL(link.getAttribute("data-href")!, doc.baseURI);
+		if (!view) return;
+		if (newTab) view.open(url.href, "_blank", "noopener");
+		// The router's own way (router.ts navigate): only the hash moves.
+		else if (url.href.split("#")[0] === view.location.href.split("#")[0]) view.location.hash = url.hash;
+		else view.location.assign(url.href);
+	};
+	doc.addEventListener("click", (event) => {
+		const link = target(event);
+		if (!link || event.defaultPrevented || event.button !== 0) return;
+		// Handled here; jsdom would otherwise follow the link without an href to the page's bare address.
+		event.preventDefault();
+		go(link, event.metaKey || event.ctrlKey || event.shiftKey);
+	});
+	doc.addEventListener("auxclick", (event) => {
+		const link = target(event);
+		if (!link || event.defaultPrevented || event.button !== 1) return;
+		event.preventDefault();
+		go(link, true);
+	});
+	doc.addEventListener("keydown", (event) => {
+		const link = target(event);
+		if (!link || link !== event.target || event.defaultPrevented || event.key !== "Enter" || event.isComposing)
+			return;
+		event.preventDefault();
+		// Enter on a real link fires its click, so the link's own click handlers run first here too.
+		if (event.metaKey || event.ctrlKey || event.shiftKey) go(link, true);
+		else link.click();
+	});
+}
+
 export function h<K extends keyof HTMLElementTagNameMap>(
 	tag: K,
 	attrs: Attrs | null = null,
@@ -31,7 +97,10 @@ export function h<K extends keyof HTMLElementTagNameMap>(
 		for (const [key, value] of Object.entries(attrs)) {
 			if (value === undefined || value === null || value === false) continue;
 			if (key === "class") element.className = String(value);
-			else if (key === "dataset") Object.assign(element.dataset, value as Record<string, string>);
+			else if (key === "href" && element instanceof HTMLAnchorElement && isInAppHref(String(value))) {
+				// tabindex given in attrs is applied after this and wins.
+				setLinkHref(element, String(value));
+			} else if (key === "dataset") Object.assign(element.dataset, value as Record<string, string>);
 			else if (key.startsWith("on") && typeof value === "function") {
 				element.addEventListener(key.slice(2).toLowerCase(), value as EventListener);
 			} else if (
