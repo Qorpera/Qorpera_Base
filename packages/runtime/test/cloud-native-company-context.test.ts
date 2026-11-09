@@ -709,7 +709,13 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 		"As soon as you know what the company is about, hire the team that builds the vision with you: at least a researcher for the customers and their problem, a market watcher for competitors and the market, and a strategist",
 	);
 	expect(cofounder).toContain("In that run, set up your daily plan routine");
-	expect(cofounder).toContain("the team's work runs on the model login of the founder whose conversation started it");
+	// v11 (Jonas, 9 November 2026): each agent works for one member; with two or more founders the team is dealt out.
+	expect(cofounder).not.toContain(
+		"the team's work runs on the model login of the founder whose conversation started it",
+	);
+	expect(cofounder).toContain("Each agent works for one member, whose ChatGPT carries the work handed to it");
+	expect(cofounder).toContain("With two or more founders, deal the team out between them by area");
+	expect(cofounder).toContain("offer agents to another member with offer_agents_to_member");
 	expect(cofounder).toContain("Hire freely for continuing work; never hire for a one-off task");
 	// v8 (Jonas, 4 November 2026): the team grows like a company of employees, not only once the vision is agreed.
 	expect(cofounder).toContain("Continuing work appears as soon as it exists, not only once the vision is agreed");
@@ -1519,31 +1525,32 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // level follows the agent's place ("the higher up the chain ... the less technical"; Jonas, 5 November 2026), and for
 // interface apps (what an agent wants members to see is an app beside the chat; Jonas, 5 November 2026), and for
 // the wall (status kept in place above the thread instead of messages; Jonas, 5 November 2026), and for readable
-// cards and overlay v10 ("approval cards are completely unreadable"; Jonas, 5 November 2026). A change to
+// cards and overlay v10 ("approval cards are completely unreadable"; Jonas, 5 November 2026), and for overlay v11
+// (each agent works for one member and the Co-Founder deals the team out; Jonas, 9 November 2026). A change to
 // either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "a723662dc0672ed8be6292f209e13b535206811836688b6e973418b1c9b8abad",
-			prompt: "5088f6d23c2a8393cde020abbca2d67b63cfbe5fe01ea553010236654c99c131",
+			instructions: "5f017381ae366bb5129aff7bb5577b9d29519854808f4f8db6ad14559f5b73f7",
+			prompt: "b977f3f5470e4ccbc6447ff08181b2c2f87af2c060f75ac4701d2ff6bcfae503",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "a2c305f672bf166fb4c37d867f2b11e38549f20fa7eab527f46aabb0d6ab8f59",
-			prompt: "69e519f56876b0be7bf4ad8f86491a8aca4a9996c16149f6c4674650f505cda0",
+			instructions: "0e3563f72518708f8d7ec8a0c8f31aaede912dd994662f60b6580813131d663f",
+			prompt: "66f25cc5ef4d70fcc0b6bd5d99f380af44ada6767d268949c7a76651db9615f3",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "a723662dc0672ed8be6292f209e13b535206811836688b6e973418b1c9b8abad",
-			prompt: "03f89e0a0ef624160697b40693ef59c921d5472236d894fd992186d85dcb25ed",
+			instructions: "5f017381ae366bb5129aff7bb5577b9d29519854808f4f8db6ad14559f5b73f7",
+			prompt: "40c00e9827e26a1f3748104a3e26aaf9c5a0dc84232933d429374350dc1251db",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {

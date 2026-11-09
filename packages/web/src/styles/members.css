@@ -136,6 +136,9 @@
 	border: 1.5px solid var(--composer-accent); background: color-mix(in srgb, var(--composer-accent) 7%, var(--bg));
 }
 .members-ask p { flex: 1 1 220px; margin: 0; font-size: 14px; }
+.members-ask-faces { display: flex; }
+.members-ask-faces .figure + .figure { margin-left: -12px; }
+.members-ask-why { display: block; margin-top: 2px; color: var(--text-muted); font-style: italic; }
 .members-agent-wrap { display: grid; justify-items: center; gap: 2px; }
 .members-agent:disabled { cursor: default; }
 .members-agent:disabled:hover { transform: none; background: transparent; }

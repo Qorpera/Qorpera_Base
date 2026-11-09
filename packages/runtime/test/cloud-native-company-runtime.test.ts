@@ -1113,6 +1113,8 @@ it.each([
 				"update_memory",
 				"update_skill",
 				"update_wall",
+				// The Co-Founder deals the team out between the members (20260930702000).
+				...(agentKind === "cofounder" ? ["crew_and_members", "offer_agents_to_member"] : []),
 			].sort(),
 		);
 		expect(evidence.threadParameters.runtimeWorkspaceRoots).toEqual([]);
@@ -1125,7 +1127,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v10",
+			schema: "qorpera.hire-overlay/v11",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -3130,6 +3132,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// Later on 8 November 2026 save_app's manifest takes concept and cover (the Concepts viewer), so they moved again.
 	// On 9 November 2026 ask_member's secret card takes a coding value's repository (20260930693000), and its schema
 	// says when to ask for one; the names and descriptions are as before, so only the catalog text moved.
+	// On 9 November 2026 the Co-Founder's crew_and_members and offer_agents_to_member (20260930702000) came after
+	// good_will_mark, so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3151,6 +3155,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"add_review_rule",
 		"good_will_list",
 		"good_will_mark",
+		"crew_and_members",
+		"offer_agents_to_member",
 		"list_hooks",
 		"read_event",
 		"send_mail",
@@ -3172,9 +3178,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"191f2be753041608873dbce02cc6f32cf9312cef670a8267e34fcf178ec2277b",
+		"143e1db0ff4abd1764cd2ef1c2b7c35f10004250188bbec41cd2ec87b74913eb",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"405176760e6a0efc6ea0fd4ddf728fd5dbad816e0160768bc8bf05d810f674f4",
+		"0736639c00b0893c31b7503c0fd9348751be60b618f00435588aeffdfa3359b7",
 	);
 });

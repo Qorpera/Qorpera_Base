@@ -102,6 +102,8 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			"_good_will.sql",
 			// The run's check around a tool call, in one call (7 November 2026).
 			"_native_run_check_one_call.sql",
+			// The Co-Founder deals agents out to members (20260930702000).
+			"_cofounder_offers_agents.sql",
 		].flatMap((suffix) =>
 			rowsOf(
 				read(
@@ -134,7 +136,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, name, scope]) => scope !== "identity" && !removed.has(name))
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(125);
+	expect(rows).toHaveLength(127);
 	expect([...removed]).toEqual([
 		"qorpera_native_mail_attachment",
 		"qorpera_manage_agent_todo",

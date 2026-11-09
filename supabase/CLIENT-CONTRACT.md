@@ -1126,7 +1126,8 @@ Each call answers 42501 for a caller who is not a member of the company.
   first reset when known), `sign_in` (no live login, one needs a new sign-in) or `none`; `used_percent` is 0-100 of
   the login with the most room, null when no fresh reading says. No email or account is shown. `asks` are the open
   asks, `[{id, staff_agent_id, from_user_id, to_user_id, asked_by_user_id, asked_by_staff_agent_id,
-  answer_by_user_id, created_at}]`. Read it when the page opens, after each call below, and every 30 s while it is
+  answer_by_user_id, created_at, why}]`; `why` is the asker's short reason (null when none; 20260930702000), and an
+  ask the Co-Founder made has `asked_by_staff_agent_id` and no `asked_by_user_id`. Read it when the page opens, after each call below, and every 30 s while it is
   open.
 - `qorpera_ask_works_for(profile, staff_agent, to_user)`: `{moved, ask_id}`. Asking for the member it already works
   for, or taking (to = the caller) an agent that works for nobody, moves at once (`moved` true, no ask). Otherwise an
@@ -1138,6 +1139,10 @@ Each call answers 42501 for a caller who is not a member of the company.
   (`no`); the member who asked may withdraw (`yes` false, `withdrawn`). A yes on an agent that meanwhile works for
   someone else, or for a member who is now a viewer, is `void` and moves nothing. An ask already answered answers its
   status. Anyone else is 42501.
+- The Co-Founder asks too (20260930702000, host calls, never a member's): `qorpera_cofounder_crew(binding)` reads the
+  members, the agents with whom they work for and the open asks; `qorpera_offer_agents_to_member(binding, {member,
+  agents, why})` asks one member (an id, email, full name or a first name only they have) to take 1 to 20 agents (ids or
+  names). The member answers on the Members page as above.
 
 ### Chat images (20260928549140_chat_images)
 

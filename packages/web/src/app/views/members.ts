@@ -278,38 +278,54 @@ function draw(container: HTMLElement, page: Page): void {
 	);
 }
 
-/** The asks the viewer answers: yes or no. */
+/** The asks the viewer answers: yes or no. The asks one asker made at once with one reason (the Co-Founder dealing out
+ * an area, say) are one card, answered together. */
 function asksForYou(container: HTMLElement, ctx: Ctx): HTMLElement | null {
 	const mine = ctx.data.asks.filter((entry) => entry.answerByUserId === ctx.viewer);
 	if (!mine.length) return null;
+	const groups = new Map<string, WorksForAsk[]>();
+	for (const pending of mine) {
+		const key = JSON.stringify([pending.askedByUserId, pending.askedByAgentId, pending.toUserId, pending.why]);
+		groups.set(key, [...(groups.get(key) ?? []), pending]);
+	}
 	return h(
 		"div",
 		{ class: "members-asks" },
-		...mine.map((pending) => {
-			const asker = pending.askedByUserId
-				? ctx.memberName(pending.askedByUserId)
-				: ctx.agentName(pending.askedByAgentId ?? "");
-			const agent = ctx.agentName(pending.agentId);
+		...[...groups.values()].map((group) => {
+			const first = group[0]!;
+			const fromAgent = !first.askedByUserId && first.askedByAgentId ? ctx.agentName(first.askedByAgentId) : null;
+			const asker = first.askedByUserId
+				? ctx.memberName(first.askedByUserId)
+				: fromAgent
+					? first.askedByAgentId === ctx.cofounder?.id
+						? t("{agent}, your Co-Founder,", { agent: fromAgent })
+						: fromAgent
+					: t("someone who left");
+			const agent = names(group.map((pending) => ctx.agentName(pending.agentId)));
 			const text =
-				pending.toUserId === ctx.viewer
+				first.toUserId === ctx.viewer
 					? t("{asker} asks you to take {agent}. Your ChatGPT then carries the work handed to {agent}.", {
 							asker,
 							agent,
 						})
 					: t("{asker} asks to take {agent} from you.", { asker, agent });
-			const found = ctx.company.store.get().staff.find((candidate) => candidate.id === pending.agentId);
+			const staff = ctx.company.store.get().staff;
+			const figures = group.slice(0, 4).flatMap((pending) => {
+				const found = staff.find((candidate) => candidate.id === pending.agentId);
+				return found ? [agentFigure(found, "", { size: 40, still: true })] : [];
+			});
 			return h(
 				"div",
 				{ class: "members-ask" },
-				found ? agentFigure(found, "", { size: 40, still: true }) : null,
-				h("p", null, text),
+				h("span", { class: "members-ask-faces" }, ...figures),
+				h("p", null, text, first.why ? h("span", { class: "members-ask-why" }, `“${first.why}”`) : null),
 				h(
 					"button",
 					{
 						class: "btn btn-primary btn-small",
 						type: "button",
 						disabled: ctx.page.busy,
-						onclick: () => void act(container, ctx.page, () => answer(ctx, pending, true)),
+						onclick: () => void act(container, ctx.page, () => answerAll(ctx, group, true)),
 					},
 					t("Yes"),
 				),
@@ -319,13 +335,31 @@ function asksForYou(container: HTMLElement, ctx: Ctx): HTMLElement | null {
 						class: "btn btn-small",
 						type: "button",
 						disabled: ctx.page.busy,
-						onclick: () => void act(container, ctx.page, () => answer(ctx, pending, false)),
+						onclick: () => void act(container, ctx.page, () => answerAll(ctx, group, false)),
 					},
 					t("No"),
 				),
 			);
 		}),
 	);
+}
+
+/** Names as the member reads them: "Clara", "Clara and Astrid", "Clara, Astrid and Bo". */
+function names(list: readonly string[]): string {
+	if (list.length < 2) return list[0] ?? "";
+	return t("{first} and {last}", { first: list.slice(0, -1).join(", "), last: list[list.length - 1] ?? "" });
+}
+
+/** Answers each ask of a card, one after the other; what the last did is the note. */
+async function answerAll(ctx: Ctx, group: readonly WorksForAsk[], yes: boolean): Promise<string> {
+	if (group.length === 1) return answer(ctx, group[0]!, yes);
+	let moved = 0;
+	for (const pending of group) if ((await ctx.company.worksFor().answer(pending.id, yes)).moved) moved++;
+	const agents = names(group.map((pending) => ctx.agentName(pending.agentId)));
+	if (!yes) return t("{agents} stay where they are.", { agents });
+	return moved === group.length
+		? t("{agents} now work for {member}.", { agents, member: ctx.memberName(group[0]!.toUserId) })
+		: t("{moved} of them moved; the others moved meanwhile.", { moved: String(moved) });
 }
 
 async function answer(ctx: Ctx, pending: WorksForAsk, yes: boolean): Promise<string> {

@@ -24,6 +24,8 @@ export interface WorksForAsk {
 	readonly askedByAgentId: string | null;
 	readonly answerByUserId: string;
 	readonly createdAt: string;
+	/** Why the asker asks (migration 20260930702000), when they said. */
+	readonly why: string | null;
 }
 
 export interface WorksFor {
@@ -78,6 +80,7 @@ export function parseWorksFor(value: unknown): WorksFor {
 				askedByAgentId: nullableUuid(item.asked_by_staff_agent_id, "agent"),
 				answerByUserId: uuid(item.answer_by_user_id, "member"),
 				createdAt: timestamp(item.created_at, "asked at"),
+				why: typeof item.why === "string" && item.why.trim() ? item.why.trim().slice(0, 280) : null,
 			};
 		}),
 	};
