@@ -324,6 +324,39 @@ describe("2D studio playback in the shell", () => {
 		expect((y! + toHeight!) / 100).toBeGreaterThanOrEqual(0.6);
 		expect(width).toBeLessThanOrEqual(side * 2);
 	});
+	it("cuts the eyes in the layer's own pixels at the 512px level, where nothing is halved", async () => {
+		let resized: ResizeObserverCallback | undefined;
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				constructor(callback: ResizeObserverCallback) {
+					resized = callback;
+				}
+				observe() {}
+				unobserve() {}
+				disconnect() {}
+			},
+		);
+		vi.stubGlobal("devicePixelRatio", 3);
+		const host = mount("Idle", "large");
+		await settle();
+		show([host]);
+		for (const fn of Object.values(context)) if (typeof fn?.mockClear === "function") fn.mockClear();
+		// 120 CSS px at 3x: a side above 256, so the body's level and the eye layer are 512 (repainted at once).
+		resized!([{ target: host, contentRect: { width: 120 } } as unknown as ResizeObserverEntry], {} as ResizeObserver);
+		expect(host.querySelector("canvas")!.width).toBeGreaterThan(256);
+		// The eye layer was drawn under 5.12x and its box's offset; the clip and the cut must not be.
+		const order = (fn: (typeof context)[string]) => fn.mock.invocationCallOrder;
+		const clip = order(context.clip!).at(-1)!;
+		const save = order(context.save!)
+			.filter((at) => at < clip)
+			.at(-1)!;
+		const resets = context
+			.setTransform!.mock.calls.map((args, index) => [args.join(), order(context.setTransform!)[index]!] as const)
+			.filter(([args, at]) => args === "1,0,0,1,0,0" && at > save && at < clip);
+		expect(resets).toHaveLength(1);
+		expect(context.rect).toHaveBeenLastCalledWith(0, 0, expect.any(Number), expect.any(Number));
+	});
 	it("retains the studio's holds and symbolic states", () => {
 		expect(localTime("Idle", 90)).toBeCloseTo(221 / 60);
 		expect(localTime("Waiting", 90)).toBeCloseTo(278 / 60);

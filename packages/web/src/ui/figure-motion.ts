@@ -317,6 +317,9 @@ function paint(entry: LiveMotion): void {
 		if (layer) {
 			const lc = layer.getContext("2d")!;
 			lc.save();
+			// In layer pixels: at 512 nothing is halved, and the layer is the canvas the eyes were drawn on, still
+			// under their 5.12x (and box) transform.
+			lc.setTransform(1, 0, 0, 1, 0, 0);
 			lc.beginPath();
 			lc.rect(0, 0, size[0], size[1]);
 			lc.clip();
