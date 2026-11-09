@@ -1081,6 +1081,22 @@ describe("settings session lifecycle", () => {
 		await draw();
 		expect(files.inert).toBe(false);
 	});
+	it("closes the Friends window over Settings when access to the company is lost", async () => {
+		const f = await setup();
+		open(f.root);
+		await draw();
+		click(f.root, ".settings-header .settings-friends");
+		await draw();
+		expect(f.root.querySelector<HTMLDialogElement>(".friends-window")?.open).toBe(true);
+		vi.mocked(f.api.getTeam).mockRejectedValue(
+			new CloudRpcError("getTeam", { code: "42501", message: "Access revoked" }),
+		);
+		f.hints.get("qorpera_profile_access_state")!();
+		await draw();
+		// Settings close, and the window that used their friends list closes with them.
+		expect(f.root.querySelector(".settings-overlay")).toBeNull();
+		expect(f.root.querySelector(".friends-window")).toBeNull();
+	});
 	it.each(["revocation", "sign out"])("ends Storage reads and removes the dialog on %s", async (change) => {
 		const folder = storageFixture();
 		const f = await setup();

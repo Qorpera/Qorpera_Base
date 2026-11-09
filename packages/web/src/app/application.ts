@@ -185,6 +185,8 @@ export function mountApplication(
 	 * so what the founder types next goes into their message. */
 	let settingsFromConversation = false;
 	function closeSettings(restoreFocus = true): void {
+		// A Friends window over Settings uses their friends list: it closes with them (access to the company lost).
+		if (settings) closeFriends(false);
 		settings?.dispose();
 		settings = undefined;
 		frame.inert = false;
