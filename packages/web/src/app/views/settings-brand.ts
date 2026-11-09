@@ -88,7 +88,6 @@ export class CompanyBrandView {
 		this.el = h(
 			"section",
 			{ class: "settings-group settings-brand", "aria-label": t("Brand") },
-			h("h2", null, uiText(phrase("Brand"))),
 			h(
 				"div",
 				{ class: "settings-brand-row" },
