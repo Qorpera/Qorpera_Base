@@ -1039,6 +1039,8 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			expect.objectContaining({ p_profile_id: table, p_expected_revision: 4, p_vision: "A webshop with ceramics." }),
 		);
 		expect(location.hash).toBe(`#/found/${table}`);
+		// The arrow alone asks the table's page to start the company by itself.
+		expect(JSON.parse(sessionStorage.getItem(`qorpera:founding-intent:${table}`) ?? "{}")).toEqual({ start: true });
 		hub.dispose();
 	});
 
@@ -1114,6 +1116,103 @@ describe("hub round 3: pick a company, or start one from an idea", () => {
 			"qorpera_start_company_founding",
 		]);
 		expect(visibleText(container)).toContain("Nordlys Kaffe is starting");
+	});
+
+	describe("the arrow alone starts the company by itself", () => {
+		/** A table with only you at it, and what Ready and Start did to it. */
+		function soloTable(connected: () => boolean) {
+			const calls: string[] = [];
+			let ready = false;
+			let started = false;
+			const rpc = async (name: string) => {
+				calls.push(name);
+				if (name === "qorpera_set_founder_ready") ready = true;
+				if (name === "qorpera_start_company_founding") started = true;
+				if (started)
+					return wire({
+						phase: "started",
+						seats: [{ ...(wire().seats as Wire[])[0], ready: false }],
+						waitingFor: [],
+						me: { userId: me, state: "joined", canEdit: false, canManage: false, canStart: false },
+						start: { startedAt: "2026-11-09T18:00:00Z", startedByUserId: me, revision: 5, companyReady: false },
+					});
+				return wire({
+					seats: [{ ...(wire().seats as Wire[])[0], modelLoginReady: connected(), ready }],
+					waitingFor: ready ? [] : [me],
+					me: { userId: me, state: "joined", canEdit: true, canManage: true, canStart: ready },
+				});
+			};
+			return { calls, rpc };
+		}
+
+		function open(api: ReturnType<typeof fixture>["api"]) {
+			const controller = new FoundingController(api, me, table, { currentUserId: () => me });
+			controllers.push(controller);
+			const view = new FoundingView(controller);
+			container.append(view.el);
+			controller.store.subscribe(() => view.update());
+			view.update();
+			return controller;
+		}
+
+		it("shows no table: Ready and Start follow at once", async () => {
+			const { api, cloud } = fixture();
+			const solo = soloTable(() => true);
+			vi.mocked(cloud.rpc).mockImplementation(solo.rpc);
+			setFoundingIntent(table, { start: true });
+			const controller = open(api);
+			expect(container.querySelector(".founding-starting")).not.toBeNull();
+			await settle();
+			await settle();
+			expect(solo.calls.filter((name) => name !== "qorpera_read_company_founding")).toEqual([
+				"qorpera_set_founder_ready",
+				"qorpera_start_company_founding",
+			]);
+			// The table's page never showed: no idea box, no Start button.
+			expect(container.querySelector("textarea.founding-vision")).toBeNull();
+			expect(container.querySelector(".founding-start")).toBeNull();
+			expect(visibleText(container)).toContain("Nordlys Kaffe is starting");
+			expect(controller.store.get().autoStart).toBe(false);
+			// Done: a reload opens the started page, and starts nothing again.
+			expect(sessionStorage.getItem(`qorpera:founding-intent:${table}`)).toBeNull();
+		});
+
+		it("asks for ChatGPT first, on its own page, and starts once it is connected", async () => {
+			const { api, cloud } = fixture();
+			let connected = false;
+			const solo = soloTable(() => connected);
+			vi.mocked(cloud.rpc).mockImplementation(solo.rpc);
+			setFoundingIntent(table, { start: true });
+			const controller = open(api);
+			await settle();
+			expect(controller.store.get().connectOpen).toBe(true);
+			expect(container.querySelector(".founding-starting .founding-connect")?.hasAttribute("hidden")).toBe(false);
+			expect(visibleText(container)).toContain("Connect your ChatGPT account, and Nordlys Kaffe starts.");
+			expect(container.querySelector(".founding-starting .founding-cancel")?.hasAttribute("hidden")).toBe(false);
+			expect(container.querySelector("textarea.founding-vision")).toBeNull();
+			expect(solo.calls).not.toContain("qorpera_set_founder_ready");
+			connected = true;
+			await controller.refresh();
+			await settle();
+			await settle();
+			expect(solo.calls).toContain("qorpera_start_company_founding");
+			expect(visibleText(container)).toContain("Nordlys Kaffe is starting");
+		});
+
+		it("shows the table when someone else sits at it", async () => {
+			const { api, cloud } = fixture();
+			const calls: string[] = [];
+			vi.mocked(cloud.rpc).mockImplementation(async (name: string) => {
+				calls.push(name);
+				return mine({ modelLoginReady: true });
+			});
+			setFoundingIntent(table, { start: true });
+			const controller = open(api);
+			await settle();
+			expect(controller.store.get().autoStart).toBe(false);
+			expect(container.querySelector("textarea.founding-vision")).not.toBeNull();
+			expect(calls).not.toContain("qorpera_start_company_founding");
+		});
 	});
 
 	it("carries qorpera.com's idea into the box once, and says where it came from", () => {
