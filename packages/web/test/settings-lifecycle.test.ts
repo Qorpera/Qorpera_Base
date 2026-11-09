@@ -9,7 +9,6 @@ import { SettingsView } from "../src/app/views/settings.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import { GoodWillCardError } from "../src/cloud/good-will.ts";
-import type { CompanyMemory } from "../src/cloud/memory-mode.ts";
 import type { HostedAccountEntitlement, HostedAccountMatch } from "../src/cloud/types.ts";
 import { markdown } from "../src/ui/markdown.ts";
 import { setTimeZonePreference } from "../src/ui/preferences.ts";
@@ -1889,42 +1888,9 @@ describe("settings session lifecycle", () => {
 		[...f.root.querySelectorAll("button")].find((button) => button.textContent === "Retry company")!.click();
 		await draw();
 		expect(f.root.querySelector(".settings-team")!.textContent).not.toContain("Team temporarily unavailable");
-		expect(f.root.querySelector(".settings-memory-slot + .settings-company-exit > .company-exit")?.textContent).toBe(
+		expect(f.root.querySelector(".settings-rules-slot + .settings-company-exit > .company-exit")?.textContent).toBe(
 			"Delete company",
 		);
-		expect(sdkRpcs(f)).toEqual([]);
-	});
-	it("shows the company's memory under its agent rules, and saves a choice through the cloud API", async () => {
-		history.replaceState(null, "", "/#/");
-		const fixtureState = fixture();
-		const memory: CompanyMemory = {
-			profileId: profileA.profileId,
-			mode: "notebooks",
-			setAt: null,
-			effective: "notebooks",
-			betaOffered: true,
-			canManage: true,
-			runsInOtherMode: 0,
-		};
-		vi.mocked(fixtureState.api.getCompanyMemory).mockResolvedValue(memory);
-		const chosen = { ...memory, mode: "tree", setAt: timestamp, effective: "tree" } as const;
-		vi.spyOn(fixtureState.api, "setCompanyMemory").mockResolvedValue(chosen);
-		const f = await setup(fixtureState);
-		open(f.root);
-		click(f.root, "#settings-tab-company");
-		await draw();
-		const section = f.root.querySelector<HTMLElement>(
-			".settings-staff-group + .settings-good-will-slot + .settings-rules-slot + .settings-memory-slot > .settings-memory",
-		)!;
-		expect(section.hidden).toBe(false);
-		// Leave or Delete company comes last: no pages and no storage card any more.
-		expect(f.root.querySelector(".settings-memory-slot + .settings-company-exit")).not.toBeNull();
-		expect(f.api.getCompanyMemory).toHaveBeenCalledExactlyOnceWith(profileA.profileId);
-		section.querySelector<HTMLInputElement>("input[type=radio][value=tree]")!.click();
-		await draw();
-		expect(f.api.setCompanyMemory).toHaveBeenCalledExactlyOnceWith(profileA.profileId, "tree");
-		expect(section.textContent).toContain("Saved. New runs use Shared context — Beta.");
-		expect(f.api.getCompanyMemory).toHaveBeenCalledTimes(1);
 		expect(sdkRpcs(f)).toEqual([]);
 	});
 	it("shows founders what they may do with their own membership", async () => {
