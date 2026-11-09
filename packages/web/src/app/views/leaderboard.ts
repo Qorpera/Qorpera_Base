@@ -200,14 +200,16 @@ export class LeaderboardView {
 	async load(): Promise<void> {
 		if (this.#signal.aborted) return;
 		const turn = ++this.#turn;
+		// A save pending now, or started before this read answers, may land after the database read the old choice.
 		const saves = this.#saves;
+		const savePending = this.#saving;
 		this.#loading = true;
 		this.#error = undefined;
 		this.#draw();
 		try {
 			const data = await this.#api.getFriendsLeaderboard(this.#days);
 			if (this.#signal.aborted || turn !== this.#turn) return;
-			const overlapped = this.#saves !== saves && this.#savedHidden !== undefined;
+			const overlapped = (savePending || this.#saves !== saves) && this.#savedHidden !== undefined;
 			this.#data = overlapped ? { ...data, hidden: this.#savedHidden! } : data;
 		} catch (error) {
 			if (this.#signal.aborted || turn !== this.#turn) return;

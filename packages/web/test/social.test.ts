@@ -245,6 +245,28 @@ describe("leaderboard page", () => {
 		expect(view.el.querySelector(".leaderboard-visible small")?.textContent).toContain("Your friends see your row");
 	});
 
+	it("keeps a saved visibility when the period changes while the save is on its way", async () => {
+		const hidden = parseLeaderboard({ ...BOARD, hidden: true });
+		const { view, api } = await mount(hidden);
+		let saved: () => void = () => {};
+		api.setLeaderboardHidden.mockImplementationOnce(() => new Promise<void>((resolve) => (saved = resolve)));
+		let answer: (board: Leaderboard) => void = () => {};
+		api.getFriendsLeaderboard.mockImplementationOnce(() => new Promise<Leaderboard>((resolve) => (answer = resolve)));
+		const visible = view.el.querySelector<HTMLInputElement>(".leaderboard-visible input")!;
+		visible.checked = true;
+		visible.dispatchEvent(new Event("change"));
+		await vi.waitFor(() => expect(api.setLeaderboardHidden).toHaveBeenCalledWith(false));
+		// The period changes while the save is out; the save lands, then the read with the old choice.
+		view.el.querySelector<HTMLButtonElement>('[data-days="30"]')!.click();
+		await vi.waitFor(() => expect(api.getFriendsLeaderboard).toHaveBeenLastCalledWith(30));
+		saved();
+		await vi.waitFor(() => expect(visible.disabled).toBe(false));
+		answer({ ...hidden, days: 30 });
+		await vi.waitFor(() => expect(view.el.querySelector(".leaderboard-list")?.hasAttribute("aria-busy")).toBe(false));
+		expect(visible.checked).toBe(true);
+		expect(view.el.querySelector(".leaderboard-visible small")?.textContent).toContain("Your friends see your row");
+	});
+
 	it("believes a read started after a save whose answer was lost", async () => {
 		const { view, api } = await mount();
 		const visible = view.el.querySelector<HTMLInputElement>(".leaderboard-visible input")!;
