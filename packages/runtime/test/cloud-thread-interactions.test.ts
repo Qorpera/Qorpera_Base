@@ -34,6 +34,43 @@ describe("thread interaction requests", () => {
 		).toThrow(/Invalid interaction request/);
 	});
 
+	it("accepts a coding value's card with its repository, and refuses a repository anywhere else", () => {
+		const card = (payload: Record<string, unknown>) => ({
+			schema: "qorpera.interaction/v1",
+			surface: "secret",
+			title: "Token for private packages",
+			payload: {
+				name: "npm_token",
+				label: "NPM_TOKEN",
+				purpose: "Installs the private packages.",
+				connectorId: "environment",
+				...payload,
+			},
+		});
+		expect(parseCloudInteractionRequestData(card({ repository: "acme/web" })).payload).toMatchObject({
+			connectorId: "environment",
+			repository: "acme/web",
+		});
+		// Without a repository it is still a coding value: a member's own reaches their sessions in every repository.
+		expect(parseCloudInteractionRequestData(card({})).payload).not.toHaveProperty("repository");
+		for (const payload of [
+			// Only lower-case owner/name.
+			{ repository: "Acme/Web" },
+			{ repository: "acme" },
+			{ repository: "acme/web/extra" },
+			// A repository only beside the environment connector.
+			{ connectorId: "linear", repository: "acme/web" },
+			// A coding value's name as the capture takes it.
+			{ name: "npm-token" },
+			{ name: "git_token" },
+			{ name: "openai_api_key" },
+		])
+			expect(() => parseCloudInteractionRequestData(card(payload))).toThrow(/Invalid interaction request/);
+		const plain = card({ connectorId: undefined, repository: "acme/web" });
+		delete (plain.payload as Record<string, unknown>).connectorId;
+		expect(() => parseCloudInteractionRequestData(plain)).toThrow(/Invalid interaction request/);
+	});
+
 	it("keeps the same card id for a retried ask", () => {
 		const input = parseCloudAskMemberInput({
 			idempotencyKey: "slack",
@@ -123,7 +160,14 @@ const PAYLOADS = {
 	},
 	secret: {
 		minimal: { name: "api-key", label: "API key", purpose: "Filing issues." },
-		maximal: { name: "api-key", label: "API key", purpose: "Filing issues.", kind: "token", connectorId: "linear" },
+		maximal: {
+			name: "npm_token",
+			label: "NPM_TOKEN",
+			purpose: "Installs the private packages.",
+			kind: "token",
+			connectorId: "environment",
+			repository: "acme/web",
+		},
 	},
 	form: {
 		minimal: { domain: "app.example.com", fields: [{ id: "email", label: "Email", type: "email" }] },

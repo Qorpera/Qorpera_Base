@@ -151,6 +151,29 @@ describe("interaction cards", () => {
 		expect(pills.map((pill) => pill.textContent)).toEqual(["Decline"]);
 	});
 
+	it("says where a coding value goes instead of saying the agent never sees it", () => {
+		const coding = (payload: Record<string, unknown>) =>
+			renderInteractionCard(
+				item({
+					surface: "secret",
+					title: "Token for private packages",
+					payload: {
+						name: "npm_token",
+						label: "NPM_TOKEN",
+						purpose: "Installs the private packages.",
+						connectorId: "environment",
+						...payload,
+					},
+				}),
+				context({ provideSecret: vi.fn(async () => {}) }),
+			).textContent;
+		expect(coding({ repository: "acme/web" })).toContain(
+			"Coding sessions in acme/web get it as NPM_TOKEN; it never shows in the chat.",
+		);
+		expect(coding({})).toContain("Your coding sessions get it as NPM_TOKEN; it never shows in the chat.");
+		expect(coding({})).not.toContain("The agent never sees the value");
+	});
+
 	it("keeps historical form cards skippable without suggesting that fields can be filled", () => {
 		const request: InteractionRequest = {
 			surface: "form",

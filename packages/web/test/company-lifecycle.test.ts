@@ -376,6 +376,96 @@ describe("answering a card", () => {
 		};
 	}
 
+	it("saves a coding value for the company and gives it to the card's repository (20260930693000)", async () => {
+		const f = company();
+		f.controller.store.set({ sessions: [thread] });
+		const request = {
+			surface: "secret" as const,
+			title: "Token for private packages",
+			payload: {
+				name: "npm_token",
+				label: "NPM_TOKEN",
+				purpose: "Installs the private packages.",
+				connectorId: "environment",
+				repository: "acme/web",
+			},
+		};
+		vi.spyOn(f.api, "listSecretConnections").mockResolvedValue([]);
+		const begin = vi.spyOn(f.api, "beginSecretCapture").mockResolvedValue({} as never);
+		vi.spyOn(f.api, "captureSecret").mockResolvedValue({ secretId: id(70) } as never);
+		const answer = vi.spyOn(f.api, "answerInteraction").mockResolvedValue(answered);
+		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
+			if (name !== "qorpera_grant_coding_environment_secret") throw new Error(`Unexpected ${name}`);
+			return {
+				schema: "qorpera.coding-environment-grant/v1",
+				status: "active",
+				secretId: id(70),
+				grantId: id(71),
+				repository: "acme/web",
+				issuedByUserId: userA.id,
+				createdAt: "2026-11-09T10:00:00Z",
+			};
+		});
+		await f.controller.provideSecret(thread.sessionId, id(593), request, "npm_value_123456");
+		expect(begin.mock.calls[0]![0]).toMatchObject({
+			ownerKind: "company",
+			connectorId: "environment",
+			secretName: "npm_token",
+		});
+		expect(f.cloud.rpc).toHaveBeenCalledWith("qorpera_grant_coding_environment_secret", {
+			p_profile_id: profileA.profileId,
+			p_secret_id: id(70),
+			p_repository: "acme/web",
+		});
+		expect(answer).toHaveBeenCalledOnce();
+		expect(answer.mock.calls[0]![3]).toBe("provided");
+
+		// A card with no repository: the member's own value, which reaches their coding sessions everywhere; no grant.
+		vi.mocked(f.cloud.rpc).mockClear();
+		begin.mockClear();
+		const { repository: _, ...anywhere } = request.payload;
+		await f.controller.provideSecret(
+			thread.sessionId,
+			id(594),
+			{ ...request, payload: anywhere },
+			"npm_value_123456",
+		);
+		expect(begin.mock.calls[0]![0]).toMatchObject({ ownerKind: "member", ownerUserId: userA.id });
+		expect(f.cloud.rpc).not.toHaveBeenCalledWith("qorpera_grant_coding_environment_secret", expect.anything());
+	});
+
+	it("keeps a coding value's card open, saying so, when the value is saved but not given to the repository", async () => {
+		const f = company();
+		f.controller.store.set({ sessions: [thread] });
+		vi.spyOn(f.api, "listSecretConnections").mockResolvedValue([]);
+		vi.spyOn(f.api, "beginSecretCapture").mockResolvedValue({} as never);
+		vi.spyOn(f.api, "captureSecret").mockResolvedValue({ secretId: id(70) } as never);
+		const answer = vi.spyOn(f.api, "answerInteraction").mockResolvedValue(answered);
+		vi.mocked(f.cloud.rpc).mockRejectedValue(new Error("Network unavailable"));
+		await expect(
+			f.controller.provideSecret(
+				thread.sessionId,
+				id(593),
+				{
+					surface: "secret",
+					title: "Token",
+					payload: {
+						name: "npm_token",
+						label: "NPM_TOKEN",
+						purpose: "Packages.",
+						connectorId: "environment",
+						repository: "acme/web",
+					},
+				},
+				"npm_value_123456",
+			),
+		).rejects.toThrow();
+		expect(answer).not.toHaveBeenCalled();
+		expect(f.controller.conversation(thread.sessionId).get().interactionError).toContain(
+			"NPM_TOKEN is saved, but it could not be given to acme/web",
+		);
+	});
+
 	it("in an agent's thread, answers on the member's selected model account", async () => {
 		const f = company();
 		f.controller.store.set({ sessions: [thread] });

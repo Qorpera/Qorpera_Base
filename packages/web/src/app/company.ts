@@ -1,6 +1,7 @@
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
+import { createWebCodingEnvironment } from "../cloud/coding-environment.ts";
 import {
 	type CodingSession,
 	type CodingSessionLogins,
@@ -2383,7 +2384,12 @@ export class CompanyController {
 	 * card as provided. The value goes from this browser to the secret broker
 	 * and nowhere else; the card learns a reference. Owners and admins save it
 	 * for the company, other members for themselves. An existing secret with the
-	 * same connector and name is replaced (a new version), never duplicated. */
+	 * same connector and name is replaced (a new version), never duplicated.
+	 * A coding value (connector `environment`, 20260930693000) that names a
+	 * repository is given to that repository's coding sessions when an owner or
+	 * admin saves it for the company; without a repository it is the member's
+	 * own, which reaches their coding sessions in every repository (a company
+	 * value reaches none until it is given to one). */
 	async provideSecret(
 		sessionId: string,
 		interactionId: string,
@@ -2396,7 +2402,9 @@ export class CompanyController {
 		const connectorId = typeof request.payload.connectorId === "string" ? request.payload.connectorId : "vault";
 		const purpose = typeof request.payload.purpose === "string" ? request.payload.purpose : request.title;
 		const role = this.store.get().team?.role;
-		const company = role === "owner" || role === "admin";
+		const coding = connectorId === "environment";
+		const repository = typeof request.payload.repository === "string" ? request.payload.repository : undefined;
+		const company = (role === "owner" || role === "admin") && (!coding || repository !== undefined);
 		store.set({ interactionError: undefined });
 		try {
 			// Never store a value whose answer could not be sent.
@@ -2420,7 +2428,19 @@ export class CompanyController {
 				purpose: purpose.slice(0, 512),
 				...(existing ? { existingSecretId: existing.secretId } : {}),
 			});
-			await this.#api.captureSecret(ticket, value);
+			const saved = await this.#api.captureSecret(ticket, value);
+			if (coding && company && repository)
+				await createWebCodingEnvironment(this.#api.cloud, this.profile, this.#userId)
+					.grant(saved.secretId, repository)
+					.catch((error: unknown) => {
+						throw new Error(
+							t("{variable} is saved, but it could not be given to {repository}: {error} Try again.", {
+								variable: name.toUpperCase(),
+								repository,
+								error: describeError(error),
+							}),
+						);
+					});
 		} catch (error) {
 			store.set({ interactionError: describeError(error) });
 			throw error;

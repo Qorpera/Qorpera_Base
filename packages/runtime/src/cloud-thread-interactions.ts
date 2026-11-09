@@ -27,6 +27,12 @@ const NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 /** Names in the cloud secret custody start with a letter. */
 const VAULT_NAME_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const FIELD_ID_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
+/** A coding value's repository as GitHub compares it: owner/name in lower case (20260930693000). */
+const REPOSITORY_PATTERN = /^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9_][a-z0-9_.-]{0,99}$/;
+/** A coding value's name: its environment variable's name in lower case (20260928549440). The kernel also refuses the
+ * names a coding machine sets itself or that name a provider's login; the capture refuses them too. */
+const CODING_VALUE_NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+const CODING_VALUE_NAME_REFUSED = /^(lc|git|ld|dyld|qorpera|ssh|xdg|docker|anthropic|claude|codex|openai)_/;
 const HOST_PATTERN = /^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)+$/;
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
 // NUL too: PostgreSQL text cannot hold it, and the final send of a card's sentence refuses it.
@@ -95,7 +101,14 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 			label: chars(1, 80),
 			purpose: chars(1, 300),
 			kind: { type: "string", enum: ["token", "password", "text"] },
-			connectorId: matching(VAULT_NAME_PATTERN, "Default vault."),
+			connectorId: matching(
+				VAULT_NAME_PATTERN,
+				"Default vault. environment for a coding value: an environment variable your coding sessions get.",
+			),
+			repository: matching(
+				REPOSITORY_PATTERN,
+				"With connectorId environment only: the repository (owner/name, lower case) whose coding sessions get it.",
+			),
 		},
 		"surface secret: the member saves a value into the company vault; you never see it.",
 	),
@@ -220,6 +233,7 @@ export const CLOUD_ASK_MEMBER_INSTRUCTIONS =
 	"When the choice is visual (a look, a product, a layout), first make a picture of each option, an SVG sketch in the company file or an interface app, and set its preview: the card shows big pictures to pick from. " +
 	"Use email draft and platform approval cards directly; do not put an extra question confirmation before their review. A question answer never bypasses required authorization. " +
 	"Form entry and credential sign-in cards are unavailable and refused. Forms would target actual webpage fields, not general questions. For page entry or authentication, offer takeover only when a member-controllable computer is available; otherwise explain the limitation. After handback, inspect the page before claiming success: I am done is not login proof. Secret cards save reusable secrets to the vault; they do not fill pages or sign in. Never collect passwords, tokens or one-time codes in chat or question answers. " +
+	"When a coding session needs an environment variable only a person can give (a token for private packages, a build's API key), raise a secret card with connectorId environment, the variable's name in lower case as name (npm_token for NPM_TOKEN), the variable's name as label, what it is for in plain words as purpose, and repository owner/name: the member pastes it in the card, and your next coding session in that repository gets it. Ask once, before you need it; never ask for one in chat. " +
 	"For an email draft when Gmail tools are available, call gmail_get_profile for the real sender, then ask_member with surface draft, title New email, payload {platform: email, connectorId: gmail, from: email_address, to: [recipients], subject, body, cc?}. Put the complete email in the card, not just chat. The member can edit recipients, subject and body, save to Gmail, send or discard. Creating a card neither sends nor saves a Gmail draft; a draft request never authorizes sending. Report saved/sent only after a successful tool result or card outcome. A sent outcome already sent it: never send again. For replies, replyTo is the original Gmail message id; threadRef alone is insufficient. If explicitly asked to save in Gmail immediately, use gmail_create_draft and report draft_id; do not create a separate unlinked card. Never invent the sender or infer a connection from conversation alone. " +
 	"payload must match the closed schema for surface. For question use {options: [{label, value?, description?, style?, preview?}], multiSelect?, allowCustom?}; options are objects, not strings. Text limits count UTF-8 bytes. Correct refused arguments before retrying; unsupported surfaces require a supported alternative. Reuse identical idempotencyKey and arguments for a retry of the same action. " +
 	"In your own shared thread, only the member you answer can answer the card. The answer wakes you as qorpera.interaction-answer/v1: the next wake input, or the request with the card it answers. It carries an outcome and chosen values for questions. Secret answers contain only the vault secret id/version and connectorId (default vault), never its value. A declined, dismissed or expired card is an answer; do not immediately raise it again.";
@@ -309,17 +323,24 @@ function payloadValid(surface: CloudInteractionSurface, payload: Record<string, 
 				);
 			});
 		}
-		case "secret":
+		case "secret": {
+			const coding = payload.connectorId === "environment";
 			return (
-				closedKeys(payload, ["name", "label", "purpose", "kind", "connectorId"]) &&
+				closedKeys(payload, ["name", "label", "purpose", "kind", "connectorId", "repository"]) &&
 				typeof payload.name === "string" &&
 				VAULT_NAME_PATTERN.test(payload.name) &&
 				(!("connectorId" in payload) ||
 					(typeof payload.connectorId === "string" && VAULT_NAME_PATTERN.test(payload.connectorId))) &&
+				// A coding value (20260930693000): a name the capture takes, and the repository only beside it.
+				(!coding ||
+					(CODING_VALUE_NAME_PATTERN.test(payload.name) && !CODING_VALUE_NAME_REFUSED.test(payload.name))) &&
+				(!("repository" in payload) ||
+					(coding && typeof payload.repository === "string" && REPOSITORY_PATTERN.test(payload.repository))) &&
 				text(payload.label, 1, 80) &&
 				text(payload.purpose, 1, 300) &&
 				optionalEnum(payload, "kind", ["token", "password", "text"])
 			);
+		}
 		case "form": {
 			if (
 				!closedKeys(payload, ["domain", "reason", "submitAfterFill", "fields"]) ||
