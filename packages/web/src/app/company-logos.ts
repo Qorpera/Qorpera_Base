@@ -109,9 +109,10 @@ export class CompanyLogos implements CompanyLogoStore {
 	async refresh(profileId: string): Promise<CompanyLogo | undefined> {
 		const id = profileId.toLowerCase();
 		const generation = this.#generation;
+		const revision = this.#revision(id);
 		const [row] = await this.#api.listCompanyLogos([id]);
 		if (generation !== this.#generation) return undefined;
-		await this.#take(id, row, generation);
+		await this.#take(id, row, generation, revision);
 		return row;
 	}
 
@@ -192,27 +193,46 @@ export class CompanyLogos implements CompanyLogoStore {
 	async #sync(profileId: string, folder: () => WebMemberFolder, signal: AbortSignal): Promise<void> {
 		if (this.#available === false) return;
 		const generation = this.#generation;
+		// Taken before the read, so an answer the page asked for earlier cannot paint over what this sync finds.
+		const revision = this.#revision(profileId);
 		let row: CompanyLogo | undefined;
 		try {
 			[row] = await this.#api.listCompanyLogos([profileId]);
 		} catch (error) {
 			if (error instanceof CloudRpcError && error.missing) this.#available = false;
+			else if (this.#latest(profileId, generation, revision))
+				this.#entries.set(profileId, { kind: "failed", retryAt: this.#now() + RETRY_MS });
 			return;
 		}
-		if (generation !== this.#generation || !row?.publisher) return;
+		// Unless the sync publishes and reads the logo again, its answer is the one the page shows.
+		let published = false;
+		try {
+			published = await this.#publish(profileId, row, folder, signal, generation);
+		} finally {
+			if (!published) await this.#take(profileId, row, generation, revision);
+		}
+		if (published) await this.refresh(profileId);
+	}
+
+	/** Publishes the drawing of the folder's logo.svg when `row` says the shown one is behind; true once it did. */
+	async #publish(
+		profileId: string,
+		row: CompanyLogo | undefined,
+		folder: () => WebMemberFolder,
+		signal: AbortSignal,
+		generation: number,
+	): Promise<boolean> {
+		if (generation !== this.#generation || !row?.publisher) return false;
 		const shown = row.objectName ? companyLogoSource(row.objectName) : null;
-		if (row.sourceSha256 === shown) {
-			await this.#take(profileId, row, generation);
-			return;
-		}
+		if (row.sourceSha256 === shown) return false;
 		let objectName: string | null = null;
 		if (row.sourceSha256) {
 			const client = folder();
 			const read = await client.read(COMPANY_LOGO_PATH, signal);
 			const file = read.entry?.file;
 			// The folder moved on since the cloud answered: the next sync draws the newer logo.
-			if (!file || file.fileSha256 !== row.sourceSha256) return;
-			if (file.bytes > MAX_SVG_BYTES) return;
+			if (!file || file.fileSha256 !== row.sourceSha256) return false;
+			if (file.bytes > MAX_SVG_BYTES) return false;
 			const svg = new TextDecoder().decode(await client.readFile(file, signal, MAX_SVG_BYTES));
 			const png = await this.#rasterize(svg, COMPANY_LOGO_SIZE);
 			signal.throwIfAborted();
@@ -220,19 +240,24 @@ export class CompanyLogos implements CompanyLogoStore {
 			await this.#tidy(profileId, row.objectName, objectName);
 			await this.#api.uploadCompanyLogo(objectName, png);
 		}
-		if (generation !== this.#generation) return;
+		if (generation !== this.#generation) return false;
 		let change: CompanyLogoChange;
 		try {
 			change = await this.#api.publishCompanyLogo(profileId, objectName);
 		} catch (error) {
-			// Not published (the folder moved on, or the call failed): the upload would only take one of the four places.
-			// The cloud refuses to delete it if another member published the same drawing meanwhile.
-			if (objectName) await this.#api.deleteCompanyLogo(objectName).catch(() => undefined);
+			// Not published. Once the folder has moved on, nobody can publish this drawing, so it only takes one of the four
+			// places. While it still matches the folder's logo.svg, another member may be about to publish it (or the next
+			// sync will), so it stays; the cloud refuses to delete it anyway once it is the logo.
+			if (objectName) {
+				const [again] = await this.#api.listCompanyLogos([profileId]).catch(() => []);
+				if (again?.publisher && again.sourceSha256 !== row.sourceSha256)
+					await this.#api.deleteCompanyLogo(objectName).catch(() => undefined);
+			}
 			throw error;
 		}
 		if (change.previousObjectName)
 			await this.#api.deleteCompanyLogo(change.previousObjectName).catch(() => undefined);
-		await this.refresh(profileId);
+		return true;
 	}
 
 	/** Makes room for an upload: deletes PNGs that are neither the logo nor `keep` once they are stale, and the oldest
@@ -276,6 +301,7 @@ export class CompanyLogos implements CompanyLogoStore {
 			while (this.#queue.size > 0 && generation === this.#generation) {
 				const ids = [...this.#queue].slice(0, BATCH);
 				for (const id of ids) this.#queue.delete(id);
+				const revisions = new Map(ids.map((id) => [id, this.#revision(id)]));
 				let rows: CompanyLogo[];
 				try {
 					rows = await this.#api.listCompanyLogos(ids);
@@ -287,7 +313,9 @@ export class CompanyLogos implements CompanyLogoStore {
 						this.#queue.clear();
 						return;
 					}
-					for (const id of ids) this.#entries.set(id, { kind: "failed", retryAt: this.#now() + RETRY_MS });
+					for (const id of ids)
+						if (this.#latest(id, generation, revisions.get(id)!))
+							this.#entries.set(id, { kind: "failed", retryAt: this.#now() + RETRY_MS });
 					continue;
 				}
 				if (generation !== this.#generation) return;
@@ -298,6 +326,7 @@ export class CompanyLogos implements CompanyLogoStore {
 							id,
 							rows.find((row) => row.profileId === id),
 							generation,
+							revisions.get(id)!,
 						),
 					),
 				);
@@ -307,11 +336,22 @@ export class CompanyLogos implements CompanyLogoStore {
 		}
 	}
 
-	/** Takes a company's answer: downloads its PNG when it is new, and repaints. */
-	async #take(profileId: string, row: CompanyLogo | undefined, generation: number): Promise<void> {
+	/** A new revision for a company, taken before asking the cloud about it: only the newest ask's answer is shown. */
+	#revision(profileId: string): number {
 		const revision = (this.#revisions.get(profileId) ?? 0) + 1;
 		this.#revisions.set(profileId, revision);
-		const latest = () => generation === this.#generation && this.#revisions.get(profileId) === revision;
+		return revision;
+	}
+
+	#latest(profileId: string, generation: number, revision: number): boolean {
+		return generation === this.#generation && this.#revisions.get(profileId) === revision;
+	}
+
+	/** Takes a company's answer to the ask of `revision`: downloads its PNG when it is new, and repaints. An answer to
+	 * an older ask, which may hold an older logo or none, is dropped. */
+	async #take(profileId: string, row: CompanyLogo | undefined, generation: number, revision: number): Promise<void> {
+		const latest = () => this.#latest(profileId, generation, revision);
+		if (!latest()) return;
 		const before = this.#entries.get(profileId);
 		if (!row?.objectName) {
 			if (before?.kind === "logo") URL.revokeObjectURL(before.url);

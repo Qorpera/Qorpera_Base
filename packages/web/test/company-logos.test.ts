@@ -147,6 +147,28 @@ describe("company logos on the page", () => {
 		expect(api.listCompanyLogos).toHaveBeenCalledTimes(2);
 	});
 
+	it("drops an older read that answers after a newer one, also one that says there is no logo", async () => {
+		let answer!: (rows: CompanyLogo[]) => void;
+		const api = fakeApi(() => [row({ objectName: companyLogoName(COMPANY, NEW) })]);
+		api.listCompanyLogos.mockImplementationOnce(
+			() =>
+				new Promise<CompanyLogo[]>((resolve) => {
+					answer = resolve;
+				}),
+		);
+		const logos = new CompanyLogos(api as unknown as CloudApi);
+		setCompanyLogos(logos);
+		const figure = companyLogo(COMPANY);
+		await vi.waitFor(() => expect(answer).toBeDefined());
+		// A sync publishes and shows B while the page's first read is still out.
+		await logos.refresh(COMPANY);
+		expect(figure.querySelector("img.company-logo-picture")?.getAttribute("src")).toBe("blob:logo-1");
+		answer([]);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(figure.querySelector("img.company-logo-picture")?.getAttribute("src")).toBe("blob:logo-1");
+		expect(logos.logo(COMPANY)?.objectName).toBe(companyLogoName(COMPANY, NEW));
+	});
+
 	it("keeps the newest logo when an older download finishes last", async () => {
 		const downloads: ((blob: Blob) => void)[] = [];
 		let current = row();
@@ -199,13 +221,17 @@ describe("keeping the logo in step with the folder", () => {
 		const now = Date.parse("2026-11-09T12:00:00Z");
 		const stale = companyLogoName(COMPANY, "c".repeat(64));
 		const fresh = companyLogoName(COMPANY, "d".repeat(64));
-		const api = fakeApi(() => [row({ publisher: true, sourceSha256: NEW })]);
+		let current = row({ publisher: true, sourceSha256: NEW });
+		const api = fakeApi(() => [current]);
 		api.listCompanyLogoObjects.mockResolvedValue([
 			{ objectName: companyLogoName(COMPANY, OLD), createdAt: now - 3_600_000 },
 			{ objectName: stale, createdAt: now - 3_600_000 },
 			{ objectName: fresh, createdAt: now - 60_000 },
 		]);
-		api.publishCompanyLogo.mockRejectedValue(new Error("the folder moved on"));
+		api.publishCompanyLogo.mockImplementation(async () => {
+			current = row({ publisher: true, sourceSha256: "e".repeat(64) });
+			throw new Error("the folder moved on");
+		});
 		const logos = new CompanyLogos(api as unknown as CloudApi, {
 			rasterize: async () => new Blob(["drawn"]),
 			now: () => now,
@@ -216,6 +242,24 @@ describe("keeping the logo in step with the folder", () => {
 		).rejects.toThrow("the folder moved on");
 		// The logo everyone sees and another member's fresh upload stay; the stale drawing and the failed upload go.
 		expect(api.deleteCompanyLogo.mock.calls.map(([name]) => name)).toEqual([stale, companyLogoName(COMPANY, NEW)]);
+	});
+
+	it("keeps a drawing that failed to publish while it still matches the folder, for whoever publishes it", async () => {
+		const api = fakeApi(() => [row({ publisher: true, sourceSha256: NEW })]);
+		// Another member uploaded the same drawing and has not published it yet.
+		api.uploadCompanyLogo.mockResolvedValue(false);
+		api.publishCompanyLogo.mockRejectedValue(new Error("network"));
+		const logos = new CompanyLogos(api as unknown as CloudApi, { rasterize: async () => new Blob(["drawn"]) });
+		await expect(
+			logos.sync(
+				COMPANY,
+				() => fakeFolder({ fileSha256: NEW, version: "v1" }) as unknown as WebMemberFolder,
+				new AbortController().signal,
+			),
+		).rejects.toThrow("network");
+		expect(api.deleteCompanyLogo).not.toHaveBeenCalled();
+		// The page still shows the logo the cloud had.
+		expect(logos.logo(COMPANY)?.objectName).toBe(companyLogoName(COMPANY, OLD));
 	});
 
 	it("deletes the oldest other drawings while the folder is full, however fresh", async () => {
