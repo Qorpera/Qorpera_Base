@@ -2167,6 +2167,30 @@ describe("continuing a run that stopped at its login's usage limit", () => {
 		);
 	});
 
+	it("never sends on another login the account check chose after the pick", async () => {
+		// Another tab picks the used-up login again between the pick's read and the send's (review r1 of #1595).
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const choose = vi.fn(async (_session: string, connection: string) => connection);
+		const f = setup(false, withUsage([0, 40]), select, undefined, choose);
+		await settle();
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: recovery } });
+		await settle();
+		const reads = select.mock.calls.length;
+		select.mockResolvedValueOnce(id(91));
+		continueButton(f.view)!.click();
+		await settle();
+		expect(choose).toHaveBeenCalledExactlyOnceWith(session.sessionId, id(91), expect.any(AbortSignal));
+		// The pick's read said the chosen login; the send's own read said the used-up one: nothing is sent.
+		expect(select.mock.calls.length).toBe(reads + 2);
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.view.el.querySelector("textarea")!.value).toBe("");
+		expect(f.company.conversation(session.sessionId).get().draft ?? "").toBe("");
+		expect(f.view.el.querySelector(".run-failure-note")?.textContent).toBe(
+			"The login could not be chosen. Try again.",
+		);
+	});
+
 	it("keeps a message the member has started, and lets them send it on the chosen login", async () => {
 		const f = setup(false, withUsage([0, 40]));
 		await settle();
@@ -2215,6 +2239,22 @@ describe("continuing a run that stopped at its login's usage limit", () => {
 		await settle();
 		expect(reason(f.view)).toBe(
 			`${STOPPED} It can run again once the limit resets. Only Anna can continue it now with another of their logins.`,
+		);
+		expect(buttons(f.view)).toEqual(["Dismiss"]);
+		// Her ChatGPT plan paid: no other login continues a plan's work, so no one is named for it.
+		f.company.store.set({
+			recoveries: {
+				[run.runId]: {
+					...recovery,
+					sponsorBindingId: id(199),
+					requestedByUserId: userB.id,
+					paidByChatgptPlan: true,
+				},
+			},
+		});
+		await settle();
+		expect(reason(f.view)).toBe(
+			`${STOPPED} It does not move to another account. It can run again once the limit resets.`,
 		);
 		expect(buttons(f.view)).toEqual(["Dismiss"]);
 		// A ChatGPT plan's limit is told in OpenAI's words, with no other login offered.

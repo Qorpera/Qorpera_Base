@@ -239,6 +239,12 @@ export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
 /** What an agent's card can open in the agent's chat. */
 export type AgentPage = "computer" | "wall";
 
+/** The login a stopped run's "Continue with …" picked: its message is sent on that login only. */
+interface ContinueLogin {
+	runId: string;
+	connectionId: string;
+}
+
 /* One conversation over the canonical transcript. Rendering follows
  * DECISIONS.md "Transcript projection rules": member inputs and agent sends
  * only. Composer drafts remain local until a message adapter is supplied. */
@@ -289,7 +295,9 @@ export class ConversationView {
 	#answerShown: string | undefined;
 	/** Enter pressed a moment before Send opens (the draft or the account check on its way): sent when it does, if the
 	 * message is still the same: its text, the question it answers and its files. */
-	#sendSoon: { text: string; answering?: string; files: readonly File[]; until: number } | undefined;
+	#sendSoon:
+		| { text: string; answering?: string; files: readonly File[]; until: number; login?: ContinueLogin }
+		| undefined;
 	/** The wall's item that question is, once Answer was pressed in this view. */
 	#answeringItem: string | undefined;
 	/** Other members' unsent messages above the composer, and who writes in this member's own. */
@@ -1805,7 +1813,8 @@ export class ConversationView {
 		return parts;
 	}
 
-	#submit(): void {
+	/** Sends the composer's message. `login`: a stopped run's "Continue with …" sends it only on that login. */
+	#submit(login?: ContinueLogin): void {
 		const text = this.#composer.value;
 		this.#sendSoon = undefined;
 		if (text.trim() && this.#send.disabled && !this.#submitting && this.#actions.sendMessage) {
@@ -1815,6 +1824,7 @@ export class ConversationView {
 				...(answering ? { answering } : {}),
 				files: [...(attachments ?? [])],
 				until: Date.now() + 2000,
+				...(login ? { login } : {}),
 			};
 			return;
 		}
@@ -1851,6 +1861,16 @@ export class ConversationView {
 					files.some((file, index) => file !== currentFiles[index])
 				)
 					return;
+				// The account check chose another login meanwhile (another tab's pick, or the cloud's): "Continue with …"
+				// never sends on a login the member did not pick there. Its words leave the composer, and the card says so.
+				if (login && current.executionSponsor?.connectionId !== login.connectionId) {
+					this.#continueNote = { runId: login.runId, text: t("The login could not be chosen. Try again.") };
+					this.#edits.declare(0, this.#composer.value.length);
+					this.#composer.value = "";
+					this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
+					return;
+				}
+				// Read at once by the send, before anything else may run: the message goes on this login.
 				const sent = await this.#actions.sendMessage!(this.#sessionId, text, this.#lifetime.signal);
 				if (sent && !this.#disposed) {
 					if (answered) this.#wall.answerSent(answered);
@@ -1971,7 +1991,7 @@ export class ConversationView {
 				soon.files.every((file, index) => file === files[index]) &&
 				Date.now() <= soon.until
 			)
-				queueMicrotask(() => this.#submit());
+				queueMicrotask(() => this.#submit(soon.login));
 		}
 		this.#attach.disabled = this.#composer.disabled || noImages;
 		this.#attachNote.hidden = !noImages;
@@ -3560,8 +3580,13 @@ export class ConversationView {
 				: [];
 		// Anyone else reads who can: the member the run was started for, whose login pays for it.
 		const payerId = recovery?.requestedByUserId?.toLowerCase();
+		// Never for a ChatGPT plan: no other login continues its work (its member reads OpenAI's words).
 		const payerName =
-			usageLimit && payer?.own !== true && payerId && payerId !== this.#company.userId.toLowerCase()
+			usageLimit &&
+			payer?.own !== true &&
+			recovery?.paidByChatgptPlan !== true &&
+			payerId &&
+			payerId !== this.#company.userId.toLowerCase()
 				? company.team?.members.find((member) => member.userId.toLowerCase() === payerId)?.displayName
 				: undefined;
 		const reason = proposalId
@@ -3744,6 +3769,6 @@ export class ConversationView {
 		);
 		this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
 		this.update();
-		this.#submit();
+		this.#submit({ runId, connectionId });
 	}
 }
