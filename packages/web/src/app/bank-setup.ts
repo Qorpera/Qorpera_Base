@@ -1,3 +1,5 @@
+import { parseRecord } from "@qorpera/contracts";
+
 /* How far the company is with its bank (`finance/bank-setup.json` in the company folder, app/bank-page.ts): what the
  * Bank page shows while no bank is connected. The company's finance agent keeps it, by hand, as it registers the
  * company (CVR) and opens the business account; the founder only signs with MitID when it is their turn. The file is
@@ -28,10 +30,13 @@ export interface BankSetup {
 
 const TEXT_MAX = 200;
 
+/** A part of the file as an object, or an empty one: an agent's mistake reads as nothing said. */
 function record(value: unknown): Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: {};
+	try {
+		return parseRecord(value, "bank setup");
+	} catch {
+		return {};
+	}
 }
 
 function status(value: unknown): BankSetupStatus {
