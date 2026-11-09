@@ -137,8 +137,14 @@ describe("last online", () => {
 		expect(lastOnline("2026-11-09T11:57:00Z", now)).toEqual({ online: true, text: "Online now" });
 		expect(lastOnline("2026-11-09T11:40:00Z", now)).toEqual({ online: false, text: "Last online 20 minutes ago" });
 		expect(lastOnline("2026-11-09T09:00:00Z", now)?.text).toBe("Last online 3 hours ago");
-		expect(lastOnline("2026-11-08T09:00:00Z", now)?.text).toBe("Last online yesterday");
-		expect(lastOnline("2026-10-01T09:00:00Z", now)?.text).toMatch(/^Last online Oct 1, 2026$/);
+		// Hours up to a day ("yesterday" never: it can be a few hours ago), then days, then weeks, then 2+ weeks.
+		expect(lastOnline("2026-11-08T13:00:00Z", now)?.text).toBe("Last online 23 hours ago");
+		expect(lastOnline("2026-11-08T09:00:00Z", now)?.text).toBe("Last online 1 day ago");
+		expect(lastOnline("2026-11-04T09:00:00Z", now)?.text).toBe("Last online 5 days ago");
+		expect(lastOnline("2026-10-30T09:00:00Z", now)?.text).toBe("Last online 1 week ago");
+		expect(lastOnline("2026-10-26T13:00:00Z", now)?.text).toBe("Last online 1 week ago");
+		expect(lastOnline("2026-10-26T11:00:00Z", now)?.text).toBe("Last online 2+ weeks ago");
+		expect(lastOnline("2026-10-01T09:00:00Z", now)?.text).toBe("Last online 2+ weeks ago");
 		expect(lastOnline(undefined, now)).toBeNull();
 		expect(lastOnline("not a time", now)).toBeNull();
 	});
@@ -229,6 +235,7 @@ describe("leaderboard page", () => {
 		expect(view.el.querySelectorAll(".leaderboard-row .person-avatar")).toHaveLength(3);
 		expect(view.el.querySelector(".leaderboard-row .company-logo")).toBeNull();
 		expect(view.el.querySelector(".leaderboard-champion-figure .person-avatar")?.textContent).toBe("A");
+		expect(view.el.querySelector(".leaderboard-champion-figure")?.classList.contains("is-person")).toBe(true);
 	});
 
 	it("shows the other boards: busiest companies and top earners", async () => {
@@ -243,7 +250,9 @@ describe("leaderboard page", () => {
 		// A company shows its logo: its figure, until companies have logos of their own.
 		expect(view.el.querySelectorAll(".leaderboard-row .company-logo")).toHaveLength(2);
 		expect(view.el.querySelector(".leaderboard-champion-figure .company-logo")).not.toBeNull();
-		expect(view.el.querySelector(".is-me .leaderboard-who small")?.textContent).toBe("You · You're in the lead.");
+		expect(view.el.querySelector(".is-me .leaderboard-who small")?.textContent).toBe("You");
+		// A company champion's figure cheers; only a person's own picture stays still.
+		expect(view.el.querySelector(".leaderboard-champion-figure")?.classList.contains("is-person")).toBe(false);
 		pick(view.el, "earning-friends");
 		// Revenue in kroner, no arrows; nobody with nothing yet gets a place.
 		expect(rows(view.el)).toEqual([
