@@ -417,6 +417,9 @@ describe("filled values on one screen", () => {
 			`sk_live_${"Ab1".repeat(10)}`,
 			`rk_test_${"Ab1".repeat(10)}`,
 			"re_c1tpEyD8_NKFusih9vKVQknRAQfmFcWCv",
+			// Resend's shape (20260930698200) in lower case alone, and in upper case.
+			`re_abcd1234_${"k".repeat(24)}`,
+			`re_ABCD1234_${"K".repeat(24)}`,
 		];
 		for (const key of keys) {
 			expect(filled.hide(`Your new key ${key} Copy`), key).toBe("Your new key [hidden] Copy");
@@ -429,7 +432,9 @@ describe("filled values on one screen", () => {
 			"Access tokens npm_AbCd… sk_live_…4xYz re_c1tp••••",
 			"Restricted key rk_live_51H…",
 			"const store_resource_name_for_the_page = 1",
-			"re_render_the_page_again_after_update()",
+			"re_render_component_tree()",
+			"re_email_validation_pattern",
+			`re_${"k".repeat(20)}`,
 			`pk_live_${"Ab1".repeat(10)}`,
 		])
 			expect(filled.shows(text), text).toBe(false);

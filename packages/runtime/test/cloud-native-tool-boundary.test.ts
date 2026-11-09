@@ -440,7 +440,12 @@ describe("cloud-owned native tool boundary", () => {
 		["GitHub fine-grained", `github_pat_${"T7fake_NotASecret".repeat(5)} x`, "github_pat_[REDACTED] x"],
 		["Stripe", `sk_live_${fake.repeat(2)} rk_test_${fake.repeat(2)}`, "sk_[REDACTED] rk_[REDACTED]"],
 		["Resend", "Bearer re_T7fakeNo_tASecretT7fakeNot", "Bearer re_[REDACTED]"],
+		["Resend in lower case alone", `Bearer re_abcd1234_${"k".repeat(24)}`, "Bearer re_[REDACTED]"],
+		["Resend after an encoded space", "Bearer%20re_T7fakeNo_tASecretT7fakeNot", "Bearer%20re_[REDACTED]"],
+		["Resend after a plus", `q=x+re_abcd1234_${"k".repeat(24)}&`, "q=x+re_[REDACTED]&"],
 		["Resend after a JSON escape", '"a\\nre_T7fakeNo_tASecretT7fakeNot"', '"a\\nre_[REDACTED]"'],
+		["Resend, JSON-escaped", `"re\\u005fabcd1234\\u005F${"k".repeat(24)}"`, '"re_[REDACTED]"'],
+		["Resend, URL-encoded", `k=re%5Fabcd1234%5F${"k".repeat(24)}`, "k=re_[REDACTED]"],
 	])("cuts a coding value key written %s out of an answer", async (_name, text, cut) => {
 		expect(redactCloudWebhookSecrets(text)).toBe(cut);
 		const { call } = fixture({ execute: async () => ({ kind: "text", value: `Config: ${text}` }) });
@@ -453,7 +458,9 @@ describe("cloud-owned native tool boundary", () => {
 			`npm_${"T7fake".repeat(5)}`,
 			`pk_live_${fake.repeat(2)}`,
 			`store_re_${fake}T7fake`,
-			"re_render_the_page_again_after_update",
+			"re_render_component_tree",
+			"re_email_validation_pattern",
+			`re_${"k".repeat(20)}`,
 			"ghp_short",
 		].join(" ");
 		expect(redactCloudWebhookSecrets(text)).toBe(text);

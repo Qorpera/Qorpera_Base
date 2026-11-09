@@ -23,7 +23,7 @@ const SEEDED = {
 	npm: "^npm_[A-Za-z0-9]{36}$",
 	github: "^(github_pat_[A-Za-z0-9_]{82}|ghp_[A-Za-z0-9]{36})$",
 	stripe: "^(sk|rk)_(test|live)_[A-Za-z0-9]{24,247}$",
-	resend: "^re_[A-Za-z0-9_]{20,64}$",
+	resend: "^re_[A-Za-z0-9]{6,16}_[A-Za-z0-9]{16,64}$",
 };
 const identity: CodingValueCaptureIdentity = {
 	companyId: "79900000-0000-4000-8000-000000000010",
@@ -160,6 +160,7 @@ describe("a service's pattern", () => {
 		expect(codingValueMatches(`sk_live_${"Ab1".repeat(10)}`, stripe)).toBe(true);
 		expect(codingValueMatches(`rk_test_${"Ab1".repeat(8)}`, stripe)).toBe(true);
 		expect(codingValueMatches("re_c1tpEyD8_NKFusih9vKVQknRAQfmFcWCv", resend)).toBe(true);
+		expect(codingValueMatches(`re_abcd1234_${"k".repeat(24)}`, resend)).toBe(true);
 		for (const [value, pattern] of [
 			[`x${token}`, npm],
 			[`${token}0`, npm],
@@ -168,6 +169,8 @@ describe("a service's pattern", () => {
 			[`sk_live_${"Ab1".repeat(7)}`, stripe],
 			[`sk_live_${"Ab1".repeat(10)}-`, stripe],
 			["re_short", resend],
+			[`re_${"k".repeat(20)}`, resend],
+			["re_render_component_tree", resend],
 		] as const)
 			expect(codingValueMatches(value, pattern), value).toBe(false);
 	});

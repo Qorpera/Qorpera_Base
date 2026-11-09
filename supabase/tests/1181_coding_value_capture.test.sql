@@ -864,7 +864,7 @@ begin
 			from public.qorpera_coding_value_services) = jsonb_build_array(
 			jsonb_build_array('github', 'github.com', '^(github_pat_[A-Za-z0-9_]{82}|ghp_[A-Za-z0-9]{36})$'),
 			jsonb_build_array('npm', 'www.npmjs.com', '^npm_[A-Za-z0-9]{36}$'),
-			jsonb_build_array('resend', 'resend.com', '^re_[A-Za-z0-9_]{20,64}$'),
+			jsonb_build_array('resend', 'resend.com', '^re_[A-Za-z0-9]{6,16}_[A-Za-z0-9]{16,64}$'),
 			jsonb_build_array('stripe', 'dashboard.stripe.com', '^(sk|rk)_(test|live)_[A-Za-z0-9]{24,247}$')),
 		'6: the seeded services');
 	-- The patterns, as the guest and the broker match them.
@@ -876,7 +876,15 @@ begin
 			and ('rk_live_' || repeat('Z', 24)) ~ (select value_pattern from public.qorpera_coding_value_services where service = 'stripe')
 			and not ('pk_live_' || repeat('Z', 24)) ~ (select value_pattern from public.qorpera_coding_value_services
 				where service = 'stripe')
-			and ('re_' || repeat('k', 20)) ~ (select value_pattern from public.qorpera_coding_value_services where service = 'resend')
+			-- Resend's shape (20260930698200): `re_`, 6 to 16 letters or digits, `_` and 16 to 64 more, whatever their case.
+			and 're_c1tpEyD8_NKFusih9vKVQknRAQfmFcWCv' ~ (select value_pattern from public.qorpera_coding_value_services
+				where service = 'resend')
+			and ('re_abcd1234_' || repeat('k', 24)) ~ (select value_pattern from public.qorpera_coding_value_services
+				where service = 'resend')
+			and not ('re_' || repeat('k', 20)) ~ (select value_pattern from public.qorpera_coding_value_services
+				where service = 'resend')
+			and not 're_render_component_tree' ~ (select value_pattern from public.qorpera_coding_value_services
+				where service = 'resend')
 			and not ('npm_' || repeat('a', 35)) ~ (select value_pattern from public.qorpera_coding_value_services where service = 'npm'),
 		'6: the patterns');
 	-- The browser action: a coding value or a hook's secret, never both; STABLE, as it reads the services.

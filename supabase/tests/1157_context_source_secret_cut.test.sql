@@ -39,8 +39,8 @@ begin
 		'a bare or short whsec_ stays');
 
 	-- 20260930698100: the keys an agent takes as coding values, as the runtime cuts them: plain, with the prefix's `_`
-	-- URL-encoded or JSON-escaped (twice, inside a JSON string), Resend's where a word or a JSON escape starts it; never
-	-- a short one, a publishable key, `re_` inside a word or a snake_case name.
+	-- URL-encoded or JSON-escaped (twice, inside a JSON string), Resend's in its own shape wherever it starts; never
+	-- a short one, a publishable key, or a `re_` that is not Resend's shape (a snake_case name).
 	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('k npm_' || repeat('T7fakeNotASecret', 3) || ';')
 		= 'k npm_[REDACTED];', 'npm');
 	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('k=npm%5F' || repeat('T7fakeNotASecret', 3) || '&')
@@ -57,11 +57,20 @@ begin
 		= 'Bearer re_[REDACTED]', 'Resend');
 	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('"a\nre_T7fakeNo_tASecretT7fakeNot"')
 		= '"a\nre_[REDACTED]"', 'Resend after a JSON escape');
+	-- Resend's shape (20260930698200), in lower case alone too, wherever it starts, its `_`s encoded or escaped.
+	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('Bearer re_abcd1234_' || repeat('k', 24))
+		= 'Bearer re_[REDACTED]', 'Resend in lower case alone');
+	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('Bearer%20re_T7fakeNo_tASecretT7fakeNot')
+		= 'Bearer%20re_[REDACTED]', 'Resend after an encoded space');
+	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('"re\\u005fabcd1234\\u005F' || repeat('k', 24) || '"')
+		= '"re_[REDACTED]"', 'Resend, JSON-escaped');
+	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('k=re%5Fabcd1234%5F' || repeat('k', 24))
+		= 'k=re_[REDACTED]', 'Resend, URL-encoded');
 	perform pg_temp.base_assert(public.qorpera_redact_webhook_secrets('npm_' || repeat('T7fake', 5)
 			|| ' pk_live_' || repeat('T7fakeNotASecret', 2) || ' store_re_T7fakeNotASecretT7fake'
-			|| ' re_render_the_page_again_after_update')
+			|| ' re_render_component_tree re_email_validation_pattern re_' || repeat('k', 20))
 		= 'npm_' || repeat('T7fake', 5) || ' pk_live_' || repeat('T7fakeNotASecret', 2) || ' store_re_T7fakeNotASecretT7fake'
-			|| ' re_render_the_page_again_after_update', 'what is not a key stays');
+			|| ' re_render_component_tree re_email_validation_pattern re_' || repeat('k', 20), 'what is not a key stays');
 	perform pg_temp.base_assert(strpos(pg_get_functiondef('public.qorpera_redact_webhook_secrets(text)'::regprocedure),
 		'20260930698100') > 0, 'the rule names its migration');
 

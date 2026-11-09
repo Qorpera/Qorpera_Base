@@ -7,9 +7,9 @@
 -- * `whsec_` and base64, as before;
 -- * npm's `npm_` and GitHub's `ghp_` with 36 letters or digits at least, GitHub's `github_pat_` with 82 letters, digits
 --   or `_` at least, Stripe's `sk_`/`rk_` with `test_` or `live_` and 24 letters or digits at least, and Resend's `re_`
---   with 20 letters, digits or `_` at least where it starts a word (or follows a JSON escape such as `\n`) and has a
---   capital letter in its first 80 characters, so a snake_case name is never cut.
--- Each `_` may be URL-encoded (`%5F`) or JSON-escaped once or twice (`_`), as a whsec_ prefix may; each cut keeps
+--   with 6 to 16 letters or digits, `_` and 16 more at least (its accepted shape, 20260930698200), in either case and
+--   wherever it starts, so a snake_case name such as `re_render_component_tree` is never cut.
+-- Each `_` may be URL-encoded (`%5F`) or JSON-escaped once or twice (`\u005F`), as a whsec_ prefix may; each cut keeps
 -- its prefix and is never longer than what it replaces, and never ends inside an escape, so a cut JSON text stays valid.
 -- The function keeps its name and its callers; no bundle has to go first: any runtime reads it.
 set local lock_timeout = '3s';
@@ -43,8 +43,8 @@ begin
 			'\1_[REDACTED]', 'g');
 	end if;
 	if strpos(v_text, 're') > 0 then
-		v_text := regexp_replace(v_text, '(?:(?<![A-Za-z0-9_])|(?<=\\[nrt]))re' || v_sep || '(?=[A-Za-z0-9_%\\]{0,80}[A-Z])'
-			|| v_word || '{20,}', 're_[REDACTED]', 'g');
+		v_text := regexp_replace(v_text, 're' || v_sep || '[A-Za-z0-9]{6,16}' || v_sep || '[A-Za-z0-9]{16,}', 're_[REDACTED]',
+			'g');
 	end if;
 	return v_text;
 end

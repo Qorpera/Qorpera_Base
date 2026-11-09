@@ -79,8 +79,8 @@ export const COMPANY_COMPUTER_PRIVATE_VALUE = "[hidden]";
  * hidden whole, never down to its first escape (E3b's HMAC secrets have this shape too); and the keys an agent takes
  * into the vault as coding values (20260930695000), as their services write them, at least as long as the shortest
  * whole key: npm's `npm_`, GitHub's `github_pat_` and `ghp_`, Stripe's `sk_`/`rk_` with `test_` or `live_`, and
- * Resend's `re_` where it starts a word and has a capital letter in its first 80 characters (inside a word, or all
- * lower case as a snake_case name is, `re_` is ordinary code; the tool boundary's cut has the same rule). Each is private on every page, whoever
+ * Resend's `re_` with 6 to 16 letters or digits, `_` and 16 more at least (its accepted shape, 20260930698200, in
+ * either case and wherever it starts; a snake_case name such as `re_render_component_tree` is not one). Each is private on every page, whoever
  * revealed it (an agent that clicks Reveal or Create itself never reads the value): snapshots, titles and addresses hide
  * it, and no screenshot is taken while a page shows it. A key an address encodes is found in the address decoded.
  * Global: make a copy before `test`ing with it.
@@ -92,7 +92,7 @@ export const COMPANY_COMPUTER_SECRET_SHAPE = new RegExp(
 		"github_pat_[A-Za-z0-9_]{82,}",
 		"ghp_[A-Za-z0-9]{36,}",
 		"(?:sk|rk)_(?:test|live)_[A-Za-z0-9]{24,}",
-		"(?<![A-Za-z0-9_])re_(?=[A-Za-z0-9_]{0,80}[A-Z])[A-Za-z0-9_]{20,}",
+		"re_[A-Za-z0-9]{6,16}_[A-Za-z0-9]{16,}",
 	].join("|"),
 	"g",
 );
