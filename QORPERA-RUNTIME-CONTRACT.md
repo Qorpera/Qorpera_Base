@@ -6331,6 +6331,28 @@ each step. It now leaves the envelope.
      Company File read shows up to about 7 KiB of plain text in one result, instead of about 5.7 KiB.
    - That means fewer model rounds for the same reading.
 
+### 2026-11-10 amendment: members message each other
+
+> **Asked for by Jonas, 10 November 2026** ("for multiplayer companies, I should also have a contact for the members I
+> work with that's a direct way to message and communicate with my friends im building with"). Migration
+> `20260930715000_member_messages`; database and web only, no runtime bundle. It adds to section 14 and changes
+> nothing there.
+
+Members of a company can write to each other: one chat per pair of members per company (the client contract's "Member
+chats"), shown in the rail as a contact for each other member.
+
+1. **What a member chat is.** Plain messages between two people. It is not a conversation of section 14: it has no
+   agent, no room, no session and no transcript events, and it is in no agent's context.
+2. **What it never does.** It wakes no agent, takes no model account and no computer hours, and writes nothing to
+   the company folder. A company's pause does not stop it. Every member may write, viewers too.
+3. **Whose it is.** The company's: a chat is deleted with its company and kept when an account is deleted, as a
+   conversation's messages are. The same two people have another chat in another company.
+4. **Who reads it.** Its two members, through the member functions only. This does not bring back member-private
+   conversations (the 2026-09-17 amendment): an agent's conversations stay shared with every member, and a member chat
+   holds no agent.
+5. **Not decided.** Whether agents read member chats (memory is company first, section 15). Until that is decided, no
+   run reads them and no memory holds them.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema

@@ -36,6 +36,8 @@ import { appHash, conceptsHash, type Route } from "../router.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
 import type { CardFootActions } from "./card-foot.ts";
+import { personFace } from "./friends.ts";
+import { memberPresence } from "./member-chat.ts";
 import type { SettingsTab } from "./settings.ts";
 
 /* The company shell: a rail with conversations and the account menu, and the
@@ -358,6 +360,8 @@ interface RailParts {
 	readonly foot: HTMLElement;
 	/** The list's own slots, kept so that nothing unchanged ever leaves the page. */
 	readonly cofounderGroup: HTMLElement;
+	/** The company's other members, each a contact: this member's chat with them. */
+	readonly membersGroup: HTMLElement;
 	readonly pinnedGroup: HTMLElement;
 	/** The company's sections by id, and Unassigned, each built once and kept. */
 	sections: Map<string, SectionParts>;
@@ -598,6 +602,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			connection,
 			foot: h("div", { class: "rail-footer" }, connection),
 			cofounderGroup: h("div", { class: "rail-cofounder", role: "group", "aria-label": "Co-Founder" }),
+			membersGroup: h("div", { class: "rail-members", role: "group" }),
 			pinnedGroup: h(
 				"div",
 				{ class: "rail-pinned", role: "group", "data-zone": "pinned" },
@@ -799,6 +804,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		parts.appsDrawer.setAttribute("aria-label", t("Apps"));
 		parts.interfaceRows = new Map();
 		parts.pinnedGroup.setAttribute("aria-label", t("Pinned"));
+		parts.membersGroup.setAttribute("aria-label", t("Members"));
 		const slot = parts.pinnedGroup.querySelector<HTMLElement>(".rail-drop-slot");
 		if (slot) slot.textContent = t("Drop here to pin");
 		parts.unassigned.title.textContent = t("Unassigned");
@@ -945,6 +951,70 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 			mentionBadge(model.mentioned),
 		),
 		h("span", { class: "rail-row-copy" }, h("strong", null, model.displayName), line ? h("small", null, line) : null),
+	);
+}
+
+/** Another member of the company, as a contact: their face where an agent has a figure, green-dotted while they are
+ * online, with how many of their messages wait. Under the name stands their newest unread message, else whether they
+ * are online or when they last were. Up to MEMBER_ROWS other members are rows; a bigger team is square cards, the face
+ * over the first name, so the agents stay in sight. */
+const MEMBER_ROWS = 3;
+interface MemberModel {
+	userId: string;
+	name: string;
+	online: boolean;
+	line: string;
+	unread: number;
+	/** Something waits: the count pops when it arrives, as a mention's badge does. */
+	mentioned: boolean;
+}
+function memberRow(model: MemberModel, href: string): HTMLElement {
+	return h(
+		"a",
+		{
+			class: "rail-row rail-row-member",
+			href,
+			draggable: "false",
+			"data-member-id": model.userId,
+			"aria-label": memberLabel(model),
+		},
+		h(
+			"span",
+			{ class: "rail-row-stand" },
+			personFace(model.name, model.userId, model.online),
+			countBadge(model.unread),
+		),
+		h(
+			"span",
+			{ class: "rail-row-copy" },
+			h("strong", null, model.name),
+			model.line ? h("small", null, model.line) : null,
+		),
+	);
+}
+
+function memberLabel(model: MemberModel): string {
+	return [model.name, model.line, model.unread ? t("Unread: {count}", { count: model.unread }) : ""]
+		.filter(Boolean)
+		.join(" · ");
+}
+function memberCard(model: MemberModel, href: string): HTMLElement {
+	return h(
+		"a",
+		{
+			class: "rail-pin rail-pin-member",
+			href,
+			draggable: "false",
+			"data-member-id": model.userId,
+			"aria-label": memberLabel(model),
+		},
+		h(
+			"span",
+			{ class: "rail-pin-stand" },
+			personFace(model.name, model.userId, model.online),
+			countBadge(model.unread),
+		),
+		h("strong", { class: "rail-pin-name" }, model.name.trim().split(/\s+/)[0] ?? model.name),
 	);
 }
 
@@ -1117,6 +1187,35 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 					cofounderCard,
 				)
 			: null;
+	// The company's other members, each a contact that opens this member's chat with them (Jonas, 10 Nov 2026), in the
+	// order they joined. None alone in the company, on a cloud without member chats, or before the first read.
+	const activeMemberId = route.name === "company" && route.section === "member" ? route.id?.toLowerCase() : undefined;
+	const memberChats = state.memberChatsUnavailable ? undefined : state.memberChats;
+	const others = (state.team?.members ?? []).filter(
+		(member) => member.userId !== company.userId && memberChats?.[member.userId],
+	);
+	const memberCards = others.length > MEMBER_ROWS;
+	parts.membersGroup.classList.toggle("is-cards", memberCards);
+	const memberElements = others.flatMap((member) => {
+		const chat = memberChats?.[member.userId];
+		if (!chat || !matches(member.displayName)) return [];
+		const presence = memberPresence(state, member.userId);
+		const href = `#/c/${profileId}/member/${member.userId}`;
+		const waiting = chat.unread > 0 && chat.last?.authorUserId === member.userId ? chat.last.text : undefined;
+		const model: MemberModel = {
+			userId: member.userId,
+			name: member.displayName,
+			online: presence?.online === true,
+			line: waiting ?? presence?.text ?? "",
+			unread: chat.unread,
+			mentioned: chat.unread > 0,
+		};
+		return [
+			memberCards
+				? row(`card:${href}`, href, model, activeMemberId === member.userId, memberCard)
+				: row(href, href, model, activeMemberId === member.userId, memberRow),
+		];
+	});
 	// The sidebar: this member's pins and hidden agents and group chats, the company's
 	// sections. A cloud without it shows every agent in one list, as before; one that
 	// places agents only lists the group chats after them.
@@ -1301,6 +1400,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		return entry.element;
 	};
 	const anyRows =
+		memberElements.length +
 		pinnedElements.length +
 		unassignedRows.length +
 		hiddenCount +
@@ -1356,7 +1456,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	reconcile(parts.unassigned.list, unassignedRows);
 	// Collapsed, where section titles hide, a short line parts each group of agents from the
 	// group above it: never under the Co-Founder, never around a section with no one in it.
-	let above = pinnedElements.length > 0;
+	let above = pinnedElements.length > 0 || memberElements.length > 0;
 	for (const [element, count] of [
 		...sectionGroups.map(({ group, rows: sectionRows }) => [group.el, sectionRows.length] as const),
 		[parts.unassigned.el, unassignedRows.length] as const,
@@ -1365,6 +1465,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		above ||= count > 0;
 	}
 	reconcile(parts.cofounderGroup, cofounderElement ? [cofounderElement] : []);
+	reconcile(parts.membersGroup, memberElements);
 	reconcile(
 		parts.list,
 		[
@@ -1381,6 +1482,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				button(t("Dismiss"), () => company.reportRailError(undefined), { small: true }),
 			),
 			cofounderElement ? parts.cofounderGroup : null,
+			memberElements.length ? parts.membersGroup : null,
 			// The pinned row stays in place while empty, hidden, so a drag can still reach it.
 			sidebar && !railQuery ? parts.pinnedGroup : pinnedElements.length ? parts.pinnedGroup : null,
 			parts.loading ?? null,
@@ -1399,6 +1501,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	parts.known.add(`#/c/${profileId}`);
 	for (const agent of state.staff) parts.known.add(`#/c/${profileId}/staff/${agent.id}`);
 	for (const listed of state.sessions) parts.known.add(`#/c/${profileId}/chat/${listed.sessionId}`);
+	for (const member of state.team?.members ?? []) parts.known.add(`#/c/${profileId}/member/${member.userId}`);
 	if (!state.loading) parts.settled = true;
 	parts.mentionsRead = parts.settled && state.mentions !== undefined;
 	parts.notices = notices;

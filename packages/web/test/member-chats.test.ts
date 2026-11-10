@@ -1,0 +1,1047 @@
+// @vitest-environment jsdom
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mountApplication } from "../src/app/application.ts";
+import { AuthController } from "../src/app/auth.ts";
+import { CompanyController } from "../src/app/company.ts";
+import { MemberChats, type MemberChatsHost, withNewestPage } from "../src/app/member-chats.ts";
+import { parseRoute, type Route, routeHash } from "../src/app/router.ts";
+import { MemberChatView, memberPresence } from "../src/app/views/member-chat.ts";
+import { renderRail } from "../src/app/views/shell.ts";
+import { CloudRpcError } from "../src/cloud/client.ts";
+import {
+	MEMBER_MESSAGE_MAX_BYTES,
+	type MemberChatCalls,
+	type MemberChatPage,
+	type MemberChatSummary,
+	type MemberMessage,
+	memberChatCalls,
+	parseMemberChatPage,
+	parseMemberChats,
+} from "../src/cloud/member-chats.ts";
+import type { HostedProfileMember, HostedStaffAgent } from "../src/cloud/types.ts";
+import { openMenu } from "../src/ui/context-menu.ts";
+import { h, linkHref } from "../src/ui/dom.ts";
+import {
+	deferred,
+	fixture,
+	id,
+	profileA,
+	settle,
+	staff,
+	stubFigureMotion,
+	team,
+	timestamp,
+	userA,
+} from "./fixtures.ts";
+
+/* Members of a company message each other (Jonas, 10 Nov 2026): the cloud's shapes (cloud/member-chats.ts), the chats'
+ * state (app/member-chats.ts), the chat on screen (app/views/member-chat.ts) and the members as contacts in the rail. */
+
+const me = userA.id;
+const sofie = id(60);
+const mads = id(61);
+const member = (userId: string, name: string, role: HostedProfileMember["role"] = "admin"): HostedProfileMember => ({
+	userId,
+	email: `${name.toLowerCase().replace(/\s+/g, ".")}@example.invalid`,
+	displayName: name,
+	role,
+	joinedAt: timestamp,
+});
+const ann = member(me, "Ann Holm", "owner");
+const people = [ann, member(sofie, "Sofie Lund"), member(mads, "Mads Berg")];
+const message = (seq: number, author: string, text: string, at = "2026-11-10T09:00:00Z"): MemberMessage => ({
+	id: id(7000 + seq),
+	seq,
+	authorUserId: author,
+	createdAt: at,
+	text,
+});
+const summary = (userId: string, extra: Partial<MemberChatSummary> = {}): MemberChatSummary => ({
+	userId,
+	lastSeenAt: null,
+	unread: 0,
+	readSeq: 0,
+	theirReadSeq: 0,
+	last: null,
+	...extra,
+});
+const page = (userId: string, messages: MemberMessage[], extra: Partial<MemberChatPage> = {}): MemberChatPage => ({
+	userId,
+	messages,
+	hasMore: false,
+	readSeq: 0,
+	theirReadSeq: 0,
+	...extra,
+});
+
+const cleanup: (() => void)[] = [];
+beforeEach(() => {
+	stubFigureMotion();
+	vi.stubGlobal("innerWidth", 1280);
+	vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+});
+afterEach(() => {
+	for (const dispose of cleanup.splice(0).reverse()) dispose();
+	openMenu()?.close();
+	document.body.replaceChildren();
+	vi.useRealTimers();
+	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
+});
+
+/** The chats over calls a test answers, with what the host was told. */
+function chats(calls: Partial<MemberChatCalls>, options: { visible?: boolean; available?: boolean } = {}) {
+	const state: { summaries?: Readonly<Record<string, MemberChatSummary>>; unavailable: boolean; visible: boolean } = {
+		unavailable: false,
+		visible: options.visible ?? true,
+	};
+	const all: MemberChatCalls = {
+		list: vi.fn(async () => []),
+		read: vi.fn(async (userId: string) => page(userId, [])),
+		send: vi.fn(async (_userId: string, _client: string, text: string) => message(99, me, text)),
+		markRead: vi.fn(async (_userId: string, seq: number) => seq),
+		remove: vi.fn(async () => ({ ...message(1, me, ""), text: undefined, deleted: true as const })),
+		...calls,
+	};
+	const host: MemberChatsHost = {
+		userId: me,
+		calls: () => all,
+		available: () => options.available !== false && !state.unavailable,
+		visible: () => state.visible,
+		summaries: () => state.summaries,
+		setSummaries: (next) => {
+			state.summaries = next;
+		},
+		setUnavailable: () => {
+			state.unavailable = true;
+			state.summaries = undefined;
+		},
+	};
+	const controller = new MemberChats(host);
+	cleanup.push(() => controller.stop());
+	return { controller, calls: all, state };
+}
+
+describe("the cloud's member chat shapes", () => {
+	const wire = (seq: number, extra: Record<string, unknown> = {}) => ({
+		id: id(7000 + seq),
+		seq,
+		authorUserId: sofie,
+		createdAt: "2026-11-10T09:00:00.123456+00:00",
+		text: `Message ${seq}`,
+		...extra,
+	});
+
+	it("reads the list, and a message taken back without its words", () => {
+		const parsed = parseMemberChats({
+			schema: "qorpera.member-chats/v1",
+			chats: [
+				{
+					userId: sofie.toUpperCase(),
+					lastSeenAt: "2026-11-10T08:00:00Z",
+					unread: 2,
+					readSeq: 3,
+					theirReadSeq: 5,
+					last: wire(5),
+				},
+				{
+					userId: mads,
+					lastSeenAt: null,
+					unread: 0,
+					readSeq: 0,
+					theirReadSeq: 0,
+					last: { ...wire(4, { deleted: true }), text: undefined },
+				},
+			],
+		});
+		expect(parsed).toEqual([
+			{ userId: sofie, lastSeenAt: "2026-11-10T08:00:00Z", unread: 2, readSeq: 3, theirReadSeq: 5, last: wire(5) },
+			{
+				userId: mads,
+				lastSeenAt: null,
+				unread: 0,
+				readSeq: 0,
+				theirReadSeq: 0,
+				last: {
+					id: id(7004),
+					seq: 4,
+					authorUserId: sofie,
+					createdAt: "2026-11-10T09:00:00.123456+00:00",
+					deleted: true,
+				},
+			},
+		]);
+	});
+
+	it("refuses a list or a page that is not what the cloud answers", () => {
+		const chat = { userId: sofie, lastSeenAt: null, unread: 0, readSeq: 0, theirReadSeq: 0, last: null };
+		for (const bad of [
+			{ schema: "qorpera.member-chats/v2", chats: [] },
+			{ schema: "qorpera.member-chats/v1", chats: [chat, chat] },
+			{ schema: "qorpera.member-chats/v1", chats: [{ ...chat, unread: -1 }] },
+			{ schema: "qorpera.member-chats/v1", chats: [{ ...chat, userId: "sofie" }] },
+			{ schema: "qorpera.member-chats/v1", chats: [{ ...chat, last: wire(1, { text: "  " }) }] },
+			{ schema: "qorpera.member-chats/v1", chats: [{ ...chat, last: wire(0) }] },
+		])
+			expect(() => parseMemberChats(bad), JSON.stringify(bad)).toThrow();
+		const good = {
+			schema: "qorpera.member-chat/v1",
+			userId: sofie,
+			messages: [wire(1), wire(2)],
+			hasMore: true,
+			readSeq: 1,
+			theirReadSeq: 2,
+		};
+		expect(parseMemberChatPage(good, sofie)).toMatchObject({
+			userId: sofie,
+			hasMore: true,
+			readSeq: 1,
+			theirReadSeq: 2,
+		});
+		for (const bad of [
+			{ ...good, schema: "qorpera.member-chat/v2" },
+			{ ...good, messages: [wire(2), wire(1)] },
+			{ ...good, messages: [wire(1), wire(1)] },
+			{ ...good, hasMore: "yes" },
+		])
+			expect(() => parseMemberChatPage(bad, sofie), JSON.stringify(bad)).toThrow();
+		// Another member's page is never taken for this chat's.
+		expect(() => parseMemberChatPage(good, mads)).toThrow();
+	});
+
+	it("calls the five functions with the company and the member", async () => {
+		const rpc = vi.fn(async (name: string, _args?: Record<string, unknown>): Promise<unknown> => {
+			if (name === "qorpera_list_member_chats") return { schema: "qorpera.member-chats/v1", chats: [] };
+			if (name === "qorpera_read_member_chat")
+				return {
+					schema: "qorpera.member-chat/v1",
+					userId: sofie,
+					messages: [],
+					hasMore: false,
+					readSeq: 0,
+					theirReadSeq: 0,
+				};
+			if (name === "qorpera_mark_member_chat_read")
+				return { schema: "qorpera.member-chat-read/v1", userId: sofie, readSeq: 7 };
+			return { schema: "qorpera.member-message/v1", userId: sofie, message: { ...wire(8), authorUserId: me } };
+		});
+		const calls = memberChatCalls({ rpc }, profileA.profileId);
+		await calls.list();
+		await calls.read(sofie);
+		await calls.read(sofie, 40);
+		expect((await calls.send(sofie, id(1), "Hi")).seq).toBe(8);
+		expect(await calls.markRead(sofie, 7)).toBe(7);
+		await calls.remove(id(7008));
+		expect(rpc.mock.calls).toEqual([
+			["qorpera_list_member_chats", { p_profile_id: profileA.profileId }],
+			[
+				"qorpera_read_member_chat",
+				{ p_profile_id: profileA.profileId, p_user_id: sofie, p_before_seq: null, p_limit: 50 },
+			],
+			[
+				"qorpera_read_member_chat",
+				{ p_profile_id: profileA.profileId, p_user_id: sofie, p_before_seq: 40, p_limit: 50 },
+			],
+			[
+				"qorpera_send_member_message",
+				{ p_profile_id: profileA.profileId, p_user_id: sofie, p_client_message_id: id(1), p_text: "Hi" },
+			],
+			["qorpera_mark_member_chat_read", { p_profile_id: profileA.profileId, p_user_id: sofie, p_seq: 7 }],
+			["qorpera_delete_member_message", { p_profile_id: profileA.profileId, p_message_id: id(7008) }],
+		]);
+		// A sent message answered for another member is not this chat's.
+		await expect(calls.send(mads, id(2), "Hi")).rejects.toThrow();
+	});
+});
+
+describe("a chat's newest page", () => {
+	const all = (from: number, to: number) =>
+		Array.from({ length: to - from + 1 }, (_, index) => message(from + index, sofie, `m${from + index}`));
+
+	it("joins what was loaded when the page reaches it, and keeps what is older", () => {
+		const merged = withNewestPage({ messages: all(1, 6), hasMore: true }, { messages: all(5, 8), hasMore: true });
+		expect(merged.messages.map((item) => item.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+		// Whether there is more before the first one was known already.
+		expect(merged.hasMore).toBe(true);
+		expect(
+			withNewestPage({ messages: all(1, 6), hasMore: false }, { messages: all(5, 8), hasMore: true }).hasMore,
+		).toBe(false);
+	});
+
+	it("starts over at the page when it does not reach what was loaded: no hole is shown", () => {
+		const merged = withNewestPage({ messages: all(1, 3), hasMore: false }, { messages: all(60, 62), hasMore: true });
+		expect(merged).toEqual({ messages: all(60, 62), hasMore: true });
+	});
+
+	it("takes a changed copy of a message, and an empty page as an empty chat", () => {
+		const taken = {
+			id: id(7002),
+			seq: 2,
+			authorUserId: sofie,
+			createdAt: "2026-11-10T09:00:00Z",
+			deleted: true as const,
+		};
+		expect(
+			withNewestPage(
+				{ messages: all(1, 3), hasMore: false },
+				{ messages: [all(1, 1)[0]!, taken, all(3, 3)[0]!], hasMore: false },
+			).messages[1],
+		).toEqual(taken);
+		expect(withNewestPage({ messages: all(1, 3), hasMore: true }, { messages: [], hasMore: false })).toEqual({
+			messages: [],
+			hasMore: false,
+		});
+	});
+});
+
+describe("the chats' state", () => {
+	it("reads the list, the open chat, and marks what is on screen read", async () => {
+		const { controller, calls, state } = chats({
+			list: vi.fn(async () => [
+				summary(sofie, { unread: 2, last: message(5, sofie, "Are you there?") }),
+				summary(mads),
+			]),
+			read: vi.fn(async (userId: string) =>
+				page(userId, [message(4, me, "Hi"), message(5, sofie, "Are you there?")], { readSeq: 4, theirReadSeq: 4 }),
+			),
+		});
+		await controller.refresh();
+		expect(state.summaries?.[sofie]?.unread).toBe(2);
+		expect(controller.unread()).toBe(2);
+		controller.setOpen(sofie);
+		await settle();
+		const thread = controller.thread(sofie).get();
+		expect(thread.loaded).toBe(true);
+		expect(thread.messages.map((item) => item.text)).toEqual(["Hi", "Are you there?"]);
+		// In front of someone: the count goes at once, and the cloud is told the newest message was seen.
+		expect(state.summaries?.[sofie]?.unread).toBe(0);
+		expect(calls.markRead).toHaveBeenCalledWith(sofie, 5);
+		expect(controller.thread(sofie).get().readSeq).toBe(5);
+		// Nothing new: no second mark.
+		controller.seen();
+		expect(calls.markRead).toHaveBeenCalledTimes(1);
+	});
+
+	it("marks nothing read while nobody looks, and marks it when they are back", async () => {
+		const { controller, calls, state } = chats(
+			{
+				list: vi.fn(async () => [summary(sofie, { unread: 1, last: message(5, sofie, "Hello") })]),
+				read: vi.fn(async (userId: string) => page(userId, [message(5, sofie, "Hello")])),
+			},
+			{ visible: false },
+		);
+		controller.setOpen(sofie);
+		await controller.refresh();
+		await settle();
+		expect(calls.markRead).not.toHaveBeenCalled();
+		expect(state.summaries?.[sofie]?.unread).toBe(1);
+		state.visible = true;
+		controller.seen();
+		expect(calls.markRead).toHaveBeenCalledWith(sofie, 5);
+		expect(state.summaries?.[sofie]?.unread).toBe(0);
+	});
+
+	it("steps a mark back when the cloud did not take it", async () => {
+		const { controller, calls } = chats({
+			read: vi.fn(async (userId: string) => page(userId, [message(5, sofie, "Hello")], { readSeq: 2 })),
+			markRead: vi.fn(async () => {
+				throw new Error("offline");
+			}),
+		});
+		controller.setOpen(sofie);
+		await settle();
+		expect(calls.markRead).toHaveBeenCalledTimes(1);
+		expect(controller.thread(sofie).get().readSeq).toBe(2);
+		// The next look tries again.
+		controller.seen();
+		expect(calls.markRead).toHaveBeenCalledTimes(2);
+	});
+
+	it("shows a message at once, sends in the order written, and clears the draft", async () => {
+		const first = deferred<MemberMessage>();
+		const sent: string[] = [];
+		const { controller, calls, state } = chats({
+			list: vi.fn(async () => [summary(sofie)]),
+			send: vi.fn(async (_userId: string, _client: string, text: string) => {
+				sent.push(text);
+				return text === "One" ? first.promise : message(11, me, text);
+			}),
+		});
+		await controller.refresh();
+		controller.setDraft(sofie, "  One  ");
+		expect(controller.send(sofie, "  One  ")).toBe(true);
+		expect(controller.send(sofie, "Two")).toBe(true);
+		const thread = controller.thread(sofie);
+		expect(thread.get().draft).toBe("");
+		expect(thread.get().outgoing.map((item) => item.text)).toEqual(["One", "Two"]);
+		await settle();
+		// The second waits for the first.
+		expect(sent).toEqual(["One"]);
+		first.resolve(message(10, me, "One"));
+		await settle();
+		expect(sent).toEqual(["One", "Two"]);
+		expect(thread.get().outgoing).toEqual([]);
+		expect(thread.get().messages.map((item) => item.text)).toEqual(["One", "Two"]);
+		expect(thread.get().readSeq).toBe(11);
+		expect(state.summaries?.[sofie]?.last?.text).toBe("Two");
+		// Each send carries an id of its own, so a repeat is the same message.
+		const ids = vi.mocked(calls.send).mock.calls.map((call) => call[1]);
+		expect(new Set(ids).size).toBe(2);
+	});
+
+	it("sends nothing blank or too long", () => {
+		const { controller, calls } = chats({});
+		expect(controller.send(sofie, " \n ")).toBe(false);
+		expect(controller.send(sofie, "a".repeat(MEMBER_MESSAGE_MAX_BYTES + 1))).toBe(false);
+		expect(controller.thread(sofie).get().notice).toBe("This message is too long to send. Send it in parts.");
+		// A message of exactly the longest size goes, and the line is gone.
+		expect(controller.send(sofie, "æ".repeat(MEMBER_MESSAGE_MAX_BYTES / 2))).toBe(true);
+		expect(controller.thread(sofie).get().notice).toBeUndefined();
+		expect(calls.send).toHaveBeenCalledTimes(0);
+	});
+
+	it("keeps a message that was not sent, to send again as the same message or to drop", async () => {
+		let fail: unknown = new Error("Failed to fetch");
+		const { controller, calls } = chats({
+			send: vi.fn(async (_userId: string, _client: string, text: string) => {
+				if (fail) throw fail;
+				return message(12, me, text);
+			}),
+		});
+		controller.send(sofie, "Hello");
+		await settle();
+		const thread = controller.thread(sofie);
+		expect(thread.get().outgoing).toMatchObject([
+			{ text: "Hello", failed: "Not sent. Check your connection and try again." },
+		]);
+		const clientId = thread.get().outgoing[0]!.clientMessageId;
+		// The member left meanwhile: the cloud refuses, and the line says so.
+		fail = new CloudRpcError(
+			"qorpera_send_member_message",
+			{ message: "Member chat unavailable", code: "42501" },
+			403,
+		);
+		controller.retry(sofie, clientId);
+		await settle();
+		expect(thread.get().outgoing[0]?.failed).toBe("You can no longer write to this member.");
+		fail = undefined;
+		controller.retry(sofie, clientId);
+		await settle();
+		expect(thread.get().outgoing).toEqual([]);
+		expect(thread.get().messages.map((item) => item.text)).toEqual(["Hello"]);
+		expect(vi.mocked(calls.send).mock.calls.map((call) => call[1])).toEqual([clientId, clientId, clientId]);
+		// Another that fails is dropped: nothing is left, and nothing more is sent.
+		fail = new Error("Failed to fetch");
+		controller.send(sofie, "Never mind");
+		await settle();
+		controller.discard(sofie, thread.get().outgoing[0]!.clientMessageId);
+		expect(thread.get().outgoing).toEqual([]);
+		expect(calls.send).toHaveBeenCalledTimes(4);
+	});
+
+	it("reads the list and the open chat again on a hint, once for a burst", async () => {
+		vi.useFakeTimers();
+		const { controller, calls } = chats({});
+		controller.setOpen(sofie);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(calls.read).toHaveBeenCalledTimes(1);
+		controller.hinted();
+		controller.hinted();
+		controller.hinted();
+		await vi.advanceTimersByTimeAsync(200);
+		expect(calls.list).toHaveBeenCalledTimes(1);
+		expect(calls.read).toHaveBeenCalledTimes(2);
+	});
+
+	it("reads the open chat when the list shows a message it missed", async () => {
+		let newest = 5;
+		const upTo = () => Array.from({ length: newest - 4 }, (_, index) => message(5 + index, sofie, `m${5 + index}`));
+		const { controller, calls } = chats({
+			list: vi.fn(async () => [summary(sofie, { last: message(newest, sofie, `m${newest}`) })]),
+			read: vi.fn(async (userId: string) => page(userId, upTo())),
+		});
+		controller.setOpen(sofie);
+		await settle();
+		await controller.refresh();
+		await settle();
+		// The list's newest message is the chat's: no second read.
+		expect(calls.read).toHaveBeenCalledTimes(1);
+		newest = 6;
+		await controller.refresh();
+		await settle();
+		expect(calls.read).toHaveBeenCalledTimes(2);
+		expect(
+			controller
+				.thread(sofie)
+				.get()
+				.messages.map((item) => item.seq),
+		).toEqual([5, 6]);
+	});
+
+	it("reads earlier pages above what is shown", async () => {
+		const newer = [message(51, sofie, "m51"), message(52, me, "m52")];
+		const older = [message(49, sofie, "m49"), message(50, me, "m50")];
+		const { controller, calls } = chats({
+			read: vi.fn(async (userId: string, before?: number) =>
+				before ? page(userId, older, { hasMore: false }) : page(userId, newer, { hasMore: true }),
+			),
+		});
+		controller.setOpen(sofie);
+		await settle();
+		expect(controller.thread(sofie).get().hasMore).toBe(true);
+		await controller.loadEarlier(sofie);
+		expect(calls.read).toHaveBeenLastCalledWith(sofie, 51);
+		expect(controller.thread(sofie).get()).toMatchObject({ hasMore: false, loadingEarlier: false });
+		expect(
+			controller
+				.thread(sofie)
+				.get()
+				.messages.map((item) => item.seq),
+		).toEqual([49, 50, 51, 52]);
+		// Nothing earlier: no more reads.
+		await controller.loadEarlier(sofie);
+		expect(calls.read).toHaveBeenCalledTimes(2);
+	});
+
+	it("takes a message back, and says so when it could not", async () => {
+		const taken = {
+			id: id(7004),
+			seq: 4,
+			authorUserId: me,
+			createdAt: "2026-11-10T09:00:00Z",
+			deleted: true as const,
+		};
+		let fail = false;
+		const { controller, state } = chats({
+			list: vi.fn(async () => [summary(sofie, { last: message(4, me, "Oops") })]),
+			read: vi.fn(async (userId: string) => page(userId, [message(4, me, "Oops")])),
+			remove: vi.fn(async () => {
+				if (fail) throw new Error("offline");
+				return taken;
+			}),
+		});
+		await controller.refresh();
+		controller.setOpen(sofie);
+		await settle();
+		await controller.remove(sofie, id(7004));
+		expect(controller.thread(sofie).get().messages).toEqual([taken]);
+		expect(state.summaries?.[sofie]?.last).toEqual(taken);
+		fail = true;
+		await controller.remove(sofie, id(7004));
+		expect(controller.thread(sofie).get().notice).toBe("Could not delete the message. Try again.");
+	});
+
+	it("stops asking a cloud that has no member chats, and says why a chat did not open", async () => {
+		const missing = new CloudRpcError("qorpera_list_member_chats", { message: "missing", code: "PGRST202" }, 404);
+		const none = chats({
+			list: vi.fn(async () => {
+				throw missing;
+			}),
+		});
+		await none.controller.refresh();
+		expect(none.state.unavailable).toBe(true);
+		await none.controller.refresh();
+		expect(none.calls.list).toHaveBeenCalledTimes(1);
+		const refused = chats({
+			read: vi.fn(async () => {
+				throw new CloudRpcError(
+					"qorpera_read_member_chat",
+					{ message: "Member chat unavailable", code: "42501" },
+					403,
+				);
+			}),
+		});
+		refused.controller.setOpen(sofie);
+		await settle();
+		expect(refused.controller.thread(sofie).get()).toMatchObject({
+			loaded: false,
+			loading: false,
+			error: "This chat is not available.",
+		});
+		const offline = chats({
+			read: vi.fn(async () => {
+				throw new Error("Failed to fetch");
+			}),
+		});
+		offline.controller.setOpen(sofie);
+		await settle();
+		expect(offline.controller.thread(sofie).get().error).toBe("Could not open this chat. Check your connection.");
+		// Alone in the company, nothing is asked.
+		const alone = chats({}, { available: false });
+		await alone.controller.refresh();
+		alone.controller.setOpen(sofie);
+		expect(alone.controller.send(sofie, "Hi")).toBe(false);
+		expect(alone.calls.list).not.toHaveBeenCalled();
+		expect(alone.calls.read).not.toHaveBeenCalled();
+	});
+});
+
+/** A company with Ann, Sofie and Mads whose cloud answers the member chat functions from `answers`. */
+function company(
+	answers: {
+		chats?: MemberChatSummary[];
+		pages?: Record<string, MemberChatPage>;
+		send?: (text: string) => unknown;
+		members?: HostedProfileMember[];
+	} = {},
+) {
+	const f = fixture();
+	const rpc = vi.mocked(f.cloud.rpc);
+	const wireMessage = (item: MemberMessage) => ({ ...item });
+	rpc.mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
+		const other = String(args.p_user_id ?? "");
+		if (name === "qorpera_list_member_chats")
+			return {
+				schema: "qorpera.member-chats/v1",
+				chats: (answers.chats ?? [summary(sofie), summary(mads)]).map((chat) => ({ ...chat })),
+			};
+		if (name === "qorpera_read_member_chat") {
+			// Nothing stands before the pages a test gives.
+			const found = (args.p_before_seq === null ? answers.pages?.[other] : undefined) ?? page(other, []);
+			return { schema: "qorpera.member-chat/v1", ...found, messages: found.messages.map(wireMessage) };
+		}
+		if (name === "qorpera_mark_member_chat_read")
+			return { schema: "qorpera.member-chat-read/v1", userId: other, readSeq: args.p_seq };
+		if (name === "qorpera_send_member_message") {
+			const answer =
+				answers.send?.(String(args.p_text)) ?? message(900, me, String(args.p_text), new Date().toISOString());
+			return { schema: "qorpera.member-message/v1", userId: other, message: answer };
+		}
+		throw new Error(`Unexpected RPC ${name}`);
+	});
+	const controller = new CompanyController(f.api, profileA, me);
+	controller.store.set({ loading: false, team: { ...team, members: answers.members ?? people } });
+	cleanup.push(() => controller.stop());
+	return { f, controller, rpc };
+}
+
+function chatView(controller: CompanyController, userId = sofie) {
+	const view = new MemberChatView(controller, userId, () => {});
+	cleanup.push(() => view.dispose());
+	cleanup.push(controller.store.subscribe(() => view.update()));
+	document.body.append(view.el);
+	return view;
+}
+
+const bubbles = (root: ParentNode) =>
+	[...root.querySelectorAll("article.message")].map((element) => [
+		element.classList.contains("mine") ? "mine" : "theirs",
+		element.querySelector(".text")?.textContent,
+		element.querySelector(".message-caption")?.textContent ?? "",
+	]);
+
+describe("a member's chat on screen", () => {
+	it("draws the messages with the times between them, mine on the right, and Seen under my newest", async () => {
+		const { controller, rpc } = company({
+			pages: {
+				[sofie]: page(
+					sofie,
+					[
+						message(1, me, "Morning!", "2026-11-09T09:00:00Z"),
+						message(2, sofie, "Hi Ann", "2026-11-09T09:01:00Z"),
+						message(3, me, "See https://qorpera.com/x, it is live.", "2026-11-10T08:00:00Z"),
+					],
+					{ readSeq: 3, theirReadSeq: 3 },
+				),
+			},
+		});
+		const view = chatView(controller);
+		await settle();
+		expect(bubbles(view.el)).toEqual([
+			["mine", "Morning!", ""],
+			["theirs", "Hi Ann", ""],
+			["mine", "See https://qorpera.com/x, it is live.", "Seen"],
+		]);
+		// Two days: a time before the first message and one before the next day's; none between a minute's two.
+		expect(view.el.querySelectorAll("time.conversation-timestamp")).toHaveLength(2);
+		// The address is a link without the sentence's comma, opened in a new tab.
+		const link = view.el.querySelector<HTMLAnchorElement>(".bubble a");
+		expect(link?.href).toBe("https://qorpera.com/x");
+		expect(link?.target).toBe("_blank");
+		expect(link?.rel).toBe("noopener noreferrer");
+		// Their name and face stand in the header (a phone shows it).
+		expect(view.el.querySelector(".member-identity h1")?.textContent).toBe("Sofie Lund");
+		// Nothing was new to this member: no mark.
+		expect(rpc.mock.calls.some((call) => call[0] === "qorpera_mark_member_chat_read")).toBe(false);
+		expect(view.el.querySelector(".thread-header")?.classList.contains("is-member")).toBe(true);
+	});
+
+	it("has no Seen while the other member has not looked, or once they answered", async () => {
+		const unseen = company({
+			pages: { [sofie]: page(sofie, [message(3, me, "Hello")], { readSeq: 3, theirReadSeq: 2 }) },
+		});
+		const first = chatView(unseen.controller);
+		await settle();
+		expect(bubbles(first.el)).toEqual([["mine", "Hello", ""]]);
+		const answered = company({
+			pages: {
+				[sofie]: page(sofie, [message(3, me, "Hello"), message(4, sofie, "Hi")], { readSeq: 4, theirReadSeq: 4 }),
+			},
+		});
+		const second = chatView(answered.controller);
+		await settle();
+		expect(bubbles(second.el).map((row) => row[2])).toEqual(["", ""]);
+	});
+
+	it("starts with the member's face and one line, and sends with Enter", async () => {
+		const { controller, rpc } = company();
+		const view = chatView(controller);
+		await settle();
+		expect(view.el.querySelector(".member-chat-empty strong")?.textContent).toBe("Sofie Lund");
+		expect(view.el.querySelector(".member-chat-empty p")?.textContent).toBe("Write the first message to Sofie Lund.");
+		const field = view.el.querySelector<HTMLTextAreaElement>(".composer-input")!;
+		const send = view.el.querySelector<HTMLButtonElement>(".composer-send")!;
+		expect(send.disabled).toBe(true);
+		field.value = "Hello Sofie";
+		field.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(send.disabled).toBe(false);
+		// Shift+Enter is a new line; Enter sends.
+		field.dispatchEvent(
+			new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true }),
+		);
+		expect(rpc.mock.calls.some((call) => call[0] === "qorpera_send_member_message")).toBe(false);
+		field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+		expect(field.value).toBe("");
+		expect(send.disabled).toBe(true);
+		await settle();
+		const sent = rpc.mock.calls.find((call) => call[0] === "qorpera_send_member_message");
+		expect(sent?.[1]).toMatchObject({ p_profile_id: profileA.profileId, p_user_id: sofie, p_text: "Hello Sofie" });
+		expect(bubbles(view.el)).toEqual([["mine", "Hello Sofie", ""]]);
+		expect(view.el.querySelector(".member-chat-empty")).toBeNull();
+	});
+
+	it("keeps a draft while the member looks elsewhere", async () => {
+		const { controller } = company();
+		const view = chatView(controller);
+		await settle();
+		const field = view.el.querySelector<HTMLTextAreaElement>(".composer-input")!;
+		field.value = "Half a thought";
+		field.dispatchEvent(new Event("input", { bubbles: true }));
+		view.dispose();
+		view.el.remove();
+		expect(controller.memberChats.open).toBeUndefined();
+		const again = chatView(controller);
+		expect(again.el.querySelector<HTMLTextAreaElement>(".composer-input")?.value).toBe("Half a thought");
+		expect(controller.memberChats.open).toBe(sofie);
+	});
+
+	it("shows a message that was not sent with the two ways on", async () => {
+		let fail = true;
+		const { controller } = company({
+			send: (text) => {
+				if (fail) throw new Error("Failed to fetch");
+				return message(901, me, text, new Date().toISOString());
+			},
+		});
+		const view = chatView(controller);
+		await settle();
+		controller.memberChats.send(sofie, "Will not go");
+		await settle();
+		const failed = view.el.querySelector(".message.pending-failed");
+		expect(failed?.querySelector(".member-chat-failed span")?.textContent).toBe(
+			"Not sent. Check your connection and try again.",
+		);
+		const buttons = [...(failed?.querySelectorAll("button") ?? [])];
+		expect(buttons.map((button) => button.textContent)).toEqual(["Try again", "Delete"]);
+		fail = false;
+		buttons[0]!.click();
+		await settle();
+		expect(view.el.querySelector(".message.pending-failed")).toBeNull();
+		expect(bubbles(view.el)).toEqual([["mine", "Will not go", ""]]);
+	});
+
+	it("draws a message taken back without words, and offers to take back only my own", async () => {
+		const { controller } = company({
+			pages: {
+				[sofie]: page(sofie, [
+					{ id: id(7001), seq: 1, authorUserId: sofie, createdAt: "2026-11-10T08:00:00Z", deleted: true },
+					message(2, sofie, "Theirs", "2026-11-10T08:00:30Z"),
+					message(3, me, "Mine", "2026-11-10T08:01:00Z"),
+				]),
+			},
+		});
+		const view = chatView(controller);
+		await settle();
+		const [gone, theirs, mine] = [...view.el.querySelectorAll<HTMLElement>("article.message")];
+		expect(gone?.classList.contains("message-erased")).toBe(true);
+		expect(gone?.textContent).toBe("Message deleted");
+		const menu = (element: HTMLElement) =>
+			element.dispatchEvent(
+				new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }),
+			);
+		// Theirs and one taken back keep the browser's own menu.
+		expect(menu(theirs!)).toBe(true);
+		expect(menu(gone!)).toBe(true);
+		expect(openMenu()).toBeUndefined();
+		expect(menu(mine!)).toBe(false);
+		expect([...openMenu()!.el.querySelectorAll("[role=menuitem]")].map((item) => item.textContent)).toEqual([
+			"Delete message",
+		]);
+	});
+
+	it("closes the chat of a member who left, and says so", async () => {
+		const { controller } = company({ pages: { [sofie]: page(sofie, [message(1, sofie, "Bye")]) } });
+		const view = chatView(controller);
+		await settle();
+		expect(view.el.querySelector<HTMLTextAreaElement>(".composer-input")?.disabled).toBe(false);
+		controller.store.set({ team: { ...team, members: [ann, people[2]!] } });
+		await settle();
+		expect(view.el.querySelector(".thread-status")?.textContent).toBe("This member is no longer in the company.");
+		expect(view.el.querySelector<HTMLTextAreaElement>(".composer-input")?.disabled).toBe(true);
+		expect(view.el.querySelector<HTMLButtonElement>(".composer-send")?.disabled).toBe(true);
+		// What was written stays readable.
+		expect(bubbles(view.el)).toEqual([["theirs", "Bye", ""]]);
+	});
+
+	it("offers earlier messages while there are any", async () => {
+		const { controller, rpc } = company({
+			pages: { [sofie]: page(sofie, [message(51, sofie, "m51")], { hasMore: true }) },
+		});
+		const view = chatView(controller);
+		await settle();
+		const earlier = view.el.querySelector<HTMLButtonElement>(".thread-earlier-button");
+		expect(earlier?.textContent).toBe("Show earlier messages");
+		earlier!.click();
+		await settle();
+		expect(rpc.mock.calls.filter((call) => call[0] === "qorpera_read_member_chat").at(-1)?.[1]).toMatchObject({
+			p_before_seq: 51,
+		});
+	});
+});
+
+describe("who is online", () => {
+	it("says online for a member in the company now or marked within minutes, else when they last were", () => {
+		const now = Date.parse("2026-11-10T12:00:00Z");
+		const chatsOf = (lastSeenAt: string | null) => ({ [sofie]: summary(sofie, { lastSeenAt }) });
+		expect(memberPresence({ here: [], memberChats: chatsOf("2026-11-10T11:58:00Z") }, sofie, now)).toEqual({
+			online: true,
+			text: "Online now",
+		});
+		expect(memberPresence({ here: [], memberChats: chatsOf("2026-11-10T09:00:00Z") }, sofie, now)).toMatchObject({
+			online: false,
+		});
+		expect(memberPresence({ here: [], memberChats: chatsOf(null) }, sofie, now)).toBeNull();
+		const here = [{ clientId: id(70), userId: sofie, name: "Sofie", staffAgentId: null }];
+		expect(memberPresence({ here, memberChats: chatsOf("2026-11-09T09:00:00Z") }, sofie, now)).toEqual({
+			online: true,
+			text: "Online now",
+		});
+	});
+});
+
+describe("members as contacts in the rail", () => {
+	const cofounder: HostedStaffAgent = { ...staff, id: id(40), displayName: "Co-Founder", templateId: "co-founder" };
+	const ada: HostedStaffAgent = { ...staff, id: id(41), displayName: "Ada" };
+
+	function rail(
+		answers: Parameters<typeof company>[0] = {},
+		route: Route = { name: "company", profileId: profileA.profileId, section: "home" },
+	) {
+		const { f, controller, rpc } = company(answers);
+		controller.store.set({ staff: [cofounder, ada] });
+		const element = h("aside", { class: "rail" });
+		document.body.append(h("div", { class: "frame" }, element));
+		const auth = new AuthController(f.cloud);
+		cleanup.push(() => auth.dispose());
+		const draw = () =>
+			renderRail(element, controller, {
+				profiles: [profileA],
+				user: userA,
+				route,
+				auth,
+				invitations: 0,
+				openSettings: () => {},
+				openFeedback: () => {},
+				openFriends: () => {},
+				agentActions: {},
+			});
+		cleanup.push(controller.store.subscribe(draw));
+		draw();
+		return { f, controller, rpc, element, draw };
+	}
+	const rows = (element: HTMLElement) =>
+		[...element.querySelectorAll<HTMLAnchorElement>(".rail-members > a")].map((row) => ({
+			name: row.querySelector("strong")?.textContent,
+			line: row.querySelector("small")?.textContent ?? "",
+			count: row.querySelector(".rail-count")?.textContent ?? "",
+			online: row.querySelector(".person-online-dot") !== null,
+			// An address inside the app: no hover popup shows it (ui/dom.ts).
+			href: linkHref(row),
+			label: row.getAttribute("aria-label"),
+		}));
+
+	it("lists the other members under the Co-Founder once their chats are read", async () => {
+		const recently = new Date(Date.now() - 60_000).toISOString();
+		const { controller, element } = rail({
+			chats: [
+				summary(sofie, { unread: 2, lastSeenAt: recently, last: message(5, sofie, "Can we talk prices at 14?") }),
+				summary(mads, { last: message(4, me, "Thanks") }),
+			],
+		});
+		// Before the first read: no members, and nobody waits for them.
+		expect(element.querySelector(".rail-members")).toBeNull();
+		await controller.memberChats.refresh();
+		await settle();
+		expect(rows(element)).toEqual([
+			{
+				name: "Sofie Lund",
+				line: "Can we talk prices at 14?",
+				count: "2",
+				online: true,
+				href: `#/c/${profileA.profileId}/member/${sofie}`,
+				label: "Sofie Lund · Can we talk prices at 14? · Unread: 2",
+			},
+			{
+				name: "Mads Berg",
+				line: "",
+				count: "",
+				online: false,
+				href: `#/c/${profileA.profileId}/member/${mads}`,
+				label: "Mads Berg",
+			},
+		]);
+		const list = element.querySelector(".rail-scroll")!;
+		const order = [...list.children].map((child) => child.className.split(" ")[0]);
+		expect(order.indexOf("rail-members")).toBe(order.indexOf("rail-cofounder") + 1);
+		// This member is no contact of their own.
+		expect(element.querySelector(`[data-member-id="${me}"]`)).toBeNull();
+	});
+
+	it("marks the open chat's row, and finds a member by name", async () => {
+		const { controller, element, draw } = rail(
+			{},
+			{ name: "company", profileId: profileA.profileId, section: "member", id: sofie },
+		);
+		await controller.memberChats.refresh();
+		await settle();
+		const active = element.querySelector(".rail-members > a.active");
+		expect(active?.getAttribute("data-member-id")).toBe(sofie);
+		expect(active?.getAttribute("aria-current")).toBe("page");
+		const search = element.querySelector<HTMLInputElement>("#rail-search-input")!;
+		search.value = "mads";
+		draw();
+		expect(rows(element).map((row) => row.name)).toEqual(["Mads Berg"]);
+	});
+
+	it("draws a bigger team as cards with first names", async () => {
+		const more = [4, 5, 6].map((n) => member(id(60 + n), `Person${n} Last${n}`));
+		const members = [...people, ...more];
+		const { controller, element } = rail({
+			members,
+			chats: members
+				.filter((item) => item.userId !== me)
+				.map((item) => summary(item.userId, { unread: item.userId === mads ? 3 : 0 })),
+		});
+		await controller.memberChats.refresh();
+		await settle();
+		const group = element.querySelector(".rail-members")!;
+		expect(group.classList.contains("is-cards")).toBe(true);
+		const cards = [...group.querySelectorAll<HTMLAnchorElement>("a.rail-pin-member")];
+		expect(cards.map((card) => card.querySelector(".rail-pin-name")?.textContent)).toEqual([
+			"Sofie",
+			"Mads",
+			"Person4",
+			"Person5",
+			"Person6",
+		]);
+		expect(cards[1]?.querySelector(".rail-count")?.textContent).toBe("3");
+		expect(cards[1]?.getAttribute("aria-label")).toBe("Mads Berg · Unread: 3");
+		expect(group.querySelector(".rail-row-member")).toBeNull();
+	});
+
+	it("shows no members alone in the company, or on a cloud without member chats", async () => {
+		const alone = rail({ members: [ann] });
+		await alone.controller.memberChats.refresh();
+		await settle();
+		expect(alone.element.querySelector(".rail-members")).toBeNull();
+		expect(alone.rpc).not.toHaveBeenCalled();
+		const old = rail();
+		old.rpc.mockImplementation(async (name: string) => {
+			throw new CloudRpcError(name, { message: "missing", code: "PGRST202" }, 404);
+		});
+		await old.controller.memberChats.refresh();
+		await settle();
+		expect(old.controller.store.get().memberChatsUnavailable).toBe(true);
+		expect(old.element.querySelector(".rail-members")).toBeNull();
+	});
+
+	it("reads the chats again when the cloud hints, and when someone joins", async () => {
+		vi.useFakeTimers();
+		const { f, controller, rpc } = rail();
+		await controller.start();
+		const lists = () => rpc.mock.calls.filter((call) => call[0] === "qorpera_list_member_chats").length;
+		// start() reads the team (the fixture's, with nobody else): nothing to read yet.
+		controller.store.set({ team: { ...team, members: people } });
+		await controller.memberChats.refresh();
+		const before = lists();
+		f.hints.get("qorpera_member_messages")?.();
+		await vi.advanceTimersByTimeAsync(200);
+		expect(lists()).toBe(before + 1);
+		vi.spyOn(f.api, "getTeam").mockResolvedValue({ ...team, members: [...people, member(id(66), "New Person")] });
+		await controller.refreshTeam();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(lists()).toBe(before + 2);
+	});
+});
+
+describe("the app with a member's chat", () => {
+	it("opens the chat from its address, marks its contact, and leads a link to oneself home", async () => {
+		const address = `#/c/${profileA.profileId}/member/${sofie}`;
+		history.replaceState(null, "", `/${address}`);
+		vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("No cloud transport in this UI fixture")));
+		HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) {
+			this.open = true;
+		};
+		const f = fixture();
+		vi.spyOn(f.api, "getTeam").mockResolvedValue({ ...team, members: people });
+		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string, args: Record<string, unknown> = {}) => {
+			if (name === "qorpera_list_member_chats")
+				return { schema: "qorpera.member-chats/v1", chats: [summary(sofie), summary(mads)] };
+			if (name === "qorpera_read_member_chat")
+				return {
+					schema: "qorpera.member-chat/v1",
+					...page(String(args.p_user_id), args.p_user_id === sofie ? [message(1, sofie, "Hello Ann")] : []),
+				};
+			if (name === "qorpera_mark_member_chat_read")
+				return { schema: "qorpera.member-chat-read/v1", userId: args.p_user_id, readSeq: args.p_seq };
+			throw new Error("Unexpected RPC");
+		});
+		const root = document.createElement("div");
+		document.body.append(root);
+		cleanup.push(mountApplication(root, f.cloud, f.api));
+		await vi.waitFor(() =>
+			expect(root.querySelector(".member-thread article.message .text")?.textContent).toBe("Hello Ann"),
+		);
+		// The thread's frame, as an agent's chat has it, and the contact lit in the rail.
+		expect(root.querySelector(".frame")?.classList.contains("has-thread")).toBe(true);
+		await vi.waitFor(() =>
+			expect(root.querySelector(".rail-members > a.active")?.getAttribute("data-member-id")).toBe(sofie),
+		);
+		// Seen by this member: the cloud is told.
+		expect(vi.mocked(f.cloud.rpc).mock.calls.some((call) => call[0] === "qorpera_mark_member_chat_read")).toBe(true);
+		// Another contact opens another chat in the same place.
+		root.querySelector<HTMLAnchorElement>(`.rail-members > a[data-member-id="${mads}"]`)!.click();
+		location.hash = `#/c/${profileA.profileId}/member/${mads}`;
+		await vi.waitFor(() => expect(root.querySelector(".member-chat-empty strong")?.textContent).toBe("Mads Berg"));
+		expect(root.querySelectorAll(".member-thread")).toHaveLength(1);
+		// A link to oneself is no chat: it leads to the company's home.
+		location.hash = `#/c/${profileA.profileId}/member/${me}`;
+		await vi.waitFor(() => expect(location.hash).toBe(`#/c/${profileA.profileId}`));
+		await vi.waitFor(() => expect(root.querySelector(".member-thread")).toBeNull());
+	});
+});
+
+describe("the member chat's address", () => {
+	it("is the company's, with the member's id", () => {
+		const route: Route = { name: "company", profileId: profileA.profileId, section: "member", id: sofie };
+		expect(parseRoute(`#/c/${profileA.profileId}/member/${sofie}`)).toEqual(route);
+		expect(routeHash(route)).toBe(`#/c/${profileA.profileId}/member/${sofie}`);
+		// Without a member it is the company's home.
+		expect(parseRoute(`#/c/${profileA.profileId}/member`)).toEqual({
+			name: "company",
+			profileId: profileA.profileId,
+			section: "home",
+		});
+	});
+});

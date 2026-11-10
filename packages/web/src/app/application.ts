@@ -13,6 +13,7 @@ import { interfacePageCalls } from "../cloud/interface-pages.ts";
 import { interfaceSupervisionCalls } from "../cloud/interface-supervisions.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
+import { UUID_PATTERN } from "../cloud/parse.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
 import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
@@ -67,6 +68,7 @@ import { GroupDetails } from "./views/group-details.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { renderInterface } from "./views/interface.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
+import { MemberChatView } from "./views/member-chat.ts";
 import {
 	hasWebsiteIdea,
 	keepWebsiteIdea,
@@ -425,6 +427,8 @@ export function mountApplication(
 	let computer: WebCompanyComputer | undefined;
 	let computerPanels: ComputerPanels | undefined;
 	let conversation: ConversationView | undefined;
+	/** The chat with another member on screen, and the company it is in. */
+	let memberChat: { view: MemberChatView; company: CompanyController } | undefined;
 	/** The agent or group chat card opened from the rail, and what an agent card asked for once its chat is on screen. */
 	let agentCard: AgentDetails | GroupDetails | undefined;
 	let agentPage: { agentId: string; page: AgentPage; until: number } | undefined;
@@ -553,6 +557,8 @@ export function mountApplication(
 		executionNotices.replaceChildren();
 		conversation?.dispose();
 		conversation = undefined;
+		memberChat?.view.dispose();
+		memberChat = undefined;
 		appPage?.dispose();
 		appPage = undefined;
 		conceptsView?.dispose();
@@ -589,6 +595,8 @@ export function mountApplication(
 		executionNotices.replaceChildren();
 		unsubscribeCompany?.();
 		conversation?.dispose();
+		memberChat?.view.dispose();
+		memberChat = undefined;
 		newConversation?.dispose();
 		company?.stop();
 		pendingCompany = undefined;
@@ -843,7 +851,8 @@ export function mountApplication(
 		}
 		frame.classList.toggle(
 			"has-thread",
-			route.name === "company" && (route.section === "chat" || route.section === "new"),
+			route.name === "company" &&
+				(route.section === "chat" || route.section === "new" || route.section === "member"),
 		);
 		// The Concepts viewer is full screen: no rail and no top bar, its own side panel instead.
 		frame.classList.toggle("has-concepts", route.name === "company" && route.section === "concepts");
@@ -949,7 +958,8 @@ export function mountApplication(
 				route.section === "home" ||
 				route.section === "chat" ||
 				route.section === "staff" ||
-				route.section === "new"
+				route.section === "new" ||
+				route.section === "member"
 			)
 				showThreadSkeleton(t("Opening company"));
 			else replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
@@ -1217,6 +1227,8 @@ export function mountApplication(
 			mail = undefined;
 			closeSettings(false);
 			conversation?.dispose();
+			memberChat?.view.dispose();
+			memberChat = undefined;
 			newConversation?.dispose();
 			appPage?.dispose();
 			appPage = undefined;
@@ -1451,6 +1463,10 @@ export function mountApplication(
 			conversation?.dispose();
 			conversation = undefined;
 			controller.setOpenSession(undefined);
+		}
+		if (route.section !== "member") {
+			memberChat?.view.dispose();
+			memberChat = undefined;
 		}
 		// Where this tab is in the rail, for the other members' rails (a conversation says its own: company.ts).
 		controller.setOpenPlace(
@@ -1768,6 +1784,32 @@ export function mountApplication(
 				// Asked for from an agent's card before its chat was open: shown once the chat knows its agent.
 				if (agentPage && (Date.now() > agentPage.until || conversation.show(agentPage.agentId, agentPage.page)))
 					agentPage = undefined;
+				return;
+			}
+			case "member": {
+				// This member's chat with another member of the company. A link to oneself, or to no member's id, leads home.
+				const userId = route.id?.toLowerCase() ?? "";
+				if (!UUID_PATTERN.test(userId) || userId === controller.userId) {
+					navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }, true);
+					return;
+				}
+				if (!state.team) {
+					showThreadSkeleton(t("Opening company"));
+					return;
+				}
+				if (memberChat?.view.userId !== userId || memberChat.company !== controller) {
+					memberChat?.view.dispose();
+					memberChat = {
+						view: new MemberChatView(controller, userId, () => setNavigationOpen(!navigationOpen)),
+						company: controller,
+					};
+					replace(main, memberChat.view.el);
+					if (!frame.inert) memberChat.view.focus();
+				} else {
+					if (!main.contains(memberChat.view.el)) replace(main, memberChat.view.el);
+					memberChat.view.update();
+				}
+				memberChat.view.setNavigationOpen(navigationOpen);
 				return;
 			}
 			case "app": {

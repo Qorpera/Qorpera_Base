@@ -456,6 +456,19 @@ label > input, label > select { font-weight: 400; }
 	min-height: 51px; padding: 3px 8px 3px 12px; border-radius: 6px; color: var(--text);
 }
 .rail-row-agent, .rail-row-group { --rail-row-figure: 50px; min-height: 63.75px; }
+/* The company's other members, under the Co-Founder (Jonas, 10 Nov 2026): each a contact with their face where an agent
+ * has a figure, a green dot while they are online and the count of their unread messages. */
+.rail-members { display: grid; gap: 0; }
+.rail-row-member { --rail-row-figure: 50px; min-height: 63.75px; }
+.rail-row-member .person-avatar { width: 44px; height: 44px; font-size: 15px; }
+:is(.rail-row-member, .rail-pin-member) .person-online-dot { right: 0; bottom: 0; width: 13px; height: 13px; box-shadow: 0 0 0 2px var(--rail); }
+:is(.rail-row-member, .rail-pin-member):hover .person-online-dot { box-shadow: 0 0 0 2px var(--rail-hover); }
+:is(.rail-row-member, .rail-pin-member).active .person-online-dot { box-shadow: 0 0 0 2px var(--rail-selection); }
+:is(.rail-row-member, .rail-pin-member) .rail-mention { top: 0; right: 0; }
+:is(.rail-row-member, .rail-pin-member).active .rail-mention { background: #fff; color: var(--rail-selection); box-shadow: 0 0 0 2px var(--rail-selection); }
+/* More than three other members: square cards like the pinned agents', so the agents stay in sight. */
+.rail-members.is-cards { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 6px; padding: 0 0 10px; }
+.rail-pin-member .person-avatar { width: 48px; height: 48px; font-size: 16px; }
 /* A page hidden from the rail, in Hidden: a button that opens its menu. */
 .rail-row-page { width: 100%; border: 0; background: none; font: inherit; text-align: left; cursor: pointer; }
 /* The Sites page (#/c/<id>/sites): its globe beside the title and lead. */
@@ -532,6 +545,7 @@ label > input, label > select { font-weight: 400; }
 /* Collapsed, the pinned cards are figures in the column and groups of agents part with a
  * short hairline, as wide as a figure (renderRail marks the groups that get one). */
 .rail-compact .rail-pinned { flex-direction: column; align-items: center; padding-bottom: 4px; }
+.rail-compact .rail-members.is-cards { flex-direction: column; flex-wrap: nowrap; align-items: center; padding-bottom: 4px; }
 .rail-compact .rail-pin { width: auto; height: auto; padding: 5px; }
 .rail-compact .rail-pin-name, .rail-compact .rail-section-title { display: none; }
 /* Collapsed, hidden agents stay out of the figure column; widen the rail to reach them. */
