@@ -205,7 +205,14 @@ checks the request and puts it to the member on a **bar it draws outside the app
 - One bar at a time: while one is open another request is refused at once. After three "Not now" in a row the app is
   refused without a bar until the member reloads it (Reload, or opening the app again); a yes starts the count again.
 - While a bar is open the page's Escape is not passed on (`AppFrame.holdEscape`).
-- A request whose page is put away (reloaded, changed, left) before the member chose is put away unsaved.
+- A request whose page is put away (reloaded, changed, left) before the member chose is put away unsaved, and so is
+  one whose app's manifest changed meanwhile. What a page may read and ask for follows the manifest as it is now,
+  also under a page that stays as it is: `writes` taken away refuses the next request at once, `writes` added works
+  without a Reload. A request still being checked when the page or the manifest changes is refused when its check
+  ends, before anything is shown (`AppPanel` serves each frame and each version of the manifest with its own bridge).
+- However much a request holds, the bar stays within the screen: its lines scroll inside it (at most 40% of the
+  window's height) and both buttons stay in reach. Checked in a browser at 390 px wide with twelve cells of 500
+  characters.
 - The bar then says how it went: "Sent to <agent>", "Saved", or why not. The page's promise resolves `{saved: true}`
   or rejects with the reason: not now, another request waits, asked three times, or the refusal's own words.
 
@@ -287,6 +294,8 @@ Step 5 builds the writes behind r1's gate. Each point of H3, and L3, as built (Â
 | H2's last line: refuse long values unless shown in full | every value is shown in full |
 | L3 ignore the page's Escape while a bar is open | `AppFrame.holdEscape` |
 | (added) the row may change while the bar is open | the change is planned again at the write and saved only if it is the one shown |
+| (added, review of the build) the manifest or the page may change while a request is checked or waits | each frame and each version of the manifest has its own bridge; a request of an earlier one is put away or refused before the bar |
+| (added, review of the build) a request may be longer than the screen | the bar's lines scroll inside it; both buttons stay in reach |
 | (added) a page must not move people or agents | `needs_yes`, `member`, `agent` and `agents` columns and the table `areas` are refused |
 
 ## 7. Steps

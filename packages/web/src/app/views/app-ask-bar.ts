@@ -17,6 +17,8 @@ import { AppActionRefused, type AppAsk, type AppGate, type AppGateOutcome } from
  *   in the page stays in the page.
  * - One bar at a time: while one is open another request is refused at once. After three Not now in a row the app asks
  *   no more until the member reloads it.
+ * - However much a request holds, the bar stays within the screen: its lines scroll inside it and both buttons stay
+ *   within reach.
  * - The member sees how it went: saved, or why not. */
 
 export interface AppAskBarHost {
@@ -243,6 +245,7 @@ export class AppAskBar implements AppGate {
 				},
 			);
 		});
+		const lines = this.#lines(ask);
 		replace(
 			this.el,
 			h(
@@ -250,11 +253,13 @@ export class AppAskBar implements AppGate {
 				{ class: "app-ask-figure", "aria-hidden": "true" },
 				ask.kind === "answer" ? agentFigure(agent, name, { size: 30, activity: "Waiting" }) : this.#host.emblem(),
 			),
-			h("div", { class: "app-ask-copy" }, title, this.#lines(ask)),
+			h("div", { class: "app-ask-copy" }, title, lines),
 			h("div", { class: "app-ask-buttons" }, later, yes),
 		);
 		this.el.hidden = false;
 		this.el.classList.remove("is-settled");
+		// Lines longer than the bar may be scroll inside it (styles/conversation.css): the keyboard reaches them too.
+		if (lines.scrollHeight > lines.clientHeight) lines.tabIndex = 0;
 		this.#host.open(true);
 		// Out of the page and onto the safe answer, so Enter never allows.
 		later.focus({ preventScroll: true });
