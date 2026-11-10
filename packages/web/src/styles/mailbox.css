@@ -391,11 +391,11 @@ span.mailbox-open { cursor: default; }
 }
 .mailbox-manage .connection-add-area { gap: 14px; padding: 14px var(--manage-end) 4px var(--manage-start); }
 .mailbox-manage .hook-form { gap: 10px; width: 100%; max-width: 520px; }
-.mailbox-manage :is(.hook-form-row, .hook-form > input, .service-token) {
+.mailbox-manage :is(.hook-form-row, .service-token) {
 	min-height: 44px; padding: 0 16px; border: 0; border-radius: 12px; background: var(--hover); color: var(--text);
 	font-size: 15px; transition: background var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
 }
-.mailbox-manage :is(.hook-form-row:focus-within, .hook-form > input:focus-visible, .service-token:focus-visible) {
+.mailbox-manage :is(.hook-form-row:focus-within, .service-token:focus-visible) {
 	outline: none; background: var(--bg); box-shadow: 0 0 0 1px var(--border-strong), 0 2px 8px rgba(0, 0, 0, 0.12);
 }
 .mailbox-manage .hook-form-row input {

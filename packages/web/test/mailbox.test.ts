@@ -279,12 +279,15 @@ describe("the Inbox", () => {
 		await vi.waitFor(() => expect(button(none.main, "Add mailbox")).toBeDefined());
 		button(none.main, "Add mailbox")!.click();
 		const form = none.main.querySelector<HTMLFormElement>("#hook-form-mailbox")!;
+		// The name is all the form asks for.
+		expect([...form.querySelectorAll("input")].map((field) => field.getAttribute("aria-label"))).toEqual([
+			"Mailbox name",
+		]);
 		type(form.querySelector('input[aria-label="Mailbox name"]')!, "hello");
-		type(form.querySelector('input[aria-label="What it is for"]')!, "Customer questions");
 		none.fake.addresses = [ADDRESS];
 		form.requestSubmit();
 		await vi.waitFor(() =>
-			expect(none.manage.hooks.createMailbox).toHaveBeenCalledWith("hello", "Customer questions", expect.anything()),
+			expect(none.manage.hooks.createMailbox).toHaveBeenCalledWith("hello", "hello", expect.anything()),
 		);
 		await vi.waitFor(() => expect(none.main.querySelector(".mailbox-tabs")).not.toBeNull());
 	});

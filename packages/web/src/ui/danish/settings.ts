@@ -425,7 +425,6 @@ export const SETTINGS: Record<string, string> = {
 	"e.g. invoices": "f.eks. fakturaer",
 	"What it is for": "Hvad den er til",
 	"What it is for, e.g. new orders from the shop": "Hvad den er til, f.eks. nye ordrer fra webshoppen",
-	"What it is for, e.g. invoices from suppliers": "Hvad den er til, f.eks. fakturaer fra leverandører",
 	"Lowercase letters, digits and hyphens, starting with a letter. The company's agents read what it is for when something arrives.":
 		"Små bogstaver, tal og bindestreger, og den starter med et bogstav. Virksomhedens agenter læser, hvad den er til, når der kommer noget.",
 	"The part before the @: lowercase letters, digits, dots, hyphens and underscores.":
