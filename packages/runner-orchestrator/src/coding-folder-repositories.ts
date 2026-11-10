@@ -1,4 +1,5 @@
 import type { CloudCodingRepository } from "@qorpera/contracts";
+import type { CodeChangePath, CodePictureChecked } from "./code-host-jobs-stand-in.ts";
 import type { CodingSessionClaim } from "./coding-executor.ts";
 import type { CodingBrokerGitRunner } from "./coding-git.ts";
 import type { LxdCodingMachineBinding } from "./coding-machine.ts";
@@ -31,6 +32,10 @@ export interface CodingFolderRepositorySession {
 		signal: AbortSignal,
 	): Promise<T>;
 	readonly runGit?: CodingBrokerGitRunner;
+	/** Reports one landing of the session's turn, or one that was refused, to the repository's change record
+	 * (`qorpera_record_code_change`, with the claim's worker and lease), and answers what the kernel made of it and the
+	 * change's number when it has one. Absent: this host records no changes. */
+	recordChange?(report: CodeChangeReport, signal: AbortSignal): Promise<{ state: string; change: number | null }>;
 }
 
 export interface CodingFolderRepositories {
@@ -44,8 +49,14 @@ export interface CodingFolderRepositories {
 	 * its default branch's commit, which a session's first turn pins as its base. Absent: no repository is kept here. */
 	start?(session: CodingFolderStart, signal: AbortSignal): Promise<{ baseSha: string }>;
 	/** The session's submitted commit landed on the default branch of a repository kept in Qorpera. Rejects with
-	 * CodingLandConflict (coding-executor.ts) when it conflicts with the default branch. */
-	land?(session: CodingFolderRepositorySession, headSha: string, signal: AbortSignal): Promise<CodingLanded>;
+	 * CodingLandConflict (coding-executor.ts) when it conflicts with the default branch. `picture` is the screenshot the
+	 * session named with its hand-in, by its path in the repository: the landing checks it in the commit that lands. */
+	land?(
+		session: CodingFolderRepositorySession,
+		headSha: string,
+		signal: AbortSignal,
+		options?: { picture?: string },
+	): Promise<CodingLanded>;
 }
 
 /** What a start needs: the claim, and its run authority (no base yet, no worktree, no token). */
@@ -59,6 +70,32 @@ export interface CodingLanded {
 	readonly state: "fast-forward" | "merged" | "unchanged";
 	/** The default branch's commit after the landing. */
 	readonly mainSha: string;
+	/** How many paths differ between the default branch before and after the landing; 0 when nothing changed. */
+	readonly filesChanged: number;
+	/** The landing's number in the repository's change record, or null when the kernel gave it none or was not heard. */
+	readonly change: number | null;
+}
+
+/** What the executor reports of one landing (`qorpera.code-change-report/v1`, own code storage step 2b), with exactly
+ * these keys. `inLine`: made inside the landing's own job, while the company's line of code host jobs was held, so the
+ * default branch cannot have moved again. `landed`: `mainBefore` and `mainAfter` are the default branch before and
+ * after. `unchanged`: `mainBefore` is the default branch now, `mainAfter` the commit of it that first held `headSha`.
+ * `conflict` and `refused` never went in: they name no commit of the default branch, and say why in `refusal`. */
+export interface CodeChangeReport {
+	schema: "qorpera.code-change-report/v1";
+	state: "landed" | "unchanged" | "conflict" | "refused";
+	inLine: boolean;
+	how: "fast-forward" | "merged" | null;
+	headSha: string;
+	mainBefore: string | null;
+	mainAfter: string | null;
+	filesChanged: number | null;
+	/** The first paths that differ, at most 50; `pathsMore` counts the rest. */
+	paths: CodeChangePath[] | null;
+	pathsMore: number;
+	picture: CodePictureChecked | null;
+	/** The code host's own code and the paths it named, at most 20. */
+	refusal: { code: string; paths: string[] } | null;
 }
 
 /** Where a coding machine mounts its session's view of the company folder, and where the session's commands start
