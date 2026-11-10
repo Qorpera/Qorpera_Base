@@ -1973,6 +1973,22 @@ describe("conversation UI boundaries", () => {
 			"Try again",
 			"Dismiss",
 		]);
+		// The agent's turn ended without its final send (10 November 2026): it did not answer, nothing was refused, and
+		// trying again is the offer.
+		f.company.store.set({
+			activity: [run],
+			recoveries: {
+				[run.runId]: details("Native provider bridge request failed (422) [code=NATIVE_PUBLIC_COMPLETION:UNKNOWN]"),
+			},
+		});
+		await settle();
+		expect(card()?.querySelector(".run-failure-reason")?.textContent).toBe(
+			"The agent finished without sending its answer. The problem is on Qorpera's side.",
+		);
+		expect([...(card()?.querySelectorAll("button") ?? [])].map((item) => item.textContent)).toEqual([
+			"Try again",
+			"Dismiss",
+		]);
 		// The card is one quiet line, like a company notice: no big mark, no rule.
 		expect(card()?.querySelector(".run-failure-mark")).toBeNull();
 		expect(card()?.querySelector(".run-failure-rule")).toBeNull();
