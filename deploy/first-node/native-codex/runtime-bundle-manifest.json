@@ -323,7 +323,7 @@
     "packages/runner-orchestrator/src/abort-scope.ts": "a89e2aab6a97001439cdf006dc70664161369bd76e8d7d5eaf24156f850bcb37",
     "packages/runner-orchestrator/src/agent-plug.ts": "637c0d3498f20aa41d9e41a6eb8e97175ca1ccbac8e78feee684ad372432e32d",
     "packages/runner-orchestrator/src/code-bundle-store.ts": "deb1a852b379afbe7d83271228784136ee2ad87ad27b2afe752a8ea5f86c2551",
-    "packages/runner-orchestrator/src/code-host-care.ts": "8997f41425f70815ba2f7c146d9028e47f2c6adbcd8c26a762aac942c15580a7",
+    "packages/runner-orchestrator/src/code-host-care.ts": "53ab91a44bea71cd5ec78de3b1e159f1ca185f6d5a1c296d8b13f9d9286aabeb",
     "packages/runner-orchestrator/src/code-host-jobs.ts": "dc1280452a1a6a59800a3c2c92b7412a9dd87cb199cf542bf9dba23ab22379c8",
     "packages/runner-orchestrator/src/code-host-repositories.ts": "ae9368aa53e1429a99ad12bfe18d02c49c1b72edf6992860c240770c06588f2d",
     "packages/runner-orchestrator/src/code-host-seed.ts": "a94a5fa30ef8b2ffea341774203b82f973881d4963572a8b6858a22f2e1c0469",
