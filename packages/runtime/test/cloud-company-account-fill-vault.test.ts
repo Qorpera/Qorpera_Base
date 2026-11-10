@@ -6,9 +6,11 @@ import {
 import {
 	type CompanyAccountAuthority,
 	type CompanyAccountFillRequest,
+	type CompanyAccountMachineFillRequest,
 	CompanyAccountVault,
 	parseCompanyAccountFillAnswer,
 	parseCompanyAccountFillRequest,
+	parseCompanyAccountMachineFillRequest,
 } from "@qorpera/runtime/cloud-company-account-vault";
 import { companyAccountFields, companyAccountTotpCode } from "@qorpera/runtime/cloud-company-accounts";
 import {
@@ -331,5 +333,225 @@ describe("company account fill over the broker", () => {
 				"Cloud secret broker rejected the company account fill",
 			);
 		expect(f.authority.readCompanyAccountFill).toHaveBeenCalledTimes(1);
+	});
+});
+
+// 20260930710000: a company machine's fill. The machine's executor asks with the fill helper's key, made for this call;
+// the vault seals the value to it, bound to the machine, its placement and its boot, which the database checked.
+describe("company account fill on a machine", () => {
+	const companyMachineId = "80300000-0000-4000-8000-000000000080";
+	const placementId = "80300000-0000-4000-8000-000000000081";
+	const bootId = "80300000-0000-4000-8000-000000000082";
+	function machine(
+		options: { field?: string; context?: Record<string, unknown>; helper?: CompanyComputerFillKey } = {},
+	) {
+		const f = fixture(options.field ? { field: options.field } : {});
+		const helper = options.helper ?? new CompanyComputerFillKey();
+		const office = f.authority.readCompanyAccountFill as unknown as () => Promise<Record<string, unknown>>;
+		const read = vi.fn(async () => {
+			const { companyComputerId: _computer, computerGeneration: _generation, ...facts } = await office();
+			return {
+				...facts,
+				schema: "qorpera.company-account-machine-fill-context/v1",
+				companyMachineId,
+				placementId,
+				bootId,
+				fillPublicKey: helper.publicKey,
+				...options.context,
+			};
+		});
+		const vault = new CompanyAccountVault({
+			authority: { ...f.authority, readCompanyAccountMachineFill: read },
+			keys: f.keyring,
+			now: () => now,
+		});
+		const fillRequest = (field = options.field ?? "password"): CompanyAccountMachineFillRequest => ({
+			...request(field),
+			executorOwner: "mx-803",
+			placementId,
+			bootId,
+			fillPublicKey: helper.publicKey,
+		});
+		const identity = (field: string) =>
+			({
+				companyId,
+				companyMachineId,
+				placementId,
+				bootId,
+				receiptId,
+				accountId,
+				field,
+			}) as CompanyAccountFillIdentity;
+		return { ...f, helper, read, vault, fillRequest, identity };
+	}
+
+	it("seals the password, the login or the code now to the helper's key, bound to the machine, placement and boot", async () => {
+		for (const [field, expected] of [
+			["password", password],
+			["login", "agents@nordlys.example"],
+			["code", companyAccountTotpCode({ seed, digits: 6, period: 30, algorithm: "SHA1" }, now)],
+		] as const) {
+			const f = machine({ field });
+			const asked = f.fillRequest(field);
+			const answer = await f.vault.machineFill(asked, AbortSignal.timeout(5000));
+			expect(answer.schema, field).toBe("qorpera.company-account-fill-answer/v1");
+			expect(JSON.stringify(answer)).not.toContain(expected);
+			const box = (answer as { box: Record<string, string> }).box;
+			expect(f.helper.open(box, f.identity(field), now)).toMatchObject({
+				field,
+				value: expected,
+				hosts: ["vercel.com", "accounts.vercel.com"],
+			});
+			expect(f.read).toHaveBeenCalledWith(asked, expect.any(AbortSignal));
+			// Never for another key, boot, placement or receipt, nor as an office's box.
+			expect(() => new CompanyComputerFillKey().open(box, f.identity(field), now)).toThrow();
+			for (const other of [{ bootId: randomUUID() }, { placementId: randomUUID() }, { receiptId: randomUUID() }])
+				expect(() =>
+					f.helper.open(box, { ...f.identity(field), ...other } as CompanyAccountFillIdentity, now),
+				).toThrow();
+			expect(() =>
+				f.helper.open(
+					box,
+					{
+						companyId,
+						companyComputerId: companyMachineId,
+						computerGeneration: 1,
+						receiptId,
+						accountId,
+						field,
+					} as never,
+					now,
+				),
+			).toThrow();
+		}
+	});
+
+	it("seals nothing when the database's answer is not exactly what the executor named", async () => {
+		for (const context of [
+			{ placementId: "80300000-0000-4000-8000-000000000091" },
+			{ bootId: "80300000-0000-4000-8000-000000000092" },
+			{ fillPublicKey: new CompanyComputerFillKey().publicKey },
+			{ receiptId: "80300000-0000-4000-8000-000000000061" },
+			{ schema: "qorpera.company-account-fill-context/v1" },
+			{ companyComputerId: companyMachineId },
+			{ field: "new_password" },
+		]) {
+			const f = machine({ context });
+			await expect(
+				f.vault.machineFill(f.fillRequest(), AbortSignal.timeout(5000)),
+				JSON.stringify(context),
+			).rejects.toThrow("Company account fill unconfirmed");
+		}
+		// The database's refusals pass on in its own words; a broker without the machine read seals nothing.
+		const refused = machine();
+		refused.read.mockRejectedValueOnce(
+			Object.assign(new Error("The company has no such open account"), { code: "22023" }),
+		);
+		expect(await refused.vault.machineFill(refused.fillRequest(), AbortSignal.timeout(5000))).toEqual({
+			schema: "qorpera.company-account-refusal/v1",
+			code: "22023",
+			message: "The company has no such open account",
+		});
+		const f = fixture();
+		const without = new CompanyAccountVault({ authority: f.authority, keys: f.keyring });
+		await expect(
+			without.machineFill(
+				{ ...request(), executorOwner: "mx", placementId, bootId, fillPublicKey: f.computer.publicKey },
+				AbortSignal.timeout(5000),
+			),
+		).rejects.toThrow("Company account fill unconfirmed");
+	});
+
+	it("reads the executor's request and refuses anything else", () => {
+		const helper = new CompanyComputerFillKey();
+		const { binding, ...rest } = request();
+		const wire = {
+			schema: "qorpera.company-account-machine-fill-request/v1",
+			binding,
+			...rest,
+			executorOwner: "mx-803",
+			placementId,
+			bootId,
+			fillPublicKey: helper.publicKey,
+		};
+		expect(parseCompanyAccountMachineFillRequest(wire)).toMatchObject({
+			...rest,
+			executorOwner: "mx-803",
+			placementId,
+			bootId,
+		});
+		for (const bad of [
+			{ ...wire, schema: "qorpera.company-account-fill-request/v1" },
+			{ ...wire, value: password },
+			{ ...wire, executorOwner: "mx 803" },
+			{ ...wire, placementId: "placement" },
+			{ ...wire, fillPublicKey: "short" },
+			{ ...wire, idempotencyKey: "short" },
+		])
+			expect(() => parseCompanyAccountMachineFillRequest(bad), JSON.stringify(bad)).toThrow();
+	});
+
+	it("calls the broker's machine fill function, and serves it with the coding executor's token only", async () => {
+		const queries: Array<{ text: string; values: readonly unknown[] }> = [];
+		const postgres = new PostgresCloudSecretBrokerAuthority({
+			database: {
+				async query<Row extends Record<string, unknown>>(text: string, values: readonly unknown[]) {
+					queries.push({ text, values });
+					return { rowCount: 1, rows: [{ result: {} } as unknown as Row] };
+				},
+			},
+			brokerAuthorityId: "80300000-0000-4000-8000-000000000040",
+			brokerCapability: randomBytes(32).toString("base64url"),
+		});
+		const f = machine();
+		const call = f.fillRequest();
+		await postgres.readCompanyAccountMachineFill(call, AbortSignal.timeout(5000));
+		expect(queries[0]?.text).toBe(
+			"select public.qorpera_fill_company_account_on_machine($1::uuid,$2::text,$3::jsonb,$4::uuid,$5::text,$6::text,$7::text,$8::uuid,$9::uuid,$10::text) as result",
+		);
+		expect(queries[0]?.values.slice(2)).toEqual([
+			JSON.stringify(call.binding),
+			receiptId,
+			call.envelope,
+			createHash("sha256").update(call.idempotencyKey).digest("hex"),
+			"mx-803",
+			placementId,
+			bootId,
+			f.helper.publicKey,
+		]);
+		const authority: CloudSecretBrokerAuthority = {
+			describeCapture: vi.fn(),
+			completeCapture: vi.fn(),
+			authorizeOperation: vi.fn(),
+			authorizeRepositoryCredential: vi.fn(),
+			...f.authority,
+			readCompanyAccountMachineFill: f.read,
+		};
+		const runtimeToken = randomBytes(32).toString("base64url");
+		const codingExecutorToken = randomBytes(32).toString("base64url");
+		const service = new HttpCloudSecretBrokerService(
+			new CloudSecretBroker({ authority, keyring: f.keyring, adapters: [] }),
+			runtimeToken,
+			{ codingExecutorToken, proveBinding: vi.fn<NativeBindingProof>(async () => undefined) },
+		);
+		services.push(service);
+		const port = await service.start();
+		const post = (token: string) =>
+			fetch(`http://127.0.0.1:${port}/v1/machine-account-fills?company=${companyId}`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+				body: JSON.stringify({ schema: "qorpera.company-account-machine-fill-request/v1", ...call }),
+			});
+		const served = await post(codingExecutorToken);
+		expect(served.status).toBe(200);
+		expect(served.headers.get("cache-control")).toBe("no-store");
+		const answer = (await served.json()) as { box: Record<string, string> };
+		expect(f.helper.open(answer.box, f.identity("password"), Date.now()).value).toBe(password);
+		// The runtime token every guest holds never opens it.
+		for (const token of [runtimeToken, randomBytes(32).toString("base64url")]) {
+			const refused = await post(token);
+			expect(refused.status).toBe(404);
+		}
+		expect(f.read).toHaveBeenCalledTimes(1);
 	});
 });

@@ -302,6 +302,47 @@ describe("LXD exec pipe", () => {
 		return { stdin, state };
 	}
 
+	// 20260930710000: fill_company_account's helper prints its key, and the executor answers it on stdin while it runs.
+	it("hands each piece of stdout to the caller as it comes, so it can answer on stdin while the command runs", async () => {
+		const exec = await fake(async (io) => {
+			io.print("stdout", Buffer.from("key\n"));
+			const input = await io.input();
+			io.print("stdout", Buffer.from(`got ${input.toString()}`));
+			return 0;
+		});
+		let answer: (line: Buffer) => void = () => undefined;
+		const second = new Promise<Buffer>((resolveSecond) => {
+			answer = resolveSecond;
+		});
+		async function* stdin(): AsyncGenerator<Uint8Array> {
+			yield Buffer.from("target\n");
+			yield await second;
+		}
+		const seen: string[] = [];
+		const result = await run(exec, {
+			stdin: stdin(),
+			onStdout: (chunk) => {
+				seen.push(chunk.toString());
+				if (chunk.toString() === "key\n") answer(Buffer.from("box\n"));
+			},
+		});
+		expect(seen).toEqual(["key\n", "got target\nbox\n"]);
+		expect(result).toMatchObject({ exitCode: 0, stdout: Buffer.from("key\ngot target\nbox\n") });
+		// A caller that refuses a piece fails the call, and LXD kills the command.
+		const refused = await fake(async (io) => {
+			io.print("stdout", Buffer.from("not the helper's"));
+			return "hold";
+		});
+		await expect(
+			run(refused, {
+				onStdout: () => {
+					throw new Error("NOT_THE_HELPERS");
+				},
+			}),
+		).rejects.toThrow("NOT_THE_HELPERS");
+		await vi.waitFor(() => expect(refused.killed).toBe(true));
+	});
+
 	it("runs the command with its environment and directory and hands it its stdin, in no request body", async () => {
 		const exec = await fake(async (io) => {
 			const input = await io.input();

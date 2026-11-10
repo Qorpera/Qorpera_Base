@@ -1,0 +1,842 @@
+import { existsSync } from "node:fs";
+import { readdir, readFile, readlink } from "node:fs/promises";
+import { isUuid } from "@qorpera/contracts";
+import { type CompanyAccountFill, CompanyComputerFillKey } from "./cloud-company-account-fill-box.ts";
+import { companyAccountFillHost } from "./cloud-company-computer-account-fill.ts";
+import {
+	COMPANY_COMPUTER_SITE_SAMPLE,
+	COMPANY_COMPUTER_SITE_STOP_CODES,
+	type CompanyComputerSiteStopReason,
+	companyComputerCheckFrame,
+	companyComputerSiteStop,
+} from "./cloud-company-computer-site-stops.ts";
+
+/* fill_company_account's helper on a company machine (20260930710000; Jonas, 10 November 2026: "Build machine sign-ins").
+ * The agent opened the account's sign-in page with `desktop open` and clicked into the field. The coding executor runs
+ * this fixed program, shipped in the machine image beside the guest helper (never anything the agent wrote), as root on
+ * the boot the database named, in one exec whose stdin and stdout stay open for the exchange:
+ * 1. stdin's first line is the executor's target (qorpera_authorize_machine_account_fill): what the box is bound to and
+ *    the account's site and sign-in hosts. The helper checks the focused tab against them (below) before anything is
+ *    asked of the vault, makes an X25519 key pair in memory, and prints one line: the public half, or why not.
+ * 2. The executor asks the vault, which seals the value to that key, bound to this call's receipt and the machine's
+ *    placement and boot; stdin's second line is that box (or stdin ends: the vault refused, and the executor says why).
+ * 3. The helper opens the box in memory (only for exactly this identity on this boot, and within its lifetime), checks the
+ *    tab again against the hosts sealed inside it, types the value with CDP Input.insertText into the focused box, and
+ *    prints one line: FILLED or a refusal code. Then it waits for stdin to end and exits.
+ * The page check, as the office's (cloud-company-computer-account-fill.ts) and A1-4c's stop: the one tab whose window has
+ * the focus, its main frame on the account's site or one of its sign-in hosts over https; the focused element in that
+ * document itself (not in a frame), an input box of the field's kind; and no CAPTCHA, human check, unusual activity
+ * warning or block shown. It never prints, logs or writes the value: stdout carries the key's public half and codes only.
+ * Buffers it holds are zeroed when done; the opened value is a string, which the process drops and exits with.
+ * The agent is root on its machine: it can read the browser's memory and the page, or replace this program or the
+ * browser. What the check protects against is a value typed somewhere it should not go by mistake or by a page's doing (a
+ * look-alike or redirected site, a frame, a bot check), and the value reaching any tool output, chat, history or file.
+ * The program itself is cloud-machine-account-fill-main.ts, which only the guest package bundles: this module is
+ * imported by the runtime too (its codes), so it must never run anything when loaded. */
+
+export const MACHINE_ACCOUNT_FILL_TARGET_SCHEMA = "qorpera.machine-account-fill-target/v1";
+export const MACHINE_ACCOUNT_FILL_READY_SCHEMA = "qorpera.machine-account-fill-ready/v1";
+export const MACHINE_ACCOUNT_FILL_RESULT_SCHEMA = "qorpera.machine-account-fill-result/v1";
+/** Why the helper typed nothing (or typed and then took it back); each reaches the agent (cloud-machine-tools.ts says
+ * what to do). */
+export const MACHINE_ACCOUNT_FILL_REFUSALS = [
+	/** No desktop runs on the machine. */
+	"DESKTOP_NOT_RUNNING",
+	/** No Chromium with the profile `desktop open` gives it runs on the desktop (or it stopped answering at the start). */
+	"BROWSER_NOT_OPEN",
+	/** The desktop's Chromium runs but holds no DevTools port on the loopback (started another way), or the port's answer is
+	 * not that browser's. */
+	"BROWSER_UNVERIFIED",
+	/** No tab has the focus, or more than one. */
+	"NO_FOCUSED_PAGE",
+	/** The focused tab is not on the account's site or a sign-in host of it, over https. */
+	"FILL_WRONG_SITE",
+	/** The focus is inside a frame of the page. */
+	"FILL_IN_FRAME",
+	/** The focused element is not a box of the field's kind, or none has the focus. */
+	"FILL_WRONG_BOX",
+	"SITE_STOP_CAPTCHA",
+	"SITE_STOP_HUMAN_CHECK",
+	"SITE_STOP_UNUSUAL_ACTIVITY",
+	"SITE_STOP_BLOCKED",
+	/** The value did not land whole in the box (the page reshaped it or moved the focus): it was emptied. */
+	"FILL_UNCONFIRMED",
+	/** The value went where it cannot be emptied: the tab must go. */
+	"FILL_LOST",
+	/** The vault's box did not open here: another identity, another boot, or past its lifetime. */
+	"FILL_BOX_REFUSED",
+	/** stdin ended without a box: the executor says why (the vault's refusal). */
+	"FILL_NO_BOX",
+	/** The helper's own deadline passed. */
+	"FILL_EXPIRED",
+	/** The browser stopped answering before anything was typed. */
+	"BROWSER_NOT_ANSWERING",
+	/** The machine restarted since the executor read where it runs. */
+	"MACHINE_BOOT_CHANGED",
+	/** The target on stdin is not one. */
+	"FILL_TARGET_INVALID",
+] as const;
+export type MachineAccountFillRefusal = (typeof MACHINE_ACCOUNT_FILL_REFUSALS)[number];
+export type MachineAccountFillCode = "FILLED" | MachineAccountFillRefusal;
+
+/** What a field's box must be, as the office's (cloud-company-computer-account-fill.ts). */
+const BOX_TYPES: Readonly<Record<"login" | "password" | "code", readonly string[]>> = {
+	login: ["text", "email", "tel"],
+	password: ["password"],
+	code: ["text", "tel", "number", "password"],
+};
+/** The helper's whole run, from its start: within the executor's deadline (company-machine-host.ts). */
+export const MACHINE_ACCOUNT_FILL_MS = 20_000;
+/** The target on stdin is small; a box is five base64url parts of at most a few KiB. */
+const TARGET_MAX_BYTES = 8192;
+const BOX_MAX_BYTES = 16384;
+
+/** The focused element of a tab's own document, as the page check reads it. */
+export type MachineFillFocus =
+	| { readonly kind: "none" }
+	| { readonly kind: "frame" }
+	| { readonly kind: "other" }
+	| { readonly kind: "input"; readonly type: string; readonly usable: boolean };
+
+/** One tab of the desktop's Chromium, as the helper reads and types into it. */
+export interface MachineFillPage {
+	/** The browser's id of the tab. */
+	readonly id: string;
+	/** The tab's main frame address, as the browser keeps it. */
+	address(): Promise<string>;
+	/** What the tab shows that asks for a person: frames of a CAPTCHA or human check service first, then its title and
+	 * the top of its text (A1-4c). */
+	stop(): Promise<CompanyComputerSiteStopReason | undefined>;
+	/** The element that has the focus in the tab's own document; the next insert types only into it. */
+	focus(): Promise<MachineFillFocus>;
+	/** Selects the text of the box `focus` read, if it still has the focus, inserts the value where the focus is (CDP
+	 * Input.insertText), and says where it went: whole in that box, emptied from it or from another box, or lost. */
+	insert(value: string): Promise<"filled" | "moved" | "emptied" | "lost">;
+}
+
+export interface MachineFillBrowser {
+	/** The one tab whose window has the focus, or why none. */
+	focusedPage(): Promise<MachineFillPage | "none" | "many">;
+	close(): void;
+}
+
+export interface MachineAccountFillPorts {
+	/** The kernel's boot id (/proc/sys/kernel/random/boot_id). */
+	bootId(): Promise<string>;
+	/** The desktop's Chromium through the DevTools port `desktop open` gave it, or why not. */
+	browser(
+		signal: AbortSignal,
+	): Promise<MachineFillBrowser | "DESKTOP_NOT_RUNNING" | "BROWSER_NOT_OPEN" | "BROWSER_UNVERIFIED">;
+	/** A key pair for this call, in memory only (the tests' own may differ). */
+	key(): CompanyComputerFillKey;
+	now(): number;
+}
+
+const TARGET_KEYS = [
+	"accountId",
+	"bootId",
+	"companyId",
+	"companyMachineId",
+	"field",
+	"hosts",
+	"placementId",
+	"receiptId",
+	"schema",
+].join();
+const HOST = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
+interface Target {
+	readonly companyId: string;
+	readonly companyMachineId: string;
+	readonly placementId: string;
+	readonly bootId: string;
+	readonly receiptId: string;
+	readonly accountId: string;
+	readonly field: "login" | "password" | "code";
+	readonly hosts: readonly string[];
+}
+
+/** The executor's target, or null: every field the database answers, and nothing else. */
+export function parseMachineAccountFillTarget(value: unknown): Target | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const input = value as Record<string, unknown>;
+	if (Object.keys(input).sort().join() !== TARGET_KEYS || input.schema !== MACHINE_ACCOUNT_FILL_TARGET_SCHEMA)
+		return null;
+	const ids = [
+		input.companyId,
+		input.companyMachineId,
+		input.placementId,
+		input.bootId,
+		input.receiptId,
+		input.accountId,
+	];
+	const hosts = input.hosts;
+	if (
+		!ids.every((id) => isUuid(id)) ||
+		(input.field !== "login" && input.field !== "password" && input.field !== "code") ||
+		!Array.isArray(hosts) ||
+		hosts.length < 1 ||
+		hosts.length > 5 ||
+		!hosts.every((host) => typeof host === "string" && host.length <= 253 && HOST.test(host)) ||
+		new Set(hosts).size !== hosts.length
+	)
+		return null;
+	return {
+		companyId: input.companyId as string,
+		companyMachineId: input.companyMachineId as string,
+		placementId: input.placementId as string,
+		bootId: input.bootId as string,
+		receiptId: input.receiptId as string,
+		accountId: input.accountId as string,
+		field: input.field,
+		hosts: [...(hosts as string[])],
+	};
+}
+
+/** Why a tab may not get the field's value now, or undefined: the site over https, no bot check, a box of the field's
+ * kind with the focus in the tab's own document. */
+async function pageRefusal(
+	page: MachineFillPage,
+	hosts: readonly string[],
+	field: Target["field"],
+): Promise<MachineAccountFillRefusal | undefined> {
+	if (companyAccountFillHost(await page.address(), hosts) === null) return "FILL_WRONG_SITE";
+	const stop = await page.stop();
+	if (stop) return COMPANY_COMPUTER_SITE_STOP_CODES[stop] as MachineAccountFillRefusal;
+	const focus = await page.focus();
+	if (focus.kind === "frame") return "FILL_IN_FRAME";
+	if (focus.kind !== "input" || !focus.usable || !BOX_TYPES[field].includes(focus.type)) return "FILL_WRONG_BOX";
+	return undefined;
+}
+
+/** Lines off stdin, each within its bound: the bytes up to a newline, or null once stdin ends (or a line is too long). */
+class LineReader {
+	readonly #source: AsyncIterator<Buffer | string>;
+	#held: Buffer = Buffer.alloc(0);
+	#ended = false;
+	constructor(stdin: AsyncIterable<Buffer | string>) {
+		this.#source = stdin[Symbol.asyncIterator]();
+	}
+	async line(maxBytes: number): Promise<Buffer | null> {
+		for (;;) {
+			const end = this.#held.indexOf(10);
+			if (end >= 0) {
+				const line = Buffer.from(this.#held.subarray(0, end));
+				const rest = Buffer.from(this.#held.subarray(end + 1));
+				this.#held.fill(0);
+				this.#held = rest;
+				if (line.length <= maxBytes) return line;
+				line.fill(0);
+				return null;
+			}
+			if (this.#held.length > maxBytes || this.#ended) {
+				this.#held.fill(0);
+				this.#held = Buffer.alloc(0);
+				return null;
+			}
+			const next = await this.#source.next();
+			if (next.done) {
+				this.#ended = true;
+				continue;
+			}
+			const chunk = typeof next.value === "string" ? Buffer.from(next.value) : next.value;
+			const joined = Buffer.concat([this.#held, chunk]);
+			this.#held.fill(0);
+			if (typeof next.value !== "string") chunk.fill(0);
+			this.#held = joined;
+		}
+	}
+	/** Reads stdin to its end, keeping nothing. */
+	async drain(): Promise<void> {
+		this.#held.fill(0);
+		this.#held = Buffer.alloc(0);
+		if (this.#ended) return;
+		for (;;) {
+			const next = await this.#source.next();
+			if (next.done) break;
+			if (typeof next.value !== "string") next.value.fill(0);
+		}
+		this.#ended = true;
+	}
+}
+
+function json(line: Buffer | null): unknown {
+	if (!line) return null;
+	try {
+		return JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(line));
+	} catch {
+		return null;
+	} finally {
+		line.fill(0);
+	}
+}
+
+/** Resolves when the signal aborts. */
+function aborted(signal: AbortSignal): Promise<"expired"> {
+	return new Promise((resolve) => {
+		if (signal.aborted) resolve("expired");
+		else signal.addEventListener("abort", () => resolve("expired"), { once: true });
+	});
+}
+
+/**
+ * One fill, as the executor runs it: the target off stdin, the page checked, the key's public half printed, the box off
+ * stdin, opened for exactly this call on this boot, the page checked against the hosts sealed in it, the value typed, a
+ * code printed. Every line it prints is the key's public half or a code; the value is never in one.
+ */
+export async function fillAccountOnMachine(options: {
+	stdin: AsyncIterable<Buffer | string>;
+	stdout: { write(text: string): unknown };
+	ports: MachineAccountFillPorts;
+	signal: AbortSignal;
+}): Promise<MachineAccountFillCode> {
+	const { ports, signal } = options;
+	const lines = new LineReader(options.stdin);
+	const say = (value: Record<string, string>) => options.stdout.write(`${JSON.stringify(value)}\n`);
+	// One result line at most, whatever ends the run first.
+	let answered: MachineAccountFillCode | undefined;
+	const result = (code: MachineAccountFillCode): MachineAccountFillCode => {
+		if (answered) return answered;
+		answered = code;
+		say({ schema: MACHINE_ACCOUNT_FILL_RESULT_SCHEMA, code });
+		return code;
+	};
+	let browser: MachineFillBrowser | undefined;
+	// Whether the value was handed to the browser: a failure after it may have left it in the box.
+	let typed = false;
+	const run = async (): Promise<MachineAccountFillCode> => {
+		const target = parseMachineAccountFillTarget(json(await lines.line(TARGET_MAX_BYTES)));
+		if (!target) return result("FILL_TARGET_INVALID");
+		const boot = (await ports.bootId()).trim();
+		if (boot !== target.bootId) return result("MACHINE_BOOT_CHANGED");
+		const opened = await ports.browser(signal);
+		if (typeof opened === "string") return result(opened);
+		browser = opened;
+		if (signal.aborted) return result("FILL_EXPIRED");
+		const page = await browser.focusedPage();
+		if (page === "none" || page === "many") return result("NO_FOCUSED_PAGE");
+		// Before the vault is asked: the tab against the account's hosts as the database names them.
+		const early = await pageRefusal(page, target.hosts, target.field);
+		if (early) return result(early);
+		if (signal.aborted) return result("FILL_EXPIRED");
+		const key = ports.key();
+		say({ schema: MACHINE_ACCOUNT_FILL_READY_SCHEMA, publicKey: key.publicKey });
+		const box = json(await lines.line(BOX_MAX_BYTES));
+		if (!box) return result("FILL_NO_BOX");
+		let fill: CompanyAccountFill;
+		try {
+			fill = key.open(
+				box,
+				{
+					companyId: target.companyId,
+					companyMachineId: target.companyMachineId,
+					placementId: target.placementId,
+					// This boot's own id: a box for another boot never opens here.
+					bootId: boot,
+					receiptId: target.receiptId,
+					accountId: target.accountId,
+					field: target.field,
+				},
+				ports.now(),
+			);
+		} catch {
+			return result("FILL_BOX_REFUSED");
+		}
+		// The same tab still has the focus, and passes again against the hosts sealed in the box.
+		const now = await browser.focusedPage();
+		if (now === "none" || now === "many" || now.id !== page.id) return result("NO_FOCUSED_PAGE");
+		const late = await pageRefusal(now, fill.hosts, target.field);
+		if (late) return result(late);
+		// Past the deadline nothing is typed: the result is already out.
+		if (signal.aborted) return result("FILL_EXPIRED");
+		typed = true;
+		const landed = await now.insert(fill.value);
+		return result(
+			landed === "filled"
+				? "FILLED"
+				: landed === "lost"
+					? "FILL_LOST"
+					: landed === "moved"
+						? "FILL_WRONG_BOX"
+						: "FILL_UNCONFIRMED",
+		);
+	};
+	try {
+		// A failure (the browser stopped answering, its connection closed) is a code too: after the value was handed over,
+		// that it may be in the box.
+		const running = run().catch(() => result(typed ? "FILL_UNCONFIRMED" : "BROWSER_NOT_ANSWERING"));
+		const outcome = await Promise.race([running, aborted(signal)]);
+		if (outcome === "expired") return result("FILL_EXPIRED");
+		// The executor ends stdin once it has the last line; reading it to its end lets the exec end cleanly.
+		await Promise.race([lines.drain().catch(() => undefined), aborted(signal)]);
+		return outcome;
+	} finally {
+		browser?.close();
+	}
+}
+
+/* The desktop's Chromium, through its DevTools port. */
+
+/** The display the desktop runs on (deploy/machine/desktop-session), and its socket. */
+const DISPLAY_SOCKET = "/tmp/.X11-unix/X1";
+/** The pinned Chromium (deploy/machine/build-machine-image.sh), and the profile `desktop open` gives it with a loopback
+ * DevTools port of the kernel's choosing (`--remote-debugging-port=0`). */
+export const MACHINE_CHROMIUM = "/usr/lib/qorpera-chromium/chrome";
+export const MACHINE_CHROMIUM_PROFILE = "/home/desktop/.config/qorpera-chromium";
+/** How long one DevTools call may take. */
+const CALL_MS = 3000;
+
+/** The user id of the desktop's account, from /etc/passwd. */
+async function desktopUid(root: string): Promise<number | null> {
+	try {
+		const line = (await readFile(`${root}/etc/passwd`, "utf8"))
+			.split("\n")
+			.find((entry) => entry.startsWith("desktop:"));
+		const uid = line?.split(":")[2];
+		return uid && /^[0-9]+$/.test(uid) ? Number(uid) : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * The DevTools port of the desktop's own Chromium, read off the kernel rather than any file a program could write: the
+ * browser process (not a renderer or helper) running the pinned Chromium as the desktop's account with the profile
+ * `desktop open` gives it, and the TCP socket it holds listening on 127.0.0.1. Of two such processes (a second `desktop
+ * open` that hands its address to the running browser and exits), the oldest is the browser. "absent" when no such browser
+ * runs; "other" when it runs but listens on no loopback port (started another way, without `desktop open`).
+ */
+export async function machineChromiumPort(
+	options: { proc?: string; root?: string; chromium?: string; profile?: string } = {},
+): Promise<{ port: number } | "absent" | "other"> {
+	const proc = options.proc ?? "/proc";
+	const chromium = options.chromium ?? MACHINE_CHROMIUM;
+	const profile = `--user-data-dir=${options.profile ?? MACHINE_CHROMIUM_PROFILE}`;
+	const uid = await desktopUid(options.root ?? "");
+	if (uid === null) return "absent";
+	const browsers: { started: bigint; sockets: Set<string> }[] = [];
+	for (const pid of (await readdir(proc)).filter((name) => /^[1-9][0-9]*$/.test(name))) {
+		try {
+			if ((await readlink(`${proc}/${pid}/exe`)) !== chromium) continue;
+			if (Number(/^Uid:\s+([0-9]+)/m.exec(await readFile(`${proc}/${pid}/status`, "utf8"))?.[1]) !== uid) continue;
+			const argv = (await readFile(`${proc}/${pid}/cmdline`, "utf8")).split("\0");
+			if (!argv.includes(profile) || argv.some((argument) => argument.startsWith("--type="))) continue;
+			// The process's start, in clock ticks since boot: field 22 of its stat, after the command name's parenthesis.
+			const stat = await readFile(`${proc}/${pid}/stat`, "utf8");
+			const started = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+			if (!started || !/^[0-9]+$/.test(started)) continue;
+			const sockets = new Set<string>();
+			for (const fd of await readdir(`${proc}/${pid}/fd`)) {
+				const link = await readlink(`${proc}/${pid}/fd/${fd}`).catch(() => "");
+				const inode = /^socket:\[([0-9]+)\]$/.exec(link)?.[1];
+				if (inode) sockets.add(inode);
+			}
+			browsers.push({ started: BigInt(started), sockets });
+		} catch {
+			// A process that ended meanwhile.
+		}
+	}
+	if (browsers.length === 0) return "absent";
+	browsers.sort((a, b) => (a.started < b.started ? -1 : a.started > b.started ? 1 : 0));
+	const browser = browsers[0] as { sockets: Set<string> };
+	try {
+		for (const line of (await readFile(`${proc}/net/tcp`, "utf8")).split("\n").slice(1)) {
+			// sl local_address rem_address st tx_queue:rx_queue tr:tm->when retrnsmt uid timeout inode
+			const fields = line.trim().split(/\s+/);
+			const local = /^0100007F:([0-9A-F]{4})$/.exec(fields[1] ?? "");
+			if (local?.[1] && fields[3] === "0A" && fields[9] && browser.sockets.has(fields[9]))
+				return { port: Number.parseInt(local[1], 16) };
+		}
+	} catch {
+		return "other";
+	}
+	return "other";
+}
+
+/** The browser's own DevTools address, as it answers on the loopback port: ws://127.0.0.1:<port>/devtools/browser/<id>. */
+async function browserAddress(port: number, signal: AbortSignal): Promise<string | null> {
+	try {
+		const answer = await fetch(`http://127.0.0.1:${port}/json/version`, {
+			redirect: "error",
+			signal: AbortSignal.any([signal, AbortSignal.timeout(CALL_MS)]),
+		});
+		if (answer.status !== 200) return null;
+		const text = await answer.text();
+		if (text.length > 8192) return null;
+		const address = (JSON.parse(text) as { webSocketDebuggerUrl?: unknown }).webSocketDebuggerUrl;
+		return typeof address === "string" &&
+			new RegExp(`^ws://127\\.0\\.0\\.1:${port}/devtools/browser/[0-9a-f-]{36}$`).test(address)
+			? address
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+type DevToolsMessage = { id?: number; result?: unknown; error?: { message?: string } };
+
+/** One DevTools connection over the global WebSocket: calls by id, events ignored. */
+class DevTools {
+	readonly #socket: WebSocket;
+	readonly #pending = new Map<number, { resolve(value: Record<string, unknown>): void; reject(error: Error): void }>();
+	#next = 1;
+	constructor(socket: WebSocket) {
+		this.#socket = socket;
+		socket.addEventListener("message", (event) => {
+			if (typeof event.data !== "string") return;
+			let message: DevToolsMessage;
+			try {
+				message = JSON.parse(event.data) as DevToolsMessage;
+			} catch {
+				return;
+			}
+			const waiting = message.id === undefined ? undefined : this.#pending.get(message.id);
+			if (!waiting || message.id === undefined) return;
+			this.#pending.delete(message.id);
+			if (message.error || !message.result || typeof message.result !== "object")
+				waiting.reject(new Error("DEVTOOLS_CALL_FAILED"));
+			else waiting.resolve(message.result as Record<string, unknown>);
+		});
+		const fail = () => {
+			for (const waiting of this.#pending.values()) waiting.reject(new Error("DEVTOOLS_CLOSED"));
+			this.#pending.clear();
+		};
+		socket.addEventListener("close", fail);
+		socket.addEventListener("error", fail);
+	}
+	static connect(url: string, signal: AbortSignal): Promise<DevTools> {
+		return new Promise((resolve, reject) => {
+			const socket = new WebSocket(url);
+			const timer = setTimeout(() => {
+				socket.close();
+				reject(new Error("DEVTOOLS_UNREACHABLE"));
+			}, CALL_MS);
+			const stop = () => {
+				clearTimeout(timer);
+				socket.close();
+				reject(new Error("DEVTOOLS_UNREACHABLE"));
+			};
+			signal.addEventListener("abort", stop, { once: true });
+			socket.addEventListener("open", () => {
+				clearTimeout(timer);
+				signal.removeEventListener("abort", stop);
+				resolve(new DevTools(socket));
+			});
+			socket.addEventListener("error", stop);
+		});
+	}
+	call(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<Record<string, unknown>> {
+		const id = this.#next++;
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.#pending.delete(id);
+				reject(new Error("DEVTOOLS_CALL_TIMEOUT"));
+			}, CALL_MS);
+			this.#pending.set(id, {
+				resolve: (value) => {
+					clearTimeout(timer);
+					resolve(value);
+				},
+				reject: (error) => {
+					clearTimeout(timer);
+					reject(error);
+				},
+			});
+			try {
+				this.#socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+			} catch {
+				this.#pending.delete(id);
+				clearTimeout(timer);
+				reject(new Error("DEVTOOLS_CLOSED"));
+			}
+		});
+	}
+	close(): void {
+		this.#socket.close();
+	}
+}
+
+/* Functions the page check runs in the tab's isolated world (its own globals, the page's document): the page's scripts
+ * cannot change what they read by replacing a built-in. */
+
+/** The element with the focus, through open shadow roots. */
+const DEEP_ACTIVE = `(() => {
+	let element = document.activeElement;
+	while (element && element.shadowRoot && element.shadowRoot.activeElement) element = element.shadowRoot.activeElement;
+	return element ?? document.body ?? document.documentElement;
+})()`;
+const DESCRIBE = `function () {
+	const tag = this.tagName;
+	if (tag === "IFRAME" || tag === "FRAME" || tag === "OBJECT" || tag === "EMBED") return { kind: "frame" };
+	if (tag === "BODY" || tag === "HTML") return { kind: "none" };
+	if (tag !== "INPUT") return { kind: "other" };
+	return { kind: "input", type: this.type, usable: !this.disabled && !this.readOnly && this.isConnected };
+}`;
+/** Whether the element (a frame of the page) is shown. */
+const VISIBLE = `function () {
+	if (!this.isConnected) return false;
+	if (typeof this.checkVisibility === "function" && !this.checkVisibility({ opacityProperty: true, visibilityProperty: true }))
+		return false;
+	const box = this.getBoundingClientRect();
+	return box.width > 0 && box.height > 0;
+}`;
+/** The frames in the document and its open shadow roots, as their elements name them, and whether each is shown. */
+const FRAMES = `(() => {
+	const found = [];
+	const visible = ${VISIBLE};
+	const walk = (root, depth) => {
+		for (const element of root.querySelectorAll("iframe, frame")) found.push({ url: element.src || "", visible: visible.call(element) });
+		if (depth < 4) for (const host of root.querySelectorAll("*")) if (host.shadowRoot) walk(host.shadowRoot, depth + 1);
+	};
+	walk(document, 0);
+	return found.slice(0, 64);
+})()`;
+const SHOWN = `(() => {
+	const text = (document.body && document.body.innerText) || "";
+	return { title: document.title, text: text.slice(0, ${COMPANY_COMPUTER_SITE_SAMPLE}), length: text.length };
+})()`;
+/** Selects the box's text, when it still has the focus, so the value replaces it. */
+const SELECT = `function () {
+	let active = document.activeElement;
+	while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+	if (active !== this) return "moved";
+	this.select();
+	return "ready";
+}`;
+/** Where the value went: whole in the box, or else emptied from the box that has it, or lost to the page. */
+const LANDED = `function (length) {
+	if (this.value.length === length) return "filled";
+	let active = document.activeElement;
+	while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+	this.value = "";
+	if (!active || active === this) return "emptied";
+	if (typeof active.value !== "string") return "lost";
+	active.value = "";
+	return "emptied";
+}`;
+
+interface FrameTree {
+	frame: { id: string; url: string };
+	childFrames?: FrameTree[];
+}
+
+/** One tab, through a flat DevTools session attached to it. */
+class DevToolsPage implements MachineFillPage {
+	readonly id: string;
+	readonly #tools: DevTools;
+	readonly #session: string;
+	#world: number | undefined;
+	#focused: string | undefined;
+	constructor(tools: DevTools, id: string, session: string) {
+		this.#tools = tools;
+		this.id = id;
+		this.#session = session;
+	}
+	async #tree(): Promise<FrameTree> {
+		return (await this.#tools.call("Page.getFrameTree", {}, this.#session)).frameTree as FrameTree;
+	}
+	/** The tab's isolated world, made once. */
+	async #context(): Promise<number> {
+		if (this.#world !== undefined) return this.#world;
+		const tree = await this.#tree();
+		const made = await this.#tools.call(
+			"Page.createIsolatedWorld",
+			{ frameId: tree.frame.id, worldName: "qorpera-account-fill", grantUniveralAccess: false },
+			this.#session,
+		);
+		if (typeof made.executionContextId !== "number") throw new Error("DEVTOOLS_CALL_FAILED");
+		this.#world = made.executionContextId;
+		return this.#world;
+	}
+	async #evaluate(expression: string, byValue = true): Promise<{ value?: unknown; objectId?: string }> {
+		let answer: Record<string, unknown>;
+		const call = async () =>
+			this.#tools.call(
+				"Runtime.evaluate",
+				{ expression, contextId: await this.#context(), returnByValue: byValue, awaitPromise: false },
+				this.#session,
+			);
+		try {
+			answer = await call();
+		} catch {
+			// A navigation ends the isolated world: make it again once.
+			this.#world = undefined;
+			answer = await call();
+		}
+		if (answer.exceptionDetails) throw new Error("DEVTOOLS_CALL_FAILED");
+		return (answer.result ?? {}) as { value?: unknown; objectId?: string };
+	}
+	async #on(objectId: string, declaration: string, args: unknown[] = []): Promise<unknown> {
+		const answer = await this.#tools.call(
+			"Runtime.callFunctionOn",
+			{
+				objectId,
+				functionDeclaration: declaration,
+				arguments: args.map((value) => ({ value })),
+				returnByValue: true,
+			},
+			this.#session,
+		);
+		if (answer.exceptionDetails) throw new Error("DEVTOOLS_CALL_FAILED");
+		return (answer.result as { value?: unknown } | undefined)?.value;
+	}
+	/** Whether the tab is shown and its window has the focus. */
+	async focused(): Promise<boolean> {
+		return (await this.#evaluate("document.visibilityState === 'visible' && document.hasFocus()")).value === true;
+	}
+	async address(): Promise<string> {
+		return (await this.#tree()).frame.url;
+	}
+	async stop(): Promise<CompanyComputerSiteStopReason | undefined> {
+		// The frames the browser keeps first (a page that does not answer still shows them): a check frame whose
+		// element's visibility cannot be read counts, as on the office.
+		const children: FrameTree[] = [];
+		const walk = (node: FrameTree) => {
+			for (const child of node.childFrames ?? []) {
+				children.push(child);
+				walk(child);
+			}
+		};
+		walk(await this.#tree());
+		for (const child of children.slice(0, 64)) {
+			if (!companyComputerCheckFrame({ url: child.frame.url })) continue;
+			let visible: boolean | undefined;
+			try {
+				const owner = await this.#tools.call("DOM.getFrameOwner", { frameId: child.frame.id }, this.#session);
+				const node = await this.#tools.call(
+					"DOM.resolveNode",
+					{ backendNodeId: owner.backendNodeId, executionContextId: await this.#context() },
+					this.#session,
+				);
+				const objectId = (node.object as { objectId?: string } | undefined)?.objectId;
+				if (objectId) visible = (await this.#on(objectId, VISIBLE)) === true;
+			} catch {
+				visible = undefined;
+			}
+			const reason = companyComputerCheckFrame({
+				url: child.frame.url,
+				...(visible === undefined ? {} : { visible }),
+			});
+			if (reason) return reason;
+		}
+		// The frames the page's own elements name, in the document and its open shadow roots.
+		const named = (await this.#evaluate(FRAMES)).value;
+		if (Array.isArray(named))
+			for (const frame of named as Array<{ url?: unknown; visible?: unknown }>) {
+				if (typeof frame.url !== "string" || typeof frame.visible !== "boolean") continue;
+				const reason = companyComputerCheckFrame({ url: frame.url, visible: frame.visible });
+				if (reason) return reason;
+			}
+		const shown = (await this.#evaluate(SHOWN)).value as { title?: unknown; text?: unknown; length?: unknown };
+		return typeof shown?.title === "string" && typeof shown.text === "string" && typeof shown.length === "number"
+			? companyComputerSiteStop({ title: shown.title, text: shown.text, length: shown.length })
+			: undefined;
+	}
+	async focus(): Promise<MachineFillFocus> {
+		const element = await this.#evaluate(DEEP_ACTIVE, false);
+		this.#focused = element.objectId;
+		if (!element.objectId) return { kind: "none" };
+		const described = (await this.#on(element.objectId, DESCRIBE)) as Record<string, unknown> | undefined;
+		if (described?.kind === "input")
+			return {
+				kind: "input",
+				type: typeof described.type === "string" ? described.type : "",
+				usable: described.usable === true,
+			};
+		return { kind: described?.kind === "frame" ? "frame" : described?.kind === "other" ? "other" : "none" };
+	}
+	async insert(value: string): Promise<"filled" | "moved" | "emptied" | "lost"> {
+		const box = this.#focused;
+		if (!box) return "moved";
+		if ((await this.#on(box, SELECT)) !== "ready") return "moved";
+		// The value goes where the focus is, as text the page's own input events carry: never through the X server.
+		await this.#tools.call("Input.insertText", { text: value }, this.#session);
+		const landed = await this.#on(box, LANDED, [value.length]);
+		return landed === "filled" || landed === "emptied" || landed === "lost" ? landed : "lost";
+	}
+}
+
+/** The desktop's Chromium, verified, with its tabs. */
+class DevToolsBrowser implements MachineFillBrowser {
+	readonly #tools: DevTools;
+	readonly #pages = new Map<string, DevToolsPage>();
+	constructor(tools: DevTools) {
+		this.#tools = tools;
+	}
+	async focusedPage(): Promise<MachineFillPage | "none" | "many"> {
+		const targets = (await this.#tools.call("Target.getTargets")).targetInfos;
+		if (!Array.isArray(targets)) return "none";
+		const focused: DevToolsPage[] = [];
+		for (const target of (targets as Array<{ targetId?: unknown; type?: unknown }>).slice(0, 64)) {
+			if (target.type !== "page" || typeof target.targetId !== "string") continue;
+			let page = this.#pages.get(target.targetId);
+			try {
+				if (!page) {
+					const attached = await this.#tools.call("Target.attachToTarget", {
+						targetId: target.targetId,
+						flatten: true,
+					});
+					if (typeof attached.sessionId !== "string") continue;
+					page = new DevToolsPage(this.#tools, target.targetId, attached.sessionId);
+					this.#pages.set(target.targetId, page);
+				}
+				if (await page.focused()) focused.push(page);
+			} catch {
+				// A tab that does not answer (asleep, closing) has no focus.
+			}
+		}
+		if (focused.length > 1) return "many";
+		return focused[0] ?? "none";
+	}
+	close(): void {
+		this.#tools.close();
+	}
+}
+
+/** The desktop's Chromium on this machine: the loopback DevTools port its browser process holds (`desktop open` starts it
+ * with one), read off the kernel, then its DevTools over that port. The paths are the tests' own when given. */
+export function machineChromium(
+	options: { socket?: string; profile?: string; proc?: string; root?: string; chromium?: string } = {},
+): MachineAccountFillPorts["browser"] {
+	return async (signal) => {
+		if (!existsSync(options.socket ?? DISPLAY_SOCKET)) return "DESKTOP_NOT_RUNNING";
+		const port = await machineChromiumPort(options);
+		if (port === "absent") return "BROWSER_NOT_OPEN";
+		if (port === "other") return "BROWSER_UNVERIFIED";
+		const address = await browserAddress(port.port, signal);
+		if (!address) return "BROWSER_UNVERIFIED";
+		try {
+			return new DevToolsBrowser(await DevTools.connect(address, signal));
+		} catch {
+			return "BROWSER_NOT_OPEN";
+		}
+	};
+}
+
+/**
+ * The program. With no arguments: the exchange above on stdin and stdout, exit 0. Any argument: the target refused. A
+ * failure prints a fixed word on stderr and exits 1; the executor never shows either.
+ */
+export async function runMachineAccountFillCli(options: {
+	argv: readonly string[];
+	stdin: AsyncIterable<Buffer | string>;
+	stdout: { write(text: string): unknown };
+	ports?: MachineAccountFillPorts;
+	deadlineMs?: number;
+}): Promise<number> {
+	if (options.argv.length > 0) {
+		options.stdout.write(
+			`${JSON.stringify({ schema: MACHINE_ACCOUNT_FILL_RESULT_SCHEMA, code: "FILL_TARGET_INVALID" })}\n`,
+		);
+		return 0;
+	}
+	const ports = options.ports ?? {
+		bootId: () => readFile("/proc/sys/kernel/random/boot_id", "utf8"),
+		browser: machineChromium(),
+		key: () => new CompanyComputerFillKey(),
+		now: Date.now,
+	};
+	const deadline = AbortSignal.timeout(options.deadlineMs ?? MACHINE_ACCOUNT_FILL_MS);
+	await fillAccountOnMachine({ stdin: options.stdin, stdout: options.stdout, ports, signal: deadline });
+	return 0;
+}

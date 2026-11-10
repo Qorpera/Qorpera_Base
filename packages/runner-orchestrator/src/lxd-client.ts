@@ -275,6 +275,9 @@ export interface LxdExecPipeRequest {
 	readonly maxStdoutBytes: number;
 	/** How much of the end of stderr to keep; the rest is dropped, never a failure. */
 	readonly stderrTailBytes: number;
+	/** Each piece of stdout as it arrives, within the bound, for a caller that answers the command on its stdin while it
+	 * runs (fill_company_account's helper, 20260930710000). Never recorded or logged here; the result keeps it too. */
+	readonly onStdout?: (chunk: Buffer) => void;
 }
 
 export interface LxdExecPipeResult {
@@ -1429,7 +1432,8 @@ function validExecPipe(request: LxdExecPipeRequest): boolean {
 		maxStdoutBytes <= MAX_EXEC_PIPE_OUTPUT_BYTES &&
 		Number.isSafeInteger(stderrTailBytes) &&
 		stderrTailBytes >= 0 &&
-		stderrTailBytes <= MAX_EXEC_PIPE_STDERR_TAIL_BYTES
+		stderrTailBytes <= MAX_EXEC_PIPE_STDERR_TAIL_BYTES &&
+		(request.onStdout === undefined || typeof request.onStdout === "function")
 	);
 }
 
@@ -3672,7 +3676,7 @@ export class LxdUnixClient
 		request: LxdExecPipeRequest,
 		signal: AbortSignal,
 	): Promise<LxdExecPipeResult> {
-		const { command, environment, cwd, stdin, maxStdoutBytes, stderrTailBytes } = request;
+		const { command, environment, cwd, stdin, maxStdoutBytes, stderrTailBytes, onStdout } = request;
 		if (!validExecPipe(request)) throw new Error("LXD instance command is invalid");
 		signal.throwIfAborted();
 		const result = await this.#request(
@@ -3755,7 +3759,15 @@ export class LxdUnixClient
 							if (stream.name === "stdout" && !stdoutEnded) {
 								stdoutBytes += payload.byteLength;
 								if (stdoutBytes > maxStdoutBytes) fail(new Error("LXD exec pipe output exceeded its bound"));
-								else stdout.push(payload);
+								else {
+									stdout.push(payload);
+									// The caller's own reading may fail; that fails the call, as a bound does.
+									try {
+										onStdout?.(Buffer.from(payload));
+									} catch (error) {
+										fail(error instanceof Error ? error : new Error("LXD exec pipe output was refused"));
+									}
+								}
 							} else if (stream.name === "stderr" && !stderrEnded) {
 								const kept = Buffer.concat([stderrTail, payload]);
 								stderrTail = Buffer.from(kept.subarray(Math.max(0, kept.byteLength - stderrTailBytes)));

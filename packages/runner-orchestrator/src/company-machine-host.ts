@@ -83,6 +83,15 @@ const CODING_VALUE_MS = 20000;
 /** The executor's own clear after a save that did not end cleanly (`--clear-only`): its own deadline, never the
  * request's, as the request may be what ended it. Two xsels side by side, 4 s each at most, and the helper's start. */
 const CODING_VALUE_CLEAR_MS = 10000;
+/** fill_company_account's fill helper (20260930710000), packaged beside the guest helper and installed by the image
+ * (scripts/package-machine-guest.mjs). It runs under CODING_VALUE_ON_BOOT's rule: only on the boot SQL named (exit 97)
+ * and only where the image has it (exit 98: an earlier image). */
+export const COMPANY_MACHINE_ACCOUNT_FILL_HELPER = "/opt/qorpera-machine/cloud-machine-account-fill.mjs";
+/** Two JSON lines at most: the key's public half, then a code. */
+const ACCOUNT_FILL_OUTPUT_BYTES = 4096;
+/** The helper gives itself 20 s (cloud-machine-account-fill.ts, MACHINE_ACCOUNT_FILL_MS); the exec ends 4 s later at
+ * most, inside the command service's 30 s for the whole request. */
+const ACCOUNT_FILL_MS = 24000;
 /** A command's log limit in the guest (the helper's MACHINE_GUEST_MAX_LOG_BYTES), as a held receipt states it. */
 const LOG_LIMIT_BYTES = 67108864;
 /** One NAS storage check's own bound, as the coding host's. It runs from the check's start: the wait for the checks
@@ -204,6 +213,8 @@ export interface CompanyMachineHostOptions {
 	 * tests' own shorter ones. */
 	codingValueTimeoutMs?: number;
 	codingValueClearTimeoutMs?: number;
+	/** How long fill_company_account's helper may run, in all (default 24 s): the tests' own shorter one. */
+	accountFillTimeoutMs?: number;
 }
 
 /** One placement of a machine as SQL lists it for this executor
@@ -265,6 +276,28 @@ export interface CompanyMachineCodingValue {
 export type CompanyMachineCodingValueOutcome =
 	| { readonly box: Readonly<Record<string, string>> }
 	| { readonly refused: string };
+
+/** fill_company_account's run on a machine of this node (20260930710000), as SQL authorized it
+ * (qorpera_authorize_machine_account_fill): where it runs, and the helper's target, given to the helper as SQL wrote it. */
+export interface CompanyMachineAccountFill {
+	placementId: string;
+	bootId: string;
+	receiptId: string;
+	target: Record<string, unknown>;
+}
+/** The vault's side of one fill: the value sealed to the helper's public key for this call, or the vault's refusal in
+ * the database's own words. */
+export type CompanyMachineAccountFillSeal = (
+	publicKey: string,
+	signal: AbortSignal,
+) => Promise<
+	{ readonly box: Readonly<Record<string, string>> } | { readonly refused: { code: string; message: string } }
+>;
+/** The helper typed the value, or why not: its code, or the vault's refusal. */
+export type CompanyMachineAccountFillOutcome =
+	| { readonly filled: true }
+	| { readonly refused: string }
+	| { readonly vaultRefused: { readonly code: string; readonly message: string } };
 
 /** A boot's company folder (F3 6d), in this process's memory only (the pass is never written anywhere). */
 interface BootFolder {
@@ -1825,6 +1858,160 @@ export class LxdCompanyMachineHost {
 		} catch {
 			console.error("COMPANY_MACHINE_CODING_VALUE_CLEAR_FAILED");
 		}
+	}
+
+	/**
+	 * fill_company_account (20260930710000): the image's fill helper on a machine of this node, as root, on exactly the
+	 * boot SQL named, in one exec whose stdin and stdout stay open for the exchange. SQL's target goes first on its stdin;
+	 * the helper checks the focused tab and prints its key's public half (or a code); `seal` asks the vault for the value
+	 * sealed to that key, and its box goes second on the helper's stdin (or stdin ends: the vault refused); the helper
+	 * types the value and prints a code. Its stdout is read here as it comes, within its bound, and never logged; its
+	 * stderr is dropped; LXD records no output. Nothing that passes here is a value: the key is public, the box sealed.
+	 * The whole exec ends at its deadline, which kills the helper. It runs once: a failure is the call's.
+	 */
+	async accountFill(
+		run: CompanyMachineAccountFill,
+		seal: CompanyMachineAccountFillSeal,
+		signal: AbortSignal,
+	): Promise<CompanyMachineAccountFillOutcome> {
+		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!pipe) throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_UNAVAILABLE");
+		if (![run.placementId, run.bootId, run.receiptId].every((id) => UUID.test(id)))
+			throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+		const deadline = AbortSignal.any([
+			signal,
+			AbortSignal.timeout(this.#options.accountFillTimeoutMs ?? ACCOUNT_FILL_MS),
+		]);
+		// The helper's second line on stdin: the box, or nothing (stdin ends).
+		let send: (line: Buffer | null) => void = () => undefined;
+		const second = new Promise<Buffer | null>((resolve) => {
+			send = resolve;
+		});
+		deadline.addEventListener("abort", () => send(null), { once: true });
+		const target = Buffer.from(
+			`${JSON.stringify(run.target)}
+`,
+			"utf8",
+		);
+		async function* stdin(): AsyncGenerator<Uint8Array> {
+			yield target;
+			const line = await second;
+			if (line) yield line;
+		}
+		let held = Buffer.alloc(0);
+		let ready: string | undefined;
+		let code: string | undefined;
+		let vaultRefused: { code: string; message: string } | undefined;
+		let sealFailure: unknown;
+		let sealing: Promise<void> | undefined;
+		// A line that is not the helper's fails the call, whatever came before it.
+		let invalid = false;
+		const line = (text: string) => {
+			let output: Record<string, unknown>;
+			try {
+				output = record(JSON.parse(text), "COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+			} catch {
+				invalid = true;
+				throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+			}
+			const keys = Object.keys(output).sort().join();
+			if (
+				ready === undefined &&
+				code === undefined &&
+				output.schema === "qorpera.machine-account-fill-ready/v1" &&
+				keys === "publicKey,schema" &&
+				typeof output.publicKey === "string" &&
+				/^[A-Za-z0-9_-]{43}$/.test(output.publicKey)
+			) {
+				const publicKey = output.publicKey;
+				ready = publicKey;
+				sealing = seal(publicKey, deadline).then(
+					(answer) => {
+						if ("box" in answer)
+							send(
+								Buffer.from(
+									`${JSON.stringify(answer.box)}
+`,
+									"utf8",
+								),
+							);
+						else {
+							vaultRefused = answer.refused;
+							send(null);
+						}
+					},
+					(error: unknown) => {
+						sealFailure = error ?? new Error("COMPANY_MACHINE_ACCOUNT_FILL_SEAL_FAILED");
+						send(null);
+					},
+				);
+				return;
+			}
+			if (
+				code === undefined &&
+				output.schema === "qorpera.machine-account-fill-result/v1" &&
+				keys === "code,schema" &&
+				typeof output.code === "string" &&
+				/^[A-Z][A-Z0-9_]{2,60}$/.test(output.code)
+			) {
+				code = output.code;
+				send(null);
+				return;
+			}
+			invalid = true;
+			throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+		};
+		const onStdout = (chunk: Buffer) => {
+			held = Buffer.concat([held, chunk]);
+			for (let end = held.indexOf(10); end >= 0; end = held.indexOf(10)) {
+				const text = held.subarray(0, end).toString("utf8");
+				held = Buffer.from(held.subarray(end + 1));
+				line(text);
+			}
+		};
+		let exitCode: number | undefined;
+		try {
+			exitCode = (
+				await pipe(
+					this.#policy.project,
+					lxdCompanyMachineName(run.placementId),
+					{
+						command: [
+							"/bin/sh",
+							"-c",
+							CODING_VALUE_ON_BOOT,
+							run.bootId,
+							"/usr/bin/node",
+							COMPANY_MACHINE_ACCOUNT_FILL_HELPER,
+						],
+						environment: {},
+						cwd: "/",
+						stdin: stdin(),
+						maxStdoutBytes: ACCOUNT_FILL_OUTPUT_BYTES,
+						stderrTailBytes: 0,
+						onStdout,
+					},
+					deadline,
+				)
+			).exitCode;
+		} catch (error) {
+			// The helper said how it ended before the exec ended badly (its stdin closed under it after its answer): that
+			// answer stands. Anything else is the call's failure.
+			if (code === undefined || invalid) throw error;
+		} finally {
+			send(null);
+		}
+		await sealing;
+		if (invalid) throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+		if (exitCode === 97) return { refused: "MACHINE_BOOT_CHANGED" };
+		if (exitCode === 98) return { refused: "MACHINE_IMAGE_WITHOUT_ACCOUNT_FILLS" };
+		if (exitCode !== undefined && exitCode !== 0) throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_FAILED");
+		if (vaultRefused) return { vaultRefused };
+		if (sealFailure !== undefined) throw sealFailure;
+		if (code === "FILLED") return { filled: true };
+		// FILL_NO_BOX only follows the vault's refusal or failure, both answered above.
+		if (code === undefined || code === "FILL_NO_BOX") throw new Error("COMPANY_MACHINE_ACCOUNT_FILL_INVALID");
+		return { refused: code };
 	}
 
 	/** Runs one authorized command action on a machine of this node. A start on a machine with a folder is delivered

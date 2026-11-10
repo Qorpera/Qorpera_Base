@@ -7,10 +7,12 @@ import {
 	type CloudMachineCommandReceipt,
 	cloudMachineFolderBytes,
 	isCloudMachineFolderLost,
+	isUuid,
 	type JsonValue,
 	parseCloudCodingCommandRead,
 	parseCloudMachineCommandFolder,
 	parseCloudMachineCommandReceipt,
+	UUID_PATTERN,
 } from "@qorpera/contracts";
 import { CODING_VALUE_REPOSITORY, codingValueNameAllowed } from "./cloud-coding-value-names.ts";
 import type {
@@ -20,9 +22,12 @@ import type {
 	CodingValuePrepareAnswer,
 	CodingValueRefusal,
 } from "./cloud-coding-value-vault.ts";
+import { COMPANY_COMPUTER_SITE_STOP_MESSAGE } from "./cloud-company-computer-site-stops.ts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import {
 	CLOUD_MACHINE_TOOL_VERSION,
+	CloudMachineAccountFillRefusal,
+	type CloudMachineAccountFillRefusalCode,
 	CloudMachineCodingValueRefusal,
 	type CloudMachineCodingValueRefusalCode,
 	type CloudMachineCommandGateway,
@@ -232,6 +237,56 @@ const CODING_VALUE_REFUSED: Readonly<Record<CloudMachineCodingValueRefusalCode, 
 		"the machine restarted, and its clipboard went with it: copy or make the key again, then call again",
 	CODING_VALUE_TARGET_INVALID: "the machine could not take the vault's request; try again with a new operationKey",
 };
+/** fill_company_account (20260930710000): how an agent signs in to a website from its machine with a company account. */
+export const CLOUD_MACHINE_FILL_COMPANY_ACCOUNT_DESCRIPTION =
+	"Type a company account's login, password or authenticator code into the field that has the focus in a machine's browser. The vault types it: you never see, pass, say or write a password. " +
+	"To sign in (or sign up) from a machine: machine_run desktop start, then desktop open with the site's sign-in or sign-up page (only a browser desktop open started can be typed into), desktop shot to see the page, desktop click into the field, then call fill_company_account with the machine, the account (its id from company_account find or open) and the field. Click into the next field and call again, then press the site's own button yourself (desktop click, or desktop key Return). " +
+	"For a sign-up, company_account open makes the account first (its login and a password only the vault knows); then fill both into the sign-up form with this tool. A code or link the website mails comes to the account's login: find it with find_mail (to the login, since the moment you acted, waitSeconds) and read_event, and type that code yourself (desktop type) or open the link (desktop open). " +
+	"The vault types only into the account's site or one of its sign-in hosts over https, into the page itself and not a frame inside it, into a box of the field's kind, and never on a page that shows a CAPTCHA, a human check, an unusual activity warning or a block. " +
+	"Never type, paste, read aloud, write down or screenshot a password, and take no desktop shot while a password or code shows in clear: shots are kept in the company folder. On a CAPTCHA, a bot check, an unusual activity warning or a block, stop at once and never retry: set the account needs_person with company_account state and tell a member what a person must do. " +
+	"The result says filled, or why not and what to do. Each call types once: give every call a new operationKey, and keep it only to repeat a call whose result was uncertain.";
+/** What the agent does about each refusal of fill_company_account's (nothing was typed, or what was typed was emptied). */
+const ACCOUNT_FILL_REFUSED: Readonly<Record<Exclude<CloudMachineAccountFillRefusalCode, "VAULT_REFUSED">, string>> = {
+	MACHINE_NOT_RUNNING:
+		"the machine is not running: start it, open the sign-in page again with desktop open, then call again",
+	ACCOUNTS_SWITCHED_OFF: "Company accounts are switched off",
+	REQUESTER_NOT_ALLOWED:
+		"only owners and admins let agents sign in with company accounts, and the member you work for is neither: ask an owner or an admin to do this sign-in, or to ask you for it",
+	ACCOUNT_NOT_OPEN:
+		"the company has no such open account: look with company_account find, and open one with company_account open when your todo needs it",
+	MACHINE_IMAGE_WITHOUT_ACCOUNT_FILLS:
+		"this machine runs an earlier image that cannot type account values; a machine started on the current image can (one that sleeps wakes on it)",
+	DESKTOP_NOT_RUNNING:
+		"the machine's desktop is not running: desktop start, desktop open the sign-in page, click into the field, then call again",
+	BROWSER_NOT_OPEN:
+		"no browser that desktop open started runs on the machine's desktop: open the sign-in page with desktop open (not desktop run), click into the field, then call again",
+	BROWSER_UNVERIFIED:
+		"the browser on the desktop is not the one desktop open starts: desktop stop, desktop start, open the sign-in page with desktop open, then call again",
+	NO_FOCUSED_PAGE:
+		"no browser tab had the focus (or more than one did): desktop click into the field on the sign-in page, then call again",
+	FILL_WRONG_SITE:
+		"the tab with the focus is not on the account's site or one of its sign-in hosts over https: open the sign-in page there with desktop open, click into the field, then call again",
+	FILL_IN_FRAME:
+		"the field is inside a frame (another page shown within the page): the vault types only into the page itself; open the sign-in page on its own",
+	FILL_WRONG_BOX:
+		"the element with the focus is not a box for this field (login: a text or email box; password: a password box; code: a code box): desktop shot, click into the right field, then call again",
+	SITE_STOP_CAPTCHA: COMPANY_COMPUTER_SITE_STOP_MESSAGE,
+	SITE_STOP_HUMAN_CHECK: COMPANY_COMPUTER_SITE_STOP_MESSAGE,
+	SITE_STOP_UNUSUAL_ACTIVITY: COMPANY_COMPUTER_SITE_STOP_MESSAGE,
+	SITE_STOP_BLOCKED: COMPANY_COMPUTER_SITE_STOP_MESSAGE,
+	FILL_UNCONFIRMED:
+		"the value did not land whole in the field (the page changed it or moved the focus) and was emptied again: desktop shot, click into the field, then call again with a new operationKey",
+	FILL_LOST:
+		"the value went where it cannot be emptied: close that tab (desktop key ctrl+w) without sending the form, open the sign-in page again and start over",
+	FILL_BOX_REFUSED:
+		"the machine could not open the vault's sealed value (it restarted, or the call took too long): call again with a new operationKey",
+	FILL_NO_BOX: "the vault sealed nothing: call again with a new operationKey",
+	FILL_EXPIRED: "the machine took too long: desktop shot to see the page, then call again with a new operationKey",
+	BROWSER_NOT_ANSWERING:
+		"the browser did not answer: desktop shot to see the page, then call again with a new operationKey",
+	MACHINE_BOOT_CHANGED: "the machine restarted: open the sign-in page again with desktop open, then call again",
+	FILL_TARGET_INVALID: "the machine could not take the vault's request; try again with a new operationKey",
+};
 export const CLOUD_MACHINE_LIST_DESCRIPTION =
 	"List the company's machines: name, purpose, size, state (waiting, starting, running, stopping, stopped, deleting), place in line, who started it and how many commands run.";
 
@@ -253,6 +308,9 @@ export function cloudMachineTools(options: {
 	/** The vault (20260930705000): with it, and a gateway that runs the machine's clipboard helper, a company agent's
 	 * own run (never a worker's) is offered save_coding_value. */
 	codingValues?: CloudMachineCodingValues;
+	/** The host has the vault's company accounts (20260930710000): with a gateway that runs the machine's fill helper, a
+	 * company agent's own run (never a worker's) is offered fill_company_account. The machine's executor asks the vault. */
+	accountFills?: boolean;
 }): readonly CloudNativeTool[] {
 	const worker = options.worker === true;
 	const binding = parseCloudNativeToolBinding(options.binding),
@@ -1124,6 +1182,115 @@ export function cloudMachineTools(options: {
 		},
 	};
 
+	/**
+	 * fill_company_account (20260930710000): one of a company account's values typed into the focused field of the
+	 * machine's browser. The model passes only the machine, the account, which value and the call's key; never a value,
+	 * and the answer holds none. One receipted call: the machine's executor runs the image's fill helper for this receipt,
+	 * which checks the page and makes a key in memory; the executor asks the vault, which seals the value to that key for
+	 * this call and this boot; the helper types it and says how it went.
+	 */
+	const accountFilling = !worker && options.accountFills === true && options.gateway.accountFill !== undefined;
+	const notFilled = (reason: string, message: string) => ({
+		kind: "json" as const,
+		value: { filled: false, refused: { reason, message } },
+	});
+	const fill: CloudNativeTool = {
+		name: "fill_company_account" satisfies CloudRuntimeToolOperation,
+		source: "runtime",
+		description: CLOUD_MACHINE_FILL_COMPANY_ACCOUNT_DESCRIPTION,
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["operationKey", "machine", "account", "field"],
+			properties: {
+				operationKey,
+				machine: {
+					...machineName,
+					description:
+						"The running machine whose browser shows the account's page (opened with desktop open), with the focus in the field.",
+				},
+				account: {
+					type: "string",
+					pattern: UUID_PATTERN.source,
+					description: "The account's id, as company_account find or open answers it.",
+				},
+				field: {
+					type: "string",
+					enum: ["login", "password", "code"],
+					description:
+						"Which of the account's values: login (its email address, into the email or username box), password (into the password box), or code (its authenticator's current code, only for an account whose twoStep is authenticator; a code the website mails or texts, you read and type yourself).",
+				},
+			},
+		},
+		parseArguments(value) {
+			const input = closed(value, ["operationKey", "machine", "account", "field"]);
+			key(input.operationKey);
+			name(input.machine);
+			if (!isUuid(input.account))
+				throw new Error("account is a company account's id, as company_account find or open answers it");
+			if (input.field !== "login" && input.field !== "password" && input.field !== "code")
+				throw new Error("field is login, password or code");
+			return {
+				operationKey: input.operationKey,
+				machine: input.machine,
+				account: input.account,
+				field: input.field,
+			};
+		},
+		async execute(value, context) {
+			check(context);
+			const input = value as Record<string, string>;
+			const machine = await find(input.machine, context.signal);
+			if (!machine) return notFilled("MACHINE_NOT_FOUND", `no machine is named ${input.machine}`);
+			if (machine.state !== "running")
+				return notFilled("MACHINE_NOT_RUNNING", `${machine.name} is ${machine.state}`);
+			const typist = options.gateway.accountFill?.bind(options.gateway);
+			if (!typist) throw new Error("Company account fills are unavailable");
+			return options.operations.execute({
+				operation: {
+					tool: "fill_company_account",
+					toolVersion: CLOUD_MACHINE_TOOL_VERSION,
+					logicalOperationKey: input.operationKey,
+					arguments: input,
+					target: { realm: "company_machine", machineId: machine.machineId },
+					requiresCompanyRevision: false,
+				},
+				signal: context.signal,
+				observation: context.observation,
+				// The executor's request is 30 s at most, and is sent once.
+				performMs: 45_000,
+				authorize: async (_operation, admitted) => {
+					if (!isDeepStrictEqual(admitted, identity)) throw new Error("Company account fill identity changed");
+				},
+				perform: async (operation, effect) => {
+					try {
+						// The executor and the vault are bound to this receipt and this exact call (its digest).
+						await typist(
+							{ machineId: machine.machineId },
+							{
+								commandId: effect.receiptId,
+								envelope: cloudNativeToolOperationEnvelope(effect.identity, operation),
+								idempotencyKey: effect.idempotencyKey,
+							},
+							effect.signal,
+						);
+					} catch (error) {
+						if (!(error instanceof CloudMachineAccountFillRefusal)) throw error;
+						if (error.code === "VAULT_REFUSED")
+							return { content: notFilled(error.code, error.vault ?? "the vault refused this account") };
+						return { content: notFilled(error.code, ACCOUNT_FILL_REFUSED[error.code]) };
+					}
+					return {
+						content: {
+							kind: "json",
+							value: { filled: { machine: machine.name, account: input.account, field: input.field } },
+						},
+					};
+				},
+			});
+		},
+	};
+
 	return [
 		start,
 		run,
@@ -1133,6 +1300,7 @@ export function cloudMachineTools(options: {
 		change("delete", CLOUD_MACHINE_DELETE_DESCRIPTION),
 		listTool,
 		...(codingValueSaving ? [save] : []),
+		...(accountFilling ? [fill] : []),
 	];
 }
 

@@ -1537,14 +1537,15 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // interface apps (what an agent wants members to see is an app beside the chat; Jonas, 5 November 2026), and for
 // the wall (status kept in place above the thread instead of messages; Jonas, 5 November 2026), and for readable
 // cards and overlay v10 ("approval cards are completely unreadable"; Jonas, 5 November 2026), and for overlay v11
-// (each agent works for one member and the Co-Founder deals the team out; Jonas, 9 November 2026). A change to
-// either is a change to every run's bytes.
+// (each agent works for one member and the Co-Founder deals the team out; Jonas, 9 November 2026), and for "Accounts on
+// websites" saying the vault types a password on a machine with fill_company_account (20260930710000; Jonas, 10 November
+// 2026). A change to either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "b2adb889e34dae43583506e1092832306895a97660b5aec2d51b39797da5e16f",
+			instructions: "7555b744e51778eff642c6f6ad332d2044d48e67675a611f03b196716ac12194",
 			prompt: "f270ecb8dda2f1851f7f607a361aba17a10fd852a6025c3adec2a265a22963e7",
 		},
 	],
@@ -1560,7 +1561,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "b2adb889e34dae43583506e1092832306895a97660b5aec2d51b39797da5e16f",
+			instructions: "7555b744e51778eff642c6f6ad332d2044d48e67675a611f03b196716ac12194",
 			prompt: "09fef8853b34037c0009a40069bd9400e73cff3b8d2623c51b6c3ca501d09ad5",
 		},
 	],

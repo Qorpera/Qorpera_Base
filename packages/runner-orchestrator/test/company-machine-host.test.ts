@@ -14,6 +14,7 @@ import { CodingControlBusy, CodingControlRefused } from "../src/coding-executor.
 import type { CodingMachineIntent } from "../src/coding-machine.ts";
 import { type LxdCompanyMachineBinding, lxdCompanyMachineName, lxdCompanyMachinePlan } from "../src/company-machine.ts";
 import {
+	COMPANY_MACHINE_ACCOUNT_FILL_HELPER,
 	COMPANY_MACHINE_CODING_VALUE_HELPER,
 	type CompanyMachineCommand,
 	type CompanyMachineEntry,
@@ -95,6 +96,7 @@ async function fixture(
 		guestReadyTimeoutMs?: number;
 		codingValueTimeoutMs?: number;
 		codingValueClearTimeoutMs?: number;
+		accountFillTimeoutMs?: number;
 	} = {},
 ) {
 	const { folder: withFolder, ...pins } = options;
@@ -3555,5 +3557,183 @@ describe("a machine's clipboard helper", () => {
 		} finally {
 			errors.mockRestore();
 		}
+	});
+});
+
+// 20260930710000: fill_company_account runs the image's fill helper on the machine, on the boot SQL named, in one exec:
+// SQL's target first on its stdin, then (once the helper printed its key) the vault's box, then stdin ends; only the
+// helper's two lines come back. The exec ends at its deadline, which kills the helper.
+describe("a machine's fill helper", () => {
+	const run = {
+		placementId: id(6),
+		bootId: id(7),
+		receiptId: id(8),
+		target: { schema: "qorpera.machine-account-fill-target/v1", hosts: ["npmjs.com"] },
+	};
+	const key = "K".repeat(43);
+	const box = {
+		schema: "qorpera.company-account-fill-box/v1",
+		ephemeralPublicKey: "e",
+		iv: "i",
+		tag: "t",
+		ciphertext: "c",
+	};
+	const ready = `${JSON.stringify({ schema: "qorpera.machine-account-fill-ready/v1", publicKey: key })}\n`;
+	const result = (code: string) => `${JSON.stringify({ schema: "qorpera.machine-account-fill-result/v1", code })}\n`;
+	/** The helper as LXD runs it: it reads its target, prints `first`, reads the box (or stdin's end), prints the result for
+	 * it, reads stdin to its end and exits. `hang` waits for the signal instead. Its stdin lines are kept. */
+	async function piped(
+		helper: {
+			first?: string;
+			after?: (box: string | null) => string;
+			exitCode?: number;
+			hang?: "before" | "after";
+		} = {},
+		options: { accountFillTimeoutMs?: number } = {},
+	) {
+		const f = await fixture(options);
+		const stdin: string[] = [];
+		const calls: { request: LxdExecPipeRequest; name: string; signal: AbortSignal }[] = [];
+		const pipe = vi.fn(async (_project: string, name: string, request: LxdExecPipeRequest, signal: AbortSignal) => {
+			calls.push({ request, name, signal });
+			const hung = () =>
+				new Promise<never>((_resolve, reject) => {
+					if (signal.aborted) reject(signal.reason);
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				});
+			if (helper.exitCode === 97 || helper.exitCode === 98)
+				return { exitCode: helper.exitCode, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) };
+			const source = (request.stdin as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+			const next = async () => {
+				const read = await source.next();
+				if (read.done) return null;
+				const text = Buffer.from(read.value).toString("utf8");
+				stdin.push(text);
+				return text;
+			};
+			let out = "";
+			const say = (text: string) => {
+				out += text;
+				request.onStdout?.(Buffer.from(text));
+			};
+			await next();
+			if (helper.hang === "before") return hung();
+			const first = helper.first ?? ready;
+			say(first);
+			const second = await next();
+			if (helper.hang === "after") return hung();
+			// A helper that answered at once only reads stdin to its end.
+			if (!first.includes("machine-account-fill-result")) say((helper.after ?? (() => result("FILLED")))(second));
+			while ((await next()) !== null);
+			return { exitCode: helper.exitCode ?? 0, stdout: Buffer.from(out), stderrTail: Buffer.alloc(0) };
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		const seal = vi.fn(
+			async (_publicKey: string, _signal: AbortSignal) =>
+				({ box }) as { box: Record<string, string> } | { refused: { code: string; message: string } },
+		);
+		return { f, pipe, calls, stdin, seal };
+	}
+
+	it("runs the helper as the executor runs it, gives it SQL's target and then the vault's box for its key", async () => {
+		const { f, pipe, calls, stdin, seal } = await piped();
+		expect(await f.host.accountFill(run, seal, f.signal)).toEqual({ filled: true });
+		expect(pipe).toHaveBeenCalledTimes(1);
+		expect(calls[0]!.name).toBe(lxdCompanyMachineName(id(6)));
+		expect(calls[0]!.request.command).toEqual([
+			"/bin/sh",
+			"-c",
+			expect.stringContaining('[ "$boot" = "$0" ]; } || exit 97; [ -f "$2" ] || exit 98; exec "$@"'),
+			id(7),
+			"/usr/bin/node",
+			COMPANY_MACHINE_ACCOUNT_FILL_HELPER,
+		]);
+		expect(COMPANY_MACHINE_ACCOUNT_FILL_HELPER).toBe("/opt/qorpera-machine/cloud-machine-account-fill.mjs");
+		expect(calls[0]!.request).toMatchObject({ environment: {}, cwd: "/", maxStdoutBytes: 4096, stderrTailBytes: 0 });
+		// The target, then the box sealed to the key the helper printed, each one line.
+		expect(stdin).toEqual([`${JSON.stringify(run.target)}\n`, `${JSON.stringify(box)}\n`]);
+		expect(seal).toHaveBeenCalledWith(key, expect.any(AbortSignal));
+		expect(f.methods()).not.toContain("qorpera_authorize_machine_command");
+	});
+
+	it("answers the helper's refusal before the vault, the vault's refusal, and another boot or image, by code", async () => {
+		const early = await piped({ first: result("FILL_WRONG_SITE") });
+		expect(await early.f.host.accountFill(run, early.seal, early.f.signal)).toEqual({ refused: "FILL_WRONG_SITE" });
+		// The vault was never asked, and stdin ended after the target.
+		expect(early.seal).not.toHaveBeenCalled();
+		expect(early.stdin).toHaveLength(1);
+		const vault = await piped({ after: (second) => result(second ? "FILLED" : "FILL_NO_BOX") });
+		vault.seal.mockResolvedValueOnce({ refused: { code: "22023", message: "The company has no such open account" } });
+		expect(await vault.f.host.accountFill(run, vault.seal, vault.f.signal)).toEqual({
+			vaultRefused: { code: "22023", message: "The company has no such open account" },
+		});
+		expect(vault.stdin).toHaveLength(1);
+		for (const [exitCode, refused] of [
+			[97, "MACHINE_BOOT_CHANGED"],
+			[98, "MACHINE_IMAGE_WITHOUT_ACCOUNT_FILLS"],
+		] as const) {
+			const other = await piped({ exitCode });
+			expect(await other.f.host.accountFill(run, other.seal, other.f.signal)).toEqual({ refused });
+			expect(other.seal).not.toHaveBeenCalled();
+		}
+		const after = await piped({ after: () => result("SITE_STOP_CAPTCHA") });
+		expect(await after.f.host.accountFill(run, after.seal, after.f.signal)).toEqual({ refused: "SITE_STOP_CAPTCHA" });
+		const bad = await piped();
+		await expect(bad.f.host.accountFill({ ...run, bootId: "boot" }, bad.seal, bad.f.signal)).rejects.toThrow(
+			"COMPANY_MACHINE_ACCOUNT_FILL_INVALID",
+		);
+		const bare = await fixture();
+		await expect(bare.host.accountFill(run, vi.fn(), bare.signal)).rejects.toThrow(
+			"COMPANY_MACHINE_ACCOUNT_FILL_UNAVAILABLE",
+		);
+	});
+
+	it("fails on a line that is not the helper's, a failed exit, or a vault that did not answer", async () => {
+		for (const helper of [
+			{ first: "not json\n" },
+			{ first: `${JSON.stringify({ schema: "qorpera.machine-account-fill-ready/v1", publicKey: "short" })}\n` },
+			{
+				first: `${JSON.stringify({ schema: "qorpera.machine-account-fill-ready/v1", publicKey: key, value: "x" })}\n`,
+			},
+			{ after: () => `${result("FILLED")}${result("FILLED")}` },
+			{ after: () => result("lower case") },
+			{ exitCode: 1 },
+		]) {
+			const { f, seal } = await piped(helper);
+			await expect(f.host.accountFill(run, seal, f.signal), JSON.stringify(helper)).rejects.toThrow(
+				/COMPANY_MACHINE_ACCOUNT_FILL_(INVALID|FAILED)/,
+			);
+		}
+		const lost = await piped({ after: (second) => result(second ? "FILLED" : "FILL_NO_BOX") });
+		lost.seal.mockRejectedValueOnce(new Error("MACHINE_ACCOUNT_FILL_BROKER_UNAVAILABLE"));
+		await expect(lost.f.host.accountFill(run, lost.seal, lost.f.signal)).rejects.toThrow(
+			"MACHINE_ACCOUNT_FILL_BROKER_UNAVAILABLE",
+		);
+	});
+
+	it("ends the exec at its deadline or when the request is cancelled, the vault's wait included", async () => {
+		const slow = await piped({ hang: "before" }, { accountFillTimeoutMs: 50 });
+		await expect(slow.f.host.accountFill(run, slow.seal, slow.f.signal)).rejects.toThrow();
+		expect(slow.calls[0]!.signal.aborted).toBe(true);
+		expect(slow.f.signal.aborted).toBe(false);
+		expect(slow.seal).not.toHaveBeenCalled();
+		// Cancelled while the vault is asked: the vault's own signal ends too, and nothing more goes to the helper.
+		const { f, calls, stdin, seal } = await piped({ hang: "after" });
+		let sealSignal: AbortSignal | undefined;
+		seal.mockImplementationOnce(
+			(_key, signal) =>
+				new Promise((_resolve, reject) => {
+					sealSignal = signal;
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				}),
+		);
+		const request = new AbortController();
+		const filling = f.host.accountFill(run, seal, request.signal);
+		await vi.waitFor(() => expect(seal).toHaveBeenCalledTimes(1));
+		request.abort(new Error("the gateway's request ended"));
+		await expect(filling).rejects.toThrow("the gateway's request ended");
+		expect(calls[0]!.signal.aborted).toBe(true);
+		expect(sealSignal?.aborted).toBe(true);
+		expect(stdin).toHaveLength(1);
 	});
 });

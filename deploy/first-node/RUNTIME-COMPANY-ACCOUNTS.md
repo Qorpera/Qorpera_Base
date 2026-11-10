@@ -220,7 +220,7 @@ offered and accounts are switched on.
 
 ## A1-4b: the agent's tool (`company_account`, runtime only)
 
-Offered to a company run's agent (not a worker, not a folder-v2 company) when the host has the vault
+Offered to a company run's agent (not a worker; since A1-7 only on the company folder) when the host has the vault
 (`QORPERA_CLOUD_SECRET_BROKER_URL` and token): the same broker client serves connectors and accounts. Inert while
 accounts are switched off (the read answers "switched off"). `cloud-company-account-tools.ts`:
 
@@ -257,6 +257,131 @@ accounts are switched off (the read answers "switched off"). `cloud-company-acco
   (to `$qorpera_operations_broker`, as `/v1/operations`), then the coordinator switches accounts on. #682 (fill
   hardening) must be in the office image before agents get `vault_fill`, and accounts stay switched off until an
   office image with A1-4c is live: until then the stop at a block page is only the agent's words.
+
+## Machines: signing in from a company machine (migration `20260930710000`, SQL test 1196)
+
+Jonas, 10 November 2026: "Build machine sign-ins", "they should be able to use the vault too". Production has no offices
+since 3 October, so `vault_fill` types nothing; agents work on their own company machines, whose desktop runs Chromium
+(`deploy/machine/README.md`, "The desktop"). This is save_coding_value's (20260930705000) opposite direction, built the
+same way: a fixed helper in the machine image, run by the machine's coding executor over LXD exec for one executing
+receipt, with the vault's box bound to the machine, its placement and its boot.
+
+### The agent's side
+
+- `fill_company_account {operationKey, machine, account, field: login|password|code}` (machine tools, toolVersion
+  `qorpera.machine-tools/v1`, receipt key `fill_company_account:<operationKey>`), offered with the machine tools to a
+  company agent's own run (never a worker's) on a host that has the vault's company accounts (the same condition as
+  `company_account`). The model passes no value and the answer holds none: `{filled: {machine, account, field}}` or
+  `{filled: false, refused: {reason, message}}`. Review: external (its card names the machine, the account and the
+  field). Each call types once, so each needs a new operationKey; a repeat after an uncertain result types again into the
+  same box (the helper selects the box's text first, so the value replaces it).
+- The words (the tool's description, `company_account`'s and "Accounts on websites"): `desktop start`, `desktop open`
+  the sign-in or sign-up page, `desktop shot` to see it, `desktop click` into the field, call the tool, click into the
+  next field and call again, press the site's own button. Never type, paste, read aloud, write down or screenshot a
+  password; no `desktop shot` while a password or code shows in clear. On a CAPTCHA, bot check, unusual activity warning
+  or block page: stop, never retry, `company_account state needs_person`, tell a member. As on the office (A1-4c), the
+  agent marks the account: the helper's refusal (`SITE_STOP_*`) carries A1-4c's message, which says to.
+- Opening on a machine needs nothing new: `company_account open` has served folder-v2 companies since A1-7 and never
+  needed an office (test 1196 opens one on a company with a machine and no computer). Agents asked to sign up today got
+  "Company accounts are switched off": the switch is the only refusal. Every A1 rule stays (one tagged login
+  `<mailbox>+<site>@<mail domain>` per site, an open todo of the agent's own, the refused sites, reuse first). The agent
+  opens the account first, then fills its login and password into the sign-up form with the tool.
+- Codes by mail: `find_mail` (to the account's tagged login, `since` the moment it acted, `waitSeconds` up to 120) and
+  `read_event` exist for agents (M2b, A1-5a; members see such mail only as "<site> · sign-in mail"). The agent reads a
+  mailed code or link and types it itself (`desktop type`, or opens the link with `desktop open`): such a code is in its
+  context already. `field: code` is the authenticator's code from the vault, for an account whose two-step is
+  `authenticator` (none is set up by any agent path yet).
+
+### The transport
+
+1. The runtime begins the receipt and sends `/v1/machine-commands/account-fill {commandId, envelope, idempotencyKey}`
+   through the coding executor's gateway, with the run's holder (G2-6b proves it at the ingress).
+2. The executor asks SQL, `qorpera_authorize_machine_account_fill(binding, scope, receipt, envelope)` (service role,
+   plain reads, writes nothing): the run's live tool authority in a company conversation on the company folder; the
+   call's own executing receipt (envelope digest, key); a company agent's run, not a worker's, of a company neither paused
+   nor being deleted. It answers, not raises, what the agent acts on: `ACCOUNTS_SWITCHED_OFF`, `REQUESTER_NOT_ALLOWED`
+   (the run's requester must be an owner or an admin, as for save_coding_value; the office's fill had no such rule, and
+   `company_account open` still has none), `MACHINE_NOT_RUNNING`, `ACCOUNT_NOT_OPEN`. Otherwise where the machine runs
+   (placement, boot, executor) and the helper's target: what the box is bound to and the account's site and sign-in hosts.
+   Another node's executor gets the request once and reads SQL again.
+3. On the machine's node the executor runs `/usr/bin/node /opt/qorpera-machine/cloud-machine-account-fill.mjs` as root
+   in one LXD exec (only on the boot SQL named: exit 97; only where the image has it: exit 98,
+   `MACHINE_IMAGE_WITHOUT_ACCOUNT_FILLS`), stdin and stdout open for the exchange, stdout at most 4 KiB and read as it
+   comes (`onStdout`), stderr dropped, nothing recorded by LXD, the whole exec ended at 24 s.
+4. The helper reads the target, checks the focused tab against the account's hosts (below), makes an X25519 key pair in
+   memory and prints `{schema: qorpera.machine-account-fill-ready/v1, publicKey}`, or a code (the vault is then never
+   asked).
+5. The executor asks the broker with its own executor token (`POST /v1/machine-account-fills?company=<id>`; the runtime
+   token every guest holds never opens it): the run's call, its own owner name, the placement, the boot and the helper's
+   key. The broker calls `qorpera_fill_company_account_on_machine` (broker only): the office fill's checks in its order
+   (switch, broker authority and job by plain read, company folder, envelope before any lock, the run check), then the
+   requester and the run's kind by plain read, the machine by plain reads (running on its current placement, reserved,
+   a known boot, and exactly the placement, boot and executor the executor named), the key's shape
+   (`qorpera_company_computer_fill_key_valid`), the account's secret then row (rank 8), and last the receipt `FOR UPDATE`
+   (executing, `cloud_tool`, envelope digest, downstream digest, key). It records `last_used` and an `account_used` event
+   and answers `qorpera.company-account-machine-fill-context/v1`. The broker opens the envelope, takes the login, the
+   password or the authenticator's code now, and seals `{value, hosts: [site, ...signInHosts]}` to the helper's key with
+   the associated data `{companyId, companyMachineId, placementId, bootId, receiptId, accountId, field}`
+   (`cloud-company-account-fill-box.ts`; an office's box names a computer and a generation instead, so neither opens as
+   the other). A refusal comes back in the database's own words (`VAULT_REFUSED`).
+6. The executor writes the box as the helper's second stdin line, or ends stdin (refused: the helper prints
+   `FILL_NO_BOX`). The helper opens it in memory for exactly its identity, on its own boot (from `/proc`), within the box's
+   90 s; checks the tab again against the hosts sealed in the box; types; prints one code; reads stdin to its end and
+   exits. The plaintext buffer is zeroed when opened; the value is a JavaScript string from then on, which the process
+   drops and exits with (strings cannot be zeroed).
+
+### The page check, and what it protects against
+
+`desktop open` starts Chromium with its own profile (`/home/desktop/.config/qorpera-chromium`) and
+`--remote-debugging-port=0`: Chromium listens on 127.0.0.1 at a port the kernel picks. The helper reads that port off the
+kernel, never off a file a program could write (the profile's `DevToolsActivePort` names a dead port after a second
+`desktop open`, whose own short-lived process writes it before it hands its address to the running browser and exits):
+the browser process (no `--type=`) running `/usr/lib/qorpera-chromium/chrome` as the account `desktop` with that profile,
+the oldest if two, and the TCP socket it holds listening on 127.0.0.1 (`/proc/<pid>/fd` against `/proc/net/tcp`); then
+the port's `/json/version` must name `ws://127.0.0.1:<port>/devtools/browser/<id>`. No such browser: `BROWSER_NOT_OPEN`
+("open it with desktop open"); one with no loopback port (started another way) or another answer: `BROWSER_UNVERIFIED`.
+It never enables the Runtime domain on a page (which sites can notice); it reads pages in an isolated world of its own.
+Then, before the vault is asked and again after the box is open:
+
+- exactly one tab is shown with its window focused (`document.hasFocus()`), and the same tab both times;
+- its main frame's address, as the browser keeps it, is https, with no user, password or port, on the account's site or
+  one of its sign-in hosts exactly (`companyAccountFillHost`, the office's); after the box, the hosts sealed in it decide;
+- no CAPTCHA or human check frame is shown and the title and text are not a block, check or unusual activity page (A1-4c's
+  `companyComputerCheckFrame` and `companyComputerSiteStop`, frames from the browser's frame tree with their owners'
+  visibility, and the page's own iframes);
+- the focused element (through open shadow roots) is in the page's own document, not a frame, and is an enabled, writable
+  `input` of the field's kind: text, email or tel for a login; password for a password; text, tel, number or password
+  for a code.
+
+Then it selects the box's text and types with CDP `Input.insertText` (never through the X server), and reads the box back:
+whole is `FILLED`; anything else empties the box (and the box that took the focus) and answers `FILL_UNCONFIRMED`, or
+`FILL_LOST` when the focus went somewhere that cannot be emptied.
+
+The agent is root on its machine. It can reach the DevTools port itself, read the page (and so a typed password) through
+it, read Chromium's memory, run its own Chromium with that profile, or replace this helper, `node` or Chromium on its disk
+before the next fill. So this protects against mistakes and pages, not against an agent set on reading the password: a
+value typed into a look-alike or redirected site, a frame of another site, a page asking for a person, a box of the wrong
+kind; and the value reaching any tool input or output, receipt, chat, run history, company file, log or screenshot the
+platform makes. The office kept the browser out of the agent's reach; a machine cannot.
+
+### Image and release
+
+- `scripts/package-machine-guest.mjs` builds `cloud-machine-account-fill.mjs` as its own file after the guest helper, so
+  the guest helper's pin (`helperSha256`, the manifest's first artifact, `fee9f69…`) does not move; no
+  `previousHelperSha256s` step is needed. `desktop` changes (`open`'s flags), so the bootstrap digest moves.
+- `deploy/machine/build-machine-image.sh` installs it and checks it on the builder's desktop: a local https page (a
+  throwaway name mapped to 127.0.0.1:443 for that Chromium only) gets a made-up password whole in its password box, the
+  helper prints only its key and `FILLED`, never the value; it refuses another site, another boot and a "Just a
+  moment..." page by code; and `desktop open`'s DevTools port listens on 127.0.0.1 only, held by Chromium.
+
+Rollout, in order: the migration; the vault (broker) with `/v1/machine-account-fills` and the vault's nginx
+`location = /v1/machine-account-fills` (POST only, through `$qorpera_operations_broker`, as `/v1/coding-environment`),
+with `/v1/company-accounts` (and `/v1/company-account-fills`) from A1-4b if not there yet; the coding executors (they
+need `broker` in their config, which coding nodes have; without it a fill answers `MACHINE_COMMAND_WRONG_EXECUTOR`); the
+runtime bundle (the coordinator's release); the machine image, built and set as the nodes' machine policy (machines on
+an earlier image answer `MACHINE_IMAGE_WITHOUT_ACCOUNT_FILLS` until they sleep and wake on it); and only then the switch,
+`update public.qorpera_company_account_settings set enabled = true;`, by the coordinator. Never before the image is
+live.
 
 ## Notes for later steps
 

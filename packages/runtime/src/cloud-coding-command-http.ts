@@ -12,9 +12,12 @@ import {
 import type { CloudCodingCommandGateway } from "./cloud-coding-command-tools.ts";
 import {
 	CLOUD_MACHINE_WAKE_SCHEMA,
+	CloudMachineAccountFillRefusal,
 	CloudMachineCodingValueRefusal,
 	CloudMachineCommandRefusal,
 	type CloudMachineCommandServiceOptions,
+	parseCloudMachineAccountFillAnswer,
+	parseCloudMachineAccountFillHttpRequest,
 	parseCloudMachineCodingValueAnswer,
 	parseCloudMachineCodingValueHttpRequest,
 	parseCloudMachineWakeHttpRequest,
@@ -379,10 +382,13 @@ export class HttpCloudCodingCommandService {
 			// save_coding_value (20260930705000): the machine's clipboard helper, for one executing receipt.
 			const codingValueRoute =
 				this.#options.machines?.codingValue && request.url === "/v1/machine-commands/coding-value";
+			// fill_company_account (20260930710000): the machine's fill helper, for one executing receipt.
+			const accountFillRoute =
+				this.#options.machines?.accountFill && request.url === "/v1/machine-commands/account-fill";
 			const holder = request.headers["x-qorpera-identity"];
 			if (
 				request.method !== "POST" ||
-				(!route && !machineRoute && !wakeRoute && !codingValueRoute) ||
+				(!route && !machineRoute && !wakeRoute && !codingValueRoute && !accountFillRoute) ||
 				request.headers["content-type"] !== "application/json" ||
 				authorization.length !== this.#token.length ||
 				!timingSafeEqual(authorization, this.#token) ||
@@ -419,6 +425,27 @@ export class HttpCloudCodingCommandService {
 					// Only a refusal the agent can act on is told apart, by its fixed code.
 					if (!(error instanceof CloudMachineCodingValueRefusal)) throw error;
 					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (accountFillRoute && this.#options.machines?.accountFill) {
+				const admitted = parseCloudMachineAccountFillHttpRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						parseCloudMachineAccountFillAnswer(
+							admitted,
+							await this.#options.machines.accountFill(admitted, controller.signal),
+						),
+					);
+				} catch (error) {
+					// Only a refusal the agent can act on is told apart, by its fixed code (and the vault's own words).
+					if (!(error instanceof CloudMachineAccountFillRefusal)) throw error;
+					replyJson(reply, 409, {
+						code: error.code,
+						...(error.vault !== undefined ? { vault: error.vault } : {}),
+					});
 				}
 				return;
 			}

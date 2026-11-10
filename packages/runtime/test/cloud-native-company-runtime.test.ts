@@ -676,6 +676,10 @@ async function fixture(
 						cancel: async () => {
 							throw new Error("No machine command in this suite");
 						},
+						// 20260930710000: a gateway that runs the machine's fill helper, for fill_company_account's offer.
+						accountFill: async () => {
+							throw new Error("No machine command in this suite");
+						},
 					}),
 				}
 			: {}),
@@ -2447,6 +2451,8 @@ it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-2
 	// It waits inside the call instead.
 	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).toHaveProperty("waitSeconds");
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).toHaveProperty("waitSeconds");
+	// A worker types no company account's value (20260930710000).
+	expect(tools.map((tool) => tool.name)).not.toContain("fill_company_account");
 	// Still no mouth, coworkers or delegation.
 	expect(tools.map((tool) => tool.name)).not.toContain("send_message");
 	expect(tools.map((tool) => tool.name)).not.toContain("manage_worker");
@@ -2467,6 +2473,10 @@ it("gives a company conversation's run the machine tools with notify, and no wai
 		"waitSeconds",
 	);
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).not.toHaveProperty("waitSeconds");
+	// A host with the vault's company accounts offers the machine sign-in (20260930710000), after the machine tools.
+	const names = tools.map((tool) => tool.name);
+	expect(names).toContain("fill_company_account");
+	expect(names.indexOf("fill_company_account")).toBeGreaterThan(names.indexOf("machine_list"));
 });
 
 it("gives manage_todo, organize_sidebar, hire_agent, create_group_chat and manage_routine the state files' writers", async () => {
@@ -3142,6 +3152,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// Later on 9 November 2026 ask_member's secret card schema says such a key is saved off the machine's clipboard with
 	// save_coding_value (20260930705000), computer_browser vault_capture only on a company computer; the names and
 	// descriptions are as before, so only the catalog text moved again.
+	// On 10 November 2026 company_account's description says the vault types an account's values on a company machine
+	// with fill_company_account (20260930710000), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3186,9 +3198,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"ce5d20ab168c29e85e223dd7c0a47c2e0572702777a9ea7c4db9f85ad6dfe932",
+		"db28d5856d9dd81d55856864da8542c76acfcb2dd0c350a93cbc129612015445",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"531de109925aea69b40b1307b75f802632711ce12b16abceb14afadd0410a84a",
+		"f974c37637bfc871af8d6d4fff73d642761895a70805f555627ae24e3a710c99",
 	);
 });

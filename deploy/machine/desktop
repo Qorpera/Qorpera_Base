@@ -11,7 +11,8 @@ desktop stop                  stop it and every program on it
 desktop status                running or stopped, and the open windows
 desktop shot FILE             save a PNG of the whole screen to FILE (for example a file of yours under /company,
                               then read it with company_read to see the screen); prints FILE, its size and pixels
-desktop open URL              open URL in Chromium on the desktop, maximized (a new window or tab)
+desktop open URL              open URL in Chromium on the desktop, maximized (a new window or tab); the vault types a
+                              company account's values only into this browser (fill_company_account)
 desktop run PROGRAM [ARG...]  start a program on the desktop as the desktop's user; it keeps running after this ends
                               (programs on the desktop save in /home/desktop: copy what matters into /company as root)
 desktop click X Y [BUTTON]    click at X,Y (pixels from the top left); BUTTON left (default), middle or right
@@ -79,8 +80,11 @@ shot)
 open)
 	need
 	url=${1:?desktop open URL}
-	launch chromium --start-maximized --no-first-run --no-default-browser-check --password-store=basic \
-		--disable-features=Translate "$url"
+	# Its own profile, and a DevTools port on the machine's loopback that the kernel picks (Chromium names it in the
+	# profile's DevToolsActivePort): the port fill_company_account's helper types a company account's value through, after
+	# it checked the port is this Chromium's (20260930710000). A Chromium already running with this profile takes the URL.
+	launch chromium --user-data-dir=/home/desktop/.config/qorpera-chromium --remote-debugging-port=0 --start-maximized \
+		--no-first-run --no-default-browser-check --password-store=basic --disable-features=Translate "$url"
 	echo "opening $url"
 	;;
 run)

@@ -29,7 +29,8 @@ import { LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/co
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
-import { localMachineCodingValue, localMachineWake, MachineCommandRouter, machineCommandRoutes } from "./machine-command-routing.ts";
+import { BrokerMachineAccountFill } from "./machine-account-fill-broker.ts";
+import { localMachineAccountFill, localMachineCodingValue, localMachineWake, MachineCommandRouter, machineCommandRoutes } from "./machine-command-routing.ts";
 import { CodingCommandRouter, type CodingCommandPeer } from "./command-routing.ts";
 import { CodingExecutorHttpControl } from "./control.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
@@ -321,6 +322,9 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		helperSha256: config.machines.helperSha256, previousHelperSha256s: config.machines.previousHelperSha256s,
 		...(config.machines.folder ? { folder: new UnixFolderControl() } : {}),
 	}) : undefined;
+	// fill_company_account (20260930710000): the same broker seals an account's value to a machine's fill helper.
+	const accountFills = config.broker && machineHost ? new BrokerMachineAccountFill({ origin: config.broker.origin,
+		executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner }) : null;
 	const machineRouter = new MachineCommandRouter({
 		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential,
 		...(machineHost ? {
@@ -334,6 +338,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				signal),
 			wakeLocal: localMachineWake(machineHost),
 			codingValueLocal: localMachineCodingValue(machineHost),
+			...(accountFills ? { accountFillLocal: localMachineAccountFill(machineHost, accountFills) } : {}),
 		} : {}),
 	});
 	const router = new CodingCommandRouter({

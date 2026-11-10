@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { isCloudMachineFolderLost } from "../../packages/contracts/src/cloud-machine.ts";
 import {
-	CLOUD_MACHINE_TOOL_VERSION, type CloudMachineCodingValueHttpRequest, CloudMachineCodingValueRefusal, type CloudMachineCommandHttpRequest,
+	type CloudMachineAccountFillHttpRequest, CloudMachineAccountFillRefusal, CLOUD_MACHINE_TOOL_VERSION,
+	type CloudMachineCodingValueHttpRequest, CloudMachineCodingValueRefusal, type CloudMachineCommandHttpRequest,
 	cloudMachineCommandHead, CloudMachineCommandRefusal,
 } from "../../packages/runtime/src/cloud-machine-command-http.ts";
 import { parseCloudNativeToolAuthority } from "../../packages/runtime/src/cloud-native-tool-authority.ts";
@@ -125,4 +126,60 @@ export async function authorizeMachineCodingValue(
 	signal.throwIfAborted();
 	return { machineId: result.machineId, placementId: result.placementId, bootId: result.bootId, executorOwner: result.executorOwner,
 		providerId: result.providerId, receiptId: result.receiptId, target: { ...bound } };
+}
+
+/** What SQL says about one fill_company_account (20260930710000): where the machine runs, the company the vault serves,
+ * and the fill helper's target (what the box is bound to and the account's site and sign-in hosts), which goes to the
+ * helper as SQL wrote it. Nothing in it is secret. */
+export interface MachineAccountFillAuthority {
+	machineId: string;
+	placementId: string;
+	bootId: string;
+	executorOwner: string;
+	providerId: string;
+	receiptId: string;
+	companyId: string;
+	target: Record<string, unknown>;
+}
+
+/** What SQL answers instead of an authority, and the agent acts on. */
+const ACCOUNT_FILL_ANSWERS = new Set(["MACHINE_NOT_RUNNING", "ACCOUNTS_SWITCHED_OFF", "REQUESTER_NOT_ALLOWED", "ACCOUNT_NOT_OPEN"] as const);
+
+/** The calling run's live tool authority, its own executing fill_company_account receipt of exactly this envelope, the
+ * run's rules, the switch, the requester, a running machine of its company and the company's open account, all in SQL
+ * (qorpera_authorize_machine_account_fill). What the agent can act on is its refusal; anything else SQL refuses fails the
+ * request. */
+export async function authorizeMachineAccountFill(
+	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> },
+	request: CloudMachineAccountFillHttpRequest,
+	signal: AbortSignal,
+): Promise<MachineAccountFillAuthority> {
+	const value = await control.call("qorpera_authorize_machine_account_fill", {
+		p_binding: request.binding, p_scope: request.scope, p_receipt_id: request.input.commandId, p_envelope: request.input.envelope,
+	}, signal);
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("MACHINE_ACCOUNT_FILL_AUTHORITY_INVALID");
+	const result = value as Record<string, unknown>;
+	if (result.schema !== "qorpera.machine-account-fill-authority/v1") throw new Error("MACHINE_ACCOUNT_FILL_AUTHORITY_INVALID");
+	if (result.state === "refused") {
+		const reason = result.reason;
+		if (typeof reason === "string" && (ACCOUNT_FILL_ANSWERS as ReadonlySet<string>).has(reason))
+			throw new CloudMachineAccountFillRefusal(reason as "MACHINE_NOT_RUNNING");
+		throw new Error("MACHINE_ACCOUNT_FILL_AUTHORITY_INVALID");
+	}
+	const target = result.target;
+	if (result.state !== "authorized" || result.machineId !== request.scope.machineId || result.receiptId !== request.input.commandId ||
+		typeof result.placementId !== "string" || !UUID.test(result.placementId) ||
+		typeof result.bootId !== "string" || !UUID.test(result.bootId) ||
+		typeof result.companyId !== "string" || !UUID.test(result.companyId) ||
+		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
+		typeof result.providerId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(result.providerId) ||
+		!target || typeof target !== "object" || Array.isArray(target)) throw new Error("MACHINE_ACCOUNT_FILL_AUTHORITY_INVALID");
+	const bound = target as Record<string, unknown>;
+	// The helper's target names the same company, machine, placement, boot and receipt the executor runs it for.
+	if (bound.schema !== "qorpera.machine-account-fill-target/v1" || bound.companyId !== result.companyId ||
+		bound.companyMachineId !== result.machineId || bound.placementId !== result.placementId || bound.bootId !== result.bootId ||
+		bound.receiptId !== result.receiptId) throw new Error("MACHINE_ACCOUNT_FILL_AUTHORITY_INVALID");
+	signal.throwIfAborted();
+	return { machineId: result.machineId, placementId: result.placementId, bootId: result.bootId, executorOwner: result.executorOwner,
+		providerId: result.providerId, receiptId: result.receiptId, companyId: result.companyId, target: { ...bound } };
 }

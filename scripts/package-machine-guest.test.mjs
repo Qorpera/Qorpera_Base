@@ -327,3 +327,76 @@ test("the image carries save_coding_value's clipboard helper as its own file, wi
 	}
 });
 
+
+test("the image carries fill_company_account's fill helper as its own file, desktop open's DevTools port, and checks both", async () => {
+	// 20260930710000: the helper is built beside the guest helper, never into it, so the guest helper's pin stays as it was.
+	const packager = read("scripts/package-machine-guest.mjs");
+	assert.match(packager, /entryPoints: \["packages\/runtime\/src\/cloud-machine-account-fill-main\.ts"\]/);
+	assert.match(
+		packager,
+		/file: "cloud-machine-account-fill\.mjs",\n\tsource: "packages\/runtime\/src\/cloud-machine-account-fill-main\.ts",\n\tinstalledPath: "\/opt\/qorpera-machine\/cloud-machine-account-fill\.mjs",\n\towner: "root:root",\n\tmode: "0444",/,
+	);
+	// The runtime imports the helper's module (its codes), and every service bundle with it: loading it runs nothing.
+	assert.doesNotMatch(read("packages/runtime/src/cloud-machine-account-fill.ts"), /process\.(argv|stdin|exitCode|exit)\b|import\.meta/);
+	assert.match(read("packages/runtime/src/cloud-machine-account-fill-main.ts"), /^runMachineAccountFillCli\(/m);
+	assert.ok(packager.indexOf('file: "cloud-machine-guest.mjs"') < packager.indexOf('file: "cloud-machine-account-fill.mjs"'));
+	const required = words(imageScript.match(/for file in ([^;]+); do\n\t\[\[ -f \$PACKAGE\/\$file \]\]/)[1]);
+	assert.ok(required.includes("cloud-machine-account-fill.mjs"));
+	assert.ok(
+		imageScript.includes(
+			'lx file push "$PACKAGE/cloud-machine-account-fill.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-account-fill.mjs" --uid 0 --gid 0 --mode 0444\n',
+		),
+	);
+	// desktop open starts Chromium with the profile the helper reads and a DevTools port the kernel picks on the loopback.
+	const desktop = read("deploy/machine/desktop");
+	assert.match(
+		desktop,
+		/launch chromium --user-data-dir=\/home\/desktop\/\.config\/qorpera-chromium --remote-debugging-port=0 --start-maximized/,
+	);
+	assert.doesNotMatch(desktop, /remote-debugging-address|remote-allow-origins/);
+	const helperSource = read("packages/runtime/src/cloud-machine-account-fill.ts");
+	assert.match(helperSource, /MACHINE_CHROMIUM_PROFILE = "\/home\/desktop\/\.config\/qorpera-chromium"/);
+	assert.match(helperSource, /MACHINE_CHROMIUM = "\/usr\/lib\/qorpera-chromium\/chrome"/);
+	assert.match(imageScript, /mv \/tmp\/chromium\/chrome-linux64 \/usr\/lib\/qorpera-chromium\n/);
+	// The build's own check: a made-up password filled into a local page's password box, never printed; another site,
+	// another boot and a "Just a moment..." page refused by code; desktop open's port on the loopback only.
+	for (const line of [
+		'spawn("/usr/bin/node", ["/opt/qorpera-machine/cloud-machine-account-fill.mjs"]',
+		'fail("the fill helper printed the value")',
+		'"the page did not get the value whole"',
+		'await refusal(["example.org"], "FILL_WRONG_SITE");',
+		'await refusal(["fill-check.test"], "MACHINE_BOOT_CHANGED", { boot: id() });',
+		'await refusal(["fill-check.test"], "SITE_STOP_HUMAN_CHECK");',
+		'echo "the DevTools port is not on the loopback"',
+		'echo "the DevTools port listens beyond the loopback"',
+	])
+		assert.ok(imageScript.includes(line), line);
+	// Both checks' scripts sit in the build's single-quoted script: they hold no single quote.
+	const fill = imageScript.slice(
+		imageScript.indexOf("# fill_company_account (20260930710000): the fill helper types"),
+		imageScript.indexOf("# Nothing of that check stays in the desktop account"),
+	);
+	assert.ok(fill.length > 0 && !fill.includes("'"));
+	// The helper's deadline fits the executor's: the exec's own is longer, and both inside the command service's 30 s.
+	const hostSource = read("packages/runner-orchestrator/src/company-machine-host.ts");
+	const helperMs = Number(helperSource.match(/\nexport const MACHINE_ACCOUNT_FILL_MS = ([0-9_]+);\n/)[1].replaceAll("_", ""));
+	const execMs = Number(hostSource.match(/\nconst ACCOUNT_FILL_MS = (\d+);\n/)[1]);
+	assert.ok(helperMs + 2000 <= execMs && execMs <= 26000, `${helperMs} ms in the helper against ${execMs} ms`);
+	assert.match(hostSource, /COMPANY_MACHINE_ACCOUNT_FILL_HELPER = "\/opt\/qorpera-machine\/cloud-machine-account-fill\.mjs"/);
+	// Built with the packager's options, the guest helper holds none of it; the fill helper bundles no browser driver.
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-machine-account-fill-"));
+	try {
+		const options = { bundle: true, platform: "node", format: "esm", target: "node22.19", legalComments: "none", logLevel: "silent" };
+		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-guest.ts")], outfile: join(temporary, "guest.mjs") });
+		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-account-fill-main.ts")], outfile: join(temporary, "fill.mjs") });
+		const guest = await readFile(join(temporary, "guest.mjs"), "utf8");
+		const helper = await readFile(join(temporary, "fill.mjs"), "utf8");
+		assert.doesNotMatch(guest, /account-fill|Input\.insertText/);
+		assert.match(helper, /"Input\.insertText"/);
+		assert.match(helper, /\/json\/version/);
+		assert.doesNotMatch(helper, /playwright/);
+		assert.ok(helper.length < 131072, `the fill helper is ${helper.length} bytes`);
+	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
+});

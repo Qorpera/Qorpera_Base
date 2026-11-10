@@ -22,7 +22,11 @@ import { isUuid } from "@qorpera/contracts";
  * inside the sealed payload, so no one on the way can widen them.
  *
  * A signed hook's secret travels the same way (E3b-3, deploy/first-node/RUNTIME-COMPANY-FOLDER-EVENTS.md §5.7):
- * bound to the hook instead of an account, as the field signing_secret, and typed only on the hook's site. */
+ * bound to the hook instead of an account, as the field signing_secret, and typed only on the hook's site.
+ *
+ * A company machine's fill (fill_company_account, 20260930710000) seals to a key the machine's fill helper made in
+ * memory for that one call: bound to the machine, its placement and its boot instead of a computer and its generation.
+ * The associated data names one or the other, so a box for a machine never opens on a computer, nor the other way. */
 
 const BOX_SCHEMA = "qorpera.company-account-fill-box/v1";
 const PAYLOAD_SCHEMA = "qorpera.company-account-fill/v1";
@@ -47,10 +51,21 @@ interface FillCall {
 	readonly receiptId: string;
 }
 
-/** Who may open the box: one computer's boot, for one tool call, of one account's value or one hook's secret. */
+/** A company machine's fill (20260930710000): the machine, the placement it runs on and that placement's boot. */
+interface MachineFillCall {
+	readonly companyId: string;
+	readonly companyMachineId: string;
+	readonly placementId: string;
+	readonly bootId: string;
+	readonly receiptId: string;
+}
+
+/** Who may open the box: one computer's boot, for one tool call, of one account's value or one hook's secret; or one
+ * company machine's boot, for one fill_company_account call, of one account's value. */
 export type CompanyAccountFillIdentity =
 	| (FillCall & { readonly accountId: string; readonly field: AccountField })
-	| (FillCall & { readonly hookId: string; readonly field: "signing_secret" });
+	| (FillCall & { readonly hookId: string; readonly field: "signing_secret" })
+	| (MachineFillCall & { readonly accountId: string; readonly field: "login" | "password" | "code" });
 
 export interface CompanyAccountFill {
 	readonly field: CompanyAccountFillField;
@@ -75,6 +90,32 @@ function decoded(value: unknown, length: number | readonly [number, number], lab
 }
 
 function identity(value: CompanyAccountFillIdentity): CompanyAccountFillIdentity {
+	// A machine's fill names the machine, its placement and its boot, and only an account's login, password or code.
+	if ("companyMachineId" in value) {
+		if (
+			![
+				value.companyId,
+				value.companyMachineId,
+				value.placementId,
+				value.bootId,
+				value.receiptId,
+				value.accountId,
+			].every((id) => isUuid(id)) ||
+			!["login", "password", "code"].includes(value.field) ||
+			"companyComputerId" in value ||
+			"hookId" in value
+		)
+			throw new Error("Company account fill identity is malformed");
+		return {
+			companyId: value.companyId,
+			companyMachineId: value.companyMachineId,
+			placementId: value.placementId,
+			bootId: value.bootId,
+			receiptId: value.receiptId,
+			accountId: value.accountId,
+			field: value.field,
+		};
+	}
 	if (
 		!isUuid(value.companyId) ||
 		!isUuid(value.companyComputerId) ||
