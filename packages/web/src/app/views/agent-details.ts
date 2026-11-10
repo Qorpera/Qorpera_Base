@@ -4,6 +4,7 @@ import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { type FigureChoice, FigurePicker } from "../../ui/figure-picker.ts";
 import { matchesKey } from "../../ui/keys.ts";
+import { markdown, markdownSourceOffset } from "../../ui/markdown.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
@@ -31,7 +32,9 @@ export interface AgentCardActions extends CardFootActions {
  * the conversation title). Name and responsibilities are edited where they stand
  * and save on their own; the figure changes from a picker under it, as on the desktop. The
  * responsibilities field is the agent's description in plain prose and what the agent works
- * from. Under it, the agent's computer and routines, then Copy, Hide and Delete. Latest notes
+ * from. It is written in Markdown and the card draws it so (Jonas, 10 November 2026: "the description isn't
+ * rendering the markdown designs they are written in"); the text itself takes the drawing's place while it is
+ * edited. Under it, the agent's computer and routines, then Copy, Hide and Delete. Latest notes
  * left the card again (Jonas, 10 November 2026): the wall stays above the agent's composer.
  * Routines are a page of the card itself, with a way back. */
 export class AgentDetails {
@@ -53,6 +56,11 @@ export class AgentDetails {
 	readonly #picker: HTMLElement;
 	readonly #figures: FigurePicker;
 	readonly #status = h("p", { class: "agent-details-status", role: "status" });
+	/** The responsibilities drawn as the Markdown they are written in: what the card shows while their field does not
+	 * have the focus. A picture of the field's text, so assistive technology reads the field alone. */
+	readonly #reading = h("div", { class: "agent-inline-reading", "aria-hidden": "true" });
+	/** The text `#reading` was last drawn from. */
+	#drawnText: string | undefined;
 	/** The field being typed in, if any. */
 	#open: TextKey | undefined;
 	#drawn = "";
@@ -259,12 +267,42 @@ export class AgentDetails {
 		// The sizer mirrors the text so the name is as wide as what it holds;
 		// the description fills the popup's static frame instead (conversation.css).
 		const sizer = h("span", { class: "agent-inline-size" }, control);
+		if (!multiline) return h("label", { class: "agent-inline-field agent-inline-name" }, sizer, icon("edit"));
+		// The drawn text stands in the field's place until the field has the focus (conversation.css).
 		return h(
 			"label",
-			{ class: `agent-inline-field agent-inline-${multiline ? "description" : "name"}` },
+			{
+				class: "agent-inline-field agent-inline-description has-reading",
+				onclick: (event: MouseEvent) => this.#editAt(event),
+			},
 			sizer,
+			this.#reading,
 			icon("edit"),
 		);
+	}
+
+	/** A click on the drawn responsibilities opens their field with the caret where the click fell. The click is
+	 * answered here, not by the label: a member who can only read keeps the drawing, and so does a click that ends a
+	 * selection of its text. */
+	#editAt(event: MouseEvent): void {
+		const control = this.#fields.charter;
+		// A click in the field itself is the field's own.
+		if (!(event.target instanceof Node) || control.parentElement?.contains(event.target)) return;
+		event.preventDefault();
+		const selection = getSelection();
+		if (!this.#canWrite() || (selection && !selection.isCollapsed && this.#reading.contains(selection.anchorNode)))
+			return;
+		const caret = document.caretPositionFromPoint?.(event.clientX, event.clientY);
+		// WebKit's older name for the same, where the first is missing.
+		const range = caret ? undefined : document.caretRangeFromPoint?.(event.clientX, event.clientY);
+		const node = caret?.offsetNode ?? range?.startContainer;
+		const at =
+			node && this.#reading.contains(node)
+				? markdownSourceOffset(control.value, node, caret?.offset ?? range?.startOffset ?? 0)
+				: undefined;
+		if (at !== undefined) control.setSelectionRange(at, at);
+		// Focusing brings the caret into view.
+		control.focus();
 	}
 
 	#show(key: TextKey, value: string): void {
@@ -272,6 +310,11 @@ export class AgentDetails {
 		if (control.value !== value) control.value = value;
 		const sizer = control.parentElement;
 		if (sizer) sizer.dataset.value = value;
+		// The field covers the drawing while it is typed in, so the drawing follows once the typing is over.
+		if (key !== "charter" || key === this.#open || value === this.#drawnText) return;
+		this.#drawnText = value;
+		// Links read as their text: a click here edits, and nothing leaves the card.
+		replace(this.#reading, markdown(value, { links: false, sourceRanges: true }));
 	}
 
 	/** Leaves a field for the panel itself, so the keyboard stays in the panel. */

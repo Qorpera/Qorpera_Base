@@ -208,20 +208,75 @@ export interface MarkdownOptions {
 	readonly links?: boolean;
 	/** Only the first block that isn't a heading or a rule: a text block's `show = "first-paragraph"`. */
 	readonly firstParagraph?: boolean;
+	/** Each block says which stretch of the source it draws (`data-source-start`, `data-source-end`), so a place in the
+	 * drawn text can be found in the text behind it (`markdownSourceOffset`). */
+	readonly sourceRanges?: boolean;
 }
 
 export function markdown(source: string, options: MarkdownOptions = {}): HTMLElement {
 	try {
 		// This lexer has no extensions, so its output contains built-in tokens only.
 		let tokens = Lexer.lex(source, { gfm: true, breaks: true }) as MarkedToken[];
+		// The lexer reads the source in order and each token keeps what it read, so the lengths add up to a block's place.
+		const starts = new Map<MarkedToken, number>();
+		if (options.sourceRanges) {
+			let read = 0;
+			for (const token of tokens) {
+				starts.set(token, read);
+				read += token.raw.length;
+			}
+		}
 		if (options.firstParagraph) {
 			const first = tokens.find((token) => !["space", "def", "heading", "hr"].includes(token.type));
 			tokens = first ? [first] : [];
 		}
-		return h("div", { class: "message-prose" }, renderTokens(tokens, 0, options.links !== false));
+		const links = options.links !== false;
+		if (!options.sourceRanges) return h("div", { class: "message-prose" }, renderTokens(tokens, 0, links));
+		return h(
+			"div",
+			{ class: "message-prose" },
+			tokens.flatMap((token) => {
+				const start = starts.get(token) ?? 0;
+				const drawn = renderTokens([token], 0, links);
+				for (const node of drawn) {
+					if (!(node instanceof HTMLElement)) continue;
+					node.dataset.sourceStart = String(start);
+					node.dataset.sourceEnd = String(start + token.raw.length);
+				}
+				return drawn;
+			}),
+		);
 	} catch {
 		return h("div", { class: "text" }, source);
 	}
+}
+
+/** Where in `source` a place in its drawn text falls: `node` and `offset` as a caret gives them, inside a block that
+ * `markdown` drew with `sourceRanges`. Each character drawn before that place is found in the block's Markdown, in
+ * order, and the marks between them are passed over. So it is close, not exact: a character the Markdown writes another
+ * way (an entity) is passed over too. `source` has its line ends as the lexer reads them (`\n`), as a text area's value
+ * does. Undefined outside every block. */
+export function markdownSourceOffset(source: string, node: Node, offset: number): number | undefined {
+	const block = (node instanceof Element ? node : node.parentElement)?.closest<HTMLElement>("[data-source-start]");
+	if (!block) return undefined;
+	const start = Number(block.dataset.sourceStart);
+	const raw = source.slice(start, Number(block.dataset.sourceEnd));
+	const before = document.createRange();
+	before.setStart(block, 0);
+	before.setEnd(node, offset);
+	let at = 0;
+	for (const character of before.toString()) {
+		const found = raw.indexOf(character, at);
+		if (found >= 0) at = found + character.length;
+	}
+	// At the start of a run of text the place is before its first character, past the marks that open it (a list
+	// item's "- ", a bold's "**"), not at the end of the run before.
+	if (offset === 0 && node instanceof Text) {
+		const [first] = node.data;
+		const found = first === undefined ? -1 : raw.indexOf(first, at);
+		if (found >= 0) at = found;
+	}
+	return start + at;
 }
 
 /** One line of Markdown as inline content (an agent wall's item, ui/agent-wall-poster.ts): emphasis, code and links,
