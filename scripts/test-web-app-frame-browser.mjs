@@ -4,8 +4,9 @@
 // browser's own (trusted), which no unit test can make. Checks, for each kind of link a page can write: which clicks
 // reach the app as an `open` call on the port and with what address, that a click a script made reaches nothing, that
 // what is the page's own stays the page's (a jump inside the page, a click a handler of the page took, wherever and
-// whenever that handler was added), that a click a handler stops from travelling on is still heard, and that the
-// frame never leaves the page it was handed, whatever was clicked (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4).
+// whenever that handler was added), that a click a handler stops from travelling on is still heard, and sent only if
+// no handler still to come takes it, that clicks on anything but a link are as they were, and that the frame never
+// leaves the page it was handed, whatever was clicked (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4).
 // Usage: QORPERA_WEB_TEST_BROWSER=<Chromium> node scripts/test-web-app-frame-browser.mjs
 // APP_FRAME_DOCUMENT=<file> serves another frame document (to see a weaker one fail); ONLY=<name> runs one page.
 import assert from "node:assert/strict";
@@ -126,14 +127,25 @@ addEventListener("load", () => setTimeout(() => addEventListener("click", (event
 <a id="at-once" href="app:stopped-at-once">At once</a><a id="bubble" href="app:cancel-bubble" onclick="event.cancelBubble = true">Old way</a>
 <a id="down" href="app:stopped-on-the-way-down">Down</a><a id="other" href="details.html" onclick="event.stopPropagation()">Details</a>
 <div id="host" class="box"></div>
+<a id="then-taken" href="app:stopped-then-taken">Stopped, then taken</a><a id="then-refused" href="app:stopped-then-refused">Stopped, then refused</a>
+<a id="then-seen" href="app:stopped-then-left-alone">Stopped, then left alone</a>
 <script>
-document.getElementById("at-once").addEventListener("click", (event) => event.stopImmediatePropagation());
+const on = (id, handler) => document.getElementById(id).addEventListener("click", handler);
+on("at-once", (event) => event.stopImmediatePropagation());
 document.addEventListener("click", (event) => { if (event.target.id === "down") event.stopPropagation(); }, true);
 const host = document.getElementById("host");
 host.attachShadow({ mode: "closed" }).innerHTML = '<a href="app:closed-and-stopped" style="display:block;height:30px">Closed</a>';
 host.addEventListener("click", (event) => event.stopPropagation());
+// One handler stops the click; another on the same link, which still runs, takes it, each in its own way.
+on("then-taken", (event) => event.stopPropagation());
+on("then-taken", (event) => { event.preventDefault(); ${say("the next handler took it")}; });
+on("then-refused", (event) => event.stopPropagation());
+on("then-refused", (event) => { event.returnValue = false; ${say("the next handler refused it")}; });
+// Or leaves it alone: it sees a click nobody took, as it would without the frame.
+on("then-seen", (event) => event.stopPropagation());
+on("then-seen", (event) => qorpera.read("the next handler sees taken: " + event.defaultPrevented + ", " + !event.returnValue));
 </script>`,
-		clicks: ["#stopped", "#at-once", "#bubble", "#down", "#other", "#host"],
+		clicks: ["#stopped", "#at-once", "#bubble", "#down", "#other", "#host", "#then-taken", "#then-refused", "#then-seen"],
 		calls: [
 			"open app:stopped",
 			"open app:stopped-at-once",
@@ -141,12 +153,18 @@ host.addEventListener("click", (event) => event.stopPropagation());
 			"open app:stopped-on-the-way-down",
 			"open details.html",
 			"open app:closed-and-stopped",
+			"read the next handler took it",
+			"read the next handler refused it",
+			"read the next handler sees taken: false, false",
+			"open app:stopped-then-left-alone",
 		],
 	},
 	"a click a script made": {
 		page: `<!doctype html>${style}<a id="app" href="app:sales">Sales</a><a id="web" href="https://example.com/">Site</a><a id="other" href="details.html">Details</a>
 <a id="stopped" href="more.html" onclick="event.stopPropagation()">More</a>
 <script>addEventListener("load", () => {
+	// A handler of the page's sees a click nobody took, though the frame holds it.
+	document.getElementById("app").addEventListener("click", (event) => qorpera.read("a handler sees taken: " + event.defaultPrevented));
 	for (const id of ["app", "web", "other", "stopped"]) {
 		document.getElementById(id).click();
 		document.getElementById(id).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
@@ -157,7 +175,32 @@ host.addEventListener("click", (event) => event.stopPropagation());
 	setTimeout(() => ${say("still here")}, 300);
 });</script>`,
 		clicks: [],
-		calls: ["read open is undefined, and the page has agents,list,onChange,read,table,todos", "read still here"],
+		calls: [
+			"read a handler sees taken: false",
+			"read a handler sees taken: false",
+			"read a handler sees taken: false",
+			"read open is undefined, and the page has agents,list,onChange,read,table,todos",
+			"read still here",
+		],
+	},
+	"the page's other clicks are as they were": {
+		page: `<!doctype html><input type="checkbox" id="kept"><input type="checkbox" id="free"><button id="quiet">Quiet</button><button id="loud">Loud</button>
+<script>
+document.getElementById("kept").addEventListener("click", (event) => event.preventDefault());
+document.getElementById("quiet").addEventListener("click", (event) => { event.cancelBubble = true; });
+document.addEventListener("click", (event) => {
+	const id = event.target.id;
+	if (id === "kept" || id === "free")
+		setTimeout(() => qorpera.read(id + " box: taken " + event.defaultPrevented + ", answer " + event.returnValue + ", checked " + event.target.checked), 0);
+	else qorpera.read(id + " reached the document");
+});
+</script>`,
+		clicks: ["#kept", "#free", "#quiet", "#loud"],
+		calls: [
+			"read kept box: taken true, answer false, checked false",
+			"read free box: taken false, answer true, checked true",
+			"read loud reached the document",
+		],
 	},
 	"a link in a shadow tree": {
 		page: `<!doctype html>${style}<div id="host" class="box"></div><div id="open"></div><a id="around" href="app:around"><span id="inside-link"></span></a>

@@ -49,6 +49,7 @@
 	const stop = Event.prototype.stopPropagation;
 	const stopNow = Event.prototype.stopImmediatePropagation;
 	const bubble = Object.getOwnPropertyDescriptor(Event.prototype, "cancelBubble");
+	const answer = Object.getOwnPropertyDescriptor(Event.prototype, "returnValue");
 	const unlisten = EventTarget.prototype.removeEventListener;
 	const soon = queueMicrotask;
 	const attribute = Element.prototype.getAttribute;
@@ -56,8 +57,8 @@
 	const codeAt = String.prototype.charCodeAt;
 	const linkOf = WeakMap.prototype.get;
 	const setLink = WeakMap.prototype.set;
-	const isSettled = WeakSet.prototype.has;
-	const markSettled = WeakSet.prototype.add;
+	const inSet = WeakSet.prototype.has;
+	const addTo = WeakSet.prototype.add;
 	// Options handed to the browser are objects with no prototype: a property the page puts on Object.prototype
 	// (`clonable`, a throwing `attributeFilter`) is never read from them.
 	const create = Object.create;
@@ -103,10 +104,16 @@
 	//   behind every handler the page has, also one it added later. A handler that stops the click from travelling on
 	//   would keep it from there, so such a click is settled as soon as that handler returns (each handler of a real
 	//   click runs on an empty stack, so that is before the browser acts on the click).
-	// - A click a script made opens nothing and need not travel at all: it is stopped on its way down.
+	// - Settling a click the page left alone holds it: the browser is kept from following the link, and where the
+	//   link leads goes to the app only once the click is over, and only if no handler still to come took the click
+	//   meanwhile (another handler on the node where the click was stopped). While a click is held, what the page
+	//   reads of its cancelling is the page's own doing, not the hold.
+	// - A click a script made opens nothing and need not travel at all: it is held on its way down.
 	const links = "a[*|href], area[href]";
 	const clicked = new WeakMap();
 	const settled = new WeakSet();
+	const held = new WeakSet();
+	const taken = new WeakSet();
 	let follow = null;
 	const isLink = (node) => {
 		try {
@@ -134,6 +141,10 @@
 		if (href === null) href = apply(attributeNS, link, ["http://www.w3.org/1999/xlink", "href"]);
 		return typeof href === "string" && !ownLink(href) ? href : null;
 	};
+	const hold = (click) => {
+		apply(addTo, held, [click]);
+		apply(prevent, click, []);
+	};
 	const noteLink = (click) => {
 		if (!follow) return;
 		let link = null;
@@ -143,17 +154,23 @@
 		} catch {}
 		if (!link) return;
 		apply(setLink, clicked, [click, link]);
-		if (click.isTrusted !== true && placeOf(link) !== null) apply(prevent, click, []);
+		if (click.isTrusted !== true && placeOf(link) !== null && !apply(prevented, click, [])) hold(click);
+	};
+	// Once the click is over, so no handler of the page is still to come.
+	const forward = (click, link) => {
+		if (apply(inSet, taken, [click])) return;
+		const href = placeOf(link);
+		if (href !== null && href.length <= 2048) follow(href);
 	};
 	const settle = (click) => {
 		const link = apply(linkOf, clicked, [click]);
-		if (!link || apply(isSettled, settled, [click])) return;
-		apply(markSettled, settled, [click]);
-		if (apply(prevented, click, [])) return;
-		const href = placeOf(link);
-		if (href === null) return;
-		apply(prevent, click, []);
-		if (click.isTrusted === true && href.length <= 2048) follow(href);
+		if (!link || apply(inSet, settled, [click])) return;
+		apply(addTo, settled, [click]);
+		// Nothing to do for a click that is held already (a script's), that the page took, or that stays in the page.
+		if (apply(inSet, held, [click]) || apply(prevented, click, []) || placeOf(link) === null) return;
+		hold(click);
+		// Only a click the member made goes on.
+		if (click.isTrusted === true) apply(later, window, [() => forward(click, link), 0]);
 	};
 	// Heard first at the window (it is listened for before the page is written).
 	const hear = (click) => {
@@ -166,7 +183,7 @@
 	// handlers do not run on an empty stack). The page may put its own in their place, and then such a click is not
 	// heard: the frame's app still ends a frame that leaves its page.
 	const stopping = (event) => {
-		if (!apply(linkOf, clicked, [event]) || apply(isSettled, settled, [event])) return;
+		if (!apply(linkOf, clicked, [event]) || apply(inSet, settled, [event])) return;
 		if (event.isTrusted === true) apply(soon, window, [() => settle(event)]);
 		else settle(event);
 	};
@@ -178,15 +195,43 @@
 		stopping(this);
 		apply(stopNow, this, []);
 	};
-	Object.defineProperty(Event.prototype, "cancelBubble", {
+	// (The older way to say it, where a browser has it.)
+	if (bubble)
+		Object.defineProperty(Event.prototype, "cancelBubble", {
+			configurable: true,
+			enumerable: true,
+			get: bubble.get,
+			set(value) {
+				if (value) stopping(this);
+				apply(bubble.set, this, [value]);
+			},
+		});
+	// The ways a handler takes a click, and reads whether one was taken. They do what they did; for a click that is
+	// held they are the page's own account: taken only if a handler of the page took it after the hold.
+	Event.prototype.preventDefault = function preventDefault() {
+		if (apply(inSet, held, [this])) apply(addTo, taken, [this]);
+		apply(prevent, this, []);
+	};
+	Object.defineProperty(Event.prototype, "defaultPrevented", {
 		configurable: true,
 		enumerable: true,
-		get: bubble.get,
-		set(value) {
-			if (value) stopping(this);
-			apply(bubble.set, this, [value]);
+		get() {
+			return apply(inSet, held, [this]) ? apply(inSet, taken, [this]) : apply(prevented, this, []);
 		},
 	});
+	// (The older way to say it, where a browser has it.)
+	if (answer)
+		Object.defineProperty(Event.prototype, "returnValue", {
+			configurable: true,
+			enumerable: true,
+			get() {
+				return apply(inSet, held, [this]) ? !apply(inSet, taken, [this]) : apply(answer.get, this, []);
+			},
+			set(value) {
+				if (!value && apply(inSet, held, [this])) apply(addTo, taken, [this]);
+				apply(answer.set, this, [value]);
+			},
+		});
 
 	define(Element.prototype, "attachShadow", function attachShadowWatched(init) {
 		const options = create(null);
