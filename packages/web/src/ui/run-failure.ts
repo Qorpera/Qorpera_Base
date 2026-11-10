@@ -18,6 +18,7 @@ export type RunFailureKind =
 	| "step_timeout"
 	| "timeout"
 	| "bridge"
+	| "no_reply"
 	| "cancelled"
 	| "other";
 
@@ -37,6 +38,14 @@ export function classifyRunFailure(
 	// is unknown (30 October 2026). The runner fails it at once with this code; it used to go silent and read as lost
 	// contact minutes later.
 	if ((lastError ?? "").includes("[code=RUN_COMPLETION_REFUSED]")) return "completion_refused";
+	// The agent's turn ended without its final send_message, so the member got no reply (10 November 2026). Nothing was
+	// refused: the runtime's own code says so, and older runs carry the stage's code with the category "unknown", which
+	// only that ending produces. A member's stop stays a stop; any other category at that stage reads as below.
+	if (
+		(lastError ?? "").includes("[code=AGENT_TURN_ENDED_WITHOUT_FINAL_SEND]") ||
+		(lastError ?? "").includes("[code=NATIVE_PUBLIC_COMPLETION:UNKNOWN]")
+	)
+		return jobStatus === "cancelled" ? "cancelled" : "no_reply";
 	// Any other refused step carries the provider's fixed code (e.g. "[code=NATIVE_CREDENTIAL_SEALING:STORAGE_BUDGET]").
 	// Most name Qorpera's own machinery, not a member's account, so the words inside a code never decide the class: the
 	// step stays "bridge", as it was before the code. Only its category can (the part after the colon, from the runtime's
@@ -111,6 +120,8 @@ const REASONS: Record<RunFailureKind, string> = {
 	step_timeout: phrase("One of the run's steps got no answer in time. The problem is on Qorpera's side."),
 	timeout: phrase("The run took too long and was stopped."),
 	bridge: phrase("The run started, but one of its steps was refused. The problem is on Qorpera's side."),
+	// Try again is offered as for lost contact; the words never ask for it.
+	no_reply: phrase("The agent finished without sending its answer. The problem is on Qorpera's side."),
 	cancelled: phrase("The run was stopped before it finished."),
 	other: phrase("The run stopped because of an internal error."),
 };
@@ -255,6 +266,10 @@ const CODING_REASONS: Record<RunFailureKind | "no_submission", string> = {
 	bridge: phrase(
 		"Something on Qorpera's side refused one of the session's steps. The workspace is kept; a follow-up continues it.",
 	),
+	// A coding session never ends its turn this way; its words are the refused step's.
+	no_reply: phrase(
+		"Something on Qorpera's side refused one of the session's steps. The workspace is kept; a follow-up continues it.",
+	),
 	cancelled: phrase("The session was stopped before it finished. The workspace is kept; a follow-up continues it."),
 	other: phrase("The session stopped because of an internal error. The workspace is kept; a follow-up continues it."),
 };
@@ -311,7 +326,8 @@ export function codingFailureReason(reason: string | undefined, limit: CodingUsa
 
 /** Whether the run was interrupted rather than refused: Qorpera lost contact with
  * it, a step got no answer in time or lost its connection, it was stopped for time,
- * cancelled, or never got a computer. Those are worth trying again as they are.
+ * cancelled, never got a computer, or the agent finished its turn without sending its
+ * answer. Those are worth trying again as they are.
  * A reached usage limit, a disconnected account, a login ChatGPT refused or that
  * could not be loaded, or a company out of computer hours need someone to act
  * first, so their card offers Dismiss only and says what to do.
@@ -331,6 +347,7 @@ export function runFailureInterrupted(
 		kind === "connection" ||
 		kind === "timeout" ||
 		kind === "dispatch" ||
+		kind === "no_reply" ||
 		kind === "cancelled"
 	);
 }

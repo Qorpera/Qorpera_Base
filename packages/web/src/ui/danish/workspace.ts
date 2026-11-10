@@ -296,7 +296,6 @@ export const WORKSPACE: Record<string, string> = {
 	Inbox: "Indbakke",
 	Addresses: "Adresser",
 	"Search mail": "Søg i posten",
-	Search: "Søg",
 	Write: "Skriv",
 	"The company has no email address yet": "Virksomheden har ingen e-mailadresse endnu",
 	"Make one, and pick the agent who answers what comes in.":

@@ -227,6 +227,8 @@ export const CONVERSATION: Record<string, string> = {
 	"The run took too long and was stopped.": "Kørslen tog for lang tid og blev stoppet.",
 	"The run started, but one of its steps was refused. The problem is on Qorpera's side.":
 		"Kørslen startede, men et af dens trin blev afvist. Fejlen ligger hos Qorpera.",
+	"The agent finished without sending its answer. The problem is on Qorpera's side.":
+		"Agenten blev færdig uden at sende sit svar. Fejlen ligger hos Qorpera.",
 	"The run was stopped before it finished.": "Kørslen blev stoppet, før den var færdig.",
 	"The run stopped because of an internal error.": "Kørslen stoppede på grund af en intern fejl.",
 	"The company is out of computer hours. New work starts again once hours are added.":
@@ -616,14 +618,9 @@ export const CONVERSATION: Record<string, string> = {
 	"{n} waits on you": "{n} venter på dig",
 	"{n} wait on you": "{n} venter på dig",
 	"{n} working": "{n} i gang",
-	"{n} done": "{n} gjort",
 	"Waits on you": "Venter på dig",
 	"Working on": "Arbejder på",
-	"{n} more done": "{n} mere gjort",
-	"Earlier: {n}": "Tidligere: {n}",
-	"Show fewer": "Vis færre",
 	// The agent's card brings the wall back (app/views/agent-details.ts).
-	"{n} just done": "{n} lige gjort",
 	// A card's long body (ui/interaction-card.ts).
 	"Show more": "Vis mere",
 	"Show less": "Vis mindre",

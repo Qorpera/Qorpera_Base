@@ -177,7 +177,16 @@ export function codingSessionStatus(
 				? { text: t("Answer sent · waiting for computer hours"), tone: "idle" }
 				: { text: t("Answer sent · waiting for the session"), tone: "working" };
 		case "publishing":
-			return { text: [t("Opening the pull request"), files].filter(Boolean).join(" · "), tone: "working" };
+			// Code kept in Qorpera has no pull request: the finished work is saved straight into the company's code.
+			return {
+				text: [
+					session.repository.host === "qorpera" ? t("Saving the change") : t("Opening the pull request"),
+					files,
+				]
+					.filter(Boolean)
+					.join(" · "),
+				tone: "working",
+			};
 		case "completed":
 			return {
 				text: standby
@@ -1140,7 +1149,9 @@ export class CodingSessionElement {
 	/** The top of the transcript: the harness, the task and where it works. */
 	#renderIntro(): HTMLElement {
 		const session = this.#session;
-		const meta = [session.repository.name, shortBranch(session.branch), session.model].filter(Boolean) as string[];
+		// The branch is a GitHub pull request's; for code kept in Qorpera it is the session's own, and says nothing here.
+		const branch = session.repository.host === "qorpera" ? undefined : shortBranch(session.branch);
+		const meta = [session.repository.name, branch, session.model].filter(Boolean) as string[];
 		const mark = harnessBadge(session.harness);
 		mark.removeAttribute("title");
 		return h(
@@ -1153,7 +1164,7 @@ export class CodingSessionElement {
 				{ class: "coding-meta" },
 				...meta.flatMap((part, index) => [
 					index ? h("span", { "aria-hidden": "true" }, "·") : null,
-					h("span", { class: index === 1 ? "coding-mono" : undefined }, part),
+					h("span", { class: branch !== undefined && index === 1 ? "coding-mono" : undefined }, part),
 				]),
 			),
 		);
