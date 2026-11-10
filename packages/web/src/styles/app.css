@@ -252,6 +252,11 @@ label > input, label > select { font-weight: 400; }
 .context-menu-chevron .icon { width: 14px; height: 14px; }
 .context-menu-item.danger, .context-menu-item.danger .icon { color: var(--danger); }
 .context-menu-separator { height: 1px; flex: none; margin: 4px 6px; background: var(--border); }
+/* A line of plain text among the rows, a row's second line, a face in the icon's place. */
+.context-menu-caption { flex: none; padding: 6px 12px 5px; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; }
+.context-menu-text { flex: 1; min-width: 0; display: grid; }
+.context-menu-hint { color: var(--text-muted); font-size: 12.5px; line-height: 1.35; }
+.context-menu-item > .person-avatar { flex: none; width: 22px; height: 22px; font-size: 9.5px; }
 .name-dialog-title { margin: 0; font-size: 16px; font-weight: 650; line-height: 22px; }
 .name-dialog-input { width: 100%; }
 

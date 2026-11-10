@@ -13,7 +13,18 @@ import { renderInterface, renderInterfaceFile } from "../src/app/views/interface
 import { renderRail } from "../src/app/views/shell.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
-import { fixture, id, profileA, session, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
+import {
+	fixture,
+	id,
+	profileA,
+	scrolledTo,
+	session,
+	staff,
+	stubFigureMotion,
+	team,
+	timestamp,
+	userA,
+} from "./fixtures.ts";
 import { type FolderFake, folderFake } from "./folder-fake.ts";
 
 /* Interfaces steps I7 and C6a (RUNTIME-INTERFACES.md §10; the 2026-10-17 scope amendment): a company's pages are the
@@ -379,7 +390,7 @@ describe("live", () => {
 		card(main, "Sales")!.querySelector<HTMLButtonElement>(".interface-card-open")!.click();
 		expect(fields(main)).toEqual(["Account A", "Bea", "Ada"]);
 		const scroller = main.querySelector<HTMLElement>(".interface-page")!;
-		scroller.scrollTop = 120;
+		scrolledTo(scroller, 120);
 		fake.folder.read.mockClear();
 		fake.folder.readFile.mockClear();
 		fake.folder.list.mockClear();

@@ -144,6 +144,9 @@ function carried(
 	return parseCloudMachineCommandFolder(shown());
 }
 
+/** The least a machine with a desktop has: what machine_start's desktop true asks for, and what the machine's own
+ * `desktop start` wants before it starts one (deploy/machine/desktop, MIN_CPUS and MIN_MEMORY_KB). */
+export const CLOUD_MACHINE_DESKTOP_LEAST = Object.freeze({ cpus: 2, memoryGiB: 4 });
 /** Only a company agent's run shares an app (share_app, v195): a worker's machine tools leave these out. */
 const SHARE_APP_START =
 	"To let members open a server in their browser, run it on an always-on machine and share its port with share_app. ";
@@ -151,8 +154,11 @@ const SHARE_APP_RUN = "To let members open one in their browser, share its port 
 export const CLOUD_MACHINE_START_DESCRIPTION =
 	"Start a machine: a whole Linux virtual machine on the company's own servers, for tests, builds, Docker stacks and long jobs. " +
 	"You are root inside. Docker with Compose, Node 24, Python 3, Git and build tools are installed; install anything else. " +
-	"It has a desktop with Chromium for work that needs a screen, such as testing a product in a browser or driving an app's interface: with machine_run, desktop start starts it, desktop shot <file under /company>.png saves the screen, which company_read then shows you, and desktop click, type, key, scroll and open drive it; desktop help lists everything. " +
+	"Playwright with its Chromium (require('playwright')), a chromium command and ffmpeg are installed too: checking a page, taking pictures of it or filming it needs no screen. " +
 	"Pick its size: cpus, memoryGiB and diskGiB (defaults 2, 4 and 40); only what one server holds limits it. " +
+	"A machine has no screen unless you ask: desktop true makes it a desktop computer, with at least 2 cpus and 4 GiB, for work that needs a real screen, such as testing a product the way a person uses it or driving an app's interface (a smaller machine refuses its desktop). " +
+	"On it, with machine_run: desktop start <company files, folders or URLs> starts the desktop and opens each on it (a folder under /company with an index.html, or an .html file, is served and opened as a site; the files stay in the company folder, so a change shows after a reload; add --lang da-DK --tz Europe/Copenhagen for a Danish company); " +
+	"desktop click X Y, type, key, scroll and open drive it, with X Y in the screen's pixels (1600x1000), and desktop run <program> starts a program on it; end a click, type, key, scroll or open with --shot /company/<a new file each time>.png, or run desktop shot with such a file, then read the file with company_read to see the screen; desktop stop when the work is done; desktop help lists everything. " +
 	"lifetime task (the default) sleeps after an hour with no use and no busy program, and is deleted after 30 days asleep: only a busy program (over about 5% of one core, or moving data) keeps it awake, and one busy for hours brings check-ins; a server that only waits stops when it sleeps, and your next run is told. always-on keeps running until an agent or a member stops it: use it to keep a server up; the agent that started it is asked once a week whether the work still needs it. " +
 	"Its disk is scratch space: it is kept while the machine sleeps, but a machine that wakes when its server is full or gone, or after its disk was given to another machine, starts fresh with an empty disk. Keep what matters in the company's files. " +
 	"Its commands see the company folder at /company when the agent and member that started it may read all of it; a coding session's work is at /company/code/<owner>/<name>/worktrees/<workerId>. " +
@@ -487,6 +493,7 @@ export function cloudMachineTools(options: {
 				memoryGiB: { type: "integer", minimum: 1, maximum: 1024 },
 				diskGiB: { type: "integer", minimum: 10, maximum: 2048 },
 				lifetime: { type: "string", enum: ["task", "always-on"] },
+				desktop: { type: "boolean" },
 				machine: machineName,
 				...(worker ? { waitSeconds: waitSchema } : {}),
 			},
@@ -502,6 +509,7 @@ export function cloudMachineTools(options: {
 					"memoryGiB",
 					"diskGiB",
 					"lifetime",
+					"desktop",
 					"machine",
 					...(worker ? ["waitSeconds"] : []),
 				],
@@ -526,12 +534,17 @@ export function cloudMachineTools(options: {
 				throw new Error("A new machine needs a purpose");
 			if (input.lifetime !== undefined && input.lifetime !== "task" && input.lifetime !== "always-on")
 				throw new Error("Invalid machine lifetime");
+			if (input.desktop !== undefined && typeof input.desktop !== "boolean")
+				throw new Error("Invalid machine desktop");
+			// A desktop computer is a machine large enough for its desktop (deploy/machine/desktop refuses a smaller one):
+			// a smaller size asked beside desktop true is raised to it. Only the size reaches the start and its receipt.
+			const least = input.desktop === true ? CLOUD_MACHINE_DESKTOP_LEAST : { cpus: 1, memoryGiB: 1 };
 			return {
 				operationKey: input.operationKey,
 				name: name(input.name ?? ""),
 				purpose,
-				cpus: integer("cpus", 2, 1, 64),
-				memoryGiB: integer("memoryGiB", 4, 1, 1024),
+				cpus: Math.max(integer("cpus", 2, 1, 64), least.cpus),
+				memoryGiB: Math.max(integer("memoryGiB", 4, 1, 1024), least.memoryGiB),
 				diskGiB: integer("diskGiB", 40, 10, 2048),
 				lifetime: (input.lifetime as string | undefined) ?? "task",
 				...wait,

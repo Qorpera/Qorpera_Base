@@ -1,0 +1,15 @@
+<!doctype html>
+<!-- The page `desktop selftest` opens (deploy/machine/desktop): its title says whether the browser has 3D drawing
+     (WebGL) and what was typed into it, so the check reads both from the window's title. -->
+<meta charset="utf-8">
+<title>selftest loading</title>
+<style>body { margin: 12px; font: 16px sans-serif } textarea { width: 95%; height: 520px; font: 24px sans-serif }</style>
+<textarea id="typed" autofocus></textarea>
+<script>
+	const context = document.createElement("canvas").getContext("webgl");
+	const typed = document.getElementById("typed");
+	const say = () => { document.title = "SELFTEST[webgl=" + (context ? "yes" : "no") + "|typed=" + typed.value + "]"; };
+	typed.addEventListener("input", say);
+	typed.focus();
+	say();
+</script>
