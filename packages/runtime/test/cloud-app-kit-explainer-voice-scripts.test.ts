@@ -39,7 +39,10 @@ function run(script: string, args: string[], scenario: string): Promise<{ code: 
 }
 
 /** The recorder with its answer waiting, told to stop `stopAfterMs` after the call stands. */
-function record(scenario: string, stopAfterMs: number): Promise<{ code: number | null; lines: Line[]; work: string }> {
+function recorded(
+	scenario: string,
+	stopAfterMs: number,
+): Promise<{ code: number | null; lines: Line[]; work: string }> {
 	const work = mkdtempSync(join(tmpdir(), "voice-peer-test-"));
 	folders.push(work);
 	writeFileSync(join(work, "answer.sdp"), "v=0 the answer\n");
@@ -84,7 +87,7 @@ it("reads the captions of a started video, and none from a page that says its vi
 });
 
 it("records a turn of the voice and writes it before it goes", async () => {
-	const { code, lines, work } = await record("turn", 3000);
+	const { code, lines, work } = await recorded("turn", 3000);
 	expect(code).toBe(0);
 	expect(lines.map((line) => Object.keys(line)[0])).toEqual(["offer", "connected", "turn", "ended"]);
 	expect(lines[0]).toEqual({ offer: "v=0 the offer\n" });
@@ -95,7 +98,7 @@ it("records a turn of the voice and writes it before it goes", async () => {
 
 it("finishes a turn whose end has come even when it is told to stop meanwhile", async () => {
 	// The turn ends half a second in and its file takes two more seconds to write; stop comes after one.
-	const { code, lines, work } = await record("turn-slow-write", 1000);
+	const { code, lines, work } = await recorded("turn-slow-write", 1000);
 	expect(code).toBe(0);
 	expect(lines.map((line) => Object.keys(line)[0])).toEqual(["offer", "connected", "turn", "ended"]);
 	expect(lines[3]).toEqual({ ended: "stop" });
@@ -103,7 +106,7 @@ it("finishes a turn whose end has come even when it is told to stop meanwhile", 
 });
 
 it("ends as a failure when a turn cannot be written, and says why", async () => {
-	const { code, lines, work } = await record("turn-lost-write", 3000);
+	const { code, lines, work } = await recorded("turn-lost-write", 3000);
 	expect(code).toBe(1);
 	expect(lines.at(-1)).toEqual({ ended: "a turn could not be kept: no room left on the machine" });
 	expect(lines.some((line) => "turn" in line)).toBe(false);
