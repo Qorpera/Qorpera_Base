@@ -40,6 +40,7 @@ import {
 	needsConversationTimestamp,
 	parseConversationTimestamp,
 } from "../../ui/conversation-timestamps.ts";
+import { Dictation } from "../../ui/dictation.ts";
 import { confirmDialog, fmtTime, h, icon, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { renderInteractionCard } from "../../ui/interaction-card.ts";
@@ -279,6 +280,8 @@ export class ConversationView {
 	/** "/" in the composer: the conversation's skills, and their names in blue. */
 	readonly #skills: SkillMentions;
 	readonly #send: HTMLButtonElement;
+	/** Speech to text: the microphone beside the send button. */
+	readonly #dictation: Dictation;
 	#stopMode = false;
 	#cannotSend = true;
 	#submitting = false;
@@ -576,6 +579,15 @@ export class ConversationView {
 			},
 			icon("send"),
 		);
+		this.#dictation = new Dictation(
+			this.#composer,
+			(start, end, text) => {
+				this.#edits.declare(start, end);
+				this.#composer.setRangeText(text, start, end, "end");
+				this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
+			},
+			this.#lifetime.signal,
+		);
 		this.#attachments = new AttachmentTray(company.conversation(sessionId).get().attachments ?? [], (files) => {
 			const hadFiles = Boolean(company.conversation(sessionId).get().attachments?.length);
 			company.conversation(sessionId).set({ attachments: files });
@@ -599,7 +611,7 @@ export class ConversationView {
 				"aria-expanded": "false",
 				onclick: () => this.#setMenu(this.#menu.hidden),
 			},
-			icon("more"),
+			icon("plus"),
 		);
 		this.#attach = h(
 			"button",
@@ -715,6 +727,7 @@ export class ConversationView {
 			this.#attachments.el,
 			this.#skills.field,
 			this.#more,
+			this.#dictation.button,
 			this.#send,
 			fileInput,
 			this.#menu,
@@ -749,6 +762,7 @@ export class ConversationView {
 			this.#composerShell,
 			this.#mentionNote,
 			this.#quoteNote,
+			this.#dictation.status,
 			this.#attachments.status,
 		);
 		this.#identity = h("button", {
@@ -1851,6 +1865,7 @@ export class ConversationView {
 		const files = [...(state.attachments ?? [])];
 		const retry = state.retrySend;
 		const answered = state.answering ? this.#answeringItem : undefined;
+		this.#dictation.cancel();
 		this.#submitting = true;
 		this.#syncSend();
 		void (async () => {
@@ -2009,6 +2024,7 @@ export class ConversationView {
 		this.#attach.disabled = this.#composer.disabled || noImages;
 		this.#attachNote.hidden = !noImages;
 		this.#more.disabled = this.#composer.disabled;
+		this.#dictation.disabled = this.#composer.disabled;
 		if (this.#composer.disabled && !this.#menu.hidden) this.#setMenu(false, false);
 		this.#composerWrap.hidden = !canWrite;
 		if (conversation.answering !== this.#answerShown) {

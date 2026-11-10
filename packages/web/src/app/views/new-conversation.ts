@@ -2,6 +2,7 @@ import { prepareWebCompanyAgentCreation } from "../../cloud/company-agents.ts";
 import { WebCompanyFolderRejectedError } from "../../cloud/company-folder-writes.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure, figureElement, nativeColorOf } from "../../ui/avatar.ts";
+import { Dictation } from "../../ui/dictation.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { FigurePicker } from "../../ui/figure-picker.ts";
 import { matchesKey } from "../../ui/keys.ts";
@@ -98,11 +99,21 @@ export class NewConversationView {
 		},
 		icon("send"),
 	);
+	/** Speech to text: the microphone beside the send button. */
+	readonly #dictation = new Dictation(
+		this.#message,
+		(start, end, text) => {
+			this.#message.setRangeText(text, start, end, "end");
+			this.#message.dispatchEvent(new Event("input", { bubbles: true }));
+		},
+		this.#lifetime.signal,
+	);
 	readonly #status = h("p", { class: "attachment-status", role: "status" });
 	readonly #composer = h(
 		"footer",
 		{ class: "composer new-conversation-composer" },
-		h("div", { class: "composer-shell" }, this.#message, this.#send),
+		h("div", { class: "composer-shell" }, this.#message, this.#dictation.button, this.#send),
+		this.#dictation.status,
 		this.#status,
 	);
 	#sending = false;
@@ -453,6 +464,7 @@ export class NewConversationView {
 	#syncComposer(): void {
 		const canWrite = this.#company.store.get().team?.capabilities.write === true;
 		this.#message.disabled = this.#sending || !canWrite;
+		this.#dictation.disabled = this.#message.disabled;
 		this.#field.inert = this.#sending;
 		this.#send.disabled =
 			this.#sending ||
@@ -464,6 +476,7 @@ export class NewConversationView {
 	async #submit(): Promise<void> {
 		this.#render();
 		if (this.#send.disabled || !this.#actions.startConversation) return;
+		this.#dictation.cancel();
 		this.#sending = true;
 		this.#setListOpen(false);
 		this.#syncComposer();

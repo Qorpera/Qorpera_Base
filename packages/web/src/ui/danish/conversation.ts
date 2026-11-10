@@ -9,6 +9,12 @@ export const CONVERSATION: Record<string, string> = {
 
 	// The thread and the composer (app/views/conversation.ts)
 	"Attach files": "Vedhæft filer",
+	Dictate: "Indtal",
+	"Stop dictation": "Stop indtaling",
+	"Qorpera may not use the microphone. Allow it in the browser's settings for this site.":
+		"Qorpera må ikke bruge mikrofonen. Tillad den i browserens indstillinger for siden.",
+	"No microphone was found.": "Der blev ikke fundet nogen mikrofon.",
+	"Speech could not be turned into text. Try again.": "Talen kunne ikke laves om til tekst. Prøv igen.",
 	Skills: "Færdigheder",
 	"No skills yet. Agents save skills as they learn how the company works.":
 		"Ingen færdigheder endnu. Agenter gemmer færdigheder, efterhånden som de lærer, hvordan virksomheden arbejder.",
