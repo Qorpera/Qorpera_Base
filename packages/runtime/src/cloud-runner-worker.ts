@@ -104,16 +104,62 @@ export function cloudRunnerJobFailureIsRetryable(error: unknown): boolean {
 	);
 }
 
-/** A failure that is safe to try again from the start, and is tried again (the 21 October 2026 amendment, item 7): the
- * native host timed out reading the run's context or composing its prompt, or its download of the run's login got no
- * answer (28 October 2026), before the run's start was recorded and before any model request or tool call. A download
- * the vault or the store refused stays final. The database still decides: it queues the job again only while nothing
- * of the attempt is durable and fewer than eight attempts were made, as for any retryable failure. Any other failure
- * is not retried here: once execution starts, a lost answer does not prove that nothing happened. */
+/** Which failures the runner reports as retryable. The database always decides what that means
+ * (20260928519120, qorpera_resume_run_from_log): before the run's start was recorded it queues the job again pristine;
+ * after it, a retryable failure is a cut-off, as a lapsed lease is: the attempt's open receipts become outcome_unknown
+ * (final: the agent is told its receipts and checks before it repeats a step, under a new key), and the job is queued
+ * again, at most eight attempts in all.
+ *
+ * Two rules:
+ * - A failure that is safe to try again from the start (the 21 October 2026 amendment, item 7): the native host timed
+ *   out reading the run's context or composing its prompt, or its download of the run's login got no answer
+ *   (28 October 2026), before the run's start was recorded and before any model request or tool call. A download the
+ *   vault or the store refused stays final. Only the database's cap of eight applies.
+ * - Since 10 November 2026 (audit B2/A2), a timeout or lost transport (`NATIVE_<STAGE>:TIMEOUT` or
+ *   `:TRANSPORT_UNAVAILABLE`) in a stage that ends before the model's turn can have sent anything: the five above, the
+ *   host's first authority check and login opening, and the run's admission and Codex's start up to its thread
+ *   (CUT_OFF_STAGES). Such a failure may come after the run's start; that a lost answer does not prove that nothing
+ *   happened is what the database's resume answers: whatever is unknown is marked so, and the agent checks. It is
+ *   reported retryable only while the job is on its first or second attempt: a failure that repeats is not a blip,
+ *   and each attempt spends a member's model usage, so the third attempt's failure is final and the member sees it.
+ * A failure during or after the model's turn stays final for now (the turn's start and completion, the run's tools,
+ * its public completion, a coding session's turn): a run that keeps a log is resumed without asking whether it
+ * already sent its final message (the 20260930539000 gate; 20260930547000 checks that only for a resume from
+ * receipts), so a retry could requeue a run whose answer was delivered. Widening this rule waits for that gate.
+ * Every other failure stays final: a refusal, a provider's failure, an exhausted budget, an invalid answer, an unknown
+ * or cancelled stage, and the runtime's own codes. */
 const RETRYABLE_BEFORE_START =
 	/ \[code=NATIVE_(?:CREDENTIAL_DOWNLOAD|COMPANY_CONTEXT|WAKE_ENVELOPE|CONNECTOR_TOOLS|PROMPT_COMPOSITION):TIMEOUT\]$/;
+const CUT_OFF_STAGES = [
+	"COMPANY_CONTEXT",
+	"WAKE_ENVELOPE",
+	"CONNECTOR_TOOLS",
+	"PROMPT_COMPOSITION",
+	"CREDENTIAL_DOWNLOAD",
+	"INITIAL_AUTHORITY_VALIDATION",
+	"CREDENTIAL_OPENING",
+	"EXECUTION_ADMISSION",
+	"CODEX_ARTIFACT",
+	"CODEX_IDENTITY",
+	"CODEX_RESULT_FENCE",
+	"CODEX_PROCESS_START",
+	"CODEX_INITIALIZE",
+	"CODEX_CONFIGURATION",
+	"CODEX_SKILLS",
+	"CODEX_THREAD_START",
+];
+const RETRYABLE_CUT_OFF = new RegExp(
+	` \\[code=NATIVE_(?:${CUT_OFF_STAGES.join("|")}):(?:TIMEOUT|TRANSPORT_UNAVAILABLE)\\]$`,
+);
+const CUT_OFF_ATTEMPTS = 3;
 export function cloudRunnerJobFailureBeforeStartIsRetryable(error: unknown): boolean {
 	return error instanceof Error && RETRYABLE_BEFORE_START.test(error.message);
+}
+export function cloudRunnerJobFailureIsCutOff(error: unknown, attemptCount: number): boolean {
+	return (
+		cloudRunnerJobFailureBeforeStartIsRetryable(error) ||
+		(attemptCount < CUT_OFF_ATTEMPTS && error instanceof Error && RETRYABLE_CUT_OFF.test(error.message))
+	);
 }
 
 /** The failure a run gets when the cloud refuses its completion for good (423: the run left unsettled work, such as a
@@ -335,65 +381,107 @@ export class EphemeralCloudRunnerWorker {
 			else leaseTimer = setTimeout(expire, remaining);
 		};
 		armDeadline();
-		const maintenance = (async () => {
-			while (await wait(this.#leaseRenewalMs, maintenanceAbort.signal)) {
+		/* One slow or shed control plane response must not abort a
+		 * healthy execution mid-flight; platform incidents last
+		 * minutes, so keep retrying transient renewal failures
+		 * until the lease itself is nearly gone rather than for a
+		 * fixed attempt count. Only a definitive rejection or the
+		 * lease's own expiry treats the lease as lost. */
+		const renewJobLease = async (): Promise<void> => {
+			for (;;) {
 				try {
-					/* One slow or shed control plane response must not abort a
-					 * healthy execution mid-flight; platform incidents last
-					 * minutes, so keep retrying transient renewal failures
-					 * until the lease itself is nearly gone rather than for a
-					 * fixed attempt count. Only a definitive rejection or the
-					 * lease's own expiry treats the lease as lost. */
-					for (;;) {
-						try {
-							const renewed = await withCloudDeadline(
-								() => this.#options.runner.renew(job.jobId),
-								Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
-								maintenanceAbort.signal,
-							);
-							leaseDeadline = Date.parse(renewed.leaseExpiresAt ?? "") || leaseDeadline;
-							armDeadline();
-							break;
-						} catch (renewError) {
-							const status = cloudRunnerControlRequestStatus(renewError);
-							const transient = status === undefined || status === 429 || status >= 500;
-							if (!transient || maintenanceAbort.signal.aborted || this.#now() + 10_000 >= leaseDeadline) {
-								throw renewError;
-							}
-							if (!(await wait(10_000, maintenanceAbort.signal))) throw renewError;
-						}
+					const renewed = await withCloudDeadline(
+						() => this.#options.runner.renew(job.jobId),
+						Math.max(1, Math.min(30_000, leaseDeadline - this.#now())),
+						maintenanceAbort.signal,
+					);
+					leaseDeadline = Date.parse(renewed.leaseExpiresAt ?? "") || leaseDeadline;
+					armDeadline();
+					return;
+				} catch (renewError) {
+					const status = cloudRunnerControlRequestStatus(renewError);
+					const transient = status === undefined || status === 429 || status >= 500;
+					if (!transient || maintenanceAbort.signal.aborted || this.#now() + 10_000 >= leaseDeadline) {
+						throw renewError;
 					}
-					/* The native lease the same way (WB-001, 28 Oct 2026): a lost or late answer is asked again every
-					 * 10 s until the native lease or the job's is 10 s from its end, so a short control-plane outage
-					 * does not stop the run. A refusal, or either lease's end, still does. */
-					for (;;) {
-						const renew = renewNativeAuthority;
-						// No native lease, or the run ended meanwhile and its release follows.
-						if (!renew) break;
-						const renewal = withCloudDeadline(
-							(attempt) => renew(attempt),
-							Math.max(1, Math.min(30_000, leaseDeadline - this.#now(), nativeDeadline - this.#now())),
-							maintenanceAbort.signal,
-						);
-						nativeRenewalInFlight = renewal;
-						try {
-							try {
-								await renewal;
-							} finally {
-								if (nativeRenewalInFlight === renewal) nativeRenewalInFlight = undefined;
-							}
-							break;
-						} catch (renewError) {
-							if (
-								!nativeRenewalUnanswered(renewError) ||
-								maintenanceAbort.signal.aborted ||
-								!(this.#now() + 10_000 < Math.min(leaseDeadline, nativeDeadline))
-							) {
-								throw renewError;
-							}
-							if (!(await wait(10_000, maintenanceAbort.signal))) throw renewError;
-						}
+					if (!(await wait(10_000, maintenanceAbort.signal))) throw renewError;
+				}
+			}
+		};
+		/* When the native lease's next renewal is due: an interval after its last one began (or after maintenance began,
+		 * before the first). Every call below moves it on by a full interval, also when there is no native lease to
+		 * renew, so the rounds that it paces never come faster than one renewal each. */
+		let nativeDueAt = this.#now() + this.#leaseRenewalMs;
+		/* The native lease the same way (WB-001, 28 Oct 2026): a lost or late answer is asked again every
+		 * 10 s until the native lease or the job's is 10 s from its end, so a short control-plane outage
+		 * does not stop the run. A refusal, or either lease's end, still does. */
+		const renewNativeLease = async (): Promise<void> => {
+			nativeDueAt = this.#now() + this.#leaseRenewalMs;
+			for (;;) {
+				const renew = renewNativeAuthority;
+				// No native lease, or the run ended meanwhile and its release follows.
+				if (!renew) return;
+				const renewal = withCloudDeadline(
+					(attempt) => renew(attempt),
+					Math.max(1, Math.min(30_000, leaseDeadline - this.#now(), nativeDeadline - this.#now())),
+					maintenanceAbort.signal,
+				);
+				nativeRenewalInFlight = renewal;
+				try {
+					try {
+						await renewal;
+					} finally {
+						if (nativeRenewalInFlight === renewal) nativeRenewalInFlight = undefined;
 					}
+					return;
+				} catch (renewError) {
+					if (
+						!nativeRenewalUnanswered(renewError) ||
+						maintenanceAbort.signal.aborted ||
+						!(this.#now() + 10_000 < Math.min(leaseDeadline, nativeDeadline))
+					) {
+						throw renewError;
+					}
+					if (!(await wait(10_000, maintenanceAbort.signal))) throw renewError;
+				}
+			}
+		};
+		const maintenance = (async () => {
+			/* A round starts when the native lease's renewal is due, never later than an interval after the last round
+			 * ended (10 November 2026, audit B1 review): after a long round or a slow heartbeat the next round starts at
+			 * once and renews the native lease first thing, so its due time carries across rounds and heartbeats. A
+			 * healthy round keeps one job renewal and one native renewal per interval. The wait is never 0 twice in a row
+			 * without a round between: each round's native renewal moves nativeDueAt a full interval on before the next
+			 * wait is worked out. After a native renewal's answer the next one is asked within an interval (in the round
+			 * while the job's renewal is still being asked, or by the next round), or, when a heartbeat is due as the
+			 * round ends, within an interval plus the heartbeat's own deadline (30 s): 75 s with the 45 s default,
+			 * inside the 120 s native lease with room for that renewal's own retries. */
+			while (
+				await wait(Math.min(this.#leaseRenewalMs, Math.max(0, nativeDueAt - this.#now())), maintenanceAbort.signal)
+			) {
+				try {
+					/* Both leases are renewed at once, each with its own retries (10 November 2026, audit B1). Until
+					 * then the native lease was renewed only after the job's renewal had an answer: a control-plane
+					 * stall kept the job's renewal retrying, with minutes of its 6-minute lease to spare, while the
+					 * 120 s native lease went unrenewed, and the run was cut at the native deadline. While the job's
+					 * renewal is still being asked, the native lease is renewed again every round's interval, so a
+					 * stall of the job's renewal alone ends the run only by the job lease's own rule. Once the job's
+					 * renewal has its answer, the native lease's renewal in flight finishes and none follows: a round
+					 * whose job renewal answers within the interval renews the native lease once. A definitive
+					 * refusal of either ends the round at once (Promise.all does not wait for the other's retries);
+					 * the catch below aborts maintenance, which ends the other's request and retry wait. The
+					 * heartbeat follows when neither renewal is in flight, and never overlaps one: the native renewal is
+					 * sent with the runner's session token (cloud-runner-broker.ts renewNativeAuthority), which the
+					 * heartbeat rotates. */
+					const round = new AbortController();
+					const whileJobRenews = AbortSignal.any([maintenanceAbort.signal, round.signal]);
+					const jobRenewal = renewJobLease().finally(() => round.abort());
+					const nativeRenewals = (async () => {
+						do {
+							await renewNativeLease();
+						} while (await wait(this.#leaseRenewalMs, whileJobRenews));
+					})();
+					await Promise.all([jobRenewal, nativeRenewals]);
 					if (this.#now() >= nextHeartbeat) {
 						try {
 							await withCloudDeadline(
@@ -425,6 +513,8 @@ export class EphemeralCloudRunnerWorker {
 					if (maintenanceAbort.signal.aborted) return;
 					maintenanceError = error;
 					executionAbort.abort(error);
+					// The other renewal may still be retrying: it ends now, never after the run.
+					maintenanceAbort.abort();
 					return;
 				}
 			}
@@ -499,9 +589,11 @@ export class EphemeralCloudRunnerWorker {
 				const failed = await this.#options.runner.fail(
 					job.jobId,
 					safeFailure(error),
-					// A network error after execution started does not prove no external effects occurred; a timeout while the
-					// run's context or prompt was composed comes before any of it.
-					(this.#options.retryable ?? cloudRunnerJobFailureBeforeStartIsRetryable)(error),
+					// A stage's timeout or lost transport goes on as a cut-off, on its first two attempts; the database's
+					// resume marks whatever is unknown (cloudRunnerJobFailureIsCutOff).
+					this.#options.retryable
+						? this.#options.retryable(error)
+						: cloudRunnerJobFailureIsCutOff(error, job.attemptCount),
 				);
 				return { status: failed.status === "queued" ? "requeued" : "failed", job: failed };
 			}
