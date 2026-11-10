@@ -40,8 +40,8 @@ const VIEW_REFUSALS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
 ]);
 
 /** PostgREST's error body, exactly: its transaction rolled back whole. It answers SQLSTATE 55P03 (lock_not_available)
- * with HTTP 500, 42501 (insufficient_privilege) with 403 (401 without a role), and 22023 (invalid_parameter_value)
- * with 400. */
+ * with HTTP 500, 57014 (query_canceled: the statement ran out of its time) with 500 or 504, 42501
+ * (insufficient_privilege) with 403 (401 without a role), and 22023 (invalid_parameter_value) with 400. */
 function postgrestError(body: Uint8Array): { code: string; message: string; details: string | null } | undefined {
 	try {
 		const value = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(body)) as unknown;
@@ -55,10 +55,20 @@ function postgrestError(body: Uint8Array): { code: string; message: string; deta
 	}
 }
 
+/** An unconfirmed call, with what is known of why as its cause (10 Nov 2026: a turn that died on one said only
+ * CODING_CONTROL_UNCONFIRMED, so nobody could tell a refusal from a lost answer): the call, the HTTP status, and the
+ * kernel's SQLSTATE and message when it answered with a whole PostgREST error. For the executor's log only, which
+ * redacts and bounds it (codingErrorDetail); the message stays the fixed code, and nothing of the cause reaches an
+ * agent or a member. An error's details and hint, where PostgreSQL puts a row's values, are never kept. */
+function unconfirmed(method: string, why: string): Error {
+	return new Error("CODING_CONTROL_UNCONFIRMED", { cause: new Error(`${method}: ${why.replace(/\s+/g, " ").slice(0, 300)}`) });
+}
+
 /** Service-role custody lives only in this dedicated control process. All
  * requests use a fixed origin and closed RPC set, without mutation retries.
- * Only a busy row (CodingControlBusy), and a refusal where the caller acts on
- * one (CodingControlRefused), are told apart from other failures; the executor
+ * Only a call the kernel rolled back whole for a busy row or a statement out of
+ * time (CodingControlBusy), and a refusal where the caller acts on one
+ * (CodingControlRefused), are told apart from other failures; the executor
  * decides what to retry. */
 export class CodingExecutorHttpControl {
 	readonly #origin: string;
@@ -78,27 +88,32 @@ export class CodingExecutorHttpControl {
 		if (Buffer.byteLength(body) > 128 * 1024) throw new Error("CODING_CONTROL_REQUEST_TOO_LARGE");
 		const checked = AbortSignal.any([signal, AbortSignal.timeout(30000)]);
 		const refusals = VIEW_REFUSALS.get(method);
-		let failure: Error = new Error("CODING_CONTROL_UNCONFIRMED");
+		let failure: Error = unconfirmed(method, "no answer");
 		try {
 			const response = await this.#fetch(`${this.#origin}/rest/v1/rpc/${method}`, {
 				method: "POST", redirect: "error", signal: checked,
 				headers: { ...supabaseServiceHeaders(this.#key), "content-type": "application/json" }, body,
 			});
 			if (response.status !== 200) {
+				failure = unconfirmed(method, `HTTP ${response.status}`);
 				const refusable = REFUSABLE.has(method) && (response.status === 401 || response.status === 403);
 				const kept = refusals !== undefined && [400, 401, 403].includes(response.status);
 				const leased = LEASED.has(method) && [400, 401, 403].includes(response.status);
 				// An error body that stalls is not worth waiting for: it stays unconfirmed.
-				if (response.status === 500 || refusable || kept || leased) {
-					const error = postgrestError(await readBoundedCloudResponse(response, 4096, AbortSignal.any([checked, AbortSignal.timeout(1000)])));
+				const error = postgrestError(await readBoundedCloudResponse(response, 4096, AbortSignal.any([checked, AbortSignal.timeout(1000)])));
+				if (error) failure = unconfirmed(method, `HTTP ${response.status} ${error.code} ${error.message}`);
+				if (response.status === 500 || response.status === 504 || refusable || kept || leased) {
 					const reason = kept && error && ["42501", "22023"].includes(error.code) && refusals?.has(error.message) ? error.message : null;
 					const leaseGone = LEASED.has(method) && error !== undefined && LEASE_REFUSALS.get(error.code)?.includes(response.status) === true;
-					if (response.status === 500 && error?.code === "55P03") failure = new CodingControlBusy();
+					// 55P03 with 500; 57014 (a statement out of time) with 500, or 504 from a PostgREST that answers it so.
+					if ((response.status === 500 && error?.code === "55P03") || ([500, 504].includes(response.status) && error?.code === "57014"))
+						failure = new CodingControlBusy();
 					else if (error && ((refusable && error.code === "42501") || reason !== null || leaseGone))
 						failure = new CodingControlRefused(error.details !== null && DETAIL.test(error.details) ? error.details : null, reason);
-				} else await response.body?.cancel().catch(() => undefined);
+				}
 				throw new Error("unconfirmed");
 			}
+			failure = unconfirmed(method, "answer not read");
 			return JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(await readBoundedCloudResponse(response, 256 * 1024, checked))) as unknown;
 		} catch {
 			throw failure;
