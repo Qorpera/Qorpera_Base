@@ -24,7 +24,7 @@ import { isUuid } from "@qorpera/contracts";
  * A signed hook's secret travels the same way (E3b-3, deploy/first-node/RUNTIME-COMPANY-FOLDER-EVENTS.md §5.7):
  * bound to the hook instead of an account, as the field signing_secret, and typed only on the hook's site.
  *
- * A company machine's fill (fill_company_account, 20260930710000) seals to a key the machine's fill helper made in
+ * A company machine's fill (fill_company_account, 20260930711000) seals to a key the machine's fill helper made in
  * memory for that one call: bound to the machine, its placement and its boot instead of a computer and its generation.
  * The associated data names one or the other, so a box for a machine never opens on a computer, nor the other way. */
 
@@ -51,7 +51,7 @@ interface FillCall {
 	readonly receiptId: string;
 }
 
-/** A company machine's fill (20260930710000): the machine, the placement it runs on and that placement's boot. */
+/** A company machine's fill (20260930711000): the machine, the placement it runs on and that placement's boot. */
 interface MachineFillCall {
 	readonly companyId: string;
 	readonly companyMachineId: string;

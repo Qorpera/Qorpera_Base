@@ -1,5 +1,5 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
--- 20260930710000: an agent signs in to a website from its company machine with a company account (fill_company_account).
+-- 20260930711000: an agent signs in to a website from its company machine with a company account (fill_company_account).
 -- On 924's folder-v2 company, with Alice's leased run (for the owner), the company's broker authority, accounts switched on,
 -- the company's mailbox and Alice's open todo:
 -- 1. the account is opened as A1 opens one (the vault's own opening, for the todo, with the tagged login), on a company
@@ -16,17 +16,17 @@
 
 -- The company's broker authority; another company's, with its own running machine of the same name.
 insert into public.qorpera_cloud_secret_broker_authorities(id, profile_id, service_origin, key_id, capability_sha256)
-values ('11960000-0000-4000-8000-000000000040', '92400000-0000-4000-8000-000000000010', 'https://broker.example.test',
+values ('12010000-0000-4000-8000-000000000040', '92400000-0000-4000-8000-000000000010', 'https://broker.example.test',
 	'company-kek-1', repeat('9', 64));
 select set_config('session_replication_role', 'replica', true);
 insert into public.qorpera_profiles(id, name, created_by_user_id)
-values ('11960000-0000-4000-8000-000000000011', 'Another company', '92400000-0000-4000-8000-000000000005');
+values ('12010000-0000-4000-8000-000000000011', 'Another company', '92400000-0000-4000-8000-000000000005');
 insert into public.qorpera_company_environments(id, profile_id, name, contract_version, created_by_user_id)
-values ('11960000-0000-4000-8000-000000000012', '11960000-0000-4000-8000-000000000011', 'Environment', 1,
+values ('12010000-0000-4000-8000-000000000012', '12010000-0000-4000-8000-000000000011', 'Environment', 1,
 	'92400000-0000-4000-8000-000000000005');
 select set_config('session_replication_role', 'origin', true);
 insert into public.qorpera_cloud_secret_broker_authorities(id, profile_id, service_origin, key_id, capability_sha256)
-values ('11960000-0000-4000-8000-000000000041', '11960000-0000-4000-8000-000000000011', 'https://broker.example.test',
+values ('12010000-0000-4000-8000-000000000041', '12010000-0000-4000-8000-000000000011', 'https://broker.example.test',
 	'other-kek-1', repeat('8', 64));
 
 -- Accounts switched on, the mail domain, the company's mailbox 'agents' (written directly, as 925 does), Alice's open todo,
@@ -35,12 +35,12 @@ update public.qorpera_company_account_settings set enabled = true;
 update public.qorpera_mail_settings set domain = 'nordlys.example';
 select set_config('session_replication_role', 'replica', true);
 insert into public.qorpera_company_mailboxes(hook_id, profile_id, environment_id, local_part)
-values ('11960000-0000-4000-8000-000000000090', '92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
+values ('12010000-0000-4000-8000-000000000090', '92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
 	'agents');
 select set_config('session_replication_role', 'origin', true);
 insert into public.qorpera_runtime_agent_todos(id, profile_id, environment_id, staff_agent_id, todo_key, title, state,
 	requested_by_user_id, created_by_run_id, updated_by_run_id)
-select '11960000-0000-4000-8000-000000000060', '92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
+select '12010000-0000-4000-8000-000000000060', '92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
 	'92400000-0000-4000-8000-000000000030', 'npm-publish', 'Publish the SDK to npm', 'open', '92400000-0000-4000-8000-000000000001',
 	run.id, run.id
 from (select (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid as id) as run;
@@ -57,33 +57,33 @@ select machine.id, machine.profile_id, machine.environment_id, machine.name, 'Si
 	machine.receipt_id, run.requested_by_user_id, 2, 4294967296, 21474836480, 'standard', 'task', machine.desired_state
 from public.qorpera_execution_runs as run
 cross join (values
-	('11960000-0000-4000-8000-0000000007a1'::uuid, '92400000-0000-4000-8000-000000000010'::uuid,
-		'92400000-0000-4000-8000-000000000020'::uuid, 'm-1196', '11960000-0000-4000-8000-0000000007a9'::uuid, 'running'),
-	('11960000-0000-4000-8000-0000000007a2', '92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
-		'm-1196-asleep', '11960000-0000-4000-8000-0000000007aa', 'stopped'),
-	('11960000-0000-4000-8000-0000000007a3', '11960000-0000-4000-8000-000000000011', '11960000-0000-4000-8000-000000000012',
-		'm-1196', '11960000-0000-4000-8000-0000000007ab', 'running')
+	('12010000-0000-4000-8000-0000000007a1'::uuid, '92400000-0000-4000-8000-000000000010'::uuid,
+		'92400000-0000-4000-8000-000000000020'::uuid, 'm-1196', '12010000-0000-4000-8000-0000000007a9'::uuid, 'running'),
+	('12010000-0000-4000-8000-0000000007a2', '92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
+		'm-1196-asleep', '12010000-0000-4000-8000-0000000007aa', 'stopped'),
+	('12010000-0000-4000-8000-0000000007a3', '12010000-0000-4000-8000-000000000011', '12010000-0000-4000-8000-000000000012',
+		'm-1196', '12010000-0000-4000-8000-0000000007ab', 'running')
 ) as machine(id, profile_id, environment_id, name, receipt_id, desired_state)
 where run.id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid;
 insert into public.qorpera_company_machine_placements(id, machine_id, profile_id, owner, machine_id_sha256, binding,
 	instance_sha256, running_at, boot_id)
-values ('11960000-0000-4000-8000-0000000007b1', '11960000-0000-4000-8000-0000000007a1', '92400000-0000-4000-8000-000000000010',
+values ('12010000-0000-4000-8000-0000000007b1', '12010000-0000-4000-8000-0000000007a1', '92400000-0000-4000-8000-000000000010',
 		'mx-1196', repeat('8', 64), '{"providerId": "machine-1196"}', repeat('7', 64), clock_timestamp(),
-		'11960000-0000-4000-8000-0000000007c1'),
-	('11960000-0000-4000-8000-0000000007b3', '11960000-0000-4000-8000-0000000007a3', '11960000-0000-4000-8000-000000000011',
+		'12010000-0000-4000-8000-0000000007c1'),
+	('12010000-0000-4000-8000-0000000007b3', '12010000-0000-4000-8000-0000000007a3', '12010000-0000-4000-8000-000000000011',
 		'mx-1196', repeat('8', 64), '{"providerId": "machine-1196"}', repeat('6', 64), clock_timestamp(),
-		'11960000-0000-4000-8000-0000000007c3');
+		'12010000-0000-4000-8000-0000000007c3');
 insert into public.qorpera_runtime_machine_allocations(id, profile_id, company_machine_placement_id, provider_adapter,
 	instance_sha256, reserved_at)
 select placement.id, placement.profile_id, placement.id, 'lxd', placement.instance_sha256, clock_timestamp()
 from public.qorpera_company_machine_placements as placement
-where placement.id in ('11960000-0000-4000-8000-0000000007b1', '11960000-0000-4000-8000-0000000007b3');
+where placement.id in ('12010000-0000-4000-8000-0000000007b1', '12010000-0000-4000-8000-0000000007b3');
 insert into public.qorpera_runtime_node_demands(allocation_id, node_id, provider_kind, provider_id, policy_sha256, cpu_millis,
 	memory_bytes, reserved_at)
-select placement.id, '11960000-0000-4000-8000-0000000007d1', 'machine', 'machine-1196', repeat('4', 64), 2000, 4294967296,
+select placement.id, '12010000-0000-4000-8000-0000000007d1', 'machine', 'machine-1196', repeat('4', 64), 2000, 4294967296,
 	clock_timestamp()
 from public.qorpera_company_machine_placements as placement
-where placement.id in ('11960000-0000-4000-8000-0000000007b1', '11960000-0000-4000-8000-0000000007b3');
+where placement.id in ('12010000-0000-4000-8000-0000000007b1', '12010000-0000-4000-8000-0000000007b3');
 select set_config('session_replication_role', 'origin', true);
 
 -- The helper's public key, as it prints it (the public half of an X25519 key, base64url without padding).
@@ -105,19 +105,19 @@ $$;
 create function pg_temp.af_sha(p_text text) returns text language sql security definer as $$
 	select encode(extensions.digest(convert_to(p_text, 'UTF8'), 'sha256'), 'hex')
 $$;
--- Receipt n ('11960000-0000-4000-8000-0000000001' || n) begins as the runtime begins a tool call, with this key and input
+-- Receipt n ('12010000-0000-4000-8000-0000000001' || n) begins as the runtime begins a tool call, with this key and input
 -- digest; af_end completes it (one unresolved receipt per run).
 create function pg_temp.af_begin(p_n text, p_key text, p_input text) returns void language plpgsql security definer as $$
 begin
 	perform pg_temp.base_claims('service_role');
 	perform public.qorpera_begin_native_tool_operation(current_setting('qorpera_test.base_binding')::jsonb,
-		('11960000-0000-4000-8000-0000000001' || p_n)::uuid, p_key, p_input, repeat('e', 64), false);
+		('12010000-0000-4000-8000-0000000001' || p_n)::uuid, p_key, p_input, repeat('e', 64), false);
 end $$;
 create function pg_temp.af_end(p_n text, p_input text) returns void language plpgsql security definer as $$
 begin
 	perform pg_temp.base_claims('service_role');
 	perform public.qorpera_complete_native_tool_operation(current_setting('qorpera_test.base_binding')::jsonb,
-		('11960000-0000-4000-8000-0000000001' || p_n)::uuid, p_input, '{}'::jsonb);
+		('12010000-0000-4000-8000-0000000001' || p_n)::uuid, p_input, '{}'::jsonb);
 end $$;
 -- One fill_company_account call's operation envelope, as the machine tools write it: the password of the account opened in
 -- 1 into m-1196, unless the arguments (p_args), the operation (p_operation) or the target (p_target) change.
@@ -133,7 +133,7 @@ begin
 			'logicalOperationKey', p_key, 'requiresCompanyRevision', false,
 			'arguments', jsonb_build_object('operationKey', p_key, 'machine', 'm-1196',
 				'account', current_setting('qorpera_test.af_account'), 'field', 'password') || p_args,
-			'target', jsonb_build_object('realm', 'company_machine', 'machineId', '11960000-0000-4000-8000-0000000007a1')
+			'target', jsonb_build_object('realm', 'company_machine', 'machineId', '12010000-0000-4000-8000-0000000007a1')
 				|| p_target) || p_operation)::text;
 end $$;
 -- Receipt n begins as the call of an envelope (as fill_company_account's receipt unless another tool's key is named).
@@ -147,7 +147,7 @@ begin
 	perform pg_temp.af_end(p_n, pg_temp.af_sha(p_envelope));
 end $$;
 -- The coding executor's read of receipt n's call, as the service role, for m-1196 unless another machine is named.
-create function pg_temp.af_exec(p_n text, p_envelope text, p_machine text default '11960000-0000-4000-8000-0000000007a1')
+create function pg_temp.af_exec(p_n text, p_envelope text, p_machine text default '12010000-0000-4000-8000-0000000007a1')
 returns text language plpgsql as $$
 declare v text;
 begin
@@ -155,21 +155,21 @@ begin
 	set local role service_role;
 	v := pg_temp.af_try(format('select public.qorpera_authorize_machine_account_fill(%L::jsonb, %L::jsonb, %L, %L)',
 		current_setting('qorpera_test.base_binding'), jsonb_build_object('machineId', p_machine),
-		'11960000-0000-4000-8000-0000000001' || p_n, p_envelope));
+		'12010000-0000-4000-8000-0000000001' || p_n, p_envelope));
 	reset role;
 	return v;
 end $$;
 -- The broker's read of receipt n's call, with what the executor names: its owner, the placement, the boot and the helper's
 -- key (m-1196's by default), on Alice's binding with the company's authority.
 create function pg_temp.af_call(p_n text, p_envelope text, p_owner text default 'mx-1196',
-	p_placement text default '11960000-0000-4000-8000-0000000007b1', p_boot text default '11960000-0000-4000-8000-0000000007c1',
+	p_placement text default '12010000-0000-4000-8000-0000000007b1', p_boot text default '12010000-0000-4000-8000-0000000007c1',
 	p_key text default null, p_downstream text default repeat('e', 64),
-	p_authority text default '11960000-0000-4000-8000-000000000040', p_capability text default repeat('9', 64))
+	p_authority text default '12010000-0000-4000-8000-000000000040', p_capability text default repeat('9', 64))
 returns text language plpgsql as $$
 begin
 	perform set_config('request.jwt.claims', '', true);
 	return pg_temp.af_try(format('select public.qorpera_fill_company_account_on_machine(%L, %L, %L::jsonb, %L, %L, %L, %L, %L, %L, %L)',
-		p_authority, p_capability, current_setting('qorpera_test.base_binding'), '11960000-0000-4000-8000-0000000001' || p_n,
+		p_authority, p_capability, current_setting('qorpera_test.base_binding'), '12010000-0000-4000-8000-0000000001' || p_n,
 		p_envelope, p_downstream, p_owner, p_placement, p_boot, coalesce(p_key, current_setting('qorpera_test.af_key'))));
 end $$;
 create function pg_temp.af_counts() returns jsonb language sql security definer as $$
@@ -200,9 +200,9 @@ select set_config('qorpera_test.af_open', pg_temp.af_try(format(
 	'select public.qorpera_open_company_account(%L, %L, %L::jsonb, %L, repeat(''a'', 64), repeat(''e'', 64), %L, %L, %L, '
 		|| '''npmjs.com'', ''{www.npmjs.com}''::text[], ''agents+npmjs.com@nordlys.example'', ''Publishes the SDK.'', %L, '
 		|| '''company-kek-1'', ''\x0196''::bytea, %L)',
-	'11960000-0000-4000-8000-000000000040', repeat('9', 64), current_setting('qorpera_test.base_binding'),
-	'11960000-0000-4000-8000-000000000101', '11960000-0000-4000-8000-000000000201', '92400000-0000-4000-8000-000000000010',
-	'92400000-0000-4000-8000-000000000020', '11960000-0000-4000-8000-000000000060',
+	'12010000-0000-4000-8000-000000000040', repeat('9', 64), current_setting('qorpera_test.base_binding'),
+	'12010000-0000-4000-8000-000000000101', '12010000-0000-4000-8000-000000000201', '92400000-0000-4000-8000-000000000010',
+	'92400000-0000-4000-8000-000000000020', '12010000-0000-4000-8000-000000000060',
 	current_setting('qorpera_test.af_envelope_sha'))), true);
 select pg_temp.af_end('01', repeat('a', 64));
 reset session authorization;
@@ -228,20 +228,20 @@ declare
 	v_account uuid := current_setting('qorpera_test.af_account')::uuid;
 begin
 	perform pg_temp.base_assert(v_open = jsonb_build_object('schema', 'qorpera.company-account/v1',
-			'accountId', '11960000-0000-4000-8000-000000000201', 'site', 'npmjs.com', 'signInHosts', jsonb_build_array('www.npmjs.com'),
+			'accountId', '12010000-0000-4000-8000-000000000201', 'site', 'npmjs.com', 'signInHosts', jsonb_build_array('www.npmjs.com'),
 			'login', 'agents+npmjs.com@nordlys.example', 'twoStep', 'none', 'status', 'pending', 'version', 1)
 			and not exists (select 1 from public.qorpera_runtime_offices where profile_id = '92400000-0000-4000-8000-000000000010'),
 		'1: the account opens on a company with a machine and no computer: ' || current_setting('qorpera_test.af_open'));
 	-- The executor's read: where m-1196 runs, and what the helper binds the box to and checks the page against.
 	perform pg_temp.base_assert(v_exec = jsonb_build_object('schema', 'qorpera.machine-account-fill-authority/v1',
-			'state', 'authorized', 'machineId', '11960000-0000-4000-8000-0000000007a1',
-			'placementId', '11960000-0000-4000-8000-0000000007b1', 'bootId', '11960000-0000-4000-8000-0000000007c1',
-			'executorOwner', 'mx-1196', 'providerId', 'machine-1196', 'receiptId', '11960000-0000-4000-8000-000000000111',
+			'state', 'authorized', 'machineId', '12010000-0000-4000-8000-0000000007a1',
+			'placementId', '12010000-0000-4000-8000-0000000007b1', 'bootId', '12010000-0000-4000-8000-0000000007c1',
+			'executorOwner', 'mx-1196', 'providerId', 'machine-1196', 'receiptId', '12010000-0000-4000-8000-000000000111',
 			'companyId', '92400000-0000-4000-8000-000000000010',
 			'target', jsonb_build_object('schema', 'qorpera.machine-account-fill-target/v1',
-				'companyId', '92400000-0000-4000-8000-000000000010', 'companyMachineId', '11960000-0000-4000-8000-0000000007a1',
-				'placementId', '11960000-0000-4000-8000-0000000007b1', 'bootId', '11960000-0000-4000-8000-0000000007c1',
-				'receiptId', '11960000-0000-4000-8000-000000000111', 'accountId', v_account, 'field', 'password',
+				'companyId', '92400000-0000-4000-8000-000000000010', 'companyMachineId', '12010000-0000-4000-8000-0000000007a1',
+				'placementId', '12010000-0000-4000-8000-0000000007b1', 'bootId', '12010000-0000-4000-8000-0000000007c1',
+				'receiptId', '12010000-0000-4000-8000-000000000111', 'accountId', v_account, 'field', 'password',
 				'hosts', jsonb_build_array('npmjs.com', 'www.npmjs.com'))),
 		'1: the executor''s read: ' || current_setting('qorpera_test.af_exec11'));
 	-- The broker's read: the account's facts, the envelope with its associated data, and what the box is bound to.
@@ -251,15 +251,15 @@ begin
 			'companyId', '92400000-0000-4000-8000-000000000010', 'environmentId', '92400000-0000-4000-8000-000000000020',
 			'keyId', 'company-kek-1', 'encryptedEnvelopeBase64', encode('\x0196'::bytea, 'base64'),
 			'envelopeSha256', encode(extensions.digest('\x0196'::bytea, 'sha256'), 'hex'),
-			'receiptId', '11960000-0000-4000-8000-000000000111', 'field', 'password',
-			'companyMachineId', '11960000-0000-4000-8000-0000000007a1', 'placementId', '11960000-0000-4000-8000-0000000007b1',
-			'bootId', '11960000-0000-4000-8000-0000000007c1', 'fillPublicKey', current_setting('qorpera_test.af_key')),
+			'receiptId', '12010000-0000-4000-8000-000000000111', 'field', 'password',
+			'companyMachineId', '12010000-0000-4000-8000-0000000007a1', 'placementId', '12010000-0000-4000-8000-0000000007b1',
+			'bootId', '12010000-0000-4000-8000-0000000007c1', 'fillPublicKey', current_setting('qorpera_test.af_key')),
 		'1: the broker''s read: ' || current_setting('qorpera_test.af_read11'));
 	-- The use is recorded once, on this receipt; the executor's read wrote nothing.
 	perform pg_temp.base_assert((current_setting('qorpera_test.af_c11')::jsonb ->> 'events')::bigint
 				= (current_setting('qorpera_test.af_c10')::jsonb ->> 'events')::bigint + 1
 			and (select array_agg(event_type order by id) from public.qorpera_cloud_secret_audit_events
-				where receipt_id = '11960000-0000-4000-8000-000000000111' and run_id = v_run) = array['account_used']
+				where receipt_id = '12010000-0000-4000-8000-000000000111' and run_id = v_run) = array['account_used']
 			and exists (select 1 from public.qorpera_company_accounts where secret_id = v_account and last_used_at is not null
 				and last_used_by_staff_agent_id = '92400000-0000-4000-8000-000000000030'),
 		'1: the use is recorded: ' || current_setting('qorpera_test.af_c11'));
@@ -301,7 +301,7 @@ begin
 	perform pg_temp.base_assert(pg_temp.af_answer(current_setting('qorpera_test.af_2a')) ->> 'state' = 'authorized'
 			and pg_temp.af_answer(current_setting('qorpera_test.af_2b')) ->> 'schema'
 				= 'qorpera.company-account-machine-fill-context/v1'
-			and pg_temp.af_answer(current_setting('qorpera_test.af_2b')) ->> 'receiptId' = '11960000-0000-4000-8000-000000000121',
+			and pg_temp.af_answer(current_setting('qorpera_test.af_2b')) ->> 'receiptId' = '12010000-0000-4000-8000-000000000121',
 		'2: a contributor requester fills: ' || current_setting('qorpera_test.af_2a') || ' / ' || current_setting('qorpera_test.af_2b'));
 end $$;
 rollback to savepoint af_contributor;
@@ -345,10 +345,10 @@ select set_config('qorpera_test.af_c21', pg_temp.af_counts()::text, true);
 select pg_temp.af_mend('21', current_setting('qorpera_test.af_env21'));
 -- The company's stopped machine: its own receipt.
 select set_config('qorpera_test.af_env22', pg_temp.af_envelope('af-22', '{"machine": "m-1196-asleep"}', '{}',
-	'{"machineId": "11960000-0000-4000-8000-0000000007a2"}'), true);
+	'{"machineId": "12010000-0000-4000-8000-0000000007a2"}'), true);
 select pg_temp.af_mbegin('22', current_setting('qorpera_test.af_env22'));
 select set_config('qorpera_test.af_2stop', pg_temp.af_exec('22', current_setting('qorpera_test.af_env22'),
-	'11960000-0000-4000-8000-0000000007a2'), true);
+	'12010000-0000-4000-8000-0000000007a2'), true);
 set local session authorization qorpera_secret_broker;
 select set_config('qorpera_test.af_2stopb', pg_temp.af_call('22', current_setting('qorpera_test.af_env22')), true);
 reset session authorization;
@@ -382,7 +382,7 @@ select set_config('qorpera_test.af_3e', pg_temp.af_differ(jsonb_build_array(
 	jsonb_build_array('executor: another call''s receipt', pg_temp.af_exec('11', current_setting('qorpera_test.af_env31')),
 		'42501:Machine account fill receipt is unavailable'),
 	jsonb_build_array('executor: another machine than the call''s', pg_temp.af_exec('31', current_setting('qorpera_test.af_env31'),
-		'11960000-0000-4000-8000-0000000007a2'), '22023:Machine account fill request is malformed'),
+		'12010000-0000-4000-8000-0000000007a2'), '22023:Machine account fill request is malformed'),
 	jsonb_build_array('executor: machine_run', pg_temp.af_exec('31', pg_temp.af_env31('{operation,tool}', '"machine_run"')),
 		'22023:Machine account fill request is malformed'),
 	jsonb_build_array('executor: new_password', pg_temp.af_exec('31',
@@ -393,10 +393,10 @@ select set_config('qorpera_test.af_3e', pg_temp.af_differ(jsonb_build_array(
 	jsonb_build_array('executor: an account that is no id', pg_temp.af_exec('31', pg_temp.af_env31('{operation,arguments,account}',
 		'"npmjs.com"')), '22023:Machine account fill request is malformed'),
 	jsonb_build_array('executor: an id in capitals', pg_temp.af_exec('31', pg_temp.af_env31('{operation,arguments,account}',
-		'"11960000-0000-4000-8000-0000000002AB"')), '22023:Machine account fill request is malformed'),
+		'"12010000-0000-4000-8000-0000000002AB"')), '22023:Machine account fill request is malformed'),
 	-- The call's own shape, but not the call its receipt was begun for (another account): the digest differs.
 	jsonb_build_array('executor: another account than the receipt''s', pg_temp.af_exec('31', pg_temp.af_env31(
-		'{operation,arguments,account}', '"11960000-0000-4000-8000-0000000002ab"')), '42501:Machine account fill receipt is unavailable')
+		'{operation,arguments,account}', '"12010000-0000-4000-8000-0000000002ab"')), '42501:Machine account fill receipt is unavailable')
 )), true);
 set local session authorization qorpera_secret_broker;
 select set_config('qorpera_test.af_3x', pg_temp.af_differ(jsonb_build_array(
@@ -414,13 +414,13 @@ select set_config('qorpera_test.af_3x', pg_temp.af_differ(jsonb_build_array(
 		'22023:company account fill call is malformed'),
 	-- Another account than the receipt's: its digest differs, and that account is not one (refused at its vault rows).
 	jsonb_build_array('call: another account than the receipt''s', pg_temp.af_call('31', pg_temp.af_env31(
-		'{operation,arguments,account}', '"11960000-0000-4000-8000-0000000002ab"')), '22023:The company has no such open account'),
+		'{operation,arguments,account}', '"12010000-0000-4000-8000-0000000002ab"')), '22023:The company has no such open account'),
 	jsonb_build_array('call: no machine', pg_temp.af_call('31', (current_setting('qorpera_test.af_env31')::jsonb
 		#- '{operation,arguments,machine}')::text), '22023:company account fill call is malformed'),
 	jsonb_build_array('call: a computer''s realm', pg_temp.af_call('31', pg_temp.af_env31('{operation,target,realm}',
 		'"company_computer"')), '22023:company account fill call is malformed'),
 	jsonb_build_array('call: a screen too', pg_temp.af_call('31',
-		pg_temp.af_env31('{operation,target,screenId}', '"11960000-0000-4000-8000-000000000999"')),
+		pg_temp.af_env31('{operation,target,screenId}', '"12010000-0000-4000-8000-000000000999"')),
 		'22023:company account fill call is malformed'),
 	jsonb_build_array('call: a company revision', pg_temp.af_call('31', pg_temp.af_env31('{operation,requiresCompanyRevision}', 'true')),
 		'22023:company account fill call is malformed'),
@@ -431,9 +431,9 @@ select set_config('qorpera_test.af_3x', pg_temp.af_differ(jsonb_build_array(
 	jsonb_build_array('receipt: another downstream key', pg_temp.af_call('31', current_setting('qorpera_test.af_env31'),
 		p_downstream => repeat('f', 64)), '42501:company account fill receipt is unavailable'),
 	jsonb_build_array('machine: another placement', pg_temp.af_call('31', current_setting('qorpera_test.af_env31'),
-		p_placement => '11960000-0000-4000-8000-0000000007b3'), '42501:company machine is not running'),
+		p_placement => '12010000-0000-4000-8000-0000000007b3'), '42501:company machine is not running'),
 	jsonb_build_array('machine: another boot', pg_temp.af_call('31', current_setting('qorpera_test.af_env31'),
-		p_boot => '11960000-0000-4000-8000-0000000007c3'), '42501:company machine is not running'),
+		p_boot => '12010000-0000-4000-8000-0000000007c3'), '42501:company machine is not running'),
 	jsonb_build_array('machine: another executor', pg_temp.af_call('31', current_setting('qorpera_test.af_env31'),
 		p_owner => 'mx-other'), '42501:company machine is not running'),
 	jsonb_build_array('key: not one', pg_temp.af_call('31', current_setting('qorpera_test.af_env31'), p_key => 'not-a-key'),
@@ -441,7 +441,7 @@ select set_config('qorpera_test.af_3x', pg_temp.af_differ(jsonb_build_array(
 	jsonb_build_array('key: a low-order point', pg_temp.af_call('31', current_setting('qorpera_test.af_env31'),
 		p_key => repeat('A', 43)), '42501:company machine fill key is unavailable'),
 	jsonb_build_array('broker: another company''s', pg_temp.af_call('31', current_setting('qorpera_test.af_env31'),
-		p_authority => '11960000-0000-4000-8000-000000000041', p_capability => repeat('8', 64)),
+		p_authority => '12010000-0000-4000-8000-000000000041', p_capability => repeat('8', 64)),
 		'42501:cloud secret broker does not serve this company'),
 	jsonb_build_array('broker: another capability', pg_temp.af_call('31', current_setting('qorpera_test.af_env31'),
 		p_capability => repeat('8', 64)), '42501:cloud secret broker authority is unavailable')
@@ -470,13 +470,13 @@ begin
 end $$;
 select set_config('qorpera_test.af_c32', pg_temp.af_counts()::text, true);
 select set_config('qorpera_test.af_3y', concat(
-	pg_temp.af_refused('32', pg_temp.af_envelope('af-32'), 'machine_run', '11960000-0000-4000-8000-0000000007a1',
+	pg_temp.af_refused('32', pg_temp.af_envelope('af-32'), 'machine_run', '12010000-0000-4000-8000-0000000007a1',
 		'42501:Machine account fill receipt is unavailable', '42501:company account fill receipt is unavailable'),
-	pg_temp.af_refused('33', pg_temp.af_envelope('af-33', '{}', '{}', '{"machineId": "11960000-0000-4000-8000-0000000007a3"}'),
-		'fill_company_account', '11960000-0000-4000-8000-0000000007a3', '42501:Machine account fill authority is unavailable',
+	pg_temp.af_refused('33', pg_temp.af_envelope('af-33', '{}', '{}', '{"machineId": "12010000-0000-4000-8000-0000000007a3"}'),
+		'fill_company_account', '12010000-0000-4000-8000-0000000007a3', '42501:Machine account fill authority is unavailable',
 		'42501:company machine is not running'),
 	pg_temp.af_refused('34', pg_temp.af_envelope('af-34', '{"machine": "m-1196-asleep"}'), 'fill_company_account',
-		'11960000-0000-4000-8000-0000000007a1', '42501:Machine account fill authority is unavailable',
+		'12010000-0000-4000-8000-0000000007a1', '42501:Machine account fill authority is unavailable',
 		'42501:company machine is not running')), true);
 select set_config('qorpera_test.af_c33', pg_temp.af_counts()::text, true);
 
@@ -504,7 +504,7 @@ do $$
 declare
 	v_role text;
 	v_call jsonb := jsonb_build_object('operationKey', 'k-1', 'machine', 'm-1196',
-		'account', '11960000-0000-4000-8000-000000000201', 'field', 'code');
+		'account', '12010000-0000-4000-8000-000000000201', 'field', 'code');
 begin
 	foreach v_role in array array['anon', 'authenticated', 'service_role', 'qorpera_secret_broker'] loop
 		perform pg_temp.base_assert(has_function_privilege(v_role,
@@ -528,18 +528,18 @@ begin
 			and not public.qorpera_valid_machine_account_fill_call(v_call - 'machine')
 			and not public.qorpera_valid_machine_account_fill_call(v_call || '{"value": "hunter2"}')
 			and not public.qorpera_valid_machine_account_fill_call(v_call || '{"machine": "M-1196"}')
-			and not public.qorpera_valid_machine_account_fill_call(v_call || '{"account": "11960000-0000-4000-8000-00000000020"}')
+			and not public.qorpera_valid_machine_account_fill_call(v_call || '{"account": "12010000-0000-4000-8000-00000000020"}')
 			and not public.qorpera_valid_machine_account_fill_call(v_call || '{"operationKey": ""}')
 			and not public.qorpera_valid_machine_account_fill_call(v_call || '{"field": null}')
 			and not public.qorpera_valid_machine_account_fill_call('[]'),
 		'4: the call check');
 	perform pg_temp.base_assert(strpos((select prosrc from pg_proc
 			where oid = 'public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),
-			'''save_coding_value'',/* 20260930710000 */''fill_company_account''') > 0,
+			'''save_coding_value'',/* 20260930711000 */''fill_company_account''') > 0,
 		'4: the observations'' list');
 	perform pg_temp.base_assert((select array_agg(proc.proname::text order by proc.proname::text collate "C")
 			from pg_proc as proc join pg_namespace as namespace on namespace.oid = proc.pronamespace
-			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930710000') > 0) = array[
+			where namespace.nspname = 'public' and strpos(proc.prosrc, '20260930711000') > 0) = array[
 			'qorpera_authorize_machine_account_fill', 'qorpera_fill_company_account_on_machine',
 			'qorpera_machine_account_fill_operation', 'qorpera_record_runtime_observation',
 			'qorpera_valid_machine_account_fill_call'],

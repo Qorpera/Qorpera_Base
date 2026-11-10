@@ -13,7 +13,7 @@ import { RECORD, readFolderProgramRecord } from "./folder-program-artifact.mjs";
 // Since 20260930705000 it also carries save_coding_value's clipboard helper,
 // built as its own file after the guest helper, so the guest helper (the
 // manifest's first artifact, whose sha-256 the executor pins) stays as it was.
-// Since 20260930710000 it also carries fill_company_account's fill helper, the
+// Since 20260930711000 it also carries fill_company_account's fill helper, the
 // same way: its own file, after the guest helper.
 const USAGE = "Usage: package-machine-guest.mjs --out <new-directory> --folder-program <built qorpera-folder>";
 const args = process.argv.slice(2);
@@ -98,7 +98,7 @@ artifacts.push({
 	sha256: createHash("sha256").update(codingValues).digest("hex"),
 	bytes: codingValues.length,
 });
-// fill_company_account's fill helper (20260930710000): the executor runs it with node; it makes a key in memory, opens
+// fill_company_account's fill helper (20260930711000): the executor runs it with node; it makes a key in memory, opens
 // the vault's box sealed to it, checks the desktop browser's focused page and types the value there with CDP.
 await build({
 	entryPoints: ["packages/runtime/src/cloud-machine-account-fill-main.ts"],

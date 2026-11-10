@@ -338,7 +338,7 @@ test("the image carries save_coding_value's clipboard helper as its own file, wi
 
 
 test("the image carries fill_company_account's fill helper as its own file, desktop open's DevTools port, and checks both", async () => {
-	// 20260930710000: the helper is built beside the guest helper, never into it, so the guest helper's pin stays as it was.
+	// 20260930711000: the helper is built beside the guest helper, never into it, so the guest helper's pin stays as it was.
 	const packager = read("scripts/package-machine-guest.mjs");
 	assert.match(packager, /entryPoints: \["packages\/runtime\/src\/cloud-machine-account-fill-main\.ts"\]/);
 	assert.match(
@@ -380,7 +380,7 @@ test("the image carries fill_company_account's fill helper as its own file, desk
 		assert.ok(imageScript.includes(line), line);
 	// Both checks' scripts sit in the build's single-quoted script: they hold no single quote.
 	const fill = imageScript.slice(
-		imageScript.indexOf("# fill_company_account (20260930710000): the fill helper types"),
+		imageScript.indexOf("# fill_company_account (20260930711000): the fill helper types"),
 		imageScript.indexOf("# Nothing of that check stays in the desktop account"),
 	);
 	assert.ok(fill.length > 0 && !fill.includes("'"));

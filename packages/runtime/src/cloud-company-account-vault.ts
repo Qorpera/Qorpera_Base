@@ -32,7 +32,7 @@ const REFUSAL_SCHEMA = "qorpera.company-account-refusal/v1";
 const CONTEXT_SCHEMA = "qorpera.company-account-context/v1";
 export const COMPANY_ACCOUNT_FILL_REQUEST_SCHEMA = "qorpera.company-account-fill-request/v1";
 const FILL_CONTEXT_SCHEMA = "qorpera.company-account-fill-context/v1";
-/** A company machine's fill (fill_company_account, 20260930710000), asked by the machine's executor. */
+/** A company machine's fill (fill_company_account, 20260930711000), asked by the machine's executor. */
 export const COMPANY_ACCOUNT_MACHINE_FILL_REQUEST_SCHEMA = "qorpera.company-account-machine-fill-request/v1";
 const MACHINE_FILL_CONTEXT_SCHEMA = "qorpera.company-account-machine-fill-context/v1";
 const FILL_ANSWER_SCHEMA = "qorpera.company-account-fill-answer/v1";
@@ -120,7 +120,7 @@ export interface CompanyAccountFillRequest {
 }
 
 /**
- * One fill_company_account call of an agent's run on a company machine (20260930710000), as the machine's executor asks
+ * One fill_company_account call of an agent's run on a company machine (20260930711000), as the machine's executor asks
  * it: the call the runtime began (its binding, receipt, downstream key and operation envelope), where the executor runs
  * the fill helper (its own owner name, the machine's placement and boot) and the helper's public key, made in memory for
  * this call. The database checks the executor's words against where the machine runs.
@@ -147,7 +147,7 @@ export interface CompanyAccountFillAnswer {
 /** The broker-role database calls (supabase migrations 20260929999700 and 20260929999750). */
 export interface CompanyAccountAuthority {
 	readCompanyAccountFill(request: CompanyAccountFillRequest, signal: AbortSignal): Promise<unknown>;
-	/** A company machine's fill (20260930710000); a broker whose database cannot serve it leaves it out. */
+	/** A company machine's fill (20260930711000); a broker whose database cannot serve it leaves it out. */
 	readCompanyAccountMachineFill?(request: CompanyAccountMachineFillRequest, signal: AbortSignal): Promise<unknown>;
 	describeCompanyAccountOpen(call: CompanyAccountCall, signal: AbortSignal): Promise<unknown>;
 	openCompanyAccount(call: CompanyAccountCall, opening: CompanyAccountOpening, signal: AbortSignal): Promise<unknown>;
@@ -366,7 +366,7 @@ interface FillContext extends FillContextBase {
 	readonly companyComputerId: string;
 	readonly computerGeneration: number;
 }
-/** A company machine's fill (20260930710000): the machine, its placement and its boot instead of a computer. */
+/** A company machine's fill (20260930711000): the machine, its placement and its boot instead of a computer. */
 interface MachineFillContext extends FillContextBase {
 	readonly companyMachineId: string;
 	readonly placementId: string;
@@ -419,7 +419,7 @@ function fillContext(value: unknown): FillContext {
 	}
 }
 
-/** What the database answers for a machine's fill (20260930710000); the envelope is checked against its digest. */
+/** What the database answers for a machine's fill (20260930711000); the envelope is checked against its digest. */
 function machineFillContext(value: unknown): MachineFillContext {
 	const input = parseClosedRecord(value, "Company account machine fill context", [
 		...FILL_CONTEXT_FACTS,
@@ -573,7 +573,7 @@ export class CompanyAccountVault {
 	}
 
 	/**
-	 * One fill_company_account on a company machine (20260930710000): the value (the login, the password, or the
+	 * One fill_company_account on a company machine (20260930711000): the value (the login, the password, or the
 	 * authenticator's code now) sealed to the key the machine's fill helper made for this call, bound to the machine, its
 	 * placement and its boot, which the database checked against where the machine runs; or the database's refusal. The
 	 * value is never in an answer, a log or an error.

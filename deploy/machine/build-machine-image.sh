@@ -22,7 +22,7 @@
 # start`), `desktop start` opens chosen company files and folders on it, pages
 # get 3D drawing, and Playwright with its Chromium, ffmpeg and a `chromium` that
 # runs from root's shell are installed, since that is how agents look at pages
-# without a screen. Also fill_company_account's fill helper (20260930710000),
+# without a screen. Also fill_company_account's fill helper (20260930711000),
 # which types a company account's value, sealed by the vault to a key it made in
 # memory, into the desktop browser's focused box through the DevTools port the
 # desktop's browser gets on the machine's loopback. An agent that has a Dockerfile builds
@@ -331,7 +331,7 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	if (JSON.parse(helper().stdout).code !== "DESKTOP_NOT_RUNNING") fail("the clipboard helper did not refuse a stopped desktop");
 JS
 	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
-	# fill_company_account (20260930710000): the fill helper types a made-up password, sealed as the vault seals one, into
+	# fill_company_account (20260930711000): the fill helper types a made-up password, sealed as the vault seals one, into
 	# the focused password box of a local https page in the desktop Chromium, through the DevTools port of the profile
 	# desktop open uses; the page gets it whole, the helper prints only its key and FILLED, never the value; and it refuses
 	# another site, another boot and a "Just a moment..." page that desktop open opened, by code, without a box. It runs as

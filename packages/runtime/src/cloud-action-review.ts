@@ -292,7 +292,7 @@ export function cloudActionEffect(
 		// can use what (20260930705000), as computer_browser vault_capture of a coding value does.
 		case "save_coding_value":
 			return "external";
-		// A company account's login, password or code typed into a website from a company machine (20260930710000), as
+		// A company account's login, password or code typed into a website from a company machine (20260930711000), as
 		// computer_browser vault_fill types one on a computer.
 		case "fill_company_account":
 			return "external";
@@ -801,7 +801,7 @@ export function describeCloudAction(
 		add("repository", args.repository);
 		add("purpose", args.purpose);
 	} else if (tool.name === "fill_company_account") {
-		// 20260930710000: the vault types the value into the machine's browser; the card names the account and which of its
+		// 20260930711000: the vault types the value into the machine's browser; the card names the account and which of its
 		// values, never the value.
 		title = "Type a company account's sign-in into a web page on a company machine";
 		target = text(args.machine) || null;

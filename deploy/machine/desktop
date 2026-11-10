@@ -84,7 +84,7 @@ launch() {
 # without a graphics card: the drawing runs in software inside the browser's own sandbox, on a machine that holds no
 # credentials.
 # Its own profile, and a DevTools port on the machine's loopback that the kernel picks: the port fill_company_account's
-# helper types a company account's value through (20260930710000), read off the kernel as the socket this browser holds,
+# helper types a company account's value through (20260930711000), read off the kernel as the socket this browser holds,
 # never off a file. A Chromium already running with this profile takes the address and keeps its port.
 PROFILE=/home/desktop/.config/qorpera-chromium
 browser() {

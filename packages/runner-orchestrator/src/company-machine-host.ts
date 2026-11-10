@@ -83,7 +83,7 @@ const CODING_VALUE_MS = 20000;
 /** The executor's own clear after a save that did not end cleanly (`--clear-only`): its own deadline, never the
  * request's, as the request may be what ended it. Two xsels side by side, 4 s each at most, and the helper's start. */
 const CODING_VALUE_CLEAR_MS = 10000;
-/** fill_company_account's fill helper (20260930710000), packaged beside the guest helper and installed by the image
+/** fill_company_account's fill helper (20260930711000), packaged beside the guest helper and installed by the image
  * (scripts/package-machine-guest.mjs). It runs under CODING_VALUE_ON_BOOT's rule: only on the boot SQL named (exit 97)
  * and only where the image has it (exit 98: an earlier image). */
 export const COMPANY_MACHINE_ACCOUNT_FILL_HELPER = "/opt/qorpera-machine/cloud-machine-account-fill.mjs";
@@ -277,7 +277,7 @@ export type CompanyMachineCodingValueOutcome =
 	| { readonly box: Readonly<Record<string, string>> }
 	| { readonly refused: string };
 
-/** fill_company_account's run on a machine of this node (20260930710000), as SQL authorized it
+/** fill_company_account's run on a machine of this node (20260930711000), as SQL authorized it
  * (qorpera_authorize_machine_account_fill): where it runs, and the helper's target, given to the helper as SQL wrote it. */
 export interface CompanyMachineAccountFill {
 	placementId: string;
@@ -1861,7 +1861,7 @@ export class LxdCompanyMachineHost {
 	}
 
 	/**
-	 * fill_company_account (20260930710000): the image's fill helper on a machine of this node, as root, on exactly the
+	 * fill_company_account (20260930711000): the image's fill helper on a machine of this node, as root, on exactly the
 	 * boot SQL named, in one exec whose stdin and stdout stay open for the exchange. SQL's target goes first on its stdin;
 	 * the helper checks the focused tab and prints its key's public half (or a code); `seal` asks the vault for the value
 	 * sealed to that key, and its box goes second on the helper's stdin (or stdin ends: the vault refused); the helper

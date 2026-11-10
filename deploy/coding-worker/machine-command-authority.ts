@@ -128,7 +128,7 @@ export async function authorizeMachineCodingValue(
 		providerId: result.providerId, receiptId: result.receiptId, target: { ...bound } };
 }
 
-/** What SQL says about one fill_company_account (20260930710000): where the machine runs, the company the vault serves,
+/** What SQL says about one fill_company_account (20260930711000): where the machine runs, the company the vault serves,
  * and the fill helper's target (what the box is bound to and the account's site and sign-in hosts), which goes to the
  * helper as SQL wrote it. Nothing in it is secret. */
 export interface MachineAccountFillAuthority {

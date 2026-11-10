@@ -3560,7 +3560,7 @@ describe("a machine's clipboard helper", () => {
 	});
 });
 
-// 20260930710000: fill_company_account runs the image's fill helper on the machine, on the boot SQL named, in one exec:
+// 20260930711000: fill_company_account runs the image's fill helper on the machine, on the boot SQL named, in one exec:
 // SQL's target first on its stdin, then (once the helper printed its key) the vault's box, then stdin ends; only the
 // helper's two lines come back. The exec ends at its deadline, which kills the helper.
 describe("a machine's fill helper", () => {

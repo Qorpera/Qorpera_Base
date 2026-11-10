@@ -302,7 +302,7 @@ describe("LXD exec pipe", () => {
 		return { stdin, state };
 	}
 
-	// 20260930710000: fill_company_account's helper prints its key, and the executor answers it on stdin while it runs.
+	// 20260930711000: fill_company_account's helper prints its key, and the executor answers it on stdin while it runs.
 	it("hands each piece of stdout to the caller as it comes, so it can answer on stdin while the command runs", async () => {
 		const exec = await fake(async (io) => {
 			io.print("stdout", Buffer.from("key\n"));

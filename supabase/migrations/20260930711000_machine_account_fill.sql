@@ -1,4 +1,4 @@
--- 20260930710000: an agent signs in to a website from its company machine with a company account (Jonas, 10 November
+-- 20260930711000: an agent signs in to a website from its company machine with a company account (Jonas, 10 November
 -- 2026: "Build machine sign-ins", "they should be able to use the vault too"; deploy/first-node/RUNTIME-COMPANY-ACCOUNTS.md,
 -- "Machines").
 --
@@ -33,15 +33,15 @@
 --   with its associated data, and what the box is bound to (the receipt, the field, the machine, its placement and boot,
 --   the helper's key).
 -- * fill_company_account joins the operations a run's observations may name.
--- Every new or patched body names this migration (20260930710000), for the deploy guards.
+-- Every new or patched body names this migration (20260930711000), for the deploy guards.
 
 do $$ begin
 	if to_regprocedure('public.qorpera_authorize_machine_account_fill(jsonb,jsonb,uuid,text)') is not null then
-		raise exception '20260930710000 is already applied'; end if;
+		raise exception '20260930711000 is already applied'; end if;
 	if to_regprocedure('public.qorpera_fill_company_account(uuid,text,jsonb,uuid,text,text)') is null
 		or to_regprocedure('public.qorpera_authorize_machine_coding_value(jsonb,jsonb,uuid,text)') is null
 		or to_regprocedure('public.qorpera_company_computer_fill_key_valid(text)') is null then
-		raise exception '20260930710000 needs company accounts (20260928429975, 20260930072000) and save from the machine (20260930705000)';
+		raise exception '20260930711000 needs company accounts (20260928429975, 20260930072000) and save from the machine (20260930705000)';
 	end if;
 end $$;
 
@@ -54,7 +54,7 @@ set local lock_timeout = '3s';
 create function public.qorpera_valid_machine_account_fill_call(p_args jsonb)
 returns boolean language plpgsql immutable set search_path = '' as $$
 begin
-	-- 20260930710000: exactly these four, each a string.
+	-- 20260930711000: exactly these four, each a string.
 	if jsonb_typeof(p_args) is distinct from 'object'
 		or p_args - array['operationKey', 'machine', 'account', 'field'] <> '{}'::jsonb
 		or not (p_args ?& array['operationKey', 'machine', 'account', 'field']) then
@@ -78,7 +78,7 @@ declare
 	v_envelope jsonb;
 	v_operation jsonb;
 begin
-	-- 20260930710000: the call, as the machine tools write it.
+	-- 20260930711000: the call, as the machine tools write it.
 	if p_envelope is null or octet_length(p_envelope) > 65536 then return null; end if;
 	begin
 		v_envelope := p_envelope::jsonb;
@@ -128,7 +128,7 @@ declare
 	v_schema constant text := 'qorpera.machine-account-fill-authority/v1';
 	v_uuid constant text := '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 begin
-	-- 20260930710000: the request, the run's authority, the receipt, the run, the switch, the machine and the account.
+	-- 20260930711000: the request, the run's authority, the receipt, the run, the switch, the machine and the account.
 	if auth.role() is distinct from 'service_role' or jsonb_typeof(p_scope) is distinct from 'object'
 		or p_scope - 'machineId' <> '{}'::jsonb or coalesce(p_scope ->> 'machineId' !~ v_uuid, true) or p_receipt_id is null then
 		raise exception 'Machine account fill request is malformed' using errcode = '22023'; end if;
@@ -241,7 +241,7 @@ declare
 	v_version public.qorpera_cloud_secret_versions%rowtype;
 	v_uuid constant text := '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 begin
-	-- 20260930710000: folder-v2 only; the run check, the run's kind, the machine, the secret and the account (rank 8), then
+	-- 20260930711000: folder-v2 only; the run check, the run's kind, the machine, the secret and the account (rank 8), then
 	-- the receipt, as the office's fill (A1-7).
 	if session_user <> 'qorpera_secret_broker' then
 		raise exception 'cloud secret broker authority is required' using errcode = '42501';
@@ -363,14 +363,14 @@ create function pg_temp.machine_fill_patched(p_function regprocedure, p_pairs te
 language plpgsql as $$
 declare v_definition text := pg_get_functiondef(p_function); v_index integer;
 begin
-	if position('20260930710000' in v_definition) > 0 then
-		raise exception '20260930710000 is already in %', p_function; end if;
+	if position('20260930711000' in v_definition) > 0 then
+		raise exception '20260930711000 is already in %', p_function; end if;
 	if coalesce(cardinality(p_pairs), 0) = 0 or cardinality(p_pairs) % 2 <> 0 or array_position(p_pairs, null) is not null then
-		raise exception '20260930710000 pairs differ in %', p_function; end if;
+		raise exception '20260930711000 pairs differ in %', p_function; end if;
 	for v_index in 1 .. cardinality(p_pairs) by 2 loop
 		if p_pairs[v_index] = '' or (length(v_definition) - length(replace(v_definition, p_pairs[v_index], '')))
 			/ length(p_pairs[v_index]) <> 1 then
-			raise exception '20260930710000 anchor differs in %: %', p_function, left(p_pairs[v_index], 80); end if;
+			raise exception '20260930711000 anchor differs in %: %', p_function, left(p_pairs[v_index], 80); end if;
 		v_definition := replace(v_definition, p_pairs[v_index], p_pairs[v_index + 1]);
 	end loop;
 	return v_definition;
@@ -378,7 +378,7 @@ end $$;
 
 do $$ begin execute pg_temp.machine_fill_patched('public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure,
 	array[$old$/* 20260930705000 */'save_coding_value',$old$,
-	$new$/* 20260930705000 */'save_coding_value',/* 20260930710000 */'fill_company_account',$new$]); end $$;
+	$new$/* 20260930705000 */'save_coding_value',/* 20260930711000 */'fill_company_account',$new$]); end $$;
 
 drop function pg_temp.machine_fill_patched(regprocedure, text[]);
 
@@ -394,13 +394,13 @@ begin
 		'public.qorpera_fill_company_account_on_machine(uuid,text,jsonb,uuid,text,text,text,uuid,uuid,text)',
 		'public.qorpera_record_runtime_observation(uuid,jsonb)'
 	]::regprocedure[] loop
-		if strpos((select prosrc from pg_proc where oid = v_function), '20260930710000') = 0 then
-			raise exception '20260930710000 marker is missing in %', v_function; end if;
+		if strpos((select prosrc from pg_proc where oid = v_function), '20260930711000') = 0 then
+			raise exception '20260930711000 marker is missing in %', v_function; end if;
 	end loop;
 	-- The office's fill and save_coding_value keep their own.
 	if strpos((select prosrc from pg_proc where oid = 'public.qorpera_fill_company_account(uuid,text,jsonb,uuid,text,text)'::regprocedure),
 			'20260930072000') = 0
 		or strpos((select prosrc from pg_proc where oid = 'public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure),
 			'20260930705000') = 0 then
-		raise exception '20260930710000: an earlier marker is lost'; end if;
+		raise exception '20260930711000: an earlier marker is lost'; end if;
 end $guard$;

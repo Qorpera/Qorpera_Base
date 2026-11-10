@@ -1541,7 +1541,7 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // (each agent works for one member and the Co-Founder deals the team out; Jonas, 9 November 2026), and for
 // interface apps that show the company's state and overlay v13 (each owner keeps one posted app current; Jonas,
 // 10 November 2026), and for "Accounts on websites" saying the vault types a password on a machine with
-// fill_company_account (20260930710000; Jonas, 10 November 2026), taken on the merged tree. A change to either is a
+// fill_company_account (20260930711000; Jonas, 10 November 2026), taken on the merged tree. A change to either is a
 // change to every run's bytes.
 it.each([
 	[

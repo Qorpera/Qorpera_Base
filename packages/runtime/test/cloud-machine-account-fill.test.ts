@@ -21,7 +21,7 @@ import {
 } from "@qorpera/runtime/cloud-machine-account-fill";
 import { describe, expect, it, vi } from "vitest";
 
-// 20260930710000: fill_company_account's helper on a company machine checks the focused tab, makes a key in memory,
+// 20260930711000: fill_company_account's helper on a company machine checks the focused tab, makes a key in memory,
 // prints only its public half, opens the vault's box for exactly this call on this boot, checks the tab again against the
 // hosts sealed in the box, sets the value on the checked box from inside its document, and prints only a code. The
 // browser is mocked here; the DevTools path is proved against a real Chromium (deploy/machine/build-machine-image.sh's

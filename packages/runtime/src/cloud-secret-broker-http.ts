@@ -621,7 +621,7 @@ export interface HttpCloudSecretBrokerServiceOptions {
 	/** The coding executor's own bearer for `/v1/repository-credentials`
 	 * (bundle v88), `/v1/coding-environment` (5j-3) and the relay's
 	 * `/v1/coding-mcp` and `/v1/coding-repository-fetch/*` (5j-6b), and a company
-	 * machine's account fill `/v1/machine-account-fills` (20260930710000); credential
+	 * machine's account fill `/v1/machine-account-fills` (20260930711000); credential
 	 * `qorpera-cloud-secret-coding-executor`. Distinct from the runtime token
 	 * every guest holds; absent means those routes answer 404. The runtime token
 	 * never opens them, and this token never opens `/v1/operations`. */
@@ -1276,7 +1276,7 @@ export class HttpCloudSecretBrokerService {
 				});
 				return;
 			}
-			// A company machine's fill (fill_company_account, 20260930710000), under the same gate as the coding
+			// A company machine's fill (fill_company_account, 20260930711000), under the same gate as the coding
 			// environment: only the coding executor's own bearer (never the runtime token every guest holds; the executor
 			// proved the run's holder at its own ingress), the database's check of the call, the machine and the executor
 			// behind it. The answer is the value sealed to the key the machine's fill helper made for this call, which only

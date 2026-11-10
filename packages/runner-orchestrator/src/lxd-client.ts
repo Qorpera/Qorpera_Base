@@ -276,7 +276,7 @@ export interface LxdExecPipeRequest {
 	/** How much of the end of stderr to keep; the rest is dropped, never a failure. */
 	readonly stderrTailBytes: number;
 	/** Each piece of stdout as it arrives, within the bound, for a caller that answers the command on its stdin while it
-	 * runs (fill_company_account's helper, 20260930710000). Never recorded or logged here; the result keeps it too. */
+	 * runs (fill_company_account's helper, 20260930711000). Never recorded or logged here; the result keeps it too. */
 	readonly onStdout?: (chunk: Buffer) => void;
 }
 

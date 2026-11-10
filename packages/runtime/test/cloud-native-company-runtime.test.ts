@@ -684,7 +684,7 @@ async function fixture(
 						cancel: async () => {
 							throw new Error("No machine command in this suite");
 						},
-						// 20260930710000: a gateway that runs the machine's fill helper, for fill_company_account's offer.
+						// 20260930711000: a gateway that runs the machine's fill helper, for fill_company_account's offer.
 						accountFill: async () => {
 							throw new Error("No machine command in this suite");
 						},
@@ -2518,7 +2518,7 @@ it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-2
 	// It waits inside the call instead.
 	expect(tools.find((tool) => tool.name === "machine_start")?.inputSchema.properties).toHaveProperty("waitSeconds");
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).toHaveProperty("waitSeconds");
-	// A worker types no company account's value (20260930710000).
+	// A worker types no company account's value (20260930711000).
 	expect(tools.map((tool) => tool.name)).not.toContain("fill_company_account");
 	// Still no mouth, coworkers or delegation.
 	expect(tools.map((tool) => tool.name)).not.toContain("send_message");
@@ -2540,7 +2540,7 @@ it("gives a company conversation's run the machine tools with notify, and no wai
 		"waitSeconds",
 	);
 	expect(tools.find((tool) => tool.name === "machine_read")?.inputSchema.properties).not.toHaveProperty("waitSeconds");
-	// A host with the vault's company accounts offers the machine sign-in (20260930710000), after the machine tools.
+	// A host with the vault's company accounts offers the machine sign-in (20260930711000), after the machine tools.
 	const names = tools.map((tool) => tool.name);
 	expect(names).toContain("fill_company_account");
 	expect(names.indexOf("fill_company_account")).toBeGreaterThan(names.indexOf("machine_list"));
@@ -3220,7 +3220,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// save_coding_value (20260930705000), computer_browser vault_capture only on a company computer; the names and
 	// descriptions are as before, so only the catalog text moved again.
 	// On 10 November 2026 company_account's description says the vault types an account's values on a company machine
-	// with fill_company_account (20260930710000), so they moved again; taken again on the tree merged with that day's
+	// with fill_company_account (20260930711000), so they moved again; taken again on the tree merged with that day's
 	// master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
