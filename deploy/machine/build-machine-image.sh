@@ -388,21 +388,25 @@ JS
 	const holder = spawn("/usr/bin/flock", [LOCK, "/usr/bin/sleep", "60"], { stdio: "ignore", detached: true });
 	for (let tries = 0; tries < 30 && spawnSync("/usr/bin/flock", ["-n", LOCK, "/usr/bin/true"]).status === 0; tries++) pause(100);
 	if (spawnSync("/usr/bin/flock", ["-n", LOCK, "/usr/bin/true"]).status === 0) fail("the desktop lock could not be held");
-	fs.writeFileSync("/tmp/qorpera-cut-off.html", "<title>qorpera-cut-off-open</title><h1>cut off</h1>", { mode: 0o644 });
-	fs.writeFileSync("/tmp/qorpera-cut-off.json", JSON.stringify({ schema: "qorpera.machine-screen-request/v1", look: true,
-		...act({ type: "open", target: "file:///tmp/qorpera-cut-off.html" }, 0) }));
+	// The page name is put together here: this check runs inside a shell whose command line is this whole script, so a
+	// name written out in it would be found on that shell by pgrep -f, always (the first build of this check failed so).
+	const page = ["qorpera", "cut", "off"].join("-");
+	if (spawnSync("/usr/bin/pgrep", ["-f", `${page}.html`]).status === 0) fail("the cut-off page name is on a command line before the open");
+	fs.writeFileSync(`/tmp/${page}.html`, `<title>${page}-open</title><h1>cut off</h1>`, { mode: 0o644 });
+	fs.writeFileSync(`/tmp/${page}.json`, JSON.stringify({ schema: "qorpera.machine-screen-request/v1", look: true,
+		...act({ type: "open", target: `file:///tmp/${page}.html` }, 0) }));
 	const cut = spawn("/bin/sh", ["-c", ON_BOOT, boot, "/usr/bin/node", "/opt/qorpera-machine/cloud-machine-screen.mjs"],
-		{ stdio: [fs.openSync("/tmp/qorpera-cut-off.json", "r"), "ignore", "ignore"], env, cwd: "/" });
+		{ stdio: [fs.openSync(`/tmp/${page}.json`, "r"), "ignore", "ignore"], env, cwd: "/" });
 	pause(1200);
-	const waiting = () => spawnSync("/usr/bin/pgrep", ["-f", "qorpera-cut-off.html"]).status === 0;
+	const waiting = () => spawnSync("/usr/bin/pgrep", ["-f", `${page}.html`]).status === 0;
 	if (!waiting()) fail("the open did not wait on the desktop lock, so the cut-off check tests nothing");
 	process.kill(cut.pid, "SIGKILL");
 	pause(11000);
-	if (waiting()) fail("the cut-off open outlived its deadline: " + spawnSync("/usr/bin/pgrep", ["-af", "qorpera-cut-off"], { encoding: "utf8" }).stdout);
+	if (waiting()) fail("the cut-off open outlived its deadline: " + spawnSync("/usr/bin/pgrep", ["-af", `${page}.html`], { encoding: "utf8" }).stdout);
 	process.kill(-holder.pid, "SIGKILL");
 	pause(3000);
 	const listed = spawnSync("/usr/bin/wmctrl", ["-l"], { env: { ...env, DISPLAY: ":1" }, encoding: "utf8" }).stdout;
-	if (listed.includes("qorpera-cut-off-open")) fail("the cut-off open ran once the desktop lock was free");
+	if (listed.includes(`${page}-open`)) fail("the cut-off open ran once the desktop lock was free");
 	if (!listed.includes("SELFTEST[")) fail("the browser an action opened did not outlive the action unit");
 	shown(screen(act({ type: "key", keys: ["Escape"] })), "an action after the cut-off one");
 	// Keys (review r1 F2): `xdotool key` runs any of its own commands that follows the keys (exec runs a program as root),
