@@ -28,7 +28,9 @@ export interface RailContact {
 	readonly after?: string;
 	readonly rank: number;
 	readonly hidden: boolean;
-	/** Its place as the cloud would keep it: the kept one, or the Members group for one never placed. */
+	/** Its place as the cloud takes it when only its showing changes (hidden, or shown again): the kept one, or the
+	 * Members group for one never placed, or whose kept section the company no longer has. The cloud refuses a
+	 * section that is gone, so that kept place is never sent back to it. */
 	readonly place: MemberContactPlace;
 }
 
@@ -66,15 +68,13 @@ export function railContacts(
 			zone: "members",
 			rank: Math.min(MEMBER_CONTACT_RANK_MAX, UNPLACED_RANK + index),
 		};
-		const place = kept ?? unplaced;
 		const hidden = chat.hidden === true;
-		// A kept place that cannot be drawn: its section is gone, or this rail has no zones but the Members group.
-		const drawn =
-			kept &&
-			kept.zone !== "members" &&
-			(!sections || (kept.zone === "section" && !sections.has(kept.sectionId ?? "")))
-				? unplaced
-				: place;
+		// A kept section the company no longer has, as far as this rail knows its sections (without the sidebar it
+		// knows none): the contact is back in the Members group, and that is the place it has from here on.
+		const place = kept && (kept.zone !== "section" || sections?.has(kept.sectionId ?? "")) ? kept : unplaced;
+		// A rail without the sidebar has no zones but the Members group: a pinned or placed contact is drawn there, its
+		// kept place untouched.
+		const drawn = place.zone !== "members" && !sections ? unplaced : place;
 		return [
 			{
 				userId,

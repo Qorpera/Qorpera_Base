@@ -1890,16 +1890,21 @@ function zoneOrder(parts: RailParts, zone: string): string[] {
 }
 
 /** The pinned row or the Members group as the company holds it, whatever a search hides: the pinned agents and group
- * chats with the member's contacts among them. A menu's Pin and Unpin put a contact after these. */
+ * chats the company still has, with the member's contacts that show there among them. A menu's Pin and Unpin put a
+ * contact after these. */
 function keptOrder(company: CompanyController, zone: "pinned" | typeof MEMBERS_ZONE): string[] {
 	const state = company.store.get();
 	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
 	const roster = company.sidebarRoster();
 	return weave(
 		zone === "pinned" ? (sidebar?.pinned ?? []).filter((itemId) => roster.includes(itemId)) : [],
-		companyContacts(company).contacts.filter((contact) => contact.zone === zone),
+		companyContacts(company).contacts.filter((contact) => contact.zone === zone && !contact.hidden),
 	);
 }
+
+/** Whether the pinned row has room for one more card. It holds PIN_LIMIT of them, whatever they are: the pinned
+ * agents and group chats and the member's pinned contacts count alike, by drag and from a menu or a card. */
+const pinnedRowFull = (company: CompanyController) => keptOrder(company, "pinned").length >= PIN_LIMIT;
 
 /** Keeps the member's contacts where a zone's rows stand after a drop or a step (`order`, as the member sees the
  * zone then): each after the agent or group chat before it. `show` names a contact that shows again there. */
@@ -1937,16 +1942,28 @@ function contactMenu(company: CompanyController, userId: string): MenuEntry[] {
 			label: t("Pin"),
 			icon: "pin",
 			select: () => {
-				const row = keptOrder(company, "pinned");
-				if (row.length >= PIN_LIMIT) company.reportRailError(t("The pinned row is full. Unpin something first."));
-				else settleContacts(company, "pinned", [...row, userId]);
+				if (pinnedRowFull(company)) company.reportRailError(t("The pinned row is full. Unpin something first."));
+				else settleContacts(company, "pinned", [...keptOrder(company, "pinned"), userId]);
 			},
 		});
 	items.push({
 		label: contact.hidden ? t("Show in sidebar") : t("Hide from sidebar"),
 		icon: contact.hidden ? "show" : "hide",
-		// Hidden, it keeps its place: shown again, it stands where it stood.
-		select: () => placeContacts(company, [{ userId, place: contact.place, hidden: !contact.hidden }]),
+		select: () => {
+			// Hidden, a contact keeps its place: shown again, it stands where it stood. Not in the pinned row: a hidden
+			// contact loses its pin, as a hidden agent does, so the row's cards are always the ones that show. (A
+			// contact another page left hidden with its pin comes back to the row only while it has room.)
+			const unpinned =
+				contact.zone === "pinned" && (!contact.hidden || pinnedRowFull(company))
+					? contactPlaces(MEMBERS_ZONE, [...keptOrder(company, MEMBERS_ZONE), userId], placedChats(company) ?? {})
+					: undefined;
+			placeContacts(
+				company,
+				unpinned
+					? unpinned.map((change) => (change.userId === userId ? { ...change, hidden: !contact.hidden } : change))
+					: [{ userId, place: contact.place, hidden: !contact.hidden }],
+			);
+		},
 	});
 	return items;
 }
@@ -2014,7 +2031,7 @@ function canOrganize(company: CompanyController): boolean {
  * sidebar as it is then: a card stays open across refreshes, and another tab may have pinned meanwhile. */
 function pinActions(company: CompanyController, sidebar: CompanySidebar, itemId: string): CardFootActions {
 	const pinned = sidebar.pinned.includes(itemId);
-	if (!pinned && sidebar.pinned.length >= PIN_LIMIT) return {};
+	if (!pinned && pinnedRowFull(company)) return {};
 	return {
 		pinned,
 		pin: () => {
@@ -2026,7 +2043,7 @@ function pinActions(company: CompanyController, sidebar: CompanySidebar, itemId:
 			const pins = current.pinned.filter((pin) => roster.includes(pin));
 			// What the card offered: already done elsewhere meanwhile is nothing to send.
 			if (pinned !== pins.includes(itemId)) return;
-			if (!pinned && pins.length >= PIN_LIMIT) {
+			if (!pinned && pinnedRowFull(company)) {
 				company.reportRailError(t("The pinned row is full. Unpin something first."));
 				return;
 			}
@@ -2428,16 +2445,14 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 			(parts.collapsed || !parts.input.value.trim()) &&
 			(placedChats(company)?.[itemId] ? true : Boolean(sidebarOf()) && company.sidebarRoster().includes(itemId)),
 		accepts: (zone: string, itemId: string) => {
-			// A contact lands in any zone: where it stands is its member's own. The pinned row holds so many cards.
-			if (placedChats(company)?.[itemId]) {
-				if (zone !== "pinned") return true;
-				const row = zoneOrder(parts, "pinned");
-				return row.includes(itemId) || row.length < PIN_LIMIT;
-			}
+			// The pinned row holds so many cards, whatever is dragged: one that is in it already moves within it.
+			const pinnable = () => zoneOrder(parts, "pinned").includes(itemId) || !pinnedRowFull(company);
+			// A contact lands in any zone: where it stands is its member's own.
+			if (placedChats(company)?.[itemId]) return zone !== "pinned" || pinnable();
 			const sidebar = sidebarOf();
 			// The Members group takes contacts only.
 			if (!sidebar || zone === MEMBERS_ZONE) return false;
-			if (zone === "pinned") return sidebar.pinned.includes(itemId) || sidebar.pinned.length < PIN_LIMIT;
+			if (zone === "pinned") return pinnable();
 			return canOrganize(company);
 		},
 		drop: ({ itemId, kind, zone, order }: RailDrop) => {
@@ -2520,10 +2535,14 @@ function nudgeItem(
 	const stepped = [...seen];
 	stepped.splice(at, 1);
 	stepped.splice(at + delta, 0, itemId);
-	if (item.kind === "member" || placedChats(company)?.[beside]) {
-		// A contact's place is read off the rows the member sees: none is made while a search hides some of them, as
-		// none is dragged then.
+	// A contact's place is read off the rows the member sees. While a search hides some of them none is made, as none
+	// is dragged then: an agent that steps then moves in the company's order alone, and every contact keeps standing
+	// after the agent it stood after.
+	const settle = () => {
 		if (parts.collapsed || !parts.input.value.trim()) settleContacts(company, zone, stepped);
+	};
+	if (item.kind === "member" || placedChats(company)?.[beside]) {
+		settle();
 		return;
 	}
 	const moved: SidebarItem = { id: itemId, kind: item.kind };
@@ -2541,7 +2560,7 @@ function nudgeItem(
 		order.splice(from, 1);
 		order.splice(to, 0, itemId);
 		void company.changeSidebar({ action: "set_pins", order });
-		settleContacts(company, zone, stepped);
+		settle();
 		return;
 	}
 	if (!canOrganize(company)) return;
@@ -2557,5 +2576,5 @@ function nudgeItem(
 	order.splice(order.indexOf(itemId), 1);
 	order.splice(order.indexOf(neighbour) + (delta > 0 ? 1 : 0), 0, itemId);
 	void company.changeSidebar(moveRequest(moved, sectionId ?? null, { order }));
-	settleContacts(company, zone, stepped);
+	settle();
 }

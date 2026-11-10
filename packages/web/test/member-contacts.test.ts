@@ -6,7 +6,8 @@ import { CompanyController } from "../src/app/company.ts";
 import { MemberChats, type MemberChatsHost } from "../src/app/member-chats.ts";
 import { contactPlaces, railContacts, weave } from "../src/app/rail-contacts.ts";
 import type { Route } from "../src/app/router.ts";
-import { renderRail } from "../src/app/views/shell.ts";
+import { renderRail, type ShellContext } from "../src/app/views/shell.ts";
+import { CloudRpcError } from "../src/cloud/client.ts";
 import {
 	type MemberChatCalls,
 	type MemberChatList,
@@ -55,7 +56,6 @@ const people = [member(me, "Ann Holm"), member(sofie, "Sofie Lund"), member(mads
 const agent = (n: number, name: string): HostedStaffAgent => ({ ...staff, id: id(n), displayName: name });
 const cofounder: HostedStaffAgent = { ...agent(40, "Co-Founder"), templateId: "co-founder" };
 const [ada, bo, cy, dee] = [agent(41, "Ada"), agent(42, "Bo"), agent(43, "Cy"), agent(44, "Dee")];
-const roster = [ada.id, bo.id, cy.id, dee.id];
 const research = id(70);
 const ops = id(71);
 /** Research holds Bo then Ada, Ops nobody; Cy is in no section and Dee is pinned. */
@@ -144,18 +144,22 @@ describe("where a contact stands", () => {
 			{ zone: "section", sectionId: research, after: bo.id, rank: 1 },
 			{ zone: "pinned", rank: 0 },
 		]);
-		// A section that is gone, and a rail with no sidebar: back in the Members group, the kept place untouched.
+		// A section that is gone: back in the Members group, and that is its place from here on (the cloud refuses a
+		// section the company does not have, so the kept one is never sent back to it).
 		const gone = railContacts([sofie, mads, nora], chats, new Set([ops]));
 		expect(gone.map((item) => [item.zone, item.rank])).toEqual([
 			["members", 5000],
 			["members", 5001],
 			["pinned", 0],
 		]);
-		expect(gone[1]?.place).toEqual({ zone: "section", sectionId: research, after: bo.id, rank: 1 });
-		expect(railContacts([sofie, mads, nora], chats, undefined).map((item) => item.zone)).toEqual([
-			"members",
-			"members",
-			"members",
+		expect(gone[1]?.place).toEqual({ zone: "members", rank: 5001 });
+		// A rail with no sidebar has the Members group alone: everyone is drawn there, a pinned place kept as it is.
+		const bare = railContacts([sofie, mads, nora], chats, undefined);
+		expect(bare.map((item) => item.zone)).toEqual(["members", "members", "members"]);
+		expect(bare.map((item) => item.place)).toEqual([
+			{ zone: "members", rank: 5000 },
+			{ zone: "members", rank: 5001 },
+			{ zone: "pinned", rank: 0 },
 		]);
 	});
 
@@ -387,6 +391,8 @@ function companyWith(
 		chats?: MemberChatSummary[];
 		members?: HostedProfileMember[];
 		sidebar?: CompanySidebar | "missing";
+		/** The company's agents beside the Co-Founder (Ada, Bo, Cy and Dee when not said). */
+		agents?: HostedStaffAgent[];
 		/** A cloud from before places: the list says nothing of them. */
 		placing?: boolean;
 		capabilities?: HostedProfileTeam["capabilities"];
@@ -396,10 +402,15 @@ function companyWith(
 	} = {},
 ) {
 	const f = fixture();
+	const agents = options.agents ?? [ada, bo, cy, dee];
 	let stored = options.sidebar === "missing" ? undefined : (options.sidebar ?? demo());
 	if (stored) vi.spyOn(f.api, "readCompanySidebar").mockImplementation(async () => structuredClone(stored!));
 	const manage = vi.spyOn(f.api, "manageCompanySidebar").mockImplementation(async (_profileId, request) => {
-		stored = applySidebarRequest(stored!, request, roster);
+		stored = applySidebarRequest(
+			stored!,
+			request,
+			agents.map((item) => item.id),
+		);
 		return structuredClone(stored);
 	});
 	const kept = new Map((options.chats ?? [summary(sofie), summary(mads)]).map((chat) => [chat.userId, chat]));
@@ -418,6 +429,9 @@ function companyWith(
 		if (name === "qorpera_place_member_contacts") {
 			if (options.keeps?.() === false) throw new Error("Failed to fetch");
 			const contacts = args.p_contacts as (MemberContactPlace & { userId: string; hidden: boolean })[];
+			// As the cloud does: a section the company does not have refuses the whole call.
+			if (contacts.some((item) => item.sectionId && !stored?.sections.some((s) => s.sectionId === item.sectionId)))
+				throw new CloudRpcError(name, { message: "Contact places are invalid", code: "22023" }, 400);
 			places.push(contacts.map(({ userId, hidden, ...place }) => ({ userId, place, hidden })));
 			for (const { userId, hidden, ...place } of contacts) {
 				const { hidden: _was, ...chat } = kept.get(userId)!;
@@ -430,7 +444,7 @@ function companyWith(
 	const company = new CompanyController(f.api, profileA, me);
 	company.store.set({
 		loading: false,
-		staff: [cofounder, ada, bo, cy, dee],
+		staff: [cofounder, ...agents],
 		team: {
 			...team,
 			...(options.capabilities ? { capabilities: options.capabilities } : {}),
@@ -443,6 +457,7 @@ function companyWith(
 	const auth = new AuthController(f.cloud);
 	cleanup.push(() => auth.dispose());
 	const route: Route = options.route ?? { name: "company", profileId: profileA.profileId, section: "home" };
+	const openCard = vi.fn<NonNullable<ShellContext["openAgentCard"]>>();
 	const draw = () =>
 		renderRail(rail, company, {
 			profiles: [profileA],
@@ -454,13 +469,13 @@ function companyWith(
 			openFeedback: () => {},
 			openFriends: () => {},
 			agentActions: {},
-			openAgentCard: () => {},
+			openAgentCard: openCard,
 			openGroupCard: () => {},
 		});
 	cleanup.push(company.store.subscribe(draw));
 	draw();
 	const ready = Promise.all([company.refreshSidebar(), company.memberChats.refresh()]).then(settle);
-	return { f, company, rail, draw, manage, places, ready };
+	return { f, company, rail, draw, manage, places, openCard, ready };
 }
 
 const names = (elements: Iterable<Element>) =>
@@ -606,6 +621,44 @@ describe("contacts in the rail", () => {
 		expect(zones(rail).Unassigned).toEqual(["Cy"]);
 	});
 
+	it("hides and shows a contact whose section the company deleted", async () => {
+		// Review of #1652, F1: the kept place named a section that is gone, the cloud refused it, and the contact could
+		// be neither hidden nor shown again.
+		const { rail, company, places, ready } = companyWith({
+			chats: [summary(sofie), placed(mads, { zone: "section", sectionId: id(79), after: bo.id, rank: 0 })],
+		});
+		await ready;
+		expect(zones(rail).members).toEqual(["Sofie Lund", "Mads Berg"]);
+		rightClick(rowOf(rail, "Mads Berg"));
+		choose("Hide from sidebar");
+		await settle();
+		expect(places).toEqual([[{ userId: mads, place: { zone: "members", rank: 5001 }, hidden: true }]]);
+		expect(company.store.get().railError).toBeUndefined();
+		expect(zones(rail).members).toEqual(["Sofie Lund"]);
+		rail.querySelector<HTMLElement>(".rail-hidden-toggle")!.click();
+		rightClick(rail.querySelector(`.rail-hidden-list [data-member-id="${mads}"]`)!);
+		choose("Show in sidebar");
+		await settle();
+		expect(places[1]).toEqual([{ userId: mads, place: { zone: "members", rank: 5001 }, hidden: false }]);
+		expect(zones(rail).members).toEqual(["Sofie Lund", "Mads Berg"]);
+		// A section deleted while the contact is hidden in it: shown again, it stands in the Members group.
+		rightClick(rowOf(rail, "Sofie Lund"));
+		choose("Hide from sidebar");
+		await settle();
+		const hiddenInOps = company.store.get().memberChats![sofie]!;
+		company.store.set({
+			memberChats: {
+				...company.store.get().memberChats,
+				[sofie]: { ...hiddenInOps, place: { zone: "section", sectionId: id(78), rank: 0 } },
+			},
+		});
+		rightClick(rail.querySelector(`.rail-hidden-list [data-member-id="${sofie}"]`)!);
+		choose("Show in sidebar");
+		await settle();
+		expect(places.at(-1)).toEqual([{ userId: sofie, place: { zone: "members", rank: 5000 }, hidden: false }]);
+		expect(company.store.get().railError).toBeUndefined();
+	});
+
 	it("pins and unpins a contact from its menu", async () => {
 		const { rail, places, ready } = companyWith();
 		await ready;
@@ -624,20 +677,73 @@ describe("contacts in the rail", () => {
 			{ userId: mads, place: { zone: "members", rank: 1 }, hidden: false },
 		]);
 		expect(zones(rail)).toMatchObject({ pinned: ["Dee"], members: ["Sofie Lund", "Mads Berg"] });
+		// Hidden, a pinned contact loses its pin, as a hidden agent does: shown again, it is in the Members group.
+		rightClick(rowOf(rail, "Sofie Lund"));
+		choose("Pin");
+		await settle();
+		expect(zones(rail).pinned).toEqual(["Dee", "Sofie"]);
+		rightClick(rail.querySelector(`.rail-pinned [data-member-id="${sofie}"]`)!);
+		choose("Hide from sidebar");
+		await settle();
+		expect(places.at(-1)).toEqual([
+			{ userId: mads, place: { zone: "members", rank: 0 }, hidden: false },
+			{ userId: sofie, place: { zone: "members", rank: 1 }, hidden: true },
+		]);
+		expect(zones(rail)).toMatchObject({ pinned: ["Dee"], members: ["Mads Berg"] });
 	});
 
 	it("says the pinned row is full, and pins nothing more", async () => {
 		const full = Array.from({ length: PIN_LIMIT }, (_, index) => agent(100 + index, `Agent ${index}`));
 		const { rail, company, places, ready } = companyWith({
+			agents: full,
 			sidebar: { sections: [], placements: {}, pinned: full.map((item) => item.id), hidden: [] },
 		});
-		company.store.set({ staff: [cofounder, ...full] });
 		await ready;
 		rightClick(rowOf(rail, "Mads Berg"));
 		choose("Pin");
 		await settle();
 		expect(places).toEqual([]);
 		expect(company.store.get().railError).toBe("The pinned row is full. Unpin something first.");
+	});
+
+	it("counts agents and contacts alike against the pinned row's limit", async () => {
+		// Review of #1652, F3: with 23 agents and a contact pinned, one more agent made 25 cards.
+		const most = Array.from({ length: PIN_LIMIT - 1 }, (_, index) => agent(100 + index, `Agent ${index}`));
+		const { rail, manage, places, openCard, company, ready } = companyWith({
+			agents: [...most, ada, bo],
+			chats: [placed(sofie, { zone: "pinned", rank: 0 }), summary(mads)],
+			sidebar: { sections: [], placements: {}, pinned: most.map((item) => item.id), hidden: [] },
+		});
+		await ready;
+		expect(rail.querySelectorAll(".rail-pinned > a")).toHaveLength(PIN_LIMIT);
+		// An agent's card offers no Pin, and another contact is told the row is full.
+		rightClick(rowOf(rail, "Ada"));
+		expect(openCard.mock.lastCall?.[2].pin).toBeUndefined();
+		rightClick(rowOf(rail, "Mads Berg"));
+		choose("Pin");
+		await settle();
+		expect(company.store.get().railError).toBe("The pinned row is full. Unpin something first.");
+		expect(manage).not.toHaveBeenCalled();
+		expect(places).toEqual([]);
+		// One card fewer, and the card offers Pin again: the agent takes the last place.
+		rightClick(rail.querySelector(`.rail-pinned [data-member-id="${sofie}"]`)!);
+		choose("Unpin");
+		await settle();
+		rightClick(rowOf(rail, "Ada"));
+		const card = openCard.mock.lastCall![2];
+		expect(card.pinned).toBe(false);
+		card.pin!();
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "set_pins",
+			order: [...most.map((item) => item.id), ada.id],
+		});
+		// Full again, of agents alone: the contact finds no room now.
+		rightClick(rowOf(rail, "Sofie Lund"));
+		choose("Pin");
+		await settle();
+		expect(company.store.get().railError).toBe("The pinned row is full. Unpin something first.");
+		expect(rail.querySelectorAll(".rail-pinned > a")).toHaveLength(PIN_LIMIT);
 	});
 
 	it("offers no menu and no drag on a cloud that keeps no places, or without the sidebar's pinned row", async () => {
@@ -731,6 +837,52 @@ describe("contacts in the rail", () => {
 		press(rowOf(rail, "Sofie Lund"), "ArrowUp");
 		await settle();
 		expect(places).toHaveLength(4);
+	});
+});
+
+describe("an agent's step while a search hides rows", () => {
+	it("moves the agent in the company's order and leaves every contact after its own agent", async () => {
+		// Review of #1652, F2: Anna, Alan and Bo, then Mads after Bo. A search for "a" hides Bo; Anna's step down over
+		// Alan read Mads's place off the rows left on screen and put him after Anna, ahead of Bo. (The section is "Ops":
+		// a search that names a section lists everyone in it.)
+		const [anna, alan] = [agent(45, "Anna"), agent(46, "Alan")];
+		const { rail, manage, places, ready } = companyWith({
+			agents: [anna, alan, bo],
+			chats: [placed(mads, { zone: "section", sectionId: research, after: bo.id, rank: 0 })],
+			members: [people[0]!, people[2]!],
+			sidebar: {
+				sections: [{ sectionId: research, name: "Ops" }],
+				placements: {
+					[anna.id]: { sectionId: research, position: 0 },
+					[alan.id]: { sectionId: research, position: 1 },
+					[bo.id]: { sectionId: research, position: 2 },
+				},
+				pinned: [],
+				hidden: [],
+			},
+		});
+		await ready;
+		expect(zones(rail).Ops).toEqual(["Anna", "Alan", "Bo", "Mads Berg"]);
+		const search = rail.querySelector<HTMLInputElement>("#rail-search-input")!;
+		search.value = "a";
+		search.dispatchEvent(new Event("input"));
+		expect(zones(rail).Ops).toEqual(["Anna", "Alan", "Mads Berg"]);
+		const row = rowOf(rail, "Anna");
+		row.focus();
+		row.dispatchEvent(
+			new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true, cancelable: true }),
+		);
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "move_agent",
+			staffAgentId: anna.id,
+			sectionId: research,
+			order: [alan.id, anna.id, bo.id],
+		});
+		expect(places).toEqual([]);
+		search.value = "";
+		search.dispatchEvent(new Event("input"));
+		expect(zones(rail).Ops).toEqual(["Alan", "Anna", "Bo", "Mads Berg"]);
 	});
 });
 
@@ -865,6 +1017,27 @@ describe("dragging contacts in the rail", () => {
 			[{ userId: mads, place: { zone: "unassigned", rank: 0 }, hidden: false }],
 		]);
 		expect(zones(rail)).toMatchObject({ Research: ["Cy", "Sofie Lund", "Bo", "Ada"], Unassigned: ["Mads Berg"] });
+	});
+
+	it("takes no agent in a pinned row that agents and a contact fill together", async () => {
+		const most = Array.from({ length: PIN_LIMIT - 1 }, (_, index) => agent(100 + index, `Agent ${index}`));
+		const { rail, manage, places, ready } = companyWith({
+			agents: [...most, ada],
+			chats: [placed(sofie, { zone: "pinned", rank: 0 }), summary(mads)],
+			sidebar: { sections: [], placements: {}, pinned: most.map((item) => item.id), hidden: [] },
+		});
+		await ready;
+		const first = rail.querySelector(".rail-pinned > a")!;
+		expect(drag(rowOf(rail, "Ada"), first, rail).lit).toBeUndefined();
+		expect(drag(rowOf(rail, "Mads Berg"), first, rail).lit).toBeUndefined();
+		// A card that is in the row still moves within it.
+		expect(
+			drag(rail.querySelector(`.rail-pinned [data-member-id="${sofie}"]`)!, rowOf(rail, "Agent 5"), rail).lit,
+		).toBe("pinned");
+		await settle();
+		expect(manage).not.toHaveBeenCalled();
+		expect(places).toHaveLength(1);
+		expect(rail.querySelectorAll(".rail-pinned > a")).toHaveLength(PIN_LIMIT);
 	});
 
 	it("takes no agent in the Members group, and lets a member who cannot organize place their contacts", async () => {
