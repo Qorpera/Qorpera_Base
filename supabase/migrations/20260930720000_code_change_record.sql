@@ -463,13 +463,21 @@ returns text language sql stable security definer set search_path = '' as $$
 				and session.attached_machine_id is not null) then 'SESSIONS_ATTACHED' end
 $$;
 
--- Whether a restore has begun to move the place (its progress says so: the step it asked for, or what a job saw).
--- From then on it is not put off any more. The place was closed in a job of its own while the company was quiet, so
--- no session works in it or can start to, and waiting for the company's other work would only keep it closed longer.
+-- Whether a restore has begun to move the place. From then on it is not put off any more: the place was closed in a
+-- job of its own while the company was quiet, so no session works in it or can start to, and waiting for the company's
+-- other work would only keep it closed longer. The progress says so in three ways:
+-- * `moving`, the kernel's own word. The step that lets the job go that sets the place aside writes it
+--   (qorpera_code_request_step), and it stays through every later step and claim of the request, whatever those are
+--   called and whatever the caller sends. Only the step by which the executor says that it read the place and found
+--   it open again as it was (`reopened`) takes it away.
+-- * `setAside` and `built`, what a job saw: the place emptied, the repository built.
+-- The name of the step a call brings says nothing here. A request that is claimed again begins with a step of
+-- another name (it reads the place, it closes it again), and must not be put off for that with the place closed and
+-- moved aside.
 create function public.qorpera_code_restore_moving(p_progress jsonb)
 returns boolean language sql immutable set search_path = '' as $$
-	select coalesce(p_progress ? 'setAside' or p_progress -> 'built' = 'true'::jsonb
-		or p_progress ->> 'step' in ('set-aside','build','open'), false)
+	select coalesce(p_progress -> 'moving' = 'true'::jsonb or p_progress ? 'setAside'
+		or p_progress -> 'built' = 'true'::jsonb, false)
 $$;
 
 -- 5. The executor records a landing ---------------------------------------------------------------------------------------
@@ -800,7 +808,8 @@ end $$;
 -- Leases the oldest requests this executor may do now, at most p_limit (1 to 20): queued, or running with a lease that
 -- ended; not put off; its company held by this executor and not being deleted. A restore of the place itself stays
 -- queued while the company's sessions are not quiet or one of the repository's is on a machine, and its progress says
--- which; one that has begun to move the place (qorpera_code_restore_moving) is handed out whatever the sessions do. A
+-- which; one that has begun to move the place (qorpera_code_restore_moving: the kernel's own word in the progress,
+-- which a claim hands out with the rest) is handed out whatever the sessions do. A
 -- fourth claim of an undo or a restore, or a sixth of a download, ends the request failed (DID_NOT_FINISH) instead; a
 -- restore keeps its progress, with what it recorded. Also claimed, as work `remove`: a made download whose time is
 -- over. It locks request rows only.
@@ -923,9 +932,17 @@ end $$;
 -- Asked before each job of a download or a restore, with the job's place in its company's line held and before the
 -- job's first command: renews the lease and saves what the request has done so far. Lost: the token is not the
 -- request's lease, or the caller no longer holds the company. Busy: a restore of the place itself that has not begun
--- to move it (qorpera_code_restore_moving, read from the progress this call brings), when the company's sessions are no
--- longer quiet or one of the repository's is on a machine. A download is never busy here: a turn's job cancels its job
--- instead.
+-- to move it (qorpera_code_restore_moving), when the company's sessions are no longer quiet or one of the
+-- repository's is on a machine. A download is never busy here: a turn's job cancels its job instead.
+-- Whether a restore has begun to move the place is the kernel's own to keep (`moving` in the progress):
+-- * The step that names `set-aside` is let go whatever the sessions do (the place is closed, by a job that was let go
+--   while the company was quiet), and writes `moving`. Every later step and claim of the request is then not put
+--   off, whatever its name: also the first step of a later claim, which reads the place or closes it again.
+-- * The step that names `reopened` takes `moving` away. The executor asks it only after it read the place and found
+--   it open again as it was: no mark is in it, because a set-aside job moved nothing and the place was opened again.
+--   From then on the request waits for quiet sessions like one that has not begun. No other word takes `moving`
+--   away, and the caller cannot write it or remove it by sending it. A `reopened` that is not heard leaves `moving`
+--   in place: the next claim reads the place first, and says it again.
 -- The step is also how the kernel learns that a job is about to displace what a made download points at, before the
 -- job does it. So no download reads ready with its file gone, whatever becomes of the job or of its finish:
 -- * A restore's job that sets the place aside is let go (the step that names `set-aside`: the one job of a restore
@@ -942,14 +959,14 @@ end $$;
 --   is made in, and the repository's earlier made download of the same file is over, since the job replaces what
 --   downloads/ holds of its kind.
 -- A step that answers busy or lost does none of this, and its job does not run. What a restore recorded (`recorded`,
--- which qorpera_code_restore_record wrote into the progress) is the kernel's own word there: a step keeps it, and
--- takes none from its caller. It locks the request's row; for a download's step and for a restore's of the place, the
--- repository's registry row before it.
+-- which qorpera_code_restore_record wrote into the progress) and `moving` are the kernel's own words there: a step
+-- keeps them, and takes none from its caller. It locks the request's row; for a download's step and for a restore's
+-- of the place, the repository's registry row before it.
 create function public.qorpera_code_request_step(p_owner text, p_machine_id_sha256 text, p_request_id uuid,
 	p_token uuid, p_progress jsonb)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare v_now timestamptz := clock_timestamp(); v_request public.qorpera_code_requests%rowtype;
-	v_generation bigint;
+	v_generation bigint; v_progress jsonb; v_place boolean; v_step text;
 begin
 	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
 	-- (3 KiB: the row holds 4, and a restore that waits adds its word.)
@@ -969,14 +986,22 @@ begin
 		or exists (select 1 from public.qorpera_company_deletions deletion
 			where deletion.profile_id = v_request.profile_id) then
 		return jsonb_build_object('schema', 'qorpera.code-request-step/v1', 'state', 'lost'); end if;
-	if v_request.kind = 'restore' and v_request.input ->> 'mode' = 'restore'
-		and not public.qorpera_code_restore_moving(coalesce(p_progress, v_request.progress))
+	-- The progress as this step will leave it: what the call brings (the row's own when it brings none), with the
+	-- kernel's words as the row has them, whatever the caller sent under their names.
+	v_progress := case when p_progress is null then v_request.progress else (p_progress - 'recorded' - 'moving')
+		|| case when v_request.progress ? 'recorded' then jsonb_build_object('recorded', v_request.progress -> 'recorded')
+			else '{}'::jsonb end
+		|| case when v_request.progress ? 'moving' then jsonb_build_object('moving', v_request.progress -> 'moving')
+			else '{}'::jsonb end end;
+	v_place := v_request.kind = 'restore' and v_request.input ->> 'mode' = 'restore';
+	v_step := v_progress ->> 'step';
+	if v_place and v_step is distinct from 'set-aside' and not public.qorpera_code_restore_moving(v_progress)
 		and public.qorpera_code_restore_waits(v_request.environment_id, v_request.owner, v_request.name, v_now) is not null then
 		return jsonb_build_object('schema', 'qorpera.code-request-step/v1', 'state', 'busy'); end if;
-	if v_request.kind = 'restore' and v_request.input ->> 'mode' = 'restore'
-		and coalesce(p_progress, v_request.progress) ->> 'step' = 'set-aside' then
+	if v_place and v_step = 'set-aside' then
 		-- The job this step lets go moves the place aside, downloads/ with it. Every such step ends what was made
-		-- there, however often the request asks it.
+		-- there, however often the request asks it. And the request has begun to move the place: the kernel keeps
+		-- that word itself.
 		update public.qorpera_code_repositories set artifact_generation = artifact_generation + 1
 		where environment_id = v_request.environment_id and owner = v_request.owner and name = v_request.name
 		returning artifact_generation into v_generation;
@@ -984,6 +1009,10 @@ begin
 			lease_until = null, updated_at = v_now
 		where request.environment_id = v_request.environment_id and request.owner = v_request.owner
 			and request.name = v_request.name and request.kind = 'download' and request.state = 'done';
+		v_progress := v_progress || '{"moving":true}'::jsonb;
+	elsif v_place and v_step = 'reopened' then
+		-- The executor read the place and found it open again as it was: the request waits for quiet sessions again.
+		v_progress := v_progress - 'moving';
 	elsif v_request.kind = 'download' and v_request.state = 'running' then
 		-- The job this step lets go replaces what downloads/ holds of its kind. (A made download claimed to be removed
 		-- is `done`, and displaces nothing.)
@@ -994,9 +1023,7 @@ begin
 			and request.input ->> 'file' = v_request.input ->> 'file';
 	end if;
 	update public.qorpera_code_requests set lease_until = v_now + public.qorpera_code_request_lease(kind),
-		progress = coalesce(case when progress ? 'recorded'
-			then (p_progress - 'recorded') || jsonb_build_object('recorded', progress -> 'recorded')
-			else p_progress - 'recorded' end, progress),
+		progress = v_progress,
 		artifact_generation = case when kind = 'download' and state = 'running' then v_generation
 			else artifact_generation end,
 		updated_at = v_now

@@ -882,6 +882,7 @@ declare v jsonb; v_item jsonb; v_id uuid; v_undo uuid; v_token uuid; q public.qo
 	v_call text; v_bad jsonb;
 	v_bundle text := '20261109T021455Z-0123456789ab'; v_aside text := 'code/_set-aside/company/at-20261110T120000Z/site';
 	v_progress jsonb; v_restored jsonb; b1 uuid := '91170000-0000-4000-8000-0000000000b1'; v_recorded jsonb;
+	v_moving jsonb := '{"moving":true}';
 	v_record_lost jsonb := '{"schema":"qorpera.code-restore-recorded/v1","state":"lost"}';
 	v_fresh text := '20261110T160000Z-ba9876543210';
 begin
@@ -1001,38 +1002,43 @@ begin
 		attachment_until = clock_timestamp(), attachment_turn = 1, attached_at = clock_timestamp() where worker_id = pg_temp.rec_copy(41);
 	perform pg_temp.base_assert(pg_temp.req_step(v_id, v_token) ->> 'state' = 'busy', 'a session went on a machine');
 	-- From the step that moves the place on, the restore is not put off: the place is closed, and waiting for the
-	-- company's other work would only keep it closed. Each way the progress can say so counts, the one this call
-	-- brings too.
+	-- company's other work would only keep it closed. The kernel's own word in the progress says so (`moving`), and
+	-- what a job saw (`setAside`, `built`). The name of a step says nothing: a later claim begins with another.
 	update public.qorpera_coding_sessions set phase = 'running' where worker_id = b1;
 	perform pg_temp.base_assert(not public.qorpera_code_restore_moving(null) and not public.qorpera_code_restore_moving('{}')
 		and not public.qorpera_code_restore_moving('{"step":"close","bundle":"x"}')
 		and not public.qorpera_code_restore_moving('{"step":"fresh"}') and not public.qorpera_code_restore_moving('{"step":"discard"}')
-		and not public.qorpera_code_restore_moving('{"built":false}') and public.qorpera_code_restore_moving('{"step":"set-aside"}')
-		and public.qorpera_code_restore_moving('{"step":"build"}') and public.qorpera_code_restore_moving('{"step":"open"}')
+		and not public.qorpera_code_restore_moving('{"built":false}') and not public.qorpera_code_restore_moving('{"step":"set-aside"}')
+		and not public.qorpera_code_restore_moving('{"step":"build"}') and not public.qorpera_code_restore_moving('{"step":"open"}')
+		and not public.qorpera_code_restore_moving('{"moving":false}') and not public.qorpera_code_restore_moving('{"moving":"true"}')
+		and public.qorpera_code_restore_moving('{"moving":true}') and public.qorpera_code_restore_moving('{"moving":true,"step":"fresh"}')
 		and public.qorpera_code_restore_moving('{"setAside":null}') and public.qorpera_code_restore_moving('{"built":true}'),
 		'when a restore counts as moving the place');
 	-- Nothing has moved yet, and the steps before this one, the ones put off too, left the repository's artifact
-	-- generation alone. This step lets the job go that moves the place aside: the generation goes up. Asked again (the
-	-- job that looks at what the folder kept of the move asks the same step), it goes up again: each such step counts,
-	-- not the first of a request.
-	perform pg_temp.base_assert((pg_temp.rec_shop('site')).artifact_generation = 0, 'nothing has moved yet');
+	-- generation alone. This step lets the job go that moves the place aside: the generation goes up, and the kernel
+	-- writes its own word into the progress that the request has begun to move the place. Asked again (the job that
+	-- looks at what the folder kept of the move asks the same step), the generation goes up again: each such step
+	-- counts, not the first of a request.
+	perform pg_temp.base_assert((pg_temp.rec_shop('site')).artifact_generation = 0
+		and not (pg_temp.req_row(v_id)).progress ? 'moving', 'nothing has moved yet');
 	v := pg_temp.req_step(v_id, v_token, jsonb_build_object('bundle', v_bundle, 'step', 'set-aside'));
 	perform pg_temp.base_assert(v ->> 'state' = 'go'
-		and (pg_temp.req_row(v_id)).progress = jsonb_build_object('bundle', v_bundle, 'step', 'set-aside')
+		and (pg_temp.req_row(v_id)).progress = jsonb_build_object('bundle', v_bundle, 'step', 'set-aside', 'moving', true)
 		and (pg_temp.rec_shop('site')).artifact_generation = 1
 		and pg_temp.req_step(v_id, v_token) ->> 'state' = 'go'
-		and (pg_temp.req_row(v_id)).progress = jsonb_build_object('bundle', v_bundle, 'step', 'set-aside')
+		and (pg_temp.req_row(v_id)).progress = jsonb_build_object('bundle', v_bundle, 'step', 'set-aside', 'moving', true)
 		and (pg_temp.rec_shop('site')).artifact_generation = 2,
 		'a restore that moves the place goes on beside a turn: ' || v::text);
-	-- (A step that does not name the set-aside moves the generation no further.)
+	-- (A step that does not name the set-aside moves the generation no further, and keeps the kernel's word.)
 	v := pg_temp.req_step(v_id, v_token, v_progress);
-	perform pg_temp.base_assert(v ->> 'state' = 'go' and (pg_temp.req_row(v_id)).progress = v_progress
+	perform pg_temp.base_assert(v ->> 'state' = 'go' and (pg_temp.req_row(v_id)).progress = v_progress || v_moving
 		and pg_temp.req_step(v_id, v_token) ->> 'state' = 'go' and (pg_temp.rec_shop('site')).artifact_generation = 2,
 		'and beside a session on a machine: ' || v::text);
-	-- The executor stopped while the sessions work: the next claim hands the request out all the same.
+	-- The executor stopped while the sessions work: the next claim hands the request out all the same, with the
+	-- kernel's word for its executor to read.
 	perform pg_temp.req_lapse(v_id);
 	v_item := pg_temp.req_claim() -> 0;
-	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_item -> 'progress' = v_progress
+	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_item -> 'progress' = v_progress || v_moving
 		and (pg_temp.req_row(v_id)).attempts = 2, 'a moving restore is claimed beside a turn: ' || coalesce(v_item::text, 'nothing'));
 	v_token := (v_item ->> 'token')::uuid;
 	update public.qorpera_coding_sessions set phase = 'completed' where worker_id = b1;
@@ -1042,7 +1048,7 @@ begin
 	perform pg_temp.req_lapse(v_id);
 	v_item := pg_temp.req_claim() -> 0;
 	v_token := (v_item ->> 'token')::uuid;
-	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_item -> 'progress' = v_progress
+	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_item -> 'progress' = v_progress || v_moving
 		and (pg_temp.req_row(v_id)).attempts = 3 and v_token <> q.lease_token, 'it goes on where it was: ' || v_item::text);
 
 	-- The finish takes `restored` in its shape only, and only for a restore that was recorded: nothing is recorded once
@@ -1105,7 +1111,8 @@ begin
 	v_recorded := jsonb_build_object('change', 8, 'boundary', 'found', 'keptThrough', 3, 'lost', 3, 'back', 0, 'bundle', v_bundle,
 		'mainSha', pg_temp.rec_sha('s3'));
 	perform pg_temp.base_assert(q.state = 'running' and q.lease_token = v_token and q.outcome is null and q.finished_at is null
-		and q.progress = v_progress || jsonb_build_object('recorded', v_recorded), 'the request after the record: ' || to_jsonb(q)::text);
+		and q.progress = v_progress || v_moving || jsonb_build_object('recorded', v_recorded),
+		'the request after the record: ' || to_jsonb(q)::text);
 	-- Made again by the same request (the answer was not heard): the same answer, and nothing is written.
 	s := pg_temp.rec_shop('site');
 	perform pg_temp.base_assert(pg_temp.req_record(v_id, v_token, v_bundle, 's3', 's6') = v
@@ -1118,7 +1125,7 @@ begin
 	-- copy: it moves nothing out of the place, and the generation stays.
 	perform pg_temp.base_assert(pg_temp.req_step(v_id, v_token, v_progress || '{"step":"discard","recorded":{"change":1}}') ->> 'state' = 'go'
 		and (pg_temp.rec_shop('site')).artifact_generation = 2
-		and (pg_temp.req_row(v_id)).progress = v_progress || jsonb_build_object('step', 'discard', 'recorded', v_recorded)
+		and (pg_temp.req_row(v_id)).progress = v_progress || v_moving || jsonb_build_object('step', 'discard', 'recorded', v_recorded)
 		and pg_temp.req_step(v_id, v_token) ->> 'state' = 'go'
 		and (pg_temp.req_row(v_id)).progress -> 'recorded' = v_recorded, 'a step keeps the record');
 	-- The finish, once the job that opened the place has saved: it writes no row, and only for the bundle and the main
@@ -1507,9 +1514,13 @@ begin
 		and pg_temp.req_step(v_id, v_first, jsonb_build_object('bundle', v_bundle, 'step', 'set-aside')) ->> 'state' = 'go'
 		and (pg_temp.rec_shop('five')).artifact_generation = 1 and pg_temp.req_download(v_before) ->> 'state' = 'failed'
 		and pg_temp.req_ready('five') = '[]'::jsonb, 'the first attempt to move the place');
-	-- That job fails before it moves anything, and the executor opens the untouched place again. Its word that the
-	-- request failed is lost: the request is still running, and will be claimed again. Meanwhile the place is open: a
-	-- member asks for the code, and it is made there.
+	-- That job fails before it moves anything, and the executor opens the untouched place again and says so. Its word
+	-- that the request failed is lost: the request is still running, and will be claimed again. Meanwhile the place is
+	-- open: a member asks for the code, and it is made there.
+	perform pg_temp.base_assert((pg_temp.req_row(v_id)).progress = jsonb_build_object('bundle', v_bundle, 'step', 'set-aside', 'moving', true)
+		and pg_temp.req_step(v_id, v_first, jsonb_build_object('bundle', v_bundle, 'step', 'reopened')) ->> 'state' = 'go'
+		and (pg_temp.req_row(v_id)).progress = jsonb_build_object('bundle', v_bundle, 'step', 'reopened')
+		and (pg_temp.rec_shop('five')).artifact_generation = 1, 'five''s place is open again, and the kernel knows');
 	v := pg_temp.req_ask('files', p_name => 'five');
 	v_between := (v ->> 'requestId')::uuid;
 	v_item := pg_temp.req_claim() -> 0;
@@ -1524,7 +1535,7 @@ begin
 	v_item := pg_temp.req_claim() -> 0;
 	v_second := (v_item ->> 'token')::uuid;
 	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and (pg_temp.req_row(v_id)).attempts = 2 and v_second <> v_first
-		and v_item -> 'progress' = jsonb_build_object('bundle', v_bundle, 'step', 'set-aside')
+		and v_item -> 'progress' = jsonb_build_object('bundle', v_bundle, 'step', 'reopened')
 		and pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_bundle, 'step', 'close')) ->> 'state' = 'go'
 		and (pg_temp.rec_shop('five')).artifact_generation = 1 and pg_temp.req_download(v_between) ->> 'state' = 'ready',
 		'claimed again, and closed again: ' || coalesce(v_item::text, 'nothing'));
@@ -1611,7 +1622,10 @@ begin
 		and pg_temp.req_step(v_id, v_first, jsonb_build_object('bundle', v_old, 'step', 'close')) ->> 'state' = 'go'
 		and pg_temp.req_step(v_id, v_first, jsonb_build_object('bundle', v_old, 'at', v_closed, 'step', 'set-aside')) ->> 'state' = 'go',
 		'six''s first claim: ' || coalesce(v_item::text, 'none'));
-	-- That job moves nothing, and the place is open again. A session's change lands there: main is past the bundle.
+	-- That job moves nothing, and the executor opens the place again and says so. A session's change lands there: main
+	-- is past the bundle.
+	perform pg_temp.base_assert(pg_temp.req_step(v_id, v_first, jsonb_build_object('bundle', v_old, 'at', v_closed, 'step', 'reopened')) ->> 'state' = 'go'
+		and not (pg_temp.req_row(v_id)).progress ? 'moving', 'six''s place is open again, and the kernel knows');
 	perform pg_temp.rec_land(62, 'k2', 'k3', p_name => 'six');
 	perform pg_temp.base_assert(pg_temp.req_rows('six') = '1:L 2:L 3:L' and (pg_temp.rec_shop('six')).last_main = pg_temp.rec_sha('k3')
 		and (pg_temp.req_row(v_id)).state = 'running', 'a landing while the place was open again: ' || pg_temp.req_rows('six'));
@@ -1622,7 +1636,7 @@ begin
 	v_item := pg_temp.req_claim() -> 0;
 	v_second := (v_item ->> 'token')::uuid;
 	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_second <> v_first
-		and v_item -> 'progress' = jsonb_build_object('bundle', v_old, 'at', v_closed, 'step', 'set-aside')
+		and v_item -> 'progress' = jsonb_build_object('bundle', v_old, 'at', v_closed, 'step', 'reopened')
 		and pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_old, 'at', v_closed, 'step', 'fresh')) ->> 'state' = 'go'
 		and pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_old, 'at', v_closed, 'step', 'fresh')) ->> 'state' = 'go'
 		and pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_old, 'at', v_closed, 'step', 'fresh')) ->> 'state' = 'go'
@@ -1648,6 +1662,117 @@ begin
 	perform pg_temp.base_assert(q.state = 'done' and q.attempts = 2 and q.outcome ->> 'bundle' = v_new and q.outcome -> 'lost' = '0'
 		and q.outcome -> 'keptThrough' = '3' and q.progress ->> 'bundle' = v_new and q.progress -> 'recorded' ->> 'bundle' = v_new,
 		'the request names the bundle it restored: ' || to_jsonb(q)::text);
+end $$;
+
+-- company/seven: the kernel keeps for itself that a restore began to move the place (`moving` in the progress). The
+-- step that names the set-aside writes it; no caller can write it or take it away by sending it; while it is there
+-- the request is handed out and let go beside working sessions, whatever a step is called, so a request that is
+-- claimed again with its place moved aside is not put off at the steps that read the place and close it again. Only
+-- the step by which the executor says the place is open again as it was takes the word away, and from there the
+-- request waits for quiet sessions like one that has not begun.
+insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name)
+values (pg_temp.rec_here(), '92400000-0000-4000-8000-000000000010', 'company', 'seven');
+do $$
+declare v jsonb; v_item jsonb; v_id uuid; v_first uuid; v_second uuid; v_third uuid;
+	b1 uuid := '91170000-0000-4000-8000-0000000000b1';
+	v_bundle text := '20261110T160000Z-' || left(pg_temp.rec_sha('m2'), 12); v_at text := '20261110T160100Z';
+	v_busy jsonb := '{"schema":"qorpera.code-request-step/v1","state":"busy"}';
+	v_close jsonb; v_aside jsonb; v_word text;
+begin
+	v_close := jsonb_build_object('bundle', v_bundle, 'step', 'close');
+	v_aside := jsonb_build_object('bundle', v_bundle, 'at', v_at, 'step', 'set-aside');
+	perform pg_temp.rec_land(63, 'm0', 'm1', p_name => 'seven');
+	perform pg_temp.rec_land(64, 'm1', 'm2', p_name => 'seven');
+	perform pg_temp.req_quiet();
+	v_id := pg_temp.req_restore('restore', v_bundle, 'keep', 'The folder lost objects.', 'seven');
+	v_first := (pg_temp.req_claim() -> 0 ->> 'token')::uuid;
+	-- The caller cannot write the kernel's word: a step that brings it is saved without it.
+	perform pg_temp.base_assert(pg_temp.req_step(v_id, v_first, v_close || '{"moving":true}') ->> 'state' = 'go'
+		and (pg_temp.req_row(v_id)).progress = v_close, 'the caller cannot write the word: ' || (pg_temp.req_row(v_id)).progress::text);
+	-- So a session that starts puts the request off, as any that has not begun to move the place: whatever the step is
+	-- called, and whatever it says of `moving`.
+	update public.qorpera_coding_sessions set phase = 'running' where worker_id = b1;
+	foreach v_word in array array['close', 'fresh', 'build', 'open', 'discard', 'reopened'] loop
+		perform pg_temp.base_assert(pg_temp.req_step(v_id, v_first, v_close || jsonb_build_object('step', v_word, 'moving', true)) = v_busy,
+			'not moving, and put off at a step named ' || v_word);
+	end loop;
+	perform pg_temp.base_assert((pg_temp.req_row(v_id)).progress = v_close and (pg_temp.rec_shop('seven')).artifact_generation = 0,
+		'a step that is put off saves nothing');
+	-- The step that names the set-aside is let go beside the running session (the place is closed, by a close that was
+	-- let go while the company was quiet), and the kernel writes its word.
+	perform pg_temp.base_assert(pg_temp.req_step(v_id, v_first, v_aside) ->> 'state' = 'go'
+		and (pg_temp.req_row(v_id)).progress = v_aside || '{"moving":true}' and (pg_temp.rec_shop('seven')).artifact_generation = 1,
+		'the step that names the set-aside sets the word: ' || (pg_temp.req_row(v_id)).progress::text);
+	-- The set-aside job moves the place, and the executor stops before the kernel hears that a job saw the place
+	-- emptied: the progress has the word and no `setAside`. Company work goes on: a session runs, and one of the
+	-- repository's sits on a machine. The request is claimed all the same, with the word for its executor to read.
+	update public.qorpera_coding_sessions set attached_machine_id = pg_temp.rec_copy(901), attachment_token = pg_temp.rec_copy(902),
+		attachment_until = clock_timestamp(), attachment_turn = 1, attached_at = clock_timestamp() where worker_id = pg_temp.rec_copy(63);
+	perform pg_temp.req_lapse(v_id);
+	v_item := pg_temp.req_claim() -> 0;
+	v_second := (v_item ->> 'token')::uuid;
+	perform pg_temp.base_assert(public.qorpera_code_restore_waits(pg_temp.rec_here(), 'company', 'seven', clock_timestamp()) = 'SESSIONS_BUSY'
+		and v_item ->> 'requestId' = v_id::text and v_item -> 'progress' = v_aside || '{"moving":true}'
+		and (pg_temp.req_row(v_id)).attempts = 2 and v_second <> v_first,
+		'claimed again beside working sessions: ' || coalesce(v_item::text, 'nothing'));
+	-- Its first steps read the place and close it again. They are let go, whatever they are called: the word is there.
+	-- And it stays there: the caller takes it away neither by leaving it out nor by sending it as false, and a step
+	-- of no other name than `reopened` does.
+	foreach v_word in array array['fresh', 'close', 'build', 'open', 'discard'] loop
+		perform pg_temp.base_assert(pg_temp.req_step(v_id, v_second, v_aside || jsonb_build_object('step', v_word, 'moving', false)) ->> 'state' = 'go'
+			and (pg_temp.req_row(v_id)).progress = v_aside || jsonb_build_object('step', v_word, 'moving', true),
+			'moving, and let go at a step named ' || v_word || ': ' || (pg_temp.req_row(v_id)).progress::text);
+	end loop;
+	perform pg_temp.base_assert(pg_temp.req_step(v_id, v_second) ->> 'state' = 'go'
+		and (pg_temp.req_row(v_id)).progress -> 'moving' = 'true' and (pg_temp.rec_shop('seven')).artifact_generation = 1,
+		'and at a step that brings nothing');
+	-- The same holds beside the session on the machine alone.
+	update public.qorpera_coding_sessions set phase = 'completed' where worker_id = b1;
+	perform pg_temp.base_assert(public.qorpera_code_restore_waits(pg_temp.rec_here(), 'company', 'seven', clock_timestamp()) = 'SESSIONS_ATTACHED'
+		and pg_temp.req_step(v_id, v_second, v_aside || '{"step":"fresh"}') ->> 'state' = 'go'
+		and pg_temp.req_step(v_id, v_second, v_aside || '{"step":"close"}') ->> 'state' = 'go', 'let go beside a session on a machine');
+	-- The other case: the set-aside job moved nothing, and the place was opened again. The executor reads the place,
+	-- finds it open as it was, and says so. The word goes, whatever the call says of it. From there the request
+	-- waits like one that has not begun: its close is put off beside the session on the machine, and beside a running
+	-- one, and so is every other step.
+	update public.qorpera_coding_sessions set phase = 'running' where worker_id = b1;
+	perform pg_temp.base_assert(pg_temp.req_step(v_id, v_second, v_aside || '{"step":"reopened","moving":true}') ->> 'state' = 'go'
+		and (pg_temp.req_row(v_id)).progress = v_aside || '{"step":"reopened"}',
+		'the step that says the place is open again takes the word away: ' || (pg_temp.req_row(v_id)).progress::text);
+	foreach v_word in array array['close', 'fresh', 'build', 'open', 'reopened'] loop
+		perform pg_temp.base_assert(pg_temp.req_step(v_id, v_second, v_aside || jsonb_build_object('step', v_word)) = v_busy,
+			'open again, and put off at a step named ' || v_word);
+	end loop;
+	update public.qorpera_coding_sessions set phase = 'completed' where worker_id = b1;
+	perform pg_temp.base_assert(pg_temp.req_step(v_id, v_second, v_aside || '{"step":"close"}') = v_busy
+		and (pg_temp.req_row(v_id)).progress = v_aside || '{"step":"reopened"}', 'and beside the session on the machine alone');
+	-- Put off, the request is not handed out while that session is on its machine, and says why. The wait is no claim.
+	perform pg_temp.base_assert(pg_temp.req_finish(v_id, v_second, pg_temp.req_outcome('{"state":"busy"}')) = pg_temp.req_recorded(null),
+		'seven''s restore is put off');
+	perform pg_temp.req_now(v_id);
+	perform pg_temp.base_assert(pg_temp.req_claim() = '[]'::jsonb
+		and (pg_temp.req_row(v_id)).progress = v_aside || '{"step":"reopened","waiting":"SESSIONS_ATTACHED"}'
+		and (pg_temp.req_row(v_id)).state = 'queued' and (pg_temp.req_row(v_id)).attempts = 2,
+		'it waits like a request that has not begun: ' || (pg_temp.req_row(v_id)).progress::text);
+	-- Off the machine: it is claimed, closes the place under the ordinary rule, and the set-aside step writes the
+	-- word again.
+	update public.qorpera_coding_sessions set attached_machine_id = null, attachment_token = null, attachment_until = null,
+		attachment_turn = null, attached_at = null where worker_id = pg_temp.rec_copy(63);
+	v_item := pg_temp.req_claim() -> 0;
+	v_third := (v_item ->> 'token')::uuid;
+	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_item -> 'progress' = v_aside || '{"step":"reopened"}'
+		and (pg_temp.req_row(v_id)).attempts = 3
+		and pg_temp.req_step(v_id, v_third, v_aside || '{"step":"close"}') ->> 'state' = 'go'
+		and not (pg_temp.req_row(v_id)).progress ? 'moving'
+		and pg_temp.req_step(v_id, v_third, v_aside) ->> 'state' = 'go'
+		and (pg_temp.req_row(v_id)).progress = v_aside || '{"moving":true}' and (pg_temp.rec_shop('seven')).artifact_generation = 2,
+		'claimed when the sessions are quiet: ' || coalesce(v_item::text, 'nothing'));
+	-- The record keeps the word beside its own, and the restore ends.
+	v := pg_temp.req_record(v_id, v_third, v_bundle, 'm2', 'm2');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(3, 2, 0, 0) and (pg_temp.req_row(v_id)).progress -> 'moving' = 'true'
+		and (pg_temp.req_row(v_id)).progress -> 'recorded' ->> 'bundle' = v_bundle
+		and pg_temp.req_finish(v_id, v_third, pg_temp.req_restore_outcome(v_bundle, 'm2')) = pg_temp.req_recorded(3)
+		and (pg_temp.req_row(v_id)).state = 'done', 'seven is restored: ' || v::text);
 end $$;
 
 -- company/two: three landings, an undo of the second, and a landing. Bundles were taken at b3 and at b5.
