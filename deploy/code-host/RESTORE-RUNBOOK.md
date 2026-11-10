@@ -87,9 +87,10 @@ What a restore brings back, and what not:
      are not.
    - `running`: `progress.step` says which step: `fresh`, `close`, `set-aside`, `build`, `open`, `discard`.
    - `queued` again with `not_before`: a turn came first. It goes on in two minutes, from where it was. If nothing
-     had been moved yet, the place was opened again meanwhile. If `progress` has `setAside`, the place stays closed
-     while the request waits, and it waits for a quiet company: see that no session of the company keeps working,
-     or the repository stays closed.
+     had been moved yet, the place was opened again meanwhile. Once the restore has begun to move the place
+     (`progress.step` is `set-aside`, `build` or `open`, or `progress` has `setAside`), it is not put off for the
+     company's sessions any more: the place is closed to them, the request is handed out again whatever they do, and
+     its jobs keep their place in the company's line until the repository is open again.
    - `done`, outcome `restored`: go to step 4.
    - `failed`: go to section 4.
 3. `failed` with `FRESH_BUNDLE_FAILED:...`: nothing was touched. The history is damaged, or the place is gone
