@@ -76,10 +76,39 @@ export interface MemberAgentMachine {
 	screenAgentName: string | null;
 	/** Why a machine that wants to run waits: the company's computer hours, or room on the servers. */
 	waitingFor: "hours" | "room" | null;
+	/** The member who holds its desktop now (migration 20260930713000): the caller (`mine`) or another, by name, and
+	 * when the hold runs out unless renewed; null when no one holds it (or a database before take-over). */
+	control: MemberAgentMachineControl | null;
 }
+export interface MemberAgentMachineControl {
+	mine: boolean;
+	name: string;
+	until: string;
+}
+/** A take-over's answer (migration 20260930713000): the caller holds the desktop until `until`, or why not. */
+export type MemberDesktopHold =
+	| { state: "ok"; until: string }
+	| {
+			state: "refused";
+			reason:
+				| "DESKTOP_MACHINE_TOO_SMALL"
+				| "MACHINE_NOT_RUNNING"
+				| "MACHINE_NEEDS_COMPANY_VIEW"
+				| "DESKTOP_MEMBER_IN_CONTROL";
+			memberName: string | null;
+	  };
+const HOLD_REFUSALS = [
+	"DESKTOP_MACHINE_TOO_SMALL",
+	"MACHINE_NOT_RUNNING",
+	"MACHINE_NEEDS_COMPANY_VIEW",
+	"DESKTOP_MEMBER_IN_CONTROL",
+] as const;
 export interface MemberAgentMachines {
 	/** Owners, admins and contributors may wake a sleeping machine; viewers may only watch. */
 	canWake: boolean;
+	/** Owners, admins and contributors may take a desktop over; viewers may only watch (false from a database before
+	 * take-over, 20260930713000). */
+	canTakeOver: boolean;
 	/** At most 20: running ones first, then the ones the agent drove most recently, then the newest. */
 	machines: MemberAgentMachine[];
 }
@@ -326,6 +355,14 @@ export class CloudMemberCompanyComputerClient {
 				(row.waitingFor !== null && row.waitingFor !== "hours" && row.waitingFor !== "room")
 			)
 				throw new Error(invalid);
+			// Who holds the desktop (20260930713000); absent before the take-over migration.
+			let control: MemberAgentMachineControl | null = null;
+			if (row.control !== undefined && row.control !== null) {
+				const held = field(row.control, invalid);
+				if (typeof held.mine !== "boolean" || !text(held.name, 256) || !text(held.until, 64))
+					throw new Error(invalid);
+				control = { mine: held.mine, name: held.name, until: held.until };
+			}
 			return {
 				machineId: row.machineId,
 				name: row.name,
@@ -337,10 +374,69 @@ export class CloudMemberCompanyComputerClient {
 				screenUsedAt: row.screenUsedAt as string | null,
 				screenAgentName: row.screenAgentName as string | null,
 				waitingFor: row.waitingFor as "hours" | "room" | null,
+				control,
 			};
 		});
 		if (new Set(machines.map((machine) => machine.machineId)).size !== machines.length) throw new Error(invalid);
-		return { canWake: value.canWake, machines };
+		if (value.canTakeOver !== undefined && typeof value.canTakeOver !== "boolean") throw new Error(invalid);
+		return { canWake: value.canWake, canTakeOver: value.canTakeOver === true, machines };
+	}
+	/** Takes the machine's desktop over for the caller (qorpera_member_take_machine_desktop, 20260930713000), or renews
+	 * the caller's own hold: until when, or why not (another member's hold names them). */
+	async takeDesktop(machineId: string, signal: AbortSignal): Promise<MemberDesktopHold> {
+		const value = await this.#desktop("qorpera_member_take_machine_desktop", machineId, {}, signal);
+		if (
+			value.state === "ok" &&
+			Object.keys(value).sort().join() === "schema,state,until" &&
+			typeof value.until === "string"
+		)
+			return { state: "ok", until: value.until };
+		if (
+			value.state === "refused" &&
+			HOLD_REFUSALS.includes(value.reason as (typeof HOLD_REFUSALS)[number]) &&
+			(value.memberName === undefined || typeof value.memberName === "string")
+		)
+			return {
+				state: "refused",
+				reason: value.reason as (typeof HOLD_REFUSALS)[number],
+				memberName: (value.memberName as string | undefined) ?? null,
+			};
+		throw new Error("Invalid desktop hold");
+	}
+	/** The window's heartbeat (qorpera_member_keep_machine_desktop): the caller's hold renewed until when, or null when
+	 * they hold it no more. */
+	async keepDesktop(machineId: string, signal: AbortSignal): Promise<string | null> {
+		const value = await this.#desktop("qorpera_member_keep_machine_desktop", machineId, {}, signal);
+		if (value.state === "ok" && typeof value.until === "string") return value.until;
+		if (value.state === "ended") return null;
+		throw new Error("Invalid desktop hold");
+	}
+	/** Gives the caller's hold back (qorpera_member_hand_back_machine_desktop): `handed_back` by their word, `closed` when
+	 * the window closed or the page is left. Whether there was one to give back. */
+	async handBackDesktop(machineId: string, reason: "handed_back" | "closed", signal: AbortSignal): Promise<boolean> {
+		const value = await this.#desktop(
+			"qorpera_member_hand_back_machine_desktop",
+			machineId,
+			{ p_reason: reason },
+			signal,
+		);
+		if (value.state === "ok" && typeof value.handedBack === "boolean") return value.handedBack;
+		throw new Error("Invalid desktop hand-back");
+	}
+	async #desktop(
+		method: string,
+		machineId: string,
+		args: Record<string, unknown>,
+		signal: AbortSignal,
+	): Promise<Record<string, unknown>> {
+		if (!COMPANY_COMPUTER_UUID.test(machineId)) throw new Error("Invalid machine");
+		const value = field(
+			(await this.#rpc(method, { p_profile_id: this.#options.companyId, p_machine_id: machineId, ...args }, signal))
+				.data,
+			"Invalid desktop hold",
+		);
+		if (value.schema !== "qorpera.member-machine-desktop/v1") throw new Error("Invalid desktop hold");
+		return value;
 	}
 	/** Wakes a sleeping machine of the company (qorpera_member_manage_company_machine 'start'): it takes its place in
 	 * line, and the nodes give it room. Owners, admins and contributors only; the database refuses anyone else. */
