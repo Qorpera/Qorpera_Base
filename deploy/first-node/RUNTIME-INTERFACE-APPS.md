@@ -226,7 +226,10 @@ web does not already answer. What the kit adds is that the agent writes one file
   the caption on screen through one audio element, with the timeline as the clock: pause, scrub and jump are the
   timeline's alone. A browser plays sound only from a member's press, and some hold every later clip to that too, so
   the element is started inside each press that plays the video or switches the voice on (muted, and stopped again
-  unless a clip is due). Voice on/off is a button (and M); the captions always stay, for a silent phone.
+  unless a clip is due). A page that is hidden stops, video and voice: it draws no frames while its sound would
+  play on. A clip that stopped while its caption still has some of it to say (the picture stood still and the clip
+  ran out) is taken up again from where the timeline is, at most once a second (review r1 of #1659). Voice on/off
+  is a button (and M), shown only when the video has clips; the captions always stay, for a silent phone.
 - **How the clips are made is the next step** (§7): the kit, the engine and the page are ready for them. The plan is
   ChatGPT's own voice through the Codex the agent already runs on, one caption at a time, each clip checked against
   its caption by the call's transcript (Jonas, 10 November 2026: "if it can just be ChatGPT's AI voice driven on

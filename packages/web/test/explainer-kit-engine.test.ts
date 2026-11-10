@@ -38,9 +38,11 @@ type Kit = {
 	captionHash: (text: string) => string;
 };
 
-// jsdom plays nothing: what the player asks of its audio element is taken down here.
+// jsdom plays nothing: what the player asks of its audio element is taken down here, and an element told to play
+// counts as playing until it is paused or a test ends its clip (`sounding`).
 let play: MockInstance<() => Promise<void>>;
 let pause: MockInstance<() => void>;
+const sounding = new WeakSet<HTMLMediaElement>();
 
 beforeEach(() => {
 	// jsdom draws nothing either: an arrow asks its path for its length and its points.
@@ -48,13 +50,21 @@ beforeEach(() => {
 		getTotalLength: () => 100,
 		getPointAtLength: (at: number) => ({ x: at, y: 0 }),
 	});
-	play = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(async () => {});
-	pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+	play = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(async function (this: HTMLMediaElement) {
+		sounding.add(this);
+	});
+	pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(function (this: HTMLMediaElement) {
+		sounding.delete(this);
+	});
+	vi.spyOn(HTMLMediaElement.prototype, "paused", "get").mockImplementation(function (this: HTMLMediaElement) {
+		return !sounding.has(this);
+	});
 });
 
 afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
+	Reflect.deleteProperty(document, "hidden");
 	document.body.replaceChildren();
 	document.head.replaceChildren();
 });
@@ -77,6 +87,21 @@ function page(clips: Record<string, number> = {}): Kit & { V: Video; root: HTMLE
 		root,
 	};
 }
+
+/** The player's clock, moved by hand: each frame it draws moves the video on by at most a tenth of a second. */
+function clock() {
+	let now = 0;
+	const frames: FrameRequestCallback[] = [];
+	vi.spyOn(performance, "now").mockImplementation(() => now);
+	vi.stubGlobal("requestAnimationFrame", (frame: FrameRequestCallback) => frames.push(frame));
+	return (seconds: number) => {
+		for (let step = 0; step < Math.round(seconds * 10); step++) {
+			now += 100;
+			for (const frame of frames.splice(0)) frame(now);
+		}
+	};
+}
+const speakers = () => play.mock.contexts as unknown as HTMLAudioElement[];
 
 const seconds = (segment: Segment | undefined) => Number(((segment?.end ?? 0) - (segment?.start ?? 0)).toFixed(2));
 
@@ -158,18 +183,7 @@ describe("the explainer kit's engine", () => {
 	});
 
 	it("speaks the clip of the caption on screen, stops with the video, and can be switched off", async () => {
-		// The player's clock, moved by hand: each frame it draws moves the video on by at most a tenth of a second.
-		let now = 0;
-		const frames: FrameRequestCallback[] = [];
-		vi.spyOn(performance, "now").mockImplementation(() => now);
-		vi.stubGlobal("requestAnimationFrame", (frame: FrameRequestCallback) => frames.push(frame));
-		const run = (seconds: number) => {
-			for (let step = 0; step < Math.round(seconds * 10); step++) {
-				now += 100;
-				for (const frame of frames.splice(0)) frame(now);
-			}
-		};
-		const speakers = () => play.mock.contexts as unknown as HTMLAudioElement[];
+		const run = clock();
 		const first = "Each traveller pays one visible fee: 149 kroner.";
 		const named = page().captionHash;
 		const { V, root } = page({ [named(first)]: 4.2 });
@@ -220,10 +234,64 @@ describe("the explainer kit's engine", () => {
 		expect(play).toHaveBeenCalledTimes(3);
 		voice.click();
 		expect(play).toHaveBeenCalledTimes(4);
-		// A video with no clip offers no voice.
+		// The button is drawn; in a video with no clip it is not, though buttons of its kind are flex boxes.
+		expect(getComputedStyle(voice).display).toBe("inline-flex");
 		const silent = page();
 		silent.V.scene((s) => s.say("A caption."));
 		silent.V.start();
-		expect(silent.root.querySelector<HTMLButtonElement>(".vp-voice")?.hidden).toBe(true);
+		const none = silent.root.querySelector<HTMLButtonElement>(".vp-voice") as HTMLButtonElement;
+		expect(none.hidden).toBe(true);
+		expect(getComputedStyle(none).display).toBe("none");
+	});
+
+	it("says the rest of a caption when its clip ran out while the picture stood still, and stops when hidden", async () => {
+		const run = clock();
+		const first = "Each traveller pays one visible fee: 149 kroner.";
+		const named = page().captionHash;
+		const { V, root } = page({ [named(first)]: 4.2 });
+		V.scene((s) => s.say(first));
+		V.start();
+		root.querySelector<HTMLButtonElement>(".vp-big")?.click();
+		await Promise.resolve();
+		await Promise.resolve();
+		run(1.3);
+		expect(play).toHaveBeenCalledTimes(2);
+		const speaker = speakers()[1] as HTMLAudioElement;
+		expect(speaker.paused).toBe(false);
+		// The page draws no frames for a while (behind another window) and the clip plays on to its end: back on
+		// screen the caption is one second in, and its clip is over. The rest is said from where the picture is.
+		sounding.delete(speaker);
+		run(0.1);
+		expect(play).toHaveBeenCalledTimes(3);
+		expect(speakers()[2]).toBe(speaker);
+		expect(speaker.paused).toBe(false);
+		// A browser that will not play is asked again once a second, not on every frame.
+		sounding.delete(speaker);
+		run(0.5);
+		expect(play).toHaveBeenCalledTimes(3);
+		run(0.6);
+		expect(play).toHaveBeenCalledTimes(4);
+		// In the clip's last quarter second, and in the breath after it, nothing is started again.
+		run(1.8);
+		sounding.delete(speaker);
+		run(0.4);
+		expect(root.querySelector(".vp-cc")?.textContent).toBe(first);
+		expect(play).toHaveBeenCalledTimes(4);
+		// The page is hidden: the video stops and the voice with it, and starting it again is the member's.
+		const again = page({ [named(first)]: 4.2 });
+		again.V.scene((s) => s.say(first));
+		again.V.start();
+		again.root.querySelector<HTMLButtonElement>(".vp-big")?.click();
+		run(1);
+		expect(again.root.querySelector(".vp-play")?.textContent).toBe("Pause");
+		const told = speakers().at(-1) as HTMLAudioElement;
+		expect(told.paused).toBe(false);
+		Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+		document.dispatchEvent(new Event("visibilitychange"));
+		expect(again.root.querySelector(".vp-play")?.textContent).toBe("Play");
+		expect(told.paused).toBe(true);
+		const calls = play.mock.calls.length;
+		run(1);
+		expect(play.mock.calls.length).toBe(calls);
 	});
 });

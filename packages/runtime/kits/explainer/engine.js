@@ -489,6 +489,7 @@ html, body { margin: 0; height: 100%; background: var(--vp-bg); color: var(--vp-
 .vp-btn:hover { border-color: #4a505a; }
 .vp-btn svg { width: 12px; height: 12px; }
 .vp-voice { margin-left: auto; }
+.vp-voice[hidden] { display: none; }
 .vp-voice[aria-pressed="false"] { color: var(--vp-dim); }
 .vp-voice svg { width: 14px; height: 12px; }
 .vp-time { font-variant-numeric: tabular-nums; flex: none; }
@@ -601,7 +602,7 @@ class Video {
     // follows it, so a pause, a jump or a scrub is the timeline's alone.
     const voiceBtn = q(".vp-voice"), speaker = new Audio();
     this.speaker = speaker; // for a look from outside: V.speaker.paused, .currentTime
-    let voiceOn = V.segments.some((g) => g.clip), spoken = null, primed = false;
+    let voiceOn = V.segments.some((g) => g.clip), spoken = null, primed = false, resumed = -Infinity;
     voiceBtn.hidden = !voiceOn;
     function hush() { if (spoken) { speaker.pause(); spoken = null; } }
     function speak() {
@@ -620,7 +621,19 @@ class Video {
           }, { once: true });
         }
         speaker.play().catch(() => {});
-      } else if (!speaker.paused && Math.abs(speaker.currentTime - at) > 0.35) speaker.currentTime = at;
+      } else if (speaker.paused) {
+        // The clip stopped while its caption still has some of it to say: the timeline stood still and the clip ran
+        // on to its end (a page that draws no frames for a while still plays). Say the rest from where the timeline
+        // is: not in the clip's last quarter second, not past what the browser says the clip holds, and at most once
+        // a second, so a browser that will not play is not asked on every frame.
+        const most = Math.min(seg.clip.seconds, Number.isFinite(speaker.duration) ? speaker.duration : seg.clip.seconds);
+        const now = performance.now();
+        if (at < most - 0.25 && now - resumed > 1000) {
+          resumed = now;
+          speaker.currentTime = at;
+          speaker.play().catch(() => {});
+        }
+      } else if (Math.abs(speaker.currentTime - at) > 0.35) speaker.currentTime = at;
     }
     // A browser plays sound only from the member's own press, and some hold every later clip to that as well. A
     // caption rarely starts in the same instant as a press, so the speaker is started inside each press that plays
@@ -743,6 +756,9 @@ class Video {
     } catch {}
     if (typeof ResizeObserver === "function") new ResizeObserver(() => fit()).observe(this.root);
     window.addEventListener("resize", fit);
+    // A hidden page draws no frames while its sound plays on to the end of the clip: stop both, and leave starting
+    // it again to the member.
+    document.addEventListener("visibilitychange", () => { if (document.hidden && playing) pause(); });
     fit();
     voice(voiceOn);
     draw();
