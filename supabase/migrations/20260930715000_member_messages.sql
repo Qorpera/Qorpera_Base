@@ -105,13 +105,17 @@ begin
 	return next;
 end $$;
 
--- A message as the functions answer it. A deleted one keeps its place and says only that it is deleted.
+-- A message as the functions answer it. A deleted one keeps its place and says only that it is deleted. Its author
+-- also gets the id they sent it with (`clientMessageId`), so a client knows its own message wherever it meets it:
+-- in a read that comes before the send's answer, or after an answer that was lost.
 create function public.qorpera_member_message_json(p_id uuid, p_seq bigint, p_author_user_id uuid,
-	p_created_at timestamptz, p_deleted_at timestamptz, p_body text)
+	p_created_at timestamptz, p_deleted_at timestamptz, p_body text, p_client_message_id uuid default null)
 returns jsonb language sql immutable set search_path = '' as $$
 	select jsonb_build_object('id', p_id, 'seq', p_seq, 'authorUserId', p_author_user_id, 'createdAt', p_created_at)
 		|| case when p_deleted_at is null then jsonb_build_object('text', p_body)
 			else jsonb_build_object('deleted', true) end
+		|| case when p_client_message_id is null then '{}'::jsonb
+			else jsonb_build_object('clientMessageId', p_client_message_id) end
 $$;
 
 -- The caller's chats in the company: one entry per other member, with or without messages. `lastSeenAt` is when that
@@ -172,7 +176,8 @@ begin
 end $$;
 
 -- One page of the caller's chat with `p_user_id`, oldest first: the newest `p_limit` messages (50 when not said, 200 at
--- most), or those before `p_before_seq`. `hasMore` says there are older ones. With the page come both read marks.
+-- most), or those before `p_before_seq`. `hasMore` says there are older ones. With the page come both read marks. The
+-- caller's own messages carry the id they were sent with; the other member's never do.
 create function public.qorpera_read_member_chat(p_profile_id uuid, p_user_id uuid, p_before_seq bigint default null,
 	p_limit integer default 50)
 returns jsonb
@@ -189,13 +194,14 @@ begin
 	select pair.user_low, pair.user_high into v_low, v_high
 	from public.qorpera_member_chat_pair(p_profile_id, p_user_id) as pair;
 	select coalesce(jsonb_agg(public.qorpera_member_message_json(page.id, page.seq, page.author_user_id,
-				page.created_at, page.deleted_at, page.body) order by page.seq)
+				page.created_at, page.deleted_at, page.body,
+				case when page.author_user_id = v_user then page.client_message_id end) order by page.seq)
 			filter (where page.position <= v_limit), '[]'::jsonb),
 		coalesce(bool_or(page.position > v_limit), false)
 	into v_messages, v_more
 	from (
 		select message.id, message.seq, message.author_user_id, message.created_at, message.deleted_at, message.body,
-			row_number() over (order by message.seq desc) as position
+			message.client_message_id, row_number() over (order by message.seq desc) as position
 		from public.qorpera_member_messages as message
 		where message.profile_id = p_profile_id and message.user_low = v_low and message.user_high = v_high
 			and (p_before_seq is null or message.seq < p_before_seq)
@@ -250,7 +256,7 @@ begin
 	end if;
 	return jsonb_build_object('schema', 'qorpera.member-message/v1', 'userId', p_user_id,
 		'message', public.qorpera_member_message_json(v_message.id, v_message.seq, v_message.author_user_id,
-			v_message.created_at, v_message.deleted_at, v_message.body));
+			v_message.created_at, v_message.deleted_at, v_message.body, v_message.client_message_id));
 end $$;
 
 -- The caller has seen their chat with `p_user_id` up to the message `p_seq`. The mark only moves forward, and only to
@@ -313,7 +319,7 @@ begin
 	return jsonb_build_object('schema', 'qorpera.member-message/v1',
 		'userId', case when v_message.user_low = v_user then v_message.user_high else v_message.user_low end,
 		'message', public.qorpera_member_message_json(v_message.id, v_message.seq, v_message.author_user_id,
-			v_message.created_at, v_message.deleted_at, v_message.body));
+			v_message.created_at, v_message.deleted_at, v_message.body, v_message.client_message_id));
 end $$;
 
 -- The hint: at commit, `member-chats` to the two members of the changed chat who are members of the company then, on
@@ -367,7 +373,7 @@ create constraint trigger qorpera_member_chat_hint after insert or update on pub
 
 -- Internal: reached only from the functions above and the triggers.
 revoke all on function public.qorpera_member_chat_pair(uuid, uuid),
-	public.qorpera_member_message_json(uuid, bigint, uuid, timestamptz, timestamptz, text),
+	public.qorpera_member_message_json(uuid, bigint, uuid, timestamptz, timestamptz, text, uuid),
 	public.qorpera_member_chat_hint()
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 

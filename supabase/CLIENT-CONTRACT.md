@@ -1167,8 +1167,10 @@ while it is being deleted), and for a `user` who is not another member of it.
 - `qorpera_read_member_chat(profile, user, before_seq default null, limit default 50)`: `{schema:
   "qorpera.member-chat/v1", userId, messages, hasMore, readSeq, theirReadSeq}`: the newest `limit` messages (1 to
   200), or those before `before_seq`, oldest first; `hasMore` says older ones exist. A message is `{id, seq,
-  authorUserId, createdAt, text}`, or `{..., deleted: true}` without `text` once its author took it back. `seq` orders
-  the messages of a chat; it is not dense. A chat's sends go one at a time, so its messages are committed in `seq`
+  authorUserId, createdAt, text}`, or `{..., deleted: true}` without `text` once its author took it back. A message
+  the caller wrote also carries `clientMessageId`, the id they sent it with (the list's `last` does not): a client
+  knows its own message by it when a read brings it before the send is answered, or after an answer was lost. `seq`
+  orders the messages of a chat; it is not dense. A chat's sends go one at a time, so its messages are committed in `seq`
   order: none appears later in front of one already read. A message taken back keeps its `seq`, so a client shows the
   change only by reading that message again: the web reads every message it shows again on each hint and poll.
 - `qorpera_send_member_message(profile, user, client_message_id, text)`: `{schema: "qorpera.member-message/v1",

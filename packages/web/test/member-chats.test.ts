@@ -174,6 +174,21 @@ describe("the cloud's member chat shapes", () => {
 		]);
 	});
 
+	it("reads the id a member sent their own message with, and refuses one that is no id", () => {
+		const good = {
+			schema: "qorpera.member-chat/v1",
+			userId: sofie,
+			messages: [wire(1, { authorUserId: me, clientMessageId: id(77).toUpperCase() }), wire(2)],
+			hasMore: false,
+			readSeq: 0,
+			theirReadSeq: 0,
+		};
+		const parsed = parseMemberChatPage(good, sofie);
+		expect(parsed.messages[0]?.clientMessageId).toBe(id(77));
+		expect(parsed.messages[1]).not.toHaveProperty("clientMessageId");
+		expect(() => parseMemberChatPage({ ...good, messages: [wire(1, { clientMessageId: "mine" })] }, sofie)).toThrow();
+	});
+
 	it("refuses a list or a page that is not what the cloud answers", () => {
 		const chat = { userId: sofie, lastSeenAt: null, unread: 0, readSeq: 0, theirReadSeq: 0, last: null };
 		for (const bad of [
@@ -528,6 +543,90 @@ describe("the chats' state", () => {
 		]);
 	});
 
+	it("shows a sent message once when a read brought it before the send was answered", async () => {
+		// Review of #1638 round 3, F1: the hint's read comes first, then the answer, then the read after it fails.
+		const server = chatServer([message(1, sofie, "m1")]);
+		const answer = deferred<MemberMessage>();
+		let offline = false;
+		const { controller } = chats({
+			read: vi.fn(async (userId: string, before?: number, limit?: number) => {
+				if (offline) throw new Error("Failed to fetch");
+				return server.read(userId, before, limit);
+			}),
+			send: vi.fn(async () => answer.promise),
+		});
+		controller.setOpen(sofie);
+		await settle();
+		controller.send(sofie, "Mine");
+		await settle();
+		// The cloud has it, and a hint's read shows it, while this browser still waits for the send's answer. The
+		// cloud names it by the id it was sent with, so it is known at once: it stands among the messages only.
+		const thread = controller.thread(sofie);
+		const stored = { ...message(2, me, "Mine"), clientMessageId: thread.get().outgoing[0]!.clientMessageId };
+		server.kept.messages.push(stored);
+		await controller.load(sofie);
+		expect(seqs(thread.get())).toEqual([1, 2]);
+		expect(thread.get().outgoing).toEqual([]);
+		offline = true;
+		answer.resolve(stored);
+		await settle();
+		expect(seqs(thread.get())).toEqual([1, 2]);
+		expect(thread.get().outgoing).toEqual([]);
+	});
+
+	it("shows a sent message once when the read came first and did not name it", async () => {
+		// The same order of things against a run that reaches its place without the id (an older cloud's answer).
+		const server = chatServer([message(1, sofie, "m1")]);
+		const answer = deferred<MemberMessage>();
+		let offline = false;
+		const { controller } = chats({
+			read: vi.fn(async (userId: string, before?: number, limit?: number) => {
+				if (offline) throw new Error("Failed to fetch");
+				return server.read(userId, before, limit);
+			}),
+			send: vi.fn(async () => answer.promise),
+		});
+		controller.setOpen(sofie);
+		await settle();
+		controller.send(sofie, "Mine");
+		await settle();
+		server.kept.messages.push(message(2, me, "Mine"));
+		await controller.load(sofie);
+		const thread = controller.thread(sofie);
+		expect(thread.get().outgoing).toHaveLength(1);
+		offline = true;
+		answer.resolve(message(2, me, "Mine"));
+		await settle();
+		// The run shown reaches its place: it stands there, and nowhere after it.
+		expect(seqs(thread.get())).toEqual([1, 2]);
+		expect(thread.get().outgoing).toEqual([]);
+	});
+
+	it("drops a message marked not sent once a read shows the cloud has it after all", async () => {
+		// The send's answer was lost on the way back: the message was written, and this browser was told it failed.
+		const server = chatServer([message(1, sofie, "m1")]);
+		const { controller, calls } = chats({
+			read: server.read,
+			send: vi.fn(async (_userId: string, client: string, text: string) => {
+				server.kept.messages.push({ ...message(2, me, text), clientMessageId: client });
+				throw new Error("Failed to fetch");
+			}),
+		});
+		controller.setOpen(sofie);
+		await settle();
+		controller.send(sofie, "Did it go?");
+		await settle();
+		const thread = controller.thread(sofie);
+		expect(thread.get().outgoing).toMatchObject([
+			{ text: "Did it go?", failed: "Not sent. Check your connection and try again." },
+		]);
+		// The hint for it, or the clock, reads the chat: there it is, once, and nothing is left to try again.
+		await controller.poll();
+		expect(thread.get().messages.map((item) => item.text)).toEqual(["m1", "Did it go?"]);
+		expect(thread.get().outgoing).toEqual([]);
+		expect(calls.send).toHaveBeenCalledTimes(1);
+	});
+
 	it("keeps a sent message after the chat's messages until a read brings it among them", async () => {
 		const server = chatServer([message(1, sofie, "m1")]);
 		let offline = false;
@@ -535,12 +634,17 @@ describe("the chats' state", () => {
 			if (offline) throw new Error("Failed to fetch");
 			return server.read(userId, before, limit);
 		});
-		const { controller } = chats({
+		const { controller, calls } = chats({
 			read,
 			send: vi.fn(async (_userId: string, _client: string, text: string) => {
 				// Sofie wrote just before: her message stands between the one shown and this one.
 				server.kept.messages.push(message(2, sofie, "m2"), message(3, me, text));
 				return message(3, me, text);
+			}),
+			remove: vi.fn(async (messageId: string) => {
+				const taken = server.kept.messages.find((item) => item.id === messageId)!;
+				server.takeBack(taken.seq);
+				return server.kept.messages.find((item) => item.id === messageId)!;
 			}),
 		});
 		controller.setOpen(sofie);
@@ -551,23 +655,29 @@ describe("the chats' state", () => {
 		await settle();
 		const thread = controller.thread(sofie);
 		expect(seqs(thread.get())).toEqual([1]);
-		expect(thread.get().outgoing).toMatchObject([{ text: "Mine", seq: 3 }]);
+		expect(thread.get().outgoing).toMatchObject([{ text: "Mine", sent: { id: id(7003), seq: 3, text: "Mine" } }]);
 		expect(thread.get().outgoing[0]?.failed).toBeUndefined();
 		// Sent once: nothing sends it again.
 		controller.retry(sofie, thread.get().outgoing[0]!.clientMessageId);
 		await settle();
 		expect(controller.thread(sofie).get().outgoing).toHaveLength(1);
+		// It is the message it will be: taken back while it waits, it loses its words where it stands (round 3, F2).
+		await controller.remove(sofie, id(7003));
+		expect(calls.remove).toHaveBeenCalledWith(id(7003));
+		expect(thread.get().outgoing).toMatchObject([{ sent: { id: id(7003), deleted: true } }]);
+		expect(seqs(thread.get())).toEqual([1]);
 		// The next read brings it, after the message that came before it.
 		offline = false;
 		await controller.poll();
 		expect(seqs(thread.get())).toEqual([1, 2, 3]);
+		expect(thread.get().messages[2]).toMatchObject({ deleted: true });
 		expect(thread.get().outgoing).toEqual([]);
 		// Sent with the chat off screen, it waits the same way and is gone once the chat is read again.
 		controller.setOpen(undefined);
 		server.kept.messages.push(message(4, me, "Later"));
-		controller
-			.thread(sofie)
-			.set({ outgoing: [{ clientMessageId: id(1), text: "Later", createdAt: timestamp, seq: 4 }] });
+		controller.thread(sofie).set({
+			outgoing: [{ clientMessageId: id(1), text: "Later", createdAt: timestamp, sent: message(4, me, "Later") }],
+		});
 		controller.setOpen(sofie);
 		await settle();
 		expect(seqs(thread.get())).toEqual([1, 2, 3, 4]);
@@ -845,6 +955,8 @@ function company(
 		pages?: Record<string, MemberChatPage>;
 		send?: (text: string) => unknown;
 		members?: HostedProfileMember[];
+		/** Reads of a chat fail while this says so. */
+		offline?: () => boolean;
 	} = {},
 ) {
 	const f = fixture();
@@ -859,7 +971,24 @@ function company(
 				schema: "qorpera.member-chats/v1",
 				chats: (answers.chats ?? [summary(sofie), summary(mads)]).map((chat) => ({ ...chat })),
 			};
+		if (name === "qorpera_delete_member_message") {
+			for (const [userId, chat] of Object.entries(kept)) {
+				const found = chat.messages.find((item) => item.id === args.p_message_id);
+				if (!found) continue;
+				const taken = {
+					id: found.id,
+					seq: found.seq,
+					authorUserId: found.authorUserId,
+					createdAt: found.createdAt,
+					deleted: true as const,
+				};
+				kept[userId] = { ...chat, messages: chat.messages.map((item) => (item === found ? taken : item)) };
+				return { schema: "qorpera.member-message/v1", userId, message: taken };
+			}
+			throw new CloudRpcError(name, { message: "Member chat unavailable", code: "42501" }, 403);
+		}
 		if (name === "qorpera_read_member_chat") {
+			if (answers.offline?.()) throw new Error("Failed to fetch");
 			// Nothing stands before the pages a test gives.
 			const found = (args.p_before_seq === null ? kept[other] : undefined) ?? page(other, []);
 			return { schema: "qorpera.member-chat/v1", ...found, messages: found.messages.map(wireMessage) };
@@ -867,8 +996,12 @@ function company(
 		if (name === "qorpera_mark_member_chat_read")
 			return { schema: "qorpera.member-chat-read/v1", userId: other, readSeq: args.p_seq };
 		if (name === "qorpera_send_member_message") {
-			const answer = (answers.send?.(String(args.p_text)) ??
-				message(900, me, String(args.p_text), new Date().toISOString())) as MemberMessage;
+			// As the cloud answers: the sender's own message, with the id it was sent with.
+			const answer: MemberMessage = {
+				...((answers.send?.(String(args.p_text)) ??
+					message(900, me, String(args.p_text), new Date().toISOString())) as MemberMessage),
+				clientMessageId: String(args.p_client_message_id),
+			};
 			const chat = kept[other] ?? page(other, []);
 			kept[other] = { ...chat, messages: [...chat.messages, answer] };
 			return { schema: "qorpera.member-message/v1", userId: other, message: answer };
@@ -1014,6 +1147,44 @@ describe("a member's chat on screen", () => {
 		await settle();
 		expect(view.el.querySelector(".message.pending-failed")).toBeNull();
 		expect(bubbles(view.el)).toEqual([["mine", "Will not go", ""]]);
+	});
+
+	it("takes back a sent message that still waits for the chat's next read", async () => {
+		// Review of #1638 round 3, F2: sent, then the read after it fails. The bubble looks sent, so it is the message.
+		let offline = false;
+		const { controller, rpc } = company({ offline: () => offline });
+		const view = chatView(controller);
+		await settle();
+		offline = true;
+		controller.memberChats.send(sofie, "Too fast");
+		await settle();
+		const sent = view.el.querySelector<HTMLElement>("article.message");
+		expect(bubbles(view.el)).toEqual([["mine", "Too fast", ""]]);
+		// Sent, not on its way: no faded bubble, and its own id.
+		expect(sent?.classList.contains("pending-queued")).toBe(false);
+		expect(sent?.dataset.messageId).toBe(id(7900));
+		sent!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+		const item = [...openMenu()!.el.querySelectorAll<HTMLElement>("[role=menuitem]")].find(
+			(entry) => entry.textContent === "Delete message",
+		);
+		item!.click();
+		await settle();
+		// It asks first; the answer is yes.
+		const confirm = [...document.querySelectorAll<HTMLButtonElement>(".modal-backdrop button")].find(
+			(button) => button.textContent === "Delete message",
+		);
+		confirm!.click();
+		await settle();
+		expect(
+			rpc.mock.calls.filter((call) => call[0] === "qorpera_delete_member_message").map((call) => call[1]),
+		).toEqual([{ p_profile_id: profileA.profileId, p_message_id: id(7900) }]);
+		expect(bubbles(view.el)).toEqual([["mine", "Message deleted", ""]]);
+		// The next read brings it among the messages as it is: once, without words.
+		offline = false;
+		await controller.memberChats.poll();
+		await settle();
+		expect(bubbles(view.el)).toEqual([["mine", "Message deleted", ""]]);
+		expect(controller.memberChats.thread(sofie).get().outgoing).toEqual([]);
 	});
 
 	it("draws a message taken back without words, and offers to take back only my own", async () => {

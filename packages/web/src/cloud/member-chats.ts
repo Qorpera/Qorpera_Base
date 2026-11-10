@@ -22,6 +22,8 @@ export interface MemberMessage {
 	/** Its words; none once its author took it back. */
 	readonly text?: string;
 	readonly deleted?: true;
+	/** On a message the reading member wrote: the id they sent it with. Never on the other member's. */
+	readonly clientMessageId?: string;
 }
 
 export interface MemberChatSummary {
@@ -58,6 +60,9 @@ function parseMessage(value: unknown): MemberMessage {
 		seq: boundedInteger(input.seq, "member message order", 1, SEQ_MAX),
 		authorUserId: uuid(input.authorUserId, "member message author"),
 		createdAt: timestamp(input.createdAt, "member message time"),
+		...(input.clientMessageId === undefined || input.clientMessageId === null
+			? {}
+			: { clientMessageId: uuid(input.clientMessageId, "member message client id") }),
 	};
 	if (input.deleted === true) return { ...base, deleted: true };
 	if (typeof input.text !== "string" || !input.text.trim()) throw new CloudShapeError("member message words");

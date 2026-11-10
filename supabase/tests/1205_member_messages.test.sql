@@ -112,7 +112,7 @@ from unnest(array['public.qorpera_list_member_chats(uuid)', 'public.qorpera_read
 select pg_temp.chat_assert(
 	not has_function_privilege(role_name, signature, 'EXECUTE'), role_name || ' may not call ' || signature)
 from unnest(array['public.qorpera_member_chat_pair(uuid,uuid)',
-		'public.qorpera_member_message_json(uuid,bigint,uuid,timestamptz,timestamptz,text)',
+		'public.qorpera_member_message_json(uuid,bigint,uuid,timestamptz,timestamptz,text,uuid)',
 		'public.qorpera_member_chat_hint()']) as signature,
 	unnest(array['anon', 'authenticated', 'service_role']) as role_name;
 select pg_temp.chat_assert(
@@ -157,6 +157,8 @@ begin
 		and v -> 'message' ->> 'text' = E'Hi Bo\nsecond line'
 		and v -> 'message' ->> 'authorUserId' = pg_temp.chat_user('a')::text
 		and (v -> 'message' ->> 'createdAt')::timestamptz <= clock_timestamp()
+		-- The sender gets back the id they sent it with.
+		and v -> 'message' ->> 'clientMessageId' = '12050000-0000-4000-8000-0000000000f1'
 		and (v -> 'message' ->> 'seq')::bigint > 0 and not (v -> 'message' ? 'deleted'), 'Ann''s first message: ' || v::text);
 	v_again := pg_temp.chat_call('a', $q$public.qorpera_send_member_message($shop, $b, '12050000-0000-4000-8000-0000000000f1', E'Hi Bo\nsecond line')$q$);
 	perform pg_temp.chat_assert(v_again = v, 'a repeated send is the same message: ' || v_again::text);
@@ -213,6 +215,8 @@ begin
 	perform pg_temp.chat_assert(v ->> 'schema' = 'qorpera.member-chat/v1' and v ->> 'userId' = pg_temp.chat_user('a')::text
 		and jsonb_array_length(v -> 'messages') = 1
 		and (v -> 'messages' -> 0 ->> 'seq')::bigint = v_first and not (v ->> 'hasMore')::boolean
+		-- Ann's own id for her message is hers alone: Bo's read of it carries none.
+		and not (v -> 'messages' -> 0 ? 'clientMessageId')
 		and (v ->> 'readSeq')::bigint = 0 and (v ->> 'theirReadSeq')::bigint = 0, 'Bo reads the chat: ' || v::text);
 	-- A mark far ahead stops at the chat's newest message (Ann's message to Cy came later and is not Bo's).
 	v := pg_temp.chat_call('b', format('public.qorpera_mark_member_chat_read($shop, $a, %s)', v_first + 1000));
@@ -256,6 +260,12 @@ begin
 	perform pg_temp.chat_assert(jsonb_array_length(v -> 'messages') = 2 and (v ->> 'hasMore')::boolean
 		and v -> 'messages' -> 0 ->> 'text' = 'Hi Ann' and v -> 'messages' -> 1 ->> 'text' = 'Second from Bo',
 		'the newest page, oldest first: ' || v::text);
+	-- In Ann's own read her message carries the id she sent it with, Bo's messages none; the list's newest message
+	-- carries none either.
+	v_page := pg_temp.chat_call('a', 'public.qorpera_read_member_chat($shop, $b)');
+	perform pg_temp.chat_assert(v_page -> 'messages' -> 0 ->> 'clientMessageId' = '12050000-0000-4000-8000-0000000000f1'
+		and not (v_page -> 'messages' -> 1 ? 'clientMessageId') and not (v_page -> 'messages' -> 2 ? 'clientMessageId')
+		and not (v_chat -> 'last' ? 'clientMessageId'), 'whose id a message carries: ' || v_page::text);
 	-- Ann has seen "Hi Ann" and not yet the message after it: one is left unread.
 	perform pg_temp.chat_call('a', format('public.qorpera_mark_member_chat_read($shop, $b, %s)', v -> 'messages' -> 0 ->> 'seq'));
 	v_chat := pg_temp.chat_of(pg_temp.chat_call('a', 'public.qorpera_list_member_chats($shop)'), 'b');
@@ -269,7 +279,8 @@ begin
 	perform pg_temp.chat_assert(jsonb_array_length(v_page -> 'messages') = 1 and (v_page ->> 'hasMore')::boolean, 'a page of at least one');
 	v := pg_temp.chat_call('a', format('public.qorpera_delete_member_message($shop, %L)', current_setting('chat.first_id')));
 	perform pg_temp.chat_assert((v -> 'message' ->> 'deleted')::boolean and not (v -> 'message' ? 'text')
-		and v ->> 'userId' = pg_temp.chat_user('b')::text and (v -> 'message' ->> 'seq')::bigint = v_first,
+		and v ->> 'userId' = pg_temp.chat_user('b')::text and (v -> 'message' ->> 'seq')::bigint = v_first
+		and v -> 'message' ->> 'clientMessageId' = '12050000-0000-4000-8000-0000000000f1',
 		'a message taken back: ' || v::text);
 	perform pg_temp.chat_assert(pg_temp.chat_call('a', format('public.qorpera_delete_member_message($shop, %L)',
 		current_setting('chat.first_id'))) = v, 'taking it back twice answers the same');

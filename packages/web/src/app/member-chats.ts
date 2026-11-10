@@ -29,9 +29,10 @@ export interface OutgoingMemberMessage {
 	readonly createdAt: string;
 	/** Why it was not sent. It stays until it is sent again or dropped. */
 	readonly failed?: string;
-	/** Sent: the place the cloud gave it. It stands here, after the chat's messages, until a read of the chat reaches
-	 * that place: the messages themselves only ever come from a read, so nothing is put among them by guess. */
-	readonly seq?: number;
+	/** Sent: the message as the cloud answered it. It stands here, after the chat's messages, until a read of the chat
+	 * reaches its place: the messages themselves only ever come from a read, so nothing is put among them by guess. It
+	 * is the same message all the while: it can be taken back as any other. */
+	readonly sent?: MemberMessage;
 }
 
 export interface MemberChatThread {
@@ -238,6 +239,7 @@ export class MemberChats {
 				const reaches = floor !== undefined && run.messages[0]?.seq === floor;
 				const earlier = reaches ? thread.messages.filter((message) => message.seq < floor) : [];
 				const newest = run.messages[run.messages.length - 1]?.seq ?? 0;
+				const own = new Set(run.messages.map((message) => message.clientMessageId));
 				return {
 					messages: [...earlier, ...run.messages],
 					hasMore: earlier.length ? thread.hasMore : run.hasMore,
@@ -246,9 +248,13 @@ export class MemberChats {
 					error: undefined,
 					readSeq: Math.max(thread.readSeq, run.readSeq),
 					theirReadSeq: Math.max(thread.theirReadSeq, run.theirReadSeq),
-					// A sent message whose place this run reaches is among the messages now (or stands before the
-					// oldest one shown): it no longer waits after them.
-					outgoing: thread.outgoing.filter((item) => item.seq === undefined || item.seq > newest),
+					// A message of this browser's that the run holds (the cloud names each of the member's own by the id
+					// it was sent with) is among the messages now, whatever became of its send's answer: still on its
+					// way, or lost. One whose place the run reaches without holding it stands before the oldest message
+					// shown. Neither waits after the messages any more.
+					outgoing: thread.outgoing.filter(
+						(item) => !own.has(item.clientMessageId) && (!item.sent || item.sent.seq > newest),
+					),
 				};
 			});
 			this.seen();
@@ -343,16 +349,23 @@ export class MemberChats {
 		const store = this.thread(key);
 		const run = async () => {
 			const outgoing = store.get().outgoing.find((item) => item.clientMessageId === clientMessageId);
-			if (this.#stopped || !outgoing || outgoing.failed || outgoing.seq !== undefined) return;
+			if (this.#stopped || !outgoing || outgoing.failed || outgoing.sent) return;
 			try {
 				const message = await this.#host.calls().send(key, clientMessageId, outgoing.text);
 				if (this.#stopped) return;
-				// Sent. It keeps its place after the chat's messages until a read brings it among them.
-				store.set((thread) => ({
-					outgoing: thread.outgoing.map((item) =>
-						item.clientMessageId === clientMessageId ? { ...item, seq: message.seq } : item,
-					),
-				}));
+				store.set((thread) => {
+					// A read that came before this answer (a hint's) already reaches its place: it is among the messages
+					// shown, and stands nowhere twice. (Such a read also takes it off this list itself.)
+					const newest = thread.messages[thread.messages.length - 1]?.seq ?? 0;
+					if (thread.loaded && newest >= message.seq)
+						return { outgoing: thread.outgoing.filter((item) => item.clientMessageId !== clientMessageId) };
+					// Sent. It keeps its place after the chat's messages until a read brings it among them.
+					return {
+						outgoing: thread.outgoing.map((item) =>
+							item.clientMessageId === clientMessageId ? { ...item, sent: message } : item,
+						),
+					};
+				});
 				// The chat is read whole again: the message takes its place among the others, after whatever came since
 				// the last read. A chat off screen is read when it opens.
 				if (this.#open === key) void this.load(key);
@@ -381,10 +394,11 @@ export class MemberChats {
 		try {
 			const message = await this.#host.calls().remove(messageId);
 			if (this.#stopped) return;
-			// Only where it stands among the messages shown: an answer that comes after the chat was opened again
-			// further down puts nothing above them.
+			// Only where it stands: among the messages shown, or after them while it waits for a read. An answer that
+			// comes after the chat was opened again further down puts nothing above them.
 			store.set((thread) => ({
 				messages: thread.messages.map((item) => (item.id === message.id ? message : item)),
+				outgoing: thread.outgoing.map((item) => (item.sent?.id === message.id ? { ...item, sent: message } : item)),
 				notice: undefined,
 			}));
 			this.#summarize(key, (chat) => (chat.last?.id === message.id ? { ...chat, last: message } : chat));

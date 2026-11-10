@@ -341,10 +341,12 @@ export class MemberChatView {
 		}
 		for (const outgoing of thread.outgoing) {
 			time(outgoing.clientMessageId, outgoing.createdAt);
+			// Sent, and waiting for the chat's next read: the message itself, drawn as any other of this member's.
+			const sent = outgoing.sent;
 			row(
 				`outgoing:${outgoing.clientMessageId}`,
-				JSON.stringify([outgoing.text, outgoing.failed, outgoing.seq !== undefined]),
-				() => this.#outgoing(outgoing),
+				JSON.stringify([outgoing.text, outgoing.failed, sent?.id, sent?.deleted]),
+				() => (sent ? this.#message(sent, true, t("You"), false) : this.#outgoing(outgoing)),
 				true,
 			);
 		}
@@ -392,15 +394,13 @@ export class MemberChatView {
 		);
 	}
 
-	/** A message on its way (faded), one that was sent and waits for the chat's next read (as any other), or one that
-	 * was not sent: why, and the two ways on. */
+	/** A message on its way (faded), or one that was not sent: why, and the two ways on. */
 	#outgoing(outgoing: OutgoingMemberMessage): HTMLElement {
 		const chats = this.#company.memberChats;
-		const state = outgoing.failed ? " pending-failed" : outgoing.seq === undefined ? " pending-queued" : "";
 		return h(
 			"article",
 			{
-				class: `message from-member mine${state}`,
+				class: `message from-member mine ${outgoing.failed ? "pending-failed" : "pending-queued"}`,
 				"aria-label": `${t("You")} · ${fmtTime(outgoing.createdAt)}`,
 			},
 			h("div", { class: "bubble" }, h("div", { class: "text" }, ...linked(outgoing.text))),
@@ -426,7 +426,11 @@ export class MemberChatView {
 		const target = event.target instanceof Element ? event.target : null;
 		const element = target?.closest<HTMLElement>("article.message[data-message-id]") ?? null;
 		const thread = this.#company.memberChats.thread(this.userId).get();
-		const message = element ? thread.messages.find((item) => item.id === element.dataset.messageId) : undefined;
+		// A message of the chat, or one this member sent that waits after them for the chat's next read.
+		const message = element
+			? (thread.messages.find((item) => item.id === element.dataset.messageId) ??
+				thread.outgoing.find((item) => item.sent?.id === element.dataset.messageId)?.sent)
+			: undefined;
 		if (!target || !element || !message || message.deleted) return;
 		const touch = (event as Partial<PointerEvent>).pointerType === "touch";
 		const keyboard = !(event.clientX || event.clientY);
