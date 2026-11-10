@@ -7,7 +7,8 @@
 --    what the box is bound to and the account's hosts) and the broker's read (the account's facts, the envelope, the
 --    receipt, the field, the machine, its placement, its boot and the helper's key), which records the use once;
 -- 2. what the agent can act on is answered by the executor's read, and refused by the broker's: accounts switched off, a
---    contributor requester, a stopped machine, a closed account; each writes nothing;
+--    stopped machine, a closed account; each writes nothing. A contributor's run fills (accounts are the company's, as on
+--    the office); a requester who is no longer a member is refused by the run check;
 -- 3. every other refusal writes nothing: the call (its tool, version, arguments, key, target), a receipt of another call
 --    or tool or never begun, the downstream key, another company's machine, a machine of another name, the placement, the
 --    boot, the executor and the helper's key the executor names, another company's broker, Postgres' own session;
@@ -284,7 +285,8 @@ begin
 		'2: switched off: ' || current_setting('qorpera_test.af_2a') || ' / ' || current_setting('qorpera_test.af_2b'));
 end $$;
 rollback to savepoint af_off;
--- A requester who is a contributor.
+-- A requester who is a contributor: accounts are the company's (as for the office's fill and an opening), so the
+-- executor's read authorizes the fill and the broker's read answers the account, recording its use.
 savepoint af_contributor;
 select set_config('session_replication_role', 'replica', true);
 update public.qorpera_profile_members set role = 'contributor'
@@ -296,13 +298,31 @@ select set_config('qorpera_test.af_2b', pg_temp.af_call('21', current_setting('q
 reset session authorization;
 do $$
 begin
-	perform pg_temp.base_assert(pg_temp.af_answer(current_setting('qorpera_test.af_2a')) = jsonb_build_object(
-			'schema', 'qorpera.machine-account-fill-authority/v1', 'state', 'refused', 'reason', 'REQUESTER_NOT_ALLOWED')
-			and current_setting('qorpera_test.af_2b')
-				= '42501:Only owners and admins let agents sign in with company accounts; ask one of them',
-		'2: a contributor requester: ' || current_setting('qorpera_test.af_2a') || ' / ' || current_setting('qorpera_test.af_2b'));
+	perform pg_temp.base_assert(pg_temp.af_answer(current_setting('qorpera_test.af_2a')) ->> 'state' = 'authorized'
+			and pg_temp.af_answer(current_setting('qorpera_test.af_2b')) ->> 'schema'
+				= 'qorpera.company-account-machine-fill-context/v1'
+			and pg_temp.af_answer(current_setting('qorpera_test.af_2b')) ->> 'receiptId' = '11960000-0000-4000-8000-000000000121',
+		'2: a contributor requester fills: ' || current_setting('qorpera_test.af_2a') || ' / ' || current_setting('qorpera_test.af_2b'));
 end $$;
 rollback to savepoint af_contributor;
+-- A requester who is no longer a member: the run check (its member row, required at rank 1) refuses the broker's read.
+savepoint af_left;
+select set_config('session_replication_role', 'replica', true);
+delete from public.qorpera_profile_members
+where profile_id = '92400000-0000-4000-8000-000000000010' and user_id = '92400000-0000-4000-8000-000000000001';
+select set_config('session_replication_role', 'origin', true);
+select set_config('qorpera_test.af_2a', pg_temp.af_exec('21', current_setting('qorpera_test.af_env21')), true);
+set local session authorization qorpera_secret_broker;
+select set_config('qorpera_test.af_2b', pg_temp.af_call('21', current_setting('qorpera_test.af_env21')), true);
+reset session authorization;
+do $$
+begin
+	perform pg_temp.base_assert(current_setting('qorpera_test.af_2b') like '42501:%'
+			and coalesce(pg_temp.af_answer(current_setting('qorpera_test.af_2a')) ->> 'state', 'raised') <> 'authorized',
+		'2: a requester no longer a member: ' || current_setting('qorpera_test.af_2a') || ' / '
+			|| current_setting('qorpera_test.af_2b'));
+end $$;
+rollback to savepoint af_left;
 -- A closed account: its vault row revoked, as a close or a member's removal revokes it (the trigger closes the account).
 savepoint af_closed;
 update public.qorpera_cloud_secrets set status = 'revoked', revoked_at = statement_timestamp(), updated_at = statement_timestamp()

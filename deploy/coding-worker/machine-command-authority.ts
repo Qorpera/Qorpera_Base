@@ -143,10 +143,10 @@ export interface MachineAccountFillAuthority {
 }
 
 /** What SQL answers instead of an authority, and the agent acts on. */
-const ACCOUNT_FILL_ANSWERS = new Set(["MACHINE_NOT_RUNNING", "ACCOUNTS_SWITCHED_OFF", "REQUESTER_NOT_ALLOWED", "ACCOUNT_NOT_OPEN"] as const);
+const ACCOUNT_FILL_ANSWERS = new Set(["MACHINE_NOT_RUNNING", "ACCOUNTS_SWITCHED_OFF", "ACCOUNT_NOT_OPEN"] as const);
 
 /** The calling run's live tool authority, its own executing fill_company_account receipt of exactly this envelope, the
- * run's rules, the switch, the requester, a running machine of its company and the company's open account, all in SQL
+ * run's rules, the switch, a running machine of its company and the company's open account, all in SQL
  * (qorpera_authorize_machine_account_fill). What the agent can act on is its refusal; anything else SQL refuses fails the
  * request. */
 export async function authorizeMachineAccountFill(

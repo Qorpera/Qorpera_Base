@@ -250,8 +250,6 @@ const ACCOUNT_FILL_REFUSED: Readonly<Record<Exclude<CloudMachineAccountFillRefus
 	MACHINE_NOT_RUNNING:
 		"the machine is not running: start it, open the sign-in page again with desktop open, then call again",
 	ACCOUNTS_SWITCHED_OFF: "Company accounts are switched off",
-	REQUESTER_NOT_ALLOWED:
-		"only owners and admins let agents sign in with company accounts, and the member you work for is neither: ask an owner or an admin to do this sign-in, or to ask you for it",
 	ACCOUNT_NOT_OPEN:
 		"the company has no such open account: look with company_account find, and open one with company_account open when your todo needs it",
 	MACHINE_IMAGE_WITHOUT_ACCOUNT_FILLS:

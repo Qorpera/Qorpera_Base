@@ -299,9 +299,10 @@ receipt, with the vault's box bound to the machine, its placement and its boot.
 2. The executor asks SQL, `qorpera_authorize_machine_account_fill(binding, scope, receipt, envelope)` (service role,
    plain reads, writes nothing): the run's live tool authority in a company conversation on the company folder; the
    call's own executing receipt (envelope digest, key); a company agent's run, not a worker's, of a company neither paused
-   nor being deleted. It answers, not raises, what the agent acts on: `ACCOUNTS_SWITCHED_OFF`, `REQUESTER_NOT_ALLOWED`
-   (the run's requester must be an owner or an admin, as for save_coding_value; the office's fill had no such rule, and
-   `company_account open` still has none), `MACHINE_NOT_RUNNING`, `ACCOUNT_NOT_OPEN`. Otherwise where the machine runs
+   nor being deleted. It answers, not raises, what the agent acts on: `ACCOUNTS_SWITCHED_OFF`, `MACHINE_NOT_RUNNING`,
+   `ACCOUNT_NOT_OPEN`. Accounts are the company's: as for the office's fill and `company_account open`, no requester role
+   is asked (an agent working for a contributor may open an account, so it fills it too); a requester who is no longer a
+   member is refused by the run check. Otherwise where the machine runs
    (placement, boot, executor) and the helper's target: what the box is bound to and the account's site and sign-in hosts.
    Another node's executor gets the request once and reads SQL again.
 3. On the machine's node the executor runs `/usr/bin/node /opt/qorpera-machine/cloud-machine-account-fill.mjs` as root
@@ -315,7 +316,7 @@ receipt, with the vault's box bound to the machine, its placement and its boot.
    token every guest holds never opens it): the run's call, its own owner name, the placement, the boot and the helper's
    key. The broker calls `qorpera_fill_company_account_on_machine` (broker only): the office fill's checks in its order
    (switch, broker authority and job by plain read, company folder, envelope before any lock, the run check), then the
-   requester and the run's kind by plain read, the machine by plain reads (running on its current placement, reserved,
+   run's kind by plain read, the machine by plain reads (running on its current placement, reserved,
    a known boot, and exactly the placement, boot and executor the executor named), the key's shape
    (`qorpera_company_computer_fill_key_valid`), the account's secret then row (rank 8), and last the receipt `FOR UPDATE`
    (executing, `cloud_tool`, envelope digest, downstream digest, key). It records `last_used` and an `account_used` event

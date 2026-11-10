@@ -16,15 +16,15 @@
 -- * qorpera_authorize_machine_account_fill, the coding executor's read (service_role): the run's live tool authority in a
 --   company conversation on the company folder; the call's own executing receipt; a company agent's run, not a worker's,
 --   of a company neither paused nor being deleted. Then what the agent can act on is answered, not raised: accounts
---   switched off (ACCOUNTS_SWITCHED_OFF), a requester who is not an owner or an admin (REQUESTER_NOT_ALLOWED, as
---   save_coding_value's rule), the machine not running (MACHINE_NOT_RUNNING), and no such open account of the company's
---   (ACCOUNT_NOT_OPEN). It answers where the machine runs and the helper's target: what the box is bound to and the
+--   switched off (ACCOUNTS_SWITCHED_OFF), the machine not running (MACHINE_NOT_RUNNING), and no such open account of the
+--   company's (ACCOUNT_NOT_OPEN). Accounts are the company's: as for the office's fill and company_account open, any
+--   requester the run check admits may have its agent fill one (no owner or admin rule). It answers where the machine runs and the helper's target: what the box is bound to and the
 --   account's site and sign-in hosts, which the helper checks the page against before the vault is asked (the vault seals
 --   the same hosts into the box, and the helper checks them again). Plain reads; writes nothing.
 -- * qorpera_fill_company_account_on_machine, the broker's read for one machine fill (qorpera_secret_broker only), next to
 --   the office's qorpera_fill_company_account: the same checks in the same order, every comparison null-safe (the switch,
 --   the broker authority by plain read, the run's job by plain read, the company folder, the call's envelope before any
---   lock, the run check), then the requester and the run's kind by plain read, the company machine the call names by plain
+--   lock, the run check), then the run's kind by plain read, the company machine the call names by plain
 --   reads (the run's company and environment, running on its current placement, reserved, with a known boot, and that
 --   placement, boot and executor exactly the ones the executor names), the helper's public key's shape, the account's
 --   secret then its row (rank 8, qorpera_company_account_locked), and last the receipt FOR UPDATE (executing, cloud_tool,
@@ -111,8 +111,8 @@ revoke all on function public.qorpera_machine_account_fill_operation(text)
 -- The executor runs the helper only after this read, on the machine's node (or forwards the call to that node's executor,
 -- which reads it again). The run's live tool authority in a company conversation on the company folder; the call and its
 -- own executing receipt; a company agent's run, not a worker's, of a company neither paused nor being deleted. What the agent
--- can act on is answered (state refused, with a reason): accounts switched off, a requester who is not an owner or an
--- admin, a machine not running now, no such open account. Every other failure raises. Plain reads; writes nothing.
+-- can act on is answered (state refused, with a reason): accounts switched off, a machine not running now, no such open
+-- account. Every other failure raises. Plain reads; writes nothing.
 create function public.qorpera_authorize_machine_account_fill(p_binding jsonb, p_scope jsonb, p_receipt_id uuid,
 	p_envelope text)
 returns jsonb
@@ -128,8 +128,7 @@ declare
 	v_schema constant text := 'qorpera.machine-account-fill-authority/v1';
 	v_uuid constant text := '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 begin
-	-- 20260930710000: the request, the run's authority, the receipt, the run, the switch, the requester, the machine and the
-	-- account.
+	-- 20260930710000: the request, the run's authority, the receipt, the run, the switch, the machine and the account.
 	if auth.role() is distinct from 'service_role' or jsonb_typeof(p_scope) is distinct from 'object'
 		or p_scope - 'machineId' <> '{}'::jsonb or coalesce(p_scope ->> 'machineId' !~ v_uuid, true) or p_receipt_id is null then
 		raise exception 'Machine account fill request is malformed' using errcode = '22023'; end if;
@@ -160,10 +159,6 @@ begin
 	-- The agent hears these.
 	if not coalesce((select settings.enabled from public.qorpera_company_account_settings as settings), false) then
 		return jsonb_build_object('schema', v_schema, 'state', 'refused', 'reason', 'ACCOUNTS_SWITCHED_OFF'); end if;
-	if not exists (select 1 from public.qorpera_profile_members as member
-		where member.profile_id = v_run.profile_id and member.user_id = v_run.requested_by_user_id
-			and member.role::text in ('owner', 'admin')) then
-		return jsonb_build_object('schema', v_schema, 'state', 'refused', 'reason', 'REQUESTER_NOT_ALLOWED'); end if;
 	-- The machine the call names, of the run's company and environment.
 	select machine.* into v_machine from public.qorpera_company_machines as machine
 	where machine.id = (p_scope ->> 'machineId')::uuid and machine.profile_id = v_run.profile_id
@@ -218,8 +213,8 @@ grant execute on function public.qorpera_authorize_machine_account_fill(jsonb, j
 -- The vault's read for one fill_company_account call, asked by the machine's executor with the helper's public key. Bound to
 -- the agent's executing receipt of exactly this call (its SHA-256 is the receipt's input digest), the company's own open
 -- website account, and the company machine the call names, running on the placement and boot the executor names, under
--- that executor. Authorization by plain read before any lock, every comparison null-safe; then the run check, the requester
--- and the run's kind, the machine (plain reads), the account's secret and row (rank 8), and last the receipt.
+-- that executor. Authorization by plain read before any lock, every comparison null-safe; then the run check, the run's
+-- kind, the machine (plain reads), the account's secret and row (rank 8), and last the receipt.
 create function public.qorpera_fill_company_account_on_machine(
 	p_broker_authority_id uuid,
 	p_broker_capability_sha256 text,
@@ -246,7 +241,7 @@ declare
 	v_version public.qorpera_cloud_secret_versions%rowtype;
 	v_uuid constant text := '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 begin
-	-- 20260930710000: folder-v2 only; the run check, the requester, the machine, the secret and the account (rank 8), then
+	-- 20260930710000: folder-v2 only; the run check, the run's kind, the machine, the secret and the account (rank 8), then
 	-- the receipt, as the office's fill (A1-7).
 	if session_user <> 'qorpera_secret_broker' then
 		raise exception 'cloud secret broker authority is required' using errcode = '42501';
@@ -287,15 +282,10 @@ begin
 	if v_authority.profile_id is distinct from v_run.profile_id then
 		raise exception 'cloud secret broker does not serve this company' using errcode = '42501';
 	end if;
-	-- A company agent's own run, never a worker's, whose requester is an owner or an admin: plain reads.
+	-- A company agent's own run, never a worker's: a plain read. Accounts are the company's, so no requester role is asked
+	-- (as the office's fill and an opening ask none).
 	if v_run.staff_agent_id is null or (public.qorpera_run_worker(v_run.id)).id is not null then
 		raise exception 'company account fill authority is unavailable' using errcode = '42501';
-	end if;
-	if not exists (select 1 from public.qorpera_profile_members as member
-		where member.profile_id = v_run.profile_id and member.user_id = v_run.requested_by_user_id
-			and member.role::text in ('owner', 'admin')) then
-		raise exception 'Only owners and admins let agents sign in with company accounts; ask one of them'
-			using errcode = '42501';
 	end if;
 	-- The company machine the call names, of the run's company and environment, running now on its current placement,
 	-- reserved and with a known boot: exactly the placement, boot and executor the executor names. Plain reads, as the
