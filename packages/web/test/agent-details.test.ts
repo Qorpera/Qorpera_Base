@@ -721,6 +721,69 @@ describe("the card's frame", () => {
 		expect(card.dialog.el.style.left).not.toBe("");
 	});
 
+	it("moves a card low in the rail up while its figure picker shows, so the picker stays inside the window", () => {
+		vi.stubGlobal("innerHeight", 800);
+		// The card follows its own size and its picker's through a ResizeObserver.
+		const observed = new Set<Element>();
+		let changed: () => void = () => {};
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				constructor(callback: () => void) {
+					changed = callback;
+				}
+				observe(target: Element) {
+					observed.add(target);
+				}
+				disconnect() {
+					observed.clear();
+				}
+			},
+		);
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team, staff: [staff], loading: false });
+		const row = document.createElement("a");
+		document.body.append(row);
+		vi.spyOn(row, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 600, 200, 40));
+		const card = new AgentDetails(
+			company,
+			staff,
+			{ updateAgent: saving() },
+			() => {},
+			row,
+			company.signal,
+			{},
+			"beside",
+		);
+		cleanup.push(() => {
+			card.dispose();
+			company.stop();
+		});
+		const top = () => Number.parseFloat(card.dialog.el.style.top) || 0;
+		vi.spyOn(card.dialog.el, "getBoundingClientRect").mockImplementation(() => new DOMRect(0, top(), 374, 180));
+		const picker = card.dialog.el.querySelector<HTMLElement>(".agent-figure-picker")!;
+		expect(observed.has(card.dialog.el)).toBe(true);
+		expect(observed.has(picker)).toBe(true);
+		// The picker hangs from the figure, 96px into the card, and is 330px tall: past the card's own 180px.
+		vi.spyOn(picker, "getClientRects").mockImplementation(() => (picker.hidden ? [] : [new DOMRect()]) as never);
+		vi.spyOn(picker, "getBoundingClientRect").mockImplementation(() => new DOMRect(0, top() + 96, 356, 330));
+		changed();
+		// Level with its row while the picker is away: the card alone fits.
+		expect(top()).toBe(592);
+		const figure = card.dialog.el.querySelector<HTMLButtonElement>(".agent-figure-button")!;
+		figure.click();
+		expect(picker.hidden).toBe(false);
+		changed();
+		// The picker's bottom stays 12px above the window's.
+		expect(top() + 96 + 330).toBe(800 - 12);
+		// Put away, the card goes back level with its row.
+		figure.click();
+		expect(picker.hidden).toBe(true);
+		changed();
+		expect(top()).toBe(592);
+	});
+
 	it("sizes the agent card to its content, beside its row, and leaves the group popup's frame alone", () => {
 		const style = document.createElement("style");
 		style.textContent = conversationCss.replace(/^@import .*;$/gm, "");
