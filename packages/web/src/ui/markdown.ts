@@ -29,20 +29,27 @@ export function webHref(href: string): string | undefined {
 	return undefined;
 }
 
-/** A stretch of the source: where it starts, and its text. */
+/** A text the lexer read tokens from, and the way from an offset in it to the source: the source itself, or the inside
+ * of a quote or of a list item, whose lines stand in the source behind a "> ", a bullet or an indent. */
+interface Layer {
+	readonly text: string;
+	readonly toSource: (offset: number) => number;
+}
+/** Where a token stands: in which text, from where, and what of that text it is. */
 interface Place {
+	readonly layer: Layer;
 	readonly start: number;
 	readonly raw: string;
 }
 /** Where an offset into a drawn run of text falls in the source. */
 type Stretch = (offset: number) => number;
-/** What each token read, for a drawing made with `sourceRanges` (`place`). */
+/** Each token's place, for a drawing made with `sourceRanges` (`place`). */
 const places = new WeakMap<object, Place>();
 /** The way from each drawn run of text to the source (`markdownSourceOffset`). */
 const drawnFrom = new WeakMap<Text, Stretch>();
 
-/** Text drawn with its character references read (`&amp;` as "&"): each reference is one place in the source, before
- * it or after it. None unless `raw` reads as exactly `text`. */
+/** Text drawn with its character references read (`&amp;` as "&"): each reference is one place, before it or after
+ * it. `raw` stands at `start`; none unless it reads as exactly `text`. */
 function referenced(start: number, raw: string, text: string): Stretch | undefined {
 	if (decodeEntities(raw) !== text) return undefined;
 	return (offset) => {
@@ -57,10 +64,10 @@ function referenced(start: number, raw: string, text: string): Stretch | undefin
 	};
 }
 
-/** Text drawn as it is written (code, raw HTML): character for character, line for line. The lexer took a quote's
- * "> " or an indent from the start of a line inside one, so each drawn line is the end of the source's line. None
- * unless every line is, or for no text at all. */
-function literal(start: number, raw: string, text: string): Stretch | undefined {
+/** Text that stands in `raw` (at `start`) line for line, each of its lines the end of a line there: a code's lines
+ * under its fence or behind its indent, a quote's behind its "> ", a list item's behind its bullet and indent. None
+ * unless every line does, or for no text at all. */
+function lineByLine(start: number, raw: string, text: string): Stretch | undefined {
 	if (!text) return undefined;
 	const lines = text.split("\n");
 	const written = raw.split("\n");
@@ -83,8 +90,8 @@ function literal(start: number, raw: string, text: string): Stretch | undefined 
 	};
 }
 
-/** The way to the source from the text drawn for `token`, which stands at `place`. Only what is drawn has a place:
- * never a code's ticks or fence, an image's brackets and address, or an escape's inside. */
+/** The way from the text drawn for `token` to where it stands in its layer. Only what is drawn has a place: never a
+ * code's ticks or fence, an image's brackets and address, or the inside of an escape. */
 function stretchOf(token: MarkedToken, { start, raw }: Place, text: string): Stretch | undefined {
 	switch (token.type) {
 		case "text":
@@ -98,16 +105,18 @@ function stretchOf(token: MarkedToken, { start, raw }: Place, text: string): Str
 			const ticks = /^`+/.exec(raw)?.[0].length ?? 0;
 			const inside = raw.slice(ticks, raw.length - ticks);
 			// One space inside each end is the mark's, where the lexer took them from the code.
-			const pad = inside.length - text.length === 2 && inside.startsWith(" ") && inside.endsWith(" ") ? 1 : 0;
-			return literal(start + ticks + pad, inside.slice(pad, inside.length - pad), text);
+			const pad = inside.length - text.length === 2 && /^[ \n]/.test(inside) && /[ \n]$/.test(inside) ? 1 : 0;
+			// A line end inside the code is drawn as a space, in the same place.
+			if (inside.slice(pad, inside.length - pad).replace(/\n/g, " ") !== text) return undefined;
+			return (offset) => start + ticks + pad + Math.min(Math.max(0, offset), text.length);
 		}
 		case "code": {
 			// The code stands under a fence's first line, which may name a language the code spells too.
 			const under = token.codeBlockStyle === "indented" ? 0 : raw.indexOf("\n") + 1;
-			return literal(start + under, raw.slice(under), text);
+			return lineByLine(start + under, raw.slice(under), text);
 		}
 		default:
-			return literal(start, raw, text);
+			return lineByLine(start, raw, text);
 	}
 }
 
@@ -116,86 +125,85 @@ function drawn(token: MarkedToken, text: string): Text {
 	const node = document.createTextNode(text);
 	const place = places.get(token);
 	const stretch = place && stretchOf(token, place, text);
-	if (stretch) drawnFrom.set(node, stretch);
+	if (place && stretch) drawnFrom.set(node, (offset) => place.layer.toSource(stretch(offset)));
 	return node;
 }
 
-/** Where `raw`, a token's own account of what it read, stands in `source` between `from` and `to`. A token inside a
- * quote or a list item read its lines without the "> " or the indent before them, so each line after the first may
- * stand behind such a prefix. */
-function locate(source: string, raw: string, from: number, to: number): [start: number, end: number] | undefined {
-	const [first = "", ...rest] = raw.split("\n");
-	for (let start = source.indexOf(first, from); start >= 0 && start + first.length <= to; ) {
-		let end = start + first.length;
-		const fits = rest.every((line, index) => {
-			if (source[end] !== "\n") return false;
-			// A line before the last ends where the source's line does.
-			const whole = index < rest.length - 1;
-			for (let at = end + 1; at + line.length <= to; at++) {
-				if (source.startsWith(line, at) && (!whole || source[at + line.length] === "\n")) {
-					end = at + line.length;
-					return true;
+/** Gives the tokens of one text their places (`places`). Nothing is looked for: the lexer read `tokens` from
+ * `layer.text` one after another from `from`, so each stands where the one before it ended, with at most empty lines
+ * between two. One that does not (the lexer rewrote what it read: a tab, a mark it took out) gets no place, and
+ * neither do those after it: where they stand would be a guess. */
+function place(layer: Layer, tokens: readonly MarkedToken[], from: number): void {
+	let at = from;
+	for (const token of tokens) {
+		// A task's box is put in after the lexing, into no text that was read: beside the item's tokens, or at the
+		// head of the item's first paragraph, which says it read the box too.
+		if (token.type === "checkbox") continue;
+		const boxed = token.type === "paragraph" || token.type === "text" ? token.tokens?.[0] : undefined;
+		const box = boxed?.type === "checkbox" ? boxed.raw.length : 0;
+		const raw = token.raw.slice(box);
+		let start = at;
+		while (layer.text[start] === "\n" && !layer.text.startsWith(raw, start)) start++;
+		if (!layer.text.startsWith(raw, start)) return;
+		places.set(token, { layer, start, raw });
+		at = start + raw.length;
+		// What the token holds was read from its own text, which stands inside it after its opening mark.
+		const inside = (text: string, lead: number) => {
+			if ("tokens" in token && token.tokens && Number.isInteger(lead) && raw.startsWith(text, lead))
+				place(layer, token.tokens as MarkedToken[], start + lead);
+		};
+		switch (token.type) {
+			case "list":
+				place(layer, token.items, start);
+				break;
+			case "list_item":
+			case "blockquote": {
+				// Read from the lines without the "> ", the bullet or the indent before each: a text of its own.
+				const lines = lineByLine(start, raw, token.text);
+				if (lines)
+					place(
+						{ text: token.text, toSource: (offset) => layer.toSource(lines(offset)) },
+						token.tokens as MarkedToken[],
+						0,
+					);
+				break;
+			}
+			case "table": {
+				// A row is a line of the table: the header's the first, the line of dashes next, then one for each row.
+				let line = start;
+				for (const [row, written] of raw.split("\n").entries()) {
+					const cells = row ? token.rows[row - 2] : token.header;
+					if (cells) placeCells(layer, cells, written, line);
+					line += written.length + 1;
 				}
-				if (!" \t>".includes(source[at] ?? "\n")) return false;
+				break;
 			}
-			return false;
-		});
-		if (fits) return [start, end];
-		// An empty first line is found at every place, the source's end included: only go on while that moves.
-		const next = source.indexOf(first, start + 1);
-		if (next <= start) break;
-		start = next;
-	}
-	return undefined;
-}
-
-/** Gives each token its place in `source` (`places`), in the order the lexer read them: a token stands after the one
- * before it and inside the one that holds it. Between two tokens only the start of a line may stand (spaces and a
- * quote's "> "), and before the first one inside another also that one's opening mark ("**", "[", "<"). One that is not
- * found so (the lexer rewrote what it read) gets no place, and neither do those after it inside the same token:
- * without it, where they stand is a guess. */
-function place(source: string, tokens: readonly MarkedToken[], from: number, to: number): void {
-	let cursor = from;
-	for (const [index, token] of tokens.entries()) {
-		const found = locate(source, token.raw, cursor, to);
-		const before = found && source.slice(cursor, found[0]);
-		if (!found || !(index ? /^[\s>]*$/ : /^(?:[*_~]+|!?\[|<)?[\s>]*$/).test(before ?? "")) return;
-		const [start, end] = found;
-		places.set(token, { start, raw: source.slice(start, end) });
-		cursor = end;
-		if (token.type === "list") place(source, token.items, start, end);
-		else if (token.type === "table") {
-			// A row is a line of the table: the header's the first, the line of dashes next, then one for each row.
-			const written = token.raw.split("\n");
-			let line = start;
-			for (const [row, cells] of [token.header, undefined, ...token.rows].entries()) {
-				const next = source.indexOf("\n", line);
-				const lineEnd = next < 0 || next > end ? end : next;
-				const text = written[row];
-				// Inside a quote or a list item the line starts with what the lexer took from it.
-				if (cells && text !== undefined && source.slice(line, lineEnd).endsWith(text))
-					placeCells(source, cells, text, lineEnd - text.length);
-				if (lineEnd === end) break;
-				line = lineEnd + 1;
-			}
-		} else if ("tokens" in token && token.tokens) {
-			// A heading's and a list item's own mark may spell what follows it ("# #", "1. 1").
-			const mark =
-				token.type === "heading"
-					? /^ {0,3}#{1,6}(?=\s|$)/.exec(token.raw)
-					: token.type === "list_item"
-						? /^[ \t]*(?:[*+-]|\d{1,9}[.)])/.exec(token.raw)
-						: null;
-			place(source, token.tokens as MarkedToken[], start + (mark?.[0].length ?? 0), end);
+			case "heading":
+				inside(token.text, /^ {0,3}#{1,6}(?=[ \t]|$)[ \t]*/.exec(raw)?.[0].length ?? 0);
+				break;
+			case "paragraph":
+			case "text":
+				inside(token.text.slice(box), 0);
+				break;
+			case "strong":
+			case "em":
+			case "del":
+				inside(token.text, (raw.length - token.text.length) / 2);
+				break;
+			case "link":
+				// Written as it reads, between "<" and ">", or between "[" and "]": a label whose bracket the lexer
+				// unescaped is none of these.
+				if (raw === token.text || raw === `<${token.text}>` || raw.startsWith(`[${token.text}]`))
+					inside(token.text, raw === token.text ? 0 : 1);
+				break;
 		}
 	}
 }
 
 /** Gives the tokens of a table row's cells their places, each inside its own cell: between the bars that divide the
- * row, as the lexer divides it (a bar behind an odd count of backslashes is the cell's own). So a cell's text is never
- * looked for among the bars. A cell the lexer rewrote (it draws an escaped bar as a bar) gets no place. `line` is the
- * row as the table wrote it, and `base` where that stands in `source`. */
-function placeCells(source: string, cells: Tokens.Table["header"], line: string, base: number): void {
+ * row, as the lexer divides it (a bar behind an odd count of backslashes is the cell's own). A cell the lexer rewrote
+ * (it draws an escaped bar as a bar) gets no place. `line` is the row, and `base` where it stands in the layer. */
+function placeCells(layer: Layer, cells: Tokens.Table["header"], line: string, base: number): void {
 	const bars = [...line.matchAll(/\|/g)]
 		.map((bar) => bar.index)
 		.filter((bar) => (/\\*$/.exec(line.slice(0, bar))?.[0].length ?? 0) % 2 === 0);
@@ -210,8 +218,8 @@ function placeCells(source: string, cells: Tokens.Table["header"], line: string,
 		const span = spans[index];
 		if (!span) return;
 		const inside = line.slice(...span);
-		const start = base + span[0] + inside.length - inside.trimStart().length;
-		if (inside.trim() === cell.text) place(source, cell.tokens as MarkedToken[], start, start + cell.text.length);
+		if (inside.trim() === cell.text)
+			place(layer, cell.tokens as MarkedToken[], base + span[0] + inside.length - inside.trimStart().length);
 	}
 }
 
@@ -405,11 +413,9 @@ export function markdown(source: string, options: MarkdownOptions = {}): HTMLEle
 	try {
 		// This lexer has no extensions, so its output contains built-in tokens only.
 		let tokens = Lexer.lex(source, { gfm: true, breaks: true }) as MarkedToken[];
-		if (options.sourceRanges) {
+		if (options.sourceRanges)
 			// The source with its line ends as the lexer read them, and as a text area's value has them.
-			const read = source.replace(/\r\n|\r/g, "\n");
-			place(read, tokens, 0, read.length);
-		}
+			place({ text: source.replace(/\r\n|\r/g, "\n"), toSource: (offset) => offset }, tokens, 0);
 		if (options.firstParagraph) {
 			const first = tokens.find((token) => !["space", "def", "heading", "hr"].includes(token.type));
 			tokens = first ? [first] : [];
@@ -435,11 +441,11 @@ function caretText(node: Node, offset: number): [text: Text, offset: number] | u
 
 /** Where in the source a place in its drawn text falls: `node` and `offset` as a caret gives them, in a drawing that
  * `markdown` made with `sourceRanges`. The place is counted inside the stretch of the source that the run of text
- * draws, never among the marks around it (a link's address, a list's number, a fence's language, an image's address):
+ * draws, never among the marks around it (a link's address, a list's number, a fence's language, a table's bars):
  * a character reference (`&amp;`) counts as the one character it draws where references are read, and as written in
- * code. It is exact or there is none. The offset is into the source with `\n` line ends, as a text area's value has
- * them. Undefined where no text of the source stands: outside the drawing, or in text whose token the lexer rewrote
- * (`place`, `stretchOf`). */
+ * code. It is exact or there is none, and nothing is searched for: every token stands where the lexer read it
+ * (`place`). The offset is into the source with `\n` line ends, as a text area's value has them. Undefined where no
+ * text of the source stands: outside the drawing, or in text whose token the lexer rewrote. */
 export function markdownSourceOffset(node: Node, offset: number): number | undefined {
 	const caret = caretText(node, offset);
 	return caret && drawnFrom.get(caret[0])?.(caret[1]);

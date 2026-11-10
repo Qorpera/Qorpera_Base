@@ -53,6 +53,19 @@ describe("a place in drawn Markdown, found in its source", () => {
 		expect(second.at("go", 1)).toBe(two.indexOf("[go]") + 2);
 	});
 
+	it("gives a link's words no place where the lexer unescaped a bracket in them", () => {
+		const source = "[\\[](u) then [a\\]b](v) and [plain](w.x).";
+		const { at } = drawing(source);
+		// Drawn "[": written as an escaped bracket, which is not the bracket that opens the link.
+		expect(at("[", 0)).toBeUndefined();
+		expect(at("[", 1)).toBeUndefined();
+		expect(at("a]b", 1)).toBeUndefined();
+		// The words around such links, and other links, keep theirs.
+		expect(at(" then ", 3)).toBe(source.indexOf(" then ") + 3);
+		expect(at("plain", 2)).toBe(source.indexOf("plain") + 2);
+		expect(at(".", 1)).toBe(source.length);
+	});
+
 	it("passes a list's numbers and bullets, also where the text spells the same", () => {
 		const source = "10. 1 apple\n11. 10 pears\n\n- - dash\n- [x] done";
 		const { at } = drawing(source);
@@ -203,6 +216,8 @@ describe("a place in drawn Markdown, found in its source", () => {
 			"- a\n\n      code in item\n\n- b",
 			"[link *with em* and `code`](http://x.y/z) tail.",
 			"| t |  u |\n|---|---|\n| \\| | v \\| w |\n| x | y |",
+			"[\\[](u) and [a\\]b](v) and [*em* `code`](w)",
+			"- [ ] loose task\n\n  more\n\n- [x] other **bold**",
 		];
 		const wrong: string[] = [];
 		const placeless: string[] = [];
@@ -230,16 +245,17 @@ describe("a place in drawn Markdown, found in its source", () => {
 					const reference = /^&(?:#\d+|#x[\da-f]+|[a-z][a-z\d]*);/i.exec(here)?.[0];
 					const read = reference && new DOMParser().parseFromString(reference, "text/html").body.textContent;
 					// The same character as written, as a reference that reads as it, or behind the backslash that
-					// escapes it.
-					if (!here.startsWith(character) && !read?.startsWith(character) && !here.startsWith(`\\${character}`))
+					// escapes it. A line end inside code among the words is drawn as a space.
+					const same = here.startsWith(character) || (character === " " && here.startsWith("\n"));
+					if (!same && !read?.startsWith(character) && !here.startsWith(`\\${character}`))
 						wrong.push(`${JSON.stringify(text)} at ${index} is at ${JSON.stringify(here.slice(0, 12))}`);
 				}
 			}
 		}
 		expect(wrong).toEqual([]);
-		// Code over two lines draws its line end as a space, and a cell draws its escaped bar as a bar: those have no
-		// place, and nothing else here lacks one.
-		expect(placeless).toEqual(["two lines", "|", "v | w"]);
+		// A cell draws its escaped bar as a bar and a link its escaped bracket as a bracket: the lexer rewrote those,
+		// so they have no place. Nothing else here lacks one.
+		expect(placeless).toEqual(["|", "v | w", "[", "a]b"]);
 	});
 
 	it("has no place where no text of the source stands", () => {
