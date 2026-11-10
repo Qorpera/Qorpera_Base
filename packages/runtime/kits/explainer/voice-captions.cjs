@@ -7,7 +7,8 @@
 //   node voice-captions.cjs /company/apps/<name>/index.html
 //
 // It prints one line, `QORPERA-VOICE {"captions":[{"text":"…","hash":"3f0a9c1e"}]}`, or with `"problem"` when the
-// page has no started video (what the page says is wrong, when it says so).
+// page says something is wrong with the video (a scenes.js that stops halfway leaves some captions behind: they are
+// not the video's) or has no started video.
 const { chromium } = require(process.env.QORPERA_PLAYWRIGHT || "playwright");
 
 (async () => {
@@ -18,10 +19,13 @@ const { chromium } = require(process.env.QORPERA_PLAYWRIGHT || "playwright");
 		const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 		await page.goto(`file://${index}`, { waitUntil: "load", timeout: 30000 });
 		const read = await page.evaluate(() => {
+			// What the page says is wrong comes first: a video that failed may still hold the captions it got to.
+			const failed = document.querySelector(".vp-fail");
+			if (failed) return { problem: failed.textContent };
 			// The page's video, or the one a scenes.js made for itself.
 			const video = typeof V === "undefined" ? null : V;
 			if (!video || !Array.isArray(video.segments) || typeof captionHash !== "function")
-				return { problem: document.querySelector(".vp-fail")?.textContent ?? "The page has no started video." };
+				return { problem: "The page has no started video." };
 			return { captions: video.segments.map((segment) => ({ text: segment.text, hash: captionHash(segment.text) })) };
 		});
 		console.log(`QORPERA-VOICE ${JSON.stringify(read)}`);

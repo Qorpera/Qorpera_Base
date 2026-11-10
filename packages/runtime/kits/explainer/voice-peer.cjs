@@ -15,6 +15,9 @@
 // It reads two files in the work folder: `answer.sdp` (the call's answer; waited for up to a minute) and `stop`
 // (its being there ends the recording). A turn is the voice's own: it begins at the call's `turn.created` and ends
 // when `turn.done` has come and the sound has been quiet for 0.7 s, so the two ends need no shared clock.
+// A turn whose end has come is always finished before the recorder goes: its file is written and its line printed
+// even when `stop` or the time comes meanwhile. A turn that cannot be written ends the recording as a failure; a
+// turn still being spoken when the end comes is dropped.
 const { chromium } = require(process.env.QORPERA_PLAYWRIGHT || "playwright");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -56,7 +59,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 			quiet.start();
 			pc.addTrack(out.stream.getAudioTracks()[0], out.stream);
 			const events = pc.createDataChannel("oai-events");
-			const call = { pc, closed: false, level: () => 0, stream: null, recorder: null, chunks: [], began: 0, done: false };
+			// `busy` from a turn's end until its file is written; `failed` says why one could not be.
+			const call = { pc, closed: false, level: () => 0, stream: null, recorder: null, chunks: [], began: 0, busy: false, failed: null };
 			window.qorperaCall = call;
 			pc.addEventListener("connectionstatechange", () => {
 				if (["failed", "closed", "disconnected"].includes(pc.connectionState)) call.closed = true;
@@ -81,9 +85,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 				call.stream = stream;
 			};
 			const begin = () => {
-				if (!call.stream || call.recorder) return;
+				if (!call.stream || call.recorder || call.busy) return;
 				call.chunks = [];
-				call.done = false;
 				call.began = performance.now();
 				call.recorder = new MediaRecorder(call.stream, { mimeType: "audio/webm;codecs=opus", audioBitsPerSecond: 128000 });
 				call.recorder.ondataavailable = (event) => {
@@ -127,9 +130,15 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 					return;
 				}
 				if (type === "turn.created") begin();
-				else if (type === "turn.done" && call.recorder && !call.done) {
-					call.done = true;
-					void finish();
+				else if (type === "turn.done" && call.recorder && !call.busy) {
+					call.busy = true;
+					finish()
+						.catch((error) => {
+							call.failed = String(error && error.message ? error.message : error).slice(0, 200);
+						})
+						.finally(() => {
+							call.busy = false;
+						});
 				}
 			};
 			await pc.setLocalDescription(await pc.createOffer());
@@ -161,21 +170,32 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 			await sleep(100);
 		}
 		say({ connected: true });
+		const state = () => page.evaluate(() => ({ closed: window.qorperaCall.closed, busy: window.qorperaCall.busy, failed: window.qorperaCall.failed }));
+		const unkept = (why) => `a turn could not be kept: ${why}`;
 		for (;;) {
+			const now = await state();
+			if (now.failed) {
+				ended = unkept(now.failed);
+				break;
+			}
 			if (fs.existsSync(stopFile)) {
 				ended = "stop";
 				break;
 			}
 			if (Date.now() > until) break;
-			if (await page.evaluate(() => window.qorperaCall.closed)) {
+			if (now.closed) {
 				ended = "closed";
 				break;
 			}
 			await sleep(150);
 		}
-		// A turn that is being written out is let finish.
-		for (let waited = 0; waited < 5000 && (await page.evaluate(() => Boolean(window.qorperaCall.recorder && window.qorperaCall.done))); waited += 100)
+		// A turn whose end has come is finished first: its last sound runs out (up to 30 s), then it is written.
+		for (let waited = 0; waited < 40000; waited += 100) {
+			const now = await state();
+			if (now.failed) ended = unkept(now.failed);
+			if (now.failed || !now.busy) break;
 			await sleep(100);
+		}
 	} catch (error) {
 		ended = String(error && error.message ? error.message : error).slice(0, 300);
 	} finally {

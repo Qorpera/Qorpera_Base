@@ -86,6 +86,8 @@ it("keeps a clip only when the voice said its caption, numbers aside", () => {
 		// Said as digits, in other punctuation and case, with a curly apostrophe.
 		["The organiser's cost isn't priced yet.", "the organiser\u2019s cost isn\u2019t priced yet"],
 		["Each traveller pays 149 kroner.", "Each traveller pays 149 kroner."],
+		// The letters around a digit are words of the caption; the digit is a number.
+		["Our B2B plan is ready.", "Our B two B plan is ready."],
 	];
 	for (const [caption, said] of kept) expect(explainerSpokenMatches(caption, said), caption).toBe(true);
 	const dropped: [string, string][] = [
@@ -105,6 +107,10 @@ it("keeps a clip only when the voice said its caption, numbers aside", () => {
 		["Planning the trip is free. So is voting on it.", "Sure. Planning the trip is free. So is voting on it."],
 		["Planning the trip is free. So is voting on it.", "So is voting on it. Planning the trip is free."],
 		["Planning the trip is free.", ""],
+		// A name with a digit in it is not a number: other letters, or none, are not the caption (review r1 of #1660).
+		["Our B2B plan is ready.", "Our B2C plan is ready."],
+		["Our B2B plan is ready.", "Our plan is ready."],
+		["The X200 ships in May.", "The Y200 ships in May."],
 	];
 	for (const [caption, said] of dropped) expect(explainerSpokenMatches(caption, said), said).toBe(false);
 });

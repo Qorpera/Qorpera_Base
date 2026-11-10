@@ -235,18 +235,21 @@ web does not already answer. What the kit adds is that the agent writes one file
   enough to travel in one machine command, each printing lines marked `QORPERA-VOICE ` with one JSON object:
   - `voice-captions.cjs` opens the explainer's page in the machine's browser and prints the captions the running
     video speaks, with each caption's clip name. The engine decides what a caption is; a read of `scenes.js` only
-    guesses.
+    guesses. A page that says its video is broken gives no captions, though a `scenes.js` that stopped halfway
+    leaves the ones it got to in the video.
   - `voice-peer.cjs` is the other end of the voice call: a headless browser makes the WebRTC offer (one silent
     track out, the call's events channel), waits for the answer as a file in its work folder, and records what the
     voice says, one file a turn. A turn is the call's own (`turn.created` to `turn.done`, then 0.7 s of quiet), so
     the two ends need no shared clock. It is handed no sign-in and reads none: the call is placed where the sign-in
     is, and only the offer and the answer pass between the two. A `stop` file ends it; so does its time (at most
-    290 s).
+    290 s). A turn whose end has come is finished first, whatever ends the recording: its file is written and its
+    line printed. A turn that cannot be written ends the recording as a failure (review r1 of #1660).
   - `voice-encode.cjs` writes the turns that were kept as clips into the app's `voice/` folder: silence cut from
     both ends, AAC in `.mp4`, mono, 72 kbit/s, each written beside its place and moved in.
-  A clip is kept only when the voice said its caption (`explainerSpokenMatches`): every word of the caption that is
-  not written in digits is in the call's transcript, in order, and the transcript has no more other words than six
-  for each number in the caption (a number is said in words no rule lists for every language). That passes "596"
+  A clip is kept only when the voice said its caption (`explainerSpokenMatches`): every run of letters in the
+  caption is in the call's transcript, in order (the letters around a digit too: "B2B" is not "B2C"), and the
+  transcript has no more other words than six for each run of digits in the caption (a number is said in words no
+  rule lists for every language). That passes "596"
   said in English or Danish and drops the caption that came back with two sentences of the voice's own.
   Run together on a Mac with the official Codex placing the call (10 November): six captions read from the page,
   spoken, checked and written as clips, with no turn started on the call's thread.

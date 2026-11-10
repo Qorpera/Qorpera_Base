@@ -92,20 +92,21 @@ export function parseExplainerClips(text: string): ExplainerClip[] {
 	return [...clips.values()];
 }
 
-/** A text's words, lower-cased: runs of letters and digits, an apostrophe inside a word kept (in either form). */
+/** A text's words, lower-cased: each run of letters (an apostrophe inside it kept, in either form) and each run of
+ * digits by itself, so "B2B" is the letters b and b around the number 2. */
 const spokenWords = (text: string): string[] =>
 	text
 		.toLowerCase()
 		.replace(/[\u2018\u2019]/g, "'")
-		.match(/[\p{L}\p{N}]+(?:'[\p{L}]+)*/gu) ?? [];
+		.match(/\p{L}+(?:'\p{L}+)*|\p{N}+/gu) ?? [];
 
 /**
  * Whether a voice said a caption as it is written, by the transcript of what it said. The voice is a talker by
  * nature: asked to read a line it sometimes adds a sentence of its own (once in 28 captions on 10 November 2026),
- * and a clip that says more or other than its caption must not be kept. Every word of the caption that is not
- * written in digits has to be in the transcript, in the caption's order. A number is said in words that no rule
- * here could list for every language, so each number in the caption allows WORDS_A_NUMBER words in the transcript
- * that the caption does not have; a caption with no number allows none.
+ * and a clip that says more or other than its caption must not be kept. Every run of letters in the caption has to
+ * be in the transcript, in the caption's order, the letters around a digit too ("B2B" is not "B2C"). A run of digits
+ * is a number, said in words that no rule here could list for every language, so each one allows WORDS_A_NUMBER
+ * words in the transcript that the caption does not have; a caption with no number allows none.
  */
 export function explainerSpokenMatches(caption: string, transcript: string): boolean {
 	const written = spokenWords(caption);
