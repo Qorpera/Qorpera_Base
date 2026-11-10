@@ -49,7 +49,10 @@
 	const stop = Event.prototype.stopPropagation;
 	const stopNow = Event.prototype.stopImmediatePropagation;
 	const bubble = Object.getOwnPropertyDescriptor(Event.prototype, "cancelBubble");
-	const answer = Object.getOwnPropertyDescriptor(Event.prototype, "returnValue");
+	const currentOf = getter(Event.prototype, "currentTarget");
+	const phaseOf = getter(Event.prototype, "eventPhase");
+	const bubblesOf = getter(Event.prototype, "bubbles");
+	const modeOf = getter(ShadowRoot.prototype, "mode");
 	const unlisten = EventTarget.prototype.removeEventListener;
 	const soon = queueMicrotask;
 	const attribute = Element.prototype.getAttribute;
@@ -99,21 +102,24 @@
 	// - The link is noted on the click's way down, before any handler of the page has the click: at the window, which
 	//   is heard first, and at the root of each shadow tree, where a closed tree's own nodes still show. It is the
 	//   innermost link on the click's path, also one around a slot that the clicked node sits in.
-	// - The click is settled once the page's handlers have had it, so one they took (preventDefault, or a handler
-	//   that answers false) is theirs. It is settled at the window, by a listener put last again at every click:
-	//   behind every handler the page has, also one it added later. A handler that stops the click from travelling on
-	//   would keep it from there, so such a click is settled as soon as that handler returns (each handler of a real
-	//   click runs on an empty stack, so that is before the browser acts on the click).
-	// - Settling a click the page left alone holds it: the browser is kept from following the link, and where the
-	//   link leads goes to the app only once the click is over, and only if no handler still to come took the click
-	//   meanwhile (another handler on the node where the click was stopped). While a click is held, what the page
-	//   reads of its cancelling is the page's own doing, not the hold.
-	// - A click a script made opens nothing and need not travel at all: it is held on its way down.
+	// - The click is settled when the page's handlers are done with it, and by what the browser itself then says of
+	//   it: a click a handler took, in any way a handler can, is the page's. Nothing the page reads or says of a
+	//   click is changed for that. The frame is heard behind the page's handlers: at the window, for a click that
+	//   travels all the way, and on every node of the click's path, each way, for a click a handler stops there.
+	//   Those listeners are put last again at every click, so a handler the page added since still comes first.
+	// - A handler that stops the click at once (stopImmediatePropagation) keeps every later listener from it, and so
+	//   do the two places where the frame cannot be behind the page's handlers in time: the window on the click's
+	//   way down, and a closed shadow tree's root on the way down. A click stopped so is settled when the handler
+	//   that stopped it returns (each handler of a real click runs on an empty stack, so that is before the browser
+	//   acts on the click).
+	// - Settling a click the page left alone keeps the browser from following the link, and sends where it leads once
+	//   the click is over.
+	// - A click a script made opens nothing: it is stopped on its way down, and never sent.
 	const links = "a[*|href], area[href]";
 	const clicked = new WeakMap();
 	const settled = new WeakSet();
-	const held = new WeakSet();
-	const taken = new WeakSet();
+	const stops = new WeakSet();
+	const closed = new WeakSet();
 	let follow = null;
 	const isLink = (node) => {
 		try {
@@ -141,58 +147,77 @@
 		if (href === null) href = apply(attributeNS, link, ["http://www.w3.org/1999/xlink", "href"]);
 		return typeof href === "string" && !ownLink(href) ? href : null;
 	};
-	const hold = (click) => {
-		apply(addTo, held, [click]);
-		apply(prevent, click, []);
-	};
-	const noteLink = (click) => {
-		if (!follow) return;
-		let link = null;
-		try {
-			const path = apply(composedPath, click, []);
-			for (let index = 0; index < path.length && !link; index++) if (isLink(path[index])) link = path[index];
-		} catch {}
-		if (!link) return;
-		apply(setLink, clicked, [click, link]);
-		if (click.isTrusted !== true && placeOf(link) !== null && !apply(prevented, click, [])) hold(click);
-	};
-	// Once the click is over, so no handler of the page is still to come.
-	const forward = (click, link) => {
-		if (apply(inSet, taken, [click])) return;
-		const href = placeOf(link);
-		if (href !== null && href.length <= 2048) follow(href);
-	};
+	// Once for each click, when the page's handlers are done with it.
 	const settle = (click) => {
 		const link = apply(linkOf, clicked, [click]);
 		if (!link || apply(inSet, settled, [click])) return;
 		apply(addTo, settled, [click]);
-		// Nothing to do for a click that is held already (a script's), that the page took, or that stays in the page.
-		if (apply(inSet, held, [click]) || apply(prevented, click, []) || placeOf(link) === null) return;
-		hold(click);
-		// Only a click the member made goes on.
-		if (click.isTrusted === true) apply(later, window, [() => forward(click, link), 0]);
+		// A click the page took is the page's, and one that stays in the page is the browser's.
+		const href = apply(prevented, click, []) ? null : placeOf(link);
+		if (href === null) return;
+		apply(prevent, click, []);
+		// Only a click the member made goes on, once it is over, to where the link led when it was settled.
+		if (click.isTrusted === true && href.length <= 2048) apply(later, window, [() => follow(href), 0]);
+	};
+	// Heard behind the page's handlers on each node of the click's path: where one of them has stopped the click,
+	// no node after this one hears it, so this is where it is settled.
+	const settleStopped = (click) => {
+		if (apply(inSet, stops, [click]) || (bubble && apply(bubble.get, click, []) === true)) settle(click);
+	};
+	const last = (node, listener, down) => {
+		apply(unlisten, node, ["click", listener, down]);
+		apply(listen, node, ["click", listener, down]);
+	};
+	const noteLink = (click) => {
+		if (!follow) return;
+		let link = null;
+		let path;
+		try {
+			path = apply(composedPath, click, []);
+			for (let index = 0; index < path.length && !link; index++) if (isLink(path[index])) link = path[index];
+		} catch {}
+		if (!link) return;
+		apply(setLink, clicked, [click, link]);
+		// A click a script made: stopped here and now, wherever it would travel, and no listener is moved for it (it
+		// may run inside a real click, whose listeners are being heard).
+		if (click.isTrusted !== true) {
+			if (placeOf(link) !== null) apply(prevent, click, []);
+			return;
+		}
+		// Not on the node that is hearing this very listener, on the way down: a listener put there now is not heard
+		// for this click (`unheard`).
+		const here = apply(currentOf, click, []);
+		for (let index = 0; index < path.length; index++) {
+			try {
+				if (path[index] !== here) last(path[index], settleStopped, true);
+				last(path[index], settleStopped, false);
+			} catch {}
+		}
 	};
 	// Heard first at the window (it is listened for before the page is written).
 	const hear = (click) => {
 		noteLink(click);
-		apply(unlisten, window, ["click", settle]);
-		apply(listen, window, ["click", settle]);
+		if (click.isTrusted === true) last(window, settle, false);
 	};
-	// The ways a handler stops a click from travelling on. They do what they did; a link's click that will not reach
-	// the window is settled when the handler that stopped it returns, or at once when a script made the click (its
-	// handlers do not run on an empty stack). The page may put its own in their place, and then such a click is not
-	// heard: the frame's app still ends a frame that leaves its page.
-	const stopping = (event) => {
+	// The ways a handler stops a click from travelling on. They do what they did. A link's click that no listener of
+	// the frame will hear after the handler that stopped it is settled when that handler returns, or at once when a
+	// script made the click (its handlers do not run on an empty stack).
+	const unheard = (event) =>
+		apply(phaseOf, event, []) === 1 &&
+		(apply(currentOf, event, []) === window || apply(inSet, closed, [apply(currentOf, event, [])]));
+	const stopping = (event, atOnce) => {
 		if (!apply(linkOf, clicked, [event]) || apply(inSet, settled, [event])) return;
+		apply(addTo, stops, [event]);
+		if (!atOnce && !unheard(event)) return;
 		if (event.isTrusted === true) apply(soon, window, [() => settle(event)]);
 		else settle(event);
 	};
 	Event.prototype.stopPropagation = function stopPropagation() {
-		stopping(this);
+		stopping(this, false);
 		apply(stop, this, []);
 	};
 	Event.prototype.stopImmediatePropagation = function stopImmediatePropagation() {
-		stopping(this);
+		stopping(this, true);
 		apply(stopNow, this, []);
 	};
 	// (The older way to say it, where a browser has it.)
@@ -202,34 +227,8 @@
 			enumerable: true,
 			get: bubble.get,
 			set(value) {
-				if (value) stopping(this);
+				if (value) stopping(this, false);
 				apply(bubble.set, this, [value]);
-			},
-		});
-	// The ways a handler takes a click, and reads whether one was taken. They do what they did; for a click that is
-	// held they are the page's own account: taken only if a handler of the page took it after the hold.
-	Event.prototype.preventDefault = function preventDefault() {
-		if (apply(inSet, held, [this])) apply(addTo, taken, [this]);
-		apply(prevent, this, []);
-	};
-	Object.defineProperty(Event.prototype, "defaultPrevented", {
-		configurable: true,
-		enumerable: true,
-		get() {
-			return apply(inSet, held, [this]) ? apply(inSet, taken, [this]) : apply(prevented, this, []);
-		},
-	});
-	// (The older way to say it, where a browser has it.)
-	if (answer)
-		Object.defineProperty(Event.prototype, "returnValue", {
-			configurable: true,
-			enumerable: true,
-			get() {
-				return apply(inSet, held, [this]) ? !apply(inSet, taken, [this]) : apply(answer.get, this, []);
-			},
-			set(value) {
-				if (!value && apply(inSet, held, [this])) apply(addTo, taken, [this]);
-				apply(answer.set, this, [value]);
 			},
 		});
 
@@ -240,6 +239,7 @@
 		options.slotAssignment = init?.slotAssignment;
 		const root = apply(attachShadow, this, [options]);
 		watch(root);
+		if (apply(modeOf, root, []) === "closed") apply(addTo, closed, [root]);
 		apply(listen, root, ["click", noteLink, true]);
 		return root;
 	});

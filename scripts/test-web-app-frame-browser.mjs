@@ -5,8 +5,9 @@
 // reach the app as an `open` call on the port and with what address, that a click a script made reaches nothing, that
 // what is the page's own stays the page's (a jump inside the page, a click a handler of the page took, wherever and
 // whenever that handler was added), that a click a handler stops from travelling on is still heard, and sent only if
-// no handler still to come takes it, that clicks on anything but a link are as they were, and that the frame never
-// leaves the page it was handed, whatever was clicked (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4).
+// no handler that still runs takes it (and a passive one cannot), that clicks on anything but a link are as they
+// were, and that the frame never leaves the page it was handed, whatever was clicked
+// (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4).
 // Usage: QORPERA_WEB_TEST_BROWSER=<Chromium> node scripts/test-web-app-frame-browser.mjs
 // APP_FRAME_DOCUMENT=<file> serves another frame document (to see a weaker one fail); ONLY=<name> runs one page.
 import assert from "node:assert/strict";
@@ -125,36 +126,54 @@ addEventListener("load", () => setTimeout(() => addEventListener("click", (event
 	"a click a handler stops from travelling on": {
 		page: `<!doctype html>${style}<a id="stopped" href="app:stopped" onclick="event.stopPropagation()">Stopped</a>
 <a id="at-once" href="app:stopped-at-once">At once</a><a id="bubble" href="app:cancel-bubble" onclick="event.cancelBubble = true">Old way</a>
-<a id="down" href="app:stopped-on-the-way-down">Down</a><a id="other" href="details.html" onclick="event.stopPropagation()">Details</a>
+<a id="down" href="app:stopped-on-the-way-down">Down</a><a id="at-window" href="app:stopped-at-the-window">At the window</a>
+<a id="other" href="details.html" onclick="event.stopPropagation()">Details</a>
 <div id="host" class="box"></div>
-<a id="then-taken" href="app:stopped-then-taken">Stopped, then taken</a><a id="then-refused" href="app:stopped-then-refused">Stopped, then refused</a>
-<a id="then-seen" href="app:stopped-then-left-alone">Stopped, then left alone</a>
 <script>
-const on = (id, handler) => document.getElementById(id).addEventListener("click", handler);
+const on = (id, handler, options) => document.getElementById(id).addEventListener("click", handler, options);
 on("at-once", (event) => event.stopImmediatePropagation());
 document.addEventListener("click", (event) => { if (event.target.id === "down") event.stopPropagation(); }, true);
+addEventListener("click", (event) => { if (event.target.id === "at-window") event.stopPropagation(); }, true);
 const host = document.getElementById("host");
 host.attachShadow({ mode: "closed" }).innerHTML = '<a href="app:closed-and-stopped" style="display:block;height:30px">Closed</a>';
 host.addEventListener("click", (event) => event.stopPropagation());
-// One handler stops the click; another on the same link, which still runs, takes it, each in its own way.
-on("then-taken", (event) => event.stopPropagation());
-on("then-taken", (event) => { event.preventDefault(); ${say("the next handler took it")}; });
-on("then-refused", (event) => event.stopPropagation());
-on("then-refused", (event) => { event.returnValue = false; ${say("the next handler refused it")}; });
-// Or leaves it alone: it sees a click nobody took, as it would without the frame.
-on("then-seen", (event) => event.stopPropagation());
-on("then-seen", (event) => qorpera.read("the next handler sees taken: " + event.defaultPrevented + ", " + !event.returnValue));
 </script>`,
-		clicks: ["#stopped", "#at-once", "#bubble", "#down", "#other", "#host", "#then-taken", "#then-refused", "#then-seen"],
+		clicks: ["#stopped", "#at-once", "#bubble", "#down", "#at-window", "#other", "#host"],
 		calls: [
 			"open app:stopped",
 			"open app:stopped-at-once",
 			"open app:cancel-bubble",
 			"open app:stopped-on-the-way-down",
+			"open app:stopped-at-the-window",
 			"open details.html",
 			"open app:closed-and-stopped",
+		],
+	},
+	"a click one handler stops and another one, on the same link, has after it": {
+		page: `<!doctype html>${style}<a id="taken" href="app:stopped-then-taken">Taken</a><a id="refused" href="app:stopped-then-refused">Refused</a>
+<a id="answered" href="app:stopped-then-answered-false">Answered false</a><a id="late" href="app:stopped-then-taken-by-a-late-handler">Late</a>
+<a id="passive" href="app:stopped-then-a-passive-handler">Passive</a><a id="seen" href="app:stopped-then-left-alone">Left alone</a>
+<script>
+const on = (id, handler, options) => document.getElementById(id).addEventListener("click", handler, options);
+for (const id of ["taken", "refused", "answered", "late", "passive", "seen"]) on(id, (event) => event.stopPropagation());
+// The handler that still runs takes the click, each in a way of its own: the link is the page's, and nothing is sent.
+on("taken", (event) => { event.preventDefault(); ${say("the next handler took it")}; });
+on("refused", (event) => { event.returnValue = false; ${say("the next handler refused it")}; });
+document.getElementById("answered").onclick = () => { ${say("the next handler answered false")}; return false; };
+addEventListener("load", () => setTimeout(() => on("late", (event) => { event.preventDefault(); ${say("a handler added later took it")}; }), 50));
+// A passive handler cannot take a click, whatever it calls: the browser would follow the link, so it is sent.
+on("passive", (event) => { event.preventDefault(); ${say("a passive handler tried")}; }, { passive: true });
+// And one that leaves the click alone sees a click nobody took, as it would without the frame.
+on("seen", (event) => qorpera.read("the next handler sees taken: " + event.defaultPrevented + ", " + !event.returnValue));
+</script>`,
+		clicks: ["#taken", "#refused", "#answered", "#late", "#passive", "#seen"],
+		calls: [
 			"read the next handler took it",
 			"read the next handler refused it",
+			"read the next handler answered false",
+			"read a handler added later took it",
+			"read a passive handler tried",
+			"open app:stopped-then-a-passive-handler",
 			"read the next handler sees taken: false, false",
 			"open app:stopped-then-left-alone",
 		],
@@ -163,7 +182,7 @@ on("then-seen", (event) => qorpera.read("the next handler sees taken: " + event.
 		page: `<!doctype html>${style}<a id="app" href="app:sales">Sales</a><a id="web" href="https://example.com/">Site</a><a id="other" href="details.html">Details</a>
 <a id="stopped" href="more.html" onclick="event.stopPropagation()">More</a>
 <script>addEventListener("load", () => {
-	// A handler of the page's sees a click nobody took, though the frame holds it.
+	// A click a script made is stopped on its way down: a handler of the page's reads it as taken already.
 	document.getElementById("app").addEventListener("click", (event) => qorpera.read("a handler sees taken: " + event.defaultPrevented));
 	for (const id of ["app", "web", "other", "stopped"]) {
 		document.getElementById(id).click();
@@ -176,9 +195,9 @@ on("then-seen", (event) => qorpera.read("the next handler sees taken: " + event.
 });</script>`,
 		clicks: [],
 		calls: [
-			"read a handler sees taken: false",
-			"read a handler sees taken: false",
-			"read a handler sees taken: false",
+			"read a handler sees taken: true",
+			"read a handler sees taken: true",
+			"read a handler sees taken: true",
 			"read open is undefined, and the page has agents,list,onChange,read,table,todos",
 			"read still here",
 		],

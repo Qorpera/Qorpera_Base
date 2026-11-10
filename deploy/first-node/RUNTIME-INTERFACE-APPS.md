@@ -192,30 +192,36 @@ screenshot of each read back with `company_read`, the weakest thing fixed, and a
   (`isTrusted`); a click a script made is stopped and leads nowhere. A Company File page beside a chat opens no links:
   its links are stopped too, and the host refuses them. In Storage's own preview a page is as before.
 
-  How the frame document hears a click does not depend on what the page's own handlers do with it:
+  How the frame document hears a click does not depend on what the page's own handlers do with it, and changes
+  nothing of what the page reads or says of the click:
   - The link is noted on the click's way down, before any handler of the page has it: at the window, where the frame
     document listens before the page is written, and at the root of every shadow tree, where a closed tree's own nodes
     still show. It is the innermost link on the click's path, also one around a slot that the clicked node sits in.
-  - The click is settled once the page's handlers have had it. A click a handler took (`preventDefault`, or a
-    handler that returns false) is the page's. The listener that settles it is put last at the window again at every
-    click, so a handler the page added later still comes before it.
-  - A handler that stops the click from travelling on (`stopPropagation`, `stopImmediatePropagation`, `cancelBubble`)
-    does not keep it from being settled: such a click is settled when that handler returns, which for a real click
-    is before the browser acts on it.
-  - Settling a click the page left alone holds it: the browser is kept from following the link, and the link's
-    address, as it is written then, goes to the host only once the click is over. Other handlers on the node where
-    a click was stopped still run after the hold; if one of them takes the click (`preventDefault`, or
-    `returnValue = false`), nothing is sent. While a click is held, what the page reads of it (`defaultPrevented`,
-    `returnValue`) is the page's own doing, not the hold.
-  - A click a script made is held on its way down, whether or not it travels up to the window, and is never sent.
+  - The click is settled when the page's handlers are done with it, by what the browser itself then says of it. A
+    click a handler took, in any way a handler can (`preventDefault`, `returnValue = false`, a handler that returns
+    false), is the page's; a passive handler cannot take one, as in any page.
+  - To be heard behind the page's handlers, the frame document listens last: at the window, for a click that travels
+    all the way, and on every node of the click's path, each way, for a click a handler stops there
+    (`stopPropagation`, `cancelBubble`): the other handlers on that node still run first. These listeners are put
+    last again at every click, so a handler the page added since still comes before them.
+  - Where no listener of the frame can come after the handler that stops the click, the click is settled when that
+    handler returns, which for a real click is before the browser acts on it. That is so for
+    `stopImmediatePropagation`, and in two places on the click's way down: at the window, and at the root of a closed
+    shadow tree.
+  - Settling a click the page left alone keeps the browser from following the link, and sends the link's address, as
+    it is written then, to the host once the click is over.
+  - A click a script made is stopped on its way down, whether or not it travels up to the window, and is never sent.
+    To the page's own handlers such a click reads as taken already.
 
-  Two limits. A link inside a closed shadow tree is not seen when a handler of the page stops the click on its way
-  down, before the click reaches that tree: such a click does what it did before, as does a click stopped by a page
-  that puts its own function in place of `Event.prototype.stopPropagation`. And after one handler has stopped a
-  click, a later handler on the same node that takes it by returning false (an `onclick` set after the first
-  handler) is not seen to take it, so the link is still sent: the browser tells a page nothing of a handler's answer.
-  Neither is a way out: a frame that leaves its page is ended by the host as before (§5), and what is sent is
-  checked by the host like any link.
+  Limits, each a dead or a wrongly sent link in a page built to meet it, none a way out (a frame that leaves its
+  page is ended by the host as before, §5, and what is sent is checked by the host like any link):
+  - A link inside a closed shadow tree is not seen when a handler of the page stops the click on its way down,
+    before the click reaches that tree. Such a click does what it did before.
+  - In the two places named above (the window and a closed tree's root, on the way down), a second handler in the
+    same place that takes the click after the first one stopped it is not waited for: the link is sent.
+  - A handler the page adds to a node during the click itself comes after the frame's listener on that node.
+  - A page that puts its own functions in place of `Event.prototype.stopImmediatePropagation` or `stopPropagation`
+    loses the settling for the clicks those stop where no listener of the frame follows.
 
 ## 5. Live data: the bridge (step 4)
 
@@ -314,7 +320,7 @@ of their own:
 | a flood of links | each is one call of the app's budget (120 a minute); refused ones count toward the 300 that stop the frame |
 | a link as a probe (is this file there?) | nothing is read for a link; the answer is the same either way, and the frame document drops it |
 | the frame leaving its page | every click on a link that the page left alone is stopped, whoever made it; `#…` stays in the page, and `javascript:` is left to the browser as before |
-| the page's own handlers deciding what the frame hears | the link is noted before any handler of the page (on the click's way down, listened for before the page is written) and settled after them (a listener put last at every click); a click a handler stops from travelling on is settled when that handler returns, held, and sent only once the click is over and no later handler took it; two named limits, in §4 |
+| the page's own handlers deciding what the frame hears | the link is noted before any handler of the page (on the click's way down, listened for before the page is written) and the click is settled behind them, by the browser's own account of whether a handler took it: at the window, or on the node where a handler stops it, by listeners put last at every click; where none can follow (a stop at once, and two places on the way down) when the stopping handler returns. Nothing the page reads or says of a click is changed. Named limits in §4 |
 | a new tab reaching back into the app | opened with its opener cut before it loads, and no referrer (the site sends none); the offered line is `rel="noopener noreferrer"` |
 | what a page read, carried out in an address | as a link in a message: only on the member's click; accepted, in the threat model above |
 | the company's colours as a way to inject styles | only hex colours parsed from `brand.toml` reach the stylesheet; every other byte of it is fixed |
