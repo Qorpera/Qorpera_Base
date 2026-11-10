@@ -1218,6 +1218,26 @@ describe("a member's chat on screen", () => {
 		expect(controller.memberChats.thread(sofie).get().outgoing).toEqual([]);
 	});
 
+	it("shows when each message was sent on a hover, a sent one and one on its way alike", async () => {
+		let offline = false;
+		const { controller } = company({
+			offline: () => offline,
+			pages: { [sofie]: page(sofie, [message(1, sofie, "Theirs", "2026-11-10T08:00:30Z")]) },
+		});
+		const view = chatView(controller);
+		await settle();
+		// Not sent: it stays on screen as the member's own, still with its time.
+		offline = true;
+		controller.memberChats.send(sofie, "Not sent");
+		await settle();
+		const [theirs, mine] = [...view.el.querySelectorAll<HTMLElement>("article.message")];
+		expect(theirs?.dataset.sentAt).toBe("2026-11-10T08:00:30Z");
+		expect(theirs?.hasAttribute("title")).toBe(false);
+		const outgoing = controller.memberChats.thread(sofie).get().outgoing[0];
+		expect(outgoing?.createdAt).toBeTruthy();
+		expect(mine?.dataset.sentAt).toBe(outgoing?.createdAt);
+	});
+
 	it("draws a message taken back without words, and offers to take back only my own", async () => {
 		const { controller } = company({
 			pages: {

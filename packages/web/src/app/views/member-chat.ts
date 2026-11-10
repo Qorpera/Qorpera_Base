@@ -12,6 +12,7 @@ import { playOnce } from "../../ui/motion.ts";
 import { presentationDay, presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { uiScale } from "../../ui/scale.ts";
+import { sentTimeHover } from "../../ui/sent-time-hover.ts";
 import { messagesSkeleton } from "../../ui/skeleton.ts";
 import type { CompanyController, CompanyState } from "../company.ts";
 import type { MemberChatThread, OutgoingMemberMessage } from "../member-chats.ts";
@@ -161,6 +162,7 @@ export class MemberChatView {
 		);
 		this.#earlier = h("div", { class: "thread-earlier" }, this.#earlierButton);
 		this.#messages.append(this.#log);
+		sentTimeHover(this.#messages, this.#lifetime.signal);
 		this.#refreshFade = quietScroll(this.#messages);
 		this.#messages.addEventListener("scroll", () => {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
@@ -382,8 +384,8 @@ export class MemberChatView {
 					.filter(Boolean)
 					.join(" "),
 				"aria-label": label,
-				title: label,
 				"data-message-id": message.id,
+				"data-sent-at": message.createdAt,
 			},
 			h(
 				"div",
@@ -402,6 +404,7 @@ export class MemberChatView {
 			{
 				class: `message from-member mine ${outgoing.failed ? "pending-failed" : "pending-queued"}`,
 				"aria-label": `${t("You")} · ${fmtTime(outgoing.createdAt)}`,
+				"data-sent-at": outgoing.createdAt,
 			},
 			h("div", { class: "bubble" }, h("div", { class: "text" }, ...linked(outgoing.text))),
 			outgoing.failed
