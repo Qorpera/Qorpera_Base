@@ -490,13 +490,18 @@ describe("ephemeral cloud runner worker", () => {
 		expect(lane.release).toHaveBeenCalledExactlyOnceWith("released");
 	});
 
-	it("tries a run again when a stage timed out or lost its transport, but not a coding session's, and nothing else", async () => {
+	it("tries a run again when a stage before the model's turn timed out or lost its transport, and nothing else", async () => {
 		for (const [code, retried] of [
 			["NATIVE_PROMPT_COMPOSITION:TIMEOUT", true],
 			["NATIVE_COMPANY_CONTEXT:TIMEOUT", true],
 			["NATIVE_CREDENTIAL_DOWNLOAD:TIMEOUT", true],
-			["NATIVE_NATIVE_TOOLS:TIMEOUT", true],
 			["NATIVE_COMPANY_CONTEXT:TRANSPORT_UNAVAILABLE", true],
+			["NATIVE_EXECUTION_ADMISSION:TIMEOUT", true],
+			["NATIVE_CODEX_THREAD_START:TRANSPORT_UNAVAILABLE", true],
+			["NATIVE_NATIVE_TOOLS:TIMEOUT", false],
+			["NATIVE_CODEX_TURN_START:TIMEOUT", false],
+			["NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE", false],
+			["NATIVE_PUBLIC_COMPLETION:TIMEOUT", false],
 			["NATIVE_CREDENTIAL_DOWNLOAD", false],
 			["NATIVE_PROMPT_COMPOSITION:UNKNOWN", false],
 			["NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED", false],
@@ -514,9 +519,8 @@ describe("ephemeral cloud runner worker", () => {
 		}
 	});
 
-	it("tries a stage's lost transport again on the first two attempts only", async () => {
-		const message =
-			"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE]";
+	it("tries a pre-turn stage's timeout again on the first two attempts only", async () => {
+		const message = "Native provider bridge request failed (422) [code=NATIVE_CODEX_THREAD_START:TIMEOUT]";
 		for (const [attemptCount, retried] of [
 			[1, true],
 			[2, true],
@@ -539,6 +543,17 @@ describe("ephemeral cloud runner worker", () => {
 			throw new Error("Native provider bridge request failed (422) [code=NATIVE_COMPANY_CONTEXT:TIMEOUT]");
 		}).runNext(assignment);
 		expect(service.requests.at(-1)).toMatchObject({ action: "fail", retryable: true });
+		// A lost transport while the model's turn completes stays final, on the first attempt too: the run may have sent
+		// its final message.
+		const turn = new RunnerService();
+		const turnRunner = await activeRunner(turn);
+		const failed = await worker(turnRunner, async () => {
+			throw new Error(
+				"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE]",
+			);
+		}).runNext(assignment);
+		expect(failed.status).toBe("failed");
+		expect(turn.requests.at(-1)).toMatchObject({ action: "fail", retryable: false });
 	});
 
 	it("destroys execution on shutdown without falsely failing the leased job, and revokes the native lease", async () => {

@@ -42,6 +42,9 @@ class Control implements CloudRunnerControlTransport {
 	loseFailure = false;
 	stallRenewal = false;
 	rejectRenewal?: number;
+	/** Runs before a lease renewal or a heartbeat is answered; what it throws is the answer. */
+	beforeRenewal?: () => Promise<void>;
+	beforeHeartbeat?: () => Promise<void>;
 	/** The next heartbeats' answers: a status refused, a transport error, or a runner no longer active. */
 	heartbeatFailures: (number | Error | "revoked")[] = [];
 	completion?: JsonValue;
@@ -51,6 +54,8 @@ class Control implements CloudRunnerControlTransport {
 
 	async request(_token: string, body: CloudRunnerControlRequest): Promise<unknown> {
 		this.calls.push(structuredClone(body));
+		if (body.action === "renew") await this.beforeRenewal?.();
+		if (body.action === "heartbeat") await this.beforeHeartbeat?.();
 		const failure = body.action === "heartbeat" ? this.heartbeatFailures.shift() : undefined;
 		if (typeof failure === "number") throw new CloudRunnerControlRequestError(failure);
 		if (failure instanceof Error) throw failure;
@@ -536,6 +541,48 @@ describe("cloud worker outage recovery", () => {
 		expect(outage.control.calls.filter((call) => call.action === "renew")).toHaveLength(2);
 		expect(lane.renew).toHaveBeenCalledTimes(2);
 		expect(lane.release).toHaveBeenCalledWith("revoked");
+	});
+
+	// The audit B1 review (10 November 2026): a round's job renewal that answers late, then a slow heartbeat, must not
+	// hold the native lease's next renewal back until the lease is almost over.
+	it("renews the native lease when it is due after a late job renewal and a slow heartbeat", async () => {
+		// Rounds every 45 s and a heartbeat due at 60 s; the native lease read at the start ends at 60 s.
+		const outage = await outageRun(60_000, 45_000);
+		// The first round, at 45 s: the job lease's renewal gets no answer at 45, 55, 65 and 75 s, and its fifth try
+		// answers at 89 s. Then the heartbeat, due since 60 s, takes 25 s, to 114 s.
+		let jobTries = 0;
+		outage.control.beforeRenewal = async () => {
+			jobTries++;
+			if (jobTries <= 4) throw new CloudRunnerControlRequestError(503);
+			if (jobTries === 5) await new Promise((resolveLater) => setTimeout(resolveLater, 4_000));
+		};
+		let heartbeats = 0;
+		outage.control.beforeHeartbeat = async () => {
+			if (++heartbeats === 1) await new Promise((resolveLater) => setTimeout(resolveLater, 25_000));
+		};
+		// Each native renewal answers 10 s after it is asked, with a lease of 120 s from the asking: the first, at 45 s,
+		// holds the lease to 165 s.
+		const renewedAt: number[] = [];
+		const started = Date.now();
+		lane.renew.mockImplementation(async () => {
+			renewedAt.push(Date.now() - started);
+			const renewed = { ...lane.authority, expiresAt: new Date(Date.now() + 120_000).toISOString() };
+			await new Promise((resolveLater) => setTimeout(resolveLater, 10_000));
+			return renewed;
+		});
+		await vi.advanceTimersByTimeAsync(115_000);
+		// Five tries in the first round, and the second round's, at 114 s.
+		expect(jobTries).toBe(6);
+		expect(heartbeats).toBe(1);
+		// The second native renewal is asked at once after the heartbeat (114 s, a wait of 0 being a timer's 1 ms), not
+		// an interval later (159 s), whose answer at 169 s would come after the lease's end at 165 s.
+		expect(renewedAt).toEqual([45_000, 114_001]);
+		await vi.advanceTimersByTimeAsync(65_000);
+		expect(outage.signal().aborted).toBe(false);
+		// Then one an interval after the last began.
+		expect(renewedAt.slice(0, 3)).toEqual([45_000, 114_001, 159_001]);
+		outage.finish();
+		expect(await outage.running).toMatchObject({ status: "completed" });
 	});
 
 	it("stops the run at the native lease's end when both renewals stall", async () => {

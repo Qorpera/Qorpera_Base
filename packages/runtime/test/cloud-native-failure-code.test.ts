@@ -132,28 +132,46 @@ describe("the runner's retry decision", () => {
 		);
 	});
 
-	// 10 November 2026 (audit B2): the database's resume makes a stage's timeout or lost transport safe to go on from,
-	// before or after the start; a failure that repeats is not a blip, so only the first two attempts go on.
-	it("goes on after a stage's timeout or lost transport, except a coding session's, on the first two attempts", () => {
+	// 10 November 2026 (audit B2): a stage that ends before the model's turn can have sent anything goes on after a
+	// timeout or lost transport; a failure that repeats is not a blip, so only the first two attempts go on.
+	it("goes on after a pre-turn stage's timeout or lost transport, on the first two attempts", () => {
 		const failure = (code: string) => new Error(`Native provider bridge request failed (422) [code=${code}]`);
-		for (const code of [
-			"NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE",
-			"NATIVE_CODEX_TURN_COMPLETION:TIMEOUT",
-			"NATIVE_NATIVE_TOOLS:TIMEOUT",
-			"NATIVE_COMPANY_CONTEXT:TRANSPORT_UNAVAILABLE",
-			"NATIVE_PROMPT_COMPOSITION:TRANSPORT_UNAVAILABLE",
-			"NATIVE_CREDENTIAL_OPENING:TIMEOUT",
-			`NATIVE_${"A".repeat(42)}:TIMEOUT`,
-			"NATIVE_CODING_SESSIONS:TIMEOUT",
-			nativeProviderFailureCode(
-				tagNativeRuntimeFailure(new Error("late"), "wake-envelope", "transport_unavailable"),
+		const stages = [
+			"company-context",
+			"wake-envelope",
+			"connector-tools",
+			"prompt-composition",
+			"execution-admission",
+			"codex-artifact",
+			"codex-identity",
+			"codex-result-fence",
+			"codex-process-start",
+			"codex-initialize",
+			"codex-configuration",
+			"codex-skills",
+			"codex-thread-start",
+		] as const;
+		const codes = [
+			// As the runtime names them.
+			...stages.flatMap((stage) =>
+				(["timeout", "transport_unavailable"] as const).map((category) =>
+					nativeProviderFailureCode(tagNativeRuntimeFailure(new Error("late"), stage, category)),
+				),
 			),
-		]) {
+			// The host's own stages before the harness.
+			"NATIVE_CREDENTIAL_DOWNLOAD:TRANSPORT_UNAVAILABLE",
+			"NATIVE_INITIAL_AUTHORITY_VALIDATION:TIMEOUT",
+			"NATIVE_CREDENTIAL_OPENING:TIMEOUT",
+		];
+		expect(codes).toContain("NATIVE_CODEX_THREAD_START:TRANSPORT_UNAVAILABLE");
+		for (const code of codes) {
 			expect(cloudRunnerJobFailureIsCutOff(failure(code), 1)).toBe(true);
 			expect(cloudRunnerJobFailureIsCutOff(failure(code), 2)).toBe(true);
-			// The third attempt's failure is final, and the member sees it.
-			expect(cloudRunnerJobFailureIsCutOff(failure(code), 3)).toBe(false);
-			expect(cloudRunnerJobFailureIsCutOff(failure(code), 7)).toBe(false);
+			if (!cloudRunnerJobFailureBeforeStartIsRetryable(failure(code))) {
+				// The third attempt's failure is final, and the member sees it.
+				expect(cloudRunnerJobFailureIsCutOff(failure(code), 3)).toBe(false);
+				expect(cloudRunnerJobFailureIsCutOff(failure(code), 7)).toBe(false);
+			}
 		}
 		// What was retried before keeps only the database's cap of eight.
 		for (const code of [
@@ -166,8 +184,25 @@ describe("the runner's retry decision", () => {
 			for (const attemptCount of [1, 3, 7]) {
 				expect(cloudRunnerJobFailureIsCutOff(failure(code), attemptCount)).toBe(true);
 			}
+		// During or after the model's turn, final for now: a run with a log is resumed without asking whether it sent
+		// its final message (20260930539000).
+		for (const stage of [
+			"CODEX_TURN_START",
+			"CODEX_TURN_COMPLETION",
+			"NATIVE_TOOLS",
+			"PUBLIC_COMPLETION",
+			"CODING_SESSION",
+			"COMPLETION_AUTHORITY_VALIDATION",
+			"CREDENTIAL_SEALING",
+			"CREDENTIAL_UPLOAD",
+			"HARNESS_EXECUTION",
+			"BUNDLE_COMPATIBILITY",
+			"CODEX_THREAD_STARTS",
+			"CODEX",
+		])
+			for (const category of ["TIMEOUT", "TRANSPORT_UNAVAILABLE"])
+				expect(cloudRunnerJobFailureIsCutOff(failure(`NATIVE_${stage}:${category}`), 1)).toBe(false);
 		for (const message of [
-			"Native provider bridge request failed (422) [code=NATIVE_CODING_SESSION:TIMEOUT]",
 			"Native provider bridge request failed (422) [code=NATIVE_CODING_SESSION:TRANSPORT_UNAVAILABLE]",
 			"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:UNKNOWN]",
 			"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:CANCELLED]",
@@ -179,10 +214,11 @@ describe("the runner's retry decision", () => {
 			"Native provider bridge request failed (422) [code=CODING_TURN_ENDED_WITHOUT_SUBMISSION]",
 			"Native provider bridge request failed (422) [code=AGENT_TURN_ENDED_WITHOUT_FINAL_SEND]",
 			"Native provider bridge request failed (422) [code=HARNESS_EXITED:TIMEOUT]",
-			`Native provider bridge request failed (422) [code=NATIVE_${"A".repeat(43)}:TIMEOUT]`,
 			"Native provider bridge request failed (422) [code=NATIVE_:TIMEOUT]",
 			"Native provider bridge request failed (422) [code=NATIVE_PROMPT_COMPOSITION:TIMEOUT] trailing",
 			"Native provider bridge request failed (422) [code=NATIVE_PROMPT_COMPOSITION:TRANSPORT_UNAVAILABLE] trailing",
+			"Native provider bridge request failed (422) [code=NATIVE_CODEX_THREAD_START]",
+			"Native provider bridge request failed (422) [code=NATIVE_CODEX_THREAD_START:UNKNOWN]",
 			RUN_COMPLETION_REFUSED_FAILURE,
 			"Native provider bridge request failed (422)",
 			"NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE",

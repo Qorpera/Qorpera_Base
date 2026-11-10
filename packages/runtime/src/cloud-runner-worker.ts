@@ -108,25 +108,49 @@ export function cloudRunnerJobFailureIsRetryable(error: unknown): boolean {
  * (20260928519120, qorpera_resume_run_from_log): before the run's start was recorded it queues the job again pristine;
  * after it, a retryable failure is a cut-off, as a lapsed lease is: the attempt's open receipts become outcome_unknown
  * (final: the agent is told its receipts and checks before it repeats a step, under a new key), and the job is queued
- * again, at most eight attempts in all, never for a run that already sent its final message.
+ * again, at most eight attempts in all.
  *
  * Two rules:
  * - A failure that is safe to try again from the start (the 21 October 2026 amendment, item 7): the native host timed
  *   out reading the run's context or composing its prompt, or its download of the run's login got no answer
  *   (28 October 2026), before the run's start was recorded and before any model request or tool call. A download the
  *   vault or the store refused stays final. Only the database's cap of eight applies.
- * - Since 10 November 2026 (audit B2/A2), a stage of the native host that timed out or lost its transport, before or
- *   after the start (`NATIVE_<STAGE>:TIMEOUT` or `:TRANSPORT_UNAVAILABLE`), except a coding session's turn
- *   (`NATIVE_CODING_SESSION`), which stays final as before. That a lost answer after the start does not prove that
- *   nothing happened is what the database's resume answers: whatever is unknown is marked so, and the agent checks.
- *   It is reported retryable only while the job is on its first or second attempt: a failure that repeats is not a
- *   blip, and each attempt spends a member's model usage, so the third attempt's failure is final and the member
- *   sees it.
+ * - Since 10 November 2026 (audit B2/A2), a timeout or lost transport (`NATIVE_<STAGE>:TIMEOUT` or
+ *   `:TRANSPORT_UNAVAILABLE`) in a stage that ends before the model's turn can have sent anything: the five above, the
+ *   host's first authority check and login opening, and the run's admission and Codex's start up to its thread
+ *   (CUT_OFF_STAGES). Such a failure may come after the run's start; that a lost answer does not prove that nothing
+ *   happened is what the database's resume answers: whatever is unknown is marked so, and the agent checks. It is
+ *   reported retryable only while the job is on its first or second attempt: a failure that repeats is not a blip,
+ *   and each attempt spends a member's model usage, so the third attempt's failure is final and the member sees it.
+ * A failure during or after the model's turn stays final for now (the turn's start and completion, the run's tools,
+ * its public completion, a coding session's turn): a run that keeps a log is resumed without asking whether it
+ * already sent its final message (the 20260930539000 gate; 20260930547000 checks that only for a resume from
+ * receipts), so a retry could requeue a run whose answer was delivered. Widening this rule waits for that gate.
  * Every other failure stays final: a refusal, a provider's failure, an exhausted budget, an invalid answer, an unknown
  * or cancelled stage, and the runtime's own codes. */
 const RETRYABLE_BEFORE_START =
 	/ \[code=NATIVE_(?:CREDENTIAL_DOWNLOAD|COMPANY_CONTEXT|WAKE_ENVELOPE|CONNECTOR_TOOLS|PROMPT_COMPOSITION):TIMEOUT\]$/;
-const RETRYABLE_CUT_OFF = / \[code=NATIVE_(?!CODING_SESSION:)[A-Z0-9_]{1,42}:(?:TIMEOUT|TRANSPORT_UNAVAILABLE)\]$/;
+const CUT_OFF_STAGES = [
+	"COMPANY_CONTEXT",
+	"WAKE_ENVELOPE",
+	"CONNECTOR_TOOLS",
+	"PROMPT_COMPOSITION",
+	"CREDENTIAL_DOWNLOAD",
+	"INITIAL_AUTHORITY_VALIDATION",
+	"CREDENTIAL_OPENING",
+	"EXECUTION_ADMISSION",
+	"CODEX_ARTIFACT",
+	"CODEX_IDENTITY",
+	"CODEX_RESULT_FENCE",
+	"CODEX_PROCESS_START",
+	"CODEX_INITIALIZE",
+	"CODEX_CONFIGURATION",
+	"CODEX_SKILLS",
+	"CODEX_THREAD_START",
+];
+const RETRYABLE_CUT_OFF = new RegExp(
+	` \\[code=NATIVE_(?:${CUT_OFF_STAGES.join("|")}):(?:TIMEOUT|TRANSPORT_UNAVAILABLE)\\]$`,
+);
 const CUT_OFF_ATTEMPTS = 3;
 export function cloudRunnerJobFailureBeforeStartIsRetryable(error: unknown): boolean {
 	return error instanceof Error && RETRYABLE_BEFORE_START.test(error.message);
@@ -384,10 +408,15 @@ export class EphemeralCloudRunnerWorker {
 				}
 			}
 		};
+		/* When the native lease's next renewal is due: an interval after its last one began (or after maintenance began,
+		 * before the first). Every call below moves it on by a full interval, also when there is no native lease to
+		 * renew, so the rounds that it paces never come faster than one renewal each. */
+		let nativeDueAt = this.#now() + this.#leaseRenewalMs;
 		/* The native lease the same way (WB-001, 28 Oct 2026): a lost or late answer is asked again every
 		 * 10 s until the native lease or the job's is 10 s from its end, so a short control-plane outage
 		 * does not stop the run. A refusal, or either lease's end, still does. */
 		const renewNativeLease = async (): Promise<void> => {
+			nativeDueAt = this.#now() + this.#leaseRenewalMs;
 			for (;;) {
 				const renew = renewNativeAuthority;
 				// No native lease, or the run ended meanwhile and its release follows.
@@ -418,7 +447,18 @@ export class EphemeralCloudRunnerWorker {
 			}
 		};
 		const maintenance = (async () => {
-			while (await wait(this.#leaseRenewalMs, maintenanceAbort.signal)) {
+			/* A round starts when the native lease's renewal is due, never later than an interval after the last round
+			 * ended (10 November 2026, audit B1 review): after a long round or a slow heartbeat the next round starts at
+			 * once and renews the native lease first thing, so its due time carries across rounds and heartbeats. A
+			 * healthy round keeps one job renewal and one native renewal per interval. The wait is never 0 twice in a row
+			 * without a round between: each round's native renewal moves nativeDueAt a full interval on before the next
+			 * wait is worked out. A native renewal that begins at b is followed by the next one by b + interval at the
+			 * latest, or, when a heartbeat is due as the round ends, by the round's end plus the heartbeat's own deadline
+			 * (30 s), which is at most b + interval + 30 s: 75 s with the 45 s default, inside the 120 s native lease
+			 * with room for that renewal's own retries. */
+			while (
+				await wait(Math.min(this.#leaseRenewalMs, Math.max(0, nativeDueAt - this.#now())), maintenanceAbort.signal)
+			) {
 				try {
 					/* Both leases are renewed at once, each with its own retries (10 November 2026, audit B1). Until
 					 * then the native lease was renewed only after the job's renewal had an answer: a control-plane
@@ -430,7 +470,9 @@ export class EphemeralCloudRunnerWorker {
 					 * whose job renewal answers within the interval renews the native lease once. A definitive
 					 * refusal of either ends the round at once (Promise.all does not wait for the other's retries);
 					 * the catch below aborts maintenance, which ends the other's request and retry wait. The
-					 * heartbeat follows when neither renewal is in flight. */
+					 * heartbeat follows when neither renewal is in flight, and never overlaps one: the native renewal is
+					 * sent with the runner's session token (cloud-runner-broker.ts renewNativeAuthority), which the
+					 * heartbeat rotates. */
 					const round = new AbortController();
 					const whileJobRenews = AbortSignal.any([maintenanceAbort.signal, round.signal]);
 					const jobRenewal = renewJobLease().finally(() => round.abort());
