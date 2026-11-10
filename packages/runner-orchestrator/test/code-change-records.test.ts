@@ -1263,15 +1263,31 @@ describe("CodeChangeRecords", () => {
 			needsDiff: true,
 			picture: null,
 		};
-		t.kernel.changes = [sent(lost)];
+		// A restore's own row the same: main before it may be what the restore took away.
+		const restore = {
+			n: 16,
+			kind: "restore" as const,
+			restoredFrom: "20261109T021455Z-aaaaaaaaaaaa",
+			filesChanged: null,
+			paths: null,
+			needsDiff: true,
+			picture: null,
+		};
+		t.kernel.changes = [sent(lost), sent(restore)];
 		await expect(t.pass()).resolves.toEqual({ written: 1, failed: 0 });
 		expect(t.write).toHaveBeenCalledTimes(1);
-		expect(t.wrote[0]?.records).toEqual([{ n: 15, text: codeChangeRecordText(change(lost)) }]);
+		expect(t.wrote[0]?.records).toEqual([
+			{ n: 15, text: codeChangeRecordText(change(lost)) },
+			{ n: 16, text: codeChangeRecordText(change(restore)) },
+		]);
 		expect(String((t.wrote[0]?.records[0] as { text: string }).text)).toContain(
 			"\n- State: no longer in the repository: a restore went back past it\n",
 		);
 		expect(t.calls.at(-1)?.args.p_written).toEqual({
-			changes: [{ n: 15, version: 2 }],
+			changes: [
+				{ n: 15, version: 2 },
+				{ n: 16, version: 1 },
+			],
 			indexVersion: 9,
 			problem: null,
 		});

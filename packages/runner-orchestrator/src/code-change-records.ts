@@ -613,9 +613,11 @@ export interface CodeChangeRecordsOptions {
 	changes?: number;
 }
 
-/** Whether the job that writes a change's file is to find what differs between its two ends of main first. */
+/** Whether the job that writes a change's file is to find what differs between its two ends of main first. Never for a
+ * row a restore went back past, nor for a restore's own row: the repository may no longer hold one of its ends, and
+ * the job leaves a record unwritten whose commits are gone. (The kernel says the same; this holds without it.) */
 function diffDue(change: CodeChangeFile): boolean {
-	return change.needsDiff && change.state !== "lost";
+	return change.needsDiff && change.state !== "lost" && change.kind !== "restore";
 }
 
 /** What one job wrote, for the kernel to be told once the job has saved. `leftOut`: a record the job was handed and
@@ -843,7 +845,6 @@ export class CodeChangeRecords {
 		const records = due.changes.map(
 			(change): CodeChangeRecordFile =>
 				// A row that has both ends of main and no files yet: the job finds what differs, and the text is made with it.
-				// Not for a row a restore went back past: its commits may be gone, and the job would leave it unwritten.
 				diffDue(change) && change.mainBefore !== null && change.mainAfter !== null
 					? {
 							n: change.n,
