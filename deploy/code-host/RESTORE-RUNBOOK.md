@@ -52,7 +52,7 @@ What a restore brings back, and what not:
 | Sessions' branches | As the bundle has them. |
 | Sessions' worktrees | Not restored. A session's next turn gets a new worktree from its branch. |
 | Files a session had not committed, and commits on no branch | Not in any bundle. They are in the set-aside copy. |
-| The change record's files | Written again from the database, a little later. |
+| The change record's files | Written again from the database, a little later, each at a new version. |
 | Downloads | Over from the moment the restore is let go to set the place aside (their files go aside with it), also when the restore then fails or is put off. A member asks for the code again once the repository is open. |
 | The damaged place | The set-aside copy, until a `discard`. Members can read it in Storage; only the platform writes there. |
 

@@ -13,7 +13,8 @@
 --      again), a restored main the record does not know, the wall for undo, and discard.
 --   5. A restore against the downloads made in its place (over from the step that begins to move the place, also when
 --      the restore then fails; a finish that comes after it); its record against landings and in every order of
---      failure; restores back, forward and back again with undos among the rows; a history of more than 200 changes.
+--      failure; record files acknowledged after a restore; restores back, forward and back again with undos among the
+--      rows; a history of more than 200 changes.
 --   6. More than 500 changes are not taken out at once.
 --   7. An agent describes a change: the notice, and each thing wrong with a picture.
 --   8. A worker's run asks for nothing.
@@ -1421,6 +1422,59 @@ begin
 			'state', 'done', 'result', 'made', 'path', v_zip, 'bytes', 80, 'sha256', repeat('a', 64), 'mainSha', pg_temp.rec_sha('a9'))))
 			= pg_temp.req_recorded(null)
 		and pg_temp.req_ready('one') = jsonb_build_array(v -> 'requestId'), 'and made again: ' || pg_temp.req_list()::text);
+end $$;
+
+-- company/four: two landings whose record files a job has written. The job's word that it wrote them comes after a
+-- restore moved those files aside and was recorded: it counts for nothing, and every file is written again.
+insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name)
+values (pg_temp.rec_here(), '92400000-0000-4000-8000-000000000010', 'company', 'four');
+do $$
+declare v jsonb; v_old jsonb; v_new jsonb; s public.qorpera_code_repositories%rowtype;
+	v_bundle text := '20261110T160000Z-ba9876543210';
+begin
+	perform pg_temp.rec_land(95, 'f0', 'f1', p_name => 'four');
+	perform pg_temp.rec_land(96, 'f1', 'f2', p_name => 'four');
+	-- A job wrote both rows' files and the list, at the versions they have.
+	v := pg_temp.rec_files(p_name => 'four');
+	s := pg_temp.rec_shop('four');
+	v_old := pg_temp.rec_wrote((select jsonb_agg(jsonb_build_object('n', c -> 'n', 'version', c -> 'version') order by c -> 'n')
+		from jsonb_array_elements(v -> 'changes') c), (v -> 'index' ->> 'version')::bigint);
+	perform pg_temp.base_assert(v_old = pg_temp.rec_wrote('[{"n":1,"version":1},{"n":2,"version":1}]', s.index_version)
+		and s.index_version = 2 and s.index_written = 0, 'what the job wrote: ' || v_old::text);
+	-- Before the job says so, a restore from a bundle of main as it stands moves the place aside, those files with it,
+	-- and is recorded. Every file has a new version, and so has the list.
+	v := pg_temp.req_restore_to(v_bundle, 'f2', 'four', 'f2');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(3, 2, 0, 0) and pg_temp.req_restore_end(v_bundle, 'f2') = pg_temp.req_recorded(3),
+		'four is restored: ' || v::text);
+	s := pg_temp.rec_shop('four');
+	perform pg_temp.base_assert((select array_agg(c.file_version order by c.n) from public.qorpera_code_changes c where c.name = 'four') = array[2, 2, 2]
+		and (select array_agg(c.file_written order by c.n) from public.qorpera_code_changes c where c.name = 'four') = array[0, 0, 0]
+		and s.index_version = 4 and s.index_written = 0, 'new versions: ' || to_jsonb(s)::text);
+	-- The job's word arrives now. It is of files that went aside: every row is still due, and the list.
+	perform pg_temp.base_assert(pg_temp.rec_written(v_old, 'four') ->> 'state' = 'recorded', 'the old acknowledgment is heard');
+	v := pg_temp.rec_files(p_name => 'four');
+	perform pg_temp.base_assert(pg_temp.rec_due_names() like '%four%' and jsonb_array_length(v -> 'changes') = 3
+		and (select jsonb_agg(c -> 'version' order by c -> 'n') from jsonb_array_elements(v -> 'changes') c) = '[2, 2, 2]'::jsonb
+		and v -> 'index' ->> 'version' = '4' and jsonb_array_length(v -> 'index' -> 'lines') = 3,
+		'still due after an acknowledgment from before the restore: ' || v::text);
+	-- A job that writes them now, in the new place, says so with the versions it wrote: nothing is due.
+	v_new := pg_temp.rec_wrote((select jsonb_agg(jsonb_build_object('n', c -> 'n', 'version', c -> 'version') order by c -> 'n')
+		from jsonb_array_elements(v -> 'changes') c), (v -> 'index' ->> 'version')::bigint);
+	perform pg_temp.rec_written(v_new, 'four');
+	v := pg_temp.rec_files(p_name => 'four');
+	perform pg_temp.base_assert(v -> 'changes' = '[]'::jsonb and v -> 'index' = 'null'::jsonb and pg_temp.rec_due_names() not like '%four%',
+		'written in the new place: ' || v::text);
+	-- The same restore recorded again by a later request (no new row): the versions go up again, the list's too, so
+	-- the word of files written before it counts for nothing either.
+	v := pg_temp.req_restore_to(v_bundle, 'f2', 'four', 'f2');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(3, 2, 0, 0) and pg_temp.req_restore_end(v_bundle, 'f2') = pg_temp.req_recorded(3)
+		and (pg_temp.rec_shop('four')).last_change = 3 and (pg_temp.rec_shop('four')).index_version = 5,
+		'the same restore again: ' || v::text);
+	perform pg_temp.rec_written(v_new, 'four');
+	v := pg_temp.rec_files(p_name => 'four');
+	perform pg_temp.base_assert(jsonb_array_length(v -> 'changes') = 3
+		and (select jsonb_agg(c -> 'version' order by c -> 'n') from jsonb_array_elements(v -> 'changes') c) = '[3, 3, 3]'::jsonb
+		and v -> 'index' ->> 'version' = '5', 'still due when the same restore is recorded again: ' || v::text);
 end $$;
 
 -- company/two: three landings, an undo of the second, and a landing. Bundles were taken at b3 and at b5.

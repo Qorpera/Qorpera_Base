@@ -1075,9 +1075,10 @@ $$;
 --   main): a filler for that gap first, as before any other movement.
 -- * Every row's state as the restored main's history has it (qorpera_code_changes_restored).
 -- * The restore's own row, from main as it was to main as restored.
--- * The place is new: every record file and the list are written again, and care checks the repository at the next
---   quiet moment, trusting no refs it knew. (The downloads made in the old place were over when the restore began
---   to move it: qorpera_code_request_step.)
+-- * The place is new: every record file and the list are written again, each at a new version, so that no
+--   acknowledgment of a file written in the old place, which may still be on its way, counts for the new one; and
+--   care checks the repository at the next quiet moment, trusting no refs it knew. (The downloads made in the old
+--   place were over when the restore began to move it: qorpera_code_request_step.)
 -- Made again, it is the same record:
 -- * by the same request (the first answer was not heard, or the job did not save and the request was claimed again):
 --   what it recorded is answered, and nothing is written;
@@ -1159,12 +1160,14 @@ begin
 					substr(v_bundle, 7, 2), substr(v_bundle, 10, 2), substr(v_bundle, 12, 2)),
 				'summary', v_request.input ->> 'note', 'owner_user_id', v_request.by_user_id));
 	end if;
-	-- The place is new: every file is written again from the rows, and care checks it at the next quiet moment.
-	update public.qorpera_code_changes change set file_written = 0
+	-- The place is new: every file is written again from the rows, and care checks it at the next quiet moment. Each
+	-- file's version goes up, and the list's: the files of the old place went aside, and a job that wrote one of them
+	-- may still say so after this. What it says is of an older version, and leaves the file due.
+	update public.qorpera_code_changes change set file_version = change.file_version + 1, file_written = 0
 	where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
 		and change.name = v_repository.name;
 	update public.qorpera_code_repositories set main_sha = v_main, restored_at = v_now, restored_from = v_bundle,
-		refs_sha256 = null, next_care_at = v_now, index_written = 0
+		refs_sha256 = null, next_care_at = v_now, index_version = index_version + 1, index_written = 0
 	where environment_id = v_repository.environment_id and owner = v_repository.owner and name = v_repository.name;
 	v_recorded := v_recorded || jsonb_build_object('change', v_n);
 	update public.qorpera_code_requests set updated_at = v_now, progress = coalesce(progress, '{}'::jsonb)
