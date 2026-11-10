@@ -455,6 +455,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			owner: ada.id,
 			posted: true,
 			reads: [],
+			writes: [],
 			concept: false,
 			cover: null,
 		};
@@ -501,6 +502,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			owner: ada.id,
 			posted: true,
 			reads: [],
+			writes: [],
 			concept: true,
 			cover: null,
 		};

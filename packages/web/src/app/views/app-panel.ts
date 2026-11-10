@@ -5,6 +5,7 @@ import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { framePage } from "../../ui/page-frame.ts";
 import { t } from "../../ui/preferences.ts";
 import { AppBridge, type AppBridgeHost, assembleApp, type CompanyApp } from "../interface-apps.ts";
+import { AppAskBar } from "./app-ask-bar.ts";
 import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
 
 /* An agent's interface app (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4) or an HTML page of the Company File, live
@@ -23,6 +24,9 @@ import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
  *   (security review r1, H2).
  * - On an app's page, the agents' open questions about the app stand in a dock over the page's corner, drawn by Qorpera
  *   outside the frame (views/question-dock.ts, Jonas, 10 November 2026): one tap answers, as in the chat.
+ * - An app's page may ask the member to change something (an answer to such a question, a row of a table): Qorpera
+ *   puts each request to the member on a bar above the frame (views/app-ask-bar.ts), and nothing changes without their
+ *   yes there. The member's Reload lets an app that was told not now three times ask again.
  * - It follows the company's folder: a change to the app's files puts its page together again and, when the page
  *   changed, shows it afresh; any other change tells the page that what it reads may have changed. */
 
@@ -88,6 +92,10 @@ export class AppPanel {
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	/** An app's page only: the open questions that point at it, drawn by Qorpera over the page's corner. */
 	#dock: QuestionDock | undefined;
+	/** An app only: where its requests for a change are put to the member, above its frame. */
+	#ask: AppAskBar | undefined;
+	/** The emblem the app's manifest names, for the bar. */
+	#emblemName: AppManifest["emblem"] = "page";
 
 	constructor(host: AppPanelHost, target: AppPanelTarget, placement: AppPanelPlacement) {
 		this.#host = host;
@@ -152,6 +160,17 @@ export class AppPanel {
 				{ signal: this.#lifetime.signal },
 			);
 		}
+		if (target.kind === "app") {
+			// Above the frame and outside it, in every placement: the bar pushes the page down, and is never over it.
+			this.#ask = new AppAskBar({
+				emblem: () => interfaceEmblem(this.#emblemName, 22),
+				agent: (agentId) => host.questions?.agent(agentId),
+				open: (open) => {
+					if (this.#frame) this.#frame.holdEscape = open;
+				},
+			});
+			this.el.insertBefore(this.#ask.el, this.#body);
+		}
 		this.#lifetime.signal.addEventListener(
 			"abort",
 			host.onFolderChange(() => this.#changed()),
@@ -177,11 +196,15 @@ export class AppPanel {
 		this.#frame = undefined;
 		this.#dock?.dispose();
 		this.#dock = undefined;
+		this.#ask?.dispose();
+		this.#ask = undefined;
 		this.el.remove();
 	}
 
-	/** Reads the app or page and shows it: afresh when `fresh` or when its page changed. */
+	/** Reads the app or page and shows it: afresh when `fresh` (the member asked: Reload, or opening it again) or when
+	 * its page changed. The member's reload also lets an app that was told not now three times ask again. */
 	reload(fresh: boolean): Promise<void> {
+		if (fresh) this.#ask?.reset();
 		if (this.#loading) {
 			this.#again = true;
 			return this.#loading;
@@ -228,6 +251,7 @@ export class AppPanel {
 	#status(text: string): void {
 		this.#frame?.dispose();
 		this.#frame = undefined;
+		this.#ask?.cancel();
 		this.#page = undefined;
 		replace(this.#body, h("p", { class: "side-panel-status" }, text));
 	}
@@ -260,12 +284,19 @@ export class AppPanel {
 				);
 			}
 			name = manifest.name;
+			this.#emblemName = manifest.emblem;
 			this.#heading(manifest.name, manifest, this.#host.agentName(manifest.owner));
 			const assembled = await assembleApp(folder, { path: app.path, entry: manifest.entry }, signal);
 			if (signal.aborted) return;
 			if (!assembled.ok) return this.#status(assembled.message);
 			page = assembled.page;
-			const bridge = new AppBridge(this.#host, { ...app, manifest }, `${this.#host.budgetKey}:${app.name}`, signal);
+			const bridge = new AppBridge(
+				this.#host,
+				{ ...app, manifest },
+				`${this.#host.budgetKey}:${app.name}`,
+				signal,
+				this.#ask,
+			);
 			handle = (call) => bridge.answer(call);
 		} else {
 			const path = this.target.path;
@@ -294,7 +325,9 @@ export class AppPanel {
 			this.#frame.changed();
 			return;
 		}
+		// A new page: a request of the old one that still waits for the member goes with it.
 		this.#frame?.dispose();
+		this.#ask?.cancel();
 		const frame = new AppFrame(page, t("App: {name}", { name }), "side-panel-frame", handle, () => {
 			if (this.#frame !== frame) return;
 			this.#status(t("This app reloaded itself. Press Reload to start it again."));
