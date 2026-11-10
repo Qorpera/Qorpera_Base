@@ -150,6 +150,8 @@ export class AgentDetails {
 			),
 			this.#figures.el,
 		);
+		// It hangs below the card: a card low in the rail moves up while it shows, so it stays inside the window.
+		this.dialog.overhang(this.#picker);
 		this.#figureButton = h(
 			"button",
 			{
