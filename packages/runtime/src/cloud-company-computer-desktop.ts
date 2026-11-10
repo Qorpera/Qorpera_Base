@@ -6,7 +6,8 @@ import {
 	type CompanyComputerScreenBinding,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import {
-	isStaffCharacterId,
+	drawnStaffCharacter,
+	RETIRED_STAFF_CHARACTERS,
 	STAFF_CHARACTER_BY_TEMPLATE,
 	STAFF_CHARACTER_IDS,
 	type StaffCharacterId,
@@ -16,6 +17,7 @@ import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } fro
 import {
 	COMPANY_COMPUTER_SCREEN_HOURS,
 	COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER,
+	COMPANY_COMPUTER_WALLPAPER_IDS,
 	type CompanyComputerWallpaperId,
 } from "./cloud-company-computer-wallpapers.ts";
 
@@ -26,9 +28,10 @@ const FOUNDER_TEMPLATE_CHARACTER: Readonly<Record<string, StaffCharacterId>> = O
 
 /**
  * The avatar a client draws for this agent, by the clients' own rules
- * (`figureFor` in the web client): the saved figure, else the template's, else a
- * stable one derived from the agent id. The hash walks the avatar list, not the
- * asset list, so an agent without a saved figure still gets its own backdrop.
+ * (`figureFor` in the web client): the saved figure (a retired one's
+ * replacement), else the template's, else a stable one derived from the agent
+ * id. The hash walks the avatar list, not the asset list, so the desktop of an
+ * agent without a saved figure follows the figure its avatar shows.
  */
 export function companyComputerScreenCharacter(
 	binding: CompanyComputerScreenBinding,
@@ -36,7 +39,8 @@ export function companyComputerScreenCharacter(
 	creature?: string,
 ): StaffCharacterId {
 	assertCompanyComputerScreenBinding(binding, binding);
-	if (isStaffCharacterId(creature)) return creature;
+	const saved = drawnStaffCharacter(creature);
+	if (saved) return saved;
 	const mapped = Object.entries({ ...STAFF_CHARACTER_BY_TEMPLATE, ...FOUNDER_TEMPLATE_CHARACTER }).find(
 		([id]) => id === templateId,
 	);
@@ -46,13 +50,29 @@ export function companyComputerScreenCharacter(
 	return STAFF_CHARACTER_IDS[seed % STAFF_CHARACTER_IDS.length];
 }
 
-/** Resolve current avatar identities to the guest image's stable asset catalog. */
+/**
+ * Resolve current avatar identities to the guest image's stable asset catalog:
+ * the figure's own backdrop; for a figure no image draws yet, the backdrop of
+ * the retired figure it replaced; else a stable one of the installed files,
+ * derived from the agent id.
+ */
 export function companyComputerScreenCreature(
 	binding: CompanyComputerScreenBinding,
 	templateId?: string,
 	creature?: string,
 ): CompanyComputerWallpaperId {
-	return COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER[companyComputerScreenCharacter(binding, templateId, creature)];
+	const character = companyComputerScreenCharacter(binding, templateId, creature);
+	const drawn: Readonly<Partial<Record<string, CompanyComputerWallpaperId>>> = COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER;
+	const own =
+		drawn[character] ??
+		Object.entries(RETIRED_STAFF_CHARACTERS)
+			.filter(([, replacement]) => replacement === character)
+			.map(([retired]) => drawn[retired])
+			.find(Boolean);
+	if (own) return own;
+	let seed = 0;
+	for (const letter of binding.staffAgentId) seed = (seed * 31 + letter.charCodeAt(0)) >>> 0;
+	return COMPANY_COMPUTER_WALLPAPER_IDS[seed % COMPANY_COMPUTER_WALLPAPER_IDS.length];
 }
 
 async function assertPhysicalDirectory(directory: string): Promise<void> {

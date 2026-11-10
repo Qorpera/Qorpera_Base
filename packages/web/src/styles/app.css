@@ -816,11 +816,11 @@ a.hero-invitation:hover { text-decoration: none; background: color-mix(in srgb, 
 .meet-name { font-size: 19px; font-weight: 600; letter-spacing: 0; }
 .meet .notice { width: min(420px, 100%); text-align: left; margin: 14px 0 0; }
 
-/* The approved selector: seven figures in one row, then eleven colours in
- * centred rows of six and five. */
+/* The approved selector: twelve figures in two rows of six, then eleven
+ * colours in centred rows of six and five. */
 .figure-grid {
-	display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); justify-items: center; align-items: center;
-	gap: 4px; width: min(100%, 324px); margin: 24px auto 0;
+	display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); justify-items: center; align-items: center;
+	gap: 6px 4px; width: min(100%, 284px); margin: 24px auto 0;
 }
 .figure-choice {
 	position: relative; display: grid; place-items: center; width: min(100%, 40px); aspect-ratio: 1; padding: 3px;

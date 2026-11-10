@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { STAFF_CHARACTER_IDS } from "@qorpera/cloud-client/staff-characters";
 import { CloudFolderGroupChats } from "@qorpera/runtime/cloud-folder-group-chats";
 import { CloudFolderHiring } from "@qorpera/runtime/cloud-folder-hiring";
 import { cloudHiringTools } from "@qorpera/runtime/cloud-hiring-tools";
@@ -66,12 +67,23 @@ describe("agent hiring tool", () => {
 		["a path", { path: "QorperaOS/agents/mikkel" }],
 		["a model", { modelId: "gpt" }],
 		["an unknown figure", { figure: "dragon" }],
+		["a retired figure", { figure: "ghost" }],
 		["an empty job", { jobDescription: "  " }],
 	])("rejects %s before any write", async (_label, extra) => {
 		const f = await fixture();
 		expect((await f.boundary.invoke("bad", "qorpera", "hire_agent", { ...hire, ...extra })).success).toBe(false);
 		expect(f.commits).toEqual([]);
 		expect(f.operationControl.beginToolOperation).not.toHaveBeenCalled();
+	});
+	it("offers every figure a client can draw, and takes each", async () => {
+		const f = await fixture();
+		const [tool] = f.tools;
+		const schema = tool?.inputSchema as { properties: { figure: { enum: string[] } } };
+		expect(schema.properties.figure.enum).toEqual([...STAFF_CHARACTER_IDS]);
+		expect(schema.properties.figure.enum).not.toContain("ghost");
+		for (const figure of STAFF_CHARACTER_IDS)
+			expect(tool?.parseArguments({ ...hire, operationKey: `hire-${figure}`, figure })).toMatchObject({ figure });
+		expect(f.commits).toEqual([]);
 	});
 	it("refuses a reused key with changed arguments before any write, and replays only the same request", async () => {
 		const f = await fixture();
