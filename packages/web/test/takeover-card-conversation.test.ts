@@ -62,10 +62,11 @@ function setup() {
 		order.push("answer");
 		return { inputId: id(714), position: 1 };
 	});
-	// The company's computer windows: one panel for the agent, its take-over and hand-back watched; the hand-back is
-	// confirmed by the database unless the test says otherwise.
+	// The company's computer windows: one panel for the agent, its take-over watched; the company's hand-back of the
+	// agent's desktops (its ledger, window or not) is confirmed by the database unless the test says otherwise.
 	let release = () => {};
 	let confirmed = true;
+	let open = true;
 	const panel = {
 		agentId: staff.id,
 		attached: false,
@@ -78,19 +79,20 @@ function setup() {
 		takeOver: vi.fn(() => {
 			order.push("takeOver");
 		}),
-		handBack: vi.fn(
-			() =>
-				new Promise<boolean>((resolve) => {
-					order.push("handBack");
-					release = () => resolve(confirmed);
-				}),
-		),
+		handBack: vi.fn(),
 	};
 	const panels = {
 		open: vi.fn(() => panel),
-		get: vi.fn((agentId: string) => (agentId === staff.id ? panel : undefined)),
+		get: vi.fn((agentId: string) => (agentId === staff.id && open ? panel : undefined)),
 		close: vi.fn(),
 		dispose: vi.fn(),
+		releaseAgent: vi.fn(
+			(_agentId: string) =>
+				new Promise<boolean>((resolve) => {
+					order.push("releaseAgent");
+					release = () => resolve(confirmed);
+				}),
+		),
 	};
 	const view = new ConversationView(company, session.sessionId, {
 		computerPanels: panels as unknown as ComputerPanels,
@@ -110,6 +112,9 @@ function setup() {
 		release: () => release(),
 		unconfirmed: () => {
 			confirmed = false;
+		},
+		closeWindow: () => {
+			open = false;
 		},
 	};
 }
@@ -135,13 +140,14 @@ describe("an agent's take-over card", () => {
 		await settle();
 		pill(f.view, "I'm done")!.click();
 		await settle();
-		expect(f.panel.handBack).toHaveBeenCalledOnce();
+		expect(f.panels.releaseAgent).toHaveBeenCalledExactlyOnceWith(staff.id);
+		expect(f.panel.handBack).not.toHaveBeenCalled();
 		// The answer waits for the hand-back.
 		expect(f.answer).not.toHaveBeenCalled();
 		f.release();
 		await settle();
 		await settle();
-		expect(f.order).toEqual(["handBack", "answer"]);
+		expect(f.order).toEqual(["releaseAgent", "answer"]);
 		expect(f.answer).toHaveBeenCalledWith(
 			session.sessionId,
 			expect.any(String),
@@ -161,7 +167,7 @@ describe("an agent's take-over card", () => {
 		f.release();
 		await settle();
 		await settle();
-		expect(f.panel.handBack).toHaveBeenCalledOnce();
+		expect(f.panels.releaseAgent).toHaveBeenCalledOnce();
 		expect(f.answer).not.toHaveBeenCalled();
 		expect(f.company.conversation(session.sessionId).get().interactionError).toBe(
 			"The computer could not be given back yet. Press I'm done to try again. It goes back by itself within 5 minutes.",
@@ -173,7 +179,21 @@ describe("an agent's take-over card", () => {
 		expect(again.getAttribute("aria-disabled")).toBeNull();
 		again.click();
 		await settle();
-		expect(f.panel.handBack).toHaveBeenCalledTimes(2);
+		expect(f.panels.releaseAgent).toHaveBeenCalledTimes(2);
+	});
+
+	it("asks the company's hand-back, not a window: with the window closed, I'm done still waits for it (review r2 F4)", async () => {
+		const f = setup();
+		f.closeWindow();
+		await settle();
+		pill(f.view, "I'm done")!.click();
+		await settle();
+		expect(f.panels.releaseAgent).toHaveBeenCalledExactlyOnceWith(staff.id);
+		expect(f.answer).not.toHaveBeenCalled();
+		f.release();
+		await settle();
+		await settle();
+		expect(f.order).toEqual(["releaseAgent", "answer"]);
 	});
 
 	it("leaves the desktop held when the member skips the card", async () => {
@@ -182,7 +202,7 @@ describe("an agent's take-over card", () => {
 		pill(f.view, "Skip")!.click();
 		await settle();
 		await settle();
-		expect(f.panel.handBack).not.toHaveBeenCalled();
+		expect(f.panels.releaseAgent).not.toHaveBeenCalled();
 		expect(f.answer).toHaveBeenCalledWith(
 			session.sessionId,
 			expect.any(String),

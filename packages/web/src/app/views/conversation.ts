@@ -2879,10 +2879,11 @@ export class ConversationView {
 									// The take-over card's I'm done gives the agent's desktop back first; the answer then wakes the agent, whose
 									// looks are let in again (20260930713000).
 									// It answers only once the database confirmed it has the desktop back (review r1 F4): otherwise the card
-									// stays open and says so, and I'm done asks again.
+									// stays open and says so, and I'm done asks again. It asks the company's ledger, not a window: a window
+									// closed meanwhile may still have a hand-back on its way (review r2 F4).
 									if (takeOver && outcome === "handed_back") {
 										const current = currentAgent();
-										if (current && (await this.#panels.get(current.id)?.handBack()) === false) {
+										if (current && !(await this.#panels.releaseAgent(current.id))) {
 											this.#company.conversation(this.#sessionId).set({
 												interactionError: t(
 													"The computer could not be given back yet. Press I'm done to try again. It goes back by itself within 5 minutes.",
