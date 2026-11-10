@@ -51,7 +51,6 @@
 .agent-wall-item.is-entering { animation: agent-wall-enter var(--motion-spring) var(--ease-spring) both; }
 @keyframes agent-wall-enter { from { opacity: 0; transform: translateY(8px) scale(0.97); } }
 .agent-wall-mark { display: grid; place-items: center; width: 14px; height: 14px; margin-top: 2px; font-size: 11px; line-height: 1; color: var(--text-muted); }
-.agent-wall-part.is-done .agent-wall-mark { color: var(--ok); }
 .agent-wall-part.is-waiting .agent-wall-mark::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--agent-wall-accent); }
 .agent-wall-part.is-waiting .agent-wall-item.is-answered { color: var(--text-muted); font-weight: 400; }
 .agent-wall .is-answered .agent-wall-answer { border-color: transparent; background: transparent; color: var(--text-muted); font-weight: 400; }
@@ -76,11 +75,6 @@
 /* Its arrow right after its words, so the two read as one control. */
 .agent-wall-row > .icon { width: 11px; height: 11px; margin: 4px 0 0 -6px; color: var(--text-muted); transform: rotate(90deg); transition: transform var(--motion-base) var(--ease-out); }
 .agent-wall-item.is-open > .agent-wall-row > .icon { transform: rotate(-90deg); }
-/* It grows upward: its arrow says so. */
-.agent-wall-done > .icon { transform: rotate(-90deg); }
-.agent-wall-done[aria-expanded="true"] > .icon { transform: rotate(90deg); }
-/* The done line: as quiet as what it holds. */
-.agent-wall-done { color: var(--text-muted); font-size: 13.5px; line-height: 1.4; }
 .agent-wall-detail { display: grid; gap: 6px; padding: 0 16px 8px 43px; color: var(--text-muted); font-size: 13px; font-weight: 400; line-height: 1.45; animation: agent-wall-open var(--motion-base) var(--ease-out) both; }
 .agent-wall-detail[hidden] { display: none; }
 @keyframes agent-wall-open { from { opacity: 0; transform: translateY(-3px); } }
