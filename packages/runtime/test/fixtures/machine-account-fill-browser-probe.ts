@@ -41,6 +41,9 @@ const BOX =
 	'<input id="p" type="password" autocomplete="off" style="position:fixed;left:0;top:0;width:100%;height:100%;font-size:40px">';
 const SINK =
 	'<input id="sink" type="text" autocomplete="off" style="position:fixed;left:0;top:0;width:160px;height:28px;z-index:2">';
+/** The text box nine open shadow roots deep in /deep-copies, as the page and the probe reach it. */
+const DEEPEST_FROM_PAGE = `document.getElementById("deep")${".shadowRoot.firstElementChild".repeat(8)}.shadowRoot.getElementById("deepest")`;
+const DEEPEST = `${DEEPEST_FROM_PAGE}.value`;
 /** The box already holds text as long as the value: a length check alone cannot tell the two apart. */
 const PREFILLED = `<script>document.getElementById("p").value = "${"y".repeat(secret.length)}";</script>`;
 const on = (event: string, body: string) =>
@@ -93,6 +96,27 @@ function page(host: string, path: string): string | undefined {
 			);
 		case "/inner":
 			return html("inner", '<input id="inner" type="text" autocomplete="off">');
+		// The page moves the focus on the value, and when the cleanup's own input event empties the box, queues a copy of
+		// what it saw into another box (setTimeout 0, after any look made at once).
+		case "/cleanup-requeues":
+			return html(
+				"Sign in",
+				BOX +
+					SINK +
+					on(
+						"input",
+						'const p = document.getElementById("p"); const sink = document.getElementById("sink"); if (p.value) { window.seen = p.value; sink.focus(); } else setTimeout(() => { sink.value = window.seen; }, 0);',
+					),
+			);
+		// A text box nine open shadow roots deep, which the page copies the value into (the box keeps it and the focus).
+		case "/deep-copies":
+			return html(
+				"Sign in",
+				`${BOX}<div id="deep"></div><script>let host = document.getElementById("deep"); for (let i = 0; i < 9; i++) { const root = host.attachShadow({ mode: "open" }); host = document.createElement("div"); root.append(host); } const box = document.createElement("input"); box.type = "text"; box.id = "deepest"; host.replaceWith(box);</script>${on(
+					"input",
+					`${DEEPEST_FROM_PAGE}.value = document.getElementById("p").value;`,
+				)}`,
+			);
 		default:
 			return undefined;
 	}
@@ -547,23 +571,40 @@ async function main(): Promise<void> {
 		equal(values.p, secret, "the box");
 		return code;
 	});
-	await check("the focus moved as the value went in: wherever it went is emptied, or the tab must go", async () => {
+	await check("the focus moved as the value went in: filled only where it belongs, or the tab must go", async () => {
 		await tab.visit("/beforeinput-moves");
 		const code = await program();
 		const values = await tab.values();
 		const saw = `${code}, the box ${describe(values.p)}, the box the focus moved to ${describe(values.sink)}`;
 		if (code === "FILLED" && (values.p !== secret || values.sink !== "")) throw new Error(saw);
-		if (code === "FILL_UNCONFIRMED" && (values.p !== "" || values.sink !== "")) throw new Error(saw);
-		if (!["FILLED", "FILL_UNCONFIRMED", "FILL_LOST"].includes(code)) throw new Error(saw);
+		if (!["FILLED", "FILL_LOST"].includes(code)) throw new Error(saw);
 		return saw;
 	});
-	await check("the focus moved once the value was in: both boxes emptied", async () => {
+	// Round 3: once the value may have reached the page, nothing but a verified fill says anything but lost.
+	await check("the focus moved once the value was in: lost, and the box emptied", async () => {
 		await tab.visit("/input-moves");
 		const code = await program();
 		const values = await tab.values();
+		equal(code, "FILL_LOST", "code");
 		equal(values.sink, "", "the box the focus moved to");
 		equal(values.p, "", "the box");
-		equal(code, "FILL_UNCONFIRMED", "code");
+		return code;
+	});
+	// Round 3, F1: the page answers the cleanup's own input event by queueing a copy (setTimeout 0) after it.
+	await check("a copy queued by the cleanup's event: lost", async () => {
+		await tab.visit("/cleanup-requeues");
+		const code = await program();
+		await delay(300);
+		const values = await tab.values();
+		equal(code, "FILL_LOST", "code");
+		return `${code}, the box the page copied it to ${describe(values.sink)}`;
+	});
+	// Round 3, F2: a copy in a text box nine open shadow roots deep (the round 2 scan stopped at eight).
+	await check("a copy nine open shadow roots deep: lost", async () => {
+		await tab.visit("/deep-copies");
+		const code = await program();
+		equal(code, "FILL_LOST", "code");
+		equal(await tab.read(DEEPEST), "", "the deep box");
 		return code;
 	});
 

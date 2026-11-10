@@ -373,7 +373,6 @@ describe("fill_company_account's helper", () => {
 			},
 		];
 		for (const [landed, code] of [
-			["emptied", "FILL_UNCONFIRMED"],
 			["lost", "FILL_LOST"],
 			["moved", "FILL_WRONG_BOX"],
 			["changed", "FILL_PAGE_CHANGED"],

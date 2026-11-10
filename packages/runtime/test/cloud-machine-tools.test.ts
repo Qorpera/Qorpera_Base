@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { CLOUD_MACHINE_FOLDER_LIMITS, cloudMachineFolderBytes } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CloudActionReviewControl, CloudActionReviewGate } from "../src/cloud-action-review.ts";
+import { COMPANY_COMPUTER_SITE_STOP_MESSAGE } from "../src/cloud-company-computer-site-stops.ts";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
 import {
 	CloudMachineAccountFillRefusal,
@@ -1702,6 +1703,9 @@ describe("machine tools", () => {
 	describe("fill_company_account", () => {
 		const account = "6f1c2c1e-3a51-4b9e-9a3e-0d2f6f1b7a10";
 		const args = { operationKey: "npm-login-1", machine: "build-a", account, field: "password" };
+		/** How every result ends (reviews of #1644). */
+		const NO_SCREENSHOT =
+			"Take no screenshot of this tab until it is closed (desktop key ctrl+w) or has gone to another page: a page can copy a value the vault typed into it at any time, and screenshots are kept in the company folder.";
 
 		it("is offered to a company agent's run on a host with the vault's accounts, never to a worker or without them", () => {
 			const agent = fixture(undefined, false, undefined, true);
@@ -1775,7 +1779,11 @@ describe("machine tools", () => {
 			try {
 				const result = await f.boundary.invoke("f1", "qorpera", "fill_company_account", args);
 				expect(result.success).toBe(true);
-				expect(f.content(result as never)).toEqual({ filled: { machine: "build-a", account, field: "password" } });
+				// Even filled, the page may copy the value at any time: no screenshot until the tab is closed or gone elsewhere.
+				expect(f.content(result as never)).toEqual({
+					filled: { machine: "build-a", account, field: "password" },
+					next: NO_SCREENSHOT,
+				});
 				const operation = f.execute.mock.calls[0]![0].operation;
 				expect(operation).toEqual({
 					tool: "fill_company_account",
@@ -1810,8 +1818,8 @@ describe("machine tools", () => {
 				"ACCOUNTS_SWITCHED_OFF",
 				"MACHINE_IMAGE_WITHOUT_ACCOUNT_FILLS",
 				"FILL_PAGE_CHANGED",
-				"FILL_UNCONFIRMED",
 				"FILL_EXPIRED",
+				"BROWSER_NOT_ANSWERING",
 				"FILL_LOST",
 			] as const) {
 				const f = fixture(undefined, false, undefined, true);
@@ -1826,15 +1834,14 @@ describe("machine tools", () => {
 					expect(answer.filled).toBe(false);
 					expect(answer.refused.reason).toBe(code);
 					expect(answer.refused.message.length).toBeGreaterThan(20);
-					// Review round 1 of #1644: when the value may still be on the page, no picture before it is gone (shots
-					// are kept in the company folder): close the tab or clear the field first, needs_person if unsure.
+					// Reviews of #1644: a page can copy a value at any time, so no result suggests a screenshot, and every one
+					// says to close the tab or let it go to another page first; FILL_LOST also says needs_person if unsure.
+					expect(answer.refused.message).not.toMatch(/desktop shot|--shot/);
+					expect(answer.refused.message.endsWith(NO_SCREENSHOT)).toBe(true);
 					if (code === "FILL_LOST") {
 						expect(answer.refused.message).toContain("may still be on the page");
 						expect(answer.refused.message).toContain("ctrl+w");
 						expect(answer.refused.message).toContain("needs_person");
-						expect(
-							answer.refused.message.replaceAll(/Take no desktop shot|add no --shot|shots are kept/g, ""),
-						).not.toMatch(/shot/);
 					}
 				} finally {
 					f.boundary.close();
@@ -1848,6 +1855,9 @@ describe("machine tools", () => {
 				const answer = stopped.content(result as never) as { refused: { message: string } };
 				expect(answer.refused.message).toContain("never retry");
 				expect(answer.refused.message).toContain("needs_person");
+				expect(answer.refused.message).toBe(
+					`${COMPANY_COMPUTER_SITE_STOP_MESSAGE.replace(/\.$/, "")}. ${NO_SCREENSHOT}`,
+				);
 			} finally {
 				stopped.boundary.close();
 			}
@@ -1860,7 +1870,7 @@ describe("machine tools", () => {
 				const result = await vault.boundary.invoke("f4", "qorpera", "fill_company_account", args);
 				expect(vault.content(result as never)).toEqual({
 					filled: false,
-					refused: { reason: "VAULT_REFUSED", message: "The company has no such open account" },
+					refused: { reason: "VAULT_REFUSED", message: `The company has no such open account. ${NO_SCREENSHOT}` },
 				});
 			} finally {
 				vault.boundary.close();
@@ -1878,6 +1888,7 @@ describe("machine tools", () => {
 			try {
 				const result = await asleep.boundary.invoke("f6", "qorpera", "fill_company_account", args);
 				expect(result.contentItems[0]!.text).toContain("MACHINE_NOT_RUNNING");
+				expect(result.contentItems[0]!.text).toContain("Take no screenshot of this tab");
 				expect(asleep.execute).not.toHaveBeenCalled();
 			} finally {
 				asleep.boundary.close();

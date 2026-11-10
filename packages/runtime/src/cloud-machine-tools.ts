@@ -249,10 +249,14 @@ export const CLOUD_MACHINE_FILL_COMPANY_ACCOUNT_DESCRIPTION =
 	"To sign in (or sign up) from a desktop computer (machine_start with desktop true): machine_run desktop start, then desktop open with the site's sign-in or sign-up page (only a browser desktop open started can be typed into), desktop shot to see the page, desktop click into the field, then call fill_company_account with the machine, the account (its id from company_account find or open) and the field. Click into the next field and call again, then press the site's own button yourself (desktop click, or desktop key Return). " +
 	"For a sign-up, company_account open makes the account first (its login and a password only the vault knows); then fill both into the sign-up form with this tool. A code or link the website mails comes to the account's login: find it with find_mail (to the login, since the moment you acted, waitSeconds) and read_event, and type that code yourself (desktop type) or open the link (desktop open). " +
 	"The vault types only into the account's site or one of its sign-in hosts over https, into the page itself and not a frame inside it, into a box of the field's kind, and never on a page that shows a CAPTCHA, a human check, an unusual activity warning or a block. " +
-	"Never type, paste, read aloud, write down or screenshot a password, and take no desktop shot while a password or code shows in clear: shots are kept in the company folder. On a CAPTCHA, a bot check, an unusual activity warning or a block, stop at once and never retry: set the account needs_person with company_account state and tell a member what a person must do. " +
+	"Never type, paste, read aloud, write down or screenshot a password. Take a desktop shot of a page only before the vault types into it: once fill_company_account was called on a page, take no desktop shot and add no --shot until its tab is closed or has gone to another page (after you send the form, or by opening the sign-in page again with desktop open), since a page can copy a value anywhere at any time and shots are kept in the company folder; reach the next field with desktop key Tab, or click where the earlier shot showed it. On a CAPTCHA, a bot check, an unusual activity warning or a block, stop at once and never retry: set the account needs_person with company_account state and tell a member what a person must do. " +
 	"The result says filled, or why not and what to do. Each call types once: give every call a new operationKey, and keep it only to repeat a call whose result was uncertain.";
-/** What the agent does about each refusal of fill_company_account's: nothing was typed, or what was typed was emptied and
- * the page confirmed it, or (FILL_LOST) the value may still be on the page. Only the first two may say desktop shot. */
+/** Every result of fill_company_account's ends with this (reviews of #1644): a page the vault typed into can copy the
+ * value anywhere at any time, so no result suggests a screenshot, and each says when one is safe again. */
+const ACCOUNT_FILL_NO_SCREENSHOT =
+	"Take no screenshot of this tab until it is closed (desktop key ctrl+w) or has gone to another page: a page can copy a value the vault typed into it at any time, and screenshots are kept in the company folder.";
+/** What the agent does about each refusal of fill_company_account's: nothing was set (every refusal but FILL_LOST), or
+ * the value may still be on the page (FILL_LOST). None suggests a screenshot; the result adds when one is safe again. */
 const ACCOUNT_FILL_REFUSED: Readonly<Record<Exclude<CloudMachineAccountFillRefusalCode, "VAULT_REFUSED">, string>> = {
 	MACHINE_NOT_RUNNING:
 		"the machine is not running: start it, open the sign-in page again with desktop open, then call again",
@@ -268,30 +272,27 @@ const ACCOUNT_FILL_REFUSED: Readonly<Record<Exclude<CloudMachineAccountFillRefus
 	BROWSER_UNVERIFIED:
 		"the browser on the desktop is not the one desktop open starts: desktop stop, desktop start, open the sign-in page with desktop open, then call again",
 	NO_FOCUSED_PAGE:
-		"no browser tab had the focus (or more than one did): desktop click into the field on the sign-in page, then call again",
+		"no browser tab had the focus (or more than one did): open the sign-in page again with desktop open, click into the field, then call again",
 	FILL_WRONG_SITE:
-		"the tab with the focus is not on the account's site or one of its sign-in hosts over https: open the sign-in page there with desktop open, click into the field, then call again",
+		"the tab with the focus is not on the account's site or one of its sign-in hosts over https, and nothing was typed: open the sign-in page there with desktop open, click into the field, then call again",
 	FILL_IN_FRAME:
-		"the field is inside a frame (another page shown within the page): the vault types only into the page itself; open the sign-in page on its own",
+		"the field is inside a frame (another page shown within the page), and nothing was typed: the vault types only into the page itself; open the sign-in page on its own",
 	FILL_WRONG_BOX:
-		"the element with the focus is not a box for this field (login: a text or email box; password: a password box; code: a code box), and nothing was typed: desktop shot, click into the right field, then call again",
+		"the element with the focus is not a box for this field (login: a text or email box; password: a password box; code: a code box), and nothing was typed: open the sign-in page again with desktop open, click into the right field, then call again",
 	FILL_PAGE_CHANGED:
-		"the page changed while the vault checked it (it went to another address or loaded again), and nothing was typed: desktop shot to see where the tab is; if it shows the sign-in page on the account's site, click into the field and call again with a new operationKey",
+		"the page changed while the vault checked it (it went to another address or loaded again), and nothing was typed: open the sign-in page again with desktop open, click into the field, then call again with a new operationKey",
 	SITE_STOP_CAPTCHA: COMPANY_COMPUTER_SITE_STOP_MESSAGE,
 	SITE_STOP_HUMAN_CHECK: COMPANY_COMPUTER_SITE_STOP_MESSAGE,
 	SITE_STOP_UNUSUAL_ACTIVITY: COMPANY_COMPUTER_SITE_STOP_MESSAGE,
 	SITE_STOP_BLOCKED: COMPANY_COMPUTER_SITE_STOP_MESSAGE,
-	FILL_UNCONFIRMED:
-		"the field did not keep the value exactly, or the page moved the focus away; the field was emptied and no copy of the value was found in any box of the page: desktop shot, click into the field, then call again with a new operationKey",
 	FILL_LOST:
-		"the value may still be on the page: it was typed, or may have been, and could not be confirmed gone (the page copied or moved it to another box, went to another address, or stopped answering). Take no desktop shot and add no --shot until it is gone: shots are kept in the company folder. First close that tab without sending the form (desktop key ctrl+w), or clear the field (desktop click into it, desktop key ctrl+a, desktop key BackSpace), or desktop stop if you cannot tell which tab has it; then open the sign-in page again with desktop open and start over with a new operationKey. If you are unsure it is gone, or the tab had gone to another site, set the account needs_person with company_account state and tell a member",
+		"the value may still be on the page: it was set there, or may have been, and is not verified to be only in the field (the field did not keep it or lost the focus, the page copied or moved it, went to another address, or stopped answering). Close that tab now without sending the form (desktop key ctrl+w), or desktop stop if you cannot tell which tab has it; then open the sign-in page again with desktop open and start over with a new operationKey. If you are unsure it is gone, or the tab had gone to another site, set the account needs_person with company_account state and tell a member",
 	FILL_BOX_REFUSED:
 		"the machine could not open the vault's sealed value (it restarted, or the call took too long): call again with a new operationKey",
 	FILL_NO_BOX: "the vault sealed nothing: call again with a new operationKey",
-	FILL_EXPIRED:
-		"the machine took too long, and nothing was typed: desktop shot to see the page, then call again with a new operationKey",
+	FILL_EXPIRED: "the machine took too long, and nothing was typed: call again with a new operationKey",
 	BROWSER_NOT_ANSWERING:
-		"the browser did not answer, and nothing was typed: desktop shot to see the page, then call again with a new operationKey",
+		"the browser did not answer, and nothing was typed: open the sign-in page again with desktop open, click into the field, then call again with a new operationKey",
 	MACHINE_BOOT_CHANGED: "the machine restarted: open the sign-in page again with desktop open, then call again",
 	FILL_TARGET_INVALID: "the machine could not take the vault's request; try again with a new operationKey",
 };
@@ -1207,7 +1208,10 @@ export function cloudMachineTools(options: {
 	const accountFilling = !worker && options.accountFills === true && options.gateway.accountFill !== undefined;
 	const notFilled = (reason: string, message: string) => ({
 		kind: "json" as const,
-		value: { filled: false, refused: { reason, message } },
+		value: {
+			filled: false,
+			refused: { reason, message: `${message.replace(/\.$/, "")}. ${ACCOUNT_FILL_NO_SCREENSHOT}` },
+		},
 	});
 	const fill: CloudNativeTool = {
 		name: "fill_company_account" satisfies CloudRuntimeToolOperation,
@@ -1298,7 +1302,10 @@ export function cloudMachineTools(options: {
 					return {
 						content: {
 							kind: "json",
-							value: { filled: { machine: machine.name, account: input.account, field: input.field } },
+							value: {
+								filled: { machine: machine.name, account: input.account, field: input.field },
+								next: ACCOUNT_FILL_NO_SCREENSHOT,
+							},
 						},
 					};
 				},

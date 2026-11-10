@@ -278,7 +278,13 @@ receipt, with the vault's box bound to the machine, its placement and its boot.
 - The words (the tool's description, `company_account`'s and "Accounts on websites"): `desktop start`, `desktop open`
   the sign-in or sign-up page, `desktop shot` to see it, `desktop click` into the field, call the tool, click into the
   next field and call again, press the site's own button. Never type, paste, read aloud, write down or screenshot a
-  password; no `desktop shot` while a password or code shows in clear. On a CAPTCHA, bot check, unusual activity warning
+  password. A `desktop shot` of a page only before the vault types into it: once the tool was called on a page, no
+  `desktop shot` and no `--shot` until its tab is closed or has gone to another page (sent the form, or opened again
+  with `desktop open`), since a page can copy a value anywhere at any time and shots are kept in the company folder; the
+  next field is reached with `desktop key Tab` or a click where the earlier shot showed it (review round 3 of #1644). No
+  result of the tool suggests a shot: every one, `filled` (its `next`) and each refusal, ends "Take no screenshot of
+  this tab until it is closed (desktop key ctrl+w) or has gone to another page: a page can copy a value the vault typed
+  into it at any time, and screenshots are kept in the company folder.". On a CAPTCHA, bot check, unusual activity warning
   or block page: stop, never retry, `company_account state needs_person`, tell a member. As on the office (A1-4c), the
   agent marks the account: the helper's refusal (`SITE_STOP_*`) carries A1-4c's message, which says to.
 - Opening on a machine needs nothing new: `company_account open` has served folder-v2 companies since A1-7 and never
@@ -369,20 +375,25 @@ checked (an object of its own world in that document; if the document is gone th
 runs anywhere) checks, inside that same call, the stamp it left in that world at the first look, the address against
 the hosts (https, no user, password or port), and that the box is connected and has the focus; only then sets the value
 with the native `HTMLInputElement.prototype` value setter (so a framework that tracks the box's value sees it change) and
-fires `input` and `change`. After 200 ms for the page's own reactions it looks again, then checks the document and
-address once more:
+fires `input` and `change`. After 200 ms for the page's own reactions it looks where the value is, again 200 ms later,
+then checks the document and address once more. The outcomes once the value may have reached the page are only two
+(review round 3 of #1644: a page can copy a value at any time, and a cleanup's own events can start a copy later, so no
+outcome says the page is clean):
 
-- `FILLED` only when that same box, connected and with the focus, holds the value exactly and no other input or text
-  area of the document, its open shadow roots or its own origin's frames holds a copy (a page script can move or copy
-  the value, and only the checked box gets the event);
-- otherwise it empties the box and every copy (native setter, then an `input` event so the page's own state follows). No
-  copy before or after: `FILL_UNCONFIRMED` (the tool says to look with `desktop shot` and click into the field again);
-- `FILL_LOST` whenever the value may still be on the page: a copy was found, the scan could not run, the box left the
-  document, the tab navigated once the value was in, the browser stopped answering, or the helper's deadline passed once
-  the value was handed over (before that it is `FILL_EXPIRED`, nothing set). The tool says the value may still be on
-  the page: no `desktop shot` (and no `--shot`) until it is gone, since shots are kept in the company folder; close the
-  tab with `desktop key ctrl+w` or clear the field, or `desktop stop`; start over; and set the account `needs_person` if
-  unsure or if the tab had gone to another site.
+- `FILLED` only when, at both looks, that same box, connected and with the focus, holds the value exactly and a
+  complete scan finds no copy in any other input or text area. The scan is iterative with no depth limit: the document,
+  every open shadow root, and the document of every frame of its own origin (iframe, frame, object), at most 250 000
+  elements; past that, or when a frame whose window is of this origin has no readable document, it is incomplete;
+- `FILL_LOST` otherwise: the box did not keep the value or lost the focus, a copy was found, the scan was incomplete,
+  the box left the document, the tab navigated once the value was in, the browser stopped answering, or the helper's
+  deadline passed once the value was handed over (before that it is `FILL_EXPIRED`, nothing set). The box and every copy
+  found are emptied (native setter, then an `input` event so the page's own state follows), but the answer stays lost.
+  The tool says the value may still be on the page: close the tab with `desktop key ctrl+w` without sending the form,
+  or `desktop stop`; start over; and set the account `needs_person` if unsure or if the tab had gone to another site.
+
+Refusals before anything was set (`FILL_WRONG_SITE`, `FILL_IN_FRAME`, `FILL_WRONG_BOX`, `FILL_PAGE_CHANGED`, the site
+stops, `FILL_EXPIRED`, `BROWSER_NOT_ANSWERING` and the rest) say nothing was typed; theirs too end with the
+no-screenshot sentence, since a value from an earlier call may still be on the page. `FILL_UNCONFIRMED` is gone.
 
 The events the helper fires are not trusted ones (`isTrusted` is false); a page that ignores untrusted input events
 keeps its own state empty although the box shows the value, and its sign-in may then fail.
@@ -391,8 +402,8 @@ tell that from a redirect). The browser proof: `node scripts/run-on-node.mjs --m
 scripts/test-machine-account-fill-browser.mjs` (Docker on a test machine: the image's pinned Chrome for Testing on a
 TigerVNC display with openbox; redirects between the helper's steps and one that lands while the call that sets the value
 is in flight, the focus moved with text as long as the value in the box, a page that moves or copies the value to another
-box or into a frame of its own origin, a page that leaves or stops answering as the value goes in, and the deadline after
-it went in).
+box, into a frame of its own origin or into a text box nine open shadow roots deep, a copy queued by the cleanup's own
+input event, a page that leaves or stops answering as the value goes in, and the deadline after it went in).
 
 The agent is root on its machine. It can reach the DevTools port itself, read the page (and so a typed password) through
 it, read Chromium's memory, run its own Chromium with that profile, or replace this helper, `node` or Chromium on its disk

@@ -33,9 +33,10 @@ import {
  * the tab (CDP Input.insertText reaches whatever document the tab shows when it lands): one call on the checked box, in
  * the helper's own world of that document, checks the document, its address and the box's focus and sets the value with
  * the native setter, then fires input and change; if the document is gone the call fails and reaches no other. The value
- * counts as filled only when that same box, still with the focus, holds it exactly and no other box of the document (its
- * open shadow roots and its own origin's frames) holds a copy; a box that does not keep it is emptied (FILL_UNCONFIRMED),
- * and any copy found, a scan that cannot run, or no answer or the deadline once the value is set is FILL_LOST.
+ * counts as filled only when that same box, still with the focus, holds it exactly and a complete scan of the document,
+ * every open shadow root and every frame of its own origin finds no other copy, twice, 200 ms apart. Once the value may
+ * have reached the page, anything else is FILL_LOST (review round 3: no outcome says the page is clean; a page can copy
+ * a value at any time): the box and every copy found are emptied, but the tab must still go.
  * It never prints, logs or writes the value: stdout carries the key's public half and codes only.
  * Buffers it holds are zeroed when done; the opened value is a string, which the process drops and exits with.
  * The agent is root on its machine: it can read the browser's memory and the page, or replace this program or the
@@ -73,12 +74,10 @@ export const MACHINE_ACCOUNT_FILL_REFUSALS = [
 	"SITE_STOP_HUMAN_CHECK",
 	"SITE_STOP_UNUSUAL_ACTIVITY",
 	"SITE_STOP_BLOCKED",
-	/** The value was set but the box did not keep it exactly, or the focus left it: the box was emptied, and no copy of
-	 * the value was found in any box of the page before or after. */
-	"FILL_UNCONFIRMED",
-	/** The value may still be on the page: it was set (or may have been) and is not confirmed gone. The page copied it to
-	 * another box, the box left the document, the scan could not run, the tab navigated once it was in, or the browser
-	 * stopped answering or the deadline passed once it was handed over. The tab must go before any picture. */
+	/** The value may still be on the page: it was set (or may have been) and is not verified filled. The box did not keep
+	 * it exactly or lost the focus, the page copied it elsewhere, the scan could not finish, the tab navigated once it was
+	 * in, or the browser stopped answering or the deadline passed once it was handed over. The tab must go before any
+	 * picture. */
 	"FILL_LOST",
 	/** The vault's box did not open here: another identity, another boot, or past its lifetime. */
 	"FILL_BOX_REFUSED",
@@ -124,9 +123,9 @@ export class MachineFillPageChanged extends Error {
 }
 
 /** Where an insert left the value: exactly in the box `focus` read, still focused, and in no other box (filled); nothing
- * set because the focus left that box (moved) or the tab left the bound document or the account's hosts (changed); set,
- * not kept by the box, which was emptied, and no copy anywhere (emptied); or set, and maybe still on the page (lost). */
-export type MachineFillLanded = "filled" | "moved" | "changed" | "emptied" | "lost";
+ * set because the focus left that box (moved) or the tab left the bound document or the account's hosts (changed); or set,
+ * or maybe set, and not verified filled (lost). */
+export type MachineFillLanded = "filled" | "moved" | "changed" | "lost";
 
 /** One tab of the desktop's Chromium, as the helper reads and types into it. */
 export interface MachineFillPage {
@@ -306,13 +305,12 @@ function json(line: Buffer | null): unknown {
 	}
 }
 
-/** An insert's outcome as the helper prints it: nothing typed (moved, changed), typed and taken back (emptied), or the
- * value maybe still on the page (lost). */
+/** An insert's outcome as the helper prints it: verified filled, nothing set (moved, changed), or the value maybe still
+ * on the page (lost). */
 const LANDED_CODES: Readonly<Record<MachineFillLanded, MachineAccountFillCode>> = {
 	filled: "FILLED",
 	moved: "FILL_WRONG_BOX",
 	changed: "FILL_PAGE_CHANGED",
-	emptied: "FILL_UNCONFIRMED",
 	lost: "FILL_LOST",
 };
 
@@ -691,48 +689,72 @@ const SET = `function (value, hosts, stamp) {
 	this.dispatchEvent(new Event("change", { bubbles: true }));
 	return "set";
 }`;
-/** How long the page's own reactions to the value get before the helper looks where it is. */
+/** How long the page's own reactions to the value get before each look where it is. */
 const SETTLE_MS = 200;
+/** How many elements and text nodes one scan of the page may visit before it gives up (and the value is lost). */
+const SCAN_BUDGET = 250_000;
 /** Where the value is, once the page reacted: filled only when this same box, connected and with the focus, holds it
- * exactly and no other input or text area of the document, its open shadow roots or its own origin's frames holds a
- * copy. Otherwise the box and every copy are emptied (with the native setter and an input event, so a framework's own
- * state follows); "emptied" when there was no copy and none is found after, else "lost". */
+ * exactly and a complete scan finds no copy in any other input or text area, and so again a settle later. The scan is
+ * iterative, with no depth limit: the document, every open shadow root, and the document of every frame of its own
+ * origin (iframe, frame, object). It is incomplete, and the value lost, past its budget, or when a frame's document
+ * cannot be read although its window is of this origin. Anything but filled empties the box and every copy found (the
+ * native setter, then an input event so the page's own state follows) and answers lost: a page can copy the value again
+ * at any time, so no answer says it is gone. */
 const LANDED = `async function (value) {
-	await new Promise((resolve) => setTimeout(resolve, ${SETTLE_MS}));
-	const copies = () => {
-		const found = [];
-		const scan = (root, depth) => {
-			for (const field of root.querySelectorAll("input, textarea"))
-				if (field !== this && typeof field.value === "string" && field.value.includes(value)) found.push(field);
-			if (depth >= 8) return;
-			for (const element of root.querySelectorAll("*")) {
-				if (element.shadowRoot) scan(element.shadowRoot, depth + 1);
-				if (element.tagName === "IFRAME" || element.tagName === "FRAME") {
+	const settle = () => new Promise((resolve) => setTimeout(resolve, ${SETTLE_MS}));
+	const scan = () => {
+		const copies = [];
+		const roots = [document];
+		let visited = 0;
+		while (roots.length > 0) {
+			const root = roots.pop();
+			const walker = (root.ownerDocument || root).createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+			for (let element = walker.nextNode(); element; element = walker.nextNode()) {
+				if (++visited > ${SCAN_BUDGET}) return { complete: false, copies };
+				if (element.shadowRoot) roots.push(element.shadowRoot);
+				const tag = element.tagName;
+				if ((tag === "INPUT" || tag === "TEXTAREA") && element !== this && typeof element.value === "string" && element.value.includes(value))
+					copies.push(element);
+				if (tag === "IFRAME" || tag === "FRAME" || tag === "OBJECT") {
 					let inner = null;
 					try {
 						inner = element.contentDocument;
 					} catch {
-						inner = null;
+						return { complete: false, copies };
 					}
-					if (inner) scan(inner, depth + 1);
+					if (inner) roots.push(inner);
+					else if (element.contentWindow) {
+						// No document to read: another origin's frame (its window refuses this origin), or one that cannot be read.
+						try {
+							void element.contentWindow.location.href;
+							return { complete: false, copies };
+						} catch {}
+					}
 				}
 			}
-		};
-		scan(document, 0);
-		return found;
+		}
+		return { complete: true, copies };
 	};
+	const kept = () => {
+		let active = document.activeElement;
+		while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+		return this.isConnected && active === this && this.value === value;
+	};
+	await settle();
+	let look = scan();
+	if (kept() && look.complete && look.copies.length === 0) {
+		await settle();
+		look = scan();
+		if (kept() && look.complete && look.copies.length === 0) return "filled";
+	}
 	const empty = (field) => {
 		const own = field.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
 		Object.getOwnPropertyDescriptor(own, "value").set.call(field, "");
 		field.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
 	};
-	let active = document.activeElement;
-	while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
-	const found = copies();
-	if (found.length === 0 && this.isConnected && active === this && this.value === value) return "filled";
 	empty(this);
-	for (const field of found) empty(field);
-	return found.length > 0 || !this.isConnected || this.value !== "" || copies().length > 0 ? "lost" : "emptied";
+	for (const field of look.copies) empty(field);
+	return "lost";
 }`;
 /** The helper's isolated world in a tab: its own globals over the page's document. */
 const WORLD = "qorpera-account-fill";
@@ -1014,7 +1036,7 @@ class DevToolsPage implements MachineFillPage {
 			const landed = await this.#on(box, LANDED, [value], true);
 			// Right after: still the bound document (no navigation heard meanwhile), at an address the account allows.
 			if (companyAccountFillHost((await this.#unchanged()).frame.url, hosts) === null) return "lost";
-			return landed === "filled" || landed === "emptied" ? landed : "lost";
+			return landed === "filled" ? "filled" : "lost";
 		} catch {
 			return "lost";
 		}
