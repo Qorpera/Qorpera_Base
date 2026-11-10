@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
 	MACHINE_SCREEN_ACTION_TAKEN_EXIT,
+	MACHINE_SCREEN_KILL_MS,
 	MACHINE_SCREEN_STEP_MS,
 	MACHINE_SCREEN_XDOTOOL_COMMANDS,
 	type MachineScreenPorts,
 	type MachineScreenRun,
 	machineScreen,
+	machineScreenActionCommand,
 	machineScreenDesktopArgs,
 	parseMachineScreenAction,
 	parseMachineScreenHeader,
@@ -21,6 +23,13 @@ import { describe, expect, it, vi } from "vitest";
 
 const PNG = Buffer.from("89504e470d0a1a0a0000000d4948445200000640000003e8", "hex");
 const DESKTOP = "/usr/local/bin/desktop";
+const SYSTEMD_RUN = "/usr/bin/systemd-run";
+/** The desktop command a transient unit's argv runs (after `--` and the desktop's path), and its RuntimeMaxSec. */
+const unit = (args: readonly string[]) => {
+	const end = args.indexOf("--");
+	const limit = args.find((arg) => arg.startsWith("RuntimeMaxSec="))?.slice("RuntimeMaxSec=".length);
+	return { options: args.slice(0, end), command: args.slice(end + 1), limit };
+};
 const done = (code: number | null = 0, stdout = "", stderr = ""): MachineScreenRun => ({
 	code,
 	stdout: Buffer.from(stdout),
@@ -34,6 +43,8 @@ function machine(
 		running?: boolean;
 		start?: MachineScreenRun;
 		answers?: Record<string, MachineScreenRun>;
+		/** Runs while a `desktop` action command runs: the tests move the clock in it. */
+		during?: (args: readonly string[]) => void;
 		windows?: string;
 		active?: MachineScreenRun;
 		shot?: Buffer | null;
@@ -48,6 +59,13 @@ function machine(
 	const ports: MachineScreenPorts = {
 		run: vi.fn(async (file: string, args: readonly string[], timeoutMs: number) => {
 			runs.push({ file, args: [...args], timeoutMs });
+			// An action's command runs as a transient unit: `systemd-run ... -p RuntimeMaxSec=<s> ... -- desktop <args>`.
+			if (file === SYSTEMD_RUN) {
+				const { command } = unit(args);
+				if (command[0] !== DESKTOP) return done(125);
+				options.during?.(command.slice(1));
+				return options.answers?.[command[1] as string] ?? done();
+			}
 			if (file === DESKTOP && args[0] === "status")
 				return done(0, running ? "running (1600x1000)\n0x01 0 m Inbox\n" : "stopped\n");
 			if (file === DESKTOP && args[0] === "start") {
@@ -55,7 +73,7 @@ function machine(
 				if (start.code === 0) running = true;
 				return start;
 			}
-			if (file === DESKTOP) return options.answers?.[args[0] as string] ?? done();
+			if (file === DESKTOP) return done(126, "", "an action ran without its own deadline");
 			if (file === "/usr/bin/wmctrl")
 				return done(
 					0,
@@ -90,9 +108,15 @@ function machine(
 		get touched() {
 			return touched;
 		},
-		/** The `desktop` commands that act (not status or start). */
+		/** The `desktop` commands that act, each in its unit: its argv, the unit's limit and the helper's backstop. */
 		actions: () =>
-			runs.filter((call) => call.file === DESKTOP && !["status", "start"].includes(call.args[0] as string)),
+			runs
+				.filter((call) => call.file === SYSTEMD_RUN)
+				.map((call) => ({
+					args: unit(call.args).command.slice(1),
+					seconds: unit(call.args).limit as string,
+					timeoutMs: call.timeoutMs,
+				})),
 	};
 }
 const request = (fields: Record<string, unknown> = {}) => ({
@@ -269,9 +293,36 @@ describe("machine_screen's helper", () => {
 			header: { started: false, action: { type: "click", exitCode: 0 }, png: PNG.length },
 		});
 		expect(m.actions()).toEqual([
-			{ file: DESKTOP, args: ["click", "812", "443", "left"], timeoutMs: expect.any(Number) },
+			{
+				args: ["click", "812", "443", "left"],
+				seconds: expect.stringMatching(/^\d+\.\d{3}$/),
+				timeoutMs: expect.any(Number),
+			},
 		]);
-		expect(m.actions()[0]!.timeoutMs).toBeLessThanOrEqual(MACHINE_SCREEN_STEP_MS.action);
+		// Its deadline is its own unit's, at most the action's; the helper's own kill comes a second after it.
+		const [first] = m.actions();
+		expect(Number(first!.seconds)).toBeGreaterThan(0);
+		expect(Number(first!.seconds) * 1000).toBeLessThanOrEqual(MACHINE_SCREEN_STEP_MS.action);
+		expect(first!.timeoutMs).toBe(Number(first!.seconds) * 1000 + MACHINE_SCREEN_KILL_MS);
+		expect(unit(m.runs.find((call) => call.file === SYSTEMD_RUN)!.args).options).toEqual([
+			"--quiet",
+			"--wait",
+			"--pipe",
+			"--collect",
+			"--expand-environment=no",
+			"--slice=qorpera-machine.slice",
+			"-p",
+			`RuntimeMaxSec=${first!.seconds}`,
+			"-p",
+			"KillMode=control-group",
+			"-p",
+			"KillSignal=SIGKILL",
+			"--setenv=DISPLAY=:1",
+			"--setenv=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+			"--setenv=HOME=/root",
+			"--setenv=LANG=C.UTF-8",
+			"--setenv=USER=root",
+		]);
 		expect(m.sleeps).toEqual([1200]);
 		// The same receipt again on this boot: nothing runs, nothing shows.
 		expect(await machineScreen(click, m.ports)).toEqual({ kind: "taken" });
@@ -309,11 +360,83 @@ describe("machine_screen's helper", () => {
 			header: { action: { type: "scroll", exitCode: 2, error: "not a pixel position: 99999" } },
 		});
 		expect(m.actions().map((call) => call.args[0])).toEqual(["click", "move"]);
-		// Killed at its deadline: no exit.
-		const killed = machine({ answers: { type: done(null) } });
-		expect(await machineScreen(action({ type: "type", text: "hello" }), killed.ports)).toMatchObject({
-			header: { action: { type: "type", exitCode: null } },
-		});
+		// Killed by the helper's own backstop: no exit, and no error of a killed command.
+		const killed = machine({ answers: { type: done(null, "", "Killed") } });
+		const output = await machineScreen(action({ type: "type", text: "hello" }), killed.ports);
+		if (output.kind !== "screen") throw new Error("no screen");
+		expect(output.header.action).toEqual({ type: "type", exitCode: null });
+	});
+
+	it("passes typed text to its unit as one argument, never expanded or read as an option (review r2 F4)", async () => {
+		const text = `$HOME \${PATH} %n %% -x`;
+		expect(machineScreenActionCommand("9.000", ["type", text]).args.slice(-4)).toEqual(["--", DESKTOP, "type", text]);
+		const options = unit(machineScreenActionCommand("9.000", ["type", text]).args).options;
+		expect(options).toContain("--expand-environment=no");
+		expect(options.filter((option) => option.includes(text))).toEqual([]);
+		const m = machine();
+		await machineScreen(action({ type: "type", text: `-x ${text}` }), m.ports);
+		expect(unit(m.runs.find((call) => call.file === SYSTEMD_RUN)!.args).command).toEqual([
+			DESKTOP,
+			"type",
+			`-x ${text}`,
+		]);
+	});
+
+	it("tells a command its unit's limit ended from one that failed, by the time it took (review r2 F4)", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			vi.setSystemTime(1_800_000_000_000);
+			// systemd-run answers 1 for both: a failure at or after the limit is the limit's, a sooner one is the command's.
+			const limited = machine({
+				answers: { type: done(1, "", "Job for run-u7.service failed") },
+				during: () => vi.setSystemTime(Date.now() + 10_000),
+			});
+			const ended = await machineScreen(action({ type: "type", text: "hello" }), limited.ports);
+			if (ended.kind !== "screen") throw new Error("no screen");
+			expect(ended.header.action).toEqual({ type: "type", exitCode: null });
+			const failed = machine({ answers: { type: done(1, "", "the desktop is not running: desktop start") } });
+			const plain = await machineScreen(action({ type: "type", text: "hello" }), failed.ports);
+			if (plain.kind !== "screen") throw new Error("no screen");
+			expect(plain.header.action).toEqual({
+				type: "type",
+				exitCode: 1,
+				error: "the desktop is not running: desktop start",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("gives an action's commands one deadline kept by their units, the time left to each (review r2 F4)", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			vi.setSystemTime(1_800_000_000_000);
+			// The move takes 4 s: the scroll after it gets the 6 s left, never a fresh 10.
+			const slow = machine({
+				during: (args) => {
+					if (args[0] === "move") vi.setSystemTime(Date.now() + 4000);
+				},
+			});
+			await machineScreen(action({ type: "scroll", direction: "down", x: 1, y: 2 }), slow.ports);
+			expect(slow.actions().map((call) => [call.args[0], call.seconds, call.timeoutMs])).toEqual([
+				["move", "10.000", 11000],
+				["scroll", "6.000", 7000],
+			]);
+			// A move that used it all leaves the scroll unstarted (a limit of 0 would be none), killed at the deadline.
+			const spent = machine({
+				during: (args) => {
+					if (args[0] === "move") vi.setSystemTime(Date.now() + 10000);
+				},
+			});
+			expect(
+				await machineScreen(action({ type: "scroll", direction: "up", x: 1, y: 2 }), spent.ports),
+			).toMatchObject({
+				header: { action: { type: "scroll", exitCode: null } },
+			});
+			expect(spent.actions().map((call) => call.args[0])).toEqual(["move"]);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("bounds the titles it tells, and shows no picture when not asked or when none was taken", async () => {

@@ -418,10 +418,57 @@ export interface MachineScreenPorts {
 }
 
 const DESKTOP = "/usr/local/bin/desktop";
+/** systemd-run, which runs an action's `desktop` command as a transient service of its own (review r2 F4). */
+const SYSTEMD_RUN = "/usr/bin/systemd-run";
 /** Each step's own deadline. A look on a stopped desktop is the status, the start, the settle and the shot; an action is
  * the status, the action, the settle and the shot: 21 s at most either way, inside the executor's 22 s
  * (company-machine-host.ts, SCREEN_MS). The windows are listed beside the shot. */
 export const MACHINE_SCREEN_STEP_MS = Object.freeze({ status: 3000, start: 10000, action: 10000, shot: 3000 });
+/** How long a kill may take to land: the helper's own kill of an action's command comes this much after its unit's
+ * limit, and the executor keeps a desktop busy for the action's deadline and this after an action it cut off
+ * (company-machine-host.ts, SCREEN_ACTION_GRACE_MS). */
+export const MACHINE_SCREEN_KILL_MS = 1000;
+
+/**
+ * How one `desktop` command of an action runs (review r2 F4): as a transient service in the machine's slice, whose
+ * RuntimeMaxSec is the time left of the action's deadline, so systemd, not this helper, ends it: at the limit it kills
+ * the unit's whole control group with SIGKILL (no 90 s stop timeout to wait out), `desktop` and everything it started
+ * there (a flock it waits on, an xdotool typing), also when the helper was killed first (the unit runs on without its
+ * client, and its limit still ends it). Measured on the live image (probe/screen-s6.log): a limit of 1 s ended a shell
+ * and its grandchild in 1.02 s, and a plain run passes its exit code, stdout and stderr through in 25 ms. (The image's
+ * `timeout` is uutils coreutils, whose --signal=KILL ends only its direct child: probe/screen-s5.log.)
+ * `--expand-environment=no` keeps the arguments as given (typed text may hold `$HOME` or `${PATH}`; a D-Bus unit's
+ * command has no `%` specifiers), and `--` ends systemd-run's options, so a text starting with `-` is the command's.
+ * What `desktop` starts through its own `launch` (a browser `open` starts) is a unit of its own, not this one, and lives
+ * on. Text beyond ASCII is pasted: `desktop type` hands it to xsel, which stays behind to own the selection until the
+ * unit ends and kills it, so the 0.2 s `desktop type` waits after shift+Insert is what lets the page take the text first.
+ */
+export function machineScreenActionCommand(
+	seconds: string,
+	args: readonly string[],
+): { file: string; args: readonly string[] } {
+	return {
+		file: SYSTEMD_RUN,
+		args: [
+			"--quiet",
+			"--wait",
+			"--pipe",
+			"--collect",
+			"--expand-environment=no",
+			"--slice=qorpera-machine.slice",
+			"-p",
+			`RuntimeMaxSec=${seconds}`,
+			"-p",
+			"KillMode=control-group",
+			"-p",
+			"KillSignal=SIGKILL",
+			...Object.entries(ENVIRONMENT).map(([name, value]) => `--setenv=${name}=${value}`),
+			"--",
+			DESKTOP,
+			...args,
+		],
+	};
+}
 
 /** The last line of a program's stderr, at most MACHINE_SCREEN_MAX_ERROR_BYTES bytes, whole characters. */
 function lastLine(stderr: string): string | undefined {
@@ -485,14 +532,27 @@ export async function machineScreen(input: unknown, ports: MachineScreenPorts): 
 	if (request.action && request.receiptId) {
 		// Never twice: the marker is made before the action, so an action cut short is not taken again either.
 		if (!(await ports.mark(request.receiptId))) return { kind: "taken" };
-		// One deadline for the action's commands together (a scroll at a place is a move, then the scroll).
+		// One deadline for the action's commands together (a scroll at a place is a move, then the scroll), kept by each
+		// command's own unit (machineScreenActionCommand), never only by this process. A command starts only with a
+		// millisecond or more left. The helper's own kill (run's timeout) is the backstop, MACHINE_SCREEN_KILL_MS later.
+		// systemd-run answers 1 for a unit its limit ended, as for a plain failure of `desktop`: one that failed at or
+		// after its limit was killed there, so it has no exit code ("killed at its deadline").
 		const until = Date.now() + MACHINE_SCREEN_STEP_MS.action;
 		let last: MachineScreenRun = { code: 0, stdout: Buffer.alloc(0), stderr: "" };
 		for (const args of machineScreenDesktopArgs(request.action)) {
-			last = await ports.run(DESKTOP, args, Math.max(1, until - Date.now()));
+			const left = Math.floor(until - Date.now());
+			if (left < 1) {
+				last = { code: null, stdout: Buffer.alloc(0), stderr: "" };
+				break;
+			}
+			const command = machineScreenActionCommand((left / 1000).toFixed(3), args);
+			const began = Date.now();
+			last = await ports.run(command.file, command.args, left + MACHINE_SCREEN_KILL_MS);
+			if (last.code !== 0 && Date.now() - began >= left) last = { ...last, code: null };
 			if (last.code !== 0) break;
 		}
-		const error = last.code === 0 ? undefined : lastLine(last.stderr);
+		// A command killed at its deadline said nothing to the point: no error line for it.
+		const error = last.code === 0 || last.code === null ? undefined : lastLine(last.stderr);
 		action = {
 			type: request.action.type,
 			exitCode: last.code,

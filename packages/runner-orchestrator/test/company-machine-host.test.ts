@@ -3867,7 +3867,7 @@ describe("a machine's screen helper (machine_screen, 20260930708000)", () => {
 		expect(await f.host.screen(action(17), f.signal)).toMatchObject({ png: picture });
 	});
 
-	it("keeps a desktop busy for the action deadline after an action that was cut off, as what it started may type on", async () => {
+	it("keeps a desktop busy for the action deadline and its kill after an action that was cut off, as what it started may type on", async () => {
 		let clock = 1_800_000_000_000;
 		const f = await fixture({ now: () => clock });
 		const picture = png();
@@ -3892,7 +3892,8 @@ describe("a machine's screen helper (machine_screen, 20260930708000)", () => {
 		).toMatchObject({
 			png: picture,
 		});
-		clock += 9_999;
+		// The action's own deadline (10 s, kept by timeout on the machine) and a second for its kill to land.
+		clock += 10_999;
 		expect(await f.host.screen(action(12), f.signal)).toEqual({ refused: "DESKTOP_BUSY" });
 		clock += 2;
 		expect(await f.host.screen(action(13), f.signal)).toMatchObject({ png: picture });

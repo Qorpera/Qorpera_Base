@@ -335,10 +335,11 @@ JS
 	# receipt a second time exits 96 and acts no more; another boot exits 97; an action on a stopped desktop is refused by
 	# its code; no picture stays on the disk and nothing reaches /company.
 	node - <<"JS"
-	const { execFileSync, spawnSync } = require("node:child_process");
+	const { execFileSync, spawn, spawnSync } = require("node:child_process");
 	const crypto = require("node:crypto");
 	const fs = require("node:fs");
 	const fail = (why) => { console.error(why); process.exit(1); };
+	const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 	const boot = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
 	const ON_BOOT = `{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97; [ -f "$2" ] || exit 98; exec "$@"`;
 	const env = { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", HOME: "/root", LANG: "C.UTF-8", USER: "root" };
@@ -371,6 +372,39 @@ JS
 	if (again.status !== 96 || again.stdout.length !== 0) fail("the same receipt acted a second time");
 	const typed = shown(screen(act({ type: "type", text: "qorpera screen" }, 1000)), "typed text");
 	if (!String(typed.activeWindow).includes("qorpera screen]")) fail(`the typed text did not arrive: ${typed.activeWindow}`);
+	// Each action command runs as a transient unit of its own (review r2 F4). Its text reaches desktop as given, never
+	// expanded or read as an option; text beyond ASCII is pasted inside the unit and still arrives before the unit ends
+	// (and with it the xsel that held it).
+	for (const text of ["$HOME ${PATH} %n %% -x", "Ærø Øster"]) {
+		const arrived = shown(screen(act({ type: "type", text }, 1000)), `typed ${text}`).activeWindow;
+		if (!String(arrived).includes(`${text}]`)) fail(`the typed text ${text} arrived as: ${arrived}`);
+	}
+	// An action cut off while it waits (review r2 F4): its deadline is its own unit limit (RuntimeMaxSec, the whole unit
+	// killed), never a timer of the helper alone. The desktop lock is held, an open (which needs it) waits on it, and the
+	// helper is killed a second later: the waiting open is there then, gone past the action deadline (10 s), and the page
+	// never opens once the lock is free. The browser the earlier open started is a unit of its own and is still there,
+	// long after that action unit ended. Then an action still runs.
+	const LOCK = "/run/qorpera-desktop.lock";
+	const holder = spawn("/usr/bin/flock", [LOCK, "/usr/bin/sleep", "60"], { stdio: "ignore", detached: true });
+	for (let tries = 0; tries < 30 && spawnSync("/usr/bin/flock", ["-n", LOCK, "/usr/bin/true"]).status === 0; tries++) pause(100);
+	if (spawnSync("/usr/bin/flock", ["-n", LOCK, "/usr/bin/true"]).status === 0) fail("the desktop lock could not be held");
+	fs.writeFileSync("/tmp/qorpera-cut-off.html", "<title>qorpera-cut-off-open</title><h1>cut off</h1>", { mode: 0o644 });
+	fs.writeFileSync("/tmp/qorpera-cut-off.json", JSON.stringify({ schema: "qorpera.machine-screen-request/v1", look: true,
+		...act({ type: "open", target: "file:///tmp/qorpera-cut-off.html" }, 0) }));
+	const cut = spawn("/bin/sh", ["-c", ON_BOOT, boot, "/usr/bin/node", "/opt/qorpera-machine/cloud-machine-screen.mjs"],
+		{ stdio: [fs.openSync("/tmp/qorpera-cut-off.json", "r"), "ignore", "ignore"], env, cwd: "/" });
+	pause(1200);
+	const waiting = () => spawnSync("/usr/bin/pgrep", ["-f", "qorpera-cut-off.html"]).status === 0;
+	if (!waiting()) fail("the open did not wait on the desktop lock, so the cut-off check tests nothing");
+	process.kill(cut.pid, "SIGKILL");
+	pause(11000);
+	if (waiting()) fail("the cut-off open outlived its deadline: " + spawnSync("/usr/bin/pgrep", ["-af", "qorpera-cut-off"], { encoding: "utf8" }).stdout);
+	process.kill(-holder.pid, "SIGKILL");
+	pause(3000);
+	const listed = spawnSync("/usr/bin/wmctrl", ["-l"], { env: { ...env, DISPLAY: ":1" }, encoding: "utf8" }).stdout;
+	if (listed.includes("qorpera-cut-off-open")) fail("the cut-off open ran once the desktop lock was free");
+	if (!listed.includes("SELFTEST[")) fail("the browser an action opened did not outlive the action unit");
+	shown(screen(act({ type: "key", keys: ["Escape"] })), "an action after the cut-off one");
 	// Keys (review r1 F2): `xdotool key` runs any of its own commands that follows the keys (exec runs a program as root),
 	// so none is a key. The helper refuses every word of the installed xdotool help as a key, in capitals too: a newer
 	// xdotool with a command its list lacks fails this build until the list has it.

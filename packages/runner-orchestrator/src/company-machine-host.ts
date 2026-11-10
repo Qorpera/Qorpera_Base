@@ -99,10 +99,11 @@ const SCREEN_MS = 22000;
  * the picture back (the agent looks again), as a read's holds its output. */
 const SCREEN_BOUNDARY_MS = 4000;
 /** How long a desktop stays busy after an action that did not end cleanly (the request aborted, or SCREEN_MS ran out):
- * the helper is killed, but what it started (an xdotool typing) may go on until the helper's own deadline for an action
- * (cloud-machine-screen.ts, MACHINE_SCREEN_STEP_MS.action; measured on a real machine: a killed helper's xdotool kept
- * typing). */
-const SCREEN_ACTION_GRACE_MS = 10000;
+ * the helper is killed, but what it started (an xdotool typing, a `desktop open` waiting on the desktop's lock) goes on
+ * until the action's own deadline, which its transient unit's RuntimeMaxSec keeps in the machine apart from the helper
+ * (cloud-machine-screen.ts: MACHINE_SCREEN_STEP_MS.action, 10 s), and then a second for its kill to land
+ * (MACHINE_SCREEN_KILL_MS). Measured on a real machine: a killed helper's xdotool kept typing (review r1 F4, r2 F4). */
+const SCREEN_ACTION_GRACE_MS = 11000;
 /** The helper's exits besides 0: an action taken on this boot before (96), another boot (97), an earlier image (98). */
 const SCREEN_EXITS: Readonly<Record<number, string>> = Object.freeze({
 	96: "SCREEN_ACTION_TAKEN",

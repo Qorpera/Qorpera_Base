@@ -370,6 +370,10 @@ test("the image carries machine_screen's screen helper as its own file, and chec
 		'fail("the screen helper ran on another boot")',
 		'fail("the screen helper acted on a stopped desktop")',
 		'fail("the screen helper left a picture on the disk")',
+		// Review r2 F4: an action cut off while it waits on the desktop lock dies at its own deadline, and never runs.
+		'fail("the open did not wait on the desktop lock, so the cut-off check tests nothing")',
+		'if (waiting()) fail("the cut-off open outlived its deadline: "',
+		'fail("the cut-off open ran once the desktop lock was free")',
 		'\t[[ -z $(ls -A /company) ]] || { echo "the screen helper wrote into /company" >&2; exit 1; }\n',
 	])
 		assert.ok(imageScript.includes(line), line);
@@ -391,8 +395,25 @@ test("the image carries machine_screen's screen helper as its own file, and chec
 	const boundaryMs = Number(hostSource.match(/\nconst SCREEN_BOUNDARY_MS = (\d+);\n/)[1]);
 	assert.ok(status + Math.max(startMs, action) + settle + shot < runMs, "the helper's steps against the executor's deadline");
 	assert.ok(runMs + boundaryMs + 2000 <= 30000, "the executor's deadline and the release against the gateway's 30 s");
-	// A desktop cut off mid-action stays busy for as long as the helper gives an action (review r1 F4).
-	assert.equal(Number(hostSource.match(/\nconst SCREEN_ACTION_GRACE_MS = (\d+);\n/)[1]), action);
+	// A desktop cut off mid-action stays busy for the action's deadline, which each command's own transient unit keeps on
+	// the machine (RuntimeMaxSec, its whole control group killed with SIGKILL), and a second for its kill to land (review
+	// r1 F4, r2 F4). Not coreutils' timeout: the image's is uutils', whose KILL ends only its direct child.
+	const killMs = Number(helperSource.match(/\nexport const MACHINE_SCREEN_KILL_MS = (\d+);\n/)[1]);
+	assert.equal(Number(hostSource.match(/\nconst SCREEN_ACTION_GRACE_MS = (\d+);\n/)[1]), action + killMs);
+	assert.match(helperSource, /\nconst SYSTEMD_RUN = "\/usr\/bin\/systemd-run";\n/);
+	for (const option of [
+		'"--wait",',
+		'"--pipe",',
+		'"--collect",',
+		'"--expand-environment=no",',
+		'"--slice=qorpera-machine.slice",',
+		"`RuntimeMaxSec=${seconds}`,",
+		'"KillMode=control-group",',
+		'"KillSignal=SIGKILL",',
+		'"--",\n\t\t\tDESKTOP,\n\t\t\t...args,',
+	])
+		assert.ok(helperSource.includes(option), option);
+	assert.doesNotMatch(helperSource, /usr\/bin\/timeout/);
 	// Keys (review r1 F2): the build checks every word of the installed xdotool help against the helper and the desktop
 	// command, and that real keys still work and an unknown one fails.
 	for (const line of [
