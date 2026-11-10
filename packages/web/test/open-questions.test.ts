@@ -9,6 +9,7 @@ import { CloudRpcError } from "../src/cloud/client.ts";
 import type { InteractionOutcome, InteractionRequest } from "../src/cloud/interactions.ts";
 import { type OpenQuestion, parseOpenQuestions } from "../src/cloud/open-questions.ts";
 import type { HostedStaffAgent, JsonValue } from "../src/cloud/types.ts";
+import { linkHref } from "../src/ui/dom.ts";
 
 const SESSION = "11111111-1111-4111-8111-111111111111";
 const AGENT = "22222222-2222-4222-8222-222222222222";
@@ -197,9 +198,8 @@ describe("the questions dock", () => {
 		expect(dock.el.querySelectorAll(".interaction-card")).toHaveLength(1);
 		expect(dock.el.textContent).toContain("Bob asks you");
 		expect(dock.el.textContent).toContain("Which direction should the shop take?");
-		expect(dock.el.querySelector<HTMLAnchorElement>(".question-dock-note a")?.getAttribute("href")).toBe(
-			`#/c/p/chat/${SESSION}`,
-		);
+		const chat = dock.el.querySelector<HTMLElement>(".question-dock-note a");
+		expect(chat && linkHref(chat)).toBe(`#/c/p/chat/${SESSION}`);
 		dock.dispose();
 	});
 
@@ -219,6 +219,7 @@ describe("the questions dock", () => {
 		const boxes = [...dock.el.querySelectorAll<HTMLButtonElement>(".choice-box")];
 		expect(boxes.map((box) => box.querySelector(".choice-label")?.textContent)).toEqual(["Calm", "Bold"]);
 		boxes[1]?.click();
+		await settle();
 		expect(answers).toEqual([[SESSION, CARD_A, "answered", { values: ["bold"] }]]);
 		await settle();
 		// Taken: the chosen box is marked, the agent has it, and nothing is left to press.

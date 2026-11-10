@@ -1057,7 +1057,7 @@ export function mountApplication(
 				questions,
 				agent: (agentId) => controller.staffById(agentId),
 				memberName: (userId) => controller.memberName(userId),
-				image: (path, signal) => cardImage(path, signal),
+				image: (path, signal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
 				conversation: (sessionId) => controller.conversation(sessionId, false),
 				chatHref: (sessionId) =>
 					routeHash({ name: "company", profileId: controller.profile.profileId, section: "chat", id: sessionId }),

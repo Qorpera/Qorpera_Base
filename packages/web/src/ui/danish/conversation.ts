@@ -279,7 +279,6 @@ export const CONVERSATION: Record<string, string> = {
 	"{name} asks you": "{name} spørger dig",
 	"Sending to {name}…": "Sender til {name}…",
 	"Sent to {name}": "Sendt til {name}",
-	"{name} is on it": "{name} går i gang",
 	"Open the chat": "Åbn chatten",
 	"Previous question": "Forrige spørgsmål",
 	"Next question": "Næste spørgsmål",
