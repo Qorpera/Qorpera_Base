@@ -88,6 +88,11 @@ it("tells how to make a page worth opening, within the bytes a tool's descriptio
 		"qorpera.agents() gives each agent's name, role and working",
 		"qorpera.onChange(fn) calls fn when the company folder changed",
 		"A page only reads: it cannot change anything.",
+		// The bridge gives an app 120 calls a minute and counts todos as ten, and a busy company's folder changes every
+		// few seconds: a page that drew on every change would spend that in seconds and then show an error.
+		"after a change draw again once, no sooner than ten seconds after the last draw however many changes arrive",
+		"An app may make 120 calls a minute in a member's tab and 8 at a time, and todos counts as ten calls",
+		"When a read fails, keep what the page last showed and read again ten seconds later, until a read works",
 	])
 		expect(schema).toContain(call);
 });

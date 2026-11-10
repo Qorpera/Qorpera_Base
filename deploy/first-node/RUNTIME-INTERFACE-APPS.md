@@ -159,8 +159,12 @@ Rules:
 - **Never into the bridge:** the member's token, email, id or session, this app's own state, other members' settings,
   vault or login data, mail, billing.
 - **The viewer's own authority**: every read is the member's own folder read.
-- **Bounds**: at most 8 calls in flight and 120 a minute per app in a tab (kept across Reloads), a call's params at
-  most 4 KiB, an answer at most 1 MiB.
+- **Bounds**: at most 8 calls in flight and 120 a minute per app in a tab (kept across Reloads; `todos` counts as
+  ten, since it reads every agent's todos), a call's params at most 4 KiB, an answer at most 1 MiB. A call over the
+  budget is refused ("Too many calls") and spends nothing. Change notices come up to once a second, so a page that
+  drew on every one would spend a minute's budget in seconds. `save_app` therefore tells agents the pace: draw when
+  the page opens, after a change draw again once and no sooner than ten seconds after the last draw, each source
+  called once per draw, and after a failed read keep what was shown and read again ten seconds later.
 - **No requests of its own**: the frame keeps `sandbox="allow-scripts"`, no origin, the frame document's policy
   (`default-src 'none'`, no `connect-src`), and this app's `frame-src 'self'`. Some side channels remain (a
   `dns-prefetch`/`preconnect` link the page's script adds is acted on before anything can take it out): blocking them is
