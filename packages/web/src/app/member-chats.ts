@@ -83,6 +83,19 @@ const EMPTY: MemberChatThread = {
  * chat starts at what was read: it shows less, never a hole. */
 const RUN_READS = 10;
 
+/** The sends that messages just read do not account for. A message of this browser's that a read holds (the cloud
+ * names each of the member's own by the id it was sent with) is among the chat's messages now, whatever became of its
+ * send's answer: still on its way, or lost. It no longer waits after them. */
+function stillOutgoing(
+	outgoing: readonly OutgoingMemberMessage[],
+	read: readonly MemberMessage[],
+): readonly OutgoingMemberMessage[] {
+	const own = new Set(read.map((message) => message.clientMessageId));
+	return outgoing.some((item) => own.has(item.clientMessageId))
+		? outgoing.filter((item) => !own.has(item.clientMessageId))
+		: outgoing;
+}
+
 function sendProblem(error: unknown): string {
 	if (error instanceof CloudRpcError && error.denied) return t("You can no longer write to this member.");
 	return t("Not sent. Check your connection and try again.");
@@ -239,7 +252,6 @@ export class MemberChats {
 				const reaches = floor !== undefined && run.messages[0]?.seq === floor;
 				const earlier = reaches ? thread.messages.filter((message) => message.seq < floor) : [];
 				const newest = run.messages[run.messages.length - 1]?.seq ?? 0;
-				const own = new Set(run.messages.map((message) => message.clientMessageId));
 				return {
 					messages: [...earlier, ...run.messages],
 					hasMore: earlier.length ? thread.hasMore : run.hasMore,
@@ -248,12 +260,10 @@ export class MemberChats {
 					error: undefined,
 					readSeq: Math.max(thread.readSeq, run.readSeq),
 					theirReadSeq: Math.max(thread.theirReadSeq, run.theirReadSeq),
-					// A message of this browser's that the run holds (the cloud names each of the member's own by the id
-					// it was sent with) is among the messages now, whatever became of its send's answer: still on its
-					// way, or lost. One whose place the run reaches without holding it stands before the oldest message
-					// shown. Neither waits after the messages any more.
-					outgoing: thread.outgoing.filter(
-						(item) => !own.has(item.clientMessageId) && (!item.sent || item.sent.seq > newest),
+					// A send the run holds is among the messages now. A sent one whose place the run reaches without
+					// holding it stands before the oldest message shown. Neither waits after the messages any more.
+					outgoing: stillOutgoing(thread.outgoing, run.messages).filter(
+						(item) => !item.sent || item.sent.seq > newest,
 					),
 				};
 			});
@@ -287,7 +297,13 @@ export class MemberChats {
 			store.set((now) => {
 				// The chat left the screen or starts elsewhere now: this page no longer joins it.
 				if (now.messages[0]?.seq !== first.seq) return { loadingEarlier: false };
-				return { messages: [...page.messages, ...now.messages], hasMore: page.hasMore, loadingEarlier: false };
+				return {
+					messages: [...page.messages, ...now.messages],
+					hasMore: page.hasMore,
+					loadingEarlier: false,
+					// A send whose answer was lost may stand on this page: then it waits after the messages no more.
+					outgoing: stillOutgoing(now.outgoing, page.messages),
+				};
 			});
 		} catch {
 			if (!this.#stopped) store.set({ loadingEarlier: false });

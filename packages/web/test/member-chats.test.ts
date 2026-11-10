@@ -627,6 +627,37 @@ describe("the chats' state", () => {
 		expect(calls.send).toHaveBeenCalledTimes(1);
 	});
 
+	it("drops a message marked not sent when an earlier page shows the cloud has it", async () => {
+		// Review of #1638 round 4, F1: the answer was lost, the chat left the screen, 50 newer messages came. Opened
+		// again, the chat does not reach it; "Show earlier messages" brings it, and it must not stand twice.
+		const server = chatServer([message(1, sofie, "m1")]);
+		const { controller } = chats({
+			read: server.read,
+			send: vi.fn(async (_userId: string, client: string, text: string) => {
+				server.kept.messages.push({ ...message(2, me, text), clientMessageId: client });
+				throw new Error("Failed to fetch");
+			}),
+		});
+		controller.setOpen(sofie);
+		await settle();
+		controller.send(sofie, "Did it go?");
+		await settle();
+		controller.setOpen(undefined);
+		server.kept.messages.push(...run(3, 52));
+		controller.setOpen(sofie);
+		await settle();
+		const thread = controller.thread(sofie);
+		// The newest page starts after it: nothing says yet that the cloud has it.
+		expect(seqs(thread.get())).toEqual(run(3, 52).map((item) => item.seq));
+		expect(thread.get().outgoing).toMatchObject([
+			{ text: "Did it go?", failed: "Not sent. Check your connection and try again." },
+		]);
+		await controller.loadEarlier(sofie);
+		expect(seqs(thread.get())).toEqual(run(1, 52).map((item) => item.seq));
+		expect(thread.get().messages[1]).toMatchObject({ seq: 2, text: "Did it go?" });
+		expect(thread.get().outgoing).toEqual([]);
+	});
+
 	it("keeps a sent message after the chat's messages until a read brings it among them", async () => {
 		const server = chatServer([message(1, sofie, "m1")]);
 		let offline = false;
