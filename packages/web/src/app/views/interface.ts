@@ -105,11 +105,11 @@ const shownIn = new WeakMap<HTMLElement, { key: string; element: Element }>();
 const BLOCK_TITLE = ".interface-block > h2";
 
 /** Draws `build()` unless the same key is on screen. Every control names itself with `data-focus-key`, so the
- * one that had keyboard focus (and an input's caret) has it again after the redraw; `moveFocus` names another. In a
+ * one that had keyboard focus (and a text field's caret) has it again after the redraw; `moveFocus` names another. In a
  * redraw of the same view, a focused control that is gone hands the focus on: to the first of its `data-focus-then`
  * keys (a JSON list) still drawn, else to the nearest control after it that is still there, else before it, else to
- * its block's title (a page left with no control). A page redrawn in the same view keeps its scroll position
- * (`data-scroll-key`). */
+ * its block's title (a page left with no control). Whatever scrolls names itself with `data-scroll-key` and is
+ * where the member left it after the redraw; the first on the page is the page's own, and names its view. */
 export function show(container: HTMLElement, key: string, build: () => HTMLElement, moveFocus?: string): void {
 	const shown = shownIn.get(container);
 	if (shown?.key === key && container.firstElementChild === shown.element && shown.element.isConnected) return;
@@ -117,14 +117,18 @@ export function show(container: HTMLElement, key: string, build: () => HTMLEleme
 	const focused = active instanceof HTMLElement && container.contains(active) ? active : null;
 	const focusKey = focused?.dataset.focusKey;
 	const caret =
-		active instanceof HTMLInputElement ? ([active.selectionStart, active.selectionEnd] as const) : undefined;
+		active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+			? ([active.selectionStart, active.selectionEnd] as const)
+			: undefined;
+	const scrollers = (root: ParentNode) => [...root.querySelectorAll<HTMLElement>("[data-scroll-key]")];
+	// Read while that page is still on screen: once it has left, a browser says each is at its top.
 	const scrolled =
 		shown && container.firstElementChild === shown.element
-			? shown.element.querySelector<HTMLElement>("[data-scroll-key]")
-			: null;
+			? scrollers(shown.element).map((each) => [each.dataset.scrollKey, each.scrollTop] as const)
+			: [];
 	const element = build();
-	const scroller = element.querySelector<HTMLElement>("[data-scroll-key]");
-	const sameView = scrolled !== null && scroller !== null && scroller.dataset.scrollKey === scrolled.dataset.scrollKey;
+	const drawn = scrollers(element);
+	const sameView = scrolled[0] !== undefined && drawn[0]?.dataset.scrollKey === scrolled[0][0];
 	const keyed = (root: ParentNode) => [...root.querySelectorAll<HTMLElement>("[data-focus-key]")];
 	const controls = new Map<string, HTMLElement>();
 	for (const each of keyed(element)) {
@@ -147,12 +151,16 @@ export function show(container: HTMLElement, key: string, build: () => HTMLEleme
 	}
 	replace(container, element);
 	shownIn.set(container, { key, element });
-	if (sameView) scroller.scrollTop = scrolled.scrollTop;
 	again?.focus({ preventScroll: true });
-	// The caret goes back only into the input that had it.
+	// The caret goes back only into the field that had it.
 	const same = again?.dataset.focusKey === focusKey;
-	if (again instanceof HTMLInputElement && same && caret && again === document.activeElement)
-		again.setSelectionRange(caret[0], caret[1]);
+	const field = again instanceof HTMLInputElement || again instanceof HTMLTextAreaElement ? again : undefined;
+	if (field && same && caret && field === document.activeElement) field.setSelectionRange(caret[0], caret[1]);
+	// Last, so that the focus and the caret move nothing after it.
+	for (const each of drawn) {
+		const was = scrolled.find(([named]) => named === each.dataset.scrollKey);
+		if (was) each.scrollTop = was[1];
+	}
 }
 
 /** What the member chose on a page: its view, the row each opened block shows, and each table's sort and filter.
@@ -332,7 +340,7 @@ export function renderInterface(
 	}
 	// The Members page draws who each agent works for (views/members.ts; Jonas, 9 November 2026).
 	if (entry.name === "members") {
-		renderMembers(container, company);
+		renderMembers(container, company, writes?.openSettings ? { openSettings: writes.openSettings } : {});
 		return;
 	}
 	// The Bank page draws itself from the company's bank summary (views/bank.ts).

@@ -333,8 +333,8 @@ receipt, with the vault's box bound to the machine, its placement and its boot.
 
 ### The page check, and what it protects against
 
-`desktop open` starts Chromium with its own profile (`/home/desktop/.config/qorpera-chromium`) and
-`--remote-debugging-port=0`: Chromium listens on 127.0.0.1 at a port the kernel picks. The helper reads that port off the
+The desktop's browser (`desktop open`, `desktop start TARGET`: its `browser()` flags) starts with its own profile
+(`/home/desktop/.config/qorpera-chromium`) and `--remote-debugging-port=0`: Chromium listens on 127.0.0.1 at a port the kernel picks. The helper reads that port off the
 kernel, never off a file a program could write (the profile's `DevToolsActivePort` names a dead port after a second
 `desktop open`, whose own short-lived process writes it before it hands its address to the running browser and exits):
 the browser process (no `--type=`) running `/usr/lib/qorpera-chromium/chrome` as the account `desktop` with that profile,

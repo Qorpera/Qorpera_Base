@@ -6,7 +6,11 @@ import { fileURLToPath } from "node:url";
 import type { CompanyComputerScreenLease } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
 import { CLOUD_AGENT_HEAD_BYTES, CLOUD_AGENT_HEAD_SCHEMA } from "@qorpera/runtime/cloud-agent-head";
-import type { CloudAgentSendReceipt } from "@qorpera/runtime/cloud-agent-mouth";
+import {
+	CLOUD_AGENT_NO_FINAL_SEND_CODE,
+	CloudAgentNoFinalSend,
+	type CloudAgentSendReceipt,
+} from "@qorpera/runtime/cloud-agent-mouth";
 import {
 	type CloudCompanyComputerSessionFactory,
 	createCloudCompanyComputerSession,
@@ -19,6 +23,7 @@ import type {
 	CloudCompanyPathPresenceFactory,
 } from "@qorpera/runtime/cloud-company-path-presence";
 import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
+import { CloudControlRpcEnded } from "@qorpera/runtime/cloud-control-errors";
 import { compileCloudNativeCompanyInstructions } from "@qorpera/runtime/cloud-native-company-context";
 import { CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
@@ -30,7 +35,10 @@ import {
 	openNativeCredentialCapsule,
 	sealNativeCredentialCapsule,
 } from "@qorpera/runtime/cloud-native-provider-host";
-import { HttpNativeProviderHostService } from "@qorpera/runtime/cloud-native-provider-service";
+import {
+	HttpNativeProviderHostService,
+	nativeProviderFailureCode,
+} from "@qorpera/runtime/cloud-native-provider-service";
 import { CLOUD_RUN_ROW_READ_MS } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CLOUD_TOOL_RESULT_INSTRUCTIONS } from "@qorpera/runtime/cloud-native-tool-boundary";
 import type { CloudNativeToolOperationControlPlane } from "@qorpera/runtime/cloud-native-tool-operations";
@@ -1131,7 +1139,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v12",
+			schema: "qorpera.hire-overlay/v13",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -1472,6 +1480,65 @@ it("requires a final send when there is an audience, but does not invent one for
 	expect(silent.control.sendMessage).not.toHaveBeenCalled();
 	const evidence = JSON.parse(await readFile(silent.evidence, "utf8"));
 	expect(JSON.stringify(evidence.threadParameters.dynamicTools)).not.toContain('"name":"send_message"');
+});
+
+it("gives a turn that ended without its final send one more turn, and fails by its own code if that says nothing too", async () => {
+	// The model read, then ended its turn on private text (10 November 2026). Told so, it answers.
+	const f = await fixture("company-corrected");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 1, finalMessageId: f.deliveries.get("corrected")?.messageId });
+	expect(f.control.sendMessage).toHaveBeenCalledOnce();
+	const corrected = JSON.parse(await readFile(`${f.evidence}.correction`, "utf8"));
+	expect(corrected.turns).toBe(2);
+	expect(corrected.turn.threadId).toBe("thread_fixture");
+	expect(corrected.turn.input).toHaveLength(1);
+	expect(corrected.turn.input[0].text).toContain("Your turn ended without a final send");
+	// A member's own conversation: a card counts, as the closing reminder says.
+	expect(corrected.turn.input[0].text).toContain("(a card from ask_member counts as one)");
+	// The model got its send's receipt, as for any final send.
+	expect(corrected.reply.result.success).toBe(true);
+	expect(JSON.stringify(corrected.reply)).toContain(f.deliveries.get("corrected")?.messageId);
+	// A distinct private identity and company root keep the first fixture's state out of the second.
+	await rm(f.identityRoot, { recursive: true, force: true });
+	await rm(f.companyRoot, { recursive: true, force: true });
+	// One more turn, not more: a model that says nothing again fails its run, by a code of its own.
+	const failed = await fixture("company-no-send");
+	const error = await failed.runtime
+		.execute(failed.request, failed.identityRoot, new AbortController().signal)
+		.catch((failure: unknown) => failure);
+	expect(error).toBeInstanceOf(CloudAgentNoFinalSend);
+	expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage: "public-completion", category: "unknown" });
+	expect(nativeProviderFailureCode(error)).toBe(CLOUD_AGENT_NO_FINAL_SEND_CODE);
+	expect(JSON.parse(await readFile(`${failed.evidence}.correction`, "utf8")).turns).toBe(2);
+	expect(failed.control.sendMessage).not.toHaveBeenCalled();
+});
+
+it("asks a worker whose turn ended without its report for it, once", async () => {
+	const f = await fixture("company-worker");
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const corrected = JSON.parse(await readFile(`${f.evidence}.correction`, "utf8"));
+	expect(corrected.turns).toBe(2);
+	expect(corrected.turn.input[0].text).toContain("Your turn ended without report_work");
+	expect(corrected.turn.input[0].text).not.toContain("send_message");
+});
+
+it("asks a reply's save again while its answer is lost, by the same key", async () => {
+	const f = await fixture("company-corrected");
+	// The first try's answer is lost (the database says its statement ended, so the copy is not waited out): the
+	// same key is sent again, and replays whatever the first try stored.
+	f.control.sendMessage.mockImplementationOnce(async () => {
+		throw new CloudControlRpcEnded("Native control-plane RPC failed (500)");
+	});
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 1, finalMessageId: f.deliveries.get("corrected")?.messageId });
+	expect(f.control.sendMessage.mock.calls.map(([, input]) => input.idempotencyKey)).toEqual([
+		"corrected",
+		"corrected",
+	]);
+	// The model saw one confirmed send, never an unconfirmed outcome.
+	const reply = JSON.parse(await readFile(`${f.evidence}.correction`, "utf8")).reply;
+	expect(reply.result.success).toBe(true);
+	expect(JSON.stringify(reply)).not.toContain("TOOL_OUTCOME_UNCONFIRMED");
 });
 
 it("has a dynamic routine run decide its next run before its final message", async () => {
@@ -3153,7 +3220,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// save_coding_value (20260930705000), computer_browser vault_capture only on a company computer; the names and
 	// descriptions are as before, so only the catalog text moved again.
 	// On 10 November 2026 company_account's description says the vault types an account's values on a company machine
-	// with fill_company_account (20260930710000), so they moved again.
+	// with fill_company_account (20260930710000), so they moved again; taken again on the tree merged with that day's
+	// master.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3198,9 +3266,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"db28d5856d9dd81d55856864da8542c76acfcb2dd0c350a93cbc129612015445",
+		"ffd38f20d61056544ba2be08d0ccc222e22134817fa42108fec2b79541a05893",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"f974c37637bfc871af8d6d4fff73d642761895a70805f555627ae24e3a710c99",
+		"a640a91ab84d5a6258033f7c3edfde4a9519309b8606ca855fcea743f49e1c3c",
 	);
 });

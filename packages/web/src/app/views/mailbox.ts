@@ -26,10 +26,12 @@ import { messageText, show } from "./interface.ts";
 import { type DigitalPostClient, DigitalPostView } from "./settings-digital-post.ts";
 import { type HooksClient, HooksView } from "./settings-hooks.ts";
 
-/* The Mailbox page, drawn as a mail app draws an inbox (the 21 Oct 2026 rebuild; design canvas "Qorpera Mail", v3):
- * Inbox, Sent and Addresses as plain tabs, one line per thread, and no boxes. The page's definition (the cloud client's
- * library) still names it, gives it its rail row and badge and decides who sees it; this view draws it from the
- * company's mail as app/company-mail.ts reads it, not from the definition's blocks.
+/* The Mailbox page, drawn as a mail app (Jonas, 10 Nov 2026: "more like just using Gmail inside of qorpera"): Write
+ * and the folders Inbox, Sent and Addresses at the side, a search field across the top, and one dense line per thread.
+ * The side is a drawer with words on a wide page, a rail of icons on a narrower one and a row under the search on a
+ * phone; styles/mailbox.css picks by the Mailbox's own width, since the app's rail takes a share of the window. The
+ * page's definition (the cloud client's library) still names it, gives it its rail row and badge and decides who sees
+ * it; this view draws it from the company's mail as app/company-mail.ts reads it, not from the definition's blocks.
  *
  * - Inbox: the sends that wait for a person first ("Waiting for you", with Send and Don't send on the line), then every
  *   other thread, newest first. A line shows who wrote, the subject, the start of the newest message (`snippet`), the
@@ -192,8 +194,25 @@ export function renderMailbox(
 			: null,
 	]);
 	const page: Page = { company, ui, name, profileId, redraw, options };
-	show(container, key, () => drawPage(page), moveFocus);
+	show(container, key, () => settle(container.firstElementChild, drawPage(page)), moveFocus);
 	CompanyMail.of(company)?.watch(lists, threads, stillShown, letters);
+}
+
+/** Marks what `drawn` shows that `before` showed too, so only what is new on screen moves in: a letter typed in the
+ * search field, or an answer on its way, redraws the page without setting every line in motion again. */
+function settle(before: Element | null, drawn: HTMLElement): HTMLElement {
+	if (!before?.matches(".mailbox")) return drawn;
+	const body = (root: Element) => {
+		const scroll = root.querySelector<HTMLElement>(".mailbox-scroll");
+		return `${scroll?.dataset.scrollKey} ${scroll?.firstElementChild?.className}`;
+	};
+	if (body(before) === body(drawn)) drawn.classList.add("is-settled");
+	if (before.querySelector(".mailbox-write-panel"))
+		drawn.querySelector(".mailbox-write-panel")?.classList.add("is-settled");
+	const toast = drawn.querySelector(".mailbox-toast");
+	if (toast && before.querySelector(".mailbox-toast")?.textContent === toast.textContent)
+		toast.classList.add("is-settled");
+	return drawn;
 }
 
 interface Page {
@@ -281,41 +300,75 @@ function drawPage(page: Page): HTMLElement {
 					: ui.tab === "addresses"
 						? addressesView(page)
 						: listView(page);
+	const reading = mail !== undefined && !off && (ui.letter !== null || ui.open !== null);
+	const writing = ui.writing && canWrite(page) && mail !== undefined && !off;
 	return h(
 		"section",
-		{ class: "mailbox", "data-interface": page.name, "data-profile": page.profileId },
-		off ? null : bar(page),
-		ui.error ? notice("danger", ui.error) : null,
+		{
+			class: `mailbox${reading ? " is-reading" : ""}${writing ? " is-writing" : ""}`,
+			"data-interface": page.name,
+			"data-profile": page.profileId,
+		},
 		h(
 			"div",
-			{
-				class: "mailbox-scroll",
-				"data-scroll-key": JSON.stringify([page.profileId, ui.tab, ui.open, ui.letter]),
-			},
-			body,
+			{ class: "mailbox-frame" },
+			off ? null : side(page),
+			h(
+				"div",
+				{ class: "mailbox-main" },
+				off ? null : bar(page),
+				ui.error ? notice("danger", ui.error) : null,
+				h(
+					"div",
+					{
+						class: "mailbox-scroll",
+						"data-scroll-key": JSON.stringify([page.profileId, ui.tab, ui.open, ui.letter]),
+					},
+					body,
+				),
+				ui.letter && mail && !off ? letterComposer(page, ui.letter) : null,
+				ui.open && !ui.letter && mail && !off ? composer(page, ui.open) : null,
+			),
 		),
-		ui.letter && mail && !off ? letterComposer(page, ui.letter) : null,
-		ui.open && !ui.letter && mail && !off ? composer(page, ui.open) : null,
-		ui.writing && canWrite(page) && mail && !off ? writePanel(page) : null,
+		writing ? writePanel(page) : null,
 		ui.toast ? toast(page, ui.toast.text, ui.toast.agent) : null,
 	);
 }
 
-function bar(page: Page): HTMLElement {
+/** Write and the folders, at the side as a mail app has them. */
+function side(page: Page): HTMLElement {
 	const { ui } = page;
 	const waiting = waitingItems(page).length;
-	const tabs: readonly [Tab, string][] = [
-		["inbox", t("Inbox")],
-		["sent", t("Sent")],
-		["addresses", t("Addresses")],
+	const tabs: readonly [Tab, string, string][] = [
+		["inbox", t("Inbox"), "inbox"],
+		// The paper plane is drawn once, under the name the approval settings gave it.
+		["sent", t("Sent"), "external_communication"],
+		["addresses", t("Addresses"), "at"],
 	];
 	return h(
-		"header",
-		{ class: "mailbox-bar" },
+		"div",
+		{ class: "mailbox-side" },
+		canWrite(page) && (page.company.store.get().mail?.addresses.length ?? 0) > 0
+			? h(
+					"button",
+					{
+						type: "button",
+						class: "mailbox-write",
+						title: t("Write"),
+						"data-focus-key": "write",
+						onclick: () => {
+							ui.writing = true;
+							page.redraw("write-to");
+						},
+					},
+					icon("edit"),
+					h("span", { class: "mailbox-write-word" }, t("Write")),
+				)
+			: null,
 		h(
 			"div",
 			{ class: "mailbox-tabs", role: "tablist", "aria-label": t("Mailbox") },
-			...tabs.map(([tab, label]) =>
+			...tabs.map(([tab, label, glyph]) =>
 				h(
 					"button",
 					{
@@ -332,7 +385,8 @@ function bar(page: Page): HTMLElement {
 							page.redraw(`tab:${tab}`);
 						},
 					},
-					label,
+					h("span", { class: "mailbox-tab-icon" }, icon(glyph)),
+					h("span", { class: "mailbox-tab-label" }, label),
 					tab === "inbox" && waiting > 0
 						? h(
 								"span",
@@ -343,9 +397,17 @@ function bar(page: Page): HTMLElement {
 				),
 			),
 		),
-		h("span", { class: "mailbox-spacer" }),
+	);
+}
+
+/** The search field across the top; Addresses, which has nothing to search, shows its name there. */
+function bar(page: Page): HTMLElement {
+	const { ui } = page;
+	return h(
+		"header",
+		{ class: "mailbox-bar" },
 		ui.tab === "addresses" && !ui.open && !ui.letter
-			? null
+			? h("h1", { class: "mailbox-title" }, t("Addresses"))
 			: h(
 					"label",
 					{ class: "mailbox-search" },
@@ -353,33 +415,21 @@ function bar(page: Page): HTMLElement {
 					h("span", { class: "visually-hidden" }, t("Search mail")),
 					h("input", {
 						type: "search",
-						placeholder: t("Search"),
+						placeholder: t("Search mail"),
 						value: ui.search,
 						"data-focus-key": "search",
 						oninput: (event: Event) => {
-							ui.search = (event.target as HTMLInputElement).value;
+							const field = event.target as HTMLInputElement;
+							ui.search = field.value;
 							ui.open = null;
 							ui.letter = null;
+							// What the new words find is read from its top, not from where the old list was left.
+							const list = field.closest(".mailbox")?.querySelector(".mailbox-scroll");
+							if (list) list.scrollTop = 0;
 							page.redraw();
 						},
 					}),
 				),
-		canWrite(page) && (page.company.store.get().mail?.addresses.length ?? 0) > 0
-			? h(
-					"button",
-					{
-						type: "button",
-						class: "mailbox-text mailbox-write",
-						"data-focus-key": "write",
-						onclick: () => {
-							ui.writing = true;
-							page.redraw("write-to");
-						},
-					},
-					icon("edit"),
-					t("Write"),
-				)
-			: null,
 	);
 }
 
@@ -604,6 +654,17 @@ function openThread(page: Page, thread: string): void {
 	page.redraw("back");
 }
 
+/** A click anywhere on a line opens it, as in a mail app; the button inside is what the keyboard reaches. */
+function wholeLine(open: () => void): (event: MouseEvent) => void {
+	return (event) => {
+		if (!(event.target as Element).closest("button, a")) open();
+	};
+}
+
+/** Between a subject and the start of the text. Its own element, so the phone layout can set the text on a line of
+ * its own without it. */
+const dash = () => h("span", { class: "mailbox-dash" }, " — ");
+
 function threadLine(page: Page, summary: MailThreadSummary): HTMLElement {
 	const sent = page.ui.tab === "sent";
 	const agentId = summary.handledBy?.staffAgentId;
@@ -625,7 +686,7 @@ function threadLine(page: Page, summary: MailThreadSummary): HTMLElement {
 				"span",
 				{ class: "mailbox-line" },
 				h("span", { class: "mailbox-subject" }, accountSite(summary.account)),
-				h("span", { class: "mailbox-snippet" }, ` — ${accountUse(page, summary.account)}`),
+				h("span", { class: "mailbox-snippet" }, dash(), accountUse(page, summary.account)),
 			)
 		: h(
 				"span",
@@ -634,13 +695,16 @@ function threadLine(page: Page, summary: MailThreadSummary): HTMLElement {
 				outside(summary.subject || t("(no subject)"), "span", "mailbox-subject"),
 				summary.snippet
 					? summary.direction === "sent"
-						? h("span", { class: "mailbox-snippet" }, ` — ${agent}: `, outside(summary.snippet))
-						: h("span", { class: "mailbox-snippet" }, " — ", outside(summary.snippet))
+						? h("span", { class: "mailbox-snippet" }, dash(), `${agent}: `, outside(summary.snippet))
+						: h("span", { class: "mailbox-snippet" }, dash(), outside(summary.snippet))
 					: null,
 			);
 	return h(
 		"li",
-		{ class: `mailbox-row${unread ? " is-unread" : ""}` },
+		{
+			class: `mailbox-row${unread ? " is-unread" : ""}`,
+			onclick: wholeLine(() => openThread(page, summary.thread)),
+		},
 		h(
 			"button",
 			{
@@ -761,13 +825,16 @@ function waitingLine(page: Page, item: MailWaitingItem, summary: MailThreadSumma
 			// than the thread's sender.
 			recipients ? h("span", { class: "mailbox-recipients", title: recipients }, recipients) : null,
 			h("span", { class: "mailbox-subject" }, item.subject || summary?.subject || t("(no subject)")),
-			item.snippet ? h("span", { class: "mailbox-snippet" }, ` — ${agent}: ${item.snippet}`) : null,
+			item.snippet ? h("span", { class: "mailbox-snippet" }, dash(), `${agent}: ${item.snippet}`) : null,
 		),
 	];
 	const thread = item.thread;
 	return h(
 		"li",
-		{ class: `mailbox-row is-waiting${answered ? " is-leaving" : ""}` },
+		{
+			class: `mailbox-row is-waiting${answered ? " is-leaving" : ""}`,
+			onclick: thread ? wholeLine(() => openThread(page, thread)) : null,
+		},
 		thread
 			? h(
 					"button",
@@ -838,21 +905,27 @@ function threadView(page: Page, thread: string): HTMLElement {
 		},
 		icon("back"),
 	);
-	const head = h(
-		"header",
-		{ class: "mailbox-thread-head" },
-		title,
-		summary ? h("span", { class: "mailbox-muted" }, summary.address) : null,
-		handler
-			? h(
-					"span",
-					{ class: "mailbox-muted mailbox-handled" },
-					figure(page, handler, summary?.handledBy?.name, 22),
-					t("{name} handles it", { name: agentName(page, handler, summary?.handledBy?.name) }),
-				)
-			: null,
-	);
-	const parts: (HTMLElement | null)[] = [h("div", { class: "mailbox-back" }, back), head];
+	const parts: (HTMLElement | null)[] = [
+		h(
+			"div",
+			{ class: "mailbox-toolbar" },
+			back,
+			handler
+				? h(
+						"span",
+						{ class: "mailbox-handled" },
+						figure(page, handler, summary?.handledBy?.name, 24),
+						t("{name} handles it", { name: agentName(page, handler, summary?.handledBy?.name) }),
+					)
+				: null,
+		),
+		h(
+			"header",
+			{ class: "mailbox-thread-head" },
+			title,
+			summary ? h("span", { class: "mailbox-label" }, summary.address) : null,
+		),
+	];
 	if (read === undefined) parts.push(spinner(t("Reading the email")));
 	else if (read.status === "gone")
 		parts.push(h("p", { class: "mailbox-none" }, t("This email thread is no longer here.")));
@@ -1161,7 +1234,7 @@ function letterOf(page: Page, folder: string): DigitalPostLetter | undefined {
 function letterLine(page: Page, letter: DigitalPostLetter): HTMLElement {
 	return h(
 		"li",
-		{ class: "mailbox-row is-letter" },
+		{ class: "mailbox-row is-letter", onclick: wholeLine(() => openLetter(page, letter.folder)) },
 		h(
 			"button",
 			{
@@ -1177,7 +1250,7 @@ function letterLine(page: Page, letter: DigitalPostLetter): HTMLElement {
 				{ class: "mailbox-line" },
 				letter.legalNotification ? h("span", { class: "mailbox-state is-legal" }, t("Legal effect")) : null,
 				outside(letter.title, "span", "mailbox-subject"),
-				letter.snippet ? h("span", { class: "mailbox-snippet" }, " — ", outside(letter.snippet)) : null,
+				letter.snippet ? h("span", { class: "mailbox-snippet" }, dash(), outside(letter.snippet)) : null,
 			),
 		),
 		h("span", { class: "mailbox-actions" }),
@@ -1213,22 +1286,29 @@ function letterView(page: Page, folder: string): HTMLElement {
 				letter.caseId ? t("Case {id}", { id: letter.caseId }) : null,
 			].filter((flag): flag is string => flag !== null)
 		: [];
-	const head = h(
-		"header",
-		{ class: "mailbox-thread-head" },
-		letter ? outside(letter.title, "h1") : h("h1", null, t("Digital Post")),
+	const parts: (HTMLElement | null)[] = [
+		h("div", { class: "mailbox-toolbar" }, back),
+		h(
+			"header",
+			{ class: "mailbox-thread-head" },
+			letter ? outside(letter.title, "h1") : h("h1", null, t("Digital Post")),
+			letter ? h("span", { class: "mailbox-label" }, t("Digital Post")) : null,
+		),
 		letter
 			? h(
-					"span",
-					{ class: "mailbox-muted mailbox-handled" },
-					icon("company"),
-					outside(letter.sender),
-					` · ${t("Digital Post")} · ${fmtTime(letter.received)}`,
+					"div",
+					{ class: "mailbox-letter-from" },
+					h("span", { class: "mailbox-initials", "aria-hidden": "true" }, icon("company")),
+					h(
+						"span",
+						{ class: "mailbox-from" },
+						outside(letter.sender, "strong"),
+						flags.length ? h("span", { class: "mailbox-flags" }, flags.join(" · ")) : null,
+					),
+					h("time", { class: "mailbox-when", datetime: letter.received }, fmtTime(letter.received)),
 				)
 			: null,
-		flags.length ? h("span", { class: "mailbox-muted mailbox-flags" }, flags.join(" · ")) : null,
-	);
-	const parts: (HTMLElement | null)[] = [h("div", { class: "mailbox-back" }, back), head];
+	];
 	if (read === undefined) parts.push(spinner(t("Reading the letter")));
 	else if (read.status === "gone")
 		parts.push(h("p", { class: "mailbox-none" }, t("This letter is no longer in the company folder.")));
@@ -1622,6 +1702,8 @@ function writePanel(page: Page): HTMLElement {
 			class: "mailbox-write-panel",
 			role: "dialog",
 			"aria-labelledby": "mailbox-write-title",
+			// On a short page the window scrolls, and so does its text: a redraw leaves both where they were (show).
+			"data-scroll-key": "write",
 			onsubmit: (event: Event) => {
 				event.preventDefault();
 				void submit();
@@ -1652,18 +1734,16 @@ function writePanel(page: Page): HTMLElement {
 						role: "radio",
 						class: `mailbox-pick${writer === chosen ? " is-current" : ""}`,
 						"aria-checked": String(writer === chosen),
+						"data-focus-key": `writer:${writer.id}`,
 						onclick: () => {
 							ui.writer = writer.id;
 							page.redraw();
 						},
 					},
-					figure(page, writer.id, undefined, 30),
+					figure(page, writer.id, undefined, 24),
 					agentName(page, writer.id),
 				),
 			),
-			from
-				? h("span", { class: "mailbox-muted mailbox-from-address" }, t("from {address}", { address: from }))
-				: null,
 		),
 		h(
 			"label",
@@ -1689,6 +1769,7 @@ function writePanel(page: Page): HTMLElement {
 					rows: "7",
 					placeholder: t("What should it say?"),
 					"data-focus-key": "write-text",
+					"data-scroll-key": "write-text",
 					oninput: (event: Event) => {
 						ui.writeText = (event.target as HTMLTextAreaElement).value;
 					},
@@ -1704,13 +1785,13 @@ function writePanel(page: Page): HTMLElement {
 				{ type: "submit", class: "mailbox-primary", disabled: ui.busy || !chosen },
 				chosen ? t("Ask {name} to write it", { name: agentName(page, chosen.id) }) : t("Write"),
 			),
-			chosen
-				? h(
-						"span",
-						{ class: "mailbox-muted" },
-						t("{name} writes and sends it", { name: agentName(page, chosen.id) }),
-					)
-				: null,
+			// One sentence: who sends it, and from which of the company's addresses.
+			h(
+				"span",
+				{ class: "mailbox-muted" },
+				chosen ? `${t("{name} writes and sends it", { name: agentName(page, chosen.id) })} ` : null,
+				from ? h("span", { class: "mailbox-from-address" }, t("from {address}", { address: from })) : null,
+			),
 		),
 	);
 }

@@ -135,6 +135,19 @@ export function stubFigureMotion(dispose: () => void = () => {}) {
 	return vi.spyOn(figureMotion, "mountFigureMotion").mockReturnValue({ dispose });
 }
 
+/** Scrolls `element` as a browser has it: one that has left the page says it is at its top, where jsdom keeps what
+ * was set. A redraw that reads the old page's scroll only after taking it out fails here, as it does in a browser. */
+export function scrolledTo(element: HTMLElement, top: number): void {
+	let at = top;
+	Object.defineProperty(element, "scrollTop", {
+		configurable: true,
+		get: () => (element.isConnected ? at : 0),
+		set: (next: number) => {
+			at = next;
+		},
+	});
+}
+
 /** The table each pushed hint event is about (migration 20260930653000). */
 const HINT_TABLES: ReadonlyMap<string, string> = new Map([
 	["sessions", "qorpera_shared_sessions"],

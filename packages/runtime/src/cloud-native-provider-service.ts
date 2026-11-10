@@ -12,6 +12,8 @@ import {
 } from "@qorpera/cloud-client/native-account-refresh";
 import type { JsonValue } from "@qorpera/contracts";
 import {
+	CLOUD_AGENT_NO_FINAL_SEND_CODE,
+	CloudAgentNoFinalSend,
 	type CloudAgentSendInput,
 	type CloudAgentSendReceipt,
 	parseCloudAgentSendInput,
@@ -155,8 +157,10 @@ const EXECUTION_STAGE_FAILED =
 const HARNESS_OUTPUT_LIMIT = "Provider harness output exceeded its byte limit";
 
 /** The fixed code a failed request carries back to the runner: the coding
- * runtime's own code (e.g. CODING_TURN_ENDED_WITHOUT_SUBMISSION), also when
- * the host wrapped it as a cause, else its native stage and category, else a
+ * runtime's own code (e.g. CODING_TURN_ENDED_WITHOUT_SUBMISSION) or the company
+ * runtime's for a turn that ended without the final send it owed
+ * (CLOUD_AGENT_NO_FINAL_SEND_CODE), also when the host wrapped it as a cause,
+ * else its native stage and category, else a
  * diagnostic from the closed lists above, else UNCLASSIFIED. Never free text.
  * Each segment stays under 43 characters, so the runner's token redaction never
  * cuts it. */
@@ -171,6 +175,9 @@ export function nativeProviderFailureCode(error: unknown): string {
 	for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
 		const own = codingErrorCode(current);
 		if (own.startsWith("CODING_") && fits(own)) return own;
+		// By its type, never by its text: the stage and category it also carries (public-completion, unknown) said
+		// only that something at the run's end went wrong, and read as a refused step (10 November 2026).
+		if (current instanceof CloudAgentNoFinalSend) return CLOUD_AGENT_NO_FINAL_SEND_CODE;
 		current = current.cause;
 	}
 	const failure = nativeRuntimeFailureMetadata(error);

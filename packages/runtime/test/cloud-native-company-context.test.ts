@@ -17,6 +17,7 @@ import {
 	cloudCompanyContextTool,
 	cloudCompanyRuntimeInstructions,
 	cloudNativeStableInstructions,
+	cloudNativeTurnCorrection,
 	compileCloudNativeCompanyInstructions,
 	composeCloudContinuation,
 	composeCloudNativeCompanyPrompt,
@@ -1537,32 +1538,34 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // interface apps (what an agent wants members to see is an app beside the chat; Jonas, 5 November 2026), and for
 // the wall (status kept in place above the thread instead of messages; Jonas, 5 November 2026), and for readable
 // cards and overlay v10 ("approval cards are completely unreadable"; Jonas, 5 November 2026), and for overlay v11
-// (each agent works for one member and the Co-Founder deals the team out; Jonas, 9 November 2026), and for "Accounts on
-// websites" saying the vault types a password on a machine with fill_company_account (20260930710000; Jonas, 10 November
-// 2026). A change to either is a change to every run's bytes.
+// (each agent works for one member and the Co-Founder deals the team out; Jonas, 9 November 2026), and for
+// interface apps that show the company's state and overlay v13 (each owner keeps one posted app current; Jonas,
+// 10 November 2026), and for "Accounts on websites" saying the vault types a password on a machine with
+// fill_company_account (20260930710000; Jonas, 10 November 2026), taken on the merged tree. A change to either is a
+// change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "7555b744e51778eff642c6f6ad332d2044d48e67675a611f03b196716ac12194",
-			prompt: "f270ecb8dda2f1851f7f607a361aba17a10fd852a6025c3adec2a265a22963e7",
+			instructions: "deca173c41da5b8240da39724dfde8f8c1e34ed3eb4ca3c1fda84be8ddf2969c",
+			prompt: "be57a945a52a80bccd0e523d775d563455ec85f3a3ee11677e7ece894f9f0ae6",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "c171de008238ba0cd74ce197422485a08501fa9777d667dd597f8526bb549e75",
-			prompt: "3b2a8421dedf5f10551deebf86ab9703250273b80d5c2be9077a8db82a7c8f33",
+			instructions: "f9bfde546292e56820c3a07d937fed63bd33215b94aa39ed4aa76151aa7379aa",
+			prompt: "9939ba06da7ba749d0a047691bd02c41d28668decdd1d00d34ecd1f23a7ad2e8",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "7555b744e51778eff642c6f6ad332d2044d48e67675a611f03b196716ac12194",
-			prompt: "09fef8853b34037c0009a40069bd9400e73cff3b8d2623c51b6c3ca501d09ad5",
+			instructions: "deca173c41da5b8240da39724dfde8f8c1e34ed3eb4ca3c1fda84be8ddf2969c",
+			prompt: "954569cabce5c2ead1fe5e2507f3c8367984855615fb747cf2c378ed2efce48f",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
@@ -1715,6 +1718,29 @@ it("shows the company's work in interface apps from the first day, as fun quick 
 	])
 		expect(instructions).toContain(rule);
 	expect(instructions).not.toContain("an SVG sketch written to the company file is enough");
+});
+
+it("has interface apps show the company's state, kept by each area's owner (10 November 2026)", () => {
+	// Jonas, 10 November: "agents lets you interact with your employees — interfaces let's you interact with your
+	// company directly". In Fjeldtur the seven agent-made apps were dated reports typed in by hand: none read the
+	// company's live data, one in three was out of date within hours, and nobody owned keeping them true.
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"in conversations they talk with you, its people, and in interface apps they look at the company itself",
+		"An app is not a report and not a message",
+		"keep one app that shows the state of that area, post it, and change it in the same run that changes the state",
+		"A page that no longer matches the company is worse than no page.",
+		"never open a page with a dated headline or a list of what you did",
+		"save_app tells you how to make a page worth opening",
+		"Before you link or post an app, look at it: when machine_run is offered, open its entry from /company/apps/<name>/ in a browser on a machine at 1280 and at 390 px wide",
+	])
+		expect(instructions).toContain(rule);
+	expect(cloudRuntimeHireBehavior("employee")).toContain(
+		"one interface app, posted, that shows how the area stands now",
+	);
+	const cofounder = cloudRuntimeHireBehavior("cofounder");
+	expect(cofounder).toContain("when one is missing, out of date or reads as a report of what was done");
+	expect(cofounder).toContain("keep one posted app for it (name it company) that shows the plan as it stands");
 });
 
 it("has the Co-Founder open the company's email in its first run, (10 November 2026)", () => {
@@ -2434,3 +2460,45 @@ it.each([
 		expect(shown.content.sha256).toBe(context.currentInputs[0].content.sha256);
 	},
 );
+
+it("tells a turn that ended with its closing act undone what is missing, and nothing when the run owes nothing", () => {
+	const run = {
+		worker: false,
+		reported: false,
+		canSend: true,
+		finalRequired: true,
+		sent: 0,
+		final: false,
+		askOffered: true,
+		routineDecisionOwed: false,
+	};
+	// A member's message: the final send, or a card.
+	const unanswered = cloudNativeTurnCorrection(run);
+	expect(unanswered).toContain("Your turn ended without a final send");
+	expect(unanswered).toContain("call send_message with phase final (a card from ask_member counts as one)");
+	expect(unanswered).toContain("This is the last turn of this run");
+	// A group chat offers no card.
+	expect(cloudNativeTurnCorrection({ ...run, askOffered: false })).not.toContain("ask_member");
+	// Sent, or optional and silent: the run ended as it may.
+	expect(cloudNativeTurnCorrection({ ...run, sent: 2, final: true })).toBeUndefined();
+	expect(cloudNativeTurnCorrection({ ...run, finalRequired: false })).toBeUndefined();
+	// A run with no public voice owes no send, whatever its policy says.
+	expect(cloudNativeTurnCorrection({ ...run, canSend: false })).toBeUndefined();
+	// A progress message is never a run's last word, also where the final is optional.
+	const spoken = cloudNativeTurnCorrection({ ...run, finalRequired: false, sent: 1 });
+	expect(spoken).toContain("after a progress message but without a final send");
+	// A dynamic routine's run decides first, and a silent one owes only its decision.
+	const undecided = cloudNativeTurnCorrection({ ...run, routineDecisionOwed: true }) as string;
+	expect(undecided.indexOf("decide_routine")).toBeGreaterThan(0);
+	expect(undecided.indexOf("decide_routine")).toBeLessThan(undecided.indexOf("Then send it now"));
+	const decisionOnly = cloudNativeTurnCorrection({ ...run, finalRequired: false, routineDecisionOwed: true });
+	expect(decisionOnly).toContain("call decide_routine now, with next or conclude");
+	expect(decisionOnly).not.toContain("send_message");
+	// A worker owes its report, and nothing once the folder saved it.
+	const worker = { ...run, worker: true, canSend: false, finalRequired: false };
+	expect(cloudNativeTurnCorrection(worker)).toContain("Call report_work now, once");
+	expect(cloudNativeTurnCorrection({ ...worker, reported: true })).toBeUndefined();
+	// A few sentences, within what the session takes as one more turn's input.
+	for (const text of [unanswered, spoken, undecided, decisionOnly, cloudNativeTurnCorrection(worker)])
+		expect(Buffer.byteLength(text as string)).toBeLessThan(1024);
+});

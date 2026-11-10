@@ -107,6 +107,9 @@ export async function runCloudNativeRunToolSession(options: {
 	/** The memory compactor and closing (§7.1), as runCloudCodexToolSession takes them. */
 	compactor?: MemoryCompactChannel;
 	closing?: (signal: AbortSignal) => Promise<void>;
+	/** What the agent is told in one more turn when its turn left undone what the run has to end with, as
+	 * runCloudCodexToolSession takes it. */
+	turnCorrection?: (signal: AbortSignal) => Promise<string | undefined>;
 	identityRoot?: string;
 	/** Warm conversations: the identity root was kept from an earlier run on this host. */
 	reusedIdentityRoot?: boolean;
@@ -256,6 +259,7 @@ export async function runCloudNativeRunToolSession(options: {
 			// The bind rechecks the run's lease, and the first request's fence its authority.
 			...(options.opening ? { opening: options.opening } : {}),
 			...(options.compactor ? { compactor: options.compactor } : {}),
+			...(options.turnCorrection ? { turnCorrection: options.turnCorrection } : {}),
 			// At closing the run's log commits its last steps and its step lines build what is left, then the run's
 			// conversation lines close (§7.1).
 			...(runLog || options.closing
@@ -284,9 +288,10 @@ export async function runCloudNativeRunToolSession(options: {
 			...(reviewer ? { reviewer } : {}),
 			beforeModelStart: async (signal) => {
 				await assertActive(signal);
-				// The run's admission is a write sent once (no retry here, and the runner never tries a failed admission
-				// again): it waits as long as the database may run it, not the 5 s default (3 Nov 2026: the database
-				// answered every caller in 3 to 6.6 s for 8 s).
+				// The run's admission is a write sent once (no retry here; an answer that is late or lost fails the attempt,
+				// and the runner reports that retryable on the job's first two attempts only): it waits as long as the
+				// database may run it, not the 5 s default (3 Nov 2026: the database answered every caller in 3 to 6.6 s
+				// for 8 s).
 				await cloudToolRequest(
 					(requestSignal) => options.beginExecution(boundary!.specification, requestSignal),
 					signal,

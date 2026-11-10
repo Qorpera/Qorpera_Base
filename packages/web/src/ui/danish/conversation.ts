@@ -617,9 +617,7 @@ export const CONVERSATION: Record<string, string> = {
 	"{name}'s wall": "{name}s opslagstavle",
 	"{n} waits on you": "{n} venter på dig",
 	"{n} wait on you": "{n} venter på dig",
-	"{n} working": "{n} i gang",
 	"Waits on you": "Venter på dig",
-	"Working on": "Arbejder på",
 	// The agent's card brings the wall back (app/views/agent-details.ts).
 	// A card's long body (ui/interaction-card.ts).
 	"Show more": "Vis mere",

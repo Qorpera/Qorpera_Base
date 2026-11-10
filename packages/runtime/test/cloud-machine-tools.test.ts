@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { CLOUD_MACHINE_FOLDER_LIMITS, cloudMachineFolderBytes } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CloudActionReviewControl, CloudActionReviewGate } from "../src/cloud-action-review.ts";
@@ -11,7 +12,9 @@ import {
 	CloudMachineCommandUnanswered,
 } from "../src/cloud-machine-command-http.ts";
 import {
+	CLOUD_MACHINE_DESKTOP_LEAST,
 	CLOUD_MACHINE_START_ANSWER_MS,
+	CLOUD_MACHINE_START_DESCRIPTION,
 	type CloudMachineCodingValues,
 	cloudMachineTools,
 } from "../src/cloud-machine-tools.ts";
@@ -1057,6 +1060,73 @@ describe("machine tools", () => {
 				p_receipt_id: f.receiptId,
 				p_envelope: authorize?.[1].p_envelope,
 			});
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("makes a desktop computer large enough for its desktop, and sends only the size to the start", async () => {
+		const f = fixture();
+		try {
+			// Asked small beside desktop true: raised to the least a desktop wants. Asked larger: kept.
+			const small = {
+				operationKey: "d1",
+				name: "shop-test",
+				purpose: "Try the shop as a customer",
+				cpus: 1,
+				memoryGiB: 1,
+			};
+			expect((await f.boundary.invoke("d1", "qorpera", "machine_start", { ...small, desktop: true })).success).toBe(
+				true,
+			);
+			expect(f.execute.mock.calls[0][0].operation.arguments).toEqual({
+				name: "shop-test",
+				purpose: "Try the shop as a customer",
+				...CLOUD_MACHINE_DESKTOP_LEAST,
+				diskGiB: 40,
+				lifetime: "task",
+			});
+			const large = { operationKey: "d2", name: "editor-test", purpose: "Try the 3D editor", cpus: 4, memoryGiB: 8 };
+			expect((await f.boundary.invoke("d2", "qorpera", "machine_start", { ...large, desktop: true })).success).toBe(
+				true,
+			);
+			expect(f.execute.mock.calls[1][0].operation.arguments).toMatchObject({ cpus: 4, memoryGiB: 8 });
+			// Without it, or with desktop false, a small machine stays small: machines have no screen unless asked.
+			expect(
+				(
+					await f.boundary.invoke("d3", "qorpera", "machine_start", {
+						...small,
+						operationKey: "d3",
+						desktop: false,
+					})
+				).success,
+			).toBe(true);
+			expect(f.execute.mock.calls[2][0].operation.arguments).toMatchObject({ cpus: 1, memoryGiB: 1 });
+			expect(f.execute.mock.calls[2][0].operation.arguments).not.toHaveProperty("desktop");
+			// A wake names only the machine, and desktop is yes or no.
+			for (const [index, bad] of [
+				{ operationKey: "x", machine: "shop-test", desktop: true },
+				{ operationKey: "x", name: "shop-test", purpose: "x", desktop: "yes" },
+			].entries())
+				expect((await f.boundary.invoke(`bad-desktop-${index}`, "qorpera", "machine_start", bad)).success).toBe(
+					false,
+				);
+			// The agent is told how to ask, and that a smaller machine refuses its desktop.
+			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain(
+				"desktop true makes it a desktop computer, with at least 2 cpus and 4 GiB",
+			);
+			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop start <company files, folders or URLs>");
+			// Every command the text says takes --shot is one the machine's desktop command takes it for; run is not.
+			const desktop = readFileSync(new URL("../../../deploy/machine/desktop", import.meta.url), "utf8");
+			const takesShot =
+				desktop
+					.match(/\n(open(?: \| [a-z]+)+)\)\n\tif \(\( \$# >= 3 \)\) && \[\[ \$\{\*: -2:1\} == --shot \]\]/)?.[1]
+					.split(" | ") ?? [];
+			const advertised =
+				CLOUD_MACHINE_START_DESCRIPTION.match(/end a ([a-z, ]+) with --shot /)?.[1].split(/, | or /) ?? [];
+			expect(advertised).toEqual(["click", "type", "key", "scroll", "open"]);
+			for (const command of advertised) expect(takesShot).toContain(command);
+			expect(takesShot).not.toContain("run");
 		} finally {
 			f.boundary.close();
 		}

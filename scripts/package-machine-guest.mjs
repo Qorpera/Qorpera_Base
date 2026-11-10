@@ -26,11 +26,23 @@ const units = [
 	"qorpera-machine-folder.service",
 	"qorpera-machine-desktop.service",
 ];
-// The desktop (9 Nov 2026): its session, the agents' `desktop` command and Chromium's AppArmor profile.
+// The desktop (9 Nov 2026): its session, the agents' `desktop` command and Chromium's AppArmor profile. Since 10 Nov
+// 2026 also the page `desktop selftest` opens, the browser's managed policy (no translate offer, no sign-in), a
+// `chromium` that runs from root's shell, the login shells' paths to the installed Playwright, and the build's
+// Playwright check.
 const files = [
 	{ file: "desktop-session", installedPath: "/opt/qorpera-machine/desktop-session", mode: "0555" },
 	{ file: "desktop", installedPath: "/usr/local/bin/desktop", mode: "0555" },
 	{ file: "qorpera-chromium.apparmor", installedPath: "/etc/apparmor.d/qorpera-chromium", mode: "0644" },
+	{ file: "desktop-selftest.html", installedPath: "/opt/qorpera-machine/desktop-selftest.html", mode: "0444" },
+	{ file: "playwright-check.cjs", installedPath: "/opt/qorpera-machine/playwright-check.cjs", mode: "0444" },
+	{ file: "chromium", installedPath: "/usr/local/bin/chromium", mode: "0555" },
+	{ file: "qorpera-machine-profile.sh", installedPath: "/etc/profile.d/qorpera-machine.sh", mode: "0644" },
+	{
+		file: "qorpera-chromium-policy.json",
+		installedPath: "/etc/opt/chrome_for_testing/policies/managed/qorpera.json",
+		mode: "0644",
+	},
 ];
 await Promise.all([...units, ...files.map((entry) => entry.file)].map((file) => readFile(`deploy/machine/${file}`)));
 // Only the recorded build: the image script pins the same bytes.
