@@ -284,9 +284,10 @@ export async function runCloudNativeRunToolSession(options: {
 			...(reviewer ? { reviewer } : {}),
 			beforeModelStart: async (signal) => {
 				await assertActive(signal);
-				// The run's admission is a write sent once (no retry here, and the runner never tries a failed admission
-				// again): it waits as long as the database may run it, not the 5 s default (3 Nov 2026: the database
-				// answered every caller in 3 to 6.6 s for 8 s).
+				// The run's admission is a write sent once (no retry here; an answer that is late or lost fails the attempt,
+				// and the runner reports that retryable on the job's first two attempts only): it waits as long as the
+				// database may run it, not the 5 s default (3 Nov 2026: the database answered every caller in 3 to 6.6 s
+				// for 8 s).
 				await cloudToolRequest(
 					(requestSignal) => options.beginExecution(boundary!.specification, requestSignal),
 					signal,

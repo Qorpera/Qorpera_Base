@@ -10,6 +10,7 @@ import {
 } from "@qorpera/runtime/cloud-native-provider";
 import {
 	type CloudRunnerBrokerDescription,
+	CloudRunnerBrokerRequestError,
 	type CloudRunnerBrokerTransport,
 	CloudRunnerJobBroker,
 	type CloudRunnerNativeAuthority,
@@ -64,7 +65,7 @@ function runnerRecord(activeLeases: number) {
 	};
 }
 
-function jobRecord(status: "queued" | "leased" | "completed" | "failed", result?: JsonValue) {
+function jobRecord(status: "queued" | "leased" | "completed" | "failed", result?: JsonValue, attemptCount = 1) {
 	return {
 		job_id: jobId,
 		profile_id: profileId,
@@ -76,7 +77,7 @@ function jobRecord(status: "queued" | "leased" | "completed" | "failed", result?
 		job_type: "agent_turn",
 		payload: { prompt: "Build the plan" },
 		status,
-		attempt_count: 1,
+		attempt_count: attemptCount,
 		runner_id: status === "queued" ? null : runnerId,
 		result: status === "completed" ? (result ?? { outcome: "ok" }) : null,
 		output_artifact_count: 0,
@@ -99,6 +100,9 @@ class RunnerService implements CloudRunnerControlTransport {
 	failCompletionOnce = false;
 	completionErrorStatus?: number;
 	failureErrorStatus?: number;
+	attemptCount = 1;
+	/** Runs before each lease renewal is answered; what it throws is the renewal's answer. */
+	onRenew?: () => Promise<void>;
 
 	async request(_token: string, body: CloudRunnerControlRequest): Promise<unknown> {
 		this.requests.push(structuredClone(body));
@@ -109,9 +113,12 @@ class RunnerService implements CloudRunnerControlTransport {
 			if (this.status !== "queued") return null;
 			this.status = "leased";
 			// A start that defers its reads: the company-lane spies serve the description and authority.
-			return { job: jobRecord("leased"), description: null, native_authority: null };
+			return { job: jobRecord("leased", undefined, this.attemptCount), description: null, native_authority: null };
 		}
-		if (body.action === "renew") return jobRecord("leased");
+		if (body.action === "renew") {
+			await this.onRenew?.();
+			return jobRecord("leased", undefined, this.attemptCount);
+		}
 		if (body.action === "complete") {
 			if (this.completionErrorStatus !== undefined) {
 				const status = this.completionErrorStatus;
@@ -132,7 +139,7 @@ class RunnerService implements CloudRunnerControlTransport {
 			throw new CloudRunnerControlRequestError(status);
 		}
 		this.status = body.retryable ? "queued" : "failed";
-		return jobRecord(this.status);
+		return jobRecord(this.status, undefined, this.attemptCount);
 	}
 }
 
@@ -313,13 +320,33 @@ describe("ephemeral cloud runner worker", () => {
 		expect(lane.acquire).not.toHaveBeenCalled();
 	});
 
-	it("renews the lease, the native authority and the heartbeat serially while a company run is in flight", async () => {
+	it("renews the lease and the native authority together, then the heartbeat, while a company run is in flight", async () => {
 		const service = new RunnerService();
 		const runner = await activeRunner(service);
+		// How many renewals are open at once, and when a heartbeat is asked: it waits for both renewals' answers.
+		let openRenewals = 0;
+		let mostOpenRenewals = 0;
+		const renewalsOpenAtHeartbeat: number[] = [];
+		const openRenewal = async (): Promise<void> => {
+			openRenewals++;
+			mostOpenRenewals = Math.max(mostOpenRenewals, openRenewals);
+			await new Promise((resolveRenewal) => setTimeout(resolveRenewal, 2));
+			openRenewals--;
+		};
+		service.onRenew = openRenewal;
+		lane.renew.mockImplementation(async () => {
+			await openRenewal();
+			return authority;
+		});
+		const heartbeat = runner.heartbeat.bind(runner);
+		vi.spyOn(runner, "heartbeat").mockImplementation(async () => {
+			renewalsOpenAtHeartbeat.push(openRenewals);
+			return heartbeat();
+		});
 		const executeJob = vi.fn(
 			async () =>
 				new Promise<CloudRunnerExecutionResult>((resolveExecution) => {
-					setTimeout(() => resolveExecution(successfulExecution()), 45);
+					setTimeout(() => resolveExecution(successfulExecution()), 60);
 				}),
 		);
 
@@ -330,6 +357,125 @@ describe("ephemeral cloud runner worker", () => {
 		expect(lane.renew).toHaveBeenCalled();
 		expect(actions).toContain("heartbeat");
 		expect(actions.at(-1)).toBe("complete");
+		// A round asks for both renewals before either has its answer.
+		expect(mostOpenRenewals).toBe(2);
+		expect(renewalsOpenAtHeartbeat.length).toBeGreaterThan(0);
+		expect(renewalsOpenAtHeartbeat.every((open) => open === 0)).toBe(true);
+	});
+
+	// 10 November 2026, audit B1: a control-plane stall kept the job lease's renewal retrying and the 120 s native lease
+	// went unrenewed until the run was cut at its deadline.
+	it("renews the native authority again and again while the lease's renewal is still failing for lack of an answer", async () => {
+		const service = new RunnerService();
+		const runner = await activeRunner(service);
+		service.onRenew = async () => {
+			throw new CloudRunnerControlRequestError(503);
+		};
+		const executeJob = vi.fn(async (options: CompanyJobOptions) => {
+			await vi.waitFor(() => expect(lane.renew.mock.calls.length).toBeGreaterThanOrEqual(3), { timeout: 2_000 });
+			options.signal.throwIfAborted();
+			return successfulExecution();
+		});
+
+		const result = await worker(runner, executeJob, { leaseRenewalMs: 10 }).runNext(assignment);
+
+		expect(result).toMatchObject({ status: "completed" });
+		// The lease's renewal was asked once and is waiting its 10 s to ask again, unanswered; the native lease was
+		// renewed every 10 ms meanwhile, in that one round.
+		expect(service.requests.filter((request) => request.action === "renew")).toHaveLength(1);
+		expect(lane.renew.mock.calls.length).toBeGreaterThanOrEqual(3);
+	});
+
+	it("renews the native authority once in a round whose lease renewal answers within the interval", async () => {
+		// The lease's renewal answering after the native one, and before it.
+		for (const [jobMs, nativeMs] of [
+			[5, 0],
+			[0, 5],
+		]) {
+			const service = new RunnerService();
+			const runner = await activeRunner(service);
+			const leaseRenewals = () => service.requests.filter((request) => request.action === "renew").length;
+			service.onRenew = () => new Promise((resolveRenewal) => setTimeout(resolveRenewal, jobMs));
+			lane.renew.mockImplementation(async () => {
+				await new Promise((resolveRenewal) => setTimeout(resolveRenewal, nativeMs));
+				return authority;
+			});
+			const executeJob = vi.fn(async (options: CompanyJobOptions) => {
+				await vi.waitFor(() => expect(leaseRenewals()).toBeGreaterThanOrEqual(3), { timeout: 2_000 });
+				options.signal.throwIfAborted();
+				return successfulExecution();
+			});
+
+			await expect(worker(runner, executeJob, { leaseRenewalMs: 10 }).runNext(assignment)).resolves.toMatchObject({
+				status: "completed",
+			});
+			expect(lane.renew).toHaveBeenCalledTimes(leaseRenewals());
+			lane.renew.mockClear();
+		}
+	});
+
+	it("stops the run at once when the native authority's renewal is refused while the lease's renewal retries", async () => {
+		const service = new RunnerService();
+		const runner = await activeRunner(service);
+		service.onRenew = async () => {
+			throw new CloudRunnerControlRequestError(503);
+		};
+		lane.renew.mockRejectedValue(new CloudRunnerBrokerRequestError("Native authority renewal refused", 409, false));
+		const executeJob = vi.fn(
+			async (options: CompanyJobOptions) =>
+				new Promise<CloudRunnerExecutionResult>((_resolve, reject) => {
+					options.signal.addEventListener("abort", () => reject(new Error("computer destroyed")), {
+						once: true,
+					});
+				}),
+		);
+		const started = Date.now();
+
+		await expect(worker(runner, executeJob, { leaseRenewalMs: 10 }).runNext(assignment)).rejects.toThrow(
+			"Native authority renewal refused",
+		);
+		// Not after the lease renewal's 10 s retry.
+		expect(Date.now() - started).toBeLessThan(5_000);
+		expect(service.requests.filter((request) => request.action === "renew")).toHaveLength(1);
+		expect(service.requests.some((request) => request.action === "fail")).toBe(false);
+		expect(lane.release).toHaveBeenCalledExactlyOnceWith("revoked");
+	});
+
+	it("stops the run at once when the lease's renewal is refused while the native authority's renewal retries", async () => {
+		const service = new RunnerService();
+		const runner = await activeRunner(service);
+		let nativeAsked: () => void = () => {};
+		const nativeWasAsked = new Promise<void>((resolveAsked) => {
+			nativeAsked = resolveAsked;
+		});
+		lane.renew.mockImplementation(async () => {
+			nativeAsked();
+			throw new CloudRunnerBrokerRequestError("Native authority renewal got no answer", 503, true);
+		});
+		service.onRenew = async () => {
+			// The refusal comes only once the native renewal is waiting to ask again.
+			await nativeWasAsked;
+			await new Promise((resolveLater) => setTimeout(resolveLater, 5));
+			throw new CloudRunnerControlRequestError(409);
+		};
+		const executeJob = vi.fn(
+			async (options: CompanyJobOptions) =>
+				new Promise<CloudRunnerExecutionResult>((_resolve, reject) => {
+					options.signal.addEventListener("abort", () => reject(new Error("computer destroyed")), {
+						once: true,
+					});
+				}),
+		);
+		const started = Date.now();
+
+		await expect(worker(runner, executeJob, { leaseRenewalMs: 10 }).runNext(assignment)).rejects.toThrow(
+			"Runner control request failed (409)",
+		);
+		// Not after the native renewal's 10 s retry.
+		expect(Date.now() - started).toBeLessThan(5_000);
+		expect(lane.renew).toHaveBeenCalledOnce();
+		expect(service.requests.some((request) => request.action === "fail")).toBe(false);
+		expect(lane.release).toHaveBeenCalledExactlyOnceWith("revoked");
 	});
 
 	it("reports deterministic job-contract failures without retrying them, and releases the native lease", async () => {
@@ -344,15 +490,24 @@ describe("ephemeral cloud runner worker", () => {
 		expect(lane.release).toHaveBeenCalledExactlyOnceWith("released");
 	});
 
-	it("tries a run again when its login download, context or prompt timed out before it started, and nothing else", async () => {
+	it("tries a run again when a stage before the model's turn timed out or lost its transport, and nothing else", async () => {
 		for (const [code, retried] of [
 			["NATIVE_PROMPT_COMPOSITION:TIMEOUT", true],
 			["NATIVE_COMPANY_CONTEXT:TIMEOUT", true],
 			["NATIVE_CREDENTIAL_DOWNLOAD:TIMEOUT", true],
+			["NATIVE_COMPANY_CONTEXT:TRANSPORT_UNAVAILABLE", true],
+			["NATIVE_EXECUTION_ADMISSION:TIMEOUT", true],
+			["NATIVE_CODEX_THREAD_START:TRANSPORT_UNAVAILABLE", true],
+			["NATIVE_NATIVE_TOOLS:TIMEOUT", false],
+			["NATIVE_CODEX_TURN_START:TIMEOUT", false],
+			["NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE", false],
+			["NATIVE_PUBLIC_COMPLETION:TIMEOUT", false],
 			["NATIVE_CREDENTIAL_DOWNLOAD", false],
 			["NATIVE_PROMPT_COMPOSITION:UNKNOWN", false],
-			["NATIVE_NATIVE_TOOLS:TIMEOUT", false],
+			["NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED", false],
 			["NATIVE_CODING_SESSION:TIMEOUT", false],
+			["NATIVE_CODING_SESSION:TRANSPORT_UNAVAILABLE", false],
+			["AGENT_TURN_ENDED_WITHOUT_FINAL_SEND", false],
 		] as const) {
 			const service = new RunnerService();
 			const runner = await activeRunner(service);
@@ -362,6 +517,43 @@ describe("ephemeral cloud runner worker", () => {
 			expect(result.status).toBe(retried ? "requeued" : "failed");
 			expect(service.requests.at(-1)).toMatchObject({ action: "fail", retryable: retried });
 		}
+	});
+
+	it("tries a pre-turn stage's timeout again on the first two attempts only", async () => {
+		const message = "Native provider bridge request failed (422) [code=NATIVE_CODEX_THREAD_START:TIMEOUT]";
+		for (const [attemptCount, retried] of [
+			[1, true],
+			[2, true],
+			[3, false],
+		] as const) {
+			const service = new RunnerService();
+			service.attemptCount = attemptCount;
+			const runner = await activeRunner(service);
+			const result = await worker(runner, async () => {
+				throw new Error(message);
+			}).runNext(assignment);
+			expect(result.status).toBe(retried ? "requeued" : "failed");
+			expect(service.requests.at(-1)).toMatchObject({ action: "fail", error: message, retryable: retried });
+		}
+		// A timeout before the start keeps only the database's cap.
+		const service = new RunnerService();
+		service.attemptCount = 5;
+		const runner = await activeRunner(service);
+		await worker(runner, async () => {
+			throw new Error("Native provider bridge request failed (422) [code=NATIVE_COMPANY_CONTEXT:TIMEOUT]");
+		}).runNext(assignment);
+		expect(service.requests.at(-1)).toMatchObject({ action: "fail", retryable: true });
+		// A lost transport while the model's turn completes stays final, on the first attempt too: the run may have sent
+		// its final message.
+		const turn = new RunnerService();
+		const turnRunner = await activeRunner(turn);
+		const failed = await worker(turnRunner, async () => {
+			throw new Error(
+				"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:TRANSPORT_UNAVAILABLE]",
+			);
+		}).runNext(assignment);
+		expect(failed.status).toBe("failed");
+		expect(turn.requests.at(-1)).toMatchObject({ action: "fail", retryable: false });
 	});
 
 	it("destroys execution on shutdown without falsely failing the leased job, and revokes the native lease", async () => {

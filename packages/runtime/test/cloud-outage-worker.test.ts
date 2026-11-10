@@ -2,6 +2,7 @@ import { realpathSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CloudRequestTimeoutError } from "@qorpera/cloud-client/cloud-request";
 import {
 	type CloudRunnerAuthorityStore,
 	type CloudRunnerControlRequest,
@@ -41,6 +42,9 @@ class Control implements CloudRunnerControlTransport {
 	loseFailure = false;
 	stallRenewal = false;
 	rejectRenewal?: number;
+	/** Runs before a lease renewal or a heartbeat is answered; what it throws is the answer. */
+	beforeRenewal?: () => Promise<void>;
+	beforeHeartbeat?: () => Promise<void>;
 	/** The next heartbeats' answers: a status refused, a transport error, or a runner no longer active. */
 	heartbeatFailures: (number | Error | "revoked")[] = [];
 	completion?: JsonValue;
@@ -50,6 +54,8 @@ class Control implements CloudRunnerControlTransport {
 
 	async request(_token: string, body: CloudRunnerControlRequest): Promise<unknown> {
 		this.calls.push(structuredClone(body));
+		if (body.action === "renew") await this.beforeRenewal?.();
+		if (body.action === "heartbeat") await this.beforeHeartbeat?.();
 		const failure = body.action === "heartbeat" ? this.heartbeatFailures.shift() : undefined;
 		if (typeof failure === "number") throw new CloudRunnerControlRequestError(failure);
 		if (failure instanceof Error) throw failure;
@@ -203,6 +209,7 @@ function worker(
 	transport = broker(),
 	now?: () => number,
 	heartbeatMs?: number,
+	leaseRenewalMs = 10,
 ) {
 	return new EphemeralCloudRunnerWorker({
 		runner,
@@ -216,7 +223,7 @@ function worker(
 		executeJob,
 		platform: "linux-x64",
 		runnerVersion: "synthetic",
-		leaseRenewalMs: 10,
+		leaseRenewalMs,
 		heartbeatMs,
 		now,
 	});
@@ -224,7 +231,7 @@ function worker(
 
 /** A native run that goes on until it is finished, on fake timers. Its native lease, read at the start, ends 60 s on;
  * each renewal answers with 120 s more. */
-async function outageRun(heartbeatMs?: number) {
+async function outageRun(heartbeatMs?: number, leaseRenewalMs?: number) {
 	vi.useFakeTimers();
 	const control = new Control();
 	const runner = new DisposableCloudRunner(control, runnerId, "b".repeat(43));
@@ -240,7 +247,7 @@ async function outageRun(heartbeatMs?: number) {
 				options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
 			}),
 	);
-	const running = worker(runner, execute, broker(), undefined, heartbeatMs)
+	const running = worker(runner, execute, broker(), undefined, heartbeatMs, leaseRenewalMs)
 		.runNext(assignment)
 		.catch((error: unknown) => error);
 	await vi.advanceTimersByTimeAsync(0);
@@ -513,15 +520,80 @@ describe("cloud worker outage recovery", () => {
 		expect(lane.release).toHaveBeenCalledWith("revoked");
 	});
 
-	it("stops the run when the native lease ends while the job lease's renewal holds up its own", async () => {
-		const outage = await outageRun();
-		// The job lease (120 s) is asked again through the outage, so the native lease (60 s) is never renewed.
+	it("keeps the native lease renewed while the job lease's renewal stalls, and stops at the job lease's end", async () => {
+		// Rounds every 45 s, as in production. The native lease read at the start ends at 60 s; each renewal gives 120 s.
+		const outage = await outageRun(undefined, 45_000);
+		// Both leases are renewed at once (audit B1, 10 November 2026), and while the job lease's renewal is still
+		// being asked, the native lease is renewed again every 45 s: at 45 s and at 90 s, so the run goes on past 60 s.
 		outage.control.stallRenewal = true;
+		await vi.advanceTimersByTimeAsync(61_000);
+		expect(outage.signal().aborted).toBe(false);
+		expect(lane.renew).toHaveBeenCalledOnce();
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(lane.renew).toHaveBeenCalledTimes(2);
+		// The job lease's renewal is asked at 45 s and 85 s, each try cut at 30 s. After the second, at 115 s, the next
+		// try would come within 10 s of the job lease's end (120 s), so its retry rule gives up and stops the run.
+		await vi.advanceTimersByTimeAsync(23_900);
+		expect(outage.signal().aborted).toBe(false);
+		await vi.advanceTimersByTimeAsync(200);
+		expect(outage.signal().aborted).toBe(true);
+		expect(await outage.running).toBeInstanceOf(CloudRequestTimeoutError);
+		expect(outage.control.calls.filter((call) => call.action === "renew")).toHaveLength(2);
+		expect(lane.renew).toHaveBeenCalledTimes(2);
+		expect(lane.release).toHaveBeenCalledWith("revoked");
+	});
+
+	// The audit B1 review (10 November 2026): a round's job renewal that answers late, then a slow heartbeat, must not
+	// hold the native lease's next renewal back until the lease is almost over.
+	it("renews the native lease when it is due after a late job renewal and a slow heartbeat", async () => {
+		// Rounds every 45 s and a heartbeat due at 60 s; the native lease read at the start ends at 60 s.
+		const outage = await outageRun(60_000, 45_000);
+		// The first round, at 45 s: the job lease's renewal gets no answer at 45, 55, 65 and 75 s, and its fifth try
+		// answers at 89 s. Then the heartbeat, due since 60 s, takes 25 s, to 114 s.
+		let jobTries = 0;
+		outage.control.beforeRenewal = async () => {
+			jobTries++;
+			if (jobTries <= 4) throw new CloudRunnerControlRequestError(503);
+			if (jobTries === 5) await new Promise((resolveLater) => setTimeout(resolveLater, 4_000));
+		};
+		let heartbeats = 0;
+		outage.control.beforeHeartbeat = async () => {
+			if (++heartbeats === 1) await new Promise((resolveLater) => setTimeout(resolveLater, 25_000));
+		};
+		// Each native renewal answers 10 s after it is asked, with a lease of 120 s from the asking: the first, at 45 s,
+		// holds the lease to 165 s.
+		const renewedAt: number[] = [];
+		const started = Date.now();
+		lane.renew.mockImplementation(async () => {
+			renewedAt.push(Date.now() - started);
+			const renewed = { ...lane.authority, expiresAt: new Date(Date.now() + 120_000).toISOString() };
+			await new Promise((resolveLater) => setTimeout(resolveLater, 10_000));
+			return renewed;
+		});
+		await vi.advanceTimersByTimeAsync(115_000);
+		// Five tries in the first round, and the second round's, at 114 s.
+		expect(jobTries).toBe(6);
+		expect(heartbeats).toBe(1);
+		// The second native renewal is asked at once after the heartbeat (114 s, a wait of 0 being a timer's 1 ms), not
+		// an interval later (159 s), whose answer at 169 s would come after the lease's end at 165 s.
+		expect(renewedAt).toEqual([45_000, 114_001]);
+		await vi.advanceTimersByTimeAsync(65_000);
+		expect(outage.signal().aborted).toBe(false);
+		// Then one an interval after the last began.
+		expect(renewedAt.slice(0, 3)).toEqual([45_000, 114_001, 159_001]);
+		outage.finish();
+		expect(await outage.running).toMatchObject({ status: "completed" });
+	});
+
+	it("stops the run at the native lease's end when both renewals stall", async () => {
+		const outage = await outageRun();
+		outage.control.stallRenewal = true;
+		lane.renew.mockImplementation(async () => new Promise<never>(() => undefined));
 		await vi.advanceTimersByTimeAsync(59_900);
 		expect(outage.signal().aborted).toBe(false);
 		await vi.advanceTimersByTimeAsync(200);
 		expect(String(await outage.running)).toContain("Runner execution authority expired");
-		expect(lane.renew).not.toHaveBeenCalled();
+		expect(lane.renew).toHaveBeenCalledTimes(2);
 		expect(lane.release).toHaveBeenCalledWith("revoked");
 	});
 
