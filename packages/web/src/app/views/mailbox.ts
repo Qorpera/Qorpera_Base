@@ -9,7 +9,8 @@ import type {
 } from "../../cloud/mail.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { fmtTime, h, icon, notice, spinner } from "../../ui/dom.ts";
+import { type MenuEntry, openContextMenu, openMenu } from "../../ui/context-menu.ts";
+import { fmtTime, h, icon, notice, personAvatar, spinner } from "../../ui/dom.ts";
 import { presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import {
@@ -41,8 +42,10 @@ import { type HooksClient, HooksView } from "./settings-hooks.ts";
  *   and sender as quotes (contract, "quoted outside content in a member's message").
  * - Sent: the threads whose newest message the company sent. Addresses: each address, who answers it, how much came in
  *   the last 7 days, and Change, which asks the Co-Founder to give it to another agent.
- * - Write: a member asks an agent to write an email; the agent writes and sends it, and its review decides as for any
- *   send.
+ * - Write: the member writes an email and gives it to an agent. Nobody owns a new one: the Writer chip says "You" until
+ *   the member picks an agent from its menu (Jonas, 10 Nov 2026: "It should have no agent owning it by default").
+ *   That agent then writes and sends it, and its review decides as for any send; mail leaves the company only through
+ *   an agent.
  *
  * - Digital Post (deploy/first-node/RUNTIME-DIGITAL-POST.md): the letters the company folder holds from public
  *   authorities are lines of the Inbox among the threads, newest first, each with the authority as its sender and a
@@ -108,6 +111,8 @@ const manageViews = new WeakMap<
 		readonly post: DigitalPostView;
 	}
 >();
+/** The pages whose Writer menu is open: a redraw under the menu draws the chip as open, and its click shuts the menu. */
+const writerMenus = new WeakSet<MailboxUi>();
 let toastIds = 0;
 
 /** The calls behind the company's mail addresses and its Digital Post key. */
@@ -178,6 +183,7 @@ export function renderMailbox(
 		{ ...ui, toast: ui.toast?.id ?? null },
 		state.team?.capabilities.write === true,
 		state.team?.capabilities.authorize === true,
+		state.team?.members.find((member) => member.userId === company.userId)?.displayName ?? null,
 		company.cofounderId() ?? null,
 		staff,
 		mail
@@ -234,6 +240,15 @@ function agentName(page: Page, agentId: string | undefined, given?: string): str
 function activeAgent(page: Page, agentId: string | undefined): HostedStaffAgent | undefined {
 	const agent = page.company.staffById(agentId);
 	return agent?.employmentStatus === "active" ? agent : undefined;
+}
+
+/** The agents at work, the Co-Founder first and the rest by name. */
+function agentsAtWork(page: Page): HostedStaffAgent[] {
+	const cofounder = page.company.cofounderId();
+	return page.company.store
+		.get()
+		.staff.filter((agent) => agent.employmentStatus === "active")
+		.sort((a, b) => (a.id === cofounder ? -1 : b.id === cofounder ? 1 : a.displayName.localeCompare(b.displayName)));
 }
 
 function figure(page: Page, agentId: string | undefined, given: string | undefined, size: number): HTMLElement {
@@ -357,6 +372,8 @@ function side(page: Page): HTMLElement {
 						title: t("Write"),
 						"data-focus-key": "write",
 						onclick: () => {
+							// A new email is nobody's; one being written keeps the writer it was given.
+							if (!ui.writeTo && !ui.writeText) ui.writer = null;
 							ui.writing = true;
 							page.redraw("write-to");
 						},
@@ -1544,10 +1561,7 @@ function addressesView(page: Page): HTMLElement {
 	const { company, ui } = page;
 	const mail = company.store.get().mail;
 	const cofounder = company.cofounderId();
-	const agents = company.store
-		.get()
-		.staff.filter((agent) => agent.employmentStatus === "active")
-		.sort((a, b) => (a.id === cofounder ? -1 : b.id === cofounder ? 1 : a.displayName.localeCompare(b.displayName)));
+	const agents = agentsAtWork(page);
 	const rows = (mail?.addresses ?? []).map((address) => {
 		const handler = address.handledBy[0];
 		const changing = ui.changing === address.address;
@@ -1660,25 +1674,81 @@ function addressesView(page: Page): HTMLElement {
 function writePanel(page: Page): HTMLElement {
 	const { company, ui } = page;
 	const mail = company.store.get().mail;
-	const cofounder = company.cofounderId();
-	// The agents who answer an address, then the Co-Founder.
-	const writers: { id: string; address?: string }[] = [];
-	for (const address of mail?.addresses ?? [])
-		for (const agent of address.handledBy)
-			if (activeAgent(page, agent.staffAgentId) && !writers.some((each) => each.id === agent.staffAgentId))
-				writers.push({ id: agent.staffAgentId, address: address.address });
-	if (cofounder && !writers.some((each) => each.id === cofounder)) writers.push({ id: cofounder });
-	const chosen = writers.find((each) => each.id === ui.writer) ?? writers[0];
-	const from = chosen?.address ?? mail?.addresses[0]?.address;
+	const agents = agentsAtWork(page);
+	// A new email is nobody's: the member writes it until they give it to an agent.
+	const chosen = agents.find((agent) => agent.id === ui.writer);
+	// It goes from the address its writer answers, else from the company's first.
+	const from = chosen
+		? (
+				mail?.addresses.find((address) => address.handledBy.some((each) => each.staffAgentId === chosen.id)) ??
+				mail?.addresses[0]
+			)?.address
+		: undefined;
+	const me = company.store.get().team?.members.find((member) => member.userId === company.userId)?.displayName;
 	const close = () => {
 		ui.writing = false;
 		page.redraw("write");
 	};
+	// The Writer chip: the member's own picture until an agent has the email, and the menu that gives it to one.
+	const writer = h(
+		"button",
+		{
+			type: "button",
+			class: `mailbox-pick mailbox-writer${chosen ? " is-current" : ""}`,
+			"aria-haspopup": "menu",
+			"aria-expanded": String(writerMenus.has(ui)),
+			"data-focus-key": "writer",
+		},
+		chosen ? figure(page, chosen.id, undefined, 24) : personAvatar(me || t("You"), company.userId),
+		h("span", { class: "mailbox-writer-name" }, chosen ? chosen.displayName : t("You")),
+		icon("chevron-down"),
+	);
+	/** Opens the menu of who writes it, under the chip; `focus` names the control that has the focus after a choice. */
+	const choose = (focus: string) => {
+		const container = writer.closest(".mailbox")?.parentElement;
+		// A redraw under the open menu draws the chip again.
+		const chip = () =>
+			writer.isConnected ? writer : (container?.querySelector<HTMLElement>(".mailbox-writer") ?? null);
+		const pick = (id: string | null) => {
+			ui.writer = id;
+			page.redraw(focus);
+		};
+		const items: MenuEntry[] = [{ label: t("You"), checked: !chosen, select: () => pick(null) }];
+		if (agents.length) items.push({ kind: "separator" });
+		for (const agent of agents)
+			items.push({ label: agent.displayName, checked: agent.id === chosen?.id, select: () => pick(agent.id) });
+		const box = writer.getBoundingClientRect();
+		openContextMenu({
+			label: t("Who writes it"),
+			x: box.left,
+			y: box.bottom + 4,
+			opener: writer,
+			findOpener: chip,
+			openerToggles: true,
+			onClose: () => {
+				writerMenus.delete(ui);
+				chip()?.setAttribute("aria-expanded", "false");
+			},
+			items,
+		});
+		// After it opened: opening shuts any menu open before it, and that menu's close would take this mark with it.
+		writerMenus.add(ui);
+		writer.setAttribute("aria-expanded", "true");
+	};
+	writer.addEventListener("click", () => {
+		if (writerMenus.has(ui)) openMenu()?.close();
+		else choose("writer");
+	});
 	const submit = async () => {
+		if (ui.busy) return;
+		// Mail leaves the company through an agent: sending one that is nobody's asks who, and Enter then sends it.
+		if (!chosen) {
+			choose("write-send");
+			return;
+		}
 		const to = ui.writeTo.trim();
 		const words = ui.writeText.trim();
-		if (!chosen || !to || !words || ui.busy) return;
-		const name = agentName(page, chosen.id);
+		if (!to || !words) return;
 		await tell(
 			page,
 			chosen.id,
@@ -1688,9 +1758,10 @@ function writePanel(page: Page): HTMLElement {
 					: t("Please write an email to {to}: {words}", { to, words }),
 				quotes: [],
 			},
-			t("{name} is writing it", { name }),
+			t("{name} is writing it", { name: chosen.displayName }),
 			() => {
 				ui.writing = false;
+				ui.writer = null;
 				ui.writeTo = "";
 				ui.writeText = "";
 			},
@@ -1724,26 +1795,9 @@ function writePanel(page: Page): HTMLElement {
 		),
 		h(
 			"div",
-			{ class: "mailbox-write-row", role: "radiogroup", "aria-label": t("Who writes it") },
+			{ class: "mailbox-write-row", role: "group", "aria-label": t("Who writes it") },
 			h("span", { class: "mailbox-write-label" }, t("Writer")),
-			...writers.map((writer) =>
-				h(
-					"button",
-					{
-						type: "button",
-						role: "radio",
-						class: `mailbox-pick${writer === chosen ? " is-current" : ""}`,
-						"aria-checked": String(writer === chosen),
-						"data-focus-key": `writer:${writer.id}`,
-						onclick: () => {
-							ui.writer = writer.id;
-							page.redraw();
-						},
-					},
-					figure(page, writer.id, undefined, 24),
-					agentName(page, writer.id),
-				),
-			),
+			writer,
 		),
 		h(
 			"label",
@@ -1766,8 +1820,8 @@ function writePanel(page: Page): HTMLElement {
 			h(
 				"textarea",
 				{
-					rows: "7",
-					placeholder: t("What should it say?"),
+					rows: "11",
+					placeholder: chosen ? t("What should it say?") : t("Write your email"),
 					"data-focus-key": "write-text",
 					"data-scroll-key": "write-text",
 					oninput: (event: Event) => {
@@ -1782,14 +1836,22 @@ function writePanel(page: Page): HTMLElement {
 			{ class: "mailbox-write-foot" },
 			h(
 				"button",
-				{ type: "submit", class: "mailbox-primary", disabled: ui.busy || !chosen },
-				chosen ? t("Ask {name} to write it", { name: agentName(page, chosen.id) }) : t("Write"),
+				{
+					type: "submit",
+					class: "mailbox-primary",
+					disabled: ui.busy,
+					"aria-haspopup": chosen ? undefined : "menu",
+					"data-focus-key": "write-send",
+				},
+				chosen ? t("Ask {name} to write it", { name: chosen.displayName }) : t("Choose an agent"),
 			),
 			// One sentence: who sends it, and from which of the company's addresses.
 			h(
 				"span",
 				{ class: "mailbox-muted" },
-				chosen ? `${t("{name} writes and sends it", { name: agentName(page, chosen.id) })} ` : null,
+				chosen
+					? `${t("{name} writes and sends it", { name: chosen.displayName })} `
+					: t("An agent sends the company's email"),
 				from ? h("span", { class: "mailbox-from-address" }, t("from {address}", { address: from })) : null,
 			),
 		),

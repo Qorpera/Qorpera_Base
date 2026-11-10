@@ -8,6 +8,7 @@ import { CompanyMail } from "../src/app/company-mail.ts";
 import { type MailboxManage, renderMailbox } from "../src/app/views/mailbox.ts";
 import type { EventHook } from "../src/cloud/event-hooks.ts";
 import type { HostedProfileRole } from "../src/cloud/types.ts";
+import { openMenu } from "../src/ui/context-menu.ts";
 import { h } from "../src/ui/dom.ts";
 import { setLanguagePreference, setTimeZonePreference } from "../src/ui/preferences.ts";
 import { fixture, id, profileA, scrolledTo, session, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
@@ -482,18 +483,45 @@ describe("Sent, Addresses and Write", () => {
 		await vi.waitFor(() => expect(button(main, "Tilføj postkasse")).toBeDefined());
 	});
 
-	it("asks the chosen agent to write an email, from the address it answers", async () => {
+	// Jonas, 10 Nov 2026: "It should have no agent owning it by default when the user clicks write manually - that
+	// indicates he is writing it until an agent is assigned".
+	it("starts a new email with no agent, and asks the one picked from the Writer chip to write it", async () => {
 		const { main, controller } = await mailbox(() => {});
 		vi.spyOn(controller, "openStaffConversation").mockResolvedValue(session.sessionId);
 		const send = vi.spyOn(controller, "sendPrompt").mockResolvedValue(true);
 		await vi.waitFor(() => expect(button(main, "Write")).toBeDefined());
 		button(main, "Write")!.click();
-		const panel = main.querySelector<HTMLFormElement>(".mailbox-write-panel")!;
-		expect(texts(panel, ".mailbox-pick")).toEqual(["Ada", "Co-Founder"]);
-		expect(panel.querySelector(".mailbox-from-address")?.textContent).toBe("from hello@acme.example");
-		type(panel.querySelector("input")!, "Nordlys Energi");
-		type(panel.querySelector("textarea")!, "Ask when the new price starts.");
-		panel.requestSubmit();
+		const panel = () => main.querySelector<HTMLFormElement>(".mailbox-write-panel")!;
+		const chip = () => panel().querySelector<HTMLButtonElement>(".mailbox-writer")!;
+		const writer = () => chip().querySelector(".mailbox-writer-name")?.textContent;
+		// Nobody has it yet: one chip, the member's own, and no address it goes from.
+		expect(panel().querySelectorAll(".mailbox-pick")).toHaveLength(1);
+		expect(writer()).toBe("You");
+		expect(chip().querySelector(".person-avatar")).not.toBeNull();
+		expect(chip().classList.contains("is-current")).toBe(false);
+		expect(chip().getAttribute("aria-expanded")).toBe("false");
+		expect(panel().querySelector(".mailbox-from-address")).toBeNull();
+		expect(panel().querySelector("textarea")!.placeholder).toBe("Write your email");
+		type(panel().querySelector("input")!, "Nordlys Energi");
+		type(panel().querySelector("textarea")!, "Ask when the new price starts.");
+		// Mail leaves the company through an agent: sending it asks who, and sends nothing yet.
+		expect(button(panel(), "Choose an agent")).toBeDefined();
+		panel().requestSubmit();
+		expect(send).not.toHaveBeenCalled();
+		const menu = openMenu()!;
+		expect(texts(menu.el, ".context-menu-label")).toEqual(["You", "Co-Founder", "Ada", "Bo"]);
+		expect(menu.el.querySelector("[aria-checked='true']")?.textContent).toBe("You");
+		expect(chip().getAttribute("aria-expanded")).toBe("true");
+		button(menu.el, "Ada")!.click();
+		expect(openMenu()).toBeUndefined();
+		expect(writer()).toBe("Ada");
+		expect(chip().classList.contains("is-current")).toBe(true);
+		expect(chip().getAttribute("aria-expanded")).toBe("false");
+		expect(panel().querySelector(".mailbox-from-address")?.textContent).toBe("from hello@acme.example");
+		expect(panel().querySelector("textarea")!.placeholder).toBe("What should it say?");
+		// The keyboard is on the button that sends it, so Enter does.
+		expect(document.activeElement).toBe(button(panel(), "Ask Ada to write it"));
+		panel().requestSubmit();
 		await vi.waitFor(() =>
 			expect(send).toHaveBeenCalledWith(
 				session.sessionId,
@@ -502,6 +530,49 @@ describe("Sent, Addresses and Write", () => {
 		);
 		await vi.waitFor(() => expect(main.querySelector(".mailbox-write-panel")).toBeNull());
 		expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Ada is writing it");
+		// The next email is nobody's again.
+		button(main, "Write")!.click();
+		expect(writer()).toBe("You");
+	});
+
+	it("opens the Writer chip's menu on a click and shuts it on the next, and keeps a started email's writer", async () => {
+		const { main } = await mailbox(() => {});
+		await vi.waitFor(() => expect(button(main, "Write")).toBeDefined());
+		button(main, "Write")!.click();
+		const chip = () => main.querySelector<HTMLButtonElement>(".mailbox-writer")!;
+		const writer = () => chip().querySelector(".mailbox-writer-name")?.textContent;
+		const to = () => main.querySelector<HTMLInputElement>(".mailbox-write-panel input")!;
+		const close = () => main.querySelector<HTMLButtonElement>(".mailbox-write-head .mailbox-icon")!.click();
+		chip().click();
+		expect(openMenu()).toBeDefined();
+		expect(chip().getAttribute("aria-expanded")).toBe("true");
+		// The press that starts the next click leaves the menu open, so that click shuts it and does not open it again.
+		chip().dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		expect(openMenu()).toBeDefined();
+		chip().click();
+		expect(openMenu()).toBeUndefined();
+		expect(chip().getAttribute("aria-expanded")).toBe("false");
+		// A press anywhere else shuts it.
+		chip().click();
+		to().dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		expect(openMenu()).toBeUndefined();
+		expect(chip().getAttribute("aria-expanded")).toBe("false");
+		// Given to the Co-Founder, who answers no address: it goes from the company's first, and the keyboard is on the
+		// chip again.
+		chip().click();
+		button(openMenu()!.el, "Co-Founder")!.click();
+		expect(writer()).toBe("Co-Founder");
+		expect(document.activeElement).toBe(chip());
+		expect(main.querySelector(".mailbox-from-address")?.textContent).toBe("from hello@acme.example");
+		// Shut and opened again: an email that was started keeps its writer, an empty one is nobody's.
+		type(to(), "Nordlys Energi");
+		close();
+		button(main, "Write")!.click();
+		expect(writer()).toBe("Co-Founder");
+		type(to(), "");
+		close();
+		button(main, "Write")!.click();
+		expect(writer()).toBe("You");
 	});
 
 	// On a short page the Write window scrolls, and so does its text. Measured in Chromium with the Mailbox 912×300
@@ -535,13 +606,22 @@ describe("Sent, Addresses and Write", () => {
 		expect(again.scrollTop).toBe(220);
 		expect(document.activeElement).toBe(again);
 		expect([again.selectionStart, again.selectionEnd]).toEqual([400, 410]);
-		// Another writer picked: the keyboard stays on the pick, and the window where it was.
-		const pick = button(panel(), "Co-Founder")!;
-		pick.focus();
-		pick.click();
-		expect(document.activeElement).toBe(button(panel(), "Co-Founder"));
-		expect(document.activeElement).not.toBe(pick);
-		expect(document.activeElement?.getAttribute("aria-checked")).toBe("true");
+		// The Writer chip's menu stays open over the page's next read, which draws the chip again, as open. The agent
+		// then picked leaves the keyboard on the chip, and the window where it was.
+		const chip = () => panel().querySelector<HTMLButtonElement>(".mailbox-writer")!;
+		const opened = chip();
+		opened.focus();
+		opened.click();
+		fake.threads = [summary(4), summary(3), summary(1), summary(2)];
+		await vi.advanceTimersByTimeAsync(20_000);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(4));
+		expect(chip()).not.toBe(opened);
+		expect(chip().getAttribute("aria-expanded")).toBe("true");
+		button(openMenu()!.el, "Co-Founder")!.click();
+		expect(openMenu()).toBeUndefined();
+		expect(chip().querySelector(".mailbox-writer-name")?.textContent).toBe("Co-Founder");
+		expect(chip().getAttribute("aria-expanded")).toBe("false");
+		expect(document.activeElement).toBe(chip());
 		expect(panel().scrollTop).toBe(78);
 		expect(panel().querySelector("textarea")!.scrollTop).toBe(220);
 	});
