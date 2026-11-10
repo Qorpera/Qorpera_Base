@@ -80,6 +80,12 @@ Module scripts may not `import` other files in v1 (inline them or use classic sc
 - `save_app {name, operationKey, manifest?, files[{path, text}], remove?}` checks the name, the manifest, each file's
   kind and size and the totals before anything is written. On create it sets `owner` to the agent and `posted = false`;
   later it never changes `posted` or `owner`. A changed file that another call changed meanwhile is a conflict.
+  When the call wrote the entry page, its answer carries `look`: what a quick read of that page found (links, which
+  do not open inside an app; three or more `<details>`; more than 500 words; more than 150 words with no picture,
+  chart, map or diagram). It is advice, never a refusal: the agent fixes it unless it does not fit the page. The
+  tool's description also says what makes a page worth opening: what the first screen answers, what to show instead
+  of write, the company's brand and phone width. How a page reads live data (§5) is said on the manifest's `reads`
+  in the tool's schema, because a tool's own description holds 4096 bytes.
 - `post_app {name, operationKey, posted}` rewrites `posted` in `app.toml`, every other byte as written.
 - `company_write` / `company_edit` of an `apps/<name>/app.toml` check the manifest the same way and refuse a change of
   `posted` (pointing to `post_app`) or of `owner`. An app's files are its owner's: another agent changes them with
@@ -92,6 +98,15 @@ Module scripts may not `import` other files in v1 (inline them or use classic sc
 Prompt guidance (the agent's company context): when you have something to show (results, a test, a prototype, a
 plan with numbers), make it an app and link it as `[Title](app:<name>)` instead of pasting long text. Keep apps small,
 plain and readable by someone who is not an expert. Post an app when every member should keep seeing it.
+
+Since 10 November 2026 (Jonas: "agents lets you interact with your employees — interfaces let's you interact with
+your company directly") the guidance also says what an app is for. In conversations members talk with the agents; in
+apps they look at the company itself, as it stands now. So an app is not a report of what was done and not a short
+version of a document. Each agent that owns an area keeps one posted app that shows the state of that area, and
+changes it in the run that changes the state (hire overlay v13). The Co-Founder checks those apps in its planning
+runs and keeps one for the company as a whole (`company`), drawn from the team's todos and agents. Before an agent
+links or posts an app it looks at it: the entry opened in a browser on a machine at 1280 and at 390 px wide, a
+screenshot of each read back with `company_read`, the weakest thing fixed, and again.
 
 ## 4. Web
 

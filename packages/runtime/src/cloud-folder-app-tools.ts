@@ -1,11 +1,12 @@
 /*
  * The interface app tools of a folder-v2 run (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3; Jonas, 5 November 2026):
- * an agent makes a small web page, kept as files in `apps/<name>/` of the Company File, to show members what it made,
- * and members open it as a page of its own.
+ * an agent makes a small web page, kept as files in `apps/<name>/` of the Company File, to show members a part of the
+ * company as it stands, and members open it as a page of its own.
  * - `save_app` creates an app (its folder, its `app.toml` and its files) or changes its manifest and files, in one
  *   change set under the call's receipt. It applies at once (review class internal): the files are the agent's own work.
  *   It checks the name, the manifest, each file's kind and size and the app's totals before anything is written; it
  *   sets `owner` and `posted = false` on a new app and never changes either after.
+ *   Its answer carries `look`: what a quick read of the saved entry page found (`appLookNotes`), as advice.
  * - `post_app` sets `posted`, which shows the app in every member's apps drawer or takes it away: delegation, which the
  *   automatic review sees (cloud-action-review.ts). It rewrites that one line of `app.toml`, every other byte as written.
  * `company_write` and `company_edit` check an `app.toml` the same way and refuse a change of `posted`
@@ -72,6 +73,23 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
 const FILES_PER_CALL = 32;
 /** The app's entries a save lists to check its totals: more than an app may hold. */
 const LIST_LIMIT = 200;
+
+/**
+ * What save_app's schema says of `reads`: how a page reads the company's live data (the bridge of
+ * RUNTIME-INTERFACE-APPS.md §5, which no agent-made app had used by 10 November 2026: every page was typed in by hand
+ * and went stale when its area moved on). It sits on the field because a tool's own description holds 4096 bytes.
+ */
+const SAVE_APP_READS =
+	"The live sources the page may read. The page's script reads the company through the qorpera object, and every call returns a promise. qorpera.read(path) gives a file's text and qorpera.list(folder) a folder's entries (name, path, kind, bytes, updatedAt), both by company path, such as apps/<name>/state.json: the app's own folder always, any other company path only with files in reads. qorpera.table(name) gives {name, columns, rows}, each row an object by column name (tables in reads). qorpera.todos() gives every agent's todos as {agent, title, status, updatedAt}, with status open, blocked, done or cancelled (todos in reads). qorpera.agents() gives each agent's name, role and working, true while it works (agents in reads). qorpera.onChange(fn) calls fn when the company folder changed: read and draw when the page opens and again then, never on a timer. Keep the facts a page shows (decisions, numbers, open questions) in one data file in the app's folder and draw the page from it, so a change of state is a change to that one file; show who works on what and what is blocked from todos and agents instead of typing it in. When a read fails, show a plain line, never an empty page. A page only reads: it cannot change anything.";
+
+/**
+ * save_app's description, last: what makes a page worth opening (Jonas, 10 November 2026: the agents' apps "weren't all
+ * that great visually"; six of the seven reviewed were one report template of text, drop-downs and dead links). A
+ * concept or prototype of the product follows the product's own design (the company context), so these rules name
+ * every other app. How to look at a page before showing it is in the company context, which has the room.
+ */
+const SAVE_APP_DESIGN =
+	" How to make a page worth opening (a concept or prototype of the company's product follows the product's own design instead). The first screen answers how this stands, without scrolling, on a laptop and on a phone: what is decided, what is open, what waits on a member and the two or three numbers that matter, each as a short line, a large number or a mark, never a paragraph. Head it with the area's plain name: no date, no update, no list of what you did; give the app that name as its title too, two or three words without the company's name. Show instead of write: a large number for a key figure, a chart for money or a trend, a map for places and routes, a diagram for steps and flows, a real picture for a thing or a screen; draw charts, maps and diagrams as inline SVG. A page with nothing to look at is a document, not an app. Keep it to about 300 words and rarely more than two laptop screens: a few words or a mark in a table cell, and the long reasoning in its file, named by its path in one line. Say what is not yet known once, as a state, not as a caveat in every sentence. Show a fact in one app only, the one whose area owns it. Fold nothing a member needs into <details> or closed rows. A link does not open inside an app, whether to a file, an app or the web: show the content itself, name a file by its path, and put links in your message. Once the company has a brand in QorperaOS/brand/, use its colours, logo and type in every app, copied in because a page cannot read QorperaOS/, so the apps look like one company; until then keep it calm: the system font, one accent colour, plenty of space. Make it work at phone width (about 390 px): one column, tables that fit or stack into cards, nothing cut off, text at least 14 px. Draw what the company already holds from its live data instead of typing it in: reads says how. The answer's look names what a quick read of the saved page found: fix it, unless it does not fit this page.";
 
 const sha256hex = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
@@ -210,21 +228,103 @@ function foldersOf(paths: readonly string[]): string[] {
 	return [...folders].sort((a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b));
 }
 
+/** The text this call writes as the app's entry page, or null when it leaves the entry as it is. */
+const entryText = (request: SaveRequest, entry: string): string | null =>
+	request.files.find((file) => file.path.toLowerCase() === entry.toLowerCase())?.text ?? null;
+
 const contentOf = (path: string, text: string) => ({
 	text,
 	mediaType: APP_FILE_TYPES[appFileKind(path)] ?? "text/plain",
 });
 
-/** What the model is told after a commit, by each unit's outcome. */
+/** A page past this many words a member would read is a document. */
+const LOOK_WORDS = 500;
+/** A page of more words than this with nothing to look at gets a note. */
+const LOOK_WORDS_UNSHOWN = 150;
+/** This many folded sections hide what the page is for. */
+const LOOK_FOLDED = 3;
+
+/** `text` without each block from `open` to `close` (to the end when one is never closed), in one pass. */
+function withoutBlocks(text: string, open: RegExp, close: RegExp): string {
+	let out = "";
+	let at = 0;
+	for (;;) {
+		open.lastIndex = at;
+		const from = open.exec(text);
+		if (from === null) return out + text.slice(at);
+		out += `${text.slice(at, from.index)} `;
+		close.lastIndex = from.index + from[0].length;
+		const to = close.exec(text);
+		if (to === null) return out;
+		at = to.index + to[0].length;
+	}
+}
+
+/**
+ * What a quick read of an app's entry page finds, told to the agent after a save: advice, never a refusal (Jonas,
+ * 10 November 2026, on a company whose seven agent-made apps held 68 links that open nothing, 36 folded sections and
+ * about 6,000 words, and six of them no picture, chart or diagram). It reads the page's text alone, so a replayed save
+ * answers the same notes, and in one pass over the page, whatever an agent wrote into it:
+ * - links: the frame opens none (a `folder:`, `app:` or web link blanks the app or does nothing); `#` links stay;
+ * - folded sections (`<details>`), which hide what a member came to see;
+ * - the words a member would read, outside scripts and styles;
+ * - a page of text with nothing to look at: no picture, drawing, canvas or video, in the markup or made by a script.
+ * How the page looks stays the agent's to check, on a machine (save_app's description).
+ */
+export function appLookNotes(html: string): string[] {
+	const page = withoutBlocks(html, /<!--/g, /-->/g);
+	const markup = withoutBlocks(withoutBlocks(page, /<script\b/gi, /<\/script\s*>/gi), /<style\b/gi, /<\/style\s*>/gi);
+	let read = "";
+	let links = 0;
+	let folded = 0;
+	let at = 0;
+	for (;;) {
+		const from = markup.indexOf("<", at);
+		const to = from < 0 ? -1 : markup.indexOf(">", from);
+		if (to < 0) break;
+		read += `${markup.slice(at, from)} `;
+		const tag = markup.slice(from + 1, to);
+		if (/^details\b/i.test(tag)) folded++;
+		const href = /^a\s/i.test(tag) ? /\shref\s*=\s*["']?\s*([^"'\s]*)/i.exec(tag) : null;
+		if (href !== null && href[1] !== "" && !href[1].startsWith("#")) links++;
+		at = to + 1;
+	}
+	read += markup.slice(at);
+	const words = read
+		.replace(/&[a-z0-9#]+;/gi, " ")
+		.split(/\s+/)
+		.filter((word) => /[\p{L}\p{N}]/u.test(word)).length;
+	const shown = /<(?:img|svg|canvas|video|picture)\b|createElementNS|getContext\(|url\(/i.test(page);
+	const notes: string[] = [];
+	if (links > 0)
+		notes.push(
+			`${links} ${links === 1 ? "link" : "links"}: a link does not open inside an app. Show the content itself, name a file by its path, and put links in your message.`,
+		);
+	if (folded >= LOOK_FOLDED)
+		notes.push(
+			`${folded} folded sections (<details>): a member sees only what is open. Show what matters and leave the rest out.`,
+		);
+	if (words > LOOK_WORDS)
+		notes.push(
+			`${words} words: this reads as a document. Aim at about 300: show the state as numbers, marks, a chart or a diagram, and keep the long reasoning in its file.`,
+		);
+	if (!shown && words > LOOK_WORDS_UNSHOWN)
+		notes.push("Nothing to look at, only text: show the main thing as a picture, a chart, a map or a diagram.");
+	return notes;
+}
+
+/** What the model is told after a commit, by each unit's outcome. `entry` is the entry page's text when this call wrote it. */
 function savedText(
 	request: { name: string; operationKey: string },
 	receiptId: string,
 	units: readonly CloudCompanyFolderUnitResult[],
 	created: boolean,
+	entry: string | null,
 ): string {
 	const saved = units.filter((unit) => unit.outcome === "saved").length;
 	const state = saved === units.length ? "applied" : saved === 0 ? "not_applied" : "partly_applied";
 	const conflict = units.some((unit) => unit.outcome === "conflict");
+	const look = state === "applied" && entry !== null ? appLookNotes(entry) : [];
 	return cloudToolJsonText({
 		schema: "qorpera.app-save/v1",
 		state,
@@ -240,9 +340,10 @@ function savedText(
 			...(unit.reason ? { reason: unit.reason } : {}),
 			...(unit.problems.length > 0 ? { problems: unit.problems.map((problem) => problem.message) } : {}),
 		})),
+		...(look.length > 0 ? { look } : {}),
 		next:
 			state === "applied"
-				? `Saved. Show it to the member with a link in your message: [${request.name}](app:${request.name}). post_app shows it to every member in their apps.`
+				? `Saved. ${look.length > 0 ? "First fix what look names, unless it does not fit this page. Then show" : "Show"} it to the member with a link in your message: [${request.name}](app:${request.name}). post_app shows it to every member in their apps.`
 				: conflict
 					? "Some files changed while this call saved them: read the app's files again, then call again with a new operationKey."
 					: "Some files were not saved (their reasons): fix them and call again with a new operationKey.",
@@ -334,7 +435,7 @@ export function cloudAppTools(options: {
 		name: "save_app" satisfies CloudRuntimeToolOperation,
 		source: "company_file",
 		maxArgumentBytes: MAX_TOOL_ARGUMENT_BYTES,
-		description: `Make or change an interface app: a small web page in apps/<name>/ of the company folder that shows members what you made (results, a test, a prototype, a dashboard), opened as a page of its own. Give the app's name (its folder: lowercase, digits and hyphens), a manifest (title, and optionally about, emblem: ${INTERFACE_EMBLEMS.join(", ")}, colour: ${AGENT_COLOURS.join(", ")}, entry: the page that opens, default ${APP_DEFAULT_ENTRY}, reads: the live sources the page may read, of ${APP_READS.join(", ")}) to make it or change its manifest, or null to keep it, and the files to write (at most ${FILES_PER_CALL} a call: .html, .css, .js, .json, .svg, .md, .csv, .txt, each at most ${APP_FILE_MAX_BYTES / 1024} KiB). Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) you write into the app's folder from a company machine may be up to ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each and ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all; pages and code up to ${APP_MAX_BYTES / 1024 / 1024} MiB in all. The app is one page: only the entry opens, so links to its other .html files do not work; put every view in the entry, as tabs or sections. The page gets its pictures and videos only where it names them when it opens (<img src>, <video src>, a poster, or url() in its styles): a script cannot load a picture or video later, so put every picture it may show in the page (hidden ones too) and switch them with styles or a script; a script reads text files with qorpera.read(path). The entry may use the app's other files by relative paths (<link rel="stylesheet" href="style.css">, <script src="app.js">, <img src="chart.svg">); the page has no network, so put everything it needs in the app. A new app needs a manifest and its entry. It applies at once. Then link it in your message as [Title](app:<name>), which members open as a page of its own. Set concept = true for a concept of the company's product, and cover = a picture of it, so it shows in the Concepts viewer. Keep operationKey for the same change, and use a new one for any other change.`,
+		description: `Make or change an interface app: a small web page in apps/<name>/ of the company folder that shows members a part of the company as it stands now (the state of an area, results, a prototype, a dashboard), opened as a page of its own. Give the app's name (its folder: lowercase, digits and hyphens), a manifest (title, and optionally about, emblem: ${INTERFACE_EMBLEMS.join(", ")}, colour: ${AGENT_COLOURS.join(", ")}, entry: the page that opens, default ${APP_DEFAULT_ENTRY}, reads: the live sources the page may read, of ${APP_READS.join(", ")}) to make it or change its manifest, or null to keep it, and the files to write (at most ${FILES_PER_CALL} a call: .html, .css, .js, .json, .svg, .md, .csv, .txt, each at most ${APP_FILE_MAX_BYTES / 1024} KiB). Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) you write into the app's folder from a company machine may be up to ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each and ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all; pages and code up to ${APP_MAX_BYTES / 1024 / 1024} MiB in all. The app is one page: only the entry opens, so links to its other .html files do not work; put every view in the entry, as tabs or sections. The page gets its pictures and videos only where it names them when it opens (<img src>, <video src>, a poster, or url() in its styles): a script cannot load a picture or video later, so put every picture it may show in the page (hidden ones too) and switch them with styles or a script; a script reads text files with qorpera.read(path). The entry may use the app's other files by relative paths (<link rel="stylesheet" href="style.css">, <script src="app.js">, <img src="chart.svg">); the page has no network, so put everything it needs in the app. A new app needs a manifest and its entry. It applies at once. Then link it in your message as [Title](app:<name>), which members open as a page of its own. Set concept = true for a concept of the company's product, and cover = a picture of it, so it shows in the Concepts viewer. Keep operationKey for the same change, and use a new one for any other change.${SAVE_APP_DESIGN}`,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -352,7 +453,11 @@ export function cloudAppTools(options: {
 						emblem: { type: ["string", "null"], enum: [...INTERFACE_EMBLEMS, null] },
 						colour: { type: ["string", "null"], enum: [...AGENT_COLOURS, null] },
 						entry: { type: ["string", "null"], maxLength: 1024 },
-						reads: { type: ["array", "null"], items: { type: "string", enum: [...APP_READS] } },
+						reads: {
+							type: ["array", "null"],
+							items: { type: "string", enum: [...APP_READS] },
+							description: SAVE_APP_READS,
+						},
 						concept: { type: ["boolean", "null"] },
 						cover: { type: ["string", "null"], maxLength: 1024 },
 					},
@@ -470,7 +575,7 @@ export function cloudAppTools(options: {
 					request,
 					digest,
 					[unit],
-					(receiptId, units) => savedText(request, receiptId, units, true),
+					(receiptId, units) => savedText(request, receiptId, units, true, entryText(request, manifest.entry)),
 					context,
 				);
 				return showCommitted(context, answer, reads);
@@ -589,7 +694,7 @@ export function cloudAppTools(options: {
 				request,
 				digest,
 				units,
-				(receiptId, results) => savedText(request, receiptId, results, false),
+				(receiptId, results) => savedText(request, receiptId, results, false, entryText(request, entry)),
 				context,
 			);
 			return showCommitted(context, answer, reads);
@@ -600,7 +705,7 @@ export function cloudAppTools(options: {
 		name: "post_app" satisfies CloudRuntimeToolOperation,
 		source: "company_file",
 		description:
-			"Post an interface app so every member of the company sees it in their apps (posted true), or take it away (posted false). The app stays in the company folder either way, and a link to it in a message still opens it. Post what members should keep coming back to: a dashboard, a board, a living plan. Keep operationKey for the same change, and use a new one for any other change.",
+			"Post an interface app so every member of the company sees it in their apps (posted true), or take it away (posted false). The app stays in the company folder either way, and a link to it in a message still opens it. Post what members should keep coming back to: the state of an area, a dashboard, a board, a living plan. Keep operationKey for the same change, and use a new one for any other change.",
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,

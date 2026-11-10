@@ -1,6 +1,6 @@
 import { parseAppManifest } from "@qorpera/cloud-client/interface-apps";
 import type { JsonValue } from "@qorpera/contracts";
-import { cloudAppTools } from "@qorpera/runtime/cloud-folder-app-tools";
+import { appLookNotes, cloudAppTools } from "@qorpera/runtime/cloud-folder-app-tools";
 import { cloudFolderFileTools } from "@qorpera/runtime/cloud-folder-file-tools";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
@@ -62,6 +62,34 @@ it("offers save_app and post_app as Company File tools", async () => {
 		["save_app", "company_file"],
 		["post_app", "company_file"],
 	]);
+});
+
+it("tells how to make a page worth opening, within the bytes a tool's description may hold", async () => {
+	const f = await fixture();
+	const tool = f.tool("save_app");
+	// The tool boundary refuses a tool whose description is over 4096 bytes, and with it every run: the lists of
+	// emblems and colours are part of this one, so a longer list can push it over.
+	expect(Buffer.byteLength(tool.description)).toBeLessThanOrEqual(4096);
+	for (const rule of [
+		"The first screen answers how this stands, without scrolling, on a laptop and on a phone",
+		"A page with nothing to look at is a document, not an app.",
+		"Fold nothing a member needs into <details> or closed rows.",
+		"A link does not open inside an app, whether to a file, an app or the web",
+		"Make it work at phone width (about 390 px)",
+		"The answer's look names what a quick read of the saved page found: fix it, unless it does not fit this page.",
+	])
+		expect(tool.description).toContain(rule);
+	// How a page reads live data is said on reads, which the schema's 64 KiB hold.
+	const schema = JSON.stringify(tool.inputSchema);
+	for (const call of [
+		"qorpera.read(path) gives a file's text",
+		"qorpera.table(name) gives {name, columns, rows}",
+		"qorpera.todos() gives every agent's todos as {agent, title, status, updatedAt}",
+		"qorpera.agents() gives each agent's name, role and working",
+		"qorpera.onChange(fn) calls fn when the company folder changed",
+		"A page only reads: it cannot change anything.",
+	])
+		expect(schema).toContain(call);
 });
 
 it("refuses arguments it cannot save before anything is read", async () => {
@@ -169,6 +197,68 @@ it("changes an app's files over the versions it reads, and keeps its owner and p
 		manifest: { name: "Sales, by week", owner: OWNER, posted: true },
 	});
 	expect(f.text("apps/sales/index.html")).toBe("<h1>New</h1>");
+});
+
+const LINKS_NOTE =
+	"a link does not open inside an app. Show the content itself, name a file by its path, and put links in your message.";
+const WORDS_NOTE =
+	"this reads as a document. Aim at about 300: show the state as numbers, marks, a chart or a diagram, and keep the long reasoning in its file.";
+const UNSHOWN_NOTE = "Nothing to look at, only text: show the main thing as a picture, a chart, a map or a diagram.";
+const words = (count: number) => Array.from({ length: count }, () => "word").join(" ");
+
+it("reads a page quickly and names what a member would trip on", () => {
+	expect(appLookNotes(PAGE)).toEqual([]);
+	// Links the frame cannot open: not a jump inside the page, not an anchor without a target, not markup in a comment.
+	expect(
+		appLookNotes(
+			'<a href="#top">Top</a> <a name="top">Here</a> <a href="folder:strategy/plan.md">Plan</a> <a class="x" href=https://example.com>Site</a> <!-- <a href="app:old">Old</a> -->',
+		),
+	).toEqual([`2 links: ${LINKS_NOTE}`]);
+	expect(appLookNotes('<a href="app:sales">Sales</a>')).toEqual([`1 link: ${LINKS_NOTE}`]);
+	// Folded sections, from three on.
+	const folded = "<details><summary>More</summary><p>Hidden</p></details>";
+	expect(appLookNotes(folded.repeat(2))).toEqual([]);
+	expect(appLookNotes(folded.repeat(3))).toEqual([
+		"3 folded sections (<details>): a member sees only what is open. Show what matters and leave the rest out.",
+	]);
+	// A page of text: a document past 500 words, and nothing to look at past 150 without a picture or a drawing.
+	expect(appLookNotes(`<p>${words(150)}</p>`)).toEqual([]);
+	expect(appLookNotes(`<p>${words(151)}</p>`)).toEqual([UNSHOWN_NOTE]);
+	expect(appLookNotes(`<p>${words(501)}</p>`)).toEqual([`501 words: ${WORDS_NOTE}`, UNSHOWN_NOTE]);
+	expect(appLookNotes(`<svg viewBox="0 0 10 10"></svg><p>${words(501)}</p>`)).toEqual([`501 words: ${WORDS_NOTE}`]);
+	expect(appLookNotes(`<p>${words(200)}</p><script>document.createElementNS(NS, "svg")</script>`)).toEqual([]);
+	expect(appLookNotes(`<p style="background:url(map.png)">${words(200)}</p>`)).toEqual([]);
+	// Only what a member reads counts: not scripts, styles, comments, tags or marks, also when one is never closed.
+	expect(
+		appLookNotes(`<style>${words(600)}</style><script>${words(600)}</script><p>A few words &amp; 1 · 2</p>`),
+	).toEqual([]);
+	expect(appLookNotes(`<p>One</p><!-- ${words(900)}`)).toEqual([]);
+	expect(appLookNotes(`<p>One</p><script>${words(900)}`)).toEqual([]);
+	expect(appLookNotes(`<p>One</p><a href="folder:a.md"`)).toEqual([]);
+});
+
+it("tells the agent what a quick read of the saved entry page found, as advice", async () => {
+	const f = await fixture();
+	const wordy = `<h1>Market</h1><p>${words(501)}</p><a href="folder:research/market.md">Source</a>`;
+	const made = read(
+		await f.call("save_app", save("market", "make-1", manifest("Market"), [{ path: "index.html", text: wordy }])),
+	);
+	expect(made).toMatchObject({
+		state: "applied",
+		created: true,
+		look: [`1 link: ${LINKS_NOTE}`, `503 words: ${WORDS_NOTE}`, UNSHOWN_NOTE],
+		next: "Saved. First fix what look names, unless it does not fit this page. Then show it to the member with a link in your message: [market](app:market). post_app shows it to every member in their apps.",
+	});
+	expect(f.text("apps/market/index.html")).toBe(wordy);
+	// A change that leaves the entry page as it is has nothing to read, and a calm page gets no notes.
+	const data = read(await f.call("save_app", save("market", "change-1", null, [{ path: "state.json", text: "{}" }])));
+	expect(data).not.toHaveProperty("look");
+	expect(data.next).toBe(
+		"Saved. Show it to the member with a link in your message: [market](app:market). post_app shows it to every member in their apps.",
+	);
+	const calm = read(await f.call("save_app", save("market", "change-2", null, [{ path: "index.html", text: PAGE }])));
+	expect(calm).toMatchObject({ state: "applied", created: false });
+	expect(calm).not.toHaveProperty("look");
 });
 
 it("marks an app as a concept with its cover, and keeps both when a later change leaves them out", async () => {
