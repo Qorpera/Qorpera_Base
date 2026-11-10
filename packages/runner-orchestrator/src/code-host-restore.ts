@@ -51,7 +51,9 @@ import { CodingControlBusy } from "./coding-executor.ts";
  * the bundle and opens the place, each in a job of its own:
  *
  *   close      prove the bundle, then write the mark `code/<owner>/<name>/restoring.json`. From its save on, every other
- *              job is refused there (`Run.prepare`, `CODE_HOST_RESTORE_IN_PROGRESS`).
+ *              job is refused there (`Run.prepare`, `CODE_HOST_RESTORE_IN_PROGRESS`). A bundle that was just taken of
+ *              the place so that nothing is lost (`fresh`) closes it only while the place's refs are still the
+ *              bundle's.
  *   set aside  move everything the place holds but the mark to `code/_set-aside/<owner>/at-<UTC>/<name>/`, one rename
  *              each. The mark says `emptied` only once a later job, which sees what the folder saved, finds nothing left.
  *   build      prove the bundle again, then make `repo.git` from it: the packs, every ref but the default branch, then
@@ -103,6 +105,7 @@ export interface CodeRestoringMark {
 const AT = /^\d{8}T\d{6}Z$/;
 const FIXED = /^[A-Z][A-Z0-9_]{2,80}$/;
 const FAILED = "CODE_HOST_RESTORE_FAILED";
+const REFS_MOVED = "CODE_HOST_RESTORE_REFS_MOVED";
 const BUNDLE_FAILED = "CODE_HOST_RESTORE_BUNDLE_FAILED";
 /** A mark is a few hundred bytes. */
 const MAX_MARK = 4096;
@@ -472,20 +475,36 @@ export interface CodeAreaClosed {
  * place holds is read by git or repaired. A mark already there stays: of this bundle, the restore goes on from it; of
  * another, it is given this bundle only while nothing of the other one is built in the place (its content is still
  * there, or the mark stands alone), and refused otherwise (`CODE_HOST_RESTORE_OTHER_BUNDLE`, naming the other). A mark
- * that is no mark of ours is refused (`CODE_HOST_RESTORE_MARK_UNREADABLE`). */
+ * that is no mark of ours is refused (`CODE_HOST_RESTORE_MARK_UNREADABLE`).
+ *
+ * `fresh` says the bundle was just taken of this place so that the restore loses nothing: it must still be all the
+ * place holds when the place is closed. So right before the mark is written, in this job, the place's refs are read
+ * as the bundle's job read them (the place made ready as for every job, then every ref by git), and their fingerprint
+ * (`codeRefsSha256`) must be the bundle's. A place that has moved on since (a change landed, a session committed on
+ * its branch, a ref came or went) or that is gone is refused, `CODE_HOST_RESTORE_REFS_MOVED`: no mark is written, and
+ * the caller takes a new bundle. A place that already has its mark is not asked: it has not been open since the mark
+ * was written. A bundle that was asked for by its name is not `fresh`: it closes whatever the place holds, since
+ * there the operator chose to go back. */
 export async function closeCodeArea(
 	job: CodeHostJob,
-	value: { repository: CloudCodingRepository; requestId: string; bundle: CodeRestoreBundle; at: string },
+	value: {
+		repository: CloudCodingRepository;
+		requestId: string;
+		bundle: CodeRestoreBundle;
+		at: string;
+		fresh: boolean;
+	},
 	source: AsyncIterable<Uint8Array>,
 	options: { fsckMs?: number } = {},
 ): Promise<CodeAreaClosed> {
-	const input = closed(value, ["repository", "requestId", "bundle", "at"]);
+	const input = closed(value, ["repository", "requestId", "bundle", "at", "fresh"]);
 	const repository = keptRepositoryOf(input.repository),
 		bundle = bundleOf(input.bundle),
 		bytes = sourceOf(source),
 		fsckMs = fsckMsOf(options),
-		{ requestId, at } = input;
-	if (!isUuid(requestId) || typeof at !== "string" || !AT.test(at)) throw new Error("INVALID_CODE_HOST_JOB");
+		{ requestId, at, fresh } = input;
+	if (!isUuid(requestId) || typeof at !== "string" || !AT.test(at) || typeof fresh !== "boolean")
+		throw new Error("INVALID_CODE_HOST_JOB");
 	return withJob(job, repository, async (run) => {
 		await prove(run, bundle, bytes, fsckMs);
 		const { there, mark } = await lookAt(run);
@@ -497,6 +516,11 @@ export async function closeCodeArea(
 			}
 			const { step, setAside, previousMainSha } = mark;
 			return { state: "present", at: mark.at, step, setAside, previousMainSha };
+		}
+		if (fresh) {
+			const whole = there && (await run.prepare()).seeded;
+			if (!whole || codeRefsSha256((await keptRefs(run)).refs) !== bundle.refsSha256)
+				throw new CodeHostRefusal(REFS_MOVED, [run.area]);
 		}
 		// Where the default branch stands, for the record: from its own file, never by git in a place that may be damaged.
 		let previousMainSha: string | null = null;
@@ -1018,8 +1042,10 @@ interface RestoreRun {
 	 * `emptied`: the place opens only once it is built. */
 	stage: "open" | "closed" | "emptied";
 	/** The bundle the place is closed for, once this run began to close it. */
-	bundle?: string;
+	bundle?: string | undefined;
 	previousMainSha: string | null;
+	/** The time in the name of the `fresh` bundle this run took last. */
+	freshAt?: number;
 }
 
 /** A restore request done, step by step (the module's comment has the steps). Before each job, with the job's place in
@@ -1031,11 +1057,13 @@ interface RestoreRun {
  *   verify    `verifyCodeBundle` on the stored bundle.
  *   restore   `fresh` first takes a new bundle of the place as it stands (nightly care's check and bundle jobs) into
  *             the store. A claim that comes again goes on with that bundle only when the place has not been open
- *             since: otherwise it takes a new one (`#earlier`). Then close, set aside (run until a job sees the place
- *             emptied), build and open. The job that opens the place has the restore recorded
- *             (`qorpera_code_restore_record`) before its mark goes: the request's finish, which comes after the job
- *             has saved, records nothing. With `damaged: remove`, the set-aside copy is removed after the place is
- *             open again, never before.
+ *             since: otherwise it takes a new one (`#earlier`). The close of a `fresh` request writes its mark only
+ *             when the place's refs are still the bundle's (`CODE_HOST_RESTORE_REFS_MOVED` otherwise): then one more
+ *             bundle is taken and the close tried once more, and a place that moved again ends the request `busy`
+ *             with nothing closed. Then set aside (run until a job sees the place emptied), build and open. The job
+ *             that opens the place has the restore recorded (`qorpera_code_restore_record`) before its mark goes:
+ *             the request's finish, which comes after the job has saved, records nothing. With `damaged: remove`,
+ *             the set-aside copy is removed after the place is open again, never before.
  *   discard   `discardSetAside` on the request's path.
  *
  * `run` never throws. A step whose answer is not the one expected ends the request `failed`, with a code that names
@@ -1218,19 +1246,43 @@ export class CodeRestore {
 			run.stage = "emptied";
 			setAside = typeof progress.setAside === "string" ? progress.setAside : null;
 		} else {
-			run.step = "close";
-			const shut = await this.#job(run, signal, async (job) => {
-				const stored = await this.#stored(run, name, job.signal);
-				run.bundle = name;
-				run.stage = "closed";
-				const at = `${new Date(this.#now()).toISOString().slice(0, 19).replace(/[-:]/g, "")}Z`;
-				return await closeCodeArea(
-					job,
-					{ repository, requestId: request.requestId, bundle: stored.bundle, at },
-					stored.pieces,
-					this.#fsck,
-				);
-			});
+			let shut: CodeAreaClosed | undefined;
+			for (let again = false; !shut; again = true) {
+				const bundle = name;
+				run.step = "close";
+				try {
+					shut = await this.#job(run, signal, async (job) => {
+						const stored = await this.#stored(run, bundle, job.signal);
+						run.bundle = bundle;
+						run.stage = "closed";
+						const at = `${new Date(this.#now()).toISOString().slice(0, 19).replace(/[-:]/g, "")}Z`;
+						return await closeCodeArea(
+							job,
+							{
+								repository,
+								requestId: request.requestId,
+								bundle: stored.bundle,
+								at,
+								fresh: request.bundle === "fresh",
+							},
+							stored.pieces,
+							this.#fsck,
+						);
+					});
+				} catch (error) {
+					if (!(error instanceof CodeHostRefusal) || error.code !== REFS_MOVED) throw error;
+					// Only a `fresh` close refuses so, and it wrote nothing: the place is open, as it was, and has moved on
+					// since the bundle was taken (a change landed, a session committed). One more bundle of the place as it
+					// stands, and one more close. A place that has moved again by then is left alone: the request is put off,
+					// and its next claim finds the place open and starts from a new bundle (`#earlier`).
+					run.stage = "open";
+					run.bundle = undefined;
+					this.#report({ event: "code-restore", step: "refs-moved", ...run.named, bundle });
+					if (again) throw new RestoreStopped("busy");
+					name = await this.#fresh(run, signal);
+					progress.bundle = name;
+				}
+			}
 			progress.at = shut.at;
 			run.previousMainSha ??= shut.previousMainSha;
 			this.#report({
@@ -1375,7 +1427,11 @@ export class CodeRestore {
 				),
 			);
 			if (made?.refsSha256 !== checked.refsSha256) throw new Error("CODE_RESTORE_ANSWER_INVALID");
-			const createdAt = new Date(this.#now()).toISOString(),
+			// A bundle's name is its time to the second and main's commit. The second bundle of a run (the place moved
+			// on before the close) may be of the same main within the same second: it is named a second on.
+			const at = Math.max(this.#now(), (run.freshAt ?? Number.NEGATIVE_INFINITY) + 1000);
+			run.freshAt = at;
+			const createdAt = new Date(at).toISOString(),
 				name = codeBundleName(createdAt, checked.mainSha);
 			await begun.commit(
 				name,

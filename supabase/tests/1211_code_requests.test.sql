@@ -1574,15 +1574,17 @@ begin
 end $$;
 
 -- company/six: a restore from `fresh` that is claimed twice, with the place open in between. Its first claim took a
--- bundle and closed the place; the job that sets the place aside was let go and failed before it moved anything, the
--- place was opened again, and the word that the request failed never reached the kernel. A change lands in the open
--- place. The executor of the next claim reads the place, takes a new bundle of it as it stands, and restores from that:
--- the bundle's name in the progress changes between two claims of one request, the record is made with the new one,
--- and main as restored is main as it was. No change is lost.
+-- bundle, found at the close that the place had moved on, took one more and closed the place with that. The job that
+-- sets the place aside was let go and failed before it moved anything, the place was opened again, and the word that
+-- the request failed never reached the kernel. A change lands in the open place. The executor of the next claim reads
+-- the place, takes a new bundle of it as it stands, and restores from that. So the bundle's name in the progress
+-- changes inside a claim and between two claims of one request, the record is made with the last one, and main as
+-- restored is main as it was. No change is lost.
 insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name)
 values (pg_temp.rec_here(), '92400000-0000-4000-8000-000000000010', 'company', 'six');
 do $$
 declare v jsonb; v_item jsonb; v_id uuid; v_first uuid; v_second uuid; q public.qorpera_code_requests%rowtype;
+	v_moved text := '20261110T155959Z-' || left(pg_temp.rec_sha('k2'), 12);
 	v_old text := '20261110T160000Z-' || left(pg_temp.rec_sha('k2'), 12);
 	v_new text := '20261110T170000Z-' || left(pg_temp.rec_sha('k3'), 12);
 	v_closed text := '20261110T160100Z'; v_again text := '20261110T170100Z';
@@ -1594,10 +1596,18 @@ begin
 	v_id := pg_temp.req_restore('restore', 'fresh', 'keep', 'A drill.', 'six');
 	v_item := pg_temp.req_claim() -> 0;
 	v_first := (v_item ->> 'token')::uuid;
-	-- The first claim: the bundle's two jobs, the close, and the job that sets the place aside is let go.
+	-- The first claim: the bundle's two jobs and the close. That close writes nothing: a session's branch had moved
+	-- since the bundle was taken. The executor takes one more bundle (two jobs, which still carry the first one's
+	-- name) and closes with that one: the name changes inside one claim too, and a step that names `fresh` after one
+	-- that named `close` moves nothing and ends no download. Then the job that sets the place aside is let go.
 	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_item ->> 'bundle' = 'fresh' and v_item -> 'progress' = 'null'::jsonb
 		and pg_temp.req_step(v_id, v_first, '{"step":"fresh"}') ->> 'state' = 'go'
 		and pg_temp.req_step(v_id, v_first, '{"step":"fresh"}') ->> 'state' = 'go'
+		and pg_temp.req_step(v_id, v_first, jsonb_build_object('bundle', v_moved, 'step', 'close')) ->> 'state' = 'go'
+		and pg_temp.req_step(v_id, v_first, jsonb_build_object('bundle', v_moved, 'step', 'fresh')) ->> 'state' = 'go'
+		and pg_temp.req_step(v_id, v_first, jsonb_build_object('bundle', v_moved, 'step', 'fresh')) ->> 'state' = 'go'
+		and (pg_temp.req_row(v_id)).progress = jsonb_build_object('bundle', v_moved, 'step', 'fresh')
+		and (pg_temp.rec_shop('six')).artifact_generation = 0
 		and pg_temp.req_step(v_id, v_first, jsonb_build_object('bundle', v_old, 'step', 'close')) ->> 'state' = 'go'
 		and pg_temp.req_step(v_id, v_first, jsonb_build_object('bundle', v_old, 'at', v_closed, 'step', 'set-aside')) ->> 'state' = 'go',
 		'six''s first claim: ' || coalesce(v_item::text, 'none'));

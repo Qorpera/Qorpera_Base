@@ -235,10 +235,21 @@ const nth = (n: number, matches: (command: CodeHostCommand) => boolean) => {
 	return (command: CodeHostCommand) => matches(command) && ++seen === n;
 };
 
-const close = (f: Fixture, b: Bundled, job = f.job, more: Partial<{ requestId: string; at: string }> = {}) =>
+const close = (
+	f: Fixture,
+	b: Bundled,
+	job = f.job,
+	more: Partial<{ requestId: string; at: string; fresh: boolean }> = {},
+) =>
 	closeCodeArea(
 		job,
-		{ repository: kept, requestId: more.requestId ?? randomUUID(), bundle: b.bundle, at: more.at ?? AT },
+		{
+			repository: kept,
+			requestId: more.requestId ?? randomUUID(),
+			bundle: b.bundle,
+			at: more.at ?? AT,
+			fresh: more.fresh ?? false,
+		},
 		pieces(b.bytes),
 	);
 const setAside = (f: Fixture, b: Bundled, job = f.job) =>
@@ -470,7 +481,7 @@ describe("code host: restore of a repository kept in Qorpera from a stored bundl
 		await expect(
 			closeCodeArea(
 				f.job,
-				{ repository: kept, requestId, bundle: b.bundle, at: AT },
+				{ repository: kept, requestId, bundle: b.bundle, at: AT, fresh: false },
 				pieces(b.bytes.subarray(0, b.bytes.length - 1)),
 			),
 		).rejects.toMatchObject({ code: "CODE_HOST_RESTORE_BUNDLE_DIFFERS" });
@@ -569,9 +580,53 @@ describe("code host: restore of a repository kept in Qorpera from a stored bundl
 		for (const bad of [
 			() => close(f, b, f.job, { at: "2026-11-10T16:14:55Z" }),
 			() => close(f, b, f.job, { requestId: "request" }),
+			() => close(f, b, f.job, { fresh: "yes" as never }),
 			() => readCodeAreaMark(f.job, { repository: kept, bundle: b.bundle.name } as never),
 		])
 			await expect(bad()).rejects.toThrow("INVALID_CODE_HOST_JOB");
+		expect(await readdir(f.scratchRoot)).toEqual([]);
+	});
+
+	it("close, fresh: a place whose refs are not the bundle's any more is not closed, and nothing is written; a bundle asked for by its name closes whatever the place holds", async () => {
+		const f = await fixture(),
+			s = await shop(f),
+			b = await bundled(f);
+		const reopen = () => reopenCodeArea(f.job, { repository: kept, bundle: b.bundle.name });
+		const moved = { code: "CODE_HOST_RESTORE_REFS_MOVED", paths: [AREA] };
+		// The bundle was just taken of the place, and the place is still all it holds: it closes.
+		expect(await close(f, b, f.job, { fresh: true })).toMatchObject({
+			state: "closed",
+			previousMainSha: s.two.mainSha,
+		});
+		expect(await reopen()).toEqual({ state: "reopened" });
+		// A session commits on its branch: main is where it was, and the refs are not the bundle's any more. The proof
+		// of the bundle itself still holds, and the place is left as it is: no mark, nothing changed.
+		const more = await s.second.commit({ "more.txt": "more\n" }, "more");
+		let before = await f.listing(f.companyRoot);
+		await expect(close(f, b, f.job, { fresh: true })).rejects.toMatchObject(moved);
+		expect(await f.listing(f.companyRoot)).toEqual(before);
+		expect(await exists(f.mark)).toBe(false);
+		// A change lands: the same.
+		expect(await land(f, s.second, more)).toMatchObject({ state: "fast-forward", mainSha: more });
+		before = await f.listing(f.companyRoot);
+		await expect(close(f, b, f.job, { fresh: true })).rejects.toMatchObject(moved);
+		expect(await f.listing(f.companyRoot)).toEqual(before);
+		// Asked for by its name, the same bundle closes the place: there the operator chose to go back.
+		expect(await close(f, b)).toMatchObject({ state: "closed", previousMainSha: more });
+		// A place that is closed already is not asked again: it has not been open since its mark was written.
+		expect(await close(f, b, f.job, { fresh: true })).toMatchObject({ state: "present" });
+		expect(await reopen()).toEqual({ state: "reopened" });
+		expect(await f.listing(f.companyRoot)).toEqual(before);
+		// A new bundle of the place as it stands closes it.
+		const again = await bundled(f, "2026-11-10T02:14:55.000Z");
+		expect(await close(f, again, f.job, { fresh: true })).toMatchObject({ state: "closed", previousMainSha: more });
+		expect(await reopenCodeArea(f.job, { repository: kept, bundle: again.bundle.name })).toEqual({
+			state: "reopened",
+		});
+		// A place that is gone holds nothing of the bundle: no folder is made for a mark.
+		await rm(f.code, { recursive: true });
+		await expect(close(f, again, f.job, { fresh: true })).rejects.toMatchObject(moved);
+		expect(await exists(f.code)).toBe(false);
 		expect(await readdir(f.scratchRoot)).toEqual([]);
 	});
 
@@ -1076,6 +1131,8 @@ describe("CodeRestore: a restore request, step by step", () => {
 			},
 		};
 		const events: Record<string, unknown>[] = [];
+		/** The executor's clock: it stands still unless a test moves it. */
+		const clock = { now: NOW };
 		const restore = new CodeRestore({
 			control,
 			hosts,
@@ -1085,7 +1142,7 @@ describe("CodeRestore: a restore request, step by step", () => {
 			owner: "coding-node-1",
 			machineIdSha256: "d".repeat(64),
 			report: (event) => events.push(event),
-			now: () => NOW,
+			now: () => clock.now,
 		});
 		/** A bundle put in the store as nightly care puts it. */
 		const keep = async (b: Bundled) => {
@@ -1114,6 +1171,7 @@ describe("CodeRestore: a restore request, step by step", () => {
 			store,
 			kernel,
 			jobs,
+			clock,
 			restore,
 			events,
 			errors,
@@ -1241,7 +1299,8 @@ describe("CodeRestore: a restore request, step by step", () => {
 			x = executor(f);
 		const name = await x.keep(await bundled(f));
 		const refs = await refsOf(f);
-		// Work after the bundle.
+		// Work after the bundle: main and the refs have moved on from it. Asked for by its name, the bundle closes the
+		// place all the same (only `fresh` is held to the place as it stands): the operator chose to go back.
 		const three = await land(f, s.first, await s.first.commit({ "later.txt": "later\n" }, "later"));
 		const late = await session(f, three.mainSha);
 		const before = await f.listing(f.companyRoot);
@@ -1905,6 +1964,201 @@ describe("CodeRestore: a restore request, step by step", () => {
 		// The first claim's bundle is still the one stored: an operator restores from it by its name.
 		expect((await readdir(x.folder)).sort()).toEqual([`${first}.bundle`, `${first}.json`]);
 		expect(await readdir(f.scratchRoot)).toEqual([]);
+	});
+
+	/** What happens to the place each time a `fresh` bundle has just been taken of it, before the job that closes the
+	 * place: one of `moves` after each bundle job, in order. (The answer of nightly care's bundle job names git's
+	 * version.) */
+	const afterEachBundle = (x: ReturnType<typeof executor>, moves: (() => Promise<unknown>)[]) => {
+		x.jobs.after = async (answer) => {
+			if (typeof (answer as { gitVersion?: unknown } | undefined)?.gitVersion === "string") await moves.shift()?.();
+		};
+	};
+	/** A `fresh` bundle's name: taken at the executor's clock, or a second on for the second one of a claim. */
+	const taken = (mainSha: string, later = 0) => codeBundleName(new Date(NOW + later).toISOString(), mainSha);
+
+	it("fresh: a change that lands between the bundle and the close is seen by the close, which writes nothing; a second bundle is taken, and the restored main holds the landing", async () => {
+		const f = await fixture(),
+			s = await shop(f),
+			x = executor(f);
+		let moved: CodeAreaRef[] = [];
+		afterEachBundle(x, [
+			async () => {
+				expect(await land(f, s.second, s.work)).toMatchObject({ state: "fast-forward", mainSha: s.work });
+				moved = await refsOf(f);
+			},
+		]);
+		const first = taken(s.two.mainSha),
+			name = taken(s.work, 1000),
+			asked = request();
+		expect(await x.run(asked)).toEqual({
+			schema: SCHEMA,
+			state: "done",
+			result: "restored",
+			bundle: name,
+			mainSha: s.work,
+			previousMainSha: s.work,
+			refsSha256: codeRefsSha256(moved),
+			refs: moved.length,
+			stranded: [],
+			movedTo: ASIDE,
+		});
+		expect(x.errors()).toEqual([]);
+		// The first close was let go and wrote nothing. The second bundle's two jobs still carry the first one's name;
+		// the second close brings the new one, and the restore is from that alone.
+		expect(x.kernel.steps).toEqual([
+			{ step: "fresh" },
+			{ step: "fresh" },
+			{ step: "close", bundle: first },
+			{ step: "fresh", bundle: first },
+			{ step: "fresh", bundle: first },
+			{ step: "close", bundle: name },
+			{ step: "set-aside", bundle: name, at: AT },
+			{ step: "set-aside", bundle: name, at: AT },
+			{ step: "build", bundle: name, at: AT, setAside: ASIDE },
+			{ step: "open", bundle: name, at: AT, setAside: ASIDE, built: true },
+		]);
+		expect(x.jobs.yields).toEqual([true, true, true, true, true, true, false, false, false, false]);
+		expect(x.events.filter((event) => event.step === "refs-moved")).toEqual([
+			expect.objectContaining({ event: "code-restore", requestId: asked.requestId, bundle: first }),
+		]);
+		// The record names main as restored and main as it was, and they are one commit: the kernel finds no change
+		// lost from that (1211, company/six).
+		expect(x.kernel.records.map((record) => record.args.p_restored)).toEqual([
+			{ schema: "qorpera.code-restore-record/v1", bundle: name, mainSha: s.work, previousMainSha: s.work },
+		]);
+		expect(await f.inRepo("rev-parse", "refs/heads/main")).toBe(s.work);
+		expect(await readFile(join(f.code, "main/work.txt"), "utf8")).toBe("work\n");
+		expect(await refsOf(f)).toEqual(moved);
+		expect(await exists(f.mark)).toBe(false);
+		expect((await readdir(x.folder)).sort()).toEqual(
+			[`${first}.bundle`, `${first}.json`, `${name}.bundle`, `${name}.json`].sort(),
+		);
+		expect(await readdir(f.scratchRoot)).toEqual([]);
+	});
+
+	it("fresh: a session's branch that moves between the bundle and the close is seen the same way, by the refs' fingerprint, though main stands still", async () => {
+		const f = await fixture(),
+			s = await shop(f),
+			x = executor(f);
+		let tip = "",
+			moved: CodeAreaRef[] = [];
+		afterEachBundle(x, [
+			async () => {
+				tip = await s.second.commit({ "more.txt": "more\n" }, "more");
+				moved = await refsOf(f);
+			},
+		]);
+		// Main is the same commit in both bundles, and both are named within one second: the second one's name is a
+		// second on.
+		const first = taken(s.two.mainSha),
+			name = taken(s.two.mainSha, 1000);
+		expect(await x.run(request())).toEqual({
+			schema: SCHEMA,
+			state: "done",
+			result: "restored",
+			bundle: name,
+			mainSha: s.two.mainSha,
+			previousMainSha: s.two.mainSha,
+			refsSha256: codeRefsSha256(moved),
+			refs: moved.length,
+			stranded: [],
+			movedTo: ASIDE,
+		});
+		expect(x.errors()).toEqual([]);
+		expect(x.kernel.steps.map((step) => [step.step, step.bundle])).toEqual([
+			["fresh", undefined],
+			["fresh", undefined],
+			["close", first],
+			["fresh", first],
+			["fresh", first],
+			["close", name],
+			["set-aside", name],
+			["set-aside", name],
+			["build", name],
+			["open", name],
+		]);
+		expect(x.events.filter((event) => event.step === "refs-moved")).toHaveLength(1);
+		// The session's commit is in the restored repository, on its branch: its next turn gets it back.
+		expect(moved.some((ref) => ref.sha === tip)).toBe(true);
+		expect(await refsOf(f)).toEqual(moved);
+		expect(
+			await addCodeWorktree(f.job, { repository: kept, workerId: s.second.workerId, baseSha: s.two.mainSha }),
+		).toMatchObject({ state: "added", headSha: tip });
+		expect(await exists(f.mark)).toBe(false);
+	});
+
+	it("fresh: refs that move again before the second close end the request as put off, with the place untouched and open; the next claim starts from a new bundle", async () => {
+		const f = await fixture(),
+			s = await shop(f),
+			x = executor(f);
+		let tip = "",
+			moved: CodeAreaRef[] = [],
+			held: string[] = [];
+		afterEachBundle(x, [
+			() => s.second.commit({ "more.txt": "more\n" }, "more"),
+			async () => {
+				tip = await s.second.commit({ "still-more.txt": "still more\n" }, "still more");
+				moved = await refsOf(f);
+				held = await f.listing(f.companyRoot);
+			},
+		]);
+		const first = taken(s.two.mainSha),
+			second = taken(s.two.mainSha, 1000),
+			asked = request();
+		expect(await x.run(asked)).toEqual({ schema: SCHEMA, state: "busy" });
+		// Two closes were let go, and neither wrote anything: no mark, nothing aside, nothing recorded. No job had to
+		// open the place again: it was never closed.
+		expect(x.kernel.steps.map((step) => [step.step, step.bundle])).toEqual([
+			["fresh", undefined],
+			["fresh", undefined],
+			["close", first],
+			["fresh", first],
+			["fresh", first],
+			["close", second],
+		]);
+		expect(x.jobs.yields).toEqual([true, true, true, true, true, true]);
+		expect(await f.listing(f.companyRoot)).toEqual(held);
+		expect(await exists(f.mark)).toBe(false);
+		expect(await exists(join(f.companyRoot, "code/_set-aside"))).toBe(false);
+		expect(x.kernel.records).toEqual([]);
+		expect(x.errors()).toEqual([]);
+		expect(x.events.filter((event) => event.step === "refs-moved").map((event) => event.bundle)).toEqual([
+			first,
+			second,
+		]);
+		expect(x.events.find((event) => event.step === "put-off")).toMatchObject({ at: "close", place: null });
+		expect((await checkCodeArea(f.job, { repository: kept })).state).toBe("present");
+		// Two minutes later the request is claimed again, with what the kernel saved. The place holds no mark, so the
+		// claim takes a new bundle of the place as it stands; nothing moves this time, and the restore is from that.
+		const saved = x.kernel.steps.at(-1) as Record<string, unknown>;
+		expect(saved).toEqual({ step: "close", bundle: second });
+		x.clock.now += 120_000;
+		const third = taken(s.two.mainSha, 120_000),
+			aside = codeSetAsidePath(kept, "20261110T161655Z");
+		x.kernel.steps.length = 0;
+		expect(await x.run({ ...asked, token: randomUUID(), progress: saved })).toMatchObject({
+			state: "done",
+			result: "restored",
+			bundle: third,
+			mainSha: s.two.mainSha,
+			previousMainSha: s.two.mainSha,
+			refsSha256: codeRefsSha256(moved),
+			movedTo: aside,
+		});
+		expect(x.kernel.steps.map((step) => [step.step, step.bundle])).toEqual([
+			["fresh", second],
+			["fresh", second],
+			["fresh", second],
+			["close", third],
+			["set-aside", third],
+			["set-aside", third],
+			["build", third],
+			["open", third],
+		]);
+		expect(await refsOf(f)).toEqual(moved);
+		expect(moved.some((ref) => ref.sha === tip)).toBe(true);
+		expect(await exists(f.mark)).toBe(false);
 	});
 
 	it("a record that was not heard, a lease that is gone and an open that did not save each leave the place closed for the next claim, which opens it with the same record", async () => {

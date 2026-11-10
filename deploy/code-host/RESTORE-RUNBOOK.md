@@ -51,6 +51,13 @@ again), changes may have landed there meanwhile. The request then takes a new bu
 before it closes it, and `progress.bundle` names the new one. If the new bundle fails, the request ends
 `FRESH_BUNDLE_FAILED` like a first try and nothing is moved; the earlier bundle is still stored under its name.
 
+A `fresh` bundle must still be all the place holds at the moment the place is closed. The job that closes the
+place reads the place's refs right before it writes `restoring.json`, and compares them with the bundle's (main,
+every session's branch, every other ref). If anything moved in between (a change landed, a session committed), it
+closes nothing, the log says `refs-moved`, and the request takes one more bundle and tries once more. If the place
+has moved again by then, the request is put off for two minutes with the place open and untouched, and starts from
+a new bundle. A bundle you ask for by its name is not compared: there you chose to go back.
+
 What a restore brings back, and what not:
 
 | | |
@@ -218,9 +225,10 @@ Two codes come from the database, not from the executor:
   `progress` and the place, and ask again as the table above says.
 - `NOT_BUILT`: this executor has no restore. Nothing was touched.
 
-The executor logs each step as `code-restore` (steps `fresh`, `closed`, `set-aside`, `built`, `recorded`,
-`opened`, `reopened`, `discarded`, `put-off`, `ended`) and each failure as `code-restore-error`. The `recorded` line
-carries what the database found: `change`, `boundary`, `keptThrough`, `lost`, `back`.
+The executor logs each step as `code-restore` (steps `fresh`, `refs-moved`, `closed`, `set-aside`, `built`,
+`recorded`, `opened`, `reopened`, `discarded`, `put-off`, `ended`) and each failure as `code-restore-error`. The
+`recorded` line carries what the database found: `change`, `boundary`, `keptThrough`, `lost`, `back`. `refs-moved`
+names the `fresh` bundle that was not used because the place had moved on before it was closed.
 
 While a place is closed, nightly care cannot look at it: the registry's `problem` reads
 `CHECK_FAILED:CODE_HOST_RESTORE_IN_PROGRESS` if care came by. That clears with care's next run after the restore.
