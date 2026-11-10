@@ -60,6 +60,7 @@ import {
 	cloudAgentFolderPlace,
 	cloudCompanyContextTool,
 	cloudNativeStableInstructions,
+	cloudNativeTurnCorrection,
 	compileCloudNativeCompanyInstructions,
 	composeCloudContinuation,
 	composeCloudNativeCompanyPrompt,
@@ -79,9 +80,11 @@ import { runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts
 import {
 	CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 	CLOUD_RUN_ROW_READ_MS,
+	CLOUD_RUN_ROW_WRITE_MS,
 	type CloudNativeToolAuthorityReader,
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
+	type CloudNativeToolRun,
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
@@ -648,13 +651,25 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				});
 				return input;
 			};
+			// The run, once its tools are made: a send and a card are asked again through it (below).
+			let toolRun: CloudNativeToolRun | undefined;
+			/* A write of the run's public voice: a send, or a card's append. Both are safe to repeat (a send replays by
+			 * its idempotency key, a card by its event id), and both take the run's row. So each try waits as long as the
+			 * database may run it, and a lost or late answer is asked again while the run's authority holds, as a
+			 * receipt's begin and completion are (CLOUD_RUN_ROW_WRITE_MS). One try of 5 s used to stand here: a database
+			 * slower than that left the model with "outcome unconfirmed" for a message that may have been stored, and a
+			 * model that did not repeat the call failed its run as one that never answered (reliability audit, 10
+			 * November 2026, A5). */
+			const publicWrite = async <T>(write: (requestSignal: AbortSignal) => Promise<T>): Promise<T> =>
+				toolRun
+					? (await toolRun.retry(write, signal, CLOUD_RUN_ROW_WRITE_MS, CLOUD_RUN_ROW_WRITE_MS)).value
+					: cloudToolRequest(write, signal, CLOUD_RUN_ROW_WRITE_MS);
 			const mouth = new CloudAgentMouth(
 				binding.runId,
 				async (input) => {
 					if (context.identity.sessionId === null) throw new Error("This run has no conversation recipient");
-					const receipt = await cloudToolRequest(
-						(requestSignal) => this.#control.sendMessage(request, input, requestSignal),
-						signal,
+					const receipt = await publicWrite((requestSignal) =>
+						this.#control.sendMessage(request, input, requestSignal),
 					);
 					if (receipt.sessionId !== context.identity.sessionId) throw new Error("Cloud send audience changed");
 					return receipt;
@@ -746,9 +761,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					});
 					const append = control.appendInteractionRequest;
 					if (!append) throw new Error("Cloud cards are unavailable on this control plane");
-					const card = await cloudToolRequest(
-						(requestSignal) => append.call(control, request, { eventId, data: input.data }, requestSignal),
-						signal,
+					const card = await publicWrite((requestSignal) =>
+						append.call(control, request, { eventId, data: input.data }, requestSignal),
 					);
 					if (card.sessionId !== context.identity.sessionId) throw new Error("Cloud card audience changed");
 					const receipt = await mouth.send(sentence);
@@ -774,6 +788,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				// The run's own offline commands (F3 4d): its computer tools add each one it starts, and its action review
 				// lets input to them through as it lets their start through.
 				const offlineShells = new Set<string>();
+				// A worker's report, once the folder saved it: its run's closing act (turnCorrection, below).
+				let workerReported = false;
 				const result = await runCloudNativeRunToolSession({
 					observability,
 					binding,
@@ -814,6 +830,25 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					// The compactor serves the run's log too; the conversation's lines close after the agent's turn.
 					compactor,
 					...(lines && viewed ? { closing: (closingSignal) => lines.close(closingSignal) } : {}),
+					// The turn completed: when it left the run's closing act undone (its final send, a worker's report, a
+					// dynamic routine's decision), the model is told so in one more turn, once. What that turn leaves undone
+					// fails the run as before (mouth.finish below; the kernel, for a report or a decision).
+					turnCorrection: async () => {
+						const sent = await mouth.settled();
+						const worker = cloudWorkerToolFilter(wake).isWorker;
+						const canSend = context.identity.sessionId !== null && wake.policy.final !== "forbidden";
+						return cloudNativeTurnCorrection({
+							worker,
+							reported: workerReported,
+							canSend,
+							finalRequired: wake.policy.final === "required",
+							sent: sent.messageCount,
+							final: sent.final,
+							// As the tools below offer it.
+							askOffered: canSend && !worker && (wake.kind !== "room" || cloudWakeIsOwnThread(wake)),
+							routineDecisionOwed,
+						});
+					},
 					command: this.#command,
 					binarySha256: this.#sha256,
 					identityRoot,
@@ -898,6 +933,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						// Contract 13: a worker reads, works and reports to its parent. It has no mouth, no
 						// coworker channel and no delegation; an ordinary company run is the dispatcher.
 						const work = cloudWorkerToolFilter(wake);
+						// From here a send and a card are asked again through the run (publicWrite).
+						toolRun = run;
 						// Machines are the company's: one gateway for the run's machine tools and for share_app, which starts
 						// its link program on the machine itself (v195).
 						const machineGateway =
@@ -1117,7 +1154,20 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 														? { outputFolder: wake.payload.outputFolder }
 														: {}),
 												}),
-											}),
+											}).map(
+												(tool): CloudNativeTool =>
+													tool.source === "worker" && tool.name === "report_work"
+														? {
+																...tool,
+																// The worker's saved report is noted: a turn that ends without one is asked for it.
+																execute: async (value, toolContext) => {
+																	const content = await tool.execute(value, toolContext);
+																	if (content.completesTurn === true) workerReported = true;
+																	return content;
+																},
+															}
+														: tool,
+											),
 										]
 									: []),
 								...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),

@@ -266,7 +266,7 @@ async function fixture() {
 			payload: null,
 		},
 	};
-	return { ...f, runtime, codingCall, observations, identityRoot, request };
+	return { ...f, runtime, codingCall, observations, identityRoot, request, evidence };
 }
 
 it("fails a coding turn whose model ends with text and no submission with its own code, tagged at its stage", async () => {
@@ -290,6 +290,11 @@ it("fails a coding turn whose model ends with text and no submission with its ow
 		),
 	).toBe(true);
 	expect(f.codingCall.mock.calls.map(([method]) => method)).not.toContain("qorpera_submit_coding_turn");
+	// Before it failed, the turn was told once what it had left undone, in one more turn of the same thread (10
+	// November 2026); the model ended that one with text again.
+	const corrected = JSON.parse(await readFile(`${f.evidence}.correction`, "utf8"));
+	expect(corrected.turns).toBe(2);
+	expect(corrected.turn.input[0].text).toContain("Your turn ended without coding_finish or coding_ask");
 });
 
 it("carries CODING_TURN_ENDED_WITHOUT_SUBMISSION to the runner through the host's harness wrapper", async () => {

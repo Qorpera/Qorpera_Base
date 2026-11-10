@@ -831,6 +831,47 @@ async function readCloudRunCard(
 	return card;
 }
 
+/**
+ * What the agent is told in one more turn of the same thread when its turn ended with the run's closing act undone
+ * (cloud-codex-tool-session.ts `turnCorrection`; 10 November 2026: a Co-Founder read three files for a member's
+ * question, ended its turn on four tokens of private text, and its run failed with the member unanswered). The
+ * closing reminder above the prompt says the same before the turn; this says it after, once, when it was not done.
+ * Undefined when the run owes nothing: it ended as it may.
+ * - A worker owes its report (`reported`: report_work answered that the folder saved it).
+ * - A run with a public voice (`canSend`) owes a final send when its wake requires one, and also once it has sent
+ *   anything: a progress message is never a run's last word (CloudAgentMouth.finish).
+ * - A dynamic routine's run owes its decision first: the kernel refuses its final send and its completion without it.
+ */
+export function cloudNativeTurnCorrection(state: {
+	worker: boolean;
+	reported: boolean;
+	canSend: boolean;
+	finalRequired: boolean;
+	sent: number;
+	final: boolean;
+	askOffered: boolean;
+	routineDecisionOwed: boolean;
+}): string | undefined {
+	if (state.worker)
+		return state.reported
+			? undefined
+			: "Your turn ended without report_work, so the agent that started you has heard nothing: what you write outside your tools stays private. Call report_work now, once, with your outcome and summary. This is the last turn of this run: a worker run that ends without a report counts as failed.";
+	const owesFinal = state.canSend && !state.final && (state.finalRequired || state.sent > 0);
+	if (!owesFinal && !state.routineDecisionOwed) return undefined;
+	const decide =
+		"this run is one occurrence of your dynamic routine and has not decided it: call decide_routine now, with next or conclude.";
+	if (!owesFinal) return `Your turn ended too early: ${decide} This is the last turn of this run.`;
+	const card = state.askOffered ? " (a card from ask_member counts as one)" : "";
+	return [
+		state.sent > 0
+			? "Your turn ended after a progress message but without a final send, and a run that has spoken must end with one."
+			: "Your turn ended without a final send, so no one has heard from you: what you write outside send_message stays private.",
+		...(state.routineDecisionOwed ? [`First, ${decide}`] : []),
+		`${state.routineDecisionOwed ? "Then send" : "Send"} it now: call send_message with phase final${card}, with the result, what you have found so far, or what blocks you.`,
+		"This is the last turn of this run: if it ends without a final send, the run fails and your answer is never heard.",
+	].join(" ");
+}
+
 /** The last thing read before acting: how this run must end. A missing required
  * final send fails the turn, so it is restated after the role, where it is not buried.
  */

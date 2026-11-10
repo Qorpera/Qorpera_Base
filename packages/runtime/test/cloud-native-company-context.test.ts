@@ -17,6 +17,7 @@ import {
 	cloudCompanyContextTool,
 	cloudCompanyRuntimeInstructions,
 	cloudNativeStableInstructions,
+	cloudNativeTurnCorrection,
 	compileCloudNativeCompanyInstructions,
 	composeCloudContinuation,
 	composeCloudNativeCompanyPrompt,
@@ -2433,3 +2434,45 @@ it.each([
 		expect(shown.content.sha256).toBe(context.currentInputs[0].content.sha256);
 	},
 );
+
+it("tells a turn that ended with its closing act undone what is missing, and nothing when the run owes nothing", () => {
+	const run = {
+		worker: false,
+		reported: false,
+		canSend: true,
+		finalRequired: true,
+		sent: 0,
+		final: false,
+		askOffered: true,
+		routineDecisionOwed: false,
+	};
+	// A member's message: the final send, or a card.
+	const unanswered = cloudNativeTurnCorrection(run);
+	expect(unanswered).toContain("Your turn ended without a final send");
+	expect(unanswered).toContain("call send_message with phase final (a card from ask_member counts as one)");
+	expect(unanswered).toContain("This is the last turn of this run");
+	// A group chat offers no card.
+	expect(cloudNativeTurnCorrection({ ...run, askOffered: false })).not.toContain("ask_member");
+	// Sent, or optional and silent: the run ended as it may.
+	expect(cloudNativeTurnCorrection({ ...run, sent: 2, final: true })).toBeUndefined();
+	expect(cloudNativeTurnCorrection({ ...run, finalRequired: false })).toBeUndefined();
+	// A run with no public voice owes no send, whatever its policy says.
+	expect(cloudNativeTurnCorrection({ ...run, canSend: false })).toBeUndefined();
+	// A progress message is never a run's last word, also where the final is optional.
+	const spoken = cloudNativeTurnCorrection({ ...run, finalRequired: false, sent: 1 });
+	expect(spoken).toContain("after a progress message but without a final send");
+	// A dynamic routine's run decides first, and a silent one owes only its decision.
+	const undecided = cloudNativeTurnCorrection({ ...run, routineDecisionOwed: true }) as string;
+	expect(undecided.indexOf("decide_routine")).toBeGreaterThan(0);
+	expect(undecided.indexOf("decide_routine")).toBeLessThan(undecided.indexOf("Then send it now"));
+	const decisionOnly = cloudNativeTurnCorrection({ ...run, finalRequired: false, routineDecisionOwed: true });
+	expect(decisionOnly).toContain("call decide_routine now, with next or conclude");
+	expect(decisionOnly).not.toContain("send_message");
+	// A worker owes its report, and nothing once the folder saved it.
+	const worker = { ...run, worker: true, canSend: false, finalRequired: false };
+	expect(cloudNativeTurnCorrection(worker)).toContain("Call report_work now, once");
+	expect(cloudNativeTurnCorrection({ ...worker, reported: true })).toBeUndefined();
+	// A few sentences, within what the session takes as one more turn's input.
+	for (const text of [unanswered, spoken, undecided, decisionOnly, cloudNativeTurnCorrection(worker)])
+		expect(Buffer.byteLength(text as string)).toBeLessThan(1024);
+});

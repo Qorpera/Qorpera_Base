@@ -98,6 +98,16 @@ const MAX_PROMPT_BYTES = 1024 * 1024;
 /** The developer instructions (RUNTIME-AGENT-MEMORY-TREE.md §6.1): the host-owned rules, about 25 KB, with the head
  * (16,000 bytes, §5.6) and the primary view (96,000, M1) as labelled data, and room to spare. */
 const MAX_RUNTIME_INSTRUCTIONS_BYTES = 256 * 1024;
+/** What the host tells the model in the one turn it adds when the agent's turn left its closing act undone
+ * (`turnCorrection`): a few sentences, never a second prompt. */
+const MAX_TURN_CORRECTION_BYTES = 4 * 1024;
+/** How long Codex may take to answer a control request: its handshake, a thread's start and a turn's start. Each is
+ * answered at once (a turn's start before its first model request), so one that gets no answer is a stuck process, and
+ * the run used to wait on it for good, holding its conversation (reliability audit, 10 November 2026, A3). A model
+ * request of Codex's that reaches the fence meanwhile lifts the deadline: Codex is at work then, and what it waits for
+ * may be this host. It is no cap on a run: a turn runs as long as its work takes (founder, 2026-09-22 and
+ * 2026-09-24). */
+const CONTROL_REQUEST_MS = 120_000;
 const TOKEN_COUNTERS = [
 	"inputTokens",
 	"outputTokens",
@@ -573,8 +583,12 @@ class CodexBoundaryRpc {
 		{ span?: CloudRuntimeObservationSpan; contextRecorded: boolean; finished: boolean }
 	>();
 	#turnObservation?: CloudRuntimeObservationSpan;
-	/** The turn's last valid cumulative usage snapshot, to tell a model request's usage from a repeat. */
+	/** The thread's last valid cumulative usage snapshot, to tell a model request's usage from a repeat. */
 	#usageTotal?: Record<string, unknown>;
+	/** The agent's turns before the current one (beginNextTurn), and the thread's usage when the current one began: a
+	 * turn's observation counts its own usage, not the thread's. */
+	#earlierTurns = 0;
+	#turnUsageBase?: Record<string, unknown>;
 	readonly #compositions = new Map<
 		string,
 		{ span?: CloudRuntimeObservationSpan; timer?: ReturnType<typeof setTimeout>; finished: boolean }
@@ -586,9 +600,11 @@ class CodexBoundaryRpc {
 	 * and `null`, which say nothing of the cause. */
 	#providerErrorToken?: string;
 	readonly #pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+	/** The deadlines of the control requests Codex has not answered yet (request's `answerWithinMs`). */
+	readonly #controlDeadlines = new Set<ReturnType<typeof setTimeout>>();
 	readonly #requestIds = new Set<string>();
 	readonly #lines = new CodexLineReader();
-	readonly completed: Promise<void>;
+	#completed: Promise<void>;
 	#resolveCompleted: () => void = () => undefined;
 	#rejectCompleted: (error: Error) => void = () => undefined;
 	#failure?: Error;
@@ -645,11 +661,7 @@ class CodexBoundaryRpc {
 		this.#child = child;
 		this.#boundary = boundary;
 		this.#observability = observability;
-		this.completed = new Promise<void>((resolve, reject) => {
-			this.#resolveCompleted = resolve;
-			this.#rejectCompleted = reject;
-		});
-		void this.completed.catch(() => undefined);
+		this.#completed = this.#awaitCompletion();
 		child.on("error", () => this.fail("Native boundary process unavailable", "transport_unavailable"));
 		child.stdin.on("error", () => this.fail("Native boundary transport unavailable", "transport_unavailable"));
 		child.on("close", () => {
@@ -727,12 +739,58 @@ class CodexBoundaryRpc {
 		}
 	}
 
+	/** The agent's current turn: settled when it completed, rejected when the boundary failed. */
+	get completed(): Promise<void> {
+		return this.#completed;
+	}
+	#awaitCompletion(): Promise<void> {
+		const completed = new Promise<void>((resolve, reject) => {
+			this.#resolveCompleted = resolve;
+			this.#rejectCompleted = reject;
+		});
+		void completed.catch(() => undefined);
+		return completed;
+	}
+
+	/** One more turn in the agent's thread, after its turn completed (runCloudCodexToolSession's `turnCorrection`). The
+	 * thread and what it has carried so far stay: its request ids, its model requests and its fenced outputs, so the
+	 * next request's new outputs are still told from the old. The turn's binding, its end and its observation start
+	 * anew, as they stood before the first turn/start. */
+	beginNextTurn(inputBytes: number): void {
+		if (this.#failure) throw this.#failure;
+		if (this.#closed || !this.#threadId || !this.#finished || this.#startingTurn || this.#activeCalls > 0)
+			throw new Error("Native boundary turn binding failed");
+		// A reply the ended turn was still composing is no longer being written.
+		for (const callId of this.#compositions.keys()) this.#finishComposition(callId, "unconfirmed");
+		try {
+			this.#turnObservation?.finish("succeeded");
+		} catch {
+			// Optional diagnostics cannot change native execution or authority.
+		}
+		this.#turnObservation = undefined;
+		this.#earlierTurns++;
+		this.#turnUsageBase = this.#usageTotal;
+		this.#turnId = undefined;
+		this.#turnEndRequested = false;
+		this.#finished = false;
+		this.#completed = this.#awaitCompletion();
+		this.#startingTurn = true;
+		this.observeTurnStart(inputBytes);
+	}
+
 	/** One host invocation, including tools/retries/compaction; not a provider HTTP attempt. */
 	observeTurnStart(inputBytes: number): void {
 		try {
 			this.#turnObservation = this.#observability?.start("model_turn", {
 				logicalOperationSha256: createHash("sha256")
-					.update(JSON.stringify([this.#threadId, "model_turn"]))
+					// The thread's first turn keeps the name it always had; a later one adds its number.
+					.update(
+						JSON.stringify(
+							this.#earlierTurns === 0
+								? [this.#threadId, "model_turn"]
+								: [this.#threadId, "model_turn", this.#earlierTurns],
+						),
+					)
 					.digest("hex"),
 				// Exact admitted prompt bytes, not the full provider request or network traffic.
 				inputBytes,
@@ -978,14 +1036,18 @@ class CodexBoundaryRpc {
 		signal.addEventListener("abort", abort, { once: true });
 		try {
 			const turn = object(
-				await this.request("turn/start", {
-					threadId,
-					input: [{ type: "text", text: input.prompt, text_elements: [] }],
-					effort: input.effort,
-					environments: [],
-					runtimeWorkspaceRoots: [],
-					sandboxPolicy: { type: "readOnly", networkAccess: false },
-				}),
+				await this.request(
+					"turn/start",
+					{
+						threadId,
+						input: [{ type: "text", text: input.prompt, text_elements: [] }],
+						effort: input.effort,
+						environments: [],
+						runtimeWorkspaceRoots: [],
+						sandboxPolicy: { type: "readOnly", networkAccess: false },
+					},
+					CONTROL_REQUEST_MS,
+				),
 			);
 			const turnId = identifier(object(turn.turn).id);
 			if (review.turnId !== undefined && review.turnId !== turnId) throw new Error("Native review binding failed");
@@ -1072,7 +1134,9 @@ class CodexBoundaryRpc {
 			const starting: StartingSide = { kind };
 			this.#startingSide = starting;
 			try {
-				const id = identifier(object(object(await this.request("thread/start", params)).thread).id);
+				const id = identifier(
+					object(object(await this.request("thread/start", params, CONTROL_REQUEST_MS)).thread).id,
+				);
 				if (
 					id === this.#threadId ||
 					this.#sideThread(id) ||
@@ -1162,14 +1226,18 @@ class CodexBoundaryRpc {
 		signal.addEventListener("abort", abort, { once: true });
 		try {
 			const started = object(
-				await this.request("turn/start", {
-					threadId: thread.threadId,
-					input: [{ type: "text", text, text_elements: [] }],
-					effort,
-					environments: [],
-					runtimeWorkspaceRoots: [],
-					sandboxPolicy: { type: "readOnly", networkAccess: false },
-				}),
+				await this.request(
+					"turn/start",
+					{
+						threadId: thread.threadId,
+						input: [{ type: "text", text, text_elements: [] }],
+						effort,
+						environments: [],
+						runtimeWorkspaceRoots: [],
+						sandboxPolicy: { type: "readOnly", networkAccess: false },
+					},
+					CONTROL_REQUEST_MS,
+				),
 			);
 			const turnId = identifier(object(started.turn).id);
 			if (thread.turn !== turn) {
@@ -1297,6 +1365,11 @@ class CodexBoundaryRpc {
 	 * Codex makes before a provider request, its context composition and then its fence, are bound here. */
 	#bindModelRequest(request: ModelRequestIdentity): "review" | "compact" | "prewarm" | "turn" {
 		if (this.#failure || this.#closed) throw new Error("Native result boundary stopped");
+		// A model request at the fence shows Codex at work on a thread or turn it was asked to start. The answer to
+		// that start may now wait on this host's own fence work (a slow database is not Codex's silence), so no
+		// control request still open is held to its deadline any longer.
+		for (const deadline of this.#controlDeadlines) clearTimeout(deadline);
+		this.#controlDeadlines.clear();
 		// The compactor's lane stays open after the agent's turn: closing builds its lines then (§7.1).
 		if (this.isCompactRequest(request)) {
 			this.#assertCompactRequest(request);
@@ -1389,7 +1462,10 @@ class CodexBoundaryRpc {
 		this.#rejectCompleted(this.#failure);
 	}
 
-	async request(method: string, params: JsonValue): Promise<unknown> {
+	/** `answerWithinMs`: for a control request, which Codex answers at once (CONTROL_REQUEST_MS). One left unanswered
+	 * that long, with no model request of Codex's reaching the fence meanwhile (#bindModelRequest), fails the boundary,
+	 * and with it the run, as a step that got no answer in time. */
+	async request(method: string, params: JsonValue, answerWithinMs?: number): Promise<unknown> {
 		if (this.#failure) throw this.#failure;
 		if (this.#closed) throw new Error("Native boundary transport closed");
 		const id = ++this.#sequence;
@@ -1400,7 +1476,30 @@ class CodexBoundaryRpc {
 		// through as it is, so a hash taken of it there still names what Codex is sent.
 		const cut = redactCloudWebhookSecretsIn(params);
 		return new Promise((resolve, reject) => {
-			this.#pending.set(id, { resolve, reject });
+			if (answerWithinMs === undefined) this.#pending.set(id, { resolve, reject });
+			else {
+				// Still pending then: the answer never came. Failing the boundary rejects this request with the rest.
+				const deadline = setTimeout(() => {
+					this.#controlDeadlines.delete(deadline);
+					if (this.#pending.has(id)) this.fail("Native boundary request got no answer", "timeout");
+				}, answerWithinMs);
+				deadline.unref?.();
+				this.#controlDeadlines.add(deadline);
+				const settled = (): void => {
+					clearTimeout(deadline);
+					this.#controlDeadlines.delete(deadline);
+				};
+				this.#pending.set(id, {
+					resolve: (value) => {
+						settled();
+						resolve(value);
+					},
+					reject: (error) => {
+						settled();
+						reject(error);
+					},
+				});
+			}
 			this.#write({ id, method, params: cut });
 		});
 	}
@@ -1549,8 +1648,18 @@ class CodexBoundaryRpc {
 			if (!usage) return;
 			const { total, last } = usage;
 			// Native cumulative snapshots can be replayed/recomputed. Never sum updates
-			// or label these counters billing-exact provider usage.
-			this.#turnObservation.update(tokenCounters(total));
+			// or label these counters billing-exact provider usage. They count the thread: a turn after the first
+			// (beginNextTurn) reports what the thread used since that turn began.
+			const base = this.#turnUsageBase;
+			this.#turnObservation.update(
+				tokenCounters(
+					base
+						? Object.fromEntries(
+								TOKEN_COUNTERS.map((key) => [key, Math.max(0, (total[key] as number) - (base[key] as number))]),
+							)
+						: total,
+				),
+			);
 			// Codex adds each completed provider response's usage to `total` and sends it as `last`
 			// (codex-rs `TokenUsageInfo::append_last_usage`), from zero on a new thread. Repeats,
 			// estimates and a filled context window do not add up that way, so only a report with input
@@ -1977,10 +2086,11 @@ async function startCloudCodexProcess(
 		if (signal.aborted) stop();
 		progress.stage = "codex-initialize";
 		const initialized = object(
-			await handshake.request("initialize", {
-				clientInfo: { name: CLIENT_NAME, version: "1" },
-				capabilities: { experimentalApi: true },
-			}),
+			await handshake.request(
+				"initialize",
+				{ clientInfo: { name: CLIENT_NAME, version: "1" }, capabilities: { experimentalApi: true } },
+				CONTROL_REQUEST_MS,
+			),
 		);
 		if (
 			typeof initialized.userAgent !== "string" ||
@@ -2000,13 +2110,15 @@ async function startCloudCodexProcess(
 		handshake.initialized();
 		progress.stage = "codex-configuration";
 		verifyConfiguration(
-			await handshake.request("config/read", { includeLayers: false, cwd: workspace }),
+			await handshake.request("config/read", { includeLayers: false, cwd: workspace }, CONTROL_REQUEST_MS),
 			inputs.effort,
 			inputs.serviceTier,
 			plan,
 		);
 		progress.stage = "codex-skills";
-		const skills = object(await handshake.request("skills/list", { cwds: [workspace], forceReload: true }));
+		const skills = object(
+			await handshake.request("skills/list", { cwds: [workspace], forceReload: true }, CONTROL_REQUEST_MS),
+		);
 		if (!Array.isArray(skills.data) || skills.data.length !== 1)
 			throw new Error("Native skill catalog could not be verified");
 		const catalog = object(skills.data[0]);
@@ -2243,6 +2355,11 @@ export async function runCloudCodexToolSession(options: {
 	/** Closing (§7.1): runs once the agent's turn has completed and been checked, before the process goes. What it
 	 * throws never fails the run: the lines it left unbuilt stay missing, for a settle to build (§5.4). */
 	closing?: (signal: AbortSignal) => Promise<void>;
+	/** Asked once, when the agent's turn has completed and been checked, before closing: whether the turn left undone
+	 * what the run has to end with (the caller knows what that is: a final send, a worker's report, a coding
+	 * submission). The text it answers is the input of one more turn in the same thread, a few sentences saying what
+	 * is missing; undefined ends the run as it stands. What that turn leaves undone is the caller's to judge. */
+	turnCorrection?: (signal: AbortSignal) => Promise<string | undefined>;
 	/** Optional metadata-only logical-turn/gate observations; not provider HTTP timing. */
 	observability?: CloudRuntimeObservability;
 	recordContextView?: (
@@ -2383,20 +2500,24 @@ export async function runCloudCodexToolSession(options: {
 		stage = "codex-thread-start";
 		await rpc.startThread();
 		const thread = object(
-			await rpc.request("thread/start", {
-				// provider-default omits the model: the pinned Codex chooses its own default. An explicit
-				// name is only sent for a session override; the provider rejects names newer than the binary.
-				...(options.model === "provider-default" ? {} : { model: options.model }),
-				cwd: started.workspace,
-				runtimeWorkspaceRoots: [],
-				environments: [],
-				ephemeral: true,
-				approvalPolicy: "never",
-				approvalsReviewer: "user",
-				sandbox: "read-only",
-				developerInstructions: nativeInstructions,
-				dynamicTools: [options.boundary.specification],
-			}),
+			await rpc.request(
+				"thread/start",
+				{
+					// provider-default omits the model: the pinned Codex chooses its own default. An explicit
+					// name is only sent for a session override; the provider rejects names newer than the binary.
+					...(options.model === "provider-default" ? {} : { model: options.model }),
+					cwd: started.workspace,
+					runtimeWorkspaceRoots: [],
+					environments: [],
+					ephemeral: true,
+					approvalPolicy: "never",
+					approvalsReviewer: "user",
+					sandbox: "read-only",
+					developerInstructions: nativeInstructions,
+					dynamicTools: [options.boundary.specification],
+				},
+				CONTROL_REQUEST_MS,
+			),
 		);
 		const threadId = identifier(object(thread.thread).id);
 		rpc.bindThread(threadId);
@@ -2404,23 +2525,48 @@ export async function runCloudCodexToolSession(options: {
 		options.reviewer?.attach({
 			review: (input, reviewSignal) => reviewing.review({ ...input, cwd: started.workspace }, reviewSignal),
 		});
+		const startTurn = async (text: string): Promise<void> => {
+			const turnStarted = object(
+				await rpc.request(
+					"turn/start",
+					{
+						threadId,
+						input: [{ type: "text", text, text_elements: [] }],
+						effort,
+						environments: [],
+						runtimeWorkspaceRoots: [],
+						sandboxPolicy: { type: "readOnly", networkAccess: false },
+					},
+					CONTROL_REQUEST_MS,
+				),
+			);
+			rpc.confirmTurn(object(turnStarted.turn).id);
+		};
 		stage = "codex-turn-start";
 		rpc.startTurn();
 		rpc.observeTurnStart(Buffer.byteLength(opening.prompt));
-		const turnRequest = rpc.request("turn/start", {
-			threadId,
-			input: [{ type: "text", text: opening.prompt, text_elements: [] }],
-			effort,
-			environments: [],
-			runtimeWorkspaceRoots: [],
-			sandboxPolicy: { type: "readOnly", networkAccess: false },
-		});
-		const turnStarted = object(await turnRequest);
-		rpc.confirmTurn(object(turnStarted.turn).id);
+		await startTurn(opening.prompt);
 		stage = "codex-turn-completion";
 		await rpc.completed;
 		rpc.assertCompleted();
 		signal.throwIfAborted();
+		// The turn completed. When it left undone what the run has to end with, the model is told so in one more turn
+		// of the same thread, with everything the first one read and did still in front of it; a run gets one such
+		// turn, and what that one leaves undone the caller fails as before (10 November 2026: a turn that ended on four
+		// tokens of private text, with no final send, failed its run and left the member unanswered).
+		const correction = await options.turnCorrection?.(signal);
+		signal.throwIfAborted();
+		if (correction !== undefined) {
+			if (!correction.trim() || Buffer.byteLength(correction) > MAX_TURN_CORRECTION_BYTES)
+				throw new Error("Invalid native boundary input");
+			stage = "codex-turn-start";
+			rpc.beginNextTurn(Buffer.byteLength(correction));
+			await startTurn(correction);
+			stage = "codex-turn-completion";
+			await rpc.completed;
+			rpc.assertCompleted();
+			signal.throwIfAborted();
+		}
 		rpc.finishObservations(true, signal);
 		try {
 			await options.closing?.(signal);

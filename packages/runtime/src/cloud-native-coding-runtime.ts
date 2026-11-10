@@ -688,6 +688,13 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			signal,
 			timeoutMs: this.#timeoutMs,
 			observability: context.observability,
+			// The turn completed with neither coding_finish nor coding_ask: the model is told so in one more turn of the
+			// same thread, once. A turn that still hands nothing in fails as before, below (reliability audit, 10
+			// November 2026, D8).
+			turnCorrection: async () =>
+				submitted
+					? undefined
+					: "Your turn ended without coding_finish or coding_ask, so nothing of it is handed in. End it now: commit on the current branch and call coding_finish with the commit SHA and a factual summary that names what is unfinished or blocked, or, with nothing worth handing in, call coding_ask with what blocks you and what you need from the member. This is the last turn of this run: if it ends without one of them, the turn fails.",
 			beginExecution: async (specification, checked) => {
 				const text = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
 				const started = await this.#control.call(

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CLOUD_AGENT_NO_FINAL_SEND_CODE, CloudAgentNoFinalSend } from "../src/cloud-agent-mouth.ts";
 import { tagNativeRuntimeFailure } from "../src/cloud-native-failure.ts";
 import { nativeProviderFailureCode } from "../src/cloud-native-provider-service.ts";
 import {
@@ -16,6 +17,30 @@ describe("the fixed code a failed native execution carries back", () => {
 				tagNativeRuntimeFailure(new Error("CODING_TURN_SCOPE_DIFFERS"), "prompt-composition", "unknown"),
 			),
 		).toBe("CODING_TURN_SCOPE_DIFFERS");
+	});
+	it("gives a turn that ended without the final send it owed its own code, by its type", () => {
+		const ended = tagNativeRuntimeFailure(new CloudAgentNoFinalSend(), "public-completion", "unknown");
+		expect(CLOUD_AGENT_NO_FINAL_SEND_CODE).toBe("AGENT_TURN_ENDED_WITHOUT_FINAL_SEND");
+		expect(nativeProviderFailureCode(ended)).toBe(CLOUD_AGENT_NO_FINAL_SEND_CODE);
+		// Under the host's wrapper, as the runner receives it.
+		expect(
+			nativeProviderFailureCode(
+				new Error(
+					"Native provider execution failed (stage=public-completion, category=unknown) [mouth=uninitialized]",
+					{ cause: ended },
+				),
+			),
+		).toBe(CLOUD_AGENT_NO_FINAL_SEND_CODE);
+		// Never by its words: the same text from anywhere else keeps its stage and category.
+		expect(
+			nativeProviderFailureCode(
+				tagNativeRuntimeFailure(
+					new Error("Native agent turn ended without a final send"),
+					"public-completion",
+					"unknown",
+				),
+			),
+		).toBe("NATIVE_PUBLIC_COMPLETION:UNKNOWN");
 	});
 	it("finds that code under the host's wrapper, as the runner receives it", () => {
 		// What the host makes of a coding turn's failure (safeHarnessExecutionFailure).

@@ -13,6 +13,19 @@ export const CLOUD_AGENT_SEND_INSTRUCTIONS =
 	`Link every file you made or changed in the company folder as a markdown link to folder: and its company path, such as ${CLOUD_FOLDER_LINK_EXAMPLE}. ` +
 	"If a send's result was lost, retry with the same idempotencyKey and exactly the same arguments. Never include private reasoning or credentials.";
 
+/** The fixed code of a run whose turn ended without the final send it owed, also after the one more turn it was
+ * given to send it (10 November 2026). The run's stored failure carries it, and the member reads "the agent finished
+ * without sending its answer", not a refused step. */
+export const CLOUD_AGENT_NO_FINAL_SEND_CODE = "AGENT_TURN_ENDED_WITHOUT_FINAL_SEND";
+
+/** The run's turn ended, and the final send it owed was never made. */
+export class CloudAgentNoFinalSend extends Error {
+	constructor() {
+		super("Native agent turn ended without a final send");
+		this.name = "CloudAgentNoFinalSend";
+	}
+}
+
 export interface CloudAgentSendInput {
 	idempotencyKey: string;
 	text: string;
@@ -104,10 +117,18 @@ export class CloudAgentMouth {
 		this.#closed = true;
 		this.#signal?.throwIfAborted();
 		const final = [...this.#receipts.values()].find((receipt) => receipt.phase === "final");
-		if (!final && (requireFinalSend || this.#receipts.size > 0)) {
-			throw new Error("Native agent turn ended without a final send");
-		}
+		if (!final && (requireFinalSend || this.#receipts.size > 0)) throw new CloudAgentNoFinalSend();
 		return { messageCount: this.#receipts.size, finalMessageId: final?.messageId ?? null };
+	}
+
+	/** What the mouth has delivered, once the send in flight has ended. It stays open: the run may still be given a
+	 * turn to make the final send it owes (finish closes it). */
+	async settled(): Promise<{ messageCount: number; final: boolean }> {
+		await this.#pending;
+		return {
+			messageCount: this.#receipts.size,
+			final: [...this.#receipts.values()].some((receipt) => receipt.phase === "final"),
+		};
 	}
 
 	/** Trusted in-process tool adapter. No listener, bearer or recipient selector. */
