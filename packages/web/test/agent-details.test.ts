@@ -8,7 +8,6 @@ import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { WebRoutines } from "../src/cloud/routines.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import conversationCss from "../src/styles/conversation.css?raw";
-import { AgentWallPoster, wallNews } from "../src/ui/agent-wall-poster.ts";
 import { FIGURE_IDS, figureFor, nativeColorOf } from "../src/ui/avatar.ts";
 import { deferred, fixture, id, profileA, settle, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
 
@@ -111,13 +110,12 @@ describe("agent saves across panel lifetimes", () => {
 		cleanup.push(() => reopened.dispose());
 		expect(field("Agent name").value).toBe("Kept name");
 		expect(status()).toBe("Saving…");
-		press(type("Agent title", "New role"), "Enter");
 		type("Responsibilities", "New description").blur();
 		expect(updateAgent).toHaveBeenCalledTimes(1);
 		first.resolve();
 		await settle();
 		expect(updateAgent).toHaveBeenCalledTimes(2);
-		expect(remote).toMatchObject({ displayName: "Kept name", role: "New role", charter: "New description" });
+		expect(remote).toMatchObject({ displayName: "Kept name", charter: "New description" });
 		expect(field("Agent name").value).toBe("Kept name");
 		expect(status()).toBe("Saved");
 	});
@@ -131,12 +129,12 @@ describe("agent saves across panel lifetimes", () => {
 		await settle();
 		const reopened = new AgentDetails(f.company, staff, { updateAgent }, () => {});
 		cleanup.push(() => reopened.dispose());
-		press(type("Agent title", "Lead"), "Enter");
+		type("Responsibilities", "Leads the launch.").blur();
 		expect(updateAgent).toHaveBeenCalledTimes(1);
 		roster.resolve([{ ...staff, displayName: "Kept name" }]);
 		await settle();
 		expect(updateAgent).toHaveBeenCalledTimes(2);
-		expect(updateAgent.mock.calls[1]![1]).toMatchObject({ displayName: "Kept name", role: "Lead" });
+		expect(updateAgent.mock.calls[1]![1]).toMatchObject({ displayName: "Kept name", charter: "Leads the launch." });
 	});
 	it.each(["navigation", "company", "authority"] as const)(
 		"cancels closed-panel writes and queued edits on %s loss",
@@ -146,7 +144,7 @@ describe("agent saves across panel lifetimes", () => {
 			const scope = new AbortController();
 			const f = open({ updateAgent }, staff, scope.signal);
 			press(type("Agent name", "Queued name"), "Enter");
-			type("Agent title", "Queued title").blur();
+			type("Responsibilities", "Queued responsibilities").blur();
 			f.details.dialog.close();
 			const signal = updateAgent.mock.calls[0]![2];
 			if (loss === "navigation") scope.abort();
@@ -185,16 +183,18 @@ describe("agent saves across panel lifetimes", () => {
 		expect(updateAgent.mock.calls[0]![2].aborted).toBe(true);
 		f.company.store.set({ team });
 		await settle();
-		press(type("Agent title", "Authorized title"), "Enter");
+		type("Responsibilities", "Authorized responsibilities").blur();
 		expect(updateAgent).toHaveBeenCalledTimes(1);
 		pending.resolve(staff.version + 1);
 		await settle();
 		expect(updateAgent).toHaveBeenCalledTimes(2);
-		expect(updateAgent.mock.calls[1]![1]).toMatchObject({ displayName: staff.displayName, role: "Authorized title" });
+		expect(updateAgent.mock.calls[1]![1]).toMatchObject({
+			displayName: staff.displayName,
+			charter: "Authorized responsibilities",
+		});
 	});
 	it.each([
 		["Agent name", staff.displayName],
-		["Agent title", staff.role],
 		["Responsibilities", staff.charter],
 	])("discards focused uncommitted %s text when authority is revoked", async (label, saved) => {
 		const updateAgent = saving();
@@ -230,9 +230,9 @@ describe("agent details edited in place", () => {
 		await settle();
 		expect(f.api.listStaff).toHaveBeenCalled();
 		expect(status()).toBe("Saved");
-		const role = type("Agent title", "Not this");
-		press(role, "Escape");
-		expect(role.value).toBe(staff.role);
+		const description = type("Responsibilities", "Not this");
+		press(description, "Escape");
+		expect(description.value).toBe(staff.charter);
 		expect(f.dialog.isConnected).toBe(true);
 		expect(updateAgent).toHaveBeenCalledTimes(1);
 		press(f.dialog, "Escape");
@@ -244,7 +244,6 @@ describe("agent details edited in place", () => {
 		const updateAgent = saving().mockReturnValueOnce(first.promise);
 		open({ updateAgent });
 		press(type("Agent name", "Ada"), "Enter");
-		type("Agent title", "Lead").blur();
 		const description = type("Responsibilities", "Owns the launch.");
 		press(description, "Enter");
 		expect(field("Responsibilities")).toBe(document.activeElement);
@@ -256,7 +255,6 @@ describe("agent details edited in place", () => {
 		expect(updateAgent).toHaveBeenCalledTimes(2);
 		expect(updateAgent.mock.calls[1]![1]).toMatchObject({
 			displayName: "Ada",
-			role: "Lead",
 			charter: "Owns the launch.",
 		});
 	});
@@ -283,11 +281,11 @@ describe("agent details edited in place", () => {
 	});
 	it("takes roster changes into fields that are not being typed in", async () => {
 		const f = open({ updateAgent: saving() });
-		type("Agent title", "Typing");
-		f.company.store.set({ staff: [{ ...staff, displayName: "Renamed elsewhere", role: "Changed elsewhere" }] });
+		type("Responsibilities", "Typing");
+		f.company.store.set({ staff: [{ ...staff, displayName: "Renamed elsewhere", charter: "Changed elsewhere" }] });
 		await settle();
 		expect(field("Agent name").value).toBe("Renamed elsewhere");
-		expect(field("Agent title").value).toBe("Typing");
+		expect(field("Responsibilities").value).toBe("Typing");
 	});
 	it("saves a field left open when the panel is closed, and drops it when the panel is disposed", async () => {
 		const updateAgent = saving();
@@ -428,38 +426,17 @@ describe("agent pages", () => {
 		expect(f.onClose).toHaveBeenCalledTimes(1);
 	});
 
-	it("offers Latest notes once the agent's wall has something on it, with what is new", async () => {
-		localStorage.clear();
-		const wall = "## Working on\n- Checking prices\n- Finding a supplier\n";
-		const notes = { open: vi.fn(), read: vi.fn(async () => wall) };
-		const f = open({}, staff, undefined, { notes });
-		const rows = () => [...f.dialog.querySelectorAll<HTMLElement>(".agent-card-link")].filter((row) => !row.hidden);
-		// Away until the wall is read.
-		expect(rows().map((row) => row.textContent)).toEqual(["Routines"]);
-		await settle();
-		expect(rows().map((row) => row.textContent)).toEqual(["Latest notes", "Routines"]);
-		named("Latest notes").click();
-		expect(notes.open).toHaveBeenCalledTimes(1);
-		expect(f.dialog.open).toBe(false);
-
-		// With one item seen: the other counts as new.
-		expect(wallNews(userA.id, staff.id, wall)).toEqual({ items: 2, unseen: 0 });
-		const poster = new AgentWallPoster({ member: userA.id });
-		poster.show(staff, "## Working on\n- Checking prices\n");
-		const again = open({}, staff, undefined, { notes });
-		await settle();
-		expect(again.dialog.querySelector(".agent-card-count")?.textContent).toBe("1 new");
-
-		// No wall, or one with nothing on it, or one that cannot be read: no row.
-		for (const read of [async () => null, async () => "# Wall\n", async () => Promise.reject(new Error("offline"))]) {
-			const none = open({}, staff, undefined, { notes: { open: vi.fn(), read } });
-			await settle();
-			expect(
-				[...none.dialog.querySelectorAll<HTMLElement>(".agent-card-link")]
-					.filter((row) => !row.hidden)
-					.map((row) => row.textContent),
-			).toEqual(["Routines"]);
-		}
+	it("shows a name and responsibilities, no title, and no Latest notes", () => {
+		const f = open({}, staff, undefined, { computer: vi.fn() });
+		expect(field("Agent name")).not.toBeNull();
+		expect(field("Responsibilities")).not.toBeNull();
+		expect(f.dialog.querySelector('[aria-label="Agent title"]')).toBeNull();
+		expect(f.dialog.querySelector(".agent-inline-title")).toBeNull();
+		expect(f.dialog.textContent).not.toContain(staff.role);
+		expect([...f.dialog.querySelectorAll(".agent-card-link")].map((row) => row.textContent)).toEqual([
+			"Computer",
+			"Routines",
+		]);
 	});
 
 	it("opens the routines as a page of the card, wider, with a way back to the details", async () => {

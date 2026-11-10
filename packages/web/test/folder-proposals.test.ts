@@ -193,9 +193,8 @@ describe("a proposal's changes in plain words", () => {
 	it("names agents, group chats, routines, interfaces and tables by their parse, else by their folder", () => {
 		const agent = (parse: Record<string, string>) =>
 			unit({ path: agentFile, structured: [structured("agent", agentFile, parse)] });
-		expect(proposalChange(agent({ name: "Sales  Lead", role: "Head of sales" }), true)).toBe(
-			"Hire “Sales Lead” as Head of sales",
-		);
+		// No title after the name: agents show none.
+		expect(proposalChange(agent({ name: "Sales  Lead", role: "Head of sales" }), true)).toBe("Hire “Sales Lead”");
 		expect(proposalChange(agent({}), true)).toBe("Hire “Sales lead”");
 		expect(proposalChange(agent({ name: "Sales Lead" }), false)).toBe("Make the agent “Sales Lead” active again");
 		expect(proposalChange(agent({ name: "Sales Lead", status: "archived" }), false)).toBe(

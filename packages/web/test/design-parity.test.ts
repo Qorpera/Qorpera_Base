@@ -478,15 +478,18 @@ describe("shell presentation lifecycle", () => {
 			const link = rail.querySelector(`a[data-href$="/staff/${agent.id}"]`)!;
 			const status = link.querySelector(".rail-row-status, .alert-mark");
 			expect(figures.get(agent.id), agent.displayName).toBe(figure);
-			expect(link.querySelector("small")?.textContent, agent.displayName).toBe(line);
+			// An idle agent has no line under its name: agents show no title (Jonas, 10 Nov 2026).
+			expect(link.querySelector("small")?.textContent, agent.displayName).toBe(
+				line === "Analyst" ? undefined : line,
+			);
 			expect(disc(status), agent.displayName).toBe(shown);
 			// The disc is only drawn. The link names the state in words, which the
 			// compact rail needs: it hides the text beside the figure.
 			if (status) expect(status.getAttribute("aria-hidden")).toBe("true");
 			const state = shown === "red" ? "A run did not finish" : line === "Analyst" ? undefined : line;
-			const words = [agent.displayName, "Analyst", state].filter(Boolean).join(" · ");
+			const words = [agent.displayName, state].filter(Boolean).join(" · ");
 			expect(link.getAttribute("aria-label"), agent.displayName).toBe(words);
-			// No hover popup: the row shows the name and role already (Jonas, 9 Nov 2026).
+			// No hover popup: the row shows the name already (Jonas, 9 Nov 2026).
 			expect(link.hasAttribute("title"), agent.displayName).toBe(false);
 		}
 		// The Co-Founder's failed room delivery reads the same way on its card.
@@ -496,7 +499,7 @@ describe("shell presentation lifecycle", () => {
 		expect(card.querySelector("small")).toBeNull();
 		expect(card.textContent).toBe("Co-Founder");
 		expect(disc(card.querySelector(".cofounder-status, .alert-mark"))).toBe("red");
-		expect(card.getAttribute("aria-label")).toBe("Co-Founder · Co-founder · A run did not finish");
+		expect(card.getAttribute("aria-label")).toBe("Co-Founder · A run did not finish");
 	});
 	it("redraws the status disc as a run fails, is picked up again and is dismissed", () => {
 		stubFigureMotion();
@@ -969,7 +972,7 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 	expect(rail.querySelector(`a[data-href$="/staff/${staff.id}"]`)).toBe(row);
 	expect(document.activeElement).toBe(row);
 	// A change rebuilds only the row it touches, inside the same list, and focus moves to the rebuilt row.
-	f.company.store.set({ staff: [{ ...staff, role: "Lead designer" }, other] });
+	f.company.store.set({ staff: [{ ...staff, templateId: "lead-designer" }, other] });
 	draw();
 	const rebuilt = rail.querySelector<HTMLElement>(`a[data-href$="/staff/${staff.id}"]`)!;
 	expect(rebuilt).not.toBe(row);
@@ -979,7 +982,7 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 	otherRow.focus();
 	f.company.store.set({
 		staff: [
-			{ ...staff, role: "Lead designer" },
+			{ ...staff, templateId: "lead-designer" },
 			{ ...other, employmentStatus: "archived" },
 		],
 	});
@@ -1071,14 +1074,14 @@ it("moves the current row in place, keeps notices and moved rows, and retries fi
 	expect(otherRow.getAttribute("aria-current")).toBe("page");
 	expect(listChanges.takeRecords()).toHaveLength(0);
 	// A change to one row leaves the error notice where it is, so it is not announced again.
-	f.company.store.set({ staff: [{ ...staff, role: "Lead designer" }, other] });
+	f.company.store.set({ staff: [{ ...staff, templateId: "lead-designer" }, other] });
 	draw();
 	expect(rail.querySelector(".rail-scroll")!.firstElementChild).toBe(alert);
 	expect(listChanges.takeRecords().some((record) => record.target === rail.querySelector(".rail-scroll"))).toBe(false);
 	listChanges.disconnect();
 	// A row that moves keeps its element and keyboard focus.
 	otherRow.focus();
-	f.company.store.set({ staff: [other, { ...staff, role: "Lead designer" }] });
+	f.company.store.set({ staff: [other, { ...staff, templateId: "lead-designer" }] });
 	draw();
 	expect(at(other)).toBe(otherRow);
 	expect(otherRow.nextElementSibling).toBe(at(staff));

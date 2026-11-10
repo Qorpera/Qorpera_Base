@@ -240,7 +240,7 @@ function placeChildren(parent: Element, children: readonly Node[]): void {
 export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
 
 /** What an agent's card can open in the agent's chat. */
-export type AgentPage = "computer" | "wall";
+export type AgentPage = "computer";
 
 /** The login a stopped run's "Continue with …" picked: its message is sent on that login only. */
 interface ContinueLogin {
@@ -1047,14 +1047,9 @@ export class ConversationView {
 			this.#details = undefined;
 			this.#identity.setAttribute("aria-expanded", "false");
 		};
-		const wall = this.#actions.agentWall;
 		this.#details = agent
 			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal, {
 					computer: () => this.show(agent.id, "computer"),
-					// From the member's private chat too: the wall is in the agent's company thread.
-					notes: wall?.show
-						? { open: () => wall.show?.(agent.id), read: (signal) => wall.read(agent.id, signal) }
-						: undefined,
 					conversationId: this.#sessionId,
 				})
 			: new GroupDetails(
@@ -1068,21 +1063,18 @@ export class ConversationView {
 				);
 	}
 
-	/** Opens this agent's computer, or shows its wall again, here, as its card asks. False while the thread is not
-	 * that agent's (for the wall: its company thread), or does not know its agent yet: the card's request then waits. */
+	/** Opens this agent's computer here, as its card asks. False while the thread is not that agent's, or does not know
+	 * its agent yet: the card's request then waits. */
 	show(agentId: string, page: AgentPage): boolean {
 		const state = this.#company.store.get();
 		const agent = this.#company.staffById(
 			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
 		);
 		if (this.#disposed || !agent || agent.id !== agentId) return false;
-		// The wall is in the agent's company thread only: from its private chat the app opens that thread.
-		if (page === "wall" && this.#wallAgent !== agentId) return false;
-		// The computer and the wall sit under the pages laid over the thread: they close for them.
+		// The computer sits under the pages laid over the thread: they close for it.
 		this.#closePair(false);
 		this.#closeCodingSession();
-		if (page === "wall") this.#wall.reveal(agentId);
-		else (this.#panel ?? this.#showPanel(agent))?.focus();
+		if (page === "computer") (this.#panel ?? this.#showPanel(agent))?.focus();
 		return true;
 	}
 

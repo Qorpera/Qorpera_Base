@@ -527,7 +527,7 @@
 .agent-figure-picker .color-grid { grid-template-columns: repeat(12, 18.5px); gap: 13px 5px; width: 100%; margin: 14px 0 0; padding-top: 15px; border-top: 1px solid #e5e5e1; }
 .agent-figure-picker .color-choice[aria-checked="true"]::after { border-color: #888884; }
 
-/* Name, title and description read as text and are edited in place. The
+/* Name and description read as text and are edited in place. The
  * sizer mirrors the text so a field is as wide, or tall, as what it holds
  * (in the agent popup the description fills the frame instead; see below). */
 .agent-inline-field { display: flex; flex-direction: row; align-items: center; gap: 6px; width: fit-content; max-width: calc(100% + 16px); min-width: 0; margin: 0 -8px; padding: 2px 8px; border-radius: 7px; font-weight: inherit; cursor: default; transition: background 120ms ease, box-shadow 120ms ease; }
@@ -549,7 +549,6 @@
 .agent-inline-size > input { text-overflow: ellipsis; }
 .agent-inline-field:not(.is-editable) .agent-inline-size > * { cursor: default; }
 .agent-inline-name { padding-block: 3px; font-family: var(--font-display); font-size: 25px; font-weight: 650; line-height: 1.25; letter-spacing: -.025em; }
-.agent-inline-title { color: var(--text-muted); font-size: 14px; line-height: 1.4; }
 .agent-inline-description { position: relative; display: block; width: auto; max-width: none; margin: 6px -10px 0; padding: 8px 34px 8px 10px; color: #2d2d2b; font-size: 13px; line-height: 1.6; }
 .agent-inline-description.is-editable:focus-within { width: auto; }
 .agent-inline-description > .agent-inline-size { display: grid; width: 100%; }
@@ -577,7 +576,6 @@
 .agent-card .agent-figure-pencil .icon { width: 20px; height: 20px; }
 .agent-card .agent-figure-picker::before { left: 25px; }
 .agent-card .agent-inline-name { font-size: 17px; }
-.agent-card .agent-inline-title { font-size: 12.5px; }
 .agent-card .agent-inline-description { margin-top: 8px; padding-right: 10px; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
 /* The text runs the card's full width; the pencil sits over its corner on hover, on a chip of the field's own colour. */
 .agent-card .agent-inline-description > .icon { top: 6px; right: 6px; box-sizing: content-box; padding: 3px; border-radius: 6px; background: #f2f2ef; }
@@ -590,9 +588,8 @@
 .agent-card-link:hover, .agent-card-link:focus-visible { background: var(--hover); outline: none; }
 .agent-card-link > .icon { flex: none; width: 16px; height: 16px; }
 .agent-card-link > .icon:last-child { width: 11px; height: 11px; margin-left: auto; color: var(--text-soft); }
-.agent-card-link[hidden], .agent-card-count[hidden] { display: none; }
+.agent-card-link[hidden] { display: none; }
 /* How many of the agent's latest notes are new while the member has its wall hidden. */
-.agent-card-count { padding: 1px 7px; border-radius: var(--radius-pill); background: var(--warning-soft); color: var(--text); font-size: 11.5px; font-weight: 600; line-height: 1.5; }
 /* Copy, Hide and Delete: plain icons at the card's right edge, named by their tooltips. */
 .agent-card-squares { display: flex; justify-content: flex-end; gap: 2px; margin: 8px -6px 0 0; }
 .agent-card-square { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text-soft); cursor: pointer; transition: background-color 120ms ease, color 120ms ease; }

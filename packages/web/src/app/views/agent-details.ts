@@ -1,5 +1,4 @@
 import type { HostedStaffAgent } from "../../cloud/types.ts";
-import { wallNews } from "../../ui/agent-wall-poster.ts";
 import { figureElement } from "../../ui/avatar.ts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
@@ -12,11 +11,12 @@ import { type AgentEdits, editsFor, savedAgentDraft } from "./agent-edits.ts";
 import { AgentRoutines, routineAccessFor } from "./agent-routines.ts";
 import { type CardFootActions, cardFoot } from "./card-foot.ts";
 
-type TextKey = "displayName" | "role" | "charter";
+/** A name and responsibilities, and no title under the name (Jonas, 10 November 2026: a name and responsibility is
+ * enough). The agent's role still lives in its agent.md; the card neither shows nor edits it. */
+type TextKey = "displayName" | "charter";
 
 const FIELDS: Record<TextKey, { label: string; empty: string }> = {
 	displayName: { label: phrase("Agent name"), empty: phrase("An agent needs a name.") },
-	role: { label: phrase("Agent title"), empty: phrase("An agent needs a title.") },
 	// The description is the agent's responsibilities in plain prose, and what the agent works from.
 	charter: { label: phrase("Responsibilities"), empty: phrase("An agent needs its responsibilities written down.") },
 };
@@ -25,16 +25,14 @@ const FIELDS: Record<TextKey, { label: string; empty: string }> = {
  * member can't use it, and the card then shows no control for it. */
 export interface AgentCardActions extends CardFootActions {
 	computer?: () => void;
-	/** "Latest notes": the agent's wall above its composer, open. The row shows once `read` finds a
-	 * wall with something on it. */
-	notes?: { open: () => void; read: (signal: AbortSignal) => Promise<string | null> };
 }
 
 /** An agent's card: what a right-click on the agent in the rail opens (and, on a phone,
- * the conversation title). Name, title and responsibilities are edited where they stand
+ * the conversation title). Name and responsibilities are edited where they stand
  * and save on their own; the figure changes from a picker under it, as on the desktop. The
  * responsibilities field is the agent's description in plain prose and what the agent works
- * from. Under it, the agent's computer, latest notes (its wall) and routines, then Copy, Hide and Delete.
+ * from. Under it, the agent's computer and routines, then Copy, Hide and Delete. Latest notes
+ * left the card again (Jonas, 10 November 2026): the wall stays above the agent's composer.
  * Routines are a page of the card itself, with a way back. */
 export class AgentDetails {
 	readonly dialog: SurfaceDialog;
@@ -104,8 +102,7 @@ export class AgentDetails {
 			icon("chevron"),
 		) as HTMLButtonElement;
 		this.#routinesLink = routines;
-		const notes = card.notes ? this.#notesLink(card.notes, then) : null;
-		const links = [link(t("Computer"), "computer", card.computer), notes, routines];
+		const links = [link(t("Computer"), "computer", card.computer), routines];
 		const foot = cardFoot(card, {
 			close: () => this.dialog.close(false),
 			copyFailed: () => {
@@ -163,7 +160,7 @@ export class AgentDetails {
 				"div",
 				{ class: "agent-details-identity" },
 				h("div", { class: "agent-figure-area" }, this.#figureButton, this.#picker),
-				h("div", { class: "agent-details-names" }, this.#field("displayName"), this.#field("role")),
+				h("div", { class: "agent-details-names" }, this.#field("displayName")),
 			),
 			this.#field("charter"),
 			links.some(Boolean) ? h("div", { class: "agent-card-links" }, ...links) : null,
@@ -217,36 +214,6 @@ export class AgentDetails {
 		onClose();
 	}
 
-	/** "Latest notes", shown once the agent's wall is read and has an item; it says how many items are new since the
-	 * member last saw it open. A wall that cannot be read leaves the row away. */
-	#notesLink(notes: NonNullable<AgentCardActions["notes"]>, then: (act: () => void) => () => void): HTMLElement {
-		const count = h("span", { class: "agent-card-count", hidden: true });
-		const row = h(
-			"button",
-			{ type: "button", class: "agent-card-link", hidden: true, onclick: then(notes.open) },
-			icon("pin"),
-			h("span", null, t("Latest notes")),
-			count,
-			icon("chevron"),
-		);
-		const signal = this.#lifetime.signal;
-		void notes.read(signal).then(
-			(text) => {
-				if (signal.aborted || text === null) return;
-				const member = this.#company.userId;
-				const { items, unseen } = wallNews(member, this.#agent.id, text);
-				if (!items) return;
-				count.hidden = !unseen;
-				count.textContent = unseen === 1 ? t("1 new") : unseen ? t("{n} new", { n: unseen }) : "";
-				row.hidden = false;
-			},
-			() => {
-				/* No row: the wall could not be read. */
-			},
-		);
-		return row;
-	}
-
 	#current(): AgentDraft {
 		return this.#edits.current();
 	}
@@ -284,17 +251,17 @@ export class AgentDetails {
 					type: "text",
 					// No width of its own: the sizer gives it the width of its text.
 					size: "1",
-					maxlength: key === "displayName" ? "64" : "160",
+					maxlength: "64",
 					autocomplete: "off",
 					...events,
 				});
 		this.#fields[key] = control;
-		// The sizer mirrors the text so the name and title are as wide as what they hold;
+		// The sizer mirrors the text so the name is as wide as what it holds;
 		// the description fills the popup's static frame instead (conversation.css).
 		const sizer = h("span", { class: "agent-inline-size" }, control);
 		return h(
 			"label",
-			{ class: `agent-inline-field agent-inline-${multiline ? "description" : key === "role" ? "title" : "name"}` },
+			{ class: `agent-inline-field agent-inline-${multiline ? "description" : "name"}` },
 			sizer,
 			icon("edit"),
 		);

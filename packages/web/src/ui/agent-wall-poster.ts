@@ -18,8 +18,7 @@ import { phrase, presentationDay, t } from "./preferences.ts";
  * (a detail, a link) is a row that opens on a click: its detail and links, drawn as a message draws them, so its folder
  * links and app cards are the same buttons the app answers in a message (app/application.ts), and a preview of the
  * picture or app it links. What is new since the member last saw the wall open is marked; what
- * was seen, and whether the poster is folded, is kept per member and agent on this device. "Latest notes" on the agent's
- * card opens it. */
+ * was seen, and whether the poster is folded, is kept per member and agent on this device. */
 
 export type WallPosterAgent = Pick<HostedStaffAgent, "id" | "displayName" | "appearance" | "templateId">;
 
@@ -27,8 +26,6 @@ export type WallPosterAgent = Pick<HostedStaffAgent, "id" | "displayName" | "app
 const DONE_SHORT = 2;
 const SEEN_KEY = "qorpera.agent-wall.seen.";
 const FOLD_KEY = "qorpera.agent-wall.folded.";
-/** How long a reveal from the agent's card waits for its wall to show before it no longer takes focus. */
-const REVEAL_MS = 15_000;
 
 type Part = "waiting" | "working" | "done";
 
@@ -107,13 +104,6 @@ function writeFolded(where: string, folded: boolean): void {
 	}
 }
 
-/** How many items `text` holds (zero when it is no wall), and how many of them `member` has not seen on this device. */
-export function wallNews(member: string, agentId: string, text: string): { items: number; unseen: number } {
-	const keys = keysOf(parseWall(text).wall);
-	const seen = readSeen(slot(member, agentId));
-	return { items: keys.length, unseen: seen ? keys.filter((key) => !seen.has(key)).length : 0 };
-}
-
 export interface WallPosterOptions {
 	/** The member who looks: what was seen and the fold state are theirs, per agent. */
 	member?: string;
@@ -158,8 +148,6 @@ export class AgentWallPoster {
 	#items = new Map<string, WallItem>();
 	/** Tells this poster's detail ids apart from another poster's on the page. */
 	readonly #serial = Math.random().toString(36).slice(2, 8);
-	/** Opened from the agent's card: if the poster shows before this time, it takes focus. */
-	#revealUntil = 0;
 
 	constructor(options: WallPosterOptions = {}) {
 		this.#member = options.member ?? "";
@@ -231,32 +219,12 @@ export class AgentWallPoster {
 		this.#fresh = new Set([...this.#fresh].filter((item) => present.has(item)));
 		if (seen) for (const item of keys) if (!seen.has(item)) this.#fresh.add(item);
 		// Closed until the member opens it, however much is new: the button says so and the chat keeps its room.
-		if (!this.#drawn) this.#open = this.#revealUntil > 0 || readFolded(where) === false;
+		if (!this.#drawn) this.#open = readFolded(where) === false;
 		this.el.hidden = false;
 		this.#draw(agent, wall, today);
 		this.#syncOpen();
 		// Seen once open; a wall never seen before is the start to mark from, folded or not.
 		if (this.#open || !seen) writeSeen(where, keys);
-		if (this.#revealUntil) {
-			// Not when the reveal is long past (its thread's read failed), nor into the middle of typing.
-			const typing = document.activeElement?.closest("input, textarea, [contenteditable=true]");
-			if (Date.now() <= this.#revealUntil && !typing) {
-				this.el.scrollIntoView?.({ block: "nearest" });
-				this.#toggle.focus({ preventScroll: true });
-			}
-			this.#revealUntil = 0;
-		}
-	}
-
-	/** Opens the wall ("Latest notes" on the agent's card): now when its text is here, else as soon as it is. */
-	reveal(agentId: string): void {
-		writeFolded(slot(this.#member, agentId), false);
-		this.#revealUntil = Date.now() + REVEAL_MS;
-		if (this.#agent?.id !== agentId || this.#text === null) return;
-		// Drawn as if first shown: open, the new items marked.
-		this.#key = "";
-		this.#drawn = undefined;
-		this.show(this.#agent, this.#text, this.#today);
 	}
 
 	/** Lets the pictures read for the agent shown so far go. */

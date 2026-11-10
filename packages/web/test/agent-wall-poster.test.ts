@@ -2,7 +2,7 @@
 import type { CloudMemberFolderEntry } from "@qorpera/cloud-client/cloud-member-folder";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentWallReader } from "../src/app/agent-wall.ts";
-import { AgentWallPoster, type WallPosterAgent, wallNews } from "../src/ui/agent-wall-poster.ts";
+import { AgentWallPoster, type WallPosterAgent } from "../src/ui/agent-wall-poster.ts";
 import { markdownInline } from "../src/ui/markdown.ts";
 
 const AGENT: WallPosterAgent = {
@@ -354,20 +354,8 @@ describe("reading an agent's wall", () => {
 	});
 });
 
-describe("Latest notes", () => {
+describe("Hiding", () => {
 	const MEMBER = "u0000000-0000-4000-8000-00000000000a";
-	const CHANGED = WALL.replace(
-		"- Checking five shops' prices\n",
-		"- Checking five shops' prices\n- Writing the shop texts\n",
-	);
-
-	it("counts what this member has not seen open", () => {
-		const poster = new AgentWallPoster({ member: MEMBER });
-		poster.show(AGENT, WALL, TODAY);
-		expect(wallNews(MEMBER, AGENT.id, CHANGED)).toEqual({ items: 9, unseen: 1 });
-		// What another member saw on this device is theirs.
-		expect(wallNews("someone-else", AGENT.id, CHANGED)).toEqual({ items: 9, unseen: 0 });
-	});
 
 	it("has no way to hide the wall, and a wall hidden before this shows again", () => {
 		localStorage.setItem(`qorpera.agent-wall.hidden.${MEMBER}.${AGENT.id}`, "1");
@@ -375,67 +363,6 @@ describe("Latest notes", () => {
 		poster.show(AGENT, WALL, TODAY);
 		expect(poster.shown).toBe(true);
 		expect(poster.el.querySelector(".agent-wall-hide")).toBeNull();
-	});
-
-	it("opens the wall, with what is new marked, and takes focus", () => {
-		const poster = new AgentWallPoster({ member: MEMBER });
-		document.body.append(poster.el);
-		poster.show(AGENT, WALL, TODAY);
-		poster.show(AGENT, CHANGED, TODAY);
-		expect(poster.el.classList.contains("is-folded")).toBe(true);
-		poster.reveal(AGENT.id);
-		expect(poster.el.classList.contains("is-folded")).toBe(false);
-		expect(texts(poster.el, ".agent-wall-item.is-new .agent-wall-text")).toEqual(["Writing the shop texts"]);
-		expect(document.activeElement).toBe(toggle(poster));
-	});
-
-	it("opens once its text is read when Latest notes opened the thread first", () => {
-		const poster = new AgentWallPoster({ member: MEMBER });
-		document.body.append(poster.el);
-		poster.reveal(AGENT.id);
-		expect(poster.shown).toBe(false);
-		poster.show(AGENT, WALL, TODAY);
-		expect(poster.el.classList.contains("is-folded")).toBe(false);
-		expect(document.activeElement).toBe(toggle(poster));
-	});
-
-	it("opens when storage keeps nothing", () => {
-		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-			throw new Error("blocked");
-		});
-		try {
-			const poster = new AgentWallPoster({ member: MEMBER });
-			poster.reveal(AGENT.id);
-			poster.show(AGENT, WALL, TODAY);
-			expect(poster.el.classList.contains("is-folded")).toBe(false);
-		} finally {
-			vi.restoreAllMocks();
-		}
-	});
-
-	it("takes no focus from a reveal long past, nor from a member typing", () => {
-		vi.useFakeTimers({ toFake: ["Date"] });
-		try {
-			const poster = new AgentWallPoster({ member: MEMBER });
-			const field = document.createElement("textarea");
-			document.body.append(poster.el, field);
-			// The thread's read failed: the wall comes much later, on a folder hint.
-			poster.reveal(AGENT.id);
-			vi.setSystemTime(Date.now() + 60_000);
-			poster.show(AGENT, WALL, TODAY);
-			expect(poster.shown).toBe(true);
-			expect(document.activeElement).toBe(document.body);
-			// A reveal in time, while the member types: the wall shows open, the focus stays.
-			const other = new AgentWallPoster({ member: MEMBER });
-			document.body.append(other.el);
-			field.focus();
-			other.reveal(AGENT.id);
-			other.show(AGENT, WALL, TODAY);
-			expect(other.shown).toBe(true);
-			expect(document.activeElement).toBe(field);
-		} finally {
-			vi.useRealTimers();
-		}
 	});
 });
 
