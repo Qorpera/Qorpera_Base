@@ -1,6 +1,7 @@
 import type { AppManifest } from "@qorpera/cloud-client/interface-apps";
 import type { User } from "@supabase/supabase-js";
 import type { InterfacePageName } from "../../cloud/interface-pages.ts";
+import type { MemberContactPlacing } from "../../cloud/member-chats.ts";
 import { UUID_PATTERN } from "../../cloud/parse.ts";
 import {
 	type CompanySidebar,
@@ -23,7 +24,7 @@ import { nameDialog } from "../../ui/name-dialog.ts";
 import { attachPersonPicture, personPicturesEpoch } from "../../ui/person-pictures.ts";
 import { phrase, presentationLocale, t, uiText } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
-import { RailDrag, type RailDrop } from "../../ui/rail-drag.ts";
+import { RAIL_ITEM, RailDrag, type RailDrop, railItemId } from "../../ui/rail-drag.ts";
 import { glideRows, measureRows } from "../../ui/rail-flip.ts";
 import { RailSelection } from "../../ui/rail-selection.ts";
 import { railListSkeleton } from "../../ui/skeleton.ts";
@@ -32,6 +33,7 @@ import { type AgentState, type CompanyController, isAgentPairSession } from "../
 import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
 import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../interfaces.ts";
+import { contactPlaces, MEMBERS_ZONE, type RailContact, railContacts, weave } from "../rail-contacts.ts";
 import { appHash, conceptsHash, type Route } from "../router.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
@@ -321,8 +323,11 @@ export function renderTopbar(
  * right-click on an agent or a group chat opens its menu (pin, move to a section,
  * rename, copy the conversation id, hide, delete); on a section, rename or delete it;
  * on the rail, make a new section. Agents and group chats drag between sections and
- * into or out of the pinned row. Search and creation share the toolbar, with the
- * account menu at the foot. Company management lives in settings. */
+ * into or out of the pinned row. The company's other members are contacts (2026-11-10):
+ * rows of the same kind, in a Members group at the foot of the list until their member
+ * drags them among the agents or pins them, and hidden like an agent; where a contact
+ * stands is each member's own (app/rail-contacts.ts). Search and creation share the
+ * toolbar, with the account menu at the foot. Company management lives in settings. */
 
 /* The rail's parts are built once per company: the toolbar with its search field,
  * the scrolling list and the foot. A store update changes what they show in place,
@@ -360,13 +365,14 @@ interface RailParts {
 	readonly foot: HTMLElement;
 	/** The list's own slots, kept so that nothing unchanged ever leaves the page. */
 	readonly cofounderGroup: HTMLElement;
-	/** The company's other members, each a contact: this member's chat with them. */
-	readonly membersGroup: HTMLElement;
 	readonly pinnedGroup: HTMLElement;
 	/** The company's sections by id, and Unassigned, each built once and kept. */
 	sections: Map<string, SectionParts>;
 	readonly unassigned: SectionParts;
-	/** Grok Bot's "Hidden Bots": this member's hidden agents, folded at the foot of the list. */
+	/** The company's other members, each a contact (this member's chat with them): those the member has not put
+	 * elsewhere in the rail, after everything the company arranges. */
+	readonly members: SectionParts;
+	/** Grok Bot's "Hidden Bots": this member's hidden agents and contacts, folded at the foot of the list. */
 	readonly hiddenGroup: HiddenParts;
 	/** The list's placeholder, built when first shown so it breathes with the page's. */
 	loading: HTMLElement | undefined;
@@ -399,6 +405,8 @@ interface HiddenParts {
 	readonly el: HTMLElement;
 	readonly toggle: HTMLButtonElement;
 	readonly label: HTMLElement;
+	/** How many messages wait from contacts in the fold: a hidden contact is still heard. */
+	readonly unread: HTMLElement;
 	readonly count: HTMLElement;
 	readonly chevron: HTMLElement;
 	readonly list: HTMLElement;
@@ -439,6 +447,7 @@ function hiddenParts(redraw: () => void): HiddenParts {
 		/* Storage may be unavailable; the group starts folded. */
 	}
 	const label = h("span", { class: "rail-hidden-label" });
+	const unread = h("span", { class: "rail-hidden-unread", "aria-hidden": "true", hidden: true });
 	const count = h("span", { class: "rail-hidden-count" });
 	const chevron = h("span", { class: "rail-hidden-chevron", "aria-hidden": "true" }, icon("chevron-down"));
 	const list = h("div", { class: "rail-section-list rail-hidden-list", id: "rail-hidden-list" });
@@ -446,6 +455,7 @@ function hiddenParts(redraw: () => void): HiddenParts {
 		"button",
 		{ type: "button", class: "rail-hidden-toggle", "aria-controls": "rail-hidden-list" },
 		label,
+		unread,
 		count,
 		chevron,
 	);
@@ -453,6 +463,7 @@ function hiddenParts(redraw: () => void): HiddenParts {
 		el: h("div", { class: "rail-hidden" }, toggle, list),
 		toggle,
 		label,
+		unread,
 		count,
 		chevron,
 		list,
@@ -602,7 +613,6 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			connection,
 			foot: h("div", { class: "rail-footer" }, connection),
 			cofounderGroup: h("div", { class: "rail-cofounder", role: "group", "aria-label": "Co-Founder" }),
-			membersGroup: h("div", { class: "rail-members", role: "group" }),
 			pinnedGroup: h(
 				"div",
 				{ class: "rail-pinned", role: "group", "data-zone": "pinned" },
@@ -610,6 +620,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			),
 			sections: new Map(),
 			unassigned: sectionParts("unassigned"),
+			members: sectionParts(MEMBERS_ZONE),
 			hiddenGroup: hiddenParts(() => created.redraw()),
 			loading: undefined,
 			empty: h("p", { class: "rail-empty" }),
@@ -625,6 +636,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			drag: undefined as unknown as RailDrag,
 			redraw,
 		};
+		created.members.el.classList.add("rail-members");
 		(created as { drag: RailDrag }).drag = new RailDrag(list, () => dragHooks(company, created), company.signal);
 		// The drawer's icons reorder by dragging (or Alt with an arrow); the order is the member's own, on this device.
 		(created as { appsDrag: AppGridDrag }).appsDrag = new AppGridDrag(
@@ -759,15 +771,16 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			signal: company.signal,
 		});
 		pressToOpenMenu(appsDrawer, company, (event) => openDrawerMenu(company, created, event));
-		// Dragging has a keyboard twin: Alt with an arrow moves the focused agent or group chat one place.
+		// Dragging has a keyboard twin: Alt with an arrow moves the focused agent, group chat or contact one place.
 		list.addEventListener(
 			"keydown",
 			(event) => {
 				const delta = matchesKey(event, "previous") ? -1 : matchesKey(event, "next") ? 1 : 0;
-				const item = railItemOf(event.target as HTMLElement);
+				const element = event.target as HTMLElement;
+				const item = railItemOf(element);
 				if (!event.altKey || !delta || !item) return;
 				event.preventDefault();
-				nudgeItem(company, item, delta);
+				nudgeItem(company, created, element, item, delta);
 			},
 			{ signal: company.signal },
 		);
@@ -804,7 +817,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		parts.appsDrawer.setAttribute("aria-label", t("Apps"));
 		parts.interfaceRows = new Map();
 		parts.pinnedGroup.setAttribute("aria-label", t("Pinned"));
-		parts.membersGroup.setAttribute("aria-label", t("Members"));
+		parts.members.title.textContent = t("Members");
 		const slot = parts.pinnedGroup.querySelector<HTMLElement>(".rail-drop-slot");
 		if (slot) slot.textContent = t("Drop here to pin");
 		parts.unassigned.title.textContent = t("Unassigned");
@@ -956,9 +969,8 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 
 /** Another member of the company, as a contact: their face where an agent has a figure, green-dotted while they are
  * online, with how many of their messages wait. Under the name stands their newest unread message, else whether they
- * are online or when they last were. Up to MEMBER_ROWS other members are rows; a bigger team is square cards, the face
- * over the first name, so the agents stay in sight. */
-const MEMBER_ROWS = 3;
+ * are online or when they last were. A row wherever an agent would be a row; in the pinned row a square card, the face
+ * over the first name. */
 interface MemberModel {
 	userId: string;
 	name: string;
@@ -1187,39 +1199,34 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 					cofounderCard,
 				)
 			: null;
-	// The company's other members, each a contact that opens this member's chat with them (Jonas, 10 Nov 2026), in the
-	// order they joined. None alone in the company, on a cloud without member chats, or before the first read.
+	// The sidebar: this member's pins and hidden agents and group chats, the company's
+	// sections. A cloud without it shows every agent in one list, as before; one that
+	// places agents only lists the group chats after them.
+	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
+	// The company's other members, each a contact that opens this member's chat with them (Jonas, 10 Nov 2026). None
+	// alone in the company, on a cloud without member chats, or before the first read. A contact stands where its
+	// member put it (app/rail-contacts.ts): in the Members group, in the order the members joined, until then.
 	const activeMemberId = route.name === "company" && route.section === "member" ? route.id?.toLowerCase() : undefined;
 	const memberChats = state.memberChatsUnavailable ? undefined : state.memberChats;
-	const others = (state.team?.members ?? []).filter(
-		(member) => member.userId !== company.userId && memberChats?.[member.userId],
-	);
-	const memberCards = others.length > MEMBER_ROWS;
-	parts.membersGroup.classList.toggle("is-cards", memberCards);
-	const memberElements = others.flatMap((member) => {
-		const chat = memberChats?.[member.userId];
-		if (!chat || !matches(member.displayName)) return [];
-		const presence = memberPresence(state, member.userId);
-		const href = `#/c/${profileId}/member/${member.userId}`;
-		const waiting = chat.unread > 0 && chat.last?.authorUserId === member.userId ? chat.last.text : undefined;
+	const { others, contacts } = companyContacts(company);
+	const contactOf = new Map(contacts.map((contact) => [contact.userId, contact]));
+	const contactsIn = (zone: string) => contacts.filter((contact) => contact.zone === zone);
+	const memberElement = (userId: string, keyPrefix = "", build = memberRow) => {
+		const member = others.get(userId)!;
+		const chat = memberChats![userId]!;
+		const presence = memberPresence(state, userId);
+		const href = `#/c/${profileId}/member/${userId}`;
+		const waiting = chat.unread > 0 && chat.last?.authorUserId === userId ? chat.last.text : undefined;
 		const model: MemberModel = {
-			userId: member.userId,
+			userId,
 			name: member.displayName,
 			online: presence?.online === true,
 			line: waiting ?? presence?.text ?? "",
 			unread: chat.unread,
 			mentioned: chat.unread > 0,
 		};
-		return [
-			memberCards
-				? row(`card:${href}`, href, model, activeMemberId === member.userId, memberCard)
-				: row(href, href, model, activeMemberId === member.userId, memberRow),
-		];
-	});
-	// The sidebar: this member's pins and hidden agents and group chats, the company's
-	// sections. A cloud without it shows every agent in one list, as before; one that
-	// places agents only lists the group chats after them.
-	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
+		return row(`${keyPrefix}${href}`, href, model, activeMemberId === userId, build);
+	};
 	const roster = company.sidebarRoster();
 	const rooms = company.groupChatRooms();
 	// Group chats the sidebar places; the others stand after the Unassigned agents.
@@ -1248,6 +1255,13 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const roomShown = (roomId: string) =>
 		(matches(placedRooms.get(roomId)?.title ?? "") || inWholeSection(roomId)) &&
 		(!hidden.has(roomId) || Boolean(railQuery));
+	// A contact shows as an agent does: where it stands unless hidden, and a search finds a hidden one too. A search
+	// that names the section it stands in lists it with the section.
+	const contactShown = (contact: RailContact) =>
+		(matches(others.get(contact.userId)!.displayName) ||
+			(contact.zone === "unassigned" && wholeSections.has(undefined)) ||
+			(contact.zone.startsWith("section:") && wholeSections.has(contact.zone.slice("section:".length)))) &&
+		(!contact.hidden || Boolean(railQuery));
 	const agentElement = (agent: HostedStaffAgent) =>
 		row(
 			`#/c/${profileId}/staff/${agent.id}`,
@@ -1271,7 +1285,10 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		const href = `#/c/${profileId}/chat/${session.sessionId}`;
 		return row(`${keyPrefix}${href}`, href, roomModel(session, roomId), activeSessionId === session.sessionId, build);
 	};
-	const pinnedElements = pinned.flatMap((itemId) => {
+	// The member's pinned contacts stand among the pinned agents and group chats, each after the one it was put after.
+	const pinnedElements = weave(pinned, contactsIn("pinned")).flatMap((itemId) => {
+		const contact = contactOf.get(itemId);
+		if (contact) return contactShown(contact) ? [memberElement(itemId, "pin:", memberCard)] : [];
 		if (placedRooms.has(itemId)) return roomShown(itemId) ? [roomElement(itemId, "pin:", groupPinCard)] : [];
 		const agent = company.staffById(itemId);
 		return shown(agent)
@@ -1286,14 +1303,25 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				]
 			: [];
 	});
+	// A container's rows: the company's order of its agents and group chats, with the member's contacts woven in
+	// before the pinned and hidden ones are left out, so a contact keeps its place beside one that is pinned or hidden.
 	const inContainer = (sectionId: string | undefined) =>
-		(sidebar ? containerOrder(sidebar, sectionId, roster) : sectionId ? [] : roster)
+		weave(
+			sidebar ? containerOrder(sidebar, sectionId, roster) : sectionId ? [] : roster,
+			contactsIn(sectionId ? `section:${sectionId}` : "unassigned"),
+		)
 			.filter((itemId) => !pinned.includes(itemId))
 			.flatMap((itemId) => {
+				const contact = contactOf.get(itemId);
+				if (contact) return contactShown(contact) ? [memberElement(itemId)] : [];
 				if (placedRooms.has(itemId)) return roomShown(itemId) ? [roomElement(itemId)] : [];
 				const agent = company.staffById(itemId);
 				return shown(agent) ? [agentElement(agent)] : [];
 			});
+	// The Members group: the contacts their member has put nowhere else, the dragged ones first, then as they joined.
+	const memberRows = weave([], contactsIn(MEMBERS_ZONE)).flatMap((userId) =>
+		contactShown(contactOf.get(userId)!) ? [memberElement(userId)] : [],
+	);
 	const sectionGroups = (sidebar?.sections ?? []).map((item) => {
 		let group = parts.sections.get(item.sectionId);
 		if (!group) {
@@ -1310,13 +1338,25 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const hiddenItems = railQuery ? [] : roster.filter((itemId) => hidden.has(itemId));
 	// With them, the pages an owner or admin hid, for owners and admins: from here they show them again.
 	const hiddenPages = railQuery ? [] : hiddenInterfaces(company);
-	const hiddenCount = hiddenItems.length + hiddenPages.length;
+	// And the contacts the member hid. A hidden contact can still write: how many of their messages wait stands on
+	// the fold, so nothing a person sent goes unseen.
+	const hiddenContacts = railQuery ? [] : contacts.filter((contact) => contact.hidden);
+	const hiddenUnread = hiddenContacts.reduce((sum, contact) => sum + (memberChats?.[contact.userId]?.unread ?? 0), 0);
+	const hiddenCount = hiddenItems.length + hiddenPages.length + hiddenContacts.length;
 	const hiddenGroup = parts.hiddenGroup;
 	hiddenGroup.count.textContent = String(hiddenCount);
 	hiddenGroup.count.hidden = hiddenGroup.open;
+	// Empty with nothing waiting, so the fold reads as its name and its count alone.
+	hiddenGroup.unread.textContent = hiddenUnread === 0 ? "" : hiddenUnread > 99 ? "99+" : String(hiddenUnread);
+	hiddenGroup.unread.hidden = hiddenUnread === 0 || hiddenGroup.open;
 	hiddenGroup.chevron.hidden = !hiddenGroup.open;
 	hiddenGroup.toggle.setAttribute("aria-expanded", String(hiddenGroup.open));
-	hiddenGroup.toggle.setAttribute("aria-label", t("Hidden: {count}", { count: hiddenCount }));
+	hiddenGroup.toggle.setAttribute(
+		"aria-label",
+		[t("Hidden: {count}", { count: hiddenCount }), hiddenUnread ? t("Unread: {count}", { count: hiddenUnread }) : ""]
+			.filter(Boolean)
+			.join(" · "),
+	);
 	hiddenGroup.list.hidden = !hiddenGroup.open;
 	reconcile(
 		hiddenGroup.list,
@@ -1346,6 +1386,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 								]
 							: [];
 					}),
+					...hiddenContacts.map((contact) => memberElement(contact.userId, "hidden:")),
 				]
 			: [],
 	);
@@ -1400,7 +1441,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		return entry.element;
 	};
 	const anyRows =
-		memberElements.length +
+		memberRows.length +
 		pinnedElements.length +
 		unassignedRows.length +
 		hiddenCount +
@@ -1454,18 +1495,26 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		parts.unassigned.el.removeAttribute("aria-labelledby");
 	}
 	reconcile(parts.unassigned.list, unassignedRows);
+	// The Members group is a zone only contacts land in, where the cloud keeps their places. Its title parts it from
+	// the sections above it, as Unassigned's does. With nobody in it, it shows only while a contact is dragged, so one
+	// can be dropped back there (styles/app.css).
+	const placing = state.memberContactPlacing === true && contacts.length > 0;
+	zone(parts.members.el, placing);
+	parts.members.title.hidden = !sectioned;
+	parts.members.el.classList.toggle("is-empty", !memberRows.length);
+	reconcile(parts.members.list, memberRows);
 	// Collapsed, where section titles hide, a short line parts each group of agents from the
 	// group above it: never under the Co-Founder, never around a section with no one in it.
-	let above = pinnedElements.length > 0 || memberElements.length > 0;
+	let above = pinnedElements.length > 0;
 	for (const [element, count] of [
 		...sectionGroups.map(({ group, rows: sectionRows }) => [group.el, sectionRows.length] as const),
 		[parts.unassigned.el, unassignedRows.length] as const,
+		[parts.members.el, memberRows.length] as const,
 	]) {
 		element.classList.toggle("rail-divided", above && count > 0);
 		above ||= count > 0;
 	}
 	reconcile(parts.cofounderGroup, cofounderElement ? [cofounderElement] : []);
-	reconcile(parts.membersGroup, memberElements);
 	reconcile(
 		parts.list,
 		[
@@ -1482,13 +1531,13 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				button(t("Dismiss"), () => company.reportRailError(undefined), { small: true }),
 			),
 			cofounderElement ? parts.cofounderGroup : null,
-			memberElements.length ? parts.membersGroup : null,
 			// The pinned row stays in place while empty, hidden, so a drag can still reach it.
 			sidebar && !railQuery ? parts.pinnedGroup : pinnedElements.length ? parts.pinnedGroup : null,
 			parts.loading ?? null,
 			// A section shows while it has rows, and always when nothing is being searched.
 			...sectionGroups.filter(({ rows: r }) => r.length || !railQuery).map(({ group }) => group.el),
 			unassignedRows.length || (sectioned && !railQuery) ? parts.unassigned.el : null,
+			memberRows.length || (placing && !railQuery) ? parts.members.el : null,
 			hiddenCount ? hiddenGroup.el : null,
 			empty ? parts.empty : null,
 			parts.selection.moving ?? null,
@@ -1781,8 +1830,14 @@ function sameName(sidebar: CompanySidebar, name: string, except?: string) {
 	);
 }
 
-/** What the rail places: an agent or a group chat, known by the row it was picked from. */
+/** What the rail places: an agent, a group chat or a member contact, known by the row it was picked from. */
 interface RailItem {
+	id: string;
+	kind: "agent" | "room" | "member";
+}
+/** An agent or a group chat: what the company's sidebar itself places, pins and hides. A contact's place is its
+ * member's own (app/rail-contacts.ts). */
+interface SidebarItem {
 	id: string;
 	kind: "agent" | "room";
 }
@@ -1791,12 +1846,131 @@ interface RailItem {
 function railItemOf(element: HTMLElement | undefined): RailItem | undefined {
 	const agentId = element?.dataset.agentId;
 	const roomId = element?.dataset.roomId;
-	return agentId ? { id: agentId, kind: "agent" } : roomId ? { id: roomId, kind: "room" } : undefined;
+	const memberId = element?.dataset.memberId;
+	return agentId
+		? { id: agentId, kind: "agent" }
+		: roomId
+			? { id: roomId, kind: "room" }
+			: memberId
+				? { id: memberId, kind: "member" }
+				: undefined;
+}
+
+/** The company's other members this member has a chat with, in the order they joined, and each as a contact where
+ * the rail draws it. */
+function companyContacts(company: CompanyController) {
+	const state = company.store.get();
+	const chats = state.memberChatsUnavailable ? undefined : state.memberChats;
+	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
+	const others = new Map(
+		(state.team?.members ?? [])
+			.filter((member) => member.userId !== company.userId && chats?.[member.userId])
+			.map((member) => [member.userId, member]),
+	);
+	const contacts = railContacts(
+		[...others.keys()],
+		chats ?? {},
+		sidebar ? new Set(sidebar.sections.map((item) => item.sectionId)) : undefined,
+	);
+	return { others, contacts };
+}
+
+/** The member's chats, where the cloud keeps contacts' places (20260930717000): what a contact's menu, drag and
+ * Alt-arrow need. Undefined on a cloud that keeps none: contacts stay where the cloud lists them. */
+function placedChats(company: CompanyController) {
+	const state = company.store.get();
+	return state.memberChatsUnavailable || state.memberContactPlacing !== true ? undefined : state.memberChats;
+}
+
+/** A zone's rows as the member sees them now, by id: agents, group chats and contacts. What a drop leaves behind
+ * is read off it; nothing drags while a search hides rows. */
+function zoneOrder(parts: RailParts, zone: string): string[] {
+	const element = parts.list.querySelector<HTMLElement>(`[data-drop-zone="${zone}"]`);
+	return element ? [...element.querySelectorAll<HTMLElement>(RAIL_ITEM)].map((row) => railItemId(row)!) : [];
+}
+
+/** The pinned row or the Members group as the company holds it, whatever a search hides: the pinned agents and group
+ * chats the company still has, with the member's contacts that show there among them. A menu's Pin and Unpin put a
+ * contact after these. */
+function keptOrder(company: CompanyController, zone: "pinned" | typeof MEMBERS_ZONE): string[] {
+	const state = company.store.get();
+	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
+	const roster = company.sidebarRoster();
+	return weave(
+		zone === "pinned" ? (sidebar?.pinned ?? []).filter((itemId) => roster.includes(itemId)) : [],
+		companyContacts(company).contacts.filter((contact) => contact.zone === zone && !contact.hidden),
+	);
+}
+
+/** Whether the pinned row has room for one more card. It holds PIN_LIMIT of them, whatever they are: the pinned
+ * agents and group chats and the member's pinned contacts count alike, by drag and from a menu or a card. */
+const pinnedRowFull = (company: CompanyController) => keptOrder(company, "pinned").length >= PIN_LIMIT;
+
+/** Keeps the member's contacts where a zone's rows stand after a drop or a step (`order`, as the member sees the
+ * zone then): each after the agent or group chat before it. `show` names a contact that shows again there. */
+function settleContacts(company: CompanyController, zone: string, order: readonly string[], show?: string): void {
+	const chats = placedChats(company);
+	if (!chats) return;
+	const changes = contactPlaces(zone, order, chats, show);
+	if (changes.length) placeContacts(company, changes);
+}
+
+/** Keeps places the member just made; what an earlier try said in the rail goes with the new one. */
+function placeContacts(company: CompanyController, changes: readonly MemberContactPlacing[]): void {
+	company.reportRailError(undefined);
+	company.memberChats.place(changes);
+}
+
+/** A contact's menu: Pin or Unpin where the rail has a pinned row, and Hide from sidebar (Show in sidebar, for a
+ * hidden one). It is the member's own rail, so any member may. Moving is a drag, or Alt with an arrow. Nothing to
+ * offer on a cloud that keeps no places. */
+function contactMenu(company: CompanyController, userId: string): MenuEntry[] {
+	const contact = companyContacts(company).contacts.find((item) => item.userId === userId);
+	if (!contact || !placedChats(company)) return [];
+	const state = company.store.get();
+	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
+	const items: MenuEntry[] = [];
+	if (sidebar && !contact.hidden && contact.zone === "pinned")
+		items.push({
+			label: t("Unpin"),
+			icon: "unpin",
+			// Back to the Members group, after the contacts there.
+			select: () => settleContacts(company, MEMBERS_ZONE, [...keptOrder(company, MEMBERS_ZONE), userId]),
+		});
+	else if (sidebar && !contact.hidden)
+		items.push({
+			label: t("Pin"),
+			icon: "pin",
+			select: () => {
+				if (pinnedRowFull(company)) company.reportRailError(t("The pinned row is full. Unpin something first."));
+				else settleContacts(company, "pinned", [...keptOrder(company, "pinned"), userId]);
+			},
+		});
+	items.push({
+		label: contact.hidden ? t("Show in sidebar") : t("Hide from sidebar"),
+		icon: contact.hidden ? "show" : "hide",
+		select: () => {
+			// Hidden, a contact keeps its place: shown again, it stands where it stood. Not in the pinned row: a hidden
+			// contact loses its pin, as a hidden agent does, so the row's cards are always the ones that show. (A
+			// contact another page left hidden with its pin comes back to the row only while it has room.)
+			const unpinned =
+				contact.zone === "pinned" && (!contact.hidden || pinnedRowFull(company))
+					? contactPlaces(MEMBERS_ZONE, [...keptOrder(company, MEMBERS_ZONE), userId], placedChats(company) ?? {})
+					: undefined;
+			placeContacts(
+				company,
+				unpinned
+					? unpinned.map((change) => (change.userId === userId ? { ...change, hidden: !contact.hidden } : change))
+					: [{ userId, place: contact.place, hidden: !contact.hidden }],
+			);
+		},
+	});
+	return items;
 }
 
 /** Moves an agent or a group chat: the sidebar names each by its own kind of id. */
 function moveRequest(
-	item: RailItem,
+	item: SidebarItem,
 	sectionId: string | null,
 	options: { order?: string[]; unpin?: boolean } = {},
 ): SidebarRequest {
@@ -1805,7 +1979,7 @@ function moveRequest(
 		: { action: "move_agent", staffAgentId: item.id, sectionId, ...options };
 }
 
-function hideRequest(item: RailItem, hidden: boolean): SidebarRequest {
+function hideRequest(item: SidebarItem, hidden: boolean): SidebarRequest {
 	return item.kind === "room"
 		? { action: "set_hidden", roomId: item.id, hidden }
 		: { action: "set_hidden", staffAgentId: item.id, hidden };
@@ -1813,7 +1987,7 @@ function hideRequest(item: RailItem, hidden: boolean): SidebarRequest {
 
 /** Asks for a new section's name and makes it; with an agent or a group chat, moves it
  * into the section (a name that already exists moves it there instead). */
-async function askSectionName(company: CompanyController, item?: RailItem): Promise<void> {
+async function askSectionName(company: CompanyController, item?: SidebarItem): Promise<void> {
 	const name = await nameDialog({
 		title: t("New section"),
 		label: t("Section name"),
@@ -1857,7 +2031,7 @@ function canOrganize(company: CompanyController): boolean {
  * sidebar as it is then: a card stays open across refreshes, and another tab may have pinned meanwhile. */
 function pinActions(company: CompanyController, sidebar: CompanySidebar, itemId: string): CardFootActions {
 	const pinned = sidebar.pinned.includes(itemId);
-	if (!pinned && sidebar.pinned.length >= PIN_LIMIT) return {};
+	if (!pinned && pinnedRowFull(company)) return {};
 	return {
 		pinned,
 		pin: () => {
@@ -1869,7 +2043,7 @@ function pinActions(company: CompanyController, sidebar: CompanySidebar, itemId:
 			const pins = current.pinned.filter((pin) => roster.includes(pin));
 			// What the card offered: already done elsewhere meanwhile is nothing to send.
 			if (pinned !== pins.includes(itemId)) return;
-			if (!pinned && pins.length >= PIN_LIMIT) {
+			if (!pinned && pinnedRowFull(company)) {
 				company.reportRailError(t("The pinned row is full. Unpin something first."));
 				return;
 			}
@@ -1886,7 +2060,7 @@ function agentCard(company: CompanyController, parts: RailParts, agent: HostedSt
 	const actions = parts.context?.agentActions;
 	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
 	const isCofounder = agent.id === company.cofounderId();
-	const item: RailItem = { id: agent.id, kind: "agent" };
+	const item: SidebarItem = { id: agent.id, kind: "agent" };
 	const hidden = Boolean(sidebar?.hidden.includes(agent.id));
 	const conversationId = company.primarySessionFor(agent.id)?.sessionId;
 	return {
@@ -1913,7 +2087,7 @@ function groupCard(
 	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
 	const placeable = Boolean(sidebar?.groupChats) && company.groupChatRooms().has(roomId);
 	const canAuthorize = state.team?.capabilities.authorize === true && state.team.capabilities.write === true;
-	const item: RailItem = { id: roomId, kind: "room" };
+	const item: SidebarItem = { id: roomId, kind: "room" };
 	const hidden = Boolean(sidebar?.hidden.includes(roomId));
 	return {
 		conversationId: session.sessionId,
@@ -2040,7 +2214,7 @@ function sectionMenu(company: CompanyController, sectionId: string): MenuEntry[]
 	];
 }
 
-/** Right-click anywhere in the rail list: an agent, a group chat, a section's title, or the rail itself. */
+/** Right-click anywhere in the rail list: an agent, a group chat, a contact, a section's title, or the rail itself. */
 function openRailMenu(company: CompanyController, parts: RailParts, event: MouseEvent): void {
 	const target = event.target as Element;
 	if (parts.drag.dragging) {
@@ -2054,11 +2228,20 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 	const roomElement = target.closest<HTMLElement>("[data-room-id]");
 	const titleElement = target.closest<HTMLElement>(".rail-section-title[data-section-id]");
 	const pageElement = target.closest<HTMLElement>("[data-interface-page]");
+	const memberElement = target.closest<HTMLElement>("[data-member-id]");
 	let items: MenuEntry[] = [];
 	let label = t("Sidebar");
 	let opener: HTMLElement = parts.list;
 	let findOpener: (() => HTMLElement | null) | undefined;
-	if (agentElement) {
+	if (memberElement?.dataset.memberId) {
+		const userId = memberElement.dataset.memberId;
+		// The row is rebuilt when a message arrives; focus goes back to the new one, in the zone it was opened from.
+		const prefix = memberElement.closest(".rail-hidden") ? ".rail-hidden " : "";
+		items = contactMenu(company, userId);
+		label = t("{name} actions", { name: memberElement.querySelector("strong")?.textContent ?? t("Members") });
+		opener = memberElement;
+		findOpener = () => parts.list.querySelector<HTMLElement>(`${prefix}[data-member-id="${userId}"]`);
+	} else if (agentElement) {
 		const agent = company.staffById(agentElement.dataset.agentId ?? agentElement.dataset.cofounderId);
 		const open = parts.context?.openAgentCard;
 		if (agent && open) {
@@ -2256,24 +2439,51 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 		return state.sidebarUnavailable ? undefined : state.sidebar;
 	};
 	return {
-		// The collapsed rail hides the search field and ignores its text.
+		// The collapsed rail hides the search field and ignores its text. A contact drags wherever the cloud keeps
+		// its place; an agent or a group chat, where the company has a sidebar.
 		canDrag: (itemId: string) =>
-			Boolean(sidebarOf()) &&
 			(parts.collapsed || !parts.input.value.trim()) &&
-			company.sidebarRoster().includes(itemId),
+			(placedChats(company)?.[itemId] ? true : Boolean(sidebarOf()) && company.sidebarRoster().includes(itemId)),
 		accepts: (zone: string, itemId: string) => {
+			// The pinned row holds so many cards, whatever is dragged: one that is in it already moves within it.
+			const pinnable = () => zoneOrder(parts, "pinned").includes(itemId) || !pinnedRowFull(company);
+			// A contact lands in any zone: where it stands is its member's own.
+			if (placedChats(company)?.[itemId]) return zone !== "pinned" || pinnable();
 			const sidebar = sidebarOf();
-			if (!sidebar) return false;
-			if (zone === "pinned") return sidebar.pinned.includes(itemId) || sidebar.pinned.length < PIN_LIMIT;
+			// The Members group takes contacts only.
+			if (!sidebar || zone === MEMBERS_ZONE) return false;
+			if (zone === "pinned") return pinnable();
 			return canOrganize(company);
 		},
 		drop: ({ itemId, kind, zone, order }: RailDrop) => {
-			const item: RailItem = { id: itemId, kind };
+			// A contact: only where it stands changes. Dragged out of Hidden, it shows again where it lands.
+			if (kind === "member") {
+				settleContacts(company, zone, order, itemId);
+				return;
+			}
+			const item: SidebarItem = { id: itemId, kind };
 			const sidebar = sidebarOf();
 			if (!sidebar) return;
+			// The member's contacts stand among a zone's rows, and the sidebar orders agents and group chats only: its
+			// requests name those, and the contacts are then kept where the rows stand, here and in the zone the item
+			// left (as the member saw it, before anything is drawn anew).
+			const chats = placedChats(company);
+			const placed = chats ? order.filter((member) => !chats[member]) : order;
+			const from = parts.list
+				.querySelector<HTMLElement>(
+					`[data-drop-zone] [data-agent-id="${itemId}"], [data-drop-zone] [data-room-id="${itemId}"]`,
+				)
+				?.closest<HTMLElement>("[data-drop-zone]")?.dataset.dropZone;
+			const left = from && from !== zone ? zoneOrder(parts, from).filter((member) => member !== itemId) : undefined;
+			const settle = () => {
+				settleContacts(company, zone, order);
+				if (from && left) settleContacts(company, from, left);
+			};
 			const pinned = sidebar.pinned.includes(itemId);
 			if (zone === "pinned") {
-				if (order.join() !== sidebar.pinned.join()) void company.changeSidebar({ action: "set_pins", order });
+				if (placed.join() !== sidebar.pinned.join())
+					void company.changeSidebar({ action: "set_pins", order: placed });
+				settle();
 				return;
 			}
 			const sectionId = zone === "unassigned" ? undefined : zone.slice("section:".length);
@@ -2283,27 +2493,59 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 			const roster = company.sidebarRoster();
 			const before = containerOrder(sidebar, sectionId, roster);
 			const next = before.filter((member) => member !== itemId);
-			const following = order[order.indexOf(itemId) + 1];
+			const following = placed[placed.indexOf(itemId) + 1];
 			const at = following ? next.indexOf(following) : -1;
 			next.splice(at < 0 ? next.length : at, 0, itemId);
-			if (!pinned && !wasHidden && next.join() === before.join()) return;
-			if (!sectionId && !pinned && !wasHidden && !homeSection(sidebar, itemId) && company.unassignedOrderLost()) {
-				company.reportRailError(unassignedOrder());
-				return;
+			// Dropped where it stood among the agents, it may still have stepped over a contact: then only that moves.
+			if (pinned || wasHidden || next.join() !== before.join()) {
+				if (!sectionId && !pinned && !wasHidden && !homeSection(sidebar, itemId) && company.unassignedOrderLost()) {
+					company.reportRailError(unassignedOrder());
+					return;
+				}
+				if (wasHidden) void company.changeSidebar(hideRequest(item, false));
+				void company.changeSidebar(
+					moveRequest(item, sectionId ?? null, { order: next, ...(pinned ? { unpin: true } : {}) }),
+				);
 			}
-			if (wasHidden) void company.changeSidebar(hideRequest(item, false));
-			void company.changeSidebar(
-				moveRequest(item, sectionId ?? null, { order: next, ...(pinned ? { unpin: true } : {}) }),
-			);
+			settle();
 		},
 	};
 }
 
-/** Moves an agent or a group chat one place up or down among what the member sees: in
- * the pinned row (the member's own order) or in its section (the company's; hidden and
- * pinned items keep their places). */
-function nudgeItem(company: CompanyController, item: RailItem, delta: number): void {
+/** Moves an agent, a group chat or a contact one place up or down among what the member sees in its zone: the
+ * pinned row (the member's own order) or a section (the company's order of agents and group chats; hidden and pinned
+ * ones keep their places). A contact's step, and a step over a contact, change only where the contact stands, which
+ * is its member's own. */
+function nudgeItem(
+	company: CompanyController,
+	parts: RailParts,
+	element: HTMLElement,
+	item: RailItem,
+	delta: number,
+): void {
 	const itemId = item.id;
+	// What the member sees in the row's zone. A row in Hidden stands in no zone: it has no place to move from.
+	const zoneElement = element.closest<HTMLElement>("[data-drop-zone]");
+	const zone = zoneElement?.dataset.dropZone;
+	if (!zoneElement || !zone) return;
+	const seen = [...zoneElement.querySelectorAll<HTMLElement>(RAIL_ITEM)].map((row) => railItemId(row)!);
+	const at = seen.indexOf(itemId);
+	const beside = seen[at + delta];
+	if (at < 0 || !beside) return;
+	const stepped = [...seen];
+	stepped.splice(at, 1);
+	stepped.splice(at + delta, 0, itemId);
+	// A contact's place is read off the rows the member sees. While a search hides some of them none is made, as none
+	// is dragged then: an agent that steps then moves in the company's order alone, and every contact keeps standing
+	// after the agent it stood after.
+	const settle = () => {
+		if (parts.collapsed || !parts.input.value.trim()) settleContacts(company, zone, stepped);
+	};
+	if (item.kind === "member" || placedChats(company)?.[beside]) {
+		settle();
+		return;
+	}
+	const moved: SidebarItem = { id: itemId, kind: item.kind };
 	const state = company.store.get();
 	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
 	if (!sidebar) return;
@@ -2318,6 +2560,7 @@ function nudgeItem(company: CompanyController, item: RailItem, delta: number): v
 		order.splice(from, 1);
 		order.splice(to, 0, itemId);
 		void company.changeSidebar({ action: "set_pins", order });
+		settle();
 		return;
 	}
 	if (!canOrganize(company)) return;
@@ -2332,5 +2575,6 @@ function nudgeItem(company: CompanyController, item: RailItem, delta: number): v
 	}
 	order.splice(order.indexOf(itemId), 1);
 	order.splice(order.indexOf(neighbour) + (delta > 0 ? 1 : 0), 0, itemId);
-	void company.changeSidebar(moveRequest(item, sectionId ?? null, { order }));
+	void company.changeSidebar(moveRequest(moved, sectionId ?? null, { order }));
+	settle();
 }

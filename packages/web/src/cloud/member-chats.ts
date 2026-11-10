@@ -4,7 +4,10 @@ import { array, boundedInteger, CloudShapeError, record, timestamp, uuid } from 
 /* Members of a company message each other (supabase/CLIENT-CONTRACT.md "Member chats", migration
  * 20260930715000_member_messages): one chat per pair of members per company. The list says, per other member, what
  * is unread and how far each side has read; a chat is read a page at a time, newest first. Nothing here wakes an
- * agent or takes a login. */
+ * agent or takes a login.
+ *
+ * Each member also keeps where the other members stand in their own rail ("Member contacts' places", migration
+ * 20260930717000_member_contact_places): the list says it per chat, and `place` sets it. */
 
 /** The longest message, in UTF-8 bytes, as the cloud checks it. */
 export const MEMBER_MESSAGE_MAX_BYTES = 16 * 1024;
@@ -26,6 +29,31 @@ export interface MemberMessage {
 	readonly clientMessageId?: string;
 }
 
+/** Where a member keeps a contact in their own rail: the Members group, the pinned row, what is in no section, or a
+ * section. */
+export type MemberContactZone = "members" | "pinned" | "unassigned" | "section";
+
+export interface MemberContactPlace {
+	readonly zone: MemberContactZone;
+	/** The section, with zone "section" only. */
+	readonly sectionId?: string;
+	/** The agent or group chat the contact stands after in its zone; none: first. Never in "members". */
+	readonly after?: string;
+	/** Its order among the contacts after the same item (in "members": among all of them), 0 to 9999. */
+	readonly rank: number;
+}
+
+/** One contact's whole place, as `place` sends it. */
+export interface MemberContactPlacing {
+	readonly userId: string;
+	readonly place: MemberContactPlace;
+	readonly hidden: boolean;
+}
+
+/** The highest rank a place takes, and how many places one call takes, as the cloud bounds them. */
+export const MEMBER_CONTACT_RANK_MAX = 9999;
+export const MEMBER_CONTACT_PLACES_MAX = 100;
+
 export interface MemberChatSummary {
 	/** The other member. */
 	readonly userId: string;
@@ -39,6 +67,16 @@ export interface MemberChatSummary {
 	readonly theirReadSeq: number;
 	/** The chat's newest message, its words cut short. */
 	readonly last: MemberMessage | null;
+	/** Where this member put the contact in their rail; none until they place it. */
+	readonly place?: MemberContactPlace;
+	/** This member hid the contact from their rail. */
+	readonly hidden?: true;
+}
+
+/** The list, and whether the cloud keeps contacts' places (20260930717000): where it does not, none can be moved. */
+export interface MemberChatList {
+	readonly chats: readonly MemberChatSummary[];
+	readonly placing: boolean;
 }
 
 export interface MemberChatPage {
@@ -69,11 +107,29 @@ function parseMessage(value: unknown): MemberMessage {
 	return { ...base, text: input.text };
 }
 
+function parsePlace(value: unknown): MemberContactPlace {
+	const input = record(value, "member contact place");
+	const zone = input.zone;
+	if (zone !== "members" && zone !== "pinned" && zone !== "unassigned" && zone !== "section")
+		throw new CloudShapeError("member contact place");
+	const given = (field: unknown) => field !== undefined && field !== null;
+	// A section goes with zone "section" alone, and the Members group has no anchor: as the cloud keeps them.
+	if (given(input.sectionId) !== (zone === "section") || (zone === "members" && given(input.after)))
+		throw new CloudShapeError("member contact place");
+	return {
+		zone,
+		...(given(input.sectionId) ? { sectionId: uuid(input.sectionId, "member contact section") } : {}),
+		...(given(input.after) ? { after: uuid(input.after, "member contact anchor") } : {}),
+		rank: boundedInteger(input.rank, "member contact rank", 0, MEMBER_CONTACT_RANK_MAX),
+	};
+}
+
 export function parseMemberChats(value: unknown): MemberChatSummary[] {
 	const input = record(value, "member chats");
 	if (input.schema !== "qorpera.member-chats/v1") throw new CloudShapeError("member chats");
-	const chats = array(input.chats, "member chats").map((entry) => {
+	const chats = array(input.chats, "member chats").map((entry): MemberChatSummary => {
 		const item = record(entry, "member chat");
+		if (item.hidden !== undefined && typeof item.hidden !== "boolean") throw new CloudShapeError("member chat");
 		return {
 			userId: uuid(item.userId, "member chat member"),
 			lastSeenAt:
@@ -84,10 +140,18 @@ export function parseMemberChats(value: unknown): MemberChatSummary[] {
 			readSeq: boundedInteger(item.readSeq, "member chat read mark", 0, SEQ_MAX),
 			theirReadSeq: boundedInteger(item.theirReadSeq, "member chat read mark", 0, SEQ_MAX),
 			last: item.last === null || item.last === undefined ? null : parseMessage(item.last),
+			...(item.place === undefined || item.place === null ? {} : { place: parsePlace(item.place) }),
+			...(item.hidden === true ? { hidden: true as const } : {}),
 		};
 	});
 	if (new Set(chats.map((chat) => chat.userId)).size !== chats.length) throw new CloudShapeError("member chats");
 	return chats;
+}
+
+/** The list as the cloud answers it, from the read and from a place alike. */
+export function parseMemberChatList(value: unknown): MemberChatList {
+	const chats = parseMemberChats(value);
+	return { chats, placing: record(value, "member chats").placing === true };
 }
 
 export function parseMemberChatPage(value: unknown, userId: string): MemberChatPage {
@@ -116,7 +180,9 @@ function parseSent(value: unknown, userId?: string): MemberMessage {
 }
 
 export interface MemberChatCalls {
-	list(): Promise<MemberChatSummary[]>;
+	list(): Promise<MemberChatList>;
+	/** Sets where this member keeps the named contacts in their own rail, each one's whole place; answers the list. */
+	place(contacts: readonly MemberContactPlacing[]): Promise<MemberChatList>;
 	/** The chat's newest messages, or those before `beforeSeq`. */
 	read(userId: string, beforeSeq?: number, limit?: number): Promise<MemberChatPage>;
 	/** `clientMessageId` is this browser's id for the message: the same call again is the same message. */
@@ -129,7 +195,21 @@ export interface MemberChatCalls {
 
 export function memberChatCalls(cloud: Pick<Cloud, "rpc">, profileId: string): MemberChatCalls {
 	return {
-		list: async () => parseMemberChats(await cloud.rpc("qorpera_list_member_chats", { p_profile_id: profileId })),
+		list: async () => parseMemberChatList(await cloud.rpc("qorpera_list_member_chats", { p_profile_id: profileId })),
+		place: async (contacts) =>
+			parseMemberChatList(
+				await cloud.rpc("qorpera_place_member_contacts", {
+					p_profile_id: profileId,
+					p_contacts: contacts.map(({ userId, place, hidden }) => ({
+						userId,
+						zone: place.zone,
+						...(place.sectionId ? { sectionId: place.sectionId } : {}),
+						...(place.after ? { after: place.after } : {}),
+						rank: place.rank,
+						hidden,
+					})),
+				}),
+			),
 		read: async (userId, beforeSeq, limit = MEMBER_CHAT_PAGE) =>
 			parseMemberChatPage(
 				await cloud.rpc("qorpera_read_member_chat", {
