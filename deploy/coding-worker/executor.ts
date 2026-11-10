@@ -25,6 +25,7 @@ import { lxdCodingMachinePlan } from "../../packages/runner-orchestrator/src/cod
 import { UnixFolderControl } from "../../packages/runner-orchestrator/src/folder-control.ts";
 import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client.ts";
 import { HttpCloudCodingCommandService } from "../../packages/runtime/src/cloud-coding-command-http.ts";
+import { HttpCloudMemberMachineScreenService } from "../../packages/runtime/src/cloud-member-machine-screen-http.ts";
 import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-code.ts";
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
 import { withAbortScope } from "../../packages/runner-orchestrator/src/abort-scope.ts";
@@ -33,8 +34,10 @@ import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../pack
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
 import {
-	localMachineCodingValue, localMachineScreen, localMachineWake, MachineCommandRouter, machineCommandRoutes,
+	localMachineCodingValue, localMachineScreen, localMachineWake, localMemberMachineScreen, MachineCommandRouter,
+	machineCommandRoutes,
 } from "./machine-command-routing.ts";
+import { MemberMachineScreenControl } from "./member-control.ts";
 import { CodingCommandRouter, type CodingCommandPeer } from "./command-routing.ts";
 import { CodingExecutorHttpControl } from "./control.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
@@ -77,11 +80,16 @@ interface Config {
 	 * its own worktree of its company's code area on the code host (5g-6b); without, its commands start at the company
 	 * folder and a turn pushes nothing. */
 	folder: { agent: PinnedFile; program: PinnedFile; controlSocket: string | null } | null;
+	/** Members' looks at agents' desktops (20260930712000): a listener on loopback `port`, reached from the member bridge
+	 * through this node's mux (/v1/member-machine-screens/), which begins each look as the member with their own token
+	 * and the project's publishable key (not a secret), at `supabaseUrl`. Absent: this executor takes no member's look,
+	 * but still serves the ones another executor sends it (the peer listener). One node of a deployment has it. */
+	memberScreens: { port: number; publishableKey: string } | null;
 }
 interface PinnedFile { path: string; sha256: string }
 const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command", "qorpera-coding-peer-command"]);
 const CONFIG_KEYS = "commandPeers,commandPort,guest,owner,peerCommandPort,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
-const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "folder", "machines"]);
+const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "folder", "machines", "memberScreens"]);
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return value as Record<string, unknown>;
@@ -120,6 +128,15 @@ function folderConfig(value: unknown): Config["folder"] {
 	if (agent.path === program.path) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	// A Unix socket's path fits in 107 bytes.
 	return { agent, program, controlSocket: input.controlSocket === undefined ? null : absolutePath(input.controlSocket, 107) };
+}
+function memberScreensConfig(value: unknown, taken: readonly number[]): Config["memberScreens"] {
+	if (value === undefined) return null;
+	const input = object(value);
+	if (Object.keys(input).sort().join() !== "port,publishableKey" || !Number.isSafeInteger(input.port) ||
+		Number(input.port) < 1024 || Number(input.port) > 65535 || taken.includes(Number(input.port)) ||
+		typeof input.publishableKey !== "string" || !/^[A-Za-z0-9._-]{8,8192}$/.test(input.publishableKey))
+		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	return { port: Number(input.port), publishableKey: input.publishableKey };
 }
 /** The file's bytes, refused unless they are the pinned ones. */
 async function readPinned(file: PinnedFile): Promise<Buffer> {
@@ -212,6 +229,7 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 		schema: "qorpera.coding-executor-service/v7", owner: config.owner, supabaseUrl: origin(config.supabaseUrl),
 		commandPort: Number(config.commandPort), peerCommandPort: Number(config.peerCommandPort), commandPeers, storagePolicy, vmPolicy: vmPolicy as unknown as Config["vmPolicy"],
 		guest: guest as unknown as Config["guest"], broker: brokerConfig, repositories, machines, codeHost, folder: folderConfig(config.folder),
+		memberScreens: memberScreensConfig(config.memberScreens, [Number(config.commandPort), Number(config.peerCommandPort)]),
 	};
 }
 
@@ -348,8 +366,14 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		helperSha256: config.machines.helperSha256, previousHelperSha256s: config.machines.previousHelperSha256s,
 		...(config.machines.folder ? { folder: new UnixFolderControl() } : {}),
 	}) : undefined;
+	// Members' looks are begun as the member, never with the executor's own key (20260930712000).
+	const memberControl = config.memberScreens
+		? new MemberMachineScreenControl({ supabaseUrl: config.supabaseUrl, publishableKey: config.memberScreens.publishableKey })
+		: undefined;
 	const machineRouter = new MachineCommandRouter({
 		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential,
+		...(memberControl ? { memberBegin: (token: string, look: { companyId: string; machineId: string; confirmed: boolean },
+			signal: AbortSignal) => memberControl.begin(token, look, signal) } : {}),
 		...(machineHost ? {
 			executeLocal: (request, authority, signal) => machineHost.command(
 				{ machineId: authority.machineId, placementId: authority.placementId, commandId: request.input.commandId,
@@ -362,6 +386,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			wakeLocal: localMachineWake(machineHost),
 			codingValueLocal: localMachineCodingValue(machineHost),
 			screenLocal: localMachineScreen(machineHost),
+			memberScreenLocal: localMemberMachineScreen(machineHost),
 		} : {}),
 	});
 	const router = new CodingCommandRouter({
@@ -401,10 +426,17 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		execute: (request, signal) => router.execute(request, signal, true),
 		machines: machineCommandRoutes(machineRouter, control, true),
 	});
+	// The member listener: loopback only; a failed look is logged by its fixed code, never with the member's token.
+	const memberScreens = config.memberScreens ? new HttpCloudMemberMachineScreenService({
+		port: config.memberScreens.port,
+		look: (look, signal) => machineRouter.memberScreen(look, signal),
+		failed: (code) => console.error(JSON.stringify({ event: "member-machine-screen-error", code })),
+	}) : undefined;
 	let executor: CloudCodingExecutor | undefined;
 	try {
 		await commands.start(stop.signal);
 		await peerCommands.start(stop.signal);
+		await memberScreens?.start(stop.signal);
 		const running = new CloudCodingExecutor({
 			control,
 			host,
@@ -534,6 +566,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		await codeHosts?.close();
 		await commands.close();
 		await peerCommands.close();
+		await memberScreens?.close();
 		process.off("SIGTERM", shutdown);
 		process.off("SIGINT", shutdown);
 	}

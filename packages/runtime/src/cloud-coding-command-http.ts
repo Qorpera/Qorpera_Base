@@ -17,11 +17,14 @@ import {
 	CloudMachineCommandRefusal,
 	type CloudMachineCommandServiceOptions,
 	CloudMachineScreenRefusal,
+	CloudMemberMachineScreenRefusal,
+	cloudMemberMachineScreenAnswer,
 	parseCloudMachineCodingValueAnswer,
 	parseCloudMachineCodingValueHttpRequest,
 	parseCloudMachineScreenAnswer,
 	parseCloudMachineScreenHttpRequest,
 	parseCloudMachineWakeHttpRequest,
+	parseCloudMemberMachineScreenPeerRequest,
 	serveCloudMachineCommand,
 } from "./cloud-machine-command-http.ts";
 import {
@@ -386,10 +389,15 @@ export class HttpCloudCodingCommandService {
 				this.#options.machines?.codingValue && request.url === "/v1/machine-commands/coding-value";
 			// machine_screen (20260930708000): the machine's screen helper, for a look or one executing receipt.
 			const screenRoute = this.#options.machines?.screen && request.url === "/v1/machine-commands/screen";
+			// A member's look (20260930712000): on the peer listener only (no run's lease to prove), from another executor.
+			const memberScreenRoute =
+				this.#options.proveBinding === null &&
+				this.#options.machines?.memberScreen &&
+				request.url === "/v1/machine-commands/member-screen";
 			const holder = request.headers["x-qorpera-identity"];
 			if (
 				request.method !== "POST" ||
-				(!route && !machineRoute && !wakeRoute && !codingValueRoute && !screenRoute) ||
+				(!route && !machineRoute && !wakeRoute && !codingValueRoute && !screenRoute && !memberScreenRoute) ||
 				request.headers["content-type"] !== "application/json" ||
 				authorization.length !== this.#token.length ||
 				!timingSafeEqual(authorization, this.#token) ||
@@ -444,6 +452,25 @@ export class HttpCloudCodingCommandService {
 				} catch (error) {
 					// Only a refusal the agent can act on is told apart, by its fixed code.
 					if (!(error instanceof CloudMachineScreenRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (memberScreenRoute && this.#options.machines?.memberScreen) {
+				const admitted = parseCloudMemberMachineScreenPeerRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						cloudMemberMachineScreenAnswer(
+							admitted,
+							await this.#options.machines.memberScreen(admitted, controller.signal),
+						),
+						CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
+					);
+				} catch (error) {
+					// Only a refusal the member's window acts on is told apart, by its fixed code.
+					if (!(error instanceof CloudMemberMachineScreenRefusal)) throw error;
 					replyJson(reply, 409, { code: error.code });
 				}
 				return;

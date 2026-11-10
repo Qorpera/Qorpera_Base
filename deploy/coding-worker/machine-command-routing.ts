@@ -1,6 +1,7 @@
 import type { CloudMachineCommandReceipt } from "../../packages/contracts/src/cloud-machine.ts";
 import type {
-	CompanyMachineCodingValue, CompanyMachineCodingValueOutcome, CompanyMachineScreen, CompanyMachineScreenOutcome,
+	CompanyMachineCodingValue, CompanyMachineCodingValueOutcome, CompanyMachineMemberLook, CompanyMachineMemberLookOutcome,
+	CompanyMachineScreen, CompanyMachineScreenOutcome,
 } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
 import {
 	CLOUD_MACHINE_CODING_VALUE_SCHEMA,
@@ -15,16 +16,21 @@ import {
 	type CloudMachineScreenHttpRequest,
 	CloudMachineScreenRefusal,
 	type CloudMachineWakeHttpRequest,
+	type CloudMemberMachineScreen,
+	type CloudMemberMachineScreenPeerRequest,
+	CloudMemberMachineScreenRefusal,
 	cloudMachineCommandRefusal,
 	createHttpCloudMachineCommandGateway,
+	createHttpMemberMachineScreenPeer,
 	isCloudMachineCodingValueRefusal,
 	isCloudMachineScreenRefusal,
 } from "../../packages/runtime/src/cloud-machine-command-http.ts";
+import type { CloudMemberMachineScreenLook } from "../../packages/runtime/src/cloud-member-machine-screen-http.ts";
 import { MACHINE_SCREEN_REQUEST_SCHEMA, parseMachineScreenHeader } from "../../packages/runtime/src/cloud-machine-screen.ts";
 import type { CodingCommandPeer } from "./command-routing.ts";
 import {
-	authorizeMachineCodingValue, authorizeMachineCommand, authorizeMachineScreen, type MachineCodingValueAuthority,
-	type MachineCommandAuthority, type MachineScreenAuthority,
+	authorizeMachineCodingValue, authorizeMachineCommand, authorizeMachineScreen, authorizeMemberMachineScreen,
+	type MachineCodingValueAuthority, type MachineCommandAuthority, type MachineScreenAuthority, type MemberMachineScreenAuthority,
 } from "./machine-command-authority.ts";
 
 interface MachineCommandRouterOptions {
@@ -41,6 +47,11 @@ interface MachineCommandRouterOptions {
 	codingValueLocal?(authority: MachineCodingValueAuthority, signal: AbortSignal): Promise<CloudMachineCodingValueAnswer>;
 	/** machine_screen (20260930708000): runs the screen helper on this node's machine; absent when the executor carries no machines. */
 	screenLocal?(authority: MachineScreenAuthority, signal: AbortSignal): Promise<CloudMachineScreenAnswer>;
+	/** A member's look (20260930712000): begins it as the member (member-control.ts); absent when this executor takes no
+	 * member's requests (only the node behind the member bridge does). */
+	memberBegin?(token: string, look: { companyId: string; machineId: string; confirmed: boolean }, signal: AbortSignal): Promise<string>;
+	/** A member's look at this node's machine; absent when the executor carries no machines. */
+	memberScreenLocal?(authority: MemberMachineScreenAuthority, etag: string | null, signal: AbortSignal): Promise<CloudMemberMachineScreen>;
 	fetch?: typeof fetch;
 }
 
@@ -140,6 +151,34 @@ export class MachineCommandRouter {
 		if (!gateway.screen) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
 		return gateway.screen(request.scope, request.input, signal);
 	}
+	/** A member's look at a desktop (20260930712000), as this executor's member listener took it: begun as the member (the
+	 * database checks their token and answers a single-use id), then read again as the executor, and looked at on this
+	 * node or sent once to the machine's node. */
+	async memberScreen(look: CloudMemberMachineScreenLook, signal: AbortSignal): Promise<CloudMemberMachineScreen> {
+		if (!this.#options.memberBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+		const useId = await this.#options.memberBegin(look.token, { companyId: look.companyId, machineId: look.machineId,
+			confirmed: look.confirmed }, signal);
+		return this.#memberServe(useId, look.etag, signal, false);
+	}
+	/** A member's look another executor sent here (the peer listener): read again, and looked at on this node only. */
+	memberScreenPeer(request: CloudMemberMachineScreenPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineScreen> {
+		return this.#memberServe(request.useId, request.etag, signal, true);
+	}
+	/** SQL names the machine's executor, as for a command, and serves the use only to it, once: this node looks, or
+	 * another node's executor is sent the use once (it reads SQL again, which serves it there, and never forwards). */
+	async #memberServe(useId: string, etag: string | null, signal: AbortSignal, localOnly: boolean): Promise<CloudMemberMachineScreen> {
+		const authority = await authorizeMemberMachineScreen(this.#options.control,
+			{ useId, owner: this.#options.owner, providerId: this.#options.providerId }, signal);
+		if (authority.served) {
+			if (!this.#options.memberScreenLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+			return this.#options.memberScreenLocal(authority, etag, signal);
+		}
+		if (localOnly) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+		const peer = this.#options.peers.find((entry) => entry.owner === authority.executorOwner && entry.providerId === authority.providerId);
+		if (!peer) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+		return createHttpMemberMachineScreenPeer({ url: peer.origin, token: await this.#options.credential(peer.tokenCredential),
+			fetch: this.#options.fetch }).memberScreen({ useId, etag }, signal);
+	}
 }
 
 /** How a router reaches this node's machines for a wake (MachineCommandRouter's `wakeLocal`). */
@@ -189,6 +228,22 @@ export function localMachineScreen(host: {
 	};
 }
 
+/** How a router looks at this node's machine for a member (MachineCommandRouter's `memberScreenLocal`): the host's
+ * picture and its etag, or no picture when the member has it (their etag is the picture's); the screen off, a restarted
+ * machine and an image without scrot as the member's refusals; a held picture as SCREEN_HIDDEN (the machine holds a read
+ * the member may not read) or SCREEN_HELD (look again), with nothing of the picture. */
+export function localMemberMachineScreen(host: {
+	memberLook(look: CompanyMachineMemberLook, signal: AbortSignal): Promise<CompanyMachineMemberLookOutcome>;
+}): (authority: MemberMachineScreenAuthority, etag: string | null, signal: AbortSignal) => Promise<CloudMemberMachineScreen> {
+	return async (authority, etag, signal) => {
+		const outcome = await host.memberLook({ placementId: authority.placementId, bootId: authority.bootId,
+			userId: authority.userId, keepDesktop: authority.keepDesktop }, signal);
+		if ("refused" in outcome) throw new CloudMemberMachineScreenRefusal(outcome.refused);
+		if ("held" in outcome) throw new CloudMemberMachineScreenRefusal(outcome.held === "hidden" ? "SCREEN_HIDDEN" : "SCREEN_HELD");
+		return { etag: outcome.etag, png: outcome.etag === etag ? null : outcome.png };
+	};
+}
+
 /** The machine routes of an executor's command service: its ingress (`localOnly` false), or its peer listener (true), which
  * never forwards. */
 export function machineCommandRoutes(
@@ -201,6 +256,7 @@ export function machineCommandRoutes(
 	wake(request: CloudMachineWakeHttpRequest, signal: AbortSignal): Promise<boolean>;
 	codingValue(request: CloudMachineCodingValueHttpRequest, signal: AbortSignal): Promise<CloudMachineCodingValueAnswer>;
 	screen(request: CloudMachineScreenHttpRequest, signal: AbortSignal): Promise<CloudMachineScreenAnswer>;
+	memberScreen?(request: CloudMemberMachineScreenPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineScreen>;
 } {
 	return {
 		authorize: (request, signal) => authorizeMachineCommand(control, request, signal),
@@ -208,5 +264,7 @@ export function machineCommandRoutes(
 		wake: (request, signal) => router.wake(request, signal, localOnly),
 		codingValue: (request, signal) => router.codingValue(request, signal, localOnly),
 		screen: (request, signal) => router.screen(request, signal, localOnly),
+		// A member's look comes from another executor only, on the peer listener; a guest's ingress has none.
+		...(localOnly ? { memberScreen: (request: CloudMemberMachineScreenPeerRequest, signal: AbortSignal) => router.memberScreenPeer(request, signal) } : {}),
 	};
 }

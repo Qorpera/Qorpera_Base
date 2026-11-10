@@ -116,6 +116,49 @@ const SCREEN_VERBS = ["click", "double", "move", "drag", "type", "key", "scroll"
 const SCREEN_MAX_WIDTH = 3840;
 const SCREEN_MAX_HEIGHT = 2160;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+/** A member's look at a desktop (20260930712000, memberLook): one fixed script run as root on exactly the boot SQL named
+ * (`$0`, else exit 97), with no helper of the image. scrot must be there (else 98, an earlier image), and the desktop's
+ * unit active with its display answering (else 95: the screen is off; a look never starts it). With `$1` = keep it puts
+ * off the desktop's own idle stop (touch -c: a desktop whose note is gone is stopping anyway). The screenshot, with the
+ * pointer drawn, goes to a root-only folder and out on stdout; the file goes with the script. A plain scrot does not
+ * touch the desktop's note, so only `keep` does (measured on a 2 cpu / 4 GiB machine, 10 Nov 2026: 42 ms a look).
+ *
+ * LXD ends the shell with SIGKILL when the look is cut off (the request, its 6 s deadline), which no trap outlives, so
+ * each look first removes the pictures of earlier looks that can no longer be in flight: named as its own and over a
+ * minute old (review r1 F1). And a picture larger than the host takes is never streamed (exit 94): the trap removes it,
+ * and the host never has to cut the exec off for its output. Plain sh, with date, stat, rm and cat. */
+export const COMPANY_MACHINE_MEMBER_LOOK = [
+	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97',
+	"command -v scrot >/dev/null 2>&1 || exit 98",
+	"{ systemctl is-active --quiet qorpera-machine-desktop.service && DISPLAY=:1 xdpyinfo >/dev/null 2>&1; } || exit 95",
+	'if [ "$1" = keep ]; then touch -c /run/qorpera-desktop/last-use; fi',
+	"umask 077",
+	"d=/run/qorpera-view",
+	'mkdir -p "$d" || exit 1',
+	'if now=$(date +%s) && [ -n "$now" ]; then',
+	'\tfor old in "$d"/look-*.png; do',
+	'\t\tm=$(stat -c %Y "$old" 2>/dev/null) && [ -n "$m" ] && [ $((now - m)) -gt 60 ] && rm -f "$old"',
+	"\tdone",
+	"fi",
+	'f="$d/look-$$.png"',
+	"trap 'rm -f \"$f\"' EXIT",
+	'DISPLAY=:1 scrot --pointer --overwrite --silent "$f" 2>/dev/null || exit 1',
+	`s=$(stat -c %s "$f" 2>/dev/null) && [ -n "$s" ] && [ "$s" -le ${SCREEN_PNG_BYTES} ] || exit 94`,
+	'cat "$f"',
+].join("\n");
+/** A member's look takes 42 ms on the machine; this bounds a busy one, inside the member's request of 30 s. */
+const MEMBER_LOOK_MS = 6000;
+/** The script's exits besides 0: the screen is off (95), another boot (97), an image without scrot (98). */
+const MEMBER_LOOK_EXITS: Readonly<Record<number, CompanyMachineMemberLookRefusal>> = Object.freeze({
+	95: "DESKTOP_NOT_RUNNING",
+	97: "MACHINE_BOOT_CHANGED",
+	98: "MACHINE_IMAGE_WITHOUT_SCREEN",
+});
+/** The member read check's refusal: a read the machine was served is not the watching member's to read. */
+const MEMBER_UNREADABLE = "qorpera.test-machine/member-unreadable";
+/** Why a member's look is held for good while the machine holds such a read (#memberReads), told apart from a hold that
+ * passes (HELD). */
+const MEMBER_HIDDEN = "the screen may show a file of the company folder the member may not read";
 /** A window title or an error as the helper prints it: no control character. */
 const SCREEN_CONTROL = /[\p{Cc}\p{Zl}\p{Zp}]/u;
 /** A command's log limit in the guest (the helper's MACHINE_GUEST_MAX_LOG_BYTES), as a held receipt states it. */
@@ -196,6 +239,7 @@ export const COMPANY_MACHINE_HOST_RPCS = [
 	"qorpera_retire_company_machine",
 	"qorpera_folder_test_machine_inherit_reads",
 	"qorpera_mark_company_machine_folder_restart",
+	"qorpera_folder_member_machine_reads",
 ] as const;
 
 export interface CompanyMachineHostOptions {
@@ -241,6 +285,8 @@ export interface CompanyMachineHostOptions {
 	codingValueClearTimeoutMs?: number;
 	/** How long machine_screen's helper may run (default 22 s): the tests' own shorter one. */
 	screenTimeoutMs?: number;
+	/** How long a member's look may run on the machine (default 6 s): the tests' own shorter one. */
+	memberLookTimeoutMs?: number;
 	/** The clock a desktop's busy grace is counted on (default Date.now): the tests' own. */
 	now?: () => number;
 }
@@ -321,6 +367,27 @@ export interface CompanyMachineScreenShot {
 	readonly heldBack?: string;
 }
 export type CompanyMachineScreenOutcome = CompanyMachineScreenShot | { readonly refused: string };
+/** A member's look at a desktop on this node (20260930712000), as SQL authorized it
+ * (qorpera_member_machine_screen_authority): where it runs, the member it is for, and whether it puts off the desktop's
+ * own idle stop (keepDesktop: the member said within 30 minutes that they still watch). */
+export interface CompanyMachineMemberLook {
+	placementId: string;
+	bootId: string;
+	userId: string;
+	keepDesktop: boolean;
+}
+export type CompanyMachineMemberLookRefusal =
+	| "DESKTOP_NOT_RUNNING"
+	| "MACHINE_BOOT_CHANGED"
+	| "MACHINE_IMAGE_WITHOUT_SCREEN";
+/** The picture and its etag (the hex sha-256 of its bytes), the screen off or the machine changed (`refused`), or the
+ * picture held back (`held`): `hidden` while the machine holds a read the member may not read, `pending` while the
+ * company folder has not released what the machine read (the member looks again). A held look carries neither the
+ * picture, its size nor its etag. */
+export type CompanyMachineMemberLookOutcome =
+	| { readonly png: Buffer; readonly etag: string }
+	| { readonly refused: CompanyMachineMemberLookRefusal }
+	| { readonly held: "hidden" | "pending" };
 /** What the company folder's release of a boot's reads needs (#release): the boot, and the run that takes them in. */
 type FolderRelease = Pick<CompanyMachineCommandAuthority, "placementId" | "bootId" | "runId">;
 
@@ -546,19 +613,23 @@ function screenOutput(stdout: Buffer): CompanyMachineScreenOutcome {
 		throw invalid();
 	if (header.png === 0) return Object.freeze({ header: Object.freeze({ ...header }), png: null });
 	const png = Buffer.from(stdout.subarray(end + 1));
-	// The signature, then IHDR first (its 13 bytes): the screen's size, which no picture of it may pass.
-	if (
-		png.length < 33 ||
-		!png.subarray(0, 8).equals(PNG_SIGNATURE) ||
-		png.readUInt32BE(8) !== 13 ||
-		png.toString("latin1", 12, 16) !== "IHDR" ||
-		png.readUInt32BE(16) < 1 ||
-		png.readUInt32BE(16) > SCREEN_MAX_WIDTH ||
-		png.readUInt32BE(20) < 1 ||
-		png.readUInt32BE(20) > SCREEN_MAX_HEIGHT
-	)
-		throw invalid();
+	if (!screenPicture(png)) throw invalid();
 	return Object.freeze({ header: Object.freeze({ ...header }), png });
+}
+/** A PNG of a screen: the signature, then IHDR first (its 13 bytes) with the screen's size, which no picture of it may
+ * pass (3840 x 2160), and at most 8 MiB. */
+function screenPicture(png: Buffer): boolean {
+	return (
+		png.length >= 33 &&
+		png.length <= SCREEN_PNG_BYTES &&
+		png.subarray(0, 8).equals(PNG_SIGNATURE) &&
+		png.readUInt32BE(8) === 13 &&
+		png.toString("latin1", 12, 16) === "IHDR" &&
+		png.readUInt32BE(16) >= 1 &&
+		png.readUInt32BE(16) <= SCREEN_MAX_WIDTH &&
+		png.readUInt32BE(20) >= 1 &&
+		png.readUInt32BE(20) <= SCREEN_MAX_HEIGHT
+	);
 }
 function entry(value: unknown): CompanyMachineEntry {
 	const e = record(value, "COMPANY_MACHINE_LIST_INVALID");
@@ -2057,6 +2128,64 @@ export class LxdCompanyMachineHost {
 		});
 	}
 
+	/**
+	 * A member's look at a desktop on this node (20260930712000): COMPANY_MACHINE_MEMBER_LOOK as root on exactly the boot
+	 * SQL named, with no helper of the image and nothing on stdin. Its stdout (the PNG) is read within its bound and never
+	 * logged, its stderr dropped; LXD records no output. It acts on nothing and starts nothing: a desktop that is off
+	 * stays off. A look is never held up by an agent's action in flight (#screenBusy): a picture changes nothing.
+	 *
+	 * A machine with /company releases the picture as an agent's (#release): a boundary first, then, in place of a run's
+	 * take-in, the member's own read check (qorpera_folder_member_machine_reads): every read the machine's newest view
+	 * holds must be the member's to read now. A refusal there is the member's alone (`hidden`): unlike a run's take-in it
+	 * marks nothing of the boot, and the machine goes on. Anything else that holds the picture is `pending`. A held look
+	 * tells nothing of the picture: no bytes, no size, no etag.
+	 *
+	 * The machine's idle measure counts the desktop's own work, not this exec (lxd-agent.service is the machine's own
+	 * unit): a look a second costs the X server about 3 % of one core and Xvnc about 6 KiB (measured 10 Nov 2026), under
+	 * the busy marks (5 % of a core, 512 KiB per 30 s) but close for the processor, so a watched desktop that moves may
+	 * keep its machine awake while it is watched. The web stops looking when the window is put away or its tab hidden,
+	 * and pauses after 30 minutes without a touch.
+	 */
+	async memberLook(look: CompanyMachineMemberLook, signal: AbortSignal): Promise<CompanyMachineMemberLookOutcome> {
+		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!pipe) throw new Error("COMPANY_MACHINE_MEMBER_LOOK_UNAVAILABLE");
+		if (
+			![look.placementId, look.bootId, look.userId].every((id) => UUID.test(id)) ||
+			typeof look.keepDesktop !== "boolean"
+		)
+			throw new Error("COMPANY_MACHINE_MEMBER_LOOK_INVALID");
+		const result = await pipe(
+			this.#policy.project,
+			lxdCompanyMachineName(look.placementId),
+			{
+				command: ["/bin/sh", "-c", COMPANY_MACHINE_MEMBER_LOOK, look.bootId, look.keepDesktop ? "keep" : "look"],
+				environment: {},
+				cwd: "/",
+				maxStdoutBytes: SCREEN_PNG_BYTES,
+				stderrTailBytes: 0,
+			},
+			AbortSignal.any([signal, AbortSignal.timeout(this.#options.memberLookTimeoutMs ?? MEMBER_LOOK_MS)]),
+		);
+		const refused = MEMBER_LOOK_EXITS[result.exitCode];
+		if (refused !== undefined) return { refused };
+		// A picture larger than a screen's: not streamed, and removed on the machine.
+		if (result.exitCode === 94) throw new Error("COMPANY_MACHINE_MEMBER_LOOK_TOO_LARGE");
+		if (result.exitCode !== 0) throw new Error("COMPANY_MACHINE_MEMBER_LOOK_FAILED");
+		const png = Buffer.from(result.stdout);
+		if (!screenPicture(png)) throw new Error("COMPANY_MACHINE_MEMBER_LOOK_INVALID");
+		const folder = this.#options.folder;
+		if (folder) {
+			const at: FolderRelease = { placementId: look.placementId, bootId: look.bootId };
+			const f = this.#folders.get(look.placementId);
+			const boot = f?.bootId === look.bootId ? f : undefined;
+			const heldBack =
+				this.#heldAlready(at, boot) ??
+				(await this.#release(folder, at, boot, SCREEN_BOUNDARY_MS, signal, () => this.#memberReads(look, signal)));
+			if (heldBack !== undefined) return { held: heldBack === MEMBER_HIDDEN ? "hidden" : "pending" };
+		}
+		return Object.freeze({ png, etag: createHash("sha256").update(png).digest("hex") });
+	}
+
 	/** Runs one authorized command action on a machine of this node. A start on a machine with a folder is delivered
 	 * meanwhile: a look from before its guest had it, or from while it was delivered, leaves its window open (#ends),
 	 * and a restart of its guest waits for it (#delivered). */
@@ -2227,13 +2356,15 @@ export class LxdCompanyMachineHost {
 	/** The company folder's release of what a boot's output may show (#command, screen): a boundary first, unless the boot
 	 * has no /company (none); then the run that gets the output takes in the reads of the machine's views (6d-3b), on a
 	 * boot without /company too. A boot can end while the boundary or the take-in is out, so it is checked after each.
-	 * Undefined: released; otherwise why it is held (a HELD text). */
+	 * Undefined: released; otherwise why it is held (a HELD text). A member's look (memberLook) takes `takeIn`, the
+	 * member's read check, in place of the run's take-in. */
 	async #release(
 		folder: FolderControl,
 		at: FolderRelease,
 		boot: BootFolder | undefined,
 		boundaryMs: number,
 		signal: AbortSignal,
+		takeIn: () => Promise<string | undefined> = () => this.#inherit(at, boot, signal),
 	): Promise<string | undefined> {
 		const ended = () => !!at.bootId && this.#ended(at.placementId, at.bootId);
 		if (boot?.state !== "none") {
@@ -2243,7 +2374,7 @@ export class LxdCompanyMachineHost {
 			if (ended()) return HELD.ended;
 			if (answer?.reads !== "released") return unreleased(answer);
 		}
-		const refused = await this.#inherit(at, boot, signal);
+		const refused = await takeIn();
 		if (ended()) return HELD.ended;
 		return refused;
 	}
@@ -2351,6 +2482,26 @@ export class LxdCompanyMachineHost {
 			if (!(error instanceof CodingControlRefused)) return HELD.untaken;
 			if (boot && error.detail === "qorpera.test-machine/unreadable") boot.unreadable = true;
 			return HELD.refused;
+		}
+	}
+	/** A member's read check of what the machine read (20260930712000), after the boundary: undefined when every read the
+	 * machine's newest view holds is the member's to read; MEMBER_HIDDEN when SQL refused one as not theirs (a refusal of
+	 * this member alone: nothing of the boot is marked); otherwise held until the member looks again. */
+	async #memberReads(look: CompanyMachineMemberLook, signal: AbortSignal): Promise<string | undefined> {
+		try {
+			const checked = record(
+				await this.#call(
+					"qorpera_folder_member_machine_reads",
+					{ p_placement_id: look.placementId, p_boot_id: look.bootId, p_user_id: look.userId },
+					signal,
+				),
+				"COMPANY_MACHINE_MEMBER_READS_INVALID",
+			);
+			return checked.schema === "qorpera.folder-member-reads/v1" ? undefined : HELD.untaken;
+		} catch (error) {
+			return error instanceof CodingControlRefused && error.detail === MEMBER_UNREADABLE
+				? MEMBER_HIDDEN
+				: HELD.untaken;
 		}
 	}
 	/** A start waits for its boot's folder to settle (opened and handed over, or known to be none), for at most 20 s

@@ -752,8 +752,11 @@ export function mountApplication(
 				if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
 					throw new Error(t("Company access is unavailable."));
 			});
-			// Open computers outlive the thread they were opened in; leaving the company ends them.
-			computerPanels = new ComputerPanels(computer, controller.signal);
+			// Open computers outlive the thread they were opened in; leaving the company ends them. A `machines` hint
+			// reads an open window's machines at once.
+			computerPanels = new ComputerPanels(computer, controller.signal, {
+				hints: (listener) => controller.onInvalidate(listener),
+			});
 			unsubscribeCompany = controller.store.subscribe(() => render());
 			void controller.start();
 			return controller;

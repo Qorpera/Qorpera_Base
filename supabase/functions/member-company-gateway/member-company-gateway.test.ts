@@ -267,6 +267,10 @@ describe("public member Company File gateway", () => {
 		],
 		["a snapshot-v1 upload", request(`/v1/member-company-file/${id}/uploads`, { method: "PUT", body: "x" }), 404],
 		["a member file export", request(`/v1/member-file-exports/${id}/${id}/${"b".repeat(64)}`), 404],
+		["a machine screen write", request(`/v1/member-machine-screens/${id}/${id}`, { method: "POST", body: "{}" }), 405],
+		["a machine screen of one id", request(`/v1/member-machine-screens/${id}`), 404],
+		["a machine screen with another tail", request(`/v1/member-machine-screens/${id}/${id}/keep`), 404],
+		["a machine screen with a query", request(`/v1/member-machine-screens/${id}/${id}?keep=1`), 404],
 	] as const)
 		it(`rejects ${name} before forwarding`, async () => {
 			const response = await forward(req, {
@@ -444,6 +448,58 @@ describe("public member Company File gateway", () => {
 			{ upstreamUrl, fetchImplementation },
 		);
 		assert.equal(preflight.status, 403);
+	});
+	it("forwards a member's look at a desktop with the member's token and etag alone, and its picture, 304 or refusal", async () => {
+		const picture = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+		const etag = `"${"e".repeat(64)}"`;
+		const seen: string[] = [];
+		let answer: () => Response = () =>
+			new Response(picture, { status: 200, headers: { "content-type": "image/png", etag, "x-node": "node-01" } });
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			const headers = new Headers(init?.headers);
+			const sent = [...headers.entries()].map(([name, value]) => `${name}=${value}`).join(" ");
+			seen.push(`${init?.method} ${new URL(String(url)).pathname} ${sent}`);
+			assert.equal(init?.body, undefined);
+			return answer();
+		};
+		const path = `/v1/member-machine-screens/${id}/${id}`;
+		const shown = await forward(request(path, { headers: { "if-none-match": etag, cookie: "a=b" } }), {
+			upstreamUrl,
+			fetchImplementation,
+		});
+		assert.equal(shown.status, 200);
+		assert.equal(shown.headers.get("content-type"), "image/png");
+		assert.equal(shown.headers.get("etag"), etag);
+		assert.equal(shown.headers.get("x-node"), null);
+		assert.match(shown.headers.get("access-control-expose-headers") ?? "", /\betag\b/);
+		assert.deepEqual(new Uint8Array(await shown.arrayBuffer()), picture);
+		answer = () => new Response(null, { status: 304, headers: { etag } });
+		const same = await forward(request(`${path}/watching`), { upstreamUrl, fetchImplementation });
+		assert.equal(same.status, 304);
+		assert.equal(same.headers.get("etag"), etag);
+		answer = () => Response.json({ code: "SCREEN_HIDDEN" }, { status: 409 });
+		const hidden = await forward(request(path), { upstreamUrl, fetchImplementation });
+		assert.equal(hidden.status, 409);
+		assert.deepEqual(await hidden.json(), { code: "SCREEN_HIDDEN" });
+		assert.deepEqual(seen, [
+			`GET ${path} authorization=Bearer member.jwt.token if-none-match=${etag}`,
+			`GET ${path}/watching authorization=Bearer member.jwt.token`,
+			`GET ${path} authorization=Bearer member.jwt.token`,
+		]);
+		// The browser may ask for the etag header, and nothing else beside the token.
+		const preflight = (headers: string) =>
+			forward(
+				request(path, {
+					method: "OPTIONS",
+					headers: { "access-control-request-method": "GET", "access-control-request-headers": headers },
+				}),
+				{ upstreamUrl, fetchImplementation },
+			);
+		const allowed = await preflight("authorization,if-none-match");
+		assert.equal(allowed.status, 204);
+		assert.equal(allowed.headers.get("access-control-allow-headers"), "authorization, if-none-match");
+		assert.equal((await preflight("authorization,content-type")).status, 403);
+		assert.equal(seen.length, 3);
 	});
 	it("forwards a chat image upload up to 8 MiB and its read with the member's headers alone", async () => {
 		const sha = "c".repeat(64);
