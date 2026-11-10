@@ -334,11 +334,15 @@ export class AppPanel {
 			name = manifest.name;
 			this.#emblemName = manifest.emblem;
 			this.#heading(manifest.name, manifest, this.#host.agentName(manifest.owner));
+			served = { ...app, manifest };
+			// The page that stands follows the manifest from the moment it is read, before its files are read again:
+			// putting the page together may fail and leave the earlier page standing, and that page must not keep what
+			// the manifest took away (review r2 of #1633, F1).
+			if (this.#frame && this.#serving?.version !== served.version) this.#serve(served);
 			const assembled = await assembleApp(folder, { path: app.path, entry: manifest.entry }, signal);
 			if (signal.aborted) return;
 			if (!assembled.ok) return this.#status(assembled.message);
 			page = assembled.page;
-			served = { ...app, manifest };
 		} else {
 			const path = this.target.path;
 			this.#path = path;
