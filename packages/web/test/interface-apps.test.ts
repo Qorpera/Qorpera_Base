@@ -5,6 +5,8 @@ import { parseAppManifest } from "@qorpera/cloud-client/interface-apps";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	AppBridge,
+	type AppLink,
+	appLink,
 	appReadablePath,
 	assembleApp,
 	type CompanyApp,
@@ -117,6 +119,61 @@ describe("an app's paths", () => {
 	});
 });
 
+describe("a link in an app's page", () => {
+	it("leads to an app, a file of the company's own work or a web page", () => {
+		expect(appLink("app:sales-board")).toEqual({ kind: "app", name: "sales-board" });
+		expect(appLink(" folder:reports/Q1%20plan.md ")).toEqual({ kind: "file", path: "reports/Q1 plan.md" });
+		expect(appLink("folder:apps/sales")).toEqual({ kind: "file", path: "apps/sales" });
+		expect(appLink("https://example.com/a?b=1#c")).toEqual({ kind: "web", href: "https://example.com/a?b=1#c" });
+		// As the browser reads the address, which is what opens.
+		expect(appLink("HTTP://Example.com")).toEqual({ kind: "web", href: "http://example.com/" });
+	});
+
+	it("leads nowhere else, whatever a page writes", () => {
+		for (const bad of [
+			// Not an app's name.
+			"app:",
+			"app:Bad",
+			"app:sales/../x",
+			"APP:sales",
+			// Not a path of the company's own work: the platform's folders, and no way around the path rules.
+			"folder:",
+			"folder:/abs",
+			"folder:QorperaOS/vision/vision.md",
+			"folder:qorperaos/agents",
+			"folder:hooks/mail/a.eml",
+			"folder:bank/x",
+			"folder:digital-post/x",
+			"folder:members/x",
+			"folder:code/repo/a.ts",
+			"folder:../x",
+			"folder:a/%2e%2e/b",
+			"folder:a%252fb",
+			"folder:a%5cb",
+			"folder:a?x=1",
+			// Not a web page a link in a message would open.
+			"other.html",
+			"/c/x",
+			"//example.com/x",
+			"#top",
+			"",
+			"javascript:alert(1)",
+			"data:text/html,<p>x",
+			"blob:https://example.com/1",
+			"file:///etc/passwd",
+			"ftp://example.com/x",
+			"mailto:someone@example.com",
+			"https://user:secret@example.com/",
+			"https://",
+			`https://example.com/${"a".repeat(2048)}`,
+			5,
+			null,
+			{ href: "app:sales" },
+		])
+			expect(appLink(bad), String(bad)).toBeNull();
+	});
+});
+
 describe("putting an app's page together", () => {
 	const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
 	const folder = () =>
@@ -178,6 +235,55 @@ describe("putting an app's page together", () => {
 		// A script's text can't end its own element early.
 		expect(script?.textContent).toBe('document.body.append("<\\/script><b>x</b>")');
 		expect(assembled.files).toBe(4);
+	});
+
+	it("starts a page from the base style, first in its head and under the page's own styles", async () => {
+		const files = fakeFolder({
+			"apps/plain/index.html": "<!doctype html><title>Plain</title><style>h1{color:red}</style><h1>Hi</h1>",
+			"apps/both/index.html": '<meta name="Color-Scheme" content="Light Dark"><p>Hi</p>',
+			"QorperaOS/brand/brand.toml": 'accent = "#1f6f5b"',
+		});
+		const signal = new AbortController().signal;
+		const brand = {
+			light: { accent: "#1f6f5b", background: null, text: null },
+			dark: { accent: null, background: null, text: null },
+		};
+		const plain = await assembleApp(files, { path: "apps/plain", entry: "index.html" }, signal, {
+			scheme: "dark",
+			brand,
+		});
+		if (!plain.ok) throw new Error(plain.message);
+		const page = new DOMParser().parseFromString(plain.page, "text/html");
+		const [base, own] = [...page.querySelectorAll("style")];
+		expect(page.head.firstElementChild).toBe(base);
+		expect(base?.hasAttribute("data-qorpera-base")).toBe(true);
+		// One layer, and the page's own styles in none: whatever the page writes wins.
+		expect(base?.textContent?.startsWith("@layer qorpera-base {")).toBe(true);
+		expect(base?.textContent?.match(/@layer/g)).toHaveLength(1);
+		expect(own?.textContent).toBe("h1{color:red}");
+		expect(base?.textContent).toContain("--q-accent: #1f6f5b;");
+		// A page that does not say it supports dark is shown light, in a dark app too.
+		expect(plain.scheme).toBe("light");
+		expect(base?.textContent).toContain("color-scheme: light;");
+		expect(plain.page.startsWith("<!DOCTYPE html><html><head><style data-qorpera-base")).toBe(true);
+		// One that says it supports both follows the app.
+		const both = await assembleApp(files, { path: "apps/both", entry: "index.html" }, signal, {
+			scheme: "dark",
+			brand: null,
+		});
+		expect(both).toMatchObject({ ok: true, scheme: "dark" });
+		expect(both.ok && both.page).toContain("color-scheme: dark;");
+		const light = await assembleApp(files, { path: "apps/both", entry: "index.html" }, signal, {
+			scheme: "light",
+			brand: null,
+		});
+		expect(light).toMatchObject({ ok: true, scheme: "light" });
+		// The company's colours are handed in: putting a page together reads only the app's own folder.
+		expect(files.reads.every((path) => path.startsWith("apps/"))).toBe(true);
+		// With no look (a concept of the product), the page is as written.
+		const asWritten = await assembleApp(files, { path: "apps/plain", entry: "index.html" }, signal);
+		expect(asWritten.ok && asWritten.page).not.toContain("qorpera-base");
+		expect(asWritten.ok && asWritten.scheme).toBeUndefined();
 	});
 
 	it("says when the entry is missing, and never reads outside the app", async () => {
@@ -301,6 +407,45 @@ describe("the bridge", () => {
 		});
 		expect(await bridge('"files"').answer({ method: "writeRows", params: {} })).toMatchObject({ ok: false });
 		expect(await bridge('"files"').answer({ method: "token", params: {} })).toMatchObject({ ok: false });
+	});
+
+	it("opens a link the member clicked once it is checked, reads nothing for it, and tells the page nothing", async () => {
+		const folder = fakeFolder(files);
+		const followed: AppLink[] = [];
+		const key = crypto.randomUUID();
+		const open = (href: unknown, follows = true) =>
+			new AppBridge(
+				{ folder: () => folder, agents: () => [] },
+				app(""),
+				key,
+				new AbortController().signal,
+				undefined,
+				follows ? (link) => followed.push(link) : undefined,
+			).answer({ method: "open", params: { href } });
+		// It needs nothing in reads, and the answer is the same whether or not what the link names is there.
+		for (const href of ["app:hiring", "folder:sales/report.md", "folder:sales/missing.md", "https://example.com/"])
+			expect(await open(href), href).toEqual({ ok: true, value: null });
+		expect(followed).toEqual([
+			{ kind: "app", name: "hiring" },
+			{ kind: "file", path: "sales/report.md" },
+			{ kind: "file", path: "sales/missing.md" },
+			{ kind: "web", href: "https://example.com/" },
+		]);
+		for (const bad of ["folder:QorperaOS/tables/tasks/table.toml", "other.html", "javascript:alert(1)", 7])
+			expect(await open(bad), String(bad)).toEqual({
+				ok: false,
+				error: "A link opens an app (app:name), a company file (folder:path) or a web page (https://…)",
+			});
+		expect(followed).toHaveLength(4);
+		expect(folder.reads).toEqual([]);
+		// A bridge given no way to open one (none is today) opens none.
+		expect(await open("app:hiring", false)).toMatchObject({ ok: false });
+		// Each link is a call of the app's budget: 120 a minute, with its reads.
+		let refused = 0;
+		for (let index = 0; index < 115; index++) if (!(await open("app:hiring")).ok) refused++;
+		expect(refused).toBe(4);
+		expect(followed).toHaveLength(4 + 111);
+		expect(await open("app:hiring")).toEqual({ ok: false, error: "Too many calls: wait a moment and try again" });
 	});
 
 	it("keeps an app's budget across its frames", async () => {
