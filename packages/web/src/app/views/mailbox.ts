@@ -138,11 +138,22 @@ const ADDRESS = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@([a-z0-9]([a-z0-9-]{0,61}[a
 /** How many addresses one email goes to, at most (the same call). */
 const MOST_RECIPIENTS = 10;
 const isAddress = (text: string) => text.length <= 254 && ADDRESS.test(text.toLowerCase());
+/** The addresses an entry of who an email goes to points at ("Anna Holm <anna@acme.dk>"). They alone are its recipients
+ * then, whatever stands beside them: the name may be an address of its own ("old@acme.dk <anna@acme.dk>"), and nobody
+ * at it is written to. */
+const pointedAt = (entry: string) =>
+	[...entry.matchAll(/<([^<>]*)>/g)].map((at) => (at[1] ?? "").trim().replace(/^mailto:/i, "")).filter(Boolean);
 /** What is typed for who an email goes to, as its recipients: each address apart, and the words between that are none
- * together, as the name they were typed as ("Nordlys Energi"). A comma or a semicolon ends a name. */
+ * together, as the name they were typed as ("Nordlys Energi"). A comma or a semicolon ends a name. An entry that
+ * points at its address is that address alone (`pointedAt`). */
 function asRecipients(text: string): string[] {
 	const found: string[] = [];
 	for (const part of text.split(/[,;]/)) {
+		const pointed = pointedAt(part);
+		if (pointed.length) {
+			found.push(...pointed);
+			continue;
+		}
 		let name: string[] = [];
 		for (const word of [...part.split(/\s+/).filter(Boolean), null]) {
 			if (word && !isAddress(word)) {
@@ -157,15 +168,23 @@ function asRecipients(text: string): string[] {
 	return found;
 }
 /** A pasted list of who an email goes to, as its recipients. Its entries stand between commas, semicolons and line
- * ends. An entry with an address in it ("Anna Holm <anna@acme.dk>", "mailto:bo@acme.dk") is that address, and the
- * words beside it are the name it was written with, left out; an entry with none is taken whole. Whatever has an `@`
- * is kept, right or wrong: what is no address becomes a chip that says so, never nothing. */
+ * ends. What stands in quotes or in round brackets is a name or a remark, left out beside anything else. An entry that
+ * points at its address is that address alone (`pointedAt`). In one that points at nothing, whatever has an `@` is a
+ * recipient ("mailto:bo@acme.dk", "Bo Berg bo@acme.dk") and the words beside it are left out; an entry with none is
+ * taken whole. Right or wrong, a recipient is kept: what is no address becomes a chip that says so, never nothing. */
 function pastedRecipients(text: string): string[] {
 	const found: string[] = [];
 	// A quoted name keeps its own comma ("Holm, Anna" <anna@acme.dk>).
-	const entries = text.replace(/"([^"\n]*)"/g, (_quoted, name: string) => name.replace(/[,;]/g, " ")).split(/[,;\n]/);
+	const entries = text.replace(/"[^"\n]*"/g, (quoted) => quoted.replace(/[,;]/g, " ")).split(/[,;\n]/);
 	for (const entry of entries) {
-		const words = entry
+		const beside = entry.replace(/"[^"]*"|\([^()]*\)/g, " ");
+		const said = beside.trim() ? beside : entry;
+		const pointed = pointedAt(said);
+		if (pointed.length) {
+			found.push(...pointed);
+			continue;
+		}
+		const words = said
 			.split(/[\s<>"()[\]]+/)
 			.map((word) => word.replace(/^mailto:/i, ""))
 			.filter(Boolean);
@@ -2027,8 +2046,9 @@ function writePanel(page: Page): HTMLElement {
 			ui.writeTo = [...ui.writeRecipients, ui.writeTo.trim()].filter(Boolean).join(", ");
 			ui.writeRecipients = [];
 		} else if (!id && chosen) {
-			// The member's own email goes to addresses: the ones among the words become chips, the rest stays typed.
-			const words = asRecipients(ui.writeTo.replace(/[<>"]/g, " "));
+			// The member's own email goes to addresses: the ones among the words become chips, the rest stays typed. A
+			// name that points at its address ("Anna Holm <anna@acme.dk>") is that address, as when it is typed.
+			const words = asRecipients(ui.writeTo);
 			ui.writeTo = words.filter((word) => !isAddress(word)).join(", ");
 			addRecipients(ui, words.filter(isAddress));
 		}

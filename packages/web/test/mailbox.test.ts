@@ -683,6 +683,53 @@ describe("Sent, Addresses and Write", () => {
 		expect(to().value).toBe("");
 	});
 
+	it("sends an entry to the address it points at alone, whatever the name beside it says", async () => {
+		const { main, fake } = await mailbox(() => {});
+		await vi.waitFor(() => expect(button(main, "Write")).toBeDefined());
+		button(main, "Write")!.click();
+		const panel = () => main.querySelector<HTMLFormElement>(".mailbox-write-panel")!;
+		const to = () => panel().querySelector<HTMLInputElement>(".mailbox-write-to input")!;
+		const chips = () => texts(panel(), ".mailbox-chip-text");
+		const paste = (text: string) =>
+			to().dispatchEvent(
+				Object.assign(new Event("paste", { bubbles: true, cancelable: true }), {
+					clipboardData: { getData: () => text },
+				}),
+			);
+		const give = (name: string) => {
+			panel().querySelector<HTMLButtonElement>(".mailbox-writer")!.click();
+			menuRow(name).click();
+		};
+		// A name that is an address itself is still the name: nobody at it gets the email.
+		paste('"old@example.com" <new@example.com>');
+		expect(chips()).toEqual(["new@example.com"]);
+		// So with no quotes around it, and with a remark in round brackets; an address pointed at wrongly is kept, and
+		// says so.
+		paste("was@example.com <anna@example.com>, bo@example.com (before: bo@old.example), Carl <carl@gmaill>");
+		expect(chips()).toEqual(["new@example.com", "anna@example.com", "bo@example.com", "carl@gmaill"]);
+		expect(texts(panel(), ".mailbox-chip.is-invalid .mailbox-chip-text")).toEqual(["carl@gmaill"]);
+		button(panel(), "Remove carl@gmaill")!.click();
+		// Typed, an entry is read the same way.
+		type(to(), '"dan@old.example" <dan@example.com>,');
+		expect(chips()).toEqual(["new@example.com", "anna@example.com", "bo@example.com", "dan@example.com"]);
+		expect(to().value).toBe("");
+		// And so are the words an agent had, back with the member.
+		give("Ada");
+		const words = panel().querySelector<HTMLInputElement>("input")!;
+		type(words, `${words.value}, eva@old.example <eva@example.com>`);
+		give("You");
+		const all = ["new@example.com", "anna@example.com", "bo@example.com", "dan@example.com", "eva@example.com"];
+		expect(chips()).toEqual(all);
+		expect(to().value).toBe("");
+		type(panel().querySelector<HTMLInputElement>("[data-focus-key='write-subject']")!, "Hello");
+		type(panel().querySelector("textarea")!, "Hi.");
+		panel().requestSubmit();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-write-panel")).toBeNull());
+		expect(calls(fake, "qorpera_send_member_mail").map((call) => (call.p_request as { to: string[] }).to)).toEqual([
+			all,
+		]);
+	});
+
 	it("holds the member's email back until it has who it goes to, a subject and its text, then sends it", async () => {
 		const { main, fake } = await mailbox(() => {});
 		await vi.waitFor(() => expect(button(main, "Write")).toBeDefined());
