@@ -27,6 +27,7 @@ import {
 } from "../src/coding-executor.ts";
 import {
 	CODING_FOLDER_GIT_ENVIRONMENT,
+	codingFolderGitEnvironment,
 	codingHostId,
 	LxdCodingExecutorHost,
 	type LxdCodingExecutorHostOptions,
@@ -2899,11 +2900,24 @@ describe("a coding session on the folder model", () => {
 				machine: f.machine,
 				scope: f.scope(),
 				currentStart: expect.any(Function),
-				session: { uid: 200000, gid: 200000, cwd: f.cwd, environment: CODING_FOLDER_GIT_ENVIRONMENT },
+				session: {
+					uid: 200000,
+					gid: 200000,
+					cwd: f.cwd,
+					environment: codingFolderGitEnvironment(f.claim.workerId),
+				},
 				custody: lxdCodingSessionStorage(f.machine, f.placement, f.claim.workerId).custodySource,
 				limitBytes: 67108864,
 			}),
 		]);
+		// Its commits are by the session, named by its worker id, for author and committer alike.
+		expect(codingFolderGitEnvironment(f.claim.workerId)).toEqual({
+			...CODING_FOLDER_GIT_ENVIRONMENT,
+			GIT_AUTHOR_NAME: "Qorpera coding session",
+			GIT_AUTHOR_EMAIL: `${f.claim.workerId}@coding.qorpera.com`,
+			GIT_COMMITTER_NAME: "Qorpera coding session",
+			GIT_COMMITTER_EMAIL: `${f.claim.workerId}@coding.qorpera.com`,
+		});
 		expect(CODING_FOLDER_GIT_ENVIRONMENT).toMatchObject({
 			GIT_CONFIG_COUNT: "13",
 			GIT_CONFIG_KEY_2: "gc.auto",
