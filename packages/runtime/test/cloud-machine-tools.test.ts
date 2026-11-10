@@ -1093,7 +1093,7 @@ describe("machine tools", () => {
 				).success,
 			).toBe(true);
 			expect(f.execute.mock.calls[2][0].operation.arguments).toMatchObject({ cpus: 1, memoryGiB: 1 });
-			expect(Object.keys(f.execute.mock.calls[2][0].operation.arguments)).not.toContain("desktop");
+			expect(f.execute.mock.calls[2][0].operation.arguments).not.toHaveProperty("desktop");
 			// A wake names only the machine, and desktop is yes or no.
 			for (const [index, bad] of [
 				{ operationKey: "x", machine: "shop-test", desktop: true },
