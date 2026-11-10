@@ -199,6 +199,26 @@ describe("dedicated coding executor control", () => {
 			// Every other call's refusal stays unconfirmed.
 			["qorpera_folder_view_close", 403, body(), unconfirmed],
 			["qorpera_mark_company_machine_running", 403, body(), unconfirmed],
+			// A member's read check of a machine's reads (20260930712000): its refusal hides that member's picture.
+			[
+				"qorpera_folder_member_machine_reads",
+				403,
+				body({
+					details: "qorpera.test-machine/member-unreadable",
+					message: "A read is not readable to the member",
+				}),
+				refused,
+				"qorpera.test-machine/member-unreadable",
+			],
+			[
+				"qorpera_folder_member_machine_reads",
+				403,
+				body({ details: null, message: "Member is unavailable" }),
+				refused,
+				null,
+			],
+			// The executor's read of a member's look is a plain call: a refusal fails the look.
+			["qorpera_member_machine_screen_authority", 403, body({ details: null }), unconfirmed],
 		];
 		for (const [method, status, text, expected, detail] of cases) {
 			const fetcher = vi.fn<typeof fetch>(answer(status, text));

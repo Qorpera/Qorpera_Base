@@ -5,14 +5,17 @@ import {
 	authorizeMachineCodingValue,
 	authorizeMachineCommand,
 	authorizeMachineScreen,
+	authorizeMemberMachineScreen,
 } from "../../../deploy/coding-worker/machine-command-authority.ts";
 import {
 	localMachineCodingValue,
 	localMachineScreen,
 	localMachineWake,
+	localMemberMachineScreen,
 	MachineCommandRouter,
 	machineCommandRoutes,
 } from "../../../deploy/coding-worker/machine-command-routing.ts";
+import type { CompanyMachineMemberLookOutcome } from "../../runner-orchestrator/src/company-machine-host.ts";
 import { HttpCloudCodingCommandService } from "../src/cloud-coding-command-http.ts";
 import {
 	CLOUD_MACHINE_TOOL_VERSION,
@@ -24,10 +27,14 @@ import {
 	type CloudMachineScreenHttpRequest,
 	CloudMachineScreenRefusal,
 	type CloudMachineWakeHttpRequest,
+	CloudMemberMachineScreenRefusal,
 	createHttpCloudMachineCommandGateway,
+	createHttpMemberMachineScreenPeer,
 	parseCloudMachineCodingValueHttpRequest,
 	parseCloudMachineScreenAnswer,
 	parseCloudMachineScreenHttpRequest,
+	parseCloudMemberMachineScreenAnswer,
+	parseCloudMemberMachineScreenPeerRequest,
 } from "../src/cloud-machine-command-http.ts";
 import type { CloudNativeToolBinding } from "../src/cloud-native-tool-authority.ts";
 import { cloudNativeToolOperationEnvelope } from "../src/cloud-native-tool-operations.ts";
@@ -1260,5 +1267,265 @@ describe("a machine's screen", () => {
 				heldBack: "held",
 			}),
 		).toMatchObject({ png: null, heldBack: "held" });
+	});
+});
+
+describe("a member's look at a desktop (20260930712000)", () => {
+	const picture = Buffer.from("89504e470d0a1a0a0000000d4948445200000640000003e8", "hex");
+	const etag = createHash("sha256").update(picture).digest("hex");
+	function fixture(owner = "mx-a") {
+		const ids = {
+			useId: randomUUID(),
+			companyId: randomUUID(),
+			machineId: randomUUID(),
+			placementId: randomUUID(),
+			bootId: randomUUID(),
+			userId: randomUUID(),
+		};
+		/** SQL's read, for the machine of node A: served only to A's executor. */
+		const answer = (requestOwner: string) => ({
+			schema: "qorpera.member-machine-screen-authority/v1",
+			state: "authorized",
+			useId: ids.useId,
+			machineId: ids.machineId,
+			placementId: ids.placementId,
+			bootId: ids.bootId,
+			executorOwner: "mx-a",
+			providerId: "machine-node",
+			userId: ids.userId,
+			served: requestOwner === "mx-a",
+			keepDesktop: true,
+		});
+		const call = vi.fn(
+			async (_method: string, args: Record<string, unknown>) => answer(args.p_owner as string) as unknown,
+		);
+		const host = {
+			memberLook: vi.fn(async (): Promise<CompanyMachineMemberLookOutcome> => ({ png: picture, etag })),
+		};
+		const memberBegin = vi.fn(async () => ids.useId);
+		const sent: { url: string; body: unknown }[] = [];
+		const router = new MachineCommandRouter({
+			owner,
+			providerId: "machine-node",
+			peers: [
+				{ owner: "mx-a", providerId: "machine-node", origin: "https://node-a.example", tokenCredential: "peer-a" },
+				{ owner: "mx-c", providerId: "machine-node", origin: "https://node-c.example", tokenCredential: "peer-c" },
+			].filter((peer) => peer.owner !== owner),
+			control: { call },
+			credential: async () => randomBytes(32).toString("base64url"),
+			memberBegin,
+			memberScreenLocal: localMemberMachineScreen(host),
+			fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+				sent.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+				return new Response(JSON.stringify({ code: "SCREEN_HIDDEN" }), { status: 409 });
+			}) as typeof fetch,
+		});
+		const look = {
+			companyId: ids.companyId,
+			machineId: ids.machineId,
+			token: "eyJh.eyJz.c2ln",
+			confirmed: true,
+			etag: null,
+		};
+		return { ...ids, answer, call, host, memberBegin, router, look, sent, signal: new AbortController().signal };
+	}
+
+	it("begins the look as the member, reads it as the machine's own executor and looks on this node", async () => {
+		const f = fixture();
+		expect(await f.router.memberScreen(f.look, f.signal)).toEqual({ etag, png: picture });
+		// The member's own token goes to the begin, and nowhere else.
+		expect(f.memberBegin).toHaveBeenCalledWith(
+			"eyJh.eyJz.c2ln",
+			{ companyId: f.companyId, machineId: f.machineId, confirmed: true },
+			f.signal,
+		);
+		expect(f.call).toHaveBeenCalledWith(
+			"qorpera_member_machine_screen_authority",
+			{ p_use_id: f.useId, p_owner: "mx-a", p_provider_id: "machine-node" },
+			f.signal,
+		);
+		expect(JSON.stringify(f.call.mock.calls)).not.toContain("eyJh");
+		expect(f.host.memberLook).toHaveBeenCalledWith(
+			{ placementId: f.placementId, bootId: f.bootId, userId: f.userId, keepDesktop: true },
+			f.signal,
+		);
+		// The member has this picture: its etag alone.
+		expect(await f.router.memberScreen({ ...f.look, etag }, f.signal)).toEqual({ etag, png: null });
+		expect(f.sent).toEqual([]);
+		// An executor that takes no member's request never begins one.
+		const plain = new MachineCommandRouter({
+			owner: "mx-a",
+			providerId: "machine-node",
+			peers: [],
+			control: { call: f.call },
+			credential: async () => "",
+		});
+		await expect(plain.memberScreen(f.look, f.signal)).rejects.toThrow("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+	});
+
+	it("tells the member why there is no picture: the screen off, a restarted machine, an earlier image, hidden or held", async () => {
+		const f = fixture();
+		for (const [outcome, code] of [
+			[{ refused: "DESKTOP_NOT_RUNNING" }, "DESKTOP_NOT_RUNNING"],
+			[{ refused: "MACHINE_BOOT_CHANGED" }, "MACHINE_BOOT_CHANGED"],
+			[{ refused: "MACHINE_IMAGE_WITHOUT_SCREEN" }, "MACHINE_IMAGE_WITHOUT_SCREEN"],
+			[{ held: "hidden" }, "SCREEN_HIDDEN"],
+			[{ held: "pending" }, "SCREEN_HELD"],
+		] as const) {
+			f.host.memberLook.mockResolvedValueOnce(outcome);
+			const error = await f.router.memberScreen(f.look, f.signal).catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(CloudMemberMachineScreenRefusal);
+			expect(error).toMatchObject({ code });
+		}
+		// SQL's refusals: a machine that is not running, a disk the member may not see; the begin's own as it gave them.
+		for (const reason of ["MACHINE_NOT_RUNNING", "MACHINE_NEEDS_COMPANY_VIEW"]) {
+			f.call.mockResolvedValueOnce({
+				schema: "qorpera.member-machine-screen-authority/v1",
+				state: "refused",
+				reason,
+			});
+			await expect(f.router.memberScreen(f.look, f.signal)).rejects.toMatchObject({ code: reason });
+		}
+		f.memberBegin.mockRejectedValueOnce(new CloudMemberMachineScreenRefusal("SCREEN_TOO_SOON"));
+		await expect(f.router.memberScreen(f.look, f.signal)).rejects.toMatchObject({ code: "SCREEN_TOO_SOON" });
+		expect(f.host.memberLook).toHaveBeenCalledTimes(5);
+	});
+
+	it("reads SQL's answer strictly: the use asked, exactly its fields, served only to the machine's own executor", async () => {
+		const f = fixture();
+		const request = { useId: f.useId, owner: "mx-a", providerId: "machine-node" };
+		expect(await authorizeMemberMachineScreen({ call: f.call }, request, f.signal)).toMatchObject({ served: true });
+		for (const other of [
+			{ useId: randomUUID() },
+			{ machineId: "m" },
+			{ placementId: null },
+			{ bootId: "boot" },
+			{ userId: 1 },
+			{ executorOwner: "mx a" },
+			{ providerId: "Node" },
+			{ keepDesktop: "yes" },
+			{ served: false },
+			{ node: "node-01" },
+			{ state: "refused", reason: "SCREEN_TOO_SOON" },
+			{ schema: "qorpera.machine-screen-authority/v1" },
+		]) {
+			f.call.mockResolvedValueOnce({ ...f.answer("mx-a"), ...other });
+			await expect(
+				authorizeMemberMachineScreen({ call: f.call }, request, f.signal),
+				JSON.stringify(other),
+			).rejects.toThrow("MEMBER_SCREEN_AUTHORITY_INVALID");
+		}
+		// Served to another executor than this one: not this one's to serve.
+		f.call.mockResolvedValueOnce({ ...f.answer("mx-a"), executorOwner: "mx-c", served: true });
+		await expect(authorizeMemberMachineScreen({ call: f.call }, request, f.signal)).rejects.toThrow(
+			"MEMBER_SCREEN_AUTHORITY_INVALID",
+		);
+		await expect(
+			authorizeMemberMachineScreen({ call: f.call }, { ...request, useId: "use" }, f.signal),
+		).rejects.toThrow("MEMBER_SCREEN_AUTHORITY_INVALID");
+	});
+
+	it("sends a look once to the node that runs the machine, which never sends it on, and its refusal stays the member's", async () => {
+		const f = fixture("mx-c");
+		await expect(f.router.memberScreen({ ...f.look, etag }, f.signal)).rejects.toMatchObject({
+			code: "SCREEN_HIDDEN",
+		});
+		expect(f.sent).toEqual([
+			{
+				url: "https://node-a.example/v1/machine-commands/member-screen",
+				body: { schema: "qorpera.member-machine-screen-http/v1", useId: f.useId, etag },
+			},
+		]);
+		// Neither the member's token nor anything of the begin goes to the peer.
+		expect(JSON.stringify(f.sent)).not.toContain("eyJh");
+		expect(f.host.memberLook).not.toHaveBeenCalled();
+		// A look sent here by a peer is read again and served here only: this node is not the machine's.
+		await expect(
+			f.router.memberScreenPeer(
+				{ schema: "qorpera.member-machine-screen-http/v1", useId: f.useId, etag: null },
+				f.signal,
+			),
+		).rejects.toThrow("MACHINE_COMMAND_WRONG_EXECUTOR");
+		expect(f.sent).toHaveLength(1);
+	});
+
+	it("crosses the peer listener only, with the peer token: the picture, the same picture, a refusal as 409", async () => {
+		const f = fixture();
+		const token = randomBytes(32).toString("base64url");
+		const start = async (
+			proveBinding: ConstructorParameters<typeof HttpCloudCodingCommandService>[0]["proveBinding"],
+		) => {
+			const http = new HttpCloudCodingCommandService({
+				token,
+				proveBinding,
+				authorize: async () => {
+					throw new Error("not a coding command");
+				},
+				execute: async () => {
+					throw new Error("not a coding command");
+				},
+				machines: machineCommandRoutes(f.router, { call: f.call }, proveBinding === null),
+			});
+			const port = await http.start();
+			cleanups.push(() => http.close());
+			return `http://127.0.0.1:${port}`;
+		};
+		const peerUrl = await start(null);
+		const peer = createHttpMemberMachineScreenPeer({ url: peerUrl, token, allowLoopback: true });
+		expect(await peer.memberScreen({ useId: f.useId, etag: null }, f.signal)).toEqual({ etag, png: picture });
+		expect(await peer.memberScreen({ useId: f.useId, etag }, f.signal)).toEqual({ etag, png: null });
+		f.host.memberLook.mockResolvedValueOnce({ held: "pending" });
+		await expect(peer.memberScreen({ useId: f.useId, etag: null }, f.signal)).rejects.toMatchObject({
+			code: "SCREEN_HELD",
+		});
+		// Another token: nothing is asked of SQL.
+		const calls = f.call.mock.calls.length;
+		await expect(
+			createHttpMemberMachineScreenPeer({
+				url: peerUrl,
+				token: randomBytes(32).toString("base64url"),
+				allowLoopback: true,
+			}).memberScreen({ useId: f.useId, etag: null }, f.signal),
+		).rejects.toThrow("Machine command gateway unavailable");
+		expect(f.call.mock.calls.length).toBe(calls);
+		// The guests' ingress has no member route, whatever the token.
+		const ingressUrl = await start(async () => {});
+		await expect(
+			createHttpMemberMachineScreenPeer({ url: ingressUrl, token, allowLoopback: true }).memberScreen(
+				{ useId: f.useId, etag: null },
+				f.signal,
+			),
+		).rejects.toThrow("Machine command gateway unavailable");
+		expect(f.call.mock.calls.length).toBe(calls);
+	});
+
+	it("reads only its own request and an answer of exactly that request, a PNG whose sha-256 is its etag", () => {
+		const useId = randomUUID();
+		const request = { schema: "qorpera.member-machine-screen-http/v1", useId, etag } as const;
+		expect(parseCloudMemberMachineScreenPeerRequest(request)).toEqual(request);
+		expect(parseCloudMemberMachineScreenPeerRequest({ ...request, etag: null })).toEqual({ ...request, etag: null });
+		for (const bad of [
+			{ ...request, useId: "use" },
+			{ ...request, etag: etag.toUpperCase() },
+			{ ...request, etag: `"${etag}"` },
+			{ ...request, token: "eyJ" },
+			{ ...request, schema: "qorpera.machine-command-http/v1" },
+		])
+			expect(() => parseCloudMemberMachineScreenPeerRequest(bad)).toThrow("Machine command gateway unavailable");
+		const good = { schema: "qorpera.member-machine-screen-answer/v1", useId, etag, png: picture.toString("base64") };
+		expect(parseCloudMemberMachineScreenAnswer({ ...request, etag: null }, good)).toEqual({ etag, png: picture });
+		expect(parseCloudMemberMachineScreenAnswer(request, { ...good, png: null })).toEqual({ etag, png: null });
+		for (const bad of [
+			{ ...good, useId: randomUUID() },
+			{ ...good, etag: "e".repeat(64) },
+			{ ...good, png: Buffer.from("other").toString("base64") },
+			{ ...good, png: "" },
+			{ ...good, png: null, etag: "e".repeat(64) },
+			{ ...good, png: "A".repeat(Math.ceil((8 * 1024 * 1024) / 3) * 4 + 4) },
+			{ ...good, size: picture.length },
+		])
+			expect(() => parseCloudMemberMachineScreenAnswer(request, bad), JSON.stringify(bad).slice(0, 120)).toThrow(
+				"Machine command gateway unavailable",
+			);
 	});
 });

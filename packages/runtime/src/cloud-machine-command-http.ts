@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
 	CloudRequestTimeoutError,
 	readBoundedCloudResponse,
@@ -155,6 +156,108 @@ export function isCloudMachineScreenRefusal(code: unknown): code is CloudMachine
 export const CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT = 12 * 1024 * 1024;
 /** How long a caller gives a screen: the executor's helper, its folder release, and the way back. */
 const SCREEN_DEADLINE_MS = 30000;
+
+// /v1/machine-commands/member-screen (20260930712000): a member's look at a desktop, sent once by the executor that took
+// the member's request (cloud-member-machine-screen-http.ts) to the executor of the machine's node, on the peer listener
+// only. It carries the single-use id SQL gave the look (qorpera_member_machine_screen_begin) and the etag of the picture
+// the member has; the receiving executor reads SQL again, serves the use, and only ever looks locally. The answer is the
+// picture and its etag, the etag alone when the member has that picture, or why there is none.
+export const CLOUD_MEMBER_MACHINE_SCREEN_HTTP_SCHEMA = "qorpera.member-machine-screen-http/v1";
+export const CLOUD_MEMBER_MACHINE_SCREEN_SCHEMA = "qorpera.member-machine-screen-answer/v1";
+const ETAG = /^[0-9a-f]{64}$/;
+export interface CloudMemberMachineScreenPeerRequest {
+	readonly schema: typeof CLOUD_MEMBER_MACHINE_SCREEN_HTTP_SCHEMA;
+	readonly useId: string;
+	/** The hex sha-256 of the picture the member has, or null. */
+	readonly etag: string | null;
+}
+/** A member's look: the picture's etag (the hex sha-256 of its bytes) and the picture, or null when it is the one the
+ * member has. A held picture is never an answer: it is a refusal (SCREEN_HIDDEN, SCREEN_HELD) with no etag. */
+export interface CloudMemberMachineScreen {
+	readonly etag: string;
+	readonly png: Buffer | null;
+}
+/** Why a member sees no picture, sent back as 409 with its code: the machine is not running, its disk has had a company
+ * folder view and the member does not read the folder's root, a look came within 400 ms of the last one, the screen is
+ * off, the machine restarted, its image has no scrot, the machine holds a read the member may not read (SCREEN_HIDDEN),
+ * or the company folder has not released what the machine read yet (SCREEN_HELD: look again). */
+export const CLOUD_MEMBER_MACHINE_SCREEN_REFUSALS = [
+	"MACHINE_NOT_RUNNING",
+	"MACHINE_NEEDS_COMPANY_VIEW",
+	"SCREEN_TOO_SOON",
+	"DESKTOP_NOT_RUNNING",
+	"MACHINE_BOOT_CHANGED",
+	"MACHINE_IMAGE_WITHOUT_SCREEN",
+	"SCREEN_HIDDEN",
+	"SCREEN_HELD",
+] as const;
+export type CloudMemberMachineScreenRefusalCode = (typeof CLOUD_MEMBER_MACHINE_SCREEN_REFUSALS)[number];
+export class CloudMemberMachineScreenRefusal extends Error {
+	readonly code: CloudMemberMachineScreenRefusalCode;
+	constructor(code: CloudMemberMachineScreenRefusalCode) {
+		super(code);
+		this.code = code;
+	}
+}
+export function isCloudMemberMachineScreenRefusal(code: unknown): code is CloudMemberMachineScreenRefusalCode {
+	return (CLOUD_MEMBER_MACHINE_SCREEN_REFUSALS as readonly unknown[]).includes(code);
+}
+export function parseCloudMemberMachineScreenPeerRequest(value: unknown): CloudMemberMachineScreenPeerRequest {
+	const input = record(value, ["schema", "useId", "etag"]);
+	if (
+		input.schema !== CLOUD_MEMBER_MACHINE_SCREEN_HTTP_SCHEMA ||
+		typeof input.useId !== "string" ||
+		!UUID.test(input.useId) ||
+		(input.etag !== null && (typeof input.etag !== "string" || !ETAG.test(input.etag)))
+	)
+		throw new Error(ERROR);
+	return Object.freeze({
+		schema: CLOUD_MEMBER_MACHINE_SCREEN_HTTP_SCHEMA,
+		useId: input.useId,
+		etag: input.etag as string | null,
+	});
+}
+/** The peer's JSON answer to exactly this request: the picture in base64, or null when its etag is the request's. */
+export function cloudMemberMachineScreenAnswer(
+	request: CloudMemberMachineScreenPeerRequest,
+	screen: CloudMemberMachineScreen,
+): { schema: string; useId: string; etag: string; png: string | null } {
+	return {
+		schema: CLOUD_MEMBER_MACHINE_SCREEN_SCHEMA,
+		useId: request.useId,
+		etag: screen.etag,
+		png: screen.png ? screen.png.toString("base64") : null,
+	};
+}
+/** A peer's answer to exactly this request: a PNG of at most 8 MiB whose sha-256 is its etag, or no picture and the
+ * request's own etag. */
+export function parseCloudMemberMachineScreenAnswer(
+	request: CloudMemberMachineScreenPeerRequest,
+	value: unknown,
+): CloudMemberMachineScreen {
+	const answer = record(value, ["schema", "useId", "etag", "png"]);
+	if (
+		answer.schema !== CLOUD_MEMBER_MACHINE_SCREEN_SCHEMA ||
+		answer.useId !== request.useId ||
+		typeof answer.etag !== "string" ||
+		!ETAG.test(answer.etag)
+	)
+		throw new Error(ERROR);
+	if (answer.png === null) {
+		if (answer.etag !== request.etag) throw new Error(ERROR);
+		return Object.freeze({ etag: answer.etag, png: null });
+	}
+	if (typeof answer.png !== "string" || answer.png.length > Math.ceil(MACHINE_SCREEN_MAX_PNG_BYTES / 3) * 4)
+		throw new Error(ERROR);
+	const png = Buffer.from(answer.png, "base64");
+	if (
+		png.length === 0 ||
+		png.toString("base64") !== answer.png ||
+		createHash("sha256").update(png).digest("hex") !== answer.etag
+	)
+		throw new Error(ERROR);
+	return Object.freeze({ etag: answer.etag, png });
+}
 
 /** Host-side: the fixed gateway to the executor of the machine's node. */
 export interface CloudMachineCommandGateway {
@@ -700,6 +803,80 @@ export function createHttpCloudMachineCommandGateway(options: {
 	});
 }
 
+/** A member's look sent to the executor of the machine's node (20260930712000), on its peer listener with the peer
+ * token: sent once, never again (the use it carries is served once), and its refusal comes back as the same refusal. */
+export function createHttpMemberMachineScreenPeer(options: {
+	url: string;
+	token: string;
+	allowLoopback?: boolean;
+	fetch?: typeof fetch;
+}): {
+	memberScreen(
+		request: { useId: string; etag: string | null },
+		signal: AbortSignal,
+	): Promise<CloudMemberMachineScreen>;
+} {
+	const base = origin(options.url, options.allowLoopback ?? false);
+	if (!validToken(options.token)) throw new Error(ERROR);
+	const transport = options.fetch ?? fetch;
+	return Object.freeze({
+		memberScreen: async (input: { useId: string; etag: string | null }, signal: AbortSignal) => {
+			try {
+				const admitted = parseCloudMemberMachineScreenPeerRequest({
+					schema: CLOUD_MEMBER_MACHINE_SCREEN_HTTP_SCHEMA,
+					useId: input.useId,
+					etag: input.etag,
+				});
+				return await withCloudDeadline(
+					async (requestSignal) => {
+						const response = await transport(`${base}/v1/machine-commands/member-screen`, {
+							method: "POST",
+							redirect: "error",
+							signal: requestSignal,
+							headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json" },
+							body: JSON.stringify(admitted),
+						}).catch(() => {
+							throw new CloudMachineCommandUnanswered();
+						});
+						if (response.status >= 500) {
+							void response.body?.cancel().catch(() => undefined);
+							throw new CloudMachineCommandUnanswered();
+						}
+						if (response.status === 409) {
+							const { code } = JSON.parse(
+								new TextDecoder("utf8", { fatal: true }).decode(
+									await readBoundedCloudResponse(response, 4096, requestSignal),
+								),
+							) as { code?: unknown };
+							if (isCloudMemberMachineScreenRefusal(code)) throw new CloudMemberMachineScreenRefusal(code);
+							throw new Error(ERROR);
+						}
+						if (response.status !== 200) {
+							void response.body?.cancel().catch(() => undefined);
+							throw new Error(ERROR);
+						}
+						return parseCloudMemberMachineScreenAnswer(
+							admitted,
+							JSON.parse(
+								new TextDecoder("utf8", { fatal: true }).decode(
+									await readBoundedCloudResponse(response, CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT, requestSignal),
+								),
+							),
+						);
+					},
+					SCREEN_DEADLINE_MS,
+					signal,
+				);
+			} catch (error) {
+				if (error instanceof CloudMachineCommandUnanswered || error instanceof CloudRequestTimeoutError)
+					throw new CloudMachineCommandUnanswered();
+				if (error instanceof CloudMemberMachineScreenRefusal) throw error;
+				throw new Error(ERROR);
+			}
+		},
+	});
+}
+
 /** A refusal the agent can act on, sent back as 409 with its code, and for a command its machine lost for the
  * company folder, the cause (`folderLost`, a key of CLOUD_MACHINE_FOLDER_LOST; F3 6e-2a). */
 export const CLOUD_MACHINE_COMMAND_REFUSALS = ["MACHINE_NOT_RUNNING", "MACHINE_COMMAND_ENDED"] as const;
@@ -737,6 +914,9 @@ export interface CloudMachineCommandServiceOptions {
 	/** machine_screen (20260930708000): authorized in SQL and run on the machine's node, or forwarded there; a refusal
 	 * is a CloudMachineScreenRefusal. */
 	screen?(request: CloudMachineScreenHttpRequest, signal: AbortSignal): Promise<CloudMachineScreenAnswer>;
+	/** A member's look (20260930712000), on the peer listener only: authorized in SQL and looked at on this node; a
+	 * refusal is a CloudMemberMachineScreenRefusal. */
+	memberScreen?(request: CloudMemberMachineScreenPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineScreen>;
 }
 export async function serveCloudMachineCommand(
 	options: CloudMachineCommandServiceOptions,

@@ -1,5 +1,7 @@
+import { spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, realpath, rm, utimes } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TimerOptions } from "node:timers";
@@ -15,6 +17,7 @@ import type { CodingMachineIntent } from "../src/coding-machine.ts";
 import { type LxdCompanyMachineBinding, lxdCompanyMachineName, lxdCompanyMachinePlan } from "../src/company-machine.ts";
 import {
 	COMPANY_MACHINE_CODING_VALUE_HELPER,
+	COMPANY_MACHINE_MEMBER_LOOK,
 	COMPANY_MACHINE_SCREEN_HELPER,
 	type CompanyMachineCommand,
 	type CompanyMachineEntry,
@@ -97,6 +100,7 @@ async function fixture(
 		codingValueTimeoutMs?: number;
 		codingValueClearTimeoutMs?: number;
 		screenTimeoutMs?: number;
+		memberLookTimeoutMs?: number;
 		now?: () => number;
 	} = {},
 ) {
@@ -117,6 +121,8 @@ async function fixture(
 	};
 	/** What SQL's take-ins of the machine's reads answer, in turn (then nothing to take in): an answer, or an error. */
 	const inherits: unknown[] = [];
+	/** What SQL's member read checks answer, in turn (then nothing to check): an answer, or an error (20260930712000). */
+	const memberReads: unknown[] = [];
 	/** The folder service: the reads its boundaries answer, the views it holds, and whether it answers at all. */
 	const service = {
 		reads: "released" as FolderReads,
@@ -194,6 +200,11 @@ async function fixture(
 						replay: false,
 					}
 				);
+			}
+			if (method === "qorpera_folder_member_machine_reads") {
+				const next = memberReads.shift();
+				if (next instanceof Error) throw next;
+				return next ?? { schema: "qorpera.folder-member-reads/v1", viewId: null, reads: 0 };
 			}
 			if (method === "qorpera_retire_company_machine")
 				return (
@@ -427,6 +438,7 @@ async function fixture(
 		admissions,
 		retirements,
 		inherits,
+		memberReads,
 		busy,
 		client,
 		get host() {
@@ -3962,4 +3974,262 @@ describe("a machine's screen helper (machine_screen, 20260930708000)", () => {
 		expect(await f.host.screen(run(id(7)), f.signal)).toEqual({ header: header(picture), png: picture });
 		expect(f.service.requests).toEqual([{ op: "boundary", machine: id(6), final: [] }]);
 	});
+});
+
+describe("a member's look at a desktop (20260930712000)", () => {
+	/** A PNG's signature and IHDR (13 bytes and its check), then `rest` bytes: what the host reads of a screenshot. */
+	const png = (width = 1600, height = 1000, rest = 64) => {
+		const ihdr = Buffer.alloc(25);
+		ihdr.writeUInt32BE(13, 0);
+		ihdr.write("IHDR", 4, "latin1");
+		ihdr.writeUInt32BE(width, 8);
+		ihdr.writeUInt32BE(height, 12);
+		ihdr.set([8, 6, 0, 0, 0], 16);
+		return Buffer.concat([
+			Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+			ihdr,
+			Buffer.alloc(rest, 7),
+		]);
+	};
+	const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+	const look = (bootId = id(7), keepDesktop = false) => ({ placementId: id(6), bootId, userId: id(21), keepDesktop });
+	type Answer = { exitCode: number; stdout: Buffer } | "hang";
+	async function piped(answer: Answer, options: Parameters<typeof fixture>[0] = {}) {
+		const f = await fixture(options);
+		const calls: { request: LxdExecPipeRequest; signal: AbortSignal }[] = [];
+		const pipe = vi.fn(async (_project: string, _name: string, given: LxdExecPipeRequest, signal: AbortSignal) => {
+			calls.push({ request: given, signal });
+			f.order.push("exec:look");
+			if (answer === "hang")
+				return new Promise<never>((_resolve, reject) => {
+					if (signal.aborted) reject(signal.reason);
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				});
+			return { exitCode: answer.exitCode, stdout: answer.stdout, stderrTail: Buffer.alloc(0) };
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		return { f, pipe, calls };
+	}
+
+	it("runs the fixed script as root on SQL's boot, keep or look as its word, and answers the PNG and its sha-256", async () => {
+		const picture = png();
+		const { f, pipe } = await piped({ exitCode: 0, stdout: picture });
+		expect(await f.host.memberLook(look(), f.signal)).toEqual({ png: picture, etag: sha(picture) });
+		const [project, name, given] = pipe.mock.calls[0]!;
+		expect(project).toBe("machines");
+		expect(name).toBe(lxdCompanyMachineName(id(6)));
+		expect(given.command).toEqual(["/bin/sh", "-c", COMPANY_MACHINE_MEMBER_LOOK, id(7), "look"]);
+		// Nothing on stdin, no environment, the picture's own bound, no stderr kept.
+		expect(given.stdin).toBeUndefined();
+		expect(given).toMatchObject({ environment: {}, cwd: "/", maxStdoutBytes: 8 * 1024 * 1024, stderrTailBytes: 0 });
+		// Without the folder service there is nothing to release.
+		expect(f.methods()).toEqual([]);
+		// The member's word within 30 minutes: the desktop's idle stop is put off.
+		await f.host.memberLook(look(id(7), true), f.signal);
+		expect(pipe.mock.calls[1]![2].command.at(-1)).toBe("keep");
+		// On SQL's boot only; scrot there; the desktop's unit active and its display answering; only `keep` touches the
+		// desktop's note, and never makes one; the pointer drawn; no helper of the image, nothing started.
+		for (const part of [
+			'[ "$boot" = "$0" ]; } || exit 97',
+			"command -v scrot >/dev/null 2>&1 || exit 98",
+			"systemctl is-active --quiet qorpera-machine-desktop.service && DISPLAY=:1 xdpyinfo",
+			"|| exit 95",
+			'if [ "$1" = keep ]; then touch -c /run/qorpera-desktop/last-use; fi',
+			'scrot --pointer --overwrite --silent "$f"',
+		])
+			expect(COMPANY_MACHINE_MEMBER_LOOK).toContain(part);
+		expect(COMPANY_MACHINE_MEMBER_LOOK).not.toMatch(/desktop start|systemctl start|cloud-machine-screen|\/opt\//);
+	});
+
+	it("answers the screen off, another boot and an image without scrot by code, and fails on anything else", async () => {
+		for (const [exitCode, refused] of [
+			[95, "DESKTOP_NOT_RUNNING"],
+			[97, "MACHINE_BOOT_CHANGED"],
+			[98, "MACHINE_IMAGE_WITHOUT_SCREEN"],
+		] as const) {
+			const { f } = await piped({ exitCode, stdout: Buffer.alloc(0) }, { folder: true });
+			expect(await f.host.memberLook(look(), f.signal)).toEqual({ refused });
+			// Nothing was shown, so nothing is released.
+			expect(f.methods()).not.toContain("qorpera_folder_member_machine_reads");
+		}
+		const failed = await piped({ exitCode: 1, stdout: png() });
+		await expect(failed.f.host.memberLook(look(), failed.f.signal)).rejects.toThrow(
+			"COMPANY_MACHINE_MEMBER_LOOK_FAILED",
+		);
+		for (const [stdout, what] of [
+			[Buffer.alloc(0), "nothing"],
+			[Buffer.from("not a png"), "not a PNG"],
+			[png(3841, 1000), "wider than a screen"],
+			[png(1600, 2161), "taller than a screen"],
+			[png(0, 1000), "no width"],
+			[Buffer.concat([Buffer.alloc(8), png().subarray(8)]), "no signature"],
+		] as const) {
+			const { f } = await piped({ exitCode: 0, stdout });
+			await expect(f.host.memberLook(look(), f.signal), what).rejects.toThrow("COMPANY_MACHINE_MEMBER_LOOK_INVALID");
+		}
+		const { f, pipe } = await piped({ exitCode: 0, stdout: png() });
+		for (const wrong of [
+			{ bootId: "boot" },
+			{ userId: "member" },
+			{ placementId: "placement" },
+			{ keepDesktop: "yes" },
+		])
+			await expect(
+				f.host.memberLook({ ...look(), ...wrong } as unknown as ReturnType<typeof look>, f.signal),
+				JSON.stringify(wrong),
+			).rejects.toThrow("COMPANY_MACHINE_MEMBER_LOOK_INVALID");
+		expect(pipe).not.toHaveBeenCalled();
+		const bare = await fixture();
+		await expect(bare.host.memberLook(look(), bare.signal)).rejects.toThrow(
+			"COMPANY_MACHINE_MEMBER_LOOK_UNAVAILABLE",
+		);
+	});
+
+	it("ends the look at its own deadline, and with the request", async () => {
+		const { f, calls } = await piped("hang", { memberLookTimeoutMs: 50 });
+		await expect(f.host.memberLook(look(), f.signal)).rejects.toThrow();
+		expect(calls[0]!.signal.aborted).toBe(true);
+		const cancelled = await piped("hang");
+		const controller = new AbortController();
+		const looking = cancelled.f.host.memberLook(look(), controller.signal);
+		await vi.waitFor(() => expect(cancelled.calls).toHaveLength(1));
+		controller.abort(new Error("the member's request ended"));
+		await expect(looking).rejects.toThrow("the member's request ended");
+	});
+
+	/** A machine with /company, its boot's folder settled and running, and the script answering a picture. */
+	async function mounted() {
+		const picture = png();
+		const piping = await piped({ exitCode: 0, stdout: picture }, { folder: true });
+		const { f } = piping;
+		await f.host.pass(f.signal);
+		f.running();
+		await f.host.pass(f.signal);
+		f.order.length = 0;
+		f.service.requests.length = 0;
+		f.calls.length = 0;
+		return { ...piping, picture };
+	}
+
+	it("lets the picture of a machine with /company leave only after a boundary and the member's own read check", async () => {
+		const { f, picture } = await mounted();
+		expect(await f.host.memberLook(look(f.boot), f.signal)).toEqual({ png: picture, etag: sha(picture) });
+		expect(f.service.requests).toEqual([{ op: "boundary", machine: id(6), final: [] }]);
+		expect(f.calls.find((call) => call.method === "qorpera_folder_member_machine_reads")?.args).toEqual({
+			p_placement_id: id(6),
+			p_boot_id: f.boot,
+			p_user_id: id(21),
+		});
+		// The look, then the boundary, then the member's check: never a run's take-in.
+		expect(f.order).toEqual(["exec:look", "folder:boundary", "sql:qorpera_folder_member_machine_reads"]);
+		expect(f.methods()).not.toContain("qorpera_folder_test_machine_inherit_reads");
+	});
+
+	it("holds the picture while the folder does not release it, and hides it from a member who may not read what the machine read, marking nothing", async () => {
+		for (const reads of ["unanswered", "unproven", "unreadable", "stopped"] as const) {
+			const { f } = await mounted();
+			f.service.reads = reads;
+			expect(await f.host.memberLook(look(f.boot), f.signal), reads).toEqual({ held: "pending" });
+			expect(f.methods()).not.toContain("qorpera_folder_member_machine_reads");
+		}
+		const down = await mounted();
+		down.f.service.down = true;
+		expect(await down.f.host.memberLook(look(down.f.boot), down.f.signal)).toEqual({ held: "pending" });
+		// The member may not read a file the machine read: hidden, with no picture, size or etag.
+		const { f, picture } = await mounted();
+		f.memberReads.push(new CodingControlRefused("qorpera.test-machine/member-unreadable"));
+		const hidden = await f.host.memberLook(look(f.boot), f.signal);
+		expect(hidden).toEqual({ held: "hidden" });
+		expect(JSON.stringify(hidden)).not.toContain(sha(picture));
+		// The refusal is that member's alone: the boot is not marked, the machine is not moved, and the next look, an
+		// agent's look and another member's look go on.
+		expect(await f.host.memberLook(look(f.boot), f.signal)).toEqual({ png: picture, etag: sha(picture) });
+		expect(f.methods()).not.toContain("qorpera_retire_company_machine");
+		await f.host.pass(f.signal);
+		expect(f.methods()).not.toContain("qorpera_retire_company_machine");
+		// Another refusal, a lost answer, or an answer that is not the check's: held until the member looks again.
+		for (const next of [
+			new CodingControlRefused(null),
+			new CodingControlRefused("qorpera.test-machine/unreadable"),
+			new Error("CODING_CONTROL_UNCONFIRMED"),
+			{ schema: "qorpera.folder-inherit/v1" },
+			null,
+		]) {
+			f.memberReads.push(next ?? { not: "an answer" });
+			expect(await f.host.memberLook(look(f.boot), f.signal), String(next)).toEqual({ held: "pending" });
+		}
+		expect(f.methods()).not.toContain("qorpera_retire_company_machine");
+	});
+
+	it("serves a member's look while an agent's action runs on the desktop", async () => {
+		const f = await fixture();
+		const picture = png();
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const header = {
+			schema: "qorpera.machine-screen/v1",
+			started: false,
+			action: { type: "click", exitCode: 0 },
+			activeWindow: null,
+			windows: [],
+			moreWindows: 0,
+			png: picture.length,
+		};
+		const pipe = vi.fn(async (_project: string, _name: string, given: LxdExecPipeRequest) => {
+			if (given.command[2] === COMPANY_MACHINE_MEMBER_LOOK)
+				return { exitCode: 0, stdout: picture, stderrTail: Buffer.alloc(0) };
+			await gate;
+			return {
+				exitCode: 0,
+				stdout: Buffer.concat([Buffer.from(`${JSON.stringify(header)}\n`), picture]),
+				stderrTail: Buffer.alloc(0),
+			};
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		const acting = f.host.screen(
+			{
+				placementId: id(6),
+				bootId: id(7),
+				runId: id(9),
+				request: {
+					schema: "qorpera.machine-screen-request/v1",
+					receiptId: id(8),
+					action: { type: "click", x: 1, y: 1 },
+					settleMs: 0,
+					look: true,
+				},
+			},
+			f.signal,
+		);
+		await vi.waitFor(() => expect(pipe).toHaveBeenCalledTimes(1));
+		expect(await f.host.memberLook(look(), f.signal)).toEqual({ png: picture, etag: sha(picture) });
+		release();
+		expect(await acting).toMatchObject({ png: picture });
+	});
+
+	it.skipIf(process.platform !== "linux")(
+		"exits as the script says in a real shell: another boot, no scrot, the screen off",
+		async () => {
+			const bin = await realpath(await mkdtemp(join(tmpdir(), "member-look-")));
+			roots.push(bin);
+			const tool = async (name: string, exitCode: number) => {
+				await writeFile(join(bin, name), `#!/bin/sh\nexit ${exitCode}\n`);
+				await chmod(join(bin, name), 0o755);
+			};
+			const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+			const run = (bootId: string) =>
+				spawnSync("/bin/sh", ["-c", COMPANY_MACHINE_MEMBER_LOOK, bootId, "look"], { env: { PATH: bin } }).status;
+			expect(run(randomUUID())).toBe(97);
+			expect(run(boot)).toBe(98);
+			await tool("scrot", 0);
+			await tool("systemctl", 3);
+			await tool("xdpyinfo", 0);
+			expect(run(boot)).toBe(95);
+			await tool("systemctl", 0);
+			await tool("xdpyinfo", 1);
+			expect(run(boot)).toBe(95);
+		},
+	);
 });
