@@ -11,6 +11,13 @@ import {
 	parseCloudMachineCommandReceipt,
 } from "@qorpera/contracts";
 import { MACHINE_CODING_VALUE_REFUSALS } from "./cloud-machine-coding-value.ts";
+import {
+	MACHINE_SCREEN_MAX_PNG_BYTES,
+	MACHINE_SCREEN_MAX_SETTLE_MS,
+	MACHINE_SCREEN_REFUSALS,
+	type MachineScreenHeader,
+	parseMachineScreenHeader,
+} from "./cloud-machine-screen.ts";
 import { type CloudNativeToolBinding, parseCloudNativeToolBinding } from "./cloud-native-tool-authority.ts";
 
 // Machine commands travel the coding executor's command gateway (the same
@@ -24,6 +31,10 @@ import { type CloudNativeToolBinding, parseCloudNativeToolBinding } from "./clou
 // the image's fixed clipboard helper on the machine for one executing receipt,
 // as SQL authorizes it (qorpera_authorize_machine_coding_value): its answer is
 // the box the helper sealed the key in, which only the vault opens, or why not.
+// /v1/machine-commands/screen (machine_screen, 20260930708000) runs the image's
+// fixed screen helper on the machine: a look (no receipt), or one action for
+// one executing receipt, as SQL authorizes it (qorpera_authorize_machine_screen).
+// Its answer is the helper's header and the screen's PNG, or why it is held.
 
 /** The machine tools' operation version: receipts and the executor's check both use it. */
 export const CLOUD_MACHINE_TOOL_VERSION = "qorpera.machine-tools/v1";
@@ -90,6 +101,57 @@ export class CloudMachineCodingValueRefusal extends Error {
 export function isCloudMachineCodingValueRefusal(code: unknown): code is CloudMachineCodingValueRefusalCode {
 	return (CLOUD_MACHINE_CODING_VALUE_REFUSALS as readonly unknown[]).includes(code);
 }
+/** machine_screen's request (20260930708000): a look carries neither receipt nor envelope; an action carries its
+ * receipt and its operation envelope, whose digest the receipt holds (SQL reads the action from them, and the executor
+ * checks the settle time and the look against the envelope's). */
+export type CloudMachineScreenInput = {
+	commandId: string | null;
+	envelope: string | null;
+	settleMs: number;
+	look: boolean;
+};
+export type CloudMachineScreenHttpRequest = Readonly<{
+	schema: "qorpera.machine-command-http/v1";
+	binding: CloudNativeToolBinding;
+	scope: CloudMachineCommandScope;
+	action: "screen";
+	input: CloudMachineScreenInput;
+}>;
+export const CLOUD_MACHINE_SCREEN_SCHEMA = "qorpera.machine-screen-answer/v1";
+/** The helper's header and the screen's PNG (base64; null: none, or held back), or why the company folder held the
+ * picture and the windows' titles back (`heldBack`; what the action did is still told). */
+export interface CloudMachineScreenAnswer {
+	readonly schema: typeof CLOUD_MACHINE_SCREEN_SCHEMA;
+	readonly commandId: string | null;
+	readonly header: MachineScreenHeader;
+	readonly png: string | null;
+	readonly heldBack?: string;
+}
+/** Why a machine showed nothing, sent back as 409 with its code: a machine that is not running, one whose image has no
+ * screen helper yet, one that restarted, an action its receipt took on this boot before (never again), and the
+ * helper's own refusals. */
+export const CLOUD_MACHINE_SCREEN_REFUSALS = [
+	"MACHINE_NOT_RUNNING",
+	"MACHINE_IMAGE_WITHOUT_SCREEN",
+	"MACHINE_BOOT_CHANGED",
+	"SCREEN_ACTION_TAKEN",
+	...MACHINE_SCREEN_REFUSALS,
+] as const;
+export type CloudMachineScreenRefusalCode = (typeof CLOUD_MACHINE_SCREEN_REFUSALS)[number];
+export class CloudMachineScreenRefusal extends Error {
+	readonly code: CloudMachineScreenRefusalCode;
+	constructor(code: CloudMachineScreenRefusalCode) {
+		super(code);
+		this.code = code;
+	}
+}
+export function isCloudMachineScreenRefusal(code: unknown): code is CloudMachineScreenRefusalCode {
+	return (CLOUD_MACHINE_SCREEN_REFUSALS as readonly unknown[]).includes(code);
+}
+/** An answer carries a PNG of 8 MiB at most, base64, and a small header: well inside this. */
+export const CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT = 12 * 1024 * 1024;
+/** How long a caller gives a screen: the executor's helper, its folder release, and the way back. */
+const SCREEN_DEADLINE_MS = 30000;
 
 /** Host-side: the fixed gateway to the executor of the machine's node. */
 export interface CloudMachineCommandGateway {
@@ -114,6 +176,14 @@ export interface CloudMachineCommandGateway {
 		input: CloudMachineCodingValueInput,
 		signal: AbortSignal,
 	): Promise<CloudMachineCodingValueAnswer>;
+	/** machine_screen (20260930708000): one look, or one action for one executing receipt, and the screen after it, or
+	 * its refusal (CloudMachineScreenRefusal). Sent once: an action is never sent again (an unanswered one is the
+	 * agent's to look at). */
+	screen?(
+		scope: CloudMachineCommandScope,
+		input: CloudMachineScreenInput,
+		signal: AbortSignal,
+	): Promise<CloudMachineScreenAnswer>;
 }
 
 /** How long a wake with `wait` stays open at the executor, well inside the gateway's and the client's bounds. */
@@ -245,6 +315,79 @@ export function parseCloudMachineCodingValueAnswer(
 		schema: CLOUD_MACHINE_CODING_VALUE_SCHEMA,
 		commandId: request.input.commandId,
 		box: Object.freeze({ ...(box as Record<string, string>) }),
+	});
+}
+export function parseCloudMachineScreenHttpRequest(value: unknown): CloudMachineScreenHttpRequest {
+	const input = record(value, ["schema", "binding", "scope", "action", "input"]);
+	const scope = record(input.scope, ["machineId"]);
+	const body = record(input.input, ["commandId", "envelope", "settleMs", "look"]);
+	if (
+		input.schema !== "qorpera.machine-command-http/v1" ||
+		input.action !== "screen" ||
+		typeof scope.machineId !== "string" ||
+		!UUID.test(scope.machineId) ||
+		(body.commandId === null) !== (body.envelope === null) ||
+		(body.commandId !== null && (typeof body.commandId !== "string" || !UUID.test(body.commandId))) ||
+		(body.envelope !== null &&
+			(typeof body.envelope !== "string" || !body.envelope || Buffer.byteLength(body.envelope) > 65536)) ||
+		!Number.isSafeInteger(body.settleMs) ||
+		(body.settleMs as number) < 0 ||
+		(body.settleMs as number) > MACHINE_SCREEN_MAX_SETTLE_MS ||
+		typeof body.look !== "boolean"
+	)
+		throw new Error(ERROR);
+	return Object.freeze({
+		schema: "qorpera.machine-command-http/v1",
+		binding: parseCloudNativeToolBinding(input.binding),
+		scope: Object.freeze({ machineId: scope.machineId }),
+		action: "screen",
+		input: Object.freeze({
+			commandId: body.commandId as string | null,
+			envelope: body.envelope as string | null,
+			settleMs: body.settleMs as number,
+			look: body.look,
+		}),
+	});
+}
+/** The executor's answer to exactly this request: its receipt (null for a look), a header of the helper's shape, and a
+ * PNG of as many bytes as the header says, or none with the reason it is held back. */
+export function parseCloudMachineScreenAnswer(
+	request: CloudMachineScreenHttpRequest,
+	value: unknown,
+): CloudMachineScreenAnswer {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(ERROR);
+	const held = "heldBack" in value;
+	const answer = record(value, ["schema", "commandId", "header", "png", ...(held ? ["heldBack"] : [])]);
+	let header: MachineScreenHeader;
+	try {
+		header = parseMachineScreenHeader(answer.header);
+	} catch {
+		throw new Error(ERROR);
+	}
+	const png =
+		typeof answer.png === "string" && answer.png.length <= Math.ceil(MACHINE_SCREEN_MAX_PNG_BYTES / 3) * 4
+			? Buffer.from(answer.png, "base64")
+			: null;
+	if (
+		answer.schema !== CLOUD_MACHINE_SCREEN_SCHEMA ||
+		answer.commandId !== request.input.commandId ||
+		(answer.png !== null && (png === null || png.toString("base64") !== answer.png || png.length !== header.png)) ||
+		(answer.png === null && header.png !== 0) ||
+		(held &&
+			(answer.png !== null ||
+				typeof answer.heldBack !== "string" ||
+				!answer.heldBack ||
+				answer.heldBack.length > 300 ||
+				header.windows.length > 0 ||
+				header.activeWindow !== null))
+	)
+		throw new Error(ERROR);
+	return Object.freeze({
+		schema: CLOUD_MACHINE_SCREEN_SCHEMA,
+		commandId: request.input.commandId,
+		header,
+		png: answer.png as string | null,
+		...(held ? { heldBack: answer.heldBack as string } : {}),
 	});
 }
 function validToken(value: string): boolean {
@@ -489,6 +632,68 @@ export function createHttpCloudMachineCommandGateway(options: {
 				throw new Error(ERROR);
 			}
 		},
+		screen: async (scope, input, signal) => {
+			try {
+				const admitted = parseCloudMachineScreenHttpRequest({
+					schema: "qorpera.machine-command-http/v1",
+					binding,
+					scope,
+					action: "screen",
+					input,
+				});
+				const body = JSON.stringify(admitted);
+				if (Buffer.byteLength(body) > REQUEST_LIMIT) throw new Error(ERROR);
+				return await withCloudDeadline(
+					async (requestSignal) => {
+						const response = await transport(`${base}/v1/machine-commands/screen`, {
+							method: "POST",
+							redirect: "error",
+							signal: requestSignal,
+							headers: {
+								authorization: `Bearer ${options.token}`,
+								"content-type": "application/json",
+								...(options.holder ? { "x-qorpera-identity": options.holder() } : {}),
+							},
+							body,
+						}).catch(() => {
+							throw new CloudMachineCommandUnanswered();
+						});
+						if (response.status >= 500) {
+							void response.body?.cancel().catch(() => undefined);
+							throw new CloudMachineCommandUnanswered();
+						}
+						if (response.status === 409) {
+							const { code } = JSON.parse(
+								new TextDecoder("utf8", { fatal: true }).decode(
+									await readBoundedCloudResponse(response, 4096, requestSignal),
+								),
+							) as { code?: unknown };
+							if (isCloudMachineScreenRefusal(code)) throw new CloudMachineScreenRefusal(code);
+							throw new Error(ERROR);
+						}
+						if (response.status !== 200) {
+							void response.body?.cancel().catch(() => undefined);
+							throw new Error(ERROR);
+						}
+						return parseCloudMachineScreenAnswer(
+							admitted,
+							JSON.parse(
+								new TextDecoder("utf8", { fatal: true }).decode(
+									await readBoundedCloudResponse(response, CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT, requestSignal),
+								),
+							),
+						);
+					},
+					SCREEN_DEADLINE_MS,
+					signal,
+				);
+			} catch (error) {
+				if (error instanceof CloudMachineCommandUnanswered || error instanceof CloudRequestTimeoutError)
+					throw new CloudMachineCommandUnanswered();
+				if (error instanceof CloudMachineScreenRefusal) throw error;
+				throw new Error(ERROR);
+			}
+		},
 	});
 }
 
@@ -526,6 +731,9 @@ export interface CloudMachineCommandServiceOptions {
 		request: CloudMachineCodingValueHttpRequest,
 		signal: AbortSignal,
 	): Promise<CloudMachineCodingValueAnswer>;
+	/** machine_screen (20260930708000): authorized in SQL and run on the machine's node, or forwarded there; a refusal
+	 * is a CloudMachineScreenRefusal. */
+	screen?(request: CloudMachineScreenHttpRequest, signal: AbortSignal): Promise<CloudMachineScreenAnswer>;
 }
 export async function serveCloudMachineCommand(
 	options: CloudMachineCommandServiceOptions,

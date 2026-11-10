@@ -13,6 +13,8 @@ import { RECORD, readFolderProgramRecord } from "./folder-program-artifact.mjs";
 // Since 20260930705000 it also carries save_coding_value's clipboard helper,
 // built as its own file after the guest helper, so the guest helper (the
 // manifest's first artifact, whose sha-256 the executor pins) stays as it was.
+// Since 20260930708000 it also carries machine_screen's screen helper, built the
+// same way and for the same reason.
 const USAGE = "Usage: package-machine-guest.mjs --out <new-directory> --folder-program <built qorpera-folder>";
 const args = process.argv.slice(2);
 if (args.length !== 4 || args[0] !== "--out" || args[2] !== "--folder-program") throw new Error(USAGE);
@@ -95,6 +97,28 @@ artifacts.push({
 	mode: "0444",
 	sha256: createHash("sha256").update(codingValues).digest("hex"),
 	bytes: codingValues.length,
+});
+// machine_screen's screen helper (20260930708000): the executor runs it with node; it takes one desktop action through
+// `desktop`, takes a screenshot and prints it.
+await build({
+	entryPoints: ["packages/runtime/src/cloud-machine-screen-main.ts"],
+	outfile: resolve(output, "cloud-machine-screen.mjs"),
+	bundle: true,
+	platform: "node",
+	format: "esm",
+	target: "node22.19",
+	legalComments: "none",
+	logLevel: "silent",
+});
+const screen = await readFile(resolve(output, "cloud-machine-screen.mjs"));
+artifacts.push({
+	file: "cloud-machine-screen.mjs",
+	source: "packages/runtime/src/cloud-machine-screen-main.ts",
+	installedPath: "/opt/qorpera-machine/cloud-machine-screen.mjs",
+	owner: "root:root",
+	mode: "0444",
+	sha256: createHash("sha256").update(screen).digest("hex"),
+	bytes: screen.length,
 });
 for (const unit of units) {
 	const bytes = await readFile(`deploy/machine/${unit}`);

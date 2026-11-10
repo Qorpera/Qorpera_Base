@@ -15,8 +15,11 @@ import {
 	CloudMachineCodingValueRefusal,
 	CloudMachineCommandRefusal,
 	type CloudMachineCommandServiceOptions,
+	CloudMachineScreenRefusal,
 	parseCloudMachineCodingValueAnswer,
 	parseCloudMachineCodingValueHttpRequest,
+	parseCloudMachineScreenAnswer,
+	parseCloudMachineScreenHttpRequest,
 	parseCloudMachineWakeHttpRequest,
 	serveCloudMachineCommand,
 } from "./cloud-machine-command-http.ts";
@@ -379,10 +382,12 @@ export class HttpCloudCodingCommandService {
 			// save_coding_value (20260930705000): the machine's clipboard helper, for one executing receipt.
 			const codingValueRoute =
 				this.#options.machines?.codingValue && request.url === "/v1/machine-commands/coding-value";
+			// machine_screen (20260930708000): the machine's screen helper, for a look or one executing receipt.
+			const screenRoute = this.#options.machines?.screen && request.url === "/v1/machine-commands/screen";
 			const holder = request.headers["x-qorpera-identity"];
 			if (
 				request.method !== "POST" ||
-				(!route && !machineRoute && !wakeRoute && !codingValueRoute) ||
+				(!route && !machineRoute && !wakeRoute && !codingValueRoute && !screenRoute) ||
 				request.headers["content-type"] !== "application/json" ||
 				authorization.length !== this.#token.length ||
 				!timingSafeEqual(authorization, this.#token) ||
@@ -418,6 +423,24 @@ export class HttpCloudCodingCommandService {
 				} catch (error) {
 					// Only a refusal the agent can act on is told apart, by its fixed code.
 					if (!(error instanceof CloudMachineCodingValueRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (screenRoute && this.#options.machines?.screen) {
+				const admitted = parseCloudMachineScreenHttpRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						parseCloudMachineScreenAnswer(
+							admitted,
+							await this.#options.machines.screen(admitted, controller.signal),
+						),
+					);
+				} catch (error) {
+					// Only a refusal the agent can act on is told apart, by its fixed code.
+					if (!(error instanceof CloudMachineScreenRefusal)) throw error;
 					replyJson(reply, 409, { code: error.code });
 				}
 				return;

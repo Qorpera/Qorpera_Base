@@ -17,7 +17,8 @@
 # Chromium (the coding image's pinned build) and xdotool behind the `desktop`
 # command (README, "The desktop"), and xsel with save_coding_value's clipboard
 # helper (20260930705000), which seals a key copied on the desktop for the vault
-# and clears the clipboard. Since 10 Nov 2026 a desktop is something an agent
+# and clears the clipboard, and machine_screen's screen helper (20260930708000),
+# with which an agent acts on the desktop and sees it in one tool call. Since 10 Nov 2026 a desktop is something an agent
 # asks for (machine_start with desktop true; a smaller machine refuses `desktop
 # start`), `desktop start` opens chosen company files and folders on it, pages
 # get 3D drawing, and Playwright with its Chromium, ffmpeg and a `chromium` that
@@ -67,7 +68,7 @@ EXPECTED_FOLDER_PROGRAM_SHA256="ec3b52e473f3bd27b52da8aa708fb28dd1e811d166d6aed8
 exec 3>&1 1>&2
 [[ $NODE_VERSION =~ ^2[4-9]\.[0-9]+\.[0-9]+$ ]] || { echo "invalid Node.js version" >&2; exit 1; }
 [[ $NODE_SHA256 =~ ^[0-9a-f]{64}$ ]] || { echo "invalid Node.js sha-256" >&2; exit 1; }
-for file in cloud-machine-guest.mjs cloud-machine-coding-value.mjs qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer \
+for file in cloud-machine-guest.mjs cloud-machine-coding-value.mjs cloud-machine-screen.mjs qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer \
 	qorpera-machine-folder.service qorpera-machine-desktop.service desktop-session desktop qorpera-chromium.apparmor \
 	desktop-selftest.html qorpera-chromium-policy.json chromium qorpera-machine-profile.sh playwright-check.cjs \
 	qorpera-folder manifest.json; do
@@ -185,6 +186,7 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 '
 lx file push "$PACKAGE/cloud-machine-guest.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-guest.mjs" --uid 0 --gid 0 --mode 0444
 lx file push "$PACKAGE/cloud-machine-coding-value.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-coding-value.mjs" --uid 0 --gid 0 --mode 0444
+lx file push "$PACKAGE/cloud-machine-screen.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-screen.mjs" --uid 0 --gid 0 --mode 0444
 lx file push "$PACKAGE/qorpera-folder" "$BUILDER/opt/qorpera-folder/qorpera-folder" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/desktop-session" "$BUILDER/opt/qorpera-machine/desktop-session" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/desktop" "$BUILDER/usr/local/bin/desktop" --uid 0 --gid 0 --mode 0555
@@ -308,6 +310,55 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	if (JSON.parse(helper().stdout).code !== "DESKTOP_NOT_RUNNING") fail("the clipboard helper did not refuse a stopped desktop");
 JS
 	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
+	# machine_screen (20260930708000): the screen helper runs as the executor runs it (root, the request on stdin, under
+	# the same boot wrapper, with the environment of an LXD exec). A look on the stopped desktop starts it and shows a
+	# 1600x1000 PNG; an open, a click and a typed text act and show the screen, the text arriving in the page; the same
+	# receipt a second time exits 96 and acts no more; another boot exits 97; an action on a stopped desktop is refused by
+	# its code; no picture stays on the disk and nothing reaches /company.
+	node - <<"JS"
+	const { execFileSync, spawnSync } = require("node:child_process");
+	const crypto = require("node:crypto");
+	const fs = require("node:fs");
+	const fail = (why) => { console.error(why); process.exit(1); };
+	const boot = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+	const ON_BOOT = `{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97; [ -f "$2" ] || exit 98; exec "$@"`;
+	const env = { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", HOME: "/root", LANG: "C.UTF-8", USER: "root" };
+	const screen = (request, on = boot) => spawnSync("/bin/sh", ["-c", ON_BOOT, on, "/usr/bin/node", "/opt/qorpera-machine/cloud-machine-screen.mjs"], {
+		input: JSON.stringify({ schema: "qorpera.machine-screen-request/v1", receiptId: null, action: null, settleMs: 500, look: true, ...request }),
+		env, cwd: "/", maxBuffer: 16 * 1024 * 1024, timeout: 22000 });
+	const act = (action, settleMs = 500) => ({ receiptId: crypto.randomUUID(), action, settleMs });
+	const shown = (run, what) => {
+		if (run.status !== 0) fail(`${what}: the screen helper exited ${run.status}`);
+		const end = run.stdout.indexOf(10);
+		const header = JSON.parse(run.stdout.subarray(0, end).toString("utf8"));
+		const png = run.stdout.subarray(end + 1);
+		if (header.schema !== "qorpera.machine-screen/v1") fail(`${what}: ${JSON.stringify(header)}`);
+		if (header.png !== png.length || png.length < 33 || png.readUInt32BE(16) !== 1600 || png.readUInt32BE(20) !== 1000)
+			fail(`${what}: no 1600x1000 screenshot`);
+		if (header.action && header.action.exitCode !== 0) fail(`${what}: the action exited ${header.action.exitCode}`);
+		return header;
+	};
+	if (!shown(screen({}), "a look on the stopped desktop").started) fail("a look did not start the stopped desktop");
+	shown(screen(act({ type: "open", target: "file:///opt/qorpera-machine/desktop-selftest.html" }, 3000)), "an open");
+	let page = false;
+	for (let tries = 0; tries < 30 && !page; tries++) page = String(shown(screen({ settleMs: 1000 }), "a look").activeWindow).includes("SELFTEST[");
+	if (!page) fail("the page the open asked for shows no window");
+	const click = act({ type: "click", x: 400, y: 400 });
+	shown(screen(click), "a click");
+	const again = screen(click);
+	if (again.status !== 96 || again.stdout.length !== 0) fail("the same receipt acted a second time");
+	const typed = shown(screen(act({ type: "type", text: "qorpera screen" })), "typed text");
+	if (!String(typed.activeWindow).includes("typed=qorpera screen]")) fail(`the typed text did not arrive: ${typed.activeWindow}`);
+	if (screen({}, crypto.randomUUID()).status !== 97) fail("the screen helper ran on another boot");
+	execFileSync("/usr/local/bin/desktop", ["stop"], { stdio: "ignore" });
+	const refused = screen(act({ type: "click", x: 1, y: 1 }));
+	if (refused.status !== 0 || JSON.parse(refused.stdout.toString("utf8")).code !== "DESKTOP_NOT_RUNNING")
+		fail("the screen helper acted on a stopped desktop");
+	if ((fs.statSync("/run/qorpera-screen").mode & 0o777) !== 0o700 || fs.readdirSync("/run/qorpera-screen/shots").length)
+		fail("the screen helper left a picture on the disk");
+JS
+	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
+	[[ -z $(ls -A /company) ]] || { echo "the screen helper wrote into /company" >&2; exit 1; }
 	# Nothing of that check stays in the desktop account but its panel layout.
 	find /home/desktop -mindepth 1 -maxdepth 1 ! -name .config ! -name .bashrc ! -name .profile ! -name .bash_logout \
 		-exec rm -rf -- {} +

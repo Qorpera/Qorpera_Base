@@ -336,6 +336,80 @@ test("the image carries save_coding_value's clipboard helper as its own file, wi
 	}
 });
 
+test("the image carries machine_screen's screen helper as its own file, and checks it on the desktop as the executor runs it", async () => {
+	// 20260930708000: the helper is built beside the guest helper, never into it, so the guest helper's pin stays as it was.
+	const packager = read("scripts/package-machine-guest.mjs");
+	assert.match(packager, /entryPoints: \["packages\/runtime\/src\/cloud-machine-screen-main\.ts"\]/);
+	assert.match(
+		packager,
+		/file: "cloud-machine-screen\.mjs",\n\tsource: "packages\/runtime\/src\/cloud-machine-screen-main\.ts",\n\tinstalledPath: "\/opt\/qorpera-machine\/cloud-machine-screen\.mjs",\n\towner: "root:root",\n\tmode: "0444",/,
+	);
+	// The runtime imports the helper's module (the action's shape, the refusal codes): loading it runs nothing. Only its
+	// entry, which nothing imports, runs the program.
+	assert.doesNotMatch(read("packages/runtime/src/cloud-machine-screen.ts"), /process\.(argv|stdin|exitCode)|import\.meta/);
+	assert.match(read("packages/runtime/src/cloud-machine-screen-main.ts"), /^runMachineScreenCli\(/m);
+	// The guest helper stays the manifest's first artifact, and its source does not reach the screen helper's module.
+	assert.ok(packager.indexOf('file: "cloud-machine-guest.mjs"') < packager.indexOf('file: "cloud-machine-screen.mjs"'));
+	assert.doesNotMatch(read("packages/runtime/src/cloud-machine-guest.ts"), /cloud-machine-screen/);
+	const required = words(imageScript.match(/for file in ([^;]+); do\n\t\[\[ -f \$PACKAGE\/\$file \]\]/)[1]);
+	assert.ok(required.includes("cloud-machine-screen.mjs"));
+	assert.ok(
+		imageScript.includes(
+			'lx file push "$PACKAGE/cloud-machine-screen.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-screen.mjs" --uid 0 --gid 0 --mode 0444\n',
+		),
+	);
+	// The build's own check runs the helper under the executor's boot wrapper, with the request on stdin.
+	const hostSource = read("packages/runner-orchestrator/src/company-machine-host.ts");
+	const wrapper = hostSource.match(/\nconst CODING_VALUE_ON_BOOT =\n\t'([^']+)';\n/)[1];
+	assert.ok(imageScript.includes(`const ON_BOOT = \`${wrapper}\`;`), "the image check runs the executor's own wrapper");
+	assert.match(hostSource, /COMPANY_MACHINE_SCREEN_HELPER = "\/opt\/qorpera-machine\/cloud-machine-screen\.mjs"/);
+	for (const line of [
+		'spawnSync("/bin/sh", ["-c", ON_BOOT, on, "/usr/bin/node", "/opt/qorpera-machine/cloud-machine-screen.mjs"]',
+		'fail("a look did not start the stopped desktop")',
+		'fail("the same receipt acted a second time")',
+		'fail("the screen helper ran on another boot")',
+		'fail("the screen helper acted on a stopped desktop")',
+		'fail("the screen helper left a picture on the disk")',
+		'\t[[ -z $(ls -A /company) ]] || { echo "the screen helper wrote into /company" >&2; exit 1; }\n',
+	])
+		assert.ok(imageScript.includes(line), line);
+	// Every check of the build sits in its one single-quoted script: no single quote may appear in it, comments too.
+	const opening = "bash -euo pipefail -c '\n";
+	const start = imageScript.indexOf(opening, imageScript.indexOf('lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256='));
+	const end = imageScript.indexOf("\n'\nlx stop \"$BUILDER\"");
+	assert.ok(start > 0 && end > start);
+	const script = imageScript.slice(start + opening.length, end);
+	assert.ok(script.includes("cloud-machine-screen.mjs") && !script.includes("'"), "a single quote in the build's checks");
+	// The helper's steps fit the executor's deadline, which fits the gateway's 30 s with the folder's release.
+	const helperSource = read("packages/runtime/src/cloud-machine-screen.ts");
+	const steps = helperSource.match(
+		/MACHINE_SCREEN_STEP_MS = Object\.freeze\(\{ status: (\d+), start: (\d+), action: (\d+), shot: (\d+) \}\)/,
+	);
+	const [status, startMs, action, shot] = steps.slice(1).map(Number);
+	const settle = Number(helperSource.match(/\nexport const MACHINE_SCREEN_MAX_SETTLE_MS = (\d+);\n/)[1]);
+	const runMs = Number(hostSource.match(/\nconst SCREEN_MS = (\d+);\n/)[1]);
+	const boundaryMs = Number(hostSource.match(/\nconst SCREEN_BOUNDARY_MS = (\d+);\n/)[1]);
+	assert.ok(status + Math.max(startMs, action) + settle + shot < runMs, "the helper's steps against the executor's deadline");
+	assert.ok(runMs + boundaryMs + 2000 <= 30000, "the executor's deadline and the release against the gateway's 30 s");
+	// Built with the packager's options, the guest helper holds none of it, and the screen helper drives the desktop only
+	// through its command and scrot.
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-machine-screen-"));
+	try {
+		const options = { bundle: true, platform: "node", format: "esm", target: "node22.19", legalComments: "none", logLevel: "silent" };
+		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-guest.ts")], outfile: join(temporary, "guest.mjs") });
+		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-screen-main.ts")], outfile: join(temporary, "screen.mjs") });
+		const guest = await readFile(join(temporary, "guest.mjs"), "utf8");
+		const helper = await readFile(join(temporary, "screen.mjs"), "utf8");
+		assert.doesNotMatch(guest, /machine-screen|scrot/);
+		assert.match(helper, /"\/usr\/local\/bin\/desktop"/);
+		assert.match(helper, /"\/usr\/bin\/scrot"/);
+		assert.match(helper, /DISPLAY: ":1"/);
+		assert.doesNotMatch(helper, /shell: true|execSync|"\/bin\/sh"/);
+		assert.ok(helper.length < 65536, `the screen helper is ${helper.length} bytes`);
+	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
+});
 
 test("a desktop is asked for: small machines refuse it, chosen files open on it, and pages work without a screen too", () => {
 	// deploy/machine/README.md, "The desktop" (10 Nov 2026: Jonas's shape, and the audit's fixes).
