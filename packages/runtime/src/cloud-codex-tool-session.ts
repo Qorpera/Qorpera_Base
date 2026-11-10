@@ -166,7 +166,8 @@ const COMPACT_UNAVAILABLE_OUTPUT = JSON.stringify({ available: false });
 const MAX_COMPACT_REPLY_BYTES = 16 * 1024;
 /** What a voice line's transcript keeps: a caption said back, with room for what a voice adds. */
 const MAX_VOICE_TRANSCRIPT_BYTES = 4 * 1024;
-/** How long closing a voice call waits for Codex to confirm its stop; the call is retired either way. */
+/** How long closing a voice call waits for Codex to confirm its stop; the call is retired either way, but a stop not
+ * confirmed in time ends the run's voice (#closeVoice). */
 const VOICE_STOP_MS = 10_000;
 /** What ends a voice call whose voice started a turn: it may only read. */
 const VOICE_ACTED = "Native voice tried to act";
@@ -220,6 +221,10 @@ interface VoiceThread {
 	stopped: boolean;
 	/** Stops watching the signal the call was opened with. */
 	release?: () => void;
+	/** Settled once its stop is confirmed or given up on: the next call waits for it. */
+	settled?: Promise<void>;
+	/** Confirms its stop, from a `thread/realtime/closed`. */
+	confirm?: () => void;
 }
 
 interface CompactTurn {
@@ -695,6 +700,13 @@ class CodexBoundaryRpc {
 	 * a turn its voice started, pass the fence on its own lane with nothing released, and never fail the run. */
 	#voice?: VoiceThread;
 	#voiceOpening = false;
+	/** The call being stopped: it holds the slot until Codex confirms the stop, and a realtime notification without a
+	 * thread meanwhile is its own. */
+	#voiceStopping?: VoiceThread;
+	/** A stop Codex never confirmed: the run opens no more calls (#closeVoice). */
+	#voiceLost = false;
+	/** How long a stop may take to be confirmed (CloudVoiceChannel.stopMs). */
+	voiceStopMs = VOICE_STOP_MS;
 	/** Ended voice threads: what Codex still says on one stays on the voice's lane. */
 	readonly #endedVoices = new Set<string>();
 	#startingSide?: StartingSide;
@@ -1459,6 +1471,10 @@ class CodexBoundaryRpc {
 		this.#voiceOpening = true;
 		let opened: VoiceThread | undefined;
 		try {
+			// The call before is still stopping: its late words must not reach this one.
+			while (this.#voiceStopping?.settled)
+				await untilAborted(this.#voiceStopping.settled, signal, "Native voice cancelled");
+			if (this.#voiceLost || this.#failure || this.#closed) throw new CloudVoiceUnavailable();
 			const started = this.#startSide("voice", signal, {
 				cwd: input.cwd,
 				runtimeWorkspaceRoots: [],
@@ -1565,15 +1581,34 @@ class CodexBoundaryRpc {
 		this.#endVoice(voice, error);
 		if (voice.stopped) return;
 		voice.stopped = true;
+		// The slot stays taken until the stop is confirmed: the answer to the stop, refused or not, or the session's
+		// close. Its pending work was rejected above.
+		let settle: () => void = () => undefined;
+		voice.settled = new Promise<void>((resolve) => {
+			settle = resolve;
+		});
+		const closed = new Promise<boolean>((resolve) => {
+			voice.confirm = () => resolve(true);
+		});
+		this.#voiceStopping = voice;
 		let timer: ReturnType<typeof setTimeout> | undefined;
-		await Promise.race([
-			this.#send("thread/realtime/stop", { threadId: voice.threadId }, undefined, true).catch(() => undefined),
-			new Promise<void>((resolve) => {
-				timer = setTimeout(resolve, VOICE_STOP_MS);
+		const confirmed = await Promise.race([
+			this.#send("thread/realtime/stop", { threadId: voice.threadId }, undefined, true).then(
+				() => true,
+				() => true,
+			),
+			closed,
+			new Promise<boolean>((resolve) => {
+				timer = setTimeout(() => resolve(false), this.voiceStopMs);
 				timer.unref?.();
 			}),
 		]);
 		clearTimeout(timer);
+		// Unconfirmed, the old session may still speak, and its notifications without a thread could not be told from a
+		// new call's: the run places no more calls. The run itself goes on.
+		if (!confirmed) this.#voiceLost = true;
+		if (this.#voiceStopping === voice) this.#voiceStopping = undefined;
+		settle();
 	}
 
 	/** Ends a voice call's lane: its pending answer and line are rejected, and its thread is retired. */
@@ -1613,9 +1648,10 @@ class CodexBoundaryRpc {
 				: undefined;
 		const method = message.method;
 		let threadId = typeof params?.threadId === "string" ? params.threadId : undefined;
-		// A realtime notification without its thread can only be the one call's.
-		if (threadId === undefined && typeof method === "string" && method.startsWith("thread/realtime/") && this.#voice)
-			threadId = this.#voice.threadId;
+		// A realtime notification without its thread can only be the one call's: the one stopping, else the live one.
+		const only = this.#voiceStopping ?? this.#voice;
+		if (threadId === undefined && typeof method === "string" && method.startsWith("thread/realtime/") && only)
+			threadId = only.threadId;
 		if (
 			!threadId ||
 			threadId === this.#threadId ||
@@ -1638,6 +1674,8 @@ class CodexBoundaryRpc {
 			this.#voiceActed(threadId, turn?.id);
 			return true;
 		}
+		if (method === "thread/realtime/closed" && this.#voiceStopping?.threadId === threadId)
+			this.#voiceStopping.confirm?.();
 		const voice = this.#voice?.threadId === threadId ? this.#voice : undefined;
 		if (!voice) return true;
 		if (method === "thread/realtime/sdp") {
@@ -2873,8 +2911,10 @@ export async function runCloudCodexToolSession(options: {
 			review: (input, reviewSignal) => reviewing.review({ ...input, cwd: started.workspace }, reviewSignal),
 		});
 		// Only a Codex login places voice calls: a plan run's Codex reaches OpenAI's API with the plan's token instead.
-		if (!rpc.chatGptPlan)
-			options.voice?.attach((input, voiceSignal) => rpc.voice({ ...input, cwd: started.workspace }, voiceSignal));
+		if (!rpc.chatGptPlan && options.voice) {
+			if (options.voice.stopMs !== undefined) rpc.voiceStopMs = options.voice.stopMs;
+			options.voice.attach((input, voiceSignal) => rpc.voice({ ...input, cwd: started.workspace }, voiceSignal));
+		}
 		const startTurn = async (text: string): Promise<void> => {
 			const turnStarted = object(
 				await rpc.request(

@@ -83,6 +83,13 @@ export class CloudVoiceUnavailable extends Error {
 /** The run's voice calls, made by a tool before or after the session that answers them is up. */
 export class CloudVoiceChannel {
 	#lane?: CloudVoiceLane;
+	/** How long the lane waits for Codex to confirm a call's stop before it opens no more calls in the run; the
+	 * session's own bound when absent. Only tests shorten it. */
+	readonly stopMs?: number;
+
+	constructor(options: { stopMs?: number } = {}) {
+		if (options.stopMs !== undefined) this.stopMs = options.stopMs;
+	}
 
 	attach(lane: CloudVoiceLane | undefined): void {
 		this.#lane = lane;

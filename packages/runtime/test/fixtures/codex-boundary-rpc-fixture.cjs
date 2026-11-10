@@ -192,9 +192,16 @@ const compactReply = (line) => {
 // reads the lines it is handed. The agent's turn waits meanwhile, until the test lets it end.
 const voiceMode = mode.startsWith("voice");
 const voiceThreadId = "thread_voice";
-const voiceEvidence = { thread: null, prewarm: null, start: null, appended: [], stops: [], interrupts: [], refused: null, delegatedFence: null };
+// events: the voice threads' starts and the first call's stop, in the order this app-server saw or sent them.
+const voiceEvidence = { thread: null, prewarm: null, start: null, appended: [], stops: [], interrupts: [], refused: null, delegatedFence: null, events: [] };
 const voiceWrite = () => writeFileSync(evidencePath, JSON.stringify({ ...voiceEvidence, mainThread: threadParameters }));
-const voiceSay = (method, params = {}) => write({ method, params: { threadId: voiceThreadId, ...params } });
+// Each call's thread has its own id: the first thread_voice, the later ones numbered.
+let voiceThreads = 0;
+let voiceCurrent = voiceThreadId;
+const voiceSay = (method, params = {}) => write({ method, params: { threadId: voiceCurrent, ...params } });
+// voice-reopen: the second call's line is answered only once the first call's late words were sent.
+let voiceLateSent;
+const voiceLate = new Promise((resolve) => { voiceLateSent = resolve; });
 
 if (mode === "descendant") {
 	spawn(process.execPath, ["-e", `process.on('SIGTERM',()=>{});setTimeout(()=>require('node:fs').writeFileSync(${JSON.stringify(evidencePath)},'UNEXPECTED_DESCENDANT_EFFECT'),1500);setTimeout(()=>{},10000);`], { stdio: "ignore" });
@@ -321,10 +328,14 @@ async function handle(message) {
 		}
 	} else if (message.method === "thread/start" && voiceMode && threadParameters) {
 		voiceEvidence.thread = message.params;
+		voiceThreads++;
+		const id = voiceThreads === 1 ? voiceThreadId : `${voiceThreadId}_${voiceThreads}`;
+		voiceCurrent = id;
+		voiceEvidence.events.push(`thread-start:${id}`);
 		// Codex prewarms a new thread in the background: the voice thread's lands on the fence while it starts.
-		voiceEvidence.prewarm = await fence([], { threadId: voiceThreadId, turnId: "", purpose: "prewarm" });
+		voiceEvidence.prewarm = await fence([], { threadId: id, turnId: "", purpose: "prewarm" });
 		voiceWrite();
-		write({ id: message.id, result: { thread: { id: voiceThreadId } } });
+		write({ id: message.id, result: { thread: { id } } });
 	} else if (message.method === "thread/realtime/start") {
 		voiceEvidence.start = message.params;
 		voiceWrite();
@@ -351,7 +362,8 @@ async function handle(message) {
 			voiceSay("thread/realtime/error", { message: "PRIVATE_REALTIME_ERROR" });
 			return;
 		}
-		if (mode === "voice-silent") return;
+		if (mode === "voice-silent" || (mode === "voice-reopen" && line === 1)) return;
+		if (mode === "voice-reopen") await voiceLate;
 		if (mode === "voice-request" && line === 1)
 			write({ id: "voice_request", method: "item/tool/call", params: { threadId: voiceThreadId, turnId: "turn_voice", callId: "voice_call", namespace: "qorpera", tool: "send_email", arguments: {} } });
 		voiceSay("thread/realtime/transcript/delta", { role: "assistant", delta: "PRIVATE_DELTA" });
@@ -363,8 +375,22 @@ async function handle(message) {
 	} else if (message.method === "thread/realtime/stop") {
 		voiceEvidence.stops.push(message.params);
 		voiceWrite();
+		// The stop is never confirmed: no answer, no close.
+		if (mode === "voice-stop-silent") return;
+		if (mode === "voice-reopen" && voiceEvidence.stops.length === 1) {
+			// The first call's stop is slow, and its session still speaks meanwhile: a line's late transcript and its close,
+			// neither naming its thread, before the stop is answered.
+			voiceEvidence.events.push("stop");
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			write({ method: "thread/realtime/transcript/done", params: { role: "assistant", text: "PRIVATE_LATE_TRANSCRIPT" } });
+			write({ method: "thread/realtime/closed", params: {} });
+			voiceEvidence.events.push("late");
+			voiceWrite();
+			voiceLateSent();
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
 		write({ id: message.id, result: {} });
-		voiceSay("thread/realtime/closed");
+		write({ method: "thread/realtime/closed", params: { threadId: message.params.threadId } });
 	} else if (message.method === "turn/interrupt" && message.params.threadId === voiceThreadId) {
 		voiceEvidence.interrupts.push(message.params);
 		voiceWrite();

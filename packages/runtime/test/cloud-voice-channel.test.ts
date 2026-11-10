@@ -28,6 +28,8 @@ describe("CloudVoiceChannel", () => {
 		channel.attach(undefined);
 		await expect(channel.open({ offerSdp: OFFER }, signal)).rejects.toBeInstanceOf(CloudVoiceUnavailable);
 		expect(lane).toHaveBeenCalledOnce();
+		expect(channel.stopMs).toBeUndefined();
+		expect(new CloudVoiceChannel({ stopMs: 200 }).stopMs).toBe(200);
 	});
 });
 

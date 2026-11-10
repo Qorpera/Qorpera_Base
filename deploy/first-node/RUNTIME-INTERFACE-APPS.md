@@ -258,7 +258,9 @@ web does not already answer. What the kit adds is that the agent writes one file
     only the call, and a model request on the voice's thread (a prewarm, or such a turn) passes the result fence on
     a lane of its own with nothing released. The one exception is the 120 seconds every side thread has to start.
   - One call at a time, and none in a run on a member's ChatGPT plan (its Codex reaches OpenAI's API with the plan's
-    token). The run's end ends the call.
+    token). The run's end ends the call. A call that ends keeps its place until Codex confirms its stop, and the next
+    call waits for that, so nothing the old session still says reaches the new one; a stop not confirmed within
+    10 seconds ends the run's voice, and the run goes on without it.
   - Nothing opens a call yet: the tool that does is the next step, and with it the one host the call's control
     connection needs beyond the run's own (Codex joins the call at `api.openai.com`).
 
