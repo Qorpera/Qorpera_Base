@@ -2,6 +2,7 @@ import { CloudMemberFolderClient, CloudMemberFolderHints } from "@qorpera/cloud-
 import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import { createClient } from "@supabase/supabase-js";
 import type { Cloud } from "./client.ts";
+import { type CodeDownloadCalls, codeDownloadCalls } from "./code-downloads.ts";
 import { memberRouteTarget } from "./deployment-config.ts";
 import { createWebMessageErases, type WebMessageErases } from "./message-erases.ts";
 import type { HostedProfile, HostedProfileRole } from "./types.ts";
@@ -24,6 +25,7 @@ export class WebCompanyFiles {
 	readonly signal: AbortSignal;
 	readonly #options: MemberFolderOptions;
 	readonly #current: () => void;
+	readonly #code: CodeDownloadCalls;
 	constructor(
 		cloud: Cloud,
 		profile: HostedProfile,
@@ -36,6 +38,7 @@ export class WebCompanyFiles {
 		this.company = Object.freeze({ role, canWrite });
 		this.signal = signal;
 		this.#current = current;
+		this.#code = codeDownloadCalls(cloud, profile.profileId);
 		this.#options = {
 			environmentId: profile.environmentId,
 			supabaseUrl: cloud.config.projectUrl,
@@ -95,6 +98,11 @@ export class WebCompanyFiles {
 			accessToken: this.#options.accessToken,
 			fetch: this.#options.fetch,
 		});
+	}
+	/** The company's code kept in Qorpera: its repositories, and a download of one (cloud/code-downloads.ts). */
+	codeDownloads(): CodeDownloadCalls {
+		this.current();
+		return this.#code;
 	}
 	/** The member's erases of single messages (summary trees M3c), through the same member route transport. */
 	messageErases(): WebMessageErases {

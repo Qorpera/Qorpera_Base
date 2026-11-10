@@ -139,6 +139,14 @@ function folderFake() {
 		readFile: vi.fn(async (reference: CloudMemberFolderFile) =>
 			new TextEncoder().encode(texts.get(reference.fileSha256) ?? ""),
 		),
+		/** A download reads the file as its pieces: here one, the whole text. */
+		readFilePieces: vi.fn(
+			async (
+				reference: CloudMemberFolderFile,
+				_signal: AbortSignal,
+				onPiece: (piece: Uint8Array, index: number, count: number) => void,
+			): Promise<void> => onPiece(new TextEncoder().encode(texts.get(reference.fileSha256) ?? ""), 0, 1),
+		),
 		pathHistory: vi.fn(
 			async (path: string): Promise<CloudMemberFolderPathHistory> => ({
 				asOfSeq,
@@ -1278,9 +1286,9 @@ describe("a folder-v2 company's Company File", () => {
 		await click(row(host, "readme.txt"));
 		expect(viewer.open).toBe(true);
 		let fail!: (error: Error) => void;
-		fake.client.readFile.mockImplementationOnce(
+		fake.client.readFilePieces.mockImplementationOnce(
 			() =>
-				new Promise<Uint8Array<ArrayBuffer>>((_, reject) => {
+				new Promise<void>((_, reject) => {
 					fail = reject;
 				}),
 		);
@@ -1647,9 +1655,57 @@ describe("a folder-v2 company's Company File", () => {
 		expect(fake.client.list.mock.calls.length).toBe(before + 2);
 	});
 
-	it("offers no download over 8 MiB, and says why", async () => {
+	it("downloads a file as the pieces it is read in, handed to the browser as one file", async () => {
 		const { fake, host } = await opened();
-		const huge = { ...entry("huge.zip", "x"), file: { ...file("x"), bytes: 9 * 1024 * 1024 } };
+		const saved: { name: string; href: string }[] = [];
+		vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+			saved.push({ name: this.download, href: this.href });
+		});
+		await click(row(host, "readme.txt"));
+		await click(action(host, "Download"));
+		expect(fake.client.readFilePieces).toHaveBeenCalledWith(
+			file("Hello."),
+			expect.any(AbortSignal),
+			expect.any(Function),
+		);
+		expect(saved).toEqual([{ name: "readme.txt", href: "blob:fixture-picture" }]);
+		const handed = vi.mocked(URL.createObjectURL).mock.calls.at(-1)![0] as Blob;
+		expect(handed.size).toBe(6);
+		expect(status(host)).toBe("Downloading readme.txt.");
+		// A file of 20 MiB arrives as five pieces: the line says how far it is, and the browser gets one Blob of them.
+		const MIB = 1024 * 1024;
+		const big = { ...entry("big/site.zip", "x"), file: { ...file("x"), bytes: 20 * MIB } };
+		fake.client.list.mockResolvedValueOnce({ asOfSeq: 4, entries: [big], next: null });
+		const said: string[] = [];
+		fake.client.readFilePieces.mockImplementationOnce(async (_reference, _signal, onPiece) => {
+			for (let index = 0; index < 5; index++) {
+				onPiece(new Uint8Array(4 * MIB).fill(index + 1), index, 5);
+				said.push(status(host));
+				await Promise.resolve();
+			}
+		});
+		await click(row(host, "big"));
+		await click(row(host, "site.zip"));
+		await click(action(host, "Download"));
+		expect(said).toEqual([20, 40, 60, 80, 100].map((percent) => `Getting site.zip…${percent}%`));
+		expect(saved.at(-1)).toEqual({ name: "site.zip", href: "blob:fixture-picture" });
+		const whole = vi.mocked(URL.createObjectURL).mock.calls.at(-1)![0] as Blob;
+		expect(whole.size).toBe(20 * MIB);
+		// The pieces are in their order: the second ends and the third begins at 8 MiB (jsdom's Blob has no arrayBuffer()).
+		const seam = await new Promise<Uint8Array>((resolve, reject) => {
+			const reader = new FileReader();
+			reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
+			reader.onerror = () => reject(reader.error);
+			reader.readAsArrayBuffer(whole.slice(8 * MIB - 1, 8 * MIB + 1));
+		});
+		expect(seam).toEqual(Uint8Array.of(2, 3));
+		expect(status(host)).toBe("Downloading site.zip.");
+		expect(fake.client.readFile).toHaveBeenCalledTimes(1);
+	});
+
+	it("offers no download over 256 MiB, and says why", async () => {
+		const { fake, host } = await opened();
+		const huge = { ...entry("huge.zip", "x"), file: { ...file("x"), bytes: 257 * 1024 * 1024 } };
 		fake.client.list.mockResolvedValueOnce({ asOfSeq: 4, entries: [huge], next: null });
 		await click(row(host, "big"));
 		await click(row(host, "huge.zip"));
@@ -1657,6 +1713,7 @@ describe("a folder-v2 company's Company File", () => {
 		expect(actions).not.toContain("Download");
 		expect(actions).toContain("too large to download here");
 		expect(fake.client.readFile).not.toHaveBeenCalled();
+		expect(fake.client.readFilePieces).not.toHaveBeenCalled();
 	});
 
 	it("follows again after a reset whose reload failed", async () => {
