@@ -101,10 +101,61 @@ pass "/company (empty) and /var/lib/qorpera-code-host (root's, 0700) for 5e's jo
 	git -C "$T/p.git" fetch --quiet --no-tags --no-recurse-submodules --no-write-fetch-head "$T/all.bundle" "+refs/*:refs/*"
 	[[ $(git -C "$T/p.git" rev-parse refs/heads/main) == "$TWO" ]]
 	[[ $(find "$T/w" -mindepth 1 -maxdepth 1 -printf "%y\0%s\0%P\0" | tr -d "\0" | wc -c) -gt 0 ]]
+	# What the change record's, the undo's and the download's jobs do with git (code-host-jobs.ts): the paths a change
+	# touched, the commits between two with their parents, a picture's first bytes and its copy out of git, an undo's
+	# merge from the change itself as the base (clean, and with a conflict that names its path), the undo's commit found
+	# again by its request line, main's files as a zip (the same bytes each time), and main with its history as a bundle
+	# of HEAD and the branch, which a clone without files and a plain clone both take for main.
+	git -C "$T/b.git" symbolic-ref HEAD refs/heads/main
+	printf 'a\nb\nc\n' >"$T/w/f.txt"
+	git -C "$T/w" add f.txt
+	git -C "$T/w" commit -q -m three
+	THREE=$(git -C "$T/w" rev-parse HEAD)
+	printf 'a\nB\nc\n' >"$T/w/f.txt"
+	printf '\211PNG\r\n\032\n' >"$T/w/p.png"
+	git -C "$T/w" add f.txt p.png
+	git -C "$T/w" commit -q -m four
+	FOUR=$(git -C "$T/w" rev-parse HEAD)
+	echo more >"$T/w/g.txt"
+	git -C "$T/w" add g.txt
+	git -C "$T/w" commit -q -m five
+	FIVE=$(git -C "$T/w" rev-parse HEAD)
+	git -C "$T/b.git" update-ref refs/heads/main "$FIVE" "$TWO"
+	[[ $(git -C "$T/b.git" diff-tree -r -z --no-renames --name-status "$THREE" "$FIVE" | tr "\0" " ") == "M f.txt A g.txt A p.png " ]]
+	[[ $(git -C "$T/b.git" rev-list --ancestry-path --parents "$THREE..$FIVE" | tail -n 1) == "$FOUR $THREE" ]]
+	PICTURE=$(git -C "$T/b.git" ls-tree -l -z --full-tree "$FIVE" -- p.png | tr "\0" "\n" | awk '{print $3}')
+	[[ $(git -C "$T/b.git" cat-file blob "$PICTURE" | /usr/bin/head -c 4 | tail -c 3) == PNG ]]
+	[[ $(echo "$PICTURE" | git -C "$T/b.git" cat-file --batch-check) == "$PICTURE blob 8" ]]
+	git -C "$T/b.git" cat-file blob "$PICTURE" >"$T/p.copy"
+	[[ $(git -C "$T/b.git" hash-object --no-filters -- "$T/p.copy") == "$PICTURE" ]]
+	UNDONE=$(git -C "$T/b.git" merge-tree --write-tree -z --name-only --no-messages --merge-base="$FOUR" "$FIVE" "$THREE" | tr -d "\0")
+	[[ $(git -C "$T/b.git" ls-tree -r --name-only "$UNDONE" | tr "\n" " ") == "f.txt g.txt " ]]
+	[[ $(git -C "$T/b.git" cat-file blob "$UNDONE:f.txt" | tr "\n" " ") == "a b c " ]]
+	printf 'a\nB2\nc\n' >"$T/w/f.txt"
+	git -C "$T/w" commit -q -a -m six
+	SIX=$(git -C "$T/w" rev-parse HEAD)
+	STATUS=0
+	CONFLICT=$(git -C "$T/b.git" merge-tree --write-tree -z --name-only --no-messages --merge-base="$FOUR" "$SIX" "$THREE" | tr "\0" "\n") || STATUS=$?
+	[[ $STATUS == 1 && $(sed -n 2p <<<"$CONFLICT") == f.txt ]]
+	REQUEST="Qorpera-Request: 00000000-0000-4000-8000-000000000000"
+	UNDO=$(git -C "$T/b.git" -c user.name=Qorpera -c user.email=code@qorpera.com commit-tree "$UNDONE" -p "$FIVE" -m "Undo change 4: four" -m "$REQUEST")
+	git -C "$T/b.git" update-ref refs/heads/main "$UNDO" "$FIVE"
+	[[ $(git -C "$T/b.git" rev-list --first-parent --fixed-strings --grep="$REQUEST" --max-count=1 --no-commit-header --format="%H %P" "$FOUR..$UNDO") == "$UNDO $FIVE" ]]
+	[[ $(git -C "$T/b.git" rev-parse --verify "$UNDO^{tree}") == "$UNDONE" ]]
+	git -C "$T/b.git" archive --format=zip --prefix=code/ -o "$T/code.zip" "$UNDO"
+	git -C "$T/b.git" archive --format=zip --prefix=code/ -o "$T/again.zip" "$UNDO"
+	[[ $(/usr/bin/head -c 2 "$T/code.zip") == PK && $(sha256sum <"$T/code.zip") == "$(sha256sum <"$T/again.zip")" ]]
+	git -C "$T/b.git" bundle create --quiet "$T/main.bundle" HEAD refs/heads/main
+	git -C "$T/b.git" bundle verify --quiet "$T/main.bundle"
+	git clone --quiet --no-checkout --template= "$T/main.bundle" "$T/c"
+	[[ $(git -C "$T/c" symbolic-ref HEAD) == refs/heads/main && $(git -C "$T/c" rev-parse --verify "HEAD^{commit}") == "$UNDO" ]]
+	git clone --quiet "$T/main.bundle" "$T/plain"
+	[[ $(cat "$T/plain/g.txt") == more && ! -e "$T/plain/p.png" ]]
 	rm -rf "$T"
 )
 pass "git $GIT_VERSION takes a bundle, a locked worktree and a ref transaction, and gc and fsck pass"
 pass "git $GIT_VERSION does nightly care's work: packed refs, a gc that deletes nothing, the timed check, a whole bundle that restores"
+pass "git $GIT_VERSION does the change record's work: a change's paths, an undo's merge and its conflict, the zip of main, the bundle a clone checks out"
 
 # --- The folder program, FUSE and vsock -------------------------------------------------------------------------------
 [[ $(sha256sum "$FOLDER" | cut -d" " -f1) == "$FOLDER_SHA256" ]] || fail "the folder program differs"
@@ -138,6 +189,14 @@ done
 # Nightly care's jobs (code-host-jobs.ts) run these with PATH=/usr/local/bin:/usr/bin:/bin.
 [[ -x /usr/bin/dd ]] || fail "/usr/bin/dd is not executable"
 for tool in timeout sha256sum wc head grep find; do
+	PATH=/usr/local/bin:/usr/bin:/bin command -v "$tool" >/dev/null || fail "no $tool in /usr/local/bin:/usr/bin:/bin"
+done
+# The change record's, the undo's and the download's jobs (code-host-jobs.ts) run these as well, with the same PATH.
+[[ -x /usr/bin/head ]] || fail "/usr/bin/head is not executable"
+# The record writer takes each file's bytes off one stream: head takes exactly what it is told, and no more.
+[[ $({ /usr/bin/head -c 70000 /dev/zero; printf rest; } | { /usr/bin/head -c 70000 >/dev/null; cat; }) == rest ]] ||
+	fail "head -c reads past its bytes"
+for tool in cat mv rm rmdir mkdir; do
 	PATH=/usr/local/bin:/usr/bin:/bin command -v "$tool" >/dev/null || fail "no $tool in /usr/local/bin:/usr/bin:/bin"
 done
 pass "the commands 5e's jobs run"
