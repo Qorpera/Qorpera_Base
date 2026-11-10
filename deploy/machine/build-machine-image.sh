@@ -260,6 +260,13 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	[[ $(cat /home/desktop/Desktop/site-2/kept.txt) == edited && -d /home/desktop/Desktop/site-3 &&
 		$(readlink /home/desktop/Desktop/site-4) == /tmp/other/site && $(readlink /home/desktop/Desktop/site) == /tmp/site ]] ||
 		{ echo "opening again replaced something on the desktop" >&2; exit 1; }
+	# Two pages of the same name from two folders: the second link gets a number, and the browser still gets its own page.
+	mkdir /tmp/pa /tmp/pb && echo "<title>qorpera-page-a</title>" >/tmp/pa/page.html && echo "<title>qorpera-page-b</title>" >/tmp/pb/page.html
+	desktop open /tmp/pa/page.html >/dev/null
+	desktop open /tmp/pb/page.html | grep "/page.html (on the desktop as page-2.html)" >/dev/null ||
+		{ echo "a second page of the same name got the wrong address" >&2; exit 1; }
+	for _ in $(seq 1 40); do desktop windows | grep qorpera-page-b >/dev/null && break; sleep 0.5; done
+	desktop windows | grep qorpera-page-b >/dev/null || { echo "the second page of the same name did not open" >&2; exit 1; }
 	# A picture that nothing could show is refused: /company is a plain folder here.
 	if desktop shot /company/never.png 2>/dev/null; then echo "a screenshot went into an unmounted /company" >&2; exit 1; fi
 	[[ -z $(ls -A /company) ]]

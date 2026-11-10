@@ -108,7 +108,7 @@ serve() { # folder -> prints the port
 quote() { python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$1"; }
 # Opens one target: a URL, or a file or folder put on the desktop first (a link, or a copy).
 open_target() { # target copy(0|1)
-	local target=$1 copy=$2 path name place port taken
+	local target=$1 copy=$2 path name shown place port taken
 	if [[ $target =~ ^[a-zA-Z][a-zA-Z0-9+.-]*: && ! -e $target ]]; then
 		browser "$target"
 		echo "opening $target"
@@ -141,24 +141,26 @@ open_target() { # target copy(0|1)
 			fi
 		fi
 		if (( copy )); then path=$place; fi
-		name=$(basename -- "$place")
 	fi
+	# The name on the desktop may carry a number; the page's address is built from the file that is opened.
+	shown=$(basename -- "$place")
+	name=$(basename -- "$path")
 	runuser -u desktop -- test -r "$path" ||
 		fail "the desktop's user cannot read $path: open it with --copy"
 	if [[ -d $path && -f $path/index.html ]]; then
 		port=$(serve "$path")
 		browser "http://127.0.0.1:$port/"
-		echo "opening $path at http://127.0.0.1:$port/ (on the desktop as $name)"
+		echo "opening $path at http://127.0.0.1:$port/ (on the desktop as $shown)"
 	elif [[ -d $path ]]; then
 		launch /usr/bin/thunar "$path"
-		echo "opening the folder $path in the file manager (on the desktop as $name)"
+		echo "opening the folder $path in the file manager (on the desktop as $shown)"
 	elif [[ ${path,,} == *.html || ${path,,} == *.htm ]]; then
 		port=$(serve "$(dirname -- "$path")")
 		browser "http://127.0.0.1:$port/$(quote "$name")"
-		echo "opening $path at http://127.0.0.1:$port/$(quote "$name") (on the desktop as $name)"
+		echo "opening $path at http://127.0.0.1:$port/$(quote "$name") (on the desktop as $shown)"
 	else
 		browser "file://$(quote "$path")"
-		echo "opening $path in Chromium (on the desktop as $name)"
+		echo "opening $path in Chromium (on the desktop as $shown)"
 	fi
 }
 shot() { # file
