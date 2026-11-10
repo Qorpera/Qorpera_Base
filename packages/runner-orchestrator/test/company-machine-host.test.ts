@@ -15,6 +15,7 @@ import type { CodingMachineIntent } from "../src/coding-machine.ts";
 import { type LxdCompanyMachineBinding, lxdCompanyMachineName, lxdCompanyMachinePlan } from "../src/company-machine.ts";
 import {
 	COMPANY_MACHINE_CODING_VALUE_HELPER,
+	COMPANY_MACHINE_SCREEN_HELPER,
 	type CompanyMachineCommand,
 	type CompanyMachineEntry,
 	LxdCompanyMachineHost,
@@ -95,6 +96,8 @@ async function fixture(
 		guestReadyTimeoutMs?: number;
 		codingValueTimeoutMs?: number;
 		codingValueClearTimeoutMs?: number;
+		screenTimeoutMs?: number;
+		now?: () => number;
 	} = {},
 ) {
 	const { folder: withFolder, ...pins } = options;
@@ -3555,5 +3558,408 @@ describe("a machine's clipboard helper", () => {
 		} finally {
 			errors.mockRestore();
 		}
+	});
+});
+
+describe("a machine's screen helper (machine_screen, 20260930708000)", () => {
+	/** A PNG's signature and IHDR (13 bytes and its check), then `rest` bytes: what the host reads of a screenshot. */
+	const png = (width = 1600, height = 1000, rest = 64) => {
+		const ihdr = Buffer.alloc(25);
+		ihdr.writeUInt32BE(13, 0);
+		ihdr.write("IHDR", 4, "latin1");
+		ihdr.writeUInt32BE(width, 8);
+		ihdr.writeUInt32BE(height, 12);
+		ihdr.set([8, 6, 0, 0, 0], 16);
+		return Buffer.concat([
+			Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+			ihdr,
+			Buffer.alloc(rest, 7),
+		]);
+	};
+	const header = (picture: Buffer | null, extra: Record<string, unknown> = {}) => ({
+		schema: "qorpera.machine-screen/v1",
+		started: false,
+		action: { type: "click", exitCode: 0 },
+		activeWindow: "Sign in - Chromium",
+		windows: ["Sign in - Chromium", "Terminal"],
+		moreWindows: 0,
+		png: picture ? picture.length : 0,
+		...extra,
+	});
+	const output = (value: Record<string, unknown>, picture: Buffer | null = null) =>
+		Buffer.concat([Buffer.from(`${JSON.stringify(value)}\n`, "utf8"), picture ?? Buffer.alloc(0)]);
+	const request = {
+		schema: "qorpera.machine-screen-request/v1",
+		receiptId: id(8),
+		action: { type: "click", x: 812, y: 443 },
+		settleMs: 500,
+		look: true,
+	};
+	const run = (bootId = id(7)) => ({ placementId: id(6), bootId, runId: id(9), request });
+	type Answer = { exitCode: number; stdout: Buffer } | "hang";
+	async function piped(answer: Answer, options: Parameters<typeof fixture>[0] = {}) {
+		const f = await fixture(options);
+		const calls: { request: LxdExecPipeRequest; name: string; signal: AbortSignal }[] = [];
+		const pipe = vi.fn(async (_project: string, name: string, given: LxdExecPipeRequest, signal: AbortSignal) => {
+			calls.push({ request: given, name, signal });
+			f.order.push("exec:screen");
+			if (answer === "hang")
+				return new Promise<never>((_resolve, reject) => {
+					if (signal.aborted) reject(signal.reason);
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				});
+			return { exitCode: answer.exitCode, stdout: answer.stdout, stderrTail: Buffer.alloc(0) };
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		return { f, pipe, calls };
+	}
+
+	it("runs the helper as the executor runs it, on SQL's boot with the request on stdin, and answers its header and PNG", async () => {
+		const picture = png();
+		const { f, pipe } = await piped({ exitCode: 0, stdout: output(header(picture), picture) });
+		const shot = await f.host.screen(run(), f.signal);
+		expect(shot).toEqual({ header: header(picture), png: picture });
+		const [project, name, given] = pipe.mock.calls[0]!;
+		expect(project).toBe("machines");
+		expect(name).toBe(lxdCompanyMachineName(id(6)));
+		expect(given.command).toEqual([
+			"/bin/sh",
+			"-c",
+			expect.stringContaining('[ "$boot" = "$0" ]; } || exit 97; [ -f "$2" ] || exit 98; exec "$@"'),
+			id(7),
+			"/usr/bin/node",
+			COMPANY_MACHINE_SCREEN_HELPER,
+		]);
+		expect(COMPANY_MACHINE_SCREEN_HELPER).toBe("/opt/qorpera-machine/cloud-machine-screen.mjs");
+		// The verb and its arguments travel on stdin, never in the argv.
+		expect(JSON.parse(Buffer.from(given.stdin as Uint8Array).toString("utf8"))).toEqual(request);
+		expect(given).toMatchObject({
+			environment: {},
+			cwd: "/",
+			maxStdoutBytes: 8 * 1024 * 1024 + 65536,
+			stderrTailBytes: 0,
+		});
+		// Without the folder service there is no /company to release: no boundary, no take-in, no command.
+		expect(pipe).toHaveBeenCalledTimes(1);
+		expect(f.methods()).toEqual([]);
+		// A header with no picture (look false) is answered as such.
+		const none = await piped({ exitCode: 0, stdout: output(header(null)) });
+		expect(await none.f.host.screen(run(), none.f.signal)).toEqual({ header: header(null), png: null });
+	});
+
+	it("answers an action taken before, another boot, an earlier image and the helper's refusals by code", async () => {
+		for (const [answer, outcome] of [
+			// The action ran on this boot before: it never runs again.
+			[{ exitCode: 96, stdout: Buffer.alloc(0) }, { refused: "SCREEN_ACTION_TAKEN" }],
+			[{ exitCode: 97, stdout: Buffer.alloc(0) }, { refused: "MACHINE_BOOT_CHANGED" }],
+			[{ exitCode: 98, stdout: Buffer.alloc(0) }, { refused: "MACHINE_IMAGE_WITHOUT_SCREEN" }],
+			[
+				{
+					exitCode: 0,
+					stdout: output({ schema: "qorpera.machine-screen-refusal/v1", code: "DESKTOP_NOT_RUNNING" }),
+				},
+				{ refused: "DESKTOP_NOT_RUNNING" },
+			],
+		] as const) {
+			const { f, pipe } = await piped(answer, { folder: true });
+			expect(await f.host.screen(run(), f.signal)).toEqual(outcome);
+			expect(pipe).toHaveBeenCalledTimes(1);
+			// Nothing was shown, so nothing is released.
+			expect(f.methods()).not.toContain("qorpera_folder_test_machine_inherit_reads");
+		}
+	});
+
+	it("refuses an answer that is not the helper's, a failed helper, and a request it cannot run", async () => {
+		const picture = png();
+		const bad: [Buffer, string][] = [
+			[Buffer.alloc(0), "no header"],
+			[Buffer.from("not json\n"), "not json"],
+			[output({ ...header(picture), shown: true }, picture), "another field"],
+			[output(header(picture)), "a PNG missing"],
+			[Buffer.concat([output(header(picture), picture), Buffer.from("x")]), "a byte past the PNG"],
+			[output(header(null), picture), "a PNG no header names"],
+			[output(header(png(3841, 1000)), png(3841, 1000)), "wider than a screen"],
+			[output(header(png(1600, 2161)), png(1600, 2161)), "taller than a screen"],
+			[output(header(png(0, 1000)), png(0, 1000)), "no width"],
+			[
+				output(
+					header(Buffer.concat([Buffer.alloc(8), png().subarray(8)])),
+					Buffer.concat([Buffer.alloc(8), png().subarray(8)]),
+				),
+				"no PNG signature",
+			],
+			[output(header(picture, { windows: Array.from({ length: 17 }, () => "w") }), picture), "17 windows"],
+			[output(header(picture, { activeWindow: "a\u0007b" }), picture), "a control character"],
+			[output(header(picture, { activeWindow: "x".repeat(121) }), picture), "a long title"],
+			[output(header(picture, { action: { type: "fly", exitCode: 0 } }), picture), "another verb"],
+			[output(header(picture, { action: { type: "click", exitCode: 256 } }), picture), "an exit past 255"],
+			[
+				output(header(picture, { action: { type: "click", exitCode: 1, error: "e".repeat(301) } }), picture),
+				"a long error",
+			],
+			[output({ schema: "qorpera.machine-screen-refusal/v1", code: "lower" }), "a refusal of no code"],
+			[
+				Buffer.concat([
+					output({ schema: "qorpera.machine-screen-refusal/v1", code: "DESKTOP_NOT_RUNNING" }),
+					picture,
+				]),
+				"a refusal with bytes",
+			],
+			[Buffer.from(`${"x".repeat(65537)}\n`), "a header past its bound"],
+		];
+		for (const [stdout, what] of bad) {
+			const { f } = await piped({ exitCode: 0, stdout });
+			await expect(f.host.screen(run(), f.signal), what).rejects.toThrow("COMPANY_MACHINE_SCREEN_INVALID");
+		}
+		const failed = await piped({ exitCode: 1, stdout: Buffer.from("MACHINE_SCREEN_FAILED\n") });
+		await expect(failed.f.host.screen(run(), failed.f.signal)).rejects.toThrow("COMPANY_MACHINE_SCREEN_FAILED");
+		const { f, pipe } = await piped({ exitCode: 0, stdout: output(header(null)) });
+		for (const wrong of [{ bootId: "boot" }, { runId: "run" }, { placementId: "placement" }])
+			await expect(f.host.screen({ ...run(), ...wrong }, f.signal)).rejects.toThrow(
+				"COMPANY_MACHINE_SCREEN_INVALID",
+			);
+		expect(pipe).not.toHaveBeenCalled();
+		// A client without the pipe exec: never run.
+		const bare = await fixture();
+		await expect(bare.host.screen(run(), bare.signal)).rejects.toThrow("COMPANY_MACHINE_SCREEN_UNAVAILABLE");
+	});
+
+	it("ends the helper at its own deadline, and with the request", async () => {
+		const { f, calls } = await piped("hang", { screenTimeoutMs: 50 });
+		await expect(f.host.screen(run(), f.signal)).rejects.toThrow();
+		expect(calls[0]!.signal.aborted).toBe(true);
+		expect(f.signal.aborted).toBe(false);
+		const cancelled = await piped("hang");
+		const controller = new AbortController();
+		const looking = cancelled.f.host.screen(run(), controller.signal);
+		await vi.waitFor(() => expect(cancelled.calls).toHaveLength(1));
+		controller.abort(new Error("the gateway's request ended"));
+		await expect(looking).rejects.toThrow("the gateway's request ended");
+	});
+
+	/** A machine with /company, its boot's folder settled (mounted) and running, and the helper answering a screen. */
+	async function mounted(options: Parameters<typeof fixture>[0] = {}) {
+		const picture = png();
+		const piping = await piped(
+			{ exitCode: 0, stdout: output(header(picture), picture) },
+			{ folder: true, ...options },
+		);
+		const { f } = piping;
+		await f.host.pass(f.signal);
+		f.running();
+		await f.host.pass(f.signal);
+		f.order.length = 0;
+		f.service.requests.length = 0;
+		f.calls.length = 0;
+		return { ...piping, picture };
+	}
+
+	it("lets a screen of a machine with /company leave only after a boundary released its reads and the run took them in", async () => {
+		const { f, picture } = await mounted();
+		expect(await f.host.screen(run(f.boot), f.signal)).toEqual({ header: header(picture), png: picture });
+		expect(f.service.requests).toEqual([{ op: "boundary", machine: id(6), final: [] }]);
+		const inherit = f.calls.find((call) => call.method === "qorpera_folder_test_machine_inherit_reads");
+		expect(inherit?.args).toMatchObject({ p_placement_id: id(6), p_boot_id: f.boot, p_run_id: id(9) });
+		// The helper first, then the boundary, then the run's take-in.
+		expect(f.order).toEqual(["exec:screen", "folder:boundary", "sql:qorpera_folder_test_machine_inherit_reads"]);
+	});
+
+	it("holds the picture and the titles back when the folder does not release the reads, and tells what the action did", async () => {
+		const held = (shot: unknown, why: string) =>
+			expect(shot).toEqual({
+				header: header(null, { activeWindow: null, windows: [] }),
+				png: null,
+				heldBack: expect.stringContaining(why),
+			});
+		for (const [reads, why] of [
+			["unanswered", "has not said yet"],
+			["unproven", "cannot prove"],
+			["unreadable", "no longer readable"],
+			["stopped", "paused"],
+		] as const) {
+			const { f } = await mounted();
+			f.service.reads = reads;
+			held(await f.host.screen(run(f.boot), f.signal), why);
+			// Nothing is taken in for a picture that stays.
+			expect(f.methods()).not.toContain("qorpera_folder_test_machine_inherit_reads");
+		}
+		// A service that does not answer holds it too.
+		const { f } = await mounted();
+		f.service.down = true;
+		held(await f.host.screen(run(f.boot), f.signal), "has not said yet");
+		// The run's take-in refused: the read is no longer readable to it, and the boot's later output stays held.
+		const refused = await mounted();
+		refused.f.inherits.push(new CodingControlRefused("qorpera.test-machine/unreadable"));
+		held(await refused.f.host.screen(run(refused.f.boot), refused.f.signal), "could not take in");
+		held(await refused.f.host.screen(run(refused.f.boot), refused.f.signal), "no longer readable");
+		const untaken = await mounted();
+		untaken.f.inherits.push(new Error("CODING_CONTROL_UNCONFIRMED"));
+		held(await untaken.f.host.screen(run(untaken.f.boot), untaken.f.signal), "did not answer this run's take-in");
+	});
+
+	it("tells nothing of the guest's error text when the picture is held back, only the verb and its exit (review r1 F3)", async () => {
+		const secret = "sensitive: the contents of /company/finance/salaries.csv";
+		const action = { type: "type", exitCode: 1, error: secret };
+		for (const hold of ["refused", "unproven"] as const) {
+			const picture = png();
+			const piping = await piped(
+				{ exitCode: 0, stdout: output(header(picture, { action }), picture) },
+				{ folder: true },
+			);
+			const { f } = piping;
+			await f.host.pass(f.signal);
+			f.running();
+			await f.host.pass(f.signal);
+			if (hold === "refused") f.inherits.push(new CodingControlRefused("qorpera.test-machine/unreadable"));
+			else f.service.reads = "unproven";
+			const shot = await f.host.screen(run(f.boot), f.signal);
+			expect(shot).toMatchObject({
+				header: { action: { type: "type", exitCode: 1 }, activeWindow: null, windows: [] },
+				png: null,
+				heldBack: expect.any(String),
+			});
+			expect(JSON.stringify(shot)).not.toContain("sensitive");
+			expect(JSON.stringify(shot)).not.toContain("salaries");
+		}
+		// Released, the action's error is told as the helper gave it.
+		const { f } = await mounted();
+		Object.assign(f.client, {
+			execInstancePipe: vi.fn(async () => ({
+				exitCode: 0,
+				stdout: output(header(png(), { action }), png()),
+				stderrTail: Buffer.alloc(0),
+			})),
+		});
+		expect(await f.host.screen(run(f.boot), f.signal)).toMatchObject({ header: { action } });
+	});
+
+	it("refuses a second action on a desktop while one runs, serves a look meanwhile, and frees it once the first ends (review r1 F4)", async () => {
+		const f = await fixture();
+		const picture = png();
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const pipe = vi.fn(async () => {
+			if (pipe.mock.calls.length === 1) await gate;
+			return { exitCode: 0, stdout: output(header(picture), picture), stderrTail: Buffer.alloc(0) };
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		const action = (receipt: number) => ({ ...run(), request: { ...request, receiptId: id(receipt) } });
+		const look = { ...run(), request: { ...request, receiptId: null, action: null } };
+		const first = f.host.screen(action(8), f.signal);
+		await vi.waitFor(() => expect(pipe).toHaveBeenCalledTimes(1));
+		// Another run's action: refused before the helper (no receipt marker made on the machine).
+		expect(await f.host.screen({ ...action(11), runId: id(12) }, f.signal)).toEqual({ refused: "DESKTOP_BUSY" });
+		expect(pipe).toHaveBeenCalledTimes(1);
+		// A look is served meanwhile; another machine's desktop is not this one.
+		expect(await f.host.screen(look, f.signal)).toEqual({ header: header(picture), png: picture });
+		expect(await f.host.screen({ ...action(13), placementId: id(14) }, f.signal)).toMatchObject({ png: picture });
+		expect(pipe).toHaveBeenCalledTimes(3);
+		release();
+		expect(await first).toMatchObject({ png: picture });
+		// The first ended: the next action runs.
+		expect(await f.host.screen(action(15), f.signal)).toMatchObject({ png: picture });
+		expect(pipe).toHaveBeenCalledTimes(4);
+		// An action whose command failed, told by a helper that reached its own end (exit 0), frees it at once too; so
+		// does a helper that never acted (the receipt's action was taken before: 96).
+		const failed = header(picture, { action: { type: "type", exitCode: 1, error: "no window took the text" } });
+		pipe.mockResolvedValueOnce({ exitCode: 0, stdout: output(failed, picture), stderrTail: Buffer.alloc(0) });
+		expect(await f.host.screen(action(16), f.signal)).toMatchObject({ header: { action: { exitCode: 1 } } });
+		pipe.mockResolvedValueOnce({ exitCode: 96, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) });
+		expect(await f.host.screen(action(17), f.signal)).toHaveProperty("refused");
+		expect(await f.host.screen(action(18), f.signal)).toMatchObject({ png: picture });
+	});
+
+	it("keeps a desktop busy after a helper that returned without reaching its own end, as its action's unit lives on (review r3 F4)", async () => {
+		let clock = 1_800_000_000_000;
+		const picture = png();
+		// Killed inside the machine (137: the exec returns, the action's unit runs on to its limit), or failed (1).
+		for (const exitCode of [137, 1]) {
+			const f = await fixture({ now: () => clock });
+			const pipe = vi.fn(async () =>
+				pipe.mock.calls.length === 1
+					? { exitCode, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) }
+					: { exitCode: 0, stdout: output(header(picture), picture), stderrTail: Buffer.alloc(0) },
+			);
+			Object.assign(f.client, { execInstancePipe: pipe });
+			const action = (receipt: number) => ({ ...run(), request: { ...request, receiptId: id(receipt) } });
+			await expect(f.host.screen(action(8), f.signal)).rejects.toThrow("COMPANY_MACHINE_SCREEN_FAILED");
+			// Another run's action meets the grace, not the helper; a look is served.
+			expect(await f.host.screen({ ...action(11), runId: id(12) }, f.signal)).toEqual({ refused: "DESKTOP_BUSY" });
+			expect(
+				await f.host.screen({ ...run(), request: { ...request, receiptId: null, action: null } }, f.signal),
+			).toMatchObject({ png: picture });
+			clock += 10_999;
+			expect(await f.host.screen(action(13), f.signal)).toEqual({ refused: "DESKTOP_BUSY" });
+			clock += 2;
+			expect(await f.host.screen(action(15), f.signal)).toMatchObject({ png: picture });
+			expect(pipe).toHaveBeenCalledTimes(3);
+		}
+	});
+
+	it("keeps a desktop busy for the action deadline and its kill after an action that was cut off, as what it started may type on", async () => {
+		let clock = 1_800_000_000_000;
+		const f = await fixture({ now: () => clock });
+		const picture = png();
+		const pipe = vi.fn(async (_project: string, _name: string, _given: LxdExecPipeRequest, signal: AbortSignal) => {
+			if (pipe.mock.calls.length === 1)
+				return new Promise<never>((_resolve, reject) => {
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				});
+			return { exitCode: 0, stdout: output(header(picture), picture), stderrTail: Buffer.alloc(0) };
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		const action = (receipt: number) => ({ ...run(), request: { ...request, receiptId: id(receipt) } });
+		const controller = new AbortController();
+		const cut = f.host.screen(action(8), controller.signal);
+		await vi.waitFor(() => expect(pipe).toHaveBeenCalledTimes(1));
+		controller.abort(new Error("the gateway's request ended"));
+		await expect(cut).rejects.toThrow("the gateway's request ended");
+		expect(await f.host.screen(action(11), f.signal)).toEqual({ refused: "DESKTOP_BUSY" });
+		// A look is served all the same.
+		expect(
+			await f.host.screen({ ...run(), request: { ...request, receiptId: null, action: null } }, f.signal),
+		).toMatchObject({
+			png: picture,
+		});
+		// The action's own deadline (10 s, kept by its unit on the machine) and a second for its kill to land.
+		clock += 10_999;
+		expect(await f.host.screen(action(12), f.signal)).toEqual({ refused: "DESKTOP_BUSY" });
+		clock += 2;
+		expect(await f.host.screen(action(13), f.signal)).toMatchObject({ png: picture });
+		expect(pipe).toHaveBeenCalledTimes(3);
+		// Past its own deadline (screenTimeoutMs), the same.
+		const slow = await fixture({ now: () => clock, screenTimeoutMs: 20 });
+		Object.assign(slow.client, {
+			execInstancePipe: vi.fn(
+				(_project: string, _name: string, _given: LxdExecPipeRequest, signal: AbortSignal) =>
+					new Promise<never>((_resolve, reject) => {
+						signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+					}),
+			),
+		});
+		await expect(slow.host.screen(action(8), slow.signal)).rejects.toThrow();
+		expect(await slow.host.screen(action(11), slow.signal)).toEqual({ refused: "DESKTOP_BUSY" });
+	});
+
+	it("takes in the reads of a boot without /company with no boundary, and asks one for a boot it does not know", async () => {
+		const { f, picture } = await mounted({});
+		const none = await piped({ exitCode: 0, stdout: output(header(picture), picture) }, { folder: true });
+		none.f.views.refusal = null;
+		await none.f.host.pass(none.f.signal);
+		none.f.running();
+		await none.f.host.pass(none.f.signal);
+		none.f.service.requests.length = 0;
+		none.f.calls.length = 0;
+		expect(await none.f.host.screen(run(none.f.boot), none.f.signal)).toEqual({
+			header: header(picture),
+			png: picture,
+		});
+		expect(none.f.service.requests).toEqual([]);
+		expect(none.f.methods()).toEqual(["qorpera_folder_test_machine_inherit_reads"]);
+		// SQL's boot is not the one this process settled: the placement's boundary is asked all the same.
+		expect(await f.host.screen(run(id(7)), f.signal)).toEqual({ header: header(picture), png: picture });
+		expect(f.service.requests).toEqual([{ op: "boundary", machine: id(6), final: [] }]);
 	});
 });

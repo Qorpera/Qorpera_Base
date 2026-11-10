@@ -83,6 +83,41 @@ const CODING_VALUE_MS = 20000;
 /** The executor's own clear after a save that did not end cleanly (`--clear-only`): its own deadline, never the
  * request's, as the request may be what ended it. Two xsels side by side, 4 s each at most, and the helper's start. */
 const CODING_VALUE_CLEAR_MS = 10000;
+/** machine_screen's helper (20260930708000), packaged beside the guest helper and installed by the image
+ * (scripts/package-machine-guest.mjs). Not the guest helper: its pin stays as it was. It runs under the same wrapper as
+ * save_coding_value's (CODING_VALUE_ON_BOOT): on the boot SQL named (else exit 97) and where the image has it (else 98). */
+export const COMPANY_MACHINE_SCREEN_HELPER = "/opt/qorpera-machine/cloud-machine-screen.mjs";
+/** The helper's answer: one header line (64 KiB at most) and a PNG of 8 MiB at most (cloud-machine-screen.ts). */
+const SCREEN_HEADER_BYTES = 65536;
+const SCREEN_PNG_BYTES = 8 * 1024 * 1024;
+const SCREEN_OUTPUT_BYTES = SCREEN_PNG_BYTES + SCREEN_HEADER_BYTES;
+/** The helper's steps take 21 s at most (cloud-machine-screen.ts, MACHINE_SCREEN_STEP_MS: the desktop's status, its
+ * start or the action, the settle and the shot); then the company folder's release (SCREEN_BOUNDARY_MS) and the run's
+ * take-in, inside the gateway's 30 s. */
+const SCREEN_MS = 22000;
+/** A boundary before a screen leaves: short, as the request is bounded at 30 s. One that does not answer in time holds
+ * the picture back (the agent looks again), as a read's holds its output. */
+const SCREEN_BOUNDARY_MS = 4000;
+/** How long a desktop stays busy after an action that did not end cleanly (the request aborted, SCREEN_MS ran out, or
+ * the helper returned without reaching its own end, such as exit 137 when it was killed inside the machine):
+ * the helper is killed, but what it started (an xdotool typing, a `desktop open` waiting on the desktop's lock) goes on
+ * until the action's own deadline, which its transient unit's RuntimeMaxSec keeps in the machine apart from the helper
+ * (cloud-machine-screen.ts: MACHINE_SCREEN_STEP_MS.action, 10 s), and then a second for its kill to land
+ * (MACHINE_SCREEN_KILL_MS). Measured on a real machine: a killed helper's xdotool kept typing (review r1 F4, r2 F4). */
+const SCREEN_ACTION_GRACE_MS = 11000;
+/** The helper's exits besides 0: an action taken on this boot before (96), another boot (97), an earlier image (98). */
+const SCREEN_EXITS: Readonly<Record<number, string>> = Object.freeze({
+	96: "SCREEN_ACTION_TAKEN",
+	97: "MACHINE_BOOT_CHANGED",
+	98: "MACHINE_IMAGE_WITHOUT_SCREEN",
+});
+const SCREEN_VERBS = ["click", "double", "move", "drag", "type", "key", "scroll", "open"];
+/** A screen of at most 3840 x 2160 (`desktop size`). */
+const SCREEN_MAX_WIDTH = 3840;
+const SCREEN_MAX_HEIGHT = 2160;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+/** A window title or an error as the helper prints it: no control character. */
+const SCREEN_CONTROL = /[\p{Cc}\p{Zl}\p{Zp}]/u;
 /** A command's log limit in the guest (the helper's MACHINE_GUEST_MAX_LOG_BYTES), as a held receipt states it. */
 const LOG_LIMIT_BYTES = 67108864;
 /** One NAS storage check's own bound, as the coding host's. It runs from the check's start: the wait for the checks
@@ -204,6 +239,10 @@ export interface CompanyMachineHostOptions {
 	 * tests' own shorter ones. */
 	codingValueTimeoutMs?: number;
 	codingValueClearTimeoutMs?: number;
+	/** How long machine_screen's helper may run (default 22 s): the tests' own shorter one. */
+	screenTimeoutMs?: number;
+	/** The clock a desktop's busy grace is counted on (default Date.now): the tests' own. */
+	now?: () => number;
 }
 
 /** One placement of a machine as SQL lists it for this executor
@@ -265,6 +304,25 @@ export interface CompanyMachineCodingValue {
 export type CompanyMachineCodingValueOutcome =
 	| { readonly box: Readonly<Record<string, string>> }
 	| { readonly refused: string };
+/** machine_screen's run on a machine of this node (20260930708000), as SQL authorized it
+ * (qorpera_authorize_machine_screen): where it runs, the run that sees the screen (it takes in the machine's reads
+ * first), and the helper's request (cloud-machine-screen.ts), given to the helper on stdin as the router built it. */
+export interface CompanyMachineScreen {
+	placementId: string;
+	bootId: string;
+	runId: string;
+	request: Record<string, unknown>;
+}
+/** What the helper answered: its header and the PNG (null: none), or why the company folder held both the picture and
+ * the windows' titles back (`heldBack`, a HELD text; what the action did is still told). */
+export interface CompanyMachineScreenShot {
+	readonly header: Readonly<Record<string, unknown>>;
+	readonly png: Buffer | null;
+	readonly heldBack?: string;
+}
+export type CompanyMachineScreenOutcome = CompanyMachineScreenShot | { readonly refused: string };
+/** What the company folder's release of a boot's reads needs (#release): the boot, and the run that takes them in. */
+type FolderRelease = Pick<CompanyMachineCommandAuthority, "placementId" | "bootId" | "runId">;
 
 /** A boot's company folder (F3 6d), in this process's memory only (the pass is never written anywhere). */
 interface BootFolder {
@@ -427,6 +485,81 @@ function guestAnswer(content: Buffer): Record<string, unknown> {
 		);
 	return value;
 }
+/** A title or an error as the helper prints it: text of at most `chars` characters (or `bytes` bytes), no control. */
+function screenText(value: unknown, chars: number, bytes = Number.POSITIVE_INFINITY): value is string {
+	return (
+		typeof value === "string" &&
+		[...value].length <= chars &&
+		Buffer.byteLength(value) <= bytes &&
+		!SCREEN_CONTROL.test(value)
+	);
+}
+/** machine_screen's helper answer (cloud-machine-screen.ts, runMachineScreenCli): a refusal's line, or one header line
+ * of exactly its fields and then exactly as many bytes of PNG as it says, a PNG of a screen of at most 3840 x 2160. */
+function screenOutput(stdout: Buffer): CompanyMachineScreenOutcome {
+	const invalid = () => new Error("COMPANY_MACHINE_SCREEN_INVALID");
+	const end = stdout.indexOf(0x0a);
+	if (end < 0 || end > SCREEN_HEADER_BYTES) throw invalid();
+	let header: Record<string, unknown>;
+	try {
+		header = record(
+			JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(stdout.subarray(0, end))),
+			"COMPANY_MACHINE_SCREEN_INVALID",
+		);
+	} catch {
+		throw invalid();
+	}
+	const keys = Object.keys(header).sort().join();
+	if (header.schema === "qorpera.machine-screen-refusal/v1" && keys === "code,schema") {
+		if (typeof header.code !== "string" || !/^[A-Z][A-Z0-9_]{2,60}$/.test(header.code) || end + 1 !== stdout.length)
+			throw invalid();
+		return { refused: header.code };
+	}
+	const action = header.action;
+	const done =
+		action && typeof action === "object" && !Array.isArray(action) ? (action as Record<string, unknown>) : null;
+	if (
+		header.schema !== "qorpera.machine-screen/v1" ||
+		keys !== "action,activeWindow,moreWindows,png,schema,started,windows" ||
+		typeof header.started !== "boolean" ||
+		(action !== null &&
+			(!done ||
+				!["exitCode,type", "error,exitCode,type"].includes(Object.keys(done).sort().join()) ||
+				!SCREEN_VERBS.includes(done.type as string) ||
+				(done.exitCode !== null &&
+					(!Number.isSafeInteger(done.exitCode) ||
+						(done.exitCode as number) < 0 ||
+						(done.exitCode as number) > 255)) ||
+				(done.error !== undefined && (!screenText(done.error, 300, 300) || done.error === "")))) ||
+		(header.activeWindow !== null && !screenText(header.activeWindow, 120)) ||
+		!Array.isArray(header.windows) ||
+		header.windows.length > 16 ||
+		header.windows.some((title) => !screenText(title, 120)) ||
+		!Number.isSafeInteger(header.moreWindows) ||
+		(header.moreWindows as number) < 0 ||
+		(header.moreWindows as number) > 100000 ||
+		!Number.isSafeInteger(header.png) ||
+		(header.png as number) < 0 ||
+		(header.png as number) > SCREEN_PNG_BYTES ||
+		stdout.length !== end + 1 + (header.png as number)
+	)
+		throw invalid();
+	if (header.png === 0) return Object.freeze({ header: Object.freeze({ ...header }), png: null });
+	const png = Buffer.from(stdout.subarray(end + 1));
+	// The signature, then IHDR first (its 13 bytes): the screen's size, which no picture of it may pass.
+	if (
+		png.length < 33 ||
+		!png.subarray(0, 8).equals(PNG_SIGNATURE) ||
+		png.readUInt32BE(8) !== 13 ||
+		png.toString("latin1", 12, 16) !== "IHDR" ||
+		png.readUInt32BE(16) < 1 ||
+		png.readUInt32BE(16) > SCREEN_MAX_WIDTH ||
+		png.readUInt32BE(20) < 1 ||
+		png.readUInt32BE(20) > SCREEN_MAX_HEIGHT
+	)
+		throw invalid();
+	return Object.freeze({ header: Object.freeze({ ...header }), png });
+}
 function entry(value: unknown): CompanyMachineEntry {
 	const e = record(value, "COMPANY_MACHINE_LIST_INVALID");
 	if (
@@ -497,6 +630,11 @@ export class LxdCompanyMachineHost {
 	readonly #listeners = new Map<string, Set<() => void>>();
 	/** Per placement: its running boot's folder. */
 	readonly #folders = new Map<string, BootFolder>();
+	/** Per placement (machine_screen, review r1 F4): an action runs on its desktop now ("acting"), or one ended abnormally
+	 * and what it started may still type until this time. A second action is refused meanwhile (DESKTOP_BUSY); a look is
+	 * not. One executor process serves every screen call of a placement on its node (a peer's forwarded one too), so
+	 * this is the whole of it; a restarted executor starts with none. */
+	readonly #screenBusy = new Map<string, "acting" | number>();
 	/** Per placement and boot (`placementId/bootId`): a boot whose folder ended (6d-2), and how: its guest restarts
 	 * (asked again each pass until the next boot comes), or its placement was retired; and the code each pass reports.
 	 * Kept apart from the boot's folder, which its end, a stop or the next boot removes, so nothing of the boot leaves
@@ -1827,6 +1965,98 @@ export class LxdCompanyMachineHost {
 		}
 	}
 
+	/**
+	 * machine_screen (20260930708000): the image's screen helper on a machine of this node, as root, on exactly the boot
+	 * SQL named, with the request on its stdin: it takes the one action (at most once per receipt on this boot), waits,
+	 * and answers the screen's PNG with a header of what the action did and the windows' titles. Its stdout is read here
+	 * within its bound and never logged, and its stderr is dropped; LXD records no output. It runs once: a failure is the
+	 * call's, never run again.
+	 *
+	 * A machine with /company shows what it read there: its screen leaves as a command's output does (#command), only
+	 * once the company folder released the machine's reads and the run that sees it took them in (6d-3b). Otherwise the
+	 * picture and the titles stay on the machine and the answer says why (`heldBack`); the action happened all the same.
+	 * Programs on the desktop run as `desktop` and cannot write /company, so the screen needs no window of its own.
+	 *
+	 * One action at a time per desktop (review r1 F4): while one runs, or for SCREEN_ACTION_GRACE_MS after one that did
+	 * not end cleanly, another run's action is refused before the helper runs (DESKTOP_BUSY, no receipt marker made), so
+	 * it can never type into a window the first one changed. A look is always served.
+	 */
+	async screen(run: CompanyMachineScreen, signal: AbortSignal): Promise<CompanyMachineScreenOutcome> {
+		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!pipe) throw new Error("COMPANY_MACHINE_SCREEN_UNAVAILABLE");
+		if (![run.placementId, run.bootId, run.runId].every((id) => UUID.test(id)))
+			throw new Error("COMPANY_MACHINE_SCREEN_INVALID");
+		const acting = run.request.action !== null && run.request.action !== undefined;
+		const now = this.#options.now ?? Date.now;
+		if (acting) {
+			const busy = this.#screenBusy.get(run.placementId);
+			if (busy === "acting" || (typeof busy === "number" && busy > now())) return { refused: "DESKTOP_BUSY" };
+			this.#screenBusy.set(run.placementId, "acting");
+		}
+		let ended = false;
+		let result: Awaited<ReturnType<typeof pipe>>;
+		try {
+			result = await pipe(
+				this.#policy.project,
+				lxdCompanyMachineName(run.placementId),
+				{
+					command: [
+						"/bin/sh",
+						"-c",
+						CODING_VALUE_ON_BOOT,
+						run.bootId,
+						"/usr/bin/node",
+						COMPANY_MACHINE_SCREEN_HELPER,
+					],
+					environment: {},
+					cwd: "/",
+					stdin: Buffer.from(JSON.stringify(run.request), "utf8"),
+					maxStdoutBytes: SCREEN_OUTPUT_BYTES,
+					stderrTailBytes: 0,
+				},
+				AbortSignal.any([signal, AbortSignal.timeout(this.#options.screenTimeoutMs ?? SCREEN_MS)]),
+			);
+			// The helper reached its own end (an answer, or one of its own exits) only then: it waits for the action's unit.
+			// Any other exit (137 when it was killed inside the machine, 1 when it failed) says nothing of the unit, which
+			// lives on to its limit (review r3 F4).
+			ended = result.exitCode === 0 || SCREEN_EXITS[result.exitCode] !== undefined;
+		} finally {
+			// The helper ended by itself: the desktop is free. Cut off (aborted, past its deadline, the exec lost, or the
+			// helper gone before its own end): it stays busy for as long as what the helper started may still act.
+			if (acting)
+				if (ended) this.#screenBusy.delete(run.placementId);
+				else this.#screenBusy.set(run.placementId, now() + SCREEN_ACTION_GRACE_MS);
+		}
+		const exit = SCREEN_EXITS[result.exitCode];
+		if (exit !== undefined) return { refused: exit };
+		if (result.exitCode !== 0) throw new Error("COMPANY_MACHINE_SCREEN_FAILED");
+		const shot = screenOutput(result.stdout);
+		const folder = this.#options.folder;
+		if ("refused" in shot || !folder) return shot;
+		const at: FolderRelease = { placementId: run.placementId, bootId: run.bootId, runId: run.runId };
+		const f = this.#folders.get(run.placementId);
+		const boot = f?.bootId === run.bootId ? f : undefined;
+		const heldBack =
+			this.#heldAlready(at, boot) ?? (await this.#release(folder, at, boot, SCREEN_BOUNDARY_MS, signal));
+		if (heldBack === undefined) return shot;
+		// A title can name what a page or a file of /company holds: the titles stay with the picture. So does the action's
+		// error text (review r1 F3): the guest is the agent's root, and its helper's header could carry anything there.
+		// Only the verb and its exit code are told.
+		const done = shot.header.action as { type?: unknown; exitCode?: unknown } | null;
+		return Object.freeze({
+			header: Object.freeze({
+				...shot.header,
+				action: done ? Object.freeze({ type: done.type, exitCode: done.exitCode }) : null,
+				activeWindow: null,
+				windows: Object.freeze([]),
+				moreWindows: 0,
+				png: 0,
+			}),
+			png: null,
+			heldBack,
+		});
+	}
+
 	/** Runs one authorized command action on a machine of this node. A start on a machine with a folder is delivered
 	 * meanwhile: a look from before its guest had it, or from while it was delivered, leaves its window open (#ends),
 	 * and a restart of its guest waits for it (#delivered). */
@@ -1976,27 +2206,46 @@ export class LxdCompanyMachineHost {
 		// boundary. Then the run that gets the output takes in the reads of the machine's views (6d-3b, "Reads" rule 3),
 		// on a boot without /company too: the disk keeps what any boot of it was served. Each receipt says why what it
 		// holds back is held (6e-2a, #told).
-		const ended = () => !!authority.bootId && this.#ended(authority.placementId, authority.bootId);
 		const f = this.#folders.get(authority.placementId);
 		const boot = f?.bootId === authority.bootId ? f : undefined;
-		const none = boot?.state === "none";
 		const at = (request.action === "read" && !request.read.tail && request.read.offset) || 0;
 		const holding = (heldBack?: string) => this.#told(authority, boot, held(receipt, at), heldBack, false);
-		const over = () => holding(HELD.ended);
-		if (ended()) return over();
-		if (boot?.unreadable) return holding(HELD.unreadable);
-		if (request.action === "start" && !none) return holding(HELD.start);
+		const already = this.#heldAlready(authority, boot);
+		if (already !== undefined) return holding(already);
+		if (request.action === "start" && boot?.state !== "none") return holding(HELD.start);
 		if (receipt.state === "running" && receipt.log.totalBytes === 0) return holding();
-		if (!none) {
-			const checked = AbortSignal.any([signal, AbortSignal.timeout(BOUNDARY_MS)]);
-			const answer = await folder.boundary(authority.placementId, [], checked).catch(() => undefined);
+		const heldBack = await this.#release(folder, authority, boot, BOUNDARY_MS, signal);
+		return heldBack === undefined ? this.#told(authority, boot, receipt, undefined, true) : holding(heldBack);
+	}
+	/** Why a boot's output is held before any boundary: its folder ended (6d-2), or a run's take-in found a read no
+	 * longer readable (#inherit). */
+	#heldAlready(at: FolderRelease, boot: BootFolder | undefined): string | undefined {
+		if (at.bootId && this.#ended(at.placementId, at.bootId)) return HELD.ended;
+		if (boot?.unreadable) return HELD.unreadable;
+		return undefined;
+	}
+	/** The company folder's release of what a boot's output may show (#command, screen): a boundary first, unless the boot
+	 * has no /company (none); then the run that gets the output takes in the reads of the machine's views (6d-3b), on a
+	 * boot without /company too. A boot can end while the boundary or the take-in is out, so it is checked after each.
+	 * Undefined: released; otherwise why it is held (a HELD text). */
+	async #release(
+		folder: FolderControl,
+		at: FolderRelease,
+		boot: BootFolder | undefined,
+		boundaryMs: number,
+		signal: AbortSignal,
+	): Promise<string | undefined> {
+		const ended = () => !!at.bootId && this.#ended(at.placementId, at.bootId);
+		if (boot?.state !== "none") {
+			const checked = AbortSignal.any([signal, AbortSignal.timeout(boundaryMs)]);
+			const answer = await folder.boundary(at.placementId, [], checked).catch(() => undefined);
 			noted(boot, answer);
-			if (ended()) return over();
-			if (answer?.reads !== "released") return holding(unreleased(answer));
+			if (ended()) return HELD.ended;
+			if (answer?.reads !== "released") return unreleased(answer);
 		}
-		const refused = await this.#inherit(authority, boot, signal);
-		if (ended()) return over();
-		return refused === undefined ? this.#told(authority, boot, receipt, undefined, true) : holding(refused);
+		const refused = await this.#inherit(at, boot, signal);
+		if (ended()) return HELD.ended;
+		return refused;
 	}
 	/** Why a boot whose folder ended has no /company (6e-2a). */
 	#endedWhy(authority: CompanyMachineCommandAuthority): string {
@@ -2078,7 +2327,7 @@ export class LxdCompanyMachineHost {
 	 * core's refusal of a read it can no longer read ("qorpera.test-machine/unreadable") marks the boot, which holds
 	 * every later output of it, and the next pass retires the placement (rule 5). */
 	async #inherit(
-		authority: CompanyMachineCommandAuthority,
+		authority: FolderRelease,
 		boot: BootFolder | undefined,
 		signal: AbortSignal,
 	): Promise<string | undefined> {
