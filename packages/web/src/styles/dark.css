@@ -19,7 +19,7 @@
 
 /* ---- account menu ---------------------------------------------------------- */
 :root[data-theme="dark"] .account-chip { background: #5c5b58; }
-:root[data-theme="dark"] :is(.account-popover, .context-menu) { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3); }
+:root[data-theme="dark"] :is(.account-popover, .context-menu, .composer-menu) { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3); }
 :root[data-theme="dark"] .rail-drag-ghost { box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3); }
 
 /* ---- rail ------------------------------------------------------------------ */
@@ -107,7 +107,6 @@
 :root[data-theme="dark"] .composer-shell.is-dragging { border-color: var(--composer-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--composer-accent) 22%, transparent); }
 :root[data-theme="dark"] .composer-send:disabled { background: #353534; color: #71706c; }
 :root[data-theme="dark"] .composer-send:not(:disabled):hover { background: var(--composer-accent-hover); }
-:root[data-theme="dark"] .composer-menu { box-shadow: 0 12px 30px rgb(0 0 0 / 45%); }
 /* The Fast switch when off: a soft grey knob, not a white one, on the dim track. */
 :root[data-theme="dark"] .composer-model-fast:not([aria-checked="true"]) .composer-switch::after { background: #c4c3be; box-shadow: none; }
 :root[data-theme="dark"] .attachment-chip { background: #2c2c2b; }

@@ -232,7 +232,6 @@
 .account-popover,
 .account-picture-menu,
 .preference-picker-popover { transform-origin: top left; animation: menu-in var(--motion-base) var(--ease-spring) both; }
-.composer-menu,
 .skill-menu,
 .mention-picker,
 .recipient-menu { transform-origin: bottom left; animation: menu-in var(--motion-base) var(--ease-spring) both; }
@@ -243,6 +242,21 @@
 }
 .context-menu.is-leaving { animation: menu-out var(--motion-fast) var(--ease-in) both; }
 @keyframes menu-out { to { opacity: 0; transform: scale(0.97); } }
+
+/* The composer's "+" menu springs up out of the "+" under its corner and drops back into it, quicker, when it
+ * closes; the "+" turns to a cross while the menu is open. A page of the menu (Model, Login) comes in from the
+ * side it lies on, and the menu takes the page's height as it does (conversation.ts). */
+.composer-menu { transform-origin: 18px calc(100% + 26px); animation: composer-menu-in var(--motion-slow) var(--ease-spring) both, composer-menu-show var(--motion-fast) ease-out both; }
+@keyframes composer-menu-in { from { transform: translateY(8px) scale(0.86); } }
+@keyframes composer-menu-show { from { opacity: 0; } }
+.composer-menu.is-leaving { animation: composer-menu-out var(--motion-fast) var(--ease-in) both; }
+@keyframes composer-menu-out { to { opacity: 0; transform: translateY(6px) scale(0.92); } }
+.composer-more > .icon { transition: transform var(--motion-slow) var(--ease-spring); }
+.composer-more[aria-expanded="true"] > .icon { transform: rotate(45deg); }
+.composer-menu > .is-page-arriving { animation: composer-page-in var(--motion-base) var(--ease-out) both; }
+.composer-menu > .is-page-returning { animation: composer-page-back var(--motion-base) var(--ease-out) both; }
+@keyframes composer-page-in { from { opacity: 0; transform: translateX(10px); } }
+@keyframes composer-page-back { from { opacity: 0; transform: translateX(-10px); } }
 
 /* ---- dialogs and settings ---- */
 
