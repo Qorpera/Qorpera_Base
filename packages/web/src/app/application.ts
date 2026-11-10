@@ -428,8 +428,6 @@ export function mountApplication(
 	/** The agent or group chat card opened from the rail, and what an agent card asked for once its chat is on screen. */
 	let agentCard: AgentDetails | GroupDetails | undefined;
 	let agentPage: { agentId: string; page: AgentPage; until: number } | undefined;
-	/** Each company's walls as the rail's agent cards read them, for their "Latest notes" row. */
-	const cardWalls = new WeakMap<CompanyController, ReturnType<typeof agentWallReader>>();
 	const cardImages = new WeakMap<CompanyController, ReturnType<typeof folderImageReader>>();
 	/** Each company's open questions for its app pages and Concepts viewer, read only while one is on screen. */
 	const appQuestions = new WeakMap<CompanyController, OpenQuestions>();
@@ -1117,7 +1115,7 @@ export function mountApplication(
 			route.section === "meet" || route.section === "concepts" || controller.store.get().accessLost === true;
 		const context = shellContext(authState.user, route);
 		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
-		// The card's Computer and Latest notes open in the agent's own chat: here when it is on screen, else once it opens.
+		// The card's Computer opens in the agent's own chat: here when it is on screen, else once it opens.
 		const showAgentPage = (agentId: string, page: AgentPage) => {
 			if (conversation?.show(agentId, page)) return;
 			// It waits a little while for the chat; a request the member moved away from does not come back later.
@@ -1129,11 +1127,6 @@ export function mountApplication(
 		if (!cardImage) {
 			cardImage = folderImageReader(() => memberFolder(companyCurrent, t("Company access changed.")));
 			cardImages.set(controller, cardImage);
-		}
-		let cardWall = cardWalls.get(controller);
-		if (!cardWall) {
-			cardWall = agentWallReader(() => memberFolder(companyCurrent, t("Company access changed.")));
-			cardWalls.set(controller, cardWall);
 		}
 		const openAgentCard: ShellContext["openAgentCard"] = (agent, anchor, card, findAnchor) => {
 			agentCard?.dispose();
@@ -1164,7 +1157,6 @@ export function mountApplication(
 				controller.signal,
 				{
 					computer: () => showAgentPage(agent.id, "computer"),
-					notes: { open: () => showAgentPage(agent.id, "wall"), read: (signal) => cardWall(agent.id, signal) },
 					...card,
 				},
 				"beside",
@@ -1752,7 +1744,6 @@ export function mountApplication(
 									wallListeners.add(listener);
 									return () => wallListeners.delete(listener);
 								},
-								show: (agentId) => showAgentPage(agentId, "wall"),
 							},
 							folderImage: cardImage,
 							messageErases: {

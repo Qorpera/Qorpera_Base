@@ -564,7 +564,6 @@ export const CONVERSATION: Record<string, string> = {
 	// Saved changes that wait for review (ui/proposal-card.ts)
 	"Archive the agent “{name}”": "Arkivér agenten “{name}”",
 	"Make the agent “{name}” active again": "Gør agenten “{name}” aktiv igen",
-	"Hire “{name}” as {role}": "Ansæt “{name}” som {role}",
 	"Hire “{name}”": "Ansæt “{name}”",
 	"Start the group chat “{name}”": "Start gruppechatten “{name}”",
 	"Pause the routine “{name}”": "Sæt rutinen “{name}” på pause",
@@ -624,9 +623,6 @@ export const CONVERSATION: Record<string, string> = {
 	"Earlier: {n}": "Tidligere: {n}",
 	"Show fewer": "Vis færre",
 	// The agent's card brings the wall back (app/views/agent-details.ts).
-	"Latest notes": "Seneste noter",
-	"1 new": "1 ny",
-	"{n} new": "{n} nye",
 	"{n} just done": "{n} lige gjort",
 	// A card's long body (ui/interaction-card.ts).
 	"Show more": "Vis mere",

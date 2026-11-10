@@ -2528,7 +2528,6 @@ describe("new conversation and agent setup", () => {
 		expect(f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')?.value).toBe("Our shared task");
 		choice(f.view.el, "create").click();
 		input(f.view.el, "Agent name", "New agent");
-		input(f.view.el, "Agent title", "Research");
 		const originalHash = location.hash;
 		vi.mocked(f.api.listStaff).mockRejectedValueOnce(new Error("Roster unavailable"));
 		f.view.el.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
@@ -2557,7 +2556,6 @@ describe("new conversation and agent setup", () => {
 			input(f.view.el, "Message", "Keep our task");
 			input(f.view.el, "Search conversation recipients", "New agent");
 			choice(f.view.el, "create").click();
-			input(f.view.el, "Agent title", "Research");
 			button(f.view.el, "Create agent").click();
 			await settle();
 			expect(f.view.el.textContent).toContain("The agent was created");
@@ -2606,7 +2604,6 @@ describe("new conversation and agent setup", () => {
 		await settle();
 		choice(f.view.el, "create").click();
 		input(f.view.el, "Agent name", "New agent");
-		input(f.view.el, "Agent title", "Research");
 		for (let index = 0; index < 2; index++)
 			f.view.el.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
 		expect(createAgent).toHaveBeenCalledTimes(1);

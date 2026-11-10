@@ -299,12 +299,12 @@ describe("shared agent activity", () => {
 		expect(f.company.pausedRunFor(staff.id)).toBeUndefined();
 	});
 
-	it("waves only a live state; Needs you and roles stay still", () => {
-		expect(stateLine(AGENT_LOOK.decision, "Marketing Lead")).toBe("Needs you");
-		expect(stateLine(AGENT_LOOK.idle, "Marketing Lead")).toBe("Marketing Lead");
-		expect(stateLine(AGENT_LOOK.failed, "Marketing Lead")).toBe("Marketing Lead");
+	it("waves only a live state; Needs you stays still, and an idle agent has no line", () => {
+		expect(stateLine(AGENT_LOOK.decision)).toBe("Needs you");
+		expect(stateLine(AGENT_LOOK.idle)).toBeNull();
+		expect(stateLine(AGENT_LOOK.failed)).toBeNull();
 		for (const state of ["working", "writing"] as const) {
-			const line = stateLine(AGENT_LOOK[state], "Marketing Lead") as HTMLElement;
+			const line = stateLine(AGENT_LOOK[state]) as HTMLElement;
 			expect(line.textContent).toBe(AGENT_LOOK[state].line);
 			expect(line.querySelectorAll(".status-wave-letter")).toHaveLength(7);
 		}
@@ -314,9 +314,9 @@ describe("shared agent activity", () => {
 		vi.useFakeTimers();
 		try {
 			const delay = (el: Element) => Number.parseFloat((el as HTMLElement).style.getPropertyValue("--wave-delay"));
-			const first = stateLine(AGENT_LOOK.working, "") as HTMLElement;
+			const first = stateLine(AGENT_LOOK.working) as HTMLElement;
 			vi.advanceTimersByTime(500);
-			const second = stateLine(AGENT_LOOK.working, "") as HTMLElement;
+			const second = stateLine(AGENT_LOOK.working) as HTMLElement;
 			const a = delay(first.querySelector(".status-wave-letter")!);
 			const b = delay(second.querySelector(".status-wave-letter")!);
 			expect(((a - b - 500) % 1400) + 0).toBe(0);
@@ -365,8 +365,8 @@ describe("agent activity in Danish", () => {
 				["status-caption-name", "Nova"],
 				["status-caption-detail", " arbejder"],
 			]);
-			expect((stateLine(AGENT_LOOK.working, "Marketing Lead") as HTMLElement).textContent).toBe("Arbejder");
-			expect(stateLine(AGENT_LOOK.decision, "Marketing Lead")).toBe("Venter på dig");
+			expect((stateLine(AGENT_LOOK.working) as HTMLElement).textContent).toBe("Arbejder");
+			expect(stateLine(AGENT_LOOK.decision)).toBe("Venter på dig");
 			// Each word is translated once, from its English key.
 			expect(untranslated()).toEqual([]);
 		} finally {

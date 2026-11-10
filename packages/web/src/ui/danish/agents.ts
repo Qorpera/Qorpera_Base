@@ -17,7 +17,6 @@ export const AGENTS: Record<string, string> = {
 	Reset: "Nulstil",
 	"Edit figure": "Rediger figur",
 	"An agent needs a name.": "En agent skal have et navn.",
-	"An agent needs a title.": "En agent skal have en titel.",
 	"An agent needs its responsibilities written down.": "En agent skal have sine ansvarsområder skrevet ned.",
 	Saved: "Gemt",
 	"Your changes could not be saved.": "Dine ændringer kunne ikke gemmes.",

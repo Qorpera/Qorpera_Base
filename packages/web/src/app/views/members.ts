@@ -575,7 +575,6 @@ function agentButton(container: HTMLElement, ctx: Ctx, agent: HostedStaffAgent, 
 			{
 				class: `members-agent${picked ? " is-picked" : ""}${pending ? " is-asking" : ""}`,
 				type: "button",
-				title: agent.role,
 				disabled: !canPick,
 				"aria-pressed": String(picked),
 				onclick: () => {
@@ -585,7 +584,6 @@ function agentButton(container: HTMLElement, ctx: Ctx, agent: HostedStaffAgent, 
 			},
 			agentFigure(agent, "", { size, still: true }),
 			h("span", { class: "members-agent-name" }, agent.displayName),
-			h("span", { class: "members-agent-role" }, agent.role),
 		),
 		pending ? pendingLine(container, ctx, pending) : null,
 	);

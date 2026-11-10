@@ -59,8 +59,6 @@ export interface WorkspaceActions {
 		read(staffAgentId: string, signal: AbortSignal): Promise<string | null>;
 		/** Calls `listener` after a change hint of the company's folder; answers the way to stop. */
 		onFolderChange(listener: () => void): () => void;
-		/** Opens the agent's wall, above the composer of its own thread: "Latest notes" on its card. */
-		show?(staffAgentId: string): void;
 	};
 	/** A picture of the company's folder for a preview (a wall item's, a question option's), read with the member's own
 	 * folder client; null when the path names no picture to show (app/folder-images.ts). */

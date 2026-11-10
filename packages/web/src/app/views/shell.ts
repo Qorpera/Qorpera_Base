@@ -823,19 +823,19 @@ function statusDisc(look: AgentLook, className: string): HTMLElement | null {
 	return h("span", { class: className, "aria-hidden": "true" });
 }
 
-/** The link's name. No tooltip: the row already shows the name and role, and a hover
+/** The link's name. No tooltip: the row already shows the name, and a hover
  * popup over every row was noise (Jonas, 9 Nov 2026). Any state also goes into the name,
  * which the compact rail needs: it hides the text beside the figure and the disc says
  * nothing aloud. */
 function railLabel(
-	agent: Pick<HostedStaffAgent, "displayName" | "role"> & { mentioned?: boolean },
+	agent: Pick<HostedStaffAgent, "displayName"> & { mentioned?: boolean },
 	look: AgentLook,
 ): { "aria-label": string } {
 	// AGENT_LOOK keeps the English words; they are translated where they are drawn.
 	const words = look.note ?? look.line;
 	const state = words ? t(words) : undefined;
 	const mention = agent.mentioned ? t("You were mentioned") : undefined;
-	return { "aria-label": [agent.displayName, agent.role, state, mention].filter(Boolean).join(" · ") };
+	return { "aria-label": [agent.displayName, state, mention].filter(Boolean).join(" · ") };
 }
 
 /** "@" on a conversation where someone mentioned this member and they have not looked yet. */
@@ -846,7 +846,7 @@ function mentionBadge(mentioned: boolean | undefined): HTMLElement | null {
 /* Each rail row is built from its model alone, and the model is also what decides
  * whether the row is rebuilt: whatever a row shows is in its key by construction.
  * Which row is current is set in place instead, since it changes with every navigation. */
-interface AgentModel extends Pick<HostedStaffAgent, "id" | "displayName" | "role" | "templateId" | "appearance"> {
+interface AgentModel extends Pick<HostedStaffAgent, "id" | "displayName" | "templateId" | "appearance"> {
 	state: AgentState;
 	/** Someone mentioned this member in the agent's thread and they have not looked yet. */
 	mentioned: boolean;
@@ -926,6 +926,7 @@ function pinCard(model: AgentModel, href: string): HTMLElement {
 
 function agentRow(model: AgentModel, href: string): HTMLElement {
 	const look = AGENT_LOOK[model.state];
+	const line = stateLine(look);
 	return h(
 		"a",
 		{
@@ -943,12 +944,7 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 			statusDisc(look, "rail-row-status"),
 			mentionBadge(model.mentioned),
 		),
-		h(
-			"span",
-			{ class: "rail-row-copy" },
-			h("strong", null, model.displayName),
-			h("small", null, stateLine(look, model.role)),
-		),
+		h("span", { class: "rail-row-copy" }, h("strong", null, model.displayName), line ? h("small", null, line) : null),
 	);
 }
 
@@ -1094,12 +1090,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		return {
 			id: agent.id,
 			displayName: agent.displayName,
-			role: agent.role,
 			templateId: agent.templateId,
 			// Resolved, so the pick and the roster's words for it once saved (a colour's name, no colour for the
 			// figure's own shade) are one cache key, and the row is kept when the save lands.
 			appearance: { color: agentColor(shown, figure), shape: "", creature: figure },
-			// State is part of the cache key, including idle/failed transitions with the same figure and role.
+			// State is part of the cache key, including idle/failed transitions with the same figure.
 			state: company.agentState(agent.id),
 			mentioned: mentionedIn(
 				agent.id === cofounder?.id && cofounderSessionId
@@ -1109,7 +1104,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		};
 	};
 	const cofounderElement =
-		cofounder && matches(`${cofounder.displayName} ${cofounder.role}`)
+		cofounder && matches(cofounder.displayName)
 			? row(
 					`#/c/${profileId}`,
 					`#/c/${profileId}`,
@@ -1149,7 +1144,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const shown = (agent: HostedStaffAgent | undefined): agent is HostedStaffAgent =>
 		// A hidden agent is still found by searching for it.
 		Boolean(agent) &&
-		(matches(`${agent!.displayName} ${agent!.role}`) || inWholeSection(agent!.id)) &&
+		(matches(agent!.displayName) || inWholeSection(agent!.id)) &&
 		(!hidden.has(agent!.id) || Boolean(railQuery));
 	const roomShown = (roomId: string) =>
 		(matches(placedRooms.get(roomId)?.title ?? "") || inWholeSection(roomId)) &&

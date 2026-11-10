@@ -64,14 +64,14 @@ describe("uncertain agent creation", () => {
 		f.fake.answer("refused", "hook", ["an agent named Ledger already works here"]);
 		f.chooseCreate();
 		f.input("Agent name", "Ledger");
-		f.input("Agent title", "Finance");
 		f.submit();
 		await vi.waitFor(() => expect(f.view.el.textContent).toContain("Agent creation was rejected"));
 		await expect(f.create.mock.results[0]!.value).rejects.toBeInstanceOf(WebCompanyFolderRejectedError);
 		expect(f.view.el.querySelector<HTMLFieldSetElement>("fieldset")!.disabled).toBe(false);
 		const name = f.view.el.querySelector<HTMLInputElement>('[aria-label="Agent name"]')!;
 		expect(name.value).toBe("Ledger");
-		expect(f.view.el.querySelector<HTMLInputElement>('[aria-label="Agent title"]')!.value).toBe("Finance");
+		// No title to fill in: an agent has a name and responsibilities.
+		expect(f.view.el.querySelector('[aria-label="Agent title"]')).toBeNull();
 		expect(f.view.el.querySelector<HTMLButtonElement>('[type="submit"]')!.textContent).toBe("Create agent");
 		expect(f.create).toHaveBeenCalledTimes(1);
 		expect(f.fake.has("QorperaOS/agents/ledger")).toBe(false);
@@ -93,7 +93,6 @@ describe("uncertain agent creation", () => {
 		f.fake.loseAnswer();
 		f.chooseCreate();
 		f.input("Agent name", "Ledger");
-		f.input("Agent title", "Finance");
 		// Responsibilities agent.md cannot hold are refused before anything is retained.
 		f.input("Agent responsibilities", "Keep\u0001the books");
 		f.submit();
@@ -130,7 +129,6 @@ describe("uncertain agent creation", () => {
 		vi.mocked(f.api.listStaff).mockResolvedValueOnce([staff]);
 		f.chooseCreate();
 		f.input("Agent name", "Ledger");
-		f.input("Agent title", "Finance");
 		f.submit();
 		await vi.waitFor(() =>
 			expect(f.view.el.textContent).toContain(

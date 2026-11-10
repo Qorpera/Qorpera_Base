@@ -62,10 +62,11 @@ function waveInto(container: HTMLElement, text: string, index: number): number {
 	return index;
 }
 
-/** The rail card's second line: the live state with the wave running, a
- * still state ("Needs you"), or the role. Live is what carries `caption`. */
-export function stateLine(look: AgentLook, role: string): HTMLElement | string {
-	if (!look.line) return role;
+/** The rail card's second line: the live state with the wave running, or a
+ * still state ("Needs you"). Live is what carries `caption`. An idle agent has
+ * none: agents show no title under their name (Jonas, 10 November 2026). */
+export function stateLine(look: AgentLook): HTMLElement | string | null {
+	if (!look.line) return null;
 	if (!look.caption) return t(look.line);
 	const line = document.createElement("span");
 	line.className = "status-wave";

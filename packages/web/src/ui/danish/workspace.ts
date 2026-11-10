@@ -426,8 +426,6 @@ export const WORKSPACE: Record<string, string> = {
 	"The conversation could not be started. Your draft is still here.":
 		"Samtalen kunne ikke startes. Din kladde er her stadig.",
 	"Agent name": "Agentnavn",
-	"For example, Research": "For eksempel Forskning",
-	"Agent title": "Agentens titel",
 	"What should this agent be responsible for?": "Hvad skal denne agent have ansvar for?",
 	"Agent responsibilities": "Agentens ansvarsområder",
 	Name: "Navn",
@@ -439,7 +437,7 @@ export const WORKSPACE: Record<string, string> = {
 	"Add created agent": "Tilføj den oprettede agent",
 	"Create agent": "Opret agent",
 	"Create an agent": "Opret en agent",
-	"Enter a name and title.": "Skriv et navn og en titel.",
+	"Enter a name.": "Skriv et navn.",
 	"Creating agent…": "Opretter agent…",
 	"Creation could not be confirmed. Retry to check the same agent.":
 		"Oprettelsen kunne ikke bekræftes. Prøv igen for at kontrollere den samme agent.",

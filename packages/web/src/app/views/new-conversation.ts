@@ -529,16 +529,6 @@ export class NewConversationView {
 				this.#draft.displayName = name.value;
 			},
 		});
-		const role = h("input", {
-			value: this.#draft.role,
-			maxlength: "160",
-			required: true,
-			placeholder: t("For example, Research"),
-			"aria-label": t("Agent title"),
-			oninput: () => {
-				this.#draft.role = role.value;
-			},
-		});
 		const charter = h("textarea", {
 			value: this.#draft.charter,
 			rows: 3,
@@ -559,7 +549,6 @@ export class NewConversationView {
 			stage,
 			picker.el,
 			h("label", null, t("Name"), name),
-			h("label", null, t("Title"), role),
 			h("label", null, t("Responsibilities"), charter),
 		);
 		const status = h(
@@ -612,8 +601,8 @@ export class NewConversationView {
 				(!this.#createdAgentId && !form.reportValidity())
 			)
 				return;
-			if (!name.value.trim() || !role.value.trim()) {
-				status.textContent = t("Enter a name and title.");
+			if (!name.value.trim()) {
+				status.textContent = t("Enter a name.");
 				return;
 			}
 			this.#pending = true;
@@ -625,7 +614,9 @@ export class NewConversationView {
 				this.#creation ??= prepareWebCompanyAgentCreation({
 					...this.#draft,
 					displayName: name.value.trim(),
-					role: role.value.trim(),
+					// No title of its own: agents show a name and responsibilities (Jonas, 10 November 2026). agent.md
+					// still wants a role, and the name is the closest true one.
+					role: name.value.trim(),
 					charter: charter.value.trim(),
 				});
 				this.#createdAgentId ??= await this.#actions.createAgent(
