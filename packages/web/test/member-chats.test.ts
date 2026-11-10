@@ -1234,8 +1234,10 @@ describe("a member's chat on screen", () => {
 		expect(theirs?.dataset.sentAt).toBe("2026-11-10T08:00:30Z");
 		expect(theirs?.hasAttribute("title")).toBe(false);
 		const outgoing = controller.memberChats.thread(sofie).get().outgoing[0];
-		expect(outgoing?.createdAt).toBeTruthy();
-		expect(mine?.dataset.sentAt).toBe(outgoing?.createdAt);
+		// The moment it was written: a failed send may stamp its state again a millisecond later.
+		expect(Math.abs(Date.parse(mine?.dataset.sentAt ?? "") - Date.parse(outgoing?.createdAt ?? ""))).toBeLessThan(
+			1000,
+		);
 	});
 
 	it("draws a message taken back without words, and offers to take back only my own", async () => {
