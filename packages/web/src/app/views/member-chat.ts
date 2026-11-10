@@ -343,7 +343,7 @@ export class MemberChatView {
 			time(outgoing.clientMessageId, outgoing.createdAt);
 			row(
 				`outgoing:${outgoing.clientMessageId}`,
-				JSON.stringify([outgoing.text, outgoing.failed]),
+				JSON.stringify([outgoing.text, outgoing.failed, outgoing.seq !== undefined]),
 				() => this.#outgoing(outgoing),
 				true,
 			);
@@ -392,13 +392,15 @@ export class MemberChatView {
 		);
 	}
 
-	/** A message on its way, or one that was not sent: why, and the two ways on. */
+	/** A message on its way (faded), one that was sent and waits for the chat's next read (as any other), or one that
+	 * was not sent: why, and the two ways on. */
 	#outgoing(outgoing: OutgoingMemberMessage): HTMLElement {
 		const chats = this.#company.memberChats;
+		const state = outgoing.failed ? " pending-failed" : outgoing.seq === undefined ? " pending-queued" : "";
 		return h(
 			"article",
 			{
-				class: `message from-member mine ${outgoing.failed ? "pending-failed" : "pending-queued"}`,
+				class: `message from-member mine${state}`,
 				"aria-label": `${t("You")} · ${fmtTime(outgoing.createdAt)}`,
 			},
 			h("div", { class: "bubble" }, h("div", { class: "text" }, ...linked(outgoing.text))),

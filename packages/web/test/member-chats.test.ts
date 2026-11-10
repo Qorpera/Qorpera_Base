@@ -523,9 +523,55 @@ describe("the chats' state", () => {
 		expect(thread.hasMore).toBe(false);
 		// More was new than the first read asked for: it read on backwards to the oldest message shown.
 		expect(vi.mocked(calls.read).mock.calls).toEqual([
-			[sofie, undefined, 12],
-			[sofie, 50, 200],
+			[sofie, undefined, 11],
+			[sofie, 51, 200],
 		]);
+	});
+
+	it("keeps a sent message after the chat's messages until a read brings it among them", async () => {
+		const server = chatServer([message(1, sofie, "m1")]);
+		let offline = false;
+		const read = vi.fn(async (userId: string, before?: number, limit?: number) => {
+			if (offline) throw new Error("Failed to fetch");
+			return server.read(userId, before, limit);
+		});
+		const { controller } = chats({
+			read,
+			send: vi.fn(async (_userId: string, _client: string, text: string) => {
+				// Sofie wrote just before: her message stands between the one shown and this one.
+				server.kept.messages.push(message(2, sofie, "m2"), message(3, me, text));
+				return message(3, me, text);
+			}),
+		});
+		controller.setOpen(sofie);
+		await settle();
+		// The read after the send fails: the sent message is put nowhere among the messages by guess.
+		offline = true;
+		controller.send(sofie, "Mine");
+		await settle();
+		const thread = controller.thread(sofie);
+		expect(seqs(thread.get())).toEqual([1]);
+		expect(thread.get().outgoing).toMatchObject([{ text: "Mine", seq: 3 }]);
+		expect(thread.get().outgoing[0]?.failed).toBeUndefined();
+		// Sent once: nothing sends it again.
+		controller.retry(sofie, thread.get().outgoing[0]!.clientMessageId);
+		await settle();
+		expect(controller.thread(sofie).get().outgoing).toHaveLength(1);
+		// The next read brings it, after the message that came before it.
+		offline = false;
+		await controller.poll();
+		expect(seqs(thread.get())).toEqual([1, 2, 3]);
+		expect(thread.get().outgoing).toEqual([]);
+		// Sent with the chat off screen, it waits the same way and is gone once the chat is read again.
+		controller.setOpen(undefined);
+		server.kept.messages.push(message(4, me, "Later"));
+		controller
+			.thread(sofie)
+			.set({ outgoing: [{ clientMessageId: id(1), text: "Later", createdAt: timestamp, seq: 4 }] });
+		controller.setOpen(sofie);
+		await settle();
+		expect(seqs(thread.get())).toEqual([1, 2, 3, 4]);
+		expect(thread.get().outgoing).toEqual([]);
 	});
 
 	it("shows on the clock what a missed hint would have brought, with no newer message", async () => {
@@ -640,6 +686,30 @@ describe("the chats' state", () => {
 		expect(controller.thread(sofie).get().hasMore).toBe(false);
 	});
 
+	it("starts over at what was read, earlier messages shown meanwhile too, when the read did not reach them", async () => {
+		// Review of #1638 round 2, F1: 51 to 2100 shown; a read reaches back to 101; 1 to 50 are shown meanwhile. Joined,
+		// they would be 1…50, 101…2100: a hole. The chat starts at 101 and offers the earlier messages again.
+		const server = chatServer(run(1, 2100));
+		const { controller, calls } = chats({ read: server.read });
+		controller.setOpen(sofie);
+		await settle();
+		for (let pages = 0; pages < 40; pages++) await controller.loadEarlier(sofie);
+		expect(seqs(controller.thread(sofie).get())[0]).toBe(51);
+		const held = deferred<void>();
+		vi.mocked(calls.read).mockImplementationOnce(async (userId: string, before?: number, limit?: number) => {
+			await held.promise;
+			return server.read(userId, before, limit);
+		});
+		const reading = controller.load(sofie);
+		await controller.loadEarlier(sofie);
+		expect(seqs(controller.thread(sofie).get())[0]).toBe(1);
+		held.resolve();
+		await reading;
+		const thread = controller.thread(sofie).get();
+		expect(seqs(thread)).toEqual(run(101, 2100).map((item) => item.seq));
+		expect(thread.hasMore).toBe(true);
+	});
+
 	it("starts the chat at what was read when more is new than it reads back in one go", async () => {
 		// Ten reads reach 60 + 9 × 200 messages back; past that the chat shows less, never a hole.
 		const server = chatServer([message(1, sofie, "m1")]);
@@ -696,6 +766,31 @@ describe("the chats' state", () => {
 		fail = true;
 		await controller.remove(sofie, id(7004));
 		expect(controller.thread(sofie).get().notice).toBe("Could not delete the message. Try again.");
+	});
+
+	it("puts a message taken back nowhere above the chat when the answer comes after it was opened again", async () => {
+		// Review of #1638 round 2, F2: message 1 is taken back, the chat is opened again at 51 to 100, then the answer
+		// comes. With 1 put above 51, "Show earlier messages" would ask before 1 and never show 2 to 50.
+		const server = chatServer(run(1, 100, me));
+		const answer = deferred<MemberMessage>();
+		const { controller } = chats({ read: server.read, remove: vi.fn(async () => answer.promise) });
+		controller.setOpen(sofie);
+		await settle();
+		await controller.loadEarlier(sofie);
+		expect(seqs(controller.thread(sofie).get())).toEqual(run(1, 100).map((item) => item.seq));
+		const removing = controller.remove(sofie, id(7001));
+		controller.setOpen(undefined);
+		controller.setOpen(sofie);
+		await settle();
+		server.takeBack(1);
+		answer.resolve(server.kept.messages[0]!);
+		await removing;
+		expect(seqs(controller.thread(sofie).get())).toEqual(run(51, 100).map((item) => item.seq));
+		expect(controller.thread(sofie).get().hasMore).toBe(true);
+		await controller.loadEarlier(sofie);
+		const thread = controller.thread(sofie).get();
+		expect(seqs(thread)).toEqual(run(1, 100).map((item) => item.seq));
+		expect(thread.messages[0]).toMatchObject({ seq: 1, deleted: true });
 	});
 
 	it("stops asking a cloud that has no member chats, and says why a chat did not open", async () => {
