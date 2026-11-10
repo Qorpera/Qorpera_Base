@@ -248,6 +248,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_open_company_founding(uuid,text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_open_runtime_office_screen(jsonb,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_own_member_picture_objects()', false, true, 'member: auth.uid() + membership/ownership'),
+	('public.qorpera_place_member_contacts(uuid,jsonb)', false, true, 'member: auth.uid() + membership; writes only where the caller keeps other members of the company in their own rail (20260930717000)'),
 	('public.qorpera_post_company_room_message(uuid,uuid,jsonb,uuid,bigint)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_prepare_email_draft_action(uuid,uuid,uuid,text,jsonb,text,uuid,bigint)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_prepare_node_update_phase(uuid,bigint,text,text,text)', true, true, 'internal: node capability secret (sha256 match)'),

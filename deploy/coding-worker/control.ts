@@ -1,5 +1,6 @@
 import { readBoundedCloudResponse, supabaseServiceHeaders } from "../../packages/cloud-client/src/cloud-request.ts";
 import { CODE_HOST_DELETION_RPCS } from "../../packages/runner-orchestrator/src/code-host.ts";
+import { CODE_CARE_RPCS } from "../../packages/runner-orchestrator/src/code-host-care.ts";
 import { CODE_HOST_RPCS } from "../../packages/runner-orchestrator/src/code-host-views.ts";
 import { CODING_EXECUTOR_RPCS, CodingControlBusy, CodingControlRefused } from "../../packages/runner-orchestrator/src/coding-executor.ts";
 import { CODING_HOST_RPCS } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
@@ -7,7 +8,7 @@ import { CODING_SNAPSHOT_RPCS } from "../../packages/runner-orchestrator/src/cod
 import { COMPANY_MACHINE_HOST_RPCS } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
 
 const METHODS = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, ...CODING_SNAPSHOT_RPCS, ...COMPANY_MACHINE_HOST_RPCS, ...CODE_HOST_RPCS,
-	...CODE_HOST_DELETION_RPCS, "qorpera_authorize_coding_command", "qorpera_route_coding_command",
+	...CODE_HOST_DELETION_RPCS, ...CODE_CARE_RPCS, "qorpera_authorize_coding_command", "qorpera_route_coding_command",
 	"qorpera_authorize_machine_command", "qorpera_authorize_machine_coding_value", "qorpera_authorize_machine_screen",
 	"qorpera_native_binding_proven"]);
 

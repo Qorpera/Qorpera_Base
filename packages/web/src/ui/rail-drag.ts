@@ -1,7 +1,9 @@
-/* Dragging agents and group chats in the rail: between sections, into or out of the
- * pinned row, and up or down inside one. Rows carry data-agent-id or, for a group
- * chat, data-room-id; the places they can land carry data-drop-zone ("pinned",
- * "section:<id>" or "unassigned"). The rows make way while a row is dragged, as the
+/* Dragging agents, group chats and member contacts in the rail: between sections, into
+ * or out of the pinned row, and up or down inside one. Rows carry data-agent-id, for a
+ * group chat data-room-id, or for a contact data-member-id; the places they can land
+ * carry data-drop-zone ("pinned", "section:<id>", "unassigned" or, for contacts,
+ * "members"). The list says what kind is dragged (data-dragging), so a zone that takes
+ * only that kind can show itself. The rows make way while a row is dragged, as the
  * apps drawer's icons do (Jonas, 10 Nov 2026: "I prefer the style used when reordering
  * the interfaces with immediate orderswitching"): the row lifts off as an image under
  * the pointer, an empty space of its shape stands where it would land, and the rows
@@ -14,27 +16,34 @@ import { easing, reducedMotion } from "./motion.ts";
 import { uiScale } from "./scale.ts";
 
 export interface RailDrop {
-	/** The agent or group chat dropped. */
+	/** The agent, group chat or contact dropped. */
 	itemId: string;
-	kind: "agent" | "room";
+	kind: RailDragKind;
 	zone: string;
-	/** The zone's agents and group chats after the drop, the dragged one included, in order. */
+	/** The zone's agents, group chats and contacts after the drop, the dragged one included, in order. */
 	order: string[];
 }
+
+export type RailDragKind = "agent" | "room" | "member";
 
 export interface RailDragHooks {
 	/** Whether this item can be picked up now (no search running, the sidebar is loaded…). */
 	canDrag(itemId: string): boolean;
 	/** Whether the item may land in this zone. */
 	accepts(zone: string, itemId: string): boolean;
+	/** Told before anything on the screen moves: the row still stands in the zone it left, so what it left behind
+	 * can be read off the list. */
 	drop(drop: RailDrop): void;
 	/** A drag ended, however it ended (dropped, put back, given up): the rail may draw again. */
 	end(): void;
 }
 
-/** What the rail drags: agents and group chats. */
-const ITEM = "[data-agent-id], [data-room-id]";
-const itemIdOf = (element: HTMLElement) => element.dataset.agentId ?? element.dataset.roomId;
+/** What the rail drags: agents, group chats and member contacts. */
+export const RAIL_ITEM = "[data-agent-id], [data-room-id], [data-member-id]";
+export const railItemId = (element: HTMLElement) =>
+	element.dataset.agentId ?? element.dataset.roomId ?? element.dataset.memberId;
+const itemSelector = (itemId: string) =>
+	`[data-agent-id="${itemId}"], [data-room-id="${itemId}"], [data-member-id="${itemId}"]`;
 /** What glides when the space moves: every row and card, and the titles and slots between them. */
 const LEAVES = ".rail-row, .rail-pin, .rail-section-title, .rail-hidden-toggle, .rail-drop-slot, .rail-empty";
 
@@ -49,7 +58,7 @@ const SETTLE_MS = 220;
 
 interface Active {
 	itemId: string;
-	kind: "agent" | "room";
+	kind: RailDragKind;
 	pointerId: number;
 	start: { x: number; y: number };
 	offset: { x: number; y: number };
@@ -87,12 +96,12 @@ export class RailDrag {
 	constructor(list: HTMLElement, hooks: () => RailDragHooks, signal: AbortSignal) {
 		this.#list = list;
 		this.#hooks = hooks;
-		// Agent and group chat links and their figures are natively draggable; the rail drags
-		// those itself. Other links keep the browser's own dragging.
+		// Agent, group chat and contact links and their figures are natively draggable; the rail
+		// drags those itself. Other links keep the browser's own dragging.
 		list.addEventListener(
 			"dragstart",
 			(event) => {
-				if ((event.target as Element).closest?.(`${ITEM}, [data-cofounder-id]`)) event.preventDefault();
+				if ((event.target as Element).closest?.(`${RAIL_ITEM}, [data-cofounder-id]`)) event.preventDefault();
 			},
 			{ signal },
 		);
@@ -137,13 +146,13 @@ export class RailDrag {
 	#press(event: PointerEvent): void {
 		if (event.button !== 0 || event.pointerType === "touch" || event.ctrlKey || event.metaKey || event.shiftKey)
 			return;
-		const source = (event.target as Element).closest<HTMLElement>(ITEM);
-		const itemId = source ? itemIdOf(source) : undefined;
+		const source = (event.target as Element).closest<HTMLElement>(RAIL_ITEM);
+		const itemId = source ? railItemId(source) : undefined;
 		if (!source || !itemId || !this.#list.contains(source) || !this.#hooks().canDrag(itemId)) return;
 		const rect = source.getBoundingClientRect();
 		this.#active = {
 			itemId,
-			kind: source.dataset.roomId ? "room" : "agent",
+			kind: source.dataset.memberId ? "member" : source.dataset.roomId ? "room" : "agent",
 			pointerId: event.pointerId,
 			start: { x: event.clientX, y: event.clientY },
 			offset: { x: event.clientX - rect.left, y: event.clientY - rect.top },
@@ -156,8 +165,7 @@ export class RailDrag {
 	#begin(active: Active): void {
 		// A redraw between the press and the first move may have rebuilt the row.
 		if (!active.source.isConnected) {
-			const selector = `[data-agent-id="${active.itemId}"], [data-room-id="${active.itemId}"]`;
-			const source = this.#list.querySelector<HTMLElement>(selector);
+			const source = this.#list.querySelector<HTMLElement>(itemSelector(active.itemId));
 			if (!source || !this.#hooks().canDrag(active.itemId)) {
 				this.#active = undefined;
 				return;
@@ -199,6 +207,7 @@ export class RailDrag {
 		active.index = index < 0 ? undefined : index;
 		zone?.classList.add("is-drop-target");
 		this.#list.classList.add("rail-dragging");
+		this.#list.dataset.dragging = active.kind;
 		document.documentElement.classList.add("rail-drag-active");
 		getSelection()?.removeAllRanges();
 		this.#scrollLoop();
@@ -206,7 +215,7 @@ export class RailDrag {
 
 	/** The zone's rows or cards in order, the dragged one left out and its space in its place. */
 	#items(zone: HTMLElement, active: Active): HTMLElement[] {
-		return [...zone.querySelectorAll<HTMLElement>(`${ITEM}, .rail-drop-gap`)].filter(
+		return [...zone.querySelectorAll<HTMLElement>(`${RAIL_ITEM}, .rail-drop-gap`)].filter(
 			(item) => item !== active.source,
 		);
 	}
@@ -410,20 +419,20 @@ export class RailDrag {
 		}
 		this.#active = undefined;
 		const gap = active.gap!;
-		const order = this.#items(zone, active).map((item) => (item === gap ? active.itemId : itemIdOf(item)!));
+		const order = this.#items(zone, active).map((item) => (item === gap ? active.itemId : railItemId(item)!));
 		// A row that lands among rows takes the space itself, so the drop moves nothing on the screen. A row
 		// pinned or unpinned changes shape: the space holds its place until the rail draws the new card or row.
 		const same = gap.classList.contains("is-pin") === active.source.classList.contains("rail-pin");
+		const hooks = this.#hooks();
+		hooks.drop({ itemId: active.itemId, kind: active.kind, zone: zone.dataset.dropZone!, order });
 		if (same) {
 			gap.replaceWith(active.source);
 			active.source.classList.replace("is-drag-source", "is-drag-landing");
 		}
-		const hooks = this.#hooks();
-		hooks.drop({ itemId: active.itemId, kind: active.kind, zone: zone.dataset.dropZone!, order });
 		// Drawn now, the rail stands as it will (the drop drew the change at once).
 		hooks.end();
 		gap.remove();
-		const selector = `[data-agent-id="${active.itemId}"], [data-room-id="${active.itemId}"]`;
+		const selector = itemSelector(active.itemId);
 		const landed =
 			(same && active.source.isConnected ? active.source : undefined) ??
 			zone.querySelector<HTMLElement>(selector) ??
@@ -444,6 +453,7 @@ export class RailDrag {
 			change?.();
 			active.zone?.classList.remove("is-drop-target");
 			this.#list.classList.remove("rail-dragging", "rail-pin-open");
+			delete this.#list.dataset.dragging;
 			active.source.classList.remove("is-drag-source");
 			if (landed.isConnected) landed.classList.add("is-drag-landing");
 		});

@@ -35,10 +35,15 @@ registry. The service reads both fields for the bound screen through the
 broker-only `qorpera_runtime_office_screen_appearance(p_binding)` when it starts
 a desktop; an office that cannot read them still starts, with the figure every
 client derives from the agent id. Explicit creature appearance takes precedence
-over the reused template/identity derivation. The image's file names are
-historical (`pebble`, `folio`, `brain`, `wisp`, `halo`, `ribbon`, `bloom`);
+over the reused template/identity derivation. The image's first seven file
+names are historical (`pebble`, `folio`, `brain`, `wisp`, `halo`, `ribbon`,
+`bloom`); the six added in November 2026 are named for their figure (`star`,
+`cloud`, `bolt`, `mushroom`, `moon`, `puzzle`).
 `cloud-company-computer-wallpapers.ts` maps each current avatar to the file
-whose traced figure is that avatar, and a test pins the table to the art. The helper copies the image's
+whose figure is that avatar, and a test pins the table to the art. An image
+built before the newer six lacks their files: there the helper keeps to the
+first seven (the ghost's file for the moon that replaced it, else a stable one
+by the agent's id), so the desktop still starts. The helper copies the image's
 `/usr/share/backgrounds/qorpera-screen-<creature>.png` through an explicit
 read/write and atomic rename into `<screenStateRoot>/<screen UUID>/wallpaper.png`;
 it does not use the cross-filesystem `copyFile` syscall that failed in the old

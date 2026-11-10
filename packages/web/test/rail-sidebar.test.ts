@@ -971,6 +971,30 @@ describe("dragging agents in the rail", () => {
 		});
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
+	it("keeps a pin made elsewhere while an agent was lifted, and drops the agent among the pins as they are now", async () => {
+		const { rail, manage, company, ready } = companyWith(demo());
+		await ready;
+		await settle();
+		const boxes = layout(rail);
+		const row = rowOf(rail, "Cy");
+		const target = boxes.get(rail.querySelector(".rail-pin")!)!;
+		row.dispatchEvent(pointer("pointerdown", 20, boxes.get(row)!.top + 20));
+		document.dispatchEvent(pointer("pointermove", 20, boxes.get(row)!.top + 34));
+		document.dispatchEvent(pointer("pointermove", 20, target.top + 5));
+		expect(rail.querySelector(".rail-pinned > .rail-drop-gap")).not.toBeNull();
+		// Bo is pinned on another device; the lifted rail still shows Dee alone.
+		const sidebar = company.store.get().sidebar!;
+		company.store.set({ sidebar: { ...sidebar, pinned: [bo.id, dee.id] } });
+		await settle();
+		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual(["Dee"]);
+		document.dispatchEvent(pointer("pointerup", 20, target.top + 5));
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "set_pins",
+			order: [bo.id, cy.id, dee.id],
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
 	it("does not pick an agent up while searching, and Escape puts a drag back", async () => {
 		const { rail, manage, draw, ready } = companyWith(demo());
 		await ready;
