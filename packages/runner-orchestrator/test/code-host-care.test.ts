@@ -356,7 +356,7 @@ const BEGIN_TO_BUNDLE = [
 	"step:bundle",
 	"job:bundle",
 ];
-const PACK = ["step:gc", "job:collect", "step:verify", "job:check", "job:fsck"];
+const PACK = ["step:gc", "job:check", "job:collect", "step:verify", "job:check", "job:fsck"];
 const RETIRE = ["step:retire", "job:retire:files", "step:retire-git", "job:retire:git-folder"];
 
 describe("CodeHostCare", () => {
@@ -575,6 +575,8 @@ describe("CodeHostCare", () => {
 		expect(t.runs).toHaveLength(7);
 		expect(t.runs.every((run) => run.options?.yields === true && run.companyId === COMPANY)).toBe(true);
 		expect(t.seen.slice(3).map((call) => [call.job, ...call.args])).toEqual([
+			// The refs are read again in the pack's own job, before anything is packed.
+			["check", { repository: REPOSITORY }, {}],
 			// Never pruning, never packing refs, with the job's own gc block.
 			["collect", { repository: REPOSITORY }, BLOCK, { packRefs: false, prune: false }],
 			["check", { repository: REPOSITORY }, {}],
@@ -1159,7 +1161,7 @@ describe("CodeHostCare", () => {
 			throw new CodeHostRefusal("CODE_HOST_GC_SHALLOW", ["code/acme/app/repo.git/shallow"]);
 		};
 		await t.pass();
-		expect(packed(t)).toEqual(["step:gc", "job:collect"]);
+		expect(packed(t)).toEqual(["step:gc", "job:check", "job:collect"]);
 		expect(t.outcome()).toMatchObject({ state: "done", problem: "AREA_SHALLOW", gc: { state: "shallow" } });
 
 		// Nothing loose: nothing to pack.
@@ -1174,7 +1176,7 @@ describe("CodeHostCare", () => {
 			t = gcOn();
 			t.jobs.collect = async () => ({ state });
 			await t.pass();
-			expect(packed(t)).toEqual(["step:gc", "job:collect"]);
+			expect(packed(t)).toEqual(["step:gc", "job:check", "job:collect"]);
 			expect(t.outcome()).toMatchObject({ state: "done", problem: null, gc: { state: "held" }, retired: 1 });
 		}
 
@@ -1194,12 +1196,11 @@ describe("CodeHostCare", () => {
 			retired: 1,
 		});
 
-		// Damaged: fsck finds problems after the pack, the refs are not the ones from before it, or the repository is gone.
+		// Damaged: fsck finds problems after the pack, or the repository is gone.
 		const damage: ((u: ReturnType<typeof setup>) => void)[] = [
 			(u) => {
 				u.area.fsck = { state: "problems", exitCode: 2, detail: "missing tree" };
 			},
-			(u) => u.area.commit(),
 			(u) => {
 				u.area.present = false;
 			},
@@ -1216,7 +1217,7 @@ describe("CodeHostCare", () => {
 			// Nothing is retired from a damaged repository.
 			expect([index, t.took().slice(BEGIN_TO_BUNDLE.length)]).toEqual([
 				index,
-				[...PACK.slice(0, index === 2 ? 4 : 5), "finish"],
+				[...PACK.slice(0, index === 1 ? 5 : 6), "finish"],
 			]);
 			expect(t.outcome()).toMatchObject({
 				state: "done",
@@ -1228,6 +1229,85 @@ describe("CodeHostCare", () => {
 			});
 			expect(t.errors()).toEqual(["verify:GC_DAMAGED"]);
 		}
+
+		// The refs after the pack are not the ones packed (a pack moves no ref: other work came between its job and the
+		// look at it). Not damaged, so packing stays on; not proven either, so the next run fscks first.
+		t = gcOn();
+		const moved = t;
+		t.jobs.collect = async () => {
+			moved.area.commit();
+			return { state: "collected" };
+		};
+		await expect(t.pass()).resolves.toEqual({ cared: 1, busy: 0, failed: 0 });
+		expect(t.took().slice(BEGIN_TO_BUNDLE.length)).toEqual([...PACK, "finish"]);
+		expect(t.outcome()).toMatchObject({
+			state: "done",
+			problem: "GC_NOT_VERIFIED",
+			refsSha256: null,
+			fsck: { state: "timeout", detail: "GC_NOT_VERIFIED: the refs moved between the pack and the look at it" },
+			gc: { state: "collected" },
+			retired: 0,
+		});
+		expect(t.errors()).toEqual([]);
+		t.jobs.collect = async () => ({ state: "collected" });
+		t.area.objects.loose = 0;
+		t.clock.now += DAY;
+		await t.pass();
+		expect(t.took().slice(0, 7)).toEqual(
+			BEGIN_TO_BUNDLE.map((entry) => (entry === "job:check:deep" ? "job:check" : entry)),
+		);
+		expect(t.outcome()).toMatchObject({
+			state: "done",
+			problem: null,
+			fsck: { state: "ok" },
+			bundle: { state: "stored" },
+		});
+
+		// A turn finished between the night's check and the pack, outside any job (here: while the stored copy of the
+		// unchanged refs was read). The pack's job reads the refs again with the line held and packs nothing; nothing
+		// is called damaged, and the next run checks, copies and packs the repository as it is then.
+		t = setup();
+		await t.pass();
+		t.row.flags = { gc: true, retire: false };
+		t.clock.now += DAY;
+		t.took();
+		const checkedRefs = t.area.fingerprint();
+		const turned = t;
+		t.kernel.stepAnswer = (step) => {
+			if (step === "gc") turned.area.commit();
+			return undefined;
+		};
+		await expect(t.pass()).resolves.toEqual({ cared: 1, busy: 0, failed: 0 });
+		expect(t.took()).toEqual(["step:begin", "step:check", "job:check", "step:gc", "job:check", "finish"]);
+		expect(t.outcome()).toMatchObject({
+			state: "done",
+			problem: null,
+			refsSha256: checkedRefs,
+			bundle: { state: "unchanged" },
+			gc: { state: "skipped" },
+		});
+		expect(t.errors()).toEqual([]);
+		t.kernel.stepAnswer = undefined;
+		t.clock.now += DAY;
+		await expect(t.pass()).resolves.toEqual({ cared: 1, busy: 0, failed: 0 });
+		expect(t.took()).toEqual([
+			"step:begin",
+			"step:check",
+			"job:check",
+			"step:fsck",
+			"job:fsck",
+			"step:bundle",
+			"job:bundle",
+			...PACK,
+			"finish",
+		]);
+		expect(t.outcome()).toMatchObject({
+			state: "done",
+			problem: null,
+			refsSha256: t.area.fingerprint(),
+			bundle: { state: "stored" },
+			gc: { state: "collected" },
+		});
 
 		// The look after the pack did not finish (fsck ran out of time, or the job failed): not damaged, not proven. The
 		// next run's fsck is due, whether the kernel keeps the refs it recorded or takes the outcome's none.
@@ -1508,7 +1588,7 @@ describe("CodeHostCare", () => {
 			return { state: "collected" };
 		};
 		await expect(packing.care.pass(stopped.signal)).resolves.toEqual({ cared: 0, busy: 1, failed: 0 });
-		expect(packing.took()).toEqual([...BEGIN_TO_BUNDLE, "step:gc", "job:collect", "finish"]);
+		expect(packing.took()).toEqual([...BEGIN_TO_BUNDLE, "step:gc", "job:check", "job:collect", "finish"]);
 		expect(packing.outcome()).toMatchObject({
 			state: "busy",
 			problem: "GC_NOT_VERIFIED",
