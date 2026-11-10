@@ -27,11 +27,11 @@ describe("company colour", () => {
 		expect(companyColor(id)).toBe(companyColor(id));
 	});
 
-	it("is never charcoal or gray, and uses every bright colour", () => {
+	it("is never charcoal or slate, and uses every bright colour", () => {
 		const seen = new Set<string>();
 		for (let index = 0; index < 400; index++) seen.add(companyColor(`company-${index}`));
 		expect(seen.has("#312f2d")).toBe(false);
-		expect(seen.has("#7c7c7a")).toBe(false);
+		expect(seen.has("#6c839b")).toBe(false);
 		expect(seen.size).toBe(COMPANY_COLORS.length);
 	});
 

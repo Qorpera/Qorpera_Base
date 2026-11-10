@@ -22,6 +22,7 @@ import {
 } from "../cloud/email-drafts.ts";
 import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
 import type { InteractionAnswer, InteractionOutcome, InteractionRequest } from "../cloud/interactions.ts";
+import { type MemberChatSummary, memberChatCalls } from "../cloud/member-chats.ts";
 import type { OpenQuestion } from "../cloud/open-questions.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
 import type { PageCursor } from "../cloud/pagination.ts";
@@ -76,6 +77,7 @@ import type { CompanyApp } from "./interface-apps.ts";
 import type { InterfaceFolderState } from "./interface-folder.ts";
 import type { InterfaceOffersState } from "./interface-offers.ts";
 import type { InterfacePagesState } from "./interface-pages.ts";
+import { MemberChats } from "./member-chats.ts";
 import { parsePresenceValue, presenceValue, sessionPlace } from "./presence-place.ts";
 import {
 	appendQuoted,
@@ -227,6 +229,11 @@ export interface CompanyState {
 	approvalsUnavailable?: boolean;
 	/** The other members' open browser tabs and the conversation each shows (presence). */
 	here?: readonly PresenceMember[];
+	/** This member's chats with the company's other members, by the other member (app/member-chats.ts). Unset until
+	 * the first read lands, and in a company with nobody else. */
+	memberChats?: Readonly<Record<string, MemberChatSummary>>;
+	/** The cloud has no member chats yet (before 20260930715000): the rail shows no members. */
+	memberChatsUnavailable?: boolean;
 	/** The company is out of computer hours: new work waits until hours are added (the zero rule). */
 	waitingForHours?: boolean;
 	/** The deployed cloud cannot say yet whether the company waits for computer hours. */
@@ -584,6 +591,8 @@ export class CompanyController {
 	#recoveriesMissing = false;
 	/** Members' unsent messages in the conversations they share (20260928000500). */
 	readonly roomDrafts: RoomDrafts;
+	/** This member's chats with the company's other members (20260930715000). */
+	readonly memberChats: MemberChats;
 	#mentionReads = 0;
 	#approvalReads = 0;
 	#hoursWaitReads = 0;
@@ -627,6 +636,25 @@ export class CompanyController {
 			realtime: "connecting",
 			loading: true,
 		});
+		const chatCalls = memberChatCalls(api.cloud, profile.profileId);
+		this.memberChats = new MemberChats({
+			userId,
+			calls: () => chatCalls,
+			available: () => {
+				const state = this.store.get();
+				return (
+					!this.#stopped &&
+					!state.accessLost &&
+					!state.memberChatsUnavailable &&
+					state.team?.capabilities.read === true &&
+					state.team.members.some((member) => member.userId !== userId)
+				);
+			},
+			visible: () => typeof document === "undefined" || document.visibilityState !== "hidden",
+			summaries: () => this.store.get().memberChats,
+			setSummaries: (memberChats) => this.store.set({ memberChats }),
+			setUnavailable: () => this.store.set({ memberChatsUnavailable: true, memberChats: undefined }),
+		});
 	}
 
 	get profile(): HostedProfile {
@@ -669,6 +697,7 @@ export class CompanyController {
 				"visibilitychange",
 				() => {
 					this.#seeMentions();
+					this.memberChats.seen();
 					if (document.visibilityState === "hidden") {
 						this.#hiddenAt ??= Date.now();
 						return;
@@ -718,6 +747,7 @@ export class CompanyController {
 		this.#sidebarRealtime?.stop();
 		void this.#presence?.stop().catch(() => {});
 		this.#presence = undefined;
+		this.memberChats.stop();
 		if (this.#poll) clearInterval(this.#poll);
 		clearTimeout(this.#watching);
 		clearTimeout(this.#openFullTimer);
@@ -749,6 +779,7 @@ export class CompanyController {
 		this.store.set({ loading: false });
 		void this.refreshMentions();
 		void this.refreshHoursWait();
+		void this.memberChats.refresh();
 	}
 
 	/** Re-read whether the company waits for computer hours. */
@@ -858,8 +889,15 @@ export class CompanyController {
 		try {
 			const team = await this.#api.getTeam(this.profile.profileId);
 			if (this.#stopped || version !== this.#versions.team) return;
+			const before = this.store
+				.get()
+				.team?.members.map((member) => member.userId)
+				.join(" ");
 			this.store.set({ team, accessLost: false });
 			this.#joinPresence();
+			// Someone joined or left: the member chats are theirs too. (The first read comes with refreshAll.)
+			if (before !== undefined && before !== team.members.map((member) => member.userId).join(" "))
+				void this.memberChats.refresh();
 		} catch (error) {
 			if (this.#stopped || version !== this.#versions.team) return;
 			if (error instanceof CloudRpcError && error.denied) {
@@ -2823,6 +2861,7 @@ export class CompanyController {
 		void this.#sessionsChanged();
 		void this.refreshActivity();
 		void this.refreshMentions();
+		this.memberChats.hinted();
 		if (this.#openSessionId) void this.loadConversation(this.#openSessionId);
 	}
 
@@ -2848,6 +2887,8 @@ export class CompanyController {
 			void this.refreshTeam();
 		} else if (resource === "sidebar") {
 			this.#refreshSidebarSoon();
+		} else if (resource === "member-chats") {
+			this.memberChats.hinted();
 		} else if (resource === "company-file") {
 			void this.refreshGroups();
 			// Accepting a proposal moves the Company File head: runs waiting on one are read again.
@@ -2881,6 +2922,8 @@ export class CompanyController {
 				this.refreshSidebar(),
 				this.refreshMentions(),
 				this.refreshHoursWait(),
+				// The member chats and the open one, whole: what a missed hint would have brought.
+				this.memberChats.poll(),
 			]);
 		} finally {
 			this.#polling = false;

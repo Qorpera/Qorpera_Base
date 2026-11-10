@@ -37,7 +37,7 @@ use the unchanged motion sampler. No runtime binding is provided.
 - Thinking: three dots on a fixed baseline, pulsing every 1.4 seconds.
 - Done: flourish, slower eye reaction, then hold.
 
-The seven bodies and face plates come from the Assets Room's `assets` and
+The first seven bodies and face plates came from the Assets Room's `assets` and
 `motion-assets` directories. `artwork-manifest.json` records source and output
 hashes. Bodies and the Planet plate are lossless WebP conversions. The other
 six face plates are first drawn to 512 × 512 in Chromium Canvas 2D, matching
@@ -47,6 +47,30 @@ the original bodies. The browser requests only the characters it mounts.
 
 Do not replace these assets with 3D experiments or regenerate the motions.
 Update this versioned directory and its references when adopting a new study.
+
+## Twelve figures (November 10, 2026)
+
+Star, Cloud, Bolt, Mushroom, Moon and Puzzle joined Planet, Acorn, Flame,
+Rocket, Crown and Heart; the Ghost left (Jonas: "keep the moon, but remove the
+ghost"). A saved agent that still names the ghost is drawn as the Moon
+(`drawnStaffCharacter`, cloud-client `staff-characters.ts`).
+
+The six new bodies and face plates were not painted by an image model. Each is
+a shape modelled as a smooth outline, inflated like a membrane (a circle gives
+its hemisphere) and lit from the upper left in stops, with the settings tuned
+until the approved Heart, Crown and Flame, rebuilt from their own outlines, came
+back through `light-field.js` with the light they have (Heart: 5th and 95th
+percentile -0.32 and +0.33 stops against the artwork's -0.32 and +0.29). Their
+silhouettes fade over 2.8 px, inside the 2.3 to 3.0 px of the approved bodies:
+`avatar-appearance.js` doubles that steepness, so a harder edge would step.
+Eyes are the roster's capsules, and `motion-model.js` holds the geometry they
+were drawn with. The recorded eye motion needs nothing per figure: it is placed
+by that geometry.
+
+The colour row changed the same day (`avatar-appearance.js`): Red, Sky and
+Slate took the places of Coral, Teal and Gray, and Green, Purple and Pink moved
+apart, so that no two colours read alike on a figure. The names an `agent.md`
+writes did not change (`src/cloud/agent-colours.ts`).
 
 ## Working as sequenced pieces (September 22, 2026)
 

@@ -50,7 +50,7 @@ export function bootView(href: string, signedIn: boolean): BootView | undefined 
 	// A company opening shows the thread's placeholder for its home, a chat and a new chat; a page's otherwise.
 	if (route.name !== "company") return undefined;
 	const section = route.section;
-	return section === "home" || section === "chat" || section === "staff" || section === "new" ? "thread" : undefined;
+	return ["home", "chat", "staff", "new", "member"].includes(section) ? "thread" : undefined;
 }
 
 /** The static shapes breathe on the document's clock, as ui/skeleton.ts's shapes do (breatheTogether), so the app's

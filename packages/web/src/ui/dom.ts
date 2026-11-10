@@ -426,20 +426,22 @@ export function spinner(label = t("Loading")): HTMLElement {
  * figure or an uploaded image). Until it exists, a company wears a placeholder
  * figure and colour derived from its profile id, which survive a rename. The
  * Crown is left out: it is the Co-Founder's. The colour is one of the
- * palette's bright colours (avatar-appearance.js), never Charcoal or Gray, so
- * the hub is not a row of black figures (Jonas, 8 November 2026). */
-const COMPANY_FIGURES = ["planet", "acorn", "flame", "rocket", "heart", "ghost"] as const;
+ * palette's bright colours (avatar-appearance.js), never Charcoal or Slate, so
+ * the hub is not a row of black figures (Jonas, 8 November 2026). The moon
+ * took the retired ghost's place (10 November 2026); the list keeps its
+ * length, so every other company keeps its figure. */
+const COMPANY_FIGURES = ["planet", "acorn", "flame", "rocket", "heart", "moon"] as const;
 export type CompanyFigure = (typeof COMPANY_FIGURES)[number];
 export const COMPANY_COLORS = [
 	"#87674c",
-	"#ff365e",
+	"#e22538",
 	"#f96e2d",
 	"#fcb51b",
-	"#00c878",
-	"#00bfb3",
+	"#0fbd59",
+	"#3faff3",
 	"#2047bd",
-	"#b83ff5",
-	"#ff2994",
+	"#a145f7",
+	"#fa59ac",
 ] as const;
 
 function seedHash(seed: string, multiplier: bigint): bigint {

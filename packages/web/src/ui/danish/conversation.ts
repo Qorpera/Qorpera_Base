@@ -643,4 +643,18 @@ export const CONVERSATION: Record<string, string> = {
 	// A card's long body (ui/interaction-card.ts).
 	"Show more": "Vis mere",
 	"Show less": "Vis mindre",
+	// A member's chat with another member (app/views/member-chat.ts, app/member-chats.ts) and its row in the rail.
+	"Unread: {count}": "Ulæste: {count}",
+	"This member is no longer in the company.": "Dette medlem er ikke længere i virksomheden.",
+	"Write the first message to {name}.": "Skriv den første besked til {name}.",
+	"Message deleted": "Besked slettet",
+	Seen: "Set",
+	"Delete message": "Slet besked",
+	"Delete this message? It is deleted for both of you.": "Slet denne besked? Den slettes for jer begge.",
+	"You can no longer write to this member.": "Du kan ikke længere skrive til dette medlem.",
+	"Not sent. Check your connection and try again.": "Ikke sendt. Tjek din forbindelse, og prøv igen.",
+	"This chat is not available.": "Denne chat er ikke tilgængelig.",
+	"Could not open this chat. Check your connection.": "Chatten kunne ikke åbnes. Tjek din forbindelse.",
+	"This message is too long to send. Send it in parts.": "Beskeden er for lang til at sende. Send den i dele.",
+	"Could not delete the message. Try again.": "Beskeden kunne ikke slettes. Prøv igen.",
 };

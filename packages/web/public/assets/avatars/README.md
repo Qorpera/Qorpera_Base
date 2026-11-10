@@ -1,6 +1,6 @@
 # Agent artwork and 2D motion
 
-`index.html` loads `motion-model.js` (the seven characters and their measured
+`index.html` loads `motion-model.js` (the twelve characters and their measured
 eye geometry), then `avatar-appearance.js` (the eleven-color palette and the
 painting: one grain-free light field per body and face plate, painted in the
 chosen color through an OKLab tone ramp; October 20, 2026). The light field
