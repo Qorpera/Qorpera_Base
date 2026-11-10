@@ -9,9 +9,14 @@ import { parseCloudCodingNasPolicy } from "../../packages/contracts/src/cloud-co
 import { CloudCodingExecutor } from "../../packages/runner-orchestrator/src/coding-executor.ts";
 import { type CodeHostEvent, type CodeHostPolicy, controlCodeHostDeletions, LxdCodeHosts, parseCodeHostPolicy } from "../../packages/runner-orchestrator/src/code-host.ts";
 import { CODE_BUNDLE_FOLDER, createCodeBundleStore } from "../../packages/runner-orchestrator/src/code-bundle-store.ts";
+import { CodeChangeRecords } from "../../packages/runner-orchestrator/src/code-change-records.ts";
 import { CodeHostCare } from "../../packages/runner-orchestrator/src/code-host-care.ts";
-import { bundleCodeArea, checkCodeArea, collectCodeGarbage, fsckCodeArea, retireCodeWorktrees } from "../../packages/runner-orchestrator/src/code-host-jobs.ts";
+import {
+	archiveCodeArea, bundleCodeArea, checkCodeArea, collectCodeGarbage, fsckCodeArea, removeCodeDownloads, retireCodeWorktrees,
+	undoCodeChange, writeCodeChangeRecords,
+} from "../../packages/runner-orchestrator/src/code-host-jobs.ts";
 import { CodeHostRepositories } from "../../packages/runner-orchestrator/src/code-host-repositories.ts";
+import { CodeHostRequests } from "../../packages/runner-orchestrator/src/code-host-requests.ts";
 import { codeHostErrorCode, codingErrorDetail } from "../../packages/runner-orchestrator/src/coding-error-detail.ts";
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
@@ -250,6 +255,16 @@ export function logCodeCare(event: Record<string, unknown>): void {
 	}
 }
 
+/** The change record's and the code requests' lines in the executor's log (`code-change`, `code-request`, and each
+ * with `-error`): an error by its code and its detail (loggedError), never as itself. */
+export function logCodeRecord(event: Record<string, unknown>): void {
+	if (!String(event.event).endsWith("-error")) console.log(JSON.stringify(event));
+	else {
+		const { error, ...rest } = event;
+		console.error(JSON.stringify({ ...rest, ...(error === undefined ? {} : loggedError(error)) }));
+	}
+}
+
 /** Independent Linux service: the identity host runs the model turn, this
  * service runs the repository VM, the command gateway and the Git broker. No
  * member client participates in this loop. */
@@ -285,6 +300,21 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		})(),
 		report: logCodeCare,
 	}) : undefined;
+	// The change record of the repositories kept in Qorpera (own code storage, step 2b): each change's file under
+	// code/<owner>/<name>/changes/ and the list, written inside a landing's or an undo's own job, and otherwise by a
+	// pass of its own. And the requests no coding turn carries: an agent's undo, a member's download of the code, an
+	// operator's restore. Part R's restore goes in here as `restore` (a CodeRestore over the same jobs and the bundle
+	// store); until then a restore request is finished failed with NOT_BUILT.
+	const codeRecords = codeHostJobs ? new CodeChangeRecords({
+		control, hosts: codeHostJobs, write: writeCodeChangeRecords, owner: config.owner,
+		machineIdSha256: createHash("sha256").update(machine).digest("hex"), report: logCodeRecord,
+	}) : undefined;
+	const codeRequests = codeHostJobs && codeRecords ? new CodeHostRequests({
+		control, hosts: codeHostJobs, records: codeRecords, owner: config.owner,
+		machineIdSha256: createHash("sha256").update(machine).digest("hex"),
+		jobs: { undo: undoCodeChange, archive: archiveCodeArea, removeDownloads: removeCodeDownloads },
+		report: logCodeRecord,
+	}) : undefined;
 	let folder: LxdCodingExecutorHostOptions["folder"];
 	if (config.folder) {
 		const agent = await readPinned(config.folder.agent), program = await readPinned(config.folder.program);
@@ -307,7 +337,9 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		const records = { root: posix.join(journalRoot, "folder-views"), assert: (signal: AbortSignal) => storage.assertControl(signal) };
 		folder = {
 			views: new CodingFolderViews({ control, folder: folderControl, client: lxd, agent, program, records }), control: folderControl, client: lxd,
-			...(codeHostJobs ? { repositories: new CodeHostRepositories(codeHostJobs) } : {}),
+			// A landing is reported to the change record in its own job, and its record's files are written there.
+			...(codeHostJobs ? { repositories: new CodeHostRepositories(codeHostJobs, {
+				...(codeRecords ? { records: codeRecords } : {}), report: logCodeRecord }) } : {}),
 			onMount: (mount) => console.log(JSON.stringify({ event: "coding-folder-mount", ...mount })),
 		};
 		// Which model this executor runs, and with what: a proof reads it from the log.
@@ -521,10 +553,42 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				await setTimeout(300_000, undefined, { signal: stop.signal }).catch(() => undefined);
 			}
 		})();
-		await Promise.all([claiming, keeping, housekeeping, machines, hosting, deletions, caring]);
+		// The code requests: at start and every 5 s after a pass, what this executor may do now. A pass runs its undos to
+		// their finish (each a job in its company's line, as urgent as a landing); a download and a restore run on beside
+		// the passes, so an undo never waits behind one, and are counted in the pass after they ended.
+		const requesting = (async () => {
+			if (!codeRequests) return;
+			while (!stop.signal.aborted) {
+				try {
+					const passed = await codeRequests.pass(stop.signal);
+					if (passed.done + passed.refused + passed.failed + passed.busy > 0) console.log(JSON.stringify({ event: "code-request", step: "pass", ...passed }));
+				} catch (error) {
+					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "code-request-error", step: "pass", ...loggedError(error) }));
+				}
+				await setTimeout(5_000, undefined, { signal: stop.signal }).catch(() => undefined);
+			}
+		})();
+		// The change record's files a landing's or an undo's own job did not write (a refused landing, a described
+		// change, a state that changed, a backfilled row, a restore, a write that failed): at start and every minute after
+		// a pass, each repository in a job of its own that yields to a turn's.
+		const recording = (async () => {
+			if (!codeRecords) return;
+			while (!stop.signal.aborted) {
+				try {
+					const passed = await codeRecords.pass(stop.signal);
+					if (passed.written + passed.failed > 0) console.log(JSON.stringify({ event: "code-change", step: "pass", ...passed }));
+				} catch (error) {
+					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "code-change-error", step: "pass", ...loggedError(error) }));
+				}
+				await setTimeout(60_000, undefined, { signal: stop.signal }).catch(() => undefined);
+			}
+		})();
+		await Promise.all([claiming, keeping, housekeeping, machines, hosting, deletions, caring, requesting, recording]);
 	} finally {
 		stop.abort();
 		await executor?.drain();
+		// A download or a restore that ran on beside the requests' passes ends on the same abort, finished as busy.
+		await codeRequests?.settled();
 		// A machine step that outlasted its pass ends on the same abort.
 		await machineHost?.settled();
 		// A take-off the keeper started settles before the process ends.

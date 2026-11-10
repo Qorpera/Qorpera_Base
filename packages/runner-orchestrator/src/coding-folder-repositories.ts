@@ -1,5 +1,5 @@
 import type { CloudCodingRepository } from "@qorpera/contracts";
-import type { CodeChangePath, CodePictureChecked } from "./code-host-jobs-stand-in.ts";
+import type { CodeChangePath, CodePictureChecked } from "./code-host-jobs.ts";
 import type { CodingSessionClaim } from "./coding-executor.ts";
 import type { CodingBrokerGitRunner } from "./coding-git.ts";
 import type { LxdCodingMachineBinding } from "./coding-machine.ts";

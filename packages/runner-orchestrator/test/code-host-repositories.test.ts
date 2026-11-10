@@ -45,51 +45,11 @@ vi.mock("../src/code-host-seed.ts", async (original) => {
 });
 vi.mock("../src/code-host-jobs.ts", async (original) => {
 	const real = await original<typeof import("../src/code-host-jobs.ts")>();
-	// STAND-IN for part B's `landCodeBranch`, to be removed with `code-host-jobs-stand-in.ts` when step 2b's parts are
-	// merged: until then the real landing does not say where main was or what differs, so this reads both with git and
-	// adds them. An answer that says them already (part B's) is passed on as it is.
-	const landCodeBranch: typeof real.landCodeBranch = async (job, value) => {
-		const repo = `${job.layout.companyRoot}/${real.codeAreaPath(value.repository)}/repo.git`;
-		const git = async (...args: string[]) =>
-			(
-				await job.shell.run(
-					{
-						argv: [job.layout.git, "-C", repo, ...args],
-						env: { PATH: "/usr/bin:/bin", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
-						cwd: "/",
-						maximumOutputBytes: 1024 ** 2,
-					},
-					job.signal,
-				)
-			).stdout.toString("utf8");
-		const mainBefore = (await git("rev-parse", "--verify", "--quiet", "refs/heads/main")).trim();
-		const landed = await real.landCodeBranch(job, value);
-		if ("diff" in landed) return landed;
-		const fields =
-			landed.state === "unchanged"
-				? []
-				: (await git("diff-tree", "-r", "-z", "--no-renames", "--name-status", mainBefore, landed.mainSha)).split(
-						"\0",
-					);
-		const paths: { path: string; change: string }[] = [];
-		for (let at = 0; at + 1 < fields.length; at += 2)
-			paths.push({
-				path: fields[at + 1] as string,
-				change: fields[at] === "A" ? "added" : fields[at] === "D" ? "removed" : "changed",
-			});
-		return {
-			...landed,
-			mainBefore,
-			containedAt: landed.state === "unchanged" ? value.headSha : null,
-			diff: { filesChanged: paths.length, paths, pathsMore: 0 },
-			picture: null,
-		};
-	};
 	return {
 		...real,
 		addCodeWorktree: vi.fn(real.addCodeWorktree),
 		exportCodeBranch: vi.fn(real.exportCodeBranch),
-		landCodeBranch: vi.fn(landCodeBranch),
+		landCodeBranch: vi.fn(real.landCodeBranch),
 		startCodeArea: vi.fn(real.startCodeArea),
 	};
 });

@@ -14,8 +14,14 @@ import {
 	codeChangeRecordText,
 	codeChangeRefusalPaths,
 } from "../src/code-change-records.ts";
-import { type CodeHostGcBlock, type CodeHostJob, CodeHostJobFailure, CodeHostRefusal } from "../src/code-host-jobs.ts";
-import type { CodeChangeDiff, CodeChangeRecordFile } from "../src/code-host-jobs-stand-in.ts";
+import {
+	type CodeChangeDiff,
+	type CodeChangeRecordFile,
+	type CodeHostGcBlock,
+	type CodeHostJob,
+	CodeHostJobFailure,
+	CodeHostRefusal,
+} from "../src/code-host-jobs.ts";
 import { CODE_HOST_LAYOUT, type CodeHostJobOptions, type CodeHostJobs } from "../src/code-host-views.ts";
 import { CodingControlBusy } from "../src/coding-executor.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";

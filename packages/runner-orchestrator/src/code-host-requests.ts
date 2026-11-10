@@ -9,13 +9,15 @@ import {
 	codeChangeErrorCode,
 	codeChangeRefusalPaths,
 } from "./code-change-records.ts";
-import { type CodeHostJob, CodeHostJobFailure, CodeHostRefusal } from "./code-host-jobs.ts";
-import type {
-	archiveCodeArea,
-	CodeChangePath,
-	removeCodeDownloads,
-	undoCodeChange,
-} from "./code-host-jobs-stand-in.ts";
+import {
+	type archiveCodeArea,
+	type CodeChangePath,
+	type CodeHostJob,
+	CodeHostJobFailure,
+	CodeHostRefusal,
+	type removeCodeDownloads,
+	type undoCodeChange,
+} from "./code-host-jobs.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
 import { CodingControlBusy, withinBytes } from "./coding-executor.ts";
 

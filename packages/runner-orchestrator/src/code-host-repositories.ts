@@ -10,6 +10,7 @@ import {
 } from "./code-change-records.ts";
 import {
 	addCodeWorktree,
+	type CodeBranchLanded,
 	type CodeHostJob,
 	CodeHostJobFailure,
 	CodeHostRefusal,
@@ -18,7 +19,6 @@ import {
 	landCodeBranch,
 	startCodeArea,
 } from "./code-host-jobs.ts";
-import type { LandCodeBranch } from "./code-host-jobs-stand-in.ts";
 import { attachCodeSession, type CodeAreaBroker } from "./code-host-seed.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
 import { CodingLandConflict, CodingLandRefused, CodingWorkspaceFailed, landRefusal } from "./coding-executor.ts";
@@ -61,9 +61,6 @@ export interface CodeHostRepositoriesOptions {
 	/** `CODE_CHANGE_RECORD_MS`, for tests. */
 	recordMs?: number;
 }
-
-/** STAND-IN (code-host-jobs-stand-in.ts): with part B's types this is `CodeBranchLanded`. */
-type Landed = Awaited<ReturnType<LandCodeBranch>>;
 
 /** What a landing's job left of the change record. */
 interface LandingRecord {
@@ -200,8 +197,7 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			};
 			try {
 				const landed = await this.#job(session, signal, async (job) => {
-					// STAND-IN (code-host-jobs-stand-in.ts): with part B's types this cast goes.
-					const landed = await (landCodeBranch as LandCodeBranch)(job, {
+					const landed = await landCodeBranch(job, {
 						repository,
 						workerId,
 						headSha,
@@ -261,7 +257,7 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 	async #recordInJob(
 		session: CodingFolderRepositorySession,
 		job: CodeHostJob,
-		landed: Landed,
+		landed: CodeBranchLanded,
 		headSha: string,
 		record: LandingRecord,
 	): Promise<void> {
@@ -413,7 +409,11 @@ function named(session: CodingFolderRepositorySession): Record<string, unknown> 
 
 /** What the kernel is told of a landing, from what the job answered. It throws when the answer is not a landing's:
  * its caller reports that, and the landing stands. */
-function landingReport(landed: Landed, headSha: string, diff: ReturnType<typeof codeChangeDiffOf>): CodeChangeReport {
+function landingReport(
+	landed: CodeBranchLanded,
+	headSha: string,
+	diff: ReturnType<typeof codeChangeDiffOf>,
+): CodeChangeReport {
 	const sha = (commit: unknown): commit is string => typeof commit === "string" && SHA.test(commit);
 	const report = {
 		schema: "qorpera.code-change-report/v1" as const,

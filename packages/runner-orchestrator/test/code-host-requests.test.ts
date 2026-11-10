@@ -1,8 +1,13 @@
 import type { CloudCodingRepository } from "@qorpera/contracts";
 import { describe, expect, it, vi } from "vitest";
 import type { CodeChangeTarget } from "../src/code-change-records.ts";
-import { type CodeHostGcBlock, type CodeHostJob, CodeHostJobFailure, CodeHostRefusal } from "../src/code-host-jobs.ts";
-import type { CodeChangeDiff } from "../src/code-host-jobs-stand-in.ts";
+import {
+	type CodeChangeDiff,
+	type CodeHostGcBlock,
+	type CodeHostJob,
+	CodeHostJobFailure,
+	CodeHostRefusal,
+} from "../src/code-host-jobs.ts";
 import {
 	CODE_REQUEST_RPCS,
 	CodeHostRequests,

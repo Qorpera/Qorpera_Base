@@ -66,6 +66,30 @@ describe("dedicated coding executor control", () => {
 				expect.objectContaining({ redirect: "error", method: "POST" }),
 			);
 		}
+		// The change record of the repositories kept in Qorpera (own code storage, step 2b): a landing's report, the
+		// record's files, and the requests (undo, download, restore).
+		for (const method of [
+			"qorpera_record_code_change",
+			"qorpera_code_change_files_due",
+			"qorpera_code_change_files",
+			"qorpera_code_change_files_written",
+			"qorpera_code_requests_claim",
+			"qorpera_code_request_step",
+			"qorpera_code_request_finish",
+		]) {
+			await control.call(method, {}, new AbortController().signal);
+			expect(fetcher).toHaveBeenLastCalledWith(
+				`https://project.supabase.co/rest/v1/rpc/${method}`,
+				expect.objectContaining({ redirect: "error", method: "POST" }),
+			);
+		}
+		// The agent's, the member's and the operator's calls of the same step are not the executor's.
+		for (const method of [
+			"qorpera_folder_request_code_undo",
+			"qorpera_request_code_download",
+			"qorpera_request_code_restore",
+		])
+			await expect(control.call(method, {}, new AbortController().signal)).rejects.toThrow("METHOD_INVALID");
 		// The per-session VM authority is gone.
 		await expect(control.call("qorpera_describe_coding_cleanup", {}, new AbortController().signal)).rejects.toThrow(
 			"METHOD_INVALID",
