@@ -56,6 +56,37 @@ const PLACEMENTS: readonly MemberAgentComputerPlacement[] = [
 	"denied",
 	"none",
 ];
+/** Where one of an agent's machines stands (qorpera_company_machine_state): on its way up while `starting` (placed)
+ * or `waiting` (for room or computer hours), on, going to sleep, or asleep. */
+export type MemberAgentMachineState = "running" | "starting" | "waiting" | "stopping" | "stopped";
+const MACHINE_STATES: readonly MemberAgentMachineState[] = ["running", "starting", "waiting", "stopping", "stopped"];
+/** One of an agent's machines, as a member's computer window lists it (migration 20260930712000): one the agent started
+ * or whose screen it drove last. Nothing of where it runs. */
+export interface MemberAgentMachine {
+	machineId: string;
+	name: string;
+	purpose: string;
+	state: MemberAgentMachineState;
+	lifetime: "task" | "always-on";
+	/** Big enough for a desktop (2 processors, 4 GiB): a machine without one has no screen to show. */
+	desktopCapable: boolean;
+	startedByAgent: boolean;
+	/** When an agent last drove its screen, and that agent's name (null: never). */
+	screenUsedAt: string | null;
+	screenAgentName: string | null;
+	/** Why a machine that wants to run waits: the company's computer hours, or room on the servers. */
+	waitingFor: "hours" | "room" | null;
+}
+export interface MemberAgentMachines {
+	/** Owners, admins and contributors may wake a sleeping machine; viewers may only watch. */
+	canWake: boolean;
+	/** At most 20: running ones first, then the ones the agent drove most recently, then the newest. */
+	machines: MemberAgentMachine[];
+}
+function field(value: unknown, error: string): Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(error);
+	return value as Record<string, unknown>;
+}
 function record(value: unknown, keys: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== keys)
 		throw new Error("Invalid Company Computer response");
@@ -252,6 +283,80 @@ export class CloudMemberCompanyComputerClient {
 			placement: value.placement as MemberAgentComputerPlacement,
 			computer,
 		};
+	}
+	/** An agent's machines for the computer window (qorpera_list_agent_machines, migration 20260930712000). Fields this
+	 * client does not know are ignored, so the database may add some first. */
+	async agentMachines(staffAgentId: string, signal: AbortSignal): Promise<MemberAgentMachines> {
+		if (!COMPANY_COMPUTER_UUID.test(staffAgentId)) throw new Error("Invalid agent machines request");
+		const invalid = "Invalid agent machines";
+		const value = field(
+			(
+				await this.#rpc(
+					"qorpera_list_agent_machines",
+					{ p_profile_id: this.#options.companyId, p_staff_agent_id: staffAgentId },
+					signal,
+				)
+			).data,
+			invalid,
+		);
+		if (
+			value.schema !== "qorpera.agent-machines/v1" ||
+			value.profileId !== this.#options.companyId ||
+			value.staffAgentId !== staffAgentId ||
+			typeof value.canWake !== "boolean" ||
+			!Array.isArray(value.machines) ||
+			value.machines.length > 20
+		)
+			throw new Error(invalid);
+		const text = (input: unknown, max: number): input is string =>
+			typeof input === "string" && input.length > 0 && [...input].length <= max;
+		const machines = value.machines.map((input): MemberAgentMachine => {
+			const row = field(input, invalid);
+			if (
+				typeof row.machineId !== "string" ||
+				!COMPANY_COMPUTER_UUID.test(row.machineId) ||
+				!text(row.name, 40) ||
+				!text(row.purpose, 300) ||
+				!MACHINE_STATES.includes(row.state as MemberAgentMachineState) ||
+				(row.lifetime !== "task" && row.lifetime !== "always-on") ||
+				typeof row.desktopCapable !== "boolean" ||
+				typeof row.startedByAgent !== "boolean" ||
+				(row.screenUsedAt !== null && !text(row.screenUsedAt, 64)) ||
+				(row.screenAgentName !== null && !text(row.screenAgentName, 160)) ||
+				(row.waitingFor !== null && row.waitingFor !== "hours" && row.waitingFor !== "room")
+			)
+				throw new Error(invalid);
+			return {
+				machineId: row.machineId,
+				name: row.name,
+				purpose: row.purpose,
+				state: row.state as MemberAgentMachineState,
+				lifetime: row.lifetime,
+				desktopCapable: row.desktopCapable,
+				startedByAgent: row.startedByAgent,
+				screenUsedAt: row.screenUsedAt as string | null,
+				screenAgentName: row.screenAgentName as string | null,
+				waitingFor: row.waitingFor as "hours" | "room" | null,
+			};
+		});
+		if (new Set(machines.map((machine) => machine.machineId)).size !== machines.length) throw new Error(invalid);
+		return { canWake: value.canWake, machines };
+	}
+	/** Wakes a sleeping machine of the company (qorpera_member_manage_company_machine 'start'): it takes its place in
+	 * line, and the nodes give it room. Owners, admins and contributors only; the database refuses anyone else. */
+	async wakeMachine(machineId: string, signal: AbortSignal): Promise<void> {
+		if (!COMPANY_COMPUTER_UUID.test(machineId)) throw new Error("Invalid machine");
+		const value = field(
+			(
+				await this.#rpc(
+					"qorpera_member_manage_company_machine",
+					{ p_profile_id: this.#options.companyId, p_machine_id: machineId, p_action: "start" },
+					signal,
+				)
+			).data,
+			"Invalid machine wake",
+		);
+		if (value.machineId !== machineId) throw new Error("Invalid machine wake");
 	}
 	start(scope: CompanyComputerScope): CloudCompanyComputerStart {
 		return new CloudCompanyComputerStart(this.#scope(scope), (method, args, signal) =>

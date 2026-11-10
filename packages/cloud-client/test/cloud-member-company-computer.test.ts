@@ -158,4 +158,98 @@ describe("member Company Computer transport", () => {
 		await expect(f.client.catalog(new AbortController().signal)).rejects.toThrow();
 		expect(f.fetch).not.toHaveBeenCalled();
 	});
+	it("lists an agent's machines for the computer window, ignoring fields it does not know (20260930712000)", async () => {
+		const f = fixture(),
+			signal = new AbortController().signal;
+		const machine = {
+			machineId: id(20),
+			name: "concept-desktop",
+			purpose: "Walks through the concepts app.",
+			state: "running",
+			lifetime: "task",
+			desktopCapable: true,
+			startedByAgent: true,
+			screenUsedAt: "2026-11-10T14:25:45Z",
+			screenAgentName: "Product Lead",
+			waitingFor: null,
+			addedLater: { control: null },
+		};
+		const reply = (machines: unknown[], extra: Record<string, unknown> = {}) =>
+			f.fetch.mockResolvedValueOnce(
+				Response.json({
+					schema: "qorpera.agent-machines/v1",
+					profileId: id(1),
+					staffAgentId: id(5),
+					canWake: false,
+					machines,
+					canTakeOver: true,
+					...extra,
+				}),
+			);
+		reply([
+			machine,
+			{
+				...machine,
+				machineId: id(21),
+				state: "waiting",
+				waitingFor: "hours",
+				screenUsedAt: null,
+				screenAgentName: null,
+			},
+		]);
+		const { addedLater: _ignored, ...known } = machine;
+		expect(await f.client.agentMachines(id(5), signal)).toEqual({
+			canWake: false,
+			machines: [
+				known,
+				{
+					...known,
+					machineId: id(21),
+					state: "waiting",
+					waitingFor: "hours",
+					screenUsedAt: null,
+					screenAgentName: null,
+				},
+			],
+		});
+		expect(f.fetch.mock.calls[0][0]).toBe("https://control.test/rest/v1/rpc/qorpera_list_agent_machines");
+		expect(JSON.parse(f.fetch.mock.calls[0][1]!.body as string)).toEqual({
+			p_profile_id: id(1),
+			p_staff_agent_id: id(5),
+		});
+		for (const [machines, extra] of [
+			[[{ ...machine, machineId: "x" }], {}],
+			[[{ ...machine, name: "" }], {}],
+			[[{ ...machine, state: "deleted" }], {}],
+			[[{ ...machine, lifetime: "forever" }], {}],
+			[[{ ...machine, desktopCapable: "yes" }], {}],
+			[[{ ...machine, waitingFor: "NODE_CAPACITY_EXHAUSTED" }], {}],
+			[[machine, machine], {}],
+			[Array.from({ length: 21 }, (_, n) => ({ ...machine, machineId: id(100 + n) })), {}],
+			[[], { staffAgentId: id(6) }],
+			[[], { profileId: id(9) }],
+			[[], { schema: "qorpera.agent-machines/v2" }],
+			[[], { canWake: "yes" }],
+		] as const) {
+			reply([...machines], extra);
+			await expect(f.client.agentMachines(id(5), signal), JSON.stringify(extra)).rejects.toThrow();
+		}
+		await expect(f.client.agentMachines("agent", signal)).rejects.toThrow();
+	});
+	it("wakes a sleeping machine through the members' machine start", async () => {
+		const f = fixture(),
+			signal = new AbortController().signal;
+		f.fetch.mockResolvedValueOnce(Response.json({ machineId: id(20), state: "waiting", node: null }));
+		await f.client.wakeMachine(id(20), signal);
+		expect(f.fetch.mock.calls[0][0]).toBe("https://control.test/rest/v1/rpc/qorpera_member_manage_company_machine");
+		expect(JSON.parse(f.fetch.mock.calls[0][1]!.body as string)).toEqual({
+			p_profile_id: id(1),
+			p_machine_id: id(20),
+			p_action: "start",
+		});
+		f.fetch.mockResolvedValueOnce(Response.json({ machineId: id(21) }));
+		await expect(f.client.wakeMachine(id(20), signal)).rejects.toThrow();
+		f.fetch.mockResolvedValueOnce(new Response("{}", { status: 403 }));
+		await expect(f.client.wakeMachine(id(20), signal)).rejects.toThrow();
+	});
 });

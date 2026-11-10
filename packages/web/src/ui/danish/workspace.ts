@@ -453,44 +453,36 @@ export const WORKSPACE: Record<string, string> = {
 		"Ændringen af udseendet kunne ikke bekræftes. Åbn virksomheden og tjek det, før du gemmer igen.",
 	"Open the company without changing appearance": "Åbn virksomheden uden at ændre udseende",
 
-	// app/views/computer.ts
+	// app/views/computer.ts, ui/machine-screen-view.ts: an agent's computer window (20260930712000)
 	"Connecting…": "Forbinder…",
 	"Close computer": "Luk computer",
 	"{name} · Computer": "{name} · Computer",
-	"{name} · Computer · Machine {number}": "{name} · Computer · Maskine {number}",
 	"Agent computer": "Agentens computer",
 	"Drag to move, drag an edge to resize. When focused, arrow keys move it and plus or minus resize it.":
 		"Træk for at flytte, træk i en kant for at ændre størrelse. Med fokus flytter piletasterne den, og plus eller minus ændrer størrelsen.",
 	"Computer access is not available yet.": "Adgang til computeren er ikke tilgængelig endnu.",
-	"This company has no machine yet.": "Denne virksomhed har ingen maskine endnu.",
-	"The machine is restarting. It comes back on its own.": "Maskinen genstarter. Den kommer tilbage af sig selv.",
-	"This machine has been retired.": "Denne maskine er taget ud af brug.",
-	"The machine is off. An owner or admin can start it.":
-		"Maskinen er slukket. En ejer eller administrator kan starte den.",
-	"You have read-only access. A company member with write access can wake the machine.":
-		"Du har kun læseadgang. Et medlem af virksomheden med skriveadgang kan vække maskinen.",
-	"Starting the machine…": "Starter maskinen…",
-	"Computer viewing is not set up here.": "Computervisning er ikke sat op her.",
-	"All computers on this machine are in use. Try again when one is free.":
-		"Alle computere på denne maskine er i brug. Prøv igen, når en er ledig.",
-	"{name} does not have access to the computer.": "{name} har ikke adgang til computeren.",
-	"{name}'s computer is being handed over. It opens here in a moment.":
-		"Computeren for {name} bliver overdraget. Den åbner her om et øjeblik.",
-	"The machine is not ready yet.": "Maskinen er ikke klar endnu.",
-	"The machine is private right now. Shared viewing returns when that ends.":
-		"Maskinen er privat lige nu. Delt visning kommer tilbage, når det slutter.",
-	"The computer could not be reached. Try again.": "Computeren kunne ikke nås. Prøv igen.",
-	"The computer screen could not be loaded in this tab. Reload the page to open it.":
-		"Computerskærmen kunne ikke indlæses i denne fane. Genindlæs siden for at åbne den.",
-	"Reload page": "Genindlæs siden",
-	"All computers are in use. An owner or admin can start another machine.":
-		"Alle computere er i brug. En ejer eller administrator kan starte en maskine mere.",
-	"Setting up another machine. This can take a while.": "Sætter en maskine mere op. Det kan tage et stykke tid.",
-	"Setting up the machine. This can take a while.": "Sætter maskinen op. Det kan tage et stykke tid.",
+	"{name} is not using a computer right now.": "{name} bruger ikke en computer lige nu.",
+	"{name} gets one when a task needs a screen.": "{name} får en, når en opgave kræver en skærm.",
+	"{name} is working on a machine without a screen.": "{name} arbejder på en maskine uden skærm.",
+	"The computer is asleep.": "Computeren sover.",
+	"Wake it": "Væk den",
+	"Someone with edit access can wake it.": "En med redigeringsadgang kan vække den.",
+	"The computer is starting…": "Computeren starter…",
 	"Waiting for room on our servers. It starts as soon as there is room.":
 		"Venter på plads på vores servere. Den starter, så snart der er plads.",
 	"Out of computer hours. The machine starts by itself once hours are added.":
 		"Ingen computertimer tilbage. Maskinen starter af sig selv, når der er tilføjet timer.",
+	"The computer is on, but its screen is off. It turns on when {name} uses it.":
+		"Computeren er tændt, men skærmen er slukket. Den tænder, når {name} bruger den.",
+	"The screen is hidden because it may show files you can't open.":
+		"Skærmen er skjult, fordi den måske viser filer, du ikke har adgang til.",
+	"Updating…": "Opdaterer…",
+	"This computer cannot show its screen yet. It can after it has slept.":
+		"Denne computer kan ikke vise sin skærm endnu. Det kan den, når den har sovet.",
+	"The computer could not be reached. Try again.": "Computeren kunne ikke nås. Prøv igen.",
+	"Paused to save power. Still watching?": "Sat på pause for at spare strøm. Ser du stadig med?",
+	"Keep watching": "Bliv ved",
+	"Choose a computer": "Vælg en computer",
 
 	// app/views/feedback.ts
 	"+ Bug": "+ Fejl",

@@ -1,6 +1,11 @@
 import type { CompanyComputerScope } from "@qorpera/cloud-client/cloud-company-computer-contract";
-import { CloudMemberCompanyComputerClient } from "@qorpera/cloud-client/cloud-member-company-computer";
+import {
+	CloudMemberCompanyComputerClient,
+	type MemberAgentMachines,
+} from "@qorpera/cloud-client/cloud-member-company-computer";
 import type { Cloud } from "./client.ts";
+import { memberRouteTarget } from "./deployment-config.ts";
+import { createWebMachineScreens, type WebMachineScreens } from "./machine-screens.ts";
 import type { HostedProfile } from "./types.ts";
 
 /** Member-only transport. Every request rechecks the account and company
@@ -8,6 +13,8 @@ import type { HostedProfile } from "./types.ts";
 export class WebCompanyComputer {
 	readonly client: CloudMemberCompanyComputerClient;
 	readonly canRequestWake: boolean;
+	/** Looks at an agent's desktop through the member bridge (migration 20260930712000). */
+	readonly screens: WebMachineScreens;
 	readonly #cloud: Cloud;
 	readonly #memberId: string;
 	readonly #current: () => void;
@@ -19,36 +26,53 @@ export class WebCompanyComputer {
 			signal.throwIfAborted();
 			current();
 		};
+		const accessToken = async (requestSignal: AbortSignal) => {
+			this.#current();
+			requestSignal.throwIfAborted();
+			const { data, error } = await cloud.supabase.auth.getSession();
+			this.#current();
+			requestSignal.throwIfAborted();
+			if (error || !data.session || data.session.user.id !== memberId)
+				throw new Error("Sign in again to open this computer.");
+			return data.session.access_token;
+		};
+		const fetching = async (input: RequestInfo | URL, init?: RequestInit) => {
+			this.#current();
+			const response = await globalThis.fetch(input, {
+				...init,
+				signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]),
+			});
+			try {
+				this.#current();
+			} catch (error) {
+				void response.body?.cancel().catch(() => undefined);
+				throw error;
+			}
+			return response;
+		};
+		this.screens = createWebMachineScreens({
+			companyId: profile.profileId,
+			objectGatewayUrl: cloud.config.objectGatewayUrl,
+			route: (url) => memberRouteTarget(cloud.config, url),
+			accessToken,
+			fetch: fetching,
+		});
 		this.client = new CloudMemberCompanyComputerClient({
 			companyId: profile.profileId,
 			environmentId: profile.environmentId,
 			supabaseUrl: cloud.config.projectUrl,
 			publishableKey: cloud.config.publishableKey,
-			accessToken: async (requestSignal) => {
-				this.#current();
-				requestSignal.throwIfAborted();
-				const { data, error } = await cloud.supabase.auth.getSession();
-				this.#current();
-				requestSignal.throwIfAborted();
-				if (error || !data.session || data.session.user.id !== memberId)
-					throw new Error("Sign in again to open this computer.");
-				return data.session.access_token;
-			},
-			fetch: async (input, init) => {
-				this.#current();
-				const response = await globalThis.fetch(input, {
-					...init,
-					signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]),
-				});
-				try {
-					this.#current();
-				} catch (error) {
-					void response.body?.cancel().catch(() => undefined);
-					throw error;
-				}
-				return response;
-			},
+			accessToken,
+			fetch: fetching,
 		});
+	}
+	/** An agent's machines for its computer window, and whether this member may wake one. */
+	agentMachines(staffAgentId: string, signal: AbortSignal): Promise<MemberAgentMachines> {
+		return this.client.agentMachines(staffAgentId, signal);
+	}
+	/** Wakes a sleeping machine (owners, admins and contributors). */
+	wakeMachine(machineId: string, signal: AbortSignal): Promise<void> {
+		return this.client.wakeMachine(machineId, signal);
 	}
 	views(scope: CompanyComputerScope) {
 		this.#current();

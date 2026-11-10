@@ -1,65 +1,53 @@
 // @vitest-environment jsdom
-import type {
-	CompanyComputerMemberStatus,
-	CompanyComputerMemberView,
-} from "@qorpera/cloud-client/cloud-company-computer-views";
+import type { MemberAgentMachine } from "@qorpera/cloud-client/cloud-member-company-computer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ComputerPanel, ComputerPanels } from "../src/app/views/computer.ts";
+import {
+	ComputerPanel,
+	ComputerPanels,
+	LOOK_EVERY_MS,
+	MACHINES_EVERY_MS,
+	type MachineHints,
+	PAUSE_AFTER_MS,
+	SCREEN_OFF_EVERY_MS,
+} from "../src/app/views/computer.ts";
 import { WebCompanyComputer } from "../src/cloud/computer.ts";
 import { DEFAULT_CLOUD_CONFIG, parseCloudConfig } from "../src/cloud/deployment-config.ts";
-import * as viewer from "../src/ui/computer-viewer.ts";
-import { deferred, fixture, id, profileA, settle, staff, userA, userB } from "./fixtures.ts";
+import { createWebMachineScreens } from "../src/cloud/machine-screens.ts";
+import type { RealtimeResource } from "../src/cloud/realtime.ts";
+import { openMenu } from "../src/ui/context-menu.ts";
+import { fixture, id, profileA, settle, staff, userA, userB } from "./fixtures.ts";
 
-const scope = {
-	companyId: profileA.profileId,
-	environmentId: profileA.environmentId,
-	companyComputerId: id(30),
-	logicalComputerId: id(31),
-};
-const binding = {
-	...scope,
-	computerGeneration: 1,
-	screenId: id(32),
-	screenGeneration: 1,
-	screenOrdinal: 1,
-	staffAgentId: staff.id,
-};
-const catalog = {
-	companyId: profileA.profileId,
-	environmentId: profileA.environmentId,
-	scope,
-	canManage: true,
-	staff: [{ staffAgentId: staff.id, name: staff.displayName }],
-	nextAfter: null,
-};
-const start = { scope, computerGeneration: 1, officeState: "active", intent: null };
-const status: CompanyComputerMemberStatus = {
-	scope,
-	computerGeneration: 1,
-	state: "active",
-	maintenance: null,
-	privacyState: "shared",
-	privacyVersion: 0,
-	screens: [{ binding, epoch: 0, drainPending: false, driver: "idle", takeoverMemberId: null }],
-	viewers: [],
-};
-const intent = {
-	schema: "qorpera.office-start-intent/v1" as const,
-	intentId: id(71),
-	companyComputerId: scope.companyComputerId,
-	computerGeneration: 1,
-	state: "requested" as const,
-};
-// The renderer chunk is never really loaded here. Most tests stand in for loadComputerViewer; the
-// one that runs the real loader meets a download that stalls.
-vi.mock("../src/ui/screen-viewer.mjs", () => new Promise<object>(() => {}));
-const START_WRITES = /\/(?:qorpera_request_runtime_office_start|qorpera_cancel_runtime_office_start)$/;
+/* An agent's computer window (migration 20260930712000; lanes/desktop-computers-20261110/LIVE-VIEW-PLAN.md, stage 1a):
+ * the agent's machines, a picture of the chosen desktop about once a second through the member bridge, and every state
+ * the window says in words. */
+
+const gateway = "https://gateway.example.invalid";
+const bridge = "https://fixture.invalid/functions/v1/member-company-gateway";
+const etag = (n: number) => String(n).repeat(64).slice(0, 64);
+function machine(n: number, change: Partial<MemberAgentMachine> = {}): MemberAgentMachine {
+	return {
+		machineId: id(40 + n),
+		name: `desk-${n}`,
+		purpose: "Walks through the concepts app the way a friend would.",
+		state: "running",
+		lifetime: "task",
+		desktopCapable: true,
+		startedByAgent: true,
+		screenUsedAt: "2026-11-10T14:25:45Z",
+		screenAgentName: staff.displayName,
+		waitingFor: null,
+		...change,
+	};
+}
+/** One look's answer from the bridge: a picture (its etag), the member's own picture again, or a refusal's code. */
+type Answer = { picture: number } | "unchanged" | { code: string } | { status: number };
+
 const cleanup: (() => void)[] = [];
 beforeEach(() => {
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
 	vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
-	// The renderer chunk (noVNC) is not fetched here; openComputerViewer stands in for it.
-	vi.spyOn(viewer, "loadComputerViewer").mockResolvedValue();
+	// jsdom has no canvas: the panel draws nothing here, and its decoder stands in for the browser's.
+	vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
 });
 afterEach(() => {
 	for (const close of cleanup.splice(0)) close();
@@ -69,1397 +57,603 @@ afterEach(() => {
 	localStorage.clear();
 	document.body.replaceChildren();
 });
-function setup(overrides: Record<string, unknown> = {}, memberRole: typeof profileA.role = profileA.role) {
+
+function setup(options: { machines?: MemberAgentMachine[]; canWake?: boolean; role?: typeof profileA.role } = {}) {
 	const f = fixture(),
 		stop = new AbortController();
-	f.cloud.config.officeViewerOrigin = "wss://viewer.example.invalid";
-	const replies: Record<string, unknown> = {
-		qorpera_member_office_catalog: catalog,
-		qorpera_runtime_office_start_status: start,
-		qorpera_runtime_office_member_status: status,
-		qorpera_open_runtime_office_screen: { state: "open" },
-		...overrides,
+	Object.assign(f.cloud.config, { objectGatewayUrl: gateway, memberCompanyGatewayUrl: bridge });
+	const state = {
+		machines: options.machines ?? [machine(1)],
+		canWake: options.canWake ?? true,
+		answers: [] as Answer[],
+		/** What a look answers once the queue is empty. */
+		fallback: "unchanged" as Answer,
+		listFails: 0,
 	};
+	const looks: { url: string; etag: string | null }[] = [];
+	const rpcs: { method: string; body: Record<string, unknown> }[] = [];
 	const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-		const method = String(input).split("/").at(-1)!;
+		const url = String(input);
 		expect(init?.redirect).toBe("error");
-		// A backend without several computers per company: the panel falls back to the catalog.
-		if (method === "qorpera_member_agent_office" && !(method in replies))
-			return Response.json({ code: "PGRST202" }, { status: 404 });
-		if (!(method in replies)) throw new Error("Unexpected network request");
-		const reply = replies[method];
-		return Response.json(
-			typeof reply === "function" ? reply(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>) : reply,
-		);
+		const headers = new Headers(init?.headers);
+		expect(headers.get("authorization")).toBe("Bearer fixture-token");
+		if (url.startsWith(`${bridge}/v1/member-machine-screens/`)) {
+			expect(init?.method).toBe("GET");
+			expect(init?.cache).toBe("no-store");
+			const asked = headers.get("if-none-match");
+			looks.push({ url: url.slice(bridge.length), etag: asked ? asked.slice(1, -1) : null });
+			const answer = state.answers.shift() ?? state.fallback;
+			if (answer === "unchanged") return new Response(null, { status: 304, headers: { etag: asked ?? '""' } });
+			if ("picture" in answer)
+				return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47, answer.picture]), {
+					status: 200,
+					headers: { "content-type": "image/png", etag: `"${etag(answer.picture)}"` },
+				});
+			if ("code" in answer) return Response.json({ code: answer.code }, { status: 409 });
+			return new Response("{}", { status: answer.status });
+		}
+		const method = url.split("/").at(-1)!;
+		const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+		rpcs.push({ method, body });
+		if (method === "qorpera_list_agent_machines") {
+			if (state.listFails > 0) {
+				state.listFails--;
+				return new Response("{}", { status: 503 });
+			}
+			return Response.json({
+				schema: "qorpera.agent-machines/v1",
+				profileId: profileA.profileId,
+				staffAgentId: staff.id,
+				canWake: state.canWake,
+				machines: state.machines,
+			});
+		}
+		if (method === "qorpera_member_manage_company_machine")
+			return Response.json({ machineId: body.p_machine_id, state: "waiting" });
+		throw new Error(`Unexpected network request ${url}`);
 	});
 	vi.stubGlobal("fetch", fetch);
-	const computer = new WebCompanyComputer(f.cloud, { ...profileA, role: memberRole }, userA.id, stop.signal, () => {});
+	const computer = new WebCompanyComputer(
+		f.cloud,
+		{ ...profileA, role: options.role ?? profileA.role },
+		userA.id,
+		stop.signal,
+		() => {},
+	);
 	cleanup.push(() => stop.abort());
-	return { ...f, stop, computer, fetch, replies };
+	let hint: ((resource: RealtimeResource) => void) | undefined;
+	const hints: MachineHints = (listener) => {
+		hint = listener;
+		return () => {
+			hint = undefined;
+		};
+	};
+	const decode = vi.fn(async () => ({ width: 1600, height: 1000, close() {} }) as unknown as ImageBitmap);
+	return {
+		...f,
+		stop,
+		computer,
+		fetch,
+		state,
+		looks,
+		rpcs,
+		hints,
+		decode,
+		hint: (resource: RealtimeResource) => hint?.(resource),
+	};
 }
-function panel(computer: WebCompanyComputer, signal?: AbortSignal) {
-	const value = new ComputerPanel(staff, computer, signal);
-	value.attach(document.body, () => value.dispose());
+type Setup = ReturnType<typeof setup>;
+function panel(s: Setup, attach = true) {
+	const value = new ComputerPanel(staff, s.computer, undefined, { hints: s.hints, decode: s.decode });
+	if (attach) value.attach(document.body, () => value.dispose());
 	cleanup.push(() => value.dispose());
 	return value;
 }
-/** Allow the automatic open flow to reach its next waiting state. */
-async function opened(computer: WebCompanyComputer, signal?: AbortSignal) {
-	const value = panel(computer, signal);
-	await settle();
-	await settle();
-	await settle();
-	return value;
+/** Lets the loop reach its next wait: a response's body is read on the event loop's own turns. */
+async function flush() {
+	for (let n = 0; n < 6; n++) {
+		await settle();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	}
 }
-function action(root: HTMLElement, label: string) {
-	const result = [...root.querySelectorAll("button")].find((button) => button.textContent === label);
-	if (!result) throw new Error(`Missing ${label}: ${root.textContent}`);
-	return result;
+async function advance(ms: number) {
+	await vi.advanceTimersByTimeAsync(ms);
+	await flush();
 }
-function methods(f: ReturnType<typeof setup>) {
-	return f.fetch.mock.calls.map(([url]) => String(url).split("/").at(-1));
+function status(p: ComputerPanel) {
+	return p.el.querySelector(".computer-loading [role=status]")?.textContent;
 }
-function statusLine(p: ComputerPanel) {
-	return p.el.querySelector("[role=status]")?.textContent;
+function detail(p: ComputerPanel) {
+	const line = p.el.querySelector<HTMLElement>(".computer-loading-detail");
+	return line?.hidden ? null : line?.textContent;
 }
-/** One 3000 ms poll of the open flow. */
-async function poll() {
-	await vi.advanceTimersByTimeAsync(3000);
-	await settle();
+function action(p: ComputerPanel) {
+	const button = p.el.querySelector<HTMLButtonElement>(".computer-loading .computer-retry");
+	return button?.hidden ? null : button;
 }
-function spyStart(f: ReturnType<typeof setup>) {
-	const startClient = f.computer.client.start(scope);
-	vi.spyOn(f.computer.client, "start").mockReturnValue(startClient);
-	return startClient;
+function screen(p: ComputerPanel) {
+	return p.el.querySelector<HTMLElement>(".machine-screen");
 }
-function spyViewer(close = vi.fn(async () => {})) {
-	return vi.spyOn(viewer, "openComputerViewer").mockReturnValue({ close });
+function mark(p: ComputerPanel) {
+	const value = p.el.querySelector<HTMLElement>(".machine-screen-mark");
+	return value?.hidden ? null : value?.textContent;
+}
+function lists(s: Setup) {
+	return s.rpcs.filter((call) => call.method === "qorpera_list_agent_machines").length;
 }
 
-describe("several computers per company", () => {
-	const scope2 = { ...scope, companyComputerId: id(40), logicalComputerId: id(41) };
-	const binding2 = { ...binding, ...scope2, screenId: id(42) };
-	const placed = (computer: unknown, overrides: Record<string, unknown> = {}) => ({
-		companyId: profileA.profileId,
-		environmentId: profileA.environmentId,
-		staffAgentId: staff.id,
-		canManage: true,
-		computers: 2,
-		placement: "screen",
-		computer,
-		...overrides,
-	});
-	const sameScope = (body: Record<string, unknown>, value: typeof scope) =>
-		JSON.stringify(body.p_scope) === JSON.stringify(value);
-	it("opens the agent's screen on the computer it is on, named by number", async () => {
-		const f = setup({
-				qorpera_member_agent_office: placed({ scope: scope2, number: 2, waiting: null }),
-				qorpera_runtime_office_start_status: { ...start, scope: scope2 },
-				qorpera_runtime_office_member_status: {
-					...status,
-					scope: scope2,
-					screens: [{ ...status.screens[0], binding: binding2 }],
-				},
-			}),
-			open = spyViewer();
-		await opened(f.computer);
-		expect(open).toHaveBeenCalledExactlyOnceWith(
-			expect.objectContaining({ binding: binding2, title: `${staff.displayName} · Computer · Machine 2` }),
-		);
-		expect(methods(f)).toEqual([
-			"qorpera_member_agent_office",
-			"qorpera_runtime_office_start_status",
-			"qorpera_runtime_office_member_status",
-		]);
-		for (const [, init] of f.fetch.mock.calls.slice(1))
-			expect(JSON.parse(String(init?.body)).p_scope).toEqual(scope2);
-	});
-	it("keeps the plain title while the company has one computer", async () => {
-		const f = setup({ qorpera_member_agent_office: placed({ scope, number: 1, waiting: null }, { computers: 1 }) }),
-			open = spyViewer();
-		await opened(f.computer);
-		expect(open).toHaveBeenCalledExactlyOnceWith(
-			expect.objectContaining({ binding, title: `${staff.displayName} · Computer` }),
-		);
-	});
-	it("follows the agent to its other computer instead of opening a second screen", async () => {
-		let asked = 0;
-		const f = setup({
-				qorpera_member_agent_office: () =>
-					asked++ === 0
-						? placed({ scope, number: 1, waiting: null }, { placement: "room" })
-						: placed({ scope: scope2, number: 2, waiting: null }),
-				qorpera_runtime_office_start_status: (body: Record<string, unknown>) => ({
-					...start,
-					scope: sameScope(body, scope) ? scope : scope2,
-				}),
-				qorpera_runtime_office_member_status: (body: Record<string, unknown>) =>
-					sameScope(body, scope)
-						? { ...status, screens: [] }
-						: { ...status, scope: scope2, screens: [{ ...status.screens[0], binding: binding2 }] },
-				qorpera_open_runtime_office_screen: { state: "refused", reason: "AGENT_ON_OTHER_COMPUTER" },
-			}),
-			open = spyViewer();
-		await opened(f.computer);
-		await vi.advanceTimersByTimeAsync(1000);
-		await settle();
-		await settle();
-		await settle();
-		expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ binding: binding2 }));
-		expect(methods(f)).toEqual([
-			"qorpera_member_agent_office",
-			"qorpera_runtime_office_start_status",
-			"qorpera_runtime_office_member_status",
-			"qorpera_open_runtime_office_screen",
-			"qorpera_member_agent_office",
-			"qorpera_runtime_office_start_status",
-			"qorpera_runtime_office_member_status",
-		]);
-	});
-	it("says why a new computer is not up yet", async () => {
-		const f = setup({
-			qorpera_member_agent_office: placed({ scope: scope2, number: 2, waiting: "room" }, { placement: "starting" }),
-			qorpera_runtime_office_start_status: {
-				...start,
-				scope: scope2,
-				officeState: "provisioning",
-				intent: { ...intent, companyComputerId: scope2.companyComputerId },
-			},
-		});
-		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("Waiting for room on our servers. It starts as soon as there is room.");
-		await poll();
-		expect(statusLine(p)).toBe("Waiting for room on our servers. It starts as soon as there is room.");
-		expect(methods(f).some((method) => START_WRITES.test(`/${method}`))).toBe(false);
-	});
-	it("says a sleeping computer waits for computer hours, and wakes it once hours are added", async () => {
-		const maintenance = {
-			reason: "idle",
-			state: "resumed",
-			transitionId: id(74),
-			requestedAt: "2026-09-19T12:00:00Z",
-			resumedAt: "2026-09-19T12:01:00Z",
-			activatedAt: null,
-		};
-		const f = setup({
-			qorpera_member_agent_office: placed({ scope, number: 1, waiting: "hours" }, { placement: "starting" }),
-			qorpera_runtime_office_start_status: { ...start, officeState: "maintenance", maintenance, intent },
-		});
-		const startClient = spyStart(f);
-		const request = vi.spyOn(startClient, "request").mockResolvedValue(intent);
-		const open = spyViewer();
-		const p = await opened(f.computer);
-		await poll();
-		// The wake is still asked for: it waits for hours instead of "starting" for good.
-		expect(request).toHaveBeenCalledOnce();
-		expect(statusLine(p)).toBe("Out of computer hours. The machine starts by itself once hours are added.");
-		f.replies.qorpera_member_agent_office = placed({ scope, number: 1, waiting: null }, { placement: "starting" });
-		for (let n = 0; n < 4; n++) await poll();
-		expect(statusLine(p)).toBe("Starting the machine…");
-		f.replies.qorpera_runtime_office_start_status = start;
-		await poll();
-		expect(request).toHaveBeenCalledOnce();
-		expect(open).toHaveBeenCalledOnce();
-	});
-	it("moves to a computer that has room while its sleeping one wakes", async () => {
-		const maintenance = {
-			reason: "idle",
-			state: "resumed",
-			transitionId: id(75),
-			requestedAt: "2026-09-19T12:00:00Z",
-			resumedAt: "2026-09-19T12:01:00Z",
-			activatedAt: null,
-		};
-		let asked = 0;
-		const f = setup({
-				qorpera_member_agent_office: () =>
-					asked++ < 2
-						? placed({ scope: scope2, number: 2, waiting: null }, { placement: "starting" })
-						: placed({ scope, number: 1, waiting: null }, { placement: "room" }),
-				qorpera_runtime_office_start_status: (body: Record<string, unknown>) =>
-					sameScope(body, scope)
-						? start
-						: {
-								...start,
-								scope: scope2,
-								officeState: "maintenance",
-								maintenance,
-								intent: { ...intent, companyComputerId: scope2.companyComputerId },
-							},
-				qorpera_request_runtime_office_start: { ...intent, companyComputerId: scope2.companyComputerId },
-			}),
-			open = spyViewer();
-		await opened(f.computer);
-		for (let n = 0; n < 12 && !open.mock.calls.length; n++) await poll();
-		expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ binding }));
-	});
-	it("moves to a computer that has room while the new one still waits for its server", async () => {
-		let asked = 0;
-		const f = setup({
-				qorpera_member_agent_office: () =>
-					asked++ < 2
-						? placed({ scope: scope2, number: 2, waiting: "setup" }, { placement: "starting" })
-						: placed({ scope, number: 1, waiting: null }, { placement: "room" }),
-				qorpera_runtime_office_start_status: (body: Record<string, unknown>) =>
-					sameScope(body, scope)
-						? start
-						: {
-								...start,
-								scope: scope2,
-								officeState: "provisioning",
-								intent: { ...intent, companyComputerId: scope2.companyComputerId },
-							},
-			}),
-			open = spyViewer();
-		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("Setting up another machine. This can take a while.");
-		for (let n = 0; n < 12 && !open.mock.calls.length; n++) await poll();
-		expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ binding }));
-	});
-	it("moves a member without owner rights to a machine that gets room", async () => {
-		let asked = 0;
-		const f = setup({
-				qorpera_member_agent_office: () =>
-					asked++ < 2
-						? placed({ scope: scope2, number: 2, waiting: null }, { placement: "unstarted", canManage: false })
-						: placed({ scope, number: 1, waiting: null }, { placement: "room", canManage: false }),
-				qorpera_runtime_office_start_status: (body: Record<string, unknown>) =>
-					sameScope(body, scope) ? start : { ...start, scope: scope2, officeState: "provisioning", intent: null },
-			}),
-			open = spyViewer();
-		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("The machine is off. An owner or admin can start it.");
-		for (let n = 0; n < 12 && !open.mock.calls.length; n++) await poll();
-		expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ binding }));
-		expect(methods(f).some((method) => START_WRITES.test(`/${method}`))).toBe(false);
-	});
-	it("says it sets up the computer, not another one, for a company's first", async () => {
-		const f = setup({
-			qorpera_member_agent_office: placed(
-				{ scope, number: 1, waiting: "setup" },
-				{ placement: "unstarted", computers: 1 },
-			),
-			qorpera_runtime_office_start_status: { ...start, officeState: "provisioning", intent },
-		});
-		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("Setting up the machine. This can take a while.");
-	});
-	it("tells members when the agent's computer access was revoked everywhere", async () => {
-		const f = setup({ qorpera_member_agent_office: placed(null, { placement: "denied" }) });
-		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe(`${staff.displayName} does not have access to the computer.`);
-	});
-	it("stops following an agent that keeps moving and offers to try again", async () => {
-		const f = setup({
-				qorpera_member_agent_office: placed({ scope, number: 1, waiting: null }, { placement: "room" }),
-				qorpera_runtime_office_member_status: { ...status, screens: [] },
-				qorpera_open_runtime_office_screen: { state: "refused", reason: "AGENT_ON_OTHER_COMPUTER" },
-			}),
-			open = spyViewer();
-		const p = await opened(f.computer);
-		for (let n = 0; n < 4; n++) {
-			await vi.advanceTimersByTimeAsync(1000);
-			await settle();
-		}
-		expect(statusLine(p)).toBe("The machine is not ready yet.");
-		expect(action(p.el, "Try again").hidden).toBe(false);
-		expect(open).not.toHaveBeenCalled();
-		expect(methods(f).filter((method) => method === "qorpera_member_agent_office")).toHaveLength(3);
-	});
-	it("tells a member without owner rights that every computer is in use", async () => {
-		const f = setup({
-			qorpera_member_agent_office: placed(null, { placement: "new", canManage: false }),
-		});
-		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("All computers are in use. An owner or admin can start another machine.");
-		expect(action(p.el, "Try again").hidden).toBe(false);
-		expect(methods(f)).toEqual(["qorpera_member_agent_office"]);
-	});
-});
-
-describe("automatic computer popover", () => {
-	it("shows loading immediately and opens the agent screen without a second action", async () => {
-		const f = setup(),
-			open = spyViewer(),
-			p = panel(f.computer);
-		expect(p.el.querySelector(".computer-loading")).not.toBeNull();
-		expect(p.el.querySelector(".computer-loading-spinner")).not.toBeNull();
-		expect(p.el.querySelector("header, select, .computer-preview, .figure")).toBeNull();
-		expect(p.el.textContent).not.toContain("Open computer");
-		// The X top right is there from the start: a preview stuck on "Connecting…" can be put away too.
+describe("an agent's computer window", () => {
+	it("shows the running desktop the agent uses, live, through the member bridge with the member's word", async () => {
+		const s = setup();
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		// The X top right is there from the start, and the window says it connects.
 		expect(p.el.querySelector("button.computer-close[aria-label='Close computer']")).not.toBeNull();
-		expect(p.el.tabIndex).toBe(0);
-		await settle();
-		await settle();
-		await settle();
-		expect(open).toHaveBeenCalledExactlyOnceWith(
-			expect.objectContaining({
-				binding,
-				mount: p.el.querySelector(".computer-panel-body"),
-				autofocus: false,
-				canControl: true,
-				sharedControl: true,
-			}),
-		);
-		expect(methods(f)).toEqual([
-			"qorpera_member_agent_office",
-			"qorpera_member_office_catalog",
-			"qorpera_runtime_office_start_status",
-			"qorpera_runtime_office_member_status",
+		expect(status(p)).toBe("Connecting…");
+		await flush();
+		expect(s.rpcs[0]).toEqual({
+			method: "qorpera_list_agent_machines",
+			body: { p_profile_id: profileA.profileId, p_staff_agent_id: staff.id },
+		});
+		// The first look says the member watches; the bridge carries it; no etag yet.
+		expect(s.looks).toEqual([
+			{ url: `/v1/member-machine-screens/${profileA.profileId}/${machine(1).machineId}/watching`, etag: null },
 		]);
-		expect(methods(f).some((method) => START_WRITES.test(`/${method}`))).toBe(false);
-		expect(p.el.querySelector<HTMLElement>(".computer-loading")?.hidden).toBe(true);
-		open.mock.calls[0]![0].onClosed();
-		expect(p.el.isConnected).toBe(false);
+		expect(s.decode).toHaveBeenCalledOnce();
+		expect(screen(p)?.hidden).toBe(false);
+		expect(mark(p)).toBe("Live");
+		expect(p.el.querySelector(".screen-viewer-enter")?.hasAttribute("disabled")).toBe(false);
+		expect(screen(p)?.getAttribute("aria-label")).toBe(`${staff.displayName} · Computer`);
+		// About a second after the last look began, the next asks with the picture the member has; it is the same.
+		await advance(LOOK_EVERY_MS - 1);
+		expect(s.looks).toHaveLength(1);
+		await advance(1);
+		expect(s.looks[1]).toEqual({
+			url: `/v1/member-machine-screens/${profileA.profileId}/${machine(1).machineId}`,
+			etag: etag(1),
+		});
+		expect(s.decode).toHaveBeenCalledOnce();
+		expect(mark(p)).toBe("Live");
+		// No take-over in this stage.
+		expect(p.el.textContent).not.toMatch(/Take over|Take control/);
+		expect(p.el.querySelector(".screen-viewer-takeover")).toBeNull();
 	});
+
+	it("slows to 2 s after three unchanged pictures and 3 s after ten; a change, a click or a machines hint brings back 1 s", async () => {
+		const s = setup();
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		const gaps = async (count: number) => {
+			const found: number[] = [];
+			for (let n = 0; n < count; n++) {
+				const before = s.looks.length;
+				let waited = 0;
+				while (s.looks.length === before && waited < 10_000) {
+					await advance(250);
+					waited += 250;
+				}
+				found.push(waited);
+			}
+			return found;
+		};
+		// Looks 2-4 come a second apart (each answers unchanged); after the third unchanged, every 2 s.
+		expect(await gaps(3)).toEqual([1000, 1000, 1000]);
+		expect(await gaps(7)).toEqual([2000, 2000, 2000, 2000, 2000, 2000, 2000]);
+		expect(await gaps(2)).toEqual([3000, 3000]);
+		// A click in the window: the next look within a second of the last.
+		p.el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+		await flush();
+		expect((await gaps(1))[0]).toBeLessThanOrEqual(1000);
+		expect(await gaps(3)).toEqual([1000, 1000, 2000]);
+		// A machines hint: the list read again at once, and looks every second.
+		const listed = lists(s);
+		s.hint("machines");
+		await flush();
+		expect(lists(s)).toBe(listed + 1);
+		expect(await gaps(2)).toEqual([1000, 1000]);
+		// Another resource's hint is not the window's.
+		s.hint("sessions");
+		await flush();
+		expect(lists(s)).toBe(listed + 1);
+		// A changed picture: every second again.
+		s.state.answers.push("unchanged", "unchanged", "unchanged", { picture: 2 });
+		await gaps(4);
+		expect(await gaps(2)).toEqual([1000, 1000]);
+		expect(s.decode).toHaveBeenCalledTimes(2);
+	});
+
+	it("says when the agent has no computer, or only machines without a screen", async () => {
+		const none = setup({ machines: [] });
+		const p = panel(none);
+		await flush();
+		expect(status(p)).toBe(`${staff.displayName} is not using a computer right now.`);
+		expect(detail(p)).toBe(`${staff.displayName} gets one when a task needs a screen.`);
+		expect(none.looks).toEqual([]);
+		expect(screen(p)?.hidden).toBe(true);
+		// One window at a time here: both would read through the one stubbed fetch.
+		p.dispose();
+		const headless = setup({ machines: [machine(1, { desktopCapable: false })] });
+		const q = panel(headless);
+		await flush();
+		expect(status(q)).toBe(`${staff.displayName} is working on a machine without a screen.`);
+		expect(detail(q)).toBeNull();
+		expect(headless.looks).toEqual([]);
+		// The list is read again every 15 s while the window is shown: a desktop that comes is shown.
+		headless.state.machines = [machine(1, { desktopCapable: false }), machine(2)];
+		headless.state.answers.push({ picture: 2 });
+		await advance(MACHINES_EVERY_MS);
+		expect(headless.looks[0]?.url).toContain(machine(2).machineId);
+		expect(mark(q)).toBe("Live");
+	});
+
+	it("wakes a sleeping computer for those who may, and tells a viewer who may", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" })] });
+		const p = panel(s);
+		await flush();
+		expect(status(p)).toBe("The computer is asleep.");
+		expect(action(p)?.textContent).toBe("Wake it");
+		expect(s.looks).toEqual([]);
+		s.state.machines = [machine(1, { state: "waiting", waitingFor: "room" })];
+		action(p)!.click();
+		await flush();
+		expect(s.rpcs.find((call) => call.method === "qorpera_member_manage_company_machine")?.body).toEqual({
+			p_profile_id: profileA.profileId,
+			p_machine_id: machine(1).machineId,
+			p_action: "start",
+		});
+		expect(status(p)).toBe("The computer is starting…");
+		expect(detail(p)).toBe("Waiting for room on our servers. It starts as soon as there is room.");
+		s.state.machines = [machine(1, { state: "waiting", waitingFor: "hours" })];
+		await advance(MACHINES_EVERY_MS);
+		expect(detail(p)).toBe("Out of computer hours. The machine starts by itself once hours are added.");
+		s.state.machines = [machine(1, { state: "starting" })];
+		await advance(MACHINES_EVERY_MS);
+		expect(status(p)).toBe("The computer is starting…");
+		expect(detail(p)).toBeNull();
+		// A viewer watches, and cannot wake.
+		const viewer = setup({ machines: [machine(1, { state: "stopping" })], canWake: false, role: "viewer" });
+		const q = panel(viewer);
+		await flush();
+		expect(status(q)).toBe("The computer is asleep.");
+		expect(detail(q)).toBe("Someone with edit access can wake it.");
+		expect(action(q)).toBeNull();
+	});
+
+	it("says the screen is off, hides it from a member who may not see what it shows, and keeps the last picture while it is held", async () => {
+		const s = setup();
+		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" });
+		const p = panel(s);
+		await flush();
+		expect(status(p)).toBe(
+			`The computer is on, but its screen is off. It turns on when ${staff.displayName} uses it.`,
+		);
+		expect(screen(p)?.hidden).toBe(true);
+		// Looked at again every 5 s: the agent turned it on.
+		s.state.answers.push({ picture: 1 });
+		await advance(SCREEN_OFF_EVERY_MS - 1);
+		expect(s.looks).toHaveLength(1);
+		await advance(1);
+		expect(mark(p)).toBe("Live");
+		// The company folder has not released the next one: the last stays, marked.
+		s.state.answers.push({ code: "SCREEN_HELD" });
+		await advance(LOOK_EVERY_MS);
+		expect(screen(p)?.hidden).toBe(false);
+		expect(mark(p)).toBe("Updating…");
+		s.state.answers.push("unchanged");
+		await advance(2000);
+		expect(mark(p)).toBe("Live");
+		// The screen may show a file this member may not open: no picture at all, and nothing of it kept.
+		s.state.answers.push({ code: "SCREEN_HIDDEN" });
+		await advance(LOOK_EVERY_MS);
+		expect(screen(p)?.hidden).toBe(true);
+		expect(status(p)).toBe("The screen is hidden because it may show files you can't open.");
+		s.state.answers.push({ picture: 3 });
+		await advance(SCREEN_OFF_EVERY_MS);
+		expect(s.looks.at(-1)?.etag).toBeNull();
+		expect(mark(p)).toBe("Live");
+		// A disk the member may not see says the same.
+		s.state.answers.push({ code: "MACHINE_NEEDS_COMPANY_VIEW" });
+		await advance(LOOK_EVERY_MS);
+		expect(status(p)).toBe("The screen is hidden because it may show files you can't open.");
+		// An image that cannot take pictures yet.
+		s.state.answers.push({ code: "MACHINE_IMAGE_WITHOUT_SCREEN" });
+		await advance(SCREEN_OFF_EVERY_MS);
+		expect(status(p)).toBe("This computer cannot show its screen yet. It can after it has slept.");
+	});
+
+	it("reads the list again when the machine stopped under a look, and after a refused look too soon, looks again", async () => {
+		const s = setup();
+		s.state.answers.push({ picture: 1 }, { code: "MACHINE_NOT_RUNNING" });
+		const p = panel(s);
+		await flush();
+		const listed = lists(s);
+		s.state.machines = [machine(1, { state: "stopped" })];
+		await advance(LOOK_EVERY_MS);
+		expect(lists(s)).toBe(listed + 1);
+		expect(status(p)).toBe("The computer is asleep.");
+		expect(screen(p)?.hidden).toBe(true);
+		const t = setup();
+		t.state.answers.push({ code: "SCREEN_TOO_SOON" }, { picture: 1 });
+		const q = panel(t);
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(mark(q)).toBe("Live");
+	});
+
+	it("looks only while a thread shows it and its tab is visible", async () => {
+		const s = setup();
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s, false);
+		await advance(5000);
+		expect(s.looks).toEqual([]);
+		expect(lists(s)).toBe(0);
+		p.attach(document.body, () => p.dispose());
+		await flush();
+		expect(s.looks).toHaveLength(1);
+		p.detach();
+		await advance(60_000);
+		expect(s.looks).toHaveLength(1);
+		p.attach(document.body, () => p.dispose());
+		await flush();
+		expect(s.looks).toHaveLength(2);
+		let visibility: DocumentVisibilityState = "hidden";
+		Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+		cleanup.push(() => Reflect.deleteProperty(document, "visibilityState"));
+		await advance(LOOK_EVERY_MS);
+		const seen = s.looks.length;
+		await advance(60_000);
+		expect(s.looks).toHaveLength(seen);
+		visibility = "visible";
+		document.dispatchEvent(new Event("visibilitychange"));
+		await flush();
+		expect(s.looks).toHaveLength(seen + 1);
+	});
+
+	it("pauses after 30 minutes without a touch on the page, and goes on with the member's word when they keep watching", async () => {
+		const s = setup();
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		// A touch within 30 minutes keeps it going; every 5 minutes the touch says again that the member watches.
+		vi.setSystemTime(Date.now() + PAUSE_AFTER_MS - 60_000);
+		const before = s.looks.length;
+		document.dispatchEvent(new PointerEvent("pointermove"));
+		await advance(3000);
+		expect(s.looks.slice(before).map((look) => look.url.endsWith("/watching"))).toEqual([true, false, false]);
+		expect(action(p)).toBeNull();
+		// Then 30 minutes without one: paused, and no looks.
+		vi.setSystemTime(Date.now() + PAUSE_AFTER_MS);
+		await advance(3000);
+		expect(status(p)).toBe("Paused to save power. Still watching?");
+		expect(screen(p)?.hidden).toBe(true);
+		const seen = s.looks.length;
+		await advance(60_000);
+		expect(s.looks).toHaveLength(seen);
+		expect(action(p)?.textContent).toBe("Keep watching");
+		action(p)!.click();
+		await flush();
+		expect(s.looks).toHaveLength(seen + 1);
+		expect(s.looks.at(-1)).toMatchObject({ url: expect.stringMatching(/\/watching$/), etag: null });
+		// Paused again: a thread showing the window again is the member's word too.
+		vi.setSystemTime(Date.now() + PAUSE_AFTER_MS);
+		await advance(3000);
+		expect(status(p)).toBe("Paused to save power. Still watching?");
+		const paused = s.looks.length;
+		p.detach();
+		p.attach(document.body, () => p.dispose());
+		await flush();
+		expect(s.looks).toHaveLength(paused + 1);
+		expect(s.looks.at(-1)?.url).toMatch(/\/watching$/);
+	});
+
+	it("switches between the agent's desktops from its menu, and keeps headless machines out of it", async () => {
+		const s = setup({
+			machines: [machine(1), machine(2, { state: "stopped" }), machine(3, { desktopCapable: false })],
+		});
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		const switcher = p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher")!;
+		expect(switcher.hidden).toBe(false);
+		expect(switcher.textContent).toBe("desk-1");
+		expect(switcher.getAttribute("aria-label")).toBe("Choose a computer");
+		switcher.click();
+		const menu = openMenu()!.el;
+		expect([...menu.querySelectorAll("[role^=menuitem]")].map((row) => row.textContent)).toEqual([
+			expect.stringContaining("desk-1"),
+			expect.stringContaining("desk-2"),
+		]);
+		expect(menu.querySelector("[aria-checked=true]")?.textContent).toContain("desk-1");
+		[...menu.querySelectorAll<HTMLElement>("[role^=menuitem]")][1]!.click();
+		await flush();
+		expect(status(p)).toBe("The computer is asleep.");
+		expect(screen(p)?.hidden).toBe(true);
+		expect(switcher.textContent).toBe("desk-2");
+		// One desktop: no switcher.
+		const one = setup({ machines: [machine(1), machine(3, { desktopCapable: false })] });
+		const q = panel(one);
+		await flush();
+		expect(q.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher")!.hidden).toBe(true);
+	});
+
+	it("says it cannot reach the computer after two failed reads, and tries again", async () => {
+		const s = setup();
+		s.state.listFails = 2;
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		expect(status(p)).toBe("Connecting…");
+		await advance(2000);
+		expect(status(p)).toBe("The computer could not be reached. Try again.");
+		action(p)!.click();
+		await flush();
+		expect(mark(p)).toBe("Live");
+		// A failed look keeps the last picture, marked, and backs off.
+		s.state.answers.push({ status: 503 });
+		await advance(LOOK_EVERY_MS);
+		expect(mark(p)).toBe("Updating…");
+		const seen = s.looks.length;
+		await advance(1999);
+		expect(s.looks).toHaveLength(seen);
+		s.state.answers.push({ picture: 2 });
+		await advance(1);
+		expect(mark(p)).toBe("Live");
+	});
+
+	it("enters and goes back as the old viewer did, and Escape goes back before it closes", async () => {
+		const s = setup();
+		s.state.answers.push({ picture: 1 });
+		const thread = document.createElement("div");
+		const conversation = document.createElement("div");
+		conversation.className = "thread-conversation";
+		const header = document.createElement("div");
+		header.className = "thread-header";
+		const message = document.createElement("div");
+		conversation.append(header, message);
+		thread.append(conversation);
+		document.body.append(thread);
+		const close = vi.fn();
+		const p = new ComputerPanel(staff, s.computer, undefined, { hints: s.hints, decode: s.decode });
+		cleanup.push(() => p.dispose());
+		p.attach(thread, close);
+		await flush();
+		p.el.querySelector<HTMLButtonElement>(".screen-viewer-enter")!.click();
+		expect(p.el.classList.contains("is-entered")).toBe(true);
+		expect(message.inert).toBe(true);
+		expect(header.inert).not.toBe(true);
+		const back = p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!;
+		expect(back.hidden).toBe(false);
+		expect(back.getAttribute("aria-label")).toBe("Back to thread");
+		p.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(p.el.classList.contains("is-entered")).toBe(false);
+		expect(message.inert).not.toBe(true);
+		expect(close).not.toHaveBeenCalled();
+		p.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(close).toHaveBeenCalledOnce();
+	});
+
+	it("closes for good from the X top right, follows a rename, and ends with the company", async () => {
+		const s = setup();
+		s.state.answers.push({ picture: 1 });
+		const panels = new ComputerPanels(s.computer, s.stop.signal, { hints: s.hints });
+		const p = panels.open(staff)!;
+		const close = vi.fn();
+		p.el.querySelector<HTMLButtonElement>(".computer-close")!.click();
+		expect(close).not.toHaveBeenCalled();
+		p.attach(document.body, close);
+		await flush();
+		p.el.querySelector<HTMLButtonElement>(".computer-close")!.click();
+		expect(close).toHaveBeenCalledOnce();
+		expect(panels.open({ ...staff, displayName: "Renamed" })).toBe(p);
+		expect(p.el.querySelector(".machine-screen")?.getAttribute("aria-label")).toBe("Renamed · Computer");
+		s.stop.abort();
+		await flush();
+		expect(panels.get(staff.id)).toBeUndefined();
+		expect(panels.open(staff)).toBeUndefined();
+	});
+
 	it("forgets a press's pointer focus when a thread detaches the panel", () => {
-		const f = setup(),
-			p = panel(f.computer);
-		document.body.append(p.el);
-		// jsdom has no pointer capture; the drag code takes it on every press.
+		const s = setup();
+		const p = panel(s);
 		p.el.setPointerCapture = vi.fn();
 		p.el.hasPointerCapture = vi.fn(() => false);
 		p.el.releasePointerCapture = vi.fn();
 		p.el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, isPrimary: true, button: 0 }));
-		expect(document.activeElement).toBe(p.el);
 		expect(p.el.classList.contains("is-pointer-focus")).toBe(true);
-		// Removal takes focus without a focusout in every browser; the mark must not outlive the thread.
 		p.detach();
 		expect(p.el.classList.contains("is-pointer-focus")).toBe(false);
 	});
-	it("closes for good from the X top right, and not before a thread holds it", async () => {
-		const f = setup(),
-			open = spyViewer(),
-			p = panel(f.computer);
-		await settle();
-		await settle();
-		await settle();
-		expect(open).toHaveBeenCalledOnce();
-		const close = vi.fn();
-		p.detach();
-		p.el.querySelector<HTMLButtonElement>(".computer-close")!.click();
-		expect(close).not.toHaveBeenCalled();
-		const body = document.createElement("div");
-		document.body.append(body);
-		p.attach(body, close);
-		p.el.querySelector<HTMLButtonElement>(".computer-close")!.click();
-		expect(close).toHaveBeenCalledOnce();
-		body.remove();
-	});
-	it("fetches the screen renderer while it finds the machine, and only when there is one", async () => {
-		const load = vi.mocked(viewer.loadComputerViewer);
-		const unavailable = new ComputerPanel(staff);
-		cleanup.push(() => unavailable.dispose());
-		expect(load).not.toHaveBeenCalled();
-		const f = setup(),
-			open = spyViewer();
-		panel(f.computer);
-		// Beside the first read about the machine, not after the screen is up.
-		expect(load).toHaveBeenCalledOnce();
-		expect(open).not.toHaveBeenCalled();
-		await settle();
-		await settle();
-		await settle();
-		expect(open).toHaveBeenCalledOnce();
-	});
-	it("asks for a reload, and starts, wakes or opens nothing, when this page cannot load the screen renderer", async () => {
-		// A deploy renamed the renderer chunk while the tab was open: the failed load stays failed.
-		vi.mocked(viewer.loadComputerViewer).mockRejectedValue(
-			new viewer.ComputerViewerUnavailable(new TypeError("Failed to fetch dynamically imported module")),
-		);
-		const reload = vi.spyOn(viewer, "reloadPage").mockImplementation(() => {});
-		const f = setup({
-			qorpera_runtime_office_start_status: { ...start, officeState: "provisioning" },
-			qorpera_request_runtime_office_start: intent,
-		});
-		const open = spyViewer();
-		const p = await opened(f.computer);
-		await poll();
-		expect(statusLine(p)).toBe("The computer screen could not be loaded in this tab. Reload the page to open it.");
-		// Only where the agent's screen is was read; nothing was asked of the machine.
-		expect(methods(f)).toEqual(["qorpera_member_agent_office", "qorpera_member_office_catalog"]);
-		expect(open).not.toHaveBeenCalled();
-		expect(p.el.querySelector<HTMLElement>(".computer-loading-spinner")?.hidden).toBe(true);
-		// Try again could never help: the page has to fetch the renderer anew.
-		const offered = [...p.el.querySelectorAll<HTMLButtonElement>(".computer-loading button")].filter(
-			(button) => !button.hidden,
-		);
-		expect(offered.map((button) => button.textContent)).toEqual(["Reload page"]);
-		offered[0]!.click();
-		expect(reload).toHaveBeenCalledOnce();
-	});
-	it("ends a renderer download that stalls in the same reload state, asking nothing of the machine", async () => {
-		vi.mocked(viewer.loadComputerViewer).mockRestore();
-		const f = setup({
-			qorpera_runtime_office_start_status: { ...start, officeState: "provisioning" },
-			qorpera_request_runtime_office_start: intent,
-		});
-		const open = spyViewer();
-		const p = await opened(f.computer);
-		// Found the machine; waits for the renderer before starting it.
-		expect(statusLine(p)).toBe("Connecting…");
-		await vi.advanceTimersByTimeAsync(viewer.RENDERER_DEADLINE_MS - 1);
-		await settle();
-		expect(statusLine(p)).toBe("Connecting…");
-		await vi.advanceTimersByTimeAsync(1);
-		await settle();
-		expect(statusLine(p)).toBe("The computer screen could not be loaded in this tab. Reload the page to open it.");
-		expect(action(p.el, "Reload page").hidden).toBe(false);
-		expect(methods(f)).toEqual(["qorpera_member_agent_office", "qorpera_member_office_catalog"]);
-		expect(open).not.toHaveBeenCalled();
-	});
-	it("keeps unavailable and missing computers inside the popover without starting a runtime", async () => {
-		const unavailable = new ComputerPanel(staff);
-		cleanup.push(() => unavailable.dispose());
-		expect(statusLine(unavailable)).toBe("Computer access is not available yet.");
-		const f = setup({ qorpera_member_office_catalog: { ...catalog, scope: null } });
-		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("This company has no machine yet.");
-		expect(methods(f)).toEqual(["qorpera_member_agent_office", "qorpera_member_office_catalog"]);
-		expect(p.el.textContent).not.toContain("Open computer");
-	});
-	it("offers retry after a failed read and opens automatically after retry succeeds", async () => {
-		const f = setup(),
-			open = spyViewer();
-		delete f.replies.qorpera_runtime_office_start_status;
-		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("The computer could not be reached. Try again.");
-		const retry = action(p.el, "Try again");
-		expect(retry.hidden).toBe(false);
-		expect(open).not.toHaveBeenCalled();
-		f.replies.qorpera_runtime_office_start_status = start;
-		retry.focus();
-		retry.click();
-		expect(document.activeElement).toBe(p.el);
-		retry.click();
-		await settle();
-		await settle();
-		await settle();
-		expect(open).toHaveBeenCalledTimes(1);
-	});
-	it("does not interrupt typing when delayed discovery completes", async () => {
-		const f = setup(),
-			pending = deferred<CompanyComputerMemberStatus>(),
-			open = spyViewer();
-		const views = f.computer.views(scope);
-		vi.spyOn(views, "status").mockReturnValue(pending.promise);
-		vi.spyOn(f.computer, "views").mockReturnValue(views);
-		await opened(f.computer);
-		const composer = document.createElement("textarea");
-		document.body.append(composer);
-		composer.focus();
-		composer.value = "Keep writing while the screen opens";
-		composer.setSelectionRange(5, 12);
-		pending.resolve(status);
-		await settle();
-		await settle();
-		expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ autofocus: false }));
-		expect(document.activeElement).toBe(composer);
-		expect(composer.selectionStart).toBe(5);
-		expect(composer.selectionEnd).toBe(12);
-	});
-	it("closing with Escape cancels polling without cancelling the runtime", async () => {
-		const f = setup({ qorpera_runtime_office_start_status: { ...start, officeState: "maintenance" } });
-		const startClient = spyStart(f),
-			cancel = vi.spyOn(startClient, "cancel");
-		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("The machine is restarting. It comes back on its own.");
-		p.focus();
-		expect(document.activeElement).toBe(p.el);
-		p.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-		await settle();
-		expect(p.el.isConnected).toBe(false);
-		const requests = methods(f);
-		await poll();
-		await poll();
-		expect(methods(f)).toEqual(requests);
-		expect(cancel).not.toHaveBeenCalled();
-	});
-	it("captures fallback Escape before the remote canvas while forwarding other keys", async () => {
-		const f = setup(),
-			close = vi.fn(async () => {}),
-			open = spyViewer(close),
-			p = await opened(f.computer);
-		const options = open.mock.calls[0]![0];
-		expect(options.onExpandedChange).toBeTypeOf("function");
-		const back = document.createElement("button");
-		back.className = "screen-viewer-back";
-		const returnToPreview = vi.fn(() => options.onExpandedChange?.(false));
-		back.addEventListener("click", returnToPreview);
-		const screen = document.createElement("canvas");
-		const remoteKey = vi.fn((event: KeyboardEvent) => {
-			// noVNC consumes keyboard input at the canvas instead of letting it bubble.
-			event.preventDefault();
-			event.stopPropagation();
-		});
-		screen.addEventListener("keydown", remoteKey);
-		p.el.querySelector(".computer-panel-body")!.append(back, screen);
-		options.onExpandedChange?.(true);
-		expect(p.el.classList.contains("is-entered")).toBe(true);
-		const typing = new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true });
-		screen.dispatchEvent(typing);
-		expect(remoteKey).toHaveBeenCalledExactlyOnceWith(typing);
-		expect(returnToPreview).not.toHaveBeenCalled();
-		const dismiss = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
-		screen.dispatchEvent(dismiss);
-		expect(dismiss.defaultPrevented).toBe(true);
-		expect(remoteKey).toHaveBeenCalledTimes(1);
-		expect(returnToPreview).toHaveBeenCalledOnce();
-		expect(p.el.classList.contains("is-entered")).toBe(false);
-		expect(p.el.isConnected).toBe(true);
-		expect(close).not.toHaveBeenCalled();
-		expect(open).toHaveBeenCalledTimes(1);
-	});
-	it("lets Escape leave fullscreen before a later Escape closes the computer", async () => {
-		const f = setup(),
-			close = vi.fn(async () => {}),
-			open = spyViewer(close),
-			p = await opened(f.computer);
-		const screen = document.createElement("canvas");
-		const remoteKey = vi.fn((event: KeyboardEvent) => event.stopPropagation());
-		screen.addEventListener("keydown", remoteKey);
-		p.el.querySelector(".computer-panel-body")!.append(screen);
-		let fullscreenElement: Element | null = screen;
-		const original = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
-		Object.defineProperty(document, "fullscreenElement", { configurable: true, get: () => fullscreenElement });
-		try {
-			const fullscreenEscape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
-			screen.dispatchEvent(fullscreenEscape);
-			expect(fullscreenEscape.defaultPrevented).toBe(false);
-			expect(remoteKey).toHaveBeenCalledExactlyOnceWith(fullscreenEscape);
-			expect(p.el.isConnected).toBe(true);
-			expect(open).toHaveBeenCalledTimes(1);
-			expect(close).not.toHaveBeenCalled();
-			fullscreenElement = null;
-			const dismiss = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
-			screen.dispatchEvent(dismiss);
-			await settle();
-			expect(dismiss.defaultPrevented).toBe(true);
-			expect(remoteKey).toHaveBeenCalledTimes(1);
-			expect(p.el.isConnected).toBe(false);
-			expect(close).toHaveBeenCalledOnce();
-		} finally {
-			if (original) Object.defineProperty(document, "fullscreenElement", original);
-			else Reflect.deleteProperty(document, "fullscreenElement");
-		}
-	});
-	it("makes covered conversation controls inert only while entered and restores them on Back or disposal", async () => {
-		const f = setup(),
-			open = spyViewer(),
-			p = await opened(f.computer);
-		const thread = document.createElement("section"),
-			conversation = document.createElement("div"),
-			header = document.createElement("header"),
-			messages = document.createElement("div"),
-			status = document.createElement("div"),
-			composer = document.createElement("footer");
-		conversation.className = "thread-conversation";
-		header.className = "thread-header";
-		composer.className = "composer";
-		header.inert = false;
-		messages.inert = false;
-		status.inert = true;
-		composer.inert = false;
-		composer.append(document.createElement("textarea"));
-		conversation.append(header, messages, status, composer);
-		thread.append(conversation, p.el);
-		document.body.append(thread);
-		const options = open.mock.calls[0]![0];
-		expect(composer.inert).toBe(false);
-		options.onExpandedChange?.(true);
-		expect(header.inert).toBe(false);
-		expect(messages.inert).toBe(true);
-		expect(composer.inert).toBe(true);
-		options.onExpandedChange?.(true);
-		options.onExpandedChange?.(false);
-		expect(messages.inert).toBe(false);
-		expect(composer.inert).toBe(false);
-		expect(status.inert).toBe(true);
-		options.onExpandedChange?.(true);
-		p.dispose();
-		expect(header.inert).toBe(false);
-		expect(messages.inert).toBe(false);
-		expect(composer.inert).toBe(false);
-		expect(status.inert).toBe(true);
-	});
-	it("removes keyboard dismissal when the panel is disposed", async () => {
-		const f = setup(),
-			close = vi.fn(),
-			p = new ComputerPanel(staff, f.computer);
-		p.attach(document.body, close);
-		p.dispose();
-		const dismiss = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
-		p.el.dispatchEvent(dismiss);
-		expect(dismiss.defaultPrevented).toBe(false);
-		expect(close).not.toHaveBeenCalled();
-	});
-	it("keeps the screen connected while the member is in another thread and shows it again on return", async () => {
-		const f = setup(),
-			closeViewer = vi.fn(async () => {}),
-			open = spyViewer(closeViewer),
-			panels = new ComputerPanels(f.computer, f.stop.signal),
-			first = document.createElement("div"),
-			second = document.createElement("div");
-		document.body.append(first, second);
-		const p = panels.open(staff)!;
-		const closeFirst = vi.fn();
-		p.attach(first, closeFirst);
-		await settle();
-		await settle();
-		await settle();
-		expect(open).toHaveBeenCalledOnce();
-		expect(p.el.parentElement).toBe(first);
-		const requests = f.fetch.mock.calls.length;
-		// Leaving the thread hands the panel back; nothing is released, and it will not slide in again.
-		expect(p.el.style.animation).toBe("");
-		p.detach();
-		expect(p.attached).toBe(false);
-		expect(p.el.style.animation).toBe("none");
-		expect(closeViewer).not.toHaveBeenCalled();
-		expect(panels.get(staff.id)).toBe(p);
-		await poll();
-		expect(f.fetch.mock.calls.length).toBe(requests);
-		// The next thread of this agent gets the same panel, same viewer: no new open flow.
-		expect(panels.open(staff)).toBe(p);
-		const closeSecond = vi.fn();
-		p.attach(second, closeSecond);
-		expect(p.el.parentElement).toBe(second);
-		expect(open).toHaveBeenCalledOnce();
-		expect(f.fetch.mock.calls.length).toBe(requests);
-		expect(closeSecond).not.toHaveBeenCalled();
-		// Closing through the registry ends the connection and forgets the panel.
-		panels.close(staff.id);
-		expect(closeViewer).toHaveBeenCalledOnce();
-		expect(p.el.isConnected).toBe(false);
-		expect(panels.get(staff.id)).toBeUndefined();
-		const reopened = panels.open(staff);
-		expect(reopened).not.toBe(p);
-		panels.dispose();
-	});
-	it("routes the viewer's own close to the thread showing the panel now, not the one that was left", async () => {
-		const f = setup(),
-			open = spyViewer(),
-			panels = new ComputerPanels(f.computer, f.stop.signal),
-			p = panels.open(staff)!,
-			closeFirst = vi.fn(),
-			closeSecond = vi.fn();
-		p.attach(document.body, closeFirst);
-		await settle();
-		await settle();
-		await settle();
-		expect(open).toHaveBeenCalledOnce();
-		p.detach();
-		// Closed by the renderer while no thread shows it: nobody is told, nothing breaks.
-		const second = document.createElement("div");
-		document.body.append(second);
-		p.attach(second, closeSecond);
-		open.mock.calls[0]![0].onClosed();
-		expect(closeFirst).not.toHaveBeenCalled();
-		expect(closeSecond).toHaveBeenCalledOnce();
-		panels.dispose();
-	});
-	it("returns an entered screen to a preview when its thread is left, and frees the thread it covered", async () => {
-		const f = setup(),
-			open = spyViewer(),
-			p = await opened(f.computer),
-			options = open.mock.calls[0]![0];
-		const thread = document.createElement("div");
-		thread.className = "thread-conversation";
-		const composer = document.createElement("div");
-		composer.inert = false;
-		thread.append(composer);
-		document.body.append(thread);
-		options.onExpandedChange?.(true);
-		expect(composer.inert).toBe(true);
-		expect(p.el.classList.contains("is-entered")).toBe(true);
-		p.detach();
-		expect(composer.inert).toBe(false);
-		expect(p.el.classList.contains("is-entered")).toBe(false);
-	});
-	it("ends every open computer when the company is left", async () => {
-		const f = setup(),
-			closeViewer = vi.fn(async () => {}),
-			stop = new AbortController(),
-			panels = new ComputerPanels(f.computer, stop.signal);
-		spyViewer(closeViewer);
-		const p = panels.open(staff)!;
-		p.attach(document.body, () => panels.close(staff.id));
-		await settle();
-		await settle();
-		await settle();
-		p.detach();
-		stop.abort();
-		expect(closeViewer).toHaveBeenCalledOnce();
-		expect(panels.get(staff.id)).toBeUndefined();
-		// A registry whose company is gone opens nothing more.
-		expect(panels.open(staff)).toBeUndefined();
-	});
-	it("gives the viewer a rename that lands while it is opening", async () => {
-		const f = setup(),
-			close = vi.fn(async () => {});
-		let p: ComputerPanel | undefined;
-		const open = vi.spyOn(viewer, "openComputerViewer").mockImplementation((options) => {
-			// The rename lands after the title was handed over and before the heading exists.
-			p?.retitle("Renamed");
-			const overlay = document.createElement("div");
-			overlay.className = "screen-viewer-overlay";
-			overlay.setAttribute("aria-label", options.title);
-			const heading = document.createElement("span");
-			heading.className = "screen-viewer-heading";
-			heading.append(document.createElement("span"));
-			heading.firstElementChild!.textContent = options.title;
-			overlay.append(heading);
-			options.mount?.append(overlay);
-			return { close };
-		});
-		p = panel(f.computer);
-		await settle();
-		await settle();
-		await settle();
-		expect(open).toHaveBeenCalledOnce();
-		expect(open.mock.calls[0]![0].title).toBe(`${staff.displayName} · Computer`);
-		const overlay = p.el.querySelector(".screen-viewer-overlay")!;
-		expect(overlay.getAttribute("aria-label")).toBe("Renamed · Computer");
-		expect(overlay.querySelector(".screen-viewer-heading > span")?.textContent).toBe("Renamed · Computer");
-	});
-	it("applies a rename made while no thread showed the panel when it is handed out again", async () => {
-		const f = setup(),
-			open = spyViewer(),
-			panels = new ComputerPanels(f.computer, f.stop.signal),
-			p = panels.open(staff)!;
+
+	it("says computer access is not available without a transport, and asks nothing", () => {
+		const p = new ComputerPanel(staff);
+		cleanup.push(() => p.dispose());
 		p.attach(document.body, () => {});
-		await settle();
-		await settle();
-		await settle();
-		expect(open).toHaveBeenCalledOnce();
-		const overlay = document.createElement("div");
-		overlay.className = "screen-viewer-overlay";
-		overlay.setAttribute("aria-label", `${staff.displayName} · Computer`);
-		p.el.querySelector(".computer-panel-body")!.append(overlay);
-		p.detach();
-		expect(panels.open({ ...staff, displayName: "Renamed" })).toBe(p);
-		expect(overlay.getAttribute("aria-label")).toBe("Renamed · Computer");
-		expect(open).toHaveBeenCalledOnce();
-		panels.dispose();
-	});
-	it("follows a rename in place: same viewer, new title", async () => {
-		const f = setup(),
-			open = spyViewer(),
-			p = await opened(f.computer);
-		expect(open.mock.calls[0]![0].title).toBe(`${staff.displayName} · Computer`);
-		const overlay = document.createElement("div");
-		overlay.className = "screen-viewer-overlay";
-		overlay.setAttribute("aria-label", `${staff.displayName} · Computer`);
-		const heading = document.createElement("span");
-		heading.className = "screen-viewer-heading";
-		heading.append(document.createElement("span"), document.createElement("small"));
-		heading.firstElementChild!.textContent = `${staff.displayName} · Computer`;
-		overlay.append(heading);
-		p.el.querySelector(".computer-panel-body")!.append(overlay);
-		p.retitle("Renamed");
-		expect(open).toHaveBeenCalledOnce();
-		expect(overlay.getAttribute("aria-label")).toBe("Renamed · Computer");
-		expect(heading.firstElementChild!.textContent).toBe("Renamed · Computer");
-		expect(heading.lastElementChild!.textContent).toBe("");
+		expect(status(p)).toBe("Computer access is not available yet.");
 	});
 });
 
-describe("web runtime member boundary", () => {
-	it("explains read-only access without requesting an idle wake", async () => {
-		const f = setup(
-			{
-				qorpera_member_office_catalog: { ...catalog, canManage: false },
-				qorpera_runtime_office_start_status: {
-					...start,
-					officeState: "maintenance",
-					intent,
-					maintenance: {
-						reason: "idle",
-						state: "requested",
-						transitionId: id(76),
-						requestedAt: "2026-09-19T12:00:00Z",
-						resumedAt: null,
-						activatedAt: null,
-					},
-				},
-			},
-			"viewer",
+describe("a member's look through the member bridge", () => {
+	function transport(answer: () => Response, route = (url: string) => url.replace(gateway, bridge)) {
+		const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => answer());
+		const screens = createWebMachineScreens({
+			companyId: profileA.profileId,
+			objectGatewayUrl: gateway,
+			route,
+			accessToken: async () => "member-token",
+			fetch: fetch as typeof globalThis.fetch,
+		});
+		return { fetch, screens };
+	}
+	const signal = new AbortController().signal;
+	const picture = () =>
+		new Response(new Uint8Array([0x89, 0x50]), {
+			status: 200,
+			headers: { "content-type": "image/png", etag: `"${etag(7)}"` },
+		});
+
+	it("asks with the member's token and etag alone, through the bridge, and takes a picture, 304 or a refusal", async () => {
+		const t = transport(picture);
+		const look = await t.screens.look(machine(1).machineId, { etag: etag(1), watching: true }, signal);
+		expect(look).toMatchObject({ kind: "picture", etag: etag(7) });
+		expect(look.kind === "picture" && look.png.type).toBe("image/png");
+		const [url, init] = t.fetch.mock.calls[0]!;
+		expect(url).toBe(`${bridge}/v1/member-machine-screens/${profileA.profileId}/${machine(1).machineId}/watching`);
+		expect(init).toMatchObject({
+			method: "GET",
+			headers: { authorization: "Bearer member-token", "if-none-match": `"${etag(1)}"` },
+			redirect: "error",
+			cache: "no-store",
+			credentials: "omit",
+		});
+		const same = transport(() => new Response(null, { status: 304, headers: { etag: `"${etag(1)}"` } }));
+		expect(await same.screens.look(machine(1).machineId, { etag: etag(1), watching: false }, signal)).toEqual({
+			kind: "unchanged",
+		});
+		expect(same.fetch.mock.calls[0]![0]).not.toMatch(/watching/);
+		const refused = transport(() => Response.json({ code: "SCREEN_HIDDEN" }, { status: 409 }));
+		expect(await refused.screens.look(machine(1).machineId, { etag: null, watching: false }, signal)).toEqual({
+			kind: "refused",
+			code: "SCREEN_HIDDEN",
+		});
+		const plain = transport(
+			() => picture(),
+			(url) => url,
 		);
-		const request = vi.spyOn(spyStart(f), "request");
-		const open = spyViewer();
-		const p = await opened(f.computer);
-		await poll();
-		expect(statusLine(p)).toBe("You have read-only access. A company member with write access can wake the machine.");
-		expect(request).not.toHaveBeenCalled();
-		f.replies.qorpera_runtime_office_start_status = start;
-		await poll();
-		expect(open).toHaveBeenCalledWith(expect.objectContaining({ canControl: false }));
-	});
-	it.each([false, true])("wakes idle before screen discovery (screen request raced=%s)", async (duringScreenOpen) => {
-		const f = setup();
-		const startClient = spyStart(f);
-		const request = vi.spyOn(startClient, "request").mockResolvedValue(intent);
-		const views = f.computer.views(scope);
-		vi.spyOn(f.computer, "views").mockReturnValue(views);
-		const enterIdle = () => {
-			f.replies.qorpera_runtime_office_start_status = {
-				...start,
-				officeState: "maintenance",
-				intent,
-				maintenance: {
-					reason: "idle",
-					state: "requested",
-					transitionId: id(77),
-					requestedAt: "2026-09-19T12:00:00Z",
-					resumedAt: null,
-					activatedAt: null,
-				},
-			};
-			f.replies.qorpera_runtime_office_member_status = { ...status, state: "maintenance", screens: [] };
-		};
-		if (duringScreenOpen) {
-			f.replies.qorpera_runtime_office_member_status = { ...status, screens: [] };
-			vi.spyOn(views, "openScreen").mockImplementationOnce(async () => {
-				enterIdle();
-				return { state: "refused", reason: "COMPUTER_NOT_ACTIVE" };
-			});
-		} else
-			vi.spyOn(views, "status").mockImplementationOnce(async () => {
-				enterIdle();
-				return { ...status, state: "maintenance", screens: [] };
-			});
-		const open = spyViewer();
-		const p = await opened(f.computer);
-		await poll();
-		expect(request).toHaveBeenCalledOnce();
-		expect(statusLine(p)).toBe("Starting the machine…");
-		f.replies.qorpera_runtime_office_start_status = start;
-		f.replies.qorpera_runtime_office_member_status = status;
-		await poll();
-		await poll();
-		expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ binding, sharedControl: true }));
-	});
-	it.each([false, true])(
-		"automatically wakes idle maintenance when the panel opens (manager=%s)",
-		async (canManage) => {
-			const maintenance = {
-				reason: "idle",
-				state: "requested",
-				transitionId: id(73),
-				requestedAt: "2026-09-19T12:00:00Z",
-				resumedAt: null,
-				activatedAt: null,
-			};
-			const f = setup({
-				qorpera_member_office_catalog: { ...catalog, canManage },
-				qorpera_runtime_office_start_status: { ...start, officeState: "maintenance", maintenance, intent },
-			});
-			const startClient = spyStart(f);
-			const request = vi.spyOn(startClient, "request").mockResolvedValue(intent);
-			const open = spyViewer();
-			const p = await opened(f.computer);
-			await poll();
-			expect(request).toHaveBeenCalledOnce();
-			expect(statusLine(p)).toBe("Starting the machine…");
-			await poll();
-			expect(request).toHaveBeenCalledOnce();
-			f.replies.qorpera_runtime_office_start_status = start;
-			await poll();
-			expect(open).toHaveBeenCalledExactlyOnceWith(
-				expect.objectContaining({ sharedControl: true, canControl: canManage }),
-			);
-		},
-	);
-	it("wakes an office that idles between discovery and viewer connection", async () => {
-		const f = setup();
-		const startClient = spyStart(f);
-		const request = vi.spyOn(startClient, "request").mockResolvedValue(intent);
-		const views = f.computer.views(scope);
-		const held = { connectionId: id(85), close: vi.fn(async () => {}) } as never;
-		const connect = vi
-			.spyOn(views, "connectScreen")
-			.mockRejectedValueOnce(new Error("Office entered idle maintenance"))
-			.mockResolvedValue(held);
-		vi.spyOn(f.computer, "views").mockReturnValue(views);
-		const open = spyViewer();
-		await opened(f.computer);
-		f.replies.qorpera_runtime_office_start_status = {
-			...start,
-			officeState: "maintenance",
-			intent,
-			maintenance: {
-				reason: "idle",
-				state: "requested",
-				transitionId: id(74),
-				requestedAt: "2026-09-19T12:00:00Z",
-				resumedAt: null,
-				activatedAt: null,
-			},
-		};
-		const connection = open.mock.calls[0]![0].requestConnection({ binding, mode: "shared", signal: f.stop.signal });
-		await settle();
-		for (let i = 0; i < 10; i++) await poll();
-		expect(request).toHaveBeenCalledOnce();
-		expect(connect).toHaveBeenCalledOnce();
-		f.replies.qorpera_runtime_office_start_status = start;
-		await poll();
-		await poll();
-		await expect(connection).resolves.toBe(held);
-		expect(connect).toHaveBeenCalledTimes(2);
-	});
-	describe("closing before the computer is up", () => {
-		const idle = (transitionId: string) => ({
-			...start,
-			officeState: "maintenance",
-			intent,
-			maintenance: {
-				reason: "idle",
-				state: "requested",
-				transitionId,
-				requestedAt: "2026-09-19T12:00:00Z",
-				resumedAt: null,
-				activatedAt: null,
-			},
-		});
-		const WITHDRAW = "qorpera_withdraw_runtime_office_wake";
-		const bodies = (f: ReturnType<typeof setup>, method: string) =>
-			f.fetch.mock.calls
-				.filter(([url]) => String(url).endsWith(`/${method}`))
-				.map(([, init]) => JSON.parse(String(init?.body)));
-		it("withdraws the idle wake this panel asked for, and never cancels the computer", async () => {
-			const f = setup({
-				qorpera_runtime_office_start_status: idle(id(78)),
-				qorpera_request_runtime_office_start: intent,
-				[WITHDRAW]: { state: "withdrawn" },
-			});
-			const cancel = vi.spyOn(spyStart(f), "cancel");
-			const p = await opened(f.computer);
-			expect(statusLine(p)).toBe("Starting the machine…");
-			expect(bodies(f, WITHDRAW)).toEqual([]);
-			p.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-			await settle();
-			await settle();
-			const [requested] = bodies(f, "qorpera_request_runtime_office_start");
-			expect(bodies(f, WITHDRAW)).toEqual([
-				{ p_scope: scope, p_computer_generation: 1, p_request_id: requested.p_request_id },
-			]);
-			await poll();
-			expect(bodies(f, WITHDRAW)).toHaveLength(1);
-			expect(cancel).not.toHaveBeenCalled();
-		});
-		it("lets a wake request in flight finish, then withdraws it", async () => {
-			const f = setup({ qorpera_runtime_office_start_status: idle(id(79)) });
-			const startClient = spyStart(f);
-			const reply = deferred<typeof intent>();
-			const request = vi.spyOn(startClient, "request").mockReturnValue(reply.promise);
-			const withdraw = vi.spyOn(startClient, "withdraw").mockResolvedValue("withdrawn");
-			const p = await opened(f.computer);
-			expect(request).toHaveBeenCalledOnce();
-			p.dispose();
-			await settle();
-			expect(request.mock.calls[0]![2].aborted).toBe(false);
-			expect(withdraw).not.toHaveBeenCalled();
-			reply.resolve(intent);
-			await settle();
-			expect(withdraw).toHaveBeenCalledExactlyOnceWith(1, request.mock.calls[0]![1], expect.any(AbortSignal));
-		});
-		it.each([false, true])("withdraws only a wake whose screen never connected (connected=%s)", async (connected) => {
-			const f = setup({ qorpera_runtime_office_start_status: idle(id(80)) });
-			const startClient = spyStart(f);
-			vi.spyOn(startClient, "request").mockResolvedValue(intent);
-			const withdraw = vi.spyOn(startClient, "withdraw").mockResolvedValue("withdrawn");
-			const views = f.computer.views(scope);
-			const held = { connectionId: id(86), close: vi.fn(async () => {}) } as never;
-			vi.spyOn(views, "connectScreen").mockResolvedValue(held);
-			vi.spyOn(f.computer, "views").mockReturnValue(views);
-			const open = spyViewer();
-			const p = await opened(f.computer);
-			f.replies.qorpera_runtime_office_start_status = start;
-			await poll();
-			expect(open).toHaveBeenCalledOnce();
-			if (connected)
-				await expect(
-					open.mock.calls[0]![0].requestConnection({ binding, mode: "shared", signal: f.stop.signal }),
-				).resolves.toBe(held);
-			p.dispose();
-			await settle();
-			expect(withdraw).toHaveBeenCalledTimes(connected ? 0 : 1);
-		});
-		it("sends nothing once the company is left", async () => {
-			const f = setup({
-				qorpera_runtime_office_start_status: idle(id(81)),
-				qorpera_request_runtime_office_start: intent,
-				[WITHDRAW]: { state: "withdrawn" },
-			});
-			const p = await opened(f.computer, f.stop.signal);
-			expect(bodies(f, "qorpera_request_runtime_office_start")).toHaveLength(1);
-			f.stop.abort();
-			await settle();
-			await settle();
-			expect(p.el.isConnected).toBe(false);
-			expect(bodies(f, WITHDRAW)).toEqual([]);
-		});
-		it("sends nothing when the company is left while the wake request is still out", async () => {
-			const f = setup({
-				qorpera_runtime_office_start_status: idle(id(82)),
-				[WITHDRAW]: { state: "withdrawn" },
-			});
-			const reply = deferred<typeof intent>();
-			vi.spyOn(spyStart(f), "request").mockReturnValue(reply.promise);
-			await opened(f.computer, f.stop.signal);
-			f.stop.abort();
-			reply.resolve(intent);
-			await settle();
-			await settle();
-			expect(bodies(f, WITHDRAW)).toEqual([]);
-		});
-		it("withdraws a wake whose reply was lost", async () => {
-			const f = setup({ qorpera_runtime_office_start_status: idle(id(83)) });
-			const startClient = spyStart(f);
-			const request = vi.spyOn(startClient, "request").mockRejectedValue(new Error("Response lost"));
-			const withdraw = vi.spyOn(startClient, "withdraw").mockResolvedValue("withdrawn");
-			const p = await opened(f.computer);
-			expect(statusLine(p)).toBe("The computer could not be reached. Try again.");
-			p.dispose();
-			await settle();
-			expect(withdraw).toHaveBeenCalledExactlyOnceWith(1, request.mock.calls[0]![1], expect.any(AbortSignal));
-		});
-		it("withdraws a wake asked for while reconnecting a screen", async () => {
-			const f = setup();
-			const startClient = spyStart(f);
-			const request = vi.spyOn(startClient, "request").mockResolvedValue(intent);
-			const withdraw = vi.spyOn(startClient, "withdraw").mockResolvedValue("withdrawn");
-			const views = f.computer.views(scope);
-			vi.spyOn(views, "connectScreen").mockRejectedValue(new Error("Office entered idle maintenance"));
-			vi.spyOn(f.computer, "views").mockReturnValue(views);
-			const open = spyViewer();
-			const p = await opened(f.computer);
-			f.replies.qorpera_runtime_office_start_status = idle(id(84));
-			const connection = open.mock.calls[0]![0].requestConnection({
-				binding,
-				mode: "shared",
-				signal: f.stop.signal,
-			});
-			const refused = expect(connection).rejects.toThrow();
-			await settle();
-			await poll();
-			expect(request).toHaveBeenCalledOnce();
-			p.dispose();
-			await refused;
-			await settle();
-			expect(withdraw).toHaveBeenCalledExactlyOnceWith(1, request.mock.calls[0]![1], expect.any(AbortSignal));
-		});
-		it("never withdraws a first start", async () => {
-			const f = setup({
-				qorpera_runtime_office_start_status: { ...start, officeState: "provisioning" },
-				qorpera_request_runtime_office_start: intent,
-			});
-			const p = await opened(f.computer);
-			expect(bodies(f, "qorpera_request_runtime_office_start")).toHaveLength(1);
-			p.dispose();
-			await settle();
-			await settle();
-			expect(bodies(f, WITHDRAW)).toEqual([]);
-		});
+		await plain.screens.look(machine(1).machineId, { etag: null, watching: false }, signal);
+		expect(plain.fetch.mock.calls[0]![0]).toBe(
+			`${gateway}/v1/member-machine-screens/${profileA.profileId}/${machine(1).machineId}`,
+		);
+		expect(new Headers(plain.fetch.mock.calls[0]![1]!.headers as HeadersInit).has("if-none-match")).toBe(false);
 	});
 
-	it.each(["provisioning", "recovering"])("does not duplicate an existing %s start", async (officeState) => {
-		for (const state of ["requested", "reserved"] as const) {
-			const f = setup({
-				qorpera_runtime_office_start_status: { ...start, officeState, intent: { ...intent, state } },
-			});
-			const startClient = spyStart(f),
-				request = vi.spyOn(startClient, "request"),
-				cancel = vi.spyOn(startClient, "cancel");
-			const p = await opened(f.computer);
-			expect(statusLine(p)).toBe("Starting the machine…");
-			await poll();
-			await poll();
-			p.dispose();
-			await settle();
-			expect(request).not.toHaveBeenCalled();
-			expect(cancel).not.toHaveBeenCalled();
+	it("takes no answer that is not one", async () => {
+		for (const answer of [
+			() => new Response(null, { status: 304, headers: { etag: `"${etag(2)}"` } }),
+			() => Response.json({ code: "SOMETHING_ELSE" }, { status: 409 }),
+			() => new Response("x", { status: 200, headers: { "content-type": "text/html", etag: `"${etag(7)}"` } }),
+			() => new Response("x", { status: 200, headers: { "content-type": "image/png", etag: etag(7) } }),
+			() => new Response("x", { status: 200, headers: { "content-type": "image/png" } }),
+			() => new Response("{}", { status: 401 }),
+		]) {
+			const t = transport(answer);
+			await expect(
+				t.screens.look(machine(1).machineId, { etag: etag(1), watching: false }, signal),
+			).rejects.toThrow();
 		}
+		await expect(transport(picture).screens.look("machine", { etag: null, watching: false }, signal)).rejects.toThrow(
+			"Invalid machine screen",
+		);
 	});
-	it.each(["provisioning", "recovering"])(
-		"reuses one start identity after an ambiguous %s request",
-		async (officeState) => {
-			const f = setup({ qorpera_runtime_office_start_status: { ...start, officeState } });
-			const startClient = spyStart(f);
-			const request = vi.spyOn(startClient, "request").mockRejectedValue(new Error("Response lost"));
-			const cancel = vi.spyOn(startClient, "cancel");
-			const p = await opened(f.computer);
-			expect(request).toHaveBeenCalledTimes(1);
-			expect(request).toHaveBeenCalledWith(1, expect.any(String), expect.any(AbortSignal));
-			expect(statusLine(p)).toBe("The computer could not be reached. Try again.");
-			await poll();
-			expect(request).toHaveBeenCalledTimes(1);
-			const retry = action(p.el, "Try again");
-			retry.click();
-			retry.click();
-			await settle();
-			await settle();
-			expect(request).toHaveBeenCalledTimes(2);
-			expect(request.mock.calls[1]![1]).toBe(request.mock.calls[0]![1]);
-			p.dispose();
-			await settle();
-			expect(cancel).not.toHaveBeenCalled();
-		},
-	);
-	it("starts once, waits for an active runtime, then connects this agent's screen", async () => {
-		const f = setup({ qorpera_runtime_office_start_status: { ...start, officeState: "provisioning" } });
-		const request = vi.spyOn(spyStart(f), "request").mockResolvedValue(intent),
-			open = spyViewer();
-		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("Starting the machine…");
-		await poll();
-		await poll();
-		expect(request).toHaveBeenCalledTimes(1);
-		expect(open).not.toHaveBeenCalled();
-		f.replies.qorpera_runtime_office_start_status = start;
-		await poll();
-		expect(request).toHaveBeenCalledTimes(1);
-		expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ binding }));
-	});
-	it.each([
-		["provisioning", true],
-		["recovering", true],
-		["active", false],
-		["maintenance", false],
-		["retired", false],
-	] as const)(
-		"starts a %s runtime only when member capability and current intent allow it",
-		async (officeState, eligibleState) => {
-			for (const canManage of [true, false]) {
-				for (const intentState of [null, "requested", "reserved", "cancelled"] as const) {
-					const f = setup({
-						qorpera_member_office_catalog: { ...catalog, canManage },
-						qorpera_runtime_office_start_status: {
-							...start,
-							officeState,
-							intent: intentState === null ? null : { ...intent, state: intentState },
-						},
-						qorpera_request_runtime_office_start: intent,
-					});
-					const open = spyViewer(),
-						p = await opened(f.computer);
-					await poll();
-					const writes = methods(f).filter((method) => START_WRITES.test(`/${method}`));
-					expect(writes).toEqual(
-						canManage && eligibleState && intentState === null ? ["qorpera_request_runtime_office_start"] : [],
-					);
-					if (officeState === "active") {
-						expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ canControl: canManage }));
-					} else {
-						expect(open).not.toHaveBeenCalled();
-						expect(statusLine(p)).toBe(
-							officeState === "maintenance"
-								? "The machine is restarting. It comes back on its own."
-								: officeState === "retired"
-									? "This machine has been retired."
-									: canManage
-										? "Starting the machine…"
-										: "The machine is off. An owner or admin can start it.",
-						);
-					}
-					if (officeState === "retired") {
-						const requests = methods(f);
-						await poll();
-						expect(methods(f)).toEqual(requests);
-					}
-					p.dispose();
-					f.stop.abort();
-					open.mockRestore();
-				}
-			}
-		},
-	);
-	it("opens a missing screen once and only selects this agent's first available screen", async () => {
-		const other = { ...status.screens[0]!, binding: { ...binding, staffAgentId: id(99) } };
-		const f = setup({ qorpera_runtime_office_member_status: { ...status, screens: [other] } }),
-			open = spyViewer();
-		await opened(f.computer);
-		await poll();
-		await poll();
-		const opens = f.fetch.mock.calls.filter(([url]) => String(url).endsWith("qorpera_open_runtime_office_screen"));
-		expect(opens).toHaveLength(1);
-		expect(JSON.parse(opens[0]![1]!.body as string)).toMatchObject({ p_staff_agent_id: staff.id });
-		expect(open).not.toHaveBeenCalled();
-		const mine = (screenOrdinal: number, drainPending = false) => ({
-			...status.screens[0]!,
-			drainPending,
-			binding: { ...binding, screenId: id(32 + screenOrdinal), screenOrdinal },
-		});
-		f.replies.qorpera_runtime_office_member_status = { ...status, screens: [other, mine(2, true), mine(4), mine(3)] };
-		await poll();
-		expect(open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ binding: mine(3).binding }));
-	});
-	it.each([
-		["SCREEN_CAPACITY_EXHAUSTED", "All computers on this machine are in use. Try again when one is free."],
-		["AGENT_HAS_NO_COMPUTER_ACCESS", `${staff.displayName} does not have access to the computer.`],
-	])("shows the %s refusal without repeatedly requesting access", async (reason, text) => {
-		const f = setup({
-				qorpera_runtime_office_member_status: { ...status, screens: [] },
-				qorpera_open_runtime_office_screen: { state: "refused", reason },
-			}),
-			open = spyViewer(),
-			p = await opened(f.computer);
-		expect(statusLine(p)).toBe(text);
-		const requests = methods(f);
-		await poll();
-		await poll();
-		expect(methods(f)).toEqual(requests);
-		expect(open).not.toHaveBeenCalled();
-	});
-	it.each(["private", "entering", "leaving"] as const)(
-		"waits while privacy is %s before shared viewing",
-		async (privacyState) => {
-			const f = setup({ qorpera_runtime_office_member_status: { ...status, privacyState } }),
-				open = spyViewer();
-			const views = f.computer.views(scope),
-				connect = vi.spyOn(views, "connectScreen");
-			vi.spyOn(f.computer, "views").mockReturnValue(views);
-			const p = await opened(f.computer);
-			await poll();
-			expect(statusLine(p)).toBe("The machine is private right now. Shared viewing returns when that ends.");
-			expect(open).not.toHaveBeenCalled();
-			expect(connect).not.toHaveBeenCalled();
-			f.replies.qorpera_runtime_office_member_status = status;
-			await poll();
-			expect(open).toHaveBeenCalledTimes(1);
-		},
-	);
-	it("reports missing viewer configuration before screen discovery", async () => {
-		const f = setup(),
-			open = spyViewer();
-		delete f.cloud.config.officeViewerOrigin;
-		const p = await opened(f.computer);
-		expect(statusLine(p)).toBe("Computer viewing is not set up here.");
-		expect(open).not.toHaveBeenCalled();
-		expect(methods(f)).not.toContain("qorpera_runtime_office_member_status");
-	});
-	it("retries connection admission and stops retrying when the viewer closes", async () => {
-		const f = setup(),
-			open = spyViewer();
-		const views = f.computer.views(scope),
-			connect = vi.spyOn(views, "connectScreen");
-		vi.spyOn(f.computer, "views").mockReturnValue(views);
-		const p = await opened(f.computer);
-		const held = { connectionId: "held", close: vi.fn(async () => {}) } as unknown as CompanyComputerMemberView;
-		connect
-			.mockRejectedValueOnce(new Error("Starting"))
-			.mockRejectedValueOnce(new Error("Starting"))
-			.mockResolvedValue(held);
-		const input = { binding, mode: "shared" as const, signal: new AbortController().signal };
-		const connection = open.mock.calls[0]![0].requestConnection(input);
-		await poll();
-		await poll();
-		await expect(connection).resolves.toBe(held);
-		expect(connect).toHaveBeenCalledTimes(3);
-		expect(connect).toHaveBeenLastCalledWith(expect.objectContaining({ binding, mode: "shared" }));
-		const closing = new AbortController();
-		connect.mockReset();
-		connect.mockRejectedValue(new Error("Starting"));
-		const stopped = open.mock.calls[0]![0].requestConnection({ ...input, signal: closing.signal });
-		const refused = expect(stopped).rejects.toThrow();
-		await settle();
-		closing.abort();
-		await refused;
-		expect(connect).toHaveBeenCalledTimes(1);
-		p.dispose();
-		expect(open.mock.results[0]!.value.close).toHaveBeenCalled();
-	});
-	it("drops delayed screen discovery after the popover closes", async () => {
-		const f = setup(),
-			pending = deferred<CompanyComputerMemberStatus>(),
-			open = spyViewer();
-		const views = f.computer.views(scope);
-		vi.spyOn(views, "status").mockReturnValue(pending.promise);
-		vi.spyOn(f.computer, "views").mockReturnValue(views);
-		const p = await opened(f.computer);
-		p.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-		pending.resolve(status);
-		await settle();
-		await poll();
-		expect(open).not.toHaveBeenCalled();
-		expect(p.el.isConnected).toBe(false);
-	});
-	it("does not render discovery that arrives after disposal", async () => {
-		const f = setup(),
-			pending = deferred<Response>();
-		f.fetch.mockReturnValueOnce(pending.promise);
-		const p = panel(f.computer);
-		await settle();
-		p.dispose();
-		pending.resolve(Response.json(catalog));
-		await settle();
-		await settle();
-		expect(p.el.textContent).toBe("");
-		expect(f.fetch).toHaveBeenCalledTimes(1);
-	});
-	it("releases a connection returned after company teardown", async () => {
-		const f = setup(),
-			pending = deferred<CompanyComputerMemberView>(),
-			open = spyViewer();
-		const views = f.computer.views(scope);
-		vi.spyOn(views, "connectScreen").mockReturnValue(pending.promise);
-		vi.spyOn(f.computer, "views").mockReturnValue(views);
-		await opened(f.computer, f.stop.signal);
-		const connecting = open.mock.calls[0]![0].requestConnection({
-			binding,
-			mode: "watch",
-			signal: new AbortController().signal,
-		});
-		const close = vi.fn(async () => {});
-		f.stop.abort();
-		pending.resolve({
-			connectionId: id(44),
-			binding,
-			mode: "watch",
-			close,
-			channel: {
-				readyState: 1,
-				protocol: "",
-				binaryType: "arraybuffer",
-				onopen: null,
-				onmessage: null,
-				onerror: null,
-				onclose: null,
-				send() {},
-				close() {},
-			},
-		});
-		await expect(connecting).rejects.toThrow();
-		expect(close).toHaveBeenCalledTimes(1);
-	});
-	it("uses current member credentials and selected environment", async () => {
-		const f = setup();
-		await f.computer.client.catalog(f.stop.signal);
-		const request = f.fetch.mock.calls[0]![1]!;
-		expect(JSON.parse(request.body as string)).toEqual({ p_environment_id: profileA.environmentId, p_after: null });
-		expect(new Headers(request.headers).get("authorization")).toBe("Bearer fixture-token");
-	});
+
 	it("does not send another account's token", async () => {
-		const f = setup();
-		f.auth(userB);
-		await expect(f.computer.client.catalog(f.stop.signal)).rejects.toThrow();
-		expect(f.fetch).not.toHaveBeenCalled();
-	});
-	it("refuses credentials refreshed after company teardown", async () => {
-		const f = setup(),
-			original = await f.cloud.supabase.auth.getSession();
-		const pending = deferred<typeof original>();
-		vi.mocked(f.cloud.supabase.auth.getSession).mockReturnValueOnce(pending.promise);
-		const request = f.computer.client.catalog(new AbortController().signal);
-		f.stop.abort();
-		pending.resolve(original);
-		await expect(request).rejects.toThrow();
-		expect(f.fetch).not.toHaveBeenCalled();
-	});
-	it("does not infer a viewer endpoint from the object gateway", () => {
-		const f = setup();
-		delete f.cloud.config.officeViewerOrigin;
-		expect(() => f.computer.views(scope)).toThrow("not configured");
+		const s = setup();
+		s.auth(userB);
+		await expect(
+			s.computer.screens.look(machine(1).machineId, { etag: null, watching: false }, s.stop.signal),
+		).rejects.toThrow();
+		await expect(s.computer.agentMachines(staff.id, s.stop.signal)).rejects.toThrow();
+		expect(s.fetch).not.toHaveBeenCalled();
 	});
 });
 

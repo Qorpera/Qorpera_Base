@@ -10,7 +10,14 @@ import type { Cloud } from "./client.ts";
  * database refuses the topic, they come by postgres_changes, which keeps Realtime polling the database while any tab
  * listens that way. */
 
-export type RealtimeResource = "sessions" | "staff" | "access" | "company-file" | "sidebar" | "member-chats";
+export type RealtimeResource =
+	| "sessions"
+	| "staff"
+	| "access"
+	| "company-file"
+	| "sidebar"
+	| "member-chats"
+	| "machines";
 export type RealtimePhase = "connecting" | "connected" | "degraded" | "stopped";
 
 export interface RealtimeSubscription {
@@ -38,7 +45,9 @@ export function liveHintTopic(profileId: string, userId: string): string {
 }
 
 /** The resource each hint event names. `member-chats` (20260930715000) comes by push only, to the two members of the
- * changed chat: where the push is refused, the member chats are read on the slow poll. */
+ * changed chat: where the push is refused, the member chats are read on the slow poll. `machines` (20260930712000),
+ * by push only too, to every member: a company's machine changed, and an open computer window reads its agent's again
+ * (it also reads them every 15 s while it is shown). */
 const HINT_EVENTS: readonly RealtimeResource[] = [
 	"sessions",
 	"staff",
@@ -46,6 +55,7 @@ const HINT_EVENTS: readonly RealtimeResource[] = [
 	"company-file",
 	"sidebar",
 	"member-chats",
+	"machines",
 ];
 
 /** Realtime's answer to a private join the database does not allow: one before 20260930653000 has no such topic. A
