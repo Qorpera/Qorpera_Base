@@ -70,7 +70,10 @@ export class OpenQuestions {
 	#reads = 0;
 	#reading: Promise<void> | undefined;
 	#again = false;
-	readonly #readSoon = throttle(() => void this.refresh(), HINT_MS);
+	/** A hint's read, at most once an interval; one still queued when the last watcher left is not made. */
+	readonly #readSoon = throttle(() => {
+		if (this.#watchers > 0) void this.refresh();
+	}, HINT_MS);
 
 	constructor(company: CompanyController, accounts: QuestionAccounts) {
 		this.#company = company;
@@ -164,19 +167,19 @@ export class OpenQuestions {
 		};
 	}
 
-	/** Gives the thread the model account the cloud chooses for it, as the thread does when it opens and as Mailbox does
-	 * (app/company-mail.ts): the conversation's own account, never another. A thread that has one keeps it. */
+	/** Gives the thread the model account the cloud chooses for it now, as the thread does when it opens and as Mailbox
+	 * does (app/company-mail.ts): the conversation's own account, never another, read afresh each time so a change made
+	 * elsewhere (another tab, a replaced login) is followed. A message on its way keeps the account it carries. */
 	async #chooseAccount(sessionId: string): Promise<void> {
 		const conversation = this.#company.conversation(sessionId, false).get();
-		if (conversation.executionSponsor || conversation.sending || conversation.retrySend) return;
-		if (!this.#accounts.selectSessionAccount) return;
+		if (conversation.sending || conversation.retrySend || !this.#accounts.selectSessionAccount) return;
 		const signal = this.#company.signal;
 		try {
 			const connectionId = await this.#accounts.selectSessionAccount(sessionId, signal);
 			if (!connectionId) return;
 			const observed = await this.#accounts.listConnections(signal);
 			const now = this.#company.conversation(sessionId, false).get();
-			if (now.executionSponsor || now.sending || now.retrySend) return;
+			if (now.sending || now.retrySend) return;
 			this.#company.setExecutionSponsor(sessionId, observed, connectionId);
 		} catch {
 			// The answer says what is missing (no account for this thread).

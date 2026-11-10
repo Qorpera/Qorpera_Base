@@ -97,7 +97,18 @@ describe("open questions from the cloud", () => {
 
 /** A company as far as the questions need it: the read, the hints, the thread's conversation and the thread's answer
  * path, which shows the answer at once as CompanyController.answerInteraction does. */
-function company(options: { questions?: OpenQuestion[]; refuse?: string } = {}) {
+function company(
+	options: {
+		questions?: OpenQuestion[];
+		refuse?: string;
+		/** The cloud takes the answer only when this resolves. */
+		gate?: Promise<void>;
+		accounts?: {
+			listConnections: () => Promise<unknown>;
+			selectSessionAccount?: (id: string) => Promise<string | null>;
+		};
+	} = {},
+) {
 	const conversations = new Map<string, Store<ConversationState>>();
 	const listeners = new Set<(resource: string) => void>();
 	let questions = options.questions ?? [];
@@ -140,7 +151,7 @@ function company(options: { questions?: OpenQuestion[]; refuse?: string } = {}) 
 					},
 					interactionError: undefined,
 				});
-				await Promise.resolve();
+				await (options.gate ?? Promise.resolve());
 				if (options.refuse) {
 					store.set({ interactionAnswers: undefined, interactionError: options.refuse });
 					throw new Error("refused");
@@ -149,7 +160,7 @@ function company(options: { questions?: OpenQuestion[]; refuse?: string } = {}) 
 			},
 		),
 	};
-	const accounts = { listConnections: vi.fn(), selectSessionAccount: undefined };
+	const accounts = options.accounts ?? { listConnections: vi.fn(), selectSessionAccount: undefined };
 	const open = new OpenQuestions(controller as unknown as CompanyController, accounts as never);
 	const agent = { id: AGENT, displayName: "Bob", appearance: { color: "", shape: "" } } as unknown as HostedStaffAgent;
 	const host: QuestionDockHost = {
@@ -233,6 +244,45 @@ describe("the questions dock", () => {
 		dock.dispose();
 	});
 
+	it("shows the answer as sent while the cloud has not taken it yet", async () => {
+		let take = () => {};
+		const gate = new Promise<void>((resolve) => {
+			take = resolve;
+		});
+		const { host } = company({ questions: [question(CARD_A, directions)], gate });
+		const dock = new QuestionDock(host, (apps) => apps.has("shop-calm"));
+		document.body.append(dock.el);
+		await settle();
+		dock.el.querySelectorAll<HTMLButtonElement>(".choice-box")[0]?.click();
+		await settle();
+		expect(dock.el.textContent).toContain("Sending to Bob…");
+		expect(dock.el.querySelector(".choice-box.is-chosen .choice-label")?.textContent).toBe("Calm");
+		expect(dock.el.querySelector(".question-dock-burst")).toBeNull();
+		take();
+		await settle();
+		expect(dock.el.textContent).toContain("Sent to Bob");
+		dock.dispose();
+	});
+
+	it("gives the thread the account the cloud chooses now, on every answer", async () => {
+		const selectSessionAccount = vi.fn(async () => "conn-2");
+		const listConnections = vi.fn(async () => ({ connections: [] }));
+		const { controller, open } = company({
+			questions: [question(CARD_A, directions), question(CARD_B, directions)],
+			accounts: { listConnections, selectSessionAccount },
+		});
+		// The thread already had an account: the cloud's current choice is read again anyway.
+		controller.conversation(SESSION).set({ executionSponsor: { sponsorBindingId: "old" } } as never);
+		await open.answer(question(CARD_A, directions), "answered", { values: ["calm"] });
+		expect(selectSessionAccount).toHaveBeenCalledWith(SESSION, controller.signal);
+		expect(controller.setExecutionSponsor).toHaveBeenCalledWith(SESSION, { connections: [] }, "conn-2");
+		// A message on its way keeps the account it carries.
+		controller.conversation(SESSION).set({ sending: true } as never);
+		await open.answer(question(CARD_B, directions), "answered", { values: ["bold"] });
+		expect(selectSessionAccount).toHaveBeenCalledTimes(1);
+		expect(controller.answerInteraction).toHaveBeenCalledTimes(2);
+	});
+
 	it("opens the card again and says why when the answer is refused", async () => {
 		const { host } = company({
 			questions: [question(CARD_A, directions)],
@@ -289,6 +339,8 @@ describe("reading the open questions", () => {
 		hint();
 		await settle();
 		expect(controller.listOpenQuestions).toHaveBeenCalledTimes(2);
+		// A second hint within the interval queues a trailing read; the last watcher leaving drops it.
+		hint();
 		stop();
 		hint();
 		await vi.advanceTimersByTimeAsync(60_000);

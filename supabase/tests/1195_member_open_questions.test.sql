@@ -4,7 +4,8 @@
 -- 9a1, raised for the owner, and the run ended. Covered:
 -- 1. The owner's list: the card, its thread, its agent and its card body; nobody else's list has it (the member who
 --    shares the thread, the viewer), and someone who is no member, anon, and service_role are refused.
--- 2. Only open question cards: a card past its time, and a card of another surface, are not listed; the newest first.
+-- 2. Only open question cards: a card past its time, one whose time is no date, and a card of another surface, are not
+--    listed, and none of them fails the list; the newest first.
 -- 3. An answer takes the card off the list at once, while the others stay.
 -- 4. An archived thread, or a member who left it, lists nothing.
 -- 5. The two partial indexes, the privileges and the marker.
@@ -74,6 +75,10 @@ begin
 	v_binding := pg_temp.cd_post(current_setting('qorpera_test.card_room')::uuid, 'Bob, show me the digest designs.');
 	perform pg_temp.oq_card(v_binding, '59600000-0000-4000-8000-0000000009b1',
 		'{"schema":"qorpera.interaction/v1","surface":"question","title":"Old question","expiresAt":"2020-01-01T00:00:00Z",
+			"payload":{"options":[{"label":"Yes"}]}}');
+	-- The validator checks a time's shape only: a day that does not exist is left out, never failing the list.
+	perform pg_temp.oq_card(v_binding, '59600000-0000-4000-8000-0000000009b4',
+		'{"schema":"qorpera.interaction/v1","surface":"question","title":"No such day","expiresAt":"2026-11-31T12:00:00Z",
 			"payload":{"options":[{"label":"Yes"}]}}');
 	perform pg_temp.oq_card(v_binding, '59600000-0000-4000-8000-0000000009b2',
 		'{"schema":"qorpera.interaction/v1","surface":"takeover","title":"Sign in to Slack",

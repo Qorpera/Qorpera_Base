@@ -8,7 +8,8 @@
 --
 -- What it lists: question cards in the agents' own threads (rooms bound to an agent) that this member answers, as
 -- qorpera_answer_interaction checks it there: the card was raised for them (its actor), the room is active, they are an
--- active member of it, the conversation is open and company-wide, and the card is not past its time and not answered.
+-- active member of it, the conversation is open and company-wide, and the card is not past its time (nor has a time
+-- that is no date) and not answered.
 -- An answer counts while it is on its way (a live answer input) or in the transcript (an interaction_answer event); an
 -- answer whose delivery failed does not, so its card is listed again, as the thread opens it again. Plain
 -- conversations are not listed: on folder-v2 they answer no cards (20260928319670), and they are the agent's thread's
@@ -74,8 +75,14 @@ begin
 					and request.actor_user_id = v_user
 					and request.body #>> '{entry,data,schema}' = 'qorpera.interaction/v1'
 					and request.body #>> '{entry,data,surface}' = 'question'
-					and (not (request.body #> '{entry,data}' ? 'expiresAt')
-						or (request.body #>> '{entry,data,expiresAt}')::timestamptz > statement_timestamp())
+					-- Past its time, or a time that is no date (the card's validator checks the shape only, so
+					-- 2026-11-31 passes it): not answerable, and never a cast that would fail the whole list.
+					and case
+						when not (request.body #> '{entry,data}' ? 'expiresAt') then true
+						when pg_input_is_valid(request.body #>> '{entry,data,expiresAt}', 'timestamptz')
+							then (request.body #>> '{entry,data,expiresAt}')::timestamptz > statement_timestamp()
+						else false
+					end
 					and not exists (
 						select 1 from public.qorpera_session_events as answer
 						where answer.session_id = request.session_id
