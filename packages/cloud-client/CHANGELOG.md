@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Interface apps: `app.toml` takes `writes`, what the page may ask a member to change: a list of at most 16 of `answers` and `table:<name>` (a company table's folder name, never `areas`). `AppManifest` has `writes` (default empty), `parseAppWrites` checks a list, `appWriteTable` reads an entry's table, and `writeAppManifest` writes the line when it is set. `APP_READS` gains `questions`.
 - A coding brief's `repository` may be one kept in Qorpera, `qorpera/<owner>/<name>` (own code storage, slice 1); the refusal says so.
 - Interface apps: `app.toml` takes `concept = true` (a concept of the company's product, for the web's Concepts viewer) and `cover = "<path>"` (a .png, .jpg or .webp in the app's folder, checked as the entry is; `APP_COVER_KINDS`). `AppManifest` has `concept` (default false) and `cover` (default null); `writeAppManifest` writes both when set.
 - `CloudMemberFolderClient`: its function calls and object reads no longer set `cache: "no-store"`, which made Chrome send a CORS preflight before every call (perf sprint A6, 7 Nov 2026). No browser stores the answer to a POST, and the objects' route answers `private, no-store` itself. A commit keeps the option.
