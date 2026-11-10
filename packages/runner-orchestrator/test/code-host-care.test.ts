@@ -115,8 +115,9 @@ class Kernel {
 	readonly clock: { now: number };
 	due: unknown[] = [DUE];
 	deleting: unknown = [];
-	/** Whether a finish without a refs fingerprint clears the row's, or leaves it: care must be right either way. */
-	nullClears = true;
+	/** When a finish moves the refs the next run compares with: only with a clean fsck, as the migration does, or with
+	 * whatever the outcome names (null too). Care must be right either way. */
+	refsRule: "clean-fsck" | "as-given" = "clean-fsck";
 	dueAnswer: (() => unknown) | undefined;
 	stepAnswer: ((step: string, row: Row) => unknown) | undefined;
 	finishAnswer: (() => unknown) | undefined;
@@ -189,7 +190,8 @@ class Kernel {
 			row.outcomes.push(outcome);
 			if (args.p_token !== row.token) return { schema: FINISH, state: "lost" };
 			const at = new Date(this.clock.now).toISOString();
-			if (outcome.refsSha256 !== null || this.nullClears) row.last.refsSha256 = outcome.refsSha256;
+			if (this.refsRule === "as-given") row.last.refsSha256 = outcome.refsSha256;
+			else if (outcome.fsck.state === "ok" && outcome.refsSha256 !== null) row.last.refsSha256 = outcome.refsSha256;
 			if (outcome.fsck.state !== "skipped") {
 				row.last.fsckState = outcome.fsck.state;
 				row.last.fsckAt = at;
@@ -583,6 +585,38 @@ describe("CodeHostCare", () => {
 		expect(t.outcome()).toMatchObject({ worktrees: 0, retired: 1 });
 		expect(t.area.worktrees).toEqual([]);
 
+		// Worktrees that all stay with their files (a file nobody committed, say) leave no folder of git's to remove: no
+		// second job.
+		const kept = setup();
+		kept.row.flags = { gc: false, retire: true };
+		kept.row.retire = [W1, W2];
+		kept.jobs.retire = async (_job, value) => ({
+			retired: [],
+			kept: value.workerIds.map((workerId) => ({ workerId, reason: "NOT_CLEAN" })),
+		});
+		await expect(kept.pass()).resolves.toEqual({ cared: 1, busy: 0, failed: 0 });
+		expect(kept.took()).toEqual([...BEGIN_TO_BUNDLE, "step:retire", "job:retire:files", "finish"]);
+		expect(kept.outcome()).toMatchObject({ state: "done", problem: null, worktrees: 2, retired: 0 });
+		// A removal that failed is still looked at by the second job: its save may have gone through all the same.
+		const lost = setup();
+		lost.row.flags = { gc: false, retire: true };
+		lost.row.retire = [W1];
+		const retire = lost.jobs.retire;
+		lost.jobs.retire = async (job, value, phase) => {
+			const answer = await retire(job, value, phase);
+			if (phase.phase === "files")
+				throw new CodeHostJobFailure("CODE_HOST_PUBLISH_UNANSWERED", "the node did not answer the publish");
+			return answer;
+		};
+		await expect(lost.pass()).resolves.toEqual({ cared: 0, busy: 0, failed: 1 });
+		expect(lost.took()).toEqual([...BEGIN_TO_BUNDLE, ...RETIRE, "finish"]);
+		expect(lost.outcome()).toMatchObject({
+			state: "failed",
+			problem: "RETIRE_FAILED:CODE_HOST_PUBLISH_UNANSWERED",
+			worktrees: 1,
+			retired: 1,
+		});
+
 		// A flag switched off while the run went on is off for its job: the kernel's answer at the job's own step counts.
 		const off = setup();
 		off.row.flags = { gc: true, retire: true };
@@ -614,6 +648,11 @@ describe("CodeHostCare", () => {
 		expect(outcome.fsck.detail).toHaveLength(2000);
 		expect(outcome.fsck.detail?.startsWith(`missing blob ${"c".repeat(40)}\n`)).toBe(true);
 		expect(t.stored()).toEqual([]);
+		// What fsck said goes into a JSON column: no NUL, and no half of a character where the text was cut.
+		const odd = setup();
+		odd.area.fsck = { state: "problems", exitCode: 1, detail: `a\0b${"x".repeat(1997)}\u{1F600} and more` };
+		await odd.pass();
+		expect(odd.outcome().fsck.detail).toBe(`ab${"x".repeat(1997)}�`);
 
 		// The refs did not change, but the last fsck was not good: it runs again.
 		t.clock.now += DAY;
@@ -1163,11 +1202,11 @@ describe("CodeHostCare", () => {
 		}
 
 		// The look after the pack did not finish (fsck ran out of time, or the job failed): not damaged, not proven. The
-		// next run's fsck is due, whether the kernel clears the refs it recorded or keeps them.
-		for (const nullClears of [true, false]) {
+		// next run's fsck is due, whether the kernel keeps the refs it recorded or takes the outcome's none.
+		for (const refsRule of ["clean-fsck", "as-given"] as const) {
 			for (const fail of [false, true]) {
 				t = gcOn();
-				t.kernel.nullClears = nullClears;
+				t.kernel.refsRule = refsRule;
 				// A first night with the pack off records the refs and a clean fsck.
 				t.row.flags = { gc: false, retire: false };
 				await t.pass();
@@ -1203,8 +1242,8 @@ describe("CodeHostCare", () => {
 				t.area.objects.loose = 0;
 				t.clock.now += 3_600_000;
 				await t.pass();
-				expect([nullClears, fail, t.took().slice(0, 5)]).toEqual([
-					nullClears,
+				expect([refsRule, fail, t.took().slice(0, 5)]).toEqual([
+					refsRule,
 					fail,
 					["step:begin", "step:check", "job:check", "step:fsck", "job:fsck"],
 				]);

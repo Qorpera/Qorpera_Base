@@ -26,7 +26,7 @@ import { CodingControlBusy } from "./coding-executor.ts";
  *   4  pack                              flag `gc`: fsck ok, the refs in a stored bundle, no `shallow`, loose objects
  *   5  check and fsck after the pack     job 4's steps began
  *   6  retire, the worktrees' files      flag `retire`: the kernel names candidates, and the repository is sound
- *   7  retire, git's folders for them    job 6's steps began
+ *   7  retire, git's folders for them    job 6 removed files, found some already gone, or failed
  *
  * Each is a code host job of its own that yields (`CodeHostJobs.run`, `yields`): a turn's job that joins the
  * company's line cancels it, and it published nothing. With its place in the line, before its first git command, each
@@ -721,23 +721,28 @@ export class CodeHostCare {
 
 	/** Jobs 6 and 7: the kernel names the sessions whose worktrees may go, with the job's place in the line held; the
 	 * job removes the files of those whose folder holds exactly its branch's head, and a new job, which sees what was
-	 * saved, removes git's folder for each whose files are gone (one an earlier night left as well). Only that second
-	 * job's answer counts a worktree as retired. */
+	 * saved, removes git's folder for each whose files are gone (one an earlier night left as well). The second job
+	 * runs only when there may be such a folder, and only its answer counts a worktree as retired. */
 	async #retire(run: CareRun, outcome: CodeCareOutcome, signal: AbortSignal): Promise<CareStop | undefined> {
 		const { repository } = run;
 		let workerIds: string[] = [];
+		// Whether git's folders may have to go: a worktree's files went this night, or were gone already (an earlier
+		// night's removal whose second job never came), or the removal failed and what it saved is not known.
+		let folders = false;
 		try {
 			await this.#job(run, "retire", signal, async (job, _block, go) => {
 				workerIds = go.flags.retire ? go.retire : [];
-				if (workerIds.length > 0) await this.#jobs.retire(job, { repository, workerIds }, { phase: "files" });
+				if (workerIds.length === 0) return;
+				folders = true;
+				const files = await this.#jobs.retire(job, { repository, workerIds }, { phase: "files" });
+				folders = files.retired.length > 0 || files.kept.some((kept) => kept.reason === "NOT_THERE");
 			});
 		} catch (error) {
 			const stop = this.#stopped(error, signal);
 			if (stop) return stop;
 			this.#failed(run, outcome, "retire", error, signal);
 		}
-		// Even after a failed removal: its save may have gone through all the same.
-		if (workerIds.length === 0) return undefined;
+		if (!folders) return undefined;
 		try {
 			const folders = await this.#job(run, "retire-git", signal, (job) =>
 				this.#jobs.retire(job, { repository, workerIds }, { phase: "git-folder" }),
@@ -912,9 +917,16 @@ export class CodeHostCare {
 		});
 	}
 
-	/** What fsck said, for the kernel's record: at most 2,000 characters, with nothing shaped like a credential. */
+	/** What fsck said, for the kernel's record: at most 2,000 characters, with nothing shaped like a credential, and
+	 * nothing a JSON column refuses (a NUL, or half a character where the text was cut). */
 	#detail(value: unknown): string | null {
-		const said = typeof value === "string" ? redactCodingErrorText(value).slice(0, 2000) : "";
+		const said =
+			typeof value === "string"
+				? redactCodingErrorText(value)
+						.replaceAll("\0", "")
+						.slice(0, 2000)
+						.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "�")
+				: "";
 		return said || null;
 	}
 
