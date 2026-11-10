@@ -10,14 +10,16 @@ import { COMPANY_MACHINE_HOST_RPCS } from "../../packages/runner-orchestrator/sr
 const METHODS = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, ...CODING_SNAPSHOT_RPCS, ...COMPANY_MACHINE_HOST_RPCS, ...CODE_HOST_RPCS,
 	...CODE_HOST_DELETION_RPCS, ...CODE_CARE_RPCS, "qorpera_authorize_coding_command", "qorpera_route_coding_command",
 	"qorpera_authorize_machine_command", "qorpera_authorize_machine_coding_value", "qorpera_authorize_machine_screen",
-	"qorpera_native_binding_proven"]);
+	"qorpera_member_machine_screen_authority", "qorpera_native_binding_proven"]);
 
 /** Calls whose refusal (SQLSTATE 42501) the caller acts on: a test machine's folder view open, which the executor
  * answers with a boot without /company, or with a move to a new disk when the open refused its disk (F3 6d), and a
  * run's take-in of a test machine's reads, whose refusal of a read no longer readable moves the machine to a new disk
  * (F3 6d-3b). The code host's open (F3 5e-3b) is the same call as the first; it fails on a refusal as on any other
- * failure (`CODE_HOST_VIEW_UNAVAILABLE`). */
-const REFUSABLE = new Set<string>(["qorpera_folder_view_open", "qorpera_folder_test_machine_inherit_reads"]);
+ * failure (`CODE_HOST_VIEW_UNAVAILABLE`). A member's read check of a machine's reads (20260930712000), whose refusal
+ * hides that member's picture and nothing else. */
+const REFUSABLE = new Set<string>(["qorpera_folder_view_open", "qorpera_folder_test_machine_inherit_reads",
+	"qorpera_folder_member_machine_reads"]);
 const DETAIL = /^qorpera\.[a-z0-9./-]{1,120}$/;
 
 /** A turn's lease renewal and describe (R2, 31 Oct 2026): the kernel's refusal says the lease is gone, and the executor

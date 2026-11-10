@@ -3,6 +3,7 @@ import { isCloudMachineFolderLost } from "../../packages/contracts/src/cloud-mac
 import {
 	CLOUD_MACHINE_TOOL_VERSION, type CloudMachineCodingValueHttpRequest, CloudMachineCodingValueRefusal, type CloudMachineCommandHttpRequest,
 	cloudMachineCommandHead, CloudMachineCommandRefusal, type CloudMachineScreenHttpRequest, CloudMachineScreenRefusal,
+	CloudMemberMachineScreenRefusal,
 } from "../../packages/runtime/src/cloud-machine-command-http.ts";
 import { type MachineScreenAction, parseMachineScreenAction } from "../../packages/runtime/src/cloud-machine-screen.ts";
 import { parseCloudNativeToolAuthority } from "../../packages/runtime/src/cloud-native-tool-authority.ts";
@@ -185,4 +186,52 @@ export async function authorizeMachineScreen(
 	return { machineId: result.machineId, placementId: result.placementId, bootId: result.bootId, executorOwner: result.executorOwner,
 		providerId: result.providerId, runId: result.runId, receiptId: request.input.commandId, action,
 		settleMs: request.input.settleMs, look: request.input.look };
+}
+
+/** What SQL says about one member's look at a desktop (20260930712000): where the machine runs, the member, whether the
+ * look puts off the desktop's own idle stop, and whether this executor serves it (it does only as the machine's own,
+ * once; an executor that forwards the look reads it without serving it). */
+export interface MemberMachineScreenAuthority {
+	useId: string;
+	machineId: string;
+	placementId: string;
+	bootId: string;
+	executorOwner: string;
+	providerId: string;
+	userId: string;
+	served: boolean;
+	keepDesktop: boolean;
+}
+
+/** The look's single-use id, begun as the member, read again live in SQL (qorpera_member_machine_screen_authority) by
+ * this executor (`owner`, `providerId`). A machine that is not running and a disk the member may not see are the
+ * member's refusals; anything else SQL refuses fails the look. */
+export async function authorizeMemberMachineScreen(
+	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> },
+	request: { useId: string; owner: string; providerId: string },
+	signal: AbortSignal,
+): Promise<MemberMachineScreenAuthority> {
+	if (!UUID.test(request.useId)) throw new Error("MEMBER_SCREEN_AUTHORITY_INVALID");
+	const value = await control.call("qorpera_member_machine_screen_authority", {
+		p_use_id: request.useId, p_owner: request.owner, p_provider_id: request.providerId,
+	}, signal);
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("MEMBER_SCREEN_AUTHORITY_INVALID");
+	const result = value as Record<string, unknown>;
+	if (result.schema !== "qorpera.member-machine-screen-authority/v1") throw new Error("MEMBER_SCREEN_AUTHORITY_INVALID");
+	if (result.state === "refused" && (result.reason === "MACHINE_NOT_RUNNING" || result.reason === "MACHINE_NEEDS_COMPANY_VIEW"))
+		throw new CloudMemberMachineScreenRefusal(result.reason);
+	if (result.state !== "authorized" ||
+		Object.keys(result).sort().join() !== "bootId,executorOwner,keepDesktop,machineId,placementId,providerId,schema,served,state,useId,userId" ||
+		result.useId !== request.useId ||
+		![result.machineId, result.placementId, result.bootId, result.userId].every((id) => typeof id === "string" && UUID.test(id)) ||
+		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
+		typeof result.providerId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(result.providerId) ||
+		typeof result.keepDesktop !== "boolean" ||
+		// Served only by the machine's own executor: what SQL says and what this executor is agree.
+		result.served !== (result.executorOwner === request.owner && result.providerId === request.providerId))
+		throw new Error("MEMBER_SCREEN_AUTHORITY_INVALID");
+	signal.throwIfAborted();
+	return { useId: result.useId, machineId: result.machineId as string, placementId: result.placementId as string,
+		bootId: result.bootId as string, executorOwner: result.executorOwner, providerId: result.providerId,
+		userId: result.userId as string, served: result.served as boolean, keepDesktop: result.keepDesktop };
 }

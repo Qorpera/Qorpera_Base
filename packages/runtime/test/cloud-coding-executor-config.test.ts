@@ -155,6 +155,34 @@ describe("coding executor service configuration", () => {
 		])
 			expect(() => parseCodingExecutorConfiguration({ ...fixture(), folder: bad })).toThrow("CONFIG_INVALID");
 	});
+	it("takes members' looks only on a loopback port of its own, with a publishable key (20260930712000)", () => {
+		const memberScreens = { port: 8791, publishableKey: "sb_publishable_xn-Yy0QJ5iGEFmsiJGmw7w_JMsDTo8N" };
+		expect(parseCodingExecutorConfiguration(fixture()).memberScreens).toBeNull();
+		expect(parseCodingExecutorConfiguration({ ...fixture(), memberScreens }).memberScreens).toEqual(memberScreens);
+		// A legacy anon key, a JWT, is publishable too.
+		expect(
+			parseCodingExecutorConfiguration({
+				...fixture(),
+				memberScreens: { ...memberScreens, publishableKey: "eyJh.eyJy.c2ln" },
+			}).memberScreens,
+		).toMatchObject({ publishableKey: "eyJh.eyJy.c2ln" });
+		for (const bad of [
+			null,
+			{ port: 8791 },
+			{ ...memberScreens, extra: true },
+			{ ...memberScreens, port: 8789 },
+			{ ...memberScreens, port: 8790 },
+			{ ...memberScreens, port: 80 },
+			{ ...memberScreens, port: "8791" },
+			{ ...memberScreens, publishableKey: "" },
+			{ ...memberScreens, publishableKey: "sb publishable" },
+			{ ...memberScreens, publishableKey: "sb_publishable_x\n" },
+		])
+			expect(
+				() => parseCodingExecutorConfiguration({ ...fixture(), memberScreens: bad }),
+				JSON.stringify(bad),
+			).toThrow("CONFIG_INVALID");
+	});
 	it("makes code hosts only with the node inventory policy's code host block", () => {
 		const codeHost = {
 			imageFingerprint: "e".repeat(64),
