@@ -399,7 +399,9 @@ test("the image carries fill_company_account's fill helper as its own file, desk
 		const guest = await readFile(join(temporary, "guest.mjs"), "utf8");
 		const helper = await readFile(join(temporary, "fill.mjs"), "utf8");
 		assert.doesNotMatch(guest, /account-fill|Input\.insertText/);
-		assert.match(helper, /"Input\.insertText"/);
+		// The value is set inside the checked document (Runtime.callFunctionOn on the checked box), never typed at the tab.
+		assert.match(helper, /"Runtime\.callFunctionOn"/);
+		assert.doesNotMatch(helper, /Input\.insertText/);
 		assert.match(helper, /\/json\/version/);
 		assert.doesNotMatch(helper, /playwright/);
 		assert.ok(helper.length < 131072, `the fill helper is ${helper.length} bytes`);

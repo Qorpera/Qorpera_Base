@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readdir, readFile, readlink } from "node:fs/promises";
 import { isUuid } from "@qorpera/contracts";
@@ -21,17 +22,20 @@ import {
  * 2. The executor asks the vault, which seals the value to that key, bound to this call's receipt and the machine's
  *    placement and boot; stdin's second line is that box (or stdin ends: the vault refused, and the executor says why).
  * 3. The helper opens the box in memory (only for exactly this identity on this boot, and within its lifetime), checks the
- *    tab again against the hosts sealed inside it, types the value with CDP Input.insertText into the focused box, and
- *    prints one line: FILLED or a refusal code. Then it waits for stdin to end and exits.
+ *    tab again against the hosts sealed inside it, sets the value on the focused box from inside the checked document,
+ *    and prints one line: FILLED or a refusal code. Then it waits for stdin to end and exits.
  * The page check, as the office's (cloud-company-computer-account-fill.ts) and A1-4c's stop: the one tab whose window has
  * the focus, its main frame on the account's site or one of its sign-in hosts over https; the focused element in that
  * document itself (not in a frame), an input box of the field's kind; and no CAPTCHA, human check, unusual activity
  * warning or block shown. Both checks and the typing are bound to the one document the tab showed at the first look
- * (review round 1 of #1644): any navigation of the tab from then on, to another document or within this one, refuses
- * before anything is typed (FILL_PAGE_CHANGED), and one seen while or right after the value went in is FILL_LOST. The box
- * is emptied before the value goes in, and the value counts as filled only when that same box, still with the focus,
- * holds it whole and nothing else took it; otherwise every box it reached is emptied, or it is FILL_LOST. Whatever may
- * have left the value on the page without that being confirmed empty (no answer, the deadline) is FILL_LOST too.
+ * (reviews of #1644): any navigation of the tab from then on, to another document or within this one, refuses before
+ * anything is typed (FILL_PAGE_CHANGED), and one seen once the value is in is FILL_LOST. The value is never typed at
+ * the tab (CDP Input.insertText reaches whatever document the tab shows when it lands): one call on the checked box, in
+ * the helper's own world of that document, checks the document, its address and the box's focus and sets the value with
+ * the native setter, then fires input and change; if the document is gone the call fails and reaches no other. The value
+ * counts as filled only when that same box, still with the focus, holds it exactly and no other box of the document (its
+ * open shadow roots and its own origin's frames) holds a copy; a box that does not keep it is emptied (FILL_UNCONFIRMED),
+ * and any copy found, a scan that cannot run, or no answer or the deadline once the value is set is FILL_LOST.
  * It never prints, logs or writes the value: stdout carries the key's public half and codes only.
  * Buffers it holds are zeroed when done; the opened value is a string, which the process drops and exits with.
  * The agent is root on its machine: it can read the browser's memory and the page, or replace this program or the
@@ -69,12 +73,12 @@ export const MACHINE_ACCOUNT_FILL_REFUSALS = [
 	"SITE_STOP_HUMAN_CHECK",
 	"SITE_STOP_UNUSUAL_ACTIVITY",
 	"SITE_STOP_BLOCKED",
-	/** The value went in but not whole into the box, or the focus left it: the box and every other box it reached were
-	 * emptied, and the page answered that they were. */
+	/** The value was set but the box did not keep it exactly, or the focus left it: the box was emptied, and no copy of
+	 * the value was found in any box of the page before or after. */
 	"FILL_UNCONFIRMED",
-	/** The value may still be on the page: it was typed (or may have been) and is not confirmed emptied. It went where it
-	 * cannot be emptied or where the helper cannot see, the tab navigated while or right after it went in, or the browser
-	 * stopped answering or the deadline passed after it was handed over. The tab must go before any picture. */
+	/** The value may still be on the page: it was set (or may have been) and is not confirmed gone. The page copied it to
+	 * another box, the box left the document, the scan could not run, the tab navigated once it was in, or the browser
+	 * stopped answering or the deadline passed once it was handed over. The tab must go before any picture. */
 	"FILL_LOST",
 	/** The vault's box did not open here: another identity, another boot, or past its lifetime. */
 	"FILL_BOX_REFUSED",
@@ -119,9 +123,9 @@ export class MachineFillPageChanged extends Error {
 	}
 }
 
-/** Where an insert left the value: whole in the box `focus` read and nowhere else (filled); nothing typed because the
- * focus left that box (moved) or the tab left the bound document or the account's hosts (changed); typed, and the box
- * and every other box it reached emptied (emptied); or typed, and not confirmed emptied (lost). */
+/** Where an insert left the value: exactly in the box `focus` read, still focused, and in no other box (filled); nothing
+ * set because the focus left that box (moved) or the tab left the bound document or the account's hosts (changed); set,
+ * not kept by the box, which was emptied, and no copy anywhere (emptied); or set, and maybe still on the page (lost). */
 export type MachineFillLanded = "filled" | "moved" | "changed" | "emptied" | "lost";
 
 /** One tab of the desktop's Chromium, as the helper reads and types into it. */
@@ -139,11 +143,10 @@ export interface MachineFillPage {
 	stop(): Promise<CompanyComputerSiteStopReason | undefined>;
 	/** The element that has the focus in the tab's own document; the next insert types only into it. */
 	focus(): Promise<MachineFillFocus>;
-	/** Types the value into the box `focus` read: right before, the bound document at an address `allowed` takes, and the
-	 * box still with the focus, emptied; the value inserted where the focus is (CDP Input.insertText); right after, where
-	 * it went, and the bound document still at an allowed address. After the value was handed to the browser it never
-	 * throws: what it cannot confirm is lost. */
-	insert(value: string, allowed: (address: string) => boolean): Promise<MachineFillLanded>;
+	/** Sets the value on the box `focus` read, in one call inside the bound document that first checks the document, its
+	 * address against `hosts` and the box's focus; then looks where the value is, and checks the bound document is still
+	 * at an allowed address. Once the value may have been set it never throws: what it cannot confirm is lost. */
+	insert(value: string, hosts: readonly string[]): Promise<MachineFillLanded>;
 }
 
 export interface MachineFillBrowser {
@@ -396,7 +399,7 @@ export async function fillAccountOnMachine(options: {
 		// Past the deadline nothing is typed: the result is already out.
 		if (signal.aborted) return result("FILL_EXPIRED");
 		typed = true;
-		const landed = await now.insert(fill.value, (address) => companyAccountFillHost(address, fill.hosts) !== null);
+		const landed = await now.insert(fill.value, fill.hosts);
 		return result(LANDED_CODES[landed]);
 	};
 	try {
@@ -670,45 +673,66 @@ const SHOWN = `(() => {
 	const text = (document.body && document.body.innerText) || "";
 	return { title: document.title, text: text.slice(0, ${COMPANY_COMPUTER_SITE_SAMPLE}), length: text.length };
 })()`;
-/** Readies the box, when it still has the focus: empties it, so only this insertion can fill it (text already there, as
- * long as the value, could otherwise pass for it), and hears in the helper's own world which elements the insertion
- * reaches (trusted input events, through open shadow roots). Nothing here fires an event the page hears. */
-const PREPARE = `function () {
+/** Sets the value on the box (`this`, an object of the helper's world in the bound document), in this one call: only in
+ * the document the helper stamped (a call on a document that is gone fails in the browser and reaches no other), at an
+ * address the account allows, with this box connected and focused. The native setter of the box's own prototype (the
+ * helper's world, which no page script can replace) sets it as typing would, so a framework that tracks the box's value
+ * sees it change on the input and change events that follow. Nothing is set otherwise. */
+const SET = `function (value, hosts, stamp) {
+	if (globalThis.qorperaAccountFillDocument !== stamp || this.ownerDocument !== document) return "changed";
+	const address = new URL(location.href);
+	if (address.protocol !== "https:" || address.username || address.password || address.port || !hosts.includes(address.hostname))
+		return "changed";
 	let active = document.activeElement;
 	while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
-	if (active !== this || !this.isConnected) return "moved";
-	const reached = [];
-	const heard = (event) => {
-		if (!event.isTrusted) return;
-		const target = event.composedPath()[0];
-		if (target && !reached.includes(target)) reached.push(target);
-	};
-	window.addEventListener("input", heard, true);
-	globalThis.qorperaAccountFill = { reached, done: () => window.removeEventListener("input", heard, true) };
-	this.value = "";
-	return "ready";
+	if (!this.isConnected || active !== this || !document.hasFocus()) return "moved";
+	Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(this, value);
+	this.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+	this.dispatchEvent(new Event("change", { bubbles: true }));
+	return "set";
 }`;
-/** Where the value went: filled only when this same box, still connected and with the focus, holds it whole and nothing
- * else took the insertion. Otherwise the box and every other box it reached are emptied ("emptied"), or it is lost to
- * the page: it reached an element that cannot be emptied, or none the helper heard (a frame, another document), or the
- * box left the document. */
-const LANDED = `function (value) {
-	const fill = globalThis.qorperaAccountFill;
-	globalThis.qorperaAccountFill = undefined;
-	if (fill) fill.done();
-	const reached = fill ? fill.reached : [];
+/** How long the page's own reactions to the value get before the helper looks where it is. */
+const SETTLE_MS = 200;
+/** Where the value is, once the page reacted: filled only when this same box, connected and with the focus, holds it
+ * exactly and no other input or text area of the document, its open shadow roots or its own origin's frames holds a
+ * copy. Otherwise the box and every copy are emptied (with the native setter and an input event, so a framework's own
+ * state follows); "emptied" when there was no copy and none is found after, else "lost". */
+const LANDED = `async function (value) {
+	await new Promise((resolve) => setTimeout(resolve, ${SETTLE_MS}));
+	const copies = () => {
+		const found = [];
+		const scan = (root, depth) => {
+			for (const field of root.querySelectorAll("input, textarea"))
+				if (field !== this && typeof field.value === "string" && field.value.includes(value)) found.push(field);
+			if (depth >= 8) return;
+			for (const element of root.querySelectorAll("*")) {
+				if (element.shadowRoot) scan(element.shadowRoot, depth + 1);
+				if (element.tagName === "IFRAME" || element.tagName === "FRAME") {
+					let inner = null;
+					try {
+						inner = element.contentDocument;
+					} catch {
+						inner = null;
+					}
+					if (inner) scan(inner, depth + 1);
+				}
+			}
+		};
+		scan(document, 0);
+		return found;
+	};
+	const empty = (field) => {
+		const own = field.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+		Object.getOwnPropertyDescriptor(own, "value").set.call(field, "");
+		field.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+	};
 	let active = document.activeElement;
 	while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
-	if (active === this && this.isConnected && this.value === value && reached.length === 1 && reached[0] === this)
-		return "filled";
-	this.value = "";
-	let lost = !fill || reached.length === 0 || !this.isConnected;
-	for (const element of reached) {
-		if (element === this) continue;
-		if ((element.tagName === "INPUT" || element.tagName === "TEXTAREA") && typeof element.value === "string") element.value = "";
-		else lost = true;
-	}
-	return lost ? "lost" : "emptied";
+	const found = copies();
+	if (found.length === 0 && this.isConnected && active === this && this.value === value) return "filled";
+	empty(this);
+	for (const field of found) empty(field);
+	return found.length > 0 || !this.isConnected || this.value !== "" || copies().length > 0 ? "lost" : "emptied";
 }`;
 /** The helper's isolated world in a tab: its own globals over the page's document. */
 const WORLD = "qorpera-account-fill";
@@ -740,8 +764,9 @@ class DevToolsPage implements MachineFillPage {
 	/** Before `bind`: a world in whatever document the tab shows, made again after a navigation (only to read whether
 	 * the tab has the focus). */
 	#world: number | undefined;
-	/** After `bind`: the main frame, the loader of its document then, and the helper's world made in that document. */
-	#document: { frameId: string; loaderId: string; world: number } | undefined;
+	/** After `bind`: the main frame, the loader of its document then, the helper's world made in that document, and the
+	 * stamp the helper left in that world (a world's globals belong to one document). */
+	#document: { frameId: string; loaderId: string; world: number; stamp: string } | undefined;
 	/** The tab's main frame id, once known; and whether the browser said the tab left the bound document since. */
 	#main: string | undefined;
 	#changed = false;
@@ -777,13 +802,26 @@ class DevToolsPage implements MachineFillPage {
 			if (ENDINGS.has(method) || (NAVIGATIONS.has(method) && frame === this.#main)) this.#changed = true;
 		});
 		await this.#tools.call("Page.enable", {}, this.#session);
-		// The world is the document's whose loader was read before and after it was made, with no navigation between.
+		// The world is the document's whose loader was read before and after it was made and stamped, with no navigation
+		// between.
 		const before = (await this.#tree()).frame;
 		const world = await this.#isolatedWorld(before.id);
+		const stamp = randomUUID();
+		const stamped = await this.#tools.call(
+			"Runtime.evaluate",
+			{ expression: `globalThis.qorperaAccountFillDocument = "${stamp}"`, contextId: world, returnByValue: true },
+			this.#session,
+		);
 		const after = (await this.#tree()).frame;
-		if (this.#changed || before.id !== this.#main || after.id !== before.id || after.loaderId !== before.loaderId)
+		if (
+			stamped.exceptionDetails ||
+			this.#changed ||
+			before.id !== this.#main ||
+			after.id !== before.id ||
+			after.loaderId !== before.loaderId
+		)
 			throw new MachineFillPageChanged();
-		this.#document = { frameId: before.id, loaderId: before.loaderId, world };
+		this.#document = { frameId: before.id, loaderId: before.loaderId, world, stamp };
 	}
 	/** The bound document's frame tree as the browser keeps it now; refuses once the tab left that document. */
 	async #unchanged(): Promise<FrameTree> {
@@ -823,7 +861,7 @@ class DevToolsPage implements MachineFillPage {
 		if (answer.exceptionDetails) throw new Error("DEVTOOLS_CALL_FAILED");
 		return (answer.result ?? {}) as { value?: unknown; objectId?: string };
 	}
-	async #on(objectId: string, declaration: string, args: unknown[] = []): Promise<unknown> {
+	async #on(objectId: string, declaration: string, args: unknown[] = [], awaitPromise = false): Promise<unknown> {
 		const answer = await this.#within(() =>
 			this.#tools.call(
 				"Runtime.callFunctionOn",
@@ -832,6 +870,7 @@ class DevToolsPage implements MachineFillPage {
 					functionDeclaration: declaration,
 					arguments: args.map((value) => ({ value })),
 					returnByValue: true,
+					awaitPromise,
 				},
 				this.#session,
 			),
@@ -930,30 +969,51 @@ class DevToolsPage implements MachineFillPage {
 			};
 		return { kind: described?.kind === "frame" ? "frame" : described?.kind === "other" ? "other" : "none" };
 	}
-	async insert(value: string, allowed: (address: string) => boolean): Promise<MachineFillLanded> {
+	async insert(value: string, hosts: readonly string[]): Promise<MachineFillLanded> {
 		const box = this.#focused;
-		if (!box) return "moved";
-		// Right before: the bound document, at an address the account allows, and the box `focus` read (an object of the
-		// helper's world in that document) still with the focus, emptied.
+		const bound = this.#document;
+		if (!box || !bound) return "moved";
+		// Right before: still the bound document, at an address the account allows, with no navigation heard.
 		try {
-			if (!allowed((await this.#unchanged()).frame.url)) return "changed";
-			if ((await this.#on(box, PREPARE)) !== "ready") return "moved";
+			if (companyAccountFillHost((await this.#unchanged()).frame.url, hosts) === null) return "changed";
 		} catch (error) {
 			if (error instanceof MachineFillPageChanged) return "changed";
 			throw error;
 		}
 		if (this.#changed) return "changed";
-		// From here the value may be on the page: nothing below throws, and what is not confirmed is lost. The value goes
-		// where the focus is, as text the page's own input events carry: never through the X server.
+		// The value is set on the box `focus` read, inside the bound document itself: the call runs in the helper's world of
+		// that document, or the browser refuses it; it never reaches a document that replaced it (review round 2 of #1644).
+		let set: unknown;
 		try {
-			await this.#tools.call("Input.insertText", { text: value }, this.#session);
-		} catch {
+			const answer = await this.#tools.call(
+				"Runtime.callFunctionOn",
+				{
+					objectId: box,
+					functionDeclaration: SET,
+					arguments: [{ value }, { value: [...hosts] }, { value: bound.stamp }],
+					returnByValue: true,
+				},
+				this.#session,
+			);
+			set = answer.exceptionDetails ? "failed" : (answer.result as { value?: unknown } | undefined)?.value;
+		} catch (error) {
+			// The browser refused the call (the box's document is gone): it never ran. No answer at all: it may have.
+			if (error instanceof Error && error.message === "DEVTOOLS_CALL_FAILED")
+				return (await this.#unchanged().then(
+					() => false,
+					(failure: unknown) => failure instanceof MachineFillPageChanged,
+				))
+					? "changed"
+					: "lost";
 			return "lost";
 		}
+		if (set === "moved" || set === "changed") return set;
+		if (set !== "set") return "lost";
+		// From here the value is on the page: nothing below throws, and what is not confirmed is lost.
 		try {
-			const landed = await this.#on(box, LANDED, [value]);
+			const landed = await this.#on(box, LANDED, [value], true);
 			// Right after: still the bound document (no navigation heard meanwhile), at an address the account allows.
-			if (!allowed((await this.#unchanged()).frame.url)) return "lost";
+			if (companyAccountFillHost((await this.#unchanged()).frame.url, hosts) === null) return "lost";
 			return landed === "filled" || landed === "emptied" ? landed : "lost";
 		} catch {
 			return "lost";

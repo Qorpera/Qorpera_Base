@@ -361,29 +361,38 @@ an autofocused box there. Then, before the vault is asked and again after the bo
   `input` of the field's kind: text, email or tel for a login; password for a password; text, tel, number or password
   for a code.
 
-Then, right before typing, it checks again that the tab is on the bound document at an address the box's hosts allow and
-that the box it checked (the same element) still has the focus, empties that box (so text already in it, as long as the
-value, cannot pass for it; nothing the page hears is fired, unlike selecting its text) and listens in its own world for
-which elements the typing reaches (trusted input events, through open shadow roots). It types with CDP
-`Input.insertText` (never through the X server) and reads back, then checks the document and address once more:
+Then it puts the value on the page without typing at the tab (review round 2 of #1644): CDP `Input.insertText` goes to
+whatever document the tab shows when it lands, so a redirect that completed while that command was in flight would have
+given the value to the new document's autofocused box. Right before, it checks again that the tab is on the bound
+document at an address the box's hosts allow, with no navigation heard. Then one `Runtime.callFunctionOn` on the box it
+checked (an object of its own world in that document; if the document is gone the browser refuses the call and nothing
+runs anywhere) checks, inside that same call, the stamp it left in that world at the first look, the address against
+the hosts (https, no user, password or port), and that the box is connected and has the focus; only then sets the value
+with the native `HTMLInputElement.prototype` value setter (so a framework that tracks the box's value sees it change) and
+fires `input` and `change`. After 200 ms for the page's own reactions it looks again, then checks the document and
+address once more:
 
-- `FILLED` only when that same box, still connected and with the focus, holds the value exactly and is the only element
-  the typing reached, on the same document at an allowed address;
-- otherwise it empties the box and every other text or password box the typing reached, and answers `FILL_UNCONFIRMED`
-  once the page confirmed that (the tool says to look with `desktop shot` and click into the field again);
-- `FILL_LOST` whenever the value may still be on the page: it reached an element that cannot be emptied, or none the
-  helper heard (a frame, another document), the box left the document, the tab navigated while or right after it went
-  in, the browser stopped answering, or the helper's deadline passed after the value was handed over (before that it is
-  `FILL_EXPIRED`, nothing typed). The tool says the value may still be on the page: no `desktop shot` (and no `--shot`)
-  until it is gone, since shots are kept in the company folder; close the tab with `desktop key ctrl+w` or clear the
-  field, or `desktop stop`; start over; and set the account `needs_person` if unsure or if the tab had gone to another
-  site.
+- `FILLED` only when that same box, connected and with the focus, holds the value exactly and no other input or text
+  area of the document, its open shadow roots or its own origin's frames holds a copy (a page script can move or copy
+  the value, and only the checked box gets the event);
+- otherwise it empties the box and every copy (native setter, then an `input` event so the page's own state follows). No
+  copy before or after: `FILL_UNCONFIRMED` (the tool says to look with `desktop shot` and click into the field again);
+- `FILL_LOST` whenever the value may still be on the page: a copy was found, the scan could not run, the box left the
+  document, the tab navigated once the value was in, the browser stopped answering, or the helper's deadline passed once
+  the value was handed over (before that it is `FILL_EXPIRED`, nothing set). The tool says the value may still be on
+  the page: no `desktop shot` (and no `--shot`) until it is gone, since shots are kept in the company folder; close the
+  tab with `desktop key ctrl+w` or clear the field, or `desktop stop`; start over; and set the account `needs_person` if
+  unsure or if the tab had gone to another site.
 
+The events the helper fires are not trusted ones (`isTrusted` is false); a page that ignores untrusted input events
+keeps its own state empty although the box shows the value, and its sign-in may then fail.
 A sign-in page that sends its form or leaves on its own as the value goes in answers `FILL_LOST` too (the helper cannot
 tell that from a redirect). The browser proof: `node scripts/run-on-node.mjs --machine node02 -- node
 scripts/test-machine-account-fill-browser.mjs` (Docker on a test machine: the image's pinned Chrome for Testing on a
-TigerVNC display with openbox; redirects between the helper's steps, the focus moved with text as long as the value in
-the box, a page that leaves or stops answering as the value goes in, and the deadline after it went in).
+TigerVNC display with openbox; redirects between the helper's steps and one that lands while the call that sets the value
+is in flight, the focus moved with text as long as the value in the box, a page that moves or copies the value to another
+box or into a frame of its own origin, a page that leaves or stops answering as the value goes in, and the deadline after
+it went in).
 
 The agent is root on its machine. It can reach the DevTools port itself, read the page (and so a typed password) through
 it, read Chromium's memory, run its own Chromium with that profile, or replace this helper, `node` or Chromium on its disk

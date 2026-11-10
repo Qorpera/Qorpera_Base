@@ -67,6 +67,32 @@ function page(host: string, path: string): string | undefined {
 			return html("Sign in", BOX + on("input", `location.href = "https://${EVIL}/autofocus";`));
 		case "/input-hangs":
 			return html("Sign in", BOX + on("input", "const end = Date.now() + 6000; while (Date.now() < end);"));
+		// The page moves the value to another box, copies it there, or copies it into a box of a frame of its own origin.
+		case "/input-transfers":
+			return html(
+				"Sign in",
+				BOX +
+					SINK +
+					on(
+						"input",
+						'const sink = document.getElementById("sink"); const p = document.getElementById("p"); sink.value = p.value; p.value = ""; sink.focus();',
+					),
+			);
+		case "/input-copies":
+			return html(
+				"Sign in",
+				BOX + SINK + on("input", 'document.getElementById("sink").value = document.getElementById("p").value;'),
+			);
+		case "/input-frame-copies":
+			return html(
+				"Sign in",
+				`${BOX}<iframe src="/inner" style="position:fixed;left:0;top:0;width:200px;height:40px;z-index:2"></iframe>${on(
+					"input",
+					'frames[0].document.getElementById("inner").value = document.getElementById("p").value;',
+				)}`,
+			);
+		case "/inner":
+			return html("inner", '<input id="inner" type="text" autocomplete="off">');
 		default:
 			return undefined;
 	}
@@ -245,6 +271,34 @@ function watched(open: MachineAccountFillPorts["browser"], step: Step, deadline:
 		};
 	};
 	return browser;
+}
+
+/** The browser's WebSocket as the helper's DevTools connection uses it, with the one call that puts the value on the page
+ * (Input.insertText at the tab before review round 2 of #1644; now the set on the checked box) held back until `hold` is
+ * done: the call is in flight, from the helper's side, while the tab moves. */
+const BrowserSocket = WebSocket;
+let hold: (() => Promise<void>) | undefined;
+const fillCall = (data: string): boolean => {
+	const message = JSON.parse(data) as { method?: string; params?: { functionDeclaration?: string } };
+	return (
+		message.method === "Input.insertText" ||
+		(message.method === "Runtime.callFunctionOn" &&
+			(message.params?.functionDeclaration ?? "").includes("qorperaAccountFillDocument !== stamp"))
+	);
+};
+class HeldFillSocket extends BrowserSocket {
+	override send(data: Parameters<WebSocket["send"]>[0]): void {
+		const run = hold;
+		if (run && typeof data === "string" && fillCall(data)) {
+			hold = undefined;
+			void run().then(
+				() => super.send(data),
+				() => super.send(data),
+			);
+			return;
+		}
+		super.send(data);
+	}
 }
 
 /** The helper in this process against the real browser, with `step` run between two of its own steps. */
@@ -456,6 +510,33 @@ async function main(): Promise<void> {
 		return code;
 	});
 
+	// Round 2, F1: the redirect lands while the call that puts the value on the page is in flight. Typed at the tab, the
+	// value reached the new document's autofocused box; set on the checked box, the call is refused with its document.
+	await check("a redirect that lands while the value is on its way types nothing", async () => {
+		await tab.visit("/sign-in");
+		const since = heard.length;
+		let held = false;
+		hold = async () => {
+			held = true;
+			await evil();
+		};
+		Reflect.set(globalThis, "WebSocket", HeldFillSocket);
+		let code: string;
+		try {
+			code = await inProcess({ method: "insert", call: 1, when: "before", run: async () => undefined });
+		} finally {
+			Reflect.set(globalThis, "WebSocket", BrowserSocket);
+			hold = undefined;
+		}
+		const values = await tab.values();
+		equal(held, true, "the fill call was held");
+		equal(values.host, EVIL, "the tab's site");
+		equal(values.p, "", "the other site's box");
+		nothingHeardOn(EVIL, since);
+		equal(code, "FILL_PAGE_CHANGED", "code");
+		return code;
+	});
+
 	// F2: the box held text as long as the value, and the page moved the focus.
 	await check("a select handler that moves the focus gets nothing", async () => {
 		await tab.visit("/select-moves");
@@ -483,6 +564,37 @@ async function main(): Promise<void> {
 		equal(values.sink, "", "the box the focus moved to");
 		equal(values.p, "", "the box");
 		equal(code, "FILL_UNCONFIRMED", "code");
+		return code;
+	});
+
+	// Round 2, F2: the page's own script moves or copies the value into another box: the input event reaches only the
+	// checked box, so only a look at every box finds it. Every copy is emptied, and the answer is FILL_LOST.
+	await check("the page moves the value to another box: lost, and both emptied", async () => {
+		await tab.visit("/input-transfers");
+		const code = await program();
+		const values = await tab.values();
+		equal(code, "FILL_LOST", "code");
+		equal(values.sink, "", "the box the page moved it to");
+		equal(values.p, "", "the box");
+		return code;
+	});
+	await check("the page copies the value to another box: lost, and both emptied", async () => {
+		await tab.visit("/input-copies");
+		const code = await program();
+		const values = await tab.values();
+		equal(code, "FILL_LOST", "code");
+		equal(values.sink, "", "the box the page copied it to");
+		equal(values.p, "", "the box");
+		return code;
+	});
+	await check("the page copies the value into a frame of its own origin: lost, and both emptied", async () => {
+		await tab.visit("/input-frame-copies");
+		await tab.until('!!frames[0] && !!frames[0].document.getElementById("inner")', "the frame");
+		const code = await program();
+		const inner = await tab.read('frames[0].document.getElementById("inner").value');
+		equal(code, "FILL_LOST", "code");
+		equal(inner, "", "the frame's box");
+		equal((await tab.values()).p, "", "the box");
 		return code;
 	});
 

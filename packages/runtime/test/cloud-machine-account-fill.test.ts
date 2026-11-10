@@ -23,8 +23,9 @@ import { describe, expect, it, vi } from "vitest";
 
 // 20260930710000: fill_company_account's helper on a company machine checks the focused tab, makes a key in memory,
 // prints only its public half, opens the vault's box for exactly this call on this boot, checks the tab again against the
-// hosts sealed in the box, types the value with CDP Input.insertText, and prints only a code. The browser is mocked here;
-// the DevTools path is proved against a real Chromium (deploy/machine/build-machine-image.sh's check, and node02).
+// hosts sealed in the box, sets the value on the checked box from inside its document, and prints only a code. The
+// browser is mocked here; the DevTools path is proved against a real Chromium (deploy/machine/build-machine-image.sh's
+// check, and scripts/test-machine-account-fill-browser.mjs on a test machine).
 
 const now = 1_790_000_000_000;
 const secret = "hunter2-Correct-Horse";
@@ -42,11 +43,11 @@ interface FakeTab {
 	hangs?: boolean;
 }
 
-/** One look at a tab; `seen` keeps each look's page and each insert's address check. */
+/** One look at a tab; `seen` keeps each look's page and the hosts each insert was given. */
 function page(
 	tab: FakeTab,
 	typed: string[],
-	seen: { pages: MachineFillPage[]; allowed: ((address: string) => boolean)[] },
+	seen: { pages: MachineFillPage[]; hosts: (readonly string[])[] },
 ): MachineFillPage {
 	const found: MachineFillPage = {
 		id: tab.id,
@@ -60,9 +61,9 @@ function page(
 		}),
 		stop: vi.fn(async () => tab.stop),
 		focus: vi.fn(async () => tab.focus),
-		insert: vi.fn(async (value: string, allowed: (address: string) => boolean) => {
+		insert: vi.fn(async (value: string, hosts: readonly string[]) => {
 			typed.push(value);
-			seen.allowed.push(allowed);
+			seen.hosts.push(hosts);
 			if (tab.fails === "insert") throw new Error("DEVTOOLS_CLOSED");
 			if (tab.hangs) await new Promise<never>(() => undefined);
 			return tab.landed ?? "filled";
@@ -111,7 +112,7 @@ function fixture(
 		},
 	];
 	const typed: string[] = [];
-	const seen = { pages: [] as MachineFillPage[], allowed: [] as ((address: string) => boolean)[] };
+	const seen = { pages: [] as MachineFillPage[], hosts: [] as (readonly string[])[] };
 	// Each look reads the tabs anew, as the browser answers them; the helper knows a tab again by its id.
 	const look = (list: FakeTab[]) => {
 		if (list.length === 0) return "none" as const;
@@ -355,18 +356,11 @@ describe("fill_company_account's helper", () => {
 			expect(moved.keys).toHaveLength(1);
 			expect(moved.typed).toEqual(inserted ? [secret] : []);
 		}
-		// The insert checks the address right before and right after against the hosts sealed in the box, not the target's.
+		// The insert checks the address (in the page, as it sets the value, and right after) against the hosts sealed in the
+		// box, not the target's.
 		const narrower = fixture({ sealed: ["www.npmjs.com"] });
 		expect(await narrower.run()).toBe("FILLED");
-		const allowed = narrower.seen.allowed[0]!;
-		expect(allowed("https://www.npmjs.com/login")).toBe(true);
-		for (const address of [
-			"https://npmjs.com/login",
-			"http://www.npmjs.com/login",
-			"https://www.npmjs.com.evil.example/login",
-			"https://evil.example/login",
-		])
-			expect(allowed(address), address).toBe(false);
+		expect(narrower.seen.hosts).toEqual([["www.npmjs.com"]]);
 	});
 
 	it("says where a typed value went, and that a failure after typing may have left it on the page", async () => {
