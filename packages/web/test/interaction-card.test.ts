@@ -310,6 +310,26 @@ describe("a visual choice", () => {
 		created.mockRestore();
 	});
 
+	it("links an app once when several options show it", () => {
+		const card = renderInteractionCard(
+			item({
+				surface: "question",
+				title: "Which headline do you like best?",
+				payload: {
+					options: [
+						{ label: "Entirely you", preview: "app:saml-concepts" },
+						{ label: "Keep close", preview: "app:saml-concepts" },
+						{ label: "The demo", preview: "app:bundle-demo" },
+					],
+				},
+			}),
+			context({ image: async () => null }),
+		);
+		expect(
+			[...card.querySelectorAll<HTMLElement>(".choice-apps .app-card")].map((link) => link.dataset.appName),
+		).toEqual(["saml-concepts", "bundle-demo"]);
+	});
+
 	it("lays three boxes out in three columns, set through the style object, and toggles them for a multi-select", () => {
 		const ctx = context({ image: async () => null });
 		const card = renderInteractionCard(item({ ...visual, payload: { ...visual.payload, multiSelect: true } }), ctx);
