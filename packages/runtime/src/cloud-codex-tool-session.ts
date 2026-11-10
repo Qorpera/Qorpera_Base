@@ -104,9 +104,9 @@ const MAX_TURN_CORRECTION_BYTES = 4 * 1024;
 /** How long Codex may take to answer a control request: its handshake, a thread's start and a turn's start. Each is
  * answered at once (a turn's start before its first model request), so one that gets no answer is a stuck process, and
  * the run used to wait on it for good, holding its conversation (reliability audit, 10 November 2026, A3). A model
- * request of Codex's that reaches the fence meanwhile lifts the deadline: Codex is at work then, and what it waits for
- * may be this host. It is no cap on a run: a turn runs as long as its work takes (founder, 2026-09-22 and
- * 2026-09-24). */
+ * request of Codex's for the very thread or turn being started, reaching the fence meanwhile, lifts that start's
+ * deadline: it is under way then, and what its answer waits for may be this host. It is no cap on a run: a turn runs
+ * as long as its work takes (founder, 2026-09-22 and 2026-09-24). */
 const CONTROL_REQUEST_MS = 120_000;
 const TOKEN_COUNTERS = [
 	"inputTokens",
@@ -165,6 +165,9 @@ interface ReviewThread {
 
 /** The threads a run's app-server holds beside the agent's: auto-review's and the memory compactor's. */
 type SideThreadKind = "review" | "compact";
+/** What a control request starts: the handshake's requests start nothing of a run's, a thread's start the agent's
+ * thread or a side thread (one at a time), a turn's start the agent's turn or a side thread's. */
+type ControlStart = "handshake" | "agent-thread" | "agent-turn" | "side-thread" | `side-turn:${string}`;
 
 /** The side thread now starting: the prewarm that arrives before its id is its own. */
 interface StartingSide {
@@ -600,8 +603,10 @@ class CodexBoundaryRpc {
 	 * and `null`, which say nothing of the cause. */
 	#providerErrorToken?: string;
 	readonly #pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
-	/** The deadlines of the control requests Codex has not answered yet (request's `answerWithinMs`). */
-	readonly #controlDeadlines = new Set<ReturnType<typeof setTimeout>>();
+	/** The deadlines of the control requests Codex has not answered yet, by request id, each with what it starts. */
+	readonly #controlDeadlines = new Map<number, { starts: ControlStart; timer: ReturnType<typeof setTimeout> }>();
+	/** The agent's turns that have completed (beginNextTurn): nothing binds to one again. */
+	readonly #endedTurnIds = new Set<string>();
 	readonly #requestIds = new Set<string>();
 	readonly #lines = new CodexLineReader();
 	#completed: Promise<void>;
@@ -770,6 +775,8 @@ class CodexBoundaryRpc {
 		this.#turnObservation = undefined;
 		this.#earlierTurns++;
 		this.#turnUsageBase = this.#usageTotal;
+		// The ended turn is over for good: a request that still names it is no part of the next one.
+		if (this.#turnId !== undefined) this.#endedTurnIds.add(this.#turnId);
 		this.#turnId = undefined;
 		this.#turnEndRequested = false;
 		this.#finished = false;
@@ -1046,7 +1053,7 @@ class CodexBoundaryRpc {
 						runtimeWorkspaceRoots: [],
 						sandboxPolicy: { type: "readOnly", networkAccess: false },
 					},
-					CONTROL_REQUEST_MS,
+					`side-turn:${threadId}`,
 				),
 			);
 			const turnId = identifier(object(turn.turn).id);
@@ -1134,9 +1141,7 @@ class CodexBoundaryRpc {
 			const starting: StartingSide = { kind };
 			this.#startingSide = starting;
 			try {
-				const id = identifier(
-					object(object(await this.request("thread/start", params, CONTROL_REQUEST_MS)).thread).id,
-				);
+				const id = identifier(object(object(await this.request("thread/start", params, "side-thread")).thread).id);
 				if (
 					id === this.#threadId ||
 					this.#sideThread(id) ||
@@ -1236,7 +1241,7 @@ class CodexBoundaryRpc {
 						runtimeWorkspaceRoots: [],
 						sandboxPolicy: { type: "readOnly", networkAccess: false },
 					},
-					CONTROL_REQUEST_MS,
+					`side-turn:${thread.threadId}`,
 				),
 			);
 			const turnId = identifier(object(started.turn).id);
@@ -1365,19 +1370,22 @@ class CodexBoundaryRpc {
 	 * Codex makes before a provider request, its context composition and then its fence, are bound here. */
 	#bindModelRequest(request: ModelRequestIdentity): "review" | "compact" | "prewarm" | "turn" {
 		if (this.#failure || this.#closed) throw new Error("Native result boundary stopped");
-		// A model request at the fence shows Codex at work on a thread or turn it was asked to start. The answer to
-		// that start may now wait on this host's own fence work (a slow database is not Codex's silence), so no
-		// control request still open is held to its deadline any longer.
-		for (const deadline of this.#controlDeadlines) clearTimeout(deadline);
-		this.#controlDeadlines.clear();
+		// A side thread's prewarm while that thread starts, as against a known thread's late one.
+		const sideStarting = request.purpose === "prewarm" && !this.#sideThread(request.threadId);
 		// The compactor's lane stays open after the agent's turn: closing builds its lines then (§7.1).
 		if (this.isCompactRequest(request)) {
 			this.#assertCompactRequest(request);
+			this.#underWay(
+				request.purpose !== "prewarm" ? `side-turn:${request.threadId}` : sideStarting && "side-thread",
+			);
 			return "compact";
 		}
 		if (this.#finished) throw new Error("Native result boundary stopped");
 		if (this.isReviewRequest(request)) {
 			this.#assertReviewRequest(request);
+			this.#underWay(
+				request.purpose !== "prewarm" ? `side-turn:${request.threadId}` : sideStarting && "side-thread",
+			);
 			return "review";
 		}
 		if (request.purpose === "prewarm") {
@@ -1389,6 +1397,7 @@ class CodexBoundaryRpc {
 			)
 				throw new Error("Native prewarm binding failed");
 			this.#prewarmThreadId = request.threadId;
+			this.#underWay("agent-thread");
 			return "prewarm";
 		}
 		if (
@@ -1399,7 +1408,20 @@ class CodexBoundaryRpc {
 		)
 			throw new Error("Native result binding failed");
 		this.confirmTurn(request.turnId);
+		this.#underWay("agent-turn");
 		return "turn";
+	}
+
+	/** A model request of Codex's has reached the fence for the thread or turn a control request starts: that start is
+	 * under way, and its answer may now wait on this host's own fence work (a slow database is not Codex's silence), so
+	 * it is held to its deadline no longer. Only that start: a request of another thread says nothing of it. */
+	#underWay(starts: ControlStart | false): void {
+		if (starts === false) return;
+		for (const [id, deadline] of this.#controlDeadlines) {
+			if (deadline.starts !== starts) continue;
+			clearTimeout(deadline.timer);
+			this.#controlDeadlines.delete(id);
+		}
 	}
 
 	/** A context composition request (`qorpera.native-context-composition/v1`): bound as its fence request is, and
@@ -1462,10 +1484,10 @@ class CodexBoundaryRpc {
 		this.#rejectCompleted(this.#failure);
 	}
 
-	/** `answerWithinMs`: for a control request, which Codex answers at once (CONTROL_REQUEST_MS). One left unanswered
-	 * that long, with no model request of Codex's reaching the fence meanwhile (#bindModelRequest), fails the boundary,
-	 * and with it the run, as a step that got no answer in time. */
-	async request(method: string, params: JsonValue, answerWithinMs?: number): Promise<unknown> {
+	/** `starts`: for a control request, which Codex answers at once. One left unanswered for CONTROL_REQUEST_MS, with
+	 * no model request for what it starts reaching the fence meanwhile (#underWay), fails the boundary, and with it
+	 * the run, as a step that got no answer in time. */
+	async request(method: string, params: JsonValue, starts?: ControlStart): Promise<unknown> {
 		if (this.#failure) throw this.#failure;
 		if (this.#closed) throw new Error("Native boundary transport closed");
 		const id = ++this.#sequence;
@@ -1476,18 +1498,18 @@ class CodexBoundaryRpc {
 		// through as it is, so a hash taken of it there still names what Codex is sent.
 		const cut = redactCloudWebhookSecretsIn(params);
 		return new Promise((resolve, reject) => {
-			if (answerWithinMs === undefined) this.#pending.set(id, { resolve, reject });
+			if (starts === undefined) this.#pending.set(id, { resolve, reject });
 			else {
 				// Still pending then: the answer never came. Failing the boundary rejects this request with the rest.
-				const deadline = setTimeout(() => {
-					this.#controlDeadlines.delete(deadline);
+				const timer = setTimeout(() => {
+					this.#controlDeadlines.delete(id);
 					if (this.#pending.has(id)) this.fail("Native boundary request got no answer", "timeout");
-				}, answerWithinMs);
-				deadline.unref?.();
-				this.#controlDeadlines.add(deadline);
+				}, CONTROL_REQUEST_MS);
+				timer.unref?.();
+				this.#controlDeadlines.set(id, { starts, timer });
 				const settled = (): void => {
-					clearTimeout(deadline);
-					this.#controlDeadlines.delete(deadline);
+					clearTimeout(timer);
+					this.#controlDeadlines.delete(id);
 				};
 				this.#pending.set(id, {
 					resolve: (value) => {
@@ -1533,7 +1555,8 @@ class CodexBoundaryRpc {
 	}
 	confirmTurn(turnId: unknown): void {
 		const id = identifier(turnId);
-		if (this.#turnId !== undefined && this.#turnId !== id) throw new Error("Native boundary turn binding failed");
+		if ((this.#turnId !== undefined && this.#turnId !== id) || this.#endedTurnIds.has(id))
+			throw new Error("Native boundary turn binding failed");
 		this.#turnId = id;
 	}
 
@@ -1756,6 +1779,7 @@ class CodexBoundaryRpc {
 			if (
 				!this.#startingTurn ||
 				(this.#turnId !== undefined && this.#turnId !== turnId) ||
+				this.#endedTurnIds.has(turnId) ||
 				params.threadId !== this.#threadId
 			)
 				throw new Error("Native turn binding failed");
@@ -2089,7 +2113,7 @@ async function startCloudCodexProcess(
 			await handshake.request(
 				"initialize",
 				{ clientInfo: { name: CLIENT_NAME, version: "1" }, capabilities: { experimentalApi: true } },
-				CONTROL_REQUEST_MS,
+				"handshake",
 			),
 		);
 		if (
@@ -2110,14 +2134,14 @@ async function startCloudCodexProcess(
 		handshake.initialized();
 		progress.stage = "codex-configuration";
 		verifyConfiguration(
-			await handshake.request("config/read", { includeLayers: false, cwd: workspace }, CONTROL_REQUEST_MS),
+			await handshake.request("config/read", { includeLayers: false, cwd: workspace }, "handshake"),
 			inputs.effort,
 			inputs.serviceTier,
 			plan,
 		);
 		progress.stage = "codex-skills";
 		const skills = object(
-			await handshake.request("skills/list", { cwds: [workspace], forceReload: true }, CONTROL_REQUEST_MS),
+			await handshake.request("skills/list", { cwds: [workspace], forceReload: true }, "handshake"),
 		);
 		if (!Array.isArray(skills.data) || skills.data.length !== 1)
 			throw new Error("Native skill catalog could not be verified");
@@ -2516,7 +2540,7 @@ export async function runCloudCodexToolSession(options: {
 					developerInstructions: nativeInstructions,
 					dynamicTools: [options.boundary.specification],
 				},
-				CONTROL_REQUEST_MS,
+				"agent-thread",
 			),
 		);
 		const threadId = identifier(object(thread.thread).id);
@@ -2537,7 +2561,7 @@ export async function runCloudCodexToolSession(options: {
 						runtimeWorkspaceRoots: [],
 						sandboxPolicy: { type: "readOnly", networkAccess: false },
 					},
-					CONTROL_REQUEST_MS,
+					"agent-turn",
 				),
 			);
 			rpc.confirmTurn(object(turnStarted.turn).id);

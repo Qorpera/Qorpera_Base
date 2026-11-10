@@ -338,6 +338,11 @@ async function handle(message) {
 		const at = { threadId, turnId: correctionTurnId };
 		const outputs = mode.startsWith("company-") ? companyOutputs : answered;
 		correction.turn = message.params;
+		if (mode === "correct-stale-turn") {
+			// A request that still names the turn that ended: no part of the new one, and the host refuses it.
+			await fence(outputs, { turnId }).catch(() => undefined);
+			return;
+		}
 		write({ id: message.id, result: { turn: { id: correctionTurnId } } });
 		write({ method: "turn/started", params: { threadId, turn: { id: correctionTurnId } } });
 		await fence(outputs, at);
@@ -360,7 +365,7 @@ async function handle(message) {
 			write({ id: message.id, error: { code: -32000, message: "PRIVATE_TURN_REQUEST_ERROR" } });
 			return;
 		}
-		if (mode === "turn-start-stalled") {
+		if (mode === "turn-start-stalled" || mode === "compact-turn-start-stalled") {
 			// Never answered; the marker says the request arrived.
 			writeFileSync(`${evidencePath}.turn-start`, "");
 			return;

@@ -80,11 +80,11 @@ import { runCloudNativeRunToolSession } from "./cloud-native-run-tool-session.ts
 import {
 	CLOUD_PAIRED_REQUEST_TIMEOUT_MS,
 	CLOUD_RUN_ROW_READ_MS,
-	CLOUD_RUN_ROW_WRITE_MS,
 	type CloudNativeToolAuthorityReader,
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
 	type CloudNativeToolRun,
+	cloudRunRowWrite,
 	cloudToolRequest,
 	parseCloudNativeToolBinding,
 } from "./cloud-native-tool-authority.ts";
@@ -655,21 +655,22 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			let toolRun: CloudNativeToolRun | undefined;
 			/* A write of the run's public voice: a send, or a card's append. Both are safe to repeat (a send replays by
 			 * its idempotency key, a card by its event id), and both take the run's row. So each try waits as long as the
-			 * database may run it, and a lost or late answer is asked again while the run's authority holds, as a
-			 * receipt's begin and completion are (CLOUD_RUN_ROW_WRITE_MS). One try of 5 s used to stand here: a database
-			 * slower than that left the model with "outcome unconfirmed" for a message that may have been stored, and a
-			 * model that did not repeat the call failed its run as one that never answered (reliability audit, 10
-			 * November 2026, A5). */
-			const publicWrite = async <T>(write: (requestSignal: AbortSignal) => Promise<T>): Promise<T> =>
-				toolRun
-					? (await toolRun.retry(write, signal, CLOUD_RUN_ROW_WRITE_MS, CLOUD_RUN_ROW_WRITE_MS)).value
-					: cloudToolRequest(write, signal, CLOUD_RUN_ROW_WRITE_MS);
+			 * database may run it, and a lost or late answer is asked again while the run's authority holds
+			 * (cloudRunRowWrite). One try of 5 s used to stand here: a database slower than that left the model with
+			 * "outcome unconfirmed" for a message that may have been stored, and a model that did not repeat the call
+			 * failed its run as one that never answered (reliability audit, 10 November 2026, A5). `toolSignal` is the
+			 * tool call's own: once the boundary has closed, nothing more is asked, though the run is still being closed. */
+			const publicWrite = <T>(
+				write: (requestSignal: AbortSignal) => Promise<T>,
+				toolSignal: AbortSignal | undefined,
+			): Promise<T> => cloudRunRowWrite(toolRun, write, toolSignal ? AbortSignal.any([signal, toolSignal]) : signal);
 			const mouth = new CloudAgentMouth(
 				binding.runId,
-				async (input) => {
+				async (input, toolSignal) => {
 					if (context.identity.sessionId === null) throw new Error("This run has no conversation recipient");
-					const receipt = await publicWrite((requestSignal) =>
-						this.#control.sendMessage(request, input, requestSignal),
+					const receipt = await publicWrite(
+						(requestSignal) => this.#control.sendMessage(request, input, requestSignal),
+						toolSignal,
 					);
 					if (receipt.sessionId !== context.identity.sessionId) throw new Error("Cloud send audience changed");
 					return receipt;
@@ -710,7 +711,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				},
 				async execute(value, context) {
 					const input = parseCloudAgentSendInput(value);
-					const receipt = await mouth.send(input);
+					const receipt = await mouth.send(input, context.signal);
 					const replayed = deliveredMessageIds.has(receipt.messageId);
 					deliveredMessageIds.add(receipt.messageId);
 					const text = JSON.stringify(receipt);
@@ -761,11 +762,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					});
 					const append = control.appendInteractionRequest;
 					if (!append) throw new Error("Cloud cards are unavailable on this control plane");
-					const card = await publicWrite((requestSignal) =>
-						append.call(control, request, { eventId, data: input.data }, requestSignal),
+					const card = await publicWrite(
+						(requestSignal) => append.call(control, request, { eventId, data: input.data }, requestSignal),
+						toolContext.signal,
 					);
 					if (card.sessionId !== context.identity.sessionId) throw new Error("Cloud card audience changed");
-					const receipt = await mouth.send(sentence);
+					const receipt = await mouth.send(sentence, toolContext.signal);
 					const replayed = deliveredMessageIds.has(receipt.messageId);
 					deliveredMessageIds.add(receipt.messageId);
 					const text = JSON.stringify({

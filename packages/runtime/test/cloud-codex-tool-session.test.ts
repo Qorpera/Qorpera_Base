@@ -1095,45 +1095,69 @@ describe("a turn that ended with the run's closing act undone", () => {
 		);
 		expect(turnCorrection).not.toHaveBeenCalled();
 	});
+
+	it("binds nothing to the turn that ended: a request that still names it fails the run", async () => {
+		const { result } = run("correct-stale-turn", { turnCorrection: async () => "Send it now." });
+		await expect(result).rejects.toThrow("Native result boundary unavailable");
+	});
 });
 
 describe("a control request Codex never answers", () => {
+	const pending = Symbol("pending");
+	/** The run's outcome if it has one by now. setImmediate is not faked, so pipes and promises get their turn. */
+	const soFar = (outcome: Promise<unknown>) =>
+		Promise.race([outcome, new Promise((resolve) => setImmediate(() => resolve(pending)))]);
+	/** The run's failure. waitFor moves the faked clock on, so the process stop's own short wait ends too. */
+	const failureOf = (outcome: Promise<unknown>) =>
+		vi.waitFor(
+			async () => {
+				const settled = await soFar(outcome);
+				if (settled === pending) throw new Error("The run has not ended");
+				return settled;
+			},
+			{ timeout: 10_000 },
+		);
+	// The host's own timers only: the fixture's process and its pipes run on.
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	it.each([
 		["stalled", ".starts", "codex-initialize"],
 		["turn-start-stalled", ".turn-start", "codex-turn-start"],
 	])("fails the run as a step that got no answer in time: %s", async (mode, marker, stage) => {
-		// The host's own timers only: the fixture's process and its pipes run on.
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-		try {
-			const { result, evidence } = run(mode);
-			const pending = Symbol("pending");
-			const outcome = result.then(
-				() => undefined,
-				(failure: unknown) => failure,
-			);
-			// The request is with Codex, unanswered.
-			await vi.waitFor(() => stat(`${evidence}${marker}`), { timeout: 10_000 });
-			expect(await Promise.race([outcome, new Promise((resolve) => setImmediate(() => resolve(pending)))])).toBe(
-				pending,
-			);
-			await vi.advanceTimersByTimeAsync(120_000);
-			// waitFor moves the faked clock on, so the process stop's own short wait ends too.
-			const error = await vi.waitFor(
-				async () => {
-					const settled = await Promise.race([
-						outcome,
-						new Promise((resolve) => setImmediate(() => resolve(pending))),
-					]);
-					if (settled === pending) throw new Error("The run has not ended");
-					return settled;
-				},
-				{ timeout: 10_000 },
-			);
-			expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage, category: "timeout", usageSignal: null });
-			expect((error as Error).message).toBe("Native boundary request got no answer");
-		} finally {
-			vi.useRealTimers();
-		}
+		const { result, evidence } = run(mode);
+		const outcome = result.then(
+			() => undefined,
+			(failure: unknown) => failure,
+		);
+		// The request is with Codex, unanswered.
+		await vi.waitFor(() => stat(`${evidence}${marker}`), { timeout: 10_000 });
+		expect(await soFar(outcome)).toBe(pending);
+		await vi.advanceTimersByTimeAsync(120_000);
+		const error = await failureOf(outcome);
+		expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage, category: "timeout", usageSignal: null });
+		expect((error as Error).message).toBe("Native boundary request got no answer");
+	});
+
+	it("holds a stalled turn start to its deadline while another thread's request reaches the fence", async () => {
+		const compactor = new MemoryCompactChannel();
+		const { result, evidence } = run("compact-turn-start-stalled", { compactor });
+		const outcome = result.then(
+			() => undefined,
+			(failure: unknown) => failure,
+		);
+		await vi.waitFor(() => stat(`${evidence}.turn-start`), { timeout: 10_000 });
+		// A compactor thread starts meanwhile, and its prewarm reaches the fence. That shows its own thread under way,
+		// and says nothing of the agent's turn, whose start stays unanswered.
+		await compactor.call("PRIVATE_COMPACT_SYSTEM", new AbortController().signal);
+		expect(await soFar(outcome)).toBe(pending);
+		await vi.advanceTimersByTimeAsync(120_000);
+		const error = await failureOf(outcome);
+		expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage: "codex-turn-start", category: "timeout" });
 	});
 });
 

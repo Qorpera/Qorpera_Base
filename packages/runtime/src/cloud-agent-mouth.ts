@@ -95,7 +95,7 @@ export function parseCloudAgentSendReceipt(value: unknown, runId: string): Cloud
  */
 export class CloudAgentMouth {
 	readonly #runId: string;
-	readonly #send: (input: CloudAgentSendInput) => Promise<CloudAgentSendReceipt>;
+	readonly #send: (input: CloudAgentSendInput, signal?: AbortSignal) => Promise<CloudAgentSendReceipt>;
 	readonly #signal?: AbortSignal;
 	readonly #receipts = new Map<string, CloudAgentSendReceipt>();
 	#pending: Promise<void> = Promise.resolve();
@@ -103,7 +103,7 @@ export class CloudAgentMouth {
 
 	constructor(
 		runId: string,
-		send: (input: CloudAgentSendInput) => Promise<CloudAgentSendReceipt>,
+		send: (input: CloudAgentSendInput, signal?: AbortSignal) => Promise<CloudAgentSendReceipt>,
 		signal?: AbortSignal,
 	) {
 		if (!UUID_PATTERN.test(runId)) throw new Error("Invalid mouth run id");
@@ -131,13 +131,19 @@ export class CloudAgentMouth {
 		};
 	}
 
-	/** Trusted in-process tool adapter. No listener, bearer or recipient selector. */
-	send(value: CloudAgentSendInput): Promise<CloudAgentSendReceipt> {
+	/** Trusted in-process tool adapter. No listener, bearer or recipient selector. `signal` is the tool call's own: a
+	 * send it has stopped is not started, and the sender is handed it, so a send being asked again stops with its call. */
+	send(value: CloudAgentSendInput, signal?: AbortSignal): Promise<CloudAgentSendReceipt> {
 		const input = parseCloudAgentSendInput(value);
 		const delivery = this.#pending.then(async () => {
 			if (this.#closed) throw new Error("Mouth is closed");
 			this.#signal?.throwIfAborted();
-			const receipt = parseCloudAgentSendReceipt(await this.#send(input), this.#runId);
+			signal?.throwIfAborted();
+			// A send with no call of its own reaches the sender as it always did, with its input alone.
+			const receipt = parseCloudAgentSendReceipt(
+				await (signal ? this.#send(input, signal) : this.#send(input)),
+				this.#runId,
+			);
 			if (receipt.phase !== input.phase) throw new Error("Send receipt phase changed");
 			this.#receipts.set(receipt.messageId, receipt);
 			return receipt;

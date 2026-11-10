@@ -162,6 +162,22 @@ describe("cloud agent public mouth", () => {
 		await expect(silent.finish()).rejects.toBeInstanceOf(CloudAgentNoFinalSend);
 	});
 
+	it("hands a send its tool call's signal, and starts none for a call that has ended", async () => {
+		const deliver = vi.fn(async (input: CloudAgentSendInput, _signal?: AbortSignal) => receipt(input));
+		const mouth = create(deliver);
+		const call = new AbortController();
+		await mouth.send({ idempotencyKey: "ack", text: "On it", phase: "progress" }, call.signal);
+		expect(deliver.mock.calls[0][1]).toBe(call.signal);
+		call.abort(new Error("tool call ended"));
+		await expect(mouth.send({ idempotencyKey: "last", text: "Done", phase: "final" }, call.signal)).rejects.toThrow(
+			"tool call ended",
+		);
+		expect(deliver).toHaveBeenCalledOnce();
+		// The mouth itself is still open for a later call.
+		await mouth.send({ idempotencyKey: "last", text: "Done", phase: "final" });
+		expect(await mouth.finish()).toEqual({ messageCount: 2, finalMessageId });
+	});
+
 	it("refuses sends on cancellation and does not treat malformed receipts as delivery", async () => {
 		const abort = new AbortController();
 		const deliver = vi.fn(async (input: CloudAgentSendInput) => ({ ...receipt(input), runId: sessionId }));
