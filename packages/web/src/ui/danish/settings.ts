@@ -2,7 +2,7 @@
  * passes it to t() / uiText(). One file per area of the app; a key lives in
  * one file only (test/translations.test.ts checks). Wording follows
  * qorpera.com. */
-/** Settings: General, Good will, Friends, Company, AI subscriptions, Company connections, Sites. */
+/** Settings: General, Good will, Friends, Company, AI subscriptions, Sites. */
 export const SETTINGS: Record<string, string> = {
 	// Settings dialog (app/views/settings.ts)
 	"Search settings": "Søg i indstillinger",
@@ -193,13 +193,10 @@ export const SETTINGS: Record<string, string> = {
 
 	// Company execution (app/views/company-execution.ts)
 
-	// AI subscriptions and Company connections (app/views/settings.ts)
+	// AI subscriptions (app/views/settings.ts)
 	"AI subscriptions": "AI-abonnementer",
-	"Company connections": "Virksomhedens forbindelser",
 	"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.":
 		"Dine egne AI-abonnementer. De betaler for det arbejde, du starter, også for dine rutiner, og de følger med dig, når du går.",
-	"The company's own accounts. Every agent can use them, and they stay when someone leaves.":
-		"Virksomhedens egne konti. Alle agenter kan bruge dem, og de bliver, når nogen går.",
 
 	// AI subscriptions: model accounts (app/views/settings-connections.ts)
 	"Continue with ChatGPT": "Fortsæt med ChatGPT",
@@ -292,29 +289,11 @@ export const SETTINGS: Record<string, string> = {
 	"The Claude sign-in could not be finished. Try again.": "Login hos Claude kunne ikke afsluttes. Prøv igen.",
 	"Claude · coding only": "Claude · kun kode",
 
-	// Company connections: services (app/views/settings-services.ts, texts from cloud/connectors.ts)
-	Services: "Tjenester",
-	"Only founders and admins can connect or disconnect them.":
-		"Kun stiftere og administratorer kan forbinde eller afbryde dem.",
-	"Read and search the mailbox, send email.": "Læs og søg i postkassen, send e-mail.",
-	"Find, read, create and update documents.": "Find, læs, opret og opdater dokumenter.",
-	"Repositories, issues, pull requests and files.": "Repositories, issues, pull requests og filer.",
-	"Use a personal access token instead": "Brug et personligt adgangstoken i stedet",
-	"A fine-grained token with the repositories the agents may use.":
-		"Et fine-grained token med de repositories, agenterne må bruge.",
+	// Connect, Disconnect, Working… and Connected (several pages)
 	Connect: "Forbind",
-	"Opening sign-in…": "Åbner login…",
 	Disconnect: "Afbryd",
 	"Working…": "Arbejder…",
 	Connected: "Forbundet",
-	"Connected as {account}": "Forbundet som {account}",
-	"Connected by {member}": "Forbundet af {member}",
-	"Connected as {account} by {member}": "Forbundet som {account} af {member}",
-	"Available to every agent in the company, including new hires.":
-		"Tilgængelig for alle virksomhedens agenter, også nyansatte.",
-	"Paste the token": "Indsæt tokenet",
-	"{service} token": "Token til {service}",
-	"Save token": "Gem token",
 	// Digital Post (app/views/settings-digital-post.ts)
 	"Digital Post could not be read.": "Digital Post kunne ikke læses.",
 	"This is not a Digital Post API key. Copy the key from the receipt Administrativ Adgang shows.":
@@ -365,25 +344,11 @@ export const SETTINGS: Record<string, string> = {
 	"Every agent in the company can read the letters.": "Alle agenter i virksomheden kan læse brevene.",
 	"Only founders and admins can connect or disconnect it.":
 		"Kun stiftere og administratorer kan forbinde eller afbryde den.",
-	"Finishing the {service} connection…": "Afslutter forbindelsen til {service}…",
-	"{service} is connected. The company's agents can use it from their next run.":
-		"{service} er forbundet. Virksomhedens agenter kan bruge den fra deres næste kørsel.",
-	"{service} was not connected.": "{service} blev ikke forbundet.",
-	"Try again.": "Prøv igen.",
-	"The sign-in was cancelled before access was granted.": "Login blev annulleret, før der blev givet adgang.",
 	"The sign-in took too long. Try again.": "Login tog for lang tid. Prøv igen.",
-	"Google did not grant lasting access. Try again and allow all requested access.":
-		"Google gav ikke varig adgang. Prøv igen, og tillad al den adgang, der bliver bedt om.",
-	"The service did not complete the sign-in. Try again.": "Tjenesten gennemførte ikke login. Prøv igen.",
 	"This sign-in link is no longer valid. Try again.": "Dette loginlink er ikke længere gyldigt. Prøv igen.",
 	"The sign-in was finished in another browser. Start it again here.":
 		"Login blev afsluttet i en anden browser. Start det igen her.",
-	"The account is connected, but the company's agents could not get it yet. Disconnect it and connect it again.":
-		"Kontoen er forbundet, men virksomhedens agenter kunne ikke få adgang til den endnu. Afbryd den, og forbind den igen.",
-	"The company's services could not be read.": "Virksomhedens tjenester kunne ikke hentes.",
 	"The sign-in could not be started. Try again.": "Login kunne ikke startes. Prøv igen.",
-	"The token could not be saved. Try again.": "Tokenet kunne ikke gemmes. Prøv igen.",
-	"The service could not be disconnected. Try again.": "Tjenesten kunne ikke afbrydes. Prøv igen.",
 
 	// Company connections: webhooks and mailboxes (app/views/settings-hooks.ts)
 	Webhooks: "Webhooks",

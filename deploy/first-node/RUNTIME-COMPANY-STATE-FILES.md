@@ -203,8 +203,8 @@ first; deleting or moving the file (seeded).
 | `role` | yes | 1–320 characters |
 | `kind` | yes | `co-founder` or `agent` |
 | `status` | yes | `active` or `archived` |
-| `colour` | no | charcoal, brown, coral, orange, gold, green, teal, blue, purple, pink, gray (the app's `qorpera-<colour>` tokens) |
-| `figure` | no | `STAFF_CHARACTER_IDS`: planet, acorn, flame, rocket, crown, heart, ghost |
+| `colour` | no | charcoal, brown, coral, orange, gold, green, teal, blue, purple, pink, gray (the app's `qorpera-<colour>` tokens). A name is a place in the app's palette, not a promise of a hue: since November 2026 the app paints coral as a red, teal as a sky blue and gray as a slate blue-gray |
+| `figure` | no | `STAFF_CHARACTER_IDS`: planet, acorn, flame, rocket, crown, heart, star, cloud, bolt, mushroom, moon, puzzle. A saved file may still name the retired `ghost`; nothing offers it, and every client draws the moon in its place (20260930709000) |
 | `model` | no | gpt-6-astra, gpt-6-sol, gpt-6-luna: the agent's model for its runs; on a native subscription, a conversation's own choice wins in that conversation; gpt-6-astra when the file names none (20260930081000) |
 | `effort` | no | low, medium, high: the effort of the agent's runs no member waits on (its own workers, its first run, a coworker's message); none: the model policy's, high (20260930532000). A member's turn and a routine keep their own |
 | body | yes | the instructions (today's charter), up to 32768 bytes trimmed; no control character other than tab and line breaks |

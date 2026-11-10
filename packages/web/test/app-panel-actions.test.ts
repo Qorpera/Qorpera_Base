@@ -67,6 +67,7 @@ function company(manifest: string) {
 		agentName: () => null,
 		onFolderChange: () => () => {},
 		openInStorage: () => {},
+		openApp: () => {},
 		budgetKey: crypto.randomUUID(),
 		writer: () => fake.folder,
 		current: () => {},

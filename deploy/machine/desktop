@@ -229,6 +229,18 @@ start)
 		# nothing can be driven.
 		for _ in $(seq 1 100); do wmctrl -m >/dev/null 2>&1 && break; sleep 0.1; done
 		wmctrl -m >/dev/null 2>&1 || { systemctl stop "$UNIT"; fail "the desktop's session did not start"; }
+		# The panel and the background are drawn a second or two after that (2.3 to 2.7 s after the start, measured on
+		# 10 Nov 2026); until then the screen is black and a screenshot of it shows nothing. A screen of one colour is a
+		# PNG of about a thousandth of its pixels' bytes (4760 bytes at 1600x1000; the drawn desktop is 16 KB): wait,
+		# about 6 s at most, for more than that, so the first look at a started desktop shows it.
+		dims=$(size)
+		drawn=$RUN/drawn-$$.png
+		for _ in $(seq 1 35); do
+			scrot --overwrite --silent -- "$drawn" 2>/dev/null &&
+				(( $(stat -c %s -- "$drawn") > ${dims%x*} * ${dims#*x} * 3 / 1000 + 3000 )) && break
+			sleep 0.1
+		done
+		rm -f -- "$drawn"
 	fi
 	touch "$RUN/last-use"
 	if [[ -n $lang ]]; then printf %s "$lang" >"$RUN/lang"; fi
@@ -308,9 +320,21 @@ type)
 	fi
 	;;
 key)
-	need
 	(( $# > 0 )) || fail "desktop key KEY..." 2
-	xdotool key --delay 40 -- "$@"
+	# xdotool runs any of its own commands that follows the keys, whatever its case (`key exec id` runs id as root): none
+	# is a key. The list is the installed xdotool's own, so a newer one's commands are refused too; without it (xdotool
+	# may want the display for its help), no keys.
+	commands=$(xdotool help 2>/dev/null | awk 'NR > 1 && NF == 1 { print tolower($1) }' || true)
+	[[ -n $commands ]] || { need; fail "cannot read xdotool's commands, so no key is pressed"; }
+	for name in "$@"; do
+		if grep -qxF -- "${name,,}" <<<"$commands"; then fail "not a key: $name (it is an xdotool command)" 2; fi
+	done
+	need
+	# xdotool skips a key name it does not know with a word on stderr, and exits 0: say so rather than that it pressed it.
+	skipped=$(xdotool key --delay 40 -- "$@" 2>&1 >/dev/null) || { [[ -z $skipped ]] || echo "$skipped" >&2; exit 1; }
+	if [[ $skipped == *"No such key name"* ]]; then
+		fail "no such key: $(sed -n "s/.*No such key name '\([^']*\)'.*/\1/p" <<<"$skipped" | head -n 1) (any other keys were pressed)" 2
+	fi
 	;;
 scroll)
 	need

@@ -11,12 +11,16 @@ import {
 } from "@qorpera/contracts";
 import type { CloudCodingCommandGateway } from "./cloud-coding-command-tools.ts";
 import {
+	CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
 	CLOUD_MACHINE_WAKE_SCHEMA,
 	CloudMachineCodingValueRefusal,
 	CloudMachineCommandRefusal,
 	type CloudMachineCommandServiceOptions,
+	CloudMachineScreenRefusal,
 	parseCloudMachineCodingValueAnswer,
 	parseCloudMachineCodingValueHttpRequest,
+	parseCloudMachineScreenAnswer,
+	parseCloudMachineScreenHttpRequest,
 	parseCloudMachineWakeHttpRequest,
 	serveCloudMachineCommand,
 } from "./cloud-machine-command-http.ts";
@@ -281,9 +285,10 @@ async function readRequest(request: IncomingMessage, signal: AbortSignal): Promi
 		signal.removeEventListener("abort", abort);
 	}
 }
-function replyJson(reply: ServerResponse, status: number, value: unknown): void {
+/** One JSON answer, within its bound: a receipt's (128 KiB), or a screen's with its picture (machine_screen). */
+function replyJson(reply: ServerResponse, status: number, value: unknown, limit = RESULT_LIMIT): void {
 	const body = JSON.stringify(value);
-	if (Buffer.byteLength(body) > RESULT_LIMIT) throw new Error(ERROR);
+	if (Buffer.byteLength(body) > limit) throw new Error(ERROR);
 	reply.writeHead(status, {
 		"content-type": "application/json",
 		"content-length": Buffer.byteLength(body),
@@ -379,10 +384,12 @@ export class HttpCloudCodingCommandService {
 			// save_coding_value (20260930705000): the machine's clipboard helper, for one executing receipt.
 			const codingValueRoute =
 				this.#options.machines?.codingValue && request.url === "/v1/machine-commands/coding-value";
+			// machine_screen (20260930708000): the machine's screen helper, for a look or one executing receipt.
+			const screenRoute = this.#options.machines?.screen && request.url === "/v1/machine-commands/screen";
 			const holder = request.headers["x-qorpera-identity"];
 			if (
 				request.method !== "POST" ||
-				(!route && !machineRoute && !wakeRoute && !codingValueRoute) ||
+				(!route && !machineRoute && !wakeRoute && !codingValueRoute && !screenRoute) ||
 				request.headers["content-type"] !== "application/json" ||
 				authorization.length !== this.#token.length ||
 				!timingSafeEqual(authorization, this.#token) ||
@@ -418,6 +425,25 @@ export class HttpCloudCodingCommandService {
 				} catch (error) {
 					// Only a refusal the agent can act on is told apart, by its fixed code.
 					if (!(error instanceof CloudMachineCodingValueRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (screenRoute && this.#options.machines?.screen) {
+				const admitted = parseCloudMachineScreenHttpRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						parseCloudMachineScreenAnswer(
+							admitted,
+							await this.#options.machines.screen(admitted, controller.signal),
+						),
+						CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
+					);
+				} catch (error) {
+					// Only a refusal the agent can act on is told apart, by its fixed code.
+					if (!(error instanceof CloudMachineScreenRefusal)) throw error;
 					replyJson(reply, 409, { code: error.code });
 				}
 				return;

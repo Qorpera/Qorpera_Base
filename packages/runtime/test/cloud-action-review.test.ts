@@ -5,6 +5,8 @@ import {
 	CLOUD_ACTION_REVIEW_INSTRUCTIONS,
 	CLOUD_ACTION_REVIEW_MODEL,
 	CLOUD_ACTION_REVIEW_SPECIFICATION,
+	CLOUD_MACHINE_SCREEN_WORK_ASK_REASON,
+	CLOUD_MACHINE_SCREEN_WORK_REASON,
 	CLOUD_MACHINE_WORK_REASON,
 	CLOUD_WORKER_WORK_ASK_REASON,
 	type CloudActionGuards,
@@ -101,6 +103,25 @@ describe("which calls are reviewed", () => {
 		["machine_delete", { operationKey: "k", machine: "build-a" }, "internal"],
 		["machine_read", { machine: "build-a", commandId: RULE }, "read"],
 		["machine_list", {}, "read"],
+		// machine_screen (20260930708000): a look changes nothing; moving the pointer and scrolling change only what shows;
+		// a click, a drag, typed text, keys or an opened page acts on what runs there, as machine_run's commands do.
+		["machine_screen", { machine: "build-a", settleMs: 0, look: true }, "read"],
+		["machine_screen", { machine: "build-a", operationKey: "k", action: { type: "move", x: 1, y: 2 } }, "internal"],
+		[
+			"machine_screen",
+			{ machine: "build-a", operationKey: "k", action: { type: "scroll", direction: "down" } },
+			"internal",
+		],
+		["machine_screen", { machine: "build-a", operationKey: "k", action: { type: "click" }, intent: "i" }, "external"],
+		[
+			"machine_screen",
+			{ machine: "build-a", operationKey: "k", action: { type: "double" }, intent: "i" },
+			"external",
+		],
+		["machine_screen", { machine: "build-a", operationKey: "k", action: { type: "drag" }, intent: "i" }, "external"],
+		["machine_screen", { machine: "build-a", operationKey: "k", action: { type: "type" }, intent: "i" }, "external"],
+		["machine_screen", { machine: "build-a", operationKey: "k", action: { type: "key" }, intent: "i" }, "external"],
+		["machine_screen", { machine: "build-a", operationKey: "k", action: { type: "open" }, intent: "i" }, "external"],
 		["computer_browser", { action: { kind: "browser", action: "snapshot" } }, "read"],
 		["computer_browser", { action: { kind: "browser", action: "click", role: "button", name: "Send" } }, "external"],
 		[
@@ -637,6 +658,64 @@ describe("what the card shows", () => {
 			title: "Run a command on a company machine",
 			target: "build-a",
 			details: { command: "cd /company/sales\n  npm test" },
+		});
+	});
+
+	it("shows an action on a company machine's screen with where it lands, the window and what it is for (20260930708000)", () => {
+		expect(
+			describeCloudAction(tool("machine_screen"), {
+				machine: "build-a",
+				operationKey: "k",
+				action: { type: "click", x: 812, y: 443 },
+				settleMs: 500,
+				look: true,
+				intent: "Open the sign-in form.",
+				window: "Acme - Chromium",
+			}),
+		).toEqual({
+			title: "Click on a company machine's screen",
+			target: "build-a: x 812, y 443",
+			details: { intent: "Open the sign-in form.", window: "Acme - Chromium" },
+		});
+		expect(
+			describeCloudAction(tool("machine_screen"), {
+				machine: "build-a",
+				action: { type: "type", text: "anna@example.com\nsecond line" },
+				intent: "Fill in the email.",
+			}),
+		).toEqual({
+			title: "Type on a company machine's screen",
+			target: "build-a",
+			details: { intent: "Fill in the email.", text: "anna@example.com\nsecond line" },
+		});
+		expect(
+			describeCloudAction(tool("machine_screen"), {
+				machine: "build-a",
+				action: { type: "key", keys: ["ctrl+l", "Return"] },
+				intent: "Go to the address bar.",
+			}).details,
+		).toEqual({ intent: "Go to the address bar.", keys: "ctrl+l Return" });
+		expect(
+			describeCloudAction(tool("machine_screen"), {
+				machine: "build-a",
+				action: { type: "open", target: "https://example.test/sign-in" },
+				intent: "Open the sign-in page.",
+			}),
+		).toEqual({
+			title: "Open a page on a company machine's screen",
+			target: "build-a",
+			details: { intent: "Open the sign-in page.", open: "https://example.test/sign-in" },
+		});
+		expect(
+			describeCloudAction(tool("machine_screen"), {
+				machine: "build-a",
+				action: { type: "drag", x: 1, y: 2, toX: 30, toY: 40 },
+				intent: "Move the card.",
+			}),
+		).toMatchObject({
+			title: "Drag on a company machine's screen",
+			target: "build-a: x 1, y 2",
+			details: { to: "x 30, y 40" },
 		});
 	});
 
@@ -3515,6 +3594,29 @@ describe("normal work on a company machine (4 November 2026)", () => {
 		});
 	});
 
+	it("allows an action on a machine's screen by the same rule, with its own words (20260930708000)", () => {
+		const screen = { name: "machine_screen", source: "runtime" } as const;
+		const refused = { ...verdict("deny", "not_requested"), reason: "The click is not clearly authorized." };
+		expect(machineWorkCheck({ tool: screen }, refused, new Set())).toEqual({
+			...refused,
+			decision: "allow",
+			builtIn: "none",
+			reason: `${CLOUD_MACHINE_SCREEN_WORK_REASON} The review said deny: The click is not clearly authorized.`,
+		});
+		expect(machineWorkCheck({ tool: screen }, refused, new Set([RULE]))).toMatchObject({
+			decision: "ask",
+			reason: expect.stringContaining(CLOUD_MACHINE_SCREEN_WORK_ASK_REASON),
+		});
+		// Typed company data sent off the machine, outside instructions, money: the reviewer's verdict stands.
+		for (const guard of Object.keys(NONE) as Array<keyof CloudActionGuards>) {
+			const held = verdict("deny", "not_requested", { [guard]: true });
+			expect(machineWorkCheck({ tool: screen }, held, new Set()), guard).toEqual(held);
+		}
+		expect(machineWorkCheck({ tool: { name: "machine_screen", source: "connector" } }, refused, new Set())).toEqual(
+			refused,
+		);
+	});
+
 	it("allows an agent's own worker briefs by the same rule, and keeps every other manage_worker action as reviewed", () => {
 		// 7 November 2026: Rumlig's Product Lead was refused handing the founder's combined demo app to its own worker.
 		const worker = { name: "manage_worker", source: "runtime" } as const;
@@ -3623,7 +3725,7 @@ describe("normal work on a company machine (4 November 2026)", () => {
 			.tools;
 		expect(tools[0].inputSchema.required).toContain("guards");
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
-			"A command on a company machine (machine_run), or starting or steering one of the agent's own workers (manage_worker), for which all five are false runs by a fixed platform rule",
+			"A command on a company machine (machine_run), an action on a company machine's screen (machine_screen: a click, a drag, typed text, keys or an opened page, which you judge by what it is for, the window it lands in, the text it types and the page it opens), or starting or steering one of the agent's own workers (manage_worker), for which all five are false runs by a fixed platform rule",
 		);
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
 			"never from whether the request or the mandate names its exact step, package or page.",

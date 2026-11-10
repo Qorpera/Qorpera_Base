@@ -3,7 +3,8 @@
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/** "interface" is a page in the rail's Interfaces tab, `#/c/{id}/i/{name}` (contract, 2026-10-02 interfaces amendment).
+/** "member" is this member's chat with another member of the company, `#/c/{id}/member/{userId}` (Jonas, 10 November
+ * 2026). "interface" is a page in the rail's Interfaces tab, `#/c/{id}/i/{name}` (contract, 2026-10-02 interfaces amendment).
  * "app" is an agent's interface app (`apps/<name>/` of the Company File) as a page of its own, `#/c/{id}/a/{name}`
  * (Jonas, 8 November 2026: an app is a whole product prototype, not a panel beside the chat). "concepts" is the
  * company's concepts of its product, full screen with a side panel to pick one, `#/c/{id}/concepts` (the most
@@ -19,7 +20,8 @@ export type CompanySection =
 	| "interface"
 	| "app"
 	| "concepts"
-	| "sites";
+	| "sites"
+	| "member";
 
 const INTERFACE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -57,7 +59,7 @@ export function parseRoute(hash: string): Route {
 		if (section === "i" && named) return { name: "company", profileId, section: "interface", id };
 		if (section === "a" && named) return { name: "company", profileId, section: "app", id };
 		if (section === "concepts") return { name: "company", profileId, section: "concepts", ...(named && { id }) };
-		if ((section === "chat" || section === "staff") && id) {
+		if ((section === "chat" || section === "staff" || section === "member") && id) {
 			return { name: "company", profileId, section, id };
 		}
 		if (section === "file" || section === "team" || section === "new" || section === "meet" || section === "sites") {

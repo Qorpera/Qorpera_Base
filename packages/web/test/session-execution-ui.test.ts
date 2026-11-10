@@ -850,7 +850,7 @@ describe("conversation execution account", () => {
 		const reply = f.view.el.querySelector<HTMLElement>(".from-agent")!;
 		expect(reply.querySelector(".message-author")!.textContent).toBe("Agent reply · speaker unavailable");
 		expect(reply.getAttribute("aria-label")).toMatch(/^Agent reply · /);
-		expect(reply.title).toMatch(/^Agent reply · /);
+		expect(reply.dataset.sentAt).toBeTruthy();
 		expect(reply.getAttribute("aria-label")).not.toContain(session.title);
 		expect(reply.getAttribute("aria-label")).not.toContain(f.company.memberName(userA.id));
 		expect(reply.textContent).toContain("Room response");

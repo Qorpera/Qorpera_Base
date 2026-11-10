@@ -29,7 +29,9 @@ import { LxdCompanyMachineHost } from "../../packages/runner-orchestrator/src/co
 import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../packages/runner-orchestrator/src/company-machine.ts";
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
-import { localMachineCodingValue, localMachineWake, MachineCommandRouter, machineCommandRoutes } from "./machine-command-routing.ts";
+import {
+	localMachineCodingValue, localMachineScreen, localMachineWake, MachineCommandRouter, machineCommandRoutes,
+} from "./machine-command-routing.ts";
 import { CodingCommandRouter, type CodingCommandPeer } from "./command-routing.ts";
 import { CodingExecutorHttpControl } from "./control.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
@@ -334,6 +336,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				signal),
 			wakeLocal: localMachineWake(machineHost),
 			codingValueLocal: localMachineCodingValue(machineHost),
+			screenLocal: localMachineScreen(machineHost),
 		} : {}),
 	});
 	const router = new CodingCommandRouter({

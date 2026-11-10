@@ -10,7 +10,7 @@ import type { Cloud } from "./client.ts";
  * database refuses the topic, they come by postgres_changes, which keeps Realtime polling the database while any tab
  * listens that way. */
 
-export type RealtimeResource = "sessions" | "staff" | "access" | "company-file" | "sidebar";
+export type RealtimeResource = "sessions" | "staff" | "access" | "company-file" | "sidebar" | "member-chats";
 export type RealtimePhase = "connecting" | "connected" | "degraded" | "stopped";
 
 export interface RealtimeSubscription {
@@ -37,8 +37,16 @@ export function liveHintTopic(profileId: string, userId: string): string {
 	return `qorpera-live-${profileId.toLowerCase()}-${userId.toLowerCase()}`;
 }
 
-/** The resource each hint event names. */
-const HINT_EVENTS: readonly RealtimeResource[] = ["sessions", "staff", "access", "company-file", "sidebar"];
+/** The resource each hint event names. `member-chats` (20260930715000) comes by push only, to the two members of the
+ * changed chat: where the push is refused, the member chats are read on the slow poll. */
+const HINT_EVENTS: readonly RealtimeResource[] = [
+	"sessions",
+	"staff",
+	"access",
+	"company-file",
+	"sidebar",
+	"member-chats",
+];
 
 /** Realtime's answer to a private join the database does not allow: one before 20260930653000 has no such topic. A
  * join without the member's token gets the same answer, so a private join waits for Realtime to hold the token. */

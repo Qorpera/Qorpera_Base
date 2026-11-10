@@ -96,6 +96,8 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"offer_agents_to_member",
 	// A key the agent made, saved off its company machine's clipboard into the vault (20260930705000).
 	"save_coding_value",
+	// A look at, or one action on, a company machine's desktop, with the screen shown to the model (20260930708000).
+	"machine_screen",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

@@ -125,8 +125,25 @@ export function redactCloudWebhookSecretsIn(value: JsonValue): JsonValue {
 		);
 	return value;
 }
-/** The pinned fence's bound on one tool result's PNG. */
+/** The pinned fence's bound on one tool result's PNG, and on its size in pixels. */
 const MAX_SHOWN_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_SHOWN_IMAGE_WIDTH = 1920;
+const MAX_SHOWN_IMAGE_HEIGHT = 1200;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+/** A PNG the pinned fence takes: its signature, then IHDR within 1..1920 x 1..1200. One it would refuse fails its own
+ * call here, never every later model request of the run. */
+function shownPng(png: Buffer): boolean {
+	if (
+		png.byteLength < 33 ||
+		!png.subarray(0, 8).equals(PNG_SIGNATURE) ||
+		png.readUInt32BE(8) !== 13 ||
+		png.toString("latin1", 12, 16) !== "IHDR"
+	)
+		return false;
+	const width = png.readUInt32BE(16);
+	const height = png.readUInt32BE(20);
+	return width >= 1 && width <= MAX_SHOWN_IMAGE_WIDTH && height >= 1 && height <= MAX_SHOWN_IMAGE_HEIGHT;
+}
 /** A result asks the run's desktop folder report (F3 4f-2b) for this long at most, and shows one this big at most. */
 const FOLDER_REPORT_WAIT_MS = 1000;
 const FOLDER_REPORT_BYTES = 4 * 1024;
@@ -1124,13 +1141,25 @@ export class CloudNativeToolBoundary {
 				response.contentItems.push({ type: "inputImage", imageUrl });
 			}
 			if (content.image) {
-				// Only a tool that shows images, after an answer citing the read it showed: the image is released with it.
+				// Only a tool that shows images, after an answer that names it: company_read's cites the read it showed, and a
+				// runtime tool's (machine_screen, 20260930708000) names the image's hash in its JSON. The image is released
+				// with that answer, and the context fence checks the same pairing on every later request.
 				const { png, sha256 } = content.image;
+				const named =
+					tool.source === "company_file"
+						? content.companyReadId !== undefined
+						: tool.source === "runtime" &&
+							content.kind === "json" &&
+							content.value !== null &&
+							typeof content.value === "object" &&
+							!Array.isArray(content.value) &&
+							content.value.imageSha256 === sha256;
 				if (
 					tool.images !== true ||
-					content.companyReadId === undefined ||
+					!named ||
 					!Buffer.isBuffer(png) ||
 					png.byteLength > MAX_SHOWN_IMAGE_BYTES ||
+					!shownPng(png) ||
 					createHash("sha256").update(png).digest("hex") !== sha256
 				)
 					throw new Error("Invalid shown image");

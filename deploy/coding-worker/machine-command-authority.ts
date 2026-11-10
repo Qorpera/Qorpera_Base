@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import { isCloudMachineFolderLost } from "../../packages/contracts/src/cloud-machine.ts";
 import {
 	CLOUD_MACHINE_TOOL_VERSION, type CloudMachineCodingValueHttpRequest, CloudMachineCodingValueRefusal, type CloudMachineCommandHttpRequest,
-	cloudMachineCommandHead, CloudMachineCommandRefusal,
+	cloudMachineCommandHead, CloudMachineCommandRefusal, type CloudMachineScreenHttpRequest, CloudMachineScreenRefusal,
 } from "../../packages/runtime/src/cloud-machine-command-http.ts";
+import { type MachineScreenAction, parseMachineScreenAction } from "../../packages/runtime/src/cloud-machine-screen.ts";
 import { parseCloudNativeToolAuthority } from "../../packages/runtime/src/cloud-native-tool-authority.ts";
 import { cloudNativeToolOperationEnvelope } from "../../packages/runtime/src/cloud-native-tool-operations.ts";
 
@@ -125,4 +126,63 @@ export async function authorizeMachineCodingValue(
 	signal.throwIfAborted();
 	return { machineId: result.machineId, placementId: result.placementId, bootId: result.bootId, executorOwner: result.executorOwner,
 		providerId: result.providerId, receiptId: result.receiptId, target: { ...bound } };
+}
+
+/** What SQL says about one machine_screen (20260930708000): where the machine runs, the run that sees the screen, and
+ * what the helper does: for an action, the action as its receipt holds it, with the envelope's settle time and look;
+ * for a look, the request's own. */
+export interface MachineScreenAuthority {
+	machineId: string;
+	placementId: string;
+	bootId: string;
+	executorOwner: string;
+	providerId: string;
+	runId: string;
+	receiptId: string | null;
+	action: MachineScreenAction | null;
+	settleMs: number;
+	look: boolean;
+}
+
+/** The calling run's live tool authority, for an action its own executing machine_screen receipt of exactly this
+ * envelope, and a running machine of its company, all in SQL (qorpera_authorize_machine_screen). A machine that is not
+ * running is the agent's refusal; anything else SQL refuses fails the request. An action is what SQL read from the
+ * receipted envelope, checked again here as the helper checks it, and its settle time and look must be the request's. */
+export async function authorizeMachineScreen(
+	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> },
+	request: CloudMachineScreenHttpRequest,
+	signal: AbortSignal,
+): Promise<MachineScreenAuthority> {
+	const value = await control.call("qorpera_authorize_machine_screen", {
+		p_binding: request.binding, p_scope: request.scope, p_receipt_id: request.input.commandId, p_envelope: request.input.envelope,
+	}, signal);
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("MACHINE_SCREEN_AUTHORITY_INVALID");
+	const result = value as Record<string, unknown>;
+	if (result.schema !== "qorpera.machine-screen-authority/v1") throw new Error("MACHINE_SCREEN_AUTHORITY_INVALID");
+	// The agent hears these: a machine that is not running, and a disk that has had a company folder view its caller may
+	// not see (20260930420000; review r1 F1).
+	if (result.state === "refused" && (result.reason === "MACHINE_NOT_RUNNING" || result.reason === "MACHINE_NEEDS_COMPANY_VIEW"))
+		throw new CloudMachineScreenRefusal(result.reason);
+	if (result.state !== "authorized" || result.machineId !== request.scope.machineId || result.receiptId !== request.input.commandId ||
+		typeof result.placementId !== "string" || !UUID.test(result.placementId) ||
+		typeof result.bootId !== "string" || !UUID.test(result.bootId) ||
+		typeof result.runId !== "string" || !UUID.test(result.runId) ||
+		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
+		typeof result.providerId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(result.providerId))
+		throw new Error("MACHINE_SCREEN_AUTHORITY_INVALID");
+	let action: MachineScreenAction | null = null;
+	if (request.input.commandId === null) {
+		if (result.action !== null || result.settleMs !== null || result.look !== null) throw new Error("MACHINE_SCREEN_AUTHORITY_INVALID");
+	} else {
+		try {
+			action = parseMachineScreenAction(result.action);
+		} catch {
+			throw new Error("MACHINE_SCREEN_AUTHORITY_INVALID");
+		}
+		if (result.settleMs !== request.input.settleMs || result.look !== request.input.look) throw new Error("MACHINE_SCREEN_AUTHORITY_INVALID");
+	}
+	signal.throwIfAborted();
+	return { machineId: result.machineId, placementId: result.placementId, bootId: result.bootId, executorOwner: result.executorOwner,
+		providerId: result.providerId, runId: result.runId, receiptId: request.input.commandId, action,
+		settleMs: request.input.settleMs, look: request.input.look };
 }

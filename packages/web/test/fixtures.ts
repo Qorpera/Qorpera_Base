@@ -155,6 +155,8 @@ const HINT_TABLES: ReadonlyMap<string, string> = new Map([
 	["access", "qorpera_profile_access_state"],
 	["company-file", "qorpera_company_files"],
 	["sidebar", "qorpera_company_sidebar_revisions"],
+	// Member chats (20260930715000): pushed to the two members of the changed chat.
+	["member-chats", "qorpera_member_messages"],
 ]);
 
 export function fixture() {

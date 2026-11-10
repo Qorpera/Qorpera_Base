@@ -13,6 +13,7 @@ import { interfacePageCalls } from "../cloud/interface-pages.ts";
 import { interfaceSupervisionCalls } from "../cloud/interface-supervisions.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
+import { UUID_PATTERN } from "../cloud/parse.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
 import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
@@ -67,6 +68,7 @@ import { GroupDetails } from "./views/group-details.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { renderInterface } from "./views/interface.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
+import { MemberChatView } from "./views/member-chat.ts";
 import {
 	hasWebsiteIdea,
 	keepWebsiteIdea,
@@ -79,7 +81,6 @@ import type { QuestionDockHost } from "./views/question-dock.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
 import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.ts";
-import { noteConnectorReturn } from "./views/settings-services.ts";
 import { SitesView } from "./views/settings-sites.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
@@ -438,6 +439,8 @@ export function mountApplication(
 	let computer: WebCompanyComputer | undefined;
 	let computerPanels: ComputerPanels | undefined;
 	let conversation: ConversationView | undefined;
+	/** The chat with another member on screen, and the company it is in. */
+	let memberChat: { view: MemberChatView; company: CompanyController } | undefined;
 	/** The agent or group chat card opened from the rail, and what an agent card asked for once its chat is on screen. */
 	let agentCard: AgentDetails | GroupDetails | undefined;
 	let agentPage: { agentId: string; page: AgentPage; until: number } | undefined;
@@ -566,6 +569,8 @@ export function mountApplication(
 		executionNotices.replaceChildren();
 		conversation?.dispose();
 		conversation = undefined;
+		memberChat?.view.dispose();
+		memberChat = undefined;
 		appPage?.dispose();
 		appPage = undefined;
 		conceptsView?.dispose();
@@ -602,6 +607,8 @@ export function mountApplication(
 		executionNotices.replaceChildren();
 		unsubscribeCompany?.();
 		conversation?.dispose();
+		memberChat?.view.dispose();
+		memberChat = undefined;
 		newConversation?.dispose();
 		company?.stop();
 		pendingCompany = undefined;
@@ -737,19 +744,10 @@ export function mountApplication(
 					});
 				}
 			}
-			if (connectorReturn?.connector === "bank") {
-				// The bank's sign-in sent the member back to the Bank page they started it on, which finishes it.
-				noteBankReturn(connectorReturn);
-				connectorReturn = undefined;
-			} else if (connectorReturn) {
-				// A provider sign-in (Step 7 connector) sent the member back to this
-				// company: show the outcome where the connection was started.
-				noteConnectorReturn(connectorReturn);
-				connectorReturn = undefined;
-				queueMicrotask(() => {
-					if (!disposed && company === controller) openSettings("company-connections");
-				});
-			}
+			// The bank's sign-in sent the member back to the Bank page they started it on, which finishes it. No other
+			// connector is signed in from the web since Company connections left Settings (10 Nov 2026).
+			if (connectorReturn?.connector === "bank") noteBankReturn(connectorReturn);
+			connectorReturn = undefined;
 			computer = new WebCompanyComputer(cloud, profile, userId, controller.signal, () => {
 				if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
 					throw new Error(t("Company access is unavailable."));
@@ -856,7 +854,8 @@ export function mountApplication(
 		}
 		frame.classList.toggle(
 			"has-thread",
-			route.name === "company" && (route.section === "chat" || route.section === "new"),
+			route.name === "company" &&
+				(route.section === "chat" || route.section === "new" || route.section === "member"),
 		);
 		// The Concepts viewer is full screen: no rail and no top bar, its own side panel instead.
 		frame.classList.toggle("has-concepts", route.name === "company" && route.section === "concepts");
@@ -962,7 +961,8 @@ export function mountApplication(
 				route.section === "home" ||
 				route.section === "chat" ||
 				route.section === "staff" ||
-				route.section === "new"
+				route.section === "new" ||
+				route.section === "member"
 			)
 				showThreadSkeleton(t("Opening company"));
 			else replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
@@ -1098,6 +1098,8 @@ export function mountApplication(
 				openSettings("storage", path);
 				if (settings && settings !== open) settingsFromConversation = beside && conversation !== undefined;
 			},
+			// A link to an app in an app's page, as its card in a message.
+			openApp,
 			budgetKey: controller.profile.profileId,
 			questions: questionsHost(),
 			// A change an app asked for and the member allowed is the member's own save, under the company's checks.
@@ -1233,6 +1235,8 @@ export function mountApplication(
 			mail = undefined;
 			closeSettings(false);
 			conversation?.dispose();
+			memberChat?.view.dispose();
+			memberChat = undefined;
 			newConversation?.dispose();
 			appPage?.dispose();
 			appPage = undefined;
@@ -1467,6 +1471,10 @@ export function mountApplication(
 			conversation?.dispose();
 			conversation = undefined;
 			controller.setOpenSession(undefined);
+		}
+		if (route.section !== "member") {
+			memberChat?.view.dispose();
+			memberChat = undefined;
 		}
 		// Where this tab is in the rail, for the other members' rails (a conversation says its own: company.ts).
 		controller.setOpenPlace(
@@ -1784,6 +1792,32 @@ export function mountApplication(
 				// Asked for from an agent's card before its chat was open: shown once the chat knows its agent.
 				if (agentPage && (Date.now() > agentPage.until || conversation.show(agentPage.agentId, agentPage.page)))
 					agentPage = undefined;
+				return;
+			}
+			case "member": {
+				// This member's chat with another member of the company. A link to oneself, or to no member's id, leads home.
+				const userId = route.id?.toLowerCase() ?? "";
+				if (!UUID_PATTERN.test(userId) || userId === controller.userId) {
+					navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }, true);
+					return;
+				}
+				if (!state.team) {
+					showThreadSkeleton(t("Opening company"));
+					return;
+				}
+				if (memberChat?.view.userId !== userId || memberChat.company !== controller) {
+					memberChat?.view.dispose();
+					memberChat = {
+						view: new MemberChatView(controller, userId, () => setNavigationOpen(!navigationOpen)),
+						company: controller,
+					};
+					replace(main, memberChat.view.el);
+					if (!frame.inert) memberChat.view.focus();
+				} else {
+					if (!main.contains(memberChat.view.el)) replace(main, memberChat.view.el);
+					memberChat.view.update();
+				}
+				memberChat.view.setNavigationOpen(navigationOpen);
 				return;
 			}
 			case "app": {

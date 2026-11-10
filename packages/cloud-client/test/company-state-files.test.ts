@@ -51,6 +51,7 @@ import {
 	writeWorkerBriefFile,
 	writeWorkerResultsFile,
 } from "../src/company-state-files.ts";
+import { drawnStaffCharacter, isStaffCharacterId, STAFF_CHARACTER_IDS } from "../src/staff-characters.ts";
 
 const ANNA = "7b0e6c9e-1c7a-4d8e-9a55-2f0d1f6a3b10";
 const TOM = "3c1f0a77-52d4-4b8e-8f31-0d6e2b9a4c18";
@@ -434,6 +435,37 @@ describe("agent.md", () => {
 			instructions:
 				"You run sales for Nordlys. You find clinics that\nstill book by phone and get them to a demo.\n\n## How you work\n- Answer new leads within the hour.",
 		});
+	});
+
+	it("takes every figure a client offers, and still reads the retired ghost", () => {
+		for (const figure of STAFF_CHARACTER_IDS)
+			expect(ok("QorperaOS/agents/a/agent.md", agentFields({ figure }))).toMatchObject({ figure });
+		expect(STAFF_CHARACTER_IDS).toEqual([
+			"planet",
+			"acorn",
+			"flame",
+			"rocket",
+			"crown",
+			"heart",
+			"star",
+			"cloud",
+			"bolt",
+			"mushroom",
+			"moon",
+			"puzzle",
+		]);
+		// No client offers the ghost any more; a saved file that names it is read, and drawn as the moon.
+		expect(ok("QorperaOS/agents/a/agent.md", agentFields({ figure: "ghost" }))).toMatchObject({ figure: "ghost" });
+		expect(drawnStaffCharacter("ghost")).toBe("moon");
+		expect(drawnStaffCharacter("moon")).toBe("moon");
+		expect(drawnStaffCharacter("wisp")).toBeUndefined();
+		expect(drawnStaffCharacter("toString")).toBeUndefined();
+		expect(isStaffCharacterId("ghost")).toBe(false);
+		// A refusal names the figures on offer, never the retired one.
+		const [problem] = refused("QorperaOS/agents/a/agent.md", agentFields({ figure: "brain" }));
+		expect(problem?.message).toBe(
+			'figure must be one of: planet, acorn, flame, rocket, crown, heart, star, cloud, bolt, mushroom, moon, puzzle (found "brain")',
+		);
 	});
 
 	it("reads CRLF files, a byte-order mark, notes and quotes", () => {
