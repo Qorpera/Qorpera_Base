@@ -371,7 +371,7 @@ const GATE_SAYS: Readonly<Record<Exclude<AppGateOutcome["outcome"], "saved" | "f
 	declined: "The member said not now",
 	busy: "Another request is waiting for the member's answer",
 	quiet: "The member said not now three times: this page asks again after the member reloads it",
-	gone: "The page was put away before the member answered",
+	gone: "The page was put away, or what it may ask for changed, before the member answered",
 };
 const TODO_FILES = 200;
 /** The budget of an app in this tab, kept across its frames, so a Reload starts no new one. */
