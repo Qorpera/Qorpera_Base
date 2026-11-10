@@ -138,6 +138,8 @@ span.mailbox-open { cursor: default; }
 	font-size: 14.5px;
 }
 .mailbox-who > span { overflow: hidden; text-overflow: ellipsis; }
+/* Who sent the newest message stays whole ("…, You"): the outside party gives way first, a long name second. */
+.mailbox-who > .mailbox-by { flex: none; max-width: 60%; }
 .mailbox-who svg { flex: none; width: 13px; height: 13px; margin-right: 6px; color: var(--text-muted); }
 .mailbox-who > .mailbox-to-label { flex: none; margin-right: 5px; color: var(--text-muted); }
 .mailbox-who > .mailbox-n { flex: none; margin-left: 6px; color: var(--text-soft); font-size: 12px; }
@@ -167,6 +169,8 @@ span.mailbox-open { cursor: default; }
 .mailbox-actions:empty { display: none; }
 .mailbox-handler { grid-column: 2; grid-row: 1; display: grid; place-items: center; width: 26px; height: 26px; }
 .mailbox-handler.is-new { opacity: 0.45; filter: grayscale(1); }
+/* The member who sent the email themself stands where an agent's figure does. */
+.mailbox-handler > .person-avatar { width: 26px; height: 26px; font-size: 10px; }
 .mailbox-post { color: var(--text-soft); }
 .mailbox-post svg { width: 18px; height: 18px; }
 .mailbox-time {
@@ -239,6 +243,7 @@ span.mailbox-open { cursor: default; }
 	color: var(--text); font-size: 15px; font-weight: 700;
 }
 .mailbox-initials svg { width: 18px; height: 18px; }
+.mailbox-message > .person-avatar, .mailbox-fold > .person-avatar { width: 40px; height: 40px; font-size: 15px; }
 .mailbox-message-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .mailbox-message-head {
 	display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; width: 100%; min-height: 40px;
@@ -354,6 +359,11 @@ span.mailbox-open { cursor: default; }
 .mailbox-writer-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mailbox-writer > .icon:last-child { flex: none; width: 14px; height: 14px; margin-left: -2px; color: var(--text-muted); }
 .mailbox-writer[aria-expanded="true"]:not(.is-current) { background: var(--hover); }
+/* The From chip under it: which of the company's addresses a member's own email goes from. It has no picture. */
+.mailbox-sender { min-width: 0; padding: 0 9px 0 13px; font-weight: 400; }
+.mailbox-sender-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mailbox-sender > .icon:last-child { flex: none; width: 14px; height: 14px; margin-left: -2px; color: var(--text-muted); }
+.mailbox-sender[aria-expanded="true"] { background: var(--hover); }
 
 /* ---- making addresses: the mailboxes, the form that adds one, Digital Post ------------ */
 /* Settings' cards (views/settings-hooks.ts, views/settings-digital-post.ts), drawn here as lines of the page like the
@@ -462,6 +472,24 @@ span.mailbox-open { cursor: default; }
 	color: var(--text); font-size: 15px;
 }
 .mailbox-write-row input:focus-visible { outline: none; }
+/* Who a member's own email goes to: a chip for each address, as a mail app has them, and the next one typed after
+   them. The field keeps room to type in and goes to a line of its own when the chips leave it less. */
+.mailbox-write-to { cursor: text; }
+.mailbox-write-to input { flex: 1 1 9em; min-width: 9em; }
+.mailbox-chip {
+	display: inline-flex; align-items: center; gap: 2px; min-width: 0; max-width: 100%; min-height: 28px;
+	padding: 0 3px 0 11px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill); font-size: 14px;
+	cursor: default;
+}
+/* One that is no email address: it holds the send until it is taken away. */
+.mailbox-chip.is-invalid { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
+.mailbox-chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mailbox-chip-remove {
+	flex: none; display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%;
+	background: none; color: inherit; cursor: pointer; transition: background var(--motion-fast) ease;
+}
+.mailbox-chip-remove:hover { background: var(--hover); }
+.mailbox-chip-remove svg { width: 12px; height: 12px; }
 /* On a short page (a phone with its keyboard up) the text gives way first, down to two lines, and scrolls inside
    itself; shorter than that and the whole window scrolls. The text never runs over the foot. */
 .mailbox-write-text { flex: 0 1 auto; display: flex; flex-direction: column; min-height: 76px; }
@@ -470,6 +498,12 @@ span.mailbox-open { cursor: default; }
 	background: none; color: var(--text); font-size: 15px; font-weight: 400; line-height: 1.55;
 }
 .mailbox-write-text textarea:focus-visible { outline: none; }
+/* While the email is on its way, or its words are on their way to an agent, nothing in the window can be changed: its
+   fields and chips stand back, as its button does. */
+.mailbox-write-panel :is(input, textarea):disabled { opacity: 1; color: var(--text-muted); }
+.mailbox-write-panel :is(.mailbox-pick, .mailbox-chip-remove):disabled { opacity: 0.5; pointer-events: none; }
+/* Why the member's email did not go, said above Send. */
+.mailbox-write-error { flex: none; margin: 0; padding: 2px 18px 0; color: var(--danger); font-size: 13.5px; overflow-wrap: anywhere; }
 .mailbox-write-foot { flex: none; display: flex; align-items: center; gap: 14px; padding: 8px 18px 16px; }
 .mailbox-write-foot .mailbox-muted { min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
 
