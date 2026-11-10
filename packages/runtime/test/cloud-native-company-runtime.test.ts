@@ -3213,6 +3213,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// an app asks for, RUNTIME-INTERFACE-APPS.md §5), so they moved again. Later that day its description says which
 	// links in an app open and that every app starts from Qorpera's base style, and its schema says the style's
 	// variables on files (the web opens an app's links and gives it the style, §2 and §4), so they moved again.
+	// Also on 10 November 2026 hire_agent's figure takes star, cloud, bolt, mushroom, moon and puzzle, and no ghost
+	// (20260930709000); the names and descriptions are as before, so only the catalog text moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3260,6 +3262,6 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"4e98b9b5cc8c4ae6088717e14ec60bb349910f2dd49be01333e5fad5b73a0b56",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"49292579b210f0158e2417cfa74b18538849f4de5c1a88cc9eef6a1f5a623f80",
+		"72d19e424a52f72b48c4766f42a679688e04971112f2113afc5c75c975d33546",
 	);
 });

@@ -1149,6 +1149,67 @@ Each call answers 42501 for a caller who is not a member of the company.
   agents, why})` asks one member (an id, email, full name or a first name only they have) to take 1 to 20 agents (ids or
   names). The member answers on the Members page as above.
 
+### Member chats (20260930715000_member_messages)
+
+Members of a company message each other (Jonas, 10 Nov 2026): one chat per pair of members per company, shown as
+contacts in the rail. A chat is the company's (deleted with it, kept when an account goes), wakes no agent, takes no
+login and no computer hours, and is not stopped by a company's pause. Every member reads and writes their own chats,
+viewers too; nobody reads another pair's. Each call answers 42501 for a caller who is not a member of the company (or
+while it is being deleted), and for a `user` who is not another member of it.
+
+- `qorpera_list_member_chats(profile)`: `{schema: "qorpera.member-chats/v1", chats}`, one entry per other member in
+  the order they joined, with or without messages: `{userId, lastSeenAt, unread, readSeq, theirReadSeq, last}`.
+  `lastSeenAt` is when that member was last online (their last `qorpera_mark_online`, else their last sign-in; null
+  when neither). `unread` counts their messages after the caller's read mark that were not taken back, at most 100.
+  `readSeq` and `theirReadSeq` are the newest message each side has seen (0: none). `last` is the chat's newest
+  message with its words cut to 280 characters, or null. Read it when the company opens, on the `member-chats` hint
+  (§3) and on the slow poll.
+- `qorpera_read_member_chat(profile, user, before_seq default null, limit default 50)`: `{schema:
+  "qorpera.member-chat/v1", userId, messages, hasMore, readSeq, theirReadSeq}`: the newest `limit` messages (1 to
+  200), or those before `before_seq`, oldest first; `hasMore` says older ones exist. A message is `{id, seq,
+  authorUserId, createdAt, text}`, or `{..., deleted: true}` without `text` once its author took it back. A message
+  the caller wrote also carries `clientMessageId`, the id they sent it with (the list's `last` does not): a client
+  knows its own message by it when a read brings it before the send is answered, or after an answer was lost. `seq`
+  orders the messages of a chat; it is not dense. A chat's sends go one at a time, so its messages are committed in `seq`
+  order: none appears later in front of one already read. A message taken back keeps its `seq`, so a client shows the
+  change only by reading that message again: the web reads every message it shows again on each hint and poll.
+- `qorpera_send_member_message(profile, user, client_message_id, text)`: `{schema: "qorpera.member-message/v1",
+  userId, message}`. `text` is not blank and at most 16 KiB (else 22023). `client_message_id` is the client's own
+  uuid for the message: the same call again answers the same message and writes nothing; the id with other words or
+  for another member is refused (23505). No read mark moves: a member's own messages are never unread to them.
+- `qorpera_mark_member_chat_read(profile, user, seq)`: `{schema: "qorpera.member-chat-read/v1", userId, readSeq}`.
+  The caller has seen the chat up to `seq`: the mark moves to the chat's newest message at or before `seq`, never
+  back; `readSeq` is the mark as it stands. Call it when new messages of the open chat are in front of the member.
+- `qorpera_delete_member_message(profile, message)`: `{schema: "qorpera.member-message/v1", userId, message}`, the
+  message now `deleted`. Only its author, while a member; twice answers the same.
+
+#### Member contacts' places (20260930717000_member_contact_places)
+
+A contact is a rail row like an agent's (Jonas, 10 Nov 2026: "not sure I like the member contacts at the top,
+undraggable and un-hideable"): its member drags it into the pinned row, into a section or among what is in no section,
+and hides it. Where a contact stands is each member's own, as their pins and hidden agents are: nobody else's rail
+changes, nothing is written to the company's folder, and any member may place their contacts, viewers too.
+
+- The list (`qorpera_list_member_chats`) answers `placing: true` on a cloud that keeps places; a client offers no
+  drag, pin or hide without it. Each chat carries `hidden` (boolean) and, once its member placed it, `place`: `{zone,
+  sectionId?, after?, rank}`. `zone` is `members` (the Members group at the foot of the list, where a contact stands
+  until it is placed), `pinned`, `unassigned` or `section` (with `sectionId`, a section of the sidebar). `after` is
+  the agent or group chat the contact stands after in its zone (absent: first; never in `members`), and `rank` (0 to
+  9999) orders the contacts that stand after the same one (in `members`: all of them).
+- The company's own order of a zone (the sidebar's) can change under a kept place. A client draws a zone by weaving
+  its contacts into that order, each after its `after`; a contact whose `after` is not in the zone stands last, and
+  one whose section is gone, or whose rail has no sidebar, stands in the Members group. The kept place is not
+  rewritten for it. A contact never placed stands in the Members group after the placed ones, in the order the
+  members joined.
+- `qorpera_place_member_contacts(profile, contacts)`: `contacts` is a list of 1 to 100 entries `{userId, zone,
+  sectionId?, after?, rank, hidden}`, each one contact's whole place (it replaces the kept one). Answers the list as
+  `qorpera_list_member_chats` does. Refused whole with 22023, nothing written, when the list or an entry has another
+  shape, names the caller, someone who is not a member of the company or one contact twice, names a section the
+  company does not have, gives `sectionId` without zone `section` (or the other way round), or gives `after` in
+  `members`. `after` is not checked against the company's agents: it is the caller's own note. 42501 as the other
+  calls. A place goes with either member's membership and with the company.
+- A change of place sends no hint: another tab of the same member shows it on the slow poll.
+
 ### Chat images (20260928549140_chat_images)
 
 Folder-v2 companies only. A member's image in a conversation (an agent's thread or a group chat) is a folder file under
@@ -1328,7 +1389,9 @@ topic's rows. A new private topic's policies must do the same.
   `access`, `company-file`, `sidebar` (the tables `qorpera_shared_sessions`, `qorpera_profile_staff`,
   `qorpera_profile_access_state`, `qorpera_company_files`, `qorpera_company_sidebar_revisions`), payload
   `{"schema":"qorpera.live-hint/v1"}` and nothing else: never a row or its id. Ids lower-case,
-  as the database writes them. Who hears a change is decided per change, at commit: only the topics of the members
+  as the database writes them. Since `20260930715000_member_messages` also `member-chats`, to the two members of a
+  member chat whose message or read mark changed (not the company's other members); a client that falls back to
+  `postgres_changes` gets no such hint and reads the member chats on its slow poll. Who hears a change is decided per change, at commit: only the topics of the members
   who may read the changed row under its table's read policy then, so a member who leaves hears nothing of the company
   from that commit on but the change to their own access row (which they may read). A member may join only their own
   topic, of a company they are a member of or have an access row in (RLS on `realtime.messages` via

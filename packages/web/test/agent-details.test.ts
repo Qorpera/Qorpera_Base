@@ -305,6 +305,125 @@ describe("agent details edited in place", () => {
 	});
 });
 
+describe("responsibilities drawn as Markdown", () => {
+	const charter = "You hold the **company-level** work.\n\n## Your first job\n\n- Hire the team\n- Keep the vision";
+	const written = { ...staff, charter };
+	const reading = () => document.querySelector<HTMLElement>(".agent-inline-reading")!;
+	const click = (target: Element) => {
+		const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+		target.dispatchEvent(event);
+		return event;
+	};
+	/** jsdom has no layout, so the test says where a click's caret falls. */
+	const caretAt = (offsetNode: Node, offset: number) => {
+		Object.defineProperty(document, "caretPositionFromPoint", {
+			configurable: true,
+			value: () => ({ offsetNode, offset }),
+		});
+		cleanup.push(() => Reflect.deleteProperty(document, "caretPositionFromPoint"));
+	};
+
+	it("draws the Markdown and keeps the text itself in the field", () => {
+		open({}, written);
+		expect(field("Responsibilities").value).toBe(charter);
+		expect(reading().querySelector("h2")?.textContent).toBe("Your first job");
+		expect(reading().querySelector("strong")?.textContent).toBe("company-level");
+		expect([...reading().querySelectorAll("li")].map((item) => item.textContent)).toEqual([
+			"Hire the team",
+			"Keep the vision",
+		]);
+		expect(reading().textContent).not.toContain("#");
+		expect(reading().textContent).not.toContain("*");
+		// A picture of the field's text: assistive technology reads the field alone, and Tab stops at the field alone.
+		expect(reading().getAttribute("aria-hidden")).toBe("true");
+		expect(reading().tabIndex).toBe(-1);
+		expect(reading().closest(".agent-inline-description")?.classList.contains("has-reading")).toBe(true);
+	});
+
+	it("leaves a drawn table no stop of its own for the keyboard", () => {
+		open({}, { ...staff, charter: "| Role | Now |\n| --- | --- |\n| Support | 2 |" });
+		const table = reading().querySelector<HTMLElement>(".message-table")!;
+		expect(table.querySelector("td")?.textContent).toBe("Support");
+		expect(table.tabIndex).toBe(-1);
+		expect(reading().querySelector('[tabindex]:not([tabindex="-1"])')).toBeNull();
+	});
+
+	it("draws a link as its text, so nothing leaves the card", () => {
+		open({}, { ...staff, charter: "Follow [the plan](https://example.com/plan)." });
+		expect(reading().textContent).toBe("Follow the plan.");
+		expect(reading().querySelector("a, button")).toBeNull();
+	});
+
+	it("opens the field on a click, with the caret where the click fell", () => {
+		open({ updateAgent: saving() }, written);
+		const item = reading().querySelectorAll("li")[1]!;
+		caretAt(item.firstChild!, 4);
+		const event = click(item);
+		const control = field("Responsibilities") as HTMLTextAreaElement;
+		expect(event.defaultPrevented).toBe(true);
+		expect(document.activeElement).toBe(control);
+		expect(control.selectionStart).toBe(charter.indexOf("Keep") + 4);
+		expect(control.selectionEnd).toBe(control.selectionStart);
+	});
+
+	it("opens the field on a click beside the text too, and leaves a click in the field to the field", () => {
+		open({ updateAgent: saving() }, written);
+		const control = field("Responsibilities");
+		expect(click(control).defaultPrevented).toBe(false);
+		expect(document.activeElement).not.toBe(control);
+		click(reading().closest("label")!);
+		expect(document.activeElement).toBe(control);
+	});
+
+	it("keeps the drawing for a member who can only read, and for a press dragged over its text", async () => {
+		const f = open({ updateAgent: saving() }, written);
+		const control = field("Responsibilities");
+		f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, authorize: false } } });
+		await settle();
+		expect(click(reading()).defaultPrevented).toBe(true);
+		expect(document.activeElement).not.toBe(control);
+		f.company.store.set({ team });
+		await settle();
+		const heading = reading().querySelector("h2")!;
+		const at = (type: string, clientX: number) =>
+			heading.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY: 20 }));
+		// A drag selects the words it passes, for copying.
+		at("pointerdown", 10);
+		at("click", 70);
+		expect(document.activeElement).not.toBe(control);
+		// A click opens the field, also where a selection still stands: a browser may clear it only after the click.
+		const selected = document.createRange();
+		selected.selectNodeContents(heading);
+		getSelection()!.removeAllRanges();
+		getSelection()!.addRange(selected);
+		at("pointerdown", 40);
+		at("click", 41);
+		expect(document.activeElement).toBe(control);
+	});
+
+	it("draws the text again once the field is left, not while it is typed in", () => {
+		const updateAgent = saving();
+		open({ updateAgent }, written);
+		const control = type("Responsibilities", "# Sales\n\nYou sell *well*.");
+		expect(reading().querySelector("h2")?.textContent).toBe("Your first job");
+		control.blur();
+		expect(updateAgent.mock.calls[0]![1]).toMatchObject({ charter: "# Sales\n\nYou sell *well*." });
+		expect(reading().querySelector("h2")?.textContent).toBe("Sales");
+		expect(reading().querySelector("em")?.textContent).toBe("well");
+		// Escape puts the saved text back, and the drawing with it.
+		press(type("Responsibilities", "Not this"), "Escape");
+		expect(reading().querySelector("h2")?.textContent).toBe("Sales");
+		expect(reading().textContent).not.toContain("Not this");
+	});
+
+	it("takes a change made elsewhere into the drawing", async () => {
+		const f = open({ updateAgent: saving() }, written);
+		f.company.store.set({ staff: [{ ...written, charter: "## Changed elsewhere" }] });
+		await settle();
+		expect(reading().querySelector("h2")?.textContent).toBe("Changed elsewhere");
+	});
+});
+
 describe("agent figure", () => {
 	it("opens a picker under the figure and saves each choice", () => {
 		const updateAgent = saving();
@@ -602,6 +721,86 @@ describe("the card's frame", () => {
 		expect(card.dialog.el.style.left).not.toBe("");
 	});
 
+	it("moves a card low in the rail up while its figure picker shows, so the picker stays inside the window", async () => {
+		vi.stubGlobal("innerHeight", 800);
+		// The card follows its own size and its picker's through a ResizeObserver.
+		const observed = new Set<Element>();
+		let changed: () => void = () => {};
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				constructor(callback: () => void) {
+					changed = callback;
+				}
+				observe(target: Element) {
+					observed.add(target);
+				}
+				disconnect() {
+					observed.clear();
+				}
+			},
+		);
+		const f = fixture();
+		const company = new CompanyController(f.api, profileA, userA.id);
+		company.store.set({ team, staff: [staff], loading: false });
+		const row = document.createElement("a");
+		document.body.append(row);
+		vi.spyOn(row, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 600, 200, 40));
+		const card = new AgentDetails(
+			company,
+			staff,
+			{ updateAgent: saving() },
+			() => {},
+			row,
+			company.signal,
+			{},
+			"beside",
+		);
+		cleanup.push(() => {
+			card.dispose();
+			company.stop();
+		});
+		const top = () => Number.parseFloat(card.dialog.el.style.top) || 0;
+		vi.spyOn(card.dialog.el, "getBoundingClientRect").mockImplementation(() => new DOMRect(0, top(), 374, 180));
+		const picker = card.dialog.el.querySelector<HTMLElement>(".agent-figure-picker")!;
+		expect(observed.has(card.dialog.el)).toBe(true);
+		expect(observed.has(picker)).toBe(true);
+		// The picker hangs from the figure, 96px into the card, and is 330px tall: past the card's own 180px.
+		vi.spyOn(picker, "getClientRects").mockImplementation(() => (picker.hidden ? [] : [new DOMRect()]) as never);
+		vi.spyOn(picker, "getBoundingClientRect").mockImplementation(() => new DOMRect(0, top() + 96, 356, 330));
+		changed();
+		// Level with its row while the picker is away: the card alone fits.
+		expect(top()).toBe(592);
+		const figure = card.dialog.el.querySelector<HTMLButtonElement>(".agent-figure-button")!;
+		figure.click();
+		expect(picker.hidden).toBe(false);
+		changed();
+		// The picker's bottom stays 12px above the window's.
+		const raised = top();
+		expect(raised + 96 + 330).toBe(800 - 12);
+		// Put away, the card goes back level with its row.
+		figure.click();
+		expect(picker.hidden).toBe(true);
+		changed();
+		expect(top()).toBe(592);
+		// A press elsewhere in the card puts the picker away as it goes down, but the card holds still until the press
+		// ends: the card's Close, pressed, stays under the pointer to take the click.
+		figure.click();
+		changed();
+		expect(top()).toBe(raised);
+		const close = card.dialog.el.querySelector<HTMLButtonElement>(".surface-close")!;
+		close.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		expect(picker.hidden).toBe(true);
+		changed();
+		window.dispatchEvent(new Event("resize"));
+		expect(top()).toBe(raised);
+		// Let go, after its click, the card goes back level with its row.
+		window.dispatchEvent(new Event("pointerup"));
+		expect(top()).toBe(raised);
+		await new Promise((resolve) => setTimeout(resolve));
+		expect(top()).toBe(592);
+	});
+
 	it("sizes the agent card to its content, beside its row, and leaves the group popup's frame alone", () => {
 		const style = document.createElement("style");
 		style.textContent = conversationCss.replace(/^@import .*;$/gm, "");
@@ -617,11 +816,16 @@ describe("the card's frame", () => {
 		expect(declared(".agent-card-square", "width")).toBe("32px");
 		expect(declared(".agent-card-square", "background")).toBe("transparent");
 		expect(declared(".agent-card-squares", "justify-content")).toBe("flex-end");
-		// The description grows with its text up to five lines and uses the card's width; elsewhere the sizer still
-		// grows it to 13.
+		// A tenth wider than the 340px it was, and never wider than the window. Read from the sheet's text: jsdom keeps
+		// no width it can't work out itself.
+		expect(conversationCss).toMatch(/^\.agent-card \{ width: min\(374px, calc\(100vw - 24px\)\);/m);
+		// The description grows with its text up to seven lines, drawn or in its field, and uses the card's width;
+		// elsewhere the sizer still grows it to 13.
 		expect(declared(".agent-card .agent-inline-description > .agent-inline-size::after", "max-height")).toMatch(
-			/5 \* 1\.5em|7\.5em/,
+			/7 \* 1\.5em|10\.5em/,
 		);
+		expect(declared(".agent-inline-reading", "max-height")).toMatch(/7 \* 1\.5em|10\.5em/);
+		expect(declared(".agent-inline-reading", "overflow-y")).toBe("auto");
 		expect(declared(".agent-card .agent-inline-description", "padding-right")).toBe("10px");
 		expect(declared(".agent-card, .agent-card *", "scrollbar-width")).toBe("none");
 		expect(declared(".agent-inline-description > .agent-inline-size::after", "max-height")).toMatch(

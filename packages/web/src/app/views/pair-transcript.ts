@@ -12,6 +12,7 @@ import { markdownBubbles } from "../../ui/markdown.ts";
 import { leave } from "../../ui/motion.ts";
 import { t } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
+import { sentTimeHover } from "../../ui/sent-time-hover.ts";
 import { messagesSkeleton } from "../../ui/skeleton.ts";
 import type { CompanyController } from "../company.ts";
 
@@ -113,6 +114,7 @@ export class PairTranscriptView {
 			{ signal: this.#lifetime.signal },
 		);
 		quietScroll(this.#messages);
+		sentTimeHover(this.#messages, this.#lifetime.signal);
 		// A new store loads itself; a transcript opened before is read again now,
 		// not when the timer next fires.
 		const existed = host.conversations.has(sessionId);
@@ -249,8 +251,7 @@ export class PairTranscriptView {
 							{
 								class: right ? "message from-agent pair-right" : "message from-agent",
 								"aria-label": `${name} · ${fmtTime(item.createdAt)}`,
-								title: `${name} · ${fmtTime(item.createdAt)}`,
-								dataset: { messageId: item.id },
+								dataset: { messageId: item.id, sentAt: item.createdAt },
 							},
 							h("div", { class: "message-author" }, name),
 							...markdownBubbles(item.text).map((body) => h("div", { class: "bubble" }, body)),

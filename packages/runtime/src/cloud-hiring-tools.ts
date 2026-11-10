@@ -1,4 +1,5 @@
 import { osPath } from "@qorpera/cloud-client/company-state-files";
+import { isStaffCharacterId, STAFF_CHARACTER_IDS } from "@qorpera/cloud-client/staff-characters";
 import type { CloudFolderGroupChat, CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
 import type { CloudFolderHire, CloudFolderHiring } from "./cloud-folder-hiring.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
@@ -7,8 +8,6 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
 
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-/** The figures a client can draw (cloud-client staff-characters). The colour follows the figure. */
-const FIGURES = ["planet", "acorn", "flame", "rocket", "crown", "heart", "ghost"] as const;
 const FIELDS = ["operationKey", "name", "role", "jobDescription", "firstAssignment", "figure"] as const;
 
 function text(value: unknown, maxBytes: number, singleLine: boolean): string {
@@ -115,7 +114,8 @@ export function cloudHiringTools(
 				role: { type: "string", minLength: 1, maxLength: 320 },
 				jobDescription: { type: "string", minLength: 1, maxLength: 16384 },
 				firstAssignment: { type: "string", minLength: 1, maxLength: FOLDER_ASSIGNMENT_BYTES },
-				figure: { type: "string", enum: [...FIGURES] },
+				// The figures a client can draw; the colour follows the figure.
+				figure: { type: "string", enum: [...STAFF_CHARACTER_IDS] },
 			},
 		},
 		parseArguments(value) {
@@ -137,8 +137,7 @@ export function cloudHiringTools(
 				throw new CloudToolArgumentRefusal(
 					`firstAssignment holds at most ${FOLDER_ASSIGNMENT_BYTES} bytes in this company: shorten it`,
 				);
-			if (a.figure !== undefined && !FIGURES.includes(a.figure as (typeof FIGURES)[number]))
-				throw new Error("Invalid hire figure");
+			if (a.figure !== undefined && !isStaffCharacterId(a.figure)) throw new Error("Invalid hire figure");
 			const hire = {
 				operationKey: a.operationKey,
 				name: text(a.name, 160, true),

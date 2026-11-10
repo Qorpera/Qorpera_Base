@@ -67,6 +67,7 @@ import {
 	runWaitingReason,
 } from "../../ui/run-failure.ts";
 import { uiScale } from "../../ui/scale.ts";
+import { sentTimeHover } from "../../ui/sent-time-hover.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
 import { markSkillNames, SkillMentions } from "../../ui/skill-mentions.ts";
 import { type AgentState, answersInteraction, type CompanyController, type ConversationState } from "../company.ts";
@@ -251,6 +252,12 @@ interface ContinueLogin {
 /* One conversation over the canonical transcript. Rendering follows
  * DECISIONS.md "Transcript projection rules": member inputs and agent sends
  * only. Composer drafts remain local until a message adapter is supplied. */
+
+/** A peer chip's time for a screen reader, as its description: the hover label (ui/sent-time-hover.ts) is only drawn,
+ * and the chip's name says what it opens. */
+const peerTimeId = (linkId: string) => `peer-time-${linkId}`;
+const peerTime = (linkId: string, at: string) =>
+	h("span", { class: "visually-hidden", id: peerTimeId(linkId) }, fmtTime(at));
 
 export class ConversationView {
 	readonly el: HTMLElement;
@@ -810,6 +817,7 @@ export class ConversationView {
 		);
 		this.#earlier = h("div", { class: "thread-earlier" }, this.#earlierButton, this.#earlierNote);
 		this.#messages.append(this.#log);
+		sentTimeHover(this.#messages, this.#lifetime.signal);
 		this.#refreshFade = quietScroll(this.#messages);
 		this.#messages.addEventListener("scroll", () => {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
@@ -2715,9 +2723,9 @@ export class ConversationView {
 									{
 										type: "button",
 										class: "peer-chip",
-										dataset: { pairSessionId: item.pairSessionId, linkIds: item.id },
-										title: `${label} · ${fmtTime(item.createdAt)}`,
+										dataset: { pairSessionId: item.pairSessionId, linkIds: item.id, sentAt: item.createdAt },
 										"aria-label": t("{label}. Open the conversation", { label }),
+										"aria-describedby": peerTimeId(item.id),
 										onclick: (event: MouseEvent) =>
 											this.#openPair(
 												item.pairSessionId,
@@ -2729,6 +2737,7 @@ export class ConversationView {
 									agentFigure(counterpart, name, { size: 16 }),
 									h("span", null, name),
 									after.trim() ? h("span", null, after.trim()) : null,
+									peerTime(item.id, item.createdAt),
 								),
 							);
 						},
@@ -3263,7 +3272,8 @@ export class ConversationView {
 		if (element.className !== className) element.className = className;
 		const label = `${author} · ${fmtTime(item.createdAt)}`;
 		if (element.getAttribute("aria-label") !== label) element.setAttribute("aria-label", label);
-		if (element.title !== label) element.title = label;
+		// Its time shows on a hover (ui/sent-time-hover.ts).
+		if (element.dataset.sentAt !== item.createdAt) element.dataset.sentAt = item.createdAt;
 		if (element.dataset.messageId !== item.id) element.dataset.messageId = item.id;
 		const shown = (item.kind === "agent" && room) || (item.kind === "member" && !mine);
 		const authorPart = !shown
@@ -3451,9 +3461,15 @@ export class ConversationView {
 				{
 					type: "button",
 					class: compact ? "peer-chip figure-only" : "peer-chip",
-					dataset: { pairSessionId: link.pairSessionId, linkIds: ids },
-					title: `${name} · ${fmtTime(link.createdAt)}`,
+					// A chip of a face alone names the agent with its time.
+					dataset: {
+						pairSessionId: link.pairSessionId,
+						linkIds: ids,
+						sentAt: link.createdAt,
+						...(compact ? { sentLabel: name } : {}),
+					},
 					"aria-label": t("{label}. Open the conversation", { label: name }),
+					"aria-describedby": peerTimeId(link.id),
 					onclick: (event: MouseEvent) =>
 						this.#openPair(
 							link.pairSessionId,
@@ -3463,6 +3479,7 @@ export class ConversationView {
 				},
 				agentFigure(staff, name, { size: 16 }),
 				compact ? null : h("span", null, name),
+				peerTime(link.id, link.createdAt),
 			),
 		);
 		const words = (text: string) => (text.trim() ? h("span", { class: "peer-words" }, text.trim()) : null);

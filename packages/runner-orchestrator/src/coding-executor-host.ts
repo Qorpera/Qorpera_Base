@@ -372,6 +372,21 @@ export const CODING_FOLDER_GIT_ENVIRONMENT: Readonly<Record<string, string>> = O
 		]),
 	]),
 );
+/** A folder session's environment: Git's settings, and who its commits are by. Until 10 Nov 2026 the platform set no
+ * author, and sessions' commits carried names the model made up ("Qorpera Coding", "Codex"): nothing in a commit said
+ * which session made it. Now author and committer name the session by its worker id, which the kernel maps to its
+ * agent, its member and its turns. Git reads these before any setting a command writes; only an explicit `--author`
+ * overrides the author, and nothing a command passes overrides the committer. */
+export function codingFolderGitEnvironment(workerId: string): Readonly<Record<string, string>> {
+	const who = { name: "Qorpera coding session", email: `${workerId}@coding.qorpera.com` };
+	return Object.freeze({
+		...CODING_FOLDER_GIT_ENVIRONMENT,
+		GIT_AUTHOR_NAME: who.name,
+		GIT_AUTHOR_EMAIL: who.email,
+		GIT_COMMITTER_NAME: who.name,
+		GIT_COMMITTER_EMAIL: who.email,
+	});
+}
 /** The most of a running command's text the keeper reports (qorpera_keep_coding_attachments). */
 const CODING_OBSERVED_COMMAND_BYTES = 300;
 /** How often quiet sessions are looked for (qorpera_archive_quiet_coding_sessions). */
@@ -2958,7 +2973,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					uid: ready.folder.uid,
 					gid: ready.folder.uid,
 					cwd: ready.folder.cwd,
-					environment: CODING_FOLDER_GIT_ENVIRONMENT,
+					environment: codingFolderGitEnvironment(ready.claim.workerId),
 				},
 				custody: ready.storage.custodySource,
 				limitBytes: this.#options.guest.resourceProfile.maxLogBytes,

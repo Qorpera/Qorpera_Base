@@ -18,9 +18,11 @@ import appCss from "../src/styles/app.css?raw";
 import conversationCss from "../src/styles/conversation.css?raw";
 import tokensCss from "../src/styles/tokens.css?raw";
 import { AttachmentTray } from "../src/ui/attachments.ts";
+import { conversationTimestampLabel } from "../src/ui/conversation-timestamps.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { markdown, markdownBubbles } from "../src/ui/markdown.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
+import { sentTimeText } from "../src/ui/sent-time-hover.ts";
 import {
 	deferred,
 	event,
@@ -208,7 +210,10 @@ describe("conversation UI boundaries", () => {
 		expect(messages[0]?.dataset.messageId).toBe(agent.id);
 		expect(messages[0]?.querySelectorAll(".bubble")).toHaveLength(2);
 		expect(messages[0]?.getAttribute("aria-label")).toContain(staff.displayName);
-		expect(messages[0]?.title).toContain(fmtTime(timestamp));
+		expect(messages[0]?.getAttribute("aria-label")).toContain(fmtTime(timestamp));
+		// Its time shows on a hover (ui/sent-time-hover.ts), not as the browser's slow tooltip.
+		expect(messages[0]?.dataset.sentAt).toBe(timestamp);
+		expect(messages[0]?.hasAttribute("title")).toBe(false);
 		// A progress message is not labelled: its text is the whole message.
 		expect(messages[0]?.classList.contains("message-progress")).toBe(true);
 		expect(messages[0]?.querySelector(".message-caption")).toBeNull();
@@ -2659,10 +2664,14 @@ describe("messages between two agents (contract 14.6)", () => {
 		});
 		f.view.update();
 		const chip = f.view.el.querySelector<HTMLButtonElement>(".peer-chip")!;
-		expect([...chip.querySelectorAll(":scope > span:not(.figure)")].map((span) => span.textContent)).toEqual([
-			"Besked fra",
-			"Helper",
-		]);
+		expect(
+			[...chip.querySelectorAll(":scope > span:not(.figure, .visually-hidden)")].map((span) => span.textContent),
+		).toEqual(["Besked fra", "Helper"]);
+		// Its time, for a screen reader, as the chip's description (review of #1651 round 1, F3).
+		const described = document.getElementById(chip.getAttribute("aria-describedby") ?? "");
+		expect(chip.contains(described)).toBe(true);
+		expect(described?.classList.contains("visually-hidden")).toBe(true);
+		expect(described?.textContent).toMatch(/\d/);
 		expect(chip.querySelector(".figure")?.nextElementSibling?.textContent).toBe("Helper");
 		expect(chip.getAttribute("aria-label")).toBe("Besked fra Helper. Åbn samtalen");
 	});
@@ -2713,10 +2722,9 @@ describe("messages between two agents (contract 14.6)", () => {
 		const chips = f.view.el.querySelectorAll<HTMLButtonElement>(".peer-chip");
 		const chip = chips[0]!;
 		// Verb, the coworker's figure, then the name: the figure sits between the two spans.
-		expect([...chip.querySelectorAll(":scope > span:not(.figure)")].map((span) => span.textContent)).toEqual([
-			"Message from",
-			"Helper",
-		]);
+		expect(
+			[...chip.querySelectorAll(":scope > span:not(.figure, .visually-hidden)")].map((span) => span.textContent),
+		).toEqual(["Message from", "Helper"]);
 		expect(chip.querySelector(".figure")?.previousElementSibling?.textContent).toBe("Message from");
 		expect(chip.getAttribute("aria-label")).toBe("Message from Helper. Open the conversation");
 		expect(chips[1]?.getAttribute("aria-label")).toBe("Left a note for Helper. Open the conversation");
@@ -2868,7 +2876,13 @@ describe("messages between two agents (contract 14.6)", () => {
 			expect(line!.getAttribute("aria-label")).toBe("Messaged Helper and Nova");
 			const chip = line!.querySelectorAll<HTMLButtonElement>(".peer-chip")[1]!;
 			expect(chip.querySelector(".figure")?.nextElementSibling?.textContent).toBe("Nova");
-			expect(chip.title).toBe(`Nova · ${fmtTime(timestamp)}`);
+			// The chip shows the name; its hover adds the time.
+			expect(sentTimeText(chip)).toBe(conversationTimestampLabel(new Date(timestamp)));
+			expect(chip.hasAttribute("title")).toBe(false);
+			// Review of #1651 round 1, F3: a screen reader hears the time as the chip's description.
+			const described = document.getElementById(chip.getAttribute("aria-describedby") ?? "");
+			expect(chip.contains(described)).toBe(true);
+			expect(described?.textContent).toBe(fmtTime(timestamp));
 			chip.click();
 			await settle();
 			const panel = f.view.el.querySelector<HTMLElement>(".pair-transcript")!;
@@ -2916,7 +2930,10 @@ describe("messages between two agents (contract 14.6)", () => {
 			expect(line.getAttribute("aria-label")).toBe("Talked with Helper, Nova, and Ada · 4 messages");
 			for (const chip of line.querySelectorAll(".peer-chip")) {
 				expect(chip.classList.contains("figure-only")).toBe(true);
-				expect(chip.querySelector(":scope > span:not(.figure)")).toBeNull();
+				expect(chip.querySelector(":scope > span:not(.figure, .visually-hidden)")).toBeNull();
+				expect(document.getElementById(chip.getAttribute("aria-describedby") ?? "")?.textContent).toBeTruthy();
+				// A face alone: its hover names the agent before the time.
+				expect(sentTimeText(chip as HTMLElement)).toMatch(/^(Helper|Nova|Ada) · /);
 			}
 		});
 
