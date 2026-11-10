@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -4056,6 +4056,11 @@ describe("a member's look at a desktop (20260930712000)", () => {
 		await expect(failed.f.host.memberLook(look(), failed.f.signal)).rejects.toThrow(
 			"COMPANY_MACHINE_MEMBER_LOOK_FAILED",
 		);
+		// A picture larger than a screen's is not streamed: the script says so, and removed it (review r1 F1).
+		const large = await piped({ exitCode: 94, stdout: Buffer.alloc(0) });
+		await expect(large.f.host.memberLook(look(), large.f.signal)).rejects.toThrow(
+			"COMPANY_MACHINE_MEMBER_LOOK_TOO_LARGE",
+		);
 		for (const [stdout, what] of [
 			[Buffer.alloc(0), "nothing"],
 			[Buffer.from("not a png"), "not a PNG"],
@@ -4230,6 +4235,55 @@ describe("a member's look at a desktop (20260930712000)", () => {
 			await tool("systemctl", 0);
 			await tool("xdpyinfo", 1);
 			expect(run(boot)).toBe(95);
+		},
+	);
+
+	it.skipIf(process.platform !== "linux")(
+		"clears earlier looks' leftovers and never streams a picture larger than a screen's, in a real shell (review r1 F1)",
+		async () => {
+			const bin = await realpath(await mkdtemp(join(tmpdir(), "member-look-bin-")));
+			const view = await realpath(await mkdtemp(join(tmpdir(), "member-look-view-")));
+			roots.push(bin, view);
+			// The pictures' folder is the script's own (root's /run/qorpera-view on a machine); here a folder of the test's.
+			const script = COMPANY_MACHINE_MEMBER_LOOK.replace("d=/run/qorpera-view", `d=${view}`);
+			expect(script).not.toBe(COMPANY_MACHINE_MEMBER_LOOK);
+			for (const [name, text] of [
+				["systemctl", "#!/bin/sh\nexit 0\n"],
+				["xdpyinfo", "#!/bin/sh\nexit 0\n"],
+				// scrot writes as many bytes as the test asks to its last argument, the picture's file.
+				["scrot", '#!/bin/sh\nfor a; do f=$a; done\nhead -c "$SCROT_BYTES" /dev/zero > "$f"\n'],
+			]) {
+				await writeFile(join(bin, name), text);
+				await chmod(join(bin, name), 0o755);
+			}
+			const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+			const run = (bytes: number) =>
+				spawnSync("/bin/sh", ["-c", script, boot, "look"], {
+					env: { PATH: `${bin}:/usr/bin:/bin`, SCROT_BYTES: String(bytes) },
+					maxBuffer: 16 * 1024 * 1024,
+				});
+			// A look killed two minutes ago left its picture; another look's is on its way now; a file of another name.
+			const old = Date.now() / 1000 - 120;
+			await writeFile(join(view, "look-111.png"), "a look cut off");
+			await utimes(join(view, "look-111.png"), old, old);
+			await writeFile(join(view, "look-222.png"), "a look in flight");
+			await writeFile(join(view, "other.png"), "not a look");
+			await utimes(join(view, "other.png"), old, old);
+			const shown = run(100);
+			expect(shown.status).toBe(0);
+			expect(shown.stdout).toHaveLength(100);
+			// The stale leftover is gone, the fresh one and the other file stay, and the look's own picture went with it.
+			expect(readdirSync(view).sort()).toEqual(["look-222.png", "other.png"]);
+			// Larger than a screen's picture may be: nothing streamed, and nothing left.
+			const large = run(8 * 1024 * 1024 + 1);
+			expect(large.status).toBe(94);
+			expect(large.stdout).toHaveLength(0);
+			expect(readdirSync(view).sort()).toEqual(["look-222.png", "other.png"]);
+			// Exactly the bound is streamed.
+			const bound = run(8 * 1024 * 1024);
+			expect(bound.status).toBe(0);
+			expect(bound.stdout).toHaveLength(8 * 1024 * 1024);
+			expect(readdirSync(view).sort()).toEqual(["look-222.png", "other.png"]);
 		},
 	);
 });

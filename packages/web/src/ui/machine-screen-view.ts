@@ -167,7 +167,8 @@ export class MachineScreenView {
 		const focused = this.el.contains(document.activeElement);
 		this.#setEntered(false);
 		if (focused) this.el.focus();
-		if (document.fullscreenElement === this.el) void document.exitFullscreen().catch(() => undefined);
+		if (document.fullscreenElement === this.el && typeof document.exitFullscreen === "function")
+			void document.exitFullscreen().catch(() => undefined);
 	}
 
 	dispose(): void {

@@ -106,6 +106,8 @@ export class ComputerPanel {
 	#chosen: string | undefined;
 	#machineId: string | undefined;
 	#etag: string | null = null;
+	/** The machine whose picture is up. */
+	#pictureOf: string | undefined;
 	#lastLook = Number.NEGATIVE_INFINITY;
 	#delay = LOOK_EVERY_MS;
 	#unchanged = 0;
@@ -319,7 +321,13 @@ export class ComputerPanel {
 				this.#machineId = machine?.machineId;
 				this.#etag = null;
 				this.#lastLook = Number.NEGATIVE_INFINITY;
-				this.#view?.clear();
+				// The last machine's picture stays, marked, until the next one's comes (or the next one says why there is
+				// none): a member who switches full screen stays full screen.
+				this.#view?.updating();
+				// The member's word is per machine: the next machine's first look says it again, so its desktop stays on
+				// while they watch it (review r1 F2).
+				this.#confirm = true;
+				this.#confirmedAt = Number.NEGATIVE_INFINITY;
 			}
 			this.#syncSwitchers();
 			if (!machine || machine.state !== "running") {
@@ -356,6 +364,7 @@ export class ComputerPanel {
 			if (look.kind === "picture") {
 				if (await this.#view?.show(look.png)) {
 					this.#etag = look.etag;
+					this.#pictureOf = machine.machineId;
 					this.#unchanged = 0;
 				}
 				this.#delay = LOOK_EVERY_MS;
@@ -378,9 +387,10 @@ export class ComputerPanel {
 					this.#delay = LOOK_EVERY_MS;
 					break;
 				case "SCREEN_HELD":
-					// The company folder has not let the next picture out yet: the last one stays, marked.
-					if (this.#view?.shown) this.#view.updating();
-					else this.#show("updating");
+					// The company folder has not let the next picture out yet: the last one stays, marked; another
+					// machine's goes.
+					if (this.#picturing()) this.#view?.updating();
+					else this.#unpicture("updating");
 					this.#delay = 2000;
 					break;
 				case "DESKTOP_NOT_RUNNING":
@@ -427,8 +437,13 @@ export class ComputerPanel {
 	 * row, the window says it cannot reach the computer. */
 	#failed(): void {
 		this.#failures++;
-		if (this.#view?.shown) this.#view.updating();
-		else if (this.#failures >= FAILURES_SHOWN) this.#show("error");
+		if (this.#picturing()) this.#view?.updating();
+		else this.#unpicture(this.#failures >= FAILURES_SHOWN ? "error" : "loading");
+	}
+
+	/** Whether the picture up is of the machine chosen now (after a switch it is the last one's until the next comes). */
+	#picturing(): boolean {
+		return this.#view?.shown === true && this.#pictureOf === this.#machineId;
 	}
 
 	/** The chosen machine while the agent has it and it has a screen, else the first with a screen: running ones come
@@ -582,11 +597,14 @@ export class ComputerPanel {
 				event.stopPropagation();
 				const rect = button.getBoundingClientRect();
 				const desktops = this.#listed?.machines.filter((machine) => machine.desktopCapable) ?? [];
+				// Full screen, the browser shows only the full-screen element: the menu goes inside it (review r1 F3).
+				const full = document.fullscreenElement;
 				openContextMenu({
 					label: t("Choose a computer"),
 					x: rect.left,
 					y: rect.bottom + 4,
 					opener: button,
+					...(full instanceof HTMLElement && full.contains(button) ? { container: full } : {}),
 					items: desktops.map((machine) => ({
 						label: machine.name,
 						hint: machine.purpose.length > 60 ? `${machine.purpose.slice(0, 59)}…` : machine.purpose,

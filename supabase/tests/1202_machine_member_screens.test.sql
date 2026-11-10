@@ -671,14 +671,15 @@ values ('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-0000000
 select set_config('session_replication_role', 'origin', true);
 select set_config('qorpera_test.mm_7d', pg_temp.mm_hinted(format(
 	'update public.qorpera_company_machines set desired_state = ''running'' where id = %L', pg_temp.mm_id('a2'))), true);
-rollback to savepoint mm_hints;
+-- Read before the rollback below, which undoes these transaction-local settings with the rest (review r1 F4).
 do $$
 begin
-	perform pg_temp.base_assert(current_setting('qorpera_test.mm_7x') = '',
-		E'7: hints that differ:\n' || current_setting('qorpera_test.mm_7x'));
-	perform pg_temp.base_assert(current_setting('qorpera_test.mm_7d') = '',
-		'7: a company being deleted: ' || current_setting('qorpera_test.mm_7d'));
+	perform pg_temp.base_assert(current_setting('qorpera_test.mm_7x', true) = '',
+		E'7: hints that differ:\n' || coalesce(current_setting('qorpera_test.mm_7x', true), 'unset'));
+	perform pg_temp.base_assert(current_setting('qorpera_test.mm_7d', true) = '',
+		'7: a company being deleted: ' || coalesce(current_setting('qorpera_test.mm_7d', true), 'unset'));
 end $$;
+rollback to savepoint mm_hints;
 
 -- 8. Grants and the marker -----------------------------------------------------------------------------------------------------
 

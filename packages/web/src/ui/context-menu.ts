@@ -39,6 +39,9 @@ export interface ContextMenuOptions {
 	findOpener?: () => HTMLElement | null;
 	/** The menu closed; `press` is the press outside it that closed it, when one did. */
 	onClose?: (press?: Event) => void;
+	/** Where the menu and its submenus are put (default the page's body): the element that is full screen when the
+	 * opener is in it, since the browser shows nothing outside that element then. */
+	container?: HTMLElement;
 }
 
 export interface ContextMenu {
@@ -144,7 +147,7 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 					}
 					closeSubmenu();
 					const child = build(entry.items, entry.label, true);
-					document.body.append(child);
+					(options.container ?? document.body).append(child);
 					const row = trigger.getBoundingClientRect();
 					const parent = menu.getBoundingClientRect();
 					const scale = uiScale();
@@ -233,7 +236,7 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 			options.onClose?.(closedBy);
 		},
 	};
-	document.body.append(root);
+	(options.container ?? document.body).append(root);
 	place(root, options.x, options.y);
 	opener?.classList.add("menu-open");
 	active = handle;

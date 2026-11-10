@@ -121,17 +121,29 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
  * unit active with its display answering (else 95: the screen is off; a look never starts it). With `$1` = keep it puts
  * off the desktop's own idle stop (touch -c: a desktop whose note is gone is stopping anyway). The screenshot, with the
  * pointer drawn, goes to a root-only folder and out on stdout; the file goes with the script. A plain scrot does not
- * touch the desktop's note, so only `keep` does (measured on a 2 cpu / 4 GiB machine, 10 Nov 2026: 42 ms a look). */
+ * touch the desktop's note, so only `keep` does (measured on a 2 cpu / 4 GiB machine, 10 Nov 2026: 42 ms a look).
+ *
+ * LXD ends the shell with SIGKILL when the look is cut off (the request, its 6 s deadline), which no trap outlives, so
+ * each look first removes the pictures of earlier looks that can no longer be in flight: named as its own and over a
+ * minute old (review r1 F1). And a picture larger than the host takes is never streamed (exit 94): the trap removes it,
+ * and the host never has to cut the exec off for its output. Plain sh, with date, stat, rm and cat. */
 export const COMPANY_MACHINE_MEMBER_LOOK = [
 	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97',
 	"command -v scrot >/dev/null 2>&1 || exit 98",
 	"{ systemctl is-active --quiet qorpera-machine-desktop.service && DISPLAY=:1 xdpyinfo >/dev/null 2>&1; } || exit 95",
 	'if [ "$1" = keep ]; then touch -c /run/qorpera-desktop/last-use; fi',
 	"umask 077",
-	"mkdir -p /run/qorpera-view || exit 1",
-	"f=/run/qorpera-view/look-$$.png",
+	"d=/run/qorpera-view",
+	'mkdir -p "$d" || exit 1',
+	'if now=$(date +%s) && [ -n "$now" ]; then',
+	'\tfor old in "$d"/look-*.png; do',
+	'\t\tm=$(stat -c %Y "$old" 2>/dev/null) && [ -n "$m" ] && [ $((now - m)) -gt 60 ] && rm -f "$old"',
+	"\tdone",
+	"fi",
+	'f="$d/look-$$.png"',
 	"trap 'rm -f \"$f\"' EXIT",
 	'DISPLAY=:1 scrot --pointer --overwrite --silent "$f" 2>/dev/null || exit 1',
+	`s=$(stat -c %s "$f" 2>/dev/null) && [ -n "$s" ] && [ "$s" -le ${SCREEN_PNG_BYTES} ] || exit 94`,
 	'cat "$f"',
 ].join("\n");
 /** A member's look takes 42 ms on the machine; this bounds a busy one, inside the member's request of 30 s. */
@@ -2156,6 +2168,8 @@ export class LxdCompanyMachineHost {
 		);
 		const refused = MEMBER_LOOK_EXITS[result.exitCode];
 		if (refused !== undefined) return { refused };
+		// A picture larger than a screen's: not streamed, and removed on the machine.
+		if (result.exitCode === 94) throw new Error("COMPANY_MACHINE_MEMBER_LOOK_TOO_LARGE");
 		if (result.exitCode !== 0) throw new Error("COMPANY_MACHINE_MEMBER_LOOK_FAILED");
 		const png = Buffer.from(result.stdout);
 		if (!screenPicture(png)) throw new Error("COMPANY_MACHINE_MEMBER_LOOK_INVALID");

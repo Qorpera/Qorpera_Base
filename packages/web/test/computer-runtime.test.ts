@@ -477,6 +477,72 @@ describe("an agent's computer window", () => {
 		expect(q.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher")!.hidden).toBe(true);
 	});
 
+	it("says the member watches each machine they switch to, and not only the first (review r1 F2)", async () => {
+		const s = setup({ machines: [machine(1), machine(2)] });
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		const watching = (n: number) => new RegExp(`/${machine(n).machineId}/watching$`);
+		expect(s.looks[0]?.url).toMatch(watching(1));
+		await advance(LOOK_EVERY_MS);
+		expect(s.looks[1]?.url).toMatch(new RegExp(`/${machine(1).machineId}$`));
+		// Within five minutes of the word for the first machine, the member chooses the second: its first look says it.
+		const choose = (row: number) => {
+			p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher")!.click();
+			[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][row]!.click();
+		};
+		s.state.answers.push({ picture: 2 });
+		choose(1);
+		await flush();
+		expect(s.looks.at(-1)?.url).toMatch(watching(2));
+		await advance(LOOK_EVERY_MS);
+		expect(s.looks.at(-1)?.url).toMatch(new RegExp(`/${machine(2).machineId}$`));
+		// And back again: the first machine hears it once more.
+		s.state.answers.push({ picture: 1 });
+		choose(0);
+		await flush();
+		expect(s.looks.at(-1)?.url).toMatch(watching(1));
+	});
+
+	it("opens the switcher's menu inside the full-screen frame, where the browser shows it (review r1 F3)", async () => {
+		const s = setup({ machines: [machine(1), machine(2)] });
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		// On the preview, the menu is the page's, as every menu.
+		p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher")!.click();
+		expect(openMenu()!.el.parentElement).toBe(document.body);
+		openMenu()!.close();
+		const overlay = p.el.querySelector<HTMLElement>(".machine-screen")!;
+		p.el.querySelector<HTMLButtonElement>(".screen-viewer-enter")!.click();
+		const inFrame = overlay.querySelector<HTMLButtonElement>(".computer-switcher")!;
+		expect(inFrame.hidden).toBe(false);
+		expect(inFrame.textContent).toBe("desk-1");
+		// Full screen: the browser shows only the full-screen element, so the menu goes inside it.
+		Object.defineProperty(document, "fullscreenElement", { configurable: true, get: () => overlay });
+		cleanup.push(() => Reflect.deleteProperty(document, "fullscreenElement"));
+		inFrame.click();
+		const menu = openMenu()!.el;
+		expect(menu.parentElement).toBe(overlay);
+		expect([...menu.querySelectorAll("[role^=menuitem]")].map((row) => row.textContent)).toEqual([
+			expect.stringContaining("desk-1"),
+			expect.stringContaining("desk-2"),
+		]);
+		s.state.answers.push({ picture: 2 });
+		[...menu.querySelectorAll<HTMLElement>("[role^=menuitem]")][1]!.click();
+		// The member stays in the entered frame: the last picture stays, marked, until the next machine's comes.
+		await flush();
+		expect(s.looks.at(-1)?.url).toContain(machine(2).machineId);
+		expect(p.el.classList.contains("is-entered")).toBe(true);
+		expect(mark(p)).toBe("Live");
+		expect(inFrame.textContent).toBe("desk-2");
+		// The browser refused full screen: the entered frame stays in the page, and so does the menu.
+		Reflect.deleteProperty(document, "fullscreenElement");
+		inFrame.click();
+		expect(openMenu()!.el.parentElement).toBe(document.body);
+		openMenu()!.close();
+	});
+
 	it("says it cannot reach the computer after two failed reads, and tries again", async () => {
 		const s = setup();
 		s.state.listFails = 2;
