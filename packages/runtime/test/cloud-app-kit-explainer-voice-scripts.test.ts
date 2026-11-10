@@ -38,16 +38,19 @@ function run(script: string, args: string[], scenario: string): Promise<{ code: 
 	});
 }
 
-/** The recorder with its answer waiting, told to stop `stopAfterMs` after the call stands. */
+/** The recorder with its answer waiting, told to stop `stopAfterMs` after the call stands. `finishing` is the seconds
+ * it gives a turn to finish, where a test cannot wait the forty it gives by itself. */
 function recorded(
 	scenario: string,
 	stopAfterMs: number,
+	finishing?: number,
 ): Promise<{ code: number | null; lines: Line[]; work: string }> {
 	const work = mkdtempSync(join(tmpdir(), "voice-peer-test-"));
 	folders.push(work);
 	writeFileSync(join(work, "answer.sdp"), "v=0 the answer\n");
 	return new Promise((resolve) => {
-		const child = spawn(process.execPath, [join(KIT, "voice-peer.cjs"), work, "20"], {
+		const args = [join(KIT, "voice-peer.cjs"), work, "20", ...(finishing ? [String(finishing)] : [])];
+		const child = spawn(process.execPath, args, {
 			env: { ...process.env, QORPERA_PLAYWRIGHT: STUB, QORPERA_VOICE_SCENARIO: scenario },
 			stdio: ["ignore", "pipe", "ignore"],
 		});
@@ -109,6 +112,15 @@ it("ends as a failure when a turn cannot be written, and says why", async () => 
 	const { code, lines, work } = await recorded("turn-lost-write", 3000);
 	expect(code).toBe(1);
 	expect(lines.at(-1)).toEqual({ ended: "a turn could not be kept: no room left on the machine" });
+	expect(lines.some((line) => "turn" in line)).toBe(false);
+	expect(existsSync(join(work, "1.webm"))).toBe(false);
+});
+
+it("ends as a failure when a turn is still not written when its time to finish is up", async () => {
+	// The turn's end came, its file never does; stop comes after a second, and the turn gets two to finish.
+	const { code, lines, work } = await recorded("turn-stalled-write", 1000, 2);
+	expect(code).toBe(1);
+	expect(lines.at(-1)).toEqual({ ended: "a turn could not be kept: it was not written in time" });
 	expect(lines.some((line) => "turn" in line)).toBe(false);
 	expect(existsSync(join(work, "1.webm"))).toBe(false);
 });

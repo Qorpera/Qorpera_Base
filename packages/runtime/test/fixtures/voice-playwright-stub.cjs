@@ -6,6 +6,7 @@
 //   turn             a call in which the voice speaks one turn
 //   turn-slow-write  the same, with the turn's file written two seconds late
 //   turn-lost-write  the same, with the turn's file refused
+//   turn-stalled-write  the same, with the turn's file never written
 const scenario = process.env.QORPERA_VOICE_SCENARIO || "turn";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -95,6 +96,7 @@ const page = {
 		globalThis[name] = async (...args) => {
 			if (scenario === "turn-slow-write") await sleep(2000);
 			if (scenario === "turn-lost-write") throw new Error("no room left on the machine");
+			if (scenario === "turn-stalled-write") await new Promise(() => {});
 			return write(...args);
 		};
 	},

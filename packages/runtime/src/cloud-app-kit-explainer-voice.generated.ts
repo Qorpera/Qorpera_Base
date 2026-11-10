@@ -50,7 +50,7 @@ export const EXPLAINER_VOICE_PEER_CJS = `// The explainer kit's voice recorder (
 // The runtime holds this file's text (cloud-app-kit-explainer-voice.generated.ts, written by
 // scripts/generate-app-kits.mjs) and runs it on the machine; change it here, then run that script.
 //
-//   node voice-peer.cjs <work folder> [seconds, at most 290]
+//   node voice-peer.cjs <work folder> [seconds, at most 290] [seconds a turn may take to finish, at most 40]
 //
 // It prints lines that start with \`QORPERA-VOICE \` and hold one JSON object each:
 //   {"offer": "<SDP>"}                 the offer, once
@@ -61,13 +61,13 @@ export const EXPLAINER_VOICE_PEER_CJS = `// The explainer kit's voice recorder (
 // (its being there ends the recording). A turn is the voice's own: it begins at the call's \`turn.created\` and ends
 // when \`turn.done\` has come and the sound has been quiet for 0.7 s, so the two ends need no shared clock.
 // A turn whose end has come is always finished before the recorder goes: its file is written and its line printed
-// even when \`stop\` or the time comes meanwhile. A turn that cannot be written ends the recording as a failure; a
-// turn still being spoken when the end comes is dropped.
+// even when \`stop\` or the time comes meanwhile. A turn that cannot be written, or is not written within its time
+// to finish, ends the recording as a failure; a turn still being spoken when the end comes is dropped.
 const { chromium } = require(process.env.QORPERA_PLAYWRIGHT || "playwright");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const [work, limit = "290"] = process.argv.slice(2);
+const [work, limit = "290", finishing = "40"] = process.argv.slice(2);
 const say = (line) => console.log(\`QORPERA-VOICE \${JSON.stringify(line)}\`);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -234,13 +234,17 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 			}
 			await sleep(150);
 		}
-		// A turn whose end has come is finished first: its last sound runs out (up to 30 s), then it is written.
-		for (let waited = 0; waited < 40000; waited += 100) {
+		// A turn whose end has come is finished first: its last sound runs out (up to 30 s), then it is written. One
+		// that is still not written when its time is up is lost, and that is said.
+		const finishMs = Math.max(1, Math.min(40, Number(finishing) || 40)) * 1000;
+		let busy = true;
+		for (let waited = 0; busy && waited < finishMs; waited += 100) {
 			const now = await state();
 			if (now.failed) ended = unkept(now.failed);
-			if (now.failed || !now.busy) break;
-			await sleep(100);
+			busy = now.busy && !now.failed;
+			if (busy) await sleep(100);
 		}
+		if (busy) ended = unkept("it was not written in time");
 	} catch (error) {
 		ended = String(error && error.message ? error.message : error).slice(0, 300);
 	} finally {

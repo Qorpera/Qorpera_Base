@@ -243,7 +243,8 @@ web does not already answer. What the kit adds is that the agent writes one file
     the two ends need no shared clock. It is handed no sign-in and reads none: the call is placed where the sign-in
     is, and only the offer and the answer pass between the two. A `stop` file ends it; so does its time (at most
     290 s). A turn whose end has come is finished first, whatever ends the recording: its file is written and its
-    line printed. A turn that cannot be written ends the recording as a failure (review r1 of #1660).
+    line printed. A turn that cannot be written, or is still not written 40 s after its end, ends the recording
+    as a failure (reviews r1 and r2 of #1660).
   - `voice-encode.cjs` writes the turns that were kept as clips into the app's `voice/` folder: silence cut from
     both ends, AAC in `.mp4`, mono, 72 kbit/s, each written beside its place and moved in.
   A clip is kept only when the voice said its caption (`explainerSpokenMatches`): every run of letters in the
