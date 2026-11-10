@@ -578,12 +578,14 @@ describe("how far the bank setup is (app/bank-setup.ts)", () => {
 					company: { status: "done", cvr: "4512 3456" },
 					account: { status: "your_turn", bank: "  Danske   Bank " },
 					yourTurn: "Sign the application in the Danske Bank app.",
+					agent: "Vera",
 				}),
 			),
 		).toEqual({
 			company: { status: "done", cvr: "45123456" },
 			account: { status: "your_turn", bank: "Danske Bank" },
 			yourTurn: "Sign the application in the Danske Bank app.",
+			agent: "Vera",
 		});
 		expect(
 			parseBankSetup(JSON.stringify({ schema: BANK_SETUP_SCHEMA, company: { status: "finished", cvr: "123" } })),
@@ -591,8 +593,15 @@ describe("how far the bank setup is (app/bank-setup.ts)", () => {
 		expect(parseBankSetup(JSON.stringify({ schema: "other", company: { status: "done" } }))).toBeNull();
 		expect(parseBankSetup("not json")).toBeNull();
 		expect(parseBankSetup(undefined)).toBeNull();
-		const long = parseBankSetup(JSON.stringify({ schema: BANK_SETUP_SCHEMA, yourTurn: "x".repeat(500) }));
+		const long = parseBankSetup(
+			JSON.stringify({ schema: BANK_SETUP_SCHEMA, yourTurn: "x".repeat(500), agent: "y".repeat(500) }),
+		);
 		expect([...(long?.yourTurn ?? "")]).toHaveLength(200);
+		expect([...(long?.agent ?? "")]).toHaveLength(200);
+		expect(parseBankSetup(JSON.stringify({ schema: BANK_SETUP_SCHEMA, agent: "  Vera\n  Finance " }))?.agent).toBe(
+			"Vera Finance",
+		);
+		expect(parseBankSetup(JSON.stringify({ schema: BANK_SETUP_SCHEMA, agent: 7 }))).not.toHaveProperty("agent");
 	});
 
 	it("is a file the Bank page reads from the folder", () => {
@@ -623,11 +632,13 @@ describe("getting the company a bank from inside Qorpera (app/views/bank.ts)", (
 		} as unknown as BankConnectionClient;
 	}
 	/** The Bank page with no bank yet, a finance agent or not, and how far the setup is. */
-	async function setupPage(options: { finance?: boolean; setup?: Record<string, unknown>; role?: string } = {}) {
+	async function setupPage(
+		options: { finance?: boolean; staff?: (typeof staff)[]; setup?: Record<string, unknown>; role?: string } = {},
+	) {
 		const controller = company(true);
 		const state = controller.store.get();
 		controller.store.set({
-			staff: options.finance ? [cofounder, vera] : [cofounder],
+			staff: [cofounder, ...(options.finance ? [vera] : []), ...(options.staff ?? [])],
 			...(state.team ? { team: { ...state.team, role: (options.role ?? "owner") as "owner" } } : {}),
 			interfaceFolder: {
 				tables: new Map(),
@@ -753,6 +764,44 @@ describe("getting the company a bank from inside Qorpera (app/views/bank.ts)", (
 		renderBank(container, controller, { connection: client, navigate: vi.fn() });
 		expect(step(container)?.textContent).toContain("The Co-Founder finds one for the company.");
 		expect(buttons(container)).toContain("Ask the Co-Founder to hire one");
+	});
+
+	it("knows the finance owner from the setup file, since agents hired through the folder carry no template", async () => {
+		const ida = {
+			...staff,
+			id: id(42),
+			displayName: "Ida",
+			role: "Finance",
+			appearance: { color: "#336699", shape: "round" },
+		};
+		const { container, controller } = await setupPage({
+			staff: [ida],
+			setup: { company: { status: "working" }, account: { status: "todo" }, agent: " ida " },
+		});
+		expect(container.querySelector(".bank-setup-progress")?.textContent).toContain("Step 2 of 4");
+		expect(container.querySelector(".bank-setup-step.is-done")?.textContent).toContain("Ida is on the team.");
+		expect(step(container)?.textContent).toContain("Ida is on it");
+		expect(container.querySelector(".bank-setup-hero p")?.textContent).toContain("Ida does the paperwork.");
+		expect(container.querySelector(".bank-setup-figure.is-waiting")).toBeNull();
+		const opened = vi.spyOn(controller, "openStaffConversation").mockResolvedValue(session.sessionId);
+		click(container, "Open Ida's thread");
+		await settle();
+		expect(opened).toHaveBeenCalledWith(expect.objectContaining({ id: ida.id }));
+	});
+
+	it("counts a setup file as the finance owner hired, even when its name matches no agent", async () => {
+		const unnamed = await setupPage({ setup: { company: { status: "todo" } } });
+		expect(unnamed.container.querySelector(".bank-setup-progress")?.textContent).toContain("Step 2 of 4");
+		expect(unnamed.container.querySelector(".bank-setup-step.is-done")?.textContent).toContain(
+			"The finance agent is on the team.",
+		);
+		document.body.replaceChildren();
+		const { container } = await setupPage({ setup: { company: { status: "working" }, agent: "Bo" } });
+		expect(step(container)?.textContent).toContain("Bo is on it");
+		expect(container.querySelector(".bank-setup-figure")).not.toBeNull();
+		expect(container.querySelector(".bank-setup-figure.is-waiting")).toBeNull();
+		// No agent by that name to write to, so no thread to open.
+		expect(buttons(container)).toEqual(["Already have a bank account?"]);
 	});
 
 	it("draws the steps again when the finance agent is hired", async () => {

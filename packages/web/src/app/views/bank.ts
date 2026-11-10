@@ -313,6 +313,11 @@ class BankView {
 	update(text: string | undefined, setupText: string | undefined, loading: boolean): void {
 		// The connect controls depend on the member's role, so a role change draws the page again; the setup steps
 		// name the Co-Founder and the finance agent, and offer to write to them.
+		// The setup file names the finance agent, so it is read before the agent is looked up.
+		if (setupText !== this.#setupText) {
+			this.#setupText = setupText;
+			this.#setup = parseBankSetup(setupText);
+		}
 		const state = this.#company.store.get();
 		const role = state.team?.role ?? null;
 		const finance = this.#financeAgent();
@@ -331,10 +336,6 @@ class BankView {
 			this.#text = text;
 			this.#summary = text === undefined ? null : parseBankSummary(text);
 			this.#hover = -1;
-		}
-		if (setupText !== this.#setupText) {
-			this.#setupText = setupText;
-			this.#setup = parseBankSetup(setupText);
 		}
 		this.#draw(loading);
 	}
@@ -440,12 +441,17 @@ class BankView {
 		return this.#setupPage(note);
 	}
 
-	/** The company's finance agent: the first active agent hired from the finance template. */
+	/** The company's finance agent: the active agent the setup file names (by its shown name, any case), else the first
+	 * active agent hired from the finance template. Agents hired through the company folder carry no template. */
 	#financeAgent(): HostedStaffAgent | undefined {
-		return this.#company.store
-			.get()
-			.staff.filter((agent) => agent.employmentStatus === "active" && agent.templateId === "financial-officer")
-			.sort((left, right) => left.createdAt.localeCompare(right.createdAt))[0];
+		const active = this.#company.store.get().staff.filter((agent) => agent.employmentStatus === "active");
+		const named = this.#setup?.agent?.toLocaleLowerCase();
+		return (
+			(named ? active.find((agent) => agent.displayName.trim().toLocaleLowerCase() === named) : undefined) ??
+			active
+				.filter((agent) => agent.templateId === "financial-officer")
+				.sort((left, right) => left.createdAt.localeCompare(right.createdAt))[0]
+		);
 	}
 
 	/** No bank yet: the way to one from inside Qorpera, done by the company's finance agent. */
@@ -458,10 +464,12 @@ class BankView {
 			cofounder && cofounder.displayName.trim().toLowerCase() !== "co-founder" ? cofounder.displayName : undefined;
 		const setup = this.#setup;
 		const mayWrite = state.team?.capabilities.write === true && !state.accessLost;
-		const agentName = finance?.displayName ?? t("The finance agent");
+		const agentName = finance?.displayName ?? setup?.agent ?? t("The finance agent");
 		const companyDone = setup?.company.status === "done";
 		const accountDone = setup?.account.status === "done";
-		const done = [finance !== undefined, companyDone, accountDone, false];
+		// Only the finance owner keeps the setup file, so a file at all means one is on the team.
+		const hired = finance !== undefined || setup !== null;
+		const done = [hired, companyDone, accountDone, false];
 		const here = done.indexOf(false);
 		const status = here === 1 ? setup?.company.status : here === 2 ? setup?.account.status : undefined;
 		const talk = (agent: HostedStaffAgent, label: string, text: string | undefined, primary = true) =>
@@ -572,9 +580,13 @@ class BankView {
 				result: "",
 			},
 		];
+		// The finance agent's own figure; an acorn in colour for an owner the team list doesn't show by that name, and a
+		// grey one waiting to be hired.
 		const figure = finance
 			? agentFigure(finance, finance.displayName, { size: 76, className: "bank-setup-figure" })
-			: figureElement("acorn", undefined, { size: 76, still: true, className: "bank-setup-figure is-waiting" });
+			: hired
+				? figureElement("acorn", undefined, { size: 76, className: "bank-setup-figure" })
+				: figureElement("acorn", undefined, { size: 76, still: true, className: "bank-setup-figure is-waiting" });
 		return h(
 			"div",
 			{ class: "bank-setup" },

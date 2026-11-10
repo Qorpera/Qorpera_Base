@@ -8,7 +8,12 @@ import { parseRecord } from "@qorpera/contracts";
  *   { "schema": "qorpera.bank-setup/v1",
  *     "company": { "status": "done", "cvr": "45123456" },
  *     "account": { "status": "your_turn", "bank": "Danske Bank" },
- *     "yourTurn": "Sign the account application in the Danske Bank app." }
+ *     "yourTurn": "Sign the account application in the Danske Bank app.",
+ *     "agent": "Vera" }
+ *
+ * `agent` names the agent who keeps the file, as the company shows it. The agent writes the file from the moment it takes
+ * the job on, so a file at all means the company has its finance owner: agents hired through the company folder carry
+ * no template the page could know them by.
  *
  * A status is todo, working, your_turn or done. An agent writes this file, so the reader forgives: a part or a status
  * it doesn't know is todo, a CVR that isn't eight digits is left out, and a text is cut to a line. A file that isn't
@@ -26,6 +31,8 @@ export interface BankSetup {
 	readonly account: { readonly status: BankSetupStatus; readonly bank?: string };
 	/** What the founder is asked to do now, in the agent's words. */
 	readonly yourTurn?: string;
+	/** The agent who keeps the file, by the name the company shows it under. */
+	readonly agent?: string;
 }
 
 const TEXT_MAX = 200;
@@ -67,9 +74,11 @@ export function parseBankSetup(text: string | undefined): BankSetup | null {
 	const cvr = typeof company.cvr === "string" ? company.cvr.replace(/\s/g, "") : undefined;
 	const bank = line(account.bank);
 	const yourTurn = line(file.yourTurn);
+	const agent = line(file.agent);
 	return {
 		company: { status: status(company.status), ...(cvr && /^\d{8}$/.test(cvr) ? { cvr } : {}) },
 		account: { status: status(account.status), ...(bank ? { bank } : {}) },
 		...(yourTurn ? { yourTurn } : {}),
+		...(agent ? { agent } : {}),
 	};
 }
