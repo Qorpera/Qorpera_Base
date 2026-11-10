@@ -4,8 +4,10 @@ import {
 	appLinkName,
 	appPath,
 	appRelativePath,
+	appWriteTable,
 	isAppManifestPath,
 	parseAppManifest,
+	parseAppWrites,
 	setAppPosted,
 	writeAppManifest,
 } from "../src/interface-apps.ts";
@@ -25,6 +27,7 @@ describe("interface apps", () => {
 				owner: null,
 				posted: false,
 				reads: [],
+				writes: [],
 				concept: false,
 				cover: null,
 			},
@@ -43,6 +46,7 @@ describe("interface apps", () => {
 				owner: OWNER,
 				posted: true,
 				reads: ["tables", "todos"],
+				writes: [],
 				concept: false,
 				cover: null,
 			},
@@ -71,6 +75,7 @@ describe("interface apps", () => {
 			owner: OWNER,
 			posted: false,
 			reads: ["files" as const],
+			writes: [],
 			concept: false,
 			cover: null,
 		};
@@ -82,6 +87,42 @@ describe("interface apps", () => {
 		expect(parseAppManifest(written)).toEqual({ ok: true, manifest: concept });
 		// Not a concept and no cover: neither line is written.
 		expect(writeAppManifest(manifest)).not.toMatch(/concept|cover/);
+	});
+
+	it("reads what a page may ask a member to change, and refuses anything else", () => {
+		const parsed = parseAppManifest(
+			'name = "Orders"\nreads = ["tables", "questions"]\nwrites = ["answers", "table:orders", "answers"]\n',
+		);
+		expect(parsed.ok && parsed.manifest).toMatchObject({
+			reads: ["tables", "questions"],
+			writes: ["answers", "table:orders"],
+		});
+		// It is written out and reads back as itself; a page that only shows writes no such line.
+		if (parsed.ok) {
+			expect(writeAppManifest(parsed.manifest)).toContain('writes = ["answers", "table:orders"]\n');
+			expect(parseAppManifest(writeAppManifest(parsed.manifest))).toEqual(parsed);
+			expect(writeAppManifest({ ...parsed.manifest, writes: [] })).not.toContain("writes");
+		}
+		// Only answers and a table by its folder's name; never the table the Members page keeps.
+		for (const writes of [
+			'"files"',
+			'"tables"',
+			'"table:"',
+			'"table:Bad_Name"',
+			'"table:orders/rows.csv"',
+			'"table:areas"',
+			'"answers", "everything"',
+			Array.from({ length: 17 }, (_, at) => `"table:t${at}"`).join(", "),
+		]) {
+			const bad = parseAppManifest(`name = "A"\nwrites = [${writes}]\n`);
+			expect(bad.ok, writes).toBe(false);
+			if (!bad.ok) expect(bad.problems.map((problem) => problem.line)).toEqual([2]);
+		}
+		expect(parseAppManifest('name = "A"\nwrites = "answers"\n').ok).toBe(false);
+		expect(parseAppWrites(["table:orders"])).toEqual({ writes: ["table:orders"] });
+		expect(parseAppWrites([1])).toHaveProperty("problem");
+		expect(appWriteTable("table:orders")).toBe("orders");
+		expect(appWriteTable("answers")).toBeNull();
 	});
 
 	it("reads concept and cover, and refuses a cover that is no picture of the app", () => {

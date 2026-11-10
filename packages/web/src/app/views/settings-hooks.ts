@@ -32,7 +32,6 @@ interface KindText {
 	add: string;
 	name: string;
 	example: string;
-	purpose: string;
 	hint: string;
 	nameRule: string;
 	taken: string;
@@ -53,7 +52,6 @@ const KIND_TEXT: Record<Kind, KindText> = {
 		add: phrase("Add webhook"),
 		name: phrase("Webhook name"),
 		example: phrase("e.g. new-orders"),
-		purpose: phrase("What it is for, e.g. new orders from the shop"),
 		hint: phrase(
 			"Lowercase letters, digits and hyphens, starting with a letter. The company's agents read what it is for when something arrives.",
 		),
@@ -71,7 +69,6 @@ const KIND_TEXT: Record<Kind, KindText> = {
 		add: phrase("Add mailbox"),
 		name: phrase("Mailbox name"),
 		example: phrase("e.g. invoices"),
-		purpose: phrase("What it is for, e.g. invoices from suppliers"),
 		hint: phrase("The part before the @: lowercase letters, digits, dots, hyphens and underscores."),
 		nameRule: phrase(
 			"A mailbox name is lowercase letters, digits, dots, hyphens and underscores, and starts and ends with a letter or digit.",
@@ -259,7 +256,8 @@ export class HooksView {
 		const text = KIND_TEXT[kind];
 		const draft = this.#drafts[kind];
 		const name = draft.name.trim().toLowerCase();
-		const purpose = draft.purpose.trim();
+		// A mailbox's form asks for its name alone: the name says what it is for, and is the purpose the kernel wants.
+		const purpose = kind === "mailbox" ? name : draft.purpose.trim();
 		const nameProblem =
 			kind === "webhook" && name.startsWith("mail-")
 				? t("Names beginning with mail- belong to mailboxes.")
@@ -396,7 +394,8 @@ export class HooksView {
 				"div",
 				{ class: "settings-copy" },
 				h("strong", null, title(hook)),
-				hook.purpose ? h("small", null, hook.purpose) : null,
+				// A mailbox added here has its name for a purpose (#add): the line is for one that says more.
+				hook.purpose && hook.purpose !== hook.email?.split("@")[0] ? h("small", null, hook.purpose) : null,
 				h("small", { class: "hook-state" }, this.#state(hook)),
 			),
 			h("div", { class: "connection-actions" }, ...actions),
@@ -422,18 +421,23 @@ export class HooksView {
 			},
 		});
 		name.dataset.focusKey = `hook-name:${kind}`;
-		const purpose = h("input", {
-			type: "text",
-			value: draft.purpose,
-			maxlength: "512",
-			autocomplete: "off",
-			placeholder: t(text.purpose),
-			"aria-label": t("What it is for"),
-			oninput: () => {
-				draft.purpose = purpose.value;
-			},
-		});
-		purpose.dataset.focusKey = `hook-purpose:${kind}`;
+		// Only a webhook says what it is for: a mailbox's name does.
+		let purpose: HTMLInputElement | null = null;
+		if (kind === "webhook") {
+			const field = h("input", {
+				type: "text",
+				value: draft.purpose,
+				maxlength: "512",
+				autocomplete: "off",
+				placeholder: t("What it is for, e.g. new orders from the shop"),
+				"aria-label": t("What it is for"),
+				oninput: () => {
+					draft.purpose = field.value;
+				},
+			});
+			field.dataset.focusKey = "hook-purpose:webhook";
+			purpose = field;
+		}
 		// A mailbox's domain is the company mail's, known once the company has one mailbox.
 		const domain = kind === "mailbox" ? this.#hooks?.find((hook) => hook.email)?.email?.split("@")[1] : undefined;
 		const add = h(
