@@ -347,6 +347,16 @@ test("a desktop is asked for: small machines refuse it, chosen files open on it,
 	// Files and folders are put on the desktop as links (the company's stay where they are) and opened; a folder with a
 	// page is served on the machine's loopback only.
 	assert.match(command, /ln -s -- "\$path" "\$place"\n/);
+	// Nothing on the desktop is ever replaced: the same link is used again, and a taken name gets a number (review r1 F1).
+	assert.doesNotMatch(command, /rm -rf -- "\$place"/);
+	assert.match(command, /if \(\( ! copy \)\) && \[\[ -L \$place && \$\(readlink -- "\$place"\) == "\$path" \]\]; then break; fi\n/);
+	assert.match(command, /if \[\[ ! -e \$place && ! -L \$place \]\]; then\n\t\t\tif \(\( copy \)\); then\n\t\t\t\tcp -a -- "\$path" "\$place"\n/);
+	for (const line of [
+		'\tdesktop open /tmp/site --copy | grep "as site-2)" >/dev/null || { echo "a copy did not get a name of its own" >&2; exit 1; }\n',
+		"\techo edited >/home/desktop/Desktop/site-2/kept.txt\n",
+		'\t\t{ echo "opening again replaced something on the desktop" >&2; exit 1; }\n',
+	])
+		assert.ok(imageScript.includes(line), line);
 	assert.match(command, /launch \/usr\/bin\/python3 -m http\.server "\$port" --bind 127\.0\.0\.1 --directory "\$folder"\n/);
 	assert.match(command, /for target in "\$@"; do open_target "\$target" 0; done\n/);
 	// 3D drawing, no test bar, the session's bus for launched programs.

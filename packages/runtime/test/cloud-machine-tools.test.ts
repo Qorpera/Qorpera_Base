@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { CLOUD_MACHINE_FOLDER_LIMITS, cloudMachineFolderBytes } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CloudActionReviewControl, CloudActionReviewGate } from "../src/cloud-action-review.ts";
@@ -1107,6 +1108,17 @@ describe("machine tools", () => {
 				"desktop true makes it a desktop computer, with at least 2 cpus and 4 GiB",
 			);
 			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop start <company files, folders or URLs>");
+			// Every command the text says takes --shot is one the machine's desktop command takes it for; run is not.
+			const desktop = readFileSync(new URL("../../../deploy/machine/desktop", import.meta.url), "utf8");
+			const takesShot =
+				desktop
+					.match(/\n(open(?: \| [a-z]+)+)\)\n\tif \(\( \$# >= 3 \)\) && \[\[ \$\{\*: -2:1\} == --shot \]\]/)?.[1]
+					.split(" | ") ?? [];
+			const advertised =
+				CLOUD_MACHINE_START_DESCRIPTION.match(/end a ([a-z, ]+) with --shot /)?.[1].split(/, | or /) ?? [];
+			expect(advertised).toEqual(["click", "type", "key", "scroll", "open"]);
+			for (const command of advertised) expect(takesShot).toContain(command);
+			expect(takesShot).not.toContain("run");
 		} finally {
 			f.boundary.close();
 		}
