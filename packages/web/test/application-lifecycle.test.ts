@@ -1213,7 +1213,9 @@ describe("account and route ownership", () => {
 			ok: false,
 			error: expect.stringContaining("three times"),
 		});
-		const icon = f.root.querySelector<HTMLAnchorElement>('.rail a.rail-app[data-app-name="sales-board"]')!;
+		const icon = f.root.querySelector<HTMLAnchorElement>(
+			`.rail a.rail-app[data-href="#/c/${profileA.profileId}/a/sales-board"]`,
+		)!;
 		// A modified click on the icon stays the link's own (a new tab): nothing is read again.
 		const tab = vi.spyOn(window, "open").mockReturnValue(null);
 		icon.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }));
