@@ -33,6 +33,17 @@ const CAPTION_WORDS = 18;
 const VIDEO_SECONDS = 180;
 
 export { EXPLAINER_ENGINE_JS };
+/** The scripts a company machine runs to give an explainer its voice (packages/runtime/kits/explainer/voice-*.cjs):
+ * the captions as the running video speaks them, the other end of the voice call, and the clips from its turns. */
+export {
+	EXPLAINER_VOICE_CAPTIONS_CJS,
+	EXPLAINER_VOICE_ENCODE_CJS,
+	EXPLAINER_VOICE_PEER_CJS,
+} from "./cloud-app-kit-explainer-voice.generated.ts";
+
+/** Words a voice may take to say one number that a caption writes in digits ("1,200" as "one thousand two
+ * hundred" is two numbers and four words; "596" as "five hundred and ninety-six" one number and five). */
+const WORDS_A_NUMBER = 6;
 
 /** One recorded clip: the caption it speaks (by hash), its file in `voice/`, and its length. */
 export interface ExplainerClip {
@@ -79,6 +90,37 @@ export function parseExplainerClips(text: string): ExplainerClip[] {
 		clips.set(caption, { caption, file, seconds: Math.round(seconds * 100) / 100 });
 	}
 	return [...clips.values()];
+}
+
+/** A text's words, lower-cased: runs of letters and digits, an apostrophe inside a word kept (in either form). */
+const spokenWords = (text: string): string[] =>
+	text
+		.toLowerCase()
+		.replace(/[\u2018\u2019]/g, "'")
+		.match(/[\p{L}\p{N}]+(?:'[\p{L}]+)*/gu) ?? [];
+
+/**
+ * Whether a voice said a caption as it is written, by the transcript of what it said. The voice is a talker by
+ * nature: asked to read a line it sometimes adds a sentence of its own (once in 28 captions on 10 November 2026),
+ * and a clip that says more or other than its caption must not be kept. Every word of the caption that is not
+ * written in digits has to be in the transcript, in the caption's order. A number is said in words that no rule
+ * here could list for every language, so each number in the caption allows WORDS_A_NUMBER words in the transcript
+ * that the caption does not have; a caption with no number allows none.
+ */
+export function explainerSpokenMatches(caption: string, transcript: string): boolean {
+	const written = spokenWords(caption);
+	const said = spokenWords(transcript);
+	const numbers = written.filter((word) => /\p{N}/u.test(word)).length;
+	let at = 0;
+	let extra = 0;
+	for (const word of written) {
+		if (/\p{N}/u.test(word)) continue;
+		const found = said.indexOf(word, at);
+		if (found < 0) return false;
+		extra += found - at;
+		at = found + 1;
+	}
+	return extra + (said.length - at) <= numbers * WORDS_A_NUMBER;
 }
 
 const escapeHtml = (text: string): string =>
