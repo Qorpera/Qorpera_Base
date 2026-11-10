@@ -74,6 +74,12 @@ export function parseAppWrites(
 	return { writes };
 }
 
+/** The kits an app can be made from (RUNTIME-INTERFACE-APPS.md §3a): `save_app` writes the kit's own files into the
+ * app's folder, and the agent writes only what the kit leaves to it. `explainer` is a short narrated video: the kit
+ * writes `engine.js` and `index.html`, the agent `scenes.js`. */
+export const APP_KITS = Object.freeze(["explainer"] as const);
+export type AppKit = (typeof APP_KITS)[number];
+
 /** The kinds of file a page may load, by extension, with the media type each is handed to the frame as. */
 export const APP_FILE_TYPES: Readonly<Record<string, string>> = Object.freeze({
 	html: "text/html",
@@ -132,6 +138,8 @@ export interface AppManifest {
 	readonly concept: boolean;
 	/** A picture of the app, relative to its folder (.png, .jpg or .webp), shown as its thumbnail; null for none. */
 	readonly cover: string | null;
+	/** The kit the app is made from, or null for a page the agent wrote whole. A kit's page is `index.html`. */
+	readonly kit: AppKit | null;
 }
 
 export interface AppProblem {
@@ -143,7 +151,20 @@ export type AppManifestParse =
 	| { readonly ok: true; readonly manifest: AppManifest }
 	| { readonly ok: false; readonly problems: readonly AppProblem[] };
 
-const KEYS = ["name", "about", "emblem", "colour", "entry", "owner", "posted", "reads", "writes", "concept", "cover"];
+const KEYS = [
+	"name",
+	"about",
+	"emblem",
+	"colour",
+	"entry",
+	"owner",
+	"posted",
+	"reads",
+	"writes",
+	"concept",
+	"cover",
+	"kit",
+];
 /** The kinds a cover may be. */
 export const APP_COVER_KINDS: ReadonlySet<string> = new Set(["png", "jpg", "jpeg", "webp"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -287,8 +308,15 @@ export function parseAppManifest(text: string): AppManifestParse {
 		if ("problem" in parsed) problem("writes", parsed.problem);
 		else writes = parsed.writes;
 	}
+	const kit = choice("kit", APP_KITS);
+	// A kit writes its own page, so there is one place it opens.
+	if (kit !== null && entry !== APP_DEFAULT_ENTRY)
+		problem("entry", `an app made from a kit opens ${APP_DEFAULT_ENTRY}: leave entry out`);
 	if (problems.length > 0 || name === null) return { ok: false, problems };
-	return { ok: true, manifest: { name, about, emblem, colour, entry, owner, posted, reads, writes, concept, cover } };
+	return {
+		ok: true,
+		manifest: { name, about, emblem, colour, entry, owner, posted, reads, writes, concept, cover, kit },
+	};
 }
 
 /** A TOML basic string. */
@@ -309,6 +337,7 @@ export function writeAppManifest(manifest: AppManifest): string {
 	if (manifest.writes.length > 0) lines.push(`writes = [${manifest.writes.map(tomlString).join(", ")}]`);
 	if (manifest.concept) lines.push("concept = true");
 	if (manifest.cover) lines.push(`cover = ${tomlString(manifest.cover)}`);
+	if (manifest.kit) lines.push(`kit = ${tomlString(manifest.kit)}`);
 	return `${lines.join("\n")}\n`;
 }
 

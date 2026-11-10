@@ -30,6 +30,7 @@ describe("interface apps", () => {
 				writes: [],
 				concept: false,
 				cover: null,
+				kit: null,
 			},
 		});
 		const full = parseAppManifest(
@@ -49,6 +50,7 @@ describe("interface apps", () => {
 				writes: [],
 				concept: false,
 				cover: null,
+				kit: null,
 			},
 		});
 	});
@@ -78,6 +80,7 @@ describe("interface apps", () => {
 			writes: [],
 			concept: false,
 			cover: null,
+			kit: null,
 		};
 		expect(parseAppManifest(writeAppManifest(manifest))).toEqual({ ok: true, manifest });
 		// A concept with its cover writes both, and reads back as itself.
@@ -87,6 +90,26 @@ describe("interface apps", () => {
 		expect(parseAppManifest(written)).toEqual({ ok: true, manifest: concept });
 		// Not a concept and no cover: neither line is written.
 		expect(writeAppManifest(manifest)).not.toMatch(/concept|cover/);
+	});
+
+	it("reads the kit an app is made from, whose page is always index.html", () => {
+		const kit = parseAppManifest('name = "How the fee works"\nkit = "explainer"\n');
+		expect(kit.ok && kit.manifest).toMatchObject({ kit: "explainer", entry: "index.html" });
+		// Written out it reads back as itself, with the line last.
+		const written = kit.ok ? writeAppManifest(kit.manifest) : "";
+		expect(written.endsWith('kit = "explainer"\n')).toBe(true);
+		expect(parseAppManifest(written)).toEqual(kit);
+		// No kit: no line.
+		expect(writeAppManifest({ ...(kit.ok ? kit.manifest : null)!, kit: null })).not.toContain("kit");
+		// A kit that is none of Qorpera's, and a kit with a page of its own, are problems with their lines.
+		expect(parseAppManifest('name = "X"\nkit = "slides"\n')).toEqual({
+			ok: false,
+			problems: [{ line: 2, message: "kit must be one of explainer" }],
+		});
+		expect(parseAppManifest('name = "X"\nentry = "main.html"\nkit = "explainer"\n')).toEqual({
+			ok: false,
+			problems: [{ line: 2, message: "an app made from a kit opens index.html: leave entry out" }],
+		});
 	});
 
 	it("reads what a page may ask a member to change, and refuses anything else", () => {

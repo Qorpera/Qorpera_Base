@@ -217,6 +217,62 @@ describe("putting an app's page together", () => {
 		expect(tooBig.ok).toBe(false);
 	});
 
+	it("puts an explainer together as any app: its engine, its scenes and its voice clips, in a dark page", async () => {
+		// The page as save_app's explainer kit writes it (packages/runtime/src/cloud-app-kit-explainer.ts
+		// `explainerPage`, whose test holds this text): the web needs to know nothing of the kit.
+		const page = [
+			"<!doctype html>",
+			'<html lang="en">',
+			"<head>",
+			'<meta charset="utf-8">',
+			'<meta name="viewport" content="width=device-width, initial-scale=1">',
+			'<meta name="color-scheme" content="dark">',
+			"<title>How the fee works</title>",
+			"</head>",
+			"<body>",
+			'<div id="video"></div>',
+			'<audio data-caption="3f0a9c1e" data-seconds="5.42" preload="none"><source src="voice/3f0a9c1e.mp4"></audio>',
+			'<audio data-caption="0000beef" data-seconds="2" preload="none"><source src="voice/0000beef.mp4"></audio>',
+			'<script src="engine.js"></script>',
+			'<script>window.V = new Video(document.getElementById("video"), { title: "How the fee works" });</script>',
+			'<script src="scenes.js"></script>',
+			"<script>V.start();</script>",
+			"</body>",
+			"</html>",
+			"",
+		].join("\n");
+		const assembled = await assembleApp(
+			fakeFolder({
+				"apps/fee/index.html": page,
+				"apps/fee/engine.js": "window.Video = class {};",
+				"apps/fee/scenes.js": 'V.part("The fee");',
+				"apps/fee/voice/3f0a9c1e.mp4": new Uint8Array([0, 0, 0, 28]),
+				// The second clip is listed in the page and gone from the folder: it stays a name the frame can't load.
+			}) as never,
+			{ path: "apps/fee", entry: "index.html" },
+			new AbortController().signal,
+			{ scheme: "light", brand: null },
+		);
+		expect(assembled.ok).toBe(true);
+		if (!assembled.ok) return;
+		// It says it is dark, so it is dark whatever the member's scheme, and so is what stands behind it meanwhile.
+		expect(assembled.scheme).toBe("dark");
+		const handed = new DOMParser().parseFromString(assembled.page, "text/html");
+		const scripts = [...handed.querySelectorAll("script")].map((script) => script.textContent);
+		expect(scripts).toEqual([
+			"window.Video = class {};",
+			'window.V = new Video(document.getElementById("video"), { title: "How the fee works" });',
+			'V.part("The fee");',
+			"V.start();",
+		]);
+		expect(handed.querySelector("script[src]")).toBeNull();
+		const clips = [...handed.querySelectorAll("audio[data-caption] > source")].map((source) =>
+			source.getAttribute("src"),
+		);
+		expect(clips).toEqual(["data:video/mp4;base64,AAAAHA==", "voice/0000beef.mp4"]);
+		expect(handed.querySelector("audio")?.getAttribute("data-seconds")).toBe("5.42");
+	});
+
 	it("puts the app's own stylesheets, scripts and pictures in, and leaves everything else as written", async () => {
 		const assembled = await assembleApp(
 			folder(),

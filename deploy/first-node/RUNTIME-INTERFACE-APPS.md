@@ -51,6 +51,7 @@ write, with the tools they already have, and need no migration.
 | `writes` | list of `answers` and `table:<name>`, at most 16 | `[]` | what the app may ask a member to change (§5 "Changes"); `<name>` is a company table's folder name, never `areas` |
 | `concept` | true or false | false | a concept of the company's product: it opens in the Concepts viewer (`#/c/<id>/concepts/<name>`, full screen, a side panel to pick a concept), and the drawer shows one Concepts entry for all of them, posted or not |
 | `cover` | relative path to a `.png`, `.jpg` or `.webp` in the app's folder | none | the picture of a concept in the viewer's side panel; without one, its emblem |
+| `kit` | `explainer` | none | the kit the app is made from (§3a): `save_app` writes the kit's own files, the agent the rest. A kit's page is `index.html`, so `entry` beside it is a problem |
 
 Unknown keys, bad types and bad values are problems; an app whose manifest has problems is not shown (its card says
 so and links the file).
@@ -135,7 +136,7 @@ its look already reads well at 1280 and at 390 px, and a company's apps look lik
   manifest's `reads`, how it lets a member act (§5 "Changes") on the manifest's `writes`, and the base style's
   variables and the company's colours (§2) on `files`, all in the tool's schema, because a tool's own description
   holds 4096 bytes. `writes` is checked as `reads` is, by `save_app` and by `company_write` / `company_edit` of an
-  `app.toml`; a manifest given without it keeps what the app has.
+  `app.toml`; a manifest given without it keeps what the app has. `kit` makes the app from a kit (§3a).
 - `post_app {name, operationKey, posted}` rewrites `posted` in `app.toml`, every other byte as written.
 - `company_write` / `company_edit` of an `apps/<name>/app.toml` check the manifest the same way and refuse a change of
   `posted` (pointing to `post_app`) or of `owner`. An app's files are its owner's: another agent changes them with
@@ -174,6 +175,71 @@ should wait for his yes on that page: "Yes, wait for me"). The company context t
 This is a rule of the agents' instructions. The platform does not hold a publish back for it: `publish_site` on a
 live site is still reviewed as any outside effect (cloud-action-review.ts). Making the member's yes a condition of
 that publish is a follow-up, if the rule alone proves too weak.
+
+## 3a. The explainer kit (10 November 2026)
+
+Jonas, 10 November 2026: "I think in general I would like to see if there are some interfaces that pressent better
+through a 3B1B style video, explaining concepts and ideas clearly but without needing to pin down an exact UI or
+design yet"; and, asked whether agents should get that format: "yes, I do. they need to be created with a voice over
+too though, they can't be mute". A trial the same day (one app as a two-minute video) gave the rule of thumb: good
+for a mechanism or a decision with numbers, bad for the state of an area.
+
+An explainer is an ordinary app (`kit = "explainer"`): the same folder, the same frame, the same limits, no call the
+web does not already answer. What the kit adds is that the agent writes one file.
+
+| File | Whose | What it is |
+| --- | --- | --- |
+| `scenes.js` | the agent's | the video: chapters (`V.part`), scenes (`V.scene`), and in each scene the captions (`s.say`) with what moves under them |
+| `engine.js` | Qorpera's | the animation engine and its player (play and pause, a scrub bar, chapters, captions, the voice). Its source is `packages/runtime/kits/explainer/engine.js`; the runtime holds its text (`cloud-app-kit-explainer-engine.generated.ts`, written by `npm run generate:app-kits`, held to the source by a test) |
+| `index.html` | Qorpera's | the page: it makes the video `V`, runs `scenes.js`, starts the video, and names the voice clips |
+| `voice/<hash>.mp4` or `.webm`, `voice/clips.json` | written from a machine | the voice: one clip a caption, and the list of them |
+
+- **`save_app` writes the two that are Qorpera's.** With `manifest.kit = "explainer"` a new app needs only
+  `scenes.js` among its files (`APP_SCENES_MISSING` without it); the engine and the page go into the same change. A
+  call that names `engine.js` or `index.html` of such an app is refused (`APP_KIT_FILE`), and so is a page of its own
+  (`APP_KIT_ENTRY`). On a later save they are written again only where the folder holds none or other text (by
+  hash): a new title, new clips, or the engine of a newer runtime. A save of `scenes.js` alone changes that one file.
+  An existing app takes the kit the same way, keeping its owner and `posted`.
+- **Each explainer carries its engine.** The engine is copied into the app, not put in by the web when the page
+  opens. So an explainer plays the same in a year as on the day it was checked, and the agent can open it on a
+  machine (`/company/apps/<name>/index.html`) to look at it, as it looks at any app. The cost is that an engine fix
+  reaches an explainer only when it is saved again.
+- **The page makes and starts the video**, so a `scenes.js` holds only parts and scenes. One that makes and starts
+  its own still plays: the engine starts once. Everything of the engine is inside one function; a `scenes.js` gets
+  `Video`, `C` (the colours) and `captionHash`, and may name its own things as it likes. With no scene, or with a
+  mistake in `scenes.js`, the page says so in words where the video would be (the line too), which is what the agent
+  sees when it looks.
+- **Captions are the narration.** Each `s.say` is one caption, shown under the stage. Silent, a caption lasts its
+  words at three a second and half a second more, or as long as what moves under it. Every frame is computed from
+  the time alone, so the video pauses, scrubs and jumps anywhere (`index.html?t=95` opens it paused at 1:35, for a
+  look on a machine; the frame has no query).
+- **The voice.** A caption has a clip when the page holds
+  `<audio data-caption="HASH" data-seconds="5.42" preload="none"><source src="voice/HASH.mp4"></audio>`, where
+  `HASH` is FNV-1a 32-bit over the caption's UTF-8 text as 8 hex digits (`captionHash`, the same in the engine and the
+  runtime, held together by a test). Changing one word of a caption gives it a new name, so that caption alone
+  falls silent until it is recorded again. `save_app` writes those elements from `voice/clips.json`
+  (`{"clips": [{"caption": "3f0a9c1e", "file": "3f0a9c1e.mp4", "seconds": 5.42}]}`): one clip a caption, the file
+  the caption's hash with `.mp4` or `.webm`, at most 60 seconds, at most 56 clips (an app's 64 files less the rest),
+  and only clips whose file is in `voice/`. A list that does not read costs the video its voice, never the save.
+  The web's page builder puts each clip into the page as it puts a video in (§2: `source[src]`), so the web knows
+  nothing of the kit. A spoken caption lasts as long as its clip and half a second. The player speaks the clip of
+  the caption on screen through one audio element, with the timeline as the clock: pause, scrub and jump are the
+  timeline's alone. A browser plays sound only from a member's press, and some hold every later clip to that too, so
+  the element is started inside each press that plays the video or switches the voice on (muted, and stopped again
+  unless a clip is due). Voice on/off is a button (and M); the captions always stay, for a silent phone.
+- **How the clips are made is the next step** (§7): the kit, the engine and the page are ready for them. The plan is
+  ChatGPT's own voice through the Codex the agent already runs on, one caption at a time, each clip checked against
+  its caption by the call's transcript (Jonas, 10 November 2026: "if it can just be ChatGPT's AI voice driven on
+  your subscription it would be ideal probably"; a trial on his Mac that day read 28 captions, and one of them came
+  back with sentences of the voice's own). Until then an explainer plays with captions alone.
+- **What an agent is told** stands on the manifest's `kit` in `save_app`'s schema: when a video is the right form
+  and when not, the calls of a scene, how to write captions for the ear, how to pace and lay out a stage, that every
+  number comes from the company's files, and to look at more than the first frame before showing it. A test holds
+  every call, icon and colour it names to the engine. After a save, `look` names what a read of `scenes.js` found:
+  no scene, a video made in the file itself, more than 56 captions, captions over 18 words, more than three minutes.
+- **Security:** nothing new. The engine is Qorpera's text, but it runs where the agent's own script runs, inside
+  the app's frame, with exactly a page's reach (§6); the page reads no live data unless its manifest says so, and an
+  explainer needs none. A clip is a file of the app under the app's limits.
 
 ## 4. Web
 
@@ -464,6 +530,10 @@ security review of its own:
    `questions` in the bridge and the frame document. No migration and no node change: both saves are ones a member
    already makes.
 6. Links through the bridge (§4) and the base style (§2), with `save_app` saying both (10 November 2026).
+7. The explainer kit (§3a, 10 November 2026): the manifest's `kit` (`cloud-client/interface-apps.ts`), the engine
+   (`packages/runtime/kits/explainer/engine.js`), the page and the clips' list (`cloud-app-kit-explainer.ts`), and
+   `save_app` writing both with how to make a video on the schema field. No migration, no node change and no change
+   to the web's own code: an explainer is put together as any app. Next: the tool that records the clips.
 
 Follow-ups: the password line on an app's own page without a header (§6 H2: shown above the page only while the page
 has a password field on screen, reported by the frame document); a member marks a human task done from an app (the asking agent's wake is built, but the object gateway

@@ -1,5 +1,6 @@
 import { parseAppManifest } from "@qorpera/cloud-client/interface-apps";
 import type { JsonValue } from "@qorpera/contracts";
+import { captionHash, EXPLAINER_ENGINE_JS, explainerPage } from "@qorpera/runtime/cloud-app-kit-explainer";
 import { appLookNotes, cloudAppTools } from "@qorpera/runtime/cloud-folder-app-tools";
 import { cloudFolderFileTools } from "@qorpera/runtime/cloud-folder-file-tools";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
@@ -214,6 +215,7 @@ it("makes a new app in one unit, owned by the agent and not posted, with the app
 			writes: [],
 			concept: false,
 			cover: null,
+			kit: null,
 		},
 	});
 	expect(f.text("apps/sales/js/app.js")).toBe("console.log(1)");
@@ -604,4 +606,189 @@ it("posts only the manifest it checked: an app made or changed in between is ref
 	const theirs = await prepare("p-3");
 	expect(theirs.foreignOwner).toBe(true);
 	expect(read(await tool.execute(theirs as never, f.context))).toMatchObject({ state: "applied", posted: true });
+});
+
+/* ---- The explainer kit (RUNTIME-INTERFACE-APPS.md §3a) --------------------------------------------------------- */
+
+const SCENES = `V.part("The fee");
+V.scene((s) => {
+  const fee = s.number({ x: 800, y: 450, from: 149, size: 96 });
+  s.say("Each traveller pays one visible fee: 149 kroner.", s.fadeIn(fee));
+});
+`;
+const units = (f: { commits: { units: { path: string }[] }[] }) => f.commits.at(-1)?.units.map((unit) => unit.path);
+
+it("makes an explainer from the agent's scenes alone: the kit's engine and page are written with them", async () => {
+	const f = await fixture();
+	const answer = read(
+		await f.call(
+			"save_app",
+			save("fee", "make-1", manifest("How the fee works", { kit: "explainer", emblem: "coin" }), [
+				{ path: "scenes.js", text: SCENES },
+			]),
+		),
+	);
+	expect(answer).toMatchObject({ state: "applied", app: "fee", created: true, link: "app:fee" });
+	// A scenes.js in order gets no notes.
+	expect(answer.look).toBeUndefined();
+	const stored = parseAppManifest(f.text("apps/fee/app.toml") ?? "");
+	expect(stored.ok && stored.manifest).toMatchObject({
+		name: "How the fee works",
+		kit: "explainer",
+		entry: "index.html",
+	});
+	expect(f.text("apps/fee/app.toml")).toContain('kit = "explainer"\n');
+	expect(f.text("apps/fee/scenes.js")).toBe(SCENES);
+	expect(f.text("apps/fee/engine.js")).toBe(EXPLAINER_ENGINE_JS);
+	expect(f.text("apps/fee/index.html")).toBe(explainerPage("How the fee works", []));
+	expect(f.files.get("apps/fee/engine.js")?.file.mediaType).toBe("text/javascript");
+	expect(f.files.get("apps/fee/index.html")?.file.mediaType).toBe("text/html");
+});
+
+it("keeps the kit's own files Qorpera's, and asks for scenes.js where there is none", async () => {
+	const f = await fixture();
+	const kit = manifest("How the fee works", { kit: "explainer" });
+	for (const own of ["engine.js", "index.html", "Engine.JS"])
+		await refuses(
+			f.call(
+				"save_app",
+				save("fee", `own-${own}`, kit, [
+					{ path: "scenes.js", text: SCENES },
+					{ path: own, text: "mine" },
+				]),
+			),
+			`APP_KIT_FILE: ${own} is the explainer kit's own file, which save_app writes`,
+		);
+	await refuses(
+		f.call("save_app", save("fee", "none-1", kit, [])),
+		"APP_SCENES_MISSING: a new explainer needs its scenes.js",
+	);
+	expect(f.commits).toEqual([]);
+	const tool = f.tool("save_app");
+	refusesArguments(
+		tool,
+		save("fee", "k", manifest("F", { kit: "slides" }), []),
+		"manifest.kit must be one of explainer",
+	);
+	refusesArguments(
+		tool,
+		save("fee", "k", manifest("F", { kit: "explainer", entry: "main.html" }), []),
+		"manifest.entry: an app made from a kit opens index.html",
+	);
+	// index.html said outright is what a kit opens anyway.
+	expect(() =>
+		tool.parseArguments(save("fee", "k", manifest("F", { kit: "explainer", entry: "index.html" }), [])),
+	).not.toThrow();
+});
+
+it("tells the maker of an explainer what a read of its scenes found", async () => {
+	const f = await fixture();
+	const answer = read(
+		await f.call(
+			"save_app",
+			save("fee", "make-1", manifest("How the fee works", { kit: "explainer" }), [
+				{ path: "scenes.js", text: `const V = new Video(document.getElementById("video"));\n${SCENES}V.start();` },
+			]),
+		),
+	);
+	expect(answer.look).toEqual([
+		"The page makes the video (V) and starts it: take new Video(…) and V.start() out of scenes.js, which only adds parts and scenes to V.",
+	]);
+	expect(answer.next).toContain("First fix what look names");
+});
+
+it("changes an explainer's scenes alone, and writes the kit's files again only where they would differ", async () => {
+	const f = await fixture();
+	await f.call(
+		"save_app",
+		save("fee", "make-1", manifest("How the fee works", { kit: "explainer" }), [{ path: "scenes.js", text: SCENES }]),
+	);
+	// New scenes, the manifest kept: one file is written, and the kit's stand as they are.
+	const next = `${SCENES}V.part("The margin");\n`;
+	const changed = read(await f.call("save_app", save("fee", "change-1", null, [{ path: "scenes.js", text: next }])));
+	expect(changed).toMatchObject({ state: "applied", created: false });
+	expect(units(f)).toEqual(["apps/fee/scenes.js"]);
+	expect(f.text("apps/fee/scenes.js")).toBe(next);
+	// The agent still may not write them.
+	await refuses(
+		f.call("save_app", save("fee", "change-2", null, [{ path: "index.html", text: "<p>mine" }])),
+		"APP_KIT_FILE: index.html",
+	);
+	// A new title is the page's title too: the manifest and the page are written, the engine is not.
+	await f.call("save_app", save("fee", "change-3", manifest("What the fee leaves"), []));
+	expect(units(f)).toEqual(["apps/fee/app.toml", "apps/fee/index.html"]);
+	expect(f.text("apps/fee/index.html")).toBe(explainerPage("What the fee leaves", []));
+	expect(f.text("apps/fee/app.toml")).toContain('kit = "explainer"\n');
+	// An engine from an earlier runtime, or one written over by hand, is put right by the next save.
+	f.seed("apps/fee/engine.js", "// an old engine");
+	await f.call("save_app", save("fee", "change-4", null, [{ path: "notes.md", text: "sources" }]));
+	expect(units(f)).toEqual(["apps/fee/notes.md", "apps/fee/engine.js"]);
+	expect(f.text("apps/fee/engine.js")).toBe(EXPLAINER_ENGINE_JS);
+});
+
+it("names in an explainer's page the voice clips its folder holds", async () => {
+	const said = captionHash("Each traveller pays one visible fee: 149 kroner.");
+	const gone = captionHash("A caption that was cut.");
+	const f = await fixture();
+	await f.call(
+		"save_app",
+		save("fee", "make-1", manifest("How the fee works", { kit: "explainer" }), [{ path: "scenes.js", text: SCENES }]),
+	);
+	// The clips and their list are written into the folder from a machine; one listed clip has no file.
+	f.seed(`apps/fee/voice/${said}.mp4`, "clip");
+	f.seed(
+		"apps/fee/voice/clips.json",
+		JSON.stringify({
+			clips: [
+				{ caption: said, file: `${said}.mp4`, seconds: 4.2 },
+				{ caption: gone, file: `${gone}.mp4`, seconds: 2 },
+			],
+		}),
+	);
+	await f.call("save_app", save("fee", "voice-1", null, [{ path: "notes.md", text: "sources" }]));
+	expect(units(f)).toEqual(["apps/fee/notes.md", "apps/fee/index.html"]);
+	expect(f.text("apps/fee/index.html")).toBe(
+		explainerPage("How the fee works", [{ caption: said, file: `${said}.mp4`, seconds: 4.2 }]),
+	);
+	// A list that does not read costs the video its voice, not the save.
+	f.seed("apps/fee/voice/clips.json", "not json");
+	await f.call("save_app", save("fee", "voice-2", null, [{ path: "notes.md", text: "more sources" }]));
+	expect(f.text("apps/fee/index.html")).toBe(explainerPage("How the fee works", []));
+});
+
+it("turns a page into an explainer when its manifest takes the kit, and refuses a page of its own beside the kit", async () => {
+	const OWNER = "0b0c3f1e-5a7d-4c2e-9f10-1a2b3c4d5e6f";
+	const f = await fixture({
+		folders: ["apps"],
+		files: {
+			"apps/fee/app.toml": `name = "Fee"\nowner = "${OWNER}"\nposted = true\n`,
+			"apps/fee/index.html": PAGE,
+		},
+	});
+	await refuses(
+		f.call("save_app", save("fee", "kit-1", manifest("Fee", { kit: "explainer" }), [])),
+		"APP_SCENES_MISSING: the explainer's scenes.js is not in its folder",
+	);
+	await f.call(
+		"save_app",
+		save("fee", "kit-2", manifest("Fee", { kit: "explainer" }), [{ path: "scenes.js", text: SCENES }]),
+	);
+	expect(f.text("apps/fee/index.html")).toBe(explainerPage("Fee", []));
+	expect(f.text("apps/fee/engine.js")).toBe(EXPLAINER_ENGINE_JS);
+	// Its owner and that it is posted stay as they were.
+	const stored = parseAppManifest(f.text("apps/fee/app.toml") ?? "");
+	expect(stored.ok && stored.manifest).toMatchObject({ kit: "explainer", owner: OWNER, posted: true });
+	// A page of its own, named now for an app that has the kit already.
+	const g = await fixture({
+		folders: ["apps"],
+		files: {
+			"apps/fee/app.toml": `name = "Fee"\nowner = "${OWNER}"\nposted = false\nkit = "explainer"\n`,
+			"apps/fee/scenes.js": SCENES,
+			"apps/fee/main.html": PAGE,
+		},
+	});
+	await refuses(
+		g.call("save_app", save("fee", "entry-1", manifest("Fee", { entry: "main.html" }), [])),
+		"APP_KIT_ENTRY",
+	);
 });
