@@ -5,7 +5,7 @@
 // The runtime holds this file's text (cloud-app-kit-explainer-voice.generated.ts, written by
 // scripts/generate-app-kits.mjs) and runs it on the machine; change it here, then run that script.
 //
-//   node voice-peer.cjs <work folder> [seconds, at most 290] [seconds a turn may take to finish, at most 40]
+//   node voice-peer.cjs <work folder> [seconds, at most 290] [seconds to finish a turn once the end has come, at most 40]
 //
 // It prints lines that start with `QORPERA-VOICE ` and hold one JSON object each:
 //   {"offer": "<SDP>"}                 the offer, once
@@ -16,8 +16,9 @@
 // (its being there ends the recording). A turn is the voice's own: it begins at the call's `turn.created` and ends
 // when `turn.done` has come and the sound has been quiet for 0.7 s, so the two ends need no shared clock.
 // A turn whose end has come is always finished before the recorder goes: its file is written and its line printed
-// even when `stop` or the time comes meanwhile. A turn that cannot be written, or is not written within its time
-// to finish, ends the recording as a failure; a turn still being spoken when the end comes is dropped.
+// even when `stop` or the time comes meanwhile. A turn that cannot be written, or is still not written 40 s after
+// the recording was told to end, ends the recording as a failure; a turn still being spoken when the end comes is
+// dropped.
 const { chromium } = require(process.env.QORPERA_PLAYWRIGHT || "playwright");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -191,15 +192,15 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 		}
 		// A turn whose end has come is finished first: its last sound runs out (up to 30 s), then it is written. One
 		// that is still not written when its time is up is lost, and that is said.
-		const finishMs = Math.max(1, Math.min(40, Number(finishing) || 40)) * 1000;
-		let busy = true;
-		for (let waited = 0; busy && waited < finishMs; waited += 100) {
-			const now = await state();
-			if (now.failed) ended = unkept(now.failed);
-			busy = now.busy && !now.failed;
-			if (busy) await sleep(100);
+		// It is looked at once more after the last wait, so a turn written in that wait is kept.
+		const finishBy = Date.now() + Math.max(1, Math.min(40, Number(finishing) || 40)) * 1000;
+		let last = await state();
+		while (last.busy && !last.failed && Date.now() < finishBy) {
+			await sleep(100);
+			last = await state();
 		}
-		if (busy) ended = unkept("it was not written in time");
+		if (last.failed) ended = unkept(last.failed);
+		else if (last.busy) ended = unkept("it was not written in time");
 	} catch (error) {
 		ended = String(error && error.message ? error.message : error).slice(0, 300);
 	} finally {

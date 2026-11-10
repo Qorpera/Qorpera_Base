@@ -126,3 +126,12 @@ it("ends as a failure when a turn is still not written when its time to finish i
 	expect(lines.some((line) => "turn" in line)).toBe(false);
 	expect(existsSync(join(work, "1.webm"))).toBe(false);
 });
+
+it("keeps a turn that is written in the last moment of its time to finish", async () => {
+	// Told to stop after a second with two seconds to finish; the turn's file is written 1.95 s after the stop.
+	const { code, lines, work } = await recorded("turn-last-moment-write", 1000, 2);
+	expect(lines.map((line) => Object.keys(line)[0])).toEqual(["offer", "connected", "turn", "ended"]);
+	expect(lines.at(-1)).toEqual({ ended: "stop" });
+	expect(code).toBe(0);
+	expect(existsSync(join(work, "1.webm"))).toBe(true);
+});

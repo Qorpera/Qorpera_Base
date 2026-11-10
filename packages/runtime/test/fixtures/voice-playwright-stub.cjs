@@ -7,8 +7,17 @@
 //   turn-slow-write  the same, with the turn's file written two seconds late
 //   turn-lost-write  the same, with the turn's file refused
 //   turn-stalled-write  the same, with the turn's file never written
+//   turn-last-moment-write  the same, with the turn's file written 1.95 s after the recorder is told to stop
+const fs = require("node:fs");
+const path = require("node:path");
 const scenario = process.env.QORPERA_VOICE_SCENARIO || "turn";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// When the recorder was told to stop (its work folder is its first argument), as seen from here.
+let stopSeen = 0;
+const watching = setInterval(() => {
+	if (!stopSeen && process.argv[2] && fs.existsSync(path.join(process.argv[2], "stop"))) stopSeen = Date.now();
+}, 10);
+watching.unref();
 
 function captionsPage() {
 	globalThis.V = { segments: [{ text: "Each traveller pays one fee." }, { text: "So four friends see it." }] };
@@ -97,6 +106,10 @@ const page = {
 			if (scenario === "turn-slow-write") await sleep(2000);
 			if (scenario === "turn-lost-write") throw new Error("no room left on the machine");
 			if (scenario === "turn-stalled-write") await new Promise(() => {});
+			if (scenario === "turn-last-moment-write") {
+				while (!stopSeen) await sleep(10);
+				await sleep(Math.max(0, stopSeen + 1950 - Date.now()));
+			}
 			return write(...args);
 		};
 	},
