@@ -58,6 +58,11 @@ closes nothing, the log says `refs-moved`, and the request takes one more bundle
 has moved again by then, the request is put off for two minutes with the place open and untouched, and starts from
 a new bundle. A bundle you ask for by its name is not compared: there you chose to go back.
 
+What no bundle holds, `fresh` or stored: files that are not committed (untracked and ignored ones too), commits no
+ref names, the reflogs, and each session's worktree as it stood. After a restore those exist only in the set-aside
+copy. So ask with `keep`, look at what the sessions had under way, and remove the copy later with `discard`; a
+`fresh` request with `remove` deletes that copy in the same request, and with it the only place those things were.
+
 What a restore brings back, and what not:
 
 | | |
