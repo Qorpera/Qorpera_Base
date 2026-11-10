@@ -4681,15 +4681,33 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    (item 5); the provider's SPF, DKIM and DMARC results travel with it. An
    agent sends from a live mailbox of its company as itself (M2b): plain
    text from "<agent> at <company>" at the mailbox's address, always ending
-   with a line saying an AI agent wrote and sent it. Every email passes the
-   automatic review as an outside action first, and only the platform's
-   sender, which alone holds the provider key, sends it. A reply to a
-   received email joins its thread and says it is an automatic response; an
-   email sent automatically is never answered, and a company never emails
-   its own mailboxes. No email goes out as if from Qorpera: a sender name or
-   mailbox that reads as Qorpera is refused (founder decision, 1 October
-   2026). Sending has its own platform switch, built off, and each company
-   an hourly and a daily limit on recipients that operators set.
+   with a line saying an AI agent wrote and sent it. Every email an agent
+   sends passes the automatic review as an outside action first, and only
+   the platform's sender, which alone holds the provider key, sends any
+   email. A reply to a received email joins its thread and says it is an
+   automatic response; an email sent automatically is never answered, and a
+   company never emails its own mailboxes. No email goes out as if from
+   Qorpera: a sender name or mailbox that reads as Qorpera is refused
+   (founder decision, 1 October 2026). Sending has its own platform switch,
+   built off, and each company an hourly and a daily limit on recipients
+   that operators set.
+
+   A member sends too (founder decision, 10 November 2026: "Let a member
+   send an email with no agent"; it amends this item and the decisions of
+   1 October 2026, under which company email left only through an agent).
+   A member who may write in the company (owner, admin or contributor)
+   sends a new plain-text email from a live mailbox of the company as
+   themself: from "<member> at <company>" at the mailbox's address, the
+   text as they wrote it. It is the member's own act, so it carries no AI
+   line, does not say it is an automatic response and passes no automatic
+   review. Everything else stands for it: the same address, count, subject
+   and text rules, the sending switch, never to the company's own
+   mailboxes, never as if from Qorpera, the company's limits counted
+   together with the agents' email, and only the platform's sender sends
+   it. No mail is private to a member: the email begins a thread every
+   member of the company reads, with who sent it, and an outside answer
+   joins that thread and wakes routines as any received email does. Agents
+   read received email only, as before.
 
 Section 21, item 33, is the event-wake acceptance item.
 

@@ -4,8 +4,8 @@ import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
 import { type fixture, id, session, staff, userA } from "./fixtures.ts";
 
-/* The member mail read (cloud/mail.ts) as a fake of its five calls on the fixture's cloud, and of the Digital Post
- * read (cloud/digital-post.ts), with the agents, the address and the letters the Mailbox tests use
+/* The member mail read (cloud/mail.ts) as a fake of its five calls on the fixture's cloud, of a member's own send, and
+ * of the Digital Post read (cloud/digital-post.ts), with the agents, the address and the letters the Mailbox tests use
  * (test/interface-mail.test.ts, test/mailbox.test.ts). */
 
 export const cofounder: HostedStaffAgent = {
@@ -163,6 +163,8 @@ export interface MailFake {
 	gone: Set<string>;
 	/** What the Digital Post read answers; unset, the cloud has no such call. */
 	digitalPost?: Record<string, unknown>;
+	/** What a member's own send is refused with; unset, it is queued and its thread is the newest. */
+	sendError?: { message: string; code: string };
 	calls: { fn: string; args: Record<string, unknown> }[];
 }
 
@@ -203,6 +205,27 @@ export function mailFake(f: ReturnType<typeof fixture>): MailFake {
 				threads: page,
 				nextBefore: rows.length > request.limit && last ? { lastAt: last.lastAt, thread: last.thread } : null,
 			};
+		}
+		if (fn === "qorpera_send_member_mail") {
+			if (fake.sendError) throw new CloudRpcError(fn, fake.sendError, 400);
+			// A member's own email starts a thread of its own: theirs, with its first recipient as the outside party.
+			const request = args.p_request as { from: string; to: string[]; subject: string; text: string };
+			const n = 900 + fake.threads.length;
+			fake.threads.unshift(
+				summary(n, {
+					address: request.from,
+					fromName: undefined,
+					fromAddress: request.to[0],
+					subject: request.subject,
+					snippet: request.text,
+					lastAt: at(-n),
+					state: "handled",
+					handledBy: undefined,
+					direction: "sent",
+					sentBy: { userId: userA.id, name: "Account A" },
+				}),
+			);
+			return { mailId: id(n), thread: thread(n), status: "queued" };
 		}
 		const threadId = String(args.p_thread);
 		if (fake.gone.has(threadId))

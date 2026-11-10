@@ -321,6 +321,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_save_review_rule(uuid,uuid,text,text,text)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_select_member_session_account(uuid,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_send_friend_request(text)', false, true, 'member: auth.uid() + membership/ownership'),
+	('public.qorpera_send_member_mail(uuid,jsonb)', false, true, 'member: auth.uid() + membership of the environment''s company with write access, before any lock; queues a company email as the member (20260930716000)'),
 	('public.qorpera_send_member_message(uuid,uuid,uuid,text)', false, true, 'member: auth.uid() + both are members; writes only as the caller, wakes no agent (20260930715000)'),
 	('public.qorpera_session_profile_id(uuid)', false, true, 'member RPC (CLIENT-CONTRACT): checks qorpera_can_read_session for authenticated; anon and service_role revoked (20260928279570)'),
 	('public.qorpera_set_chatgpt_plan_work_while_away(uuid,uuid,boolean)', false, true, 'member: the consent call''s own owner and membership checks; the caller''s own ChatGPT plan only'),

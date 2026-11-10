@@ -1,7 +1,9 @@
+import { describeError } from "../../cloud/client.ts";
 import type { DigitalPostLetter } from "../../cloud/digital-post.ts";
 import type {
 	MailAccount,
 	MailAddress,
+	MailMember,
 	MailMessage,
 	MailThreadSummary,
 	MailWaitingItem,
@@ -43,10 +45,12 @@ import { type HooksClient, HooksView } from "./settings-hooks.ts";
  *   and sender as quotes (contract, "quoted outside content in a member's message").
  * - Sent: the threads whose newest message the company sent. Addresses: each address, who answers it, how much came in
  *   the last 7 days, and Change, which asks the Co-Founder to give it to another agent.
- * - Write: the member writes an email and gives it to an agent. Nobody owns a new one: the Writer chip says "You" until
- *   the member picks an agent from its menu (Jonas, 10 Nov 2026: "It should have no agent owning it by default").
- *   That agent then writes and sends it, and its review decides as for any send; mail leaves the company only through
- *   an agent.
+ * - Write: the member writes an email. Nobody owns a new one: the Writer chip says "You" (Jonas, 10 Nov 2026: "It
+ *   should have no agent owning it by default"), and Send sends it as the member's own email from one of the company's
+ *   addresses (contract, M2e). Who it goes to are chips, as a mail app has them: an address typed becomes one at a
+ *   space, a comma or Enter, and one that is no email address is marked and holds the send. With an agent picked from
+ *   the Writer chip's menu, that agent writes and sends it instead, and its review decides as for any send. A member's
+ *   own email shows in Sent and in its thread with the member's picture.
  *
  * - Digital Post (deploy/first-node/RUNTIME-DIGITAL-POST.md): the letters the company folder holds from public
  *   authorities are lines of the Inbox among the threads, newest first, each with the authority as its sender and a
@@ -79,8 +83,18 @@ interface MailboxUi {
 	expanded: Record<string, boolean>;
 	writing: boolean;
 	writer: string | null;
+	/** What is typed after "To": all of it with an agent as the writer, what is not yet a chip with the member. */
 	writeTo: string;
+	/** Who the member's own email goes to, as typed: one chip each. */
+	writeRecipients: string[];
+	writeSubject: string;
 	writeText: string;
+	/** The company address the member's own email goes from; the first one in use until they pick another. */
+	writeFrom: string | null;
+	/** The id of the member's send being tried: the same email sent again is one email (contract, M2e). */
+	writeSendId: string | null;
+	/** Why the member's email did not go, said inside the Write window. */
+	writeError: string | null;
 	note: string;
 	changing: string | null;
 	busy: boolean;
@@ -112,11 +126,35 @@ const manageViews = new WeakMap<
 		readonly post: DigitalPostView;
 	}
 >();
-/** The pages whose Writer menu is open: a redraw under the menu draws the chip as open. */
-const writerMenus = new WeakSet<MailboxUi>();
-/** The press outside a page's Writer menu that shut it: on the chip, the click that press ends in opens nothing. */
-const writerPresses = new WeakMap<MailboxUi, Event>();
+/** The chip of a page's Write window whose menu is open (`writer` or `from`): a redraw under the menu draws it open. */
+const chipMenus = new WeakMap<MailboxUi, string>();
+/** The press outside a chip's menu that shut it: on that chip, the click that press ends in opens nothing. */
+const chipPresses = new WeakMap<MailboxUi, { readonly chip: string; readonly press: Event }>();
 let toastIds = 0;
+
+/** An email address as the cloud takes one (`qorpera_send_member_mail`), in lower case. */
+const ADDRESS = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+/** How many addresses one email goes to, at most (the same call). */
+const MOST_RECIPIENTS = 10;
+const isAddress = (text: string) => text.length <= 254 && ADDRESS.test(text.toLowerCase());
+/** What is typed for who an email goes to, as its recipients: each address apart, and the words between that are none
+ * together, as the name they were typed as ("Nordlys Energi"). A comma or a semicolon ends a name. */
+function asRecipients(text: string): string[] {
+	const found: string[] = [];
+	for (const part of text.split(/[,;]/)) {
+		let name: string[] = [];
+		for (const word of [...part.split(/\s+/).filter(Boolean), null]) {
+			if (word && !isAddress(word)) {
+				name.push(word);
+				continue;
+			}
+			if (name.length) found.push(name.join(" "));
+			name = [];
+			if (word) found.push(word);
+		}
+	}
+	return found;
+}
 
 /** The calls behind the company's mail addresses and its Digital Post key. */
 export interface MailboxManage {
@@ -152,7 +190,12 @@ export function renderMailbox(
 			writing: false,
 			writer: null,
 			writeTo: "",
+			writeRecipients: [],
+			writeSubject: "",
 			writeText: "",
+			writeFrom: null,
+			writeSendId: null,
+			writeError: null,
 			note: "",
 			changing: null,
 			busy: false,
@@ -186,7 +229,7 @@ export function renderMailbox(
 		{ ...ui, toast: ui.toast?.id ?? null },
 		state.team?.capabilities.write === true,
 		state.team?.capabilities.authorize === true,
-		state.team?.members.find((member) => member.userId === company.userId)?.displayName ?? null,
+		state.team?.members.map((member) => [member.userId, member.displayName]) ?? null,
 		company.cofounderId() ?? null,
 		staff,
 		mail
@@ -258,6 +301,22 @@ function figure(page: Page, agentId: string | undefined, given: string | undefin
 	return agentFigure(page.company.staffById(agentId), given ?? "", { size });
 }
 
+/** A member's name as the company knows it now, else as the mail named them. */
+function memberName(page: Page, member: MailMember): string {
+	const known = page.company.store.get().team?.members.find((each) => each.userId === member.userId)?.displayName;
+	return known || member.name || t("A member");
+}
+
+/** Who sent a member's own email, as a line says it: "You" to the one who did. */
+function memberLabel(page: Page, member: MailMember): string {
+	return member.userId === page.company.userId ? t("You") : memberName(page, member);
+}
+
+/** The picture of the member who sent an email themself, where an agent's figure stands for an agent's. */
+function memberFace(page: Page, member: MailMember): HTMLElement {
+	return personAvatar(memberName(page, member), member.userId);
+}
+
 /** Words from outside the company: set as text, with the title that says where they came from. */
 function outside(text: string, tag: keyof HTMLElementTagNameMap = "span", className?: string): HTMLElement {
 	return h(tag, { ...(className ? { class: className } : {}), title: t("From outside the company") }, text);
@@ -281,10 +340,11 @@ function when(at: string): string {
 	);
 }
 
-function say(page: Page, text: string, agent: string | null): void {
+/** Says what just happened at the foot of the page; `moveFocus` names the control that then has the focus. */
+function say(page: Page, text: string, agent: string | null, moveFocus?: string): void {
 	const id = ++toastIds;
 	page.ui.toast = { text, agent, id };
-	page.redraw();
+	page.redraw(moveFocus);
 	setTimeout(() => {
 		if (page.ui.toast?.id !== id) return;
 		page.ui.toast = null;
@@ -376,7 +436,8 @@ function side(page: Page): HTMLElement {
 						"data-focus-key": "write",
 						onclick: () => {
 							// A new email is nobody's; one being written keeps the writer it was given.
-							if (!ui.writeTo && !ui.writeText) ui.writer = null;
+							if (!ui.writeTo && !ui.writeRecipients.length && !ui.writeSubject && !ui.writeText)
+								ui.writer = null;
 							ui.writing = true;
 							page.redraw("write-to");
 						},
@@ -689,6 +750,9 @@ function threadLine(page: Page, summary: MailThreadSummary): HTMLElement {
 	const sent = page.ui.tab === "sent";
 	const agentId = summary.handledBy?.staffAgentId;
 	const agent = agentName(page, agentId, summary.handledBy?.name);
+	// A newest message that a member sent themself is theirs: their name and their picture, not an agent's.
+	const member = summary.sentBy;
+	const sender = member ? memberLabel(page, member) : agent;
 	const isNew = summary.state === "new";
 	const unread = summary.unread && !sent;
 	const who = summary.account
@@ -698,7 +762,9 @@ function threadLine(page: Page, summary: MailThreadSummary): HTMLElement {
 				{ class: "mailbox-who" },
 				sent ? h("span", { class: "mailbox-to-label" }, t("To:")) : null,
 				outside(partyText(summary)),
-				summary.direction === "sent" && !sent && summary.handledBy ? h("span", null, `, ${agent}`) : null,
+				summary.direction === "sent" && !sent && (member || summary.handledBy)
+					? h("span", null, `, ${sender}`)
+					: null,
 				summary.messages > 1 ? h("span", { class: "mailbox-n" }, String(summary.messages)) : null,
 			);
 	const line = summary.account
@@ -715,7 +781,7 @@ function threadLine(page: Page, summary: MailThreadSummary): HTMLElement {
 				outside(summary.subject || t("(no subject)"), "span", "mailbox-subject"),
 				summary.snippet
 					? summary.direction === "sent"
-						? h("span", { class: "mailbox-snippet" }, dash(), `${agent}: `, outside(summary.snippet))
+						? h("span", { class: "mailbox-snippet" }, dash(), `${sender}: `, outside(summary.snippet))
 						: h("span", { class: "mailbox-snippet" }, dash(), outside(summary.snippet))
 					: null,
 			);
@@ -739,18 +805,30 @@ function threadLine(page: Page, summary: MailThreadSummary): HTMLElement {
 			line,
 		),
 		h("span", { class: "mailbox-actions" }),
-		agentId
+		member
 			? h(
 					"span",
 					{
-						class: `mailbox-handler${isNew ? " is-new" : ""}`,
-						title: isNew
-							? t("{name} hasn't handled it yet", { name: agent })
-							: t("{name} handles it", { name: agent }),
+						class: "mailbox-handler",
+						title:
+							member.userId === page.company.userId
+								? t("You sent it")
+								: t("{name} sent it", { name: memberName(page, member) }),
 					},
-					figure(page, agentId, summary.handledBy?.name, 26),
+					memberFace(page, member),
 				)
-			: h("span", { class: "mailbox-handler" }),
+			: agentId
+				? h(
+						"span",
+						{
+							class: `mailbox-handler${isNew ? " is-new" : ""}`,
+							title: isNew
+								? t("{name} hasn't handled it yet", { name: agent })
+								: t("{name} handles it", { name: agent }),
+						},
+						figure(page, agentId, summary.handledBy?.name, 26),
+					)
+				: h("span", { class: "mailbox-handler" }),
 		h("time", { class: "mailbox-time", datetime: summary.lastAt }, when(summary.lastAt)),
 	);
 }
@@ -1037,13 +1115,21 @@ function messageItem(
 		ui.expanded = { ...ui.expanded, [key]: !open };
 		page.redraw(`message:${key}`);
 	};
+	// An email a member sent themself is theirs: no agent wrote it.
+	const member = received ? undefined : message.member;
 	const agentId = received ? undefined : message.staffAgent?.staffAgentId;
 	const agent = received ? "" : agentName(page, agentId, message.staffAgent?.name);
 	const sender = senderOf(message);
-	const name = received ? message.fromName || message.fromAddress || t("Unknown sender") : agent || sender;
+	const name = received
+		? message.fromName || message.fromAddress || t("Unknown sender")
+		: member
+			? memberLabel(page, member)
+			: agent || sender;
 	const avatar = received
 		? h("span", { class: "mailbox-initials", "aria-hidden": "true" }, initials(name) || "?")
-		: figure(page, agentId, message.staffAgent?.name, 40);
+		: member
+			? memberFace(page, member)
+			: figure(page, agentId, message.staffAgent?.name, 40);
 	const text = message.text ?? "";
 	const flat = text.replace(/\s+/g, " ").trim();
 	if (!open)
@@ -1674,24 +1760,213 @@ function addressesView(page: Page): HTMLElement {
 
 // Write -------------------------------------------------------------------------------------------------------------
 
+/** Adds to who the member's email goes to, none of them twice, and returns the ones added. */
+function addRecipients(ui: MailboxUi, texts: readonly string[]): string[] {
+	const added: string[] = [];
+	for (const text of texts) {
+		const recipient = text.trim();
+		if (!recipient || ui.writeRecipients.some((each) => each.toLowerCase() === recipient.toLowerCase())) continue;
+		ui.writeRecipients.push(recipient);
+		added.push(recipient);
+	}
+	return added;
+}
+
+/** The member changed their email: the next send is a new one, and what was said about the last try goes. */
+function edited(ui: MailboxUi, field: Element): void {
+	ui.writeSendId = null;
+	if (!ui.writeError) return;
+	ui.writeError = null;
+	field.closest(".mailbox-write-panel")?.querySelector(".mailbox-write-error")?.remove();
+}
+
+/** Who the member's own email goes to: a chip for each address, and the field the next one is typed in. An address
+ * becomes a chip at the space after it; anything typed does at a comma, a semicolon, Enter or when the field is left,
+ * and a chip that is no email address is marked. Chips come and go in place, so the field keeps the focus; a redraw
+ * draws them from the same list. */
+function recipientsRow(page: Page): HTMLElement {
+	const { ui } = page;
+	const input = h("input", {
+		value: ui.writeTo,
+		autocomplete: "off",
+		autocapitalize: "off",
+		spellcheck: "false",
+		inputmode: "email",
+		"aria-label": t("To"),
+		"data-focus-key": "write-to",
+	});
+	const hint = () => {
+		input.placeholder = ui.writeRecipients.length ? "" : t("Email address");
+	};
+	const chip = (recipient: string): HTMLElement => {
+		const wrong = isAddress(recipient) ? null : t("Not an email address");
+		const drawn: HTMLElement = h(
+			"span",
+			{ class: `mailbox-chip${wrong ? " is-invalid" : ""}`, title: wrong },
+			h("span", { class: "mailbox-chip-text" }, recipient),
+			wrong ? h("span", { class: "visually-hidden" }, wrong) : null,
+			h(
+				"button",
+				{
+					type: "button",
+					class: "mailbox-chip-remove",
+					"aria-label": t("Remove {name}", { name: recipient }),
+					onclick: () => {
+						const index = ui.writeRecipients.indexOf(recipient);
+						if (index >= 0) ui.writeRecipients.splice(index, 1);
+						drawn.remove();
+						edited(ui, input);
+						hint();
+						input.focus();
+					},
+				},
+				icon("close"),
+			),
+		);
+		return drawn;
+	};
+	const add = (texts: readonly string[]) => {
+		for (const recipient of addRecipients(ui, texts)) input.before(chip(recipient));
+		hint();
+	};
+	/** What is typed becomes a chip. */
+	const take = () => {
+		if (!input.value.trim()) return;
+		add(asRecipients(input.value));
+		input.value = "";
+		ui.writeTo = "";
+		edited(ui, input);
+	};
+	input.addEventListener("input", (event) => {
+		edited(ui, input);
+		// A word being composed is still being typed.
+		if (!(event as InputEvent).isComposing) {
+			// A comma or a semicolon ends what stands before it. A space ends an address, and never a name, whose next
+			// word may follow ("Nordlys Energi"); what stands after is still being typed.
+			const cut = Math.max(input.value.lastIndexOf(","), input.value.lastIndexOf(";")) + 1;
+			const ended = asRecipients(input.value.slice(0, cut));
+			const words = input.value.slice(cut).trimStart().split(/\s+/);
+			let spaced = 0;
+			while (spaced < words.length - 1 && isAddress(words[spaced] ?? "")) spaced += 1;
+			if (cut || spaced) {
+				add([...ended, ...words.slice(0, spaced)]);
+				input.value = words.slice(spaced).join(" ");
+			}
+		}
+		ui.writeTo = input.value;
+	});
+	input.addEventListener("keydown", (event) => {
+		if (event.isComposing) return;
+		if (event.key === "Enter" && !event.metaKey && !event.ctrlKey) {
+			// Enter ends an address; it does not send the email from here.
+			event.preventDefault();
+			take();
+		} else if (event.key === "Backspace" && !input.value && ui.writeRecipients.length) {
+			ui.writeRecipients.pop();
+			input.previousElementSibling?.remove();
+			edited(ui, input);
+			hint();
+		}
+	});
+	// Leaving the field ends an address too. Not when a redraw takes the field away, or the window loses the focus:
+	// what is half typed then stays typed.
+	input.addEventListener("blur", () => {
+		queueMicrotask(() => {
+			if (input.isConnected && document.activeElement !== input) take();
+		});
+	});
+	// A pasted list ("Anna <anna@acme.dk>, bo@acme.dk") becomes its addresses.
+	input.addEventListener("paste", (event) => {
+		const found = (event.clipboardData?.getData("text") ?? "")
+			.split(/[\s,;<>"]+/)
+			.map((part) => part.replace(/^mailto:/i, ""))
+			.filter(isAddress);
+		if (!found.length) return;
+		event.preventDefault();
+		add(found);
+		edited(ui, input);
+	});
+	hint();
+	return h(
+		"div",
+		{
+			class: "mailbox-write-row mailbox-write-to",
+			// A press beside the chips writes the next address.
+			onclick: (event: MouseEvent) => {
+				if (!(event.target as Element).closest("button, input")) input.focus();
+			},
+		},
+		h("span", { class: "mailbox-write-label", "aria-hidden": "true" }, t("To")),
+		...ui.writeRecipients.map(chip),
+		input,
+	);
+}
+
 function writePanel(page: Page): HTMLElement {
 	const { company, ui } = page;
-	const mail = company.store.get().mail;
 	const agents = agentsAtWork(page);
-	// A new email is nobody's: the member writes it until they give it to an agent.
+	// A new email is nobody's: the member writes and sends it themself until they give it to an agent.
 	const chosen = agents.find((agent) => agent.id === ui.writer);
-	// It goes from the address its writer answers, else from the company's first.
-	const from = chosen
-		? (
-				mail?.addresses.find((address) => address.handledBy.some((each) => each.staffAgentId === chosen.id)) ??
-				mail?.addresses[0]
-			)?.address
-		: undefined;
+	const addresses = company.store.get().mail?.addresses ?? [];
+	// The member's own email goes from an address in use; a paused one stands in only when none is, and the cloud then
+	// says why the email cannot go.
+	const inUse = addresses.filter((address) => address.status === "active");
+	const own = inUse.length ? inUse : addresses;
+	// An agent's email goes from the address its writer answers, else from the company's first; the member's own from the
+	// one they picked, else from the first.
+	const from = (
+		chosen
+			? (addresses.find((address) => address.handledBy.some((each) => each.staffAgentId === chosen.id)) ??
+				addresses[0])
+			: (own.find((address) => address.address === ui.writeFrom) ?? own[0])
+	)?.address;
 	const me = company.store.get().team?.members.find((member) => member.userId === company.userId)?.displayName;
 	const face = () => personAvatar(me || t("You"), company.userId);
 	const close = () => {
 		ui.writing = false;
 		page.redraw("write");
+	};
+	/** Gives a chip its menu, opened under it and named by the chip's focus key. */
+	const menuOn = (chip: HTMLElement, name: string, label: string, items: () => MenuEntry[]) => {
+		chip.setAttribute("aria-haspopup", "menu");
+		chip.setAttribute("aria-expanded", String(chipMenus.get(ui) === name));
+		const open = () => {
+			const container = chip.closest(".mailbox")?.parentElement;
+			// A redraw under the open menu draws the chip again.
+			const drawn = () =>
+				chip.isConnected ? chip : (container?.querySelector<HTMLElement>(`[data-focus-key="${name}"]`) ?? null);
+			const box = chip.getBoundingClientRect();
+			openContextMenu({
+				label,
+				x: box.left,
+				y: box.bottom + 4 * uiScale(),
+				opener: chip,
+				findOpener: drawn,
+				onClose: (press) => {
+					chipMenus.delete(ui);
+					if (press) chipPresses.set(ui, { chip: name, press });
+					else chipPresses.delete(ui);
+					drawn()?.setAttribute("aria-expanded", "false");
+				},
+				items: items(),
+			});
+			// After it opened: opening shuts any menu open before it, and that menu's close would take this mark with it.
+			chipMenus.set(ui, name);
+			chip.setAttribute("aria-expanded", "true");
+		};
+		// A press on the chip while its menu is open only shuts the menu: the menu says which press shut it, and the click
+		// that press ends in opens nothing (as an agent's menu on the Members page). A click from the keyboard has no
+		// press before it.
+		let shuts = false;
+		chip.addEventListener("pointerdown", (event) => {
+			const shut = chipPresses.get(ui);
+			shuts = shut?.chip === name && shut.press === event;
+		});
+		chip.addEventListener("click", (event) => {
+			const shut = shuts && event.detail > 0;
+			shuts = false;
+			if (!shut) open();
+		});
 	};
 	// The Writer chip: the member's own picture until an agent has the email, and the menu that gives it to one.
 	const writer = h(
@@ -1699,24 +1974,28 @@ function writePanel(page: Page): HTMLElement {
 		{
 			type: "button",
 			class: `mailbox-pick mailbox-writer${chosen ? " is-current" : ""}`,
-			"aria-haspopup": "menu",
-			"aria-expanded": String(writerMenus.has(ui)),
 			"data-focus-key": "writer",
 		},
 		chosen ? figure(page, chosen.id, undefined, 24) : face(),
 		h("span", { class: "mailbox-writer-name" }, chosen ? chosen.displayName : t("You")),
 		icon("chevron-down"),
 	);
-	/** Opens the menu of who writes it, under the chip; `focus` names the control that has the focus after a choice. */
-	const choose = (focus: string) => {
-		const container = writer.closest(".mailbox")?.parentElement;
-		// A redraw under the open menu draws the chip again.
-		const chip = () =>
-			writer.isConnected ? writer : (container?.querySelector<HTMLElement>(".mailbox-writer") ?? null);
-		const pick = (id: string | null) => {
-			ui.writer = id;
-			page.redraw(focus);
-		};
+	const pick = (id: string | null) => {
+		if (id && !chosen) {
+			// An agent reads who it goes to as words: the chips go back to the text they were typed as.
+			ui.writeTo = [...ui.writeRecipients, ui.writeTo.trim()].filter(Boolean).join(", ");
+			ui.writeRecipients = [];
+		} else if (!id && chosen) {
+			// The member's own email goes to addresses: the ones among the words become chips, the rest stays typed.
+			const words = asRecipients(ui.writeTo.replace(/[<>"]/g, " "));
+			ui.writeTo = words.filter((word) => !isAddress(word)).join(", ");
+			addRecipients(ui, words.filter(isAddress));
+		}
+		ui.writer = id;
+		ui.writeError = null;
+		page.redraw("writer");
+	};
+	menuOn(writer, "writer", t("Who writes it"), () => {
 		// Each row has its writer's picture, as the chip has; the one who has the email carries the check.
 		const items: MenuEntry[] = [{ label: t("You"), lead: face(), checked: !chosen, select: () => pick(null) }];
 		if (agents.length) items.push({ kind: "separator" });
@@ -1727,42 +2006,92 @@ function writePanel(page: Page): HTMLElement {
 				checked: agent.id === chosen?.id,
 				select: () => pick(agent.id),
 			});
-		const box = writer.getBoundingClientRect();
-		openContextMenu({
-			label: t("Who writes it"),
-			x: box.left,
-			y: box.bottom + 4 * uiScale(),
-			opener: writer,
-			findOpener: chip,
-			onClose: (press) => {
-				writerMenus.delete(ui);
-				if (press) writerPresses.set(ui, press);
-				else writerPresses.delete(ui);
-				chip()?.setAttribute("aria-expanded", "false");
-			},
-			items,
-		});
-		// After it opened: opening shuts any menu open before it, and that menu's close would take this mark with it.
-		writerMenus.add(ui);
-		writer.setAttribute("aria-expanded", "true");
+		return items;
+	});
+	// The From chip: which of the company's addresses the member's own email goes from, when there is a choice.
+	const sender =
+		!chosen && from && own.length > 1
+			? h(
+					"button",
+					{ type: "button", class: "mailbox-pick mailbox-sender", "data-focus-key": "from" },
+					h("span", { class: "mailbox-sender-name" }, from),
+					icon("chevron-down"),
+				)
+			: null;
+	if (sender)
+		menuOn(sender, "from", t("Which address it goes from"), () =>
+			own.map((address) => ({
+				label: address.address,
+				checked: address.address === from,
+				select: () => {
+					ui.writeFrom = address.address;
+					ui.writeSendId = null;
+					ui.writeError = null;
+					page.redraw("from");
+				},
+			})),
+		);
+	const sent = () => {
+		ui.writing = false;
+		ui.writer = null;
+		ui.writeTo = "";
+		ui.writeRecipients = [];
+		ui.writeSubject = "";
+		ui.writeText = "";
+		ui.writeFrom = null;
+		ui.writeSendId = null;
+		ui.writeError = null;
 	};
-	// A press on the chip while its menu is open only shuts the menu: the menu says which press shut it, and the click
-	// that press ends in opens nothing (as an agent's menu on the Members page). A click from the keyboard has no press
-	// before it.
-	let shuts = false;
-	writer.addEventListener("pointerdown", (event) => {
-		shuts = event === writerPresses.get(ui);
-	});
-	writer.addEventListener("click", (event) => {
-		const shut = shuts && event.detail > 0;
-		shuts = false;
-		if (!shut) choose("writer");
-	});
+	/** Sends the member's own email from the company's address (contract, M2e). */
+	const send = async () => {
+		const reader = CompanyMail.of(company);
+		if (!reader) return;
+		// What is still typed after the chips goes with them.
+		addRecipients(ui, asRecipients(ui.writeTo));
+		ui.writeTo = "";
+		const to = [...ui.writeRecipients];
+		const wrong = to.find((recipient) => !isAddress(recipient));
+		const subject = ui.writeSubject.replace(/\s+/g, " ").trim();
+		// What holds the email back, said in the window, with the focus on the field it is about.
+		const held: readonly [why: string, field: string] | null = !from
+			? [t("The company has no email address yet"), "writer"]
+			: !to.length
+				? [t("Add who the email goes to"), "write-to"]
+				: wrong
+					? [t("{address} is not an email address", { address: wrong }), "write-to"]
+					: to.length > MOST_RECIPIENTS
+						? [t("An email goes to at most {count} addresses", { count: MOST_RECIPIENTS }), "write-to"]
+						: !subject
+							? [t("The email needs a subject"), "write-subject"]
+							: !ui.writeText.trim()
+								? [t("The email needs its text"), "write-text"]
+								: null;
+		if (held || !from) {
+			ui.writeError = held?.[0] ?? null;
+			page.redraw(held?.[1]);
+			return;
+		}
+		// The same email sent again after a try that failed is one email: it keeps its id until it is changed.
+		ui.writeSendId ??= crypto.randomUUID();
+		const sendId = ui.writeSendId;
+		ui.busy = true;
+		ui.writeError = null;
+		page.redraw();
+		try {
+			await reader.send({ sendId, from, to, subject, text: ui.writeText.trimEnd() });
+			sent();
+			ui.busy = false;
+			say(page, t("Your email is on its way"), null, "write");
+		} catch (error) {
+			ui.busy = false;
+			ui.writeError = describeError(error);
+			page.redraw("write-send");
+		}
+	};
 	const submit = async () => {
 		if (ui.busy) return;
-		// Mail leaves the company through an agent: sending one that is nobody's asks who, and Enter then sends it.
 		if (!chosen) {
-			choose("write-send");
+			await send();
 			return;
 		}
 		const to = ui.writeTo.trim();
@@ -1778,12 +2107,7 @@ function writePanel(page: Page): HTMLElement {
 				quotes: [],
 			},
 			t("{name} is writing it", { name: chosen.displayName }),
-			() => {
-				ui.writing = false;
-				ui.writer = null;
-				ui.writeTo = "";
-				ui.writeText = "";
-			},
+			sent,
 		);
 	};
 	return h(
@@ -1800,6 +2124,11 @@ function writePanel(page: Page): HTMLElement {
 			},
 			onkeydown: (event: KeyboardEvent) => {
 				if (event.key === "Escape") close();
+				// Cmd or Ctrl with Enter sends from any field, as in a mail app.
+				else if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.isComposing) {
+					event.preventDefault();
+					void submit();
+				}
 			},
 		},
 		h(
@@ -1818,61 +2147,100 @@ function writePanel(page: Page): HTMLElement {
 			h("span", { class: "mailbox-write-label" }, t("Writer")),
 			writer,
 		),
-		h(
-			"label",
-			{ class: "mailbox-write-row" },
-			h("span", { class: "mailbox-write-label" }, t("To")),
-			h("input", {
-				placeholder: t("Name or email address"),
-				value: ui.writeTo,
-				autocomplete: "off",
-				"data-focus-key": "write-to",
-				oninput: (event: Event) => {
-					ui.writeTo = (event.target as HTMLInputElement).value;
-				},
-			}),
-		),
+		sender
+			? h(
+					"div",
+					{ class: "mailbox-write-row", role: "group", "aria-label": t("Which address it goes from") },
+					h("span", { class: "mailbox-write-label" }, t("From")),
+					sender,
+				)
+			: null,
+		chosen
+			? h(
+					"label",
+					{ class: "mailbox-write-row" },
+					h("span", { class: "mailbox-write-label" }, t("To")),
+					h("input", {
+						placeholder: t("Name or email address"),
+						value: ui.writeTo,
+						autocomplete: "off",
+						"data-focus-key": "write-to",
+						oninput: (event: Event) => {
+							ui.writeTo = (event.target as HTMLInputElement).value;
+						},
+					}),
+				)
+			: recipientsRow(page),
+		// An agent writes the subject of its own email; the member writes theirs.
+		chosen
+			? null
+			: h(
+					"label",
+					{ class: "mailbox-write-row" },
+					h("span", { class: "mailbox-write-label" }, t("Subject")),
+					h("input", {
+						value: ui.writeSubject,
+						maxlength: "200",
+						autocomplete: "off",
+						"data-focus-key": "write-subject",
+						oninput: (event: Event) => {
+							const field = event.target as HTMLInputElement;
+							ui.writeSubject = field.value;
+							edited(ui, field);
+						},
+						onkeydown: (event: KeyboardEvent) => {
+							// Enter goes on to the text; it does not send an email half written.
+							if (event.key !== "Enter" || event.metaKey || event.ctrlKey || event.isComposing) return;
+							event.preventDefault();
+							(event.currentTarget as HTMLElement).closest("form")?.querySelector("textarea")?.focus();
+						},
+					}),
+				),
 		h(
 			"label",
 			{ class: "mailbox-write-text" },
-			h("span", { class: "visually-hidden" }, t("What should it say")),
+			h("span", { class: "visually-hidden" }, chosen ? t("What should it say") : t("Write your email")),
 			h(
 				"textarea",
 				{
 					rows: "11",
+					maxlength: chosen ? undefined : "20000",
 					placeholder: chosen ? t("What should it say?") : t("Write your email"),
 					"data-focus-key": "write-text",
 					"data-scroll-key": "write-text",
 					oninput: (event: Event) => {
-						ui.writeText = (event.target as HTMLTextAreaElement).value;
+						const field = event.target as HTMLTextAreaElement;
+						ui.writeText = field.value;
+						edited(ui, field);
 					},
 				},
 				ui.writeText,
 			),
 		),
+		ui.writeError ? h("p", { class: "mailbox-write-error", role: "alert" }, ui.writeError) : null,
 		h(
 			"div",
 			{ class: "mailbox-write-foot" },
 			h(
 				"button",
-				{
-					type: "submit",
-					class: "mailbox-primary",
-					disabled: ui.busy,
-					"aria-haspopup": chosen ? undefined : "menu",
-					"data-focus-key": "write-send",
-				},
-				chosen ? t("Ask {name} to write it", { name: chosen.displayName }) : t("Choose an agent"),
+				{ type: "submit", class: "mailbox-primary", disabled: ui.busy, "data-focus-key": "write-send" },
+				chosen ? t("Ask {name} to write it", { name: chosen.displayName }) : ui.busy ? t("Sending") : t("Send"),
 			),
-			// One sentence: who sends it, and from which of the company's addresses.
-			h(
-				"span",
-				{ class: "mailbox-muted" },
-				chosen
-					? `${t("{name} writes and sends it", { name: chosen.displayName })} `
-					: t("An agent sends the company's email"),
-				from ? h("span", { class: "mailbox-from-address" }, t("from {address}", { address: from })) : null,
-			),
+			// Beside it: who sends it, and from which of the company's addresses (the From chip says so when it shows).
+			chosen
+				? h(
+						"span",
+						{ class: "mailbox-muted" },
+						`${t("{name} writes and sends it", { name: chosen.displayName })} `,
+						from ? h("span", { class: "mailbox-from-address" }, t("from {address}", { address: from })) : null,
+					)
+				: from && !sender
+					? h(
+							"span",
+							{ class: "mailbox-muted" },
+							h("span", { class: "mailbox-from-address" }, t("from {address}", { address: from })),
+						)
+					: null,
 		),
 	);
 }

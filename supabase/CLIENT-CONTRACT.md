@@ -794,14 +794,15 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   `subject` and `authentication-results` headers. Agents find received mail with the runtime tool `find_mail`; there
   is no client surface.
 - Sending (20260928309740_runtime_company_mail_sending, step M2b): agents send from a mailbox with the runtime
-  tool `send_mail`; there is no client surface yet. Sent email is queued in `qorpera_company_mail_outbox` (closed
+  tool `send_mail`; a member's own send is "Members send mail", below. Sent email is queued in `qorpera_company_mail_outbox` (closed
   to every API role) and sent by the `mail-outbox` Edge Function. Sending has its own switch in
   `qorpera_mail_settings` (`sending`, built off) and the company limits on recipients `company_hourly_recipients`
   (60) and `company_daily_recipients` (300). Received mail (`mail.received`) now also carries `autoSubmitted`,
   `precedence`, `listId` and `automated`; agents never answer automated mail.
 - Sender names (20260928319810_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
   (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
-  digits folded), and no email goes out when the agent's or the company's name or the mailbox reads as Qorpera.
+  digits folded), and no email goes out when the agent's, the sending member's or the company's name or the mailbox
+  reads as Qorpera.
 - Attachments (20260928429984_runtime_company_mail_attachments, step M2c-1): agents attach company files to
   `send_mail`; there is no client surface. Saving a received email's attachment (the runtime tool `save_attachment`)
   served only snapshot-v1 companies: C-P4 removed the tool, and legacy sweep D4 (20260930333000) dropped its request.
@@ -827,6 +828,22 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   and each send of `qorpera_member_mail_waiting` may carry `snippet`, the start of the text the agent wants to send,
   and `cc`, its cc recipients as the agent gave them.
   Both are outside words to show as text only; a client must also work without them.
+- Members send mail (20260930716000_member_mail_send, step M2e; founder decision, 10 November 2026): a member who
+  may write in the company (owner, admin or contributor) calls
+  `qorpera_send_member_mail(p_environment_id, p_request)` with `{sendId, from, to, cc?, subject, text}` →
+  `{mailId, thread, status}`. `sendId` is a UUID the client makes for the send and keeps while it retries: the same
+  member's same id again answers with the email already queued (its `status` then `queued`, `sent`, `failed` or
+  `cancelled`) and sends nothing twice. `from` is one of the company's mailbox addresses, or its name alone; `to` is
+  1 to 10 plain addresses and `cc` up to 9, 10 together; `subject` is one line of 1 to 200 characters; `text` is 1
+  to 20,000 characters of plain text, sent as written. The email goes out from "<member> at <company>" with no AI
+  line, begins a thread of its own, and is every member's to read. Errors: 42501 for a non-member ("Company mail is
+  unavailable"), a viewer, a mailbox that is not the company's, the company's own mailboxes as recipients, or a
+  name that reads as Qorpera; 22023 for a request of another shape; 0A000 while the mailbox is paused or sending is
+  switched off; 54000 past the company's hourly or daily limit on recipients, with when the email can go. Show the
+  error's message. No reply to a received email and no attachments yet. In `qorpera_member_mail_thread` a sent
+  message a member sent themself carries `member` (`{userId, name?}`; the name is theirs in the company now, absent
+  once they have left) and no `staffAgent`; in `qorpera_member_mail_threads` a thread whose newest message is such
+  an email carries `sentBy`, the same shape.
 
 
 ### Digital Post (20260930529000_digital_post_sync)
