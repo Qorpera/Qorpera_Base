@@ -357,7 +357,10 @@ JS
 		if (header.action && header.action.exitCode !== 0) fail(`${what}: the action exited ${header.action.exitCode}`);
 		return header;
 	};
-	if (!shown(screen({}), "a look on the stopped desktop").started) fail("a look did not start the stopped desktop");
+	const first = shown(screen({}), "a look on the stopped desktop");
+	if (!first.started) fail("a look did not start the stopped desktop");
+	// The desktop is drawn before the start returns: a black 1600x1000 screen is a PNG of 4760 bytes, the drawn one 16 KB.
+	if (first.png <= 7800) fail(`a look that started the desktop shows an undrawn screen (${first.png} bytes)`);
 	shown(screen(act({ type: "open", target: "file:///opt/qorpera-machine/desktop-selftest.html" }, 3000)), "an open");
 	let page = false;
 	for (let tries = 0; tries < 30 && !page; tries++) page = String(shown(screen({ settleMs: 1000 }), "a look").activeWindow).includes("SELFTEST[");

@@ -229,6 +229,18 @@ start)
 		# nothing can be driven.
 		for _ in $(seq 1 100); do wmctrl -m >/dev/null 2>&1 && break; sleep 0.1; done
 		wmctrl -m >/dev/null 2>&1 || { systemctl stop "$UNIT"; fail "the desktop's session did not start"; }
+		# The panel and the background are drawn a second or two after that (2.3 to 2.7 s after the start, measured on
+		# 10 Nov 2026); until then the screen is black and a screenshot of it shows nothing. A screen of one colour is a
+		# PNG of about a thousandth of its pixels' bytes (4760 bytes at 1600x1000; the drawn desktop is 16 KB): wait,
+		# about 6 s at most, for more than that, so the first look at a started desktop shows it.
+		dims=$(size)
+		drawn=$RUN/drawn-$$.png
+		for _ in $(seq 1 35); do
+			scrot --overwrite --silent -- "$drawn" 2>/dev/null &&
+				(( $(stat -c %s -- "$drawn") > ${dims%x*} * ${dims#*x} * 3 / 1000 + 3000 )) && break
+			sleep 0.1
+		done
+		rm -f -- "$drawn"
 	fi
 	touch "$RUN/last-use"
 	if [[ -n $lang ]]; then printf %s "$lang" >"$RUN/lang"; fi
