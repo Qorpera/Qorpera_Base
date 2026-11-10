@@ -39,6 +39,11 @@ export const CODE_CHANGE_PATHS_BYTES = 12_000;
 /** The paths a refusal names for the kernel: its row's `refusal` may be 8 KiB. */
 export const CODE_CHANGE_REFUSAL_PATHS = 20;
 export const CODE_CHANGE_REFUSAL_BYTES = 6000;
+/** The longest path a change's picture may have: an agent names a file in the company folder by a path of at most
+ * this many bytes (`qorpera_folder_describe_code_change`, migration `20260930720000`); the record's own copy of a
+ * session's picture, `code/<owner>/<name>/changes/<n>.<ext>`, is far shorter. A record shows the path whole: cut, it
+ * would name no file. */
+export const CODE_CHANGE_PICTURE_PATH_BYTES = 1024;
 
 /** A repository kept in Qorpera, as the kernel names it for its record's files. */
 export interface CodeChangeTarget {
@@ -344,7 +349,10 @@ export function codeChangeRecordText(change: CodeChangeFile, diff?: CodeChangeDi
 	const notice = change.notice === null ? null : quoted(change.notice, 1000);
 	const problem = change.pictureProblem === null ? undefined : PICTURE_PROBLEMS[change.pictureProblem];
 	const picture = change.picture
-		? code(change.picture.source === "commit" ? change.picture.at : change.picture.path, 800)
+		? code(
+				change.picture.source === "commit" ? change.picture.at : change.picture.path,
+				CODE_CHANGE_PICTURE_PATH_BYTES,
+			)
 		: problem
 			? `None: the picture given was ${problem}.`
 			: "None.";
@@ -372,7 +380,7 @@ export function codeChangeRecordText(change: CodeChangeFile, diff?: CodeChangeDi
 	const paths = diff ? diff.paths : change.paths;
 	if (paths !== null) {
 		// The files get what the rest of the record left of its 24 KiB: every part above has a bound of its own (a path
-		// as code may be three times its bytes, when it is all backticks), and together they stay under 21 KiB.
+		// as code may be three times its bytes, when it is all backticks), and together they stay under 22 KiB.
 		const room = CODE_CHANGE_RECORD_BYTES - bytes(sections.join("\n")) - 64;
 		const more = diff ? diff.pathsMore : change.pathsMore;
 		const files = pathList(

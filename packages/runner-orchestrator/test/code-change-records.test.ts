@@ -2,6 +2,7 @@ import type { CloudCodingRepository } from "@qorpera/contracts";
 import { describe, expect, it, vi } from "vitest";
 import {
 	answeredBefore,
+	CODE_CHANGE_PICTURE_PATH_BYTES,
 	CODE_CHANGE_RECORD_BYTES,
 	CODE_CHANGE_RPCS,
 	type CodeChangeFile,
@@ -185,6 +186,22 @@ describe("codeChangeRecordText", () => {
 		expect(picture({ pictureProblem: "something else" })).toBe("None.");
 		expect(picture({ picture: { source: "folder", path: "QorperaOS/pictures/new price.png" } })).toBe(
 			"`QorperaOS/pictures/new price.png`",
+		);
+		// The path of a picture an agent named may be as long as `manage_code describe` takes one: 1024 bytes. It comes
+		// through whole, so a reader can open the file it names.
+		for (const long of [
+			`pictures/${"a".repeat(801 - 13)}.png`,
+			`pictures/${"a".repeat(1024 - 13)}.png`,
+			`pictures/${"é".repeat((1024 - 13) / 2 - 1)}xy.png`,
+		]) {
+			expect(bytes(long)).toBeGreaterThan(800);
+			expect(bytes(long)).toBeLessThanOrEqual(1024);
+			expect(picture({ picture: { source: "folder", path: long } })).toBe(`\`${long}\``);
+		}
+		expect(bytes(`pictures/${"a".repeat(1024 - 13)}.png`)).toBe(CODE_CHANGE_PICTURE_PATH_BYTES);
+		// No row holds a longer one; if one came, it would be cut there, with the mark of a cut.
+		expect(picture({ picture: { source: "folder", path: `pictures/${"a".repeat(2000)}.png` } })).toBe(
+			`\`pictures/${"a".repeat(1024 - 9 - 3)}…\``,
 		);
 		// A landing that changed no file, and a time that is none.
 		const empty = codeChangeRecordText(change({ filesChanged: 0, paths: [], createdAt: "soon" }));
@@ -524,6 +541,8 @@ describe("codeChangeRecordText", () => {
 			}),
 		);
 		expect(bytes(worst)).toBeLessThanOrEqual(CODE_CHANGE_RECORD_BYTES);
+		// Everything but the files, with the picture's path at its whole length: the files keep 2 KiB at the least.
+		expect(bytes(worst.split("\n## Files\n")[0] ?? "")).toBeLessThan(22 * 1024);
 		expect(worst.endsWith("\n## Files\n\n- 9050 not named here\n")).toBe(true);
 		expect(worst).toContain("\n## Why it did not go in\n\n- 20 not named here\n");
 	});
