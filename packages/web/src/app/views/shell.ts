@@ -1777,7 +1777,9 @@ function appIcon(entry: CompanyInterface, href: string, count: number): HTMLElem
 	);
 }
 
-/** An agent's posted app in the drawer: its emblem with its name under it, a link to the app's own page. */
+/** An agent's posted app in the drawer: its emblem with its name under it, a link to the app's own page. A press on
+ * the icon of the app that is already open reads the app again (application.ts follows a link to the open app's page
+ * that way): the app's page has no Reload of its own. */
 function agentAppIcon(manifest: AppManifest, href: string): HTMLElement {
 	return h(
 		"a",
