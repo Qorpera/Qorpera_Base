@@ -458,6 +458,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			writes: [],
 			concept: false,
 			cover: null,
+			kit: null,
 		};
 		controller.store.set({
 			apps: [
@@ -505,6 +506,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			writes: [],
 			concept: true,
 			cover: null,
+			kit: null,
 		};
 		controller.store.set({
 			apps: [

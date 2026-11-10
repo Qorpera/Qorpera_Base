@@ -7,6 +7,8 @@
  *   It checks the name, the manifest, each file's kind and size and the app's totals before anything is written; it
  *   sets `owner` and `posted = false` on a new app and never changes either after.
  *   Its answer carries `look`: what a quick read of the saved entry page found (`appLookNotes`), as advice.
+ *   An app made from a kit (`manifest.kit`, §3a) gets the kit's own files from this call: for an explainer the engine
+ *   and the page, beside the agent's `scenes.js`, whose quick read is the `look` (cloud-app-kit-explainer.ts).
  * - `post_app` sets `posted`, which shows the app in every member's apps drawer or takes it away: delegation, which the
  *   automatic review sees (cloud-action-review.ts). It rewrites that one line of `app.toml`, every other byte as written.
  * `company_write` and `company_edit` check an `app.toml` the same way and refuse a change of `posted`
@@ -21,6 +23,7 @@ import {
 	APP_DEFAULT_ENTRY,
 	APP_FILE_MAX_BYTES,
 	APP_FILE_TYPES,
+	APP_KITS,
 	APP_MANIFEST,
 	APP_MANIFEST_MAX_BYTES,
 	APP_MAX_BYTES,
@@ -43,6 +46,17 @@ import {
 } from "@qorpera/cloud-client/interface-apps";
 import { INTERFACE_EMBLEMS, isInterfaceName } from "@qorpera/cloud-client/interfaces";
 import type { JsonValue } from "@qorpera/contracts";
+import {
+	EXPLAINER_CLIPS,
+	EXPLAINER_CLIPS_MAX_BYTES,
+	EXPLAINER_ENGINE,
+	EXPLAINER_ENGINE_JS,
+	EXPLAINER_PAGE,
+	EXPLAINER_SCENES,
+	explainerNotes,
+	explainerPage,
+	parseExplainerClips,
+} from "./cloud-app-kit-explainer.ts";
 import {
 	type CloudCompanyFolderClient,
 	type CloudCompanyFolderEntry,
@@ -107,6 +121,15 @@ const SAVE_APP_FILES =
 	"The files to write, by their path in the app's folder. Each page starts from Qorpera's base style, which sits in a layer under your own CSS, so any rule you write wins over it: the system font, the text in a centred column at most 800 px wide (set body's margin yourself to use the whole width), and plain headings, links, tables and code. Its colours are CSS variables, and you use them in place of fixed colours: --q-bg the page, --q-text the text, --q-muted quiet text, --q-line rules and borders, --q-surface cards and panels, --q-accent the company's colour for links, marks and key figures, --q-on-accent text on the accent, --q-accent-soft a tint of it, and --q-good, --q-warn and --q-bad for states; --q-font and --q-mono are the type and --q-radius the corner. They hold the company's colours once QorperaOS/brand/brand.toml gives them, which the agent that owns the brand writes with company_write: accent, background and text, each as \"#rrggbb\", at the top for a light page and again under [dark] for a dark one. Text must read on its background (4.5 to 1) and the accent must show on it (3 to 1), or Qorpera's own colour is used instead. A page is shown light unless its head says it works in both, with <meta name=\"color-scheme\" content=\"light dark\">: then it follows the member's light or dark, so give it no fixed colours at all. The company's logo and other pictures are still copied into the app's folder, because a page cannot read QorperaOS/. A concept gets no base style.";
 
 /**
+ * What save_app's schema says of `kit`: how to make an explainer, a short narrated video in place of a page
+ * (RUNTIME-INTERFACE-APPS.md §3a; Jonas, 10 November 2026). It is the whole of what an agent knows of the engine
+ * (packages/runtime/kits/explainer/engine.js), so a name here that the engine lacks draws nothing: the kit's test holds
+ * the two together. On the field for the same reason as `reads`.
+ */
+const SAVE_APP_KIT =
+	'explainer makes the app a short narrated video in place of a page: 90 to 120 seconds that explain one mechanism, decision or idea with pictures that move, as a maths explainer does. Use it where motion explains better than a page: how money or data flows, why a number is what it is, what a choice costs. Not for the state of an area (that is a page) and not as a mock-up of a screen. You write one file, scenes.js; save_app writes engine.js and index.html beside it, so never write or edit those two. scenes.js adds chapters and scenes to the video V, which the page makes and starts: V.part("The idea"); V.scene((s) => { const a = s.box({x: 400, y: 450, w: 260, h: 100, label: "Shop", sub: "pays 149", color: C.blue}); const b = s.icon({name: "person", x: 1100, y: 450, color: C.yellow, label: "Ada"}); const ab = s.arrow(a, b, {color: C.yellow}); s.say("The shop pays Ada.", s.create(a), s.create(b), s.create(ab), s.flow(ab, 1.2, {count: 3})); }); A part is a chapter (4 to 6 in a video); a scene is one picture, and the stage clears between scenes. The stage is 1600 by 900: x and y are a thing\'s centre, y grows downwards. Things: s.box({x, y, w, h, label, sub, color, dash}); s.text({x, y, str, size, color, font: "sans" or "serif"}); s.number({x, y, from, size, fmt}), which s.value(n, to) counts; s.bar({x, y, w, h, dir: "up" or "right", scale}), which s.value(bar, to) grows; s.icon({name, x, y, label}) with name of person, bot, house, bus, card, coin, server, db, cloud, lock, doc, clock, shield, globe, mail, bolt; s.arrow(from, to, {color, bend, label}) between two things or points; s.line({d, head: false}) for any path. show: true on a thing makes it visible from the start: for the title frame only. s.say(caption, ...animations) is one caption and what moves under it, one after another: s.create(m) draws it, s.write(text), s.fadeIn(m), s.fadeOut(m), s.dim(m, 0.3), s.move(m, x, y), s.scale(m, k), s.indicate(m) glows, s.value(m, to), s.flow(arrow, seconds, {count}) sends dots along an arrow, s.camera(x, y, zoom). Each takes its seconds last; s.all(s.create, [a, b], 1) runs several together and {w: true} plays one with the one before it. Animate every thing: what you never animate just fades in. Colours come from C, one meaning each: yellow money, green what is kept or good, red loss, blue and teal things, purple partners, grey what is unknown. The captions are the narration: shown under the stage, and spoken word for word when the video has a voice. Write them for the ear: one idea and about 15 words a caption, short plain sentences, amounts as they are said (149 kroner, not NOK 149.00), no brackets and no symbols. 2 to 7 captions a scene, 25 to 35 in all. The stage shows and the caption tells: at most 12 words on the stage at once, and never a sentence in a box. A mechanism is motion: money flows along arrows, a total counts up or down, a part slides out of a whole, a bar grows past zero; never only boxes that appear. Keep 60 units free at every edge. Text sizes: 24 at least, 28 to 34 for labels, 44 to 60 for statements, 76 to 96 for the one number that matters. The first scene is the title frame: a small grey line, the title in two lines at size 70 to 80 and one small picture, all show: true, with the band around y 560 left free for the Play button. The last scene stays on screen at the end: make it a summary worth stopping on. Every number, name and claim comes from the company\'s files: never round a figure into a new one, and say assumed or example where the source does. Look before you show it, as for any app, and at more than the first frame: index.html?t=SECONDS opens the video paused at that second. Look at the end of each caption, at t=0 and at the last frame, at 1280 and at 390 px wide, and fix what overlaps, is cut off, stands empty or is too small to read. The answer\'s look names what a read of scenes.js found.';
+
+/**
  * save_app's description, last: what makes a page worth opening (Jonas, 10 November 2026: the agents' apps "weren't all
  * that great visually"; six of the seven reviewed were one report template of text, drop-downs and dead links). A
  * concept or prototype of the product follows the product's own design (the company context), so these rules name
@@ -136,6 +159,8 @@ interface ManifestInput {
 	/** Null keeps what the app has (false for a new app). */
 	readonly concept: boolean | null;
 	readonly cover: string | null;
+	/** Null keeps what the app has (no kit for a new app). */
+	readonly kit: AppManifest["kit"];
 }
 
 interface SaveRequest {
@@ -169,7 +194,7 @@ function parseManifest(value: JsonValue | undefined): ManifestInput | null {
 	if (value === null) return null;
 	if (value === undefined || typeof value !== "object" || Array.isArray(value))
 		throw new CloudToolArgumentRefusal("manifest must be an object, or null to keep the app's manifest as it is");
-	const keys = ["title", "about", "emblem", "colour", "entry", "reads", "writes", "concept", "cover"];
+	const keys = ["title", "about", "emblem", "colour", "entry", "reads", "writes", "concept", "cover", "kit"];
 	if (Object.keys(value).some((key) => !keys.includes(key)))
 		throw new CloudToolArgumentRefusal(`manifest takes ${keys.join(", ")}`);
 	const choice = <T extends string>(raw: JsonValue | undefined, label: string, options: readonly T[]): T | null => {
@@ -211,6 +236,11 @@ function parseManifest(value: JsonValue | undefined): ManifestInput | null {
 		if ("problem" in parsed) throw new CloudToolArgumentRefusal(`manifest.${parsed.problem}`);
 		writes = parsed.writes;
 	}
+	const kit = choice(value.kit, "manifest.kit", APP_KITS);
+	if (kit !== null && entry !== null && entry !== APP_DEFAULT_ENTRY)
+		throw new CloudToolArgumentRefusal(
+			`manifest.entry: an app made from a kit opens ${APP_DEFAULT_ENTRY}; leave entry out`,
+		);
 	return {
 		name: text(value.title, "manifest.title", 60, true) as string,
 		about: text(value.about, "manifest.about", 200, false),
@@ -221,6 +251,7 @@ function parseManifest(value: JsonValue | undefined): ManifestInput | null {
 		writes,
 		concept: typeof value.concept === "boolean" ? value.concept : null,
 		cover,
+		kit,
 	};
 }
 
@@ -263,9 +294,19 @@ function foldersOf(paths: readonly string[]): string[] {
 	return [...folders].sort((a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b));
 }
 
-/** The text this call writes as the app's entry page, or null when it leaves the entry as it is. */
-const entryText = (request: SaveRequest, entry: string): string | null =>
-	request.files.find((file) => file.path.toLowerCase() === entry.toLowerCase())?.text ?? null;
+/** The files a kit writes itself, which an agent's call may not name. */
+const KIT_FILES: Readonly<Record<NonNullable<AppManifest["kit"]>, readonly string[]>> = {
+	explainer: [EXPLAINER_ENGINE, EXPLAINER_PAGE],
+};
+
+/** Refuses a call that writes a file of the app's kit: the kit's files are Qorpera's, the same in every such app. */
+function refuseKitFiles(kit: NonNullable<AppManifest["kit"]>, files: readonly AppFile[]): void {
+	const own = files.find((file) => KIT_FILES[kit].includes(file.path.toLowerCase()));
+	if (own)
+		throw new CloudToolRefusal(
+			`APP_KIT_FILE: ${own.path} is the ${kit} kit's own file, which save_app writes; leave it out and give ${EXPLAINER_SCENES}`,
+		);
+}
 
 const contentOf = (path: string, text: string) => ({
 	text,
@@ -365,18 +406,28 @@ export function appLookNotes(html: string): string[] {
 	return notes;
 }
 
-/** What the model is told after a commit, by each unit's outcome. `entry` is the entry page's text when this call wrote it. */
+/** What a quick read of what a call wrote finds: of an explainer its scenes, of any other app its entry page; nothing
+ * when the call wrote neither. */
+function lookNotes(files: readonly AppFile[], kit: AppManifest["kit"], entry: string): string[] {
+	const path = kit === "explainer" ? EXPLAINER_SCENES : entry.toLowerCase();
+	const written = files.find((file) => file.path.toLowerCase() === path)?.text;
+	if (written === undefined) return [];
+	return kit === "explainer" ? explainerNotes(written) : appLookNotes(written);
+}
+
+/** What the model is told after a commit, by each unit's outcome. `notes` is what a quick read of what this call
+ * wrote found (`lookNotes`). */
 function savedText(
 	request: { name: string; operationKey: string },
 	receiptId: string,
 	units: readonly CloudCompanyFolderUnitResult[],
 	created: boolean,
-	entry: string | null,
+	notes: readonly string[],
 ): string {
 	const saved = units.filter((unit) => unit.outcome === "saved").length;
 	const state = saved === units.length ? "applied" : saved === 0 ? "not_applied" : "partly_applied";
 	const conflict = units.some((unit) => unit.outcome === "conflict");
-	const look = state === "applied" && entry !== null ? appLookNotes(entry) : [];
+	const look = state === "applied" ? notes : [];
 	return cloudToolJsonText({
 		schema: "qorpera.app-save/v1",
 		state,
@@ -487,7 +538,7 @@ export function cloudAppTools(options: {
 		name: "save_app" satisfies CloudRuntimeToolOperation,
 		source: "company_file",
 		maxArgumentBytes: MAX_TOOL_ARGUMENT_BYTES,
-		description: `Make or change an interface app: a small web page in apps/<name>/ of the company folder that shows members a part of the company as it stands now (the state of an area, results, a prototype, a dashboard), opened as a page of its own. Give the app's name (its folder: lowercase, digits and hyphens), a manifest (title, and optionally about, emblem: ${INTERFACE_EMBLEMS.join(", ")}, colour: ${AGENT_COLOURS.join(", ")}, entry: the page that opens, default ${APP_DEFAULT_ENTRY}, reads: the live sources the page may read, of ${APP_READS.join(", ")}, writes: what it may ask a member to change) to make it or change its manifest, or null to keep it, and the files to write (at most ${FILES_PER_CALL} a call: .html, .css, .js, .json, .svg, .md, .csv, .txt, each at most ${APP_FILE_MAX_BYTES / 1024} KiB). Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) you write into the app's folder from a company machine may be up to ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each and ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all; pages and code up to ${APP_MAX_BYTES / 1024 / 1024} MiB in all. The app is one page: only the entry opens, so links to its other .html files do not work; put every view in the entry, as tabs or sections. The page gets its pictures and videos only where it names them when it opens (<img src>, <video src>, a poster, or url() in its styles): a script cannot load a picture or video later, so put every picture it may show in the page (hidden ones too) and switch them with styles or a script; a script reads text files with qorpera.read(path). The entry may use the app's other files by relative paths (<link rel="stylesheet" href="style.css">, <script src="app.js">, <img src="chart.svg">); the page has no network, so put everything it needs in the app. A new app needs a manifest and its entry. It applies at once. Then link it in your message as [Title](app:<name>), which members open as a page of its own. Set concept = true for a concept of the company's product, and cover = a picture of it, so it shows in the Concepts viewer. Keep operationKey for the same change, and use a new one for any other change.${SAVE_APP_DESIGN}`,
+		description: `Make or change an interface app: a small web page in apps/<name>/ of the company folder that shows members a part of the company as it stands now (the state of an area, results, a prototype, a dashboard), opened as a page of its own. Give the app's name (its folder: lowercase, digits and hyphens), a manifest (title, and optionally about, emblem: ${INTERFACE_EMBLEMS.join(", ")}, colour: ${AGENT_COLOURS.join(", ")}, entry: the page that opens, default ${APP_DEFAULT_ENTRY}, reads: the live sources the page may read, of ${APP_READS.join(", ")}, writes: what it may ask a member to change, kit: explainer for a short narrated video) to make it or change its manifest, or null to keep it, and the files to write (at most ${FILES_PER_CALL} a call: .html, .css, .js, .json, .svg, .md, .csv, .txt, each at most ${APP_FILE_MAX_BYTES / 1024} KiB). Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) you write into the app's folder from a company machine may be up to ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each and ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all; pages and code up to ${APP_MAX_BYTES / 1024 / 1024} MiB in all. The app is one page: only the entry opens, so links to its other .html files do not work; put every view in the entry, as tabs or sections. The page gets its pictures and videos only where it names them when it opens (<img src>, <video src>, a poster, or url() in its styles): a script cannot load a picture or video later, so put every picture it may show in the page (hidden ones too) and switch them with styles or a script; a script reads text files with qorpera.read(path). The entry may use the app's other files by relative paths (<link rel="stylesheet" href="style.css">, <script src="app.js">, <img src="chart.svg">); the page has no network, so put everything it needs in the app. A new app needs a manifest and its entry. It applies at once. Then link it in your message as [Title](app:<name>). Set concept = true for a concept of the company's product, and cover = a picture of it, so it shows in the Concepts viewer. Keep operationKey for the same change, and use a new one for any other change.${SAVE_APP_DESIGN}`,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -518,6 +569,7 @@ export function cloudAppTools(options: {
 						},
 						concept: { type: ["boolean", "null"] },
 						cover: { type: ["string", "null"], maxLength: 1024 },
+						kit: { type: ["string", "null"], enum: [...APP_KITS, null], description: SAVE_APP_KIT },
 					},
 				},
 				files: {
@@ -592,13 +644,28 @@ export function cloudAppTools(options: {
 					writes: request.manifest.writes ?? [],
 					concept: request.manifest.concept ?? false,
 					cover: request.manifest.cover,
+					kit: request.manifest.kit,
 				};
-				if (!request.files.some((file) => file.path.toLowerCase() === manifest.entry.toLowerCase()))
+				// A kit's own files go in with the agent's: for an explainer the engine and the page, around its scenes.
+				let files = request.files;
+				if (manifest.kit === "explainer") {
+					refuseKitFiles(manifest.kit, files);
+					if (!files.some((file) => file.path.toLowerCase() === EXPLAINER_SCENES))
+						throw new CloudToolRefusal(
+							`APP_SCENES_MISSING: a new explainer needs its ${EXPLAINER_SCENES} among files`,
+						);
+					files = [
+						...files,
+						{ path: EXPLAINER_ENGINE, text: EXPLAINER_ENGINE_JS },
+						{ path: EXPLAINER_PAGE, text: explainerPage(manifest.name, []) },
+					];
+				}
+				if (!files.some((file) => file.path.toLowerCase() === manifest.entry.toLowerCase()))
 					throw new CloudToolRefusal(
 						`APP_ENTRY_MISSING: a new app needs its entry, ${manifest.entry}, among files`,
 					);
-				const total = request.files.reduce((sum, file) => sum + Buffer.byteLength(file.text), 0);
-				if (request.files.length + 1 > APP_MAX_FILES || total > APP_MAX_BYTES)
+				const total = files.reduce((sum, file) => sum + Buffer.byteLength(file.text), 0);
+				if (files.length + 1 > APP_MAX_FILES || total > APP_MAX_BYTES)
 					throw new CloudToolRefusal(
 						`APP_TOO_LARGE: an app holds at most ${APP_MAX_FILES} files and ${APP_MAX_BYTES / 1024 / 1024} MiB in all`,
 					);
@@ -608,8 +675,8 @@ export function cloudAppTools(options: {
 						kind: "file",
 						content: { text: writeAppManifest(manifest), mediaType: "application/toml" },
 					},
-					...foldersOf(request.files.map((file) => file.path)).map((path) => ({ path, kind: "folder" as const })),
-					...request.files.map((file) => ({
+					...foldersOf(files.map((file) => file.path)).map((path) => ({ path, kind: "folder" as const })),
+					...files.map((file) => ({
 						path: file.path,
 						kind: "file" as const,
 						content: contentOf(file.path, file.text),
@@ -635,7 +702,8 @@ export function cloudAppTools(options: {
 					request,
 					digest,
 					[unit],
-					(receiptId, units) => savedText(request, receiptId, units, true, entryText(request, manifest.entry)),
+					(receiptId, units) =>
+						savedText(request, receiptId, units, true, lookNotes(request.files, manifest.kit, manifest.entry)),
 					context,
 				);
 				return showCommitted(context, answer, reads);
@@ -649,8 +717,11 @@ export function cloudAppTools(options: {
 			let entry = APP_DEFAULT_ENTRY;
 			if (stored !== null && stored !== "unreadable") reads.push(stored.entry);
 			const storedParse = stored !== null && stored !== "unreadable" ? parseAppManifest(stored.text) : null;
+			const before = storedParse?.ok ? storedParse.manifest : null;
+			// The kit and the title the app has after this call: the kit's page is written from them below.
+			let kit = before?.kit ?? null;
+			let title = before?.name ?? request.name;
 			if (request.manifest !== null) {
-				const before = storedParse?.ok ? storedParse.manifest : null;
 				const manifest: AppManifest = {
 					name: request.manifest.name,
 					about: request.manifest.about,
@@ -663,8 +734,15 @@ export function cloudAppTools(options: {
 					writes: request.manifest.writes ?? before?.writes ?? [],
 					concept: request.manifest.concept ?? before?.concept ?? false,
 					cover: request.manifest.cover ?? before?.cover ?? null,
+					kit: request.manifest.kit ?? before?.kit ?? null,
 				};
+				if (manifest.kit !== null && manifest.entry !== APP_DEFAULT_ENTRY)
+					throw new CloudToolRefusal(
+						`APP_KIT_ENTRY: an app made from a kit opens ${APP_DEFAULT_ENTRY}; give manifest.entry ${APP_DEFAULT_ENTRY}`,
+					);
 				entry = manifest.entry;
+				kit = manifest.kit;
+				title = manifest.name;
 				const textOut = writeAppManifest(manifest);
 				if (stored === "unreadable")
 					throw new CloudToolRefusal(
@@ -690,11 +768,42 @@ export function cloudAppTools(options: {
 				.list(root, { recursive: true, limit: LIST_LIMIT }, context.signal)
 				.catch((error) => unavailable(error, "saved"));
 			reads.push(...listed.entries);
+			const byKey = new Map(listed.entries.map((item) => [item.path.slice(root.length + 1).toLowerCase(), item]));
+			// A kit's own files, written where the folder holds none or other text: the engine of this runtime, and the
+			// page with the title as it is now and the voice clips the folder holds. A save of scenes.js alone leaves
+			// them as they are.
+			let files = request.files;
+			if (kit === "explainer") {
+				refuseKitFiles(kit, files);
+				const given = (path: string) => files.find((file) => file.path.toLowerCase() === path)?.text;
+				if (byKey.get(EXPLAINER_SCENES)?.kind !== "file" && given(EXPLAINER_SCENES) === undefined)
+					throw new CloudToolRefusal(
+						`APP_SCENES_MISSING: the explainer's ${EXPLAINER_SCENES} is not in its folder; write it among files`,
+					);
+				let listedClips = given(EXPLAINER_CLIPS) ?? null;
+				if (listedClips === null && byKey.get(EXPLAINER_CLIPS)?.kind === "file")
+					listedClips = await folder
+						.readText(`${root}/${EXPLAINER_CLIPS}`, EXPLAINER_CLIPS_MAX_BYTES, context.signal)
+						.then(
+							(found) => found?.text ?? null,
+							(error) => (error instanceof CloudCompanyPathNotText ? null : unavailable(error, "saved")),
+						);
+				const clips = (listedClips === null ? [] : parseExplainerClips(listedClips)).filter(
+					(clip) => byKey.get(`voice/${clip.file}`)?.kind === "file",
+				);
+				for (const file of [
+					{ path: EXPLAINER_ENGINE, text: EXPLAINER_ENGINE_JS },
+					{ path: EXPLAINER_PAGE, text: explainerPage(title, clips) },
+				]) {
+					const found = byKey.get(file.path);
+					if (found?.kind !== "file" || found.file.fileSha256 !== sha256hex(file.text)) files = [...files, file];
+				}
+			}
 			const sizes = new Map<string, number>();
 			for (const item of listed.entries)
 				if (item.kind === "file" && APP_FILE_TYPES[appFileKind(item.path)])
 					sizes.set(item.path.slice(root.length + 1).toLowerCase(), item.file.bytes);
-			for (const file of request.files) sizes.set(file.path.toLowerCase(), Buffer.byteLength(file.text));
+			for (const file of files) sizes.set(file.path.toLowerCase(), Buffer.byteLength(file.text));
 			// A picture or video counts as a file, and toward the pictures' and videos' own bound, which the page's reader
 			// holds it to; every file to its own bound, since the page's reader shows no app with one past it (7 November
 			// 2026: a machine wrote 10 MB pages into an app that then never opened).
@@ -717,14 +826,13 @@ export function cloudAppTools(options: {
 				throw new CloudToolRefusal(
 					`APP_FILE_TOO_LARGE: ${over[0]} is ${Math.ceil(over[1] / 1024)} KiB; a page or code file loads at most ${APP_FILE_MAX_BYTES / 1024} KiB and a picture or video at most ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB, so the app would not open. Put pictures in their own files, not inside a page, and make it smaller or remove it with company_delete`,
 				);
-			const byKey = new Map(listed.entries.map((item) => [item.path.slice(root.length + 1).toLowerCase(), item]));
-			for (const folderPath of foldersOf(request.files.map((file) => file.path))) {
+			for (const folderPath of foldersOf(files.map((file) => file.path))) {
 				const found = byKey.get(folderPath.toLowerCase());
 				if (found === undefined) units.push({ op: "mkdir", path: `${root}/${folderPath}` });
 				else if (found.kind !== "folder")
 					throw new CloudToolRefusal(`APP_NOT_A_FOLDER: ${root}/${folderPath} is a file, not a folder`);
 			}
-			for (const file of request.files) {
+			for (const file of files) {
 				const found = byKey.get(file.path.toLowerCase());
 				if (found !== undefined && found.kind !== "file")
 					throw new CloudToolRefusal(`APP_NOT_A_FILE: ${root}/${file.path} is a folder or a link`);
@@ -743,10 +851,7 @@ export function cloudAppTools(options: {
 							},
 				);
 			}
-			if (
-				!byKey.has(entry.toLowerCase()) &&
-				!request.files.some((file) => file.path.toLowerCase() === entry.toLowerCase())
-			)
+			if (!byKey.has(entry.toLowerCase()) && !files.some((file) => file.path.toLowerCase() === entry.toLowerCase()))
 				throw new CloudToolRefusal(
 					`APP_ENTRY_MISSING: the app's entry, ${entry}, is not in its folder; write it among files`,
 				);
@@ -755,7 +860,7 @@ export function cloudAppTools(options: {
 				request,
 				digest,
 				units,
-				(receiptId, results) => savedText(request, receiptId, results, false, entryText(request, entry)),
+				(receiptId, results) => savedText(request, receiptId, results, false, lookNotes(request.files, kit, entry)),
 				context,
 			);
 			return showCommitted(context, answer, reads);
