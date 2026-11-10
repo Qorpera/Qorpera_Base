@@ -2039,37 +2039,43 @@ it("rejects a line still being spoken when the run ends, and detaches the voice"
 	await expect(f.voice.open({ offerSdp: VOICE_OFFER }, signal)).rejects.toBeInstanceOf(CloudVoiceUnavailable);
 });
 
-it("keeps the slot of a call being stopped until its stop is confirmed, and gives its late words to no other call", async () => {
-	const f = await voiceRun("voice-reopen");
-	const signal = new AbortController().signal;
-	const first = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
-	const line = new AbortController();
-	const speaking = first.speak('"One."', line.signal).catch((error: unknown) => error);
-	await vi.waitFor(async () => expect((await f.recorded()).appended).toHaveLength(1), { timeout: 10_000 });
-	line.abort();
-	// The line is rejected at once; the next call waits for the stop, and does not fail.
-	expect(((await speaking) as Error).message).toBe("Native voice cancelled");
-	const second = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
-	await expect(second.speak('"Two."', signal)).resolves.toEqual({ transcript: 'SAID "Two."' });
-	await second.close();
-	await f.endTurn();
-	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
-	const recorded = await f.recorded();
-	// The second thread started only after the first call's late transcript and close, which went to neither call.
-	expect(recorded.events).toEqual(["thread-start:thread_voice", "stop", "late", "thread-start:thread_voice_2"]);
-	expect(recorded.stops).toEqual([{ threadId: "thread_voice" }, { threadId: "thread_voice_2" }]);
-});
+it.each(["voice-reopen", "voice-reopen-refused"])(
+	"keeps the slot of a call being stopped until its stop is confirmed, and gives its late words to no other call: %s",
+	async (mode) => {
+		const f = await voiceRun(mode);
+		const signal = new AbortController().signal;
+		const first = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		const line = new AbortController();
+		const speaking = first.speak('"One."', line.signal).catch((error: unknown) => error);
+		await vi.waitFor(async () => expect((await f.recorded()).appended).toHaveLength(1), { timeout: 10_000 });
+		line.abort();
+		// The line is rejected at once; the next call waits for the stop, and does not fail.
+		expect(((await speaking) as Error).message).toBe("Native voice cancelled");
+		const second = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		await expect(second.speak('"Two."', signal)).resolves.toEqual({ transcript: 'SAID "Two."' });
+		await second.close();
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		const recorded = await f.recorded();
+		// The second thread started only after the first call's late transcript and close, which went to neither call.
+		expect(recorded.events).toEqual(["thread-start:thread_voice", "stop", "late", "thread-start:thread_voice_2"]);
+		expect(recorded.stops).toEqual([{ threadId: "thread_voice" }, { threadId: "thread_voice_2" }]);
+	},
+);
 
-it("places no more calls in a run once a stop went unconfirmed, and the run stands", async () => {
-	const f = await voiceRun("voice-stop-silent", { voice: new CloudVoiceChannel({ stopMs: 200 }) });
-	const signal = new AbortController().signal;
-	const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
-	await call.close();
-	await expect(f.voice.open({ offerSdp: VOICE_OFFER }, signal)).rejects.toBeInstanceOf(CloudVoiceUnavailable);
-	expect((await f.recorded()).events).toEqual(["thread-start:thread_voice"]);
-	await f.endTurn();
-	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
-});
+it.each(["voice-stop-silent", "voice-stop-refused"])(
+	"places no more calls in a run once a stop went unconfirmed, and the run stands: %s",
+	async (mode) => {
+		const f = await voiceRun(mode, { voice: new CloudVoiceChannel({ stopMs: 200 }) });
+		const signal = new AbortController().signal;
+		const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		await call.close();
+		await expect(f.voice.open({ offerSdp: VOICE_OFFER }, signal)).rejects.toBeInstanceOf(CloudVoiceUnavailable);
+		expect((await f.recorded()).events).toEqual(["thread-start:thread_voice"]);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	},
+);
 
 it("gives a run on a member's ChatGPT plan no voice", async () => {
 	const f = await voiceRun("voice", { identityRoot: await planRoot() });

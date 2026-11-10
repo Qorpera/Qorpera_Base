@@ -199,7 +199,9 @@ const voiceWrite = () => writeFileSync(evidencePath, JSON.stringify({ ...voiceEv
 let voiceThreads = 0;
 let voiceCurrent = voiceThreadId;
 const voiceSay = (method, params = {}) => write({ method, params: { threadId: voiceCurrent, ...params } });
-// voice-reopen: the second call's line is answered only once the first call's late words were sent.
+// voice-reopen (and voice-reopen-refused, whose first stop is refused): the second call's line is answered only once
+// the first call's late words were sent.
+const voiceReopen = mode === "voice-reopen" || mode === "voice-reopen-refused";
 let voiceLateSent;
 const voiceLate = new Promise((resolve) => { voiceLateSent = resolve; });
 
@@ -362,8 +364,8 @@ async function handle(message) {
 			voiceSay("thread/realtime/error", { message: "PRIVATE_REALTIME_ERROR" });
 			return;
 		}
-		if (mode === "voice-silent" || (mode === "voice-reopen" && line === 1)) return;
-		if (mode === "voice-reopen") await voiceLate;
+		if (mode === "voice-silent" || (voiceReopen && line === 1)) return;
+		if (voiceReopen) await voiceLate;
 		if (mode === "voice-request" && line === 1)
 			write({ id: "voice_request", method: "item/tool/call", params: { threadId: voiceThreadId, turnId: "turn_voice", callId: "voice_call", namespace: "qorpera", tool: "send_email", arguments: {} } });
 		voiceSay("thread/realtime/transcript/delta", { role: "assistant", delta: "PRIVATE_DELTA" });
@@ -377,9 +379,17 @@ async function handle(message) {
 		voiceWrite();
 		// The stop is never confirmed: no answer, no close.
 		if (mode === "voice-stop-silent") return;
-		if (mode === "voice-reopen" && voiceEvidence.stops.length === 1) {
-			// The first call's stop is slow, and its session still speaks meanwhile: a line's late transcript and its close,
-			// neither naming its thread, before the stop is answered.
+		// A refused stop confirms nothing: the session may still be up.
+		const refuse = () => write({ id: message.id, error: { code: -32000, message: "PRIVATE_REALTIME_STOP_ERROR" } });
+		if (mode === "voice-stop-refused") {
+			refuse();
+			return;
+		}
+		const refused = mode === "voice-reopen-refused" && voiceEvidence.stops.length === 1;
+		if (refused) refuse();
+		if (voiceReopen && voiceEvidence.stops.length === 1) {
+			// The first call's stop is slow (or refused), and its session still speaks meanwhile: a line's late transcript
+			// and its close, neither naming its thread, before the stop is answered.
 			voiceEvidence.events.push("stop");
 			await new Promise((resolve) => setTimeout(resolve, 300));
 			write({ method: "thread/realtime/transcript/done", params: { role: "assistant", text: "PRIVATE_LATE_TRANSCRIPT" } });
@@ -387,6 +397,7 @@ async function handle(message) {
 			voiceEvidence.events.push("late");
 			voiceWrite();
 			voiceLateSent();
+			if (refused) return;
 			await new Promise((resolve) => setTimeout(resolve, 100));
 		}
 		write({ id: message.id, result: {} });

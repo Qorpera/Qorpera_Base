@@ -1581,8 +1581,8 @@ class CodexBoundaryRpc {
 		this.#endVoice(voice, error);
 		if (voice.stopped) return;
 		voice.stopped = true;
-		// The slot stays taken until the stop is confirmed: the answer to the stop, refused or not, or the session's
-		// close. Its pending work was rejected above.
+		// The slot stays taken until the stop is confirmed: a successful answer to the stop, or the session's close. A
+		// refused stop confirms nothing, so the close is still waited for. Its pending work was rejected above.
 		let settle: () => void = () => undefined;
 		voice.settled = new Promise<void>((resolve) => {
 			settle = resolve;
@@ -1595,7 +1595,8 @@ class CodexBoundaryRpc {
 		const confirmed = await Promise.race([
 			this.#send("thread/realtime/stop", { threadId: voice.threadId }, undefined, true).then(
 				() => true,
-				() => true,
+				// A process that ended can say no more, and opens no more calls.
+				() => (this.#failure || this.#closed ? true : closed),
 			),
 			closed,
 			new Promise<boolean>((resolve) => {
