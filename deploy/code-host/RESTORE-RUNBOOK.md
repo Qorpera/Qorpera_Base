@@ -44,6 +44,13 @@ Three modes:
 `fresh` first takes a new bundle of the place as it stands and stores it like a nightly one. When that works, the
 history is sound and no change is lost. When it fails, the history itself is damaged: use a stored bundle.
 
+A `fresh` request that is taken up again (after it was put off, or after its lease ended) uses the bundle it took
+before only when the place has not been open since: the place was already seen emptied, or it still holds this
+request's `restoring.json` for that bundle. When the place is open (an earlier try moved nothing and opened it
+again), changes may have landed there meanwhile. The request then takes a new bundle of the place as it stands
+before it closes it, and `progress.bundle` names the new one. If the new bundle fails, the request ends
+`FRESH_BUNDLE_FAILED` like a first try and nothing is moved; the earlier bundle is still stored under its name.
+
 What a restore brings back, and what not:
 
 | | |
@@ -96,7 +103,8 @@ What a restore brings back, and what not:
      `progress.recorded` the restore is in the change record, and only the opening of the place, or its finish, is
      left.
    - `queued` again with `not_before`: a turn came first. It goes on in two minutes, from where it was. If nothing
-     had been moved yet, the place was opened again meanwhile. Once the restore has begun to move the place
+     had been moved yet, the place was opened again meanwhile (a `fresh` request then takes a new bundle when it
+     goes on). Once the restore has begun to move the place
      (`progress.step` is `set-aside`, `build` or `open`, or `progress` has `setAside`), it is not put off for the
      company's sessions any more: the place is closed to them, the request is handed out again whatever they do, and
      its jobs keep their place in the company's line until the repository is open again.

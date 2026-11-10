@@ -1573,6 +1573,73 @@ begin
 		'a download made after the open outlives the discard and the finish: ' || pg_temp.req_list()::text);
 end $$;
 
+-- company/six: a restore from `fresh` that is claimed twice, with the place open in between. Its first claim took a
+-- bundle and closed the place; the job that sets the place aside was let go and failed before it moved anything, the
+-- place was opened again, and the word that the request failed never reached the kernel. A change lands in the open
+-- place. The executor of the next claim reads the place, takes a new bundle of it as it stands, and restores from that:
+-- the bundle's name in the progress changes between two claims of one request, the record is made with the new one,
+-- and main as restored is main as it was. No change is lost.
+insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name)
+values (pg_temp.rec_here(), '92400000-0000-4000-8000-000000000010', 'company', 'six');
+do $$
+declare v jsonb; v_item jsonb; v_id uuid; v_first uuid; v_second uuid; q public.qorpera_code_requests%rowtype;
+	v_old text := '20261110T160000Z-' || left(pg_temp.rec_sha('k2'), 12);
+	v_new text := '20261110T170000Z-' || left(pg_temp.rec_sha('k3'), 12);
+	v_closed text := '20261110T160100Z'; v_again text := '20261110T170100Z';
+	v_aside text := 'code/_set-aside/company/at-20261110T170100Z/six';
+begin
+	perform pg_temp.rec_land(60, 'k0', 'k1', p_name => 'six');
+	perform pg_temp.rec_land(61, 'k1', 'k2', p_name => 'six');
+	perform pg_temp.req_quiet();
+	v_id := pg_temp.req_restore('restore', 'fresh', 'keep', 'A drill.', 'six');
+	v_item := pg_temp.req_claim() -> 0;
+	v_first := (v_item ->> 'token')::uuid;
+	-- The first claim: the bundle's two jobs, the close, and the job that sets the place aside is let go.
+	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_item ->> 'bundle' = 'fresh' and v_item -> 'progress' = 'null'::jsonb
+		and pg_temp.req_step(v_id, v_first, '{"step":"fresh"}') ->> 'state' = 'go'
+		and pg_temp.req_step(v_id, v_first, '{"step":"fresh"}') ->> 'state' = 'go'
+		and pg_temp.req_step(v_id, v_first, jsonb_build_object('bundle', v_old, 'step', 'close')) ->> 'state' = 'go'
+		and pg_temp.req_step(v_id, v_first, jsonb_build_object('bundle', v_old, 'at', v_closed, 'step', 'set-aside')) ->> 'state' = 'go',
+		'six''s first claim: ' || coalesce(v_item::text, 'none'));
+	-- That job moves nothing, and the place is open again. A session's change lands there: main is past the bundle.
+	perform pg_temp.rec_land(62, 'k2', 'k3', p_name => 'six');
+	perform pg_temp.base_assert(pg_temp.req_rows('six') = '1:L 2:L 3:L' and (pg_temp.rec_shop('six')).last_main = pg_temp.rec_sha('k3')
+		and (pg_temp.req_row(v_id)).state = 'running', 'a landing while the place was open again: ' || pg_temp.req_rows('six'));
+	-- The request's lease ends and it is claimed again, with the first claim's bundle in its progress. The jobs that
+	-- read the place and take the new bundle ask their steps with what the kernel saved; the close brings the new name.
+	perform pg_temp.req_quiet();
+	perform pg_temp.req_lapse(v_id);
+	v_item := pg_temp.req_claim() -> 0;
+	v_second := (v_item ->> 'token')::uuid;
+	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_second <> v_first
+		and v_item -> 'progress' = jsonb_build_object('bundle', v_old, 'at', v_closed, 'step', 'set-aside')
+		and pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_old, 'at', v_closed, 'step', 'fresh')) ->> 'state' = 'go'
+		and pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_old, 'at', v_closed, 'step', 'fresh')) ->> 'state' = 'go'
+		and pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_old, 'at', v_closed, 'step', 'fresh')) ->> 'state' = 'go'
+		and (pg_temp.req_row(v_id)).progress = jsonb_build_object('bundle', v_old, 'at', v_closed, 'step', 'fresh')
+		and pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_new, 'at', v_closed, 'step', 'close')) ->> 'state' = 'go'
+		and (pg_temp.req_row(v_id)).progress = jsonb_build_object('bundle', v_new, 'at', v_closed, 'step', 'close'),
+		'claimed again, a new bundle: ' || coalesce(v_item::text, 'nothing') || ' ' || (pg_temp.req_row(v_id)).progress::text);
+	perform pg_temp.base_assert(
+		pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_new, 'at', v_again, 'step', 'set-aside')) ->> 'state' = 'go'
+		and pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_new, 'at', v_again, 'step', 'set-aside')) ->> 'state' = 'go'
+		and pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_new, 'at', v_again, 'step', 'build', 'setAside', v_aside)) ->> 'state' = 'go'
+		and pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_new, 'at', v_again, 'step', 'open', 'setAside', v_aside,
+			'built', true)) ->> 'state' = 'go', 'the restore from the new bundle');
+	-- The record, with the new bundle: main as restored is where the record has main. Every row stays as it is.
+	v := pg_temp.req_record(v_id, v_second, v_new, 'k3', 'k3');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(4, 3, 0, 0) and pg_temp.req_rows('six') = '1:L 2:L 3:L 4:L'
+		and pg_temp.rec_is(4, 'restore', 'landed', 'k3', 'k3', 'six') and (pg_temp.rec_row(4, 'six')).restored_from = v_new
+		and (pg_temp.rec_shop('six')).restored_from = v_new and (pg_temp.rec_shop('six')).last_main = pg_temp.rec_sha('k3'),
+		'nothing is lost: ' || v::text || ' ' || pg_temp.req_rows('six'));
+	perform pg_temp.base_assert(pg_temp.req_finish(v_id, v_second, pg_temp.req_restore_outcome(v_new, 'k3',
+			jsonb_build_object('previousMainSha', pg_temp.rec_sha('k3'), 'movedTo', v_aside))) = pg_temp.req_recorded(4), 'six''s restore ends');
+	q := pg_temp.req_row(v_id);
+	perform pg_temp.base_assert(q.state = 'done' and q.attempts = 2 and q.outcome ->> 'bundle' = v_new and q.outcome -> 'lost' = '0'
+		and q.outcome -> 'keptThrough' = '3' and q.progress ->> 'bundle' = v_new and q.progress -> 'recorded' ->> 'bundle' = v_new,
+		'the request names the bundle it restored: ' || to_jsonb(q)::text);
+end $$;
+
 -- company/two: three landings, an undo of the second, and a landing. Bundles were taken at b3 and at b5.
 insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name)
 values (pg_temp.rec_here(), '92400000-0000-4000-8000-000000000010', 'company', 'two');

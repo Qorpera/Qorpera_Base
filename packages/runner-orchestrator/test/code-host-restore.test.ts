@@ -47,6 +47,7 @@ import {
 	codeSetAsidePath,
 	discardSetAside,
 	openCodeArea,
+	readCodeAreaMark,
 	reopenCodeArea,
 	restoreCodeArea,
 	setAsideCodeArea,
@@ -474,6 +475,9 @@ describe("code host: restore of a repository kept in Qorpera from a stored bundl
 			),
 		).rejects.toMatchObject({ code: "CODE_HOST_RESTORE_BUNDLE_DIFFERS" });
 		expect(await f.listing(f.companyRoot)).toEqual(before);
+		// An open place reads as one: it is there, and holds no mark.
+		const look = () => readCodeAreaMark(f.job, { repository: kept });
+		expect(await look()).toEqual({ there: true, mark: null });
 
 		expect(await close(f, b, f.job, { requestId })).toEqual({
 			state: "closed",
@@ -491,7 +495,8 @@ describe("code host: restore of a repository kept in Qorpera from a stored bundl
 			setAside: null,
 			previousMainSha: s.two.mainSha,
 		});
-		// The mark is the one thing written.
+		// The mark is the one thing written, and a job reads it from the place without writing anything.
+		expect(await look()).toEqual({ there: true, mark: await readMark(f) });
 		const marked = await f.listing(f.companyRoot);
 		expect(marked.filter((line) => !before.includes(line))).toEqual([
 			`f ${(await readFile(f.mark)).length} ${AREA}/restoring.json`,
@@ -539,11 +544,14 @@ describe("code host: restore of a repository kept in Qorpera from a stored bundl
 		});
 		await writeFile(f.mark, "x".repeat(5000));
 		await expect(setAside(f, b)).rejects.toMatchObject({ code: "CODE_HOST_RESTORE_MARK_UNREADABLE" });
+		await expect(look()).rejects.toMatchObject({ code: "CODE_HOST_RESTORE_MARK_UNREADABLE" });
 		await rm(f.mark);
 		await rename(f.code, join(f.root, "elsewhere"));
 		await symlink(join(f.root, "elsewhere"), f.code);
 		await expect(close(f, b)).rejects.toMatchObject({ code: "CODE_HOST_LINK", paths: [AREA] });
+		await expect(look()).rejects.toMatchObject({ code: "CODE_HOST_LINK", paths: [AREA] });
 		await rm(f.code);
+		expect(await look()).toEqual({ there: false, mark: null });
 
 		// A place that is gone is closed too: the mark alone, in a folder made for it.
 		expect(await close(f, b)).toEqual({
@@ -554,12 +562,14 @@ describe("code host: restore of a repository kept in Qorpera from a stored bundl
 			previousMainSha: null,
 		});
 		expect(await readdir(f.code)).toEqual(["restoring.json"]);
+		expect(await look()).toMatchObject({ there: true, mark: { step: "closed", previousMainSha: null } });
 		await expect(startCodeArea(f.job, { repository: kept })).rejects.toMatchObject({
 			code: "CODE_HOST_RESTORE_IN_PROGRESS",
 		});
 		for (const bad of [
 			() => close(f, b, f.job, { at: "2026-11-10T16:14:55Z" }),
 			() => close(f, b, f.job, { requestId: "request" }),
+			() => readCodeAreaMark(f.job, { repository: kept, bundle: b.bundle.name } as never),
 		])
 			await expect(bad()).rejects.toThrow("INVALID_CODE_HOST_JOB");
 		expect(await readdir(f.scratchRoot)).toEqual([]);
@@ -1682,6 +1692,219 @@ describe("CodeRestore: a restore request, step by step", () => {
 		]);
 		expect(await exists(join(f.aside, "downloads", fileName))).toBe(true);
 		expect(await exists(f.mark)).toBe(false);
+	});
+
+	/** A `fresh` request whose first claim took its bundle, closed the place and was let go to set it aside, where the
+	 * job failed before it moved anything: the place was opened again as it was. The executor's word that the request
+	 * failed never reaches the kernel, so the request is claimed again with what the kernel saved. Answers the bundle
+	 * the first claim took and that next claim. */
+	async function openedAgain(f: Fixture, x: ReturnType<typeof executor>, mainSha: string) {
+		const asked = request(),
+			before = await f.listing(f.companyRoot);
+		x.jobs.host = () =>
+			stoppedAt(
+				f,
+				(command) => command.argv[0] === "/bin/sh" && (command.argv[2] ?? "").includes("mv --no-copy --version"),
+			);
+		expect(await x.run(asked)).toEqual({
+			schema: SCHEMA,
+			state: "failed",
+			code: "SET_ASIDE_FAILED:UNCLASSIFIED:PLACE_AS_BEFORE",
+		});
+		x.jobs.host = () => f.job;
+		expect(await f.listing(f.companyRoot)).toEqual(before);
+		const first = codeBundleName(new Date(NOW).toISOString(), mainSha),
+			saved = x.kernel.steps.at(-1) as Record<string, unknown>;
+		expect(saved).toEqual({ step: "set-aside", bundle: first, at: AT });
+		expect((await readdir(x.folder)).sort()).toEqual([`${first}.bundle`, `${first}.json`]);
+		x.kernel.steps.length = 0;
+		return { first, next: { ...asked, token: randomUUID(), progress: saved } };
+	}
+
+	it("fresh, claimed again after its place was open again: takes a new bundle of the place as it stands, so a change that landed meanwhile is in the restored main", async () => {
+		const f = await fixture(),
+			s = await shop(f),
+			x = executor(f);
+		const { first, next } = await openedAgain(f, x, s.two.mainSha);
+		// While the place is open, a session's change lands: main moves on from the commit the first bundle holds.
+		expect(await land(f, s.second, s.work)).toMatchObject({ state: "fast-forward", mainSha: s.work });
+		const refs = await refsOf(f),
+			name = codeBundleName(new Date(NOW).toISOString(), s.work);
+		expect(name).not.toBe(first);
+		// The next claim reads the place before anything else. No mark of the request is in it: the place has been open
+		// since the first bundle was taken. So it takes a new bundle of the place as it stands, and only then closes.
+		expect(await x.run(next)).toEqual({
+			schema: SCHEMA,
+			state: "done",
+			result: "restored",
+			bundle: name,
+			mainSha: s.work,
+			previousMainSha: s.work,
+			refsSha256: codeRefsSha256(refs),
+			refs: refs.length,
+			stranded: [],
+			movedTo: ASIDE,
+		});
+		expect(x.errors()).toEqual(["Error: the code host went away"]);
+		// The look, nightly care's check and its bundle job, each under the step `fresh`; then the restore, from the new
+		// bundle alone.
+		expect(x.kernel.steps).toEqual([
+			{ step: "fresh", bundle: first, at: AT },
+			{ step: "fresh", bundle: first, at: AT },
+			{ step: "fresh", bundle: first, at: AT },
+			{ step: "close", bundle: name, at: AT },
+			{ step: "set-aside", bundle: name, at: AT },
+			{ step: "set-aside", bundle: name, at: AT },
+			{ step: "build", bundle: name, at: AT, setAside: ASIDE },
+			{ step: "open", bundle: name, at: AT, setAside: ASIDE, built: true },
+		]);
+		expect(x.jobs.yields.slice(-8)).toEqual([true, true, true, true, false, false, false, false]);
+		// The record names main as restored and main as it was, and they are one commit: the kernel finds no change
+		// lost from that (1211, company/six).
+		expect(x.kernel.records.map((record) => record.args.p_restored)).toEqual([
+			{ schema: "qorpera.code-restore-record/v1", bundle: name, mainSha: s.work, previousMainSha: s.work },
+		]);
+		// The restored main holds the landing, with its file.
+		expect(await f.inRepo("rev-parse", "refs/heads/main")).toBe(s.work);
+		expect(await readFile(join(f.code, "main/work.txt"), "utf8")).toBe("work\n");
+		expect(await refsOf(f)).toEqual(refs);
+		expect(await exists(f.mark)).toBe(false);
+		// The first bundle stays in the store, as every stored bundle does.
+		expect((await readdir(x.folder)).sort()).toEqual(
+			[`${first}.bundle`, `${first}.json`, `${name}.bundle`, `${name}.json`].sort(),
+		);
+		expect(await readdir(f.scratchRoot)).toEqual([]);
+	});
+
+	it("fresh, claimed again while its place has been closed since: goes on with the bundle it took and takes no new one; a mark that is not this request's for that bundle is no ground to go on", async () => {
+		const f = await fixture(),
+			s = await shop(f),
+			x = executor(f);
+		const first = codeBundleName(new Date(NOW).toISOString(), s.two.mainSha),
+			asked = request();
+		const stored = async () => (await readdir(x.folder)).sort();
+		// The first claim stops while the old place is moved: the place stays closed, under this request's mark. The
+		// kernel has not heard that anything is aside.
+		for (let n = 0; n < 30; n += 1)
+			await writeFile(join(f.code, `stray-${String(n).padStart(2, "0")}.txt`), `${n}\n`);
+		x.jobs.host = () => stoppedAt(f, nth(2, at.move()));
+		expect(await x.run(asked)).toEqual({
+			schema: SCHEMA,
+			state: "failed",
+			code: "SET_ASIDE_FAILED:UNCLASSIFIED:PLACE_CLOSED",
+		});
+		expect(await readMark(f)).toMatchObject({ requestId: asked.requestId, bundle: first, step: "closed" });
+		const saved = x.kernel.steps.at(-1) as Record<string, unknown>;
+		expect(saved).toEqual({ step: "set-aside", bundle: first, at: AT });
+		expect(await stored()).toEqual([`${first}.bundle`, `${first}.json`]);
+		// The next claim reads the mark from the place (one job, under the step `fresh`), and goes on with the bundle
+		// the place is closed for: no check and no bundle job runs, and a closed place would refuse them. It stops again
+		// while the repository is built.
+		x.jobs.host = () => stoppedAt(f, at.refs(f));
+		x.kernel.steps.length = 0;
+		expect(await x.run({ ...asked, token: randomUUID(), progress: saved })).toEqual({
+			schema: SCHEMA,
+			state: "failed",
+			code: "BUILD_FAILED:UNCLASSIFIED:PLACE_CLOSED",
+		});
+		expect(x.kernel.steps).toEqual([
+			{ step: "fresh", bundle: first, at: AT },
+			{ step: "close", bundle: first, at: AT },
+			{ step: "set-aside", bundle: first, at: AT },
+			{ step: "set-aside", bundle: first, at: AT },
+			{ step: "build", bundle: first, at: AT, setAside: ASIDE },
+		]);
+		const building = x.kernel.steps.at(-1) as Record<string, unknown>;
+		// Now the kernel knows a job saw the place emptied: the claim after that asks the place nothing, and builds
+		// from the same bundle.
+		x.jobs.host = () => f.job;
+		x.kernel.steps.length = 0;
+		expect(await x.run({ ...asked, token: randomUUID(), progress: building })).toMatchObject({
+			state: "done",
+			result: "restored",
+			bundle: first,
+			mainSha: s.two.mainSha,
+			movedTo: ASIDE,
+		});
+		expect(x.kernel.steps.map((step) => step.step)).toEqual(["build", "open"]);
+		expect(await exists(f.mark)).toBe(false);
+		// The answer of the open was lost, and the same request comes once more. The place is open now, and restored:
+		// the kernel's word that the repository was built stands, so the request does not start over with a new
+		// bundle. It ends the same way, and records nothing again.
+		const opened = x.kernel.steps.at(-1) as Record<string, unknown>,
+			records = x.kernel.records.length;
+		expect(opened).toEqual({ step: "open", bundle: first, at: AT, setAside: ASIDE, built: true });
+		x.kernel.steps.length = 0;
+		expect(await x.run({ ...asked, token: randomUUID(), progress: opened })).toMatchObject({
+			state: "done",
+			result: "restored",
+			bundle: first,
+			mainSha: s.two.mainSha,
+			movedTo: ASIDE,
+		});
+		expect(x.kernel.steps.map((step) => step.step)).toEqual(["open"]);
+		expect(x.kernel.records).toHaveLength(records);
+		// One bundle was taken for the request, by its first claim.
+		expect(await stored()).toEqual([`${first}.bundle`, `${first}.json`]);
+		expect(x.events.filter((event) => event.event === "code-restore" && event.step === "fresh")).toHaveLength(1);
+
+		// A place that is closed, but not by this request for the bundle it took: the earlier bundle is no ground to
+		// go on, and a new one cannot be taken of a closed place. Nothing is moved.
+		const mark = {
+			schema: "qorpera.code-restoring/v1",
+			requestId: asked.requestId,
+			bundle: first,
+			at: AT,
+			step: "closed",
+			setAside: null,
+			previousMainSha: s.two.mainSha,
+		};
+		for (const other of [
+			{ ...mark, requestId: randomUUID() },
+			{ ...mark, bundle: codeBundleName("2026-11-08T02:00:00.000Z", s.two.mainSha) },
+		]) {
+			await writeFile(f.mark, `${JSON.stringify(other)}\n`);
+			const before = await f.listing(f.companyRoot);
+			x.kernel.steps.length = 0;
+			expect(await x.run({ ...asked, token: randomUUID(), progress: saved })).toEqual({
+				schema: SCHEMA,
+				state: "failed",
+				code: "FRESH_BUNDLE_FAILED:CODE_HOST_RESTORE_IN_PROGRESS",
+			});
+			expect(x.kernel.steps.map((step) => step.step)).toEqual(["fresh", "fresh"]);
+			expect(await f.listing(f.companyRoot)).toEqual(before);
+		}
+		expect(await stored()).toEqual([`${first}.bundle`, `${first}.json`]);
+	});
+
+	it("fresh, claimed again after its place was open again: a new bundle that fails its proof ends the request, and nothing is moved", async () => {
+		const f = await fixture(),
+			s = await shop(f),
+			x = executor(f);
+		const { first, next } = await openedAgain(f, x, s.two.mainSha);
+		// While the place is open, a file version main needs goes missing: the history is no longer sound.
+		const blob = await f.inRepo("rev-parse", `${s.two.mainSha}:index.html`);
+		await rm(join(f.repo, "objects", blob.slice(0, 2), blob.slice(2)));
+		const before = await f.listing(f.companyRoot);
+		// The next claim finds the place open, and its new bundle fails: the request ends as a first claim's does. The
+		// bundle of the first claim is not gone back to: nothing is closed, moved or built.
+		expect(await x.run(next)).toEqual({
+			schema: SCHEMA,
+			state: "failed",
+			code: "FRESH_BUNDLE_FAILED:CODE_HOST_BUNDLE_FAILED",
+		});
+		expect(await f.listing(f.companyRoot)).toEqual(before);
+		expect(x.kernel.steps).toEqual([
+			{ step: "fresh", bundle: first, at: AT },
+			{ step: "fresh", bundle: first, at: AT },
+			{ step: "fresh", bundle: first, at: AT },
+		]);
+		expect(x.kernel.records).toEqual([]);
+		expect(await exists(f.mark)).toBe(false);
+		expect(await exists(join(f.companyRoot, "code/_set-aside"))).toBe(false);
+		// The first claim's bundle is still the one stored: an operator restores from it by its name.
+		expect((await readdir(x.folder)).sort()).toEqual([`${first}.bundle`, `${first}.json`]);
+		expect(await readdir(f.scratchRoot)).toEqual([]);
 	});
 
 	it("a record that was not heard, a lease that is gone and an open that did not save each leave the place closed for the next claim, which opens it with the same record", async () => {

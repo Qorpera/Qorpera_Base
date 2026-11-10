@@ -526,6 +526,18 @@ export async function closeCodeArea(
 	});
 }
 
+/** Whether a restore has a place closed, read from the place itself and nothing else: whether its folder is there,
+ * and its mark when it holds one. Plain file tests and one read; nothing is written, and git reads nothing. A file
+ * that is no mark of ours is refused (`CODE_HOST_RESTORE_MARK_UNREADABLE`). */
+export async function readCodeAreaMark(
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository },
+): Promise<{ there: boolean; mark: CodeRestoringMark | null }> {
+	const input = closed(value, ["repository"]);
+	const repository = keptRepositoryOf(input.repository);
+	return withJob(job, repository, (run) => lookAt(run));
+}
+
 /** Each name moved from one folder into another by one rename, never onto anything, and never by a copy: `mv` copies
  * and deletes where a rename is refused as crossing devices, and half a copy of a repository is worse than none. The
  * names moved are printed. Exit 3: something stands where a name would go. */
@@ -1018,10 +1030,12 @@ interface RestoreRun {
  *
  *   verify    `verifyCodeBundle` on the stored bundle.
  *   restore   `fresh` first takes a new bundle of the place as it stands (nightly care's check and bundle jobs) into
- *             the store; then close, set aside (run until a job sees the place emptied), build and open. The job that
- *             opens the place has the restore recorded (`qorpera_code_restore_record`) before its mark goes: the
- *             request's finish, which comes after the job has saved, records nothing. With `damaged: remove`, the
- *             set-aside copy is removed after the place is open again, never before.
+ *             the store. A claim that comes again goes on with that bundle only when the place has not been open
+ *             since: otherwise it takes a new one (`#earlier`). Then close, set aside (run until a job sees the place
+ *             emptied), build and open. The job that opens the place has the restore recorded
+ *             (`qorpera_code_restore_record`) before its mark goes: the request's finish, which comes after the job
+ *             has saved, records nothing. With `damaged: remove`, the set-aside copy is removed after the place is
+ *             open again, never before.
  *   discard   `discardSetAside` on the request's path.
  *
  * `run` never throws. A step whose answer is not the one expected ends the request `failed`, with a code that names
@@ -1192,11 +1206,11 @@ export class CodeRestore {
 
 	async #restore(run: RestoreRun, signal: AbortSignal): Promise<CodeRestoreOutcome> {
 		const { request, repository, progress } = run;
-		// The bundle: the one asked for, or a new one of the place as it stands, which an earlier run may have stored.
+		// The bundle: the one asked for, or a new one of the place as it stands. The one an earlier claim took is that
+		// only while the place has not been open since (`#earlier`).
 		let name: string;
 		if (request.bundle !== "fresh") name = request.bundle as string;
-		else if (typeof progress.bundle === "string" && CODE_BUNDLE_NAME.test(progress.bundle)) name = progress.bundle;
-		else name = await this.#fresh(run, signal);
+		else name = (await this.#earlier(run, signal)) ?? (await this.#fresh(run, signal));
 		progress.bundle = name;
 		let setAside: string | null;
 		if (progress.built === true || "setAside" in progress) {
@@ -1305,6 +1319,24 @@ export class CodeRestore {
 			stranded: opened.stranded.slice(0, 200),
 			movedTo,
 		};
+	}
+
+	/** The bundle an earlier claim of a `fresh` request took, when the restore goes on with it: only when the place has
+	 * not been open since it was taken. That is so once a job saw the place emptied (the progress has `setAside` or
+	 * `built`: from there the place opens only restored), and while the place still holds this request's mark for that
+	 * bundle, which a job reads from the place itself. Null otherwise: the place is open, because an earlier claim
+	 * opened it again or never closed it, and changes may have landed there since. A restore from the earlier bundle
+	 * would put main back before them, and `fresh` loses no change: the caller takes a new bundle of the place as it
+	 * stands, and closes only then. A place that another mark closes gives null too: the new bundle is refused there
+	 * (`CODE_HOST_RESTORE_IN_PROGRESS`), as a first claim's is. */
+	async #earlier(run: RestoreRun, signal: AbortSignal): Promise<string | null> {
+		const { request, repository, progress } = run,
+			name = progress.bundle;
+		if (typeof name !== "string" || !CODE_BUNDLE_NAME.test(name)) return null;
+		if (progress.built === true || "setAside" in progress) return name;
+		run.step = "fresh";
+		const { mark } = await this.#job(run, signal, (job) => readCodeAreaMark(job, { repository }));
+		return mark?.requestId === request.requestId && mark.bundle === name ? name : null;
 	}
 
 	/** `fresh`: a new bundle of the place as it stands, proven by the bundle job itself and stored with its manifest
