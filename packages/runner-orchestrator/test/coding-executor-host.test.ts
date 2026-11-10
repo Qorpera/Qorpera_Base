@@ -27,13 +27,14 @@ import {
 } from "../src/coding-executor.ts";
 import {
 	CODING_FOLDER_GIT_ENVIRONMENT,
+	CODING_HOST_RPCS,
 	codingHostId,
 	LxdCodingExecutorHost,
 	type LxdCodingExecutorHostOptions,
 } from "../src/coding-executor-host.ts";
 import type { LxdCodingFolderCommandTransportOptions } from "../src/coding-folder-command-transport.ts";
 import type { CodingFolderControl } from "../src/coding-folder-control.ts";
-import type { CodingFolderRepositories } from "../src/coding-folder-repositories.ts";
+import type { CodeChangeReport, CodingFolderRepositories } from "../src/coding-folder-repositories.ts";
 import {
 	CodingFolderRestartRequired,
 	type CodingFolderViewEnd,
@@ -4721,6 +4722,87 @@ describe("a coding session on the folder model", () => {
 		f.claim.pullRequest = f.pullRequest;
 		await expect(f.host.publish(f.claim, f.submission, f.signal)).rejects.toThrow("CODING_FOLDER_EXPORT_EMPTY");
 		expect(mocked.push).not.toHaveBeenCalled();
+	});
+	it("lands a repository kept in Qorpera with the picture the session named, and its session reports the landing under the turn's lease (own code storage, step 2b)", async () => {
+		const f = await folderFixture();
+		f.claim.repository = { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" };
+		const headSha = f.submission.headSha;
+		const report: CodeChangeReport = {
+			schema: "qorpera.code-change-report/v1",
+			state: "landed",
+			inLine: true,
+			how: "fast-forward",
+			headSha,
+			mainBefore: f.baseSha,
+			mainAfter: headSha,
+			filesChanged: 2,
+			paths: [
+				{ path: "src/price.tsx", change: "changed" },
+				{ path: "docs/changes/free-returns.png", change: "added" },
+			],
+			pathsMore: 0,
+			picture: { state: "ok", blob: "c".repeat(40), bytes: 51_234, type: "png" },
+			refusal: null,
+		};
+		// The repositories as the code hosts' are: the landing reports through the session it is given.
+		const recorded: unknown[] = [];
+		const start = vi.fn<NonNullable<CodingFolderRepositories["start"]>>(async () => ({ baseSha: f.baseSha }));
+		const land = vi.fn<NonNullable<CodingFolderRepositories["land"]>>(async (session, _headSha, signal) => {
+			recorded.push(await session.recordChange?.(report, signal).catch((error: unknown) => error));
+			return { state: "fast-forward", mainSha: headSha, filesChanged: 2, change: 14 };
+		});
+		Object.assign(f.repositories, { start, land });
+		const control = f.call.getMockImplementation()!;
+		const reports: Record<string, unknown>[] = [];
+		let answer: unknown = { schema: "qorpera.code-change-recorded/v1", state: "recorded", change: 14 };
+		f.call.mockImplementation(async (method, args, signal) => {
+			if (method !== "qorpera_record_code_change") return control(method, args, signal);
+			reports.push(args);
+			return answer;
+		});
+		await f.host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const picture = "docs/changes/free-returns.png";
+		expect(await f.host.publish(f.claim, { ...f.submission, picture }, f.signal)).toEqual({
+			pullRequest: null,
+			noChange: false,
+			landed: { state: "fast-forward", mainSha: headSha, filesChanged: 2, change: 14 },
+		});
+		// The picture goes to the landing, which checks it in git; nothing is exported or pushed.
+		expect(land.mock.calls[0]?.slice(1)).toEqual([headSha, f.signal, { picture }]);
+		expect(f.repositories.export).not.toHaveBeenCalled();
+		expect(mocked.push).not.toHaveBeenCalled();
+		// The report carries the turn's worker and lease: the kernel takes it from the executor that holds the turn.
+		expect(reports).toEqual([{ p_worker_id: f.claim.workerId, p_lease_token: f.claim.leaseToken, p_change: report }]);
+		expect(recorded).toEqual([{ state: "recorded", change: 14 }]);
+		expect(CODING_HOST_RPCS).toContain("qorpera_record_code_change");
+		// No picture named: none handed on. The kernel may know the commit already, or have no row for it.
+		for (const [given, heard] of [
+			[
+				{ schema: "qorpera.code-change-recorded/v1", state: "nothing", change: null },
+				{ state: "nothing", change: null },
+			],
+			[
+				{ schema: "qorpera.code-change-recorded/v1", state: "known", change: 3 },
+				{ state: "known", change: 3 },
+			],
+		]) {
+			answer = given;
+			await f.host.publish(f.claim, f.submission, f.signal);
+			expect(land.mock.calls.at(-1)?.[3]).toEqual({});
+			expect(recorded.at(-1)).toEqual(heard);
+		}
+		// An answer that is not the kernel's confirms nothing.
+		for (const odd of [
+			null,
+			{ state: "recorded", change: 14 },
+			{ schema: "qorpera.code-change-recorded/v1", state: "saved", change: 14 },
+			{ schema: "qorpera.code-change-recorded/v1", state: "recorded", change: 0 },
+			{ schema: "qorpera.code-change-recorded/v1", state: "recorded" },
+		]) {
+			answer = odd;
+			await f.host.publish(f.claim, f.submission, f.signal);
+			expect(recorded.at(-1)).toBeInstanceOf(Error);
+		}
 	});
 	it("reports a session busy by the one idle rule, a waiting command quiet, its commands as the host kept them, and renews no guest lease", async () => {
 		const f = await folderFixture();
