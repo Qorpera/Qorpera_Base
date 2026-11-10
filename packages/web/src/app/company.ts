@@ -22,6 +22,7 @@ import {
 } from "../cloud/email-drafts.ts";
 import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
 import type { InteractionAnswer, InteractionOutcome, InteractionRequest } from "../cloud/interactions.ts";
+import type { OpenQuestion } from "../cloud/open-questions.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
 import type { PageCursor } from "../cloud/pagination.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
@@ -801,6 +802,15 @@ export class CompanyController {
 			if (error instanceof CloudRpcError && error.missing)
 				this.store.set({ approvalsUnavailable: true, approvals: {} });
 		}
+	}
+
+	/** The question cards waiting for this member in the company's agent threads (migration 20260930706000), for the
+	 * app page and the Concepts viewer (app/open-questions.ts). None for a member who answers nothing; a cloud before the
+	 * migration says so (CloudRpcError.missing), and the caller stops asking. */
+	async listOpenQuestions(): Promise<OpenQuestion[]> {
+		const state = this.store.get();
+		if (this.#stopped || state.accessLost || !state.team?.capabilities.write) return [];
+		return this.#api.listOpenQuestions(this.profile.profileId);
 	}
 
 	/** Mentions in the conversation on screen are seen: the badge goes, for this member only. */

@@ -171,6 +171,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_list_member_company_path_commands(uuid,uuid,integer)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_list_member_company_snapshot_paths(uuid,uuid,text,integer)', false, true, 'member: self-scoped or pure helper'),
 	('public.qorpera_list_member_mentions(uuid)', false, true, 'member: auth.uid() + membership/ownership'),
+	('public.qorpera_list_member_open_questions(uuid)', false, true, 'member: auth.uid() + membership; only the question cards raised for the caller in agent threads they are in, viewers none (20260930706000)'),
 	('public.qorpera_list_member_native_execution_connections(uuid)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
 	('public.qorpera_list_member_notifications(uuid,integer)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_list_member_recovery_identities(uuid,uuid,integer)', false, true, 'member: auth.uid() + membership/ownership'),
