@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyMail } from "../src/app/company-mail.ts";
@@ -8,7 +10,7 @@ import type { EventHook } from "../src/cloud/event-hooks.ts";
 import type { HostedProfileRole } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
 import { setLanguagePreference, setTimeZonePreference } from "../src/ui/preferences.ts";
-import { fixture, id, profileA, session, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
+import { fixture, id, profileA, scrolledTo, session, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 import { type FolderFake, folderFake } from "./folder-fake.ts";
 import {
 	ADDRESS,
@@ -221,8 +223,12 @@ describe("the Inbox", () => {
 		});
 		await vi.waitFor(() => expect(lines(main)).toHaveLength(3));
 		const search = main.querySelector<HTMLInputElement>(".mailbox-search input")!;
+		// What the words find is read from its top, wherever the list was left.
+		const list = () => main.querySelector<HTMLElement>(".mailbox-scroll")!;
+		scrolledTo(list(), 60);
 		type(search, "cake");
 		expect(texts(main, ".mailbox-row .mailbox-subject")).toEqual(["Subject 1"]);
+		expect(list().scrollTop).toBe(0);
 		type(search, "mette");
 		expect(texts(main, ".mailbox-row .mailbox-subject")).toEqual(["Subject 3"]);
 		// The field keeps its words and the focus when the page draws again.
@@ -496,6 +502,65 @@ describe("Sent, Addresses and Write", () => {
 		);
 		await vi.waitFor(() => expect(main.querySelector(".mailbox-write-panel")).toBeNull());
 		expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Ada is writing it");
+	});
+
+	// On a short page the Write window scrolls, and so does its text. Measured in Chromium with the Mailbox 912×300
+	// and 500×240: the page's next read of the mail once sent the list, the window and its text back to their tops
+	// (the window's foot, with its button, out of view again) and the caret to the start of the text.
+	it("leaves the list, the Write window, its text and the caret where they were when the mail is read again", async () => {
+		vi.useFakeTimers();
+		const { main, fake } = await mailbox((mail) => {
+			mail.threads = [summary(1), summary(2)];
+		});
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(2));
+		button(main, "Write")!.click();
+		const list = () => main.querySelector<HTMLElement>(".mailbox-scroll")!;
+		const panel = () => main.querySelector<HTMLFormElement>(".mailbox-write-panel")!;
+		const first = panel();
+		const text = first.querySelector("textarea")!;
+		text.focus();
+		type(text, "Ask when the new price starts.\n".repeat(30));
+		text.setSelectionRange(400, 410);
+		scrolledTo(list(), 60);
+		scrolledTo(first, 78);
+		scrolledTo(text, 220);
+		// New mail came, and the page's next read draws it.
+		fake.threads = [summary(3), summary(1), summary(2)];
+		await vi.advanceTimersByTimeAsync(20_000);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(3));
+		expect(panel()).not.toBe(first);
+		expect(list().scrollTop).toBe(60);
+		expect(panel().scrollTop).toBe(78);
+		const again = panel().querySelector("textarea")!;
+		expect(again.scrollTop).toBe(220);
+		expect(document.activeElement).toBe(again);
+		expect([again.selectionStart, again.selectionEnd]).toEqual([400, 410]);
+		// Another writer picked: the keyboard stays on the pick, and the window where it was.
+		const pick = button(panel(), "Co-Founder")!;
+		pick.focus();
+		pick.click();
+		expect(document.activeElement).toBe(button(panel(), "Co-Founder"));
+		expect(document.activeElement).not.toBe(pick);
+		expect(document.activeElement?.getAttribute("aria-checked")).toBe("true");
+		expect(panel().scrollTop).toBe(78);
+		expect(panel().querySelector("textarea")!.scrollTop).toBe(220);
+	});
+
+	// jsdom has no layout, so this reads the rules that hold the Write window together on a short page (a phone with
+	// its keyboard up). Measured in Chromium with the Mailbox 500×300 and 912×300: the text once kept its full height
+	// and ran over the foot, and the window's clip hid the rest.
+	it("lets the Write window's text give way, and the window scroll, on a short page", () => {
+		const css = readFileSync(resolve("src/styles/mailbox.css"), "utf8");
+		const rule = (selector: string) =>
+			css.match(new RegExp(`^${selector.replaceAll(".", "\\.")} \\{([^}]*)\\}`, "m"))?.[1] ?? "";
+		expect(rule(".mailbox-write-panel")).toContain("max-height: calc(100% - 16px); overflow: hidden auto;");
+		// Only the text gives way: down to a floor, and then the window scrolls.
+		expect(rule(".mailbox-write-text")).toMatch(
+			/flex: 0 1 auto; display: flex; flex-direction: column; min-height: \d+px;/,
+		);
+		expect(rule(".mailbox-write-text textarea")).toContain("flex: 1; min-width: 0; min-height: 0;");
+		for (const fixed of [".mailbox-write-head", ".mailbox-write-row", ".mailbox-write-foot"])
+			expect(rule(fixed)).toContain("flex: none;");
 	});
 
 	it("draws no Send, note, Write or Change for a viewer", async () => {
