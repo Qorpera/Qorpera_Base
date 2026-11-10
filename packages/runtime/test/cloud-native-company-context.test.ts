@@ -1725,6 +1725,22 @@ it("has the Co-Founder open the company's email in its first run, (10 November 2
 	expect(cofounder).toContain("Give the founders the address in your hello.");
 });
 
+it("has the finance owner set up the CVR and bank account and keep the Bank page's progress file (10 November 2026)", () => {
+	// Jonas, 10 November: the Bank page assumes most companies register and open their bank account from inside Qorpera;
+	// the page reads finance/bank-setup.json (packages/web/src/app/bank-setup.ts), which an agent must keep.
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	expect(instructions).toContain(
+		"A company registers (CVR) and opens its business bank account from inside Qorpera: the agent who owns the company's finances does the work, and the founders only sign with MitID when it is their turn.",
+	);
+	expect(instructions).toContain(
+		'{"schema": "qorpera.bank-setup/v1", "agent": "<your name>", "company": {"status": "working"',
+	);
+	expect(instructions).toContain("where each status is todo, working, your_turn or done.");
+	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
+		"when nobody owns the company's finances by then, hire that owner to set them up.",
+	);
+});
+
 it("tells an agent to explore what is to be seen in loops, with demo videos in one posted app", () => {
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
