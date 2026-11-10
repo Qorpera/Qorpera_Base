@@ -306,7 +306,7 @@ export class AgentDetails {
 		const node = caret?.offsetNode ?? range?.startContainer;
 		const at =
 			node && this.#reading.contains(node)
-				? markdownSourceOffset(control.value, node, caret?.offset ?? range?.startOffset ?? 0)
+				? markdownSourceOffset(node, caret?.offset ?? range?.startOffset ?? 0)
 				: undefined;
 		if (at !== undefined) control.setSelectionRange(at, at);
 		// Focusing brings the caret into view.
