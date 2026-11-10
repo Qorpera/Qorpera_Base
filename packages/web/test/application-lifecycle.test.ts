@@ -1059,7 +1059,14 @@ describe("account and route ownership", () => {
 		// page carries the app's name for assistive technology.
 		expect(page.getAttribute("aria-label")).toBe("Sales board");
 		expect(page.querySelector(".side-panel-header, .side-panel-button, .side-panel-way")).toBeNull();
-		expect([...page.children].map((child) => child.className)).toEqual(["app-ask", "side-panel-body"]);
+		// What Qorpera keeps there shows only when needed: the bar of a request above the page, the questions dock over it.
+		expect([...page.children].map((child) => child.className)).toEqual([
+			"app-ask",
+			"side-panel-body",
+			"question-dock",
+		]);
+		expect(page.querySelector<HTMLElement>(".app-ask")?.hidden).toBe(true);
+		expect(page.querySelector<HTMLElement>(".question-dock")?.hidden).toBe(true);
 		expect(page.querySelector(".side-panel-body iframe.side-panel-frame")?.getAttribute("sandbox")).toBe(
 			"allow-scripts",
 		);
