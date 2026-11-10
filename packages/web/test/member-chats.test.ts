@@ -12,6 +12,7 @@ import { CloudRpcError } from "../src/cloud/client.ts";
 import {
 	MEMBER_MESSAGE_MAX_BYTES,
 	type MemberChatCalls,
+	type MemberChatList,
 	type MemberChatPage,
 	type MemberChatSummary,
 	type MemberMessage,
@@ -66,6 +67,8 @@ const summary = (userId: string, extra: Partial<MemberChatSummary> = {}): Member
 	last: null,
 	...extra,
 });
+/** The list as a cloud that keeps contacts' places answers it. */
+const listed = (chats: MemberChatSummary[]): MemberChatList => ({ chats, placing: true });
 const page = (userId: string, messages: MemberMessage[], extra: Partial<MemberChatPage> = {}): MemberChatPage => ({
 	userId,
 	messages,
@@ -97,7 +100,8 @@ function chats(calls: Partial<MemberChatCalls>, options: { visible?: boolean; av
 		visible: options.visible ?? true,
 	};
 	const all: MemberChatCalls = {
-		list: vi.fn(async () => []),
+		list: vi.fn(async () => listed([])),
+		place: vi.fn(async () => listed([])),
 		read: vi.fn(async (userId: string) => page(userId, [])),
 		send: vi.fn(async (_userId: string, _client: string, text: string) => message(99, me, text)),
 		markRead: vi.fn(async (_userId: string, seq: number) => seq),
@@ -117,6 +121,7 @@ function chats(calls: Partial<MemberChatCalls>, options: { visible?: boolean; av
 			state.unavailable = true;
 			state.summaries = undefined;
 		},
+		placeFailed: () => {},
 	};
 	const controller = new MemberChats(host);
 	cleanup.push(() => controller.stop());
@@ -299,10 +304,9 @@ const seqs = (thread: { messages: readonly MemberMessage[] }) => thread.messages
 describe("the chats' state", () => {
 	it("reads the list, the open chat, and marks what is on screen read", async () => {
 		const { controller, calls, state } = chats({
-			list: vi.fn(async () => [
-				summary(sofie, { unread: 2, last: message(5, sofie, "Are you there?") }),
-				summary(mads),
-			]),
+			list: vi.fn(async () =>
+				listed([summary(sofie, { unread: 2, last: message(5, sofie, "Are you there?") }), summary(mads)]),
+			),
 			read: vi.fn(async (userId: string) =>
 				page(userId, [message(4, me, "Hi"), message(5, sofie, "Are you there?")], { readSeq: 3, theirReadSeq: 4 }),
 			),
@@ -339,7 +343,7 @@ describe("the chats' state", () => {
 	it("marks nothing read while nobody looks, and marks it when they are back", async () => {
 		const { controller, calls, state } = chats(
 			{
-				list: vi.fn(async () => [summary(sofie, { unread: 1, last: message(5, sofie, "Hello") })]),
+				list: vi.fn(async () => listed([summary(sofie, { unread: 1, last: message(5, sofie, "Hello") })])),
 				read: vi.fn(async (userId: string) => page(userId, [message(5, sofie, "Hello")])),
 			},
 			{ visible: false },
@@ -376,7 +380,7 @@ describe("the chats' state", () => {
 		const first = deferred<MemberMessage>();
 		const sent: string[] = [];
 		const { controller, calls, state } = chats({
-			list: vi.fn(async () => [summary(sofie)]),
+			list: vi.fn(async () => listed([summary(sofie)])),
 			read: server.read,
 			send: vi.fn(async (_userId: string, _client: string, text: string) => {
 				sent.push(text);
@@ -719,13 +723,15 @@ describe("the chats' state", () => {
 		// Review of #1638, F4: a message taken back and the other member's look changed nothing the poll looked at.
 		const server = chatServer([message(4, sofie, "Theirs"), message(5, me, "Mine")]);
 		const { controller, calls } = chats({
-			list: vi.fn(async () => [
-				summary(sofie, {
-					last: server.kept.messages.at(-1) ?? null,
-					theirReadSeq: server.kept.theirReadSeq,
-					readSeq: 4,
-				}),
-			]),
+			list: vi.fn(async () =>
+				listed([
+					summary(sofie, {
+						last: server.kept.messages.at(-1) ?? null,
+						theirReadSeq: server.kept.theirReadSeq,
+						readSeq: 4,
+					}),
+				]),
+			),
 			read: server.read,
 		});
 		server.kept.readSeq = 4;
@@ -748,7 +754,7 @@ describe("the chats' state", () => {
 		let look = 0;
 		let offline = false;
 		const { controller } = chats({
-			list: vi.fn(async () => [summary(sofie, { last: message(5, me, "Mine"), theirReadSeq: look })]),
+			list: vi.fn(async () => listed([summary(sofie, { last: message(5, me, "Mine"), theirReadSeq: look })])),
 			read: vi.fn(async (userId: string) => {
 				if (offline) throw new Error("Failed to fetch");
 				return page(userId, [message(5, me, "Mine")]);
@@ -891,7 +897,7 @@ describe("the chats' state", () => {
 		};
 		let fail = false;
 		const { controller, state } = chats({
-			list: vi.fn(async () => [summary(sofie, { last: message(4, me, "Oops") })]),
+			list: vi.fn(async () => listed([summary(sofie, { last: message(4, me, "Oops") })])),
 			read: vi.fn(async (userId: string) => page(userId, [message(4, me, "Oops")])),
 			remove: vi.fn(async () => {
 				if (fail) throw new Error("offline");
@@ -1000,7 +1006,8 @@ function company(
 		if (name === "qorpera_list_member_chats")
 			return {
 				schema: "qorpera.member-chats/v1",
-				chats: (answers.chats ?? [summary(sofie), summary(mads)]).map((chat) => ({ ...chat })),
+				placing: true,
+				chats: (answers.chats ?? [summary(sofie), summary(mads)]).map((chat) => ({ ...chat, hidden: false })),
 			};
 		if (name === "qorpera_delete_member_message") {
 			for (const [userId, chat] of Object.entries(kept)) {
@@ -1327,8 +1334,10 @@ describe("members as contacts in the rail", () => {
 		draw();
 		return { f, controller, rpc, element, draw };
 	}
+	const names = (elements: Iterable<Element>) =>
+		[...elements].map((element) => element.querySelector("strong")?.textContent);
 	const rows = (element: HTMLElement) =>
-		[...element.querySelectorAll<HTMLAnchorElement>(".rail-members > a")].map((row) => ({
+		[...element.querySelectorAll<HTMLAnchorElement>(".rail-members a[data-member-id]")].map((row) => ({
 			name: row.querySelector("strong")?.textContent,
 			line: row.querySelector("small")?.textContent ?? "",
 			count: row.querySelector(".rail-count")?.textContent ?? "",
@@ -1338,7 +1347,7 @@ describe("members as contacts in the rail", () => {
 			label: row.getAttribute("aria-label"),
 		}));
 
-	it("lists the other members under the Co-Founder once their chats are read", async () => {
+	it("lists the other members in a Members group at the foot of the list once their chats are read", async () => {
 		const recently = new Date(Date.now() - 60_000).toISOString();
 		const { controller, element } = rail({
 			chats: [
@@ -1368,9 +1377,15 @@ describe("members as contacts in the rail", () => {
 				label: "Mads Berg",
 			},
 		]);
+		// After everything the company arranges: the Co-Founder and the agents come first (Jonas, 10 Nov 2026: "not sure
+		// I like the member contacts at the top").
 		const list = element.querySelector(".rail-scroll")!;
-		const order = [...list.children].map((child) => child.className.split(" ")[0]);
-		expect(order.indexOf("rail-members")).toBe(order.indexOf("rail-cofounder") + 1);
+		const order = [...list.children].map((child) =>
+			child.classList.contains("rail-members") ? "members" : child.className.split(" ")[0],
+		);
+		expect(order.indexOf("rail-cofounder")).toBeLessThan(order.indexOf("rail-section"));
+		expect(order.indexOf("rail-section")).toBeLessThan(order.indexOf("members"));
+		expect(names(list.querySelectorAll(".rail-section:not(.rail-members) a"))).toEqual(["Ada"]);
 		// This member is no contact of their own.
 		expect(element.querySelector(`[data-member-id="${me}"]`)).toBeNull();
 	});
@@ -1382,7 +1397,7 @@ describe("members as contacts in the rail", () => {
 		);
 		await controller.memberChats.refresh();
 		await settle();
-		const active = element.querySelector(".rail-members > a.active");
+		const active = element.querySelector(".rail-members a.active");
 		expect(active?.getAttribute("data-member-id")).toBe(sofie);
 		expect(active?.getAttribute("aria-current")).toBe("page");
 		const search = element.querySelector<HTMLInputElement>("#rail-search-input")!;
@@ -1391,7 +1406,7 @@ describe("members as contacts in the rail", () => {
 		expect(rows(element).map((row) => row.name)).toEqual(["Mads Berg"]);
 	});
 
-	it("draws a bigger team as cards with first names", async () => {
+	it("keeps a bigger team as rows, in the order the members joined", async () => {
 		const more = [4, 5, 6].map((n) => member(id(60 + n), `Person${n} Last${n}`));
 		const members = [...people, ...more];
 		const { controller, element } = rail({
@@ -1402,19 +1417,14 @@ describe("members as contacts in the rail", () => {
 		});
 		await controller.memberChats.refresh();
 		await settle();
-		const group = element.querySelector(".rail-members")!;
-		expect(group.classList.contains("is-cards")).toBe(true);
-		const cards = [...group.querySelectorAll<HTMLAnchorElement>("a.rail-pin-member")];
-		expect(cards.map((card) => card.querySelector(".rail-pin-name")?.textContent)).toEqual([
-			"Sofie",
-			"Mads",
-			"Person4",
-			"Person5",
-			"Person6",
+		expect(rows(element).map((row) => [row.name, row.count])).toEqual([
+			["Sofie Lund", ""],
+			["Mads Berg", "3"],
+			["Person4 Last4", ""],
+			["Person5 Last5", ""],
+			["Person6 Last6", ""],
 		]);
-		expect(cards[1]?.querySelector(".rail-count")?.textContent).toBe("3");
-		expect(cards[1]?.getAttribute("aria-label")).toBe("Mads Berg · Unread: 3");
-		expect(group.querySelector(".rail-row-member")).toBeNull();
+		expect(element.querySelector(".rail-pin-member")).toBeNull();
 	});
 
 	it("shows no members alone in the company, or on a cloud without member chats", async () => {
@@ -1483,12 +1493,12 @@ describe("the app with a member's chat", () => {
 		// The thread's frame, as an agent's chat has it, and the contact lit in the rail.
 		expect(root.querySelector(".frame")?.classList.contains("has-thread")).toBe(true);
 		await vi.waitFor(() =>
-			expect(root.querySelector(".rail-members > a.active")?.getAttribute("data-member-id")).toBe(sofie),
+			expect(root.querySelector(".rail-members a.active")?.getAttribute("data-member-id")).toBe(sofie),
 		);
 		// Seen by this member: the cloud is told.
 		expect(vi.mocked(f.cloud.rpc).mock.calls.some((call) => call[0] === "qorpera_mark_member_chat_read")).toBe(true);
 		// Another contact opens another chat in the same place.
-		root.querySelector<HTMLAnchorElement>(`.rail-members > a[data-member-id="${mads}"]`)!.click();
+		root.querySelector<HTMLAnchorElement>(`.rail-members a[data-member-id="${mads}"]`)!.click();
 		location.hash = `#/c/${profileA.profileId}/member/${mads}`;
 		await vi.waitFor(() => expect(root.querySelector(".member-chat-empty strong")?.textContent).toBe("Mads Berg"));
 		expect(root.querySelectorAll(".member-thread")).toHaveLength(1);

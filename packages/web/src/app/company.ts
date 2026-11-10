@@ -234,6 +234,9 @@ export interface CompanyState {
 	memberChats?: Readonly<Record<string, MemberChatSummary>>;
 	/** The cloud has no member chats yet (before 20260930715000): the rail shows no members. */
 	memberChatsUnavailable?: boolean;
+	/** The cloud keeps where each member puts their contacts in the rail (20260930717000): they drag, pin and hide.
+	 * Without it they stand in the Members group, as the cloud lists them. */
+	memberContactPlacing?: boolean;
 	/** The company is out of computer hours: new work waits until hours are added (the zero rule). */
 	waitingForHours?: boolean;
 	/** The deployed cloud cannot say yet whether the company waits for computer hours. */
@@ -652,8 +655,10 @@ export class CompanyController {
 			},
 			visible: () => typeof document === "undefined" || document.visibilityState !== "hidden",
 			summaries: () => this.store.get().memberChats,
-			setSummaries: (memberChats) => this.store.set({ memberChats }),
+			setSummaries: (memberChats, placing) =>
+				this.store.set(placing === undefined ? { memberChats } : { memberChats, memberContactPlacing: placing }),
 			setUnavailable: () => this.store.set({ memberChatsUnavailable: true, memberChats: undefined }),
+			placeFailed: () => this.reportRailError(t("The sidebar could not be changed. Try again.")),
 		});
 	}
 

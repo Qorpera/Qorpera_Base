@@ -6352,6 +6352,12 @@ chats"), shown in the rail as a contact for each other member.
    holds no agent.
 5. **Not decided.** Whether agents read member chats (memory is company first, section 15). Until that is decided, no
    run reads them and no memory holds them.
+6. **Where a contact stands in the rail** (added the same day, migration `20260930717000_member_contact_places`;
+   Jonas: "not sure I like the member contacts at the top, undraggable and un-hideable"). A contact is a rail row
+   like an agent's: its member drags it among the agents, pins it and hides it. That place is the member's own, as
+   their pins and hidden agents are. The company's sections file (`QorperaOS/agents/sections.md`, 5.6) names agents
+   and group chats only and is the same for every member; no member's contacts are written to it, and no agent
+   places them.
 
 ## 20. Enforcement matrix
 
