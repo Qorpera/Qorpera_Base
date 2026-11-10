@@ -1850,6 +1850,13 @@ describe("what the reviewer reads as the mandate", () => {
 		);
 	});
 
+	it("lets the Co-Founder open the company's main mailbox in any run (10 November 2026)", () => {
+		// Jonas, 10 November: a company should have its email from the start, without a card in the founder's way.
+		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain(
+			"The Co-Founder opening the company's main mailbox, named after the company, is part of founding and is requested in every run, members' runs included.",
+		);
+	});
+
 	it("tells the reviewer a routine never narrows the job, and to ask rather than deny when unsure (4 November 2026)", () => {
 		// 3–4 November: routine runs had starting the founder's preview, reading public competitor pages and pausing the
 		// agent's own routine denied as outside the routine's text, and a deny waits for a member's new message.
