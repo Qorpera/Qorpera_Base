@@ -437,6 +437,10 @@ describe("the folder core's entry points (core C3)", () => {
 		"qorpera_folder_archive_coding_worker",
 		"qorpera_folder_manage_hook",
 		"qorpera_folder_note_interface_changes",
+		// The company's code kept in Qorpera (20260930720000).
+		"qorpera_folder_request_code_undo",
+		"qorpera_folder_code_request",
+		"qorpera_folder_describe_code_change",
 	] as const;
 
 	it("reads a page of proposals and a proposal's apply up to 16 MiB, where a proposal's close stops at 256 KiB", async () => {

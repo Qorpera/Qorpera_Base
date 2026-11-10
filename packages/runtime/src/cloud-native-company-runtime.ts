@@ -11,6 +11,7 @@ import {
 } from "./cloud-action-review.ts";
 import { composeCloudAgentHead, readCloudAgentHeadVision } from "./cloud-agent-head.ts";
 import { CLOUD_AGENT_SEND_INSTRUCTIONS, CloudAgentMouth, parseCloudAgentSendInput } from "./cloud-agent-mouth.ts";
+import { cloudCodeTools } from "./cloud-code-tools.ts";
 import {
 	type CloudChatGptPlanAuth,
 	type CloudCodexContextComposer,
@@ -1170,6 +1171,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 															}
 														: tool,
 											),
+											// The company's code kept in Qorpera (20260930720000): an agent's own run takes a change
+											// out of main again and describes one; a worker reports to its agent instead.
+											...(work.isWorker ? [] : cloudCodeTools({ folder: folder.client, identity })),
 										]
 									: []),
 								...(identity.sessionId && wake.policy.final !== "forbidden" ? [send] : []),

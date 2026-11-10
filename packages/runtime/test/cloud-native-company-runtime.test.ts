@@ -1100,6 +1100,8 @@ it.each([
 				"manage_routine",
 				"manage_todo",
 				"manage_worker",
+				// The company's code kept in Qorpera (20260930720000): an agent's own run, never a worker's.
+				"manage_code",
 				"organize_sidebar",
 				"add_review_rule",
 				"good_will_list",
@@ -2517,6 +2519,7 @@ it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-2
 	// Still no mouth, coworkers or delegation.
 	expect(tools.map((tool) => tool.name)).not.toContain("send_message");
 	expect(tools.map((tool) => tool.name)).not.toContain("manage_worker");
+	expect(tools.map((tool) => tool.name)).not.toContain("manage_code");
 	expect(tools.map((tool) => tool.name)).not.toContain("send_coworker_message");
 });
 
@@ -3215,6 +3218,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// variables on files (the web opens an app's links and gives it the style, §2 and §4), so they moved again.
 	// Also on 10 November 2026 hire_agent's figure takes star, cloud, bolt, mushroom, moon and puzzle, and no ghost
 	// (20260930709000); the names and descriptions are as before, so only the catalog text moved again.
+	// Also on 10 November 2026 manage_code came after manage_worker (the change record of the company's code,
+	// 20260930720000), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3255,13 +3260,14 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"create_group_chat",
 		"manage_todo",
 		"manage_worker",
+		"manage_code",
 		"send_message",
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"4e98b9b5cc8c4ae6088717e14ec60bb349910f2dd49be01333e5fad5b73a0b56",
+		"f719131b3c6a6fc7790fe8bb8f08133c304a3a8ab949a76f09e6c88b6a8e0169",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"72d19e424a52f72b48c4766f42a679688e04971112f2113afc5c75c975d33546",
+		"99682be1263ec38717c75a9fa4572173f483db2875db363c8de02fba95148f07",
 	);
 });
