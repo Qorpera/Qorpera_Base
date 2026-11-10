@@ -736,12 +736,14 @@ begin
 			where (r.environment_id, r.profile_id, r.owner, r.name) in ((v_here, v_company, 'company', 'shop'),
 				(v_here, v_company, 'company', 'site'), (v_here, v_company, 'company', 'other'),
 				(pg_temp.care_there(), '91170000-0000-4000-8000-000000000010', 'company', 'shop'))) = 4
-		and not exists (select 1 from public.qorpera_code_repositories r where not r.care_enabled or r.gc_enabled
+		-- With care off: the repositories that were there before care get it one at a time, by hand.
+		and not exists (select 1 from public.qorpera_code_repositories r where r.care_enabled or r.gc_enabled
 			or r.retire_enabled or r.next_care_at > clock_timestamp() or r.care_attempts <> 0), 'the backfill: ' || v_count);
+	perform pg_temp.base_assert(pg_temp.care_names() = '', 'none of them is due: ' || pg_temp.care_names());
 	-- Again: nothing new, and a registered repository stays as it is.
-	update public.qorpera_code_repositories set care_enabled = false, retired = 7 where name = 'site';
+	update public.qorpera_code_repositories set care_enabled = true, retired = 7 where name = 'site';
 	v_count := public.qorpera_code_repositories_backfill();
 	perform pg_temp.base_assert(v_count = 0 and (select count(*) from public.qorpera_code_repositories) = 4
-		and exists (select 1 from public.qorpera_code_repositories where name = 'site' and not care_enabled and retired = 7),
+		and exists (select 1 from public.qorpera_code_repositories where name = 'site' and care_enabled and retired = 7),
 		'a second backfill: ' || v_count);
 end $$;

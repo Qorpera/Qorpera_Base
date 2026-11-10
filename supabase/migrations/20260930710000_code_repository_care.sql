@@ -116,14 +116,17 @@ create trigger qorpera_coding_sessions_register_repository after insert on publi
 	execute function public.qorpera_code_repository_register();
 
 -- The repositories of the sessions that exist, each once, by its first session; answers how many it registered. One
--- that is registered stays as it is, so a second call registers nothing.
+-- that is registered stays as it is, so a second call registers nothing. They are registered with care off: care has
+-- never run on a real repository, so the ones that hold work get it one at a time, by hand, the first of them
+-- watched (`update public.qorpera_code_repositories set care_enabled = true where …`, as the database owner). A
+-- repository that starts from now on is registered by the trigger, with care on.
 create function public.qorpera_code_repositories_backfill()
 returns integer language plpgsql security definer set search_path = '' as $$
 declare v_count integer;
 begin
-	insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name)
+	insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name, care_enabled)
 	select distinct on (session.environment_id, session.repository ->> 'owner', session.repository ->> 'name')
-		session.environment_id, session.profile_id, session.repository ->> 'owner', session.repository ->> 'name'
+		session.environment_id, session.profile_id, session.repository ->> 'owner', session.repository ->> 'name', false
 	from public.qorpera_coding_sessions session
 	where session.repository ->> 'host' = 'qorpera'
 	order by session.environment_id, session.repository ->> 'owner', session.repository ->> 'name', session.created_at,
