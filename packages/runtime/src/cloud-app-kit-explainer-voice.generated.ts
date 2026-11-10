@@ -108,6 +108,13 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 			// \`busy\` from a turn's end until its file is written; \`failed\` says why one could not be.
 			const call = { pc, closed: false, level: () => 0, stream: null, recorder: null, chunks: [], began: 0, busy: false, failed: null };
 			window.qorperaCall = call;
+			// Waits for a turn whose end has come to be written, \`ms\` at most, and answers how it stands then: looked
+			// at after the last wait, so a turn written in that wait is kept.
+			call.settle = async (ms) => {
+				const by = performance.now() + ms;
+				while (call.busy && !call.failed && performance.now() < by) await new Promise((resolve) => setTimeout(resolve, 100));
+				return { busy: call.busy, failed: call.failed };
+			};
 			pc.addEventListener("connectionstatechange", () => {
 				if (["failed", "closed", "disconnected"].includes(pc.connectionState)) call.closed = true;
 			});
@@ -237,13 +244,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 		}
 		// A turn whose end has come is finished first: its last sound runs out (up to 30 s), then it is written. One
 		// that is still not written when its time is up is lost, and that is said.
-		// It is looked at once more after the last wait, so a turn written in that wait is kept.
-		const finishBy = Date.now() + Math.max(1, Math.min(40, Number(finishing) || 40)) * 1000;
-		let last = await state();
-		while (last.busy && !last.failed && Date.now() < finishBy) {
-			await sleep(100);
-			last = await state();
-		}
+		const last = await page.evaluate((ms) => window.qorperaCall.settle(ms), Math.max(1, Math.min(40, Number(finishing) || 40)) * 1000);
 		if (last.failed) ended = unkept(last.failed);
 		else if (last.busy) ended = unkept("it was not written in time");
 	} catch (error) {

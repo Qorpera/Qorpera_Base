@@ -7,17 +7,15 @@
 //   turn-slow-write  the same, with the turn's file written two seconds late
 //   turn-lost-write  the same, with the turn's file refused
 //   turn-stalled-write  the same, with the turn's file never written
-//   turn-last-moment-write  the same, with the turn's file written 1.95 s after the recorder is told to stop
-const fs = require("node:fs");
-const path = require("node:path");
+//   turn-last-moment-write  the same, with the turn's file written 40 ms before the recorder's wait for it ends
 const scenario = process.env.QORPERA_VOICE_SCENARIO || "turn";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-// When the recorder was told to stop (its work folder is its first argument), as seen from here.
-let stopSeen = 0;
-const watching = setInterval(() => {
-	if (!stopSeen && process.argv[2] && fs.existsSync(path.join(process.argv[2], "stop"))) stopSeen = Date.now();
-}, 10);
-watching.unref();
+// The last moment: the recorder's wait for a turn to be written is the one page function it calls with a number, its
+// milliseconds, so the moment 40 ms before that wait ends is known here to the millisecond.
+let lastMoment = () => {};
+const untilLastMoment = new Promise((resolve) => {
+	lastMoment = resolve;
+});
 
 function captionsPage() {
 	globalThis.V = { segments: [{ text: "Each traveller pays one fee." }, { text: "So four friends see it." }] };
@@ -106,14 +104,14 @@ const page = {
 			if (scenario === "turn-slow-write") await sleep(2000);
 			if (scenario === "turn-lost-write") throw new Error("no room left on the machine");
 			if (scenario === "turn-stalled-write") await new Promise(() => {});
-			if (scenario === "turn-last-moment-write") {
-				while (!stopSeen) await sleep(10);
-				await sleep(Math.max(0, stopSeen + 1950 - Date.now()));
-			}
+			if (scenario === "turn-last-moment-write") await untilLastMoment;
 			return write(...args);
 		};
 	},
-	evaluate: async (run, arg) => run(arg),
+	evaluate: async (run, arg) => {
+		if (typeof arg === "number") setTimeout(lastMoment, arg - 40);
+		return run(arg);
+	},
 };
 
 exports.chromium = { launch: async () => ({ newPage: async () => page, close: async () => {} }) };

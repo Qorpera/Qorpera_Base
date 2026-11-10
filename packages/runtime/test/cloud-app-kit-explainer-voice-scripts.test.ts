@@ -128,7 +128,9 @@ it("ends as a failure when a turn is still not written when its time to finish i
 });
 
 it("keeps a turn that is written in the last moment of its time to finish", async () => {
-	// Told to stop after a second with two seconds to finish; the turn's file is written 1.95 s after the stop.
+	// Told to stop after a second with two seconds to finish; the turn's file is written 40 ms before those two
+	// seconds are up, inside the recorder's last wait. (A recorder that judged on its look before that wait ended
+	// this as "not written in time".)
 	const { code, lines, work } = await recorded("turn-last-moment-write", 1000, 2);
 	expect(lines.map((line) => Object.keys(line)[0])).toEqual(["offer", "connected", "turn", "ended"]);
 	expect(lines.at(-1)).toEqual({ ended: "stop" });
