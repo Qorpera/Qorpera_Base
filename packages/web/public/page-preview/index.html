@@ -57,6 +57,10 @@
 	const soon = queueMicrotask;
 	const attribute = Element.prototype.getAttribute;
 	const attributeNS = Element.prototype.getAttributeNS;
+	const setAttribute = Element.prototype.setAttribute;
+	const setAttributeNS = Element.prototype.setAttributeNS;
+	const removeAttribute = Element.prototype.removeAttribute;
+	const removeAttributeNS = Element.prototype.removeAttributeNS;
 	const codeAt = String.prototype.charCodeAt;
 	const linkOf = WeakMap.prototype.get;
 	const setLink = WeakMap.prototype.set;
@@ -113,7 +117,8 @@
 	//   that stopped it returns (each handler of a real click runs on an empty stack, so that is before the browser
 	//   acts on the click).
 	// - Settling a click the page left alone keeps the browser from following the link, and sends where it leads once
-	//   the click is over.
+	//   the click is over. A click settled while a passive handler has it cannot be stopped; the link's address is
+	//   taken out of the link for as long as the click lasts instead (`park`).
 	// - A click a script made opens nothing: it is stopped on its way down, and never sent.
 	const links = "a[*|href], area[href]";
 	const clicked = new WeakMap();
@@ -142,10 +147,28 @@
 		return apply(codeAt, href, [at + 10]) === 58;
 	};
 	// Where a link leads, as it is written now (a handler of the page may have changed it), or null for the page's own.
+	const older = "http://www.w3.org/1999/xlink";
 	const placeOf = (link) => {
 		let href = apply(attribute, link, ["href"]);
-		if (href === null) href = apply(attributeNS, link, ["http://www.w3.org/1999/xlink", "href"]);
+		if (href === null) href = apply(attributeNS, link, [older, "href"]);
 		return typeof href === "string" && !ownLink(href) ? href : null;
+	};
+	// A click that a passive handler has at the moment cannot be stopped by anyone, the frame included. The link is
+	// then kept from leading anywhere while the click ends: its address is taken out of it, and put back once the
+	// click is over, unless the page has written one meanwhile.
+	const park = (link) => {
+		const plain = apply(attribute, link, ["href"]);
+		const drawn = apply(attributeNS, link, [older, "href"]);
+		if (plain !== null) apply(removeAttribute, link, ["href"]);
+		if (drawn !== null) apply(removeAttributeNS, link, [older, "href"]);
+		apply(later, window, [
+			() => {
+				if (plain !== null && apply(attribute, link, ["href"]) === null) apply(setAttribute, link, ["href", plain]);
+				if (drawn !== null && apply(attributeNS, link, [older, "href"]) === null)
+					apply(setAttributeNS, link, [older, "xlink:href", drawn]);
+			},
+			0,
+		]);
 	};
 	// Once for each click, when the page's handlers are done with it.
 	const settle = (click) => {
@@ -156,6 +179,7 @@
 		const href = apply(prevented, click, []) ? null : placeOf(link);
 		if (href === null) return;
 		apply(prevent, click, []);
+		if (!apply(prevented, click, [])) park(link);
 		// Only a click the member made goes on, once it is over, to where the link led when it was settled.
 		if (click.isTrusted === true && href.length <= 2048) apply(later, window, [() => follow(href), 0]);
 	};

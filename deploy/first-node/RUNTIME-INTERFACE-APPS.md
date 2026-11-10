@@ -209,7 +209,10 @@ screenshot of each read back with `company_read`, the weakest thing fixed, and a
     `stopImmediatePropagation`, and in two places on the click's way down: at the window, and at the root of a closed
     shadow tree.
   - Settling a click the page left alone keeps the browser from following the link, and sends the link's address, as
-    it is written then, to the host once the click is over.
+    it is written then, to the host once the click is over. One click cannot be kept from the browser that way: a
+    click settled while a passive handler has it (a passive handler that stopped it at once, or in one of the two
+    places above), since nobody can take a click from a passive handler. There the link's address is taken out of
+    the link for as long as the click lasts, and put back once it is over.
   - A click a script made is stopped on its way down, whether or not it travels up to the window, and is never sent.
     To the page's own handlers such a click reads as taken already.
 

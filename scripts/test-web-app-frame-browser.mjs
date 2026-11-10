@@ -149,6 +149,25 @@ host.addEventListener("click", (event) => event.stopPropagation());
 			"open app:closed-and-stopped",
 		],
 	},
+	"a click a passive handler stops, which nobody can take": {
+		page: `<!doctype html>${style}<a id="at-once" href="more.html">More</a><a id="at-window" href="less.html">Less</a>
+<svg width="120" height="40" xmlns:xlink="http://www.w3.org/1999/xlink"><a id="drawn" href="drawn.html" xlink:href="older.html"><rect width="120" height="40"></rect></a></svg>
+<button id="report">Report</button>
+<script>
+const passive = { passive: true };
+document.getElementById("at-once").addEventListener("click", (event) => event.stopImmediatePropagation(), passive);
+document.getElementById("drawn").addEventListener("click", (event) => event.stopImmediatePropagation(), passive);
+addEventListener("click", (event) => { if (event.target.id === "at-window") event.stopPropagation(); }, { capture: true, passive: true });
+// Each link has its address again once its click is over.
+document.getElementById("report").addEventListener("click", () => {
+	const drawn = document.getElementById("drawn");
+	qorpera.read("addresses: " + [document.getElementById("at-once").getAttribute("href"), document.getElementById("at-window").getAttribute("href"),
+		drawn.getAttribute("href"), drawn.getAttributeNS("http://www.w3.org/1999/xlink", "href")].join(", "));
+});
+</script>`,
+		clicks: ["#at-once", "#at-window", "#drawn rect", "#report"],
+		calls: ["open more.html", "open less.html", "open drawn.html", "read addresses: more.html, less.html, drawn.html, older.html"],
+	},
 	"a click one handler stops and another one, on the same link, has after it": {
 		page: `<!doctype html>${style}<a id="taken" href="app:stopped-then-taken">Taken</a><a id="refused" href="app:stopped-then-refused">Refused</a>
 <a id="answered" href="app:stopped-then-answered-false">Answered false</a><a id="late" href="app:stopped-then-taken-by-a-late-handler">Late</a>

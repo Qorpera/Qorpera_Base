@@ -270,6 +270,8 @@ describe("an HTML page's frame", () => {
 			"if (href === null) return;",
 			// Every other click on a link is stopped, whoever made it: the frame never leaves its page.
 			"apply(prevent, click, []);",
+			// A click that a passive handler has cannot be stopped: then the link is kept from leading anywhere.
+			"if (!apply(prevented, click, [])) park(link);",
 			// Only a click the member made goes on, once the click is over, to where the link led when it was settled.
 			"if (click.isTrusted === true && href.length <= 2048) apply(later, window, [() => follow(href), 0]);",
 		];
@@ -277,6 +279,15 @@ describe("an HTML page's frame", () => {
 		expect(steps.map((step) => settle.indexOf(step))).toEqual(
 			steps.map((step) => settle.indexOf(step)).sort((a, b) => a - b),
 		);
+		// Parked, a link has no address for as long as the click lasts: both spellings of it go, and each comes back
+		// once the click is over unless the page has written one meanwhile.
+		for (const part of [
+			'if (plain !== null) apply(removeAttribute, link, ["href"]);',
+			'if (drawn !== null) apply(removeAttributeNS, link, [older, "href"]);',
+			'if (plain !== null && apply(attribute, link, ["href"]) === null) apply(setAttribute, link, ["href", plain]);',
+			'if (drawn !== null && apply(attributeNS, link, [older, "href"]) === null)\n\t\t\t\t\tapply(setAttributeNS, link, [older, "xlink:href", drawn]);',
+		])
+			expect(script, part).toContain(part);
 		// A click a script made is stopped where it is noted, and no listener is moved for it.
 		expect(script).toContain(
 			"if (click.isTrusted !== true) {\n\t\t\tif (placeOf(link) !== null) apply(prevent, click, []);\n\t\t\treturn;\n\t\t}",
