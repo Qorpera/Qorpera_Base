@@ -207,10 +207,10 @@ const unshownScreens: [string, Partial<CloudToolContent>, { png: Buffer; sha256:
 ];
 
 it.each(unshownScreens)("never shows a runtime tool's image from %s", async (_, content, image) => {
-	const f = screenFixture(
-		image ? { ...content, value: { machine: "build-a", kind: "screen", imageSha256: image.sha256 } } : content,
-		image,
-	);
+	const named: Partial<CloudToolContent> = image
+		? { kind: "json", value: { machine: "build-a", kind: "screen", imageSha256: image.sha256 } }
+		: content;
+	const f = screenFixture(named, image);
 	const result = await f.invoke();
 	expect(result.contentItems).toHaveLength(1);
 	expect(JSON.parse(result.contentItems[0].text)).toMatchObject({

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
+import { isUuid } from "@qorpera/contracts";
 
 /* machine_screen's helper on a company machine (20260930708000; Jonas, 10 November 2026: agents ask for a desktop
  * computer and must see and drive it). The coding executor runs this fixed program, shipped in the machine image beside
@@ -88,7 +89,6 @@ const CONTROL = /[\p{Cc}\p{Zl}\p{Zp}]/u;
 const CONTROLS = /[\p{Cc}\p{Zl}\p{Zp}]/gu;
 const URL_TARGET = /^(https?|file):\/\/[!-~]+$/;
 const PATH_TARGET = /^\/[^\p{Cc}\p{Zl}\p{Zp}]*$/u;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 /** Whether the text holds a control character other than a line break or a tab (which `desktop type` pastes). */
 export function machineScreenTextControlled(text: string): boolean {
@@ -238,7 +238,7 @@ export function parseMachineScreenRequest(value: unknown): MachineScreenRequest 
 		Object.keys(input).sort().join() !== "action,look,receiptId,schema,settleMs" ||
 		input.schema !== MACHINE_SCREEN_REQUEST_SCHEMA ||
 		(input.receiptId === null) !== (input.action === null) ||
-		(input.receiptId !== null && (typeof input.receiptId !== "string" || !UUID.test(input.receiptId))) ||
+		(input.receiptId !== null && !isUuid(input.receiptId)) ||
 		typeof input.settleMs !== "number" ||
 		!Number.isInteger(input.settleMs) ||
 		input.settleMs < 0 ||
