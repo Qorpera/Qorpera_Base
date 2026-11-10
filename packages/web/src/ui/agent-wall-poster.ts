@@ -1,4 +1,4 @@
-import { parseWall, type Wall, type WallItem, wallPreview } from "@qorpera/cloud-client/agent-wall";
+import { parseWall, type WallItem, wallPreview } from "@qorpera/cloud-client/agent-wall";
 import { isInterfaceName } from "@qorpera/cloud-client/interfaces";
 import { forgetPictureUrl, pictureUrl } from "../app/folder-images.ts";
 import type { HostedStaffAgent } from "../cloud/types.ts";
@@ -8,12 +8,12 @@ import { markdownInline } from "./markdown.ts";
 import { playOnce } from "./motion.ts";
 import { phrase, t } from "./preferences.ts";
 
-/* An agent's wall, right above its composer (Jonas, 6 Nov 2026): one small centred button, "N waits on you · N working",
- * that opens upward and pushes the chat up. Open, it shows what the agent is working on and, nearest the composer, what
- * waits on the member. What the agent has done is not shown (Jonas, 10 Nov 2026: "showing this notch of what's been
- * done is pointless"): a wall with only done items shows nothing, though the file keeps its Done part. The wall
- * is the file QorperaOS/agents/<handle>/wall.md (@qorpera/cloud-client/agent-wall); the view reads it and hands its text
- * here.
+/* An agent's wall, right above its composer (Jonas, 6 Nov 2026): one small centred button, "N waits on you", that opens
+ * upward and pushes the chat up. Open, it shows what waits on the member, each with its Answer. What the agent has done
+ * and what it is working on are not shown (Jonas, 10 Nov 2026: "showing this notch of what's been done is pointless",
+ * then: "the notch still shows "working" despite the agent not working... get rid of it too"): a wall with nothing that
+ * waits shows nothing, though the file keeps its Working on and Done parts. The wall is the file
+ * QorperaOS/agents/<handle>/wall.md (@qorpera/cloud-client/agent-wall); the view reads it and hands its text here.
  *
  * Each item is a headline (Jonas, 5 November 2026: no more text per headline than a glance takes). One with more to it
  * (a detail, a link) is a row that opens on a click: its detail and links, drawn as a message draws them, so its folder
@@ -26,28 +26,24 @@ export type WallPosterAgent = Pick<HostedStaffAgent, "id" | "displayName" | "app
 const SEEN_KEY = "qorpera.agent-wall.seen.";
 const FOLD_KEY = "qorpera.agent-wall.folded.";
 
-type Part = "waiting" | "working";
-
-/** A short, stable name for one item: its part and its words. FNV-1a, 32 bits. */
-function itemKey(part: Part, text: string): string {
+/** A short, stable name for one item that waits: its words. FNV-1a, 32 bits. The part's name is hashed with them, as it
+ * was when the poster showed more parts, so what a member has seen on this device stays seen. */
+function itemKey(text: string): string {
 	let hash = 0x811c9dc5;
-	for (const char of `${part}\n${text}`) {
+	for (const char of `waiting\n${text}`) {
 		hash ^= char.codePointAt(0) ?? 0;
 		hash = Math.imul(hash, 0x01000193) >>> 0;
 	}
 	return hash.toString(36);
 }
 
-function keysOf(wall: Wall): string[] {
-	return [
-		...wall.waiting.map((item) => itemKey("waiting", item.text)),
-		...wall.working.map((item) => itemKey("working", item.text)),
-	];
+function keysOf(waiting: readonly WallItem[]): string[] {
+	return waiting.map((item) => itemKey(item.text));
 }
 
-/** The wall as the poster shows it: what waits and what is worked on, without what is done. */
-function shownWall(text: string): Wall {
-	return { ...parseWall(text).wall, done: [] };
+/** The wall as the poster shows it: what waits on the member, without what is worked on or done. */
+function waitingOf(text: string): readonly WallItem[] {
+	return parseWall(text).wall.waiting;
 }
 
 /** A headline as plain words for the row's button, which holds no link: Markdown drawn, then read back as text, so
@@ -120,7 +116,7 @@ export interface WallPosterOptions {
 export class AgentWallPoster {
 	readonly el: HTMLElement;
 	readonly #toggle: HTMLButtonElement;
-	/** What the closed button leads with: a dot when something waits, else a spinner while something is worked on. */
+	/** What the closed button leads with: a dot while something waits unanswered. */
 	readonly #state = h("span", { class: "agent-wall-state", "aria-hidden": "true" });
 	readonly #summary = h("span", { class: "agent-wall-summary" });
 	readonly #closeWord = h("span", { class: "agent-wall-close-word" });
@@ -175,13 +171,13 @@ export class AgentWallPoster {
 		);
 	}
 
-	/** Whether the poster shows (a wall with at least one item). */
+	/** Whether the poster shows (a wall with at least one item that waits). */
 	get shown(): boolean {
 		return !this.el.hidden;
 	}
 
-	/** Shows `agent`'s wall as `text` reads, or nothing when there is no agent, no text, or nothing that waits or is
-	 * worked on. The same wall again changes nothing. */
+	/** Shows `agent`'s wall as `text` reads, or nothing when there is no agent, no text, or nothing that waits. The same
+	 * wall again changes nothing. */
 	show(agent: WallPosterAgent | undefined, text: string | null): void {
 		const key = JSON.stringify([agent?.id, agent?.displayName, agent?.appearance, text]);
 		if (key === this.#key) return;
@@ -198,18 +194,18 @@ export class AgentWallPoster {
 		}
 		this.#agent = agent;
 		this.#text = text;
-		const wall = agent && text !== null ? shownWall(text) : undefined;
+		const waiting = agent && text !== null ? waitingOf(text) : undefined;
 		// Off the wall, an answered item is over: the same words later are a new question.
-		if (wall) {
-			const asked = new Set(wall.waiting.map(answerKey));
+		if (waiting) {
+			const asked = new Set(waiting.map(answerKey));
 			this.#answered = new Set([...this.#answered].filter((item) => asked.has(item)));
 		}
-		const keys = wall ? keysOf(wall) : [];
-		if (!agent || !wall || !keys.length) {
+		if (!agent || !waiting?.length) {
 			this.el.hidden = true;
 			this.#drawn = undefined;
 			return;
 		}
+		const keys = keysOf(waiting);
 		const where = slot(this.#member, agent.id);
 		const seen = readSeen(where);
 		const present = new Set(keys);
@@ -219,7 +215,7 @@ export class AgentWallPoster {
 		// Closed until the member opens it, however much is new: the button says so and the chat keeps its room.
 		if (!this.#drawn) this.#open = readFolded(where) === false;
 		this.el.hidden = false;
-		this.#draw(agent, wall);
+		this.#draw(agent, waiting);
 		this.#syncOpen();
 		// Seen once open; a wall never seen before is the start to mark from, folded or not.
 		if (this.#open || !seen) writeSeen(where, keys);
@@ -306,7 +302,7 @@ export class AgentWallPoster {
 	/** The answer to this item (from `onAnswer`) has been sent. */
 	answerSent(item: string): void {
 		this.#answered.add(item);
-		if (this.#agent && this.#text !== null && !this.el.hidden) this.#draw(this.#agent, shownWall(this.#text));
+		if (this.#agent && this.#text !== null && !this.el.hidden) this.#draw(this.#agent, waitingOf(this.#text));
 	}
 
 	#setOpen(open: boolean): void {
@@ -314,12 +310,12 @@ export class AgentWallPoster {
 		this.#open = open;
 		const agent = this.#agent;
 		if (agent) writeFolded(slot(this.#member, agent.id), !open);
-		if (open && agent && this.#text !== null) writeSeen(slot(this.#member, agent.id), keysOf(shownWall(this.#text)));
+		if (open && agent && this.#text !== null) writeSeen(slot(this.#member, agent.id), keysOf(waitingOf(this.#text)));
 		// Closed again, what was new has been seen: the button no longer counts it.
 		if (!open) {
 			this.#fresh = new Set();
 		}
-		if (agent && this.#text !== null) this.#draw(agent, shownWall(this.#text));
+		if (agent && this.#text !== null) this.#draw(agent, waitingOf(this.#text));
 		this.#syncOpen();
 	}
 
@@ -331,7 +327,7 @@ export class AgentWallPoster {
 		this.#toggle.setAttribute("aria-expanded", String(this.#open));
 	}
 
-	#draw(agent: WallPosterAgent, wall: Wall): void {
+	#draw(agent: WallPosterAgent, items: readonly WallItem[]): void {
 		this.el.setAttribute("aria-label", t("{name}'s wall", { name: agent.displayName }));
 		const counts: Node[] = [];
 		const count = (n: number, one: string, many = one, className?: string) => {
@@ -344,20 +340,19 @@ export class AgentWallPoster {
 				),
 			);
 		};
-		const answered = wall.waiting.filter((entry) => this.#answered.has(answerKey(entry))).length;
-		const waiting = wall.waiting.length - answered;
+		const answered = items.filter((entry) => this.#answered.has(answerKey(entry))).length;
+		const waiting = items.length - answered;
 		count(waiting, phrase("{n} waits on you"), phrase("{n} wait on you"), "agent-wall-count-waiting");
 		count(answered, phrase("{n} answered"));
-		count(wall.working.length, phrase("{n} working"));
 		replace(this.#summary, ...counts);
-		this.#state.className = `agent-wall-state${waiting ? " is-waiting" : wall.working.length ? " is-working" : ""}`;
+		this.#state.classList.toggle("is-waiting", waiting > 0);
 
 		const drawn = new Set<string>();
 		this.#items = new Map();
-		const item = (part: Part, entry: WallItem, keyText = entry.text) => {
-			// The same headline twice in a part (two "Approve the post"): the second has a key of its own.
-			let key = itemKey(part, keyText);
-			for (let again = 2; drawn.has(key); again++) key = `${itemKey(part, keyText)}-${again}`;
+		const rows = items.map((entry) => {
+			// The same headline twice (two "Approve the post"): the second has a key of its own.
+			let key = itemKey(entry.text);
+			for (let again = 2; drawn.has(key); again++) key = `${itemKey(entry.text)}-${again}`;
 			drawn.add(key);
 			this.#items.set(key, entry);
 			const fresh = this.#fresh.has(key);
@@ -411,7 +406,7 @@ export class AgentWallPoster {
 					detail,
 				);
 			}
-			if (part === "waiting" && this.#onAnswer) {
+			if (this.#onAnswer) {
 				row.classList.add("has-answer");
 				const done = this.#answered.has(answerKey(entry));
 				row.classList.toggle("is-answered", done);
@@ -435,27 +430,13 @@ export class AgentWallPoster {
 			// What joins the wall while it is on screen comes in moving.
 			if (this.#drawn && !this.#drawn.has(key)) playOnce(row, "is-entering");
 			return row;
-		};
-		const part = (name: Part, label: string, rows: Node[]) =>
-			rows.length
-				? h(
-						"div",
-						{ class: `agent-wall-part is-${name}`, role: "group", "aria-label": label },
-						h("ul", { class: "agent-wall-list" }, rows),
-					)
-				: null;
-
+		});
 		replace(
 			this.#body,
-			part(
-				"working",
-				t("Working on"),
-				wall.working.map((entry) => item("working", entry)),
-			),
-			part(
-				"waiting",
-				t("Waits on you"),
-				wall.waiting.map((entry) => item("waiting", entry)),
+			h(
+				"div",
+				{ class: "agent-wall-part is-waiting", role: "group", "aria-label": t("Waits on you") },
+				h("ul", { class: "agent-wall-list" }, rows),
 			),
 		);
 		// What was drawn before stays still.
