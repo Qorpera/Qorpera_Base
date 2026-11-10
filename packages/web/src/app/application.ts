@@ -79,7 +79,6 @@ import type { QuestionDockHost } from "./views/question-dock.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
 import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.ts";
-import { noteConnectorReturn } from "./views/settings-services.ts";
 import { SitesView } from "./views/settings-sites.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
@@ -724,19 +723,10 @@ export function mountApplication(
 					});
 				}
 			}
-			if (connectorReturn?.connector === "bank") {
-				// The bank's sign-in sent the member back to the Bank page they started it on, which finishes it.
-				noteBankReturn(connectorReturn);
-				connectorReturn = undefined;
-			} else if (connectorReturn) {
-				// A provider sign-in (Step 7 connector) sent the member back to this
-				// company: show the outcome where the connection was started.
-				noteConnectorReturn(connectorReturn);
-				connectorReturn = undefined;
-				queueMicrotask(() => {
-					if (!disposed && company === controller) openSettings("company-connections");
-				});
-			}
+			// The bank's sign-in sent the member back to the Bank page they started it on, which finishes it. No other
+			// connector is signed in from the web since Company connections left Settings (10 Nov 2026).
+			if (connectorReturn?.connector === "bank") noteBankReturn(connectorReturn);
+			connectorReturn = undefined;
 			computer = new WebCompanyComputer(cloud, profile, userId, controller.signal, () => {
 				if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
 					throw new Error(t("Company access is unavailable."));
