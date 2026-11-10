@@ -763,7 +763,7 @@ function threadLine(page: Page, summary: MailThreadSummary): HTMLElement {
 				sent ? h("span", { class: "mailbox-to-label" }, t("To:")) : null,
 				outside(partyText(summary)),
 				summary.direction === "sent" && !sent && (member || summary.handledBy)
-					? h("span", null, `, ${sender}`)
+					? h("span", { class: "mailbox-by" }, `, ${sender}`)
 					: null,
 				summary.messages > 1 ? h("span", { class: "mailbox-n" }, String(summary.messages)) : null,
 			);

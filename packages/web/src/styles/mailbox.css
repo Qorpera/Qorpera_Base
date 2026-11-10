@@ -138,6 +138,8 @@ span.mailbox-open { cursor: default; }
 	font-size: 14.5px;
 }
 .mailbox-who > span { overflow: hidden; text-overflow: ellipsis; }
+/* Who sent the newest message stays whole ("…, You"): the outside party gives way first, a long name second. */
+.mailbox-who > .mailbox-by { flex: none; max-width: 60%; }
 .mailbox-who svg { flex: none; width: 13px; height: 13px; margin-right: 6px; color: var(--text-muted); }
 .mailbox-who > .mailbox-to-label { flex: none; margin-right: 5px; color: var(--text-muted); }
 .mailbox-who > .mailbox-n { flex: none; margin-left: 6px; color: var(--text-soft); font-size: 12px; }
