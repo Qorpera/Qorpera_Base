@@ -76,6 +76,43 @@ describe("a place in drawn Markdown, found in its source", () => {
 		expect(at("js", 2, 1)).toBe(source.indexOf("`js`") + 3);
 	});
 
+	it("never lands in an image's address, also where its words are written as references", () => {
+		const source = "![&#65;](https://example.com/A) and ![plan](plan.png)";
+		const { at } = drawing(source);
+		// Drawn "A": after it is after the reference, not at the "A" that ends the address.
+		expect(at("A", 0)).toBe(source.indexOf("&#65;"));
+		expect(at("A", 1)).toBe(source.indexOf("&#65;") + 5);
+		expect(at("plan", 2)).toBe(source.indexOf("![plan]") + 4);
+		expect(at("plan", 4)).toBe(source.indexOf("](plan.png)"));
+		// Words whose bracket the lexer unescaped stand nowhere it can count to.
+		expect(drawing("![a\\]b](x.png)").at("a]b", 1)).toBeUndefined();
+	});
+
+	it("counts code as it is written, its references unread", () => {
+		const source = "`&amp;` and\n\n```html\n&lt;b&gt; x\n```";
+		const { at } = drawing(source);
+		// Drawn "&amp;" among the words: two characters in is two characters in.
+		expect(at("&amp;", 0)).toBe(source.indexOf("&amp;"));
+		expect(at("&amp;", 2)).toBe(source.indexOf("&amp;") + 2);
+		expect(at("&amp;", 5)).toBe(source.indexOf("&amp;") + 5);
+		expect(at("&lt;b&gt; x", 5)).toBe(source.indexOf("&lt;b") + 5);
+		expect(at("&lt;b&gt; x", 11)).toBe(source.indexOf("\n```", 20));
+	});
+
+	it("counts a code's lines inside a list item past the indent before each", () => {
+		const source = "- item\n\n  ```js\n  a &amp; b\n    deep\n  ```";
+		const { at, run } = drawing(source);
+		const code = run("a &amp; b").data;
+		expect(code).toBe("a &amp; b\n  deep");
+		expect(at("a &amp; b", 0)).toBe(source.indexOf("a &amp; b"));
+		expect(at("a &amp; b", 3)).toBe(source.indexOf("a &amp; b") + 3);
+		// The end of the first line, the start of the second (after the item's indent, before the code's own), and in it.
+		expect(at("a &amp; b", 9)).toBe(source.indexOf("\n    deep"));
+		expect(at("a &amp; b", 10)).toBe(source.indexOf("    deep") + 2);
+		expect(at("a &amp; b", code.indexOf("deep") + 2)).toBe(source.indexOf("deep") + 2);
+		expect(at("a &amp; b", code.length)).toBe(source.indexOf("\n  ```", 20));
+	});
+
 	it("finds text in a quote and in a list inside a list, past the marks before each line", () => {
 		const source = "> first line\n> [x](http://y.z). Done\n\n- alpha\n  - two [a](b.c). End\n  - three";
 		const { at } = drawing(source);
@@ -126,6 +163,72 @@ describe("a place in drawn Markdown, found in its source", () => {
 		expect(drawing(windows).at("one", 1)).toBe(value.indexOf("one") + 1);
 	});
 
+	it("puts the caret before the same character in the source as in the drawing, whatever the Markdown", () => {
+		const corpus = [
+			"Read [plan](https://example.com). Then [a.b](http://a.b/c.d).",
+			'![&#65;](https://example.com/A) ![x](x) ![a b](<u v> "t")',
+			"`&amp;` ``a`b`` `` ` `` ` x ` `two\nlines`",
+			"```js\njs &amp; js\n```",
+			"~~~\ntilde\n~~~\n\n```\nunterminated",
+			"    indented code\n    more\n\nafter",
+			"> quote **bold** [l](http://u.v).\n> second `code` line\n>\n> > nested *em*\nlazy line",
+			"1. one\n2. two\n   continued [x](y.z).\n3. 3",
+			"- a\n  - b\n    - c [d](e.f)\n  - g\n- h",
+			"- [ ] todo &amp; more\n- [x] done\n\n* loose\n\n  para two\n\n* other",
+			"# #\n\n## Title ##\n\nSetext\n===\n\n#hashtag\n---\n\n###### six",
+			"a\\*b\\_c &lt;tag&gt; &copy; &#x1F600; &unknown; &amp;amp; &",
+			"<div>html &amp; block</div>\n\nafter <b>inline</b> html <!-- c -->",
+			"| h1 | h2 |\n| --- | :-: |\n| **b** | [l](u.v) |\n| - | `c` |\n\n> | q | r |\n> | - | - |\n> | s | t |",
+			"Line one\nline two  \nline three\\\nline four",
+			"*em **strong** em* ***both*** __under__ _u_ ~~del~~ **a*b*c**",
+			"https://auto.link/x.y and <https://angle.link> and <me@x.yz> www.x.yz me@x.yz",
+			"[ref][r] and [r] and [none][nope]\n\n[r]: http://ref.er/x",
+			"Emoji 😀 **😀b** `😀` [😀](u)",
+			"> - quote list\n>   more\n> - second\n>\n>   ```\n>   code in quote list\n>   ```",
+			"\tTabbed code\n\n-\ttab item\n- \tb",
+			"1) paren list\n2) two\n\n10. ten\n    - in ten",
+			"\\# not heading &#35; \\> not quote \\[x\\](y)",
+			"First.\r\n\r\nSecond *one*.\r\n- a\r\n- b",
+			"- a\n\n      code in item\n\n- b",
+			"[link *with em* and `code`](http://x.y/z) tail.",
+		];
+		const wrong: string[] = [];
+		const placeless: string[] = [];
+		for (const source of corpus) {
+			// As a text area holds it.
+			const value = source.replace(/\r\n|\r/g, "\n");
+			const walker = document.createTreeWalker(drawing(source).root, NodeFilter.SHOW_TEXT);
+			for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+				const text = node.data;
+				if (markdownSourceOffset(node, 0) === undefined) {
+					placeless.push(text);
+					continue;
+				}
+				let before = -1;
+				for (let index = 0; index <= text.length; index++) {
+					const at = markdownSourceOffset(node, index) ?? -1;
+					// Further into the drawn text is never earlier in the source.
+					if (at < before)
+						wrong.push(`${JSON.stringify(text)} at ${index} goes back in ${JSON.stringify(source)}`);
+					before = at;
+					// The end has no character after it, and the middle of a pair of code units no caret.
+					if (index === text.length || /[\uDC00-\uDFFF]/.test(text[index] ?? "")) continue;
+					const [character = ""] = text.slice(index);
+					const here = value.slice(at);
+					const reference = /^&(?:#\d+|#x[\da-f]+|[a-z][a-z\d]*);/i.exec(here)?.[0];
+					const read = reference && new DOMParser().parseFromString(reference, "text/html").body.textContent;
+					// The same character as written, as a reference that reads as it, or behind the backslash that
+					// escapes it.
+					if (!here.startsWith(character) && !read?.startsWith(character) && !here.startsWith(`\\${character}`))
+						wrong.push(`${JSON.stringify(text)} at ${index} is at ${JSON.stringify(here.slice(0, 12))}`);
+				}
+			}
+		}
+		expect(wrong).toEqual([]);
+		// Code over two lines draws its line end as a space: it has no place, and nothing else here lacks one.
+		expect(placeless).toEqual(["two lines"]);
+	});
+
 	it("has no place where no text of the source stands", () => {
 		const loose = document.createElement("p");
 		loose.textContent = "Loose";
@@ -134,10 +237,13 @@ describe("a place in drawn Markdown, found in its source", () => {
 		// A drawing that was not asked for places keeps none.
 		const plain = markdown("Plain *text*.");
 		expect(markdownSourceOffset(plain.querySelector("em")!.firstChild!, 2)).toBeUndefined();
-		// A cell whose bar the lexer rewrote has none either, and the cells after it keep theirs.
-		const table = "| a \\| b |\n| --- |\n| c |";
+		// A cell whose bar the lexer rewrote has none either, nor the cell after it in its row: where that one stands
+		// would be a guess (the "b" before it is not it). The other rows keep theirs.
+		const table = "| x | y |\n| --- | --- |\n| a \\| b | b |\n| c | d |";
 		const { at } = drawing(table);
+		expect(at("y", 1)).toBe(table.indexOf("y") + 1);
 		expect(at("a | b", 2)).toBeUndefined();
-		expect(at("c", 1)).toBe(table.indexOf("c") + 1);
+		expect(at("b", 1, 1)).toBeUndefined();
+		expect(at("d", 1)).toBe(table.indexOf("d") + 1);
 	});
 });
