@@ -419,9 +419,13 @@ function bar(page: Page): HTMLElement {
 						value: ui.search,
 						"data-focus-key": "search",
 						oninput: (event: Event) => {
-							ui.search = (event.target as HTMLInputElement).value;
+							const field = event.target as HTMLInputElement;
+							ui.search = field.value;
 							ui.open = null;
 							ui.letter = null;
+							// What the new words find is read from its top, not from where the old list was left.
+							const list = field.closest(".mailbox")?.querySelector(".mailbox-scroll");
+							if (list) list.scrollTop = 0;
 							page.redraw();
 						},
 					}),
@@ -1698,6 +1702,8 @@ function writePanel(page: Page): HTMLElement {
 			class: "mailbox-write-panel",
 			role: "dialog",
 			"aria-labelledby": "mailbox-write-title",
+			// On a short page the window scrolls, and so does its text: a redraw leaves both where they were (show).
+			"data-scroll-key": "write",
 			onsubmit: (event: Event) => {
 				event.preventDefault();
 				void submit();
@@ -1728,6 +1734,7 @@ function writePanel(page: Page): HTMLElement {
 						role: "radio",
 						class: `mailbox-pick${writer === chosen ? " is-current" : ""}`,
 						"aria-checked": String(writer === chosen),
+						"data-focus-key": `writer:${writer.id}`,
 						onclick: () => {
 							ui.writer = writer.id;
 							page.redraw();
@@ -1762,6 +1769,7 @@ function writePanel(page: Page): HTMLElement {
 					rows: "7",
 					placeholder: t("What should it say?"),
 					"data-focus-key": "write-text",
+					"data-scroll-key": "write-text",
 					oninput: (event: Event) => {
 						ui.writeText = (event.target as HTMLTextAreaElement).value;
 					},
