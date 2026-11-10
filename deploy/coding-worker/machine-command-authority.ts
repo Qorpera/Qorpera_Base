@@ -147,6 +147,8 @@ export interface MachineScreenAuthority {
 	action: MachineScreenAction | null;
 	settleMs: number;
 	look: boolean;
+	/** The lease generation SQL's read saw (20260930713000): the host lets the picture out only while it stands. */
+	desktopGeneration: number;
 }
 
 /** The calling run's live tool authority, for an action its own executing machine_screen receipt of exactly this
@@ -175,7 +177,8 @@ export async function authorizeMachineScreen(
 		typeof result.bootId !== "string" || !UUID.test(result.bootId) ||
 		typeof result.runId !== "string" || !UUID.test(result.runId) ||
 		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
-		typeof result.providerId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(result.providerId))
+		typeof result.providerId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(result.providerId) ||
+		!Number.isSafeInteger(result.desktopGeneration) || (result.desktopGeneration as number) < 0)
 		throw new Error("MACHINE_SCREEN_AUTHORITY_INVALID");
 	let action: MachineScreenAction | null = null;
 	if (request.input.commandId === null) {
@@ -191,7 +194,7 @@ export async function authorizeMachineScreen(
 	signal.throwIfAborted();
 	return { machineId: result.machineId, placementId: result.placementId, bootId: result.bootId, executorOwner: result.executorOwner,
 		providerId: result.providerId, runId: result.runId, receiptId: request.input.commandId, action,
-		settleMs: request.input.settleMs, look: request.input.look };
+		settleMs: request.input.settleMs, look: request.input.look, desktopGeneration: result.desktopGeneration as number };
 }
 
 /** What SQL says about one member's look at a desktop (20260930712000): where the machine runs, the member, whether the
@@ -207,6 +210,8 @@ export interface MemberMachineScreenAuthority {
 	userId: string;
 	served: boolean;
 	keepDesktop: boolean;
+	/** The lease generation SQL's read saw (20260930713000): the host lets the picture out only while it stands. */
+	desktopGeneration: number;
 }
 
 /** The look's single-use id, begun as the member, read again live in SQL (qorpera_member_machine_screen_authority) by
@@ -229,7 +234,9 @@ export async function authorizeMemberMachineScreen(
 		result.reason === "DESKTOP_MEMBER_IN_CONTROL"))
 		throw new CloudMemberMachineScreenRefusal(result.reason);
 	if (result.state !== "authorized" ||
-		Object.keys(result).sort().join() !== "bootId,executorOwner,keepDesktop,machineId,placementId,providerId,schema,served,state,useId,userId" ||
+		Object.keys(result).sort().join() !==
+			"bootId,desktopGeneration,executorOwner,keepDesktop,machineId,placementId,providerId,schema,served,state,useId,userId" ||
+		!Number.isSafeInteger(result.desktopGeneration) || (result.desktopGeneration as number) < 0 ||
 		result.useId !== request.useId ||
 		![result.machineId, result.placementId, result.bootId, result.userId].every((id) => typeof id === "string" && UUID.test(id)) ||
 		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
@@ -241,7 +248,8 @@ export async function authorizeMemberMachineScreen(
 	signal.throwIfAborted();
 	return { useId: result.useId, machineId: result.machineId as string, placementId: result.placementId as string,
 		bootId: result.bootId as string, executorOwner: result.executorOwner, providerId: result.providerId,
-		userId: result.userId as string, served: result.served as boolean, keepDesktop: result.keepDesktop };
+		userId: result.userId as string, served: result.served as boolean, keepDesktop: result.keepDesktop,
+		desktopGeneration: result.desktopGeneration as number };
 }
 
 /** What SQL says about one member's action on a desktop (20260930713000): where the machine runs, and whether this

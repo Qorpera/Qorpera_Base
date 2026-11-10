@@ -986,6 +986,8 @@ describe("a machine's screen", () => {
 			action,
 			settleMs: 500,
 			look: true,
+			// The lease generation the read saw (20260930713000).
+			desktopGeneration: 7,
 		};
 		const lookAnswer = { ...answer, receiptId: null, action: null, settleMs: null, look: null };
 		const call = vi.fn(async (_method: string, args: Record<string, unknown>) =>
@@ -1041,6 +1043,8 @@ describe("a machine's screen", () => {
 					settleMs: 500,
 					look: true,
 				},
+				// The host's fence after the capture checks it (review r1 F1).
+				desktopGeneration: 7,
 			},
 			f.signal,
 		);
@@ -1121,6 +1125,9 @@ describe("a machine's screen", () => {
 			[f.request, { action: null }],
 			[f.request, { settleMs: 2500 }],
 			[f.request, { look: false }],
+			[f.request, { desktopGeneration: undefined }],
+			[f.request, { desktopGeneration: -1 }],
+			[f.request, { desktopGeneration: "7" }],
 			[f.look, { receiptId: null, action: f.action, settleMs: null, look: null }],
 			[f.look, { receiptId: null, action: null, settleMs: 500, look: null }],
 		] as const) {
@@ -1305,6 +1312,7 @@ describe("a member's look at a desktop (20260930712000)", () => {
 			userId: ids.userId,
 			served: requestOwner === "mx-a",
 			keepDesktop: true,
+			desktopGeneration: 3,
 		});
 		const call = vi.fn(
 			async (_method: string, args: Record<string, unknown>) => answer(args.p_owner as string) as unknown,
@@ -1356,7 +1364,7 @@ describe("a member's look at a desktop (20260930712000)", () => {
 		);
 		expect(JSON.stringify(f.call.mock.calls)).not.toContain("eyJh");
 		expect(f.host.memberLook).toHaveBeenCalledWith(
-			{ placementId: f.placementId, bootId: f.bootId, userId: f.userId, keepDesktop: true },
+			{ placementId: f.placementId, bootId: f.bootId, userId: f.userId, keepDesktop: true, desktopGeneration: 3 },
 			f.signal,
 		);
 		// The member has this picture: its etag alone.
@@ -1377,6 +1385,8 @@ describe("a member's look at a desktop (20260930712000)", () => {
 		const f = fixture();
 		for (const [outcome, code] of [
 			[{ refused: "DESKTOP_NOT_RUNNING" }, "DESKTOP_NOT_RUNNING"],
+			// The fence after the capture: another member took the desktop over since the read (20260930713000).
+			[{ refused: "DESKTOP_MEMBER_IN_CONTROL" }, "DESKTOP_MEMBER_IN_CONTROL"],
 			[{ refused: "MACHINE_BOOT_CHANGED" }, "MACHINE_BOOT_CHANGED"],
 			[{ refused: "MACHINE_IMAGE_WITHOUT_SCREEN" }, "MACHINE_IMAGE_WITHOUT_SCREEN"],
 			[{ held: "hidden" }, "SCREEN_HIDDEN"],
@@ -1398,7 +1408,7 @@ describe("a member's look at a desktop (20260930712000)", () => {
 		}
 		f.memberBegin.mockRejectedValueOnce(new CloudMemberMachineScreenRefusal("SCREEN_TOO_SOON"));
 		await expect(f.router.memberScreen(f.look, f.signal)).rejects.toMatchObject({ code: "SCREEN_TOO_SOON" });
-		expect(f.host.memberLook).toHaveBeenCalledTimes(5);
+		expect(f.host.memberLook).toHaveBeenCalledTimes(6);
 	});
 
 	it("reads SQL's answer strictly: the use asked, exactly its fields, served only to the machine's own executor", async () => {
@@ -1414,6 +1424,8 @@ describe("a member's look at a desktop (20260930712000)", () => {
 			{ executorOwner: "mx a" },
 			{ providerId: "Node" },
 			{ keepDesktop: "yes" },
+			{ desktopGeneration: -1 },
+			{ desktopGeneration: undefined },
 			{ served: false },
 			{ node: "node-01" },
 			{ state: "refused", reason: "SCREEN_TOO_SOON" },

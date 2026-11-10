@@ -261,7 +261,7 @@ export function localMachineScreen(host: {
 	return async (authority, signal) => {
 		const outcome = await host.screen({ placementId: authority.placementId, bootId: authority.bootId, runId: authority.runId,
 			request: { schema: MACHINE_SCREEN_REQUEST_SCHEMA, receiptId: authority.receiptId, action: authority.action,
-				settleMs: authority.settleMs, look: authority.look } }, signal);
+				settleMs: authority.settleMs, look: authority.look }, desktopGeneration: authority.desktopGeneration }, signal);
 		if ("refused" in outcome) {
 			if (isCloudMachineScreenRefusal(outcome.refused)) throw new CloudMachineScreenRefusal(outcome.refused);
 			throw new Error("MACHINE_SCREEN_FAILED");
@@ -280,7 +280,7 @@ export function localMemberMachineScreen(host: {
 }): (authority: MemberMachineScreenAuthority, etag: string | null, signal: AbortSignal) => Promise<CloudMemberMachineScreen> {
 	return async (authority, etag, signal) => {
 		const outcome = await host.memberLook({ placementId: authority.placementId, bootId: authority.bootId,
-			userId: authority.userId, keepDesktop: authority.keepDesktop }, signal);
+			userId: authority.userId, keepDesktop: authority.keepDesktop, desktopGeneration: authority.desktopGeneration }, signal);
 		if ("refused" in outcome) throw new CloudMemberMachineScreenRefusal(outcome.refused);
 		if ("held" in outcome) throw new CloudMemberMachineScreenRefusal(outcome.held === "hidden" ? "SCREEN_HIDDEN" : "SCREEN_HELD");
 		return { etag: outcome.etag, png: outcome.etag === etag ? null : outcome.png };
