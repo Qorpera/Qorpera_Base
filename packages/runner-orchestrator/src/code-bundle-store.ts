@@ -122,7 +122,8 @@ export interface CodeBundleStore {
 	verify(target: CodeBundleTarget, name: string, signal?: AbortSignal): Promise<CodeBundleManifest | null>;
 	/** As `find`, with the stored file's bytes for a restore (own code storage, step 2b): `CODE_BUNDLE_MISSING` when
 	 * `find` would answer null. The pieces are read as they are taken, each in the store's line and within a step's
-	 * time, from a file opened at the first one and closed after the last, or when their reader stops. They are exactly
+	 * time, from a file opened at the first one and closed after the last, or when their reader stops; a reader that
+	 * stopped waiting while the file was being opened has it closed as soon as it is open. They are exactly
 	 * the manifest's `bytes` (`CODE_BUNDLE_DIFFERS` when the file opened has another size, or ends early). Nothing here
 	 * hashes them: whoever takes them does, against the manifest's `sha256`. */
 	read(target: CodeBundleTarget, name: string, signal?: AbortSignal): Promise<CodeBundleRead>;
@@ -573,7 +574,10 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 			if (!found) throw new Error("CODE_BUNDLE_MISSING");
 			const { folder, manifest } = found;
 			async function* pieces(): AsyncGenerator<Uint8Array, void, undefined> {
-				const file = await use(stepMs, signal, async (checked) => {
+				// Owed: the handle goes when the store's line gets to it, whatever its reader stopped for.
+				const close = (handle: FileHandle) =>
+					use(stepMs, undefined, () => handle.close(), true).catch(() => undefined);
+				const openIt = async (checked: AbortSignal): Promise<FileHandle> => {
 					await assert(checked);
 					const opened = await open(
 						posix.join(folder, `${bundle}.bundle`),
@@ -589,7 +593,20 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 						await opened.close().catch(() => undefined);
 						throw error;
 					}
-				});
+				};
+				// The work goes on after its caller stopped waiting (`use`), and may still open a file nobody is given: that
+				// handle is closed when it comes, as `begin` takes down a writer that comes late.
+				let opening: Promise<FileHandle> | undefined;
+				let file: FileHandle;
+				try {
+					file = await use(stepMs, signal, (checked) => {
+						opening = openIt(checked);
+						return opening;
+					});
+				} catch (error) {
+					void opening?.then(close, () => undefined);
+					throw error;
+				}
 				try {
 					for (let offset = 0; offset < manifest.bytes; ) {
 						const at = offset;
@@ -606,8 +623,7 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 						yield piece;
 					}
 				} finally {
-					// Owed: the handle goes when the store's line gets to it, whatever its reader stopped for.
-					await use(stepMs, undefined, () => file.close(), true).catch(() => undefined);
+					await close(file);
 				}
 			}
 			return { manifest, pieces: { [Symbol.asyncIterator]: pieces } };

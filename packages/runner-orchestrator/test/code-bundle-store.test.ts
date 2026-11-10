@@ -329,6 +329,85 @@ describe("createCodeBundleStore", () => {
 		await expect(store.read(TARGET, name)).rejects.toThrow("CODING_STORAGE_MOUNT_UNCONFIRMED");
 	});
 
+	it("closes a bundle's file that is opened after its reader stopped waiting", async () => {
+		// The storage's check can be made to hang (a hard mount that stalls), one use at a time.
+		const stalls: (() => void)[] = [];
+		let stalling = false;
+		const { store, folder } = setup({
+			assert: () =>
+				new Promise<void>((resolve) => {
+					if (stalling) stalls.push(resolve);
+					else resolve();
+				}),
+		});
+		const kept = await put(store, TARGET, "a stored bundle", at(0));
+		/** The files this process holds open in the repository's folder. */
+		const held = () =>
+			readdirSync("/proc/self/fd").filter((fd) => {
+				try {
+					return realpathSync(join("/proc/self/fd", fd)).startsWith(folder);
+				} catch {
+					return false;
+				}
+			}).length;
+		const gone = new AbortController();
+		const read = await store.read(TARGET, kept.name, gone.signal);
+		// The first piece is asked for, and the check before the file is opened hangs. Another use waits behind it.
+		stalling = true;
+		const first = read.pieces[Symbol.asyncIterator]().next();
+		await vi.waitFor(() => expect(stalls).toHaveLength(1));
+		const behind = store.companies();
+		// The reader gives up (its job yielded) while the file is being opened.
+		gone.abort(new Error("the job yielded"));
+		await expect(first).rejects.toThrow("the job yielded");
+		expect(held()).toBe(0);
+		// The check answers. The work goes on and opens the file nobody waits for.
+		stalls[0]?.();
+		await vi.waitFor(() => expect(stalls).toHaveLength(2));
+		expect(held()).toBe(1);
+		// The use behind it ends, and then the store closes the file: the close is owed, and waited its turn in the line.
+		// By the end of the use after it, the file is closed.
+		stalling = false;
+		stalls[1]?.();
+		await expect(behind).resolves.toEqual([COMPANY]);
+		await store.companies();
+		expect(held()).toBe(0);
+		// The bundle is still handed out whole.
+		const pieces: Buffer[] = [];
+		for await (const piece of (await store.read(TARGET, kept.name)).pieces) pieces.push(Buffer.from(piece));
+		expect(Buffer.concat(pieces).toString()).toBe("a stored bundle");
+		expect(held()).toBe(0);
+
+		// The same for a reader whose wait ran out: the file opened after that is closed too.
+		const slow = setup({
+			stepMs: 500,
+			assert: () =>
+				new Promise<void>((resolve) => {
+					if (stalling) stalls.push(resolve);
+					else resolve();
+				}),
+		});
+		const late = await put(slow.store, TARGET, "a stored bundle", at(0));
+		const slowly = await slow.store.read(TARGET, late.name);
+		stalls.length = 0;
+		stalling = true;
+		await expect(slowly.pieces[Symbol.asyncIterator]().next()).rejects.toThrow("CODE_BUNDLE_STORE_TIMEOUT");
+		stalling = false;
+		stalls[0]?.();
+		// The use behind the open, and then one behind the close.
+		await slow.store.companies();
+		await slow.store.companies();
+		expect(
+			readdirSync("/proc/self/fd").filter((fd) => {
+				try {
+					return realpathSync(join("/proc/self/fd", fd)).startsWith(slow.folder);
+				} catch {
+					return false;
+				}
+			}),
+		).toEqual([]);
+	});
+
 	it("removes what a dead write left at the repository's next begin, and nothing else", async () => {
 		const { store, folder } = setup();
 		const kept = await put(store, TARGET, "stored", at(0));
