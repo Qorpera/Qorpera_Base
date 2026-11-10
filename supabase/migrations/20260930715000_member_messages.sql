@@ -17,8 +17,8 @@
 --   whole surface.
 --
 -- Read marks: each member's own, per chat: the newest message they have seen. Messages from the other member after
--- it are unread (the rail's count); the other member sees the mark as "Seen". A member's own message moves their
--- own mark to it.
+-- it are unread (the rail's count); the other member sees the mark as "Seen". A mark moves only when its member's
+-- client says the messages were in front of them (qorpera_mark_member_chat_read): writing a message moves none.
 --
 -- Last online: the list says when each other member was last online, as the friends list does for friends
 -- (20260930690000). Members of one company already see each other in it while they are there (its presence channel);
@@ -28,8 +28,10 @@
 -- topics (20260930653000), at commit, with no row and no id; the web then reads again. A missed hint is normal: the
 -- web's slow poll reads the list too.
 --
--- Order: a message takes its place (`seq`) when it is written, so two written in the same instant can commit out of
--- order. The web reads a chat's newest page whole on every hint, so the later one still shows in its place.
+-- Order: a chat's sends go one at a time (an advisory lock on the chat, held to the end of the send's transaction),
+-- so a message takes its place (`seq`) only after every earlier message of its chat is committed. A chat's committed
+-- messages are therefore always a whole run from its first: no message turns up later in front of one already read,
+-- and a read mark never passes a message that is still on its way (SQL test 1206). Sends in other chats do not wait.
 --
 -- A member who leaves keeps nothing open: the list names only the company's members now, and every call checks both
 -- memberships. A message that lands as the other member leaves stays unread in a chat nobody lists; the rows are
@@ -210,7 +212,7 @@ end $$;
 
 -- The caller writes to `p_user_id`. `p_client_message_id` is the caller's own id for the message: the same call again
 -- answers the same message and writes nothing; the id with other words, or for another member, is refused (23505).
--- The words: not blank, at most 16 KiB. The sender's own read mark moves to the message.
+-- The words: not blank, at most 16 KiB. No read mark moves: the sender's own messages are never unread to them.
 create function public.qorpera_send_member_message(p_profile_id uuid, p_user_id uuid, p_client_message_id uuid,
 	p_text text)
 returns jsonb
@@ -227,17 +229,15 @@ begin
 	if p_client_message_id is null or p_text is null or p_text !~ '[^[:space:]]' or octet_length(p_text) > 16384 then
 		raise exception 'Message is invalid' using errcode = '22023';
 	end if;
+	-- One send at a time in this chat, to the end of this transaction: the message's place is taken after every earlier
+	-- message of the chat is committed.
+	perform pg_advisory_xact_lock(hashtextextended(
+		'qorpera.member-chat:' || p_profile_id::text || ':' || v_low::text || ':' || v_high::text, 0));
 	insert into public.qorpera_member_messages (profile_id, user_low, user_high, author_user_id, client_message_id, body)
 	values (p_profile_id, v_low, v_high, v_user, p_client_message_id, p_text)
 	on conflict on constraint qorpera_member_messages_client do nothing
 	returning * into v_message;
-	if found then
-		insert into public.qorpera_member_message_reads as reads (profile_id, user_id, other_user_id, read_seq)
-		values (p_profile_id, v_user, p_user_id, v_message.seq)
-		on conflict (profile_id, user_id, other_user_id) do update
-			set read_seq = excluded.read_seq, read_at = clock_timestamp()
-			where reads.read_seq < excluded.read_seq;
-	else
+	if not found then
 		select * into strict v_message
 		from public.qorpera_member_messages as message
 		where message.profile_id = p_profile_id and message.author_user_id = v_user

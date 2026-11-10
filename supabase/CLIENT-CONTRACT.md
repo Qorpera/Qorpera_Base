@@ -1168,11 +1168,13 @@ while it is being deleted), and for a `user` who is not another member of it.
   "qorpera.member-chat/v1", userId, messages, hasMore, readSeq, theirReadSeq}`: the newest `limit` messages (1 to
   200), or those before `before_seq`, oldest first; `hasMore` says older ones exist. A message is `{id, seq,
   authorUserId, createdAt, text}`, or `{..., deleted: true}` without `text` once its author took it back. `seq` orders
-  the messages of a chat; it is not dense.
+  the messages of a chat; it is not dense. A chat's sends go one at a time, so its messages are committed in `seq`
+  order: none appears later in front of one already read. A message taken back keeps its `seq`, so a client shows the
+  change only by reading that message again: the web reads every message it shows again on each hint and poll.
 - `qorpera_send_member_message(profile, user, client_message_id, text)`: `{schema: "qorpera.member-message/v1",
   userId, message}`. `text` is not blank and at most 16 KiB (else 22023). `client_message_id` is the client's own
   uuid for the message: the same call again answers the same message and writes nothing; the id with other words or
-  for another member is refused (23505). The sender's read mark moves to the message.
+  for another member is refused (23505). No read mark moves: a member's own messages are never unread to them.
 - `qorpera_mark_member_chat_read(profile, user, seq)`: `{schema: "qorpera.member-chat-read/v1", userId, readSeq}`.
   The caller has seen the chat up to `seq`: the mark moves to the chat's newest message at or before `seq`, never
   back; `readSeq` is the mark as it stands. Call it when new messages of the open chat are in front of the member.

@@ -2922,7 +2922,8 @@ export class CompanyController {
 				this.refreshSidebar(),
 				this.refreshMentions(),
 				this.refreshHoursWait(),
-				this.memberChats.refresh(),
+				// The member chats and the open one, whole: what a missed hint would have brought.
+				this.memberChats.poll(),
 			]);
 		} finally {
 			this.#polling = false;

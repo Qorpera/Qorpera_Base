@@ -161,6 +161,8 @@ begin
 	v_again := pg_temp.chat_call('a', $q$public.qorpera_send_member_message($shop, $b, '12050000-0000-4000-8000-0000000000f1', E'Hi Bo\nsecond line')$q$);
 	perform pg_temp.chat_assert(v_again = v, 'a repeated send is the same message: ' || v_again::text);
 	perform pg_temp.chat_assert((select count(*) from public.qorpera_member_messages) = 1, 'a repeated send writes nothing');
+	-- Writing moves no read mark: a mark says what its member has seen.
+	perform pg_temp.chat_assert(not exists (select 1 from public.qorpera_member_message_reads), 'a send writes no read mark');
 	perform set_config('chat.first', v -> 'message' ->> 'seq', true);
 	perform set_config('chat.first_id', v -> 'message' ->> 'id', true);
 end $$;
@@ -199,7 +201,7 @@ begin
 	v_chat := pg_temp.chat_of(v, 'a');
 	perform pg_temp.chat_assert((v_chat ->> 'unread')::int = 1 and v_chat -> 'last' ->> 'text' = E'Hi Bo\nsecond line'
 		and (v_chat -> 'last' ->> 'seq')::bigint = v_first
-		and (v_chat ->> 'readSeq')::bigint = 0 and (v_chat ->> 'theirReadSeq')::bigint = v_first,
+		and (v_chat ->> 'readSeq')::bigint = 0 and (v_chat ->> 'theirReadSeq')::bigint = 0,
 		'Bo''s list with Ann''s message: ' || v_chat::text);
 	-- Bo's chat with Cy is empty: Ann's message to Cy is not his to see, in the list or by reading.
 	v_chat := pg_temp.chat_of(v, 'c');
@@ -211,7 +213,7 @@ begin
 	perform pg_temp.chat_assert(v ->> 'schema' = 'qorpera.member-chat/v1' and v ->> 'userId' = pg_temp.chat_user('a')::text
 		and jsonb_array_length(v -> 'messages') = 1
 		and (v -> 'messages' -> 0 ->> 'seq')::bigint = v_first and not (v ->> 'hasMore')::boolean
-		and (v ->> 'readSeq')::bigint = 0 and (v ->> 'theirReadSeq')::bigint = v_first, 'Bo reads the chat: ' || v::text);
+		and (v ->> 'readSeq')::bigint = 0 and (v ->> 'theirReadSeq')::bigint = 0, 'Bo reads the chat: ' || v::text);
 	-- A mark far ahead stops at the chat's newest message (Ann's message to Cy came later and is not Bo's).
 	v := pg_temp.chat_call('b', format('public.qorpera_mark_member_chat_read($shop, $a, %s)', v_first + 1000));
 	perform pg_temp.chat_assert(v ->> 'schema' = 'qorpera.member-chat-read/v1' and (v ->> 'readSeq')::bigint = v_first, 'Bo''s mark: ' || v::text);
@@ -246,14 +248,19 @@ do $$
 declare v jsonb; v_chat jsonb; v_page jsonb; v_first bigint := current_setting('chat.first')::bigint;
 begin
 	v_chat := pg_temp.chat_of(pg_temp.chat_call('a', 'public.qorpera_list_member_chats($shop)'), 'b');
-	-- Bo's own messages moved his mark past Ann's first message.
+	-- Bo's mark stands at Ann's message, where he put it: his own two messages did not move it, nor any mark of Ann's.
 	perform pg_temp.chat_assert((v_chat ->> 'unread')::int = 2 and v_chat -> 'last' ->> 'text' = 'Second from Bo'
-		and (v_chat ->> 'theirReadSeq')::bigint = (v_chat -> 'last' ->> 'seq')::bigint and (v_chat ->> 'readSeq')::bigint = v_first,
+		and (v_chat ->> 'theirReadSeq')::bigint = v_first and (v_chat ->> 'readSeq')::bigint = 0,
 		'Ann''s list after Bo answered: ' || v_chat::text);
 	v := pg_temp.chat_call('a', 'public.qorpera_read_member_chat($shop, $b, null, 2)');
 	perform pg_temp.chat_assert(jsonb_array_length(v -> 'messages') = 2 and (v ->> 'hasMore')::boolean
 		and v -> 'messages' -> 0 ->> 'text' = 'Hi Ann' and v -> 'messages' -> 1 ->> 'text' = 'Second from Bo',
 		'the newest page, oldest first: ' || v::text);
+	-- Ann has seen "Hi Ann" and not yet the message after it: one is left unread.
+	perform pg_temp.chat_call('a', format('public.qorpera_mark_member_chat_read($shop, $b, %s)', v -> 'messages' -> 0 ->> 'seq'));
+	v_chat := pg_temp.chat_of(pg_temp.chat_call('a', 'public.qorpera_list_member_chats($shop)'), 'b');
+	perform pg_temp.chat_assert((v_chat ->> 'unread')::int = 1
+		and (v_chat ->> 'readSeq')::bigint = (v -> 'messages' -> 0 ->> 'seq')::bigint, 'Ann''s mark at Bo''s first answer: ' || v_chat::text);
 	v_page := pg_temp.chat_call('a', format('public.qorpera_read_member_chat($shop, $b, %s, 2)', v -> 'messages' -> 0 ->> 'seq'));
 	perform pg_temp.chat_assert(jsonb_array_length(v_page -> 'messages') = 1 and not (v_page ->> 'hasMore')::boolean
 		and (v_page -> 'messages' -> 0 ->> 'seq')::bigint = v_first, 'the page before it: ' || v_page::text);
@@ -287,10 +294,14 @@ begin
 	perform pg_temp.chat_assert(jsonb_array_length(v -> 'messages') = 1, 'Cy reads Ann''s message');
 	v := pg_temp.chat_call('c', $q$public.qorpera_send_member_message($shop, $a, '12050000-0000-4000-8000-0000000000c1', 'Hi from a viewer')$q$);
 	perform pg_temp.chat_assert(v -> 'message' ->> 'text' = 'Hi from a viewer', 'a viewer writes');
-	-- Writing moved Cy's own mark past Ann's message.
-	v := pg_temp.chat_call('c', 'public.qorpera_list_member_chats($shop)');
-	perform pg_temp.chat_assert((select bool_and((chat ->> 'unread')::int = 0) from jsonb_array_elements(v -> 'chats') as chat),
-		'Cy has nothing unread after writing: ' || v::text);
+	-- Writing moved no mark: Ann's message is unread to Cy until Cy's own mark says it was seen. Cy's own message is
+	-- never unread to Cy.
+	v := pg_temp.chat_of(pg_temp.chat_call('c', 'public.qorpera_list_member_chats($shop)'), 'a');
+	perform pg_temp.chat_assert((v ->> 'unread')::int = 1 and (v ->> 'readSeq')::bigint = 0
+		and v -> 'last' ->> 'text' = 'Hi from a viewer', 'Cy''s list after writing: ' || v::text);
+	perform pg_temp.chat_call('c', format('public.qorpera_mark_member_chat_read($shop, $a, %s)', v -> 'last' ->> 'seq'));
+	v := pg_temp.chat_of(pg_temp.chat_call('c', 'public.qorpera_list_member_chats($shop)'), 'a');
+	perform pg_temp.chat_assert((v ->> 'unread')::int = 0, 'Cy has nothing unread once marked: ' || v::text);
 end $$;
 
 -- 7. Dan and Eve are not in "Chat shop", and nobody is signed out: every call is refused.
@@ -324,7 +335,7 @@ begin
 	where message ->> 'text' = 'Second from Bo';
 	perform pg_temp.chat_call('b', format('public.qorpera_delete_member_message($shop, %L)', v_id));
 	v_chat := pg_temp.chat_of(pg_temp.chat_call('a', 'public.qorpera_list_member_chats($shop)'), 'b');
-	perform pg_temp.chat_assert((v_chat ->> 'unread')::int = 1 and (v_chat -> 'last' ->> 'deleted')::boolean,
+	perform pg_temp.chat_assert((v_chat ->> 'unread')::int = 0 and (v_chat -> 'last' ->> 'deleted')::boolean,
 		'a message taken back unread is not counted: ' || v_chat::text);
 end $$;
 

@@ -1,5 +1,7 @@
 import { CloudRpcError } from "../cloud/client.ts";
 import {
+	MEMBER_CHAT_PAGE,
+	MEMBER_CHAT_READ_MAX,
 	MEMBER_MESSAGE_MAX_BYTES,
 	type MemberChatCalls,
 	type MemberChatPage,
@@ -11,9 +13,13 @@ import { Store } from "./state.ts";
 
 /* A member's chats with the other members of the company (Jonas, 10 Nov 2026: "a contact for the members I work with
  * that's a direct way to message and communicate with my friends im building with"). The list (one entry per other
- * member: unread, last online, the newest message) is the company's state, read on every hint; each chat's messages
- * are read when it opens and again on each hint while it is open. A message shows at once and is sent behind it; one
- * that could not be sent stays, to be sent again or dropped. */
+ * member: unread, last online, the newest message) is the company's state, read on every hint and on the clock. A
+ * message shows at once and is sent behind it; one that could not be sent stays, to be sent again or dropped.
+ *
+ * The messages a chat shows are always one whole run of it, from the oldest one shown to its newest, and every read
+ * brings that whole run again (on a hint, on the clock, after a send): a message taken back, however old, loses its
+ * words, and no hole ever stands between two messages. A chat off screen keeps its draft and what is still to send,
+ * not its messages: it is read whole when it opens again. */
 
 /** A message this browser wrote that the cloud has not answered yet, or refused. */
 export interface OutgoingMemberMessage {
@@ -25,7 +31,7 @@ export interface OutgoingMemberMessage {
 }
 
 export interface MemberChatThread {
-	/** Oldest first. */
+	/** Oldest first: one whole run of the chat, up to its newest message. */
 	readonly messages: readonly MemberMessage[];
 	/** There are messages before the first one here. */
 	readonly hasMore: boolean;
@@ -68,19 +74,9 @@ const EMPTY: MemberChatThread = {
 	draft: "",
 };
 
-/** The chat with a page of its newest messages read in: what was loaded before it stays when the page reaches it.
- * A page that does not reach it (more new messages than one page) starts the chat over at the page: nothing is shown
- * with a hole in it. */
-export function withNewestPage(
-	thread: Pick<MemberChatThread, "messages" | "hasMore">,
-	page: Pick<MemberChatPage, "messages" | "hasMore">,
-): Pick<MemberChatThread, "messages" | "hasMore"> {
-	const first = page.messages[0]?.seq;
-	if (first === undefined) return { messages: [], hasMore: false };
-	const reaches = thread.messages.some((message) => message.seq >= first);
-	const older = reaches ? thread.messages.filter((message) => message.seq < first) : [];
-	return { messages: [...older, ...page.messages], hasMore: older.length ? thread.hasMore : page.hasMore };
-}
+/** How many reads one refresh of a chat may take to reach the oldest message shown (2,000 messages). Past that the
+ * chat starts at what was read: it shows less, never a hole. */
+const RUN_READS = 10;
 
 /** The messages with one more in its place, or in place of the copy already there. */
 function withMessage(messages: readonly MemberMessage[], message: MemberMessage): MemberMessage[] {
@@ -121,11 +117,26 @@ export class MemberChats {
 		return store;
 	}
 
-	/** The chat on screen, if any: it is read now, kept up to date, and marked read while someone looks. */
+	/** The chat on screen, if any: it is read now, kept up to date, and marked read while someone looks. The chat that
+	 * leaves the screen keeps its draft and what is still to send, and lets its messages go: what it shows when it
+	 * opens again is read then, so nothing taken back meanwhile is ever shown. */
 	setOpen(userId: string | undefined): void {
 		const next = userId?.toLowerCase();
 		if (next === this.#open) return;
+		const previous = this.#open;
 		this.#open = next;
+		if (previous) {
+			// A read of it still on its way is not waited for.
+			this.#reads.set(previous, (this.#reads.get(previous) ?? 0) + 1);
+			this.thread(previous).set({
+				messages: [],
+				hasMore: false,
+				loaded: false,
+				loading: false,
+				loadingEarlier: false,
+				error: undefined,
+			});
+		}
 		if (next) void this.load(next);
 	}
 
@@ -144,9 +155,15 @@ export class MemberChats {
 		if (this.#stopped || this.#hintTimer) return;
 		this.#hintTimer = setTimeout(() => {
 			this.#hintTimer = undefined;
-			void this.refresh();
-			if (this.#open) void this.load(this.#open);
+			void this.poll();
 		}, 150);
+	}
+
+	/** The clock's read, and a hint's: the list, and the open chat whole. A hint can be missed (and a browser that
+	 * listens the old way gets none), so whatever a hint would have brought (a new message, one taken back, the other
+	 * member's look) shows no later than the next turn of the clock. */
+	async poll(): Promise<void> {
+		await Promise.all([this.refresh(), this.#open ? this.load(this.#open) : undefined]);
 	}
 
 	/** Reads the list again. */
@@ -163,12 +180,15 @@ export class MemberChats {
 				next[chat.userId] = seen ? { ...chat, unread: 0 } : chat;
 			}
 			this.#host.setSummaries(next);
-			// A message that came while the open chat's own read was missed (no hint): read it now.
-			const open = this.#open ? next[this.#open] : undefined;
-			if (open?.last && this.#open) {
-				const thread = this.thread(this.#open).get();
-				const newest = thread.messages[thread.messages.length - 1];
-				if (thread.loaded && !thread.loading && (!newest || newest.seq < open.last.seq)) void this.load(this.#open);
+			// The list's read marks are newer than a chat's own, or as new: "Seen" follows them without a read of the chat.
+			for (const chat of chats) {
+				const store = this.#threads.get(chat.userId);
+				const thread = store?.get();
+				if (store && thread && (chat.readSeq > thread.readSeq || chat.theirReadSeq > thread.theirReadSeq))
+					store.set({
+						readSeq: Math.max(thread.readSeq, chat.readSeq),
+						theirReadSeq: Math.max(thread.theirReadSeq, chat.theirReadSeq),
+					});
 			}
 		} catch (error) {
 			if (this.#stopped || version !== this.#listReads) return;
@@ -176,25 +196,53 @@ export class MemberChats {
 		}
 	}
 
-	/** Reads the chat's newest messages and both read marks. */
+	/** One whole run of the chat, read now: its newest messages back to `floor`, the oldest message shown, or its
+	 * newest page when nothing is shown yet. The first read asks for what is shown and a little more; when more than
+	 * that is new it reads on backwards until it reaches `floor`, so the run has no hole. */
+	async #run(key: string, shown: number, floor: number | undefined): Promise<MemberChatPage> {
+		const calls = this.#host.calls();
+		const newest = await calls.read(key, undefined, floor === undefined ? MEMBER_CHAT_PAGE : shown + 10);
+		let messages = newest.messages;
+		let hasMore = newest.hasMore;
+		for (let reads = 1; floor !== undefined && hasMore && reads < RUN_READS; reads++) {
+			const first = messages[0];
+			if (!first || first.seq <= floor) break;
+			const earlier = await calls.read(key, first.seq, MEMBER_CHAT_READ_MAX);
+			messages = [...earlier.messages, ...messages];
+			hasMore = earlier.hasMore && earlier.messages.length > 0;
+		}
+		// No further back than what was shown: the chat keeps its place, and "Show earlier messages" its meaning.
+		const run = floor === undefined ? messages : messages.filter((message) => message.seq >= floor);
+		return { ...newest, messages: run, hasMore: hasMore || run.length < messages.length };
+	}
+
+	/** Reads the chat again, whole: every message it shows (or its newest page, when it shows none yet) and both read
+	 * marks. What it showed is replaced, never added to. */
 	async load(userId: string): Promise<void> {
 		const key = userId.toLowerCase();
 		if (this.#stopped || !this.#host.available()) return;
 		const store = this.thread(key);
 		const version = (this.#reads.get(key) ?? 0) + 1;
 		this.#reads.set(key, version);
-		if (!store.get().loaded) store.set({ loading: true, error: undefined });
+		const before = store.get();
+		if (!before.loaded) store.set({ loading: true, error: undefined });
+		const floor = before.loaded ? before.messages[0]?.seq : undefined;
 		try {
-			const page = await this.#host.calls().read(key);
+			const run = await this.#run(key, before.messages.length, floor);
 			if (this.#stopped || this.#reads.get(key) !== version) return;
-			store.set((thread) => ({
-				...withNewestPage(thread, page),
-				loaded: true,
-				loading: false,
-				error: undefined,
-				readSeq: Math.max(thread.readSeq, page.readSeq),
-				theirReadSeq: Math.max(thread.theirReadSeq, page.theirReadSeq),
-			}));
+			store.set((thread) => {
+				// Earlier messages read in meanwhile ("Show earlier messages") end right where this run starts: they stay.
+				const earlier = floor === undefined ? [] : thread.messages.filter((message) => message.seq < floor);
+				return {
+					messages: [...earlier, ...run.messages],
+					hasMore: earlier.length ? thread.hasMore : run.hasMore,
+					loaded: true,
+					loading: false,
+					error: undefined,
+					readSeq: Math.max(thread.readSeq, run.readSeq),
+					theirReadSeq: Math.max(thread.theirReadSeq, run.theirReadSeq),
+				};
+			});
 			this.seen();
 		} catch (error) {
 			if (this.#stopped || this.#reads.get(key) !== version) return;
@@ -223,7 +271,7 @@ export class MemberChats {
 			const page = await this.#host.calls().read(key, first.seq);
 			if (this.#stopped) return;
 			store.set((now) => {
-				// The chat started over meanwhile (a newer read did not reach these): this page no longer joins it.
+				// The chat left the screen or starts elsewhere now: this page no longer joins it.
 				if (now.messages[0]?.seq !== first.seq) return { loadingEarlier: false };
 				return { messages: [...page.messages, ...now.messages], hasMore: page.hasMore, loadingEarlier: false };
 			});
@@ -293,15 +341,15 @@ export class MemberChats {
 				if (this.#stopped) return;
 				store.set((thread) => ({
 					outgoing: thread.outgoing.filter((item) => item.clientMessageId !== clientMessageId),
-					messages: withMessage(thread.messages, message),
-					// A member's own message moves their read mark to it, as the cloud does.
-					readSeq: Math.max(thread.readSeq, message.seq),
+					// It stands where it was written at once; a chat off screen holds no messages (setOpen).
+					messages: thread.loaded ? withMessage(thread.messages, message) : thread.messages,
 				}));
+				// Messages that came since the last read stand before it: the chat is read whole again, so none is
+				// missing between what was shown and this one.
+				if (this.#open === key) void this.load(key);
 				this.#summarize(key, (chat) => ({
 					...chat,
 					last: !chat.last || chat.last.seq <= message.seq ? message : chat.last,
-					unread: 0,
-					readSeq: Math.max(chat.readSeq, message.seq),
 				}));
 			} catch (error) {
 				if (this.#stopped) return;
@@ -332,7 +380,8 @@ export class MemberChats {
 	}
 
 	/** The open chat is in front of someone: what it shows is read. The rail's count goes at once; the cloud is told,
-	 * and the other member then sees "Seen". */
+	 * and the other member then sees "Seen". Only the other member's messages need a mark: this member's own are never
+	 * unread to them, and writing moves no mark. */
 	seen(): void {
 		const key = this.#open;
 		if (this.#stopped || !key || !this.#host.visible() || !this.#host.available()) return;
@@ -341,7 +390,8 @@ export class MemberChats {
 		const newest = thread.messages[thread.messages.length - 1];
 		if (!thread.loaded || !newest) return;
 		if (this.#host.summaries()?.[key]?.unread) this.#summarize(key, (chat) => ({ ...chat, unread: 0 }));
-		if (newest.seq <= thread.readSeq) return;
+		const me = this.#host.userId;
+		if (!thread.messages.some((message) => message.authorUserId !== me && message.seq > thread.readSeq)) return;
 		store.set({ readSeq: newest.seq });
 		void this.#host
 			.calls()

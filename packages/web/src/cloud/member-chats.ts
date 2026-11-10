@@ -8,8 +8,10 @@ import { array, boundedInteger, CloudShapeError, record, timestamp, uuid } from 
 
 /** The longest message, in UTF-8 bytes, as the cloud checks it. */
 export const MEMBER_MESSAGE_MAX_BYTES = 16 * 1024;
-/** How many messages one read of a chat asks for. */
+/** How many messages a chat opens with, and how many "Show earlier messages" adds. */
 export const MEMBER_CHAT_PAGE = 50;
+/** The most messages one read gives, as the cloud bounds it. */
+export const MEMBER_CHAT_READ_MAX = 200;
 
 export interface MemberMessage {
 	readonly id: string;
@@ -111,7 +113,7 @@ function parseSent(value: unknown, userId?: string): MemberMessage {
 export interface MemberChatCalls {
 	list(): Promise<MemberChatSummary[]>;
 	/** The chat's newest messages, or those before `beforeSeq`. */
-	read(userId: string, beforeSeq?: number): Promise<MemberChatPage>;
+	read(userId: string, beforeSeq?: number, limit?: number): Promise<MemberChatPage>;
 	/** `clientMessageId` is this browser's id for the message: the same call again is the same message. */
 	send(userId: string, clientMessageId: string, text: string): Promise<MemberMessage>;
 	/** This member has seen the chat up to `seq`; answers their mark as it stands. */
@@ -123,13 +125,13 @@ export interface MemberChatCalls {
 export function memberChatCalls(cloud: Pick<Cloud, "rpc">, profileId: string): MemberChatCalls {
 	return {
 		list: async () => parseMemberChats(await cloud.rpc("qorpera_list_member_chats", { p_profile_id: profileId })),
-		read: async (userId, beforeSeq) =>
+		read: async (userId, beforeSeq, limit = MEMBER_CHAT_PAGE) =>
 			parseMemberChatPage(
 				await cloud.rpc("qorpera_read_member_chat", {
 					p_profile_id: profileId,
 					p_user_id: userId,
 					p_before_seq: beforeSeq ?? null,
-					p_limit: MEMBER_CHAT_PAGE,
+					p_limit: Math.min(MEMBER_CHAT_READ_MAX, Math.max(1, limit)),
 				}),
 				userId,
 			),
