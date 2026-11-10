@@ -138,24 +138,98 @@ const ADDRESS = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@([a-z0-9]([a-z0-9-]{0,61}[a
 /** How many addresses one email goes to, at most (the same call). */
 const MOST_RECIPIENTS = 10;
 const isAddress = (text: string) => text.length <= 254 && ADDRESS.test(text.toLowerCase());
-/** The addresses an entry of who an email goes to points at ("Anna Holm <anna@acme.dk>"). They alone are its recipients
- * then, whatever stands beside them: the name may be an address of its own ("old@acme.dk <anna@acme.dk>"), and nobody
- * at it is written to. */
-const pointedAt = (entry: string) =>
-	[...entry.matchAll(/<([^<>]*)>/g)].map((at) => (at[1] ?? "").trim().replace(/^mailto:/i, "")).filter(Boolean);
-/** What is typed for who an email goes to, as its recipients: each address apart, and the words between that are none
- * together, as the name they were typed as ("Nordlys Energi"). A comma or a semicolon ends a name. An entry that
- * points at its address is that address alone (`pointedAt`). */
+/** One entry of a list of who an email goes to, read by its marks. */
+interface Entry {
+	/** The address it points at ("Anna Holm <anna@acme.dk>"), or null when it points at nothing. It alone is the entry's
+	 * recipient, whatever stands beside it: the name may be an address of its own ("old@acme.dk <anna@acme.dk>"), and
+	 * nobody at it is written to. A quoted address that is all of its entry counts as pointed at, as a list from a
+	 * spreadsheet gives it. An entry that points at more than one address, or has one more standing after the one it
+	 * points at, says no clear thing: it is kept here as it stands, which is no address, for the member to put right. */
+	pointed: string | null;
+	/** The rest, in the order it stands: what is plain, and each aside whole. An aside is a quoted text or a remark in
+	 * round brackets: a name or a note, and never a recipient, whatever it holds. */
+	parts: { text: string; aside: boolean }[];
+	/** Where the list goes on after it. */
+	end: number;
+}
+const POINTED = /<([^<>,;\n]*)>/y;
+const PLAIN = /[^,;\n"(<]+/y;
+/** A list of who an email goes to, as its entries. A comma, a semicolon or a line end closes an entry, but not one that
+ * stands in an aside: a quoted name keeps its own ('"Holm, Anna" <anna@acme.dk>'), and so does a remark ("(formerly,
+ * old@acme.dk)"). Nor is anything in an aside pointed at ('"Former <old@acme.dk>" <anna@acme.dk>' points at anna alone).
+ * An aside runs to the mark that closes it, a remark over the remarks it holds. Left open it runs to the end of its
+ * line, so what follows an open quote is never read as an entry of its own. */
+function entriesOf(list: string): Entry[] {
+	const entries: Entry[] = [];
+	let pointed: string[] = [];
+	let parts: Entry["parts"] = [];
+	let unclear = false;
+	let from = 0;
+	const close = (stop: number, end: number) => {
+		const text = list.slice(from, stop).trim();
+		const alone = /^"([^"]*)"$/.exec(text)?.[1]?.trim() ?? "";
+		entries.push({
+			pointed: unclear || pointed.length > 1 ? text : (pointed[0] ?? (isAddress(alone) ? alone : null)),
+			parts,
+			end,
+		});
+		pointed = [];
+		parts = [];
+		unclear = false;
+		from = end;
+	};
+	let at = 0;
+	while (at < list.length) {
+		const mark = list[at];
+		let stop = at + 1;
+		if (mark === "," || mark === ";" || mark === "\n") close(at, stop);
+		else if (mark === '"' || mark === "(") {
+			let open = 1;
+			while (open && stop < list.length && list[stop] !== "\n") {
+				const inside = list[stop];
+				// A backslash takes the mark after it as it stands.
+				stop += inside === "\\" && stop + 1 < list.length && list[stop + 1] !== "\n" ? 2 : 1;
+				if (inside === (mark === "(" ? ")" : '"')) open -= 1;
+				else if (inside === "(" && mark === "(") open += 1;
+			}
+			parts.push({ text: list.slice(at, stop), aside: true });
+		} else {
+			POINTED.lastIndex = at;
+			PLAIN.lastIndex = at;
+			const point = mark === "<" ? POINTED.exec(list) : null;
+			if (point) stop = at + point[0].length;
+			else if (PLAIN.test(list)) stop = PLAIN.lastIndex;
+			const address = point?.[1]?.trim().replace(/^mailto:/i, "");
+			const plain = list.slice(at, stop);
+			const last = parts.at(-1);
+			if (address) pointed.push(address);
+			// What is plain stays one text, so a pointed bracket that closes nothing stays in its word ("<anna@acme.dk").
+			else if (last && !last.aside) last.text += plain;
+			else parts.push({ text: plain, aside: false });
+			// The name stands before its address. An address after it is nobody's name: one more recipient, or none.
+			if (!address && pointed.length && plain.includes("@")) unclear = true;
+		}
+		at = stop;
+	}
+	close(list.length, list.length);
+	return entries;
+}
+/** What is typed for who an email goes to, as its recipients. An entry that points at its address is that address
+ * alone. In one that points at nothing each address is a recipient, and what stands between is kept as the name it was
+ * typed as ("Nordlys Energi"), an aside whole: no address, so a chip that says so. */
 function asRecipients(text: string): string[] {
 	const found: string[] = [];
-	for (const part of text.split(/[,;]/)) {
-		const pointed = pointedAt(part);
-		if (pointed.length) {
-			found.push(...pointed);
+	for (const entry of entriesOf(text)) {
+		if (entry.pointed !== null) {
+			found.push(entry.pointed);
 			continue;
 		}
+		// An aside is one word, and its first mark keeps it from being an address.
+		const words = entry.parts.flatMap((part) =>
+			part.aside ? [part.text.trim()] : part.text.split(/\s+/).filter(Boolean),
+		);
 		let name: string[] = [];
-		for (const word of [...part.split(/\s+/).filter(Boolean), null]) {
+		for (const word of [...words, null]) {
 			if (word && !isAddress(word)) {
 				name.push(word);
 				continue;
@@ -167,30 +241,31 @@ function asRecipients(text: string): string[] {
 	}
 	return found;
 }
-/** A pasted list of who an email goes to, as its recipients. Its entries stand between commas, semicolons and line
- * ends. What stands in quotes or in round brackets is a name or a remark, left out beside anything else. An entry that
- * points at its address is that address alone (`pointedAt`). In one that points at nothing, whatever has an `@` is a
- * recipient ("mailto:bo@acme.dk", "Bo Berg bo@acme.dk") and the words beside it are left out; an entry with none is
- * taken whole. Right or wrong, a recipient is kept: what is no address becomes a chip that says so, never nothing. */
+/** A pasted list of who an email goes to, as its recipients. An entry that points at its address is that address
+ * alone. In one that points at nothing, whatever has an `@` outside an aside is a recipient ("mailto:bo@acme.dk",
+ * "Bo Berg bo@acme.dk") and what stands beside it is left out; an entry with no `@` is taken whole, and one of asides
+ * alone as it stands. Right or wrong, a recipient is kept: what is no address becomes a chip that says so, never
+ * nothing. */
 function pastedRecipients(text: string): string[] {
 	const found: string[] = [];
-	// A quoted name keeps its own comma ("Holm, Anna" <anna@acme.dk>).
-	const entries = text.replace(/"[^"\n]*"/g, (quoted) => quoted.replace(/[,;]/g, " ")).split(/[,;\n]/);
-	for (const entry of entries) {
-		const beside = entry.replace(/"[^"]*"|\([^()]*\)/g, " ");
-		const said = beside.trim() ? beside : entry;
-		const pointed = pointedAt(said);
-		if (pointed.length) {
-			found.push(...pointed);
+	for (const entry of entriesOf(text)) {
+		if (entry.pointed !== null) {
+			found.push(entry.pointed);
 			continue;
 		}
-		const words = said
-			.split(/[\s<>"()[\]]+/)
+		const words = entry.parts
+			.filter((part) => !part.aside)
+			.flatMap((part) => part.text.split(/[\s<>)[\]]+/))
 			.map((word) => word.replace(/^mailto:/i, ""))
 			.filter(Boolean);
 		const addressed = words.filter((word) => word.includes("@"));
+		const whole = entry.parts
+			.map((part) => part.text)
+			.join("")
+			.trim();
 		if (addressed.length) found.push(...addressed);
 		else if (words.length) found.push(words.join(" "));
+		else if (whole) found.push(whole);
 	}
 	return found;
 }
@@ -1892,13 +1967,16 @@ function recipientsRow(page: Page): HTMLElement {
 		edited(ui, input);
 		// A word being composed is still being typed.
 		if (!(event as InputEvent).isComposing) {
-			// A comma or a semicolon ends what stands before it. A space ends an address, and never a name, whose next
-			// word may follow ("Nordlys Energi"); what stands after is still being typed.
-			const cut = Math.max(input.value.lastIndexOf(","), input.value.lastIndexOf(";")) + 1;
+			// A comma or a semicolon ends what stands before it, but not one inside a quoted name or a remark, closed or
+			// still open ('"Holm, Anna'). A space ends an address, and never a name, whose next word may follow ("Nordlys
+			// Energi"); what stands after is still being typed. Nor does it end an address that has a mark after it, when
+			// that much comes in at once (dropped in, say): there it may be the name ("old@acme.dk <anna@acme.dk>").
+			const cut = entriesOf(input.value).at(-2)?.end ?? 0;
 			const ended = asRecipients(input.value.slice(0, cut));
-			const words = input.value.slice(cut).trimStart().split(/\s+/);
+			const rest = input.value.slice(cut);
+			const words = rest.trimStart().split(/\s+/);
 			let spaced = 0;
-			while (spaced < words.length - 1 && isAddress(words[spaced] ?? "")) spaced += 1;
+			if (!/[<"(]/.test(rest)) while (spaced < words.length - 1 && isAddress(words[spaced] ?? "")) spaced += 1;
 			if (cut || spaced) {
 				add([...ended, ...words.slice(0, spaced)]);
 				input.value = words.slice(spaced).join(" ");

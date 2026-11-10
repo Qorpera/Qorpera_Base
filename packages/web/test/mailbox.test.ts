@@ -730,6 +730,140 @@ describe("Sent, Addresses and Write", () => {
 		]);
 	});
 
+	// Review of #1650, round 3: an address in a quoted name, or in a remark with a comma, got the email too.
+	it.each([
+		["typed", '"Former <old@example.com>" <new@example.com>'],
+		["taken back from an agent", '"Former <old@example.com>" <new@example.com>'],
+		["pasted", "New <new@example.com> (formerly, old@example.com)"],
+	])("never sends to an address that stands in a quoted name or a remark (%s)", async (how, entry) => {
+		const { main, fake } = await mailbox(() => {});
+		await vi.waitFor(() => expect(button(main, "Write")).toBeDefined());
+		button(main, "Write")!.click();
+		const panel = () => main.querySelector<HTMLFormElement>(".mailbox-write-panel")!;
+		const to = () => panel().querySelector<HTMLInputElement>(".mailbox-write-to input")!;
+		const give = (name: string) => {
+			panel().querySelector<HTMLButtonElement>(".mailbox-writer")!.click();
+			menuRow(name).click();
+		};
+		if (how === "typed") {
+			type(to(), entry);
+			to().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+		} else if (how === "pasted") {
+			to().dispatchEvent(
+				Object.assign(new Event("paste", { bubbles: true, cancelable: true }), {
+					clipboardData: { getData: () => entry },
+				}),
+			);
+		} else {
+			give("Ada");
+			type(panel().querySelector<HTMLInputElement>("input")!, entry);
+			give("You");
+		}
+		expect(texts(panel(), ".mailbox-chip-text")).toEqual(["new@example.com"]);
+		expect(to().value).toBe("");
+		type(panel().querySelector<HTMLInputElement>("[data-focus-key='write-subject']")!, "Hello");
+		type(panel().querySelector("textarea")!, "Hi.");
+		panel().requestSubmit();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-write-panel")).toBeNull());
+		expect(calls(fake, "qorpera_send_member_mail").map((call) => (call.p_request as { to: string[] }).to)).toEqual([
+			["new@example.com"],
+		]);
+	});
+
+	it("reads a quoted name and a remark whole, and marks an entry that does not say who it goes to", async () => {
+		const { main, fake } = await mailbox(() => {});
+		await vi.waitFor(() => expect(button(main, "Write")).toBeDefined());
+		button(main, "Write")!.click();
+		const panel = () => main.querySelector<HTMLFormElement>(".mailbox-write-panel")!;
+		const to = () => panel().querySelector<HTMLInputElement>(".mailbox-write-to input")!;
+		const chips = () => texts(panel(), ".mailbox-chip-text");
+		const wrong = () => texts(panel(), ".mailbox-chip.is-invalid .mailbox-chip-text");
+		const enter = () =>
+			to().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+		/** Pastes `text` into the field, and says whether the page took it (else the field does, as typing). */
+		const paste = (text: string) =>
+			!to().dispatchEvent(
+				Object.assign(new Event("paste", { bubbles: true, cancelable: true }), {
+					clipboardData: { getData: () => text },
+				}),
+			);
+		// The comma in a quoted name ends nothing, also while the name is still open.
+		type(to(), '"Holm,');
+		expect(chips()).toEqual([]);
+		expect(to().value).toBe('"Holm,');
+		type(to(), '"Holm, Anna" <anna@example.com>,');
+		expect(chips()).toEqual(["anna@example.com"]);
+		expect(to().value).toBe("");
+		// A typed remark is kept beside its address, whole: it is nobody, and it says so.
+		type(to(), "bo@example.com (formerly old@example.com ),");
+		expect(chips()).toEqual(["anna@example.com", "bo@example.com", "(formerly old@example.com )"]);
+		expect(wrong()).toEqual(["(formerly old@example.com )"]);
+		button(panel(), "Remove (formerly old@example.com )")!.click();
+		// A quote left open runs to the end: what stands in it is no entry of its own. And the space after an address
+		// ends it only while nothing after it has a mark, which may make that address the name.
+		type(to(), 'carl@example.com "Former <old@example.com>, more@example.com');
+		expect(chips()).toHaveLength(2);
+		expect(to().value).toBe('carl@example.com "Former <old@example.com>, more@example.com');
+		enter();
+		expect(chips()).toEqual([
+			"anna@example.com",
+			"bo@example.com",
+			"carl@example.com",
+			'"Former <old@example.com>, more@example.com',
+		]);
+		expect(wrong()).toEqual(['"Former <old@example.com>, more@example.com']);
+		button(panel(), 'Remove "Former <old@example.com>, more@example.com')!.click();
+		type(to(), "was@example.com <dan@example.com>");
+		expect(chips()).toHaveLength(3);
+		enter();
+		expect(chips()).toEqual(["anna@example.com", "bo@example.com", "carl@example.com", "dan@example.com"]);
+		// Pasted, a remark holds its remarks and its commas, and a quoted name its semicolon and an open bracket.
+		expect(
+			paste(
+				'eva@example.com (was (until 2024, old@example.com) there); "Holm; Finn (old@example.com" <finn@example.com>',
+			),
+		).toBe(true);
+		expect(chips().slice(4)).toEqual(["eva@example.com", "finn@example.com"]);
+		// A list as a spreadsheet gives it: each address in quotes of its own.
+		expect(paste('"gry@example.com","hans@example.com"')).toBe(true);
+		expect(chips().slice(6)).toEqual(["gry@example.com", "hans@example.com"]);
+		// An entry that is a remark alone is kept as it stands, and says it is no address.
+		expect(paste("ida@example.com, (old@example.com)")).toBe(true);
+		expect(chips().slice(8)).toEqual(["ida@example.com", "(old@example.com)"]);
+		expect(wrong()).toEqual(["(old@example.com)"]);
+		button(panel(), "Remove (old@example.com)")!.click();
+		// An entry that points at two addresses, or has one more after the one it points at, does not say who it goes
+		// to: it is one marked chip, as it stands, and none of its addresses is a recipient.
+		expect(paste("Former <old@example.com> <new@example.com>")).toBe(false);
+		type(to(), "Former <old@example.com> <new@example.com>, Jon <jon@example.com> old@example.com,");
+		expect(wrong()).toEqual(["Former <old@example.com> <new@example.com>", "Jon <jon@example.com> old@example.com"]);
+		expect(to().value).toBe("");
+		type(panel().querySelector<HTMLInputElement>("[data-focus-key='write-subject']")!, "Hello");
+		type(panel().querySelector("textarea")!, "Hi.");
+		panel().requestSubmit();
+		expect(panel().querySelector(".mailbox-write-error")?.textContent).toBe(
+			"Former <old@example.com> <new@example.com> is not an email address",
+		);
+		expect(calls(fake, "qorpera_send_member_mail")).toEqual([]);
+		button(panel(), "Remove Former <old@example.com> <new@example.com>")!.click();
+		button(panel(), "Remove Jon <jon@example.com> old@example.com")!.click();
+		panel().requestSubmit();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-write-panel")).toBeNull());
+		expect(calls(fake, "qorpera_send_member_mail").map((call) => (call.p_request as { to: string[] }).to)).toEqual([
+			[
+				"anna@example.com",
+				"bo@example.com",
+				"carl@example.com",
+				"dan@example.com",
+				"eva@example.com",
+				"finn@example.com",
+				"gry@example.com",
+				"hans@example.com",
+				"ida@example.com",
+			],
+		]);
+	});
+
 	it("holds the member's email back until it has who it goes to, a subject and its text, then sends it", async () => {
 		const { main, fake } = await mailbox(() => {});
 		await vi.waitFor(() => expect(button(main, "Write")).toBeDefined());
