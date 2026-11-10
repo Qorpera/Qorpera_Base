@@ -16,10 +16,12 @@ function decodeEntities(value: string): string {
 
 /** Only explicit web/mail links can leave a transcript. Images are links,
  * never automatic remote requests. Raw HTML is always rendered as text. A
- * `folder:` link (ui/folder-links.ts) leaves nothing: it opens the Company File. */
-function safeHref(href: string): string | undefined {
+ * `folder:` link (ui/folder-links.ts) leaves nothing: it opens the Company File.
+ * Answers the address as the browser reads it (`https:`, `http:` or `mailto:`, with no name or password in it), or
+ * undefined. A link in an agent's interface app is checked by this same rule (app/interface-apps.ts `appLink`). */
+export function webHref(href: string): string | undefined {
 	try {
-		const url = new URL(decodeEntities(href));
+		const url = new URL(href);
 		if (["https:", "http:", "mailto:"].includes(url.protocol) && !url.username && !url.password) return url.href;
 	} catch {
 		// Relative paths and malformed URLs have no destination in this client.
@@ -276,7 +278,7 @@ function renderTokens(tokens: readonly MarkedToken[], depth = 0, links = true): 
 							content,
 						),
 					];
-				const href = safeHref(token.href);
+				const href = webHref(decodeEntities(token.href));
 				return [
 					href
 						? h("a", { href, target: "_blank", rel: "noopener noreferrer", title: token.title }, content)

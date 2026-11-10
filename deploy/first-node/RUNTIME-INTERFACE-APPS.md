@@ -71,6 +71,52 @@ own read authority) reads the entry and the files it names and hands the frame o
 Module scripts may not `import` other files in v1 (inline them or use classic scripts). The page then goes through
 `framePage` exactly as a Company File page does.
 
+**The base style** (10 November 2026; `packages/web/src/app/interface-app-style.ts`). The host gives every app's page
+one small stylesheet to start from. Before it, the host gave a page no style at all, so each agent made up a look: six
+of the seven apps in the reviewed company were the same generic green report. With it, an app that says nothing about
+its look already reads well at 1280 and at 390 px, and a company's apps look like one company.
+
+- **Injected, not only offered as variables.** When the host puts the page together it puts the stylesheet first in
+  the page's `<head>`. Offering only variables was the other choice: variables style nothing, so a page with no CSS of
+  its own would stay the browser's bare default. The frame document does not inject it: it is one fixed file that also
+  shows Company File pages, which stay exactly as written, and it knows neither the company's colours nor the app's
+  scheme. The host knows both, and already rewrites the page.
+- **In a cascade layer.** All of it sits in `@layer qorpera-base`. A page's own styles are in no layer, so any rule a
+  page writes wins over it, whatever its selector and wherever it stands. An agent overrides a default by setting the
+  property; nothing has to be undone.
+- **What it sets:** the system font, the text and page colours, the page's margin, heading sizes, links, tables (ruled
+  rows, padded cells, the full width), code, pictures no wider than the page, and a focus ring. The body's margin alone
+  holds the text to a centred column at most 800 px wide (16 px at the sides on a phone), so a page that sets its own
+  `body { margin }` takes the whole width back with that one rule. It uses no `!important`, loads nothing, and leaves
+  what a page says in its markup (`<table width>`, `<th align>`) alone.
+- **Its variables:** `--q-bg` (the page), `--q-text`, `--q-muted` (quiet text), `--q-line` (rules and borders),
+  `--q-surface` (cards and panels), `--q-accent` (the company's colour), `--q-on-accent` (text on it),
+  `--q-accent-soft`, `--q-good`, `--q-warn`, `--q-bad`, `--q-font`, `--q-mono`, `--q-radius`.
+- **The company's colours** come from `QorperaOS/brand/brand.toml`, beside the logo. A page cannot read `QorperaOS/`
+  itself (§5), so the host reads the file with the member's own read, when the app opens and on Reload:
+
+  ```toml
+  accent = "#1f6f5b"        # links, marks, key figures
+  background = "#f5f6ef"    # the page
+  text = "#1d2b24"
+
+  [dark]                    # the same three, for a dark page
+  background = "#141a17"
+  text = "#e8efe9"
+  ```
+
+  Only `#rgb` and `#rrggbb` are taken, so nothing but a colour reaches the stylesheet; other keys are left alone, and a
+  file that is not TOML gives no colours. Background and text count together, and only when the text reads on the
+  background (4.5 to 1). The accent counts only when it shows on the background (3 to 1): in a dark page the dark one
+  first, then the light one. Whatever is left out is Qorpera's own (the web app's page, text and link colours), and
+  without the file all of it is. No tool checks the file when it is written.
+- **Light and dark.** A page is shown in the app's own scheme only when it says it supports both, the web's own way:
+  `<meta name="color-scheme" content="light dark">`. A page that does not say is shown light, as a browser shows such
+  a page. Following the scheme by default was the other choice; an app with colours of its own that assumed a light
+  page would then get light text on its own light cards. A page that follows the scheme is put together again, and
+  shown afresh, when the member's theme changes.
+- **Not for a concept** (`concept = true`), whose design is the product's own, and not for a Company File page.
+
 ## 3. Agent tools
 
 | Tool | What it does | Review class |
@@ -81,14 +127,15 @@ Module scripts may not `import` other files in v1 (inline them or use classic sc
 - `save_app {name, operationKey, manifest?, files[{path, text}], remove?}` checks the name, the manifest, each file's
   kind and size and the totals before anything is written. On create it sets `owner` to the agent and `posted = false`;
   later it never changes `posted` or `owner`. A changed file that another call changed meanwhile is a conflict.
-  When the call wrote the entry page, its answer carries `look`: what a quick read of that page found (links, which
-  do not open inside an app; three or more `<details>`; more than 500 words; more than 150 words with no picture,
-  chart, map or diagram). It is advice, never a refusal: the agent fixes it unless it does not fit the page. The
-  tool's description also says what makes a page worth opening: what the first screen answers, what to show instead
-  of write, the company's brand and phone width. How a page reads live data (§5) is said on the manifest's `reads`
-  in the tool's schema, and how it lets a member act (§5 "Changes") on the manifest's `writes`, because a tool's own
-  description holds 4096 bytes. `writes` is checked as `reads` is, by `save_app` and by `company_write` /
-  `company_edit` of an `app.toml`; a manifest given without it keeps what the app has.
+  When the call wrote the entry page, its answer carries `look`: what a quick read of that page found (links that
+  open nothing, §4, the first three named; three or more `<details>`; more than 500 words; more than 150 words with
+  no picture, chart, map or diagram). It is advice, never a refusal: the agent fixes it unless it does not fit the
+  page. The tool's description also says what makes a page worth opening: what the first screen answers, what to show
+  instead of write, which links open, the base style and phone width. How a page reads live data (§5) is said on the
+  manifest's `reads`, how it lets a member act (§5 "Changes") on the manifest's `writes`, and the base style's
+  variables and the company's colours (§2) on `files`, all in the tool's schema, because a tool's own description
+  holds 4096 bytes. `writes` is checked as `reads` is, by `save_app` and by `company_write` / `company_edit` of an
+  `app.toml`; a manifest given without it keeps what the app has.
 - `post_app {name, operationKey, posted}` rewrites `posted` in `app.toml`, every other byte as written.
 - `company_write` / `company_edit` of an `apps/<name>/app.toml` check the manifest the same way and refuse a change of
   `posted` (pointing to `post_app`) or of `owner`. An app's files are its owner's: another agent changes them with
@@ -146,6 +193,58 @@ that publish is a follow-up, if the rule alone proves too weak.
 - **Changes.** The page or panel follows the folder's hints (one channel shared with the pages' reader; at most once a second,
   a minute's poll behind it). After a change it puts the page together again: a changed page is shown afresh, an
   unchanged one is told `qorpera-app-change` (§5).
+- **Links** (10 November 2026; the seven apps of the reviewed company held 68 links, all dead). The frame follows no
+  link itself. In an app's page the frame document stops a click on a link (`<a href>`, `<area href>`, an SVG `<a>`;
+  also inside a shadow tree) and sends where it leads to the host over the port (§5). The host opens what it allows:
+  - `app:<name>`: that app, where apps open (its own page, or the Concepts viewer for a concept), as an app's card in
+    a message does;
+  - `folder:<path>`: Storage at that file or folder, where a folder link in a message opens when no chat stands beside
+    it. The path is under the rules of a read (§5): the company's own work, never a platform folder;
+  - `http:` and `https:`: a new tab, checked as a link in a message is (no name or password in the address), with no
+    way back to the app and no referrer. The member's click was in the frame, so a browser may stop the tab as a
+    pop-up. Then Qorpera offers the link in a line of its own above the app's frame, named by its real host and path,
+    and the member's click on that line opens it.
+
+  Anything else opens nothing: a relative address (an app is one page, §2), `mailto:`, any other scheme, a platform
+  folder. Three things are not touched: a jump inside the page (`#…`), any click the page's handlers took for
+  themselves (`preventDefault`), and a `javascript:` address, which is left to the browser as before (Chromium runs
+  none in this frame, so a page uses a button or a click handler instead). Only a click the member made is sent
+  (`isTrusted`); a click a script made is stopped and leads nowhere. A Company File page beside a chat opens no links:
+  its links are stopped too, and the host refuses them. In Storage's own preview a page is as before.
+
+  How the frame document hears a click does not depend on what the page's own handlers do with it, and changes
+  nothing of what the page reads or says of the click:
+  - The link is noted on the click's way down, before any handler of the page has it: at the window, where the frame
+    document listens before the page is written, and at the root of every shadow tree, where a closed tree's own nodes
+    still show. It is the innermost link on the click's path, also one around a slot that the clicked node sits in.
+  - The click is settled when the page's handlers are done with it, by what the browser itself then says of it. A
+    click a handler took, in any way a handler can (`preventDefault`, `returnValue = false`, a handler that returns
+    false), is the page's; a passive handler cannot take one, as in any page.
+  - To be heard behind the page's handlers, the frame document listens last: at the window, for a click that travels
+    all the way, and on every node of the click's path, each way, for a click a handler stops there
+    (`stopPropagation`, `cancelBubble`): the other handlers on that node still run first. These listeners are put
+    last again at every click, so a handler the page added since still comes before them.
+  - Where no listener of the frame can come after the handler that stops the click, the click is settled when that
+    handler returns, which for a real click is before the browser acts on it. That is so for
+    `stopImmediatePropagation`, and in two places on the click's way down: at the window, and at the root of a closed
+    shadow tree.
+  - Settling a click the page left alone keeps the browser from following the link, and sends the link's address, as
+    it is written then, to the host once the click is over. One click cannot be kept from the browser that way: a
+    click settled while a passive handler has it (a passive handler that stopped it at once, or in one of the two
+    places above), since nobody can take a click from a passive handler. There the link's address is taken out of
+    the link for as long as the click lasts, and put back once it is over.
+  - A click a script made is stopped on its way down, whether or not it travels up to the window, and is never sent.
+    To the page's own handlers such a click reads as taken already.
+
+  Limits, each a dead or a wrongly sent link in a page built to meet it, none a way out (a frame that leaves its
+  page is ended by the host as before, §5, and what is sent is checked by the host like any link):
+  - A link inside a closed shadow tree is not seen when a handler of the page stops the click on its way down,
+    before the click reaches that tree. Such a click does what it did before.
+  - In the two places named above (the window and a closed tree's root, on the way down), a second handler in the
+    same place that takes the click after the first one stopped it is not waited for: the link is sent.
+  - A handler the page adds to a node during the click itself comes after the frame's listener on that node.
+  - A page that puts its own functions in place of `Event.prototype.stopImmediatePropagation` or `stopPropagation`
+    loses the settling for the clicks those stop where no listener of the frame follows.
 
 ## 5. The bridge: live data (step 4) and changes the member allows (step 5)
 
@@ -171,7 +270,9 @@ await qorpera.addRow("orders", cells)         // ask the member to add a row
 ```
 
 Wire, on the port: page → host `{type: "qorpera-app-call", id, method, params}`; host → page
-`{type: "qorpera-app-answer", id, ok, value | error}` and `{type: "qorpera-app-change"}`.
+`{type: "qorpera-app-answer", id, ok, value | error}` and `{type: "qorpera-app-change"}`. A link the member clicked
+(§4) goes the same way, as the call `open` with `params: {href}`. The frame document alone sends it: the `qorpera`
+object has no call for it, so a page's script cannot.
 
 Rules:
 - **A page changes nothing by itself.** The last three calls only ask: see "Changes" below. Every other call reads.
@@ -192,6 +293,10 @@ Rules:
   drew on every one would spend a minute's budget in seconds. `save_app` therefore tells agents the pace: draw when
   the page opens, after a change draw again once and no sooner than ten seconds after the last draw, each source
   called once per draw, and after a failed read keep what was shown and read again ten seconds later.
+- **Links are calls**: an `open` is checked on the host (`appLink`, with the path rules of a read) and spends one call
+  of the budget; a refused one counts with the refused calls, and 300 of those stop the frame. It needs nothing in
+  `reads`, because nothing is read for it. The answer is the same whether or not what the link names is there, and the
+  frame document drops it, so a page learns nothing from a link.
 - **No requests of its own**: the frame keeps `sandbox="allow-scripts"`, no origin, the frame document's policy
   (`default-src 'none'`, no `connect-src`), and this app's `frame-src 'self'`. Some side channels remain (a
   `dns-prefetch`/`preconnect` link the page's script adds is acted on before anything can take it out): blocking them is
@@ -270,6 +375,8 @@ the member each time). What a prompt-injected agent can still do is ask: a membe
 makes that change, as theirs, to an answer the agent itself asked for or to a row of a table the app names; it can
 never be a file, a member's or agent's place, a setting, or anything outside those two. A leak through a side channel
 leaves from the member's browser, unlogged.
+Links add one way out: a page can put what it read into a web address, as an agent can in a message. It leaves only
+when the member clicks it, in a tab of the member's own browser, unlogged like the side channels.
 
 ## 6. Security review
 
@@ -317,6 +424,23 @@ Step 5 builds the writes behind r1's gate. Each point of H3, and L3, as built (�
 | (added, review of the build) a request may be longer than the screen | the bar's lines scroll inside it; both buttons stay in reach |
 | (added) a page must not move people or agents | `needs_yes`, `member`, `agent` and `agents` columns and the table `areas` are refused |
 
+Step 6, links and the base style (10 November 2026), was read by the pull request's exact-head review, not by a
+security review of its own:
+
+| Concern | Done |
+| --- | --- |
+| a page could move the member without a click | only a click the member made is sent (`isTrusted`), by the frame document, on the port the page cannot reach; the `qorpera` object has no call for it |
+| an address is anything a page can write | checked on the host (`appLink`): `app:` only with an app's name; `folder:` only a path a read may name (relative, no `..`, no `%`, no backslash, no platform folder); `http(s)` as a link in a message; everything else refused |
+| a flood of links | each is one call of the app's budget (120 a minute); refused ones count toward the 300 that stop the frame |
+| a link as a probe (is this file there?) | nothing is read for a link; the answer is the same either way, and the frame document drops it |
+| the frame leaving its page | every click on a link that the page left alone is stopped, whoever made it; `#…` stays in the page, and `javascript:` is left to the browser as before |
+| the page's own handlers deciding what the frame hears | the link is noted before any handler of the page (on the click's way down, listened for before the page is written) and the click is settled behind them, by the browser's own account of whether a handler took it: at the window, or on the node where a handler stops it, by listeners put last at every click; where none can follow (a stop at once, and two places on the way down) when the stopping handler returns. Nothing the page reads or says of a click is changed. Named limits in §4 |
+| a new tab reaching back into the app | opened with its opener cut before it loads, and no referrer (the site sends none); the offered line is `rel="noopener noreferrer"` |
+| what a page read, carried out in an address | as a link in a message: only on the member's click; accepted, in the threat model above |
+| the company's colours as a way to inject styles | only hex colours parsed from `brand.toml` reach the stylesheet; every other byte of it is fixed |
+| the base style overriding an app | one cascade layer under the page's own styles, no `!important` |
+| a dark base under an app that assumed a light page | dark only for a page that declares `color-scheme` light and dark |
+
 ## 7. Steps
 
 1. Format + parser (`cloud-client/interface-apps.ts`) and the page assembler (web `app/interface-apps.ts`).
@@ -330,6 +454,7 @@ Step 5 builds the writes behind r1's gate. Each point of H3, and L3, as built (�
    checks and saves (web `app/app-actions.ts`), the bar (`app/views/app-ask-bar.ts`), and the three calls and
    `questions` in the bridge and the frame document. No migration and no node change: both saves are ones a member
    already makes.
+6. Links through the bridge (§4) and the base style (§2), with `save_app` saying both (10 November 2026).
 
 Follow-ups: a member marks a human task done from an app (the asking agent's wake is built, but the object gateway
 holds every member save under `QorperaOS/human-tasks/` until Qorpera has its own task screen, and a task that asks
@@ -337,3 +462,7 @@ for proof cannot be finished by one tap); a typed answer; removing a row; the fo
 machine's change of `posted` (§3's known gap; the same gap lets a machine write `writes`, which gains it nothing
 without the member's yes on the bar); browser-test variants for the frame (self-navigation to
 `about:`/`javascript:`, speculation rules, a page that reloads itself) in `scripts/test-web-page-frame-browser.mjs`.
+From step 6: links from a Company File page beside a chat; `mailto:` links; the brand's fonts, and its logo as part of
+the base style; a check of `brand.toml` when an agent writes it, and its name in the Branding agent's job (the hire
+overlay says only "colours" today); a Chromium on the test machines, so `scripts/test-web-app-frame-browser.mjs` (real
+clicks in a real frame) runs with `changed`.
