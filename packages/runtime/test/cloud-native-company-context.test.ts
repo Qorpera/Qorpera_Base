@@ -1730,14 +1730,21 @@ it("has the finance owner set up the CVR and bank account and keep the Bank page
 	// the page reads finance/bank-setup.json (packages/web/src/app/bank-setup.ts), which an agent must keep.
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	expect(instructions).toContain(
-		"A company registers (CVR) and opens its business bank account from inside Qorpera: the agent who owns the company's finances does the work, and the founders only sign with MitID when it is their turn.",
+		"A company registers (CVR) and opens its business bank account from inside Qorpera: the agent that owns the company's money does the work.",
+	);
+	expect(instructions).toContain(
+		"The founders decide what is theirs to decide, such as the company form (ApS or sole trader), its owners and their shares, and the share capital",
+	);
+	expect(instructions).toContain("record what exists as done instead of starting it again");
+	expect(instructions).toContain(
+		"Open the account only at a bank the Bank page can connect: Danske Bank, Nordea, Jyske Bank, Sydbank, Nykredit Bank, Arbejdernes Landsbank, Spar Nord Bank or Lunar",
 	);
 	expect(instructions).toContain(
 		'{"schema": "qorpera.bank-setup/v1", "agent": "<your name>", "company": {"status": "working"',
 	);
 	expect(instructions).toContain("where each status is todo, working, your_turn or done.");
 	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
-		"when nobody owns the company's finances by then, hire that owner to set them up.",
+		"hire a money owner and put the CVR registration, the bank account and finance/bank-setup.json in its job description.",
 	);
 });
 
