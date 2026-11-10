@@ -14,7 +14,7 @@ export type MenuEntry =
 			label: string;
 			icon?: string;
 			danger?: boolean;
-			/** A radio choice in a submenu: the current one carries a check. */
+			/** A radio choice: the current one carries a check, at the row's end when a picture leads it. */
 			checked?: boolean;
 			/** A picture in the icon's place: a member's face. */
 			lead?: HTMLElement;
@@ -180,6 +180,7 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 				entry.hint
 					? h("span", { class: "context-menu-text" }, label, h("span", { class: "context-menu-hint" }, entry.hint))
 					: label,
+				entry.lead && entry.checked ? icon("check") : null,
 			);
 			item.addEventListener("click", () => {
 				// Focus goes back to the opener first, so a dialog the choice opens returns it there.

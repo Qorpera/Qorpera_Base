@@ -294,6 +294,27 @@ export const CONVERSATION: Record<string, string> = {
 	"{count} questions for you": "{count} spørgsmål til dig",
 	"Your answer could not be sent. Try again.": "Dit svar kunne ikke sendes. Prøv igen.",
 	"App · opens on its own page": "App · åbner på sin egen side",
+
+	// What an app asks the member to change, on the bar above its page (app/views/app-ask-bar.ts, app/app-actions.ts)
+	"This app wants to send your answer to {name}": "Appen vil sende dit svar til {name}",
+	"This app wants to add a row to a company table": "Appen vil tilføje en række i en af virksomhedens tabeller",
+	"This app wants to change a row in a company table": "Appen vil ændre en række i en af virksomhedens tabeller",
+	"Your answer": "Dit svar",
+	Table: "Tabel",
+	Row: "Række",
+	empty: "tom",
+	becomes: "bliver til",
+	"Send answer": "Send svar",
+	"Add row": "Tilføj række",
+	"Change row": "Ændr række",
+	"This app asked three times. It can ask again after you reload it.":
+		"Appen har spurgt tre gange. Den kan spørge igen, når du har genindlæst den.",
+	"That could not be saved. Try again.": "Det kunne ikke gemmes. Prøv igen.",
+	"The row could not be saved.": "Rækken kunne ikke gemmes.",
+	"That table is no longer in the company.": "Tabellen er ikke i virksomheden længere.",
+	"The row changed while you were deciding. Nothing was saved.":
+		"Rækken blev ændret, mens du tog stilling. Intet blev gemt.",
+	"You may not change this table. Nothing was saved.": "Du må ikke ændre denne tabel. Intet blev gemt.",
 	App: "App",
 
 	// The company's concepts of its product, full screen (app/views/concepts.ts), and their entry in the apps drawer

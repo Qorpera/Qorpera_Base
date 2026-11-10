@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Interface apps: `app.toml` takes `writes`, what the page may ask a member to change: a list of at most 16 of `answers` and `table:<name>` (a company table's folder name, never `areas`). `AppManifest` has `writes` (default empty), `parseAppWrites` checks a list, `appWriteTable` reads an entry's table, and `writeAppManifest` writes the line when it is set. `APP_READS` gains `questions`.
 - `staff-characters`: `STAFF_CHARACTER_IDS` gains star, cloud, bolt, mushroom, moon and puzzle and loses ghost (Jonas, 10 Nov 2026; migration `20260930709000`). `RETIRED_STAFF_CHARACTERS` names the figures nothing offers any more and what each is drawn as (ghost: moon), and `drawnStaffCharacter(value)` gives the figure to draw for a saved one. An `agent.md` that says `figure: ghost` still parses (`AgentFigure` takes the retired name); a refusal lists only the figures on offer. The legal expert's template figure is the moon.
 - A coding brief's `repository` may be one kept in Qorpera, `qorpera/<owner>/<name>` (own code storage, slice 1); the refusal says so.
 - Interface apps: `app.toml` takes `concept = true` (a concept of the company's product, for the web's Concepts viewer) and `cover = "<path>"` (a .png, .jpg or .webp in the app's folder, checked as the entry is; `APP_COVER_KINDS`). `AppManifest` has `concept` (default false) and `cover` (default null); `writeAppManifest` writes both when set.
