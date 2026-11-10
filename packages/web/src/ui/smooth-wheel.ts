@@ -8,20 +8,19 @@ const BURST_GAP_MS = 120;
 /** A frame that came late still moves at most this far in time, so a stall never jumps. */
 const MAX_FRAME_MS = 50;
 const DELTA_PIXEL = 0;
-const DELTA_LINE = 1;
-const DELTA_PAGE = 2;
-/** A line of a line-based wheel (Firefox, some Linux mice), in pixels. */
-const LINE_PX = 40;
 
 type LegacyWheel = WheelEvent & { wheelDeltaY?: number };
 
 /**
- * Whether a wheel event comes from a wheel that clicks in steps, the kind a browser may move
- * without any easing (Safari does), rather than from a trackpad or a Magic Mouse, whose
- * gestures already glide and keep their own momentum.
+ * Whether a wheel event comes from a wheel that clicks in steps and is measured in pixels, the
+ * kind a browser may move without any easing (Safari does), rather than from a trackpad or a
+ * Magic Mouse, whose gestures already glide and keep their own momentum.
+ *
+ * Line and page deltas are left to the browser: Firefox sends them, eases them itself, and
+ * measures a line by the scroller's font and the reader's settings, a distance a page cannot
+ * know, so gliding them would change how far a click goes.
  *
  * Browsers don't say which device sent an event. What they do give away:
- * - line or page deltas come only from stepped wheels;
  * - WebKit and Chromium report the legacy `wheelDeltaY` as 120 per wheel line (WebKit's
  *   WheelEvent TickMultiplier). A trackpad's lines are its pixels / 40, so its wheelDeltaY is
  *   3 × its whole-pixel delta: a multiple of 120 only for a 40 px jump, which is not how a
@@ -30,17 +29,11 @@ type LegacyWheel = WheelEvent & { wheelDeltaY?: number };
  *   click arrives as 4.000244… px with wheelDeltaY 12. Trackpads move in whole pixels.
  */
 export function isSteppedWheel(event: WheelEvent): boolean {
-	if (event.deltaMode !== DELTA_PIXEL) return true;
+	if (event.deltaMode !== DELTA_PIXEL) return false;
 	const legacy = (event as LegacyWheel).wheelDeltaY;
 	if (typeof legacy !== "number" || legacy === 0) return false;
 	if (legacy % 120 === 0) return true;
 	return !Number.isInteger(event.deltaY) && legacy % 12 === 0;
-}
-
-function pixels(event: WheelEvent, scroller: HTMLElement): number {
-	if (event.deltaMode === DELTA_LINE) return event.deltaY * LINE_PX;
-	if (event.deltaMode === DELTA_PAGE) return event.deltaY * scroller.clientHeight;
-	return event.deltaY;
 }
 
 /** Whether something between the pointer and the scroller would scroll this way itself
@@ -58,7 +51,8 @@ function innerScrollerTakes(target: EventTarget | null, scroller: HTMLElement, d
 /**
  * Eases a stepped mouse wheel in a scroller: each click glides the same distance the browser
  * would have jumped, and clicks that come fast add up into one glide. Trackpads, Magic Mice,
- * pinch zoom, sideways scrolls and reduced motion keep the browser's own scrolling.
+ * line-based wheels (Firefox), pinch zoom, sideways scrolls and reduced motion keep the
+ * browser's own scrolling.
  *
  * The glide keeps to the content when something else moves the scroller (a pin to the newest
  * message, earlier messages put in above): the move is carried into the glide, not undone.
@@ -129,7 +123,7 @@ export function smoothWheel(scroller: HTMLElement): void {
 				written = position;
 				lastFrame = performance.now();
 			} else if (down !== target > position) target = position; // Turning back starts from here.
-			const next = Math.min(Math.max(target + pixels(event, scroller), 0), maxTop());
+			const next = Math.min(Math.max(target + event.deltaY, 0), maxTop());
 			if (next === target && !frame) return; // Already at the end: nothing to glide.
 			event.preventDefault();
 			target = next;

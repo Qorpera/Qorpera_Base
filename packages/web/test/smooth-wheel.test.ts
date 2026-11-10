@@ -80,9 +80,9 @@ describe("which wheel events glide", () => {
 		// macOS speeds a slow wheel up in tenths of a line: 0.1000061 × 40 px, wheelDeltaY 12.
 		expect(isSteppedWheel(wheelEvent({ deltaY: 4.000244140625, wheelDeltaY: -12 }))).toBe(true);
 		expect(isSteppedWheel(wheelEvent({ deltaY: -8.00048828125, wheelDeltaY: 24 }))).toBe(true);
-		// Firefox and some Linux mice count lines or pages.
-		expect(isSteppedWheel(wheelEvent({ deltaY: 3, deltaMode: 1 }))).toBe(true);
-		expect(isSteppedWheel(wheelEvent({ deltaY: 1, deltaMode: 2 }))).toBe(true);
+		// Firefox counts lines or pages and measures a line by the font: it keeps its own distance.
+		expect(isSteppedWheel(wheelEvent({ deltaY: 3, deltaMode: 1, wheelDeltaY: -120 }))).toBe(false);
+		expect(isSteppedWheel(wheelEvent({ deltaY: 1, deltaMode: 2, wheelDeltaY: -120 }))).toBe(false);
 
 		expect(isSteppedWheel(swipe(1))).toBe(false);
 		expect(isSteppedWheel(swipe(4))).toBe(false);
@@ -158,6 +158,11 @@ describe("smooth wheel", () => {
 		const sideways = wheelEvent({ deltaY: 0, deltaX: 40, wheelDeltaY: 0, at: now + 2000 });
 		el.dispatchEvent(sideways);
 		expect(sideways.defaultPrevented).toBe(false);
+
+		// A line-based wheel (Firefox) keeps the browser's distance and easing.
+		const lines = wheelEvent({ deltaY: 3, deltaMode: 1, wheelDeltaY: -120, at: now + 2500 });
+		el.dispatchEvent(lines);
+		expect(lines.defaultPrevented).toBe(false);
 
 		reduce = true;
 		const still = click(1, now + 3000);
