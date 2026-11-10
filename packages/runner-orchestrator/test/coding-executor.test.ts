@@ -25,6 +25,7 @@ import {
 	landRefusal,
 	PUBLICATION_UNFINISHED,
 	parseCodingSessionClaim,
+	parseCodingSubmission,
 	parseCodingTurnState,
 	prepareUnfinished,
 	TURN_START_UNFINISHED,
@@ -397,7 +398,7 @@ describe("the coding executor over a session turn", () => {
 		vi.mocked(w.host.publish).mockResolvedValueOnce({
 			pullRequest: null,
 			noChange: false,
-			landed: { state: "merged", mainSha: "c".repeat(40) },
+			landed: { state: "merged", mainSha: "c".repeat(40), filesChanged: 3, change: 14 },
 		});
 		const finish = {
 			schema: "qorpera.coding-submission/v1",
@@ -417,7 +418,145 @@ describe("the coding executor over a session turn", () => {
 			p_outcome: "succeeded",
 			p_summary: "Tests passed",
 			p_pull_request: null,
+			// The artifact is as it was: the change's number is the kernel's own to add to its line.
 			p_artifacts: [{ kind: "landed", state: "merged", branch: "main", headSha, mainSha: "c".repeat(40) }],
+			// How many files the landing changed on the default branch, for the session's card.
+			p_files_changed: 3,
+		});
+		expect(Object.keys((completion.p_artifacts as object[])[0] ?? {})).toEqual([
+			"kind",
+			"state",
+			"branch",
+			"headSha",
+			"mainSha",
+		]);
+	});
+
+	it("passes the files a landing changed with the completion, only for a landing that moved the default branch", async () => {
+		const completed = async (publication: Record<string, unknown>) => {
+			const w = world();
+			vi.mocked(w.host.publish).mockResolvedValueOnce(publication as never);
+			const finish = {
+				schema: "qorpera.coding-submission/v1",
+				workerId: w.world.claim.workerId,
+				sequence: 1,
+				kind: "finish",
+				state: "submitted",
+				summary: "Tests passed",
+				headSha,
+				operationKey: "done",
+			};
+			const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+			const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+			expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+			const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+			// The kernel's call has the parameter either way: a count, or null.
+			expect("p_files_changed" in completion).toBe(true);
+			return completion.p_files_changed;
+		};
+		const landed = (landing: Record<string, unknown>) => ({
+			pullRequest: null,
+			noChange: false,
+			landed: { mainSha: "c".repeat(40), change: null, ...landing },
+		});
+		expect(await completed(landed({ state: "fast-forward", filesChanged: 1 }))).toBe(1);
+		expect(await completed(landed({ state: "merged", filesChanged: 0 }))).toBe(0);
+		// Main held the commit already: this turn changed nothing there.
+		expect(await completed(landed({ state: "unchanged", filesChanged: 0 }))).toBeNull();
+		// A count the kernel would refuse is not sent, so the report always lands.
+		for (const filesChanged of [undefined, -1, 1.5, 2 ** 31, Number.NaN, "3"])
+			expect(await completed(landed({ state: "fast-forward", filesChanged }))).toBeNull();
+		// A pull request on GitHub says nothing of files.
+		expect(
+			await completed({
+				pullRequest: { url: "https://github.com/Qorpera/app/pull/12", number: 12, headSha },
+				noChange: false,
+			}),
+		).toBeNull();
+	});
+
+	it("keeps the picture a session named with its hand-in when it is a path the kernel takes, and hands it to the publication", async () => {
+		const submission = (extra: Record<string, unknown>) =>
+			parseCodingSubmission({
+				schema: "qorpera.coding-submission/v1",
+				kind: "finish",
+				state: "submitted",
+				summary: "Tests passed",
+				headSha,
+				operationKey: "done",
+				...extra,
+			});
+		const plain = { kind: "finish", summary: "Tests passed", headSha, operationKey: "done" };
+		expect(submission({})).toEqual(plain);
+		for (const picture of [
+			"docs/changes/free-returns.png",
+			"shot.PNG",
+			"docs/before and after.jpeg",
+			"a/b/c/d.webp",
+			".hidden/x-1_2.jpg",
+			`${"d/".repeat(147)}x.png`,
+		])
+			expect(submission({ picture, notice: "Each price now says so." })).toEqual({ ...plain, picture });
+		// What a customer will notice stays in the kernel; a picture that is no such path is dropped, and the work is
+		// handed in without one.
+		for (const picture of [
+			"/company/code/shop/shot.png",
+			"../shot.png",
+			"docs/../shot.png",
+			"docs/./shot.png",
+			"./shot.png",
+			"docs//shot.png",
+			"docs/shot.gif",
+			"docs/shot.png ",
+			" docs/shot.png",
+			"docs/sh\not.png",
+			"docs/shot.png\n",
+			"docs/s*.png",
+			"shot",
+			"",
+			`${"d/".repeat(148)}x.png`,
+			7,
+			null,
+			["docs/shot.png"],
+		]) {
+			const parsed = submission({ picture });
+			expect(parsed).toEqual(plain);
+			expect(parsed && "picture" in parsed).toBe(false);
+		}
+		// An ask has none.
+		expect(
+			parseCodingSubmission({
+				schema: "qorpera.coding-submission/v1",
+				kind: "ask",
+				state: "submitted",
+				summary: "Blocked",
+				question: "Which price?",
+				options: [],
+				operationKey: "ask",
+				picture: "docs/shot.png",
+			}),
+		).toEqual({ kind: "ask", summary: "Blocked", question: "Which price?", options: [], operationKey: "ask" });
+
+		// Through a turn: the host's publication gets the submission with its picture.
+		const w = world();
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+			notice: "Each price now says so.",
+			picture: "docs/changes/free-returns.png",
+		};
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+		expect(vi.mocked(w.host.publish).mock.calls[0]?.[1]).toEqual({
+			...plain,
+			picture: "docs/changes/free-returns.png",
 		});
 	});
 

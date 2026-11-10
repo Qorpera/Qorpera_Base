@@ -122,6 +122,23 @@ describe("which calls are reviewed", () => {
 		["machine_screen", { machine: "build-a", operationKey: "k", action: { type: "type" }, intent: "i" }, "external"],
 		["machine_screen", { machine: "build-a", operationKey: "k", action: { type: "key" }, intent: "i" }, "external"],
 		["machine_screen", { machine: "build-a", operationKey: "k", action: { type: "open" }, intent: "i" }, "external"],
+		// manage_code (20260930720000): an undo puts main back to a state it had and can itself be undone, and a
+		// description changes only the record's words. Neither waits for a review; without its case it would.
+		[
+			"manage_code",
+			{ action: "undo", operationKey: "k", owner: "acme", name: "shop", change: 12, andLater: false, reason: "r" },
+			"internal",
+		],
+		[
+			"manage_code",
+			{ action: "undo", operationKey: "k", owner: "acme", name: "shop", change: 12, andLater: true, reason: "r" },
+			"internal",
+		],
+		[
+			"manage_code",
+			{ action: "describe", operationKey: "k", owner: "acme", name: "shop", change: 12, notice: "n" },
+			"internal",
+		],
 		["computer_browser", { action: { kind: "browser", action: "snapshot" } }, "read"],
 		["computer_browser", { action: { kind: "browser", action: "click", role: "button", name: "Send" } }, "external"],
 		[
@@ -658,6 +675,55 @@ describe("what the card shows", () => {
 			title: "Run a command on a company machine",
 			target: "build-a",
 			details: { command: "cd /company/sales\n  npm test" },
+		});
+	});
+
+	it("has a card's words for an undo and a description of a change in the company's code (20260930720000)", () => {
+		expect(
+			describeCloudAction(tool("manage_code"), {
+				action: "undo",
+				operationKey: "k",
+				owner: "acme",
+				name: "shop",
+				change: 12,
+				andLater: false,
+				reason: "The price line broke the checkout.",
+				notice: "The free returns line is gone again.",
+			}),
+		).toEqual({
+			title: "Undo a change in the company's code",
+			target: "acme/shop, change 12",
+			details: {
+				reason: "The price line broke the checkout.",
+				"customers will notice": "The free returns line is gone again.",
+			},
+		});
+		expect(
+			describeCloudAction(tool("manage_code"), {
+				action: "undo",
+				operationKey: "k",
+				owner: "acme",
+				name: "shop",
+				change: 12,
+				andLater: true,
+				reason: "r",
+			}).title,
+		).toBe("Undo a change in the company's code, and every change after it");
+		// The picture's path stays off the card, as every company path does.
+		expect(
+			describeCloudAction(tool("manage_code"), {
+				action: "describe",
+				operationKey: "k",
+				owner: "acme",
+				name: "shop",
+				change: 12,
+				notice: "Each price now says free returns.",
+				picture: "product/screens/price.png",
+			}),
+		).toEqual({
+			title: "Describe a change in the company's code",
+			target: "acme/shop, change 12",
+			details: { "customers will notice": "Each price now says free returns." },
 		});
 	});
 
