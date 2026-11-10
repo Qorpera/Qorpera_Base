@@ -147,6 +147,17 @@ describe("a place in drawn Markdown, found in its source", () => {
 		expect(at("2", 1)).toBe(source.indexOf("2") + 1);
 	});
 
+	it("keeps each cell's text to its own cell, never the bars between the cells", () => {
+		const source = "| h | i |\n| - | - |\n| \\| | b |";
+		const { at } = drawing(source);
+		// The first cell draws its escaped bar as a bar. The lexer rewrote it, so it has no place: least of all the
+		// bar that starts the row.
+		expect(at("|", 0)).toBeUndefined();
+		expect(at("|", 1)).toBeUndefined();
+		expect(at("b", 0)).toBe(source.lastIndexOf("b"));
+		expect(at("b", 1)).toBe(source.lastIndexOf("b") + 1);
+	});
+
 	it("takes a caret between elements as the text beside it", () => {
 		const source = "One **two** three\n\n- x";
 		const { root } = drawing(source);
@@ -191,6 +202,7 @@ describe("a place in drawn Markdown, found in its source", () => {
 			"First.\r\n\r\nSecond *one*.\r\n- a\r\n- b",
 			"- a\n\n      code in item\n\n- b",
 			"[link *with em* and `code`](http://x.y/z) tail.",
+			"| t |  u |\n|---|---|\n| \\| | v \\| w |\n| x | y |",
 		];
 		const wrong: string[] = [];
 		const placeless: string[] = [];
@@ -225,8 +237,9 @@ describe("a place in drawn Markdown, found in its source", () => {
 			}
 		}
 		expect(wrong).toEqual([]);
-		// Code over two lines draws its line end as a space: it has no place, and nothing else here lacks one.
-		expect(placeless).toEqual(["two lines"]);
+		// Code over two lines draws its line end as a space, and a cell draws its escaped bar as a bar: those have no
+		// place, and nothing else here lacks one.
+		expect(placeless).toEqual(["two lines", "|", "v | w"]);
 	});
 
 	it("has no place where no text of the source stands", () => {
@@ -237,13 +250,13 @@ describe("a place in drawn Markdown, found in its source", () => {
 		// A drawing that was not asked for places keeps none.
 		const plain = markdown("Plain *text*.");
 		expect(markdownSourceOffset(plain.querySelector("em")!.firstChild!, 2)).toBeUndefined();
-		// A cell whose bar the lexer rewrote has none either, nor the cell after it in its row: where that one stands
-		// would be a guess (the "b" before it is not it). The other rows keep theirs.
+		// A cell whose bar the lexer rewrote has none either. The cell after it keeps its own: it is looked for in its
+		// own cell, where the "b" before it is not.
 		const table = "| x | y |\n| --- | --- |\n| a \\| b | b |\n| c | d |";
 		const { at } = drawing(table);
 		expect(at("y", 1)).toBe(table.indexOf("y") + 1);
 		expect(at("a | b", 2)).toBeUndefined();
-		expect(at("b", 1, 1)).toBeUndefined();
+		expect(at("b", 1, 1)).toBe(table.lastIndexOf("b") + 1);
 		expect(at("d", 1)).toBe(table.indexOf("d") + 1);
 	});
 });

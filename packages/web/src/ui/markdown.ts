@@ -1,5 +1,5 @@
 import { appLinkName } from "@qorpera/cloud-client/interface-apps";
-import { Lexer, type MarkedToken } from "marked";
+import { Lexer, type MarkedToken, type Tokens } from "marked";
 import { h } from "./dom.ts";
 import { folderLinkPath } from "./folder-links.ts";
 import { interfaceEmblem } from "./interface-emblem.ts";
@@ -150,32 +150,33 @@ function locate(source: string, raw: string, from: number, to: number): [start: 
 }
 
 /** Gives each token its place in `source` (`places`), in the order the lexer read them: a token stands after the one
- * before it and inside the one that holds it. One that can't be found (the lexer rewrote what it read: a tab, an
- * escaped bar in a table) gets no place, and neither do those after it inside the same token: without it, where they
- * stand is a guess. */
+ * before it and inside the one that holds it. Between two tokens only the start of a line may stand (spaces and a
+ * quote's "> "), and before the first one inside another also that one's opening mark ("**", "[", "<"). One that is not
+ * found so (the lexer rewrote what it read) gets no place, and neither do those after it inside the same token:
+ * without it, where they stand is a guess. */
 function place(source: string, tokens: readonly MarkedToken[], from: number, to: number): void {
 	let cursor = from;
-	for (const token of tokens) {
+	for (const [index, token] of tokens.entries()) {
 		const found = locate(source, token.raw, cursor, to);
-		if (!found) return;
+		const before = found && source.slice(cursor, found[0]);
+		if (!found || !(index ? /^[\s>]*$/ : /^(?:[*_~]+|!?\[|<)?[\s>]*$/).test(before ?? "")) return;
 		const [start, end] = found;
 		places.set(token, { start, raw: source.slice(start, end) });
 		cursor = end;
 		if (token.type === "list") place(source, token.items, start, end);
 		else if (token.type === "table") {
-			// A row is a line: the header's the first, the line of dashes next, then one for each row.
-			const lines = [start];
-			for (let line = source.indexOf("\n", start); line >= 0 && line < end; line = source.indexOf("\n", line + 1))
-				lines.push(line + 1);
-			for (const [index, row] of [token.header, undefined, ...token.rows].entries()) {
-				const line = lines[index];
-				if (row && line !== undefined)
-					place(
-						source,
-						row.flatMap((cell) => cell.tokens as MarkedToken[]),
-						line,
-						lines[index + 1] ?? end,
-					);
+			// A row is a line of the table: the header's the first, the line of dashes next, then one for each row.
+			const written = token.raw.split("\n");
+			let line = start;
+			for (const [row, cells] of [token.header, undefined, ...token.rows].entries()) {
+				const next = source.indexOf("\n", line);
+				const lineEnd = next < 0 || next > end ? end : next;
+				const text = written[row];
+				// Inside a quote or a list item the line starts with what the lexer took from it.
+				if (cells && text !== undefined && source.slice(line, lineEnd).endsWith(text))
+					placeCells(source, cells, text, lineEnd - text.length);
+				if (lineEnd === end) break;
+				line = lineEnd + 1;
 			}
 		} else if ("tokens" in token && token.tokens) {
 			// A heading's and a list item's own mark may spell what follows it ("# #", "1. 1").
@@ -187,6 +188,30 @@ function place(source: string, tokens: readonly MarkedToken[], from: number, to:
 						: null;
 			place(source, token.tokens as MarkedToken[], start + (mark?.[0].length ?? 0), end);
 		}
+	}
+}
+
+/** Gives the tokens of a table row's cells their places, each inside its own cell: between the bars that divide the
+ * row, as the lexer divides it (a bar behind an odd count of backslashes is the cell's own). So a cell's text is never
+ * looked for among the bars. A cell the lexer rewrote (it draws an escaped bar as a bar) gets no place. `line` is the
+ * row as the table wrote it, and `base` where that stands in `source`. */
+function placeCells(source: string, cells: Tokens.Table["header"], line: string, base: number): void {
+	const bars = [...line.matchAll(/\|/g)]
+		.map((bar) => bar.index)
+		.filter((bar) => (/\\*$/.exec(line.slice(0, bar))?.[0].length ?? 0) % 2 === 0);
+	const edges = [-1, ...bars, line.length];
+	const spans = bars.map((bar, index) => [bar + 1, edges[index + 2] ?? line.length] as const);
+	spans.unshift([0, edges[1] ?? line.length]);
+	// A bar at the row's start or end leaves an empty cell outside it, which is none.
+	if (spans[0] && !line.slice(...spans[0]).trim()) spans.shift();
+	const last = spans.at(-1);
+	if (last && !line.slice(...last).trim()) spans.pop();
+	for (const [index, cell] of cells.entries()) {
+		const span = spans[index];
+		if (!span) return;
+		const inside = line.slice(...span);
+		const start = base + span[0] + inside.length - inside.trimStart().length;
+		if (inside.trim() === cell.text) place(source, cell.tokens as MarkedToken[], start, start + cell.text.length);
 	}
 }
 
