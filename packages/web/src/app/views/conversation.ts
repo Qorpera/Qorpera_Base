@@ -1579,10 +1579,12 @@ export class ConversationView {
 		}
 	}
 
-	/** Take over the agent's computer for a card: open its screen here and give it the keyboard. */
+	/** Take over the agent's computer for a card: open its screen here and take the desktop over (20260930713000), which
+	 * gives the member its mouse and keyboard once the window shows it. */
 	#takeOver(agent: HostedStaffAgent): void {
 		const panel = this.#panel ?? this.#showPanel(agent);
 		panel?.focus();
+		panel?.takeOver();
 	}
 
 	/** Show the agent's computer here: the one already open, or one started now. */
@@ -2873,7 +2875,15 @@ export class ConversationView {
 								memberName: (userId) => this.#company.memberName(userId),
 								canAnswer: answers,
 								...(this.#actions.folderImage ? { image: this.#actions.folderImage } : {}),
-								answer: (outcome, answer) => this.#answerInteraction(item.id, outcome, answer),
+								answer: async (outcome, answer) => {
+									// The take-over card's I'm done gives the agent's desktop back first; the answer then wakes the agent, whose
+									// looks are let in again (20260930713000).
+									if (takeOver && outcome === "handed_back") {
+										const current = currentAgent();
+										if (current) await this.#panels.get(current.id)?.handBack();
+									}
+									return this.#answerInteraction(item.id, outcome, answer);
+								},
 								...(email
 									? {
 											emailDraft: this.#company.emailDraftEditor(item.id),

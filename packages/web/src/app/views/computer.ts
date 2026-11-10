@@ -1,24 +1,32 @@
 import type { MemberAgentMachine, MemberAgentMachines } from "@qorpera/cloud-client/cloud-member-company-computer";
 import type { WebCompanyComputer } from "../../cloud/computer.ts";
-import type { MachineScreenLook } from "../../cloud/machine-screens.ts";
+import type { MachineActAnswer, MachineDesktopAction, MachineScreenLook } from "../../cloud/machine-screens.ts";
 import type { RealtimeResource } from "../../cloud/realtime.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { attachComputerDrag } from "../../ui/computer-drag.ts";
 import { openContextMenu } from "../../ui/context-menu.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { type MachineScreenPicture, MachineScreenView } from "../../ui/machine-screen-view.ts";
+import { type MachineScreenPicture, MachineScreenView, TEXT_MAX } from "../../ui/machine-screen-view.ts";
 import { leave, zoomFrom } from "../../ui/motion.ts";
 import { t } from "../../ui/preferences.ts";
 
-/** The least time from one look's start to the next: about a picture a second while it changes. */
-export const LOOK_EVERY_MS = 1000;
-/** After 3 unchanged pictures in a row the window looks every 2 s, after 10 every 3 s; a changed picture, a click in
- * the window or a `machines` hint brings it back to every second. */
+/** The least time from one look's start to the next while the picture changes or the member acts on it: a look takes
+ * about 0.2 s end to end (production p50 204 ms, 10 Nov 2026), and the database takes one look per 400 ms of a member. */
+export const LOOK_EVERY_MS = 450;
+/** After 3 unchanged pictures in a row the window looks every second, after 6 every 2 s, after 13 every 3 s; a changed
+ * picture, a click in the window, the member's own action or a `machines` hint brings it back to LOOK_EVERY_MS. */
 export const LOOK_UNCHANGED_MS: readonly (readonly [unchanged: number, every: number])[] = [
-	[10, 3000],
-	[3, 2000],
+	[13, 3000],
+	[6, 2000],
+	[3, 1000],
 ];
+/** How often the window renews the member's hold of a desktop while it shows it (the database's lease runs 5 min). */
+export const KEEP_EVERY_MS = 60_000;
+/** How long an action waits on a desktop another action is busy on (an agent's that began before the take-over may
+ * hold it 11 s past an end that was not clean) before it is dropped. */
+const BUSY_GIVE_UP_MS = 15_000;
+const BUSY_RETRY_MS = 1000;
 /** How often the window reads its agent's machines again while it is shown (the `machines` hint reads them at once). */
 export const MACHINES_EVERY_MS = 15_000;
 /** How often a screen that is off, or hidden, is looked at again. */
@@ -55,7 +63,9 @@ type Shown =
 	| "updating"
 	| "image"
 	| "error"
-	| "paused";
+	| "paused"
+	// Another member holds the desktop (20260930713000).
+	| "controlled";
 
 /**
  * An agent's computer window (migration 20260930712000; lanes/desktop-computers-20261110/LIVE-VIEW-PLAN.md, stage 1a):
@@ -63,7 +73,13 @@ type Shown =
  * in its corner when the agent has more than one. Every member who reads the company may watch; owners, admins and
  * contributors may wake a sleeping machine. It looks only while a thread shows it and its tab is visible, slows down
  * while nothing changes, and stops after 30 minutes without a touch on the page until the member says they still watch.
- * There is no take-over yet (stage 1b adds a member's control of the desktop beside the picture).
+ *
+ * Owners, admins and contributors take the desktop over (migration 20260930713000, stage 1b): Take over, here or on the
+ * agent's take-over card, gives them its mouse and keyboard (the picture takes their clicks, drags, wheel, keys and
+ * text, one action at a time) while the agent gets no pictures of it and waits; Hand back, the card's I'm done, closing
+ * the window or leaving the page gives it back. The hold is the database's, renewed every minute while the window
+ * shows it; other members see who holds it, not the screen. While the picture changes or the member acts, the window
+ * looks every 450 ms.
  *
  * The panel belongs to the company's `ComputerPanels`, not to the thread it was opened in: a thread attaches it while
  * the member is there and hands it back on the way out. Only the member closing it, or leaving the company, ends it.
@@ -98,6 +114,8 @@ export class ComputerPanel {
 	#name: string;
 	/** Wakes the look loop before its wait ends (attached, shown again, a hint, a touch, a choice). */
 	#poke: () => void = () => {};
+	/** Whether the company's page is gone (the panel's own close is not that). */
+	#parentGone: () => boolean = () => false;
 
 	// What the loop knows. The machines as last read, the member's own choice, and the picture the member has.
 	#listed: MemberAgentMachines | undefined;
@@ -118,6 +136,27 @@ export class ComputerPanel {
 	#paused = false;
 	#confirm = true;
 	#confirmedAt = Number.NEGATIVE_INFINITY;
+	// The member's hold of the desktop (20260930713000): the machine held, whether a take-over waits for the list, when
+	// the hold last changed (a list asked before then says nothing of it), and the actions on their way.
+	#computer: WebCompanyComputer | undefined;
+	#holding: string | undefined;
+	#wantTakeOver = false;
+	#taking = false;
+	#holdChangedAt = Number.NEGATIVE_INFINITY;
+	#queue: MachineDesktopAction[] = [];
+	#sending = false;
+	#keepTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Where the picture sends the member's input while they hold the desktop: one, so the picture keeps what it gathers. */
+	readonly #input = { act: (action: MachineDesktopAction) => this.#enqueue(action) };
+	readonly #controlText = h("span", { class: "machine-screen-control-text" });
+	readonly #controlNote = h("span", { class: "machine-screen-control-note", role: "status", "aria-live": "polite" });
+	readonly #controlButton = h("button", { type: "button", class: "machine-screen-control-button" });
+	readonly #controls = h(
+		"div",
+		{ class: "machine-screen-control", hidden: true },
+		h("span", { class: "machine-screen-control-words" }, this.#controlText, this.#controlNote),
+		this.#controlButton,
+	);
 
 	constructor(
 		agent: HostedStaffAgent,
@@ -127,6 +166,7 @@ export class ComputerPanel {
 	) {
 		this.agentId = agent.id;
 		this.#name = agent.displayName;
+		this.#parentGone = () => parentSignal?.aborted === true;
 		const signal = AbortSignal.any([this.#stop.signal, ...(parentSignal ? [parentSignal] : [])]);
 		this.#switcher = this.#switcherButton(signal);
 		this.#frameSwitcher = this.#switcherButton(signal);
@@ -174,6 +214,8 @@ export class ComputerPanel {
 			"keydown",
 			(event) => {
 				if (!matchesKey(event, "dismiss")) return;
+				// The member holds the desktop and the picture has the keyboard: Escape is the computer's.
+				if (this.#view?.takesKeysFrom(event.target)) return;
 				if (document.fullscreenElement && this.el.contains(document.fullscreenElement)) return;
 				event.preventDefault();
 				event.stopPropagation();
@@ -191,6 +233,7 @@ export class ComputerPanel {
 			this.#show("unavailable");
 			return;
 		}
+		this.#computer = computer;
 		this.#view = new MachineScreenView({
 			mount: this.#body,
 			title: this.#titleText(),
@@ -198,6 +241,20 @@ export class ComputerPanel {
 			...(options.decode ? { decode: options.decode } : {}),
 		});
 		this.#view.setSwitcher(this.#frameSwitcher);
+		this.#view.setControls(this.#controls);
+		// The controls are the member's, not the start of a panel drag.
+		this.#controls.addEventListener("pointerdown", (event) => event.stopPropagation(), { signal });
+		this.#controlButton.addEventListener("click", () => void (this.#holding ? this.handBack() : this.takeOver()), {
+			signal,
+		});
+		// The page goes for good (or into the browser's cache): the hold is given back as it goes.
+		window.addEventListener(
+			"pagehide",
+			() => {
+				if (this.#holding) computer.handBackOnLeave(this.#holding);
+			},
+			{ signal },
+		);
 		// The member's attention: any touch on the page; coming back to the tab counts as one.
 		const touched = () => this.#touched();
 		for (const type of ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"])
@@ -248,7 +305,41 @@ export class ComputerPanel {
 			this.#confirm = true;
 		}
 		this.#touched();
+		// Coming back to a hold: renewed now, as the window shows it again.
+		if (this.#holding) this.#scheduleKeep(0);
 		this.#poke();
+	}
+
+	/** Take the desktop over (the window's Take over, or the agent's take-over card): at once when the window shows a
+	 * running desktop, or as soon as it does. */
+	takeOver(): void {
+		if (this.#stop.signal.aborted || !this.#computer) return;
+		this.#wantTakeOver = true;
+		this.#touched();
+		this.#poke();
+		void this.#take();
+	}
+
+	/** Give the desktop back (the window's Hand back, or the card's I'm done before it answers). Resolves once the
+	 * database has it back, or could not be asked: a hold not given back runs out by itself. */
+	async handBack(): Promise<void> {
+		this.#wantTakeOver = false;
+		const machineId = this.#holding;
+		const computer = this.#computer;
+		if (!machineId || !computer) return;
+		this.#released();
+		try {
+			await computer.handBackDesktop(machineId, "handed_back", AbortSignal.timeout(10_000));
+		} catch {
+			// The hold runs out by itself; the list says where it stands.
+		}
+		this.#listStale = true;
+		this.#poke();
+	}
+
+	/** Whether the member holds the desktop the window shows. */
+	get holding(): boolean {
+		return this.#holding !== undefined;
 	}
 
 	/** Leave the thread; the window stops looking until a thread shows it again. */
@@ -271,6 +362,14 @@ export class ComputerPanel {
 
 	dispose(): void {
 		if (this.#stop.signal.aborted) return;
+		// The window closes: the member's hold goes with it (as the page goes, when the company's page is left).
+		const held = this.#holding;
+		if (held && this.#computer) {
+			const computer = this.#computer;
+			this.#released();
+			if (this.#parentGone()) computer.handBackOnLeave(held);
+			else void computer.handBackDesktop(held, "closed", AbortSignal.timeout(10_000)).catch(() => undefined);
+		}
 		this.#stop.abort();
 		this.#poke();
 		this.#close = () => {};
@@ -304,11 +403,13 @@ export class ComputerPanel {
 			}
 			const listDue = this.#listedAt + MACHINES_EVERY_MS;
 			if (this.#listStale || Date.now() >= listDue) {
+				const asked = Date.now();
 				try {
 					this.#listed = await computer.agentMachines(this.agentId, signal);
 					this.#listedAt = Date.now();
 					this.#listStale = false;
 					this.#failures = 0;
+					this.#heldPerList(asked);
 				} catch {
 					signal.throwIfAborted();
 					this.#failed();
@@ -318,6 +419,8 @@ export class ComputerPanel {
 			}
 			const machine = this.#pick();
 			if (machine?.machineId !== this.#machineId) {
+				// The member chose another machine: the desktop they held goes back.
+				if (this.#holding && this.#holding !== machine?.machineId) void this.handBack();
 				this.#machineId = machine?.machineId;
 				this.#etag = null;
 				this.#lastLook = Number.NEGATIVE_INFINITY;
@@ -334,9 +437,21 @@ export class ComputerPanel {
 				this.#view?.clear();
 				this.#etag = null;
 				this.#showMachine(machine);
+				this.#syncControls();
 				await this.#wait(this.#listedAt + MACHINES_EVERY_MS - Date.now(), signal);
 				continue;
 			}
+			// Another member holds the desktop: who, and no picture, until they give it back (a hint) or their hold runs
+			// out (its time: no hint comes then).
+			if (machine.control && !machine.control.mine) {
+				this.#unpicture("controlled", machine.control.name);
+				const until = Date.parse(machine.control.until);
+				const end = Number.isFinite(until) ? until + 500 : Number.POSITIVE_INFINITY;
+				await this.#wait(Math.min(this.#listedAt + MACHINES_EVERY_MS, end) - Date.now(), signal);
+				if (Date.now() >= end) this.#listStale = true;
+				continue;
+			}
+			if (this.#wantTakeOver && !this.#holding && !this.#taking) void this.#take();
 			const due = this.#lastLook + this.#delay;
 			if (Date.now() < due) {
 				await this.#wait(Math.min(due, this.#listedAt + MACHINES_EVERY_MS) - Date.now(), signal);
@@ -366,6 +481,10 @@ export class ComputerPanel {
 					this.#etag = look.etag;
 					this.#pictureOf = machine.machineId;
 					this.#unchanged = 0;
+					// The picture is up: the state text under it goes (a screen reader reads it no more), and the take-over
+					// controls show.
+					this.#loading.hidden = true;
+					this.#syncControls();
 				}
 				this.#delay = LOOK_EVERY_MS;
 				continue;
@@ -406,8 +525,190 @@ export class ComputerPanel {
 					this.#unpicture("image");
 					this.#delay = MACHINES_EVERY_MS;
 					break;
+				case "DESKTOP_MEMBER_IN_CONTROL":
+					// Another member took it: the list says who.
+					this.#listStale = true;
+					this.#unpicture("controlled");
+					this.#delay = LOOK_EVERY_MS;
+					break;
 			}
 		}
+	}
+
+	/** What the list says of the member's own hold of the machine shown, unless the hold changed since it was asked. */
+	#heldPerList(asked: number): void {
+		if (asked < this.#holdChangedAt) return;
+		const machine = this.#pick();
+		const mine = machine?.control?.mine === true && machine.state === "running" ? machine.machineId : undefined;
+		if (mine && this.#holding !== mine) this.#held(mine);
+		else if (!mine && this.#holding) this.#released();
+		this.#syncControls();
+	}
+
+	/** Takes the desktop shown over, once: its hold, or why not. */
+	async #take(): Promise<void> {
+		const computer = this.#computer;
+		const machine = this.#pick();
+		if (!computer || this.#taking || this.#holding) return;
+		// A viewer never takes over; a machine not running yet waits for the list to say it runs.
+		if (this.#listed && !this.#listed.canTakeOver) this.#wantTakeOver = false;
+		if (!machine || machine.state !== "running" || !this.#listed?.canTakeOver) return;
+		this.#taking = true;
+		this.#syncControls();
+		let hold: Awaited<ReturnType<WebCompanyComputer["takeDesktop"]>> | undefined;
+		try {
+			hold = await computer.takeDesktop(machine.machineId, this.#stop.signal);
+		} catch {
+			// Said under the picture; the member may try again.
+			this.#controlNote.textContent = t("The computer could not be taken over. Try again.");
+		} finally {
+			this.#taking = false;
+		}
+		if (this.#stop.signal.aborted) return;
+		this.#wantTakeOver = false;
+		if (hold?.state === "ok" && machine.machineId === this.#pick()?.machineId) {
+			this.#controlNote.textContent = "";
+			this.#held(machine.machineId);
+			this.#quicken();
+		} else if (hold) this.#listStale = true;
+		this.#syncControls();
+		this.#poke();
+	}
+
+	/** The member holds the machine's desktop now: the picture takes their input, and the window renews the hold. */
+	#held(machineId: string): void {
+		this.#holding = machineId;
+		this.#holdChangedAt = Date.now();
+		this.#queue = [];
+		this.#scheduleKeep(KEEP_EVERY_MS);
+		this.#syncControls();
+		this.#view?.focusScreen();
+	}
+
+	/** The member holds it no more (handed back, run out, or the window goes): input stops, and so does the renewal. */
+	#released(): void {
+		if (!this.#holding) return;
+		this.#holding = undefined;
+		this.#holdChangedAt = Date.now();
+		this.#queue = [];
+		clearTimeout(this.#keepTimer);
+		this.#keepTimer = undefined;
+		this.#controlNote.textContent = "";
+		this.#syncControls();
+	}
+
+	/** The next renewal of the hold, after `ms`; it is asked only while a thread shows the window. */
+	#scheduleKeep(ms: number): void {
+		clearTimeout(this.#keepTimer);
+		this.#keepTimer = setTimeout(() => void this.#keep(), ms);
+	}
+
+	async #keep(): Promise<void> {
+		const machineId = this.#holding;
+		const computer = this.#computer;
+		if (!machineId || !computer || this.#stop.signal.aborted) return;
+		if (!this.attached) {
+			// Not shown: no renewal; the hold runs out in 5 minutes unless the window is shown again first.
+			this.#keepTimer = undefined;
+			return;
+		}
+		let until: string | null | undefined;
+		try {
+			until = await computer.keepDesktop(machineId, this.#stop.signal);
+		} catch {
+			until = undefined;
+		}
+		if (this.#stop.signal.aborted || this.#holding !== machineId) return;
+		if (until === null) {
+			// It ended (handed back elsewhere, run out after 30 minutes without input, or another member's now).
+			this.#released();
+			this.#listStale = true;
+			this.#poke();
+			return;
+		}
+		// Renewed, or not reached this time: again in a minute (the hold has 5), or sooner after a miss.
+		this.#scheduleKeep(until === undefined ? KEEP_EVERY_MS / 4 : KEEP_EVERY_MS);
+	}
+
+	/** One of the member's actions, after those on their way; texts typed one after another go as one. */
+	#enqueue(action: MachineDesktopAction): void {
+		if (!this.#holding) return;
+		const last = this.#queue.at(-1);
+		if (
+			last?.type === "type" &&
+			action.type === "type" &&
+			this.#queue.length > (this.#sending ? 1 : 0) &&
+			[...last.text].length + [...action.text].length <= TEXT_MAX
+		)
+			this.#queue[this.#queue.length - 1] = { type: "type", text: last.text + action.text };
+		else this.#queue.push(action);
+		this.#touched();
+		void this.#drain();
+	}
+
+	/** Sends the member's actions one at a time: an answer before the next goes. A desktop busy with another action
+	 * (an agent's that began before the take-over) is waited for, then the action is dropped. */
+	async #drain(): Promise<void> {
+		const computer = this.#computer;
+		if (this.#sending || !computer) return;
+		this.#sending = true;
+		try {
+			let busySince: number | undefined;
+			while (this.#queue.length && this.#holding && !this.#stop.signal.aborted) {
+				const machineId = this.#holding;
+				const action = this.#queue[0] as MachineDesktopAction;
+				let answer: MachineActAnswer | undefined;
+				try {
+					answer = await computer.screens.act(machineId, action, this.#stop.signal);
+				} catch {
+					answer = undefined;
+				}
+				if (this.#stop.signal.aborted || this.#holding !== machineId) return;
+				if (answer?.kind === "refused" && answer.code === "DESKTOP_BUSY") {
+					busySince ??= Date.now();
+					if (Date.now() - busySince < BUSY_GIVE_UP_MS) {
+						this.#controlNote.textContent = t("Waiting for {name} to finish a step…", { name: this.#name });
+						await new Promise((resolve) => setTimeout(resolve, BUSY_RETRY_MS));
+						continue;
+					}
+				}
+				busySince = undefined;
+				this.#controlNote.textContent = "";
+				this.#queue.shift();
+				if (
+					answer?.kind === "refused" &&
+					(answer.code === "DESKTOP_CONTROL_ENDED" || answer.code === "DESKTOP_MEMBER_IN_CONTROL")
+				) {
+					// The hold ended under the action (handed back elsewhere, or it ran out): the list says where it stands.
+					this.#released();
+					this.#listStale = true;
+				}
+				// The screen changed (or may have): look again soon.
+				this.#quicken();
+			}
+		} finally {
+			this.#sending = false;
+		}
+	}
+
+	/** The take-over controls under the picture: Take over for a member who may, while there is a picture; what holding
+	 * means and Hand back while they hold it; nothing for a viewer. The picture takes input only while held. */
+	#syncControls(): void {
+		const picture = this.#view?.shown === true && this.#picturing();
+		const holding = this.#holding !== undefined && this.#holding === this.#machineId;
+		const offer = !holding && picture && this.#listed?.canTakeOver === true;
+		this.#controls.hidden = !(picture && (holding || offer));
+		this.#controls.classList.toggle("is-holding", holding);
+		const text = holding
+			? t("You are using the computer. {name} gets no pictures of the screen while you use it.", {
+					name: this.#name,
+				})
+			: "";
+		if (this.#controlText.textContent !== text) this.#controlText.textContent = text;
+		const label = holding ? t("Hand back") : t("Take over");
+		if (this.#controlButton.textContent !== label) this.#controlButton.textContent = label;
+		this.#controlButton.disabled = this.#taking;
+		this.#view?.capture(holding && picture ? this.#input : null);
 	}
 
 	/** Waits `ms` (at most until the next machines read is due), or until something pokes the loop. */
@@ -468,13 +769,14 @@ export class ComputerPanel {
 	}
 
 	/** The picture goes, and the window says why. */
-	#unpicture(shown: Shown): void {
+	#unpicture(shown: Shown, member: string | null = null): void {
 		this.#etag = null;
 		this.#view?.clear();
-		this.#show(shown);
+		this.#show(shown, null, member);
+		this.#syncControls();
 	}
 
-	#show(shown: Shown, waitingFor: "hours" | "room" | null = null): void {
+	#show(shown: Shown, waitingFor: "hours" | "room" | null = null, member: string | null = null): void {
 		const name = { name: this.#name };
 		const [status, detail, action]: [string, string | null, string | null] =
 			shown === "loading"
@@ -524,8 +826,23 @@ export class ComputerPanel {
 														]
 													: shown === "error"
 														? [t("The computer could not be reached. Try again."), null, t("Try again")]
-														: [t("Paused to save power. Still watching?"), null, t("Keep watching")];
+														: shown === "controlled"
+															? [
+																	member
+																		? t(
+																				"{member} is using the computer. The screen is hidden meanwhile.",
+																				{ member },
+																			)
+																		: t(
+																				"Someone is using the computer. The screen is hidden meanwhile.",
+																			),
+																	null,
+																	null,
+																]
+															: [t("Paused to save power. Still watching?"), null, t("Keep watching")];
 		this.#loading.dataset.state = shown;
+		// The state text shows only while there is no picture over it (a screen reader would read it under one).
+		this.#loading.hidden = this.#view?.shown === true;
 		this.#spinner.hidden = !(shown === "loading" || shown === "starting" || shown === "updating" || this.#waking);
 		if (this.#status.textContent !== status) this.#status.textContent = status;
 		this.#detail.hidden = detail === null;
@@ -571,7 +888,7 @@ export class ComputerPanel {
 		if (Date.now() - this.#confirmedAt >= CONFIRM_EVERY_MS) this.#confirm = true;
 	}
 
-	/** Looks come every second again, from now. */
+	/** Looks come every LOOK_EVERY_MS again, from now. */
 	#quicken(): void {
 		this.#unchanged = 0;
 		if (this.#delay > LOOK_EVERY_MS && this.#failures === 0) this.#delay = LOOK_EVERY_MS;
