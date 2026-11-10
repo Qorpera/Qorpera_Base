@@ -13,6 +13,7 @@ export const COMPANY: Record<string, string> = {
 	Deleted: "Slettet",
 	Download: "Hent",
 	"Downloading {name}.": "Henter {name}.",
+	"Getting {name}…": "Henter {name}…",
 	"Folder path": "Mappesti",
 	"History of {name}": "Historik for {name}",
 	History: "Historik",

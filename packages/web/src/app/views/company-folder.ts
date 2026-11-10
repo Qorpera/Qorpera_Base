@@ -11,6 +11,7 @@ import {
 	type CloudMemberFolderVersion,
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { WebFileDownloads } from "../../../../member-web/src/files.ts";
+import type { CodeDownloadCalls } from "../../cloud/code-downloads.ts";
 import { withProblems } from "../../cloud/company-folder-writes.ts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, fmtBytes, fmtTime, h, icon, replace } from "../../ui/dom.ts";
@@ -19,6 +20,7 @@ import { reducedMotion } from "../../ui/motion.ts";
 import { framePage, PageFrames } from "../../ui/page-frame.ts";
 import { presentationDay, presentationLocale, previousDay, t, timeZoneOption } from "../../ui/preferences.ts";
 import { linesSkeleton, listSkeleton } from "../../ui/skeleton.ts";
+import { CodeDownload } from "./code-download.ts";
 
 /* A folder-v2 company's Company File (folder core C4, P33; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md):
  * the file browser Jonas approved for #386. A breadcrumb, one list of folders, files and links, and a preview beside it
@@ -28,7 +30,7 @@ import { linesSkeleton, listSkeleton } from "../../ui/skeleton.ts";
 
 type Client = Pick<
 	CloudMemberFolderClient,
-	"list" | "read" | "readFile" | "pathHistory" | "history" | "changes" | "commit"
+	"list" | "read" | "readFile" | "readFilePieces" | "pathHistory" | "history" | "changes" | "commit"
 >;
 
 /** What the page needs from the product: the folder, its hint, and the company's lifetime. */
@@ -37,6 +39,9 @@ export interface CompanyFolderSource {
 	current(): void;
 	folder(): Client;
 	folderHints(onHint: (seq: number) => void): { close(): Promise<void> };
+	/** The calls behind "Download the code" on a repository's folder (code-download.ts); without them it is not
+	 * offered. */
+	codeDownloads?(): CodeDownloadCalls;
 }
 
 /** The names a change's author is shown by. */
@@ -152,8 +157,9 @@ const HISTORY_PAGE = 50;
 /** Text larger than this only downloads. */
 const MAX_PREVIEW_TEXT_BYTES = 1024 * 1024;
 const MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024;
-/** The browser hands out at most this much in one download (member-web's WebFileDownloads). */
-const MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024;
+/** The browser hands out at most this much in one download (member-web's WebFileDownloads): a folder file's most,
+ * read piece by piece. */
+const MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024;
 const POLL_MS = 60_000;
 const SYNC_DELAY_MS = 1000;
 /** How many newest Recents pages a refresh reads to reach the changes already shown. */
@@ -243,6 +249,8 @@ export class CompanyFolderBrowser {
 	#large: SurfaceDialog | undefined;
 	#client?: Client;
 	#downloads?: WebFileDownloads;
+	/** "Download the code", on a repository's folder; absent where the product has no calls for it. */
+	#code?: CodeDownload;
 	#hints?: { close(): Promise<void> };
 	#poll?: ReturnType<typeof setInterval>;
 	#syncTimer?: ReturnType<typeof setTimeout>;
@@ -434,6 +442,17 @@ export class CompanyFolderBrowser {
 		replace(this.#root, listSkeleton(t("Opening Company File"), 4));
 		this.#client = this.#source.folder();
 		this.#downloads ??= new WebFileDownloads({ signal: this.#signal(), current: () => this.#live() });
+		const downloads = this.#downloads;
+		const client = this.#client;
+		const calls = this.#source.codeDownloads?.bind(this.#source);
+		if (calls)
+			this.#code ??= new CodeDownload({
+				signal: this.#signal(),
+				live: () => this.#live(),
+				calls,
+				folder: () => client,
+				offer: (name, pieces, bytes) => downloads.offerPieces(name, pieces, bytes),
+			});
 		replace(
 			this.#documents,
 			this.#crumbs,
@@ -441,8 +460,10 @@ export class CompanyFolderBrowser {
 				"div",
 				{ class: "storage-toolbar" },
 				this.#title,
+				this.#code?.button ?? null,
 				h("div", { class: "storage-controls" }, this.#filter, this.#sort, this.#views),
 			),
+			this.#code?.line ?? null,
 			h(
 				"div",
 				{ class: "files-body" },
@@ -645,6 +666,7 @@ export class CompanyFolderBrowser {
 		if (moved) this.#search.value = "";
 		this.#drawCrumbs();
 		this.#title.textContent = dir ? baseName(dir) : t("Documents");
+		this.#code?.enter(dir);
 		this.#drawList(!append);
 		if (jumped) await this.#refreshOpened();
 	}
@@ -1261,11 +1283,20 @@ export class CompanyFolderBrowser {
 		await this.#show({ path, file: entry.file, target: entry.target });
 	}
 
+	/** Reads the file piece by piece and hands it to the browser as one file. A large one says how far it is. */
 	async #download(path: string, file: CloudMemberFolderFile): Promise<void> {
-		const bytes = await this.#client!.readFile(file, this.#signal(), MAX_DOWNLOAD_BYTES);
+		const name = baseName(path);
+		const far = h("span", { "aria-hidden": "true" });
+		const pieces: Blob[] = [];
+		await this.#client!.readFilePieces(file, this.#signal(), (piece, index, count) => {
+			pieces.push(new Blob([piece as BlobPart]));
+			if (count <= 2) return;
+			if (!far.isConnected) this.#say(t("Getting {name}…", { name }), far);
+			far.textContent = t("{percent}%", { percent: Math.round(((index + 1) / count) * 100) });
+		});
 		this.#live();
-		this.#downloads!.offer(path, bytes);
-		this.#say(t("Downloading {name}.", { name: baseName(path) }));
+		this.#downloads!.offerPieces(path, pieces, file.bytes);
+		this.#say(t("Downloading {name}.", { name }));
 	}
 
 	// ---- history ----------------------------------------------------------------

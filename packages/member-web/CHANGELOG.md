@@ -7,6 +7,7 @@
 - Independent static member web application using shared cloud clients for Files, explicit transfers, protected review, Company Computer controls, browser consent/private viewing and account cleanup.
 - Public-only deployment configuration, PKCE sign-in, account/company cancellation, scoped sign-out storage, CSP headers and an enforced browser package boundary.
 - Local package, targeted account/configuration/upload tests and Chromium proof with disposable service fixtures.
+- `WebFileDownloads.offerPieces(name, pieces, bytes)`: hands the browser a file of up to 256 MiB as one `Blob` of the pieces it was read in, with no second copy (the web's Storage and its "Download the code"). `offer` keeps its 8 MiB for a file held whole.
 
 ### Removed
 
