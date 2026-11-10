@@ -9,9 +9,10 @@ import type {
 } from "../../cloud/mail.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { type MenuEntry, openContextMenu, openMenu } from "../../ui/context-menu.ts";
+import { type MenuEntry, openContextMenu } from "../../ui/context-menu.ts";
 import { fmtTime, h, icon, notice, personAvatar, spinner } from "../../ui/dom.ts";
 import { presentationLocale, presentationTimeZone, t } from "../../ui/preferences.ts";
+import { uiScale } from "../../ui/scale.ts";
 import type { CompanyController } from "../company.ts";
 import {
 	CompanyMail,
@@ -111,8 +112,10 @@ const manageViews = new WeakMap<
 		readonly post: DigitalPostView;
 	}
 >();
-/** The pages whose Writer menu is open: a redraw under the menu draws the chip as open, and its click shuts the menu. */
+/** The pages whose Writer menu is open: a redraw under the menu draws the chip as open. */
 const writerMenus = new WeakSet<MailboxUi>();
+/** The press outside a page's Writer menu that shut it: on the chip, the click that press ends in opens nothing. */
+const writerPresses = new WeakMap<MailboxUi, Event>();
 let toastIds = 0;
 
 /** The calls behind the company's mail addresses and its Digital Post key. */
@@ -1685,6 +1688,7 @@ function writePanel(page: Page): HTMLElement {
 			)?.address
 		: undefined;
 	const me = company.store.get().team?.members.find((member) => member.userId === company.userId)?.displayName;
+	const face = () => personAvatar(me || t("You"), company.userId);
 	const close = () => {
 		ui.writing = false;
 		page.redraw("write");
@@ -1699,7 +1703,7 @@ function writePanel(page: Page): HTMLElement {
 			"aria-expanded": String(writerMenus.has(ui)),
 			"data-focus-key": "writer",
 		},
-		chosen ? figure(page, chosen.id, undefined, 24) : personAvatar(me || t("You"), company.userId),
+		chosen ? figure(page, chosen.id, undefined, 24) : face(),
 		h("span", { class: "mailbox-writer-name" }, chosen ? chosen.displayName : t("You")),
 		icon("chevron-down"),
 	);
@@ -1713,20 +1717,27 @@ function writePanel(page: Page): HTMLElement {
 			ui.writer = id;
 			page.redraw(focus);
 		};
-		const items: MenuEntry[] = [{ label: t("You"), checked: !chosen, select: () => pick(null) }];
+		// Each row has its writer's picture, as the chip has; the one who has the email carries the check.
+		const items: MenuEntry[] = [{ label: t("You"), lead: face(), checked: !chosen, select: () => pick(null) }];
 		if (agents.length) items.push({ kind: "separator" });
 		for (const agent of agents)
-			items.push({ label: agent.displayName, checked: agent.id === chosen?.id, select: () => pick(agent.id) });
+			items.push({
+				label: agent.displayName,
+				lead: figure(page, agent.id, undefined, 22),
+				checked: agent.id === chosen?.id,
+				select: () => pick(agent.id),
+			});
 		const box = writer.getBoundingClientRect();
 		openContextMenu({
 			label: t("Who writes it"),
 			x: box.left,
-			y: box.bottom + 4,
+			y: box.bottom + 4 * uiScale(),
 			opener: writer,
 			findOpener: chip,
-			openerToggles: true,
-			onClose: () => {
+			onClose: (press) => {
 				writerMenus.delete(ui);
+				if (press) writerPresses.set(ui, press);
+				else writerPresses.delete(ui);
 				chip()?.setAttribute("aria-expanded", "false");
 			},
 			items,
@@ -1735,9 +1746,17 @@ function writePanel(page: Page): HTMLElement {
 		writerMenus.add(ui);
 		writer.setAttribute("aria-expanded", "true");
 	};
-	writer.addEventListener("click", () => {
-		if (writerMenus.has(ui)) openMenu()?.close();
-		else choose("writer");
+	// A press on the chip while its menu is open only shuts the menu: the menu says which press shut it, and the click
+	// that press ends in opens nothing (as an agent's menu on the Members page). A click from the keyboard has no press
+	// before it.
+	let shuts = false;
+	writer.addEventListener("pointerdown", (event) => {
+		shuts = event === writerPresses.get(ui);
+	});
+	writer.addEventListener("click", (event) => {
+		const shut = shuts && event.detail > 0;
+		shuts = false;
+		if (!shut) choose("writer");
 	});
 	const submit = async () => {
 		if (ui.busy) return;

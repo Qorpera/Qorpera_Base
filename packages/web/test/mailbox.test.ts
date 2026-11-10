@@ -151,6 +151,11 @@ const button = (root: ParentNode, label: string) =>
 	[...root.querySelectorAll<HTMLButtonElement>("button")].find(
 		(each) => each.textContent?.trim() === label || each.getAttribute("aria-label") === label,
 	);
+/** A row of the open menu, by its label: a row starts with a picture, and a face's initials are text too. */
+const menuRow = (label: string) =>
+	[...openMenu()!.el.querySelectorAll<HTMLButtonElement>(".context-menu-item")].find(
+		(row) => row.querySelector(".context-menu-label")?.textContent === label,
+	)!;
 const lines = (main: HTMLElement) => [...main.querySelectorAll<HTMLElement>(".mailbox-row")];
 const tab = (main: HTMLElement, name: string) => button(main.querySelector(".mailbox-tabs")!, name)?.click();
 function type(field: HTMLInputElement | HTMLTextAreaElement, value: string): void {
@@ -510,9 +515,14 @@ describe("Sent, Addresses and Write", () => {
 		expect(send).not.toHaveBeenCalled();
 		const menu = openMenu()!;
 		expect(texts(menu.el, ".context-menu-label")).toEqual(["You", "Co-Founder", "Ada", "Bo"]);
-		expect(menu.el.querySelector("[aria-checked='true']")?.textContent).toBe("You");
+		// Each row starts with its writer's picture; the one who has the email ends in the check.
+		expect(texts(menu.el, "[aria-checked='true'] .context-menu-label")).toEqual(["You"]);
+		expect(menuRow("You").firstElementChild?.classList.contains("person-avatar")).toBe(true);
+		expect(menuRow("You").lastElementChild?.classList.contains("icon")).toBe(true);
+		expect(menuRow("Ada").firstElementChild?.classList.contains("figure")).toBe(true);
+		expect(menuRow("Ada").lastElementChild?.classList.contains("context-menu-label")).toBe(true);
 		expect(chip().getAttribute("aria-expanded")).toBe("true");
-		button(menu.el, "Ada")!.click();
+		menuRow("Ada").click();
 		expect(openMenu()).toBeUndefined();
 		expect(writer()).toBe("Ada");
 		expect(chip().classList.contains("is-current")).toBe(true);
@@ -546,21 +556,26 @@ describe("Sent, Addresses and Write", () => {
 		chip().click();
 		expect(openMenu()).toBeDefined();
 		expect(chip().getAttribute("aria-expanded")).toBe("true");
-		// The press that starts the next click leaves the menu open, so that click shuts it and does not open it again.
-		chip().dispatchEvent(new Event("pointerdown", { bubbles: true }));
-		expect(openMenu()).toBeDefined();
-		chip().click();
+		// A press on the chip shuts its menu, and the click that press ends in does not open it again.
+		const press = (target: HTMLElement) => target.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		const pointerClick = () => {
+			press(chip());
+			chip().dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+		};
+		pointerClick();
 		expect(openMenu()).toBeUndefined();
 		expect(chip().getAttribute("aria-expanded")).toBe("false");
+		// The click after that opens it again.
+		pointerClick();
+		expect(openMenu()).toBeDefined();
 		// A press anywhere else shuts it.
-		chip().click();
-		to().dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		press(to());
 		expect(openMenu()).toBeUndefined();
 		expect(chip().getAttribute("aria-expanded")).toBe("false");
 		// Given to the Co-Founder, who answers no address: it goes from the company's first, and the keyboard is on the
 		// chip again.
 		chip().click();
-		button(openMenu()!.el, "Co-Founder")!.click();
+		menuRow("Co-Founder").click();
 		expect(writer()).toBe("Co-Founder");
 		expect(document.activeElement).toBe(chip());
 		expect(main.querySelector(".mailbox-from-address")?.textContent).toBe("from hello@acme.example");
@@ -617,7 +632,13 @@ describe("Sent, Addresses and Write", () => {
 		await vi.waitFor(() => expect(lines(main)).toHaveLength(4));
 		expect(chip()).not.toBe(opened);
 		expect(chip().getAttribute("aria-expanded")).toBe("true");
-		button(openMenu()!.el, "Co-Founder")!.click();
+		// A press on the chip drawn anew shuts the menu the old one opened, and its click opens nothing.
+		chip().dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		chip().dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+		expect(openMenu()).toBeUndefined();
+		expect(chip().getAttribute("aria-expanded")).toBe("false");
+		chip().click();
+		menuRow("Co-Founder").click();
 		expect(openMenu()).toBeUndefined();
 		expect(chip().querySelector(".mailbox-writer-name")?.textContent).toBe("Co-Founder");
 		expect(chip().getAttribute("aria-expanded")).toBe("false");
