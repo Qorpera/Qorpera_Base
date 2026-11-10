@@ -630,6 +630,9 @@ interface Written {
 }
 /** The problem the kernel is told for a record a job left out. */
 const LEFT_OUT = "CODE_CHANGE_RECORD_LEFT_OUT";
+/** What one call tells the kernel of written rows, at most: the executor's control sends no request over 128 KiB, and
+ * twenty rows with a found diff each can be twice that. */
+const WRITTEN_BYTES = 64 * 1024;
 
 export class CodeChangeRecords {
 	readonly #control: CodeChangeRecordsOptions["control"];
@@ -888,11 +891,43 @@ export class CodeChangeRecords {
 	}
 
 	/** Tells the kernel which files are written, or of a problem that left them due. Answers whether it heard; an
-	 * answer that did not come is reported, and the files stay due. */
+	 * answer that did not come is reported, and the files stay due. Rows whose diffs together would pass what one call
+	 * carries are told in several calls, the list's version with the last. */
 	async #written(
 		target: CodeChangeTarget,
 		wrote: Written,
 		problem: string | null,
+		tries: number,
+		signal: AbortSignal,
+	): Promise<boolean> {
+		const parts: Record<string, unknown>[][] = [[]];
+		let size = 0;
+		for (const { n, version, diff } of wrote.changes) {
+			const entry = { n, version, ...(diff ? codeChangeDiffReported(diff) : {}) };
+			const entrySize = bytes(JSON.stringify(entry)) + 1;
+			if (size + entrySize > WRITTEN_BYTES && parts.at(-1)?.length) {
+				parts.push([]);
+				size = 0;
+			}
+			parts.at(-1)?.push(entry);
+			size += entrySize;
+		}
+		for (const [at, changes] of parts.entries()) {
+			const told = await this.#told(
+				target,
+				{ changes, indexVersion: at === parts.length - 1 ? wrote.indexVersion : null, problem },
+				tries,
+				signal,
+			);
+			if (!told) return false;
+		}
+		return true;
+	}
+
+	/** One `qorpera_code_change_files_written`, asked `tries` times while no answer comes. */
+	async #told(
+		target: CodeChangeTarget,
+		written: Record<string, unknown>,
 		tries: number,
 		signal: AbortSignal,
 	): Promise<boolean> {
@@ -907,15 +942,7 @@ export class CodeChangeRecords {
 						p_environment_id: target.environmentId,
 						p_repository_owner: target.owner,
 						p_name: target.name,
-						p_written: {
-							changes: wrote.changes.map(({ n, version, diff }) => ({
-								n,
-								version,
-								...(diff ? codeChangeDiffReported(diff) : {}),
-							})),
-							indexVersion: wrote.indexVersion,
-							problem,
-						},
+						p_written: written,
 					},
 					signal,
 				);

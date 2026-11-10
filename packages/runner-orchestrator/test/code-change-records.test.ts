@@ -1293,6 +1293,51 @@ describe("CodeChangeRecords", () => {
 		});
 	});
 
+	it("tells the kernel of many rows with long diffs in several calls, each one the control can send", async () => {
+		const t = setup();
+		// Twenty backfilled rows, each with fifty long paths found: about 12,000 bytes a row.
+		t.kernel.changes = Array.from({ length: 20 }, (_, at) =>
+			sent({ n: at + 1, picture: null, filesChanged: null, paths: null, needsDiff: true }),
+		);
+		const paths = Array.from({ length: 50 }, (_, at) => ({
+			path: `${String(at).padStart(2, "0")}-${"p".repeat(190)}`,
+			change: "changed" as const,
+		}));
+		t.write.mockImplementationOnce(async (_job, value) => ({
+			written: value.records.map((record) => record.n),
+			diffs: value.records.map((record) => ({ n: record.n, filesChanged: 50, paths, pathsMore: 0 })),
+			restored: [],
+		}));
+		await expect(t.pass()).resolves.toEqual({ written: 1, failed: 0 });
+		const told = t.calls.filter((call) => call.method === "qorpera_code_change_files_written");
+		expect(told.length).toBeGreaterThan(1);
+		// Every row once, in order, with its diff; no call over 128 KiB; the list's version with the last call only.
+		const rows = told.flatMap(
+			(call) => (call.args.p_written as { changes: { n: number; paths: unknown[] }[] }).changes,
+		);
+		expect(rows.map((row) => row.n)).toEqual(Array.from({ length: 20 }, (_, at) => at + 1));
+		expect(rows.every((row) => row.paths.length === 50)).toBe(true);
+		for (const call of told) expect(bytes(JSON.stringify(call.args))).toBeLessThan(128 * 1024);
+		expect(told.map((call) => (call.args.p_written as { indexVersion: number | null }).indexVersion)).toEqual([
+			...Array.from({ length: told.length - 1 }, () => null),
+			9,
+		]);
+		// A call the kernel does not take ends the telling: the rows after it stay due.
+		const cut = setup();
+		cut.kernel.changes = t.kernel.changes;
+		cut.write.mockImplementationOnce(async (_job, value) => ({
+			written: value.records.map((record) => record.n),
+			diffs: value.records.map((record) => ({ n: record.n, filesChanged: 50, paths, pathsMore: 0 })),
+			restored: [],
+		}));
+		cut.kernel.answer = (method) => {
+			if (method === "qorpera_code_change_files_written") throw new Error("CODING_CONTROL_UNCONFIRMED");
+			return undefined;
+		};
+		await expect(cut.pass()).resolves.toEqual({ written: 0, failed: 1 });
+		expect(cut.calls.filter((call) => call.method === "qorpera_code_change_files_written")).toHaveLength(2);
+	});
+
 	it("hangs nothing off the signal its passes are given, which may last as long as the process (abort-scope.ts)", async () => {
 		const t = setup();
 		const lasting = new AbortController();
