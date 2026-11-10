@@ -62,8 +62,10 @@ function setup() {
 		order.push("answer");
 		return { inputId: id(714), position: 1 };
 	});
-	// The company's computer windows: one panel for the agent, its take-over and hand-back watched.
+	// The company's computer windows: one panel for the agent, its take-over and hand-back watched; the hand-back is
+	// confirmed by the database unless the test says otherwise.
 	let release = () => {};
+	let confirmed = true;
 	const panel = {
 		agentId: staff.id,
 		attached: false,
@@ -78,9 +80,9 @@ function setup() {
 		}),
 		handBack: vi.fn(
 			() =>
-				new Promise<void>((resolve) => {
+				new Promise<boolean>((resolve) => {
 					order.push("handBack");
-					release = resolve;
+					release = () => resolve(confirmed);
 				}),
 		),
 	};
@@ -100,11 +102,15 @@ function setup() {
 	};
 	return {
 		view,
+		company,
 		panel: panel as typeof panel & Partial<ComputerPanel>,
 		panels,
 		answer,
 		order,
 		release: () => release(),
+		unconfirmed: () => {
+			confirmed = false;
+		},
 	};
 }
 function pill(view: ConversationView, label: string) {
@@ -144,6 +150,30 @@ describe("an agent's take-over card", () => {
 			{},
 			expect.anything(),
 		);
+	});
+
+	it("answers nothing while the hand-back is not confirmed, and says so, so I'm done asks again (review r1 F4)", async () => {
+		const f = setup();
+		f.unconfirmed();
+		await settle();
+		pill(f.view, "I'm done")!.click();
+		await settle();
+		f.release();
+		await settle();
+		await settle();
+		expect(f.panel.handBack).toHaveBeenCalledOnce();
+		expect(f.answer).not.toHaveBeenCalled();
+		expect(f.company.conversation(session.sessionId).get().interactionError).toBe(
+			"The computer could not be given back yet. Press I'm done to try again. It goes back by itself within 5 minutes.",
+		);
+		f.view.update();
+		expect(f.view.el.textContent).toContain("The computer could not be given back yet.");
+		// The card is open again: I'm done asks once more.
+		const again = pill(f.view, "I'm done")!;
+		expect(again.getAttribute("aria-disabled")).toBeNull();
+		again.click();
+		await settle();
+		expect(f.panel.handBack).toHaveBeenCalledTimes(2);
 	});
 
 	it("leaves the desktop held when the member skips the card", async () => {

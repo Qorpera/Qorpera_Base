@@ -88,6 +88,12 @@ function setup(
 		/** What a look answers once the queue is empty. */
 		fallback: "unchanged" as Answer,
 		listFails: 0,
+		/** Hand-backs that fail (503) before one goes through, and a gate each waits on (review r1 F4). */
+		handBackFails: 0,
+		handBackGate: undefined as Promise<void> | undefined,
+		/** A gate a take-over's answer waits on (review r1 F5), and one the next list read waits on (F6). */
+		takeGate: undefined as Promise<void> | undefined,
+		listGate: undefined as Promise<void> | undefined,
 	};
 	const looks: { url: string; etag: string | null }[] = [];
 	const acts: { url: string; action: Record<string, unknown> }[] = [];
@@ -127,6 +133,12 @@ function setup(
 		const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
 		rpcs.push({ method, body });
 		if (method === "qorpera_list_agent_machines") {
+			if (state.listGate) {
+				const gate = state.listGate;
+				state.listGate = undefined;
+				// The machines as they are when the read is answered.
+				await gate;
+			}
 			if (state.listFails > 0) {
 				state.listFails--;
 				return new Response("{}", { status: 503 });
@@ -143,6 +155,7 @@ function setup(
 		if (method === "qorpera_member_manage_company_machine")
 			return Response.json({ machineId: body.p_machine_id, state: "waiting" });
 		if (method === "qorpera_member_take_machine_desktop") {
+			if (state.takeGate) await state.takeGate;
 			// As the database: the list says the member holds it from now on.
 			if (state.take.state === "ok")
 				state.machines = state.machines.map((row) =>
@@ -155,6 +168,11 @@ function setup(
 		if (method === "qorpera_member_keep_machine_desktop")
 			return Response.json({ schema: "qorpera.member-machine-desktop/v1", ...state.keep });
 		if (method === "qorpera_member_hand_back_machine_desktop") {
+			if (state.handBackGate) await state.handBackGate;
+			if (state.handBackFails > 0) {
+				state.handBackFails--;
+				return new Response("{}", { status: 503 });
+			}
 			state.machines = state.machines.map((row) =>
 				row.machineId === body.p_machine_id && row.control?.mine ? { ...row, control: null } : row,
 			);
@@ -1270,5 +1288,148 @@ describe("a member's action through the member bridge (20260930713000)", () => {
 		await expect(
 			transport(() => Response.json({})).screens.act("machine", { type: "key", keys: ["a"] }, signal),
 		).rejects.toThrow();
+	});
+});
+
+describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
+	/** A gate the test opens. */
+	function gate() {
+		let open = () => {};
+		const closed = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		return { closed, open: () => open() };
+	}
+	const words = (p: ComputerPanel) => controls(p)?.querySelector(".machine-screen-control-text")?.textContent;
+
+	it("is done only once the database confirms it: a failed one says so, never renews, never takes the hold up again, and asks again", async () => {
+		const { s, p } = await holding();
+		s.state.handBackFails = 1;
+		expect(await p.handBack()).toBe(false);
+		expect(p.holding).toBe(false);
+		expect(words(p)).toBe("The computer could not be given back yet. It goes back by itself within 5 minutes.");
+		expect(controlButton(p)?.textContent).toBe("Try again");
+		// The picture takes no input meanwhile.
+		expect(canvas(p).hasAttribute("tabindex")).toBe(false);
+		// A list read that still shows the hold (the database has it yet) neither takes it up again nor renews it: it asks
+		// again.
+		const asked = calls(s, "qorpera_member_hand_back_machine_desktop").length;
+		s.hint("machines");
+		await flush();
+		expect(p.holding).toBe(false);
+		expect(calls(s, "qorpera_member_hand_back_machine_desktop").length).toBe(asked + 1);
+		expect(controlButton(p)?.textContent).toBe("Take over");
+		await advance(KEEP_EVERY_MS * 2);
+		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
+		expect(p.holding).toBe(false);
+	});
+
+	it("asks a failed hand-back again with growing waits while the window lives, and Try again asks at once", async () => {
+		const { s, p } = await holding();
+		s.state.handBackFails = 3;
+		expect(await p.handBack()).toBe(false);
+		const count = () => calls(s, "qorpera_member_hand_back_machine_desktop").length;
+		expect(count()).toBe(1);
+		await advance(1999);
+		expect(count()).toBe(1);
+		await advance(1);
+		expect(count()).toBe(2);
+		// The second failed: Try again asks at once, and this time it goes through.
+		controlButton(p)!.click();
+		await flush();
+		expect(count()).toBe(3);
+		expect(words(p)).toBe("The computer could not be given back yet. It goes back by itself within 5 minutes.");
+		controlButton(p)!.click();
+		await flush();
+		expect(count()).toBe(4);
+		expect(controlButton(p)?.textContent).toBe("Take over");
+		await advance(30_000);
+		expect(count()).toBe(4);
+	});
+
+	it("waits for a slow hand-back, saying it gives the computer back, before it is done", async () => {
+		const { s, p } = await holding();
+		const slow = gate();
+		s.state.handBackGate = slow.closed;
+		let done: boolean | undefined;
+		const back = p.handBack().then((value) => {
+			done = value;
+		});
+		await flush();
+		expect(done).toBeUndefined();
+		expect(words(p)).toBe("Giving the computer back…");
+		expect(controlButton(p)?.disabled).toBe(true);
+		slow.open();
+		await back;
+		expect(done).toBe(true);
+		expect(controlButton(p)?.textContent).toBe("Take over");
+	});
+
+	it("calls off a take-over still on its way: the hold that comes back late is given back at once and never renewed", async () => {
+		const s = setup();
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		const late = gate();
+		s.state.takeGate = late.closed;
+		controlButton(p)!.click();
+		await flush();
+		expect(calls(s, "qorpera_member_take_machine_desktop")).toHaveLength(1);
+		// I'm done while the take-over is on its way: it waits for it.
+		let done: boolean | undefined;
+		const back = p.handBack().then((value) => {
+			done = value;
+		});
+		await flush();
+		expect(done).toBeUndefined();
+		expect(calls(s, "qorpera_member_hand_back_machine_desktop")).toHaveLength(0);
+		late.open();
+		await back;
+		expect(done).toBe(true);
+		expect(calls(s, "qorpera_member_hand_back_machine_desktop").map((call) => call.body.p_machine_id)).toEqual([
+			machine(1).machineId,
+		]);
+		expect(p.holding).toBe(false);
+		await advance(KEEP_EVERY_MS * 2);
+		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
+		expect(p.holding).toBe(false);
+	});
+
+	it("gives a take-over that comes back after the window closed back as it comes", async () => {
+		const s = setup();
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		const late = gate();
+		s.state.takeGate = late.closed;
+		controlButton(p)!.click();
+		await flush();
+		p.dispose();
+		late.open();
+		await flush();
+		expect(calls(s, "qorpera_member_hand_back_machine_desktop").map((call) => call.body.p_reason)).toEqual([
+			"closed",
+		]);
+	});
+
+	it("gives the held machine back when the member switches during a list read that is still on its way", async () => {
+		const s = setup({ machines: [machine(1), machine(2)] });
+		const { p } = await holding(s);
+		expect(p.holding).toBe(true);
+		// A read of the list begins and waits; meanwhile the member picks the other machine.
+		const slowList = gate();
+		s.state.listGate = slowList.closed;
+		s.hint("machines");
+		await flush();
+		s.state.answers.push({ picture: 2 });
+		p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher")!.click();
+		[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][1]!.click();
+		slowList.open();
+		await flush();
+		await flush();
+		expect(calls(s, "qorpera_member_hand_back_machine_desktop").map((call) => call.body.p_machine_id)).toEqual([
+			machine(1).machineId,
+		]);
+		expect(p.holding).toBe(false);
 	});
 });

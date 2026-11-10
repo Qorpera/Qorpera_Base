@@ -2878,9 +2878,18 @@ export class ConversationView {
 								answer: async (outcome, answer) => {
 									// The take-over card's I'm done gives the agent's desktop back first; the answer then wakes the agent, whose
 									// looks are let in again (20260930713000).
+									// It answers only once the database confirmed it has the desktop back (review r1 F4): otherwise the card
+									// stays open and says so, and I'm done asks again.
 									if (takeOver && outcome === "handed_back") {
 										const current = currentAgent();
-										if (current) await this.#panels.get(current.id)?.handBack();
+										if (current && (await this.#panels.get(current.id)?.handBack()) === false) {
+											this.#company.conversation(this.#sessionId).set({
+												interactionError: t(
+													"The computer could not be given back yet. Press I'm done to try again. It goes back by itself within 5 minutes.",
+												),
+											});
+											throw new Error("The computer was not given back");
+										}
 									}
 									return this.#answerInteraction(item.id, outcome, answer);
 								},

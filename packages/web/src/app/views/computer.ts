@@ -27,6 +27,11 @@ export const KEEP_EVERY_MS = 60_000;
  * hold it 11 s past an end that was not clean) before it is dropped. */
 const BUSY_GIVE_UP_MS = 15_000;
 const BUSY_RETRY_MS = 1000;
+/** The waits before a hand-back that did not reach the database is asked again: 2, 4, 8, then 15 s (review r1 F4). */
+const RELEASE_RETRY_MS = [2000, 4000, 8000, 15_000];
+/** A take-over's or a hand-back's own deadline: not the window's, so the answer of one asked as the window closes comes
+ * back, and a hold it gave is given back. */
+const HOLD_CALL_MS = 15_000;
 /** How often the window reads its agent's machines again while it is shown (the `machines` hint reads them at once). */
 export const MACHINES_EVERY_MS = 15_000;
 /** How often a screen that is off, or hidden, is looked at again. */
@@ -136,13 +141,25 @@ export class ComputerPanel {
 	#paused = false;
 	#confirm = true;
 	#confirmedAt = Number.NEGATIVE_INFINITY;
-	// The member's hold of the desktop (20260930713000): the machine held, whether a take-over waits for the list, when
-	// the hold last changed (a list asked before then says nothing of it), and the actions on their way.
+	// The member's hold of the desktop (20260930713000): the machine held, whether a take-over waits for the list, the one
+	// on its way and whether it was called off, when the hold last changed (a list asked before then says nothing of it),
+	// the holds the member asked to give back until the database confirms each (review r1 F4), and the actions on their way.
 	#computer: WebCompanyComputer | undefined;
 	#holding: string | undefined;
 	#wantTakeOver = false;
-	#taking = false;
+	#taking: Promise<void> | undefined;
+	#takeCalledOff = false;
 	#holdChangedAt = Number.NEGATIVE_INFINITY;
+	readonly #releases = new Map<
+		string,
+		{
+			since: number;
+			tries: number;
+			asking?: Promise<boolean>;
+			timer?: ReturnType<typeof setTimeout>;
+			failed: boolean;
+		}
+	>();
 	#queue: MachineDesktopAction[] = [];
 	#sending = false;
 	#keepTimer: ReturnType<typeof setTimeout> | undefined;
@@ -244,9 +261,14 @@ export class ComputerPanel {
 		this.#view.setControls(this.#controls);
 		// The controls are the member's, not the start of a panel drag.
 		this.#controls.addEventListener("pointerdown", (event) => event.stopPropagation(), { signal });
-		this.#controlButton.addEventListener("click", () => void (this.#holding ? this.handBack() : this.takeOver()), {
-			signal,
-		});
+		this.#controlButton.addEventListener(
+			"click",
+			() =>
+				void (this.#holding || (this.#machineId && this.#releases.has(this.#machineId))
+					? this.handBack()
+					: this.takeOver()),
+			{ signal },
+		);
 		// The page goes for good (or into the browser's cache): the hold is given back as it goes.
 		window.addEventListener(
 			"pagehide",
@@ -317,24 +339,34 @@ export class ComputerPanel {
 		this.#wantTakeOver = true;
 		this.#touched();
 		this.#poke();
-		void this.#take();
+		this.#startTake();
 	}
 
-	/** Give the desktop back (the window's Hand back, or the card's I'm done before it answers). Resolves once the
-	 * database has it back, or could not be asked: a hold not given back runs out by itself. */
-	async handBack(): Promise<void> {
+	/** Starts a take-over unless one is on its way or the desktop is held: it is the window's until it settles. */
+	#startTake(): void {
+		if (this.#taking || this.#holding) return;
+		this.#takeCalledOff = false;
+		const taking = this.#take().finally(() => {
+			if (this.#taking === taking) this.#taking = undefined;
+			this.#syncControls();
+		});
+		this.#taking = taking;
+	}
+
+	/** Give the desktop back (the window's Hand back, the card's I'm done before it answers, a switch to another machine).
+	 * A take-over still on its way is called off first, and a hold it gets is given back as it comes. True once the
+	 * database confirmed that the member holds nothing (it had it back, or held nothing of theirs any more); false while
+	 * it could not be asked: the window then says so, asks again with growing waits while it lives, never renews the hold
+	 * and never takes it up again from the list (review r1 F4, F5). A hold never given back ends by itself in 5 minutes. */
+	async handBack(): Promise<boolean> {
 		this.#wantTakeOver = false;
-		const machineId = this.#holding;
-		const computer = this.#computer;
-		if (!machineId || !computer) return;
-		this.#released();
-		try {
-			await computer.handBackDesktop(machineId, "handed_back", AbortSignal.timeout(10_000));
-		} catch {
-			// The hold runs out by itself; the list says where it stands.
+		if (this.#taking) {
+			this.#takeCalledOff = true;
+			await this.#taking;
 		}
-		this.#listStale = true;
-		this.#poke();
+		if (this.#holding) this.#intendRelease(this.#holding);
+		const asked = [...this.#releases.keys()].map((machineId) => this.#giveBack(machineId));
+		return (await Promise.all(asked)).every(Boolean);
 	}
 
 	/** Whether the member holds the desktop the window shows. */
@@ -362,14 +394,18 @@ export class ComputerPanel {
 
 	dispose(): void {
 		if (this.#stop.signal.aborted) return;
-		// The window closes: the member's hold goes with it (as the page goes, when the company's page is left).
-		const held = this.#holding;
-		if (held && this.#computer) {
-			const computer = this.#computer;
-			this.#released();
-			if (this.#parentGone()) computer.handBackOnLeave(held);
-			else void computer.handBackDesktop(held, "closed", AbortSignal.timeout(10_000)).catch(() => undefined);
-		}
+		// The window closes: the member's hold goes with it, and so does every hold they asked to give back (as the page
+		// goes, when the company's page is left). A take-over still on its way is called off: its hold is given back as it
+		// comes (#take).
+		if (this.#holding) this.#intendRelease(this.#holding);
+		this.#takeCalledOff = true;
+		const computer = this.#computer;
+		if (computer)
+			for (const [machineId, release] of this.#releases) {
+				clearTimeout(release.timer);
+				this.#closeHold(computer, machineId);
+			}
+		this.#releases.clear();
 		this.#stop.abort();
 		this.#poke();
 		this.#close = () => {};
@@ -419,8 +455,12 @@ export class ComputerPanel {
 			}
 			const machine = this.#pick();
 			if (machine?.machineId !== this.#machineId) {
-				// The member chose another machine: the desktop they held goes back.
-				if (this.#holding && this.#holding !== machine?.machineId) void this.handBack();
+				// The member chose another machine: the desktop they held (or are taking over) goes back (review r1 F6).
+				if (
+					this.#machineId !== undefined &&
+					((this.#holding && this.#holding !== machine?.machineId) || this.#taking)
+				)
+					void this.handBack();
 				this.#machineId = machine?.machineId;
 				this.#etag = null;
 				this.#lastLook = Number.NEGATIVE_INFINITY;
@@ -451,7 +491,7 @@ export class ComputerPanel {
 				if (Date.now() >= end) this.#listStale = true;
 				continue;
 			}
-			if (this.#wantTakeOver && !this.#holding && !this.#taking) void this.#take();
+			if (this.#wantTakeOver && !this.#holding && !this.#taking) this.#startTake();
 			const due = this.#lastLook + this.#delay;
 			if (Date.now() < due) {
 				await this.#wait(Math.min(due, this.#listedAt + MACHINES_EVERY_MS) - Date.now(), signal);
@@ -535,42 +575,127 @@ export class ComputerPanel {
 		}
 	}
 
-	/** What the list says of the member's own hold of the machine shown, unless the hold changed since it was asked. */
+	/** What the list says of the member's own holds, each by its machine's own id, never by the machine shown (review r1
+	 * F6). A hold they asked to give back that the list shows no more is confirmed given back; one it still shows is asked
+	 * again. The hold the window has ends when the list no longer shows it. One of theirs on the machine shown that the
+	 * window does not know (the page was loaded again) is taken up, unless they asked to give it back. A list asked before
+	 * the hold last changed, or before a hand-back was asked, says nothing of either. */
 	#heldPerList(asked: number): void {
-		if (asked < this.#holdChangedAt) return;
-		const machine = this.#pick();
-		const mine = machine?.control?.mine === true && machine.state === "running" ? machine.machineId : undefined;
-		if (mine && this.#holding !== mine) this.#held(mine);
-		else if (!mine && this.#holding) this.#released();
+		const machines = this.#listed?.machines ?? [];
+		const mine = (machineId: string | undefined) =>
+			machines.some((row) => row.machineId === machineId && row.control?.mine === true && row.state === "running");
+		for (const [machineId, release] of [...this.#releases]) {
+			if (asked < release.since) continue;
+			if (!machines.some((row) => row.machineId === machineId && row.control?.mine === true))
+				this.#confirmRelease(machineId);
+			else if (!release.asking) void this.#giveBack(machineId);
+		}
+		if (asked >= this.#holdChangedAt) {
+			if (this.#holding && !mine(this.#holding)) this.#released();
+			const shown = this.#pick();
+			if (!this.#holding && !this.#taking && shown && mine(shown.machineId) && !this.#releases.has(shown.machineId))
+				this.#held(shown.machineId);
+		}
 		this.#syncControls();
 	}
 
-	/** Takes the desktop shown over, once: its hold, or why not. */
+	/** The member asked to give this machine's desktop back: the window stops holding it at once (no input, no renewal),
+	 * and keeps asking the database until it confirms. */
+	#intendRelease(machineId: string): void {
+		if (this.#holding === machineId) this.#released();
+		if (!this.#releases.has(machineId)) this.#releases.set(machineId, { since: Date.now(), tries: 0, failed: false });
+		this.#syncControls();
+	}
+
+	/** Asks the database once to take the member's hold of this machine back, or joins the asking on its way. True once it
+	 * confirmed; false when it could not be asked, and it is asked again after a wait (RELEASE_RETRY_MS) while the
+	 * window lives. */
+	#giveBack(machineId: string): Promise<boolean> {
+		const release = this.#releases.get(machineId);
+		const computer = this.#computer;
+		if (!release) return Promise.resolve(true);
+		if (!computer || this.#stop.signal.aborted) return Promise.resolve(false);
+		if (release.asking) return release.asking;
+		clearTimeout(release.timer);
+		release.timer = undefined;
+		release.asking = (async () => {
+			try {
+				// Either answer is the database's word that the member holds nothing of it now (`false`: it held nothing).
+				await computer.handBackDesktop(machineId, "handed_back", AbortSignal.timeout(HOLD_CALL_MS));
+				release.asking = undefined;
+				this.#confirmRelease(machineId);
+				return true;
+			} catch {
+				release.asking = undefined;
+				if (this.#releases.get(machineId) !== release || this.#stop.signal.aborted) return false;
+				release.failed = true;
+				release.tries++;
+				const wait = RELEASE_RETRY_MS[Math.min(release.tries, RELEASE_RETRY_MS.length) - 1] as number;
+				release.timer = setTimeout(() => void this.#giveBack(machineId), wait);
+				this.#syncControls();
+				return false;
+			}
+		})();
+		this.#syncControls();
+		return release.asking;
+	}
+
+	/** The database confirmed the member holds nothing of this machine: the hand-back is done. */
+	#confirmRelease(machineId: string): void {
+		const release = this.#releases.get(machineId);
+		if (!release) return;
+		clearTimeout(release.timer);
+		this.#releases.delete(machineId);
+		this.#listStale = true;
+		this.#syncControls();
+		this.#poke();
+	}
+
+	/** As the window closes: one last request to give the hold back (closed), or, as the page goes, one the browser
+	 * finishes after it (keepalive). Nothing waits for it; a hold it does not reach ends by itself in 5 minutes. */
+	#closeHold(computer: WebCompanyComputer, machineId: string): void {
+		if (this.#parentGone()) computer.handBackOnLeave(machineId);
+		else void computer.handBackDesktop(machineId, "closed", AbortSignal.timeout(HOLD_CALL_MS)).catch(() => undefined);
+	}
+
+	/** Takes the desktop shown over, once: its hold, or why not. Called off meanwhile (a hand-back, the window's close,
+	 * a switch to another machine), a hold that comes back is given back at once and never renewed (review r1 F5); so is
+	 * one of a machine no longer shown. */
 	async #take(): Promise<void> {
 		const computer = this.#computer;
 		const machine = this.#pick();
-		if (!computer || this.#taking || this.#holding) return;
+		if (!computer || this.#holding) return;
 		// A viewer never takes over; a machine not running yet waits for the list to say it runs.
 		if (this.#listed && !this.#listed.canTakeOver) this.#wantTakeOver = false;
 		if (!machine || machine.state !== "running" || !this.#listed?.canTakeOver) return;
-		this.#taking = true;
+		// The machine's own hand-back still on its way comes first: a take-over is never answered before it.
+		if (this.#releases.has(machine.machineId) && !(await this.#giveBack(machine.machineId))) {
+			this.#wantTakeOver = false;
+			return;
+		}
 		this.#syncControls();
 		let hold: Awaited<ReturnType<WebCompanyComputer["takeDesktop"]>> | undefined;
 		try {
-			hold = await computer.takeDesktop(machine.machineId, this.#stop.signal);
+			hold = await computer.takeDesktop(machine.machineId, AbortSignal.timeout(HOLD_CALL_MS));
 		} catch {
 			// Said under the picture; the member may try again.
 			this.#controlNote.textContent = t("The computer could not be taken over. Try again.");
-		} finally {
-			this.#taking = false;
 		}
-		if (this.#stop.signal.aborted) return;
 		this.#wantTakeOver = false;
-		if (hold?.state === "ok" && machine.machineId === this.#pick()?.machineId) {
+		if (hold?.state === "ok" && (this.#takeCalledOff || machine.machineId !== this.#pick()?.machineId)) {
+			// Called off while it was on its way: the hold goes back as it comes.
+			if (this.#stop.signal.aborted) this.#closeHold(computer, machine.machineId);
+			else {
+				this.#intendRelease(machine.machineId);
+				void this.#giveBack(machine.machineId);
+			}
+		} else if (hold?.state === "ok" && !this.#stop.signal.aborted) {
 			this.#controlNote.textContent = "";
 			this.#held(machine.machineId);
 			this.#quicken();
 		} else if (hold) this.#listStale = true;
+		this.#takeCalledOff = false;
+		if (this.#stop.signal.aborted) return;
 		this.#syncControls();
 		this.#poke();
 	}
@@ -618,7 +743,7 @@ export class ComputerPanel {
 		} catch {
 			until = undefined;
 		}
-		if (this.#stop.signal.aborted || this.#holding !== machineId) return;
+		if (this.#stop.signal.aborted || this.#holding !== machineId || this.#releases.has(machineId)) return;
 		if (until === null) {
 			// It ended (handed back elsewhere, run out after 30 minutes without input, or another member's now).
 			this.#released();
@@ -696,18 +821,30 @@ export class ComputerPanel {
 	#syncControls(): void {
 		const picture = this.#view?.shown === true && this.#picturing();
 		const holding = this.#holding !== undefined && this.#holding === this.#machineId;
-		const offer = !holding && picture && this.#listed?.canTakeOver === true;
-		this.#controls.hidden = !(picture && (holding || offer));
-		this.#controls.classList.toggle("is-holding", holding);
+		const release = this.#machineId ? this.#releases.get(this.#machineId) : undefined;
+		const offer = !holding && !release && picture && this.#listed?.canTakeOver === true;
+		this.#controls.hidden = !(picture && (holding || release || offer));
+		this.#controls.classList.toggle("is-holding", holding || release !== undefined);
 		const text = holding
 			? t("You are using the computer. {name} gets no pictures of the screen while you use it.", {
 					name: this.#name,
 				})
-			: "";
+			: release?.failed
+				? t("The computer could not be given back yet. It goes back by itself within 5 minutes.")
+				: release
+					? t("Giving the computer back…")
+					: "";
 		if (this.#controlText.textContent !== text) this.#controlText.textContent = text;
-		const label = holding ? t("Hand back") : t("Take over");
+		const label = holding
+			? t("Hand back")
+			: release?.failed
+				? t("Try again")
+				: release
+					? t("Hand back")
+					: t("Take over");
 		if (this.#controlButton.textContent !== label) this.#controlButton.textContent = label;
-		this.#controlButton.disabled = this.#taking;
+		this.#controlButton.disabled =
+			this.#taking !== undefined || (release !== undefined && release.asking !== undefined);
 		this.#view?.capture(holding && picture ? this.#input : null);
 	}
 
