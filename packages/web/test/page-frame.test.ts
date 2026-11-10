@@ -187,7 +187,7 @@ describe("an HTML page's frame", () => {
 			expect(script.indexOf(taken), taken).toBeLessThan(script.indexOf('addEventListener("message"'));
 		}
 		// Listened for after the page is written: opening the document drops the window's listeners.
-		const listened = script.indexOf("apply(listen, window, [");
+		const listened = script.indexOf('apply(listen, window, [\n\t\t\t"keydown",');
 		expect(listened).toBeGreaterThan(script.indexOf("apply(close, document, []);"));
 		expect(script.slice(listened)).toContain(
 			'if (apply(keyOf, pressed, []) !== "Escape" || apply(composing, pressed, [])) return;',
@@ -202,39 +202,79 @@ describe("an HTML page's frame", () => {
 
 	it("follows no link itself: a click on one is stopped, and only the member's own goes to the app, over the port", () => {
 		const script = frameDocument.slice(frameDocument.indexOf("<script>"), frameDocument.indexOf("</script>"));
-		// Taken before the page runs, so the page can't change them.
+		// Taken, and put in place, before the page runs, so the page can't change them.
 		for (const taken of [
 			"const prevent = Event.prototype.preventDefault;",
-			'const targetOf = getter(Event.prototype, "target");',
-			"const closest = Element.prototype.closest;",
+			"const composedPath = Event.prototype.composedPath;",
+			"const stop = Event.prototype.stopPropagation;",
+			"const stopNow = Event.prototype.stopImmediatePropagation;",
+			'const bubble = Object.getOwnPropertyDescriptor(Event.prototype, "cancelBubble");',
+			"const unlisten = EventTarget.prototype.removeEventListener;",
+			"const soon = queueMicrotask;",
 			"const attribute = Element.prototype.getAttribute;",
 			"const codeAt = String.prototype.charCodeAt;",
 			"const clicked = new WeakMap();",
+			"const settled = new WeakSet();",
 			'const links = "a[*|href], area[href]";',
+			"Event.prototype.stopPropagation = function stopPropagation() {",
+			"Event.prototype.stopImmediatePropagation = function stopImmediatePropagation() {",
+			'Object.defineProperty(Event.prototype, "cancelBubble", {',
 		]) {
 			expect(script, taken).toContain(taken);
 			expect(script.indexOf(taken), taken).toBeLessThan(script.indexOf('addEventListener("message"'));
 		}
-		// A link in a shadow tree is noted at the tree's root, where the click still shows what was clicked.
-		expect(script).toContain('watch(root);\n\t\tapply(listen, root, ["click", noteLink]);');
-		// Heard once the page is written, at the window, and only for a page handed a port.
-		const heard = script.indexOf('if (live)\n\t\t\tapply(listen, window, [\n\t\t\t\t"click",');
-		expect(heard).toBeGreaterThan(script.indexOf("apply(close, document, []);"));
-		const handler = script.slice(heard);
+		// Only for a page handed a port: without one, nothing is noted, so nothing is stopped or sent.
+		expect(script).toContain("const noteLink = (click) => {\n\t\tif (!follow) return;");
+		expect(script).toContain('if (live) {\n\t\t\tdefine(window, "qorpera", live.page);');
+		// The link is noted on the click's way down, before any handler of the page: at the window, listened for once
+		// the document is opened (which drops the window's listeners) and before the page is written, and at each
+		// shadow tree's root. It is the innermost link on the click's whole path, a slot's surroundings included.
+		const heard = script.indexOf('apply(listen, window, ["click", hear, true]);');
+		expect(heard).toBeGreaterThan(script.indexOf("apply(open, document, []);"));
+		expect(heard).toBeLessThan(script.indexOf("apply(write, document, [data.html]);"));
+		expect(script).toContain('watch(root);\n\t\tapply(listen, root, ["click", noteLink, true]);');
+		expect(script).toContain(
+			"const path = apply(composedPath, click, []);\n\t\t\tfor (let index = 0; index < path.length && !link; index++) if (isLink(path[index])) link = path[index];",
+		);
+		// The click is settled last at the window: the listener is put there again at every click, behind every
+		// handler the page has added since.
+		expect(script).toContain(
+			'noteLink(click);\n\t\tapply(unlisten, window, ["click", settle]);\n\t\tapply(listen, window, ["click", settle]);',
+		);
+		const settle = script.slice(
+			script.indexOf("const settle = (click) => {"),
+			script.indexOf("const hear = (click) => {"),
+		);
 		const steps = [
+			// Once for each click.
+			"if (!link || apply(isSettled, settled, [click])) return;",
+			"apply(markSettled, settled, [click]);",
 			// A click the page took for itself is the page's.
-			"if (!link || apply(prevented, click, [])) return;",
-			// So is a jump inside the page, and the page's own script.
-			'if (typeof href !== "string" || ownLink(href)) return;',
+			"if (apply(prevented, click, [])) return;",
+			// So is a jump inside the page.
+			"if (href === null) return;",
 			// Every other click on a link is stopped, whoever made it: the frame never leaves its page.
 			"apply(prevent, click, []);",
 			// Only a click the member made goes on.
-			"if (click.isTrusted === true && href.length <= 2048) live.follow(href);",
+			"if (click.isTrusted === true && href.length <= 2048) follow(href);",
 		];
-		for (const step of steps) expect(handler, step).toContain(step);
-		expect(steps.map((step) => handler.indexOf(step))).toEqual(
-			steps.map((step) => handler.indexOf(step)).sort((a, b) => a - b),
+		for (const step of steps) expect(settle, step).toContain(step);
+		expect(steps.map((step) => settle.indexOf(step))).toEqual(
+			steps.map((step) => settle.indexOf(step)).sort((a, b) => a - b),
 		);
+		// A click a script made need not travel to the window at all: it is stopped where it is noted.
+		expect(script).toContain("if (click.isTrusted !== true && placeOf(link) !== null) apply(prevent, click, []);");
+		// A handler that stops a link's click from travelling on does not keep it from being settled: it is settled
+		// when that handler returns, or at once for a click a script made.
+		expect(script).toContain(
+			"if (event.isTrusted === true) apply(soon, window, [() => settle(event)]);\n\t\telse settle(event);",
+		);
+		for (const way of [
+			"stopping(this);\n\t\tapply(stop, this, []);",
+			"stopping(this);\n\t\tapply(stopNow, this, []);",
+			"if (value) stopping(this);\n\t\t\tapply(bubble.set, this, [value]);",
+		])
+			expect(script, way).toContain(way);
 		// It goes out as a call on the port this document keeps: never on a window message, and by no call of the
 		// page's `qorpera` object.
 		expect(script).toContain(
@@ -243,7 +283,6 @@ describe("an HTML page's frame", () => {
 		const api = script.slice(script.indexOf("const page = freeze({"), script.indexOf("// Sent as a call"));
 		expect(api).toContain('read: freeze((path) => call("read", { path: String(path) })),');
 		expect(api).not.toMatch(/open|follow|href/);
-		expect(script).toContain('if (live) define(window, "qorpera", live.page);');
 		expect(script.match(/app\.postMessage\(/g)).toHaveLength(2);
 
 		// What stays the page's own, as the browser reads an address.

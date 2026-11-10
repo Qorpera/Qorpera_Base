@@ -192,6 +192,23 @@ screenshot of each read back with `company_read`, the weakest thing fixed, and a
   (`isTrusted`); a click a script made is stopped and leads nowhere. A Company File page beside a chat opens no links:
   its links are stopped too, and the host refuses them. In Storage's own preview a page is as before.
 
+  How the frame document hears a click does not depend on what the page's own handlers do with it:
+  - The link is noted on the click's way down, before any handler of the page has it: at the window, where the frame
+    document listens before the page is written, and at the root of every shadow tree, where a closed tree's own nodes
+    still show. It is the innermost link on the click's path, also one around a slot that the clicked node sits in.
+  - The click is settled once the page's handlers have had it, with the link's address as it is then. A click a
+    handler took (`preventDefault`, or a handler that returns false) is the page's. The listener that settles it is
+    put last at the window again at every click, so a handler the page added later still comes before it.
+  - A handler that stops the click from travelling on (`stopPropagation`, `stopImmediatePropagation`, `cancelBubble`)
+    does not keep it from being settled: such a click is settled when that handler returns, which for a real click
+    is before the browser acts on it.
+  - A click a script made is stopped on its way down, whether or not it travels up to the window.
+
+  One limit: a link inside a closed shadow tree is not seen when a handler of the page stops the click on its way
+  down, before the click reaches that tree. Such a click does what it did before; the same holds for a page that
+  puts its own function in place of `Event.prototype.stopPropagation`. A frame that leaves its page is ended by the
+  host as before (§5), so this is a dead link, not a way out.
+
 ## 5. Live data: the bridge (step 4)
 
 The page talks to the host only over **one `MessageChannel` port**, handed to the frame with the page, once
@@ -289,6 +306,7 @@ of their own:
 | a flood of links | each is one call of the app's budget (120 a minute); refused ones count toward the 300 that stop the frame |
 | a link as a probe (is this file there?) | nothing is read for a link; the answer is the same either way, and the frame document drops it |
 | the frame leaving its page | every click on a link that the page left alone is stopped, whoever made it; `#…` stays in the page, and `javascript:` is left to the browser as before |
+| the page's own handlers deciding what the frame hears | the link is noted before any handler of the page (on the click's way down, listened for before the page is written) and settled after them (a listener put last at every click); a click a handler stops from travelling on is settled when that handler returns; one named limit, in §4 |
 | a new tab reaching back into the app | opened with its opener cut before it loads, and no referrer (the site sends none); the offered line is `rel="noopener noreferrer"` |
 | what a page read, carried out in an address | as a link in a message: only on the member's click; accepted, in the threat model above |
 | the company's colours as a way to inject styles | only hex colours parsed from `brand.toml` reach the stylesheet; every other byte of it is fixed |

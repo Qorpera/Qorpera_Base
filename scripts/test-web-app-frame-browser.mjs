@@ -3,8 +3,9 @@
 // (packages/web/public/page-preview/index.html) under its rule from packages/web/public/_headers. Clicks are the
 // browser's own (trusted), which no unit test can make. Checks, for each kind of link a page can write: which clicks
 // reach the app as an `open` call on the port and with what address, that a click a script made reaches nothing, that
-// what is the page's own stays the page's (a jump inside the page, its own script, a click its handler took), and that
-// the frame never leaves the page it was handed, whatever was clicked (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4).
+// what is the page's own stays the page's (a jump inside the page, a click a handler of the page took, wherever and
+// whenever that handler was added), that a click a handler stops from travelling on is still heard, and that the
+// frame never leaves the page it was handed, whatever was clicked (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4).
 // Usage: QORPERA_WEB_TEST_BROWSER=<Chromium> node scripts/test-web-app-frame-browser.mjs
 // APP_FRAME_DOCUMENT=<file> serves another frame document (to see a weaker one fail); ONLY=<name> runs one page.
 import assert from "node:assert/strict";
@@ -70,14 +71,15 @@ document.body.append(frame.frame);`,
 /** A page says something to the test through the one way a page has: a read, which the app keeps. In single quotes,
  * so it also fits in an attribute. */
 const say = (text) => `qorpera.read('${text}')`;
-const style = "<style>a, #host { display: block; height: 30px; } svg { display: block; }</style>";
+const style = "<style>a, .box { display: block; height: 30px; } svg { display: block; }</style>";
 const variants = {
 	"the links a page writes": {
 		page: `<!doctype html>${style}<a id="app" href="app:sales">Sales</a><a id="file" href="folder:strategy/plan%202027.md">Plan</a>
 <a id="web" href="https://example.com/pricing?plan=team" target="_blank">Site</a><a id="spaced" href="  app:hiring ">Hiring</a>
 <a id="other" href="details.html">Details</a><a id="empty" href="">Again</a><a id="mail" href="mailto:a@example.com">Mail</a>
-<a id="inner" href="app:deep"><b><i id="deep">Deep</i></b></a>`,
-		clicks: ["#app", "#file", "#web", "#spaced", "#other", "#empty", "#mail", "#deep"],
+<a id="inner" href="app:deep"><b><i id="deep">Deep</i></b></a>
+<a id="rewritten" href="app:before" onclick="this.setAttribute('href', 'app:after')">Rewritten</a>`,
+		clicks: ["#app", "#file", "#web", "#spaced", "#other", "#empty", "#mail", "#deep", "#rewritten"],
 		calls: [
 			"open app:sales",
 			"open folder:strategy/plan%202027.md",
@@ -87,6 +89,8 @@ const variants = {
 			"open ",
 			"open mailto:a@example.com",
 			"open app:deep",
+			// Where the link leads once the page's handlers have had the click, as the browser would follow it.
+			"open app:after",
 		],
 	},
 	"a link followed from the keyboard": {
@@ -97,19 +101,57 @@ const variants = {
 	"what stays the page's own": {
 		page: `<!doctype html>${style}<a id="jump" href="#bottom">Down</a><a id="script" href="javascript:void ${say("script ran")}">Run</a>
 <a id="taken" href="app:sales" onclick="event.preventDefault(); ${say("page took it")}">Tab</a>
-<a id="late" href="app:hiring">Late</a><a id="plain" name="bottom">No address</a><p id="text">Text</p>
-<script>document.addEventListener("click", (event) => { if (event.target.id === "late") { event.preventDefault(); ${say("document took it")}; } });</script>`,
-		clicks: ["#jump", "#script", "#taken", "#late", "#plain", "#text"],
+<a id="answered" href="app:sales" onclick="${say("handler answered false")}; return false">Tab</a>
+<a id="late" href="app:hiring">Late</a><a id="later" href="app:hiring">Later</a>
+<a id="stopped" href="app:sales" onclick="event.stopPropagation(); event.preventDefault(); ${say("stopped and took it")}">Menu</a>
+<a id="plain" name="bottom">No address</a><p id="text">Text</p>
+<script>document.addEventListener("click", (event) => { if (event.target.id === "late") { event.preventDefault(); ${say("document took it")}; } });
+// A handler at the window that the page adds long after the frame's own.
+addEventListener("load", () => setTimeout(() => addEventListener("click", (event) => {
+	if (event.target.id === "later") { event.preventDefault(); ${say("a later window handler took it")}; }
+}), 50));</script>`,
+		clicks: ["#jump", "#script", "#taken", "#answered", "#late", "#later", "#stopped", "#plain", "#text"],
 		// The javascript: address is left to the browser, as before, and Chromium runs none in this frame: nothing is
 		// sent for it, and nothing runs.
-		calls: ["read page took it", "read document took it"],
+		calls: [
+			"read page took it",
+			"read handler answered false",
+			"read document took it",
+			"read a later window handler took it",
+			"read stopped and took it",
+		],
+	},
+	"a click a handler stops from travelling on": {
+		page: `<!doctype html>${style}<a id="stopped" href="app:stopped" onclick="event.stopPropagation()">Stopped</a>
+<a id="at-once" href="app:stopped-at-once">At once</a><a id="bubble" href="app:cancel-bubble" onclick="event.cancelBubble = true">Old way</a>
+<a id="down" href="app:stopped-on-the-way-down">Down</a><a id="other" href="details.html" onclick="event.stopPropagation()">Details</a>
+<div id="host" class="box"></div>
+<script>
+document.getElementById("at-once").addEventListener("click", (event) => event.stopImmediatePropagation());
+document.addEventListener("click", (event) => { if (event.target.id === "down") event.stopPropagation(); }, true);
+const host = document.getElementById("host");
+host.attachShadow({ mode: "closed" }).innerHTML = '<a href="app:closed-and-stopped" style="display:block;height:30px">Closed</a>';
+host.addEventListener("click", (event) => event.stopPropagation());
+</script>`,
+		clicks: ["#stopped", "#at-once", "#bubble", "#down", "#other", "#host"],
+		calls: [
+			"open app:stopped",
+			"open app:stopped-at-once",
+			"open app:cancel-bubble",
+			"open app:stopped-on-the-way-down",
+			"open details.html",
+			"open app:closed-and-stopped",
+		],
 	},
 	"a click a script made": {
 		page: `<!doctype html>${style}<a id="app" href="app:sales">Sales</a><a id="web" href="https://example.com/">Site</a><a id="other" href="details.html">Details</a>
+<a id="stopped" href="more.html" onclick="event.stopPropagation()">More</a>
 <script>addEventListener("load", () => {
-	for (const id of ["app", "web", "other"]) {
+	for (const id of ["app", "web", "other", "stopped"]) {
 		document.getElementById(id).click();
 		document.getElementById(id).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
+		// One that does not travel up to the window at all.
+		document.getElementById(id).dispatchEvent(new MouseEvent("click", { cancelable: true }));
 	}
 	qorpera.read("open is " + typeof qorpera.open + ", and the page has " + Object.keys(qorpera).sort().join(","));
 	setTimeout(() => ${say("still here")}, 300);
@@ -118,14 +160,25 @@ const variants = {
 		calls: ["read open is undefined, and the page has agents,list,onChange,read,table,todos", "read still here"],
 	},
 	"a link in a shadow tree": {
-		page: `<!doctype html>${style}<div id="host"></div><div id="open"></div><a id="around" href="app:around"><span id="slot"></span></a>
+		page: `<!doctype html>${style}<div id="host" class="box"></div><div id="open"></div><a id="around" href="app:around"><span id="inside-link"></span></a>
+<div id="slot-open"><span id="in-open-slot" class="box">In an open tree's slot</span></div>
+<div id="slot-closed"><span id="in-closed-slot" class="box">In a closed tree's slot</span></div>
 <script>
 document.getElementById("host").attachShadow({ mode: "closed" }).innerHTML = '<a href="app:closed" style="display:block;height:30px">Closed</a>';
 document.getElementById("open").attachShadow({ mode: "open" }).innerHTML = '<a id="inside" href="app:open" style="display:block;height:30px">Open</a>';
-document.getElementById("slot").attachShadow({ mode: "closed" }).innerHTML = '<b style="display:block;height:30px">Around</b>';
+document.getElementById("inside-link").attachShadow({ mode: "closed" }).innerHTML = '<b style="display:block;height:30px">Around</b>';
+// The link is in the shadow tree, around a slot; what is clicked is the page's own node, put into that slot.
+document.getElementById("slot-open").attachShadow({ mode: "open" }).innerHTML = '<a href="app:around-an-open-slot"><slot></slot></a>';
+document.getElementById("slot-closed").attachShadow({ mode: "closed" }).innerHTML = '<a href="app:around-a-closed-slot"><slot></slot></a>';
 </script>`,
-		clicks: ["#host", "#inside", "#slot"],
-		calls: ["open app:closed", "open app:open", "open app:around"],
+		clicks: ["#host", "#inside", "#inside-link", "#in-open-slot", "#in-closed-slot"],
+		calls: [
+			"open app:closed",
+			"open app:open",
+			"open app:around",
+			"open app:around-an-open-slot",
+			"open app:around-a-closed-slot",
+		],
 	},
 	"a link in a drawing": {
 		page: `<!doctype html><svg width="300" height="120" xmlns:xlink="http://www.w3.org/1999/xlink">
