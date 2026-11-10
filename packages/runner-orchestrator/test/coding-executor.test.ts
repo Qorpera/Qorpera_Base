@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	CLEANUP_STOP_BUDGET_MS,
 	CloudCodingExecutor,
-	CODING_DESCRIBE_BUDGET_MS,
 	CODING_LEASE_MARGIN_MS,
 	CODING_RETRY_PAUSES_MS,
 	CodingControlBusy,
@@ -12,6 +11,7 @@ import {
 	type CodingExecutorControl,
 	type CodingExecutorHost,
 	CodingLandConflict,
+	CodingLandRefused,
 	CodingMachineUnavailable,
 	type CodingPushCarrier,
 	CodingPushRefused,
@@ -20,10 +20,12 @@ import {
 	type CodingSubmission,
 	type CodingTurnState,
 	CodingWorkspaceFailed,
+	landRefusal,
 	PUBLICATION_UNFINISHED,
 	parseCodingSessionClaim,
 	parseCodingTurnState,
 	prepareUnfinished,
+	TURN_START_UNFINISHED,
 } from "../src/coding-executor.ts";
 import { CODING_VM_STOP_BUDGET_MS, codingHostId } from "../src/coding-executor-host.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
@@ -441,6 +443,45 @@ describe("the coding executor over a session turn", () => {
 		expect(w.host.detachSession).not.toHaveBeenCalled();
 	});
 
+	it("a landing refused by rule fails the turn with what to change", async () => {
+		const w = world();
+		const summary = landRefusal("main", "CODE_HOST_FILE_TOO_LARGE", ["assets/film.mov"])!;
+		expect(summary).toBe(
+			'The change was not landed, and nothing changed on main: it holds files larger than 256 MiB, which a repository kept in Qorpera does not take: "assets/film.mov". Take them out, commit and finish again.',
+		);
+		// A storage that is not as Qorpera left it is never a "finish again"; a code this does not know has no words.
+		expect(landRefusal("main", "CODE_HOST_AREA_FROM_GITHUB", ["code/acme/web"])).toMatch(
+			/^The change was not landed, and nothing changed on main: the repository's own storage .+ Finishing again will not help\./,
+		);
+		expect(
+			landRefusal(
+				"main",
+				"CODE_HOST_NAMES_NOT_NFC",
+				Array.from({ length: 23 }, (_, i) => `n${i}`),
+			),
+		).toContain('"n19" and 3 more');
+		expect(landRefusal("main", "CODE_HOST_LAND_FAILED", [])).toBeUndefined();
+		vi.mocked(w.host.publish).mockRejectedValueOnce(new CodingLandRefused("CODE_HOST_FILE_TOO_LARGE", summary));
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const report = vi.fn();
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		expect([completion.p_outcome, completion.p_summary, completion.p_artifacts]).toEqual(["failed", summary, null]);
+		expect(report).toHaveBeenCalledWith("publish", expect.objectContaining({ message: "CODE_HOST_FILE_TOO_LARGE" }));
+		expect(w.host.detachSession).not.toHaveBeenCalled();
+	});
+
 	it("a publication that fails for another reason fails the turn and says so, instead of letting the lease lapse", async () => {
 		const w = world();
 		const report = vi.fn();
@@ -715,7 +756,8 @@ describe("the coding executor over a session turn", () => {
 		expect(report).not.toHaveBeenCalled();
 	});
 
-	it("begins again only after a busy refusal", async () => {
+	it("begins again only after a busy refusal: any other failed admission that did not begin fails the turn and says so", async () => {
+		// 10 Nov 2026: one turn in six died here and was told as "the executor stopped responding".
 		const w = world();
 		const control: CodingExecutorControl = {
 			call: (method, args, signal) => {
@@ -728,11 +770,173 @@ describe("the coding executor over a session turn", () => {
 		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
 		const run = executor.runOnce(new AbortController().signal);
 		await vi.advanceTimersByTimeAsync(5000);
-		expect(await run).toBe("recovery-required");
+		expect(await run).toBe("failed");
 		expect(w.world.calls.filter((c) => c.method === "qorpera_begin_coding_turn")).toHaveLength(1);
 		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
 			["turn", "CODING_CONTROL_UNCONFIRMED"],
 		]);
+		const completions = w.world.calls.filter((c) => c.method === "qorpera_complete_coding_turn");
+		expect(completions.map((c) => [c.args.p_outcome, c.args.p_summary])).toEqual([["failed", TURN_START_UNFINISHED]]);
+		// The session stays attached with its workspace, for the follow-up.
+		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
+		expect(w.host.detachSession).not.toHaveBeenCalled();
+		expect(w.host.publish).not.toHaveBeenCalled();
+	});
+
+	it("an admission whose answer was lost goes on when the kernel describes the turn as running", async () => {
+		const w = world();
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const inner = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const control: CodingExecutorControl = {
+			call: async (method, args, signal) => {
+				const answer = await inner.call(method, args, signal);
+				// The kernel admitted the turn; its answer never arrived.
+				if (method === "qorpera_begin_coding_turn") throw new Error("CODING_CONTROL_UNCONFIRMED");
+				return answer;
+			},
+		};
+		const report = vi.fn();
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+		expect(w.world.calls.filter((c) => c.method === "qorpera_begin_coding_turn")).toHaveLength(1);
+		expect(w.world.calls.filter((c) => c.method === "qorpera_complete_coding_turn")).toHaveLength(1);
+		expect(w.host.publish).toHaveBeenCalledTimes(1);
+		expect(report).not.toHaveBeenCalled();
+	});
+
+	it("the workspace note is written again after a busy row or a lost answer; one that never lands fails the turn in words", async () => {
+		const w = world();
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const inner = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const failures: Error[] = [new CodingControlBusy(), new Error("CODING_CONTROL_UNCONFIRMED")];
+		const notes = (c: { method: string; args: Record<string, unknown> }) =>
+			c.method === "qorpera_record_coding_progress" && c.args.p_last_step === "Workspace ready";
+		const control: CodingExecutorControl = {
+			call: (method, args, signal) => {
+				const failure = notes({ method, args }) ? failures.shift() : undefined;
+				if (!failure) return inner.call(method, args, signal);
+				w.world.calls.push({ method, args });
+				return Promise.reject(failure);
+			},
+		};
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		const run = executor.runOnce(new AbortController().signal);
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(await run).toBe("completed");
+		expect(w.world.calls.filter(notes)).toHaveLength(3);
+
+		const lost = world();
+		const never: CodingExecutorControl = {
+			call: (method, args, signal) => {
+				if (!notes({ method, args })) return lost.control.call(method, args, signal);
+				lost.world.calls.push({ method, args });
+				return Promise.reject(new Error("CODING_CONTROL_UNCONFIRMED"));
+			},
+		};
+		const report = vi.fn();
+		const second = new CloudCodingExecutor({
+			control: never,
+			host: lost.host,
+			owner: "exec-test",
+			turnPollMs: 1,
+			report,
+		});
+		const failed = second.runOnce(new AbortController().signal);
+		await vi.advanceTimersByTimeAsync(20000);
+		expect(await failed).toBe("failed");
+		// The first try and two more.
+		expect(lost.world.calls.filter(notes)).toHaveLength(3);
+		expect(lost.world.calls.some((c) => c.method === "qorpera_begin_coding_turn")).toBe(false);
+		expect(lost.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args.p_summary).toBe(
+			TURN_START_UNFINISHED,
+		);
+		expect(report).toHaveBeenCalledTimes(1);
+	});
+
+	it("a report whose answer was lost is read back: a lease the kernel gave up means it went through, a turn still described is reported again", async () => {
+		const finish = (workerId: string) => ({
+			schema: "qorpera.coding-submission/v1",
+			workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		});
+		// 1. The report went through; its answer never arrived. The kernel then refuses the describe: the lease is gone.
+		const w = world();
+		const inner = withHook(w.control, endTurnOnPoll(w.world, "completed", finish(w.world.claim.workerId)));
+		const through: CodingExecutorControl = {
+			call: async (method, args, signal) => {
+				if (method === "qorpera_describe_coding_turn" && w.world.phase === "completed")
+					throw new CodingControlRefused(null);
+				const answer = await inner.call(method, args, signal);
+				if (method === "qorpera_complete_coding_turn") throw new Error("CODING_CONTROL_UNCONFIRMED");
+				return answer;
+			},
+		};
+		const report = vi.fn();
+		const executor = new CloudCodingExecutor({
+			control: through,
+			host: w.host,
+			owner: "exec-test",
+			turnPollMs: 1,
+			report,
+		});
+		expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+		expect(w.world.calls.filter((c) => c.method === "qorpera_complete_coding_turn")).toHaveLength(1);
+		expect(report).not.toHaveBeenCalled();
+
+		// 2. The report never reached the kernel, twice: the turn is still described, and the third report lands.
+		const v = world();
+		const again = withHook(v.control, endTurnOnPoll(v.world, "completed", finish(v.world.claim.workerId)));
+		let lost = 2;
+		const twice: CodingExecutorControl = {
+			call: (method, args, signal) => {
+				if (method !== "qorpera_complete_coding_turn" || lost-- <= 0) return again.call(method, args, signal);
+				v.world.calls.push({ method, args });
+				return Promise.reject(new Error("CODING_CONTROL_UNCONFIRMED"));
+			},
+		};
+		const second = new CloudCodingExecutor({ control: twice, host: v.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await second.runOnce(new AbortController().signal)).toBe("completed");
+		const reports = v.world.calls.filter((c) => c.method === "qorpera_complete_coding_turn");
+		expect(reports).toHaveLength(3);
+		for (const sent of reports) expect(sent.args).toEqual(reports[0]!.args);
+		expect(v.host.publish).toHaveBeenCalledTimes(1);
+
+		// 3. A report that never lands leaves the lease to lapse, as before.
+		const u = world();
+		const none = withHook(u.control, endTurnOnPoll(u.world, "completed", finish(u.world.claim.workerId)));
+		const never: CodingExecutorControl = {
+			call: (method, args, signal) => {
+				if (method !== "qorpera_complete_coding_turn") return none.call(method, args, signal);
+				u.world.calls.push({ method, args });
+				return Promise.reject(new Error("CODING_CONTROL_UNCONFIRMED"));
+			},
+		};
+		const third = new CloudCodingExecutor({ control: never, host: u.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await third.runOnce(new AbortController().signal)).toBe("recovery-required");
+		expect(u.world.calls.filter((c) => c.method === "qorpera_complete_coding_turn")).toHaveLength(3);
 	});
 
 	it("stops beginning again when the lease held at the first busy refusal ends, though heartbeats extend it", async () => {
@@ -752,7 +956,8 @@ describe("the coding executor over a session turn", () => {
 		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
 		const run = executor.runOnce(new AbortController().signal);
 		await vi.advanceTimersByTimeAsync(70000);
-		expect(await run).toBe("recovery-required");
+		// The turn still holds its lease (heartbeats renewed it): it fails saying so, never silently.
+		expect(await run).toBe("failed");
 		expect(heartbeats).toBeGreaterThanOrEqual(3);
 		expect(begins.length).toBeGreaterThan(20);
 		expect(begins.at(-1)!).toBeLessThan(leaseUntil);
@@ -764,8 +969,10 @@ describe("the coding executor over a session turn", () => {
 		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
 			["turn", "CODING_CONTROL_BUSY"],
 		]);
-		expect(w.host.detachSession).toHaveBeenCalledTimes(1);
-		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
+		expect(w.host.detachSession).not.toHaveBeenCalled();
+		expect(
+			w.world.calls.filter((c) => c.method === "qorpera_complete_coding_turn").map((c) => c.args.p_summary),
+		).toEqual([TURN_START_UNFINISHED]);
 	});
 
 	it("stops beginning again when the lease is lost", async () => {
@@ -880,9 +1087,12 @@ describe("the coding executor over a session turn", () => {
 					: w.control.call(method, args, signal),
 		};
 		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
-		expect(await executor.runOnce(new AbortController().signal)).toBe("recovery-required");
+		// Nothing began: the turn fails saying so, and does not wait in the queue.
+		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
 		expect(w.world.calls.map((c) => c.method)).not.toContain("qorpera_defer_coding_session");
-		expect(w.world.calls.map((c) => c.method)).not.toContain("qorpera_complete_coding_turn");
+		expect(w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args.p_summary).toBe(
+			TURN_START_UNFINISHED,
+		);
 	});
 
 	it("a deferral after an hours refusal that fails is reported and left to recovery", async () => {
@@ -1312,31 +1522,39 @@ describe("the lease and the turn's reads through a slow database", () => {
 		);
 		const r = run(w, s.control);
 		await vi.advanceTimersByTimeAsync(10000);
-		expect(await r.outcome).toBe("recovery-required");
+		// The kernel's answer: the session was cancelled or archived, or the lease is another's. Not a recovery.
+		expect(await r.outcome).toBe("released");
 		expect(r.reported()).toEqual([["turn", "CODING_CONTROL_REFUSED"]]);
 		// The one before the workspace, and the refused one.
 		expect(s.at(DESCRIBE)).toHaveLength(2);
 		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
 	});
 
-	it("ends the turn when a describe stays lost past its budget", async () => {
+	it("a describe that stays lost past its budget is said once, and the turn goes on while its lease is renewed", async () => {
 		const w = world();
-		const s = slow(w, ({ method, pass }) =>
-			method === DESCRIBE && w.world.phase === "running" ? unconfirmed() : pass(),
+		// Lost for the first 50 s of the run; the harness's turn ends at the first describe that is answered after.
+		const started = Date.now();
+		const s = slow(
+			w,
+			({ method, pass }) =>
+				method === DESCRIBE && w.world.phase === "running" && Date.now() - started < 50000 ? unconfirmed() : pass(),
+			50000,
 		);
 		const r = run(w, s.control);
 		await vi.advanceTimersByTimeAsync(40000);
-		expect(await r.outcome).toBe("recovery-required");
-		expect(r.reported()).toEqual([["turn", "CODING_CONTROL_UNCONFIRMED"]]);
+		// One budget of retries ran out (2, 4, 8 and 8 s apart), and the next poll asked again.
+		expect(r.reported()).toEqual([["watch", "CODING_CONTROL_UNCONFIRMED"]]);
 		const [, first, ...rest] = s.at(DESCRIBE);
-		// 2, 4, 8 and 8 s apart; the next pause would end past the budget.
 		timeline(
-			rest.map((at) => at - first!),
-			[2000, 6000, 14000, 22000],
+			rest.slice(0, 5).map((at) => at - first!),
+			[2000, 6000, 14000, 22000, 23000],
 		);
-		expect(rest).toHaveLength(4);
-		near(s.ended()! - first!, 22000);
-		expect(s.ended()! - first!).toBeLessThan(CODING_DESCRIBE_BUDGET_MS);
+		expect(s.ended()).toBeUndefined();
+		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
+		await vi.advanceTimersByTimeAsync(40000);
+		expect(await r.outcome).toBe("blocked");
+		expect(r.reported()).toEqual([["watch", "CODING_CONTROL_UNCONFIRMED"]]);
+		expect(s.at(HEARTBEAT).length).toBeGreaterThanOrEqual(3);
 	});
 
 	it("a lost lease cancels a describe's retries at once", async () => {

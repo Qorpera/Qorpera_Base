@@ -12,11 +12,12 @@ import {
 	CodeHostJobFailure,
 	CodeHostRefusal,
 	exportCodeBranch,
+	landCodeBranch,
 } from "../src/code-host-jobs.ts";
 import { CODE_HOST_EXPORT_MAXIMUM_BYTES, CodeHostRepositories } from "../src/code-host-repositories.ts";
 import { attachCodeSession, type CodeAreaBroker } from "../src/code-host-seed.ts";
 import type { CodeHostJobs } from "../src/code-host-views.ts";
-import { type CodingSessionClaim, CodingWorkspaceFailed } from "../src/coding-executor.ts";
+import { CodingLandRefused, type CodingSessionClaim, CodingWorkspaceFailed } from "../src/coding-executor.ts";
 import type { CodingFolderRepositorySession } from "../src/coding-folder-repositories.ts";
 import { type CodingBrokerGitCommand, createCodingBrokerGitRunner, pushCloudCodingBundle } from "../src/coding-git.ts";
 import type { LxdCodingMachineBinding } from "../src/coding-machine.ts";
@@ -29,7 +30,11 @@ vi.mock("../src/code-host-seed.ts", async (original) => {
 });
 vi.mock("../src/code-host-jobs.ts", async (original) => {
 	const real = await original<typeof import("../src/code-host-jobs.ts")>();
-	return { ...real, exportCodeBranch: vi.fn(real.exportCodeBranch) };
+	return {
+		...real,
+		exportCodeBranch: vi.fn(real.exportCodeBranch),
+		landCodeBranch: vi.fn(real.landCodeBranch),
+	};
 });
 
 const exec = promisify(execFile),
@@ -245,6 +250,54 @@ describe("CodeHostRepositories", () => {
 			f.repositories.start({ claim: f.session.claim, assertAuthorized: f.authorized }, signal()),
 		).rejects.toThrow("CODE_HOST_REPOSITORY_NOT_HERE");
 		await expect(f.repositories.land(f.session, head, signal())).rejects.toThrow("CODE_HOST_REPOSITORY_NOT_HERE");
+	});
+	it("a landing the code host refuses by rule says what to change, never to finish again as it is", async () => {
+		const f = await fixture();
+		const kept: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const claim = { ...f.session.claim, repository: kept, baseSha: null };
+		const { baseSha } = await f.repositories.start({ claim, assertAuthorized: f.authorized }, signal());
+		const session = { ...f.session, claim, baseSha };
+		await f.repositories.prepare(session, signal());
+		// A commit the session's branch does not hold.
+		const elsewhere = await f.repositories.land(session, "f".repeat(40), signal()).catch((e) => e);
+		expect(elsewhere).toBeInstanceOf(CodingLandRefused);
+		expect(elsewhere.message).toBe("CODE_HOST_EXPORT_MOVED");
+		expect(elsewhere.summary).toBe(
+			"The change was not landed, and nothing changed on main: the commit handed in is not on this session's own branch. Commit the work on the branch the session's workspace has checked out, and finish with that commit.",
+		);
+		// Two names in one folder that differ only by case: main's files could not hold both.
+		await f.commit(f.tree, "cart.js");
+		const head = await f.commit(f.tree, "Cart.js");
+		const names = await f.repositories.land(session, head, signal()).catch((e) => e);
+		expect(names).toBeInstanceOf(CodingLandRefused);
+		expect(names.message).toBe("CODE_HOST_NAMES_DIFFER_BY_CASE");
+		expect(names.cause).toBeInstanceOf(CodeHostRefusal);
+		expect(names.summary).toMatch(
+			/^The change was not landed, and nothing changed on main: it holds names in one folder that differ only by upper and lower case: .*"Cart\.js".*Rename them so that each is its own name, commit and finish again\.$/,
+		);
+		expect(names.summary).toContain('"cart.js"');
+		// Nothing landed: main is where the start left it.
+		expect(await f.git(join(f.companyRoot, "code/qorpera/example/repo.git"), "rev-parse", "refs/heads/main")).toBe(
+			baseSha,
+		);
+	});
+	it("a landing that lost main to another one is made once more, and no more than that", async () => {
+		const f = await fixture();
+		const kept: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const claim = { ...f.session.claim, repository: kept, baseSha: null };
+		const { baseSha } = await f.repositories.start({ claim, assertAuthorized: f.authorized }, signal());
+		const session = { ...f.session, claim, baseSha };
+		await f.repositories.prepare(session, signal());
+		const head = await f.commit(f.tree, "cart.js");
+		const moved = () => new CodeHostJobFailure("CODE_HOST_BASE_MOVED", "main moved");
+		vi.mocked(landCodeBranch).mockClear();
+		vi.mocked(landCodeBranch).mockRejectedValueOnce(moved()).mockRejectedValueOnce(moved());
+		await expect(f.repositories.land(session, head, signal())).rejects.toThrow("CODE_HOST_BASE_MOVED");
+		expect(vi.mocked(landCodeBranch)).toHaveBeenCalledTimes(2);
+		vi.mocked(landCodeBranch).mockClear();
+		vi.mocked(landCodeBranch).mockRejectedValueOnce(moved());
+		expect(await f.repositories.land(session, head, signal())).toEqual({ state: "fast-forward", mainSha: head });
+		expect(vi.mocked(landCodeBranch)).toHaveBeenCalledTimes(2);
 	});
 	it("a start where a GitHub copy is fails the turn, saying the place is taken", async () => {
 		const f = await fixture();

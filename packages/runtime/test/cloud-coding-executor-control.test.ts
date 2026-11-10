@@ -337,6 +337,69 @@ describe("dedicated coding executor control", () => {
 			),
 		).toEqual({ state: "failed", snapshot: null, failure });
 	});
+	it("tells a statement the kernel cancelled for its time apart as busy: it wrote nothing either", async () => {
+		const cancelled = {
+			code: "57014",
+			details: null,
+			hint: null,
+			message: "canceling statement due to statement timeout",
+		};
+		const cases: [status: number, expected: string][] = [
+			[500, "CODING_CONTROL_BUSY"],
+			[504, "CODING_CONTROL_BUSY"],
+			[400, "CODING_CONTROL_UNCONFIRMED"],
+			[503, "CODING_CONTROL_UNCONFIRMED"],
+		];
+		for (const [status, expected] of cases) {
+			const fetcher = vi.fn<typeof fetch>(
+				async () =>
+					new Response(JSON.stringify(cancelled), { status, headers: { "content-type": "application/json" } }),
+			);
+			const control = new CodingExecutorHttpControl({
+				supabaseUrl: "https://project.supabase.co",
+				serviceRoleKey: "private",
+				fetch: fetcher,
+			});
+			const call = control.call("qorpera_complete_coding_turn", {}, new AbortController().signal);
+			await expect(call).rejects.toThrow(expected);
+			if (expected === "CODING_CONTROL_BUSY") await expect(call).rejects.toBeInstanceOf(CodingControlBusy);
+			expect(fetcher).toHaveBeenCalledTimes(1);
+		}
+	});
+	it("keeps why a call stayed unconfirmed as its cause, for the log: the call, the status, the kernel's code and message", async () => {
+		const answer = (status: number, body: string) =>
+			new CodingExecutorHttpControl({
+				supabaseUrl: "https://project.supabase.co",
+				serviceRoleKey: "private",
+				fetch: vi.fn<typeof fetch>(
+					async () => new Response(body, { status, headers: { "content-type": "application/json" } }),
+				),
+			});
+		const paused = { code: "55000", details: "row (1, secret)", hint: null, message: "Company execution is paused" };
+		const cases: [status: number, body: string, why: string][] = [
+			[500, JSON.stringify(paused), "qorpera_begin_coding_turn: HTTP 500 55000 Company execution is paused"],
+			[
+				400,
+				JSON.stringify({ ...paused, code: "22023", message: "Coding  progress\nis invalid" }),
+				"qorpera_begin_coding_turn: HTTP 400 22023 Coding progress is invalid",
+			],
+			[503, "upstream connect error", "qorpera_begin_coding_turn: HTTP 503"],
+			[200, "not json", "qorpera_begin_coding_turn: answer not read"],
+			[
+				500,
+				JSON.stringify({ ...paused, message: "m".repeat(900) }),
+				`qorpera_begin_coding_turn: HTTP 500 55000 ${"m".repeat(300)}`.slice(
+					0,
+					300 + "qorpera_begin_coding_turn: ".length,
+				),
+			],
+		];
+		for (const [status, body, why] of cases) {
+			const call = answer(status, body).call("qorpera_begin_coding_turn", {}, new AbortController().signal);
+			// The message is the fixed code alone; the details, where a row's values would be, are never kept.
+			await expect(call).rejects.toMatchObject({ message: "CODING_CONTROL_UNCONFIRMED", cause: { message: why } });
+		}
+	});
 	it("does not wait on an error body that stalls", async () => {
 		const fetcher = vi.fn<typeof fetch>(
 			async () => new Response(new ReadableStream({ start() {} }), { status: 500 }),
@@ -361,9 +424,10 @@ describe("dedicated coding executor control", () => {
 			serviceRoleKey: "private",
 			fetch: fetcher,
 		});
-		await expect(control.call("qorpera_heartbeat_coding_session", {}, new AbortController().signal)).rejects.toThrow(
-			"CODING_CONTROL_UNCONFIRMED",
-		);
+		const call = control.call("qorpera_heartbeat_coding_session", {}, new AbortController().signal);
+		await expect(call).rejects.toThrow("CODING_CONTROL_UNCONFIRMED");
+		// Nothing of what the transport said is kept, as its cause either.
+		await expect(call).rejects.toMatchObject({ cause: { message: "qorpera_heartbeat_coding_session: no answer" } });
 		expect(fetcher).toHaveBeenCalledTimes(1);
 		expect(
 			() =>
