@@ -610,9 +610,13 @@ export class CodeHostCare {
 	}
 
 	/** Jobs 4 and 5: the pack (never pruning, never packing refs), only for a repository fsck found whole, whose refs are
-	 * in a stored bundle, that has no `shallow` file and has loose objects to pack. Then a new job looks at what was
-	 * really saved: a repository whose refs moved or that fsck now finds problems in is `damaged`. A pack whose result
-	 * could not be looked at leaves fsck's state `timeout`, so the next run looks first. */
+	 * in a stored bundle, that has no `shallow` file and has loose objects to pack. The pack's own job reads the refs
+	 * once more before it packs, with the company's line held: a turn that finished since the night's check (between
+	 * two jobs, or while the stored copy was read) moved them, and then nothing is packed this night. Then a new job
+	 * looks at what was really saved: a repository that is gone or that fsck now finds problems in is `damaged`. A pack
+	 * whose result could not be looked at, or after which the refs are not the ones packed (a pack moves no ref, so
+	 * other work came in between: not damage, and not proof either), leaves fsck's state `timeout`, so the next run
+	 * looks first. */
 	async #pack(
 		run: CareRun,
 		outcome: CodeCareOutcome,
@@ -632,13 +636,19 @@ export class CodeHostCare {
 		try {
 			const collected = await this.#job(run, "gc", signal, async (job, block, go) => {
 				if (!go.flags.gc) return undefined;
+				// What is packed is what fsck passed and a copy holds: the refs of the night's check. They are read
+				// again here, where no other job of the company can run: moved refs are another repository than the
+				// one that was checked, and its pack waits for the run that checks it.
+				const now = checkedOf(await this.#jobs.check(job, { repository }, {}));
+				if (now.state !== "present" || now.refsSha256 !== checked.refsSha256) return { state: "moved" as const };
 				packing = true;
 				return await this.#jobs.collect(job, { repository }, block, { packRefs: false, prune: false });
 			});
 			if (collected?.state === "collected") outcome.gc.state = "collected";
 			else {
-				// Leases were still held, or another view holds the block: nothing was packed.
-				if (collected) outcome.gc.state = "held";
+				// The refs moved since the check, leases were still held, or another view holds the block: nothing was
+				// packed. Only the last two are the pack's own `held`.
+				if (collected && collected.state !== "moved") outcome.gc.state = "held";
 				packing = false;
 			}
 		} catch (error) {
@@ -673,12 +683,20 @@ export class CodeHostCare {
 				return { again, fsck };
 			});
 			if (fsck) outcome.fsck = { state: fsck.state, detail: fsck.state === "ok" ? null : this.#detail(fsck.detail) };
-			if (again.state !== "present" || again.refsSha256 !== checked.refsSha256 || fsck?.state === "problems") {
+			if (again.state !== "present" || fsck?.state === "problems") {
 				run.sound = false;
 				outcome.gc.state = "damaged";
 				outcome.problem = "GC_DAMAGED";
 				this.#problem(run, "verify", new Error("GC_DAMAGED"));
 			} else if (fsck?.state !== "ok") unverified(outcome.fsck);
+			else if (again.refsSha256 !== checked.refsSha256)
+				// Whole, but not the refs that were packed. A pack moves no ref, so other work came between its job and
+				// this one. That is no damage, and this look proves nothing about the pack either: the next run starts
+				// with an fsck of the refs as they are then, and packing stays on.
+				unverified({
+					state: "timeout",
+					detail: "GC_NOT_VERIFIED: the refs moved between the pack and the look at it",
+				});
 			else {
 				outcome.mainSha = again.mainSha;
 				outcome.worktrees = again.worktrees.length;
