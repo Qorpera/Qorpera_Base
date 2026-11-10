@@ -66,6 +66,22 @@ describe("a message's sent time on a hover", () => {
 		expect(shownSentTime()?.textContent).toMatch(/^Yesterday /);
 	});
 
+	it("shows the next message's time at once across two gaps on the way", () => {
+		// Review of #1651 round 2, F1: the second gap forgot that a label had just been showing.
+		const { root, theirs, mine, blank } = thread();
+		const row = h("div", { class: "pair-row" });
+		root.append(row);
+		over(theirs);
+		vi.advanceTimersByTime(400);
+		expect(shownSentTime()).toBeDefined();
+		over(row);
+		vi.advanceTimersByTime(100);
+		over(blank);
+		vi.advanceTimersByTime(100);
+		over(mine);
+		expect(shownSentTime()?.textContent).toBe(sentTimeText(mine));
+	});
+
 	it("stands beside the message, away from the thread's middle", () => {
 		const { theirs, mine } = thread();
 		over(theirs);

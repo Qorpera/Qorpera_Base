@@ -44,7 +44,9 @@ export function shownSentTime(): HTMLElement | undefined {
 function hide(moved = false): void {
 	if (timer !== undefined) window.clearTimeout(timer);
 	timer = undefined;
-	hiddenAt = moved && current && tip?.classList.contains("is-shown") ? Date.now() : 0;
+	// A move that finds nothing showing (a second gap on the way) keeps the moment the label last went.
+	if (!moved) hiddenAt = 0;
+	else if (current && tip?.classList.contains("is-shown")) hiddenAt = Date.now();
 	current = undefined;
 	tip?.classList.remove("is-shown");
 }
