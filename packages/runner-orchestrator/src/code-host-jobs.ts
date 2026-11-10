@@ -70,26 +70,29 @@ export class CodeHostJobFailure extends Error {
 	}
 }
 
-const SHA = /^[0-9a-f]{40}$/;
-const SHA256 = /^[0-9a-f]{64}$/;
-const ZERO = "0".repeat(40);
-const MiB = 1024 ** 2;
-const GiB = 1024 ** 3;
+// What follows without a doc comment of its own surface is exported for the code host's other job files (a second
+// file of jobs builds on the same run, the same guarded move of main and the same limits). It is not the executor's
+// surface: the executor calls the job functions.
+export const SHA = /^[0-9a-f]{40}$/;
+export const SHA256 = /^[0-9a-f]{64}$/;
+export const ZERO = "0".repeat(40);
+export const MiB = 1024 ** 2;
+export const GiB = 1024 ** 3;
 /** Q13: single files over 256 MiB are refused until large files; the folder refuses a pack of 256 MiB or more. */
-const MAX_BLOB = 256 * MiB;
-const MAX_PACK = 256 * MiB;
-const MAX_LISTING = 256 * MiB;
+export const MAX_BLOB = 256 * MiB;
+export const MAX_PACK = 256 * MiB;
+export const MAX_LISTING = 256 * MiB;
 /** A commit file read (5h reads at most 1 MiB). */
-const MAX_READ = 16 * MiB;
-const MAX_TEXT = 64 * 1024;
+export const MAX_READ = 16 * MiB;
+export const MAX_TEXT = 64 * 1024;
 /** Every ref of a code area in one listing: a session may keep branches and tags of its own beside its branch. */
-const MAX_REFS = 64 * MiB;
+export const MAX_REFS = 64 * MiB;
 /** One exec's output is held in memory, and LXD's pipe carries at most this (lxd-client.ts). */
-const MAX_PIECE = 256 * MiB;
+export const MAX_PIECE = 256 * MiB;
 /** The platform's repository config, byte for byte: no include, extension, filter, hook or worktree setting. */
 export const CODE_AREA_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n";
-const MAIN_LOCK = "qorpera: the default branch, platform-only";
-const WORKTREE_LOCK = "qorpera: a coding session's worktree";
+export const MAIN_LOCK = "qorpera: the default branch, platform-only";
+export const WORKTREE_LOCK = "qorpera: a coding session's worktree";
 
 /** Every command's settings, command scope, so they beat the repository's. §6's table for the shared directory, and
  * for gc: worker branches never packed (packed-refs is shared and the folder can't read its lines; gc packs refs
@@ -162,7 +165,7 @@ function workerIdOf(value: unknown): string {
 	if (!isUuid(value)) throw new Error("INVALID_CODE_HOST_JOB");
 	return value;
 }
-function closed<T extends string>(value: unknown, keys: readonly T[]): Record<T, unknown> {
+export function closed<T extends string>(value: unknown, keys: readonly T[]): Record<T, unknown> {
 	if (
 		!value ||
 		typeof value !== "object" ||
@@ -190,7 +193,7 @@ export function codeAreaPath(repository: CloudCodingRepository): string {
 	const { owner, name } = parseCloudCodingRepository(repository);
 	return `code/${owner.toLowerCase()}/${name.toLowerCase()}`;
 }
-function tail(text: string): string {
+export function tail(text: string): string {
 	return text.length > 2000 ? text.slice(-2000) : text;
 }
 
@@ -198,7 +201,7 @@ type PathType = "none" | "link" | "directory" | "file" | "other";
 const PATH_TYPES = new Set<string>(["none", "link", "directory", "file", "other"]);
 
 /** One job: its scratch directory, its environment, and the code area's paths. */
-class Run {
+export class Run {
 	readonly job: CodeHostJob;
 	readonly layout: CodeHostLayout;
 	readonly repository: CloudCodingRepository;
@@ -524,7 +527,9 @@ class Run {
 
 /** The records of `ls-tree -l -z`, `<mode> <type> <object> <size>\t<path>\0`, with the path as raw bytes. Only this
  * form leaves the path unquoted: `--format` C-quotes `%(path)` even with -z. */
-function treeRecords(listing: Buffer): { mode: string; type: string; name: string; size: string; path: Buffer }[] {
+export function treeRecords(
+	listing: Buffer,
+): { mode: string; type: string; name: string; size: string; path: Buffer }[] {
 	const records: ReturnType<typeof treeRecords> = [];
 	let start = 0;
 	while (start < listing.length) {
@@ -541,7 +546,7 @@ function treeRecords(listing: Buffer): { mode: string; type: string; name: strin
 	return records;
 }
 
-async function withJob<T>(job: CodeHostJob, repository: CloudCodingRepository, use: (run: Run) => Promise<T>) {
+export async function withJob<T>(job: CodeHostJob, repository: CloudCodingRepository, use: (run: Run) => Promise<T>) {
 	const layout = checkLayout(job.layout);
 	job.signal.throwIfAborted();
 	const run = new Run(job, layout, repository, `${layout.scratchRoot}/${randomUUID()}`);
@@ -715,7 +720,13 @@ esac || { printf 'abort\\n' >&3; answer abort; finish 11; }
 printf 'commit\\n' >&3; answer commit || finish 10
 finish 0`;
 
-async function moveBase(run: Run, state: "present" | "partial" | "none", base: string, commit: string, old: string) {
+export async function moveBase(
+	run: Run,
+	state: "present" | "partial" | "none",
+	base: string,
+	commit: string,
+	old: string,
+) {
 	// The script makes its two pipes in the job's scratch. A job that moves a second time (nightly care's check: main/'s
 	// HEAD, then its files) removes them first.
 	if (run.moves > 0) {
@@ -932,7 +943,7 @@ export async function exportCodeBranch(
  * never holds both a copy of a GitHub repository and a repository kept here. */
 export const CODE_AREA_IN_QORPERA_REF = "refs/qorpera/kept-here";
 /** Who makes the platform's own commits in a repository kept in Qorpera: its first commit and its merges. */
-const PLATFORM_COMMITTER = ["-c", "user.name=Qorpera", "-c", "user.email=code@qorpera.com"] as const;
+export const PLATFORM_COMMITTER = ["-c", "user.name=Qorpera", "-c", "user.email=code@qorpera.com"] as const;
 
 export interface CodeAreaStarted {
 	/** `started`: the repository was made by this job, with one empty commit. `present`: it was already there. */
@@ -1223,7 +1234,7 @@ export function codeRefsSha256(refs: readonly CodeAreaRef[]): string {
 /** Every ref of a repository kept in Qorpera, and its default branch's commit. The mark and the default branch are
  * read as `Run.ref` reads them: never symbolic, always a commit. A seeded area without the mark is a copy of a GitHub
  * repository, and one without its default branch a start that stopped before it: both are refused. */
-async function keptRefs(run: Run): Promise<{ refs: CodeAreaRef[]; mainSha: string }> {
+export async function keptRefs(run: Run): Promise<{ refs: CodeAreaRef[]; mainSha: string }> {
 	const base = `refs/heads/${run.repository.baseBranch}`,
 		listed = await run.refs(run.repo);
 	const commit = (ref: string): string | null => {
@@ -1240,7 +1251,7 @@ async function keptRefs(run: Run): Promise<{ refs: CodeAreaRef[]; mainSha: strin
 }
 
 /** A care job's repository: one kept in Qorpera, as a landing's. */
-function keptRepositoryOf(value: unknown): CloudCodingRepository {
+export function keptRepositoryOf(value: unknown): CloudCodingRepository {
 	const repository = repositoryOf(value);
 	if (repository.host !== "qorpera") throw new Error("INVALID_CODE_HOST_JOB");
 	return repository;
