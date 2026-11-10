@@ -721,7 +721,7 @@ describe("the card's frame", () => {
 		expect(card.dialog.el.style.left).not.toBe("");
 	});
 
-	it("moves a card low in the rail up while its figure picker shows, so the picker stays inside the window", () => {
+	it("moves a card low in the rail up while its figure picker shows, so the picker stays inside the window", async () => {
 		vi.stubGlobal("innerHeight", 800);
 		// The card follows its own size and its picker's through a ResizeObserver.
 		const observed = new Set<Element>();
@@ -776,11 +776,28 @@ describe("the card's frame", () => {
 		expect(picker.hidden).toBe(false);
 		changed();
 		// The picker's bottom stays 12px above the window's.
-		expect(top() + 96 + 330).toBe(800 - 12);
+		const raised = top();
+		expect(raised + 96 + 330).toBe(800 - 12);
 		// Put away, the card goes back level with its row.
 		figure.click();
 		expect(picker.hidden).toBe(true);
 		changed();
+		expect(top()).toBe(592);
+		// A press elsewhere in the card puts the picker away as it goes down, but the card holds still until the press
+		// ends: the card's Close, pressed, stays under the pointer to take the click.
+		figure.click();
+		changed();
+		expect(top()).toBe(raised);
+		const close = card.dialog.el.querySelector<HTMLButtonElement>(".surface-close")!;
+		close.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		expect(picker.hidden).toBe(true);
+		changed();
+		window.dispatchEvent(new Event("resize"));
+		expect(top()).toBe(raised);
+		// Let go, after its click, the card goes back level with its row.
+		window.dispatchEvent(new Event("pointerup"));
+		expect(top()).toBe(raised);
+		await new Promise((resolve) => setTimeout(resolve));
 		expect(top()).toBe(592);
 	});
 
