@@ -13,6 +13,19 @@ export const CLOUD_AGENT_SEND_INSTRUCTIONS =
 	`Link every file you made or changed in the company folder as a markdown link to folder: and its company path, such as ${CLOUD_FOLDER_LINK_EXAMPLE}. ` +
 	"If a send's result was lost, retry with the same idempotencyKey and exactly the same arguments. Never include private reasoning or credentials.";
 
+/** The fixed code of a run whose turn ended without the final send it owed, also after the one more turn it was
+ * given to send it (10 November 2026). The run's stored failure carries it, and the member reads "the agent finished
+ * without sending its answer", not a refused step. */
+export const CLOUD_AGENT_NO_FINAL_SEND_CODE = "AGENT_TURN_ENDED_WITHOUT_FINAL_SEND";
+
+/** The run's turn ended, and the final send it owed was never made. */
+export class CloudAgentNoFinalSend extends Error {
+	constructor() {
+		super("Native agent turn ended without a final send");
+		this.name = "CloudAgentNoFinalSend";
+	}
+}
+
 export interface CloudAgentSendInput {
 	idempotencyKey: string;
 	text: string;
@@ -82,7 +95,7 @@ export function parseCloudAgentSendReceipt(value: unknown, runId: string): Cloud
  */
 export class CloudAgentMouth {
 	readonly #runId: string;
-	readonly #send: (input: CloudAgentSendInput) => Promise<CloudAgentSendReceipt>;
+	readonly #send: (input: CloudAgentSendInput, signal?: AbortSignal) => Promise<CloudAgentSendReceipt>;
 	readonly #signal?: AbortSignal;
 	readonly #receipts = new Map<string, CloudAgentSendReceipt>();
 	#pending: Promise<void> = Promise.resolve();
@@ -90,7 +103,7 @@ export class CloudAgentMouth {
 
 	constructor(
 		runId: string,
-		send: (input: CloudAgentSendInput) => Promise<CloudAgentSendReceipt>,
+		send: (input: CloudAgentSendInput, signal?: AbortSignal) => Promise<CloudAgentSendReceipt>,
 		signal?: AbortSignal,
 	) {
 		if (!UUID_PATTERN.test(runId)) throw new Error("Invalid mouth run id");
@@ -104,19 +117,33 @@ export class CloudAgentMouth {
 		this.#closed = true;
 		this.#signal?.throwIfAborted();
 		const final = [...this.#receipts.values()].find((receipt) => receipt.phase === "final");
-		if (!final && (requireFinalSend || this.#receipts.size > 0)) {
-			throw new Error("Native agent turn ended without a final send");
-		}
+		if (!final && (requireFinalSend || this.#receipts.size > 0)) throw new CloudAgentNoFinalSend();
 		return { messageCount: this.#receipts.size, finalMessageId: final?.messageId ?? null };
 	}
 
-	/** Trusted in-process tool adapter. No listener, bearer or recipient selector. */
-	send(value: CloudAgentSendInput): Promise<CloudAgentSendReceipt> {
+	/** What the mouth has delivered, once the send in flight has ended. It stays open: the run may still be given a
+	 * turn to make the final send it owes (finish closes it). */
+	async settled(): Promise<{ messageCount: number; final: boolean }> {
+		await this.#pending;
+		return {
+			messageCount: this.#receipts.size,
+			final: [...this.#receipts.values()].some((receipt) => receipt.phase === "final"),
+		};
+	}
+
+	/** Trusted in-process tool adapter. No listener, bearer or recipient selector. `signal` is the tool call's own: a
+	 * send it has stopped is not started, and the sender is handed it, so a send being asked again stops with its call. */
+	send(value: CloudAgentSendInput, signal?: AbortSignal): Promise<CloudAgentSendReceipt> {
 		const input = parseCloudAgentSendInput(value);
 		const delivery = this.#pending.then(async () => {
 			if (this.#closed) throw new Error("Mouth is closed");
 			this.#signal?.throwIfAborted();
-			const receipt = parseCloudAgentSendReceipt(await this.#send(input), this.#runId);
+			signal?.throwIfAborted();
+			// A send with no call of its own reaches the sender as it always did, with its input alone.
+			const receipt = parseCloudAgentSendReceipt(
+				await (signal ? this.#send(input, signal) : this.#send(input)),
+				this.#runId,
+			);
 			if (receipt.phase !== input.phase) throw new Error("Send receipt phase changed");
 			this.#receipts.set(receipt.messageId, receipt);
 			return receipt;

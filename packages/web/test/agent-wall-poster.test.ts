@@ -36,33 +36,32 @@ beforeEach(() => localStorage.clear());
 afterEach(() => document.body.replaceChildren());
 
 describe("an agent's wall above its composer", () => {
-	it("shows working and, nearest the composer, waiting, with a summary on its button, and nothing done", () => {
+	it("shows what waits, with a summary on its button, and nothing worked on or done", () => {
 		const poster = new AgentWallPoster();
 		poster.show(AGENT, WALL);
 		expect(poster.shown).toBe(true);
 		expect(poster.el.getAttribute("aria-label")).toBe("Shop Operations's wall");
-		expect(poster.el.querySelector(".agent-wall-summary")?.textContent).toBe("1 waits on you · 2 working");
+		expect(poster.el.querySelector(".agent-wall-summary")?.textContent).toBe("1 waits on you");
 		expect(poster.el.querySelector(".agent-wall-state")?.classList.contains("is-waiting")).toBe(true);
 		expect(
 			[...poster.el.querySelectorAll(".agent-wall-part")].map((part) => part.getAttribute("aria-label")),
-		).toEqual(["Working on", "Waits on you"]);
-		expect(texts(poster.el, ".is-waiting .agent-wall-text")).toEqual([
-			"Pick a shop name. My pick is Båndklar. The names",
-		]);
-		expect(texts(poster.el, ".is-working .agent-wall-text")).toEqual([
-			"Checking five shops' prices",
-			// A link in a headline reads as its words on the row; the link itself is there when the row opens.
-			"Choosing the shop system, see Launch checklist",
-		]);
-		// What is done is not shown (Jonas, 10 Nov 2026).
+		).toEqual(["Waits on you"]);
+		// A link in a headline reads as its words on the row; the link itself is there when the row opens.
+		expect(texts(poster.el, ".agent-wall-text")).toEqual(["Pick a shop name. My pick is Båndklar. The names"]);
+		// What is worked on and what is done are not shown (Jonas, 10 Nov 2026).
+		expect(poster.el.textContent).not.toContain("working");
+		expect(poster.el.textContent).not.toContain("Checking five shops' prices");
 		expect(poster.el.textContent).not.toContain("done");
 		expect(poster.el.textContent).not.toContain("Two suppliers found");
-		expect(poster.el.querySelector(".is-done, .agent-wall-done")).toBeNull();
+		expect(poster.el.querySelector(".is-working, .is-done, .agent-wall-done")).toBeNull();
 	});
 
 	it("draws links as the same folder-link and app-card buttons a message has", () => {
 		const poster = new AgentWallPoster();
-		poster.show(AGENT, WALL);
+		poster.show(
+			AGENT,
+			"## Waits on you\n- Pick a shop name. [The names](folder:research/shop-names.md)\n- Approve the list, see [Launch checklist](app:launch-checklist)\n",
+		);
 		const folder = poster.el.querySelector<HTMLButtonElement>("button.folder-link")!;
 		expect([folder.dataset.folderPath, folder.textContent]).toEqual(["research/shop-names.md", "The names"]);
 		const app = poster.el.querySelector<HTMLButtonElement>("button.app-card")!;
@@ -82,14 +81,19 @@ describe("an agent's wall above its composer", () => {
 		expect(clicked).toEqual(["research/shop-names.md", "app:launch-checklist"]);
 	});
 
-	it("is hidden with no agent, no wall, or a wall with nothing waiting or worked on", () => {
+	it("is hidden with no agent, no wall, or a wall with nothing that waits", () => {
 		const poster = new AgentWallPoster();
 		poster.show(AGENT, null);
 		expect(poster.shown).toBe(false);
 		poster.show(AGENT, "# Wall\n\n## Waits on you\n\n## Working on\n\n## Done\n");
 		expect(poster.shown).toBe(false);
-		// Only done: nothing to show.
-		poster.show(AGENT, "## Done\n- 2026-11-05: Plan written\n- 2026-11-04: Team hired\n");
+		// Only work going on and work done: nothing to show.
+		poster.show(AGENT, "## Working on\n- Writing the plan\n- Finding a supplier\n");
+		expect(poster.shown).toBe(false);
+		poster.show(
+			AGENT,
+			"## Working on\n- Writing the plan\n\n## Done\n- 2026-11-05: Plan written\n- 2026-11-04: Team hired\n",
+		);
 		expect(poster.shown).toBe(false);
 		poster.show(undefined, WALL);
 		expect(poster.shown).toBe(false);
@@ -101,9 +105,9 @@ describe("an agent's wall above its composer", () => {
 
 	it("shows what reads of a wall that breaks its rules", () => {
 		const poster = new AgentWallPoster();
-		poster.show(AGENT, "## Working on\n- Writing the plan\nnot an item\n\n## Done\n- yesterday: Hired\n");
+		poster.show(AGENT, "## Waits on you\n- Approve the plan\nnot an item\n\n## Done\n- yesterday: Hired\n");
 		expect(poster.shown).toBe(true);
-		expect(texts(poster.el, ".agent-wall-text")).toEqual(["Writing the plan"]);
+		expect(texts(poster.el, ".agent-wall-text")).toEqual(["Approve the plan"]);
 	});
 
 	it("starts closed, even when something waits, opens on a click, and keeps that per agent", () => {
@@ -125,26 +129,18 @@ describe("an agent's wall above its composer", () => {
 		expect(again.el.classList.contains("is-folded")).toBe(true);
 	});
 
-	it("leads with a spinner while only work goes on", () => {
-		const poster = new AgentWallPoster();
-		poster.show(AGENT, "## Working on\n- Writing the plan\n");
-		expect(poster.el.querySelector(".agent-wall-summary")?.textContent).toBe("1 working");
-		expect(poster.el.querySelector(".agent-wall-state")?.classList.contains("is-working")).toBe(true);
-	});
-
 	it("marks what is new once opened, and forgets it once closed", () => {
 		const first = new AgentWallPoster();
-		first.show(AGENT, "## Working on\n- Writing the plan\n");
+		first.show(AGENT, "## Waits on you\n- Approve the plan\n");
 		// Seen for the first time: nothing to mark from.
-		expect(first.el.querySelector(".agent-wall-summary")?.textContent).toBe("1 working");
-		const CHANGED =
-			"## Working on\n- Writing the plan\n- Finding a supplier\n\n## Done\n- 2026-11-05: Plan written\n";
+		expect(first.el.querySelector(".agent-wall-summary")?.textContent).toBe("1 waits on you");
+		const CHANGED = "## Waits on you\n- Approve the plan\n- Pick a supplier\n\n## Done\n- 2026-11-05: Plan written\n";
 		const next = new AgentWallPoster();
 		next.show(AGENT, CHANGED);
 		expect(next.el.classList.contains("is-folded")).toBe(true);
-		expect(next.el.querySelector(".agent-wall-summary")?.textContent).toBe("2 working");
+		expect(next.el.querySelector(".agent-wall-summary")?.textContent).toBe("2 wait on you");
 		toggle(next).click();
-		expect(texts(next.el, ".agent-wall-item.is-new .agent-wall-text")).toEqual(["Finding a supplier"]);
+		expect(texts(next.el, ".agent-wall-item.is-new .agent-wall-text")).toEqual(["Pick a supplier"]);
 		expect(next.el.querySelector(".agent-wall-item.is-new .visually-hidden")?.textContent).toBe(" (New)");
 		toggle(next).click();
 		// Seen now: the next visit marks nothing.
@@ -204,6 +200,8 @@ describe("an agent's wall above its composer", () => {
 		poster.answerSent(onAnswer.mock.calls[0]?.[1] as string);
 		expect(poster.el.querySelector(".agent-wall-answer")?.textContent).toBe("Answered");
 		expect(poster.el.querySelector(".agent-wall-count-waiting")).toBeNull();
+		// The button's dot is for what still waits.
+		expect(poster.el.querySelector(".agent-wall-state")?.classList.contains("is-waiting")).toBe(false);
 		// It can still be answered again.
 		poster.el.querySelector<HTMLButtonElement>(".agent-wall-answer")?.click();
 		expect(onAnswer).toHaveBeenCalledTimes(2);
@@ -214,14 +212,14 @@ describe("an agent's wall above its composer", () => {
 
 	it("stays closed and marks an item that joins while it shows", () => {
 		const poster = new AgentWallPoster();
-		poster.show(AGENT, "## Working on\n- Writing the plan\n");
-		poster.show(AGENT, "## Waits on you\n- Approve the plan\n\n## Working on\n- Writing the plan\n");
+		poster.show(AGENT, "## Waits on you\n- Approve the plan\n");
+		poster.show(AGENT, "## Waits on you\n- Approve the plan\n- Pick a supplier\n");
 		expect(poster.el.classList.contains("is-folded")).toBe(true);
-		expect(poster.el.querySelector(".agent-wall-summary")?.textContent).toBe("1 waits on you · 1 working");
-		expect(texts(poster.el, ".is-new .agent-wall-text")).toEqual(["Approve the plan"]);
+		expect(poster.el.querySelector(".agent-wall-summary")?.textContent).toBe("2 wait on you");
+		expect(texts(poster.el, ".is-new .agent-wall-text")).toEqual(["Pick a supplier"]);
 		// The mark stays while the member is here.
-		poster.show(AGENT, "## Waits on you\n- Approve the plan\n\n## Working on\n- Writing the plan\n- More\n");
-		expect(texts(poster.el, ".is-new .agent-wall-text")).toEqual(["More", "Approve the plan"]);
+		poster.show(AGENT, "## Waits on you\n- Approve the plan\n- Pick a supplier\n- Name the shop\n");
+		expect(texts(poster.el, ".is-new .agent-wall-text")).toEqual(["Pick a supplier", "Name the shop"]);
 	});
 
 	it("keeps working when storage throws", () => {
@@ -338,11 +336,9 @@ describe("items that open", () => {
 ## Waits on you
 - Pick a bundle
   Two looks, same price. [The sketch](folder:sketches/bundles.svg)
-
-## Working on
-- Building the shop demo
+- Try the shop demo
   See [Shop demo](app:shop-demo)
-- Checking prices
+- Confirm the prices
 `;
 	const row = (poster: AgentWallPoster, index: number) =>
 		poster.el.querySelectorAll<HTMLElement>(".agent-wall-item")[index]!;
@@ -354,9 +350,9 @@ describe("items that open", () => {
 		document.body.append(poster.el);
 		poster.show(AGENT, DETAILED);
 		expect(texts(poster.el, ".agent-wall-text")).toEqual([
-			"Building the shop demo",
-			"Checking prices",
 			"Pick a bundle",
+			"Try the shop demo",
+			"Confirm the prices",
 		]);
 		// A headline with nothing more is no button.
 
@@ -388,8 +384,8 @@ describe("items that open", () => {
 		waiting(poster).querySelector<HTMLButtonElement>(".agent-wall-row")!.click();
 		expect(waiting(poster).querySelector<HTMLElement>(".agent-wall-detail")!.hidden).toBe(true);
 		// An app it links opens as the message's app card.
-		row(poster, 0).querySelector<HTMLButtonElement>(".agent-wall-row")!.click();
-		expect(row(poster, 0).querySelector(".agent-wall-preview.is-app .app-card")).not.toBeNull();
+		row(poster, 1).querySelector<HTMLButtonElement>(".agent-wall-row")!.click();
+		expect(row(poster, 1).querySelector(".agent-wall-preview.is-app .app-card")).not.toBeNull();
 	});
 
 	it("keeps a headline's links out of its row, reads an encoded picture path, and tells twin headlines apart", async () => {

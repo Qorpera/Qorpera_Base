@@ -1933,6 +1933,7 @@ export function mountApplication(
 						};
 					},
 					bankConnection: () => createWebConnectors(cloud, controller.profile),
+					openSettings: (tab) => openSettings(tab),
 				});
 				return;
 			case "sites": {

@@ -185,13 +185,22 @@ test("the guest helper with the folder mount stays under the executor's 64 KiB r
 test("the image has a desktop that only `desktop start` starts, with Chromium sandboxed, and checks it end to end", () => {
 	// deploy/machine/README.md, "The desktop" (9 Nov 2026).
 	const packager = read("scripts/package-machine-guest.mjs");
-	const files = [...packager.matchAll(/\{ file: "([^"]+)", installedPath: "([^"]+)", mode: "(\d{4})" \}/g)].map(
+	const files = [...packager.matchAll(/\{\s*file: "([^"]+)",\s*installedPath: "([^"]+)",\s*mode: "(\d{4})",?\s*\}/g)].map(
 		([, file, installedPath, mode]) => ({ file, installedPath, mode }),
 	);
 	assert.deepEqual(files, [
 		{ file: "desktop-session", installedPath: "/opt/qorpera-machine/desktop-session", mode: "0555" },
 		{ file: "desktop", installedPath: "/usr/local/bin/desktop", mode: "0555" },
 		{ file: "qorpera-chromium.apparmor", installedPath: "/etc/apparmor.d/qorpera-chromium", mode: "0644" },
+		{ file: "desktop-selftest.html", installedPath: "/opt/qorpera-machine/desktop-selftest.html", mode: "0444" },
+		{ file: "playwright-check.cjs", installedPath: "/opt/qorpera-machine/playwright-check.cjs", mode: "0444" },
+		{ file: "chromium", installedPath: "/usr/local/bin/chromium", mode: "0555" },
+		{ file: "qorpera-machine-profile.sh", installedPath: "/etc/profile.d/qorpera-machine.sh", mode: "0644" },
+		{
+			file: "qorpera-chromium-policy.json",
+			installedPath: "/etc/opt/chrome_for_testing/policies/managed/qorpera.json",
+			mode: "0644",
+		},
 	]);
 	const required = words(imageScript.match(/for file in ([^;]+); do\n\t\[\[ -f \$PACKAGE\/\$file \]\]/)[1]);
 	for (const { file, installedPath, mode } of files) {
@@ -245,7 +254,7 @@ test("the image has a desktop that only `desktop start` starts, with Chromium sa
 	assert.doesNotMatch(proof, /modprobe|iptables -[ID]/);
 	const cli = spawnSync("bash", [join(repositoryRoot, "deploy/machine/desktop"), "help"], { encoding: "utf8" });
 	assert.equal(cli.status, 0);
-	for (const command of ["start", "stop", "status", "shot", "open", "run", "click", "double", "move", "drag", "type", "key", "scroll", "windows"])
+	for (const command of ["start", "stop", "status", "shot", "open", "run", "click", "double", "move", "drag", "type", "key", "scroll", "windows", "size", "selftest"])
 		assert.match(cli.stdout, new RegExp(`^desktop ${command}\\b`, "m"), command);
 	const unknown = spawnSync("bash", [join(repositoryRoot, "deploy/machine/desktop"), "fly"], { encoding: "utf8" });
 	assert.equal(unknown.status, 2);
@@ -327,3 +336,60 @@ test("the image carries save_coding_value's clipboard helper as its own file, wi
 	}
 });
 
+
+test("a desktop is asked for: small machines refuse it, chosen files open on it, and pages work without a screen too", () => {
+	// deploy/machine/README.md, "The desktop" (10 Nov 2026: Jonas's shape, and the audit's fixes).
+	const command = read("deploy/machine/desktop");
+	// A machine below a desktop computer's size refuses `desktop start`, and names the way to get one.
+	assert.match(command, /\nMIN_CPUS=2\n/);
+	assert.match(command, /\nMIN_MEMORY_KB=3500000\n/);
+	assert.match(command, /if \(\( cpus < MIN_CPUS \|\| memory < MIN_MEMORY_KB \)\); then\n\t\t\tfail "this machine is too small for a desktop: [^\n]*machine_start with desktop true" 3\n/);
+	// Files and folders are put on the desktop as links (the company's stay where they are) and opened; a folder with a
+	// page is served on the machine's loopback only.
+	assert.match(command, /ln -s -- "\$path" "\$place"\n/);
+	// Nothing on the desktop is ever replaced: the same link is used again, and a taken name gets a number (review r1 F1).
+	assert.doesNotMatch(command, /rm -rf -- "\$place"/);
+	assert.match(command, /if \(\( ! copy \)\) && \[\[ -L \$place && \$\(readlink -- "\$place"\) == "\$path" \]\]; then break; fi\n/);
+	assert.match(command, /if \[\[ ! -e \$place && ! -L \$place \]\]; then\n\t\t\tif \(\( copy \)\); then\n\t\t\t\tcp -a -- "\$path" "\$place"\n/);
+	for (const line of [
+		'\tdesktop open /tmp/site --copy | grep "as site-2)" >/dev/null || { echo "a copy did not get a name of its own" >&2; exit 1; }\n',
+		"\techo edited >/home/desktop/Desktop/site-2/kept.txt\n",
+		'\t\t{ echo "opening again replaced something on the desktop" >&2; exit 1; }\n',
+	])
+		assert.ok(imageScript.includes(line), line);
+	assert.match(command, /launch \/usr\/bin\/python3 -m http\.server "\$port" --bind 127\.0\.0\.1 --directory "\$folder"\n/);
+	assert.match(command, /for target in "\$@"; do open_target "\$target" 0; done\n/);
+	// 3D drawing, no test bar, the session's bus for launched programs.
+	assert.match(command, /--disable-infobars\n\t\t--enable-unsafe-swiftshader\)/);
+	assert.match(command, /--setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=\$RUN\/bus"/);
+	// Text beyond plain ASCII is pasted (xdotool types a capital Å small), on both selections.
+	assert.match(command, /if \[\[ \$text == \*\[!\[:ascii:\]\]\* \|\| \$text == \*\[\[:cntrl:\]\]\* \]\]; then\n/);
+	assert.match(command, /xdotool key --clearmodifiers shift\+Insert\n/);
+	// A picture nothing could show is refused.
+	assert.match(command, /&& ! mountpoint -q \/company; then\n\t\tfail "this machine has no company folder at \/company/);
+	// A forgotten desktop stops itself; every desktop command puts that off.
+	const session = read("deploy/machine/desktop-session");
+	assert.match(session, /\nIDLE=\$\{QORPERA_DESKTOP_IDLE_SECONDS:-3600\}\n/);
+	assert.match(command, /\ttouch "\$RUN\/last-use"\n/);
+	assert.match(session, /dbus-daemon --session --address="\$DBUS_SESSION_BUS_ADDRESS" --nofork --nopidfile &\n/);
+	// Root's Chromium runs without the sandbox root cannot use; any other account keeps it.
+	const wrapper = read("deploy/machine/chromium");
+	assert.match(wrapper, /if \[ "\$\(id -u\)" = 0 \]; then\n\texec \/usr\/lib\/qorpera-chromium\/chrome --no-sandbox --enable-unsafe-swiftshader "\$@"\nfi\nexec \/usr\/lib\/qorpera-chromium\/chrome --enable-unsafe-swiftshader "\$@"\n$/);
+	assert.ok(!imageScript.includes("ln -sf /usr/lib/qorpera-chromium/chrome /usr/local/bin/chromium"), "the wrapper is a file, never a link to the binary");
+	assert.deepEqual(JSON.parse(read("deploy/machine/qorpera-chromium-policy.json")).TranslateEnabled, false);
+	// Playwright by pinned version with its own browsers, found from any folder; ffmpeg; the build proves each.
+	assert.match(imageScript, /\nPLAYWRIGHT_VERSION=\d+\.\d+\.\d+\n/);
+	assert.match(imageScript, /npm install -g --ignore-scripts --no-fund --no-audit "playwright@\$\{PLAYWRIGHT_VERSION\}"\n/);
+	assert.match(read("deploy/machine/qorpera-machine-profile.sh"), /\nexport PLAYWRIGHT_BROWSERS_PATH=\/opt\/ms-playwright\n/);
+	const apt = words(imageScript.match(/apt-get install -y --no-install-recommends((?:[^\n]*\\\n)*[^\n]*)/)[1]);
+	for (const tool of ["ffmpeg", "fonts-noto-cjk", "xsel"]) assert.ok(apt.includes(tool), tool);
+	for (const line of [
+		"\tdesktop selftest\n",
+		'\tmkdir /tmp/empty && (cd /tmp/empty && bash -lc "node /opt/qorpera-machine/playwright-check.cjs")\n',
+		'\tif desktop shot /company/never.png 2>/dev/null; then echo "a screenshot went into an unmounted /company" >&2; exit 1; fi\n',
+		"\tdesktop start --lang da-DK --tz Europe/Copenhagen\n",
+	])
+		assert.ok(imageScript.includes(line), line);
+	// The selftest reads 3D drawing and the typed text from the page's title.
+	assert.match(read("deploy/machine/desktop-selftest.html"), /"SELFTEST\[webgl=" \+ \(context \? "yes" : "no"\) \+ "\|typed=" \+ typed\.value \+ "\]"/);
+});

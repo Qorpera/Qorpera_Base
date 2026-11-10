@@ -177,9 +177,9 @@ describe("the shipped pages (C6a)", () => {
 		const main = h("main");
 		document.body.append(main);
 		renderInterface(main, controller, "members");
-		// The Members page draws itself (views/members.ts, test/members.test.ts): no tabs, no blocks.
-		expect(main.querySelector(".interface-title h1")?.textContent).toBe("Members");
-		expect(main.querySelector("[role=tablist]")).toBeNull();
+		// The Members page draws itself (views/members.ts, test/members.test.ts): no header, no tabs, no blocks.
+		expect(main.querySelector("section.members > h1.visually-hidden")?.textContent).toBe("Members");
+		expect(main.querySelector(".interface-title, [role=tablist]")).toBeNull();
 		expect(main.querySelector(".members-page")).not.toBeNull();
 		const page = main.firstElementChild;
 		renderInterface(main, controller, "members");
@@ -618,26 +618,8 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 });
 
 describe("review round 1 (web)", () => {
-	it("draws Members again after another page took the area, and follows the company", () => {
-		const { controller } = company([], { members: 3, pages: pages(false, true) });
-		const main = h("main");
-		document.body.append(main);
-		renderInterface(main, controller, "members");
-		const members = main.firstElementChild;
-		main.replaceChildren(h("section", null, "a thread"));
-		renderInterface(main, controller, "members");
-		expect(main.firstElementChild).not.toBe(members);
-		expect(main.querySelector(".interface-title h1")?.textContent).toBe("Members");
-	});
-
-	it("shows rows in the block's order", () => {
-		const { controller } = company([
-			run(ada.id, 1, { updatedAt: "2026-10-02T09:00:00Z" }),
-			run(bo.id, 2, { updatedAt: "2026-10-02T10:00:00Z" }),
-		]);
-		const rows = interfaceRows(controller, "working") ?? [];
-		expect(rows.map(({ row }) => row.agent)).toEqual([ada.id, bo.id]);
-		// A list without an order keeps its source's order.
+	/** A page an agent built: one list of who is working. */
+	const work = () => {
 		const parsed = parseInterfaceFile(`format = "qorpera.interface/v0"
 
 [interface]
@@ -655,13 +637,36 @@ line = "{what}"
 figure = "agent"
 `);
 		if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
+		return parsed.file;
+	};
+
+	it("draws Members again after another page took the area, and follows the company", () => {
+		const { controller } = company([], { members: 3, pages: pages(false, true) });
 		const main = h("main");
-		renderInterfaceFile(main, controller, `order-${Math.random()}`, parsed.file);
+		document.body.append(main);
+		renderInterface(main, controller, "members");
+		const members = main.firstElementChild;
+		main.replaceChildren(h("section", null, "a thread"));
+		renderInterface(main, controller, "members");
+		expect(main.firstElementChild).not.toBe(members);
+		expect(main.querySelector("section.members > h1.visually-hidden")?.textContent).toBe("Members");
+	});
+
+	it("shows rows in the block's order", () => {
+		const { controller } = company([
+			run(ada.id, 1, { updatedAt: "2026-10-02T09:00:00Z" }),
+			run(bo.id, 2, { updatedAt: "2026-10-02T10:00:00Z" }),
+		]);
+		const rows = interfaceRows(controller, "working") ?? [];
+		expect(rows.map(({ row }) => row.agent)).toEqual([ada.id, bo.id]);
+		// A list without an order keeps its source's order.
+		const main = h("main");
+		renderInterfaceFile(main, controller, `order-${Math.random()}`, work());
 		expect([...main.querySelectorAll(".interface-block strong")].map((el) => el.textContent)).toEqual(["Ada", "Bo"]);
 	});
 
 	it("waits while the company loads and says when live updates are not connected", () => {
-		const { controller } = company([], { members: 3, pages: pages(false, true) });
+		const { controller } = company([run(ada.id, 1, {})], { members: 3, pages: pages(false, true) });
 		controller.store.set({ loading: true, staff: [] });
 		const main = h("main");
 		renderInterface(main, controller, "members");
@@ -669,9 +674,15 @@ figure = "agent"
 		expect(main.textContent).not.toContain("This page isn't available here yet.");
 		controller.store.set({ loading: false, staff: [cofounder, ada, bo, cy], realtime: "connecting" });
 		renderInterface(main, controller, "members");
+		// Members is pictures only: it has no header, so no live note either (as the Mailbox and the Bank page).
+		expect(main.querySelector(".members-page")).not.toBeNull();
+		expect(main.querySelector(".interface-live")).toBeNull();
+		// A page with a header says it there.
+		const name = `live-${Math.random()}`;
+		renderInterfaceFile(main, controller, name, work());
 		expect(main.querySelector(".interface-live")?.textContent).toBe("connecting");
 		controller.store.set({ realtime: "connected" });
-		renderInterface(main, controller, "members");
+		renderInterfaceFile(main, controller, name, work());
 		expect(main.querySelector(".interface-live")?.textContent).toBe("Live");
 	});
 

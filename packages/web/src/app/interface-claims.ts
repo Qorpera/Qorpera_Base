@@ -33,6 +33,8 @@ export interface InterfaceWrites {
 	readonly mailManage?: () => MailboxManage;
 	/** The company's connections, for the Bank page's Connect the bank: its sign-in and whether it is connected. */
 	readonly bankConnection?: () => Pick<WebConnectors, "list" | "beginSignIn" | "finishSignIn">;
+	/** Opens Settings at a tab, for the Members page's Connect ChatGPT and Sign in again. */
+	readonly openSettings?: (tab: "ai-subscriptions") => void;
 }
 
 /** The offer an accept answers: the cell it names and what it read there. */
