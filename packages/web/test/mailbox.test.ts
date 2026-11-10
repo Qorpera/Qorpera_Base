@@ -705,12 +705,12 @@ describe("Sent, Addresses and Write", () => {
 		// A name that is an address itself is still the name: nobody at it gets the email.
 		paste('"old@example.com" <new@example.com>');
 		expect(chips()).toEqual(["new@example.com"]);
-		// So with no quotes around it, and with a remark in round brackets; an address pointed at wrongly is kept, and
-		// says so.
+		// So with no quotes around it, and with a remark in round brackets; an entry that points at what is no address is
+		// kept whole, and says so.
 		paste("was@example.com <anna@example.com>, bo@example.com (before: bo@old.example), Carl <carl@gmaill>");
-		expect(chips()).toEqual(["new@example.com", "anna@example.com", "bo@example.com", "carl@gmaill"]);
-		expect(texts(panel(), ".mailbox-chip.is-invalid .mailbox-chip-text")).toEqual(["carl@gmaill"]);
-		button(panel(), "Remove carl@gmaill")!.click();
+		expect(chips()).toEqual(["new@example.com", "anna@example.com", "bo@example.com", "Carl <carl@gmaill>"]);
+		expect(texts(panel(), ".mailbox-chip.is-invalid .mailbox-chip-text")).toEqual(["Carl <carl@gmaill>"]);
+		button(panel(), "Remove Carl <carl@gmaill>")!.click();
 		// Typed, an entry is read the same way.
 		type(to(), '"dan@old.example" <dan@example.com>,');
 		expect(chips()).toEqual(["new@example.com", "anna@example.com", "bo@example.com", "dan@example.com"]);
@@ -965,6 +965,88 @@ describe("Sent, Addresses and Write", () => {
 		button(main, "Write")!.click();
 		expect(texts(panel(), ".mailbox-chip-text")).toEqual([]);
 		expect(to().value).toBe("");
+	});
+
+	// Review of #1650, round 5: pasted for an agent, "Anna (Acme); Anna (Beta)" lost what tells the two apart, and so
+	// one of them.
+	it("keeps an entry with no address whole, so two names are never made one", async () => {
+		const { main, controller, fake } = await mailbox(() => {});
+		vi.spyOn(controller, "openStaffConversation").mockResolvedValue(session.sessionId);
+		const send = vi.spyOn(controller, "sendPrompt").mockResolvedValue(true);
+		await vi.waitFor(() => expect(button(main, "Write")).toBeDefined());
+		button(main, "Write")!.click();
+		const panel = () => main.querySelector<HTMLFormElement>(".mailbox-write-panel")!;
+		const to = () => panel().querySelector<HTMLInputElement>(".mailbox-write-to input")!;
+		const chips = () => texts(panel(), ".mailbox-chip-text");
+		const wrong = () => texts(panel(), ".mailbox-chip.is-invalid .mailbox-chip-text");
+		const paste = (text: string) =>
+			!to().dispatchEvent(
+				Object.assign(new Event("paste", { bubbles: true, cancelable: true }), {
+					clipboardData: { getData: () => text },
+				}),
+			);
+		const give = (name: string) => {
+			panel().querySelector<HTMLButtonElement>(".mailbox-writer")!.click();
+			menuRow(name).click();
+		};
+		give("Ada");
+		// A name is kept with its remark, and a quoted name with its comma: two entries, two chips.
+		expect(paste("Anna (Acme); Anna (Beta)")).toBe(true);
+		expect(chips()).toEqual(["Anna (Acme)", "Anna (Beta)"]);
+		// So is an entry that points at what is no address, and one whose only `@` word is none: each as it stands.
+		expect(paste('Anna <Acme>, Bo <Acme>\n"Holm, Carl"\t(Acme)\nDan @Acme; Eva @Acme')).toBe(true);
+		const names = [
+			"Anna (Acme)",
+			"Anna (Beta)",
+			"Anna <Acme>",
+			"Bo <Acme>",
+			'"Holm, Carl" (Acme)',
+			"Dan @Acme",
+			"Eva @Acme",
+		];
+		expect(chips()).toEqual(names);
+		// Typed, the same.
+		type(to(), "Finn (Acme), Finn (Beta),");
+		expect(chips()).toEqual([...names, "Finn (Acme)", "Finn (Beta)"]);
+		// An agent takes a name as well as an address, so for one a pasted list is read as if typed: the name that stands
+		// beside an address with nothing pointing at it is a chip of its own, and so is one typed before what is pasted.
+		expect(paste("Gry (Acme) gry@example.com; Gry (Beta) <gry@beta.example>")).toBe(true);
+		type(to(), "Hans Holm ");
+		to().setSelectionRange(10, 10);
+		expect(paste("hans@example.com; ida@example.com")).toBe(true);
+		const addresses = ["gry@example.com", "gry@beta.example", "hans@example.com", "ida@example.com"];
+		const all = [
+			...names,
+			"Finn (Acme)",
+			"Finn (Beta)",
+			"Gry (Acme)",
+			"gry@example.com",
+			"gry@beta.example",
+			"Hans Holm",
+			"hans@example.com",
+			"ida@example.com",
+		];
+		expect(chips()).toEqual(all);
+		expect(to().value).toBe("");
+		expect(wrong()).toEqual([]);
+		// In the member's own email each name is a chip of its own too, and each says it is no address. Only an address
+		// can be sent to there, so the name beside a pasted address is left out.
+		give("You");
+		expect(chips()).toEqual(all);
+		expect(wrong()).toEqual(all.filter((each) => !addresses.includes(each)));
+		expect(paste("Jon (Acme) jon@example.com")).toBe(true);
+		expect(chips()).toEqual([...all, "jon@example.com"]);
+		give("Ada");
+		// The agent is told every one of them.
+		type(panel().querySelector("textarea")!, "Ask when the new price starts.");
+		panel().requestSubmit();
+		await vi.waitFor(() =>
+			expect(send).toHaveBeenCalledWith(
+				session.sessionId,
+				`Please write an email to ${[...all, "jon@example.com"].join(", ")} from hello@acme.example: Ask when the new price starts.`,
+			),
+		);
+		expect(calls(fake, "qorpera_send_member_mail")).toEqual([]);
 	});
 
 	it("holds the member's email back until it has who it goes to, a subject and its text, then sends it", async () => {

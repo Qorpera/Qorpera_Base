@@ -144,9 +144,10 @@ const isAddress = (text: string) => text.length <= 254 && ADDRESS.test(text.toLo
 interface Entry {
 	/** The address it points at ("Anna Holm <anna@acme.dk>"), or null when it points at nothing. It alone is the entry's
 	 * recipient, whatever stands beside it: the name may be an address of its own ("old@acme.dk <anna@acme.dk>"), and
-	 * nobody at it is written to. An entry that points at more than one address, or has one more standing after the one
-	 * it points at, says no clear thing: it is kept here as it stands, which is no address, for the member to put
-	 * right. */
+	 * nobody at it is written to. An entry that points at what is no address ("Carl <carl@gmaill>", "Anna <Acme>"), at
+	 * more than one address, or has one more standing after the one it points at, says no clear thing: it is kept here
+	 * whole, as it stands, which is no address, for the member to put right. Whole, so that two such entries are never
+	 * made one ("Anna <Acme>", "Bo <Acme>"). */
 	pointed: string | null;
 	/** The rest, in the order it stands: what is plain, and each aside whole. An aside is a quoted text or a remark in
 	 * round brackets: a name or a note, and never a recipient, whatever it holds and wherever it stands, alone in its
@@ -169,8 +170,10 @@ function entriesOf(list: string): Entry[] {
 	let unclear = false;
 	let from = 0;
 	const close = (stop: number, end: number) => {
+		const [first] = pointed;
+		const clear = first !== undefined && pointed.length === 1 && !unclear && isAddress(first);
 		entries.push({
-			pointed: unclear || pointed.length > 1 ? list.slice(from, stop).trim() : (pointed[0] ?? null),
+			pointed: clear ? first : first === undefined ? null : list.slice(from, stop).trim().replace(/\s+/g, " "),
 			parts,
 			end,
 		});
@@ -242,11 +245,12 @@ function asRecipients(text: string): string[] {
 	}
 	return found;
 }
-/** A pasted list of who an email goes to, as its recipients. An entry that points at its address is that address
- * alone. In one that points at nothing, whatever has an `@` outside an aside is a recipient ("mailto:bo@acme.dk",
- * "Bo Berg bo@acme.dk") and what stands beside it is left out; an entry with no `@` is taken whole, and one of asides
- * alone as it stands. Right or wrong, a recipient is kept: what is no address becomes a chip that says so, never
- * nothing. */
+/** A list pasted into the member's own email, as its recipients. Only an address can be sent to there, so the name
+ * beside one is left out. An entry that points at its address is that address alone. One that points at nothing and
+ * has an address outside an aside is that address ("mailto:bo@acme.dk", "Bo Berg bo@acme.dk"): the name and the asides
+ * beside it are left out, and whatever else has an `@` there is kept with it, right or wrong. An entry with no address
+ * in it has nothing to stand for it: it is kept whole, as it stands, with what tells it from another ("Anna (Acme)",
+ * "Anna (Beta)"). So no entry is dropped, and no two are made one: what is no address becomes a chip that says so. */
 function pastedRecipients(text: string): string[] {
 	const found: string[] = [];
 	for (const entry of entriesOf(text)) {
@@ -254,18 +258,17 @@ function pastedRecipients(text: string): string[] {
 			found.push(entry.pointed);
 			continue;
 		}
-		const words = entry.parts
+		const addressed = entry.parts
 			.filter((part) => !part.aside)
 			.flatMap((part) => part.text.split(/[\s<>)[\]]+/))
 			.map((word) => word.replace(/^mailto:/i, ""))
-			.filter(Boolean);
-		const addressed = words.filter((word) => word.includes("@"));
+			.filter((word) => word.includes("@"));
 		const whole = entry.parts
 			.map((part) => part.text)
 			.join("")
-			.trim();
-		if (addressed.length) found.push(...addressed);
-		else if (words.length) found.push(words.join(" "));
+			.trim()
+			.replace(/\s+/g, " ");
+		if (addressed.some(isAddress)) found.push(...addressed);
 		else if (whole) found.push(whole);
 	}
 	return found;
@@ -2009,13 +2012,17 @@ function recipientsRow(page: Page, named: boolean): HTMLElement {
 		});
 	});
 	// A pasted list ("Anna <anna@acme.dk>, bo@acme.dk") becomes a chip for each of its entries, read together with what
-	// is typed around it. A piece of one address, or a name alone, is typed on as the field takes it.
+	// is typed around it. An agent takes a name as well as an address, so for one the list is read as if it were typed,
+	// and no name in it is left out ("Nordlys Energi bo@acme.dk" is both). A piece of one address, or a name alone, is
+	// typed on as the field takes it.
 	input.addEventListener("paste", (event) => {
 		const start = input.selectionStart ?? input.value.length;
 		const end = input.selectionEnd ?? start;
 		const pasted = event.clipboardData?.getData("text") ?? "";
 		if (!pasted.trim()) return;
-		const found = pastedRecipients(input.value.slice(0, start) + pasted + input.value.slice(end));
+		const found = (named ? asRecipients : pastedRecipients)(
+			input.value.slice(0, start) + pasted + input.value.slice(end),
+		);
 		if (found.length < 2 && !found.some(isAddress)) return;
 		event.preventDefault();
 		add(found);
