@@ -452,10 +452,10 @@ export class EphemeralCloudRunnerWorker {
 			 * once and renews the native lease first thing, so its due time carries across rounds and heartbeats. A
 			 * healthy round keeps one job renewal and one native renewal per interval. The wait is never 0 twice in a row
 			 * without a round between: each round's native renewal moves nativeDueAt a full interval on before the next
-			 * wait is worked out. A native renewal that begins at b is followed by the next one by b + interval at the
-			 * latest, or, when a heartbeat is due as the round ends, by the round's end plus the heartbeat's own deadline
-			 * (30 s), which is at most b + interval + 30 s: 75 s with the 45 s default, inside the 120 s native lease
-			 * with room for that renewal's own retries. */
+			 * wait is worked out. After a native renewal's answer the next one is asked within an interval (in the round
+			 * while the job's renewal is still being asked, or by the next round), or, when a heartbeat is due as the
+			 * round ends, within an interval plus the heartbeat's own deadline (30 s): 75 s with the 45 s default,
+			 * inside the 120 s native lease with room for that renewal's own retries. */
 			while (
 				await wait(Math.min(this.#leaseRenewalMs, Math.max(0, nativeDueAt - this.#now())), maintenanceAbort.signal)
 			) {
