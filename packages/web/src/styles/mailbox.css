@@ -350,8 +350,8 @@ span.mailbox-open { cursor: default; }
 /* ---- Write: a mail app's new-message window, docked at the foot ------------------ */
 .mailbox-write-panel {
 	position: absolute; right: 24px; bottom: 0; z-index: 3; display: flex; flex-direction: column;
-	width: min(500px, calc(100% - 32px)); max-height: calc(100% - 16px); overflow: hidden;
-	border-radius: 12px 12px 0 0; background: var(--bg);
+	width: min(500px, calc(100% - 32px)); max-height: calc(100% - 16px); overflow: hidden auto;
+	overscroll-behavior: contain; border-radius: 12px 12px 0 0; background: var(--bg);
 	box-shadow: 0 0 0 1px var(--border), 0 8px 30px rgba(0, 0, 0, 0.2), 0 2px 6px rgba(0, 0, 0, 0.1);
 	animation: mailbox-rise var(--motion-base) var(--ease-out) both;
 }
@@ -375,9 +375,11 @@ span.mailbox-open { cursor: default; }
 	color: var(--text); font-size: 15px;
 }
 .mailbox-write-row input:focus-visible { outline: none; }
-.mailbox-write-text { display: block; min-height: 0; }
+/* On a short page (a phone with its keyboard up) the text gives way first, down to two lines, and scrolls inside
+   itself; shorter than that and the whole window scrolls. The text never runs over the foot. */
+.mailbox-write-text { flex: 0 1 auto; display: flex; flex-direction: column; min-height: 76px; }
 .mailbox-write-text textarea {
-	display: block; width: 100%; min-height: 168px; padding: 14px 18px; border: 0; border-radius: 0; resize: none;
+	flex: 1; min-width: 0; min-height: 0; padding: 14px 18px; border: 0; border-radius: 0; resize: none;
 	background: none; color: var(--text); font-size: 15px; font-weight: 400; line-height: 1.55;
 }
 .mailbox-write-text textarea:focus-visible { outline: none; }
