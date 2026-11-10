@@ -53,6 +53,8 @@ select pg_temp.acct_assert(not exists (
 	except
 	select unnest(array['qorpera_account_presence', 'qorpera_claude_logins', 'qorpera_claude_sign_in_members',
 		'qorpera_company_creation_requests', 'qorpera_company_founder_seats',
+		-- Which machines a member watched and when (20260930712000): the member's own record, no picture.
+		'qorpera_company_machine_screen_watches',
 		'qorpera_founding_presence_devices', 'qorpera_friendships',
 		'qorpera_mail_thread_reads', 'qorpera_member_email_actions', 'qorpera_member_email_drafts',
 		-- The pages a member hid from their own rail (20260930697000).

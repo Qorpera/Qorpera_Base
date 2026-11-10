@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { UUID_PATTERN } from "@qorpera/contracts";
 import { type CloudMemberMachineScreen, CloudMemberMachineScreenRefusal } from "./cloud-machine-command-http.ts";
 
 // A member's look at an agent's desktop computer (20260930712000): the coding executor's third listener, on loopback
@@ -11,7 +12,8 @@ import { type CloudMemberMachineScreen, CloudMemberMachineScreenRefusal } from "
 // desktop on for 30 minutes from then. The token is checked by the database alone (the executor begins the look as the
 // member: qorpera_member_machine_screen_begin), never by this listener; it is never logged, stored or put in an answer.
 
-const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+/** A company's and a machine's ids, lower-case as the database writes them, and `/watching`. */
+const UUID = UUID_PATTERN.source.slice(1, -1);
 const ROUTE = new RegExp(`^/v1/member-machine-screens/(${UUID})/(${UUID})(/watching)?$`);
 const BEARER = /^Bearer ([A-Za-z0-9._~-]{1,8192})$/;
 const IF_NONE_MATCH = /^"([0-9a-f]{64})"$/;
