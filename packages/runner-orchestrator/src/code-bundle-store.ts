@@ -444,7 +444,7 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 				maximum = writerOptions.maximumBytes ?? CODE_BUNDLE_MAXIMUM_BYTES;
 			if (!Number.isSafeInteger(expected) || expected < 0 || !Number.isSafeInteger(maximum) || maximum < 1)
 				throw new Error("INVALID_CODE_BUNDLE");
-			return use(stepMs, signal, async (checked) => {
+			const make = async (checked: AbortSignal): Promise<CodeBundleWriter> => {
 				await assert(checked);
 				const folder = (await folderOf(repository, true)) as string;
 				// A dead write's leftovers: its temporary files, and a bundle whose manifest never came (a commit gives both
@@ -474,7 +474,22 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 				);
 				writing.add(temporary);
 				return writer(repository, folder, temporary, file, maximum);
-			});
+			};
+			// The work goes on after its caller stopped waiting (`use`), and may still open a writer nobody is given:
+			// that writer is aborted when it comes, so its file goes and no later sweep has to step around it.
+			let made: Promise<CodeBundleWriter> | undefined;
+			try {
+				return await use(stepMs, signal, (checked) => {
+					made = make(checked);
+					return made;
+				});
+			} catch (error) {
+				void made?.then(
+					(late) => late.abort().catch(() => undefined),
+					() => undefined,
+				);
+				throw error;
+			}
 		},
 
 		async find(target: CodeBundleTarget, name: string, signal?: AbortSignal): Promise<CodeBundleManifest | null> {

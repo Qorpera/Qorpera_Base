@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	CODE_BUNDLE_FOLDER,
 	CODE_BUNDLES_KEPT,
@@ -333,6 +333,56 @@ describe("createCodeBundleStore", () => {
 		await expect(store.prune(TARGET, 1)).resolves.toEqual([]);
 		for (const keep of [0, -1, 1.5, 1001])
 			await expect(store.prune(TARGET, keep)).rejects.toThrow("INVALID_CODE_BUNDLE");
+	});
+
+	it("takes down a writer that comes after its begin's caller stopped waiting, with its file", async () => {
+		// The storage's check hangs past the begin's time (a hard mount that stalls), then answers.
+		let release: () => void = () => undefined;
+		const hung = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let checks = 0;
+		const { store, folder } = setup({
+			stepMs: 2_000,
+			assert: async () => {
+				checks += 1;
+				if (checks === 1) await hung;
+			},
+		});
+		await expect(store.begin(TARGET)).rejects.toThrow("CODE_BUNDLE_STORE_TIMEOUT");
+		// The work goes on: it opens the file nobody waits for, and the store removes it again.
+		release();
+		const kept = await put(store, TARGET, "stored", at(0));
+		await expect(store.find(TARGET, kept.name)).resolves.toEqual(kept.manifest);
+		await vi.waitFor(() => expect(readdirSync(folder).sort()).toEqual([`${kept.name}.bundle`, `${kept.name}.json`]));
+		// And no later begin steps around a file of the lost writer's: a dead write's leftover is swept as before.
+		const half = join(folder, `.write-${randomUUID()}`);
+		writeFileSync(half, "half a bund", { mode: 0o600 });
+		await (await store.begin(TARGET)).abort();
+		expect(readdirSync(folder).sort()).toEqual([`${kept.name}.bundle`, `${kept.name}.json`]);
+
+		// The same for a caller that gives up by its own signal while the work is under way.
+		checks = 0;
+		let let2: () => void = () => undefined;
+		const second = new Promise<void>((resolve) => {
+			let2 = resolve;
+		});
+		const other = setup({
+			assert: async () => {
+				checks += 1;
+				if (checks === 1) await second;
+			},
+		});
+		const gone = new AbortController();
+		const begun = other.store.begin(TARGET, {}, gone.signal);
+		await vi.waitFor(() => expect(checks).toBe(1));
+		gone.abort(new Error("the caller left"));
+		await expect(begun).rejects.toThrow("the caller left");
+		let2();
+		await expect(other.store.companies()).resolves.toEqual([COMPANY]);
+		await vi.waitFor(() => expect(readdirSync(other.folder)).toEqual([]));
+		await (await other.store.begin(TARGET)).abort();
+		expect(readdirSync(other.folder)).toEqual([]);
 	});
 
 	it("checks the storage before a writer begins and before a bundle gets its name", async () => {

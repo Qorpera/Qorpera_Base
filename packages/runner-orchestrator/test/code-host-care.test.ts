@@ -477,7 +477,7 @@ describe("CodeHostCare", () => {
 		]);
 	});
 
-	it("gives a repository with unchanged refs job 1 only; fsck again after a week, a bundle again when the refs change or the stored one is gone", async () => {
+	it("gives a repository with unchanged refs job 1 only; fsck again after a week, a bundle again when the refs change or the stored one is gone or spoiled", async () => {
 		const t = setup();
 		await t.pass();
 		t.took();
@@ -540,6 +540,29 @@ describe("CodeHostCare", () => {
 		const third = codeBundleName(new Date(t.clock.now).toISOString(), MAIN);
 		expect(t.outcome()).toMatchObject({ state: "done", problem: null, bundle: { state: "stored", name: third } });
 		expect(readFileSync(join(t.folder, `${third}.bundle`))).toEqual(t.area.bundle);
+
+		// The stored bundle rotted where it lay: the same size, other bytes, the refs as they were, the flags off. It is
+		// read whole every night, so the same night it is made again, and the spoiled one is no longer the record's.
+		t.clock.now += DAY;
+		writeFileSync(join(t.folder, `${third}.bundle`), Buffer.alloc(t.area.bundle.length, 0x2e));
+		t.took();
+		await expect(t.pass()).resolves.toEqual({ cared: 1, busy: 0, failed: 0 });
+		expect(t.took()).toEqual(["step:begin", "step:check", "job:check", "step:bundle", "job:bundle", "finish"]);
+		expect(t.errors()).toEqual(["bundle:CODE_BUNDLE_MISSING", "bundle:CODE_BUNDLE_DIFFERS"]);
+		const fourth = codeBundleName(new Date(t.clock.now).toISOString(), MAIN);
+		expect(t.outcome()).toMatchObject({
+			state: "done",
+			problem: null,
+			bundle: { state: "stored", name: fourth, sha256: digest(t.area.bundle) },
+			gc: { state: "skipped" },
+		});
+		expect(readFileSync(join(t.folder, `${fourth}.bundle`))).toEqual(t.area.bundle);
+		// The night after, the new one is whole: nothing is made.
+		t.clock.now += DAY;
+		await t.pass();
+		expect(t.took()).toEqual(["step:begin", "step:check", "job:check", "finish"]);
+		expect(t.errors()).toHaveLength(2);
+		expect(t.outcome()).toMatchObject({ state: "done", problem: null, bundle: { state: "unchanged" } });
 	});
 
 	it("with the flags on, packs after a clean fsck and a stored bundle, looks at what the pack left, and retires in two jobs", async () => {
@@ -1256,7 +1279,8 @@ describe("CodeHostCare", () => {
 			}
 		}
 
-		// The copy behind a pack was stored on an earlier night: it is read whole first, and a pack waits for a good one.
+		// The copy behind a pack was stored on an earlier night: it is read whole first, and one that is spoiled is made
+		// again before anything is packed.
 		t = setup();
 		await t.pass();
 		t.row.flags = { gc: true, retire: false };
@@ -1274,13 +1298,32 @@ describe("CodeHostCare", () => {
 		t.clock.now += DAY;
 		t.took();
 		await expect(t.pass()).resolves.toEqual({ cared: 1, busy: 0, failed: 0 });
-		expect(t.took()).toEqual(["step:begin", "step:check", "job:check", "finish"]);
+		expect(t.took()).toEqual([
+			"step:begin",
+			"step:check",
+			"job:check",
+			"step:bundle",
+			"job:bundle",
+			...PACK,
+			"finish",
+		]);
+		expect(t.errors()).toEqual(["bundle:CODE_BUNDLE_DIFFERS"]);
 		expect(t.outcome()).toMatchObject({
 			state: "done",
-			problem: "BUNDLE_NOT_VERIFIED",
-			bundle: { state: "unchanged" },
-			gc: { state: "skipped" },
+			problem: null,
+			bundle: { state: "stored", sha256: digest(t.area.bundle) },
+			gc: { state: "collected" },
 		});
+		// A store that cannot be read is no copy either: nothing is packed.
+		t = setup();
+		await t.pass();
+		t.row.flags = { gc: true, retire: false };
+		t.storage.mounted = false;
+		t.clock.now += DAY;
+		t.took();
+		await expect(t.pass()).resolves.toEqual({ cared: 0, busy: 0, failed: 1 });
+		expect(t.took()).toEqual(["step:begin", "step:check", "job:check", "finish"]);
+		expect(t.outcome()).toMatchObject({ state: "failed", bundle: { state: "failed" }, gc: { state: "skipped" } });
 	});
 
 	it("records a repository that is not there: nothing to care for when it never was, a problem when care saw it before", async () => {

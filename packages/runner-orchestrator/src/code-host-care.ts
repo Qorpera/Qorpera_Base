@@ -487,8 +487,9 @@ export class CodeHostCare {
 		if (health !== "unknown") outcome.refsSha256 = checked.refsSha256;
 		run.sound = health === "ok";
 
-		// 3. Bundle, unless a stored bundle already holds these refs. A repository fsck found problems in gets none: the
-		// last good copy is worth more than a copy of the damage.
+		// 3. Bundle, unless a stored bundle already holds these refs. It holds them only when it is read whole this night
+		// and its bytes are its manifest's: a copy nobody reads can rot for as long as the refs stand still. A repository
+		// fsck found problems in gets no bundle: the last good copy is worth more than a copy of the damage.
 		let holds: string | null = null;
 		if (
 			last.bundleRefsSha256 === checked.refsSha256 &&
@@ -496,10 +497,15 @@ export class CodeHostCare {
 			CODE_BUNDLE_NAME.test(last.bundleName)
 		) {
 			try {
-				const stored = await this.#bundles.find(target, last.bundleName, signal);
-				if (stored?.refsSha256 === checked.refsSha256) holds = last.bundleName;
-				// The kernel's record names a bundle the store does not hold any more: it is made again.
-				else this.#problem(run, "bundle", new Error("CODE_BUNDLE_MISSING"));
+				const found = await this.#bundles.find(target, last.bundleName, signal);
+				const whole =
+					found?.refsSha256 === checked.refsSha256
+						? await this.#bundles.verify(target, last.bundleName, signal)
+						: null;
+				if (whole?.refsSha256 === checked.refsSha256) holds = last.bundleName;
+				// The kernel's record names a bundle the store does not hold any more, or holds with other bytes than its
+				// manifest's: it is made again. The spoiled one stays until the store's own pruning takes it.
+				else this.#problem(run, "bundle", new Error(found ? "CODE_BUNDLE_DIFFERS" : "CODE_BUNDLE_MISSING"));
 			} catch (error) {
 				outcome.bundle.state = "failed";
 				const stop = this.#failed(run, outcome, "bundle", error, signal);
@@ -515,7 +521,7 @@ export class CodeHostCare {
 
 		// 4 and 5. Pack, and look at what it left.
 		if (run.flags.gc) {
-			const stop = await this.#pack(run, outcome, target, checked, holds, signal);
+			const stop = await this.#pack(run, outcome, checked, holds, signal);
 			if (stop) return stop;
 		}
 
@@ -610,7 +616,6 @@ export class CodeHostCare {
 	async #pack(
 		run: CareRun,
 		outcome: CodeCareOutcome,
-		target: CodeBundleTarget,
 		checked: Present,
 		holds: string | null,
 		signal: AbortSignal,
@@ -620,22 +625,8 @@ export class CodeHostCare {
 			outcome.gc.state = "shallow";
 			return undefined;
 		}
+		// The copy that stands behind the pack (`holds`) was written this night or read whole this night.
 		if (!run.sound || holds === null || checked.objects.loose < 1) return undefined;
-		if (outcome.bundle.state !== "stored") {
-			// The copy that stands behind the pack is read whole first, unless it was written this night.
-			let whole = false;
-			try {
-				whole = (await this.#bundles.verify(target, holds, signal)) !== null;
-			} catch (error) {
-				const stop = this.#stopped(error, signal);
-				if (stop) return stop;
-				this.#problem(run, "bundle", error);
-			}
-			if (!whole) {
-				outcome.problem ??= "BUNDLE_NOT_VERIFIED";
-				return undefined;
-			}
-		}
 		// Whether the pack's own steps began: from then on, what the job saved must be looked at.
 		let packing = false;
 		try {
