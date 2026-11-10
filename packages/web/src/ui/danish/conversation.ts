@@ -616,14 +616,9 @@ export const CONVERSATION: Record<string, string> = {
 	"{n} waits on you": "{n} venter på dig",
 	"{n} wait on you": "{n} venter på dig",
 	"{n} working": "{n} i gang",
-	"{n} done": "{n} gjort",
 	"Waits on you": "Venter på dig",
 	"Working on": "Arbejder på",
-	"{n} more done": "{n} mere gjort",
-	"Earlier: {n}": "Tidligere: {n}",
-	"Show fewer": "Vis færre",
 	// The agent's card brings the wall back (app/views/agent-details.ts).
-	"{n} just done": "{n} lige gjort",
 	// A card's long body (ui/interaction-card.ts).
 	"Show more": "Vis mere",
 	"Show less": "Vis mindre",
