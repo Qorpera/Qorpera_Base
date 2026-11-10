@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Interface apps: `APP_CLOSED_FOLDERS` lists the folders at the top of the Company File that an app's page reads no file in and links to none (the platform's: `QorperaOS/`, `hooks/`, `digital-post/`, `bank/`, `members/`, `code/`, by their keys). The web's bridge and `save_app`'s look note share it.
 - Interface apps: `app.toml` takes `writes`, what the page may ask a member to change: a list of at most 16 of `answers` and `table:<name>` (a company table's folder name, never `areas`). `AppManifest` has `writes` (default empty), `parseAppWrites` checks a list, `appWriteTable` reads an entry's table, and `writeAppManifest` writes the line when it is set. `APP_READS` gains `questions`.
 - `staff-characters`: `STAFF_CHARACTER_IDS` gains star, cloud, bolt, mushroom, moon and puzzle and loses ghost (Jonas, 10 Nov 2026; migration `20260930709000`). `RETIRED_STAFF_CHARACTERS` names the figures nothing offers any more and what each is drawn as (ghost: moon), and `drawnStaffCharacter(value)` gives the figure to draw for a saved one. An `agent.md` that says `figure: ghost` still parses (`AgentFigure` takes the retired name); a refusal lists only the figures on offer. The legal expert's template figure is the moon.
 - A coding brief's `repository` may be one kept in Qorpera, `qorpera/<owner>/<name>` (own code storage, slice 1); the refusal says so.
