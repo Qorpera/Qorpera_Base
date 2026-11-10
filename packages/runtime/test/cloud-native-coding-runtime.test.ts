@@ -14,7 +14,11 @@ import {
 import type { NativeCompanyExecutionRequest } from "../src/cloud-native-provider-host.ts";
 import { runCloudNativeRunToolSession } from "../src/cloud-native-run-tool-session.ts";
 import { CLOUD_RUN_ROW_READ_MS, CloudNativeToolRun } from "../src/cloud-native-tool-authority.ts";
-import { type CloudToolContext, cloudToolJsonText } from "../src/cloud-native-tool-boundary.ts";
+import {
+	CloudToolArgumentRefusal,
+	type CloudToolContext,
+	cloudToolJsonText,
+} from "../src/cloud-native-tool-boundary.ts";
 import { CloudNativeToolOperations } from "../src/cloud-native-tool-operations.ts";
 import { CLOUD_RUNTIME_NATIVE_BINARY_SHA256 } from "../src/cloud-runtime-bundle.generated.ts";
 import {
@@ -277,6 +281,13 @@ describe("the coding composition of a native turn", () => {
 					"The read-only sandbox your harness describes covers only its own built-in tools, which this session does not use; it says nothing about the repository VM.",
 					"In the VM the selected repository and branch are writable: edit files, install, build, test and commit there through coding_run_command.",
 					"Never stop, ask or hand in because of that read-only notice; only a command the VM actually refuses shows the repository is not writable, and then name that command and its error.",
+					// Own code storage, step 2b (20260930720000): the change's record is made of one sentence a founder can
+					// read and a small picture the session commits; neither holds a hand-in back.
+					"With coding_finish, also give notice: one plain sentence, in the language of the brief, on what a customer of the company will notice, written for a founder who reads no code, so with no file, branch, commit or test name in it.",
+					"Leave it out when a customer will notice nothing.",
+					"When the change shows on a screen, give picture too: take a screenshot of the new screen with the machine's headless Chromium",
+					"keep it small (a few hundred KB; one over 4 MB is not used), commit it under docs/changes/ with a name of its own, and give its path in the repository.",
+					"Neither is required: never hold work back for them.",
 				])
 					expect(options.runtimeInstructions).toContain(rule);
 				await options.beginExecution(
@@ -357,6 +368,156 @@ describe("the coding composition of a native turn", () => {
 			expect.any(AbortSignal),
 		);
 		expect(f.gatewayFactory).toHaveBeenCalledWith(f.binding);
+	});
+	// Own code storage, step 2b (20260930720000): a finish may say what a customer will notice and name a screenshot the
+	// session committed. Both are optional, a wrong shape is refused with what to change, and neither is ever required.
+	it("hands in what a customer will notice and the picture's path when they are given, and only then", async () => {
+		const f = fixture();
+		const base = {
+			operationKey: "done",
+			summary: "Added the returns line; npm test: 21 passed",
+			headSha: "b".repeat(40),
+		};
+		vi.mocked(runCloudNativeRunToolSession).mockImplementation(async (options) => {
+			const run = await CloudNativeToolRun.open(f.binding, f.control, options.signal);
+			try {
+				const adapters = await options.tools(
+					f.authority.identity,
+					new CloudNativeToolOperations(run, f.control),
+					run,
+				);
+				const finish = adapters.tools[3];
+				expect(finish.description).toContain(
+					"notice says in one plain sentence what a customer will notice, and picture names a screenshot you committed that shows it; both may be left out.",
+				);
+				expect(finish.inputSchema).toMatchObject({
+					properties: {
+						notice: { type: "string", minLength: 1, maxLength: 200 },
+						picture: { type: "string", minLength: 1, maxLength: 300 },
+					},
+					required: ["operationKey", "summary", "headSha"],
+					additionalProperties: false,
+				});
+				// Neither given: exactly the three of before. An empty one is one left out.
+				expect(finish.parseArguments(base)).toEqual(base);
+				expect(finish.parseArguments({ ...base, notice: "", picture: "" })).toEqual(base);
+				expect(finish.parseArguments({ ...base, notice: "  \n" })).toEqual(base);
+				// Each alone, and both; what surrounds a value is trimmed off.
+				expect(
+					finish.parseArguments({ ...base, notice: ' Each price now says "Free returns within 30 days". ' }),
+				).toEqual({ ...base, notice: 'Each price now says "Free returns within 30 days".' });
+				expect(finish.parseArguments({ ...base, picture: " docs/changes/free returns.PNG\n" })).toEqual({
+					...base,
+					picture: "docs/changes/free returns.PNG",
+				});
+				for (const picture of [
+					"shot.png",
+					"a/b/c.webp",
+					"docs/changes/x.jpeg",
+					"docs/.hidden/y.jpg",
+					"a-b_c.d/e.png",
+				])
+					expect(finish.parseArguments({ ...base, picture })).toEqual({ ...base, picture });
+				expect(finish.parseArguments({ ...base, notice: "é".repeat(200) })).toEqual({
+					...base,
+					notice: "é".repeat(200),
+				});
+				// A wrong shape is refused in words the model can act on, and the boundary relays them.
+				const plain = /^[ -~À-ÿ]{1,1024}$/;
+				for (const notice of [
+					"two\nlines",
+					"a\ttab",
+					"x".repeat(201),
+					"é".repeat(201),
+					"nul\u0000",
+					7,
+					null,
+					["a"],
+				]) {
+					const refusal = (() => {
+						try {
+							finish.parseArguments({ ...base, notice } as never);
+						} catch (error) {
+							return error;
+						}
+					})();
+					expect(refusal, JSON.stringify(notice)).toBeInstanceOf(CloudToolArgumentRefusal);
+					expect((refusal as Error).message).toMatch(/^notice is one line of at most 200 characters/);
+					expect((refusal as Error).message).toMatch(plain);
+				}
+				for (const picture of [
+					"/company/code/acme/shop/main/docs/changes/x.png",
+					"/docs/changes/x.png",
+					"docs/changes/../../secret.png",
+					"./x.png",
+					"docs//x.png",
+					"docs/changes/x.gif",
+					"docs/changes/x",
+					"docs/changes/.png",
+					"docs/changes/æ.png",
+					"docs/changes/x.png\nmore",
+					"docs\\x.png",
+					`${"d/".repeat(148)}x.png`,
+					7,
+					null,
+				]) {
+					const refusal = (() => {
+						try {
+							finish.parseArguments({ ...base, picture } as never);
+						} catch (error) {
+							return error;
+						}
+					})();
+					expect(refusal, JSON.stringify(picture)).toBeInstanceOf(CloudToolArgumentRefusal);
+					expect((refusal as Error).message).toMatch(
+						/^picture is the path of a \.png, \.jpg, \.jpeg or \.webp file/,
+					);
+					expect((refusal as Error).message).toMatch(plain);
+				}
+				// The three of before are still required, and no other key is taken.
+				expect(() => finish.parseArguments({ operationKey: "done", headSha: "b".repeat(40), notice: "n" })).toThrow(
+					"Invalid coding submission",
+				);
+				expect(() => finish.parseArguments({ ...base, pictures: ["a.png"] })).toThrow("Invalid coding submission");
+				const receipt = JSON.parse(
+					(
+						await finish.execute(
+							finish.parseArguments({
+								...base,
+								notice: "Each price now says free returns.",
+								picture: "docs/changes/free-returns.png",
+							}),
+							f.context,
+						)
+					).value as string,
+				);
+				// The model's receipt holds none of the words, as before.
+				expect(receipt).toEqual({
+					schema: "qorpera.coding-submission/v1",
+					workerId: f.coding.workerId,
+					sequence: 1,
+					kind: "finish",
+					state: "submitted",
+					headSha: "b".repeat(40),
+					operationKey: "done",
+				});
+				return { providerSessionId: "native-thread", toolCalls: 1, codexVersion: "pinned", fencedRequests: 2 };
+			} finally {
+				run.close();
+			}
+		});
+		await f.runtime.execute(f.request, "/private", f.context.signal, f.turn);
+		const submitted = f.call.mock.calls.filter(([method]) => method === "qorpera_submit_coding_turn");
+		expect(submitted).toHaveLength(1);
+		expect(submitted[0]?.[1]).toEqual({
+			p_binding: f.binding,
+			p_submission: {
+				kind: "finish",
+				...base,
+				notice: "Each price now says free returns.",
+				picture: "docs/changes/free-returns.png",
+			},
+		});
 	});
 	it("records any number of model requests in a coding turn (runtime v92; it was 256)", async () => {
 		const f = fixture();
