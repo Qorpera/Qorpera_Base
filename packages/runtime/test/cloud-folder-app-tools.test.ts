@@ -616,7 +616,9 @@ V.scene((s) => {
   s.say("Each traveller pays one visible fee: 149 kroner.", s.fadeIn(fee));
 });
 `;
-const units = (f: { commits: { units: { path: string }[] }[] }) => f.commits.at(-1)?.units.map((unit) => unit.path);
+/** The paths the last commit wrote, in its order. */
+const units = (f: { commits: { units: Record<string, unknown>[] }[] }) =>
+	f.commits.at(-1)?.units.map((unit) => unit.path);
 
 it("makes an explainer from the agent's scenes alone: the kit's engine and page are written with them", async () => {
 	const f = await fixture();
