@@ -150,10 +150,15 @@ function visualChoices(
 			});
 		return box;
 	});
-	// An app's option opens the app's own page from its link: the box itself picks.
-	const apps = options
-		.map((option) => /^app:(.+)$/.exec(option.preview ?? "")?.[1])
-		.filter((name): name is string => Boolean(name) && isInterfaceName(name ?? ""));
+	// An app's option opens the app's own page from its link: the box itself picks. Each app once, however many of the
+	// options show it (two headlines in one concept).
+	const apps = [
+		...new Set(
+			options
+				.map((option) => /^app:(.+)$/.exec(option.preview ?? "")?.[1])
+				.filter((name): name is string => Boolean(name) && isInterfaceName(name ?? "")),
+		),
+	];
 	const grid = h(
 		"div",
 		{ class: "interaction-choices" },
