@@ -58,6 +58,14 @@ describe("dedicated coding executor control", () => {
 			"https://project.supabase.co/rest/v1/rpc/qorpera_code_hosts_deleting",
 			expect.objectContaining({ redirect: "error", method: "POST" }),
 		);
+		// Nightly care of the repositories kept in Qorpera (own code storage, step 2a): due, step and finish.
+		for (const method of ["qorpera_code_care_due", "qorpera_code_care_step", "qorpera_code_care_finish"]) {
+			await control.call(method, {}, new AbortController().signal);
+			expect(fetcher).toHaveBeenLastCalledWith(
+				`https://project.supabase.co/rest/v1/rpc/${method}`,
+				expect.objectContaining({ redirect: "error", method: "POST" }),
+			);
+		}
 		// The per-session VM authority is gone.
 		await expect(control.call("qorpera_describe_coding_cleanup", {}, new AbortController().signal)).rejects.toThrow(
 			"METHOD_INVALID",
