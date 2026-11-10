@@ -9,7 +9,9 @@ import { PAGE_CONTENT, PAGE_ESCAPE, PAGE_FRAME_URL, PAGE_READY } from "./page-fr
  * - A frame that says it is ready a second time, or loads a second time, has left the document it was handed (it
  *   reloaded or went somewhere): its port is closed and `left` is called, and the panel shows a new frame only when the
  *   member asks (Reload). A document the frame shows later has no port.
- * - Escape in the page reaches the frame as Escape (page-frame.ts' rule), so the panel closes as it does elsewhere. */
+ * - Escape in the page reaches the frame as Escape (page-frame.ts' rule), so the panel closes as it does elsewhere.
+ * - The frame follows no link. A link the member clicks in the page comes over the port as one more call (`open`),
+ *   which the frame document alone sends, and the host opens what it allows (app/interface-apps.ts `appLink`). */
 
 /** One call from the page, as the host takes it. */
 export interface AppCall {

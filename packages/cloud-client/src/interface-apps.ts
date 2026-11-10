@@ -29,6 +29,17 @@ export const APP_DEFAULT_EMBLEM: InterfaceEmblem = "page";
 /** The live sources a manifest may ask for (§5). */
 export const APP_READS = Object.freeze(["files", "tables", "todos", "agents"] as const);
 export type AppRead = (typeof APP_READS)[number];
+/** The folders at the top of the Company File that the platform writes or keeps (the agents' prompt: "the platform
+ * writes digital-post/, bank/, members/ and hooks/"), by their keys (`companyPathKey`): an app's page reads no file in
+ * them and its links open none (§4, §5). */
+export const APP_CLOSED_FOLDERS: readonly string[] = Object.freeze([
+	"qorperaos",
+	"hooks",
+	"digital-post",
+	"bank",
+	"members",
+	"code",
+]);
 
 /** The kinds of file a page may load, by extension, with the media type each is handed to the frame as. */
 export const APP_FILE_TYPES: Readonly<Record<string, string>> = Object.freeze({

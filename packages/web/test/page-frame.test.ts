@@ -200,6 +200,77 @@ describe("an HTML page's frame", () => {
 		);
 	});
 
+	it("follows no link itself: a click on one is stopped, and only the member's own goes to the app, over the port", () => {
+		const script = frameDocument.slice(frameDocument.indexOf("<script>"), frameDocument.indexOf("</script>"));
+		// Taken before the page runs, so the page can't change them.
+		for (const taken of [
+			"const prevent = Event.prototype.preventDefault;",
+			'const targetOf = getter(Event.prototype, "target");',
+			"const closest = Element.prototype.closest;",
+			"const attribute = Element.prototype.getAttribute;",
+			"const codeAt = String.prototype.charCodeAt;",
+			"const clicked = new WeakMap();",
+			'const links = "a[*|href], area[href]";',
+		]) {
+			expect(script, taken).toContain(taken);
+			expect(script.indexOf(taken), taken).toBeLessThan(script.indexOf('addEventListener("message"'));
+		}
+		// A link in a shadow tree is noted at the tree's root, where the click still shows what was clicked.
+		expect(script).toContain('watch(root);\n\t\tapply(listen, root, ["click", noteLink]);');
+		// Heard once the page is written, at the window, and only for a page handed a port.
+		const heard = script.indexOf('if (live)\n\t\t\tapply(listen, window, [\n\t\t\t\t"click",');
+		expect(heard).toBeGreaterThan(script.indexOf("apply(close, document, []);"));
+		const handler = script.slice(heard);
+		const steps = [
+			// A click the page took for itself is the page's.
+			"if (!link || apply(prevented, click, [])) return;",
+			// So is a jump inside the page, and the page's own script.
+			'if (typeof href !== "string" || ownLink(href)) return;',
+			// Every other click on a link is stopped, whoever made it: the frame never leaves its page.
+			"apply(prevent, click, []);",
+			// Only a click the member made goes on.
+			"if (click.isTrusted === true && href.length <= 2048) live.follow(href);",
+		];
+		for (const step of steps) expect(handler, step).toContain(step);
+		expect(steps.map((step) => handler.indexOf(step))).toEqual(
+			steps.map((step) => handler.indexOf(step)).sort((a, b) => a - b),
+		);
+		// It goes out as a call on the port this document keeps: never on a window message, and by no call of the
+		// page's `qorpera` object.
+		expect(script).toContain(
+			'apply(send, port, [{ type: "qorpera-app-call", id: ++next, method: "open", params: { href } }]);',
+		);
+		const api = script.slice(script.indexOf("const page = freeze({"), script.indexOf("// Sent as a call"));
+		expect(api).toContain('read: freeze((path) => call("read", { path: String(path) })),');
+		expect(api).not.toMatch(/open|follow|href/);
+		expect(script).toContain('if (live) define(window, "qorpera", live.page);');
+		expect(script.match(/app\.postMessage\(/g)).toHaveLength(2);
+
+		// What stays the page's own, as the browser reads an address.
+		const source = /const ownLink = (\(href\) => \{[\s\S]*?\n\t\});/.exec(script)?.[1];
+		expect(source).toBeDefined();
+		const ownLink = new Function("apply", "codeAt", `return ${source};`)(
+			Reflect.apply,
+			String.prototype.charCodeAt,
+		) as (href: string) => boolean;
+		for (const own of ["#", "#top", "  #top", "\t\n#a", "javascript:void(0)", "JavaScript:show(2)", " javascript:x"])
+			expect(ownLink(own), own).toBe(true);
+		for (const place of [
+			"",
+			" ",
+			"app:sales",
+			"folder:plan.md",
+			"https://example.com/#top",
+			"other.html#top",
+			"javascript",
+			"javascripts:x",
+			"java\tscript:x",
+			"javascript\u001a",
+			"x#top",
+		])
+			expect(ownLink(place), JSON.stringify(place)).toBe(false);
+	});
+
 	it("takes WebRTC, frames and the ways to hide them away before the page runs", () => {
 		const script = frameDocument.slice(frameDocument.indexOf("<script>"), frameDocument.indexOf("</script>"));
 		const guarded = (text: string) => {

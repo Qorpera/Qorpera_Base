@@ -1085,6 +1085,8 @@ export function mountApplication(
 				openSettings("storage", path);
 				if (settings && settings !== open) settingsFromConversation = beside && conversation !== undefined;
 			},
+			// A link to an app in an app's page, as its card in a message.
+			openApp,
 			budgetKey: controller.profile.profileId,
 			questions: questionsHost(),
 		});

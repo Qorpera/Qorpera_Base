@@ -5,6 +5,7 @@ import type {
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { companyPathKey, parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
 import {
+	APP_CLOSED_FOLDERS,
 	APP_FILE_MAX_BYTES,
 	APP_FILE_TYPES,
 	APP_MANIFEST,
@@ -20,12 +21,16 @@ import {
 	type AppProblem,
 	type AppRead,
 	appFileKind,
+	appLinkName,
 	appRelativePath,
 	parseAppManifest,
 } from "@qorpera/cloud-client/interface-apps";
 import { isInterfaceName, parseTableFile, parseTableRows } from "@qorpera/cloud-client/interfaces";
 import type { AppAnswer, AppCall } from "../ui/app-frame.ts";
+import { folderLinkPath } from "../ui/folder-links.ts";
+import { webHref } from "../ui/markdown.ts";
 import { framePage } from "../ui/page-frame.ts";
+import { type AppLook, type AppScheme, appBaseStyle, appScheme } from "./interface-app-style.ts";
 
 /* Interface apps on the web (deploy/first-node/RUNTIME-INTERFACE-APPS.md §2, §4 and §5; Jonas, 5 November 2026): the
  * company's apps as their manifests say (`readApps`, for the apps drawer and the cards), one app's page put together
@@ -38,7 +43,12 @@ import { framePage } from "../ui/page-frame.ts";
  * - The bridge reads only what the manifest's `reads` names, and only what an agent of the company reads too: the app's
  *   own folder always; with `files`, the company's own work (never QorperaOS/ or what the platform writes: mail, bank,
  *   members, events, digital post); with `tables`, a table's rows; with `agents` and `todos`, plain lines about them.
- *   It never hands over who the member is, a token, or anything of this app's own state. */
+ *   It never hands over who the member is, a token, or anything of this app's own state.
+ * - A link the member clicks in the page comes over the bridge too (`open`): checked here (`appLink`), it opens another
+ *   app, a file of the company's own work or a web page, and nothing else. The page learns nothing from it.
+ * - An app's page starts from Qorpera's base style (app/interface-app-style.ts), put first in its head when it is put
+ *   together: the company's colours, the scheme, the system font and plain defaults, all of which the page's own
+ *   styles override. */
 
 /** One app of the company, as its folder and manifest say. */
 export interface CompanyApp {
@@ -66,9 +76,6 @@ type Folder = Pick<CloudMemberFolderClient, "read" | "list" | "readFile">;
 const LIST_PAGE = 50;
 /** Apps a company lists, at most. */
 const MAX_APPS = 200;
-/** Folders the platform writes or keeps, whose files an app never reads (the agents' prompt: "the platform writes
- * digital-post/, bank/, members/ and hooks/"). */
-const PLATFORM_FOLDERS = ["qorperaos", "hooks", "digital-post", "bank", "members", "code"];
 const TEXT = new TextDecoder("utf-8", { fatal: true });
 
 async function listAll(
@@ -134,7 +141,14 @@ export async function readApps(folder: Folder, signal: AbortSignal): Promise<Com
 /* ---- Putting a page together ----------------------------------------------------------------------------------- */
 
 export type AssembledApp =
-	| { readonly ok: true; readonly page: string; readonly files: number; readonly bytes: number }
+	| {
+			readonly ok: true;
+			readonly page: string;
+			readonly files: number;
+			readonly bytes: number;
+			/** The scheme of the base style the page starts from; undefined for a page given none. */
+			readonly scheme?: AppScheme;
+	  }
 	| { readonly ok: false; readonly reason: "missing" | "too_large" | "not_shown"; readonly message: string };
 
 /** A path a page names, resolved against the folder of the file that names it (`base`, relative to the app's folder):
@@ -257,11 +271,13 @@ async function inlineCssUrls(files: AppFiles, css: string, base: string): Promis
 }
 
 /** One app's page as the frame is handed it: its entry with the app's own stylesheets, scripts and pictures put in,
- * then through framePage (ui/page-frame.ts). */
+ * then through framePage (ui/page-frame.ts). With `look`, the page starts from Qorpera's base style
+ * (app/interface-app-style.ts), first in its head, in the look's colours and in the scheme the page supports. */
 export async function assembleApp(
 	folder: Folder,
 	app: Pick<CompanyApp, "path"> & { readonly entry: string },
 	signal: AbortSignal,
+	look?: AppLook,
 ): Promise<AssembledApp> {
 	const files = new AppFiles(folder, app.path, signal);
 	const html = await files.text(app.entry);
@@ -314,11 +330,20 @@ export async function assembleApp(
 			reason: "too_large",
 			message: "The app is larger than 4 MiB of pages and code, 48 MiB of pictures and videos, or 64 files.",
 		};
+	// Before every style of the page, and in a layer of its own: whatever the page's styles say wins.
+	let scheme: AppScheme | undefined;
+	if (look) {
+		scheme = appScheme(page, look.scheme);
+		const base = page.createElement("style");
+		base.setAttribute("data-qorpera-base", "");
+		base.textContent = appBaseStyle(scheme, look.brand);
+		page.head.prepend(base);
+	}
 	const written = `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : "<!doctype html>"}${page.documentElement.outerHTML}`;
 	const handed = framePage(written);
 	return handed === null
 		? { ok: false, reason: "not_shown", message: "This app can't be shown live." }
-		: { ok: true, page: handed, files: files.count, bytes: files.bytes };
+		: { ok: true, page: handed, files: files.count, bytes: files.bytes, ...(scheme ? { scheme } : {}) };
 }
 
 /* ---- The bridge --------------------------------------------------------------------------------------------- */
@@ -360,7 +385,32 @@ export function appReadablePath(value: unknown): string | null {
 	const plain = appRelativePath(path);
 	if (plain === null || /%/.test(plain)) return null;
 	const top = companyPathKey(plain).split("/")[0] ?? "";
-	return PLATFORM_FOLDERS.includes(top) ? null : plain;
+	return APP_CLOSED_FOLDERS.includes(top) ? null : plain;
+}
+
+/** Where a link in an app's page leads, once checked. */
+export type AppLink =
+	| { readonly kind: "app"; readonly name: string }
+	| { readonly kind: "file"; readonly path: string }
+	| { readonly kind: "web"; readonly href: string };
+
+const MAX_LINK_CHARS = 2048;
+
+/** A link's address as an app's page gave it, which is anything a page can write, checked. It leads to an app of the
+ * company (`app:<name>`, as in a message), to a file or folder of the company's own work (`folder:<path>`, as in a
+ * message, and under the rules a read is under: `appReadablePath`), or to a web page (`http:` or `https:`, checked as a
+ * link in a message is). Null for anything else: a relative address, another scheme, a platform folder. */
+export function appLink(value: unknown): AppLink | null {
+	if (typeof value !== "string" || value.length > MAX_LINK_CHARS) return null;
+	const href = value.trim();
+	const name = appLinkName(href);
+	if (name !== undefined) return { kind: "app", name };
+	if (href.startsWith("folder:")) {
+		const path = appReadablePath(folderLinkPath(href));
+		return path === null || path === "" ? null : { kind: "file", path };
+	}
+	const web = webHref(href);
+	return web !== undefined && /^https?:/.test(web) ? { kind: "web", href: web } : null;
 }
 
 /** The answers to one app's live-data calls, with the member's own reads. */
@@ -369,17 +419,21 @@ export class AppBridge {
 	readonly #app: CompanyApp & { readonly manifest: AppManifest };
 	readonly #key: string;
 	readonly #signal: AbortSignal;
+	readonly #follow: ((link: AppLink) => void) | undefined;
 
+	/** `follow` opens a link the member clicked in the page, once it is checked; without it no link opens. */
 	constructor(
 		host: AppBridgeHost,
 		app: CompanyApp & { readonly manifest: AppManifest },
 		key: string,
 		signal: AbortSignal,
+		follow?: (link: AppLink) => void,
 	) {
 		this.#host = host;
 		this.#app = app;
 		this.#key = key;
 		this.#signal = signal;
+		this.#follow = follow;
 	}
 
 	#may(read: AppRead): boolean {
@@ -467,6 +521,16 @@ export class AppBridge {
 			case "todos": {
 				if (!this.#may("todos")) return refuse('Add "todos" to reads in app.toml to read the todos');
 				return { ok: true, value: await this.#todos(folder) };
+			}
+			case "open": {
+				// A link the member clicked (the frame document sends it; the page's `qorpera` object has no such call). It
+				// needs nothing in `reads`: nothing is read for it, and the answer is the same whether or not what it names
+				// is there, so a page learns nothing by it.
+				const link = appLink(call.params.href);
+				if (link === null || !this.#follow)
+					return refuse("A link opens an app (app:name), a company file (folder:path) or a web page (https://…)");
+				this.#follow(link);
+				return { ok: true, value: null };
 			}
 			default:
 				return refuse("Not a call the app answers");

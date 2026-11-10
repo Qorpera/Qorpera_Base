@@ -7,7 +7,9 @@
      its own, with them). The frame waits for its page from the app that framed it, then becomes that page. Escape
      pressed in the page (and not taken by it) is passed to the app, which has no other way to hear a key pressed in
      here: it closes what the page is shown in, as Escape does everywhere else. An interface app's page is handed one
-     message port with it, which only this document holds: its `qorpera` object reads the company's data through it. -->
+     message port with it, which only this document holds: its `qorpera` object reads the company's data through it,
+     and a link the member clicks in the page goes to the app over it, which opens what it allows: the frame follows no
+     link itself. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -42,6 +44,14 @@
 	const keyOf = getter(KeyboardEvent.prototype, "key");
 	const composing = getter(KeyboardEvent.prototype, "isComposing");
 	const prevented = getter(Event.prototype, "defaultPrevented");
+	const prevent = Event.prototype.preventDefault;
+	const targetOf = getter(Event.prototype, "target");
+	const closest = Element.prototype.closest;
+	const attribute = Element.prototype.getAttribute;
+	const attributeNS = Element.prototype.getAttributeNS;
+	const codeAt = String.prototype.charCodeAt;
+	const linkOf = WeakMap.prototype.get;
+	const setLink = WeakMap.prototype.set;
 	// Options handed to the browser are objects with no prototype: a property the page puts on Object.prototype
 	// (`clonable`, a throwing `attributeFilter`) is never read from them.
 	const create = Object.create;
@@ -75,6 +85,34 @@
 	});
 	const watch = (target) => apply(observe, watcher, [target, watching]);
 	watch(document);
+
+	// Links (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4). The frame follows no link itself: in an app's page a
+	// click on one is stopped, and where it leads goes to the app, which opens what it allows. A click's link is
+	// noted where the click still shows what was clicked: inside a shadow tree at that tree's root (open or closed),
+	// anywhere else at the window.
+	const links = "a[*|href], area[href]";
+	const clicked = new WeakMap();
+	const noteLink = (click) => {
+		if (apply(linkOf, clicked, [click])) return;
+		try {
+			const target = apply(targetOf, click, []);
+			const link = apply(nodeType, target, []) === 1 ? apply(closest, target, [links]) : null;
+			if (link) apply(setLink, clicked, [click, link]);
+		} catch {}
+	};
+	// A jump inside the page (#…) is the page's own, like any click its scripts handle, and a javascript: address is
+	// the browser's to run or not, as before (Chromium runs none in this frame): neither is a place to go. Read as the
+	// browser reads an address: what it skips in front is skipped, and the scheme counts in any case.
+	const ownLink = (href) => {
+		let at = 0;
+		while (apply(codeAt, href, [at]) <= 32) at++;
+		if (apply(codeAt, href, [at]) === 35) return true;
+		const scheme = "javascript";
+		for (let index = 0; index < 10; index++)
+			if ((apply(codeAt, href, [at + index]) | 32) !== apply(codeAt, scheme, [index])) return false;
+		return apply(codeAt, href, [at + 10]) === 58;
+	};
+
 	define(Element.prototype, "attachShadow", function attachShadowWatched(init) {
 		const options = create(null);
 		options.mode = init?.mode;
@@ -82,6 +120,7 @@
 		options.slotAssignment = init?.slotAssignment;
 		const root = apply(attachShadow, this, [options]);
 		watch(root);
+		apply(listen, root, ["click", noteLink]);
 		return root;
 	});
 	for (const [target, name] of [
@@ -105,7 +144,8 @@
 	// An interface app's live data (deploy/first-node/RUNTIME-INTERFACE-APPS.md §5) comes over the one port the app hands
 	// over with the page: kept in here, never on the page's reach, so only this document's own window ever talks to the
 	// app, and a document the frame later shows has none. The page gets a frozen `qorpera` object whose calls go out on
-	// it; the app checks each.
+	// it; the app checks each. A link the member clicked goes out on it too (`follow`), from this document alone: the
+	// page's object has no call for it.
 	const send = MessagePort.prototype.postMessage;
 	// An event's data is read with the browser's own getter: a page that redefines it would be handed the event, and
 	// through it the port.
@@ -148,7 +188,7 @@
 				apply(set, pending, [id, [resolve, reject]]);
 				apply(send, port, [{ type: "qorpera-app-call", id, method, params }]);
 			});
-		return freeze({
+		const page = freeze({
 			read: freeze((path) => call("read", { path: String(path) })),
 			list: freeze((path) => call("list", { path: path === undefined ? "" : String(path) })),
 			table: freeze((name) => call("table", { name: String(name) })),
@@ -158,6 +198,10 @@
 				if (typeof listener === "function") apply(push, changes, [listener]);
 			}),
 		});
+		// Sent as a call, so the app counts it as one; nothing here waits for its answer.
+		const follow = (href) =>
+			apply(send, port, [{ type: "qorpera-app-call", id: ++next, method: "open", params: { href } }]);
+		return { page, follow };
 	};
 
 	addEventListener("message", function take(event) {
@@ -165,8 +209,9 @@
 		if (event.source !== app || !data || data.type !== "qorpera-page" || typeof data.html !== "string") return;
 		removeEventListener("message", take);
 		const port = event.ports && event.ports.length === 1 ? event.ports[0] : null;
+		const live = port ? bridge(port) : null;
 		apply(open, document, []);
-		if (port) define(window, "qorpera", bridge(port));
+		if (live) define(window, "qorpera", live.page);
 		apply(write, document, [data.html]);
 		apply(close, document, []);
 		// Added once the page is written (opening the document drops the window's listeners). Passed on only after every
@@ -184,6 +229,24 @@
 				]);
 			},
 		]);
+		// Only for a page handed a port (an app's; the app refuses the links of any other page it hands one). Heard
+		// last, at the window, so the page's own handlers have had the click: one they took (the page's own tabs or
+		// menu) is theirs. Any other click on a link is stopped, so the frame never leaves its page, and only one the
+		// member made goes on to the app: a click a script made leads nowhere.
+		if (live)
+			apply(listen, window, [
+				"click",
+				function followLink(click) {
+					noteLink(click);
+					const link = apply(linkOf, clicked, [click]);
+					if (!link || apply(prevented, click, [])) return;
+					let href = apply(attribute, link, ["href"]);
+					if (href === null) href = apply(attributeNS, link, ["http://www.w3.org/1999/xlink", "href"]);
+					if (typeof href !== "string" || ownLink(href)) return;
+					apply(prevent, click, []);
+					if (click.isTrusted === true && href.length <= 2048) live.follow(href);
+				},
+			]);
 	});
 	app.postMessage({ type: "qorpera-page-ready" }, "*");
 })();
