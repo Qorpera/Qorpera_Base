@@ -2,6 +2,7 @@ import { realpathSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CloudRequestTimeoutError } from "@qorpera/cloud-client/cloud-request";
 import {
 	type CloudRunnerAuthorityStore,
 	type CloudRunnerControlRequest,
@@ -513,15 +514,34 @@ describe("cloud worker outage recovery", () => {
 		expect(lane.release).toHaveBeenCalledWith("revoked");
 	});
 
-	it("stops the run when the native lease ends while the job lease's renewal holds up its own", async () => {
+	it("keeps the native lease renewed while the job lease's renewal stalls, and stops at the job lease's end", async () => {
 		const outage = await outageRun();
-		// The job lease (120 s) is asked again through the outage, so the native lease (60 s) is never renewed.
+		// Both leases are renewed at once (audit B1, 10 November 2026): the job lease's renewal stalls, but the native
+		// lease (60 s) is renewed in the same round, to 120 s, so the run goes on past the native lease's first end.
 		outage.control.stallRenewal = true;
+		await vi.advanceTimersByTimeAsync(61_000);
+		expect(outage.signal().aborted).toBe(false);
+		expect(lane.renew).toHaveBeenCalledOnce();
+		// The job lease's renewal is asked at 0 s, 40 s and 80 s, each try cut at 30 s. After the third, at 110 s, the
+		// next try would come within 10 s of the job lease's end (120 s), so its retry rule gives up and stops the run.
+		await vi.advanceTimersByTimeAsync(48_900);
+		expect(outage.signal().aborted).toBe(false);
+		await vi.advanceTimersByTimeAsync(200);
+		expect(outage.signal().aborted).toBe(true);
+		expect(await outage.running).toBeInstanceOf(CloudRequestTimeoutError);
+		expect(outage.control.calls.filter((call) => call.action === "renew")).toHaveLength(3);
+		expect(lane.release).toHaveBeenCalledWith("revoked");
+	});
+
+	it("stops the run at the native lease's end when both renewals stall", async () => {
+		const outage = await outageRun();
+		outage.control.stallRenewal = true;
+		lane.renew.mockImplementation(async () => new Promise<never>(() => undefined));
 		await vi.advanceTimersByTimeAsync(59_900);
 		expect(outage.signal().aborted).toBe(false);
 		await vi.advanceTimersByTimeAsync(200);
 		expect(String(await outage.running)).toContain("Runner execution authority expired");
-		expect(lane.renew).not.toHaveBeenCalled();
+		expect(lane.renew).toHaveBeenCalledTimes(2);
 		expect(lane.release).toHaveBeenCalledWith("revoked");
 	});
 
