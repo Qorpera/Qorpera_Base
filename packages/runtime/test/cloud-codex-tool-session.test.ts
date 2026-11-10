@@ -33,6 +33,11 @@ import {
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRunLog } from "@qorpera/runtime/cloud-run-log";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
+import {
+	CLOUD_VOICE_READER_RULE,
+	CloudVoiceChannel,
+	CloudVoiceUnavailable,
+} from "@qorpera/runtime/cloud-voice-channel";
 import { MemoryCompactChannel, MemoryCompactStop } from "@qorpera/runtime/memory-tree/compact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -69,6 +74,7 @@ function run(
 		composeContext?: Parameters<typeof runCloudCodexToolSession>[0]["composeContext"];
 		runLog?: CloudRunLog;
 		compactor?: MemoryCompactChannel;
+		voice?: CloudVoiceChannel;
 		closing?: Parameters<typeof runCloudCodexToolSession>[0]["closing"];
 		opening?: Parameters<typeof runCloudCodexToolSession>[0]["opening"];
 		turnCorrection?: Parameters<typeof runCloudCodexToolSession>[0]["turnCorrection"];
@@ -1880,6 +1886,205 @@ it("keeps the agent's turn when closing fails, and stops the compactor once the 
 	await expect(compactor.call("PRIVATE_COMPACT_SYSTEM", new AbortController().signal)).rejects.toMatchObject({
 		reason: "outage",
 	});
+});
+
+// A voice call (VOICE-TOOL-DESIGN-20261110): a side thread of the run's own app-server that can do nothing, with a
+// realtime session whose voice reads one line at a time. Whatever the voice does, the agent's run stands.
+const VOICE_OFFER = "v=0\r\nPRIVATE_OFFER_SDP\r\n";
+
+/** A run whose agent's turn waits, once it is under way, until the test lets it end. */
+async function voiceRun(mode: string, options: Parameters<typeof run>[1] = {}) {
+	const voice = options.voice ?? new CloudVoiceChannel();
+	const contextViews: string[] = [];
+	const started = run(mode, {
+		voice,
+		recordContextView: async (frame) => {
+			contextViews.push(frame.threadId);
+		},
+		...options,
+	});
+	await vi.waitFor(() => stat(`${started.evidence}.voice-ready`), { timeout: 10_000 });
+	return {
+		...started,
+		voice,
+		contextViews,
+		recorded: async () => JSON.parse(await readFile(started.evidence, "utf8")),
+		endTurn: () => writeFile(`${started.evidence}.continue`, ""),
+	};
+}
+
+it("places a voice call on a side thread that can do nothing, and reads its lines one at a time", async () => {
+	const f = await voiceRun("voice");
+	const signal = new AbortController().signal;
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER, voice: "cove" }, signal);
+	expect(call.answerSdp).toBe("v=0\r\nPRIVATE_ANSWER_SDP\r\n");
+	await expect(f.voice.open({ offerSdp: VOICE_OFFER }, signal)).rejects.toThrow("Native voice call already open");
+	await expect(call.speak('"One."', signal)).resolves.toEqual({ transcript: 'SAID "One."' });
+	// This transcript comes without its thread, and past the bound: its head is kept, never a cut character.
+	await expect(call.speak("LONG", signal)).resolves.toEqual({ transcript: "é".repeat(2048) });
+	await call.close();
+	await expect(call.speak('"Three."', signal)).rejects.toThrow("Native voice call ended");
+	await f.endTurn();
+	// The voice's prewarm is not the agent's request, nor its context.
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture", fencedRequests: 1 });
+	expect(f.contextViews.every((threadId) => threadId === "thread_fixture")).toBe(true);
+	const recorded = await f.recorded();
+	expect(recorded.thread).toMatchObject({
+		ephemeral: true,
+		approvalPolicy: "never",
+		sandbox: "read-only",
+		developerInstructions: CLOUD_VOICE_READER_RULE,
+		dynamicTools: [],
+	});
+	expect(recorded.thread.cwd).toBe(recorded.mainThread.cwd);
+	expect(recorded.prewarm).toMatchObject({ threadId: "thread_voice", outputs: [] });
+	expect(recorded.start).toEqual({
+		threadId: "thread_voice",
+		outputModality: "audio",
+		transport: { type: "webrtc", sdp: VOICE_OFFER },
+		version: "v3",
+		voice: "cove",
+		clientManagedHandoffs: true,
+		includeStartupContext: false,
+		initialItems: [{ role: "developer", text: CLOUD_VOICE_READER_RULE }],
+	});
+	expect(recorded.appended).toEqual([
+		{ threadId: "thread_voice", text: '"One."' },
+		{ threadId: "thread_voice", text: "LONG" },
+	]);
+	expect(recorded.stops).toEqual([{ threadId: "thread_voice" }]);
+	expect(recorded.interrupts).toEqual([]);
+});
+
+it("interrupts a turn the voice starts, ends the call, and the agent's turn stands", async () => {
+	const f = await voiceRun("voice-delegates");
+	const signal = new AbortController().signal;
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+	await expect(call.speak('"One."', signal)).rejects.toThrow("Native voice tried to act");
+	await vi.waitFor(async () => expect((await f.recorded()).delegatedFence).not.toBeNull(), { timeout: 10_000 });
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture", fencedRequests: 1 });
+	const recorded = await f.recorded();
+	expect(recorded.start).not.toHaveProperty("voice");
+	expect(recorded.interrupts).toContainEqual({ threadId: "thread_voice", turnId: "turn_voice" });
+	expect(recorded.stops).toEqual([{ threadId: "thread_voice" }]);
+	// The turn's request gets nothing of the agent's, and is not its context.
+	expect(recorded.delegatedFence.outputs).toEqual([
+		{ kind: "function_call_output", callId: "voice_call", output: '{"available":false}' },
+	]);
+	expect(f.contextViews).not.toContain("thread_voice");
+});
+
+it("refuses every request of the voice's thread", async () => {
+	const f = await voiceRun("voice-request");
+	const signal = new AbortController().signal;
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+	await expect(call.speak('"One."', signal)).resolves.toEqual({ transcript: 'SAID "One."' });
+	await call.close();
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture", toolCalls: 0 });
+	expect((await f.recorded()).refused.error).toMatchObject({ code: -32601 });
+	expect(f.execute).not.toHaveBeenCalled();
+});
+
+it("ends the call on a realtime error without the provider's words, and the run stands", async () => {
+	const f = await voiceRun("voice-error");
+	const signal = new AbortController().signal;
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+	const failure = await call.speak('"One."', signal).catch((error: unknown) => error);
+	expect((failure as Error).message).toBe("Native voice call failed");
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	expect((await f.recorded()).stops).toEqual([{ threadId: "thread_voice" }]);
+});
+
+it("rejects the call when Codex refuses its realtime start, and leaves the run's failure category as it was", async () => {
+	const f = await voiceRun("voice-start-error", {
+		// The run fails afterwards for a reason of its own: the category it reports is not the voice's.
+		turnCorrection: async () => {
+			throw new Error("PRIVATE_CORRECTION_FAILURE");
+		},
+	});
+	const signal = new AbortController().signal;
+	const failure = await f.voice.open({ offerSdp: VOICE_OFFER }, signal).catch((error: unknown) => error);
+	expect((failure as Error).message).toBe("Native voice request rejected");
+	await vi.waitFor(async () => expect((await f.recorded()).stops).toHaveLength(1), { timeout: 10_000 });
+	await f.endTurn();
+	const ended = await f.result.catch((error: unknown) => error);
+	expect(nativeRuntimeFailureMetadata(ended)).toMatchObject({ category: "unknown" });
+});
+
+it("closes the call when the signal it was opened with aborts", async () => {
+	const f = await voiceRun("voice");
+	const opened = new AbortController();
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER }, opened.signal);
+	opened.abort();
+	await vi.waitFor(async () => expect((await f.recorded()).stops).toEqual([{ threadId: "thread_voice" }]), {
+		timeout: 10_000,
+	});
+	await expect(call.speak('"One."', new AbortController().signal)).rejects.toThrow("Native voice cancelled");
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+});
+
+it("rejects a line still being spoken when the run ends, and detaches the voice", async () => {
+	const f = await voiceRun("voice-silent");
+	const signal = new AbortController().signal;
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+	const speaking = call.speak('"One."', signal).catch((error: unknown) => error);
+	await vi.waitFor(async () => expect((await f.recorded()).appended).toHaveLength(1), { timeout: 10_000 });
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	expect(await speaking).toBeInstanceOf(CloudVoiceUnavailable);
+	await expect(f.voice.open({ offerSdp: VOICE_OFFER }, signal)).rejects.toBeInstanceOf(CloudVoiceUnavailable);
+});
+
+it.each(["voice-reopen", "voice-reopen-refused"])(
+	"keeps the slot of a call being stopped until its stop is confirmed, and gives its late words to no other call: %s",
+	async (mode) => {
+		const f = await voiceRun(mode);
+		const signal = new AbortController().signal;
+		const first = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		const line = new AbortController();
+		const speaking = first.speak('"One."', line.signal).catch((error: unknown) => error);
+		await vi.waitFor(async () => expect((await f.recorded()).appended).toHaveLength(1), { timeout: 10_000 });
+		line.abort();
+		// The line is rejected at once; the next call waits for the stop, and does not fail.
+		expect(((await speaking) as Error).message).toBe("Native voice cancelled");
+		const second = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		await expect(second.speak('"Two."', signal)).resolves.toEqual({ transcript: 'SAID "Two."' });
+		await second.close();
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		const recorded = await f.recorded();
+		// The second thread started only after the first call's late transcript and close, which went to neither call.
+		expect(recorded.events).toEqual(["thread-start:thread_voice", "stop", "late", "thread-start:thread_voice_2"]);
+		expect(recorded.stops).toEqual([{ threadId: "thread_voice" }, { threadId: "thread_voice_2" }]);
+	},
+);
+
+it.each(["voice-stop-silent", "voice-stop-refused"])(
+	"places no more calls in a run once a stop went unconfirmed, and the run stands: %s",
+	async (mode) => {
+		const f = await voiceRun(mode, { voice: new CloudVoiceChannel({ stopMs: 200 }) });
+		const signal = new AbortController().signal;
+		const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		await call.close();
+		await expect(f.voice.open({ offerSdp: VOICE_OFFER }, signal)).rejects.toBeInstanceOf(CloudVoiceUnavailable);
+		expect((await f.recorded()).events).toEqual(["thread-start:thread_voice"]);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	},
+);
+
+it("gives a run on a member's ChatGPT plan no voice", async () => {
+	const f = await voiceRun("voice", { identityRoot: await planRoot() });
+	await expect(f.voice.open({ offerSdp: VOICE_OFFER }, new AbortController().signal)).rejects.toBeInstanceOf(
+		CloudVoiceUnavailable,
+	);
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	await expect(stat(f.evidence)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 async function starts(evidence: string): Promise<number> {

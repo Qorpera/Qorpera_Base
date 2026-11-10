@@ -243,6 +243,27 @@ web does not already answer. What the kit adds is that the agent writes one file
 - **Security:** nothing new. The engine is Qorpera's text, but it runs where the agent's own script runs, inside
   the app's frame, with exactly a page's reach (§6); the page reads no live data unless its manifest says so, and an
   explainer needs none. A clip is a file of the app under the app's limits.
+- **The call** (10 November 2026; `cloud-voice-channel.ts`, and the voice lane in `cloud-codex-tool-session.ts`).
+  The voice is ChatGPT's own, reached through the Codex app-server the agent's run already has, on the run's own
+  sign-in: a side thread, as auto-review's and the memory compactor's are, with a realtime session on it
+  (`thread/realtime/start`: WebRTC, version v3, `clientManagedHandoffs`, no startup context). The lane takes a
+  WebRTC offer and hands back the provider's answer; the sound itself flows between OpenAI and whoever made the
+  offer, never through the runtime. Then one line at a time (`thread/realtime/appendSpeech`), each answered with
+  what the provider says was spoken (`thread/realtime/transcript/done`, at most 4 KiB), until the call is closed,
+  its caller's signal aborts, or the provider ends it.
+  - The voice only reads. Its thread has no tools, a read-only sandbox and the reader rule as its instructions;
+    every request Codex makes on it is refused. If the voice hands over to a model turn anyway (it did once on
+    10 November, before the rule), the turn is interrupted and the call ends ("Native voice tried to act").
+  - Nothing a call does fails the agent's run: a refused request, the provider's error and a malformed answer end
+    only the call, and a model request on the voice's thread (a prewarm, or such a turn) passes the result fence on
+    a lane of its own with nothing released. The one exception is the 120 seconds every side thread has to start.
+  - One call at a time, and none in a run on a member's ChatGPT plan (its Codex reaches OpenAI's API with the plan's
+    token). The run's end ends the call. A call that ends keeps its place until Codex confirms its stop (a successful
+    answer to the stop, or the session's close; a refused stop confirms nothing), and the next call waits for that,
+    so nothing the old session still says reaches the new one; a stop not confirmed within 10 seconds ends the run's
+    voice, and the run goes on without it.
+  - Nothing opens a call yet: the tool that does is the next step, and with it the one host the call's control
+    connection needs beyond the run's own (Codex joins the call at `api.openai.com`).
 
 ## 4. Web
 
