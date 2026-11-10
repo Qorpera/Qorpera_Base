@@ -5,10 +5,13 @@
 --    refs/qorpera/kept-here at its start), is the platform's alone. Until now a coding session could take a lease on it
 --    and remove it, and a member could write or restore it with no lease: without it every later start and landing is
 --    refused, and a new session is told the place holds a copy of a GitHub repository.
--- 2. In a repository that has the mark, a coding session's lease is never for the default branch (refs/heads/main: one
+-- 2. In a repository kept in Qorpera, a coding session's lease is never for the default branch (refs/heads/main: one
 --    repository, one default branch, 20260930670000), packed-refs or shallow. A session could take them and move or
 --    rewind main itself, past the landing and whatever comes to stand before it. Its own branch and the other refs it
 --    makes stay its own, under a lease as before. A copy of a GitHub repository is as it was.
+--    A place under code/ is kept in Qorpera when the kernel has a coding session on it as one (20260930670000's own
+--    rule for which of the two a place holds), or when its mark is there as a file. The first is the one that lasts:
+--    git's cleanup packs the mark into packed-refs and removes its file (code-host-jobs.ts, collectCodeGarbage).
 -- 3. A turn whose executor stopped while it handed in a commit says so in the repository's words: there is no pull
 --    request for a repository kept in Qorpera.
 -- A member's restore of refs/heads/main is not changed here: the commit's rule reads a key alone, and whether a member
@@ -45,9 +48,14 @@ select pg_temp.dependable_patch('public.qorpera_folder_git_lease_take(uuid,jsonb
 			return jsonb_build_object('schema','qorpera.folder-git-lease/v1','state','refused','reason',v_reason); end if;$old$,
 	$new$		-- 20260930707000: where the repository is kept in Qorpera (its mark is there), only the platform moves the default
 		-- branch: never a session's lease on it, or on the two files that would move it for every reader.
+		-- The repository is the kernel's own record of one there (as 20260930670000 tells the two kinds apart), which
+		-- lasts when git's cleanup packs the mark's file away; or the mark's file.
 		if v_reason = 'git_lease_required' and v_key ~ '^code/[^/]+/[^/]+/repo\.git/(refs/heads/main|packed-refs|shallow)$'
-			and public.qorpera_folder_git_version(p_environment_id,
-				substring(v_key from '^code/[^/]+/[^/]+/repo\.git/') || 'refs/qorpera/kept-here') is not null then
+			and (exists (select 1 from public.qorpera_coding_sessions kept where kept.environment_id = p_environment_id
+					and kept.repository ->> 'host' = 'qorpera' and kept.repository ->> 'owner' = split_part(v_key, '/', 2)
+					and kept.repository ->> 'name' = split_part(v_key, '/', 3))
+				or public.qorpera_folder_git_version(p_environment_id,
+					substring(v_key from '^code/[^/]+/[^/]+/repo\.git/') || 'refs/qorpera/kept-here') is not null) then
 			v_reason := 'git_platform_only'; end if;
 		if v_reason <> 'git_lease_required' then
 			return jsonb_build_object('schema','qorpera.folder-git-lease/v1','state','refused','reason',v_reason); end if;$new$]);

@@ -277,8 +277,17 @@ describe("CodeHostRepositories", () => {
 		);
 		expect(names.summary).toContain('"cart.js"');
 		// Nothing landed: main is where the start left it.
-		expect(await f.git(join(f.companyRoot, "code/qorpera/example/repo.git"), "rev-parse", "refs/heads/main")).toBe(
-			baseSha,
+		const repo = join(f.companyRoot, "code/qorpera/example/repo.git");
+		expect(await f.git(repo, "rev-parse", "refs/heads/main")).toBe(baseSha);
+		// Refs git cannot read (a packed-refs file that is not git's) fail a command, not a rule: they have words too,
+		// and never a plain "finishing again hands it in".
+		await writeFile(join(repo, "packed-refs"), "not a packed-refs file\n");
+		const unread = await f.repositories.land(session, head, signal()).catch((e) => e);
+		expect(unread).toBeInstanceOf(CodingLandRefused);
+		expect(unread.message).toBe("CODE_HOST_REF_UNREADABLE");
+		expect(unread.cause).toBeInstanceOf(CodeHostJobFailure);
+		expect(unread.summary).toBe(
+			"The change was not landed, and nothing changed on main: the repository's own record of its branches could not be read. Finish again once; if that fails the same way, nothing can go into main until Qorpera has repaired the repository, so say so in your report. The work is kept on the session's branch.",
 		);
 	});
 	it("a landing that lost main to another one is made once more, and no more than that", async () => {

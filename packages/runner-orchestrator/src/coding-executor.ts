@@ -184,8 +184,9 @@ export function prepareUnfinished(error: unknown): string {
  * log. */
 export const TURN_START_UNFINISHED =
 	"The coding turn could not start, so nothing ran and nothing was changed. The workspace is kept; a follow-up tries again. [code=CODING_TURN_START_UNFINISHED]";
-/** What to change after a landing the code host refused by rule (its code, and the paths it named), or undefined for a
- * code this does not know. Never a "finish again" for work that would be refused the same way. */
+/** What to change after a landing the code host refused by rule (its code, and the paths it named), or whose refs it
+ * could not read, or undefined for a code this does not know. Never a plain "finish again" for work that would be
+ * refused the same way. */
 export function landRefusal(baseBranch: string, code: string, paths: readonly string[]): string | undefined {
 	const shown = paths.slice(0, 20).map((path) => JSON.stringify(path));
 	const named = shown.length
@@ -203,10 +204,12 @@ export function landRefusal(baseBranch: string, code: string, paths: readonly st
 		case "CODE_HOST_EXPORT_MOVED":
 		case "CODE_HOST_EXPORT_NO_BRANCH":
 			return `${not}: the commit handed in is not on this session's own branch. Commit the work on the branch the session's workspace has checked out, and finish with that commit.`;
+		case "CODE_HOST_REF_UNREADABLE":
+			// git could not read the repository's refs: once is a hiccup, twice is a file that is not git's any more.
+			return `${not}: the repository's own record of its branches could not be read. Finish again once; if that fails the same way, nothing can go into ${baseBranch} until Qorpera has repaired the repository, so say so in your report. The work is kept on the session's branch.`;
 		case "CODE_HOST_NOT_SEEDED":
 		case "CODE_HOST_AREA_FROM_GITHUB":
 		case "CODE_HOST_AREA_NO_BASE":
-		case "CODE_HOST_REF_UNREADABLE":
 		case "CODE_HOST_REF_IS_SYMBOLIC":
 		case "CODE_HOST_REF_NOT_A_COMMIT":
 		case "CODE_HOST_LINK":
@@ -649,8 +652,16 @@ export class CloudCodingExecutor {
 						claimed.leaseUntil = until;
 						failures = 0;
 					}
-				} catch {
-					if (!heartbeatStop.signal.aborted) stop.abort(new Error("CODING_EXECUTOR_LEASE_LOST"));
+				} catch (error) {
+					// A refusal is the kernel's answer, and stays with the reason as its cause: the turn then ends as
+					// released. Renewals that ran out of time lost the lease without one.
+					if (!heartbeatStop.signal.aborted)
+						stop.abort(
+							new Error(
+								"CODING_EXECUTOR_LEASE_LOST",
+								error instanceof CodingControlRefused ? { cause: error } : undefined,
+							),
+						);
 				}
 			})();
 			// The turn as the kernel sees it, asked again while its answer is lost or late, within its own budget; the
@@ -975,7 +986,10 @@ export class CloudCodingExecutor {
 			}
 			// A refused describe or renewal is the kernel's answer: the session was cancelled or archived, or the lease
 			// is no longer this turn's, and the kernel wrote which.
-			return cause instanceof CodingControlRefused ? "released" : "recovery-required";
+			return cause instanceof CodingControlRefused ||
+				(cause instanceof Error && cause.cause instanceof CodingControlRefused)
+				? "released"
+				: "recovery-required";
 		} finally {
 			heartbeatStop.abort();
 			clearTimeout(watchdog);

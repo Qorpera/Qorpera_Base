@@ -686,7 +686,8 @@ describe("the coding executor over a session turn", () => {
 		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 50, report });
 		const run = executor.runOnce(new AbortController().signal);
 		await vi.advanceTimersByTimeAsync(16000);
-		expect(await run).toBe("recovery-required");
+		// The kernel refused the renewal: the lease is gone by its word, and it wrote what happened.
+		expect(await run).toBe("released");
 		// The lease is gone: it is not asked again.
 		expect(heartbeats).toBe(1);
 		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
@@ -995,7 +996,8 @@ describe("the coding executor over a session turn", () => {
 		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
 		const run = executor.runOnce(new AbortController().signal);
 		await vi.advanceTimersByTimeAsync(20000);
-		expect(await run).toBe("recovery-required");
+		// The renewal was refused: the kernel took the turn.
+		expect(await run).toBe("released");
 		expect(lost).toBeGreaterThan(0);
 		expect(begins.every((at) => at <= lost)).toBe(true);
 		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
@@ -1415,7 +1417,8 @@ describe("the lease and the turn's reads through a slow database", () => {
 		);
 		const r = run(w, s.control);
 		await vi.advanceTimersByTimeAsync(30000);
-		expect(await r.outcome).toBe("recovery-required");
+		// A refusal is the kernel's answer: released, not a recovery.
+		expect(await r.outcome).toBe("released");
 		expect(r.reported()).toEqual([["turn", "CODING_EXECUTOR_LEASE_LOST"]]);
 		const renewals = s.at(HEARTBEAT);
 		expect(renewals).toHaveLength(2);
@@ -1569,7 +1572,8 @@ describe("the lease and the turn's reads through a slow database", () => {
 		);
 		const r = run(w, s.control, 2000);
 		await vi.advanceTimersByTimeAsync(30000);
-		expect(await r.outcome).toBe("recovery-required");
+		// The renewal was refused: the kernel's answer, so the turn is released.
+		expect(await r.outcome).toBe("released");
 		expect(r.reported()).toEqual([["turn", "CODING_EXECUTOR_LEASE_LOST"]]);
 		near(s.ended(), 15000);
 		// The describe's pause from 8 s to 16 s was cut at the refusal; nothing was asked after it.

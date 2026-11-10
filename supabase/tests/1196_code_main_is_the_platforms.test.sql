@@ -5,6 +5,8 @@
 --   2. A copy of a GitHub repository (no mark) is as it was: a session takes the lease on main.
 --   3. With the mark: a member's and a session's write of it are refused; a session's lease on main, packed-refs and
 --      shallow is refused; its own branch and another ref of its own are held; another worker's branch is the other's.
+--   4. After git's cleanup packed the mark into packed-refs and removed its file, the kernel's own record of the
+--      repository (a coding session on it as one kept in Qorpera) keeps main the platform's.
 
 create function pg_temp.take(p_view jsonb, p_path text) returns jsonb language sql as $$
 	select public.qorpera_folder_git_lease_take('63200000-0000-4000-8000-000000000020', pg_temp.vactor(p_view), p_path)
@@ -94,4 +96,36 @@ begin
 	perform pg_temp.lease(pg_temp.cv(1), g || 'refs/heads/main-2', 'held');
 	perform pg_temp.lease(pg_temp.cv(1), g || 'refs/heads/qorpera/coding/' || w2, 'refused', 'git_other_worker');
 	perform pg_temp.lease(pg_temp.cv(2), g || 'refs/heads/qorpera/coding/' || w2, 'held');
+end $$;
+
+-- 4. After git's cleanup ------------------------------------------------------------------------------------------------
+do $$
+declare g text := 'code/acme/app/repo.git/'; b jsonb := pg_temp.stage('git-beta'); w1 text := pg_temp.wk(1); r jsonb;
+begin
+	-- The cleanup (the platform's) packs the mark into packed-refs and removes its file. With no record of the
+	-- repository as one kept in Qorpera, nothing would tell it from a GitHub copy: main could be leased again.
+	r := pg_temp.commit('{"kind":"platform"}', 'kept-packed', jsonb_build_array(
+		jsonb_build_object('op','delete','path',g || 'refs/qorpera/kept-here','expectedVersion',pg_temp.ver(g || 'refs/qorpera/kept-here')),
+		jsonb_build_object('op','write','path',g || 'packed-refs','file',b,'expectedVersion',pg_temp.ver(g || 'packed-refs'))));
+	perform pg_temp.expect(r, 1, 'saved'); perform pg_temp.expect(r, 2, 'saved');
+	if pg_temp.ver(g || 'refs/qorpera/kept-here') is not null then raise exception 'The mark''s file stayed'; end if;
+	perform pg_temp.lease(pg_temp.cv(2), g || 'refs/heads/main', 'held');
+	r := public.qorpera_folder_git_leases_drop('63200000-0000-4000-8000-000000000020', pg_temp.vactor(pg_temp.cv(2)));
+	-- The kernel's record: the sessions are on acme/app as a repository kept in Qorpera (a dispatch wrote them so).
+	-- (With the agent's grant of it, which a dispatch writes too: a session without one loses its view.)
+	perform set_config('session_replication_role', 'replica', true);
+	insert into public.qorpera_coding_repository_grants(environment_id, staff_agent_id, repository, enabled)
+	values ('63200000-0000-4000-8000-000000000020', '63200000-0000-4000-8000-0000000000a1',
+		'{"host":"qorpera","owner":"acme","name":"app","baseBranch":"main"}', true);
+	update public.qorpera_coding_sessions set repository = jsonb_set(repository, '{host}', '"qorpera"')
+	where environment_id = '63200000-0000-4000-8000-000000000020' and repository ->> 'owner' = 'acme' and repository ->> 'name' = 'app';
+	perform set_config('session_replication_role', 'origin', true);
+	perform pg_temp.lease(pg_temp.cv(1), g || 'refs/heads/main', 'refused', 'git_platform_only');
+	perform pg_temp.lease(pg_temp.cv(2), g || 'refs/heads/main', 'refused', 'git_platform_only');
+	perform pg_temp.lease(pg_temp.cv(1), g || 'packed-refs', 'refused', 'git_platform_only');
+	perform pg_temp.lease(pg_temp.cv(1), g || 'shallow', 'refused', 'git_platform_only');
+	perform pg_temp.lease(pg_temp.cv(1), g || 'refs/heads/qorpera/coding/' || w1, 'held');
+	-- Another place of the same company, with no record and no mark, is not held back by this rule.
+	r := pg_temp.take(pg_temp.cv(1), 'code/acme/other/repo.git/refs/heads/main');
+	if r ->> 'reason' is not distinct from 'git_platform_only' then raise exception 'Another place: %', r; end if;
 end $$;

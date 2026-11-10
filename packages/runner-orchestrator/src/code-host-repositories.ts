@@ -105,8 +105,8 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 
 	/** The session's submitted commit landed on the default branch of its repository kept in Qorpera. A landing that
 	 * lost the default branch to another one (the move's compare-and-swap, `CODE_HOST_BASE_MOVED`) wrote nothing and is
-	 * made once more, from the branch as it stands then. A refusal by rule says what to change (CodingLandConflict,
-	 * CodingLandRefused), since the same work would be refused again. */
+	 * made once more, from the branch as it stands then. A refusal by rule, and refs that could not be read, say what to
+	 * do (CodingLandConflict, CodingLandRefused), since the same work would be refused again. */
 	async land(session: CodingFolderRepositorySession, headSha: string, signal: AbortSignal): Promise<CodingLanded> {
 		const { repository, workerId } = session.claim;
 		if (repository.host !== "qorpera") throw new Error("CODE_HOST_REPOSITORY_NOT_HERE");
@@ -119,11 +119,19 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			} catch (error) {
 				if (signal.aborted) throw error;
 				if (again && error instanceof CodeHostJobFailure && error.code === "CODE_HOST_BASE_MOVED") continue;
-				if (!(error instanceof CodeHostRefusal)) throw error;
-				if (error.code === "CODE_HOST_LAND_CONFLICT") throw new CodingLandConflict(error.paths);
-				const summary = landRefusal(repository.baseBranch, error.code, error.paths);
-				if (summary === undefined) throw error;
-				throw new CodingLandRefused(error.code, summary, { cause: error });
+				if (error instanceof CodeHostRefusal && error.code === "CODE_HOST_LAND_CONFLICT")
+					throw new CodingLandConflict(error.paths);
+				// A refusal by rule, and refs git could not read (a failed command, `Run.ref`): both have their own words.
+				let code: string | undefined;
+				let paths: readonly string[] = [];
+				if (error instanceof CodeHostRefusal) {
+					code = error.code;
+					paths = error.paths;
+				} else if (error instanceof CodeHostJobFailure && error.code === "CODE_HOST_REF_UNREADABLE")
+					code = error.code;
+				const summary = code === undefined ? undefined : landRefusal(repository.baseBranch, code, paths);
+				if (code === undefined || summary === undefined) throw error;
+				throw new CodingLandRefused(code, summary, { cause: error });
 			}
 		}
 	}
