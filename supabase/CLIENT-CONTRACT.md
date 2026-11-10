@@ -1218,6 +1218,32 @@ before). Each call answers 42501 for a caller who is not a member of the company
   every 15 s while the window is open without hints. Fields may be added; a client ignores the ones it does not know.
 - `qorpera_member_machine_screen_begin(profile, machine, watch)`: one look, begun as the member. Clients do not call it:
   the look route (§4) does, with the member's own token. `watch` is `{"confirmed": boolean}`.
+
+### An agent's computer, taken over (20260930713000_machine_member_control)
+
+An owner, admin or contributor takes over an agent's desktop computer in the computer window and hands it back; a viewer
+watches only. While a member holds the desktop, the agent gets no picture of that machine and neither acts on it, starts
+a new command there nor saves a key off it (`DESKTOP_MEMBER_IN_CONTROL`); other members see who holds it, not the
+screen. The hold is a lease: 5 minutes from the member's last word (taking it, an action, the heartbeat), never more
+than 30 minutes from their last input (taking it, an action); it ends at once when they hand it back and by itself at
+its time (no job ends it: every check compares the time). Each call answers 42501 for a caller who may not, 22023 for a
+request of another shape.
+
+- `qorpera_list_agent_machines` also answers `canTakeOver` (owners, admins, contributors) and, per machine, `control`:
+  null, or `{mine, name, until}` while a member holds its desktop (`mine` when it is the caller; `name` the holder's;
+  `until` when the lease runs out unless renewed: read the list again then).
+- `qorpera_member_take_machine_desktop(profile, machine)`: `{schema: "qorpera.member-machine-desktop/v1", state: "ok",
+  until}`, or `state: "refused"` with `reason` `DESKTOP_MACHINE_TOO_SMALL`, `MACHINE_NOT_RUNNING`,
+  `MACHINE_NEEDS_COMPANY_VIEW` or `DESKTOP_MEMBER_IN_CONTROL` (with `memberName`, the holder's). Taking it again renews
+  the caller's own lease.
+- `qorpera_member_keep_machine_desktop(profile, machine)`: the window's heartbeat, every 60 s while it shows the member
+  holding the desktop: `state: "ok"` with the new `until`, or `state: "ended"` (handed back, run out, or another
+  member's now).
+- `qorpera_member_hand_back_machine_desktop(profile, machine, reason)`: `reason` `handed_back` (the member's word, or
+  their take-over card's I'm done) or `closed` (their window closed or they left the company's page). `{schema, state:
+  "ok", handedBack}`: false when the caller held nothing (any more). A take-over card is answered after this.
+- `qorpera_member_machine_desktop_act_begin(profile, machine, action)`: one action, begun as the member. Clients do not
+  call it: the action route (§4) does, with the member's own token and the action as SQL keeps it (a text by its length).
 #### Member contacts' places (20260930717000_member_contact_places)
 
 A contact is a rail row like an agent's (Jonas, 10 Nov 2026: "not sure I like the member contacts at the top,
@@ -1406,7 +1432,9 @@ topic's rows. A new private topic's policies must do the same.
   `postgres_changes` gets no such hint and reads the member chats on its slow poll. Since
   `20260930712000_machine_member_screens` also `machines`, to every member of the company, when one of its machines is
   made, wanted on or off, removed or fails, another agent drives its screen (or one drives it again after 10 minutes),
-  or its placement is made, starts, gets a boot, retires or goes: read `qorpera_list_agent_machines` again. Who hears a change is decided per change, at commit: only the topics of the members
+  or its placement is made, starts, gets a boot, retires or goes, and since `20260930713000_machine_member_control` when
+  a member takes its desktop over or hands it back (not on an action or a heartbeat, nor when a lease runs out: read the
+  list again at its `until`): read `qorpera_list_agent_machines` again. Who hears a change is decided per change, at commit: only the topics of the members
   who may read the changed row under its table's read policy then, so a member who leaves hears nothing of the company
   from that commit on but the change to their own access row (which they may read). A member may join only their own
   topic, of a company they are a member of or have an access row in (RLS on `realtime.messages` via
@@ -1508,7 +1536,21 @@ only after durable storage.
   is off), `MACHINE_BOOT_CHANGED`, `MACHINE_IMAGE_WITHOUT_SCREEN`, `SCREEN_HIDDEN` (the machine holds a read of the
   company folder this member may not read) or `SCREEN_HELD` (the folder has not released what the machine read: look
   again); 401 for a token the database does not take; 403 for a machine that is not there for the member. Behind the
-  member company gateway like the other member routes.
+  member company gateway like the other member routes. Since 20260930713000 also `DESKTOP_MEMBER_IN_CONTROL`: another
+  member holds the desktop (the list says who).
+- `POST /v1/member-machine-screens/<companyId>/<machineId>/act` (20260930713000; the same listener) — an action of the
+  member who holds the desktop, with their token, `content-type: application/json` and `{"action": {...}}` (at most
+  16 KiB): `{type: click, x, y, button?}`, `{type: double|move, x, y}`, `{type: drag, x, y, toX, toY}`, `{type: type,
+  text}` (1 to 500 characters, no control character but a line break or a tab), `{type: key, keys}` (1 to 16 names such
+  as Return or ctrl+l, none an xdotool command word), `{type: scroll, direction, steps?, x?, y?}`; positions are the
+  screen's pixels (the picture's own size). Never `open`. 200 `{schema: "qorpera.member-machine-act/v1", exitCode}`
+  (the action's exit; null when it was cut off); 400 for a body that is not one action; 409 `{code}`:
+  `MACHINE_NOT_RUNNING`, `MACHINE_NEEDS_COMPANY_VIEW`, `DESKTOP_MEMBER_IN_CONTROL`, `DESKTOP_CONTROL_ENDED` (the
+  member's hold ended: handed back or run out), `DESKTOP_BUSY` (another action runs on the desktop: an agent's that
+  began before the take-over), `DESKTOP_NOT_RUNNING` (the screen is off), `MACHINE_BOOT_CHANGED`,
+  `MACHINE_IMAGE_WITHOUT_SCREEN`, `SCREEN_ACTION_TAKEN`, or the screen helper's own refusals; 401 and 403 as a look.
+  The text goes to the machine and nowhere else: never to the database, a log or an answer. Nothing of the screen comes
+  back: the client looks again. Behind the member company gateway, which reads a body only for a signed-in member.
 
 `/v1/profile-objects/<profileId>/<sha256>` answers only the private `DELETE` folder GC and erasure use (with the
 gateway control token, never a member token); the gateway serves no raw object reads or uploads by hash, no read
