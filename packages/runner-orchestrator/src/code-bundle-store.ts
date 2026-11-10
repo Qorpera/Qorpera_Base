@@ -92,7 +92,8 @@ export interface CodeBundleWriter {
 	 * (`CODE_BUNDLE_DIFFERS` otherwise) and no bundle has the name (`CODE_BUNDLE_EXISTS`). The temporary file goes either
 	 * way. */
 	commit(name: string, facts: CodeBundleFacts, signal?: AbortSignal): Promise<CodeBundleManifest>;
-	/** Removes the temporary file. Nothing after a commit. */
+	/** Removes the temporary file. Nothing after a commit. The removal keeps its place in the store's line when the
+	 * wait for it ends (`CODE_BUNDLE_STORE_TIMEOUT`): the file still goes. */
 	abort(): Promise<void>;
 }
 
@@ -232,16 +233,19 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 
 	/** One use of the store, after the last one ended and within `ms`. It rejects with its caller's reason, with
 	 * `CODE_BUNDLE_STORE_TIMEOUT` past `ms`, with the fixed code the store or the storage's check gave, or with
-	 * `CODE_BUNDLE_STORE_FAILED` for anything else (the cause kept). */
+	 * `CODE_BUNDLE_STORE_FAILED` for anything else (the cause kept). A use whose time passed while it waited in the
+	 * line is not begun, unless it is `owed`: work that takes a writer's file down runs when its turn comes, however
+	 * long that took, and only its caller stops waiting. */
 	async function use<T>(
 		ms: number,
 		signal: AbortSignal | undefined,
 		work: (checked: AbortSignal) => Promise<T>,
+		owed = false,
 	): Promise<T> {
 		const deadline = AbortSignal.timeout(ms);
 		const checked = signal ? AbortSignal.any([signal, deadline]) : deadline;
 		const running = last.then(async () => {
-			checked.throwIfAborted();
+			if (!owed) checked.throwIfAborted();
 			return await work(checked);
 		});
 		last = running.catch(() => undefined);
@@ -426,9 +430,16 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 			},
 
 			abort(): Promise<void> {
-				return use(stepMs, undefined, async () => {
-					if (state !== "closed") await close();
-				});
+				// Owed: a wait behind the store's other uses that outlasts the step must not leave the file, which no
+				// sweep takes while its writer counts as open.
+				return use(
+					stepMs,
+					undefined,
+					async () => {
+						if (state !== "closed") await close();
+					},
+					true,
+				);
 			},
 		});
 	}
@@ -476,7 +487,8 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 				return writer(repository, folder, temporary, file, maximum);
 			};
 			// The work goes on after its caller stopped waiting (`use`), and may still open a writer nobody is given:
-			// that writer is aborted when it comes, so its file goes and no later sweep has to step around it.
+			// that writer is aborted when it comes. An abort is owed, so its file goes when the store's line gets to it,
+			// whatever stands in the line before it, and no later sweep has to step around it.
 			let made: Promise<CodeBundleWriter> | undefined;
 			try {
 				return await use(stepMs, signal, (checked) => {

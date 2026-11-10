@@ -383,6 +383,43 @@ describe("createCodeBundleStore", () => {
 		await vi.waitFor(() => expect(readdirSync(other.folder)).toEqual([]));
 		await (await other.store.begin(TARGET)).abort();
 		expect(readdirSync(other.folder)).toEqual([]);
+
+		// Another use stands in the line before the lost writer's removal, and stalls for longer than a step may take:
+		// the removal is owed, so it waits its turn and is not given up.
+		const stalls: (() => void)[] = [];
+		const queued = setup({
+			stepMs: 500,
+			assert: () =>
+				new Promise<void>((resolve) => {
+					if (stalls.length < 2) stalls.push(resolve);
+					else resolve();
+				}),
+		});
+		const left = new AbortController();
+		const lost = expect(queued.store.begin(TARGET, {}, left.signal)).rejects.toThrow("the caller left");
+		const behind = expect(queued.store.companies()).rejects.toThrow("CODE_BUNDLE_STORE_TIMEOUT");
+		await vi.waitFor(() => expect(stalls).toHaveLength(1));
+		left.abort(new Error("the caller left"));
+		await lost;
+		stalls[0]?.();
+		// The second use is under way, behind it the removal; the writer's file is there.
+		await vi.waitFor(() => expect(stalls).toHaveLength(2));
+		expect(readdirSync(queued.folder).filter((name) => /^\.write-[0-9a-f-]{36}$/.test(name))).toHaveLength(1);
+		await behind;
+		await new Promise((resolve) => setTimeout(resolve, 600));
+		expect(readdirSync(queued.folder)).toHaveLength(1);
+		stalls[1]?.();
+		await vi.waitFor(() => expect(readdirSync(queued.folder)).toEqual([]));
+		// A writer whose own abort waited too long is told so, and its file goes all the same.
+		const slow = await queued.store.begin(TARGET);
+		stalls.length = 1;
+		const stalled = expect(queued.store.companies()).rejects.toThrow("CODE_BUNDLE_STORE_TIMEOUT");
+		await vi.waitFor(() => expect(stalls).toHaveLength(2));
+		await expect(slow.abort()).rejects.toThrow("CODE_BUNDLE_STORE_TIMEOUT");
+		await stalled;
+		expect(readdirSync(queued.folder)).toHaveLength(1);
+		stalls[1]?.();
+		await vi.waitFor(() => expect(readdirSync(queued.folder)).toEqual([]));
 	});
 
 	it("checks the storage before a writer begins and before a bundle gets its name", async () => {
