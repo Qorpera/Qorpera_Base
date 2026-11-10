@@ -74,11 +74,15 @@ it("tells how to make a page worth opening, within the bytes a tool's descriptio
 		"The first screen answers how this stands, without scrolling, on a laptop and on a phone",
 		"A page with nothing to look at is a document, not an app.",
 		"Fold nothing a member needs into <details> or closed rows.",
-		"A link does not open inside an app, whether to a file, an app or the web",
+		"Links open on a member's click: href app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens.",
+		"Every app starts from Qorpera's base style, which your own CSS overrides",
+		"the company's colours as variables, so the apps look like one company; files says which",
 		"Make it work at phone width (about 390 px)",
 		"The answer's look names what a quick read of the saved page found: fix it, unless it does not fit this page.",
 	])
 		expect(tool.description).toContain(rule);
+	// The web opens an app's links and gives it a base style now: the description no longer says otherwise.
+	expect(tool.description).not.toMatch(/does not open inside an app|copied in because/);
 	// How a page reads live data is said on reads, which the schema's 64 KiB hold.
 	const schema = JSON.stringify(tool.inputSchema);
 	for (const call of [
@@ -96,6 +100,21 @@ it("tells how to make a page worth opening, within the bytes a tool's descriptio
 		"When a read fails, keep what the page last showed and read again ten seconds later, until a read works",
 	])
 		expect(schema).toContain(call);
+	// So is the base style a page starts from: its variables, where the company's colours come from, light and dark.
+	const files = JSON.stringify((tool.inputSchema as { properties: { files: unknown } }).properties.files);
+	for (const said of [
+		"Each page starts from Qorpera's base style, which sits in a layer under your own CSS, so any rule you write wins over it",
+		"a centred column at most 800 px wide (set body's margin yourself to use the whole width)",
+		"--q-bg the page, --q-text the text, --q-muted quiet text, --q-line rules and borders, --q-surface cards and panels",
+		"--q-accent the company's colour for links, marks and key figures, --q-on-accent text on the accent",
+		"--q-good, --q-warn and --q-bad for states",
+		'QorperaOS/brand/brand.toml gives them, which the agent that owns the brand writes with company_write: accent, background and text, each as \\"#rrggbb\\", at the top for a light page and again under [dark] for a dark one',
+		"Text must read on its background (4.5 to 1) and the accent must show on it (3 to 1), or Qorpera's own colour is used instead.",
+		'A page is shown light unless its head says it works in both, with <meta name=\\"color-scheme\\" content=\\"light dark\\">',
+		"because a page cannot read QorperaOS/",
+		"A concept gets no base style.",
+	])
+		expect(files).toContain(said);
 });
 
 it("tells on writes how a page lets a member act, and that nothing is saved without the member's yes", async () => {
@@ -239,7 +258,7 @@ it("changes an app's files over the versions it reads, and keeps its owner and p
 });
 
 const LINKS_NOTE =
-	"a link does not open inside an app. Show the content itself, name a file by its path, and put links in your message.";
+	"a link opens another app (app:<name>), a file of the company's own work (folder:<path>, never under QorperaOS/), a web page (https://…) or a place in the page (#id). For anything else, such as a tab, use a button with a click handler.";
 const WORDS_NOTE =
 	"this reads as a document. Aim at about 300: show the state as numbers, marks, a chart or a diagram, and keep the long reasoning in its file.";
 const UNSHOWN_NOTE = "Nothing to look at, only text: show the main thing as a picture, a chart, a map or a diagram.";
@@ -247,13 +266,29 @@ const words = (count: number) => Array.from({ length: count }, () => "word").joi
 
 it("reads a page quickly and names what a member would trip on", () => {
 	expect(appLookNotes(PAGE)).toEqual([]);
-	// Links the frame cannot open: not a jump inside the page, not an anchor without a target, not markup in a comment.
+	// The links the web opens when a member clicks them are fine: an app, a file of the company's own work, a web
+	// page, a jump inside the page. So is an anchor without a target.
 	expect(
 		appLookNotes(
-			'<a href="#top">Top</a> <a name="top">Here</a> <a href="folder:strategy/plan.md">Plan</a> <a class="x" href=https://example.com>Site</a> <!-- <a href="app:old">Old</a> -->',
+			'<a href="#top">Top</a> <a name="top">Here</a> <a href="folder:strategy/plan%202027.md">Plan</a> <a class="x" href=https://example.com>Site</a> <a href="app:sales">Sales</a> <a href="HTTP://example.com">Site</a>',
 		),
-	).toEqual([`2 links: ${LINKS_NOTE}`]);
-	expect(appLookNotes('<a href="app:sales">Sales</a>')).toEqual([`1 link: ${LINKS_NOTE}`]);
+	).toEqual([]);
+	// The ones that open nothing are named, the first three of them: another page of the app, a path of the site, a
+	// file in a folder the platform keeps, a name that is no app's, mail, a script (the browser runs none in an app's
+	// frame). Not markup in a comment.
+	expect(appLookNotes('<a href="details.html">More</a> <!-- <a href="old.html">Old</a> -->')).toEqual([
+		`1 link opens nothing (details.html): ${LINKS_NOTE}`,
+	]);
+	expect(
+		appLookNotes(
+			'<a href="/c/1/file">Files</a> <a href="folder:QorperaOS/vision/vision.md">Vision</a> <a href="folder:Hooks/mail/a.eml">Mail</a> <a href="app:Sales Board">Sales</a> <a href="mailto:a@example.com">Mail</a> <a href="folder:">Root</a> <a href="javascript:show(2)">Two</a>',
+		),
+	).toEqual([
+		`7 links open nothing (/c/1/file, folder:QorperaOS/vision/vision.md, folder:Hooks/mail/a.eml, …): ${LINKS_NOTE}`,
+	]);
+	expect(appLookNotes(`<a href="${"x".repeat(200)}">Long</a>`)).toEqual([
+		`1 link opens nothing (${"x".repeat(80)}…): ${LINKS_NOTE}`,
+	]);
 	// Folded sections, from three on.
 	const folded = "<details><summary>More</summary><p>Hidden</p></details>";
 	expect(appLookNotes(folded.repeat(2))).toEqual([]);
@@ -278,14 +313,14 @@ it("reads a page quickly and names what a member would trip on", () => {
 
 it("tells the agent what a quick read of the saved entry page found, as advice", async () => {
 	const f = await fixture();
-	const wordy = `<h1>Market</h1><p>${words(501)}</p><a href="folder:research/market.md">Source</a>`;
+	const wordy = `<h1>Market</h1><p>${words(501)}</p><a href="research/market.md">Source</a>`;
 	const made = read(
 		await f.call("save_app", save("market", "make-1", manifest("Market"), [{ path: "index.html", text: wordy }])),
 	);
 	expect(made).toMatchObject({
 		state: "applied",
 		created: true,
-		look: [`1 link: ${LINKS_NOTE}`, `503 words: ${WORDS_NOTE}`, UNSHOWN_NOTE],
+		look: [`1 link opens nothing (research/market.md): ${LINKS_NOTE}`, `503 words: ${WORDS_NOTE}`, UNSHOWN_NOTE],
 		next: "Saved. First fix what look names, unless it does not fit this page. Then show it to the member with a link in your message: [market](app:market). post_app shows it to every member in their apps.",
 	});
 	expect(f.text("apps/market/index.html")).toBe(wordy);

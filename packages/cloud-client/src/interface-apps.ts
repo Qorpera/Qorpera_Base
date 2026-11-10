@@ -29,6 +29,17 @@ export const APP_DEFAULT_EMBLEM: InterfaceEmblem = "page";
 /** The live sources a manifest may ask for (§5). `questions`: the agents' open question cards that point at the app. */
 export const APP_READS = Object.freeze(["files", "tables", "todos", "agents", "questions"] as const);
 export type AppRead = (typeof APP_READS)[number];
+/** The folders at the top of the Company File that the platform writes or keeps (the agents' prompt: "the platform
+ * writes digital-post/, bank/, members/ and hooks/"), by their keys (`companyPathKey`): an app's page reads no file in
+ * them and its links open none (§4, §5). */
+export const APP_CLOSED_FOLDERS: readonly string[] = Object.freeze([
+	"qorperaos",
+	"hooks",
+	"digital-post",
+	"bank",
+	"members",
+	"code",
+]);
 /** What a manifest's `writes` may list (§5): `answers`, an answer to an agent's open question that points at the app,
  * and `table:<name>`, a row of that company table. The page only asks; the member allows each one on a bar the web
  * draws outside the app's frame, and the save is the member's own. */

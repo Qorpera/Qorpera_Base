@@ -10,6 +10,8 @@ import { PAGE_CONTENT, PAGE_ESCAPE, PAGE_FRAME_URL, PAGE_READY } from "./page-fr
  *   reloaded or went somewhere): its port is closed and `left` is called, and the panel shows a new frame only when the
  *   member asks (Reload). A document the frame shows later has no port.
  * - Escape in the page reaches the frame as Escape (page-frame.ts' rule), so the panel closes as it does elsewhere.
+ * - The frame follows no link. A link the member clicks in the page comes over the port as one more call (`open`),
+ *   which the frame document alone sends, and the host opens what it allows (app/interface-apps.ts `appLink`).
  * - A page changes nothing through its port: a call that asks for a change is answered only after the member allowed it
  *   on a bar the app draws outside this frame (app/views/app-ask-bar.ts), which may take as long as the member takes. */
 

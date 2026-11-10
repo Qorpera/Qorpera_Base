@@ -14,8 +14,9 @@
  */
 
 import { createHash } from "node:crypto";
-import { AGENT_COLOURS } from "@qorpera/cloud-client/company-state-shared";
+import { AGENT_COLOURS, companyPathKey } from "@qorpera/cloud-client/company-state-shared";
 import {
+	APP_CLOSED_FOLDERS,
 	APP_COVER_KINDS,
 	APP_DEFAULT_ENTRY,
 	APP_FILE_MAX_BYTES,
@@ -33,6 +34,7 @@ import {
 	type AppManifest,
 	appFileKind,
 	appFolder,
+	appLinkName,
 	appRelativePath,
 	parseAppManifest,
 	parseAppWrites,
@@ -97,13 +99,23 @@ const SAVE_APP_WRITES =
 	"What the page may ask a member to change, of answers and table:<name>. A page changes nothing by itself: its script asks, Qorpera shows the member a bar above the page with exactly what will be saved, and it is saved only when the member allows it there, as the member's own change. Each call returns a promise: it resolves once the change is saved, and rejects with the reason when the member says not now, when another request still waits, or when the save is refused. Show that reason on the page and leave the button, so the member can try again. Ask only from a click on a button of the page that says what it does, one request per click, never when the page opens or on a timer: after three not now in a row the page may not ask again until the member reloads it. A <form> does not submit inside an app: handle the button's click (and Enter in a field), not a form's submit. answers: a member answers an open question on the page. Ask the question with ask_member and point it at the app, with a link [title](app:<name>) in its body or app:<name> as an option's preview. qorpera.questions() (questions in reads) then lists the open questions that point at this app, each {id, agent, title, body, options: [{label, value, description}], multiSelect, askedAt}. Draw them as part of the page: a choice between two concepts as a button on each concept, an approval as a button beside what is approved. On a click call qorpera.answer(id, value) with one option's value, or a list of values for a multiSelect question. Your run goes on with the answer, as when the member answers in the chat; a typed answer is given in the chat. table:<name>: a member changes a row of the company table QorperaOS/tables/<name>/, such as a status, a date, a number or a note. qorpera.setRow(table, key, cells) changes cells of the row with that key: key is the value of the table's key column (an object of column to value when the key is several columns), and cells is an object of column to new value: text, a number, true or false, or null to empty an optional cell. qorpera.addRow(table, cells) adds a row. One row per request, at most 12 cells of it, a cell's text at most 500 characters; the bar shows each value before and after. A page cannot change a key cell or a column that names a member or an agent, and cannot remove a row; the table's own [write] rule and column types still decide, and the table areas is never written from an app. Read the rows with qorpera.table(name) (tables in reads) and draw again after a change. To act when a member changes a row, set a routine that wakes you: manage_routine with a trigger of kind file_change and path QorperaOS/tables/<name>/rows.csv; without one you see the change the next time you read the table. Keep what members change in a table, and what only you change in a data file of the app.";
 
 /**
+ * What save_app's schema says of `files`: the base style every app's page starts from (RUNTIME-INTERFACE-APPS.md §2;
+ * the web puts it into the page, packages/web/src/app/interface-app-style.ts), its variables, where the company's
+ * colours come from, and how a page follows light and dark. On the field for the same reason as `reads`.
+ */
+const SAVE_APP_FILES =
+	"The files to write, by their path in the app's folder. Each page starts from Qorpera's base style, which sits in a layer under your own CSS, so any rule you write wins over it: the system font, the text in a centred column at most 800 px wide (set body's margin yourself to use the whole width), and plain headings, links, tables and code. Its colours are CSS variables, and you use them in place of fixed colours: --q-bg the page, --q-text the text, --q-muted quiet text, --q-line rules and borders, --q-surface cards and panels, --q-accent the company's colour for links, marks and key figures, --q-on-accent text on the accent, --q-accent-soft a tint of it, and --q-good, --q-warn and --q-bad for states; --q-font and --q-mono are the type and --q-radius the corner. They hold the company's colours once QorperaOS/brand/brand.toml gives them, which the agent that owns the brand writes with company_write: accent, background and text, each as \"#rrggbb\", at the top for a light page and again under [dark] for a dark one. Text must read on its background (4.5 to 1) and the accent must show on it (3 to 1), or Qorpera's own colour is used instead. A page is shown light unless its head says it works in both, with <meta name=\"color-scheme\" content=\"light dark\">: then it follows the member's light or dark, so give it no fixed colours at all. The company's logo and other pictures are still copied into the app's folder, because a page cannot read QorperaOS/. A concept gets no base style.";
+
+/**
  * save_app's description, last: what makes a page worth opening (Jonas, 10 November 2026: the agents' apps "weren't all
  * that great visually"; six of the seven reviewed were one report template of text, drop-downs and dead links). A
  * concept or prototype of the product follows the product's own design (the company context), so these rules name
- * every other app. How to look at a page before showing it is in the company context, which has the room.
+ * every other app. How to look at a page before showing it is in the company context, which has the room. Since the
+ * web opens an app's links and gives every app a base style (RUNTIME-INTERFACE-APPS.md §2 and §4), it says which links
+ * open and points to `files` for the style.
  */
 const SAVE_APP_DESIGN =
-	" How to make a page worth opening (a concept or prototype of the company's product follows the product's own design instead). The first screen answers how this stands, without scrolling, on a laptop and on a phone: what is decided, what is open, what waits on a member and the two or three numbers that matter, each as a short line, a large number or a mark, never a paragraph. Head it with the area's plain name: no date, no update, no list of what you did; give the app that name as its title too, two or three words without the company's name. Show instead of write: a large number for a key figure, a chart for money or a trend, a map for places and routes, a diagram for steps and flows, a real picture for a thing or a screen; draw charts, maps and diagrams as inline SVG. A page with nothing to look at is a document, not an app. Keep it to about 300 words and rarely more than two laptop screens: a few words or a mark in a table cell, and the long reasoning in its file, named by its path in one line. Say what is not yet known once, as a state, not as a caveat in every sentence. Show a fact in one app only, the one whose area owns it. Fold nothing a member needs into <details> or closed rows. A link does not open inside an app, whether to a file, an app or the web: show the content itself, name a file by its path, and put links in your message. Once the company has a brand in QorperaOS/brand/, use its colours, logo and type in every app, copied in because a page cannot read QorperaOS/, so the apps look like one company; until then keep it calm: the system font, one accent colour, plenty of space. Make it work at phone width (about 390 px): one column, tables that fit or stack into cards, nothing cut off, text at least 14 px. Draw what the company already holds from its live data instead of typing it in: reads says how. The answer's look names what a quick read of the saved page found: fix it, unless it does not fit this page.";
+	" How to make a page worth opening (a concept or prototype of the company's product follows the product's own design instead). The first screen answers how this stands, without scrolling, on a laptop and on a phone: what is decided, what is open, what waits on a member and the two or three numbers that matter, each as a short line, a large number or a mark, never a paragraph. Head it with the area's plain name: no date, no update, no list of what you did; give the app that name as its title too, two or three words without the company's name. Show instead of write: a large number for a key figure, a chart for money or a trend, a map for places and routes, a diagram for steps and flows, a real picture for a thing or a screen; draw charts, maps and diagrams as inline SVG. A page with nothing to look at is a document, not an app. Keep it to about 300 words and rarely more than two laptop screens: a few words or a mark in a table cell, and the long reasoning in its file, linked in one line. Say what is not yet known once, as a state, not as a caveat in every sentence. Show a fact in one app only, the one whose area owns it. Fold nothing a member needs into <details> or closed rows. Links open on a member's click: href app:<name> another app, folder:<path> a file of the company's own work, https://… a web page in a new tab, #id a place in the page; nothing else opens. Every app starts from Qorpera's base style, which your own CSS overrides: the system font, a readable column, plain headings and tables, and the company's colours as variables, so the apps look like one company; files says which, so use them, not colours of your own. Make it work at phone width (about 390 px): one column, tables that fit or stack into cards, nothing cut off, text at least 14 px. Draw what the company already holds from its live data instead of typing it in: reads says how. The answer's look names what a quick read of the saved page found: fix it, unless it does not fit this page.";
 
 const sha256hex = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
@@ -284,11 +296,28 @@ function withoutBlocks(text: string, open: RegExp, close: RegExp): string {
 }
 
 /**
+ * Whether a link in an app's page opens when a member clicks it, by the form of its address: a quick mirror of the
+ * web's check (packages/web/src/app/interface-apps.ts `appLink`), which is the one that decides. A jump inside the page
+ * is the page's own. A `javascript:` address opens nothing: the browser runs none in an app's frame.
+ */
+function linkOpens(href: string): boolean {
+	if (href.startsWith("#") || /^https?:/i.test(href) || appLinkName(href) !== undefined) return true;
+	if (!href.startsWith("folder:")) return false;
+	try {
+		const top = companyPathKey(decodeURIComponent(href.slice("folder:".length))).split("/")[0] ?? "";
+		return top !== "" && !APP_CLOSED_FOLDERS.includes(top);
+	} catch {
+		return false;
+	}
+}
+
+/**
  * What a quick read of an app's entry page finds, told to the agent after a save: advice, never a refusal (Jonas,
  * 10 November 2026, on a company whose seven agent-made apps held 68 links that open nothing, 36 folded sections and
  * about 6,000 words, and six of them no picture, chart or diagram). It reads the page's text alone, so a replayed save
  * answers the same notes, and in one pass over the page, whatever an agent wrote into it:
- * - links: the frame opens none (a `folder:`, `app:` or web link blanks the app or does nothing); `#` links stay;
+ * - links that open nothing: the web opens an `app:`, `folder:` or web link when a member clicks it (`linkOpens`), and
+ *   nothing else; a jump inside the page (`#`) is the page's own;
  * - folded sections (`<details>`), which hide what a member came to see;
  * - the words a member would read, outside scripts and styles;
  * - a page of text with nothing to look at: no picture, drawing, canvas or video, in the markup or made by a script.
@@ -298,7 +327,7 @@ export function appLookNotes(html: string): string[] {
 	const page = withoutBlocks(html, /<!--/g, /-->/g);
 	const markup = withoutBlocks(withoutBlocks(page, /<script\b/gi, /<\/script\s*>/gi), /<style\b/gi, /<\/style\s*>/gi);
 	let read = "";
-	let links = 0;
+	const dead: string[] = [];
 	let folded = 0;
 	let at = 0;
 	for (;;) {
@@ -309,7 +338,7 @@ export function appLookNotes(html: string): string[] {
 		const tag = markup.slice(from + 1, to);
 		if (/^details\b/i.test(tag)) folded++;
 		const href = /^a\s/i.test(tag) ? /\shref\s*=\s*["']?\s*([^"'\s]*)/i.exec(tag) : null;
-		if (href !== null && href[1] !== "" && !href[1].startsWith("#")) links++;
+		if (href?.[1] && !linkOpens(href[1])) dead.push(href[1].length > 80 ? `${href[1].slice(0, 80)}…` : href[1]);
 		at = to + 1;
 	}
 	read += markup.slice(at);
@@ -319,9 +348,9 @@ export function appLookNotes(html: string): string[] {
 		.filter((word) => /[\p{L}\p{N}]/u.test(word)).length;
 	const shown = /<(?:img|svg|canvas|video|picture)\b|createElementNS|getContext\(|url\(/i.test(page);
 	const notes: string[] = [];
-	if (links > 0)
+	if (dead.length > 0)
 		notes.push(
-			`${links} ${links === 1 ? "link" : "links"}: a link does not open inside an app. Show the content itself, name a file by its path, and put links in your message.`,
+			`${dead.length} ${dead.length === 1 ? "link opens" : "links open"} nothing (${dead.slice(0, 3).join(", ")}${dead.length > 3 ? ", …" : ""}): a link opens another app (app:<name>), a file of the company's own work (folder:<path>, never under QorperaOS/), a web page (https://…) or a place in the page (#id). For anything else, such as a tab, use a button with a click handler.`,
 		);
 	if (folded >= LOOK_FOLDED)
 		notes.push(
@@ -494,6 +523,7 @@ export function cloudAppTools(options: {
 				files: {
 					type: "array",
 					maxItems: FILES_PER_CALL,
+					description: SAVE_APP_FILES,
 					items: {
 						type: "object",
 						additionalProperties: false,
