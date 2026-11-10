@@ -644,6 +644,7 @@ class Video {
     function voice(on) {
       voiceOn = on;
       voiceBtn.setAttribute("aria-pressed", String(on));
+      voiceBtn.title = "An AI voice reads the captions (M)";
       voiceBtn.innerHTML = on ? \`\${ICON_VOICE}Voice on\` : \`\${ICON_MUTED}Voice off\`;
       hush();
       speak();
