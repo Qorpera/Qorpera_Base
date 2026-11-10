@@ -98,13 +98,13 @@ const press = (root: Element, label: string) =>
 		.click();
 const dialog = () => [...document.querySelectorAll<HTMLElement>('[role="alertdialog"]')].at(-1)!;
 
-/** Opens a kind's form, fills it in and submits it. */
-function add(kind: "webhook" | "mailbox", name: string, purpose: string): void {
+/** Opens a kind's form, fills it in and submits it. A mailbox's form asks for its name alone. */
+function add(kind: "webhook" | "mailbox", name: string, purpose?: string): void {
 	if (!view?.el.querySelector(`#hook-form-${kind}`))
 		press(section(kind), kind === "webhook" ? "Add webhook" : "Add mailbox");
 	const form = view!.el.querySelector<HTMLFormElement>(`#hook-form-${kind}`)!;
 	const fields = form.querySelectorAll<HTMLInputElement>("input");
-	for (const [index, value] of [name, purpose].entries()) {
+	for (const [index, value] of (purpose === undefined ? [name] : [name, purpose]).entries()) {
 		fields[index]!.value = value;
 		fields[index]!.dispatchEvent(new Event("input"));
 	}
@@ -366,28 +366,36 @@ describe("webhooks and mailboxes", () => {
 		await settle();
 		press(section("mailbox"), "Add mailbox");
 		expect(view!.el.querySelector("#hook-form-mailbox .hook-domain")?.textContent).toBe("@acme.example.com");
+		// The form asks for the name and nothing else.
+		expect(view!.el.querySelectorAll("#hook-form-mailbox input")).toHaveLength(1);
 
-		add("mailbox", "orders", "Orders by email");
+		add("mailbox", "orders");
 		await settle();
 		expect(section("mailbox").textContent).toContain("Company mail is not set up yet.");
 
-		add("mailbox", "postmaster", "Bounces");
+		add("mailbox", "postmaster");
 		await settle();
 		expect(section("mailbox").textContent).toContain("This mailbox name is reserved. Choose another.");
 
-		add("mailbox", "a..b", "Orders by email");
+		add("mailbox", "a..b");
 		await settle();
 		expect(section("mailbox").textContent).toContain(
 			"A mailbox name is lowercase letters, digits, dots, hyphens and underscores, and starts and ends with a letter or digit.",
 		);
 		expect(client.createMailbox).toHaveBeenCalledTimes(2);
 
-		add("mailbox", "orders", "Orders by email");
+		add("mailbox", "orders");
 		await settle();
-		expect(client.createMailbox).toHaveBeenLastCalledWith("orders", "Orders by email", expect.any(AbortSignal));
+		// The kernel wants a purpose: the name is it.
+		expect(client.createMailbox).toHaveBeenLastCalledWith("orders", "orders", expect.any(AbortSignal));
 		expect(ids(section("mailbox"))).toEqual([mailbox.id, id(71)]);
 		expect(cardOf(id(71))?.textContent).toContain("The mailbox is ready.");
 		expect(cardOf(id(71))?.querySelector("strong")?.textContent).toBe("orders@acme.example.com");
+		// Its card says the name once, under it only its state; a mailbox with a purpose of its own keeps that line.
+		expect([...cardOf(id(71))!.querySelectorAll(".settings-copy small")].map((line) => line.className)).toEqual([
+			"hook-state",
+		]);
+		expect(cardOf(mailbox.id)?.querySelector(".settings-copy small")?.textContent).toBe("Invoices from suppliers");
 	});
 
 	it("shows a failed read with a way to try again", async () => {

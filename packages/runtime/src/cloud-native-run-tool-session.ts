@@ -107,6 +107,9 @@ export async function runCloudNativeRunToolSession(options: {
 	/** The memory compactor and closing (§7.1), as runCloudCodexToolSession takes them. */
 	compactor?: MemoryCompactChannel;
 	closing?: (signal: AbortSignal) => Promise<void>;
+	/** What the agent is told in one more turn when its turn left undone what the run has to end with, as
+	 * runCloudCodexToolSession takes it. */
+	turnCorrection?: (signal: AbortSignal) => Promise<string | undefined>;
 	identityRoot?: string;
 	/** Warm conversations: the identity root was kept from an earlier run on this host. */
 	reusedIdentityRoot?: boolean;
@@ -256,6 +259,7 @@ export async function runCloudNativeRunToolSession(options: {
 			// The bind rechecks the run's lease, and the first request's fence its authority.
 			...(options.opening ? { opening: options.opening } : {}),
 			...(options.compactor ? { compactor: options.compactor } : {}),
+			...(options.turnCorrection ? { turnCorrection: options.turnCorrection } : {}),
 			// At closing the run's log commits its last steps and its step lines build what is left, then the run's
 			// conversation lines close (§7.1).
 			...(runLog || options.closing

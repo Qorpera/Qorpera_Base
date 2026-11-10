@@ -17,6 +17,7 @@ import {
 	cloudCompanyContextTool,
 	cloudCompanyRuntimeInstructions,
 	cloudNativeStableInstructions,
+	cloudNativeTurnCorrection,
 	compileCloudNativeCompanyInstructions,
 	composeCloudContinuation,
 	composeCloudNativeCompanyPrompt,
@@ -1539,13 +1540,14 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // cards and overlay v10 ("approval cards are completely unreadable"; Jonas, 5 November 2026), and for overlay v11
 // (each agent works for one member and the Co-Founder deals the team out; Jonas, 9 November 2026), and for
 // interface apps that show the company's state and overlay v13 (each owner keeps one posted app current; Jonas,
-// 10 November 2026). A change to either is a change to every run's bytes.
+// 10 November 2026), and for patch notes before changes go live ("Yes, wait for me"; Jonas, 10 November 2026). A
+// change to either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "dded78928ee30c1244246a3b9922dce62bd23631218f0be37a831825c481bf4c",
+			instructions: "38809f27e2559a681a29b0a66c8b1d66d2688f176052ec803c04b1567e0a9640",
 			prompt: "be57a945a52a80bccd0e523d775d563455ec85f3a3ee11677e7ece894f9f0ae6",
 		},
 	],
@@ -1553,7 +1555,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "f9bfde546292e56820c3a07d937fed63bd33215b94aa39ed4aa76151aa7379aa",
+			instructions: "1640fabc8e45fb1e3d46572498e4ce55e1755854a5759db6f9ab2dd92986226d",
 			prompt: "9939ba06da7ba749d0a047691bd02c41d28668decdd1d00d34ecd1f23a7ad2e8",
 		},
 	],
@@ -1561,7 +1563,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "dded78928ee30c1244246a3b9922dce62bd23631218f0be37a831825c481bf4c",
+			instructions: "38809f27e2559a681a29b0a66c8b1d66d2688f176052ec803c04b1567e0a9640",
 			prompt: "954569cabce5c2ead1fe5e2507f3c8367984855615fb747cf2c378ed2efce48f",
 		},
 	],
@@ -1738,6 +1740,27 @@ it("has interface apps show the company's state, kept by each area's owner (10 N
 	const cofounder = cloudRuntimeHireBehavior("cofounder");
 	expect(cofounder).toContain("when one is missing, out of date or reads as a report of what was done");
 	expect(cofounder).toContain("keep one posted app for it (name it company) that shows the plan as it stands");
+});
+
+it("has changes shown as patch notes and held until a member says yes (10 November 2026)", () => {
+	// Jonas, 10 November: "I would also like some version of an update list/patch notes for changes before they go
+	// live, if agents have worked on several changes it could just post all of them as a patchnote rundown with visuals
+	// and very brief and easy to digest text - or a video". Asked whether changes should wait for his yes on that page
+	// before they go live: "Yes, wait for me".
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"Before changes go live, show them and wait for a member's yes.",
+		// What "live" means, so the rule holds back a release and nothing else.
+		"A change goes live when people outside the team meet it: an update to a site that is already published (publish_site on a live site), a new version of the product customers use, a new price, or a mail or post that goes out to many.",
+		"Keep one posted app named whats-new, titled What's new, that shows every change that is ready and not yet live",
+		"each as a picture of what changes (before and after, a screenshot of the new screen, a small drawing, or a short video for what moves) with one plain line under it on what a customer will notice, never how it was made",
+		"show them together as one rundown, short enough to take in within a minute, instead of asking about each",
+		"one question card that points at the app, with the options Put it live and Not yet, and show the same two as buttons on the page when save_app offers writes",
+		"Nothing in the rundown goes live before a member says yes: finishing the work, merging it and testing it are yours to do, and putting it where customers meet it waits.",
+		"On yes, put it live in that run and mark those changes as live on the page; on not yet, ask what to change, change it and show it again.",
+		"Only a fix for something that is broken for customers right now goes live at once: show it in the app the same day, marked as already live.",
+	])
+		expect(instructions).toContain(rule);
 });
 
 it("has the Co-Founder open the company's email in its first run, (10 November 2026)", () => {
@@ -2457,3 +2480,45 @@ it.each([
 		expect(shown.content.sha256).toBe(context.currentInputs[0].content.sha256);
 	},
 );
+
+it("tells a turn that ended with its closing act undone what is missing, and nothing when the run owes nothing", () => {
+	const run = {
+		worker: false,
+		reported: false,
+		canSend: true,
+		finalRequired: true,
+		sent: 0,
+		final: false,
+		askOffered: true,
+		routineDecisionOwed: false,
+	};
+	// A member's message: the final send, or a card.
+	const unanswered = cloudNativeTurnCorrection(run);
+	expect(unanswered).toContain("Your turn ended without a final send");
+	expect(unanswered).toContain("call send_message with phase final (a card from ask_member counts as one)");
+	expect(unanswered).toContain("This is the last turn of this run");
+	// A group chat offers no card.
+	expect(cloudNativeTurnCorrection({ ...run, askOffered: false })).not.toContain("ask_member");
+	// Sent, or optional and silent: the run ended as it may.
+	expect(cloudNativeTurnCorrection({ ...run, sent: 2, final: true })).toBeUndefined();
+	expect(cloudNativeTurnCorrection({ ...run, finalRequired: false })).toBeUndefined();
+	// A run with no public voice owes no send, whatever its policy says.
+	expect(cloudNativeTurnCorrection({ ...run, canSend: false })).toBeUndefined();
+	// A progress message is never a run's last word, also where the final is optional.
+	const spoken = cloudNativeTurnCorrection({ ...run, finalRequired: false, sent: 1 });
+	expect(spoken).toContain("after a progress message but without a final send");
+	// A dynamic routine's run decides first, and a silent one owes only its decision.
+	const undecided = cloudNativeTurnCorrection({ ...run, routineDecisionOwed: true }) as string;
+	expect(undecided.indexOf("decide_routine")).toBeGreaterThan(0);
+	expect(undecided.indexOf("decide_routine")).toBeLessThan(undecided.indexOf("Then send it now"));
+	const decisionOnly = cloudNativeTurnCorrection({ ...run, finalRequired: false, routineDecisionOwed: true });
+	expect(decisionOnly).toContain("call decide_routine now, with next or conclude");
+	expect(decisionOnly).not.toContain("send_message");
+	// A worker owes its report, and nothing once the folder saved it.
+	const worker = { ...run, worker: true, canSend: false, finalRequired: false };
+	expect(cloudNativeTurnCorrection(worker)).toContain("Call report_work now, once");
+	expect(cloudNativeTurnCorrection({ ...worker, reported: true })).toBeUndefined();
+	// A few sentences, within what the session takes as one more turn's input.
+	for (const text of [unanswered, spoken, undecided, decisionOnly, cloudNativeTurnCorrection(worker)])
+		expect(Buffer.byteLength(text as string)).toBeLessThan(1024);
+});

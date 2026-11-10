@@ -1,42 +1,48 @@
 import type { HostedProfileMember, HostedStaffAgent } from "../../cloud/types.ts";
 import type { WorksFor, WorksForAsk, WorksForLogin } from "../../cloud/works-for.ts";
 import { agentFigure } from "../../ui/avatar.ts";
-import { h, personAvatar, personColor, replace } from "../../ui/dom.ts";
-import { interfaceEmblem } from "../../ui/interface-emblem.ts";
+import { boardDrag } from "../../ui/board-drag.ts";
+import { type MenuEntry, openContextMenu } from "../../ui/context-menu.ts";
+import { h, icon, personAvatar, personColor, replace } from "../../ui/dom.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
+import { uiScale } from "../../ui/scale.ts";
 import type { CompanyController } from "../company.ts";
-import { agentList } from "../interface-areas.ts";
-import { interfaceRows } from "../interfaces.ts";
 
 /* The Members page (Jonas, 9 November 2026: "this interface should help clear up and delegate responsibility/ownership
- * between members, help you re-organize supervision and subscription commitments etc through simple and big visuals").
- * Each agent but the Co-Founder works for one member, whose subscription carries the work handed to it (migrations
- * 20260930700000 and 20260930701000). Up to three members the page draws a mat per member, side by side; with more, every
- * member as a small tile and one of them opened big below (Jonas: "not sure how any of them scales ... let's say there
- * were 10"). An agent moves by an ask the other side says yes to; an agent nobody works for sits in the open pile. */
+ * between members ... through simple and big visuals"; 10 November: "dont want any textbased sections, pure visual",
+ * "you can get rid of the containers too" and, of the bar with the page's title, "get rid of the pages header though,
+ * it's pointless"). Each agent but the Co-Founder works for one member, whose ChatGPT runs the work handed to it
+ * (migrations 20260930700000 and 20260930701000). The page is pictures only, with no header, no text and no boxes: a
+ * line per member, their face, name and ChatGPT meter, then the figures of the agents that work for them, by name
+ * only ("get rid of the subtitles for the agents"). An agent moves by a drag onto another member's line, or by a tap
+ * and a choice from a menu; until the other side says yes it stands faded where it would go. The Co-Founder stands by
+ * everyone's faces, and agents nobody works for have a last line of their own. What a picture means in words is its
+ * tooltip. */
 
 /** How often the page reads again while it is open. */
 const READ_EVERY_MS = 30_000;
-/** Above this many members, the overview: a tile each and one member open. */
-const MATS_UP_TO = 3;
+/** Up to this many members the agents are drawn big; with more, smaller. */
+const ROOMY_UP_TO = 3;
+
+export interface MembersOptions {
+	/** Opens Settings at a tab, for Connect ChatGPT and Sign in again. */
+	readonly openSettings?: (tab: "ai-subscriptions") => void;
+}
 
 interface Page {
 	readonly company: CompanyController;
+	options: MembersOptions;
 	data: WorksFor | undefined;
 	error: string | undefined;
-	/** An agent picked to move. */
-	picked: string | undefined;
-	/** The member open below the overview. */
-	open: string | undefined;
 	/** A call on its way; the page waits for it. */
 	busy: boolean;
-	/** What the last call did, or why it failed. */
+	/** Why the last call failed. What a call did, the page shows by itself. */
 	note: string | undefined;
-	dismissed: boolean;
 	timer: ReturnType<typeof setInterval> | undefined;
 }
 
 interface Seat {
+	/** The member's account, or "" for the agents nobody works for. */
 	readonly id: string;
 	readonly member: HostedProfileMember | null;
 	readonly name: string;
@@ -47,22 +53,23 @@ interface Seat {
 }
 
 interface Ctx {
+	readonly container: HTMLElement;
 	readonly page: Page;
 	readonly company: CompanyController;
 	readonly data: WorksFor;
 	readonly seats: readonly Seat[];
+	/** The company's agents that still work here, by id. */
+	readonly staff: ReadonlyMap<string, HostedStaffAgent>;
 	readonly cofounder: HostedStaffAgent | undefined;
-	readonly areaOf: (agent: HostedStaffAgent) => string;
 	readonly agentName: (id: string) => string;
 	readonly memberName: (id: string | null) => string;
 	readonly viewer: string;
-	readonly redraw: () => void;
 }
 
 const pages = new WeakMap<HTMLElement, Page>();
 const firstName = (name: string) => name.split(/\s+/)[0] || name;
 
-/** When a full login resets, short enough for a tile: the weekday and time within a week, else the date. */
+/** When a full login resets, short enough for a line: the weekday and time within a week, else the date. */
 function resetTime(iso: string): string {
 	const at = new Date(iso);
 	const soon = at.getTime() - Date.now() < 6 * 24 * 3600 * 1000;
@@ -72,19 +79,17 @@ function resetTime(iso: string): string {
 	).format(at);
 }
 
-export function renderMembers(container: HTMLElement, company: CompanyController): void {
+export function renderMembers(container: HTMLElement, company: CompanyController, options: MembersOptions = {}): void {
 	let page = pages.get(container);
 	if (!page || page.company !== company) {
 		if (page?.timer) clearInterval(page.timer);
 		const fresh: Page = {
 			company,
+			options,
 			data: undefined,
 			error: undefined,
-			picked: undefined,
-			open: undefined,
 			busy: false,
 			note: undefined,
-			dismissed: false,
 			timer: undefined,
 		};
 		pages.set(container, fresh);
@@ -101,6 +106,7 @@ export function renderMembers(container: HTMLElement, company: CompanyController
 		}, READ_EVERY_MS);
 		page = fresh;
 	}
+	page.options = options;
 	draw(container, page);
 }
 
@@ -133,14 +139,14 @@ async function read(container: HTMLElement, page: Page): Promise<void> {
 	if (showing(container, page)) draw(container, page);
 }
 
-/** Runs a call, then reads again; what it did, or why it failed, shows at the top of the page. */
-async function act(container: HTMLElement, page: Page, call: () => Promise<string>): Promise<void> {
+/** Runs a call, then reads again: the page shows what it did. Why it failed, when it did, stands at the top. */
+async function act(container: HTMLElement, page: Page, call: () => Promise<unknown>): Promise<void> {
 	if (page.busy) return;
 	page.busy = true;
-	page.picked = undefined;
+	page.note = undefined;
 	draw(container, page);
 	try {
-		page.note = await call();
+		await call();
 	} catch (error) {
 		page.note = error instanceof Error ? error.message : String(error);
 	}
@@ -155,45 +161,24 @@ const drawn = new WeakMap<HTMLElement, { key: string; element: Element }>();
 function draw(container: HTMLElement, page: Page): void {
 	const { company } = page;
 	const state = company.store.get();
-	const live = state.realtime === "connected";
 	const key = JSON.stringify([
 		presentationLocale(),
-		state.realtime,
 		state.team?.members,
-		state.staff.map((agent) => [agent.id, agent.displayName, agent.role, agent.employmentStatus, agent.appearance]),
-		interfaceRows(company, "table:areas")?.map((item) => [item.row.area, item.row.agents]),
+		state.staff.map((agent) => [agent.id, agent.displayName, agent.employmentStatus, agent.appearance]),
 		page.data,
 		page.error,
-		page.picked,
-		page.open,
 		page.busy,
 		page.note,
-		page.dismissed,
+		Boolean(page.options.openSettings),
 	]);
 	const last = drawn.get(container);
 	if (last?.key === key && container.firstElementChild === last.element) return;
-	const head = h(
-		"header",
-		{ class: "interface-head" },
-		interfaceEmblem("members", 30),
-		h(
-			"div",
-			{ class: "interface-title" },
-			h("h1", null, t("Members")),
-			h("small", null, t("Who each agent works for.")),
-		),
-		h(
-			"span",
-			{ class: `interface-live${live ? "" : " is-degraded"}`, role: "status" },
-			h("span", { class: "interface-live-dot", "aria-hidden": "true" }),
-			live ? t("Live") : state.realtime === "connecting" ? t("connecting") : t("live updates degraded"),
-		),
-	);
 	const shell = (...body: (HTMLElement | null)[]) => {
 		const element = h(
 			"section",
 			{ class: "interface members", "data-interface": "members" },
-			head,
+			// No header (Jonas: "it's pointless"); the name stays for a screen reader.
+			h("h1", { class: "visually-hidden" }, t("Members")),
 			h("div", { class: "members-page" }, ...body),
 		);
 		replace(container, element);
@@ -205,20 +190,19 @@ function draw(container: HTMLElement, page: Page): void {
 		return;
 	}
 	const viewer = company.userId;
-	// A viewer takes no agents, but one whose agents still work for them (made a viewer later) keeps their seat.
+	// A viewer takes no agents, but one whose agents still work for them (made a viewer later) keeps their line.
 	const members = [...(state.team?.members ?? [])]
 		.filter((member) => member.role !== "viewer" || data.agents.some((agent) => agent.userId === member.userId))
 		.sort(
 			(a, b) => Number(b.userId === viewer) - Number(a.userId === viewer) || a.joinedAt.localeCompare(b.joinedAt),
 		);
-	const staff = new Map(state.staff.map((agent) => [agent.id, agent]));
+	const staff = new Map(
+		state.staff.filter((agent) => agent.employmentStatus === "active").map((agent) => [agent.id, agent]),
+	);
 	const agentsOf = (userId: string | null) =>
 		data.agents
 			.filter((entry) => entry.userId === userId)
-			.flatMap((entry) => {
-				const agent = staff.get(entry.agentId);
-				return agent && agent.employmentStatus === "active" ? [agent] : [];
-			})
+			.flatMap((entry) => staff.get(entry.agentId) ?? [])
 			.sort((a, b) => a.displayName.localeCompare(b.displayName));
 	const seats: Seat[] = members.map((member) => ({
 		id: member.userId,
@@ -229,453 +213,112 @@ function draw(container: HTMLElement, page: Page): void {
 		login: data.logins.find((login) => login.userId === member.userId),
 		agents: agentsOf(member.userId),
 	}));
-	const pile: Seat = {
+	const nobody: Seat = {
 		id: "",
 		member: null,
-		name: t("Open pile"),
+		name: t("Nobody"),
 		you: false,
 		colour: "var(--text-soft)",
 		login: undefined,
 		agents: agentsOf(null),
 	};
-	// An agent's area: the row of the areas table whose agents cell holds it, else its role.
-	const areas = new Map<string, string>();
-	for (const item of interfaceRows(company, "table:areas") ?? []) {
-		const name = item.row.area;
-		if (typeof name === "string") for (const id of agentList(item.row.agents)) areas.set(id, name);
-	}
-	const memberName = (id: string | null) => {
-		if (id === null) return t("nobody");
-		if (id === viewer) return t("you");
-		const member = state.team?.members.find((candidate) => candidate.userId === id);
-		return member ? firstName(member.displayName || member.email) : t("someone who left");
-	};
+	const cofounder = [...staff.values()].find((agent) => agent.templateId === "co-founder");
 	const ctx: Ctx = {
+		container,
 		page,
 		company,
 		data,
 		seats,
-		cofounder: state.staff.find((agent) => agent.templateId === "co-founder" && agent.employmentStatus === "active"),
-		areaOf: (agent) => areas.get(agent.id) ?? agent.role,
+		staff,
+		cofounder,
 		agentName: (id) => staff.get(id)?.displayName ?? t("an agent"),
-		memberName,
+		memberName: (id) => {
+			if (id === null) return t("nobody");
+			if (id === viewer) return t("you");
+			const member = state.team?.members.find((candidate) => candidate.userId === id);
+			return member ? firstName(member.displayName || member.email) : t("someone who left");
+		},
 		viewer,
-		redraw: () => draw(container, page),
 	};
-	const many = seats.length > MATS_UP_TO;
+	const roomy = seats.length <= ROOMY_UP_TO;
+	const size = roomy ? 72 : 40;
 	shell(
-		page.note ? h("p", { class: "members-note", role: "status" }, page.note) : null,
-		asksForYou(container, ctx),
-		suggestion(container, ctx),
-		many ? null : split(ctx, pile),
-		many ? overview(container, ctx) : mats(container, ctx),
-		pile.agents.length ? mat(container, ctx, pile) : null,
+		page.note ? h("p", { class: "members-note", role: "alert" }, page.note) : null,
 		h(
-			"p",
-			{ class: "members-foot" },
-			t("Work already running finishes on the login it started on. Only new work moves."),
+			"div",
+			{ class: `members-rows${roomy ? "" : " is-compact"}` },
+			...seats.map((seat) => row(ctx, seat, size)),
+			// The Co-Founder works for every member: it stands by all their faces, and stays there.
+			cofounder
+				? h(
+						"div",
+						{
+							class: "members-row is-everyone",
+							role: "group",
+							"aria-label": t("The Co-Founder works for everyone."),
+						},
+						h(
+							"div",
+							{ class: "members-who" },
+							h(
+								"span",
+								{ class: "members-faces", "aria-hidden": "true" },
+								...seats.slice(0, 3).map((seat) => personAvatar(seat.name, seat.id)),
+							),
+							h("div", { class: "members-who-text" }, h("b", null, t("Everyone"))),
+						),
+						h(
+							"div",
+							{ class: "members-crew" },
+							h(
+								"div",
+								{ class: "members-tile" },
+								h(
+									"button",
+									{
+										class: "members-agent",
+										type: "button",
+										disabled: true,
+										title: t("The Co-Founder works for everyone."),
+									},
+									...stand(cofounder, size),
+								),
+							),
+						),
+					)
+				: null,
+			nobody.agents.length ? row(ctx, nobody, size) : null,
 		),
 	);
 }
 
-/** The asks the viewer answers: yes or no. The asks one offer made together (the Co-Founder dealing out an area, say)
- * are one card, answered together; any other ask is a card of its own. */
-function asksForYou(container: HTMLElement, ctx: Ctx): HTMLElement | null {
-	const mine = ctx.data.asks.filter((entry) => entry.answerByUserId === ctx.viewer);
-	if (!mine.length) return null;
-	const groups = new Map<string, WorksForAsk[]>();
-	for (const pending of mine) {
-		// One offer's asks (the same batch) are one card; every other ask is its own.
-		const key = pending.batch ?? pending.id;
-		groups.set(key, [...(groups.get(key) ?? []), pending]);
-	}
-	return h(
-		"div",
-		{ class: "members-asks" },
-		...[...groups.values()].map((group) => {
-			const first = group[0]!;
-			const fromAgent = !first.askedByUserId && first.askedByAgentId ? ctx.agentName(first.askedByAgentId) : null;
-			const asker = first.askedByUserId
-				? ctx.memberName(first.askedByUserId)
+/** What an agent's button holds: its figure with whatever marks it, and its name. */
+function stand(agent: HostedStaffAgent, size: number, mark?: HTMLElement): HTMLElement[] {
+	return [
+		h("span", { class: "members-pic" }, agentFigure(agent, "", { size, still: true }), mark ?? null),
+		h("span", { class: "members-agent-name" }, agent.displayName),
+	];
+}
+
+/** What an ask says to the member who answers it. */
+function askText(ctx: Ctx, pending: WorksForAsk): string {
+	const fromAgent = !pending.askedByUserId && pending.askedByAgentId ? ctx.agentName(pending.askedByAgentId) : null;
+	const asker = pending.askedByUserId
+		? ctx.memberName(pending.askedByUserId)
+		: fromAgent
+			? pending.askedByAgentId === ctx.cofounder?.id
+				? t("{agent}, your Co-Founder,", { agent: fromAgent })
 				: fromAgent
-					? first.askedByAgentId === ctx.cofounder?.id
-						? t("{agent}, your Co-Founder,", { agent: fromAgent })
-						: fromAgent
-					: t("someone who left");
-			const agent = names(group.map((pending) => ctx.agentName(pending.agentId)));
-			const text =
-				first.toUserId === ctx.viewer
-					? t("{asker} asks you to take {agent}. Your ChatGPT then carries the work handed to {agent}.", {
-							asker,
-							agent,
-						})
-					: t("{asker} asks to take {agent} from you.", { asker, agent });
-			const staff = ctx.company.store.get().staff;
-			const figures = group.slice(0, 4).flatMap((pending) => {
-				const found = staff.find((candidate) => candidate.id === pending.agentId);
-				return found ? [agentFigure(found, "", { size: 40, still: true })] : [];
-			});
-			return h(
-				"div",
-				{ class: "members-ask" },
-				h("span", { class: "members-ask-faces" }, ...figures),
-				h("p", null, text, first.why ? h("span", { class: "members-ask-why" }, `“${first.why}”`) : null),
-				h(
-					"button",
-					{
-						class: "btn btn-primary btn-small",
-						type: "button",
-						disabled: ctx.page.busy,
-						onclick: () => void act(container, ctx.page, () => answerAll(ctx, group, true)),
-					},
-					t("Yes"),
-				),
-				h(
-					"button",
-					{
-						class: "btn btn-small",
-						type: "button",
-						disabled: ctx.page.busy,
-						onclick: () => void act(container, ctx.page, () => answerAll(ctx, group, false)),
-					},
-					t("No"),
-				),
-			);
-		}),
-	);
-}
-
-/** Names as the member reads them: "Clara", "Clara and Astrid", "Clara, Astrid and Bo". */
-function names(list: readonly string[]): string {
-	if (list.length < 2) return list[0] ?? "";
-	return t("{first} and {last}", { first: list.slice(0, -1).join(", "), last: list[list.length - 1] ?? "" });
-}
-
-/** Answers each ask of a card, one after the other; what the last did is the note. */
-async function answerAll(ctx: Ctx, group: readonly WorksForAsk[], yes: boolean): Promise<string> {
-	if (group.length === 1) return answer(ctx, group[0]!, yes);
-	let moved = 0;
-	for (const pending of group) if ((await ctx.company.worksFor().answer(pending.id, yes)).moved) moved++;
-	const agents = names(group.map((pending) => ctx.agentName(pending.agentId)));
-	if (!yes) return t("{agents} stay where they are.", { agents });
-	return moved === group.length
-		? t("{agents} now work for {member}.", { agents, member: ctx.memberName(group[0]!.toUserId) })
-		: t("{moved} of them moved; the others moved meanwhile.", { moved: String(moved) });
-}
-
-async function answer(ctx: Ctx, pending: WorksForAsk, yes: boolean): Promise<string> {
-	const result = await ctx.company.worksFor().answer(pending.id, yes);
+			: t("someone who left");
 	const agent = ctx.agentName(pending.agentId);
-	if (result.status === "yes")
-		return t("{agent} now works for {member}.", { agent, member: ctx.memberName(pending.toUserId) });
-	if (result.status === "void") return t("{agent} moved meanwhile, so nothing changed.", { agent });
-	if (result.status === "withdrawn") return t("You took back the ask about {agent}.", { agent });
-	return t("{agent} stays where it is.", { agent });
-}
-
-/** Asks for each agent to work for the member, one after the other. */
-async function ask(ctx: Ctx, agents: readonly string[], to: string): Promise<string> {
-	let moved = 0;
-	for (const id of agents) if ((await ctx.company.worksFor().ask(id, to)).moved) moved++;
-	const member = ctx.memberName(to);
-	const one = agents.length === 1 ? ctx.agentName(agents[0] ?? "") : undefined;
-	if (moved === agents.length)
-		return one
-			? t("{agent} now works for {member}.", { agent: one, member })
-			: t("{n} agents now work for {member}.", { n: String(agents.length), member });
-	if (to === ctx.viewer) {
-		const holder = ctx.data.agents.find((entry) => entry.agentId === agents[0])?.userId ?? null;
-		return t("Asked {member}. You take over when they say yes.", { member: ctx.memberName(holder) });
-	}
-	return t("Asked {member}. Nothing moves until they say yes.", { member });
-}
-
-/** A suggestion when a member's agents can't work right now, or one member carries the crew and another none. */
-function suggestion(container: HTMLElement, ctx: Ctx): HTMLElement | null {
-	const { seats, page, data } = ctx;
-	if (page.dismissed || !data.mayAsk || seats.length < 2) return null;
-	const open = new Set(data.asks.map((entry) => entry.agentId));
-	const stuck = seats.find(
-		(seat) =>
-			(seat.login?.state === "full" || seat.login?.state === "sign_in") &&
-			seat.agents.some((agent) => !open.has(agent.id)),
-	);
-	const roomiest = [...seats]
-		.filter((seat) => seat !== stuck && seat.login?.state === "ready" && seat.member?.role !== "viewer")
-		.sort(
-			(a, b) => (a.login?.usedPercent ?? 50) - (b.login?.usedPercent ?? 50) || a.agents.length - b.agents.length,
-		)[0];
-	let text: string | undefined;
-	let agents: string[] = [];
-	let to: Seat | undefined;
-	if (stuck && roomiest) {
-		agents = stuck.agents.filter((agent) => !open.has(agent.id)).map((agent) => agent.id);
-		to = roomiest;
-		const names = stuck.agents.map((agent) => agent.displayName).join(", ");
-		const member = stuck.you ? t("You") : firstName(stuck.name);
-		const other = roomiest.you ? t("you") : firstName(roomiest.name);
-		text =
-			stuck.login?.state === "full"
-				? stuck.login.resetsAt
-					? t("{member}: ChatGPT is full until {time}, so {agents} wait. Shall {other} take them for now?", {
-							member,
-							time: resetTime(stuck.login.resetsAt),
-							agents: names,
-							other,
-						})
-					: t("{member}: ChatGPT is full, so {agents} wait. Shall {other} take them for now?", {
-							member,
-							agents: names,
-							other,
-						})
-				: t("{member}: ChatGPT needs a new sign-in, so {agents} wait. Shall {other} take them for now?", {
-						member,
-						agents: names,
-						other,
-					});
-	} else {
-		const top = [...seats].sort((a, b) => b.agents.length - a.agents.length)[0];
-		const empty = seats.find((seat) => !seat.agents.length && seat.login?.state === "ready");
-		if (!top || !empty || top.agents.length < 3) return null;
-		const byArea = new Map<string, HostedStaffAgent[]>();
-		for (const agent of top.agents) {
-			if (open.has(agent.id)) continue;
-			byArea.set(ctx.areaOf(agent), [...(byArea.get(ctx.areaOf(agent)) ?? []), agent]);
-		}
-		const [area, group] = [...byArea.entries()].sort((a, b) => b[1].length - a[1].length)[0] ?? [];
-		if (!area || !group || group.length >= top.agents.length) return null;
-		agents = group.map((agent) => agent.id);
-		to = empty;
-		const other = empty.you ? t("you") : firstName(empty.name);
-		const n = String(top.agents.length);
-		text = top.you
-			? t("You carry {n} agents and {other} none. Shall {other} take {area}?", { n, other, area })
-			: t("{member} carries {n} agents and {other} none. Shall {other} take {area}?", {
-					member: firstName(top.name),
-					n,
-					other,
-					area,
-				});
-	}
-	if (!to || !agents.length || !text) return null;
-	// Only the member they work for, the member they would go to, or an owner or admin may ask.
-	const target = to;
-	const from = agents.map((id) => data.agents.find((entry) => entry.agentId === id)?.userId ?? null);
-	if (!from.every((holder) => sendable(ctx, holder, target.id))) return null;
-	return h(
-		"div",
-		{ class: "members-suggest" },
-		ctx.cofounder ? agentFigure(ctx.cofounder, "", { size: 44, still: true }) : null,
-		h("p", null, h("b", null, t("Suggestion")), " ", text),
-		h(
-			"button",
-			{
-				class: "btn btn-primary btn-small",
-				type: "button",
-				disabled: page.busy,
-				onclick: () => void act(container, page, () => ask(ctx, agents, target.id)),
-			},
-			target.you ? t("Take them") : t("Ask {member}", { member: firstName(target.name) }),
-		),
-		h(
-			"button",
-			{
-				class: "btn btn-small",
-				type: "button",
-				onclick: () => {
-					page.dismissed = true;
-					ctx.redraw();
-				},
-			},
-			t("Not now"),
-		),
-	);
-}
-
-/** The split: one bar in the members' colours, with what each carries. */
-function split(ctx: Ctx, pile: Seat): HTMLElement {
-	const all = [...ctx.seats, ...(pile.agents.length ? [pile] : [])];
-	return h(
-		"div",
-		{ class: "members-split" },
-		h(
-			"div",
-			{ class: "members-split-bar", "aria-hidden": "true" },
-			...all.map((seat) => {
-				const part = h("i");
-				part.style.flexGrow = String(seat.agents.length);
-				part.style.background = seat.colour;
-				return part;
-			}),
-		),
-		h(
-			"p",
-			{ class: "members-split-legend" },
-			...all.map((seat) =>
-				h(
-					"span",
-					null,
-					h("i", { style: `background:${seat.colour}` }),
-					h("b", null, seat.you ? t("You") : seat.member ? firstName(seat.name) : seat.name),
-					` ${seat.agents.length} / ${ctx.data.agents.length}`,
-				),
-			),
-		),
-	);
-}
-
-/** A member's subscription: how much of the usage window is used, and what is wrong when something is. */
-function subscription(seat: Seat): HTMLElement {
-	const login = seat.login;
-	if (!login || login.state === "none")
-		return h("div", { class: "members-sub is-none" }, h("span", null, t("No ChatGPT connected")));
-	const used = login.state === "full" ? 100 : (login.usedPercent ?? 0);
-	const meter = h("span", { class: "members-meter" }, h("i"));
-	const fill = meter.firstElementChild as HTMLElement;
-	fill.style.width = `${Math.max(2, used)}%`;
-	fill.style.background = login.state === "ready" ? seat.colour : "var(--warning)";
-	const warn =
-		login.state === "sign_in"
-			? t("Needs a new sign-in. These agents wait.")
-			: login.state === "full"
-				? login.resetsAt
-					? t("Full until {time}. These agents wait.", { time: resetTime(login.resetsAt) })
-					: t("Full for now. These agents wait.")
-				: null;
-	return h(
-		"div",
-		{ class: `members-sub${warn ? " is-warn" : ""}` },
-		h(
-			"span",
-			{ class: "members-sub-row" },
-			h("span", null, t("ChatGPT")),
-			h(
-				"b",
-				null,
-				login.usedPercent === null && login.state === "ready"
-					? t("Connected")
-					: t("{n} % used", { n: String(used) }),
-			),
-		),
-		meter,
-		warn ? h("span", { class: "members-sub-warn" }, warn) : null,
-	);
-}
-
-/** An agent as a big figure with its name; tapping it picks it to move. */
-function agentButton(container: HTMLElement, ctx: Ctx, agent: HostedStaffAgent, size: number): HTMLElement {
-	const pending = ctx.data.asks.find((entry) => entry.agentId === agent.id);
-	const picked = ctx.page.picked === agent.id;
-	const canPick = ctx.data.mayAsk && !pending && !ctx.page.busy;
-	return h(
-		"div",
-		{ class: "members-agent-wrap" },
-		h(
-			"button",
-			{
-				class: `members-agent${picked ? " is-picked" : ""}${pending ? " is-asking" : ""}`,
-				type: "button",
-				disabled: !canPick,
-				"aria-pressed": String(picked),
-				onclick: () => {
-					ctx.page.picked = picked ? undefined : agent.id;
-					ctx.redraw();
-				},
-			},
-			agentFigure(agent, "", { size, still: true }),
-			h("span", { class: "members-agent-name" }, agent.displayName),
-		),
-		pending ? pendingLine(container, ctx, pending) : null,
-	);
-}
-
-function pendingLine(container: HTMLElement, ctx: Ctx, pending: WorksForAsk): HTMLElement {
-	return h(
-		"span",
-		{ class: "members-agent-pending" },
-		t("Waiting for {member}", { member: ctx.memberName(pending.answerByUserId) }),
-		pending.askedByUserId === ctx.viewer
-			? h(
-					"button",
-					{
-						class: "members-link",
-						type: "button",
-						disabled: ctx.page.busy,
-						onclick: () => void act(container, ctx.page, () => answer(ctx, pending, false)),
-					},
-					t("Take back"),
-				)
-			: null,
-	);
-}
-
-/** The agents of one seat, grouped by area side by side. */
-function crewByArea(container: HTMLElement, ctx: Ctx, seat: Seat, size: number): HTMLElement {
-	const names = [...new Set(seat.agents.map(ctx.areaOf))].sort((a, b) => a.localeCompare(b));
-	const groups = names.map((area) =>
-		h(
-			"div",
-			{ class: "members-area" },
-			h("span", { class: "members-area-name" }, area),
-			h(
-				"div",
-				{ class: "members-crew" },
-				...seat.agents
-					.filter((agent) => ctx.areaOf(agent) === area)
-					.map((agent) => agentButton(container, ctx, agent, size)),
-			),
-		),
-	);
-	if (!seat.agents.length)
-		groups.push(
-			h(
-				"div",
-				{ class: "members-empty" },
-				h(
-					"b",
-					null,
-					seat.you
-						? t("No agents work for you yet.")
-						: t("No agents work for {member} yet.", { member: firstName(seat.name) }),
-				),
-				ctx.data.mayAsk ? h("span", null, t("Tap an agent, then send it here.")) : null,
-			),
-		);
-	return h("div", { class: "members-areas" }, ...groups);
-}
-
-function seatHead(seat: Seat, size: number): HTMLElement {
-	const face = seat.member
-		? personAvatar(seat.name, seat.member.userId)
-		: h("span", { class: "members-pile-face", "aria-hidden": "true" }, "?");
-	face.classList.add("members-face");
-	face.style.setProperty("--face", `${size}px`);
-	const n = String(seat.agents.length);
-	const member = firstName(seat.name);
-	const count = seat.you
-		? seat.agents.length === 1
-			? t("1 agent works for you")
-			: t("{n} agents work for you", { n })
-		: seat.agents.length === 1
-			? t("1 agent works for {member}", { member })
-			: t("{n} agents work for {member}", { n, member });
-	return h(
-		"div",
-		{ class: "members-seat-head" },
-		face,
-		h(
-			"div",
-			{ class: "members-who" },
-			h("b", null, seat.you ? t("{name} (you)", { name: member }) : seat.name),
-			h(
-				"span",
-				null,
-				seat.member
-					? count
-					: t("These agents work for nobody. Take one, and the work handed to it runs on your ChatGPT."),
-			),
-		),
-	);
+	const says =
+		pending.toUserId === ctx.viewer
+			? t("{asker} asks you to take {agent}. Your ChatGPT then carries the work handed to {agent}.", {
+					asker,
+					agent,
+				})
+			: t("{asker} asks to take {agent} from you.", { asker, agent });
+	return pending.why ? `${says} “${pending.why}”` : says;
 }
 
 /** Whether the viewer may ask for an agent of `from` to go to `to`. */
@@ -685,180 +328,280 @@ function sendable(ctx: Ctx, from: string | null, to: string): boolean {
 	return ctx.data.mayAskForOthers || to === ctx.viewer || from === ctx.viewer;
 }
 
-/** Where the picked agent works now (null: nobody), or undefined when nothing is picked. */
-function pickedFrom(ctx: Ctx): string | null | undefined {
-	const id = ctx.page.picked;
-	if (!id) return undefined;
-	return ctx.data.agents.find((entry) => entry.agentId === id)?.userId ?? null;
-}
-
-/** Where a picked agent can go: a button per member, or (many members) the tiles themselves. */
-function moveBar(container: HTMLElement, ctx: Ctx, tapTiles: boolean): HTMLElement | null {
-	const id = ctx.page.picked;
-	const agent = id ? ctx.company.store.get().staff.find((candidate) => candidate.id === id) : undefined;
-	if (!id || !agent) return null;
-	const from = pickedFrom(ctx) ?? null;
-	return h(
-		"div",
-		{ class: "members-move" },
-		agentFigure(agent, "", { size: 30, still: true }),
-		h(
-			"span",
-			null,
-			tapTiles
-				? t("Tap who {agent} should work for. They say yes first.", { agent: agent.displayName })
-				: t("Move {agent} to", { agent: agent.displayName }),
-		),
-		...(tapTiles
-			? []
-			: ctx.seats
-					.filter((seat) => sendable(ctx, from, seat.id))
-					.map((seat) =>
-						h(
-							"button",
-							{
-								class: "btn btn-small members-move-to",
-								type: "button",
-								style: `--seat:${seat.colour}`,
-								onclick: () => void act(container, ctx.page, () => ask(ctx, [id], seat.id)),
-							},
-							seat.you ? t("You") : firstName(seat.name),
-						),
-					)),
-		h(
-			"button",
-			{
-				class: "btn btn-small members-ghost",
-				type: "button",
-				onclick: () => {
-					ctx.page.picked = undefined;
-					ctx.redraw();
-				},
-			},
-			t("Cancel"),
-		),
-	);
-}
-
-function mat(container: HTMLElement, ctx: Ctx, seat: Seat): HTMLElement {
-	const from = pickedFrom(ctx);
-	const target = from !== undefined && seat.member !== null && sendable(ctx, from, seat.id);
+/** A member's line: their face, name and ChatGPT, then the agents that work for them and the ones on their way here.
+ * Another member's agent can be dropped on it. */
+function row(ctx: Ctx, seat: Seat, size: number): HTMLElement {
+	const member = firstName(seat.name);
+	const n = String(seat.agents.length);
+	const face = seat.member
+		? personAvatar(seat.name, seat.member.userId)
+		: h("span", { class: "members-nobody-face", "aria-hidden": "true" }, "?");
+	face.classList.add("members-face");
+	const one = seat.agents.length === 1;
+	// The line in words, for a screen reader: the figures say it to the eye.
+	const count = seat.you
+		? one
+			? t("1 agent works for you")
+			: t("{n} agents work for you", { n })
+		: seat.member
+			? one
+				? t("1 agent works for {member}", { member })
+				: t("{n} agents work for {member}", { n, member })
+			: one
+				? t("1 agent")
+				: t("{n} agents", { n });
+	const stuck = seat.agents.length > 0 && (seat.login?.state === "full" || seat.login?.state === "sign_in");
+	const coming = seat.member
+		? ctx.data.asks.flatMap((pending) => {
+				const agent = pending.toUserId === seat.id ? ctx.staff.get(pending.agentId) : undefined;
+				return agent ? [agent] : [];
+			})
+		: [];
+	const empty = !seat.agents.length && !coming.length;
 	const element = h(
 		"div",
-		{ class: `members-mat${seat.you ? " is-you" : ""}${seat.member ? "" : " is-pile"}${target ? " is-target" : ""}` },
-		seatHead(seat, 52),
-		seat.member ? subscription(seat) : null,
-		crewByArea(container, ctx, seat, 64),
+		{
+			class: `members-row${stuck ? " is-stuck" : ""}${empty ? " is-empty" : ""}`,
+			role: "group",
+			"aria-label": count,
+			...(seat.member ? { "data-drop-lane": seat.id } : {}),
+		},
+		h(
+			"div",
+			{ class: "members-who" },
+			face,
+			h(
+				"div",
+				{ class: "members-who-text" },
+				h("b", null, seat.you ? t("{name} (you)", { name: member }) : seat.name),
+				seat.member ? subscription(ctx, seat) : null,
+			),
+		),
+		h(
+			"div",
+			{ class: "members-crew" },
+			...seat.agents.map((agent) => tile(ctx, seat, agent, size, false)),
+			...coming.map((agent) => tile(ctx, seat, agent, size, true)),
+			// An empty place: all an empty line shows, and where a dragged agent lands.
+			seat.member
+				? h(
+						"span",
+						{
+							class: "members-slot",
+							...(empty
+								? {
+										title: seat.you
+											? t("No agents work for you yet.")
+											: t("No agents work for {member} yet.", { member }),
+									}
+								: { "aria-hidden": "true" }),
+						},
+						h("i"),
+					)
+				: null,
+		),
 	);
 	element.style.setProperty("--seat", seat.colour);
 	return element;
 }
 
-/* Up to three members: a mat each, side by side. */
-function mats(container: HTMLElement, ctx: Ctx): HTMLElement {
+/** A member's ChatGPT as a picture: its mark and a meter of how much of the usage window is used. A full one is amber
+ * and says when it has room again; one that is not there, or needs a new sign-in, is a broken line. */
+function subscription(ctx: Ctx, seat: Seat): HTMLElement {
+	const login = seat.login;
+	const openSettings = ctx.page.options.openSettings;
+	const settings = (label: string) =>
+		seat.you && openSettings
+			? [
+					h(
+						"button",
+						{ class: "btn btn-small", type: "button", onclick: () => openSettings("ai-subscriptions") },
+						label,
+					),
+				]
+			: null;
+	const mark = h("img", { class: "members-gpt", src: "./assets/provider-openai.svg", alt: "" });
+	const meter = (used: number) => {
+		const fill = h("i");
+		fill.style.width = `${Math.max(4, used)}%`;
+		return h("span", { class: "members-meter" }, used ? fill : null);
+	};
+	if (!login || login.state === "none")
+		return h(
+			"div",
+			{
+				class: "members-sub is-none",
+				title: seat.you ? t("You have not connected ChatGPT.") : t("No ChatGPT connected"),
+			},
+			...(settings(t("Connect ChatGPT")) ?? [mark, meter(0)]),
+		);
+	if (login.state === "sign_in")
+		return h(
+			"div",
+			{ class: "members-sub is-out", title: t("Needs a new sign-in.") },
+			...(settings(t("Sign in again")) ?? [mark, meter(0)]),
+		);
+	if (login.state === "full")
+		return h(
+			"div",
+			{
+				class: "members-sub is-warn",
+				title: login.resetsAt ? t("Full until {time}.", { time: resetTime(login.resetsAt) }) : t("Full for now."),
+			},
+			mark,
+			meter(100),
+			login.resetsAt ? h("span", null, resetTime(login.resetsAt)) : null,
+		);
+	const used = login.usedPercent;
 	return h(
 		"div",
-		{ class: "members-stage" },
-		moveBar(container, ctx, false),
-		h("div", { class: "members-mats" }, ...ctx.seats.map((seat) => mat(container, ctx, seat))),
+		{
+			class: "members-sub",
+			title: `${t("ChatGPT")}: ${used === null ? t("Connected") : t("{n} % used", { n: String(used) })}`,
+		},
+		mark,
+		...(used === null ? [icon("check")] : [meter(used), h("span", null, `${used} %`)]),
 	);
 }
 
-/* More members: a tile each (the face in a ring that fills with the usage window, how many agents work for them, their
- * faces, and what is wrong), and one member open big below. You first, then whoever can't work right now, then by how
- * many agents each carries. While an agent is picked, a tap on a tile sends it there. */
-function overview(container: HTMLElement, ctx: Ctx): HTMLElement {
-	const { page, seats } = ctx;
-	const stuck = (seat: Seat) => seat.login?.state === "full" || seat.login?.state === "sign_in";
-	const shown = seats.find((seat) => seat.id === page.open) ?? seats.find((seat) => seat.you) ?? seats[0];
-	const waiting = seats.filter(stuck);
-	const none = seats.filter((seat) => !seat.agents.length);
-	const from = pickedFrom(ctx);
-	const picked = page.picked;
-	return h(
-		"div",
-		{ class: "members-stage" },
-		h(
-			"p",
-			{ class: "members-summary" },
-			h(
-				"b",
-				null,
-				t("{n} agents work for {m} members.", { n: String(ctx.data.agents.length), m: String(seats.length) }),
-			),
-			waiting.length
-				? h("span", { class: "members-summary-warn" }, t("{n} can't work right now", { n: String(waiting.length) }))
-				: null,
-			none.length ? h("span", null, t("{n} with no agents yet", { n: String(none.length) })) : null,
+/** What a tap on an agent with an open ask offers: yes or no to the member who answers, take back to the one who
+ * asked. */
+function pendingItems(ctx: Ctx, pending: WorksForAsk): MenuEntry[] {
+	const { container, page, viewer } = ctx;
+	const say = (yes: boolean) => () => void act(container, page, () => ctx.company.worksFor().answer(pending.id, yes));
+	if (pending.answerByUserId === viewer)
+		return [
+			{ kind: "caption", label: askText(ctx, pending) },
+			{ label: t("Yes"), icon: "check", select: say(true) },
+			{ label: t("No"), icon: "close", select: say(false) },
+		];
+	if (pending.askedByUserId === viewer)
+		return [
+			{ kind: "caption", label: t("Waiting for {member}", { member: ctx.memberName(pending.answerByUserId) }) },
+			{ label: t("Take back"), icon: "back", select: say(false) },
+		];
+	return [];
+}
+
+/** An agent in a member's line: its figure and name. A tap opens where it can go; a drag onto another member's line
+ * asks for the move. While an ask is open the agent stands twice: where it works, with the face of the member it would
+ * go to on its figure, and faded in that member's line (`coming`). The member who answers has yes and no under the one
+ * in their own line. */
+function tile(ctx: Ctx, seat: Seat, agent: HostedStaffAgent, size: number, coming: boolean): HTMLElement {
+	const { container, page, viewer } = ctx;
+	const holder = seat.member ? seat.id : null;
+	const pending = ctx.data.asks.find((entry) => entry.agentId === agent.id);
+	const targets = pending || coming ? [] : ctx.seats.filter((to) => sendable(ctx, holder, to.id));
+	const items = (): MenuEntry[] => {
+		if (pending) return pendingItems(ctx, pending);
+		if (!targets.length) return [];
+		return [
+			{
+				kind: "caption",
+				label:
+					holder === viewer
+						? t("{agent} works for you", { agent: agent.displayName })
+						: t("{agent} works for {member}", { agent: agent.displayName, member: ctx.memberName(holder) }),
+			},
+			...targets.map((to): MenuEntry => {
+				const member = firstName(to.name);
+				// Taking an agent asks the member it works for; offering one asks the member it would go to.
+				const says = to.you ? holder : to.id;
+				const hints = [
+					says === null ? null : t("{member} says yes first.", { member: ctx.memberName(says) }),
+					!to.login || to.login.state === "none"
+						? to.you
+							? t("You have not connected ChatGPT.")
+							: t("{member} has no ChatGPT yet.", { member })
+						: null,
+				].filter((hint) => hint !== null);
+				return {
+					label: to.you ? t("Move to me") : t("Move to {member}", { member }),
+					lead: personAvatar(to.name, to.id),
+					...(hints.length ? { hint: hints.join(" ") } : {}),
+					select: () => void act(container, page, () => ctx.company.worksFor().ask(agent.id, to.id)),
+				};
+			}),
+		];
+	};
+	const live = !page.busy && items().length > 0;
+	const goes = pending && !coming ? ctx.seats.find((to) => to.id === pending.toUserId) : undefined;
+	const waits = pending
+		? pending.answerByUserId === viewer
+			? t("Waiting for you")
+			: t("Waiting for {member}", { member: ctx.memberName(pending.answerByUserId) })
+		: null;
+	// The button the page finds again after it drew itself anew: the agent where it works, or where it would go.
+	const found = coming ? "data-coming" : "data-agent";
+	const button = h(
+		"button",
+		{
+			class: `members-agent${coming ? " is-coming" : ""}`,
+			type: "button",
+			[found]: agent.id,
+			...(waits ? { title: waits } : {}),
+			disabled: !live,
+			...(live ? { "aria-haspopup": "menu" } : {}),
+		},
+		...stand(
+			agent,
+			size,
+			goes ? h("span", { class: "members-to", "aria-hidden": "true" }, personAvatar(goes.name, goes.id)) : undefined,
 		),
-		moveBar(container, ctx, true),
-		h(
-			"div",
-			{ class: "members-tiles", role: "list" },
-			...[...seats]
-				.sort(
-					(a, b) =>
-						Number(b.you) - Number(a.you) ||
-						Number(stuck(b)) - Number(stuck(a)) ||
-						b.agents.length - a.agents.length,
-				)
-				.map((seat) => {
-					const used = seat.login?.state === "full" ? 100 : (seat.login?.usedPercent ?? 0);
-					const face = personAvatar(seat.name, seat.id);
-					face.classList.add("members-face");
-					face.style.setProperty("--face", "40px");
-					const target = from !== undefined && sendable(ctx, from, seat.id);
-					const state = seat.login?.state;
-					const tile = h(
-						"button",
-						{
-							class: `members-tile${seat === shown ? " is-open" : ""}${target ? " is-target" : ""}${stuck(seat) ? " is-warn" : ""}`,
-							type: "button",
-							role: "listitem",
-							"aria-pressed": String(seat === shown),
-							disabled: picked !== undefined && !target,
-							onclick: () => {
-								if (picked && target) void act(container, page, () => ask(ctx, [picked], seat.id));
-								else {
-									page.open = seat.id;
-									ctx.redraw();
-								}
-							},
-						},
-						h("span", { class: "members-ring is-small", style: `--used:${used};--seat:${seat.colour}` }, face),
-						h(
-							"span",
-							{ class: "members-tile-copy" },
-							h("b", { class: "members-tile-name" }, seat.you ? t("You") : firstName(seat.name)),
-							state === "full"
-								? h(
-										"span",
-										{ class: "members-tile-warn" },
-										seat.login?.resetsAt
-											? t("Full until {time}", { time: resetTime(seat.login.resetsAt) })
-											: t("Full for now"),
-									)
-								: state === "sign_in"
-									? h("span", { class: "members-tile-warn" }, t("Needs to sign in"))
-									: h(
-											"span",
-											{ class: "members-tile-count" },
-											seat.agents.length === 1
-												? t("1 agent")
-												: t("{n} agents", { n: String(seat.agents.length) }),
-										),
-							h(
-								"span",
-								{ class: "members-tile-faces" },
-								...seat.agents.slice(0, 5).map((agent) => agentFigure(agent, "", { size: 22, still: true })),
-								seat.agents.length > 5 ? h("small", null, `+${seat.agents.length - 5}`) : null,
-							),
-						),
-					);
-					tile.style.setProperty("--seat", seat.colour);
-					return tile;
-				}),
-		),
-		shown ? mat(container, ctx, shown) : null,
 	);
+	// Yes and no stand in the line of the member who answers: by the faded agent when it would come to them, by the
+	// agent itself when it would leave them.
+	const answers =
+		pending && pending.answerByUserId === viewer && coming === (pending.toUserId === viewer)
+			? h(
+					"span",
+					{ class: "members-answer" },
+					...([true, false] as const).map((yes) =>
+						h(
+							"button",
+							{
+								class: yes ? "is-yes" : "",
+								type: "button",
+								title: yes ? t("Yes") : t("No"),
+								"aria-label": yes ? t("Yes") : t("No"),
+								disabled: page.busy,
+								onclick: () => void act(container, page, () => ctx.company.worksFor().answer(pending.id, yes)),
+							},
+							icon(yes ? "check" : "close"),
+						),
+					),
+				)
+			: null;
+	const element = h("div", { class: "members-tile" }, button, answers);
+	if (!live) return element;
+	// A press on the agent while its menu is open only closes the menu: the menu says which press closed it, and the
+	// click that press ends in opens nothing. A click from the keyboard has no press before it.
+	let closedBy: Event | undefined;
+	let closes = false;
+	button.addEventListener("pointerdown", (event) => {
+		closes = event === closedBy;
+	});
+	button.addEventListener("click", (event) => {
+		const closing = closes && event.detail > 0;
+		closes = false;
+		if (closing) return;
+		const rect = button.getBoundingClientRect();
+		openContextMenu({
+			label: agent.displayName,
+			x: rect.left,
+			y: rect.bottom + 4 * uiScale(),
+			items: items(),
+			opener: button,
+			findOpener: () => container.querySelector<HTMLElement>(`.members-agent[${found}="${agent.id}"]`),
+			onClose: (press) => {
+				closedBy = press;
+			},
+		});
+	});
+	boardDrag(button, {
+		within: ".members-page",
+		targets: targets.map((to) => to.id),
+		drop: (to) => void act(container, page, () => ctx.company.worksFor().ask(agent.id, to)),
+	});
+	return element;
 }

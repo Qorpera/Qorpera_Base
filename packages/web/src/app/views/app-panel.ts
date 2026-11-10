@@ -1,10 +1,11 @@
 import type { AppManifest } from "@qorpera/cloud-client/interface-apps";
-import { type AppCallHandler, AppFrame } from "../../ui/app-frame.ts";
+import { type AppAnswer, type AppCall, AppFrame } from "../../ui/app-frame.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { framePage } from "../../ui/page-frame.ts";
 import { t } from "../../ui/preferences.ts";
 import { AppBridge, type AppBridgeHost, assembleApp, type CompanyApp } from "../interface-apps.ts";
+import { AppAskBar } from "./app-ask-bar.ts";
 import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
 
 /* An agent's interface app (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4) or an HTML page of the Company File, live
@@ -23,6 +24,11 @@ import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
  *   (security review r1, H2).
  * - On an app's page, the agents' open questions about the app stand in a dock over the page's corner, drawn by Qorpera
  *   outside the frame (views/question-dock.ts, Jonas, 10 November 2026): one tap answers, as in the chat.
+ * - An app's page may ask the member to change something (an answer to such a question, a row of a table): Qorpera
+ *   puts each request to the member on a bar above the frame (views/app-ask-bar.ts), and nothing changes without their
+ *   yes there. The member's Reload lets an app that was told not now three times ask again. What a page may read and
+ *   ask for is what its manifest says now, also when the manifest changes under a page that stays as it is; a request
+ *   made under an earlier manifest, or by a page since put away, is refused before anything is shown.
  * - It follows the company's folder: a change to the app's files puts its page together again and, when the page
  *   changed, shows it afresh; any other change tells the page that what it reads may have changed. */
 
@@ -59,6 +65,12 @@ export interface AppPanelHost extends AppBridgeHost {
 	readonly questions?: QuestionDockHost;
 }
 
+/** Who answers the frame's calls: the bridge of the app as its manifest was last read (`version`, the manifest's). */
+interface Serving {
+	readonly version: string | null;
+	readonly bridge: AppBridge;
+}
+
 /** Changes in the folder put the page together again at most this often. */
 const CHANGE_MS = 1500;
 
@@ -88,6 +100,14 @@ export class AppPanel {
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	/** An app's page only: the open questions that point at it, drawn by Qorpera over the page's corner. */
 	#dock: QuestionDock | undefined;
+	/** An app only: where its requests for a change are put to the member, above its frame. */
+	#ask: AppAskBar | undefined;
+	/** The emblem the app's manifest names, for the bar. */
+	#emblemName: AppManifest["emblem"] = "page";
+	/** An app only: who answers its page's calls now. Replaced with the frame, and under the same frame when the
+	 * manifest changed, so the page never reads or asks for more (or less) than the manifest says now (review r1 of
+	 * #1633, F1 and F2). Undefined for a page of the Company File, which reads nothing. */
+	#serving: Serving | undefined;
 
 	constructor(host: AppPanelHost, target: AppPanelTarget, placement: AppPanelPlacement) {
 		this.#host = host;
@@ -152,6 +172,17 @@ export class AppPanel {
 				{ signal: this.#lifetime.signal },
 			);
 		}
+		if (target.kind === "app") {
+			// Above the frame and outside it, in every placement: the bar pushes the page down, and is never over it.
+			this.#ask = new AppAskBar({
+				emblem: () => interfaceEmblem(this.#emblemName, 22),
+				agent: (agentId) => host.questions?.agent(agentId),
+				open: (open) => {
+					if (this.#frame) this.#frame.holdEscape = open;
+				},
+			});
+			this.el.insertBefore(this.#ask.el, this.#body);
+		}
 		this.#lifetime.signal.addEventListener(
 			"abort",
 			host.onFolderChange(() => this.#changed()),
@@ -177,11 +208,16 @@ export class AppPanel {
 		this.#frame = undefined;
 		this.#dock?.dispose();
 		this.#dock = undefined;
+		this.#ask?.dispose();
+		this.#ask = undefined;
+		this.#serving = undefined;
 		this.el.remove();
 	}
 
-	/** Reads the app or page and shows it: afresh when `fresh` or when its page changed. */
+	/** Reads the app or page and shows it: afresh when `fresh` (the member asked: Reload, or opening it again) or when
+	 * its page changed. The member's reload also lets an app that was told not now three times ask again. */
 	reload(fresh: boolean): Promise<void> {
+		if (fresh) this.#ask?.reset();
 		if (this.#loading) {
 			this.#again = true;
 			return this.#loading;
@@ -228,8 +264,44 @@ export class AppPanel {
 	#status(text: string): void {
 		this.#frame?.dispose();
 		this.#frame = undefined;
+		this.#serve(null);
 		this.#page = undefined;
 		replace(this.#body, h("p", { class: "side-panel-status" }, text));
+	}
+
+	/** Starts answering the page's calls for the app as its manifest is now, or for none (a page of the Company File,
+	 * or nothing shown). A request that waits for the member was made under the earlier manifest or by the earlier
+	 * page: it goes, unsaved. One whose check is still running is refused when the check ends, before anything is
+	 * shown. One the member already allowed is on its way and is not touched. */
+	#serve(app: (CompanyApp & { readonly manifest: AppManifest }) | null): void {
+		this.#ask?.cancel();
+		if (!app) {
+			this.#serving = undefined;
+			return;
+		}
+		const bar = this.#ask;
+		const live = () => this.#serving === serving;
+		const serving: Serving = {
+			version: app.version,
+			bridge: new AppBridge(
+				this.#host,
+				app,
+				`${this.#host.budgetKey}:${app.name}`,
+				this.#lifetime.signal,
+				bar && {
+					closed: () => (live() ? bar.closed() : "gone"),
+					ask: (ask, perform) => (live() ? bar.ask(ask, perform) : Promise.resolve({ outcome: "gone" as const })),
+				},
+			),
+		};
+		this.#serving = serving;
+	}
+
+	#answer(call: AppCall): Promise<AppAnswer> {
+		// A page of the Company File is no app: it reads nothing.
+		return this.#serving
+			? this.#serving.bridge.answer(call)
+			: Promise.resolve({ ok: false, error: "Only an app in apps/ reads the company's data" });
 	}
 
 	async #load(fresh: boolean): Promise<void> {
@@ -237,7 +309,7 @@ export class AppPanel {
 		if (!this.#frame) replace(this.#body, h("p", { class: "side-panel-status" }, t("Opening…")));
 		const folder = this.#host.folder();
 		let page: string | null;
-		let handle: AppCallHandler;
+		let served: (CompanyApp & { readonly manifest: AppManifest }) | null = null;
 		let name: string;
 		if (this.target.kind === "app") {
 			const target = this.target;
@@ -260,13 +332,17 @@ export class AppPanel {
 				);
 			}
 			name = manifest.name;
+			this.#emblemName = manifest.emblem;
 			this.#heading(manifest.name, manifest, this.#host.agentName(manifest.owner));
+			served = { ...app, manifest };
+			// The page that stands follows the manifest from the moment it is read, before its files are read again:
+			// putting the page together may fail and leave the earlier page standing, and that page must not keep what
+			// the manifest took away (review r2 of #1633, F1).
+			if (this.#frame && this.#serving?.version !== served.version) this.#serve(served);
 			const assembled = await assembleApp(folder, { path: app.path, entry: manifest.entry }, signal);
 			if (signal.aborted) return;
 			if (!assembled.ok) return this.#status(assembled.message);
 			page = assembled.page;
-			const bridge = new AppBridge(this.#host, { ...app, manifest }, `${this.#host.budgetKey}:${app.name}`, signal);
-			handle = (call) => bridge.answer(call);
 		} else {
 			const path = this.target.path;
 			this.#path = path;
@@ -287,15 +363,17 @@ export class AppPanel {
 			if (signal.aborted) return;
 			page = framePage(html);
 			if (page === null) return this.#status(t("This page can't be shown live."));
-			// A page of the Company File is no app: it reads nothing.
-			handle = async () => ({ ok: false, error: "Only an app in apps/ reads the company's data" });
 		}
-		if (!fresh && this.#frame && page === this.#page) {
-			this.#frame.changed();
+		const same = !fresh && this.#frame !== undefined && page === this.#page;
+		// With a new page, and under the same page when the app's manifest changed: what it may read and ask for now.
+		if (!same || (served !== null && this.#serving?.version !== served.version)) this.#serve(served);
+		if (same) {
+			this.#frame?.changed();
 			return;
 		}
 		this.#frame?.dispose();
-		const frame = new AppFrame(page, t("App: {name}", { name }), "side-panel-frame", handle, () => {
+		const answer = (call: AppCall) => this.#answer(call);
+		const frame = new AppFrame(page, t("App: {name}", { name }), "side-panel-frame", answer, () => {
 			if (this.#frame !== frame) return;
 			this.#status(t("This app reloaded itself. Press Reload to start it again."));
 		});

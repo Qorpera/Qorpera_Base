@@ -14,12 +14,18 @@ export type MenuEntry =
 			label: string;
 			icon?: string;
 			danger?: boolean;
-			/** A radio choice in a submenu: the current one carries a check. */
+			/** A radio choice: the current one carries a check, at the row's end when a picture leads it. */
 			checked?: boolean;
+			/** A picture in the icon's place: a member's face. */
+			lead?: HTMLElement;
+			/** A second, quieter line under the label. */
+			hint?: string;
 			select: () => void;
 	  }
 	| { kind: "submenu"; label: string; icon?: string; items: MenuEntry[] }
-	| { kind: "separator" };
+	| { kind: "separator" }
+	/** A line of plain text: what the rows below are about, or what choosing one does. */
+	| { kind: "caption"; label: string };
 
 export interface ContextMenuOptions {
 	label: string;
@@ -31,7 +37,8 @@ export interface ContextMenuOptions {
 	opener?: HTMLElement;
 	/** Finds the opener again when a redraw replaced it while the menu was open. */
 	findOpener?: () => HTMLElement | null;
-	onClose?: () => void;
+	/** The menu closed; `press` is the press outside it that closed it, when one did. */
+	onClose?: (press?: Event) => void;
 }
 
 export interface ContextMenu {
@@ -88,6 +95,7 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 	const opener = options.opener;
 	let submenu: { el: HTMLElement; trigger: HTMLElement } | undefined;
 	let closed = false;
+	let closedBy: Event | undefined;
 
 	const closeSubmenu = (focusTrigger = false) => {
 		if (!submenu) return;
@@ -108,6 +116,10 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 		for (const entry of entries) {
 			if (entry.kind === "separator") {
 				menu.append(h("div", { class: "context-menu-separator", role: "separator" }));
+				continue;
+			}
+			if (entry.kind === "caption") {
+				menu.append(h("div", { class: "context-menu-caption" }, entry.label));
 				continue;
 			}
 			const glyph = entry.icon ? icon(entry.icon) : h("span", { class: "icon", "aria-hidden": "true" });
@@ -155,6 +167,7 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 				continue;
 			}
 			const radio = entry.checked !== undefined;
+			const label = h("span", { class: "context-menu-label" }, entry.label);
 			const item = h(
 				"button",
 				{
@@ -163,8 +176,11 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 					role: radio ? "menuitemradio" : "menuitem",
 					...(radio ? { "aria-checked": String(entry.checked) } : {}),
 				},
-				radio ? (entry.checked ? icon("check") : glyph) : glyph,
-				h("span", { class: "context-menu-label" }, entry.label),
+				entry.lead ?? (radio ? (entry.checked ? icon("check") : glyph) : glyph),
+				entry.hint
+					? h("span", { class: "context-menu-text" }, label, h("span", { class: "context-menu-hint" }, entry.hint))
+					: label,
+				entry.lead && entry.checked ? icon("check") : null,
 			);
 			item.addEventListener("click", () => {
 				// Focus goes back to the opener first, so a dialog the choice opens returns it there.
@@ -214,7 +230,7 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 			const target = opener?.isConnected ? opener : options.findOpener?.();
 			if (target?.isConnected && (!document.activeElement || document.activeElement === document.body))
 				target.focus({ preventScroll: true });
-			options.onClose?.();
+			options.onClose?.(closedBy);
 		},
 	};
 	document.body.append(root);
@@ -229,7 +245,9 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 	document.addEventListener(
 		"pointerdown",
 		(event) => {
-			if (!inside(event.target)) handle.close();
+			if (inside(event.target)) return;
+			closedBy = event;
+			handle.close();
 		},
 		{ capture: true, signal },
 	);

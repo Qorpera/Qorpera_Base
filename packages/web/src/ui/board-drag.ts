@@ -11,6 +11,8 @@ export interface BoardDragOptions {
 	readonly targets: readonly string[];
 	/** The card was let go over one of them. */
 	readonly drop: (lane: string) => void;
+	/** What holds the card and its lanes, as a selector; a board when not said. */
+	readonly within?: string;
 }
 
 /** Design pixels a press moves before it drags. */
@@ -34,7 +36,7 @@ export function boardDrag(card: HTMLElement, options: BoardDragOptions): void {
 }
 
 function press(card: HTMLElement, options: BoardDragOptions, down: PointerEvent): void {
-	const board = card.closest<HTMLElement>(".interface-board");
+	const board = card.closest<HTMLElement>(options.within ?? ".interface-board");
 	if (!board) return;
 	const stop = new AbortController();
 	const lanes = () =>

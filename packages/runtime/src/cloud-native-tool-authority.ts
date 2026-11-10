@@ -237,6 +237,24 @@ export const CLOUD_RUN_ROW_WRITE_MS = CLOUD_RUN_ROW_READ_MS;
  * (R1). */
 export const CLOUD_NATIVE_FENCE_CALL_TIMEOUT_MS = CLOUD_RUN_ROW_LONG_READ_MS;
 
+/**
+ * A write of the run that takes its row and is safe to repeat as it is (it replays by a key of its own): a send, or a
+ * card's append. Each try waits as long as the database may run it, and a lost or late answer is asked again through
+ * the run while its authority holds, as a receipt's begin and completion are (CLOUD_RUN_ROW_WRITE_MS,
+ * `CloudNativeToolRun.retry`). `signal` is the caller's own, a tool call's: once it is aborted (the tool boundary
+ * closed, the turn failed) nothing is asked again, also while the run itself is still being closed, so no try commits
+ * after the call that made it has ended. Before the run exists there is one try.
+ */
+export async function cloudRunRowWrite<T>(
+	run: CloudNativeToolRun | undefined,
+	write: (signal: AbortSignal) => Promise<T>,
+	signal: AbortSignal,
+): Promise<T> {
+	return run
+		? (await run.retry(write, signal, CLOUD_RUN_ROW_WRITE_MS, CLOUD_RUN_ROW_WRITE_MS)).value
+		: cloudToolRequest(write, signal, CLOUD_RUN_ROW_WRITE_MS);
+}
+
 /** Bounded, cancellation-aware wait, including transports which ignore AbortSignal. */
 export function cloudToolRequest<T>(
 	operation: (signal: AbortSignal) => Promise<T>,
