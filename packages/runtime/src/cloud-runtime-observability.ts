@@ -98,6 +98,8 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"save_coding_value",
 	// A look at, or one action on, a company machine's desktop, with the screen shown to the model (20260930708000).
 	"machine_screen",
+	// The company's code kept in Qorpera (20260930720000): taking a change out of main, and describing one.
+	"manage_code",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [
