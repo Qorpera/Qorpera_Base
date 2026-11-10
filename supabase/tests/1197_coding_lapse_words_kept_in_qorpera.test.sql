@@ -24,7 +24,9 @@ begin
 	-- The turn finished and was being handed in when its executor stopped.
 	perform set_config('session_replication_role', 'replica', true);
 	update public.qorpera_coding_session_turns set submission = jsonb_build_object('kind', 'finish', 'headSha', repeat('b', 40),
-		'summary', 'The shop has a cart.') where worker_id = '91170000-0000-4000-8000-0000000000b1' and sequence = 1;
+		'summary', 'The shop has a cart.', 'sequence', 1, 'workerId', '91170000-0000-4000-8000-0000000000b1'),
+		submission_receipt_id = '91197000-0000-4000-8000-0000000000e1', submitted_at = clock_timestamp()
+	where worker_id = '91170000-0000-4000-8000-0000000000b1' and sequence = 1;
 	update public.qorpera_coding_sessions set phase = 'publishing', lease_until = clock_timestamp() - interval '1 second'
 	where worker_id = '91170000-0000-4000-8000-0000000000b1';
 	perform set_config('session_replication_role', 'origin', true);
