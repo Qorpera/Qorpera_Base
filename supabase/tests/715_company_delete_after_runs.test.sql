@@ -166,6 +166,17 @@ end
 $$;
 select pg_temp.base_claims('service_role');
 
+-- A repository kept in Qorpera, with a change in its record and a request for its code: all three go with the company
+-- (20260930710000, 20260930720000).
+insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name)
+values ('92400000-0000-4000-8000-000000000020', '92400000-0000-4000-8000-000000000010', 'company', 'shop');
+insert into public.qorpera_code_changes(environment_id, owner, name, n, profile_id, kind, state, main_after, title)
+values ('92400000-0000-4000-8000-000000000020', 'company', 'shop', 1, '92400000-0000-4000-8000-000000000010', 'found', 'landed',
+	repeat('a', 40), 'A change');
+insert into public.qorpera_code_requests(environment_id, owner, name, profile_id, kind, input, by_kind)
+values ('92400000-0000-4000-8000-000000000020', 'company', 'shop', '92400000-0000-4000-8000-000000000010', 'download',
+	'{"file":"files","fileName":"shop-2026-11-10.zip"}', 'member');
+
 -- Another folder-v2 company (made as the base makes its own), untouched by all of this: its rows are counted now and
 -- after the delete.
 insert into auth.users(id, email) values ('71500000-0000-4000-8000-000000000005', 'delete-neighbour@example.test');
@@ -424,7 +435,11 @@ begin
 	where counted.before_rows - counted.after_rows <> coalesce(found.value::bigint, 0);
 	if v_wrong is not null or (select count(*) from jsonb_each_text(v_found)) < 40
 		or (select value from jsonb_each_text(v_found) where key::regclass = 'public.qorpera_profiles'::regclass) <> '1'
-		or (select value::bigint from jsonb_each_text(v_found) where key::regclass = 'public.qorpera_folder_commits'::regclass) < 1 then
+		or (select value::bigint from jsonb_each_text(v_found) where key::regclass = 'public.qorpera_folder_commits'::regclass) < 1
+		-- The repository kept in Qorpera, its change and its request (20260930720000).
+		or (select count(*) from jsonb_each_text(v_found) where value = '1' and key::regclass in (
+			'public.qorpera_code_repositories'::regclass, 'public.qorpera_code_changes'::regclass,
+			'public.qorpera_code_requests'::regclass)) <> 3 then
 		raise exception 'The purge removed other rows than it found (removed/found): %', v_wrong;
 	end if;
 end
