@@ -193,9 +193,9 @@ export function parseMachineScreenAction(value: unknown): MachineScreenAction {
 	}
 }
 
-/** The settle time an action waits by default: an opening page takes longer. */
+/** The settle time a call waits by default: none for a look, longer for an opening page than for another action. */
 export function machineScreenDefaultSettleMs(action: MachineScreenAction | null): number {
-	return action?.type === "open" ? 2500 : 500;
+	return action === null ? 0 : action.type === "open" ? 2500 : 500;
 }
 
 /** The `desktop` commands that perform one action, each a fixed argv: a scroll at a place moves there first. */

@@ -4,9 +4,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	authorizeMachineCodingValue,
 	authorizeMachineCommand,
+	authorizeMachineScreen,
 } from "../../../deploy/coding-worker/machine-command-authority.ts";
 import {
 	localMachineCodingValue,
+	localMachineScreen,
 	localMachineWake,
 	MachineCommandRouter,
 	machineCommandRoutes,
@@ -19,9 +21,13 @@ import {
 	type CloudMachineCommandHttpRequest,
 	CloudMachineCommandRefusal,
 	CloudMachineCommandUnanswered,
+	type CloudMachineScreenHttpRequest,
+	CloudMachineScreenRefusal,
 	type CloudMachineWakeHttpRequest,
 	createHttpCloudMachineCommandGateway,
 	parseCloudMachineCodingValueHttpRequest,
+	parseCloudMachineScreenAnswer,
+	parseCloudMachineScreenHttpRequest,
 } from "../src/cloud-machine-command-http.ts";
 import type { CloudNativeToolBinding } from "../src/cloud-native-tool-authority.ts";
 import { cloudNativeToolOperationEnvelope } from "../src/cloud-native-tool-operations.ts";
@@ -910,5 +916,329 @@ describe("a machine's coding value", () => {
 			{ ...f.request, scope: { machineId: f.request.scope.machineId, placementId: randomUUID() } },
 		])
 			expect(() => parseCloudMachineCodingValueHttpRequest(bad)).toThrow("Machine command gateway unavailable");
+	});
+});
+
+describe("a machine's screen", () => {
+	const header = (png: number) => ({
+		schema: "qorpera.machine-screen/v1",
+		started: false,
+		action: { type: "click", exitCode: 0 },
+		activeWindow: "Sign in - Chromium",
+		windows: ["Sign in - Chromium"],
+		moreWindows: 0,
+		png,
+	});
+	const picture = Buffer.from("89504e470d0a1a0a0000000d4948445200000640000003e8", "hex");
+	function fixture() {
+		const { binding } = nativeToolAuthorityFixture();
+		const machineId = randomUUID();
+		const commandId = randomUUID();
+		const placementId = randomUUID();
+		const bootId = randomUUID();
+		const runId = randomUUID();
+		const action = { type: "click", x: 812, y: 443 };
+		const request: CloudMachineScreenHttpRequest = {
+			schema: "qorpera.machine-command-http/v1",
+			binding,
+			scope: { machineId },
+			action: "screen",
+			input: {
+				commandId,
+				envelope: JSON.stringify({ schema: "qorpera.cloud-tool-operation/v2" }),
+				settleMs: 500,
+				look: true,
+			},
+		};
+		const look: CloudMachineScreenHttpRequest = {
+			...request,
+			input: { commandId: null, envelope: null, settleMs: 0, look: true },
+		};
+		const answer = {
+			schema: "qorpera.machine-screen-authority/v1",
+			state: "authorized",
+			machineId,
+			placementId,
+			bootId,
+			executorOwner: "mx-a",
+			providerId: "machine-node",
+			runId,
+			staffAgentId: randomUUID(),
+			requesterUserId: randomUUID(),
+			receiptId: commandId,
+			action,
+			settleMs: 500,
+			look: true,
+		};
+		const lookAnswer = { ...answer, receiptId: null, action: null, settleMs: null, look: null };
+		const call = vi.fn(async (_method: string, args: Record<string, unknown>) =>
+			args.p_receipt_id === null ? lookAnswer : (answer as unknown),
+		);
+		const host = {
+			screen: vi.fn(
+				async () =>
+					({ header: header(picture.length), png: picture }) as
+						| { header: Record<string, unknown>; png: Buffer | null; heldBack?: string }
+						| { refused: string },
+			),
+		};
+		const router = new MachineCommandRouter({
+			owner: "mx-a",
+			providerId: "machine-node",
+			peers: [],
+			control: { call },
+			credential: async () => "",
+			screenLocal: localMachineScreen(host),
+		});
+		return { binding, request, look, answer, call, host, router, action, signal: new AbortController().signal };
+	}
+
+	it("asks SQL for the action its receipt holds, runs the helper on this node with it, and answers the screen", async () => {
+		const f = fixture();
+		expect(await f.router.screen(f.request, f.signal)).toEqual({
+			schema: "qorpera.machine-screen-answer/v1",
+			commandId: f.request.input.commandId,
+			header: header(picture.length),
+			png: picture.toString("base64"),
+		});
+		expect(f.call).toHaveBeenCalledWith(
+			"qorpera_authorize_machine_screen",
+			{
+				p_binding: f.binding,
+				p_scope: f.request.scope,
+				p_receipt_id: f.request.input.commandId,
+				p_envelope: f.request.input.envelope,
+			},
+			f.signal,
+		);
+		// The helper's request: SQL's action, never one the caller sent; the run that sees the screen takes in its reads.
+		expect(f.host.screen).toHaveBeenCalledWith(
+			{
+				placementId: f.answer.placementId,
+				bootId: f.answer.bootId,
+				runId: f.answer.runId,
+				request: {
+					schema: "qorpera.machine-screen-request/v1",
+					receiptId: f.request.input.commandId,
+					action: f.action,
+					settleMs: 500,
+					look: true,
+				},
+			},
+			f.signal,
+		);
+		// A look: no receipt, no action, and the request's own settle and look.
+		expect(await f.router.screen(f.look, f.signal)).toMatchObject({ commandId: null });
+		expect(f.host.screen).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				request: {
+					schema: "qorpera.machine-screen-request/v1",
+					receiptId: null,
+					action: null,
+					settleMs: 0,
+					look: true,
+				},
+			}),
+			f.signal,
+		);
+		// A held picture comes back without it, with why.
+		f.host.screen.mockResolvedValueOnce({
+			header: { ...header(0), activeWindow: null, windows: [] },
+			png: null,
+			heldBack: "the company folder did not release what the machine read; read again",
+		});
+		expect(await f.router.screen(f.request, f.signal)).toMatchObject({
+			png: null,
+			heldBack: "the company folder did not release what the machine read; read again",
+		});
+	});
+
+	it("turns a stopped machine and the helper's codes into the agent's refusals, and anything else into a failure", async () => {
+		const f = fixture();
+		f.call.mockResolvedValueOnce({
+			schema: "qorpera.machine-screen-authority/v1",
+			state: "refused",
+			reason: "MACHINE_NOT_RUNNING",
+			machine: "build-a",
+		});
+		await expect(f.router.screen(f.request, f.signal)).rejects.toMatchObject({ code: "MACHINE_NOT_RUNNING" });
+		expect(f.host.screen).not.toHaveBeenCalled();
+		for (const code of [
+			"SCREEN_ACTION_TAKEN",
+			"MACHINE_BOOT_CHANGED",
+			"MACHINE_IMAGE_WITHOUT_SCREEN",
+			"DESKTOP_NOT_RUNNING",
+			"DESKTOP_MACHINE_TOO_SMALL",
+		]) {
+			f.host.screen.mockResolvedValueOnce({ refused: code });
+			const error = await f.router.screen(f.request, f.signal).catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(CloudMachineScreenRefusal);
+			expect(error).toMatchObject({ code });
+		}
+		f.host.screen.mockResolvedValueOnce({ refused: "SOMETHING_ELSE" });
+		await expect(f.router.screen(f.request, f.signal)).rejects.toThrow("MACHINE_SCREEN_FAILED");
+		// SQL's read for another machine, receipt, placement, boot, run or action, or a look's with an action, is no
+		// authority; nor an action whose settle or look is not the request's.
+		for (const [request, other] of [
+			[f.request, { machineId: randomUUID() }],
+			[f.request, { receiptId: randomUUID() }],
+			[f.request, { placementId: "x" }],
+			[f.request, { bootId: null }],
+			[f.request, { runId: "run" }],
+			[f.request, { executorOwner: "" }],
+			[f.request, { action: { type: "click", x: 4000, y: 1 } }],
+			[f.request, { action: { type: "click", x: 1, y: 1, extra: true } }],
+			[f.request, { action: null }],
+			[f.request, { settleMs: 2500 }],
+			[f.request, { look: false }],
+			[f.look, { receiptId: null, action: f.action, settleMs: null, look: null }],
+			[f.look, { receiptId: null, action: null, settleMs: 500, look: null }],
+		] as const) {
+			f.call.mockResolvedValueOnce({ ...f.answer, ...other });
+			await expect(
+				authorizeMachineScreen({ call: f.call }, request, f.signal),
+				JSON.stringify(other),
+			).rejects.toThrow("MACHINE_SCREEN_AUTHORITY_INVALID");
+		}
+	});
+
+	it("crosses the ingress with the run's own lease: the screen back, a refusal as 409 with its code", async () => {
+		const f = fixture();
+		const token = randomBytes(32).toString("base64url");
+		const lease = randomBytes(32).toString("base64url");
+		const http = new HttpCloudCodingCommandService({
+			token,
+			proveBinding: async (binding, holder) => {
+				if (holder !== `job.${binding.jobId.toLowerCase()}.${lease}`)
+					throw new Error("native binding proof is refused");
+			},
+			authorize: async () => {
+				throw new Error("not a coding command");
+			},
+			execute: async () => {
+				throw new Error("not a coding command");
+			},
+			machines: { ...machineCommandRoutes(f.router, { call: f.call }, false) },
+		});
+		const port = await http.start();
+		cleanups.push(() => http.close());
+		const gateway = (holder: string) =>
+			createHttpCloudMachineCommandGateway({
+				url: `http://127.0.0.1:${port}`,
+				token,
+				binding: f.binding,
+				holder: () => holder,
+				allowLoopback: true,
+			});
+		const own = gateway(`job.${f.binding.jobId.toLowerCase()}.${lease}`);
+		expect(await own.screen!(f.request.scope, f.request.input, f.signal)).toEqual({
+			schema: "qorpera.machine-screen-answer/v1",
+			commandId: f.request.input.commandId,
+			header: header(picture.length),
+			png: picture.toString("base64"),
+		});
+		f.host.screen.mockResolvedValueOnce({ refused: "SCREEN_ACTION_TAKEN" });
+		const refused = await own.screen!(f.request.scope, f.request.input, f.signal).catch((caught: unknown) => caught);
+		expect(refused).toBeInstanceOf(CloudMachineScreenRefusal);
+		expect(refused).toMatchObject({ code: "SCREEN_ACTION_TAKEN" });
+		// Without the run's lease nothing is asked of SQL, and the machine is never reached.
+		const calls = f.call.mock.calls.length;
+		await expect(
+			gateway(`job.${f.binding.jobId.toLowerCase()}.${randomBytes(32).toString("base64url")}`).screen!(
+				f.request.scope,
+				f.request.input,
+				f.signal,
+			),
+		).rejects.toThrow("Machine command gateway unavailable");
+		expect(f.call.mock.calls.length).toBe(calls);
+		expect(f.host.screen).toHaveBeenCalledTimes(2);
+	});
+
+	it("goes once to the peer whose node runs the machine, which never forwards, and its refusal stays the agent's", async () => {
+		const f = fixture();
+		const sent: string[] = [];
+		const router = new MachineCommandRouter({
+			owner: "mx-c",
+			providerId: "machine-node",
+			peers: [
+				{ owner: "mx-a", providerId: "machine-node", origin: "https://node-a.example", tokenCredential: "peer-a" },
+			],
+			control: { call: f.call },
+			credential: async () => randomBytes(32).toString("base64url"),
+			fetch: (async (input: string | URL | Request) => {
+				sent.push(String(input));
+				return new Response(JSON.stringify({ code: "DESKTOP_NOT_RUNNING" }), { status: 409 });
+			}) as typeof fetch,
+		});
+		await expect(router.screen(f.request, f.signal)).rejects.toMatchObject({ code: "DESKTOP_NOT_RUNNING" });
+		expect(sent).toEqual(["https://node-a.example/v1/machine-commands/screen"]);
+		await expect(router.screen(f.request, f.signal, true)).rejects.toThrow("MACHINE_COMMAND_WRONG_EXECUTOR");
+		expect(sent).toHaveLength(1);
+	});
+
+	it("sends a request once and gives up on no answer, never sending it again", async () => {
+		const f = fixture();
+		const sent: string[] = [];
+		const gateway = createHttpCloudMachineCommandGateway({
+			url: "https://node-a.example",
+			token: randomBytes(32).toString("base64url"),
+			binding: f.binding,
+			holder: null,
+			fetch: (async (input: string | URL | Request) => {
+				sent.push(String(input));
+				return new Response("bad gateway", { status: 502 });
+			}) as typeof fetch,
+		});
+		await expect(gateway.screen!(f.request.scope, f.request.input, f.signal)).rejects.toBeInstanceOf(
+			CloudMachineCommandUnanswered,
+		);
+		expect(sent).toHaveLength(1);
+	});
+
+	it("reads only its own request shape, and an answer of exactly that request within its bounds", () => {
+		const f = fixture();
+		expect(parseCloudMachineScreenHttpRequest(f.request)).toEqual(f.request);
+		expect(parseCloudMachineScreenHttpRequest(f.look)).toEqual(f.look);
+		for (const bad of [
+			{ ...f.request, action: "coding_value" },
+			{ ...f.request, input: { ...f.request.input, action: f.action } },
+			{ ...f.request, input: { ...f.request.input, commandId: "x" } },
+			{ ...f.request, input: { ...f.request.input, envelope: null } },
+			{ ...f.request, input: { ...f.request.input, envelope: "x".repeat(65537) } },
+			{ ...f.request, input: { ...f.request.input, settleMs: 5001 } },
+			{ ...f.request, input: { ...f.request.input, settleMs: 1.5 } },
+			{ ...f.request, input: { ...f.request.input, look: "yes" } },
+			{ ...f.look, input: { ...f.look.input, commandId: randomUUID() } },
+			{ ...f.request, scope: { machineId: f.request.scope.machineId, placementId: randomUUID() } },
+		])
+			expect(() => parseCloudMachineScreenHttpRequest(bad)).toThrow("Machine command gateway unavailable");
+		const good = {
+			schema: "qorpera.machine-screen-answer/v1",
+			commandId: f.request.input.commandId,
+			header: header(picture.length),
+			png: picture.toString("base64"),
+		};
+		expect(parseCloudMachineScreenAnswer(f.request, good)).toEqual(good);
+		for (const bad of [
+			{ ...good, commandId: randomUUID() },
+			{ ...good, png: Buffer.from("other").toString("base64") },
+			{ ...good, png: null },
+			{ ...good, header: { ...good.header, windows: ["a\u0007"] } },
+			{ ...good, header: { ...good.header, extra: 1 } },
+			{ ...good, heldBack: "held" },
+			{ ...good, png: null, header: { ...header(0), activeWindow: "kept" }, heldBack: "held" },
+			{ ...good, png: "A".repeat(Math.ceil((8 * 1024 * 1024) / 3) * 4 + 4) },
+		])
+			expect(() => parseCloudMachineScreenAnswer(f.request, bad), JSON.stringify(bad).slice(0, 200)).toThrow(
+				"Machine command gateway unavailable",
+			);
+		expect(
+			parseCloudMachineScreenAnswer(f.request, {
+				...good,
+				png: null,
+				header: { ...header(0), activeWindow: null, windows: [] },
+				heldBack: "held",
+			}),
+		).toMatchObject({ png: null, heldBack: "held" });
 	});
 });
