@@ -1012,6 +1012,8 @@ describe("CodeRestore: a restore request, step by step", () => {
 			/** What each step call saved, in order, and whether the place held its repository when it was asked. */
 			steps: [] as Record<string, unknown>[],
 			whole: [] as boolean[],
+			/** A look at the place at each step the kernel lets go, before the job's first command. */
+			look: async (_progress: Record<string, unknown>): Promise<void> => undefined,
 			answer: (_progress: Record<string, unknown>): "go" | "busy" | "lost" => "go",
 			/** Each record call, in order, with whether the place was still closed when it came. */
 			records: [] as { args: Record<string, unknown>; closed: boolean }[],
@@ -1043,6 +1045,7 @@ describe("CodeRestore: a restore request, step by step", () => {
 				if (state === "go") {
 					kernel.steps.push(progress);
 					kernel.whole.push(await exists(f.repo));
+					await kernel.look(progress);
 				}
 				return {
 					schema: "qorpera.code-request-step/v1",
@@ -1618,6 +1621,67 @@ describe("CodeRestore: a restore request, step by step", () => {
 			"the request is finished: restored",
 		]);
 		expect(await f.inRepo("rev-parse", "refs/heads/main")).toBe(s.work);
+	});
+
+	it("asks the set-aside step again on a later claim, before it moves a download that was made after the first attempt was opened again", async () => {
+		const f = await fixture(),
+			x = executor(f);
+		await shop(f);
+		const name = await x.keep(await bundled(f));
+		const asked = request({ bundle: name });
+		// What the kernel is asked, in order, and whether the download's file stands in the place at that moment. The
+		// kernel ends the downloads made in the place at each step that names the set-aside.
+		const fileName = "app-2026-11-10.zip",
+			file = join(f.code, "downloads", fileName);
+		const steps: string[] = [];
+		x.kernel.look = async (progress) => {
+			steps.push(
+				`${String(progress.step)}: the download is ${(await exists(file)) ? "in the place" : "not in the place"}`,
+			);
+		};
+		// The first claim closes the place. The job that sets it aside is let go, and fails before it moves anything.
+		// The place is opened again as it was.
+		const before = await f.listing(f.companyRoot);
+		x.jobs.host = () =>
+			stoppedAt(
+				f,
+				(command) => command.argv[0] === "/bin/sh" && (command.argv[2] ?? "").includes("mv --no-copy --version"),
+			);
+		expect(await x.run(asked)).toEqual({
+			schema: SCHEMA,
+			state: "failed",
+			code: "SET_ASIDE_FAILED:UNCLASSIFIED:PLACE_AS_BEFORE",
+		});
+		expect(steps).toEqual(["close: the download is not in the place", "set-aside: the download is not in the place"]);
+		expect(await f.listing(f.companyRoot)).toEqual(before);
+		const saved = x.kernel.steps.at(-1) as Record<string, unknown>;
+		expect(saved).toEqual({ step: "set-aside", bundle: name, at: AT });
+		// The executor's word that the request failed never reaches the kernel, so the request will be claimed again.
+		// Meanwhile the place is open, and the code is made there as a file.
+		x.jobs.host = () => f.job;
+		expect(await archiveCodeArea(f.job, { repository: kept, file: "files", fileName })).toMatchObject({
+			path: `${AREA}/downloads/${fileName}`,
+		});
+		expect(await exists(file)).toBe(true);
+		// The next claim comes with what the kernel saved. It closes the place again and asks the set-aside step again:
+		// the download made in between is still in the place when the kernel is asked, and goes aside only after.
+		steps.length = 0;
+		expect(await x.run({ ...asked, token: randomUUID(), progress: saved })).toMatchObject({
+			state: "done",
+			result: "restored",
+			bundle: name,
+			movedTo: ASIDE,
+		});
+		expect(x.errors()).toEqual(["Error: the code host went away"]);
+		expect(steps).toEqual([
+			"close: the download is in the place",
+			"set-aside: the download is in the place",
+			"set-aside: the download is not in the place",
+			"build: the download is not in the place",
+			"open: the download is not in the place",
+		]);
+		expect(await exists(join(f.aside, "downloads", fileName))).toBe(true);
+		expect(await exists(f.mark)).toBe(false);
 	});
 
 	it("a record that was not heard, a lease that is gone and an open that did not save each leave the place closed for the next claim, which opens it with the same record", async () => {

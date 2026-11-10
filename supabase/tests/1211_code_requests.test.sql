@@ -11,8 +11,9 @@
 --   4. Restore: the operator's call, verify, the wait for quiet sessions, progress, the record a restore makes before
 --      its place opens and the finish after it, what the record does to the rows (lost rows, files and care due
 --      again), a restored main the record does not know, the wall for undo, and discard.
---   5. A restore against the downloads made in its place (over from the step that begins to move the place, also when
---      the restore then fails; a finish that comes after it); its record against landings and in every order of
+--   5. A restore against the downloads made in its place (over from each step that lets a job go to move the place,
+--      also when the restore then fails, and on a later claim of the same request; not from a step that moves nothing
+--      out; a finish that comes after it); its record against landings and in every order of
 --      failure; record files acknowledged after a restore; restores back, forward and back again with undos among the
 --      rows; a history of more than 200 changes.
 --   6. More than 500 changes are not taken out at once.
@@ -880,13 +881,11 @@ declare v jsonb; v_item jsonb; v_id uuid; v_undo uuid; v_token uuid; q public.qo
 	r public.qorpera_code_changes%rowtype; s public.qorpera_code_repositories%rowtype; v_role text; i integer;
 	v_call text; v_bad jsonb;
 	v_bundle text := '20261109T021455Z-0123456789ab'; v_aside text := 'code/_set-aside/company/at-20261110T120000Z/site';
-	v_progress jsonb; v_moved jsonb; v_restored jsonb; b1 uuid := '91170000-0000-4000-8000-0000000000b1'; v_recorded jsonb;
+	v_progress jsonb; v_restored jsonb; b1 uuid := '91170000-0000-4000-8000-0000000000b1'; v_recorded jsonb;
 	v_record_lost jsonb := '{"schema":"qorpera.code-restore-recorded/v1","state":"lost"}';
 	v_fresh text := '20261110T160000Z-ba9876543210';
 begin
 	v_progress := jsonb_build_object('bundle', v_bundle, 'setAside', v_aside);
-	-- (With the kernel's own word: the generation the repository's artifacts got when this restore began to move the place.)
-	v_moved := v_progress || '{"emptied":1}';
 	v_restored := pg_temp.req_restore_outcome(v_bundle, 's3', jsonb_build_object('previousMainSha', pg_temp.rec_sha('s6'),
 		'stranded', jsonb_build_array(pg_temp.rec_copy(44)), 'movedTo', v_aside));
 	-- Only the database owner asks for a restore.
@@ -1013,25 +1012,27 @@ begin
 		and public.qorpera_code_restore_moving('{"setAside":null}') and public.qorpera_code_restore_moving('{"built":true}'),
 		'when a restore counts as moving the place');
 	-- Nothing has moved yet, and the steps before this one, the ones put off too, left the repository's artifact
-	-- generation alone. This step lets the job go that moves the place aside: the generation goes up, once for the
-	-- request, and the request keeps it.
-	perform pg_temp.base_assert((pg_temp.rec_shop('site')).artifact_generation = 0 and not (pg_temp.req_row(v_id)).progress ? 'emptied',
-		'nothing has moved yet');
+	-- generation alone. This step lets the job go that moves the place aside: the generation goes up. Asked again (the
+	-- job that looks at what the folder kept of the move asks the same step), it goes up again: each such step counts,
+	-- not the first of a request.
+	perform pg_temp.base_assert((pg_temp.rec_shop('site')).artifact_generation = 0, 'nothing has moved yet');
 	v := pg_temp.req_step(v_id, v_token, jsonb_build_object('bundle', v_bundle, 'step', 'set-aside'));
 	perform pg_temp.base_assert(v ->> 'state' = 'go'
-		and (pg_temp.req_row(v_id)).progress = jsonb_build_object('bundle', v_bundle, 'step', 'set-aside', 'emptied', 1)
+		and (pg_temp.req_row(v_id)).progress = jsonb_build_object('bundle', v_bundle, 'step', 'set-aside')
 		and (pg_temp.rec_shop('site')).artifact_generation = 1
 		and pg_temp.req_step(v_id, v_token) ->> 'state' = 'go'
-		and (pg_temp.req_row(v_id)).progress = jsonb_build_object('bundle', v_bundle, 'step', 'set-aside', 'emptied', 1),
+		and (pg_temp.req_row(v_id)).progress = jsonb_build_object('bundle', v_bundle, 'step', 'set-aside')
+		and (pg_temp.rec_shop('site')).artifact_generation = 2,
 		'a restore that moves the place goes on beside a turn: ' || v::text);
-	v := pg_temp.req_step(v_id, v_token, v_progress || '{"emptied":7}');
-	perform pg_temp.base_assert(v ->> 'state' = 'go' and (pg_temp.req_row(v_id)).progress = v_moved
-		and pg_temp.req_step(v_id, v_token) ->> 'state' = 'go' and (pg_temp.rec_shop('site')).artifact_generation = 1,
+	-- (A step that does not name the set-aside moves the generation no further.)
+	v := pg_temp.req_step(v_id, v_token, v_progress);
+	perform pg_temp.base_assert(v ->> 'state' = 'go' and (pg_temp.req_row(v_id)).progress = v_progress
+		and pg_temp.req_step(v_id, v_token) ->> 'state' = 'go' and (pg_temp.rec_shop('site')).artifact_generation = 2,
 		'and beside a session on a machine: ' || v::text);
 	-- The executor stopped while the sessions work: the next claim hands the request out all the same.
 	perform pg_temp.req_lapse(v_id);
 	v_item := pg_temp.req_claim() -> 0;
-	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_item -> 'progress' = v_moved
+	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_item -> 'progress' = v_progress
 		and (pg_temp.req_row(v_id)).attempts = 2, 'a moving restore is claimed beside a turn: ' || coalesce(v_item::text, 'nothing'));
 	v_token := (v_item ->> 'token')::uuid;
 	update public.qorpera_coding_sessions set phase = 'completed' where worker_id = b1;
@@ -1041,7 +1042,7 @@ begin
 	perform pg_temp.req_lapse(v_id);
 	v_item := pg_temp.req_claim() -> 0;
 	v_token := (v_item ->> 'token')::uuid;
-	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_item -> 'progress' = v_moved
+	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_item -> 'progress' = v_progress
 		and (pg_temp.req_row(v_id)).attempts = 3 and v_token <> q.lease_token, 'it goes on where it was: ' || v_item::text);
 
 	-- The finish takes `restored` in its shape only, and only for a restore that was recorded: nothing is recorded once
@@ -1104,7 +1105,7 @@ begin
 	v_recorded := jsonb_build_object('change', 8, 'boundary', 'found', 'keptThrough', 3, 'lost', 3, 'back', 0, 'bundle', v_bundle,
 		'mainSha', pg_temp.rec_sha('s3'));
 	perform pg_temp.base_assert(q.state = 'running' and q.lease_token = v_token and q.outcome is null and q.finished_at is null
-		and q.progress = v_moved || jsonb_build_object('recorded', v_recorded), 'the request after the record: ' || to_jsonb(q)::text);
+		and q.progress = v_progress || jsonb_build_object('recorded', v_recorded), 'the request after the record: ' || to_jsonb(q)::text);
 	-- Made again by the same request (the answer was not heard): the same answer, and nothing is written.
 	s := pg_temp.rec_shop('site');
 	perform pg_temp.base_assert(pg_temp.req_record(v_id, v_token, v_bundle, 's3', 's6') = v
@@ -1113,11 +1114,11 @@ begin
 		'the same record again');
 	perform pg_temp.base_error(format('select pg_temp.req_record(%L, %L, %L, %L)', v_id, v_token, v_bundle, 's2'),
 		'22023', 'Code restore record invalid');
-	-- A step keeps what was recorded, and the generation the restore made, and takes neither from its caller. The
-	-- generation does not go up again: the request moved the place once.
-	perform pg_temp.base_assert(pg_temp.req_step(v_id, v_token, v_progress || '{"step":"discard","recorded":{"change":1},"emptied":9}') ->> 'state' = 'go'
-		and (pg_temp.rec_shop('site')).artifact_generation = 1
-		and (pg_temp.req_row(v_id)).progress = v_moved || jsonb_build_object('step', 'discard', 'recorded', v_recorded)
+	-- A step keeps what was recorded, and takes none from its caller. This one is of the job that removes a set-aside
+	-- copy: it moves nothing out of the place, and the generation stays.
+	perform pg_temp.base_assert(pg_temp.req_step(v_id, v_token, v_progress || '{"step":"discard","recorded":{"change":1}}') ->> 'state' = 'go'
+		and (pg_temp.rec_shop('site')).artifact_generation = 2
+		and (pg_temp.req_row(v_id)).progress = v_progress || jsonb_build_object('step', 'discard', 'recorded', v_recorded)
 		and pg_temp.req_step(v_id, v_token) ->> 'state' = 'go'
 		and (pg_temp.req_row(v_id)).progress -> 'recorded' = v_recorded, 'a step keeps the record');
 	-- The finish, once the job that opened the place has saved: it writes no row, and only for the bundle and the main
@@ -1222,8 +1223,7 @@ begin
 		perform pg_temp.req_lapse(v_id);
 	end loop;
 	perform pg_temp.base_assert(pg_temp.req_claim() = '[]'::jsonb and (pg_temp.req_row(v_id)).state = 'failed'
-		and (pg_temp.req_row(v_id)).outcome ->> 'code' = 'DID_NOT_FINISH'
-		and (pg_temp.req_row(v_id)).progress = v_progress || '{"emptied":4}' and (pg_temp.rec_shop('site')).artifact_generation = 4,
+		and (pg_temp.req_row(v_id)).outcome ->> 'code' = 'DID_NOT_FINISH' and (pg_temp.req_row(v_id)).progress = v_progress,
 		'a restore that did not finish keeps its progress: ' || (pg_temp.req_row(v_id)).progress::text);
 
 	-- Discard: one set-aside copy of the repository, by its path.
@@ -1279,7 +1279,7 @@ begin
 	q := pg_temp.req_row(v_download);
 	v := pg_temp.req_ask('files', p_name => 'one');
 	perform pg_temp.base_assert(q.state = 'expired' and q.lease_token is null and (pg_temp.rec_shop('one')).last_main = q.outcome ->> 'mainSha'
-		and (pg_temp.rec_shop('one')).artifact_generation = 1 and (pg_temp.req_row(v_id)).progress -> 'emptied' = '1'
+		and (pg_temp.rec_shop('one')).artifact_generation = 1
 		and pg_temp.req_download(v_download) ->> 'state' = 'failed' and pg_temp.req_download(v_download) ->> 'reason' = 'failed'
 		and v ->> 'state' = 'queued' and v ->> 'requestId' <> v_download::text and v -> 'path' = 'null'
 		and (select r -> 'downloads' from jsonb_array_elements(pg_temp.req_list() -> 'repositories') r where r ->> 'name' = 'one')
@@ -1307,8 +1307,8 @@ begin
 		and pg_temp.req_download((v_item ->> 'requestId')::uuid) ->> 'state' = 'failed', 'no download from a closed place');
 
 	-- The operator asks again with the same bundle. The new request goes on from the emptied place: recorded inside the
-	-- job that opens it. (Its own first step that says the place is moved takes the generation up once more. Nothing
-	-- was made in between, so nothing ends by it.)
+	-- job that opens it. (The step this test's helper asks before the record names the set-aside, as a job that moves
+	-- the place would: it takes the generation up once more. Nothing was made in between, so nothing ends by it.)
 	v := pg_temp.req_restore_to(v_bundle, 'a2', 'one', 'a2');
 	perform pg_temp.base_assert(v = pg_temp.req_restored(3, 2, 0, 0) and pg_temp.rec_is(3, 'restore', 'landed', 'a2', 'a2', 'one')
 		and (pg_temp.rec_shop('one')).artifact_generation = 2, 'recorded in the job: ' || v::text);
@@ -1475,6 +1475,102 @@ begin
 	perform pg_temp.base_assert(jsonb_array_length(v -> 'changes') = 3
 		and (select jsonb_agg(c -> 'version' order by c -> 'n') from jsonb_array_elements(v -> 'changes') c) = '[3, 3, 3]'::jsonb
 		and v -> 'index' ->> 'version' = '5', 'still due when the same restore is recorded again: ' || v::text);
+end $$;
+
+-- company/five: the downloads are ended by each attempt to move the place, not once for a request. A restore's job
+-- that sets the place aside is let go, fails before it moves anything, and the place is opened again as it was. The
+-- word that the request failed never reaches the kernel, so the same request is claimed again later. A download made
+-- while the place was open is over when that claim's job is let go to move the place. And a step that moves nothing
+-- out of the place ends nothing: a download made after the restore's open outlives the discard of the set-aside copy.
+insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name)
+values (pg_temp.rec_here(), '92400000-0000-4000-8000-000000000010', 'company', 'five');
+do $$
+declare v jsonb; v_item jsonb; v_id uuid; v_first uuid; v_second uuid; v_before uuid; v_between uuid; v_after uuid;
+	q public.qorpera_code_requests%rowtype;
+	v_zip text := 'code/company/five/downloads/five-' || to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD') || '.zip';
+	v_bundle text := '20261110T160000Z-ba9876543210'; v_aside text := 'code/_set-aside/company/at-20261110T120000Z/five';
+	v_made jsonb;
+begin
+	v_made := pg_temp.req_outcome(jsonb_build_object('state', 'done', 'result', 'made', 'path', v_zip, 'bytes', 55,
+		'sha256', repeat('5', 64), 'mainSha', pg_temp.rec_sha('g2')));
+	perform pg_temp.rec_land(97, 'g0', 'g1', p_name => 'five');
+	perform pg_temp.rec_land(98, 'g1', 'g2', p_name => 'five');
+	v_before := (pg_temp.req_ask('files', p_name => 'five') ->> 'requestId')::uuid;
+	v_item := pg_temp.req_claim() -> 0;
+	perform pg_temp.base_assert(pg_temp.req_made(v_before, (v_item ->> 'token')::uuid, v_made) = pg_temp.req_recorded(null)
+		and pg_temp.req_ready('five') = jsonb_build_array(v_before), 'five''s download is ready');
+	-- A restore closes the place, and its job that sets the place aside is let go: the download is over.
+	perform pg_temp.req_quiet();
+	v_id := pg_temp.req_restore('restore', v_bundle, 'remove', 'The folder lost objects.', 'five');
+	v_first := (pg_temp.req_claim() -> 0 ->> 'token')::uuid;
+	perform pg_temp.base_assert(pg_temp.req_step(v_id, v_first, jsonb_build_object('bundle', v_bundle, 'step', 'close')) ->> 'state' = 'go'
+		and pg_temp.req_step(v_id, v_first, jsonb_build_object('bundle', v_bundle, 'step', 'set-aside')) ->> 'state' = 'go'
+		and (pg_temp.rec_shop('five')).artifact_generation = 1 and pg_temp.req_download(v_before) ->> 'state' = 'failed'
+		and pg_temp.req_ready('five') = '[]'::jsonb, 'the first attempt to move the place');
+	-- That job fails before it moves anything, and the executor opens the untouched place again. Its word that the
+	-- request failed is lost: the request is still running, and will be claimed again. Meanwhile the place is open: a
+	-- member asks for the code, and it is made there.
+	v := pg_temp.req_ask('files', p_name => 'five');
+	v_between := (v ->> 'requestId')::uuid;
+	v_item := pg_temp.req_claim() -> 0;
+	perform pg_temp.base_assert(v ->> 'state' = 'queued' and v_between <> v_before and v_item ->> 'requestId' = v_between::text
+		and pg_temp.req_made(v_between, (v_item ->> 'token')::uuid, v_made) = pg_temp.req_recorded(null)
+		and (pg_temp.req_row(v_between)).artifact_generation = 1 and pg_temp.req_download(v_between) ->> 'state' = 'ready'
+		and pg_temp.req_ready('five') = jsonb_build_array(v_between) and (pg_temp.req_row(v_id)).state = 'running',
+		'a download made while the place was open again: ' || pg_temp.req_list()::text);
+	-- The restore's lease ends and it is claimed again. It closes the place again. Nothing has moved yet: the download
+	-- is still ready.
+	perform pg_temp.req_lapse(v_id);
+	v_item := pg_temp.req_claim() -> 0;
+	v_second := (v_item ->> 'token')::uuid;
+	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and (pg_temp.req_row(v_id)).attempts = 2 and v_second <> v_first
+		and v_item -> 'progress' = jsonb_build_object('bundle', v_bundle, 'step', 'set-aside')
+		and pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_bundle, 'step', 'close')) ->> 'state' = 'go'
+		and (pg_temp.rec_shop('five')).artifact_generation = 1 and pg_temp.req_download(v_between) ->> 'state' = 'ready',
+		'claimed again, and closed again: ' || coalesce(v_item::text, 'nothing'));
+	-- Its job that sets the place aside is let go again, and this time it moves the place, downloads/ with it. The
+	-- download made in between is over from this step: to the member who reads it, in the list, and for one who asks
+	-- again.
+	perform pg_temp.base_assert(pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_bundle, 'step', 'set-aside')) ->> 'state' = 'go',
+		'the second attempt to move the place');
+	q := pg_temp.req_row(v_between);
+	v := pg_temp.req_ask('files', p_name => 'five');
+	perform pg_temp.base_assert(q.state = 'expired' and q.lease_token is null and (pg_temp.rec_shop('five')).artifact_generation = 2
+		and pg_temp.req_download(v_between) = jsonb_build_object('schema', 'qorpera.code-download/v1', 'requestId', v_between,
+			'file', 'files', 'state', 'failed', 'reason', 'failed', 'path', null, 'bytes', null)
+		and pg_temp.req_ready('five') = '[]'::jsonb and v ->> 'state' = 'queued' and v ->> 'requestId' not in (v_before::text, v_between::text),
+		'a download made between two attempts is over at the second: ' || to_jsonb(q)::text || ' ' || pg_temp.req_list()::text);
+	-- (The one asked for now is refused in the closed place.)
+	v_item := pg_temp.req_claim() -> 0;
+	perform pg_temp.base_assert(v_item ->> 'requestId' = v ->> 'requestId'
+		and pg_temp.req_step((v_item ->> 'requestId')::uuid, (v_item ->> 'token')::uuid) ->> 'state' = 'go'
+		and pg_temp.req_finish((v_item ->> 'requestId')::uuid, (v_item ->> 'token')::uuid,
+			pg_temp.req_outcome('{"state":"failed","code":"CODE_HOST_RESTORE_IN_PROGRESS"}')) = pg_temp.req_recorded(null), 'no download from a closed place');
+	-- The job that looks at what the folder kept of the move asks the same step, and may end what is ended already. The
+	-- build and the open move nothing out of the place: their steps leave the generation where it is.
+	perform pg_temp.base_assert(pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_bundle, 'step', 'set-aside')) ->> 'state' = 'go'
+		and (pg_temp.rec_shop('five')).artifact_generation = 3
+		and pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_bundle, 'step', 'build', 'setAside', v_aside)) ->> 'state' = 'go'
+		and pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_bundle, 'step', 'open', 'setAside', v_aside, 'built', true)) ->> 'state' = 'go'
+		and (pg_temp.rec_shop('five')).artifact_generation = 3, 'the steps that move nothing out');
+	perform pg_temp.base_assert(pg_temp.req_record(v_id, v_second, v_bundle, 'g2', 'g2') = pg_temp.req_restored(3, 2, 0, 0), 'five is restored');
+	-- The repository is open again, before the request ends: a member asks for the code and it is made in the new place.
+	v := pg_temp.req_ask('files', p_name => 'five');
+	v_after := (v ->> 'requestId')::uuid;
+	v_item := pg_temp.req_claim() -> 0;
+	perform pg_temp.base_assert(v ->> 'state' = 'queued' and v_item ->> 'requestId' = v_after::text
+		and pg_temp.req_made(v_after, (v_item ->> 'token')::uuid, v_made) = pg_temp.req_recorded(null)
+		and (pg_temp.req_row(v_after)).artifact_generation = 3 and pg_temp.req_ready('five') = jsonb_build_array(v_after),
+		'a download made after the open');
+	-- The restore's last job removes the set-aside copy, as asked. It moves nothing out of the place: its step ends no
+	-- download, and neither does the request's finish.
+	perform pg_temp.base_assert(pg_temp.req_step(v_id, v_second, jsonb_build_object('bundle', v_bundle, 'step', 'discard', 'setAside', v_aside,
+			'built', true)) ->> 'state' = 'go'
+		and (pg_temp.rec_shop('five')).artifact_generation = 3 and pg_temp.req_download(v_after) ->> 'state' = 'ready'
+		and pg_temp.req_finish(v_id, v_second, pg_temp.req_restore_outcome(v_bundle, 'g2')) = pg_temp.req_recorded(3)
+		and (pg_temp.req_row(v_after)).state = 'done' and pg_temp.req_download(v_after) ->> 'state' = 'ready'
+		and pg_temp.req_ready('five') = jsonb_build_array(v_after) and pg_temp.req_ask('files', p_name => 'five') ->> 'requestId' = v_after::text,
+		'a download made after the open outlives the discard and the finish: ' || pg_temp.req_list()::text);
 end $$;
 
 -- company/two: three landings, an undo of the second, and a landing. Bundles were taken at b3 and at b5.

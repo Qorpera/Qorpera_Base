@@ -35,8 +35,8 @@ import { CodingControlBusy, withinBytes } from "./coding-executor.ts";
  *              job, since the file is there only once the job has saved. The step is more than a look at the lease:
  *              it is where the kernel ends the made download whose file this job replaces, and gives the request the
  *              repository's artifact generation, in which its file is made. So no download reads ready with its file
- *              gone, whatever becomes of this job or of its finish, and a finish that comes after a restore began to
- *              move the place is not taken as made.
+ *              gone, whatever becomes of this job or of its finish, and a finish that comes after a restore's job was
+ *              let go to move the place is not taken as made.
  *   restore    part R's `CodeRestore` runs its steps; without one the request is finished failed (`NOT_BUILT`). A
  *              restore that put the repository back was recorded by the job that opened its place
  *              (`qorpera_code_restore_record`), as an undo's row is written inside its job: the finish here, after

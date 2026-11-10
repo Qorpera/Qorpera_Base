@@ -9,8 +9,8 @@
 --
 -- 1. qorpera_code_repositories gets ten columns: the last change's number and main as the record knows it, the list
 --    file's version and the version written, the back-off of record files that could not be written, the last
---    restore, and the generation of what the place holds besides git (it goes up when a restore begins to move the
---    place aside; a made download counts only in the generation it was made in).
+--    restore, and the generation of what the place holds besides git (it goes up each time a restore's job is let go
+--    to move the place aside; a made download counts only in the generation it was made in).
 -- 2. qorpera_code_changes: one numbered row per movement of main (a landing, an undo, a restore, or a movement nobody
 --    recorded: `found`) and per landing that was refused. A row holds main before and after, so the rows cover main's
 --    history end to end. Numbers have no gaps: the last one and one more, under the registry row's lock, in the
@@ -27,8 +27,9 @@
 --    * qorpera_code_requests_claim / qorpera_code_request_step / qorpera_code_request_finish: lease the oldest requests
 --      this executor may do now, renew before each job, and say how each ended. An undo's finish writes the undo row
 --      and sets the rows it took out `reverted`. The step, asked before a job's first command, is also where a made
---      download ends when that job is about to displace its file (a restore that moves the place aside, a newer
---      download of the same file): before the file goes, and whatever becomes of the job or of its finish.
+--      download ends when that job is about to displace its file (a restore's job that sets the place aside, each
+--      time one is let go; a newer download of the same file): before the file goes, and whatever becomes of the job
+--      or of its finish.
 --    * qorpera_code_restore_record: a restore's record, made inside the job that opens the place again, before the mark
 --      that closes it goes, as a landing's row is written inside its own job. It writes the restore's row, sets every
 --      row's state to what the restored main's history holds (`lost` for a row the restore went back past, in main again
@@ -80,8 +81,8 @@ alter table public.qorpera_code_repositories
 	add column files_problem text check (files_problem is null or files_problem ~ '^[A-Z0-9_:]{1,120}$'),
 	add column restored_at timestamptz,
 	add column restored_from text check (restored_from is null or restored_from ~ '^\d{8}T\d{6}Z-[0-9a-f]{12}$'),
-	-- The generation of what the place holds besides git (downloads/): it goes up when a restore begins to move the
-	-- place aside. A made download counts only in the generation its job was begun in.
+	-- The generation of what the place holds besides git (downloads/): it goes up each time a restore's job is let go
+	-- to move the place aside. A made download counts only in the generation its job was begun in.
 	add column artifact_generation bigint not null default 0 check (artifact_generation >= 0);
 -- The lists still to write.
 create index qorpera_code_repositories_list_due on public.qorpera_code_repositories(environment_id, owner, name)
@@ -927,22 +928,28 @@ end $$;
 -- instead.
 -- The step is also how the kernel learns that a job is about to displace what a made download points at, before the
 -- job does it. So no download reads ready with its file gone, whatever becomes of the job or of its finish:
--- * A restore begins to move the place (the first step of the request whose progress says so; the job that sets the
---   place aside asks it before it moves anything): the repository's artifact generation goes up, and every made
---   download of the repository is over, since downloads/ goes aside with the place. The request's progress keeps the
---   generation it made (`emptied`), so it advances once.
+-- * A restore's job that sets the place aside is let go (the step that names `set-aside`: the one job of a restore
+--   that moves anything out of the place asks it before it moves anything): the repository's artifact generation goes
+--   up, and every made download of the repository is over, since downloads/ goes aside with the place. Each time it
+--   is asked, not once for a request: a job that was let go may fail before it moves anything, the place is then
+--   opened again as it was, downloads are made there, and the same request, claimed again, moves the place after
+--   all. Its step then ends those too. A step asked twice ends nothing twice, and a download ended while its file
+--   still stands is only asked for again.
+-- * No other step of a restore ends a download: closing the place, building it, opening it and removing a set-aside
+--   copy move nothing out of it. So a download made once the repository is open again outlives the rest of that
+--   restore.
 -- * A download is to be made: the request takes the repository's generation as it stands, which is the one its file
 --   is made in, and the repository's earlier made download of the same file is over, since the job replaces what
 --   downloads/ holds of its kind.
--- A step that answers busy or lost does neither, and its job does not run. `recorded` (what
--- qorpera_code_restore_record wrote) and `emptied` are the kernel's own words in the progress: a step keeps them, and
--- takes none from its caller. It locks the request's row; for a download's step and for a restore's of the place,
--- the repository's registry row before it.
+-- A step that answers busy or lost does none of this, and its job does not run. What a restore recorded (`recorded`,
+-- which qorpera_code_restore_record wrote into the progress) is the kernel's own word there: a step keeps it, and
+-- takes none from its caller. It locks the request's row; for a download's step and for a restore's of the place, the
+-- repository's registry row before it.
 create function public.qorpera_code_request_step(p_owner text, p_machine_id_sha256 text, p_request_id uuid,
 	p_token uuid, p_progress jsonb)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare v_now timestamptz := clock_timestamp(); v_request public.qorpera_code_requests%rowtype;
-	v_generation bigint; v_empties boolean := false; v_own jsonb := '{}'::jsonb;
+	v_generation bigint;
 begin
 	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
 	-- (3 KiB: the row holds 4, and a restore that waits adds its word.)
@@ -967,10 +974,9 @@ begin
 		and public.qorpera_code_restore_waits(v_request.environment_id, v_request.owner, v_request.name, v_now) is not null then
 		return jsonb_build_object('schema', 'qorpera.code-request-step/v1', 'state', 'busy'); end if;
 	if v_request.kind = 'restore' and v_request.input ->> 'mode' = 'restore'
-		and public.qorpera_code_restore_moving(coalesce(p_progress, v_request.progress))
-		and not coalesce(v_request.progress ? 'emptied', false) then
-		-- The job this step lets go may move the place aside, downloads/ with it.
-		v_empties := true;
+		and coalesce(p_progress, v_request.progress) ->> 'step' = 'set-aside' then
+		-- The job this step lets go moves the place aside, downloads/ with it. Every such step ends what was made
+		-- there, however often the request asks it.
 		update public.qorpera_code_repositories set artifact_generation = artifact_generation + 1
 		where environment_id = v_request.environment_id and owner = v_request.owner and name = v_request.name
 		returning artifact_generation into v_generation;
@@ -987,16 +993,10 @@ begin
 			and request.name = v_request.name and request.kind = 'download' and request.state = 'done'
 			and request.input ->> 'file' = v_request.input ->> 'file';
 	end if;
-	if v_request.progress ? 'recorded' then
-		v_own := v_own || jsonb_build_object('recorded', v_request.progress -> 'recorded'); end if;
-	if v_empties then
-		v_own := v_own || jsonb_build_object('emptied', v_generation);
-	elsif v_request.progress ? 'emptied' then
-		v_own := v_own || jsonb_build_object('emptied', v_request.progress -> 'emptied');
-	end if;
 	update public.qorpera_code_requests set lease_until = v_now + public.qorpera_code_request_lease(kind),
-		progress = case when p_progress is null and not v_empties then progress
-			else ((coalesce(p_progress, progress, '{}'::jsonb) - 'recorded') - 'emptied') || v_own end,
+		progress = coalesce(case when progress ? 'recorded'
+			then (p_progress - 'recorded') || jsonb_build_object('recorded', progress -> 'recorded')
+			else p_progress - 'recorded' end, progress),
 		artifact_generation = case when kind = 'download' and state = 'running' then v_generation
 			else artifact_generation end,
 		updated_at = v_now
@@ -1078,7 +1078,7 @@ $$;
 -- * The place is new: every record file and the list are written again, each at a new version, so that no
 --   acknowledgment of a file written in the old place, which may still be on its way, counts for the new one; and
 --   care checks the repository at the next quiet moment, trusting no refs it knew. (The downloads made in the old
---   place were over when the restore began to move it: qorpera_code_request_step.)
+--   place were over when the restore's job was let go to move it: qorpera_code_request_step.)
 -- Made again, it is the same record:
 -- * by the same request (the first answer was not heard, or the job did not save and the request was claimed again):
 --   what it recorded is answered, and nothing is written;
@@ -1186,9 +1186,9 @@ end $$;
 --   A finish that comes after its job, when the record has moved on, takes over the filler that covers the undo.
 -- * A made download lasts 7 days; a removed one is expired. `made` is taken only from a request whose job asked its
 --   step first (55000 otherwise): the step gave it the repository's artifact generation, and ended the earlier made
---   download of its file before the job replaced it. When a restore has begun to move the place since, the file went
---   aside before this finish came: the download is over at once (expired), and is ready to nobody. The finish ends
---   no other request.
+--   download of its file before the job replaced it. When a restore's job was let go to move the place since, the
+--   file went aside before this finish came, or may have: the download is over at once (expired), and is ready to
+--   nobody. The finish ends no other request.
 -- * A restore that put the repository back was recorded inside the job that opened the place
 --   (qorpera_code_restore_record): the finish writes no row. It ends the request, with what was recorded beside the
 --   outcome, and takes `restored` only for a request that recorded this bundle at this main (55000 otherwise): a
@@ -1329,8 +1329,8 @@ begin
 		-- many rows went and came back.
 		v_stored := p_outcome || (v_recorded - 'change' - 'bundle' - 'mainSha');
 	end if;
-	-- A made download counts in the generation its job was begun in, and in no other: a restore that began to move the
-	-- place since took its file aside.
+	-- A made download counts in the generation its job was begun in, and in no other: a restore's job that was let go
+	-- to move the place since took its file aside.
 	if v_result = 'made' then
 		if v_request.artifact_generation is null then
 			raise exception 'Code download was not begun' using errcode = '55000'; end if;
@@ -1605,8 +1605,8 @@ end $$;
 -- An owner or admin asks for the company's code: `files` (main's files as a .zip) or `history` (main with its history
 -- as a git bundle, for a developer). Answers, in this order: the made download of that file when main has not moved
 -- since (ready; a made download is over as soon as a job is let go that displaces its file, a newer download of that
--- file or a restore that moves the place aside, so the one found here still has its file); the open request of that
--- file; refused after 20 download requests of the company in 24 hours
+-- file or a restore's job that sets the place aside, so the one found here still has its file); the open request of
+-- that file; refused after 20 download requests of the company in 24 hours
 -- (too_many) or when no executor holds the company (no_executor); else a new request (queued). P0002 when the company
 -- has no such repository.
 create function public.qorpera_request_code_download(p_profile_id uuid, p_owner text, p_name text, p_file text)

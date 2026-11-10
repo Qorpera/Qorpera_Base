@@ -53,7 +53,7 @@ What a restore brings back, and what not:
 | Sessions' worktrees | Not restored. A session's next turn gets a new worktree from its branch. |
 | Files a session had not committed, and commits on no branch | Not in any bundle. They are in the set-aside copy. |
 | The change record's files | Written again from the database, a little later, each at a new version. |
-| Downloads | Over from the moment the restore is let go to set the place aside (their files go aside with it), also when the restore then fails or is put off. A member asks for the code again once the repository is open. |
+| Downloads | Over from the moment the restore is let go to set the place aside (their files go aside with it), also when the restore then fails or is put off. That holds for each try: when a first try moved nothing and the place was open again for a while, what was downloaded meanwhile is over when the next try is let go. A download made after the repository is open again stays, also while the restore removes its set-aside copy. A member asks for the code again once the repository is open. |
 | The damaged place | The set-aside copy, until a `discard`. Members can read it in Storage; only the platform writes there. |
 
 ## 2. Before you start
@@ -159,8 +159,7 @@ place is in.
 The truth about closed or open is the place itself: it is closed exactly while `restoring.json` is in
 `code/<owner>/<name>/` (look in Storage). `progress` says how far the kernel heard: with `setAside` in it, the old
 place is aside; with `built`, the repository is built and only the opening was left; with `recorded`, the restore
-is in the change record. `emptied` is the database's own note: this request was let go to move the place, and the
-downloads made there ended then (the number is the generation the repository's downloads got).
+is in the change record.
 
 **A restore that is recorded and whose place is still closed.** The record is made inside the job that opens the
 place, before the mark goes. What happens when something stops there:

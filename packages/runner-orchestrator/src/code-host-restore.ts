@@ -939,6 +939,9 @@ export interface CodeRestoreOptions {
 const OUTCOME = "qorpera.code-request-outcome/v1";
 const CALL_MS = 10_000;
 const YIELDED = "CODE_HOST_JOB_YIELDED";
+/** The name each job's step call gives the kernel. `set-aside` is more than a name: it is the one job of a restore
+ * that moves anything out of the place, and the kernel ends the downloads made in the place each time a step names
+ * it (`qorpera_code_request_step`). A job that moves something out of the place must ask its step under that name. */
 type RestoreStep = "verify" | "fresh" | "close" | "set-aside" | "build" | "open" | "discard";
 /** What a failed step is called in a request's outcome. */
 /** The steps that move the place: their jobs do not yield, and the kernel does not put them off. */
@@ -1383,7 +1386,9 @@ export class CodeRestore {
 	 * (`qorpera_code_restore_moving`), and the job keeps its place: giving way would only keep the repository closed.
 	 * The step must stay the first thing a job does: the one of the job that sets the place aside is where the kernel
 	 * ends the downloads made in the place, whose files go aside with it, and takes the repository's artifact
-	 * generation up (`qorpera_code_request_step`), before anything is moved. */
+	 * generation up (`qorpera_code_request_step`), before anything is moved. It does so every time that step is
+	 * asked, on this claim or a later one: a job that was let go may fail before it moves anything, the place is then
+	 * opened again, and a download made there must end when the next claim's job is let go to move the place. */
 	async #job<T>(run: RestoreRun, signal: AbortSignal, steps: (job: CodeHostJob) => Promise<T>): Promise<T> {
 		return await this.#hosts.run(
 			run.request.companyId,
