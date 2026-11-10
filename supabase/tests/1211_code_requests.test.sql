@@ -1341,6 +1341,45 @@ begin
 		and pg_temp.req_restore_end(v_at3, 'b3') = pg_temp.req_recorded(15), 'at the commit that landed twice: ' || v::text || ' ' || pg_temp.req_rows('two'));
 end $$;
 
+-- company/three: an undo that takes out several changes with an undo among them, and that undo's own undo. A restore
+-- to before, between and after them leaves every row as it was when main stood there, whichever way it went.
+insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name)
+values (pg_temp.rec_here(), '92400000-0000-4000-8000-000000000010', 'company', 'three');
+do $$
+declare v jsonb;
+	v_at3 text := '20261101T020000Z-0123456789ab'; v_at6 text := '20261102T020000Z-0123456789ab';
+	v_at7 text := '20261103T020000Z-0123456789ab';
+begin
+	perform pg_temp.rec_land(90, 't0', 't1', p_name => 'three');
+	perform pg_temp.rec_land(91, 't1', 't2', p_name => 'three');
+	perform pg_temp.rec_land(92, 't2', 't3', p_name => 'three');
+	perform pg_temp.base_assert(pg_temp.req_undone('three-undo', 2, false, 't3', 'u4', p_name => 'three') = pg_temp.req_recorded(4), 'three''s undo');
+	perform pg_temp.rec_land(93, 'u4', 't5', p_name => 'three');
+	-- The third change and every later one are taken out: the undo of the second among them, so the second is in main
+	-- again. Then that undo is undone, and every row is as it was before it.
+	perform pg_temp.base_assert(pg_temp.req_undone('three-later', 3, true, 't5', 'u6', p_name => 'three') = pg_temp.req_recorded(6)
+		and pg_temp.req_rows('three') = '1:L 2:L 3:R6 4:R6 5:R6 6:L', 'three, taken out from the third on: ' || pg_temp.req_rows('three'));
+	perform pg_temp.base_assert(pg_temp.req_undone('three-undo-undo', 6, false, 'u6', 'u7', p_name => 'three') = pg_temp.req_recorded(7)
+		and pg_temp.req_rows('three') = '1:L 2:R4 3:L 4:L 5:L 6:R7 7:L', 'three, and put back: ' || pg_temp.req_rows('three'));
+	-- Back to the copy taken between the two: the rows are as they were then.
+	v := pg_temp.req_restore_to(v_at6, 'u6', 'three', 'u7');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(8, 6, 1, 0) and pg_temp.req_rows('three') = '1:L 2:L 3:R6 4:R6 5:R6 6:L 7:- 8:L'
+		and pg_temp.req_restore_end(v_at6, 'u6') = pg_temp.req_recorded(8), 'back between the undos: ' || v::text || ' ' || pg_temp.req_rows('three'));
+	-- Forward to the copy taken after the second: as they were then.
+	v := pg_temp.req_restore_to(v_at7, 'u7', 'three', 'u6');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(9, 7, 0, 1) and pg_temp.req_rows('three') = '1:L 2:R4 3:L 4:L 5:L 6:R7 7:L 8:L 9:L'
+		and pg_temp.req_restore_end(v_at7, 'u7') = pg_temp.req_recorded(9), 'forward past both: ' || v::text || ' ' || pg_temp.req_rows('three'));
+	-- Back to before every undo: none of them is in main's history, so nothing is undone.
+	v := pg_temp.req_restore_to(v_at3, 't3', 'three', 'u7');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(10, 3, 6, 0) and pg_temp.req_rows('three') = '1:L 2:L 3:L 4:- 5:- 6:- 7:- 8:- 9:- 10:L'
+		and pg_temp.req_restore_end(v_at3, 't3') = pg_temp.req_recorded(10), 'back before the undos: ' || v::text || ' ' || pg_temp.req_rows('three'));
+	-- And forward again, all the way.
+	v := pg_temp.req_restore_to(v_at7, 'u7', 'three', 't3');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(11, 7, 0, 6)
+		and pg_temp.req_rows('three') = '1:L 2:R4 3:L 4:L 5:L 6:R7 7:L 8:L 9:L 10:L 11:L'
+		and pg_temp.req_restore_end(v_at7, 'u7') = pg_temp.req_recorded(11), 'forward again: ' || v::text || ' ' || pg_temp.req_rows('three'));
+end $$;
+
 -- company/long: 250 changes, each on the one before. The claim hands out no rows; the kernel finds the restored main
 -- among them itself, however far back it is.
 insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name, last_change, last_main)
@@ -1369,13 +1408,27 @@ begin
 		and (select count(*) from public.qorpera_code_changes c where c.name = 'long' and c.n between 11 and 250 and c.state = 'lost') = 240
 		and pg_temp.rec_is(251, 'restore', 'landed', 'l250', 'l10', 'long') and pg_temp.rec_is(252, 'restore', 'landed', 'l10', 'elsewhere', 'long')
 		and pg_temp.req_restore_end(v_else, 'elsewhere') = pg_temp.req_recorded(252), 'not known: ' || v::text);
-	-- Forward to the newest copy: all 250 are in main again. The restore to the unknown commit is lost: main does not
-	-- hold what it restored.
+	-- An undo on top of that main takes the fifth change out. Then the same copy is restored again. What is known is
+	-- set: the undo came after the restore whose place is not known, and main no longer holds it, so it is lost and the
+	-- change it took out is in main again. What is not known stays: the rows before that restore are as they were left.
+	perform pg_temp.base_assert(pg_temp.req_undone('long-undo', 5, false, 'elsewhere', 'e1', p_name => 'long') = pg_temp.req_recorded(253)
+		and (pg_temp.rec_row(5, 'long')).reverted_by = 253, 'an undo after the unknown restore');
+	v := pg_temp.req_restore_to(v_else, 'elsewhere', 'long', 'e1');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(254, null, 1, 0, 'unknown')
+		and pg_temp.rec_is(253, 'undo', 'lost', 'elsewhere', 'e1', 'long') and (pg_temp.rec_row(5, 'long')).state = 'landed'
+		and (pg_temp.rec_row(5, 'long')).reverted_by is null
+		and (select count(*) from public.qorpera_code_changes c where c.name = 'long' and c.n <= 10 and c.state = 'landed') = 10
+		and (select count(*) from public.qorpera_code_changes c where c.name = 'long' and c.n between 11 and 250 and c.state = 'lost') = 240
+		and pg_temp.rec_is(252, 'restore', 'landed', 'l10', 'elsewhere', 'long') and pg_temp.rec_is(254, 'restore', 'landed', 'e1', 'elsewhere', 'long')
+		and pg_temp.req_restore_end(v_else, 'elsewhere') = pg_temp.req_recorded(254), 'the unknown copy again: ' || v::text);
+	-- Forward to the newest copy: all 250 are in main again. The restores to the unknown commit are lost: main does not
+	-- hold what they restored.
 	v := pg_temp.req_restore_to(v_at250, 'l250', 'long');
-	perform pg_temp.base_assert(v = pg_temp.req_restored(253, 250, 1, 240)
+	perform pg_temp.base_assert(v = pg_temp.req_restored(255, 250, 2, 240)
 		and (select count(*) from public.qorpera_code_changes c where c.name = 'long' and c.n <= 250 and c.state = 'landed') = 250
 		and pg_temp.rec_is(251, 'restore', 'landed', 'l250', 'l10', 'long') and pg_temp.rec_is(252, 'restore', 'lost', 'l10', 'elsewhere', 'long')
-		and pg_temp.req_restore_end(v_at250, 'l250') = pg_temp.req_recorded(253), 'all the way forward: ' || v::text);
+		and pg_temp.rec_is(253, 'undo', 'lost', 'elsewhere', 'e1', 'long') and pg_temp.rec_is(254, 'restore', 'lost', 'e1', 'elsewhere', 'long')
+		and pg_temp.req_restore_end(v_at250, 'l250') = pg_temp.req_recorded(255), 'all the way forward: ' || v::text);
 end $$;
 
 -- 6. More than 500 changes are not taken out at once ----------------------------------------------------------------------
