@@ -1183,6 +1183,25 @@ while it is being deleted), and for a `user` who is not another member of it.
 - `qorpera_delete_member_message(profile, message)`: `{schema: "qorpera.member-message/v1", userId, message}`, the
   message now `deleted`. Only its author, while a member; twice answers the same.
 
+### An agent's computer, watched (20260930712000_machine_member_screens)
+
+A member watches an agent's desktop computer in the computer window: a picture of its screen about once a second, with
+no take-over (that is 20260930713000). Every member who reads the company may watch, viewers too; owners, admins and
+contributors may wake a sleeping machine (`qorpera_member_manage_company_machine(profile, machine, 'start')`, as
+before). Each call answers 42501 for a caller who is not a member of the company, or while it is being deleted.
+
+- `qorpera_list_agent_machines(profile, staff_agent)`: `{schema: "qorpera.agent-machines/v1", profileId,
+  staffAgentId, canWake, machines}`. At most 20 of the company's machines that the agent started or whose screen it
+  drove last, not removed and not being deleted: running ones first, then the ones this agent drove most recently, then
+  the newest. A machine is `{machineId, name, purpose, state, lifetime, desktopCapable, startedByAgent, screenUsedAt,
+  screenAgentName, waitingFor}`: `state` as `qorpera_company_machine_state` (running, starting, waiting, stopping,
+  stopped); `desktopCapable` at 2 processors and 4 GiB; `screenUsedAt` and `screenAgentName` the last agent's drive of
+  its screen (null: never); `waitingFor` `hours` or `room` for a waiting machine, else null. No node, placement, boot or
+  command. 42501 for an agent that is not the company's. Read it when the window opens, on the `machines` hint (§3) and
+  every 15 s while the window is open without hints. Fields may be added; a client ignores the ones it does not know.
+- `qorpera_member_machine_screen_begin(profile, machine, watch)`: one look, begun as the member. Clients do not call it:
+  the look route (§4) does, with the member's own token. `watch` is `{"confirmed": boolean}`.
+
 ### Chat images (20260928549140_chat_images)
 
 Folder-v2 companies only. A member's image in a conversation (an agent's thread or a group chat) is a folder file under
@@ -1341,7 +1360,10 @@ topic's rows. A new private topic's policies must do the same.
   `{"schema":"qorpera.live-hint/v1"}` and nothing else: never a row or its id. Ids lower-case,
   as the database writes them. Since `20260930715000_member_messages` also `member-chats`, to the two members of a
   member chat whose message or read mark changed (not the company's other members); a client that falls back to
-  `postgres_changes` gets no such hint and reads the member chats on its slow poll. Who hears a change is decided per change, at commit: only the topics of the members
+  `postgres_changes` gets no such hint and reads the member chats on its slow poll. Since
+  `20260930712000_machine_member_screens` also `machines`, to every member of the company, when one of its machines is
+  made, wanted on or off, removed or fails, another agent drives its screen (or one drives it again after 10 minutes),
+  or its placement is made, starts, gets a boot, retires or goes: read `qorpera_list_agent_machines` again. Who hears a change is decided per change, at commit: only the topics of the members
   who may read the changed row under its table's read policy then, so a member who leaves hears nothing of the company
   from that commit on but the change to their own access row (which they may read). A member may join only their own
   topic, of a company they are a member of or have an access row in (RLS on `realtime.messages` via
@@ -1434,6 +1456,16 @@ only after durable storage.
   404 for a missing conversation, message or erase; 423 in a paused company.
   Behind the member company gateway like the other member routes.
 - `/healthz`, `/livez`, `/readyz`
+- `GET /v1/member-machine-screens/<companyId>/<machineId>[/watching]` (20260930712000; not the object gateway's: the
+  node's mux sends it to the coding executor's member listener) — a member's look at an agent's desktop, with the
+  member's token and, when the member has a picture, `If-None-Match: "<etag>"`. `/watching` says the member still
+  watches (the window opened, a touch in it, or "Still watching?" answered), which keeps the desktop on 30 minutes from
+  then. 200 `image/png` with `etag`; 304 when it is the member's picture; 409 `{code}`: `MACHINE_NOT_RUNNING`,
+  `MACHINE_NEEDS_COMPANY_VIEW`, `SCREEN_TOO_SOON` (within 400 ms of the last look), `DESKTOP_NOT_RUNNING` (the screen
+  is off), `MACHINE_BOOT_CHANGED`, `MACHINE_IMAGE_WITHOUT_SCREEN`, `SCREEN_HIDDEN` (the machine holds a read of the
+  company folder this member may not read) or `SCREEN_HELD` (the folder has not released what the machine read: look
+  again); 401 for a token the database does not take; 403 for a machine that is not there for the member. Behind the
+  member company gateway like the other member routes.
 
 `/v1/profile-objects/<profileId>/<sha256>` answers only the private `DELETE` folder GC and erasure use (with the
 gateway control token, never a member token); the gateway serves no raw object reads or uploads by hash, no read
