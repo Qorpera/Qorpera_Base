@@ -293,8 +293,10 @@
 .composer-menu[hidden], .composer-menu [hidden] { display: none; }
 .composer-menu:focus { outline: 0; }
 .composer-menu button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px; border: 0; border-radius: 8px; background: none; color: var(--text); cursor: default; font: inherit; font-size: 15px; font-weight: 400; line-height: 1.4; text-align: left; }
-.composer-menu button:hover:not(:disabled), .composer-menu button:focus-visible { background: var(--hover); outline: 0; }
-/* Forced colours take the background away: the row the keyboard is on keeps a ring there. */
+.composer-menu button:hover:not(:disabled), .composer-menu button:focus-visible { background: var(--hover); }
+/* The background shows the row the keyboard is on. Forced colours take it away: there the row keeps a ring
+ * (also under the pointer: the rule above sets no outline). */
+.composer-menu button:focus-visible { outline: 0; }
 @media (forced-colors: active) { .composer-menu button:focus-visible { outline: 2px solid Highlight; outline-offset: -2px; } }
 .composer-menu button:disabled { opacity: .5; }
 /* A row's own picture stands on its first line; the arrow of a row that opens a page is small and quiet. */
