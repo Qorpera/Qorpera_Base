@@ -75,7 +75,8 @@ export interface PreparedAsk {
 }
 
 /** How a request ended. `busy`: another one was on the bar. `quiet`: the member said not now three times in a row, so
- * the app asks no more until they reload it. `gone`: the page it came from was put away before the member chose. */
+ * the app asks no more until they reload it. `gone`: the page it came from was put away, or its manifest changed,
+ * before the member chose. */
 export type AppGateOutcome =
 	| { readonly outcome: "saved" | "declined" | "busy" | "quiet" | "gone" }
 	| { readonly outcome: "failed"; readonly message: string };
@@ -83,7 +84,7 @@ export type AppGateOutcome =
 /** The member's yes, asked outside the app's frame (views/app-ask-bar.ts): the one way a request becomes a change. */
 export interface AppGate {
 	/** Why no request can be shown now, or null. */
-	readonly closed: () => "busy" | "quiet" | null;
+	readonly closed: () => "busy" | "quiet" | "gone" | null;
 	/** Shows the request and, when the member allows it, makes the change with `perform`. */
 	readonly ask: (ask: AppAsk, perform: () => Promise<void>) => Promise<AppGateOutcome>;
 }
