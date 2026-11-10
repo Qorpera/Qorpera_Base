@@ -246,9 +246,10 @@ describe("dedicated coding executor control", () => {
 			[heartbeat, 400, seconds, refused],
 			[describe, 403, lapsed, refused],
 			[describe, 500, cancelled, refused],
-			// A slow database: asked again within the lease.
-			[heartbeat, 500, body("57014", "canceling statement due to statement timeout"), unconfirmed],
-			[describe, 500, body("57014", "canceling statement due to statement timeout"), unconfirmed],
+			// A slow database: asked again within the lease. A statement the kernel cancelled for its time wrote nothing,
+			// like a busy row (10 Nov 2026); the two ask again after either.
+			[heartbeat, 500, body("57014", "canceling statement due to statement timeout"), "CODING_CONTROL_BUSY"],
+			[describe, 500, body("57014", "canceling statement due to statement timeout"), "CODING_CONTROL_BUSY"],
 			[heartbeat, 500, body("55P03", "could not obtain lock on row"), "CODING_CONTROL_BUSY"],
 			[heartbeat, 504, body("PGRST003", "Timed out acquiring connection from connection pool."), unconfirmed],
 			[heartbeat, 502, "<html><body>Bad gateway</body></html>", unconfirmed],
