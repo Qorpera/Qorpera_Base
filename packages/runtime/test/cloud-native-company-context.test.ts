@@ -1737,6 +1737,9 @@ it("has the finance owner set up the CVR and bank account and keep the Bank page
 	);
 	expect(instructions).toContain("record what exists as done instead of starting it again");
 	expect(instructions).toContain(
+		"When the company's existing account is at another bank, tell the founders it cannot show in Qorpera and let them choose whether to open one at a bank on this list.",
+	);
+	expect(instructions).toContain(
 		"Open the account only at a bank the Bank page can connect: Danske Bank, Nordea, Jyske Bank, Sydbank, Nykredit Bank, Arbejdernes Landsbank, Spar Nord Bank or Lunar",
 	);
 	expect(instructions).toContain(
