@@ -83,9 +83,28 @@ pass "/company (empty) and /var/lib/qorpera-code-host (root's, 0700) for 5e's jo
 	[[ $(git -C "$T/b.git" rev-parse main) == "$TWO" ]]
 	git -C "$T/b.git" gc -q
 	git -C "$T/b.git" fsck --strict --no-progress
+	# What nightly care's jobs do with git (code-host-jobs.ts): refs packed but for the sessions' branches, a gc that
+	# deletes nothing, the check that reads no file content under a time limit, and a bundle of every ref that is
+	# measured, verified and fetched whole into an empty repository.
+	git -C "$T/b.git" pack-refs --all --exclude "refs/heads/qorpera/coding/*"
+	git -C "$T/b.git" gc --quiet --no-prune
+	timeout -k 10 60 git --no-replace-objects --git-dir="$T/b.git" fsck --connectivity-only --no-dangling --no-progress
+	[[ $(git -C "$T/b.git" count-objects -v) == *"size-pack: "* ]]
+	git -C "$T/w" status --porcelain >/dev/null
+	git -C "$T/w" ls-files -v >/dev/null
+	git -C "$T/b.git" bundle create --quiet "$T/all.bundle" --all
+	BYTES=$(wc -c <"$T/all.bundle")
+	[[ $(dd if="$T/all.bundle" bs=16777216 skip=0 count=1 iflag=fullblock status=none | sha256sum) == "$(sha256sum <"$T/all.bundle")" ]]
+	[[ $(head -c "$BYTES" "$T/all.bundle" | wc -c) == "$BYTES" ]]
+	git init --quiet --bare --template= --ref-format=files "$T/p.git"
+	git -C "$T/p.git" bundle verify --quiet "$T/all.bundle"
+	git -C "$T/p.git" fetch --quiet --no-tags --no-recurse-submodules --no-write-fetch-head "$T/all.bundle" "+refs/*:refs/*"
+	[[ $(git -C "$T/p.git" rev-parse refs/heads/main) == "$TWO" ]]
+	[[ $(find "$T/w" -mindepth 1 -maxdepth 1 -printf "%y\0%s\0%P\0" | tr -d "\0" | wc -c) -gt 0 ]]
 	rm -rf "$T"
 )
 pass "git $GIT_VERSION takes a bundle, a locked worktree and a ref transaction, and gc and fsck pass"
+pass "git $GIT_VERSION does nightly care's work: packed refs, a gc that deletes nothing, the timed check, a whole bundle that restores"
 
 # --- The folder program, FUSE and vsock -------------------------------------------------------------------------------
 [[ $(sha256sum "$FOLDER" | cut -d" " -f1) == "$FOLDER_SHA256" ]] || fail "the folder program differs"
@@ -115,6 +134,11 @@ done
 # The view's mount and its clean (runner-orchestrator code-host-views.ts) run these with PATH=/usr/sbin:/usr/bin.
 for tool in mkfifo cmp head mv tail findmnt mountpoint umount systemctl; do
 	PATH=/usr/sbin:/usr/bin command -v "$tool" >/dev/null || fail "no $tool in /usr/sbin:/usr/bin"
+done
+# Nightly care's jobs (code-host-jobs.ts) run these with PATH=/usr/local/bin:/usr/bin:/bin.
+[[ -x /usr/bin/dd ]] || fail "/usr/bin/dd is not executable"
+for tool in timeout sha256sum wc head grep find; do
+	PATH=/usr/local/bin:/usr/bin:/bin command -v "$tool" >/dev/null || fail "no $tool in /usr/local/bin:/usr/bin:/bin"
 done
 pass "the commands 5e's jobs run"
 echo "ALL PASSED"
