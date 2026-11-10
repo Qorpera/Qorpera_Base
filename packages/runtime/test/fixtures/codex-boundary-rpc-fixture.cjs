@@ -188,6 +188,23 @@ const compactReply = (line) => {
 	compactCompleted("completed");
 };
 
+// A voice call (VOICE-TOOL-DESIGN-20261110): a side thread that can do nothing, with a realtime session whose voice
+// reads the lines it is handed. The agent's turn waits meanwhile, until the test lets it end.
+const voiceMode = mode.startsWith("voice");
+const voiceThreadId = "thread_voice";
+// events: the voice threads' starts and the first call's stop, in the order this app-server saw or sent them.
+const voiceEvidence = { thread: null, prewarm: null, start: null, appended: [], stops: [], interrupts: [], refused: null, delegatedFence: null, events: [] };
+const voiceWrite = () => writeFileSync(evidencePath, JSON.stringify({ ...voiceEvidence, mainThread: threadParameters }));
+// Each call's thread has its own id: the first thread_voice, the later ones numbered.
+let voiceThreads = 0;
+let voiceCurrent = voiceThreadId;
+const voiceSay = (method, params = {}) => write({ method, params: { threadId: voiceCurrent, ...params } });
+// voice-reopen (and voice-reopen-refused, whose first stop is refused): the second call's line is answered only once
+// the first call's late words were sent.
+const voiceReopen = mode === "voice-reopen" || mode === "voice-reopen-refused";
+let voiceLateSent;
+const voiceLate = new Promise((resolve) => { voiceLateSent = resolve; });
+
 if (mode === "descendant") {
 	spawn(process.execPath, ["-e", `process.on('SIGTERM',()=>{});setTimeout(()=>require('node:fs').writeFileSync(${JSON.stringify(evidencePath)},'UNEXPECTED_DESCENDANT_EFFECT'),1500);setTimeout(()=>{},10000);`], { stdio: "ignore" });
 }
@@ -311,6 +328,88 @@ async function handle(message) {
 			// compact-stalled and compact-open-*: the turn waits for its interrupt or for the run's end.
 			compactWrite();
 		}
+	} else if (message.method === "thread/start" && voiceMode && threadParameters) {
+		voiceEvidence.thread = message.params;
+		voiceThreads++;
+		const id = voiceThreads === 1 ? voiceThreadId : `${voiceThreadId}_${voiceThreads}`;
+		voiceCurrent = id;
+		voiceEvidence.events.push(`thread-start:${id}`);
+		// Codex prewarms a new thread in the background: the voice thread's lands on the fence while it starts.
+		voiceEvidence.prewarm = await fence([], { threadId: id, turnId: "", purpose: "prewarm" });
+		voiceWrite();
+		write({ id: message.id, result: { thread: { id } } });
+	} else if (message.method === "thread/realtime/start") {
+		voiceEvidence.start = message.params;
+		voiceWrite();
+		if (mode === "voice-start-error") {
+			write({ id: message.id, error: { code: -32000, message: "PRIVATE_REALTIME_START_ERROR" } });
+			return;
+		}
+		write({ id: message.id, result: {} });
+		voiceSay("thread/realtime/started", { sessionId: "PRIVATE_SESSION" });
+		voiceSay("thread/realtime/sdp", { sdp: "v=0\r\nPRIVATE_ANSWER_SDP\r\n" });
+	} else if (message.method === "thread/realtime/appendSpeech") {
+		voiceEvidence.appended.push(message.params);
+		voiceWrite();
+		write({ id: message.id, result: {} });
+		const line = voiceEvidence.appended.length;
+		if (mode === "voice-delegates") {
+			// The voice hands over to a model turn: its request carries an output, which gets nothing of the agent's.
+			write({ method: "turn/started", params: { threadId: voiceThreadId, turn: { id: "turn_voice" } } });
+			voiceEvidence.delegatedFence = await fence([{ kind: "function_call_output", callId: "voice_call", output: "PRIVATE_VOICE_OUTPUT" }], { threadId: voiceThreadId, turnId: "turn_voice" });
+			voiceWrite();
+			return;
+		}
+		if (mode === "voice-error") {
+			voiceSay("thread/realtime/error", { message: "PRIVATE_REALTIME_ERROR" });
+			return;
+		}
+		if (mode === "voice-silent" || (voiceReopen && line === 1)) return;
+		if (voiceReopen) await voiceLate;
+		if (mode === "voice-request" && line === 1)
+			write({ id: "voice_request", method: "item/tool/call", params: { threadId: voiceThreadId, turnId: "turn_voice", callId: "voice_call", namespace: "qorpera", tool: "send_email", arguments: {} } });
+		voiceSay("thread/realtime/transcript/delta", { role: "assistant", delta: "PRIVATE_DELTA" });
+		voiceSay("thread/realtime/transcript/done", { role: "user", text: "PRIVATE_USER_TEXT" });
+		const said = { role: "assistant", text: message.params.text === "LONG" ? "é".repeat(3000) : `SAID ${message.params.text}` };
+		// The second line's transcript comes without its thread: the lane takes it as the one call's.
+		if (line === 2) write({ method: "thread/realtime/transcript/done", params: said });
+		else voiceSay("thread/realtime/transcript/done", said);
+	} else if (message.method === "thread/realtime/stop") {
+		voiceEvidence.stops.push(message.params);
+		voiceWrite();
+		// The stop is never confirmed: no answer, no close.
+		if (mode === "voice-stop-silent") return;
+		// A refused stop confirms nothing: the session may still be up.
+		const refuse = () => write({ id: message.id, error: { code: -32000, message: "PRIVATE_REALTIME_STOP_ERROR" } });
+		if (mode === "voice-stop-refused") {
+			refuse();
+			return;
+		}
+		const refused = mode === "voice-reopen-refused" && voiceEvidence.stops.length === 1;
+		if (refused) refuse();
+		if (voiceReopen && voiceEvidence.stops.length === 1) {
+			// The first call's stop is slow (or refused), and its session still speaks meanwhile: a line's late transcript
+			// and its close, neither naming its thread, before the stop is answered.
+			voiceEvidence.events.push("stop");
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			write({ method: "thread/realtime/transcript/done", params: { role: "assistant", text: "PRIVATE_LATE_TRANSCRIPT" } });
+			write({ method: "thread/realtime/closed", params: {} });
+			voiceEvidence.events.push("late");
+			voiceWrite();
+			voiceLateSent();
+			if (refused) return;
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+		write({ id: message.id, result: {} });
+		write({ method: "thread/realtime/closed", params: { threadId: message.params.threadId } });
+	} else if (message.method === "turn/interrupt" && message.params.threadId === voiceThreadId) {
+		voiceEvidence.interrupts.push(message.params);
+		voiceWrite();
+		write({ id: message.id, result: {} });
+		write({ method: "turn/completed", params: { threadId: voiceThreadId, turn: { id: message.params.turnId, status: "interrupted", error: null } } });
+	} else if (message.id === "voice_request") {
+		voiceEvidence.refused = message;
+		voiceWrite();
 	} else if (message.method === "thread/start") {
 		threadParameters = message.params;
 		if (mode === "bootstrap") {
@@ -530,6 +629,11 @@ async function handle(message) {
 		} else {
 			// The compactor's thread replies during the agent's turn.
 			if (mode === "compact-gate") await compactReply1;
+			if (voiceMode) {
+				// A voice call is placed while the agent's turn is open; the test ends the turn.
+				writeFileSync(`${evidencePath}.voice-ready`, "");
+				while (!existsSync(`${evidencePath}.continue`)) await new Promise((resolve) => setTimeout(resolve, 5));
+			}
 			// Just under the 1 MiB wire limit: one line over many pipe reads, split inside 3-byte characters.
 			if (mode === "large-line") write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "\u20ac".repeat(349_000) } });
 			write({ method: "item/agentMessage/delta", params: { threadId, turnId, delta: "PRIVATE_OUTPUT_CANARY" } });

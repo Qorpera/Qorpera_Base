@@ -36,6 +36,7 @@ import { type CloudRunLog, CloudRunLogGone } from "./cloud-run-log.ts";
 import { NATIVE_AUTHORITY_LEASE_SECONDS } from "./cloud-runner-broker.ts";
 import { type CloudRuntimeObservability, cloudRuntimeErrorCategory } from "./cloud-runtime-observability.ts";
 import type { CloudRuntimeServiceTier } from "./cloud-runtime-policy.ts";
+import type { CloudVoiceChannel } from "./cloud-voice-channel.ts";
 import type { MemoryCompactChannel } from "./memory-tree/compact.ts";
 import type { CloudRunStepLines } from "./memory-tree/step-lines.ts";
 
@@ -106,6 +107,8 @@ export async function runCloudNativeRunToolSession(options: {
 	opening?: (signal: AbortSignal) => Promise<CloudCodexOpening>;
 	/** The memory compactor and closing (§7.1), as runCloudCodexToolSession takes them. */
 	compactor?: MemoryCompactChannel;
+	/** A voice call's lane, as runCloudCodexToolSession takes it. */
+	voice?: CloudVoiceChannel;
 	closing?: (signal: AbortSignal) => Promise<void>;
 	/** What the agent is told in one more turn when its turn left undone what the run has to end with, as
 	 * runCloudCodexToolSession takes it. */
@@ -259,6 +262,7 @@ export async function runCloudNativeRunToolSession(options: {
 			// The bind rechecks the run's lease, and the first request's fence its authority.
 			...(options.opening ? { opening: options.opening } : {}),
 			...(options.compactor ? { compactor: options.compactor } : {}),
+			...(options.voice ? { voice: options.voice } : {}),
 			...(options.turnCorrection ? { turnCorrection: options.turnCorrection } : {}),
 			// At closing the run's log commits its last steps and its step lines build what is left, then the run's
 			// conversation lines close (§7.1).
