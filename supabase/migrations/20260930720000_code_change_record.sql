@@ -1127,8 +1127,10 @@ begin
 	v_run := public.qorpera_code_agent_run(p_binding);
 	v_n := (p_request ->> 'change')::integer;
 	v_later := (p_request ->> 'andLater')::boolean;
+	-- (A notice left out and a null one are the same request.)
 	v_digest := encode(extensions.digest(convert_to(jsonb_build_object('schema', 'qorpera.folder-code-undo/v1',
-		'runId', v_run.id, 'request', p_request)::text, 'utf8'), 'sha256'), 'hex');
+		'runId', v_run.id, 'request', p_request || jsonb_build_object('notice', p_request -> 'notice'))::text, 'utf8'),
+		'sha256'), 'hex');
 	v_begun := public.qorpera_folder_begin_run_receipt(p_binding, v_receipt_id, 'code:' || (p_request ->> 'operationKey'), v_digest,
 		encode(extensions.digest(convert_to(v_run.id::text || ':code:' || (p_request ->> 'operationKey'), 'utf8'), 'sha256'), 'hex'), false);
 	if v_begun ->> 'state' = 'completed' then return v_begun -> 'result'; end if;
@@ -1227,7 +1229,8 @@ begin
 		raise exception 'Code request is invalid' using errcode = '22023'; end if;
 	v_run := public.qorpera_code_agent_run(p_binding);
 	v_digest := encode(extensions.digest(convert_to(jsonb_build_object('schema', 'qorpera.folder-code-describe/v1',
-		'runId', v_run.id, 'request', p_request)::text, 'utf8'), 'sha256'), 'hex');
+		'runId', v_run.id, 'request', p_request || jsonb_build_object('notice', v_notice, 'picture', v_path))::text, 'utf8'),
+		'sha256'), 'hex');
 	v_begun := public.qorpera_folder_begin_run_receipt(p_binding, v_receipt_id, 'code:' || (p_request ->> 'operationKey'), v_digest,
 		encode(extensions.digest(convert_to(v_run.id::text || ':code:' || (p_request ->> 'operationKey'), 'utf8'), 'sha256'), 'hex'), false);
 	if v_begun ->> 'state' = 'completed' then return v_begun -> 'result'; end if;

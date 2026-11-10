@@ -208,9 +208,12 @@ begin
 		and q.by_user_id is not distinct from v_run.requested_by_user_id and q.run_id = v_run.id and q.lease_token is null
 		and q.attempts = 0 and q.not_before is null and q.progress is null and q.outcome is null and q.finished_at is null
 		and q.expires_at is null, 'an undo is asked for: ' || to_jsonb(q)::text);
-	-- The same call again answers the same; the same key for another request is another operation's.
+	-- The same call again answers the same; the same key for another request is another operation's. A notice left out
+	-- is a null one: the same request.
 	perform pg_temp.base_assert(pg_temp.req_undo('undo-1', 6, p_keys => '{"notice":"The old checkout is back."}') = v
 		and (select count(*) from public.qorpera_code_requests) = 1, 'a replay');
+	perform pg_temp.base_assert(public.qorpera_folder_request_code_undo(pg_temp.c3_alice(), v_request - 'notice'
+			|| '{"operationKey":"undo-none","change":3}') = pg_temp.req_refused('never_landed'), 'a notice left out');
 	perform pg_temp.base_error($q$select pg_temp.req_undo('undo-1', 5)$q$, '23505', 'logical operation key is already bound to other work');
 	-- Another call for the same change finds the open request, whatever else it says; one for another change is told
 	-- that the repository is busy.
