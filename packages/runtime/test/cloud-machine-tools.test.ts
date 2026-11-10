@@ -1809,7 +1809,9 @@ describe("machine tools", () => {
 				"BROWSER_NOT_OPEN",
 				"ACCOUNTS_SWITCHED_OFF",
 				"MACHINE_IMAGE_WITHOUT_ACCOUNT_FILLS",
+				"FILL_PAGE_CHANGED",
 				"FILL_UNCONFIRMED",
+				"FILL_EXPIRED",
 				"FILL_LOST",
 			] as const) {
 				const f = fixture(undefined, false, undefined, true);
@@ -1824,6 +1826,16 @@ describe("machine tools", () => {
 					expect(answer.filled).toBe(false);
 					expect(answer.refused.reason).toBe(code);
 					expect(answer.refused.message.length).toBeGreaterThan(20);
+					// Review round 1 of #1644: when the value may still be on the page, no picture before it is gone (shots
+					// are kept in the company folder): close the tab or clear the field first, needs_person if unsure.
+					if (code === "FILL_LOST") {
+						expect(answer.refused.message).toContain("may still be on the page");
+						expect(answer.refused.message).toContain("ctrl+w");
+						expect(answer.refused.message).toContain("needs_person");
+						expect(
+							answer.refused.message.replaceAll(/Take no desktop shot|add no --shot|shots are kept/g, ""),
+						).not.toMatch(/shot/);
+					}
 				} finally {
 					f.boundary.close();
 				}

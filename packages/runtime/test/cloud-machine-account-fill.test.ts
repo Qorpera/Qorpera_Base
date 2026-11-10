@@ -11,7 +11,9 @@ import {
 	MACHINE_ACCOUNT_FILL_REFUSALS,
 	type MachineAccountFillPorts,
 	type MachineFillFocus,
+	type MachineFillLanded,
 	type MachineFillPage,
+	MachineFillPageChanged,
 	machineChromium,
 	machineChromiumPort,
 	parseMachineAccountFillTarget,
@@ -32,25 +34,42 @@ interface FakeTab {
 	address: string;
 	stop?: CompanyComputerSiteStopReason;
 	focus: MachineFillFocus;
-	landed?: "filled" | "moved" | "emptied" | "lost";
+	landed?: MachineFillLanded;
 	fails?: "address" | "insert";
+	/** The tab left the document bound at the first look: by that look's bind, or by this look's address read. */
+	changed?: "bind" | "address";
+	/** The insert never settles: the browser stopped answering once the value was handed over. */
+	hangs?: boolean;
 }
 
-function page(tab: FakeTab, typed: string[]): MachineFillPage {
-	return {
+/** One look at a tab; `seen` keeps each look's page and each insert's address check. */
+function page(
+	tab: FakeTab,
+	typed: string[],
+	seen: { pages: MachineFillPage[]; allowed: ((address: string) => boolean)[] },
+): MachineFillPage {
+	const found: MachineFillPage = {
 		id: tab.id,
+		bind: vi.fn(async () => {
+			if (tab.changed === "bind") throw new MachineFillPageChanged();
+		}),
 		address: vi.fn(async () => {
 			if (tab.fails === "address") throw new Error("DEVTOOLS_CALL_TIMEOUT");
+			if (tab.changed === "address") throw new MachineFillPageChanged();
 			return tab.address;
 		}),
 		stop: vi.fn(async () => tab.stop),
 		focus: vi.fn(async () => tab.focus),
-		insert: vi.fn(async (value: string) => {
+		insert: vi.fn(async (value: string, allowed: (address: string) => boolean) => {
 			typed.push(value);
+			seen.allowed.push(allowed);
 			if (tab.fails === "insert") throw new Error("DEVTOOLS_CLOSED");
+			if (tab.hangs) await new Promise<never>(() => undefined);
 			return tab.landed ?? "filled";
 		}),
 	};
+	seen.pages.push(found);
+	return found;
 }
 
 /** The executor's side: the target first, then (once the helper's key is out) the vault's box for `identity`, or nothing. */
@@ -92,11 +111,12 @@ function fixture(
 		},
 	];
 	const typed: string[] = [];
+	const seen = { pages: [] as MachineFillPage[], allowed: [] as ((address: string) => boolean)[] };
 	// Each look reads the tabs anew, as the browser answers them; the helper knows a tab again by its id.
 	const look = (list: FakeTab[]) => {
 		if (list.length === 0) return "none" as const;
 		if (list.length > 1) return "many" as const;
-		return page(list[0]!, typed);
+		return page(list[0]!, typed, seen);
 	};
 	let looks = 0;
 	const closed = vi.fn();
@@ -159,7 +179,7 @@ function fixture(
 	};
 	const run = (signal = new AbortController().signal) =>
 		fillAccountOnMachine({ stdin: stdin(), stdout, ports, signal }).finally(() => readyResolve('{"schema":"done"}'));
-	return { ids, target, typed, ports, run, closed, handed, keys, printed: () => printed };
+	return { ids, target, typed, seen, ports, run, closed, handed, keys, printed: () => printed };
 }
 
 const lines = (text: string) =>
@@ -300,7 +320,56 @@ describe("fill_company_account's helper", () => {
 		}
 	});
 
-	it("says where a typed value went, and that a failure after typing leaves it unconfirmed", async () => {
+	it("binds both looks and the typing to the first look's document: a change refuses before anything is typed", async () => {
+		const first: FakeTab = {
+			id: "tab-1",
+			address: "https://www.npmjs.com/login",
+			focus: { kind: "input", type: "password", usable: true },
+		};
+		// Both looks bind (the second checks it is still the first one's document), each before its first read.
+		const f = fixture({ tabs: [first] });
+		expect(await f.run()).toBe("FILLED");
+		expect(f.seen.pages).toHaveLength(2);
+		for (const found of f.seen.pages) {
+			expect(found.bind).toHaveBeenCalledTimes(1);
+			expect(vi.mocked(found.bind).mock.invocationCallOrder[0]).toBeLessThan(
+				vi.mocked(found.address).mock.invocationCallOrder[0]!,
+			);
+		}
+		// The tab left the document at the first look: refused before the key, so the vault is never asked.
+		const early = fixture({ tabs: [{ ...first, changed: "bind" }] });
+		expect(await early.run()).toBe("FILL_PAGE_CHANGED");
+		expect(lines(early.printed())).toEqual([
+			{ schema: "qorpera.machine-account-fill-result/v1", code: "FILL_PAGE_CHANGED" },
+		]);
+		expect(early.keys).toEqual([]);
+		// After the box: a redirect seen by the second look's bind or a read of it (never inserted), or by the insert itself
+		// right before it typed.
+		for (const [patch, inserted] of [
+			[{ changed: "bind" }, false],
+			[{ changed: "address" }, false],
+			[{ landed: "changed" }, true],
+		] as const) {
+			const moved = fixture({ tabs: [first], later: [{ ...first, ...patch }] });
+			expect(await moved.run(), JSON.stringify(patch)).toBe("FILL_PAGE_CHANGED");
+			expect(moved.keys).toHaveLength(1);
+			expect(moved.typed).toEqual(inserted ? [secret] : []);
+		}
+		// The insert checks the address right before and right after against the hosts sealed in the box, not the target's.
+		const narrower = fixture({ sealed: ["www.npmjs.com"] });
+		expect(await narrower.run()).toBe("FILLED");
+		const allowed = narrower.seen.allowed[0]!;
+		expect(allowed("https://www.npmjs.com/login")).toBe(true);
+		for (const address of [
+			"https://npmjs.com/login",
+			"http://www.npmjs.com/login",
+			"https://www.npmjs.com.evil.example/login",
+			"https://evil.example/login",
+		])
+			expect(allowed(address), address).toBe(false);
+	});
+
+	it("says where a typed value went, and that a failure after typing may have left it on the page", async () => {
 		const tab = (patch: Partial<FakeTab>): FakeTab[] => [
 			{
 				id: "tab-1",
@@ -313,15 +382,45 @@ describe("fill_company_account's helper", () => {
 			["emptied", "FILL_UNCONFIRMED"],
 			["lost", "FILL_LOST"],
 			["moved", "FILL_WRONG_BOX"],
+			["changed", "FILL_PAGE_CHANGED"],
 		] as const) {
 			const f = fixture({ tabs: tab({ landed }) });
 			expect(await f.run()).toBe(code);
 		}
+		// The browser stopped answering once the value was handed over: not confirmed emptied.
 		const after = fixture({ tabs: tab({ fails: "insert" }) });
-		expect(await after.run()).toBe("FILL_UNCONFIRMED");
+		expect(await after.run()).toBe("FILL_LOST");
+		expect(lines(after.printed()).at(-1)).toEqual({
+			schema: "qorpera.machine-account-fill-result/v1",
+			code: "FILL_LOST",
+		});
 		const before = fixture({ tabs: tab({ fails: "address" }) });
 		expect(await before.run()).toBe("BROWSER_NOT_ANSWERING");
 		expect(before.typed).toEqual([]);
+	});
+
+	it("answers FILL_LOST, never FILL_EXPIRED, when its deadline passes after the value was handed over", async () => {
+		const deadline = new AbortController();
+		const f = fixture({
+			tabs: [
+				{
+					id: "tab-1",
+					address: "https://www.npmjs.com/login",
+					focus: { kind: "input", type: "password", usable: true },
+					hangs: true,
+				},
+			],
+		});
+		const running = f.run(deadline.signal);
+		await vi.waitFor(() => expect(f.typed).toEqual([secret]));
+		deadline.abort();
+		expect(await running).toBe("FILL_LOST");
+		expect(lines(f.printed()).at(-1)).toEqual({
+			schema: "qorpera.machine-account-fill-result/v1",
+			code: "FILL_LOST",
+		});
+		expect(f.printed()).not.toContain(secret);
+		expect(f.closed).toHaveBeenCalledTimes(1);
 	});
 
 	it("refuses without a desktop, a browser of desktop open's, another boot or a target", async () => {

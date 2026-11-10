@@ -274,7 +274,7 @@ receipt, with the vault's box bound to the machine, its placement and its boot.
   `company_account`). The model passes no value and the answer holds none: `{filled: {machine, account, field}}` or
   `{filled: false, refused: {reason, message}}`. Review: external (its card names the machine, the account and the
   field). Each call types once, so each needs a new operationKey; a repeat after an uncertain result types again into the
-  same box (the helper selects the box's text first, so the value replaces it).
+  same box (the helper empties the box first, so the value replaces what is there).
 - The words (the tool's description, `company_account`'s and "Accounts on websites"): `desktop start`, `desktop open`
   the sign-in or sign-up page, `desktop shot` to see it, `desktop click` into the field, call the tool, click into the
   next field and call again, press the site's own button. Never type, paste, read aloud, write down or screenshot a
@@ -342,7 +342,14 @@ the oldest if two, and the TCP socket it holds listening on 127.0.0.1 (`/proc/<p
 the port's `/json/version` must name `ws://127.0.0.1:<port>/devtools/browser/<id>`. No such browser: `BROWSER_NOT_OPEN`
 ("open it with desktop open"); one with no loopback port (started another way) or another answer: `BROWSER_UNVERIFIED`.
 It never enables the Runtime domain on a page (which sites can notice); it reads pages in an isolated world of its own.
-Then, before the vault is asked and again after the box is open:
+The focused tab's checks and the typing are bound to the one document it shows at the first look (review round 1 of
+#1644): the helper enables the Page domain on that tab only (its navigation events), reads its main frame's loader id,
+and makes its world in that document, with the same loader read before and after and no navigation heard between. From
+then on every read runs in that world alone (never made again in another document), and the loader is read again at
+each step: any navigation of the main frame (requested, started, committed, within the document, `document.open`), a
+reload, a closed or crashed tab, or a world that is gone refuses with `FILL_PAGE_CHANGED`, nothing typed. Before, a
+redirect between the address read and the typing let the helper make its world again in the new document and type into
+an autofocused box there. Then, before the vault is asked and again after the box is open:
 
 - exactly one tab is shown with its window focused (`document.hasFocus()`), and the same tab both times;
 - its main frame's address, as the browser keeps it, is https, with no user, password or port, on the account's site or
@@ -354,9 +361,29 @@ Then, before the vault is asked and again after the box is open:
   `input` of the field's kind: text, email or tel for a login; password for a password; text, tel, number or password
   for a code.
 
-Then it selects the box's text and types with CDP `Input.insertText` (never through the X server), and reads the box back:
-whole is `FILLED`; anything else empties the box (and the box that took the focus) and answers `FILL_UNCONFIRMED`, or
-`FILL_LOST` when the focus went somewhere that cannot be emptied.
+Then, right before typing, it checks again that the tab is on the bound document at an address the box's hosts allow and
+that the box it checked (the same element) still has the focus, empties that box (so text already in it, as long as the
+value, cannot pass for it; nothing the page hears is fired, unlike selecting its text) and listens in its own world for
+which elements the typing reaches (trusted input events, through open shadow roots). It types with CDP
+`Input.insertText` (never through the X server) and reads back, then checks the document and address once more:
+
+- `FILLED` only when that same box, still connected and with the focus, holds the value exactly and is the only element
+  the typing reached, on the same document at an allowed address;
+- otherwise it empties the box and every other text or password box the typing reached, and answers `FILL_UNCONFIRMED`
+  once the page confirmed that (the tool says to look with `desktop shot` and click into the field again);
+- `FILL_LOST` whenever the value may still be on the page: it reached an element that cannot be emptied, or none the
+  helper heard (a frame, another document), the box left the document, the tab navigated while or right after it went
+  in, the browser stopped answering, or the helper's deadline passed after the value was handed over (before that it is
+  `FILL_EXPIRED`, nothing typed). The tool says the value may still be on the page: no `desktop shot` (and no `--shot`)
+  until it is gone, since shots are kept in the company folder; close the tab with `desktop key ctrl+w` or clear the
+  field, or `desktop stop`; start over; and set the account `needs_person` if unsure or if the tab had gone to another
+  site.
+
+A sign-in page that sends its form or leaves on its own as the value goes in answers `FILL_LOST` too (the helper cannot
+tell that from a redirect). The browser proof: `node scripts/run-on-node.mjs --machine node02 -- node
+scripts/test-machine-account-fill-browser.mjs` (Docker on a test machine: the image's pinned Chrome for Testing on a
+TigerVNC display with openbox; redirects between the helper's steps, the focus moved with text as long as the value in
+the box, a page that leaves or stops answering as the value goes in, and the deadline after it went in).
 
 The agent is root on its machine. It can reach the DevTools port itself, read the page (and so a typed password) through
 it, read Chromium's memory, run its own Chromium with that profile, or replace this helper, `node` or Chromium on its disk
