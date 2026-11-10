@@ -12,8 +12,13 @@
 --    another tool's key, completed), the machine (another name, another company's, stopped);
 -- 5. a paused company: an action refused; a look too, by the run's own check (every tool of a paused company's run
 --    is refused there), so the look's own rule (no wake check) never decides;
--- 6. the call check's shapes per verb;
--- 7. the grants, the observations' list and the marker.
+-- 6. the call check's shapes per verb, no key an xdotool command word (review r1 F2);
+-- 7. the grants, the observations' list and the marker;
+-- 8. the disk's company folder access, as a machine command's (review r1 F1; 20260930420000, 20260930424000): a caller
+--    whose agent does not read the root looks and acts on a disk that never had a view, and its action (not its look)
+--    marks the disk, which the platform's open then refuses; a root reader's actions leave it unmarked; once the disk has
+--    a view, a caller whose agent or member does not read the root is refused a look and an action alike
+--    (MACHINE_NEEDS_COMPANY_VIEW, answered), and a root reader is not.
 
 -- Alice's run acknowledges first, as a member's wake requires before any work (924).
 select pg_temp.base_claims('service_role');
@@ -428,6 +433,12 @@ declare
 		v_call || '{"action": {"type": "key", "keys": "Return"}}',
 		v_call || '{"action": {"type": "key", "keys": ["-x"]}}',
 		v_call || '{"action": {"type": "key", "keys": ["ctrl l"]}}',
+		-- `xdotool key` runs a command word that follows its keys: exec runs a program (review r1 F2), in any case.
+		v_call || '{"action": {"type": "key", "keys": ["exec", "id"]}}',
+		v_call || '{"action": {"type": "key", "keys": ["EXEC", "id"]}}',
+		v_call || '{"action": {"type": "key", "keys": ["Return", "Sleep", "1"]}}',
+		v_call || '{"action": {"type": "key", "keys": ["windowKill"]}}',
+		v_call || '{"action": {"type": "key", "keys": ["type"]}}',
 		v_call || '{"action": {"type": "key", "keys": ["a","a","a","a","a","a","a","a","a","a","a","a","a","a","a","a","a"]}}',
 		v_call || '{"action": {"type": "scroll", "direction": "left"}}',
 		v_call || '{"action": {"type": "scroll", "direction": "up", "steps": 0}}',
@@ -475,6 +486,110 @@ begin
 	perform pg_temp.base_assert((select provolatile from pg_proc
 			where oid = 'public.qorpera_valid_machine_screen_call(jsonb)'::regprocedure) = 's',
 		'7: the call check is STABLE');
+end $$;
+
+
+-- 8. The disk's company folder access (review r1 F1) -----------------------------------------------------------------------
+
+-- Whether the run's agent and member read the folder's root now; m-1198's disk's mark; the platform's open of a view
+-- on m-1198's current placement and boot (as the machine executor asks it); and the run's agent's path grants revoked
+-- (its block undoes it).
+create function pg_temp.ms_reads_root() returns boolean language sql as $$
+	select public.qorpera_folder_reads_root(run.environment_id, run.profile_id, run.staff_agent_id, run.requested_by_user_id)
+	from public.qorpera_execution_runs as run where run.id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid
+$$;
+create function pg_temp.ms_unchecked() returns timestamptz language sql as $$
+	select folder_unchecked_at from public.qorpera_company_machine_placements where id = '11980000-0000-4000-8000-0000000007b1'
+$$;
+create function pg_temp.ms_open() returns jsonb language sql as $$
+	select public.qorpera_folder_view_open('92400000-0000-4000-8000-000000000020', '{"kind":"platform"}', 'test_machine',
+		'{"companyMachineId": "11980000-0000-4000-8000-0000000007a1", "placementId": "11980000-0000-4000-8000-0000000007b1",
+			"bootId": "11980000-0000-4000-8000-0000000007c1"}')
+$$;
+create function pg_temp.ms_revoke_agent() returns void language plpgsql as $$
+begin
+	set local session_replication_role = replica;
+	update public.qorpera_company_path_grants set revoked_at = clock_timestamp()
+	where principal_kind = 'staff_agent' and revoked_at is null and principal_id = (select run.staff_agent_id
+		from public.qorpera_execution_runs as run where run.id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid);
+	set local session_replication_role = origin;
+end $$;
+-- One action's authorization under receipt n, begun and completed around it.
+create function pg_temp.ms_act(p_n text) returns text language plpgsql as $$
+declare v_envelope text := pg_temp.ms_envelope('ms-' || p_n); v text;
+begin
+	perform pg_temp.ms_begin(p_n, v_envelope);
+	v := pg_temp.ms_auth(p_n, v_envelope);
+	perform pg_temp.ms_end(p_n, v_envelope);
+	return v;
+end $$;
+
+-- 8.1 m-1198's disk never had a view, and the root reader's actions above left it unmarked. A caller without the root
+--     read (Alice's agent, its grants revoked; undone after) still looks and acts there; its look marks nothing, its
+--     action marks the disk, and the platform's open then refuses it.
+do $$
+declare v_look text; v_act text;
+begin
+	perform pg_temp.base_assert(pg_temp.ms_reads_root() and pg_temp.ms_unchecked() is null
+		and not exists (select 1 from public.qorpera_folder_views where placement_id = '11980000-0000-4000-8000-0000000007b1'),
+		'8: Alice and her member read the root, her actions left the disk unmarked, and it never had a view');
+	begin
+		perform pg_temp.ms_revoke_agent();
+		perform pg_temp.base_assert(not pg_temp.ms_reads_root(), '8: without its grants the agent does not read the root');
+		v_look := pg_temp.ms_auth(null, null);
+		perform pg_temp.base_assert(pg_temp.ms_answer(v_look) ->> 'state' = 'authorized' and pg_temp.ms_unchecked() is null,
+			'8: a look without the root on a viewless disk is served and marks nothing: ' || v_look);
+		v_act := pg_temp.ms_act('81');
+		perform pg_temp.base_assert(pg_temp.ms_answer(v_act) ->> 'state' = 'authorized' and pg_temp.ms_unchecked() is not null,
+			'8: an action without the root on a viewless disk is served and marks it: ' || v_act);
+		perform pg_temp.base_claims('service_role');
+		perform pg_temp.base_error('select pg_temp.ms_open()', '42501', 'Test machine disk was used without the folder check');
+		raise exception 'Undo' using errcode = 'QTF80';
+	exception when sqlstate 'QTF80' then null;
+	end;
+	perform pg_temp.base_assert(pg_temp.ms_reads_root() and pg_temp.ms_unchecked() is null, '8: undone');
+end $$;
+
+-- 8.2 The platform opens a view on the clean disk. A root reader still looks and acts there, and the disk stays
+--     unmarked. A caller whose agent does not read the root (its grants revoked; undone after) is refused a look and an
+--     action alike, as an answer the agent hears that carries nothing of the machine. The member's side is the same
+--     check with the run's requester (as machine commands make it), but cannot fail while the run stands: the folder's
+--     root is always company_shared (a constraint), which every member reads, and a run's requester must be a member.
+select pg_temp.base_claims('service_role');
+select set_config('qorpera_test.ms_view', pg_temp.ms_open()::text, true);
+do $$
+declare v_case text; v_look text; v_act text;
+	v_refused constant jsonb := jsonb_build_object('schema', 'qorpera.machine-screen-authority/v1', 'state', 'refused',
+		'reason', 'MACHINE_NEEDS_COMPANY_VIEW', 'machine', 'm-1198');
+begin
+	perform pg_temp.base_assert(exists (select 1 from public.qorpera_folder_views
+			where id = (current_setting('qorpera_test.ms_view')::jsonb ->> 'viewId')::uuid and kind = 'test_machine'
+				and placement_id = '11980000-0000-4000-8000-0000000007b1'),
+		'8: the view is open on m-1198''s disk: ' || current_setting('qorpera_test.ms_view'));
+	v_look := pg_temp.ms_auth(null, null);
+	v_act := pg_temp.ms_act('82');
+	perform pg_temp.base_assert(pg_temp.ms_answer(v_look) ->> 'state' = 'authorized'
+			and pg_temp.ms_answer(v_act) ->> 'state' = 'authorized' and pg_temp.ms_unchecked() is null,
+		'8: with the root, a disk that has a view is seen and driven: ' || v_look || ' / ' || v_act);
+	foreach v_case in array array['agent'] loop
+		begin
+			perform pg_temp.ms_revoke_agent();
+			perform pg_temp.base_assert(not pg_temp.ms_reads_root(), '8: ' || v_case || ' does not read the root');
+			v_look := pg_temp.ms_auth(null, null);
+			v_act := pg_temp.ms_act('83');
+			perform pg_temp.base_assert(v_look = 'ok:' || v_refused::text and v_act = 'ok:' || v_refused::text
+					and pg_temp.ms_unchecked() is null,
+				'8: without the ' || v_case || '''s root read, no look and no action: ' || v_look || ' / ' || v_act);
+			raise exception 'Undo' using errcode = 'QTF80';
+		exception when sqlstate 'QTF80' then null;
+		end;
+	end loop;
+	perform pg_temp.base_assert(pg_temp.ms_reads_root(), '8: undone');
+	-- The check names the run's agent and requester, as qorpera_authorize_machine_command's (20260930420000).
+	perform pg_temp.base_assert(strpos(regexp_replace((select prosrc from pg_proc
+			where oid = 'public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)'::regprocedure), '\s+', ' ', 'g'),
+			'public.qorpera_folder_reads_root(v_machine.environment_id, v_machine.profile_id, (v_identity ->> ''staffAgentId'')::uuid, (v_identity ->> ''requesterUserId'')::uuid)') > 0,
+		'8: the root check names the run''s agent and requester');
 end $$;
 
 rollback;

@@ -97,6 +97,7 @@ async function fixture(
 		codingValueTimeoutMs?: number;
 		codingValueClearTimeoutMs?: number;
 		screenTimeoutMs?: number;
+		now?: () => number;
 	} = {},
 ) {
 	const { folder: withFolder, ...pins } = options;
@@ -3794,6 +3795,120 @@ describe("a machine's screen helper (machine_screen, 20260930708000)", () => {
 		const untaken = await mounted();
 		untaken.f.inherits.push(new Error("CODING_CONTROL_UNCONFIRMED"));
 		held(await untaken.f.host.screen(run(untaken.f.boot), untaken.f.signal), "did not answer this run's take-in");
+	});
+
+	it("tells nothing of the guest's error text when the picture is held back, only the verb and its exit (review r1 F3)", async () => {
+		const secret = "sensitive: the contents of /company/finance/salaries.csv";
+		const action = { type: "type", exitCode: 1, error: secret };
+		for (const hold of ["refused", "unproven"] as const) {
+			const picture = png();
+			const piping = await piped(
+				{ exitCode: 0, stdout: output(header(picture, { action }), picture) },
+				{ folder: true },
+			);
+			const { f } = piping;
+			await f.host.pass(f.signal);
+			f.running();
+			await f.host.pass(f.signal);
+			if (hold === "refused") f.inherits.push(new CodingControlRefused("qorpera.test-machine/unreadable"));
+			else f.service.reads = "unproven";
+			const shot = await f.host.screen(run(f.boot), f.signal);
+			expect(shot).toMatchObject({
+				header: { action: { type: "type", exitCode: 1 }, activeWindow: null, windows: [] },
+				png: null,
+				heldBack: expect.any(String),
+			});
+			expect(JSON.stringify(shot)).not.toContain("sensitive");
+			expect(JSON.stringify(shot)).not.toContain("salaries");
+		}
+		// Released, the action's error is told as the helper gave it.
+		const { f } = await mounted();
+		Object.assign(f.client, {
+			execInstancePipe: vi.fn(async () => ({
+				exitCode: 0,
+				stdout: output(header(png(), { action }), png()),
+				stderrTail: Buffer.alloc(0),
+			})),
+		});
+		expect(await f.host.screen(run(f.boot), f.signal)).toMatchObject({ header: { action } });
+	});
+
+	it("refuses a second action on a desktop while one runs, serves a look meanwhile, and frees it once the first ends (review r1 F4)", async () => {
+		const f = await fixture();
+		const picture = png();
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const pipe = vi.fn(async () => {
+			if (pipe.mock.calls.length === 1) await gate;
+			return { exitCode: 0, stdout: output(header(picture), picture), stderrTail: Buffer.alloc(0) };
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		const action = (receipt: number) => ({ ...run(), request: { ...request, receiptId: id(receipt) } });
+		const look = { ...run(), request: { ...request, receiptId: null, action: null } };
+		const first = f.host.screen(action(8), f.signal);
+		await vi.waitFor(() => expect(pipe).toHaveBeenCalledTimes(1));
+		// Another run's action: refused before the helper (no receipt marker made on the machine).
+		expect(await f.host.screen({ ...action(11), runId: id(12) }, f.signal)).toEqual({ refused: "DESKTOP_BUSY" });
+		expect(pipe).toHaveBeenCalledTimes(1);
+		// A look is served meanwhile; another machine's desktop is not this one.
+		expect(await f.host.screen(look, f.signal)).toEqual({ header: header(picture), png: picture });
+		expect(await f.host.screen({ ...action(13), placementId: id(14) }, f.signal)).toMatchObject({ png: picture });
+		expect(pipe).toHaveBeenCalledTimes(3);
+		release();
+		expect(await first).toMatchObject({ png: picture });
+		// The first ended: the next action runs.
+		expect(await f.host.screen(action(15), f.signal)).toMatchObject({ png: picture });
+		expect(pipe).toHaveBeenCalledTimes(4);
+		// An action that failed (but ended) frees it at once too.
+		pipe.mockResolvedValueOnce({ exitCode: 1, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) });
+		await expect(f.host.screen(action(16), f.signal)).rejects.toThrow("COMPANY_MACHINE_SCREEN_FAILED");
+		expect(await f.host.screen(action(17), f.signal)).toMatchObject({ png: picture });
+	});
+
+	it("keeps a desktop busy for the action deadline after an action that was cut off, as what it started may type on", async () => {
+		let clock = 1_800_000_000_000;
+		const f = await fixture({ now: () => clock });
+		const picture = png();
+		const pipe = vi.fn(async (_project: string, _name: string, _given: LxdExecPipeRequest, signal: AbortSignal) => {
+			if (pipe.mock.calls.length === 1)
+				return new Promise<never>((_resolve, reject) => {
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				});
+			return { exitCode: 0, stdout: output(header(picture), picture), stderrTail: Buffer.alloc(0) };
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		const action = (receipt: number) => ({ ...run(), request: { ...request, receiptId: id(receipt) } });
+		const controller = new AbortController();
+		const cut = f.host.screen(action(8), controller.signal);
+		await vi.waitFor(() => expect(pipe).toHaveBeenCalledTimes(1));
+		controller.abort(new Error("the gateway's request ended"));
+		await expect(cut).rejects.toThrow("the gateway's request ended");
+		expect(await f.host.screen(action(11), f.signal)).toEqual({ refused: "DESKTOP_BUSY" });
+		// A look is served all the same.
+		expect(
+			await f.host.screen({ ...run(), request: { ...request, receiptId: null, action: null } }, f.signal),
+		).toMatchObject({
+			png: picture,
+		});
+		clock += 9_999;
+		expect(await f.host.screen(action(12), f.signal)).toEqual({ refused: "DESKTOP_BUSY" });
+		clock += 2;
+		expect(await f.host.screen(action(13), f.signal)).toMatchObject({ png: picture });
+		expect(pipe).toHaveBeenCalledTimes(3);
+		// Past its own deadline (screenTimeoutMs), the same.
+		const slow = await fixture({ now: () => clock, screenTimeoutMs: 20 });
+		Object.assign(slow.client, {
+			execInstancePipe: vi.fn(
+				(_project: string, _name: string, _given: LxdExecPipeRequest, signal: AbortSignal) =>
+					new Promise<never>((_resolve, reject) => {
+						signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+					}),
+			),
+		});
+		await expect(slow.host.screen(action(8), slow.signal)).rejects.toThrow();
+		expect(await slow.host.screen(action(11), slow.signal)).toEqual({ refused: "DESKTOP_BUSY" });
 	});
 
 	it("takes in the reads of a boot without /company with no boundary, and asks one for a boot it does not know", async () => {

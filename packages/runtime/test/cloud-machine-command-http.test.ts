@@ -1062,8 +1062,21 @@ describe("a machine's screen", () => {
 			machine: "build-a",
 		});
 		await expect(f.router.screen(f.request, f.signal)).rejects.toMatchObject({ code: "MACHINE_NOT_RUNNING" });
+		// A disk that has had a company folder view its caller may not see (review r1 F1): a look as much as an action.
+		for (const request of [f.request, f.look]) {
+			f.call.mockResolvedValueOnce({
+				schema: "qorpera.machine-screen-authority/v1",
+				state: "refused",
+				reason: "MACHINE_NEEDS_COMPANY_VIEW",
+				machine: "build-a",
+			});
+			const error = await f.router.screen(request, f.signal).catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(CloudMachineScreenRefusal);
+			expect(error).toMatchObject({ code: "MACHINE_NEEDS_COMPANY_VIEW" });
+		}
 		expect(f.host.screen).not.toHaveBeenCalled();
 		for (const code of [
+			"DESKTOP_BUSY",
 			"SCREEN_ACTION_TAKEN",
 			"MACHINE_BOOT_CHANGED",
 			"MACHINE_IMAGE_WITHOUT_SCREEN",

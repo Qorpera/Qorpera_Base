@@ -261,11 +261,15 @@ export const CLOUD_MACHINE_SCREEN_DESCRIPTION =
 /** What the agent does about each refusal of the machine's screen (20260930708000). */
 const SCREEN_REFUSED: Readonly<Record<CloudMachineScreenRefusalCode, string>> = {
 	MACHINE_NOT_RUNNING: "the machine is not running: start it with machine_start, then look",
+	MACHINE_NEEDS_COMPANY_VIEW:
+		"this machine's disk holds the whole company folder, and this run, with the member it works for, may not read all of it, so it cannot see or drive its screen: use a machine this run started",
 	MACHINE_IMAGE_WITHOUT_SCREEN:
 		"this machine runs an earlier image without machine_screen; it gets it once it sleeps and wakes (machine_stop, then machine_start), or use machine_run with desktop commands meanwhile",
 	MACHINE_BOOT_CHANGED: "the machine restarted meanwhile and its desktop started over: look before you act",
 	SCREEN_ACTION_TAKEN:
 		"this action was taken on the machine before and is never taken twice: look (no action) to see what came of it",
+	DESKTOP_BUSY:
+		"another run is acting on this desktop right now, so this action did not run: look, then act again with a new operationKey",
 	DESKTOP_MACHINE_TOO_SMALL:
 		"this machine is too small for a desktop: start a desktop computer (machine_start with desktop true)",
 	DESKTOP_DID_NOT_START:
@@ -1256,6 +1260,8 @@ export function cloudMachineTools(options: {
 				minItems: 1,
 				maxItems: 16,
 				items: { type: "string", pattern: "^[A-Za-z0-9_][A-Za-z0-9_+]{0,39}$" },
+				description:
+					"Key names such as Return, Tab, Escape or ctrl+l; never an xdotool command word such as exec or type.",
 			},
 			direction: { type: "string", enum: ["up", "down"] },
 			steps: { type: "integer", minimum: 1, maximum: 30 },

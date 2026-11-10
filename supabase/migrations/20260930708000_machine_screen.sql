@@ -10,15 +10,19 @@
 -- one receipted call (receipt key machine_screen:<operationKey>) and is reviewed by its verb.
 -- * qorpera_valid_machine_screen_call: an action's arguments as the machine tools record them: the call's key, the
 --   machine's name, one action of a closed shape per verb (positions in screen pixels), the settle time, whether to
---   look, and the intent (required for the verbs that are reviewed). Granted to no role.
+--   look, and the intent (required for the verbs that are reviewed). A key is never one of xdotool's own command words
+--   (`xdotool key` runs a command that follows its keys: `exec` would run a program as root). Granted to no role.
 -- * qorpera_authorize_machine_screen, the coding executor's read (service_role): the run's live tool authority in a
 --   company conversation (the run's own check, which refuses every tool of a paused company's run); for an action, the
 --   call's own executing receipt of exactly this envelope and a run whose wake may still work; the machine of the run's
---   company and environment,
---   running on its placement with a known boot (else MACHINE_NOT_RUNNING). A worker's run may use it, as machine_run.
---   It answers where the machine runs and, for an action, the action as the receipt holds it. It writes one thing: the
---   machine's last use, at most every 30 seconds, since the idle rule counts only an agent's use (20260930055000) and
---   a desktop driven only by machine_screen would otherwise sleep after its quiet window.
+--   company and environment, locked as a machine command locks it, running on its placement with a known boot (else
+--   MACHINE_NOT_RUNNING). A worker's run may use it, as machine_run. The disk's access is a machine command's
+--   (20260930420000, 20260930424000): on a disk that has had a company folder view, a caller whose agent or member does
+--   not read the folder's root sees and drives no screen (MACHINE_NEEDS_COMPANY_VIEW, answered like MACHINE_NOT_RUNNING);
+--   such a caller's action on a disk that never had one marks it (folder_unchecked_at), so no view opens there after.
+--   It answers where the machine runs and, for an action, the action as the receipt holds it. It writes the machine's
+--   last use, at most every 30 seconds, since the idle rule counts only an agent's use (20260930055000) and a desktop
+--   driven only by machine_screen would otherwise sleep after its quiet window; and the disk's mark above.
 -- * machine_screen joins the operations a run's observations may name.
 -- Every new or patched body names this migration (20260930708000), for the deploy guards.
 
@@ -58,7 +62,7 @@ end $$;
 -- for click, double, drag, type, key and open. The action is one of
 --   {type: click, x, y, button?: left|middle|right}, {type: double|move, x, y}, {type: drag, x, y, toX, toY},
 --   {type: type, text: 1 to 500 characters, no control character but a line break or a tab},
---   {type: key, keys: 1 to 16 key names such as Return or ctrl+l},
+--   {type: key, keys: 1 to 16 key names such as Return or ctrl+l, none an xdotool command word, in any case},
 --   {type: scroll, direction: up|down, steps?: 1 to 30, x? and y? together},
 --   {type: open, target: an http(s) or file URL in printable ASCII, or an absolute path, at most 2000 characters};
 -- x and toX are whole numbers 0 to 3839, y and toY 0 to 2159: pixels of the screen. Each check runs only after the ones
@@ -70,6 +74,16 @@ declare
 	v_type text;
 	v_keys text[];
 	v_field text;
+	-- xdotool's own commands (xdotool 3.20160805.1, `xdotool help`), as cloud-machine-screen.ts lists them
+	-- (MACHINE_SCREEN_XDOTOOL_COMMANDS): `xdotool key` runs any of them that follows its keys, whatever its case.
+	v_xdotool constant text[] := array[
+		'getactivewindow', 'getwindowfocus', 'getwindowname', 'getwindowpid', 'getwindowgeometry', 'getdisplaygeometry',
+		'search', 'selectwindow', 'help', 'version', 'behave', 'behave_screen_edge', 'click', 'getmouselocation', 'key',
+		'keydown', 'keyup', 'mousedown', 'mousemove', 'mousemove_relative', 'mouseup', 'set_window', 'type',
+		'windowactivate', 'windowfocus', 'windowkill', 'windowclose', 'windowmap', 'windowminimize', 'windowmove',
+		'windowraise', 'windowreparent', 'windowsize', 'windowunmap', 'set_num_desktops', 'get_num_desktops',
+		'set_desktop', 'get_desktop', 'set_desktop_for_window', 'get_desktop_for_window', 'get_desktop_viewport',
+		'set_desktop_viewport', 'exec', 'sleep'];
 begin
 	-- 20260930708000: the call's own keys, each of its type.
 	if jsonb_typeof(p_args) is distinct from 'object'
@@ -127,7 +141,8 @@ begin
 		when 'key' then jsonb_typeof(v_action -> 'keys') = 'array'
 			and jsonb_array_length(v_action -> 'keys') between 1 and 16
 			and not exists (select 1 from jsonb_array_elements(v_action -> 'keys') as key(value)
-				where jsonb_typeof(key.value) <> 'string' or (key.value #>> '{}') !~ '^[A-Za-z0-9_][A-Za-z0-9_+]{0,39}$')
+				where jsonb_typeof(key.value) <> 'string' or (key.value #>> '{}') !~ '^[A-Za-z0-9_][A-Za-z0-9_+]{0,39}$'
+					or lower(key.value #>> '{}') = any (v_xdotool))
 		when 'scroll' then jsonb_typeof(v_action -> 'direction') = 'string' and v_action ->> 'direction' in ('up', 'down')
 			and (not v_action ? 'steps' or (jsonb_typeof(v_action -> 'steps') = 'number'
 				and (v_action ->> 'steps')::numeric between 1 and 30
@@ -148,9 +163,12 @@ revoke all on function public.qorpera_valid_machine_screen_call(jsonb)
 -- executor, which reads it again and never forwards). A look is a request with neither receipt nor envelope; an action
 -- has both. The run's live tool authority in a company conversation; for an action, the call (exactly machine_screen's
 -- of this machine, its arguments checked) and its own executing receipt, then the run's wake may still work (a wake
--- whose public output is final acts no more); the machine of the run's company and environment, not removed (for an action, of the
--- name the call gives); running now on its placement, reserved, with a known boot, or MACHINE_NOT_RUNNING. Every other
--- failure raises. Plain reads, and the machine's last use moved when it is more than 30 seconds old.
+-- whose public output is final acts no more); the machine of the run's company and environment, not removed (for an
+-- action, of the name the call gives), FOR UPDATE as a machine command takes it (a view's open waits for it); running now
+-- on its placement, reserved, with a known boot, or MACHINE_NOT_RUNNING; then the disk's access as a machine command's
+-- (20260930420000): a disk that has had a view needs the caller's agent and member to read the folder's root, or
+-- MACHINE_NEEDS_COMPANY_VIEW; and an action of a caller without it marks a disk that never had one (20260930424000).
+-- Every other failure raises. The machine's last use moves when it is more than 30 seconds old.
 create function public.qorpera_authorize_machine_screen(p_binding jsonb, p_scope jsonb, p_receipt_id uuid,
 	p_envelope text)
 returns jsonb
@@ -164,6 +182,7 @@ declare
 	v_receipt public.qorpera_run_operation_receipts%rowtype;
 	v_machine public.qorpera_company_machines%rowtype;
 	v_placement public.qorpera_company_machine_placements%rowtype;
+	v_reads_root boolean;
 	v_uuid constant text := '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 begin
 	-- 20260930708000: the request: a look (no receipt, no envelope) or an action (both).
@@ -205,11 +224,13 @@ begin
 			raise exception 'Machine screen receipt is unavailable' using errcode = '42501'; end if;
 		perform public.qorpera_assert_wake_work_allowed(v_run.id);
 	end if;
-	-- The machine the request names, of the run's company and environment (and of the call's name).
+	-- The machine the request names, of the run's company and environment (and of the call's name), locked as a machine
+	-- command locks it: a view's open (FOR SHARE) waits for it, so the disk's access below stands until this commits.
 	select machine.* into v_machine from public.qorpera_company_machines as machine
 	where machine.id = (p_scope ->> 'machineId')::uuid and machine.profile_id = v_run.profile_id
 		and machine.environment_id = v_run.environment_id and machine.removed_at is null
-		and (v_args is null or machine.name = v_args ->> 'machine');
+		and (v_args is null or machine.name = v_args ->> 'machine')
+	for update;
 	if not found then
 		raise exception 'Machine screen authority is unavailable' using errcode = '42501'; end if;
 	v_placement := public.qorpera_company_machine_placement(v_machine.id);
@@ -218,6 +239,21 @@ begin
 		or v_placement.boot_id is null or not coalesce(public.qorpera_company_machine_placement_reserved(v_placement.id), false) then
 		return jsonb_build_object('schema', 'qorpera.machine-screen-authority/v1', 'state', 'refused',
 			'reason', 'MACHINE_NOT_RUNNING', 'machine', v_machine.name); end if;
+	-- What the disk's views read may be on it, on any boot (20260930420000, as a machine command): a caller whose agent or
+	-- member does not read the folder's root neither sees nor drives the screen of a disk that has had a view, a look as
+	-- much as an action. The agent hears it, and nothing of the machine comes with it.
+	v_reads_root := public.qorpera_folder_reads_root(v_machine.environment_id, v_machine.profile_id,
+		(v_identity ->> 'staffAgentId')::uuid, (v_identity ->> 'requesterUserId')::uuid);
+	if not v_reads_root and exists (select 1 from public.qorpera_folder_views v where v.placement_id = v_placement.id) then
+		return jsonb_build_object('schema', 'qorpera.machine-screen-authority/v1', 'state', 'refused',
+			'reason', 'MACHINE_NEEDS_COMPANY_VIEW', 'machine', v_machine.name); end if;
+	-- Such a caller's action on a disk that never had a view marks it, as a command's start does (20260930424000): what
+	-- it did there was not checked, so no view opens on that disk after. A look changes nothing and marks nothing.
+	if v_args is not null and not v_reads_root then
+		update public.qorpera_company_machine_placements set folder_unchecked_at = clock_timestamp()
+		where id = v_placement.id and folder_unchecked_at is null
+			and not exists (select 1 from public.qorpera_folder_views v where v.placement_id = v_placement.id);
+	end if;
 	-- An agent used it: the idle rule's clock, moved at most every 30 seconds (a look-act-look loop is many calls).
 	update public.qorpera_company_machines set last_used_at = clock_timestamp()
 	where id = v_machine.id and last_used_at < clock_timestamp() - interval '30 seconds';

@@ -1905,7 +1905,13 @@ describe("machine tools", () => {
 		});
 
 		it("answers the machine's refusals in words, a look unanswered as look again, and an action unanswered as unconfirmed", async () => {
-			for (const code of ["DESKTOP_NOT_RUNNING", "SCREEN_ACTION_TAKEN", "MACHINE_IMAGE_WITHOUT_SCREEN"] as const) {
+			for (const code of [
+				"DESKTOP_NOT_RUNNING",
+				"SCREEN_ACTION_TAKEN",
+				"MACHINE_IMAGE_WITHOUT_SCREEN",
+				"DESKTOP_BUSY",
+				"MACHINE_NEEDS_COMPANY_VIEW",
+			] as const) {
 				const f = fixture(undefined, false, undefined, true);
 				try {
 					f.screen.mockRejectedValueOnce(new CloudMachineScreenRefusal(code));

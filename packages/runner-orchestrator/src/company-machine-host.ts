@@ -98,6 +98,11 @@ const SCREEN_MS = 22000;
 /** A boundary before a screen leaves: short, as the request is bounded at 30 s. One that does not answer in time holds
  * the picture back (the agent looks again), as a read's holds its output. */
 const SCREEN_BOUNDARY_MS = 4000;
+/** How long a desktop stays busy after an action that did not end cleanly (the request aborted, or SCREEN_MS ran out):
+ * the helper is killed, but what it started (an xdotool typing) may go on until the helper's own deadline for an action
+ * (cloud-machine-screen.ts, MACHINE_SCREEN_STEP_MS.action; measured on a real machine: a killed helper's xdotool kept
+ * typing). */
+const SCREEN_ACTION_GRACE_MS = 10000;
 /** The helper's exits besides 0: an action taken on this boot before (96), another boot (97), an earlier image (98). */
 const SCREEN_EXITS: Readonly<Record<number, string>> = Object.freeze({
 	96: "SCREEN_ACTION_TAKEN",
@@ -234,6 +239,8 @@ export interface CompanyMachineHostOptions {
 	codingValueClearTimeoutMs?: number;
 	/** How long machine_screen's helper may run (default 22 s): the tests' own shorter one. */
 	screenTimeoutMs?: number;
+	/** The clock a desktop's busy grace is counted on (default Date.now): the tests' own. */
+	now?: () => number;
 }
 
 /** One placement of a machine as SQL lists it for this executor
@@ -621,6 +628,11 @@ export class LxdCompanyMachineHost {
 	readonly #listeners = new Map<string, Set<() => void>>();
 	/** Per placement: its running boot's folder. */
 	readonly #folders = new Map<string, BootFolder>();
+	/** Per placement (machine_screen, review r1 F4): an action runs on its desktop now ("acting"), or one ended abnormally
+	 * and what it started may still type until this time. A second action is refused meanwhile (DESKTOP_BUSY); a look is
+	 * not. One executor process serves every screen call of a placement on its node (a peer's forwarded one too), so
+	 * this is the whole of it; a restarted executor starts with none. */
+	readonly #screenBusy = new Map<string, "acting" | number>();
 	/** Per placement and boot (`placementId/bootId`): a boot whose folder ended (6d-2), and how: its guest restarts
 	 * (asked again each pass until the next boot comes), or its placement was retired; and the code each pass reports.
 	 * Kept apart from the boot's folder, which its end, a stop or the next boot removes, so nothing of the boot leaves
@@ -1962,32 +1974,54 @@ export class LxdCompanyMachineHost {
 	 * once the company folder released the machine's reads and the run that sees it took them in (6d-3b). Otherwise the
 	 * picture and the titles stay on the machine and the answer says why (`heldBack`); the action happened all the same.
 	 * Programs on the desktop run as `desktop` and cannot write /company, so the screen needs no window of its own.
+	 *
+	 * One action at a time per desktop (review r1 F4): while one runs, or for SCREEN_ACTION_GRACE_MS after one that did
+	 * not end cleanly, another run's action is refused before the helper runs (DESKTOP_BUSY, no receipt marker made), so
+	 * it can never type into a window the first one changed. A look is always served.
 	 */
 	async screen(run: CompanyMachineScreen, signal: AbortSignal): Promise<CompanyMachineScreenOutcome> {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!pipe) throw new Error("COMPANY_MACHINE_SCREEN_UNAVAILABLE");
 		if (![run.placementId, run.bootId, run.runId].every((id) => UUID.test(id)))
 			throw new Error("COMPANY_MACHINE_SCREEN_INVALID");
-		const result = await pipe(
-			this.#policy.project,
-			lxdCompanyMachineName(run.placementId),
-			{
-				command: [
-					"/bin/sh",
-					"-c",
-					CODING_VALUE_ON_BOOT,
-					run.bootId,
-					"/usr/bin/node",
-					COMPANY_MACHINE_SCREEN_HELPER,
-				],
-				environment: {},
-				cwd: "/",
-				stdin: Buffer.from(JSON.stringify(run.request), "utf8"),
-				maxStdoutBytes: SCREEN_OUTPUT_BYTES,
-				stderrTailBytes: 0,
-			},
-			AbortSignal.any([signal, AbortSignal.timeout(this.#options.screenTimeoutMs ?? SCREEN_MS)]),
-		);
+		const acting = run.request.action !== null && run.request.action !== undefined;
+		const now = this.#options.now ?? Date.now;
+		if (acting) {
+			const busy = this.#screenBusy.get(run.placementId);
+			if (busy === "acting" || (typeof busy === "number" && busy > now())) return { refused: "DESKTOP_BUSY" };
+			this.#screenBusy.set(run.placementId, "acting");
+		}
+		let ended = false;
+		let result: Awaited<ReturnType<typeof pipe>>;
+		try {
+			result = await pipe(
+				this.#policy.project,
+				lxdCompanyMachineName(run.placementId),
+				{
+					command: [
+						"/bin/sh",
+						"-c",
+						CODING_VALUE_ON_BOOT,
+						run.bootId,
+						"/usr/bin/node",
+						COMPANY_MACHINE_SCREEN_HELPER,
+					],
+					environment: {},
+					cwd: "/",
+					stdin: Buffer.from(JSON.stringify(run.request), "utf8"),
+					maxStdoutBytes: SCREEN_OUTPUT_BYTES,
+					stderrTailBytes: 0,
+				},
+				AbortSignal.any([signal, AbortSignal.timeout(this.#options.screenTimeoutMs ?? SCREEN_MS)]),
+			);
+			ended = true;
+		} finally {
+			// The helper ended: the desktop is free. Cut off (aborted, past its deadline, or the exec lost): it stays busy
+			// for as long as what the helper started may still type.
+			if (acting)
+				if (ended) this.#screenBusy.delete(run.placementId);
+				else this.#screenBusy.set(run.placementId, now() + SCREEN_ACTION_GRACE_MS);
+		}
 		const exit = SCREEN_EXITS[result.exitCode];
 		if (exit !== undefined) return { refused: exit };
 		if (result.exitCode !== 0) throw new Error("COMPANY_MACHINE_SCREEN_FAILED");
@@ -2000,10 +2034,14 @@ export class LxdCompanyMachineHost {
 		const heldBack =
 			this.#heldAlready(at, boot) ?? (await this.#release(folder, at, boot, SCREEN_BOUNDARY_MS, signal));
 		if (heldBack === undefined) return shot;
-		// A title can name what a page or a file of /company holds: the titles stay with the picture.
+		// A title can name what a page or a file of /company holds: the titles stay with the picture. So does the action's
+		// error text (review r1 F3): the guest is the agent's root, and its helper's header could carry anything there.
+		// Only the verb and its exit code are told.
+		const done = shot.header.action as { type?: unknown; exitCode?: unknown } | null;
 		return Object.freeze({
 			header: Object.freeze({
 				...shot.header,
+				action: done ? Object.freeze({ type: done.type, exitCode: done.exitCode }) : null,
 				activeWindow: null,
 				windows: Object.freeze([]),
 				moreWindows: 0,

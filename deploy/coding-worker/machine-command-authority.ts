@@ -159,7 +159,10 @@ export async function authorizeMachineScreen(
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("MACHINE_SCREEN_AUTHORITY_INVALID");
 	const result = value as Record<string, unknown>;
 	if (result.schema !== "qorpera.machine-screen-authority/v1") throw new Error("MACHINE_SCREEN_AUTHORITY_INVALID");
-	if (result.state === "refused" && result.reason === "MACHINE_NOT_RUNNING") throw new CloudMachineScreenRefusal("MACHINE_NOT_RUNNING");
+	// The agent hears these: a machine that is not running, and a disk that has had a company folder view its caller may
+	// not see (20260930420000; review r1 F1).
+	if (result.state === "refused" && (result.reason === "MACHINE_NOT_RUNNING" || result.reason === "MACHINE_NEEDS_COMPANY_VIEW"))
+		throw new CloudMachineScreenRefusal(result.reason);
 	if (result.state !== "authorized" || result.machineId !== request.scope.machineId || result.receiptId !== request.input.commandId ||
 		typeof result.placementId !== "string" || !UUID.test(result.placementId) ||
 		typeof result.bootId !== "string" || !UUID.test(result.bootId) ||

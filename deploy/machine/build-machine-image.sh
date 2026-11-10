@@ -371,6 +371,17 @@ JS
 	if (again.status !== 96 || again.stdout.length !== 0) fail("the same receipt acted a second time");
 	const typed = shown(screen(act({ type: "type", text: "qorpera screen" }, 1000)), "typed text");
 	if (!String(typed.activeWindow).includes("qorpera screen]")) fail(`the typed text did not arrive: ${typed.activeWindow}`);
+	// Keys (review r1 F2): `xdotool key` runs any of its own commands that follows the keys (exec runs a program as root),
+	// so none is a key. The helper refuses every word of the installed xdotool help as a key, in capitals too: a newer
+	// xdotool with a command its list lacks fails this build until the list has it.
+	const help = spawnSync("/usr/bin/xdotool", ["help"], { env: { ...env, DISPLAY: ":1" }, encoding: "utf8" }).stdout
+		.split("\n").slice(1).map((line) => line.trim()).filter(Boolean);
+	if (help.length < 40 || !help.includes("exec") || help.some((word) => /\s/.test(word))) fail(`xdotool help lists ${help.length} commands`);
+	for (const word of [...help, "EXEC"]) {
+		const keyed = screen(act({ type: "key", keys: [word, "id"] }));
+		if (keyed.status !== 0 || JSON.parse(keyed.stdout.toString("utf8")).code !== "SCREEN_REQUEST_INVALID")
+			fail(`the screen helper took ${word} as a key`);
+	}
 	if (screen({}, crypto.randomUUID()).status !== 97) fail("the screen helper ran on another boot");
 	execFileSync("/usr/local/bin/desktop", ["stop"], { stdio: "ignore" });
 	const refused = screen(act({ type: "click", x: 1, y: 1 }));
@@ -381,6 +392,24 @@ JS
 JS
 	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
 	[[ -z $(ls -A /company) ]] || { echo "the screen helper wrote into /company" >&2; exit 1; }
+	# desktop key refuses every word of the installed xdotool help as a key (exit 2) and runs nothing for it, presses real
+	# keys, and fails on a key name xdotool does not know rather than saying it pressed it (review r1 F2).
+	desktop start >/dev/null
+	words=$(DISPLAY=:1 xdotool help | tail -n +2)
+	(( $(wc -w <<<"$words") >= 40 )) || { echo "xdotool help lists no commands" >&2; exit 1; }
+	rm -f /tmp/qorpera-key-ran
+	for word in $words EXEC; do
+		code=0
+		desktop key "$word" touch /tmp/qorpera-key-ran 2>/dev/null || code=$?
+		[[ $code == 2 ]] || { echo "desktop key took $word as a key (exit $code)" >&2; exit 1; }
+	done
+	[[ ! -e /tmp/qorpera-key-ran ]] || { echo "a key ran a program" >&2; exit 1; }
+	{ desktop key Return && desktop key ctrl+l; } || { echo "desktop key refused a real key" >&2; exit 1; }
+	code=0
+	desktop key NoSuchKey 2>/dev/null || code=$?
+	[[ $code == 2 ]] || { echo "desktop key took a key that does not exist (exit $code)" >&2; exit 1; }
+	desktop stop >/dev/null
+	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
 	# Nothing of that check stays in the desktop account but its panel layout.
 	find /home/desktop -mindepth 1 -maxdepth 1 ! -name .config ! -name .bashrc ! -name .profile ! -name .bash_logout \
 		-exec rm -rf -- {} +

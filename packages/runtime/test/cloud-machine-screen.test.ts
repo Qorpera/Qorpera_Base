@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
 	MACHINE_SCREEN_ACTION_TAKEN_EXIT,
 	MACHINE_SCREEN_STEP_MS,
+	MACHINE_SCREEN_XDOTOOL_COMMANDS,
 	type MachineScreenPorts,
 	type MachineScreenRun,
 	machineScreen,
@@ -160,6 +162,26 @@ describe("machine_screen's action shape", () => {
 			[{ type: "open", target: `/${"a".repeat(2000)}` }, "at most 2000 characters"],
 		] as const)
 			expect(() => parseMachineScreenAction(value), JSON.stringify(value)).toThrow(words);
+	});
+
+	it("takes no xdotool command word as a key, in any case, as the database's call check (review r1 F2)", () => {
+		// `xdotool key --delay 40 -- exec id` ran id as root on a real machine: xdotool runs a command that follows its keys.
+		for (const keys of [["exec", "id"], ["EXEC", "id"], ["Return", "Sleep", "1"], ["windowKill"], ["type"], ["Help"]])
+			expect(() => parseMachineScreenAction({ type: "key", keys }), keys.join()).toThrow("it is an xdotool command");
+		// A key that only contains one is no command, and real keys stay keys.
+		for (const keys of [["ctrl+exec"], ["Return"], ["ctrl+l", "Tab", "shift+Insert", "F5", "Escape"]])
+			expect(parseMachineScreenAction({ type: "key", keys })).toEqual({ type: "key", keys });
+		// xdotool 3.20160805.1's own list, the one the image installs, and the database's (20260930708000) the same.
+		expect(MACHINE_SCREEN_XDOTOOL_COMMANDS).toHaveLength(44);
+		expect(MACHINE_SCREEN_XDOTOOL_COMMANDS).toContain("exec");
+		const migration = readFileSync(
+			new URL("../../../supabase/migrations/20260930708000_machine_screen.sql", import.meta.url),
+			"utf8",
+		);
+		const listed = /\n\tv_xdotool constant text\[\] := array\[([^\]]+)\];\n/.exec(migration)?.[1] ?? "";
+		const words = [...listed.matchAll(/'([a-z_]+)'/g)].map((match) => match[1]);
+		expect([...words].sort()).toEqual([...MACHINE_SCREEN_XDOTOOL_COMMANDS].sort());
+		expect(migration).toContain("or lower(key.value #>> '{}') = any (v_xdotool))");
 	});
 
 	it("drives `desktop` with a fixed argv per verb, the text as one argument", () => {

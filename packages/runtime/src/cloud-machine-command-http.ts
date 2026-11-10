@@ -127,14 +127,17 @@ export interface CloudMachineScreenAnswer {
 	readonly png: string | null;
 	readonly heldBack?: string;
 }
-/** Why a machine showed nothing, sent back as 409 with its code: a machine that is not running, one whose image has no
- * screen helper yet, one that restarted, an action its receipt took on this boot before (never again), and the
- * helper's own refusals. */
+/** Why a machine showed nothing, sent back as 409 with its code: a machine that is not running, a disk that has had a
+ * company folder view the caller may not see (review r1 F1), one whose image has no screen helper yet, one that
+ * restarted, an action its receipt took on this boot before (never again), another run's action on that desktop right
+ * now (review r1 F4), and the helper's own refusals. */
 export const CLOUD_MACHINE_SCREEN_REFUSALS = [
 	"MACHINE_NOT_RUNNING",
+	"MACHINE_NEEDS_COMPANY_VIEW",
 	"MACHINE_IMAGE_WITHOUT_SCREEN",
 	"MACHINE_BOOT_CHANGED",
 	"SCREEN_ACTION_TAKEN",
+	"DESKTOP_BUSY",
 	...MACHINE_SCREEN_REFUSALS,
 ] as const;
 export type CloudMachineScreenRefusalCode = (typeof CLOUD_MACHINE_SCREEN_REFUSALS)[number];

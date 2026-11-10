@@ -391,6 +391,17 @@ test("the image carries machine_screen's screen helper as its own file, and chec
 	const boundaryMs = Number(hostSource.match(/\nconst SCREEN_BOUNDARY_MS = (\d+);\n/)[1]);
 	assert.ok(status + Math.max(startMs, action) + settle + shot < runMs, "the helper's steps against the executor's deadline");
 	assert.ok(runMs + boundaryMs + 2000 <= 30000, "the executor's deadline and the release against the gateway's 30 s");
+	// A desktop cut off mid-action stays busy for as long as the helper gives an action (review r1 F4).
+	assert.equal(Number(hostSource.match(/\nconst SCREEN_ACTION_GRACE_MS = (\d+);\n/)[1]), action);
+	// Keys (review r1 F2): the build checks every word of the installed xdotool help against the helper and the desktop
+	// command, and that real keys still work and an unknown one fails.
+	for (const line of [
+		'fail(`the screen helper took ${word} as a key`)',
+		"\twords=$(DISPLAY=:1 xdotool help | tail -n +2)\n",
+		'\t[[ ! -e /tmp/qorpera-key-ran ]] || { echo "a key ran a program" >&2; exit 1; }\n',
+		'\t[[ $code == 2 ]] || { echo "desktop key took a key that does not exist (exit $code)" >&2; exit 1; }\n',
+	])
+		assert.ok(imageScript.includes(line), line);
 	// Built with the packager's options, the guest helper holds none of it, and the screen helper drives the desktop only
 	// through its command and scrot.
 	const temporary = await mkdtemp(join(tmpdir(), "qorpera-machine-screen-"));
@@ -409,6 +420,40 @@ test("the image carries machine_screen's screen helper as its own file, and chec
 	} finally {
 		await rm(temporary, { recursive: true, force: true });
 	}
+});
+
+test("desktop key presses no xdotool command word, whatever its case, by the installed xdotool's own list (review r1 F2)", async () => {
+	// A stand-in xdotool whose help lists the commands as xdotool 3.20160805.1 prints them; any other use of it is a
+	// failure here, since a refused key must never reach xdotool.
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-desktop-key-"));
+	try {
+		const stub = join(temporary, "xdotool");
+		await writeFile(
+			stub,
+			'#!/bin/sh\nif [ "$1" = help ]; then printf "Available commands:\\n  key\\n  type\\n  exec\\n  sleep\\n  windowkill\\n"; exit 0; fi\necho "xdotool ran: $*" >&2\nexit 9\n',
+			{ mode: 0o755 },
+		);
+		const env = { ...process.env, PATH: `${temporary}:${process.env.PATH}` };
+		const key = (...args) =>
+			spawnSync("bash", [join(repositoryRoot, "deploy/machine/desktop"), "key", ...args], { encoding: "utf8", env });
+		for (const args of [["exec", "id"], ["EXEC", "id"], ["Return", "Sleep"], ["WindowKill"]]) {
+			const refused = key(...args);
+			assert.equal(refused.status, 2, `${args.join(" ")}: ${refused.stderr}`);
+			assert.match(refused.stderr, /^not a key: [A-Za-z]+ \(it is an xdotool command\)\n$/);
+		}
+		// A real key passes the check and goes on to the desktop (which is not running here); nothing ran xdotool's key.
+		const real = key("Return", "ctrl+exec");
+		assert.equal(real.status, 1);
+		assert.match(real.stderr, /^the desktop is not running/);
+		assert.doesNotMatch(real.stderr, /xdotool ran/);
+		// Without xdotool's list no key is pressed.
+		await writeFile(stub, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+		assert.notEqual(key("Return").status, 0);
+	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
+	// An unknown key name, which xdotool only reports on stderr, fails the command instead of passing as pressed.
+	assert.match(read("deploy/machine/desktop"), /if \[\[ \$skipped == \*"No such key name"\* \]\]; then\n\t\tfail "no such key: /);
 });
 
 test("a desktop is asked for: small machines refuse it, chosen files open on it, and pages work without a screen too", () => {

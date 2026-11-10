@@ -320,9 +320,21 @@ type)
 	fi
 	;;
 key)
-	need
 	(( $# > 0 )) || fail "desktop key KEY..." 2
-	xdotool key --delay 40 -- "$@"
+	# xdotool runs any of its own commands that follows the keys, whatever its case (`key exec id` runs id as root): none
+	# is a key. The list is the installed xdotool's own, so a newer one's commands are refused too; without it (xdotool
+	# may want the display for its help), no keys.
+	commands=$(xdotool help 2>/dev/null | awk 'NR > 1 && NF == 1 { print tolower($1) }' || true)
+	[[ -n $commands ]] || { need; fail "cannot read xdotool's commands, so no key is pressed"; }
+	for name in "$@"; do
+		if grep -qxF -- "${name,,}" <<<"$commands"; then fail "not a key: $name (it is an xdotool command)" 2; fi
+	done
+	need
+	# xdotool skips a key name it does not know with a word on stderr, and exits 0: say so rather than that it pressed it.
+	skipped=$(xdotool key --delay 40 -- "$@" 2>&1 >/dev/null) || { [[ -z $skipped ]] || echo "$skipped" >&2; exit 1; }
+	if [[ $skipped == *"No such key name"* ]]; then
+		fail "no such key: $(sed -n "s/.*No such key name '\([^']*\)'.*/\1/p" <<<"$skipped" | head -n 1) (any other keys were pressed)" 2
+	fi
 	;;
 scroll)
 	need

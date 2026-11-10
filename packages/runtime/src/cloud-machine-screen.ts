@@ -84,6 +84,59 @@ const KEYS: Readonly<Record<MachineScreenVerb, readonly string[]>> = {
 	open: ["type", "target"],
 };
 const KEY_NAME = /^[A-Za-z0-9_][A-Za-z0-9_+]{0,39}$/;
+/**
+ * xdotool's own commands (xdotool 3.20160805.1, `xdotool help`, as the machine image installs it): `xdotool key` runs any
+ * of them that follows its keys, `--` or not, and in any case (review r1 F2: `key exec id` ran `id` as root). No key may
+ * be one, compared without case; a key that only contains one (`ctrl+exec`) is no command. The database's call check
+ * holds the same list (20260930708000), the machine's `desktop key` checks the installed xdotool's own, and the image
+ * build fails when that has a word this list lacks.
+ */
+export const MACHINE_SCREEN_XDOTOOL_COMMANDS: readonly string[] = Object.freeze([
+	"getactivewindow",
+	"getwindowfocus",
+	"getwindowname",
+	"getwindowpid",
+	"getwindowgeometry",
+	"getdisplaygeometry",
+	"search",
+	"selectwindow",
+	"help",
+	"version",
+	"behave",
+	"behave_screen_edge",
+	"click",
+	"getmouselocation",
+	"key",
+	"keydown",
+	"keyup",
+	"mousedown",
+	"mousemove",
+	"mousemove_relative",
+	"mouseup",
+	"set_window",
+	"type",
+	"windowactivate",
+	"windowfocus",
+	"windowkill",
+	"windowclose",
+	"windowmap",
+	"windowminimize",
+	"windowmove",
+	"windowraise",
+	"windowreparent",
+	"windowsize",
+	"windowunmap",
+	"set_num_desktops",
+	"get_num_desktops",
+	"set_desktop",
+	"get_desktop",
+	"set_desktop_for_window",
+	"get_desktop_for_window",
+	"get_desktop_viewport",
+	"set_desktop_viewport",
+	"exec",
+	"sleep",
+]);
 /** Control characters as the database's `[[:cntrl:]]` sees them, line and paragraph separators too. */
 const CONTROL = /[\p{Cc}\p{Zl}\p{Zp}]/u;
 const CONTROLS = /[\p{Cc}\p{Zl}\p{Zp}]/gu;
@@ -158,6 +211,11 @@ export function parseMachineScreenAction(value: unknown): MachineScreenAction {
 			)
 				throw new Error(
 					"machine_screen's key keys are 1 to 16 key names such as Return, Tab, Escape, ctrl+l or ctrl+shift+t",
+				);
+			const command = (keys as string[]).find((key) => MACHINE_SCREEN_XDOTOOL_COMMANDS.includes(key.toLowerCase()));
+			if (command !== undefined)
+				throw new Error(
+					`machine_screen's key keys are key names; ${command} is not one (it is an xdotool command)`,
 				);
 			return Object.freeze({ type: "key", keys: Object.freeze([...(keys as string[])]) });
 		}
