@@ -23,6 +23,7 @@ const LOGIN_UNAVAILABLE =
 const LOGIN_UNAVAILABLE_FOR_OTHERS =
 	/^The run could not load the login that pays for it\. The member whose login it is can check it in Settings → AI subscriptions\.$/;
 const QORPERA_REFUSED = /^The run started, but one of its steps was refused\. The problem is on Qorpera's side\.$/;
+const NO_REPLY = /^The agent finished without sending its answer\. The problem is on Qorpera's side\.$/;
 
 describe("why a run stopped, in the member's words", () => {
 	it.each([
@@ -96,6 +97,18 @@ describe("why a run stopped, in the member's words", () => {
 			"failed",
 			/one of its steps was refused/,
 		],
+		// The agent's turn ended without its final send (10 November 2026): it did not answer, nothing was refused. The
+		// runtime's own code, and the stage's code older runs carry; a member's stop stays a stop, and any other category
+		// at that stage reads as before.
+		[BRIDGE("AGENT_TURN_ENDED_WITHOUT_FINAL_SEND"), "failed", NO_REPLY],
+		[BRIDGE("NATIVE_PUBLIC_COMPLETION:UNKNOWN"), "failed", NO_REPLY],
+		[`${BRIDGE("NATIVE_PUBLIC_COMPLETION:UNKNOWN")}; durable attempt output requires review`, "failed", NO_REPLY],
+		[BRIDGE("NATIVE_PUBLIC_COMPLETION:UNKNOWN"), "cancelled", /stopped before it finished/],
+		[BRIDGE("AGENT_TURN_ENDED_WITHOUT_FINAL_SEND"), "cancelled", /stopped before it finished/],
+		[BRIDGE("NATIVE_PUBLIC_COMPLETION:CANCELLED"), "failed", /^Qorpera lost contact with this run\./],
+		[BRIDGE("NATIVE_PUBLIC_COMPLETION:TIMEOUT"), "failed", /steps got no answer in time/],
+		[BRIDGE("NATIVE_PUBLIC_COMPLETION"), "failed", QORPERA_REFUSED],
+		[BRIDGE("AGENT_TURN_ENDED_WITHOUT_FINAL_SEND_AGAIN"), "failed", QORPERA_REFUSED],
 		// The turn failed with the model provider's own error (3 November 2026: a ChatGPT workspace plan's login whose
 		// every Codex turn failed), told here to a member whose own login did not pay.
 		[BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED"), "failed", PROVIDER_REFUSED_FOR_OTHERS],
@@ -166,6 +179,8 @@ describe("why a run stopped, in the member's words", () => {
 		expect(reason).toMatch(expected);
 		// Plain words only: no status codes, no machinery names.
 		expect(reason).not.toMatch(/\d{3}|runner|provider|bridge|lease|dispatch/i);
+		// Try again appears only when the cloud allows it, so the words never ask for it.
+		expect(reason).not.toMatch(/try again/i);
 	});
 
 	it("takes the cloud's word on a usage limit, and never reads a rate limit as one", () => {
@@ -311,6 +326,11 @@ describe("whether a stopped run is worth trying again as it is", () => {
 		// A dropped connection is usually brief.
 		[BRIDGE("NATIVE_PROMPT_COMPOSITION:TRANSPORT_UNAVAILABLE"), "failed", true],
 		[BRIDGE("NATIVE_COMPANY_CONTEXT:UNKNOWN"), "failed", false],
+		// The agent finished without sending its answer: worth trying again as it is.
+		[BRIDGE("AGENT_TURN_ENDED_WITHOUT_FINAL_SEND"), "failed", true],
+		[BRIDGE("NATIVE_PUBLIC_COMPLETION:UNKNOWN"), "failed", true],
+		[BRIDGE("NATIVE_PUBLIC_COMPLETION:UNKNOWN"), "cancelled", true],
+		[BRIDGE("NATIVE_PUBLIC_COMPLETION"), "failed", false],
 		["something nobody has seen before", "failed", false],
 	] as const)("%s → %s", (error, status, expected) => {
 		expect(runFailureInterrupted(error, status)).toBe(expected);

@@ -177,6 +177,17 @@ describe("the captions the kernel state produces", () => {
 			text: "Failed · workspace kept",
 			tone: "failed",
 		});
+		// Handing in: a pull request on GitHub; code the company keeps in Qorpera has none, and is saved.
+		const kept = { host: "qorpera", owner: "company", name: "shop", baseBranch: "main" };
+		expect(codingSessionStatus(codingSession({ phase: "publishing" }), owner, NOW).text).toBe(
+			"Opening the pull request · 3 files changed",
+		);
+		expect(codingSessionStatus(codingSession({ phase: "publishing", repository: kept }), owner, NOW).text).toBe(
+			"Saving the change · 3 files changed",
+		);
+		expect(codingSessionStatus(codingSession({ phase: "completed", repository: kept }), owner, NOW).text).toBe(
+			"Finished · session kept for follow-ups",
+		);
 		// Between turns: where the session is, instead of the generic "kept".
 		const done = { phase: "completed" as const, pullRequest: { url: "https://x.invalid/pull/1", number: 1 } };
 		expect(codingSessionStatus(codingSession({ ...done, attached: true }), owner, NOW).text).toBe(
@@ -487,6 +498,15 @@ describe("the element in the thread", () => {
 		expect(element.el.querySelector(".coding-meta")?.textContent).toBe(
 			`Qorpera_Base·qorpera/coding/1111…·claude-sonnet-5`,
 		);
+		expect(element.el.querySelector(".coding-meta .coding-mono")?.textContent).toBe("qorpera/coding/1111…");
+		// Code kept in Qorpera: the project's name and the model, never the session's own branch.
+		const kept = mount(
+			codingSession({ repository: { host: "qorpera", owner: "company", name: "shop", baseBranch: "main" } }),
+			{ events },
+		);
+		await settle();
+		expect(kept.element.el.querySelector(".coding-meta")?.textContent).toBe("shop·claude-sonnet-5");
+		expect(kept.element.el.querySelector(".coding-meta .coding-mono")).toBeNull();
 		// One turn for the harness, behind its mark: its steps, then what it said, a bubble a paragraph, then a step.
 		const turns = [...element.el.querySelectorAll<HTMLElement>(".coding-body .coding-turn")];
 		expect(turns.map((turn) => turn.className)).toEqual(["coding-turn coding-turn-harness"]);

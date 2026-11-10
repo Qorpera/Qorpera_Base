@@ -1131,6 +1131,8 @@ describe("machine tools", () => {
 				"desktop true makes it a desktop computer, with at least 2 cpus and 4 GiB",
 			);
 			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop start <company files, folders or URLs>");
+			// Programs start on the desktop with desktop run; the screen itself is machine_screen's.
+			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop run <program> starts a program on it");
 		} finally {
 			f.boundary.close();
 		}

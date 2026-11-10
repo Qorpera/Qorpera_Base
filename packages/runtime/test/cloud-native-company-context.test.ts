@@ -1537,31 +1537,32 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // interface apps (what an agent wants members to see is an app beside the chat; Jonas, 5 November 2026), and for
 // the wall (status kept in place above the thread instead of messages; Jonas, 5 November 2026), and for readable
 // cards and overlay v10 ("approval cards are completely unreadable"; Jonas, 5 November 2026), and for overlay v11
-// (each agent works for one member and the Co-Founder deals the team out; Jonas, 9 November 2026). A change to
-// either is a change to every run's bytes.
+// (each agent works for one member and the Co-Founder deals the team out; Jonas, 9 November 2026), and for
+// interface apps that show the company's state and overlay v13 (each owner keeps one posted app current; Jonas,
+// 10 November 2026). A change to either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "a84b891738dfd28a9f7031865763e0f12f6a5a46eb0729b631253a1b14f94a11",
-			prompt: "f270ecb8dda2f1851f7f607a361aba17a10fd852a6025c3adec2a265a22963e7",
+			instructions: "c8200177a9d57ee35567cb5c15bb1634998e679abe3b515f4d7181516c615dcd",
+			prompt: "be57a945a52a80bccd0e523d775d563455ec85f3a3ee11677e7ece894f9f0ae6",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "d351fdf78a813ab939d3eaab8cd3b4c4fd4b0529686c1a66d6edd810c439ce2f",
-			prompt: "3b2a8421dedf5f10551deebf86ab9703250273b80d5c2be9077a8db82a7c8f33",
+			instructions: "f9bfde546292e56820c3a07d937fed63bd33215b94aa39ed4aa76151aa7379aa",
+			prompt: "9939ba06da7ba749d0a047691bd02c41d28668decdd1d00d34ecd1f23a7ad2e8",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "a84b891738dfd28a9f7031865763e0f12f6a5a46eb0729b631253a1b14f94a11",
-			prompt: "09fef8853b34037c0009a40069bd9400e73cff3b8d2623c51b6c3ca501d09ad5",
+			instructions: "c8200177a9d57ee35567cb5c15bb1634998e679abe3b515f4d7181516c615dcd",
+			prompt: "954569cabce5c2ead1fe5e2507f3c8367984855615fb747cf2c378ed2efce48f",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
@@ -1714,6 +1715,29 @@ it("shows the company's work in interface apps from the first day, as fun quick 
 	])
 		expect(instructions).toContain(rule);
 	expect(instructions).not.toContain("an SVG sketch written to the company file is enough");
+});
+
+it("has interface apps show the company's state, kept by each area's owner (10 November 2026)", () => {
+	// Jonas, 10 November: "agents lets you interact with your employees — interfaces let's you interact with your
+	// company directly". In Fjeldtur the seven agent-made apps were dated reports typed in by hand: none read the
+	// company's live data, one in three was out of date within hours, and nobody owned keeping them true.
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"in conversations they talk with you, its people, and in interface apps they look at the company itself",
+		"An app is not a report and not a message",
+		"keep one app that shows the state of that area, post it, and change it in the same run that changes the state",
+		"A page that no longer matches the company is worse than no page.",
+		"never open a page with a dated headline or a list of what you did",
+		"save_app tells you how to make a page worth opening",
+		"Before you link or post an app, look at it: when machine_run is offered, open its entry from /company/apps/<name>/ in a browser on a machine at 1280 and at 390 px wide",
+	])
+		expect(instructions).toContain(rule);
+	expect(cloudRuntimeHireBehavior("employee")).toContain(
+		"one interface app, posted, that shows how the area stands now",
+	);
+	const cofounder = cloudRuntimeHireBehavior("cofounder");
+	expect(cofounder).toContain("when one is missing, out of date or reads as a report of what was done");
+	expect(cofounder).toContain("keep one posted app for it (name it company) that shows the plan as it stands");
 });
 
 it("has the Co-Founder open the company's email in its first run, (10 November 2026)", () => {
