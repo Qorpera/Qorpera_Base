@@ -2,10 +2,13 @@ import { CloudRpcError } from "../cloud/client.ts";
 import {
 	MEMBER_CHAT_PAGE,
 	MEMBER_CHAT_READ_MAX,
+	MEMBER_CONTACT_PLACES_MAX,
 	MEMBER_MESSAGE_MAX_BYTES,
 	type MemberChatCalls,
+	type MemberChatList,
 	type MemberChatPage,
 	type MemberChatSummary,
+	type MemberContactPlacing,
 	type MemberMessage,
 } from "../cloud/member-chats.ts";
 import { t } from "../ui/preferences.ts";
@@ -20,7 +23,11 @@ import { Store } from "./state.ts";
  * brings that whole run again (on a hint, on the clock, after a send): a message taken back, however old, loses its
  * words, and no hole ever stands between two messages. Nothing but a read puts a message among them: a sent message
  * waits after them until a read brings it, and one taken back changes only where it already stands. A chat off screen
- * keeps its draft and what is still to send, not its messages: it is read whole when it opens again. */
+ * keeps its draft and what is still to send, not its messages: it is read whole when it opens again.
+ *
+ * Where the member keeps each contact in their rail, and which they hid, comes with the list too. A place is drawn
+ * the moment it is made and kept by the cloud behind it; while one is on its way, a list read from before it is not
+ * taken, so the row never jumps back and forth. */
 
 /** A message this browser wrote: on its way, refused, or sent and not yet in a read of the chat. */
 export interface OutgoingMemberMessage {
@@ -62,9 +69,12 @@ export interface MemberChatsHost {
 	/** Whether someone is looking at this tab. */
 	visible(): boolean;
 	summaries(): Readonly<Record<string, MemberChatSummary>> | undefined;
-	setSummaries(next: Readonly<Record<string, MemberChatSummary>>): void;
+	/** `placing`, with a list the cloud answered: whether it keeps contacts' places (20260930717000). */
+	setSummaries(next: Readonly<Record<string, MemberChatSummary>>, placing?: boolean): void;
 	/** The cloud has no member chats (before migration 20260930715000): the rail shows none. */
 	setUnavailable(): void;
+	/** A place the member made was not kept: the rail says so, and shows what the cloud has. */
+	placeFailed(): void;
 }
 
 const EMPTY: MemberChatThread = {
@@ -109,6 +119,9 @@ export class MemberChats {
 	/** Each chat's sends go one after the other, so they land in the order written. */
 	readonly #sending = new Map<string, Promise<unknown>>();
 	#listReads = 0;
+	/** Places on their way to the cloud, one after the other, and how many. */
+	#places: Promise<unknown> = Promise.resolve();
+	#placesPending = 0;
 	#open: string | undefined;
 	#stopped = false;
 	#hintTimer: ReturnType<typeof setTimeout> | undefined;
@@ -182,29 +195,81 @@ export class MemberChats {
 		if (this.#stopped || !this.#host.available()) return;
 		const version = ++this.#listReads;
 		try {
-			const chats = await this.#host.calls().list();
-			if (this.#stopped || version !== this.#listReads) return;
-			const next: Record<string, MemberChatSummary> = {};
-			for (const chat of chats) {
-				// The chat on screen, in front of someone, is read: its count never flashes up between the hint and the mark.
-				const seen = chat.userId === this.#open && this.#host.visible() && this.thread(chat.userId).get().loaded;
-				next[chat.userId] = seen ? { ...chat, unread: 0 } : chat;
-			}
-			this.#host.setSummaries(next);
-			// The list's read marks are newer than a chat's own, or as new: "Seen" follows them without a read of the chat.
-			for (const chat of chats) {
-				const store = this.#threads.get(chat.userId);
-				const thread = store?.get();
-				if (store && thread && (chat.readSeq > thread.readSeq || chat.theirReadSeq > thread.theirReadSeq))
-					store.set({
-						readSeq: Math.max(thread.readSeq, chat.readSeq),
-						theirReadSeq: Math.max(thread.theirReadSeq, chat.theirReadSeq),
-					});
-			}
+			const list = await this.#host.calls().list();
+			// A place on its way is drawn already, and this list may be from before it: the place's own answer is the
+			// list that counts.
+			if (this.#stopped || version !== this.#listReads || this.#placesPending) return;
+			this.#take(list);
 		} catch (error) {
 			if (this.#stopped || version !== this.#listReads) return;
 			if (error instanceof CloudRpcError && error.missing) this.#host.setUnavailable();
 		}
+	}
+
+	/** A list the cloud answered becomes the list shown. */
+	#take(list: MemberChatList): void {
+		const next: Record<string, MemberChatSummary> = {};
+		for (const chat of list.chats) {
+			// The chat on screen, in front of someone, is read: its count never flashes up between the hint and the mark.
+			const seen = chat.userId === this.#open && this.#host.visible() && this.thread(chat.userId).get().loaded;
+			next[chat.userId] = seen ? { ...chat, unread: 0 } : chat;
+		}
+		this.#host.setSummaries(next, list.placing);
+		// The list's read marks are newer than a chat's own, or as new: "Seen" follows them without a read of the chat.
+		for (const chat of list.chats) {
+			const store = this.#threads.get(chat.userId);
+			const thread = store?.get();
+			if (store && thread && (chat.readSeq > thread.readSeq || chat.theirReadSeq > thread.theirReadSeq))
+				store.set({
+					readSeq: Math.max(thread.readSeq, chat.readSeq),
+					theirReadSeq: Math.max(thread.theirReadSeq, chat.theirReadSeq),
+				});
+		}
+	}
+
+	/** Places contacts in this member's own rail: where each stands, and whether it is hidden. Drawn at once and kept
+	 * by the cloud behind it, one change after the other; a change that is not kept is said in the rail, and the rail
+	 * shows what the cloud has. */
+	place(changes: readonly MemberContactPlacing[]): void {
+		const summaries = this.#host.summaries();
+		if (this.#stopped || !summaries || !this.#host.available()) return;
+		const next = { ...summaries };
+		const sent: MemberContactPlacing[] = [];
+		for (const change of changes) {
+			const userId = change.userId.toLowerCase();
+			const chat = next[userId];
+			if (!chat) continue;
+			const { hidden: _hidden, ...rest } = chat;
+			next[userId] = { ...rest, place: change.place, ...(change.hidden ? { hidden: true as const } : {}) };
+			sent.push({ userId, place: change.place, hidden: change.hidden });
+		}
+		if (!sent.length) return;
+		this.#host.setSummaries(next);
+		// A list read that is on its way says nothing of this change: it is not taken.
+		++this.#listReads;
+		this.#placesPending++;
+		const run = async () => {
+			let answer: MemberChatList | undefined;
+			let failed = false;
+			try {
+				// The cloud takes so many at once; a bigger change goes in parts, each answering the list.
+				for (let start = 0; start < sent.length && !this.#stopped; start += MEMBER_CONTACT_PLACES_MAX)
+					answer = await this.#host.calls().place(sent.slice(start, start + MEMBER_CONTACT_PLACES_MAX));
+			} catch {
+				failed = true;
+			}
+			this.#placesPending--;
+			if (this.#stopped) return;
+			// Reads sent while this was on its way may be from before it.
+			++this.#listReads;
+			if (failed) this.#host.placeFailed();
+			if (this.#placesPending) return;
+			// The last change's answer is the list as it stands. After a failure the list is read again: it shows what
+			// the cloud kept, and whether it keeps places at all.
+			if (answer && !failed) this.#take(answer);
+			else await this.refresh();
+		};
+		this.#places = this.#places.then(run, run);
 	}
 
 	/** One whole run of the chat, read now: its newest messages back to `floor`, the oldest message shown, or its

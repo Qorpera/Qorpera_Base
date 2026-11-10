@@ -1201,6 +1201,32 @@ before). Each call answers 42501 for a caller who is not a member of the company
   every 15 s while the window is open without hints. Fields may be added; a client ignores the ones it does not know.
 - `qorpera_member_machine_screen_begin(profile, machine, watch)`: one look, begun as the member. Clients do not call it:
   the look route (§4) does, with the member's own token. `watch` is `{"confirmed": boolean}`.
+#### Member contacts' places (20260930717000_member_contact_places)
+
+A contact is a rail row like an agent's (Jonas, 10 Nov 2026: "not sure I like the member contacts at the top,
+undraggable and un-hideable"): its member drags it into the pinned row, into a section or among what is in no section,
+and hides it. Where a contact stands is each member's own, as their pins and hidden agents are: nobody else's rail
+changes, nothing is written to the company's folder, and any member may place their contacts, viewers too.
+
+- The list (`qorpera_list_member_chats`) answers `placing: true` on a cloud that keeps places; a client offers no
+  drag, pin or hide without it. Each chat carries `hidden` (boolean) and, once its member placed it, `place`: `{zone,
+  sectionId?, after?, rank}`. `zone` is `members` (the Members group at the foot of the list, where a contact stands
+  until it is placed), `pinned`, `unassigned` or `section` (with `sectionId`, a section of the sidebar). `after` is
+  the agent or group chat the contact stands after in its zone (absent: first; never in `members`), and `rank` (0 to
+  9999) orders the contacts that stand after the same one (in `members`: all of them).
+- The company's own order of a zone (the sidebar's) can change under a kept place. A client draws a zone by weaving
+  its contacts into that order, each after its `after`; a contact whose `after` is not in the zone stands last, and
+  one whose section is gone, or whose rail has no sidebar, stands in the Members group. The kept place is not
+  rewritten for it. A contact never placed stands in the Members group after the placed ones, in the order the
+  members joined.
+- `qorpera_place_member_contacts(profile, contacts)`: `contacts` is a list of 1 to 100 entries `{userId, zone,
+  sectionId?, after?, rank, hidden}`, each one contact's whole place (it replaces the kept one). Answers the list as
+  `qorpera_list_member_chats` does. Refused whole with 22023, nothing written, when the list or an entry has another
+  shape, names the caller, someone who is not a member of the company or one contact twice, names a section the
+  company does not have, gives `sectionId` without zone `section` (or the other way round), or gives `after` in
+  `members`. `after` is not checked against the company's agents: it is the caller's own note. 42501 as the other
+  calls. A place goes with either member's membership and with the company.
+- A change of place sends no hint: another tab of the same member shows it on the slow poll.
 
 ### Chat images (20260928549140_chat_images)
 
