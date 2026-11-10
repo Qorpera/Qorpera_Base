@@ -347,9 +347,11 @@ begin
 		next_care_at = public.qorpera_code_care_next_at(owner, name, p_outcome ->> 'state' = 'busy', v_now),
 		last_care_at = v_now,
 		last_ok_at = case when p_outcome ->> 'state' = 'done' and v_problem is null then v_now else last_ok_at end,
-		-- The same problem keeps the time it was first seen.
-		problem = v_problem,
-		problem_since = case when v_problem is null then null when v_problem = problem then problem_since else v_now end,
+		-- The same problem keeps the time it was first seen. A run put off as busy looked at nothing, or not at
+		-- everything: when it names no problem, last night's stays until a run that finishes says otherwise.
+		problem = case when p_outcome ->> 'state' = 'busy' and v_problem is null then problem else v_problem end,
+		problem_since = case when p_outcome ->> 'state' = 'busy' and v_problem is null then problem_since
+			when v_problem is null then null when v_problem = problem then problem_since else v_now end,
 		main_sha = coalesce(p_outcome ->> 'mainSha', main_sha),
 		-- Only a clean fsck moves the refs the next run compares with.
 		refs_sha256 = case when v_fsck = 'ok' then coalesce(p_outcome ->> 'refsSha256', refs_sha256) else refs_sha256 end,

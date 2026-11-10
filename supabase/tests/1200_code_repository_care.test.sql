@@ -637,6 +637,14 @@ begin
 			or r.next_care_at = public.qorpera_code_care_next_at('company', 'shop', false, r.last_care_at))
 		and r.problem = 'GC_DAMAGED' and r.problem_since < r.last_care_at and r.last_ok_at = q.last_ok_at
 		and r.care_token is null and r.care_attempts = 0, 'a busy run: ' || to_jsonb(r)::text);
+	-- A busy run that names no problem looked at too little to clear one: last night's stays, with its time.
+	q := r;
+	v_token := pg_temp.care_begin();
+	perform pg_temp.care_finish(v_token, pg_temp.care_outcome('{"state":"busy"}'));
+	r := pg_temp.care_shop();
+	perform pg_temp.base_assert(r.problem = 'GC_DAMAGED' and r.problem_since = q.problem_since
+		and r.last_ok_at is not distinct from q.last_ok_at and r.care_token is null,
+		'a busy run with no problem: ' || to_jsonb(r)::text);
 	-- No problem: the problem and its time go, and the run was a good one. Packing stays off.
 	v_token := pg_temp.care_begin();
 	perform pg_temp.care_finish(v_token, pg_temp.care_outcome());
