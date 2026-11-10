@@ -6,12 +6,12 @@
 --   2. The executor's claim, step and finish of an undo: refused, undone, already; a filler first; an undo of an undo;
 --      andLater across undo rows, and its own undo; a finish that comes late; too many starts; put off; nothing.
 --   3. Downloads: the member's three calls per role, made and ready, the same main again, too large, put off, the
---      rate, no executor, and the file's removal.
+--      rate, no executor, the file's removal, and a made download that is over once a newer one replaced its file.
 --   4. Restore: the operator's call, verify, the wait for quiet sessions, progress, the record a restore makes before
 --      its place opens and the finish after it, what the record does to the rows (lost rows, files and care due
 --      again), a restored main the record does not know, the wall for undo, and discard.
---   5. A restore's record against landings and in every order of failure; restores back, forward and back again with
---      undos among the rows; a history of more than 200 changes.
+--   5. A restore's record against landings and in every order of failure, and the downloads it ends; restores back,
+--      forward and back again with undos among the rows; a history of more than 200 changes.
 --   6. More than 500 changes are not taken out at once.
 --   7. An agent describes a change: the notice, and each thing wrong with a picture.
 --   8. A worker's run asks for nothing.
@@ -734,6 +734,52 @@ begin
 		select pg_temp.rec_here(), 'company', 'shop', %L, 'download', '{"file":"files","fileName":"a.zip"}', 'member'
 		from generate_series(1, 2)$q$, v_company), '23505');
 end $$;
+-- A made download is ready only while its file is the one it made. The job that makes a download replaces what
+-- downloads/ holds of its kind, so the older made download of that file is over from then on: to the member who reads
+-- it, in the list, and for the request that asks again. The other kind's file is not touched.
+do $$
+declare v jsonb; v_item jsonb; v_old uuid; v_new uuid; v_other uuid; q public.qorpera_code_requests%rowtype;
+	v_day text := to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD');
+	v_zip text := 'code/company/shop/downloads/shop-' || to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD') || '.zip';
+	v_bundle text := 'code/company/shop/downloads/shop-' || to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD') || '.bundle';
+begin
+	-- (The day's rate starts again.)
+	update public.qorpera_code_requests set created_at = created_at - interval '25 hours' where kind = 'download';
+	v_old := (pg_temp.req_ask('files') ->> 'requestId')::uuid;
+	v_other := (pg_temp.req_ask('history') ->> 'requestId')::uuid;
+	v := pg_temp.req_claim();
+	perform pg_temp.base_assert(jsonb_array_length(v) = 2 and v -> 0 ->> 'requestId' = v_old::text and v -> 1 ->> 'requestId' = v_other::text,
+		'two downloads are claimed: ' || v::text);
+	perform pg_temp.req_finish(v_old, (v -> 0 ->> 'token')::uuid, pg_temp.req_outcome(jsonb_build_object('state', 'done',
+		'result', 'made', 'path', v_zip, 'bytes', 200, 'sha256', repeat('1', 64), 'mainSha', pg_temp.rec_sha('c24'))));
+	perform pg_temp.req_finish(v_other, (v -> 1 ->> 'token')::uuid, pg_temp.req_outcome(jsonb_build_object('state', 'done',
+		'result', 'made', 'path', v_bundle, 'bytes', 300, 'sha256', repeat('2', 64), 'mainSha', pg_temp.rec_sha('c24'))));
+	perform pg_temp.base_assert(pg_temp.req_download(v_old) ->> 'state' = 'ready' and pg_temp.req_download(v_other) ->> 'state' = 'ready'
+		and pg_temp.req_ask('files') ->> 'requestId' = v_old::text, 'both are ready');
+	-- Main moves, and the files are asked for again: a new request. Until it is made, the older file is still there.
+	perform pg_temp.base_assert(pg_temp.rec_land(34, 'c24', 'c25') = pg_temp.rec_answer('recorded', 19), 'main moves once more');
+	v_new := (pg_temp.req_ask('files') ->> 'requestId')::uuid;
+	perform pg_temp.base_assert(v_new <> v_old and pg_temp.req_download(v_old) ->> 'state' = 'ready'
+		and pg_temp.req_download(v_new) ->> 'state' = 'queued', 'a newer one is on its way');
+	v_item := pg_temp.req_claim() -> 0;
+	perform pg_temp.base_assert(pg_temp.req_finish(v_new, (v_item ->> 'token')::uuid, pg_temp.req_outcome(jsonb_build_object('state', 'done',
+		'result', 'made', 'path', v_zip, 'bytes', 201, 'sha256', repeat('3', 64), 'mainSha', pg_temp.rec_sha('c25'))))
+		= pg_temp.req_recorded(null), 'the newer one is made');
+	q := pg_temp.req_row(v_old);
+	perform pg_temp.base_assert(q.state = 'expired' and q.lease_token is null
+		and pg_temp.req_download(v_old) = jsonb_build_object('schema', 'qorpera.code-download/v1', 'requestId', v_old, 'file', 'files',
+			'state', 'failed', 'reason', 'failed', 'path', null, 'bytes', null)
+		and pg_temp.req_download(v_new) ->> 'state' = 'ready' and (pg_temp.req_download(v_new) ->> 'bytes')::integer = 201
+		and pg_temp.req_ask('files') ->> 'requestId' = v_new::text and pg_temp.req_ask('files') ->> 'state' = 'ready'
+		and (select jsonb_agg(d ->> 'requestId' order by d ->> 'file') from jsonb_array_elements(
+			(select r -> 'downloads' from jsonb_array_elements(pg_temp.req_list() -> 'repositories') r where r ->> 'name' = 'shop')) d
+			where d ->> 'state' = 'ready') = jsonb_build_array(v_new, v_other)
+		and pg_temp.req_download(v_other) ->> 'state' = 'ready' and (pg_temp.req_row(v_other)).state = 'done',
+		'the older download of that file is over: ' || to_jsonb(q)::text || ' ' || pg_temp.req_list()::text);
+	-- And nothing is asked to be removed for it when its 7 days would have been over.
+	update public.qorpera_code_requests set expires_at = clock_timestamp() - interval '1 second' where id = v_old;
+	perform pg_temp.base_assert(pg_temp.req_claim() = '[]'::jsonb and (pg_temp.req_row(v_old)).state = 'expired', 'no removal for it');
+end $$;
 
 -- 4. Restore ----------------------------------------------------------------------------------------------------------
 -- company/site: three landings, an undo of the second, a conflict, and a landing after a movement nobody recorded.
@@ -1121,18 +1167,43 @@ insert into public.qorpera_code_repositories(environment_id, profile_id, owner, 
 values (pg_temp.rec_here(), '92400000-0000-4000-8000-000000000010', 'company', 'one');
 do $$
 declare v jsonb; v_item jsonb; v_id uuid; v_first uuid; v_token uuid; q public.qorpera_code_requests%rowtype;
-	s public.qorpera_code_repositories%rowtype; i integer;
+	s public.qorpera_code_repositories%rowtype; i integer; v_download uuid;
+	v_zip text := 'code/company/one/downloads/one-' || to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD') || '.zip';
 	v_bundle text := '20261110T160000Z-ba9876543210'; v_other text := '20261110T180000Z-ba9876543210';
 	v_record_lost jsonb := '{"schema":"qorpera.code-restore-recorded/v1","state":"lost"}';
 begin
 	perform pg_temp.rec_land(70, 'a0', 'a1', p_name => 'one');
 	perform pg_temp.rec_land(71, 'a1', 'a2', p_name => 'one');
+	-- The code as a file, made while main is at the second change.
+	v_download := (pg_temp.req_ask('files', p_name => 'one') ->> 'requestId')::uuid;
+	v_item := pg_temp.req_claim() -> 0;
+	perform pg_temp.req_finish(v_download, (v_item ->> 'token')::uuid, pg_temp.req_outcome(jsonb_build_object('state', 'done',
+		'result', 'made', 'path', v_zip, 'bytes', 77, 'sha256', repeat('7', 64), 'mainSha', pg_temp.rec_sha('a2'))));
+	perform pg_temp.base_assert(pg_temp.req_ask('files', p_name => 'one') ->> 'state' = 'ready'
+		and pg_temp.req_ask('files', p_name => 'one') ->> 'requestId' = v_download::text, 'one''s download is ready');
 	-- A restore from a bundle of main as it stands: recorded inside the job that opens the place. Then the place is
 	-- open, the company's line is free, and a landing goes in and is recorded before the restore's finish arrives. The
 	-- finish records nothing: the landing is in main, and the record's main is where the landing left it.
 	v := pg_temp.req_restore_to(v_bundle, 'a2', 'one', 'a2');
 	perform pg_temp.base_assert(v = pg_temp.req_restored(3, 2, 0, 0) and pg_temp.rec_is(3, 'restore', 'landed', 'a2', 'a2', 'one'),
 		'recorded in the job: ' || v::text);
+	-- The restore put the repository in a new place, and downloads/ went aside with the old one: the made download is
+	-- over, though main is where it was made. The member who reads it is told so, the list no longer shows it, and
+	-- asking again makes a new file.
+	q := pg_temp.req_row(v_download);
+	v := pg_temp.req_ask('files', p_name => 'one');
+	perform pg_temp.base_assert(q.state = 'expired' and q.lease_token is null and (pg_temp.rec_shop('one')).last_main = q.outcome ->> 'mainSha'
+		and pg_temp.req_download(v_download) ->> 'state' = 'failed' and pg_temp.req_download(v_download) ->> 'reason' = 'failed'
+		and v ->> 'state' = 'queued' and v ->> 'requestId' <> v_download::text and v -> 'path' = 'null'
+		and (select r -> 'downloads' from jsonb_array_elements(pg_temp.req_list() -> 'repositories') r where r ->> 'name' = 'one')
+			= jsonb_build_array(jsonb_build_object('requestId', v ->> 'requestId', 'file', 'files', 'state', 'queued', 'path', null,
+				'bytes', null, 'madeAt', null, 'expiresAt', null)),
+		'a restore ends the made downloads: ' || to_jsonb(q)::text || ' ' || v::text);
+	v_item := pg_temp.req_claim() -> 0;
+	perform pg_temp.base_assert(v_item ->> 'requestId' = v ->> 'requestId' and v_item ->> 'work' = 'make'
+		and pg_temp.req_finish((v_item ->> 'requestId')::uuid, (v_item ->> 'token')::uuid, pg_temp.req_outcome(jsonb_build_object(
+			'state', 'done', 'result', 'made', 'path', v_zip, 'bytes', 78, 'sha256', repeat('8', 64), 'mainSha', pg_temp.rec_sha('a2'))))
+			= pg_temp.req_recorded(null) and pg_temp.req_ask('files', p_name => 'one') ->> 'state' = 'ready', 'and the new file is made');
 	perform pg_temp.base_assert(pg_temp.rec_land(72, 'a2', 'a3', p_name => 'one') = pg_temp.rec_answer('recorded', 4), 'a landing after the open');
 	perform pg_temp.base_assert(pg_temp.req_restore_end(v_bundle, 'a2') = pg_temp.req_recorded(3)
 		and pg_temp.req_rows('one') = '1:L 2:L 3:L 4:L' and pg_temp.rec_is(4, 'landing', 'landed', 'a2', 'a3', 'one')

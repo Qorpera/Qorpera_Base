@@ -1363,7 +1363,9 @@ with the member folder client. Storage → the repository's folder → "Download
   [{owner, name, changes, downloads: [{requestId, file, state, path, bytes, madeAt, expiresAt}]}]}` for any member of
   the company (viewers too; 42501 "Code unavailable" for anyone else). `canDownload` is true for owners and admins.
   `changes` is how many changes the repository's record holds. `downloads` are the ones on their way (`state`
-  `queued` or `running`) and the made ones whose 7 days are not over (`ready`, with `path` and `bytes`).
+  `queued` or `running`) and the made ones whose file is still there (`ready`, with `path` and `bytes`): a made
+  download is over after 7 days, once a newer download of the same `file` is made (it replaces the file), and when
+  the repository is restored from its copy (its folder is new).
 - `qorpera_request_code_download(profile, owner, name, file)`: owners and admins (42501 otherwise). `file` is `files`
   (main's files, a `.zip`) or `history` (main with its history, a git `.bundle`); anything else is 22023, a repository
   the company does not keep is P0002 "No such repository". Answers `{schema: "qorpera.code-download/v1", requestId,
@@ -1372,8 +1374,9 @@ with the member folder client. Storage → the repository's folder → "Download
   company in 24 hours) or `no_executor`; else a new request, `queued`.
 - `qorpera_code_download(profile, request)`: owners and admins; how that request stands, in the same shape. Besides
   the states above: `failed` with `reason` `too_large` (over 200 MiB), `busy` (it was put off behind coding work until
-  it ended) or `failed` (anything else, a file whose 7 days are over included: ask again). P0002 "No such download"
-  for a request that is not one of the company's downloads.
+  it ended) or `failed` (anything else, a made file that is over included: its 7 days passed, a newer download
+  replaced it, or the repository was restored; ask again). P0002 "No such download" for a request that is not one of
+  the company's downloads.
 - The tables are closed to every API role; the executor's, the agent's and the operator's calls are not a member's.
 
 ## 3. Realtime

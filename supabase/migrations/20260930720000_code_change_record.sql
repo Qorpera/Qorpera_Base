@@ -1015,8 +1015,9 @@ $$;
 --   main): a filler for that gap first, as before any other movement.
 -- * Every row's state as the restored main's history has it (qorpera_code_changes_restored).
 -- * The restore's own row, from main as it was to main as restored.
--- * The place is new: every record file and the list are written again, and care checks the repository at the next
---   quiet moment, trusting no refs it knew.
+-- * The place is new: every record file and the list are written again, the downloads made in the old place are over
+--   (their files went aside with it), and care checks the repository at the next quiet moment, trusting no refs it
+--   knew.
 -- Made again, it is the same record:
 -- * by the same request (the first answer was not heard, or the job did not save and the request was claimed again):
 --   what it recorded is answered, and nothing is written;
@@ -1105,6 +1106,12 @@ begin
 	update public.qorpera_code_repositories set main_sha = v_main, restored_at = v_now, restored_from = v_bundle,
 		refs_sha256 = null, next_care_at = v_now, index_written = 0
 	where environment_id = v_repository.environment_id and owner = v_repository.owner and name = v_repository.name;
+	-- A made download is ready only while its file is the one it made: downloads/ went aside with the old place. Each
+	-- is over, with nothing left to remove (a removal that was claimed finds its lease gone).
+	update public.qorpera_code_requests request set state = 'expired', lease_token = null, lease_owner = null,
+		lease_until = null, updated_at = v_now
+	where request.environment_id = v_repository.environment_id and request.owner = v_repository.owner
+		and request.name = v_repository.name and request.kind = 'download' and request.state = 'done';
 	v_recorded := v_recorded || jsonb_build_object('change', v_n);
 	update public.qorpera_code_requests set updated_at = v_now, progress = coalesce(progress, '{}'::jsonb)
 		|| jsonb_build_object('recorded', v_recorded || jsonb_build_object('bundle', v_bundle, 'mainSha', v_main))
@@ -1120,7 +1127,8 @@ end $$;
 --   it took out are reverted by it. With andLater that is every row from the target on that was in main, newest
 --   first, each as it stands when its turn comes, so an undo among them puts its own targets back before they go too.
 --   A finish that comes after its job, when the record has moved on, takes over the filler that covers the undo.
--- * A made download lasts 7 days; a removed one is expired.
+-- * A made download lasts 7 days; a removed one is expired. Making one replaced the file of the repository's earlier
+--   made download of the same kind (one zip and one bundle stay at most): that one is over, so it is ready to nobody.
 -- * A restore that put the repository back was recorded inside the job that opened the place
 --   (qorpera_code_restore_record): the finish writes no row. It ends the request, with what was recorded beside the
 --   outcome, and takes `restored` only for a request that recorded this bundle at this main (55000 otherwise): a
@@ -1260,6 +1268,15 @@ begin
 		-- The request keeps the outcome with what the record found: the boundary, the newest row main holds, and how
 		-- many rows went and came back.
 		v_stored := p_outcome || (v_recorded - 'change' - 'bundle' - 'mainSha');
+	end if;
+	-- A made download is ready only while its file is the one it made, and this one's job replaced what downloads/ held
+	-- of its kind: the earlier made downloads of that file are over, with nothing left to remove.
+	if v_result = 'made' then
+		update public.qorpera_code_requests request set state = 'expired', lease_token = null, lease_owner = null,
+			lease_until = null, updated_at = v_now
+		where request.environment_id = v_request.environment_id and request.owner = v_request.owner
+			and request.name = v_request.name and request.kind = 'download' and request.state = 'done'
+			and request.input ->> 'file' = v_request.input ->> 'file' and request.id <> v_request.id;
 	end if;
 	-- What a refused undo names fits the row.
 	if v_state = 'refused' and p_outcome ? 'paths' then
@@ -1526,7 +1543,8 @@ end $$;
 
 -- An owner or admin asks for the company's code: `files` (main's files as a .zip) or `history` (main with its history
 -- as a git bundle, for a developer). Answers, in this order: the made download of that file when main has not moved
--- since (ready); the open request of that file; refused after 20 download requests of the company in 24 hours
+-- since (ready; a made download is over once a newer one of that file is made, and when a restore puts the repository
+-- in a new place, so the one found here still has its file); the open request of that file; refused after 20 download requests of the company in 24 hours
 -- (too_many) or when no executor holds the company (no_executor); else a new request (queued). P0002 when the company
 -- has no such repository.
 create function public.qorpera_request_code_download(p_profile_id uuid, p_owner text, p_name text, p_file text)
