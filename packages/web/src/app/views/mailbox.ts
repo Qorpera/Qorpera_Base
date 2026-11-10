@@ -83,9 +83,11 @@ interface MailboxUi {
 	expanded: Record<string, boolean>;
 	writing: boolean;
 	writer: string | null;
-	/** What is typed after "To": all of it with an agent as the writer, what is not yet a chip with the member. */
+	/** What is typed after "To" and is not yet a chip. */
 	writeTo: string;
-	/** Who the member's own email goes to, as typed: one chip each. */
+	/** Who the email goes to, one chip each, as it was read when it was typed. A chip is never read again: it stays what
+	 * it is whoever writes the email. With an agent as the writer it may be a name; in the member's own email one that
+	 * is no address is marked. */
 	writeRecipients: string[];
 	writeSubject: string;
 	writeText: string;
@@ -142,12 +144,13 @@ const isAddress = (text: string) => text.length <= 254 && ADDRESS.test(text.toLo
 interface Entry {
 	/** The address it points at ("Anna Holm <anna@acme.dk>"), or null when it points at nothing. It alone is the entry's
 	 * recipient, whatever stands beside it: the name may be an address of its own ("old@acme.dk <anna@acme.dk>"), and
-	 * nobody at it is written to. A quoted address that is all of its entry counts as pointed at, as a list from a
-	 * spreadsheet gives it. An entry that points at more than one address, or has one more standing after the one it
-	 * points at, says no clear thing: it is kept here as it stands, which is no address, for the member to put right. */
+	 * nobody at it is written to. An entry that points at more than one address, or has one more standing after the one
+	 * it points at, says no clear thing: it is kept here as it stands, which is no address, for the member to put
+	 * right. */
 	pointed: string | null;
 	/** The rest, in the order it stands: what is plain, and each aside whole. An aside is a quoted text or a remark in
-	 * round brackets: a name or a note, and never a recipient, whatever it holds. */
+	 * round brackets: a name or a note, and never a recipient, whatever it holds and wherever it stands, alone in its
+	 * entry too ('"old@acme.dk"'). */
 	parts: { text: string; aside: boolean }[];
 	/** Where the list goes on after it. */
 	end: number;
@@ -166,10 +169,8 @@ function entriesOf(list: string): Entry[] {
 	let unclear = false;
 	let from = 0;
 	const close = (stop: number, end: number) => {
-		const text = list.slice(from, stop).trim();
-		const alone = /^"([^"]*)"$/.exec(text)?.[1]?.trim() ?? "";
 		entries.push({
-			pointed: unclear || pointed.length > 1 ? text : (pointed[0] ?? (isAddress(alone) ? alone : null)),
+			pointed: unclear || pointed.length > 1 ? list.slice(from, stop).trim() : (pointed[0] ?? null),
 			parts,
 			end,
 		});
@@ -1904,27 +1905,30 @@ function edited(ui: MailboxUi, field: Element): void {
 	field.closest(".mailbox-write-panel")?.querySelector(".mailbox-write-error")?.remove();
 }
 
-/** Who the member's own email goes to: a chip for each address, and the field the next one is typed in. An address
- * becomes a chip at the space after it; anything typed does at a comma, a semicolon, Enter or when the field is left,
- * and a chip that is no email address is marked. Chips come and go in place, so the field keeps the focus; a redraw
- * draws them from the same list. While the email is being sent the field and each chip's button are disabled. */
-function recipientsRow(page: Page): HTMLElement {
+/** Who the email goes to: a chip for each one, and the field the next one is typed in. An address becomes a chip at
+ * the space after it; anything typed does at a comma, a semicolon, Enter or when the field is left. The member's own
+ * email goes to addresses, so there a chip that is no email address is marked; an agent (`named`) reads a name too,
+ * and with one as the writer no chip is. The row is the same for both, and a change of writer changes nothing in it:
+ * no chip is turned back into text and read again, so one that is no address stays so. Chips come and go in place, so
+ * the field keeps the focus; a redraw draws them from the same list. While the email, or the words to its agent, are
+ * on their way the field and each chip's button are disabled. */
+function recipientsRow(page: Page, named: boolean): HTMLElement {
 	const { ui } = page;
 	const input = h("input", {
 		value: ui.writeTo,
 		autocomplete: "off",
 		autocapitalize: "off",
 		spellcheck: "false",
-		inputmode: "email",
+		inputmode: named ? undefined : "email",
 		disabled: ui.busy,
 		"aria-label": t("To"),
 		"data-focus-key": "write-to",
 	});
 	const hint = () => {
-		input.placeholder = ui.writeRecipients.length ? "" : t("Email address");
+		input.placeholder = ui.writeRecipients.length ? "" : named ? t("Name or email address") : t("Email address");
 	};
 	const chip = (recipient: string): HTMLElement => {
-		const wrong = isAddress(recipient) ? null : t("Not an email address");
+		const wrong = named || isAddress(recipient) ? null : t("Not an email address");
 		const drawn: HTMLElement = h(
 			"span",
 			{ class: `mailbox-chip${wrong ? " is-invalid" : ""}`, title: wrong },
@@ -2119,17 +2123,7 @@ function writePanel(page: Page): HTMLElement {
 	const pick = (id: string | null) => {
 		// A menu left open over the window when the email went picks nothing.
 		if (ui.busy) return;
-		if (id && !chosen) {
-			// An agent reads who it goes to as words: the chips go back to the text they were typed as.
-			ui.writeTo = [...ui.writeRecipients, ui.writeTo.trim()].filter(Boolean).join(", ");
-			ui.writeRecipients = [];
-		} else if (!id && chosen) {
-			// The member's own email goes to addresses: the ones among the words become chips, the rest stays typed. A
-			// name that points at its address ("Anna Holm <anna@acme.dk>") is that address, as when it is typed.
-			const words = asRecipients(ui.writeTo);
-			ui.writeTo = words.filter((word) => !isAddress(word)).join(", ");
-			addRecipients(ui, words.filter(isAddress));
-		}
+		// Who it goes to stays as it stands: each chip what it was made as, and what is typed after them still typed.
 		ui.writer = id;
 		ui.writeError = null;
 		page.redraw("writer");
@@ -2254,7 +2248,8 @@ function writePanel(page: Page): HTMLElement {
 			await send();
 			return;
 		}
-		const to = ui.writeTo.trim();
+		// An agent reads who it goes to as words: the chips, and what is typed after them.
+		const to = [...ui.writeRecipients, ui.writeTo.trim()].filter(Boolean).join(", ");
 		const words = ui.writeText.trim();
 		if (!to || !words) return;
 		await tell(
@@ -2316,23 +2311,7 @@ function writePanel(page: Page): HTMLElement {
 					sender,
 				)
 			: null,
-		chosen
-			? h(
-					"label",
-					{ class: "mailbox-write-row" },
-					h("span", { class: "mailbox-write-label" }, t("To")),
-					h("input", {
-						placeholder: t("Name or email address"),
-						value: ui.writeTo,
-						autocomplete: "off",
-						disabled: ui.busy,
-						"data-focus-key": "write-to",
-						oninput: (event: Event) => {
-							ui.writeTo = (event.target as HTMLInputElement).value;
-						},
-					}),
-				)
-			: recipientsRow(page),
+		recipientsRow(page, Boolean(chosen)),
 		// An agent writes the subject of its own email; the member writes theirs.
 		chosen
 			? null

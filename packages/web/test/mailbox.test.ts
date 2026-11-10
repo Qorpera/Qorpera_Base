@@ -540,10 +540,12 @@ describe("Sent, Addresses and Write", () => {
 		expect(chip().getAttribute("aria-expanded")).toBe("false");
 		expect(panel().querySelector(".mailbox-from-address")?.textContent).toBe("from hello@acme.example");
 		expect(panel().querySelector("textarea")!.placeholder).toBe("What should it say?");
-		// An agent reads who it goes to as words, and writes the subject itself.
+		// An agent writes the subject itself. Who it goes to is as the member left it: the name still typed, in the same
+		// field, which now says it takes a name too.
 		expect(texts(panel(), ".mailbox-write-label")).toEqual(["Writer", "To"]);
 		expect(panel().querySelector(".mailbox-chip")).toBeNull();
 		expect(panel().querySelector("input")!.value).toBe("Nordlys Energi");
+		expect(panel().querySelector("input")!.placeholder).toBe("Name or email address");
 		expect(document.activeElement).toBe(chip());
 		expect(button(panel(), "Ask Ada to write it")).toBeDefined();
 		panel().requestSubmit();
@@ -713,10 +715,9 @@ describe("Sent, Addresses and Write", () => {
 		type(to(), '"dan@old.example" <dan@example.com>,');
 		expect(chips()).toEqual(["new@example.com", "anna@example.com", "bo@example.com", "dan@example.com"]);
 		expect(to().value).toBe("");
-		// And so are the words an agent had, back with the member.
+		// And so is one typed while an agent has the email; back with the member, the chips are as they were made.
 		give("Ada");
-		const words = panel().querySelector<HTMLInputElement>("input")!;
-		type(words, `${words.value}, eva@old.example <eva@example.com>`);
+		type(to(), "eva@old.example <eva@example.com>,");
 		give("You");
 		const all = ["new@example.com", "anna@example.com", "bo@example.com", "dan@example.com", "eva@example.com"];
 		expect(chips()).toEqual(all);
@@ -733,7 +734,7 @@ describe("Sent, Addresses and Write", () => {
 	// Review of #1650, round 3: an address in a quoted name, or in a remark with a comma, got the email too.
 	it.each([
 		["typed", '"Former <old@example.com>" <new@example.com>'],
-		["taken back from an agent", '"Former <old@example.com>" <new@example.com>'],
+		["typed while an agent had it", '"Former <old@example.com>" <new@example.com>'],
 		["pasted", "New <new@example.com> (formerly, old@example.com)"],
 	])("never sends to an address that stands in a quoted name or a remark (%s)", async (how, entry) => {
 		const { main, fake } = await mailbox(() => {});
@@ -745,19 +746,17 @@ describe("Sent, Addresses and Write", () => {
 			panel().querySelector<HTMLButtonElement>(".mailbox-writer")!.click();
 			menuRow(name).click();
 		};
-		if (how === "typed") {
-			type(to(), entry);
-			to().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
-		} else if (how === "pasted") {
+		if (how === "pasted") {
 			to().dispatchEvent(
 				Object.assign(new Event("paste", { bubbles: true, cancelable: true }), {
 					clipboardData: { getData: () => entry },
 				}),
 			);
 		} else {
-			give("Ada");
-			type(panel().querySelector<HTMLInputElement>("input")!, entry);
-			give("You");
+			if (how !== "typed") give("Ada");
+			type(to(), entry);
+			to().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+			if (how !== "typed") give("You");
 		}
 		expect(texts(panel(), ".mailbox-chip-text")).toEqual(["new@example.com"]);
 		expect(to().value).toBe("");
@@ -824,12 +823,19 @@ describe("Sent, Addresses and Write", () => {
 			),
 		).toBe(true);
 		expect(chips().slice(4)).toEqual(["eva@example.com", "finn@example.com"]);
-		// A list as a spreadsheet gives it: each address in quotes of its own.
+		// A quoted text is a name also when it is all of its entry, and so is a remark: each is kept as it stands, and
+		// says it is no address, whatever it holds.
 		expect(paste('"gry@example.com","hans@example.com"')).toBe(true);
-		expect(chips().slice(6)).toEqual(["gry@example.com", "hans@example.com"]);
-		// An entry that is a remark alone is kept as it stands, and says it is no address.
+		expect(chips().slice(6)).toEqual(['"gry@example.com"', '"hans@example.com"']);
+		expect(wrong()).toEqual(['"gry@example.com"', '"hans@example.com"']);
+		button(panel(), 'Remove "gry@example.com"')!.click();
+		button(panel(), 'Remove "hans@example.com"')!.click();
+		type(to(), '"old@example.com"');
+		enter();
+		expect(wrong()).toEqual(['"old@example.com"']);
+		button(panel(), 'Remove "old@example.com"')!.click();
 		expect(paste("ida@example.com, (old@example.com)")).toBe(true);
-		expect(chips().slice(8)).toEqual(["ida@example.com", "(old@example.com)"]);
+		expect(chips().slice(6)).toEqual(["ida@example.com", "(old@example.com)"]);
 		expect(wrong()).toEqual(["(old@example.com)"]);
 		button(panel(), "Remove (old@example.com)")!.click();
 		// An entry that points at two addresses, or has one more after the one it points at, does not say who it goes
@@ -857,11 +863,108 @@ describe("Sent, Addresses and Write", () => {
 				"dan@example.com",
 				"eva@example.com",
 				"finn@example.com",
-				"gry@example.com",
-				"hans@example.com",
 				"ida@example.com",
 			],
 		]);
+	});
+
+	// Review of #1650, round 4: taken back from an agent, a quoted address stood alone in the field and got the email.
+	it("leaves who the email goes to as it stands when its writer changes, so what is no address stays so", async () => {
+		const { main, fake } = await mailbox(() => {});
+		await vi.waitFor(() => expect(button(main, "Write")).toBeDefined());
+		button(main, "Write")!.click();
+		const panel = () => main.querySelector<HTMLFormElement>(".mailbox-write-panel")!;
+		const to = () => panel().querySelector<HTMLInputElement>(".mailbox-write-to input")!;
+		const chips = () => texts(panel(), ".mailbox-chip-text");
+		const wrong = () => texts(panel(), ".mailbox-chip.is-invalid .mailbox-chip-text");
+		const said = () => panel().querySelector(".mailbox-write-error")?.textContent;
+		const sends = () => calls(fake, "qorpera_send_member_mail");
+		const enter = () =>
+			to().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+		const give = (name: string) => {
+			panel().querySelector<HTMLButtonElement>(".mailbox-writer")!.click();
+			menuRow(name).click();
+		};
+		type(panel().querySelector<HTMLInputElement>("[data-focus-key='write-subject']")!, "Hello");
+		type(panel().querySelector("textarea")!, "Hi.");
+		// Typed while an agent has it and not yet ended, it is still typed when the member takes the email back, whole:
+		// the quoted address is not left alone in the field for the next reading.
+		give("Ada");
+		type(to(), '"old@example.com" new@example.com');
+		expect(chips()).toEqual([]);
+		give("You");
+		expect(chips()).toEqual([]);
+		expect(to().value).toBe('"old@example.com" new@example.com');
+		// Send reads it as it was typed: the quoted text is a name, no address, and holds the email back.
+		panel().requestSubmit();
+		expect(said()).toBe('"old@example.com" is not an email address');
+		expect(chips()).toEqual(['"old@example.com"', "new@example.com"]);
+		expect(wrong()).toEqual(['"old@example.com"']);
+		expect(to().value).toBe("");
+		expect(sends()).toEqual([]);
+		// A chip is never read again. An agent takes it as a name, so there it is not marked; back with the member it is
+		// what it was, and still holds the email back.
+		give("Ada");
+		expect(chips()).toEqual(['"old@example.com"', "new@example.com"]);
+		expect(wrong()).toEqual([]);
+		give("You");
+		expect(chips()).toEqual(['"old@example.com"', "new@example.com"]);
+		expect(wrong()).toEqual(['"old@example.com"']);
+		expect(to().value).toBe("");
+		panel().requestSubmit();
+		expect(said()).toBe('"old@example.com" is not an email address');
+		expect(sends()).toEqual([]);
+		// Nor are two chips put together: one after the other these would read as a quoted name and the address it
+		// points at.
+		type(to(), '"a');
+		enter();
+		type(to(), 'b " <older@example.com>');
+		enter();
+		give("Ada");
+		give("You");
+		expect(chips()).toEqual(['"old@example.com"', "new@example.com", '"a', 'b " <older@example.com>']);
+		expect(wrong()).toEqual(['"old@example.com"', '"a', 'b " <older@example.com>']);
+		expect(to().value).toBe("");
+		panel().requestSubmit();
+		expect(sends()).toEqual([]);
+		// With those taken away it goes, to the one address.
+		for (const name of ['"old@example.com"', '"a', 'b " <older@example.com>'])
+			button(panel(), `Remove ${name}`)!.click();
+		panel().requestSubmit();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-write-panel")).toBeNull());
+		expect(sends().map((call) => (call.p_request as { to: string[] }).to)).toEqual([["new@example.com"]]);
+	});
+
+	it("takes a name as well as an address while an agent writes the email, and gives the agent both as its words", async () => {
+		const { main, controller, fake } = await mailbox(() => {});
+		vi.spyOn(controller, "openStaffConversation").mockResolvedValue(session.sessionId);
+		const send = vi.spyOn(controller, "sendPrompt").mockResolvedValue(true);
+		await vi.waitFor(() => expect(button(main, "Write")).toBeDefined());
+		button(main, "Write")!.click();
+		const panel = () => main.querySelector<HTMLFormElement>(".mailbox-write-panel")!;
+		const to = () => panel().querySelector<HTMLInputElement>(".mailbox-write-to input")!;
+		panel().querySelector<HTMLButtonElement>(".mailbox-writer")!.click();
+		menuRow("Ada").click();
+		// The comma ends the address and the name; no chip is marked, and the last name is still being typed.
+		type(to(), "anna@example.com Nordlys Energi, Bo");
+		expect(texts(panel(), ".mailbox-chip-text")).toEqual(["anna@example.com", "Nordlys Energi"]);
+		expect(panel().querySelector(".mailbox-chip.is-invalid")).toBeNull();
+		expect(to().value).toBe("Bo");
+		expect(to().placeholder).toBe("");
+		type(panel().querySelector("textarea")!, "Ask when the new price starts.");
+		panel().requestSubmit();
+		await vi.waitFor(() =>
+			expect(send).toHaveBeenCalledWith(
+				session.sessionId,
+				"Please write an email to anna@example.com, Nordlys Energi, Bo from hello@acme.example: Ask when the new price starts.",
+			),
+		);
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-write-panel")).toBeNull());
+		expect(calls(fake, "qorpera_send_member_mail")).toEqual([]);
+		// The next email starts with nobody to go to.
+		button(main, "Write")!.click();
+		expect(texts(panel(), ".mailbox-chip-text")).toEqual([]);
+		expect(to().value).toBe("");
 	});
 
 	it("holds the member's email back until it has who it goes to, a subject and its text, then sends it", async () => {
@@ -1062,7 +1165,7 @@ describe("Sent, Addresses and Write", () => {
 		menuRow("Ada").click();
 		type(panel().querySelector("input")!, "Nordlys Energi");
 		type(panel().querySelector("textarea")!, "Ask when the new price starts.");
-		const open = ["Close", "writer", "write-to", "write-text", "write-send"];
+		const open = ["Close", "writer", "To", "write-text", "write-send"];
 		expect(usable(panel())).toEqual(open);
 		// Ada's thread can't be opened: the page says so, and the window keeps its words, the keyboard on its button.
 		panel().requestSubmit();
@@ -1115,7 +1218,8 @@ describe("Sent, Addresses and Write", () => {
 		// Who it goes to was changed while the agent had it: back with the member it is a new email, to the new address,
 		// and not the first one answered for again.
 		give("Ada");
-		type(panel().querySelector("input")!, "bo@outside.example");
+		button(panel(), "Remove anna@outside.example")!.click();
+		type(panel().querySelector<HTMLInputElement>(".mailbox-write-to input")!, "bo@outside.example,");
 		give("You");
 		expect(texts(panel(), ".mailbox-chip-text")).toEqual(["bo@outside.example"]);
 		fake.sendError = undefined;
@@ -1234,28 +1338,29 @@ describe("Sent, Addresses and Write", () => {
 		expect(panel().querySelector(".mailbox-from-address")?.textContent).toBe("from hello@acme.example");
 	});
 
-	it("keeps who the email goes to when its writer changes: chips for the member, words for an agent", async () => {
+	it("keeps who the email goes to when its writer changes: the same chips, and what is typed after them", async () => {
 		const { main } = await mailbox(() => {});
 		await vi.waitFor(() => expect(button(main, "Write")).toBeDefined());
 		button(main, "Write")!.click();
 		const panel = () => main.querySelector<HTMLFormElement>(".mailbox-write-panel")!;
 		const chip = () => panel().querySelector<HTMLButtonElement>(".mailbox-writer")!;
+		const to = () => panel().querySelector<HTMLInputElement>(".mailbox-write-to input")!;
 		const subject = () => panel().querySelector<HTMLInputElement>("[data-focus-key='write-subject']")!;
-		type(
-			panel().querySelector<HTMLInputElement>(".mailbox-write-to input")!,
-			"anna@outside.example, bo@outside.example Carl",
-		);
+		type(to(), "anna@outside.example, bo@outside.example Carl");
 		type(subject(), "The new price");
 		expect(texts(panel(), ".mailbox-chip-text")).toEqual(["anna@outside.example", "bo@outside.example"]);
+		// With an agent the row is the same one: its chips, each with its own button, and the name still typed.
 		chip().click();
 		menuRow("Ada").click();
-		expect(panel().querySelector(".mailbox-chip")).toBeNull();
-		expect(panel().querySelector("input")!.value).toBe("anna@outside.example, bo@outside.example, Carl");
-		// Back with the member, the addresses are chips again, the rest stays typed, and the subject is as it was.
+		expect(texts(panel(), ".mailbox-chip-text")).toEqual(["anna@outside.example", "bo@outside.example"]);
+		expect(to().value).toBe("Carl");
+		expect(to()).toBe(panel().querySelector("input"));
+		expect(button(panel(), "Remove bo@outside.example")).toBeDefined();
+		// Back with the member it is as it was, and so is the subject.
 		chip().click();
 		menuRow("You").click();
 		expect(texts(panel(), ".mailbox-chip-text")).toEqual(["anna@outside.example", "bo@outside.example"]);
-		expect(panel().querySelector<HTMLInputElement>(".mailbox-write-to input")!.value).toBe("Carl");
+		expect(to().value).toBe("Carl");
 		expect(subject().value).toBe("The new price");
 		expect(button(panel(), "Send")).toBeDefined();
 	});
