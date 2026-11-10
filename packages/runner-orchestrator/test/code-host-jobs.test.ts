@@ -1,6 +1,18 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import {
+	chmod,
+	lstat,
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	realpath,
+	rm,
+	symlink,
+	utimes,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -8,18 +20,23 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	addCodeWorktree,
+	bundleCodeArea,
 	CODE_AREA_CONFIG,
 	CODE_AREA_IN_QORPERA_REF,
 	type CodeCommitSource,
 	type CodeHostCommand,
 	type CodeHostGcBlock,
 	type CodeHostJob,
+	checkCodeArea,
 	codeAreaPath,
+	codeRefsSha256,
 	collectCodeGarbage,
 	exportCodeBranch,
+	fsckCodeArea,
 	inspectCodeArea,
 	landCodeBranch,
 	readCodeAreaBase,
+	retireCodeWorktrees,
 	seedCodeArea,
 	startCodeArea,
 	withCodeCommit,
@@ -396,7 +413,7 @@ async function seeded() {
 }
 
 describe("code host worktrees", () => {
-	it("adds and locks a session's worktree, finds it again, keeps its branch, and refuses a half one", async () => {
+	it("adds and locks a session's worktree, finds it again, keeps its branch, adds one again whose files alone are gone, and refuses files without git's folder", async () => {
 		const { f, c } = await seeded(),
 			workerId = randomUUID(),
 			tree = join(c.code, "worktrees", workerId),
@@ -414,16 +431,45 @@ describe("code host worktrees", () => {
 		await f.git(tree, "commit", "--quiet", "-am", "session");
 		const head = await f.git(tree, "rev-parse", "HEAD");
 		await rm(tree, { recursive: true });
-		await expect(addCodeWorktree(c.job, input)).rejects.toMatchObject({
-			code: "CODE_HOST_WORKTREE_INCOMPLETE",
-			paths: [`code/qorpera/example/repo.git/worktrees/${workerId}`],
-		});
 		await rm(admin, { recursive: true });
 		expect(await addCodeWorktree(c.job, input)).toEqual({ state: "added", headSha: head, restored: [] });
 		expect(await readFile(join(tree, "README.md"), "utf8")).toBe("session\n");
 
+		// Its files alone go (nightly care retired it, or a removal stopped halfway): git's folder for the worktree, with
+		// its own index and diary, is removed, and the worktree is added again from the branch.
+		await writeFile(join(admin, "logs-of-the-old-worktree"), "x\n");
+		await rm(tree, { recursive: true });
+		expect(await addCodeWorktree(c.job, input)).toEqual({
+			state: "added",
+			headSha: head,
+			restored: [`code/qorpera/example/repo.git/worktrees/${workerId}`],
+		});
+		expect(await readFile(join(tree, "README.md"), "utf8")).toBe("session\n");
+		expect(await readFile(join(tree, ".git"), "utf8")).toBe(`gitdir: ${admin}\n`);
+		expect(await f.git(tree, "symbolic-ref", "HEAD")).toBe(`refs/heads/qorpera/coding/${workerId}`);
+		expect(await f.git(tree, "status", "--porcelain")).toBe("");
+		expect(await exists(join(admin, "locked"))).toBe(true);
+		expect(await exists(join(admin, "logs-of-the-old-worktree"))).toBe(false);
+		expect(await addCodeWorktree(c.job, input)).toEqual({ state: "present", headSha: head, restored: [] });
+		// A head the names' rule refuses is not added again, and git's folder stays as it was.
+		await writeFile(join(tree, "Readme.md"), "another case\n");
+		await f.git(tree, "add", "Readme.md");
+		await f.git(tree, "commit", "--quiet", "-m", "names");
+		await rm(tree, { recursive: true });
+		await expect(addCodeWorktree(c.job, input)).rejects.toMatchObject({ code: "CODE_HOST_NAMES_DIFFER_BY_CASE" });
+		expect(await exists(join(admin, "HEAD"))).toBe(true);
+		await f.git(c.repo, "--git-dir=.", "update-ref", `refs/heads/qorpera/coding/${workerId}`, head);
+		expect(await addCodeWorktree(c.job, input)).toMatchObject({ state: "added", headSha: head });
+
 		await writeFile(join(tree, ".git"), "gitdir: /elsewhere\n");
 		await expect(addCodeWorktree(c.job, input)).rejects.toMatchObject({ code: "CODE_HOST_WORKTREE_CHANGED" });
+		// Files without git's folder for them: nothing says what they are, and nothing is touched.
+		await rm(admin, { recursive: true });
+		await expect(addCodeWorktree(c.job, input)).rejects.toMatchObject({
+			code: "CODE_HOST_WORKTREE_INCOMPLETE",
+			paths: [`code/qorpera/example/worktrees/${workerId}`],
+		});
+		expect(await readFile(join(tree, "README.md"), "utf8")).toBe("session\n");
 	});
 
 	it("gives every spelling of a repository the one lower-case code area", async () => {
@@ -831,29 +877,27 @@ describe("code host companies", () => {
 	});
 });
 
-describe("code host: a repository kept in Qorpera (own code storage, slice 1)", () => {
-	const kept = { host: "qorpera" as const, owner: "qorpera", name: "example", baseBranch: "main" };
-	/** A session's worktree on the kept repository, and a commit there. */
-	async function session(
-		f: Awaited<ReturnType<typeof fixture>>,
-		c: Awaited<ReturnType<Awaited<ReturnType<typeof fixture>>["company"]>>,
-		baseSha: string,
-	) {
-		const workerId = randomUUID();
-		await addCodeWorktree(c.job, { repository: kept, workerId, baseSha });
-		const tree = join(c.code, "worktrees", workerId);
-		const commit = async (files: Record<string, string>, message = "change") => {
-			for (const [path, content] of Object.entries(files)) {
-				await mkdir(dirname(join(tree, path)), { recursive: true });
-				await writeFile(join(tree, path), content);
-			}
-			await f.git(tree, "add", "--all");
-			await f.git(tree, "commit", "--quiet", "-m", message);
-			return f.git(tree, "rev-parse", "HEAD");
-		};
-		return { workerId, tree, commit };
-	}
+const kept = { host: "qorpera" as const, owner: "qorpera", name: "example", baseBranch: "main" };
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+type Company = Awaited<ReturnType<Fixture["company"]>>;
+/** A session's worktree on the kept repository, and a commit there. */
+async function session(f: Fixture, c: Company, baseSha: string) {
+	const workerId = randomUUID();
+	await addCodeWorktree(c.job, { repository: kept, workerId, baseSha });
+	const tree = join(c.code, "worktrees", workerId);
+	const commit = async (files: Record<string, string>, message = "change") => {
+		for (const [path, content] of Object.entries(files)) {
+			await mkdir(dirname(join(tree, path)), { recursive: true });
+			await writeFile(join(tree, path), content);
+		}
+		await f.git(tree, "add", "--all");
+		await f.git(tree, "commit", "--quiet", "-m", message);
+		return f.git(tree, "rev-parse", "HEAD");
+	};
+	return { workerId, tree, admin: join(c.repo, "worktrees", workerId), commit };
+}
 
+describe("code host: a repository kept in Qorpera (own code storage, slice 1)", () => {
 	it("starts empty: one commit of no files on the default branch, its mark, and main/ at it; again, the same", async () => {
 		const f = await fixture(),
 			c = await f.company();
@@ -977,5 +1021,713 @@ describe("code host: a repository kept in Qorpera (own code storage, slice 1)", 
 			landCodeBranch(c.job, { repository: kept, workerId: a.workerId, headSha: theirs }),
 		).rejects.toMatchObject({ code: "CODE_HOST_EXPORT_MOVED" });
 		expect(await f.git(c.repo, "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(baseSha);
+	});
+});
+
+describe("code host: nightly care of a repository kept in Qorpera (own code storage, step 2)", () => {
+	const area = "code/qorpera/example";
+	const digest = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
+	const unblocked: CodeHostGcBlock = { begin: async () => ({ state: "blocking", held: 0 }), end: async () => {} };
+	/** A repository with one session's work landed on main. */
+	async function landed() {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const first = await session(f, c, baseSha);
+		const head = await first.commit(
+			{ "index.html": "<p>shop</p>\n", "src/cart.js": "export const cart = [];\n" },
+			"shop",
+		);
+		await landCodeBranch(c.job, { repository: kept, workerId: first.workerId, headSha: head });
+		return { f, c, baseSha, first, head };
+	}
+	async function check(c: Company, options?: { deep?: boolean }) {
+		const checked = await checkCodeArea(c.job, { repository: kept }, options);
+		if (checked.state !== "present") throw new Error("the repository is absent");
+		return checked;
+	}
+	/** Every command of the jobs is one LXD exec can carry, with the code host's settings and no other. */
+	function expectJobCommands(log: CodeHostCommand[]) {
+		for (const command of log) {
+			expect(command.env.GIT_CONFIG_GLOBAL).toBe("/dev/null");
+			expect(command.argv.length).toBeLessThanOrEqual(64);
+			if (command.argv[0] === GIT) expect(command.argv[2]).toMatch(/^--git-dir=\//);
+		}
+	}
+
+	it("the jobs are a kept repository's alone: nothing is made where none is seeded, and a copy of a GitHub repository is refused", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const sink = { write: async () => {} },
+			refsSha256 = "0".repeat(64);
+		expect(await checkCodeArea(c.job, { repository: kept })).toEqual({ state: "absent" });
+		expect(await readdir(c.companyRoot)).toEqual([]);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+		for (const job of [
+			() => fsckCodeArea(c.job, { repository: kept }),
+			() => bundleCodeArea(c.job, { repository: kept, refsSha256 }, sink),
+			() => retireCodeWorktrees(c.job, { repository: kept, workerIds: [] }, { phase: "files" }),
+		])
+			await expect(job()).rejects.toMatchObject({ code: "CODE_HOST_NOT_SEEDED" });
+		expect(await readdir(c.companyRoot)).toEqual([]);
+		// A repository on GitHub is none of theirs: refused before any command.
+		const commands = c.log.length;
+		for (const job of [
+			() => checkCodeArea(c.job, { repository: f.repository }),
+			() => fsckCodeArea(c.job, { repository: f.repository }),
+			() => bundleCodeArea(c.job, { repository: f.repository, refsSha256 }, sink),
+			() => retireCodeWorktrees(c.job, { repository: f.repository, workerIds: [] }, { phase: "files" }),
+			() => checkCodeArea(c.job, { repository: kept, deep: true } as never),
+			() => fsckCodeArea(c.job, { repository: kept }, { maximumMs: 0 }),
+			() => bundleCodeArea(c.job, { repository: kept, refsSha256: "main" }, sink),
+			() => bundleCodeArea(c.job, { repository: kept, refsSha256 }, sink, { chunkBytes: 0 }),
+			() => bundleCodeArea(c.job, { repository: kept, refsSha256 }, sink, { maximumBytes: 1.5 }),
+		])
+			await expect(job()).rejects.toThrow("INVALID_CODE_HOST_JOB");
+		expect(c.log).toHaveLength(commands);
+		// A copy of a GitHub repository at the same place has no mark: no care job reads or repairs it.
+		await seedCodeArea(c.job, {
+			repository: f.repository,
+			baseSha: f.baseSha,
+			bundle: await f.bundle("refs/heads/main"),
+		});
+		await writeFile(join(c.code, "main/stray.txt"), "stray\n");
+		for (const job of [
+			() => checkCodeArea(c.job, { repository: kept }),
+			() => fsckCodeArea(c.job, { repository: kept }),
+			() => bundleCodeArea(c.job, { repository: kept, refsSha256 }, sink),
+			() => retireCodeWorktrees(c.job, { repository: kept, workerIds: [] }, { phase: "git-folder" }),
+		])
+			await expect(job()).rejects.toMatchObject({ code: "CODE_HOST_AREA_FROM_GITHUB", paths: [area] });
+		expect(await readFile(join(c.code, "main/stray.txt"), "utf8")).toBe("stray\n");
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+	});
+
+	it("check: answers the refs with their fingerprint, the worktrees and the objects, and moves a main/ that is a commit behind", async () => {
+		const { f, c, baseSha, first, head } = await landed();
+		const branch = `refs/heads/qorpera/coding/${first.workerId}`;
+		const refs = [
+			{ name: "refs/heads/main", sha: head },
+			{ name: branch, sha: head },
+			{ name: CODE_AREA_IN_QORPERA_REF, sha: baseSha },
+		];
+		const refsSha256 = digest(`${head} refs/heads/main\n${head} ${branch}\n${baseSha} ${CODE_AREA_IN_QORPERA_REF}\n`);
+		// The fingerprint is of the refs sorted by name, in whatever order they are given.
+		expect(codeRefsSha256([...refs].reverse())).toBe(refsSha256);
+		expect(codeRefsSha256([])).toBe(digest(""));
+		expect(() => codeRefsSha256([{ name: "refs/heads/main", sha: "main" }])).toThrow("INVALID_CODE_HOST_JOB");
+		const checked = await checkCodeArea(c.job, { repository: kept });
+		expect(checked).toEqual({
+			state: "present",
+			mainSha: head,
+			refs,
+			refsSha256,
+			shallow: false,
+			worktrees: [first.workerId],
+			objects: { loose: expect.any(Number), packs: 0, sizeKiB: expect.any(Number) },
+			repaired: "none",
+			restored: [],
+		});
+		expect((await check(c)).objects.loose).toBeGreaterThan(0);
+		// A folder under worktrees/ that is no session's is not one of them.
+		await mkdir(join(c.code, "worktrees/notes"));
+		const other = await session(f, c, head);
+		expect((await check(c)).worktrees).toEqual([first.workerId, other.workerId].sort());
+		await writeFile(join(c.repo, "shallow"), `${head}\n`);
+		expect(await check(c)).toMatchObject({ shallow: true, repaired: "none" });
+		await rm(join(c.repo, "shallow"));
+
+		// main/ is a commit behind the default branch (a landing stopped between the two): its HEAD, index and files.
+		await f.git(join(c.code, "main"), "checkout", "--quiet", "--force", "--detach", baseSha);
+		expect(await readdir(join(c.code, "main"))).toEqual([".git"]);
+		expect(await check(c)).toMatchObject({ mainSha: head, repaired: "head", restored: [] });
+		expect(await readFile(join(c.repo, "worktrees/main/HEAD"), "utf8")).toBe(`${head}\n`);
+		expect(await readFile(join(c.code, "main/index.html"), "utf8")).toBe("<p>shop</p>\n");
+		expect(await f.git(join(c.code, "main"), "status", "--porcelain")).toBe("");
+		expect(await check(c)).toMatchObject({ repaired: "none", restored: [] });
+		// Only its HEAD file is another commit's, and a file the checkout does not know is left: both are put right.
+		await writeFile(join(c.repo, "worktrees/main/HEAD"), `${baseSha}\n`);
+		expect(await check(c)).toMatchObject({ repaired: "head", restored: [] });
+		await writeFile(join(c.repo, "worktrees/main/HEAD"), `${baseSha}\n`);
+		await writeFile(join(c.code, "main/stray.txt"), "stray\n");
+		expect(await check(c)).toMatchObject({ repaired: "files", restored: [`${area}/main`] });
+		expect(await readFile(join(c.repo, "worktrees/main/HEAD"), "utf8")).toBe(`${head}\n`);
+		expect((await readdir(join(c.code, "main"))).sort()).toEqual([".git", "index.html", "src"]);
+
+		// A start that stopped before its default branch is not the check's to finish.
+		await rm(join(c.repo, "refs/heads/main"));
+		await expect(checkCodeArea(c.job, { repository: kept })).rejects.toMatchObject({
+			code: "CODE_HOST_AREA_NO_BASE",
+			paths: ["refs/heads/main"],
+		});
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+		expectJobCommands(c.log);
+	});
+
+	it("check: a main/ whose files are not the default branch's is removed and added again, and a deep check compares content too", async () => {
+		const { f, c, head } = await landed(),
+			main = join(c.code, "main");
+		const rebuilt = { mainSha: head, repaired: "files", restored: [`${area}/main`] },
+			right = { mainSha: head, repaired: "none", restored: [] };
+		const changes: [string, () => Promise<unknown>][] = [
+			["a file too many", () => writeFile(join(main, "src/stray.txt"), "stray\n")],
+			["a missing file", () => rm(join(main, "src/cart.js"))],
+			["an empty folder too many", () => mkdir(join(main, "empty"))],
+			["a file of another size", () => writeFile(join(main, "index.html"), "<p>another shop</p>\n")],
+			[
+				"a link where a file was",
+				async () => {
+					await rm(join(main, "index.html"));
+					await symlink("src/cart.js", join(main, "index.html"));
+				},
+			],
+			["no files at all", () => rm(main, { recursive: true })],
+			[
+				"neither the files nor git's folder for them",
+				async () => {
+					await rm(main, { recursive: true });
+					await rm(join(c.repo, "worktrees/main"), { recursive: true });
+				},
+			],
+		];
+		for (const [name, change] of changes) {
+			await change();
+			// main/ made from nothing is no restore of a file the job found changed.
+			expect(await check(c), name).toMatchObject(
+				name.startsWith("neither") ? { ...rebuilt, restored: [] } : rebuilt,
+			);
+			expect((await readdir(main)).sort(), name).toEqual([".git", "index.html", "src"]);
+			expect(await readdir(join(main, "src")), name).toEqual(["cart.js"]);
+			expect(await readFile(join(main, "index.html"), "utf8"), name).toBe("<p>shop</p>\n");
+			expect(await readFile(join(main, ".git"), "utf8"), name).toBe(`gitdir: ${c.repo}/worktrees/main\n`);
+			expect(await exists(join(c.repo, "worktrees/main/locked")), name).toBe(true);
+			expect(await f.git(main, "status", "--porcelain"), name).toBe("");
+			expect(await check(c), name).toMatchObject(right);
+		}
+		// Other content of the same size: no path, kind or size differs, so only a deep check, which reads, finds it.
+		const before = new Date(Date.now() - 60_000);
+		await writeFile(join(main, "index.html"), "<p>shOp</p>\n");
+		await utimes(join(main, "index.html"), before, before);
+		expect(await check(c)).toMatchObject(right);
+		expect(await check(c, { deep: true })).toMatchObject(rebuilt);
+		expect(await readFile(join(main, "index.html"), "utf8")).toBe("<p>shop</p>\n");
+		expect(await check(c, { deep: true })).toMatchObject(right);
+		expect(await f.git(c.repo, "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(head);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+	});
+
+	it("check: a file the repository's own attributes convert at checkout has another size than its version, and is no difference", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const first = await session(f, c, baseSha);
+		const head = await first.commit(
+			{ ".gitattributes": "*.txt text eol=crlf\n", "notes.txt": "one\ntwo\n" },
+			"notes",
+		);
+		await landCodeBranch(c.job, { repository: kept, workerId: first.workerId, headSha: head });
+		const notes = join(c.code, "main/notes.txt");
+		expect(await f.git(c.repo, "--git-dir=.", "cat-file", "-s", `${head}:notes.txt`)).toBe("8");
+		expect(await readFile(notes, "utf8")).toBe("one\r\ntwo\r\n");
+		for (const deep of [false, true])
+			expect(await check(c, { deep })).toMatchObject({ repaired: "none", restored: [] });
+		// The same file with other content is one.
+		await writeFile(notes, "one\r\ntwo\r\nthree\r\n");
+		expect(await check(c)).toMatchObject({ repaired: "files", restored: [`${area}/main`] });
+		expect(await readFile(notes, "utf8")).toBe("one\r\ntwo\r\n");
+	});
+
+	it("check: a submodule's place in main/ is an empty folder or none, as git takes it, and nothing is inside it", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const first = await session(f, c, baseSha);
+		await writeFile(join(first.tree, "index.html"), "<p>shop</p>\n");
+		await f.git(first.tree, "add", "index.html");
+		for (const path of ["vendored", "deps/only/this"])
+			await f.git(first.tree, "update-index", "--add", "--cacheinfo", `160000,${baseSha},${path}`);
+		await f.git(first.tree, "commit", "--quiet", "-m", "vendored");
+		const head = await f.git(first.tree, "rev-parse", "HEAD");
+		await landCodeBranch(c.job, { repository: kept, workerId: first.workerId, headSha: head });
+		const main = join(c.code, "main"),
+			right = { mainSha: head, repaired: "none", restored: [] };
+		expect(await readdir(join(main, "vendored"))).toEqual([]);
+		expect(await readdir(join(main, "deps/only/this"))).toEqual([]);
+		for (const deep of [false, true]) expect(await check(c, { deep })).toMatchObject(right);
+		// A folder that keeps no empty folder shows none of them.
+		await rm(join(main, "vendored"), { recursive: true });
+		await rm(join(main, "deps"), { recursive: true });
+		for (const deep of [false, true]) expect(await check(c, { deep })).toMatchObject(right);
+		// Files in a submodule's place are none of the default branch's.
+		await mkdir(join(main, "vendored"));
+		await writeFile(join(main, "vendored/stray.txt"), "stray\n");
+		expect(await check(c)).toMatchObject({ repaired: "files", restored: [`${area}/main`] });
+		expect(await readdir(join(main, "vendored"))).toEqual([]);
+		expect(await check(c)).toMatchObject(right);
+	});
+
+	it("fsck: ok; a missing file version is a problem, with what fsck said; long output is cut; a slow one is stopped", async () => {
+		const { f, c, first, head } = await landed();
+		expect(await fsckCodeArea(c.job, { repository: kept })).toEqual({ state: "ok", exitCode: 0, detail: "" });
+		const loose = (object: string) => join(c.repo, "objects", object.slice(0, 2), object.slice(2));
+		const blob = await f.git(c.repo, "--git-dir=.", "rev-parse", `${head}:src/cart.js`);
+		await rm(loose(blob));
+		const missing = await fsckCodeArea(c.job, { repository: kept });
+		expect(missing.state).toBe("problems");
+		expect(missing.exitCode).toBeGreaterThan(0);
+		expect(missing.detail).toContain(`missing blob ${blob}`);
+		expect(missing.detail.length).toBeLessThan(2000);
+
+		// 80 more file versions go: fsck names each, and the answer keeps the first 2,000 characters.
+		const many = Object.fromEntries(
+			Array.from({ length: 80 }, (_, index) => [`files/${index}.txt`, `file ${index}\n`]),
+		);
+		const next = await first.commit(many, "many");
+		const blobs = (
+			await f.git(c.repo, "--git-dir=.", "ls-tree", "-r", "--format=%(objectname)", next, "files/")
+		).split("\n");
+		expect(blobs).toHaveLength(80);
+		for (const object of blobs) await rm(loose(object));
+		const cut = await fsckCodeArea(c.job, { repository: kept });
+		expect(cut.state).toBe("problems");
+		expect(cut.detail).toHaveLength(2000);
+		expect(cut.detail).toContain("missing blob ");
+
+		// An fsck that does not end is stopped, and what it said until then is kept.
+		const slow = join(f.root, "slow-git");
+		await writeFile(
+			slow,
+			`#!/bin/sh\nfor a do [ "$a" = fsck ] && { echo "Checking connectivity"; exec sleep 60; }; done\nexec ${GIT} "$@"\n`,
+		);
+		await chmod(slow, 0o755);
+		const started = Date.now();
+		expect(
+			await fsckCodeArea(
+				{ ...c.job, layout: { ...c.job.layout, git: slow } },
+				{ repository: kept },
+				{ maximumMs: 500 },
+			),
+		).toEqual({ state: "timeout", exitCode: null, detail: "Checking connectivity\n" });
+		expect(Date.now() - started).toBeLessThan(30_000);
+		// It wrote nothing in the folder, and its scratch is gone.
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+		expectJobCommands(c.log);
+	});
+
+	it("bundle: holds every ref and restores as a mirror that passes fsck, read out in pieces whose hash and size are the code host's", async () => {
+		const { f, c, baseSha, first, head } = await landed();
+		// A second session with work that is not landed, and a tag and a branch of its own.
+		const second = await session(f, c, head);
+		const work = await second.commit({ "work.txt": "work\n" }, "work");
+		await f.git(second.tree, "tag", "-a", "-m", "tagged", "v1");
+		await f.git(second.tree, "branch", "spare", baseSha);
+		const checked = await check(c);
+		expect(checked.refs.map((ref) => ref.name)).toEqual(
+			[
+				"refs/heads/main",
+				`refs/heads/qorpera/coding/${first.workerId}`,
+				`refs/heads/qorpera/coding/${second.workerId}`,
+				"refs/heads/spare",
+				CODE_AREA_IN_QORPERA_REF,
+				"refs/tags/v1",
+			].sort(),
+		);
+		const before = await readdir(c.repo);
+		const pieces: Buffer[] = [];
+		const bundled = await bundleCodeArea(
+			c.job,
+			{ repository: kept, refsSha256: checked.refsSha256 },
+			{
+				write: async (chunk) => {
+					pieces.push(Buffer.from(chunk));
+				},
+			},
+			{ chunkBytes: 256 },
+		);
+		const whole = Buffer.concat(pieces);
+		expect(bundled).toEqual({
+			sha256: digest(whole),
+			bytes: whole.length,
+			gitVersion: (await f.git(f.root, "version")).replace("git version ", ""),
+			refs: checked.refs,
+			refsSha256: checked.refsSha256,
+		});
+		expect(pieces.length).toBeGreaterThan(1);
+		expect(pieces.length).toBe(Math.ceil(whole.length / 256));
+		expect(pieces.slice(0, -1).every((piece) => piece.length === 256)).toBe(true);
+
+		// Anywhere with git: a mirror of the bundle is the whole repository.
+		const file = join(f.root, "all.bundle"),
+			mirror = join(f.root, "mirror.git");
+		await writeFile(file, whole);
+		await f.git(f.root, "clone", "--quiet", "--mirror", file, mirror);
+		expect(await f.git(mirror, "fsck", "--full", "--strict", "--no-dangling", "--no-progress")).toBe("");
+		expect((await f.git(mirror, "for-each-ref", "--format=%(refname) %(objectname)")).split("\n")).toEqual(
+			checked.refs.map((ref) => `${ref.name} ${ref.sha}`),
+		);
+		// A bundle says which commit HEAD is at, not which branch: git guesses one at that commit, here main or the
+		// first session's.
+		expect(await f.git(mirror, "rev-parse", "HEAD")).toBe(head);
+		expect(await f.git(mirror, "show", `${work}:work.txt`)).toBe("work");
+		expect(await f.git(mirror, "show", "refs/heads/main:index.html")).toBe("<p>shop</p>");
+
+		// One piece when it fits, the same bytes.
+		const again: Buffer[] = [];
+		const once = await bundleCodeArea(
+			c.job,
+			{ repository: kept, refsSha256: checked.refsSha256 },
+			{
+				write: async (chunk) => {
+					again.push(Buffer.from(chunk));
+				},
+			},
+		);
+		expect(again).toHaveLength(1);
+		expect(once.bytes).toBe(again[0]?.length);
+		expect(once.sha256).toBe(digest(again[0] as Buffer));
+		// The job wrote nothing in the code area, and its scratch is gone.
+		expect(await readdir(c.repo)).toEqual(before);
+		expect((await check(c)).refsSha256).toBe(checked.refsSha256);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+		expectJobCommands(c.log);
+	});
+
+	it("bundle: refuses over the cap and when the refs are not the ones asked for, also when one moves while the bundle is made", async () => {
+		const { f, c, first } = await landed();
+		const checked = await check(c);
+		const written: number[] = [];
+		const sink = {
+			write: async (chunk: Uint8Array) => {
+				written.push(chunk.length);
+			},
+		};
+		await expect(
+			bundleCodeArea(c.job, { repository: kept, refsSha256: checked.refsSha256 }, sink, { maximumBytes: 100 }),
+		).rejects.toMatchObject({ code: "CODE_HOST_BUNDLE_TOO_LARGE" });
+		// The session commits: the fingerprint is not the refs' any more.
+		const next = await first.commit({ "more.txt": "more\n" }, "more");
+		await expect(
+			bundleCodeArea(c.job, { repository: kept, refsSha256: checked.refsSha256 }, sink),
+		).rejects.toMatchObject({ code: "CODE_HOST_BUNDLE_REFS_MOVED", paths: [area] });
+		// A ref made between the job's reading of the refs and its bundle: the bundle is not of the refs asked for.
+		const moving = join(f.root, "moving-git");
+		await writeFile(
+			moving,
+			`#!/bin/sh\nfor a do [ "$a" = create ] && ${GIT} --git-dir="${c.repo}" update-ref refs/heads/spare ${next}; done\nexec ${GIT} "$@"\n`,
+		);
+		await chmod(moving, 0o755);
+		await expect(
+			bundleCodeArea(
+				{ ...c.job, layout: { ...c.job.layout, git: moving } },
+				{ repository: kept, refsSha256: (await check(c)).refsSha256 },
+				sink,
+			),
+		).rejects.toMatchObject({ code: "CODE_HOST_BUNDLE_REFS_MOVED", paths: [area] });
+		expect(await f.git(c.repo, "--git-dir=.", "rev-parse", "refs/heads/spare")).toBe(next);
+		// A history cut short (repo.git/shallow hides a commit's parents) gives a bundle that does not restore: the proof
+		// fails it.
+		await first.commit({ "third.txt": "third\n" }, "third");
+		const fourth = await first.commit({ "fourth.txt": "fourth\n" }, "fourth");
+		await writeFile(join(c.repo, "shallow"), `${fourth}\n`);
+		await expect(
+			bundleCodeArea(c.job, { repository: kept, refsSha256: (await check(c)).refsSha256 }, sink),
+		).rejects.toMatchObject({ code: "CODE_HOST_BUNDLE_FAILED" });
+		await rm(join(c.repo, "shallow"));
+		// No byte of a refused or failed bundle left the code host.
+		expect(written).toEqual([]);
+		// A sink that fails fails the job.
+		await expect(
+			bundleCodeArea(
+				c.job,
+				{ repository: kept, refsSha256: (await check(c)).refsSha256 },
+				{
+					write: async () => {
+						throw new Error("CODE_BUNDLE_STORE_FULL");
+					},
+				},
+			),
+		).rejects.toThrow("CODE_BUNDLE_STORE_FULL");
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+	});
+
+	it("pack with the refs left loose and nothing pruned: every ref stays a file, and a landing, a start and a new session work afterwards", async () => {
+		const { f, c, baseSha, first, head } = await landed();
+		expect(
+			await collectCodeGarbage(c.job, { repository: kept }, unblocked, { packRefs: false, prune: false }),
+		).toEqual({ state: "collected", restored: [] });
+		expect(await exists(join(c.repo, "packed-refs"))).toBe(false);
+		expect(await readFile(join(c.repo, "refs/heads/main"), "utf8")).toBe(`${head}\n`);
+		expect(await readFile(join(c.repo, "refs/qorpera/kept-here"), "utf8")).toBe(`${baseSha}\n`);
+		expect(await readFile(join(c.repo, "refs/heads/qorpera/coding", first.workerId), "utf8")).toBe(`${head}\n`);
+		const packed = await check(c);
+		expect(packed).toMatchObject({ mainSha: head, repaired: "none", restored: [] });
+		expect(packed.objects.loose).toBe(0);
+		expect(packed.objects.packs).toBeGreaterThan(0);
+		expect(await fsckCodeArea(c.job, { repository: kept })).toEqual({ state: "ok", exitCode: 0, detail: "" });
+		expect(c.log.filter((command) => command.argv.includes("gc")).map((command) => command.argv.slice(3))).toEqual([
+			["gc", "--quiet", "--no-prune"],
+		]);
+		expect(c.log.some((command) => command.argv.includes("pack-refs"))).toBe(false);
+
+		const more = await first.commit({ "more.txt": "more\n" }, "more");
+		expect(await landCodeBranch(c.job, { repository: kept, workerId: first.workerId, headSha: more })).toEqual({
+			state: "fast-forward",
+			mainSha: more,
+			restored: [],
+		});
+		expect(await readFile(join(c.code, "main/more.txt"), "utf8")).toBe("more\n");
+		expect(await startCodeArea(c.job, { repository: kept })).toEqual({
+			state: "present",
+			baseSha: more,
+			restored: [],
+		});
+		const other = await session(f, c, more);
+		expect(await readFile(join(other.tree, "more.txt"), "utf8")).toBe("more\n");
+		// A session deletes a branch of its own afterwards: it is still a loose file.
+		await f.git(other.tree, "branch", "spare");
+		await f.git(other.tree, "branch", "-D", "spare");
+		expect(await exists(join(c.repo, "packed-refs"))).toBe(false);
+
+		// Without the two options the gc is today's: it packs the refs, the sessions' branches left out.
+		expect(await collectCodeGarbage(c.job, { repository: kept }, unblocked)).toEqual({
+			state: "collected",
+			restored: [],
+		});
+		expect(await readFile(join(c.repo, "packed-refs"), "utf8")).toContain(`${more} refs/heads/main`);
+		expect(await exists(join(c.repo, "refs/heads/main"))).toBe(false);
+		expect(c.log.filter((command) => command.argv.includes("gc")).map((command) => command.argv.slice(3))).toEqual([
+			["gc", "--quiet", "--no-prune"],
+			["gc", "--quiet"],
+		]);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+	});
+
+	it("gc --no-prune keeps an unreachable commit readable, however old; git's own pruning would drop it (the plan's assumption)", async () => {
+		const { f, c, head } = await landed();
+		// A commit no ref reaches, with a file version of its own, both a month old: older than git's two weeks.
+		const repo = (...args: string[]) => f.git(c.repo, "--git-dir=.", ...args);
+		await writeFile(join(f.root, "orphan.txt"), "kept by no ref\n");
+		const blob = await repo("hash-object", "-w", join(f.root, "orphan.txt"));
+		await writeFile(join(f.root, "orphan.tree"), `100644 blob ${blob}\torphan.txt\n`);
+		const tree = (
+			await exec("/bin/sh", ["-c", `exec ${GIT} --git-dir=. mktree <"$1"`, "sh", join(f.root, "orphan.tree")], {
+				cwd: c.repo,
+				env: f.env,
+			})
+		).stdout.trim();
+		const orphan = await repo("commit-tree", tree, "-p", head, "-m", "orphan");
+		const old = new Date(Date.now() - 30 * 86_400_000);
+		for (const object of [blob, tree, orphan])
+			await utimes(join(c.repo, "objects", object.slice(0, 2), object.slice(2)), old, old);
+		expect(
+			await collectCodeGarbage(c.job, { repository: kept }, unblocked, { packRefs: false, prune: false }),
+		).toEqual({ state: "collected", restored: [] });
+		// Its loose files went into a pack, and it reads as before.
+		for (const object of [blob, tree, orphan])
+			expect(await exists(join(c.repo, "objects", object.slice(0, 2), object.slice(2)))).toBe(false);
+		expect(await repo("cat-file", "-t", orphan)).toBe("commit");
+		expect(await repo("show", `${orphan}:orphan.txt`)).toBe("kept by no ref");
+		expect(await repo("fsck", "--full", "--no-dangling", "--no-progress")).toBe("");
+		// Another night's pack: it stays.
+		await collectCodeGarbage(c.job, { repository: kept }, unblocked, { packRefs: false, prune: false });
+		expect(await repo("show", `${orphan}:orphan.txt`)).toBe("kept by no ref");
+		// git's own pruning (today's gc) drops it by its age.
+		await collectCodeGarbage(c.job, { repository: kept }, unblocked);
+		await expect(repo("cat-file", "-e", orphan)).rejects.toThrow();
+		expect(await repo("rev-parse", "refs/heads/main")).toBe(head);
+	});
+
+	it("retire: leaves a worktree that is not exactly its session's branch, saying why", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		type Session = Awaited<ReturnType<typeof session>> & { head: string };
+		const cases: [string, (s: Session) => Promise<unknown>][] = [
+			["LINKS_DIFFER", (s) => writeFile(join(s.tree, ".git"), "gitdir: /elsewhere\n")],
+			["LINKS_DIFFER", (s) => writeFile(join(s.admin, "gitdir"), "/elsewhere/.git\n")],
+			// Whose objects, refs and config git would take for the worktree.
+			["LINKS_DIFFER", (s) => writeFile(join(s.admin, "commondir"), `${f.root}/source/.git\n`)],
+			["HEAD_NOT_ITS_BRANCH", (s) => f.git(s.tree, "checkout", "--quiet", "--detach")],
+			["HEAD_NOT_ITS_BRANCH", (s) => f.git(s.tree, "checkout", "--quiet", "-b", "another")],
+			["NO_BRANCH", (s) => rm(join(c.repo, "refs/heads/qorpera/coding", s.workerId))],
+			["IN_PROGRESS", (s) => writeFile(join(s.admin, "MERGE_HEAD"), `${s.head}\n`)],
+			["IN_PROGRESS", (s) => mkdir(join(s.admin, "rebase-merge"))],
+			// A ref of the worktree's own, as a bisect keeps them.
+			[
+				"IN_PROGRESS",
+				async (s) => {
+					await mkdir(join(s.admin, "refs/bisect"), { recursive: true });
+					await writeFile(join(s.admin, "refs/bisect/bad"), `${s.head}\n`);
+				},
+			],
+			["NOT_CLEAN", (s) => writeFile(join(s.tree, "untracked.txt"), "x\n")],
+			["NOT_CLEAN", (s) => writeFile(join(s.tree, "debug.log"), "ignored\n")],
+			["NOT_CLEAN", (s) => writeFile(join(s.tree, "index.html"), "<p>another shop</p>\n")],
+			["NOT_CLEAN", (s) => rm(join(s.tree, "index.html"))],
+			[
+				"NOT_CLEAN",
+				async (s) => {
+					await writeFile(join(s.tree, "index.html"), "<p>staged</p>\n");
+					await f.git(s.tree, "add", "index.html");
+					await writeFile(join(s.tree, "index.html"), "<p>shop</p>\n");
+				},
+			],
+			// Changes the index tells git not to look at: its status prints nothing for them.
+			...["--assume-unchanged", "--skip-worktree"].map((flag): [string, (s: Session) => Promise<unknown>] => [
+				"NOT_CLEAN",
+				async (s) => {
+					await f.git(s.tree, "update-index", flag, "index.html");
+					await writeFile(join(s.tree, "index.html"), "<p>a shop git does not look at</p>\n");
+					expect(await f.git(s.tree, "status", "--porcelain", "--ignored")).toBe("");
+				},
+			]),
+			[
+				"SUBMODULE",
+				async (s) => {
+					await f.git(s.tree, "update-index", "--add", "--cacheinfo", `160000,${s.head},vendored`);
+					await f.git(s.tree, "commit", "--quiet", "-m", "vendored");
+				},
+			],
+			["SUBMODULE", (s) => f.git(s.tree, "init", "--quiet", "--template=", "nested")],
+			["NAMES_REFUSED", (s) => s.commit({ "Cart.js": "a\n", "cart.js": "b\n" }, "names")],
+		];
+		const sessions: Session[] = [];
+		for (const [, change] of cases) {
+			const made = await session(f, c, baseSha);
+			const head = await made.commit({ "index.html": "<p>shop</p>\n", ".gitignore": "*.log\n" }, "shop");
+			sessions.push({ ...made, head });
+			await change({ ...made, head });
+		}
+		const missing = randomUUID();
+		const workerIds = [missing, ...sessions.map((s) => s.workerId)];
+		expect(await retireCodeWorktrees(c.job, { repository: kept, workerIds }, { phase: "files" })).toEqual({
+			retired: [],
+			kept: [
+				{ workerId: missing, reason: "NOT_THERE" },
+				...sessions.map((s, index) => ({ workerId: s.workerId, reason: cases[index]?.[0] })),
+			],
+		});
+		for (const s of sessions) {
+			expect(await exists(join(s.tree, ".gitignore"))).toBe(true);
+			expect(await exists(join(s.admin, "HEAD"))).toBe(true);
+		}
+		// And the second job leaves a worktree whose files are there.
+		expect(await retireCodeWorktrees(c.job, { repository: kept, workerIds }, { phase: "git-folder" })).toEqual({
+			retired: [],
+			kept: [
+				{ workerId: missing, reason: "NOT_THERE" },
+				...sessions.map((s) => ({ workerId: s.workerId, reason: "FILES_STILL_THERE" })),
+			],
+		});
+		for (const s of sessions) expect(await exists(join(s.admin, "HEAD"))).toBe(true);
+		// At most 20 sessions a job, each once, in one of the two phases.
+		const commands = c.log.length;
+		for (const [ids, phase] of [
+			[Array.from({ length: 21 }, () => randomUUID()), "files"],
+			[[missing, missing], "files"],
+			[["main"], "files"],
+			[[missing], "all"],
+		] as const)
+			await expect(
+				retireCodeWorktrees(c.job, { repository: kept, workerIds: ids }, { phase: phase as "files" }),
+			).rejects.toThrow("INVALID_CODE_HOST_JOB");
+		expect(c.log).toHaveLength(commands);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+		expectJobCommands(c.log);
+	});
+
+	it("retire: removes a clean worktree's files, then git's folder for it, and a follow-up gets the same head and files back from the branch", async () => {
+		const { f, c, baseSha, first, head } = await landed();
+		// The second session's work is not landed: it is on its branch, which stays.
+		const second = await session(f, c, head);
+		await mkdir(join(second.tree, "bin"));
+		await writeFile(join(second.tree, "bin/run.sh"), "#!/bin/sh\n");
+		await chmod(join(second.tree, "bin/run.sh"), 0o755);
+		await symlink("bin/run.sh", join(second.tree, "run"));
+		const work = await second.commit({ "work.txt": "work\n" }, "work");
+		// The empty refs/ git makes in its folder for a worktree, and an empty folder a finished bisect left in it, hold
+		// no ref.
+		expect(await readdir(join(first.admin, "refs"))).toEqual([]);
+		await mkdir(join(second.admin, "refs/bisect"));
+		const ids = [first.workerId, second.workerId];
+		const retire = (phase: "files" | "git-folder") =>
+			retireCodeWorktrees(c.job, { repository: kept, workerIds: ids }, { phase });
+		const branch = (workerId: string) =>
+			f.git(c.repo, "--git-dir=.", "rev-parse", `refs/heads/qorpera/coding/${workerId}`);
+		const refs = (await check(c)).refsSha256;
+
+		expect(await retire("files")).toEqual({ retired: ids, kept: [] });
+		for (const s of [first, second]) {
+			expect(await exists(s.tree)).toBe(false);
+			expect(await exists(join(s.admin, "HEAD"))).toBe(true);
+		}
+		// No ref moved, and the worktrees are no longer among the folder's.
+		expect(await check(c)).toMatchObject({ refsSha256: refs, worktrees: [], repaired: "none" });
+		expect(await retire("files")).toEqual({
+			retired: [],
+			kept: ids.map((workerId) => ({ workerId, reason: "NOT_THERE" })),
+		});
+
+		// A follow-up between the two jobs: the first session's worktree comes back from its branch.
+		expect(await addCodeWorktree(c.job, { repository: kept, workerId: first.workerId, baseSha })).toEqual({
+			state: "added",
+			headSha: head,
+			restored: [`${area}/repo.git/worktrees/${first.workerId}`],
+		});
+		expect(await readFile(join(first.tree, "src/cart.js"), "utf8")).toBe("export const cart = [];\n");
+		expect(await f.git(first.tree, "symbolic-ref", "HEAD")).toBe(`refs/heads/qorpera/coding/${first.workerId}`);
+		expect(await f.git(first.tree, "status", "--porcelain")).toBe("");
+
+		// The second job: git's folder goes where the files are gone, and stays where they are back.
+		expect(await retire("git-folder")).toEqual({
+			retired: [second.workerId],
+			kept: [{ workerId: first.workerId, reason: "FILES_STILL_THERE" }],
+		});
+		expect(await exists(second.admin)).toBe(false);
+		expect(await exists(join(first.admin, "HEAD"))).toBe(true);
+		expect(await retire("git-folder")).toEqual({
+			retired: [],
+			kept: [
+				{ workerId: first.workerId, reason: "FILES_STILL_THERE" },
+				{ workerId: second.workerId, reason: "NOT_THERE" },
+			],
+		});
+		expect(await branch(second.workerId)).toBe(work);
+		expect(await fsckCodeArea(c.job, { repository: kept })).toEqual({ state: "ok", exitCode: 0, detail: "" });
+
+		// The second session's follow-up: the same head and the same files, and it works on.
+		expect(await addCodeWorktree(c.job, { repository: kept, workerId: second.workerId, baseSha: head })).toEqual({
+			state: "added",
+			headSha: work,
+			restored: [],
+		});
+		expect(await f.git(second.tree, "rev-parse", "HEAD")).toBe(work);
+		expect(await f.git(second.tree, "symbolic-ref", "HEAD")).toBe(`refs/heads/qorpera/coding/${second.workerId}`);
+		expect(await f.git(second.tree, "status", "--porcelain", "--ignored")).toBe("");
+		expect((await readdir(second.tree)).sort()).toEqual([".git", "bin", "index.html", "run", "src", "work.txt"]);
+		expect(await readFile(join(second.tree, "work.txt"), "utf8")).toBe("work\n");
+		expect((await lstat(join(second.tree, "bin/run.sh"))).mode & 0o111).toBe(0o111);
+		expect((await lstat(join(second.tree, "run"))).isSymbolicLink()).toBe(true);
+		expect(await exists(join(second.admin, "locked"))).toBe(true);
+		const later = await second.commit({ "later.txt": "later\n" }, "later");
+		expect(await landCodeBranch(c.job, { repository: kept, workerId: second.workerId, headSha: later })).toEqual({
+			state: "fast-forward",
+			mainSha: later,
+			restored: [],
+		});
+		// A worktree whose link to git's folder was changed after its files went is left to its session.
+		expect(
+			await retireCodeWorktrees(c.job, { repository: kept, workerIds: [first.workerId] }, { phase: "files" }),
+		).toEqual({
+			retired: [first.workerId],
+			kept: [],
+		});
+		await writeFile(join(first.admin, "gitdir"), "/elsewhere/.git\n");
+		expect(
+			await retireCodeWorktrees(c.job, { repository: kept, workerIds: [first.workerId] }, { phase: "git-folder" }),
+		).toEqual({ retired: [], kept: [{ workerId: first.workerId, reason: "LINKS_DIFFER" }] });
+		expect(await exists(join(first.admin, "HEAD"))).toBe(true);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+		expectJobCommands(c.log);
 	});
 });
