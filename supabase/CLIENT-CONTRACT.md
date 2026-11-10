@@ -1537,7 +1537,8 @@ only after durable storage.
   company folder this member may not read) or `SCREEN_HELD` (the folder has not released what the machine read: look
   again); 401 for a token the database does not take; 403 for a machine that is not there for the member. Behind the
   member company gateway like the other member routes. Since 20260930713000 also `DESKTOP_MEMBER_IN_CONTROL`: another
-  member holds the desktop (the list says who).
+  member holds the desktop (the list says who), or took it over while this look was on its way (its picture never
+  leaves: review r1 F1).
 - `POST /v1/member-machine-screens/<companyId>/<machineId>/act` (20260930713000; the same listener) — an action of the
   member who holds the desktop, with their token, `content-type: application/json` and `{"action": {...}}` (at most
   16 KiB): `{type: click, x, y, button?}`, `{type: double|move, x, y}`, `{type: drag, x, y, toX, toY}`, `{type: type,
