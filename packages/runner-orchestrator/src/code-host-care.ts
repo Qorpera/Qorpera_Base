@@ -10,7 +10,15 @@ import {
 	codeBundleName,
 } from "./code-bundle-store.ts";
 import { type CodeHostDeletions, controlCodeHostDeletions } from "./code-host.ts";
-import { type CodeHostGcBlock, type CodeHostJob, CodeHostJobFailure, CodeHostRefusal } from "./code-host-jobs.ts";
+import {
+	type CodeAreaChecked,
+	type CodeAreaRef,
+	type CodeBundleSink,
+	type CodeHostGcBlock,
+	type CodeHostJob,
+	CodeHostJobFailure,
+	CodeHostRefusal,
+} from "./code-host-jobs.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
 import { redactCodingErrorText } from "./coding-error-detail.ts";
 import { CodingControlBusy } from "./coding-executor.ts";
@@ -35,32 +43,6 @@ import { CodingControlBusy } from "./coding-executor.ts";
  * Every run that began ends with `qorpera_code_care_finish`. */
 
 export const CODE_CARE_RPCS = ["qorpera_code_care_due", "qorpera_code_care_step", "qorpera_code_care_finish"] as const;
-
-// The next three are Part B's (`code-host-jobs.ts`), declared here only until the parts are merged: the lead replaces
-// them by imports from there.
-/** One ref: `refs/heads/main`, a session's branch, the mark. */
-export interface CodeAreaRef {
-	name: string;
-	sha: string;
-}
-export type CodeAreaChecked =
-	| { state: "absent" }
-	| {
-			state: "present";
-			mainSha: string;
-			refs: CodeAreaRef[];
-			refsSha256: string;
-			shallow: boolean;
-			/** The session ids that have a worktree folder under worktrees/. */
-			worktrees: string[];
-			objects: { loose: number; packs: number; sizeKiB: number };
-			/** What the check repaired: main/'s HEAD, or main/'s files (removed and added again). */
-			repaired: "none" | "head" | "files";
-			restored: string[];
-	  };
-export interface CodeBundleSink {
-	write(chunk: Uint8Array): Promise<void>;
-}
 
 /** The code host jobs care runs: `code-host-jobs.ts`'s functions, given by the caller. `collect` is
  * `collectCodeGarbage` as it is. */

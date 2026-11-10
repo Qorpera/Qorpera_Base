@@ -6,14 +6,19 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CODE_BUNDLE_FOLDER, codeBundleName, createCodeBundleStore } from "../src/code-bundle-store.ts";
 import {
 	CODE_CARE_RPCS,
-	type CodeAreaChecked,
-	type CodeAreaRef,
 	type CodeCareJobs,
 	type CodeCareOutcome,
 	CodeHostCare,
 	type CodeHostCareOptions,
 } from "../src/code-host-care.ts";
-import { type CodeHostGcBlock, type CodeHostJob, CodeHostJobFailure, CodeHostRefusal } from "../src/code-host-jobs.ts";
+import {
+	type CodeAreaChecked,
+	type CodeAreaRef,
+	type CodeHostGcBlock,
+	type CodeHostJob,
+	CodeHostJobFailure,
+	CodeHostRefusal,
+} from "../src/code-host-jobs.ts";
 import { CODE_HOST_LAYOUT, type CodeHostJobOptions, type CodeHostJobs } from "../src/code-host-views.ts";
 import { CodingControlBusy } from "../src/coding-executor.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";

@@ -8,6 +8,9 @@ import { cloudCodingSessionLayout } from "../../packages/contracts/src/cloud-cod
 import { parseCloudCodingNasPolicy } from "../../packages/contracts/src/cloud-coding-storage.ts";
 import { CloudCodingExecutor } from "../../packages/runner-orchestrator/src/coding-executor.ts";
 import { type CodeHostEvent, type CodeHostPolicy, controlCodeHostDeletions, LxdCodeHosts, parseCodeHostPolicy } from "../../packages/runner-orchestrator/src/code-host.ts";
+import { CODE_BUNDLE_FOLDER, createCodeBundleStore } from "../../packages/runner-orchestrator/src/code-bundle-store.ts";
+import { CodeHostCare } from "../../packages/runner-orchestrator/src/code-host-care.ts";
+import { bundleCodeArea, checkCodeArea, collectCodeGarbage, fsckCodeArea, retireCodeWorktrees } from "../../packages/runner-orchestrator/src/code-host-jobs.ts";
 import { CodeHostRepositories } from "../../packages/runner-orchestrator/src/code-host-repositories.ts";
 import { codeHostErrorCode, codingErrorDetail } from "../../packages/runner-orchestrator/src/coding-error-detail.ts";
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
@@ -237,6 +240,16 @@ export function logCodeHost(event: CodeHostEvent | CodeHostViewEvent): void {
 		...(event.error === undefined ? {} : loggedError(event.error)) }));
 }
 
+/** Nightly care's line in the executor's log (`code-care`, `code-care-error`): an error by its code and its detail
+ * (loggedError), never as itself. */
+export function logCodeCare(event: Record<string, unknown>): void {
+	if (event.event === "code-care") console.log(JSON.stringify(event));
+	else {
+		const { error, ...rest } = event;
+		console.error(JSON.stringify({ ...rest, ...(error === undefined ? {} : loggedError(error)) }));
+	}
+}
+
 /** Independent Linux service: the identity host runs the model turn, this
  * service runs the repository VM, the command gateway and the Git broker. No
  * member client participates in this loop. */
@@ -260,6 +273,18 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const codeHosts = config.codeHost ? new LxdCodeHosts({ client: new LxdUnixClient(), policy: config.codeHost, log: logCodeHost }) : undefined;
 	// Each company's code host jobs, one at a time: its sessions' worktrees on the folder model.
 	const codeHostJobs = codeHosts ? new CodeHostJobs({ hosts: codeHosts, client: lxd, control, log: logCodeHost }) : undefined;
+	// Nightly care of the repositories kept in Qorpera (own code storage, step 2a): its jobs yield to a turn's, and its
+	// bundles go beside the journals, on the NAS, under control/code-bundles. The store checks the storage through an
+	// object of its own: one runs a single check at a time, and the executor's is in use.
+	const codeCare = codeHostJobs ? new CodeHostCare({
+		control, hosts: codeHostJobs, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
+		jobs: { check: checkCodeArea, fsck: fsckCodeArea, bundle: bundleCodeArea, collect: collectCodeGarbage, retire: retireCodeWorktrees },
+		bundles: (() => {
+			const bundleStorage = createCodingNasStorage(config.storagePolicy);
+			return createCodeBundleStore({ root: posix.join(journalRoot, CODE_BUNDLE_FOLDER), assert: (signal) => bundleStorage.assertControl(signal) });
+		})(),
+		report: logCodeCare,
+	}) : undefined;
 	let folder: LxdCodingExecutorHostOptions["folder"];
 	if (config.folder) {
 		const agent = await readPinned(config.folder.agent), program = await readPinned(config.folder.program);
@@ -480,7 +505,23 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				await setTimeout(60_000, undefined, { signal: stop.signal }).catch(() => undefined);
 			}
 		})();
-		await Promise.all([claiming, keeping, housekeeping, machines, hosting, deletions]);
+		// Nightly care of the repositories kept in Qorpera: at start and every 5 minutes after a pass, the ones the
+		// kernel says are due (each night between 01:00 and 04:00 UTC, or 30 minutes after a run a turn put off), one at
+		// a time. Beside housekeeping, never inside it: a pass lasts as long as its bundles. A pass reports each
+		// repository itself (code-care, code-care-error) and ends the run it is in as busy when the executor stops.
+		const caring = (async () => {
+			if (!codeCare) return;
+			while (!stop.signal.aborted) {
+				try {
+					const passed = await codeCare.pass(stop.signal);
+					if (passed.cared + passed.busy + passed.failed > 0) console.log(JSON.stringify({ event: "code-care", step: "pass", ...passed }));
+				} catch (error) {
+					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "code-care-error", step: "pass", ...loggedError(error) }));
+				}
+				await setTimeout(300_000, undefined, { signal: stop.signal }).catch(() => undefined);
+			}
+		})();
+		await Promise.all([claiming, keeping, housekeeping, machines, hosting, deletions, caring]);
 	} finally {
 		stop.abort();
 		await executor?.drain();
