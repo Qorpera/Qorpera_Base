@@ -39,13 +39,16 @@ export function shownSentTime(): HTMLElement | undefined {
 	return tip?.classList.contains("is-shown") ? tip : undefined;
 }
 
-function hide(): void {
+/** `moved`: the pointer went on (to another message, a gap, out of the thread), so a message reached next shows its
+ * time at once. Otherwise the label was dismissed (a press, a scroll, a key), and the next one waits again. */
+function hide(moved = false): void {
 	if (timer !== undefined) window.clearTimeout(timer);
 	timer = undefined;
-	if (current && tip?.classList.contains("is-shown")) hiddenAt = Date.now();
+	hiddenAt = moved && current && tip?.classList.contains("is-shown") ? Date.now() : 0;
 	current = undefined;
 	tip?.classList.remove("is-shown");
 }
+const dismiss = () => hide();
 
 /** Beside the message, on the side away from the thread's middle (an agent's on the left gets it on its right, the
  * member's own on the right gets it on its left), at the pointer's height within the message. Without room beside (a
@@ -59,7 +62,6 @@ function place(label: HTMLElement, target: HTMLElement, root: HTMLElement, point
 	const gap = GAP * scale;
 	const margin = MARGIN * scale;
 	const rightSide = box.left + box.width / 2 <= area.left + area.width / 2;
-	// Room within the thread itself: a panel's label never stands over what is beside it.
 	const fitsRight = box.right + gap + width <= Math.min(area.right, window.innerWidth) - margin;
 	const fitsLeft = box.left - gap - width >= Math.max(area.left, 0) + margin;
 	let left: number;
@@ -74,7 +76,9 @@ function place(label: HTMLElement, target: HTMLElement, root: HTMLElement, point
 		top = pointer.y - 2 * gap - height;
 		if (top < Math.max(area.top, 0) + margin) top = pointer.y + 3 * gap;
 	}
-	left = Math.min(Math.max(left, margin), window.innerWidth - width - margin);
+	// Inside the thread as it is on screen: a panel's label never stands over what is beside it.
+	const leftmost = Math.max(area.left, 0) + margin;
+	left = Math.max(Math.min(left, Math.min(area.right, window.innerWidth) - margin - width), leftmost);
 	top = Math.min(Math.max(top, margin), window.innerHeight - height - margin);
 	label.style.left = `${Math.round(left)}px`;
 	label.style.top = `${Math.round(top)}px`;
@@ -96,6 +100,17 @@ function show(target: HTMLElement, root: HTMLElement, pointer: Point): void {
 export function sentTimeHover(root: HTMLElement, signal: AbortSignal): void {
 	const pointer: Point = { x: 0, y: 0 };
 	const options = { signal };
+	const messageAt = (event: PointerEvent) => {
+		const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-sent-at]") : null;
+		return target && root.contains(target) ? target : undefined;
+	};
+	const arm = (target: HTMLElement) => {
+		const warm = Boolean(current && tip?.classList.contains("is-shown")) || Date.now() - hiddenAt < WARM_MS;
+		hide(true);
+		current = target;
+		if (warm) show(target, root, pointer);
+		else timer = window.setTimeout(() => show(target, root, pointer), DELAY_MS);
+	};
 	root.addEventListener(
 		"pointerover",
 		(event) => {
@@ -104,33 +119,36 @@ export function sentTimeHover(root: HTMLElement, signal: AbortSignal): void {
 			pointer.y = event.clientY;
 			// A press held down is a selection being made: no label over it.
 			if (event.buttons) return hide();
-			const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-sent-at]") : null;
-			if (!target || !root.contains(target)) return hide();
-			if (target === current) return;
-			const warm = Boolean(current && tip?.classList.contains("is-shown")) || Date.now() - hiddenAt < WARM_MS;
-			hide();
-			current = target;
-			if (warm) show(target, root, pointer);
-			else timer = window.setTimeout(() => show(target, root, pointer), DELAY_MS);
+			const target = messageAt(event);
+			if (!target) return hide(true);
+			if (target !== current) arm(target);
 		},
 		options,
 	);
 	root.addEventListener(
 		"pointermove",
 		(event) => {
+			if (event.pointerType !== "mouse") return;
 			pointer.x = event.clientX;
 			pointer.y = event.clientY;
-			if (event.buttons && current) hide();
+			if (event.buttons) {
+				if (current) hide();
+				return;
+			}
+			// After a press, a scroll or a selection, moving on within the same message asks for its time again.
+			if (current || timer !== undefined) return;
+			const target = messageAt(event);
+			if (target) arm(target);
 		},
 		options,
 	);
-	root.addEventListener("pointerleave", hide, options);
-	root.addEventListener("pointerdown", hide, options);
+	root.addEventListener("pointerleave", () => hide(true), options);
+	root.addEventListener("pointerdown", dismiss, options);
 	// The thread scrolls under a still pointer: the label would point at another message.
-	root.addEventListener("scroll", hide, { capture: true, signal });
-	root.addEventListener("wheel", hide, { passive: true, signal });
-	window.addEventListener("keydown", hide, options);
-	window.addEventListener("blur", hide, options);
+	root.addEventListener("scroll", dismiss, { capture: true, signal });
+	root.addEventListener("wheel", dismiss, { passive: true, signal });
+	window.addEventListener("keydown", dismiss, options);
+	window.addEventListener("blur", dismiss, options);
 	signal.addEventListener("abort", () => {
 		if (!current?.isConnected || root.contains(current)) hide();
 	});

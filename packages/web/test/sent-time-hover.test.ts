@@ -20,6 +20,7 @@ afterEach(() => {
 	document.body.replaceChildren();
 	localStorage.clear();
 	vi.useRealTimers();
+	vi.restoreAllMocks();
 });
 
 function box(left: number, top: number, width: number, height: number): DOMRect {
@@ -97,6 +98,57 @@ describe("a message's sent time on a hover", () => {
 			end();
 			expect(shownSentTime()).toBeUndefined();
 		}
+	});
+
+	it("asks again when the pointer moves on within the message after a dismissal, after the wait", () => {
+		// Review of #1651 round 1, F1: a scroll inside a long message hid the label for good.
+		const { root, theirs } = thread();
+		const text = theirs.firstElementChild!;
+		over(text);
+		vi.advanceTimersByTime(400);
+		expect(shownSentTime()).toBeDefined();
+		root.dispatchEvent(new Event("scroll"));
+		expect(shownSentTime()).toBeUndefined();
+		// No pointerover: the pointer never left the text.
+		text.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse", clientY: 130 }));
+		// A dismissal is not a move to the next message: it waits again.
+		expect(shownSentTime()).toBeUndefined();
+		vi.advanceTimersByTime(400);
+		expect(shownSentTime()?.textContent).toBe(sentTimeText(theirs));
+		// A move with the button down (a selection) brings nothing back.
+		root.dispatchEvent(new PointerEvent("pointerdown"));
+		text.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse", buttons: 1 }));
+		vi.advanceTimersByTime(400);
+		expect(shownSentTime()).toBeUndefined();
+	});
+
+	it("keeps the label inside a narrow panel that stands off the window's left edge", () => {
+		// Review of #1651 round 1, F2: the label above the pointer could stand over what is beside the panel.
+		const size = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(160);
+		vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(24);
+		const message = h("article", { class: "message", "data-sent-at": sentAt }, "A long one");
+		const panel = h("div", { class: "pair-messages" }, message);
+		document.body.append(panel);
+		panel.getBoundingClientRect = () => box(600, 0, 400, 600);
+		message.getBoundingClientRect = () => box(612, 200, 376, 80);
+		sentTimeHover(panel, lifetime.signal);
+		message.dispatchEvent(
+			new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse", clientX: 615, clientY: 240 }),
+		);
+		vi.advanceTimersByTime(400);
+		const tip = shownSentTime()!;
+		expect(size).toHaveBeenCalled();
+		// No room beside: above the pointer, its left edge inside the panel (600 + the 8 px margin), not at 535.
+		expect(Number.parseFloat(tip.style.left)).toBe(608);
+		expect(Number.parseFloat(tip.style.top)).toBeLessThan(240);
+		message.dispatchEvent(new PointerEvent("pointerleave"));
+		panel.dispatchEvent(new PointerEvent("pointerleave"));
+		message.dispatchEvent(
+			new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse", clientX: 990, clientY: 240 }),
+		);
+		vi.advanceTimersByTime(400);
+		// At the right edge, its right edge stays inside too (1000 - 8 - 160).
+		expect(Number.parseFloat(shownSentTime()!.style.left)).toBe(832);
 	});
 
 	it("hides when its thread goes", () => {

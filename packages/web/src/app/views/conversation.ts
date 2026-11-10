@@ -253,6 +253,12 @@ interface ContinueLogin {
  * DECISIONS.md "Transcript projection rules": member inputs and agent sends
  * only. Composer drafts remain local until a message adapter is supplied. */
 
+/** A peer chip's time for a screen reader, as its description: the hover label (ui/sent-time-hover.ts) is only drawn,
+ * and the chip's name says what it opens. */
+const peerTimeId = (linkId: string) => `peer-time-${linkId}`;
+const peerTime = (linkId: string, at: string) =>
+	h("span", { class: "visually-hidden", id: peerTimeId(linkId) }, fmtTime(at));
+
 export class ConversationView {
 	readonly el: HTMLElement;
 	readonly #company: CompanyController;
@@ -2719,6 +2725,7 @@ export class ConversationView {
 										class: "peer-chip",
 										dataset: { pairSessionId: item.pairSessionId, linkIds: item.id, sentAt: item.createdAt },
 										"aria-label": t("{label}. Open the conversation", { label }),
+										"aria-describedby": peerTimeId(item.id),
 										onclick: (event: MouseEvent) =>
 											this.#openPair(
 												item.pairSessionId,
@@ -2730,6 +2737,7 @@ export class ConversationView {
 									agentFigure(counterpart, name, { size: 16 }),
 									h("span", null, name),
 									after.trim() ? h("span", null, after.trim()) : null,
+									peerTime(item.id, item.createdAt),
 								),
 							);
 						},
@@ -3461,6 +3469,7 @@ export class ConversationView {
 						...(compact ? { sentLabel: name } : {}),
 					},
 					"aria-label": t("{label}. Open the conversation", { label: name }),
+					"aria-describedby": peerTimeId(link.id),
 					onclick: (event: MouseEvent) =>
 						this.#openPair(
 							link.pairSessionId,
@@ -3470,6 +3479,7 @@ export class ConversationView {
 				},
 				agentFigure(staff, name, { size: 16 }),
 				compact ? null : h("span", null, name),
+				peerTime(link.id, link.createdAt),
 			),
 		);
 		const words = (text: string) => (text.trim() ? h("span", { class: "peer-words" }, text.trim()) : null);
