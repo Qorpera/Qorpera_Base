@@ -29,11 +29,13 @@ import {
 	APP_TEXT_KINDS,
 	APP_VIDEO_FILE_MAX_BYTES,
 	APP_VIDEOS_MAX_BYTES,
+	APP_WRITES_MAX,
 	type AppManifest,
 	appFileKind,
 	appFolder,
 	appRelativePath,
 	parseAppManifest,
+	parseAppWrites,
 	setAppPosted,
 	writeAppManifest,
 } from "@qorpera/cloud-client/interface-apps";
@@ -83,7 +85,16 @@ const LIST_LIMIT = 200;
  * would spend it in seconds and then show an error until the next change.
  */
 const SAVE_APP_READS =
-	"The live sources the page may read. The page's script reads the company through the qorpera object, and every call returns a promise. qorpera.read(path) gives a file's text and qorpera.list(folder) a folder's entries (name, path, kind, bytes, updatedAt), both by company path, such as apps/<name>/state.json: the app's own folder always, any other company path only with files in reads. qorpera.table(name) gives {name, columns, rows}, each row an object by column name (tables in reads). qorpera.todos() gives every agent's todos as {agent, title, status, updatedAt}, with status open, blocked, done or cancelled (todos in reads). qorpera.agents() gives each agent's name, role and working, true while it works (agents in reads). qorpera.onChange(fn) calls fn when the company folder changed, which in a busy company is every few seconds. Read and draw when the page opens; after a change draw again once, no sooner than ten seconds after the last draw however many changes arrive, and do not poll on a timer. An app may make 120 calls a minute in a member's tab and 8 at a time, and todos counts as ten calls, so call each source once per draw. Keep the facts a page shows (decisions, numbers, open questions) in one data file in the app's folder and draw the page from it, so a change of state is a change to that one file; show who works on what and what is blocked from todos and agents instead of typing it in. When a read fails, keep what the page last showed and read again ten seconds later, until a read works; with nothing to show yet, show a plain line, never an empty page. A page only reads: it cannot change anything.";
+	"The live sources the page may read. The page's script reads the company through the qorpera object, and every call returns a promise. qorpera.read(path) gives a file's text and qorpera.list(folder) a folder's entries (name, path, kind, bytes, updatedAt), both by company path, such as apps/<name>/state.json: the app's own folder always, any other company path only with files in reads. qorpera.table(name) gives {name, columns, rows}, each row an object by column name (tables in reads). qorpera.todos() gives every agent's todos as {agent, title, status, updatedAt}, with status open, blocked, done or cancelled (todos in reads). qorpera.agents() gives each agent's name, role and working, true while it works (agents in reads). qorpera.questions() gives your and the other agents' open questions to this member that point at this app (questions in reads; writes says how a page answers one). qorpera.onChange(fn) calls fn when the company folder changed, which in a busy company is every few seconds. Read and draw when the page opens; after a change draw again once, no sooner than ten seconds after the last draw however many changes arrive, and do not poll on a timer. An app may make 120 calls a minute in a member's tab and 8 at a time, and todos counts as ten calls, so call each source once per draw. Keep the facts a page shows (decisions, numbers, open questions) in one data file in the app's folder and draw the page from it, so a change of state is a change to that one file; show who works on what and what is blocked from todos and agents instead of typing it in. When a read fails, keep what the page last showed and read again ten seconds later, until a read works; with nothing to show yet, show a plain line, never an empty page. Reading changes nothing: writes says what a page may ask a member to change.";
+
+/**
+ * What save_app's schema says of `writes`: how a page lets a member act on the company (RUNTIME-INTERFACE-APPS.md §5;
+ * Jonas, 10 November 2026: "interfaces let's you interact with your company directly"). The page only asks: the web
+ * draws a bar outside the app's frame that shows what will be saved, and the save is the member's own. It sits on the
+ * field for the same reason as `reads`.
+ */
+const SAVE_APP_WRITES =
+	"What the page may ask a member to change, of answers and table:<name>. A page changes nothing by itself: its script asks, Qorpera shows the member a bar above the page with exactly what will be saved, and it is saved only when the member allows it there, as the member's own change. Each call returns a promise: it resolves once the change is saved, and rejects with the reason when the member says not now, when another request still waits, or when the save is refused. Show that reason on the page and leave the button, so the member can try again. Ask only from a click on a button of the page that says what it does, one request per click, never when the page opens or on a timer: after three not now in a row the page may not ask again until the member reloads it. A <form> does not submit inside an app: handle the button's click (and Enter in a field), not a form's submit. answers: a member answers an open question on the page. Ask the question with ask_member and point it at the app, with a link [title](app:<name>) in its body or app:<name> as an option's preview. qorpera.questions() (questions in reads) then lists the open questions that point at this app, each {id, agent, title, body, options: [{label, value, description}], multiSelect, askedAt}. Draw them as part of the page: a choice between two concepts as a button on each concept, an approval as a button beside what is approved. On a click call qorpera.answer(id, value) with one option's value, or a list of values for a multiSelect question. Your run goes on with the answer, as when the member answers in the chat; a typed answer is given in the chat. table:<name>: a member changes a row of the company table QorperaOS/tables/<name>/, such as a status, a date, a number or a note. qorpera.setRow(table, key, cells) changes cells of the row with that key: key is the value of the table's key column (an object of column to value when the key is several columns), and cells is an object of column to new value: text, a number, true or false, or null to empty an optional cell. qorpera.addRow(table, cells) adds a row. One row per request, at most 12 cells of it, a cell's text at most 500 characters; the bar shows each value before and after. A page cannot change a key cell or a column that names a member or an agent, and cannot remove a row; the table's own [write] rule and column types still decide, and the table areas is never written from an app. Read the rows with qorpera.table(name) (tables in reads) and draw again after a change. To act when a member changes a row, set a routine that wakes you: manage_routine with a trigger of kind file_change and path QorperaOS/tables/<name>/rows.csv; without one you see the change the next time you read the table. Keep what members change in a table, and what only you change in a data file of the app.";
 
 /**
  * save_app's description, last: what makes a page worth opening (Jonas, 10 November 2026: the agents' apps "weren't all
@@ -108,6 +119,8 @@ interface ManifestInput {
 	readonly colour: AppManifest["colour"];
 	readonly entry: string | null;
 	readonly reads: AppManifest["reads"] | null;
+	/** Null keeps what the app has (nothing for a new app). */
+	readonly writes: AppManifest["writes"] | null;
 	/** Null keeps what the app has (false for a new app). */
 	readonly concept: boolean | null;
 	readonly cover: string | null;
@@ -144,7 +157,7 @@ function parseManifest(value: JsonValue | undefined): ManifestInput | null {
 	if (value === null) return null;
 	if (value === undefined || typeof value !== "object" || Array.isArray(value))
 		throw new CloudToolArgumentRefusal("manifest must be an object, or null to keep the app's manifest as it is");
-	const keys = ["title", "about", "emblem", "colour", "entry", "reads", "concept", "cover"];
+	const keys = ["title", "about", "emblem", "colour", "entry", "reads", "writes", "concept", "cover"];
 	if (Object.keys(value).some((key) => !keys.includes(key)))
 		throw new CloudToolArgumentRefusal(`manifest takes ${keys.join(", ")}`);
 	const choice = <T extends string>(raw: JsonValue | undefined, label: string, options: readonly T[]): T | null => {
@@ -180,6 +193,12 @@ function parseManifest(value: JsonValue | undefined): ManifestInput | null {
 			throw new CloudToolArgumentRefusal(`manifest.reads must be a list of ${APP_READS.join(", ")}`);
 		reads = [...new Set(value.reads as AppManifest["reads"][number][])];
 	}
+	let writes: AppManifest["writes"] | null = null;
+	if (value.writes !== undefined && value.writes !== null) {
+		const parsed = parseAppWrites(value.writes);
+		if ("problem" in parsed) throw new CloudToolArgumentRefusal(`manifest.${parsed.problem}`);
+		writes = parsed.writes;
+	}
 	return {
 		name: text(value.title, "manifest.title", 60, true) as string,
 		about: text(value.about, "manifest.about", 200, false),
@@ -187,6 +206,7 @@ function parseManifest(value: JsonValue | undefined): ManifestInput | null {
 		colour: choice(value.colour, "manifest.colour", AGENT_COLOURS),
 		entry,
 		reads,
+		writes,
 		concept: typeof value.concept === "boolean" ? value.concept : null,
 		cover,
 	};
@@ -438,7 +458,7 @@ export function cloudAppTools(options: {
 		name: "save_app" satisfies CloudRuntimeToolOperation,
 		source: "company_file",
 		maxArgumentBytes: MAX_TOOL_ARGUMENT_BYTES,
-		description: `Make or change an interface app: a small web page in apps/<name>/ of the company folder that shows members a part of the company as it stands now (the state of an area, results, a prototype, a dashboard), opened as a page of its own. Give the app's name (its folder: lowercase, digits and hyphens), a manifest (title, and optionally about, emblem: ${INTERFACE_EMBLEMS.join(", ")}, colour: ${AGENT_COLOURS.join(", ")}, entry: the page that opens, default ${APP_DEFAULT_ENTRY}, reads: the live sources the page may read, of ${APP_READS.join(", ")}) to make it or change its manifest, or null to keep it, and the files to write (at most ${FILES_PER_CALL} a call: .html, .css, .js, .json, .svg, .md, .csv, .txt, each at most ${APP_FILE_MAX_BYTES / 1024} KiB). Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) you write into the app's folder from a company machine may be up to ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each and ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all; pages and code up to ${APP_MAX_BYTES / 1024 / 1024} MiB in all. The app is one page: only the entry opens, so links to its other .html files do not work; put every view in the entry, as tabs or sections. The page gets its pictures and videos only where it names them when it opens (<img src>, <video src>, a poster, or url() in its styles): a script cannot load a picture or video later, so put every picture it may show in the page (hidden ones too) and switch them with styles or a script; a script reads text files with qorpera.read(path). The entry may use the app's other files by relative paths (<link rel="stylesheet" href="style.css">, <script src="app.js">, <img src="chart.svg">); the page has no network, so put everything it needs in the app. A new app needs a manifest and its entry. It applies at once. Then link it in your message as [Title](app:<name>), which members open as a page of its own. Set concept = true for a concept of the company's product, and cover = a picture of it, so it shows in the Concepts viewer. Keep operationKey for the same change, and use a new one for any other change.${SAVE_APP_DESIGN}`,
+		description: `Make or change an interface app: a small web page in apps/<name>/ of the company folder that shows members a part of the company as it stands now (the state of an area, results, a prototype, a dashboard), opened as a page of its own. Give the app's name (its folder: lowercase, digits and hyphens), a manifest (title, and optionally about, emblem: ${INTERFACE_EMBLEMS.join(", ")}, colour: ${AGENT_COLOURS.join(", ")}, entry: the page that opens, default ${APP_DEFAULT_ENTRY}, reads: the live sources the page may read, of ${APP_READS.join(", ")}, writes: what it may ask a member to change) to make it or change its manifest, or null to keep it, and the files to write (at most ${FILES_PER_CALL} a call: .html, .css, .js, .json, .svg, .md, .csv, .txt, each at most ${APP_FILE_MAX_BYTES / 1024} KiB). Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) you write into the app's folder from a company machine may be up to ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each and ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all; pages and code up to ${APP_MAX_BYTES / 1024 / 1024} MiB in all. The app is one page: only the entry opens, so links to its other .html files do not work; put every view in the entry, as tabs or sections. The page gets its pictures and videos only where it names them when it opens (<img src>, <video src>, a poster, or url() in its styles): a script cannot load a picture or video later, so put every picture it may show in the page (hidden ones too) and switch them with styles or a script; a script reads text files with qorpera.read(path). The entry may use the app's other files by relative paths (<link rel="stylesheet" href="style.css">, <script src="app.js">, <img src="chart.svg">); the page has no network, so put everything it needs in the app. A new app needs a manifest and its entry. It applies at once. Then link it in your message as [Title](app:<name>), which members open as a page of its own. Set concept = true for a concept of the company's product, and cover = a picture of it, so it shows in the Concepts viewer. Keep operationKey for the same change, and use a new one for any other change.${SAVE_APP_DESIGN}`,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -460,6 +480,12 @@ export function cloudAppTools(options: {
 							type: ["array", "null"],
 							items: { type: "string", enum: [...APP_READS] },
 							description: SAVE_APP_READS,
+						},
+						writes: {
+							type: ["array", "null"],
+							maxItems: APP_WRITES_MAX,
+							items: { type: "string", maxLength: 80 },
+							description: SAVE_APP_WRITES,
 						},
 						concept: { type: ["boolean", "null"] },
 						cover: { type: ["string", "null"], maxLength: 1024 },
@@ -533,6 +559,7 @@ export function cloudAppTools(options: {
 					owner,
 					posted: false,
 					reads: request.manifest.reads ?? [],
+					writes: request.manifest.writes ?? [],
 					concept: request.manifest.concept ?? false,
 					cover: request.manifest.cover,
 				};
@@ -603,6 +630,7 @@ export function cloudAppTools(options: {
 					owner: before?.owner ?? owner,
 					posted: before?.posted ?? false,
 					reads: request.manifest.reads ?? before?.reads ?? [],
+					writes: request.manifest.writes ?? before?.writes ?? [],
 					concept: request.manifest.concept ?? before?.concept ?? false,
 					cover: request.manifest.cover ?? before?.cover ?? null,
 				};

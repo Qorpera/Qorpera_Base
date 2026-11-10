@@ -15,6 +15,7 @@ import {
 	APP_VIDEO_FILE_MAX_BYTES,
 	APP_VIDEO_KINDS,
 	APP_VIDEOS_MAX_BYTES,
+	APP_WRITE_ANSWERS,
 	APPS_FOLDER,
 	type AppManifest,
 	type AppProblem,
@@ -24,8 +25,19 @@ import {
 	parseAppManifest,
 } from "@qorpera/cloud-client/interface-apps";
 import { isInterfaceName, parseTableFile, parseTableRows } from "@qorpera/cloud-client/interfaces";
+import type { WebMemberFolder } from "../cloud/company-folder-writes.ts";
 import type { AppAnswer, AppCall } from "../ui/app-frame.ts";
 import { framePage } from "../ui/page-frame.ts";
+import {
+	AppActionRefused,
+	type AppGate,
+	type AppGateOutcome,
+	type AppQuestionSource,
+	appQuestions,
+	type PreparedAsk,
+	prepareAnswer,
+	prepareRow,
+} from "./app-actions.ts";
 
 /* Interface apps on the web (deploy/first-node/RUNTIME-INTERFACE-APPS.md §2, §4 and §5; Jonas, 5 November 2026): the
  * company's apps as their manifests say (`readApps`, for the apps drawer and the cards), one app's page put together
@@ -37,8 +49,12 @@ import { framePage } from "../ui/page-frame.ts";
  *   what is read here too, since a machine's mounted folder can write past the write tools.
  * - The bridge reads only what the manifest's `reads` names, and only what an agent of the company reads too: the app's
  *   own folder always; with `files`, the company's own work (never QorperaOS/ or what the platform writes: mail, bank,
- *   members, events, digital post); with `tables`, a table's rows; with `agents` and `todos`, plain lines about them.
- *   It never hands over who the member is, a token, or anything of this app's own state. */
+ *   members, events, digital post); with `tables`, a table's rows; with `agents` and `todos`, plain lines about them;
+ *   with `questions`, the agents' open question cards that point at this app.
+ *   It never hands over who the member is, a token, or anything of this app's own state.
+ * - The bridge changes nothing by itself. A page may ask for what the manifest's `writes` names (an answer to such a
+ *   question, a row of a named table): the request is checked (app/app-actions.ts), put to the member on the bar outside
+ *   the frame (views/app-ask-bar.ts), and made as the member's own change only when they allow it there. */
 
 /** One app of the company, as its folder and manifest say. */
 export interface CompanyApp {
@@ -327,6 +343,15 @@ export async function assembleApp(
 export interface AppBridgeHost {
 	readonly folder: () => Folder;
 	readonly agents: () => readonly { readonly name: string; readonly role: string; readonly working: boolean }[];
+	/** The agents' open questions and an agent by its id, for an app that shows or answers them; absent where the
+	 * company has none to show. */
+	readonly questions?: AppQuestionSource & {
+		readonly agent: (agentId: string) => { readonly displayName: string } | undefined;
+	};
+	/** The member's own client for a change they allowed, and the check that the company is still the one on screen
+	 * (it throws when it is not). Absent where nothing can be changed. */
+	readonly writer?: () => WebMemberFolder;
+	readonly current?: () => void;
 }
 
 /** Calls in flight, and calls a minute, for one app in this tab. */
@@ -336,6 +361,18 @@ const MAX_PER_MINUTE = 120;
 const MAX_ANSWER_BYTES = 1024 * 1024;
 const MAX_PATH_CHARS = 1024;
 const MAX_PARAMS_CHARS = 4096;
+/** A row's cells may be longer than a read's few short values. */
+const MAX_ROW_PARAMS_CHARS = 16 * 1024;
+/** What a call spends of the minute's budget, when it is more than one: todos reads every agent's todos folder, and a
+ * request for a change reads the table or the questions before anything is shown. */
+const CALL_COST: Readonly<Record<string, number>> = { todos: 10, answer: 5, setRow: 5, addRow: 5 };
+/** What a page is told when its request did not become a change. */
+const GATE_SAYS: Readonly<Record<Exclude<AppGateOutcome["outcome"], "saved" | "failed">, string>> = {
+	declined: "The member said not now",
+	busy: "Another request is waiting for the member's answer",
+	quiet: "The member said not now three times: this page asks again after the member reloads it",
+	gone: "The page was put away, or what it may ask for changed, before the member answered",
+};
 const TODO_FILES = 200;
 /** The budget of an app in this tab, kept across its frames, so a Reload starts no new one. */
 const budgets = new Map<string, { inFlight: number; minute: number; calls: number }>();
@@ -369,17 +406,21 @@ export class AppBridge {
 	readonly #app: CompanyApp & { readonly manifest: AppManifest };
 	readonly #key: string;
 	readonly #signal: AbortSignal;
+	readonly #gate: AppGate | undefined;
 
+	/** `gate`: where a request for a change is put to the member; without one the app only reads. */
 	constructor(
 		host: AppBridgeHost,
 		app: CompanyApp & { readonly manifest: AppManifest },
 		key: string,
 		signal: AbortSignal,
+		gate?: AppGate,
 	) {
 		this.#host = host;
 		this.#app = app;
 		this.#key = key;
 		this.#signal = signal;
+		this.#gate = gate;
 	}
 
 	#may(read: AppRead): boolean {
@@ -387,14 +428,18 @@ export class AppBridge {
 	}
 
 	async answer(call: AppCall): Promise<AppAnswer> {
-		// A call is a method and a few short values: anything larger is no call this bridge takes.
-		if (call.method.length > 32 || JSON.stringify(call.params).length > MAX_PARAMS_CHARS)
+		// A call is a method and a few short values (a row's cells may be longer): anything larger is no call this bridge
+		// takes.
+		const row = call.method === "setRow" || call.method === "addRow";
+		if (
+			call.method.length > 32 ||
+			JSON.stringify(call.params).length > (row ? MAX_ROW_PARAMS_CHARS : MAX_PARAMS_CHARS)
+		)
 			return refuse("Not a call the app answers");
 		const spent = budget(this.#key);
 		if (spent.inFlight >= MAX_IN_FLIGHT || spent.calls >= MAX_PER_MINUTE)
 			return refuse("Too many calls: wait a moment and try again");
-		// todos reads every agent's todos folder: it costs as ten calls.
-		spent.calls += call.method === "todos" ? 10 : 1;
+		spent.calls += CALL_COST[call.method] ?? 1;
 		spent.inFlight++;
 		try {
 			const value = await this.#value(call);
@@ -468,9 +513,58 @@ export class AppBridge {
 				if (!this.#may("todos")) return refuse('Add "todos" to reads in app.toml to read the todos');
 				return { ok: true, value: await this.#todos(folder) };
 			}
+			case "questions": {
+				if (!this.#may("questions"))
+					return refuse('Add "questions" to reads in app.toml to read the open questions');
+				const source = this.#host.questions;
+				if (!source) return { ok: true, value: [] };
+				return {
+					ok: true,
+					value: await appQuestions(source, this.#app.name, (id) => source.agent(id)?.displayName ?? ""),
+				};
+			}
+			case "answer":
+			case "setRow":
+			case "addRow":
+				return this.#change(call);
 			default:
 				return refuse("Not a call the app answers");
 		}
+	}
+
+	/** A request for a change: only what the manifest's `writes` names, checked, then put to the member. The page is
+	 * answered once the member chose and, when they allowed it, the change is saved or refused. */
+	async #change(call: AppCall): Promise<AppAnswer> {
+		const writes = this.#app.manifest.writes;
+		const gate = this.#gate;
+		let prepare: () => Promise<PreparedAsk>;
+		if (call.method === "answer") {
+			if (!writes.includes(APP_WRITE_ANSWERS))
+				return refuse('Add "answers" to writes in app.toml to answer a question from the page');
+			const questions = this.#host.questions;
+			if (!gate || !questions) return refuse("Nothing can be changed from this page");
+			prepare = () => prepareAnswer(questions, this.#app.name, call.params);
+		} else {
+			const table = call.params.table;
+			if (typeof table !== "string" || !isInterfaceName(table) || !writes.includes(`table:${table}`))
+				return refuse('Add "table:<name>" to writes in app.toml to change rows of that table');
+			const { writer, current } = this.#host;
+			if (!gate || !writer || !current) return refuse("Nothing can be changed from this page");
+			prepare = () => prepareRow(writer(), call.method === "addRow", call.params, this.#signal, current);
+		}
+		// One request at a time: while one waits for the member, another is refused before anything is read.
+		const closed = gate.closed();
+		if (closed) return refuse(GATE_SAYS[closed]);
+		let prepared: PreparedAsk;
+		try {
+			prepared = await prepare();
+		} catch (error) {
+			if (error instanceof AppActionRefused) return refuse(error.message);
+			throw error;
+		}
+		const result = await gate.ask(prepared.ask, prepared.perform);
+		if ("message" in result) return refuse(result.message);
+		return result.outcome === "saved" ? { ok: true, value: { saved: true } } : refuse(GATE_SAYS[result.outcome]);
 	}
 
 	/** Each agent's todos, as their files' first heading and status say. */
