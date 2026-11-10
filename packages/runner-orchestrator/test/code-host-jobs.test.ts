@@ -1863,22 +1863,28 @@ describe("code host: the change record, undo and download of a repository kept i
 		});
 		// A merge: what main got is the session's two files, whatever the merge commit's parents hold.
 		const x1 = await second.commit({ "cart.js": "export const cart = [];\n" }, "cart");
-		const x2 = await second.commit({ "cart.test.js": "test\n" }, "test");
-		const merged = await land(c, second, x2);
+		const x2 = await second.commit({ "cart.test.js": "test\n", "docs/cart.png": png }, "test");
+		const merged = await land(c, second, x2, "docs/cart.png");
 		expect(merged).toEqual({
 			state: "merged",
 			mainSha: await repo(f, c, "rev-parse", "refs/heads/main"),
 			mainBefore: h3,
 			containedAt: null,
 			diff: {
-				filesChanged: 2,
+				filesChanged: 3,
 				paths: [
 					{ path: "cart.js", change: "added" },
 					{ path: "cart.test.js", change: "added" },
+					{ path: "docs/cart.png", change: "added" },
 				],
 				pathsMore: 0,
 			},
-			picture: null,
+			picture: {
+				state: "ok",
+				blob: await repo(f, c, "rev-parse", `${x2}:docs/cart.png`),
+				bytes: png.length,
+				type: "png",
+			},
 			restored: [],
 		});
 		expect(merged.mainSha).not.toBe(x2);
@@ -1938,6 +1944,15 @@ describe("code host: the change record, undo and download of a repository kept i
 		const cut = (await land(c, fourth, await fourth.commit(long, "long"))).diff;
 		expect(cut).toMatchObject({ filesChanged: 30, pathsMore: 10 });
 		expect(cut.paths.map((entry) => entry.path)).toEqual(Object.keys(long).slice(0, 20));
+		// A merge's picture is looked for in the merge, the commit that becomes main: a path only main's side holds is
+		// found there (and is no picture), though the session's own commit has no such file.
+		const fifth = await session(f, c, baseSha);
+		const late = await land(c, fifth, await fifth.commit({ "notes.txt": "notes\n" }, "notes"), "cart.js");
+		expect(late).toMatchObject({
+			state: "merged",
+			diff: { filesChanged: 1, paths: [{ path: "notes.txt", change: "added" }], pathsMore: 0 },
+			picture: { state: "not_a_picture" },
+		});
 		expect(await readdir(c.scratchRoot)).toEqual([]);
 		expectJobCommands(c.log);
 	});
