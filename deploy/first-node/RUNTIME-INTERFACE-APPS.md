@@ -158,6 +158,23 @@ runs and keeps one for the company as a whole (`company`), drawn from the team's
 links or posts an app it looks at it: the entry opened in a browser on a machine at 1280 and at 390 px wide, a
 screenshot of each read back with `company_read`, the weakest thing fixed, and again.
 
+**Patch notes before changes go live** (Jonas, 10 November 2026: "I would also like some version of an update
+list/patch notes for changes before they go live, if agents have worked on several changes it could just post all of
+them as a patchnote rundown with visuals and very brief and easy to digest text - or a video"; asked whether changes
+should wait for his yes on that page: "Yes, wait for me"). The company context tells every agent:
+- A change goes live when people outside the team meet it: an update to a published site (`publish_site` on a live
+  site), a new version of the product, a new price, a mail or post that goes out to many. Until then it is ready.
+- One posted app, `whats-new` ("What's new"), shows every change that is ready and not yet live: a picture of what
+  changes and one plain line on what a customer will notice, several changes as one rundown a member takes in within
+  a minute.
+- The go-ahead is one question card that points at the app, options "Put it live" and "Not yet", and the same two as
+  buttons on the page (§5 "Changes": `qorpera.answer`). Nothing in the rundown goes live before a member's yes;
+  finishing, merging and testing stay the agents' own.
+- One exception: a fix for something broken for customers right now goes live at once and is shown the same day.
+This is a rule of the agents' instructions. The platform does not hold a publish back for it: `publish_site` on a
+live site is still reviewed as any outside effect (cloud-action-review.ts). Making the member's yes a condition of
+that publish is a follow-up, if the rule alone proves too weak.
+
 ## 4. Web
 
 - **App page.** `#/c/<profileId>/a/<name>` shows the app in the main area, at full width and height, as Mailbox and
