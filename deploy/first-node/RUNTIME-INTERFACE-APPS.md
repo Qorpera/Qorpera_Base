@@ -117,7 +117,8 @@ screenshot of each read back with `company_read`, the weakest thing fixed, and a
   Bank show (`AppPanel` placed as a page). It has **no header** (Jonas, 10 November 2026, on the page's slim header:
   "I would remove any headers as they add nothing but bad visual design"): the app is the whole page, as a concept is
   the whole stage. The rail beside it shows which app is open and leads everywhere else (at phone width, the top bar's
-  menu); opening the app again reads it afresh, as Reload did. Qorpera draws only what is needed when it is needed,
+  menu); a press on the open app's icon in the rail, or on its card in a message, reads it afresh, as Reload did
+  (a modified click on the icon still opens a new tab). Qorpera draws only what is needed when it is needed,
   outside the frame: the bar of a request (§5 "Changes") above the page, and the questions dock over its corner. A
   deep link or reload opens the company, waits for its first read, then the app. When the app can't be shown, the line
   that says why ("This app isn't in the company anymore.", a manifest's problems, "This app reloaded itself…") has the
@@ -208,7 +209,8 @@ checks the request and puts it to the member on a **bar it draws outside the app
   on a visible screen, and takes only a press (pointer or key) that began on it after it woke: a click or a held key
   on its way when the bar came in does nothing, and Enter in the page stays in the page.
 - One bar at a time: while one is open another request is refused at once. After three "Not now" in a row the app is
-  refused without a bar until the member reloads it (Reload, or opening the app again); a yes starts the count again.
+  refused without a bar until the member reloads it (a press on the open app's icon in the rail or on its card in a message, the Concepts
+  viewer's Reload, or the browser's own); a yes starts the count again.
 - While a bar is open the page's Escape is not passed on (`AppFrame.holdEscape`).
 - A request whose page is put away (reloaded, changed, left) before the member chose is put away unsaved, and so is
   one whose app's manifest changed meanwhile. What a page may read and ask for follows the manifest as it is now,

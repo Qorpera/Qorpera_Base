@@ -1547,7 +1547,8 @@ function drawInterfaces(
 		const key = `app:${app.name}`;
 		const model = JSON.stringify([app.name, manifest.name, manifest.about, manifest.emblem]);
 		const kept = parts.interfaceRows.get(key);
-		const element = kept?.shown === model ? kept.element : agentAppIcon(manifest, appHash(profileId, app.name));
+		const element =
+			kept?.shown === model ? kept.element : agentAppIcon(app.name, manifest, appHash(profileId, app.name));
 		rows.set(key, { shown: model, element });
 		element.dataset.appKey = key;
 		element.classList.toggle("active", app.name === activeApp);
@@ -1625,14 +1626,17 @@ function appIcon(entry: CompanyInterface, href: string, count: number): HTMLElem
 	);
 }
 
-/** An agent's posted app in the drawer: its emblem with its name under it, a link to the app's own page. */
-function agentAppIcon(manifest: AppManifest, href: string): HTMLElement {
+/** An agent's posted app in the drawer: its emblem with its name under it, a link to the app's own page. It names its
+ * app, so a press on the icon of the app that is already open reads the app again (application.ts): the app's page has
+ * no Reload of its own, and a link to where one already is does nothing by itself. */
+function agentAppIcon(name: string, manifest: AppManifest, href: string): HTMLElement {
 	return h(
 		"a",
 		{
 			class: "rail-app",
 			href,
 			draggable: "false",
+			"data-app-name": name,
 		},
 		h("span", { class: "rail-app-stand" }, interfaceEmblem(manifest.emblem, 34)),
 		h("span", { class: "rail-app-name" }, manifest.name),

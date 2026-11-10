@@ -283,6 +283,15 @@ export function mountApplication(
 	function onFolderLink(event: MouseEvent): void {
 		const app = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-app-name]") : null;
 		if (app?.dataset.appName && !event.defaultPrevented) {
+			// The app's icon in the rail is a link, and goes where it leads by itself, in a new tab too. Only an ordinary
+			// press on the icon of the app that is open is taken here: a link to where one already is does nothing, and the
+			// app's page has no Reload of its own, so the press reads the app again (and lets it ask again, §5).
+			if (app instanceof HTMLAnchorElement) {
+				const route = currentRoute();
+				const open = appPage !== undefined && route.name === "company" && route.section === "app";
+				if (!open || route.id !== app.dataset.appName) return;
+				if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+			}
 			event.preventDefault();
 			openApp(app.dataset.appName);
 			return;

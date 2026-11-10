@@ -16,6 +16,7 @@ import type { AgentThreadHandle } from "../src/cloud/parse.ts";
 import type { HostedAccountEntitlement, HostedProfile, HostedStaffAgent } from "../src/cloud/types.ts";
 import conversationCss from "../src/styles/conversation.css?raw";
 import { markdown } from "../src/ui/markdown.ts";
+import { PAGE_READY } from "../src/ui/page-frame.ts";
 import {
 	deferred,
 	fixture,
@@ -1146,6 +1147,88 @@ describe("account and route ownership", () => {
 		const back = page.querySelector<HTMLElement>("a.side-panel-way")!;
 		expect(back.textContent).toBe("Back to the conversation");
 		expect(back.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+	});
+
+	it("reads the open app again from its icon in the rail, which also lets it ask again", async () => {
+		// The app's page has no Reload of its own (no header), and a link to where one already is does nothing: a press
+		// on the open app's icon is the member's reload (review r1 of #1636).
+		const fake = withApp();
+		fake.put(
+			"apps/sales-board/app.toml",
+			`name = "Sales board"\nowner = "${staff.id}"\nposted = true\nwrites = ["table:orders"]\n`,
+		);
+		fake.put(
+			"QorperaOS/tables/orders/table.toml",
+			'format = "qorpera.table/v0"\n\n[table]\nid = "1d6e4a57-8b3c-4f21-9e6d-0a7c5b2f8e15"\nname = "Orders"\nrows = "file"\nkey = ["order"]\n\n[[column]]\nname = "order"\ntype = "text"\n\n[[column]]\nname = "status"\ntype = "text"\n\n[write]\nagents = "all"\nmembers = "all"\n',
+		);
+		fake.put("QorperaOS/tables/orders/rows.csv", "order,status\n1042,packed\n");
+		const f = mounted(`#/c/${profileA.profileId}/a/sales-board`);
+		await draw();
+		await draw();
+		const page = appPage(f.root)!;
+		/** Plays the frame's side up to the hand-over, as the frame document would: a way to send a call on its port. */
+		const played = async () => {
+			const frame = await vi.waitFor(() => {
+				const found = page.querySelector<HTMLIFrameElement>("iframe.side-panel-frame");
+				if (!found?.contentWindow || found.dataset.played) throw new Error("no new frame yet");
+				return found;
+			});
+			frame.dataset.played = "true";
+			const post = vi.spyOn(frame.contentWindow as Window, "postMessage").mockImplementation(() => {});
+			frame.dispatchEvent(new Event("load"));
+			const ready = new MessageEvent("message", { data: { type: PAGE_READY } });
+			Object.defineProperty(ready, "source", { value: frame.contentWindow });
+			window.dispatchEvent(ready);
+			const port = (post.mock.calls[0] as unknown as [unknown, string, MessagePort[]])[2][0] as MessagePort;
+			let calls = 0;
+			const call = (method: string, params: Record<string, unknown>) =>
+				new Promise<{ ok: boolean; error?: string }>((resolve) => {
+					const id = ++calls;
+					const answer = (event: MessageEvent) => {
+						if (event.data?.id !== id) return;
+						port.removeEventListener("message", answer);
+						resolve(event.data);
+					};
+					port.addEventListener("message", answer);
+					port.start();
+					port.postMessage({ type: "qorpera-app-call", id, method, params });
+				});
+			return { frame, call };
+		};
+		const ship = { table: "orders", key: "1042", cells: { status: "shipped" } };
+		const bar = () => page.querySelector<HTMLElement>(".app-ask") as HTMLElement;
+		const asked = () =>
+			vi.waitFor(() => {
+				if (bar().hidden) throw new Error("no request on the bar yet");
+			});
+		const first = await played();
+		// Three times Not now: the app asks no more.
+		for (let round = 0; round < 3; round++) {
+			const answer = first.call("setRow", ship);
+			await asked();
+			[...bar().querySelectorAll("button")].find((button) => button.textContent === "Not now")?.click();
+			expect(await answer).toMatchObject({ ok: false, error: "The member said not now" });
+		}
+		expect(await first.call("setRow", ship)).toMatchObject({
+			ok: false,
+			error: expect.stringContaining("three times"),
+		});
+		const icon = f.root.querySelector<HTMLAnchorElement>('.rail a.rail-app[data-app-name="sales-board"]')!;
+		// A modified click on the icon stays the link's own (a new tab): nothing is read again.
+		const tab = vi.spyOn(window, "open").mockReturnValue(null);
+		icon.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }));
+		expect(tab).toHaveBeenCalledOnce();
+		await draw();
+		expect(page.querySelector("iframe.side-panel-frame")).toBe(first.frame);
+		// An ordinary press on the icon of the app that is open reads it again, in a new frame, and it may ask again.
+		icon.click();
+		const second = await played();
+		expect(second.frame).not.toBe(first.frame);
+		expect(appPage(f.root)).toBe(page);
+		void second.call("setRow", ship);
+		await asked();
+		expect(bar().textContent).toContain("This app wants to change a row in a company table");
+		expect(tab).toHaveBeenCalledOnce();
 	});
 
 	/** The company's folder with two concepts of its product, `shop-a` then `shop-b` (the newer), and the posted app. */

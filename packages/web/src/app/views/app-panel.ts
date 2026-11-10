@@ -13,7 +13,7 @@ import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
  * - An app is a page of its own, `#/c/{id}/a/{name}` (Jonas, 8 November 2026: an app is a whole product prototype and
  *   opens as Mailbox and Bank do, never in a panel beside the chat). It has no header (Jonas, 10 November 2026: "I
  *   would remove any headers as they add nothing but bad visual design"): the app is the whole page, the rail beside
- *   it shows which app is open and leads everywhere else, and opening the app again reads it afresh.
+ *   it shows which app is open and leads everywhere else, and a press on the open app's icon there reads it afresh.
  * - A Company File page linked in a message stands beside the conversation (Jonas, 5 November 2026: PR #1430's agent
  *   sheet, standing beside the thread instead of over it). The thread stays as it is, usable; Escape, in the panel or
  *   in its page, and Close put it away.
