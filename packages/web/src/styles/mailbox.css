@@ -498,6 +498,10 @@ span.mailbox-open { cursor: default; }
 	background: none; color: var(--text); font-size: 15px; font-weight: 400; line-height: 1.55;
 }
 .mailbox-write-text textarea:focus-visible { outline: none; }
+/* While the email is on its way, or its words are on their way to an agent, nothing in the window can be changed: its
+   fields and chips stand back, as its button does. */
+.mailbox-write-panel :is(input, textarea):disabled { opacity: 1; color: var(--text-muted); }
+.mailbox-write-panel :is(.mailbox-pick, .mailbox-chip-remove):disabled { opacity: 0.5; pointer-events: none; }
 /* Why the member's email did not go, said above Send. */
 .mailbox-write-error { flex: none; margin: 0; padding: 2px 18px 0; color: var(--danger); font-size: 13.5px; overflow-wrap: anywhere; }
 .mailbox-write-foot { flex: none; display: flex; align-items: center; gap: 14px; padding: 8px 18px 16px; }

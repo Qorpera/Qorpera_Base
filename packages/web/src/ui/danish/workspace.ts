@@ -359,6 +359,10 @@ export const WORKSPACE: Record<string, string> = {
 	"The email needs a subject": "E-mailen mangler et emne",
 	"The email needs its text": "E-mailen mangler sin tekst",
 	"Your email is on its way": "Din e-mail er på vej",
+	"This email could not be sent. Send it again to try once more.":
+		"Denne e-mail kunne ikke sendes. Send den igen for at prøve en gang til.",
+	"This email was cancelled before it went. Send it again if it should still go.":
+		"Denne e-mail blev annulleret, før den blev sendt. Send den igen, hvis den stadig skal afsted.",
 	"Ask {name} to write it": "Bed {name} om at skrive den",
 	"{name} writes and sends it": "{name} skriver og sender den",
 	"That agent is no longer at work.": "Den agent er ikke længere på arbejde.",

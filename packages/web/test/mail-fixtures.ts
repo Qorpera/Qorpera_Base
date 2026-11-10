@@ -165,6 +165,10 @@ export interface MailFake {
 	digitalPost?: Record<string, unknown>;
 	/** What a member's own send is refused with; unset, it is queued and its thread is the newest. */
 	sendError?: { message: string; code: string };
+	/** A member's own send answers only after this. */
+	sendHold?: Promise<void>;
+	/** How the email queued by an earlier try of the same send ended: the send answers with it and queues nothing. */
+	sendStatus?: string;
 	calls: { fn: string; args: Record<string, unknown> }[];
 }
 
@@ -207,7 +211,9 @@ export function mailFake(f: ReturnType<typeof fixture>): MailFake {
 			};
 		}
 		if (fn === "qorpera_send_member_mail") {
+			await fake.sendHold;
 			if (fake.sendError) throw new CloudRpcError(fn, fake.sendError, 400);
+			if (fake.sendStatus) return { mailId: id(899), thread: thread(899), status: fake.sendStatus };
 			// A member's own email starts a thread of its own: theirs, with its first recipient as the outside party.
 			const request = args.p_request as { from: string; to: string[]; subject: string; text: string };
 			const n = 900 + fake.threads.length;

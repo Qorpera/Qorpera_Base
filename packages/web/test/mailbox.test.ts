@@ -162,6 +162,11 @@ function type(field: HTMLInputElement | HTMLTextAreaElement, value: string): voi
 	field.value = value;
 	field.dispatchEvent(new Event("input", { bubbles: true }));
 }
+/** The controls under `root` that can be used, each by its label or else by its focus key. */
+const usable = (root: ParentNode) =>
+	[...root.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLTextAreaElement>("button, input, textarea")]
+		.filter((each) => !each.disabled)
+		.map((each) => each.getAttribute("aria-label") ?? each.getAttribute("data-focus-key"));
 
 describe("the Inbox", () => {
 	it("lists the sends waiting for a person first, then every other thread on one line each", async () => {
@@ -613,7 +618,7 @@ describe("Sent, Addresses and Write", () => {
 		button(panel(), "Remove bo@outside.example")!.click();
 		expect(chips()).toEqual(["anna@outside.example", "carl@outside.example"]);
 		expect(document.activeElement).toBe(to());
-		// A pasted list becomes its addresses.
+		// A pasted list becomes a chip for each of its entries; the name beside an address is left out.
 		const paste = Object.assign(new Event("paste", { bubbles: true, cancelable: true }), {
 			clipboardData: { getData: () => "Dan Holm <dan@outside.example>; mailto:eva@outside.example" },
 		});
@@ -629,6 +634,53 @@ describe("Sent, Addresses and Write", () => {
 		main.querySelector<HTMLButtonElement>(".mailbox-write-head .mailbox-icon")!.click();
 		button(main, "Write")!.click();
 		expect(chips()).toHaveLength(4);
+	});
+
+	it("makes a chip of every entry of a pasted list, and marks the ones that are no address", async () => {
+		const { main, fake } = await mailbox(() => {});
+		await vi.waitFor(() => expect(button(main, "Write")).toBeDefined());
+		button(main, "Write")!.click();
+		const panel = () => main.querySelector<HTMLFormElement>(".mailbox-write-panel")!;
+		const to = () => panel().querySelector<HTMLInputElement>(".mailbox-write-to input")!;
+		const chips = () => texts(panel(), ".mailbox-chip-text");
+		/** Pastes `text` into the field, and says whether the page took it (else the field does, as typing). */
+		const paste = (text: string) => {
+			const event = Object.assign(new Event("paste", { bubbles: true, cancelable: true }), {
+				clipboardData: { getData: () => text },
+			});
+			to().dispatchEvent(event);
+			return event.defaultPrevented;
+		};
+		// An entry that is no address is not dropped beside one that is: it is a chip that says so, and it holds the
+		// email back.
+		expect(paste("anna@example.com, bo@gmaill")).toBe(true);
+		expect(chips()).toEqual(["anna@example.com", "bo@gmaill"]);
+		expect(texts(panel(), ".mailbox-chip.is-invalid .mailbox-chip-text")).toEqual(["bo@gmaill"]);
+		expect(to().value).toBe("");
+		type(panel().querySelector<HTMLInputElement>("[data-focus-key='write-subject']")!, "Hello");
+		type(panel().querySelector("textarea")!, "Hi.");
+		panel().requestSubmit();
+		expect(panel().querySelector(".mailbox-write-error")?.textContent).toBe("bo@gmaill is not an email address");
+		expect(calls(fake, "qorpera_send_member_mail")).toEqual([]);
+		button(panel(), "Remove bo@gmaill")!.click();
+		// A name written beside its address is left out, with a comma of its own too; a line is an entry.
+		expect(paste('"Holm, Dan" <dan@outside.example>\nEva Berg\teva@outside.example')).toBe(true);
+		expect(chips()).toEqual(["anna@example.com", "dan@outside.example", "eva@outside.example"]);
+		// A piece of an address, or a name alone, is typed on as the field takes it.
+		expect(paste("gmaill")).toBe(false);
+		expect(paste("Nordlys Energi")).toBe(false);
+		expect(chips()).toHaveLength(3);
+		// Pasted onto what is typed, the two are read as one.
+		type(to(), "carl@");
+		to().setSelectionRange(5, 5);
+		expect(paste("outside.example")).toBe(true);
+		expect(chips()).toEqual([
+			"anna@example.com",
+			"dan@outside.example",
+			"eva@outside.example",
+			"carl@outside.example",
+		]);
+		expect(to().value).toBe("");
 	});
 
 	it("holds the member's email back until it has who it goes to, a subject and its text, then sends it", async () => {
@@ -742,6 +794,218 @@ describe("Sent, Addresses and Write", () => {
 		await vi.waitFor(() => expect(main.querySelector(".mailbox-write-panel")).toBeNull());
 		expect(ids()).toHaveLength(3);
 		expect(ids()[2]).not.toBe(ids()[0]);
+		expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Your email is on its way");
+	});
+
+	it("lets nothing in the Write window be changed while the member's email is on its way, and brings the window back when it could not go", async () => {
+		const { main, fake } = await mailbox((mail) => {
+			mail.addresses = [ADDRESS, { ...ADDRESS, address: "sales@acme.example", handledBy: [], routines: [] }];
+		});
+		await vi.waitFor(() => expect(button(main, "Write")).toBeDefined());
+		button(main, "Write")!.click();
+		const panel = () => main.querySelector<HTMLFormElement>(".mailbox-write-panel")!;
+		const chip = () => panel().querySelector<HTMLButtonElement>(".mailbox-writer")!;
+		const requests = () => calls(fake, "qorpera_send_member_mail").map((call) => call.p_request);
+		type(panel().querySelector<HTMLInputElement>(".mailbox-write-to input")!, "anna@outside.example ");
+		type(panel().querySelector<HTMLInputElement>("[data-focus-key='write-subject']")!, "Hello");
+		type(panel().querySelector("textarea")!, "Hi.");
+		const open = [
+			"Close",
+			"writer",
+			"from",
+			"Remove anna@outside.example",
+			"To",
+			"write-subject",
+			"write-text",
+			"write-send",
+		];
+		expect(usable(panel())).toEqual(open);
+		// The cloud is slow to answer, and the Writer chip's menu is open over the window.
+		let release: () => void = () => {};
+		fake.sendHold = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		chip().click();
+		panel().requestSubmit();
+		await vi.waitFor(() => expect(requests()).toHaveLength(1));
+		// What is in the window is what is being sent: only the window itself can still be shut, and the menu left open
+		// over it picks nothing.
+		expect(usable(panel())).toEqual(["Close"]);
+		expect(button(panel(), "Sending")).toBeDefined();
+		menuRow("Ada").click();
+		expect(chip().querySelector(".mailbox-writer-name")?.textContent).toBe("You");
+		expect(texts(panel(), ".mailbox-chip-text")).toEqual(["anna@outside.example"]);
+		// Shut meanwhile, the window comes back with the email and why it did not go, the keyboard on Send.
+		button(panel(), "Close")!.click();
+		expect(main.querySelector(".mailbox-write-panel")).toBeNull();
+		fake.sendError = { message: "Sending company mail is switched off", code: "0A000" };
+		release();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-write-error")?.textContent).toBe("Sending company mail is switched off"),
+		);
+		expect(usable(panel())).toEqual(open);
+		expect(texts(panel(), ".mailbox-chip-text")).toEqual(["anna@outside.example"]);
+		expect(panel().querySelector("textarea")!.value).toBe("Hi.");
+		expect(document.activeElement).toBe(button(panel(), "Send"));
+		// Sent again as it stands, it is the same email in every part.
+		fake.sendError = undefined;
+		panel().requestSubmit();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-write-panel")).toBeNull());
+		expect(requests()).toHaveLength(2);
+		expect(requests()[1]).toEqual(requests()[0]);
+		expect(requests()[1]).toMatchObject({
+			from: "hello@acme.example",
+			to: ["anna@outside.example"],
+			subject: "Hello",
+			text: "Hi.",
+		});
+		expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Your email is on its way");
+	});
+
+	it("lets nothing in the Write window be changed while its words are on their way to an agent, and keeps them when they could not go", async () => {
+		const { main, controller } = await mailbox(() => {});
+		vi.spyOn(controller, "openStaffConversation")
+			.mockRejectedValueOnce(new Error("Ada's thread can't be opened here."))
+			.mockResolvedValue(session.sessionId);
+		let answer: (went: boolean) => void = () => {};
+		const send = vi.spyOn(controller, "sendPrompt").mockImplementation(
+			() =>
+				new Promise<boolean>((resolve) => {
+					answer = resolve;
+				}),
+		);
+		await vi.waitFor(() => expect(button(main, "Write")).toBeDefined());
+		button(main, "Write")!.click();
+		const panel = () => main.querySelector<HTMLFormElement>(".mailbox-write-panel")!;
+		panel().querySelector<HTMLButtonElement>(".mailbox-writer")!.click();
+		menuRow("Ada").click();
+		type(panel().querySelector("input")!, "Nordlys Energi");
+		type(panel().querySelector("textarea")!, "Ask when the new price starts.");
+		const open = ["Close", "writer", "write-to", "write-text", "write-send"];
+		expect(usable(panel())).toEqual(open);
+		// Ada's thread can't be opened: the page says so, and the window keeps its words, the keyboard on its button.
+		panel().requestSubmit();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".notice-danger")?.textContent).toContain("Ada's thread can't be opened here."),
+		);
+		expect(send).not.toHaveBeenCalled();
+		expect(usable(panel())).toEqual(open);
+		expect(panel().querySelector("input")!.value).toBe("Nordlys Energi");
+		expect(panel().querySelector("textarea")!.value).toBe("Ask when the new price starts.");
+		expect(document.activeElement).toBe(button(panel(), "Ask Ada to write it"));
+		// Asked again, the words are on their way: until Ada has them, only the window itself can be shut.
+		panel().requestSubmit();
+		await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+		expect(usable(panel())).toEqual(["Close"]);
+		answer(true);
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-write-panel")).toBeNull());
+		expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Ada is writing it");
+		expect(document.activeElement).toBe(button(main, "Write"));
+	});
+
+	it("keeps the id of the member's email only while it is the same email, whoever had it meanwhile", async () => {
+		const { main, fake } = await mailbox((mail) => {
+			mail.sendError = { message: "Sending company mail is switched off", code: "0A000" };
+		});
+		await vi.waitFor(() => expect(button(main, "Write")).toBeDefined());
+		button(main, "Write")!.click();
+		const panel = () => main.querySelector<HTMLFormElement>(".mailbox-write-panel")!;
+		const said = () => panel().querySelector(".mailbox-write-error")?.textContent;
+		const requests = () =>
+			calls(fake, "qorpera_send_member_mail").map((call) => call.p_request as { sendId: string; to: string[] });
+		const ids = () => requests().map((request) => request.sendId);
+		const give = (name: string) => {
+			panel().querySelector<HTMLButtonElement>(".mailbox-writer")!.click();
+			menuRow(name).click();
+		};
+		type(panel().querySelector<HTMLInputElement>(".mailbox-write-to input")!, "anna@outside.example");
+		type(panel().querySelector<HTMLInputElement>("[data-focus-key='write-subject']")!, "Hello");
+		type(panel().querySelector("textarea")!, "Hi.");
+		panel().requestSubmit();
+		await vi.waitFor(() => expect(said()).toBe("Sending company mail is switched off"));
+		// Given to an agent and taken back as it was, it is the same email still.
+		give("Ada");
+		give("You");
+		expect(said()).toBeUndefined();
+		panel().requestSubmit();
+		await vi.waitFor(() => expect(said()).toBe("Sending company mail is switched off"));
+		expect(ids()).toHaveLength(2);
+		expect(ids()[1]).toBe(ids()[0]);
+		// Who it goes to was changed while the agent had it: back with the member it is a new email, to the new address,
+		// and not the first one answered for again.
+		give("Ada");
+		type(panel().querySelector("input")!, "bo@outside.example");
+		give("You");
+		expect(texts(panel(), ".mailbox-chip-text")).toEqual(["bo@outside.example"]);
+		fake.sendError = undefined;
+		panel().requestSubmit();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-write-panel")).toBeNull());
+		expect(ids()).toHaveLength(3);
+		expect(ids()[2]).not.toBe(ids()[0]);
+		expect(requests()[2]?.to).toEqual(["bo@outside.example"]);
+	});
+
+	it.each([
+		["failed", "This email could not be sent. Send it again to try once more."],
+		["cancelled", "This email was cancelled before it went. Send it again if it should still go."],
+	])(
+		"keeps the member's email when an earlier try of it ended as %s, and sends the next as a new one",
+		async (status, sentence) => {
+			const { main, fake } = await mailbox((mail) => {
+				mail.sendError = { message: "The cloud did not answer", code: "57014" };
+			});
+			await vi.waitFor(() => expect(button(main, "Write")).toBeDefined());
+			button(main, "Write")!.click();
+			const panel = () => main.querySelector<HTMLFormElement>(".mailbox-write-panel")!;
+			const said = () => panel().querySelector(".mailbox-write-error")?.textContent;
+			const ids = () =>
+				calls(fake, "qorpera_send_member_mail").map((call) => (call.p_request as { sendId: string }).sendId);
+			type(panel().querySelector<HTMLInputElement>(".mailbox-write-to input")!, "anna@outside.example");
+			type(panel().querySelector<HTMLInputElement>("[data-focus-key='write-subject']")!, "Hello");
+			type(panel().querySelector("textarea")!, "Hi.");
+			panel().requestSubmit();
+			await vi.waitFor(() => expect(said()).toBe("The cloud did not answer"));
+			// That try did reach the cloud: the email was queued there, and then did not go. Asked for again, the cloud
+			// answers with how it ended and queues nothing, so the window says so and keeps the email.
+			fake.sendError = undefined;
+			fake.sendStatus = status;
+			panel().requestSubmit();
+			await vi.waitFor(() => expect(said()).toBe(sentence));
+			expect(ids()).toHaveLength(2);
+			expect(ids()[1]).toBe(ids()[0]);
+			expect(texts(panel(), ".mailbox-chip-text")).toEqual(["anna@outside.example"]);
+			expect(panel().querySelector("textarea")!.value).toBe("Hi.");
+			expect(main.querySelector(".mailbox-toast")).toBeNull();
+			expect(document.activeElement).toBe(button(panel(), "Send"));
+			// The next Send is a new email, which goes.
+			fake.sendStatus = undefined;
+			panel().requestSubmit();
+			await vi.waitFor(() => expect(main.querySelector(".mailbox-write-panel")).toBeNull());
+			expect(ids()).toHaveLength(3);
+			expect(ids()[2]).not.toBe(ids()[0]);
+			expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Your email is on its way");
+		},
+	);
+
+	it("takes the member's email as gone when an earlier try of it was sent", async () => {
+		const { main, fake } = await mailbox((mail) => {
+			mail.sendError = { message: "The cloud did not answer", code: "57014" };
+		});
+		await vi.waitFor(() => expect(button(main, "Write")).toBeDefined());
+		button(main, "Write")!.click();
+		const panel = () => main.querySelector<HTMLFormElement>(".mailbox-write-panel")!;
+		type(panel().querySelector<HTMLInputElement>(".mailbox-write-to input")!, "anna@outside.example");
+		type(panel().querySelector<HTMLInputElement>("[data-focus-key='write-subject']")!, "Hello");
+		type(panel().querySelector("textarea")!, "Hi.");
+		panel().requestSubmit();
+		await vi.waitFor(() =>
+			expect(panel().querySelector(".mailbox-write-error")?.textContent).toBe("The cloud did not answer"),
+		);
+		fake.sendError = undefined;
+		fake.sendStatus = "sent";
+		panel().requestSubmit();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-write-panel")).toBeNull());
+		expect(calls(fake, "qorpera_send_member_mail")).toHaveLength(2);
 		expect(main.querySelector(".mailbox-toast")?.textContent).toBe("Your email is on its way");
 	});
 

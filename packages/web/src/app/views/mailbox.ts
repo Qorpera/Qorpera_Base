@@ -91,8 +91,9 @@ interface MailboxUi {
 	writeText: string;
 	/** The company address the member's own email goes from; the first one in use until they pick another. */
 	writeFrom: string | null;
-	/** The id of the member's send being tried: the same email sent again is one email (contract, M2e). */
-	writeSendId: string | null;
+	/** The member's send being tried, and the email it was: sent again as it stands it is one email (contract, M2e);
+	 * changed in any part, it is a new one. */
+	writeSend: { readonly id: string; readonly email: string } | null;
 	/** Why the member's email did not go, said inside the Write window. */
 	writeError: string | null;
 	note: string;
@@ -155,6 +156,25 @@ function asRecipients(text: string): string[] {
 	}
 	return found;
 }
+/** A pasted list of who an email goes to, as its recipients. Its entries stand between commas, semicolons and line
+ * ends. An entry with an address in it ("Anna Holm <anna@acme.dk>", "mailto:bo@acme.dk") is that address, and the
+ * words beside it are the name it was written with, left out; an entry with none is taken whole. Whatever has an `@`
+ * is kept, right or wrong: what is no address becomes a chip that says so, never nothing. */
+function pastedRecipients(text: string): string[] {
+	const found: string[] = [];
+	// A quoted name keeps its own comma ("Holm, Anna" <anna@acme.dk>).
+	const entries = text.replace(/"([^"\n]*)"/g, (_quoted, name: string) => name.replace(/[,;]/g, " ")).split(/[,;\n]/);
+	for (const entry of entries) {
+		const words = entry
+			.split(/[\s<>"()[\]]+/)
+			.map((word) => word.replace(/^mailto:/i, ""))
+			.filter(Boolean);
+		const addressed = words.filter((word) => word.includes("@"));
+		if (addressed.length) found.push(...addressed);
+		else if (words.length) found.push(words.join(" "));
+	}
+	return found;
+}
 
 /** The calls behind the company's mail addresses and its Digital Post key. */
 export interface MailboxManage {
@@ -194,7 +214,7 @@ export function renderMailbox(
 			writeSubject: "",
 			writeText: "",
 			writeFrom: null,
-			writeSendId: null,
+			writeSend: null,
 			writeError: null,
 			note: "",
 			changing: null,
@@ -1302,25 +1322,36 @@ function composer(page: Page, thread: string): HTMLElement | null {
 	);
 }
 
-/** Sends a note through the company's mail reader; a note that can't go from here waits in the agent's thread. */
-async function tell(page: Page, agentId: string, note: QuotedText, done: string, onSent: () => void): Promise<void> {
+/** Sends a note through the company's mail reader; a note that can't go from here waits in the agent's thread.
+ * `focus` names the control that takes the keyboard after it, when the note went and when it did not: what asked is
+ * drawn disabled while the note is on its way, and gives the keyboard up. */
+async function tell(
+	page: Page,
+	agentId: string,
+	note: QuotedText,
+	done: string,
+	onSent: () => void,
+	focus?: readonly [went: string, held: string],
+): Promise<void> {
 	const { ui } = page;
 	const reader = CompanyMail.of(page.company);
 	if (!reader) return;
 	ui.busy = true;
 	ui.error = null;
 	page.redraw();
+	let went = false;
 	try {
 		const result = await reader.tell(agentId, note);
 		onSent();
+		went = true;
 		ui.busy = false;
-		if (result.sent) say(page, done, agentId);
+		if (result.sent) say(page, done, agentId, focus?.[0]);
 		else location.hash = result.href;
 	} catch (error) {
 		ui.busy = false;
 		ui.error = error instanceof Error ? error.message : String(error);
 	}
-	page.redraw();
+	page.redraw(focus?.[went ? 0 : 1]);
 }
 
 // Digital Post ------------------------------------------------------------------------------------------------------
@@ -1772,9 +1803,8 @@ function addRecipients(ui: MailboxUi, texts: readonly string[]): string[] {
 	return added;
 }
 
-/** The member changed their email: the next send is a new one, and what was said about the last try goes. */
+/** The member changed their email: what was said about the last try goes. */
 function edited(ui: MailboxUi, field: Element): void {
-	ui.writeSendId = null;
 	if (!ui.writeError) return;
 	ui.writeError = null;
 	field.closest(".mailbox-write-panel")?.querySelector(".mailbox-write-error")?.remove();
@@ -1783,7 +1813,7 @@ function edited(ui: MailboxUi, field: Element): void {
 /** Who the member's own email goes to: a chip for each address, and the field the next one is typed in. An address
  * becomes a chip at the space after it; anything typed does at a comma, a semicolon, Enter or when the field is left,
  * and a chip that is no email address is marked. Chips come and go in place, so the field keeps the focus; a redraw
- * draws them from the same list. */
+ * draws them from the same list. While the email is being sent the field and each chip's button are disabled. */
 function recipientsRow(page: Page): HTMLElement {
 	const { ui } = page;
 	const input = h("input", {
@@ -1792,6 +1822,7 @@ function recipientsRow(page: Page): HTMLElement {
 		autocapitalize: "off",
 		spellcheck: "false",
 		inputmode: "email",
+		disabled: ui.busy,
 		"aria-label": t("To"),
 		"data-focus-key": "write-to",
 	});
@@ -1810,6 +1841,7 @@ function recipientsRow(page: Page): HTMLElement {
 				{
 					type: "button",
 					class: "mailbox-chip-remove",
+					disabled: ui.busy,
 					"aria-label": t("Remove {name}", { name: recipient }),
 					onclick: () => {
 						const index = ui.writeRecipients.indexOf(recipient);
@@ -1875,15 +1907,19 @@ function recipientsRow(page: Page): HTMLElement {
 			if (input.isConnected && document.activeElement !== input) take();
 		});
 	});
-	// A pasted list ("Anna <anna@acme.dk>, bo@acme.dk") becomes its addresses.
+	// A pasted list ("Anna <anna@acme.dk>, bo@acme.dk") becomes a chip for each of its entries, read together with what
+	// is typed around it. A piece of one address, or a name alone, is typed on as the field takes it.
 	input.addEventListener("paste", (event) => {
-		const found = (event.clipboardData?.getData("text") ?? "")
-			.split(/[\s,;<>"]+/)
-			.map((part) => part.replace(/^mailto:/i, ""))
-			.filter(isAddress);
-		if (!found.length) return;
+		const start = input.selectionStart ?? input.value.length;
+		const end = input.selectionEnd ?? start;
+		const pasted = event.clipboardData?.getData("text") ?? "";
+		if (!pasted.trim()) return;
+		const found = pastedRecipients(input.value.slice(0, start) + pasted + input.value.slice(end));
+		if (found.length < 2 && !found.some(isAddress)) return;
 		event.preventDefault();
 		add(found);
+		input.value = "";
+		ui.writeTo = "";
 		edited(ui, input);
 	});
 	hint();
@@ -1969,11 +2005,14 @@ function writePanel(page: Page): HTMLElement {
 		});
 	};
 	// The Writer chip: the member's own picture until an agent has the email, and the menu that gives it to one.
+	// While the email, or the words to its agent, are on their way, nothing in the window can be changed: it is what
+	// was sent that leaves the window when it has gone, and a change made meanwhile would go with it unsent.
 	const writer = h(
 		"button",
 		{
 			type: "button",
 			class: `mailbox-pick mailbox-writer${chosen ? " is-current" : ""}`,
+			disabled: ui.busy,
 			"data-focus-key": "writer",
 		},
 		chosen ? figure(page, chosen.id, undefined, 24) : face(),
@@ -1981,6 +2020,8 @@ function writePanel(page: Page): HTMLElement {
 		icon("chevron-down"),
 	);
 	const pick = (id: string | null) => {
+		// A menu left open over the window when the email went picks nothing.
+		if (ui.busy) return;
 		if (id && !chosen) {
 			// An agent reads who it goes to as words: the chips go back to the text they were typed as.
 			ui.writeTo = [...ui.writeRecipients, ui.writeTo.trim()].filter(Boolean).join(", ");
@@ -2013,7 +2054,7 @@ function writePanel(page: Page): HTMLElement {
 		!chosen && from && own.length > 1
 			? h(
 					"button",
-					{ type: "button", class: "mailbox-pick mailbox-sender", "data-focus-key": "from" },
+					{ type: "button", class: "mailbox-pick mailbox-sender", disabled: ui.busy, "data-focus-key": "from" },
 					h("span", { class: "mailbox-sender-name" }, from),
 					icon("chevron-down"),
 				)
@@ -2024,8 +2065,8 @@ function writePanel(page: Page): HTMLElement {
 				label: address.address,
 				checked: address.address === from,
 				select: () => {
+					if (ui.busy) return;
 					ui.writeFrom = address.address;
-					ui.writeSendId = null;
 					ui.writeError = null;
 					page.redraw("from");
 				},
@@ -2039,7 +2080,7 @@ function writePanel(page: Page): HTMLElement {
 		ui.writeSubject = "";
 		ui.writeText = "";
 		ui.writeFrom = null;
-		ui.writeSendId = null;
+		ui.writeSend = null;
 		ui.writeError = null;
 	};
 	/** Sends the member's own email from the company's address (contract, M2e). */
@@ -2071,21 +2112,42 @@ function writePanel(page: Page): HTMLElement {
 			page.redraw(held?.[1]);
 			return;
 		}
-		// The same email sent again after a try that failed is one email: it keeps its id until it is changed.
-		ui.writeSendId ??= crypto.randomUUID();
-		const sendId = ui.writeSendId;
+		// The email as it leaves, in every part. Sent again as it stands after a try that failed, it is the same email
+		// and keeps its id, so the cloud sends it once; changed since in any part, by any way, it is a new one.
+		const email = { from, to, subject, text: ui.writeText.trimEnd() };
+		const written = JSON.stringify(email);
+		if (ui.writeSend?.email !== written) ui.writeSend = { id: crypto.randomUUID(), email: written };
+		const sendId = ui.writeSend.id;
 		ui.busy = true;
 		ui.writeError = null;
 		page.redraw();
+		/** The email did not go: the window says why and keeps it, open again if it was shut meanwhile. */
+		const kept = (why: string) => {
+			ui.busy = false;
+			ui.writing = true;
+			ui.writeError = why;
+			page.redraw("write-send");
+		};
 		try {
-			await reader.send({ sendId, from, to, subject, text: ui.writeText.trimEnd() });
+			const receipt = await reader.send({ sendId, ...email });
+			// Only an email queued by an earlier try answers with how it ended. One that did not go is not sent by asking
+			// for it again: the member is told, and their next Send is a new email.
+			const ended =
+				receipt.status === "failed"
+					? t("This email could not be sent. Send it again to try once more.")
+					: receipt.status === "cancelled"
+						? t("This email was cancelled before it went. Send it again if it should still go.")
+						: null;
+			if (ended) {
+				ui.writeSend = null;
+				kept(ended);
+				return;
+			}
 			sent();
 			ui.busy = false;
 			say(page, t("Your email is on its way"), null, "write");
 		} catch (error) {
-			ui.busy = false;
-			ui.writeError = describeError(error);
-			page.redraw("write-send");
+			kept(describeError(error));
 		}
 	};
 	const submit = async () => {
@@ -2108,6 +2170,7 @@ function writePanel(page: Page): HTMLElement {
 			},
 			t("{name} is writing it", { name: chosen.displayName }),
 			sent,
+			["write", "write-send"],
 		);
 	};
 	return h(
@@ -2164,6 +2227,7 @@ function writePanel(page: Page): HTMLElement {
 						placeholder: t("Name or email address"),
 						value: ui.writeTo,
 						autocomplete: "off",
+						disabled: ui.busy,
 						"data-focus-key": "write-to",
 						oninput: (event: Event) => {
 							ui.writeTo = (event.target as HTMLInputElement).value;
@@ -2182,6 +2246,7 @@ function writePanel(page: Page): HTMLElement {
 						value: ui.writeSubject,
 						maxlength: "200",
 						autocomplete: "off",
+						disabled: ui.busy,
 						"data-focus-key": "write-subject",
 						oninput: (event: Event) => {
 							const field = event.target as HTMLInputElement;
@@ -2206,6 +2271,7 @@ function writePanel(page: Page): HTMLElement {
 					rows: "11",
 					maxlength: chosen ? undefined : "20000",
 					placeholder: chosen ? t("What should it say?") : t("Write your email"),
+					disabled: ui.busy,
 					"data-focus-key": "write-text",
 					"data-scroll-key": "write-text",
 					oninput: (event: Event) => {
