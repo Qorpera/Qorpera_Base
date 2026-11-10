@@ -21,12 +21,14 @@ import {
 	type CodingSubmission,
 	type CodingTurnState,
 	CodingWorkspaceFailed,
+	landConflict,
 	landRefusal,
 	PUBLICATION_UNFINISHED,
 	parseCodingSessionClaim,
 	parseCodingTurnState,
 	prepareUnfinished,
 	TURN_START_UNFINISHED,
+	withinBytes,
 } from "../src/coding-executor.ts";
 import { CODING_VM_STOP_BUDGET_MS, codingHostId } from "../src/coding-executor-host.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
@@ -462,6 +464,27 @@ describe("the coding executor over a session turn", () => {
 			),
 		).toContain('"n19" and 3 more');
 		expect(landRefusal("main", "CODE_HOST_LAND_FAILED", [])).toBeUndefined();
+		// The kernel counts a summary's bytes (4000) and refuses a longer one, so the report would never land (review of
+		// the v228 release, F1). Names of many bytes are named only as far as they fit, and what to do always follows.
+		const accented = Array.from({ length: 20 }, (_, i) => `docs/${"e\u0301".repeat(80)}-${i}.md`);
+		for (const text of [
+			landRefusal("main", "CODE_HOST_NAMES_NOT_NFC", accented)!,
+			landConflict("main", accented),
+			landRefusal("main", "CODE_HOST_FILE_TOO_LARGE", ["\u{1F4E6}".repeat(900)])!,
+		]) {
+			expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4000);
+			expect(text).toMatch(/(commit and finish again\.|Take them out, commit and finish again\.)$/);
+		}
+		expect(landRefusal("main", "CODE_HOST_NAMES_NOT_NFC", accented)).toContain(
+			" more. Rename them, commit and finish again.",
+		);
+		expect(landRefusal("main", "CODE_HOST_FILE_TOO_LARGE", ["\u{1F4E6}".repeat(900)])).toContain(
+			": 1 path too long to name here. Take them out",
+		);
+		// Any summary is cut by bytes, whole characters only.
+		expect(withinBytes("abc", 4000)).toBe("abc");
+		expect(withinBytes("\u00e5".repeat(3000), 4000)).toBe("\u00e5".repeat(2000));
+		expect(withinBytes(`${"a".repeat(3999)}\u{1F4E6}`, 4000)).toBe("a".repeat(3999));
 		vi.mocked(w.host.publish).mockRejectedValueOnce(new CodingLandRefused("CODE_HOST_FILE_TOO_LARGE", summary));
 		const finish = {
 			schema: "qorpera.coding-submission/v1",

@@ -159,11 +159,43 @@ const GIT_WAY_OUT =
 /** The reasons a publication held by a refused save fails its turn with: what to change, never the value or the path. */
 const SAVE_REFUSAL = `The save was refused: a file this session wrote in the company folder carries one of the session's secret values, in its contents or its name. It was not saved, and nothing was published. Remove the value and finish again. If a git commit carried it, take the value out of the files (and \`git add\` them) or the message, ${GIT_WAY_OUT}, then commit again.`;
 const SAVE_UNCHECKED = `The save was refused: a file this session wrote in the company folder could not be checked for the session's secret values. It was not saved, and nothing was published. If it is in a git repository's storage, ${GIT_WAY_OUT}, then commit and finish again. Otherwise remove the file or make it smaller, and finish again. If nothing needs changing, finish again: the check may have been busy.`;
+/** The kernel takes a turn's summary of at most this many UTF-8 bytes (qorpera_complete_coding_turn), and refuses a
+ * longer one: the report then never lands, and the turn's lease lapses. */
+const SUMMARY_BYTES = 4000;
+/** `text` cut to at most `bytes` UTF-8 bytes, whole characters only. */
+export function withinBytes(text: string, bytes: number): string {
+	if (Buffer.byteLength(text) <= bytes) return text;
+	let cut = "";
+	let used = 0;
+	for (const character of text) {
+		const size = Buffer.byteLength(character);
+		if (used + size > bytes) break;
+		cut += character;
+		used += size;
+	}
+	return cut;
+}
+/** The paths a refused landing names, quoted: at most 20 of them and at most 2000 bytes, so that what to do about
+ * them always fits the summary after them (a path may be 4 KiB, and its characters several bytes each); then how many
+ * more there are. Empty when there is none. */
+function namedPaths(paths: readonly string[]): string {
+	const shown: string[] = [];
+	let used = 0;
+	for (const path of paths.slice(0, 20)) {
+		const quoted = JSON.stringify(path);
+		const size = Buffer.byteLength(quoted) + 2;
+		if (used + size > 2000) break;
+		shown.push(quoted);
+		used += size;
+	}
+	const more = paths.length - shown.length;
+	if (!shown.length) return more ? `${more} path${more === 1 ? "" : "s"} too long to name here` : "";
+	return `${shown.join(", ")}${more ? ` and ${more} more` : ""}`;
+}
 /** A landing that conflicts with the default branch of a repository kept in Qorpera: what to do, and where. */
 export function landConflict(baseBranch: string, paths: readonly string[]): string {
-	const shown = paths.slice(0, 20).map((path) => JSON.stringify(path));
-	const more = paths.length > shown.length ? ` and ${paths.length - shown.length} more` : "";
-	return `The change was not landed: it conflicts with what ${baseBranch} got since this session began${shown.length ? `, in ${shown.join(", ")}${more}` : ""}. Nothing changed on ${baseBranch}. Run git merge ${baseBranch} on the session's branch, resolve the conflicts, run the checks, commit and finish again.`;
+	const named = namedPaths(paths);
+	return `The change was not landed: it conflicts with what ${baseBranch} got since this session began${named ? `, in ${named}` : ""}. Nothing changed on ${baseBranch}. Run git merge ${baseBranch} on the session's branch, resolve the conflicts, run the checks, commit and finish again.`;
 }
 /** Whether a failure says the session's machine needs recovery before anything else runs on it, with or without a
  * detail after the code (`CODING_HOST_VM_RECOVERY_REQUIRED:LXD_REFUSED_403`). */
@@ -188,10 +220,7 @@ export const TURN_START_UNFINISHED =
  * could not read, or undefined for a code this does not know. Never a plain "finish again" for work that would be
  * refused the same way. */
 export function landRefusal(baseBranch: string, code: string, paths: readonly string[]): string | undefined {
-	const shown = paths.slice(0, 20).map((path) => JSON.stringify(path));
-	const named = shown.length
-		? `: ${shown.join(", ")}${paths.length > shown.length ? ` and ${paths.length - shown.length} more` : ""}`
-		: "";
+	const named = paths.length ? `: ${namedPaths(paths)}` : "";
 	const not = `The change was not landed, and nothing changed on ${baseBranch}`;
 	switch (code) {
 		case "CODE_HOST_FILE_TOO_LARGE":
@@ -724,7 +753,8 @@ export class CloudCodingExecutor {
 				const report = {
 					...args,
 					p_outcome: outcome,
-					p_summary: summary.slice(0, 4000),
+					// By bytes, as the kernel counts them: a longer summary is refused, and the report would never land.
+					p_summary: withinBytes(summary, SUMMARY_BYTES),
 					p_needs: null,
 					p_pull_request: null,
 					p_checks: null,
