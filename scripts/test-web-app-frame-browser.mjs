@@ -217,7 +217,7 @@ on("seen", (event) => qorpera.read("the next handler sees taken: " + event.defau
 			"read a handler sees taken: true",
 			"read a handler sees taken: true",
 			"read a handler sees taken: true",
-			"read open is undefined, and the page has agents,list,onChange,read,table,todos",
+			"read open is undefined, and the page has addRow,agents,answer,list,onChange,questions,read,setRow,table,todos",
 			"read still here",
 		],
 	},

@@ -8,8 +8,8 @@
      pressed in the page (and not taken by it) is passed to the app, which has no other way to hear a key pressed in
      here: it closes what the page is shown in, as Escape does everywhere else. An interface app's page is handed one
      message port with it, which only this document holds: its `qorpera` object reads the company's data through it,
-     and a link the member clicks in the page goes to the app over it, which opens what it allows: the frame follows no
-     link itself. -->
+     and asks for a change, which the app makes only when the member allows it outside this frame; and a link the
+     member clicks in the page goes to the app over it, which opens what it allows: the frame follows no link itself. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -288,8 +288,9 @@
 	// An interface app's live data (deploy/first-node/RUNTIME-INTERFACE-APPS.md §5) comes over the one port the app hands
 	// over with the page: kept in here, never on the page's reach, so only this document's own window ever talks to the
 	// app, and a document the frame later shows has none. The page gets a frozen `qorpera` object whose calls go out on
-	// it; the app checks each. A link the member clicked goes out on it too (`follow`), from this document alone: the
-	// page's object has no call for it.
+	// it; the app checks each. A call that asks for a change (answer, setRow, addRow) changes nothing here: the app shows
+	// the member what it would save, outside this frame, and the promise settles once the member chose. A link the
+	// member clicked goes out on it too (`follow`), from this document alone: the page's object has no call for it.
 	const send = MessagePort.prototype.postMessage;
 	// An event's data is read with the browser's own getter: a page that redefines it would be handed the event, and
 	// through it the port.
@@ -338,6 +339,10 @@
 			table: freeze((name) => call("table", { name: String(name) })),
 			todos: freeze(() => call("todos", {})),
 			agents: freeze(() => call("agents", {})),
+			questions: freeze(() => call("questions", {})),
+			answer: freeze((id, value) => call("answer", { id: String(id), value })),
+			setRow: freeze((table, key, cells) => call("setRow", { table: String(table), key, cells })),
+			addRow: freeze((table, cells) => call("addRow", { table: String(table), cells })),
 			onChange: freeze((listener) => {
 				if (typeof listener === "function") apply(push, changes, [listener]);
 			}),

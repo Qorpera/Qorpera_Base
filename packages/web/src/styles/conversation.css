@@ -1376,6 +1376,56 @@ a.side-panel-button:hover { text-decoration: none; }
 	.email-draft-actions .btn { font-size: 14px; }
 	.email-draft-actions .email-draft-save { font-size: 12px; }
 }
+/* What an app asks the member to change (views/app-ask-bar.ts; RUNTIME-INTERFACE-APPS.md §5): Qorpera's own bar, above
+ * the app's frame and never over it, so it pushes the page down and nothing of the page sits under its buttons. It says
+ * what will be saved; Not now has the focus, and the yes button wakes a second after the bar is on screen. */
+.app-ask {
+	flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+	padding: 12px 14px; border-bottom: 1px solid var(--border-strong); background: var(--chrome); color: var(--text);
+	font-size: 13px; line-height: 1.4; animation: app-ask-in var(--motion-base) var(--ease-out) both;
+}
+.app-ask[hidden] { display: none; }
+.app-ask-figure { display: grid; flex: none; place-items: center; align-self: flex-start; min-width: 30px; }
+.app-ask-copy { display: flex; flex: 1 1 260px; flex-direction: column; gap: 6px; min-width: 0; }
+.app-ask-title { font-weight: 600; overflow-wrap: anywhere; }
+/* The lines are shown in full, however long: they scroll inside the bar, so the bar never grows past the screen and
+ * both buttons stay within reach (review r1 of #1633, F3: twelve cells of 500 characters on a phone). */
+.app-ask-lines {
+	display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 12px; margin: 0;
+	max-height: min(40vh, 18rem); overflow-y: auto; overscroll-behavior: contain;
+}
+.app-ask-lines:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.app-ask-lines dt { color: var(--text-muted); overflow-wrap: anywhere; }
+/* A value is the company's text, not Qorpera's: it wraps where it stands and never turns the line's direction. */
+.app-ask-lines dd { margin: 0; overflow-wrap: anywhere; unicode-bidi: isolate; }
+.app-ask-value { unicode-bidi: isolate; }
+.app-ask-was { color: var(--text-muted); text-decoration: line-through; }
+/* The word for an empty cell is Qorpera's, not a value: it is never struck through (an inline-block takes no line from its parent). */
+.app-ask-empty { display: inline-block; color: var(--text-soft); font-style: italic; text-decoration: none; }
+.app-ask-arrow { margin: 0 6px; color: var(--text-muted); }
+.app-ask-buttons { display: flex; flex: none; gap: 8px; margin-left: auto; }
+.app-ask-button {
+	min-height: 32px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
+	background: var(--bg); color: var(--text); font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer;
+}
+.app-ask-button:hover:not(:disabled) { background: var(--hover); }
+.app-ask-button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.app-ask-button:disabled { cursor: default; opacity: 0.45; }
+/* The yes button is faint until it wakes, then filled: the one strong mark on the bar, and only once it can be pressed. */
+.app-ask-button.is-yes { transition: background-color var(--motion-fast), color var(--motion-fast); }
+.app-ask-button.is-yes.is-awake { border-color: transparent; background: var(--text); color: var(--bg); }
+.app-ask-button.is-yes.is-awake:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 86%, var(--bg)); }
+.app-ask-note {
+	display: flex; flex: 1 1 260px; align-items: center; gap: 8px; min-width: 0; margin: 0; overflow-wrap: anywhere;
+	max-height: min(40vh, 18rem); overflow-y: auto;
+}
+.app-ask-note .icon { flex: none; width: 16px; height: 16px; }
+.app-ask-note.is-saved .icon { color: var(--ok); }
+.app-ask-note.is-failed { color: var(--danger); }
+@keyframes app-ask-in { from { opacity: 0; transform: translateY(-6px); } }
+@media (max-width: 560px) { .app-ask-buttons { width: 100%; } .app-ask-button { flex: 1; } }
+@media (prefers-reduced-motion: reduce) { .app-ask { animation: none; } .app-ask-button.is-yes { transition: none; } }
+
 /* The questions dock (views/question-dock.ts; Jonas, 10 November 2026): an agent's open questions about the app on
  * screen, drawn by Qorpera over the corner of an app's page or the Concepts viewer's stage, never inside the frame. The
  * agent's figure waits beside its question; one tap answers; folded, it is a pill with the count. */

@@ -91,7 +91,8 @@ it("tells how to make a page worth opening, within the bytes a tool's descriptio
 		"qorpera.todos() gives every agent's todos as {agent, title, status, updatedAt}",
 		"qorpera.agents() gives each agent's name, role and working",
 		"qorpera.onChange(fn) calls fn when the company folder changed",
-		"A page only reads: it cannot change anything.",
+		"qorpera.questions() gives your and the other agents' open questions to this member that point at this app",
+		"Reading changes nothing: writes says what a page may ask a member to change.",
 		// The bridge gives an app 120 calls a minute and counts todos as ten, and a busy company's folder changes every
 		// few seconds: a page that drew on every change would spend that in seconds and then show an error.
 		"after a change draw again once, no sooner than ten seconds after the last draw however many changes arrive",
@@ -114,6 +115,36 @@ it("tells how to make a page worth opening, within the bytes a tool's descriptio
 		"A concept gets no base style.",
 	])
 		expect(files).toContain(said);
+});
+
+it("tells on writes how a page lets a member act, and that nothing is saved without the member's yes", async () => {
+	const f = await fixture();
+	const tool = f.tool("save_app");
+	expect(tool.description).toContain("writes: what it may ask a member to change");
+	const properties = (tool.inputSchema as { properties: { manifest: { properties: Record<string, unknown> } } })
+		.properties.manifest.properties;
+	const writes = JSON.stringify(properties.writes);
+	for (const rule of [
+		// The gate: the page asks, the member allows on a bar the page cannot draw, and the save is the member's own.
+		"A page changes nothing by itself",
+		"it is saved only when the member allows it there, as the member's own change",
+		"rejects with the reason when the member says not now, when another request still waits, or when the save is refused",
+		"Ask only from a click on a button of the page that says what it does, one request per click, never when the page opens or on a timer",
+		"after three not now in a row the page may not ask again until the member reloads it",
+		"A <form> does not submit inside an app: handle the button's click (and Enter in a field), not a form's submit.",
+		// Answers: the question is asked as always and pointed at the app; the page answers with one of its options.
+		"Ask the question with ask_member and point it at the app",
+		"qorpera.questions() (questions in reads) then lists the open questions that point at this app",
+		"qorpera.answer(id, value) with one option's value, or a list of values for a multiSelect question",
+		// Rows: one row a request, never who holds or does something, and how the agent hears of a change.
+		"qorpera.setRow(table, key, cells) changes cells of the row with that key",
+		"qorpera.addRow(table, cells) adds a row",
+		"One row per request, at most 12 cells of it, a cell's text at most 500 characters",
+		"A page cannot change a key cell or a column that names a member or an agent, and cannot remove a row",
+		"the table areas is never written from an app",
+		"manage_routine with a trigger of kind file_change and path QorperaOS/tables/<name>/rows.csv",
+	])
+		expect(writes).toContain(rule);
 });
 
 it("refuses arguments it cannot save before anything is read", async () => {
@@ -141,6 +172,8 @@ it("refuses arguments it cannot save before anything is read", async () => {
 	refusesArguments(tool, save("sales", "k", manifest("S", { concept: "yes" }), []), "manifest.concept");
 	refusesArguments(tool, save("sales", "k", manifest("S", { cover: "cover.gif" }), []), "manifest.cover");
 	refusesArguments(tool, save("sales", "k", manifest("S", { cover: "../cover.png" }), []), "manifest.cover");
+	for (const writes of [["files"], ["table:Bad_Name"], ["table:areas"], "answers", [1]])
+		refusesArguments(tool, save("sales", "k", manifest("S", { writes }), []), "manifest.writes");
 	refusesArguments(f.tool("post_app"), { name: "sales", operationKey: "k", posted: "yes" }, "posted must be");
 	expect(f.commits).toEqual([]);
 });
@@ -178,6 +211,7 @@ it("makes a new app in one unit, owned by the agent and not posted, with the app
 			owner: f.identity.staffAgentId.toLowerCase(),
 			posted: false,
 			reads: ["tables"],
+			writes: [],
 			concept: false,
 			cover: null,
 		},
@@ -324,6 +358,41 @@ it("marks an app as a concept with its cover, and keeps both when a later change
 		ok: true,
 		manifest: { concept: false, cover: "cover.webp" },
 	});
+});
+
+it("lists what the page may ask a member to change, and keeps it when a later change leaves it out", async () => {
+	const f = await fixture();
+	await f.call(
+		"save_app",
+		save(
+			"orders",
+			"make-1",
+			manifest("Orders", { reads: ["tables", "questions"], writes: ["answers", "table:orders", "answers"] }),
+			[{ path: "index.html", text: PAGE }],
+		),
+	);
+	expect(f.text("apps/orders/app.toml")).toContain(
+		'reads = ["tables", "questions"]\nwrites = ["answers", "table:orders"]\n',
+	);
+	await f.call("save_app", save("orders", "change-1", manifest("Orders to ship"), []));
+	expect(parseAppManifest(f.text("apps/orders/app.toml") ?? "")).toMatchObject({
+		ok: true,
+		manifest: { name: "Orders to ship", writes: ["answers", "table:orders"] },
+	});
+	// An empty list takes it away: the page only shows again.
+	await f.call("save_app", save("orders", "change-2", manifest("Orders to ship", { writes: [] }), []));
+	expect(f.text("apps/orders/app.toml")).not.toContain("writes");
+	// company_write checks an app.toml the same way: a table the platform's own page keeps is never listed.
+	const me = f.identity.staffAgentId.toLowerCase();
+	await refuses(
+		f.call("company_write", {
+			path: "apps/orders/app.toml",
+			operationKey: "w-1",
+			expectedVersion: f.files.get("apps/orders/app.toml")?.version as string,
+			text: `name = "Orders"\nposted = false\nowner = "${me}"\nwrites = ["table:areas"]\n`,
+		}),
+		"APP_MANIFEST_INVALID",
+	);
 });
 
 it("posts an app by its one line, and refuses posted through company_write", async () => {

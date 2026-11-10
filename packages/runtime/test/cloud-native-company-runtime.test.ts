@@ -3209,9 +3209,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// Later on 9 November 2026 ask_member's secret card schema says such a key is saved off the machine's clipboard with
 	// save_coding_value (20260930705000), computer_browser vault_capture only on a company computer; the names and
 	// descriptions are as before, so only the catalog text moved again.
-	// On 10 November 2026 save_app's description says which links in an app open and that every app starts from
-	// Qorpera's base style, and its schema says the style's variables on files (the web opens an app's links and gives
-	// it the style, RUNTIME-INTERFACE-APPS.md §2 and §4), so they moved again.
+	// On 10 November 2026 save_app's manifest takes writes, with questions among its reads (a member allows a change
+	// an app asks for, RUNTIME-INTERFACE-APPS.md §5), so they moved again. Later that day its description says which
+	// links in an app open and that every app starts from Qorpera's base style, and its schema says the style's
+	// variables on files (the web opens an app's links and gives it the style, §2 and §4), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3256,9 +3257,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"192354d86fdd2c614408600bd6d82e8326c6b30311a4d3e0bf753077b8de2c88",
+		"4e98b9b5cc8c4ae6088717e14ec60bb349910f2dd49be01333e5fad5b73a0b56",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"768b53d3a0d7c082fae1d3362db745770c471c01c89c11e5a05bc45b860ed2bd",
+		"49292579b210f0158e2417cfa74b18538849f4de5c1a88cc9eef6a1f5a623f80",
 	);
 });

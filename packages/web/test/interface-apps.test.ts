@@ -419,6 +419,7 @@ describe("the bridge", () => {
 				app(""),
 				key,
 				new AbortController().signal,
+				undefined,
 				follows ? (link) => followed.push(link) : undefined,
 			).answer({ method: "open", params: { href } });
 		// It needs nothing in reads, and the answer is the same whether or not what the link names is there.

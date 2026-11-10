@@ -1089,6 +1089,9 @@ export function mountApplication(
 			openApp,
 			budgetKey: controller.profile.profileId,
 			questions: questionsHost(),
+			// A change an app asked for and the member allowed is the member's own save, under the company's checks.
+			writer: () => memberFolder(companyCurrent, t("Company access changed.")),
+			current: companyCurrent,
 		});
 		sidePanel = (target) =>
 			new AppPanel(panelHost(true), target, { kind: "beside", onClose: () => conversation?.closeBeside(true) });

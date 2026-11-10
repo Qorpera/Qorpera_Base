@@ -118,7 +118,7 @@ describe("a link in an app's page", () => {
 		expect(app.panel.el.querySelector(".side-panel-link")).toBeNull();
 	});
 
-	it("offers a web page the browser would not open by itself as a link of Qorpera's own, under the header", async () => {
+	it("offers a web page the browser would not open by itself as a link of Qorpera's own, above the frame", async () => {
 		const { host } = company();
 		const app = await opened(host);
 		vi.spyOn(window, "open").mockReturnValue(null);
@@ -131,9 +131,13 @@ describe("a link in an app's page", () => {
 		expect(link?.title).toBe("https://example.com/pricing?plan=team");
 		expect([link?.target, link?.rel]).toEqual(["_blank", "noopener noreferrer"]);
 		expect(document.activeElement).toBe(link);
-		// Between the header and the page, drawn by Qorpera, not in the frame.
-		expect(offered()?.previousElementSibling?.classList.contains("side-panel-header")).toBe(true);
+		// Above the page and after the header, drawn by Qorpera in the panel itself, not in the frame.
+		expect(offered()?.parentElement).toBe(app.panel.el);
 		expect(offered()?.nextElementSibling?.classList.contains("side-panel-body")).toBe(true);
+		const header = app.panel.el.querySelector(".side-panel-header");
+		expect(
+			(header?.compareDocumentPosition(offered() as HTMLElement) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
 		// One at a time: the next one takes its place.
 		expect(await app.clicked("https://example.org/")).toMatchObject({ ok: true });
 		expect(app.panel.el.querySelectorAll(".side-panel-link")).toHaveLength(1);
