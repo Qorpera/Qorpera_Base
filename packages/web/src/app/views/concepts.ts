@@ -5,6 +5,7 @@ import { forgetPictureUrl, pictureUrl } from "../folder-images.ts";
 import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
 import { conceptsHash } from "../router.ts";
 import { AppPanel, type AppPanelHost } from "./app-panel.ts";
+import { QuestionDock } from "./question-dock.ts";
 
 /* The Concepts viewer, `#/c/{id}/concepts[/{name}]` (Jonas, 8 November 2026: "a fullscreen view of the selected
  * concept, with a sidepanel for the different ideas/designs you could select to view"). The first thing a company shows
@@ -20,6 +21,8 @@ import { AppPanel, type AppPanelHost } from "./app-panel.ts";
  * - A cover is read by its file's version: a cover made or replaced shows once the folder says it changed, and a read
  *   that failed is tried again then.
  * - An item is a link to its concept's route: pressing it switches the concept in place, the panel as it is.
+ * - The agents' open questions about any concept (a choice between directions) stand in a dock over the stage's
+ *   corner, drawn by Qorpera outside the concept's frame (views/question-dock.ts): one tap answers, as in the chat.
  * - The panel folds to a thin strip (kept per viewer in this browser); at phone width it is a top bar with a menu. */
 
 /** Changes in the folder look at the covers again at most this often. */
@@ -97,6 +100,9 @@ export class ConceptsView {
 	readonly #coverReads = new Set<string>();
 	readonly #coverAgain = new Set<string>();
 	#timer: ReturnType<typeof setTimeout> | undefined;
+	/** The agents' open questions about any of the concepts, over the stage's corner (views/question-dock.ts). */
+	#dock: QuestionDock | undefined;
+	#dockNames = "";
 
 	constructor(host: ConceptsHost, apps: readonly CompanyApp[], name: string | undefined) {
 		this.#host = host;
@@ -141,6 +147,10 @@ export class ConceptsView {
 			),
 			this.#stage,
 		);
+		if (host.panel.questions) {
+			this.#dock = new QuestionDock(host.panel.questions, () => false);
+			this.el.append(this.#dock.el);
+		}
 		this.el.addEventListener(
 			"keydown",
 			(event: KeyboardEvent) => {
@@ -212,6 +222,8 @@ export class ConceptsView {
 		clearTimeout(this.#timer);
 		this.#panel?.dispose();
 		this.#panel = undefined;
+		this.#dock?.dispose();
+		this.#dock = undefined;
 		for (const cover of this.#covers.values()) if (cover.url) forgetPictureUrl(cover.url);
 		this.#covers.clear();
 		this.el.remove();
@@ -264,6 +276,17 @@ export class ConceptsView {
 		this.#drawFoot(selected);
 		this.#drawGuard(selected);
 		this.#drawStage(concepts, selected);
+		this.#drawDock(concepts);
+	}
+
+	/** The dock shows the questions that point at any of the concepts: a choice between them shows once. */
+	#drawDock(concepts: readonly Concept[]): void {
+		const names = concepts.map((concept) => concept.name);
+		const key = names.join("\n");
+		if (!this.#dock || key === this.#dockNames) return;
+		this.#dockNames = key;
+		const known = new Set(names);
+		this.#dock.setMatch((apps) => [...apps].some((app) => known.has(app)));
 	}
 
 	#drawGuard(selected: Concept | undefined): void {

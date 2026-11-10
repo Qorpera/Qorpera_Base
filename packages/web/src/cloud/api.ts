@@ -40,6 +40,7 @@ import {
 	parseMemberPictures,
 } from "./member-pictures.ts";
 import { listMemberMentions, type MemberMentions, markMentionsSeen } from "./mentions.ts";
+import { listOpenQuestions, type OpenQuestion } from "./open-questions.ts";
 import { type HostedCompanyOrganization, parseHostedCompanyOrganization } from "./organization.ts";
 import { collectPages, type PageCursor } from "./pagination.ts";
 import {
@@ -497,6 +498,11 @@ export class CloudApi {
 	/** The approval cards that wait for the signed-in member's answer, by agent. */
 	listWaitingApprovals(profileId: string): Promise<WaitingApproval[]> {
 		return listWaitingApprovals(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	/** The question cards raised for the signed-in member in the company's agent threads that still wait for them. */
+	listOpenQuestions(profileId: string): Promise<OpenQuestion[]> {
+		return listOpenQuestions(this.cloud, requiredUuid(profileId, "Profile id"));
 	}
 
 	/** Sections are the company's; pins and hidden agents are the signed-in member's. */

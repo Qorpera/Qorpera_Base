@@ -46,6 +46,7 @@ import { pagesOn } from "./interfaces.ts";
 import { MemberPictures } from "./member-pictures.ts";
 import { newVersionNotice, runningBuildFiles, watchNewVersion } from "./new-version.ts";
 import { watchOnline } from "./online-mark.ts";
+import { OpenQuestions } from "./open-questions.ts";
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
@@ -74,6 +75,7 @@ import {
 	type Viewer,
 } from "./views/new-company.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
+import type { QuestionDockHost } from "./views/question-dock.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
 import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.ts";
@@ -429,6 +431,8 @@ export function mountApplication(
 	/** Each company's walls as the rail's agent cards read them, for their "Latest notes" row. */
 	const cardWalls = new WeakMap<CompanyController, ReturnType<typeof agentWallReader>>();
 	const cardImages = new WeakMap<CompanyController, ReturnType<typeof folderImageReader>>();
+	/** Each company's open questions for its app pages and Concepts viewer, read only while one is on screen. */
+	const appQuestions = new WeakMap<CompanyController, OpenQuestions>();
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
 	let profiles: HostedProfile[] = [];
@@ -1032,6 +1036,33 @@ export function mountApplication(
 		};
 		// An agent's app on its page, or a Company File page beside the chat (RUNTIME-INTERFACE-APPS.md §4, §5): read with
 		// the member's own folder client, under the company's checks.
+		// The agents' open questions about an app, answered on its page and in the Concepts viewer as in the chat
+		// (app/open-questions.ts): the member's own model account for the thread, chosen as the thread chooses it.
+		const questionsHost = (): QuestionDockHost => {
+			let questions = appQuestions.get(controller);
+			if (!questions) {
+				questions = new OpenQuestions(
+					controller,
+					createWebNativeSubscription(
+						cloud,
+						controller.profile.profileId,
+						controller.userId,
+						controller.signal,
+						companyCurrent,
+					),
+				);
+				appQuestions.set(controller, questions);
+			}
+			return {
+				questions,
+				agent: (agentId) => controller.staffById(agentId),
+				memberName: (userId) => controller.memberName(userId),
+				image: (path, signal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
+				conversation: (sessionId) => controller.conversation(sessionId, false),
+				chatHref: (sessionId) =>
+					routeHash({ name: "company", profileId: controller.profile.profileId, section: "chat", id: sessionId }),
+			};
+		};
 		const panelHost = (beside: boolean): AppPanelHost => ({
 			folder: () => memberFolder(companyCurrent, t("Company access changed.")),
 			agents: () =>
@@ -1057,6 +1088,7 @@ export function mountApplication(
 				if (settings && settings !== open) settingsFromConversation = beside && conversation !== undefined;
 			},
 			budgetKey: controller.profile.profileId,
+			questions: questionsHost(),
 		});
 		sidePanel = (target) =>
 			new AppPanel(panelHost(true), target, { kind: "beside", onClose: () => conversation?.closeBeside(true) });

@@ -5,6 +5,7 @@ import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { framePage } from "../../ui/page-frame.ts";
 import { t } from "../../ui/preferences.ts";
 import { AppBridge, type AppBridgeHost, assembleApp, type CompanyApp } from "../interface-apps.ts";
+import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
 
 /* An agent's interface app (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4) or an HTML page of the Company File, live
  * in the locked frame (ui/app-frame.ts), in one of two places:
@@ -20,6 +21,8 @@ import { AppBridge, type AppBridgeHost, assembleApp, type CompanyApp } from "../
  * - Its header (or the Concepts viewer's side panel) is drawn outside the frame, and always says whose app it is and
  *   that Qorpera never asks for a password in it, so a page that draws a sign-in can't pass for this app's own
  *   (security review r1, H2).
+ * - On an app's page, the agents' open questions about the app stand in a dock over the page's corner, drawn by Qorpera
+ *   outside the frame (views/question-dock.ts, Jonas, 10 November 2026): one tap answers, as in the chat.
  * - It follows the company's folder: a change to the app's files puts its page together again and, when the page
  *   changed, shows it afresh; any other change tells the page that what it reads may have changed. */
 
@@ -51,6 +54,9 @@ export interface AppPanelHost extends AppBridgeHost {
 	readonly openInStorage: (path: string) => void;
 	/** Where the app's call budget is kept in this tab: the company. */
 	readonly budgetKey: string;
+	/** The agents' open questions about the app, answered on its page (views/question-dock.ts); absent where the
+	 * company has none to show. */
+	readonly questions?: QuestionDockHost;
 }
 
 /** Changes in the folder put the page together again at most this often. */
@@ -80,6 +86,8 @@ export class AppPanel {
 	#loading: Promise<void> | undefined;
 	#again = false;
 	#timer: ReturnType<typeof setTimeout> | undefined;
+	/** An app's page only: the open questions that point at it, drawn by Qorpera over the page's corner. */
+	#dock: QuestionDock | undefined;
 
 	constructor(host: AppPanelHost, target: AppPanelTarget, placement: AppPanelPlacement) {
 		this.#host = host;
@@ -120,6 +128,11 @@ export class AppPanel {
 				h("header", { class: "side-panel-header" }, this.#first, ...this.#headerCopy(), ...actions),
 				this.#body,
 			);
+			if (host.questions && target.kind === "app") {
+				const name = target.name;
+				this.#dock = new QuestionDock(host.questions, (apps) => apps.has(name));
+				this.el.append(this.#dock.el);
+			}
 		} else {
 			this.#title = h("strong", { class: "side-panel-title" });
 			this.#first = control("close", t("Close"), () => placement.onClose());
@@ -162,6 +175,8 @@ export class AppPanel {
 		clearTimeout(this.#timer);
 		this.#frame?.dispose();
 		this.#frame = undefined;
+		this.#dock?.dispose();
+		this.#dock = undefined;
 		this.el.remove();
 	}
 

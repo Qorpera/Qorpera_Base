@@ -273,6 +273,18 @@ export const CONVERSATION: Record<string, string> = {
 	"App: {name}": "App: {name}",
 	"This app reloaded itself. Press Reload to start it again.":
 		"Appen genindlæste sig selv. Tryk Genindlæs for at starte den igen.",
+
+	// The agents' open questions on an app's page and in the Concepts viewer (app/views/question-dock.ts)
+	"Questions for you": "Spørgsmål til dig",
+	"{name} asks you": "{name} spørger dig",
+	"Sending to {name}…": "Sender til {name}…",
+	"Sent to {name}": "Sendt til {name}",
+	"Open the chat": "Åbn chatten",
+	"Previous question": "Forrige spørgsmål",
+	"Next question": "Næste spørgsmål",
+	"Hide the question": "Skjul spørgsmålet",
+	"{count} questions for you": "{count} spørgsmål til dig",
+	"Your answer could not be sent. Try again.": "Dit svar kunne ikke sendes. Prøv igen.",
 	"App · opens on its own page": "App · åbner på sin egen side",
 	App: "App",
 
