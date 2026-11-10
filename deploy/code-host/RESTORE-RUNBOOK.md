@@ -86,7 +86,10 @@ What a restore brings back, and what not:
    - `queued` with `progress` `{"waiting": ...}`: sessions are working or attached. It starts by itself when they
      are not.
    - `running`: `progress.step` says which step: `fresh`, `close`, `set-aside`, `build`, `open`, `discard`.
-   - `queued` again with `not_before`: a turn came first. It goes on in two minutes, from where it was.
+   - `queued` again with `not_before`: a turn came first. It goes on in two minutes, from where it was. If nothing
+     had been moved yet, the place was opened again meanwhile. If `progress` has `setAside`, the place stays closed
+     while the request waits, and it waits for a quiet company: see that no session of the company keeps working,
+     or the repository stays closed.
    - `done`, outcome `restored`: go to step 4.
    - `failed`: go to section 4.
 3. `failed` with `FRESH_BUNDLE_FAILED:...`: nothing was touched. The history is damaged, or the place is gone
@@ -168,6 +171,9 @@ Two codes come from the database, not from the executor:
 
 The executor logs each step as `code-restore` (steps `fresh`, `closed`, `set-aside`, `built`, `opened`,
 `reopened`, `discarded`, `put-off`, `ended`) and each failure as `code-restore-error`.
+
+While a place is closed, nightly care cannot look at it: the registry's `problem` reads
+`CHECK_FAILED:CODE_HOST_RESTORE_IN_PROGRESS` if care came by. That clears with care's next run after the restore.
 
 ## 5. The monthly proof
 
