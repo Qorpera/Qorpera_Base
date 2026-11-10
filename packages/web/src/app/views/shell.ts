@@ -1884,13 +1884,6 @@ function placedChats(company: CompanyController) {
 	return state.memberChatsUnavailable || state.memberContactPlacing !== true ? undefined : state.memberChats;
 }
 
-/** A zone's rows as the member sees them now, by id: agents, group chats and contacts. What a drop leaves behind
- * is read off it; nothing drags while a search hides rows. */
-function zoneOrder(parts: RailParts, zone: string): string[] {
-	const element = parts.list.querySelector<HTMLElement>(`[data-drop-zone="${zone}"]`);
-	return element ? [...element.querySelectorAll<HTMLElement>(RAIL_ITEM)].map((row) => railItemId(row)!) : [];
-}
-
 /** The pinned row or the Members group as the company holds it, whatever a search hides: the pinned agents and group
  * chats the company still has, with the member's contacts that show there among them. A menu's Pin and Unpin put a
  * contact after these. */
@@ -2448,7 +2441,7 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 			(placedChats(company)?.[itemId] ? true : Boolean(sidebarOf()) && company.sidebarRoster().includes(itemId)),
 		accepts: (zone: string, itemId: string) => {
 			// The pinned row holds so many cards, whatever is dragged: one that is in it already moves within it.
-			const pinnable = () => zoneOrder(parts, "pinned").includes(itemId) || !pinnedRowFull(company);
+			const pinnable = () => keptOrder(company, "pinned").includes(itemId) || !pinnedRowFull(company);
 			// A contact lands in any zone: where it stands is its member's own.
 			if (placedChats(company)?.[itemId]) return zone !== "pinned" || pinnable();
 			const sidebar = sidebarOf();
@@ -2460,7 +2453,7 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 		drop: ({ itemId, kind, zone, order }: RailDrop) => {
 			// A contact: only where it stands changes. Dragged out of Hidden, it shows again where it lands.
 			if (kind === "member") {
-				settleContacts(company, zone, order, itemId);
+				settleContacts(company, zone, dropInto(heldOrder(company, zone), itemId, order), itemId);
 				return;
 			}
 			const item: SidebarItem = { id: itemId, kind };
@@ -2476,21 +2469,18 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 					`[data-drop-zone] [data-agent-id="${itemId}"], [data-drop-zone] [data-room-id="${itemId}"]`,
 				)
 				?.closest<HTMLElement>("[data-drop-zone]")?.dataset.dropZone;
-			const left = from && from !== zone ? zoneOrder(parts, from).filter((member) => member !== itemId) : undefined;
+			// After the sidebar change below, as the zones hold their rows then: contacts moved meanwhile stay moved.
 			const settle = () => {
-				settleContacts(company, zone, order);
-				if (from && left) settleContacts(company, from, left);
+				settleContacts(company, zone, dropInto(heldOrder(company, zone), itemId, order));
+				if (from && from !== zone)
+					settleContacts(
+						company,
+						from,
+						heldOrder(company, from).filter((member) => member !== itemId),
+					);
 			};
 			const pinned = sidebar.pinned.includes(itemId);
-			// The rail is not drawn afresh while a row is lifted, so the rows dropped among may be older than the
-			// sidebar: the item goes into the sidebar as it is now, before the first row that followed it where it
-			// was dropped and is still there. A pin made or taken away meanwhile (on another device) stays so.
-			const into = (now: readonly string[]) => {
-				const next = now.filter((member) => member !== itemId);
-				const following = placed.slice(placed.indexOf(itemId) + 1).find((member) => next.includes(member));
-				next.splice(following ? next.indexOf(following) : next.length, 0, itemId);
-				return next;
-			};
+			const into = (now: readonly string[]) => dropInto(now, itemId, placed);
 			if (zone === "pinned") {
 				// A pin list can still name an item deleted since it was read; the cloud refuses those.
 				const roster = company.sidebarRoster();
@@ -2521,6 +2511,43 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 		},
 		end: () => parts.redraw(),
 	};
+}
+
+/** `itemId` put into `now` (a zone's rows as the company holds them now) where it was dropped among `dropped` (the
+ * rows a lifted rail showed): before the first row that followed it there and is still in `now`, else last. The rail
+ * is not drawn afresh while a row is lifted, so the rows it showed may be older than the company's: a pin made or a
+ * contact moved meanwhile (on another device) stays so. */
+function dropInto(now: readonly string[], itemId: string, dropped: readonly string[]): string[] {
+	const next = now.filter((member) => member !== itemId);
+	const following = dropped.slice(dropped.indexOf(itemId) + 1).find((member) => next.includes(member));
+	next.splice(following ? next.indexOf(following) : next.length, 0, itemId);
+	return next;
+}
+
+/** A zone's rows as the company holds them now, as the rail draws them with no search running: its agents and group
+ * chats in their order with the member's contacts woven in, and nothing hidden, or pinned outside the pinned row. */
+function heldOrder(company: CompanyController, zone: string): string[] {
+	const state = company.store.get();
+	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
+	const roster = company.sidebarRoster();
+	const pinned = (sidebar?.pinned ?? []).filter((itemId) => roster.includes(itemId));
+	const hidden = new Set(sidebar?.hidden ?? []);
+	const contacts = companyContacts(company).contacts.filter((contact) => contact.zone === zone);
+	for (const contact of contacts) if (contact.hidden) hidden.add(contact.userId);
+	const sectionId = zone.startsWith("section:") ? zone.slice("section:".length) : undefined;
+	const items =
+		zone === "pinned"
+			? pinned
+			: zone === MEMBERS_ZONE
+				? []
+				: sidebar
+					? containerOrder(sidebar, sectionId, roster)
+					: sectionId
+						? []
+						: roster;
+	return weave(items, contacts).filter(
+		(itemId) => !hidden.has(itemId) && (zone === "pinned" || !pinned.includes(itemId)),
+	);
 }
 
 /** Moves an agent, a group chat or a contact one place up or down among what the member sees in its zone: the

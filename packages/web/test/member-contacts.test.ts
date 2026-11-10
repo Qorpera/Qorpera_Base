@@ -930,8 +930,9 @@ describe("dragging contacts in the rail", () => {
 			clientX: x,
 			clientY: y,
 		});
-	/** Drags a row onto another row or a title: above its middle unless `below`. Answers the zone that lit up. */
-	function drag(from: Element, onto: Element, rail: HTMLElement, below = false) {
+	/** Drags a row onto another row or a title: above its middle unless `below`. Answers the zone that lit up.
+	 * `meanwhile` runs while the row is held over its place, before it is let go. */
+	function drag(from: Element, onto: Element, rail: HTMLElement, below = false, meanwhile?: () => void) {
 		const boxes = layout(rail);
 		const start = boxes.get(from)!;
 		const to = boxes.get(onto)!;
@@ -941,6 +942,7 @@ describe("dragging contacts in the rail", () => {
 		document.dispatchEvent(pointer("pointermove", 20, y));
 		const lit = rail.querySelector<HTMLElement>(".is-drop-target")?.dataset.dropZone;
 		const kind = rail.querySelector<HTMLElement>(".rail-scroll")!.dataset.dragging;
+		meanwhile?.();
 		document.dispatchEvent(pointer("pointerup", 20, y));
 		return { lit, kind };
 	}
@@ -1017,6 +1019,39 @@ describe("dragging contacts in the rail", () => {
 			[{ userId: mads, place: { zone: "unassigned", rank: 0 }, hidden: false }],
 		]);
 		expect(zones(rail)).toMatchObject({ Research: ["Cy", "Sofie Lund", "Bo", "Ada"], Unassigned: ["Mads Berg"] });
+	});
+
+	it("keeps a contact where it was moved meanwhile when an agent or a contact is dropped beside it", async () => {
+		const { rail, company, manage, places, ready } = companyWith({
+			chats: [placed(sofie, { zone: "pinned", after: dee.id, rank: 0 }), summary(mads)],
+		});
+		await ready;
+		expect(zones(rail).pinned).toEqual(["Dee", "Sofie"]);
+		/** Sofie unpinned on another device, while the lifted rail still shows her pinned. */
+		const unpinSofie = () => {
+			const chats = company.store.get().memberChats!;
+			company.store.set({
+				memberChats: { ...chats, [sofie]: { ...chats[sofie]!, place: { zone: "members", rank: 0 } } },
+			});
+		};
+		drag(rowOf(rail, "Cy"), rowOf(rail, "Dee"), rail, false, unpinSofie);
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, { action: "set_pins", order: [cy.id, dee.id] });
+		// Nothing puts her back in the pinned row.
+		expect(places.flat().filter((change) => change.userId === sofie)).toEqual([]);
+		expect(zones(rail).pinned).toEqual(["Cy", "Dee"]);
+		// The same for a contact dropped there: only Mads is placed.
+		const chats = company.store.get().memberChats!;
+		company.store.set({
+			memberChats: { ...chats, [sofie]: { ...chats[sofie]!, place: { zone: "pinned", after: dee.id, rank: 0 } } },
+		});
+		await settle();
+		drag(rowOf(rail, "Mads Berg"), rowOf(rail, "Dee"), rail, false, unpinSofie);
+		await settle();
+		expect(places.at(-1)).toEqual([
+			{ userId: mads, place: { zone: "pinned", after: cy.id, rank: 0 }, hidden: false },
+		]);
+		expect(places.flat().filter((change) => change.userId === sofie)).toEqual([]);
 	});
 
 	it("takes no agent in a pinned row that agents and a contact fill together", async () => {
