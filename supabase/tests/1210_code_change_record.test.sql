@@ -187,6 +187,7 @@ begin
 			'public.qorpera_code_change_paths_valid(jsonb)', 'public.qorpera_code_change_fit(jsonb,integer,integer)',
 			'public.qorpera_code_change_append(uuid,text,text,jsonb)', 'public.qorpera_code_change_found(uuid,text,text,text,text)',
 			'public.qorpera_code_change_set(uuid,text,text,integer,boolean,integer)',
+			'public.qorpera_code_changes_restored(uuid,text,text,text)',
 			'public.qorpera_code_undo_message(integer,text,boolean)', 'public.qorpera_code_request_lease(text)',
 			'public.qorpera_code_restore_waits(uuid,text,text,timestamptz)', 'public.qorpera_code_restore_moving(jsonb)',
 			'public.qorpera_code_change_report_valid(jsonb)',
@@ -204,6 +205,7 @@ begin
 			'public.qorpera_code_change_files_written(text,text,uuid,text,text,jsonb)',
 			'public.qorpera_code_requests_claim(text,text,integer)',
 			'public.qorpera_code_request_step(text,text,uuid,uuid,jsonb)',
+			'public.qorpera_code_restore_record(text,text,uuid,uuid,jsonb)',
 			'public.qorpera_code_request_finish(text,text,uuid,uuid,jsonb)',
 			'public.qorpera_folder_request_code_undo(jsonb,jsonb)', 'public.qorpera_folder_code_request(jsonb,uuid)',
 			'public.qorpera_folder_describe_code_change(jsonb,jsonb)'] loop
@@ -220,6 +222,7 @@ begin
 	perform pg_temp.base_assert(not exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace
 		and proname in ('qorpera_record_code_change', 'qorpera_code_change_files_due', 'qorpera_code_change_files',
 			'qorpera_code_change_files_written', 'qorpera_code_requests_claim', 'qorpera_code_request_step',
+			'qorpera_code_restore_record', 'qorpera_code_changes_restored',
 			'qorpera_code_request_finish', 'qorpera_folder_request_code_undo', 'qorpera_folder_code_request',
 			'qorpera_folder_describe_code_change', 'qorpera_list_code_repositories', 'qorpera_request_code_download',
 			'qorpera_code_download', 'qorpera_request_code_restore', 'qorpera_code_changes_backfill')

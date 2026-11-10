@@ -56,7 +56,8 @@ import { CodingControlBusy } from "./coding-executor.ts";
  *              each. The mark says `emptied` only once a later job, which sees what the folder saved, finds nothing left.
  *   build      prove the bundle again, then make `repo.git` from it: the packs, every ref but the default branch, then
  *              that branch and `main/` together (`moveBase`). The mark stays.
- *   open       a job of its own sees the bundle's repository whole, and removes the mark.
+ *   open       a job of its own sees the bundle's repository whole, has the restore written into the change record
+ *              (`qorpera_code_restore_record`) while the place is still closed, and only then removes the mark.
  *
  * Each job is safe whatever part of what it wrote the folder saved, and can be run again: the mark is saved before
  * anything moves and goes after everything else is saved and seen, a move is never taken for done before a later job
@@ -68,7 +69,7 @@ import { CodingControlBusy } from "./coding-executor.ts";
 export const CODE_RESTORING_SCHEMA = "qorpera.code-restoring/v1";
 /** Where a restore puts what a place held, under `code/`. It can be no owner: an owner has no underscore. */
 export const CODE_SET_ASIDE_FOLDER = "_set-aside";
-export const CODE_RESTORE_RPCS = ["qorpera_code_request_step"] as const;
+export const CODE_RESTORE_RPCS = ["qorpera_code_request_step", "qorpera_code_restore_record"] as const;
 
 /** A stored bundle as its manifest gives it (`code-bundle-store.ts`). */
 export interface CodeRestoreBundle {
@@ -716,13 +717,9 @@ async function held(run: Run, commits: readonly string[]): Promise<Set<string>> 
 	return found;
 }
 
-export interface CodeAreaOpened {
-	/** `opened`: this job removed the mark. `open`: there was none, and the place holds the restored repository. */
-	state: "opened" | "open";
+/** What `openCodeArea` found, as it hands it to its `record` before the mark goes. */
+export interface CodeAreaOpening {
 	mainSha: string;
-	/** The highest number among `tips` whose commit the restored default branch is or reaches: the last change the
-	 * record names that the repository still holds. Null when it holds none of them. */
-	keptThrough: number | null;
 	/** The sessions among `sessions` that have neither their branch nor their base commit here: their next turn could
 	 * not start. */
 	stranded: string[];
@@ -730,34 +727,37 @@ export interface CodeAreaOpened {
 	previousMainSha: string | null;
 }
 
+export interface CodeAreaOpened extends CodeAreaOpening {
+	/** `opened`: this job removed the mark. `open`: there was none, and the place holds the restored repository. */
+	state: "opened" | "open";
+}
+
 /** A restore's last step, in a job that sees what the build saved. With the mark there (for `bundle`, saying
  * `emptied`), the place must hold exactly the mark, `repo.git` and `main/`; the repository's refs must have the
  * bundle's fingerprint, with the default branch at the bundle's commit; and `main/` must be at it
- * (`CODE_HOST_RESTORE_NOT_BUILT` otherwise: the place stays closed, and the build is run again). Only then does the
- * mark go, which opens the place to every other job. With no mark, the place must hold a repository kept in Qorpera
- * that has the bundle's default branch commit: an earlier run of this step opened it. Either way it answers
- * `keptThrough` and `stranded`, from the record's tips and the repository's sessions as the request named them
- * (at most 1,000 each). */
+ * (`CODE_HOST_RESTORE_NOT_BUILT` otherwise: the place stays closed, and the build is run again). Then `record` is
+ * called with what was found, and only once it has answered does the mark go, which opens the place to every other
+ * job. `record` is where the caller writes the restore into the change record: the place is still closed and this job
+ * holds its company's line, so no landing can come between the restored default branch and its record, as a landing
+ * writes its own row inside its own job. When `record` rejects, the mark stays and the job fails with its error. With
+ * no mark, the place must hold a repository kept in Qorpera that has the bundle's default branch commit: an earlier
+ * run of this step opened it, after its `record` had answered, and `record` is not called again. Either way it
+ * answers `stranded`, from the repository's sessions as the request named them (at most 1,000). */
 export async function openCodeArea(
 	job: CodeHostJob,
 	value: {
 		repository: CloudCodingRepository;
 		bundle: CodeRestoreBundle;
-		tips: readonly { n: number; mainAfter: string }[];
 		sessions: readonly { workerId: string; baseSha: string }[];
 	},
+	record: (place: CodeAreaOpening) => Promise<void>,
 ): Promise<CodeAreaOpened> {
-	const input = closed(value, ["repository", "bundle", "tips", "sessions"]);
+	const input = closed(value, ["repository", "bundle", "sessions"]);
 	const repository = keptRepositoryOf(input.repository),
 		bundle = bundleOf(input.bundle),
-		{ tips, sessions } = input;
+		{ sessions } = input;
 	if (
-		!Array.isArray(tips) ||
-		tips.length > 1000 ||
-		!tips.every(
-			(tip) =>
-				Number.isSafeInteger(tip?.n) && tip.n >= 1 && typeof tip.mainAfter === "string" && SHA.test(tip.mainAfter),
-		) ||
+		typeof record !== "function" ||
 		!Array.isArray(sessions) ||
 		sessions.length > 1000 ||
 		!sessions.every(
@@ -790,39 +790,27 @@ export async function openCodeArea(
 			branches = new Set((await keptRefs(run)).refs.map((ref) => ref.name));
 			if (!(await run.isCommit(run.repo, bundle.mainSha))) throw notBuilt(run, "the bundle's commit is not there");
 		}
-		const here = await held(run, [
-			...tips.map((tip: { mainAfter: string }) => tip.mainAfter),
-			...sessions.map((session: { baseSha: string }) => session.baseSha),
-		]);
-		let keptThrough: number | null = null;
-		for (const tip of [...(tips as { n: number; mainAfter: string }[])].sort((a, b) => b.n - a.n)) {
-			if (!here.has(tip.mainAfter)) continue;
-			const reached =
-				tip.mainAfter === bundle.mainSha
-					? 0
-					: (await run.git(run.repo, ["merge-base", "--is-ancestor", tip.mainAfter, bundle.mainSha])).status;
-			if (reached !== 0 && reached !== 1) throw new CodeHostJobFailure(FAILED, "merge-base");
-			if (reached === 0) {
-				keptThrough = tip.n;
-				break;
-			}
-		}
+		const here = await held(
+			run,
+			sessions.map((session: { baseSha: string }) => session.baseSha),
+		);
 		const stranded = (sessions as { workerId: string; baseSha: string }[])
 			.filter(
 				(session) => !branches.has(`refs/heads/qorpera/coding/${session.workerId}`) && !here.has(session.baseSha),
 			)
 			.map((session) => session.workerId);
-		if (mark) {
-			const removed = await run.command(["/usr/bin/rm", "-f", "--", `${run.code}/${CODE_AREA_RESTORING}`]);
-			if (removed.status !== 0) throw new CodeHostJobFailure(FAILED, tail(removed.stderr));
-		}
-		return {
-			state: mark ? "opened" : "open",
+		const place: CodeAreaOpening = {
 			mainSha: bundle.mainSha,
-			keptThrough,
 			stranded,
 			previousMainSha: mark?.previousMainSha ?? null,
 		};
+		if (mark) {
+			// The record first, with the place still closed: once the mark is gone a landing may be recorded.
+			await record({ ...place, stranded: [...stranded] });
+			const removed = await run.command(["/usr/bin/rm", "-f", "--", `${run.code}/${CODE_AREA_RESTORING}`]);
+			if (removed.status !== 0) throw new CodeHostJobFailure(FAILED, tail(removed.stderr));
+		}
+		return { state: mark ? "opened" : "open", ...place };
 	});
 }
 
@@ -902,13 +890,13 @@ export interface CodeRestoreRequest {
 	progress: Record<string, unknown> | null;
 	/** A discard's set-aside path. */
 	path: string | null;
-	/** The newest rows of the record that moved the default branch. */
-	tips: readonly { n: number; mainAfter: string }[];
 	/** The repository's sessions that are not archived. */
 	sessions: readonly { workerId: string; baseSha: string }[];
 }
 
-/** How a restore request ended, as `qorpera_code_request_finish` takes it (`qorpera.code-request-outcome/v1`). */
+/** How a restore request ended, as `qorpera_code_request_finish` takes it (`qorpera.code-request-outcome/v1`). Which
+ * changes the restored default branch still holds is not the executor's to say: the kernel finds that from its rows
+ * when the restore is recorded, and keeps it beside this outcome. */
 export type CodeRestoreOutcome = { schema: "qorpera.code-request-outcome/v1" } & (
 	| { state: "done"; result: "verified"; mainSha: string; refsSha256: string; refs: number }
 	| {
@@ -919,7 +907,6 @@ export type CodeRestoreOutcome = { schema: "qorpera.code-request-outcome/v1" } &
 			previousMainSha: string | null;
 			refsSha256: string;
 			refs: number;
-			keptThrough: number | null;
 			stranded: string[];
 			movedTo: string | null;
 	  }
@@ -978,6 +965,8 @@ export const CODE_RESTORE_WORDS: Readonly<Record<string, string>> = Object.freez
 		"The folder did not keep the move of the old place: after a job moved it, the next job still found it there.",
 	CODE_BUNDLE_MISSING: "No stored bundle has that name for this repository.",
 	AREA_ABSENT: "There is no repository at the place to take a fresh bundle of. Ask with a stored bundle's name.",
+	RESTORE_BOUNDARY_UNKNOWN:
+		"The change record does not know the commit that was restored: which of its earlier changes main still holds could not be told, and their states were left as they were. Compare changes/index.md with main by hand.",
 });
 
 /** The kernel did not let a job go on: the company is busy, or the request's lease is gone. */
@@ -1026,16 +1015,19 @@ interface RestoreRun {
  *
  *   verify    `verifyCodeBundle` on the stored bundle.
  *   restore   `fresh` first takes a new bundle of the place as it stands (nightly care's check and bundle jobs) into
- *             the store; then close, set aside (run until a job sees the place emptied), build and open. With
- *             `damaged: remove`, the set-aside copy is removed after the place is open again, never before.
+ *             the store; then close, set aside (run until a job sees the place emptied), build and open. The job that
+ *             opens the place has the restore recorded (`qorpera_code_restore_record`) before its mark goes: the
+ *             request's finish, which comes after the job has saved, records nothing. With `damaged: remove`, the
+ *             set-aside copy is removed after the place is open again, never before.
  *   discard   `discardSetAside` on the request's path.
  *
  * `run` never throws. A step whose answer is not the one expected ends the request `failed`, with a code that names
  * the step, the reason and, once the place was touched, whether it is as before (`PLACE_AS_BEFORE`) or closed
  * (`PLACE_CLOSED`). A request the kernel put off, a job that yielded and an executor that is stopping end it `busy`:
- * it is claimed again later, and goes on from what the kernel saved and the place holds. A place this run closed and
- * did not get to move anything out of is opened again before the run ends, either way, unless the request's lease is
- * gone. */
+ * it is claimed again later, and goes on from what the kernel saved and the place holds. So do a record the kernel
+ * was not heard to take, and an open that failed after its record was made: the place stays closed, and the next
+ * claim opens it, where the record made again is the same record. A place this run closed and did not get to move
+ * anything out of is opened again before the run ends, either way, unless the request's lease is gone. */
 export class CodeRestore {
 	readonly #control: CodeRestoreOptions["control"];
 	readonly #hosts: Pick<CodeHostJobs, "run">;
@@ -1117,8 +1109,7 @@ export class CodeRestore {
 	/** The request, checked field by field, with what its mode needs. */
 	#runOf(request: CodeRestoreRequest): RestoreRun {
 		if (!isRecord(request)) throw new Error("RESTORE_REQUEST_INVALID");
-		const { requestId, token, companyId, environmentId, mode, bundle, damaged, path, progress, tips, sessions } =
-			request;
+		const { requestId, token, companyId, environmentId, mode, bundle, damaged, path, progress, sessions } = request;
 		const stored = typeof bundle === "string" && CODE_BUNDLE_NAME.test(bundle);
 		if (
 			![requestId, token, companyId, environmentId].every((id) => isUuid(id)) ||
@@ -1129,7 +1120,6 @@ export class CodeRestore {
 					? (stored || bundle === "fresh") && (damaged === "keep" || damaged === "remove")
 					: mode === "discard" && typeof path === "string") ||
 			!(progress === null || isRecord(progress)) ||
-			!Array.isArray(tips) ||
 			!Array.isArray(sessions)
 		)
 			throw new Error("RESTORE_REQUEST_INVALID");
@@ -1265,14 +1255,27 @@ export class CodeRestore {
 		run.step = "open";
 		const manifest = await this.#bundles.find(run.target, name, signal);
 		if (!manifest) throw new Error("CODE_BUNDLE_MISSING");
-		const opened = await this.#job(run, signal, (job) =>
-			openCodeArea(job, {
-				repository,
-				bundle: bundleFacts(name, manifest),
-				tips: request.tips.slice(0, 1000),
-				sessions: request.sessions.slice(0, 1000),
-			}),
-		);
+		let recorded = false,
+			opened: CodeAreaOpened;
+		try {
+			opened = await this.#job(run, signal, (job) =>
+				openCodeArea(
+					job,
+					{ repository, bundle: bundleFacts(name, manifest), sessions: request.sessions.slice(0, 1000) },
+					async (place) => {
+						await this.#record(run, name, place, job.signal);
+						recorded = true;
+					},
+				),
+			);
+		} catch (error) {
+			// The record is made and the place did not open: the mark could not be removed, or the job did not save. The
+			// repository is restored and recorded, and only its mark is in the way: the request is not failed for that. It
+			// is claimed again, and that claim's open job takes the mark away.
+			if (!recorded || error instanceof RestoreStopped) throw error;
+			this.#report({ event: "code-restore-error", step: "open", ...run.named, place: "PLACE_CLOSED", error });
+			throw new RestoreStopped("busy");
+		}
 		this.#report({ event: "code-restore", step: "opened", ...run.named, state: opened.state });
 		let movedTo = setAside;
 		if (request.damaged === "remove" && setAside !== null) {
@@ -1296,7 +1299,6 @@ export class CodeRestore {
 			previousMainSha: run.previousMainSha ?? opened.previousMainSha,
 			refsSha256: manifest.refsSha256,
 			refs: manifest.refsCount,
-			keptThrough: opened.keptThrough,
 			stranded: opened.stranded.slice(0, 200),
 			movedTo,
 		};
@@ -1413,6 +1415,80 @@ export class CodeRestore {
 		)
 			return answer.state;
 		throw new Error("CODE_RESTORE_STEP_UNCONFIRMED");
+	}
+
+	/** The restore written into the change record (`qorpera_code_restore_record`), from inside the job that opens the
+	 * place, before its mark goes: the kernel writes the restore's row and sets every row's state to what the restored
+	 * default branch holds, which it finds from its own rows. It resolves only when the kernel said `recorded`. A
+	 * request whose lease is gone ends the run as lost. A kernel that was not heard is asked once more (made again, the
+	 * record is the same one); still not heard, the run ends as put off with the place closed, and the next claim's
+	 * open records. A restored commit the record does not know is reported as an error for an operator: the record is
+	 * made all the same, and no change was marked lost by a guess. */
+	async #record(run: RestoreRun, bundle: string, place: CodeAreaOpening, signal: AbortSignal): Promise<void> {
+		let failure: unknown;
+		for (let tried = 0; tried < 2; tried += 1) {
+			let answer: unknown;
+			try {
+				answer = await this.#control.call(
+					CODE_RESTORE_RPCS[1],
+					{
+						p_owner: this.#owner,
+						p_machine_id_sha256: this.#machineIdSha256,
+						p_request_id: run.request.requestId,
+						p_token: run.request.token,
+						p_restored: {
+							schema: "qorpera.code-restore-record/v1",
+							bundle,
+							mainSha: place.mainSha,
+							previousMainSha: run.previousMainSha ?? place.previousMainSha,
+						},
+					},
+					AbortSignal.any([signal, AbortSignal.timeout(CALL_MS)]),
+				);
+			} catch (error) {
+				failure = error;
+				continue;
+			}
+			if (isRecord(answer) && answer.schema === "qorpera.code-restore-recorded/v1") {
+				if (answer.state === "lost") throw new RestoreStopped("lost");
+				const { change, boundary, keptThrough, lost, back } = answer;
+				if (
+					answer.state === "recorded" &&
+					Number.isSafeInteger(change) &&
+					(boundary === "found" || boundary === "unknown")
+				) {
+					this.#report({
+						event: "code-restore",
+						step: "recorded",
+						...run.named,
+						change,
+						boundary,
+						keptThrough,
+						lost,
+						back,
+					});
+					if (boundary === "unknown")
+						this.#report({
+							event: "code-restore-error",
+							step: "record",
+							...run.named,
+							change,
+							words: CODE_RESTORE_WORDS.RESTORE_BOUNDARY_UNKNOWN,
+							error: new Error("RESTORE_BOUNDARY_UNKNOWN"),
+						});
+					return;
+				}
+			}
+			failure = new Error("CODE_RESTORE_RECORD_UNCONFIRMED");
+		}
+		this.#report({
+			event: "code-restore-error",
+			step: "record",
+			...run.named,
+			place: "PLACE_CLOSED",
+			error: failure,
+		});
+		throw new RestoreStopped("busy");
 	}
 
 	/** How a run that threw ends. A place it closed and did not see emptied is opened again first, when nothing was

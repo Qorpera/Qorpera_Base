@@ -25,8 +25,12 @@
 --      index.md) still to write, what they say, and that they were written. The row is the truth; a file is its copy.
 --    * qorpera_code_requests_claim / qorpera_code_request_step / qorpera_code_request_finish: lease the oldest requests
 --      this executor may do now, renew before each job, and say how each ended. An undo's finish writes the undo row
---      and sets the rows it took out `reverted`; a restore's finish writes the restore row, sets the rows it went back
---      past `lost`, and makes every record file and care due again.
+--      and sets the rows it took out `reverted`.
+--    * qorpera_code_restore_record: a restore's record, made inside the job that opens the place again, before the mark
+--      that closes it goes, as a landing's row is written inside its own job. It writes the restore's row, sets every
+--      row's state to what the restored main's history holds (`lost` for a row the restore went back past, in main again
+--      for one a restore to a newer copy brought back), and makes every record file and care due again. The finish,
+--      after that job has saved, only ends the request.
 -- 5. The agent's calls (native host, scope binding; the agent's own company run only, under a run receipt):
 --    qorpera_folder_request_code_undo, qorpera_folder_code_request (a read) and qorpera_folder_describe_code_change.
 -- 6. The member's calls: qorpera_list_code_repositories (any member), qorpera_request_code_download and
@@ -317,6 +321,105 @@ begin
 			perform public.qorpera_code_change_set(p_environment_id, p_owner, p_name, v_target, not p_in_main, p_n);
 		end loop;
 	end if;
+end $$;
+
+-- Sets the rows' states to what main's history holds once a restore has put main at p_main, and answers what it found:
+-- {"boundary":"found"|"unknown","keptThrough":<n>|null,"lost":<int>,"back":<int>}. The caller holds the registry row's
+-- lock.
+-- The history is read from the rows, each of which holds main before and after: the newest row that moved main to
+-- p_main, then the newest row before it that moved main to where that one began, and so on down. Never through a
+-- restore's own row (main before a restore is no part of main after it), and always to a lower number (a commit that
+-- lands again after a restore went back past it is a later row's, and says nothing of what the earlier row stood on).
+-- That is one pass down the repository's rows, newest first, however long the record is.
+-- * A row of that history is in main, unless an undo of that history took it out: every row of it starts as landed,
+--   and the history's undos are done again in their order, each on its targets newest first and each target as it
+--   stands when its turn comes, as their finishes did. So a row that an undo outside the history took out is in main
+--   again, and a row an earlier restore marked lost is whatever this history makes it.
+-- * A row that moved main and is not of that history is lost. A restore's own row is of it when the commit it restored
+--   is one of the history's.
+-- * A row that never went in (conflict, refused) stays as it is.
+-- So a restore back, a restore forward to a newer copy and back again each leave the states the restored main has.
+-- The walk ends where the record's first change began: then every row's place is known (boundary `found`). It may
+-- also end at a commit that no change put main at. That is not read as nothing kept:
+-- * a restore put main there whose own place in the record was not known: the rows before that restore stay as they
+--   were left, the rows after it are set as above, and the boundary is `unknown`;
+-- * no row says how main got there: nothing is known, no row is touched, and the boundary is `unknown`.
+-- keptThrough is the newest row of the history: 0 when the boundary is found and main holds no row, null when it is
+-- unknown and no row is known to be held. `lost` counts the rows this call marked lost, `back` the lost ones it found
+-- in the history again.
+create function public.qorpera_code_changes_restored(p_environment_id uuid, p_owner text, p_name text, p_main text)
+returns jsonb language plpgsql volatile security definer set search_path = '' as $$
+declare v_history integer[] := '{}'; v_commits text[] := array[p_main]; v_at text := p_main; v_below integer;
+	v_step record; v_undo record; v_target integer; v_known boolean; v_floor integer := 0; v_lost integer; v_back integer;
+begin
+	-- Down the rows that moved main, newest first: the next one that put main where the walk stands is the history's
+	-- next row, and the walk then stands where that row began.
+	for v_step in select change.n, change.main_before, change.main_after from public.qorpera_code_changes change
+		where change.environment_id = p_environment_id and change.owner = p_owner and change.name = p_name
+			and change.main_after is not null and change.kind <> 'restore'
+		order by change.n desc
+	loop
+		continue when v_step.main_after <> v_at;
+		v_history := v_history || v_step.n;
+		v_below := v_step.n;
+		v_at := v_step.main_before;
+		-- (A row with no main before it is the record's first.)
+		exit when v_at is null;
+		v_commits := v_commits || v_at;
+	end loop;
+	-- Whether the walk ended where the record's first change began. A record with no change has nothing to place.
+	select v_at is null or v_at is not distinct from first.main_before into v_known
+	from (select change.main_before from public.qorpera_code_changes change
+		where change.environment_id = p_environment_id and change.owner = p_owner and change.name = p_name
+			and change.main_after is not null and change.kind <> 'restore'
+		order by change.n limit 1) first;
+	if not found then v_known := true; end if;
+	if not v_known then
+		select max(change.n) into v_floor from public.qorpera_code_changes change
+		where change.environment_id = p_environment_id and change.owner = p_owner and change.name = p_name
+			and change.kind = 'restore' and change.main_after = v_at and (v_below is null or change.n < v_below);
+		if v_floor is null then
+			return jsonb_build_object('boundary', 'unknown', 'keptThrough', null, 'lost', 0, 'back', 0);
+		end if;
+	end if;
+	-- What moved main and is not of the history is lost. (A row's file says its state: its version goes up with it.)
+	update public.qorpera_code_changes change set state = 'lost', reverted_by = null,
+		file_version = change.file_version + 1
+	where change.environment_id = p_environment_id and change.owner = p_owner and change.name = p_name
+		and change.n > v_floor and change.main_after is not null and change.state in ('landed','reverted')
+		and not case when change.kind = 'restore' then change.main_after = any(v_commits)
+			else change.n in (select unnest(v_history)) end;
+	get diagnostics v_lost = row_count;
+	-- What is of the history starts in main: a row a restore marked lost is back, and a row an undo took out is in main
+	-- until that undo, if the history holds it, is done again below. So is a row left as it was whose undo is not.
+	select count(*) into v_back from public.qorpera_code_changes change
+	where change.environment_id = p_environment_id and change.owner = p_owner and change.name = p_name
+		and change.n > v_floor and change.main_after is not null and change.state = 'lost'
+		and case when change.kind = 'restore' then change.main_after = any(v_commits)
+			else change.n in (select unnest(v_history)) end;
+	update public.qorpera_code_changes change set state = 'landed', reverted_by = null,
+		file_version = change.file_version + 1
+	where change.environment_id = p_environment_id and change.owner = p_owner and change.name = p_name
+		and change.main_after is not null
+		and case when change.n <= v_floor then change.state = 'reverted' and change.reverted_by > v_floor
+			else change.state in ('reverted','lost') and case when change.kind = 'restore'
+				then change.main_after = any(v_commits) else change.n in (select unnest(v_history)) end end;
+	for v_undo in select change.n, change.undoes from public.qorpera_code_changes change
+		where change.environment_id = p_environment_id and change.owner = p_owner and change.name = p_name
+			and change.kind = 'undo' and change.n in (select unnest(v_history))
+		order by change.n
+	loop
+		for v_target in select target from unnest(v_undo.undoes) target order by target desc loop
+			if (select change.state from public.qorpera_code_changes change
+				where change.environment_id = p_environment_id and change.owner = p_owner and change.name = p_name
+					and change.n = v_target) = 'landed' then
+				perform public.qorpera_code_change_set(p_environment_id, p_owner, p_name, v_target, false, v_undo.n);
+			end if;
+		end loop;
+	end loop;
+	return jsonb_build_object('boundary', case when v_known then 'found' else 'unknown' end,
+		'keptThrough', case when cardinality(v_history) > 0 then v_history[1] when v_known then 0 end,
+		'lost', v_lost, 'back', v_back);
 end $$;
 
 -- An undo's commit message, which is also its row's title: one change, or that change and every later one.
@@ -681,13 +784,15 @@ begin
 	return jsonb_build_object('schema', 'qorpera.code-change-files-written/v1', 'state', 'recorded');
 end $$;
 
--- 7. The requests: claim, step, finish ----------------------------------------------------------------------------------
+-- 7. The requests: claim, step, a restore's record, finish -----------------------------------------------------------------
 
 -- Leases the oldest requests this executor may do now, at most p_limit (1 to 20): queued, or running with a lease that
 -- ended; not put off; its company held by this executor and not being deleted. A restore of the place itself stays
 -- queued while the company's sessions are not quiet or one of the repository's is on a machine, and its progress says
--- which; one that has begun to move the place (qorpera_code_restore_moving) is handed out whatever the sessions do. A fourth claim of an undo or a restore, or a sixth of a download, ends the request failed (DID_NOT_FINISH)
--- instead. Also claimed, as work `remove`: a made download whose time is over. It locks request rows only.
+-- which; one that has begun to move the place (qorpera_code_restore_moving) is handed out whatever the sessions do. A
+-- fourth claim of an undo or a restore, or a sixth of a download, ends the request failed (DID_NOT_FINISH) instead; a
+-- restore keeps its progress, with what it recorded. Also claimed, as work `remove`: a made download whose time is
+-- over. It locks request rows only.
 create function public.qorpera_code_requests_claim(p_owner text, p_machine_id_sha256 text, p_limit integer)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare v_now timestamptz := clock_timestamp(); v_request public.qorpera_code_requests%rowtype; v_claimed jsonb := '[]'::jsonb;
@@ -753,13 +858,8 @@ begin
 		else
 			v_item := v_item || jsonb_build_object('mode', v_request.input ->> 'mode', 'bundle', v_request.input -> 'bundle',
 				'damaged', v_request.input ->> 'damaged', 'progress', v_request.progress, 'path', v_request.input -> 'path',
-				-- The newest 200 rows that moved main, and the repository's sessions that are not archived and have a base.
-				'tips', (select coalesce(jsonb_agg(jsonb_build_object('n', tip.n, 'mainAfter', tip.main_after)
-						order by tip.n desc), '[]'::jsonb)
-					from (select change.n, change.main_after from public.qorpera_code_changes change
-						where change.environment_id = v_request.environment_id and change.owner = v_request.owner
-							and change.name = v_request.name and change.main_after is not null
-						order by change.n desc limit 200) tip),
+				-- The repository's sessions that are not archived and have a base. (Which rows the restored main holds is
+				-- the kernel's own to find, from the rows: qorpera_code_changes_restored.)
 				'sessions', (select coalesce(jsonb_agg(jsonb_build_object('workerId', kept.worker_id, 'baseSha', kept.base_sha)
 						order by kept.worker_id), '[]'::jsonb)
 					from (select session.worker_id, session.base_sha from public.qorpera_coding_sessions session
@@ -813,7 +913,9 @@ end $$;
 -- the token is not the request's lease, or the caller no longer holds the company. Busy: a restore of the place
 -- itself that has not begun to move it (qorpera_code_restore_moving, read from the progress this call brings), when
 -- the company's sessions are no longer quiet or one of the repository's is on a machine. A download is
--- never busy here: a turn's job cancels its job instead. It locks the request's row only.
+-- never busy here: a turn's job cancels its job instead. What a restore recorded (`recorded`, which
+-- qorpera_code_restore_record wrote into the progress) is the kernel's own word there: a step keeps it, and takes none
+-- from its caller. It locks the request's row only.
 create function public.qorpera_code_request_step(p_owner text, p_machine_id_sha256 text, p_request_id uuid,
 	p_token uuid, p_progress jsonb)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
@@ -835,7 +937,9 @@ begin
 		and public.qorpera_code_restore_waits(v_request.environment_id, v_request.owner, v_request.name, v_now) is not null then
 		return jsonb_build_object('schema', 'qorpera.code-request-step/v1', 'state', 'busy'); end if;
 	update public.qorpera_code_requests set lease_until = v_now + public.qorpera_code_request_lease(kind),
-		progress = coalesce(p_progress, progress), updated_at = v_now
+		progress = coalesce(case when progress ? 'recorded'
+			then (p_progress - 'recorded') || jsonb_build_object('recorded', progress -> 'recorded')
+			else p_progress - 'recorded' end, progress), updated_at = v_now
 	where id = p_request_id returning * into v_request;
 	return jsonb_build_object('schema', 'qorpera.code-request-step/v1', 'state', 'go', 'leaseUntil', v_request.lease_until);
 end $$;
@@ -884,16 +988,14 @@ returns boolean language sql immutable set search_path = '' as $$
 					and public.qorpera_code_json_text(p_outcome -> 'refsSha256', '^[0-9a-f]{64}$')
 					and public.qorpera_code_json_count(p_outcome -> 'refs')
 				when 'restore:restored' then
-					pg_column_size(p_outcome) <= 12288 and p_outcome ?& array['previousMainSha','keptThrough','stranded','movedTo']
+					pg_column_size(p_outcome) <= 12288 and p_outcome ?& array['previousMainSha','stranded','movedTo']
 					and p_outcome - array['schema','state','result','bundle','mainSha','previousMainSha','refsSha256','refs',
-						'keptThrough','stranded','movedTo'] = '{}'::jsonb
+						'stranded','movedTo'] = '{}'::jsonb
 					and public.qorpera_code_json_text(p_outcome -> 'bundle', '^\d{8}T\d{6}Z-[0-9a-f]{12}$')
 					and public.qorpera_code_json_text(p_outcome -> 'mainSha', '^[0-9a-f]{40}$')
 					and public.qorpera_code_care_text_valid(p_outcome -> 'previousMainSha', '^[0-9a-f]{40}$')
 					and public.qorpera_code_json_text(p_outcome -> 'refsSha256', '^[0-9a-f]{64}$')
 					and public.qorpera_code_json_count(p_outcome -> 'refs')
-					and (p_outcome -> 'keptThrough' = 'null'::jsonb or (public.qorpera_code_json_count(p_outcome -> 'keptThrough')
-						and p_outcome ->> 'keptThrough' ~ '^[1-9][0-9]{0,8}$'))
 					and public.qorpera_code_json_strings(p_outcome -> 'stranded', 200)
 					and public.qorpera_code_care_text_valid(p_outcome -> 'movedTo', '^code/_set-aside/.')
 					and coalesce(octet_length(p_outcome ->> 'movedTo'), 0) <= 1024
@@ -901,6 +1003,114 @@ returns boolean language sql immutable set search_path = '' as $$
 				else false end
 			else false end, false)
 $$;
+
+-- A restore's record: its row, and every row's state as the restored main has it. The executor makes this call inside
+-- the job that opens the place again, with the company's line held and the mark that closes the place still there, as
+-- a landing's row is written inside its own job: so no landing can be recorded between the restored main and this
+-- row. The request stays its caller's (running); qorpera_code_request_finish ends it once that job has saved.
+-- p_restored, exactly: {"schema":"qorpera.code-restore-record/v1","bundle":"<the stored bundle's name>",
+-- "mainSha":"<main as restored>","previousMainSha":"<main when the place was closed>"|null}.
+-- Under the registry row's lock:
+-- * Main was not where the record had it when the place was closed (previousMainSha is given and is not the record's
+--   main): a filler for that gap first, as before any other movement.
+-- * Every row's state as the restored main's history has it (qorpera_code_changes_restored).
+-- * The restore's own row, from main as it was to main as restored.
+-- * The place is new: every record file and the list are written again, and care checks the repository at the next
+--   quiet moment, trusting no refs it knew.
+-- Made again, it is the same record:
+-- * by the same request (the first answer was not heard, or the job did not save and the request was claimed again):
+--   what it recorded is answered, and nothing is written;
+-- * by a later request, when the record's newest movement of main is already this restore (an earlier request recorded
+--   it and did not come to its end; the place has been closed since, so nothing moved main): that row is answered and
+--   no second one is written; the rest is done again, which changes nothing.
+-- Answers {"schema":"qorpera.code-restore-recorded/v1","state":"recorded","change":<the restore's row>,
+-- "boundary":"found"|"unknown","keptThrough":<n>|null,"lost":<int>,"back":<int>} (the last four as
+-- qorpera_code_changes_restored gives them; unknown: where the restored main stands among the earlier rows is not
+-- known, their states were left as they were, and an operator must look), or
+-- {…,"state":"lost"}: the token is not the request's lease, or the caller no longer holds the company; nothing is
+-- written then. What was recorded is kept in the request's progress (`recorded`), for the same request's next call,
+-- for the finish and for the operator. It locks the repository's registry row, then the request's, then rows of the
+-- two tables.
+create function public.qorpera_code_restore_record(p_owner text, p_machine_id_sha256 text, p_request_id uuid,
+	p_token uuid, p_restored jsonb)
+returns jsonb language plpgsql volatile security definer set search_path = '' as $$
+declare
+	v_now timestamptz := clock_timestamp(); v_request public.qorpera_code_requests%rowtype;
+	v_repository public.qorpera_code_repositories%rowtype; v_last public.qorpera_code_changes%rowtype;
+	v_bundle text := p_restored ->> 'bundle'; v_main text := p_restored ->> 'mainSha';
+	v_previous text := p_restored ->> 'previousMainSha'; v_n integer; v_recorded jsonb;
+	c_recorded constant jsonb := '{"schema":"qorpera.code-restore-recorded/v1","state":"recorded"}';
+	c_lost constant jsonb := '{"schema":"qorpera.code-restore-recorded/v1","state":"lost"}';
+begin
+	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
+	if jsonb_typeof(p_restored) is distinct from 'object'
+		or not p_restored ?& array['schema','bundle','mainSha','previousMainSha']
+		or p_restored - array['schema','bundle','mainSha','previousMainSha'] <> '{}'::jsonb
+		or p_restored -> 'schema' <> '"qorpera.code-restore-record/v1"'::jsonb
+		or not public.qorpera_code_json_text(p_restored -> 'bundle', '^\d{8}T\d{6}Z-[0-9a-f]{12}$')
+		or not public.qorpera_code_json_text(p_restored -> 'mainSha', '^[0-9a-f]{40}$')
+		or not public.qorpera_code_care_text_valid(p_restored -> 'previousMainSha', '^[0-9a-f]{40}$') then
+		raise exception 'Code restore record invalid' using errcode = '22023'; end if;
+	-- An unlocked read names the request's repository, whose registry row is locked before the request's.
+	select * into v_request from public.qorpera_code_requests where id = p_request_id;
+	if v_request.id is null or p_token is null then return c_lost; end if;
+	-- The company's profile row first: a row written below checks its key (as qorpera_record_code_change).
+	perform 1 from public.qorpera_profiles profile where profile.id = v_request.profile_id for key share;
+	select * into v_repository from public.qorpera_code_repositories
+	where environment_id = v_request.environment_id and owner = v_request.owner and name = v_request.name for update;
+	select * into v_request from public.qorpera_code_requests where id = p_request_id for update;
+	if v_request.lease_token is distinct from p_token or v_request.lease_owner is distinct from p_owner
+		or not public.qorpera_code_care_holder(v_request.environment_id, p_owner, p_machine_id_sha256) then
+		return c_lost; end if;
+	-- Only a restore of the place is recorded, from the bundle that was asked for (`fresh` is the one the executor
+	-- stored for it).
+	if v_request.kind <> 'restore' or v_request.input ->> 'mode' <> 'restore'
+		or v_request.input ->> 'bundle' not in ('fresh', v_bundle) then
+		raise exception 'Code restore record invalid' using errcode = '22023'; end if;
+	-- The same request again: what it recorded.
+	v_recorded := v_request.progress -> 'recorded';
+	if v_recorded is not null then
+		if v_recorded ->> 'bundle' is distinct from v_bundle or v_recorded ->> 'mainSha' is distinct from v_main then
+			raise exception 'Code restore record invalid' using errcode = '22023'; end if;
+		return c_recorded || (v_recorded - 'bundle' - 'mainSha');
+	end if;
+	select * into v_last from public.qorpera_code_changes change
+	where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
+		and change.name = v_repository.name and change.main_after is not null
+	order by change.n desc limit 1;
+	if v_last.kind = 'restore' and v_last.restored_from = v_bundle and v_last.main_after = v_main
+		and v_repository.last_main = v_main then
+		-- The record's newest movement of main is this restore, from a request that did not come to its end.
+		v_n := v_last.n;
+	elsif v_repository.last_main is not null and v_previous <> v_repository.last_main then
+		-- Main had moved before the place was closed, and nobody recorded how.
+		perform public.qorpera_code_change_found(v_repository.environment_id, v_repository.owner, v_repository.name,
+			v_repository.last_main, v_previous);
+	end if;
+	v_recorded := public.qorpera_code_changes_restored(v_repository.environment_id, v_repository.owner,
+		v_repository.name, v_main);
+	if v_n is null then
+		v_n := public.qorpera_code_change_append(v_repository.environment_id, v_repository.owner, v_repository.name,
+			jsonb_build_object('kind', 'restore', 'state', 'landed',
+				'main_before', coalesce(v_previous, v_repository.last_main), 'main_after', v_main,
+				'request_id', v_request.id, 'restored_from', v_bundle,
+				'title', format('Restored from the copy of %s-%s-%s %s:%s UTC', substr(v_bundle, 1, 4), substr(v_bundle, 5, 2),
+					substr(v_bundle, 7, 2), substr(v_bundle, 10, 2), substr(v_bundle, 12, 2)),
+				'summary', v_request.input ->> 'note', 'owner_user_id', v_request.by_user_id));
+	end if;
+	-- The place is new: every file is written again from the rows, and care checks it at the next quiet moment.
+	update public.qorpera_code_changes change set file_written = 0
+	where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
+		and change.name = v_repository.name;
+	update public.qorpera_code_repositories set main_sha = v_main, restored_at = v_now, restored_from = v_bundle,
+		refs_sha256 = null, next_care_at = v_now, index_written = 0
+	where environment_id = v_repository.environment_id and owner = v_repository.owner and name = v_repository.name;
+	v_recorded := v_recorded || jsonb_build_object('change', v_n);
+	update public.qorpera_code_requests set updated_at = v_now, progress = coalesce(progress, '{}'::jsonb)
+		|| jsonb_build_object('recorded', v_recorded || jsonb_build_object('bundle', v_bundle, 'mainSha', v_main))
+	where id = p_request_id;
+	return c_recorded || v_recorded;
+end $$;
 
 -- How a claimed request ended. Recorded, with the number of the row it wrote (an undo that took something out, a
 -- restore that put the repository back), or lost: the token is not the request's lease, or the caller no longer holds
@@ -911,8 +1121,10 @@ $$;
 --   first, each as it stands when its turn comes, so an undo among them puts its own targets back before they go too.
 --   A finish that comes after its job, when the record has moved on, takes over the filler that covers the undo.
 -- * A made download lasts 7 days; a removed one is expired.
--- * A restore that put the repository back: its row; the rows after the last one main still holds are lost, and an undo
---   among them first gives its targets back to main; every record file, the list and care are due again.
+-- * A restore that put the repository back was recorded inside the job that opened the place
+--   (qorpera_code_restore_record): the finish writes no row. It ends the request, with what was recorded beside the
+--   outcome, and takes `restored` only for a request that recorded this bundle at this main (55000 otherwise): a
+--   record made now, with the place open, could take a landing made since for one the restore went back past.
 -- It locks the repository's registry row, then the request's.
 create function public.qorpera_code_request_finish(p_owner text, p_machine_id_sha256 text, p_request_id uuid,
 	p_token uuid, p_outcome jsonb)
@@ -921,8 +1133,8 @@ declare
 	v_now timestamptz := clock_timestamp(); v_request public.qorpera_code_requests%rowtype;
 	v_repository public.qorpera_code_repositories%rowtype; v_change public.qorpera_code_changes%rowtype;
 	v_state text := p_outcome ->> 'state'; v_result text := p_outcome ->> 'result'; v_removal boolean; v_n integer;
-	v_target integer; v_later boolean; v_each integer; v_undoes integer[] := '{}'; v_paths jsonb; v_kept integer;
-	v_bundle text; v_words jsonb; v_exact boolean; v_stored jsonb := p_outcome;
+	v_target integer; v_later boolean; v_each integer; v_undoes integer[] := '{}'; v_paths jsonb; v_recorded jsonb;
+	v_words jsonb; v_exact boolean; v_stored jsonb := p_outcome;
 	v_lost jsonb := jsonb_build_object('schema', 'qorpera.code-request-finish/v1', 'state', 'lost');
 begin
 	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
@@ -1040,41 +1252,14 @@ begin
 		-- The row holds what changed; the request keeps the rest of the outcome.
 		v_stored := p_outcome - 'paths';
 	elsif v_request.kind = 'restore' and v_result = 'restored' then
-		v_kept := coalesce((p_outcome ->> 'keptThrough')::integer, 0);
-		v_bundle := p_outcome ->> 'bundle';
-		-- An undo that main no longer holds gives its targets back to main, newest first, each as it stands then.
-		for v_each in select change.n from public.qorpera_code_changes change
-			where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
-				and change.name = v_repository.name and change.n > v_kept and change.kind = 'undo'
-			order by change.n desc
-		loop
-			select * into v_change from public.qorpera_code_changes change
-			where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
-				and change.name = v_repository.name and change.n = v_each;
-			if v_change.state = 'landed' then
-				foreach v_target in array v_change.undoes loop
-					perform public.qorpera_code_change_set(v_repository.environment_id, v_repository.owner, v_repository.name,
-						v_target, true, null);
-				end loop;
-			end if;
-		end loop;
-		update public.qorpera_code_changes change set state = 'lost', reverted_by = null, file_version = change.file_version + 1
-		where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
-			and change.name = v_repository.name and change.n > v_kept and change.main_after is not null
-			and change.state in ('landed','reverted');
-		v_n := public.qorpera_code_change_append(v_repository.environment_id, v_repository.owner, v_repository.name,
-			jsonb_build_object('kind', 'restore', 'state', 'landed', 'main_before', v_repository.last_main,
-				'main_after', p_outcome ->> 'mainSha', 'request_id', v_request.id, 'restored_from', v_bundle,
-				'title', format('Restored from the copy of %s-%s-%s %s:%s UTC', substr(v_bundle, 1, 4), substr(v_bundle, 5, 2),
-					substr(v_bundle, 7, 2), substr(v_bundle, 10, 2), substr(v_bundle, 12, 2)),
-				'summary', v_request.input ->> 'note', 'owner_user_id', v_request.by_user_id));
-		-- The place is new: every file is written again from the rows, and care checks it at the next quiet moment.
-		update public.qorpera_code_changes change set file_written = 0
-		where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
-			and change.name = v_repository.name;
-		update public.qorpera_code_repositories set main_sha = p_outcome ->> 'mainSha', restored_at = v_now,
-			restored_from = v_bundle, refs_sha256 = null, next_care_at = v_now, index_written = 0
-		where environment_id = v_repository.environment_id and owner = v_repository.owner and name = v_repository.name;
+		v_recorded := v_request.progress -> 'recorded';
+		if v_recorded is null or v_recorded ->> 'bundle' is distinct from p_outcome ->> 'bundle'
+			or v_recorded ->> 'mainSha' is distinct from p_outcome ->> 'mainSha' then
+			raise exception 'Code restore is not recorded' using errcode = '55000'; end if;
+		v_n := (v_recorded ->> 'change')::integer;
+		-- The request keeps the outcome with what the record found: the boundary, the newest row main holds, and how
+		-- many rows went and came back.
+		v_stored := p_outcome || (v_recorded - 'change' - 'bundle' - 'mainSha');
 	end if;
 	-- What a refused undo names fits the row.
 	if v_state = 'refused' and p_outcome ? 'paths' then
@@ -1597,6 +1782,7 @@ revoke all on function public.qorpera_code_executor_custody(text, text),
 	public.qorpera_code_change_append(uuid, text, text, jsonb),
 	public.qorpera_code_change_found(uuid, text, text, text, text),
 	public.qorpera_code_change_set(uuid, text, text, integer, boolean, integer),
+	public.qorpera_code_changes_restored(uuid, text, text, text),
 	public.qorpera_code_undo_message(integer, text, boolean),
 	public.qorpera_code_request_lease(text),
 	public.qorpera_code_restore_waits(uuid, text, text, timestamptz),
@@ -1615,6 +1801,7 @@ revoke all on function public.qorpera_record_code_change(uuid, uuid, jsonb),
 	public.qorpera_code_change_files_written(text, text, uuid, text, text, jsonb),
 	public.qorpera_code_requests_claim(text, text, integer),
 	public.qorpera_code_request_step(text, text, uuid, uuid, jsonb),
+	public.qorpera_code_restore_record(text, text, uuid, uuid, jsonb),
 	public.qorpera_code_request_finish(text, text, uuid, uuid, jsonb),
 	public.qorpera_folder_request_code_undo(jsonb, jsonb),
 	public.qorpera_folder_code_request(jsonb, uuid),
@@ -1629,6 +1816,7 @@ grant execute on function public.qorpera_record_code_change(uuid, uuid, jsonb),
 	public.qorpera_code_change_files_written(text, text, uuid, text, text, jsonb),
 	public.qorpera_code_requests_claim(text, text, integer),
 	public.qorpera_code_request_step(text, text, uuid, uuid, jsonb),
+	public.qorpera_code_restore_record(text, text, uuid, uuid, jsonb),
 	public.qorpera_code_request_finish(text, text, uuid, uuid, jsonb),
 	public.qorpera_folder_request_code_undo(jsonb, jsonb),
 	public.qorpera_folder_code_request(jsonb, uuid),

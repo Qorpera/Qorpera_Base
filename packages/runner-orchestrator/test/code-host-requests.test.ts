@@ -72,7 +72,6 @@ const RESTORE = {
 	damaged: "keep",
 	progress: null,
 	path: null,
-	tips: [{ n: 14, mainAfter: MAIN }],
 	sessions: [{ workerId: R1, baseSha: BEFORE }],
 };
 const DIFF: CodeChangeDiff = {
@@ -227,6 +226,7 @@ describe("CodeHostRequests", () => {
 			"qorpera_code_requests_claim",
 			"qorpera_code_request_step",
 			"qorpera_code_request_finish",
+			"qorpera_code_restore_record",
 		]);
 	});
 
@@ -694,7 +694,6 @@ describe("CodeHostRequests", () => {
 					damaged: "keep",
 					progress: null,
 					path: null,
-					tips: [{ n: 14, mainAfter: MAIN }],
 					sessions: [{ workerId: R1, baseSha: BEFORE }],
 				},
 			]);

@@ -26,8 +26,14 @@ company's code host:
    looks again and writes into the mark that the place is empty.
 3. **Build.** The bundle is proven again. `repo.git` is made from it: the objects, every ref, then `main` and
    `main/` together.
-4. **Open.** A job of its own checks that the place holds exactly the bundle's repository, and removes the mark.
+4. **Open.** A job of its own checks that the place holds exactly the bundle's repository. Still inside that job,
+   with the mark in place, the restore is written into the change record: it gets its number, and every change's
+   state is set to what the restored main holds. Only then is the mark removed. So no change can land between the
+   restored main and its record.
 5. Only with `remove`: the set-aside copy is removed, after the place is open again.
+
+The request is `done` only after the job that opened the place has saved. Until then it is `running`, also when the
+restore is already in the change record (`progress` then has `recorded`).
 
 Three modes:
 
@@ -42,7 +48,7 @@ What a restore brings back, and what not:
 
 | | |
 |---|---|
-| Main | The bundle's main. With `fresh` that is main as it was. With an older bundle, the changes after it are gone from main; their records say `lost`. |
+| Main | The bundle's main. With `fresh` that is main as it was. With an older bundle, the changes after it are gone from main; their records say `lost`. A later restore from a newer bundle that holds them brings them back: every change's state is worked out again from the main that was restored, whichever way the restore went. |
 | Sessions' branches | As the bundle has them. |
 | Sessions' worktrees | Not restored. A session's next turn gets a new worktree from its branch. |
 | Files a session had not committed, and commits on no branch | Not in any bundle. They are in the set-aside copy. |
@@ -85,7 +91,9 @@ What a restore brings back, and what not:
    ```
    - `queued` with `progress` `{"waiting": ...}`: sessions are working or attached. It starts by itself when they
      are not.
-   - `running`: `progress.step` says which step: `fresh`, `close`, `set-aside`, `build`, `open`, `discard`.
+   - `running`: `progress.step` says which step: `fresh`, `close`, `set-aside`, `build`, `open`, `discard`. With
+     `progress.recorded` the restore is in the change record, and only the opening of the place, or its finish, is
+     left.
    - `queued` again with `not_before`: a turn came first. It goes on in two minutes, from where it was. If nothing
      had been moved yet, the place was opened again meanwhile. Once the restore has begun to move the place
      (`progress.step` is `set-aside`, `build` or `open`, or `progress` has `setAside`), it is not put off for the
@@ -102,9 +110,24 @@ What a restore brings back, and what not:
    If the newest fails its proof, take the one before it.
 4. Read the outcome of a `restored` request:
    - `mainSha`: main now. `previousMainSha`: main before, when it could be read.
-   - `keptThrough` against the registry's `last_change`: the changes with a higher number are gone from main. Tell
-     the company's owner agent, in a message from Qorpera, which changes must be made again. Their records name
-     the sessions.
+   - `change`: the restore's own number in the change record.
+   - `boundary`, `keptThrough`, `lost`, `back`: what the database found when it recorded the restore. It reads the
+     changes' own rows, however many there are, to find which of them the restored main holds.
+     - `boundary: found`: every change's state is right for the restored main. `keptThrough` is the newest change
+       main holds (0: none). `lost` is how many changes this restore took out of main, `back` how many an earlier
+       restore had taken out and this one brought back. List the lost ones:
+       ```sql
+       select n, title, state from public.qorpera_code_changes
+       where environment_id = '<environment>' and owner = '<owner>' and name = '<name>' and state = 'lost' order by n;
+       ```
+       Tell the company's owner agent, in a message from Qorpera, which changes must be made again. Their records
+       name the sessions.
+     - `boundary: unknown`: the commit that was restored is one no change in the record names (the bundle was taken
+       at a main the record never heard of). **Nothing was marked lost by a guess**: the states of the changes
+       before this restore were left as they were, and some may be wrong. The executor's log has the line
+       `code-restore-error` with `RESTORE_BOUNDARY_UNKNOWN` for the request. Compare `changes/index.md` with main
+       by hand (`git log --first-parent` in a clone of the bundle) and tell the owner agent which changes main no
+       longer holds. A later restore from a bundle the record does know sets every state right again.
    - `stranded`: sessions that have neither their branch nor their base commit any more. Archive each: its next
      turn could not start.
    - `movedTo`: the set-aside copy, or null when there was nothing to set aside or it was removed.
@@ -134,7 +157,22 @@ place is in.
 
 The truth about closed or open is the place itself: it is closed exactly while `restoring.json` is in
 `code/<owner>/<name>/` (look in Storage). `progress` says how far the kernel heard: with `setAside` in it, the old
-place is aside; with `built`, the repository is built and only the opening was left.
+place is aside; with `built`, the repository is built and only the opening was left; with `recorded`, the restore
+is in the change record.
+
+**A restore that is recorded and whose place is still closed.** The record is made inside the job that opens the
+place, before the mark goes. What happens when something stops there:
+
+| What stopped | Where it leaves things | Who repairs it |
+|---|---|---|
+| The record was not heard by the database (asked twice in the job). | Nothing recorded, or recorded without the executor knowing. The mark is in place. The request is put off: `queued` with `not_before`, or still `running` until its lease ends when the database could not be told that either. | The next claim (two minutes later, or after the lease): its job records (made again, it is the same record: no second row) and opens the place. |
+| The record was made, and the mark could not be removed or the job did not save. | Recorded, place closed, request put off the same way. The log has `code-restore-error`, step `open`. | The next claim, the same way. |
+| The executor stopped between the record and the request's finish. | Recorded. The place is open if the job had saved, closed if not. The request is `running` until its lease ends (up to two hours after the last step). | The next claim after the lease: it opens the place if it is closed, and ends the request. Nothing is recorded twice. |
+| Three claims went by without an end. | The request is `failed` with `DID_NOT_FINISH`, `progress` has `recorded`, and the place may still be closed. | **You.** Look in Storage. Without `restoring.json` the repository is open and whole: nothing is left to do. With it, ask again at once, mode `restore`, with the bundle's name from `progress.bundle`. The new request builds what is missing, opens the place and ends `restored`; the change record gets no second row for it, because its newest movement of main is already this restore. |
+
+A request never ends `done` before the job that opened its place has saved, and the request's finish records
+nothing: a restore is recorded only while its place is closed. A finish for a restore that was never recorded is
+refused by the database (`Code restore is not recorded`), and the request is claimed again.
 
 **The first part is the step**: `FRESH_BUNDLE_FAILED`, `VERIFY_FAILED`, `CLOSE_FAILED`, `SET_ASIDE_FAILED`,
 `BUILD_FAILED`, `OPEN_FAILED`, `DISCARD_FAILED`.
@@ -162,6 +200,7 @@ place is aside; with `built`, the repository is built and only the opening was l
 | `CODE_HOST_BASE_MOVED`, `CODE_HOST_MAIN_FAILED`, `CODE_HOST_RESTORE_REFS_FAILED`, `CODE_HOST_RESTORE_FAILED` | A git step failed while the repository was built. Ask again. |
 | `RESTORE_LEASE_LOST` | Another claim has the request, or this executor no longer holds the company. Read the request's state again. |
 | `RESTORE_REQUEST_INVALID` | The request names no bundle, path or choice the executor can act on. |
+| `RESTORE_BOUNDARY_UNKNOWN` | Never a failure: shown in the log beside a restore that succeeded. The change record does not know the commit that was restored, so the states of its earlier changes were left as they were. See section 3, step 4. |
 | `UNCLASSIFIED` | The reason has no code. Read the executor's log line `code-restore-error` with that request's id. |
 
 Two codes come from the database, not from the executor:
@@ -170,8 +209,9 @@ Two codes come from the database, not from the executor:
   `progress` and the place, and ask again as the table above says.
 - `NOT_BUILT`: this executor has no restore. Nothing was touched.
 
-The executor logs each step as `code-restore` (steps `fresh`, `closed`, `set-aside`, `built`, `opened`,
-`reopened`, `discarded`, `put-off`, `ended`) and each failure as `code-restore-error`.
+The executor logs each step as `code-restore` (steps `fresh`, `closed`, `set-aside`, `built`, `recorded`,
+`opened`, `reopened`, `discarded`, `put-off`, `ended`) and each failure as `code-restore-error`. The `recorded` line
+carries what the database found: `change`, `boundary`, `keptThrough`, `lost`, `back`.
 
 While a place is closed, nightly care cannot look at it: the registry's `problem` reads
 `CHECK_FAILED:CODE_HOST_RESTORE_IN_PROGRESS` if care came by. That clears with care's next run after the restore.
@@ -217,15 +257,20 @@ long each step took and how large things were.
    (`update public.qorpera_code_repositories set care_enabled = true, next_care_at = now() where ...`). Wait for
    `bundle_name`.
 3. Mode `verify` with that bundle: `done`, `verified`. Storage shows nothing new.
-4. Land a third change. Mode `restore`, `fresh`, `keep`. Expect: `restored`; `keptThrough` 3; nothing `lost`;
+4. Land a third change. Mode `restore`, `fresh`, `keep`. Expect: `restored`; `boundary` `found`; `keptThrough` 3;
+   `lost` 0;
    `movedTo` is `code/_set-aside/<owner>/at-<UTC>/<name>`, and in Storage that folder holds `repo.git`, `main`,
    `worktrees` (with the uncommitted file) and `changes`; `changes/1.md` to `4.md` are written again (4 is the
    restore's own); a follow-up to each session gets its worktree back and lands.
-5. Land another change. Mode `restore` with the bundle of step 2, `remove`. Expect: main is back at change 2; the
-   later changes are `lost`; the sessions' branches are as the bundle had them; `movedTo` is null and this
-   restore's set-aside folder is gone; a follow-up still lands.
-6. Make care due again: fsck `ok`, a new bundle.
-7. Mode `discard` for the set-aside copy of step 4. Then `verify` on a real repository's newest bundle.
+5. Land another change. Mode `restore` with the bundle of step 2, `remove`. Expect: main is back at change 2;
+   `keptThrough` 2; the later changes are `lost` (and `lost` counts them, the restore of step 4 among them); the
+   sessions' branches are as the bundle had them; `movedTo` is null and this restore's set-aside folder is gone; a
+   follow-up still lands.
+6. Mode `restore` with the bundle step 4 stored (its name is in that request's outcome), `keep`. Expect: the
+   changes step 5 lost are in main again, `back` counts them, the follow-up of step 5 is `lost`, and an undo of
+   the third change (ask the Co-Founder) works.
+7. Make care due again: fsck `ok`, a new bundle.
+8. Mode `discard` for the set-aside copies of steps 4 and 6. Then `verify` on a real repository's newest bundle.
 
 **What the first drill must also prove**, since no test can (each from the folder service's log, Storage and the
 executor's log; stop at the first that is not as written):
@@ -247,4 +292,7 @@ executor's log; stop at the first that is not as written):
    Storage no longer shows it.
 8. The code host's disk: a restore needs three times the bundle free under `/var/lib/qorpera-code-host`. Read the
    policy's `codeHost.rootDiskBytes` on each node against the largest stored bundle.
-9. The record: the `restore` row is there, the rows a restore went back past say `lost`, and care ran clean.
+9. The record: the `restore` row is there, the rows a restore went back past say `lost`, the rows a restore to a
+   newer bundle brought back say `in main` again, and care ran clean.
+10. The record's place: in the executor's log each restore's `recorded` line comes before its `opened` line, and a
+    turn started on the repository while the restore's last job runs lands after it and is not `lost`.

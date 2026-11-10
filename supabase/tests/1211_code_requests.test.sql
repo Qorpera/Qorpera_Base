@@ -7,11 +7,14 @@
 --      andLater across undo rows, and its own undo; a finish that comes late; too many starts; put off; nothing.
 --   3. Downloads: the member's three calls per role, made and ready, the same main again, too large, put off, the
 --      rate, no executor, and the file's removal.
---   4. Restore: the operator's call, verify, the wait for quiet sessions, progress, what a restore does to the record
---      (lost rows, files and care due again), the wall for undo, and discard.
---   5. More than 500 changes are not taken out at once.
---   6. An agent describes a change: the notice, and each thing wrong with a picture.
---   7. A worker's run asks for nothing.
+--   4. Restore: the operator's call, verify, the wait for quiet sessions, progress, the record a restore makes before
+--      its place opens and the finish after it, what the record does to the rows (lost rows, files and care due
+--      again), a restored main the record does not know, the wall for undo, and discard.
+--   5. A restore's record against landings and in every order of failure; restores back, forward and back again with
+--      undos among the rows; a history of more than 200 changes.
+--   6. More than 500 changes are not taken out at once.
+--   7. An agent describes a change: the notice, and each thing wrong with a picture.
+--   8. A worker's run asks for nothing.
 
 -- exec-1170 runs on machine 5…5 and holds this company's code alone.
 update public.qorpera_coding_executors set nas_machine_id_sha256 = repeat('5', 64) where owner = 'exec-1170';
@@ -140,6 +143,64 @@ $$;
 create function pg_temp.req_restore(p_mode text, p_bundle text, p_damaged text, p_note text, p_name text default 'shop')
 returns uuid language sql as $$
 	select public.qorpera_request_code_restore(pg_temp.rec_here(), 'company', p_name, p_mode, p_bundle, p_damaged, p_note)
+$$;
+
+-- A restore's record, as the executor makes it inside the job that opens the place again: the bundle, main as restored,
+-- and main when the place was closed (no word: it could not be read).
+create function pg_temp.req_record_raw(p_id uuid, p_token uuid, p_restored jsonb, p_owner text default 'exec-1170',
+	p_machine text default repeat('5', 64)) returns jsonb language plpgsql as $$
+declare v jsonb;
+begin
+	perform pg_temp.base_claims('service_role');
+	set local role service_role;
+	v := public.qorpera_code_restore_record(p_owner, p_machine, p_id, p_token, p_restored);
+	reset role;
+	return v;
+end $$;
+create function pg_temp.req_restoring(p_bundle text, p_main text, p_previous text default null) returns jsonb language sql as $$
+	select jsonb_build_object('schema', 'qorpera.code-restore-record/v1', 'bundle', p_bundle, 'mainSha', pg_temp.rec_sha(p_main),
+		'previousMainSha', pg_temp.rec_sha(p_previous))
+$$;
+create function pg_temp.req_record(p_id uuid, p_token uuid, p_bundle text, p_main text, p_previous text default null)
+returns jsonb language sql as $$
+	select pg_temp.req_record_raw(p_id, p_token, pg_temp.req_restoring(p_bundle, p_main, p_previous))
+$$;
+-- What the record answers: the restore's row, whether the restored main was found in the record, the newest row it
+-- holds, and how many rows went and came back.
+create function pg_temp.req_restored(p_change integer, p_kept integer, p_lost integer, p_back integer,
+	p_boundary text default 'found') returns jsonb language sql immutable as $$
+	select jsonb_build_object('schema', 'qorpera.code-restore-recorded/v1', 'state', 'recorded', 'change', p_change,
+		'boundary', p_boundary, 'keptThrough', p_kept, 'lost', p_lost, 'back', p_back)
+$$;
+-- How a restore ended, as its executor says it after the job that opened the place has saved.
+create function pg_temp.req_restore_outcome(p_bundle text, p_main text, p_keys jsonb default '{}') returns jsonb language sql as $$
+	select pg_temp.req_outcome(jsonb_build_object('state', 'done', 'result', 'restored', 'bundle', p_bundle,
+		'mainSha', pg_temp.rec_sha(p_main), 'previousMainSha', null, 'refsSha256', repeat('a', 64), 'refs', 9,
+		'stranded', '[]'::jsonb, 'movedTo', null) || p_keys)
+$$;
+-- The company's sessions are quiet: none is in a turn, none waits for an executor.
+create function pg_temp.req_quiet() returns void language sql as $$
+	update public.qorpera_coding_sessions set phase = 'completed', lease_owner = null, lease_token = null, lease_until = null
+	where environment_id = pg_temp.rec_here() and phase <> 'completed'
+$$;
+-- A restore from the operator's call to the executor's record: asked for, claimed (the claim is kept for a look and
+-- for the finish), and recorded. Answers what the record answered.
+create function pg_temp.req_restore_to(p_bundle text, p_main text, p_name text, p_previous text default null)
+returns jsonb language plpgsql as $$
+declare v_id uuid; v_item jsonb;
+begin
+	perform pg_temp.req_quiet();
+	v_id := pg_temp.req_restore('restore', p_bundle, 'keep', 'A drill.', p_name);
+	v_item := pg_temp.req_claim() -> 0;
+	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and not v_item ? 'tips',
+		'the restore is claimed: ' || coalesce(v_item::text, 'none'));
+	perform set_config('qorpera_test.req_item', v_item::text, true);
+	return pg_temp.req_record(v_id, (v_item ->> 'token')::uuid, p_bundle, p_main, p_previous);
+end $$;
+-- The finish of the restore req_restore_to recorded.
+create function pg_temp.req_restore_end(p_bundle text, p_main text) returns jsonb language sql as $$
+	select pg_temp.req_finish((current_setting('qorpera_test.req_item')::jsonb ->> 'requestId')::uuid,
+		(current_setting('qorpera_test.req_item')::jsonb ->> 'token')::uuid, pg_temp.req_restore_outcome(p_bundle, p_main))
 $$;
 
 -- company/shop has six rows: five landings and a conflict. Main is at c5.
@@ -709,12 +770,13 @@ declare v jsonb; v_item jsonb; v_id uuid; v_undo uuid; v_token uuid; q public.qo
 	r public.qorpera_code_changes%rowtype; s public.qorpera_code_repositories%rowtype; v_role text; i integer;
 	v_call text; v_bad jsonb;
 	v_bundle text := '20261109T021455Z-0123456789ab'; v_aside text := 'code/_set-aside/company/at-20261110T120000Z/site';
-	v_progress jsonb; v_restored jsonb; b1 uuid := '91170000-0000-4000-8000-0000000000b1';
+	v_progress jsonb; v_restored jsonb; b1 uuid := '91170000-0000-4000-8000-0000000000b1'; v_recorded jsonb;
+	v_record_lost jsonb := '{"schema":"qorpera.code-restore-recorded/v1","state":"lost"}';
+	v_fresh text := '20261110T160000Z-ba9876543210';
 begin
 	v_progress := jsonb_build_object('bundle', v_bundle, 'setAside', v_aside);
-	v_restored := pg_temp.req_outcome(jsonb_build_object('state', 'done', 'result', 'restored', 'bundle', v_bundle,
-		'mainSha', pg_temp.rec_sha('r1'), 'previousMainSha', pg_temp.rec_sha('s6'), 'refsSha256', repeat('a', 64), 'refs', 9,
-		'keptThrough', 3, 'stranded', jsonb_build_array(pg_temp.rec_copy(44)), 'movedTo', v_aside));
+	v_restored := pg_temp.req_restore_outcome(v_bundle, 's3', jsonb_build_object('previousMainSha', pg_temp.rec_sha('s6'),
+		'stranded', jsonb_build_array(pg_temp.rec_copy(44)), 'movedTo', v_aside));
 	-- Only the database owner asks for a restore.
 	foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
 		perform pg_temp.base_claims(v_role);
@@ -750,7 +812,8 @@ begin
 		'result', 'nothing', 'mainSha', pg_temp.rec_sha('s6'))));
 
 	-- Verify: the request is the operator's. It is claimed whatever the company's sessions do (it writes nothing in the
-	-- folder), for two hours, with the rows that moved main, newest first, and the repository's open sessions.
+	-- folder), for two hours, with the repository's open sessions. (The rows are not handed out: which of them the
+	-- restored main holds is the kernel's own to find.)
 	v_id := pg_temp.req_restore('verify', v_bundle, null, 'The monthly drill.', 'site');
 	q := pg_temp.req_row(v_id);
 	perform pg_temp.base_assert(q.kind = 'restore' and q.state = 'queued' and q.by_kind = 'operator' and q.by_user_id is null
@@ -763,25 +826,23 @@ begin
 	v := pg_temp.req_claim();
 	v_item := v -> 0;
 	q := pg_temp.req_row(v_id);
-	perform pg_temp.base_assert(jsonb_array_length(v) = 2 and v_item - 'tips' - 'sessions' = jsonb_build_object('requestId', v_id,
+	perform pg_temp.base_assert(jsonb_array_length(v) = 2 and v_item - 'sessions' = jsonb_build_object('requestId', v_id,
 			'token', q.lease_token, 'leaseUntil', q.lease_until, 'companyId', '92400000-0000-4000-8000-000000000010',
 			'environmentId', pg_temp.rec_here(), 'owner', 'company', 'name', 'site', 'kind', 'restore', 'mode', 'verify',
 			'bundle', v_bundle, 'damaged', 'keep', 'progress', null, 'path', null)
-		and v_item -> 'tips' = jsonb_build_array(jsonb_build_object('n', 7, 'mainAfter', pg_temp.rec_sha('s6')),
-			jsonb_build_object('n', 6, 'mainAfter', pg_temp.rec_sha('s5')), jsonb_build_object('n', 4, 'mainAfter', pg_temp.rec_sha('s4')),
-			jsonb_build_object('n', 3, 'mainAfter', pg_temp.rec_sha('s3')), jsonb_build_object('n', 2, 'mainAfter', pg_temp.rec_sha('s2')),
-			jsonb_build_object('n', 1, 'mainAfter', pg_temp.rec_sha('s1')))
 		and v_item -> 'sessions' = (select jsonb_agg(jsonb_build_object('workerId', pg_temp.rec_copy(n), 'baseSha', pg_temp.rec_sha('base'))
 			order by pg_temp.rec_copy(n)) from generate_series(40, 44) n)
 		and q.lease_until between clock_timestamp() + interval '119 minutes' and clock_timestamp() + interval '2 hours'
 		and v -> 1 ->> 'kind' = 'undo', 'the verify is claimed: ' || v::text);
 	perform pg_temp.req_finish((v -> 1 ->> 'requestId')::uuid, (v -> 1 ->> 'token')::uuid, pg_temp.req_outcome(
 		jsonb_build_object('state', 'done', 'result', 'nothing', 'mainSha', pg_temp.rec_sha('c24'))));
-	-- A request ends as its mode does, and a verify writes no row.
+	-- A request ends as its mode does, and a verify writes no row and records no restore.
 	foreach v_bad in array array[v_restored, pg_temp.req_outcome('{"state":"done","result":"discarded"}')] loop
 		perform pg_temp.base_error(format('select pg_temp.req_finish(%L, %L, %L)', v_id, q.lease_token, v_bad),
 			'22023', 'Code request outcome invalid');
 	end loop;
+	perform pg_temp.base_error(format('select pg_temp.req_record(%L, %L, %L, %L)', v_id, q.lease_token, v_bundle, 's3'),
+		'22023', 'Code restore record invalid');
 	v := pg_temp.req_finish(v_id, q.lease_token, pg_temp.req_outcome(jsonb_build_object('state', 'done', 'result', 'verified',
 		'mainSha', pg_temp.rec_sha('s6'), 'refsSha256', repeat('a', 64), 'refs', 9)));
 	perform pg_temp.base_assert(v = pg_temp.req_recorded(null) and (pg_temp.req_row(v_id)).state = 'done'
@@ -812,7 +873,7 @@ begin
 	v_token := q.lease_token;
 	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_item ->> 'mode' = 'restore' and v_item ->> 'damaged' = 'keep'
 		and v_item -> 'progress' = 'null' and q.progress is null and q.state = 'running' and q.attempts = 1
-		and jsonb_array_length(v_item -> 'tips') = 6 and jsonb_array_length(v_item -> 'sessions') = 5, 'the restore is claimed: ' || v_item::text);
+		and not v_item ? 'tips' and jsonb_array_length(v_item -> 'sessions') = 5, 'the restore is claimed: ' || v_item::text);
 	-- Before each job: the lease is renewed and what was done so far is kept. Until the restore has begun to move the
 	-- place, a session that starts stops the next job.
 	v := pg_temp.req_step(v_id, v_token, jsonb_build_object('bundle', v_bundle, 'step', 'close'));
@@ -862,31 +923,93 @@ begin
 	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_item -> 'progress' = v_progress
 		and (pg_temp.req_row(v_id)).attempts = 3 and v_token <> q.lease_token, 'it goes on where it was: ' || v_item::text);
 
-	-- Restored, from a bundle older than main: main still holds the rows up to the third.
+	-- The finish takes `restored` in its shape only, and only for a restore that was recorded: nothing is recorded once
+	-- the place is open.
 	foreach v_bad in array array[pg_temp.req_outcome('{"state":"done","result":"verified"}') || jsonb_build_object(
-			'mainSha', pg_temp.rec_sha('r1'), 'refsSha256', repeat('a', 64), 'refs', 9),
-		v_restored - 'stranded', v_restored - 'previousMainSha', v_restored || '{"keptThrough":0}', v_restored || '{"keptThrough":"3"}',
+			'mainSha', pg_temp.rec_sha('s3'), 'refsSha256', repeat('a', 64), 'refs', 9),
+		v_restored - 'stranded', v_restored - 'previousMainSha', v_restored || '{"keptThrough":3}', v_restored || '{"boundary":"found"}',
 		v_restored || '{"bundle":"fresh"}', v_restored || '{"movedTo":"code/company/site"}', v_restored || '{"stranded":[7]}',
 		v_restored || '{"refs":-1}', v_restored || '{"extra":true}'] loop
 		perform pg_temp.base_error(format('select pg_temp.req_finish(%L, %L, %L)', v_id, v_token, v_bad),
 			'22023', 'Code request outcome invalid');
 	end loop;
-	v := pg_temp.req_finish(v_id, v_token, v_restored);
-	r := pg_temp.rec_row(8, 'site'); s := pg_temp.rec_shop('site'); q := pg_temp.req_row(v_id);
-	-- The rows after the third that moved main are lost; the undo among them first gave its target back to main, so
+	perform pg_temp.base_error(format('select pg_temp.req_finish(%L, %L, %L)', v_id, v_token, v_restored),
+		'55000', 'Code restore is not recorded');
+	perform pg_temp.base_assert((pg_temp.req_row(v_id)).state = 'running' and (pg_temp.rec_shop('site')).last_change = 7, 'nothing was recorded');
+
+	-- The record, which the executor makes inside the job that opens the place: exactly its keys, each of its kind, for
+	-- the bundle that was asked for, from the caller that holds the request.
+	foreach v_bad in array array['null'::jsonb, '[]', '{}', pg_temp.req_restoring(v_bundle, 's3') - 'previousMainSha',
+		pg_temp.req_restoring(v_bundle, 's3') - 'schema', pg_temp.req_restoring(v_bundle, 's3') || '{"keptThrough":3}',
+		pg_temp.req_restoring(v_bundle, 's3') || '{"schema":"qorpera.code-restore-record/v2"}',
+		pg_temp.req_restoring(v_bundle, 's3') || '{"bundle":"fresh"}', pg_temp.req_restoring(v_bundle, 's3') || '{"bundle":null}',
+		pg_temp.req_restoring(v_bundle, 's3') || '{"mainSha":"s3"}', pg_temp.req_restoring(v_bundle, 's3') || '{"mainSha":null}',
+		pg_temp.req_restoring(v_bundle, 's3') || '{"previousMainSha":"s6"}', pg_temp.req_restoring(v_bundle, 's3') || '{"previousMainSha":7}',
+		-- Another bundle than the one the operator asked for.
+		pg_temp.req_restoring(v_fresh, 's3')] loop
+		perform pg_temp.base_error(format('select pg_temp.req_record_raw(%L, %L, %L)', v_id, v_token, v_bad),
+			'22023', 'Code restore record invalid');
+	end loop;
+	perform pg_temp.base_error(format('select pg_temp.req_record_raw(%L, %L, null)', v_id, v_token), '22023', 'Code restore record invalid');
+	perform pg_temp.base_error(format('select pg_temp.req_record_raw(%L, %L, %L, %L)', v_id, v_token, pg_temp.req_restoring(v_bundle, 's3'),
+		'exec 1170'), '42501', 'Coding machine custody required');
+	q := pg_temp.req_row(v_id);
+	perform pg_temp.base_assert(pg_temp.req_record(v_id, pg_temp.rec_copy(1), v_bundle, 's3') = v_record_lost
+		and pg_temp.req_record(v_id, null, v_bundle, 's3') = v_record_lost
+		and pg_temp.req_record(pg_temp.rec_copy(1), v_token, v_bundle, 's3') = v_record_lost
+		and pg_temp.req_record(null, v_token, v_bundle, 's3') = v_record_lost
+		and pg_temp.req_record_raw(v_id, v_token, pg_temp.req_restoring(v_bundle, 's3'), 'exec-none') = v_record_lost
+		and pg_temp.req_record_raw(v_id, v_token, pg_temp.req_restoring(v_bundle, 's3'), p_machine => repeat('6', 64)) = v_record_lost
+		and to_jsonb(pg_temp.req_row(v_id)) = to_jsonb(q) and (pg_temp.rec_shop('site')).last_change = 7
+		and pg_temp.req_rows('site') = '1:L 2:R4 3:L 4:L 5:C 6:L 7:L', 'a record that is lost writes nothing');
+
+	-- Recorded, from a bundle older than main: the restored main is where the third row left it. The kernel finds that
+	-- from the rows. The rows after it that moved main are lost; the undo among them is no longer in main's history, so
 	-- change 2 is in main again, as it was when the bundle was taken. A conflict stays what it was.
-	perform pg_temp.base_assert(v = pg_temp.req_recorded(8) and pg_temp.req_rows('site') = '1:L 2:L 3:L 4:- 5:C 6:- 7:- 8:L'
+	v := pg_temp.req_record(v_id, v_token, v_bundle, 's3', 's6');
+	r := pg_temp.rec_row(8, 'site'); s := pg_temp.rec_shop('site'); q := pg_temp.req_row(v_id);
+	perform pg_temp.base_assert(v = pg_temp.req_restored(8, 3, 3, 0) and pg_temp.req_rows('site') = '1:L 2:L 3:L 4:- 5:C 6:- 7:- 8:L'
 		and (pg_temp.rec_row(4, 'site')).reverted_by is null and (pg_temp.rec_row(2, 'site')).reverted_by is null
-		and pg_temp.rec_is(8, 'restore', 'landed', 's6', 'r1', 'site') and r.title = 'Restored from the copy of 2026-11-09 02:14 UTC'
+		and pg_temp.rec_is(8, 'restore', 'landed', 's6', 's3', 'site') and r.title = 'Restored from the copy of 2026-11-09 02:14 UTC'
 		and r.summary = 'The folder lost objects.' and r.restored_from = v_bundle and r.request_id = v_id and r.undoes is null
-		and r.worker_id is null and r.files_changed is null, 'restored: ' || pg_temp.req_rows('site') || ' ' || to_jsonb(r)::text);
+		and r.worker_id is null and r.files_changed is null, 'recorded: ' || v::text || ' ' || pg_temp.req_rows('site') || ' ' || to_jsonb(r)::text);
 	-- The registry: main as restored, when and from what; care is due at once and trusts no refs it knew.
-	perform pg_temp.base_assert(s.last_change = 8 and s.last_main = pg_temp.rec_sha('r1') and s.main_sha = pg_temp.rec_sha('r1')
+	perform pg_temp.base_assert(s.last_change = 8 and s.last_main = pg_temp.rec_sha('s3') and s.main_sha = pg_temp.rec_sha('s3')
 		and s.restored_at between clock_timestamp() - interval '1 minute' and clock_timestamp() and s.restored_from = v_bundle
 		and s.refs_sha256 is null and s.next_care_at <= clock_timestamp() and s.index_written = 0 and s.index_version > 0,
 		'the registry after a restore: ' || to_jsonb(s)::text);
-	perform pg_temp.base_assert(q.state = 'done' and q.outcome = v_restored || '{"change":8}' and q.progress = v_progress
-		and q.lease_token is null, 'the restore''s request: ' || to_jsonb(q)::text);
+	-- The request is still its executor's: the place opens, and the job saves, before it ends. It keeps what was
+	-- recorded.
+	v_recorded := jsonb_build_object('change', 8, 'boundary', 'found', 'keptThrough', 3, 'lost', 3, 'back', 0, 'bundle', v_bundle,
+		'mainSha', pg_temp.rec_sha('s3'));
+	perform pg_temp.base_assert(q.state = 'running' and q.lease_token = v_token and q.outcome is null and q.finished_at is null
+		and q.progress = v_progress || jsonb_build_object('recorded', v_recorded), 'the request after the record: ' || to_jsonb(q)::text);
+	-- Made again by the same request (the answer was not heard): the same answer, and nothing is written.
+	s := pg_temp.rec_shop('site');
+	perform pg_temp.base_assert(pg_temp.req_record(v_id, v_token, v_bundle, 's3', 's6') = v
+		and pg_temp.req_record(v_id, v_token, v_bundle, 's3') = v and to_jsonb(pg_temp.rec_shop('site')) = to_jsonb(s)
+		and pg_temp.req_rows('site') = '1:L 2:L 3:L 4:- 5:C 6:- 7:- 8:L' and to_jsonb(pg_temp.req_row(v_id)) = to_jsonb(q),
+		'the same record again');
+	perform pg_temp.base_error(format('select pg_temp.req_record(%L, %L, %L, %L)', v_id, v_token, v_bundle, 's2'),
+		'22023', 'Code restore record invalid');
+	-- A step keeps what was recorded, and takes none from its caller.
+	perform pg_temp.base_assert(pg_temp.req_step(v_id, v_token, v_progress || '{"step":"discard","recorded":{"change":1}}') ->> 'state' = 'go'
+		and (pg_temp.req_row(v_id)).progress = v_progress || jsonb_build_object('step', 'discard', 'recorded', v_recorded)
+		and pg_temp.req_step(v_id, v_token) ->> 'state' = 'go'
+		and (pg_temp.req_row(v_id)).progress -> 'recorded' = v_recorded, 'a step keeps the record');
+	-- The finish, once the job that opened the place has saved: it writes no row, and only for the bundle and the main
+	-- that were recorded. The request keeps the outcome with what the record found.
+	perform pg_temp.base_error(format('select pg_temp.req_finish(%L, %L, %L)', v_id, v_token,
+		v_restored || jsonb_build_object('mainSha', pg_temp.rec_sha('s2'))), '55000', 'Code restore is not recorded');
+	v := pg_temp.req_finish(v_id, v_token, v_restored);
+	q := pg_temp.req_row(v_id);
+	perform pg_temp.base_assert(v = pg_temp.req_recorded(8) and q.state = 'done' and q.lease_token is null
+		and q.outcome = v_restored || '{"change":8,"boundary":"found","keptThrough":3,"lost":3,"back":0}'
+		and q.progress -> 'recorded' = v_recorded and (pg_temp.rec_shop('site')).last_change = 8
+		and pg_temp.req_rows('site') = '1:L 2:L 3:L 4:- 5:C 6:- 7:- 8:L', 'the restore''s request: ' || to_jsonb(q)::text);
+	-- Its lease is over: the token records and finishes nothing more.
+	perform pg_temp.base_assert(pg_temp.req_record(v_id, v_token, v_bundle, 's3') = v_record_lost
+		and pg_temp.req_finish(v_id, v_token, v_restored) ->> 'state' = 'lost', 'a finished restore');
 	-- Every file is written again: all eight rows and the list. A row a restore went back past, and the restore's own,
 	-- are handed out without a diff to ask for, whatever is known of their files.
 	v := pg_temp.rec_files(p_name => 'site');
@@ -903,12 +1026,12 @@ begin
 	-- commit it ended at gets no row from it, and a landing on that commit is a row of its own. (Then as before.)
 	begin
 		v := pg_temp.rec_record(pg_temp.rec_turn(45, 1, pg_temp.rec_sha('s5'), '{}', pg_temp.own_repo('company', 'site')),
-			pg_temp.rec_report('unchanged', pg_temp.rec_sha('s5'), pg_temp.rec_sha('r1'), pg_temp.rec_sha('s5')));
+			pg_temp.rec_report('unchanged', pg_temp.rec_sha('s5'), pg_temp.rec_sha('s3'), pg_temp.rec_sha('s5')));
 		perform pg_temp.base_assert(v = pg_temp.rec_answer('nothing', null) and pg_temp.rec_is(6, 'found', 'lost', 's4', 's5', 'site'),
 			'a lost filler is not taken over: ' || v::text);
-		v := pg_temp.rec_land(46, 'r1', 's5', false, p_name => 'site');
+		v := pg_temp.rec_land(46, 's3', 's5', false, p_name => 'site');
 		perform pg_temp.base_assert(v = pg_temp.rec_answer('recorded', 9) and pg_temp.rec_is(6, 'found', 'lost', 's4', 's5', 'site')
-			and pg_temp.rec_is(9, 'landing', 'landed', 'r1', 's5', 'site'), 'a landing on a lost filler''s commit: ' || v::text);
+			and pg_temp.rec_is(9, 'landing', 'landed', 's3', 's5', 'site'), 'a landing on a lost filler''s commit: ' || v::text);
 		raise exception 'as before' using errcode = 'P0001';
 	exception when raise_exception then
 		perform pg_temp.base_assert(sqlerrm = 'as before' and (pg_temp.rec_shop('site')).last_change = 8, 'as before: ' || sqlerrm);
@@ -921,26 +1044,51 @@ begin
 		and pg_temp.req_undo('undo-wall', 1, true, p_name => 'site') = pg_temp.req_refused('wall')
 		and pg_temp.req_undo('undo-wall-3', 3, true, p_name => 'site') = pg_temp.req_refused('wall')
 		and pg_temp.req_undo('undo-never', 5, p_name => 'site') = pg_temp.req_refused('never_landed'), 'undo after a restore');
-	perform pg_temp.base_assert(pg_temp.req_undone('undo-before', 3, false, 'r1', 'r1u', p_name => 'site') = pg_temp.req_recorded(9)
+	perform pg_temp.base_assert(pg_temp.req_undone('undo-before', 3, false, 's3', 's3u', p_name => 'site') = pg_temp.req_recorded(9)
 		and pg_temp.req_rows('site') = '1:L 2:L 3:R9 4:- 5:C 6:- 7:- 8:L 9:L', 'an undo before the wall: ' || pg_temp.req_rows('site'));
 	-- andLater from the restore's row on is not across it; from a row after it, neither.
 	perform pg_temp.base_assert(pg_temp.req_undo('undo-after', 9, true, p_name => 'site') ->> 'state' = 'queued', 'andLater after the wall');
 	v_item := pg_temp.req_claim() -> 0;
 	perform pg_temp.req_finish((v_item ->> 'requestId')::uuid, (v_item ->> 'token')::uuid, pg_temp.req_outcome(
-		jsonb_build_object('state', 'done', 'result', 'nothing', 'mainSha', pg_temp.rec_sha('r1u'))));
+		jsonb_build_object('state', 'done', 'result', 'nothing', 'mainSha', pg_temp.rec_sha('s3u'))));
 
-	-- A restore from a fresh bundle of a place whose main no row knows: main holds none of the rows, so every row
-	-- that moved main is lost, the earlier restore's too. The place it replaced was removed, so nothing was moved.
+	-- A restore to a commit no row names, with nothing known of main before it: where the restored main stands in the
+	-- record is not known. That is not read as nothing kept: no row is touched, and the answer, the request's progress
+	-- and its outcome say so, for an operator to look. The place it replaced was removed, so nothing was moved.
+	perform pg_temp.req_quiet();
 	v_id := pg_temp.req_restore('restore', 'fresh', 'remove', null, 'site');
 	v_item := pg_temp.req_claim() -> 0;
-	perform pg_temp.base_assert(v_item ->> 'bundle' = 'fresh' and v_item ->> 'damaged' = 'remove' and jsonb_array_length(v_item -> 'tips') = 8,
+	perform pg_temp.base_assert(v_item ->> 'bundle' = 'fresh' and v_item ->> 'damaged' = 'remove' and not v_item ? 'tips',
 		'a fresh restore is claimed: ' || v_item::text);
-	v := pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, v_restored || jsonb_build_object('bundle', '20261110T160000Z-ba9876543210',
-		'mainSha', pg_temp.rec_sha('r2'), 'previousMainSha', null, 'keptThrough', null, 'stranded', '[]'::jsonb, 'movedTo', null));
-	perform pg_temp.base_assert(v = pg_temp.req_recorded(10) and pg_temp.req_rows('site') = '1:- 2:- 3:- 4:- 5:C 6:- 7:- 8:- 9:- 10:L'
-		and pg_temp.rec_is(10, 'restore', 'landed', 'r1u', 'r2', 'site') and (pg_temp.rec_row(10, 'site')).summary is null
+	v := pg_temp.req_record(v_id, (v_item ->> 'token')::uuid, v_fresh, 'r2');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(10, null, 0, 0, 'unknown')
+		and pg_temp.req_rows('site') = '1:L 2:L 3:R9 4:- 5:C 6:- 7:- 8:L 9:L 10:L'
+		and pg_temp.rec_is(10, 'restore', 'landed', 's3u', 'r2', 'site') and (pg_temp.rec_row(10, 'site')).summary is null
 		and (pg_temp.rec_row(10, 'site')).title = 'Restored from the copy of 2026-11-10 16:00 UTC'
-		and (pg_temp.rec_shop('site')).restored_from = '20261110T160000Z-ba9876543210', 'nothing kept: ' || pg_temp.req_rows('site'));
+		and (pg_temp.rec_shop('site')).restored_from = v_fresh and (pg_temp.rec_shop('site')).last_main = pg_temp.rec_sha('r2')
+		and (pg_temp.req_row(v_id)).progress #>> '{recorded,boundary}' = 'unknown', 'not known, nothing lost: ' || v::text || ' ' || pg_temp.req_rows('site'));
+	v := pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, pg_temp.req_restore_outcome(v_fresh, 'r2'));
+	perform pg_temp.base_assert(v = pg_temp.req_recorded(10) and (pg_temp.req_row(v_id)).outcome ->> 'boundary' = 'unknown'
+		and (pg_temp.req_row(v_id)).outcome -> 'keptThrough' = 'null' and (pg_temp.req_row(v_id)).outcome -> 'lost' = '0',
+		'the outcome says the boundary is not known: ' || (pg_temp.req_row(v_id)).outcome::text);
+	-- Main had moved before the place was closed and nobody recorded how (the executor read main there): a filler for
+	-- that gap first, as before any other movement. A fresh bundle is of that very main, so the filler is the newest row
+	-- the restored main holds. Its history ends at the restore before, whose own place was not known: the rows before
+	-- that one are left as they were, and the boundary is still not known.
+	v := pg_temp.req_restore_to('20261110T170000Z-ba9876543210', 'r3', 'site', 'r3');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(12, 11, 0, 0, 'unknown') and pg_temp.rec_is(11, 'found', 'landed', 'r2', 'r3', 'site')
+		and pg_temp.rec_is(12, 'restore', 'landed', 'r3', 'r3', 'site')
+		and pg_temp.req_rows('site') = '1:L 2:L 3:R9 4:- 5:C 6:- 7:- 8:L 9:L 10:L 11:L 12:L', 'a filler first: ' || v::text || ' ' || pg_temp.req_rows('site'));
+	perform pg_temp.base_assert(pg_temp.req_restore_end('20261110T170000Z-ba9876543210', 'r3') = pg_temp.req_recorded(12), 'and its finish');
+	-- A restore to where the record's first row began: main holds none of the rows, and that is known. Every row that
+	-- moved main is lost, the earlier restores' too; the undo among them gives its target nothing back, since that is
+	-- lost as well.
+	v := pg_temp.req_restore_to('20261101T020000Z-0123456789ab', 's0', 'site');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(13, 0, 8, 0)
+		and pg_temp.req_rows('site') = '1:- 2:- 3:- 4:- 5:C 6:- 7:- 8:- 9:- 10:- 11:- 12:- 13:L'
+		and pg_temp.rec_is(13, 'restore', 'landed', 'r3', 's0', 'site') and (pg_temp.rec_row(3, 'site')).reverted_by is null,
+		'nothing kept, and known: ' || v::text || ' ' || pg_temp.req_rows('site'));
+	perform pg_temp.base_assert(pg_temp.req_restore_end('20261101T020000Z-0123456789ab', 's0') = pg_temp.req_recorded(13), 'and its finish');
 
 	-- Three starts of a restore and no finish: it ends, and keeps what it had done for the request that goes on.
 	v_id := pg_temp.req_restore('restore', v_bundle, 'keep', 'Once more.', 'site');
@@ -964,10 +1112,198 @@ begin
 		pg_temp.req_outcome(jsonb_build_object('state', 'done', 'result', 'verified', 'mainSha', pg_temp.rec_sha('r2'),
 			'refsSha256', repeat('a', 64), 'refs', 9))), '22023', 'Code request outcome invalid');
 	perform pg_temp.base_assert(pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, pg_temp.req_outcome('{"state":"done","result":"discarded"}'))
-		= pg_temp.req_recorded(null) and (pg_temp.req_row(v_id)).state = 'done' and (pg_temp.rec_shop('site')).last_change = 10, 'discarded');
+		= pg_temp.req_recorded(null) and (pg_temp.req_row(v_id)).state = 'done' and (pg_temp.rec_shop('site')).last_change = 13, 'discarded');
 end $$;
 
--- 5. More than 500 changes are not taken out at once ----------------------------------------------------------------------
+-- 5. A restore's record -----------------------------------------------------------------------------------------------
+-- company/one: two landings. The record is made while the place is closed, so a landing after it stands.
+insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name)
+values (pg_temp.rec_here(), '92400000-0000-4000-8000-000000000010', 'company', 'one');
+do $$
+declare v jsonb; v_item jsonb; v_id uuid; v_first uuid; v_token uuid; q public.qorpera_code_requests%rowtype;
+	s public.qorpera_code_repositories%rowtype; i integer;
+	v_bundle text := '20261110T160000Z-ba9876543210'; v_other text := '20261110T180000Z-ba9876543210';
+	v_record_lost jsonb := '{"schema":"qorpera.code-restore-recorded/v1","state":"lost"}';
+begin
+	perform pg_temp.rec_land(70, 'a0', 'a1', p_name => 'one');
+	perform pg_temp.rec_land(71, 'a1', 'a2', p_name => 'one');
+	-- A restore from a bundle of main as it stands: recorded inside the job that opens the place. Then the place is
+	-- open, the company's line is free, and a landing goes in and is recorded before the restore's finish arrives. The
+	-- finish records nothing: the landing is in main, and the record's main is where the landing left it.
+	v := pg_temp.req_restore_to(v_bundle, 'a2', 'one', 'a2');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(3, 2, 0, 0) and pg_temp.rec_is(3, 'restore', 'landed', 'a2', 'a2', 'one'),
+		'recorded in the job: ' || v::text);
+	perform pg_temp.base_assert(pg_temp.rec_land(72, 'a2', 'a3', p_name => 'one') = pg_temp.rec_answer('recorded', 4), 'a landing after the open');
+	perform pg_temp.base_assert(pg_temp.req_restore_end(v_bundle, 'a2') = pg_temp.req_recorded(3)
+		and pg_temp.req_rows('one') = '1:L 2:L 3:L 4:L' and pg_temp.rec_is(4, 'landing', 'landed', 'a2', 'a3', 'one')
+		and (pg_temp.rec_shop('one')).last_main = pg_temp.rec_sha('a3') and (pg_temp.rec_shop('one')).last_change = 4,
+		'the landing stands after the finish: ' || pg_temp.req_rows('one'));
+
+	-- The record was made and the job that opens the place did not save (or the executor stopped): the request is still
+	-- running, and the next claim opens the place and records again. That is the same record: the same answer, no
+	-- second row. The token of the claim before it records nothing.
+	v := pg_temp.req_restore_to(v_bundle, 'a2', 'one', 'a3');
+	v_item := current_setting('qorpera_test.req_item')::jsonb;
+	v_id := (v_item ->> 'requestId')::uuid;
+	perform pg_temp.base_assert(v = pg_temp.req_restored(5, 2, 1, 0) and pg_temp.req_rows('one') = '1:L 2:L 3:L 4:- 5:L'
+		and pg_temp.rec_is(5, 'restore', 'landed', 'a3', 'a2', 'one'), 'back to the bundle: ' || v::text || ' ' || pg_temp.req_rows('one'));
+	perform pg_temp.req_lapse(v_id);
+	v_token := (pg_temp.req_claim() -> 0 ->> 'token')::uuid;
+	q := pg_temp.req_row(v_id); s := pg_temp.rec_shop('one');
+	perform pg_temp.base_assert(q.attempts = 2 and q.state = 'running' and q.progress #>> '{recorded,change}' = '5'
+		and pg_temp.req_record(v_id, (v_item ->> 'token')::uuid, v_bundle, 'a2', 'a3') = v_record_lost
+		and pg_temp.req_record(v_id, v_token, v_bundle, 'a2', 'a3') = v
+		and to_jsonb(pg_temp.rec_shop('one')) = to_jsonb(s) and pg_temp.req_rows('one') = '1:L 2:L 3:L 4:- 5:L',
+		'the next claim records the same: ' || to_jsonb(q)::text);
+	perform pg_temp.base_assert(pg_temp.req_finish(v_id, v_token, pg_temp.req_restore_outcome(v_bundle, 'a2')) = pg_temp.req_recorded(5)
+		and (pg_temp.req_row(v_id)).state = 'done' and (pg_temp.req_row(v_id)).outcome -> 'lost' = '1', 'and ends it');
+
+	-- The record was made and the request never came to its end: three claims, and it ends as one that did not finish.
+	-- The place may still be closed. Its progress keeps what was recorded, for the operator. (Further back: the two
+	-- restores of the newer bundle are lost with what they restored.)
+	v := pg_temp.req_restore_to(v_other, 'a1', 'one');
+	v_first := (current_setting('qorpera_test.req_item')::jsonb ->> 'requestId')::uuid;
+	perform pg_temp.base_assert(v = pg_temp.req_restored(6, 1, 3, 0) and pg_temp.req_rows('one') = '1:L 2:- 3:- 4:- 5:- 6:L'
+		and pg_temp.rec_is(6, 'restore', 'landed', 'a2', 'a1', 'one'), 'further back: ' || v::text || ' ' || pg_temp.req_rows('one'));
+	for i in 2..3 loop
+		perform pg_temp.req_lapse(v_first);
+		perform pg_temp.base_assert(pg_temp.req_claim() -> 0 ->> 'requestId' = v_first::text, 'start ' || i);
+	end loop;
+	perform pg_temp.req_lapse(v_first);
+	q := pg_temp.req_row(v_first);
+	perform pg_temp.base_assert(pg_temp.req_claim() = '[]'::jsonb and (pg_temp.req_row(v_first)).state = 'failed'
+		and (pg_temp.req_row(v_first)).outcome ->> 'code' = 'DID_NOT_FINISH'
+		and (pg_temp.req_row(v_first)).progress -> 'recorded' = q.progress -> 'recorded'
+		and q.progress #>> '{recorded,change}' = '6', 'it did not finish, and keeps its record');
+	-- A turn that meets the closed place is refused, and that is a row too: it moved nothing.
+	perform pg_temp.rec_record(pg_temp.rec_turn(73, 1, pg_temp.rec_sha('h73'), '{}', pg_temp.own_repo('company', 'one')),
+		pg_temp.rec_report('refused', pg_temp.rec_sha('h73'), null, null, '{"refusal":{"code":"CODE_HOST_RESTORE_IN_PROGRESS","paths":[]}}'));
+	-- The operator asks again with the same bundle, and the new request opens the place. The record's newest movement
+	-- of main is already this restore: its row is answered, no second one is written, and no row's state changes.
+	s := pg_temp.rec_shop('one');
+	v := pg_temp.req_restore_to(v_other, 'a1', 'one', 'a2');
+	v_id := (current_setting('qorpera_test.req_item')::jsonb ->> 'requestId')::uuid;
+	perform pg_temp.base_assert(v_id <> v_first and v = pg_temp.req_restored(6, 1, 0, 0)
+		and pg_temp.req_rows('one') = '1:L 2:- 3:- 4:- 5:- 6:L 7:X' and (pg_temp.rec_shop('one')).last_change = 7
+		and (pg_temp.rec_shop('one')).last_main = pg_temp.rec_sha('a1') and (pg_temp.rec_row(6, 'one')).request_id = v_first
+		and (pg_temp.rec_shop('one')).restored_at >= s.restored_at, 'the same restore by a later request: ' || v::text || ' ' || pg_temp.req_rows('one'));
+	perform pg_temp.base_assert(pg_temp.req_restore_end(v_other, 'a1') = pg_temp.req_recorded(6)
+		and (pg_temp.req_row(v_id)).outcome -> 'change' = '6', 'which ends with that row');
+	-- Once main has moved on, a restore from the same bundle is a restore of its own: a new row, and the landing since
+	-- is lost.
+	perform pg_temp.base_assert(pg_temp.rec_land(74, 'a1', 'a4', p_name => 'one') = pg_temp.rec_answer('recorded', 8), 'main moves on');
+	v := pg_temp.req_restore_to(v_other, 'a1', 'one', 'a4');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(9, 1, 1, 0) and pg_temp.req_rows('one') = '1:L 2:- 3:- 4:- 5:- 6:L 7:X 8:- 9:L'
+		and pg_temp.rec_is(9, 'restore', 'landed', 'a4', 'a1', 'one'), 'a restore of its own: ' || v::text || ' ' || pg_temp.req_rows('one'));
+	perform pg_temp.base_assert(pg_temp.req_restore_end(v_other, 'a1') = pg_temp.req_recorded(9), 'and its finish');
+	-- Main had moved before the place was closed and nobody recorded how: a filler for that gap first. The bundle is of
+	-- that main, so the filler is the newest row main holds, and everything before it is in main still.
+	v := pg_temp.req_restore_to('20261110T190000Z-ba9876543210', 'a9', 'one', 'a9');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(11, 10, 0, 0) and pg_temp.rec_is(10, 'found', 'landed', 'a1', 'a9', 'one')
+		and pg_temp.rec_is(11, 'restore', 'landed', 'a9', 'a9', 'one')
+		and pg_temp.req_rows('one') = '1:L 2:- 3:- 4:- 5:- 6:L 7:X 8:- 9:L 10:L 11:L', 'a filler first: ' || v::text || ' ' || pg_temp.req_rows('one'));
+	perform pg_temp.base_assert(pg_temp.req_restore_end('20261110T190000Z-ba9876543210', 'a9') = pg_temp.req_recorded(11), 'and its finish');
+end $$;
+
+-- company/two: three landings, an undo of the second, and a landing. Bundles were taken at b3 and at b5.
+insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name)
+values (pg_temp.rec_here(), '92400000-0000-4000-8000-000000000010', 'company', 'two');
+do $$
+declare v jsonb; v_item jsonb;
+	v_at3 text := '20261101T020000Z-0123456789ab'; v_at5 text := '20261102T020000Z-0123456789ab';
+	v_at6 text := '20261103T020000Z-0123456789ab'; v_at2 text := '20261031T020000Z-0123456789ab';
+begin
+	perform pg_temp.rec_land(80, 'b0', 'b1', p_name => 'two');
+	perform pg_temp.rec_land(81, 'b1', 'b2', p_name => 'two');
+	perform pg_temp.rec_land(82, 'b2', 'b3', p_name => 'two');
+	perform pg_temp.base_assert(pg_temp.req_undone('two-undo', 2, false, 'b3', 'b4', p_name => 'two') = pg_temp.req_recorded(4), 'two''s undo');
+	perform pg_temp.rec_land(83, 'b4', 'b5', p_name => 'two');
+	perform pg_temp.base_assert(pg_temp.req_rows('two') = '1:L 2:R4 3:L 4:L 5:L', 'two''s rows: ' || pg_temp.req_rows('two'));
+	-- Back to b3: the undo and the landing after it are lost, and the change the undo took out is in main again.
+	v := pg_temp.req_restore_to(v_at3, 'b3', 'two', 'b5');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(6, 3, 2, 0) and pg_temp.req_rows('two') = '1:L 2:L 3:L 4:- 5:- 6:L'
+		and pg_temp.req_restore_end(v_at3, 'b3') = pg_temp.req_recorded(6), 'back: ' || v::text || ' ' || pg_temp.req_rows('two'));
+	-- Forward to the newer copy, at b5: the two rows are in main's history again. The undo is back, so the change it
+	-- took out is out again, undone by it. The first restore's row stays: the commit it restored is in the history.
+	v := pg_temp.req_restore_to(v_at5, 'b5', 'two', 'b3');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(7, 5, 0, 2) and pg_temp.req_rows('two') = '1:L 2:R4 3:L 4:L 5:L 6:L 7:L'
+		and pg_temp.rec_is(7, 'restore', 'landed', 'b3', 'b5', 'two')
+		and pg_temp.req_restore_end(v_at5, 'b5') = pg_temp.req_recorded(7), 'forward: ' || v::text || ' ' || pg_temp.req_rows('two'));
+	-- What came back is undone like any change: its commits are in main.
+	perform pg_temp.base_assert(pg_temp.req_undone('two-undo-back', 5, false, 'b5', 'b6', p_name => 'two') = pg_temp.req_recorded(8)
+		and (current_setting('qorpera_test.req_item')::jsonb -> 'change') = jsonb_build_object('n', 5, 'mainBefore', pg_temp.rec_sha('b4'),
+			'mainAfter', pg_temp.rec_sha('b5'))
+		and pg_temp.req_rows('two') = '1:L 2:R4 3:L 4:L 5:R8 6:L 7:L 8:L', 'an undo of a row that came back: ' || pg_temp.req_rows('two'));
+	-- Back again to b3: both undos are lost, so both changes they took out are in main again where main holds them (the
+	-- second), or lost with their undo (the fifth). The restore that went forward is lost too.
+	v := pg_temp.req_restore_to(v_at3, 'b3', 'two', 'b6');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(9, 3, 4, 0) and pg_temp.req_rows('two') = '1:L 2:L 3:L 4:- 5:- 6:L 7:- 8:- 9:L'
+		and (pg_temp.rec_row(5, 'two')).reverted_by is null
+		and pg_temp.req_restore_end(v_at3, 'b3') = pg_temp.req_recorded(9), 'back again: ' || v::text || ' ' || pg_temp.req_rows('two'));
+	-- Forward to a copy taken after the second undo, at b6: every row is what it was then, each undo with its target.
+	v := pg_temp.req_restore_to(v_at6, 'b6', 'two', 'b3');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(10, 8, 0, 4)
+		and pg_temp.req_rows('two') = '1:L 2:R4 3:L 4:L 5:R8 6:L 7:L 8:L 9:L 10:L'
+		and pg_temp.req_restore_end(v_at6, 'b6') = pg_temp.req_recorded(10), 'forward again: ' || v::text || ' ' || pg_temp.req_rows('two'));
+	-- Back to b2, and the third change's commit lands again, from where main now stands. Its new row is the one that
+	-- says so; an undo takes it out. Then forward to the copy at b6, whose history never held that new row: there the
+	-- commit is the third row's, as it was, and the new row and its undo are lost.
+	v := pg_temp.req_restore_to(v_at2, 'b2', 'two', 'b6');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(11, 2, 8, 0) and pg_temp.req_rows('two') = '1:L 2:L 3:- 4:- 5:- 6:- 7:- 8:- 9:- 10:- 11:L'
+		and pg_temp.req_restore_end(v_at2, 'b2') = pg_temp.req_recorded(11), 'back to the second: ' || v::text || ' ' || pg_temp.req_rows('two'));
+	perform pg_temp.base_assert(pg_temp.rec_land(84, 'b2', 'b3', p_name => 'two') = pg_temp.rec_answer('recorded', 12)
+		and pg_temp.req_undone('two-undo-again', 12, false, 'b3', 'b7', p_name => 'two') = pg_temp.req_recorded(13)
+		and pg_temp.req_rows('two') = '1:L 2:L 3:- 4:- 5:- 6:- 7:- 8:- 9:- 10:- 11:L 12:R13 13:L', 'the commit lands again: ' || pg_temp.req_rows('two'));
+	v := pg_temp.req_restore_to(v_at6, 'b6', 'two', 'b7');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(14, 8, 2, 8)
+		and pg_temp.req_rows('two') = '1:L 2:R4 3:L 4:L 5:R8 6:L 7:L 8:L 9:L 10:L 11:L 12:- 13:- 14:L'
+		and (pg_temp.rec_row(12, 'two')).reverted_by is null
+		and pg_temp.req_restore_end(v_at6, 'b6') = pg_temp.req_recorded(14), 'forward past a commit that landed twice: ' || v::text || ' ' || pg_temp.req_rows('two'));
+	-- And at the commit itself, the newest row that put main there is the one in main.
+	v := pg_temp.req_restore_to(v_at3, 'b3', 'two', 'b6');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(15, 12, 7, 1)
+		and pg_temp.req_rows('two') = '1:L 2:L 3:- 4:- 5:- 6:L 7:- 8:- 9:L 10:- 11:L 12:L 13:- 14:- 15:L'
+		and pg_temp.req_restore_end(v_at3, 'b3') = pg_temp.req_recorded(15), 'at the commit that landed twice: ' || v::text || ' ' || pg_temp.req_rows('two'));
+end $$;
+
+-- company/long: 250 changes, each on the one before. The claim hands out no rows; the kernel finds the restored main
+-- among them itself, however far back it is.
+insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name, last_change, last_main)
+values (pg_temp.rec_here(), '92400000-0000-4000-8000-000000000010', 'company', 'long', 250, pg_temp.rec_sha('l250'));
+insert into public.qorpera_code_changes(environment_id, owner, name, n, profile_id, kind, state, main_before, main_after, title)
+select pg_temp.rec_here(), 'company', 'long', n, '92400000-0000-4000-8000-000000000010', 'found', 'landed',
+	pg_temp.rec_sha('l' || n - 1), pg_temp.rec_sha('l' || n), 'Change ' || n
+from generate_series(1, 250) n;
+do $$
+declare v jsonb;
+	v_at10 text := '20261001T020000Z-0123456789ab'; v_at250 text := '20261109T020000Z-0123456789ab';
+	v_else text := '20261002T020000Z-0123456789ab';
+begin
+	-- Back to the tenth change, 240 changes ago: the ten are in main, and the 240 after them are lost.
+	v := pg_temp.req_restore_to(v_at10, 'l10', 'long', 'l250');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(251, 10, 240, 0)
+		and (select count(*) from public.qorpera_code_changes c where c.name = 'long' and c.n <= 10 and c.state = 'landed') = 10
+		and (select count(*) from public.qorpera_code_changes c where c.name = 'long' and c.n between 11 and 250 and c.state = 'lost') = 240
+		and pg_temp.rec_is(251, 'restore', 'landed', 'l250', 'l10', 'long')
+		and pg_temp.req_restore_end(v_at10, 'l10') = pg_temp.req_recorded(251), 'far back: ' || v::text);
+	-- A commit no row names: not known, so nothing is lost by a guess. The ten stay in main and the rest lost, as they
+	-- were.
+	v := pg_temp.req_restore_to(v_else, 'elsewhere', 'long');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(252, null, 0, 0, 'unknown')
+		and (select count(*) from public.qorpera_code_changes c where c.name = 'long' and c.n <= 10 and c.state = 'landed') = 10
+		and (select count(*) from public.qorpera_code_changes c where c.name = 'long' and c.n between 11 and 250 and c.state = 'lost') = 240
+		and pg_temp.rec_is(251, 'restore', 'landed', 'l250', 'l10', 'long') and pg_temp.rec_is(252, 'restore', 'landed', 'l10', 'elsewhere', 'long')
+		and pg_temp.req_restore_end(v_else, 'elsewhere') = pg_temp.req_recorded(252), 'not known: ' || v::text);
+	-- Forward to the newest copy: all 250 are in main again. The restore to the unknown commit is lost: main does not
+	-- hold what it restored.
+	v := pg_temp.req_restore_to(v_at250, 'l250', 'long');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(253, 250, 1, 240)
+		and (select count(*) from public.qorpera_code_changes c where c.name = 'long' and c.n <= 250 and c.state = 'landed') = 250
+		and pg_temp.rec_is(251, 'restore', 'landed', 'l250', 'l10', 'long') and pg_temp.rec_is(252, 'restore', 'lost', 'l10', 'elsewhere', 'long')
+		and pg_temp.req_restore_end(v_at250, 'l250') = pg_temp.req_recorded(253), 'all the way forward: ' || v::text);
+end $$;
+
+-- 6. More than 500 changes are not taken out at once ----------------------------------------------------------------------
 insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name, last_change, last_main)
 values (pg_temp.rec_here(), '92400000-0000-4000-8000-000000000010', 'company', 'big', 502, pg_temp.rec_sha('b502'));
 insert into public.qorpera_code_changes(environment_id, owner, name, n, profile_id, kind, state, main_before, main_after, title)
@@ -989,7 +1325,7 @@ begin
 		and (pg_temp.rec_row(2, 'big')).state = 'landed', '500 changes taken out: ' || v::text);
 end $$;
 
--- 6. An agent describes a change ----------------------------------------------------------------------------------------
+-- 7. An agent describes a change ----------------------------------------------------------------------------------------
 -- Files in the company folder: a picture, a note, a folder with a picture's name, and a picture that is too large.
 select pg_temp.base_commit('{"kind":"platform"}', 'req-pictures', jsonb_build_array(
 	jsonb_build_object('op', 'mkdir', 'path', 'pictures'),
@@ -1071,7 +1407,7 @@ begin
 		'the picture''s problem');
 end $$;
 
--- 7. A worker's run asks for nothing ------------------------------------------------------------------------------------
+-- 8. A worker's run asks for nothing ------------------------------------------------------------------------------------
 -- A coding session's own run (b1's turn, as 928 runs one) is no agent's company run: it neither undoes nor describes.
 -- (The owner's coding machine is section 4's; no session is on it any more.)
 set local session_replication_role = replica;

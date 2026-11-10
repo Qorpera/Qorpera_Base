@@ -20,20 +20,26 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CODE_BUNDLE_FOLDER, codeBundleName, createCodeBundleStore } from "../src/code-bundle-store.ts";
 import {
 	addCodeWorktree,
+	archiveCodeArea,
 	bundleCodeArea,
 	CODE_AREA_CONFIG,
 	type CodeAreaRef,
 	type CodeHostCommand,
 	type CodeHostGcBlock,
 	type CodeHostJob,
+	CodeHostJobFailure,
 	checkCodeArea,
 	codeRefsSha256,
 	fsckCodeArea,
 	landCodeBranch,
+	removeCodeDownloads,
 	startCodeArea,
+	undoCodeChange,
 } from "../src/code-host-jobs.ts";
+import { CodeHostRequests } from "../src/code-host-requests.ts";
 import {
 	CODE_RESTORE_RPCS,
+	type CodeAreaOpening,
 	CodeRestore,
 	type CodeRestoreBundle,
 	type CodeRestoreRequest,
@@ -241,8 +247,16 @@ const build = (f: Fixture, b: Bundled, job = f.job) =>
 const open = (
 	f: Fixture,
 	b: Bundled,
-	more: Partial<{ tips: { n: number; mainAfter: string }[]; sessions: { workerId: string; baseSha: string }[] }> = {},
-) => openCodeArea(f.job, { repository: kept, bundle: b.bundle, tips: more.tips ?? [], sessions: more.sessions ?? [] });
+	more: Partial<{
+		sessions: { workerId: string; baseSha: string }[];
+		record: (place: CodeAreaOpening) => Promise<void>;
+	}> = {},
+) =>
+	openCodeArea(
+		f.job,
+		{ repository: kept, bundle: b.bundle, sessions: more.sessions ?? [] },
+		more.record ?? (async () => undefined),
+	);
 /** A place closed and seen emptied: ready for the build. */
 async function emptied(f: Fixture, b: Bundled) {
 	await close(f, b);
@@ -669,12 +683,7 @@ describe("code host: restore of a repository kept in Qorpera from a stored bundl
 		});
 		expect(await f.listing(f.code)).toEqual(built);
 
-		const tips = [
-				{ n: 1, mainAfter: s.one.mainSha },
-				{ n: 3, mainAfter: three.mainSha },
-				{ n: 2, mainAfter: s.two.mainSha },
-			],
-			never = randomUUID(),
+		const never = randomUUID(),
 			sessions = [
 				{ workerId: s.first.workerId, baseSha: s.baseSha },
 				{ workerId: s.second.workerId, baseSha: s.two.mainSha },
@@ -683,24 +692,47 @@ describe("code host: restore of a repository kept in Qorpera from a stored bundl
 				// Never had a worktree, on a base the bundle holds.
 				{ workerId: never, baseSha: s.one.mainSha },
 			];
-		expect(await open(f, b, { tips, sessions })).toEqual({
+		// The restore is recorded before the place opens. A record that is not made leaves the place closed.
+		await expect(
+			open(f, b, {
+				sessions,
+				record: async () => {
+					throw new Error("the kernel was not heard");
+				},
+			}),
+		).rejects.toThrow("the kernel was not heard");
+		expect(await readMark(f)).toMatchObject({ step: "emptied", setAside: ASIDE });
+		await expect(
+			landCodeBranch(f.job, { repository: kept, workerId: s.second.workerId, headSha: s.work }),
+		).rejects.toMatchObject({ code: "CODE_HOST_RESTORE_IN_PROGRESS" });
+		// The record is asked for with what the job found, while the mark is still there; then the mark goes.
+		const recorded: { place: CodeAreaOpening; closed: boolean }[] = [];
+		const note = async (place: CodeAreaOpening) => {
+			recorded.push({ place, closed: await exists(f.mark) });
+		};
+		expect(await open(f, b, { sessions, record: note })).toEqual({
 			state: "opened",
 			mainSha: s.two.mainSha,
-			keptThrough: 2,
 			stranded: [late.workerId],
 			previousMainSha: three.mainSha,
 		});
+		expect(recorded).toEqual([
+			{
+				place: { mainSha: s.two.mainSha, stranded: [late.workerId], previousMainSha: three.mainSha },
+				closed: true,
+			},
+		]);
 		expect(await exists(f.mark)).toBe(false);
 		await expectBuilt(f, b);
-		// Opened again (the first answer was lost): the same, but for what only the mark knew.
-		expect(await open(f, b, { tips, sessions })).toEqual({
+		// Opened again (the first answer was lost): the same, but for what only the mark knew. Nothing is recorded: what
+		// was to be recorded was, before the mark went.
+		expect(await open(f, b, { sessions, record: note })).toEqual({
 			state: "open",
 			mainSha: s.two.mainSha,
-			keptThrough: 2,
 			stranded: [late.workerId],
 			previousMainSha: null,
 		});
-		expect(await open(f, b, { tips: [{ n: 7, mainAfter: three.mainSha }] })).toMatchObject({ keptThrough: null });
+		expect(recorded).toHaveLength(1);
 
 		// Nightly care finds a sound repository with main/ as it should be.
 		expect(await checkCodeArea(f.job, { repository: kept }, { deep: true })).toMatchObject({
@@ -833,9 +865,15 @@ describe("code host: restore of a repository kept in Qorpera from a stored bundl
 		await startCodeArea(empty.job, { repository: kept });
 		await expect(open(empty, b)).rejects.toMatchObject({ code: "CODE_HOST_RESTORE_NOT_BUILT" });
 		for (const bad of [
-			() => open(f, b, { tips: [{ n: 0, mainAfter: s.one.mainSha }] }),
-			() => open(f, b, { tips: [{ n: 1, mainAfter: "main" }] }),
 			() => open(f, b, { sessions: [{ workerId: "session", baseSha: s.one.mainSha }] }),
+			() => open(f, b, { sessions: [{ workerId: s.first.workerId, baseSha: "main" }] }),
+			() => open(f, b, { record: "record" as never }),
+			() =>
+				openCodeArea(
+					f.job,
+					{ repository: kept, bundle: b.bundle, sessions: [], tips: [] } as never,
+					async () => {},
+				),
 		])
 			await expect(bad()).rejects.toThrow("INVALID_CODE_HOST_JOB");
 		expect(await readdir(f.scratchRoot)).toEqual([]);
@@ -956,6 +994,16 @@ describe("code host: restore of a repository kept in Qorpera from a stored bundl
 
 describe("CodeRestore: a restore request, step by step", () => {
 	const NOW = Date.UTC(2026, 10, 10, 16, 14, 55);
+	/** What the kernel answers a restore's record. */
+	const RECORDED = {
+		schema: "qorpera.code-restore-recorded/v1",
+		state: "recorded",
+		change: 15,
+		boundary: "found",
+		keptThrough: 14,
+		lost: 0,
+		back: 0,
+	};
 	const gc: CodeHostGcBlock = { begin: async () => ({ state: "blocking", held: 0 }), end: async () => {} };
 	/** The executor's side with the code host's own jobs on a local disk, the real store, and a kernel that records. */
 	function executor(f: Fixture) {
@@ -964,6 +1012,10 @@ describe("CodeRestore: a restore request, step by step", () => {
 			/** What each step call saved, in order. */
 			steps: [] as Record<string, unknown>[],
 			answer: (_progress: Record<string, unknown>): "go" | "busy" | "lost" => "go",
+			/** Each record call, in order, with whether the place was still closed when it came. */
+			records: [] as { args: Record<string, unknown>; closed: boolean }[],
+			/** What the kernel answers a record; an error is a kernel that was not heard. */
+			record: async (_restored: Record<string, unknown>): Promise<unknown> => RECORDED,
 		};
 		const jobs = {
 			/** Whether each job yields, in order. */
@@ -971,11 +1023,19 @@ describe("CodeRestore: a restore request, step by step", () => {
 			/** The code host each job gets. */
 			host: (): CodeHostJob => f.job,
 			after: async (_answer: unknown): Promise<void> => undefined,
+			/** How a job gets its turn on the code host: at once, unless a test keeps a line. */
+			enter: <T>(turn: () => Promise<T>): Promise<T> => turn(),
 		};
 		const control = {
 			async call(method: string, args: Record<string, unknown>): Promise<unknown> {
-				expect(method).toBe("qorpera_code_request_step");
 				expect(args).toMatchObject({ p_owner: "coding-node-1", p_machine_id_sha256: "d".repeat(64) });
+				if (method === "qorpera_code_restore_record") {
+					kernel.records.push({ args: structuredClone(args), closed: await exists(f.mark) });
+					const answer = await kernel.record(args.p_restored as Record<string, unknown>);
+					if (answer instanceof Error) throw answer;
+					return answer;
+				}
+				expect(method).toBe("qorpera_code_request_step");
 				const progress = structuredClone(args.p_progress) as Record<string, unknown>,
 					state = kernel.answer(progress);
 				// The kernel saves only when it lets the job go on.
@@ -991,9 +1051,11 @@ describe("CodeRestore: a restore request, step by step", () => {
 			run: async (companyId, environmentId, signal, job, options) => {
 				expect([companyId, environmentId]).toEqual([COMPANY, ENVIRONMENT]);
 				jobs.yields.push(options?.yields === true);
-				const answer = await job({ ...jobs.host(), signal }, gc);
-				await jobs.after(answer);
-				return answer;
+				return await jobs.enter(async () => {
+					const answer = await job({ ...jobs.host(), signal }, gc);
+					await jobs.after(answer);
+					return answer;
+				});
 			},
 		};
 		const events: Record<string, unknown>[] = [];
@@ -1056,7 +1118,6 @@ describe("CodeRestore: a restore request, step by step", () => {
 		damaged: "keep",
 		progress: null,
 		path: null,
-		tips: [],
 		sessions: [],
 		...more,
 	});
@@ -1067,16 +1128,13 @@ describe("CodeRestore: a restore request, step by step", () => {
 			s = await shop(f),
 			x = executor(f);
 		const refs = await refsOf(f),
-			tips = [
-				{ n: 2, mainAfter: s.two.mainSha },
-				{ n: 1, mainAfter: s.one.mainSha },
-			],
 			sessions = [
 				{ workerId: s.first.workerId, baseSha: s.baseSha },
 				{ workerId: s.second.workerId, baseSha: s.two.mainSha },
 			];
 		const name = codeBundleName(new Date(NOW).toISOString(), s.two.mainSha);
-		const outcome = await x.run(request({ tips, sessions }));
+		const asked = request({ sessions });
+		const outcome = await x.run(asked);
 		expect(x.errors()).toEqual([]);
 		expect(outcome).toEqual({
 			schema: SCHEMA,
@@ -1087,10 +1145,28 @@ describe("CodeRestore: a restore request, step by step", () => {
 			previousMainSha: s.two.mainSha,
 			refsSha256: codeRefsSha256(refs),
 			refs: refs.length,
-			keptThrough: 2,
 			stranded: [],
 			movedTo: ASIDE,
 		});
+		// The restore was recorded once, by the job that opened the place, while the place was still closed: the bundle,
+		// main as restored and main as it was. Which changes main still holds is the kernel's to find.
+		expect(x.kernel.records).toEqual([
+			{
+				args: {
+					p_owner: "coding-node-1",
+					p_machine_id_sha256: "d".repeat(64),
+					p_request_id: asked.requestId,
+					p_token: asked.token,
+					p_restored: {
+						schema: "qorpera.code-restore-record/v1",
+						bundle: name,
+						mainSha: s.two.mainSha,
+						previousMainSha: s.two.mainSha,
+					},
+				},
+				closed: true,
+			},
+		]);
 		// What the kernel saved before each job: the operator reads how far a restore got from it.
 		expect(x.kernel.steps).toEqual([
 			{ step: "fresh" },
@@ -1103,7 +1179,7 @@ describe("CodeRestore: a restore request, step by step", () => {
 		]);
 		// The jobs before the place moves yield to a turn's; from the set-aside to the open they keep their place.
 		expect(x.jobs.yields).toEqual([true, true, true, false, false, false, false]);
-		expect(CODE_RESTORE_RPCS).toEqual(["qorpera_code_request_step"]);
+		expect(CODE_RESTORE_RPCS).toEqual(["qorpera_code_request_step", "qorpera_code_restore_record"]);
 		// The new bundle is in the store like a nightly one, and is the repository's.
 		expect((await readdir(x.folder)).sort()).toEqual([`${name}.bundle`, `${name}.json`]);
 		expect(await x.store.verify({ companyId: COMPANY, owner: "acme", name: "app" }, name)).toMatchObject({
@@ -1124,9 +1200,17 @@ describe("CodeRestore: a restore request, step by step", () => {
 			"closed",
 			"set-aside",
 			"built",
+			"recorded",
 			"opened",
 			"ended",
 		]);
+		expect(x.events.find((event) => event.step === "recorded")).toMatchObject({
+			change: 15,
+			boundary: "found",
+			keptThrough: 14,
+			lost: 0,
+			back: 0,
+		});
 		expect(await readdir(f.scratchRoot)).toEqual([]);
 	});
 
@@ -1156,11 +1240,6 @@ describe("CodeRestore: a restore request, step by step", () => {
 			request({
 				bundle: name,
 				damaged: "remove",
-				tips: [
-					{ n: 3, mainAfter: three.mainSha },
-					{ n: 2, mainAfter: s.two.mainSha },
-					{ n: 1, mainAfter: s.one.mainSha },
-				],
 				sessions: [
 					{ workerId: s.second.workerId, baseSha: s.two.mainSha },
 					{ workerId: late.workerId, baseSha: three.mainSha },
@@ -1177,11 +1256,22 @@ describe("CodeRestore: a restore request, step by step", () => {
 			previousMainSha: three.mainSha,
 			refsSha256: codeRefsSha256(refs),
 			refs: refs.length,
-			keptThrough: 2,
 			stranded: [late.workerId],
 			// Removed, as asked: after the place was open again.
 			movedTo: null,
 		});
+		// Recorded with main as it was when the place was closed, which the mark kept.
+		expect(x.kernel.records.map((record) => [record.args.p_restored, record.closed])).toEqual([
+			[
+				{
+					schema: "qorpera.code-restore-record/v1",
+					bundle: name,
+					mainSha: s.two.mainSha,
+					previousMainSha: three.mainSha,
+				},
+				true,
+			],
+		]);
 		expect(x.kernel.steps.map((step) => step.step)).toEqual([
 			"close",
 			"set-aside",
@@ -1246,7 +1336,6 @@ describe("CodeRestore: a restore request, step by step", () => {
 			result: "restored",
 			bundle: name,
 			movedTo: ASIDE,
-			keptThrough: null,
 		});
 		expect(await f.inRepo("fsck", "--full", "--no-dangling", "--no-progress")).toBe("");
 		expect(await readFile(join(f.code, "main/index.html"), "utf8")).toBe("<p>shop</p>\n");
@@ -1337,12 +1426,11 @@ describe("CodeRestore: a restore request, step by step", () => {
 		const opened = x.kernel.steps.at(-1) as Record<string, unknown>;
 		expect(opened).toEqual({ step: "open", bundle: name, at: AT, setAside: ASIDE, built: true });
 		x.kernel.steps.length = 0;
-		expect(await again(opened, { tips: [{ n: 2, mainAfter: s.two.mainSha }] })).toMatchObject({
-			...restored,
-			keptThrough: 2,
-			previousMainSha: null,
-		});
+		const records = x.kernel.records.length;
+		expect(await again(opened)).toMatchObject({ ...restored, previousMainSha: null });
 		expect(x.kernel.steps.map((step) => step.step)).toEqual(["open"]);
+		// Nothing is recorded again: the mark went only after the record was made, and the place has been open since.
+		expect(x.kernel.records).toHaveLength(records);
 		await expectBuilt(f, b);
 	});
 
@@ -1455,4 +1543,188 @@ describe("CodeRestore: a restore request, step by step", () => {
 					}),
 			).toThrow("INVALID_CODE_RESTORE");
 	});
+
+	it("records the restore while its place is still closed: a landing that waits for the company's line is recorded after it, whenever the request's finish is heard", async () => {
+		const f = await fixture(),
+			s = await shop(f),
+			x = executor(f);
+		const name = await x.keep(await bundled(f));
+		// The company's line: one code host job at a time, in the order they asked.
+		let line: Promise<unknown> = Promise.resolve();
+		x.jobs.enter = (turn) => {
+			const mine = line.then(turn);
+			line = mine.catch(() => undefined);
+			return mine;
+		};
+		const order: string[] = [];
+		x.kernel.record = async () => {
+			order.push(`the restore is recorded, its place ${(await exists(f.mark)) ? "closed" : "open"}`);
+			return RECORDED;
+		};
+		// A session hands a commit in while the restore's last job has the line: its landing waits behind that job, and
+		// is recorded inside its own.
+		let landing: Promise<void> | undefined;
+		x.kernel.answer = (progress) => {
+			if (progress.step === "open")
+				landing ??= x.jobs.enter(async () => {
+					await addCodeWorktree(f.job, { repository: kept, workerId: s.second.workerId, baseSha: s.two.mainSha });
+					const landed = await land(f, s.second, s.work);
+					order.push(`a landing is recorded: ${landed.state}`);
+				});
+			return "go";
+		};
+		// The requests' loop, with a kernel that hears the request's finish only after that landing.
+		const asked = request({ bundle: name });
+		let claimed = false;
+		const requests = new CodeHostRequests({
+			control: {
+				call: async (method, args) => {
+					if (method === "qorpera_code_requests_claim") {
+						const open = claimed ? [] : [asked];
+						claimed = true;
+						return { schema: "qorpera.code-requests/v1", requests: open };
+					}
+					expect(method).toBe("qorpera_code_request_finish");
+					await landing;
+					order.push(`the request is finished: ${(args.p_outcome as { result?: string }).result}`);
+					return { schema: "qorpera.code-request-finish/v1", state: "recorded", change: 15 };
+				},
+			},
+			hosts: {
+				run: async () => {
+					throw new Error("no job of the requests' own is expected");
+				},
+			},
+			jobs: { undo: undoCodeChange, archive: archiveCodeArea, removeDownloads: removeCodeDownloads },
+			records: { inJob: async () => async () => undefined },
+			restore: x.restore,
+			owner: "coding-node-1",
+			machineIdSha256: "d".repeat(64),
+		});
+		await requests.pass(new AbortController().signal);
+		await requests.settled();
+		expect(x.errors()).toEqual([]);
+		expect(order).toEqual([
+			"the restore is recorded, its place closed",
+			"a landing is recorded: fast-forward",
+			"the request is finished: restored",
+		]);
+		expect(await f.inRepo("rev-parse", "refs/heads/main")).toBe(s.work);
+	});
+
+	it("a record that was not heard, a lease that is gone and an open that did not save each leave the place closed for the next claim, which opens it with the same record", async () => {
+		/** A place closed, emptied and built: only the open is left, as the kernel's progress says. */
+		const ready = async () => {
+			const f = await fixture(),
+				s = await shop(f),
+				x = executor(f);
+			const b = await bundled(f),
+				name = await x.keep(b);
+			await emptied(f, b);
+			await build(f, b);
+			const asked = request({ bundle: name, progress: { bundle: name, at: AT, setAside: ASIDE, built: true } });
+			const stillClosed = async () => {
+				expect(await readMark(f)).toMatchObject({ step: "emptied", bundle: name });
+				await expectBuilt(f, b);
+				await expect(
+					landCodeBranch(f.job, { repository: kept, workerId: s.second.workerId, headSha: s.work }),
+				).rejects.toMatchObject({ code: "CODE_HOST_RESTORE_IN_PROGRESS" });
+			};
+			/** The next claim of the same request, with a kernel that is heard. */
+			const next = async () => {
+				x.kernel.record = async () => RECORDED;
+				x.jobs.host = () => f.job;
+				x.jobs.after = async () => undefined;
+				const outcome = await x.run({ ...asked, token: randomUUID() });
+				expect(outcome).toMatchObject({ state: "done", result: "restored", bundle: name, movedTo: ASIDE });
+				expect(await exists(f.mark)).toBe(false);
+				await expectBuilt(f, b);
+			};
+			const putOff = () => [...x.events].reverse().find((event) => event.step === "put-off");
+			return { f, x, asked, stillClosed, next, putOff };
+		};
+
+		// The kernel is not heard: it is asked once more inside the job, and then the job fails with the mark in place.
+		// The request is put off, not failed: the next claim records and opens.
+		let t = await ready();
+		t.x.kernel.record = async () => new Error("CODING_CONTROL_UNCONFIRMED");
+		expect(await t.x.run(t.asked)).toEqual({ schema: SCHEMA, state: "busy" });
+		expect(t.x.kernel.records.map((record) => record.closed)).toEqual([true, true]);
+		expect(t.x.errors()).toEqual(["Error: CODING_CONTROL_UNCONFIRMED"]);
+		expect(t.putOff()).toMatchObject({ at: "open", place: "PLACE_CLOSED" });
+		await t.stillClosed();
+		await t.next();
+		expect(t.x.kernel.records).toHaveLength(3);
+
+		// The first answer is lost and the second is heard, in the same job: recorded, and the place opens.
+		t = await ready();
+		let tries = 0;
+		t.x.kernel.record = async () => (++tries === 1 ? new Error("CODING_CONTROL_UNCONFIRMED") : RECORDED);
+		expect(await t.x.run(t.asked)).toMatchObject({ state: "done", result: "restored", movedTo: ASIDE });
+		expect(t.x.kernel.records.map((record) => record.closed)).toEqual([true, true]);
+		expect(t.x.errors()).toEqual([]);
+		expect(await exists(t.f.mark)).toBe(false);
+
+		// An answer that is none counts as not heard.
+		t = await ready();
+		t.x.kernel.record = async () => ({ ...RECORDED, boundary: "somewhere" });
+		expect(await t.x.run(t.asked)).toEqual({ schema: SCHEMA, state: "busy" });
+		expect(t.x.errors()).toEqual(["Error: CODE_RESTORE_RECORD_UNCONFIRMED"]);
+		await t.stillClosed();
+
+		// The request's lease is gone: nothing was recorded for this claim, and the place is the next holder's.
+		t = await ready();
+		t.x.kernel.record = async () => ({ schema: "qorpera.code-restore-recorded/v1", state: "lost" });
+		expect(await t.x.run(t.asked)).toEqual({
+			schema: SCHEMA,
+			state: "failed",
+			code: "RESTORE_LEASE_LOST:PLACE_CLOSED",
+		});
+		expect(t.x.kernel.records).toHaveLength(1);
+		await t.stillClosed();
+		await t.next();
+
+		// The record is made and the mark cannot be removed: put off, with the record standing. The next claim's record
+		// is the same one, and its job takes the mark away.
+		t = await ready();
+		const { f } = t;
+		t.x.jobs.host = () =>
+			stoppedAt(f, (command) => command.argv[0] === "/usr/bin/rm" && command.argv.at(-1) === f.mark);
+		expect(await t.x.run(t.asked)).toEqual({ schema: SCHEMA, state: "busy" });
+		expect(t.x.kernel.records.map((record) => record.closed)).toEqual([true]);
+		expect(t.x.errors()).toEqual(["Error: the code host went away"]);
+		expect(t.putOff()).toMatchObject({ at: "open", place: "PLACE_CLOSED" });
+		await t.stillClosed();
+		await t.next();
+		expect(t.x.kernel.records.map((record) => record.closed)).toEqual([true, true]);
+
+		// The record is made and the job does not save: the folder still holds the mark. Put off, and the next claim
+		// opens the place.
+		t = await ready();
+		const mark = await readFile(t.f.mark, "utf8"),
+			again = t.f.mark;
+		t.x.jobs.after = async (answer) => {
+			if ((answer as { state?: string })?.state !== "opened") return;
+			await writeFile(again, mark);
+			throw new CodeHostJobFailure("CODE_HOST_PUBLISH_REFUSED", "the folder did not take the save");
+		};
+		expect(await t.x.run(t.asked)).toEqual({ schema: SCHEMA, state: "busy" });
+		expect(t.x.kernel.records).toHaveLength(1);
+		expect(t.x.errors()).toEqual([expect.stringContaining("CODE_HOST_PUBLISH_REFUSED")]);
+		await t.stillClosed();
+		await t.next();
+
+		// The restored commit is one the change record does not know: the restore is recorded and the place opens, and
+		// the log says, as an error, that an operator must look.
+		t = await ready();
+		t.x.kernel.record = async () => ({ ...RECORDED, boundary: "unknown", keptThrough: null });
+		expect(await t.x.run(t.asked)).toMatchObject({ state: "done", result: "restored" });
+		expect(t.x.errors()).toEqual(["Error: RESTORE_BOUNDARY_UNKNOWN"]);
+		expect(t.x.events.find((event) => event.event === "code-restore-error")).toMatchObject({
+			step: "record",
+			change: 15,
+			words: expect.stringContaining("left as they were"),
+		});
+		expect(await exists(t.f.mark)).toBe(false);
+	}, 120_000);
 });

@@ -33,7 +33,10 @@ import { CodingControlBusy, withinBytes } from "./coding-executor.ts";
  *   download   a job that yields to a turn's: the kernel is asked first (`qorpera_code_request_step`), then the file
  *              is made under `code/<owner>/<name>/downloads/`, or an expired one removed. The finish comes after the
  *              job, since the file is there only once the job has saved.
- *   restore    part R's `CodeRestore` runs its steps; without one the request is finished failed (`NOT_BUILT`).
+ *   restore    part R's `CodeRestore` runs its steps; without one the request is finished failed (`NOT_BUILT`). A
+ *              restore that put the repository back was recorded by the job that opened its place
+ *              (`qorpera_code_restore_record`), as an undo's row is written inside its job: the finish here, after
+ *              that job has saved, only ends the request.
  *
  * A download and a restore may take minutes: they run on beside the passes, so that an undo never waits behind one.
  * What they came to is counted in the pass after they ended, and `settled` waits for them. */
@@ -42,6 +45,9 @@ export const CODE_REQUEST_RPCS = [
 	"qorpera_code_requests_claim",
 	"qorpera_code_request_step",
 	"qorpera_code_request_finish",
+	// A restore's own: `CodeRestore` makes it (`CODE_RESTORE_RPCS`). It is named here because this list is the one the
+	// executor's control allows the requests.
+	"qorpera_code_restore_record",
 ] as const;
 
 /** The code host jobs the requests run: `code-host-jobs.ts`'s functions, given by the caller. */
@@ -89,8 +95,6 @@ export interface CodeRestoreRequest extends Claimed {
 	progress: Record<string, unknown> | null;
 	/** A discard's set-aside path. */
 	path: string | null;
-	/** The newest rows that moved main. */
-	tips: { n: number; mainAfter: string }[];
 	/** The repository's sessions that are not archived. */
 	sessions: { workerId: string; baseSha: string }[];
 }
@@ -119,7 +123,6 @@ export type CodeRequestOutcome = { schema: "qorpera.code-request-outcome/v1" } &
 			previousMainSha: string | null;
 			refsSha256: string;
 			refs: number;
-			keptThrough: number | null;
 			stranded: string[];
 			movedTo: string | null;
 	  }
@@ -231,16 +234,13 @@ function requestOf(value: unknown): CodeRequest {
 	}
 	if (entry.kind === "restore") {
 		const { mode, bundle, damaged, progress, path } = entry;
-		const tips = entry.tips ?? [],
-			sessions = entry.sessions ?? [];
+		const sessions = entry.sessions ?? [];
 		if (
 			(mode !== "verify" && mode !== "restore" && mode !== "discard") ||
 			!(bundle === null || bundle === undefined || typeof bundle === "string") ||
 			!(damaged === null || damaged === undefined || damaged === "keep" || damaged === "remove") ||
 			!(progress === null || progress === undefined || isRecord(progress)) ||
 			!(path === null || path === undefined || typeof path === "string") ||
-			!Array.isArray(tips) ||
-			!tips.every((tip) => isRecord(tip) && whole(tip.n, 1) && sha(tip.mainAfter)) ||
 			!Array.isArray(sessions) ||
 			!sessions.every((session) => isRecord(session) && isUuid(session.workerId) && sha(session.baseSha))
 		)
@@ -253,7 +253,6 @@ function requestOf(value: unknown): CodeRequest {
 			damaged: damaged ?? null,
 			progress: progress ?? null,
 			path: path ?? null,
-			tips: (tips as { n: number; mainAfter: string }[]).map(({ n, mainAfter }) => ({ n, mainAfter })),
 			sessions: (sessions as { workerId: string; baseSha: string }[]).map(({ workerId, baseSha }) => ({
 				workerId,
 				baseSha,
