@@ -1544,7 +1544,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "a1116cfe6441eb6ee4982d77b4fe61bce371cd62b8435f0642518fe05f887527",
+			instructions: "b2adb889e34dae43583506e1092832306895a97660b5aec2d51b39797da5e16f",
 			prompt: "f270ecb8dda2f1851f7f607a361aba17a10fd852a6025c3adec2a265a22963e7",
 		},
 	],
@@ -1552,7 +1552,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "d89bae789bd1c86ff6ee0a48dcfcb8f89b4c568d2678eecfafba9455b38de9c6",
+			instructions: "c171de008238ba0cd74ce197422485a08501fa9777d667dd597f8526bb549e75",
 			prompt: "3b2a8421dedf5f10551deebf86ab9703250273b80d5c2be9077a8db82a7c8f33",
 		},
 	],
@@ -1560,7 +1560,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "a1116cfe6441eb6ee4982d77b4fe61bce371cd62b8435f0642518fe05f887527",
+			instructions: "b2adb889e34dae43583506e1092832306895a97660b5aec2d51b39797da5e16f",
 			prompt: "09fef8853b34037c0009a40069bd9400e73cff3b8d2623c51b6c3ca501d09ad5",
 		},
 	],
@@ -1723,6 +1723,32 @@ it("has the Co-Founder open the company's email in its first run, (10 November 2
 		"In that first run, before your hello, open the company's email so it works from day one: when manage_hook is offered, create the company's main mailbox (action create, kind mailbox) with the company's name in lowercase letters as its localPart",
 	);
 	expect(cofounder).toContain("Give the founders the address in your hello.");
+});
+
+it("has the finance owner set up the CVR and bank account and keep the Bank page's progress file (10 November 2026)", () => {
+	// Jonas, 10 November: the Bank page assumes most companies register and open their bank account from inside Qorpera;
+	// the page reads finance/bank-setup.json (packages/web/src/app/bank-setup.ts), which an agent must keep.
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	expect(instructions).toContain(
+		"A company registers (CVR) and opens its business bank account from inside Qorpera: the agent that owns the company's money does the work.",
+	);
+	expect(instructions).toContain(
+		"The founders decide what is theirs to decide, such as the company form (ApS or sole trader), its owners and their shares, and the share capital",
+	);
+	expect(instructions).toContain("record what exists as done instead of starting it again");
+	expect(instructions).toContain(
+		"When the company's existing account is at another bank, tell the founders it cannot show in Qorpera and let them choose whether to open one at a bank on this list.",
+	);
+	expect(instructions).toContain(
+		"Open the account only at a bank the Bank page can connect: Danske Bank, Nordea, Jyske Bank, Sydbank, Nykredit Bank, Arbejdernes Landsbank, Spar Nord Bank or Lunar",
+	);
+	expect(instructions).toContain(
+		'{"schema": "qorpera.bank-setup/v1", "agent": "<your name>", "company": {"status": "working"',
+	);
+	expect(instructions).toContain("where each status is todo, working, your_turn or done.");
+	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
+		"hire a money owner and put the CVR registration, the bank account and finance/bank-setup.json in its job description.",
+	);
 });
 
 it("tells an agent to explore what is to be seen in loops, with demo videos in one posted app", () => {
