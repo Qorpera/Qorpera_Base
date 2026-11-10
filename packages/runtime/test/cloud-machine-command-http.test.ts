@@ -1137,6 +1137,13 @@ describe("a machine's screen", () => {
 			header: header(picture.length),
 			png: picture.toString("base64"),
 		});
+		// A real screenshot is far past a receipt's 128 KiB: the screen's own bound carries it.
+		const large = Buffer.concat([picture, Buffer.alloc(3 * 1024 * 1024, 7)]);
+		f.host.screen.mockResolvedValueOnce({ header: header(large.length), png: large });
+		expect(await own.screen!(f.request.scope, f.request.input, f.signal)).toMatchObject({
+			header: { png: large.length },
+			png: large.toString("base64"),
+		});
 		f.host.screen.mockResolvedValueOnce({ refused: "SCREEN_ACTION_TAKEN" });
 		const refused = await own.screen!(f.request.scope, f.request.input, f.signal).catch((caught: unknown) => caught);
 		expect(refused).toBeInstanceOf(CloudMachineScreenRefusal);
@@ -1151,7 +1158,7 @@ describe("a machine's screen", () => {
 			),
 		).rejects.toThrow("Machine command gateway unavailable");
 		expect(f.call.mock.calls.length).toBe(calls);
-		expect(f.host.screen).toHaveBeenCalledTimes(2);
+		expect(f.host.screen).toHaveBeenCalledTimes(3);
 	});
 
 	it("goes once to the peer whose node runs the machine, which never forwards, and its refusal stays the agent's", async () => {

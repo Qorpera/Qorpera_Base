@@ -373,9 +373,10 @@ function lastLine(stderr: string): string | undefined {
 		.filter(Boolean)
 		.pop();
 	if (!line) return undefined;
-	let cut = line;
-	while (Buffer.byteLength(cut) > MACHINE_SCREEN_MAX_ERROR_BYTES) cut = [...cut].slice(0, -1).join("");
-	return cut;
+	// No more characters than bytes, then whole characters off the end until it fits.
+	const chars = [...line].slice(0, MACHINE_SCREEN_MAX_ERROR_BYTES);
+	while (Buffer.byteLength(chars.join("")) > MACHINE_SCREEN_MAX_ERROR_BYTES) chars.pop();
+	return chars.join("");
 }
 /** A title as the header carries it: control characters gone, at most MACHINE_SCREEN_MAX_TITLE characters. */
 function title(text: string): string {

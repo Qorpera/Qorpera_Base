@@ -11,6 +11,7 @@ import {
 } from "@qorpera/contracts";
 import type { CloudCodingCommandGateway } from "./cloud-coding-command-tools.ts";
 import {
+	CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
 	CLOUD_MACHINE_WAKE_SCHEMA,
 	CloudMachineCodingValueRefusal,
 	CloudMachineCommandRefusal,
@@ -284,9 +285,10 @@ async function readRequest(request: IncomingMessage, signal: AbortSignal): Promi
 		signal.removeEventListener("abort", abort);
 	}
 }
-function replyJson(reply: ServerResponse, status: number, value: unknown): void {
+/** One JSON answer, within its bound: a receipt's (128 KiB), or a screen's with its picture (machine_screen). */
+function replyJson(reply: ServerResponse, status: number, value: unknown, limit = RESULT_LIMIT): void {
 	const body = JSON.stringify(value);
-	if (Buffer.byteLength(body) > RESULT_LIMIT) throw new Error(ERROR);
+	if (Buffer.byteLength(body) > limit) throw new Error(ERROR);
 	reply.writeHead(status, {
 		"content-type": "application/json",
 		"content-length": Buffer.byteLength(body),
@@ -437,6 +439,7 @@ export class HttpCloudCodingCommandService {
 							admitted,
 							await this.#options.machines.screen(admitted, controller.signal),
 						),
+						CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
 					);
 				} catch (error) {
 					// Only a refusal the agent can act on is told apart, by its fixed code.
