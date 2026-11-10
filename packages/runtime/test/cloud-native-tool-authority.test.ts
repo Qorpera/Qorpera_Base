@@ -8,6 +8,7 @@ import {
 	CLOUD_RUN_ROW_READ_MS,
 	type CloudNativeToolAuthorityReader,
 	CloudNativeToolRun,
+	cloudRunRowWrite,
 	cloudToolRequest,
 	parseCloudNativeToolAuthority,
 	parseCloudNativeToolBinding,
@@ -787,4 +788,51 @@ it("holds another call's authority read to assertActive's checks, before and aft
 	// A closed run sends nothing.
 	await expect(run.assertActiveWith(read, abort.signal)).rejects.toThrow("Cloud tool authority unavailable");
 	expect(read).toHaveBeenCalledOnce();
+});
+
+it("asks a run's repeatable write again while its answer is lost, and never once its caller's call has ended", async () => {
+	const { run } = await admit();
+	// The database says the lost try's statement ended, so the copy is not waited out: the same write goes again.
+	const write = vi
+		.fn<(signal: AbortSignal) => Promise<string>>()
+		.mockRejectedValueOnce(new CloudControlRpcEnded("Native control-plane RPC failed (500)"))
+		.mockResolvedValueOnce("stored");
+	await expect(cloudRunRowWrite(run, write, new AbortController().signal)).resolves.toBe("stored");
+	expect(write).toHaveBeenCalledTimes(2);
+	// The tool call ends (its boundary closed) while its write waits to be asked again: no further try is made,
+	// though the run itself is still open and its authority holds.
+	const call = new AbortController();
+	const cut = vi.fn<(signal: AbortSignal) => Promise<string>>(async () => {
+		call.abort(new Error("tool call ended"));
+		throw new CloudControlRpcEnded("Native control-plane RPC failed (500)");
+	});
+	await expect(cloudRunRowWrite(run, cut, call.signal)).rejects.toThrow();
+	// Longer than the pause before a second try.
+	await new Promise((resolve) => setTimeout(resolve, 400));
+	expect(cut).toHaveBeenCalledOnce();
+	expect(run.signal.aborted).toBe(false);
+	// The same when the call ends in the middle of that pause (250 ms before the second try).
+	const later = new AbortController();
+	const paused = vi.fn<(signal: AbortSignal) => Promise<string>>(async () => {
+		setTimeout(() => later.abort(new Error("tool call ended")), 50);
+		throw new CloudControlRpcEnded("Native control-plane RPC failed (500)");
+	});
+	await expect(cloudRunRowWrite(run, paused, later.signal)).rejects.toThrow();
+	await new Promise((resolve) => setTimeout(resolve, 400));
+	expect(paused).toHaveBeenCalledOnce();
+	expect(run.signal.aborted).toBe(false);
+	// A refusal is never asked again.
+	const refused = vi.fn<(signal: AbortSignal) => Promise<string>>(async () => {
+		throw new CloudControlRpcRefused("42501", "refused", "Native control-plane RPC failed (403)");
+	});
+	await expect(cloudRunRowWrite(run, refused, new AbortController().signal)).rejects.toBeInstanceOf(
+		CloudControlRpcRefused,
+	);
+	expect(refused).toHaveBeenCalledOnce();
+	// Before the run exists there is one try.
+	const once = vi.fn<(signal: AbortSignal) => Promise<string>>(async () => {
+		throw new CloudControlRpcEnded("Native control-plane RPC failed (500)");
+	});
+	await expect(cloudRunRowWrite(undefined, once, new AbortController().signal)).rejects.toThrow();
+	expect(once).toHaveBeenCalledOnce();
 });
