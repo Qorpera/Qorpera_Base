@@ -17,6 +17,7 @@ import {
 } from "../../packages/runner-orchestrator/src/code-host-jobs.ts";
 import { CodeHostRepositories } from "../../packages/runner-orchestrator/src/code-host-repositories.ts";
 import { CodeHostRequests } from "../../packages/runner-orchestrator/src/code-host-requests.ts";
+import { CodeRestore } from "../../packages/runner-orchestrator/src/code-host-restore.ts";
 import { codeHostErrorCode, codingErrorDetail } from "../../packages/runner-orchestrator/src/coding-error-detail.ts";
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
@@ -255,8 +256,8 @@ export function logCodeCare(event: Record<string, unknown>): void {
 	}
 }
 
-/** The change record's and the code requests' lines in the executor's log (`code-change`, `code-request`, and each
- * with `-error`): an error by its code and its detail (loggedError), never as itself. */
+/** The change record's, the code requests' and a restore's lines in the executor's log (`code-change`, `code-request`,
+ * `code-restore`, and each with `-error`): an error by its code and its detail (loggedError), never as itself. */
 export function logCodeRecord(event: Record<string, unknown>): void {
 	if (!String(event.event).endsWith("-error")) console.log(JSON.stringify(event));
 	else {
@@ -288,23 +289,26 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const codeHosts = config.codeHost ? new LxdCodeHosts({ client: new LxdUnixClient(), policy: config.codeHost, log: logCodeHost }) : undefined;
 	// Each company's code host jobs, one at a time: its sessions' worktrees on the folder model.
 	const codeHostJobs = codeHosts ? new CodeHostJobs({ hosts: codeHosts, client: lxd, control, log: logCodeHost }) : undefined;
-	// Nightly care of the repositories kept in Qorpera (own code storage, step 2a): its jobs yield to a turn's, and its
-	// bundles go beside the journals, on the NAS, under control/code-bundles. The store checks the storage through an
-	// object of its own: one runs a single check at a time, and the executor's is in use.
-	const codeCare = codeHostJobs ? new CodeHostCare({
+	// The bundles of the repositories kept in Qorpera go beside the journals, on the NAS, under control/code-bundles.
+	// One store for nightly care, which writes them, and for a restore, which reads them: its uses of the storage stay
+	// in one line. It checks the storage through an object of its own: one runs a single check at a time, and the
+	// executor's is in use.
+	const codeBundles = codeHostJobs ? (() => {
+		const bundleStorage = createCodingNasStorage(config.storagePolicy);
+		return createCodeBundleStore({ root: posix.join(journalRoot, CODE_BUNDLE_FOLDER), assert: (signal) => bundleStorage.assertControl(signal) });
+	})() : undefined;
+	// Nightly care of the repositories kept in Qorpera (own code storage, step 2a): its jobs yield to a turn's.
+	const codeCare = codeHostJobs && codeBundles ? new CodeHostCare({
 		control, hosts: codeHostJobs, owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
 		jobs: { check: checkCodeArea, fsck: fsckCodeArea, bundle: bundleCodeArea, collect: collectCodeGarbage, retire: retireCodeWorktrees },
-		bundles: (() => {
-			const bundleStorage = createCodingNasStorage(config.storagePolicy);
-			return createCodeBundleStore({ root: posix.join(journalRoot, CODE_BUNDLE_FOLDER), assert: (signal) => bundleStorage.assertControl(signal) });
-		})(),
+		bundles: codeBundles,
 		report: logCodeCare,
 	}) : undefined;
 	// The change record of the repositories kept in Qorpera (own code storage, step 2b): each change's file under
 	// code/<owner>/<name>/changes/ and the list, written inside a landing's or an undo's own job, and otherwise by a
 	// pass of its own. And the requests no coding turn carries: an agent's undo, a member's download of the code, an
-	// operator's restore. Part R's restore goes in here as `restore` (a CodeRestore over the same jobs and the bundle
-	// store); until then a restore request is finished failed with NOT_BUILT.
+	// operator's restore (a CodeRestore over care's check and bundle jobs and the bundle store; its own jobs are
+	// code-host-restore.ts's; the runbook is deploy/code-host/RESTORE-RUNBOOK.md).
 	const codeRecords = codeHostJobs ? new CodeChangeRecords({
 		control, hosts: codeHostJobs, write: writeCodeChangeRecords, owner: config.owner,
 		machineIdSha256: createHash("sha256").update(machine).digest("hex"), report: logCodeRecord,
@@ -313,6 +317,10 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		control, hosts: codeHostJobs, records: codeRecords, owner: config.owner,
 		machineIdSha256: createHash("sha256").update(machine).digest("hex"),
 		jobs: { undo: undoCodeChange, archive: archiveCodeArea, removeDownloads: removeCodeDownloads },
+		...(codeBundles ? { restore: new CodeRestore({
+			control, hosts: codeHostJobs, bundles: codeBundles, check: checkCodeArea, bundle: bundleCodeArea, owner: config.owner,
+			machineIdSha256: createHash("sha256").update(machine).digest("hex"), report: logCodeRecord,
+		}) } : {}),
 		report: logCodeRecord,
 	}) : undefined;
 	let folder: LxdCodingExecutorHostOptions["folder"];
