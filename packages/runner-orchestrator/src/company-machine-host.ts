@@ -98,7 +98,8 @@ const SCREEN_MS = 22000;
 /** A boundary before a screen leaves: short, as the request is bounded at 30 s. One that does not answer in time holds
  * the picture back (the agent looks again), as a read's holds its output. */
 const SCREEN_BOUNDARY_MS = 4000;
-/** How long a desktop stays busy after an action that did not end cleanly (the request aborted, or SCREEN_MS ran out):
+/** How long a desktop stays busy after an action that did not end cleanly (the request aborted, SCREEN_MS ran out, or
+ * the helper returned without reaching its own end, such as exit 137 when it was killed inside the machine):
  * the helper is killed, but what it started (an xdotool typing, a `desktop open` waiting on the desktop's lock) goes on
  * until the action's own deadline, which its transient unit's RuntimeMaxSec keeps in the machine apart from the helper
  * (cloud-machine-screen.ts: MACHINE_SCREEN_STEP_MS.action, 10 s), and then a second for its kill to land
@@ -2015,10 +2016,13 @@ export class LxdCompanyMachineHost {
 				},
 				AbortSignal.any([signal, AbortSignal.timeout(this.#options.screenTimeoutMs ?? SCREEN_MS)]),
 			);
-			ended = true;
+			// The helper reached its own end (an answer, or one of its own exits) only then: it waits for the action's unit.
+			// Any other exit (137 when it was killed inside the machine, 1 when it failed) says nothing of the unit, which
+			// lives on to its limit (review r3 F4).
+			ended = result.exitCode === 0 || SCREEN_EXITS[result.exitCode] !== undefined;
 		} finally {
-			// The helper ended: the desktop is free. Cut off (aborted, past its deadline, or the exec lost): it stays busy
-			// for as long as what the helper started may still type.
+			// The helper ended by itself: the desktop is free. Cut off (aborted, past its deadline, the exec lost, or the
+			// helper gone before its own end): it stays busy for as long as what the helper started may still act.
 			if (acting)
 				if (ended) this.#screenBusy.delete(run.placementId);
 				else this.#screenBusy.set(run.placementId, now() + SCREEN_ACTION_GRACE_MS);

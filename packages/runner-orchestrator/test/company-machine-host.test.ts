@@ -3861,10 +3861,41 @@ describe("a machine's screen helper (machine_screen, 20260930708000)", () => {
 		// The first ended: the next action runs.
 		expect(await f.host.screen(action(15), f.signal)).toMatchObject({ png: picture });
 		expect(pipe).toHaveBeenCalledTimes(4);
-		// An action that failed (but ended) frees it at once too.
-		pipe.mockResolvedValueOnce({ exitCode: 1, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) });
-		await expect(f.host.screen(action(16), f.signal)).rejects.toThrow("COMPANY_MACHINE_SCREEN_FAILED");
-		expect(await f.host.screen(action(17), f.signal)).toMatchObject({ png: picture });
+		// An action whose command failed, told by a helper that reached its own end (exit 0), frees it at once too; so
+		// does a helper that never acted (the receipt's action was taken before: 96).
+		const failed = header(picture, { action: { type: "type", exitCode: 1, error: "no window took the text" } });
+		pipe.mockResolvedValueOnce({ exitCode: 0, stdout: output(failed, picture), stderrTail: Buffer.alloc(0) });
+		expect(await f.host.screen(action(16), f.signal)).toMatchObject({ header: { action: { exitCode: 1 } } });
+		pipe.mockResolvedValueOnce({ exitCode: 96, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) });
+		expect(await f.host.screen(action(17), f.signal)).toHaveProperty("refused");
+		expect(await f.host.screen(action(18), f.signal)).toMatchObject({ png: picture });
+	});
+
+	it("keeps a desktop busy after a helper that returned without reaching its own end, as its action's unit lives on (review r3 F4)", async () => {
+		let clock = 1_800_000_000_000;
+		const picture = png();
+		// Killed inside the machine (137: the exec returns, the action's unit runs on to its limit), or failed (1).
+		for (const exitCode of [137, 1]) {
+			const f = await fixture({ now: () => clock });
+			const pipe = vi.fn(async () =>
+				pipe.mock.calls.length === 1
+					? { exitCode, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) }
+					: { exitCode: 0, stdout: output(header(picture), picture), stderrTail: Buffer.alloc(0) },
+			);
+			Object.assign(f.client, { execInstancePipe: pipe });
+			const action = (receipt: number) => ({ ...run(), request: { ...request, receiptId: id(receipt) } });
+			await expect(f.host.screen(action(8), f.signal)).rejects.toThrow("COMPANY_MACHINE_SCREEN_FAILED");
+			// Another run's action meets the grace, not the helper; a look is served.
+			expect(await f.host.screen({ ...action(11), runId: id(12) }, f.signal)).toEqual({ refused: "DESKTOP_BUSY" });
+			expect(
+				await f.host.screen({ ...run(), request: { ...request, receiptId: null, action: null } }, f.signal),
+			).toMatchObject({ png: picture });
+			clock += 10_999;
+			expect(await f.host.screen(action(13), f.signal)).toEqual({ refused: "DESKTOP_BUSY" });
+			clock += 2;
+			expect(await f.host.screen(action(15), f.signal)).toMatchObject({ png: picture });
+			expect(pipe).toHaveBeenCalledTimes(3);
+		}
 	});
 
 	it("keeps a desktop busy for the action deadline and its kill after an action that was cut off, as what it started may type on", async () => {
@@ -3892,7 +3923,7 @@ describe("a machine's screen helper (machine_screen, 20260930708000)", () => {
 		).toMatchObject({
 			png: picture,
 		});
-		// The action's own deadline (10 s, kept by timeout on the machine) and a second for its kill to land.
+		// The action's own deadline (10 s, kept by its unit on the machine) and a second for its kill to land.
 		clock += 10_999;
 		expect(await f.host.screen(action(12), f.signal)).toEqual({ refused: "DESKTOP_BUSY" });
 		clock += 2;
