@@ -156,6 +156,27 @@ describe("an app's request and the manifest it was made under", () => {
 		expect(app.bar().textContent).toContain("This app wants to change a row in a company table");
 	});
 
+	it("follows the manifest even when the page cannot be put together again", async () => {
+		const { fake, host, changed } = company(MAY_WRITE);
+		const app = await opened(host);
+		const first = app.call("setRow", ship);
+		await app.shown();
+		// The manifest loses `writes`, and the page's own file fails to read: the earlier page keeps standing.
+		fake.put("apps/shop/app.toml", MAY_NOT);
+		const read = fake.folder.read.getMockImplementation() as typeof fake.folder.read;
+		fake.folder.read.mockImplementation(async (path, signal) => {
+			if (path === "apps/shop/index.html") throw new Error("offline");
+			return read(path, signal);
+		});
+		await changed(app.panel);
+		expect(app.panel.el.querySelector("iframe.side-panel-frame")).toBe(app.frame);
+		// It stands without what the manifest took away: the waiting request is gone, a new one is refused.
+		expect(app.bar().hidden).toBe(true);
+		expect(await first).toMatchObject({ ok: false, error: GONE });
+		expect(await app.call("setRow", ship)).toMatchObject({ ok: false, error: NOT_LISTED });
+		expect(fake.commits).toEqual([]);
+	});
+
 	it("keeps a waiting request when the folder changed but the manifest did not", async () => {
 		const { fake, host, changed } = company(MAY_WRITE);
 		const app = await opened(host);

@@ -213,8 +213,10 @@ checks the request and puts it to the member on a **bar it draws outside the app
 - A request whose page is put away (reloaded, changed, left) before the member chose is put away unsaved, and so is
   one whose app's manifest changed meanwhile. What a page may read and ask for follows the manifest as it is now,
   also under a page that stays as it is: `writes` taken away refuses the next request at once, `writes` added works
-  without a Reload. A request still being checked when the page or the manifest changes is refused when its check
-  ends, before anything is shown (`AppPanel` serves each frame and each version of the manifest with its own bridge).
+  without a Reload. The page that stands follows the manifest from the moment it is read, before its files are read
+  again, so a page that cannot be put together again does not keep what the manifest took away. A request still
+  being checked when the page or the manifest changes is refused when its check ends, before anything is shown
+  (`AppPanel` serves each frame and each version of the manifest with its own bridge).
 - However much a request holds, the bar stays within the screen: its lines scroll inside it (at most 40% of the
   window's height) and both buttons stay in reach. Checked in a browser at 390 px wide with twelve cells of 500
   characters.
