@@ -603,11 +603,12 @@
 .agent-card .agent-inline-description textarea { height: 0; min-height: 100%; }
 /* An agent's responsibilities read as the Markdown they are written in (agent-details.ts): the drawing stands in the
  * field's place, as tall as the field may be, until the field has the focus. Each steps out of the way without leaving
- * the page: the field stays in the tab order, and the drawing keeps where it was scrolled to. The drawing shows the
- * thin scrollbar the field shows. */
+ * the page: the field stays in the tab order, and the drawing keeps where it was scrolled to. It is the field's own
+ * focus that swaps them, not the label's: a press on the drawing gives the drawing the focus first. The drawing shows
+ * the thin scrollbar the field shows. */
 .agent-inline-reading { min-height: 1.5em; max-height: calc(7 * 1.5em); overflow-y: auto; overscroll-behavior: contain; overflow-wrap: anywhere; scrollbar-width: thin; }
-.agent-inline-description.has-reading:not(:focus-within) > .agent-inline-size { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); pointer-events: none; }
-.agent-inline-description.has-reading:focus-within > .agent-inline-reading { position: absolute; inset: 8px 10px auto; visibility: hidden; pointer-events: none; }
+.agent-inline-description.has-reading > .agent-inline-size:not(:focus-within) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); pointer-events: none; }
+.agent-inline-description.has-reading > .agent-inline-size:focus-within ~ .agent-inline-reading { position: absolute; inset: 8px 10px auto; visibility: hidden; pointer-events: none; }
 /* The chat's Markdown at the card's size: its line height, tighter blocks, headings and bold in the full text colour. */
 .agent-inline-reading .message-prose { line-height: inherit; }
 .agent-inline-reading .message-prose > * + * { margin-top: 6px; }

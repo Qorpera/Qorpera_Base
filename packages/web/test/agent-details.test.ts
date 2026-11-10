@@ -334,9 +334,18 @@ describe("responsibilities drawn as Markdown", () => {
 		]);
 		expect(reading().textContent).not.toContain("#");
 		expect(reading().textContent).not.toContain("*");
-		// A picture of the field's text: assistive technology reads the field alone.
+		// A picture of the field's text: assistive technology reads the field alone, and Tab stops at the field alone.
 		expect(reading().getAttribute("aria-hidden")).toBe("true");
+		expect(reading().tabIndex).toBe(-1);
 		expect(reading().closest(".agent-inline-description")?.classList.contains("has-reading")).toBe(true);
+	});
+
+	it("leaves a drawn table no stop of its own for the keyboard", () => {
+		open({}, { ...staff, charter: "| Role | Now |\n| --- | --- |\n| Support | 2 |" });
+		const table = reading().querySelector<HTMLElement>(".message-table")!;
+		expect(table.querySelector("td")?.textContent).toBe("Support");
+		expect(table.tabIndex).toBe(-1);
+		expect(reading().querySelector('[tabindex]:not([tabindex="-1"])')).toBeNull();
 	});
 
 	it("draws a link as its text, so nothing leaves the card", () => {
@@ -366,7 +375,7 @@ describe("responsibilities drawn as Markdown", () => {
 		expect(document.activeElement).toBe(control);
 	});
 
-	it("keeps the drawing for a member who can only read, and over a selection of its text", async () => {
+	it("keeps the drawing for a member who can only read, and for a press dragged over its text", async () => {
 		const f = open({ updateAgent: saving() }, written);
 		const control = field("Responsibilities");
 		f.company.store.set({ team: { ...team, capabilities: { ...team.capabilities, authorize: false } } });
@@ -375,14 +384,20 @@ describe("responsibilities drawn as Markdown", () => {
 		expect(document.activeElement).not.toBe(control);
 		f.company.store.set({ team });
 		await settle();
+		const heading = reading().querySelector("h2")!;
+		const at = (type: string, clientX: number) =>
+			heading.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY: 20 }));
+		// A drag selects the words it passes, for copying.
+		at("pointerdown", 10);
+		at("click", 70);
+		expect(document.activeElement).not.toBe(control);
+		// A click opens the field, also where a selection still stands: a browser may clear it only after the click.
 		const selected = document.createRange();
-		selected.selectNodeContents(reading().querySelector("h2")!);
+		selected.selectNodeContents(heading);
 		getSelection()!.removeAllRanges();
 		getSelection()!.addRange(selected);
-		click(reading());
-		expect(document.activeElement).not.toBe(control);
-		getSelection()!.removeAllRanges();
-		click(reading());
+		at("pointerdown", 40);
+		at("click", 41);
 		expect(document.activeElement).toBe(control);
 	});
 

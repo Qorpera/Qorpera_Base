@@ -57,10 +57,13 @@ export class AgentDetails {
 	readonly #figures: FigurePicker;
 	readonly #status = h("p", { class: "agent-details-status", role: "status" });
 	/** The responsibilities drawn as the Markdown they are written in: what the card shows while their field does not
-	 * have the focus. A picture of the field's text, so assistive technology reads the field alone. */
-	readonly #reading = h("div", { class: "agent-inline-reading", "aria-hidden": "true" });
+	 * have the focus. A picture of the field's text, so assistive technology reads the field alone, and Tab stops at
+	 * the field alone: left to itself, a browser makes a stop of anything that scrolls. */
+	readonly #reading = h("div", { class: "agent-inline-reading", "aria-hidden": "true", tabindex: "-1" });
 	/** The text `#reading` was last drawn from. */
 	#drawnText: string | undefined;
+	/** Where the pointer last went down on the responsibilities: a press that moved before it let go selected text. */
+	#pressedAt: { x: number; y: number } | undefined;
 	/** The field being typed in, if any. */
 	#open: TextKey | undefined;
 	#drawn = "";
@@ -273,6 +276,9 @@ export class AgentDetails {
 			"label",
 			{
 				class: "agent-inline-field agent-inline-description has-reading",
+				onpointerdown: (event: PointerEvent) => {
+					this.#pressedAt = { x: event.clientX, y: event.clientY };
+				},
 				onclick: (event: MouseEvent) => this.#editAt(event),
 			},
 			sizer,
@@ -282,16 +288,18 @@ export class AgentDetails {
 	}
 
 	/** A click on the drawn responsibilities opens their field with the caret where the click fell. The click is
-	 * answered here, not by the label: a member who can only read keeps the drawing, and so does a click that ends a
-	 * selection of its text. */
+	 * answered here, not by the label: a member who can only read keeps the drawing, and so does a press that was
+	 * dragged over the text, which selects it for copying. (A selection alone can't tell: a browser may clear the one
+	 * a click falls in only after the click.) */
 	#editAt(event: MouseEvent): void {
 		const control = this.#fields.charter;
 		// A click in the field itself is the field's own.
 		if (!(event.target instanceof Node) || control.parentElement?.contains(event.target)) return;
 		event.preventDefault();
-		const selection = getSelection();
-		if (!this.#canWrite() || (selection && !selection.isCollapsed && this.#reading.contains(selection.anchorNode)))
-			return;
+		const pressed = this.#pressedAt;
+		this.#pressedAt = undefined;
+		const dragged = pressed !== undefined && Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) > 4;
+		if (!this.#canWrite() || dragged) return;
 		const caret = document.caretPositionFromPoint?.(event.clientX, event.clientY);
 		// WebKit's older name for the same, where the first is missing.
 		const range = caret ? undefined : document.caretRangeFromPoint?.(event.clientX, event.clientY);
@@ -314,7 +322,10 @@ export class AgentDetails {
 		if (key !== "charter" || key === this.#open || value === this.#drawnText) return;
 		this.#drawnText = value;
 		// Links read as their text: a click here edits, and nothing leaves the card.
-		replace(this.#reading, markdown(value, { links: false, sourceRanges: true }));
+		const drawn = markdown(value, { links: false, sourceRanges: true });
+		// A table is a stop for the keyboard in a message; here the field is the only one.
+		for (const stop of drawn.querySelectorAll("[tabindex]")) stop.setAttribute("tabindex", "-1");
+		replace(this.#reading, drawn);
 	}
 
 	/** Leaves a field for the panel itself, so the keyboard stays in the panel. */
