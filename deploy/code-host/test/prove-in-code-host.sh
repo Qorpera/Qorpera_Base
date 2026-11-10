@@ -151,11 +151,61 @@ pass "/company (empty) and /var/lib/qorpera-code-host (root's, 0700) for 5e's jo
 	[[ $(git -C "$T/c" symbolic-ref HEAD) == refs/heads/main && $(git -C "$T/c" rev-parse --verify "HEAD^{commit}") == "$UNDO" ]]
 	git clone --quiet "$T/main.bundle" "$T/plain"
 	[[ $(cat "$T/plain/g.txt") == more && ! -e "$T/plain/p.png" ]]
+	# What a restore's jobs do with git (code-host-restore.ts). A bundle of every ref also names each worktree's HEAD,
+	# outside refs/, and says which commit HEAD is at, never which branch: only refs/* is taken from it. It is proven
+	# in a new bare repository (verified, fetched whole, checked by fsck --full under a time limit) and repacked with
+	# one thread, which gives the same pack each time. The repository is made again from that pack through index-pack
+	# (once more over a repo.git that lost its HEAD, which keeps its refs and objects, and with the pack it already
+	# holds), every ref but main in one transaction, each from nothing, then main and its worktree. Then the two looks
+	# that say what a restore kept: an object that is not there, and whether main reaches a commit.
+	git -C "$T/b.git" update-ref refs/qorpera/kept-here "$ONE"
+	git -C "$T/b.git" update-ref refs/heads/qorpera/coding/00000000-0000-4000-8000-000000000000 "$FOUR"
+	git -C "$T/b.git" bundle create --quiet "$T/every.bundle" --all
+	[[ $(git -C "$T/b.git" bundle list-heads "$T/every.bundle" | grep -c " HEAD$") -ge 1 ]]
+	for proof in proof again; do
+		git init --quiet --bare --template= --ref-format=files "$T/$proof.git"
+		git --git-dir="$T/$proof.git" bundle verify --quiet "$T/every.bundle"
+		git --git-dir="$T/$proof.git" fetch --quiet --no-tags --no-recurse-submodules --no-write-fetch-head "$T/every.bundle" "+refs/*:refs/*"
+		[[ ! -e $T/$proof.git/worktrees && $(git --git-dir="$T/$proof.git" for-each-ref) == "$(git -C "$T/b.git" for-each-ref)" ]]
+		timeout -k 10 60 git --no-replace-objects --git-dir="$T/$proof.git" fsck --full --no-dangling --no-progress
+		git --git-dir="$T/$proof.git" -c pack.threads=1 repack -a -d -q
+	done
+	PACKS=$(find "$T/proof.git/objects/pack" -maxdepth 1 -type f -name "pack-*.pack" -printf "%s %p\n")
+	[[ $(wc -l <<<"$PACKS") == 1 && $(ls "$T/again.git/objects/pack") == "$(ls "$T/proof.git/objects/pack")" ]]
+	PACK=${PACKS#* }
+	MAIN=$(git --git-dir="$T/proof.git" rev-parse --verify "refs/heads/main^{commit}")
+	[[ $MAIN == "$UNDO" ]]
+	git init --quiet --bare --template= --ref-format=files --initial-branch=main "$T/r.git"
+	git --git-dir="$T/r.git" index-pack --stdin <"$PACK" >/dev/null
+	rm "$T/r.git/HEAD"
+	git init --quiet --bare --template= --ref-format=files --initial-branch=main "$T/r.git"
+	[[ $(cat "$T/r.git/HEAD") == "ref: refs/heads/main" ]]
+	git --git-dir="$T/r.git" index-pack --stdin <"$PACK" >/dev/null
+	[[ $(find "$T/r.git/objects/pack" -name "pack-*.pack" | wc -l) == 1 ]]
+	{
+		echo start
+		git --git-dir="$T/proof.git" for-each-ref --format="create %(refname) %(objectname)" | grep -v "^create refs/heads/main "
+		echo prepare
+		echo commit
+	} | git --git-dir="$T/r.git" update-ref --no-deref --stdin >/dev/null
+	printf "start\nupdate refs/heads/main %s %s\nprepare\ncommit\n" "$MAIN" 0000000000000000000000000000000000000000 |
+		git --git-dir="$T/r.git" update-ref --no-deref --stdin >/dev/null
+	git --git-dir="$T/r.git" worktree add --quiet --lock --detach "$T/rmain" "$MAIN"
+	[[ $(git --git-dir="$T/r.git" for-each-ref) == "$(git --git-dir="$T/proof.git" for-each-ref)" ]]
+	[[ $(cat "$T/rmain/g.txt") == more && ! -e "$T/rmain/p.png" ]]
+	git --git-dir="$T/r.git" fsck --full --strict --no-dangling --no-progress
+	GONE=1111111111111111111111111111111111111111
+	[[ $(printf "%s\n%s\n" "$MAIN" "$GONE" | git --git-dir="$T/r.git" cat-file --batch-check | cut -d" " -f1,2 | tr "\n" " ") == "$MAIN commit $GONE missing " ]]
+	git --git-dir="$T/r.git" merge-base --is-ancestor "$FOUR" "$MAIN"
+	STATUS=0
+	git --git-dir="$T/r.git" merge-base --is-ancestor "$MAIN" "$FOUR" || STATUS=$?
+	[[ $STATUS == 1 ]]
 	rm -rf "$T"
 )
 pass "git $GIT_VERSION takes a bundle, a locked worktree and a ref transaction, and gc and fsck pass"
 pass "git $GIT_VERSION does nightly care's work: packed refs, a gc that deletes nothing, the timed check, a whole bundle that restores"
 pass "git $GIT_VERSION does the change record's work: a change's paths, an undo's merge and its conflict, the zip of main, the bundle a clone checks out"
+pass "git $GIT_VERSION does a restore's work: a bundle of every ref proven and repacked the same twice, a repository made again from its pack, its refs and main"
 
 # --- The folder program, FUSE and vsock -------------------------------------------------------------------------------
 [[ $(sha256sum "$FOLDER" | cut -d" " -f1) == "$FOLDER_SHA256" ]] || fail "the folder program differs"
@@ -199,5 +249,16 @@ done
 for tool in cat mv rm rmdir mkdir; do
 	PATH=/usr/local/bin:/usr/bin:/bin command -v "$tool" >/dev/null || fail "no $tool in /usr/local/bin:/usr/bin:/bin"
 done
+# A restore's jobs (code-host-restore.ts) run these as well, with the same PATH. What a damaged repository holds is
+# moved aside by a rename or not at all: mv must know --no-copy, or it would copy and delete where a rename is refused.
+PATH=/usr/local/bin:/usr/bin:/bin command -v stat >/dev/null || fail "no stat in /usr/local/bin:/usr/bin:/bin"
+[[ $(stat -f -c "%a %S" -- /var/lib/qorpera-code-host) =~ ^[0-9]+\ [0-9]+$ ]] || fail "stat -f does not give the free blocks and their size"
+mv --no-copy --version >/dev/null 2>&1 || fail "mv does not know --no-copy"
+D=$(mktemp -d -p /var/lib/qorpera-code-host)
+mkdir -p "$D/from/repo.git/refs" "$D/to"
+mv --no-copy -T -- "$D/from/repo.git" "$D/to/repo.git" || fail "mv --no-copy -T does not rename a folder"
+[[ -d $D/to/repo.git/refs && ! -e $D/from/repo.git && $(find "$D/to" -mindepth 1 -maxdepth 1 -printf "%f\0" | tr "\0" " ") == "repo.git " ]] ||
+	fail "the folder was not moved whole"
+rm -rf "$D"
 pass "the commands 5e's jobs run"
 echo "ALL PASSED"
