@@ -10,11 +10,13 @@ import {
 	COMPANY_COMPUTER_SCREEN_HOURS,
 	companyComputerScreenCharacter,
 	companyComputerScreenCreature,
+	companyComputerScreenFirstCreature,
 	isCompanyComputerScreenTimeZone,
 	prepareCompanyComputerScreenWallpaper,
 } from "@qorpera/runtime/cloud-company-computer-desktop";
 import type { CompanyComputerGuestBoundary } from "@qorpera/runtime/cloud-company-computer-guest";
 import {
+	COMPANY_COMPUTER_FIRST_WALLPAPER_IDS,
 	COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER,
 	COMPANY_COMPUTER_WALLPAPER_FILES,
 	COMPANY_COMPUTER_WALLPAPER_IDS,
@@ -53,37 +55,71 @@ async function desktopFixture() {
 
 describe("restored agent wallpaper preparation (synthetic image bytes, local filesystem)", () => {
 	it("uses the existing template mapping and renderer identity hash without accepting arbitrary asset names", () => {
-		const drawn: Partial<Record<string, string>> = COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER;
 		const binding = computerBinding();
 		let seed = 0;
 		for (const character of binding.staffAgentId) seed = (seed * 31 + character.charCodeAt(0)) >>> 0;
-		// A figure no image draws yet keeps to the installed files, by the agent's id.
-		const installed = COMPANY_COMPUTER_WALLPAPER_IDS[seed % COMPANY_COMPUTER_WALLPAPER_IDS.length];
-		// The moon replaced the ghost: until an image draws it, the ghost's file stands in.
-		const backdrop = (character: string) => drawn[character] ?? (character === "moon" ? "wisp" : installed);
 		for (const [template, character] of Object.entries(STAFF_CHARACTER_BY_TEMPLATE)) {
 			expect(companyComputerScreenCharacter(binding, template)).toBe(character);
-			expect(companyComputerScreenCreature(binding, template)).toBe(backdrop(character));
+			expect(companyComputerScreenCreature(binding, template)).toBe(
+				COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER[character],
+			);
 		}
-		expect(companyComputerScreenCreature(binding, "legal-expert")).toBe("wisp");
+		expect(companyComputerScreenCreature(binding, "legal-expert")).toBe("moon");
 		// The same walk the clients use (`figureFor`), so an agent nobody has
 		// dressed yet shows the same figure on its desktop as in its avatar.
 		const walked = STAFF_CHARACTER_IDS[seed % STAFF_CHARACTER_IDS.length];
 		for (const template of [undefined, "unknown-template", "__proto__", "../../outside"]) {
 			expect(companyComputerScreenCharacter(binding, template)).toBe(walked);
-			expect(companyComputerScreenCreature(binding, template)).toBe(backdrop(walked));
+			expect(companyComputerScreenCreature(binding, template)).toBe(COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER[walked]);
 		}
 		expect(companyComputerScreenCharacter(binding, "co-founder")).toBe("crown");
 		expect(companyComputerScreenCreature(binding, "agent-manager", "flame")).toBe("ribbon");
 		expect(companyComputerScreenCreature(binding, "agent-manager", "../../outside")).toBe("halo");
 		// A saved ghost is drawn as the moon, like in every client.
 		expect(companyComputerScreenCharacter(binding, "agent-manager", "ghost")).toBe("moon");
-		expect(companyComputerScreenCreature(binding, "agent-manager", "ghost")).toBe("wisp");
-		for (const figure of ["star", "cloud", "bolt", "mushroom", "puzzle"]) {
+		expect(companyComputerScreenCreature(binding, "agent-manager", "ghost")).toBe("moon");
+		// Each of the six newer figures has a backdrop named for it.
+		for (const figure of ["star", "cloud", "bolt", "mushroom", "moon", "puzzle"]) {
 			expect(companyComputerScreenCharacter(binding, "agent-manager", figure)).toBe(figure);
-			expect(companyComputerScreenCreature(binding, "agent-manager", figure)).toBe(installed);
+			expect(companyComputerScreenCreature(binding, "agent-manager", figure)).toBe(figure);
 		}
 		expect(() => companyComputerScreenCreature({ ...binding, screenOrdinal: 33 })).toThrow("SCREEN_BINDING_MISMATCH");
+	});
+
+	it("keeps to the first seven backdrops for an image built before the newer figures", () => {
+		const binding = computerBinding();
+		let seed = 0;
+		for (const character of binding.staffAgentId) seed = (seed * 31 + character.charCodeAt(0)) >>> 0;
+		const installed = COMPANY_COMPUTER_FIRST_WALLPAPER_IDS[seed % COMPANY_COMPUTER_FIRST_WALLPAPER_IDS.length];
+		// A figure that has always had a backdrop keeps it.
+		for (const [figure, asset] of [
+			["planet", "brain"],
+			["acorn", "folio"],
+			["flame", "ribbon"],
+			["rocket", "pebble"],
+			["crown", "halo"],
+			["heart", "bloom"],
+		])
+			expect(companyComputerScreenFirstCreature(binding, "agent-manager", figure)).toBe(asset);
+		// The moon replaced the ghost, whose backdrop every image has.
+		for (const figure of ["moon", "ghost"])
+			expect(companyComputerScreenFirstCreature(binding, "agent-manager", figure)).toBe("wisp");
+		expect(companyComputerScreenFirstCreature(binding, "legal-expert")).toBe("wisp");
+		// The other five get one of the seven, the same one every time for this agent.
+		for (const figure of ["star", "cloud", "bolt", "mushroom", "puzzle"])
+			expect(companyComputerScreenFirstCreature(binding, "agent-manager", figure)).toBe(installed);
+		expect(COMPANY_COMPUTER_FIRST_WALLPAPER_IDS).toEqual([
+			"pebble",
+			"folio",
+			"brain",
+			"wisp",
+			"halo",
+			"ribbon",
+			"bloom",
+		]);
+		expect(() => companyComputerScreenFirstCreature({ ...binding, screenOrdinal: 33 })).toThrow(
+			"SCREEN_BINDING_MISMATCH",
+		);
 	});
 
 	it("maps every avatar to the installed file that actually draws it", async () => {
@@ -98,7 +134,7 @@ describe("restored agent wallpaper preparation (synthetic image bytes, local fil
 				figures: Record<string, { d: string }>;
 			}
 		).figures;
-		// The figures an image draws: the six that stay and the retired ghost.
+		// Every figure on offer, and the retired ghost, whose backdrop every image has.
 		expect(Object.keys(figures).sort()).toEqual(Object.keys(COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER).sort());
 		const drawn = new Set<string>();
 		for (const [character, asset] of Object.entries(COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER)) {
@@ -125,14 +161,10 @@ describe("restored agent wallpaper preparation (synthetic image bytes, local fil
 				{ ...fixture, imageRoot, creature: character },
 				new AbortController().signal,
 			);
-			// Each of the twelve gets a whole backdrop from the image as it is packaged today.
+			// Each of the twelve gets its own backdrop, whole, from the image as it is packaged today.
+			expect(prepared.creature).toBe(COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER[character]);
 			expect(await readFile(prepared.wallpaper)).toEqual(
-				await readFile(
-					join(
-						imageRoot,
-						`qorpera-screen-${companyComputerScreenCreature(fixture.binding, fixture.templateId, character)}.png`,
-					),
-				),
+				await readFile(join(imageRoot, `qorpera-screen-${COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER[character]}.png`)),
 			);
 			expect(prepared.backdrops).toBeDefined();
 			expect(await readdir(prepared.backdrops!)).toHaveLength(24);
@@ -166,6 +198,39 @@ describe("restored agent wallpaper preparation (synthetic image bytes, local fil
 			"config",
 			"wallpaper.png",
 		]);
+	});
+
+	it("starts a newer figure's desktop on an image that has only the first seven backdrops", async () => {
+		const fixture = await desktopFixture();
+		const signal = new AbortController().signal;
+		// An image built before the newer figures had backdrops.
+		for (const figure of ["star", "cloud", "bolt", "mushroom", "moon", "puzzle"])
+			await rm(join(fixture.imageRoot, `qorpera-screen-${figure}.png`));
+		const installed = companyComputerScreenFirstCreature(fixture.binding, fixture.templateId, "star");
+		const star = await prepareCompanyComputerScreenWallpaper({ ...fixture, creature: "star" }, signal);
+		expect(star.creature).toBe(installed);
+		expect(await readFile(star.wallpaper, "utf8")).toBe(`synthetic ${installed} image bytes`);
+		for (const creature of ["moon", "ghost"]) {
+			const moon = await prepareCompanyComputerScreenWallpaper({ ...fixture, creature }, signal);
+			expect(moon.creature).toBe("wisp");
+			expect(await readFile(moon.wallpaper, "utf8")).toBe("synthetic wisp image bytes");
+		}
+		// A figure the image has always drawn is untouched.
+		const flame = await prepareCompanyComputerScreenWallpaper({ ...fixture, creature: "flame" }, signal);
+		expect(flame.creature).toBe("ribbon");
+		// With its file in the image, the figure has its own backdrop.
+		await writeFile(join(fixture.imageRoot, "qorpera-screen-star.png"), "synthetic star image bytes");
+		const own = await prepareCompanyComputerScreenWallpaper({ ...fixture, creature: "star" }, signal);
+		expect(own.creature).toBe("star");
+		expect(await readFile(own.wallpaper, "utf8")).toBe("synthetic star image bytes");
+		// A file that is there but is no plain file is refused, never swapped for another backdrop.
+		await symlink(
+			join(fixture.imageRoot, "qorpera-screen-halo.png"),
+			join(fixture.imageRoot, "qorpera-screen-cloud.png"),
+		);
+		await expect(prepareCompanyComputerScreenWallpaper({ ...fixture, creature: "cloud" }, signal)).rejects.toThrow(
+			"INVALID_SCREEN_WALLPAPER",
+		);
 	});
 
 	it("stages the hourly tone-on-tone set and the company zone beside the wallpaper, and clears both when withdrawn", async () => {

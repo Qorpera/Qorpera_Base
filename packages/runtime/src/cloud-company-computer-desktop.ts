@@ -15,9 +15,10 @@ import {
 import type { CompanyComputerGuestBoundary } from "./cloud-company-computer-guest.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import {
+	COMPANY_COMPUTER_FIRST_WALLPAPER_IDS,
 	COMPANY_COMPUTER_SCREEN_HOURS,
 	COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER,
-	COMPANY_COMPUTER_WALLPAPER_IDS,
+	type CompanyComputerFirstWallpaperId,
 	type CompanyComputerWallpaperId,
 } from "./cloud-company-computer-wallpapers.ts";
 
@@ -50,29 +51,38 @@ export function companyComputerScreenCharacter(
 	return STAFF_CHARACTER_IDS[seed % STAFF_CHARACTER_IDS.length];
 }
 
-/**
- * Resolve current avatar identities to the guest image's stable asset catalog:
- * the figure's own backdrop; for a figure no image draws yet, the backdrop of
- * the retired figure it replaced; else a stable one of the installed files,
- * derived from the agent id.
- */
+/** Resolve current avatar identities to the guest image's asset catalog: the backdrop that draws the figure. */
 export function companyComputerScreenCreature(
 	binding: CompanyComputerScreenBinding,
 	templateId?: string,
 	creature?: string,
 ): CompanyComputerWallpaperId {
+	return COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER[companyComputerScreenCharacter(binding, templateId, creature)];
+}
+
+/**
+ * The backdrop on an image built before its figure had one, which has only the
+ * first seven files: the figure's own when it is one of those; the retired
+ * figure's it replaced (the ghost's for the moon); else a stable one of the
+ * seven, derived from the agent id.
+ */
+export function companyComputerScreenFirstCreature(
+	binding: CompanyComputerScreenBinding,
+	templateId?: string,
+	creature?: string,
+): CompanyComputerFirstWallpaperId {
 	const character = companyComputerScreenCharacter(binding, templateId, creature);
-	const drawn: Readonly<Partial<Record<string, CompanyComputerWallpaperId>>> = COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER;
-	const own =
-		drawn[character] ??
-		Object.entries(RETIRED_STAFF_CHARACTERS)
-			.filter(([, replacement]) => replacement === character)
-			.map(([retired]) => drawn[retired])
-			.find(Boolean);
-	if (own) return own;
+	const drawn: Readonly<Record<string, CompanyComputerWallpaperId>> = COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER;
+	const replaced = Object.entries(RETIRED_STAFF_CHARACTERS)
+		.filter(([, replacement]) => replacement === character)
+		.map(([retired]) => retired);
+	for (const figure of [character, ...replaced]) {
+		const installed = COMPANY_COMPUTER_FIRST_WALLPAPER_IDS.find((id) => id === drawn[figure]);
+		if (installed) return installed;
+	}
 	let seed = 0;
 	for (const letter of binding.staffAgentId) seed = (seed * 31 + letter.charCodeAt(0)) >>> 0;
-	return COMPANY_COMPUTER_WALLPAPER_IDS[seed % COMPANY_COMPUTER_WALLPAPER_IDS.length];
+	return COMPANY_COMPUTER_FIRST_WALLPAPER_IDS[seed % COMPANY_COMPUTER_FIRST_WALLPAPER_IDS.length];
 }
 
 async function assertPhysicalDirectory(directory: string): Promise<void> {
@@ -145,11 +155,18 @@ export async function prepareCompanyComputerScreenWallpaper(
 	const binding = Object.freeze({ ...options.binding });
 	const root = options.layout.screenStateRoot;
 	const imageRoot = options.imageRoot ?? "/usr/share/backgrounds";
-	const creature = companyComputerScreenCreature(binding, options.templateId, options.creature);
+	let creature = companyComputerScreenCreature(binding, options.templateId, options.creature);
 	await options.boundary.assertReady(binding, signal);
 	signal.throwIfAborted();
 	await assertPhysicalDirectory(root);
 	await assertPhysicalDirectory(imageRoot);
+	// An image built before this figure had a backdrop has no file for it: it keeps to the seven it has, so its
+	// desktop still starts. A file that is there but wrong (a link, empty, too large) is refused as before.
+	const missing = await lstat(join(imageRoot, `qorpera-screen-${creature}.png`)).then(
+		() => false,
+		(error: NodeJS.ErrnoException) => error.code === "ENOENT",
+	);
+	if (missing) creature = companyComputerScreenFirstCreature(binding, options.templateId, options.creature);
 	const bytes = await readImage(join(imageRoot, `qorpera-screen-${creature}.png`), signal);
 	// An image without the full hourly set (or an older image) keeps the static
 	// wallpaper; the wrapper refuses partial sets rather than cycling them.
