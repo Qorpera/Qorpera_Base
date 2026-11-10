@@ -4605,50 +4605,46 @@ describe("a member's action on a desktop (20260930713000)", () => {
 	});
 
 	it.skipIf(process.platform !== "linux")(
-		"types from a file of its own in a real shell, pastes beyond ASCII on both selections, and leaves no file",
+		"types from its stdin in a real shell, pastes beyond ASCII on both selections, and keeps the text out of every argument and file",
 		async () => {
 			const bin = await realpath(await mkdtemp(join(tmpdir(), "member-type-bin-")));
-			const typed = await realpath(await mkdtemp(join(tmpdir(), "member-type-run-")));
 			const log = join(await realpath(await mkdtemp(join(tmpdir(), "member-type-log-"))), "log");
-			roots.push(bin, typed, dirname(log));
-			// The text's folder is the script's own (root's /run/qorpera-type on a machine); here a folder of the test's.
-			const script = COMPANY_MACHINE_MEMBER_TYPE.replace("d=/run/qorpera-type", `d=${typed}`).replace(
-				"touch -c /run/qorpera-desktop/last-use",
-				`touch -c ${typed}/last-use`,
-			);
-			expect(script).not.toBe(COMPANY_MACHINE_MEMBER_TYPE);
-			// Each tool records its argv; xdotool type copies the file it is given, xsel its stdin.
+			roots.push(bin, dirname(log));
+			// Each tool records its argv; xdotool type and xsel record their stdin too, an x after it (so its last line breaks show).
 			for (const [name, text] of [
 				["systemctl", "#!/bin/sh\nexit 0\n"],
 				["xdpyinfo", "#!/bin/sh\nexit 0\n"],
 				[
 					"xdotool",
-					`#!/bin/sh\necho "xdotool $* DISPLAY=$DISPLAY" >> ${log}\nif [ "$1" = type ]; then for a; do f=$a; done; echo "file: $(cat "$f")" >> ${log}; fi\n`,
+					`#!/bin/sh\necho "xdotool $* DISPLAY=$DISPLAY" >> ${log}\nif [ "$1" = type ]; then echo "stdin: [$(cat; printf x)]" >> ${log}; fi\n`,
 				],
-				["xsel", `#!/bin/sh\necho "xsel $* stdin: $(cat)" >> ${log}\n`],
+				["xsel", `#!/bin/sh\necho "xsel $* stdin: [$(cat; printf x)]" >> ${log}\n`],
 			]) {
 				await writeFile(join(bin, name), text);
 				await chmod(join(bin, name), 0o755);
 			}
 			const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
 			const run = (text: string, mode: string, PATH = `${bin}:/usr/bin:/bin`, bootId = boot) =>
-				spawnSync("/bin/sh", ["-c", script, bootId, mode], { env: { PATH }, input: text });
-			expect(run("hunter2", "type").status).toBe(0);
+				spawnSync("/bin/sh", ["-c", COMPANY_MACHINE_MEMBER_TYPE, bootId, mode], { env: { PATH }, input: text });
+			expect(run("hunter2 $HOME `id`", "type").status).toBe(0);
 			expect(readFileSync(log, "utf8").split("\n")).toEqual([
-				expect.stringMatching(/^xdotool type --delay 12 --file \S+\/type-\d+ DISPLAY=:1$/),
-				"file: hunter2",
+				"xdotool type --delay 12 --file - DISPLAY=:1",
+				"stdin: [hunter2 $HOME `id`x]",
 				"",
 			]);
 			await writeFile(log, "");
-			expect(run("Åse", "paste").status).toBe(0);
-			expect(readFileSync(log, "utf8").split("\n")).toEqual([
-				"xsel --logfile /dev/null --clipboard --input stdin: Åse",
-				"xsel --logfile /dev/null --primary --input stdin: Åse",
-				"xdotool key --clearmodifiers shift+Insert DISPLAY=:1",
-				"",
-			]);
-			// The text's file went with the script either way.
-			expect(readdirSync(typed).filter((name) => name.startsWith("type-"))).toEqual([]);
+			expect(run("Åse\n\n", "paste").status).toBe(0);
+			expect(readFileSync(log, "utf8")).toBe(
+				[
+					"xsel --logfile /dev/null --clipboard --input stdin: [Åse\n\nx]",
+					"xsel --logfile /dev/null --primary --input stdin: [Åse\n\nx]",
+					"xdotool key --clearmodifiers shift+Insert DISPLAY=:1",
+					"",
+				].join("\n"),
+			);
+			// The text is no program's argument: only dash's own printf (no process of its own) and the shell take it.
+			for (const line of COMPANY_MACHINE_MEMBER_TYPE.split("\n").filter((entry) => entry.includes("$text")))
+				expect(line.trim(), line).toMatch(/^(text=\$\{text%x\}|printf %s "\$text" \| )/);
 			// Another boot, no xdotool or xsel, the screen off (with the test's tools alone: these checks come first).
 			expect(run("x", "type", bin, randomUUID()).status).toBe(97);
 			await rm(join(bin, "xsel"));

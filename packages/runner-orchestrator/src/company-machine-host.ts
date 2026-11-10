@@ -155,34 +155,35 @@ const MEMBER_LOOK_EXITS: Readonly<Record<number, CompanyMachineMemberLookRefusal
 	98: "MACHINE_IMAGE_WITHOUT_SCREEN",
 });
 /** A member's typed text on a desktop (20260930713000, memberAct): one fixed script run as root on exactly the boot SQL
- * named (`$0`, else exit 97), with the text on its stdin and never in an argument. It is not the screen helper's `type`:
- * that runs `desktop type TEXT` as a transient systemd unit, whose description is its command line, and systemd writes
- * that into the machine's journal ("Started run-….service - [systemd-run] … desktop type TEXT", measured with systemd 259
- * on 10 Nov 2026), where a member's password must never be. xdotool and xsel must be there (else 98, an earlier image),
- * and the desktop's unit active with its display answering (else 95: no action runs on a screen that is off). The text
- * goes to a root-only file under /run (memory) and goes with the script. `$1` = paste puts it on both selections and
- * presses shift+Insert, as `desktop type` does for text beyond plain ASCII (a letter outside the keyboard's layout comes
- * out wrong through xdotool), and the executor clears both selections after; otherwise xdotool types it from the file.
- * The desktop's idle clock is touched, as the screen helper's action touches it. Plain sh, with cat, rm and touch. */
+ * named (`$0`, else exit 97), with the text on its stdin and never in an argument or a file. It is not the screen
+ * helper's `type`: that runs `desktop type TEXT` as a transient systemd unit, whose description is its command line, and
+ * systemd writes that into the machine's journal ("Started run-….service - [systemd-run] … desktop type TEXT", measured
+ * with systemd 259 on 10 Nov 2026), where a member's password must never be. xdotool and xsel must be there (else 98,
+ * an earlier image), and the desktop's unit active with its display answering (else 95: no action runs on a screen that
+ * is off). The text stays in the shell's memory (`printf` is dash's own, so no process shows it): a script cut off
+ * leaves nothing of it behind. `$1` = paste puts it on both selections and presses shift+Insert, as `desktop type` does
+ * for text beyond plain ASCII (a letter outside the keyboard's layout comes out wrong through xdotool), and the executor
+ * clears both selections after; otherwise xdotool types it from its stdin. The desktop's idle clock is touched, as the
+ * screen helper's action touches it. Plain sh, with cat and touch. */
 export const COMPANY_MACHINE_MEMBER_TYPE = [
 	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97',
 	"{ command -v xdotool && command -v xsel; } >/dev/null 2>&1 || exit 98",
 	"{ systemctl is-active --quiet qorpera-machine-desktop.service && DISPLAY=:1 xdpyinfo >/dev/null 2>&1; } || exit 95",
 	"touch -c /run/qorpera-desktop/last-use",
-	"umask 077",
-	"d=/run/qorpera-type",
-	'mkdir -p "$d" || exit 1',
-	'f="$d/type-$$"',
-	"trap 'rm -f \"$f\"' EXIT",
-	'cat > "$f" || exit 1',
+	// The text whole, its last line breaks too (the x keeps them from the command substitution).
+	"text=$(cat; printf x) || exit 1",
+	// biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's own parameter expansion, not a template.
+	"text=${text%x}",
 	"export DISPLAY=:1",
 	'if [ "$1" = paste ]; then',
-	// xsel stays behind to own each selection: its own output goes nowhere, so the exec ends with the script.
-	'\t{ xsel --logfile /dev/null --clipboard --input < "$f" && xsel --logfile /dev/null --primary --input < "$f"; } >/dev/null 2>&1 || exit 1',
+	"\tfor selection in --clipboard --primary; do",
+	// xsel stays behind to own the selection: its own output goes nowhere, so the exec ends with the script.
+	'\t\tprintf %s "$text" | xsel --logfile /dev/null "$selection" --input >/dev/null 2>&1 || exit 1',
+	"\tdone",
 	"\txdotool key --clearmodifiers shift+Insert || exit 1",
 	"\tsleep 0.2",
 	"else",
-	'\txdotool type --delay 12 --file "$f" || exit 1',
+	'\tprintf %s "$text" | xdotool type --delay 12 --file - || exit 1',
 	"fi",
 ].join("\n");
 /** A member's typed text: at most 500 characters at 12 ms a key, well inside this; the request is bounded at 30 s. */
