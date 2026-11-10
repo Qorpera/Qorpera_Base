@@ -1101,7 +1101,8 @@ describe("CodeRestore: a restore request, step by step", () => {
 			{ step: "build", bundle: name, at: AT, setAside: ASIDE },
 			{ step: "open", bundle: name, at: AT, setAside: ASIDE, built: true },
 		]);
-		expect(x.jobs.yields).toEqual([true, true, true, true, true, true, true]);
+		// The jobs before the place moves yield to a turn's; from the set-aside to the open they keep their place.
+		expect(x.jobs.yields).toEqual([true, true, true, false, false, false, false]);
 		expect(CODE_RESTORE_RPCS).toEqual(["qorpera_code_request_step"]);
 		// The new bundle is in the store like a nightly one, and is the repository's.
 		expect((await readdir(x.folder)).sort()).toEqual([`${name}.bundle`, `${name}.json`]);
@@ -1354,7 +1355,7 @@ describe("CodeRestore: a restore request, step by step", () => {
 		// A turn began before the old place was moved: the place is opened again, as it was, by a job that does not yield.
 		x.kernel.answer = (progress) => (progress.step === "set-aside" ? "busy" : "go");
 		expect(await x.run(request({ bundle: name }))).toEqual({ schema: SCHEMA, state: "busy" });
-		expect(x.jobs.yields).toEqual([true, true, false]);
+		expect(x.jobs.yields).toEqual([true, false, false]);
 		expect(await f.listing(f.companyRoot)).toEqual(before);
 		expect(x.kernel.steps).toEqual([{ step: "close", bundle: name }]);
 		expect(x.events.find((event) => event.step === "put-off")).toMatchObject({
@@ -1369,7 +1370,7 @@ describe("CodeRestore: a restore request, step by step", () => {
 			state: "failed",
 			code: "RESTORE_LEASE_LOST:PLACE_CLOSED",
 		});
-		expect(x.jobs.yields.slice(jobsBefore)).toEqual([true, true]);
+		expect(x.jobs.yields.slice(jobsBefore)).toEqual([true, false]);
 		expect(await readMark(f)).toMatchObject({ step: "closed", bundle: name });
 		// A folder that does not keep the move: the job after it still finds the old place there. (The request goes on
 		// from the mark the last one left.)

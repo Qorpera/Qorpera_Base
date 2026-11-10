@@ -349,6 +349,15 @@ returns text language sql stable security definer set search_path = '' as $$
 				and session.attached_machine_id is not null) then 'SESSIONS_ATTACHED' end
 $$;
 
+-- Whether a restore has begun to move the place (its progress says so: the step it asked for, or what a job saw).
+-- From then on it is not put off any more. The place was closed in a job of its own while the company was quiet, so
+-- no session works in it or can start to, and waiting for the company's other work would only keep it closed longer.
+create function public.qorpera_code_restore_moving(p_progress jsonb)
+returns boolean language sql immutable set search_path = '' as $$
+	select coalesce(p_progress ? 'setAside' or p_progress -> 'built' = 'true'::jsonb
+		or p_progress ->> 'step' in ('set-aside','build','open'), false)
+$$;
+
 -- 5. The executor records a landing ---------------------------------------------------------------------------------------
 
 -- Whether p_change is a landing's report, qorpera.code-change-report/v1: exactly its keys, each of its kind, and what
@@ -677,7 +686,7 @@ end $$;
 -- Leases the oldest requests this executor may do now, at most p_limit (1 to 20): queued, or running with a lease that
 -- ended; not put off; its company held by this executor and not being deleted. A restore of the place itself stays
 -- queued while the company's sessions are not quiet or one of the repository's is on a machine, and its progress says
--- which. A fourth claim of an undo or a restore, or a sixth of a download, ends the request failed (DID_NOT_FINISH)
+-- which; one that has begun to move the place (qorpera_code_restore_moving) is handed out whatever the sessions do. A fourth claim of an undo or a restore, or a sixth of a download, ends the request failed (DID_NOT_FINISH)
 -- instead. Also claimed, as work `remove`: a made download whose time is over. It locks request rows only.
 create function public.qorpera_code_requests_claim(p_owner text, p_machine_id_sha256 text, p_limit integer)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
@@ -697,7 +706,8 @@ begin
 		for update of request skip locked
 	loop
 		exit when jsonb_array_length(v_claimed) >= p_limit;
-		if v_request.kind = 'restore' and v_request.input ->> 'mode' = 'restore' then
+		if v_request.kind = 'restore' and v_request.input ->> 'mode' = 'restore'
+			and not public.qorpera_code_restore_moving(v_request.progress) then
 			v_waiting := public.qorpera_code_restore_waits(v_request.environment_id, v_request.owner, v_request.name, v_now);
 			if v_waiting is not null then
 				update public.qorpera_code_requests set state = 'queued', lease_token = null, lease_owner = null,
@@ -801,7 +811,8 @@ end $$;
 
 -- Asked before each job of a download or a restore: renews the lease and saves what the request has done so far. Lost:
 -- the token is not the request's lease, or the caller no longer holds the company. Busy: a restore of the place
--- itself, when the company's sessions are no longer quiet or one of the repository's is on a machine. A download is
+-- itself that has not begun to move it (qorpera_code_restore_moving, read from the progress this call brings), when
+-- the company's sessions are no longer quiet or one of the repository's is on a machine. A download is
 -- never busy here: a turn's job cancels its job instead. It locks the request's row only.
 create function public.qorpera_code_request_step(p_owner text, p_machine_id_sha256 text, p_request_id uuid,
 	p_token uuid, p_progress jsonb)
@@ -819,8 +830,9 @@ begin
 		or exists (select 1 from public.qorpera_company_deletions deletion
 			where deletion.profile_id = v_request.profile_id) then
 		return jsonb_build_object('schema', 'qorpera.code-request-step/v1', 'state', 'lost'); end if;
-	if v_request.kind = 'restore' and v_request.input ->> 'mode' = 'restore' and public.qorpera_code_restore_waits(
-			v_request.environment_id, v_request.owner, v_request.name, v_now) is not null then
+	if v_request.kind = 'restore' and v_request.input ->> 'mode' = 'restore'
+		and not public.qorpera_code_restore_moving(coalesce(p_progress, v_request.progress))
+		and public.qorpera_code_restore_waits(v_request.environment_id, v_request.owner, v_request.name, v_now) is not null then
 		return jsonb_build_object('schema', 'qorpera.code-request-step/v1', 'state', 'busy'); end if;
 	update public.qorpera_code_requests set lease_until = v_now + public.qorpera_code_request_lease(kind),
 		progress = coalesce(p_progress, progress), updated_at = v_now
@@ -1588,6 +1600,7 @@ revoke all on function public.qorpera_code_executor_custody(text, text),
 	public.qorpera_code_undo_message(integer, text, boolean),
 	public.qorpera_code_request_lease(text),
 	public.qorpera_code_restore_waits(uuid, text, text, timestamptz),
+	public.qorpera_code_restore_moving(jsonb),
 	public.qorpera_code_change_report_valid(jsonb),
 	public.qorpera_code_change_files_written_valid(jsonb),
 	public.qorpera_code_request_outcome_valid(text, jsonb),

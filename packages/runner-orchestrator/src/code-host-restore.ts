@@ -954,6 +954,8 @@ const CALL_MS = 10_000;
 const YIELDED = "CODE_HOST_JOB_YIELDED";
 type RestoreStep = "verify" | "fresh" | "close" | "set-aside" | "build" | "open" | "discard";
 /** What a failed step is called in a request's outcome. */
+/** The steps that move the place: their jobs do not yield, and the kernel does not put them off. */
+const MOVING: ReadonlySet<RestoreStep> = new Set(["set-aside", "build", "open"]);
 const STEP: Readonly<Record<RestoreStep, string>> = {
 	verify: "VERIFY_FAILED",
 	fresh: "FRESH_BUNDLE_FAILED",
@@ -1018,8 +1020,9 @@ interface RestoreRun {
 
 /** A restore request done, step by step (the module's comment has the steps). Before each job, with the job's place in
  * its company's line held, the kernel is asked (`qorpera_code_request_step`): it renews the request's lease, saves
- * how far the request got, and says whether the company is still quiet. Every job yields to a turn's, but the one that
- * opens an untouched place again.
+ * how far the request got, and says whether the company is still quiet. A job yields to a turn's until the restore
+ * begins to move the place (and not the one that opens an untouched place again); from the set-aside to the open the
+ * jobs keep their place in the line.
  *
  *   verify    `verifyCodeBundle` on the stored bundle.
  *   restore   `fresh` first takes a new bundle of the place as it stands (nightly care's check and bundle jobs) into
@@ -1372,8 +1375,10 @@ export class CodeRestore {
 		return { bundle: bundleFacts(name, manifest), pieces };
 	}
 
-	/** One job of the request on the company's code host, which yields. With its place in the company's line it asks the
-	 * kernel first: only on `go` do its steps run. */
+	/** One job of the request on the company's code host. With its place in the company's line it asks the kernel first:
+	 * only on `go` do its steps run. It yields to a turn's job until the restore begins to move the place. From then on
+	 * (set aside, build, open) the place is closed to every session, the kernel does not put the request off any more
+	 * (`qorpera_code_restore_moving`), and the job keeps its place: giving way would only keep the repository closed. */
 	async #job<T>(run: RestoreRun, signal: AbortSignal, steps: (job: CodeHostJob) => Promise<T>): Promise<T> {
 		return await this.#hosts.run(
 			run.request.companyId,
@@ -1384,7 +1389,7 @@ export class CodeRestore {
 				if (answer !== "go") throw new RestoreStopped(answer);
 				return await steps(job);
 			},
-			{ yields: true },
+			{ yields: !MOVING.has(run.step) },
 		);
 	}
 

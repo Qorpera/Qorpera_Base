@@ -813,17 +813,46 @@ begin
 	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_item ->> 'mode' = 'restore' and v_item ->> 'damaged' = 'keep'
 		and v_item -> 'progress' = 'null' and q.progress is null and q.state = 'running' and q.attempts = 1
 		and jsonb_array_length(v_item -> 'tips') = 6 and jsonb_array_length(v_item -> 'sessions') = 5, 'the restore is claimed: ' || v_item::text);
-	-- Before each job: the lease is renewed and what was done so far is kept. A session that starts stops the next job.
-	v := pg_temp.req_step(v_id, v_token, v_progress);
-	perform pg_temp.base_assert(v ->> 'state' = 'go' and (pg_temp.req_row(v_id)).progress = v_progress
-		and pg_temp.req_step(v_id, v_token) ->> 'state' = 'go' and (pg_temp.req_row(v_id)).progress = v_progress, 'a restore''s step: ' || v::text);
+	-- Before each job: the lease is renewed and what was done so far is kept. Until the restore has begun to move the
+	-- place, a session that starts stops the next job.
+	v := pg_temp.req_step(v_id, v_token, jsonb_build_object('bundle', v_bundle, 'step', 'close'));
+	perform pg_temp.base_assert(v ->> 'state' = 'go'
+		and (pg_temp.req_row(v_id)).progress = jsonb_build_object('bundle', v_bundle, 'step', 'close')
+		and pg_temp.req_step(v_id, v_token) ->> 'state' = 'go'
+		and (pg_temp.req_row(v_id)).progress = jsonb_build_object('bundle', v_bundle, 'step', 'close'), 'a restore''s step: ' || v::text);
 	update public.qorpera_coding_sessions set phase = 'running' where worker_id = b1;
 	perform pg_temp.base_assert(pg_temp.req_step(v_id, v_token, '{"bundle":"other"}') = '{"schema":"qorpera.code-request-step/v1","state":"busy"}'
-		and (pg_temp.req_row(v_id)).progress = v_progress, 'busy at a step');
+		and pg_temp.req_step(v_id, v_token) ->> 'state' = 'busy'
+		and (pg_temp.req_row(v_id)).progress = jsonb_build_object('bundle', v_bundle, 'step', 'close'), 'busy at a step');
 	update public.qorpera_coding_sessions set phase = 'completed' where worker_id = b1;
 	update public.qorpera_coding_sessions set attached_machine_id = pg_temp.rec_copy(901), attachment_token = pg_temp.rec_copy(902),
 		attachment_until = clock_timestamp(), attachment_turn = 1, attached_at = clock_timestamp() where worker_id = pg_temp.rec_copy(41);
 	perform pg_temp.base_assert(pg_temp.req_step(v_id, v_token) ->> 'state' = 'busy', 'a session went on a machine');
+	-- From the step that moves the place on, the restore is not put off: the place is closed, and waiting for the
+	-- company's other work would only keep it closed. Each way the progress can say so counts, the one this call
+	-- brings too.
+	update public.qorpera_coding_sessions set phase = 'running' where worker_id = b1;
+	perform pg_temp.base_assert(not public.qorpera_code_restore_moving(null) and not public.qorpera_code_restore_moving('{}')
+		and not public.qorpera_code_restore_moving('{"step":"close","bundle":"x"}')
+		and not public.qorpera_code_restore_moving('{"step":"fresh"}') and not public.qorpera_code_restore_moving('{"step":"discard"}')
+		and not public.qorpera_code_restore_moving('{"built":false}') and public.qorpera_code_restore_moving('{"step":"set-aside"}')
+		and public.qorpera_code_restore_moving('{"step":"build"}') and public.qorpera_code_restore_moving('{"step":"open"}')
+		and public.qorpera_code_restore_moving('{"setAside":null}') and public.qorpera_code_restore_moving('{"built":true}'),
+		'when a restore counts as moving the place');
+	v := pg_temp.req_step(v_id, v_token, jsonb_build_object('bundle', v_bundle, 'step', 'set-aside'));
+	perform pg_temp.base_assert(v ->> 'state' = 'go'
+		and (pg_temp.req_row(v_id)).progress = jsonb_build_object('bundle', v_bundle, 'step', 'set-aside')
+		and pg_temp.req_step(v_id, v_token) ->> 'state' = 'go', 'a restore that moves the place goes on beside a turn: ' || v::text);
+	v := pg_temp.req_step(v_id, v_token, v_progress);
+	perform pg_temp.base_assert(v ->> 'state' = 'go' and (pg_temp.req_row(v_id)).progress = v_progress
+		and pg_temp.req_step(v_id, v_token) ->> 'state' = 'go', 'and beside a session on a machine: ' || v::text);
+	-- The executor stopped while the sessions work: the next claim hands the request out all the same.
+	perform pg_temp.req_lapse(v_id);
+	v_item := pg_temp.req_claim() -> 0;
+	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_item -> 'progress' = v_progress
+		and (pg_temp.req_row(v_id)).attempts = 2, 'a moving restore is claimed beside a turn: ' || coalesce(v_item::text, 'nothing'));
+	v_token := (v_item ->> 'token')::uuid;
+	update public.qorpera_coding_sessions set phase = 'completed' where worker_id = b1;
 	update public.qorpera_coding_sessions set attached_machine_id = null, attachment_token = null, attachment_until = null,
 		attachment_turn = null, attached_at = null where worker_id = pg_temp.rec_copy(41);
 	-- The executor stopped: the next claim hands the request out with what it had done.
@@ -831,7 +860,7 @@ begin
 	v_item := pg_temp.req_claim() -> 0;
 	v_token := (v_item ->> 'token')::uuid;
 	perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and v_item -> 'progress' = v_progress
-		and (pg_temp.req_row(v_id)).attempts = 2 and v_token <> q.lease_token, 'it goes on where it was: ' || v_item::text);
+		and (pg_temp.req_row(v_id)).attempts = 3 and v_token <> q.lease_token, 'it goes on where it was: ' || v_item::text);
 
 	-- Restored, from a bundle older than main: main still holds the rows up to the third.
 	foreach v_bad in array array[pg_temp.req_outcome('{"state":"done","result":"verified"}') || jsonb_build_object(
