@@ -12,6 +12,7 @@ import type { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import { WebCompanyFolderRejectedError } from "../src/cloud/company-folder-writes.ts";
 import { UUID_PATTERN } from "../src/cloud/parse.ts";
 import type { HostedStaffAgent } from "../src/cloud/types.ts";
+import { DANISH } from "../src/ui/danish/index.ts";
 import { staff } from "./fixtures.ts";
 import { type FolderFake, folderFake } from "./folder-fake.ts";
 
@@ -43,7 +44,12 @@ const NATIVE = {
 	rocket: "#f96e2d",
 	crown: "#fcb51b",
 	heart: "#fb672a",
-	ghost: "#312f2d",
+	star: "#fcb51b",
+	cloud: "#3faff3",
+	bolt: "#a145f7",
+	mushroom: "#e22538",
+	moon: "#2047bd",
+	puzzle: "#0fbd59",
 } as const;
 const native = (figure: keyof typeof NATIVE) => NATIVE[figure];
 
@@ -162,25 +168,55 @@ describe("creating an agent", () => {
 	it.each([
 		["qorpera-teal", "teal"],
 		["#2047BD", "blue"],
-		[" #ff2994 ", "pink"],
+		[" #fa59ac ", "pink"],
+		// A colour the palette had before 10 November 2026 names nothing now.
+		["#ff2994", null],
 		["#123456", null],
 		["coral", null],
 	])("writes the colour %s as %s", (color, colour) => {
 		expect(agentFileColour(color)).toBe(colour);
 	});
 
-	it("names the vendored palette's colours (avatar-appearance.js)", () => {
+	it("paints each colour name as the vendored palette's colour in its place (avatar-appearance.js)", () => {
 		const source = readFileSync(new URL("../public/assets/avatars/avatar-appearance.js", import.meta.url), "utf8");
 		const scope: {
 			QORPERA_MOTION_MODEL: object;
 			QORPERA_AVATAR_APPEARANCE?: { palette: { name: string; color: string }[] };
 		} = { QORPERA_MOTION_MODEL: { avatars: [] } };
 		runInNewContext(source, { window: scope });
-		const palette = Array.from(scope.QORPERA_AVATAR_APPEARANCE?.palette ?? [], ({ name, color }) => [
-			name.toLowerCase(),
-			color,
+		const palette = Array.from(scope.QORPERA_AVATAR_APPEARANCE?.palette ?? []);
+		// A file's colour name is a place in the palette: the hex there is what it is painted as.
+		expect(palette.map(({ color }) => color)).toEqual(Object.values(AGENT_COLOUR_HEX));
+		// The picker's own names. Coral, teal and gray were repainted on 10 November 2026 and are shown as Red, Sky
+		// and Slate; a file still writes coral, teal and gray.
+		expect(palette.map(({ name }) => name)).toEqual([
+			"Charcoal",
+			"Brown",
+			"Red",
+			"Orange",
+			"Gold",
+			"Green",
+			"Sky",
+			"Blue",
+			"Purple",
+			"Pink",
+			"Slate",
 		]);
-		expect(palette).toEqual(Object.entries(AGENT_COLOUR_HEX));
+		expect(Object.keys(AGENT_COLOUR_HEX)).toEqual([
+			"charcoal",
+			"brown",
+			"coral",
+			"orange",
+			"gold",
+			"green",
+			"teal",
+			"blue",
+			"purple",
+			"pink",
+			"gray",
+		]);
+		// Each of the picker's names has its Danish (ui/avatar.ts writes them as phrases).
+		for (const { name } of palette) expect(Object.hasOwn(DANISH, name), name).toBe(true);
 	});
 
 	it("writes no colour for the figure's own shade, and a picked palette colour by its name", async () => {

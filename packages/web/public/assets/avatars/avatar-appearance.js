@@ -2,26 +2,29 @@
 
 (() => {
 	const model = window.QORPERA_MOTION_MODEL;
-	// Native Ghost, Acorn, Rocket, and Crown shades remain shared choices.
+	// Eleven colours, spaced so that no two read alike on a figure (November 10,
+	// 2026: Red, Sky and Slate took the places of Coral, Teal and Gray; Green,
+	// Purple and Pink moved apart). Every figure's own shade but the Planet's,
+	// the Flame's and the Heart's is one of them.
 	const palette = Object.freeze([
 		{ name: "Charcoal", color: "#312f2d" },
 		{ name: "Brown", color: "#87674c" },
-		{ name: "Coral", color: "#ff365e" },
+		{ name: "Red", color: "#e22538" },
 		{ name: "Orange", color: "#f96e2d" },
 		{ name: "Gold", color: "#fcb51b" },
-		{ name: "Green", color: "#00c878" },
-		{ name: "Teal", color: "#00bfb3" },
+		{ name: "Green", color: "#0fbd59" },
+		{ name: "Sky", color: "#3faff3" },
 		{ name: "Blue", color: "#2047bd" },
-		{ name: "Purple", color: "#b83ff5" },
-		{ name: "Pink", color: "#ff2994" },
-		{ name: "Gray", color: "#7c7c7a" },
+		{ name: "Purple", color: "#a145f7" },
+		{ name: "Pink", color: "#fa59ac" },
+		{ name: "Slate", color: "#6c839b" },
 	].map(Object.freeze));
 	const selected = new Map();
 	const originals = new Map();
 	const rendered = new Map();
 	const materials = new Map();
 	// White-eye thresholds in each source's least-colored channel.
-	const eyeStarts = Object.freeze({ planet: 125, acorn: 100, flame: 72, rocket: 100, crown: 75, heart: 95, ghost: 95 });
+	const eyeStarts = Object.freeze({ planet: 125, acorn: 100, flame: 72, rocket: 100, crown: 75, heart: 95, star: 41, cloud: 79, bolt: 84, mushroom: 56, moon: 51, puzzle: 32 });
 	const linearChannels = Array.from({ length: 256 }, (_, index) => {
 		const channel = index / 255;
 		return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;

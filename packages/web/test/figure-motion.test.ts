@@ -243,7 +243,7 @@ describe("2D studio playback in the shell", () => {
 		vi.mocked(HTMLImageElement.prototype.decode).mockReturnValue(load.promise);
 		const host = document.createElement("span");
 		document.body.append(host);
-		const motion = mountFigureMotion(host, "ghost", "#312f2d", artwork);
+		const motion = mountFigureMotion(host, "moon", "#312f2d", artwork);
 		motion.dispose();
 		host.remove();
 		load.resolve();

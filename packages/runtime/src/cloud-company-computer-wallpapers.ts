@@ -1,4 +1,4 @@
-import type { StaffCharacterId } from "@qorpera/cloud-client/staff-characters";
+import type { RetiredStaffCharacterId, StaffCharacterId } from "@qorpera/cloud-client/staff-characters";
 
 /**
  * Guest image assets keep the file names every installed office image already
@@ -22,6 +22,10 @@ export type CompanyComputerWallpaperId = (typeof COMPANY_COMPUTER_WALLPAPER_IDS)
  * each template, not the old template-to-name table: `brain.html` holds the
  * planet silhouette, `folio.html` the acorn, and so on. A regression test pins
  * every entry to the baked avatar path so the two cannot drift apart again.
+ *
+ * The six figures added in November 2026 (star, cloud, bolt, mushroom, moon,
+ * puzzle) have no backdrop in any image yet. The ghost is retired, but its file
+ * is in every image, and stands in for the moon that replaced it.
  */
 export const COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER = Object.freeze({
 	planet: "brain",
@@ -31,7 +35,7 @@ export const COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER = Object.freeze({
 	crown: "halo",
 	heart: "bloom",
 	ghost: "wisp",
-} satisfies Readonly<Record<StaffCharacterId, CompanyComputerWallpaperId>>);
+} satisfies Readonly<Partial<Record<StaffCharacterId | RetiredStaffCharacterId, CompanyComputerWallpaperId>>>);
 
 /** Hourly frames follow the image name with the two-digit local hour. */
 export const COMPANY_COMPUTER_SCREEN_HOURS = Object.freeze(

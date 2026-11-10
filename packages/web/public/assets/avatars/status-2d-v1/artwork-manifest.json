@@ -101,20 +101,111 @@
     "preparation": "Resampled to 512 × 512 by Chromium Canvas 2D, matching avatar-appearance.prepare for this face plate; then lossless WebP."
   },
   {
-    "file": "ghost.webp",
-    "sourceSha256": "ed940a6b6944ae5725dbbdfcc40e6946aea2201b18d331617c8d6fd93528c541",
-    "sha256": "4322d82a611917a153ecd130fcc26bbda989549c8b0c46e96f6b4d1b31b52d1c",
-    "sourceBytes": 170213,
-    "bytes": 117234,
-    "visibleChannelDifferences": 0
+    "file": "star.webp",
+    "sourceSha256": "9ebedc11c34e26af77f19947d9b10bf061425d5fa9de624be70fa8e7e845e9e0",
+    "sha256": "cf8c34e5a52c3e2d68f1fedb899927c1e0fd1ffd477ae0f6506fbcaa8d06f352",
+    "sourceBytes": 90658,
+    "bytes": 49236,
+    "visibleChannelDifferences": 0,
+    "preparation": "Rendered at 512 × 512 by the clay-figure kit (November 10, 2026) and drawn once to a Chromium Canvas 2D, as avatar-appearance.prepare reads every plate; then lossless WebP."
   },
   {
-    "file": "ghost-face.webp",
-    "sourceSha256": "c669017f470342663f7e068b9fa1eba552f28b0ded768d398dcac925cb467c44",
-    "sha256": "dc922d20d656918c32b5e26366adbc9ece506a8f342947569bc697ad9604f699",
-    "sourceBytes": 940047,
-    "bytes": 108542,
+    "file": "star-face.webp",
+    "sourceSha256": "aa8e21704b98e8054705b2df68f4d66e4ad8943d4f97661640ec1de7a28f0bac",
+    "sha256": "98d62e29b203c648acbb0987e2aa904a788c6e7f00f05ac3fdc749380a6d9602",
+    "sourceBytes": 87546,
+    "bytes": 46282,
     "visibleChannelDifferences": 0,
-    "preparation": "Resampled to 512 × 512 by Chromium Canvas 2D, matching avatar-appearance.prepare for this face plate; then lossless WebP."
+    "preparation": "Rendered at 512 × 512 by the clay-figure kit (November 10, 2026) and drawn once to a Chromium Canvas 2D, as avatar-appearance.prepare reads every plate; then lossless WebP."
+  },
+  {
+    "file": "cloud.webp",
+    "sourceSha256": "05b6f3fac3525c89f66aabc8f206f89e4f3a946e3a1020892a7a55dccfb2f29a",
+    "sha256": "fc722503d9cd17f493777f51e24b8bdee441a6c812ebaa842492a25815240abd",
+    "sourceBytes": 86041,
+    "bytes": 64654,
+    "visibleChannelDifferences": 0,
+    "preparation": "Rendered at 512 × 512 by the clay-figure kit (November 10, 2026) and drawn once to a Chromium Canvas 2D, as avatar-appearance.prepare reads every plate; then lossless WebP."
+  },
+  {
+    "file": "cloud-face.webp",
+    "sourceSha256": "5165508a02077a934a8664033caaa2bc8429e78ddfc14dac441e8c2442a50375",
+    "sha256": "a5aca0c76792d9f85550116dead00708e7a4d0c304434e3f19196ba9d4c38007",
+    "sourceBytes": 83891,
+    "bytes": 61770,
+    "visibleChannelDifferences": 0,
+    "preparation": "Rendered at 512 × 512 by the clay-figure kit (November 10, 2026) and drawn once to a Chromium Canvas 2D, as avatar-appearance.prepare reads every plate; then lossless WebP."
+  },
+  {
+    "file": "bolt.webp",
+    "sourceSha256": "e381052eb0e53ba2bb25c8076be02544f0ba2016383ade0ad2599d21b574c8d2",
+    "sha256": "4e5f58981354babfdf9d7d98528d0234aa091e3193d26e5d1e7880e30cb3e3fc",
+    "sourceBytes": 84022,
+    "bytes": 39576,
+    "visibleChannelDifferences": 0,
+    "preparation": "Rendered at 512 × 512 by the clay-figure kit (November 10, 2026) and drawn once to a Chromium Canvas 2D, as avatar-appearance.prepare reads every plate; then lossless WebP."
+  },
+  {
+    "file": "bolt-face.webp",
+    "sourceSha256": "8708105d4697f50b6f23a9cea6c97e714561b9b557737a3d1cc2159ddb4107d4",
+    "sha256": "ba676c7b74719f02ce391edbf1cda6bb4ef4598d889b42fe8ff40ed88b0de997",
+    "sourceBytes": 81615,
+    "bytes": 36086,
+    "visibleChannelDifferences": 0,
+    "preparation": "Rendered at 512 × 512 by the clay-figure kit (November 10, 2026) and drawn once to a Chromium Canvas 2D, as avatar-appearance.prepare reads every plate; then lossless WebP."
+  },
+  {
+    "file": "mushroom.webp",
+    "sourceSha256": "94c273a8501299ca740498118535d6970230accb54e8ecd9067c44850deee4b5",
+    "sha256": "04e4e2bdfa674bf6408bf4f285c722013b00cad961fdccef7550d66901baab90",
+    "sourceBytes": 93504,
+    "bytes": 51100,
+    "visibleChannelDifferences": 0,
+    "preparation": "Rendered at 512 × 512 by the clay-figure kit (November 10, 2026) and drawn once to a Chromium Canvas 2D, as avatar-appearance.prepare reads every plate; then lossless WebP."
+  },
+  {
+    "file": "mushroom-face.webp",
+    "sourceSha256": "79f86a715ca4b7398d32b5abd552019032cf2e92c1894b2a7c1ca25c2f30cee1",
+    "sha256": "4e4fbfe23a1fbbc28d3a6c403ad4e44ba347dd213d77bdf52c63f17176e19ddd",
+    "sourceBytes": 90722,
+    "bytes": 48228,
+    "visibleChannelDifferences": 0,
+    "preparation": "Rendered at 512 × 512 by the clay-figure kit (November 10, 2026) and drawn once to a Chromium Canvas 2D, as avatar-appearance.prepare reads every plate; then lossless WebP."
+  },
+  {
+    "file": "moon.webp",
+    "sourceSha256": "5358dc47f924b03830dd23d734fcc71f93b6e4492ea69a08b9c23945f9ab55ef",
+    "sha256": "d8d5d5113fb4a396fc51047f8995d2c80eed72e80d4cc4f90344f52f6e0ac45d",
+    "sourceBytes": 78613,
+    "bytes": 48028,
+    "visibleChannelDifferences": 0,
+    "preparation": "Rendered at 512 × 512 by the clay-figure kit (November 10, 2026) and drawn once to a Chromium Canvas 2D, as avatar-appearance.prepare reads every plate; then lossless WebP."
+  },
+  {
+    "file": "moon-face.webp",
+    "sourceSha256": "1874a3e19ba0bba2932842e0f23c052bfb170646205a267ce8f1896f464391db",
+    "sha256": "b7e983a6766795805f78caa5876853bb5cbc3cf7049ea22226fb83801c8550dc",
+    "sourceBytes": 77078,
+    "bytes": 45348,
+    "visibleChannelDifferences": 0,
+    "preparation": "Rendered at 512 × 512 by the clay-figure kit (November 10, 2026) and drawn once to a Chromium Canvas 2D, as avatar-appearance.prepare reads every plate; then lossless WebP."
+  },
+  {
+    "file": "puzzle.webp",
+    "sourceSha256": "9b203a20868fc858f142b081d8724ef2c81501f3f48d831bff74be6818945f8f",
+    "sha256": "2ffa4ed54ced6d464df050d50e6d322736ac520366e56ad72ea6d3834109aff7",
+    "sourceBytes": 78603,
+    "bytes": 52622,
+    "visibleChannelDifferences": 0,
+    "preparation": "Rendered at 512 × 512 by the clay-figure kit (November 10, 2026) and drawn once to a Chromium Canvas 2D, as avatar-appearance.prepare reads every plate; then lossless WebP."
+  },
+  {
+    "file": "puzzle-face.webp",
+    "sourceSha256": "c225b9262a17cf0371f7e2e215e1877409b26a28734f5caa6b537a8613307058",
+    "sha256": "452ebb232ff4cc4ea94899b583f9005b4fc0427e52bc623c8980b96f58362799",
+    "sourceBytes": 75642,
+    "bytes": 49490,
+    "visibleChannelDifferences": 0,
+    "preparation": "Rendered at 512 × 512 by the clay-figure kit (November 10, 2026) and drawn once to a Chromium Canvas 2D, as avatar-appearance.prepare reads every plate; then lossless WebP."
   }
 ]
