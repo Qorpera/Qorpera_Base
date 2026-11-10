@@ -1380,7 +1380,10 @@ export class CodeRestore {
 	/** One job of the request on the company's code host. With its place in the company's line it asks the kernel first:
 	 * only on `go` do its steps run. It yields to a turn's job until the restore begins to move the place. From then on
 	 * (set aside, build, open) the place is closed to every session, the kernel does not put the request off any more
-	 * (`qorpera_code_restore_moving`), and the job keeps its place: giving way would only keep the repository closed. */
+	 * (`qorpera_code_restore_moving`), and the job keeps its place: giving way would only keep the repository closed.
+	 * The step must stay the first thing a job does: the one of the job that sets the place aside is where the kernel
+	 * ends the downloads made in the place, whose files go aside with it, and takes the repository's artifact
+	 * generation up (`qorpera_code_request_step`), before anything is moved. */
 	async #job<T>(run: RestoreRun, signal: AbortSignal, steps: (job: CodeHostJob) => Promise<T>): Promise<T> {
 		return await this.#hosts.run(
 			run.request.companyId,

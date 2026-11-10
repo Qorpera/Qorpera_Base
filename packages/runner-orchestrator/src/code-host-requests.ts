@@ -32,7 +32,11 @@ import { CodingControlBusy, withinBytes } from "./coding-executor.ts";
  *              record's files that are due. A pass runs its undos to their finish, one after another.
  *   download   a job that yields to a turn's: the kernel is asked first (`qorpera_code_request_step`), then the file
  *              is made under `code/<owner>/<name>/downloads/`, or an expired one removed. The finish comes after the
- *              job, since the file is there only once the job has saved.
+ *              job, since the file is there only once the job has saved. The step is more than a look at the lease:
+ *              it is where the kernel ends the made download whose file this job replaces, and gives the request the
+ *              repository's artifact generation, in which its file is made. So no download reads ready with its file
+ *              gone, whatever becomes of this job or of its finish, and a finish that comes after a restore began to
+ *              move the place is not taken as made.
  *   restore    part R's `CodeRestore` runs its steps; without one the request is finished failed (`NOT_BUILT`). A
  *              restore that put the repository back was recorded by the job that opened its place
  *              (`qorpera_code_restore_record`), as an undo's row is written inside its job: the finish here, after
@@ -511,7 +515,10 @@ export class CodeHostRequests {
 	}
 
 	/** A download: the file made, or an expired one removed, in a job that yields to a turn's. With its place in the
-	 * company's line, before its first command, the job asks the kernel whether the request is still this executor's. */
+	 * company's line, before its first command, the job asks the kernel whether the request is still this executor's.
+	 * That step must stay the first thing the job does: on `go` the kernel has ended the made download whose file the
+	 * job is about to replace (`qorpera_code_request_step`), and a job whose step was not answered `go` writes
+	 * nothing. */
 	async #download(request: CodeDownloadRequest, signal: AbortSignal): Promise<Ended> {
 		const repository = repositoryOf(request);
 		let outcome: CodeRequestOutcome;

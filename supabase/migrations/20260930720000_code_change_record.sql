@@ -7,9 +7,10 @@
 -- are rolled, except for (9): the folder rules (nobody writes those places today), the submit call (it takes two more
 -- keys) and the completion's sentence (there are no rows yet, so no sentence).
 --
--- 1. qorpera_code_repositories gets nine columns: the last change's number and main as the record knows it, the list
---    file's version and the version written, the back-off of record files that could not be written, and the last
---    restore.
+-- 1. qorpera_code_repositories gets ten columns: the last change's number and main as the record knows it, the list
+--    file's version and the version written, the back-off of record files that could not be written, the last
+--    restore, and the generation of what the place holds besides git (it goes up when a restore begins to move the
+--    place aside; a made download counts only in the generation it was made in).
 -- 2. qorpera_code_changes: one numbered row per movement of main (a landing, an undo, a restore, or a movement nobody
 --    recorded: `found`) and per landing that was refused. A row holds main before and after, so the rows cover main's
 --    history end to end. Numbers have no gaps: the last one and one more, under the registry row's lock, in the
@@ -25,7 +26,9 @@
 --      index.md) still to write, what they say, and that they were written. The row is the truth; a file is its copy.
 --    * qorpera_code_requests_claim / qorpera_code_request_step / qorpera_code_request_finish: lease the oldest requests
 --      this executor may do now, renew before each job, and say how each ended. An undo's finish writes the undo row
---      and sets the rows it took out `reverted`.
+--      and sets the rows it took out `reverted`. The step, asked before a job's first command, is also where a made
+--      download ends when that job is about to displace its file (a restore that moves the place aside, a newer
+--      download of the same file): before the file goes, and whatever becomes of the job or of its finish.
 --    * qorpera_code_restore_record: a restore's record, made inside the job that opens the place again, before the mark
 --      that closes it goes, as a landing's row is written inside its own job. It writes the restore's row, sets every
 --      row's state to what the restored main's history holds (`lost` for a row the restore went back past, in main again
@@ -57,11 +60,12 @@
 -- binding. Section 6 role authenticated, as a member of the company. Sections 7 and 8 no API role.
 -- Locks, always in this order: the company's profile row (a key share, where a row with its key is written), the coding
 -- session's row (only the first call), the repository's registry row, then rows of the two new tables. Nothing takes a
--- registry row before a session's. The claim and the step lock request rows only.
+-- registry row before a session's. The claim locks request rows only; so does the step, but for a download's and for
+-- a restore's of the place, which take the registry row first.
 
 set local lock_timeout = '3s';
 
--- 1. The registry gets nine columns ------------------------------------------------------------------------------------
+-- 1. The registry gets ten columns -------------------------------------------------------------------------------------
 
 alter table public.qorpera_code_repositories
 	add column last_change integer not null default 0 check (last_change >= 0),
@@ -75,7 +79,10 @@ alter table public.qorpera_code_repositories
 	add column files_not_before timestamptz,
 	add column files_problem text check (files_problem is null or files_problem ~ '^[A-Z0-9_:]{1,120}$'),
 	add column restored_at timestamptz,
-	add column restored_from text check (restored_from is null or restored_from ~ '^\d{8}T\d{6}Z-[0-9a-f]{12}$');
+	add column restored_from text check (restored_from is null or restored_from ~ '^\d{8}T\d{6}Z-[0-9a-f]{12}$'),
+	-- The generation of what the place holds besides git (downloads/): it goes up when a restore begins to move the
+	-- place aside. A made download counts only in the generation its job was begun in.
+	add column artifact_generation bigint not null default 0 check (artifact_generation >= 0);
 -- The lists still to write.
 create index qorpera_code_repositories_list_due on public.qorpera_code_repositories(environment_id, owner, name)
 	where index_written < index_version;
@@ -186,6 +193,9 @@ create table public.qorpera_code_requests (
 	finished_at timestamptz,
 	-- A download's file goes at this time.
 	expires_at timestamptz,
+	-- A download: the repository's artifact generation when the job that makes its file was begun (its step). Null
+	-- until then.
+	artifact_generation bigint check (artifact_generation is null or artifact_generation >= 0),
 	foreign key (environment_id, owner, name)
 		references public.qorpera_code_repositories(environment_id, owner, name) on delete cascade,
 	check ((lease_token is null) = (lease_until is null) and (lease_token is null) = (lease_owner is null))
@@ -909,22 +919,42 @@ begin
 	return jsonb_build_object('schema', 'qorpera.code-requests/v1', 'requests', v_claimed);
 end $$;
 
--- Asked before each job of a download or a restore: renews the lease and saves what the request has done so far. Lost:
--- the token is not the request's lease, or the caller no longer holds the company. Busy: a restore of the place
--- itself that has not begun to move it (qorpera_code_restore_moving, read from the progress this call brings), when
--- the company's sessions are no longer quiet or one of the repository's is on a machine. A download is
--- never busy here: a turn's job cancels its job instead. What a restore recorded (`recorded`, which
--- qorpera_code_restore_record wrote into the progress) is the kernel's own word there: a step keeps it, and takes none
--- from its caller. It locks the request's row only.
+-- Asked before each job of a download or a restore, with the job's place in its company's line held and before the
+-- job's first command: renews the lease and saves what the request has done so far. Lost: the token is not the
+-- request's lease, or the caller no longer holds the company. Busy: a restore of the place itself that has not begun
+-- to move it (qorpera_code_restore_moving, read from the progress this call brings), when the company's sessions are no
+-- longer quiet or one of the repository's is on a machine. A download is never busy here: a turn's job cancels its job
+-- instead.
+-- The step is also how the kernel learns that a job is about to displace what a made download points at, before the
+-- job does it. So no download reads ready with its file gone, whatever becomes of the job or of its finish:
+-- * A restore begins to move the place (the first step of the request whose progress says so; the job that sets the
+--   place aside asks it before it moves anything): the repository's artifact generation goes up, and every made
+--   download of the repository is over, since downloads/ goes aside with the place. The request's progress keeps the
+--   generation it made (`emptied`), so it advances once.
+-- * A download is to be made: the request takes the repository's generation as it stands, which is the one its file
+--   is made in, and the repository's earlier made download of the same file is over, since the job replaces what
+--   downloads/ holds of its kind.
+-- A step that answers busy or lost does neither, and its job does not run. `recorded` (what
+-- qorpera_code_restore_record wrote) and `emptied` are the kernel's own words in the progress: a step keeps them, and
+-- takes none from its caller. It locks the request's row; for a download's step and for a restore's of the place,
+-- the repository's registry row before it.
 create function public.qorpera_code_request_step(p_owner text, p_machine_id_sha256 text, p_request_id uuid,
 	p_token uuid, p_progress jsonb)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare v_now timestamptz := clock_timestamp(); v_request public.qorpera_code_requests%rowtype;
+	v_generation bigint; v_empties boolean := false; v_own jsonb := '{}'::jsonb;
 begin
 	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
 	-- (3 KiB: the row holds 4, and a restore that waits adds its word.)
 	if p_progress is not null and (jsonb_typeof(p_progress) <> 'object' or pg_column_size(p_progress) > 3072) then
 		raise exception 'Code request progress invalid' using errcode = '22023'; end if;
+	-- An unlocked read names the request's kind and its repository, whose registry row is locked before the request's.
+	select * into v_request from public.qorpera_code_requests where id = p_request_id;
+	if v_request.kind = 'download' or (v_request.kind = 'restore' and v_request.input ->> 'mode' = 'restore') then
+		select repository.artifact_generation into v_generation from public.qorpera_code_repositories repository
+		where repository.environment_id = v_request.environment_id and repository.owner = v_request.owner
+			and repository.name = v_request.name for update;
+	end if;
 	select * into v_request from public.qorpera_code_requests where id = p_request_id for update;
 	if not found or p_token is null or v_request.lease_token is distinct from p_token
 		or v_request.lease_owner is distinct from p_owner
@@ -936,10 +966,40 @@ begin
 		and not public.qorpera_code_restore_moving(coalesce(p_progress, v_request.progress))
 		and public.qorpera_code_restore_waits(v_request.environment_id, v_request.owner, v_request.name, v_now) is not null then
 		return jsonb_build_object('schema', 'qorpera.code-request-step/v1', 'state', 'busy'); end if;
+	if v_request.kind = 'restore' and v_request.input ->> 'mode' = 'restore'
+		and public.qorpera_code_restore_moving(coalesce(p_progress, v_request.progress))
+		and not coalesce(v_request.progress ? 'emptied', false) then
+		-- The job this step lets go may move the place aside, downloads/ with it.
+		v_empties := true;
+		update public.qorpera_code_repositories set artifact_generation = artifact_generation + 1
+		where environment_id = v_request.environment_id and owner = v_request.owner and name = v_request.name
+		returning artifact_generation into v_generation;
+		update public.qorpera_code_requests request set state = 'expired', lease_token = null, lease_owner = null,
+			lease_until = null, updated_at = v_now
+		where request.environment_id = v_request.environment_id and request.owner = v_request.owner
+			and request.name = v_request.name and request.kind = 'download' and request.state = 'done';
+	elsif v_request.kind = 'download' and v_request.state = 'running' then
+		-- The job this step lets go replaces what downloads/ holds of its kind. (A made download claimed to be removed
+		-- is `done`, and displaces nothing.)
+		update public.qorpera_code_requests request set state = 'expired', lease_token = null, lease_owner = null,
+			lease_until = null, updated_at = v_now
+		where request.environment_id = v_request.environment_id and request.owner = v_request.owner
+			and request.name = v_request.name and request.kind = 'download' and request.state = 'done'
+			and request.input ->> 'file' = v_request.input ->> 'file';
+	end if;
+	if v_request.progress ? 'recorded' then
+		v_own := v_own || jsonb_build_object('recorded', v_request.progress -> 'recorded'); end if;
+	if v_empties then
+		v_own := v_own || jsonb_build_object('emptied', v_generation);
+	elsif v_request.progress ? 'emptied' then
+		v_own := v_own || jsonb_build_object('emptied', v_request.progress -> 'emptied');
+	end if;
 	update public.qorpera_code_requests set lease_until = v_now + public.qorpera_code_request_lease(kind),
-		progress = coalesce(case when progress ? 'recorded'
-			then (p_progress - 'recorded') || jsonb_build_object('recorded', progress -> 'recorded')
-			else p_progress - 'recorded' end, progress), updated_at = v_now
+		progress = case when p_progress is null and not v_empties then progress
+			else ((coalesce(p_progress, progress, '{}'::jsonb) - 'recorded') - 'emptied') || v_own end,
+		artifact_generation = case when kind = 'download' and state = 'running' then v_generation
+			else artifact_generation end,
+		updated_at = v_now
 	where id = p_request_id returning * into v_request;
 	return jsonb_build_object('schema', 'qorpera.code-request-step/v1', 'state', 'go', 'leaseUntil', v_request.lease_until);
 end $$;
@@ -1015,9 +1075,9 @@ $$;
 --   main): a filler for that gap first, as before any other movement.
 -- * Every row's state as the restored main's history has it (qorpera_code_changes_restored).
 -- * The restore's own row, from main as it was to main as restored.
--- * The place is new: every record file and the list are written again, the downloads made in the old place are over
---   (their files went aside with it), and care checks the repository at the next quiet moment, trusting no refs it
---   knew.
+-- * The place is new: every record file and the list are written again, and care checks the repository at the next
+--   quiet moment, trusting no refs it knew. (The downloads made in the old place were over when the restore began
+--   to move it: qorpera_code_request_step.)
 -- Made again, it is the same record:
 -- * by the same request (the first answer was not heard, or the job did not save and the request was claimed again):
 --   what it recorded is answered, and nothing is written;
@@ -1106,12 +1166,6 @@ begin
 	update public.qorpera_code_repositories set main_sha = v_main, restored_at = v_now, restored_from = v_bundle,
 		refs_sha256 = null, next_care_at = v_now, index_written = 0
 	where environment_id = v_repository.environment_id and owner = v_repository.owner and name = v_repository.name;
-	-- A made download is ready only while its file is the one it made: downloads/ went aside with the old place. Each
-	-- is over, with nothing left to remove (a removal that was claimed finds its lease gone).
-	update public.qorpera_code_requests request set state = 'expired', lease_token = null, lease_owner = null,
-		lease_until = null, updated_at = v_now
-	where request.environment_id = v_repository.environment_id and request.owner = v_repository.owner
-		and request.name = v_repository.name and request.kind = 'download' and request.state = 'done';
 	v_recorded := v_recorded || jsonb_build_object('change', v_n);
 	update public.qorpera_code_requests set updated_at = v_now, progress = coalesce(progress, '{}'::jsonb)
 		|| jsonb_build_object('recorded', v_recorded || jsonb_build_object('bundle', v_bundle, 'mainSha', v_main))
@@ -1127,8 +1181,11 @@ end $$;
 --   it took out are reverted by it. With andLater that is every row from the target on that was in main, newest
 --   first, each as it stands when its turn comes, so an undo among them puts its own targets back before they go too.
 --   A finish that comes after its job, when the record has moved on, takes over the filler that covers the undo.
--- * A made download lasts 7 days; a removed one is expired. Making one replaced the file of the repository's earlier
---   made download of the same kind (one zip and one bundle stay at most): that one is over, so it is ready to nobody.
+-- * A made download lasts 7 days; a removed one is expired. `made` is taken only from a request whose job asked its
+--   step first (55000 otherwise): the step gave it the repository's artifact generation, and ended the earlier made
+--   download of its file before the job replaced it. When a restore has begun to move the place since, the file went
+--   aside before this finish came: the download is over at once (expired), and is ready to nobody. The finish ends
+--   no other request.
 -- * A restore that put the repository back was recorded inside the job that opened the place
 --   (qorpera_code_restore_record): the finish writes no row. It ends the request, with what was recorded beside the
 --   outcome, and takes `restored` only for a request that recorded this bundle at this main (55000 otherwise): a
@@ -1142,7 +1199,7 @@ declare
 	v_repository public.qorpera_code_repositories%rowtype; v_change public.qorpera_code_changes%rowtype;
 	v_state text := p_outcome ->> 'state'; v_result text := p_outcome ->> 'result'; v_removal boolean; v_n integer;
 	v_target integer; v_later boolean; v_each integer; v_undoes integer[] := '{}'; v_paths jsonb; v_recorded jsonb;
-	v_words jsonb; v_exact boolean; v_stored jsonb := p_outcome;
+	v_words jsonb; v_exact boolean; v_stored jsonb := p_outcome; v_displaced boolean := false;
 	v_lost jsonb := jsonb_build_object('schema', 'qorpera.code-request-finish/v1', 'state', 'lost');
 begin
 	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
@@ -1269,27 +1326,25 @@ begin
 		-- many rows went and came back.
 		v_stored := p_outcome || (v_recorded - 'change' - 'bundle' - 'mainSha');
 	end if;
-	-- A made download is ready only while its file is the one it made, and this one's job replaced what downloads/ held
-	-- of its kind: the earlier made downloads of that file are over, with nothing left to remove.
+	-- A made download counts in the generation its job was begun in, and in no other: a restore that began to move the
+	-- place since took its file aside.
 	if v_result = 'made' then
-		update public.qorpera_code_requests request set state = 'expired', lease_token = null, lease_owner = null,
-			lease_until = null, updated_at = v_now
-		where request.environment_id = v_request.environment_id and request.owner = v_request.owner
-			and request.name = v_request.name and request.kind = 'download' and request.state = 'done'
-			and request.input ->> 'file' = v_request.input ->> 'file' and request.id <> v_request.id;
+		if v_request.artifact_generation is null then
+			raise exception 'Code download was not begun' using errcode = '55000'; end if;
+		v_displaced := v_request.artifact_generation <> v_repository.artifact_generation;
 	end if;
 	-- What a refused undo names fits the row.
 	if v_state = 'refused' and p_outcome ? 'paths' then
 		v_stored := p_outcome || jsonb_build_object('paths', public.qorpera_code_change_fit(p_outcome -> 'paths', 100, 12288));
 	end if;
 	update public.qorpera_code_requests set
-		state = case when v_result = 'removed' then 'expired' else v_state end,
+		state = case when v_result = 'removed' or v_displaced then 'expired' else v_state end,
 		lease_token = null, lease_owner = null, lease_until = null, not_before = null,
 		-- A made download counts its removal's claims from none.
 		attempts = case when v_result = 'made' then 0 else attempts end,
 		outcome = case when v_n is null then v_stored else v_stored || jsonb_build_object('change', v_n) end,
 		finished_at = coalesce(finished_at, v_now), updated_at = v_now,
-		expires_at = case when v_result = 'made' then v_now + interval '7 days' else expires_at end
+		expires_at = case when v_result = 'made' and not v_displaced then v_now + interval '7 days' else expires_at end
 	where id = p_request_id;
 	return jsonb_build_object('schema', 'qorpera.code-request-finish/v1', 'state', 'recorded', 'change', v_n);
 end $$;
@@ -1546,8 +1601,9 @@ end $$;
 
 -- An owner or admin asks for the company's code: `files` (main's files as a .zip) or `history` (main with its history
 -- as a git bundle, for a developer). Answers, in this order: the made download of that file when main has not moved
--- since (ready; a made download is over once a newer one of that file is made, and when a restore puts the repository
--- in a new place, so the one found here still has its file); the open request of that file; refused after 20 download requests of the company in 24 hours
+-- since (ready; a made download is over as soon as a job is let go that displaces its file, a newer download of that
+-- file or a restore that moves the place aside, so the one found here still has its file); the open request of that
+-- file; refused after 20 download requests of the company in 24 hours
 -- (too_many) or when no executor holds the company (no_executor); else a new request (queued). P0002 when the company
 -- has no such repository.
 create function public.qorpera_request_code_download(p_profile_id uuid, p_owner text, p_name text, p_file text)

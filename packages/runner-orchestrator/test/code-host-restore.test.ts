@@ -1009,8 +1009,9 @@ describe("CodeRestore: a restore request, step by step", () => {
 	function executor(f: Fixture) {
 		const store = createCodeBundleStore({ root: join(f.controlRoot, CODE_BUNDLE_FOLDER) });
 		const kernel = {
-			/** What each step call saved, in order. */
+			/** What each step call saved, in order, and whether the place held its repository when it was asked. */
 			steps: [] as Record<string, unknown>[],
+			whole: [] as boolean[],
 			answer: (_progress: Record<string, unknown>): "go" | "busy" | "lost" => "go",
 			/** Each record call, in order, with whether the place was still closed when it came. */
 			records: [] as { args: Record<string, unknown>; closed: boolean }[],
@@ -1039,7 +1040,10 @@ describe("CodeRestore: a restore request, step by step", () => {
 				const progress = structuredClone(args.p_progress) as Record<string, unknown>,
 					state = kernel.answer(progress);
 				// The kernel saves only when it lets the job go on.
-				if (state === "go") kernel.steps.push(progress);
+				if (state === "go") {
+					kernel.steps.push(progress);
+					kernel.whole.push(await exists(f.repo));
+				}
 				return {
 					schema: "qorpera.code-request-step/v1",
 					state,
@@ -1177,6 +1181,10 @@ describe("CodeRestore: a restore request, step by step", () => {
 			{ step: "build", bundle: name, at: AT, setAside: ASIDE },
 			{ step: "open", bundle: name, at: AT, setAside: ASIDE, built: true },
 		]);
+		// Each job asks before its first command. The first step that says the place is to be moved comes while the
+		// place still holds everything: that step is where the kernel ends the downloads made there, before they go
+		// aside. (Then the place is empty, until it is built.)
+		expect(x.kernel.whole).toEqual([true, true, true, true, false, false, true]);
 		// The jobs before the place moves yield to a turn's; from the set-aside to the open they keep their place.
 		expect(x.jobs.yields).toEqual([true, true, true, false, false, false, false]);
 		expect(CODE_RESTORE_RPCS).toEqual(["qorpera_code_request_step", "qorpera_code_restore_record"]);
