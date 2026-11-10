@@ -2434,6 +2434,38 @@ describe("new conversation and agent setup", () => {
 		expect(f.view.el.querySelector<HTMLInputElement>('[aria-label="Agent name"]')?.value).toBe("Draft agent");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
+	it("stops the microphone when a new agent's setup takes the composer's place", async () => {
+		const heard: { onresult: ((event: unknown) => void) | null; aborted: boolean }[] = [];
+		vi.stubGlobal(
+			"webkitSpeechRecognition",
+			class {
+				onresult: ((event: unknown) => void) | null = null;
+				onerror = null;
+				onend = null;
+				aborted = false;
+				constructor() {
+					heard.push(this);
+				}
+				start() {}
+				stop() {}
+				abort() {
+					this.aborted = true;
+				}
+			},
+		);
+		const f = setupNew();
+		f.company.store.set({ team });
+		await settle();
+		const message = f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')!;
+		button(f.view.el, "Dictate").click();
+		heard[0]!.onresult?.({ results: [[{ transcript: "Hello" }]] });
+		expect(message.value).toBe("Hello");
+		choice(f.view.el, "create").click();
+		expect(f.view.el.querySelector('[aria-label="Agent name"]')).not.toBeNull();
+		expect(heard[0]!.aborted).toBe(true);
+		heard[0]!.onresult?.({ results: [[{ transcript: "Hello there" }]] });
+		expect(message.value).toBe("Hello");
+	});
 	it("sends to the selected group only on the first message and blocks duplicate sends", async () => {
 		const pending = deferred<string>(),
 			startConversation = vi.fn(() => pending.promise);
@@ -3055,30 +3087,63 @@ describe("the composer at a scale that makes one line fractional", () => {
 		const style = drawAt125();
 		try {
 			const f = setup();
-			// One line is 42 × 1.25 = 52.5 pixels, which Chrome reports as 53. The empty composer once
-			// opened in its two-row shape here, because 53 > 52.5.
-			const one = typeDraft(f.view, 53);
+			// One line is 34 × 1.25 = 42.5 pixels, which Chrome reports as 43. The empty composer once
+			// opened in its two-row shape here, because 43 > 42.5.
+			const one = typeDraft(f.view, 43);
 			expect(one.expanded).toBe(false);
-			expect(one.field.style.height).toBe("53px");
-			expect(one.shell.style.height).toBe("55px");
-			// Two lines: the shell adds its expanded padding (8 + 34, at 125%) and its 1px borders.
-			const two = typeDraft(f.view, 79);
+			expect(one.field.style.height).toBe("43px");
+			expect(one.shell.style.height).toBe("45px");
+			// Two lines: the shell adds its expanded padding (8 + 32, at 125%) and its 1px borders.
+			const two = typeDraft(f.view, 69);
 			expect(two.expanded).toBe(true);
-			expect(two.shell.style.height).toBe("133.5px");
+			expect(two.shell.style.height).toBe("121px");
 			// Back to one line: the shell is measured compact again, so it folds back to one row.
-			const again = typeDraft(f.view, 53);
+			const again = typeDraft(f.view, 43);
 			expect(again.expanded).toBe(false);
-			expect(again.shell.style.height).toBe("55px");
+			expect(again.shell.style.height).toBe("45px");
 			// The tallest draft is 112 × 1.25 = 140 pixels; past it the field scrolls.
 			const tall = typeDraft(f.view, 400);
 			expect(tall.field.style.height).toBe("140px");
 			expect(tall.field.style.overflowY).toBe("auto");
 			// A file keeps the shell expanded, even under one line of text: measured expanded, one
-			// line is the expanded field's 30 × 1.25 = 37.5, read as 38, under the compact 52.5.
+			// line is the expanded field's 26 × 1.25 = 32.5, read as 33, under the compact 42.5.
 			attach(f.view.el, [new File(["notes"], "notes.txt", { type: "text/plain" })]);
-			expect(typeDraft(f.view, 38).expanded).toBe(true);
+			expect(typeDraft(f.view, 33).expanded).toBe(true);
 		} finally {
 			style.remove();
 		}
+	});
+});
+
+describe("the composer's microphone", () => {
+	it("stands beside the send button and writes what is heard into the draft", () => {
+		const heard: { onresult: ((event: unknown) => void) | null; abort: () => void }[] = [];
+		vi.stubGlobal(
+			"webkitSpeechRecognition",
+			class {
+				onresult: ((event: unknown) => void) | null = null;
+				onerror = null;
+				onend = null;
+				aborted = false;
+				constructor() {
+					heard.push(this);
+				}
+				start() {}
+				stop() {}
+				abort() {
+					this.aborted = true;
+				}
+			},
+		);
+		const f = setup({ sendMessage: vi.fn(async () => ({ sessionId: session.sessionId })) as never });
+		const shell = f.view.el.querySelector<HTMLElement>(".composer-shell")!;
+		const mic = button(shell, "Dictate");
+		expect(mic.nextElementSibling).toBe(shell.querySelector(".composer-send"));
+		expect(shell.querySelector(".composer-more path")?.getAttribute("d")).toBe("M12 5v14M5 12h14");
+		mic.click();
+		heard[0]!.onresult?.({ results: [[{ transcript: "Book a meeting" }]] });
+		expect(f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')!.value).toBe("Book a meeting");
+		expect(f.company.conversation(session.sessionId).get().draft).toBe("Book a meeting");
+		expect(button(shell, "Stop dictation")).toBe(mic);
 	});
 });

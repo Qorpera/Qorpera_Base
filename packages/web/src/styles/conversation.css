@@ -66,6 +66,8 @@
  * hold its menus under whatever stands beside it in the composer (a draft's button on the wall's line). */
 .thread-foot .composer { position: relative; z-index: 7; }
 .thread-foot .composer-shell { border-color: var(--glass-edge); background: transparent; box-shadow: var(--glass-shadow); }
+.thread-foot .composer-more { border: 1px solid var(--glass-edge); background: var(--glass-bg); box-shadow: var(--glass-shadow); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
+.thread-foot .composer-more:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 6%, var(--glass-bg)); }
 .thread-foot .composer-shell::before {
 	content: ""; position: absolute; z-index: -1; inset: 0; border-radius: inherit; background: var(--glass-bg); pointer-events: none;
 	-webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
@@ -84,7 +86,7 @@
 /* A line of words alone (a note under the field, the drafts' helpers) gets a glass chip of its own to be read on, and the
  * run's execution line (its login picker, a send to start again) a glass card. The Answering strip is inside the
  * composer's own glass. */
-.thread-foot :is(.composer-mention-note, .composer-quote-note, .attachment-status:not(:empty), .draft-helpers, .draft-own-note, .thread-status > p) {
+.thread-foot :is(.composer-mention-note, .composer-quote-note, .composer-dictation-note, .attachment-status:not(:empty), .draft-helpers, .draft-own-note, .thread-status > p) {
 	width: fit-content; max-width: 100%; box-sizing: border-box; padding: 3px 9px; border-radius: 12px; background: var(--glass-bg);
 	-webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
 }
@@ -213,19 +215,23 @@
 .skeleton.skeleton-bubble { width: 100%; height: 39px; border-radius: 18px 18px 18px 5px; }
 .skeleton-message-agent + .skeleton-message-agent .skeleton-bubble { border-top-left-radius: 8px; }
 .skeleton-message-mine .skeleton-bubble { border-radius: 18px 18px 5px 18px; }
-.skeleton.skeleton-composer-field { height: 44px; border-radius: 22px; }
-.composer-shell { position: relative; min-height: 44px; border: 1px solid var(--border-strong); border-radius: 22px; background: #fff; padding: 0 43px; transition: height 320ms cubic-bezier(.2,.7,.2,1), border-radius 320ms ease; }
+.skeleton.skeleton-composer-field { height: 36px; border-radius: 18px; }
+/* A thin capsule, as in Messages: the menu's "+" stands outside it on the left, the microphone and the send button
+ * inside it on the right (Jonas, 10 Nov 2026). */
+.composer-shell { position: relative; min-height: 36px; border: 1px solid var(--border-strong); border-radius: 18px; background: #fff; padding: 0 36px 0 16px; transition: height 320ms cubic-bezier(.2,.7,.2,1), border-radius 320ms ease; }
 .composer-shell.is-dragging { border-color: var(--composer-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--composer-accent) 22%, transparent); }
-.composer-shell .composer-input { display: block; width: 100%; min-width: 0; height: 42px; min-height: 42px; max-height: 112px; border: 0; background: transparent; padding: 11px 0 8px; resize: none; border-radius: 0; outline: 0; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; }
-.composer-shell.is-expanded { border-radius: 16px; padding: 8px 12px 34px; }
-.composer-shell.is-expanded .composer-input { padding: 0; min-height: 30px; }
+.composer-shell:has(> .composer-more) { margin-left: 44px; }
+.composer-shell:not(.is-expanded):has(> .composer-mic:not([hidden])) { padding-right: 66px; }
+.composer-shell .composer-input { display: block; width: 100%; min-width: 0; height: 34px; min-height: 34px; max-height: 112px; border: 0; background: transparent; padding: 7px 0 6px; resize: none; border-radius: 0; outline: 0; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; }
+.composer-shell.is-expanded { border-radius: 16px; padding: 8px 14px 32px; }
+.composer-shell.is-expanded .composer-input { padding: 0; min-height: 26px; }
 /* Skills called with "/" (contract 15.2). While the text names a skill, the field's own
  * characters turn transparent and a copy of the text, whose skill names are blue, lies over
  * them (it ignores the pointer). The copy has the field's exact box, font and wrapping, so the
  * two never drift apart, and a selection's background still shows between its letters. */
 .composer-field { position: relative; }
 .composer-shell .composer-input { white-space: pre-wrap; overflow-wrap: break-word; }
-.composer-highlight { position: absolute; inset: 0; overflow: hidden; pointer-events: none; visibility: hidden; padding: 11px 0 8px; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; white-space: pre-wrap; overflow-wrap: break-word; }
+.composer-highlight { position: absolute; inset: 0; overflow: hidden; pointer-events: none; visibility: hidden; padding: 7px 0 6px; font-family: var(--font-sans); font-size: 16px; line-height: 21px; letter-spacing: 0; white-space: pre-wrap; overflow-wrap: break-word; }
 .composer-shell.is-expanded .composer-highlight { padding: 0; }
 .composer-field:is(.has-skills, .has-quotes) .composer-highlight { visibility: visible; }
 .composer-field:is(.has-skills, .has-quotes) .composer-input { color: transparent; caret-color: var(--text); }
@@ -264,10 +270,19 @@
 .skill-option.is-loading .skeleton-line { grid-column: 1 / -1; width: 36%; }
 .skill-option.is-loading .skeleton-line.skeleton-small { width: 72%; }
 .skill-menu-note { margin: 6px 8px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
-.composer-more, .composer-send { position: absolute; bottom: 4px; width: 34px; height: 34px; min-height: 34px; border-radius: 50%; }
-.composer-more { left: 4px; }
-.composer-more .icon { stroke-width: 4px; }
-.composer-send { right: 4px; display: grid; place-items: center; padding: 0; border: 0; background: var(--composer-accent); color: var(--composer-on-accent); cursor: pointer; }
+.composer-more, .composer-mic, .composer-send { position: absolute; bottom: 3px; width: 28px; height: 28px; min-height: 28px; border-radius: 50%; }
+/* The "+" is a round button of its own beside the capsule, level with its last line. */
+.composer-more { left: -45px; bottom: -1px; width: 36px; height: 36px; min-height: 36px; background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--text-muted); }
+.composer-more:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 12%, transparent); color: var(--text); }
+.composer-more .icon { width: 19px; height: 19px; stroke-width: 2.1px; }
+.composer-mic { right: 34px; }
+.composer-mic .icon { width: 17px; height: 17px; }
+/* Listening: red as a recording is, with a soft ring that breathes. */
+.composer-mic.is-listening, .composer-mic.is-listening:hover:not(:disabled) { background: #ff3b30; color: #fff; animation: composer-listening 1.4s ease-in-out infinite; }
+@keyframes composer-listening { 50% { box-shadow: 0 0 0 4px rgb(255 59 48 / 22%); } }
+.composer-dictation-note { margin: 6px 6px 0; color: var(--text-muted); font-size: 12px; line-height: 16px; }
+.composer-dictation-note[hidden] { display: none; }
+.composer-send { right: 3px; display: grid; place-items: center; padding: 0; border: 0; background: var(--composer-accent); color: var(--composer-on-accent); cursor: pointer; }
 .composer-send:disabled { background: #e8e8e8; color: #aaa; cursor: default; }
 .composer-send:not(:disabled):hover { background: var(--composer-accent-hover); }
 .composer-menu { position: absolute; z-index: 30; left: 0; bottom: calc(100% + 8px); width: 252px; max-width: calc(100vw - 48px); max-height: min(360px, 65dvh); overflow-y: auto; padding: 5px; border: 1px solid var(--border); border-radius: 12px; background: var(--overlay); box-shadow: 0 12px 30px rgb(0 0 0 / 14%); }
@@ -800,6 +815,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 	.draft-notch.is-typing .draft-dots i { animation: none; opacity: 1; }
 	.draft-peek { transition: none; }
 	.composer-shell, .composer-switch, .composer-switch::after { transition: none; }
+	.composer-mic.is-listening { animation: none; }
 }
 
 /* Group details use the same anchored frame as an agent's details. */
@@ -927,7 +943,7 @@ dialog.surface-dialog.image-viewer-dialog[open] { animation: image-viewer-in var
 .composer-shell.coding-composer:not(.is-expanded) { padding-left: 16px; }
 .coding-composer:has(.coding-field-input[aria-disabled="true"]) { background: var(--hover); }
 .coding-field-input[aria-disabled="true"] { cursor: default; }
-.coding-talk-locked { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 6px 16px; border-radius: 22px; background: var(--hover); box-sizing: border-box; font-size: 12.5px; line-height: 16px; color: var(--text-muted); text-align: center; }
+.coding-talk-locked { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 6px 16px; border-radius: 18px; background: var(--hover); box-sizing: border-box; font-size: 12.5px; line-height: 16px; color: var(--text-muted); text-align: center; }
 .coding-talk-locked .coding-glyph { margin: 0; width: 12px; height: 12px; }
 /* The sessions still going: one pill above the composer, with a gap under it. Hover, focus or a tap unfolds it
  * upward over the messages into a line per session, so the composer and the messages never move. */
