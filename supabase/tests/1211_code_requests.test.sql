@@ -276,11 +276,15 @@ begin
 	perform pg_temp.base_assert(public.qorpera_folder_request_code_undo(pg_temp.c3_alice(), v_request - 'notice'
 			|| '{"operationKey":"undo-none","change":3}') = pg_temp.req_refused('never_landed'), 'a notice left out');
 	perform pg_temp.base_error($q$select pg_temp.req_undo('undo-1', 5)$q$, '23505', 'logical operation key is already bound to other work');
-	-- Another call for the same change finds the open request, whatever else it says; one for another change is told
-	-- that the repository is busy.
-	perform pg_temp.base_assert(pg_temp.req_undo('undo-1b', 6) = v and pg_temp.req_undo('undo-1c', 6, true) = v
+	-- Another call for the same undo (that change, alone) finds the open request, whatever reason or notice it gives.
+	-- One for that change and every later one asks for something else: it is told the repository is busy, as is one
+	-- for another change. It is never handed the open request, which would not do what it asked.
+	perform pg_temp.base_assert(pg_temp.req_undo('undo-1b', 6) = v
+		and pg_temp.req_undo('undo-1b2', 6, p_keys => '{"reason":"Another reason.","notice":"Other words."}') = v
+		and pg_temp.req_undo('undo-1c', 6, true) = pg_temp.req_refused('busy')
 		and pg_temp.req_undo('undo-1d', 5) = pg_temp.req_refused('busy')
-		and (select count(*) from public.qorpera_code_requests) = 1, 'one open undo');
+		and (select count(*) from public.qorpera_code_requests) = 1
+		and (pg_temp.req_row(v_id)).input -> 'andLater' = 'false', 'one open undo, of one scope');
 	-- The agent reads how it stands; another company's request, or none, is no request.
 	perform pg_temp.base_assert(pg_temp.req_read(v_id) = jsonb_build_object('schema', 'qorpera.code-request/v1', 'requestId', v_id,
 		'kind', 'undo', 'state', 'queued', 'result', null, 'change', null, 'code', null, 'paths', null), 'queued: ' || pg_temp.req_read(v_id)::text);
@@ -1386,9 +1390,12 @@ declare v jsonb;
 begin
 	perform pg_temp.base_assert(pg_temp.req_undo('undo-big-1', 1, true, p_name => 'big') = pg_temp.req_refused('too_many')
 		and pg_temp.req_undo('undo-big-2', 2, true, p_name => 'big') = pg_temp.req_refused('too_many'), 'too many');
-	-- 500 at once, and one alone, are asked for.
+	-- 500 at once are asked for. Asked again the same way, that is the open request. The third change alone is another
+	-- undo (and not too many): while this one is open it is told busy, not handed the request that takes out 500.
 	v := pg_temp.req_undo('undo-big-3', 3, true, p_name => 'big');
-	perform pg_temp.base_assert(v ->> 'state' = 'queued' and pg_temp.req_undo('undo-big-4', 3, p_name => 'big') = v, '500 changes: ' || v::text);
+	perform pg_temp.base_assert(v ->> 'state' = 'queued' and pg_temp.req_undo('undo-big-4', 3, true, p_name => 'big') = v
+		and pg_temp.req_undo('undo-big-5', 3, p_name => 'big') = pg_temp.req_refused('busy')
+		and (select count(*) from public.qorpera_code_requests where name = 'big') = 1, '500 changes: ' || v::text);
 	v := pg_temp.req_finish((v ->> 'requestId')::uuid, (pg_temp.req_claim() -> 0 ->> 'token')::uuid, pg_temp.req_moved('b502', 'bu'));
 	perform pg_temp.base_assert(v = pg_temp.req_recorded(503) and cardinality((pg_temp.rec_row(503, 'big')).undoes) = 500
 		and (pg_temp.rec_row(503, 'big')).undoes[1] = 3 and (pg_temp.rec_row(503, 'big')).undoes[500] = 502

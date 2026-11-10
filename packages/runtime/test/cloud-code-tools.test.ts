@@ -473,6 +473,13 @@ describe("manage_code undo: one answer in plain words per way it can go", () => 
 			false,
 			"Nothing was undone: another undo, or a restore, is being made in acme/shop. Call again with a new operationKey when it is done.",
 		],
+		// Also when the undo that is open is of this very change with the other scope: the kernel hands a call only a
+		// request that does what it asked, so one with andLater is never answered from an undo of the change alone.
+		[
+			"busy",
+			true,
+			"Nothing was undone: another undo, or a restore, is being made in acme/shop. Call again with a new operationKey when it is done.",
+		],
 		[
 			"no_executor",
 			false,

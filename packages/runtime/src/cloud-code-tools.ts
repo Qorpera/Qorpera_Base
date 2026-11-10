@@ -212,7 +212,9 @@ function undoRefused(reason: Extract<CloudCompanyCodeUndo, { state: "refused" }>
 				: `Change ${n} cannot be undone: the record does not hold main as it was before it. Instead, ${followUp}.`;
 		case "too_many":
 			return `Nothing was undone: that would take out more than 500 changes at once. Instead, ${followUp}.`;
-		// The answer is kept under the call's operation key, so a later try needs a new one.
+		// The answer is kept under the call's operation key, so a later try needs a new one. The other undo may be of this
+		// very change with the other scope (alone, where this call says andLater, or the other way round): the kernel
+		// hands a call the open request only when it is the same undo, so what this call reports is what it asked for.
 		case "busy":
 			return `Nothing was undone: another undo, or a restore, is being made in ${request.owner}/${request.name}. Call again with a new operationKey when it is done.`;
 		case "no_executor":

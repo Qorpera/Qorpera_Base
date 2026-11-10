@@ -1313,9 +1313,11 @@ begin
 end $$;
 
 -- An agent asks for a change to be taken out of main: that change alone, or with andLater that change and every later
--- one. Answers queued (a request was added, or the open undo of the same change was found), already (the row is
--- reverted) or refused with why; P0002 when there is no such repository or number. A replay under the same operation
--- key answers what the first call answered.
+-- one. Answers queued (a request was added, or the open request for the very same undo was found: the same change
+-- with the same andLater), already (the row is reverted) or refused with why; P0002 when there is no such repository
+-- or number. An open undo of that change with the other scope is another undo: the caller is told busy, never handed
+-- a request that does something else than it asked. A replay under the same operation key answers what the first
+-- call answered.
 create function public.qorpera_folder_request_code_undo(p_binding jsonb, p_request jsonb)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare
@@ -1374,7 +1376,8 @@ begin
 			where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
 				and change.name = v_repository.name and change.n >= v_n and change.state = 'landed' limit 501) later) > 500
 			then 'too_many'
-		when v_open.id is not null and (v_open.kind <> 'undo' or v_open.input -> 'change' <> to_jsonb(v_n)) then 'busy'
+		when v_open.id is not null and (v_open.kind <> 'undo' or v_open.input -> 'change' <> to_jsonb(v_n)
+			or v_open.input -> 'andLater' <> to_jsonb(v_later)) then 'busy'
 		when v_open.id is null and (select count(*) from public.qorpera_coding_executors executor
 			where executor.environment_id = v_repository.environment_id and executor.enabled) <> 1 then 'no_executor' end;
 	if v_change.state = 'reverted' then
