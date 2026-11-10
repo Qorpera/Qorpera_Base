@@ -15,8 +15,10 @@
 --    takes it with the company (20260928248920 follows its two foreign keys).
 -- 2. qorpera_code_care_due(owner, machine, limit): the repositories an executor may care for now, oldest first. Care is
 --    on and due, no run holds the lease, the caller is the environment's only enabled executor, the company is not
---    being deleted, and none of its coding sessions is queued, input_ready, preparing, running or publishing. It
---    writes nothing.
+--    being deleted, and none of its coding sessions is in a turn (preparing, running, publishing) or came to wait for
+--    an executor in the last 15 minutes (queued, input_ready). One that has waited longer waits for something that
+--    can take hours, such as its login's usage limit: care does not wait with it, and a turn that starts after all
+--    cancels care's job (it yields). It writes nothing.
 -- 3. qorpera_code_care_step(owner, machine, environment, repository owner, name, token, step): asked before each job
 --    of a run. 'begin' (no token) starts a run: a new token, a lease of two hours, one more start counted. Every other
 --    step names the run's token and renews the lease. Each call repeats every check of (2), so a run stops at its next
@@ -139,6 +141,18 @@ select public.qorpera_code_repositories_backfill();
 
 -- 2. What the three calls share -----------------------------------------------------------------------------------------
 
+-- Whether a company's coding sessions keep care away now: one is in a turn, or came to wait for an executor in the last
+-- 15 minutes (a claim takes such a session within seconds). A session still waiting after that waits for its login's
+-- usage limit, computer hours or the like, perhaps for days: care goes ahead, and the turn's first job cancels care's
+-- job when the session is taken after all (care's jobs yield).
+create function public.qorpera_code_care_busy(p_environment_id uuid, p_now timestamptz)
+returns boolean language sql stable security definer set search_path = '' as $$
+	select exists (select 1 from public.qorpera_coding_sessions session
+		where session.environment_id = p_environment_id
+			and (session.phase in ('preparing','running','publishing')
+				or (session.phase in ('queued','input_ready') and session.updated_at > p_now - interval '15 minutes')))
+$$;
+
 -- Whether this owner on this machine is the environment's coding executor and its only enabled one: care runs only
 -- where one executor alone works on the company's code.
 create function public.qorpera_code_care_holder(p_environment_id uuid, p_owner text, p_machine_id_sha256 text)
@@ -232,10 +246,8 @@ begin
 			and public.qorpera_code_care_holder(repository.environment_id, p_owner, p_machine_id_sha256)
 			and not exists (select 1 from public.qorpera_company_deletions deletion
 				where deletion.profile_id = repository.profile_id)
-			-- The company's coding sessions are quiet: none waits for an executor or is in a turn.
-			and not exists (select 1 from public.qorpera_coding_sessions session
-				where session.environment_id = repository.environment_id
-					and session.phase in ('queued','input_ready','preparing','running','publishing'))
+			-- The company's coding sessions are quiet: none is in a turn or just came to wait for an executor.
+			and not public.qorpera_code_care_busy(repository.environment_id, v_now)
 		order by repository.next_care_at, repository.environment_id, repository.owner collate "C", repository.name collate "C"
 		limit p_limit) due;
 	return jsonb_build_object('schema', 'qorpera.code-care-due/v1', 'repositories', v_due);
@@ -280,8 +292,7 @@ begin
 		where environment_id = p_environment_id and owner = p_repository_owner and name = p_name;
 		return jsonb_build_object('schema', 'qorpera.code-care-step/v1', 'state', 'not-due');
 	end if;
-	if exists (select 1 from public.qorpera_coding_sessions session where session.environment_id = p_environment_id
-		and session.phase in ('queued','input_ready','preparing','running','publishing')) then
+	if public.qorpera_code_care_busy(p_environment_id, v_now) then
 		return jsonb_build_object('schema', 'qorpera.code-care-step/v1', 'state', 'busy'); end if;
 	if p_step = 'retire' and v_row.retire_enabled then
 		-- This repository's sessions archived for 7 days, off every machine, with no turn open or unsettled. Those after
@@ -383,6 +394,7 @@ end $$;
 revoke all on function public.qorpera_code_repository_register(),
 	public.qorpera_code_repositories_backfill(),
 	public.qorpera_code_care_holder(uuid, text, text),
+	public.qorpera_code_care_busy(uuid, timestamptz),
 	public.qorpera_code_care_next_at(text, text, boolean, timestamptz),
 	public.qorpera_code_care_text_valid(jsonb, text),
 	public.qorpera_code_care_outcome_valid(jsonb)

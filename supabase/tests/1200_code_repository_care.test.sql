@@ -89,8 +89,9 @@ create function pg_temp.care_no_bundle(p_state text) returns jsonb language sql 
 	select jsonb_build_object('state', p_state, 'name', null, 'sha256', null, 'bytes', null, 'refsSha256', null)
 $$;
 -- Session b1's phase, as its turns would move it.
-create function pg_temp.care_phase(p_phase text) returns void language sql as $$
-	update public.qorpera_coding_sessions set phase = p_phase where worker_id = '91170000-0000-4000-8000-0000000000b1'
+create function pg_temp.care_phase(p_phase text, p_ago interval default interval '0') returns void language sql as $$
+	update public.qorpera_coding_sessions set phase = p_phase, updated_at = clock_timestamp() - p_ago
+	where worker_id = '91170000-0000-4000-8000-0000000000b1'
 $$;
 -- The id of the n-th copy of a session.
 create function pg_temp.care_copy(p_n integer) returns uuid language sql immutable as $$
@@ -260,6 +261,19 @@ begin
 		perform pg_temp.care_phase(v_phase);
 		perform pg_temp.base_assert(pg_temp.care_names() = 'app,shop,site', 'a session is ' || v_phase);
 	end loop;
+	-- A session that has waited for an executor for more than 15 minutes waits for something that can take hours (its
+	-- login's usage limit): care does not wait with it. A turn, however long it lasts, keeps care away.
+	foreach v_phase in array array['queued', 'input_ready'] loop
+		perform pg_temp.care_phase(v_phase, interval '14 minutes');
+		perform pg_temp.base_assert(pg_temp.care_names() = 'app', 'a session is ' || v_phase || ' for 14 minutes');
+		perform pg_temp.care_phase(v_phase, interval '16 minutes');
+		perform pg_temp.base_assert(pg_temp.care_names() = 'app,shop,site', 'a session is ' || v_phase || ' for 16 minutes');
+	end loop;
+	foreach v_phase in array array['preparing', 'running', 'publishing'] loop
+		perform pg_temp.care_phase(v_phase, interval '3 hours');
+		perform pg_temp.base_assert(pg_temp.care_names() = 'app', 'a session is ' || v_phase || ' for 3 hours');
+	end loop;
+	perform pg_temp.care_phase('completed');
 
 	-- Care switched off.
 	update public.qorpera_code_repositories set care_enabled = false where name = 'shop';
