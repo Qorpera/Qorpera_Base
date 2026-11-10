@@ -189,7 +189,7 @@ begin
 			'public.qorpera_code_change_set(uuid,text,text,integer,boolean,integer)',
 			'public.qorpera_code_changes_restored(uuid,text,text,text)',
 			'public.qorpera_code_undo_message(integer,text,boolean)', 'public.qorpera_code_request_lease(text)',
-			'public.qorpera_code_restore_waits(uuid,text,text,timestamptz)', 'public.qorpera_code_restore_moving(jsonb)',
+			'public.qorpera_code_restore_waits(uuid,text,text,timestamptz)', 'public.qorpera_code_restore_holds(jsonb)',
 			'public.qorpera_code_change_report_valid(jsonb)',
 			'public.qorpera_code_change_files_written_valid(jsonb)', 'public.qorpera_code_request_outcome_valid(text,jsonb)',
 			'public.qorpera_code_agent_run(jsonb)', 'public.qorpera_code_download_view(public.qorpera_code_requests,timestamptz)',

@@ -117,18 +117,25 @@ What a restore brings back, and what not:
    - `queued` again with `not_before`: a turn came first. It goes on in two minutes, from where it was. If nothing
      had been moved yet, the place was opened again meanwhile (a `fresh` request then takes a new bundle when it
      goes on).
-   - **When a restore is put off, and when not.** Until it is let go to set the place aside, a restore waits for
-     quiet sessions: at the claim and before each job. From that moment `progress` has `moving: true`. The
-     database writes that itself and keeps it through every later step and claim; nothing the executor sends
-     changes it. While it is there (or `progress` has `setAside` or `built`) the request is not put off for the
-     company's sessions any more: the place is closed to them, the request is handed out again whatever they do,
-     and its jobs keep their place in the company's line until the repository is open again. That also holds
-     after a restart in the middle: the next claim first reads the place, under a step named `fresh` or `close`,
-     and goes on from the mark it finds.
-   - `moving` goes away in one case only: the executor read the place and found it open again as it was (no
-     `restoring.json`: a first try moved nothing and the place was opened again). It then says `reopened`, and from
-     there the request waits for quiet sessions like a new one. If that word was not heard, `moving` stays, and the
-     next claim reads the place and says it again; it closes nothing before the database has taken that word.
+   - **When a restore is put off, and when not.** There is one rule. Until it is let go to close the place, a
+     restore waits for quiet sessions: at the claim, and before each job (the jobs of a `fresh` bundle and the
+     close itself). From the close that is let go, `progress` has `held: true`. The database writes that itself
+     and keeps it through every later step and claim; nothing the executor sends changes it. While it is there the
+     request is not put off for the company's sessions any more: the place is closed to them or about to be, the
+     request is handed out again whatever they do, and its jobs keep their place in the company's line until the
+     repository is open again. That also holds after a restart at any point from the close on: the next claim
+     first reads the place, under a step named `fresh` or `close`, and goes on from the mark it finds.
+   - `held` goes away in one case only: the executor saw the place open again as it was (no `restoring.json`). That
+     is so when the close wrote no mark (the bundle's proof failed, the job gave way to a turn's, the place had
+     moved on since a `fresh` bundle), when a first try moved nothing and the place was opened again, and when a
+     later claim reads the place and finds no mark. It then says `reopened`, before it asks anything else, and from
+     there the request waits for quiet sessions like a new one. If that word was not heard, `held` stays, the try
+     ends, and the next claim reads the place and says it again; it closes nothing before the database has taken
+     that word.
+   - A request that ends `failed` keeps `held`. The next restore you ask for the same place begins with it
+     (`progress` is `{"held": true}` from the start), so it does not wait for quiet sessions while the repository
+     may still be closed: it reads the place first, goes on from the mark it finds, or says `reopened` and waits
+     like any new request when the place is open.
    - `done`, outcome `restored`: go to step 4.
    - `failed`: go to section 4.
 3. `failed` with `FRESH_BUNDLE_FAILED:...`: nothing was touched. The history is damaged, or the place is gone
@@ -183,13 +190,13 @@ place is in.
 |---|---|---|
 | (no such part) | Never touched. | Fix the reason, ask again. |
 | `PLACE_AS_BEFORE` | Was closed, nothing was moved, and it is open again as it was. | Fix the reason, ask again. |
-| `PLACE_CLOSED` | Closed: `restoring.json` is in it, and turns on the repository fail. | **Ask again at once**, mode `restore`, with the bundle's name from `progress.bundle` (not `fresh`: there may be no place to bundle any more). The new request goes on from what the place holds. |
+| `PLACE_CLOSED` | Closed: `restoring.json` is in it, and turns on the repository fail. | **Ask again at once**, mode `restore`, with the bundle's name from `progress.bundle` (not `fresh`: there may be no place to bundle any more). The new request goes on from what the place holds, and does not wait for quiet sessions: it begins with `held`. |
 
 The truth about closed or open is the place itself: it is closed exactly while `restoring.json` is in
-`code/<owner>/<name>/` (look in Storage). `progress` says how far the kernel heard: with `moving`, a job was let
-go to set the place aside (whether it moved anything, the place says); with `setAside` in it, the old place is
-aside; with `built`, the repository is built and only the opening was left; with `recorded`, the restore is in
-the change record.
+`code/<owner>/<name>/` (look in Storage). `progress` says how far the kernel heard: with `held`, a job was let go
+to close the place and the place was not seen open since (whether it is closed, and whether anything moved, the
+place says); with `setAside` in it, the old place is aside; with `built`, the repository is built and only the
+opening was left; with `recorded`, the restore is in the change record.
 
 **A restore that is recorded and whose place is still closed.** The record is made inside the job that opens the
 place, before the mark goes. What happens when something stops there:

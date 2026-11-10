@@ -1079,16 +1079,17 @@ describe("CodeRestore: a restore request, step by step", () => {
 			whole: [] as boolean[],
 			/** Every step call with what it was answered, as `<step>: <answer>`, the ones put off too. */
 			asked: [] as string[],
-			/** The kernel's own word that the request began to move the place: written when the step that names the
-			 * set-aside is let go, taken away only by the step `reopened`. No call brings it. */
-			moving: false,
-			/** Company work goes on: a step is put off unless the request has begun to move the place, by the kernel's
-			 * rule (its own word, or what a job saw: `setAside`, `built`; the step that names the set-aside is let go). */
+			/** The kernel's own word that the request holds the place: written when a step that names the close or the
+			 * set-aside is let go, taken away only by the step `reopened`. No call brings it. (One stand-in serves the
+			 * requests of a test one after the other: a test that begins a new request sets it as that request begins.) */
+			held: false,
+			/** Company work goes on: a step is put off unless the request holds the place, by the kernel's one rule (its
+			 * own word, and nothing a call brings). */
 			work: false,
 			/** The progress a claim hands out: what the last step saved, and the kernel's word. */
 			handed: (): Record<string, unknown> => ({
 				...(kernel.steps.at(-1) ?? {}),
-				...(kernel.moving ? { moving: true } : {}),
+				...(kernel.held ? { held: true } : {}),
 			}),
 			/** A look at the place at each step the kernel lets go, before the job's first command. */
 			look: async (_progress: Record<string, unknown>): Promise<void> => undefined,
@@ -1119,15 +1120,14 @@ describe("CodeRestore: a restore request, step by step", () => {
 				expect(method).toBe("qorpera_code_request_step");
 				const progress = structuredClone(args.p_progress) as Record<string, unknown>;
 				// The executor never sends the kernel's word, and the kernel would not take it.
-				expect(progress).not.toHaveProperty("moving");
+				expect(progress).not.toHaveProperty("held");
 				let state = kernel.answer(progress);
-				const moving = kernel.moving || "setAside" in progress || progress.built === true;
-				if (state === "go" && kernel.work && !moving && progress.step !== "set-aside") state = "busy";
+				if (state === "go" && kernel.work && !kernel.held) state = "busy";
 				kernel.asked.push(`${String(progress.step)}: ${state}`);
 				// The kernel saves only when it lets the job go on.
 				if (state === "go") {
-					if (progress.step === "set-aside") kernel.moving = true;
-					if (progress.step === "reopened") kernel.moving = false;
+					if (progress.step === "close" || progress.step === "set-aside") kernel.held = true;
+					if (progress.step === "reopened") kernel.held = false;
 					kernel.steps.push(progress);
 					kernel.whole.push(await exists(f.repo));
 					await kernel.look(progress);
@@ -1143,6 +1143,8 @@ describe("CodeRestore: a restore request, step by step", () => {
 			run: async (companyId, environmentId, signal, job, options) => {
 				expect([companyId, environmentId]).toEqual([COMPANY, ENVIRONMENT]);
 				jobs.yields.push(options?.yields === true);
+				// An executor that is stopping runs no job, and asks nothing for one.
+				signal.throwIfAborted();
 				return await jobs.enter(async () => {
 					const answer = await job({ ...jobs.host(), signal }, gc);
 					await jobs.after(answer);
@@ -1388,13 +1390,20 @@ describe("CodeRestore: a restore request, step by step", () => {
 		expect(await exists(join(f.code, "main/later.txt"))).toBe(false);
 		expect(await refsOf(f)).toEqual(refs);
 
-		// A bundle that is not in the store closes nothing.
+		// A bundle that is not in the store closes nothing. The close's step was let go all the same, so the kernel
+		// holds that the request has the place: as the run ends it reads the place, finds it open, and says so.
 		const missing = codeBundleName("2026-11-01T00:00:00.000Z", s.two.mainSha);
+		x.kernel.held = false;
+		x.kernel.asked.length = 0;
+		x.jobs.yields.length = 0;
 		expect(await x.run(request({ bundle: missing }))).toEqual({
 			schema: SCHEMA,
 			state: "failed",
 			code: "CLOSE_FAILED:CODE_BUNDLE_MISSING",
 		});
+		expect(x.kernel.asked).toEqual(["close: go", "reopened: go"]);
+		expect(x.jobs.yields).toEqual([true, false]);
+		expect(x.kernel.held).toBe(false);
 		expect(await x.run(request({ mode: "verify", bundle: missing }))).toEqual({
 			schema: SCHEMA,
 			state: "failed",
@@ -1510,7 +1519,7 @@ describe("CodeRestore: a restore request, step by step", () => {
 		// While the repository is built: closed, and the kernel knows the old place is aside. (The claim comes with the
 		// kernel's word that the place was being moved: it reads the place first, and goes on.)
 		x.jobs.host = () => stoppedAt(f, at.refs(f));
-		expect(x.kernel.handed()).toEqual({ ...saved, moving: true });
+		expect(x.kernel.handed()).toEqual({ ...saved, held: true });
 		expect(await again(x.kernel.handed())).toEqual({
 			schema: SCHEMA,
 			state: "failed",
@@ -1550,7 +1559,12 @@ describe("CodeRestore: a restore request, step by step", () => {
 		expect(await x.run(request({ bundle: name }))).toEqual({ schema: SCHEMA, state: "busy" });
 		expect(x.jobs.yields).toEqual([true, false, false]);
 		expect(await f.listing(f.companyRoot)).toEqual(before);
-		expect(x.kernel.steps).toEqual([{ step: "close", bundle: name }]);
+		// (The run's last word to the kernel: the place is open again as it was.)
+		expect(x.kernel.steps).toEqual([
+			{ step: "close", bundle: name },
+			{ step: "reopened", bundle: name, at: AT },
+		]);
+		expect(x.kernel.held).toBe(false);
 		expect(x.events.find((event) => event.step === "put-off")).toMatchObject({
 			at: "set-aside",
 			place: "PLACE_AS_BEFORE",
@@ -1597,7 +1611,7 @@ describe("CodeRestore: a restore request, step by step", () => {
 		const saved = x.kernel.steps.at(-1) as Record<string, unknown>;
 		expect(saved).toEqual({ step: "set-aside", bundle: name, at: AT });
 		const handed = x.kernel.handed();
-		expect(handed).toEqual({ ...saved, moving: true });
+		expect(handed).toEqual({ ...saved, held: true });
 		x.kernel.answer = () => "go";
 		// An executor that is stopping ends the request as busy: no command runs for it.
 		const stopping = new AbortController();
@@ -1889,7 +1903,7 @@ describe("CodeRestore: a restore request, step by step", () => {
 		expect(await readMark(f)).toMatchObject({ requestId: asked.requestId, bundle: first, step: "closed" });
 		expect(x.kernel.steps.at(-1)).toEqual({ step: "set-aside", bundle: first, at: AT });
 		const saved = x.kernel.handed();
-		expect(saved).toEqual({ step: "set-aside", bundle: first, at: AT, moving: true });
+		expect(saved).toEqual({ step: "set-aside", bundle: first, at: AT, held: true });
 		expect(await stored()).toEqual([`${first}.bundle`, `${first}.json`]);
 		// The next claim reads the mark from the place (one job, under the step `fresh`), and goes on with the bundle
 		// the place is closed for: no check and no bundle job runs, and a closed place would refuse them. It stops again
@@ -2039,12 +2053,14 @@ describe("CodeRestore: a restore request, step by step", () => {
 			movedTo: ASIDE,
 		});
 		expect(x.errors()).toEqual([]);
-		// The first close was let go and wrote nothing. The second bundle's two jobs still carry the first one's name;
-		// the second close brings the new one, and the restore is from that alone.
+		// The first close was let go and wrote nothing: the kernel is told that the place is open. The second bundle's
+		// two jobs still carry the first one's name; the second close brings the new one, and the restore is from that
+		// alone.
 		expect(x.kernel.steps).toEqual([
 			{ step: "fresh" },
 			{ step: "fresh" },
 			{ step: "close", bundle: first },
+			{ step: "reopened", bundle: first },
 			{ step: "fresh", bundle: first },
 			{ step: "fresh", bundle: first },
 			{ step: "close", bundle: name },
@@ -2105,6 +2121,7 @@ describe("CodeRestore: a restore request, step by step", () => {
 			["fresh", undefined],
 			["fresh", undefined],
 			["close", first],
+			["reopened", first],
 			["fresh", first],
 			["fresh", first],
 			["close", name],
@@ -2143,15 +2160,19 @@ describe("CodeRestore: a restore request, step by step", () => {
 			asked = request();
 		expect(await x.run(asked)).toEqual({ schema: SCHEMA, state: "busy" });
 		// Two closes were let go, and neither wrote anything: no mark, nothing aside, nothing recorded. No job had to
-		// open the place again: it was never closed.
+		// open the place again: it was never closed. Each time the kernel was told that the place is open, so the
+		// request ends without the kernel's word that it holds the place.
 		expect(x.kernel.steps.map((step) => [step.step, step.bundle])).toEqual([
 			["fresh", undefined],
 			["fresh", undefined],
 			["close", first],
+			["reopened", first],
 			["fresh", first],
 			["fresh", first],
 			["close", second],
+			["reopened", second],
 		]);
+		expect(x.kernel.held).toBe(false);
 		expect(x.jobs.yields).toEqual([true, true, true, true, true, true]);
 		expect(await f.listing(f.companyRoot)).toEqual(held);
 		expect(await exists(f.mark)).toBe(false);
@@ -2166,8 +2187,8 @@ describe("CodeRestore: a restore request, step by step", () => {
 		expect((await checkCodeArea(f.job, { repository: kept })).state).toBe("present");
 		// Two minutes later the request is claimed again, with what the kernel saved. The place holds no mark, so the
 		// claim takes a new bundle of the place as it stands; nothing moves this time, and the restore is from that.
-		const saved = x.kernel.steps.at(-1) as Record<string, unknown>;
-		expect(saved).toEqual({ step: "close", bundle: second });
+		const saved = x.kernel.handed();
+		expect(saved).toEqual({ step: "reopened", bundle: second });
 		x.clock.now += 120_000;
 		const third = taken(s.two.mainSha, 120_000),
 			aside = codeSetAsidePath(kept, "20261110T161655Z");
@@ -2220,9 +2241,9 @@ describe("CodeRestore: a restore request, step by step", () => {
 			expect(await exists(join(f.aside, "repo.git"))).toBe(true);
 			// What the kernel has of the request: the set-aside step's word, and its own that the place is being moved.
 			const handed = x.kernel.handed();
-			expect(handed).toEqual({ step: "set-aside", bundle: name, at: AT, moving: true });
+			expect(handed).toEqual({ step: "set-aside", bundle: name, at: AT, held: true });
 			// Company work goes on: a step is put off unless the request has begun to move the place. The request is
-			// claimed again. Its first steps read the place and close it again, under names that say nothing of moving.
+			// claimed again. Its first steps read the place and close it again.
 			// None is put off, no job gives way to a turn's, and the repository is back.
 			x.kernel.work = true;
 			x.kernel.asked.length = 0;
@@ -2262,8 +2283,8 @@ describe("CodeRestore: a restore request, step by step", () => {
 				if (progress.step === "reopened") throw new Error("CODING_CONTROL_UNCONFIRMED");
 				return "go" as const;
 			};
-			// The first claim closes the place, and its set-aside job is let go: the kernel writes its word that the
-			// request is moving the place. The job fails before it moves anything, and the executor opens the place
+			// The first claim closes the place, and its set-aside job is let go: the kernel holds its word that the
+			// request has the place. The job fails before it moves anything, and the executor opens the place
 			// again as it was. Neither its word that the place is open again nor the request's end is heard.
 			x.jobs.host = () =>
 				stoppedAt(
@@ -2280,13 +2301,13 @@ describe("CodeRestore: a restore request, step by step", () => {
 			x.jobs.host = () => f.job;
 			const name = (x.kernel.steps.at(-1) as { bundle: string }).bundle,
 				handed = x.kernel.handed();
-			expect(handed).toEqual({ step: "set-aside", bundle: name, at: AT, moving: true });
+			expect(handed).toEqual({ step: "set-aside", bundle: name, at: AT, held: true });
 			expect(await exists(f.mark)).toBe(false);
 			// The place is open, and company work goes on in it: a session's change lands.
 			expect(await land(f, s.second, s.work)).toMatchObject({ state: "fast-forward", mainSha: s.work });
 			const before = await f.listing(f.companyRoot);
 			x.kernel.work = true;
-			// The request is handed out beside that work, since the kernel holds that the place is being moved. The claim
+			// The request is handed out beside that work, since the kernel holds that the request has the place. The claim
 			// reads the place before anything else, in a job that keeps its place, and finds it open. While the kernel
 			// does not hear that, nothing else is asked: no close may be let go beside working sessions on the strength
 			// of a word that is no longer true. The request is put off, and the word stays.
@@ -2298,7 +2319,7 @@ describe("CodeRestore: a restore request, step by step", () => {
 			});
 			expect(x.kernel.asked).toEqual([`${look}: go`]);
 			expect(x.jobs.yields).toEqual([false]);
-			expect(x.kernel.moving).toBe(true);
+			expect(x.kernel.held).toBe(true);
 			// The claim after that is heard. It reads the place again and tells the kernel, which takes its word away;
 			// the step after that is put off like a first claim's, and its job would have given way. Nothing was
 			// closed or moved under the session.
@@ -2311,7 +2332,7 @@ describe("CodeRestore: a restore request, step by step", () => {
 			});
 			expect(x.kernel.asked).toEqual([`${look}: go`, "reopened: go", `${look}: busy`]);
 			expect(x.jobs.yields).toEqual([false, true]);
-			expect(x.kernel.moving).toBe(false);
+			expect(x.kernel.held).toBe(false);
 			expect(await f.listing(f.companyRoot)).toEqual(before);
 			expect(await exists(f.mark)).toBe(false);
 			expect(await f.inRepo("rev-parse", "refs/heads/main")).toBe(s.work);
@@ -2340,6 +2361,238 @@ describe("CodeRestore: a restore request, step by step", () => {
 			expect(await exists(f.mark)).toBe(false);
 		}
 	}, 60_000);
+
+	it("a request whose executor stopped between closing the place and setting it aside is claimed again and finishes beside working sessions: no step is put off, and no job gives way", async () => {
+		for (const fresh of [true, false]) {
+			const f = await fixture(),
+				s = await shop(f),
+				x = executor(f);
+			const stored = await x.keep(await bundled(f)),
+				asked = request(fresh ? {} : { bundle: stored });
+			// The first claim, with the company quiet: the close is let go and writes the mark. The executor stops right
+			// there, before it asks the set-aside step. The repository is closed, and nothing has moved.
+			const before = await f.listing(f.code);
+			const stopping = new AbortController();
+			x.jobs.after = async (answer) => {
+				if ((answer as { state?: string } | undefined)?.state === "closed")
+					stopping.abort(new Error("the executor is stopping"));
+			};
+			expect(await x.restore.run(asked, stopping.signal)).toEqual({ schema: SCHEMA, state: "busy" });
+			x.jobs.after = async () => undefined;
+			const name = fresh ? taken(s.two.mainSha) : stored;
+			expect(x.kernel.asked).toEqual([...(fresh ? ["fresh: go", "fresh: go"] : []), "close: go"]);
+			expect(await readMark(f)).toMatchObject({ requestId: asked.requestId, bundle: name, step: "closed" });
+			expect((await f.listing(f.code)).filter((line) => !line.endsWith(" restoring.json"))).toEqual(before);
+			expect(await exists(join(f.companyRoot, "code/_set-aside"))).toBe(false);
+			// What the kernel has of the request: the close step's word, and its own that the request holds the place,
+			// written when it let that close go.
+			const handed = x.kernel.handed();
+			expect(handed).toEqual({ step: "close", bundle: name, held: true });
+			// Company work goes on: a step is put off unless the request holds the place. The request is claimed again,
+			// reads the place, finds its mark and goes on. No step is put off, no job gives way, and the repository is
+			// back.
+			x.kernel.work = true;
+			x.kernel.asked.length = 0;
+			x.jobs.yields.length = 0;
+			expect(await x.run({ ...asked, token: randomUUID(), progress: handed })).toMatchObject({
+				state: "done",
+				result: "restored",
+				bundle: name,
+				mainSha: s.two.mainSha,
+				movedTo: ASIDE,
+			});
+			expect(x.kernel.asked).toEqual([
+				`${fresh ? "fresh" : "close"}: go`,
+				"close: go",
+				"set-aside: go",
+				"set-aside: go",
+				"build: go",
+				"open: go",
+			]);
+			expect(x.jobs.yields).toEqual([false, false, false, false, false, false]);
+			expect(x.errors()).toEqual([]);
+			expect(await exists(f.mark)).toBe(false);
+			expect((await checkCodeArea(f.job, { repository: kept })).state).toBe("present");
+		}
+	}, 60_000);
+
+	it("fresh: a close refused because the place moved on says that the place is open, and the next bundle's jobs wait for quiet sessions and give way again", async () => {
+		const f = await fixture(),
+			s = await shop(f),
+			x = executor(f);
+		let held: string[] = [];
+		afterEachBundle(x, [
+			async () => {
+				await s.second.commit({ "more.txt": "more\n" }, "more");
+				held = await f.listing(f.companyRoot);
+			},
+		]);
+		// Company work begins at the moment the kernel hears that the place is open again.
+		x.kernel.look = async (progress) => {
+			if (progress.step === "reopened") x.kernel.work = true;
+		};
+		const first = taken(s.two.mainSha);
+		expect(await x.run(request())).toEqual({ schema: SCHEMA, state: "busy" });
+		// The close was let go while the company was quiet, and the kernel held from there that the request has the
+		// place. The close wrote no mark. Before anything else the kernel is told that the place is open; so the job
+		// that begins the second bundle is asked like any job of a request that has not begun, and is put off beside
+		// the work that started. It would have given way to a turn's job, too.
+		expect(x.kernel.asked).toEqual(["fresh: go", "fresh: go", "close: go", "reopened: go", "fresh: busy"]);
+		expect(x.jobs.yields).toEqual([true, true, true, true]);
+		expect(x.kernel.held).toBe(false);
+		expect(x.kernel.handed()).toEqual({ step: "reopened", bundle: first });
+		// The place is open and untouched: no mark, nothing aside, nothing recorded.
+		expect(await f.listing(f.companyRoot)).toEqual(held);
+		expect(await exists(f.mark)).toBe(false);
+		expect(x.kernel.records).toEqual([]);
+		expect(x.errors()).toEqual([]);
+		expect(x.events.find((event) => event.step === "put-off")).toMatchObject({ at: "fresh", place: null });
+		// A kernel that does not hear that word ends the request as put off at once: no second bundle is begun with the
+		// word still standing.
+		const g = await fixture(),
+			t = await shop(g),
+			y = executor(g);
+		afterEachBundle(y, [() => t.second.commit({ "more.txt": "more\n" }, "more")]);
+		y.kernel.answer = (progress) => {
+			if (progress.step === "reopened") throw new Error("CODING_CONTROL_UNCONFIRMED");
+			return "go";
+		};
+		expect(await y.run(request())).toEqual({ schema: SCHEMA, state: "busy" });
+		expect(y.kernel.asked).toEqual(["fresh: go", "fresh: go", "close: go"]);
+		expect(y.jobs.yields).toEqual([true, true, true]);
+		expect(y.kernel.held).toBe(true);
+		expect(y.errors()).toEqual(["Error: CODING_CONTROL_UNCONFIRMED"]);
+		expect(await exists(g.mark)).toBe(false);
+	});
+
+	it("a close that fails or gives way before its mark is saved says that the place is open; so does a run whose close never got to the place", async () => {
+		const f = await fixture(),
+			s = await shop(f),
+			x = executor(f);
+		const name = await x.keep(await bundled(f));
+		const before = await f.listing(f.companyRoot);
+		const again = (more: Partial<CodeRestoreRequest> = {}) => {
+			x.kernel.held = false;
+			x.kernel.asked.length = 0;
+			x.jobs.yields.length = 0;
+			return x.run(request({ bundle: name, ...more }));
+		};
+		// The code host goes away while the bundle is proven for the close: no mark was written. The run reads the
+		// place by the job that would open it again, finds it open, and tells the kernel.
+		x.jobs.host = () => stoppedAt(f, (command) => command.argv.includes("fsck"));
+		expect(await again()).toEqual({
+			schema: SCHEMA,
+			state: "failed",
+			code: "CLOSE_FAILED:UNCLASSIFIED:PLACE_AS_BEFORE",
+		});
+		expect(x.kernel.asked).toEqual(["close: go", "reopened: go"]);
+		expect(x.jobs.yields).toEqual([true, false]);
+		expect(x.kernel.held).toBe(false);
+		// The close job gives way to a turn's job while it proves the bundle: the same, and the request is put off.
+		x.jobs.host = () => ({
+			...f.job,
+			shell: {
+				run: (command, signal) =>
+					command.argv.includes("fsck")
+						? Promise.reject(new CodeHostJobFailure("CODE_HOST_JOB_YIELDED", "a turn's job came"))
+						: f.job.shell.run(command, signal),
+			},
+		});
+		expect(await again()).toEqual({ schema: SCHEMA, state: "busy" });
+		expect(x.kernel.asked).toEqual(["close: go", "reopened: go"]);
+		expect(x.kernel.held).toBe(false);
+		x.jobs.host = () => f.job;
+		expect(await f.listing(f.companyRoot)).toEqual(before);
+		// The word that the place is open is not heard. The kernel still holds that the request has the place, and
+		// hands it out beside company work; the claim reads the place first, says it again, and its close then waits.
+		x.jobs.host = () => stoppedAt(f, (command) => command.argv.includes("fsck"));
+		x.kernel.answer = (progress) => {
+			if (progress.step === "reopened") throw new Error("CODING_CONTROL_UNCONFIRMED");
+			return "go";
+		};
+		expect(await again()).toMatchObject({ state: "failed", code: "CLOSE_FAILED:UNCLASSIFIED:PLACE_AS_BEFORE" });
+		expect(x.kernel.asked).toEqual(["close: go"]);
+		expect(x.kernel.held).toBe(true);
+		x.jobs.host = () => f.job;
+		x.kernel.answer = () => "go";
+		x.kernel.work = true;
+		x.kernel.asked.length = 0;
+		x.jobs.yields.length = 0;
+		expect(await x.run(request({ bundle: name, progress: x.kernel.handed() }))).toEqual({
+			schema: SCHEMA,
+			state: "busy",
+		});
+		expect(x.kernel.asked).toEqual(["close: go", "reopened: go", "close: busy"]);
+		expect(x.jobs.yields).toEqual([false, true]);
+		expect(x.kernel.held).toBe(false);
+		expect(await f.listing(f.companyRoot)).toEqual(before);
+		expect(await f.inRepo("rev-parse", "refs/heads/main")).toBe(s.two.mainSha);
+	});
+
+	it("a new request for a place an earlier one left closed begins with the kernel's word: it reads the place and goes on beside working sessions, or finds it open, says so and waits", async () => {
+		const f = await fixture(),
+			s = await shop(f),
+			x = executor(f);
+		const name = await x.keep(await bundled(f));
+		// An earlier request stops while the old place is moved, and ends failed: the place is closed and half aside.
+		for (let n = 0; n < 30; n += 1)
+			await writeFile(join(f.code, `stray-${String(n).padStart(2, "0")}.txt`), `${n}\n`);
+		x.jobs.host = () => stoppedAt(f, nth(2, at.move()));
+		const earlier = request({ bundle: name });
+		expect(await x.run(earlier)).toEqual({
+			schema: SCHEMA,
+			state: "failed",
+			code: "SET_ASIDE_FAILED:UNCLASSIFIED:PLACE_CLOSED",
+		});
+		x.jobs.host = () => f.job;
+		expect(await readMark(f)).toMatchObject({ requestId: earlier.requestId, bundle: name, step: "closed" });
+		// The operator asks again by the bundle's name. The kernel begins that request with its word, since the place's
+		// last restore ended failed holding it. Company work goes on. The request reads the place first, finds the
+		// earlier request's mark, and goes on from it: no step is put off, and no job gives way.
+		x.kernel.held = true;
+		x.kernel.work = true;
+		x.kernel.asked.length = 0;
+		x.jobs.yields.length = 0;
+		expect(await x.run(request({ bundle: name, progress: { held: true } }))).toMatchObject({
+			state: "done",
+			result: "restored",
+			bundle: name,
+			mainSha: s.two.mainSha,
+			movedTo: ASIDE,
+		});
+		expect(x.kernel.asked).toEqual([
+			"close: go",
+			"close: go",
+			"set-aside: go",
+			"set-aside: go",
+			"build: go",
+			"open: go",
+		]);
+		expect(x.jobs.yields).toEqual([false, false, false, false, false, false]);
+		expect(await exists(f.mark)).toBe(false);
+		// The same word for a place that is in fact open (somebody opened it by hand, say): the request reads the
+		// place, tells the kernel, and its close waits for quiet sessions. Nothing is closed beside the work.
+		const before = await f.listing(f.companyRoot);
+		x.kernel.held = true;
+		x.kernel.asked.length = 0;
+		x.jobs.yields.length = 0;
+		expect(await x.run(request({ bundle: name, progress: { held: true } }))).toEqual({
+			schema: SCHEMA,
+			state: "busy",
+		});
+		expect(x.kernel.asked).toEqual(["close: go", "reopened: go", "close: busy"]);
+		expect(x.jobs.yields).toEqual([false, true]);
+		expect(x.kernel.held).toBe(false);
+		expect(await f.listing(f.companyRoot)).toEqual(before);
+		// A `fresh` request that begins with the word does the same before it takes its bundle.
+		x.kernel.held = true;
+		x.kernel.asked.length = 0;
+		x.jobs.yields.length = 0;
+		expect(await x.run(request({ progress: { held: true } }))).toEqual({ schema: SCHEMA, state: "busy" });
+		expect(x.kernel.asked).toEqual(["fresh: go", "reopened: go", "fresh: busy"]);
+		expect(x.jobs.yields).toEqual([false, true]);
+		expect(await f.listing(f.companyRoot)).toEqual(before);
+	});
 
 	it("a record that was not heard, a lease that is gone and an open that did not save each leave the place closed for the next claim, which opens it with the same record", async () => {
 		/** A place closed, emptied and built: only the open is left, as the kernel's progress says. */

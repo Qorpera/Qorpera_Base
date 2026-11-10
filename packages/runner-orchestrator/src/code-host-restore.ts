@@ -975,17 +975,19 @@ export interface CodeRestoreOptions {
 const OUTCOME = "qorpera.code-request-outcome/v1";
 const CALL_MS = 10_000;
 const YIELDED = "CODE_HOST_JOB_YIELDED";
-/** The name each job's step call gives the kernel. `set-aside` is more than a name: it is the one job of a restore
- * that moves anything out of the place. Each time a step names it, the kernel ends the downloads made in the place
- * and writes its own word that the request has begun to move the place (`qorpera_code_request_step`). A job that
- * moves something out of the place must ask its step under that name. */
+/** The name each job's step call gives the kernel. Two are more than names (`qorpera_code_request_step`):
+ * - `close`: the step before a job that may close the place. When the kernel lets it go, it writes its own word that
+ *   the request holds the place, and puts no later step off.
+ * - `set-aside`: the one job of a restore that moves anything out of the place. Each time a step names it, the kernel
+ *   ends the downloads made in the place. A job that moves something out of the place must ask its step under that
+ *   name. */
 type RestoreStep = "verify" | "fresh" | "close" | "set-aside" | "build" | "open" | "discard";
-/** The one step that is no job's: the executor's word to the kernel that it read the place and found it open again as
- * it was (no mark in it). The kernel takes its own word that the request is moving the place away on this name, and
- * on no other (`qorpera_code_request_step`). */
+/** The one step that is no job's: the executor's word to the kernel that the place was seen open again as it was (no
+ * mark in it). The kernel takes its own word that the request holds the place away on this name, and on no other
+ * (`qorpera_code_request_step`). */
 const REOPENED = "reopened";
 /** The steps that move the place: their jobs do not yield. Nor does any job of a run that holds the kernel's word
- * that the request began to move the place (`RestoreRun.moving`), whatever its step is called. */
+ * that the request holds the place (`RestoreRun.held`), whatever its step is called. */
 const MOVING: ReadonlySet<RestoreStep> = new Set(["set-aside", "build", "open"]);
 /** What a failed step is called in a request's outcome. */
 const STEP: Readonly<Record<RestoreStep, string>> = {
@@ -1044,12 +1046,15 @@ interface RestoreRun {
 	/** What the kernel keeps of how far the request got: `bundle` (the bundle used), `at` (the place was closed then),
 	 * `setAside` (a job saw the place emptied: where its content went, or null) and `built` (the repository is built). */
 	progress: Record<string, unknown>;
-	/** The kernel's own word that the request began to move the place (`moving` in the progress a claim hands out,
-	 * which the kernel wrote when it let a set-aside job go and which no call of the executor's brings back). While it
-	 * stands the kernel puts no step of the request off, and no job of this run yields. It is true when the claim came
-	 * with it and from the set-aside step this run was let go at; it is false once the kernel took the word that the
-	 * place is open again as it was (`#opened`), and once this run opened the restored place. */
-	moving: boolean;
+	/** The kernel's own word that the request holds the place (`held` in the progress a claim hands out, which the
+	 * kernel wrote when it let a close go and which no call of the executor's brings back). While it stands the kernel
+	 * puts no step of the request off, and no job of this run yields. It is true when the claim came with it and from
+	 * the close step, or the set-aside step, this run was let go at. It is false once the kernel took the word that
+	 * the place is open again as it was (`#opened`), and once this run opened the restored place. */
+	held: boolean;
+	/** This run said that the place is open again and the kernel did not take it: the word still stands there, the run
+	 * ends, and it does not say so a second time. */
+	unheard?: boolean;
 	/** `open`: this run has not closed the place. `closed`: it began to, and no job has seen the place emptied.
 	 * `emptied`: the place opens only once it is built. */
 	stage: "open" | "closed" | "emptied";
@@ -1078,13 +1083,20 @@ interface RestoreRun {
  *             the set-aside copy is removed after the place is open again, never before.
  *   discard   `discardSetAside` on the request's path.
  *
- * Whether the request has begun to move the place is the kernel's to keep: it writes `moving` into the progress when
- * it lets a set-aside job go, and hands it out with every later claim. A run that holds that word keeps its place in
- * the line at every job, and on a claim that cannot tell from the progress that a job saw the place emptied it reads
- * the place first (`#look`). A place closed by its mark is gone on with, without waiting for the company's other
- * work. A place with no mark is open again as it was: the kernel is told (`reopened`), takes its word away, and the
- * run goes on like one that has not begun, waiting for quiet sessions before it closes anything. The run that opens
- * its own untouched place again says the same, right after that job has saved.
+ * Whether the request holds the place is the kernel's to keep, by one rule: its word (`held` in the progress) stands
+ * from the first close step it lets go until the place is seen open again. It hands the word out with every later
+ * claim, and with a new request for a place whose last restore ended failed holding it. A run that holds the word
+ * keeps its place in the line at every job, and on a claim that cannot tell from the progress that a job saw the
+ * place emptied it reads the place first (`#look`). A place closed by its mark is gone on with, without waiting for
+ * the company's other work.
+ *
+ * Every way the place ends up open again after a close step was let go says so to the kernel (`reopened`, `#opened`)
+ * before anything else is asked, and the run goes on only when the kernel took it, as one that has not begun: its
+ * bundle jobs and its close wait for quiet sessions and give way to a turn's. Those ways are: a look that finds no
+ * mark; a `fresh` close refused because the place had moved on (it wrote no mark); this run's own reopen of the place
+ * it closed, once that job has saved; and a run that ends after its close step was let go without its job having got
+ * to the place, which reads the place as it ends (`#ended`). So no close, no bundle job and no set-aside is asked
+ * with the kernel's word standing and the place open.
  *
  * `run` never throws. A step whose answer is not the one expected ends the request `failed`, with a code that names
  * the step, the reason and, once the place was touched, whether it is as before (`PLACE_AS_BEFORE`) or closed
@@ -1216,7 +1228,7 @@ export class CodeRestore {
 			},
 			step: mode === "verify" ? "verify" : mode === "discard" ? "discard" : "close",
 			progress: saved,
-			moving: mode === "restore" && progress?.moving === true,
+			held: mode === "restore" && progress?.held === true,
 			stage: "open",
 			previousMainSha: null,
 		};
@@ -1260,9 +1272,9 @@ export class CodeRestore {
 		let name: string;
 		if (request.bundle !== "fresh") {
 			name = request.bundle as string;
-			// The kernel holds that the request began to move the place, and no job is known to have seen it emptied:
-			// the place is read before it is closed again (`#look`).
-			if (run.moving && progress.built !== true && !("setAside" in progress)) await this.#look(run, signal);
+			// The kernel holds that the request has the place, and no job is known to have seen it emptied: the place is
+			// read before it is closed again (`#look`).
+			if (run.held && progress.built !== true && !("setAside" in progress)) await this.#look(run, signal);
 		} else name = (await this.#earlier(run, signal)) ?? (await this.#fresh(run, signal));
 		progress.bundle = name;
 		let setAside: string | null;
@@ -1303,6 +1315,10 @@ export class CodeRestore {
 					run.stage = "open";
 					run.bundle = undefined;
 					this.#report({ event: "code-restore", step: "refs-moved", ...run.named, bundle });
+					// The close was let go, so the kernel holds that the request has the place. It is told that the place
+					// is open before anything else is asked: the next bundle's jobs and the next close wait for quiet
+					// sessions again, and give way to a turn's.
+					if (run.held) await this.#opened(run, signal);
 					if (again) throw new RestoreStopped("busy");
 					name = await this.#fresh(run, signal);
 					progress.bundle = name;
@@ -1372,7 +1388,7 @@ export class CodeRestore {
 		}
 		this.#report({ event: "code-restore", step: "opened", ...run.named, state: opened.state });
 		// The place is open and restored: the job that removes the set-aside copy gives way to a turn's like any other.
-		run.moving = false;
+		run.held = false;
 		let movedTo = setAside;
 		if (request.damaged === "remove" && setAside !== null) {
 			// The repository is restored whatever becomes of this: a copy that could not be removed now is named in the
@@ -1413,7 +1429,7 @@ export class CodeRestore {
 			name = progress.bundle;
 		if (typeof name === "string" && CODE_BUNDLE_NAME.test(name)) {
 			if (progress.built === true || "setAside" in progress) return name;
-		} else if (!run.moving) return null;
+		} else if (!run.held) return null;
 		const mark = await this.#look(run, signal);
 		return mark?.requestId === request.requestId && mark.bundle === name ? name : null;
 	}
@@ -1422,37 +1438,41 @@ export class CodeRestore {
 	 * place holds: its mark, or null when it holds none. The job's step is named after what follows it (`fresh` for a
 	 * `fresh` request, `close` for a bundle asked for by its name).
 	 *
-	 * With the kernel's word that the request began to move the place (`run.moving`), this is the first thing the
-	 * claim does, and the job keeps its place in the line: the place may be closed and moved aside, and must not wait
-	 * for the company's other work. A place that then holds no mark is open again as it was (a set-aside job moved
-	 * nothing and the place was opened again, and the kernel did not hear of it). Sessions may be at work in it. So the
+	 * With the kernel's word that the request holds the place (`run.held`), this is the first thing the claim does,
+	 * and the job keeps its place in the line: the place may be closed, or moved aside, and must not wait for the
+	 * company's other work. A place that then holds no mark is open again as it was (a close that wrote no mark, or a
+	 * place that was opened again untouched, and the kernel did not hear of it). Sessions may be at work in it. So the
 	 * kernel is told before anything else is asked (`#opened`), and only when it took that word does the run go on,
-	 * as one that has not begun: its close waits for quiet sessions. No close is ever asked with the kernel's word
-	 * standing and the place open. */
+	 * as one that has not begun: its bundle jobs and its close wait for quiet sessions. No close is ever asked with
+	 * the kernel's word standing and the place open. */
 	async #look(run: RestoreRun, signal: AbortSignal): Promise<CodeRestoringMark | null> {
 		const { request, repository } = run;
 		run.step = request.bundle === "fresh" ? "fresh" : "close";
 		const { mark } = await this.#job(run, signal, (job) => readCodeAreaMark(job, { repository }));
-		if (!mark && run.moving) await this.#opened(run, signal);
+		if (!mark && run.held) await this.#opened(run, signal);
 		return mark;
 	}
 
 	/** The kernel told that the place is open again as it was (`qorpera_code_request_step`, the step `reopened`): it
-	 * takes its word that the request is moving the place away, and the request waits for quiet sessions again. Said
-	 * only after a job read the place and found no mark in it, or after the job that removed this run's own mark has
-	 * saved. It resolves only when the kernel said `go`, and then this run is not moving either. A kernel that was not
-	 * heard, or that did not let the step go, ends the run as put off: its word may still stand, and the next claim
-	 * reads the place first and says it again. */
+	 * takes its word that the request holds the place away, and the request waits for quiet sessions again. Said only
+	 * when a job saw the place without a mark: a look, a close that refused before it wrote one, or the job that
+	 * removed this run's own mark, once it has saved. It resolves only when the kernel said `go`, and then this run
+	 * does not hold the place either. A kernel that was not heard, or that did not let the step go, ends the run as
+	 * put off: its word may still stand, and the next claim reads the place first and says it again. */
 	async #opened(run: RestoreRun, signal: AbortSignal): Promise<void> {
 		let answer: "go" | "busy" | "lost";
 		try {
 			answer = await this.#step(run, signal, REOPENED);
 		} catch (error) {
+			run.unheard = true;
 			this.#report({ event: "code-restore-error", step: REOPENED, ...run.named, error });
 			throw new RestoreStopped("busy");
 		}
-		if (answer !== "go") throw new RestoreStopped(answer);
-		run.moving = false;
+		if (answer !== "go") {
+			run.unheard = true;
+			throw new RestoreStopped(answer);
+		}
+		run.held = false;
 	}
 
 	/** `fresh`: a new bundle of the place as it stands, proven by the bundle job itself and stored with its manifest
@@ -1535,10 +1555,11 @@ export class CodeRestore {
 	/** One job of the request on the company's code host. With its place in the company's line it asks the kernel first:
 	 * only on `go` do its steps run. It yields to a turn's job until the restore begins to move the place. From then on
 	 * (set aside, build, open) the place is closed to every session, the kernel does not put the request off any more
-	 * (`qorpera_code_restore_moving`), and the job keeps its place: giving way would only keep the repository closed.
-	 * The kernel keeps that word itself, from the set-aside step it let go, and hands it out with a later claim: a run
-	 * that holds it (`run.moving`) yields at no job, whatever the step is called, so the jobs that read the place and
-	 * close it again after a stop keep their place too.
+	 * (`qorpera_code_restore_holds`), and the job keeps its place: giving way would only keep the repository closed.
+	 * The kernel keeps that word itself, from the first close step it let go, and hands it out with a later claim: a
+	 * run that holds it (`run.held`) yields at no job, whatever the step is called, so the jobs that read the place
+	 * and close it again after a stop keep their place too. (The first close of a claim is asked without the word: it
+	 * waits for quiet sessions, and its job gives way to a turn's.)
 	 * The step must stay the first thing a job does: the one of the job that sets the place aside is where the kernel
 	 * ends the downloads made in the place, whose files go aside with it, and takes the repository's artifact
 	 * generation up (`qorpera_code_request_step`), before anything is moved. It does so every time that step is
@@ -1552,11 +1573,14 @@ export class CodeRestore {
 			async (job) => {
 				const answer = await this.#step(run, job.signal);
 				if (answer !== "go") throw new RestoreStopped(answer);
-				// The kernel wrote its word that the request has begun to move the place.
-				if (run.step === "set-aside") run.moving = true;
+				// The kernel wrote its word that the request holds the place.
+				if (run.step === "close" || run.step === "set-aside") {
+					run.held = true;
+					run.unheard = false;
+				}
 				return await steps(job);
 			},
-			{ yields: !(run.moving || MOVING.has(run.step)) },
+			{ yields: !(run.held || MOVING.has(run.step)) },
 		);
 	}
 
@@ -1663,7 +1687,12 @@ export class CodeRestore {
 
 	/** How a run that threw ends. A place it closed and did not see emptied is opened again first, when nothing was
 	 * moved out of it: a restore that could not go on leaves the repository as it found it. Not when the request's lease
-	 * is gone: the place is then for whoever holds the request to go on from. */
+	 * is gone: the place is then for whoever holds the request to go on from.
+	 *
+	 * A run that ends with the kernel's word standing says `reopened` when the place is seen open: after its own
+	 * reopen, and, when it never began to close the place itself (its close step was let go and the job did not get
+	 * to the place, or the claim came with the word and stopped early), after a job that reads the place and finds no
+	 * mark. A word that is not heard stays with the kernel, and the next claim reads the place first. */
 	async #ended(run: RestoreRun, error: unknown, signal: AbortSignal): Promise<CodeRestoreOutcome> {
 		const stop =
 			error instanceof RestoreStopped
@@ -1673,14 +1702,14 @@ export class CodeRestore {
 						signal.aborted
 					? "busy"
 					: undefined;
-		let place: string | undefined;
+		let place: string | undefined,
+			open = false;
 		if (run.stage === "closed") {
-			place = stop !== "lost" && (await this.#reopen(run, signal)) ? "PLACE_AS_BEFORE" : "PLACE_CLOSED";
-			// The place is open again as it was, by a job that has saved. When the kernel holds that the request is
-			// moving the place, it is told: the request then waits for quiet sessions again. A word that is not heard
-			// stays with the kernel, and the next claim reads the place first.
-			if (place === "PLACE_AS_BEFORE" && run.moving) await this.#opened(run, signal).catch(() => undefined);
+			open = stop !== "lost" && (await this.#reopen(run, signal));
+			place = open ? "PLACE_AS_BEFORE" : "PLACE_CLOSED";
 		} else if (run.stage === "emptied") place = "PLACE_CLOSED";
+		else if (run.held && !run.unheard && stop !== "lost") open = await this.#unmarked(run, signal);
+		if (open && run.held) await this.#opened(run, signal).catch(() => undefined);
 		if (stop === "busy") {
 			this.#report({ event: "code-restore", step: "put-off", ...run.named, at: run.step, place: place ?? null });
 			return { schema: OUTCOME, state: "busy" };
@@ -1689,6 +1718,21 @@ export class CodeRestore {
 		const reason = stop === "lost" ? "RESTORE_LEASE_LOST" : `${STEP[run.step]}:${codeOf(error)}`,
 			code = place ? `${reason}:${place}` : reason;
 		return { schema: OUTCOME, state: "failed", code: /^[A-Z0-9_:]{1,120}$/.test(code) ? code : STEP[run.step] };
+	}
+
+	/** Whether the place holds no mark, read as a run ends that never began to close it. Like the reopen, the job does
+	 * not yield and does not ask the kernel. A place that cannot be read counts as not seen open. */
+	async #unmarked(run: RestoreRun, signal: AbortSignal): Promise<boolean> {
+		if (signal.aborted) return false;
+		try {
+			const { mark } = await this.#hosts.run(run.request.companyId, run.request.environmentId, signal, (job) =>
+				readCodeAreaMark(job, { repository: run.repository }),
+			);
+			return mark === null;
+		} catch (error) {
+			this.#report({ event: "code-restore-error", step: "look", ...run.named, error });
+			return false;
+		}
 	}
 
 	/** Opens a place this run closed, when it is still what it was (`reopenCodeArea`). The job does not yield, and does
