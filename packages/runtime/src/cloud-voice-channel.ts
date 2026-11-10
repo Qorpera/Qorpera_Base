@@ -1,7 +1,10 @@
 /**
- * The seam between a run's Codex app-server and a tool that gives an explainer its voice (VOICE-TOOL-DESIGN-20261110):
- * the session attaches its realtime lane here once the agent's thread is bound, and only for a Codex login's run. The
- * call is ChatGPT's own voice through Codex: a side thread that can do nothing, reading one line at a time.
+ * The seam between a run's Codex app-server and a tool that gives an explainer its voice
+ * (deploy/first-node/RUNTIME-INTERFACE-APPS.md §3a, "The call"): the session attaches its realtime lane here once the
+ * agent's thread is bound, and only for a Codex login's run. The call is ChatGPT's own voice through Codex: a side
+ * thread that can do nothing, reading one line at a time. The call's sound never comes here: it flows between
+ * OpenAI and the peer that made the offer, and this side passes only the offer, the answer, the lines and what the
+ * provider says was spoken.
  */
 
 /** What the voice is told before its first line. The voice once "delegated" without it and a turn started on its
