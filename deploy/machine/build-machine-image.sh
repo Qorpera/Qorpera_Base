@@ -17,7 +17,12 @@
 # Chromium (the coding image's pinned build) and xdotool behind the `desktop`
 # command (README, "The desktop"), and xsel with save_coding_value's clipboard
 # helper (20260930705000), which seals a key copied on the desktop for the vault
-# and clears the clipboard. An agent that has a Dockerfile builds
+# and clears the clipboard. Since 10 Nov 2026 a desktop is something an agent
+# asks for (machine_start with desktop true; a smaller machine refuses `desktop
+# start`), `desktop start` opens chosen company files and folders on it, pages
+# get 3D drawing, and Playwright with its Chromium, ffmpeg and a `chromium` that
+# runs from root's shell are installed, since that is how agents look at pages
+# without a screen. An agent that has a Dockerfile builds
 # and runs it inside its machine; images are not made from Dockerfiles.
 #
 # The builder runs in the node's declared image build space (the observer
@@ -47,6 +52,9 @@ MISE_VERSION=2026.10.10
 MISE_SHA256=7d79972e15549b286dcf9e25ef8c4fcef3d9fd7c0332d11cdfbc7d2842c418be
 TYPESCRIPT_VERSION=7.0.2
 TSX_VERSION=4.23.15
+# Playwright, from npm, with the Chromium builds that version drives (its own download, from the CDN the Chromium
+# below comes from): what agents script pages with, so no machine installs it again.
+PLAYWRIGHT_VERSION=1.65.0
 # Chromium for the desktop: the coding image's pin (deploy/coding-machine/coding-image.json), Chrome for Testing.
 CHROMIUM_VERSION=151.0.7922.34
 CHROMIUM_URL=https://cdn.playwright.dev/builds/cft/151.0.7922.34/linux64/chrome-linux64.zip
@@ -61,6 +69,7 @@ exec 3>&1 1>&2
 [[ $NODE_SHA256 =~ ^[0-9a-f]{64}$ ]] || { echo "invalid Node.js sha-256" >&2; exit 1; }
 for file in cloud-machine-guest.mjs cloud-machine-coding-value.mjs qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer \
 	qorpera-machine-folder.service qorpera-machine-desktop.service desktop-session desktop qorpera-chromium.apparmor \
+	desktop-selftest.html qorpera-chromium-policy.json chromium qorpera-machine-profile.sh playwright-check.cjs \
 	qorpera-folder manifest.json; do
 	[[ -f $PACKAGE/$file ]] || { echo "package misses $file" >&2; exit 1; }
 done
@@ -104,18 +113,19 @@ for _ in $(seq 1 90); do lx exec "$BUILDER" -- true >/dev/null 2>&1 && break; sl
 lx exec "$BUILDER" -- cloud-init status --wait >/dev/null
 lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256" UV_VERSION="$UV_VERSION" \
 	UV_SHA256="$UV_SHA256" MISE_VERSION="$MISE_VERSION" MISE_SHA256="$MISE_SHA256" TYPESCRIPT_VERSION="$TYPESCRIPT_VERSION" \
-	TSX_VERSION="$TSX_VERSION" CHROMIUM_URL="$CHROMIUM_URL" CHROMIUM_SHA256="$CHROMIUM_SHA256" bash -euo pipefail -c '
+	TSX_VERSION="$TSX_VERSION" CHROMIUM_URL="$CHROMIUM_URL" CHROMIUM_SHA256="$CHROMIUM_SHA256" \
+	PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" bash -euo pipefail -c '
 	export DEBIAN_FRONTEND=noninteractive
 	apt-get update
 	apt-get install -y --no-install-recommends ca-certificates curl git jq unzip zip xz-utils make pkg-config \
 		build-essential python3 python3-venv python3-pip docker.io docker-compose-v2 docker-buildx \
-		ripgrep fd-find sqlite3 libreoffice-nogui fuse3 file \
+		ripgrep fd-find sqlite3 libreoffice-nogui fuse3 file ffmpeg \
 		tigervnc-standalone-server xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-terminal xfconf thunar dbus-x11 \
 		x11-utils x11-xserver-utils xdotool wmctrl scrot xsel apparmor \
 		libnss3 libnspr4 libasound2t64 libgbm1 libcups2t64 libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 \
 		libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libxext6 libx11-6 libxcb1 libpango-1.0-0 \
 		libcairo2 libdbus-1-3 libexpat1 libglib2.0-0t64 libdrm2 libudev1 fonts-dejavu-core fonts-liberation \
-		fonts-noto-core fonts-noto-color-emoji
+		fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji
 	# Debian names fd fdfind; the toolbox calls it fd.
 	ln -sf /usr/bin/fdfind /usr/local/bin/fd
 	curl -fsSLo /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"
@@ -128,6 +138,12 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	# No install scripts: tsc and tsx need none (esbuild, under tsx, ships its binary as a platform package).
 	npm install -g --ignore-scripts --no-fund --no-audit "typescript@${TYPESCRIPT_VERSION}" "tsx@${TSX_VERSION}"
 	for tool in tsc tsx; do ln -sf "/opt/node/bin/$tool" "/usr/local/bin/$tool"; done
+	# Playwright for every folder and account: the package beside tsc, its browsers in one shared folder (the
+	# profile file the package brings names both). No install script: the browsers are fetched by its own command.
+	npm install -g --ignore-scripts --no-fund --no-audit "playwright@${PLAYWRIGHT_VERSION}"
+	PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright /opt/node/bin/playwright install chromium
+	chmod -R a+rX /opt/ms-playwright
+	ln -sf /opt/node/bin/playwright /usr/local/bin/playwright
 	curl -fsSLo /tmp/uv.tar.gz "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz"
 	echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum -c -
 	tar -xzf /tmp/uv.tar.gz -C /tmp
@@ -144,7 +160,6 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	echo "${CHROMIUM_SHA256}  /tmp/chromium.zip" | sha256sum -c -
 	unzip -q /tmp/chromium.zip -d /tmp/chromium
 	mv /tmp/chromium/chrome-linux64 /usr/lib/qorpera-chromium
-	ln -sf /usr/lib/qorpera-chromium/chrome /usr/local/bin/chromium
 	rm -rf /tmp/chromium.zip /tmp/chromium
 	# The desktop runs as its own account, so Chromium keeps its sandbox; root (the agents commands) drives it.
 	useradd --create-home --shell /bin/bash --user-group desktop
@@ -154,6 +169,8 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	install -o desktop -g desktop -m 0644 /etc/xdg/xfce4/panel/default.xml \
 		/home/desktop/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
 	install -d -o root -g root -m 0755 /opt/qorpera-machine /opt/qorpera-folder
+	# Where Chrome for Testing reads its managed policy (the package brings the file).
+	install -d -o root -g root -m 0755 /etc/opt/chrome_for_testing/policies/managed
 	# Where the company folder is mounted; until then an empty folder.
 	install -d -o root -g root -m 0755 /company
 	# Where the folder program keeps its caches, on the machine disk: root only (the program makes none of it).
@@ -172,11 +189,17 @@ lx file push "$PACKAGE/qorpera-folder" "$BUILDER/opt/qorpera-folder/qorpera-fold
 lx file push "$PACKAGE/desktop-session" "$BUILDER/opt/qorpera-machine/desktop-session" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/desktop" "$BUILDER/usr/local/bin/desktop" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/qorpera-chromium.apparmor" "$BUILDER/etc/apparmor.d/qorpera-chromium" --uid 0 --gid 0 --mode 0644
+lx file push "$PACKAGE/desktop-selftest.html" "$BUILDER/opt/qorpera-machine/desktop-selftest.html" --uid 0 --gid 0 --mode 0444
+lx file push "$PACKAGE/playwright-check.cjs" "$BUILDER/opt/qorpera-machine/playwright-check.cjs" --uid 0 --gid 0 --mode 0444
+lx file push "$PACKAGE/chromium" "$BUILDER/usr/local/bin/chromium" --uid 0 --gid 0 --mode 0555
+lx file push "$PACKAGE/qorpera-machine-profile.sh" "$BUILDER/etc/profile.d/qorpera-machine.sh" --uid 0 --gid 0 --mode 0644
+lx file push "$PACKAGE/qorpera-chromium-policy.json" "$BUILDER/etc/opt/chrome_for_testing/policies/managed/qorpera.json" --uid 0 --gid 0 --mode 0644
 for unit in qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer qorpera-machine-folder.service \
 	qorpera-machine-desktop.service; do
 	lx file push "$PACKAGE/$unit" "$BUILDER/etc/systemd/system/$unit" --uid 0 --gid 0 --mode 0644
 done
-lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGRAM_SHA256" bash -euo pipefail -c '
+lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGRAM_SHA256" \
+	PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" bash -euo pipefail -c '
 	systemctl daemon-reload
 	systemctl enable qorpera-machine-watchdog.timer
 	# Checks the reviewed image must pass.
@@ -189,6 +212,13 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 		"$tool" --version >/dev/null || { echo "$tool does not answer --version" >&2; exit 1; }
 	done
 	unzip -v >/dev/null
+	ffmpeg -version >/dev/null
+	# Pages without a screen: root runs the image Chromium headless (its wrapper drops the sandbox root cannot use), and
+	# a login shell in an empty folder finds Playwright and its browser with nothing installed.
+	[[ $(chromium --headless --dump-dom "data:text/html,<p>qorpera-root-headless</p>" 2>/dev/null) == *qorpera-root-headless* ]] ||
+		{ echo "root cannot run chromium headless" >&2; exit 1; }
+	[[ $(playwright --version) == "Version ${PLAYWRIGHT_VERSION}" ]] || { echo "playwright is not ${PLAYWRIGHT_VERSION}" >&2; exit 1; }
+	mkdir /tmp/empty && (cd /tmp/empty && bash -lc "node /opt/qorpera-machine/playwright-check.cjs")
 	# The folder program is the pinned one, runs, and is only started by the helper (its unit has no [Install]).
 	[[ $(sha256sum </opt/qorpera-folder/qorpera-folder | cut -d" " -f1) == "$EXPECTED_FOLDER_PROGRAM_SHA256" ]]
 	/opt/qorpera-folder/qorpera-folder --version
@@ -207,7 +237,39 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	[[ $(chromium --version) == *" 151.0.7922.34"* ]]
 	DOM=$(runuser -u desktop -- timeout 60 chromium --headless --disable-gpu --dump-dom "data:text/html,<p>qorpera-machine-desktop</p>" 2>/dev/null)
 	[[ $DOM == *qorpera-machine-desktop* ]] || { echo "chromium does not render sandboxed" >&2; exit 1; }
-	desktop start
+	[[ -f /etc/opt/chrome_for_testing/policies/managed/qorpera.json ]]
+	desktop start --lang da-DK --tz Europe/Copenhagen
+	desktop status | grep "language da-DK, time zone Europe/Copenhagen" >/dev/null || { echo "the desktop lost its language or time zone" >&2; exit 1; }
+	# 3D drawing in the browser, text with Danish capitals typed as written, a screenshot the size of the screen.
+	desktop selftest
+	# A folder with a page in it: linked on the desktop, served on the loopback, opened; one action can save the screen.
+	mkdir /tmp/site && echo "<title>qorpera-site</title><h1>site</h1>" >/tmp/site/index.html
+	desktop open /tmp/site --shot /tmp/site-shot.png | grep "at http://127.0.0.1:86" >/dev/null || { echo "the folder was not served" >&2; exit 1; }
+	for _ in $(seq 1 40); do desktop windows | grep qorpera-site >/dev/null && break; sleep 0.5; done
+	desktop windows | grep qorpera-site >/dev/null || { echo "the served folder shows no window" >&2; exit 1; }
+	[[ -L /home/desktop/Desktop/site && -s /tmp/site-shot.png ]] || { echo "no link on the desktop, or no picture after the action" >&2; exit 1; }
+	# Nothing on the desktop is replaced: the same link is used again, a copy gets a name of its own and keeps what was
+	# changed in it, and another folder of the same name gets a number.
+	desktop open /tmp/site >/dev/null
+	[[ ! -e /home/desktop/Desktop/site-2 ]] || { echo "the same folder got a second link" >&2; exit 1; }
+	desktop open /tmp/site --copy | grep "as site-2)" >/dev/null || { echo "a copy did not get a name of its own" >&2; exit 1; }
+	[[ -d /home/desktop/Desktop/site-2 && ! -L /home/desktop/Desktop/site-2 && -L /home/desktop/Desktop/site ]]
+	echo edited >/home/desktop/Desktop/site-2/kept.txt
+	mkdir -p /tmp/other/site && echo "<title>qorpera-other</title>" >/tmp/other/site/index.html
+	desktop open /tmp/site >/dev/null && desktop open /tmp/site --copy >/dev/null && desktop open /tmp/other/site >/dev/null
+	[[ $(cat /home/desktop/Desktop/site-2/kept.txt) == edited && -d /home/desktop/Desktop/site-3 &&
+		$(readlink /home/desktop/Desktop/site-4) == /tmp/other/site && $(readlink /home/desktop/Desktop/site) == /tmp/site ]] ||
+		{ echo "opening again replaced something on the desktop" >&2; exit 1; }
+	# Two pages of the same name from two folders: the second link gets a number, and the browser still gets its own page.
+	mkdir /tmp/pa /tmp/pb && echo "<title>qorpera-page-a</title>" >/tmp/pa/page.html && echo "<title>qorpera-page-b</title>" >/tmp/pb/page.html
+	desktop open /tmp/pa/page.html >/dev/null
+	desktop open /tmp/pb/page.html | grep "/page.html (on the desktop as page-2.html)" >/dev/null ||
+		{ echo "a second page of the same name got the wrong address" >&2; exit 1; }
+	for _ in $(seq 1 40); do desktop windows | grep qorpera-page-b >/dev/null && break; sleep 0.5; done
+	desktop windows | grep qorpera-page-b >/dev/null || { echo "the second page of the same name did not open" >&2; exit 1; }
+	# A picture that nothing could show is refused: /company is a plain folder here.
+	if desktop shot /company/never.png 2>/dev/null; then echo "a screenshot went into an unmounted /company" >&2; exit 1; fi
+	[[ -z $(ls -A /company) ]]
 	desktop open "data:text/html,<title>qorpera-machine-desktop</title><h1>qorpera-machine-desktop</h1>"
 	for _ in $(seq 1 60); do desktop windows | grep -q qorpera-machine-desktop && break; sleep 0.5; done
 	desktop windows | grep -q qorpera-machine-desktop || { echo "chromium shows no window on the desktop" >&2; exit 1; }
@@ -301,7 +363,7 @@ JS
 	sync
 '
 lx stop "$BUILDER"
-lx publish "$BUILDER" --alias "$ALIAS" description="Qorpera company machine $STAMP (Ubuntu 26.04, Docker, Node $NODE_VERSION, toolbox, company folder, desktop with Chromium $CHROMIUM_VERSION)"
+lx publish "$BUILDER" --alias "$ALIAS" description="Qorpera company machine $STAMP (Ubuntu 26.04, Docker, Node $NODE_VERSION, toolbox, company folder, desktop with Chromium $CHROMIUM_VERSION, Playwright $PLAYWRIGHT_VERSION)"
 FINGERPRINT=$(lx image info "$ALIAS" | awk '/^Fingerprint:/ {print $2}')
 [[ $FINGERPRINT =~ ^[0-9a-f]{64}$ ]] || { echo "no image fingerprint" >&2; exit 1; }
 echo "published $FINGERPRINT (delete it by hand if this build fails from here)" >&2
@@ -329,6 +391,6 @@ fi
 # The bootstrap digest pins exactly what was installed: this script and the guest package.
 BOOTSTRAP=$(cat "$0" "$PACKAGE/manifest.json" | sha256sum | cut -d' ' -f1)
 jq -n --arg imageFingerprint "$FINGERPRINT" --arg bootstrapSha256 "$BOOTSTRAP" --arg alias "$ALIAS" \
-	--arg helperSha256 "$(jq -r '.artifacts[0].sha256' "$PACKAGE/manifest.json")" --arg node "$NODE_VERSION" --arg chromium "$CHROMIUM_VERSION" \
+	--arg helperSha256 "$(jq -r '.artifacts[0].sha256' "$PACKAGE/manifest.json")" --arg node "$NODE_VERSION" --arg chromium "$CHROMIUM_VERSION" --arg playwright "$PLAYWRIGHT_VERSION" \
 	'{schema: "qorpera.machine-image-build/v1", alias: $alias, imageFingerprint: $imageFingerprint,
-	  bootstrapSha256: $bootstrapSha256, helperSha256: $helperSha256, node: $node, chromium: $chromium}' >&3
+	  bootstrapSha256: $bootstrapSha256, helperSha256: $helperSha256, node: $node, chromium: $chromium, playwright: $playwright}' >&3

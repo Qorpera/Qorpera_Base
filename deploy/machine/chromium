@@ -1,0 +1,9 @@
+#!/bin/sh
+# Chromium for commands and scripts (/usr/local/bin/chromium): `chromium --headless --screenshot=page.png URL`.
+# Root, which an agent's commands run as, cannot use Chromium's own sandbox, so root's Chromium runs without it, as
+# Playwright's does; any other account keeps it. --enable-unsafe-swiftshader gives pages 3D drawing (WebGL) on a
+# machine without a graphics card. The desktop starts the browser itself (deploy/machine/desktop).
+if [ "$(id -u)" = 0 ]; then
+	exec /usr/lib/qorpera-chromium/chrome --no-sandbox --enable-unsafe-swiftshader "$@"
+fi
+exec /usr/lib/qorpera-chromium/chrome --enable-unsafe-swiftshader "$@"
