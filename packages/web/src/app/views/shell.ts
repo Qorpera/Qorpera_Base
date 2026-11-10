@@ -2469,15 +2469,15 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 					`[data-drop-zone] [data-agent-id="${itemId}"], [data-drop-zone] [data-room-id="${itemId}"]`,
 				)
 				?.closest<HTMLElement>("[data-drop-zone]")?.dataset.dropZone;
-			// After the sidebar change below, as the zones hold their rows then: contacts moved meanwhile stay moved.
+			// Both zones' rows as the company holds them now, read before the sidebar change below moves the item (a
+			// contact placed after it would move with it): only the item goes in or out, and contacts moved meanwhile
+			// stay moved.
+			const landed = dropInto(heldOrder(company, zone), itemId, order);
+			const left =
+				from && from !== zone ? heldOrder(company, from).filter((member) => member !== itemId) : undefined;
 			const settle = () => {
-				settleContacts(company, zone, dropInto(heldOrder(company, zone), itemId, order));
-				if (from && from !== zone)
-					settleContacts(
-						company,
-						from,
-						heldOrder(company, from).filter((member) => member !== itemId),
-					);
+				settleContacts(company, zone, landed);
+				if (from && left) settleContacts(company, from, left);
 			};
 			const pinned = sidebar.pinned.includes(itemId);
 			const into = (now: readonly string[]) => dropInto(now, itemId, placed);

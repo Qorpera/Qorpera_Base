@@ -1021,6 +1021,38 @@ describe("dragging contacts in the rail", () => {
 		expect(zones(rail)).toMatchObject({ Research: ["Cy", "Sofie Lund", "Bo", "Ada"], Unassigned: ["Mads Berg"] });
 	});
 
+	it("keeps a contact where the member saw it when the agent it stood after is dragged away", async () => {
+		const { rail, manage, places, ready } = companyWith({
+			chats: [placed(sofie, { zone: "section", sectionId: research, after: bo.id, rank: 0 }), summary(mads)],
+		});
+		await ready;
+		expect(zones(rail).Research).toEqual(["Bo", "Sofie Lund", "Ada"]);
+		// Bo below Ada, in his own section: Sofie stays first, not after Ada.
+		drag(rowOf(rail, "Bo"), rowOf(rail, "Ada"), rail, true);
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "move_agent",
+			staffAgentId: bo.id,
+			sectionId: research,
+			order: [ada.id, bo.id],
+		});
+		expect(places.at(-1)).toEqual([
+			{ userId: sofie, place: { zone: "section", sectionId: research, rank: 0 }, hidden: false },
+		]);
+		expect(zones(rail).Research).toEqual(["Sofie Lund", "Ada", "Bo"]);
+		// Bo out to the agents in no section: Sofie still first in Research, not at its end.
+		drag(rowOf(rail, "Bo"), rowOf(rail, "Cy"), rail);
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "move_agent",
+			staffAgentId: bo.id,
+			sectionId: null,
+			order: [bo.id, cy.id, dee.id],
+		});
+		expect(places.flat().filter((change) => change.userId === sofie && change.place.after !== undefined)).toEqual([]);
+		expect(zones(rail).Research).toEqual(["Sofie Lund", "Ada"]);
+	});
+
 	it("keeps a contact where it was moved meanwhile when an agent or a contact is dropped beside it", async () => {
 		const { rail, company, manage, places, ready } = companyWith({
 			chats: [placed(sofie, { zone: "pinned", after: dee.id, rank: 0 }), summary(mads)],
