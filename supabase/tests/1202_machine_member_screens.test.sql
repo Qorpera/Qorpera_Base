@@ -336,7 +336,9 @@ do $$
 declare v_where jsonb := jsonb_build_object('schema', 'qorpera.member-machine-screen-authority/v1', 'state', 'authorized',
 	'useId', current_setting('qorpera_test.mm_u31'), 'machineId', pg_temp.mm_id('a1'), 'placementId', pg_temp.mm_id('b1'),
 	'bootId', pg_temp.mm_id('c1'), 'executorOwner', 'mx-1202', 'providerId', 'machine-1202',
-	'userId', pg_temp.mm_user('viewer'), 'keepDesktop', true);
+	'userId', pg_temp.mm_user('viewer'), 'keepDesktop', true,
+	-- The lease generation the read saw (20260930713000): no member ever took m-1202 over.
+	'desktopGeneration', 0);
 begin
 	perform pg_temp.base_assert(pg_temp.mm_answer(current_setting('qorpera_test.mm_a31')) = v_where || '{"served": false}'
 			and pg_temp.mm_answer(current_setting('qorpera_test.mm_a32')) = v_where || '{"served": false}'

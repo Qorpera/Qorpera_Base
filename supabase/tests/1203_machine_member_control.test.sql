@@ -21,7 +21,14 @@
 --    from the last input; lapsed and idle leases are closed as such by the next take-over; hand back ('handed_back',
 --    'closed') only of the member's own;
 -- 7. the `machines` hint when a lease begins or ends by a word, never on an action's renewal or a heartbeat;
--- 8. the grants, the closed tables and the marker.
+-- 8. the grants, the closed tables and the marker;
+-- 9. the fence after a capture (review r1 F1): the lease generation moves when a lease begins and when one is given back
+--    (never on taking again, an action or a heartbeat); both look reads answer it; the picture check lets a picture out
+--    only at the generation the read saw and with no live hold but the looker's own: a member's look authorized before
+--    another member took over and typed, and an agent's look authorized before a take-over, typing and a hand-back,
+--    both get none;
+-- 10. a root read taken away between an action's begin and the executor's read (review r1 F2): the action runs, the
+--    disk that never had a view is marked, and the platform's open then refuses it.
 
 -- Alice's run acknowledges first, as a member's wake requires before any work (924).
 select pg_temp.base_claims('service_role');
@@ -818,6 +825,131 @@ begin
 end $$;
 rollback to savepoint dc_hints;
 
+-- 9. The fence after a capture (review r1 F1) -----------------------------------------------------------------------------
+
+create function pg_temp.dc_generation(p_machine text) returns bigint language sql as $$
+	select desktop_member_generation from public.qorpera_company_machines where id = pg_temp.dc_id(p_machine)
+$$;
+create function pg_temp.dc_check(p_generation bigint, p_who text default null, p_placement text default 'b1')
+returns text language sql as $$
+	select pg_temp.dc_service(format('select public.qorpera_machine_desktop_picture_check(%L, %L, %L)',
+		pg_temp.dc_id(p_placement), p_generation, case when p_who is not null then pg_temp.dc_user(p_who) end))
+$$;
+select set_config('qorpera_test.dc_ok', 'ok:{"state": "ok", "schema": "qorpera.machine-desktop-picture/v1"}', true);
+select set_config('qorpera_test.dc_held', pg_temp.dc_refused('qorpera.machine-desktop-picture/v1',
+	'DESKTOP_MEMBER_IN_CONTROL'), true);
+do $$
+declare v_g bigint; v_look jsonb; v_begin text; v_member jsonb; v text;
+begin
+	-- No one holds m-1203 now (6 ended with a hand-back): an agent's look answers the generation, and its picture leaves.
+	perform pg_temp.base_assert((pg_temp.dc_machine('a1')).desktop_member_user_id is null, '9: no one holds m-1203');
+	v_g := pg_temp.dc_generation('a1');
+	v_look := pg_temp.dc_answer(pg_temp.dc_look('a1'));
+	perform pg_temp.base_assert((v_look ->> 'desktopGeneration')::bigint = v_g and v_g > 0,
+		'9: the agent''s look answers the lease generation it saw: ' || v_look::text);
+	perform pg_temp.base_assert(pg_temp.dc_check(v_g) = current_setting('qorpera_test.dc_ok'),
+		'9: no hold, the same generation: the agent''s picture leaves');
+	-- A take-over moves it; taking again, an action and a heartbeat do not; a hand-back does.
+	perform pg_temp.dc_take('contributor', 'a1');
+	perform pg_temp.base_assert(pg_temp.dc_generation('a1') = v_g + 1, '9: a take-over moves the generation');
+	perform pg_temp.dc_take('contributor', 'a1');
+	perform pg_temp.dc_act_id('contributor', 'a1', '{"type": "type", "length": 3}');
+	perform pg_temp.dc_keep('contributor', 'a1');
+	perform pg_temp.base_assert(pg_temp.dc_generation('a1') = v_g + 1, '9: taking again, an action and a heartbeat do not');
+	-- The holder sees their own screen; nobody else does, no agent either, and no picture of before the take-over.
+	perform pg_temp.base_assert(pg_temp.dc_check(v_g + 1, 'contributor') = current_setting('qorpera_test.dc_ok'),
+		'9: the holder''s own picture leaves');
+	perform pg_temp.base_assert(pg_temp.dc_check(v_g + 1, 'admin') = current_setting('qorpera_test.dc_held')
+			and pg_temp.dc_check(v_g + 1) = current_setting('qorpera_test.dc_held')
+			and pg_temp.dc_check(v_g, 'contributor') = current_setting('qorpera_test.dc_held'),
+		'9: another member''s, an agent''s and a picture from before the take-over do not');
+	perform pg_temp.dc_back('contributor', 'a1');
+	perform pg_temp.base_assert(pg_temp.dc_generation('a1') = v_g + 2, '9: a hand-back moves the generation');
+	-- Taken over and handed back while a look was on its way: no hold now, but that picture never leaves.
+	perform pg_temp.base_assert(pg_temp.dc_check(v_g) = current_setting('qorpera_test.dc_held')
+			and pg_temp.dc_check(v_g + 1) = current_setting('qorpera_test.dc_held')
+			and pg_temp.dc_check(v_g + 2) = current_setting('qorpera_test.dc_ok'),
+		'9: only the generation of now lets a picture out');
+
+	-- (i) Member B (the viewer) begins a look and the executor reads it; then A (the contributor) takes over and types;
+	--     then B's capture returns: B's picture does not leave.
+	v_begin := pg_temp.dc_begin_look('viewer', 'a1');
+	v_member := pg_temp.dc_answer(pg_temp.dc_look_auth(v_begin));
+	perform pg_temp.base_assert(v_member ->> 'state' = 'authorized' and (v_member ->> 'desktopGeneration')::bigint = v_g + 2,
+		'9: a member''s look read answers the generation: ' || coalesce(v_member::text, v_begin));
+	perform pg_temp.dc_take('contributor', 'a1');
+	perform pg_temp.dc_act_id('contributor', 'a1', '{"type": "type", "length": 8}');
+	v := pg_temp.dc_check((v_member ->> 'desktopGeneration')::bigint, 'viewer');
+	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_held'), '9 (i): B''s picture stays: ' || v);
+	perform pg_temp.dc_back('contributor', 'a1');
+
+	-- (ii) An agent's look is read; the take-over, the input and even the hand-back all finish before its capture comes
+	--      back: the agent's picture does not leave either.
+	v_look := pg_temp.dc_answer(pg_temp.dc_look('a1'));
+	perform pg_temp.dc_take('admin', 'a1');
+	perform pg_temp.dc_act_id('admin', 'a1', '{"type": "key", "keys": ["Return"]}');
+	perform pg_temp.dc_back('admin', 'a1');
+	v := pg_temp.dc_check((v_look ->> 'desktopGeneration')::bigint);
+	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_held'), '9 (ii): the agent''s picture stays: ' || v);
+end $$;
+
+select set_config('qorpera_test.dc_9x', pg_temp.dc_differ(jsonb_build_array(
+	jsonb_build_array('no placement', pg_temp.dc_service('select public.qorpera_machine_desktop_picture_check(null, 0, null)'),
+		'22023:Machine desktop request is malformed'),
+	jsonb_build_array('a generation below 0', pg_temp.dc_check(-1), '22023:Machine desktop request is malformed'),
+	jsonb_build_array('another placement', pg_temp.dc_check(0, null, 'ff'), '42501:Machine desktop is unavailable'),
+	jsonb_build_array('a member', pg_temp.dc_as(pg_temp.dc_user('owner'), format(
+		'select public.qorpera_machine_desktop_picture_check(%L, 0, null)', pg_temp.dc_id('b1'))),
+		'42501:permission denied for function qorpera_machine_desktop_picture_check')
+)), true);
+do $$
+begin
+	perform pg_temp.base_assert(current_setting('qorpera_test.dc_9x') = '',
+		E'9: checks that differ:\n' || current_setting('qorpera_test.dc_9x'));
+end $$;
+
+-- 10. A root read taken away between an action's begin and the executor's read (review r1 F2) ------------------------------
+
+do $$
+declare v_action uuid; v text;
+begin
+	perform pg_temp.dc_take('contributor', 'a1');
+	perform pg_temp.base_assert((select folder_unchecked_at from public.qorpera_company_machine_placements
+			where id = pg_temp.dc_id('b1')) is null
+		and not exists (select 1 from public.qorpera_folder_views where placement_id = pg_temp.dc_id('b1')),
+		'10: m-1203''s disk never had a view and is unmarked');
+	begin
+		-- Begun while the member reads the root: nothing marked.
+		v_action := pg_temp.dc_act_id('contributor', 'a1', '{"type": "type", "length": 4}');
+		perform pg_temp.base_assert((select folder_unchecked_at from public.qorpera_company_machine_placements
+			where id = pg_temp.dc_id('b1')) is null, '10: the begin of a root reader marks nothing');
+		-- The root read goes before the executor reads the action.
+		set local session_replication_role = replica;
+		update public.qorpera_company_path_resources set revoked_at = clock_timestamp()
+		where environment_id = '92400000-0000-4000-8000-000000000020' and path = '';
+		set local session_replication_role = origin;
+		v := pg_temp.dc_auth(v_action);
+		perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'authorized'
+				and (select folder_unchecked_at from public.qorpera_company_machine_placements
+					where id = pg_temp.dc_id('b1')) is not null,
+			'10: the action runs, and its read marks the disk: ' || v);
+		-- The root read back: the disk stays marked, and the platform's open refuses it.
+		set local session_replication_role = replica;
+		update public.qorpera_company_path_resources set revoked_at = null
+		where environment_id = '92400000-0000-4000-8000-000000000020' and path = '';
+		set local session_replication_role = origin;
+		perform pg_temp.base_claims('service_role');
+		perform pg_temp.base_error(format(
+			'select public.qorpera_folder_view_open(%L, %L, %L, %L)', '92400000-0000-4000-8000-000000000020',
+			'{"kind":"platform"}', 'test_machine', jsonb_build_object('companyMachineId', pg_temp.dc_id('a1'),
+				'placementId', pg_temp.dc_id('b1'), 'bootId', pg_temp.dc_id('c1'))),
+			'42501', 'Test machine disk was used without the folder check');
+		raise exception 'Undo' using errcode = 'QTF80';
+	exception when sqlstate 'QTF80' then null;
+	end;
+	perform pg_temp.dc_back('contributor', 'a1');
+end $$;
+
 -- 8. Grants, the closed tables and the marker ---------------------------------------------------------------------------------
 
 do $$
@@ -832,8 +964,10 @@ begin
 				format('8: %s may%s call %s', v_role, case when v_role = 'authenticated' then '' else ' not' end, v_function));
 		end loop;
 		perform pg_temp.base_assert(has_function_privilege(v_role,
-				'public.qorpera_member_machine_desktop_act_authority(uuid,text,text)', 'execute') = (v_role = 'service_role'),
-			'8: the executor''s read is the service role''s alone: ' || v_role);
+				'public.qorpera_member_machine_desktop_act_authority(uuid,text,text)', 'execute') = (v_role = 'service_role')
+			and has_function_privilege(v_role, 'public.qorpera_machine_desktop_picture_check(uuid,bigint,uuid)', 'execute')
+				= (v_role = 'service_role'),
+			'8: the executor''s reads are the service role''s alone: ' || v_role);
 		perform pg_temp.base_assert(not has_function_privilege(v_role, 'public.qorpera_valid_member_desktop_action(jsonb)', 'execute'),
 			'8: the action check is no role''s: ' || v_role);
 		perform pg_temp.base_assert(not has_table_privilege(v_role, 'public.qorpera_company_machine_desktop_controls',
@@ -851,8 +985,9 @@ begin
 	perform pg_temp.base_assert((select array_agg(proname::text order by proname) from pg_proc
 			where pronamespace = 'public'::regnamespace and strpos(prosrc, '20260930713000') > 0)
 		= array['qorpera_authorize_machine_coding_value', 'qorpera_authorize_machine_command', 'qorpera_authorize_machine_screen',
-			'qorpera_list_agent_machines', 'qorpera_member_hand_back_machine_desktop', 'qorpera_member_keep_machine_desktop',
-			'qorpera_member_machine_desktop_act_authority', 'qorpera_member_machine_desktop_act_begin',
+			'qorpera_list_agent_machines', 'qorpera_machine_desktop_picture_check', 'qorpera_member_hand_back_machine_desktop',
+			'qorpera_member_keep_machine_desktop', 'qorpera_member_machine_desktop_act_authority',
+			'qorpera_member_machine_desktop_act_begin',
 			'qorpera_member_machine_screen_authority', 'qorpera_member_machine_screen_begin',
 			'qorpera_member_take_machine_desktop', 'qorpera_valid_member_desktop_action'],
 		'8: the bodies that name 20260930713000: ' || (select array_agg(proname::text order by proname)::text from pg_proc

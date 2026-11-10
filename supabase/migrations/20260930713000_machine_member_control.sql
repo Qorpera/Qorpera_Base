@@ -37,6 +37,12 @@
 --   command that started before goes on, as do reads and cancels), and qorpera_authorize_machine_coding_value.
 -- * Another member's look is refused while one member holds the desktop (DESKTOP_MEMBER_IN_CONTROL), at the begin and at
 --   the executor's read; the member who holds it keeps looking.
+-- * Every picture is fenced by the lease's generation (review r1 F1): desktop_member_generation moves in the statement
+--   that begins a lease and in the one that gives it back. Both look reads (the agent's qorpera_authorize_machine_screen,
+--   a member's qorpera_member_machine_screen_authority) answer the generation they saw, and after the capture, before any
+--   picture or title leaves, the executor asks qorpera_machine_desktop_picture_check (service_role): the same generation,
+--   and no live hold by anyone but the one who looks. Otherwise the picture is dropped, so a look authorized before a
+--   take-over never shows what the member did after it, however the steps interleave.
 -- * The member's list (qorpera_list_agent_machines) says whether they may take over (canTakeOver) and, per machine, who
 --   holds its desktop (control: null, or {mine, name, until}); the `machines` hint also goes when a lease begins or ends
 --   by a word (never on an action's renewal).
@@ -81,7 +87,10 @@ alter table public.qorpera_company_machines
 	add column desktop_member_user_id uuid,
 	add column desktop_member_since timestamptz,
 	add column desktop_member_until timestamptz,
-	add column desktop_member_input_at timestamptz;
+	add column desktop_member_input_at timestamptz,
+	-- Moves when a lease begins and when one is given back (review r1 F1): a picture is let out only when it has not moved
+	-- since its look was authorized.
+	add column desktop_member_generation bigint not null default 0;
 
 -- One row per lease: who, when it began and ended, and how ('handed_back' by the member's word, 'closed' with their window
 -- or page, 'lapsed' when the window's heartbeat stopped, 'idle' after 30 minutes without input), and how many actions.
@@ -203,6 +212,7 @@ begin
 	-- A member at the desktop uses the machine: its last use moves, at most every 30 seconds.
 	update public.qorpera_company_machines set desktop_member_user_id = v_user, desktop_member_since = v_now,
 		desktop_member_until = v_now + interval '5 minutes', desktop_member_input_at = v_now,
+		desktop_member_generation = desktop_member_generation + 1,
 		last_used_at = case when last_used_at < v_now - interval '30 seconds' then v_now else last_used_at end
 	where id = v_machine.id;
 	return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'ok',
@@ -277,7 +287,7 @@ begin
 			else 'lapsed' end
 	where machine_id = v_machine.id and began_at = v_machine.desktop_member_since and ended_at is null;
 	update public.qorpera_company_machines set desktop_member_user_id = null, desktop_member_since = null,
-		desktop_member_until = null, desktop_member_input_at = null
+		desktop_member_until = null, desktop_member_input_at = null, desktop_member_generation = desktop_member_generation + 1
 	where id = v_machine.id;
 	return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'ok', 'handedBack', v_live);
 end
@@ -359,7 +369,8 @@ grant execute on function public.qorpera_member_machine_desktop_act_begin(uuid, 
 
 -- Everything the begin checked, again and live, under the machine's lock: the action begun within 15 seconds and not
 -- served, its member still an owner, admin or contributor of a company not being deleted, and still holding the desktop
--- under the lease the action was begun in. Served by the placement's own executor only, once.
+-- under the lease the action was begun in. Served by the placement's own executor only, once. The disk's mark is decided
+-- again here, as the action is let run (a root read taken away since the begin).
 create function public.qorpera_member_machine_desktop_act_authority(p_action_id uuid, p_owner text, p_provider_id text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
@@ -368,6 +379,7 @@ declare
 	v_machine public.qorpera_company_machines%rowtype;
 	v_placement public.qorpera_company_machine_placements%rowtype;
 	v_root public.qorpera_company_path_resources%rowtype;
+	v_reads_root boolean;
 	v_served boolean;
 begin
 	-- 20260930713000
@@ -397,16 +409,23 @@ begin
 		return jsonb_build_object('schema', 'qorpera.member-machine-desktop-act-authority/v1', 'state', 'refused',
 			'reason', 'MACHINE_NOT_RUNNING'); end if;
 	select * into v_root from public.qorpera_company_path_resources where environment_id = v_machine.environment_id and path = '';
-	if not coalesce(public.qorpera_folder_principal_allowed(v_machine.profile_id, v_root, 'member', v_act.user_id, 'read'), false)
-		and exists (select 1 from public.qorpera_folder_views v where v.placement_id = v_placement.id) then
+	v_reads_root := coalesce(public.qorpera_folder_principal_allowed(v_machine.profile_id, v_root, 'member', v_act.user_id,
+		'read'), false);
+	if not v_reads_root and exists (select 1 from public.qorpera_folder_views v where v.placement_id = v_placement.id) then
 		return jsonb_build_object('schema', 'qorpera.member-machine-desktop-act-authority/v1', 'state', 'refused',
 			'reason', 'MACHINE_NEEDS_COMPANY_VIEW'); end if;
-	-- The same lease, live: handed back, lapsed or taken by another member since the begin, the action does not run.
 	if not coalesce(v_machine.desktop_member_until > clock_timestamp(), false)
 		or v_machine.desktop_member_user_id is distinct from v_act.user_id
 		or v_machine.desktop_member_since is distinct from v_control.began_at or v_control.ended_at is not null then
 		return jsonb_build_object('schema', 'qorpera.member-machine-desktop-act-authority/v1', 'state', 'refused',
 			'reason', 'DESKTOP_CONTROL_ENDED'); end if;
+	-- The action runs: a member who does not read the root now (it may have been taken away since the begin, which marked
+	-- nothing then) marks a disk that never had a view, under this lock, as the begin does (review r1 F2).
+	if not v_reads_root then
+		update public.qorpera_company_machine_placements set folder_unchecked_at = clock_timestamp()
+		where id = v_placement.id and folder_unchecked_at is null
+			and not exists (select 1 from public.qorpera_folder_views v where v.placement_id = v_placement.id);
+	end if;
 	v_served := v_placement.owner = p_owner and v_placement.binding ->> 'providerId' = p_provider_id;
 	if v_served then
 		update public.qorpera_company_machine_desktop_actions set served_at = clock_timestamp() where id = v_act.id;
@@ -429,9 +448,41 @@ revoke all on function public.qorpera_member_machine_desktop_act_authority(uuid,
 	from public, anon, authenticated, qorpera_secret_broker;
 grant execute on function public.qorpera_member_machine_desktop_act_authority(uuid, text, text) to service_role;
 
+-- 5b. The fence after a capture (review r1 F1) -------------------------------------------------------------------------------
+
+-- Asked by the executor after a look's capture and before its picture or titles leave: the placement's machine, not
+-- removed, still at the lease generation the look's read answered, and held live by no one, or by the member who looks
+-- (p_user_id; null for an agent's look, which no hold lets through). Any lease begun or given back since the read moved
+-- the generation, so what the picture may show of a member's input after it never leaves. Plain reads; writes nothing.
+create function public.qorpera_machine_desktop_picture_check(p_placement_id uuid, p_generation bigint, p_user_id uuid)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare
+	v_machine public.qorpera_company_machines%rowtype;
+begin
+	-- 20260930713000
+	if auth.role() is distinct from 'service_role' or p_placement_id is null or p_generation is null or p_generation < 0 then
+		raise exception 'Machine desktop request is malformed' using errcode = '22023'; end if;
+	select machine.* into v_machine from public.qorpera_company_machines as machine
+	where machine.id = (select placement.machine_id from public.qorpera_company_machine_placements as placement
+		where placement.id = p_placement_id) and machine.removed_at is null;
+	if not found then
+		raise exception 'Machine desktop is unavailable' using errcode = '42501'; end if;
+	if v_machine.desktop_member_generation is distinct from p_generation
+		or (coalesce(v_machine.desktop_member_until > clock_timestamp(), false)
+			and v_machine.desktop_member_user_id is distinct from p_user_id) then
+		return jsonb_build_object('schema', 'qorpera.machine-desktop-picture/v1', 'state', 'refused',
+			'reason', 'DESKTOP_MEMBER_IN_CONTROL'); end if;
+	return jsonb_build_object('schema', 'qorpera.machine-desktop-picture/v1', 'state', 'ok');
+end
+$$;
+revoke all on function public.qorpera_machine_desktop_picture_check(uuid, bigint, uuid)
+	from public, anon, authenticated, qorpera_secret_broker;
+grant execute on function public.qorpera_machine_desktop_picture_check(uuid, bigint, uuid) to service_role;
+
 -- 6. While a member holds the desktop, the agent waits -------------------------------------------------------------------
 
--- The agent's screen read: no look and no action (no picture of that machine reaches an agent).
+-- The agent's screen read: no look and no action (no picture of that machine reaches an agent), and the lease generation
+-- it saw, which the executor's fence after the capture checks (review r1 F1).
 do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)'::regprocedure,
 	array[$old$		return jsonb_build_object('schema', 'qorpera.machine-screen-authority/v1', 'state', 'refused',
 			'reason', 'MACHINE_NOT_RUNNING', 'machine', v_machine.name); end if;$old$,
@@ -440,7 +491,11 @@ do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_autho
 	-- 20260930713000: a member holds the desktop: the agent neither sees nor drives it until they hand it back.
 	if coalesce(v_machine.desktop_member_until > clock_timestamp(), false) then
 		return jsonb_build_object('schema', 'qorpera.machine-screen-authority/v1', 'state', 'refused',
-			'reason', 'DESKTOP_MEMBER_IN_CONTROL', 'machine', v_machine.name); end if;$new$]); end $$;
+			'reason', 'DESKTOP_MEMBER_IN_CONTROL', 'machine', v_machine.name); end if;$new$,
+	$old$		'look', case when v_args is null then null else coalesce((v_args ->> 'look')::boolean, true) end);$old$,
+	$new$		'look', case when v_args is null then null else coalesce((v_args ->> 'look')::boolean, true) end,
+		-- 20260930713000: the lease generation this read saw; the picture leaves only while it stands.
+		'desktopGeneration', v_machine.desktop_member_generation);$new$]); end $$;
 
 -- The command read: no new command starts. A start sent again of a command that started before goes on (its guest has
 -- it, or has not: the executor's send again is the same command), and so do reads and cancels.
@@ -479,7 +534,11 @@ do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_membe
 			'reason', 'DESKTOP_MEMBER_IN_CONTROL'); end if;$new$]); end $$;
 
 do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_member_machine_screen_authority(uuid,text,text)'::regprocedure,
-	array[$old$		return jsonb_build_object('schema', 'qorpera.member-machine-screen-authority/v1', 'state', 'refused',
+	array[$old$		'keepDesktop', coalesce(v_watch.confirmed_at > clock_timestamp() - interval '30 minutes', false));$old$,
+	$new$		'keepDesktop', coalesce(v_watch.confirmed_at > clock_timestamp() - interval '30 minutes', false),
+		-- 20260930713000: the lease generation this read saw; the picture leaves only while it stands (review r1 F1).
+		'desktopGeneration', v_machine.desktop_member_generation);$new$,
+	$old$		return jsonb_build_object('schema', 'qorpera.member-machine-screen-authority/v1', 'state', 'refused',
 			'reason', 'MACHINE_NEEDS_COMPANY_VIEW'); end if;$old$,
 	$new$		return jsonb_build_object('schema', 'qorpera.member-machine-screen-authority/v1', 'state', 'refused',
 			'reason', 'MACHINE_NEEDS_COMPANY_VIEW'); end if;
@@ -533,6 +592,7 @@ begin
 		'public.qorpera_member_hand_back_machine_desktop(uuid,uuid,text)',
 		'public.qorpera_member_machine_desktop_act_begin(uuid,uuid,jsonb)',
 		'public.qorpera_member_machine_desktop_act_authority(uuid,text,text)',
+		'public.qorpera_machine_desktop_picture_check(uuid,bigint,uuid)',
 		'public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)',
 		'public.qorpera_authorize_machine_command(jsonb,jsonb,text,uuid,text,jsonb)',
 		'public.qorpera_authorize_machine_coding_value(jsonb,jsonb,uuid,text)',
