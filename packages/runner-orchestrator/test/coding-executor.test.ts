@@ -15,6 +15,7 @@ import {
 	CodingMachineUnavailable,
 	type CodingPushCarrier,
 	CodingPushRefused,
+	type CodingReportStage,
 	CodingSaveRefused,
 	type CodingSessionClaim,
 	type CodingSubmission,
@@ -1019,7 +1020,7 @@ describe("the coding executor over a session turn", () => {
 		const w = world();
 		vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(new Error("CODING_HOST_GUEST_NOT_READY"));
 		vi.mocked(w.host.detachSession).mockRejectedValueOnce(new Error("CODING_HOST_VM_RECOVERY_REQUIRED"));
-		const report = vi.fn((_stage: "turn" | "stop" | "defer" | "publish", _error: unknown) => {
+		const report = vi.fn((_stage: CodingReportStage, _error: unknown) => {
 			throw new Error("log sink down");
 		});
 		const executor = new CloudCodingExecutor({
