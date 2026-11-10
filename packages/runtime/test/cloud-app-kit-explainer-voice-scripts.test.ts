@@ -55,15 +55,17 @@ function recorded(
 			stdio: ["ignore", "pipe", "ignore"],
 		});
 		let output = "";
-		let told = false;
+		let stop: ReturnType<typeof setTimeout> | undefined;
 		child.stdout.on("data", (chunk: Buffer) => {
 			output += chunk.toString("utf8");
-			if (!told && output.includes('"connected":true')) {
-				told = true;
-				setTimeout(() => writeFileSync(join(work, "stop"), ""), stopAfterMs);
-			}
+			if (stop === undefined && output.includes('"connected":true'))
+				stop = setTimeout(() => writeFileSync(join(work, "stop"), ""), stopAfterMs);
 		});
-		child.on("close", (code) => resolve({ code, lines: marked(output), work }));
+		// A recorder that ended by itself is told nothing more: its folder may be gone by then.
+		child.on("close", (code) => {
+			clearTimeout(stop);
+			resolve({ code, lines: marked(output), work });
+		});
 	});
 }
 
