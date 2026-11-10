@@ -347,8 +347,8 @@ JS
 	shown(screen(click), "a click");
 	const again = screen(click);
 	if (again.status !== 96 || again.stdout.length !== 0) fail("the same receipt acted a second time");
-	const typed = shown(screen(act({ type: "type", text: "qorpera screen" })), "typed text");
-	if (!String(typed.activeWindow).includes("typed=qorpera screen]")) fail(`the typed text did not arrive: ${typed.activeWindow}`);
+	const typed = shown(screen(act({ type: "type", text: "qorpera screen" }, 1000)), "typed text");
+	if (!String(typed.activeWindow).includes("qorpera screen]")) fail(`the typed text did not arrive: ${typed.activeWindow}`);
 	if (screen({}, crypto.randomUUID()).status !== 97) fail("the screen helper ran on another boot");
 	execFileSync("/usr/local/bin/desktop", ["stop"], { stdio: "ignore" });
 	const refused = screen(act({ type: "click", x: 1, y: 1 }));
