@@ -71,6 +71,7 @@ function run(
 		compactor?: MemoryCompactChannel;
 		closing?: Parameters<typeof runCloudCodexToolSession>[0]["closing"];
 		opening?: Parameters<typeof runCloudCodexToolSession>[0]["opening"];
+		turnCorrection?: Parameters<typeof runCloudCodexToolSession>[0]["turnCorrection"];
 	} = {},
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => new Promise(() => undefined));
@@ -1009,6 +1010,157 @@ it("does not end the turn after a progress send", async () => {
 	const recorded = JSON.parse(await readFile(evidence, "utf8"));
 	expect(recorded.interrupt).toBeNull();
 });
+describe("a turn that ended with the run's closing act undone", () => {
+	it("gives the model one more turn in the same thread, told what is missing, and ends on its final send", async () => {
+		const { rows, observability } = observationCollector();
+		const turnCorrection = vi.fn(async () => "You sent no final message. Send it now.");
+		const { result, evidence } = run("correct-final", { observability, tools: [publicSendTool()], turnCorrection });
+		// The first turn's request, the added turn's first one, and the one after its final send.
+		await expect(result).resolves.toEqual({
+			providerSessionId: "thread_fixture",
+			toolCalls: 1,
+			codexVersion: "0.155.1",
+			fencedRequests: 3,
+		});
+		await observability.close();
+		expect(turnCorrection).toHaveBeenCalledOnce();
+		const recorded = JSON.parse(await readFile(`${evidence}.correction`, "utf8"));
+		expect(recorded.turns).toBe(2);
+		expect(recorded.turn).toMatchObject({
+			threadId: "thread_fixture",
+			input: [{ type: "text", text: "You sent no final message. Send it now.", text_elements: [] }],
+		});
+		// The final send ends the added turn as it ends any turn, and its marker stays with the host.
+		expect(recorded.interrupt).toEqual({ threadId: "thread_fixture", turnId: "turn_fixture_2" });
+		expect(Object.keys(recorded.reply.result).sort()).toEqual(["contentItems", "success"]);
+		// Each turn is observed by itself: the second counts what the thread used since it began, not the thread.
+		const turns = rows.filter((row) => row.operation === "model_turn" && row.phase === "finish");
+		expect(turns.map((row) => [row.status, row.inputTokens, row.cachedInputTokens, row.outputTokens])).toEqual([
+			["succeeded", 100, 0, 5],
+			["succeeded", 60, 90, 4],
+		]);
+		expect(turns[0].logicalOperationSha256).not.toBe(turns[1].logicalOperationSha256);
+		const requests = rows.filter((row) => row.operation === "model_request" && row.phase === "finish");
+		expect(requests.map((row) => [row.parentAttemptId, row.inputTokens])).toEqual([
+			[turns[0].attemptId, 100],
+			[turns[1].attemptId, 60],
+		]);
+		expect(JSON.stringify(rows)).not.toContain("PRIVATE_");
+	});
+
+	it("asks once: what the added turn leaves undone is the caller's to judge", async () => {
+		const turnCorrection = vi.fn(async () => "You sent no final message. Send it now.");
+		const { result, evidence } = run("correct-silent", { tools: [publicSendTool()], turnCorrection });
+		await expect(result).resolves.toMatchObject({ toolCalls: 0, fencedRequests: 2 });
+		expect(turnCorrection).toHaveBeenCalledOnce();
+		expect(JSON.parse(await readFile(`${evidence}.correction`, "utf8")).turns).toBe(2);
+	});
+
+	it("starts no second turn when the caller owes nothing", async () => {
+		const turnCorrection = vi.fn(async () => undefined);
+		const { result, evidence } = run("correct-silent", { turnCorrection });
+		await expect(result).resolves.toMatchObject({ toolCalls: 0, fencedRequests: 1 });
+		expect(turnCorrection).toHaveBeenCalledOnce();
+		await expect(stat(`${evidence}.correction`)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("asks only once the turn has completed, and before closing", async () => {
+		const order: string[] = [];
+		const { result } = run("correct-silent", {
+			turnCorrection: async () => {
+				order.push("correction");
+				return undefined;
+			},
+			closing: async () => {
+				order.push("closing");
+			},
+		});
+		await result;
+		expect(order).toEqual(["correction", "closing"]);
+	});
+
+	it.each([
+		["", "blank"],
+		["x".repeat(4097), "too long"],
+	])("refuses a correction that is not a few sentences: %#", async (text) => {
+		const { result, evidence } = run("correct-silent", { turnCorrection: async () => text });
+		await expect(result).rejects.toThrow("Invalid native boundary input");
+		await expect(stat(`${evidence}.correction`)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("asks nothing of a turn that failed", async () => {
+		const turnCorrection = vi.fn(async () => "Send it now.");
+		await expect(run("failed-turn", { turnCorrection }).result).rejects.toThrow(
+			"Native boundary turn did not complete",
+		);
+		expect(turnCorrection).not.toHaveBeenCalled();
+	});
+
+	it("binds nothing to the turn that ended: a request that still names it fails the run", async () => {
+		const { result } = run("correct-stale-turn", { turnCorrection: async () => "Send it now." });
+		await expect(result).rejects.toThrow("Native result boundary unavailable");
+	});
+});
+
+describe("a control request Codex never answers", () => {
+	const pending = Symbol("pending");
+	/** The run's outcome if it has one by now. setImmediate is not faked, so pipes and promises get their turn. */
+	const soFar = (outcome: Promise<unknown>) =>
+		Promise.race([outcome, new Promise((resolve) => setImmediate(() => resolve(pending)))]);
+	/** The run's failure. waitFor moves the faked clock on, so the process stop's own short wait ends too. */
+	const failureOf = (outcome: Promise<unknown>) =>
+		vi.waitFor(
+			async () => {
+				const settled = await soFar(outcome);
+				if (settled === pending) throw new Error("The run has not ended");
+				return settled;
+			},
+			{ timeout: 10_000 },
+		);
+	// The host's own timers only: the fixture's process and its pipes run on.
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it.each([
+		["stalled", ".starts", "codex-initialize"],
+		["turn-start-stalled", ".turn-start", "codex-turn-start"],
+	])("fails the run as a step that got no answer in time: %s", async (mode, marker, stage) => {
+		const { result, evidence } = run(mode);
+		const outcome = result.then(
+			() => undefined,
+			(failure: unknown) => failure,
+		);
+		// The request is with Codex, unanswered.
+		await vi.waitFor(() => stat(`${evidence}${marker}`), { timeout: 10_000 });
+		expect(await soFar(outcome)).toBe(pending);
+		await vi.advanceTimersByTimeAsync(120_000);
+		const error = await failureOf(outcome);
+		expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage, category: "timeout", usageSignal: null });
+		expect((error as Error).message).toBe("Native boundary request got no answer");
+	});
+
+	it("holds a stalled turn start to its deadline while another thread's request reaches the fence", async () => {
+		const compactor = new MemoryCompactChannel();
+		const { result, evidence } = run("compact-turn-start-stalled", { compactor });
+		const outcome = result.then(
+			() => undefined,
+			(failure: unknown) => failure,
+		);
+		await vi.waitFor(() => stat(`${evidence}.turn-start`), { timeout: 10_000 });
+		// A compactor thread starts meanwhile, and its prewarm reaches the fence. That shows its own thread under way,
+		// and says nothing of the agent's turn, whose start stays unanswered.
+		await compactor.call("PRIVATE_COMPACT_SYSTEM", new AbortController().signal);
+		expect(await soFar(outcome)).toBe(pending);
+		await vi.advanceTimersByTimeAsync(120_000);
+		const error = await failureOf(outcome);
+		expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage: "codex-turn-start", category: "timeout" });
+	});
+});
+
 it("ends an interrupted native turn as cancelled while preserving the public failure", async () => {
 	const { rows, observability } = observationCollector();
 	await expect(run("interrupted-turn", { observability }).result).rejects.toThrow(
