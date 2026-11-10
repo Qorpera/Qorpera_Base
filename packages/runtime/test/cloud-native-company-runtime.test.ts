@@ -3215,6 +3215,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// variables on files (the web opens an app's links and gives it the style, §2 and §4), so they moved again.
 	// Also on 10 November 2026 hire_agent's figure takes star, cloud, bolt, mushroom, moon and puzzle, and no ghost
 	// (20260930709000); the names and descriptions are as before, so only the catalog text moved again.
+	// Still on 10 November 2026 save_app's manifest takes kit: explainer makes an app a short narrated video, with how
+	// to make one on the schema field (RUNTIME-INTERFACE-APPS.md §3a), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3259,9 +3261,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"70cc4fd534da1be6c2c9acd627e6574fa63132d9c95d257f521c0162b5bf66ff",
+		"e879936abf4bc6366b5038f6954be442fed66375a3a0d2c1fbc4d474b004cd8c",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"d1f300b8dc8929b1199c9afc7f7550c537411a6484e0f4be6fc9bd93c297e0cd",
+		"8b12753aadd5da04612486ef0abea3c6a6aabfab6db8bb455035f0b97c02d2de",
 	);
 });
