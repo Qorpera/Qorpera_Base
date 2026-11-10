@@ -9,7 +9,8 @@ values ('91197000-0000-4000-8000-0000000000d1', 'member', '92400000-0000-4000-80
 	'92400000-0000-4000-8000-000000000020', '92400000-0000-4000-8000-000000000001', 'exec-1170', repeat('7', 64), '{}');
 set local session_replication_role = origin;
 do $$
-declare v_claim jsonb; w public.qorpera_runtime_workers%rowtype; s public.qorpera_coding_sessions%rowtype;
+declare v_claim jsonb; v_begin jsonb; v_pass jsonb; v_turn jsonb; v_token uuid;
+	w public.qorpera_runtime_workers%rowtype; s public.qorpera_coding_sessions%rowtype;
 	v_def text := pg_get_functiondef('public.qorpera_claim_coding_session(text,integer)'::regprocedure);
 begin
 	-- GitHub's words stay for GitHub's repositories.
@@ -17,17 +18,26 @@ begin
 		and strpos(v_def, ' was being published; the draft pull request may exist. A follow-up publishes or confirms it.') > 0
 		and strpos(v_def, ' was submitted but not published; a follow-up can publish it.') > 0
 		and strpos(v_def, ' was handed in but had not reached main; a follow-up hands it in again.') > 0, 'the claim''s words');
+	-- The turn as 928 runs one: claimed, begun, its run started, its machine ready, its finish submitted.
 	perform pg_temp.base_claims('service_role');
 	v_claim := public.qorpera_claim_coding_session('exec-1170', 60);
 	perform pg_temp.base_assert(v_claim ->> 'workerId' = '91170000-0000-4000-8000-0000000000b1'
 		and v_claim -> 'repository' = pg_temp.own_repo(), 'the claim: ' || coalesce(v_claim::text, 'none'));
-	-- The turn finished and was being handed in when its executor stopped.
+	v_token := (pg_temp.c3_session('91170000-0000-4000-8000-0000000000b1')).lease_token;
+	v_begin := public.qorpera_begin_coding_turn('91170000-0000-4000-8000-0000000000b1', v_token, '{}');
+	v_pass := pg_temp.base_materialize();
+	perform pg_temp.base_assert(v_pass ->> 'state' = 'done' and jsonb_array_length(v_pass -> 'run_ids') = 1, 'the turn''s run: ' || v_pass::text);
+	v_turn := pg_temp.base_start((v_pass -> 'run_ids' ->> 0)::uuid);
+	update public.qorpera_coding_sessions set vm_allocation_id = '91197000-0000-4000-8000-0000000000d2'
+	where worker_id = '91170000-0000-4000-8000-0000000000b1';
+	perform public.qorpera_authorize_coding_turn(v_turn);
+	perform public.qorpera_submit_coding_turn(v_turn, jsonb_build_object('kind', 'finish', 'operationKey', 'lapse-finish-1',
+		'summary', 'The shop has a cart.', 'headSha', repeat('b', 40)));
+	-- The executor was handing the commit in when it stopped.
+	perform pg_temp.base_claims('service_role');
+	perform public.qorpera_record_coding_progress('91170000-0000-4000-8000-0000000000b1', v_token, 'publishing', 'Landing the change');
 	perform set_config('session_replication_role', 'replica', true);
-	update public.qorpera_coding_session_turns set submission = jsonb_build_object('kind', 'finish', 'headSha', repeat('b', 40),
-		'summary', 'The shop has a cart.', 'sequence', 1, 'workerId', '91170000-0000-4000-8000-0000000000b1'),
-		submission_receipt_id = '91197000-0000-4000-8000-0000000000e1', submitted_at = clock_timestamp()
-	where worker_id = '91170000-0000-4000-8000-0000000000b1' and sequence = 1;
-	update public.qorpera_coding_sessions set phase = 'publishing', lease_until = clock_timestamp() - interval '1 second'
+	update public.qorpera_coding_sessions set lease_until = clock_timestamp() - interval '1 second'
 	where worker_id = '91170000-0000-4000-8000-0000000000b1';
 	perform set_config('session_replication_role', 'origin', true);
 	perform pg_temp.base_assert(public.qorpera_claim_coding_session('exec-1170', 60) is null, 'the lapse''s call claims nothing');
