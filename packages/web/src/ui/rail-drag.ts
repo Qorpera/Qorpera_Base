@@ -1,10 +1,16 @@
 /* Dragging agents and group chats in the rail: between sections, into or out of the
  * pinned row, and up or down inside one. Rows carry data-agent-id or, for a group
  * chat, data-room-id; the places they can land carry data-drop-zone ("pinned",
- * "section:<id>" or "unassigned"). While a row is dragged, the zone under the pointer
- * is shaded (no border) and a thin marker shows where the row will land. A press that
- * never moves stays an ordinary click. */
+ * "section:<id>" or "unassigned"). The rows make way while a row is dragged, as the
+ * apps drawer's icons do (Jonas, 10 Nov 2026: "I prefer the style used when reordering
+ * the interfaces with immediate orderswitching"): the row lifts off as an image under
+ * the pointer, an empty space of its shape stands where it would land, and the rows
+ * around glide to open and close it. Letting go drops it into that space. Off the rail
+ * the space goes back to where the row started, and Escape puts everything back. A
+ * press that never moves stays an ordinary click. While a row is lifted the rail is not
+ * drawn afresh (the hooks' `end` draws what changed meanwhile). */
 
+import { easing, reducedMotion } from "./motion.ts";
 import { uiScale } from "./scale.ts";
 
 export interface RailDrop {
@@ -22,15 +28,24 @@ export interface RailDragHooks {
 	/** Whether the item may land in this zone. */
 	accepts(zone: string, itemId: string): boolean;
 	drop(drop: RailDrop): void;
+	/** A drag ended, however it ended (dropped, put back, given up): the rail may draw again. */
+	end(): void;
 }
 
 /** What the rail drags: agents and group chats. */
 const ITEM = "[data-agent-id], [data-room-id]";
 const itemIdOf = (element: HTMLElement) => element.dataset.agentId ?? element.dataset.roomId;
+/** What glides when the space moves: every row and card, and the titles and slots between them. */
+const LEAVES = ".rail-row, .rail-pin, .rail-section-title, .rail-hidden-toggle, .rail-drop-slot, .rail-empty";
 
 /** Design pixels: how far a press moves before it drags, and the band at the list's edges that scrolls it. */
 const THRESHOLD = 6;
 const EDGE = 40;
+/** Design pixels: how near the rows' top the pointer comes before an empty pinned row opens to take a card. */
+const PIN_REACH = 10;
+/** As the apps drawer: the rows' glide, and the image's flight into its place. */
+const GLIDE_MS = 260;
+const SETTLE_MS = 220;
 
 interface Active {
 	itemId: string;
@@ -39,26 +54,39 @@ interface Active {
 	start: { x: number; y: number };
 	offset: { x: number; y: number };
 	source: HTMLElement;
+	/** The row's size at the lift: hidden, it measures nothing. */
+	size?: DOMRect;
 	ghost?: HTMLElement;
+	/** The empty space where the row would land. */
+	gap?: HTMLElement;
+	/** Where the row stood at the lift: its zone (none for Hidden agents) and its place there. */
+	home?: { zone: HTMLElement | undefined; index: number };
 	zone?: HTMLElement;
 	index?: number;
 	lastX: number;
 	lastY: number;
 }
 
+/** Where an element is laid out, on screen: its box without the glide it may be in the middle of. */
+function layoutRect(element: HTMLElement): DOMRect {
+	const rect = element.getBoundingClientRect();
+	const moved = getComputedStyle(element).translate;
+	if (!moved || moved === "none") return rect;
+	const [x = 0, y = 0] = moved.split(/\s+/).map((part) => Number.parseFloat(part) || 0);
+	return new DOMRect(rect.left - x, rect.top - y, rect.width, rect.height);
+}
+
 export class RailDrag {
 	readonly #list: HTMLElement;
 	readonly #hooks: () => RailDragHooks;
-	readonly #marker: HTMLElement;
 	#active: Active | undefined;
 	#frame = 0;
+	/** The glides running now, one per element, so a new move starts each from where it is. */
+	readonly #glides = new Map<Element, Animation>();
 
 	constructor(list: HTMLElement, hooks: () => RailDragHooks, signal: AbortSignal) {
 		this.#list = list;
 		this.#hooks = hooks;
-		this.#marker = document.createElement("div");
-		this.#marker.className = "rail-drop-marker";
-		this.#marker.setAttribute("aria-hidden", "true");
 		// Agent and group chat links and their figures are natively draggable; the rail drags
 		// those itself. Other links keep the browser's own dragging.
 		list.addEventListener(
@@ -92,46 +120,18 @@ export class RailDrag {
 		return this.#active?.ghost ? this.#active.itemId : undefined;
 	}
 
-	/** After the rail redraws: the dragged row may be a new element, the redraw took
-	 * the marker away, and rows may have come or gone under the pointer. */
-	refresh(): void {
-		const active = this.#active;
-		if (!active?.ghost) return;
-		const source = this.#row(active.itemId, active.source);
-		if (source && source !== active.source) {
-			active.source.classList.remove("is-drag-source");
-			active.source = source;
-		}
-		active.source.classList.add("is-drag-source");
-		this.#list.classList.add("rail-dragging");
-		// A zone element that was rebuilt is a new target, so the old one is let go first.
-		if (active.zone && !active.zone.isConnected) active.zone = undefined;
-		this.#target(active.lastX, active.lastY);
-	}
-
+	/** Puts the row back where it stood at the lift, and drops a press not lifted yet. */
 	cancel(): void {
 		const active = this.#active;
 		if (!active) return;
 		this.#active = undefined;
-		cancelAnimationFrame(this.#frame);
-		active.ghost?.remove();
-		active.source.classList.remove("is-drag-source");
-		active.zone?.classList.remove("is-drop-target");
-		this.#marker.remove();
-		this.#list.classList.remove("rail-dragging");
-		document.documentElement.classList.remove("rail-drag-active");
+		if (!active.ghost) return;
+		this.#land(active, active.source, () => active.gap?.remove());
+		this.#hooks().end();
 	}
 
 	#compact(): boolean {
 		return this.#list.closest(".rail-compact") !== null;
-	}
-
-	#row(itemId: string, near: HTMLElement): HTMLElement | undefined {
-		// The same item can stand in the list and nowhere else; prefer the zone it was in.
-		const selector = `[data-agent-id="${itemId}"], [data-room-id="${itemId}"]`;
-		const zone = near.closest("[data-drop-zone]");
-		const inZone = zone?.isConnected ? zone.querySelector<HTMLElement>(selector) : null;
-		return inZone ?? this.#list.querySelector<HTMLElement>(selector) ?? undefined;
 	}
 
 	#press(event: PointerEvent): void {
@@ -156,8 +156,9 @@ export class RailDrag {
 	#begin(active: Active): void {
 		// A redraw between the press and the first move may have rebuilt the row.
 		if (!active.source.isConnected) {
-			const source = this.#row(active.itemId, active.source);
-			if (!source) {
+			const selector = `[data-agent-id="${active.itemId}"], [data-room-id="${active.itemId}"]`;
+			const source = this.#list.querySelector<HTMLElement>(selector);
+			if (!source || !this.#hooks().canDrag(active.itemId)) {
 				this.#active = undefined;
 				return;
 			}
@@ -168,12 +169,13 @@ export class RailDrag {
 		ghost.classList.add("rail-drag-ghost");
 		// Outside the rail the ghost would lose the collapsed rail's layout.
 		ghost.classList.toggle("compact", this.#compact());
-		ghost.classList.remove("active", "menu-open", "is-drag-source");
+		ghost.classList.remove("active", "menu-open", "is-drag-source", "is-drag-landing");
 		ghost.removeAttribute("href");
 		ghost.removeAttribute("id");
 		ghost.setAttribute("aria-hidden", "true");
 		ghost.style.width = `${rect.width}px`;
 		ghost.style.height = `${rect.height}px`;
+		active.size = rect;
 		// A clone copies no pixels: the figure's canvas is drawn again from the row's.
 		const drawn = active.source.querySelectorAll("canvas");
 		ghost.querySelectorAll("canvas").forEach((canvas, index) => {
@@ -182,11 +184,47 @@ export class RailDrag {
 		});
 		document.body.append(ghost);
 		active.ghost = ghost;
+		// The row leaves the list and an empty space of its size takes its place, so nothing moves yet.
+		const zone = active.source.closest<HTMLElement>("[data-drop-zone]") ?? undefined;
+		const gap = document.createElement("div");
+		gap.className = "rail-drop-gap";
+		gap.setAttribute("aria-hidden", "true");
+		active.gap = gap;
+		this.#shape(active, zone);
+		active.source.before(gap);
 		active.source.classList.add("is-drag-source");
+		const index = zone ? this.#items(zone, active).indexOf(gap) : -1;
+		active.home = { zone, index };
+		active.zone = zone;
+		active.index = index < 0 ? undefined : index;
+		zone?.classList.add("is-drop-target");
 		this.#list.classList.add("rail-dragging");
 		document.documentElement.classList.add("rail-drag-active");
 		getSelection()?.removeAllRanges();
 		this.#scrollLoop();
+	}
+
+	/** The zone's rows or cards in order, the dragged one left out and its space in its place. */
+	#items(zone: HTMLElement, active: Active): HTMLElement[] {
+		return [...zone.querySelectorAll<HTMLElement>(`${ITEM}, .rail-drop-gap`)].filter(
+			(item) => item !== active.source,
+		);
+	}
+
+	/** Gives the space the shape of what stands in `zone`: a card in the pinned row, a row elsewhere. */
+	#shape(active: Active, zone: HTMLElement | undefined): void {
+		const gap = active.gap!;
+		const card = zone?.dataset.dropZone === "pinned";
+		gap.classList.toggle("is-pin", card);
+		const like = card ? ".rail-pin" : ".rail-row";
+		const sample = active.source.matches(like)
+			? undefined
+			: ((zone ?? this.#list).querySelector<HTMLElement>(`${like}:not(.is-drag-source)`) ??
+				this.#list.querySelector<HTMLElement>(`${like}:not(.is-drag-source)`));
+		// With nothing of that shape to measure, the stylesheet's size stands.
+		const rect = sample ? sample.getBoundingClientRect() : active.source.matches(like) ? active.size : undefined;
+		gap.style.width = card && rect?.width ? `${rect.width}px` : "";
+		gap.style.height = rect?.height ? `${rect.height}px` : "";
 	}
 
 	#move(event: PointerEvent): void {
@@ -204,31 +242,33 @@ export class RailDrag {
 		this.#target(event.clientX, event.clientY);
 	}
 
-	/** Finds the zone under the pointer and where in it the row would land. */
+	/** Finds the zone under the pointer and the place in it, and moves the space there. Over
+	 * the rail but no zone (or one that takes no more), the space stays where it is; off the
+	 * rail it goes back to where the row started. */
 	#target(x: number, y: number): void {
 		const active = this.#active!;
-		const hooks = this.#hooks();
-		const under = document.elementsFromPoint(x, y).find((element) => this.#list.contains(element));
 		const listRect = this.#list.getBoundingClientRect();
 		const inside = x >= listRect.left && x <= listRect.right && y >= listRect.top && y <= listRect.bottom;
-		let zone = inside ? (under?.closest<HTMLElement>("[data-drop-zone]") ?? null) : null;
-		if (zone && !hooks.accepts(zone.dataset.dropZone!, active.itemId)) zone = null;
-		if (zone !== active.zone) {
-			active.zone?.classList.remove("is-drop-target");
-			zone?.classList.add("is-drop-target");
-			active.zone = zone ?? undefined;
-		}
-		if (!zone) {
-			active.index = undefined;
-			this.#marker.remove();
+		if (!inside) {
+			this.#put(active, active.home!.zone, active.home!.index);
 			return;
 		}
-		const items = [...zone.querySelectorAll<HTMLElement>(ITEM)].filter((item) => itemIdOf(item) !== active.itemId);
+		this.#reach(active, y);
+		// The zones themselves never glide, so they say where the pointer is in the list as it stands, whatever
+		// row is passing over it.
+		const zone = document
+			.elementsFromPoint(x, y)
+			.find(
+				(element): element is HTMLElement => element.matches("[data-drop-zone]") && this.#list.contains(element),
+			);
+		if (!zone || !this.#hooks().accepts(zone.dataset.dropZone!, active.itemId)) return;
+		const items = this.#items(zone, active).filter((item) => item !== active.gap);
 		// The collapsed rail stacks pinned figures in a column: they order like rows there.
 		const grid = zone.dataset.dropZone === "pinned" && !this.#compact();
 		let index = items.length;
 		for (const [position, item] of items.entries()) {
-			const rect = item.getBoundingClientRect();
+			// Where the rows will stand, not where a glide has them now, so a move never undoes itself.
+			const rect = layoutRect(item);
 			const before = grid
 				? y < rect.top || (y <= rect.bottom && x < rect.left + rect.width / 2)
 				: y < rect.top + rect.height / 2;
@@ -237,43 +277,91 @@ export class RailDrag {
 				break;
 			}
 		}
-		active.index = index;
-		this.#place(items, index, grid);
+		this.#put(active, zone, index);
 	}
 
-	#place(items: HTMLElement[], index: number, grid: boolean): void {
-		const list = this.#list.getBoundingClientRect();
-		const top = (value: number) => value - list.top + this.#list.scrollTop;
-		const left = (value: number) => value - list.left + this.#list.scrollLeft;
-		const marker = this.#marker;
-		marker.classList.toggle("vertical", grid && items.length > 0);
-		if (!items.length) {
-			// An empty zone: its shading says where the item lands.
-			marker.remove();
-			return;
+	/** An empty pinned row (or one whose only card is lifted) opens only when the pointer comes up to it, so
+	 * lifting a row never pushes the list down under the pointer. It closes once the pointer is a little past it. */
+	#reach(active: Active, y: number): void {
+		const pinned = this.#list.querySelector<HTMLElement>(':scope > [data-drop-zone="pinned"]');
+		const open = this.#list.classList.contains("rail-pin-open");
+		let want = false;
+		if (pinned && this.#hooks().accepts("pinned", active.itemId)) {
+			const margin = PIN_REACH * uiScale();
+			if (open) want = y <= pinned.getBoundingClientRect().bottom + margin;
+			else {
+				const below = pinned.nextElementSibling;
+				want = below ? y < layoutRect(below as HTMLElement).top + margin : true;
+			}
 		}
-		// Insets are design pixels; the boxes are measured in screen pixels.
-		const scale = uiScale();
-		if (grid) {
-			const anchor = items[Math.min(index, items.length - 1)]!.getBoundingClientRect();
-			const x = index < items.length ? anchor.left - 4 * scale : anchor.right + 4 * scale;
-			Object.assign(marker.style, {
-				top: `${top(anchor.top + 8 * scale)}px`,
-				left: `${left(x) - 1}px`,
-				width: "",
-				height: `${anchor.height - 16 * scale}px`,
-			});
-		} else {
-			const anchor = items[Math.min(index, items.length - 1)]!.getBoundingClientRect();
-			const y = index < items.length ? anchor.top : anchor.bottom;
-			Object.assign(marker.style, {
-				top: `${top(y) - 1}px`,
-				left: `${left(anchor.left + 8 * scale)}px`,
-				width: `${anchor.width - 16 * scale}px`,
-				height: "",
-			});
+		if (want !== open) this.#glide(() => this.#list.classList.toggle("rail-pin-open", want));
+	}
+
+	/** Moves the space to `index` in `zone` (none: back to where the row started), the rows gliding. */
+	#put(active: Active, zone: HTMLElement | undefined, index: number): void {
+		const gap = active.gap!;
+		if (zone !== active.zone) {
+			active.zone?.classList.remove("is-drop-target");
+			zone?.classList.add("is-drop-target");
 		}
-		if (marker.parentElement !== this.#list) this.#list.append(marker);
+		const home = zone === undefined || (zone === active.home!.zone && index === active.home!.index);
+		active.zone = zone;
+		active.index = zone ? index : undefined;
+		const items = zone ? this.#items(zone, active).filter((item) => item !== gap) : [];
+		const at = (): [Element, "before" | "after"] | undefined => {
+			if (home) return [active.source, "before"];
+			if (index < items.length) return [items[index]!, "before"];
+			if (items.length) return [items[items.length - 1]!, "after"];
+			return undefined;
+		};
+		const place = at();
+		const already = place
+			? place[1] === "before"
+				? place[0].previousElementSibling === gap
+				: place[0].nextElementSibling === gap
+			: gap.parentElement !== null && zone?.contains(gap);
+		if (already) return;
+		this.#glide(() => {
+			this.#shape(active, home ? active.home!.zone : zone);
+			if (place) place[0][place[1]](gap);
+			else if (zone) {
+				// An empty zone: the space goes where its rows would be.
+				const slot = zone.querySelector(":scope > .rail-drop-slot");
+				if (slot) slot.before(gap);
+				else (zone.querySelector(".rail-section-list") ?? zone).append(gap);
+			}
+		});
+	}
+
+	/** Runs `change` and lets every row it moves glide from where it stood. */
+	#glide(change: () => void): void {
+		const leaves = [...this.#list.querySelectorAll<HTMLElement>(LEAVES)];
+		const from = new Map(leaves.map((leaf) => [leaf, leaf.getBoundingClientRect()]));
+		change();
+		if (reducedMotion()) return;
+		const curve = easing("--ease-spring");
+		for (const leaf of leaves) {
+			if (!leaf.isConnected || typeof leaf.animate !== "function") continue;
+			// A glide still running starts again from where it has the row now.
+			this.#glides.get(leaf)?.cancel();
+			const was = from.get(leaf)!;
+			const now = leaf.getBoundingClientRect();
+			// What was not drawn before (the opened pinned row's slot) or is not drawn now has nowhere to glide from.
+			if (!was.width || !was.height || !now.width || !now.height) continue;
+			const dx = was.left - now.left;
+			const dy = was.top - now.top;
+			if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
+			const glide = leaf.animate([{ translate: `${dx}px ${dy}px` }, { translate: "0 0" }], {
+				duration: GLIDE_MS,
+				easing: curve,
+			});
+			this.#glides.set(leaf, glide);
+			const done = () => {
+				if (this.#glides.get(leaf) === glide) this.#glides.delete(leaf);
+			};
+			glide.addEventListener?.("finish", done);
+			glide.addEventListener?.("cancel", done);
+		}
 	}
 
 	/** Near the top or bottom edge the list scrolls under the pointer. */
@@ -308,9 +396,6 @@ export class RailDrag {
 			this.#active = undefined;
 			return;
 		}
-		const zone = active.zone;
-		const index = active.index;
-		this.cancel();
 		// The press ends on a link: that click is the drop, not a navigation.
 		const swallow = (click: MouseEvent) => {
 			click.preventDefault();
@@ -318,11 +403,74 @@ export class RailDrag {
 		};
 		window.addEventListener("click", swallow, { capture: true, once: true });
 		setTimeout(() => window.removeEventListener("click", swallow, { capture: true }), 0);
-		if (!zone?.isConnected || index === undefined) return;
-		const order = [...zone.querySelectorAll<HTMLElement>(ITEM)]
-			.map((item) => itemIdOf(item)!)
-			.filter((itemId) => itemId !== active.itemId);
-		order.splice(index, 0, active.itemId);
-		this.#hooks().drop({ itemId: active.itemId, kind: active.kind, zone: zone.dataset.dropZone!, order });
+		const { zone, index, home } = active;
+		if (!zone?.isConnected || index === undefined || (zone === home!.zone && index === home!.index)) {
+			this.cancel();
+			return;
+		}
+		this.#active = undefined;
+		const gap = active.gap!;
+		const order = this.#items(zone, active).map((item) => (item === gap ? active.itemId : itemIdOf(item)!));
+		// A row that lands among rows takes the space itself, so the drop moves nothing on the screen. A row
+		// pinned or unpinned changes shape: the space holds its place until the rail draws the new card or row.
+		const same = gap.classList.contains("is-pin") === active.source.classList.contains("rail-pin");
+		if (same) {
+			gap.replaceWith(active.source);
+			active.source.classList.replace("is-drag-source", "is-drag-landing");
+		}
+		const hooks = this.#hooks();
+		hooks.drop({ itemId: active.itemId, kind: active.kind, zone: zone.dataset.dropZone!, order });
+		// Drawn now, the rail stands as it will (the drop drew the change at once).
+		hooks.end();
+		gap.remove();
+		const selector = `[data-agent-id="${active.itemId}"], [data-room-id="${active.itemId}"]`;
+		const landed =
+			(same && active.source.isConnected ? active.source : undefined) ??
+			zone.querySelector<HTMLElement>(selector) ??
+			this.#list.querySelector<HTMLElement>(selector) ??
+			active.source;
+		if (landed !== active.source) active.source.classList.remove("is-drag-source");
+		this.#land(active, landed);
+	}
+
+	/** The list is an ordinary list again (after `change`), its rows gliding there, and the image flies into
+	 * `landed`, which shows when it gets there. */
+	#land(active: Active, landed: HTMLElement, change?: () => void): void {
+		cancelAnimationFrame(this.#frame);
+		document.documentElement.classList.remove("rail-drag-active");
+		const ghost = active.ghost!;
+		// The row comes back into the list unseen, keeping its space, so it can glide like the rest.
+		this.#glide(() => {
+			change?.();
+			active.zone?.classList.remove("is-drop-target");
+			this.#list.classList.remove("rail-dragging", "rail-pin-open");
+			active.source.classList.remove("is-drag-source");
+			if (landed.isConnected) landed.classList.add("is-drag-landing");
+		});
+		const done = () => {
+			ghost.remove();
+			landed.classList.remove("is-drag-landing");
+		};
+		if (!landed.isConnected || reducedMotion() || typeof ghost.animate !== "function") {
+			done();
+			return;
+		}
+		const to = layoutRect(landed);
+		const from = ghost.getBoundingClientRect();
+		// A card that lands as a row (or a row as a card) has another shape: the image fades on its way.
+		const fits = Math.abs(to.width - from.width) < 2 && Math.abs(to.height - from.height) < 2;
+		const left = to.left + (to.width - from.width) / 2;
+		const top = to.top + (to.height - from.height) / 2;
+		const flight = ghost.animate(
+			[
+				{ transform: ghost.style.transform },
+				{ transform: `translate(${left}px, ${top}px)`, ...(fits ? {} : { opacity: 0 }) },
+			],
+			{ duration: SETTLE_MS, easing: easing("--ease-out"), fill: "forwards" },
+		);
+		flight.addEventListener?.("finish", done);
+		flight.addEventListener?.("cancel", done);
+		// However the flight ends (a hidden tab runs no animations), the row shows.
+		setTimeout(done, SETTLE_MS + 200);
 	}
 }

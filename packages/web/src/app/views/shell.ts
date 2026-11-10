@@ -1043,6 +1043,9 @@ function sessionRow(model: SessionModel, href: string): HTMLElement {
 
 export function renderRail(container: HTMLElement, company: CompanyController, context: ShellContext): void {
 	const parts = partsFor(company, () => renderRail(container, company, context));
+	// A lifted row keeps the rail still: the rows make way for it by hand (ui/rail-drag.ts), and what changed
+	// meanwhile draws when it is let go.
+	if (parts.drag.dragging) return;
 	const restoreFocus = preserveAccountFocus();
 	const route = context.route;
 	const state = company.store.get();
@@ -1505,7 +1508,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (!state.loading) parts.settled = true;
 	parts.mentionsRead = parts.settled && state.mentions !== undefined;
 	parts.notices = notices;
-	parts.drag.refresh();
 	// A row moved to a new place loses focus on the way, so it gets it back too.
 	if (focused && document.activeElement !== focused) {
 		const replacement = focused.isConnected ? focused : successor;
@@ -2296,6 +2298,7 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 				moveRequest(item, sectionId ?? null, { order: next, ...(pinned ? { unpin: true } : {}) }),
 			);
 		},
+		end: () => parts.redraw(),
 	};
 }
 

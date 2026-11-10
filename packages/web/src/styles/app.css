@@ -440,18 +440,23 @@ label > input, label > select { font-weight: 400; }
 .rail-row, .rail-pin, .cofounder-home { -webkit-touch-callout: none; }
 .rail-row.menu-open, .rail-pin.menu-open, .cofounder-home.menu-open { background: var(--rail-hover); }
 .rail-row.active.menu-open, .rail-pin.active.menu-open, .cofounder-home.active.menu-open { background: var(--rail-selection); }
-/* Dragging an agent: every place it can land is an invisible container; the one under
- * the pointer lights up (no border) and a thin line shows where the agent lands. */
+/* Dragging an agent: the rows make way for it, as the apps drawer's icons do (ui/rail-drag.ts). The row
+ * lifts off as an image under the pointer, an empty space of its shape stands where it would land, and
+ * the row itself is out of the list until it is let go (then unseen until the image reaches it). */
 .rail-scroll { position: relative; }
-.rail-dragging :is(.rail-section, .rail-pinned) { transition: background-color 120ms ease; }
-.rail-dragging [data-drop-zone].is-drop-target { background: var(--rail-hover); }
-.rail-dragging .rail-pinned.is-empty { display: flex; margin-bottom: 6px; padding: 0; }
-.rail-dragging .rail-pinned.is-empty .rail-drop-slot {
+/* A pinned row with no card (empty, or its only card lifted) opens to take one when the pointer comes up to
+ * it (rail-pin-open), so lifting a row never pushes the list down under the pointer. */
+.rail-dragging .rail-pinned.is-empty:has(> .rail-drop-gap), .rail-dragging.rail-pin-open .rail-pinned.is-empty { display: flex; }
+.rail-dragging.rail-pin-open .rail-pinned:not(:has(> :is(.rail-pin:not(.is-drag-source), .rail-drop-gap))) { margin-bottom: 6px; padding: 0; }
+.rail-dragging.rail-pin-open .rail-pinned:not(:has(> :is(.rail-pin:not(.is-drag-source), .rail-drop-gap))) .rail-drop-slot {
 	display: grid; flex: 1; place-items: center; height: 64px; color: var(--rail-small); font-size: 12px; font-weight: 550;
 }
-.rail-dragging .rail-section-list:empty { min-height: 44px; }
+.rail-dragging .rail-section-list:not(:has(> :not(.is-drag-source))) { min-height: 44px; }
 .rail-dragging :is(.rail-row, .rail-pin):hover:not(.active) { background: transparent; }
-.is-drag-source { opacity: 0.28; }
+.rail-scroll .is-drag-source { display: none !important; }
+.rail-scroll .is-drag-landing { visibility: hidden; }
+.rail-drop-gap { flex: none; height: 63.75px; pointer-events: none; }
+.rail-drop-gap.is-pin { width: 86px; height: 86px; }
 .rail-drag-ghost {
 	--rail: var(--sidebar-surface); --rail-hover: var(--sidebar-hover); --rail-selection: var(--composer-accent);
 	--rail-status: var(--agent-active); --rail-status-failed: #ff3b30;
@@ -459,8 +464,6 @@ label > input, label > select { font-weight: 400; }
 	background: var(--rail); border-radius: 12px; opacity: 0.96;
 	box-shadow: 0 14px 32px rgba(11, 11, 11, 0.18), 0 2px 8px rgba(11, 11, 11, 0.08);
 }
-.rail-drop-marker { position: absolute; z-index: 5; height: 2px; border-radius: 1px; background: var(--rail-selection); pointer-events: none; }
-.rail-drop-marker.vertical { width: 2px; }
 /* Dragged from the collapsed rail, the image is the figure alone, as the row shows it there. */
 .rail-drag-ghost.compact :is(.rail-row-copy, .rail-pin-name) { display: none; }
 .rail-drag-ghost.compact.rail-row { grid-template-columns: 1fr; justify-items: center; padding: 5px; }
@@ -567,7 +570,8 @@ label > input, label > select { font-weight: 400; }
 /* Collapsed, hidden agents stay out of the figure column; widen the rail to reach them. */
 .rail-compact .rail-hidden { display: none; }
 .rail-compact .rail-pin-stand, .rail-compact .rail-pin .figure { width: 50px; height: 50px; }
-.rail-compact .rail-dragging .rail-pinned.is-empty .rail-drop-slot { height: 44px; font-size: 0; }
+.rail-compact .rail-dragging .rail-pinned .rail-drop-slot { height: 44px; font-size: 0; }
+.rail-compact .rail-drop-gap.is-pin { width: 60px; height: 60px; }
 .rail-compact .rail-divided::before { content: ""; display: block; height: 1px; margin: 4px 8px; background: var(--border-strong); }
 .rail-compact .account-menu-rail .account-trigger { justify-content: center; }
 .rail-compact .account-menu-rail .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; z-index: 50; }
