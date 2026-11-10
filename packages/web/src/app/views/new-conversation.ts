@@ -511,6 +511,8 @@ export class NewConversationView {
 		}
 		this.#listOpen = false;
 		this.#editing = true;
+		// The composer leaves the screen: so does the listening, and nothing more is written into it.
+		this.#dictation.cancel();
 		const stage = h(
 			"div",
 			{ class: "new-agent-stage" },

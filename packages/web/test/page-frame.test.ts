@@ -228,8 +228,10 @@ describe("an HTML page's frame", () => {
 	it("keeps the frame document's policy and the site's rule for it in step, and locked down", () => {
 		const frameRule = rule("/page-preview/*");
 		// Pages applies /* first: this rule takes its policy and its framing refusal off before setting its own.
-		expect(frameRule.slice(0, 2)).toEqual(["! Content-Security-Policy", "! X-Frame-Options"]);
+		expect(frameRule.slice(0, 3)).toEqual(["! Content-Security-Policy", "! X-Frame-Options", "! Permissions-Policy"]);
 		expect(frameRule).toContain("X-Frame-Options: SAMEORIGIN");
+		// A Company File page gets no microphone, camera or other device, though the app has the microphone for dictation.
+		expect(frameRule).toContain("Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()");
 		const header = policy(frameRule);
 		const directives = header.split(";").map((part) => part.trim());
 		expect(directives[0]).toBe("sandbox allow-scripts");
@@ -253,6 +255,7 @@ describe("an HTML page's frame", () => {
 		// Every other page of the site keeps refusing to be framed, and the app frames nothing but this site.
 		const site = rule("/*");
 		expect(site).toContain("X-Frame-Options: DENY");
+		expect(site).toContain("Permissions-Policy: camera=(), microphone=(self), geolocation=(), payment=(), usb=()");
 		expect(policy(site)).toContain("frame-ancestors 'none'");
 		expect(policy(site)).toMatch(/^default-src 'self';/);
 		expect(policy(site)).not.toMatch(/frame-src|child-src/);

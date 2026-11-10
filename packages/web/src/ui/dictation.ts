@@ -39,7 +39,8 @@ function spokenLanguage(): string {
 
 /** Speech to text for a composer: the microphone button, and the words written into the field while they are spoken.
  * The words go in at the caret and are rewritten as the browser hears better; typing, a send or any other change to
- * those words ends the listening and keeps what is there. `write` makes the change as the field's own code edit
+ * those words ends the listening at once and keeps what is there. A caret the member moved away from the spoken words
+ * stays where they put it. `write` makes the change as the field's own code edit
  * (the composer's history and drafts follow it). */
 export class Dictation {
 	readonly button: HTMLButtonElement;
@@ -76,7 +77,8 @@ export class Dictation {
 		input.addEventListener(
 			"input",
 			() => {
-				if (!this.#writing) this.stop();
+				// At once: a result still on its way would be written after what the member typed.
+				if (!this.#writing) this.cancel();
 			},
 			{ signal },
 		);
@@ -132,6 +134,9 @@ export class Dictation {
 			}
 			const text = heard ? space + heard : "";
 			if (text === this.#written) return;
+			const input = this.#input;
+			const caret = { start: input.selectionStart, end: input.selectionEnd };
+			const following = caret.start === end && caret.end === end;
 			this.#writing = true;
 			try {
 				this.#write(this.#start, end, text);
@@ -139,6 +144,16 @@ export class Dictation {
 				this.#writing = false;
 			}
 			this.#written = text;
+			// The write leaves the caret after the spoken words; a caret elsewhere goes back, moved by the words' change.
+			if (!following) {
+				const shift = (at: number) =>
+					at <= this.#start
+						? at
+						: at >= end
+							? at + text.length - (end - this.#start)
+							: this.#start + Math.min(at - this.#start, text.length);
+				input.setSelectionRange(shift(caret.start), shift(caret.end));
+			}
 		};
 		recognition.onerror = (event) => {
 			if (event.error === "no-speech" || event.error === "aborted") return;

@@ -12,6 +12,7 @@ class FakeRecognition {
 	onerror: ((event: { error: string }) => void) | null = null;
 	onend: (() => void) | null = null;
 	started = false;
+	stopped = false;
 	aborted = false;
 	constructor() {
 		FakeRecognition.last = this;
@@ -19,7 +20,11 @@ class FakeRecognition {
 	start() {
 		this.started = true;
 	}
+	/** As a browser does: it ends later, after any last result (`finish`). */
 	stop() {
+		this.stopped = true;
+	}
+	finish() {
 		this.onend?.();
 	}
 	abort() {
@@ -87,6 +92,11 @@ describe("dictation", () => {
 		expect(writes).toEqual(["Hej med", "Hej med dig", "Hej med dig, hvordan går det"]);
 		expect(input.value).toBe("Hej med dig, hvordan går det");
 		dictation.button.click();
+		expect(recognition.stopped).toBe(true);
+		// The words still being heard when the member stopped come in before the end.
+		recognition.hear("med dig,", " hvordan går det?");
+		expect(input.value).toBe("Hej med dig, hvordan går det?");
+		recognition.finish();
 		expect(dictation.listening).toBe(false);
 		expect(dictation.button.getAttribute("aria-label")).toBe("Indtal");
 	});
@@ -101,6 +111,10 @@ describe("dictation", () => {
 		input.value = "hello!";
 		input.dispatchEvent(new Event("input", { bubbles: true }));
 		expect(dictation.listening).toBe(false);
+		// A last result the browser still had is dropped: it would land after what was typed.
+		expect(recognition.aborted).toBe(true);
+		recognition.hear("Hello");
+		expect(input.value).toBe("hello!");
 
 		dictation.button.click();
 		const again = FakeRecognition.last!;
@@ -114,12 +128,32 @@ describe("dictation", () => {
 		expect(dictation.listening).toBe(false);
 	});
 
+	it("leaves a caret the member moved where they put it", () => {
+		vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
+		const { input, dictation } = setup("Dear team");
+		input.setSelectionRange(4, 4);
+		dictation.button.click();
+		const recognition = FakeRecognition.last!;
+		recognition.hear("all");
+		expect(input.value).toBe("Dear all team");
+		expect(input.selectionStart).toBe(8);
+		// The member clicks back to the start without typing; the words go on being rewritten around the caret.
+		input.setSelectionRange(0, 0);
+		recognition.hear("all of the");
+		expect(input.value).toBe("Dear all of the team");
+		expect([input.selectionStart, input.selectionEnd]).toEqual([0, 0]);
+		input.setSelectionRange(16, 20);
+		recognition.hear("all of the whole");
+		expect(input.value).toBe("Dear all of the whole team");
+		expect(input.value.slice(input.selectionStart, input.selectionEnd)).toBe("team");
+	});
+
 	it("says why the microphone could not listen, and is switched off with the field", () => {
 		vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
 		const { dictation } = setup();
 		dictation.button.click();
 		FakeRecognition.last!.onerror?.({ error: "not-allowed" });
-		FakeRecognition.last!.onend?.();
+		FakeRecognition.last!.finish();
 		expect(dictation.status.hidden).toBe(false);
 		expect(dictation.status.textContent).toBe(
 			"Qorpera may not use the microphone. Allow it in the browser's settings for this site.",

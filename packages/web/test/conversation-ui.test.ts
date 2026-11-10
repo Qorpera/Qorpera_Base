@@ -2434,6 +2434,38 @@ describe("new conversation and agent setup", () => {
 		expect(f.view.el.querySelector<HTMLInputElement>('[aria-label="Agent name"]')?.value).toBe("Draft agent");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
+	it("stops the microphone when a new agent's setup takes the composer's place", async () => {
+		const heard: { onresult: ((event: unknown) => void) | null; aborted: boolean }[] = [];
+		vi.stubGlobal(
+			"webkitSpeechRecognition",
+			class {
+				onresult: ((event: unknown) => void) | null = null;
+				onerror = null;
+				onend = null;
+				aborted = false;
+				constructor() {
+					heard.push(this);
+				}
+				start() {}
+				stop() {}
+				abort() {
+					this.aborted = true;
+				}
+			},
+		);
+		const f = setupNew();
+		f.company.store.set({ team });
+		await settle();
+		const message = f.view.el.querySelector<HTMLTextAreaElement>('[aria-label="Message"]')!;
+		button(f.view.el, "Dictate").click();
+		heard[0]!.onresult?.({ results: [[{ transcript: "Hello" }]] });
+		expect(message.value).toBe("Hello");
+		choice(f.view.el, "create").click();
+		expect(f.view.el.querySelector('[aria-label="Agent name"]')).not.toBeNull();
+		expect(heard[0]!.aborted).toBe(true);
+		heard[0]!.onresult?.({ results: [[{ transcript: "Hello there" }]] });
+		expect(message.value).toBe("Hello");
+	});
 	it("sends to the selected group only on the first message and blocks duplicate sends", async () => {
 		const pending = deferred<string>(),
 			startConversation = vi.fn(() => pending.promise);
