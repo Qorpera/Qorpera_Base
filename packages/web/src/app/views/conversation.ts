@@ -52,7 +52,7 @@ import {
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../../ui/mentions.ts";
-import { foldFrom, playOnce } from "../../ui/motion.ts";
+import { easing, foldFrom, leave, playOnce, reducedMotion } from "../../ui/motion.ts";
 import { presentationDay, presentationLocale, presentationTimeZone, t, timeZoneOption } from "../../ui/preferences.ts";
 import { renderProposalCard } from "../../ui/proposal-card.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
@@ -327,6 +327,10 @@ export class ConversationView {
 	readonly #more: HTMLButtonElement;
 	readonly #menu: HTMLElement;
 	readonly #menuMain: HTMLElement;
+	/** Whether the "+" menu is open. It stays on the page a moment longer while it leaves (#setMenu). */
+	#menuOpen = false;
+	/** The menu taking the height of the page it just turned to (#turnMenuPage). */
+	#menuResize: Animation | undefined;
 	readonly #models: ComposerModels;
 	/** Which of the member's logins pays here; only where the conversation's model account is shown. */
 	readonly #logins: ComposerLogins | undefined;
@@ -550,7 +554,7 @@ export class ConversationView {
 			// The skills take the place of "···" and of the "@" names above the field; they never stand
 			// together. (Opening "···" moves focus off the field, which closes the skills.)
 			opened: () => {
-				if (!this.#menu.hidden) this.#setMenu(false, false);
+				if (this.#menuOpen) this.#setMenu(false, false);
 				this.#closeMention();
 			},
 			// Messages already written mark the names of skills once the list is known: through a
@@ -609,7 +613,7 @@ export class ConversationView {
 				"aria-label": t("Chat settings and more"),
 				"aria-haspopup": "menu",
 				"aria-expanded": "false",
-				onclick: () => this.#setMenu(this.#menu.hidden),
+				onclick: () => this.#setMenu(!this.#menuOpen),
 			},
 			icon("plus"),
 		);
@@ -651,7 +655,15 @@ export class ConversationView {
 			{ class: "composer-menu-note", hidden: true },
 			t("Images are not supported in group chats. Use Company File."),
 		);
-		this.#menuMain = h("div", null, this.#attach, this.#attachNote, this.#models.button, this.#logins?.button);
+		this.#menuMain = h(
+			"div",
+			null,
+			this.#attach,
+			this.#attachNote,
+			h("div", { class: "composer-menu-separator", role: "separator" }),
+			this.#models.button,
+			this.#logins?.button,
+		);
 		this.#menu = h(
 			"div",
 			{
@@ -879,7 +891,7 @@ export class ConversationView {
 		document.addEventListener(
 			"click",
 			(event) => {
-				if (!this.#menu.hidden && !this.#composerShell.contains(event.target as Node)) this.#setMenu(false, false);
+				if (this.#menuOpen && !this.#composerShell.contains(event.target as Node)) this.#setMenu(false, false);
 			},
 			{ signal: this.#lifetime.signal },
 		);
@@ -996,17 +1008,42 @@ export class ConversationView {
 		return `${presentationLocale()} ${presentationTimeZone()} ${presentationDay(new Date())}`;
 	}
 
+	/** Opens the "+" menu on its main page, or closes it. Closing, the menu goes back into the "+" showing the
+	 * page it was on (styles/motion.css) and is out of reach at once; it is hidden when that has played. */
 	#setMenu(open: boolean, restoreFocus = true): void {
+		const wasOpen = this.#menuOpen;
+		this.#menuOpen = open;
+		this.#more.setAttribute("aria-expanded", String(open));
+		if (open) {
+			this.#resetMenu();
+			this.#menu.hidden = false;
+			this.#focusMenu();
+			return;
+		}
+		if (wasOpen)
+			leave(this.#menu, "is-leaving", () => {
+				// Opened again while it left: it stays.
+				if (this.#menuOpen) return;
+				this.#menu.hidden = true;
+				this.#resetMenu();
+			});
+		if (restoreFocus) this.#more.focus();
+	}
+
+	/** The menu back on its main page and within reach: leave() takes it out of reach but, since the menu is
+	 * kept for its next opening, cannot give it back. */
+	#resetMenu(): void {
 		this.#menuMain.hidden = false;
 		for (const submenu of [this.#models, this.#logins]) {
 			if (!submenu) continue;
 			submenu.el.hidden = true;
 			submenu.button.setAttribute("aria-expanded", "false");
 		}
-		this.#menu.hidden = !open;
-		this.#more.setAttribute("aria-expanded", String(open));
-		if (open) this.#focusMenu();
-		else if (restoreFocus) this.#more.focus();
+		this.#menuResize?.cancel();
+		this.#menu.classList.remove("is-leaving");
+		this.#menu.inert = false;
+		delete this.#menu.dataset.leaving;
+		this.#menu.style.removeProperty("pointer-events");
 	}
 
 	/** A group chat's menu may hold no live control; the menu itself then takes focus so Escape still closes it. */
@@ -1020,9 +1057,12 @@ export class ConversationView {
 	 * during a read), so Escape and the arrows keep working. */
 	#setSubmenu(submenu: ComposerModels | ComposerLogins, open: boolean, restoreFocus = true): void {
 		if (open && (submenu.button.disabled || submenu.button.hidden)) return;
+		const turns = this.#menuOpen && submenu.el.hidden === open;
+		const height = this.#menu.offsetHeight;
 		this.#menuMain.hidden = open;
 		submenu.el.hidden = !open;
 		submenu.button.setAttribute("aria-expanded", String(open));
+		if (turns) this.#turnMenuPage(open ? submenu.el : this.#menuMain, height, open);
 		if (open) {
 			submenu.focus();
 			if (submenu === this.#models) void this.#models.refresh();
@@ -1030,6 +1070,29 @@ export class ConversationView {
 			if (submenu.button.hidden || submenu.button.disabled) this.#focusMenu();
 			else submenu.button.focus();
 		}
+	}
+
+	/** The open menu turns to `page`: it comes in from the side it lies on (a page of its own from the right, the
+	 * main page from the left) while the menu goes from the `height` it had to the page's. */
+	#turnMenuPage(page: HTMLElement, height: number, forward: boolean): void {
+		playOnce(page, forward ? "is-page-arriving" : "is-page-returning");
+		this.#menuResize?.cancel();
+		if (reducedMotion() || typeof this.#menu.animate !== "function") return;
+		const to = this.#menu.offsetHeight;
+		if (!height || !to || Math.abs(to - height) < 2) return;
+		const resize = this.#menu.animate([{ height: `${height}px` }, { height: `${to}px` }], {
+			duration: 220,
+			easing: easing("--ease-out"),
+		});
+		this.#menuResize = resize;
+		// The taller page shows no scroll bar while the menu grows to it.
+		this.#menu.style.overflow = "clip";
+		const clear = () => {
+			if (this.#menuResize !== resize) return;
+			this.#menuResize = undefined;
+			this.#menu.style.removeProperty("overflow");
+		};
+		resize.finished.then(clear, clear);
 	}
 
 	#openDetails(): void {
@@ -2017,7 +2080,7 @@ export class ConversationView {
 		this.#attachNote.hidden = !noImages;
 		this.#more.disabled = this.#composer.disabled;
 		this.#dictation.disabled = this.#composer.disabled;
-		if (this.#composer.disabled && !this.#menu.hidden) this.#setMenu(false, false);
+		if (this.#composer.disabled && this.#menuOpen) this.#setMenu(false, false);
 		this.#composerWrap.hidden = !canWrite;
 		if (conversation.answering !== this.#answerShown) {
 			this.#answerShown = conversation.answering;

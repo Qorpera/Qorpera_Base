@@ -380,3 +380,88 @@ describe("composer model selector", () => {
 		expect(panel.textContent).toContain("model is unavailable");
 	});
 });
+
+/* jsdom has no animation engine, so the menu above closes at once. With one (ui/motion.ts looks for
+ * getAnimations) it stays on the page while its leaving animation plays. */
+describe("the composer menu with an animation engine", () => {
+	async function animated() {
+		const f = await setup();
+		Element.prototype.getAnimations = () => [{ playState: "running" }] as unknown as Animation[];
+		cleanups.push(() => {
+			delete (Element.prototype as { getAnimations?: unknown }).getAnimations;
+		});
+		const more = button(f.view.el, "Chat settings and more");
+		const menu = f.view.el.querySelector<HTMLElement>(".composer-menu")!;
+		return { ...f, more, menu };
+	}
+
+	it("stays on the page, out of reach, while it leaves, and is hidden when that has played", async () => {
+		const { more, menu } = await animated();
+		more.click();
+		expect(menu.hidden).toBe(false);
+		expect(more.getAttribute("aria-expanded")).toBe("true");
+		more.click();
+		// Closed for the "+" and the keyboard at once; only the picture of it is still there.
+		expect(more.getAttribute("aria-expanded")).toBe("false");
+		expect(document.activeElement).toBe(more);
+		expect(menu.hidden).toBe(false);
+		expect(menu.inert).toBe(true);
+		expect(menu.classList.contains("is-leaving")).toBe(true);
+		menu.dispatchEvent(new Event("animationend"));
+		expect(menu.hidden).toBe(true);
+		// The menu is kept for its next opening: nothing of the leaving stays on it.
+		expect(menu.inert).toBe(false);
+		expect(menu.classList.contains("is-leaving")).toBe(false);
+		expect(menu.style.pointerEvents).toBe("");
+		expect("leaving" in menu.dataset).toBe(false);
+	});
+
+	it("stays when it is opened again while it leaves, and closes from the page it shows", async () => {
+		const { view, more, menu } = await animated();
+		more.click();
+		more.click();
+		more.click();
+		expect(more.getAttribute("aria-expanded")).toBe("true");
+		expect(menu.hidden).toBe(false);
+		expect(menu.inert).toBe(false);
+		expect(menu.classList.contains("is-leaving")).toBe(false);
+		// The leaving that was cut short ends late (no animationend came: its timer): the menu is open and stays.
+		vi.advanceTimersByTime(700);
+		expect(menu.hidden).toBe(false);
+		expect(menu.inert).toBe(false);
+		button(view.el, "Model: GPT-6 Astra, Low effort").click();
+		const panel = view.el.querySelector<HTMLElement>(".composer-models")!;
+		expect(panel.hidden).toBe(false);
+		more.click();
+		// It leaves showing the Model page, and is back on its main page once hidden.
+		expect(panel.hidden).toBe(false);
+		expect(menu.inert).toBe(true);
+		menu.dispatchEvent(new Event("animationend"));
+		expect(menu.hidden).toBe(true);
+		expect(panel.hidden).toBe(true);
+		expect(menu.firstElementChild!.hasAttribute("hidden")).toBe(false);
+	});
+
+	it("turns to a page from the side it lies on and takes the page's height", async () => {
+		const { view, menu } = await animated();
+		const resize = vi.fn(
+			(_keyframes: Keyframe[] | PropertyIndexedKeyframes | null, _options?: number | KeyframeAnimationOptions) =>
+				({ finished: new Promise<Animation>(() => {}), cancel() {} }) as unknown as Animation,
+		);
+		menu.animate = resize;
+		const panel = view.el.querySelector<HTMLElement>(".composer-models")!;
+		Object.defineProperty(menu, "offsetHeight", { get: () => (panel.hidden ? 110 : 430) });
+		await open(view);
+		expect(panel.classList.contains("is-page-arriving")).toBe(true);
+		expect(resize).toHaveBeenLastCalledWith(
+			[{ height: "110px" }, { height: "430px" }],
+			expect.objectContaining({ duration: 220 }),
+		);
+		button(panel, "Model").click();
+		expect(menu.firstElementChild!.classList.contains("is-page-returning")).toBe(true);
+		expect(resize).toHaveBeenLastCalledWith(
+			[{ height: "430px" }, { height: "110px" }],
+			expect.objectContaining({ duration: 220 }),
+		);
+	});
+});
