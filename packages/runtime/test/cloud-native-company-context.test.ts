@@ -1539,13 +1539,14 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // cards and overlay v10 ("approval cards are completely unreadable"; Jonas, 5 November 2026), and for overlay v11
 // (each agent works for one member and the Co-Founder deals the team out; Jonas, 9 November 2026), and for
 // interface apps that show the company's state and overlay v13 (each owner keeps one posted app current; Jonas,
-// 10 November 2026). A change to either is a change to every run's bytes.
+// 10 November 2026), and for patch notes before changes go live ("Yes, wait for me"; Jonas, 10 November 2026). A
+// change to either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "cd16fd9758b183688e61cc4fab8460196807683ea48768a5fd9bc47c3f94f6c8",
+			instructions: "8978fd0289a943862218fd4a578caa3c89fed3dec6f1f36ef257a58ea738b566",
 			prompt: "be57a945a52a80bccd0e523d775d563455ec85f3a3ee11677e7ece894f9f0ae6",
 		},
 	],
@@ -1553,7 +1554,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "f9bfde546292e56820c3a07d937fed63bd33215b94aa39ed4aa76151aa7379aa",
+			instructions: "1640fabc8e45fb1e3d46572498e4ce55e1755854a5759db6f9ab2dd92986226d",
 			prompt: "9939ba06da7ba749d0a047691bd02c41d28668decdd1d00d34ecd1f23a7ad2e8",
 		},
 	],
@@ -1561,7 +1562,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "cd16fd9758b183688e61cc4fab8460196807683ea48768a5fd9bc47c3f94f6c8",
+			instructions: "8978fd0289a943862218fd4a578caa3c89fed3dec6f1f36ef257a58ea738b566",
 			prompt: "954569cabce5c2ead1fe5e2507f3c8367984855615fb747cf2c378ed2efce48f",
 		},
 	],
@@ -1738,6 +1739,27 @@ it("has interface apps show the company's state, kept by each area's owner (10 N
 	const cofounder = cloudRuntimeHireBehavior("cofounder");
 	expect(cofounder).toContain("when one is missing, out of date or reads as a report of what was done");
 	expect(cofounder).toContain("keep one posted app for it (name it company) that shows the plan as it stands");
+});
+
+it("has changes shown as patch notes and held until a member says yes (10 November 2026)", () => {
+	// Jonas, 10 November: "I would also like some version of an update list/patch notes for changes before they go
+	// live, if agents have worked on several changes it could just post all of them as a patchnote rundown with visuals
+	// and very brief and easy to digest text - or a video". Asked whether changes should wait for his yes on that page
+	// before they go live: "Yes, wait for me".
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"Before changes go live, show them and wait for a member's yes.",
+		// What "live" means, so the rule holds back a release and nothing else.
+		"A change goes live when people outside the team meet it: an update to a site that is already published (publish_site on a live site), a new version of the product customers use, a new price, or a mail or post that goes out to many.",
+		"Keep one posted app named whats-new, titled What's new, that shows every change that is ready and not yet live",
+		"each as a picture of what changes (before and after, a screenshot of the new screen, a small drawing, or a short video for what moves) with one plain line under it on what a customer will notice, never how it was made",
+		"show them together as one rundown, short enough to take in within a minute, instead of asking about each",
+		"one question card that points at the app, with the options Put it live and Not yet, and show the same two as buttons on the page when save_app offers writes",
+		"Nothing in the rundown goes live before a member says yes: finishing the work, merging it and testing it are yours to do, and putting it where customers meet it waits.",
+		"On yes, put it live in that run and mark those changes as live on the page; on not yet, ask what to change, change it and show it again.",
+		"Only a fix for something that is broken for customers right now goes live at once: show it in the app the same day, marked as already live.",
+	])
+		expect(instructions).toContain(rule);
 });
 
 it("has the Co-Founder open the company's email in its first run, (10 November 2026)", () => {
