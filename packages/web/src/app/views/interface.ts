@@ -340,7 +340,7 @@ export function renderInterface(
 	}
 	// The Members page draws who each agent works for (views/members.ts; Jonas, 9 November 2026).
 	if (entry.name === "members") {
-		renderMembers(container, company);
+		renderMembers(container, company, writes?.openSettings ? { openSettings: writes.openSettings } : {});
 		return;
 	}
 	// The Bank page draws itself from the company's bank summary (views/bank.ts).
