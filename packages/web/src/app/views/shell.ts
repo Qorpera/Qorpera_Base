@@ -1055,6 +1055,9 @@ function sessionRow(model: SessionModel, href: string): HTMLElement {
 
 export function renderRail(container: HTMLElement, company: CompanyController, context: ShellContext): void {
 	const parts = partsFor(company, () => renderRail(container, company, context));
+	// A lifted row keeps the rail still: the rows make way for it by hand (ui/rail-drag.ts), and what changed
+	// meanwhile draws when it is let go.
+	if (parts.drag.dragging) return;
 	const restoreFocus = preserveAccountFocus();
 	const route = context.route;
 	const state = company.store.get();
@@ -1554,7 +1557,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (!state.loading) parts.settled = true;
 	parts.mentionsRead = parts.settled && state.mentions !== undefined;
 	parts.notices = notices;
-	parts.drag.refresh();
 	// A row moved to a new place loses focus on the way, so it gets it back too.
 	if (focused && document.activeElement !== focused) {
 		const replacement = focused.isConnected ? focused : successor;
@@ -1777,7 +1779,9 @@ function appIcon(entry: CompanyInterface, href: string, count: number): HTMLElem
 	);
 }
 
-/** An agent's posted app in the drawer: its emblem with its name under it, a link to the app's own page. */
+/** An agent's posted app in the drawer: its emblem with its name under it, a link to the app's own page. A press on
+ * the icon of the app that is already open reads the app again (application.ts follows a link to the open app's page
+ * that way): the app's page has no Reload of its own. */
 function agentAppIcon(manifest: AppManifest, href: string): HTMLElement {
 	return h(
 		"a",
@@ -1880,13 +1884,6 @@ function companyContacts(company: CompanyController) {
 function placedChats(company: CompanyController) {
 	const state = company.store.get();
 	return state.memberChatsUnavailable || state.memberContactPlacing !== true ? undefined : state.memberChats;
-}
-
-/** A zone's rows as the member sees them now, by id: agents, group chats and contacts. What a drop leaves behind
- * is read off it; nothing drags while a search hides rows. */
-function zoneOrder(parts: RailParts, zone: string): string[] {
-	const element = parts.list.querySelector<HTMLElement>(`[data-drop-zone="${zone}"]`);
-	return element ? [...element.querySelectorAll<HTMLElement>(RAIL_ITEM)].map((row) => railItemId(row)!) : [];
 }
 
 /** The pinned row or the Members group as the company holds it, whatever a search hides: the pinned agents and group
@@ -2446,7 +2443,7 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 			(placedChats(company)?.[itemId] ? true : Boolean(sidebarOf()) && company.sidebarRoster().includes(itemId)),
 		accepts: (zone: string, itemId: string) => {
 			// The pinned row holds so many cards, whatever is dragged: one that is in it already moves within it.
-			const pinnable = () => zoneOrder(parts, "pinned").includes(itemId) || !pinnedRowFull(company);
+			const pinnable = () => keptOrder(company, "pinned").includes(itemId) || !pinnedRowFull(company);
 			// A contact lands in any zone: where it stands is its member's own.
 			if (placedChats(company)?.[itemId]) return zone !== "pinned" || pinnable();
 			const sidebar = sidebarOf();
@@ -2458,7 +2455,7 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 		drop: ({ itemId, kind, zone, order }: RailDrop) => {
 			// A contact: only where it stands changes. Dragged out of Hidden, it shows again where it lands.
 			if (kind === "member") {
-				settleContacts(company, zone, order, itemId);
+				settleContacts(company, zone, dropInto(heldOrder(company, zone), itemId, order), itemId);
 				return;
 			}
 			const item: SidebarItem = { id: itemId, kind };
@@ -2474,15 +2471,23 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 					`[data-drop-zone] [data-agent-id="${itemId}"], [data-drop-zone] [data-room-id="${itemId}"]`,
 				)
 				?.closest<HTMLElement>("[data-drop-zone]")?.dataset.dropZone;
-			const left = from && from !== zone ? zoneOrder(parts, from).filter((member) => member !== itemId) : undefined;
+			// Both zones' rows as the company holds them now, read before the sidebar change below moves the item (a
+			// contact placed after it would move with it): only the item goes in or out, and contacts moved meanwhile
+			// stay moved.
+			const landed = dropInto(heldOrder(company, zone), itemId, order);
+			const left =
+				from && from !== zone ? heldOrder(company, from).filter((member) => member !== itemId) : undefined;
 			const settle = () => {
-				settleContacts(company, zone, order);
+				settleContacts(company, zone, landed);
 				if (from && left) settleContacts(company, from, left);
 			};
 			const pinned = sidebar.pinned.includes(itemId);
+			const into = (now: readonly string[]) => dropInto(now, itemId, placed);
 			if (zone === "pinned") {
-				if (placed.join() !== sidebar.pinned.join())
-					void company.changeSidebar({ action: "set_pins", order: placed });
+				// A pin list can still name an item deleted since it was read; the cloud refuses those.
+				const roster = company.sidebarRoster();
+				const pins = into(sidebar.pinned.filter((pin) => roster.includes(pin)));
+				if (pins.join() !== sidebar.pinned.join()) void company.changeSidebar({ action: "set_pins", order: pins });
 				settle();
 				return;
 			}
@@ -2492,10 +2497,7 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 			// The rail shows no hidden or pinned items; the new order keeps them where they stood.
 			const roster = company.sidebarRoster();
 			const before = containerOrder(sidebar, sectionId, roster);
-			const next = before.filter((member) => member !== itemId);
-			const following = placed[placed.indexOf(itemId) + 1];
-			const at = following ? next.indexOf(following) : -1;
-			next.splice(at < 0 ? next.length : at, 0, itemId);
+			const next = into(before);
 			// Dropped where it stood among the agents, it may still have stepped over a contact: then only that moves.
 			if (pinned || wasHidden || next.join() !== before.join()) {
 				if (!sectionId && !pinned && !wasHidden && !homeSection(sidebar, itemId) && company.unassignedOrderLost()) {
@@ -2509,7 +2511,45 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 			}
 			settle();
 		},
+		end: () => parts.redraw(),
 	};
+}
+
+/** `itemId` put into `now` (a zone's rows as the company holds them now) where it was dropped among `dropped` (the
+ * rows a lifted rail showed): before the first row that followed it there and is still in `now`, else last. The rail
+ * is not drawn afresh while a row is lifted, so the rows it showed may be older than the company's: a pin made or a
+ * contact moved meanwhile (on another device) stays so. */
+function dropInto(now: readonly string[], itemId: string, dropped: readonly string[]): string[] {
+	const next = now.filter((member) => member !== itemId);
+	const following = dropped.slice(dropped.indexOf(itemId) + 1).find((member) => next.includes(member));
+	next.splice(following ? next.indexOf(following) : next.length, 0, itemId);
+	return next;
+}
+
+/** A zone's rows as the company holds them now, as the rail draws them with no search running: its agents and group
+ * chats in their order with the member's contacts woven in, and nothing hidden, or pinned outside the pinned row. */
+function heldOrder(company: CompanyController, zone: string): string[] {
+	const state = company.store.get();
+	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
+	const roster = company.sidebarRoster();
+	const pinned = (sidebar?.pinned ?? []).filter((itemId) => roster.includes(itemId));
+	const hidden = new Set(sidebar?.hidden ?? []);
+	const contacts = companyContacts(company).contacts.filter((contact) => contact.zone === zone);
+	for (const contact of contacts) if (contact.hidden) hidden.add(contact.userId);
+	const sectionId = zone.startsWith("section:") ? zone.slice("section:".length) : undefined;
+	const items =
+		zone === "pinned"
+			? pinned
+			: zone === MEMBERS_ZONE
+				? []
+				: sidebar
+					? containerOrder(sidebar, sectionId, roster)
+					: sectionId
+						? []
+						: roster;
+	return weave(items, contacts).filter(
+		(itemId) => !hidden.has(itemId) && (zone === "pinned" || !pinned.includes(itemId)),
+	);
 }
 
 /** Moves an agent, a group chat or a contact one place up or down among what the member sees in its zone: the

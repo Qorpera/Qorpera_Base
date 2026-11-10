@@ -930,8 +930,9 @@ describe("dragging contacts in the rail", () => {
 			clientX: x,
 			clientY: y,
 		});
-	/** Drags a row onto another row or a title: above its middle unless `below`. Answers the zone that lit up. */
-	function drag(from: Element, onto: Element, rail: HTMLElement, below = false) {
+	/** Drags a row onto another row or a title: above its middle unless `below`. Answers the zone that lit up.
+	 * `meanwhile` runs while the row is held over its place, before it is let go. */
+	function drag(from: Element, onto: Element, rail: HTMLElement, below = false, meanwhile?: () => void) {
 		const boxes = layout(rail);
 		const start = boxes.get(from)!;
 		const to = boxes.get(onto)!;
@@ -941,6 +942,7 @@ describe("dragging contacts in the rail", () => {
 		document.dispatchEvent(pointer("pointermove", 20, y));
 		const lit = rail.querySelector<HTMLElement>(".is-drop-target")?.dataset.dropZone;
 		const kind = rail.querySelector<HTMLElement>(".rail-scroll")!.dataset.dragging;
+		meanwhile?.();
 		document.dispatchEvent(pointer("pointerup", 20, y));
 		return { lit, kind };
 	}
@@ -1019,6 +1021,71 @@ describe("dragging contacts in the rail", () => {
 		expect(zones(rail)).toMatchObject({ Research: ["Cy", "Sofie Lund", "Bo", "Ada"], Unassigned: ["Mads Berg"] });
 	});
 
+	it("keeps a contact where the member saw it when the agent it stood after is dragged away", async () => {
+		const { rail, manage, places, ready } = companyWith({
+			chats: [placed(sofie, { zone: "section", sectionId: research, after: bo.id, rank: 0 }), summary(mads)],
+		});
+		await ready;
+		expect(zones(rail).Research).toEqual(["Bo", "Sofie Lund", "Ada"]);
+		// Bo below Ada, in his own section: Sofie stays first, not after Ada.
+		drag(rowOf(rail, "Bo"), rowOf(rail, "Ada"), rail, true);
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "move_agent",
+			staffAgentId: bo.id,
+			sectionId: research,
+			order: [ada.id, bo.id],
+		});
+		expect(places.at(-1)).toEqual([
+			{ userId: sofie, place: { zone: "section", sectionId: research, rank: 0 }, hidden: false },
+		]);
+		expect(zones(rail).Research).toEqual(["Sofie Lund", "Ada", "Bo"]);
+		// Bo out to the agents in no section: Sofie still first in Research, not at its end.
+		drag(rowOf(rail, "Bo"), rowOf(rail, "Cy"), rail);
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "move_agent",
+			staffAgentId: bo.id,
+			sectionId: null,
+			order: [bo.id, cy.id, dee.id],
+		});
+		expect(places.flat().filter((change) => change.userId === sofie && change.place.after !== undefined)).toEqual([]);
+		expect(zones(rail).Research).toEqual(["Sofie Lund", "Ada"]);
+	});
+
+	it("keeps a contact where it was moved meanwhile when an agent or a contact is dropped beside it", async () => {
+		const { rail, company, manage, places, ready } = companyWith({
+			chats: [placed(sofie, { zone: "pinned", after: dee.id, rank: 0 }), summary(mads)],
+		});
+		await ready;
+		expect(zones(rail).pinned).toEqual(["Dee", "Sofie"]);
+		/** Sofie unpinned on another device, while the lifted rail still shows her pinned. */
+		const unpinSofie = () => {
+			const chats = company.store.get().memberChats!;
+			company.store.set({
+				memberChats: { ...chats, [sofie]: { ...chats[sofie]!, place: { zone: "members", rank: 0 } } },
+			});
+		};
+		drag(rowOf(rail, "Cy"), rowOf(rail, "Dee"), rail, false, unpinSofie);
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, { action: "set_pins", order: [cy.id, dee.id] });
+		// Nothing puts her back in the pinned row.
+		expect(places.flat().filter((change) => change.userId === sofie)).toEqual([]);
+		expect(zones(rail).pinned).toEqual(["Cy", "Dee"]);
+		// The same for a contact dropped there: only Mads is placed.
+		const chats = company.store.get().memberChats!;
+		company.store.set({
+			memberChats: { ...chats, [sofie]: { ...chats[sofie]!, place: { zone: "pinned", after: dee.id, rank: 0 } } },
+		});
+		await settle();
+		drag(rowOf(rail, "Mads Berg"), rowOf(rail, "Dee"), rail, false, unpinSofie);
+		await settle();
+		expect(places.at(-1)).toEqual([
+			{ userId: mads, place: { zone: "pinned", after: cy.id, rank: 0 }, hidden: false },
+		]);
+		expect(places.flat().filter((change) => change.userId === sofie)).toEqual([]);
+	});
+
 	it("takes no agent in a pinned row that agents and a contact fill together", async () => {
 		const most = Array.from({ length: PIN_LIMIT - 1 }, (_, index) => agent(100 + index, `Agent ${index}`));
 		const { rail, manage, places, ready } = companyWith({
@@ -1028,8 +1095,9 @@ describe("dragging contacts in the rail", () => {
 		});
 		await ready;
 		const first = rail.querySelector(".rail-pinned > a")!;
-		expect(drag(rowOf(rail, "Ada"), first, rail).lit).toBeUndefined();
-		expect(drag(rowOf(rail, "Mads Berg"), first, rail).lit).toBeUndefined();
+		// Refused, the space stays in the zone the row was lifted from.
+		expect(drag(rowOf(rail, "Ada"), first, rail).lit).toBe("unassigned");
+		expect(drag(rowOf(rail, "Mads Berg"), first, rail).lit).toBe("members");
 		// A card that is in the row still moves within it.
 		expect(
 			drag(rail.querySelector(`.rail-pinned [data-member-id="${sofie}"]`)!, rowOf(rail, "Agent 5"), rail).lit,
@@ -1045,10 +1113,10 @@ describe("dragging contacts in the rail", () => {
 			capabilities: { read: true, write: false, authorize: false, manageMembers: false },
 		});
 		await ready;
-		// An agent finds no place to land among the contacts.
-		expect(drag(rowOf(rail, "Cy"), rowOf(rail, "Sofie Lund"), rail)).toEqual({ lit: undefined, kind: "agent" });
+		// An agent finds no place to land among the contacts: the space stays where it was lifted from.
+		expect(drag(rowOf(rail, "Cy"), rowOf(rail, "Sofie Lund"), rail)).toEqual({ lit: "unassigned", kind: "agent" });
 		// A viewer cannot move the company's agents, and still places a contact in a section: it is their own rail.
-		expect(drag(rowOf(rail, "Cy"), rowOf(rail, "Ada"), rail).lit).toBeUndefined();
+		expect(drag(rowOf(rail, "Cy"), rowOf(rail, "Ada"), rail).lit).toBe("unassigned");
 		expect(drag(rowOf(rail, "Sofie Lund"), rowOf(rail, "Ada"), rail).lit).toBe(`section:${research}`);
 		await settle();
 		expect(manage).not.toHaveBeenCalled();

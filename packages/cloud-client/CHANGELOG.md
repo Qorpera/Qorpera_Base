@@ -15,6 +15,7 @@
 
 - `agent-wall`: an agent's wall, `QorperaOS/agents/<handle>/wall.md` (Jonas, 5 November 2026): `wallPath`, `wallHandle`, the limits, `WALL_HEADINGS`, `parseWall` (every item that reads, the file's own head, and every problem with its line and code: `line` text a rewrite would drop, `size`, `limit`, `shape`), `renderWall` (the kept form, after the head), `foldWallDone` (the last week, and Earlier), `wallItemProblem`, `wallItemText` and `isWallDay`.
 - `interface-apps`: the interface app format (deploy/first-node/RUNTIME-INTERFACE-APPS.md): `APPS_FOLDER`, the limits and file kinds, `parseAppManifest` (every problem with its line), `writeAppManifest`, `setAppPosted` (that one line changed in place), `appPath`, `isAppManifestPath`, `appRelativePath`, `appFileKind` and `appLinkName` (`app:<name>`).
+- `CloudMemberFolderClient.readFilePieces(file, signal, onPiece)`: a file's bytes as its pieces, in order, for a file too large to read under one deadline or to hold twice (own code storage, step 2b: a download of up to 256 MiB). The manifest and each piece of at most 4 MiB are checked against their hashes, have the client's deadline to themselves and get three tries (a refusal and the caller's stop get one); `pieceRetryMs` sets the pause between tries. A file of at most 8 MiB is also checked whole before a piece is handed out, as `readFile` checks it; a larger one is not, since a browser cannot hash it without a second copy.
 
 ### Breaking Changes
 

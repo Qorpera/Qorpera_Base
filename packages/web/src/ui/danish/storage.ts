@@ -37,4 +37,24 @@ export const STORAGE: Record<string, string> = {
 	"This page can't be shown live, so its source is shown.": "Siden kan ikke vises direkte, så dens kilde vises.",
 	"Open {path} in Storage": "Åbn {path} i Lager",
 	"{name} could not be found in the Company File.": "{name} findes ikke i Virksomhedsfilen.",
+
+	// "Download the code" on a repository's folder (app/views/code-download.ts). The reader does not know git: no word
+	// of it here, in either language.
+	"Download the code": "Hent koden",
+	"The files": "Filerne",
+	"Everything as it is now, in one file": "Alt, som det er nu, i én fil",
+	"With full history": "Med hele historikken",
+	"For a developer": "Til en udvikler",
+	"Getting the code ready…": "Gør koden klar…",
+	"Downloading the code…": "Henter koden…",
+	"{percent}%": "{percent}%",
+	"The code is not ready yet. Try again in a little while.": "Koden er ikke klar endnu. Prøv igen om lidt.",
+	"This code is too large to download here (over 200 MB). Write to Qorpera and we will send it.":
+		"Koden er for stor til at hente her (over 200 MB). Skriv til Qorpera, så sender vi den.",
+	"The agents are working on the code right now. Try again in a little while.":
+		"Agenterne arbejder på koden lige nu. Prøv igen om lidt.",
+	"The code has been downloaded many times today. Try again tomorrow.":
+		"Koden er hentet mange gange i dag. Prøv igen i morgen.",
+	"The code could not be made ready just now. Try again.": "Koden kunne ikke gøres klar lige nu. Prøv igen.",
+	"The code could not be downloaded just now. Try again.": "Koden kunne ikke hentes lige nu. Prøv igen.",
 };

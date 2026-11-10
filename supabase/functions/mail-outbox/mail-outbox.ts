@@ -5,7 +5,8 @@
  * itself. It claims a batch of the email agents queued (qorpera_claim_company_mail, under a five-minute lease) and
  * sends each through the mail provider (Resend) with the platform's key, which no node or agent holds: from the
  * agent at the mailbox's address, plain text with the AI line the database added, and a reply's thread headers and
- * Auto-Submitted: auto-replied. An email with attachments (M2c-1) carries the company files as they were when queued,
+ * Auto-Submitted: auto-replied. An email a member sent themself (M2e, 20260930716000) waits in the same outbox and is
+ * claimed and sent the same way: from the member, its text as written, with no AI line. An email with attachments (M2c-1) carries the company files as they were when queued,
  * read from the company's objects in Storage (each a manifest and its chunks, checked against their digests) and sent
  * as the email's attachments; a file whose bytes are not in Storage yet is tried again later. After the sends it reads
  * back the provider's Message-ID of a few sent emails (I5a), so an answer to an email an agent started joins its

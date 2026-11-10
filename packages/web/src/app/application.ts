@@ -288,6 +288,19 @@ export function mountApplication(
 			openApp(app.dataset.appName);
 			return;
 		}
+		// A link to the page of the app that is already open (its icon in the rail) leads nowhere new, and the app's page
+		// has no Reload of its own: an ordinary press on it reads the app again, which also lets it ask again (§5). A
+		// modified click stays the link's own (a new tab), and a link to any other place goes there by itself.
+		const here = event.target instanceof Element ? event.target.closest<HTMLElement>("a[data-href]") : null;
+		if (here && !event.defaultPrevented && appPage && here.getAttribute("data-href") === location.hash) {
+			const route = currentRoute();
+			const ordinary = event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+			if (ordinary && route.name === "company" && route.section === "app" && route.id) {
+				event.preventDefault();
+				openApp(route.id);
+				return;
+			}
+		}
 		const link = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-folder-path]") : null;
 		const path = link?.dataset.folderPath;
 		if (path === undefined || event.defaultPrevented) return;

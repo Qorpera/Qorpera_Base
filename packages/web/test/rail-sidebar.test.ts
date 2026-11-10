@@ -884,7 +884,65 @@ describe("dragging agents in the rail", () => {
 		expect(rail.querySelector(".rail-hidden")).toBeNull();
 		localStorage.removeItem("qorpera.web.rail-hidden-open");
 	});
-	it("keeps the drop spot when the rail redraws mid-drag", async () => {
+	it("opens a space where the agent will land while it is dragged, and drops it there", async () => {
+		const { rail, manage, ready } = companyWith(demo());
+		await ready;
+		await settle();
+		const boxes = layout(rail);
+		const row = rowOf(rail, "Cy");
+		const target = boxes.get(rowOf(rail, "Ada"))!;
+		row.dispatchEvent(pointer("pointerdown", 20, boxes.get(row)!.top + 20));
+		document.dispatchEvent(pointer("pointermove", 20, boxes.get(row)!.top + 34));
+		// Lifted: the row is out of the list and an empty space stands where it was.
+		const section = rowOf(rail, "Bo").parentElement!;
+		const unassigned = row.parentElement!;
+		const order = (list: Element) =>
+			[...list.children].map((child) =>
+				child.matches(".rail-drop-gap") ? "space" : child.matches(".is-drag-source") ? "lifted" : names([child])[0],
+			);
+		expect(order(section)).toEqual(["Bo", "Ada"]);
+		expect(order(unassigned).slice(0, 2)).toEqual(["space", "lifted"]);
+		expect(document.querySelector(".rail-drag-ghost")).not.toBeNull();
+		// Over Ada the space moves above her at once, and Unassigned closes up; no line marks the place.
+		document.dispatchEvent(pointer("pointermove", 20, target.top + 5));
+		expect(order(section)).toEqual(["Bo", "space", "Ada"]);
+		expect(order(unassigned)).not.toContain("space");
+		expect(order(unassigned)[0]).toBe("lifted");
+		expect(rail.querySelector(".rail-drop-marker")).toBeNull();
+		expect(manage).not.toHaveBeenCalled();
+		document.dispatchEvent(pointer("pointerup", 20, target.top + 5));
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "move_agent",
+			staffAgentId: cy.id,
+			sectionId: research,
+			order: [bo.id, cy.id, ada.id],
+		});
+		expect(groups(rail)[0]).toEqual(["Research", "Bo", "Cy", "Ada"]);
+		expect(rail.querySelector(".rail-drop-gap, .is-drag-source, .is-drag-landing")).toBeNull();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	it("puts the space back where the agent started when it is dragged off the rail, and sends nothing", async () => {
+		const { rail, manage, ready } = companyWith(demo());
+		await ready;
+		await settle();
+		const boxes = layout(rail);
+		const row = rowOf(rail, "Cy");
+		row.dispatchEvent(pointer("pointerdown", 20, boxes.get(row)!.top + 20));
+		document.dispatchEvent(pointer("pointermove", 20, boxes.get(row)!.top + 34));
+		document.dispatchEvent(pointer("pointermove", 20, boxes.get(rowOf(rail, "Bo"))!.top + 5));
+		expect(rail.querySelector(".rail-drop-gap")!.nextElementSibling).toBe(rowOf(rail, "Bo"));
+		document.dispatchEvent(pointer("pointermove", 900, boxes.get(rowOf(rail, "Bo"))!.top + 5));
+		expect(rail.querySelector(".rail-drop-gap")!.nextElementSibling).toBe(row);
+		document.dispatchEvent(pointer("pointerup", 900, boxes.get(rowOf(rail, "Bo"))!.top + 5));
+		await settle();
+		expect(manage).not.toHaveBeenCalled();
+		expect(groups(rail)[0]).toEqual(["Research", "Bo", "Ada"]);
+		expect(row.isConnected && !row.classList.contains("is-drag-source")).toBe(true);
+		expect(rail.querySelector(".rail-drop-gap, .is-drag-source")).toBeNull();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	it("holds the rail still while an agent is lifted and draws what changed when it is let go", async () => {
 		const { rail, manage, company, ready } = companyWith(demo());
 		await ready;
 		await settle();
@@ -894,11 +952,14 @@ describe("dragging agents in the rail", () => {
 		row.dispatchEvent(pointer("pointerdown", 20, boxes.get(row)!.top + 20));
 		document.dispatchEvent(pointer("pointermove", 20, boxes.get(row)!.top + 34));
 		document.dispatchEvent(pointer("pointermove", 20, target.top + 5));
-		expect(rail.querySelector(".rail-drop-marker")).not.toBeNull();
-		// An activity poll redraws the rail while the pointer holds still.
+		const space = rail.querySelector(".rail-drop-gap")!;
+		expect(space.nextElementSibling).toBe(rowOf(rail, "Ada"));
+		// An activity poll would redraw the rail; the space and the lifted row stay as they are.
 		company.store.set({ activity: [] });
 		await settle();
-		expect(rail.querySelector(".rail-drop-marker")).not.toBeNull();
+		expect(space.isConnected).toBe(true);
+		expect(space.nextElementSibling).toBe(rowOf(rail, "Ada"));
+		expect(row.classList.contains("is-drag-source")).toBe(true);
 		expect(rail.querySelector(".is-drop-target")?.getAttribute("data-drop-zone")).toBe(`section:${research}`);
 		document.dispatchEvent(pointer("pointerup", 20, target.top + 5));
 		await settle();
@@ -908,6 +969,31 @@ describe("dragging agents in the rail", () => {
 			sectionId: research,
 			order: [bo.id, cy.id, ada.id],
 		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	it("keeps a pin made elsewhere while an agent was lifted, and drops the agent among the pins as they are now", async () => {
+		const { rail, manage, company, ready } = companyWith(demo());
+		await ready;
+		await settle();
+		const boxes = layout(rail);
+		const row = rowOf(rail, "Cy");
+		const target = boxes.get(rail.querySelector(".rail-pin")!)!;
+		row.dispatchEvent(pointer("pointerdown", 20, boxes.get(row)!.top + 20));
+		document.dispatchEvent(pointer("pointermove", 20, boxes.get(row)!.top + 34));
+		document.dispatchEvent(pointer("pointermove", 20, target.top + 5));
+		expect(rail.querySelector(".rail-pinned > .rail-drop-gap")).not.toBeNull();
+		// Bo is pinned on another device; the lifted rail still shows Dee alone.
+		const sidebar = company.store.get().sidebar!;
+		company.store.set({ sidebar: { ...sidebar, pinned: [bo.id, dee.id] } });
+		await settle();
+		expect(names(rail.querySelectorAll(".rail-pin"))).toEqual(["Dee"]);
+		document.dispatchEvent(pointer("pointerup", 20, target.top + 5));
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, {
+			action: "set_pins",
+			order: [bo.id, cy.id, dee.id],
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
 	it("does not pick an agent up while searching, and Escape puts a drag back", async () => {
 		const { rail, manage, draw, ready } = companyWith(demo());

@@ -5,7 +5,8 @@ import { array, boundedInteger, CloudShapeError, nonEmptyString, oneOf, record, 
  * 20260930002660, the `sessionId` of a waiting send; supabase/CLIENT-CONTRACT.md "Members read mail"). Five calls, each
  * with the member's own authority: the addresses, a page of threads, one thread, the sends that wait for a person, and
  * "I have read this thread". The answers are empty while the company's mail is off; a non-member gets 42501 and a
- * thread that is not the company's 22023.
+ * thread that is not the company's 22023. A sixth sends: a member's own email from one of the company's addresses, with
+ * no agent (migration 20260930716000_member_mail_send, "Members send mail").
  *
  * Identities are checked; what is only shown is read leniently. A waiting send's recipients, subject and text are the
  * agent's own send arguments as it gave them, so they are read for what they hold and nothing else. */
@@ -19,6 +20,12 @@ const MAIL_THREAD_STATES = ["new", "handled", "waiting"] as const;
 
 export interface MailAgent {
 	readonly staffAgentId: string;
+	readonly name?: string;
+}
+
+/** The member who sent an email themself. No name once they have left the company. */
+export interface MailMember {
+	readonly userId: string;
 	readonly name?: string;
 }
 
@@ -75,6 +82,8 @@ export interface MailThreadSummary {
 	readonly state: MailThreadState;
 	readonly handledBy?: MailAgent;
 	readonly direction: MailDirection;
+	/** The member who sent the newest message themself, while that message is a sent one. Absent for an agent's. */
+	readonly sentBy?: MailMember;
 	readonly unread: boolean;
 	readonly messages: number;
 	readonly account?: MailAccount;
@@ -121,7 +130,27 @@ export type MailMessage =
 			/** `queued`, or the outbox's status (`sent`, `failed`, ...). */
 			readonly status: string;
 			readonly staffAgent?: MailAgent;
+			/** The member who sent it themself, with no agent. */
+			readonly member?: MailMember;
 	  });
+
+/** A member's own email: a new plain-text email from one of the company's addresses. `sendId` names this send, so the
+ * same request sent again (a retry after a lost answer) queues nothing new. */
+export interface MailMemberSend {
+	readonly sendId: string;
+	readonly from: string;
+	readonly to: readonly string[];
+	readonly cc?: readonly string[];
+	readonly subject: string;
+	readonly text: string;
+}
+
+export interface MailMemberSent {
+	readonly mailId: string;
+	readonly thread: string;
+	/** `queued`, or the outbox's status when this send was made before. */
+	readonly status: string;
+}
 
 /** A send an agent wants to make that waits for a person's answer. */
 export interface MailWaitingSend {
@@ -194,6 +223,13 @@ function agent(value: unknown, label: string): MailAgent | undefined {
 	const item = record(value, label);
 	const name = shownText(item.name, 512);
 	return { staffAgentId: uuid(item.staffAgentId, label), ...(name ? { name } : {}) };
+}
+
+function member(value: unknown, label: string): MailMember | undefined {
+	if (absent(value)) return undefined;
+	const item = record(value, label);
+	const name = shownText(item.name, 512);
+	return { userId: uuid(item.userId, label), ...(name ? { name } : {}) };
 }
 
 function account(value: unknown): MailAccount | undefined {
@@ -276,6 +312,7 @@ function parseSummary(value: unknown): MailThreadSummary {
 	const item = record(value, "mail thread");
 	const found = account(item.account);
 	const handledBy = agent(item.handledBy, "mail thread agent");
+	const sentBy = member(item.sentBy, "mail thread member");
 	return {
 		thread: threadId(item.thread, "mail thread"),
 		address: nonEmptyString(item.address, "mail thread address", 320),
@@ -287,6 +324,7 @@ function parseSummary(value: unknown): MailThreadSummary {
 		state: oneOf(item.state, MAIL_THREAD_STATES, "mail thread state"),
 		...(handledBy ? { handledBy } : {}),
 		direction: oneOf(item.direction, MAIL_DIRECTIONS, "mail thread direction"),
+		...(sentBy ? { sentBy } : {}),
 		unread: flag(item.unread, "mail thread unread"),
 		messages: absent(item.messages) ? 0 : boundedInteger(item.messages, "mail count", 0, Number.MAX_SAFE_INTEGER),
 		...(found ? { account: found } : optional("snippet", shownText(item.snippet, 200))),
@@ -322,6 +360,7 @@ function parseMessage(value: unknown): MailMessage {
 		};
 	}
 	const staffAgent = agent(item.staffAgent, "mail agent");
+	const sender = member(item.member, "mail member");
 	return {
 		kind,
 		id: nonEmptyString(item.mailId, "mail message id", 128),
@@ -329,6 +368,7 @@ function parseMessage(value: unknown): MailMessage {
 		status: shownText(item.status, 64) ?? "queued",
 		at: timestamp(item.at, "mail message time"),
 		...(staffAgent ? { staffAgent } : {}),
+		...(sender ? { member: sender } : {}),
 	};
 }
 
@@ -436,4 +476,34 @@ export async function markMailThreadRead(cloud: Cloud, environmentId: string, th
 		p_thread: thread,
 	});
 	if (answer !== true) throw new CloudShapeError("mail read mark");
+}
+
+/** Sends the member's own email from one of the company's addresses, as themself: it is queued, and the platform's
+ * sender sends it. 42501 for a member who may not write in the company, an address that is not the company's, a
+ * recipient that is one of its own mailboxes or a name that reads as Qorpera; 22023 for a request that is not one;
+ * 0A000 while sending is off or the mailbox is paused; 54000 at the company's limits. */
+export async function sendMemberMail(
+	cloud: Cloud,
+	environmentId: string,
+	request: MailMemberSend,
+): Promise<MailMemberSent> {
+	const answer = record(
+		await cloud.rpc("qorpera_send_member_mail", {
+			p_environment_id: environmentId,
+			p_request: {
+				sendId: request.sendId,
+				from: request.from,
+				to: request.to,
+				...(request.cc?.length ? { cc: request.cc } : {}),
+				subject: request.subject,
+				text: request.text,
+			},
+		}),
+		"mail send",
+	);
+	return {
+		mailId: uuid(answer.mailId, "mail send"),
+		thread: threadId(answer.thread, "mail send thread"),
+		status: shownText(answer.status, 64) ?? "queued",
+	};
 }

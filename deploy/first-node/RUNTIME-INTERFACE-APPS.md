@@ -178,14 +178,21 @@ that publish is a follow-up, if the rule alone proves too weak.
 ## 4. Web
 
 - **App page.** `#/c/<profileId>/a/<name>` shows the app in the main area, at full width and height, as Mailbox and
-  Bank show (`AppPanel` placed as a page). Slim header: the way back (to the company's last open conversation, else
-  the company), emblem, title, "Made by <owner> · Qorpera never asks for passwords here", Reload, Show in Storage. A
-  deep link or reload opens the company, waits for its first read, then the app; an app that is gone says "This app
-  isn't in the company anymore."
+  Bank show (`AppPanel` placed as a page). It has **no header** (Jonas, 10 November 2026, on the page's slim header:
+  "I would remove any headers as they add nothing but bad visual design"): the app is the whole page, as a concept is
+  the whole stage. The rail beside it shows which app is open and leads everywhere else (at phone width, the top bar's
+  menu); a press on the open app's icon in the rail, or on its card in a message, reads it afresh, as Reload did
+  (a modified click on the icon still opens a new tab). Qorpera draws only what is needed when it is needed,
+  outside the frame: the bar of a request (§5 "Changes") above the page, and the questions dock over its corner. A
+  deep link or reload opens the company, waits for its first read, then the app. When the app can't be shown, the line
+  that says why ("This app isn't in the company anymore.", a manifest's problems, "This app reloaded itself…") has the
+  ways on under it: the way back (to the company's last open conversation, else the company) when the app is gone,
+  Reload, and Show in Storage when the app has a folder.
 - **Side panel.** PR #1430's agent sheet, generalised: `AppPanel` placed beside the conversation inside
   `.thread-body` (not over it, no dim, not modal), the conversation stays mounted and usable. It shows `folder:`
-  links to `.html` files (a plain page, no manifest), never an app. Header as the app page's, with Close instead of
-  the way back; Escape (in the panel or in the page) closes it. At phone width it covers the thread, with Close.
+  links to `.html` files (a plain page, no manifest), never an app. It keeps a header (the emblem, the name, who made
+  it and the password line, Reload, Show in Storage, Close); Escape (in the panel or in the page) closes it. At phone
+  width it covers the thread, with Close.
 - **Chat card.** A link `app:<name>` in an agent's message draws as a card in the bubble (emblem, title, about,
   "App · opens on its own page"), which opens the app's page; once the company's apps are read, the card shows the
   app's own emblem and line. Wall posters and choice cards draw the same card.
@@ -325,7 +332,8 @@ checks the request and puts it to the member on a **bar it draws outside the app
   on a visible screen, and takes only a press (pointer or key) that began on it after it woke: a click or a held key
   on its way when the bar came in does nothing, and Enter in the page stays in the page.
 - One bar at a time: while one is open another request is refused at once. After three "Not now" in a row the app is
-  refused without a bar until the member reloads it (Reload, or opening the app again); a yes starts the count again.
+  refused without a bar until the member reloads it (a press on the open app's icon in the rail or on its card in a message, the Concepts
+  viewer's Reload, or the browser's own); a yes starts the count again.
 - While a bar is open the page's Escape is not passed on (`AppFrame.holdEscape`).
 - A request whose page is put away (reloaded, changed, left) before the member chose is put away unsaved, and so is
   one whose app's manifest changed meanwhile. What a page may read and ask for follows the manifest as it is now,
@@ -368,8 +376,9 @@ Threat model: the app's author is an agent of the company, which already reads t
 internet (through the logged agent exit). The frame keeps the app from the member's session (cookies, storage, tokens,
 this app's DOM), from acting as the member (a page only asks; the member's yes is given outside the frame), and from
 reaching what the platform keeps out of it.
-Two things the frame adds that the agent doesn't have are guarded: what the member types into the page (the host-drawn
-header always says whose app it is and that Qorpera never asks for passwords there), and the member's authority
+Two things the frame adds that the agent doesn't have are guarded: what the member types into the page (beside the
+chat and in the Concepts viewer, Qorpera says whose page it is and that it never asks for passwords there; an app's
+own page has said neither since it lost its header on 10 November 2026, §6 H2), and the member's authority
 (reads only of the allowed sources; a change only of what `writes` names, one at a time, shown in full and allowed by
 the member each time). What a prompt-injected agent can still do is ask: a member who allows a bar without reading it
 makes that change, as theirs, to an answer the agent itself asked for or to a row of a table the app names; it can
@@ -386,7 +395,7 @@ An independent Opus review of this design and the frame ran on 5 November 2026 b
 | Finding | Done |
 | --- | --- |
 | H1 the bridge must not ride on window messages | one port per frame, handed over once; second "ready" or third load tears it down |
-| H2 phishing inside the panel | host-drawn header: app name, "Made by <agent>", "Qorpera never asks for passwords here" |
+| H2 phishing inside the panel | host-drawn header: app name, "Made by <agent>", "Qorpera never asks for passwords here". **Since 10 November 2026 an app's own page has no header** (Jonas's decision, §4), so the line stands beside the chat and in the Concepts viewer's side panel only. On an app's own page nothing replaces it yet: a page that draws a sign-in there has the rail beside it and nothing else of Qorpera's. A guard that costs no header is a follow-up (§7): the line shown above the page only while the page has a password field on screen |
 | H3 the Allow bar is too weak | no writes until step 5, which builds the review's gate: see the table below |
 | M1 threat model | corrected above; side channels are best effort |
 | M2 reads: allow list, path checks, never-in-bridge | platform folders refused, host path checks, the list above |
@@ -456,7 +465,8 @@ security review of its own:
    already makes.
 6. Links through the bridge (§4) and the base style (§2), with `save_app` saying both (10 November 2026).
 
-Follow-ups: a member marks a human task done from an app (the asking agent's wake is built, but the object gateway
+Follow-ups: the password line on an app's own page without a header (§6 H2: shown above the page only while the page
+has a password field on screen, reported by the frame document); a member marks a human task done from an app (the asking agent's wake is built, but the object gateway
 holds every member save under `QorperaOS/human-tasks/` until Qorpera has its own task screen, and a task that asks
 for proof cannot be finished by one tap); a typed answer; removing a row; the folder-core rule that parks a
 machine's change of `posted` (§3's known gap; the same gap lets a machine write `writes`, which gains it nothing
