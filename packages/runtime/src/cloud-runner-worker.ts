@@ -117,10 +117,11 @@ export function cloudRunnerJobFailureIsRetryable(error: unknown): boolean {
  *   vault or the store refused stays final. Only the database's cap of eight applies.
  * - Since 10 November 2026 (audit B2/A2), a stage of the native host that timed out or lost its transport, before or
  *   after the start (`NATIVE_<STAGE>:TIMEOUT` or `:TRANSPORT_UNAVAILABLE`), except a coding session's turn
- *   (`NATIVE_CODING_SESSION`), which stays final as before. That a lost answer after the start does not prove that nothing happened is what the
- *   database's resume answers: whatever is unknown is marked so, and the agent checks. It is reported retryable only
- *   while the job is on its first or second attempt: a failure that repeats is not a blip, and each attempt spends a
- *   member's model usage, so the third attempt's failure is final and the member sees it.
+ *   (`NATIVE_CODING_SESSION`), which stays final as before. That a lost answer after the start does not prove that
+ *   nothing happened is what the database's resume answers: whatever is unknown is marked so, and the agent checks.
+ *   It is reported retryable only while the job is on its first or second attempt: a failure that repeats is not a
+ *   blip, and each attempt spends a member's model usage, so the third attempt's failure is final and the member
+ *   sees it.
  * Every other failure stays final: a refusal, a provider's failure, an exhausted budget, an invalid answer, an unknown
  * or cancelled stage, and the runtime's own codes. */
 const RETRYABLE_BEFORE_START =
@@ -422,11 +423,23 @@ export class EphemeralCloudRunnerWorker {
 					/* Both leases are renewed at once, each with its own retries (10 November 2026, audit B1). Until
 					 * then the native lease was renewed only after the job's renewal had an answer: a control-plane
 					 * stall kept the job's renewal retrying, with minutes of its 6-minute lease to spare, while the
-					 * 120 s native lease went unrenewed, and the run was cut at the native deadline. A definitive
+					 * 120 s native lease went unrenewed, and the run was cut at the native deadline. While the job's
+					 * renewal is still being asked, the native lease is renewed again every round's interval, so a
+					 * stall of the job's renewal alone ends the run only by the job lease's own rule. Once the job's
+					 * renewal has its answer, the native lease's renewal in flight finishes and none follows: a round
+					 * whose job renewal answers within the interval renews the native lease once. A definitive
 					 * refusal of either ends the round at once (Promise.all does not wait for the other's retries);
 					 * the catch below aborts maintenance, which ends the other's request and retry wait. The
-					 * heartbeat follows when both have their answer. */
-					await Promise.all([renewJobLease(), renewNativeLease()]);
+					 * heartbeat follows when neither renewal is in flight. */
+					const round = new AbortController();
+					const whileJobRenews = AbortSignal.any([maintenanceAbort.signal, round.signal]);
+					const jobRenewal = renewJobLease().finally(() => round.abort());
+					const nativeRenewals = (async () => {
+						do {
+							await renewNativeLease();
+						} while (await wait(this.#leaseRenewalMs, whileJobRenews));
+					})();
+					await Promise.all([jobRenewal, nativeRenewals]);
 					if (this.#now() >= nextHeartbeat) {
 						try {
 							await withCloudDeadline(

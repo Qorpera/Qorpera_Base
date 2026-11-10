@@ -204,6 +204,7 @@ function worker(
 	transport = broker(),
 	now?: () => number,
 	heartbeatMs?: number,
+	leaseRenewalMs = 10,
 ) {
 	return new EphemeralCloudRunnerWorker({
 		runner,
@@ -217,7 +218,7 @@ function worker(
 		executeJob,
 		platform: "linux-x64",
 		runnerVersion: "synthetic",
-		leaseRenewalMs: 10,
+		leaseRenewalMs,
 		heartbeatMs,
 		now,
 	});
@@ -225,7 +226,7 @@ function worker(
 
 /** A native run that goes on until it is finished, on fake timers. Its native lease, read at the start, ends 60 s on;
  * each renewal answers with 120 s more. */
-async function outageRun(heartbeatMs?: number) {
+async function outageRun(heartbeatMs?: number, leaseRenewalMs?: number) {
 	vi.useFakeTimers();
 	const control = new Control();
 	const runner = new DisposableCloudRunner(control, runnerId, "b".repeat(43));
@@ -241,7 +242,7 @@ async function outageRun(heartbeatMs?: number) {
 				options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
 			}),
 	);
-	const running = worker(runner, execute, broker(), undefined, heartbeatMs)
+	const running = worker(runner, execute, broker(), undefined, heartbeatMs, leaseRenewalMs)
 		.runNext(assignment)
 		.catch((error: unknown) => error);
 	await vi.advanceTimersByTimeAsync(0);
@@ -515,21 +516,25 @@ describe("cloud worker outage recovery", () => {
 	});
 
 	it("keeps the native lease renewed while the job lease's renewal stalls, and stops at the job lease's end", async () => {
-		const outage = await outageRun();
-		// Both leases are renewed at once (audit B1, 10 November 2026): the job lease's renewal stalls, but the native
-		// lease (60 s) is renewed in the same round, to 120 s, so the run goes on past the native lease's first end.
+		// Rounds every 45 s, as in production. The native lease read at the start ends at 60 s; each renewal gives 120 s.
+		const outage = await outageRun(undefined, 45_000);
+		// Both leases are renewed at once (audit B1, 10 November 2026), and while the job lease's renewal is still
+		// being asked, the native lease is renewed again every 45 s: at 45 s and at 90 s, so the run goes on past 60 s.
 		outage.control.stallRenewal = true;
 		await vi.advanceTimersByTimeAsync(61_000);
 		expect(outage.signal().aborted).toBe(false);
 		expect(lane.renew).toHaveBeenCalledOnce();
-		// The job lease's renewal is asked at 0 s, 40 s and 80 s, each try cut at 30 s. After the third, at 110 s, the
-		// next try would come within 10 s of the job lease's end (120 s), so its retry rule gives up and stops the run.
-		await vi.advanceTimersByTimeAsync(48_900);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(lane.renew).toHaveBeenCalledTimes(2);
+		// The job lease's renewal is asked at 45 s and 85 s, each try cut at 30 s. After the second, at 115 s, the next
+		// try would come within 10 s of the job lease's end (120 s), so its retry rule gives up and stops the run.
+		await vi.advanceTimersByTimeAsync(23_900);
 		expect(outage.signal().aborted).toBe(false);
 		await vi.advanceTimersByTimeAsync(200);
 		expect(outage.signal().aborted).toBe(true);
 		expect(await outage.running).toBeInstanceOf(CloudRequestTimeoutError);
-		expect(outage.control.calls.filter((call) => call.action === "renew")).toHaveLength(3);
+		expect(outage.control.calls.filter((call) => call.action === "renew")).toHaveLength(2);
+		expect(lane.renew).toHaveBeenCalledTimes(2);
 		expect(lane.release).toHaveBeenCalledWith("revoked");
 	});
 

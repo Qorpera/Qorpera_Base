@@ -365,14 +365,14 @@ describe("ephemeral cloud runner worker", () => {
 
 	// 10 November 2026, audit B1: a control-plane stall kept the job lease's renewal retrying and the 120 s native lease
 	// went unrenewed until the run was cut at its deadline.
-	it("renews the native authority while the lease's renewal is still failing for lack of an answer", async () => {
+	it("renews the native authority again and again while the lease's renewal is still failing for lack of an answer", async () => {
 		const service = new RunnerService();
 		const runner = await activeRunner(service);
 		service.onRenew = async () => {
 			throw new CloudRunnerControlRequestError(503);
 		};
 		const executeJob = vi.fn(async (options: CompanyJobOptions) => {
-			await vi.waitFor(() => expect(lane.renew).toHaveBeenCalled(), { timeout: 2_000 });
+			await vi.waitFor(() => expect(lane.renew.mock.calls.length).toBeGreaterThanOrEqual(3), { timeout: 2_000 });
 			options.signal.throwIfAborted();
 			return successfulExecution();
 		});
@@ -380,9 +380,38 @@ describe("ephemeral cloud runner worker", () => {
 		const result = await worker(runner, executeJob, { leaseRenewalMs: 10 }).runNext(assignment);
 
 		expect(result).toMatchObject({ status: "completed" });
-		// The lease's renewal was asked once and is waiting its 10 s to ask again, unanswered.
+		// The lease's renewal was asked once and is waiting its 10 s to ask again, unanswered; the native lease was
+		// renewed every 10 ms meanwhile, in that one round.
 		expect(service.requests.filter((request) => request.action === "renew")).toHaveLength(1);
-		expect(lane.renew).toHaveBeenCalledOnce();
+		expect(lane.renew.mock.calls.length).toBeGreaterThanOrEqual(3);
+	});
+
+	it("renews the native authority once in a round whose lease renewal answers within the interval", async () => {
+		// The lease's renewal answering after the native one, and before it.
+		for (const [jobMs, nativeMs] of [
+			[5, 0],
+			[0, 5],
+		]) {
+			const service = new RunnerService();
+			const runner = await activeRunner(service);
+			const leaseRenewals = () => service.requests.filter((request) => request.action === "renew").length;
+			service.onRenew = () => new Promise((resolveRenewal) => setTimeout(resolveRenewal, jobMs));
+			lane.renew.mockImplementation(async () => {
+				await new Promise((resolveRenewal) => setTimeout(resolveRenewal, nativeMs));
+				return authority;
+			});
+			const executeJob = vi.fn(async (options: CompanyJobOptions) => {
+				await vi.waitFor(() => expect(leaseRenewals()).toBeGreaterThanOrEqual(3), { timeout: 2_000 });
+				options.signal.throwIfAborted();
+				return successfulExecution();
+			});
+
+			await expect(worker(runner, executeJob, { leaseRenewalMs: 10 }).runNext(assignment)).resolves.toMatchObject({
+				status: "completed",
+			});
+			expect(lane.renew).toHaveBeenCalledTimes(leaseRenewals());
+			lane.renew.mockClear();
+		}
 	});
 
 	it("stops the run at once when the native authority's renewal is refused while the lease's renewal retries", async () => {
