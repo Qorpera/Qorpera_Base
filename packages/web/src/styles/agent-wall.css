@@ -24,9 +24,8 @@
 .agent-wall-count-waiting { color: color-mix(in srgb, var(--agent-wall-accent) 78%, var(--text)); font-weight: 600; }
 .agent-wall.is-folded .agent-wall-close-word { display: none; }
 .agent-wall-state { flex: none; width: 8px; height: 8px; border-radius: 50%; }
-.agent-wall-state:not(.is-waiting, .is-working) { display: none; }
+.agent-wall-state:not(.is-waiting) { display: none; }
 .agent-wall-state.is-waiting { background: var(--agent-wall-accent); }
-.agent-wall-state.is-working { box-sizing: border-box; border: 2px solid color-mix(in srgb, var(--agent-wall-accent) 30%, transparent); border-top-color: var(--agent-wall-accent); border-right-color: var(--agent-wall-accent); animation: agent-wall-spin 1.4s linear infinite; }
 /* Open, the rows say all of it: the button is the word Close, in the place the member just clicked. */
 .agent-wall:not(.is-folded) .agent-wall-toggle { border-color: transparent; background: transparent; }
 .agent-wall:not(.is-folded) .agent-wall-toggle:hover { background: var(--hover); }
@@ -46,7 +45,6 @@
 	display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 13px; align-items: start; padding: 6px 16px; border-radius: var(--radius);
 	color: var(--text-muted); font-size: 13.5px; line-height: 1.4; overflow-wrap: anywhere;
 }
-.agent-wall-part.is-working .agent-wall-item { color: var(--text); }
 .agent-wall-part.is-waiting .agent-wall-item { color: var(--text); font-weight: 600; }
 .agent-wall-item.is-entering { animation: agent-wall-enter var(--motion-spring) var(--ease-spring) both; }
 @keyframes agent-wall-enter { from { opacity: 0; transform: translateY(8px) scale(0.97); } }
@@ -55,13 +53,11 @@
 .agent-wall-part.is-waiting .agent-wall-item.is-answered { color: var(--text-muted); font-weight: 400; }
 .agent-wall .is-answered .agent-wall-answer { border-color: transparent; background: transparent; color: var(--text-muted); font-weight: 400; }
 .agent-wall-part.is-waiting .is-answered .agent-wall-mark::before { background: transparent; box-shadow: inset 0 0 0 2px var(--text-muted); }
-.agent-wall-part.is-working .agent-wall-mark::before { content: ""; box-sizing: border-box; width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--agent-wall-accent) 30%, transparent); border-top-color: var(--agent-wall-accent); border-right-color: var(--agent-wall-accent); animation: agent-wall-spin 1.4s linear infinite; }
 /* What waits has its answer at hand. */
 .agent-wall-item.has-answer { position: relative; }
 .agent-wall-item.has-answer > .agent-wall-row, .agent-wall-item.has-answer:not(.is-expandable) { padding-right: 96px; }
 .agent-wall .agent-wall-answer { position: absolute; right: 16px; top: 3px; border-radius: var(--radius-pill); color: color-mix(in srgb, var(--agent-wall-accent) 78%, var(--text)); font-weight: 600; }
 
-@keyframes agent-wall-spin { to { transform: rotate(360deg); } }
 .agent-wall-text { min-width: 0; }
 /* An item with more to it is a row that opens: the headline is its button, the detail and a preview show under it. */
 .agent-wall-item.is-expandable { display: block; padding: 0; }
@@ -123,6 +119,6 @@
 	.agent-wall-body { max-height: 40dvh; }
 }
 @media (prefers-reduced-motion: reduce) {
-	.agent-wall, .agent-wall-detail, .agent-wall-preview.is-loading, .agent-wall-item.is-entering, .agent-wall-state.is-working, .agent-wall-part.is-working .agent-wall-mark::before { animation: none; }
+	.agent-wall, .agent-wall-detail, .agent-wall-preview.is-loading, .agent-wall-item.is-entering { animation: none; }
 	.agent-wall-fold, .agent-wall-toggle, .agent-wall-toggle > .icon, .agent-wall-row, .agent-wall-row > .icon { transition: none; }
 }
