@@ -1055,20 +1055,14 @@ describe("account and route ownership", () => {
 		expect(page).not.toBeNull();
 		// The whole main area: no chat, and nothing beside one.
 		expect(f.root.querySelector(".thread, .thread-body.has-beside")).toBeNull();
-		expect(page.querySelector(".side-panel-title")?.textContent).toBe("Sales board");
-		expect(page.querySelector(".side-panel-by")?.textContent).toBe(
-			"Made by Fixture agent · Qorpera never asks for passwords here",
-		);
+		// The app is the whole page (Jonas, 10 November 2026: no header): nothing of Qorpera's stands over it, and the
+		// page carries the app's name for assistive technology.
+		expect(page.getAttribute("aria-label")).toBe("Sales board");
+		expect(page.querySelector(".side-panel-header, .side-panel-button, .side-panel-way")).toBeNull();
+		expect([...page.children].map((child) => child.className)).toEqual(["app-ask", "side-panel-body"]);
 		expect(page.querySelector(".side-panel-body iframe.side-panel-frame")?.getAttribute("sandbox")).toBe(
 			"allow-scripts",
 		);
-		expect(page.querySelector('[aria-label="Reload"]')).not.toBeNull();
-		expect(page.querySelector('[aria-label="Show in Storage"]')).not.toBeNull();
-		// Opened straight from a link, it leads back to the company; it has no Close, as a page has none.
-		const back = page.querySelector<HTMLAnchorElement>("a.side-panel-back")!;
-		expect(back.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}`);
-		expect(back.getAttribute("aria-label")).toBe("Back to the company");
-		expect(page.querySelector('[aria-label="Close"]')).toBeNull();
 		// The rail's icon for it is a link to this page, marked as the open one.
 		const icon = f.root.querySelector<HTMLAnchorElement>(
 			`.rail a.rail-app[data-href="#/c/${profileA.profileId}/a/sales-board"]`,
@@ -1082,19 +1076,23 @@ describe("account and route ownership", () => {
 		await draw();
 		await draw();
 		expect(page.isConnected).toBe(false);
-		expect(appPage(f.root)?.querySelector(".side-panel-status")?.textContent).toBe(
-			"This app isn't in the company anymore.",
-		);
+		const gone = appPage(f.root)!;
+		expect(gone.querySelector(".side-panel-status")?.textContent).toBe("This app isn't in the company anymore.");
+		// With no header, the line has its own ways on: back to the company (it was opened straight from a link), and
+		// Reload. There is no folder to show.
+		const ways = [...gone.querySelectorAll<HTMLElement>(".side-panel-way")];
+		expect(ways.map((way) => way.textContent)).toEqual(["Back to the company", "Reload"]);
+		expect(ways[0]?.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}`);
 	});
 
-	it("waits for the company's staff before a deep-linked app's page names its maker and answers its roster", async () => {
+	it("waits for the company's staff before a deep-linked app's page opens and answers its roster", async () => {
 		withApp();
 		const f = mounted(`#/c/${profileA.profileId}/a/sales-board`);
 		const staffRead = deferred<HostedStaffAgent[]>();
 		vi.mocked(f.api.listStaff).mockReturnValue(staffRead.promise);
 		await draw();
 		await draw();
-		// The membership and the folder are read; the staff are not yet: no page with a nameless maker.
+		// The membership and the folder are read; the staff are not yet: no page with a roster it can't answer.
 		expect(f.api.listStaff).toHaveBeenCalled();
 		expect(appPage(f.root)).toBeNull();
 		expect(f.root.querySelector("main > .page .skeleton-page")).not.toBeNull();
@@ -1102,13 +1100,11 @@ describe("account and route ownership", () => {
 		await draw();
 		await draw();
 		const page = appPage(f.root)!;
-		expect(page.querySelector(".side-panel-by")?.textContent).toBe(
-			"Made by Fixture agent · Qorpera never asks for passwords here",
-		);
+		expect(page.getAttribute("aria-label")).toBe("Sales board");
 		expect(page.querySelector("iframe.side-panel-frame")).not.toBeNull();
 	});
 
-	it("opens an app's card in a chat as the app's page, which leads back to the conversation", async () => {
+	it("opens an app's card in a chat as the app's page", async () => {
 		withApp();
 		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
 		await draw();
@@ -1124,10 +1120,25 @@ describe("account and route ownership", () => {
 		// Not beside the chat: the chat is gone, and the app has the page.
 		expect(f.root.querySelector(".thread")).toBeNull();
 		const page = appPage(f.root)!;
-		expect(page.querySelector(".side-panel-title")?.textContent).toBe("Sales board");
-		const back = page.querySelector<HTMLAnchorElement>("a.side-panel-back")!;
+		expect(page.getAttribute("aria-label")).toBe("Sales board");
+		expect(page.querySelector(".side-panel-header")).toBeNull();
+	});
+
+	it("leads back to the conversation from a card whose app is gone", async () => {
+		withApp();
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		await draw();
+		const prose = markdown("See [Old board](app:old-board).");
+		f.root.querySelector(".thread")!.append(prose);
+		prose.querySelector<HTMLButtonElement>("button.app-card")!.click();
+		await draw();
+		await draw();
+		const page = appPage(f.root)!;
+		expect(page.querySelector(".side-panel-status")?.textContent).toBe("This app isn't in the company anymore.");
+		const back = page.querySelector<HTMLElement>("a.side-panel-way")!;
+		expect(back.textContent).toBe("Back to the conversation");
 		expect(back.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
-		expect(back.getAttribute("aria-label")).toBe("Back to the conversation");
 	});
 
 	/** The company's folder with two concepts of its product, `shop-a` then `shop-b` (the newer), and the posted app. */
@@ -1440,7 +1451,7 @@ describe("account and route ownership", () => {
 		await draw();
 		await draw();
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/a/sales-board`);
-		expect(appPage(f.root)?.querySelector(".side-panel-title")?.textContent).toBe("Sales board");
+		expect(appPage(f.root)?.getAttribute("aria-label")).toBe("Sales board");
 		expect(concepts(f.root)).toBeNull();
 	});
 

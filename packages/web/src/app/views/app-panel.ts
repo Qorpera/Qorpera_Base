@@ -11,7 +11,9 @@ import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
 /* An agent's interface app (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4) or an HTML page of the Company File, live
  * in the locked frame (ui/app-frame.ts), in one of two places:
  * - An app is a page of its own, `#/c/{id}/a/{name}` (Jonas, 8 November 2026: an app is a whole product prototype and
- *   opens as Mailbox and Bank do, never in a panel beside the chat). Its slim header has the way back.
+ *   opens as Mailbox and Bank do, never in a panel beside the chat). It has no header (Jonas, 10 November 2026: "I
+ *   would remove any headers as they add nothing but bad visual design"): the app is the whole page, the rail beside
+ *   it shows which app is open and leads everywhere else, and opening the app again reads it afresh.
  * - A Company File page linked in a message stands beside the conversation (Jonas, 5 November 2026: PR #1430's agent
  *   sheet, standing beside the thread instead of over it). The thread stays as it is, usable; Escape, in the panel or
  *   in its page, and Close put it away.
@@ -19,9 +21,12 @@ import { QuestionDock, type QuestionDockHost } from "./question-dock.ts";
  *   "a fullscreen view of the selected concept"). It has no header at all: the concept's own design owns the whole
  *   area, and the viewer's side panel says whose it is, with Reload and Show in Storage.
  * Either way:
- * - Its header (or the Concepts viewer's side panel) is drawn outside the frame, and always says whose app it is and
- *   that Qorpera never asks for a password in it, so a page that draws a sign-in can't pass for this app's own
- *   (security review r1, H2).
+ * - Beside the chat, the header (and for a concept the viewer's side panel) is drawn outside the frame, and says whose
+ *   page it is and that Qorpera never asks for a password in it, so a page that draws a sign-in can't pass for this
+ *   app's own (security review r1, H2). An app's own page says neither since it lost its header: what Qorpera draws
+ *   there is the bar of a request and the questions dock.
+ * - When an app's page can't be shown, the line that says why carries the ways on a header had: Reload, the app's
+ *   folder in Storage, and the way back when the app is gone.
  * - On an app's page, the agents' open questions about the app stand in a dock over the page's corner, drawn by Qorpera
  *   outside the frame (views/question-dock.ts, Jonas, 10 November 2026): one tap answers, as in the chat.
  * - An app's page may ask the member to change something (an answer to such a question, a row of a table): Qorpera
@@ -38,8 +43,9 @@ export type AppPanelTarget =
 /** What stands beside a chat: a page of the Company File. An app opens as a page of its own. */
 export type SidePanelTarget = Extract<AppPanelTarget, { kind: "page" }>;
 
-/** Where it stands: beside the chat, with Close; as a page of its own, with the way back; or as the Concepts viewer's
- * concept, with no header (the viewer's side panel has the way back and the controls). */
+/** Where it stands: beside the chat, with Close; as a page of its own, with no header (`back` is where a page that
+ * can't be shown leads); or as the Concepts viewer's concept, with no header either (the viewer's side panel has the
+ * way back and the controls). */
 export type AppPanelPlacement =
 	| { readonly kind: "beside"; readonly onClose: () => void }
 	| { readonly kind: "page"; readonly back: { readonly href: string; readonly label: string } }
@@ -82,8 +88,10 @@ export class AppPanel {
 	readonly #title: HTMLElement;
 	readonly #by = h("span", { class: "side-panel-by" });
 	readonly #body = h("div", { class: "side-panel-body" });
-	/** What takes the focus when the panel opens: Close beside the chat, the way back on a page. */
+	/** What takes the focus when the panel opens: Close beside the chat, else the page itself. */
 	readonly #first: HTMLElement;
+	/** An app's own page: where it leads when the app can't be shown. Undefined in the other placements. */
+	readonly #back: { readonly href: string; readonly label: string } | undefined;
 	#frame: AppFrame | undefined;
 	#page: string | undefined;
 	#path: string | undefined;
@@ -100,54 +108,46 @@ export class AppPanel {
 	constructor(host: AppPanelHost, target: AppPanelTarget, placement: AppPanelPlacement) {
 		this.#host = host;
 		this.target = target;
-		const control = (name: string, label: string, onclick: () => void) =>
-			h(
-				"button",
-				{ type: "button", class: "side-panel-button", title: label, "aria-label": label, onclick },
-				icon(name),
-			);
-		const actions = [
-			control("reload", t("Reload"), () => void this.reload(true)),
-			control("folder", t("Show in Storage"), () => {
-				if (this.#path) host.openInStorage(this.#path);
-			}),
-		];
 		if (placement.kind === "concept") {
 			// Nothing of Qorpera's over the concept: the frame is the whole stage. The heading is kept, unshown.
 			this.#title = h("strong", { class: "side-panel-title" });
 			this.el = h("section", { class: "side-panel is-concept", tabindex: "-1" }, this.#body);
 			this.#first = this.el;
 		} else if (placement.kind === "page") {
-			// The page's own heading: the app's name, once, at the top of the page.
-			this.#title = h("h1", { class: "side-panel-title" });
-			this.#first = h(
-				"a",
-				{
-					class: "side-panel-button side-panel-back",
-					href: placement.back.href,
-					title: placement.back.label,
-					"aria-label": placement.back.label,
-				},
-				icon("back"),
-			);
-			this.el = h(
-				"section",
-				{ class: "side-panel is-page", tabindex: "-1" },
-				h("header", { class: "side-panel-header" }, this.#first, ...this.#headerCopy(), ...actions),
-				this.#body,
-			);
+			// Nothing of Qorpera's over the app (Jonas, 10 November 2026): the frame is the whole page, named for
+			// assistive technology by the section's label. The heading is kept, unshown.
+			this.#title = h("strong", { class: "side-panel-title" });
+			this.el = h("section", { class: "side-panel is-page", tabindex: "-1" }, this.#body);
+			this.#first = this.el;
+			this.#back = placement.back;
 			if (host.questions && target.kind === "app") {
 				const name = target.name;
 				this.#dock = new QuestionDock(host.questions, (apps) => apps.has(name));
 				this.el.append(this.#dock.el);
 			}
 		} else {
+			const control = (name: string, label: string, onclick: () => void) =>
+				h(
+					"button",
+					{ type: "button", class: "side-panel-button", title: label, "aria-label": label, onclick },
+					icon(name),
+				);
 			this.#title = h("strong", { class: "side-panel-title" });
 			this.#first = control("close", t("Close"), () => placement.onClose());
 			this.el = h(
 				"aside",
 				{ class: "side-panel", "aria-label": t("Beside the chat"), tabindex: "-1" },
-				h("header", { class: "side-panel-header" }, ...this.#headerCopy(), ...actions, this.#first),
+				h(
+					"header",
+					{ class: "side-panel-header" },
+					this.#emblem,
+					h("span", { class: "side-panel-copy" }, this.#title, this.#by),
+					control("reload", t("Reload"), () => void this.reload(true)),
+					control("folder", t("Show in Storage"), () => {
+						if (this.#path) host.openInStorage(this.#path);
+					}),
+					this.#first,
+				),
 				this.#body,
 			);
 			this.el.addEventListener(
@@ -181,7 +181,7 @@ export class AppPanel {
 			null,
 			null,
 		);
-		this.#status(t("Opening…"));
+		replace(this.#body, h("p", { class: "side-panel-status" }, t("Opening…")));
 		void this.reload(false);
 	}
 
@@ -223,10 +223,6 @@ export class AppPanel {
 		return this.#loading;
 	}
 
-	#headerCopy(): HTMLElement[] {
-		return [this.#emblem, h("span", { class: "side-panel-copy" }, this.#title, this.#by)];
-	}
-
 	/** At most once each CHANGE_MS, however often the folder changes (a busy company changes it every second). */
 	#changed(): void {
 		if (this.#timer !== undefined) return;
@@ -237,6 +233,7 @@ export class AppPanel {
 	}
 
 	#heading(title: string, manifest: AppManifest | null, owner: string | null): void {
+		if (this.#back) this.el.setAttribute("aria-label", title);
 		this.#title.textContent = title;
 		this.#title.title = manifest?.about ? `${title} · ${manifest.about}` : title;
 		replace(this.#emblem, interfaceEmblem(manifest?.emblem ?? "page", 22));
@@ -248,12 +245,45 @@ export class AppPanel {
 		this.#by.textContent = `${made} · ${t("Qorpera never asks for passwords here")}`;
 	}
 
-	#status(text: string): void {
+	/** Says why nothing is shown. An app's own page has no header, so the line carries the ways on: Reload, the app's
+	 * folder in Storage when it has one, and the way back when the app is `gone`. */
+	#status(text: string, gone = false): void {
 		this.#frame?.dispose();
 		this.#frame = undefined;
 		this.#ask?.cancel();
 		this.#page = undefined;
-		replace(this.#body, h("p", { class: "side-panel-status" }, text));
+		const line = h("p", { class: "side-panel-status" }, text);
+		const back = this.#back;
+		if (!back) {
+			replace(this.#body, line);
+			return;
+		}
+		const path = this.#path;
+		replace(
+			this.#body,
+			h(
+				"div",
+				{ class: "side-panel-state" },
+				line,
+				h(
+					"div",
+					{ class: "side-panel-ways" },
+					gone ? h("a", { class: "side-panel-way", href: back.href }, back.label) : null,
+					h(
+						"button",
+						{ type: "button", class: "side-panel-way", onclick: () => void this.reload(true) },
+						t("Reload"),
+					),
+					path
+						? h(
+								"button",
+								{ type: "button", class: "side-panel-way", onclick: () => this.#host.openInStorage(path) },
+								t("Show in Storage"),
+							)
+						: null,
+				),
+			),
+		);
 	}
 
 	async #load(fresh: boolean): Promise<void> {
@@ -271,7 +301,7 @@ export class AppPanel {
 			if (signal.aborted) return;
 			if (!app) {
 				this.#path = undefined;
-				return this.#status(t("This app isn't in the company anymore."));
+				return this.#status(t("This app isn't in the company anymore."), true);
 			}
 			this.#path = app.path;
 			const manifest = app.manifest;
