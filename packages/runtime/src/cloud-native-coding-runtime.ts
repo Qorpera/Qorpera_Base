@@ -690,11 +690,12 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			observability: context.observability,
 			// The turn completed with neither coding_finish nor coding_ask: the model is told so in one more turn of the
 			// same thread, once. A turn that still hands nothing in fails as before, below (reliability audit, 10
-			// November 2026, D8).
+			// November 2026, D8). It asks for no hand-in the instructions would not: a commit in a repository kept in
+			// Qorpera lands at once, so unfinished work there ends with coding_ask.
 			turnCorrection: async () =>
 				submitted
 					? undefined
-					: "Your turn ended without coding_finish or coding_ask, so nothing of it is handed in. End it now: commit on the current branch and call coding_finish with the commit SHA and a factual summary that names what is unfinished or blocked, or, with nothing worth handing in, call coding_ask with what blocks you and what you need from the member. This is the last turn of this run: if it ends without one of them, the turn fails.",
+					: "Your turn ended without coding_finish or coding_ask, so nothing of it is handed in. End it now, by your instructions' rules for handing in. When you have a commit they let you hand in, call coding_finish with its SHA and a factual summary that names what is left; in a repository kept in Qorpera that is only work that is whole and passes its checks, since it lands at once. Otherwise call coding_ask with what is unfinished or blocks you and what you need from the member. This is the last turn of this run: if it ends without one of them, the turn fails.",
 			beginExecution: async (specification, checked) => {
 				const text = cloudToolJsonText(specification, CLOUD_NATIVE_TOOL_CATALOG_BYTES);
 				const started = await this.#control.call(
