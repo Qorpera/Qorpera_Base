@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -9,10 +9,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	type CodeHostCommand,
 	type CodeHostGcBlock,
+	type CodeHostJob,
 	CodeHostJobFailure,
 	CodeHostRefusal,
 	exportCodeBranch,
 	landCodeBranch,
+	retireCodeWorktrees,
 } from "../src/code-host-jobs.ts";
 import { CODE_HOST_EXPORT_MAXIMUM_BYTES, CodeHostRepositories } from "../src/code-host-repositories.ts";
 import { attachCodeSession, type CodeAreaBroker } from "../src/code-host-seed.ts";
@@ -250,6 +252,52 @@ describe("CodeHostRepositories", () => {
 			f.repositories.start({ claim: f.session.claim, assertAuthorized: f.authorized }, signal()),
 		).rejects.toThrow("CODE_HOST_REPOSITORY_NOT_HERE");
 		await expect(f.repositories.land(f.session, head, signal())).rejects.toThrow("CODE_HOST_REPOSITORY_NOT_HERE");
+	});
+	it("a follow-up after nightly care retired the session's worktree gets it back from its branch, with the same head and files", async () => {
+		const f = await fixture();
+		const kept: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const claim = { ...f.session.claim, repository: kept, baseSha: null };
+		const { baseSha } = await f.repositories.start({ claim, assertAuthorized: f.authorized }, signal());
+		const session = { ...f.session, claim, baseSha },
+			cwd = `/company/code/qorpera/example/worktrees/${f.workerId}`,
+			admin = join(f.companyRoot, "code/qorpera/example/repo.git/worktrees", f.workerId);
+		await f.repositories.prepare(session, signal());
+		const landed = await f.commit(f.tree, "cart.js");
+		await f.repositories.land(session, landed, signal());
+		// Work the session committed after its landing is on its branch only.
+		const head = await f.commit(f.tree, "more.js");
+		// Care's jobs, as its loop runs them: on the company's code host, between the session's turns.
+		const care: CodeHostJob = {
+			shell: localShell([]),
+			layout: { companyRoot: f.companyRoot, scratchRoot: join(f.root, "scratch"), git: GIT },
+			signal: signal(),
+		};
+		const retire = (phase: "files" | "git-folder") =>
+			retireCodeWorktrees(care, { repository: kept, workerIds: [f.workerId] }, { phase });
+		const back = async () => {
+			await expect(f.repositories.prepare(session, signal())).resolves.toEqual({ cwd });
+			expect(await f.git(f.tree, "rev-parse", "HEAD")).toBe(head);
+			expect(await f.git(f.tree, "symbolic-ref", "HEAD")).toBe(`refs/heads/qorpera/coding/${f.workerId}`);
+			expect(await f.git(f.tree, "status", "--porcelain", "--ignored")).toBe("");
+			expect((await readdir(f.tree)).sort()).toEqual([".git", "cart.js", "more.js"]);
+			expect(await readFile(join(f.tree, "more.js"), "utf8")).toBe("more.js\n");
+		};
+		// A follow-up between care's two jobs: the files are gone and git's folder for the worktree is left.
+		expect(await retire("files")).toEqual({ retired: [f.workerId], kept: [] });
+		expect(await exists(f.tree)).toBe(false);
+		expect(await exists(admin)).toBe(true);
+		await back();
+		// And one after both.
+		expect(await retire("files")).toEqual({ retired: [f.workerId], kept: [] });
+		expect(await retire("git-folder")).toEqual({ retired: [f.workerId], kept: [] });
+		expect(await exists(f.tree)).toBe(false);
+		expect(await exists(admin)).toBe(false);
+		await back();
+		// The session works on and lands, as before it was retired.
+		const next = await f.commit(f.tree, "last.js");
+		expect(await f.repositories.land(session, next, signal())).toEqual({ state: "fast-forward", mainSha: next });
+		expect(f.calls).toEqual([]);
+		expect(f.lent).not.toHaveBeenCalled();
 	});
 	it("a landing the code host refuses by rule says what to change, never to finish again as it is", async () => {
 		const f = await fixture();
