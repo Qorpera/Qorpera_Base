@@ -269,7 +269,7 @@ export class SitesView {
 						)
 					: fromCode(site)
 						? t(
-								"Take {name} offline? Its earlier versions go with it. The next change that passes its tests makes the site again, with a new password, and it waits in What's new.",
+								"Take {name} offline? Its earlier versions go with it. Qorpera prepares the newest version again, with a new password, and it waits in What's new until you put it live.",
 								{ name: nameOf(site) },
 							)
 						: t(

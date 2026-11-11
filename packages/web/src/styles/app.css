@@ -511,7 +511,7 @@ label > input, label > select { font-weight: 400; }
 /* What's new (#/c/<id>/whats-new), headed as the Sites page is: per project, what is live (the Sites page's card), the
  * changes ready to go live as a picture with one line each (the look of a question's visual choices), and the buttons. */
 .whats-new-site { margin: 0 0 40px; }
-.whats-new-site > h2 { margin: 0 0 10px; }
+.whats-new-site > h2 { margin: 0 0 10px; overflow-wrap: anywhere; }
 .whats-new-site > h3 { margin: 22px 0 10px; }
 /* One card in the list, as much room under it as over it. */
 .whats-new-live.connection-list { padding-bottom: 4px; }

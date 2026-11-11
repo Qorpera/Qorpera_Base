@@ -1664,6 +1664,33 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		localStorage.clear();
 	});
 
+	it("sends a member's move of What's new into a group as their own layout (the cloud's check takes whats-new since 729000)", async () => {
+		localStorage.clear();
+		const { element, controller, set } = drawer();
+		controller.store.set({ whatsNew: { ready: 1 } });
+		await settle();
+		const tile = element.querySelector<HTMLElement>("[data-app-key='whats-new']")!;
+		tile.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 9, clientY: 9 }));
+		const item = (selector: string, label: string) =>
+			[...document.querySelectorAll<HTMLElement>(`${selector} [role^=menuitem]`)].find(
+				(entry) => entry.textContent?.trim() === label,
+			)!;
+		item(".context-menu", "Move to").click();
+		item(".context-submenu", "Market").click();
+		await settle();
+		expect(set).toHaveBeenLastCalledWith(
+			profileA.profileId,
+			expect.objectContaining({
+				places: expect.objectContaining({ "whats-new": expect.objectContaining({ group: "market" }) }),
+			}),
+			null,
+		);
+		await settle();
+		expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+		expect(group(element).querySelector(".rail-count")?.textContent).toBe("1");
+		localStorage.clear();
+	});
+
 	it("renames and takes apart a group in the member's own drawer, and moves an app into one", async () => {
 		localStorage.clear();
 		const { element, set } = drawer();

@@ -202,7 +202,7 @@ describe("Settings → Sites", () => {
 		expect(cardOf(shop.id)?.textContent).toContain("From product/webshop-preview.html");
 		press(card, "Unpublish");
 		expect(dialog().textContent).toContain(
-			"Take Gift message offline? Its earlier versions go with it. The next change that passes its tests makes the site again, with a new password, and it waits in What's new.",
+			"Take Gift message offline? Its earlier versions go with it. Qorpera prepares the newest version again, with a new password, and it waits in What's new until you put it live.",
 		);
 		press(dialog(), "Unpublish");
 		await settle();

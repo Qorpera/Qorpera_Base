@@ -461,8 +461,8 @@ export const SETTINGS: Record<string, string> = {
 		"Tag {name} offline? Linket holder op med at virke, og adgangskoden slettes. Appen bliver ved med at køre på sin maskine.",
 	// A project's site made from its code kept in Qorpera: it goes live from What's new (own code storage step 4)
 	"Goes live from What's new": "Sættes live under Nyheder",
-	"Take {name} offline? Its earlier versions go with it. The next change that passes its tests makes the site again, with a new password, and it waits in What's new.":
-		"Tag {name} offline? Dens tidligere versioner forsvinder med den. Den næste ændring, der består sine tests, laver hjemmesiden igen med en ny adgangskode, og den venter under Nyheder.",
+	"Take {name} offline? Its earlier versions go with it. Qorpera prepares the newest version again, with a new password, and it waits in What's new until you put it live.":
+		"Tag {name} offline? Dens tidligere versioner forsvinder med den. Qorpera gør den nyeste version klar igen med en ny adgangskode, og den venter under Nyheder, til du sætter den live.",
 
 	// What's new: the changes to the company's sites made from its code, ready to go live (app/views/whats-new.ts)
 	"What's new": "Nyheder",
@@ -498,6 +498,8 @@ export const SETTINGS: Record<string, string> = {
 	"Founders and admins put changes live.": "Stiftere og administratorer sætter ændringer live.",
 	"Something changed while you looked. Here is what is ready now.":
 		"Noget har ændret sig, mens du kiggede. Her er det, der er klar nu.",
+	"Something changed while you looked. Here is what is live now.":
+		"Noget har ændret sig, mens du kiggede. Her er det, der er live nu.",
 	"It did not go live: {why}. Nothing changed.": "Det blev ikke sat live: {why}. Intet er ændret.",
 	"It did not go back: {why}. Nothing changed.": "Den blev ikke sat live igen: {why}. Intet er ændret.",
 	"Qorpera could not be reached": "Qorpera kunne ikke nås",

@@ -423,6 +423,91 @@ describe("What's new: the page", () => {
 		expect(labels(block(view))).toContain("Put it live");
 	});
 
+	it("sends Put it live once, however often it is pressed while the call is out", async () => {
+		const answer = deferred<CodeReleaseAnswer>();
+		const { view, client } = await page([releasesOf([shop()])], { putLive: () => answer.promise });
+		const put = buttons(block(view)).find((item) => item.textContent === "Put it live")!;
+		put.click();
+		put.click();
+		await settle();
+		press(block(view), "Putting it live…");
+		await settle();
+		expect(client.putLive).toHaveBeenCalledOnce();
+		answer.resolve({ state: "live", version: 4 });
+		await settle();
+		expect(client.putLive).toHaveBeenCalledOnce();
+	});
+
+	it("says it went live when no answer came but the page read after it shows the new version", async () => {
+		const after = shop({
+			live: { version: 4, kind: "release", since: timestamp, by: userA.id },
+			back: { version: 3 },
+			ready: null,
+		});
+		const { view } = await page([releasesOf([shop()]), releasesOf([after])], {
+			putLive: () => Promise.reject(new Error("The cloud request timed out")),
+		});
+		press(block(view), "Put it live");
+		await settle();
+		expect(block(view).querySelector(".whats-new-live + .service-outcome.is-ok")?.textContent).toBe(
+			"Version 4 is live.",
+		);
+		expect(block(view).querySelector(".service-outcome.is-error")).toBeNull();
+	});
+
+	it("draws what is live again when Go back finds the page moved", async () => {
+		const newer = shop({
+			live: { version: 4, kind: "release", since: timestamp, by: userA.id },
+			back: { version: 3 },
+		});
+		const { view } = await page([releasesOf([shop()]), releasesOf([newer])], {
+			goBack: async () => ({ state: "moved" }),
+		});
+		press(block(view), "Go back to version 2");
+		await settle();
+		press(dialog(), "Go back");
+		await settle();
+		expect(block(view).querySelector(".whats-new-live + .service-outcome")?.textContent).toBe(
+			"Something changed while you looked. Here is what is live now.",
+		);
+		expect(labels(block(view).querySelector(".whats-new-live")!)).toEqual(["Go back to version 3"]);
+	});
+
+	it("reads again when the window comes back, keeps what it showed when a read gets no answer, and drops it when the cloud refuses the member", async () => {
+		const controller = company();
+		const list = vi
+			.fn()
+			.mockResolvedValueOnce(releasesOf([shop()]))
+			.mockRejectedValueOnce(new Error("Failed to fetch"))
+			.mockRejectedValueOnce(
+				new CloudRpcError("qorpera_list_code_releases", { message: "Releases unavailable", code: "42501" }, 403),
+			);
+		const view = new WhatsNewView(controller, { list, putLive: vi.fn(), goBack: vi.fn() }, controller.signal);
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		await settle();
+		expect(labels(block(view))).toContain("Put it live");
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(list).toHaveBeenCalledTimes(2);
+		expect(text(view.el)).toContain("What's new could not be read.");
+		expect(labels(block(view))).toContain("Put it live");
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+		expect(list).toHaveBeenCalledTimes(3);
+		expect(view.el.querySelector("[data-site]")).toBeNull();
+		expect(labels(view.el)).toEqual(["Try again"]);
+	});
+
+	it("shows a picture that does not decode as its line on a plain tile", async () => {
+		const { view } = await page([releasesOf([shop()])]);
+		const first = block(view).querySelector<HTMLElement>(".whats-new-change")!;
+		first.querySelector("img")!.dispatchEvent(new Event("error"));
+		expect(first.classList.contains("is-plain")).toBe(true);
+		expect(first.querySelector("img")).toBeNull();
+		expect(first.querySelector(".whats-new-line")?.textContent).toBe("The checkout shows the gift message.");
+	});
+
 	it("asks once before going back, and goes back to the version Go back named", async () => {
 		const back = shop({
 			live: { version: 2, kind: "back", since: timestamp, by: userA.id },
@@ -572,7 +657,8 @@ describe("What's new: Not yet", () => {
 		controller.conversation(session.sessionId, false).set({ draft: "Not yet: the colours" });
 		vi.spyOn(controller, "openStaffConversation")
 			.mockResolvedValueOnce(session.sessionId)
-			.mockRejectedValueOnce(new Error(""));
+			// The cloud's own words for a thread that would not open name machinery: never shown.
+			.mockRejectedValueOnce(new Error("permission denied for function qorpera_agent_thread"));
 		const draft = vi.spyOn(controller, "addToDraft");
 		location.hash = `#/c/${profileA.profileId}/whats-new`;
 		press(block(view), "Not yet");
@@ -584,11 +670,38 @@ describe("What's new: Not yet", () => {
 		expect(block(view).querySelector(".whats-new-actions + .service-outcome.is-error")?.textContent).toBe(
 			"The thread could not be opened.",
 		);
+		expect(text(block(view))).not.toContain("qorpera_agent_thread");
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/whats-new`);
 	});
 
 	it("has no entry while no project makes a website", () => {
 		expect(whatsNewEntry(company(), releasesOf([]))).toBeUndefined();
 		expect(whatsNewEntry(company(), releasesOf([shop({ ready: null })]))).toEqual({ ready: 0 });
+	});
+
+	it("gives a member who cannot put a version live the entry, without a count they could never clear", () => {
+		expect(whatsNewEntry(company("contributor"), releasesOf([shop()], false))).toEqual({ ready: 0 });
+	});
+
+	it("quiets only the project it was said to, and counts every project's changes", async () => {
+		const other = shop({
+			owner: "qorpera",
+			name: "gift-cards",
+			site: { slug: "gift-cards", url: "https://sites.qorpera.com/gift-cards/", title: "Gift cards" },
+			ready: { ...shop().ready!, token: OTHER_TOKEN, changes: [shop().ready!.changes[1]!], quiet: 0 },
+		});
+		const { view, controller } = await page([releasesOf([shop(), other])]);
+		// In the read's order (live sites first, then the others: 729000 orders them).
+		expect([...view.el.querySelectorAll(".whats-new-site h2")].map((title) => title.textContent)).toEqual([
+			"Wristband shop",
+			"Gift cards",
+		]);
+		expect(whatsNewEntry(controller, releasesOf([shop(), other]))).toEqual({ ready: 7 });
+		vi.spyOn(controller, "openStaffConversation").mockResolvedValue(session.sessionId);
+		vi.spyOn(controller, "addToDraft").mockImplementation(() => {});
+		location.hash = `#/c/${profileA.profileId}/whats-new`;
+		press(view.el.querySelector('[data-site="qorpera/gift-cards"]')!, "Not yet");
+		await settle();
+		expect(whatsNewEntry(controller, releasesOf([shop(), other]))).toEqual({ ready: 6 });
 	});
 });

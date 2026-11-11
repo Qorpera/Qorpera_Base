@@ -60,9 +60,11 @@ function quiet(company: CompanyController, token: string, shown: readonly string
 }
 
 /** The apps drawer's entry for a read: present while a project makes a website, with how many changes are ready that
- * this member did not answer Not yet to. */
+ * this member did not answer Not yet to. Only an owner or admin can put them live or say Not yet, so only they get the
+ * count: anyone else would carry a badge they could never clear. */
 export function whatsNewEntry(company: CompanyController, releases: CodeReleases): { ready: number } | undefined {
 	if (!releases.sites.length) return undefined;
+	if (!releases.canRelease) return { ready: 0 };
 	const silent = quieted(company);
 	let ready = 0;
 	for (const { ready: point } of releases.sites)
@@ -77,17 +79,21 @@ function titleOf(site: CodeReleaseSite): string {
 	return site.site?.title ?? site.site?.slug ?? site.name;
 }
 
-/** Why a write did not go through, in the interface language. */
-function failure(error: unknown): string {
+/** Why a write did not go through, in the interface language. `unknown`: no answer came (the deadline, no network),
+ * so the write may have gone through all the same: the read after it tells. */
+function failure(error: unknown): { why: string; unknown: boolean } {
 	if (error instanceof CloudRpcError) {
-		if (error.code === "42501") return t("only founders and admins can put a version live");
+		if (error.code === "42501") return { why: t("only founders and admins can put a version live"), unknown: false };
 		// The 3 s lock wait (the executor was keeping a new version) or the statement's time.
-		if (error.code === "55P03" || error.code === "57014") return t("Qorpera was busy for a moment");
-		if (error.code === "P0002") return t("the project is no longer there");
+		if (error.code === "55P03" || error.code === "57014")
+			return { why: t("Qorpera was busy for a moment"), unknown: false };
+		if (error.code === "P0002") return { why: t("the project is no longer there"), unknown: false };
 		// A request that never got an answer has no status.
-		if (error.status !== undefined && error.status > 0) return t("something went wrong on Qorpera's side");
-	} else if (error instanceof CloudShapeError) return t("something went wrong on Qorpera's side");
-	return t("Qorpera could not be reached");
+		if (error.status !== undefined && error.status > 0)
+			return { why: t("something went wrong on Qorpera's side"), unknown: false };
+	} else if (error instanceof CloudShapeError)
+		return { why: t("something went wrong on Qorpera's side"), unknown: true };
+	return { why: t("Qorpera could not be reached"), unknown: true };
 }
 
 export class WhatsNewView {
@@ -126,6 +132,15 @@ export class WhatsNewView {
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.#draw();
 		void this.#refresh();
+		// Back in this window, the page reads again: another tab or another member may have put a version live, or the
+		// member's role changed.
+		window.addEventListener(
+			"focus",
+			() => {
+				if (!this.#working) void this.#refresh();
+			},
+			{ signal: this.#lifetime.signal },
+		);
 	}
 
 	dispose(): void {
@@ -161,9 +176,12 @@ export class WhatsNewView {
 			this.#releases = releases;
 			this.#error = undefined;
 			this.#listed(releases);
-		} catch {
+		} catch (error) {
 			if (this.#lifetime.signal.aborted) return;
 			this.#error = t("What's new could not be read.");
+			// Refused (the member left or lost the company) or gone: what was read before is no longer theirs to act on. A
+			// read that got no answer keeps it, under the line that says so.
+			if (error instanceof CloudRpcError && (error.denied || error.missing)) this.#releases = undefined;
 		} finally {
 			this.#loading = false;
 			this.#draw();
@@ -179,9 +197,11 @@ export class WhatsNewView {
 		if (this.#working || this.#lifetime.signal.aborted) return;
 		const key = keyOf(site);
 		const focus = `${action}:${key}`;
+		const before = site.live?.version ?? null;
 		this.#working = { site: key, action };
 		this.#outcome = undefined;
 		this.#draw(focus);
+		let unknown = false;
 		try {
 			const answer = await work(this.#lifetime.signal);
 			if (this.#lifetime.signal.aborted) return;
@@ -193,15 +213,24 @@ export class WhatsNewView {
 							tone: "ok",
 							text: t("Version {version} is live.", { version: String(answer.version) }),
 						}
-					: {
-							site: key,
-							at: "ready",
-							tone: "ok",
-							text: t("Something changed while you looked. Here is what is ready now."),
-						};
+					: // Moved: what was shown is no longer so, and nothing changed; the read shows what is now.
+						action === "live"
+						? {
+								site: key,
+								at: "ready",
+								tone: "ok",
+								text: t("Something changed while you looked. Here is what is ready now."),
+							}
+						: {
+								site: key,
+								at: "live",
+								tone: "ok",
+								text: t("Something changed while you looked. Here is what is live now."),
+							};
 		} catch (error) {
 			if (this.#lifetime.signal.aborted) return;
-			const why = failure(error);
+			const { why, unknown: noAnswer } = failure(error);
+			unknown = noAnswer;
 			this.#outcome = {
 				site: key,
 				at: action === "live" ? "actions" : "live",
@@ -216,6 +245,18 @@ export class WhatsNewView {
 			if (!this.#lifetime.signal.aborted) this.#draw(focus);
 		}
 		await this.#refresh();
+		// No answer came: when the read shows another version live now, the write went through (or another tab's did),
+		// and "Nothing changed" would be wrong.
+		const now = this.#releases?.sites.find((item) => keyOf(item) === key)?.live;
+		if (unknown && !this.#lifetime.signal.aborted && now && now.version !== before) {
+			this.#outcome = {
+				site: key,
+				at: "live",
+				tone: "ok",
+				text: t("Version {version} is live.", { version: String(now.version) }),
+			};
+			this.#draw();
+		}
 	}
 
 	#putLive(site: CodeReleaseSite): Promise<void> {
@@ -269,12 +310,12 @@ export class WhatsNewView {
 		this.#outcome = undefined;
 		this.#draw(`talk:${key}`);
 		try {
-			if (!agent) throw new Error(t("The thread could not be opened."));
+			if (!agent) throw new Error("No agent to tell");
 			const isCofounder = agent.id === cofounderId;
 			let sessionId: string;
 			if (isCofounder) {
 				const opened = await company.openCofounderConversation();
-				if (!opened.sessionId) throw new Error(opened.reason ?? t("The Co-Founder's thread can't be opened here."));
+				if (!opened.sessionId) throw new Error("No Co-Founder thread");
 				sessionId = opened.sessionId;
 			} else sessionId = await company.openStaffConversation(agent);
 			if (this.#lifetime.signal.aborted) return;
@@ -293,14 +334,10 @@ export class WhatsNewView {
 			}
 			if (location.hash === from)
 				location.hash = isCofounder ? `#/c/${profileId}` : `#/c/${profileId}/staff/${agent.id}`;
-		} catch (error) {
+		} catch {
 			if (this.#lifetime.signal.aborted) return;
-			this.#outcome = {
-				site: key,
-				at: "actions",
-				tone: "error",
-				text: error instanceof Error && error.message ? error.message : t("The thread could not be opened."),
-			};
+			// One plain line whatever went wrong: the cloud's own words for a thread that would not open name machinery.
+			this.#outcome = { site: key, at: "actions", tone: "error", text: t("The thread could not be opened.") };
 		} finally {
 			this.#working = undefined;
 			if (!this.#lifetime.signal.aborted) this.#draw(`talk:${key}`);
@@ -410,7 +447,8 @@ export class WhatsNewView {
 				if (this.#lifetime.signal.aborted) return;
 				if (!url) return plain();
 				box.classList.remove("is-loading");
-				box.append(h("img", { src: url, alt: "", decoding: "async" }));
+				// A file that is no picture after all (it does not decode) is the line on its tile, as one not read.
+				box.append(h("img", { src: url, alt: "", decoding: "async", onerror: () => plain() }));
 			});
 		};
 		// Pictures are read as they come near the screen.
