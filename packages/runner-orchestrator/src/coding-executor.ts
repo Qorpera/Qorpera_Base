@@ -254,6 +254,10 @@ export function landRefusal(baseBranch: string, code: string, paths: readonly st
 /** A publication that failed for another reason than a refusal (the step's own code is in the executor's log). */
 export const PUBLICATION_UNFINISHED =
 	"Handing in the work did not finish, so it may not have reached the repository yet. The work is kept on the session's branch; finishing again hands it in. [code=CODING_PUBLICATION_UNFINISHED]";
+/** The turn's step while the work of a session on a repository kept in Qorpera lands: its checks run, then it goes
+ * into the default branch (own code storage, step 3). Set before the executor knows whether the repository has checks.
+ * The web shows the founder's card line for checks by these exact words. */
+export const CODING_LANDING_STEP = "Checking and saving the change";
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
 	/** Null for archive: the quiet sessions of this executor's environments. */
@@ -946,9 +950,10 @@ export class CloudCodingExecutor {
 			if (submission?.kind === "finish" && turn.jobStatus === "completed") {
 				await progress({
 					p_phase: "publishing",
-					// A repository kept in Qorpera has no pull request: its work lands (own code storage).
+					// A repository kept in Qorpera has no pull request: its work lands (own code storage), once its checks
+					// passed (step 3). The founder's card reads exactly these words (CODING_LANDING_STEP).
 					p_last_step:
-						claimed.repository.host === "qorpera" ? "Landing the change" : "Publishing the draft pull request",
+						claimed.repository.host === "qorpera" ? CODING_LANDING_STEP : "Publishing the draft pull request",
 				});
 				let publication: CodingExecutorPublication;
 				try {
