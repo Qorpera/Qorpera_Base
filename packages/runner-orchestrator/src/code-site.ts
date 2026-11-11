@@ -72,8 +72,8 @@ export type CodeSiteProblemCode =
 	| "SITE_HOLDS_SECRET";
 
 /** What the code made wrong in its site: the file it is about (`SITE_FILE_TOO_LARGE`, `SITE_FILE_NAME`, and
- * `SITE_HOLDS_SECRET` as the collect found it), and the secret variable whose value a file holds. A secret found only
- * by the folder's save check names neither. */
+ * `SITE_HOLDS_SECRET` as the collect found it; null when its path holds a secret value), and the secret variable whose
+ * value a file or its path holds. A secret found only by the folder's save check names neither. */
 export interface CodeSiteProblem {
 	readonly code: CodeSiteProblemCode;
 	readonly path: string | null;
@@ -235,7 +235,11 @@ export const CODE_CHECKS_NEWER_RUN: readonly string[] = [
  *    site serves, in C order. Each, in turn: the name rule (`SITE_FILE_NAME`), its bytes read once (at most 10 MiB and
  *    one byte: `SITE_FILE_TOO_LARGE`), then the count, the total and the folders. Then `index.html` at the top.
  * 4. The secret scan: for each name whose value in this command's environment has at least 8 bytes (the mask's own
- *    least), whether a file's bytes hold it, byte for byte (`SITE_HOLDS_SECRET <NAME> <path>`). No value is printed.
+ *    least), whether a file's bytes or its path hold it, byte for byte (`SITE_HOLDS_SECRET <NAME> <path>`). No value is
+ *    printed, in any spelling: a path the answer would name that holds one of those values is never named (release
+ *    review, F1: the transport masks the answer while its paths are still written `\xHH`, so a value with a backslash
+ *    or a byte outside printable ASCII passed the mask and came back whole once read). The answer is then
+ *    `SITE_HOLDS_SECRET <NAME>` alone, whatever rule the path met first.
  * 5. Git, with an environment of its own (no variable, configuration or attribute of the session's or of the copy's,
  *    which the repository's own code writes): a new scratch repository `$d/site.git`; the files' exact bytes
  *    (`hash-object --no-filters`, which reads them again), and one tree, all of mode 100644, of the ids of the bytes
@@ -248,7 +252,7 @@ export const CODE_CHECKS_NEWER_RUN: readonly string[] = [
  *    more that it was about to; no file at an object's name is ever partial.
  * 7. Three lines: `tree <id>`, `files <n>`, `bytes <n>`.
  * A problem prints one line `<CODE>[ <detail>]` and exits 3, the detail's bytes outside printable ASCII and its
- * backslashes written `\xHH`, at most 1,000 bytes. Anything that is not the code's fault exits otherwise: 2 for a run
+ * backslashes written `\xHH` (lowercase), cut at a whole byte's spelling within 1,000 bytes. Anything that is not the code's fault exits otherwise: 2 for a run
  * folder or a recipe that is not as the host made it, 4 for a file that changed while it was taken or a git command
  * that failed, 1 for anything else Python could not do. */
 const COLLECT_PY = String.raw`import hashlib,os,re,shutil,stat,subprocess,sys
@@ -259,7 +263,24 @@ def say(code,detail=b""):
 	os.write(1,code+(b" "+detail if detail else b"")+b"\n")
 	sys.exit(3)
 def esc(p):
-	return b"".join(bytes([c]) if 32<=c<127 and c!=92 else b"\\x%02x"%c for c in p)[:1000]
+	out=b""
+	for c in p:
+		piece=bytes([c]) if 32<=c<127 and c!=92 else b"\\x%02x"%c
+		if len(out)+len(piece)>1000:
+			break
+		out+=piece
+	return out
+NAME=re.compile(rb"[A-Za-z_][A-Za-z0-9_]{0,127}")
+SECRETS=[]
+for name in E.get(b"QORPERA_SITE_SECRET_NAMES",b"").split():
+	value=E.get(name) if NAME.fullmatch(name) else None
+	if value is not None and len(value)>=8:
+		SECRETS.append((name,value))
+def named(code,p,variable=b""):
+	held=[name for name,value in SECRETS if value in p]
+	if held:
+		say(b"SITE_HOLDS_SECRET",variable or held[0])
+	say(code,(variable+b" " if variable else b"")+esc(p))
 top=d+b"/src"
 if not stat.S_ISDIR(os.lstat(top).st_mode):
 	sys.exit(2)
@@ -299,14 +320,14 @@ total=0
 folders=set()
 for p in paths:
 	if len(p)>${CODE_SITE_MAX_PATH_BYTES} or not RULE.fullmatch(p):
-		say(b"SITE_FILE_NAME",esc(p))
+		named(b"SITE_FILE_NAME",p)
 	fd=os.open(top+b"/"+p,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
 	with os.fdopen(fd,"rb") as f:
 		if not stat.S_ISREG(os.fstat(fd).st_mode):
 			sys.exit(4)
 		content=f.read(${CODE_SITE_MAX_FILE_BYTES}+1)
 	if len(content)>${CODE_SITE_MAX_FILE_BYTES}:
-		say(b"SITE_FILE_TOO_LARGE",esc(p))
+		named(b"SITE_FILE_TOO_LARGE",p)
 	files.append((p,content))
 	total+=len(content)
 	if len(files)>${CODE_SITE_MAX_FILES}:
@@ -321,13 +342,10 @@ for p in paths:
 		say(b"SITE_TOO_MANY_FOLDERS")
 if b"index.html" not in paths:
 	say(b"SITE_NO_INDEX")
-NAME=re.compile(rb"[A-Za-z_][A-Za-z0-9_]{0,127}")
-for name in E.get(b"QORPERA_SITE_SECRET_NAMES",b"").split():
-	value=E.get(name) if NAME.fullmatch(name) else None
-	if value is not None and len(value)>=8:
-		for p,content in files:
-			if value in content:
-				say(b"SITE_HOLDS_SECRET",name+b" "+esc(p))
+for name,value in SECRETS:
+	for p,content in files:
+		if value in content or value in p:
+			named(b"SITE_HOLDS_SECRET",p,name)
 scratch=d+b"/site.git"
 if os.path.islink(scratch) or os.path.isfile(scratch):
 	os.unlink(scratch)
@@ -434,6 +452,11 @@ export const CODE_SITE_DROP = [
 const MADE = /^tree ([0-9a-f]{40})\nfiles ([1-9][0-9]{0,2})\nbytes (0|[1-9][0-9]{0,7})\n$/;
 const REFUSED = /^(SITE_[A-Z_]+)(?: ([^\n]+))?\n$/;
 const VARIABLE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+/** A detail exactly as the collect spells one: printable ASCII but the backslash as itself, and every other byte (a
+ * control, the backslash, DEL and each byte from 0x80) as `\xHH` in lowercase, at most 1,000 bytes. Any other spelling,
+ * such as a printable byte written `\x41`, is not the collect's: it could carry a secret value past the mask, which
+ * reads the answer before it is decoded (release review, F1). */
+const DETAIL = /^(?:[\x20-\x5b\x5d-\x7e]|\\x(?:[01][0-9a-f]|5c|7f|[89a-f][0-9a-f]))+$/;
 const WITHOUT_DETAIL: readonly CodeSiteProblemCode[] = [
 	"SITE_FOLDER_MISSING",
 	"SITE_NO_INDEX",
@@ -455,8 +478,10 @@ function unescaped(detail: string): string {
 
 /** The collect's ending, from its exit code and its whole output (stdout and stderr as one, masked): `made` for exit 0
  * and exactly its three lines (a tree's id, 1 to 500 files, at most 25 MiB); a problem for exit 3 and exactly one line
- * of one of the eight codes with the detail its code has; null for anything else, which is not the command's own ending
- * (91 included). Pure. */
+ * of one of the eight codes with the detail its code has, spelled as the collect spells one (`SITE_HOLDS_SECRET` with
+ * its variable alone, or the variable and a path); null for anything else, which is not the command's own ending (91
+ * included). A path it gives was masked before it was decoded: the host masks it again before it shows it anywhere.
+ * Pure. */
 export function codeSiteCollectAnswer(
 	output: string,
 	exitCode: number | null,
@@ -477,10 +502,12 @@ export function codeSiteCollectAnswer(
 		detail = refused[2];
 	if (WITHOUT_DETAIL.includes(code))
 		return detail === undefined ? { problem: { code, path: null, variable: null } } : null;
-	if (detail === undefined) return null;
+	if (detail === undefined || detail.length > 1000 || !DETAIL.test(detail)) return null;
 	if (code === "SITE_FILE_TOO_LARGE" || code === "SITE_FILE_NAME")
 		return { problem: { code, path: unescaped(detail), variable: null } };
 	if (code !== "SITE_HOLDS_SECRET") return null;
+	// The variable alone: the value is in a path the collect does not name.
+	if (!detail.includes(" ")) return VARIABLE.test(detail) ? { problem: { code, path: null, variable: detail } } : null;
 	const space = detail.indexOf(" "),
 		variable = detail.slice(0, space);
 	return space > 0 && VARIABLE.test(variable) && space < detail.length - 1
@@ -546,22 +573,24 @@ export function codeSiteRefusedSummary(problem: CodeSiteProblem, folder: string)
 			what = `has web files in more than ${CODE_SITE_MAX_FOLDERS} folders`;
 			break;
 		case "SITE_FILE_TOO_LARGE":
-			what = `has a file over 10 MB: ${path}`;
+			what = problem.path === null ? "has a file over 10 MB" : `has a file over 10 MB: ${path}`;
 			break;
 		case "SITE_TOO_LARGE":
 			what = "is over 25 MB";
 			break;
 		case "SITE_FILE_NAME":
 			what =
-				`has a file whose name a site cannot serve: ${path} (only letters, digits, dots, hyphens and underscores, ` +
+				`has a file whose name a site cannot serve${problem.path === null ? "" : `: ${path}`} (only letters, digits, dots, hyphens and underscores, ` +
 				"each part starting with a letter, a digit or an underscore and at most 200 bytes, at most 16 parts and 512 " +
 				"bytes in all)";
 			break;
 		case "SITE_HOLDS_SECRET":
 			what =
-				problem.variable !== null && problem.path !== null
-					? `holds the value of ${shown(problem.variable, 128)} in ${path}`
-					: "holds one of this session's secret values";
+				problem.variable === null
+					? "holds one of this session's secret values"
+					: problem.path === null
+						? `holds the value of ${shown(problem.variable, 128)} in one of its files or file names`
+						: `holds the value of ${shown(problem.variable, 128)} in ${path}`;
 			break;
 	}
 	const key = problem.code === "SITE_HOLDS_SECRET" ? " A key must never be built into the site." : "";
