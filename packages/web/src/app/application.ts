@@ -712,7 +712,8 @@ export function mountApplication(
 					)
 					.catch(() => undefined);
 			});
-			// The company's sections are QorperaOS/agents/sections.md: the rail's moves are the member's edits of it.
+			// On a cloud from before each member's own sidebar (20260930722000), the company's sections are
+			// QorperaOS/agents/sections.md and the rail's moves are the member's edits of it.
 			controller.useSectionsFile((signal) => {
 				const current = () => {
 					if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
@@ -1214,6 +1215,7 @@ export function mountApplication(
 				openAgentCard,
 				openGroupCard,
 				hideInterfacePage: (page, hidden) => interfacePages?.hide(page, hidden) ?? Promise.resolve(),
+				refreshInterfacePages: () => void interfacePages?.refresh(),
 			});
 		if (navigationFocus) {
 			// The drawer opens on its first control: the company's name, or the search field when it is open (the

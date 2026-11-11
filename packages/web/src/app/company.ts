@@ -216,6 +216,9 @@ export interface CompanyState {
 	sidebarUnavailable?: boolean;
 	/** A rail action (a sidebar change, a rename, a delete) that did not happen, in the member's words. */
 	railError?: string;
+	/** The member just reset their sidebar: the rail offers Undo until they dismiss it or change the sidebar again.
+	 * `appsOrder` is the apps drawer's order this device kept before, put back by Undo. */
+	sidebarReset?: { appsOrder: readonly string[] };
 	realtime: RealtimePhase;
 	realtimeError?: string;
 	/** Mentions of this member not seen yet, by conversation (session id → count). */
@@ -1156,8 +1159,8 @@ export class CompanyController {
 		);
 	}
 
-	/** Makes section changes and moves edits of QorperaOS/agents/sections.md through the member's folder client
-	 * (folder-v2, where the sidebar RPC refuses them); pins and hidden items stay with the RPC. */
+	/** Makes section changes and moves edits of QorperaOS/agents/sections.md through the member's folder client, on a
+	 * cloud from before each member's own sidebar (20260930722000) only; pins and hidden items stay with the RPC. */
 	useSectionsFile(folder: (signal: AbortSignal) => WebMemberFolder): void {
 		this.#sectionsFolder = folder;
 	}
@@ -1165,7 +1168,24 @@ export class CompanyController {
 	/** Whether a reorder in Unassigned cannot be saved: the sections are QorperaOS/agents/sections.md and the cloud
 	 * predates its order of what is in no section (20260930519000). */
 	unassignedOrderLost(): boolean {
-		return this.#sectionsFolder !== undefined && this.store.get().sidebar?.unassignedOrder !== true;
+		const sidebar = this.store.get().sidebar;
+		return this.#sectionsFolder !== undefined && sidebar?.own === undefined && sidebar?.unassignedOrder !== true;
+	}
+
+	/** Whether the sidebar is the member's own over the company's (20260930722000): what they change is theirs alone,
+	 * and Reset sidebar brings back the company's. */
+	ownSidebar(): boolean {
+		const state = this.store.get();
+		return Boolean(state.sidebar?.own && !state.sidebarUnavailable);
+	}
+
+	/** Takes away everything the member changed in this company's sidebar, or with `undo` puts back what the last
+	 * reset took. Contacts' places come back with the member chats' next read, which this starts. */
+	async resetSidebar(undo = false): Promise<boolean> {
+		if (!this.ownSidebar()) return false;
+		const done = await this.changeSidebar({ action: undo ? "undo_reset" : "reset" });
+		if (done) void this.memberChats.refresh();
+		return done;
 	}
 
 	/** Draws a sidebar change at once and sends it; changes go one at a time, in order.
@@ -1183,7 +1203,8 @@ export class CompanyController {
 		let send: () => Promise<CompanySidebar>;
 		const roster = this.sidebarRoster();
 		let drawn = applySidebarRequest(current.sidebar, request, roster);
-		if (folder && isSectionsRequest(request)) {
+		// Since 20260930722000 a section change is the member's own, through the RPC; the file is the company's.
+		if (folder && current.sidebar.own === undefined && isSectionsRequest(request)) {
 			const keeps = current.sidebar.unassignedOrder === true;
 			let named: ReturnType<typeof sectionsChange>;
 			try {
@@ -1206,7 +1227,7 @@ export class CompanyController {
 				};
 			send = () => this.#writeSections(folder, named, "unpin" in request && request.unpin === true);
 		} else send = () => this.#api.manageCompanySidebar(this.profile.profileId, request);
-		this.store.set({ sidebar: drawn, railError: undefined });
+		this.store.set({ sidebar: drawn, railError: undefined, sidebarReset: undefined });
 		this.#sidebarPending++;
 		const write = this.#sidebarWrites.then(send);
 		this.#sidebarWrites = write.catch(() => {});

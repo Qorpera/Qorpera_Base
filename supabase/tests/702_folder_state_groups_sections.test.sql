@@ -394,20 +394,21 @@ begin
 		raise exception 'sections.md locks the company row only: %', t; end if;
 end $$;
 
--- 9. The member RPC's section actions refuse on folder-v2; the file is the way --------------------------------------------
+-- 9. The member RPC's section actions change the member's own sidebar, never the company's (20260930722000) ----------
 
 do $$
 begin
 	perform set_config('request.jwt.claims', '{"role":"authenticated","sub":"70200000-0000-4000-8000-000000000001"}', true);
 	set local role authenticated;
-	begin
-		perform public.qorpera_manage_company_sidebar('70200000-0000-4000-8000-000000000010', jsonb_build_object('action','create_section',
-			'sectionId','70200000-0000-4000-8000-0000000000d1','name','Direct'));
-		raise exception 'A direct section must be refused' using errcode = 'QTF03';
-	exception when sqlstate '55000' then null;
-	end;
+	perform public.qorpera_manage_company_sidebar('70200000-0000-4000-8000-000000000010', jsonb_build_object('action','create_section',
+		'sectionId','70200000-0000-4000-8000-0000000000d1','name','Direct'));
 	reset role;
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	if exists (select 1 from public.qorpera_company_sidebar_sections where id = '70200000-0000-4000-8000-0000000000d1')
+		or not exists (select 1 from public.qorpera_member_sidebar_sections where section_id = '70200000-0000-4000-8000-0000000000d1'
+			and user_id = '70200000-0000-4000-8000-000000000001' and own) then
+		raise exception 'A member''s section is their own, not the company''s'; end if;
+	delete from public.qorpera_member_sidebar_sections where section_id = '70200000-0000-4000-8000-0000000000d1';
 end $$;
 
 -- 10. Ids across kinds, legacy keys, places kept while away, restores as they were, pins and hiding -------------------
