@@ -1255,7 +1255,8 @@ select pg_temp.code_releases_patch('public.qorpera_unpublish_company_site(uuid)'
 	perform public.qorpera_company_site_for_admin(p_site_id);$new$,
 	$old$	delete from public.qorpera_company_sites where id = p_site_id;$old$,
 	$new$	-- 20260930729000: a repository's site goes with its kept versions and its way back: the repository's list file is
-	-- written again (nothing is live), and the next change whose checks pass makes the site anew.
+	-- written again (nothing is live). The newest change that left a site is due again at once: the next upload pass
+	-- makes the site anew, with a new password and not live, and it waits in What's new for a member.
 	update public.qorpera_code_repositories repository set index_version = repository.index_version + 1
 	from public.qorpera_company_sites site
 	where site.id = p_site_id and repository.environment_id = site.environment_id and repository.owner = site.code_owner

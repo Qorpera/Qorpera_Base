@@ -1593,8 +1593,10 @@ Settings → Sites. Built switched off (`qorpera_site_settings.enabled`) until t
 - `qorpera_unpublish_company_site(site)`: owners and admins. Deletes the site, its files, password and sessions at
   once (the Company File keeps the source). `{schema: "qorpera.company-site-unpublish/v1", siteId, removed}`;
   `removed` false when it was already gone.
-  For a repository's site its kept versions and the way back go with it; the next change whose checks pass makes the
-  site again, with a new password, and it waits in What's new.
+  For a repository's site its kept versions and the way back go with it. The site is then off, not gone for good: the
+  newest change that left a site is due again at once, so the executor's next upload pass (within about a minute, no
+  new change needed) makes the site again under its name, with a new password and not live, and it waits in What's
+  new until a member puts it live.
 - The tables are closed to every API role; the agent's and the edge function's calls are service-only.
 
 ### What's new: a repository's site, put live by a member (20260930729000_code_releases)
