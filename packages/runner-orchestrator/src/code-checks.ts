@@ -1,17 +1,7 @@
-import type { CodeCommitEntry } from "./code-host-jobs.ts";
+import { CODE_CHECKS_FILE, type CodeCommitFile } from "./code-host-jobs.ts";
 import { CodingJsonSyntaxError, parseCodingJson } from "./coding-setup.ts";
 
-// Stand-in for part B (code-host-jobs.ts) until it is merged. Then this block becomes
-// `export { CODE_CHECKS_FILE } from "./code-host-jobs.ts";` and `CodeCommitFile` joins the type import above.
-/** Where a repository keeps its checks, read from git at one commit. */
-export const CODE_CHECKS_FILE = ".qorpera/checks.json";
-/** A path of one commit, as git holds it: its entry (a file's bytes cut after maxBytes + 1), and its blob's id when it
- * is a regular file. */
-export interface CodeCommitFile {
-	entry: CodeCommitEntry;
-	blob: string | null;
-}
-// End of the stand-in for part B.
+export { CODE_CHECKS_FILE, type CodeCommitFile };
 
 /** A repository's checks (own code storage, step 3): the commands Qorpera runs on a clean copy of what would go into
  * its default branch, before it goes in. This file holds what is pure of them: the checks file's rules, the gate, the
