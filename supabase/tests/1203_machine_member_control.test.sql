@@ -47,10 +47,12 @@
 --    UPDATE) and then wants the machine, a take-over and a member's first look wait for it at the fence before they lock
 --    the machine, so the holder gets the machine and nothing deadlocks (as it was, each locked the machine first and
 --    then waited for the company row's key: 40P01);
--- 16. the clipboard after a hand-back (v233 release review r1, F29 of #1661): save_coding_value's read is refused while a
---    member's hold was live at or after the agent's last screen action (desktop_agent_acted_at, moved by an action and
---    never by a look): after a hold that began and ended, or was taken over again from another press and ran out,
---    until the agent acts again; with no hold since its action it goes as before.
+-- 16. after a member held a desktop, its clipboard is cleared before an agent reads a key from it (v233 release review
+--    r1, F29 and F32 of #1661): while desktop_clipboard_generation differs from the lease generation the read answers
+--    `clear` (with that generation) and authorizes nothing, whatever the agent did since (a look, an action); only
+--    qorpera_machine_desktop_clipboard_cleared at the generation that stands, with no member holding, lifts it (an older
+--    generation, or one while a member holds, records nothing); a second hold after a clear needs a new one; a machine no
+--    member held reads as before.
 
 -- Alice's run acknowledges first, as a member's wake requires before any work (924).
 select pg_temp.base_claims('service_role');
@@ -469,9 +471,8 @@ begin
 	perform pg_temp.base_assert(current_setting('qorpera_test.dc_2x') = '',
 		E'2: the agent''s reads that differ:\n' || current_setting('qorpera_test.dc_2x'));
 	perform pg_temp.base_assert(v_now.screen_staff_agent_id is not distinct from (v_before ->> 'screen_staff_agent_id')::uuid
-			and v_now.screen_used_at is not distinct from (v_before ->> 'screen_used_at')::timestamptz
-			and v_now.desktop_agent_acted_at is not distinct from (v_before ->> 'desktop_agent_acted_at')::timestamptz,
-		'2: a refused look or action stamps no agent on the screen, and no action of the agent''s');
+			and v_now.screen_used_at is not distinct from (v_before ->> 'screen_used_at')::timestamptz,
+		'2: a refused look or action stamps no agent on the screen');
 	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_company_machine_commands
 			where id = '12030000-0000-4000-8000-000000000102'),
 		'2: the refused start made no command');
@@ -783,9 +784,8 @@ select pg_temp.dc_shift('a1', 'desktop_member_input_at = clock_timestamp() - int
 	|| 'desktop_member_until = clock_timestamp() - interval ''1 minute''');
 select set_config('qorpera_test.dc_6x', pg_temp.dc_differ(jsonb_build_array(
 	jsonb_build_array('the agent''s look', pg_temp.dc_answer(pg_temp.dc_look('a1')) ->> 'state', 'authorized'),
-	-- What the member copied may still be on the clipboard (F29): refused until the agent's own next action (16).
-	jsonb_build_array('the agent''s coding value', pg_temp.dc_coding_value('302'), pg_temp.dc_refused(
-		'qorpera.machine-coding-value-authority/v1', 'DESKTOP_MEMBER_IN_CONTROL', '{"machine": "m-1203"}')),
+	-- What the member copied may still be on the clipboard (F32): no read before the platform cleared it (16).
+	jsonb_build_array('the agent''s coding value', pg_temp.dc_answer(pg_temp.dc_coding_value('302')) ->> 'state', 'clear'),
 	jsonb_build_array('a viewer''s look', pg_temp.dc_answer(pg_temp.dc_begin_look('viewer', 'a1')) ->> 'state', 'ok'),
 	jsonb_build_array('the list', pg_temp.dc_listed('viewer', 'm-1203') -> 'control', 'null'::jsonb),
 	jsonb_build_array('the holder''s action', pg_temp.dc_act('contributor', 'a1', '{"type": "click", "x": 1, "y": 1}'),
@@ -1204,6 +1204,8 @@ begin
 		perform pg_temp.base_assert(has_function_privilege(v_role,
 				'public.qorpera_member_machine_desktop_act_authority(uuid,text,text)', 'execute') = (v_role = 'service_role')
 			and has_function_privilege(v_role, 'public.qorpera_machine_desktop_picture_check(uuid,bigint,uuid)', 'execute')
+				= (v_role = 'service_role')
+			and has_function_privilege(v_role, 'public.qorpera_machine_desktop_clipboard_cleared(uuid,bigint)', 'execute')
 				= (v_role = 'service_role'),
 			'8: the executor''s reads are the service role''s alone: ' || v_role);
 		perform pg_temp.base_assert(not has_function_privilege(v_role, 'public.qorpera_valid_member_desktop_action(jsonb)', 'execute'),
@@ -1225,7 +1227,8 @@ begin
 	perform pg_temp.base_assert((select array_agg(proname::text order by proname) from pg_proc
 			where pronamespace = 'public'::regnamespace and strpos(prosrc, '20260930713000') > 0)
 		= array['qorpera_authorize_machine_coding_value', 'qorpera_authorize_machine_command', 'qorpera_authorize_machine_screen',
-			'qorpera_list_agent_machines', 'qorpera_machine_desktop_picture_check', 'qorpera_member_hand_back_machine_desktop',
+			'qorpera_list_agent_machines', 'qorpera_machine_desktop_clipboard_cleared', 'qorpera_machine_desktop_picture_check',
+			'qorpera_member_hand_back_machine_desktop',
 			'qorpera_member_keep_machine_desktop', 'qorpera_member_machine_desktop_act_authority',
 			'qorpera_member_machine_desktop_act_begin',
 			'qorpera_member_machine_screen_authority', 'qorpera_member_machine_screen_begin',
@@ -1418,55 +1421,103 @@ begin
 			|| 'an action with a seat below 0 are malformed');
 end $$;
 
--- 16. The clipboard after a hand-back (v233 release review r1, F29 of #1661) --------------------------------------------------
+-- 16. After a member held a desktop, its clipboard is cleared before an agent reads a key from it (F29, F32 of #1661) ------
 
 -- The read gets past every hold check when it reaches the capture key, which this fixture does not have (55000).
 select set_config('qorpera_test.dc_cv_ok', '55000:The coding value''s capture key must be made again', true);
-select set_config('qorpera_test.dc_cv_held', pg_temp.dc_refused('qorpera.machine-coding-value-authority/v1',
-	'DESKTOP_MEMBER_IN_CONTROL', '{"machine": "m-1203"}'), true);
+create function pg_temp.dc_cleared(p_generation bigint, p_placement text default 'b1') returns text language sql as $$
+	select pg_temp.dc_service(format('select public.qorpera_machine_desktop_clipboard_cleared(%L, %L)',
+		pg_temp.dc_id(p_placement), p_generation))
+$$;
+create function pg_temp.dc_clipboard(p_machine text) returns bigint language sql as $$
+	select desktop_clipboard_generation from public.qorpera_company_machines where id = pg_temp.dc_id(p_machine)
+$$;
+select set_config('qorpera_test.dc_clip_ok', 'ok:{"state": "ok", "schema": "qorpera.machine-desktop-clipboard/v1"}', true);
+select set_config('qorpera_test.dc_clip_no', pg_temp.dc_refused('qorpera.machine-desktop-clipboard/v1',
+	'DESKTOP_MEMBER_IN_CONTROL'), true);
 do $$
-declare v text; v_acted timestamptz;
+declare v text; v_g bigint; v_clear jsonb;
 begin
 	-- No live hold on m-1203 now: whoever held it, their lease has run out.
 	if coalesce((pg_temp.dc_machine('a1')).desktop_member_until > clock_timestamp(), false) then
 		perform pg_temp.dc_shift('a1', 'desktop_member_until = clock_timestamp() - interval ''1 second''');
 	end if;
-	-- After 14's holds, the agent has not acted since: refused.
-	v := pg_temp.dc_coding_value('303');
-	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_cv_held'),
-		'16: a hold since the agent''s last action (it never acted): refused: ' || v);
-	-- A look moves nothing; the agent's action (its copy) does, and then the read goes as before.
-	v_acted := (pg_temp.dc_machine('a1')).desktop_agent_acted_at;
+	-- A machine no member ever held: both generations 0, so it reads as before (1181 shows such a read authorized).
+	perform pg_temp.base_assert((pg_temp.dc_machine('a5')).desktop_member_generation = 0 and pg_temp.dc_clipboard('a5') = 0,
+		'16: a machine no member held: its clipboard counts as clear');
+	-- m-1203 was held above and its clipboard never confirmed clear since: the read answers `clear`, with the generation
+	-- it saw and where the machine runs, and authorizes no read.
+	v_g := pg_temp.dc_generation('a1');
+	v_clear := pg_temp.dc_answer(pg_temp.dc_coding_value('303'));
+	perform pg_temp.base_assert(v_g > 0 and pg_temp.dc_clipboard('a1') <> v_g
+			and v_clear = jsonb_build_object('schema', 'qorpera.machine-coding-value-authority/v1', 'state', 'clear',
+				'machineId', pg_temp.dc_id('a1'), 'placementId', pg_temp.dc_id('b1'), 'bootId', pg_temp.dc_id('c1'),
+				'executorOwner', 'mx-1203', 'providerId', 'machine-1203',
+				'receiptId', '12030000-0000-4000-8000-000000000303', 'desktopGeneration', v_g),
+		'16: after a hold, the read answers clear: ' || coalesce(v_clear::text, 'none'));
+	-- Nothing the agent does lifts it: a look, an action (a click here; a pointer move is an action just the same, and an
+	-- action the host refuses as DESKTOP_BUSY never reaches SQL again).
 	perform pg_temp.base_assert(pg_temp.dc_answer(pg_temp.dc_look('a1')) ->> 'state' = 'authorized'
-			and (pg_temp.dc_machine('a1')).desktop_agent_acted_at is not distinct from v_acted,
-		'16: a look moves no action stamp');
-	v := pg_temp.dc_agent_act('202');
-	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'authorized'
-			and (pg_temp.dc_machine('a1')).desktop_agent_acted_at > coalesce(v_acted, '-infinity'),
-		'16: the agent''s action is let in and stamped: ' || v);
+			and pg_temp.dc_answer(pg_temp.dc_agent_act('202')) ->> 'state' = 'authorized',
+		'16: the agent looks and acts');
 	v := pg_temp.dc_coding_value('304');
-	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_cv_ok'), '16: no hold since the copy: as before: ' || v);
-	-- A member takes the desktop over and hands it back between the agent's copy and its read: refused.
+	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'clear' and pg_temp.dc_clipboard('a1') <> v_g,
+		'16: a look and an action lift nothing: ' || v);
+	-- A confirmation at an older generation records nothing.
+	v := pg_temp.dc_cleared(v_g - 1);
+	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_clip_no') and pg_temp.dc_clipboard('a1') <> v_g - 1,
+		'16: an older generation records nothing: ' || v);
+	-- A member takes it over (the generation moves): the confirmation of the generation the read saw records nothing,
+	-- and neither does one of the new generation while the member holds it; the read is refused as while held.
 	perform pg_temp.dc_take('contributor', 'a1');
-	perform pg_temp.dc_act_id('contributor', 'a1', '{"type": "key", "keys": ["ctrl+c"]}');
-	perform pg_temp.dc_back('contributor', 'a1');
+	v := pg_temp.dc_cleared(v_g);
+	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_clip_no'), '16: taken over since the read: nothing: ' || v);
+	v := pg_temp.dc_cleared(pg_temp.dc_generation('a1'));
+	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_clip_no') and pg_temp.dc_clipboard('a1') < v_g,
+		'16: while a member holds it: nothing: ' || v);
 	v := pg_temp.dc_coding_value('305');
-	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_cv_held'),
-		'16: a hold that began and ended after the copy: refused: ' || v);
-	-- The agent copies again: it goes.
-	perform pg_temp.dc_agent_act('203');
-	v := pg_temp.dc_coding_value('306');
-	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_cv_ok'), '16: copied again after the hold: goes: ' || v);
-	-- A hold taken over again from another press (the same row, a new seat) that then ran out by time: refused.
+	perform pg_temp.base_assert(v = pg_temp.dc_refused('qorpera.machine-coding-value-authority/v1', 'DESKTOP_MEMBER_IN_CONTROL',
+		'{"machine": "m-1203"}'), '16: held: refused: ' || v);
+	-- Handed back: `clear` at the new generation; the confirmed clear lifts it, and the read goes as before.
+	perform pg_temp.dc_back('contributor', 'a1');
+	v_g := pg_temp.dc_generation('a1');
+	v_clear := pg_temp.dc_answer(pg_temp.dc_coding_value('306'));
+	perform pg_temp.base_assert(v_clear ->> 'state' = 'clear' and (v_clear ->> 'desktopGeneration')::bigint = v_g,
+		'16: handed back: clear at the new generation: ' || coalesce(v_clear::text, 'none'));
+	v := pg_temp.dc_cleared(v_g);
+	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_clip_ok') and pg_temp.dc_clipboard('a1') = v_g,
+		'16: the confirmed clear is recorded: ' || v);
+	v := pg_temp.dc_coding_value('307');
+	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_cv_ok'), '16: then the read goes as before: ' || v);
+	-- A second hold after the clear (taken over again from another press, then run out by time) needs a new clear.
 	perform pg_temp.dc_take('admin', 'a1');
 	perform pg_temp.dc_take('admin', 'a1');
 	perform pg_temp.dc_shift('a1', 'desktop_member_until = clock_timestamp() - interval ''1 second''');
-	v := pg_temp.dc_coding_value('307');
-	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_cv_held'),
-		'16: a hold taken over again that ran out after the copy: refused: ' || v);
-	perform pg_temp.dc_agent_act('204');
-	v := pg_temp.dc_coding_value('308');
-	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_cv_ok'), '16: copied again: goes: ' || v);
+	v_clear := pg_temp.dc_answer(pg_temp.dc_coding_value('308'));
+	perform pg_temp.base_assert(pg_temp.dc_generation('a1') = v_g + 2 and v_clear ->> 'state' = 'clear'
+			and (v_clear ->> 'desktopGeneration')::bigint = v_g + 2,
+		'16: a second hold needs a new clear: ' || coalesce(v_clear::text, 'none'));
+	-- Its lease ran out: no one holds the desktop and the generation stands, so a clear is recorded.
+	v := pg_temp.dc_cleared(v_g + 2);
+	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_clip_ok') and pg_temp.dc_clipboard('a1') = v_g + 2,
+		'16: a clear after a lease that ran out is recorded: ' || v);
+	v := pg_temp.dc_coding_value('309');
+	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_cv_ok'), '16: and the read goes: ' || v);
+end $$;
+-- The confirmation's own shape and grants.
+select set_config('qorpera_test.dc_16x', pg_temp.dc_differ(jsonb_build_array(
+	jsonb_build_array('no placement', pg_temp.dc_service('select public.qorpera_machine_desktop_clipboard_cleared(null, 0)'),
+		'22023:Machine desktop request is malformed'),
+	jsonb_build_array('a generation below 0', pg_temp.dc_cleared(-1), '22023:Machine desktop request is malformed'),
+	jsonb_build_array('another placement', pg_temp.dc_cleared(0, 'ff'), '42501:Machine desktop is unavailable'),
+	jsonb_build_array('a member', pg_temp.dc_as(pg_temp.dc_user('owner'), format(
+		'select public.qorpera_machine_desktop_clipboard_cleared(%L, 0)', pg_temp.dc_id('b1'))),
+		'42501:permission denied for function qorpera_machine_desktop_clipboard_cleared')
+)), true);
+do $$
+begin
+	perform pg_temp.base_assert(current_setting('qorpera_test.dc_16x') = '',
+		E'16: confirmations that differ:\n' || current_setting('qorpera_test.dc_16x'));
 end $$;
 
 -- 12. An action that waits for the machine's lock across the lease's end (review r7 F14) -------------------------------------

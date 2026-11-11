@@ -80,9 +80,12 @@
 --   generation it saw (desktopGeneration), and the executor asks the same check, with no looker, before the helper
 --   reads the clipboard and again after it, before the box is answered: a take-over since the read drops the box whole
 --   (nothing stored, nothing logged; the agent hears DESKTOP_MEMBER_IN_CONTROL). What a member copied stays on the
---   clipboard after their hand-back, so the read is also refused while a member's hold was live at or after the
---   agent's last screen action (desktop_agent_acted_at, moved by an action the agent's screen read lets in; never by a
---   look): the agent copies the key again and calls again. The helper takes the desktop as an
+--   clipboard after their hand-back, so after a member has held a desktop the platform clears its clipboard before an
+--   agent can read a key from it (F32 of #1661): while desktop_clipboard_generation differs from the lease generation
+--   the read answers `clear` (with the generation) and nothing is read; the executor's host clears both selections
+--   under the one-actor rule after the fence, and qorpera_machine_desktop_clipboard_cleared(placement, generation)
+--   (service_role) records the generation only while it stands and no member holds the desktop. The agent's call is
+--   refused (DESKTOP_MEMBER_IN_CONTROL) either way; its next call reads as before. No action of the agent's lifts it. The helper takes the desktop as an
 --   action does, so a member's action and the clipboard read never interleave on one desktop. What cannot be undone: a
 --   capture whose helper had begun before a take-over may already have cleared the clipboard.
 -- * The member's list (qorpera_list_agent_machines) says whether they may take over (canTakeOver) and, per machine, who
@@ -140,10 +143,12 @@ alter table public.qorpera_company_machines
 	add column desktop_member_generation bigint not null default 0,
 	-- The press that seated the hold (F26): the id the page minted for that take-over request; recognition only.
 	add column desktop_member_press uuid,
-	-- When an agent's screen action on this machine was last authorized (v233 release review r1, F29 of #1661): a key a
-	-- member copied during a hold may still be on the clipboard after it, so save_coding_value reads the clipboard only
-	-- when no member's hold was live at or after it (the agent copies the key again: an action). Looks never move it.
-	add column desktop_agent_acted_at timestamptz;
+	-- The lease generation at which the platform last confirmed the desktop's clipboard clear (F29, F32 of #1661): what a
+	-- member copied during a hold stays on the clipboard after it, and the generation moves at every seating and every
+	-- hand-back, so while this differs from desktop_member_generation a member has held the desktop since the last
+	-- confirmed clear, and save_coding_value reads nothing until the executor has cleared it
+	-- (qorpera_machine_desktop_clipboard_cleared). Equal (0) on a machine no member ever held.
+	add column desktop_clipboard_generation bigint not null default 0;
 
 -- One row per lease: who, when it began and ended, and how ('handed_back' by the member's word, 'closed' with their window
 -- or page, 'lapsed' when the window's heartbeat stopped, 'idle' after 30 minutes without input), and how many actions.
@@ -641,6 +646,37 @@ revoke all on function public.qorpera_machine_desktop_picture_check(uuid, bigint
 	from public, anon, authenticated, qorpera_secret_broker;
 grant execute on function public.qorpera_machine_desktop_picture_check(uuid, bigint, uuid) to service_role;
 
+-- The executor's word that it cleared a desktop's clipboard (F32 of #1661): asked after the host, holding the desktop
+-- under its one-actor rule and past the fence (the generation stands, no one holds it), cleared both selections with the
+-- image's own helper. Under the machine's lock it records that generation as the clipboard's only when it is still the
+-- lease generation and no member holds the desktop now; otherwise it records nothing (DESKTOP_MEMBER_IN_CONTROL), and the
+-- next save_coding_value clears again.
+create function public.qorpera_machine_desktop_clipboard_cleared(p_placement_id uuid, p_generation bigint)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+	v_machine public.qorpera_company_machines%rowtype;
+begin
+	-- 20260930713000
+	if auth.role() is distinct from 'service_role' or p_placement_id is null or p_generation is null or p_generation < 0 then
+		raise exception 'Machine desktop request is malformed' using errcode = '22023'; end if;
+	select machine.* into v_machine from public.qorpera_company_machines as machine
+	where machine.id = (select placement.machine_id from public.qorpera_company_machine_placements as placement
+		where placement.id = p_placement_id) and machine.removed_at is null
+	for no key update;
+	if not found then
+		raise exception 'Machine desktop is unavailable' using errcode = '42501'; end if;
+	if v_machine.desktop_member_generation is distinct from p_generation
+		or coalesce(v_machine.desktop_member_until > clock_timestamp(), false) then
+		return jsonb_build_object('schema', 'qorpera.machine-desktop-clipboard/v1', 'state', 'refused',
+			'reason', 'DESKTOP_MEMBER_IN_CONTROL'); end if;
+	update public.qorpera_company_machines set desktop_clipboard_generation = p_generation where id = v_machine.id;
+	return jsonb_build_object('schema', 'qorpera.machine-desktop-clipboard/v1', 'state', 'ok');
+end
+$$;
+revoke all on function public.qorpera_machine_desktop_clipboard_cleared(uuid, bigint)
+	from public, anon, authenticated, qorpera_secret_broker;
+grant execute on function public.qorpera_machine_desktop_clipboard_cleared(uuid, bigint) to service_role;
+
 -- 6. While a member holds the desktop, the agent waits -------------------------------------------------------------------
 
 -- The agent's screen read: no look and no action (no picture of that machine reaches an agent), and the lease generation
@@ -657,14 +693,7 @@ do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_autho
 	$old$		'look', case when v_args is null then null else coalesce((v_args ->> 'look')::boolean, true) end);$old$,
 	$new$		'look', case when v_args is null then null else coalesce((v_args ->> 'look')::boolean, true) end,
 		-- 20260930713000: the lease generation this read saw; the picture leaves only while it stands.
-		'desktopGeneration', v_machine.desktop_member_generation);$new$,
-	$old$	-- An agent used it: the idle rule's clock, moved at most every 30 seconds (a look-act-look loop is many calls).$old$,
-	$new$	-- 20260930713000 (F29 of #1661): an action of the agent's, let in now under the machine's lock (a refused one never
-	-- gets here): the clipboard after it is the agent's own again, as far as save_coding_value goes. A look moves nothing.
-	if jsonb_typeof(v_args -> 'action') = 'object' then
-		update public.qorpera_company_machines set desktop_agent_acted_at = clock_timestamp() where id = v_machine.id;
-	end if;
-	-- An agent used it: the idle rule's clock, moved at most every 30 seconds (a look-act-look loop is many calls).$new$]); end $$;
+		'desktopGeneration', v_machine.desktop_member_generation);$new$]); end $$;
 
 -- The command read: no new command starts. A start sent again of a command that started before goes on (its guest has
 -- it, or has not: the executor's send again is the same command), and so do reads and cancels.
@@ -691,20 +720,16 @@ do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_autho
 	if coalesce(v_machine.desktop_member_until > clock_timestamp(), false) then
 		return jsonb_build_object('schema', 'qorpera.machine-coding-value-authority/v1', 'state', 'refused',
 			'reason', 'DESKTOP_MEMBER_IN_CONTROL', 'machine', v_machine.name); end if;
-	-- 20260930713000 (F29 of #1661): a member's hold was live at or after the agent's last screen action: what is on the
-	-- clipboard may be what the member copied, and stays after their hand-back. Refused until the agent copies the key
-	-- again (an action moves desktop_agent_acted_at). Every hold has its row here from its take-over on; a row is closed
-	-- (ended_at) when the next lease begins or the member hands back, and the open one is the machine's current lease,
-	-- whose end so far is desktop_member_until (a take-over of the member's own lease from another press keeps the row and
-	-- moves that time). A hold counts when it began or was live at or after the action: its start or its end is. So a hold
-	-- that began and ended between two actions, or was taken over again, counts.
-	if exists (select 1 from public.qorpera_company_machine_desktop_controls as control
-		where control.machine_id = v_machine.id
-			and greatest(control.began_at, coalesce(control.ended_at, case when control.began_at = v_machine.desktop_member_since
-				then v_machine.desktop_member_until end, control.began_at))
-				>= coalesce(v_machine.desktop_agent_acted_at, '-infinity'::timestamptz)) then
-		return jsonb_build_object('schema', 'qorpera.machine-coding-value-authority/v1', 'state', 'refused',
-			'reason', 'DESKTOP_MEMBER_IN_CONTROL', 'machine', v_machine.name); end if;$new$,
+	-- 20260930713000 (F32 of #1661): a member held the desktop since its clipboard was last confirmed clear (the lease
+	-- generation moved since): what they copied may still be on it. Nothing is read: the executor clears both selections
+	-- (under the desktop's one-actor rule, after the fence) and confirms it with qorpera_machine_desktop_clipboard_cleared
+	-- at the generation answered here; the agent hears DESKTOP_MEMBER_IN_CONTROL, copies the key again and calls again.
+	-- No action of the agent's lifts this: it proves nothing about the clipboard.
+	if v_machine.desktop_clipboard_generation is distinct from v_machine.desktop_member_generation then
+		return jsonb_build_object('schema', 'qorpera.machine-coding-value-authority/v1', 'state', 'clear',
+			'machineId', v_machine.id, 'placementId', v_placement.id, 'bootId', v_placement.boot_id,
+			'executorOwner', v_placement.owner, 'providerId', v_placement.binding ->> 'providerId', 'receiptId', p_receipt_id,
+			'desktopGeneration', v_machine.desktop_member_generation); end if;$new$,
 	$old$		'receiptId', p_receipt_id,
 		-- What the helper checks the value against, seals it to and binds the box to.$old$,
 	$new$		'receiptId', p_receipt_id,
@@ -815,6 +840,7 @@ begin
 		'public.qorpera_member_machine_desktop_act_begin(uuid,uuid,jsonb,bigint,bigint)',
 		'public.qorpera_member_machine_desktop_act_authority(uuid,text,text)',
 		'public.qorpera_machine_desktop_picture_check(uuid,bigint,uuid)',
+		'public.qorpera_machine_desktop_clipboard_cleared(uuid,bigint)',
 		'public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)',
 		'public.qorpera_authorize_machine_command(jsonb,jsonb,text,uuid,text,jsonb)',
 		'public.qorpera_authorize_machine_coding_value(jsonb,jsonb,uuid,text)',
