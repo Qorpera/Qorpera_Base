@@ -1312,6 +1312,31 @@ request of another shape.
 - The action route's body is `{"action": {...}, "epoch": n, "seat": s}`; the page sends the epoch and the seat of the
   hold the key, click or text was captured under, never those at send time, and its queue and every answer belong to
   that one hold: an answer for an older hold changes nothing of the current one (F25).
+### A member turns an agent's desktop on (20260930714000_machine_member_start)
+
+An owner, admin or contributor turns the desktop (the screen) of an agent's running desktop computer on, whatever the
+agent does (Jonas, 11 Nov 2026): the window's Turn it on, and Wake it, which turns the screen on too once the machine
+runs. Starting is not taking over: it needs no hold and takes none, and the agent is told nothing (its next
+`machine_screen` or `desktop start` finds the desktop running).
+
+- `qorpera_member_machine_desktop_start_begin(profile, machine)` (authenticated; the start route calls it with the
+  member's own token): under the machine's lock, a running machine of the company big enough for a desktop
+  (`MACHINE_NOT_RUNNING`, `DESKTOP_MACHINE_TOO_SMALL`), then exactly what an agent's first screen use marks and refuses:
+  the disk rule (`MACHINE_NEEDS_COMPANY_VIEW` on a disk that had a view, for a member who does not read the folder's
+  root; a disk that never had one is marked unchecked for them), the machine's last use (at most every 30 s), and the
+  screen stamped as the agent the machine was started by. A member's live hold of the desktop answers `{state: "held"}`
+  and records and runs nothing (it runs already: a hold needs a picture); a second start of the machine within 5 s is
+  `DESKTOP_START_TOO_SOON`. It records the start (id, member, machine, time) and answers `{schema:
+  "qorpera.member-machine-desktop-start/v1", state: "ok", startId}`; refusals are `{state: "refused", reason}`.
+- `qorpera_member_machine_desktop_start_authority(start, owner, provider)` (service_role): the executor's read, single
+  use, within 15 s of the begin, of a member still an owner, admin or contributor of a company not being deleted, the
+  machine still running and big enough, the disk rule read again (marking as the begin does); `served` only for the
+  placement's own executor, and `held` when a member's hold began since the begin.
+- The machine stays awake under a member (point 5 of the brief): a member's look read moves the machine's last use (at
+  most every 30 s) while their word that they watch is at most 30 minutes old, and a hold's heartbeat moves it when it
+  renews the lease. Without them a task machine whose desktop a member only watched slept after its executor's
+  `sleep_after_seconds` (an hour by default), and a hold kept by heartbeats alone could too.
+
 #### Member contacts' places (20260930717000_member_contact_places)
 
 A contact is a rail row like an agent's (Jonas, 10 Nov 2026: "not sure I like the member contacts at the top,
@@ -1621,6 +1646,14 @@ only after durable storage.
   `MACHINE_IMAGE_WITHOUT_SCREEN`, `SCREEN_ACTION_TAKEN`, or the screen helper's own refusals; 401 and 403 as a look.
   The text goes to the machine and nowhere else: never to the database, a log or an answer. Nothing of the screen comes
   back: the client looks again. Behind the member company gateway, which reads a body only for a signed-in member.
+- `POST /v1/member-machine-screens/<companyId>/<machineId>/start` (20260930714000; the same listener) — turns the
+  desktop on, with the member's token, `content-type: application/json` and the body `{}` (at most 1 KiB; any key is a
+  bad request: what to open there is for a later stage). 200 `{schema: "qorpera.member-machine-start/v1", outcome}`:
+  `started` (it was off and is drawn now) or `running` (it ran already, or another member holds it); 409 `{code}`:
+  `MACHINE_NOT_RUNNING`, `MACHINE_NEEDS_COMPANY_VIEW`, `DESKTOP_MACHINE_TOO_SMALL`, `DESKTOP_START_TOO_SOON` (a start
+  of this machine within 5 s), `MACHINE_BOOT_CHANGED`, `MACHINE_IMAGE_WITHOUT_SCREEN` or `DESKTOP_DID_NOT_START`; 400,
+  401 and 403 as an action. Never refused because an agent runs or acts on the machine (it takes no hold); the client
+  looks again at once.
 
 `/v1/profile-objects/<profileId>/<sha256>` answers only the private `DELETE` folder GC and erasure use (with the
 gateway control token, never a member token); the gateway serves no raw object reads or uploads by hash, no read

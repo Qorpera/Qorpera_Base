@@ -2522,7 +2522,9 @@ export class LxdCompanyMachineHost {
 	 * unit): a look a second costs the X server about 3 % of one core and Xvnc about 6 KiB (measured 10 Nov 2026), under
 	 * the busy marks (5 % of a core, 512 KiB per 30 s) but close for the processor, so a watched desktop that moves may
 	 * keep its machine awake while it is watched. The web stops looking when the window is put away or its tab hidden,
-	 * and pauses after 30 minutes without a touch.
+	 * and pauses after 30 minutes without a touch. Since 20260930714000 SQL keeps the machine awake itself while a member
+	 * watches: the look's read moves the machine's last use (at most every 30 s) when the member's word that they watch is
+	 * at most 30 minutes old, so a quiet desktop does not sleep under them either.
 	 */
 	async memberLook(look: CompanyMachineMemberLook, signal: AbortSignal): Promise<CompanyMachineMemberLookOutcome> {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
