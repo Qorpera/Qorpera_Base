@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	CODE_CHECK_DEFAULT_SECONDS,
 	CODE_CHECK_MAX_SECONDS,
+	CODE_CHECKS_EARLIER_RUN_NOT_STOPPED,
 	CODE_CHECKS_FILE,
 	CODE_CHECKS_MAIN_MOVED,
 	CODE_CHECKS_TOTAL_SECONDS,
@@ -698,6 +699,14 @@ describe("the other words", () => {
 		expect(words("transport")).toBe(said("the session's machine did not answer"));
 		expect(words("authority")).toBe(said("the session's machine did not answer"));
 		expect(words("budget")).toBe(said("the checks ran past the time Qorpera gives them"));
+		// The machine is there: a command of an earlier run was not seen to end, and no new run starts beside it.
+		expect(CODE_CHECKS_EARLIER_RUN_NOT_STOPPED).toBe("CODE_CHECKS_EARLIER_RUN_NOT_STOPPED");
+		expect(
+			codeChecksNotRunSummary({ state: "not_run", why: "machine", code: CODE_CHECKS_EARLIER_RUN_NOT_STOPPED }),
+		).toBe(said("an earlier run of the checks has not stopped on the session's machine yet"));
+		expect(
+			codeChecksNotRunSummary({ state: "not_run", why: "transport", code: CODE_CHECKS_EARLIER_RUN_NOT_STOPPED }),
+		).toBe(said("the session's machine did not answer"));
 	});
 
 	it("says main kept moving", () => {

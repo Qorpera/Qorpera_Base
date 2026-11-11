@@ -471,12 +471,19 @@ export function codeChecksRefusedSummary(candidate: CodeChecksRead, mainHadFile:
 	return `Nothing went into main: the repository's checks file, ${CODE_CHECKS_FILE}, ${what}. Fix the file, commit and finish again. [code=CODING_CHECKS_REFUSED]`;
 }
 
+/** The code of a run that was not started because a command of an earlier run of the session's checks was not seen to
+ * end: the machine is there, and the checks run again once that command has stopped. */
+export const CODE_CHECKS_EARLIER_RUN_NOT_STOPPED = "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED";
+
 /** `CODING_CHECKS_DID_NOT_RUN`: the checks could not run, which is never the code's fault. */
 export function codeChecksNotRunSummary(run: Extract<CodeChecksRun, { state: "not_run" }>): string {
 	let why: string;
 	switch (run.why) {
 		case "machine":
-			why = "the session's machine stopped";
+			why =
+				run.code === CODE_CHECKS_EARLIER_RUN_NOT_STOPPED
+					? "an earlier run of the checks has not stopped on the session's machine yet"
+					: "the session's machine stopped";
 			break;
 		case "copy":
 			why = "the clean copy of the commit could not be made";

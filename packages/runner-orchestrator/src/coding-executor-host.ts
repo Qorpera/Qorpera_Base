@@ -18,7 +18,12 @@ import {
 } from "@qorpera/contracts";
 import { withAbortScope } from "./abort-scope.ts";
 import type { AgentPlug } from "./agent-plug.ts";
-import { type CodeCheck, type CodeChecksRun, codeChecksTail } from "./code-checks.ts";
+import {
+	CODE_CHECKS_EARLIER_RUN_NOT_STOPPED,
+	type CodeCheck,
+	type CodeChecksRun,
+	codeChecksTail,
+} from "./code-checks.ts";
 import { codeAreaPath } from "./code-host-jobs.ts";
 import {
 	type CodingCommandSecrets,
@@ -480,9 +485,6 @@ const CODE_CHECKS_UNANSWERED_READS = 20;
  * unanswered, until its end is confirmed; and how long an earlier run's command left unconfirmed is cancelled and read
  * again before a new run. Within the executor's stop (TimeoutStopSec 75 s, its cleanup 45 s). */
 const CODE_CHECKS_STOP_MS = 20_000;
-/** The code of a run that did not start because a command of an earlier run of this session's checks is not known to
- * have ended (release review r1, F1): no folder is touched. */
-const CODE_CHECKS_EARLIER_RUN = "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED";
 /** A check's command in its run's answer and the change record, at most this many bytes. */
 const CODE_CHECKS_RUN_BYTES = 200;
 /** A refusal of a check's run authority: the turn's, the machine's or its disk's. */
@@ -1765,7 +1767,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * command id>`, and its copy removes the earlier runs' folders. The first check that fails ends the run. It never
 	 * throws for a check's or the machine's sake: what could not run, or ran past the run's wall budget, is `not_run`
 	 * with why, a running command stopped first (#stopChecksCommand). A command whose end could not be confirmed holds
-	 * every later run of the session's checks: each is `not_run` (`machine`, CODE_CHECKS_EARLIER_RUN) until a cancel and
+	 * every later run of the session's checks: each is `not_run` (`machine`, CODE_CHECKS_EARLIER_RUN_NOT_STOPPED) until a cancel and
 	 * a read confirm it ended, and touches no folder (release review r1, F1). The turn's abort stops the running command
 	 * with time of its own and is thrown on. */
 	async #runChecks(
@@ -1842,7 +1844,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				this.#checksReport({ event: "code-checks-error", step: "earlier", ...said, error });
 			}
 			this.#checksReport({ event: "code-checks", step: "earlier", ...said, commandId: earlier, ended });
-			if (!ended) return answer({ state: "not_run", why: "machine", code: CODE_CHECKS_EARLIER_RUN });
+			if (!ended) return answer({ state: "not_run", why: "machine", code: CODE_CHECKS_EARLIER_RUN_NOT_STOPPED });
 			if (this.#checksUnended.get(claim.workerId) === earlier) this.#checksUnended.delete(claim.workerId);
 		}
 		const budget = AbortSignal.timeout(
