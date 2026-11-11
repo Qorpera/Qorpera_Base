@@ -86,9 +86,35 @@ async function place(options: { start?: boolean } = {}) {
 		await rm(dir, { recursive: true, force: true });
 		return tree;
 	};
-	/** The commands run since the log held `start` of them, each as one line. */
-	const since = (start: number) => log.slice(start).map((command) => command.argv.join(" "));
-	return { root, job, log, repo, repoGit, sh, site, since };
+	/** An object's bytes as git keeps them (a tree's raw entries), without its header. */
+	const raw = async (kind: "tree" | "blob", id: string) =>
+		(await exec(GIT, [`--git-dir=${repo}`, "cat-file", kind, id], { cwd: root, env, encoding: "buffer" })).stdout;
+	/** What a session can do: a loose object under `id`'s name that holds other bytes (a tree's or a file's). */
+	const plant = async (id: string, kind: "tree" | "blob", bytes: Buffer) => {
+		const loose = join(repo, "objects", id.slice(0, 2), id.slice(2));
+		await chmod(loose, 0o644);
+		await writeFile(loose, deflateSync(Buffer.concat([Buffer.from(`${kind} ${bytes.length}\0`, "latin1"), bytes])));
+	};
+	/** The kinds of the objects the commands since `start` asked for whole (`cat-file --batch`): a tree walked is one,
+	 * and a file version read is one. */
+	const askedWhole = async (start: number) => {
+		const ids = log
+			.slice(start)
+			.filter((command) => command.argv.at(-1) === "--batch")
+			.flatMap((command) =>
+				Buffer.from(command.stdin as Uint8Array)
+					.toString("latin1")
+					.split("\n")
+					.filter(Boolean),
+			);
+		if (!ids.length) return [];
+		const kinds = await sh(
+			'g=$1 r=$2; shift 2; printf "%s\\n" "$@" | "$g" --git-dir="$r" cat-file --batch-check="%(objecttype)"',
+			...ids,
+		);
+		return kinds.split("\n");
+	};
+	return { root, job, log, repo, repoGit, sh, site, raw, plant, askedWhole };
 }
 
 describe("code host: a repository's site tree (own code storage, step 4, part B)", () => {
@@ -135,25 +161,22 @@ describe("code host: a repository's site tree (own code storage, step 4, part B)
 			expect(file).toMatchObject({ bytes: bytes.length, sha256: digest(bytes) });
 		}
 		expect(read.manifestSha256).toBe(manifestOf(read.files));
-		// By git alone and never from a worktree: the mark, the tree's type, its entries, and one read of the bytes with
-		// each file version once.
-		expect(
-			p.log
-				.slice(start)
-				.filter((command) => command.argv[0] === GIT)
-				.map((command) => command.argv.slice(3).join(" ")),
-		).toEqual([
+		// By git alone and never from a worktree: the mark, the tree's type, the top's folder and then its four folders
+		// read whole, the files' sizes, and one read of the files' bytes with each file version once.
+		const commands = p.log.slice(start).filter((command) => command.argv[0] === GIT);
+		expect(commands.map((command) => command.argv.slice(3).join(" "))).toEqual([
 			expect.stringMatching(/^for-each-ref /),
 			"cat-file --batch-check",
-			`ls-tree -r -l -z --full-tree ${tree}`,
+			"cat-file --batch",
+			"cat-file --batch",
+			"cat-file --batch-check",
 			"cat-file --batch",
 		]);
-		const batch = p.log.slice(start).find((command) => command.argv.at(-1) === "--batch");
-		expect(
-			Buffer.from(batch?.stdin as Uint8Array)
-				.toString("latin1")
-				.split("\n"),
-		).toHaveLength(8 + 1);
+		const asked = commands.map((command) => Buffer.from((command.stdin as Uint8Array | undefined) ?? []).toString());
+		expect(asked[2]).toBe(`${tree}\n`);
+		expect(asked[3]?.split("\n")).toHaveLength(4 + 1);
+		expect(asked[5]?.split("\n")).toHaveLength(8 + 1);
+		expect(await p.askedWhole(start)).toEqual([...Array(5).fill("tree"), ...Array(8).fill("blob")]);
 		expect(await readdir(join(p.root, "scratch"))).toEqual([]);
 
 		// Packed, as nightly care leaves what no ref reaches (a cruft pack of its own): read the same.
@@ -228,7 +251,7 @@ describe("code host: a repository's site tree (own code storage, step 4, part B)
 			code: "CODE_HOST_SITE_READ_FAILED",
 			detail: "index.html: its file version is not here",
 		});
-		// A tree that names a folder the repository lacks: ls-tree cannot walk it.
+		// A tree that names a folder the repository lacks.
 		const noFolder = await p.sh(
 			'printf "040000 tree %s\\tsite\\n" "$3" | "$1" --git-dir="$2" mktree --missing',
 			"89abcdef0123456789abcdef0123456789abcdef",
@@ -236,18 +259,67 @@ describe("code host: a repository's site tree (own code storage, step 4, part B)
 		await expect(readCodeSiteTree(p.job, { repository: kept, tree: noFolder })).rejects.toMatchObject({
 			name: "CodeHostJobFailure",
 			code: "CODE_HOST_SITE_READ_FAILED",
+			detail: "site: its folder is not here",
 		});
 		// A loose object written under a file version's name with other bytes of the same size, as a session could.
 		const tree = await p.site({ files: { "index.html": "<p>shop</p>\n", "app.js": "const a = 1;\n" } });
-		const blob = await p.repoGit("rev-parse", `${tree}:app.js`),
-			loose = join(p.repo, "objects", blob.slice(0, 2), blob.slice(2));
-		await chmod(loose, 0o644);
-		await writeFile(loose, deflateSync(Buffer.from("blob 13\0const a = 2;\n", "latin1")));
+		const blob = await p.repoGit("rev-parse", `${tree}:app.js`);
+		await p.plant(blob, "blob", Buffer.from("const a = 2;\n"));
 		await expect(readCodeSiteTree(p.job, { repository: kept, tree })).rejects.toMatchObject({
 			name: "CodeHostJobFailure",
 			code: "CODE_HOST_SITE_READ_FAILED",
 			detail: `${blob}: its bytes are not the file version's`,
 		});
+	});
+
+	it("fails a tree whose own bytes, or a folder's, are not their id's: planted loose, or packed by care", async () => {
+		const p = await place();
+		// Another site of the same count and sizes, its objects all honest: what a session would rather put live.
+		const files = { "index.html": "<p>shop</p>\n", "css/site.css": "p{color:red}\n" },
+			other = { "index.html": "<p>evil</p>\n", "css/site.css": "p{color:tan}\n" };
+		/** The other site's top folder, or its css folder, planted under the id of this site's. */
+		const planted = async (where: "top" | "css", these: Record<string, string> = files) => {
+			const tree = await p.site({ files: these }),
+				evil = await p.site({ files: other }),
+				[id, from] =
+					where === "top"
+						? [tree, evil]
+						: [await p.repoGit("rev-parse", `${tree}:css`), await p.repoGit("rev-parse", `${evil}:css`)];
+			await p.plant(id, "tree", await p.raw("tree", from));
+			// cat-file answers the other folder's bytes under this one's id; git's own walk below the top takes them too.
+			expect(await p.raw("tree", id)).toEqual(await p.raw("tree", from));
+			if (where === "css")
+				expect(await p.repoGit("ls-tree", "-r", tree)).toContain(
+					`${await p.repoGit("rev-parse", `${evil}:css/site.css`)}\tcss/site.css`,
+				);
+			return { tree, id, evil };
+		};
+		const fails = (tree: string, id: string) =>
+			expect(readCodeSiteTree(p.job, { repository: kept, tree })).rejects.toMatchObject({
+				name: "CodeHostJobFailure",
+				code: "CODE_HOST_SITE_READ_FAILED",
+				detail: `${id}: its bytes are not the folder's`,
+			});
+		for (const where of ["top", "css"] as const) {
+			const { tree, id, evil } = await planted(where);
+			await fails(tree, id);
+			// The honest tree beside it still reads.
+			const read = await readCodeSiteTree(p.job, { repository: kept, tree: evil });
+			expect(read.files.map((file) => Buffer.from(file.content).toString())).toEqual([
+				"p{color:tan}\n",
+				"<p>evil</p>\n",
+			]);
+			// Undone for the next case: the planted object goes, and the next site writes it again.
+			await rm(join(p.repo, "objects", id.slice(0, 2), id.slice(2)));
+		}
+		// Care's repack carries planted objects into a pack under the same ids, as they are: still found.
+		const top = await planted("top"),
+			css = await planted("css", { ...files, "index.html": "<p>shoq</p>\n" });
+		await p.repoGit("repack", "-a", "-d", "--cruft", "--quiet");
+		expect(await p.repoGit("count-objects", "-v")).toMatch(/^count: 0$/m);
+		expect(await p.raw("tree", top.id)).toEqual(await p.raw("tree", top.evil));
+		await fails(top.tree, top.id);
+		await fails(css.tree, css.id);
 	});
 
 	it("refuses a tree that breaks the site's rules, from its entries alone, before any file is read", async () => {
@@ -265,7 +337,8 @@ describe("code host: a repository's site tree (own code storage, step 4, part B)
 				paths: problem.path === null ? [] : [problem.path],
 				problem: { ...problem, variable: null },
 			});
-			expect(p.since(start).some((command) => command.endsWith(" cat-file --batch"))).toBe(false);
+			// Its folders were walked; no file was read.
+			expect(await p.askedWhole(start)).not.toContain("blob");
 		};
 		const index = "<p>shop</p>\n";
 		// Three parts of the rule's length make 513 characters: one more than a site path has.
@@ -314,6 +387,23 @@ describe("code host: a repository's site tree (own code storage, step 4, part B)
 		// The same 500 files with deep.js one folder further down: n, n/m and n/m/k, 101 folders.
 		const { "n/m/deep.js": deep, ...rest } = files;
 		await tooMany({ files: { ...rest, "n/m/k/deep.js": deep as string } }, "SITE_TOO_MANY_FOLDERS");
+		// No more folders are walked than a site may have, also folders that lead to no file (the collect writes none):
+		// index.html beside 100 empty folders is taken, beside 101 refused.
+		const empty = await p.sh('"$1" --git-dir="$2" mktree'),
+			index = await p.sh('printf "<p>shop</p>\\n" | "$1" --git-dir="$2" hash-object -w --stdin');
+		const emptyFolders = (count: number) =>
+			p.sh(
+				'g=$1 r=$2; shift 2; { printf "100644 blob %s\\tindex.html\\n" "$1"; i=0; while [ "$i" -lt "$2" ]; do printf "040000 tree %s\\tf%03d\\n" "$3" "$i"; i=$((i + 1)); done; } | "$g" --git-dir="$r" mktree',
+				index,
+				String(count),
+				empty,
+			);
+		const hundred = await readCodeSiteTree(p.job, { repository: kept, tree: await emptyFolders(100) });
+		expect(hundred.files.map((file) => file.path)).toEqual(["index.html"]);
+		await expect(readCodeSiteTree(p.job, { repository: kept, tree: await emptyFolders(101) })).rejects.toMatchObject({
+			code: "CODE_HOST_SITE_TREE_INVALID",
+			problem: { code: "SITE_TOO_MANY_FOLDERS" },
+		});
 	}, 120_000);
 
 	it("takes a file of 10 MiB and a site of 25 MiB, read whole, and refuses one byte more of each", async () => {
