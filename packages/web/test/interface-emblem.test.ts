@@ -29,6 +29,16 @@ describe("an interface's emblem", () => {
 		expect(one).not.toBe(two);
 	});
 
+	it("draws What's new's own spark, which no file names", () => {
+		const spark = interfaceEmblem("spark", 34);
+		expect(spark.querySelectorAll('g [data-fill="ink"]')).toHaveLength(2);
+		expect(spark.querySelectorAll("mask > *")).toHaveLength(1);
+		// Not the default page shape it would fall back to.
+		expect(spark.querySelector("g path")?.getAttribute("d")).not.toBe(
+			interfaceEmblem("page", 34).querySelector("g path")?.getAttribute("d"),
+		);
+	});
+
 	it("keeps a cut filled shape and an ink line where they were", () => {
 		const bank = interfaceEmblem("bank", 40);
 		expect(bank.querySelector("mask circle")?.getAttribute("fill")).toBe("#000");
