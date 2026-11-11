@@ -55,9 +55,10 @@
 -- enabled executor on that machine gets nothing, or `lost`). Section 4 role authenticated, as a member of the company.
 -- Locks, always in this order: the company's profile row (a key share, where a row with its key is written), the
 -- repository's registry row, the company's lock on making a site (an advisory lock, only while a site is made), the
--- site row (another company's abandoned site that a new site takes the name of, locked and checked again before it
--- goes), then version rows. Every call of a repository's site keeps it, the member's taking it offline in Sites too.
--- The member's two writes give up after 3 s of waiting.
+-- site row, then version rows. Every call of a repository's site keeps it, the member's taking it offline in Sites too.
+-- A new site's name never waits on, and never keeps, a lock of a site whose name it passes over: a name some site has
+-- is passed over without a lock, and an abandoned site is locked only when no other call holds it, then checked again
+-- before it goes. The member's two writes give up after 3 s of waiting.
 
 set local lock_timeout = '3s';
 
@@ -510,14 +511,27 @@ begin
 			|| v_repository.profile_id::text, 0));
 		if (select count(*) from public.qorpera_company_sites site where site.profile_id = v_repository.profile_id) >= 10 then
 			return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_LIMIT'); end if;
-		-- Each name in turn: the site that has it is locked, and taken over only when it is still abandoned then (it may
-		-- have gone live meanwhile); a name another call takes at the same moment is passed over.
+		-- Each name in turn, never waiting on another call's lock of a site and never keeping one on a name passed over
+		-- (two first uploads of two companies whose names come in opposite orders would wait on each other): a name some
+		-- site has is passed over, read without a lock, unless that site is abandoned; that site is locked only when no
+		-- other call holds it, and taken over only when it is still abandoned under the lock (it may have gone live
+		-- meanwhile); else the lock goes at once, with the block. A name another call takes at the same moment is passed
+		-- over (on conflict); the only wait here is on that call's new site of the name, and that call waits on nothing
+		-- of this one's.
 		foreach v_slug in array public.qorpera_code_site_slugs(p_name, v_row.site ->> 'name') loop
-			v_holder := null;
-			select site.* into v_holder from public.qorpera_company_sites site where site.slug = v_slug for update;
-			continue when v_holder.id is not null and not public.qorpera_site_abandoned(v_holder);
-			if v_holder.id is not null then
-				delete from public.qorpera_company_sites where id = v_holder.id; end if;
+			select site.* into v_holder from public.qorpera_company_sites site where site.slug = v_slug;
+			if found then
+				continue when not public.qorpera_site_abandoned(v_holder);
+				begin
+					select site.* into v_holder from public.qorpera_company_sites site where site.id = v_holder.id
+					for update skip locked;
+					if not found or not public.qorpera_site_abandoned(v_holder) then
+						raise exception 'the name''s site is held or no longer abandoned' using errcode = 'QCS01'; end if;
+					delete from public.qorpera_company_sites where id = v_holder.id;
+				exception when sqlstate 'QCS01' then
+					continue;
+				end;
+			end if;
 			insert into public.qorpera_company_sites (profile_id, environment_id, slug, title, source_path,
 				created_by_staff_agent_id, code_owner, code_name)
 			values (v_repository.profile_id, p_environment_id, v_slug, v_row.site ->> 'title',
