@@ -426,7 +426,7 @@ end $$;
 -- 5. Undo -------------------------------------------------------------------------------------------------------------
 -- company/back: change 1 passed, 2 had no checks file, 3 and 4 passed.
 do $$
-declare v jsonb; v_id uuid; v_item jsonb;
+declare v jsonb; v_id uuid; v_item jsonb; v_bundle text;
 begin
 	perform pg_temp.base_assert(pg_temp.chk_land(1340, 'b0', 'b1', pg_temp.chk_ok(pg_temp.chk_passed('b1')), 'back')
 			= pg_temp.rec_answer('recorded', 1)
@@ -462,6 +462,22 @@ begin
 	perform pg_temp.base_assert(pg_temp.req_undone('chk-wide-1', 2, true, 'w4', 'v1', '{}', 'wide') = pg_temp.req_recorded(4)
 		and current_setting('qorpera_test.req_item')::jsonb -> 'change' ->> 'mainBefore' = pg_temp.rec_sha('w2b')
 		and pg_temp.chk_said(4, 'wide') = pg_temp.chk_as('not_run'), 'andLater of a wider row: ' || pg_temp.chk_said(4, 'wide')::text);
+	-- A turn's report that comes late never takes a filler that goes on past its own landing. Two movements nobody saw:
+	-- v1 to x1, whose checks passed, and x1 to x2, of which nothing is known. Then a landing in line: a filler from v1
+	-- to x2. The first movement's report is late and takes nothing: the filler ends at x2, with files no check ran on,
+	-- and says nothing of checks. Neither an undo back to x2 nor a restore to x2 inherits anything.
+	perform pg_temp.base_assert(pg_temp.chk_land(1354, 'x2', 'x3', '{"state":"none"}', 'wide') = pg_temp.rec_answer('recorded', 6)
+		and pg_temp.chk_land(1355, 'v1', 'x1', pg_temp.chk_ok(pg_temp.chk_passed('x1')), 'wide', false) = pg_temp.rec_answer('late', null)
+		and pg_temp.rec_is(5, 'found', 'landed', 'v1', 'x2', 'wide') and pg_temp.chk_said(5, 'wide') = pg_temp.chk_none(),
+		'a late landing does not take a filler that goes on: ' || pg_temp.chk_said(5, 'wide')::text);
+	perform pg_temp.base_assert(pg_temp.req_undone('chk-wide-2', 6, true, 'x3', 'v2', '{}', 'wide') = pg_temp.req_recorded(7)
+		and current_setting('qorpera_test.req_item')::jsonb -> 'change' ->> 'mainBefore' = pg_temp.rec_sha('x2')
+		and pg_temp.chk_said(7, 'wide') = pg_temp.chk_as('not_run'),
+		'andLater back to the end of such a row: ' || pg_temp.chk_said(7, 'wide')::text);
+	v_bundle := '20261111T060000Z-' || repeat('f', 12);
+	v := pg_temp.req_restore_to(v_bundle, 'x2', 'wide', 'v2');
+	perform pg_temp.base_assert(v ->> 'change' = '8' and v -> 'keptThrough' = '5' and pg_temp.chk_said(8, 'wide') = pg_temp.chk_as('not_run')
+		and pg_temp.req_restore_end(v_bundle, 'x2') = pg_temp.req_recorded(8), 'a restore to the end of such a row: ' || v::text);
 
 	-- company/late: an undo's finish that comes late, after a landing reported late took over the filler that covers the
 	-- undo and itself (1211's company/eight, change 10). The landing's checks passed; the row becomes the undo's, and
@@ -483,6 +499,25 @@ begin
 	perform pg_temp.base_assert(v = pg_temp.req_recorded(3) and pg_temp.rec_is(3, 'undo', 'landed', 'l2', 'l3', 'late')
 		and (pg_temp.rec_row(3, 'late')).undoes = array[2] and pg_temp.chk_said(3, 'late') = pg_temp.chk_as('not_run'),
 		'the undo''s row: ' || v::text || ' ' || pg_temp.chk_said(3, 'late')::text);
+
+	-- The same for an undo with every later change (review round 1 of this step, F1). Change 5 passed (l4 to l5) and
+	-- change 6 had no checks file (l5 to l6). The undo of change 6 and all after it moved main from l6 to n1, back to
+	-- l5's files, and its finish was not heard. A landing nobody recorded went from n1 to n2, and the next landing in
+	-- line left a filler from l6 to n2. The undo's finish takes that filler: the row ends at n2, with the unrecorded
+	-- landing's files, which no check ran on. It does not inherit change 5's checks.
+	perform pg_temp.base_assert(pg_temp.chk_land(1356, 'l4', 'l5', pg_temp.chk_ok(pg_temp.chk_passed('l5')), 'late')
+			= pg_temp.rec_answer('recorded', 5)
+		and pg_temp.chk_land(1357, 'l5', 'l6', '{"state":"none"}', 'late') = pg_temp.rec_answer('recorded', 6), 'late''s later changes');
+	v_id := (pg_temp.req_undo('chk-late-2', 6, true, '{}', 'late') ->> 'requestId')::uuid;
+	select item into v_item from jsonb_array_elements(pg_temp.req_claim()) item where item ->> 'requestId' = v_id::text;
+	perform pg_temp.base_assert(v_item -> 'change' ->> 'mainBefore' = pg_temp.rec_sha('l5')
+		and pg_temp.chk_land(1358, 'n2', 'l7', '{"state":"none"}', 'late') = pg_temp.rec_answer('recorded', 8)
+		and pg_temp.rec_is(7, 'found', 'landed', 'l6', 'n2', 'late'), 'a filler over the undo and the landing after it');
+	v := pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, pg_temp.req_moved('l6', 'n1'));
+	perform pg_temp.base_assert(v = pg_temp.req_recorded(7) and pg_temp.rec_is(7, 'undo', 'landed', 'l6', 'n2', 'late')
+		and (pg_temp.rec_row(7, 'late')).undoes = array[6] and (pg_temp.rec_row(7, 'late')).own_after = pg_temp.rec_sha('n1')
+		and pg_temp.chk_said(7, 'late') = pg_temp.chk_as('not_run'),
+		'a late undo of a range that took a wider filler: ' || v::text || ' ' || pg_temp.chk_said(7, 'late')::text);
 end $$;
 
 -- 6. Restore ----------------------------------------------------------------------------------------------------------

@@ -22,11 +22,13 @@
 --    once fails the migration), and each changed body carries the marker 20260930721000:
 --    * qorpera_code_change_report_valid and qorpera_record_code_change take qorpera.code-change-report/v2, a v1 report
 --      with `checks`: null for every state but landed, and for a landing {"state":"none"}, {"state":"off"} or
---      {"state":"passed","result":…}. The appended row, or the filler a turn takes over, gets the state and the result.
+--      {"state":"passed","result":…}. The appended row, or the filler a turn takes over, gets the state and the result
+--      (a turn only takes a filler that ends at its own commit, so the row ends with the files that were checked).
 --      A v1 report is recorded as before, with neither.
 --    * qorpera_code_change_files: each change also says checksState and checks, for its record file.
 --    * qorpera_code_request_finish: an undo's row is not_run, or inherited when it takes main back with every later
---      change (andLater) to a commit a row put main at whose checks passed or that inherited them.
+--      change (andLater) to a commit a row put main at whose checks passed or that inherited them, and the row ends
+--      where the undo's own commit is (a filler it took over that also covers later movements is not_run).
 --    * qorpera_code_restore_record: a restore's row is inherited when the restored main is where the newest row of its
 --      history put main and that row passed or inherited; else not_run.
 --    * qorpera_complete_coding_turn: the platform's line on a landing ends with what the checks said (passed with their
@@ -165,7 +167,8 @@ select pg_temp.code_checks_patch('public.qorpera_record_code_change(uuid,uuid,js
 		'checks_state', p_change -> 'checks' ->> 'state', 'checks', p_change -> 'checks' -> 'result');$new$,
 	$old$			how = coalesce(p_change ->> 'how', change.how), picture = v_picture, picture_problem = v_problem,$old$,
 	$new$			how = coalesce(p_change ->> 'how', change.how), picture = v_picture, picture_problem = v_problem,
-			-- 20260930721000: and what the repository's checks did, as the report says (none from v1).
+			-- 20260930721000: and what the repository's checks did, as the report says (none from v1). The filler ends at
+			-- the turn's own commit (it is taken by that), so these are the checks of the files the row ends with.
 			checks_state = p_change -> 'checks' ->> 'state', checks = p_change -> 'checks' -> 'result',$new$]);
 
 -- A record file says what the checks said.
@@ -183,10 +186,13 @@ select pg_temp.code_checks_patch('public.qorpera_code_request_finish(text,text,u
 				-- 20260930721000: no machine is there to run the checks of an undo. With andLater main has exactly the files of
 				-- the commit the job went back to (what the claim gave it: the target's own beginning, else where its span
 				-- began): the newest row that put main there and passed its checks, or inherited them, vouches for them.
+				-- Only for a row that ends at the undo's own commit: a filler the undo took over late, which also covers
+				-- what moved main after it, ends with files nobody checked.
 				(checks_state, checks) = (select case when kept.n is null then 'not_run' else 'inherited' end,
 						case when kept.n is not null then jsonb_build_object('schema', 'qorpera.code-checks/v1', 'as', kept.n) end
 					from (select max(back.n) as n from public.qorpera_code_changes back
-						where v_later and back.environment_id = v_repository.environment_id and back.owner = v_repository.owner
+						where v_later and change.main_after = p_outcome ->> 'mainAfter'
+							and back.environment_id = v_repository.environment_id and back.owner = v_repository.owner
 							and back.name = v_repository.name and back.checks_state in ('passed','inherited')
 							and back.main_after = v_request.progress -> 'begun' ->> 'mainBefore') kept)$new$]);
 
