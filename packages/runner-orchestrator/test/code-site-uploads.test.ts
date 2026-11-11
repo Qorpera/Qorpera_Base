@@ -689,7 +689,6 @@ describe("CodeSiteUploads", () => {
 		const steps = ["begin", "list", "missing", "put", "finish"];
 		const failures: [string, unknown][] = [
 			["throws", new Error("CODING_CONTROL_UNCONFIRMED")],
-			["busy", new CodingControlBusy()],
 			["odd", { schema: "qorpera.code-site-other/v1", state: "ready" }],
 			["shapeless", { state: "kept" }],
 		];
@@ -743,6 +742,52 @@ describe("CodeSiteUploads", () => {
 				: undefined;
 		await expect(last.pass()).resolves.toEqual({ uploaded: 0, failed: 1 });
 		expect(last.errors()).toEqual(["list:SITE_UPLOAD_FAILED:CODE_SITE_ANSWER_UNCONFIRMED"]);
+	});
+
+	it("counts a busy kernel as no failure until the third pass in a row, and forgets it once a pass gets through", async () => {
+		for (const step of ["begin", "list", "missing", "put", "finish"]) {
+			const t = setup({ shop: small(3) });
+			let busy = true;
+			t.kernel.answer = (method) => {
+				if (!busy || method !== `qorpera_code_site_${step}`) return undefined;
+				throw new CodingControlBusy();
+			};
+			// Two busy passes: nothing is told of the site, and it stays due.
+			await expect(t.pass(), step).resolves.toEqual({ uploaded: 0, failed: 0 });
+			await expect(t.pass(), step).resolves.toEqual({ uploaded: 0, failed: 0 });
+			expect(t.of("qorpera_code_site_failed"), step).toEqual([]);
+			expect(t.errors(), step).toEqual([]);
+			expect(t.events.filter((event) => event.step === "busy").map((event) => [event.at, event.passes])).toEqual([
+				[step, 1],
+				[step, 2],
+			]);
+			// The third in a row is a call that did not answer.
+			await expect(t.pass(), step).resolves.toEqual({ uploaded: 0, failed: 1 });
+			expect(t.of("qorpera_code_site_failed").map((call) => call.args)).toEqual([
+				{ ...WHICH, p_change: 14, p_code: "SITE_UPLOAD_FAILED" },
+			]);
+			expect(t.errors(), step).toEqual([`${step}:SITE_UPLOAD_FAILED:CODING_CONTROL_BUSY`]);
+			// And the count starts again: two more busy passes tell nothing.
+			await expect(t.pass(), step).resolves.toEqual({ uploaded: 0, failed: 0 });
+			await expect(t.pass(), step).resolves.toEqual({ uploaded: 0, failed: 0 });
+			expect(t.of("qorpera_code_site_failed"), step).toHaveLength(1);
+			// A pass that gets through forgets them.
+			busy = false;
+			await expect(t.pass(), step).resolves.toEqual({ uploaded: 1, failed: 0 });
+			busy = true;
+		}
+		// A busy pass, a pass that got through, a busy pass: never three in a row.
+		const t = setup({ shop: small(3) });
+		let busy = true;
+		t.kernel.answer = (method) => {
+			if (busy && method === "qorpera_code_site_put") throw new CodingControlBusy();
+			return undefined;
+		};
+		await expect(t.pass()).resolves.toEqual({ uploaded: 0, failed: 0 });
+		await expect(t.pass()).resolves.toEqual({ uploaded: 0, failed: 0 });
+		busy = false;
+		await expect(t.pass()).resolves.toEqual({ uploaded: 1, failed: 0 });
+		expect(t.of("qorpera_code_site_failed")).toEqual([]);
 	});
 
 	it("reads only the missing pages it can trust: each path of the tree, at its size, after the page before", async () => {

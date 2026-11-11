@@ -3,6 +3,7 @@ import { withAbortScope } from "./abort-scope.ts";
 import { type CodeChangeRecordsOptions, codeChangeErrorCode } from "./code-change-records.ts";
 import { type CodeHostJob, CodeHostJobFailure } from "./code-host-jobs.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
+import { CodingControlBusy } from "./coding-executor.ts";
 
 /** The upload of a repository's site (own code storage, step 4, part U; STEP4-RELEASES-PLAN.md 8.5 as STEP4-BUILD.md
  * section 1 replaced it). A landing whose checks passed keeps the site its checks built as a git tree in the
@@ -56,6 +57,10 @@ const PROBLEM = /^[A-Z0-9_:]{1,120}$/;
 const YIELDED = "CODE_HOST_JOB_YIELDED";
 /** A call that did not answer, or answered what the pass cannot read. */
 const UPLOAD_FAILED = "SITE_UPLOAD_FAILED";
+/** A kernel that was busy (a lock it waited for, a statement out of time) wrote nothing and is no failure of the site:
+ * the next pass tries again. Only a site whose call is busy this many passes in a row is told as a call that did not
+ * answer, so a put that can never finish in time is backed off and given up like any other failure. */
+const BUSY_PASSES = 3;
 /** A read that failed without a code of its own. */
 const READ_FAILED = "CODE_HOST_SITE_READ_FAILED";
 const STATES = ["ready", "live", "kept"] as const;
@@ -146,6 +151,8 @@ export class CodeSiteUploads {
 	readonly #machineIdSha256: string;
 	readonly #report: (event: Record<string, unknown>) => void;
 	readonly #limit: number;
+	/** How many passes in a row each site's upload met a busy kernel, by its repository and change. */
+	readonly #busy = new Map<string, number>();
 	/** A wake that came while nothing waited: the next wait ends at once. */
 	#woken = false;
 	readonly #waiting = new Set<() => void>();
@@ -308,8 +315,10 @@ export class CodeSiteUploads {
 			bytes,
 			ms: Math.round(performance.now() - started),
 		});
+		const key = `${due.target.environmentId}/${due.target.owner}/${due.target.name}/${due.change}`;
 		try {
 			const uploaded = await this.#upload(due, tree, signal);
+			this.#busy.delete(key);
 			this.#report({
 				event: "code-site",
 				step: "uploaded",
@@ -327,6 +336,17 @@ export class CodeSiteUploads {
 				return "failed";
 			}
 			const stopped = error instanceof SiteStopped ? error : new SiteStopped("upload", UPLOAD_FAILED, error);
+			if (stopped.cause instanceof CodingControlBusy) {
+				const passes = (this.#busy.get(key) ?? 0) + 1;
+				if (passes < BUSY_PASSES) {
+					// Nothing was written and nothing failed: the site stays due, and the next pass goes on where this one stopped.
+					if (this.#busy.size >= 200) this.#busy.clear();
+					this.#busy.set(key, passes);
+					this.#report({ event: "code-site", step: "busy", ...named(due), at: stopped.step, passes });
+					return undefined;
+				}
+			}
+			this.#busy.delete(key);
 			return await this.#failed(due, stopped.step, stopped.code, stopped.cause, signal, stopped.path);
 		}
 	}
