@@ -59,6 +59,8 @@ function rpcs(f: ReturnType<typeof fixture>): string[] {
 				name !== "qorpera_member_interface_offers" &&
 				// The apps drawer's Sites entry.
 				name !== "qorpera_list_company_sites" &&
+				// The rail's line under each agent's name reads the next planned runs (app/agent-notes.ts).
+				name !== "qorpera_list_cloud_routines" &&
 				name !== "qorpera_member_interface_supervisions" &&
 				name !== "qorpera_member_interface_pages" &&
 				// The account marks itself online for its friends (online-mark.ts).

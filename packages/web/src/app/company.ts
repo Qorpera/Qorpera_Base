@@ -72,6 +72,7 @@ import type { FigureChoice } from "../ui/figure-picker.ts";
 import { isGroupChat } from "../ui/group-chat.ts";
 import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
+import type { AgentNotesState } from "./agent-notes.ts";
 import type { MailState } from "./company-mail.ts";
 import type { CompanyApp } from "./interface-apps.ts";
 import type { InterfaceFolderState } from "./interface-folder.ts";
@@ -257,6 +258,9 @@ export interface CompanyState {
 	/** How many websites the company's agents published, as last read: the apps drawer shows Sites while there are any.
 	 * Unset until read, and on a cloud that can't say. */
 	siteCount?: number;
+	/** What the rail says of each agent between runs: its wall's waiting and newest done item, its next planned run
+	 * (app/agent-notes.ts). Unset until the first read lands; an agent with nothing has no entry. */
+	agentNotes?: AgentNotesState;
 	/** The company's mail as the member reads it (Interfaces step I5c; app/company-mail.ts). Unset until it is read. */
 	mail?: MailState;
 	loading: boolean;
