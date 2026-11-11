@@ -7,7 +7,8 @@ import { CODING_HOST_RPCS } from "../../packages/runner-orchestrator/src/coding-
 import { CODING_SNAPSHOT_RPCS } from "../../packages/runner-orchestrator/src/coding-snapshots.ts";
 import { COMPANY_MACHINE_HOST_RPCS } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
 
-const METHODS = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, ...CODING_SNAPSHOT_RPCS, ...COMPANY_MACHINE_HOST_RPCS, ...CODE_HOST_RPCS,
+/** The executor's closed RPC set (exported for the tests, which run the routes and the host against it: F33 of #1661). */
+export const CODING_CONTROL_METHODS: ReadonlySet<string> = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, ...CODING_SNAPSHOT_RPCS, ...COMPANY_MACHINE_HOST_RPCS, ...CODE_HOST_RPCS,
 	...CODE_HOST_DELETION_RPCS, ...CODE_CARE_RPCS, "qorpera_authorize_coding_command", "qorpera_route_coding_command",
 	"qorpera_authorize_machine_command", "qorpera_authorize_machine_coding_value", "qorpera_authorize_machine_screen",
 	"qorpera_member_machine_screen_authority", "qorpera_member_machine_desktop_act_authority", "qorpera_native_binding_proven"]);
@@ -87,7 +88,7 @@ export class CodingExecutorHttpControl {
 		this.#fetch = options.fetch ?? fetch;
 	}
 	async call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
-		if (!METHODS.has(method)) throw new Error("CODING_CONTROL_METHOD_INVALID");
+		if (!CODING_CONTROL_METHODS.has(method)) throw new Error("CODING_CONTROL_METHOD_INVALID");
 		const body = JSON.stringify(args);
 		if (Buffer.byteLength(body) > 128 * 1024) throw new Error("CODING_CONTROL_REQUEST_TOO_LARGE");
 		const checked = AbortSignal.any([signal, AbortSignal.timeout(30000)]);

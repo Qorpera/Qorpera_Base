@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { CloudMachineCommandReceipt } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CODING_CONTROL_METHODS } from "../../../deploy/coding-worker/control.ts";
 import {
 	authorizeMachineCodingValue,
 	authorizeMachineCommand,
@@ -103,6 +104,20 @@ async function service(
 	const port = await http.start();
 	cleanups.push(() => http.close());
 	return { token, url: `http://127.0.0.1:${port}`, lease, holderOf, proveBinding };
+}
+
+/** The executor's control as production has it (F33 of #1661): a closed method set (CodingExecutorHttpControl), so a
+ * route that calls a method outside it fails here as it would there. */
+function closed<
+	T extends { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> },
+>(control: T): T {
+	return {
+		...control,
+		call: async (method: string, args: Record<string, unknown>, signal: AbortSignal) => {
+			if (!CODING_CONTROL_METHODS.has(method)) throw new Error("CODING_CONTROL_METHOD_INVALID");
+			return control.call(method, args, signal);
+		},
+	};
 }
 
 describe("machine command gateway", () => {
@@ -442,7 +457,7 @@ describe("a machine wake's route", () => {
 			owner: "mx-a",
 			providerId: "machine-node",
 			peers,
-			control: { call: vi.fn() },
+			control: closed({ call: vi.fn() }),
 			credential: async () => randomBytes(32).toString("base64url"),
 			...(options.wakeLocal ? { wakeLocal: options.wakeLocal } : {}),
 			fetch: (async (input: string | URL | Request) => {
@@ -789,7 +804,7 @@ describe("a machine's coding value", () => {
 			owner: "mx-a",
 			providerId: "machine-node",
 			peers: [],
-			control: { call },
+			control: closed({ call }),
 			credential: async () => "",
 			codingValueLocal: localMachineCodingValue(host),
 			codingValueClearLocal: localMachineCodingValueClear(host),
@@ -986,7 +1001,7 @@ describe("a machine's coding value", () => {
 			peers: [
 				{ owner: "mx-a", providerId: "machine-node", origin: "https://node-a.example", tokenCredential: "peer-a" },
 			],
-			control: { call: f.call },
+			control: closed({ call: f.call }),
 			credential: async () => randomBytes(32).toString("base64url"),
 			fetch: (async (input: string | URL | Request) => {
 				sent.push(String(input));
@@ -1066,6 +1081,8 @@ describe("a machine's screen", () => {
 			look: true,
 			// The lease generation the read saw (20260930713000).
 			desktopGeneration: 7,
+			// F35 of #1661: no member held the desktop since its clipboard was last confirmed clear.
+			clipboardClear: false,
 		};
 		const lookAnswer = { ...answer, receiptId: null, action: null, settleMs: null, look: null };
 		const call = vi.fn(async (_method: string, args: Record<string, unknown>) =>
@@ -1083,7 +1100,7 @@ describe("a machine's screen", () => {
 			owner: "mx-a",
 			providerId: "machine-node",
 			peers: [],
-			control: { call },
+			control: closed({ call }),
 			credential: async () => "",
 			screenLocal: localMachineScreen(host),
 		});
@@ -1123,9 +1140,14 @@ describe("a machine's screen", () => {
 				},
 				// The host's fence after the capture checks it (review r1 F1).
 				desktopGeneration: 7,
+				clearClipboard: false,
 			},
 			f.signal,
 		);
+		// A clear owed (F35): the host is told, and clears under the call's hold before it looks or acts.
+		f.call.mockResolvedValueOnce({ ...f.answer, clipboardClear: true });
+		await f.router.screen(f.request, f.signal);
+		expect(f.host.screen).toHaveBeenLastCalledWith(expect.objectContaining({ clearClipboard: true }), f.signal);
 		// A look: no receipt, no action, and the request's own settle and look.
 		expect(await f.router.screen(f.look, f.signal)).toMatchObject({ commandId: null });
 		expect(f.host.screen).toHaveBeenLastCalledWith(
@@ -1206,6 +1228,8 @@ describe("a machine's screen", () => {
 			[f.request, { desktopGeneration: undefined }],
 			[f.request, { desktopGeneration: -1 }],
 			[f.request, { desktopGeneration: "7" }],
+			[f.request, { clipboardClear: undefined }],
+			[f.request, { clipboardClear: "true" }],
 			[f.look, { receiptId: null, action: f.action, settleMs: null, look: null }],
 			[f.look, { receiptId: null, action: null, settleMs: 500, look: null }],
 		] as const) {
@@ -1285,7 +1309,7 @@ describe("a machine's screen", () => {
 			peers: [
 				{ owner: "mx-a", providerId: "machine-node", origin: "https://node-a.example", tokenCredential: "peer-a" },
 			],
-			control: { call: f.call },
+			control: closed({ call: f.call }),
 			credential: async () => randomBytes(32).toString("base64url"),
 			fetch: (async (input: string | URL | Request) => {
 				sent.push(String(input));
@@ -1407,7 +1431,7 @@ describe("a member's look at a desktop (20260930712000)", () => {
 				{ owner: "mx-a", providerId: "machine-node", origin: "https://node-a.example", tokenCredential: "peer-a" },
 				{ owner: "mx-c", providerId: "machine-node", origin: "https://node-c.example", tokenCredential: "peer-c" },
 			].filter((peer) => peer.owner !== owner),
-			control: { call },
+			control: closed({ call }),
 			credential: async () => randomBytes(32).toString("base64url"),
 			memberBegin,
 			memberScreenLocal: localMemberMachineScreen(host),
@@ -1453,7 +1477,7 @@ describe("a member's look at a desktop (20260930712000)", () => {
 			owner: "mx-a",
 			providerId: "machine-node",
 			peers: [],
-			control: { call: f.call },
+			control: closed({ call: f.call }),
 			credential: async () => "",
 		});
 		await expect(plain.memberScreen(f.look, f.signal)).rejects.toThrow("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
@@ -1652,6 +1676,8 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 			executorOwner: "mx-a",
 			providerId: "machine-node",
 			userId: ids.userId,
+			// The seat it was begun in (round 23 of #1661).
+			seat: 9,
 			action,
 			served: requestOwner === "mx-a",
 		});
@@ -1670,7 +1696,7 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 				{ owner: "mx-a", providerId: "machine-node", origin: "https://node-a.example", tokenCredential: "peer-a" },
 				{ owner: "mx-c", providerId: "machine-node", origin: "https://node-c.example", tokenCredential: "peer-c" },
 			].filter((peer) => peer.owner !== owner),
-			control: { call },
+			control: closed({ call }),
 			credential: async () => randomBytes(32).toString("base64url"),
 			memberActBegin,
 			memberActLocal: localMemberMachineAct(host),
@@ -1708,8 +1734,16 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 		expect(JSON.stringify(f.call.mock.calls)).not.toContain("eyJh");
 		expect(JSON.stringify(f.call.mock.calls)).not.toContain("hunter2");
 		// The host gets the text: it alone takes it to the machine.
+		// With the seat and the member, which the host's fence asks again once it holds the desktop (round 23).
 		expect(f.host.memberAct).toHaveBeenCalledWith(
-			{ placementId: f.placementId, bootId: f.bootId, actionId: f.actionId, action: typed },
+			{
+				placementId: f.placementId,
+				bootId: f.bootId,
+				actionId: f.actionId,
+				action: typed,
+				seat: 9,
+				userId: f.userId,
+			},
 			f.signal,
 		);
 		expect(f.sent).toEqual([]);
@@ -1739,7 +1773,7 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 			owner: "mx-a",
 			providerId: "machine-node",
 			peers: [],
-			control: { call: f.call },
+			control: closed({ call: f.call }),
 			credential: async () => "",
 		});
 		await expect(plain.memberAct(f.act, f.signal)).rejects.toThrow("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
@@ -1760,6 +1794,9 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 			{ executorOwner: "mx a" },
 			{ served: false },
 			{ node: "node-01" },
+			{ seat: 0 },
+			{ seat: "9" },
+			{ seat: undefined },
 			{ state: "refused", reason: "DESKTOP_BUSY" },
 			{ schema: "qorpera.member-machine-screen-authority/v1" },
 		]) {
