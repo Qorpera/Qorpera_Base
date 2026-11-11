@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { CODE_HOST_INSTANCE, type CodeHostLease, codeHostProject } from "../src/code-host.ts";
 import type { CodeHostGcBlock, CodeHostJob } from "../src/code-host-jobs.ts";
+import { CodeHostRequests } from "../src/code-host-requests.ts";
 import type { CodeAreaBroker } from "../src/code-host-seed.ts";
 import {
 	CODE_HOST_FOLDER_CLEAN,
@@ -812,6 +813,175 @@ describe("CodeHostJobs", () => {
 			"qorpera_folder_view_close",
 			"qorpera_folder_view_open",
 			"qorpera_folder_view_close",
+		]);
+	});
+
+	it("lets jobs that yield wait in line among themselves: only a job that does not yield takes the line from them", async () => {
+		const { lxd, jobs } = setup();
+		const order: string[] = [];
+		// A download that runs for minutes.
+		const long = deferred();
+		let firstSettled = false;
+		const first = jobs.run(
+			COMPANY,
+			ENVIRONMENT,
+			signal(),
+			async () => {
+				order.push("first");
+				await long.promise;
+				return "first";
+			},
+			{ yields: true },
+		);
+		first.then(
+			() => {
+				firstSettled = true;
+			},
+			() => {
+				firstSettled = true;
+			},
+		);
+		await until(() => order.includes("first"));
+		// Another job that yields joins meanwhile (a second download of the company, the record files' pass, nightly
+		// care): it cancels nothing and waits its turn.
+		const second = jobs.run(
+			COMPANY,
+			ENVIRONMENT,
+			signal(),
+			async () => {
+				order.push("second");
+				return "second";
+			},
+			{ yields: true },
+		);
+		await delay(30);
+		expect(firstSettled).toBe(false);
+		expect(order).toEqual(["first"]);
+		long.resolve();
+		await expect(first).resolves.toBe("first");
+		await expect(second).resolves.toBe("second");
+		expect(order).toEqual(["first", "second"]);
+		expect(lxd.labels().filter((label) => label === "publish")).toHaveLength(2);
+
+		// A job that does not yield still takes the line from every job that yields: the one that runs and the one that
+		// waits behind it.
+		const held = deferred();
+		const running = jobs.run(
+			COMPANY,
+			ENVIRONMENT,
+			signal(),
+			async () => {
+				order.push("running");
+				await held.promise;
+			},
+			{ yields: true },
+		);
+		await until(() => order.includes("running"));
+		const waiting = jobs.run(
+			COMPANY,
+			ENVIRONMENT,
+			signal(),
+			async () => {
+				order.push("waiting");
+			},
+			{ yields: true },
+		);
+		const turn = jobs.run(COMPANY, ENVIRONMENT, signal(), async () => {
+			order.push("turn");
+			return "turn";
+		});
+		held.resolve();
+		await expect(running).rejects.toMatchObject({ code: "CODE_HOST_JOB_YIELDED" });
+		await expect(waiting).rejects.toMatchObject({ code: "CODE_HOST_JOB_YIELDED" });
+		await expect(turn).resolves.toBe("turn");
+		expect(order).toEqual(["first", "second", "running", "turn"]);
+		expect(lxd.labels().filter((label) => label === "publish")).toHaveLength(3);
+	});
+
+	it("makes two downloads of one company one after the other on the real line: the second ends neither the first nor itself", async () => {
+		const { jobs } = setup();
+		const finished: { requestId: string; state: unknown; result: unknown }[] = [];
+		const download = (requestId: string, token: string, fileName: string) => ({
+			requestId,
+			token,
+			leaseUntil: "2026-11-10T12:30:00+00:00",
+			companyId: COMPANY,
+			environmentId: ENVIRONMENT,
+			owner: "qorpera",
+			name: "shop",
+			kind: "download",
+			work: "make",
+			file: fileName.endsWith(".zip") ? "files" : "history",
+			fileName,
+			path: `code/qorpera/shop/downloads/${fileName}`,
+		});
+		const first = "44444444-4444-4444-8444-444444444441",
+			second = "44444444-4444-4444-8444-444444444442";
+		// One download a claim: the second is claimed while the first is still being made.
+		const claims = [
+			[download(first, "55555555-5555-4555-8555-555555555551", "shop-2026-11-10.zip")],
+			[download(second, "55555555-5555-4555-8555-555555555552", "shop-2026-11-10.bundle")],
+		];
+		const long = deferred();
+		const made: string[] = [];
+		const requests = new CodeHostRequests({
+			control: {
+				async call(method: string, args: Record<string, unknown>) {
+					if (method === "qorpera_code_requests_claim")
+						return { schema: "qorpera.code-requests/v1", requests: claims.shift() ?? [] };
+					if (method === "qorpera_code_request_step")
+						return {
+							schema: "qorpera.code-request-step/v1",
+							state: "go",
+							leaseUntil: "2026-11-10T12:35:00+00:00",
+						};
+					if (method === "qorpera_code_request_finish") {
+						const outcome = args.p_outcome as { state: unknown; result?: unknown };
+						finished.push({
+							requestId: args.p_request_id as string,
+							state: outcome.state,
+							result: outcome.result,
+						});
+						return { schema: "qorpera.code-request-finish/v1", state: "recorded", change: null };
+					}
+					throw new Error(`not a request call: ${method}`);
+				},
+			},
+			hosts: jobs,
+			jobs: {
+				undo: async () => {
+					throw new Error("no undo here");
+				},
+				// The first download takes minutes; the second is made at once.
+				archive: async (_job, value) => {
+					made.push(value.fileName);
+					if (value.fileName.endsWith(".zip")) await long.promise;
+					return {
+						path: `code/qorpera/shop/downloads/${value.fileName}`,
+						bytes: 5_242_880,
+						sha256: "f".repeat(64),
+						mainSha: "a".repeat(40),
+					};
+				},
+				removeDownloads: async (_job, value) => ({ removed: [...value.fileNames] }),
+			},
+			records: { inJob: async () => async () => undefined },
+			owner: "coding-node-01",
+			machineIdSha256: "5".repeat(64),
+		});
+		await requests.pass(signal());
+		await until(() => made.includes("shop-2026-11-10.zip"));
+		await requests.pass(signal());
+		// The second download's job is in the line behind the first: nothing is cancelled, nothing is put off.
+		await delay(30);
+		expect(finished).toEqual([]);
+		expect(made).toEqual(["shop-2026-11-10.zip"]);
+		long.resolve();
+		await requests.settled();
+		expect(made).toEqual(["shop-2026-11-10.zip", "shop-2026-11-10.bundle"]);
+		expect(finished).toEqual([
+			{ requestId: first, state: "done", result: "made" },
+			{ requestId: second, state: "done", result: "made" },
 		]);
 	});
 

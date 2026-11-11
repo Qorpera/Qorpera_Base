@@ -17,7 +17,10 @@ import { code, readRecord, syncDirectory } from "./lxd-office-journal-files.ts";
  * code host hashed: fsync, a no-overwrite link, then the manifest's link, which is what makes it a stored bundle, and
  * an fsync of the folder (as `publish`, lxd-office-journal-files.ts). What a write that died left (a temporary file, or
  * a bundle without its manifest) goes at the repository's next `begin`. Restore, anywhere with git: check the file's
- * SHA-256 against the manifest, `git bundle verify`, `git clone --mirror <file> <name>.git`. */
+ * SHA-256 against the manifest, `git bundle verify`, `git clone --mirror <file> <name>.git`, then
+ * `git -C <name>.git symbolic-ref HEAD refs/heads/main` (a bundle says which commit HEAD is at, not which branch). The
+ * platform's own restore reads a bundle through `read` (`code-host-restore.ts`;
+ * `deploy/code-host/RESTORE-RUNBOOK.md`). */
 
 export const CODE_BUNDLE_SCHEMA = "qorpera.code-bundle/v1";
 /** The store's folder in the executor's `control/` folder on its storage. */
@@ -97,6 +100,13 @@ export interface CodeBundleWriter {
 	abort(): Promise<void>;
 }
 
+/** A stored bundle handed out (`CodeBundleStore.read`). */
+export interface CodeBundleRead {
+	manifest: CodeBundleManifest;
+	/** The bundle's bytes in order, in pieces of 1 MiB. Each pass over them reads the file again. */
+	pieces: AsyncIterable<Uint8Array>;
+}
+
 export interface CodeBundleStore {
 	/** A writer for the repository's next bundle. First the storage is checked mounted, what a dead write left in the
 	 * repository's folder is removed, and twice `expectedBytes` must be free (`CODE_BUNDLE_NO_SPACE`). */
@@ -110,6 +120,13 @@ export interface CodeBundleStore {
 	find(target: CodeBundleTarget, name: string, signal?: AbortSignal): Promise<CodeBundleManifest | null>;
 	/** As `find`, and the file is read whole: null unless its SHA-256 is the manifest's. */
 	verify(target: CodeBundleTarget, name: string, signal?: AbortSignal): Promise<CodeBundleManifest | null>;
+	/** As `find`, with the stored file's bytes for a restore (own code storage, step 2b): `CODE_BUNDLE_MISSING` when
+	 * `find` would answer null. The pieces are read as they are taken, each in the store's line and within a step's
+	 * time, from a file opened at the first one and closed after the last, or when their reader stops; a reader that
+	 * stopped waiting while the file was being opened has it closed as soon as it is open. They are exactly
+	 * the manifest's `bytes` (`CODE_BUNDLE_DIFFERS` when the file opened has another size, or ends early). Nothing here
+	 * hashes them: whoever takes them does, against the manifest's `sha256`. */
+	read(target: CodeBundleTarget, name: string, signal?: AbortSignal): Promise<CodeBundleRead>;
 	/** Removes the repository's stored bundles beyond the newest `keep`, and answers their names. Only right after a
 	 * commit to the repository through this store (`CODE_BUNDLE_PRUNE_NOT_NOW` otherwise), whose bundle always stays. */
 	prune(target: CodeBundleTarget, keep: number, signal?: AbortSignal): Promise<string[]>;
@@ -543,6 +560,73 @@ export function createCodeBundleStore(options: CodeBundleStoreOptions): CodeBund
 					await file.close();
 				}
 			});
+		},
+
+		async read(target: CodeBundleTarget, name: string, signal?: AbortSignal): Promise<CodeBundleRead> {
+			const repository = targetOf(target),
+				bundle = nameOf(name);
+			const found = await use(stepMs, signal, async (checked) => {
+				await assert(checked);
+				const folder = await folderOf(repository, false);
+				const manifest = folder ? await stored(folder, repository, bundle) : null;
+				return folder && manifest ? { folder, manifest } : null;
+			});
+			if (!found) throw new Error("CODE_BUNDLE_MISSING");
+			const { folder, manifest } = found;
+			async function* pieces(): AsyncGenerator<Uint8Array, void, undefined> {
+				// Owed: the handle goes when the store's line gets to it, whatever its reader stopped for.
+				const close = (handle: FileHandle) =>
+					use(stepMs, undefined, () => handle.close(), true).catch(() => undefined);
+				const openIt = async (checked: AbortSignal): Promise<FileHandle> => {
+					await assert(checked);
+					const opened = await open(
+						posix.join(folder, `${bundle}.bundle`),
+						constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+					);
+					try {
+						// The file this handle holds, not whatever has the name by now.
+						const stat = await opened.stat();
+						if (!stat.isFile() || stat.uid !== process.getuid?.() || stat.size !== manifest.bytes)
+							throw new Error("CODE_BUNDLE_DIFFERS");
+						return opened;
+					} catch (error) {
+						await opened.close().catch(() => undefined);
+						throw error;
+					}
+				};
+				// The work goes on after its caller stopped waiting (`use`), and may still open a file nobody is given: that
+				// handle is closed when it comes, as `begin` takes down a writer that comes late.
+				let opening: Promise<FileHandle> | undefined;
+				let file: FileHandle;
+				try {
+					file = await use(stepMs, signal, (checked) => {
+						opening = openIt(checked);
+						return opening;
+					});
+				} catch (error) {
+					void opening?.then(close, () => undefined);
+					throw error;
+				}
+				try {
+					for (let offset = 0; offset < manifest.bytes; ) {
+						const at = offset;
+						const piece = await use(stepMs, signal, async () => {
+							const buffer = Buffer.allocUnsafe(Math.min(READ_BYTES, manifest.bytes - at));
+							for (let filled = 0; filled < buffer.length; ) {
+								const { bytesRead } = await file.read(buffer, filled, buffer.length - filled, at + filled);
+								if (bytesRead === 0) throw new Error("CODE_BUNDLE_DIFFERS");
+								filled += bytesRead;
+							}
+							return buffer;
+						});
+						offset += piece.length;
+						yield piece;
+					}
+				} finally {
+					await close(file);
+				}
+			}
+			return { manifest, pieces: { [Symbol.asyncIterator]: pieces } };
 		},
 
 		async prune(target: CodeBundleTarget, keep: number, signal?: AbortSignal): Promise<string[]> {

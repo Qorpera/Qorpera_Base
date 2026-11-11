@@ -123,6 +123,8 @@ export const CODING_HOST_RPCS = [
 	// A machine given a new disk from its image (rule 4, `unreadable`): its disk holds a read no longer readable.
 	"qorpera_mark_coding_machine_new_disk",
 	"qorpera_record_coding_machine_new_disk",
+	// A landing in a repository kept in Qorpera, reported to its change record (own code storage, step 2b).
+	"qorpera_record_code_change",
 ] as const;
 
 /** The leased session a repository token is asked for (bundle v88): the
@@ -1613,6 +1615,26 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			},
 			withRepositoryToken: this.#repositoryToken(claim),
 			runGit: this.#options.runGit,
+			// The kernel takes the report only from the executor that holds the turn's lease, and takes the row's words
+			// (title, summary, what a customer will notice) from its own rows.
+			recordChange: async (report, checked) => {
+				const answer = record(
+					await this.#call(
+						"qorpera_record_code_change",
+						{ p_worker_id: claim.workerId, p_lease_token: claim.leaseToken, p_change: report },
+						checked,
+					),
+				);
+				const change = answer.change;
+				if (
+					answer.schema !== "qorpera.code-change-recorded/v1" ||
+					typeof answer.state !== "string" ||
+					!["recorded", "adopted", "replayed", "known", "late", "nothing"].includes(answer.state) ||
+					!(change === null || (Number.isSafeInteger(change) && (change as number) >= 1))
+				)
+					throw new Error("CODING_HOST_CODE_CHANGE_UNCONFIRMED");
+				return { state: answer.state, change: change as number | null };
+			},
 		};
 	}
 	/** One guest lease step of the session, so the keeper never renews it
@@ -1889,10 +1911,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				const repositories = folder.repositories;
 				if (!repositories?.land) throw new Error("CODING_REPOSITORY_NOT_HERE");
 				if (submission.headSha === ready.baseSha) return { pullRequest: null, noChange: true };
+				// The picture the session named with its hand-in is checked by the landing, in the commit that lands.
 				const landed = await repositories.land(
 					this.#repositorySession(claim, ready.machine, ready.storage, ready.folder.uid, ready.baseSha, root),
 					submission.headSha,
 					signal,
+					submission.picture === undefined ? {} : { picture: submission.picture },
 				);
 				return { pullRequest: null, noChange: false, landed };
 			}

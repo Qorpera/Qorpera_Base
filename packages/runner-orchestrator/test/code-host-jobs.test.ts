@@ -17,12 +17,16 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import { inflateRawSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	addCodeWorktree,
+	archiveCodeArea,
 	bundleCodeArea,
 	CODE_AREA_CONFIG,
 	CODE_AREA_IN_QORPERA_REF,
+	type CodeChangeDiff,
+	type CodeChangeRecordFile,
 	type CodeCommitSource,
 	type CodeHostCommand,
 	type CodeHostGcBlock,
@@ -36,10 +40,14 @@ import {
 	inspectCodeArea,
 	landCodeBranch,
 	readCodeAreaBase,
+	removeCodeDownloads,
 	retireCodeWorktrees,
 	seedCodeArea,
 	startCodeArea,
+	undoCodeChange,
 	withCodeCommit,
+	withJob,
+	writeCodeChangeRecords,
 } from "../src/code-host-jobs.ts";
 import { localShell } from "./helpers/code-host-shell.ts";
 
@@ -885,7 +893,7 @@ async function session(f: Fixture, c: Company, baseSha: string) {
 	const workerId = randomUUID();
 	await addCodeWorktree(c.job, { repository: kept, workerId, baseSha });
 	const tree = join(c.code, "worktrees", workerId);
-	const commit = async (files: Record<string, string>, message = "change") => {
+	const commit = async (files: Record<string, string | Uint8Array>, message = "change") => {
 		for (const [path, content] of Object.entries(files)) {
 			await mkdir(dirname(join(tree, path)), { recursive: true });
 			await writeFile(join(tree, path), content);
@@ -974,6 +982,10 @@ describe("code host: a repository kept in Qorpera (own code storage, slice 1)", 
 		expect(await landCodeBranch(c.job, { repository: kept, workerId: first.workerId, headSha: one })).toEqual({
 			state: "fast-forward",
 			mainSha: one,
+			mainBefore: baseSha,
+			containedAt: null,
+			diff: { filesChanged: 1, paths: [{ path: "index.html", change: "added" }], pathsMore: 0 },
+			picture: null,
 			restored: [],
 		});
 		expect(await readFile(join(c.code, "main/index.html"), "utf8")).toBe("<p>shop</p>\n");
@@ -1470,9 +1482,10 @@ describe("code host: nightly care of a repository kept in Qorpera (own code stor
 		expect(c.log.some((command) => command.argv.includes("pack-refs"))).toBe(false);
 
 		const more = await first.commit({ "more.txt": "more\n" }, "more");
-		expect(await landCodeBranch(c.job, { repository: kept, workerId: first.workerId, headSha: more })).toEqual({
+		expect(await landCodeBranch(c.job, { repository: kept, workerId: first.workerId, headSha: more })).toMatchObject({
 			state: "fast-forward",
 			mainSha: more,
+			mainBefore: head,
 			restored: [],
 		});
 		expect(await readFile(join(c.code, "main/more.txt"), "utf8")).toBe("more\n");
@@ -1710,11 +1723,9 @@ describe("code host: nightly care of a repository kept in Qorpera (own code stor
 		expect((await lstat(join(second.tree, "run"))).isSymbolicLink()).toBe(true);
 		expect(await exists(join(second.admin, "locked"))).toBe(true);
 		const later = await second.commit({ "later.txt": "later\n" }, "later");
-		expect(await landCodeBranch(c.job, { repository: kept, workerId: second.workerId, headSha: later })).toEqual({
-			state: "fast-forward",
-			mainSha: later,
-			restored: [],
-		});
+		expect(
+			await landCodeBranch(c.job, { repository: kept, workerId: second.workerId, headSha: later }),
+		).toMatchObject({ state: "fast-forward", mainSha: later, mainBefore: head, restored: [] });
 		// A worktree whose link to git's folder was changed after its files went is left to its session.
 		expect(
 			await retireCodeWorktrees(c.job, { repository: kept, workerIds: [first.workerId] }, { phase: "files" }),
@@ -1729,5 +1740,1068 @@ describe("code host: nightly care of a repository kept in Qorpera (own code stor
 		expect(await exists(join(first.admin, "HEAD"))).toBe(true);
 		expect(await readdir(c.scratchRoot)).toEqual([]);
 		expectJobCommands(c.log);
+	});
+});
+
+/** A zip's entries from its central directory, each name with its bytes (stored, or deflated). */
+function unzip(zip: Buffer): Map<string, Buffer> {
+	const end = zip.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06])),
+		entries = new Map<string, Buffer>();
+	let at = zip.readUInt32LE(end + 16);
+	for (let index = zip.readUInt16LE(end + 10); index > 0; index -= 1) {
+		expect(zip.readUInt32LE(at)).toBe(0x02014b50);
+		const method = zip.readUInt16LE(at + 10),
+			packed = zip.readUInt32LE(at + 20),
+			nameLength = zip.readUInt16LE(at + 28),
+			local = zip.readUInt32LE(at + 42),
+			data = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28),
+			bytes = zip.subarray(data, data + packed);
+		expect([0, 8]).toContain(method);
+		entries.set(zip.toString("utf8", at + 46, at + 46 + nameLength), method === 0 ? bytes : inflateRawSync(bytes));
+		at += 46 + nameLength + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32);
+	}
+	return entries;
+}
+
+describe("code host: the change record, undo and download of a repository kept in Qorpera (own code storage, step 2b)", () => {
+	const area = "code/qorpera/example";
+	const digest = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
+	/** The first bytes of each kind of picture, and a little after them. */
+	const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("a picture")]),
+		jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("a picture")]),
+		webp = Buffer.concat([Buffer.from("RIFF"), Buffer.from([0x1a, 0, 0, 0]), Buffer.from("WEBPVP8 a picture")]);
+	const none: CodeChangeDiff = { filesChanged: 0, paths: [], pathsMore: 0 };
+	const repo = (f: Fixture, c: Company, ...args: string[]) => f.git(c.repo, "--git-dir=.", ...args);
+	const land = (c: Company, s: { workerId: string }, headSha: string, picture?: string) =>
+		landCodeBranch(c.job, {
+			repository: kept,
+			workerId: s.workerId,
+			headSha,
+			...(picture === undefined ? {} : { picture }),
+		});
+	/** What the repository holds, with main/ looked at file by file: `repaired` is "none" when it was main's files. */
+	async function state(f: Fixture, c: Company) {
+		const checked = await checkCodeArea(c.job, { repository: kept });
+		if (checked.state !== "present") throw new Error("the repository is absent");
+		return {
+			main: checked.mainSha,
+			files: (await repo(f, c, "ls-tree", "-r", "--name-only", checked.mainSha)).split("\n").filter(Boolean),
+			repaired: checked.repaired,
+			refs: checked.refsSha256,
+		};
+	}
+	/** Every command of the jobs is one LXD exec can carry, with the code host's settings and no other; git works on
+	 * the git directory it is given, but for the clone that proves a download. */
+	function expectJobCommands(log: CodeHostCommand[]) {
+		for (const command of log) {
+			expect(command.env.GIT_CONFIG_GLOBAL).toBe("/dev/null");
+			expect(command.argv.length).toBeLessThanOrEqual(64);
+			if (command.argv[0] === GIT) expect(command.argv[2]).toMatch(/^(--git-dir=\/|clone$)/);
+		}
+	}
+	/** A repository with three changes: a fast-forward of three commits, a merge, and a fast-forward of one. */
+	async function changes() {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const first = await session(f, c, baseSha),
+			second = await session(f, c, baseSha);
+		await first.commit({ "index.html": "<p>shop</p>\n" }, "shop");
+		await first.commit({ "src/a.js": "a\n" }, "a");
+		const one = await land(c, first, await first.commit({ "src/b.js": "b\n" }, "b"));
+		const two = await land(c, second, await second.commit({ "cart.js": "cart\n" }, "cart"));
+		const third = await session(f, c, two.mainSha);
+		const three = await land(c, third, await third.commit({ "later.txt": "later\n" }, "later"));
+		expect([one.state, two.state, three.state]).toEqual(["fast-forward", "merged", "fast-forward"]);
+		return { f, c, baseSha, first, second, third, one, two, three };
+	}
+	/** A change as its record gives it: its number and the two ends of main. */
+	const span = (n: number, landed: { mainBefore: string; mainSha: string }) => ({
+		n,
+		mainBefore: landed.mainBefore,
+		mainAfter: landed.mainSha,
+	});
+	const undo = (
+		c: Company,
+		change: { n: number; mainBefore: string; mainAfter: string },
+		more: { requestId?: string; andLater?: boolean; message?: string } = {},
+	) =>
+		undoCodeChange(c.job, {
+			repository: kept,
+			requestId: more.requestId ?? randomUUID(),
+			change,
+			andLater: more.andLater ?? false,
+			message: more.message ?? `Undo change ${change.n}: a title`,
+		});
+
+	it("a landing answers where main was, what it changed in main's files, and where main already held the commit", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const first = await session(f, c, baseSha),
+			second = await session(f, c, baseSha);
+		// Three commits landed as one fast-forward: the change is main before to main after, not one commit's.
+		const h1 = await first.commit({ "index.html": "<p>shop</p>\n" }, "shop");
+		await first.commit({ "src/a.js": "a\n" }, "a");
+		const h3 = await first.commit({ "src/b.js": "b\n" }, "b");
+		expect(await land(c, first, h3)).toEqual({
+			state: "fast-forward",
+			mainSha: h3,
+			mainBefore: baseSha,
+			containedAt: null,
+			diff: {
+				filesChanged: 3,
+				paths: [
+					{ path: "index.html", change: "added" },
+					{ path: "src/a.js", change: "added" },
+					{ path: "src/b.js", change: "added" },
+				],
+				pathsMore: 0,
+			},
+			picture: null,
+			restored: [],
+		});
+		// A merge: what main got is the session's two files, whatever the merge commit's parents hold.
+		const x1 = await second.commit({ "cart.js": "export const cart = [];\n" }, "cart");
+		const x2 = await second.commit({ "cart.test.js": "test\n", "docs/cart.png": png }, "test");
+		const merged = await land(c, second, x2, "docs/cart.png");
+		expect(merged).toEqual({
+			state: "merged",
+			mainSha: await repo(f, c, "rev-parse", "refs/heads/main"),
+			mainBefore: h3,
+			containedAt: null,
+			diff: {
+				filesChanged: 3,
+				paths: [
+					{ path: "cart.js", change: "added" },
+					{ path: "cart.test.js", change: "added" },
+					{ path: "docs/cart.png", change: "added" },
+				],
+				pathsMore: 0,
+			},
+			picture: {
+				state: "ok",
+				blob: await repo(f, c, "rev-parse", `${x2}:docs/cart.png`),
+				bytes: png.length,
+				type: "png",
+			},
+			restored: [],
+		});
+		expect(merged.mainSha).not.toBe(x2);
+		// A file changed and a file removed.
+		const third = await session(f, c, merged.mainSha);
+		await rm(join(third.tree, "src/a.js"));
+		const last = await third.commit({ "index.html": "<p>store</p>\n" }, "store");
+		expect((await land(c, third, last)).diff).toEqual({
+			filesChanged: 2,
+			paths: [
+				{ path: "index.html", change: "changed" },
+				{ path: "src/a.js", change: "removed" },
+			],
+			pathsMore: 0,
+		});
+
+		// Main already holds the commit: nothing changed, no picture is looked at, and the answer says which commit of
+		// main first held it.
+		const unchanged = (containedAt: string) => ({
+			state: "unchanged",
+			mainSha: last,
+			mainBefore: last,
+			containedAt,
+			diff: none,
+			picture: null,
+			restored: [],
+		});
+		// Main itself.
+		expect(await land(c, third, last, "index.html")).toEqual(unchanged(last));
+		// A commit main stood at once, and one a fast-forward passed over: both are on main's own line.
+		expect(await land(c, first, h3)).toEqual(unchanged(h3));
+		expect(await land(c, first, h1)).toEqual(unchanged(h1));
+		// A commit a merge brought in, and one behind it (two steps behind the merge's second parent, where
+		// `rev-list --first-parent --ancestry-path` prints nothing): the merge.
+		expect(await land(c, second, x2)).toEqual(unchanged(merged.mainSha));
+		expect(await land(c, second, x1)).toEqual(unchanged(merged.mainSha));
+
+		// More than fifty paths: the first fifty are named and the rest counted.
+		const fourth = await session(f, c, last);
+		const many = Object.fromEntries(
+			Array.from({ length: 60 }, (_, index) => [`many/f${String(index).padStart(2, "0")}.txt`, `${index}\n`]),
+		);
+		const counted = (await land(c, fourth, await fourth.commit(many, "many"))).diff;
+		expect(counted).toMatchObject({ filesChanged: 60, pathsMore: 10 });
+		expect(counted.paths).toEqual(
+			Object.keys(many)
+				.slice(0, 50)
+				.map((path) => ({ path, change: "added" })),
+		);
+		// Long paths (398 bytes each): the names listed stay within 8 KiB together, which is twenty of them.
+		const long = Object.fromEntries(
+			Array.from({ length: 30 }, (_, index) => [
+				`${"d".repeat(200)}/${"e".repeat(190)}-${String(index).padStart(2, "0")}.txt`,
+				`${index}\n`,
+			]),
+		);
+		const cut = (await land(c, fourth, await fourth.commit(long, "long"))).diff;
+		expect(cut).toMatchObject({ filesChanged: 30, pathsMore: 10 });
+		expect(cut.paths.map((entry) => entry.path)).toEqual(Object.keys(long).slice(0, 20));
+		// A merge's picture is looked for in the merge, the commit that becomes main: a path only main's side holds is
+		// found there (and is no picture), though the session's own commit has no such file.
+		const fifth = await session(f, c, baseSha);
+		const late = await land(c, fifth, await fifth.commit({ "notes.txt": "notes\n" }, "notes"), "cart.js");
+		expect(late).toMatchObject({
+			state: "merged",
+			diff: { filesChanged: 1, paths: [{ path: "notes.txt", change: "added" }], pathsMore: 0 },
+			picture: { state: "not_a_picture" },
+		});
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+		expectJobCommands(c.log);
+	});
+
+	it("checks a session's picture in git, at the commit that becomes main, and says which check failed", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const s = await session(f, c, baseSha);
+		const large = Buffer.alloc(4 * 1024 ** 2 + 1);
+		png.copy(large);
+		await mkdir(join(s.tree, "docs"));
+		await symlink("shot.png", join(s.tree, "docs/link.png"));
+		await writeFile(join(s.tree, "docs/run.png"), png);
+		await chmod(join(s.tree, "docs/run.png"), 0o755);
+		const head = await s.commit(
+			{
+				"docs/shot.png": png,
+				"docs/shot.jpg": jpeg,
+				"docs/shot.webp": webp,
+				"docs/four-mib.png": large.subarray(0, 4 * 1024 ** 2),
+				"docs/over.png": large,
+				"docs/notes.png": "not a picture\n",
+				"docs/empty.png": "",
+				"docs/wave.webp": Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WAVEfmt ")]),
+				"docs/short.jpg": Buffer.from([0xff, 0xd8]),
+			},
+			"pictures",
+		);
+		const ok = async (path: string, bytes: number, type: string) => ({
+			state: "ok",
+			blob: await repo(f, c, "rev-parse", `${head}:${path}`),
+			bytes,
+			type,
+		});
+		expect((await land(c, s, head, "docs/shot.png")).picture).toEqual(await ok("docs/shot.png", png.length, "png"));
+		const cases: [string, unknown][] = [
+			["docs/shot.jpg", await ok("docs/shot.jpg", jpeg.length, "jpeg")],
+			["docs/shot.webp", await ok("docs/shot.webp", webp.length, "webp")],
+			// An executable file is a file.
+			["docs/run.png", await ok("docs/run.png", png.length, "png")],
+			["docs/four-mib.png", await ok("docs/four-mib.png", 4 * 1024 ** 2, "png")],
+			["docs/over.png", { state: "too_large" }],
+			["docs/notes.png", { state: "not_a_picture" }],
+			["docs/empty.png", { state: "not_a_picture" }],
+			["docs/wave.webp", { state: "not_a_picture" }],
+			["docs/short.jpg", { state: "not_a_picture" }],
+			["docs/link.png", { state: "not_a_file" }],
+			["docs", { state: "not_a_file" }],
+			["docs/none.png", { state: "missing" }],
+			["Docs/shot.png", { state: "missing" }],
+			// What can be no path in a repository names nothing.
+			["docs/../docs/shot.png", { state: "missing" }],
+			["/docs/shot.png", { state: "missing" }],
+			["docs/shot.png/", { state: "missing" }],
+			["", { state: "missing" }],
+		];
+		let main = head;
+		for (const [index, [picture, expected]] of cases.entries()) {
+			// The file in the session's folder is swapped after the commit: the check reads git's object.
+			const next = await s.commit({ "n.txt": `${index}\n` }, `case ${index}`);
+			await writeFile(join(s.tree, "docs/shot.jpg"), "swapped\n");
+			const landed = await land(c, s, next, picture);
+			expect(landed, picture).toMatchObject({ state: "fast-forward", mainBefore: main, mainSha: next });
+			expect(landed.picture, picture).toEqual(expected);
+			await writeFile(join(s.tree, "docs/shot.jpg"), jpeg);
+			main = next;
+		}
+		// None given is none looked at, and a picture that is no string is no job.
+		const next = await s.commit({ "n.txt": "last\n" }, "last");
+		expect(
+			(await landCodeBranch(c.job, { repository: kept, workerId: s.workerId, headSha: next, picture: undefined }))
+				.picture,
+		).toBeNull();
+		const commands = c.log.length;
+		for (const more of [{ picture: 5 }, { picture: null }, { shot: "docs/shot.png" }])
+			await expect(
+				landCodeBranch(c.job, { repository: kept, workerId: s.workerId, headSha: next, ...more } as never),
+			).rejects.toThrow("INVALID_CODE_HOST_JOB");
+		expect(c.log).toHaveLength(commands);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+		expectJobCommands(c.log);
+	});
+
+	it("records: writes each change's file, its picture out of git and the list; leaves a file that holds its bytes; renders a record from the diff it computes", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const s = await session(f, c, baseSha);
+		const one = await s.commit({ "index.html": "<p>shop</p>\n", "docs/changes/shop.png": png }, "shop");
+		const first = await land(c, s, one, "docs/changes/shop.png");
+		if (first.picture?.state !== "ok") throw new Error("the picture was not taken");
+		const two = await s.commit({ "index.html": "<p>store</p>\n", "src/cart.js": "cart\n" }, "store");
+		await land(c, s, two);
+		const before = await state(f, c);
+		const render = (diff: CodeChangeDiff) =>
+			`# Change 2\n\n- Files changed: ${diff.filesChanged}\n${diff.paths.map((entry) => `- ${entry.change} ${entry.path}\n`).join("")}`;
+		const records: CodeChangeRecordFile[] = [
+			{
+				n: 1,
+				text: "# Change 1: Shop\n\n> a session's words, and “quotes”\n",
+				picture: { blob: first.picture.blob, to: `${area}/changes/1.png` },
+			},
+			{ n: 2, text: render, diff: { before: one, after: two } },
+		];
+		const index = "# Changes in qorpera/example\n\n- 2 · store\n- 1 · shop\n";
+		const write = (value: { records: readonly CodeChangeRecordFile[]; index: string | null }) =>
+			writeCodeChangeRecords(c.job, { repository: kept, ...value });
+		expect(await write({ records, index })).toEqual({
+			written: [1, 2],
+			diffs: [
+				{
+					n: 2,
+					filesChanged: 2,
+					paths: [
+						{ path: "index.html", change: "changed" },
+						{ path: "src/cart.js", change: "added" },
+					],
+					pathsMore: 0,
+				},
+			],
+			restored: [],
+		});
+		const folder = join(c.code, "changes");
+		expect((await readdir(folder)).sort()).toEqual(["1.md", "1.png", "2.md", "index.md"]);
+		expect(await readFile(join(folder, "1.md"), "utf8")).toBe(records[0]?.text);
+		expect(await readFile(join(folder, "2.md"), "utf8")).toBe(
+			"# Change 2\n\n- Files changed: 2\n- changed index.html\n- added src/cart.js\n",
+		);
+		expect((await readFile(join(folder, "1.png"))).equals(png)).toBe(true);
+		expect(await readFile(join(folder, "index.md"), "utf8")).toBe(index);
+		for (const name of ["1.md", "1.png", "index.md"])
+			expect((await lstat(join(folder, name))).mode & 0o777).toBe(0o644);
+		expect((await lstat(folder)).mode & 0o777).toBe(0o755);
+
+		// Again: every file holds its bytes, and none is written (a written file is a new one renamed into place).
+		const inodes = async (): Promise<Record<string, number>> =>
+			Object.fromEntries(
+				await Promise.all(
+					(await readdir(folder))
+						.sort()
+						.map(async (name) => [name, (await lstat(join(folder, name))).ino] as const),
+				),
+			);
+		const made = await inodes();
+		expect(await write({ records, index })).toMatchObject({ written: [1, 2], restored: [] });
+		expect(await inodes()).toEqual(made);
+		// One record's text changed and no list given: that file alone is written.
+		const changed: CodeChangeRecordFile[] = [
+			{ ...(records[0] as CodeChangeRecordFile), text: "# Change 1: Shop\n\n- State: undone by change 3\n" },
+			records[1] as CodeChangeRecordFile,
+		];
+		expect(await write({ records: changed, index: null })).toMatchObject({ written: [1, 2] });
+		const later = await inodes();
+		expect(later["1.md"]).not.toBe(made["1.md"]);
+		expect({ ...later, "1.md": made["1.md"] }).toEqual(made);
+		expect(await readFile(join(folder, "1.md"), "utf8")).toBe("# Change 1: Shop\n\n- State: undone by change 3\n");
+		expect(await readFile(join(folder, "index.md"), "utf8")).toBe(index);
+		// A picture that is not git's bytes any more is copied out again.
+		await writeFile(join(folder, "1.png"), "swapped");
+		await write({ records: changed, index: null });
+		expect((await readFile(join(folder, "1.png"))).equals(png)).toBe(true);
+
+		// What a restore took out of the repository is left out, and fails no job: a record whose diff names a commit
+		// that is not here is not written, and a picture whose file version is not here (or is none) is not copied.
+		const gone = "f".repeat(40);
+		expect(
+			await write({
+				records: [
+					{ n: 3, text: render, diff: { before: gone, after: two } },
+					{ n: 4, text: "# Change 4\n", picture: { blob: gone, to: `${area}/changes/4.jpg` } },
+					{
+						n: 5,
+						text: "# Change 5\n",
+						picture: { blob: await repo(f, c, "rev-parse", `${two}^{tree}`), to: `${area}/changes/5.webp` },
+					},
+				],
+				index: null,
+			}),
+		).toEqual({ written: [4, 5], diffs: [], restored: [] });
+		expect((await readdir(folder)).sort()).toEqual(["1.md", "1.png", "2.md", "4.md", "5.md", "index.md"]);
+		// No ref moved, and main/ is as it was.
+		expect(await state(f, c)).toEqual({ ...before, repaired: "none" });
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+		expectJobCommands(c.log);
+	});
+
+	it("records: many in one job; a folder where a file goes, a link where the folder is and a malformed record are refused", async () => {
+		const { f, c, three } = await changes();
+		const folder = join(c.code, "changes");
+		const write = (value: unknown) =>
+			writeCodeChangeRecords(c.job, { repository: kept, ...(value as { records: []; index: null }) });
+		// Sixty records and the list, some of them long: each file gets exactly its own bytes off the one stream.
+		const long = new Map([
+			[2, 100_000],
+			[3, 120_000],
+			[27, 70_000],
+		]);
+		const many = Array.from({ length: 60 }, (_, index) => ({
+			n: index + 1,
+			text: `# Change ${index + 1}\n${long.has(index + 1) ? `${"é".repeat(long.get(index + 1) ?? 0)}\n` : ""}`,
+		}));
+		expect((await write({ records: many, index: "# The list\n" })).written).toEqual(many.map((record) => record.n));
+		expect(await readdir(folder)).toHaveLength(61);
+		for (const { n, text } of many) expect(await readFile(join(folder, `${n}.md`), "utf8"), `${n}.md`).toBe(text);
+		expect(await readFile(join(folder, "index.md"), "utf8")).toBe("# The list\n");
+		expectJobCommands(c.log);
+
+		await rm(join(folder, "7.md"));
+		await mkdir(join(folder, "7.md"));
+		await expect(write({ records: many, index: null })).rejects.toMatchObject({
+			code: "CODE_HOST_UNEXPECTED_FILE",
+			paths: [`${area}/changes/7.md`],
+		});
+		await rm(folder, { recursive: true });
+		await mkdir(join(f.root, "elsewhere"));
+		await symlink(join(f.root, "elsewhere"), folder);
+		await expect(write({ records: many.slice(0, 1), index: "# The list\n" })).rejects.toMatchObject({
+			code: "CODE_HOST_LINK",
+			paths: [`${area}/changes`],
+		});
+		expect(await readdir(join(f.root, "elsewhere"))).toEqual([]);
+
+		const commands = c.log.length,
+			head = three.mainSha;
+		for (const value of [
+			{ records: [{ n: 0, text: "x" }], index: null },
+			{ records: [{ n: 1.5, text: "x" }], index: null },
+			{
+				records: [
+					{ n: 1, text: "x" },
+					{ n: 1, text: "y" },
+				],
+				index: null,
+			},
+			{ records: [{ n: 1, text: "" }], index: null },
+			{ records: [{ n: 1, text: "a\0b" }], index: null },
+			{ records: [{ n: 1 }], index: null },
+			// A text still to be rendered, with nothing to render it from.
+			{ records: [{ n: 1, text: () => "x" }], index: null },
+			{ records: [{ n: 1, text: "x", diff: { before: "main", after: head } }], index: null },
+			{ records: [{ n: 1, text: "x", diff: { before: head } }], index: null },
+			// A picture goes beside its own record and nowhere else.
+			{ records: [{ n: 1, text: "x", picture: { blob: head, to: `${area}/changes/2.png` } }], index: null },
+			{ records: [{ n: 1, text: "x", picture: { blob: head, to: `${area}/main/1.png` } }], index: null },
+			{ records: [{ n: 1, text: "x", picture: { blob: head, to: `${area}/changes/1.gif` } }], index: null },
+			{ records: [{ n: 1, text: "x", picture: { blob: "main", to: `${area}/changes/1.png` } }], index: null },
+			{ records: [{ n: 1, text: "x", state: "landed" }], index: null },
+			{ records: Array.from({ length: 101 }, (_, index) => ({ n: index + 1, text: "x" })), index: null },
+			{ records: "all", index: null },
+			{ records: [], index: "" },
+			{ records: [], index: "x".repeat(256 * 1024 + 1) },
+			{ records: [] },
+		])
+			await expect(write(value)).rejects.toThrow("INVALID_CODE_HOST_JOB");
+		expect(c.log).toHaveLength(commands);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+	});
+
+	it("undo: takes one change out as one new commit of the platform's, a fast-forward of three commits and a merge alike, and an undo is undone the same way", async () => {
+		const { f, c, one, two, three } = await changes();
+		const requestId = randomUUID();
+		const undone = await undo(c, span(1, one), { requestId, message: "Undo change 1: Shop" });
+		if (undone.state !== "undone") throw new Error("the change was not undone");
+		expect(undone).toEqual({
+			state: "undone",
+			mainBefore: three.mainSha,
+			mainAfter: undone.mainAfter,
+			diff: {
+				filesChanged: 3,
+				paths: [
+					{ path: "index.html", change: "removed" },
+					{ path: "src/a.js", change: "removed" },
+					{ path: "src/b.js", change: "removed" },
+				],
+				pathsMore: 0,
+			},
+			replayed: false,
+		});
+		// Main and main/ moved together, to what main was without the three commits; everything since is kept.
+		expect(await state(f, c)).toMatchObject({
+			main: undone.mainAfter,
+			files: ["cart.js", "later.txt"],
+			repaired: "none",
+		});
+		expect((await readdir(join(c.code, "main"))).sort()).toEqual([".git", "cart.js", "later.txt"]);
+		expect(await repo(f, c, "log", "-1", "--format=%P%n%an <%ae>%n%cn <%ce>%n%B", undone.mainAfter)).toBe(
+			`${three.mainSha}\nQorpera <code@qorpera.com>\nQorpera <code@qorpera.com>\nUndo change 1: Shop\n\nQorpera-Request: ${requestId}`,
+		);
+
+		// The merge goes by the record's two ends of main, not by its parents.
+		const second = await undo(c, span(2, two));
+		if (second.state !== "undone") throw new Error("the merge was not undone");
+		expect(second).toMatchObject({
+			mainBefore: undone.mainAfter,
+			diff: { filesChanged: 1, paths: [{ path: "cart.js", change: "removed" }], pathsMore: 0 },
+			replayed: false,
+		});
+		expect((await state(f, c)).files).toEqual(["later.txt"]);
+
+		// An undo is a change like any other: undoing it puts back what it took out.
+		const back = await undo(c, { n: 4, mainBefore: undone.mainBefore, mainAfter: undone.mainAfter });
+		if (back.state !== "undone") throw new Error("the undo was not undone");
+		expect(back.diff).toEqual({
+			filesChanged: 3,
+			paths: [
+				{ path: "index.html", change: "added" },
+				{ path: "src/a.js", change: "added" },
+				{ path: "src/b.js", change: "added" },
+			],
+			pathsMore: 0,
+		});
+		expect(await state(f, c)).toMatchObject({
+			main: back.mainAfter,
+			files: ["index.html", "later.txt", "src/a.js", "src/b.js"],
+			repaired: "none",
+		});
+		expect(await readFile(join(c.code, "main/index.html"), "utf8")).toBe("<p>shop</p>\n");
+		// Main's history stays one line: each undo's one parent is main before it.
+		expect(await repo(f, c, "rev-list", "--first-parent", "--max-count=4", "refs/heads/main")).toBe(
+			[back.mainAfter, second.mainAfter, undone.mainAfter, three.mainSha].join("\n"),
+		);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+		expectJobCommands(c.log);
+	});
+
+	it("undo: an undo is undone by its own two ends, so a landing that came after it stays, though one wider row of the record covers both", async () => {
+		const { f, c, one, three } = await changes();
+		// The undo of change 1 moves main from three to U and takes three files out.
+		const undone = await undo(c, span(1, one));
+		if (undone.state !== "undone") throw new Error("the change was not undone");
+		// A landing after it adds a file that has nothing to do with the undo.
+		const next = await session(f, c, undone.mainAfter);
+		const landed = await land(c, next, await next.commit({ "news.txt": "news\n" }, "news"));
+		expect(landed.state).toBe("fast-forward");
+		expect((await state(f, c)).files).toEqual(["cart.js", "later.txt", "news.txt"]);
+		// The record lost both and holds them as one row, from three to the landing. The undo's own two ends are three
+		// and U: undoing the undo by those puts back exactly what it took out.
+		const back = await undo(c, { n: 5, mainBefore: undone.mainBefore, mainAfter: undone.mainAfter });
+		if (back.state !== "undone") throw new Error("the undo was not undone");
+		expect(undone.mainBefore).toBe(three.mainSha);
+		expect(back.diff).toEqual({
+			filesChanged: 3,
+			paths: [
+				{ path: "index.html", change: "added" },
+				{ path: "src/a.js", change: "added" },
+				{ path: "src/b.js", change: "added" },
+			],
+			pathsMore: 0,
+		});
+		expect((await state(f, c)).files).toEqual([
+			"cart.js",
+			"index.html",
+			"later.txt",
+			"news.txt",
+			"src/a.js",
+			"src/b.js",
+		]);
+		expect(await readFile(join(c.code, "main/news.txt"), "utf8")).toBe("news\n");
+	});
+
+	it("undo: a change later work built on is refused with its paths and nothing is written; andLater makes main's files what they were before it; a change main no longer holds is nothing", async () => {
+		const { f, c, baseSha, third, one, two } = await changes();
+		// A later change rewrote a file the first one added.
+		const four = await land(c, third, await third.commit({ "index.html": "<p>store</p>\n" }, "store"));
+		const before = {
+			...(await state(f, c)),
+			head: await readFile(join(c.repo, "worktrees/main/HEAD"), "utf8"),
+		};
+		await expect(undo(c, span(1, one))).rejects.toMatchObject({
+			code: "CODE_HOST_UNDO_CONFLICT",
+			paths: ["index.html"],
+		});
+		expect({ ...(await state(f, c)), head: await readFile(join(c.repo, "worktrees/main/HEAD"), "utf8") }).toEqual(
+			before,
+		);
+		expect(before).toMatchObject({ main: four.mainSha, repaired: "none" });
+
+		// That change and everything after it, together: no merge, so no conflict.
+		const all = await undo(c, span(1, one), { andLater: true, message: "Go back to before change 1" });
+		if (all.state !== "undone") throw new Error("the changes were not undone");
+		expect(all).toMatchObject({ mainBefore: four.mainSha, replayed: false });
+		expect(all.diff).toEqual({
+			filesChanged: 5,
+			paths: ["cart.js", "index.html", "later.txt", "src/a.js", "src/b.js"].map((path) => ({
+				path,
+				change: "removed",
+			})),
+			pathsMore: 0,
+		});
+		expect(await state(f, c)).toMatchObject({ main: all.mainAfter, files: [], repaired: "none" });
+		expect(await readdir(join(c.code, "main"))).toEqual([".git"]);
+		expect(await repo(f, c, "rev-parse", `${all.mainAfter}^{tree}`)).toBe(
+			await repo(f, c, "rev-parse", `${baseSha}^{tree}`),
+		);
+		expect(await repo(f, c, "log", "-1", "--format=%P %s", all.mainAfter)).toBe(
+			`${four.mainSha} Go back to before change 1`,
+		);
+
+		// Main no longer holds what those changes did: there is nothing to take out, and main stays.
+		const nothing = { state: "nothing", mainSha: all.mainAfter };
+		expect(await undo(c, span(1, one))).toEqual(nothing);
+		expect(await undo(c, span(2, two))).toEqual(nothing);
+		expect(await undo(c, span(1, one), { andLater: true })).toEqual(nothing);
+		expect(await repo(f, c, "rev-parse", "refs/heads/main")).toBe(all.mainAfter);
+
+		// And that undo undone: every change is back, the later one's file as it left it.
+		expect((await undo(c, { n: 5, mainBefore: all.mainBefore, mainAfter: all.mainAfter })).state).toBe("undone");
+		expect((await state(f, c)).files).toEqual(["cart.js", "index.html", "later.txt", "src/a.js", "src/b.js"]);
+		expect(await readFile(join(c.code, "main/index.html"), "utf8")).toBe("<p>store</p>\n");
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+	});
+
+	it("undo: a request made again is found by its line in main's history and answered as it was, with main/ put right", async () => {
+		const { f, c, two, three } = await changes();
+		const requestId = randomUUID();
+		const undone = await undo(c, span(2, two), { requestId });
+		if (undone.state !== "undone") throw new Error("the change was not undone");
+		// That run's job saved the branch and lost the rest: main/ holds the files of main before it.
+		await f.git(join(c.code, "main"), "checkout", "--quiet", "--force", "--detach", three.mainSha);
+		expect(await readFile(join(c.code, "main/cart.js"), "utf8")).toBe("cart\n");
+		expect(await undo(c, span(2, two), { requestId })).toEqual({ ...undone, replayed: true });
+		expect(await exists(join(c.code, "main/cart.js"))).toBe(false);
+		expect(await state(f, c)).toMatchObject({
+			main: undone.mainAfter,
+			files: ["index.html", "later.txt", "src/a.js", "src/b.js"],
+			repaired: "none",
+		});
+		// Another change lands after it: the request is still answered with its own commit, and none is made.
+		const fourth = await session(f, c, undone.mainAfter);
+		const more = await land(c, fourth, await fourth.commit({ "more.txt": "more\n" }, "more"));
+		expect(await undo(c, span(2, two), { requestId })).toEqual({ ...undone, replayed: true });
+		expect(await repo(f, c, "rev-parse", "refs/heads/main")).toBe(more.mainSha);
+		// Another request for the same change finds main without it.
+		expect(await undo(c, span(2, two))).toEqual({ state: "nothing", mainSha: more.mainSha });
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+	});
+
+	it("undo: refuses a change main does not hold, a commit that is not there, names the folder takes for one, a main that moved under it, and a malformed request", async () => {
+		const { f, c, first, one, three } = await changes();
+		// A session's commit that never landed.
+		const loose = await first.commit({ "loose.txt": "loose\n" }, "loose");
+		await expect(undo(c, { n: 9, mainBefore: three.mainSha, mainAfter: loose })).rejects.toMatchObject({
+			code: "CODE_HOST_UNDO_NOT_IN_MAIN",
+			paths: [loose],
+		});
+		const gone = "f".repeat(40),
+			never = "e".repeat(40);
+		await expect(undo(c, { n: 9, mainBefore: gone, mainAfter: three.mainSha })).rejects.toMatchObject({
+			code: "CODE_HOST_UNDO_UNKNOWN_COMMIT",
+			paths: [gone],
+		});
+		await expect(undo(c, { n: 9, mainBefore: gone, mainAfter: never })).rejects.toMatchObject({
+			code: "CODE_HOST_UNDO_UNKNOWN_COMMIT",
+			paths: [never, gone],
+		});
+
+		// A file was removed, and its name came back in another case: the old one put back would stand beside it.
+		const s = await session(f, c, three.mainSha);
+		await rm(join(s.tree, "later.txt"));
+		const removed = await land(c, s, await s.commit({ "x.txt": "x\n" }, "without later"));
+		const renamed = await land(c, s, await s.commit({ "Later.txt": "Later\n" }, "another later"));
+		const refused = undo(c, span(4, removed));
+		await expect(refused).rejects.toMatchObject({ code: "CODE_HOST_NAMES_DIFFER_BY_CASE" });
+		expect([...(await refused.catch((error) => error.paths))].sort()).toEqual(["Later.txt", "later.txt"]);
+		expect(await state(f, c)).toMatchObject({ main: renamed.mainSha, repaired: "none" });
+
+		// Main moves between the undo's reading of it and its own move: the compare-and-swap fails, and nothing of the
+		// undo is in main.
+		const other = await s.commit({ "other.txt": "other\n" }, "other"),
+			moving = join(f.root, "moving-git");
+		await writeFile(
+			moving,
+			`#!/bin/sh\nfor a do [ "$a" = commit-tree ] && ${GIT} --git-dir="${c.repo}" update-ref refs/heads/main ${other} ${renamed.mainSha}; done\nexec ${GIT} "$@"\n`,
+		);
+		await chmod(moving, 0o755);
+		await expect(
+			undoCodeChange(
+				{ ...c.job, layout: { ...c.job.layout, git: moving } },
+				{
+					repository: kept,
+					requestId: randomUUID(),
+					change: span(1, one),
+					andLater: false,
+					message: "Undo change 1",
+				},
+			),
+		).rejects.toMatchObject({ code: "CODE_HOST_BASE_MOVED" });
+		expect(await repo(f, c, "rev-parse", "refs/heads/main")).toBe(other);
+		expect(await repo(f, c, "log", "--format=%s", "--grep=Undo change", "refs/heads/main")).toBe("");
+
+		const commands = c.log.length;
+		for (const more of [
+			{ requestId: "request" },
+			{ andLater: "yes" },
+			{ message: "" },
+			{ message: " \n" },
+			{ message: "a\0b" },
+			{ message: "x".repeat(4097) },
+			{ change: { n: 0, mainBefore: three.mainSha, mainAfter: three.mainSha } },
+			{ change: { n: 1, mainBefore: "main", mainAfter: three.mainSha } },
+			{ change: { n: 1, mainAfter: three.mainSha } },
+			{ change: 1 },
+			{ reason: "it broke" },
+		])
+			await expect(
+				undoCodeChange(c.job, {
+					repository: kept,
+					requestId: randomUUID(),
+					change: span(1, one),
+					andLater: false,
+					message: "Undo change 1",
+					...more,
+				} as never),
+			).rejects.toThrow("INVALID_CODE_HOST_JOB");
+		expect(c.log).toHaveLength(commands);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+	});
+
+	it("download: main's files as a zip under the repository's name, and main with its history as a bundle a plain clone checks out; one of each stays, and they are removed by name", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const s = await session(f, c, baseSha);
+		await mkdir(join(s.tree, "bin"));
+		await writeFile(join(s.tree, "bin/run.sh"), "#!/bin/sh\n");
+		await chmod(join(s.tree, "bin/run.sh"), 0o755);
+		await symlink("bin/run.sh", join(s.tree, "run"));
+		const landed = await land(
+			c,
+			s,
+			await s.commit(
+				{
+					"index.html": "<p>shop</p>\n",
+					"src/cart.js": "export const cart = [];\n",
+					"docs/shot.png": png,
+					"docs/internal.md": "internal\n",
+					".gitattributes": "docs/internal.md export-ignore\n",
+				},
+				"shop",
+			),
+		);
+		const head = landed.mainSha;
+		// Another session's work that is not in main.
+		const other = await session(f, c, head);
+		await other.commit({ "unlanded.txt": "unlanded\n" }, "unlanded");
+		const before = await state(f, c),
+			downloads = join(c.code, "downloads");
+
+		const zipped = await archiveCodeArea(c.job, {
+			repository: kept,
+			file: "files",
+			fileName: "example-2026-11-10.zip",
+		});
+		const zip = await readFile(join(downloads, "example-2026-11-10.zip"));
+		expect(zipped).toEqual({
+			path: `${area}/downloads/example-2026-11-10.zip`,
+			bytes: zip.length,
+			sha256: digest(zip),
+			mainSha: head,
+		});
+		// Main's files, each under the repository's name (a folder has an entry of its own). What the repository's own
+		// attributes mark export-ignore is left out, as git does.
+		const entries = unzip(zip);
+		expect([...entries.keys()].filter((name) => !name.endsWith("/")).sort()).toEqual([
+			"example/.gitattributes",
+			"example/bin/run.sh",
+			"example/docs/shot.png",
+			"example/index.html",
+			"example/run",
+			"example/src/cart.js",
+		]);
+		expect(entries.get("example/index.html")?.toString("utf8")).toBe("<p>shop</p>\n");
+		expect(entries.get("example/src/cart.js")?.toString("utf8")).toBe("export const cart = [];\n");
+		expect(entries.get("example/docs/shot.png")?.equals(png)).toBe(true);
+		expect(entries.get("example/run")?.toString("utf8")).toBe("bin/run.sh");
+		expect((await lstat(join(downloads, "example-2026-11-10.zip"))).mode & 0o777).toBe(0o644);
+
+		// The same main another day: the same bytes under the new name, and the older zip is gone.
+		expect(
+			await archiveCodeArea(c.job, { repository: kept, file: "files", fileName: "example-2026-11-11.zip" }),
+		).toEqual({ ...zipped, path: `${area}/downloads/example-2026-11-11.zip` });
+		expect(await readdir(downloads)).toEqual(["example-2026-11-11.zip"]);
+
+		// The history, for a developer: beside the zip.
+		const bundled = await archiveCodeArea(c.job, {
+			repository: kept,
+			file: "history",
+			fileName: "example-2026-11-11.bundle",
+		});
+		const file = join(downloads, "example-2026-11-11.bundle"),
+			bundle = await readFile(file);
+		expect(bundled).toEqual({
+			path: `${area}/downloads/example-2026-11-11.bundle`,
+			bytes: bundle.length,
+			sha256: digest(bundle),
+			mainSha: head,
+		});
+		expect((await readdir(downloads)).sort()).toEqual(["example-2026-11-11.bundle", "example-2026-11-11.zip"]);
+		// It holds main and where HEAD is, and neither the sessions' branches nor the mark.
+		expect(await f.src("bundle", "list-heads", file)).toBe(`${head} HEAD\n${head} refs/heads/main`);
+		// A plain clone checks main out, with its history.
+		const clone = join(f.root, "clone");
+		await f.git(f.root, "clone", "--quiet", file, clone);
+		expect(await f.git(clone, "status", "--short", "--branch")).toBe("## main...origin/main");
+		expect(await f.git(clone, "rev-parse", "HEAD")).toBe(head);
+		expect(await f.git(clone, "log", "--format=%s")).toBe("shop\nStart example");
+		expect(await readFile(join(clone, "src/cart.js"), "utf8")).toBe("export const cart = [];\n");
+		expect(await readFile(join(clone, "docs/internal.md"), "utf8")).toBe("internal\n");
+		expect(await f.git(clone, "for-each-ref", "--format=%(refname)")).not.toContain("qorpera");
+		expect(await f.git(clone, "fsck", "--full", "--strict", "--no-dangling", "--no-progress")).toBe("");
+
+		// A new bundle takes the old one's place and leaves the zip.
+		await archiveCodeArea(c.job, { repository: kept, file: "history", fileName: "example-2026-11-12.bundle" });
+		const standing = ["example-2026-11-11.zip", "example-2026-11-12.bundle"];
+		expect((await readdir(downloads)).sort()).toEqual(standing);
+		// Too large: refused before anything is put in downloads/, and what stood there stays.
+		for (const [kind, fileName] of [
+			["files", "example-2026-11-13.zip"],
+			["history", "example-2026-11-13.bundle"],
+		] as const)
+			await expect(
+				archiveCodeArea(c.job, { repository: kept, file: kind, fileName }, { maximumBytes: 100 }),
+			).rejects.toMatchObject({
+				code: "CODE_HOST_DOWNLOAD_TOO_LARGE",
+				// The same main is the same zip, byte for byte; a bundle's pack may come out another size.
+				paths: [kind === "files" ? `${zip.length} bytes` : expect.stringMatching(/^\d+ bytes$/)],
+			});
+		expect((await readdir(downloads)).sort()).toEqual(standing);
+		// At the limit it is made.
+		expect(
+			(
+				await archiveCodeArea(
+					c.job,
+					{ repository: kept, file: "files", fileName: "example-2026-11-11.zip" },
+					{ maximumBytes: zip.length },
+				)
+			).bytes,
+		).toBe(zip.length);
+
+		// Removed by name: a name that is not there is left out, a folder by a download's name stays, and a link goes
+		// without what it points at.
+		await mkdir(join(downloads, "folder.zip"));
+		await writeFile(join(f.root, "kept.zip"), "kept\n");
+		await symlink(join(f.root, "kept.zip"), join(downloads, "link.zip"));
+		expect(
+			await removeCodeDownloads(c.job, {
+				repository: kept,
+				fileNames: ["example-2026-11-11.zip", "example-2026-11-10.zip", "folder.zip", "link.zip"],
+			}),
+		).toEqual({ removed: ["example-2026-11-11.zip", "link.zip"] });
+		expect((await readdir(downloads)).sort()).toEqual(["example-2026-11-12.bundle", "folder.zip"]);
+		expect(await readFile(join(f.root, "kept.zip"), "utf8")).toBe("kept\n");
+		await rm(join(downloads, "folder.zip"), { recursive: true });
+		// The folder goes with its last file.
+		expect(await removeCodeDownloads(c.job, { repository: kept, fileNames: ["example-2026-11-12.bundle"] })).toEqual({
+			removed: ["example-2026-11-12.bundle"],
+		});
+		expect(await exists(downloads)).toBe(false);
+		expect(await removeCodeDownloads(c.job, { repository: kept, fileNames: ["example-2026-11-12.bundle"] })).toEqual({
+			removed: [],
+		});
+		expect(await removeCodeDownloads(c.job, { repository: kept, fileNames: [] })).toEqual({ removed: [] });
+
+		// No ref moved, and main/ is as it was.
+		expect(await state(f, c)).toEqual({ ...before, repaired: "none" });
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+		expectJobCommands(c.log);
+	});
+
+	it("download: a repository with no files yet; refuses a name that is no plain file of its kind, a limit that is none, and a downloads/ that is a link", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const empty = await archiveCodeArea(c.job, { repository: kept, file: "files", fileName: "example.zip" });
+		expect(empty.mainSha).toBe(baseSha);
+		expect([...unzip(await readFile(join(c.code, "downloads/example.zip"))).keys()]).toEqual(["example/"]);
+		expect(
+			(await archiveCodeArea(c.job, { repository: kept, file: "history", fileName: "example.bundle" })).mainSha,
+		).toBe(baseSha);
+		await rm(join(c.code, "downloads"), { recursive: true });
+
+		const commands = c.log.length;
+		for (const [value, options] of [
+			[{ file: "files", fileName: "example.bundle" }],
+			[{ file: "history", fileName: "example.zip" }],
+			[{ file: "all", fileName: "example.zip" }],
+			[{ file: "files", fileName: "../example.zip" }],
+			[{ file: "files", fileName: "a/example.zip" }],
+			[{ file: "files", fileName: ".zip" }],
+			[{ file: "files", fileName: "-o.zip" }],
+			[{ file: "files", fileName: "example.zip.lock" }],
+			[{ file: "files", fileName: `${"x".repeat(192)}.zip` }],
+			[{ file: "files", fileName: 5 }],
+			[{ file: "files" }],
+			[{ file: "files", fileName: "example.zip" }, { maximumBytes: 0 }],
+			[{ file: "files", fileName: "example.zip" }, { maximumBytes: 1.5 }],
+			[{ file: "files", fileName: "example.zip" }, { maximumBytes: 256 * 1024 ** 2 + 1 }],
+		] as [Record<string, unknown>, { maximumBytes: number }?][])
+			await expect(archiveCodeArea(c.job, { repository: kept, ...value } as never, options)).rejects.toThrow(
+				"INVALID_CODE_HOST_JOB",
+			);
+		for (const fileNames of [
+			["a/b.zip"],
+			["example.txt"],
+			["x.zip", "x.zip"],
+			Array.from({ length: 21 }, (_, index) => `f${index}.zip`),
+			"x.zip",
+		])
+			await expect(removeCodeDownloads(c.job, { repository: kept, fileNames } as never)).rejects.toThrow(
+				"INVALID_CODE_HOST_JOB",
+			);
+		expect(c.log).toHaveLength(commands);
+
+		await mkdir(join(f.root, "elsewhere"));
+		await writeFile(join(f.root, "elsewhere/keep.zip"), "keep\n");
+		await symlink(join(f.root, "elsewhere"), join(c.code, "downloads"));
+		await expect(
+			archiveCodeArea(c.job, { repository: kept, file: "files", fileName: "example.zip" }),
+		).rejects.toMatchObject({ code: "CODE_HOST_LINK", paths: [`${area}/downloads`] });
+		await expect(removeCodeDownloads(c.job, { repository: kept, fileNames: ["keep.zip"] })).rejects.toMatchObject({
+			code: "CODE_HOST_LINK",
+			paths: [`${area}/downloads`],
+		});
+		expect(await readdir(join(f.root, "elsewhere"))).toEqual(["keep.zip"]);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+	});
+
+	it("the jobs are a kept repository's alone: nothing is made where none is seeded, and a copy of a GitHub repository is refused", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const jobs = (repository: unknown = kept) => {
+			const here = repository as typeof kept;
+			return [
+				() =>
+					writeCodeChangeRecords(c.job, {
+						repository: here,
+						records: [{ n: 1, text: "# 1\n" }],
+						index: "# list\n",
+					}),
+				() =>
+					undoCodeChange(c.job, {
+						repository: here,
+						requestId: randomUUID(),
+						change: { n: 1, mainBefore: f.baseSha, mainAfter: f.baseSha },
+						andLater: false,
+						message: "Undo change 1",
+					}),
+				() => archiveCodeArea(c.job, { repository: here, file: "files", fileName: "example.zip" }),
+				() => archiveCodeArea(c.job, { repository: here, file: "history", fileName: "example.bundle" }),
+				() => removeCodeDownloads(c.job, { repository: here, fileNames: ["example.zip"] }),
+			];
+		};
+		for (const job of jobs()) await expect(job()).rejects.toMatchObject({ code: "CODE_HOST_NOT_SEEDED" });
+		expect(await readdir(c.companyRoot)).toEqual([]);
+		// A repository on GitHub is none of theirs: refused before any command.
+		const commands = c.log.length;
+		for (const job of jobs(f.repository)) await expect(job()).rejects.toThrow("INVALID_CODE_HOST_JOB");
+		expect(c.log).toHaveLength(commands);
+		// A copy of a GitHub repository at the same place has no mark.
+		await seedCodeArea(c.job, {
+			repository: f.repository,
+			baseSha: f.baseSha,
+			bundle: await f.bundle("refs/heads/main"),
+		});
+		for (const job of jobs())
+			await expect(job()).rejects.toMatchObject({ code: "CODE_HOST_AREA_FROM_GITHUB", paths: [area] });
+		expect((await readdir(c.code)).sort()).toEqual(["main", "repo.git"]);
+		expect(await f.git(c.repo, "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(f.baseSha);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+	});
+
+	it("a place a restore is working on is closed: every job is refused before it repairs or makes anything there, but a restore's own", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const prepare = (restoring?: boolean) =>
+			withJob(c.job, kept, (run) => run.prepare(undefined, restoring === undefined ? undefined : { restoring }));
+		const mark = join(c.code, "restoring.json"),
+			closed = { code: "CODE_HOST_RESTORE_IN_PROGRESS", paths: [area] };
+		// Between a restore's two jobs the place holds the mark alone: a session's first turn starts no empty repository
+		// there.
+		await mkdir(c.code, { recursive: true });
+		await writeFile(mark, '{"schema":"qorpera.code-restoring/v1"}\n');
+		await expect(startCodeArea(c.job, { repository: kept })).rejects.toMatchObject(closed);
+		await expect(prepare()).rejects.toMatchObject(closed);
+		await expect(prepare(false)).rejects.toMatchObject(closed);
+		expect(await readdir(c.code)).toEqual(["restoring.json"]);
+		expect(await prepare(true)).toMatchObject({ made: false, seeded: false, restoring: true, main: "none" });
+		await rm(mark);
+		expect(await prepare()).toMatchObject({ made: false, restoring: false });
+
+		// A repository with work in it, and the mark there.
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const s = await session(f, c, baseSha);
+		const landed = await land(c, s, await s.commit({ "index.html": "<p>shop</p>\n" }, "shop"));
+		const next = await s.commit({ "more.txt": "more\n" }, "more");
+		await writeFile(mark, "{}\n");
+		// Something a job would put back on its way in.
+		await writeFile(join(c.repo, "config"), "[core]\n\tbare = true\n\thooksPath = /elsewhere\n");
+		const sink = { write: async () => {} };
+		for (const job of [
+			() => startCodeArea(c.job, { repository: kept }),
+			() => addCodeWorktree(c.job, { repository: kept, workerId: randomUUID(), baseSha }),
+			() => addCodeWorktree(c.job, { repository: kept, workerId: s.workerId, baseSha }),
+			() => landCodeBranch(c.job, { repository: kept, workerId: s.workerId, headSha: next }),
+			() => inspectCodeArea(c.job, { repository: kept, commit: next }),
+			() => readCodeAreaBase(c.job, kept),
+			() => withCodeCommit(c.job, { repository: kept, commit: next }, async () => undefined),
+			() =>
+				exportCodeBranch(
+					c.job,
+					{ repository: kept, workerId: s.workerId, baseSha, headSha: next },
+					{ maximumBytes: 1024 },
+				),
+			() => checkCodeArea(c.job, { repository: kept }),
+			() => fsckCodeArea(c.job, { repository: kept }),
+			() => bundleCodeArea(c.job, { repository: kept, refsSha256: "0".repeat(64) }, sink),
+			() => retireCodeWorktrees(c.job, { repository: kept, workerIds: [] }, { phase: "files" }),
+			() => writeCodeChangeRecords(c.job, { repository: kept, records: [{ n: 1, text: "# 1\n" }], index: null }),
+			() => undo(c, span(1, landed)),
+			() => archiveCodeArea(c.job, { repository: kept, file: "files", fileName: "example.zip" }),
+			() => removeCodeDownloads(c.job, { repository: kept, fileNames: ["example.zip"] }),
+		])
+			await expect(job()).rejects.toMatchObject(closed);
+		expect(await readFile(join(c.repo, "config"), "utf8")).toBe("[core]\n\tbare = true\n\thooksPath = /elsewhere\n");
+		expect(await readFile(join(c.repo, "refs/heads/main"), "utf8")).toBe(`${landed.mainSha}\n`);
+		expect((await readdir(c.code)).sort()).toEqual(["main", "repo.git", "restoring.json", "worktrees"]);
+		// A restore's own job passes, and finds the place prepared as every job does.
+		expect(await prepare(true)).toMatchObject({ made: true, seeded: true, restoring: true, main: "present" });
+		expect(await readFile(join(c.repo, "config"), "utf8")).toBe(CODE_AREA_CONFIG);
+
+		// Whatever has the mark's name closes the place; for a restore's own job it is a file, and never a link.
+		await rm(mark);
+		await mkdir(mark);
+		await expect(prepare()).rejects.toMatchObject(closed);
+		await expect(prepare(true)).rejects.toMatchObject({
+			code: "CODE_HOST_UNEXPECTED_FILE",
+			paths: [`${area}/restoring.json`],
+		});
+		await rm(mark, { recursive: true });
+		await symlink("main", mark);
+		for (const restoring of [true, undefined])
+			await expect(prepare(restoring)).rejects.toMatchObject({
+				code: "CODE_HOST_LINK",
+				paths: [`${area}/restoring.json`],
+			});
+		// With the mark gone the repository works as before.
+		await rm(mark);
+		expect(await land(c, s, next)).toMatchObject({ state: "fast-forward", mainBefore: landed.mainSha });
+		expect(await readdir(c.scratchRoot)).toEqual([]);
 	});
 });

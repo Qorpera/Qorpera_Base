@@ -30,6 +30,7 @@ import {
 import {
 	CLOUD_NATIVE_TOOL_CATALOG_BYTES,
 	type CloudNativeTool,
+	CloudToolArgumentRefusal,
 	type CloudToolContext,
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
@@ -75,6 +76,14 @@ export interface CloudNativeCodingDriver {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const OPERATION_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
+/** A finish's picture, as the submit call takes it (20260930720000): a path from the top of the repository to a .png,
+ * .jpg, .jpeg or .webp file, at most 300 bytes, with no part that is `.` or `..`. */
+const PICTURE_PATH =
+	/^[A-Za-z0-9._-][A-Za-z0-9._ -]*(\/[A-Za-z0-9._-][A-Za-z0-9._ -]*)*\.(png|jpg|jpeg|webp|PNG|JPG|JPEG|WEBP)$/;
+const NOTICE_REFUSAL =
+	"notice is one line of at most 200 characters, with no line break or tab: one plain sentence on what a customer will notice. Leave it out when they will notice nothing.";
+const PICTURE_REFUSAL =
+	"picture is the path of a .png, .jpg, .jpeg or .webp file you committed, from the top of the repository, such as docs/changes/new-price.png: at most 300 bytes, no leading slash, no . or .. part, and only letters, digits, dots, hyphens, underscores and spaces in each name. Leave it out when there is no picture.";
 const PROMPT_BYTES = 64 * 1024;
 const INSTRUCTIONS =
 	"You are the coding session an agent started for a member. Work only on the repository and branch the cloud selected. " +
@@ -91,6 +100,9 @@ const INSTRUCTIONS =
 	"When the work and its checks are complete, commit on the current branch and call coding_finish with the commit SHA and a factual summary including failures; that records a submission for trusted publication: a repository kept in Qorpera gets the commit landed on its default branch, one on GitHub gets it pushed as a draft pull request. You have no messaging tool. " +
 	// 10 Nov 2026 (audit): a landing has no draft state and nothing checks it, so the session's own checks are the gate.
 	"In a repository kept in Qorpera the landing is at once and nothing stands between your finish and the company's code: finish there only with work that is whole. Write tests with a change that can be tested, run the project's tests and build before you finish and see them pass, and never remove or weaken a failing test to get there. Keep a README that says how to install, test, build and start the project. Say in the summary what a person will notice and which checks you ran. " +
+	// Own code storage, step 2b (10 Nov 2026): every landing is a numbered change with a record a founder reads. The
+	// sentence and the picture are the session's to give; a hand-in without them lands the same.
+	"With coding_finish, also give notice: one plain sentence, in the language of the brief, on what a customer of the company will notice, written for a founder who reads no code, so with no file, branch, commit or test name in it. Leave it out when a customer will notice nothing. When the change shows on a screen, give picture too: take a screenshot of the new screen with the machine's headless Chromium (chromium --headless --screenshot=<file> --window-size=1280,800 <address>), keep it small (a few hundred KB; one over 4 MB is not used), commit it under docs/changes/ with a name of its own, and give its path in the repository. Neither is required: never hold work back for them. " +
 	// Own code storage, slice 1 (8 Nov 2026): a repository kept in Qorpera starts empty, and its landing merges.
 	"A repository kept in Qorpera may start empty, with one commit and no files: build the project in it from scratch. When its default branch moved since your session began, the landing merges your commit with it; if the two conflict, the turn fails and says so: then run git merge with the default branch on your branch, resolve the conflicts, run the checks, commit and finish again. " +
 	"Every turn ends with coding_finish or coding_ask, never with a written answer alone: a turn that ends without one fails, and nothing of it is handed in. " +
@@ -587,13 +599,20 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			name: "coding_finish" satisfies CloudRuntimeToolOperation,
 			source: "worker",
 			description:
-				"End the turn with the exact committed head SHA on the session branch and a factual summary of the changes and check results. The platform validates that commit and hands it in: in a repository kept in Qorpera it lands on the default branch; on GitHub it is pushed and the draft pull request opened or updated. This is a durable submission, not proof that it landed. Stop modifying the repository after submitting.",
+				"End the turn with the exact committed head SHA on the session branch and a factual summary of the changes and check results. notice says in one plain sentence what a customer will notice, and picture names a screenshot you committed that shows it; both may be left out. The platform validates that commit and hands it in: in a repository kept in Qorpera it lands on the default branch; on GitHub it is pushed and the draft pull request opened or updated. This is a durable submission, not proof that it landed. Stop modifying the repository after submitting.",
 			inputSchema: {
 				type: "object",
 				properties: {
 					operationKey: { type: "string", pattern: OPERATION_KEY.source },
 					summary: { type: "string", minLength: 1, maxLength: 4000 },
 					headSha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+					notice: { type: "string", minLength: 1, maxLength: 200 },
+					picture: {
+						type: "string",
+						minLength: 1,
+						maxLength: 300,
+						description: "Its path from the top of the repository, such as docs/changes/new-price.png.",
+					},
 				},
 				required: ["operationKey", "summary", "headSha"],
 				additionalProperties: false,
@@ -601,7 +620,9 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			parseArguments(value) {
 				const input = record(value, "Invalid coding submission");
 				if (
-					Object.keys(input).sort().join() !== "headSha,operationKey,summary" ||
+					Object.keys(input).some(
+						(key) => !["operationKey", "summary", "headSha", "notice", "picture"].includes(key),
+					) ||
 					typeof input.operationKey !== "string" ||
 					!OPERATION_KEY.test(input.operationKey) ||
 					typeof input.summary !== "string" ||
@@ -611,7 +632,34 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					!/^[0-9a-f]{40}$/.test(input.headSha)
 				)
 					throw new Error("Invalid coding submission");
-				return { operationKey: input.operationKey, summary: input.summary, headSha: input.headSha };
+				// The two the change's record is made of (20260930720000): each is passed on only when given, and an empty
+				// one is one left out. A wrong shape is refused with what to change, so the same turn can hand in again.
+				const given = (field: unknown): unknown => (typeof field === "string" ? field.trim() || undefined : field);
+				const notice = given(input.notice);
+				const picture = given(input.picture);
+				if (
+					notice !== undefined &&
+					(typeof notice !== "string" ||
+						Array.from(notice).length > 200 ||
+						/[\u0000-\u001f\u007f]/.test(notice) ||
+						Buffer.from(notice).toString("utf8") !== notice)
+				)
+					throw new CloudToolArgumentRefusal(NOTICE_REFUSAL);
+				if (
+					picture !== undefined &&
+					(typeof picture !== "string" ||
+						Buffer.byteLength(picture) > 300 ||
+						!PICTURE_PATH.test(picture) ||
+						picture.split("/").some((part) => part === "." || part === ".."))
+				)
+					throw new CloudToolArgumentRefusal(PICTURE_REFUSAL);
+				return {
+					operationKey: input.operationKey,
+					summary: input.summary,
+					headSha: input.headSha,
+					...(notice === undefined ? {} : { notice }),
+					...(picture === undefined ? {} : { picture }),
+				};
 			},
 			execute: async (value, toolContext) => {
 				const input = finish.parseArguments(value) as Record<string, JsonValue>;
