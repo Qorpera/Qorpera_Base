@@ -71,6 +71,7 @@ function shop(extra: Partial<CodeReleaseSite> = {}): CodeReleaseSite {
 		},
 		waiting: 2,
 		problem: null,
+		givenUp: false,
 		...extra,
 	};
 }
@@ -194,6 +195,12 @@ describe("What's new: the read", () => {
 		).toThrow();
 		expect(bad((site) => Object.assign(site, { waiting: -1 }))).toThrow();
 		expect(() => parseCodeReleases({ schema: "qorpera.code-releases/v2", canRelease: true, sites: [] })).toThrow();
+		// givenUp: a kernel from before the key leaves it out, which reads as not given up; only true is given up.
+		const older = wire(releasesOf([shop()])) as { sites: Record<string, unknown>[] };
+		delete older.sites[0]!.givenUp;
+		expect(parseCodeReleases(older).sites[0]?.givenUp).toBe(false);
+		const given = wire(releasesOf([shop({ givenUp: true })]));
+		expect(parseCodeReleases(given).sites[0]?.givenUp).toBe(true);
 		expect(
 			parseCodeReleaseAnswer({ schema: "qorpera.code-release/v1", state: "live", version: 4, url: "x" }),
 		).toEqual({
@@ -411,9 +418,7 @@ describe("What's new: the page", () => {
 		],
 		[new CloudRpcError("x", { message: "no such repository", code: "P0002" }, 404), "the project is no longer there"],
 		[new CloudRpcError("x", { message: "boom", code: "XX000" }, 500), "something went wrong on Qorpera's side"],
-		[new CloudRpcError("x", { message: "TypeError: Failed to fetch", code: "" }, 0), "Qorpera could not be reached"],
-		[new Error("The cloud request timed out"), "Qorpera could not be reached"],
-	])("says why it did not go live, and that nothing changed (%s)", async (error, why) => {
+	])("says why it did not go live when Qorpera refused it, and that nothing changed (%s)", async (error, why) => {
 		const { view } = await page([releasesOf([shop()])], { putLive: () => Promise.reject(error) });
 		press(block(view), "Put it live");
 		await settle();
@@ -438,21 +443,130 @@ describe("What's new: the page", () => {
 		expect(client.putLive).toHaveBeenCalledOnce();
 	});
 
-	it("says it went live when no answer came but the page read after it shows the new version", async () => {
-		const after = shop({
-			live: { version: 4, kind: "release", since: timestamp, by: userA.id },
-			back: { version: 3 },
-			ready: null,
+	/** A page over a list whose answers are given one by one: a value, an error to throw, or a promise to hold. */
+	async function stepped(
+		answers: (CodeReleases | Error | Promise<CodeReleases>)[],
+		writes: { putLive?: () => Promise<CodeReleaseAnswer>; goBack?: () => Promise<CodeReleaseAnswer> },
+	) {
+		const controller = company();
+		const list = vi.fn(async () => {
+			const next = answers.shift() ?? releasesOf([shop()]);
+			if (next instanceof Error) throw next;
+			return structuredClone(await next);
 		});
-		const { view } = await page([releasesOf([shop()]), releasesOf([after])], {
-			putLive: () => Promise.reject(new Error("The cloud request timed out")),
-		});
+		const view = new WhatsNewView(
+			controller,
+			{ list, putLive: vi.fn(writes.putLive ?? vi.fn()), goBack: vi.fn(writes.goBack ?? vi.fn()) },
+			controller.signal,
+		);
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		await settle();
+		return { view, list };
+	}
+	const lost = () => Promise.reject(new CloudRpcError("x", { message: "TypeError: Failed to fetch", code: "" }, 0));
+	const fourLive = () =>
+		releasesOf([
+			shop({
+				live: { version: 4, kind: "release", since: timestamp, by: userA.id },
+				back: { version: 3 },
+				ready: null,
+			}),
+		]);
+	const focus = async () => {
+		window.dispatchEvent(new Event("focus"));
+		await settle();
+	};
+	const said = (view: WhatsNewView) =>
+		[...block(view).querySelectorAll(".service-outcome")].map((line) => line.textContent);
+
+	it("claims neither outcome when the answer is lost, says it is not known while reads fail, and settles with the first read that succeeds", async () => {
+		const followUp = deferred<CodeReleases>();
+		const { view, list } = await stepped(
+			[releasesOf([shop()]), followUp.promise, new Error("Failed to fetch"), fourLive(), fourLive()],
+			{ putLive: lost },
+		);
 		press(block(view), "Put it live");
 		await settle();
-		expect(block(view).querySelector(".whats-new-live + .service-outcome.is-ok")?.textContent).toBe(
-			"Version 4 is live.",
-		);
-		expect(block(view).querySelector(".service-outcome.is-error")).toBeNull();
+		// The write committed, and its answer was lost: neither "went live" nor "nothing changed" yet.
+		expect(said(view)).toEqual(["It may not have gone live: Qorpera could not be reached. Checking…"]);
+		expect(block(view).querySelector(".whats-new-live + .service-outcome")).not.toBeNull();
+		followUp.reject(new Error("Failed to fetch"));
+		await settle();
+		const unknown =
+			"Qorpera could not be reached, so it is not known whether it went live. Open this page again in a moment.";
+		expect(said(view)).toEqual([unknown]);
+		expect(text(view.el)).not.toContain("Nothing changed");
+		await focus();
+		expect(list).toHaveBeenCalledTimes(3);
+		expect(said(view)).toEqual([unknown]);
+		// The first read that succeeds settles it: the version is live.
+		await focus();
+		expect(said(view)).toEqual(["Version 4 is live."]);
+		// And the next one takes the line away: no old outcome over what a read shows.
+		await focus();
+		expect(list).toHaveBeenCalledTimes(5);
+		expect(said(view)).toEqual([]);
+	});
+
+	it("takes the line away when the read after a lost answer shows nothing changed, with the ready changes there again", async () => {
+		const { view } = await stepped([releasesOf([shop()]), releasesOf([shop()])], { putLive: lost });
+		press(block(view), "Put it live");
+		await settle();
+		expect(said(view)).toEqual([]);
+		expect(labels(block(view).querySelector(".whats-new-actions")!)).toEqual(["Put it live", "Not yet"]);
+	});
+
+	it("never lets a read that left before the press settle it", async () => {
+		const early = deferred<CodeReleases>();
+		const late = deferred<CodeReleases>();
+		const { view } = await stepped([releasesOf([shop()]), early.promise, late.promise], { putLive: lost });
+		// A read is out (the window came back) when the member presses.
+		window.dispatchEvent(new Event("focus"));
+		press(block(view), "Put it live");
+		await settle();
+		// It answers with the page as it was before the press: that settles nothing.
+		early.resolve(releasesOf([shop()]));
+		await settle();
+		expect(said(view)).toEqual(["It may not have gone live: Qorpera could not be reached. Checking…"]);
+		late.resolve(fourLive());
+		await settle();
+		expect(said(view)).toEqual(["Version 4 is live."]);
+	});
+
+	it("says the same of a Go back whose answer was lost, and settles it when the older version is live", async () => {
+		const gone = shop({ live: { version: 2, kind: "back", since: timestamp, by: userA.id }, back: null });
+		const { view } = await stepped([releasesOf([shop()]), new Error("Failed to fetch"), releasesOf([gone])], {
+			goBack: lost,
+		});
+		press(block(view), "Go back to version 2");
+		await settle();
+		press(dialog(), "Go back");
+		await settle();
+		expect(said(view)).toEqual([
+			"Qorpera could not be reached, so it is not known whether it went back. Open this page again in a moment.",
+		]);
+		await focus();
+		expect(said(view)).toEqual(["Version 2 is live."]);
+	});
+
+	it("takes any outcome away once a later read succeeds", async () => {
+		const { view } = await page([releasesOf([shop()]), fourLive()]);
+		press(block(view), "Put it live");
+		await settle();
+		expect(said(view)).toEqual(["Version 4 is live."]);
+		await focus();
+		expect(said(view)).toEqual([]);
+		const refused = await page([releasesOf([shop()])], {
+			putLive: () => Promise.reject(new CloudRpcError("x", { message: "", code: "42501" }, 403)),
+		});
+		press(block(refused.view), "Put it live");
+		await settle();
+		expect(said(refused.view)).toEqual([
+			"It did not go live: only founders and admins can put a version live. Nothing changed.",
+		]);
+		await focus();
+		expect(said(refused.view)).toEqual([]);
 	});
 
 	it("draws what is live again when Go back finds the page moved", async () => {
@@ -570,6 +684,17 @@ describe("What's new: the page", () => {
 		const notice = block(view).querySelector(".notice-warn");
 		expect(notice?.textContent).toBe(line);
 		expect(text(block(view))).not.toContain(problem);
+	});
+
+	it.each([
+		// Five failures of one change: no upload tries it again until a newer change is saved.
+		["SITE_UPLOAD_FAILED", "The newest version could not be prepared. The next change that is saved gets a new try."],
+		// The company's ten sites stay the reason, given up or not.
+		["SITE_LIMIT", "This project can't get a site: the company has 10. Take one offline in Sites."],
+	])("never says Qorpera is trying again once it stopped trying (%s)", async (problem, line) => {
+		const { view } = await page([releasesOf([shop({ problem, givenUp: true, ready: null })])]);
+		expect(block(view).querySelector(".notice-warn")?.textContent).toBe(line);
+		expect(text(block(view))).not.toContain("trying again");
 	});
 
 	it("leaves the name out when the member who said go left the company", async () => {
