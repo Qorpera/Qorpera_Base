@@ -10,6 +10,7 @@ import { parseRoute, type Route, routeHash } from "../src/app/router.ts";
 import { messageText, renderInterface, renderInterfaceFile } from "../src/app/views/interface.ts";
 import { renderRail } from "../src/app/views/shell.ts";
 import { EMPTY_APP_LAYOUT, type MemberAppLayout, parseAppGroups } from "../src/cloud/app-groups.ts";
+import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { colourNameHex } from "../src/ui/avatar.ts";
 import { h } from "../src/ui/dom.ts";
@@ -1605,5 +1606,19 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		expect(controller.store.get().appLayout).toEqual({ layout: EMPTY_APP_LAYOUT, updatedAt: null });
 		await controller.changeAppLayout({ ...EMPTY_APP_LAYOUT, groups: { market: { name: "Sales" } } });
 		expect(set).toHaveBeenLastCalledWith(profileA.profileId, expect.anything(), null);
+	});
+	it("keeps the drawer draggable after a reset on a cloud without each member's apps layout (review F2 on #1678, round 4)", async () => {
+		localStorage.clear();
+		const { controller, f } = drawer();
+		vi.spyOn(f.api, "readMemberAppLayout").mockRejectedValue(
+			new CloudRpcError("qorpera_member_app_layout", { message: "missing", code: "PGRST202" }, 404),
+		);
+		vi.spyOn(
+			controller as unknown as { changeSidebar: (r: unknown) => Promise<boolean> },
+			"changeSidebar",
+		).mockResolvedValue(true);
+		await controller.resetSidebar();
+		expect(controller.resettingSidebar()).toBe(false);
+		expect(controller.store.get().appLayoutUnavailable).toBe(true);
 	});
 });

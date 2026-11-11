@@ -207,6 +207,17 @@ export function arrangeApps(
 	layout: MemberAppLayout,
 	present: readonly string[],
 ): AppTreeNode[] {
+	return arrangeAppsFully(company, layout, present).tree;
+}
+
+/** `arrangeApps`, and the places the arrangement refused (they broke it); the drawer leaves those out of the next
+ * change it writes, so a refused place never comes back later nor outweighs a newer move. */
+export function arrangeAppsFully(
+	company: readonly AppTreeNode[],
+	layout: MemberAppLayout,
+	present: readonly string[],
+): { tree: AppTreeNode[]; refused: ReadonlySet<string> } {
+	const refused = new Set<string>();
 	const have = new Set(present);
 	const seen = new Set<string>();
 	const tree = clone(company, have, seen);
@@ -282,6 +293,7 @@ export function arrangeApps(
 			(b.place.at ?? 0) > (a.place.at ?? 0) || ((b.place.at ?? 0) === (a.place.at ?? 0) && b.key > a.key) ? b : a,
 		);
 		held.delete(newestCulprit.key);
+		refused.add(newestCulprit.key);
 	}
 	const newest = (a: Held, b: Held) => (b.place.at ?? 0) - (a.place.at ?? 0) || (a.key < b.key ? -1 : 1);
 	const oldest = (a: Held, b: Held) => -newest(a, b);
@@ -328,7 +340,7 @@ export function arrangeApps(
 			node.items = prune(node.items);
 			return node.items.length ? [node] : [];
 		});
-	return prune(tree);
+	return { tree: prune(tree), refused };
 }
 
 export interface AppTile {
@@ -355,6 +367,12 @@ export function appsIn(node: AppTreeNode): string[] {
 }
 
 /* ---- Changes to the member's document --------------------------------------------------------------------------- */
+
+/** The member's document without the places an arrangement refused. */
+export function withoutRefused(layout: MemberAppLayout, refused: ReadonlySet<string>): MemberAppLayout {
+	if (!refused.size) return layout;
+	return { ...layout, places: Object.fromEntries(Object.entries(layout.places).filter(([key]) => !refused.has(key))) };
+}
 
 /** Sets or takes away a place; a new one is the newest (`at`). */
 function withPlace(layout: MemberAppLayout, key: string, place: AppPlace | undefined): MemberAppLayout {

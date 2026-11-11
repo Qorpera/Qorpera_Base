@@ -1216,7 +1216,8 @@ export class CompanyController {
 		const reset = this.#appLayoutWrites
 			.then(() => this.changeSidebar({ action: undo ? "undo_reset" : "reset" }))
 			.then(async (done) => {
-				if (!done) return done;
+				// A cloud without each member's apps layout (before 20260930723000) has none to read again.
+				if (!done || this.store.get().appLayoutUnavailable) return done;
 				// The layout as the reset left it, read here and taken whatever other read is on its way; until one is
 				// taken, moves stay held (a failed read leaves them held until a later read works).
 				this.#appLayoutStale = true;
@@ -1226,8 +1227,12 @@ export class CompanyController {
 					// Reads sent before this one are dropped when they land (their version is older); this one is always taken.
 					if (!this.#stopped) this.store.set({ appLayout: read });
 					this.#appLayoutStale = false;
-				} catch {
-					/* Moves wait for the next read that works. */
+				} catch (error) {
+					// No such read on this cloud: nothing to wait for. Otherwise moves wait for the next read that works.
+					if (error instanceof CloudRpcError && error.missing) {
+						this.#appLayoutStale = false;
+						this.store.set({ appLayoutUnavailable: true });
+					}
 				}
 				return done;
 			})

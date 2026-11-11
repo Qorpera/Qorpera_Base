@@ -5,7 +5,7 @@ import {
 	type AppTile,
 	type AppTreeNode,
 	appsIn,
-	arrangeApps,
+	arrangeAppsFully,
 	drawerKey,
 	EMPTY_APP_LAYOUT,
 	fileKey,
@@ -13,12 +13,14 @@ import {
 	groupIdOf,
 	groupsOf,
 	isGroupKey,
+	type MemberAppLayout,
 	makeAppGroup,
 	nodeKey,
 	placeApp,
 	renameAppGroup,
 	suggestGroupName,
 	ungroupApps,
+	withoutRefused,
 } from "../../cloud/app-groups.ts";
 import type { InterfacePageName } from "../../cloud/interface-pages.ts";
 import type { MemberContactPlacing } from "../../cloud/member-chats.ts";
@@ -377,6 +379,8 @@ interface RailParts {
 	 * device, each group's tile, and the keys the grid showed, so a change of them glides. */
 	appTree: AppTreeNode[];
 	appTiles: AppTile[];
+	/** The member's places the arrangement refused; the next change leaves them out. */
+	appRefused: ReadonlySet<string>;
 	appGroupsOpen: Set<string>;
 	groupRows: Map<string, { shown: string; element: HTMLElement }>;
 	appKeysShown: string | undefined;
@@ -650,6 +654,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			appsOrder: storedAppsOrder(company.profile.profileId),
 			appTree: [],
 			appTiles: [],
+			appRefused: new Set(),
 			appGroupsOpen: storedGroupsOpen(company.profile.profileId),
 			groupRows: new Map(),
 			appKeysShown: undefined,
@@ -1879,7 +1884,10 @@ function drawInterfaces(
 	// neither names stands loose in the order above.
 	const state = company.store.get();
 	const byKey = new Map(ordered.map((element) => [fileKey(element.dataset.appKey ?? ""), element]));
-	const tree = arrangeApps(state.appGroups ?? [], state.appLayout?.layout ?? EMPTY_APP_LAYOUT, [...byKey.keys()]);
+	const { tree, refused } = arrangeAppsFully(state.appGroups ?? [], state.appLayout?.layout ?? EMPTY_APP_LAYOUT, [
+		...byKey.keys(),
+	]);
+	parts.appRefused = refused;
 	const tiles = flattenApps(tree, parts.appGroupsOpen);
 	const colourOf = (key: string | undefined) => (key ? colourHex(colours.get(drawerKey(key))) : undefined);
 	const groupRows = new Map<string, { shown: string; element: HTMLElement }>();
@@ -2023,6 +2031,12 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 	}
 }
 
+/** The member's document as the next change builds on it: without the places the drawer's arrangement refused. */
+function ownAppLayout(company: CompanyController, parts: RailParts): MemberAppLayout | undefined {
+	const layout = company.store.get().appLayout?.layout;
+	return layout && withoutRefused(layout, parts.appRefused);
+}
+
 /** Whether the drawer's arrangement is the member's own to change (20260930723000). */
 function appsArrangeable(company: CompanyController): boolean {
 	const state = company.store.get();
@@ -2047,7 +2061,7 @@ function toggleAppGroup(company: CompanyController, parts: RailParts, id: string
 /** A drag or Alt-arrow move in the drawer: the moved tile joins the group of the tile before it (the group itself when
  * that tile is an open group's), standing after it. */
 function moveInDrawer(company: CompanyController, parts: RailParts, order: readonly string[], moved: string): void {
-	const layout = company.store.get().appLayout?.layout;
+	const layout = ownAppLayout(company, parts);
 	if (!layout) return;
 	const keys = order.map(fileKey);
 	const key = fileKey(moved);
@@ -2075,7 +2089,7 @@ function canMergeApps(parts: RailParts, dragged: string, onto: string): boolean 
 }
 
 async function mergeApps(company: CompanyController, parts: RailParts, dragged: string, onto: string): Promise<void> {
-	const layout = company.store.get().appLayout?.layout;
+	const layout = ownAppLayout(company, parts);
 	const to = parts.appTiles.find((tile) => tile.key === fileKey(onto));
 	if (!layout || !to) return;
 	const key = fileKey(dragged);
@@ -2094,7 +2108,7 @@ async function mergeApps(company: CompanyController, parts: RailParts, dragged: 
 		maxLength: APP_GROUP_NAME_LIMIT,
 		signal: company.signal,
 	});
-	const now = company.store.get().appLayout?.layout;
+	const now = ownAppLayout(company, parts);
 	if (!name || !now) return;
 	const id = `m-${crypto.randomUUID().slice(0, 8)}`;
 	parts.appGroupsOpen.add(id);
@@ -2780,7 +2794,7 @@ function openDrawerMenu(company: CompanyController, parts: RailParts, event: Mou
 function moveToMenu(company: CompanyController, parts: RailParts, key: string): MenuEntry {
 	const here = parts.appTiles.find((tile) => tile.key === key)?.chain.at(-1) ?? null;
 	const move = (group: string | null) => () => {
-		const layout = company.store.get().appLayout?.layout;
+		const layout = ownAppLayout(company, parts);
 		if (!layout || group === here) return;
 		const target = group ? groupsOf(parts.appTree).find((entry) => entry.group.id === group)?.group : undefined;
 		const last = target ? target.items.at(-1) : parts.appTree.at(-1);
@@ -2820,7 +2834,7 @@ function groupMenu(company: CompanyController, parts: RailParts, id: string): Me
 					maxLength: APP_GROUP_NAME_LIMIT,
 					signal: company.signal,
 				});
-				const layout = company.store.get().appLayout?.layout;
+				const layout = ownAppLayout(company, parts);
 				if (name && layout) void company.changeAppLayout(renameAppGroup(layout, id, name, companyName));
 			},
 		},
@@ -2828,7 +2842,7 @@ function groupMenu(company: CompanyController, parts: RailParts, id: string): Me
 			label: t("Ungroup"),
 			icon: "grid",
 			select: () => {
-				const layout = company.store.get().appLayout?.layout;
+				const layout = ownAppLayout(company, parts);
 				if (!layout) return;
 				parts.appGroupsOpen.delete(id);
 				storeGroupsOpen(company.profile.profileId, parts.appGroupsOpen);

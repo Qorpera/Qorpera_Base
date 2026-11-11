@@ -3,6 +3,7 @@ import {
 	type AppTreeNode,
 	appLayoutChanges,
 	arrangeApps,
+	arrangeAppsFully,
 	EMPTY_APP_LAYOUT,
 	flattenApps,
 	type MemberAppLayout,
@@ -13,6 +14,7 @@ import {
 	renameAppGroup,
 	suggestGroupName,
 	ungroupApps,
+	withoutRefused,
 } from "../src/cloud/app-groups.ts";
 
 const FILE = `# Apps
@@ -277,5 +279,44 @@ describe("the member's own arrangement", () => {
 		// A group never goes into itself, nor three levels deep.
 		const loop = placeApp(mine, arrangeApps(company, mine, keys), "group:c", "a", null);
 		expect(shape(arrangeApps(company, loop, keys))).toEqual(shape(arrangeApps(company, mine, keys)));
+	});
+
+	it("never brings back a move the drawer refused, nor lets it outweigh a newer one (review F1 on #1678, round 4)", () => {
+		// The drawer writes each change on the document as it stands, less the places the arrangement refused.
+		const write = (
+			company: AppTreeNode[],
+			mine: MemberAppLayout,
+			keys: string[],
+			change: (layout: MemberAppLayout, tree: AppTreeNode[]) => MemberAppLayout,
+		) => {
+			const { tree, refused } = arrangeAppsFully(company, mine, keys);
+			return change(withoutRefused(mine, refused), tree);
+		};
+		// A: Y holds Q, so Y into W is refused; Q moved out later must not let Y jump into W.
+		const a = parseAppGroups("- group y: Y\n  - group q: Q\n    - app:q\n  - app:y\n- group w: W\n  - app:w\n");
+		const aKeys = ["app:q", "app:y", "app:w"];
+		let mine = write(a, EMPTY_APP_LAYOUT, aKeys, (l, t) => placeApp(l, t, "group:y", "w", "app:w"));
+		expect(shape(arrangeApps(a, mine, aKeys))[0]).toEqual(["group:y Y", ["group:q Q", "app:q"], "app:y"]);
+		mine = write(a, mine, aKeys, (l, t) => placeApp(l, t, "group:q", null, null));
+		expect(shape(arrangeApps(a, mine, aKeys))).toEqual([
+			["group:q Q", "app:q"],
+			["group:y Y", "app:y"],
+			["group:w W", "app:w"],
+		]);
+		// B: the member put Z into Y; the company then puts Y into X, so that place is refused; Y into W then holds.
+		const before = parseAppGroups(
+			"- group x: X\n  - app:x\n- group y: Y\n  - app:y\n- group z: Z\n  - app:z\n- group w: W\n  - app:w\n",
+		);
+		const after = parseAppGroups(
+			"- group x: X\n  - app:x\n  - group y: Y\n    - app:y\n- group z: Z\n  - app:z\n- group w: W\n  - app:w\n",
+		);
+		const bKeys = ["app:x", "app:y", "app:z", "app:w"];
+		let own = write(before, EMPTY_APP_LAYOUT, bKeys, (l, t) => placeApp(l, t, "group:z", "y", "app:y"));
+		own = write(after, own, bKeys, (l, t) => placeApp(l, t, "group:y", "w", "app:w"));
+		expect(shape(arrangeApps(after, own, bKeys))).toEqual([
+			["group:x X", "app:x"],
+			["group:z Z", "app:z"],
+			["group:w W", "app:w", ["group:y Y", "app:y"]],
+		]);
 	});
 });
