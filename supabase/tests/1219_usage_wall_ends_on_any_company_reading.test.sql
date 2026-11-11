@@ -105,7 +105,11 @@ select pg_temp.base_assert(pg_temp.w_near(pg_temp.w_wall(2), interval '5 days'),
 	'a reading with room ended the wall after a newer full reading: ' || pg_temp.w_text(pg_temp.w_wall(2)));
 select pg_temp.w_reading(2, interval '2 hours', 100, interval '6 days') \g /dev/null
 -- At the same time, room wins.
-select pg_temp.w_reading(2, interval '1 minute', 100, interval '6 days') \g /dev/null
+update public.qorpera_native_provider_account_metadata as full_reading
+set provider_account_usage = jsonb_set(full_reading.provider_account_usage, '{observedAt}',
+	room_reading.provider_account_usage -> 'observedAt')
+from public.qorpera_native_provider_account_metadata as room_reading
+where full_reading.connection_id = pg_temp.w_id(1, 2) and room_reading.connection_id = pg_temp.w_id(1, 1);
 select pg_temp.base_assert(pg_temp.w_wall(2) is null,
 	'a full reading at the same time as the reading with room kept the wall: ' || pg_temp.w_text(pg_temp.w_wall(2)));
 select pg_temp.w_reading(2, interval '2 hours', 100, interval '6 days') \g /dev/null
