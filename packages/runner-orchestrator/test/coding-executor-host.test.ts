@@ -5395,11 +5395,15 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				})
 			: undefined;
 		const logged: Record<string, unknown>[] = [];
+		// A mock, so that the order of its lines can be read beside the guest's calls (invocationCallOrder).
+		const report = vi.fn((event: Record<string, unknown>) => {
+			logged.push(event);
+		});
 		const host = new LxdCodingExecutorHost({
 			...f.options,
 			folder: {
 				...f.folder,
-				report: (event) => logged.push(event),
+				report,
 				checksPollMs: 5,
 				checksStopMs: options.stopMs ?? 300,
 				...(options.budgetMs === undefined ? {} : { checksBudgetMs: options.budgetMs }),
@@ -5489,6 +5493,13 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			host,
 			session,
 			logged,
+			/** When the log line of `step` for `commandId` was written, in the order of every mock's calls. */
+			loggedAt: (step: string, commandId: string) =>
+				report.mock.calls.flatMap(([event], at) =>
+					event.step === step && event.commandId === commandId
+						? [report.mock.invocationCallOrder[at] as number]
+						: [],
+				),
 			custody,
 			commands,
 			/** The commands the guest was asked to run, in order. */
@@ -6022,7 +6033,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 					step: "earlier",
 					attempt: 2,
 					commandId: check,
-					ended: false,
+					end: "running",
 				}),
 			);
 			// The turn's abort while it waits is thrown on, and starts nothing.
@@ -6113,7 +6124,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(f.logged).toContainEqual(
 				expect.objectContaining({
 					event: "code-checks",
-					step: "landed",
+					step: "looked",
 					attempt: 2,
 					commandId: landed.commandId,
 					end: "ended",
@@ -6141,7 +6152,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 					.map(checkOf),
 			).toEqual([undefined]);
 			expect(f.logged).toContainEqual(
-				expect.objectContaining({ step: "landed", attempt: 2, commandId: landed.commandId, end: "unconfirmed" }),
+				expect.objectContaining({ step: "looked", attempt: 2, commandId: landed.commandId, end: "running" }),
 			);
 			// It holds every later run before anything, until it has ended.
 			const before = f.ran().length;
@@ -6149,6 +6160,158 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(f.ran()).toHaveLength(before);
 			(f.commands.get(landed.commandId) as { state: CodingGuestCommandState }).state = "cancelled";
 			expect(await f.run(CHECKS.slice(0, 1), 4)).toMatchObject({ state: "passed" });
+		});
+
+		/** Review round 6, F1, in its order: a check's start is never answered; its first stop passes its bound (the guest
+		 * refuses every cancel); the retry's guard before the run then gets the provisional `cancelled`; the lost start lands
+		 * before the retry's folder exists (at the retry's first guest call, the stand-in guest shows it `running`). `stops`
+		 * says whether the guest's cancel of the landed command ends it. */
+		const timesOut = async (stops: boolean) => {
+			const f = await checksFixture();
+			const older = runName(f.claim.sequence, 1),
+				newer = runName(f.claim.sequence, 2);
+			const run = mocked.guestRun.getMockImplementation()!,
+				cancel = mocked.guestCancel.getMockImplementation()!;
+			let lost: CodingGuestRunRequest | undefined;
+			let refuse = true;
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const asked = parseCodingGuestRequest("run", request);
+				if (asked.environment.QORPERA_CHECKS_NAME === older && checkOf(asked)) {
+					lost = asked;
+					throw new Error("LXD operation failed");
+				}
+				// The lost start lands now, before the retry's copy runs.
+				if (
+					asked.environment.QORPERA_CHECKS_NAME === newer &&
+					!checkOf(asked) &&
+					lost &&
+					!f.commands.has(lost.commandId)
+				)
+					f.commands.set(lost.commandId, {
+						run: lost,
+						state: "running",
+						exit: null,
+						printed: Buffer.from("listening on 3000\n"),
+						ending: { state: "running" },
+						until: Number.POSITIVE_INFINITY,
+					});
+				return run(request);
+			});
+			mocked.guestCancel.mockImplementation(async (request: unknown) => {
+				const asked = parseCodingGuestRequest("cancel", request);
+				if (refuse && asked.commandId === lost?.commandId) throw new Error("LXD operation failed");
+				if (!stops && f.commands.get(asked.commandId)?.state === "running" && asked.commandId === lost?.commandId)
+					return {
+						schema: "qorpera.coding-guest-command/v1",
+						workerId: f.claim.workerId,
+						commandId: asked.commandId,
+						state: "running",
+						exit: null,
+						end: 0,
+					};
+				return cancel(request);
+			});
+			expect(await f.run(CHECKS.slice(0, 1))).toEqual({ state: "not_run", why: "transport", code: "UNCLASSIFIED" });
+			const checkId = (lost as CodingGuestRunRequest).commandId;
+			// Its first stop could not be confirmed.
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "ended", attempt: 1, index: 1, state: "not_run", stopped: false }),
+			);
+			refuse = false;
+			f.ending(() => ({}));
+			return { f, checkId, newer };
+		};
+
+		it("looks again after the retry's fence at a check whose start was never answered and whose first stop timed out (review round 6, F1)", async () => {
+			const { f, checkId, newer } = await timesOut(true);
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+			// The guard before the retry got the provisional `cancelled`: no longer held there.
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "earlier", attempt: 2, commandId: checkId, end: "ended" }),
+			);
+			// The start landed before the retry's folder; the retry's copy, then the landed check cancelled and read until it
+			// ended, then the retry's first check.
+			const [copy, check] = f.ran().filter((ran) => ran.environment.QORPERA_CHECKS_NAME === newer);
+			const copied = orderOf(mocked.guestRun, copy?.commandId as string)[0] as number,
+				checked = orderOf(mocked.guestRun, check?.commandId as string)[0] as number;
+			const looked = orderOf(mocked.guestCancel, checkId).filter((at) => at > copied);
+			expect(looked.length).toBeGreaterThan(0);
+			expect(Math.max(...looked)).toBeLessThan(checked);
+			expect(f.loggedAt("looked", checkId).every((at) => at > copied && at < checked)).toBe(true);
+			expect(f.commands.get(checkId)?.state).toBe("cancelled");
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "looked", attempt: 2, commandId: checkId, end: "ended" }),
+			);
+		});
+
+		it("starts no check of the retry when that landed check cannot be stopped (review round 6, F1)", async () => {
+			const { f, checkId, newer } = await timesOut(false);
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toEqual({
+				state: "not_run",
+				why: "machine",
+				code: "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED",
+			});
+			expect(
+				f
+					.ran()
+					.filter((ran) => ran.environment.QORPERA_CHECKS_NAME === newer)
+					.map(checkOf),
+			).toEqual([undefined]);
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "looked", attempt: 2, commandId: checkId, end: "running" }),
+			);
+		});
+
+		it("looks again after the next fence at a check whose receipt ended it as unconfirmed (review round 6, F1)", async () => {
+			const f = await checksFixture();
+			// The guest lost the check: its receipt says `unconfirmed`, with no word of how it ended.
+			f.ending((run) => (checkOf(run) ? { state: "lost" } : {}));
+			expect(await f.run(CHECKS.slice(0, 1))).toEqual({
+				state: "not_run",
+				why: "machine",
+				code: "CODE_CHECKS_UNCONFIRMED",
+			});
+			const lost = f.ran()[1]?.commandId as string;
+			f.ending(() => ({}));
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+			const [, copy, , check] = f.ran();
+			const copied = orderOf(mocked.guestRun, copy?.commandId as string)[0] as number,
+				checked = orderOf(mocked.guestRun, check?.commandId as string)[0] as number;
+			const looked = f.loggedAt("looked", lost);
+			expect(looked).toHaveLength(1);
+			expect([copied < (looked[0] as number), (looked[0] as number) < checked]).toEqual([true, true]);
+		});
+
+		it("looks again after the next fence at a check the machine showed nothing of when it ended (review round 6, F1)", async () => {
+			const f = await checksFixture();
+			// The check ends at once; then the machine's disk can no longer be said (`hidden`: `unconfirmed`), so nothing of
+			// the command may be shown, and one may still run there.
+			let armed: number | undefined;
+			const disk = mocked.disk.getMockImplementation()!;
+			mocked.disk.mockImplementation(async (...args: unknown[]) => {
+				if (armed !== undefined && ++armed >= 2) return "not a rebuild";
+				return disk(...args);
+			});
+			f.ending((run) => {
+				if (!checkOf(run)) return {};
+				armed = 0;
+				return { code: 0 };
+			});
+			expect(await f.run(CHECKS.slice(0, 1))).toEqual({
+				state: "not_run",
+				why: "machine",
+				code: "CODE_CHECKS_UNCONFIRMED",
+			});
+			armed = undefined;
+			const shown = f.ran()[1]?.commandId as string;
+			f.ending(() => ({}));
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+			const [, copy, , check] = f.ran();
+			const copied = orderOf(mocked.guestRun, copy?.commandId as string)[0] as number,
+				checked = orderOf(mocked.guestRun, check?.commandId as string)[0] as number;
+			const looked = f.loggedAt("looked", shown);
+			expect(looked).toHaveLength(1);
+			expect([copied < (looked[0] as number), (looked[0] as number) < checked]).toEqual([true, true]);
 		});
 
 		it("lets a copy whose start was never acknowledged land after the retry began: the retry is not held back, and the late copy does nothing (review round 4, F1)", async () => {
@@ -6244,7 +6407,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				code: "CODE_CHECKS_BUDGET",
 			});
 			expect(f.logged).toContainEqual(
-				expect.objectContaining({ step: "earlier", attempt: 2, commandId: first, ended: true }),
+				expect.objectContaining({ step: "earlier", attempt: 2, commandId: first, end: "lost" }),
 			);
 			const second = f.ran()[3]?.commandId as string;
 			expect(f.ran()).toHaveLength(4);
@@ -6253,7 +6416,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			f.ending(() => ({}));
 			expect(await f.run(CHECKS.slice(0, 1), 3)).toMatchObject({ state: "passed" });
 			expect(f.logged).toContainEqual(
-				expect.objectContaining({ step: "earlier", attempt: 3, commandId: second, ended: true }),
+				expect.objectContaining({ step: "earlier", attempt: 3, commandId: second, end: "unkept" }),
 			);
 		});
 	});
@@ -6435,7 +6598,14 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		 * TCP port of its own, as a check's test server does; or, without `listen`, one that only waits. */
 		const started: ChildProcess[] = [];
 		afterEach(() => {
-			for (const child of started.splice(0)) child.kill("SIGKILL");
+			// Each helper is the leader of a process group of its own: the whole group goes, its server child too, also when
+			// an assertion failed.
+			for (const child of started.splice(0))
+				try {
+					if (child.pid) process.kill(-child.pid, "SIGKILL");
+				} catch {
+					/* gone already */
+				}
 		});
 		const stale = async (cwd: string, listen = false) => {
 			const server = listen
@@ -6443,6 +6613,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				: "setInterval(() => {}, 1000); process.stdout.write('0\\n');";
 			const child = spawn("bash", ["--noprofile", "--norc", "-c", `"${process.execPath}" -e "${server}" & wait`], {
 				cwd,
+				detached: true,
 				stdio: ["ignore", "pipe", "ignore"],
 			});
 			started.push(child);
