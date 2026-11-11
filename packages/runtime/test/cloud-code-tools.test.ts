@@ -559,37 +559,41 @@ describe("manage_code undo: one answer in plain words per way it can go", () => 
 	});
 
 	it("says an undo is still being made when its wait ends, and the same call again goes on waiting for it", async () => {
-		let ended = false;
-		const f = await fixture(
-			(method) =>
-				method === UNDO
-					? queued
-					: ended
-						? stands({ state: "done", result: "undone", change: 15 })
-						: stands({ state: "running" }),
-			{ lookMs: 5, waitMs: 40 },
-		);
+		vi.useFakeTimers();
 		try {
-			const started = performance.now();
-			expect(await f.invoke(undo)).toEqual({
-				success: true,
-				status: "ok",
-				text: "The undo of change 12 is still being made. Call manage_code undo for it again to see how it went.",
-			});
-			// It waited its whole time, looking more than once, and no longer: a look at the start and one every 5 ms
-			// through the 40th is nine; one more for a timer's rounding.
-			expect(performance.now() - started).toBeGreaterThanOrEqual(35);
-			const looks = f.methods().filter((method) => method === STANDS).length;
-			expect(looks).toBeGreaterThan(1);
-			expect(looks).toBeLessThanOrEqual(10);
-			// The same call again (the kernel answers the same request to the same key) reads how it went.
-			ended = true;
-			expect((await f.invoke(undo)).text).toBe(
-				"Change 12 is undone. Main is as it was without it. This is change 15: code/acme/shop/changes/15.md. Check code/acme/shop/main/ before you tell anyone.",
+			let ended = false;
+			const f = await fixture(
+				(method) =>
+					method === UNDO
+						? queued
+						: ended
+							? stands({ state: "done", result: "undone", change: 15 })
+							: stands({ state: "running" }),
+				{ lookMs: 5, waitMs: 40 },
 			);
-			expect(f.calls.filter((call) => call.method === UNDO).map((call) => call.args.p_request)).toHaveLength(2);
+			try {
+				const first = f.invoke(undo);
+				await vi.advanceTimersByTimeAsync(40);
+				expect(await first).toEqual({
+					success: true,
+					status: "ok",
+					text: "The undo of change 12 is still being made. Call manage_code undo for it again to see how it went.",
+				});
+				// It paused 5 ms before each look and looked through its whole 40 ms: eight looks, and no ninth.
+				expect(f.methods().filter((method) => method === STANDS)).toHaveLength(8);
+				// The same call again (the kernel answers the same request to the same key) reads how it went.
+				ended = true;
+				const second = f.invoke(undo);
+				await vi.advanceTimersByTimeAsync(5);
+				expect((await second).text).toBe(
+					"Change 12 is undone. Main is as it was without it. This is change 15: code/acme/shop/changes/15.md. Check code/acme/shop/main/ before you tell anyone.",
+				);
+				expect(f.calls.filter((call) => call.method === UNDO).map((call) => call.args.p_request)).toHaveLength(2);
+			} finally {
+				f.run.close();
+			}
 		} finally {
-			f.run.close();
+			vi.useRealTimers();
 		}
 	});
 
