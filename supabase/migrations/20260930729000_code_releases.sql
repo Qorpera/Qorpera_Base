@@ -31,7 +31,7 @@
 --    only as CODING_CONTROL_UNCONFIRMED.
 -- 4. The member's calls: qorpera_list_code_releases (any member), qorpera_put_code_release_live and
 --    qorpera_code_release_back (owners and admins).
--- 5. Thirteen existing functions change, each by anchors on its definition as it is (an anchor that is not found
+-- 5. Fourteen existing functions change, each by anchors on its definition as it is (an anchor that is not found
 --    exactly once fails the migration), and each changed body carries the marker 20260930729000:
 --    * qorpera_code_checks_switch answers `site` too;
 --    * qorpera_code_change_report_valid and qorpera_record_code_change take v3;
@@ -44,6 +44,7 @@
 --      folder under code/;
 --    * qorpera_list_company_sites: a code site only while it is live, its row exactly qorpera.company-site/v1;
 --    * qorpera_site_abandoned: never a code site.
+--    * qorpera_unpublish_company_site: a member who takes a repository's site offline has its list file written again.
 --
 -- Who may call: section 3 the service role only, as the coding executor that holds the company (the custody check of
 -- qorpera_code_hosts_deleting, 42501 otherwise, and care's holder rule: an executor that is not the environment's one
@@ -1174,6 +1175,17 @@ select pg_temp.code_releases_patch('public.qorpera_site_abandoned(public.qorpera
 	select p_site.code_owner is null
 		and case when p_site.kind = 'app' then p_site.published_at is null else p_site.current_version_id is null end$new$]);
 
+-- A member who takes a repository's site offline in Sites: its list file says so.
+select pg_temp.code_releases_patch('public.qorpera_unpublish_company_site(uuid)'::regprocedure, array[
+	$old$	delete from public.qorpera_company_sites where id = p_site_id;$old$,
+	$new$	-- 20260930729000: a repository's site goes with its kept versions and its way back: the repository's list file is
+	-- written again (nothing is live), and the next change whose checks pass makes the site anew.
+	update public.qorpera_code_repositories repository set index_version = repository.index_version + 1
+	from public.qorpera_company_sites site
+	where site.id = p_site_id and repository.environment_id = site.environment_id and repository.owner = site.code_owner
+		and repository.name = site.code_name;
+	delete from public.qorpera_company_sites where id = p_site_id;$new$]);
+
 -- 7. Grants, and the deploy guard --------------------------------------------------------------------------------------
 
 revoke all on function public.qorpera_code_site_valid(jsonb),
@@ -1239,7 +1251,8 @@ begin
 		'public.qorpera_site_publish_begin(jsonb,text,jsonb,uuid)',
 		'public.qorpera_site_unpublish(jsonb,text)',
 		'public.qorpera_list_company_sites(uuid)',
-		'public.qorpera_site_abandoned(public.qorpera_company_sites)'
+		'public.qorpera_site_abandoned(public.qorpera_company_sites)',
+		'public.qorpera_unpublish_company_site(uuid)'
 	]::regprocedure[] loop
 		if strpos((select prosrc from pg_proc where oid = v_function), '20260930729000') = 0 then
 			raise exception '20260930729000 is missing from %', v_function; end if;

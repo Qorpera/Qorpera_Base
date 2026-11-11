@@ -365,7 +365,8 @@ begin
 		'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)',
 		'public.qorpera_coding_turn_failure(public.qorpera_runtime_workers,text)', 'public.qorpera_site_publish_check(jsonb,text)',
 		'public.qorpera_site_publish_begin(jsonb,text,jsonb,uuid)', 'public.qorpera_site_unpublish(jsonb,text)',
-		'public.qorpera_list_company_sites(uuid)', 'public.qorpera_site_abandoned(public.qorpera_company_sites)'] loop
+		'public.qorpera_list_company_sites(uuid)', 'public.qorpera_site_abandoned(public.qorpera_company_sites)',
+		'public.qorpera_unpublish_company_site(uuid)'] loop
 		perform pg_temp.base_assert(strpos(pg_get_functiondef(v_function::regprocedure), '20260930729000') > 0,
 			'the marker is in ' || v_function);
 	end loop;
@@ -497,7 +498,7 @@ end $$;
 -- 3. The switch, inheriting rows, the platform's line and the rounds ----------------------------------------------------------
 do $$
 declare w uuid := pg_temp.rec_turn(1620, 1, pg_temp.rec_sha('s1'), '{}', pg_temp.own_repo('company', 'said')); v jsonb;
-	v_bundle text; v_tail text; v_other uuid; v_nowhere uuid;
+	v_bundle text; v_tail text; v_line text; v_other uuid; v_nowhere uuid;
 	v_site_words constant text := 'Nothing went into main: every check passed, but the site in "dist" has no index.html at its '
 		|| 'top. Fix it in the code or in the checks file''s "site", and finish again.';
 	v_failed constant text := 'Nothing went into main: the check "build" failed on this change. Fix the cause in the code.';
@@ -545,21 +546,21 @@ begin
 	perform pg_temp.base_assert(pg_temp.rec_record(w, pg_temp.rel_report('landed', pg_temp.rec_sha('s1'), pg_temp.rec_sha('s0'),
 		pg_temp.rec_sha('s1'), pg_temp.rel_passed('s1'), pg_temp.rel_made('s1'))) = pg_temp.rec_answer('recorded', 1), 'said 1');
 	v_tail := ' Its checks passed: build. Qorpera keeps its site for What''s new, where a member puts it live.';
-	perform pg_temp.base_assert(right(pg_temp.rel_complete(w, 's1'), length(v_tail)) = v_tail,
-		'made: ' || (select result ->> 'summary' from public.qorpera_runtime_workers where id = w));
+	v_line := pg_temp.rel_complete(w, 's1');
+	perform pg_temp.base_assert(right(v_line, length(v_tail)) = v_tail, 'made: ' || coalesce(v_line, 'none'));
 	w := pg_temp.rec_turn(1626, 1, pg_temp.rec_sha('s2'), '{}', pg_temp.own_repo('company', 'said'));
 	perform pg_temp.base_assert(pg_temp.rec_record(w, pg_temp.rel_report('landed', pg_temp.rec_sha('s2'), pg_temp.rec_sha('s1'),
 		pg_temp.rec_sha('s2'), pg_temp.rel_passed('s2'), pg_temp.rel_missed())) = pg_temp.rec_answer('recorded', 2), 'said 2');
 	v_tail := ' Its checks passed: build. Qorpera could not keep its site this time (SITE_BOUNDARY); the next change that '
 		|| 'goes in keeps one.';
-	perform pg_temp.base_assert(right(pg_temp.rel_complete(w, 's2'), length(v_tail)) = v_tail,
-		'missed: ' || (select result ->> 'summary' from public.qorpera_runtime_workers where id = w));
+	v_line := pg_temp.rel_complete(w, 's2');
+	perform pg_temp.base_assert(right(v_line, length(v_tail)) = v_tail, 'missed: ' || coalesce(v_line, 'none'));
 	w := pg_temp.rec_turn(1627, 1, pg_temp.rec_sha('s3'), '{}', pg_temp.own_repo('company', 'said'));
 	perform pg_temp.base_assert(pg_temp.rec_record(w, pg_temp.rel_report('landed', pg_temp.rec_sha('s3'), pg_temp.rec_sha('s2'),
 		pg_temp.rec_sha('s3'), pg_temp.rel_passed('s3'), 'null')) = pg_temp.rec_answer('recorded', 3), 'said 3');
 	v_tail := '.md. Its checks passed: build.';
-	perform pg_temp.base_assert(right(pg_temp.rel_complete(w, 's3'), length(v_tail)) = v_tail,
-		'no site: ' || (select result ->> 'summary' from public.qorpera_runtime_workers where id = w));
+	v_line := pg_temp.rel_complete(w, 's3');
+	perform pg_temp.base_assert(right(v_line, length(v_tail)) = v_tail, 'no site: ' || coalesce(v_line, 'none'));
 
 	-- A refused site keeps the executor's words and its code, and counts as a round with the failed checks.
 	perform pg_temp.base_assert(pg_temp.rel_fail(1629, 1, v_site_words || ' [code=CODING_CHECKS_SITE_REFUSED]')
@@ -1167,7 +1168,8 @@ end $$;
 
 -- 9. publish_site, the list file, a site taken offline ---------------------------------------------------------------------
 do $$
-declare v jsonb; p jsonb; v_source text; s public.qorpera_company_sites%rowtype; v_password text; v_new public.qorpera_company_sites%rowtype;
+declare v jsonb; p jsonb; v_source text; s public.qorpera_company_sites%rowtype; v_password text; v_index bigint;
+	v_new public.qorpera_company_sites%rowtype;
 	v_from_code constant text := 'SITE_FROM_CODE: this site is made from code kept in Qorpera; a member puts it live in What''s new';
 	v_under_code constant text := 'SITE_FROM_CODE: source must not be under code/: a repository kept in Qorpera goes live only '
 		|| 'through What''s new, on a member''s yes';
@@ -1209,6 +1211,7 @@ begin
 	-- upload makes it again, with its name and a new password.
 	s := pg_temp.rel_site_row('a1-web');
 	v_password := (select password from public.qorpera_company_site_secrets where site_id = s.id);
+	v_index := (pg_temp.rec_shop('a1-web')).index_version;
 	perform pg_temp.base_assert(pg_temp.req_as(pg_temp.req_owner(), format('public.qorpera_unpublish_company_site(%L)', s.id))
 		->> 'removed' = 'true', 'offline');
 	p := pg_temp.rel_page('a1-web');
@@ -1216,7 +1219,9 @@ begin
 		and not exists (select 1 from public.qorpera_company_site_versions where site_id = s.id)
 		and (select count(*) = 4 and bool_and(version_id is null) from public.qorpera_code_releases where name = 'a1-web')
 		and p = '{"owner":"company","name":"a1-web","site":null,"live":null,"back":null,"ready":null,"waiting":4,"problem":null}'
-		and pg_temp.rel_due_of('a1-web') = 4, 'gone: ' || p::text);
+		and pg_temp.rel_due_of('a1-web') = 4 and (pg_temp.rec_shop('a1-web')).index_version = v_index + 1
+		and pg_temp.rec_files(20, 'a1-web') -> 'index' -> 'live' = 'null'
+		and pg_temp.rec_files(20, 'a1-web') -> 'index' -> 'ready' = 'null', 'gone: ' || p::text);
 	perform pg_temp.rel_upload('a1-web', 4, 'w4');
 	v_new := pg_temp.rel_site_row('a1-web');
 	p := pg_temp.rel_page('a1-web');
