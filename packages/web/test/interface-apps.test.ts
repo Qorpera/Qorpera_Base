@@ -407,16 +407,17 @@ describe("the company's apps", () => {
 		]);
 	});
 
-	it("reads ahead each app's page with the files it names and the company's colours, but no videos", async () => {
+	it("reads ahead each app's page with the files it names and the company's colours, but no long videos", async () => {
 		const f = fakeFolder({
 			"apps/sales/app.toml": 'name = "Sales"\n',
 			"apps/sales/index.html":
-				'<link rel="stylesheet" href="look.css"><script src="app.js"></script><img src="big.png"><video src="clip.mp4"></video>',
+				'<link rel="stylesheet" href="look.css"><script src="app.js"></script><img src="big.png"><video src="clip.mp4"></video><video src="film.mp4"></video>',
 			"apps/sales/look.css": "body{background:url(back.webp)}",
 			"apps/sales/back.webp": "w",
 			"apps/sales/app.js": "1",
 			"apps/sales/big.png": "x",
 			"apps/sales/clip.mp4": "v",
+			"apps/sales/film.mp4": new Uint8Array(2 * 1024 * 1024 + 1),
 			"apps/sales/unused.png": "u",
 			"apps/plan/app.toml": 'name = "Plan"\nentry = "pages/start.html"\n',
 			"apps/plan/pages/start.html": "<p>",
@@ -434,15 +435,17 @@ describe("the company's apps", () => {
 				"apps/sales/back.webp",
 				"apps/sales/app.js",
 				"apps/sales/big.png",
+				"apps/sales/clip.mp4",
 				"apps/plan/pages/start.html",
 			]),
 		);
-		// Videos wait for the open, and a file the page doesn't name is never read.
-		expect(f.reads).not.toContain("apps/sales/clip.mp4");
+		// A short clip is read ahead, a video past 2 MiB waits for the open (its entry is read, never its bytes), and a
+		// file the page doesn't name is never read.
+		expect(read).not.toContain(2 * 1024 * 1024 + 1);
 		expect(f.reads).not.toContain("apps/sales/unused.png");
 		expect(f.reads.filter((path) => path.startsWith("apps/broken/") && path !== "apps/broken/app.toml")).toEqual([]);
-		// The three manifests that read, the colours, five files of Sales and Plan's entry.
-		expect(read).toHaveLength(10);
+		// The three manifests that read, the colours, six files of Sales and Plan's entry.
+		expect(read).toHaveLength(11);
 		const stopped = new AbortController();
 		stopped.abort();
 		f.reads.length = 0;
