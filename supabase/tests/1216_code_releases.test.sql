@@ -366,7 +366,7 @@ begin
 		'public.qorpera_coding_turn_failure(public.qorpera_runtime_workers,text)', 'public.qorpera_site_publish_check(jsonb,text)',
 		'public.qorpera_site_publish_begin(jsonb,text,jsonb,uuid)', 'public.qorpera_site_unpublish(jsonb,text)',
 		'public.qorpera_list_company_sites(uuid)', 'public.qorpera_site_abandoned(public.qorpera_company_sites)',
-		'public.qorpera_unpublish_company_site(uuid)'] loop
+		'public.qorpera_unpublish_company_site(uuid)', 'public.qorpera_member_app_layout_valid(jsonb)'] loop
 		perform pg_temp.base_assert(strpos(pg_get_functiondef(v_function::regprocedure), '20260930729000') > 0,
 			'the marker is in ' || v_function);
 	end loop;

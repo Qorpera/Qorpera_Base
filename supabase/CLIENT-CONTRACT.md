@@ -314,6 +314,8 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   document, QAL01 when `p_expected` is not the last `updatedAt`, 22023 for a shape
   the web never writes; an empty layout leaves no row). The layout is
   `qorpera.member-app-layout/v1` `{places, groups}` (packages/web/src/cloud/app-groups.ts).
+  A place's key is `page:mailbox|members|bank`, `app:<name>`, `concepts`, `sites`,
+  `whats-new` (the What's new page, since `20260930729000`) or `group:<id>`.
   Any member. Reset takes it away and Undo puts it back; `own.apps` counts it.
 - `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
   shape after the change. Before `20260930727000`, shared, owner/admin/contributor:

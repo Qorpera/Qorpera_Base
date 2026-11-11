@@ -31,7 +31,7 @@
 --    only as CODING_CONTROL_UNCONFIRMED.
 -- 4. The member's calls: qorpera_list_code_releases (any member), qorpera_put_code_release_live and
 --    qorpera_code_release_back (owners and admins).
--- 5. Fourteen existing functions change, each by anchors on its definition as it is (an anchor that is not found
+-- 5. Fifteen existing functions change, each by anchors on its definition as it is (an anchor that is not found
 --    exactly once fails the migration), and each changed body carries the marker 20260930729000:
 --    * qorpera_code_checks_switch answers `site` too;
 --    * qorpera_code_change_report_valid and qorpera_record_code_change take v3;
@@ -45,6 +45,8 @@
 --    * qorpera_list_company_sites: a code site only while it is live, its row exactly qorpera.company-site/v1;
 --    * qorpera_site_abandoned: never a code site.
 --    * qorpera_unpublish_company_site: a member who takes a repository's site offline has its list file written again.
+--    * qorpera_member_app_layout_valid (20260930728000): a member's own apps drawer may place the bare key whats-new,
+--      the What's new page, beside concepts and sites.
 --
 -- Who may call: section 3 the service role only, as the coding executor that holds the company (the custody check of
 -- qorpera_code_hosts_deleting, 42501 otherwise, and care's holder rule: an executor that is not the environment's one
@@ -1186,6 +1188,12 @@ select pg_temp.code_releases_patch('public.qorpera_unpublish_company_site(uuid)'
 		and repository.name = site.code_name;
 	delete from public.qorpera_company_sites where id = p_site_id;$new$]);
 
+-- A member's own apps drawer (20260930728000) may place What's new, the platform's page, as it places Sites.
+select pg_temp.code_releases_patch('public.qorpera_member_app_layout_valid(jsonb)'::regprocedure, array[
+	$old$			where place.key !~ '^(page:(mailbox|members|bank)|app:[a-z0-9-]{1,64}|concepts|sites|group:[a-z0-9-]{1,40})$'$old$,
+	$new$			-- 20260930729000: What's new, the platform's page, is the bare whats-new (app:whats-new is an agent's app).
+			where place.key !~ '^(page:(mailbox|members|bank)|app:[a-z0-9-]{1,64}|concepts|sites|whats-new|group:[a-z0-9-]{1,40})$'$new$]);
+
 -- 7. Grants, and the deploy guard --------------------------------------------------------------------------------------
 
 revoke all on function public.qorpera_code_site_valid(jsonb),
@@ -1252,7 +1260,8 @@ begin
 		'public.qorpera_site_unpublish(jsonb,text)',
 		'public.qorpera_list_company_sites(uuid)',
 		'public.qorpera_site_abandoned(public.qorpera_company_sites)',
-		'public.qorpera_unpublish_company_site(uuid)'
+		'public.qorpera_unpublish_company_site(uuid)',
+		'public.qorpera_member_app_layout_valid(jsonb)'
 	]::regprocedure[] loop
 		if strpos((select prosrc from pg_proc where oid = v_function), '20260930729000') = 0 then
 			raise exception '20260930729000 is missing from %', v_function; end if;
