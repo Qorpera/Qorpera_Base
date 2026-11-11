@@ -270,11 +270,21 @@ describe("the coding composition of a native turn", () => {
 					"A request to push, to merge, to open a pull request or to report its link means: commit and call coding_finish; the platform then hands the commit in as above and passes on what happened, so you do none of that yourself.",
 					"A repository kept in Qorpera may start empty, with one commit and no files: build the project in it from scratch.",
 					"When something blocks you, still end the turn that way. On a GitHub repository: coding_finish with the commit you have and a summary that names the blocker, since it stays a draft.",
-					// 10 November 2026 (audit): a landing has no draft and nothing checks it, so half-done work is never handed
-					// in there, the session's own checks are the gate, and the values it was given are its to use.
-					"In a repository kept in Qorpera: never hand in half-done or failing work, since it would land; hand in what is whole and passes its checks and name what is left, or, with nothing whole yet, call coding_ask.",
-					"In a repository kept in Qorpera the landing is at once and nothing stands between your finish and the company's code: finish there only with work that is whole.",
-					"run the project's tests and build before you finish and see them pass, and never remove or weaken a failing test to get there.",
+					// 10 November 2026 (audit): a landing has no draft, so half-done work is never handed in there, and the
+					// values the session was given are its to use. Own code storage, step 3 (20260930721000): Qorpera runs the
+					// repository's checks file before a landing; the session writes the file and runs the same checks first.
+					"In a repository kept in Qorpera: never hand in half-done or failing work: it would not pass its checks, or would go in unfinished; hand in what is whole and passes its checks and name what is left, or, with nothing whole yet, call coding_ask.",
+					"In a repository kept in Qorpera, Qorpera runs the repository's checks before your commit goes into its default branch: the commands in .qorpera/checks.json, each from the top of a clean copy of what would go in (your commit, or your commit merged with the default branch when it moved), on this machine, with CI=true and stdin closed.",
+					"Only work whose every check passes goes in; otherwise nothing goes in and the turn fails with the check that failed and the end of its output.",
+					'When the repository has no checks file, add one in this change: {"checks":[{"name":"install","run":"npm ci"},{"name":"test","run":"npm test"},{"name":"build","run":"npm run build"}]} for a Node project, or the commands that install, test and build yours;',
+					"each check has a name (lower case, digits, . _ -), a run command, and may have timeoutSeconds (10 to 1800, 600 when left out; at most 3600 in all) and cwd (a folder of the repository).",
+					"Make checks fast and honest: they must not need servers or ports your own commands hold, or files git does not track.",
+					// The session's copy is in its home, on the machine's disk, and is removed first, so a second run after a
+					// fix works.
+					'Before coding_finish, run them yourself the same way: rm -rf ~/qorpera-check && git clone --quiet --shared --no-checkout "$(git rev-parse --path-format=absolute --git-common-dir)" ~/qorpera-check && git -C ~/qorpera-check checkout --quiet --detach <commit>, then each command in ~/qorpera-check with CI=true.',
+					"Never remove or weaken a check or a test to make it pass: the record of your change shows every change to the checks.",
+					"Never commit test output or logs as proof; the record says which checks passed. Write tests with a change that can be tested. Keep a README that says how to install, test, build and start the project.",
+					"the landing merges your commit with it, and the checks run on that merge; if the two conflict, the turn fails and says so",
 					"The secret values this session was given, when it was given any, are environment variables of every command, under the names the company saved them with: use them for what the work needs",
 					// 3 November 2026: Codex's read-only sandbox notice made a session ask for "a writable coding environment"
 					// before it tried one edit. The notice is about the harness's own tools; the repository VM is writable.
@@ -290,6 +300,9 @@ describe("the coding composition of a native turn", () => {
 					"Neither is required: never hold work back for them.",
 				])
 					expect(options.runtimeInstructions).toContain(rule);
+				// Step 1's words said nothing checks a landing.
+				for (const gone of ["nothing stands between your finish", "since it would land", "the landing is at once"])
+					expect(options.runtimeInstructions).not.toContain(gone);
 				await options.beginExecution(
 					{
 						type: "namespace",

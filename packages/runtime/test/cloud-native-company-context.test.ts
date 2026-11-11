@@ -1543,14 +1543,15 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // 10 November 2026), and for patch notes before changes go live ("Yes, wait for me"; Jonas, 10 November 2026), and
 // for a project's history and its hand-over (#1643, 10 November 2026), and for the change record of the company's code
 // (each change numbered, undone and described with manage_code; own code storage step 2b, 10 November 2026), and for
-// the wall's now line and what a wall line says (the sidebar's line under each name; Jonas, 11 November 2026). A
+// the checks Qorpera runs before a change goes into the company's code (own code storage step 3, 11 November 2026), and
+// for the wall's now line and what a wall line says (the sidebar's line under each name; Jonas, 11 November 2026). A
 // change to either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "4f11a91a7b7b2302f500e0a51d93d446cf9234ca5c33c856a324c04a3bb21242",
+			instructions: "e1c8f9ccd39ea90633ced014848b9485441b95873cd7a0f8c8cf2aaf1221c147",
 			prompt: "87eaa2f504945457baf071474bd7bf712ef50dfc3e99267e0dc089a2d5cd5c44",
 		},
 	],
@@ -1566,7 +1567,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "4f11a91a7b7b2302f500e0a51d93d446cf9234ca5c33c856a324c04a3bb21242",
+			instructions: "e1c8f9ccd39ea90633ced014848b9485441b95873cd7a0f8c8cf2aaf1221c147",
 			prompt: "cae25d562292e7abd87158f86f29192c376cd4d484509a2a8135e14753940692",
 		},
 	],
@@ -1577,13 +1578,21 @@ it.each([
 // Own code storage, step 2b (20260930720000): every change in a repository kept in Qorpera has a number and a record,
 // and a wrong one is taken out with manage_code before it is fixed. The sentence that sent an undo to the session as a
 // follow-up (#1643) is gone: two ways to undo would be one too many.
-it("tells every agent where a change's record is, and to undo and describe with manage_code", () => {
+// Own code storage, step 3 (20260930721000): Qorpera runs a repository's checks before a change goes in, so the agent
+// follows up a failed check, stops after three in a row, reads why a change changed its checks, and checks itself only
+// what checks cannot.
+it("tells every agent where a change's record is, what its checks mean, and to undo and describe with manage_code", () => {
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
-		"A change landed in a repository kept in Qorpera is in its main code before you read the result, and rejecting it takes nothing out.",
+		"Before a change goes into a repository kept in Qorpera, Qorpera runs the repository's checks (.qorpera/checks.json: the commands that install, test and build it) on a clean copy;",
+		"a change whose checks fail goes nowhere, and its session's turn fails with what failed: send the session a follow-up to fix it, and after three failures in a row narrow the change or drop it instead.",
+		"When the checks could not run, the code is not at fault: the session only finishes again.",
+		"A change that went in is in its main code before you read the result, and rejecting it takes nothing out.",
 		"Qorpera numbers each change and writes its record at code/<owner>/<name>/changes/<number>.md; changes/index.md lists them, newest first.",
-		"Check a new change yourself first (its files are at code/<owner>/<name>/main/; run its tests or open what it built on a machine).",
-		"When it is wrong, take it out at once with manage_code, action undo, check main again, and then send the session a follow-up that fixes it.",
+		"Its record says which checks passed and whether the change changed the checks themselves: when it did, read why before you rely on it.",
+		"A repository with no checks file takes its changes unchecked: have its next session add one.",
+		"Check what checks cannot yourself: open what a change built on a machine (its files are at code/<owner>/<name>/main/).",
+		"When it is wrong, take it out at once with manage_code, action undo; Qorpera does not check an undo, so check main again, and then send the session a follow-up that fixes it.",
 		"When its record lacks what a customer will notice, or a picture of it, add them with manage_code, action describe.",
 		// What #1643 said of a project's history and its hand-over stays.
 		"A project's own history says what changed: on a machine, run git in /company/code/<owner>/<name>/main",
@@ -1591,15 +1600,21 @@ it("tells every agent where a change's record is, and to undo and describe with 
 		"Pull requests, branches, commits, diffs and checks are your tools, never the members' words",
 	])
 		expect(instructions).toContain(rule);
-	for (const gone of ["fixes or undoes it at once", "To undo a landed change", "revert that commit"])
+	for (const gone of [
+		"fixes or undoes it at once",
+		"To undo a landed change",
+		"revert that commit",
+		"A change landed in a repository kept in Qorpera",
+		"Check a new change yourself first",
+	])
 		expect(instructions).not.toContain(gone);
 	// A worker reports to its agent and gets none of it.
-	expect(
-		cloudCompanyRuntimeInstructions(
-			{ kind: "agent", source: { kind: "worker-dispatch", id: randomUUID(), occurrenceKey: "dispatch" } } as never,
-			false,
-		),
-	).not.toContain("manage_code");
+	const worker = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind: "worker-dispatch", id: randomUUID(), occurrenceKey: "dispatch" } } as never,
+		false,
+	);
+	expect(worker).not.toContain("manage_code");
+	expect(worker).not.toContain(".qorpera/checks.json");
 });
 
 // Jonas, 5 November 2026: members "gave up immediately because of the exhausting amount of reading material". A

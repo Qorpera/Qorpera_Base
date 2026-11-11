@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	CLEANUP_STOP_BUDGET_MS,
 	CloudCodingExecutor,
+	CODING_LANDING_STEP,
 	CODING_LEASE_MARGIN_MS,
 	CODING_RETRY_PAUSES_MS,
 	CodingControlBusy,
@@ -642,6 +643,103 @@ describe("the coding executor over a session turn", () => {
 		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
 		expect([completion.p_outcome, completion.p_summary, completion.p_artifacts]).toEqual(["failed", summary, null]);
 		expect(report).toHaveBeenCalledWith("publish", expect.objectContaining({ message: "CODE_HOST_FILE_TOO_LARGE" }));
+		expect(w.host.detachSession).not.toHaveBeenCalled();
+	});
+
+	it("says the change is being checked and saved while a repository kept in Qorpera lands, and only there", async () => {
+		const stepOf = async (host: "qorpera" | "github.com") => {
+			const w = world();
+			w.world.claim.repository = (
+				host === "qorpera" ? { host, owner: "acme", name: "shop", baseBranch: "main" } : repository
+			) as never;
+			vi.mocked(w.host.publish).mockResolvedValueOnce(
+				host === "qorpera"
+					? {
+							pullRequest: null,
+							noChange: false,
+							landed: { state: "fast-forward", mainSha: headSha, filesChanged: 1, change: 2 },
+						}
+					: {
+							pullRequest: { url: "https://github.com/Qorpera/app/pull/12", number: 12, headSha },
+							noChange: false,
+						},
+			);
+			const finish = {
+				schema: "qorpera.coding-submission/v1",
+				workerId: w.world.claim.workerId,
+				sequence: 1,
+				kind: "finish",
+				state: "submitted",
+				summary: "Tests passed",
+				headSha,
+				operationKey: "done",
+			};
+			const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+			const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+			expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+			const publishing = w.world.calls.filter(
+				(c) => c.method === "qorpera_record_coding_progress" && c.args.p_phase === "publishing",
+			);
+			expect(publishing).toHaveLength(1);
+			// Set before the landing starts: the checks run inside it.
+			const calls = vi.mocked(w.control.call).mock;
+			const set = calls.calls.findIndex(
+				(c) => c[0] === "qorpera_record_coding_progress" && c[1].p_phase === "publishing",
+			);
+			expect(calls.invocationCallOrder[set]).toBeLessThan(vi.mocked(w.host.publish).mock.invocationCallOrder[0]!);
+			return publishing[0]?.args.p_last_step;
+		};
+		// The founder's card draws its line for the checks by exactly these words (the web, part E).
+		expect(CODING_LANDING_STEP).toBe("Checking and saving the change");
+		expect(await stepOf("qorpera")).toBe("Checking and saving the change");
+		expect(await stepOf("github.com")).toBe("Publishing the draft pull request");
+	});
+
+	it.each([
+		[
+			"CODING_CHECKS_FAILED",
+			'Nothing went into main: the check "test" failed on this change. It ran `npm test` and ended with exit code 1 after 41 s. The end of its output:\n\n    1 failing\n\nIts whole output is in ~/.qorpera-checks/out/2-test.log on the session\'s machine. Fix the cause in the code, never by removing or weakening the check or its tests; run the checks yourself from a clean copy, commit and finish again. [code=CODING_CHECKS_FAILED]',
+		],
+		[
+			"CODING_CHECKS_REFUSED",
+			"Nothing went into main: the repository's checks file, .qorpera/checks.json, is gone in this change, and a repository that has checks keeps them. Fix the file, commit and finish again. [code=CODING_CHECKS_REFUSED]",
+		],
+		[
+			"CODING_CHECKS_DID_NOT_RUN",
+			"Nothing went into main: Qorpera could not run the repository's checks on this change (the session's machine stopped). This is not a fault in the code. The work is kept on the session's branch; finishing again runs the checks again. [code=CODING_CHECKS_DID_NOT_RUN]",
+		],
+		[
+			"CODING_CHECKS_MAIN_MOVED",
+			"Nothing went into main yet: main changed twice while this change's checks ran, so they never ran on what would go in. This is not a fault in the code. The work is kept on the session's branch; finishing again checks it once more. [code=CODING_CHECKS_MAIN_MOVED]",
+		],
+	])("fails the turn with the checks' own words, as they are, for %s", async (code, summary) => {
+		const w = world();
+		w.world.claim.repository = { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" } as never;
+		vi.mocked(w.host.publish).mockRejectedValueOnce(new CodingLandRefused(code, summary));
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const report = vi.fn();
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		// Nothing landed: no artifact, no files, and the words with their code for the kernel to keep.
+		expect([completion.p_outcome, completion.p_summary, completion.p_artifacts, completion.p_files_changed]).toEqual([
+			"failed",
+			summary,
+			null,
+			null,
+		]);
+		expect(report).toHaveBeenCalledWith("publish", expect.objectContaining({ message: code }));
+		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
 		expect(w.host.detachSession).not.toHaveBeenCalled();
 	});
 

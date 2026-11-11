@@ -7,6 +7,7 @@ import {
 	mkdtemp,
 	readdir,
 	readFile,
+	readlink,
 	realpath,
 	rm,
 	symlink,
@@ -25,8 +26,11 @@ import {
 	bundleCodeArea,
 	CODE_AREA_CONFIG,
 	CODE_AREA_IN_QORPERA_REF,
+	CODE_CHECKS_FILE,
+	type CodeBranchLanding,
 	type CodeChangeDiff,
 	type CodeChangeRecordFile,
+	type CodeCommitFile,
 	type CodeCommitSource,
 	type CodeHostCommand,
 	type CodeHostGcBlock,
@@ -2802,6 +2806,424 @@ describe("code host: the change record, undo and download of a repository kept i
 		// With the mark gone the repository works as before.
 		await rm(mark);
 		expect(await land(c, s, next)).toMatchObject({ state: "fast-forward", mainBefore: landed.mainSha });
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+	});
+});
+
+describe("code host: a landing in two jobs with the checks between them (own code storage, step 3)", () => {
+	const digest = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
+	const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("a picture")]);
+	const none: CodeChangeDiff = { filesChanged: 0, paths: [], pathsMore: 0 };
+	const missing: CodeCommitFile = { entry: { kind: "missing" }, blob: null },
+		other: CodeCommitFile = { entry: { kind: "other" }, blob: null };
+	const repo = (f: Fixture, c: Company, ...args: string[]) => f.git(c.repo, "--git-dir=.", ...args);
+	const checksText = (...names: string[]) =>
+		`${JSON.stringify({ checks: names.map((name) => ({ name, run: `npm run ${name}` })) }, null, "\t")}\n`;
+	/** The checks file as job A answers it: its bytes, and its blob at that commit. */
+	const file = async (f: Fixture, c: Company, commit: string, text: string): Promise<CodeCommitFile> => ({
+		entry: { kind: "file", bytes: new Uint8Array(Buffer.from(text)) },
+		blob: await repo(f, c, "rev-parse", `${commit}:${CODE_CHECKS_FILE}`),
+	});
+	/** Job A: the candidate, and the checks file at it and at main. */
+	const toCheck = (c: Company, s: { workerId: string }, headSha: string, picture?: string) =>
+		landCodeBranch(c.job, {
+			repository: kept,
+			workerId: s.workerId,
+			headSha,
+			checks: true,
+			...(picture === undefined ? {} : { picture }),
+		});
+	/** Job B: exactly the candidate job A made. */
+	const landAs = (
+		c: Company,
+		s: { workerId: string },
+		headSha: string,
+		wanted: NonNullable<CodeBranchLanding["expect"]>,
+		picture?: string,
+	) =>
+		landCodeBranch(c.job, {
+			repository: kept,
+			workerId: s.workerId,
+			headSha,
+			expect: wanted,
+			...(picture === undefined ? {} : { picture }),
+		});
+	/** Every path under a code area with what it holds, so a job that wrote nothing leaves it equal. */
+	async function snapshot(dir: string): Promise<Record<string, string>> {
+		const found: Record<string, string> = {};
+		for (const path of (await readdir(dir, { recursive: true })).sort()) {
+			const at = join(dir, path),
+				info = await lstat(at);
+			found[path] = info.isSymbolicLink()
+				? `link ${await readlink(at)}`
+				: info.isDirectory()
+					? "folder"
+					: `file ${info.mode.toString(8)} ${digest(await readFile(at))}`;
+		}
+		return found;
+	}
+	const changed = (before: Record<string, string>, after: Record<string, string>) =>
+		[...new Set([...Object.keys(before), ...Object.keys(after)])]
+			.filter((path) => before[path] !== after[path])
+			.sort();
+
+	it("to-check: a fast-forward and a merge are answered with the checks file at both ends, having moved nothing; expect then lands exactly that candidate, with its picture and diff", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const first = await session(f, c, baseSha),
+			second = await session(f, c, baseSha);
+		const text = checksText("install", "test");
+		const h1 = await first.commit(
+			{ [CODE_CHECKS_FILE]: text, "index.html": "<p>shop</p>\n", "docs/shot.png": png },
+			"shop",
+		);
+		const before = await snapshot(c.code);
+		expect(await toCheck(c, first, h1, "docs/shot.png")).toEqual({
+			state: "to-check",
+			how: "fast-forward",
+			mainBefore: baseSha,
+			mainAfter: h1,
+			checks: await file(f, c, h1, text),
+			mainChecks: missing,
+			restored: [],
+		});
+		// Nothing moved and nothing was written: the default branch, main/ and the objects are as they were.
+		expect(changed(before, await snapshot(c.code))).toEqual([]);
+		// Job B lands exactly that candidate, and answers what a landing answers today.
+		expect(
+			await landAs(c, first, h1, { how: "fast-forward", mainBefore: baseSha, mainAfter: h1 }, "docs/shot.png"),
+		).toEqual({
+			state: "fast-forward",
+			mainSha: h1,
+			mainBefore: baseSha,
+			containedAt: null,
+			diff: {
+				filesChanged: 3,
+				paths: [
+					{ path: CODE_CHECKS_FILE, change: "added" },
+					{ path: "docs/shot.png", change: "added" },
+					{ path: "index.html", change: "added" },
+				],
+				pathsMore: 0,
+			},
+			picture: {
+				state: "ok",
+				blob: await repo(f, c, "rev-parse", `${h1}:docs/shot.png`),
+				bytes: png.length,
+				type: "png",
+			},
+			restored: [],
+		});
+		expect(await repo(f, c, "rev-parse", "refs/heads/main")).toBe(h1);
+		expect(await readFile(join(c.code, "main", CODE_CHECKS_FILE), "utf8")).toBe(text);
+
+		// A session that began before: its candidate is the merge with main, which job A writes and no ref names.
+		const h2 = await second.commit({ "cart.js": "export const cart = [];\n", "docs/cart.png": png }, "cart");
+		const between = await snapshot(c.code);
+		const merge = await toCheck(c, second, h2, "docs/cart.png");
+		if (merge.state !== "to-check") throw new Error(`job A answered ${merge.state}`);
+		expect(merge).toEqual({
+			state: "to-check",
+			how: "merged",
+			mainBefore: h1,
+			mainAfter: merge.mainAfter,
+			checks: await file(f, c, merge.mainAfter, text),
+			mainChecks: await file(f, c, h1, text),
+			restored: [],
+		});
+		expect(await repo(f, c, "log", "-1", "--format=%P %an %cn", merge.mainAfter)).toBe(`${h1} ${h2} Qorpera Qorpera`);
+		// Only new objects were written: no ref, nothing of main/ and nothing else.
+		const written = changed(between, await snapshot(c.code));
+		expect(written.length).toBeGreaterThan(0);
+		for (const path of written) {
+			expect(path).toMatch(/^repo\.git\/objects\//);
+			expect(between[path]).toBeUndefined();
+		}
+		expect(await repo(f, c, "for-each-ref", "--points-at", merge.mainAfter)).toBe("");
+		// Job B lands the merge job A made, and makes none of its own.
+		const commands = c.log.length;
+		expect(
+			await landAs(c, second, h2, { how: "merged", mainBefore: h1, mainAfter: merge.mainAfter }, "docs/cart.png"),
+		).toEqual({
+			state: "merged",
+			mainSha: merge.mainAfter,
+			mainBefore: h1,
+			containedAt: null,
+			diff: {
+				filesChanged: 2,
+				paths: [
+					{ path: "cart.js", change: "added" },
+					{ path: "docs/cart.png", change: "added" },
+				],
+				pathsMore: 0,
+			},
+			picture: {
+				state: "ok",
+				blob: await repo(f, c, "rev-parse", `${merge.mainAfter}:docs/cart.png`),
+				bytes: png.length,
+				type: "png",
+			},
+			restored: [],
+		});
+		expect(
+			c.log
+				.slice(commands)
+				.some(
+					(command) =>
+						command.argv.includes("commit-tree") ||
+						command.argv.includes("merge-tree") ||
+						command.argv.includes(CODE_CHECKS_FILE),
+				),
+		).toBe(false);
+		expect(await repo(f, c, "rev-parse", "refs/heads/main")).toBe(merge.mainAfter);
+		expect((await readdir(join(c.code, "main"))).sort()).toEqual([
+			".git",
+			".qorpera",
+			"cart.js",
+			"docs",
+			"index.html",
+		]);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+	});
+
+	it("to-check: the file at the candidate only, at main only, at both; a folder or a link there is other; a file of 20 KiB comes back cut", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const s = await session(f, c, baseSha);
+		const at = join(s.tree, CODE_CHECKS_FILE);
+		const text = checksText("test");
+		const h1 = await s.commit({ [CODE_CHECKS_FILE]: text }, "checks");
+		expect(await toCheck(c, s, h1)).toMatchObject({
+			how: "fast-forward",
+			checks: await file(f, c, h1, text),
+			mainChecks: missing,
+		});
+		await landAs(c, s, h1, { how: "fast-forward", mainBefore: baseSha, mainAfter: h1 });
+		// Main has it, and the candidate removed it.
+		await rm(join(s.tree, ".qorpera"), { recursive: true });
+		const h2 = await s.commit({ "a.txt": "a\n" }, "no checks");
+		expect(await toCheck(c, s, h2)).toEqual({
+			state: "to-check",
+			how: "fast-forward",
+			mainBefore: h1,
+			mainAfter: h2,
+			checks: missing,
+			mainChecks: await file(f, c, h1, text),
+			restored: [],
+		});
+		// Both have it, changed at the candidate; an executable file is a file.
+		const more = checksText("test", "build");
+		await s.commit({ [CODE_CHECKS_FILE]: more }, "more checks");
+		await chmod(at, 0o755);
+		const h3 = await s.commit({ "b.txt": "b\n" }, "executable");
+		expect(await repo(f, c, "ls-tree", h3, "--", CODE_CHECKS_FILE)).toMatch(/^100755 blob /);
+		expect(await toCheck(c, s, h3)).toMatchObject({
+			checks: await file(f, c, h3, more),
+			mainChecks: await file(f, c, h1, text),
+		});
+		// A folder at the path, and a link: something there that is no file.
+		await rm(at);
+		await mkdir(at);
+		await writeFile(join(at, "inside"), "x\n");
+		expect(await toCheck(c, s, await s.commit({}, "a folder"))).toMatchObject({
+			checks: other,
+			mainChecks: await file(f, c, h1, text),
+		});
+		await rm(at, { recursive: true });
+		await symlink("../a.txt", at);
+		const h5 = await s.commit({}, "a link");
+		expect(await repo(f, c, "ls-tree", h5, "--", CODE_CHECKS_FILE)).toMatch(/^120000 blob /);
+		expect(await toCheck(c, s, h5)).toMatchObject({ checks: other });
+		// A file of 20 KiB: its first 16 KiB and one byte more, and the whole file's blob.
+		await rm(at);
+		const large = "x".repeat(20 * 1024);
+		const h6 = await s.commit({ [CODE_CHECKS_FILE]: large }, "large");
+		expect(await toCheck(c, s, h6)).toMatchObject({
+			checks: {
+				entry: { kind: "file", bytes: new Uint8Array(Buffer.from(large.slice(0, 16 * 1024 + 1))) },
+				blob: await repo(f, c, "rev-parse", `${h6}:${CODE_CHECKS_FILE}`),
+			},
+		});
+		// None of it moved main.
+		expect(await repo(f, c, "rev-parse", "refs/heads/main")).toBe(h1);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+	});
+
+	it("without a checks file at either end it lands as today; a commit main holds is unchanged as today; a conflict and a refusal by name come before any read", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const first = await session(f, c, baseSha),
+			second = await session(f, c, baseSha);
+		const h1 = await first.commit({ "index.html": "<p>shop</p>\n" }, "shop");
+		expect(await toCheck(c, first, h1)).toEqual({
+			state: "fast-forward",
+			mainSha: h1,
+			mainBefore: baseSha,
+			containedAt: null,
+			diff: { filesChanged: 1, paths: [{ path: "index.html", change: "added" }], pathsMore: 0 },
+			picture: null,
+			restored: [],
+		});
+		expect(await repo(f, c, "rev-parse", "refs/heads/main")).toBe(h1);
+		// A merge, where `.qorpera` is a file and not a folder: nothing at the path either.
+		const h2 = await second.commit({ ".qorpera": "a file\n", "cart.js": "cart\n" }, "cart");
+		const merged = await toCheck(c, second, h2);
+		if (merged.state !== "merged") throw new Error(`job A answered ${merged.state}`);
+		expect(merged).toMatchObject({ mainBefore: h1, diff: { filesChanged: 2 } });
+		expect(await repo(f, c, "rev-parse", "refs/heads/main")).toBe(merged.mainSha);
+		// `checks` and `expect` left undefined are left out.
+		const third = await session(f, c, merged.mainSha);
+		const h3 = await third.commit({ "later.txt": "later\n" }, "later");
+		expect(
+			await landCodeBranch(c.job, {
+				repository: kept,
+				workerId: third.workerId,
+				headSha: h3,
+				checks: undefined,
+				expect: undefined,
+			}),
+		).toMatchObject({ state: "fast-forward", mainSha: h3 });
+		// Unchanged as today, also when what main holds has a checks file.
+		expect(await toCheck(c, first, h1)).toEqual({
+			state: "unchanged",
+			mainSha: h3,
+			mainBefore: h3,
+			containedAt: h1,
+			diff: none,
+			picture: null,
+			restored: [],
+		});
+		await rm(join(third.tree, ".qorpera"));
+		const h4 = await third.commit({ [CODE_CHECKS_FILE]: checksText("test") }, "checks");
+		await landAs(c, third, h4, { how: "fast-forward", mainBefore: h3, mainAfter: h4 });
+		expect(await toCheck(c, third, h4, "later.txt")).toEqual({
+			state: "unchanged",
+			mainSha: h4,
+			mainBefore: h4,
+			containedAt: h4,
+			diff: none,
+			picture: null,
+			restored: [],
+		});
+		// A conflict, and names that differ only by case: refused as today, and the checks file is never read.
+		const commands = c.log.length;
+		const fourth = await session(f, c, baseSha);
+		const store = await fourth.commit(
+			{ "index.html": "<p>store</p>\n", [CODE_CHECKS_FILE]: checksText("test") },
+			"store",
+		);
+		await expect(toCheck(c, fourth, store)).rejects.toMatchObject({
+			code: "CODE_HOST_LAND_CONFLICT",
+			paths: ["index.html"],
+		});
+		const fifth = await session(f, c, h4);
+		const named = await fifth.commit(
+			{ "docs/Notes.md": "a\n", "docs/notes.md": "b\n", [CODE_CHECKS_FILE]: checksText("test", "build") },
+			"names",
+		);
+		await expect(toCheck(c, fifth, named)).rejects.toMatchObject({ code: "CODE_HOST_NAMES_DIFFER_BY_CASE" });
+		expect(c.log.slice(commands).some((command) => command.argv.includes(CODE_CHECKS_FILE))).toBe(false);
+		expect(await repo(f, c, "rev-parse", "refs/heads/main")).toBe(h4);
+		expect(await readdir(c.scratchRoot)).toEqual([]);
+	});
+
+	it("expect: stale, having written nothing, when main moved, when the session's branch no longer holds the commit, or when the candidate is not of those two; checks with expect is no job", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const { baseSha } = await startCodeArea(c.job, { repository: kept });
+		const s = await session(f, c, baseSha),
+			another = await session(f, c, baseSha);
+		const head = await s.commit({ [CODE_CHECKS_FILE]: checksText("test"), "a.txt": "a\n" }, "a");
+		expect(await toCheck(c, s, head)).toMatchObject({
+			state: "to-check",
+			how: "fast-forward",
+			mainBefore: baseSha,
+			mainAfter: head,
+		});
+		const stale = async (wanted: NonNullable<CodeBranchLanding["expect"]>, headSha = head) => {
+			const before = await snapshot(c.code);
+			await expect(landAs(c, s, headSha, wanted), JSON.stringify(wanted)).rejects.toMatchObject({
+				code: "CODE_HOST_LAND_STALE",
+			});
+			expect(changed(before, await snapshot(c.code)), JSON.stringify(wanted)).toEqual([]);
+		};
+		// Another session's landing moves main while the checks run.
+		const moved = await landCodeBranch(c.job, {
+			repository: kept,
+			workerId: another.workerId,
+			headSha: await another.commit({ "b.txt": "b\n" }, "b"),
+		});
+		await stale({ how: "fast-forward", mainBefore: baseSha, mainAfter: head });
+		// Job A again: the candidate is now the merge with main.
+		const merge = await toCheck(c, s, head);
+		if (merge.state !== "to-check") throw new Error(`job A answered ${merge.state}`);
+		expect(merge).toMatchObject({ how: "merged", mainBefore: moved.mainSha });
+		const right = { how: "merged" as const, mainBefore: moved.mainSha, mainAfter: merge.mainAfter };
+		// Not the candidate that was checked: the two parents the other way round, one parent too few, a commit that is
+		// not there, a tree, the session's own commit, or the right one said to be a fast-forward or after another main.
+		const tree = await repo(f, c, "rev-parse", `${merge.mainAfter}^{tree}`);
+		const swapped = await repo(f, c, "commit-tree", tree, "-p", head, "-p", moved.mainSha, "-m", "swapped");
+		const single = await repo(f, c, "commit-tree", tree, "-p", moved.mainSha, "-m", "one parent");
+		for (const wanted of [
+			{ ...right, mainAfter: swapped },
+			{ ...right, mainAfter: single },
+			{ ...right, mainAfter: "f".repeat(40) },
+			{ ...right, mainAfter: tree },
+			{ ...right, mainAfter: head },
+			{ ...right, how: "fast-forward" as const },
+			{ how: "fast-forward" as const, mainBefore: moved.mainSha, mainAfter: head },
+			{ ...right, mainBefore: baseSha },
+		])
+			await stale(wanted);
+		// The session's branch went back to its base, or is gone.
+		await f.git(s.tree, "reset", "--quiet", "--hard", baseSha);
+		await stale(right);
+		await f.git(s.tree, "reset", "--quiet", "--hard", head);
+		const branch = `refs/heads/qorpera/coding/${s.workerId}`;
+		await repo(f, c, "update-ref", "-d", branch);
+		await stale(right);
+		await repo(f, c, "update-ref", branch, head);
+		// The candidate that was checked lands; asked again, main holds the commit: unchanged, as today.
+		expect(await landAs(c, s, head, right)).toMatchObject({
+			state: "merged",
+			mainSha: merge.mainAfter,
+			mainBefore: moved.mainSha,
+		});
+		expect(await landAs(c, s, head, right)).toMatchObject({
+			state: "unchanged",
+			mainSha: merge.mainAfter,
+			containedAt: merge.mainAfter,
+		});
+		// A fast-forward: its candidate is the session's commit, and a fast-forward it must be.
+		await f.git(s.tree, "merge", "--quiet", "--ff-only", merge.mainAfter);
+		const next = await s.commit({ "c.txt": "c\n" }, "c");
+		await stale({ how: "fast-forward", mainBefore: merge.mainAfter, mainAfter: merge.mainAfter }, next);
+		await stale({ how: "merged", mainBefore: merge.mainAfter, mainAfter: next }, next);
+		expect(
+			await landAs(c, s, next, { how: "fast-forward", mainBefore: merge.mainAfter, mainAfter: next }),
+		).toMatchObject({ state: "fast-forward", mainSha: next });
+
+		// Both options at once, and options that are not as the plan writes them: no job, no command.
+		const commands = c.log.length;
+		for (const more of [
+			{ checks: true, expect: right },
+			{ checks: false },
+			{ checks: "yes" },
+			{ checks: null },
+			{ expect: null },
+			{ expect: { ...right, how: "rebase" } },
+			{ expect: { how: "merged", mainBefore: right.mainBefore } },
+			{ expect: { ...right, headSha: head } },
+			{ expect: { ...right, mainBefore: "main" } },
+		])
+			await expect(
+				landCodeBranch(c.job, { repository: kept, workerId: s.workerId, headSha: next, ...more } as never),
+				JSON.stringify(more),
+			).rejects.toThrow("INVALID_CODE_HOST_JOB");
+		expect(c.log).toHaveLength(commands);
 		expect(await readdir(c.scratchRoot)).toEqual([]);
 	});
 });

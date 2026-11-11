@@ -707,7 +707,8 @@ begin
 			'mainAfter', pg_temp.rec_sha('c2'), 'headSha', pg_temp.rec_sha('c2'), 'summary', 'Summary of session 2, turn 1.',
 			'notice', 'Each price says free returns.', 'picture', r.picture, 'pictureProblem', null)
 			|| jsonb_build_object('filesChanged', 2, 'paths', r.paths, 'pathsMore', 0, 'needsDiff', false, 'refusal', null,
-			'undoes', null, 'revertedBy', null, 'restoredFrom', null), 'a landing''s file: ' || (v -> 'changes' -> 2)::text);
+			'undoes', null, 'revertedBy', null, 'restoredFrom', null, 'checksState', null, 'checks', null),
+		'a landing''s file: ' || (v -> 'changes' -> 2)::text);
 	-- A filler needs its files counted; a row with no main, and a row that has them, do not.
 	v_row := v -> 'changes' -> 3;
 	perform pg_temp.base_assert(v_row ->> 'kind' = 'found' and (v_row ->> 'needsDiff')::boolean and v_row -> 'session' = 'null'
