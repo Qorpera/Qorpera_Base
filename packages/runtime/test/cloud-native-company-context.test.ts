@@ -1552,7 +1552,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "e1c8f9ccd39ea90633ced014848b9485441b95873cd7a0f8c8cf2aaf1221c147",
+			instructions: "209a52e8bc31d10d482ac85492dd903dd658b1d92a1d33b30de089d873576b10",
 			prompt: "87eaa2f504945457baf071474bd7bf712ef50dfc3e99267e0dc089a2d5cd5c44",
 		},
 	],
@@ -1568,7 +1568,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "e1c8f9ccd39ea90633ced014848b9485441b95873cd7a0f8c8cf2aaf1221c147",
+			instructions: "209a52e8bc31d10d482ac85492dd903dd658b1d92a1d33b30de089d873576b10",
 			prompt: "cae25d562292e7abd87158f86f29192c376cd4d484509a2a8135e14753940692",
 		},
 	],
