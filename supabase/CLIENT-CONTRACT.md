@@ -1251,12 +1251,15 @@ request of another shape.
   state: "ok", handedBack, epoch, holding}`: `handedBack` whether it gave a live lease back; `epoch` the caller's current
   epoch afterwards (a take-over the member asks for later is sent at it); `holding` whether the caller holds the
   machine now (another tab of theirs, at the newer epoch: hand back again at `epoch` to give that back too).
-- The take-over card's I'm done is answered after this (review r9 of #1661): I'm done answers once everything this
-  page took or may have taken is fenced by an answered hand-back, and a list read that counts (none of its machines
-  below the epoch the page knows) shows this member holding none of the agent's machines after every hold it observed
-  was handed back. A take-over the member starts from another tab after that read was taken is a new take-over,
-  outside this answer; the agent then hears `DESKTOP_MEMBER_IN_CONTROL`, as for any take-over without a card. No page
-  can exclude what the member does a moment later.
+- The take-over card's I'm done is answered after this (reviews r9 and r10 of #1661): I'm done answers once, after a
+  list read that counts (none of its machines below the epoch the page knows), the page owes nothing for the agent's
+  machines. What it owes about an epoch (a take-over it sent at it, a hold it took up or was shown there) is
+  discharged only by learning from the database that the member's epoch is above it (a hand-back's answer, a
+  `TAKE_CALLED_OFF`, a list): no answer or read at that epoch, whatever it says about holding, and no refusal,
+  timeout or closed window discharges it; a hold the read itself shows at the current epoch is owed like any other.
+  A take-over the member starts from another tab after that read was taken is a new take-over, outside this answer;
+  the agent then hears `DESKTOP_MEMBER_IN_CONTROL`, as for any take-over without a card. No page can exclude what the
+  member does a moment later.
 - `qorpera_member_machine_desktop_act_begin(profile, machine, action)`: one action, begun as the member. Clients do not
   call it: the action route (§4) does, with the member's own token and the action as SQL keeps it (a text by its length).
 #### Member contacts' places (20260930717000_member_contact_places)

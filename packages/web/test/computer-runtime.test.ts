@@ -2105,6 +2105,53 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		expect(s.state.machines[0]?.control).toBeNull();
 	});
 
+	it("discharges nothing on an answer at the same epoch: a hold seen at 1 stays owed after a hand-back answers 1, not held (r10 F17)", async () => {
+		const { s, panels, p } = await company();
+		expect(p.holding).toBe(false);
+		// The page knows epoch 0; the database is at 1 (another tab gave it back), and nothing is held.
+		s.state.epochs.set(machine(1).machineId, 1);
+		// I'm done: its read is captured empty at epoch 1, and held back.
+		const read = gate();
+		s.state.listSnapshotGates = [read.closed];
+		let done: boolean | undefined;
+		const answered = panels.releaseAgent(staff.id).then((value) => {
+			done = value;
+		});
+		await flush();
+		// A take-over at 0 is sent, and its answer lost.
+		s.state.takeLost = "late";
+		p.takeOver();
+		await flush();
+		expect(takeEpochs(s)).toEqual([0]);
+		// The window closes: the hand-back at 0 finds epoch 1, nothing held; its answer is held back.
+		const back = gate();
+		s.state.handBackAnswerGates = [back.closed];
+		panels.close(staff.id);
+		await flush();
+		expect(backEpochs(s)).toEqual([0]);
+		// Another tab takes at epoch 1. The window, opened again, lists that hold (owed: the machine was given back); it
+		// closes again.
+		s.state.machines = [machine(1, { control: held(1) })];
+		s.state.answers.push({ picture: 1 });
+		const again = panels.open(staff)!;
+		again.attach(document.body, () => panels.close(staff.id));
+		await flush();
+		expect(again.holding).toBe(false);
+		panels.close(staff.id);
+		await flush();
+		// The hand-back's answer (epoch 1, nothing held) and then the empty read at epoch 1 arrive: neither discharges the
+		// hold seen at 1. I'm done hands it back at 1 and answers after that.
+		back.open();
+		await flush();
+		read.open();
+		await answered;
+		expect(done).toBe(true);
+		expect(backEpochs(s)).toEqual([0, 1]);
+		expect(s.state.machines[0]?.control).toBeNull();
+		// The take-over sent at 0 reaches the database now: refused.
+		expect(s.state.lateCommit?.()).toBe(false);
+	});
+
 	it("lets a list with a lower epoch than the page knows end and take up nothing (r8 F15)", async () => {
 		const { s, p } = await company();
 		// A read of the window's is captured while another tab holds the desktop at epoch 0, and delayed.

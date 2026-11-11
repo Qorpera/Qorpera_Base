@@ -11,8 +11,8 @@ export const RELEASE_RETRY_MS = [2000, 4000, 8000, 15_000];
 export const HOLD_CALL_MS = 15_000;
 /** How many hand-backs one "give it all back" waits for in a row for a machine before it says no. */
 const SETTLE_ROUNDS = 3;
-/** How many more rounds Hand back and I'm done hand machines back while answers say the member holds them at a newer
- * epoch (another tab of theirs, taking it again each time) before they say no. */
+/** How many more rounds Hand back and I'm done read the list and hand back while something is still owed (another tab of
+ * the member's taking the desktop again each time) before they say no. */
 const HOLDING_ROUNDS = 3;
 
 /** A take-over as the ledger answers it: held; refused (the database said why); uncertain (the answer was lost, or the
@@ -30,21 +30,23 @@ export type DesktopRelease = "asking" | "failed" | "pending";
 
 interface Hold {
 	readonly machineId: string;
-	/** The agents whose windows took it over or took it up (one machine may be on two agents' lists): each agent's
-	 * take-over card asks the ledger by its own id. */
+	/** The agents whose windows took it over, took it up or listed it (one machine may be on two agents' lists): each
+	 * agent's take-over card asks the ledger by its own id. */
 	readonly agents: Set<string>;
-	/** The member's hand-back epoch for the machine as this page knows it: from a hand-back's answer, a refusal, or the
-	 * list. A take-over is sent at it. */
+	/** The member's hand-back epoch for the machine, the highest the page learned from the database (a hand-back's answer,
+	 * a TAKE_CALLED_OFF, a list). A take-over is sent at it; everything owed is owed at it. */
 	epoch: number | undefined;
-	/** What the page may hold under `epoch`: a take-over waiting for the machine's hand-back to be answered (queued),
-	 * one on its way (taking), held, or may be held (maybe: its answer was lost). It says what the window may use; what
-	 * must be given back is `sent`'s. */
+	/** What the window may use (display and input, not what is owed): a take-over waiting for the machine's hand-back to
+	 * be answered (queued), one on its way (taking), held, or may be held (maybe: its answer was lost). It may end early:
+	 * a refusal, a heartbeat's `ended`, an action's DESKTOP_CONTROL_ENDED. */
 	state: "queued" | "taking" | "held" | "maybe" | undefined;
-	/** The highest epoch a take-over of this page was sent under, from the moment it left the page, until a hand-back
-	 * answered past it (review r6 F12): no refusal, timeout, list read or ended heartbeat clears it, only that answer,
-	 * or a TAKE_CALLED_OFF that names a newer epoch (the old one is fenced already). While it is set, every release of the
-	 * machine hands back, whatever the state says, and I'm done waits for that answer. */
-	sent: number | undefined;
+	/** Owed at `epoch` (review r10): a take-over this page sent under it, or a hold this page took up under it. Every
+	 * release of the machine hands it back. */
+	took: boolean;
+	/** Owed at `epoch` (review r10): a hold of the member's that a list or a hand-back's answer showed under it, on a
+	 * machine this page gave back or while an I'm done works on its agent (another tab, an earlier page). Hand back and
+	 * I'm done hand it back; a close or a switch alone give back only what the page took. */
+	saw: boolean;
 	/** The take-over the state is of, and its promise: an answer of an older one is told apart. */
 	take?: object;
 	pending?: Promise<DesktopTake>;
@@ -59,46 +61,43 @@ interface Hold {
 	tries: number;
 	failed: boolean;
 	timer?: ReturnType<typeof setTimeout>;
-	/** A hand-back answered that the member holds the machine at this epoch (another tab of theirs, or an earlier page:
-	 * review r7 F13). It stands until a hand-back answers past it, or answers at or past it that the member holds nothing:
-	 * no close, switch, list read, refusal or timeout clears it. While it stands the machine counts as held for I'm done,
-	 * and Hand back and I'm done hand it back at this epoch; a close or a switch alone still give back only what the page
-	 * took. */
-	elsewhere: number | undefined;
 	/** The company's page was left while a take-over was on its way. */
 	gone?: boolean;
 }
 
 /**
  * What this member may hold of the company's desktops, for the page's lifetime (migration 20260930713000; reviews r2
- * to r5 of #1661). It is the company's (ComputerPanels), never a window's, so closing a window forgets nothing.
+ * to r10 of #1661). It is the company's (ComputerPanels), never a window's, so closing a window forgets nothing.
  *
- * The database keeps one hand-back epoch per member and machine, which only it moves. A take-over is sent at the epoch
- * the page knows and is accepted only at the current one; a hand-back at the current epoch moves it on and gives back the
- * lease taken under it, and one at an older epoch changes nothing. So a hand-back's answer for epoch e means nothing
- * taken or sent at e or before holds the desktop, or ever will, whenever it arrives: no clock, no list read, no guess.
+ * The database keeps one hand-back epoch per member and machine, which only it moves: a take-over is accepted only at
+ * the current epoch, and the epoch moves from E to E+1 only by the member's hand-back at E, which ends the lease taken
+ * under E. So an epoch above E means nothing taken or sent under E or below holds the desktop, or ever can.
+ *
+ * One discharge rule (review r10): everything the page owes for a machine (`took`, `saw`, and a release asked while they
+ * stand) is owed at the epoch it knows, and is discharged by exactly one thing: the page learning, from the database,
+ * that the member's epoch for that machine is above it (a hand-back's answer, a TAKE_CALLED_OFF, a list). No answer or
+ * snapshot at that epoch, whatever it says about holding, and no refusal, timeout, close, switch or `ended` discharges
+ * anything. What the page knows is ordered by that counter alone, never by its own clock.
  *
  * - A release of a machine (Hand back, the card's I'm done, a window's close, a change of the window's machine, the
  *   page hidden) is marked at once, before anything is awaited: from then on the window takes no input, sends no
  *   heartbeat and ignores any take-over answer for the machine. Then one hand-back at the known epoch is sent, and asked
- *   again with growing waits (RELEASE_RETRY_MS) until answered, window or not; its answer gives the new epoch, which a
- *   take-over the member asks for on purpose afterwards uses. A take-over queued behind an unanswered hand-back waits for
- *   its answer, and is never sent once it was called off meanwhile.
- * - Hand back and I'm done also read the member's list and hand back the agent's machines the list shows the member
- *   holding that the page has nothing of (another tab, an earlier page), at the list's epoch; and when a hand-back
- *   answers that the member holds a machine now (a newer epoch), again at that epoch, at most twice.
- * - The member's own list says the current epoch per machine and the epoch of each hold of theirs: a lost answer whose
- *   epoch holds is held; a held lease the list no longer shows ended; an epoch moved on by another tab ends what this
- *   page had under the older one. A hold the list shows on a machine this page gave back is never taken up.
+ *   again with growing waits (RELEASE_RETRY_MS) until answered, window or not. A take-over queued behind an unanswered
+ *   hand-back waits for its answer, and is never sent once it was called off meanwhile.
+ * - Hand back and I'm done then read the member's list and hand back what it shows them holding, until a read that
+ *   counts leaves nothing owed (releaseAgent).
  * - Leaving the company's page asks every machine back once more, at its epoch, in a request the browser finishes after
  *   the page. The lease's own end, 5 minutes without a heartbeat, stays the last word.
  */
 export class DesktopHoldLedger {
 	readonly #computer: WebCompanyComputer | undefined;
 	readonly #holds = new Map<string, Hold>();
-	/** Machines whose hand-back was asked in this page's lifetime: a hold a list shows there is never taken up, unless
-	 * the member took the machine over again on purpose. */
+	/** Machines whose release was asked in this page's lifetime, whether or not anything was owed there: a hold a list
+	 * shows there is never taken up (it is owed instead), unless the member took the machine over again on purpose. */
 	readonly #givenBack = new Set<string>();
+	/** Agents whose machines were all given back in this page's lifetime (Hand back, I'm done, a window's close): a machine
+	 * of theirs the page learns of only later was given back too (found by the schedule explorer). */
+	readonly #agentsGivenBack = new Set<string>();
 	readonly #listeners = new Set<() => void>();
 	/** The agents an I'm done (or Hand back) is working on now, how many at once. */
 	readonly #finishing = new Map<string, number>();
@@ -131,7 +130,7 @@ export class DesktopHoldLedger {
 		return () => this.#listeners.delete(listener);
 	}
 
-	/** Whether anything of this agent's may be held: held, may be held, on its way, queued, or a hand-back unanswered. */
+	/** Whether anything of this agent's machines is owed: taken or sent, seen held, or a hand-back unanswered. */
 	has(agentId: string): boolean {
 		return [...this.#holds.values()].some((hold) => hold.agents.has(agentId) && this.#busy(hold));
 	}
@@ -179,8 +178,8 @@ export class DesktopHoldLedger {
 				this.#state(hold, undefined);
 				return { state: "uncertain" };
 			}
-			// From here the take-over may reach the database: only an answered hand-back past this epoch forgets it.
-			hold.sent = Math.max(hold.sent ?? epoch, epoch);
+			// From here the take-over may reach the database: owed at this epoch until the page learns one above it.
+			hold.took = true;
 			this.#state(hold, "taking");
 			let answer: MemberDesktopHold | undefined;
 			try {
@@ -193,11 +192,12 @@ export class DesktopHoldLedger {
 				if (answer?.state === "ok") computer.handBackOnLeave(machineId, epoch);
 				return { state: "called-off" };
 			}
-			// A release was asked meanwhile: its hand-back, at this epoch, covers whatever this got (review r5 F11).
+			// A refusal that names the member's epoch is knowledge from the database, whatever came of this one.
+			if (answer?.state === "refused" && answer.epoch !== null) this.#learn(hold, answer.epoch);
+			// A release was asked meanwhile: its hand-back covers whatever this got (review r5 F11).
 			if (!mine() || hold.calling) return { state: "called-off" };
 			if (hold.epoch !== epoch) {
-				// The epoch moved on meanwhile (another tab handed it back): nothing taken at the older one holds.
-				// (The state is read anew: it may have changed while the answer was on its way.)
+				// The epoch moved on meanwhile: nothing taken at the older one holds. (The state is read anew.)
 				if ((hold.state as Hold["state"]) === "taking") this.#state(hold, undefined);
 				return { state: "called-off" };
 			}
@@ -206,17 +206,11 @@ export class DesktopHoldLedger {
 				return { state: "ok" };
 			}
 			if (answer?.state === "refused") {
-				// Refused: nothing of this one holds, but an earlier take-over at this epoch may still be on its way, so
-				// what was sent stays to be handed back; only a TAKE_CALLED_OFF at a newer epoch shows it fenced already.
-				if (answer.epoch !== null) {
-					hold.epoch = Math.max(epoch, answer.epoch);
-					if (answer.reason === "TAKE_CALLED_OFF" && hold.sent !== undefined && answer.epoch > hold.sent)
-						hold.sent = undefined;
-				}
+				// Nothing of this one holds; what was sent at this epoch stays owed (an earlier one may be on its way).
 				this.#state(hold, undefined);
 				return answer;
 			}
-			// Lost: the database may have given it. Kept as such until the list says, or a hand-back covers it.
+			// Lost: the database may have given it. Owed as ever; held once a list shows it.
 			this.#state(hold, "maybe");
 			return { state: "uncertain" };
 		})();
@@ -228,45 +222,49 @@ export class DesktopHoldLedger {
 	}
 
 	/** A hold of this member's that the list shows on this agent's machine, at the epoch it was taken under, that no window
-	 * knows (the page was loaded again): true, it is the window's now. False on a machine this page gave back (and did not
-	 * take over again), while a release or a take-over of it is on its way, or from a list older than what the page knows
-	 * (its epoch lower: review r8). */
+	 * knows (the page was loaded again): true, it is the window's now, and owed. False on a machine this page gave back
+	 * (and did not take over again), while a release or a take-over of it is on its way, or from a list older than what
+	 * the page knows (its epoch lower: review r8). */
 	adopt(machineId: string, agentId: string, row: MemberAgentMachine): boolean {
 		const epoch = row.control?.mine === true ? row.control.epoch : null;
-		if (this.#left || epoch === null || epoch !== row.epoch || this.#givenBack.has(machineId)) return false;
+		if (this.#left || epoch === null || epoch !== row.epoch) return false;
 		const hold = this.#holds.get(machineId) ?? this.#entry(machineId);
+		this.#coveredBy(hold, agentId);
+		if (this.#givenBack.has(machineId)) return false;
 		if ((hold.epoch !== undefined && row.epoch < hold.epoch) || hold.calling) return false;
 		if (hold.state === "queued" || hold.state === "taking") return false;
-		hold.epoch = epoch;
+		this.#learn(hold, epoch);
 		hold.agents.add(agentId);
+		hold.took = true;
 		this.#state(hold, "held");
 		return true;
 	}
 
-	/** The hold under `epoch` ended by itself (a heartbeat or an action was told so). */
+	/** The hold under `epoch` ended by itself (a heartbeat or an action was told so): what the window uses ends; what is
+	 * owed does not (review r10). */
 	ended(machineId: string, epoch: number): void {
 		const hold = this.#holds.get(machineId);
 		if (hold?.state === "held" && hold.epoch === epoch && !hold.calling) this.#state(hold, undefined);
 	}
 
-	/** Gives this machine back: marked at once, before anything is awaited, then one hand-back at the epoch of what the
-	 * page holds, or else of what it sent, asked again until answered (window or not). A take-over still queued is
-	 * dropped, never sent. Nothing is sent when the page holds nothing of the machine and sent nothing since the last
-	 * answered hand-back. */
+	/** Gives this machine back: marked at once, before anything is awaited, then one hand-back at the known epoch, asked
+	 * again until answered (window or not). A take-over still queued is dropped, never sent. It is sent while the page
+	 * owes what it took or sent there (`took`), or, with `elsewhere` (Hand back, I'm done), what it saw held (`saw`); else
+	 * nothing is sent. */
 	release(machineId: string, agentId?: string, reason: Hold["reason"] = "handed_back", elsewhere = false): void {
 		if (this.#left || !this.#computer) return;
 		const hold = this.#holds.get(machineId);
 		if (!hold) return;
 		if (agentId) hold.agents.add(agentId);
 		if (hold.state === "queued") this.#state(hold, undefined);
-		// Hand back and I'm done also give back what an answer said the member holds elsewhere.
-		const owed = this.#owed(hold);
-		const epoch = elsewhere && hold.elsewhere !== undefined ? Math.max(owed ?? hold.elsewhere, hold.elsewhere) : owed;
-		if (!hold.calling && epoch === undefined) return;
+		// Asked, so given back in this page's lifetime, whether or not anything is sent (found by the schedule explorer):
+		// a hold a list shows here later is owed, never taken up, until a take-over on purpose.
 		this.#givenBack.add(machineId);
+		const owes = hold.took || (elsewhere && hold.saw);
+		if (!hold.calling && (!owes || hold.epoch === undefined)) return;
 		if (!hold.calling) {
 			hold.calling = true;
-			hold.callEpoch = epoch;
+			hold.callEpoch = hold.epoch;
 			hold.reason = reason;
 		}
 		this.#changed();
@@ -281,18 +279,17 @@ export class DesktopHoldLedger {
 	}
 
 	/** Everything this agent's windows may hold, given back: every machine of the agent's in the ledger is released at
-	 * once (review r5 F11). True once every hand-back was answered and nothing of the agent's is left; false while one
-	 * is not answered (asked again meanwhile; the lease also ends by itself in 5 minutes). With `elsewhere` (Hand back,
-	 * I'm done) it then reads the member's list until a read that counts leaves nothing held or owed, handing back what
-	 * reads show the member holding (another tab, an earlier page, what this page took), a few rounds; without a list it
-	 * says no.
+	 * once (review r5 F11). True once every hand-back was answered and nothing of the agent's is owed; false while one is
+	 * not answered (asked again meanwhile; the lease also ends by itself in 5 minutes). With `elsewhere` (Hand back, I'm
+	 * done) it then reads the member's list until a read that counts leaves nothing owed, handing back what reads show the
+	 * member holding (another tab, an earlier page, what this page took), a few rounds; without a list it says no.
 	 *
-	 * What I'm done answers (review r9): once everything this page took or may have taken is fenced by an answered
-	 * hand-back, and a list read that counts (none of its machines below the epoch the ledger knows) shows this member
-	 * holding none of the agent's machines after every hold it observed was handed back. A take-over the member starts
-	 * from another tab after that read was taken is a new take-over, outside this answer; the agent then hears
-	 * DESKTOP_MEMBER_IN_CONTROL, as for any take-over without a card. No page can exclude what the member does a moment
-	 * later. */
+	 * What I'm done answers (reviews r9, r10): once, after a list read that counts (none of its machines below the epoch
+	 * the ledger knows), nothing of the agent's machines is owed: whatever the page sent, took up or saw held under an
+	 * epoch is discharged only by learning, from the database, an epoch above it, and a hold that read shows at the
+	 * current epoch is owed like any other. A take-over the member starts from another tab after that read was taken is
+	 * a new take-over, outside this answer; the agent then hears DESKTOP_MEMBER_IN_CONTROL, as for any take-over without
+	 * a card. No page can exclude what the member does a moment later. */
 	async releaseAgent(agentId: string, reason: Hold["reason"] = "handed_back", elsewhere = false): Promise<boolean> {
 		// The hand-backs this asks, each waited for once: a failed one says no (it is asked again on its own, after a wait).
 		const asks = new Map<Hold, Promise<boolean>>();
@@ -301,6 +298,8 @@ export class DesktopHoldLedger {
 			if (hold.calling) asks.set(hold, this.#ask(hold));
 		};
 		if (elsewhere) this.#finishing.set(agentId, (this.#finishing.get(agentId) ?? 0) + 1);
+		// Every machine of the agent's, those the page learns of later too.
+		this.#agentsGivenBack.add(agentId);
 		try {
 			// At once, before anything is awaited (review r5 F11).
 			for (const hold of [...this.#holds.values()]) if (hold.agents.has(agentId)) give(hold);
@@ -311,7 +310,8 @@ export class DesktopHoldLedger {
 				if (!elsewhere) return !this.has(agentId);
 				// A read asked after every hand-back so far was answered (review r8). What it shows is reconciled into the
 				// ledger first (listed: a hold of the member's it shows is owed now); it counts only when none of its
-				// machines is below the epoch the ledger knows, and then the ledger alone decides (review r9).
+				// machines is below the epoch the ledger knows, and then the ledger alone decides (review r9): done when
+				// nothing of the agent's machines is owed.
 				const list = await this.#readList(agentId);
 				if (!list) return false;
 				const counts = list.machines.every((row) => {
@@ -331,33 +331,26 @@ export class DesktopHoldLedger {
 		}
 	}
 
-	/** A list read of an agent's machines, ordered by the database's own counter, never by the page's clock (review r8):
-	 * for a machine, a list whose epoch is below what the page knows is older and says nothing. At the epoch the page
-	 * knows or above it is at least as new: an epoch above moves the page's knowledge on (what the page had under the older
-	 * one is fenced: a hand-back of it was answered), and a hold of the member's it shows at that epoch is real: owed
-	 * (review r9) on a machine this page gave back, or while an I'm done works on its agent, whether or not a window may
-	 * take it up; and a lost answer whose take-over it shows is held. A list never ends a hold at the same epoch by not
-	 * showing it: it cannot tell an older read from an ended lease there; the heartbeat (its `ended`) does that. A release
-	 * on its way waits for its own answer. */
+	/** A list read of an agent's machines, ordered by the database's own counter (review r8): for a machine, a list whose
+	 * epoch is below what the page knows says nothing. At the epoch the page knows or above it is used: an epoch above is
+	 * learned (and discharges what was owed below it); a hold of the member's it shows at its epoch is real: owed (`saw`)
+	 * on a machine this page gave back, or while an I'm done works on its agent, whether or not a window may take it up
+	 * (review r9); and a lost answer it shows is held. A list never ends a hold by not showing it; a release on its way
+	 * waits for its own answer. */
 	listed(list: MemberAgentMachines, agentId: string): void {
 		for (const row of list.machines) {
 			const hold = this.#holds.get(row.machineId) ?? this.#entry(row.machineId);
 			if (hold.epoch !== undefined && row.epoch < hold.epoch) continue;
+			this.#coveredBy(hold, agentId);
 			hold.agents.add(agentId);
-			if (hold.epoch === undefined || row.epoch > hold.epoch) {
-				const moved = hold.epoch !== undefined;
-				hold.epoch = row.epoch;
-				if (moved && !hold.calling && hold.state !== "queued" && hold.state !== undefined)
-					this.#state(hold, undefined);
-			}
+			this.#learn(hold, row.epoch);
 			const holding = row.control?.mine === true ? row.control.epoch : null;
 			// Adoption (input and heartbeats) and obligation (a hand-back owed) are apart: #givenBack blocks the first only.
 			if (
-				holding !== null &&
-				holding >= row.epoch &&
+				holding === row.epoch &&
 				(this.#givenBack.has(row.machineId) || [...hold.agents].some((agent) => this.#finishing.has(agent)))
 			) {
-				hold.elsewhere = Math.max(hold.elsewhere ?? holding, holding);
+				hold.saw = true;
 				this.#changed();
 			}
 			if (hold.calling) continue;
@@ -365,14 +358,13 @@ export class DesktopHoldLedger {
 		}
 	}
 
-	/** As the company's page is left for good (or its access is gone): each machine is asked back once more, at its
+	/** As the company's page is left for good (or its access is gone): each machine owed is asked back once more, at its
 	 * epoch, in a request the browser finishes after the page; nothing waits for it, and nothing is kept. */
 	leave(): void {
 		for (const hold of this.#holds.values()) {
 			hold.gone = true;
 			clearTimeout(hold.timer);
-			const epoch = hold.calling ? hold.callEpoch : this.#owed(hold);
-			if (epoch !== undefined) this.#computer?.handBackOnLeave(hold.machineId, epoch);
+			if (this.#busy(hold) && hold.epoch !== undefined) this.#computer?.handBackOnLeave(hold.machineId, hold.epoch);
 		}
 		if (!this.#holds.size) return;
 		this.#holds.clear();
@@ -386,9 +378,13 @@ export class DesktopHoldLedger {
 		if (this.#left) return;
 		for (const hold of [...this.#holds.values()]) {
 			this.release(hold.machineId);
-			if (hold.calling && hold.callEpoch !== undefined)
-				this.#computer?.handBackOnLeave(hold.machineId, hold.callEpoch);
+			if (hold.calling && hold.epoch !== undefined) this.#computer?.handBackOnLeave(hold.machineId, hold.epoch);
 		}
+	}
+
+	/** A machine the page learns is this agent's: given back, if all the agent's machines were. */
+	#coveredBy(hold: Hold, agentId: string): void {
+		if (!hold.agents.has(agentId) && this.#agentsGivenBack.has(agentId)) this.#givenBack.add(hold.machineId);
 	}
 
 	#entry(machineId: string): Hold {
@@ -397,30 +393,34 @@ export class DesktopHoldLedger {
 			agents: new Set(),
 			epoch: undefined,
 			state: undefined,
-			sent: undefined,
+			took: false,
+			saw: false,
 			calling: false,
 			callEpoch: undefined,
 			reason: "handed_back",
 			tries: 0,
 			failed: false,
-			elsewhere: undefined,
 		};
 		this.#holds.set(machineId, hold);
 		return hold;
 	}
 
-	/** Whether the page may hold something of the machine, sent a take-over of it since the last answered hand-back, was
-	 * told the member holds it elsewhere, or has a hand-back of it unanswered. */
-	#busy(hold: Hold): boolean {
-		return hold.state !== undefined || hold.sent !== undefined || hold.elsewhere !== undefined || hold.calling;
+	/** The member's epoch for the machine, as the database said it. An epoch above the known one discharges everything
+	 * owed (it was owed at the known one, and the epoch moves past it only by a hand-back that ends what was taken under
+	 * it) and ends what the window had there; one at or below it changes nothing (review r10). */
+	#learn(hold: Hold, epoch: number): void {
+		if (hold.epoch !== undefined && epoch <= hold.epoch) return;
+		const moved = hold.epoch !== undefined;
+		hold.epoch = epoch;
+		hold.took = false;
+		hold.saw = false;
+		if (moved && !hold.calling && hold.state !== "queued" && hold.state !== undefined) hold.state = undefined;
+		this.#changed();
 	}
 
-	/** The epoch a release of the machine hands back at: that of what the page holds or may hold (never below what it
-	 * sent), else that of what it sent; none when it has neither. */
-	#owed(hold: Hold): number | undefined {
-		if (hold.state !== undefined && hold.state !== "queued" && hold.epoch !== undefined)
-			return Math.max(hold.epoch, hold.sent ?? hold.epoch);
-		return hold.sent;
+	/** Whether the page owes something of the machine, or has a hand-back of it unanswered. */
+	#busy(hold: Hold): boolean {
+		return hold.took || hold.saw || hold.calling;
 	}
 
 	#state(hold: Hold, state: Hold["state"]): void {
@@ -441,9 +441,9 @@ export class DesktopHoldLedger {
 		}
 	}
 
-	/** The machine's hand-back at the epoch it was asked at, or the one on its way. Its answer is the database's word that
-	 * nothing taken or sent at that epoch or before holds the machine or ever will, and gives the current epoch. Not
-	 * answered: asked again after a wait. */
+	/** The machine's hand-back at the epoch it was asked at, or the one on its way. Its answer is the database's word on
+	 * the member's epoch (learned: above the known one, it discharges what was owed) and on whether they hold the machine
+	 * now (if so, at the epoch the page knows, it is owed: `saw`). Not answered: asked again after a wait. */
 	#ask(hold: Hold): Promise<boolean> {
 		if (hold.asking) return hold.asking;
 		if (!hold.calling) return Promise.resolve(true);
@@ -466,13 +466,9 @@ export class DesktopHoldLedger {
 				hold.tries = 0;
 				hold.calling = false;
 				hold.callEpoch = undefined;
-				hold.epoch = Math.max(hold.epoch ?? 0, answer.epoch);
-				// The database's epoch is past what was sent: every take-over sent at it, or before, is fenced.
-				if (hold.sent !== undefined && answer.epoch > hold.sent) hold.sent = undefined;
-				// The member holds it now (at the answer's epoch): owed until an answer past it, or one that says nothing is.
-				if (answer.holding) hold.elsewhere = answer.epoch;
-				else if (hold.elsewhere !== undefined && answer.epoch >= hold.elsewhere) hold.elsewhere = undefined;
-				// A take-over asked on purpose after the release (queued) goes on at the new epoch; nothing else is left.
+				this.#learn(hold, answer.epoch);
+				if (answer.holding && answer.epoch === hold.epoch) hold.saw = true;
+				// A take-over asked on purpose after the release (queued) goes on at the new epoch; nothing else is used.
 				if (hold.state !== "queued") hold.state = undefined;
 				this.#changed();
 				return true;
