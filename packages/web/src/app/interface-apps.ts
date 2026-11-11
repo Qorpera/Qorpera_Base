@@ -1,7 +1,9 @@
-import type {
-	CloudMemberFolderClient,
-	CloudMemberFolderEntry,
-	CloudMemberFolderFile,
+import {
+	CLOUD_MEMBER_FOLDER_READ_MANY,
+	type CloudMemberFolderClient,
+	type CloudMemberFolderEntry,
+	CloudMemberFolderError,
+	type CloudMemberFolderFile,
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { companyPathKey, parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
 import {
@@ -87,7 +89,8 @@ export function companyConcepts(apps: readonly CompanyApp[]): (CompanyApp & { re
 		.sort((a, b) => (b.changed ?? 0) - (a.changed ?? 0) || a.name.localeCompare(b.name));
 }
 
-type Folder = Pick<CloudMemberFolderClient, "read" | "list" | "readFile">;
+type Folder = Pick<CloudMemberFolderClient, "read" | "list" | "readFile"> &
+	Partial<Pick<CloudMemberFolderClient, "readMany">>;
 
 const LIST_PAGE = 50;
 /** Apps a company lists, at most. */
@@ -211,7 +214,11 @@ interface WarmBudget {
 	left: number;
 }
 
-/** Reads the files of one app's page, once each, a few at once, within the app's limits. Reading ahead (`warm`), it
+/** Folders whose database has no qorpera_member_folder_read_many yet (it answered 404): each path is read alone there. */
+const NO_READ_MANY = new WeakSet<object>();
+
+/** Reads the files of one app's page, once each, a few at once, within the app's limits. The entries of the files the
+ * page names together are read as the member in one call (`readMany`), each file's bytes then a few at once. Reading ahead (`warm`), it
  * reads no video past WARM_VIDEO_MAX_BYTES and nothing past the round's bytes, and makes no `data:` URLs: only the
  * bytes are wanted, for the member's file cache. */
 class AppFiles {
@@ -226,6 +233,12 @@ class AppFiles {
 	readonly #waiting: (() => void)[] = [];
 	#bytes = 0;
 	#videoBytes = 0;
+	/** Entries asked for since the last call went out: they go in the next one, a moment later. */
+	#asked: {
+		readonly path: string;
+		readonly resolve: (entry: CloudMemberFolderEntry | null) => void;
+		readonly reject: (error: unknown) => void;
+	}[] = [];
 	tooLarge = false;
 
 	constructor(
@@ -258,8 +271,8 @@ class AppFiles {
 			if (this.#read.size >= APP_MAX_FILES) this.tooLarge = true;
 			return Promise.resolve(null);
 		}
-		const reading = this.#turn(async () => {
-			const entry = (await this.#folder.read(`${this.#root}/${path}`, this.#signal)).entry;
+		const reading = (async () => {
+			const entry = await this.#entry(`${this.#root}/${path}`);
 			const file: CloudMemberFolderFile | null | undefined = entry?.kind === "file" ? entry.file : null;
 			if (!file) return null;
 			const video = APP_MEDIA_KINDS.has(appFileKind(path));
@@ -281,8 +294,8 @@ class AppFiles {
 			}
 			if (video) this.#videoBytes += file.bytes;
 			else this.#bytes += file.bytes;
-			return this.#folder.readFile(file, this.#signal, most, LIVE);
-		});
+			return this.#turn(() => this.#folder.readFile(file, this.#signal, most, LIVE));
+		})();
 		// Reading ahead, a file that fails is left for the open: the page waits for all its other reads, so a round
 		// never has more under way than it says.
 		if (this.#warm) {
@@ -292,6 +305,40 @@ class AppFiles {
 		}
 		this.#read.set(key, reading);
 		return reading;
+	}
+
+	/** A path's entry, read live as the member: with the other paths asked for in the same moment, in one call. */
+	#entry(path: string): Promise<CloudMemberFolderEntry | null> {
+		if (!this.#folder.readMany || NO_READ_MANY.has(this.#folder)) return this.#readAlone(path);
+		return new Promise((resolve, reject) => {
+			if (this.#asked.push({ path, resolve, reject }) === 1) queueMicrotask(() => this.#readAsked());
+		});
+	}
+
+	#readAlone(path: string): Promise<CloudMemberFolderEntry | null> {
+		return this.#turn(async () => (await this.#folder.read(path, this.#signal)).entry);
+	}
+
+	/** Reads the entries asked for, up to CLOUD_MEMBER_FOLDER_READ_MANY a call. A call that fails reads each of its paths
+	 * alone, so each answers or fails as its own read would; a database without the call is not asked again. */
+	#readAsked(): void {
+		const asked = this.#asked.splice(0);
+		const folder = this.#folder;
+		for (let start = 0; start < asked.length; start += CLOUD_MEMBER_FOLDER_READ_MANY) {
+			const part = asked.slice(start, start + CLOUD_MEMBER_FOLDER_READ_MANY);
+			folder.readMany!(
+				part.map((item) => item.path),
+				this.#signal,
+			).then(
+				(reads) => {
+					for (const [index, item] of part.entries()) item.resolve(reads[index]?.entry ?? null);
+				},
+				(error: unknown) => {
+					if (error instanceof CloudMemberFolderError && error.status === 404) NO_READ_MANY.add(folder);
+					for (const item of part) this.#readAlone(item.path).then(item.resolve, item.reject);
+				},
+			);
+		}
 	}
 
 	/** Runs `read` once fewer than its share of reads are under way; a read that ends hands its turn to the next. */
