@@ -5,6 +5,7 @@
 --   1. An agent asks for an undo: the request's shape, each refusal, a replay, one open at a time.
 --   2. The executor's claim, step and finish of an undo: refused, undone, already; a filler first; an undo of an undo;
 --      andLater across undo rows, and its own undo; a finish that comes late; too many starts; put off; nothing.
+--      (company/eight, before section 6: a late finish against a row a turn took for its own.)
 --   3. Downloads: the member's three calls per role, made and ready, the same main again, too large, put off, the
 --      rate, no executor, the file's removal, and a made download that is over from the step of the job that replaces
 --      its file, whatever becomes of that job's finish.
@@ -1987,6 +1988,124 @@ begin
 		and pg_temp.rec_is(251, 'restore', 'landed', 'l250', 'l10', 'long') and pg_temp.rec_is(252, 'restore', 'lost', 'l10', 'elsewhere', 'long')
 		and pg_temp.rec_is(253, 'undo', 'lost', 'elsewhere', 'e1', 'long') and pg_temp.rec_is(254, 'restore', 'lost', 'e1', 'elsewhere', 'long')
 		and pg_temp.req_restore_end(v_at250, 'l250') = pg_temp.req_recorded(255), 'all the way forward: ' || v::text);
+end $$;
+
+-- company/eight: an undo's finish that comes late, after a turn took the undo's movement for its own (the review of
+-- the release that carried this migration, F1). The undo's job moved main and its finish was not heard. The record
+-- then learns of that movement from somebody else: a session that fast-forwarded to the undo's commit and hands it in
+-- unchanged leaves a filler for it and takes the filler over as its landing; or a landing whose report comes late
+-- takes over a filler that covers the undo and itself. The finish, made again, must take that row for the undo (the
+-- undo's commit is the undo job's own), add no movement that never was, and leave the record's main where it is.
+insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name)
+values (pg_temp.rec_here(), '92400000-0000-4000-8000-000000000010', 'company', 'eight');
+-- Session copy p_n hands in commit p_head, which main is at and has held since it got there.
+create function pg_temp.req_same(p_n integer, p_head text) returns jsonb language sql as $$
+	select pg_temp.rec_record(pg_temp.rec_turn(p_n, 1, pg_temp.rec_sha(p_head), '{}', pg_temp.own_repo('company', 'eight')),
+		pg_temp.rec_report('unchanged', pg_temp.rec_sha(p_head), pg_temp.rec_sha(p_head), pg_temp.rec_sha(p_head)))
+$$;
+-- An undo of company/eight asked for and claimed, with no finish: the claim.
+create function pg_temp.req_begun(p_key text, p_change integer) returns jsonb language plpgsql as $$
+declare v_id uuid := (pg_temp.req_undo(p_key, p_change, false, '{}', 'eight') ->> 'requestId')::uuid; v_item jsonb;
+begin
+	select item into v_item from jsonb_array_elements(pg_temp.req_claim()) item where item ->> 'requestId' = v_id::text;
+	perform pg_temp.base_assert(v_item is not null, 'the undo of ' || p_change || ' is claimed');
+	return v_item;
+end $$;
+create function pg_temp.req_eight(p_n integer) returns public.qorpera_code_changes language sql as $$
+	select * from public.qorpera_code_changes c
+	where c.environment_id = pg_temp.rec_here() and c.owner = 'company' and c.name = 'eight' and c.n = p_n
+$$;
+do $$
+declare v jsonb; v_item jsonb; v_id uuid; r public.qorpera_code_changes%rowtype; s public.qorpera_code_repositories%rowtype;
+begin
+	perform pg_temp.rec_land(700, 'g0', 'g1', p_name => 'eight');
+	perform pg_temp.rec_land(701, 'g1', 'g2', p_name => 'eight');
+	perform pg_temp.rec_land(702, 'g2', 'g3', p_name => 'eight');
+	perform pg_temp.rec_land(703, 'g3', 'g4', p_name => 'eight');
+	perform pg_temp.rec_land(704, 'g4', 'g5', p_name => 'eight');
+	perform pg_temp.base_assert(pg_temp.req_rows('eight') = '1:L 2:L 3:L 4:L 5:L', 'eight''s changes');
+
+	-- The undo of change 1 moved main from g5 to h1, and its finish was not heard. A session hands h1 in unchanged:
+	-- row 6 is its landing. The finish made again takes row 6 for the undo: one movement, the undo's, and the turn has
+	-- no row of its own (its report, made again, is told the row that put main there).
+	v_item := pg_temp.req_begun('late-1', 1);
+	v_id := (v_item ->> 'requestId')::uuid;
+	perform pg_temp.base_assert(pg_temp.req_same(710, 'h1') = pg_temp.rec_answer('adopted', 6)
+		and pg_temp.rec_is(6, 'landing', 'landed', 'g5', 'h1', 'eight') and (pg_temp.req_eight(6)).worker_id = pg_temp.rec_copy(710),
+		'a session takes the undo''s movement for its landing');
+	v := pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, pg_temp.req_moved('g5', 'h1'));
+	r := pg_temp.req_eight(6); s := pg_temp.rec_shop('eight');
+	perform pg_temp.base_assert(v = pg_temp.req_recorded(6) and pg_temp.rec_is(6, 'undo', 'landed', 'g5', 'h1', 'eight')
+		and r.undoes = array[1] and r.request_id = v_id and r.title = 'Undo change 1: Session 700' and r.worker_id is null
+		and r.sequence is null and r.head_sha is null and r.how is null and r.picture is null and r.files_changed = 1
+		and r.paths = '[{"path":"src/a.ts","change":"changed"}]'
+		and pg_temp.req_rows('eight') = '1:R6 2:L 3:L 4:L 5:L 6:L' and s.last_change = 6 and s.last_main = pg_temp.rec_sha('h1')
+		and (pg_temp.req_row(v_id)).state = 'done' and (pg_temp.req_row(v_id)).outcome ->> 'change' = '6'
+		and not (pg_temp.req_row(v_id)).outcome ? 'unrecorded', 'the undo keeps its movement: ' || v::text || ' ' || pg_temp.req_rows('eight'));
+	perform pg_temp.base_assert(pg_temp.rec_record(pg_temp.rec_copy(710), pg_temp.rec_report('unchanged', pg_temp.rec_sha('h1'),
+			pg_temp.rec_sha('h1'), pg_temp.rec_sha('h1'))) = pg_temp.rec_answer('known', 6)
+		and (pg_temp.rec_shop('eight')).last_change = 6, 'the session''s report again');
+
+	-- The same, and a landing went on from the undo's commit before the finish came: nothing is put behind that
+	-- landing, and the record's main stays where the landing left it.
+	v_item := pg_temp.req_begun('late-2', 2);
+	v_id := (v_item ->> 'requestId')::uuid;
+	perform pg_temp.base_assert(pg_temp.req_same(711, 'h2') = pg_temp.rec_answer('adopted', 7)
+		and pg_temp.rec_land(712, 'h2', 'g6', p_name => 'eight') = pg_temp.rec_answer('recorded', 8)
+		and pg_temp.rec_is(7, 'landing', 'landed', 'h1', 'h2', 'eight'), 'a session''s row, and a landing after it');
+	v := pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, pg_temp.req_moved('h1', 'h2'));
+	r := pg_temp.req_eight(7); s := pg_temp.rec_shop('eight');
+	perform pg_temp.base_assert(v = pg_temp.req_recorded(7) and pg_temp.rec_is(7, 'undo', 'landed', 'h1', 'h2', 'eight')
+		and r.undoes = array[2] and r.worker_id is null and pg_temp.rec_is(8, 'landing', 'landed', 'h2', 'g6', 'eight')
+		and pg_temp.req_rows('eight') = '1:R6 2:R7 3:L 4:L 5:L 6:L 7:L 8:L' and s.last_change = 8
+		and s.last_main = pg_temp.rec_sha('g6'), 'no movement behind the landing: ' || v::text || ' ' || pg_temp.req_rows('eight'));
+
+	-- The other order: the undo is recorded, then a session hands its commit in unchanged. The row that put main
+	-- there is the undo's, and stays it.
+	v_item := pg_temp.req_begun('late-3', 3);
+	v_id := (v_item ->> 'requestId')::uuid;
+	v := pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, pg_temp.req_moved('g6', 'h3'));
+	perform pg_temp.base_assert(v = pg_temp.req_recorded(9) and pg_temp.req_same(713, 'h3') = pg_temp.rec_answer('known', 9)
+		and pg_temp.rec_is(9, 'undo', 'landed', 'g6', 'h3', 'eight') and (pg_temp.req_eight(9)).undoes = array[3]
+		and pg_temp.req_rows('eight') = '1:R6 2:R7 3:R9 4:L 5:L 6:L 7:L 8:L 9:L' and (pg_temp.rec_shop('eight')).last_change = 9,
+		'the undo first, the session after it: ' || pg_temp.req_rows('eight'));
+
+	-- A landing reported late took a filler that covers the undo and itself. The undo of change 4 moved main from h3
+	-- to h4 (not heard); a landing went from h4 to g7 and its report was not heard either; the next landing left a
+	-- filler from h3 to g7; then the first landing's report came and took that filler. The undo started where that row
+	-- starts, so the row is the undo's: the undo takes it, its span stays, what the job counted for the undo alone is
+	-- not the row's, and the landing's report, made once more, is late.
+	v_item := pg_temp.req_begun('late-4', 4);
+	v_id := (v_item ->> 'requestId')::uuid;
+	perform pg_temp.base_assert(pg_temp.rec_land(714, 'g7', 'g8', p_name => 'eight') = pg_temp.rec_answer('recorded', 11)
+		and pg_temp.rec_is(10, 'found', 'landed', 'h3', 'g7', 'eight')
+		and pg_temp.rec_land(715, 'h4', 'g7', false, p_name => 'eight') = pg_temp.rec_answer('adopted', 10)
+		and pg_temp.rec_is(10, 'landing', 'landed', 'h3', 'g7', 'eight'), 'a late landing takes the filler: ' || pg_temp.req_rows('eight'));
+	v := pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, pg_temp.req_moved('h3', 'h4'));
+	r := pg_temp.req_eight(10); s := pg_temp.rec_shop('eight');
+	perform pg_temp.base_assert(v = pg_temp.req_recorded(10) and pg_temp.rec_is(10, 'undo', 'landed', 'h3', 'g7', 'eight')
+		and r.undoes = array[4] and r.worker_id is null and r.files_changed is distinct from 1
+		and pg_temp.req_rows('eight') = '1:R6 2:R7 3:R9 4:R10 5:L 6:L 7:L 8:L 9:L 10:L 11:L' and s.last_change = 11
+		and s.last_main = pg_temp.rec_sha('g8'), 'the undo takes the row that starts where it started: ' || v::text || ' ' || pg_temp.req_rows('eight'));
+	perform pg_temp.base_assert(pg_temp.rec_record(pg_temp.rec_copy(715), pg_temp.rec_report('landed', pg_temp.rec_sha('g7'),
+			pg_temp.rec_sha('h4'), pg_temp.rec_sha('g7'), '{"inLine":false}')) = pg_temp.rec_answer('late', null)
+		and (pg_temp.rec_shop('eight')).last_change = 11, 'the landing''s report again is late');
+
+	-- The record has had main at the undo's commit, and no row of main's history is the undo's to take: here the row
+	-- that recorded it is lost, as a restore that went back past it leaves it. Nothing is written to the rows, no state
+	-- changes, the record's main stays, and the request says so.
+	v_item := pg_temp.req_begun('late-5', 5);
+	v_id := (v_item ->> 'requestId')::uuid;
+	perform pg_temp.base_assert(pg_temp.req_same(716, 'h5') = pg_temp.rec_answer('adopted', 12), 'a session''s row for the fifth undo');
+	update public.qorpera_code_changes set state = 'lost'
+	where environment_id = pg_temp.rec_here() and owner = 'company' and name = 'eight' and n = 12;
+	v := pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, pg_temp.req_moved('g8', 'h5'));
+	s := pg_temp.rec_shop('eight');
+	perform pg_temp.base_assert(v = pg_temp.req_recorded(null) and pg_temp.rec_is(12, 'landing', 'lost', 'g8', 'h5', 'eight')
+		and pg_temp.req_rows('eight') = '1:R6 2:R7 3:R9 4:R10 5:L 6:L 7:L 8:L 9:L 10:L 11:L 12:-' and s.last_change = 12
+		and s.last_main = pg_temp.rec_sha('h5') and (pg_temp.req_row(v_id)).state = 'done'
+		and (pg_temp.req_row(v_id)).outcome -> 'unrecorded' = 'true' and not (pg_temp.req_row(v_id)).outcome ? 'change'
+		and pg_temp.req_read(v_id) -> 'change' = 'null', 'nothing is written behind the record: ' || v::text || ' ' || pg_temp.req_rows('eight'));
 end $$;
 
 -- 6. More than 500 changes are not taken out at once ----------------------------------------------------------------------

@@ -1216,7 +1216,13 @@ end $$;
 -- * An undo that moved main: a filler first when main was not where the record had it, then the undo's row; the rows
 --   it took out are reverted by it. With andLater that is every row from the target on that was in main, newest
 --   first, each as it stands when its turn comes, so an undo among them puts its own targets back before they go too.
---   A finish that comes after its job, when the record has moved on, takes over the filler that covers the undo.
+--   A finish that comes after its job, when the record has moved on, takes over the row that already records the
+--   undo's movement: the filler that covers it, or the row of a turn that took that filler for its own (a session that
+--   handed the undo's commit in unchanged, or a landing that was reported late). The undo's commit is the undo job's
+--   own, so that movement is the undo's whoever recorded it first; the row becomes the undo's, and the turn's report,
+--   made again, is answered known or late. Such a finish never adds a movement behind what the record holds and never
+--   moves the record's main: when the record has had main at the undo's commit and no row can be taken (a restore went
+--   back past it), nothing is written to the rows, and the request's outcome says `unrecorded`.
 -- * A made download lasts 7 days; a removed one is expired. `made` is taken only from a request whose job asked its
 --   step first (55000 otherwise): the step gave it the repository's artifact generation, and ended the earlier made
 --   download of its file before the job replaced it. When a restore's job was let go to move the place since, the
@@ -1235,7 +1241,7 @@ declare
 	v_repository public.qorpera_code_repositories%rowtype; v_change public.qorpera_code_changes%rowtype;
 	v_state text := p_outcome ->> 'state'; v_result text := p_outcome ->> 'result'; v_removal boolean; v_n integer;
 	v_target integer; v_later boolean; v_each integer; v_undoes integer[] := '{}'; v_paths jsonb; v_recorded jsonb;
-	v_words jsonb; v_exact boolean; v_stored jsonb := p_outcome; v_displaced boolean := false;
+	v_words jsonb; v_exact boolean; v_stored jsonb := p_outcome; v_displaced boolean := false; v_unrecorded boolean := false;
 	v_lost jsonb := jsonb_build_object('schema', 'qorpera.code-request-finish/v1', 'state', 'lost');
 begin
 	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
@@ -1290,31 +1296,45 @@ begin
 			'files_changed', p_outcome -> 'filesChanged', 'paths', v_paths,
 			'paths_more', (p_outcome ->> 'pathsMore')::integer
 				+ jsonb_array_length(p_outcome -> 'paths') - jsonb_array_length(v_paths));
-		if v_repository.last_main is not null and v_repository.last_main <> p_outcome ->> 'mainBefore' then
-			-- Main is not where the record has it. When this finish comes after its job (the first was not heard), the
-			-- record may have moved on: the next movement recorded left a filler that covers the undo. It ends at the
-			-- undo's commit, or, when more was lost with it, starts where the undo started. The undo takes that filler
-			-- over, as a landing reported late does. With no such filler main had moved before the undo and nobody
-			-- recorded it: a filler for that gap first.
-			select change.n, change.main_before = p_outcome ->> 'mainBefore' and change.main_after = p_outcome ->> 'mainAfter'
-				and change.files_changed is null into v_n, v_exact
-			from public.qorpera_code_changes change
-			where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
-				and change.name = v_repository.name and change.n > v_target and change.kind = 'found'
-				and change.state in ('landed','reverted')
-				and (change.main_after = p_outcome ->> 'mainAfter' or change.main_before = p_outcome ->> 'mainBefore')
-			order by (change.main_after = p_outcome ->> 'mainAfter') desc, change.n desc limit 1;
-			if v_n is null then
-				perform public.qorpera_code_change_found(v_repository.environment_id, v_repository.owner, v_repository.name,
-					v_repository.last_main, p_outcome ->> 'mainBefore');
-			end if;
+		-- When this finish comes after its job (the first was not heard), the record may have moved on, and a row may
+		-- already record the undo's movement: the newest row after the target, in main's history, that ends at the
+		-- undo's commit, or, when more was lost with it, starts where the undo started. It is a filler the next movement
+		-- recorded left, or the row of a turn that took that filler for its own: a session that handed the undo's
+		-- commit in unchanged, or a landing reported late. The undo's commit is the undo job's own and nothing else
+		-- moved main from where the undo started, so that movement is the undo's whoever recorded it first.
+		select change.n, change.main_before = p_outcome ->> 'mainBefore' and change.main_after = p_outcome ->> 'mainAfter'
+			and (change.kind = 'landing' or change.files_changed is null) into v_n, v_exact
+		from public.qorpera_code_changes change
+		where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
+			and change.name = v_repository.name and change.n > v_target and change.kind in ('found','landing')
+			and change.state in ('landed','reverted')
+			and (change.main_after = p_outcome ->> 'mainAfter' or change.main_before = p_outcome ->> 'mainBefore')
+		order by (change.main_after = p_outcome ->> 'mainAfter') desc, change.n desc limit 1;
+		if v_n is null and exists (select 1 from public.qorpera_code_changes change
+				where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
+					and change.name = v_repository.name and (change.main_after = p_outcome ->> 'mainAfter'
+						or change.main_before = p_outcome ->> 'mainAfter')) then
+			-- The record has had main at the undo's commit, and no row of main's history is the undo's to take: a restore
+			-- went back past it. A row added now would say main moved after the newest row, which it did not: nothing is
+			-- written to the rows, no state changes (the restore set them from the history main has), and the record's
+			-- main stays.
+			v_unrecorded := true;
+		elsif v_n is null and v_repository.last_main is not null and v_repository.last_main <> p_outcome ->> 'mainBefore' then
+			-- Nothing of the record names the undo's commit, and main was not where the record had it when the undo
+			-- began: it had moved before the undo and nobody recorded it. A filler for that gap first.
+			perform public.qorpera_code_change_found(v_repository.environment_id, v_repository.owner, v_repository.name,
+				v_repository.last_main, p_outcome ->> 'mainBefore');
 		end if;
-		if v_n is not null then
-			-- The filler becomes the undo's row; its span, number and state stay. What the job counted is the row's when
-			-- the filler covers the undo and nothing else.
+		if v_unrecorded then
+			null;
+		elsif v_n is not null then
+			-- The row becomes the undo's; its span, number and state stay, and a turn it was taken for has no row any more
+			-- (its report, made again, is answered known or late). What the job counted is the row's when the row covers
+			-- the undo and nothing else.
 			update public.qorpera_code_changes change set kind = 'undo', undoes = '{}', request_id = v_request.id,
 				title = v_words ->> 'title', summary = v_words ->> 'summary', notice = v_words ->> 'notice',
 				staff_agent_id = v_request.by_agent_id, owner_user_id = v_request.by_user_id,
+				worker_id = null, sequence = null, head_sha = null, how = null, picture = null, picture_problem = null,
 				files_changed = case when v_exact then (p_outcome ->> 'filesChanged')::integer else change.files_changed end,
 				paths = case when v_exact then v_paths else change.paths end,
 				paths_more = case when v_exact then (v_words ->> 'paths_more')::integer else change.paths_more end,
@@ -1328,7 +1348,9 @@ begin
 				v_words || jsonb_build_object('state', 'landed', 'main_before', p_outcome ->> 'mainBefore',
 					'main_after', p_outcome ->> 'mainAfter'));
 		end if;
-		if v_later then
+		if v_unrecorded then
+			null;
+		elsif v_later then
 			for v_each in select change.n from public.qorpera_code_changes change
 				where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
 					and change.name = v_repository.name and change.n >= v_target and change.n < v_n
@@ -1347,11 +1369,13 @@ begin
 				v_target, false, v_n);
 			v_undoes := array[v_target];
 		end if;
-		update public.qorpera_code_changes change set undoes = v_undoes
-		where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
-			and change.name = v_repository.name and change.n = v_n;
-		-- The row holds what changed; the request keeps the rest of the outcome.
-		v_stored := p_outcome - 'paths';
+		if not v_unrecorded then
+			update public.qorpera_code_changes change set undoes = v_undoes
+			where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
+				and change.name = v_repository.name and change.n = v_n;
+		end if;
+		-- The row holds what changed; the request keeps the rest of the outcome, and says when no row was written.
+		v_stored := p_outcome - 'paths' || case when v_unrecorded then '{"unrecorded":true}'::jsonb else '{}'::jsonb end;
 	elsif v_request.kind = 'restore' and v_result = 'restored' then
 		v_recorded := v_request.progress -> 'recorded';
 		if v_recorded is null or v_recorded ->> 'bundle' is distinct from p_outcome ->> 'bundle'
@@ -1655,6 +1679,11 @@ begin
 		raise exception 'Code download request is invalid' using errcode = '22023'; end if;
 	-- The company's profile row first: the request's row checks its key.
 	perform 1 from public.qorpera_profiles profile where profile.id = p_profile_id for key share;
+	-- One download request of a company at a time, to the end of its transaction: the day's count and the new row are
+	-- one step for the company, also when two members ask for two repositories at the same moment (the profile's key
+	-- share locks do not exclude each other, and the two registry rows are two locks). This call alone takes the lock,
+	-- and before any row's: nothing waits for it while holding one.
+	perform pg_advisory_xact_lock(hashtextextended('qorpera.code-downloads:' || p_profile_id::text, 0));
 	select repository.* into v_repository from public.qorpera_code_repositories repository
 	join public.qorpera_company_files file on file.environment_id = repository.environment_id
 		and file.profile_id = p_profile_id and file.core = 'folder-v2'
