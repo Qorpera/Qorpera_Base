@@ -129,7 +129,8 @@ async function readText(folder: Folder, entry: CloudMemberFolderEntry, signal: A
 /** The company's groups of apps, from `apps/groups.md` (cloud/app-groups.ts); undefined when it has none. */
 export async function readAppGroups(folder: Folder, signal: AbortSignal): Promise<AppTreeNode[] | undefined> {
 	const entry = (await folder.read(APP_GROUPS_PATH, signal)).entry;
-	const text = entry ? await readText(folder, entry, signal, APP_GROUPS_MAX_BYTES) : null;
+	// A bigger file is read too (up to a mebibyte): the reader keeps its first 64 KiB, as the agents' tool does.
+	const text = entry ? await readText(folder, entry, signal, 16 * APP_GROUPS_MAX_BYTES) : null;
 	return text === null ? undefined : parseAppGroups(text);
 }
 

@@ -31,8 +31,9 @@ comment on table public.qorpera_member_app_layouts is
 	'Each member''s own arrangement of the apps drawer over the company''s apps/groups.md (20260930728000). Written '
 	'only through qorpera_set_member_app_layout.';
 
-/** Whether a layout document has the shape the web writes: a key is a drawer key or `group:<id>`, a group id 1-40 of
- * a-z, 0-9 and hyphens, a name 1-40 characters on one line. */
+/** Whether a layout document has the shape the web writes: a key is a drawer key (an app's name up to 64 characters)
+ * or `group:<id>`, a group id 1-40 of a-z, 0-9 and hyphens (as `@qorpera/cloud-client/app-groups` reads them), a name
+ * 1-40 characters on one line. */
 create function public.qorpera_member_app_layout_valid(p_layout jsonb)
 returns boolean language sql immutable set search_path = '' as $$
 	-- Every test is null-safe, and the whole answers false rather than null for anything missing.
@@ -46,22 +47,22 @@ returns boolean language sql immutable set search_path = '' as $$
 		and (select count(*) from jsonb_object_keys(case when jsonb_typeof(p_layout -> 'groups') = 'object' then p_layout -> 'groups' else '{}' end)) <= 200
 		and not exists (
 			select 1 from jsonb_each(case when jsonb_typeof(p_layout -> 'places') = 'object' then p_layout -> 'places' else '{}' end) place(key, value)
-			where place.key !~ '^(page:(mailbox|members|bank)|app:[a-z0-9][a-z0-9-]{0,62}|concepts|sites|group:[a-z0-9][a-z0-9-]{0,39})$'
+			where place.key !~ '^(page:(mailbox|members|bank)|app:[a-z0-9-]{1,64}|concepts|sites|group:[a-z0-9-]{1,40})$'
 				or jsonb_typeof(place.value) is distinct from 'object'
 				or case when jsonb_typeof(place.value) = 'object' then place.value - array['group','after','first','at'] <> '{}'::jsonb
 					else true end
 				or coalesce(jsonb_typeof(place.value -> 'group'), 'null') not in ('null', 'string')
 				or (jsonb_typeof(place.value -> 'group') = 'string'
-					and place.value ->> 'group' !~ '^[a-z0-9][a-z0-9-]{0,39}$')
+					and place.value ->> 'group' !~ '^[a-z0-9-]{1,40}$')
 				or coalesce(jsonb_typeof(place.value -> 'after'), 'null') not in ('null', 'string')
-				or coalesce(char_length(place.value ->> 'after'), 0) > 70
+				or coalesce(char_length(place.value ->> 'after'), 0) > 80
 				or coalesce(jsonb_typeof(place.value -> 'first'), 'boolean') <> 'boolean'
 				or coalesce(jsonb_typeof(place.value -> 'at'), 'number') <> 'number'
 				or (jsonb_typeof(place.value -> 'at') = 'number'
 					and ((place.value ->> 'at')::numeric < 0 or (place.value ->> 'at')::numeric <> trunc((place.value ->> 'at')::numeric))))
 		and not exists (
 			select 1 from jsonb_each(case when jsonb_typeof(p_layout -> 'groups') = 'object' then p_layout -> 'groups' else '{}' end) grouped(id, value)
-			where grouped.id !~ '^[a-z0-9][a-z0-9-]{0,39}$'
+			where grouped.id !~ '^[a-z0-9-]{1,40}$'
 				or jsonb_typeof(grouped.value) is distinct from 'object'
 				or case when jsonb_typeof(grouped.value) = 'object' then grouped.value - array['name','removed','mine'] <> '{}'::jsonb
 					else true end

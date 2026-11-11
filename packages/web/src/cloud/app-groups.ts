@@ -7,6 +7,12 @@
  *
  * Keys are the file's: `page:mailbox|members|bank`, `app:<name>`, `concepts`, `sites`, and `group:<id>` for a group. */
 
+import {
+	isAppDrawerKey,
+	isAppGroupId,
+	parseAppGroups as parseAppGroupsFile,
+	type AppGroupNode as SharedAppGroupNode,
+} from "@qorpera/cloud-client/app-groups";
 import { parseRecord } from "@qorpera/contracts";
 
 export const APP_GROUPS_PATH = "apps/groups.md";
@@ -55,9 +61,6 @@ export interface MemberAppLayout {
 
 export const EMPTY_APP_LAYOUT: MemberAppLayout = { schema: APP_LAYOUT_SCHEMA, places: {}, groups: {} };
 
-const GROUP_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
-const KEY = /^(page:(mailbox|members|bank)|app:[a-z0-9][a-z0-9-]{0,62}|concepts|sites)$/;
-
 export const groupKey = (id: string) => `group:${id}`;
 export const isGroupKey = (key: string) => key.startsWith("group:");
 export const groupIdOf = (key: string) => key.slice("group:".length);
@@ -70,41 +73,19 @@ export function drawerKey(key: string): string {
 	return key.startsWith("page:") ? key.slice("page:".length) : key;
 }
 
-/** Reads `apps/groups.md`: a nested list, two spaces a level; `- <key> words` for an app, `- group <id>: <name>` for a
- * group, two group levels at most. What it cannot read it skips; a key or a group named twice counts the first time. */
+/** Reads `apps/groups.md` with the same reader the agents' `organize_apps` uses (`@qorpera/cloud-client/app-groups`):
+ * a nested list, two group levels; what it cannot read it skips, and only the file's first 64 KiB count. */
 export function parseAppGroups(text: string): AppTreeNode[] {
-	const root: AppTreeNode[] = [];
-	const stack: AppGroupNode[] = [];
-	const seen = new Set<string>();
-	for (const raw of text.slice(0, APP_GROUPS_MAX_BYTES).split(/\r?\n/)) {
-		const line = /^( *)- (.+?)\s*$/.exec(raw);
-		if (!line) continue;
-		const depth = Math.floor(line[1]!.length / 2);
-		const body = line[2]!;
-		const group = /^group ([a-z0-9][a-z0-9-]{0,39}):\s*(.+)$/.exec(body);
-		if (group) {
-			const id = group[1]!;
-			const name = group[2]!.trim().slice(0, APP_GROUP_NAME_LIMIT);
-			// A group stands at most one level in; a deeper one is read at the nearest allowed level.
-			const level = Math.min(depth, stack.length, 1);
-			stack.length = level;
-			if (seen.has(groupKey(id)) || !name) {
-				// Its items still need a home: they stand where the group would have.
-				continue;
-			}
-			seen.add(groupKey(id));
-			const node: AppGroupNode = { kind: "group", id, name, items: [] };
-			(stack.at(-1)?.items ?? root).push(node);
-			stack.push(node);
-			continue;
-		}
-		const key = body.split(/\s+/, 1)[0]!;
-		if (!KEY.test(key) || seen.has(key)) continue;
-		seen.add(key);
-		stack.length = Math.min(depth, stack.length);
-		(stack.at(-1)?.items ?? root).push({ kind: "item", key });
-	}
-	return root;
+	// A line whose key is no drawer key stays in the file for the agents and is not drawn.
+	const tree = (nodes: readonly SharedAppGroupNode[]): AppTreeNode[] =>
+		nodes
+			.filter((node) => node.kind === "group" || isAppDrawerKey(node.key))
+			.map((node) =>
+				node.kind === "item"
+					? { kind: "item", key: node.key }
+					: { kind: "group", id: node.id, name: node.name, items: tree(node.items) },
+			);
+	return tree(parseAppGroupsFile(text).items);
 }
 
 /** The member's document as the cloud keeps it; anything else is the empty one. */
@@ -122,8 +103,8 @@ export function parseMemberAppLayout(value: unknown): MemberAppLayout {
 	const places: Record<string, AppPlace> = {};
 	for (const [key, raw] of Object.entries(objectOrNothing(input.places) ?? {})) {
 		const place = objectOrNothing(raw);
-		if (!place || !(KEY.test(key) || (isGroupKey(key) && GROUP_ID.test(groupIdOf(key))))) continue;
-		const group = typeof place.group === "string" && GROUP_ID.test(place.group) ? place.group : null;
+		if (!place || !(isAppDrawerKey(key) || (isGroupKey(key) && isAppGroupId(groupIdOf(key))))) continue;
+		const group = typeof place.group === "string" && isAppGroupId(place.group) ? place.group : null;
 		const after = typeof place.after === "string" ? place.after : null;
 		const at = typeof place.at === "number" && Number.isSafeInteger(place.at) && place.at >= 0 ? place.at : 0;
 		places[key] = { group, after, ...(place.first === true ? { first: true } : {}), at };
@@ -131,7 +112,7 @@ export function parseMemberAppLayout(value: unknown): MemberAppLayout {
 	const groups: Record<string, AppGroupChange> = {};
 	for (const [id, raw] of Object.entries(objectOrNothing(input.groups) ?? {})) {
 		const change = objectOrNothing(raw);
-		if (!change || !GROUP_ID.test(id)) continue;
+		if (!change || !isAppGroupId(id)) continue;
 		const mine = objectOrNothing(change.mine);
 		const entry: AppGroupChange = {
 			...(typeof change.name === "string" && change.name ? { name: change.name } : {}),

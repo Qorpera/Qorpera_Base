@@ -319,4 +319,17 @@ describe("the member's own arrangement", () => {
 			["group:w W", "app:w", ["group:y Y", "app:y"]],
 		]);
 	});
+
+	it("takes an app's name up to 64 characters in the file and in the member's document (review F1 on #1678, round 8)", () => {
+		const long = `app:${"a".repeat(64)}`;
+		const company = parseAppGroups(`- group sales: Sales\n  - ${long} Long\n`);
+		expect(shape(arrangeApps(company, EMPTY_APP_LAYOUT, [long]))).toEqual([["group:sales Sales", long]]);
+		const read = parseMemberAppLayout({
+			schema: "qorpera.member-app-layout/v1",
+			places: { [long]: { group: "-ops", after: null, first: true, at: 1 } },
+			groups: { "-ops": { mine: { name: "Ops" } } },
+		});
+		expect(read.places[long]).toEqual({ group: "-ops", after: null, first: true, at: 1 });
+		expect(read.groups["-ops"]).toEqual({ mine: { name: "Ops" } });
+	});
 });

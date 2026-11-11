@@ -115,3 +115,17 @@ begin
 	reset role;
 	perform pg_temp.base_claims('service_role');
 end $$;
+
+-- An app's name may be 64 characters, and a group id is read as the agents' tool reads it (review F1/F2 on #1678, round 8).
+do $$
+declare v_viewer uuid := '92400000-0000-4000-8000-000000000003'; v_state jsonb;
+	v_long text := 'app:' || repeat('a', 64);
+begin
+	v_state := pg_temp.al_call(v_viewer, pg_temp.al_set(jsonb_build_object('schema', 'qorpera.member-app-layout/v1',
+		'places', jsonb_build_object(v_long, jsonb_build_object('group', '-ops', 'after', null, 'first', true, 'at', 1)),
+		'groups', jsonb_build_object('-ops', jsonb_build_object('mine', jsonb_build_object('name', 'Ops')))), null));
+	perform pg_temp.base_assert(v_state #> '{layout,places}' ? v_long, 'A 64-character app name is taken: ' || v_state::text);
+	perform pg_temp.al_refused(v_viewer, pg_temp.al_set(jsonb_build_object('schema', 'qorpera.member-app-layout/v1',
+		'places', jsonb_build_object(v_long || 'a', '{}'::jsonb), 'groups', '{}'::jsonb),
+		(v_state ->> 'updatedAt')::timestamptz), '22023');
+end $$;
