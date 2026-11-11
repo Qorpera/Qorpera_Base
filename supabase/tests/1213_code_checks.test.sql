@@ -12,7 +12,8 @@
 --   4. The record files: checksState and checks.
 --   5. Undo: one change, andLater over a passed row, over a none row and over an inherited one, andLater of a row that
 --      took a wider filler over, and a late finish that takes over a row whose checks passed.
---   6. Restore: inherited from a passed row and from an inherited one, not, and to a commit the record does not know.
+--   6. Restore: inherited from a passed row and from an inherited one, not, and to a commit the record does not know;
+--      and an undo back to a commit two rows put main at.
 --   7. The platform's line after a landing, for each state and for no row.
 --   8. The failure words: each code keeps the executor's words and is the reason; the rounds counted, passed over and
 --      reset; any other code as before.
@@ -178,8 +179,8 @@ end $$;
 
 -- 2. The record call --------------------------------------------------------------------------------------------------
 do $$
-declare v jsonb; v_bad jsonb; w uuid; r public.qorpera_code_changes%rowtype; q public.qorpera_code_repositories%rowtype;
-	h text := pg_temp.rec_sha('gh'); a text := pg_temp.rec_sha('ga'); b text := pg_temp.rec_sha('gb');
+declare v jsonb; v_bad jsonb; v_place integer; w uuid; r public.qorpera_code_changes%rowtype;
+	q public.qorpera_code_repositories%rowtype; h text := pg_temp.rec_sha('gh'); a text := pg_temp.rec_sha('ga'); b text := pg_temp.rec_sha('gb');
 	v_ok jsonb := pg_temp.chk_ok(pg_temp.chk_passed('ga'));
 	v_refusal jsonb := '{"refusal":{"code":"CODE_HOST_NAMES_DIFFER_BY_CASE","paths":["Readme.md","README.md"]}}';
 	v_test jsonb := '{"name":"test","run":"npm test","ms":21000}';
@@ -202,7 +203,7 @@ begin
 	-- Each that is not: checks for a state that did not land, none or a wrong one for a landing, v1 with checks, and
 	-- every way a passed result can be wrong.
 	w := pg_temp.rec_turn(1310, 1, h, '{}', pg_temp.own_repo('company', 'gate'));
-	foreach v_bad in array array[
+	for v_bad, v_place in select bad.item, bad.place from unnest(array[
 		pg_temp.chk_report('conflict', h, null, null, '{"state":"none"}'),
 		pg_temp.chk_report('unchanged', h, a, a, '{"state":"none"}'),
 		pg_temp.chk_report('refused', h, null, null, '{"state":"off"}', v_refusal),
@@ -287,8 +288,9 @@ begin
 			'{"changed":{"added":[7],"removed":[],"run":[]}}'))),
 		pg_temp.chk_report('landed', h, b, a, pg_temp.chk_ok(pg_temp.chk_passed('ga', 'fast-forward', '{"changed":[]}'))),
 		-- And all of it over 8 KiB, every other rule kept.
-		pg_temp.chk_report('landed', h, b, a, pg_temp.chk_ok(pg_temp.chk_wide('ga', 20)))] loop
-		perform pg_temp.base_assert(not public.qorpera_code_change_report_valid(v_bad), 'no report: ' || left(v_bad::text, 600));
+		pg_temp.chk_report('landed', h, b, a, pg_temp.chk_ok(pg_temp.chk_wide('ga', 20)))]) with ordinality bad(item, place) loop
+		perform pg_temp.base_assert(not public.qorpera_code_change_report_valid(v_bad),
+			'no report ' || v_place || ': ' || left(v_bad::text, 600));
 		perform pg_temp.base_error(format('select pg_temp.rec_record(%L, %L)', w, v_bad), '22023', 'Code change report invalid');
 	end loop;
 	perform pg_temp.base_assert(pg_column_size(pg_temp.chk_wide('ga', 20)) > 8192
@@ -497,6 +499,10 @@ begin
 	perform pg_temp.base_assert(v ->> 'change' = '10' and v -> 'keptThrough' = '7'
 		and pg_temp.chk_said(10, 'back') = pg_temp.chk_as('inherited', 7)
 		and pg_temp.req_restore_end(v_bundle, 'u3') = pg_temp.req_recorded(10), 'back to an inherited row: ' || v::text);
+	-- Two rows have put main at u3 now, both vouched for: an undo back to it names the newer.
+	perform pg_temp.base_assert(pg_temp.chk_land(1348, 'u3', 'b6', '{"state":"none"}', 'back') = pg_temp.rec_answer('recorded', 11)
+		and pg_temp.req_undone('chk-undo-5', 11, true, 'b6', 'u5', '{}', 'back') = pg_temp.req_recorded(12)
+		and pg_temp.chk_said(12, 'back') = pg_temp.chk_as('inherited', 10), 'the newest of two: ' || pg_temp.chk_said(12, 'back')::text);
 	-- A commit no row put main at: nothing vouches for it.
 	v_bundle := '20261111T040000Z-' || repeat('d', 12);
 	v := pg_temp.req_restore_to(v_bundle, 'r9', 'kept', 'r3');
