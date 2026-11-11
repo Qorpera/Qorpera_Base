@@ -437,15 +437,31 @@ const CODING_FOLDER_GUEST_READY_MS = 300_000;
 /** How long a publication waits before it asks for a boundary again while one left paths waiting for save checks that
  * had not ended (the service answers within the control's timeout, and goes on checking). */
 const CODING_FOLDER_CHECK_RETRY_MS = 1_000;
-/** A run of a repository's checks (own code storage, step 3; STEP3-CHECKS-PLAN.md 6.2). The copy: a clean copy of
- * exactly the candidate on the machine's own disk, read from the repository's storage in the company folder (no
- * untracked or ignored file of any worktree), after waiting for a merge commit job A just wrote to reach the session's
- * view. Each run has a folder of its own, `$QORPERA_CHECKS_ROOT/$QORPERA_CHECKS_NAME` (the name is the copy's command
- * id: the session, its turn and the run's attempt), so a process left of an earlier run holds paths into another
- * folder, never this run's (release review r1, F1). The earlier runs' folders are removed to give the disk back, and
- * nothing else, as far as they can be: what a check left that its user cannot remove (a container's files) never stops
- * a copy. A root that is a link or a file is taken away first, so nothing is removed through it. Its values come in the
- * environment. */
+/** A run of a repository's checks (own code storage, step 3; STEP3-CHECKS-PLAN.md 6.2). Each run has a folder of its
+ * own, `$QORPERA_CHECKS_ROOT/$QORPERA_CHECKS_NAME`, named `<the turn's sequence, 10 digits>-<the run's attempt, 4 digits>`
+ * (codeChecksRunName): the session user's home is one session's (SQL gives each session its own uid, never another's),
+ * so the names sort by time, the newest run's last. A process left of an earlier run holds paths into another folder,
+ * never the newest run's (release review r1, F1). And a command of a run that is not the newest does nothing, by these
+ * scripts' own rule on the machine (review round 4, F1): a start the transport never saw acknowledged may land at any
+ * time after the host moved on, so its copy or check finds a higher name and exits 91 before it removes, makes or runs
+ * anything. Names compare as bytes (`LC_ALL=C`, in a subshell of its own: nothing a check runs gets it). */
+const CODE_CHECKS_NEWER_RUN = [
+	"(",
+	"\tLC_ALL=C",
+	'\tfor e in "$QORPERA_CHECKS_ROOT"/*; do',
+	'\t\tm="$(basename -- "$e")"',
+	"\t\tif [[ $m =~ ^[0-9]{10}-[0-9]{4}$ && $m > $QORPERA_CHECKS_NAME ]]; then exit 91; fi",
+	"\tdone",
+	")",
+	'if [ "$?" -eq 91 ]; then exit 91; fi',
+];
+/** The copy: a clean copy of exactly the candidate on the machine's own disk, read from the repository's storage in the
+ * company folder (no untracked or ignored file of any worktree), after waiting for a merge commit job A just wrote to
+ * reach the session's view. A root that is a link or a file is taken away first, so nothing is removed through it;
+ * then a copy of a run that is not the newest exits 91, having removed and made nothing. Otherwise it removes the run
+ * folders with a lower name, as far as it can (what a check left that its user cannot remove, a container's files,
+ * never stops a copy), and no other entry: two copies that land at once never remove each other's newer folder. Its
+ * values come in the environment. */
 const CODE_CHECKS_COPY = [
 	"set -eu",
 	'r="$QORPERA_CHECKS_ROOT"',
@@ -453,7 +469,14 @@ const CODE_CHECKS_COPY = [
 	'd="$r/$n"',
 	'if [ -L "$r" ] || { [ -e "$r" ] && [ ! -d "$r" ]; }; then rm -f -- "$r"; fi',
 	'mkdir -p -- "$r"',
-	'find "$r" -mindepth 1 -maxdepth 1 ! -name "$n" -exec rm -rf -- {} + || true',
+	...CODE_CHECKS_NEWER_RUN,
+	"(",
+	"\tLC_ALL=C",
+	'\tfor e in "$r"/*; do',
+	'\t\tm="$(basename -- "$e")"',
+	'\t\tif [[ $m =~ ^[0-9]{10}-[0-9]{4}$ && $m < $n ]]; then rm -rf -- "$e" || true; fi',
+	"\tdone",
+	")",
 	'rm -rf -- "$d"',
 	'mkdir -p -- "$d/out"',
 	"i=0",
@@ -465,13 +488,23 @@ const CODE_CHECKS_COPY = [
 	'test "$(git -C "$d/src" rev-parse HEAD)" = "$QORPERA_CHECKS_COMMIT"',
 ].join("\n");
 /** One check: its own command from its folder of the copy, stdin closed, its whole output also kept on the machine's
- * disk, and its own exit code. */
+ * disk, and its own exit code. A check of a run that is not the newest exits 91 and runs nothing. Its folder is most
+ * often gone by then (the newer copy removed it, and the guest agent cannot start a command in a folder that is not
+ * there), but the removal is best effort, and a start may land before the newer copy ran: the rule holds either way. */
 const CODE_CHECKS_CHECK = [
+	...CODE_CHECKS_NEWER_RUN,
 	'cd -- "$QORPERA_CHECK_CWD" || exit 2',
 	'bash --noprofile --norc -c "$QORPERA_CHECK_RUN" </dev/null 2>&1 | tee -- "$QORPERA_CHECK_LOG"',
 	// bash's own placeholder, not the template's.
 	`exit "\${PIPESTATUS[0]}"`,
 ].join("\n");
+/** The folder name of a run of a session's checks: its turn's sequence and its attempt, zero-padded so that names sort
+ * by time as bytes; null for numbers that do not fit. */
+function codeChecksRunName(sequence: number, attempt: number): string | null {
+	if (!Number.isSafeInteger(sequence) || sequence < 0 || sequence > 9_999_999_999) return null;
+	if (!Number.isSafeInteger(attempt) || attempt < 0 || attempt > 9_999) return null;
+	return `${String(sequence).padStart(10, "0")}-${String(attempt).padStart(4, "0")}`;
+}
 /** The copy's own time limit. */
 const CODE_CHECKS_COPY_MS = 300_000;
 /** What the wall budget gives each check beyond its own limit. */
@@ -1763,13 +1796,14 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * its environment and secrets, its output masked and kept in its custody only once the machine's reads are released.
 	 * Its authority is the host's own part of a command's (the turn still prepared, a fresh run authority, no machine
 	 * marked for a new disk), never the model's: the turn has handed in, and the model's commands are refused. Each
-	 * command gets `CI=true` and `QORPERA_CHECKS=1`. The run works in a folder of its own, `~/.qorpera-checks/<its copy's
-	 * command id>`, and its copy removes the earlier runs' folders. The first check that fails ends the run. It never
+	 * command gets `CI=true` and `QORPERA_CHECKS=1`. The run works in a folder of its own, `~/.qorpera-checks/<its turn's
+	 * sequence>-<its attempt>` (codeChecksRunName), and its copy removes the earlier runs' folders; a command of a run
+	 * that is not the newest does nothing (CODE_CHECKS_NEWER_RUN). The first check that fails ends the run. It never
 	 * throws for a check's or the machine's sake: what could not run, or ran past the run's wall budget, is `not_run`
-	 * with why, a running command stopped first (#stopChecksCommand). A command whose end could not be confirmed holds
-	 * every later run of the session's checks: each is `not_run` (`machine`, CODE_CHECKS_EARLIER_RUN_NOT_STOPPED) until a cancel and
-	 * a read confirm it ended, and touches no folder (release review r1, F1). The turn's abort stops the running command
-	 * with time of its own and is thrown on. */
+	 * with why, a running command stopped first (#stopChecksCommand). A command whose end could not be confirmed (its
+	 * cancels rejected, or still `running`) holds every later run of the session's checks: each is `not_run` (`machine`,
+	 * CODE_CHECKS_EARLIER_RUN_NOT_STOPPED) until a cancel and a read confirm it ended, and touches no folder (release
+	 * review r1, F1). The turn's abort stops the running command with time of its own and is thrown on. */
 	async #runChecks(
 		claim: CodingSessionClaim,
 		input: { commit: string; checks: readonly CodeCheck[]; attempt: number },
@@ -1808,16 +1842,24 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (!folder || !ready.folder)
 			return answer({ state: "not_run", why: "transport", code: "CODING_HOST_CHECKS_UNAVAILABLE" });
 		const { uid } = ready.folder;
+		// The run's own folder, named by its turn and its attempt so that the session's runs sort by time (the scripts'
+		// rule: a command of a run that is not the newest does nothing).
+		const name = codeChecksRunName(claim.sequence, input.attempt);
+		if (name === null) return answer({ state: "not_run", why: "transport", code: "CODE_CHECKS_RUN_NAME_INVALID" });
 		// The session user's home, as the folder command transport gives each command (HOME): on the machine's own disk.
-		// The run's own folder there is named by its copy's command id: one of a kind for the session, the turn and the
-		// attempt.
 		const home = `/home/qorpera-${uid}`,
 			root = `${home}/.qorpera-checks`,
+			dir = `${root}/${name}`,
 			commandId = (index: number) =>
-				codingHostId("checks", `${claim.workerId}:${claim.sequence}:${input.attempt}:${index}`),
-			name = commandId(0),
-			dir = `${root}/${name}`;
-		const base = { ...codingFolderGitEnvironment(claim.workerId), CI: "true", QORPERA_CHECKS: "1" };
+				codingHostId("checks", `${claim.workerId}:${claim.sequence}:${input.attempt}:${index}`);
+		// Every command of the run, the copy's and each check's, knows its run by the root and its name.
+		const base = {
+			...codingFolderGitEnvironment(claim.workerId),
+			CI: "true",
+			QORPERA_CHECKS: "1",
+			QORPERA_CHECKS_ROOT: root,
+			QORPERA_CHECKS_NAME: name,
+		};
 		const authorize = this.#commandAuthority(ready);
 		const checked: LxdCodingFolderCommandTransportOptions["authorize"] = async (...call) => {
 			try {
@@ -1873,8 +1915,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 							}
 						: {
 								...base,
-								QORPERA_CHECKS_ROOT: root,
-								QORPERA_CHECKS_NAME: name,
 								QORPERA_CHECKS_REPOSITORY: repository,
 								QORPERA_CHECKS_COMMIT: input.commit,
 							},
@@ -2056,9 +2096,16 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	/** Cancels one command of a run of the checks and reads it until it has ended, within CODE_CHECKS_STOP_MS: a cancel
 	 * that is rejected, or whose receipt still says `running`, is asked again at the next read. Answers whether its end
 	 * was confirmed: a receipt in any state but `running` (`machine_stopped` for a machine that stopped or was rebuilt
-	 * under it), no start of it the host ever kept (`CODING_COMMAND_UNKNOWN`: nothing of it ever ran), or `hidden`
-	 * saying the machine it ran on stopped or lost its disk. A cancel's own signal is the bound's, never the turn's: a
-	 * turn that gave up still stops what it started. `turn`, when given, is the turn's signal, whose abort is thrown on. */
+	 * under it), no start of it the host ever kept (`CODING_COMMAND_UNKNOWN`), or `hidden` saying the machine it ran on
+	 * stopped or lost its disk. A cancel's own signal is the bound's, never the turn's: a turn that gave up still stops
+	 * what it started. `turn`, when given, is the turn's signal, whose abort is thrown on.
+	 *
+	 * One `cancelled` is not an end for certain (review round 4, F1): a start the guest never acknowledged may still land
+	 * after it, at any time or never, and nothing the host waits for can say which (the transport stops it when it next
+	 * reads it, and nothing may read it again). It is believed all the same, and the next run goes on, because such a
+	 * command is harmless by the scripts' own rule on the machine: it belongs to a run that is no longer the newest, and
+	 * its copy or check finds the newer run's folder (a higher name) and exits 91 having removed, made and run nothing
+	 * (CODE_CHECKS_NEWER_RUN). The guard for a command that still reads `running` stays: that one did start. */
 	async #stopChecksCommand(
 		transport: LxdCodingFolderCommandTransport,
 		scope: CloudCodingCommandScope,
