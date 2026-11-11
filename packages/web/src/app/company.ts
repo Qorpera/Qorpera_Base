@@ -217,8 +217,9 @@ export interface CompanyState {
 	/** A rail action (a sidebar change, a rename, a delete) that did not happen, in the member's words. */
 	railError?: string;
 	/** The member just reset their sidebar: the rail offers Undo until they dismiss it or change the sidebar again.
-	 * `appsOrder` is the apps drawer's order this device kept before, put back by Undo. */
-	sidebarReset?: { appsOrder: readonly string[] };
+	 * `appsOrder` is the apps drawer's order this device kept before, put back by Undo; `undoing` while Undo is on its
+	 * way, so it is sent once. */
+	sidebarReset?: { appsOrder: readonly string[]; undoing?: boolean };
 	realtime: RealtimePhase;
 	realtimeError?: string;
 	/** Mentions of this member not seen yet, by conversation (session id → count). */
@@ -668,7 +669,10 @@ export class CompanyController {
 			placeFailed: () => this.reportRailError(t("The sidebar could not be changed. Try again.")),
 			// Reset sidebar counts placed contacts among the member's changes (20260930722000).
 			placed: () => {
-				if (this.ownSidebar()) void this.refreshSidebar();
+				if (!this.ownSidebar()) return;
+				// A newer place is never undone by an older reset's Undo.
+				this.store.set({ sidebarReset: undefined });
+				void this.refreshSidebar();
 			},
 		});
 	}

@@ -320,7 +320,7 @@ create function public.qorpera_sidebar_own_place(p_profile_id uuid, p_user_id uu
 	p_order uuid[])
 returns void language plpgsql security definer set search_path = '' as $$
 declare v_at integer; v_after uuid; v_first boolean := false; v_view jsonb; v_section text; v_position integer;
-	v_before uuid;
+	v_before uuid; v_dependent uuid;
 begin
 	if p_section_id is not null and not exists (select 1 from public.qorpera_sidebar_own_sections(p_profile_id, p_user_id) seen
 			where seen.section_id = p_section_id) then
@@ -343,8 +343,26 @@ begin
 			select entry ->> 'roomId', entry ->> 'sectionId', (entry ->> 'position')::integer
 				from jsonb_array_elements(v_view -> 'roomPlacements') entry) listed
 		where listed.section is not distinct from v_section and listed.position = v_position - 1;
-		update public.qorpera_member_sidebar_places set after_item_id = v_before, first = v_before is null
-		where profile_id = p_profile_id and user_id = p_user_id and after_item_id = p_item_id and item_id <> p_item_id;
+		-- Only what stands in the item's own section, in the order it stands there: the first takes the item's place,
+		-- each next one stands after the one before it, so their order holds however old each place is.
+		for v_dependent in
+			select place.item_id
+			from public.qorpera_member_sidebar_places place
+			join (select entry ->> 'staffAgentId' as id, (entry ->> 'position')::integer as position
+					from jsonb_array_elements(v_view -> 'placements') entry
+					where entry ->> 'sectionId' is not distinct from v_section
+				union all
+				select entry ->> 'roomId', (entry ->> 'position')::integer
+					from jsonb_array_elements(v_view -> 'roomPlacements') entry
+					where entry ->> 'sectionId' is not distinct from v_section) listed on listed.id = place.item_id::text
+			where place.profile_id = p_profile_id and place.user_id = p_user_id and place.after_item_id = p_item_id
+				and place.item_id <> p_item_id and place.section_id::text is not distinct from v_section
+			order by listed.position
+		loop
+			update public.qorpera_member_sidebar_places set after_item_id = v_before, first = v_before is null
+			where profile_id = p_profile_id and user_id = p_user_id and item_id = v_dependent;
+			v_before := v_dependent;
+		end loop;
 	end if;
 	if p_order is not null then
 		v_at := pg_catalog.array_position(p_order, p_item_id);

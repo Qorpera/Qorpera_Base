@@ -267,3 +267,70 @@ begin
 		join public.qorpera_member_sidebar_places b on b.user_id = a.user_id and b.item_id = a.after_item_id and b.after_item_id = a.item_id
 		where a.user_id = v_contributor), 'No two places point at each other');
 end $$;
+
+-- Two more agents, and Research is Alice, Dave, Carol, Erin, Bob.
+select pg_temp.base_commit(pg_temp.base_owner(), 'own-hire', jsonb_build_array(
+	pg_temp.base_hire('dave', '12140000-0000-4000-8000-0000000000d1', 'Dave'),
+	pg_temp.base_hire('erin', '12140000-0000-4000-8000-0000000000d2', 'Erin')));
+select pg_temp.base_commit(pg_temp.base_owner(), 'own-sections-0003', jsonb_build_array(pg_temp.own_sections_file(jsonb_build_array(
+	jsonb_build_object('name', 'Research', 'agents', jsonb_build_array('92400000-0000-4000-8000-000000000030',
+		'12140000-0000-4000-8000-0000000000d1', '92400000-0000-4000-8000-000000000032', '12140000-0000-4000-8000-0000000000d2',
+		'92400000-0000-4000-8000-000000000031'))))));
+-- A container's order as a member sees it, with p_item put right after p_after (null: first), as a drag sends it.
+create function pg_temp.own_order(p_state jsonb, p_section text, p_item text, p_after text) returns jsonb language sql as $$
+	select to_jsonb(case when p_after is null then array[p_item] else '{}'::text[] end || coalesce((
+		select array_agg(id order by n) from (
+			select listed.id, listed.n * 2 as n from unnest(pg_temp.own_in(p_state, p_section)) with ordinality listed(id, n)
+			where listed.id <> p_item
+			union all
+			select p_item, (select n * 2 + 1 from unnest(pg_temp.own_in(p_state, p_section)) with ordinality listed(id, n)
+				where listed.id = p_after)
+			where p_after is not null) ordered), '{}'))
+$$;
+
+-- 7. Places that stood after a moved item keep their order among themselves (review F1 on #1677, round 2). The owner
+-- makes Alice, Erin, Bob, Dave, Carol of the company's Alice, Dave, Carol, Erin, Bob, then moves Bob out: Alice, Erin,
+-- Dave, Carol.
+do $$
+declare v_owner uuid := '92400000-0000-4000-8000-000000000001';
+	v_alice text := '92400000-0000-4000-8000-000000000030'; v_bob text := '92400000-0000-4000-8000-000000000031';
+	v_carol text := '92400000-0000-4000-8000-000000000032'; v_dave text := '12140000-0000-4000-8000-0000000000d1';
+	v_erin text := '12140000-0000-4000-8000-0000000000d2'; v_state jsonb; v_research text; v_step text[];
+begin
+	v_state := pg_temp.own_read(v_owner);
+	v_research := pg_temp.own_section(v_state, 'Research');
+	perform pg_temp.base_assert(pg_temp.own_in(v_state, v_research) = array[v_alice, v_dave, v_carol, v_erin, v_bob],
+		'The company''s order: ' || v_state::text);
+	foreach v_step slice 1 in array array[[v_bob, v_alice], [v_carol, v_bob], [v_erin, v_alice], [v_dave, v_bob]] loop
+		v_state := pg_temp.own_manage(v_owner, jsonb_build_object('action', 'move_agent', 'staffAgentId', v_step[1],
+			'sectionId', v_research, 'order', pg_temp.own_order(v_state, v_research, v_step[1], v_step[2])));
+	end loop;
+	perform pg_temp.base_assert(pg_temp.own_in(v_state, v_research) = array[v_alice, v_erin, v_bob, v_dave, v_carol],
+		'The owner''s order: ' || v_state::text);
+	v_state := pg_temp.own_manage(v_owner, jsonb_build_object('action', 'move_agent', 'staffAgentId', v_bob, 'sectionId', null));
+	perform pg_temp.base_assert(pg_temp.own_in(v_state, v_research) = array[v_alice, v_erin, v_dave, v_carol],
+		'Dave and Carol keep their order when Bob leaves: ' || v_state::text);
+end $$;
+
+-- 8. A move never changes a place in another section (review F2 on #1677, round 2): the contributor puts Erin after
+-- Alice in Research; the company moves Alice into Ops; the contributor reorders Alice there; Erin's place stays as it was.
+do $$
+declare v_contributor uuid := '92400000-0000-4000-8000-000000000002';
+	v_alice text := '92400000-0000-4000-8000-000000000030'; v_bob text := '92400000-0000-4000-8000-000000000031';
+	v_carol text := '92400000-0000-4000-8000-000000000032'; v_dave text := '12140000-0000-4000-8000-0000000000d1';
+	v_erin text := '12140000-0000-4000-8000-0000000000d2'; v_state jsonb; v_research text; v_ops text;
+begin
+	v_state := pg_temp.own_read(v_contributor);
+	v_research := pg_temp.own_section(v_state, 'Research');
+	v_state := pg_temp.own_manage(v_contributor, jsonb_build_object('action', 'move_agent', 'staffAgentId', v_erin,
+		'sectionId', v_research, 'order', pg_temp.own_order(v_state, v_research, v_erin, v_alice)));
+	perform pg_temp.base_commit(pg_temp.base_owner(), 'own-sections-0004', jsonb_build_array(pg_temp.own_sections_file(jsonb_build_array(
+		jsonb_build_object('name', 'Research', 'agents', jsonb_build_array(v_dave, v_carol, v_erin, v_bob)),
+		jsonb_build_object('name', 'Ops', 'agents', jsonb_build_array(v_alice))))));
+	v_state := pg_temp.own_read(v_contributor);
+	v_ops := pg_temp.own_section(v_state, 'Ops');
+	perform pg_temp.own_manage(v_contributor, jsonb_build_object('action', 'move_agent', 'staffAgentId', v_alice,
+		'sectionId', v_ops, 'order', jsonb_build_array(v_alice)));
+	perform pg_temp.base_assert((select after_item_id = v_alice::uuid and not first from public.qorpera_member_sidebar_places
+		where user_id = v_contributor and item_id = v_erin::uuid), 'Erin''s place in Research is untouched');
+end $$;

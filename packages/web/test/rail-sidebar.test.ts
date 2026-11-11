@@ -1751,4 +1751,17 @@ describe("Reset sidebar's Undo (review of #1677)", () => {
 		await settle();
 		expect(JSON.parse(localStorage.getItem(appsKey)!)).toEqual(["page:bank", "concepts"]);
 	});
+	it("sends Undo once, however often it is pressed while on its way", async () => {
+		const { manage, undo } = await resetOnce();
+		const answer = deferred<CompanySidebar>();
+		manage.mockImplementationOnce(() => answer.promise);
+		undo()!.click();
+		await settle();
+		expect(undo()!.disabled).toBe(true);
+		undo()!.click();
+		answer.resolve({ ...demo(), own: own(1) });
+		await settle();
+		expect(manage.mock.calls.filter(([, request]) => request.action === "undo_reset")).toHaveLength(1);
+		expect(undo()).toBeUndefined();
+	});
 });

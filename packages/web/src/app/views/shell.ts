@@ -1487,6 +1487,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 							button(t("Dismiss"), () => company.store.set({ sidebarReset: undefined }), { small: true }),
 						),
 					};
+		// Undo is pressed once: it waits while its request is on its way.
+		const undo = entry.element.querySelector("button");
+		if (undo) undo.disabled = state.sidebarReset.undoing === true;
 		notices.set("reset", entry);
 		return entry.element;
 	};
@@ -2158,7 +2161,13 @@ async function askResetSidebar(company: CompanyController, parts: RailParts): Pr
  * member ordered them again since. A failed Undo keeps its offer, to try again. */
 async function undoSidebarReset(company: CompanyController, parts: RailParts): Promise<void> {
 	const reset = company.store.get().sidebarReset;
-	if (!reset || !(await company.resetSidebar(true))) return;
+	if (!reset || reset.undoing) return;
+	company.store.set({ sidebarReset: { ...reset, undoing: true } });
+	if (!(await company.resetSidebar(true))) {
+		// Tried again from the same offer, unless something newer took it away meanwhile.
+		if (company.store.get().sidebarReset) company.store.set({ sidebarReset: reset });
+		return;
+	}
 	const profileId = company.profile.profileId;
 	if (!storedAppsOrder(profileId).length) {
 		storeAppsOrder(profileId, reset.appsOrder);

@@ -1216,8 +1216,12 @@ export function mountApplication(
 				openGroupCard,
 				hideInterfacePage: (page, hidden) =>
 					(interfacePages?.hide(page, hidden) ?? Promise.resolve()).then(() => {
-						// Reset sidebar counts hidden pages among the member's changes (20260930722000).
-						if (controller.ownSidebar()) void controller.refreshSidebar();
+						// Reset sidebar counts hidden pages among the member's changes (20260930722000), and a newer choice
+						// is never undone by an older reset's Undo.
+						if (controller.ownSidebar()) {
+							controller.store.set({ sidebarReset: undefined });
+							void controller.refreshSidebar();
+						}
 					}),
 				refreshInterfacePages: () => void interfacePages?.refresh(),
 			});
