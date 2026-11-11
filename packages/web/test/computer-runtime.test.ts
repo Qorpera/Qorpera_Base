@@ -104,7 +104,14 @@ function setup(
 		lateCommit: undefined as (() => boolean) | undefined,
 		/** The take-over attempts the database called off, as machine:attempt (review r3). */
 		calledOff: new Set<string>(),
+		/** The database's clock less the page's (review r4), and whether the list says a wrong time of it. */
+		serverShift: 0,
+		listClockWrong: false,
 	};
+	/** As the database: an attempt takes only within 2 minutes of its time (its first 48 bits) either way. */
+	const fresh = (attempt: string) =>
+		Math.abs(Number.parseInt(attempt.replace(/-/g, "").slice(0, 12), 16) - (Date.now() + state.serverShift)) <=
+		120_000;
 	const looks: { url: string; etag: string | null }[] = [];
 	const acts: { url: string; action: Record<string, unknown> }[] = [];
 	const rpcs: { method: string; body: Record<string, unknown> }[] = [];
@@ -160,6 +167,7 @@ function setup(
 				canWake: state.canWake,
 				canTakeOver: state.canTakeOver,
 				machines: state.machines,
+				serverNow: new Date(Date.now() + (state.listClockWrong ? 0 : state.serverShift)).toISOString(),
 			});
 		}
 		if (method === "qorpera_member_manage_company_machine")
@@ -185,11 +193,11 @@ function setup(
 				state.lateCommit = commit;
 				throw new TypeError("Failed to fetch");
 			}
-			if (calledOff())
+			if (calledOff() || !fresh(attempt))
 				return Response.json({
 					schema: "qorpera.member-machine-desktop/v1",
 					state: "refused",
-					reason: "TAKE_CALLED_OFF",
+					reason: calledOff() ? "TAKE_CALLED_OFF" : "TAKE_EXPIRED",
 				});
 			commit();
 			if (lost === "committed") throw new TypeError("Failed to fetch");
@@ -210,12 +218,23 @@ function setup(
 				state.handBackFails--;
 				return new Response("{}", { status: 503 });
 			}
-			// As the database: every attempt named is called off for good, and the member's lease ends.
-			for (const attempt of body.p_attempt_ids as string[]) state.calledOff.add(`${body.p_machine_id}:${attempt}`);
-			state.machines = state.machines.map((row) =>
-				row.machineId === body.p_machine_id && row.control?.mine ? { ...row, control: null } : row,
-			);
-			return Response.json({ schema: "qorpera.member-machine-desktop/v1", state: "ok", handedBack: true });
+			// As the database: every attempt named that could still take is called off for good, and the member's lease
+			// ends when one of them holds it; one held by another attempt stays (review r4).
+			const named = body.p_attempt_ids as string[];
+			for (const attempt of named) if (fresh(attempt)) state.calledOff.add(`${body.p_machine_id}:${attempt}`);
+			const row = state.machines.find((machine) => machine.machineId === body.p_machine_id);
+			const mine = row?.control?.mine === true;
+			const ours = mine && named.includes(String(row?.control?.attempt));
+			if (ours)
+				state.machines = state.machines.map((machine) =>
+					machine.machineId === body.p_machine_id ? { ...machine, control: null } : machine,
+				);
+			return Response.json({
+				schema: "qorpera.member-machine-desktop/v1",
+				state: "ok",
+				handedBack: ours,
+				heldElsewhere: mine && !ours,
+			});
 		}
 		throw new Error(`Unexpected network request ${url}`);
 	});
@@ -1272,8 +1291,8 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		await advance(KEEP_EVERY_MS);
 		expect(calls(s, "qorpera_member_keep_machine_desktop").map((call) => call.body.p_attempt_id)).toEqual([id(90)]);
 		window.dispatchEvent(new Event("pagehide"));
-		const left = s.fetch.mock.calls.find(([url]) =>
-			String(url).endsWith("/qorpera_member_hand_back_machine_desktop"),
+		const left = s.fetch.mock.calls.find(
+			([url, init]) => String(url).endsWith("/qorpera_member_hand_back_machine_desktop") && init?.keepalive === true,
 		);
 		expect(left?.[1]).toMatchObject({ method: "POST", keepalive: true });
 		expect(JSON.parse(String(left?.[1]?.body))).toEqual({
@@ -1282,6 +1301,14 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 			p_reason: "closed",
 			p_attempt_ids: [id(90)],
 		});
+		// The page may come back from the browser's cache: the hold is given back as ever too, not only by the keepalive.
+		await flush();
+		expect(p.holding).toBe(false);
+		expect(
+			calls(s, "qorpera_member_hand_back_machine_desktop").filter(
+				(call) => JSON.stringify(call.body.p_attempt_ids) === JSON.stringify([id(90)]),
+			),
+		).toHaveLength(2);
 	});
 
 	it("gives a held desktop back when the member chooses another machine", async () => {
@@ -1505,7 +1532,7 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 	});
 });
 
-describe("the company's ledger of the desktops a member may hold (review r2 F4, F5; r3 F5, F7, F8)", () => {
+describe("the company's ledger of the desktops a member may hold (review r2 F4, F5; r3 F5, F7, F8; r4 F5, F8, F9)", () => {
 	/** A gate the test opens. */
 	function gate() {
 		let open = () => {};
@@ -1718,6 +1745,153 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 		expect(p.holding).toBe(true);
 		await advance(KEEP_EVERY_MS);
 		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(1);
+	});
+
+	it("makes its attempts' times by the database's clock from the list, so a page whose clock is off still takes over (r4 F5)", async () => {
+		const s = setup();
+		s.state.serverShift = 10 * 60_000;
+		const { p } = await company(s);
+		await takeOver(p);
+		expect(p.holding).toBe(true);
+		const [attempt] = attempts(s);
+		// A version 7 uuid whose time is the database's.
+		expect(attempt?.[14]).toBe("7");
+		const time = Number.parseInt(attempt!.replace(/-/g, "").slice(0, 12), 16);
+		expect(Math.abs(time - (Date.now() + 10 * 60_000))).toBeLessThan(1000);
+	});
+
+	it("sends a take-over refused as expired once more, as a fresh attempt after a fresh list read (r4 F5)", async () => {
+		const { s, p } = await company();
+		// The database's clock is ten minutes on from what the window's list read said.
+		s.state.serverShift = 10 * 60_000;
+		const read = lists(s);
+		await takeOver(p);
+		expect(attempts(s)).toHaveLength(2);
+		expect(attempts(s)[0]).not.toBe(attempts(s)[1]);
+		expect(lists(s)).toBe(read + 1);
+		expect(p.holding).toBe(true);
+		expect(s.state.machines[0]?.control?.attempt).toBe(attempts(s)[1]);
+	});
+
+	it("says this device's clock is wrong when the take-over is refused as expired twice", async () => {
+		const s = setup();
+		s.state.serverShift = 10 * 60_000;
+		s.state.listClockWrong = true;
+		const { panels, p } = await company(s);
+		await takeOver(p);
+		expect(attempts(s)).toHaveLength(2);
+		expect(p.holding).toBe(false);
+		expect(controls(p)?.textContent).toContain(
+			"The computer could not be taken over because this device's clock is wrong. Set the clock and try again.",
+		);
+		// Both refused: nothing of them can hold the desktop, and nothing is left to give back.
+		expect(await panels.releaseAgent(staff.id)).toBe(true);
+		expect(handBacks(s)).toHaveLength(0);
+	});
+
+	it("keeps a called-off take-over until a hand-back naming it is answered, when its refusal comes back first (r4 F9)", async () => {
+		const { s, panels, p } = await company();
+		const late = gate();
+		s.state.takeGate = late.closed;
+		await takeOver(p);
+		expect(attempts(s)).toHaveLength(1);
+		// I'm done while the take-over is on its way; its hand-back fails.
+		s.state.handBackFails = 1;
+		expect(await panels.releaseAgent(staff.id)).toBe(false);
+		expect(handBacks(s)).toHaveLength(1);
+		// The take-over comes back refused (another member took the desktop meanwhile) before a hand-back naming it was
+		// answered: it stays, and I'm done answers only after one is.
+		s.state.take = { state: "refused", reason: "DESKTOP_MEMBER_IN_CONTROL", memberName: "Ada" };
+		late.open();
+		await flush();
+		expect(await panels.releaseAgent(staff.id)).toBe(true);
+		expect(handBacks(s).map((call) => call.body.p_attempt_ids)).toEqual([attempts(s), attempts(s)]);
+	});
+
+	it("gives back a machine taken over while the window's loop waited, when the member switches back (r4 F8)", async () => {
+		const { s, p } = await company(setup({ machines: [machine(1), machine(2)] }));
+		const pick = (n: number) => {
+			p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher")!.click();
+			[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][n]!.click();
+		};
+		// The window's loop waits on a list read.
+		const slowList = gate();
+		s.state.listGate = slowList.closed;
+		s.hint("machines");
+		await flush();
+		// Meanwhile the member picks the second machine and presses Take over (its answer is lost), then picks the first
+		// again: the loop never saw the second.
+		pick(1);
+		s.state.takeLost = "committed";
+		controlButton(p)!.click();
+		await flush();
+		expect(calls(s, "qorpera_member_take_machine_desktop").map((call) => call.body.p_machine_id)).toEqual([
+			machine(2).machineId,
+		]);
+		pick(0);
+		await flush();
+		expect(handBacks(s).map((call) => [call.body.p_machine_id, call.body.p_attempt_ids])).toEqual([
+			[machine(2).machineId, attempts(s)],
+		]);
+		slowList.open();
+		await flush();
+		expect(s.state.machines[1]?.control).toBeNull();
+		expect(p.holding).toBe(false);
+		// The take-over pressed for the second machine is not carried over to the first.
+		expect(attempts(s)).toHaveLength(1);
+	});
+
+	it("names on I'm done the attempt the member's list shows holding the desktop from elsewhere, and reads it again when told it is still held (r4 F9)", async () => {
+		const { s, panels } = await company();
+		panels.close(staff.id);
+		await flush();
+		// Another tab of the member's holds the desktop: I'm done names its attempt, read from the list at the time.
+		s.state.machines = [machine(1, { control: { mine: true, name: "Owner", until: until(), attempt: id(92) } })];
+		expect(await panels.releaseAgent(staff.id)).toBe(true);
+		expect(handBacks(s).map((call) => call.body.p_attempt_ids)).toEqual([[id(92)]]);
+		expect(s.state.machines[0]?.control).toBeNull();
+		// That tab takes it again between the list read and the hand-back: the hand-back says it is still held elsewhere,
+		// so the list is read again and that attempt is named too.
+		s.state.machines = [machine(1, { control: { mine: true, name: "Owner", until: until(), attempt: id(93) } })];
+		const slow = gate();
+		s.state.handBackGates = [slow.closed];
+		let done: boolean | undefined;
+		const back = panels.releaseAgent(staff.id).then((value) => {
+			done = value;
+		});
+		await flush();
+		expect(handBacks(s).at(-1)?.body.p_attempt_ids).toEqual([id(93)]);
+		s.state.machines = [machine(1, { control: { mine: true, name: "Owner", until: until(), attempt: id(94) } })];
+		slow.open();
+		await back;
+		expect(done).toBe(true);
+		expect(handBacks(s).at(-1)?.body.p_attempt_ids).toEqual([id(94)]);
+		expect(s.state.machines[0]?.control).toBeNull();
+		// Without its list, I'm done cannot know what is held elsewhere, and says no.
+		s.state.listFails = 1;
+		expect(await panels.releaseAgent(staff.id)).toBe(false);
+		expect(await panels.releaseAgent(staff.id)).toBe(true);
+	});
+
+	it("keeps a take-over on its way through pagehide until a hand-back naming it is answered, should the page come back from the cache", async () => {
+		const { s, panels, p } = await company();
+		const late = gate();
+		s.state.takeGate = late.closed;
+		await takeOver(p);
+		expect(attempts(s)).toHaveLength(1);
+		// The page is put in the browser's cache: the keepalive hand-back and the ordinary one both fail.
+		s.state.handBackFails = 2;
+		window.dispatchEvent(new Event("pagehide"));
+		await flush();
+		expect(handBacks(s)).toHaveLength(2);
+		// It comes back: I'm done still names the take-over's attempt and waits for the answer.
+		expect(await panels.releaseAgent(staff.id)).toBe(true);
+		expect(handBacks(s).map((call) => call.body.p_attempt_ids)).toEqual([attempts(s), attempts(s), attempts(s)]);
+		// The take-over arrives after that: refused, nothing held.
+		late.open();
+		await flush();
+		expect(s.state.machines[0]?.control).toBeNull();
+		expect(p.holding).toBe(false);
 	});
 
 	it("asks every hold back, best effort, as the company's page is left", async () => {

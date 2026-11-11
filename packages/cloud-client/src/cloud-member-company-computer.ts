@@ -98,7 +98,9 @@ export type MemberDesktopHold =
 				| "MACHINE_NEEDS_COMPANY_VIEW"
 				| "DESKTOP_MEMBER_IN_CONTROL"
 				// The attempt was called off by a hand-back that named it: it holds nothing, ever (review r3).
-				| "TAKE_CALLED_OFF";
+				| "TAKE_CALLED_OFF"
+				// The attempt's time is more than 2 minutes from the database's clock: it never takes (review r4).
+				| "TAKE_EXPIRED";
 			memberName: string | null;
 	  };
 /** The most take-over attempts one hand-back calls off (the database's own limit). */
@@ -109,6 +111,7 @@ const HOLD_REFUSALS = [
 	"MACHINE_NEEDS_COMPANY_VIEW",
 	"DESKTOP_MEMBER_IN_CONTROL",
 	"TAKE_CALLED_OFF",
+	"TAKE_EXPIRED",
 ] as const;
 export interface MemberAgentMachines {
 	/** Owners, admins and contributors may wake a sleeping machine; viewers may only watch. */
@@ -118,6 +121,15 @@ export interface MemberAgentMachines {
 	canTakeOver: boolean;
 	/** At most 20: running ones first, then the ones the agent drove most recently, then the newest. */
 	machines: MemberAgentMachine[];
+	/** The database's time when it answered (review r4 of #1661): the page makes its take-over attempts' times by it.
+	 * Null from a database before it. */
+	serverNow: string | null;
+}
+/** A hand-back's answer: whether it gave a lease of the caller's back, and whether the caller still holds the machine by
+ * a take-over attempt it did not name (another tab of theirs, or an earlier page). */
+export interface MemberDesktopHandBack {
+	handedBack: boolean;
+	heldElsewhere: boolean;
 }
 function field(value: unknown, error: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(error);
@@ -398,7 +410,14 @@ export class CloudMemberCompanyComputerClient {
 		});
 		if (new Set(machines.map((machine) => machine.machineId)).size !== machines.length) throw new Error(invalid);
 		if (value.canTakeOver !== undefined && typeof value.canTakeOver !== "boolean") throw new Error(invalid);
-		return { canWake: value.canWake, canTakeOver: value.canTakeOver === true, machines };
+		if (value.serverNow !== undefined && value.serverNow !== null && !text(value.serverNow, 64))
+			throw new Error(invalid);
+		return {
+			canWake: value.canWake,
+			canTakeOver: value.canTakeOver === true,
+			machines,
+			serverNow: typeof value.serverNow === "string" ? value.serverNow : null,
+		};
 	}
 	/** Takes the machine's desktop over for the caller (qorpera_member_take_machine_desktop, 20260930713000), or renews
 	 * the caller's own hold: until when, or why not (another member's hold names them). `attempt` is the caller's own uuid
@@ -443,16 +462,16 @@ export class CloudMemberCompanyComputerClient {
 		if (value.state === "ended") return null;
 		throw new Error("Invalid desktop hold");
 	}
-	/** Gives the caller's hold back (qorpera_member_hand_back_machine_desktop): `handed_back` by their word, `closed` when
-	 * the window closed or the page is left; and calls off for good each take-over attempt named (at most 32). Whether
-	 * there was a hold to give back. Its answer means the caller holds nothing of the machine and none of those attempts
-	 * ever will. */
+	/** Calls off for good each take-over attempt named (at most 32) and gives back the caller's lease when one of them
+	 * holds it (qorpera_member_hand_back_machine_desktop): `handed_back` by their word, `closed` when the window closed
+	 * or the page is left. Its answer means none of those attempts holds the machine or ever will; it says whether a
+	 * lease was given back, and whether the caller still holds the machine by an attempt it did not name. */
 	async handBackDesktop(
 		machineId: string,
 		reason: "handed_back" | "closed",
 		attempts: readonly string[],
 		signal: AbortSignal,
-	): Promise<boolean> {
+	): Promise<MemberDesktopHandBack> {
 		if (attempts.length > DESKTOP_ATTEMPTS_MAX || attempts.some((attempt) => !COMPANY_COMPUTER_UUID.test(attempt)))
 			throw new Error("Invalid take-over attempts");
 		const value = await this.#desktop(
@@ -461,7 +480,12 @@ export class CloudMemberCompanyComputerClient {
 			{ p_reason: reason, p_attempt_ids: [...attempts] },
 			signal,
 		);
-		if (value.state === "ok" && typeof value.handedBack === "boolean") return value.handedBack;
+		if (
+			value.state === "ok" &&
+			typeof value.handedBack === "boolean" &&
+			(value.heldElsewhere === undefined || typeof value.heldElsewhere === "boolean")
+		)
+			return { handedBack: value.handedBack, heldElsewhere: value.heldElsewhere === true };
 		throw new Error("Invalid desktop hand-back");
 	}
 	async #desktop(

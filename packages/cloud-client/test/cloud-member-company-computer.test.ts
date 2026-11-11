@@ -183,6 +183,7 @@ describe("member Company Computer transport", () => {
 					canWake: false,
 					machines,
 					canTakeOver: true,
+					serverNow: "2026-11-10T14:26:00.123+00:00",
 					...extra,
 				}),
 			);
@@ -202,6 +203,7 @@ describe("member Company Computer transport", () => {
 		expect(await f.client.agentMachines(id(5), signal)).toEqual({
 			canWake: false,
 			canTakeOver: true,
+			serverNow: "2026-11-10T14:26:00.123+00:00",
 			machines: [
 				known,
 				{
@@ -233,6 +235,8 @@ describe("member Company Computer transport", () => {
 			[[], { schema: "qorpera.agent-machines/v2" }],
 			[[], { canWake: "yes" }],
 			[[], { canTakeOver: "yes" }],
+			[[], { serverNow: 5 }],
+			[[], { serverNow: "" }],
 			[[{ ...machine, control: { mine: "yes", name: "Ada", until: "2026-11-10T19:00:00Z" } }], {}],
 			[[{ ...machine, control: { mine: false, name: "", until: "2026-11-10T19:00:00Z" } }], {}],
 			[[{ ...machine, control: { mine: false, name: "Ada" } }], {}],
@@ -283,6 +287,7 @@ describe("member Company Computer transport", () => {
 		expect(await f.client.agentMachines(id(5), signal)).toEqual({
 			canWake: true,
 			canTakeOver: false,
+			serverNow: null,
 			machines: [
 				{ ...machine, control: { ...control, attempt: null } },
 				{ ...machine, machineId: id(21), control: own },
@@ -300,6 +305,7 @@ describe("member Company Computer transport", () => {
 		expect(await f.client.agentMachines(id(5), signal)).toEqual({
 			canWake: true,
 			canTakeOver: false,
+			serverNow: null,
 			machines: [{ ...machine, control: null }],
 		});
 	});
@@ -332,13 +338,15 @@ describe("member Company Computer transport", () => {
 			reason: "MACHINE_NOT_RUNNING",
 			memberName: null,
 		});
-		// An attempt a hand-back called off (review r3).
-		answer({ state: "refused", reason: "TAKE_CALLED_OFF" });
-		expect(await f.client.takeDesktop(id(20), attempt, signal)).toEqual({
-			state: "refused",
-			reason: "TAKE_CALLED_OFF",
-			memberName: null,
-		});
+		// An attempt a hand-back called off (review r3), and one too far from the database's clock (r4).
+		for (const reason of ["TAKE_CALLED_OFF", "TAKE_EXPIRED"]) {
+			answer({ state: "refused", reason });
+			expect(await f.client.takeDesktop(id(20), attempt, signal)).toEqual({
+				state: "refused",
+				reason,
+				memberName: null,
+			});
+		}
 		for (const bad of [{ state: "refused", reason: "SOMETHING" }, { state: "ok" }, { state: "ok", until: 5 }]) {
 			answer(bad);
 			await expect(f.client.takeDesktop(id(20), attempt, signal), JSON.stringify(bad)).rejects.toThrow();
@@ -355,8 +363,11 @@ describe("member Company Computer transport", () => {
 		expect(f.fetch.mock.calls.at(-1)![0]).toBe(
 			"https://control.test/rest/v1/rpc/qorpera_member_keep_machine_desktop",
 		);
-		answer({ state: "ok", handedBack: true });
-		expect(await f.client.handBackDesktop(id(20), "closed", [attempt, id(31)], signal)).toBe(true);
+		answer({ state: "ok", handedBack: true, heldElsewhere: false });
+		expect(await f.client.handBackDesktop(id(20), "closed", [attempt, id(31)], signal)).toEqual({
+			handedBack: true,
+			heldElsewhere: false,
+		});
 		expect(f.fetch.mock.calls.at(-1)![0]).toBe(
 			"https://control.test/rest/v1/rpc/qorpera_member_hand_back_machine_desktop",
 		);
@@ -366,6 +377,19 @@ describe("member Company Computer transport", () => {
 			p_reason: "closed",
 			p_attempt_ids: [attempt, id(31)],
 		});
+		// Still held by an attempt it did not name (review r4), and a database before heldElsewhere.
+		answer({ state: "ok", handedBack: false, heldElsewhere: true });
+		expect(await f.client.handBackDesktop(id(20), "handed_back", [attempt], signal)).toEqual({
+			handedBack: false,
+			heldElsewhere: true,
+		});
+		answer({ state: "ok", handedBack: false });
+		expect(await f.client.handBackDesktop(id(20), "handed_back", [attempt], signal)).toEqual({
+			handedBack: false,
+			heldElsewhere: false,
+		});
+		answer({ state: "ok", handedBack: false, heldElsewhere: "yes" });
+		await expect(f.client.handBackDesktop(id(20), "handed_back", [attempt], signal)).rejects.toThrow();
 		f.fetch.mockResolvedValueOnce(Response.json({ schema: "qorpera.member-machine-screen/v1", state: "ok" }));
 		await expect(f.client.handBackDesktop(id(20), "handed_back", [], signal)).rejects.toThrow();
 		const calls = f.fetch.mock.calls.length;

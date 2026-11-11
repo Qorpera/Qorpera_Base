@@ -3,6 +3,7 @@ import {
 	CloudMemberCompanyComputerClient,
 	DESKTOP_ATTEMPTS_MAX,
 	type MemberAgentMachines,
+	type MemberDesktopHandBack,
 	type MemberDesktopHold,
 } from "@qorpera/cloud-client/cloud-member-company-computer";
 import { isUuid } from "@qorpera/contracts";
@@ -91,13 +92,14 @@ export class WebCompanyComputer {
 	keepDesktop(machineId: string, attempt: string, signal: AbortSignal): Promise<string | null> {
 		return this.client.keepDesktop(machineId, attempt, signal);
 	}
-	/** Gives this member's hold back (by their word, or as their window closes) and calls off the attempts named. */
+	/** Calls off the attempts named and gives back this member's lease when one of them holds it (by their word, or as
+	 * their window closes); says whether they still hold the machine by an attempt it did not name. */
 	handBackDesktop(
 		machineId: string,
 		reason: "handed_back" | "closed",
 		attempts: readonly string[],
 		signal: AbortSignal,
-	): Promise<boolean> {
+	): Promise<MemberDesktopHandBack> {
 		return this.client.handBackDesktop(machineId, reason, attempts, signal);
 	}
 	/** Best effort, as the page goes (it is hidden for good, or the company's page is left): gives this member's hold of

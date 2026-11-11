@@ -331,10 +331,11 @@ export class ComputerPanel {
 		this.#startTake();
 	}
 
-	/** Starts a take-over unless one is on its way or the desktop is held: it is the window's until it settles. */
+	/** Starts a take-over unless one is on its way or the desktop is held: it is the window's until it settles. It takes
+	 * the machine chosen now, at the click (review r4 F8). */
 	#startTake(): void {
 		if (this.#taking || this.#holding) return;
-		const taking = this.#take().finally(() => {
+		const taking = this.#take(this.#pick()).finally(() => {
 			if (this.#taking === taking) this.#taking = undefined;
 			this.#syncControls();
 		});
@@ -350,7 +351,7 @@ export class ComputerPanel {
 	handBack(): Promise<boolean> {
 		this.#wantTakeOver = false;
 		this.#released();
-		return this.#ledger.releaseAgent(this.agentId);
+		return this.#ledger.releaseAgent(this.agentId, "handed_back", true);
 	}
 
 	/** Whether the member holds the desktop the window shows. */
@@ -436,14 +437,10 @@ export class ComputerPanel {
 			}
 			const machine = this.#pick();
 			if (machine?.machineId !== this.#machineId) {
-				// The member chose another machine: whatever the ledger has of the one shown before goes back, held, may be held
-				// (a lost answer), on its way or queued; the window's own state does not decide it (review r1 F6, r3 F8).
-				for (const before of new Set([this.#machineId, this.#holding])) {
-					if (before === undefined || before === machine?.machineId) continue;
-					if (this.#holding === before) this.#released();
-					this.#ledger.release(before, this.agentId);
-					if (this.#ledger.releasing(before)) this.#wantTakeOver = false;
-				}
+				// The window's machine changed: every machine of this agent's the ledger has but the one shown now goes back,
+				// held, may be held (a lost answer), on its way or queued; the window's own state does not decide it (review r1
+				// F6, r3 F8, r4 F8).
+				this.#ledger.releaseOthers(this.agentId, machine?.machineId);
 				this.#machineId = machine?.machineId;
 				this.#etag = null;
 				this.#lastLook = Number.NEGATIVE_INFINITY;
@@ -566,7 +563,7 @@ export class ComputerPanel {
 	 * nothing of it. */
 	#heldPerList(asked: number): void {
 		const machines = this.#listed?.machines ?? [];
-		this.#ledger.listed(machines, asked);
+		if (this.#listed) this.#ledger.listed(this.#listed, asked, Date.now());
 		const mine = (machineId: string | undefined) =>
 			machines.find((row) => row.machineId === machineId && row.control?.mine === true && row.state === "running");
 		if (asked >= this.#holdChangedAt) {
@@ -604,9 +601,8 @@ export class ComputerPanel {
 	 * why not. Called off meanwhile (a hand-back, the window's close, a switch to another machine), what it got goes back
 	 * with the hand-back that names it and is never renewed (review r1 F5, r3); so is one of a machine no longer shown. A
 	 * lost answer stays in the ledger as "may be held" until a hand-back names it or the list says it holds. */
-	async #take(): Promise<void> {
+	async #take(machine: MemberAgentMachine | undefined): Promise<void> {
 		const computer = this.#computer;
-		const machine = this.#pick();
 		if (!computer || this.#holding) return;
 		// A viewer never takes over; a machine not running yet waits for the list to say it runs.
 		if (this.#listed && !this.#listed.canTakeOver) this.#wantTakeOver = false;
@@ -625,6 +621,11 @@ export class ComputerPanel {
 		} else if (hold.state === "uncertain")
 			// Said under the picture; the member may try again.
 			this.#controlNote.textContent = t("The computer could not be taken over. Try again.");
+		else if (hold.state === "refused" && hold.reason === "TAKE_EXPIRED")
+			// Refused twice by the database's clock, after the ledger read it again: this device's clock is off.
+			this.#controlNote.textContent = t(
+				"The computer could not be taken over because this device's clock is wrong. Set the clock and try again.",
+			);
 		else if (hold.state === "refused") this.#listStale = true;
 		this.#syncControls();
 		this.#poke();
@@ -1005,7 +1006,13 @@ export class ComputerPanel {
 						hint: machine.purpose.length > 60 ? `${machine.purpose.slice(0, 59)}…` : machine.purpose,
 						checked: machine.machineId === this.#machineId,
 						select: () => {
+							const before = this.#pick()?.machineId;
 							this.#chosen = machine.machineId;
+							// At the choice, not when the loop next sees it (it may be waiting on a request): every machine of this
+							// agent's in the ledger but this one goes back (review r4 F8). A take-over asked before is not carried
+							// over to the machine chosen now.
+							if (machine.machineId !== before) this.#wantTakeOver = false;
+							this.#ledger.releaseOthers(this.agentId, machine.machineId);
 							this.#quicken();
 						},
 					})),
@@ -1056,7 +1063,7 @@ export class ComputerPanels {
 	 * or not (a closed window's hand-back is still the ledger's). True once nothing of the agent's is held; false while
 	 * something is not confirmed (asked again meanwhile; the lease ends by itself in 5 minutes). */
 	releaseAgent(agentId: string): Promise<boolean> {
-		return this.#panels.get(agentId)?.handBack() ?? this.#holds.releaseAgent(agentId);
+		return this.#panels.get(agentId)?.handBack() ?? this.#holds.releaseAgent(agentId, "handed_back", true);
 	}
 
 	/** The panel a thread left open for this agent, if any. */
