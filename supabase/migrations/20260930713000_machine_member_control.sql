@@ -79,21 +79,23 @@
 -- * save_coding_value's clipboard is fenced the same way (v233 release review r1, F29 of #1661): its read answers the
 --   generation it saw (desktopGeneration), and the executor asks the same check, with no looker, before the helper
 --   reads the clipboard and again after it, before the box is answered: a take-over since the read drops the box whole
---   (nothing stored, nothing logged; the agent hears DESKTOP_MEMBER_IN_CONTROL). What a member copied stays on the
---   clipboard after their hand-back, so after a member has held a desktop the platform clears its clipboard before an
---   agent can read a key from it (F32 of #1661): while desktop_clipboard_generation differs from the lease generation
---   the read answers `clear` (with the generation) and nothing is read; the executor's host clears both selections
---   under the one-actor rule after the fence, and qorpera_machine_desktop_clipboard_cleared(placement, generation)
---   (service_role) records the generation only while it stands and no member holds the desktop. The agent's call is
---   answered CLIPBOARD_EMPTY either way (true then: copy the key on the site and call again); its next call reads as
---   before. That is the backstop (F35 of #1661): the clear is owed from the hold on, and the agent's first screen call
---   after it (a look or an action) does it first: the screen read answers clipboardClear, and the host clears and
---   records under that call's hold of the desktop, after the fence, before it looks or acts. A clear that fails there
---   fails nothing: it stays owed. The host clears with a fixed script of its own (both selections, each xsel checked,
---   then each read back by its byte count alone), never the helper's `--clear-only`, which answers cleared whatever
---   xsel did (F34). No action of the agent's lifts it. The helper takes the desktop as an action does, so a member's action and
---   the clipboard read never interleave on one desktop. What cannot be undone: a capture whose helper had begun before a
---   take-over may already have cleared the clipboard.
+--   (nothing stored, nothing logged; the agent hears DESKTOP_MEMBER_IN_CONTROL). The helper takes the desktop as an
+--   action does, so a member's action and the clipboard read never interleave on one desktop. What cannot be undone: a
+--   capture whose helper had begun before a take-over may already have cleared the clipboard.
+-- * After a member has held a desktop, the platform clears its clipboard before an agent can read a key from it (F32 to
+--   F35 of #1661): what a member copied stays on the clipboard after their hand-back. The clear is owed from the hold
+--   on: desktop_clipboard_generation (the lease generation at the last confirmed clear) differs from the lease
+--   generation, which moves at every seating and every hand-back. Only the platform's confirmed clear lifts it: the
+--   executor's host clears both selections with a fixed script of its own (each xsel must succeed, then each selection
+--   is read back by its byte count alone; never the helper's `--clear-only`, which answers cleared whatever xsel did),
+--   under the one-actor rule and after the fence, and qorpera_machine_desktop_clipboard_cleared(placement, generation)
+--   (service_role) records it only while that generation stands and no member holds the desktop. It is done first at the
+--   agent's first screen call after the hold (a look or an action): the screen read answers clipboardClear, and the host
+--   clears and records under that call's hold of the desktop, within 3 s, before it looks or acts; if the fence or the
+--   record says a member holds the desktop again, an action does not run (DESKTOP_MEMBER_IN_CONTROL), and any other
+--   failure fails nothing (it stays owed). The backstop is save_coding_value: while the clear is owed its read answers
+--   `clear` (with the generation), nothing is read, the executor clears and records the same way, and the agent hears
+--   CLIPBOARD_EMPTY (true then: copy the key on the site and call again).
 -- * The member's list (qorpera_list_agent_machines) says whether they may take over (canTakeOver) and, per machine, who
 --   holds its desktop (control: null, or {mine, name, until}, and for the caller's own hold the epoch it was taken
 --   under, its seat and the press that seated it), and the caller's own current hand-back epoch per machine (epoch);
@@ -149,11 +151,11 @@ alter table public.qorpera_company_machines
 	add column desktop_member_generation bigint not null default 0,
 	-- The press that seated the hold (F26): the id the page minted for that take-over request; recognition only.
 	add column desktop_member_press uuid,
-	-- The lease generation at which the platform last confirmed the desktop's clipboard clear (F29, F32 of #1661): what a
+	-- The lease generation at which the platform last confirmed the desktop's clipboard clear (F32 to F35 of #1661): what a
 	-- member copied during a hold stays on the clipboard after it, and the generation moves at every seating and every
 	-- hand-back, so while this differs from desktop_member_generation a member has held the desktop since the last
-	-- confirmed clear, and save_coding_value reads nothing until the executor has cleared it
-	-- (qorpera_machine_desktop_clipboard_cleared). Equal (0) on a machine no member ever held.
+	-- confirmed clear: the clear is owed (the agent's next screen call does it, save_coding_value reads nothing until it is
+	-- done), and only qorpera_machine_desktop_clipboard_cleared moves this. Equal (0) on a machine no member ever held.
 	add column desktop_clipboard_generation bigint not null default 0;
 
 -- One row per lease: who, when it began and ended, and how ('handed_back' by the member's word, 'closed' with their window
@@ -654,11 +656,12 @@ revoke all on function public.qorpera_machine_desktop_picture_check(uuid, bigint
 	from public, anon, authenticated, qorpera_secret_broker;
 grant execute on function public.qorpera_machine_desktop_picture_check(uuid, bigint, uuid) to service_role;
 
--- The executor's word that it cleared a desktop's clipboard (F32 of #1661): asked after the host, holding the desktop
--- under its one-actor rule and past the fence (the generation stands, no one holds it), cleared both selections with the
--- image's own helper. Under the machine's lock it records that generation as the clipboard's only when it is still the
--- lease generation and no member holds the desktop now; otherwise it records nothing (DESKTOP_MEMBER_IN_CONTROL), and the
--- next save_coding_value clears again.
+-- The executor's word that it cleared a desktop's clipboard (F32 to F35 of #1661): asked after the host, holding the
+-- desktop under its one-actor rule and past the fence (the generation stands, no one holds it), cleared both selections
+-- with its own fixed script and every check of it passed. Under the machine's lock it records that generation as the
+-- clipboard's only when it is still the lease generation and no member holds the desktop now; otherwise it records
+-- nothing (DESKTOP_MEMBER_IN_CONTROL), and the clear stays owed (the agent's next screen call, or save_coding_value's
+-- own clear, does it).
 create function public.qorpera_machine_desktop_clipboard_cleared(p_placement_id uuid, p_generation bigint)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
@@ -703,8 +706,9 @@ do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_autho
 		-- 20260930713000: the lease generation this read saw; the picture leaves only while it stands.
 		'desktopGeneration', v_machine.desktop_member_generation,
 		-- F35 of #1661: a member held the desktop since its clipboard was last confirmed clear: the host clears it under
-		-- this call's hold of the desktop, after the fence, and records it (qorpera_machine_desktop_clipboard_cleared)
-		-- before it looks or acts, so whatever the agent copies after it is its own when save_coding_value reads it.
+		-- this call's hold of the desktop, after the fence, within 3 s, and records it (qorpera_machine_desktop_clipboard_
+		-- cleared) before it looks or acts, so whatever the agent copies after it is its own when save_coding_value reads
+		-- it; if a member holds the desktop again by then, an action does not run.
 		'clipboardClear', v_machine.desktop_clipboard_generation is distinct from v_machine.desktop_member_generation);$new$]); end $$;
 
 -- The command read: no new command starts. A start sent again of a command that started before goes on (its guest has
@@ -732,11 +736,12 @@ do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_autho
 	if coalesce(v_machine.desktop_member_until > clock_timestamp(), false) then
 		return jsonb_build_object('schema', 'qorpera.machine-coding-value-authority/v1', 'state', 'refused',
 			'reason', 'DESKTOP_MEMBER_IN_CONTROL', 'machine', v_machine.name); end if;
-	-- 20260930713000 (F32 of #1661): a member held the desktop since its clipboard was last confirmed clear (the lease
-	-- generation moved since): what they copied may still be on it. Nothing is read: the executor clears both selections
-	-- (under the desktop's one-actor rule, after the fence) and confirms it with qorpera_machine_desktop_clipboard_cleared
-	-- at the generation answered here; the agent hears CLIPBOARD_EMPTY, copies the key again and calls again.
-	-- No action of the agent's lifts this: it proves nothing about the clipboard.
+	-- 20260930713000 (F32 to F35 of #1661): a member held the desktop since its clipboard was last confirmed clear (the
+	-- lease generation moved since): what they copied may still be on it. The clear is owed; the agent's first screen call
+	-- after the hold does it, and this is the backstop. Nothing is read: the executor clears both selections (under the
+	-- desktop's one-actor rule, after the fence) and confirms it with qorpera_machine_desktop_clipboard_cleared at the
+	-- generation answered here; the agent hears CLIPBOARD_EMPTY, copies the key again and calls again. Only the
+	-- platform's confirmed clear lifts this.
 	if v_machine.desktop_clipboard_generation is distinct from v_machine.desktop_member_generation then
 		return jsonb_build_object('schema', 'qorpera.machine-coding-value-authority/v1', 'state', 'clear',
 			'machineId', v_machine.id, 'placementId', v_placement.id, 'bootId', v_placement.boot_id,
