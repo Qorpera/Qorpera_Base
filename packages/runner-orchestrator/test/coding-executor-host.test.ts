@@ -5430,7 +5430,11 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		let ending: (run: CodingGuestRunRequest, index: number) => Ending = () => ({});
 		const stateOf = (commandId: string) => {
 			const found = commands.get(commandId);
-			if (!found) throw new Error("FAKE_GUEST_COMMAND_UNKNOWN");
+			// As the guest agent answers a command it has no record of (the faked class is given its code).
+			if (!found)
+				throw Object.assign(new CodingGuestRefused("CODING_GUEST_COMMAND_UNKNOWN"), {
+					code: "CODING_GUEST_COMMAND_UNKNOWN",
+				});
 			// A command that ran its time ends as it was told to.
 			if (found.state === "running" && Date.now() >= found.until && found.ending.state !== "running") {
 				found.state = found.ending.state ?? "exited";
@@ -5498,6 +5502,9 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				),
 		};
 	}
+	/** A run's folder name: its turn's sequence and its attempt, zero-padded, so that names sort by time. */
+	const runName = (sequence: number, attempt: number) =>
+		`${String(sequence).padStart(10, "0")}-${String(attempt).padStart(4, "0")}`;
 	/** The check a command of a run is, by its environment: undefined for the copy. */
 	const checkOf = (run: { environment: Readonly<Record<string, string>> }) => run.environment.QORPERA_CHECK_RUN;
 
@@ -5578,6 +5585,9 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			API_KEY: "env-value-api-key-CANARY",
 			CI: "true",
 			QORPERA_CHECKS: "1",
+			// Every command knows its run: the root, and the run's own name, ordered by the turn and the attempt.
+			QORPERA_CHECKS_ROOT: `${HOME}/.qorpera-checks`,
+			QORPERA_CHECKS_NAME: runName(f.claim.sequence, 1),
 			HOME,
 			USER: "qorpera-200000",
 		};
@@ -5586,13 +5596,11 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(ran.environment).toMatchObject(common);
 		}
 		// The copy: in the home, its values in the environment, the repository's storage by its place in the folder. The
-		// run's own folder is named by the copy's command id.
-		const run1 = codingHostId("checks", `${f.claim.workerId}:${f.claim.sequence}:1:0`),
-			dir = `${HOME}/.qorpera-checks/${run1}`;
+		// run's own folder is named by its turn and its attempt.
+		const dir = `${HOME}/.qorpera-checks/0000000001-0001`;
+		expect(f.claim.sequence).toBe(1);
 		expect(copy).toMatchObject({ cwd: HOME, timeoutMs: 300_000 });
 		expect(copy?.environment).toMatchObject({
-			QORPERA_CHECKS_ROOT: `${HOME}/.qorpera-checks`,
-			QORPERA_CHECKS_NAME: run1,
 			QORPERA_CHECKS_REPOSITORY: "/company/code/acme/shop/repo.git",
 			QORPERA_CHECKS_COMMIT: COMMIT,
 		});
@@ -5614,13 +5622,17 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			`${dir}/out/3-build.log`,
 		]);
 		for (const ran of checks) {
-			expect(ran.command).toBe(
-				[
-					'cd -- "$QORPERA_CHECK_CWD" || exit 2',
-					'bash --noprofile --norc -c "$QORPERA_CHECK_RUN" </dev/null 2>&1 | tee -- "$QORPERA_CHECK_LOG"',
-					`exit "\${PIPESTATUS[0]}"`,
-				].join("\n"),
-			);
+			// First the rule that a command of a run that is not the newest does nothing; then the check itself.
+			expect(ran.command).toContain("then exit 91; fi");
+			expect(
+				ran.command.endsWith(
+					[
+						'cd -- "$QORPERA_CHECK_CWD" || exit 2',
+						'bash --noprofile --norc -c "$QORPERA_CHECK_RUN" </dev/null 2>&1 | tee -- "$QORPERA_CHECK_LOG"',
+						`exit "\${PIPESTATUS[0]}"`,
+					].join("\n"),
+				),
+			).toBe(true);
 			expect(ran.environment.QORPERA_CHECKS_COMMIT).toBeUndefined();
 		}
 		// Each command's id names the turn, the attempt and its place; its input hash names the commit and what it runs.
@@ -5720,7 +5732,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				exitCode: 1,
 				atLimit: false,
 				tail: "tail of: > test\n\n  1 failing\n",
-				log: `~/.qorpera-checks/${codingHostId("checks", `${f.claim.workerId}:${f.claim.sequence}:1:0`)}/out/2-test.log`,
+				log: "~/.qorpera-checks/0000000001-0001/out/2-test.log",
 			},
 			notRun: ["build"],
 		});
@@ -5902,7 +5914,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		const cancels = () =>
 			mocked.guestCancel.mock.calls.map(([request]) => (request as { commandId: string }).commandId);
 		const folderOf = (run: { environment: Readonly<Record<string, string>>; cwd: string }) =>
-			run.environment.QORPERA_CHECKS_NAME ?? run.cwd;
+			checkOf(run) ? run.cwd : `${run.environment.QORPERA_CHECKS_ROOT}/${run.environment.QORPERA_CHECKS_NAME}`;
 
 		it("asks a cancel that is rejected again, believes the end only once a read confirms it, and runs again in another folder", async () => {
 			const f = await stuck();
@@ -5927,8 +5939,8 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
 			expect(cancels()).toHaveLength(3);
 			const [first, , again, checked] = f.ran();
-			const one = codingHostId("checks", `${f.claim.workerId}:${f.claim.sequence}:1:0`),
-				two = codingHostId("checks", `${f.claim.workerId}:${f.claim.sequence}:2:0`);
+			const one = runName(f.claim.sequence, 1),
+				two = runName(f.claim.sequence, 2);
 			expect([first, again].map((run) => run?.environment.QORPERA_CHECKS_NAME)).toEqual([one, two]);
 			expect(one).not.toBe(two);
 			expect([f.ran()[1]?.cwd, checked?.cwd]).toEqual([
@@ -6025,12 +6037,73 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			f.ending(() => ({}));
 			expect(await f.run(CHECKS.slice(0, 1), 4)).toMatchObject({ state: "passed" });
 			expect(f.ran().map(folderOf).slice(2)).toEqual([
-				codingHostId("checks", `${f.claim.workerId}:${f.claim.sequence}:4:0`),
-				`${HOME}/.qorpera-checks/${codingHostId("checks", `${f.claim.workerId}:${f.claim.sequence}:4:0`)}/src`,
+				`${HOME}/.qorpera-checks/${runName(f.claim.sequence, 4)}`,
+				`${HOME}/.qorpera-checks/${runName(f.claim.sequence, 4)}/src`,
 			]);
 			const after = cancels().length;
 			expect(await f.run(CHECKS.slice(0, 1), 5)).toMatchObject({ state: "passed" });
 			expect(cancels()).toHaveLength(after);
+		});
+
+		it("lets a copy whose start was never acknowledged land after the retry began: the retry is not held back, and the late copy does nothing (review round 4, F1)", async () => {
+			const f = await checksFixture();
+			const older = runName(f.claim.sequence, 1),
+				newer = runName(f.claim.sequence, 2);
+			// The first run's copy never reaches the guest while the host asks: every start's answer is lost.
+			const run = mocked.guestRun.getMockImplementation()!;
+			const lost: CodingGuestRunRequest[] = [];
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const asked = parseCodingGuestRequest("run", request);
+				if (asked.environment.QORPERA_CHECKS_NAME !== older || checkOf(asked)) return run(request);
+				lost.push(asked);
+				throw new Error("LXD operation failed");
+			});
+			expect(await f.run(CHECKS.slice(0, 1))).toEqual({ state: "not_run", why: "transport", code: "UNCLASSIFIED" });
+			const copyId = lost[0]?.commandId as string;
+			expect(new Set(lost.map((request) => request.commandId))).toEqual(new Set([copyId]));
+			// Its cancel found nothing in the guest: `cancelled` for now, never acknowledged, with no outcome kept. The host
+			// takes it as stopped.
+			const kept = join(f.custody, "host-commands", copyId.replaceAll("-", ""));
+			expect(JSON.parse(await readFile(join(kept, "progress.json"), "utf8"))).toMatchObject({
+				acknowledged: false,
+				cancelled: true,
+			});
+			await expect(readFile(join(kept, "outcome.json"))).rejects.toMatchObject({ code: "ENOENT" });
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "ended", attempt: 1, index: 0, state: "not_run", stopped: true }),
+			);
+			// The retry runs at once, held back by nothing, in its own folder with a higher name.
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+			expect(f.logged.filter((event) => event.step === "earlier")).toEqual([]);
+			const [retry] = f.ran();
+			expect(retry?.environment.QORPERA_CHECKS_NAME).toBe(newer);
+			expect(Buffer.compare(Buffer.from(newer), Buffer.from(older))).toBe(1);
+			// The lost start lands now: the guest runs what it was asked, the copy under the older run's name, beside the
+			// newer run's folder. On this machine, with bash: it exits 91 having removed and made nothing.
+			const landed = lost.at(-1) as CodingGuestRunRequest;
+			expect(landed.command).toBe(retry?.command);
+			expect(landed.environment).toMatchObject({
+				QORPERA_CHECKS_ROOT: retry?.environment.QORPERA_CHECKS_ROOT,
+				QORPERA_CHECKS_NAME: older,
+			});
+			const m = await onTheMachine();
+			const at = await m.home("landed");
+			await mkdir(join(at.root, newer, "src"), { recursive: true });
+			await writeFile(join(at.root, newer, "src", "result.txt"), "the retry's\n");
+			const late = await m.bash(
+				landed.command,
+				{
+					HOME: at.home,
+					QORPERA_CHECKS_ROOT: at.root,
+					QORPERA_CHECKS_NAME: landed.environment.QORPERA_CHECKS_NAME as string,
+					QORPERA_CHECKS_REPOSITORY: landed.environment.QORPERA_CHECKS_REPOSITORY as string,
+					QORPERA_CHECKS_COMMIT: landed.environment.QORPERA_CHECKS_COMMIT as string,
+				},
+				at.home,
+			);
+			expect(late.code).toBe(91);
+			expect(await readdir(at.root)).toEqual([newer]);
+			expect(await readFile(join(at.root, newer, "src", "result.txt"), "utf8")).toBe("the retry's\n");
 		});
 
 		it("believes an earlier command ended once the guest no longer has it, or the host never kept its start", async () => {
@@ -6079,12 +6152,14 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		});
 	});
 
-	it("gives each run its own folder: the copy removes the earlier runs' folders of the session user, and only those", async () => {
+	/** The scripts as the host hands them to the guest (from a run through the fixture), run for real with bash and git
+	 * on this machine, in homes of the test's own; a repository's storage with one commit. */
+	async function onTheMachine() {
 		const f = await checksFixture();
 		await f.run(CHECKS.slice(0, 1));
-		const script = f.ran()[0]?.command as string;
+		const [copyRun, checkRun] = f.ran();
 		const exec = promisify(execFile);
-		const top = await realpath(await mkdtemp(join(tmpdir(), "code-checks-copy-")));
+		const top = await realpath(await mkdtemp(join(tmpdir(), "code-checks-scripts-")));
 		roots.push(top);
 		const env = {
 			PATH: "/usr/bin:/bin",
@@ -6097,7 +6172,6 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			GIT_COMMITTER_EMAIL: "test@example.invalid",
 		};
 		const git = async (cwd: string, ...args: string[]) => (await exec("git", args, { cwd, env })).stdout.trim();
-		// The repository's storage, as the company folder holds it.
 		const source = join(top, "source"),
 			repository = join(top, "repo.git");
 		await mkdir(source);
@@ -6107,73 +6181,163 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		await git(source, "commit", "--quiet", "-m", "app");
 		const commit = await git(source, "rev-parse", "HEAD");
 		await git(top, "clone", "--quiet", "--bare", source, repository);
+		/** One script with bash as the guest runs it: its exit code and what it printed. */
+		const bash = async (script: string, given: Record<string, string>, cwd: string) => {
+			try {
+				const { stdout } = await exec("bash", ["--noprofile", "--norc", "-c", script], {
+					cwd,
+					env: { ...env, ...given },
+				});
+				return { code: 0, output: stdout };
+			} catch (error) {
+				const failed = error as { code?: number; stdout?: string; stderr?: string };
+				return { code: failed.code ?? -1, output: `${failed.stdout ?? ""}${failed.stderr ?? ""}` };
+			}
+		};
+		/** A home of its own, its checks' root, and the session's own files beside it. */
+		const home = async (label: string) => {
+			const at = join(top, label);
+			await mkdir(join(at, "qorpera-check"), { recursive: true });
+			await writeFile(join(at, "qorpera-check", "keep.js"), "keep\n");
+			await writeFile(join(at, "notes.md"), "keep\n");
+			return { home: at, root: join(at, ".qorpera-checks") };
+		};
+		const copy = (at: { home: string; root: string }, name: string) =>
+			bash(
+				copyRun?.command as string,
+				{
+					HOME: at.home,
+					QORPERA_CHECKS_ROOT: at.root,
+					QORPERA_CHECKS_NAME: name,
+					QORPERA_CHECKS_REPOSITORY: repository,
+					QORPERA_CHECKS_COMMIT: commit,
+				},
+				at.home,
+			);
+		const check = (at: { home: string; root: string }, name: string, run: string) =>
+			bash(
+				checkRun?.command as string,
+				{
+					HOME: at.home,
+					QORPERA_CHECKS_ROOT: at.root,
+					QORPERA_CHECKS_NAME: name,
+					QORPERA_CHECK_CWD: ".",
+					QORPERA_CHECK_RUN: run,
+					QORPERA_CHECK_LOG: join(at.root, name, "out", "1-test.log"),
+				},
+				join(at.root, name, "src"),
+			);
 		const exists = (path: string) =>
 			lstat(path).then(
 				() => true,
 				() => false,
 			);
-		const copy = async (home: string, name: string) =>
-			exec("bash", ["--noprofile", "--norc", "-c", script], {
-				cwd: home,
-				env: {
-					...env,
-					HOME: home,
-					QORPERA_CHECKS_ROOT: join(home, ".qorpera-checks"),
-					QORPERA_CHECKS_NAME: name,
-					QORPERA_CHECKS_REPOSITORY: repository,
-					QORPERA_CHECKS_COMMIT: commit,
-				},
-			});
-		// Earlier runs' folders, the layout before runs had folders of their own, a stray file, and this run's own name
-		// holding something already; beside them, the session's own files and its own recipe's folder.
-		const home = join(top, "home");
-		const checksRoot = join(home, ".qorpera-checks");
-		const name = randomUUID();
-		for (const folder of [`${randomUUID()}/src/node_modules`, `${randomUUID()}/out`, "src/lib", "out", name])
-			await mkdir(join(checksRoot, folder), { recursive: true });
-		await writeFile(join(checksRoot, "stray.log"), "old\n");
-		await writeFile(join(checksRoot, name, "left.txt"), "old\n");
-		await mkdir(join(home, "qorpera-check"), { recursive: true });
-		await writeFile(join(home, "qorpera-check", "keep.js"), "keep\n");
-		await writeFile(join(home, "notes.md"), "keep\n");
-		await copy(home, name);
-		expect(await readdir(checksRoot)).toEqual([name]);
-		expect((await readdir(join(checksRoot, name))).sort()).toEqual(["out", "src"]);
-		expect(await readdir(join(checksRoot, name, "out"))).toEqual([]);
-		expect(await git(join(checksRoot, name, "src"), "rev-parse", "HEAD")).toBe(commit);
-		expect((await readdir(join(checksRoot, name, "src"))).sort()).toEqual([".git", "app.js"]);
-		expect(await readFile(join(home, "qorpera-check", "keep.js"), "utf8")).toBe("keep\n");
-		expect(await readFile(join(home, "notes.md"), "utf8")).toBe("keep\n");
-		// The next run's copy removes this run's folder, and nothing beside it.
-		const next = randomUUID();
-		await copy(home, next);
-		expect(await readdir(checksRoot)).toEqual([next]);
-		expect((await readdir(home)).sort()).toEqual([".qorpera-checks", "notes.md", "qorpera-check"]);
-		// A root that is a link is taken away, and nothing is removed through it.
-		const linked = join(top, "linked"),
-			elsewhere = join(top, "elsewhere");
-		await mkdir(join(elsewhere, "work"), { recursive: true });
-		await writeFile(join(elsewhere, "work", "keep.js"), "keep\n");
-		await mkdir(linked);
-		await symlink(elsewhere, join(linked, ".qorpera-checks"));
-		await copy(linked, name);
-		expect(await readFile(join(elsewhere, "work", "keep.js"), "utf8")).toBe("keep\n");
-		expect(await readdir(elsewhere)).toEqual(["work"]);
-		expect((await lstat(join(linked, ".qorpera-checks"))).isDirectory()).toBe(true);
-		expect(await readdir(join(linked, ".qorpera-checks"))).toEqual([name]);
-		expect(await exists(join(linked, ".qorpera-checks", name, "src", "app.js"))).toBe(true);
-		// What an earlier run left that the session's user cannot remove stays, and the copy is made all the same.
-		const locked = join(checksRoot, randomUUID(), "cache");
-		await mkdir(locked, { recursive: true });
-		await writeFile(join(locked, "owned-by-a-container"), "x\n");
-		await chmod(locked, 0o555);
-		try {
-			const third = randomUUID();
-			await copy(home, third);
-			expect(await git(join(checksRoot, third, "src"), "rev-parse", "HEAD")).toBe(commit);
-			expect((await readdir(checksRoot)).length).toBe(2);
-		} finally {
-			await chmod(locked, 0o755);
-		}
+		return { f, commit, git, bash, home, copy, check, exists, copyScript: copyRun?.command as string };
+	}
+
+	describe("the scripts on the machine: a run's own folder, and a command of a run that is not the newest does nothing", () => {
+		it("a copy removes the run folders with a lower name, and no other entry, and makes its own", async () => {
+			const m = await onTheMachine();
+			const at = await m.home("home");
+			const name = runName(7, 2);
+			// Earlier runs (an earlier turn, an earlier attempt of this turn), entries that are not run folders (the layouts
+			// before, a stray file, a name of another shape), and this run's own name holding something already.
+			const earlier = [runName(6, 1), runName(7, 1)];
+			for (const folder of [
+				`${earlier[0]}/src/node_modules`,
+				`${earlier[1]}/out`,
+				"src/lib",
+				"out",
+				randomUUID(),
+				name,
+			])
+				await mkdir(join(at.root, folder), { recursive: true });
+			await writeFile(join(at.root, "stray.log"), "old\n");
+			await writeFile(join(at.root, "12345-1"), "not a run's name\n");
+			await writeFile(join(at.root, name, "left.txt"), "old\n");
+			const others = (await readdir(at.root)).filter((entry) => !earlier.includes(entry) && entry !== name).sort();
+			expect(await m.copy(at, name)).toEqual({ code: 0, output: "" });
+			expect((await readdir(at.root)).sort()).toEqual([...others, name].sort());
+			expect((await readdir(join(at.root, name))).sort()).toEqual(["out", "src"]);
+			expect(await readdir(join(at.root, name, "out"))).toEqual([]);
+			expect(await m.git(join(at.root, name, "src"), "rev-parse", "HEAD")).toBe(m.commit);
+			expect(await readFile(join(at.home, "qorpera-check", "keep.js"), "utf8")).toBe("keep\n");
+			expect(await readFile(join(at.home, "notes.md"), "utf8")).toBe("keep\n");
+			// The next turn's run removes this run's folder, and still nothing else.
+			const next = runName(8, 1);
+			expect((await m.copy(at, next)).code).toBe(0);
+			expect((await readdir(at.root)).sort()).toEqual([...others, next].sort());
+			expect((await readdir(at.home)).sort()).toEqual([".qorpera-checks", "notes.md", "qorpera-check"]);
+		});
+
+		it("a copy of a run that is not the newest exits 91 and removes or makes nothing", async () => {
+			const m = await onTheMachine();
+			const at = await m.home("home");
+			const older = runName(7, 1),
+				newer = runName(7, 2),
+				oldest = runName(6, 4);
+			// The newer run's folder stands, with a check's file in it; an older run's folder too.
+			await mkdir(join(at.root, newer, "src"), { recursive: true });
+			await writeFile(join(at.root, newer, "src", "result.txt"), "the newer run's\n");
+			await mkdir(join(at.root, oldest, "out"), { recursive: true });
+			const before = (await readdir(at.root)).sort();
+			const late = await m.copy(at, older);
+			expect(late.code).toBe(91);
+			expect((await readdir(at.root)).sort()).toEqual(before);
+			expect(await m.exists(join(at.root, older))).toBe(false);
+			expect(await readFile(join(at.root, newer, "src", "result.txt"), "utf8")).toBe("the newer run's\n");
+			expect(await readdir(join(at.root, oldest))).toEqual(["out"]);
+			// A later turn's name is higher whatever its attempt: the sequence comes first, both padded.
+			expect((await m.copy(at, runName(10, 1))).code).toBe(0);
+			expect(await readdir(at.root)).toEqual([runName(10, 1)]);
+			expect((await m.copy(at, runName(9, 9))).code).toBe(91);
+			expect(await readdir(at.root)).toEqual([runName(10, 1)]);
+		});
+
+		it("a check of a run that is not the newest exits 91 and runs nothing, though its folder stands", async () => {
+			const m = await onTheMachine();
+			const at = await m.home("home");
+			const older = runName(3, 1),
+				newer = runName(3, 2);
+			for (const name of [older, newer]) await mkdir(join(at.root, name, "src"), { recursive: true });
+			await mkdir(join(at.root, older, "out"), { recursive: true });
+			const late = await m.check(at, older, "touch ran.txt; echo ran");
+			expect(late.code).toBe(91);
+			expect(await m.exists(join(at.root, older, "src", "ran.txt"))).toBe(false);
+			expect(await m.exists(join(at.root, older, "out", "1-test.log"))).toBe(false);
+			// The newest run's check runs, keeps its whole output, and ends with its command's own code.
+			await mkdir(join(at.root, newer, "out"), { recursive: true });
+			expect(await m.check(at, newer, "touch ran.txt; echo ran; exit 3")).toEqual({ code: 3, output: "ran\n" });
+			expect(await m.exists(join(at.root, newer, "src", "ran.txt"))).toBe(true);
+			expect(await readFile(join(at.root, newer, "out", "1-test.log"), "utf8")).toBe("ran\n");
+		});
+
+		it("a copy takes a root that is a link away and removes nothing through it, and a folder it cannot remove never stops it", async () => {
+			const m = await onTheMachine();
+			const linked = await m.home("linked"),
+				elsewhere = join(linked.home, "..", "elsewhere"),
+				name = runName(2, 1);
+			await mkdir(join(elsewhere, runName(1, 1)), { recursive: true });
+			await writeFile(join(elsewhere, runName(1, 1), "keep.js"), "keep\n");
+			await symlink(elsewhere, linked.root);
+			expect((await m.copy(linked, name)).code).toBe(0);
+			expect(await readFile(join(elsewhere, runName(1, 1), "keep.js"), "utf8")).toBe("keep\n");
+			expect((await lstat(linked.root)).isDirectory()).toBe(true);
+			expect(await readdir(linked.root)).toEqual([name]);
+			expect(await m.exists(join(linked.root, name, "src", "app.js"))).toBe(true);
+			// What an earlier run left that the session's user cannot remove stays, and the copy is made all the same.
+			const at = await m.home("home");
+			const locked = join(at.root, runName(1, 1), "cache");
+			await mkdir(locked, { recursive: true });
+			await writeFile(join(locked, "owned-by-a-container"), "x\n");
+			await chmod(locked, 0o555);
+			try {
+				expect((await m.copy(at, name)).code).toBe(0);
+				expect(await m.git(join(at.root, name, "src"), "rev-parse", "HEAD")).toBe(m.commit);
+				expect((await readdir(at.root)).sort()).toEqual([runName(1, 1), name]);
+			} finally {
+				await chmod(locked, 0o755);
+			}
+		});
 	});
 });
