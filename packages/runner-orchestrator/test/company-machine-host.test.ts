@@ -16,7 +16,9 @@ import { CodingControlBusy, CodingControlRefused } from "../src/coding-executor.
 import type { CodingMachineIntent } from "../src/coding-machine.ts";
 import { type LxdCompanyMachineBinding, lxdCompanyMachineName, lxdCompanyMachinePlan } from "../src/company-machine.ts";
 import {
+	COMPANY_MACHINE_CLIPBOARD_CLEAR,
 	COMPANY_MACHINE_CODING_VALUE_HELPER,
+	COMPANY_MACHINE_HOST_RPCS,
 	COMPANY_MACHINE_MEMBER_LOOK,
 	COMPANY_MACHINE_MEMBER_TYPE,
 	COMPANY_MACHINE_SCREEN_HELPER,
@@ -184,6 +186,10 @@ async function fixture(
 	const busy = new Set<string>();
 	const control = {
 		call: vi.fn(async (method: string, args: Record<string, unknown>) => {
+			// As the executor's control in production: a closed method set, of which the host's own list is the host's part
+			// (F33 of #1661: a call missing from the list is refused here as it is there).
+			if (!(COMPANY_MACHINE_HOST_RPCS as readonly string[]).includes(method))
+				throw new Error("CODING_CONTROL_METHOD_INVALID");
 			calls.push({ method, args });
 			order.push(`sql:${method}`);
 			if (busy.has(method)) throw new CodingControlBusy();
@@ -4378,7 +4384,9 @@ describe("a member's action on a desktop (20260930713000)", () => {
 			),
 			picture ?? Buffer.alloc(0),
 		]);
-	const act = (action: Record<string, unknown>, actionId = id(31)) => ({
+	const act = (action: Record<string, unknown>, actionId = id(31), seat = 2) => ({
+		seat,
+		userId: id(21),
 		placementId: id(6),
 		bootId: id(7),
 		actionId,
@@ -4407,7 +4415,12 @@ describe("a member's action on a desktop (20260930713000)", () => {
 		const calls: LxdExecPipeRequest[] = [];
 		const pipe = vi.fn(async (_project: string, _name: string, given: LxdExecPipeRequest, signal: AbortSignal) => {
 			calls.push(given);
-			f.order.push(given.command.includes(COMPANY_MACHINE_CODING_VALUE_HELPER) ? "exec:clear" : "exec:act");
+			f.order.push(
+				given.command.includes(COMPANY_MACHINE_CODING_VALUE_HELPER) ||
+					given.command[2] === COMPANY_MACHINE_CLIPBOARD_CLEAR
+					? "exec:clear"
+					: "exec:act",
+			);
 			return reply(given, signal);
 		});
 		Object.assign(f.client, { execInstancePipe: pipe });
@@ -4517,7 +4530,8 @@ describe("a member's action on a desktop (20260930713000)", () => {
 			COMPANY_MACHINE_CODING_VALUE_HELPER,
 			"--clear-only",
 		]);
-		expect(f.order).toEqual(["exec:act", "exec:clear"]);
+		// The seat asked again once the desktop is held (round 23), the paste, then the clear of both selections.
+		expect(f.order).toEqual(["sql:qorpera_machine_desktop_picture_check", "exec:act", "exec:clear"]);
 		// A tab or a line break is pasted too, as `desktop type` does.
 		await f.host.memberAct(act({ type: "type", text: "one\ttwo" }, id(33)), f.signal);
 		expect(calls[3]!.command.at(-1)).toBe("paste");
@@ -4741,7 +4755,7 @@ describe("a member's action on a desktop (20260930713000)", () => {
 			reason: "DESKTOP_MEMBER_IN_CONTROL",
 		};
 		const clear = { placementId: id(6), bootId: id(7), desktopGeneration: 4 };
-		let clearAnswer = cleared;
+		let clearAnswer = answer(0);
 		let gate: Promise<void> | undefined;
 		let open = () => {};
 		const close = () => {
@@ -4754,14 +4768,14 @@ describe("a member's action on a desktop (20260930713000)", () => {
 		};
 		const { f, calls } = await piped(async (given) => {
 			if (gate) await gate;
-			if (given.command.includes(COMPANY_MACHINE_CODING_VALUE_HELPER)) return clearAnswer;
+			if (given.command[2] === COMPANY_MACHINE_CLIPBOARD_CLEAR) return clearAnswer;
 			const request = given.stdin ? JSON.parse(stdinText(given)) : {};
 			return answer(0, output(request.action?.type ?? null, request.look ? png() : null));
 		});
-		const clears = () => calls.filter((given) => given.command.at(-1) === "--clear-only").length;
+		const clears = () => calls.filter((given) => given.command[2] === COMPANY_MACHINE_CLIPBOARD_CLEAR).length;
 		const recorded = () => f.calls.filter((call) => call.method === "qorpera_machine_desktop_clipboard_cleared");
-		// 1. The fence (that generation, no one holding), the helper's own clear of both selections, then SQL's record of
-		//    that generation: in that order, the clipboard never read.
+		// 1. The fence (that generation, no one holding), the host's own clear of both selections (F34: its own script, not
+		//    the helper's --clear-only), then SQL's record of that generation: in that order, the clipboard never read.
 		f.order.length = 0;
 		expect(await f.host.clearClipboard(clear, f.signal)).toEqual({ cleared: true });
 		expect(f.order).toEqual([
@@ -4769,15 +4783,9 @@ describe("a member's action on a desktop (20260930713000)", () => {
 			"exec:clear",
 			"sql:qorpera_machine_desktop_clipboard_cleared",
 		]);
-		expect(calls[0]!.command).toEqual([
-			"/bin/sh",
-			"-c",
-			expect.stringContaining('[ "$boot" = "$0" ]; } || exit 97'),
-			id(7),
-			"/usr/bin/node",
-			COMPANY_MACHINE_CODING_VALUE_HELPER,
-			"--clear-only",
-		]);
+		expect(calls[0]!.command).toEqual(["/bin/sh", "-c", COMPANY_MACHINE_CLIPBOARD_CLEAR, id(7)]);
+		expect(calls[0]!).toMatchObject({ environment: {}, cwd: "/", stderrTailBytes: 0 });
+		expect(calls[0]!.stdin).toBeUndefined();
 		expect(f.calls.find((call) => call.method === "qorpera_machine_desktop_picture_check")?.args).toEqual({
 			p_placement_id: id(6),
 			p_generation: 4,
@@ -4789,12 +4797,13 @@ describe("a member's action on a desktop (20260930713000)", () => {
 		expect(await f.host.clearClipboard(clear, f.signal)).toEqual({ cleared: false });
 		expect(clears()).toBe(1);
 		expect(recorded()).toHaveLength(1);
-		// 3. A clear that failed confirms nothing; another boot and an image without the helper are the agent's codes.
+		// 3. A clear that failed confirms nothing (an xsel that failed: 1; a byte left on a selection: 2); another boot and an
+		//    image without xsel are the agent's codes.
 		const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
 		try {
 			clearAnswer = answer(1);
 			expect(await f.host.clearClipboard(clear, f.signal)).toEqual({ cleared: false });
-			clearAnswer = answer(0, Buffer.from("something else\n"));
+			clearAnswer = answer(2);
 			expect(await f.host.clearClipboard(clear, f.signal)).toEqual({ cleared: false });
 			clearAnswer = answer(98);
 			expect(await f.host.clearClipboard(clear, f.signal)).toEqual({
@@ -4807,7 +4816,7 @@ describe("a member's action on a desktop (20260930713000)", () => {
 		}
 		expect(clears()).toBe(5);
 		expect(recorded()).toHaveLength(1);
-		clearAnswer = cleared;
+		clearAnswer = answer(0);
 		// 4. SQL refuses the record (a take-over between the clear and the record): not cleared.
 		f.clipboardClears.push({
 			schema: "qorpera.machine-desktop-clipboard/v1",
@@ -4839,6 +4848,194 @@ describe("a member's action on a desktop (20260930713000)", () => {
 			{ ...clear, desktopGeneration: -1 },
 		])
 			await expect(f.host.clearClipboard(wrong, f.signal)).rejects.toThrow("COMPANY_MACHINE_CODING_VALUE_INVALID");
+	});
+
+	it("composes the host's own clipboard clear: the boot first, no display is clear, each xsel checked, then a byte count alone (F34 of #1661)", () => {
+		const lines = COMPANY_MACHINE_CLIPBOARD_CLEAR.split("\n");
+		expect(lines[0]).toBe('{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97');
+		expect(lines[1]).toBe("[ -S /tmp/.X11-unix/X1 ] || exit 0");
+		expect(lines[2]).toBe("[ -x /usr/bin/xsel ] || exit 98");
+		// Both clears must succeed, then both read back: a failed read counts its own word, never empty.
+		expect(COMPANY_MACHINE_CLIPBOARD_CLEAR).toContain('xsel --logfile /dev/null "$selection" --clear || exit 1');
+		expect(COMPANY_MACHINE_CLIPBOARD_CLEAR).toContain(
+			"--output --selectionTimeout 3000 || echo failed; } | /usr/bin/wc -c)",
+		);
+		expect(COMPANY_MACHINE_CLIPBOARD_CLEAR).toContain('[ "$left" -eq 0 ] || exit 2');
+		expect(COMPANY_MACHINE_CLIPBOARD_CLEAR.match(/for selection in --clipboard --primary; do/g)).toHaveLength(2);
+		// Nothing of a selection is printed, kept in a file or put on a command line.
+		expect(COMPANY_MACHINE_CLIPBOARD_CLEAR).not.toMatch(/>\s*\/(?!dev\/null)|tee|echo "\$/);
+	});
+
+	it("clears an owed clipboard under the screen call's hold before it looks or acts, and fails nothing when it cannot (F35 of #1661)", async () => {
+		const held = {
+			schema: "qorpera.machine-desktop-picture/v1",
+			state: "refused",
+			reason: "DESKTOP_MEMBER_IN_CONTROL",
+		};
+		let clearAnswer = answer(0);
+		let gate: Promise<void> | undefined;
+		let open = () => {};
+		const close = () => {
+			gate = new Promise<void>((resolve) => {
+				open = () => {
+					gate = undefined;
+					resolve();
+				};
+			});
+		};
+		const { f, calls } = await piped(async (given) => {
+			if (given.command[2] === COMPANY_MACHINE_CLIPBOARD_CLEAR) return clearAnswer;
+			if (gate) await gate;
+			const request = given.stdin ? JSON.parse(stdinText(given)) : {};
+			return answer(0, output(request.action?.type ?? null, request.look ? png() : null));
+		});
+		const clears = () => calls.filter((given) => given.command[2] === COMPANY_MACHINE_CLIPBOARD_CLEAR).length;
+		const recorded = () => f.calls.filter((call) => call.method === "qorpera_machine_desktop_clipboard_cleared");
+		const owed = (action: Record<string, unknown> | null, receipt: number | null = null) => ({
+			...agent(action, receipt),
+			desktopGeneration: 4,
+			clearClipboard: true,
+		});
+		// 1. A look that owes the clear: the fence, the clear, the record, then the look (and its own fence after the capture).
+		f.order.length = 0;
+		expect(await f.host.screen(owed(null), f.signal)).toMatchObject({ png: expect.any(Buffer) });
+		expect(f.order).toEqual([
+			"sql:qorpera_machine_desktop_picture_check",
+			"exec:clear",
+			"sql:qorpera_machine_desktop_clipboard_cleared",
+			"exec:act",
+			"sql:qorpera_machine_desktop_picture_check",
+		]);
+		expect(recorded().map((call) => call.args)).toEqual([{ p_placement_id: id(6), p_generation: 4 }]);
+		// 2. An action that owes it: the same, under the action's own hold, before the action.
+		f.order.length = 0;
+		expect(await f.host.screen(owed({ type: "click", x: 1, y: 1 }, 14), f.signal)).toMatchObject({
+			header: { action: { type: "click", exitCode: 0 } },
+		});
+		expect(f.order.slice(0, 4)).toEqual([
+			"sql:qorpera_machine_desktop_picture_check",
+			"exec:clear",
+			"sql:qorpera_machine_desktop_clipboard_cleared",
+			"exec:act",
+		]);
+		// 3. A screen call that owes nothing clears nothing.
+		f.order.length = 0;
+		await f.host.screen(agent(null, null), f.signal);
+		expect(f.order).toEqual(["exec:act", "sql:qorpera_machine_desktop_picture_check"]);
+		expect(clears()).toBe(2);
+		// 4. The clear fails, the fence says no, the record is refused or throws: the look goes on all the same, and nothing
+		//    more is recorded (the clear stays owed).
+		const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			clearAnswer = answer(1);
+			expect(await f.host.screen(owed(null), f.signal)).toMatchObject({ png: expect.any(Buffer) });
+			clearAnswer = answer(0);
+			f.pictureChecks.push(held);
+			expect(await f.host.screen(owed(null), f.signal)).toMatchObject({ png: expect.any(Buffer) });
+			f.clipboardClears.push({
+				schema: "qorpera.machine-desktop-clipboard/v1",
+				state: "refused",
+				reason: "DESKTOP_MEMBER_IN_CONTROL",
+			});
+			expect(await f.host.screen(owed(null), f.signal)).toMatchObject({ png: expect.any(Buffer) });
+			f.clipboardClears.push(new Error("SQL unavailable"));
+			expect(await f.host.screen(owed(null), f.signal)).toMatchObject({ png: expect.any(Buffer) });
+		} finally {
+			errors.mockRestore();
+		}
+		expect(clears()).toBe(5);
+		expect(recorded()).toHaveLength(4);
+		// 5. A look while a member's action holds the desktop: no clear beside it (it stays owed), and the look is served.
+		close();
+		const acting = f.host.memberAct(act({ type: "click", x: 5, y: 5 }, id(43)), f.signal);
+		await vi.waitFor(() => expect(f.order).toContain("exec:act"));
+		const looked = f.host.screen(owed(null), f.signal);
+		open();
+		expect(await looked).toMatchObject({ png: expect.any(Buffer) });
+		expect(await acting).toEqual({ done: { exitCode: 0 } });
+		expect(clears()).toBe(5);
+	});
+
+	it("the headline flow: a member held the desktop and handed it back; the agent's look clears and records, its copy is its own, and its save reads it at the first call (F35 of #1661)", async () => {
+		const box = {
+			schema: "qorpera.coding-value-machine-box/v1",
+			ephemeralPublicKey: "ZXBo",
+			iv: "aXY",
+			tag: "dGFn",
+			ciphertext: "Y2lwaGVy",
+		};
+		const { f } = await piped(async (given) => {
+			if (given.command[2] === COMPANY_MACHINE_CLIPBOARD_CLEAR) return answer(0);
+			if (given.command.includes(COMPANY_MACHINE_CODING_VALUE_HELPER))
+				return answer(
+					0,
+					Buffer.from(`${JSON.stringify({ schema: "qorpera.machine-coding-value-box/v1", box })}\n`),
+				);
+			const request = given.stdin ? JSON.parse(stdinText(given)) : {};
+			return answer(0, output(request.action?.type ?? null, request.look ? png() : null));
+		});
+		f.order.length = 0;
+		// The agent's first screen call after the hand-back is its look; SQL says the clear is owed at generation 6.
+		await f.host.screen({ ...agent(null, null), desktopGeneration: 6, clearClipboard: true }, f.signal);
+		// It presses the site's Copy (an action; nothing owed any more), then saves: the first call reads its own copy.
+		await f.host.screen({ ...agent({ type: "click", x: 400, y: 300 }, 15), desktopGeneration: 6 }, f.signal);
+		const saved = await f.host.codingValue(
+			{
+				placementId: id(6),
+				bootId: id(7),
+				receiptId: id(44),
+				target: { schema: "qorpera.coding-value-machine-target/v1" },
+				desktopGeneration: 6,
+			},
+			f.signal,
+		);
+		expect(saved).toEqual({ box });
+		expect(f.order.filter((step) => step === "exec:clear" || step.endsWith("clipboard_cleared"))).toEqual([
+			"exec:clear",
+			"sql:qorpera_machine_desktop_clipboard_cleared",
+			// The save's read is the helper's (counted as a clipboard exec here), after the look's clear and the copy.
+			"exec:clear",
+		]);
+		const firstClear = f.order.indexOf("exec:clear");
+		const copy = f.order.indexOf("exec:act", firstClear);
+		expect(firstClear).toBeLessThan(copy);
+	});
+
+	it("asks the fence again for a member's action once it holds the desktop: a hold handed back meanwhile runs nothing (round 23 of #1661)", async () => {
+		const held = {
+			schema: "qorpera.machine-desktop-picture/v1",
+			state: "refused",
+			reason: "DESKTOP_MEMBER_IN_CONTROL",
+		};
+		const { f, calls } = await piped(async (given) => {
+			const request = given.stdin ? JSON.parse(stdinText(given)) : {};
+			return answer(0, output(request.action?.type ?? null, request.look ? png() : null));
+		});
+		f.pictureChecks.push(held);
+		expect(await f.host.memberAct(act({ type: "click", x: 5, y: 5 }, id(45), 7), f.signal)).toEqual({
+			refused: "DESKTOP_CONTROL_ENDED",
+		});
+		expect(calls).toHaveLength(0);
+		expect(f.calls.find((call) => call.method === "qorpera_machine_desktop_picture_check")?.args).toEqual({
+			p_placement_id: id(6),
+			p_generation: 7,
+			p_user_id: id(21),
+		});
+		// The desktop is free again at once: the next action runs.
+		expect(await f.host.memberAct(act({ type: "click", x: 5, y: 5 }, id(46)), f.signal)).toEqual({
+			done: { exitCode: 0 },
+		});
+		// A fence that does not answer runs nothing either, and frees the desktop.
+		f.pictureChecks.push(new Error("SQL unavailable"));
+		await expect(f.host.memberAct(act({ type: "click", x: 5, y: 5 }, id(47)), f.signal)).rejects.toThrow();
+		expect(calls).toHaveLength(1);
+		expect(await f.host.memberAct(act({ type: "click", x: 5, y: 5 }, id(48)), f.signal)).toEqual({
+			done: { exitCode: 0 },
+		});
+		// Malformed: never run.
+		await expect(f.host.memberAct({ ...act({ type: "click", x: 5, y: 5 }), seat: 0 }, f.signal)).rejects.toThrow(
+			"COMPANY_MACHINE_MEMBER_ACT_INVALID",
+		);
 	});
 
 	it("lets no picture of a desktop a member took over since the look's read leave, to an agent or another member (review r1 F1)", async () => {

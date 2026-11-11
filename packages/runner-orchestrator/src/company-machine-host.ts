@@ -168,6 +168,29 @@ const MEMBER_LOOK_EXITS: Readonly<Record<number, CompanyMachineMemberLookRefusal
  * letter outside the keyboard's layout comes out wrong through xdotool), and the executor clears both selections
  * after; otherwise xdotool types it from its stdin. The desktop's idle clock is touched, as the screen helper's action
  * touches it. Plain sh, with cat and touch. It runs in a transient unit of its own (companyMachineMemberTypeCommand). */
+/**
+ * The host's own clear of a desktop's clipboard after a member held it (F32, F34 of #1661), as root on exactly the boot
+ * SQL named, with no helper of the image: the helper's `--clear-only` answers cleared whatever xsel did, so it confirms
+ * nothing. With no display there is no clipboard (exit 0): image 91d433c0 keeps none past its desktop's session (no
+ * clipboard manager, nothing saved; measured 11 Nov 2026). Otherwise both selections are cleared, each xsel must
+ * succeed (else 1), and then each is read back and only its byte count kept (a read that fails counts its own word, so
+ * it is never taken for empty): a byte left is 2. 97 is another boot, 98 an image without xsel. Nothing of a selection
+ * leaves the pipe into wc. Plain sh; its arguments: the boot id.
+ */
+export const COMPANY_MACHINE_CLIPBOARD_CLEAR = [
+	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97',
+	"[ -S /tmp/.X11-unix/X1 ] || exit 0",
+	"[ -x /usr/bin/xsel ] || exit 98",
+	"export DISPLAY=:1",
+	"for selection in --clipboard --primary; do",
+	'\t/usr/bin/timeout 4 /usr/bin/xsel --logfile /dev/null "$selection" --clear || exit 1',
+	"done",
+	"for selection in --clipboard --primary; do",
+	'\tleft=$({ /usr/bin/timeout 4 /usr/bin/xsel --logfile /dev/null "$selection" --output --selectionTimeout 3000 || echo failed; } | /usr/bin/wc -c)',
+	'\t[ "$left" -eq 0 ] || exit 2',
+	"done",
+].join("\n");
+
 export const COMPANY_MACHINE_MEMBER_TYPE = [
 	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97',
 	"{ command -v xdotool && command -v xsel; } >/dev/null 2>&1 || exit 98",
@@ -337,6 +360,9 @@ export const COMPANY_MACHINE_HOST_RPCS = [
 	"qorpera_folder_member_machine_reads",
 	// The fence after a capture (20260930713000, review r1 F1).
 	"qorpera_machine_desktop_picture_check",
+	// The record of a desktop clipboard the host cleared after a member held it (F32 of #1661; F33: it was missing here,
+	// so the executor's closed control refused it in production).
+	"qorpera_machine_desktop_clipboard_cleared",
 ] as const;
 
 export interface CompanyMachineHostOptions {
@@ -474,6 +500,9 @@ export interface CompanyMachineScreen {
 	request: Record<string, unknown>;
 	/** The lease generation SQL's read saw (20260930713000): the picture leaves only while it stands (review r1 F1). */
 	desktopGeneration: number;
+	/** A member held the desktop since its clipboard was last confirmed clear (F35 of #1661): cleared and recorded under this
+	 * call's hold of the desktop before it looks or acts; a clear that fails fails nothing (it stays owed). */
+	clearClipboard?: boolean;
 }
 /** What the helper answered: its header and the PNG (null: none), or why the company folder held both the picture and
  * the windows' titles back (`heldBack`, a HELD text; what the action did is still told). */
@@ -516,6 +545,9 @@ export interface CompanyMachineMemberAct {
 	bootId: string;
 	actionId: string;
 	action: Record<string, unknown>;
+	/** The seat the action was begun in, and its member: the fence is asked again once the desktop is held (round 23). */
+	seat: number;
+	userId: string;
 }
 /** The action ran (`exitCode`: `desktop`'s, null when it was killed at its deadline), or why it did not: the desktop is
  * busy with another action (DESKTOP_BUSY), off, or the machine changed. Nothing of the screen comes back. */
@@ -2240,28 +2272,89 @@ export class LxdCompanyMachineHost {
 				throw new Error("COMPANY_MACHINE_CODING_VALUE_BUSY");
 		}
 		try {
-			if (!(await this.#pictureAllowed(run.placementId, run.desktopGeneration, null, signal)))
-				return { cleared: false };
-			const cleared = await this.#clearCodingValue(pipe, run);
-			if (cleared === "boot") return { refused: "MACHINE_BOOT_CHANGED" };
-			if (cleared === "image") return { refused: "MACHINE_IMAGE_WITHOUT_CODING_VALUES" };
-			if (cleared === "failed") return { cleared: false };
-			const answer = record(
-				await this.#call(
-					"qorpera_machine_desktop_clipboard_cleared",
-					{ p_placement_id: run.placementId, p_generation: run.desktopGeneration },
-					signal,
-				),
-				"COMPANY_MACHINE_CLIPBOARD_CLEARED_INVALID",
-			);
-			if (answer.schema !== "qorpera.machine-desktop-clipboard/v1")
-				throw new Error("COMPANY_MACHINE_CLIPBOARD_CLEARED_INVALID");
-			if (answer.state === "ok") return { cleared: true };
-			if (answer.state === "refused" && answer.reason === "DESKTOP_MEMBER_IN_CONTROL") return { cleared: false };
-			throw new Error("COMPANY_MACHINE_CLIPBOARD_CLEARED_INVALID");
+			return await this.#clearAndRecord(pipe, run, signal);
 		} finally {
-			// The clear helper ends by itself or at its own deadline: nothing of it acts after.
+			// The clear script ends by itself or at its own deadline: nothing of it acts after.
 			this.#releaseDesktop(run.placementId, true);
+		}
+	}
+	/** Holding the desktop: the fence (that generation, no one holding), the host's own clear of both selections
+	 * (COMPANY_MACHINE_CLIPBOARD_CLEAR), and only on its success SQL's record of that generation. */
+	async #clearAndRecord(
+		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		run: CompanyMachineClipboardClear,
+		signal: AbortSignal,
+	): Promise<CompanyMachineClipboardCleared> {
+		if (!(await this.#pictureAllowed(run.placementId, run.desktopGeneration, null, signal)))
+			return { cleared: false };
+		const cleared = await this.#clearSelections(pipe, run);
+		if (cleared === "boot") return { refused: "MACHINE_BOOT_CHANGED" };
+		if (cleared === "image") return { refused: "MACHINE_IMAGE_WITHOUT_CODING_VALUES" };
+		if (cleared === "failed") return { cleared: false };
+		const answer = record(
+			await this.#call(
+				"qorpera_machine_desktop_clipboard_cleared",
+				{ p_placement_id: run.placementId, p_generation: run.desktopGeneration },
+				signal,
+			),
+			"COMPANY_MACHINE_CLIPBOARD_CLEARED_INVALID",
+		);
+		if (answer.schema !== "qorpera.machine-desktop-clipboard/v1")
+			throw new Error("COMPANY_MACHINE_CLIPBOARD_CLEARED_INVALID");
+		if (answer.state === "ok") return { cleared: true };
+		if (answer.state === "refused" && answer.reason === "DESKTOP_MEMBER_IN_CONTROL") return { cleared: false };
+		throw new Error("COMPANY_MACHINE_CLIPBOARD_CLEARED_INVALID");
+	}
+	/** COMPANY_MACHINE_CLIPBOARD_CLEAR once, under its own deadline and never the request's signal: cleared (exit 0),
+	 * another boot (97), an image without xsel (98), or failed (anything else; logged as a fixed word alone). */
+	async #clearSelections(
+		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		run: Pick<CompanyMachineClipboardClear, "placementId" | "bootId">,
+	): Promise<"cleared" | "boot" | "image" | "failed"> {
+		try {
+			const result = await pipe(
+				this.#policy.project,
+				lxdCompanyMachineName(run.placementId),
+				{
+					command: ["/bin/sh", "-c", COMPANY_MACHINE_CLIPBOARD_CLEAR, run.bootId],
+					environment: {},
+					cwd: "/",
+					maxStdoutBytes: 4096,
+					stderrTailBytes: 0,
+				},
+				AbortSignal.timeout(this.#options.codingValueClearTimeoutMs ?? CODING_VALUE_CLEAR_MS),
+			);
+			if (result.exitCode === 0) return "cleared";
+			if (result.exitCode === 97) return "boot";
+			if (result.exitCode === 98) return "image";
+		} catch {
+			// Logged below.
+		}
+		console.error("COMPANY_MACHINE_CLIPBOARD_CLEAR_FAILED");
+		return "failed";
+	}
+	/** An agent's screen call that owes the clear (F35 of #1661): under its hold of the desktop (an action's; a look takes
+	 * the desktop for the clear alone when it is free), before it looks or acts. Nothing of it fails the call: a desktop
+	 * an action of someone else's holds, a fence that says no, a failed clear or record, any error: it stays owed, and
+	 * save_coding_value's own clear is the backstop. */
+	async #clearOwed(
+		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		run: CompanyMachineScreen,
+		holding: boolean,
+		signal: AbortSignal,
+	): Promise<void> {
+		const took = !holding && this.#holdDesktop(run.placementId);
+		if (!holding && !took) return;
+		try {
+			await this.#clearAndRecord(
+				pipe,
+				{ placementId: run.placementId, bootId: run.bootId, desktopGeneration: run.desktopGeneration },
+				signal,
+			);
+		} catch {
+			console.error("COMPANY_MACHINE_CLIPBOARD_CLEAR_FAILED");
+		} finally {
+			if (took) this.#releaseDesktop(run.placementId, true);
 		}
 	}
 
@@ -2301,6 +2394,8 @@ export class LxdCompanyMachineHost {
 		let ended = false;
 		let result: Awaited<ReturnType<typeof pipe>>;
 		try {
+			// A member held the desktop since its clipboard was last confirmed clear: cleared and recorded first (F35).
+			if (run.clearClipboard === true) await this.#clearOwed(pipe, run, acting, signal);
 			result = await this.#screenHelper(pipe, run.placementId, run.bootId, run.request, signal);
 			// The helper reached its own end (an answer, or one of its own exits) only then: it waits for the action's unit.
 			// Any other exit (137 when it was killed inside the machine, 1 when it failed) says nothing of the unit, which
@@ -2436,7 +2531,9 @@ export class LxdCompanyMachineHost {
 		const verb = act.action?.type;
 		const text = act.action?.text;
 		if (
-			![act.placementId, act.bootId, act.actionId].every((id) => UUID.test(id)) ||
+			![act.placementId, act.bootId, act.actionId, act.userId].every((id) => UUID.test(id)) ||
+			!Number.isSafeInteger(act.seat) ||
+			act.seat < 1 ||
 			typeof verb !== "string" ||
 			!SCREEN_VERBS.includes(verb) ||
 			verb === "open" ||
@@ -2446,6 +2543,19 @@ export class LxdCompanyMachineHost {
 			throw new Error("COMPANY_MACHINE_MEMBER_ACT_INVALID");
 		const pasted = typeof text === "string" && PASTED.test(text);
 		if (!this.#holdDesktop(act.placementId)) return { refused: "DESKTOP_BUSY" };
+		// Holding the desktop, the action's seat is asked again (round 23 of #1661): an action authorized before a hand-back
+		// never runs after it, nor after a clear of the clipboard recorded since. Nothing ran: the desktop is free again.
+		let seated: boolean;
+		try {
+			seated = await this.#pictureAllowed(act.placementId, act.seat, act.userId, signal);
+		} catch (error) {
+			this.#releaseDesktop(act.placementId, true);
+			throw error;
+		}
+		if (!seated) {
+			this.#releaseDesktop(act.placementId, true);
+			return { refused: "DESKTOP_CONTROL_ENDED" };
+		}
 		let ended = false;
 		try {
 			if (typeof text === "string") {
