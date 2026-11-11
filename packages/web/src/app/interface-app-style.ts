@@ -90,7 +90,8 @@ export async function readAppBrand(
 ): Promise<AppBrand | null> {
 	const entry = (await folder.read(APP_BRAND_PATH, signal)).entry;
 	if (entry?.kind !== "file" || !entry.file || entry.file.bytes > BRAND_MAX_BYTES) return null;
-	const bytes = await folder.readFile(entry.file, signal, BRAND_MAX_BYTES);
+	// The entry was read live just now: its bytes may come from the member's file cache.
+	const bytes = await folder.readFile(entry.file, signal, BRAND_MAX_BYTES, { cached: true });
 	try {
 		return parseAppBrand(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 	} catch {

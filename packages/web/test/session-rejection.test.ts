@@ -4,6 +4,7 @@ import { AuthError } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { type Cloud, CloudRpcError, createCloud, sessionRejection } from "../src/cloud/client.ts";
+import { forgetMemberFiles } from "../src/cloud/company-files.ts";
 import { startGoodWillCard } from "../src/cloud/good-will.ts";
 import { fixture, settle, userA } from "./fixtures.ts";
 
@@ -11,6 +12,11 @@ import { fixture, settle, userA } from "./fixtures.ts";
  * cloud refused every request with "No suitable key or wrong key type" and the member saw
  * red errors instead of sign-in. A refusal of the session itself now signs the member out
  * in this browser, once; permission refusals, network failures and 5xx do not. */
+
+vi.mock("../src/cloud/company-files.ts", async (importOriginal) => ({
+	...(await importOriginal<Record<string, unknown>>()),
+	forgetMemberFiles: vi.fn(),
+}));
 
 const PROJECT = "https://rejects.example.invalid";
 const storageKey = "qorpera-web-auth/v1";
@@ -295,10 +301,13 @@ describe("only the token this browser holds now counts", () => {
 		localStorage.setItem(storageKey, JSON.stringify({ access_token: "fixture-token" }));
 		const signOut = vi.fn(async () => ({ error: new AuthError("Session could not be loaded") }));
 		const { auth, reject } = await controller(signOut);
+		vi.mocked(forgetMemberFiles).mockClear();
 		reject({ accessToken: "fixture-token" });
 		await settle();
 		expect(signOut).toHaveBeenCalledTimes(1);
 		expect(localStorage.getItem(storageKey)).toBeNull();
+		// Auth said nothing of the sign-out it could not make: the member's file cache goes all the same.
+		expect(forgetMemberFiles).toHaveBeenCalled();
 		expect(auth.store.get()).toMatchObject({ session: null, message: "You were signed out. Sign in again." });
 	});
 

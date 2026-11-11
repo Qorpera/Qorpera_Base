@@ -1,5 +1,6 @@
 import type { Session, User } from "@supabase/supabase-js";
 import { type Cloud, forgetStoredSession, type SessionRejection } from "../cloud/client.ts";
+import { forgetMemberFiles } from "../cloud/company-files.ts";
 import { t } from "../ui/preferences.ts";
 import { Store } from "./state.ts";
 
@@ -88,7 +89,10 @@ export class AuthController {
 			data: { subscription },
 		} = this.#cloud.supabase.auth.onAuthStateChange((_event, session) => {
 			this.store.set({ session, user: session?.user ?? null, ready: true });
-			if (!session) void this.#loadProviders();
+			if (session) return;
+			// Signed out, however it came about: no file read as the member stays in this tab.
+			forgetMemberFiles();
+			void this.#loadProviders();
 		});
 		this.#unsubscribe = () => subscription.unsubscribe();
 	}
@@ -135,6 +139,8 @@ export class AuthController {
 		const current = this.store.get().session;
 		// The member signed in again meanwhile: that session is a new one and stays.
 		if (current && current.access_token !== session.access_token) return;
+		// Auth may not have said it signed out (its sign-out failed): no file read as the member stays in this tab.
+		forgetMemberFiles();
 		this.store.set({
 			session: null,
 			user: null,
@@ -237,6 +243,7 @@ export class AuthController {
 
 	async signOut(): Promise<void> {
 		await this.#cloud.supabase.auth.signOut();
+		forgetMemberFiles();
 		this.store.set({ session: null, user: null, pendingEmail: undefined, message: undefined, error: undefined });
 	}
 
