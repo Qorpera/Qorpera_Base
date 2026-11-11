@@ -496,3 +496,85 @@ describe("a coding session's failed turn, by its code (20260930560000)", () => {
 		);
 	});
 });
+
+describe("a change to code kept in Qorpera that did not go in for its checks (own code storage, step 3)", () => {
+	const NOT_PASSED = "Not saved yet: the change did not pass its tests, so the code is as it was.";
+	const NOT_TESTED = "Not saved yet: Qorpera could not test the change just now. Nothing was lost.";
+	// The executor's words as the cloud keeps them (runner-orchestrator code-checks.ts, with the round sentence the cloud
+	// adds): the check, its command and the end of its output, which may say anything, a code included.
+	const FAILED = [
+		'Nothing went into main: the check "test" failed on this change merged with main as it is now. It ran `npm test` and ended with exit code 124 after 600 s, at its time limit of 600 s. The end of its output:',
+		"",
+		"    Error: Provider credential is invalid; you have hit your usage limit. Request timed out.",
+		"    Native provider bridge request failed (422) [code=COMPUTER_HOURS_EXHAUSTED]",
+		"",
+		"Its whole output is in ~/.qorpera-checks/out/2-test.log on the session's machine. Checks that passed before it: install. Fix the cause in the code, never by removing or weakening the check or its tests; run the checks yourself from a clean copy, commit and finish again. The checks failed for this session 2 times in a row.",
+	].join("\n");
+	const REFUSED =
+		"Nothing went into main: the repository's checks file, .qorpera/checks.json, is gone in this change, and a repository that has checks keeps them. Fix the file, commit and finish again.";
+	const DID_NOT_RUN =
+		"Nothing went into main: Qorpera could not run the repository's checks on this change (the session's machine did not answer). This is not a fault in the code. The work is kept on the session's branch; finishing again runs the checks again.";
+	const MAIN_MOVED =
+		"Nothing went into main yet: main changed twice while this change's checks ran, so they never ran on what would go in. This is not a fault in the code. The work is kept on the session's branch; finishing again checks it once more.";
+	// The cloud's plain words for a failed run, whose code travels apart (20260930560000).
+	const STOPPED = "The coding turn stopped. The files the turn wrote stay in the session's workspace as it left them.";
+	// What a cloud without step 3's failure words makes of any code it has no case for.
+	const QORPERA_WORDS =
+		"The coding turn stopped because of a problem on Qorpera's side. The files the turn wrote stay in the session's workspace as it left them; a follow-up turn continues from them.";
+
+	it.each([
+		["CODING_CHECKS_FAILED", FAILED, NOT_PASSED],
+		["CODING_CHECKS_REFUSED", REFUSED, NOT_PASSED],
+		["CODING_CHECKS_DID_NOT_RUN", DID_NOT_RUN, NOT_TESTED],
+		["CODING_CHECKS_MAIN_MOVED", MAIN_MOVED, NOT_TESTED],
+	] as const)("%s", (code, summary, expected) => {
+		// The failed event's code decides, for the owner and for anyone else, whatever the output says.
+		for (const said of [
+			codingFailureReason(summary, {}, code),
+			codingFailureReason(summary, { mine: true }, code),
+			codingFailureReason(summary, { mine: false }, code),
+			// A summary that still ends with its code, and no code beside it, reads the same, as the cloud reads it.
+			codingFailureReason(`${summary} [code=${code}]`),
+			codingFailureReason(`${summary}\n[code=${code}]\n`),
+			// A cloud whose failure words do not know the code yet: the code still decides.
+			codingFailureReason(QORPERA_WORDS, {}, code),
+		]) {
+			expect(said).toBe(expected);
+			// A founder never reads a check's name, its command or output, a branch, a commit, a pull request or "CI".
+			expect(said).not.toMatch(/\[|code=|check|npm|main\b|branch|commit|pull request|\bCI\b|git|\.json|\d/i);
+		}
+	});
+
+	it("leaves a usage limit first, as the cloud does", () => {
+		expect(codingFailureReason(FAILED, { usageLimit: true }, "CODING_CHECKS_FAILED")).toBe(
+			"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up waits and goes on by itself once the limit resets.",
+		);
+	});
+
+	it("reads every other code as before, so a cloud that sends none of these works as it did", () => {
+		// Only a whole code decides.
+		for (const code of [
+			"CODING_CHECKS",
+			"CODING_CHECKS_FAILED_AGAIN",
+			"CODING_CHECKS_FAILED:UNKNOWN",
+			"CODING_CHECK_FAILED",
+		])
+			expect(codingFailureReason(STOPPED, {}, code)).toBe(
+				"Something on Qorpera's side refused one of the session's steps. The workspace is kept; a follow-up continues it.",
+			);
+		// Lower-case reasons name no code.
+		expect(codingFailureReason(STOPPED, {}, "coding_checks_failed")).toBe(
+			"The session stopped because of an internal error. The workspace is kept; a follow-up continues it.",
+		);
+		// A code in a summary decides only at its end: one inside the run's error reads as before.
+		expect(
+			codingFailureReason(
+				"The coding turn did not finish: Runner model socket request timed out [code=CODING_CHECKS_FAILED]; durable attempt output requires review",
+			),
+		).toBe("One of the session's steps got no answer in time. The workspace is kept; a follow-up continues it.");
+		// Without a code anywhere, the executor's words are never shown as they are.
+		expect(codingFailureReason(MAIN_MOVED)).toBe(
+			"The session stopped because of an internal error. The workspace is kept; a follow-up continues it.",
+		);
+	});
+});
