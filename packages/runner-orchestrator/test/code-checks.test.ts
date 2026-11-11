@@ -871,7 +871,13 @@ describe("the other words", () => {
 });
 
 type Passed = Extract<CodeChecksRun, { state: "passed" }>;
-const passedRun = (checks: Passed["checks"]): Passed => ({ state: "passed", ms: 130_400.6, copyMs: 2_100, checks });
+const passedRun = (checks: Passed["checks"]): Passed => ({
+	state: "passed",
+	ms: 130_400.6,
+	copyMs: 2_100,
+	checks,
+	site: null,
+});
 
 describe("the row's value for a run that passed", () => {
 	it("is 7.1's object", () => {

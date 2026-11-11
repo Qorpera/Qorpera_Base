@@ -10,6 +10,7 @@ import {
 	CODE_CHECKS_MAIN_MOVED,
 	type CodeCheck,
 	type CodeChecksRun,
+	type CodeSiteRecipe,
 	codeChecksFailedSummary,
 	codeChecksGate,
 	codeChecksNotRunSummary,
@@ -38,6 +39,7 @@ import {
 } from "../src/code-host-repositories.ts";
 import { attachCodeSession, type CodeAreaBroker } from "../src/code-host-seed.ts";
 import type { CodeHostJobs } from "../src/code-host-views.ts";
+import { type CodeSiteCollected, codeSiteRefusedSummary } from "../src/code-site.ts";
 import {
 	CodingLandConflict,
 	CodingLandRefused,
@@ -1178,8 +1180,8 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 	const FILE = { entry: { kind: "file" as const, bytes: Buffer.from('{"checks":[]}') }, blob: BLOB },
 		MAIN_FILE = { entry: { kind: "file" as const, bytes: Buffer.from('{"checks":[]}') }, blob: MAIN_BLOB },
 		NO_FILE = { entry: { kind: "missing" as const }, blob: null };
-	const READ = { state: "ok" as const, blob: BLOB, checks: CHECKS },
-		MAIN_READ = { state: "ok" as const, blob: MAIN_BLOB, checks: CHECKS.slice(0, 1) };
+	const READ = { state: "ok" as const, blob: BLOB, checks: CHECKS, site: null },
+		MAIN_READ = { state: "ok" as const, blob: MAIN_BLOB, checks: CHECKS.slice(0, 1), site: null };
 	const CHANGED = { added: ["test"], removed: [], run: [] };
 	const PASSED: Extract<CodeChecksRun, { state: "passed" }> = {
 		state: "passed",
@@ -1189,6 +1191,7 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 			{ name: "install", run: "npm ci", ms: 38_000 },
 			{ name: "test", run: "npm test", ms: 59_000 },
 		],
+		site: null,
 	};
 	const FAILED: Extract<CodeChecksRun, { state: "failed" }> = {
 		state: "failed",
@@ -1215,7 +1218,7 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 	/** A session on a repository kept in Qorpera whose host runs checks: its switch answers `on`, and its runner is a
 	 * stand-in that answers `runs` in turn (each run is a step of the session's). The landing's two jobs are stand-ins
 	 * where a test says. */
-	async function checked(on = true) {
+	async function checked(on = true, sites = true) {
 		const f = await fixture();
 		const claim = { ...f.session.claim, repository: KEPT, baseSha: null };
 		const { baseSha } = await f.repositories.start({ claim, assertAuthorized: f.authorized }, signal());
@@ -1228,7 +1231,7 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 		const runs: CodeChecksRun[] = [];
 		const runChecks = vi.fn(
 			async (
-				_input: { commit: string; checks: readonly CodeCheck[]; attempt: number },
+				_input: { commit: string; checks: readonly CodeCheck[]; attempt: number; site: CodeSiteRecipe | null },
 				_signal: AbortSignal,
 			): Promise<CodeChecksRun> => {
 				f.events.push("checks");
@@ -1239,7 +1242,7 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 		);
 		const checksSwitch = vi.fn(async (_signal: AbortSignal) => {
 			f.events.push("switch");
-			return on;
+			return { checks: on, site: sites };
 		});
 		const session: CodingFolderRepositorySession = {
 			...f.session,
@@ -1258,9 +1261,14 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 			return confirm;
 		});
 		const logged: Record<string, unknown>[] = [];
+		// The upload pass of a repository's site (step 4), woken by a landing whose report says its site was made.
+		const wake = vi.fn(() => {
+			f.events.push("wake");
+		});
 		const repositories = new CodeHostRepositories(f.jobs, {
 			records: { inJob },
 			report: (event) => logged.push(event),
+			sites: { wake },
 		});
 		let files = 0;
 		// Each test says what the jobs and the gate answer: nothing an earlier test left is answered.
@@ -1283,6 +1291,7 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 			inJob,
 			logged,
 			repositories,
+			wake,
 			/** One more commit on the session's branch. */
 			commit: () => f.commit(f.tree, `file-${++files}.js`),
 			/** What the stand-in runner answers, in turn. */
@@ -1323,10 +1332,18 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 		file: BLOB,
 		tries,
 	});
-	/** The gate runs the candidate's checks. */
-	const gateRuns = () => {
-		vi.mocked(readCodeChecks).mockReturnValueOnce(MAIN_READ).mockReturnValueOnce(READ);
-		vi.mocked(codeChecksGate).mockReturnValueOnce({ gate: "run", checks: CHECKS, blob: BLOB, changed: CHANGED });
+	/** The gate runs the candidate's checks, and says the site they leave (`site`; none by default). */
+	const gateRuns = (site: CodeSiteRecipe | null = null) => {
+		vi.mocked(readCodeChecks)
+			.mockReturnValueOnce(MAIN_READ)
+			.mockReturnValueOnce({ ...READ, site });
+		vi.mocked(codeChecksGate).mockReturnValueOnce({
+			gate: "run",
+			checks: CHECKS,
+			blob: BLOB,
+			changed: CHANGED,
+			site,
+		});
 	};
 
 	it("lands a repository with no checks file in one job, as before, its row saying none", async () => {
@@ -1429,14 +1446,15 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 			expect(vi.mocked(readCodeChecks).mock.calls).toEqual([[MAIN_FILE], [FILE]]);
 			expect(vi.mocked(codeChecksGate).mock.calls).toEqual([[MAIN_READ, READ]]);
 			expect(t.runChecks.mock.calls.map(([input]) => input)).toEqual([
-				{ commit: candidate, checks: CHECKS, attempt: 1 },
+				{ commit: candidate, checks: CHECKS, attempt: 1, site: null },
 			]);
 			expect(vi.mocked(codeChecksPassed).mock.calls).toEqual([
 				[{ commit: candidate, how, blob: BLOB, run: PASSED, changed: CHANGED, tries: 1 }],
 			]);
+			// A run that passed is reported as v3: what became of its site, here none to take.
 			expect(t.reports()).toEqual([
 				{
-					schema: "qorpera.code-change-report/v2",
+					schema: "qorpera.code-change-report/v3",
 					state: "landed",
 					inLine: true,
 					how,
@@ -1449,6 +1467,7 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 					picture: null,
 					refusal: null,
 					checks: { state: "passed", result: result(candidate, how, 1) },
+					site: null,
 				},
 			]);
 			expect(t.logged.filter((event) => event.event === "code-checks")).toEqual([
@@ -1533,8 +1552,8 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 		expect(await t.land(head)).toMatchObject({ state: "fast-forward", mainSha: head, change: 7 });
 		// The same candidate, its run a new attempt; main did not move, so it is the first try.
 		expect(t.runChecks.mock.calls.map(([input]) => input)).toEqual([
-			{ commit: head, checks: CHECKS, attempt: 1 },
-			{ commit: head, checks: CHECKS, attempt: 2 },
+			{ commit: head, checks: CHECKS, attempt: 1, site: null },
+			{ commit: head, checks: CHECKS, attempt: 2, site: null },
 		]);
 		expect(t.asked()).toHaveLength(2);
 		expect(vi.mocked(codeChecksPassed).mock.calls[0]?.[0]).toMatchObject({ run: PASSED, tries: 1 });
@@ -1587,8 +1606,8 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 		]);
 		// The second run is of the new candidate, its own attempt; the record says it was the second try.
 		expect(t.runChecks.mock.calls.map(([input]) => input)).toEqual([
-			{ commit: head, checks: CHECKS, attempt: 1 },
-			{ commit: merge, checks: CHECKS, attempt: 2 },
+			{ commit: head, checks: CHECKS, attempt: 1, site: null },
+			{ commit: merge, checks: CHECKS, attempt: 2, site: null },
 		]);
 		expect(vi.mocked(codeChecksPassed).mock.calls).toEqual([
 			[{ commit: head, how: "fast-forward", blob: BLOB, run: PASSED, changed: CHANGED, tries: 1 }],
@@ -1732,6 +1751,7 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 			ms: 3_000,
 			copyMs: 1_000,
 			checks: CHECKS.map(({ name, run }) => ({ name, run, ms: 1_000 })),
+			site: null,
 		});
 		expect(await t.land(head)).toEqual({ state: "fast-forward", mainSha: head, filesChanged: 2, change: 7 });
 		const repo = join(t.f.companyRoot, "code/qorpera/example/repo.git");
@@ -1744,10 +1764,12 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 			commit: head,
 			checks: CHECKS.map(({ name, run }) => ({ name, run, timeoutSeconds: 600, cwd: "." })),
 			attempt: 1,
+			site: null,
 		});
 		const blob = await t.f.git(repo, "rev-parse", `${head}:.qorpera/checks.json`);
 		expect(t.reports().at(-1)).toMatchObject({
-			schema: "qorpera.code-change-report/v2",
+			schema: "qorpera.code-change-report/v3",
+			site: null,
 			state: "landed",
 			mainAfter: head,
 			checks: {
@@ -1774,5 +1796,275 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 		t.checksSwitch.mockRejectedValueOnce(refused);
 		await expect(t.land(head)).rejects.toBe(refused);
 		expect(t.asked()).toEqual([]);
+	});
+
+	describe("a repository's site at a landing (own code storage, step 4)", () => {
+		const RECIPE: CodeSiteRecipe = { folder: "dist", name: "gift-message", title: "Gift message" };
+		const MADE: CodeSiteCollected = { state: "made", tree: "a".repeat(40), files: 3, bytes: 4_096, ...RECIPE };
+		const MISSED: CodeSiteCollected = { state: "missed", code: "CODE_SITE_BOUNDARY_UNCHECKED" };
+		/** A run whose every check passed, with what became of its site. */
+		const passed = (site: CodeSiteCollected | null): CodeChecksRun => ({ ...PASSED, site });
+		/** Job A then job B, the gate with `site`, and one run's answer. */
+		const lands = (t: Awaited<ReturnType<typeof checked>>, head: string, site: CodeSiteRecipe | null) => {
+			vi.mocked(landCodeBranch)
+				.mockResolvedValueOnce(toCheck(t.baseSha, head) as never)
+				.mockResolvedValueOnce(landed(t.baseSha, head) as never);
+			gateRuns(site);
+			vi.mocked(codeChecksPassed).mockReturnValueOnce(result(head, "fast-forward", 1));
+		};
+
+		it("takes the candidate's site, reports it made as v3 exactly as the kernel takes it, and wakes the upload once", async () => {
+			const t = await checked();
+			const head = await t.f.commit(t.f.tree, "cart.js");
+			lands(t, head, RECIPE);
+			t.runs(passed(MADE));
+			t.f.events.length = 0;
+			expect(await t.land(head)).toEqual({ state: "fast-forward", mainSha: head, filesChanged: 1, change: 7 });
+			// The gate's recipe goes to the run, the switch saying sites are on.
+			expect(t.runChecks.mock.calls.map(([input]) => input)).toEqual([
+				{ commit: head, checks: CHECKS, attempt: 1, site: RECIPE },
+			]);
+			expect(t.reports()).toEqual([
+				{
+					schema: "qorpera.code-change-report/v3",
+					state: "landed",
+					inLine: true,
+					how: "fast-forward",
+					headSha: head,
+					mainBefore: t.baseSha,
+					mainAfter: head,
+					filesChanged: 1,
+					paths: DIFF.paths,
+					pathsMore: 0,
+					picture: null,
+					refusal: null,
+					checks: { state: "passed", result: result(head, "fast-forward", 1) },
+					site: {
+						state: "made",
+						site: {
+							schema: "qorpera.code-site/v1",
+							tree: "a".repeat(40),
+							files: 3,
+							bytes: 4_096,
+							folder: "dist",
+							name: "gift-message",
+							title: "Gift message",
+						},
+					},
+				},
+			]);
+			// Woken once, after the landing's job saved and the record's files were confirmed.
+			expect(t.wake).toHaveBeenCalledTimes(1);
+			expect(t.steps().slice(-3)).toEqual(["publish", "confirm", "wake"]);
+			expect(t.logged.filter((event) => event.event === "code-checks")).toEqual([
+				expect.objectContaining({ step: "landed", checks: "passed", attempt: 1, site: "made" }),
+			]);
+		});
+
+		it("takes no site when the checks file has none, or the switch says sites are off, and reports v3 with none", async () => {
+			for (const [sites, recipe] of [
+				[true, null],
+				[false, RECIPE],
+			] as const) {
+				const t = await checked(true, sites);
+				const head = await t.f.commit(t.f.tree, "cart.js");
+				lands(t, head, recipe);
+				t.runs(passed(null));
+				expect(await t.land(head)).toMatchObject({ state: "fast-forward", mainSha: head, change: 7 });
+				expect(t.runChecks.mock.calls.map(([input]) => input.site)).toEqual([null]);
+				expect(t.reports()).toEqual([
+					expect.objectContaining({ schema: "qorpera.code-change-report/v3", site: null }),
+				]);
+				expect(t.wake).not.toHaveBeenCalled();
+			}
+		});
+
+		it("lands a change whose site Qorpera missed, reports it missed with its code, and wakes nothing", async () => {
+			const t = await checked();
+			const head = await t.f.commit(t.f.tree, "cart.js");
+			lands(t, head, RECIPE);
+			t.runs(passed(MISSED));
+			expect(await t.land(head)).toMatchObject({ state: "fast-forward", mainSha: head, change: 7 });
+			expect(t.reports()).toEqual([
+				expect.objectContaining({
+					schema: "qorpera.code-change-report/v3",
+					checks: { state: "passed", result: result(head, "fast-forward", 1) },
+					site: { state: "missed", code: "CODE_SITE_BOUNDARY_UNCHECKED" },
+				}),
+			]);
+			expect(t.wake).not.toHaveBeenCalled();
+			expect(t.logged).toContainEqual(expect.objectContaining({ step: "landed", site: "missed" }));
+		});
+
+		it.each([
+			{ code: "SITE_FOLDER_MISSING", path: null, variable: null },
+			{ code: "SITE_NO_INDEX", path: null, variable: null },
+			{ code: "SITE_TOO_MANY_FILES", path: null, variable: null },
+			{ code: "SITE_TOO_MANY_FOLDERS", path: null, variable: null },
+			{ code: "SITE_FILE_TOO_LARGE", path: "video/intro.mp4", variable: null },
+			{ code: "SITE_TOO_LARGE", path: null, variable: null },
+			{ code: "SITE_FILE_NAME", path: "img/My Photo.png", variable: null },
+			{ code: "SITE_HOLDS_SECRET", path: "assets/app.js", variable: "STRIPE_KEY" },
+			{ code: "SITE_HOLDS_SECRET", path: null, variable: null },
+		] as const)(
+			"lands nothing and reports no row when the site is refused ($code, $variable), and fails the turn with its words",
+			async (problem) => {
+				const t = await checked();
+				const head = await t.f.commit(t.f.tree, "cart.js");
+				vi.mocked(landCodeBranch).mockResolvedValueOnce(toCheck(t.baseSha, head) as never);
+				gateRuns(RECIPE);
+				t.runs({ state: "site_refused", ms: 99_000, checks: PASSED.checks, problem });
+				const refused = await t.land(head).catch((e) => e);
+				expect(refused).toBeInstanceOf(CodingLandRefused);
+				expect(refused.message).toBe("CODING_CHECKS_SITE_REFUSED");
+				// Part C1's words, of the problem and the recipe's folder.
+				expect(refused.summary).toBe(codeSiteRefusedSummary(problem, "dist"));
+				expect(refused.summary).toMatch(/\[code=CODING_CHECKS_SITE_REFUSED\]$/);
+				// One job, one run, no job B, no row, no record files, nothing woken; main is where it was.
+				expect(t.asked()).toHaveLength(1);
+				expect(t.runChecks).toHaveBeenCalledTimes(1);
+				expect(t.recordChange).not.toHaveBeenCalled();
+				expect(t.inJob).not.toHaveBeenCalled();
+				expect(codeChecksPassed).not.toHaveBeenCalled();
+				expect(t.wake).not.toHaveBeenCalled();
+				expect(await t.f.git(join(t.f.companyRoot, "code/qorpera/example/repo.git"), "rev-parse", "main")).toBe(
+					t.baseSha,
+				);
+				expect(t.logged).toContainEqual(
+					expect.objectContaining({
+						event: "code-checks",
+						step: "site-refused",
+						attempt: 1,
+						problem: problem.code,
+						variable: problem.variable,
+					}),
+				);
+			},
+		);
+
+		it("takes the site again in the run made again when main moved, and reports the second one", async () => {
+			const t = await checked();
+			const head = await t.f.commit(t.f.tree, "cart.js");
+			const other = "c".repeat(40),
+				merge = "d".repeat(40);
+			vi.mocked(landCodeBranch)
+				.mockResolvedValueOnce(toCheck(t.baseSha, head) as never)
+				.mockRejectedValueOnce(new CodeHostJobFailure("CODE_HOST_LAND_STALE", "the default branch moved"))
+				.mockResolvedValueOnce(toCheck(other, merge, "merged") as never)
+				.mockResolvedValueOnce(landed(other, merge, "merged") as never);
+			gateRuns(RECIPE);
+			gateRuns(RECIPE);
+			const again: CodeSiteCollected = { ...MADE, tree: "b".repeat(40), files: 4 };
+			t.runs(passed(MADE), passed(again));
+			vi.mocked(codeChecksPassed)
+				.mockReturnValueOnce(result(head, "fast-forward", 1))
+				.mockReturnValueOnce(result(merge, "merged", 2));
+			expect(await t.land(head)).toMatchObject({ state: "merged", mainSha: merge, change: 7 });
+			// Each run takes the site of its own candidate, as an attempt of its own.
+			expect(t.runChecks.mock.calls.map(([input]) => [input.commit, input.attempt, input.site])).toEqual([
+				[head, 1, RECIPE],
+				[merge, 2, RECIPE],
+			]);
+			expect(t.reports()).toEqual([
+				expect.objectContaining({
+					mainAfter: merge,
+					site: { state: "made", site: expect.objectContaining({ tree: "b".repeat(40), files: 4 }) },
+				}),
+			]);
+			expect(t.wake).toHaveBeenCalledTimes(1);
+		});
+
+		it("takes the site in the run made again when the checks could not run, and wakes once", async () => {
+			const t = await checked();
+			const head = await t.f.commit(t.f.tree, "cart.js");
+			lands(t, head, RECIPE);
+			t.runs(NOT_RUN("CODE_CHECKS_MACHINE_STOPPED"), passed(MADE));
+			expect(await t.land(head)).toMatchObject({ state: "fast-forward", change: 7 });
+			expect(t.runChecks.mock.calls.map(([input]) => [input.attempt, input.site])).toEqual([
+				[1, RECIPE],
+				[2, RECIPE],
+			]);
+			expect(t.wake).toHaveBeenCalledTimes(1);
+		});
+
+		it("reports a candidate main already holds as unchanged, v2 with no checks, and wakes nothing for its site", async () => {
+			const t = await checked();
+			const head = await t.f.commit(t.f.tree, "cart.js");
+			vi.mocked(landCodeBranch)
+				.mockResolvedValueOnce(toCheck(t.baseSha, head) as never)
+				.mockResolvedValueOnce({
+					...landed(head, head),
+					state: "unchanged",
+					containedAt: head,
+					diff: { filesChanged: 0, paths: [], pathsMore: 0 },
+				} as never);
+			gateRuns(RECIPE);
+			t.runs(passed(MADE));
+			vi.mocked(codeChecksPassed).mockReturnValueOnce(result(head, "fast-forward", 1));
+			expect(await t.land(head)).toMatchObject({ state: "unchanged", mainSha: head });
+			expect(t.reports()).toEqual([
+				expect.objectContaining({ schema: "qorpera.code-change-report/v2", state: "unchanged", checks: null }),
+			]);
+			expect(t.reports()[0]).not.toHaveProperty("site");
+			expect(t.wake).not.toHaveBeenCalled();
+			expect(t.logged).toContainEqual(expect.objectContaining({ step: "landed", checks: null, site: null }));
+		});
+
+		it("lets a wake that throws change nothing of the landing", async () => {
+			const t = await checked();
+			const head = await t.f.commit(t.f.tree, "cart.js");
+			lands(t, head, RECIPE);
+			t.runs(passed(MADE));
+			const thrown = new Error("CODE_SITE_PASS_GONE");
+			t.wake.mockImplementationOnce(() => {
+				throw thrown;
+			});
+			expect(await t.land(head)).toEqual({ state: "fast-forward", mainSha: head, filesChanged: 1, change: 7 });
+			expect(t.wake).toHaveBeenCalledTimes(1);
+			expect(t.logged).toContainEqual(
+				expect.objectContaining({ event: "code-change-error", step: "wake", error: thrown }),
+			);
+		});
+
+		it("lets a site the kernel would not take change nothing of the landing: the record says why it has no row", async () => {
+			const t = await checked();
+			const head = await t.f.commit(t.f.tree, "cart.js");
+			lands(t, head, RECIPE);
+			t.runs(passed({ ...MADE, tree: "not a tree" }));
+			expect(await t.land(head)).toEqual({ state: "fast-forward", mainSha: head, filesChanged: 1, change: null });
+			expect(t.recordChange).not.toHaveBeenCalled();
+			expect(t.logged).toContainEqual(
+				expect.objectContaining({
+					event: "code-change-error",
+					step: "report",
+					error: new Error("INVALID_CODE_SITE"),
+				}),
+			);
+		});
+
+		it("gives the run the recipe part C1's real reader and gate read from the candidate's checks file", async () => {
+			const t = await checked();
+			const file = JSON.stringify({
+				checks: CHECKS.map(({ name, run }) => ({ name, run })),
+				site: { folder: "web/dist", title: "The shop" },
+			});
+			await mkdir(join(t.f.tree, ".qorpera"));
+			await writeFile(join(t.f.tree, ".qorpera/checks.json"), file);
+			await t.f.git(t.f.tree, "add", ".qorpera/checks.json");
+			const head = await t.f.commit(t.f.tree, "cart.js");
+			const recipe = { folder: "web/dist", name: null, title: "The shop" };
+			t.runs(passed({ state: "made", tree: "e".repeat(40), files: 1, bytes: 12, ...recipe }));
+			expect(await t.land(head)).toMatchObject({ state: "fast-forward", mainSha: head, change: 7 });
+			expect(t.runChecks.mock.calls[0]?.[0].site).toEqual(recipe);
+			expect(t.reports().at(-1)).toMatchObject({
+				schema: "qorpera.code-change-report/v3",
+				mainAfter: head,
+				site: {
+					state: "made",
+					site: { schema: "qorpera.code-site/v1", tree: "e".repeat(40), files: 1, bytes: 12, ...recipe },
+				},
+			});
+			expect(t.wake).toHaveBeenCalledTimes(1);
+		});
 	});
 });

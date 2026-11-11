@@ -30,6 +30,7 @@ import {
 } from "./code-host-jobs.ts";
 import { attachCodeSession, type CodeAreaBroker } from "./code-host-seed.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
+import { type CodeSiteCollected, codeSiteRefusedSummary, codeSiteReported } from "./code-site.ts";
 import { CodingLandConflict, CodingLandRefused, CodingWorkspaceFailed, landRefusal } from "./coding-executor.ts";
 import {
 	CODING_FOLDER_COMPANY_ROOT,
@@ -71,10 +72,16 @@ export interface CodeHostRepositoriesOptions {
 	report?: (event: Record<string, unknown>) => void;
 	/** `CODE_CHANGE_RECORD_MS`, for tests. */
 	recordMs?: number;
+	/** The pass that uploads a repository's site (`code-site-uploads.ts`, own code storage step 4): woken after a
+	 * landing whose report says its site was made, so the upload starts now. */
+	sites?: { wake(): void };
 }
 
-/** What the repository's checks said of a landing that moved main: its report's `checks` (step 3). */
-type LandingChecks = NonNullable<CodeChangeReportV2["checks"]>;
+/** What the repository's checks said of a landing that moved main: its report's `checks` (step 3), and for a run that
+ * passed, what became of the site it left (step 4; null when there was none to take), which a v3 report carries. */
+type LandingChecks =
+	| Exclude<NonNullable<CodeChangeReportV2["checks"]>, { state: "passed" }>
+	| { state: "passed"; result: Record<string, unknown>; site: CodeSiteCollected | null };
 
 /** What a landing's job left of the change record. */
 interface LandingRecord {
@@ -99,12 +106,14 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 	readonly #records: Pick<CodeChangeRecords, "inJob"> | undefined;
 	readonly #report: (event: Record<string, unknown>) => void;
 	readonly #recordMs: number;
+	readonly #sites: { wake(): void } | undefined;
 
 	constructor(jobs: Pick<CodeHostJobs, "run">, options: CodeHostRepositoriesOptions = {}) {
 		const recordMs = options.recordMs ?? CODE_CHANGE_RECORD_MS;
 		if (!Number.isSafeInteger(recordMs) || recordMs < 1) throw new Error("INVALID_CODE_HOST_REPOSITORIES");
 		this.#jobs = jobs;
 		this.#records = options.records;
+		this.#sites = options.sites;
 		const report = options.report;
 		// The log must never change what happens: a reporter that throws is not heard.
 		this.#report = (event) => {
@@ -202,7 +211,12 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 	 * check, checks that could not run twice and main moving twice each fail the turn with their words
 	 * (CodingLandRefused) and make no row of the change record: the session's commit was not ready, and met no main. A
 	 * repository with no checks file lands in job A as before, its row saying `none`; one whose checks are switched off,
-	 * or a host that runs none, too, saying `off`. */
+	 * or a host that runs none, too, saying `off`.
+	 *
+	 * The candidate's checks file may say where its checks leave the repository's website (step 4): the run then takes it
+	 * once every check passed, unless the switch says sites are off. A site the code made wrong fails the turn as a failed
+	 * check does (`CODING_CHECKS_SITE_REFUSED`, no row). A run that passed is reported as v3, with what became of its
+	 * site; after a landing whose report says the site was made, the upload pass is woken (`sites`). */
 	async land(
 		session: CodingFolderRepositorySession,
 		headSha: string,
@@ -213,7 +227,11 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 		if (repository.host !== "qorpera") throw new Error("CODE_HOST_REPOSITORY_NOT_HERE");
 		const { checksSwitch, runChecks } = session;
 		// The switch's answer lost is read as on: a landing never goes in unchecked for want of an answer.
-		const enabled = checksSwitch !== undefined && runChecks !== undefined && (await checksSwitch(signal));
+		const switched =
+			checksSwitch !== undefined && runChecks !== undefined
+				? await checksSwitch(signal)
+				: { checks: false, site: false };
+		const enabled = switched.checks;
 		const told = (step: string, extra: Record<string, unknown> = {}) =>
 			this.#report({ event: "code-checks", step, ...named(session), ...extra });
 		let runs = 0;
@@ -234,7 +252,9 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 				told("refused", { tries });
 				throw new CodingLandRefused("CODING_CHECKS_REFUSED", gate.summary);
 			}
-			const input = { commit: found.mainAfter, checks: gate.checks };
+			// The candidate's site is taken only while the switch says sites are on.
+			const site = switched.site ? gate.site : null;
+			const input = { commit: found.mainAfter, checks: gate.checks, site };
 			let run = await runChecks({ ...input, attempt: ++runs }, signal);
 			// Checks that could not run are the machine's or Qorpera's fault, never the code's: once more.
 			if (run.state === "not_run") {
@@ -248,6 +268,12 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			if (run.state === "failed") {
 				told("failed", { attempt: runs, exitCode: run.failed.exitCode, atLimit: run.failed.atLimit });
 				throw new CodingLandRefused("CODING_CHECKS_FAILED", codeChecksFailedSummary(run, found.how));
+			}
+			// Every check passed, but the site the code left cannot go: nothing goes in, as for a failed check.
+			if (run.state === "site_refused") {
+				if (site === null) throw new Error("CODE_HOST_LANDING_INVALID");
+				told("site-refused", { attempt: runs, problem: run.problem.code, variable: run.problem.variable });
+				throw new CodingLandRefused("CODING_CHECKS_SITE_REFUSED", codeSiteRefusedSummary(run.problem, site.folder));
 			}
 			const result = codeChecksPassed({
 				commit: found.mainAfter,
@@ -264,10 +290,24 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 					signal,
 					options,
 					{ expect: { how: found.how, mainBefore: found.mainBefore, mainAfter: found.mainAfter } },
-					{ state: "passed", result },
+					{ state: "passed", result, site: run.site },
 				);
 				if (landed.state === "to-check") throw new Error("CODE_HOST_LANDING_INVALID");
-				told("landed", { checks: landed.state === "unchanged" ? null : "passed", attempt: runs, tries });
+				const made = landed.state !== "unchanged" && run.site?.state === "made";
+				told("landed", {
+					checks: landed.state === "unchanged" ? null : "passed",
+					attempt: runs,
+					tries,
+					site: landed.state === "unchanged" ? null : (run.site?.state ?? null),
+				});
+				// Its report says the site was made: the upload need not wait for its pass's next turn. A wake that throws
+				// is the pass's own, and changes nothing of the landing.
+				if (made)
+					try {
+						this.#sites?.wake();
+					} catch (error) {
+						this.#failed(session, "wake", error);
+					}
 				return landed;
 			} catch (error) {
 				if (signal.aborted || !(error instanceof CodeHostJobFailure && error.code === "CODE_HOST_LAND_STALE"))
@@ -520,9 +560,10 @@ function named(session: CodingFolderRepositorySession): Record<string, unknown> 
 }
 
 /** What the kernel is told of a landing, from what the job answered, with what the repository's checks said of a
- * landing that moved main (`checks`; an unchanged main says nothing of them). It throws when the answer is not a
- * landing's, or a passed run's result is not of the commit that went in: its caller reports that, and the landing
- * stands. */
+ * landing that moved main (`checks`; an unchanged main says nothing of them). A landing whose checks passed is v3, with
+ * what became of its site (`codeSiteReported`); every other report is v2 as before. It throws when the answer is not a
+ * landing's, a passed run's result is not of the commit that went in, or its site is not one the kernel takes: its
+ * caller reports that, and the landing stands. */
 function landingReport(
 	landed: CodeBranchLanded,
 	headSha: string,
@@ -570,9 +611,9 @@ function landingReport(
 		(checks.state === "passed" && (checks.result.commit !== landed.mainSha || checks.result.how !== landed.state))
 	)
 		throw new Error("CODE_CHANGE_LANDING_INVALID");
-	return {
+	const moved = {
 		...report,
-		state: "landed",
+		state: "landed" as const,
 		how: landed.state,
 		mainBefore: landed.mainBefore,
 		mainAfter: landed.mainSha,
@@ -581,9 +622,15 @@ function landingReport(
 			picture === null
 				? null
 				: picture.state === "ok"
-					? { state: "ok", blob: picture.blob, bytes: picture.bytes, type: picture.type }
+					? { state: "ok" as const, blob: picture.blob, bytes: picture.bytes, type: picture.type }
 					: { state: picture.state },
-		checks,
+	};
+	if (checks.state !== "passed") return { ...moved, checks };
+	return {
+		...moved,
+		schema: "qorpera.code-change-report/v3",
+		checks: { state: "passed", result: checks.result },
+		site: codeSiteReported(checks.site),
 	};
 }
 
