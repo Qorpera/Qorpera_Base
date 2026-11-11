@@ -3222,6 +3222,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// to make one on the schema field (RUNTIME-INTERFACE-APPS.md §3a), so they moved again.
 	// Also on 10 November 2026 manage_code came after manage_worker (the change record of the company's code,
 	// 20260930720000), so they moved again.
+	// On 11 November 2026 ask_member's description says how a takeover holds the agent's desktop computer
+	// (20260930713000, release v233), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3267,9 +3269,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"63728d56fe28c16f62d97ef4555309096824f68a61fc2f05b2a8d4320473419b",
+		"93b56bf36e68b4b1f156a9c514f45a4242b7a87d72b64e0a9a4eac5e97ca9032",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"58bc3382f1ce1ea785e400096c05064029056edd95d80b1707447687a81bbe91",
+		"95dbf0812591eff53354754de0923c8bd8b2dbfcadb0135ed70b26e261e88256",
 	);
 });
