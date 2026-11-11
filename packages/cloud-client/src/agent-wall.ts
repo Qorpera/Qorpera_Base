@@ -253,18 +253,22 @@ export function parseWall(text: string): WallParse {
 			problems.push({ code: "line", line: at, message: problem });
 			return;
 		}
+		// A second Now line is never kept: a writer would drop it, so it reads as a line out of shape, not a full part.
+		if (part === "now" && parts.now.length) {
+			problems.push({
+				code: "line",
+				line: at,
+				message: "the Now part holds one line: put the rest on the wall's items",
+			});
+			return;
+		}
 		if (part === "done") parts.done.push({ day: day as string, text: wallItemText(words) });
 		else parts[part].push({ text: wallItemText(words) });
 		lastLine = at;
 	});
 	for (const [name, words] of headings)
 		if (parts[name].length > LIMITS[name])
-			problems.push({
-				code: "limit",
-				line: 1,
-				message:
-					LIMITS[name] === 1 ? `"${words}" holds one line` : `"${words}" holds at most ${LIMITS[name]} items`,
-			});
+			problems.push({ code: "limit", line: 1, message: `"${words}" holds at most ${LIMITS[name]} items` });
 	for (let index = 1; index < parts.done.length; index++)
 		if ((parts.done[index]?.day ?? "") > (parts.done[index - 1]?.day ?? "")) {
 			problems.push({ code: "shape", line: 1, message: "done items go newest first" });

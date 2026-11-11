@@ -204,7 +204,9 @@ it("keeps a Now line on top: one line, no detail, absent from a wall written bef
 	expect(parseWall(renderWall(WALL)).wall).not.toHaveProperty("now");
 	const twice = parseWall("## Now\n- One\n- Two\n");
 	expect(twice.wall.now).toBe("One");
-	expect(twice.problems).toEqual([{ code: "limit", line: 1, message: '"Now" holds one line' }]);
+	expect(twice.problems).toEqual([
+		{ code: "line", line: 3, message: "the Now part holds one line: put the rest on the wall's items" },
+	]);
 	const detailed = parseWall("## Now\n- One\n  More words\n");
 	expect(detailed.wall.now).toBe("One");
 	expect(detailed.problems).toEqual([

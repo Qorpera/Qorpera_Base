@@ -367,6 +367,18 @@ it("keeps the line under the agent's name: needed once, kept by null, short when
 	expect(parseWall(f.text(WALL) ?? "").wall.now).toBe("Prices next");
 	await f.call("update_wall", wall(null, null, [], "Prices set, now choosing suppliers"));
 	expect(parseWall(f.text(WALL) ?? "").wall.now).toBe("Prices set, now choosing suppliers");
+	// A member who wrote two Now lines keeps both: the wall is not rewritten until it is put in shape.
+	const twice = "# Wall\n\n## Now\n- One\n- Two\n";
+	const h = await fixture({ files: { [WALL]: twice } });
+	const refused = await h.call("update_wall", wall(null, ["Pricing"], [], null)).then(
+		() => null,
+		(error: unknown) => error,
+	);
+	expect(refused).toBeInstanceOf(CloudToolRefusal);
+	expect(String((refused as Error).message)).toContain("WALL_OUT_OF_SHAPE: nothing was written");
+	expect(String((refused as Error).message)).toContain("line 5: the Now part holds one line");
+	expect(h.text(WALL)).toBe(twice);
+	expect(h.commits).toEqual([]);
 	// One already on the wall that is longer than a new one may be is kept as it stands.
 	const g = await fixture({ files: { [WALL]: `# Wall\n\n## Now\n- ${"y".repeat(70)}\n` } });
 	expect(read(await g.call("update_wall", wall([], ["Pricing"], [], "y".repeat(70)))).saved).toBe(true);
