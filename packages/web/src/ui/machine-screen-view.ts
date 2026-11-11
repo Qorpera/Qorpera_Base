@@ -87,8 +87,10 @@ export interface MachineScreenViewOptions {
  *
  * While the member holds the desktop (20260930713000, `capture`), the picture takes their input: clicks, double and
  * right clicks, drags and the wheel at the screen's own pixels (the picture's natural size, wherever it is drawn), keys
- * that are not text by their X names, typed text gathered into one action (TYPE_BATCH_MS), and what they paste. A slot
- * under the picture holds the take-over controls the panel gives it.
+ * that are not text by their X names, typed text gathered into one action (TYPE_BATCH_MS), and what they paste. The
+ * panel captures only while the view is entered (the frame in the thread, or full screen): in the preview a press drags
+ * the window (computer-drag.ts), and a desktop cannot be driven at that size anyway. A slot under the picture holds the
+ * take-over controls the panel gives it.
  */
 export class MachineScreenView {
 	readonly el: HTMLElement;
@@ -517,6 +519,14 @@ export class MachineScreenView {
 		this.#mark.hidden = true;
 		this.#hint.textContent = "";
 		this.#canvas.getContext("2d")?.clearRect(0, 0, this.#canvas.width, this.#canvas.height);
+	}
+
+	/** Enters the frame in the thread, as Enter does but without asking for full screen: only the member's own press on
+	 * Enter asks for that. The panel's take-over pressed in the preview comes here, so the picture can take their input.
+	 * Nothing while no picture shows. */
+	enterFrame(): void {
+		if (this.#entered || this.#enter.disabled) return;
+		this.#setEntered(true);
 	}
 
 	/** Back to the preview, from the entered frame or full screen. */
