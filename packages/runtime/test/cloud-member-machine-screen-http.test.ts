@@ -139,7 +139,7 @@ describe("a member's action through the executor's member listener (202609307130
 			async () => ({ etag, png: picture }),
 			async () => ({ exitCode: 0 }),
 		);
-		const done = await post(s.url("/act"), { action: { type: "type", text: "hunter2 Åse" }, epoch: 3 });
+		const done = await post(s.url("/act"), { action: { type: "type", text: "hunter2 Åse" }, epoch: 3, seat: 11 });
 		expect(done.status).toBe(200);
 		expect(done.headers.get("cache-control")).toBe("no-store");
 		expect(await done.json()).toEqual({ schema: "qorpera.member-machine-act/v1", exitCode: 0 });
@@ -150,13 +150,14 @@ describe("a member's action through the executor's member listener (202609307130
 				token,
 				action: { type: "type", text: "hunter2 Åse" },
 				epoch: 3,
+				seat: 11,
 			},
 			expect.any(AbortSignal),
 		);
-		// The epoch of the hold the input was captured under goes on as it came (F24), 0 too.
-		await post(s.url("/act"), { epoch: 0, action: { type: "click", x: 812, y: 443, button: "right" } });
+		// The epoch and the seat of the hold the input was captured under go on as they came (F24, F26), 0 too.
+		await post(s.url("/act"), { seat: 0, epoch: 0, action: { type: "click", x: 812, y: 443, button: "right" } });
 		expect(s.acted).toHaveBeenLastCalledWith(
-			expect.objectContaining({ action: { type: "click", x: 812, y: 443, button: "right" }, epoch: 0 }),
+			expect.objectContaining({ action: { type: "click", x: 812, y: 443, button: "right" }, epoch: 0, seat: 0 }),
 			expect.any(AbortSignal),
 		);
 		expect(s.looked).not.toHaveBeenCalled();
@@ -174,46 +175,61 @@ describe("a member's action through the executor's member listener (202609307130
 			return answered.status;
 		};
 		for (const body of [
-			{ action: { type: "open", target: "https://bank.example.test" }, epoch: 1 },
-			{ action: { type: "type", text: "hunter2" }, epoch: 1 },
-			{ action: { type: "type", text: "x".repeat(501) }, epoch: 1 },
-			{ action: { type: "key", keys: ["exec", "id"] }, epoch: 1 },
-			{ action: { type: "click", x: 1, y: 2 }, epoch: 1, intent: "x" },
-			{ act: { type: "click", x: 1, y: 2 }, epoch: 1 },
+			{ action: { type: "open", target: "https://bank.example.test" }, epoch: 1, seat: 1 },
+			{ action: { type: "type", text: "hunter2" }, epoch: 1, seat: 1 },
+			{ action: { type: "type", text: "x".repeat(501) }, epoch: 1, seat: 1 },
+			{ action: { type: "key", keys: ["exec", "id"] }, epoch: 1, seat: 1 },
+			{ action: { type: "click", x: 1, y: 2 }, epoch: 1, seat: 1, intent: "x" },
+			{ act: { type: "click", x: 1, y: 2 }, epoch: 1, seat: 1 },
 			// The epoch is never guessed (F24): missing, below 0, not whole, too large, or not a number.
-			{ action: { type: "click", x: 1, y: 2 } },
-			{ action: { type: "click", x: 1, y: 2 }, epoch: -1 },
-			{ action: { type: "click", x: 1, y: 2 }, epoch: 1.5 },
-			{ action: { type: "click", x: 1, y: 2 }, epoch: 2 ** 53 },
-			{ action: { type: "click", x: 1, y: 2 }, epoch: "1" },
-			{ action: { type: "click", x: 1, y: 2 }, epoch: null },
+			{ action: { type: "click", x: 1, y: 2 }, seat: 1 },
+			{ action: { type: "click", x: 1, y: 2 }, epoch: -1, seat: 1 },
+			{ action: { type: "click", x: 1, y: 2 }, epoch: 1.5, seat: 1 },
+			{ action: { type: "click", x: 1, y: 2 }, epoch: 2 ** 53, seat: 1 },
+			{ action: { type: "click", x: 1, y: 2 }, epoch: "1", seat: 1 },
+			{ action: { type: "click", x: 1, y: 2 }, epoch: null, seat: 1 },
+			// Nor is the seat (F26).
+			{ action: { type: "click", x: 1, y: 2 }, epoch: 1 },
+			{ action: { type: "click", x: 1, y: 2 }, epoch: 1, seat: -1 },
+			{ action: { type: "click", x: 1, y: 2 }, epoch: 1, seat: 2.5 },
+			{ action: { type: "click", x: 1, y: 2 }, epoch: 1, seat: 2 ** 53 },
+			{ action: { type: "click", x: 1, y: 2 }, epoch: 1, seat: "2" },
+			{ action: { type: "click", x: 1, y: 2 }, epoch: 1, seat: null },
 			[{ type: "click", x: 1, y: 2 }],
 			"not json hunter2",
-			JSON.stringify({ action: { type: "type", text: "y".repeat(400) }, epoch: 1, pad: "z".repeat(17000) }),
+			JSON.stringify({ action: { type: "type", text: "y".repeat(400) }, epoch: 1, seat: 1, pad: "z".repeat(17000) }),
 		])
 			expect(await status(post(s.url("/act"), body)), JSON.stringify(body).slice(0, 80)).toBe(400);
 		expect(
 			await status(
-				post(s.url("/act"), { action: { type: "click", x: 1, y: 2 }, epoch: 1 }, { "content-type": "text/plain" }),
+				post(
+					s.url("/act"),
+					{ action: { type: "click", x: 1, y: 2 }, epoch: 1, seat: 1 },
+					{ "content-type": "text/plain" },
+				),
 			),
 		).toBe(400);
 		expect(s.acted).not.toHaveBeenCalled();
 		// The look's routes take no POST; the action's takes no GET; and no token, no action.
 		expect(await status(fetch(s.url("/act"), { headers: { authorization: `Bearer ${token}` } }))).toBe(405);
-		expect(await status(post(s.url("/watching"), { action: { type: "click", x: 1, y: 2 }, epoch: 1 }))).toBe(405);
+		expect(await status(post(s.url("/watching"), { action: { type: "click", x: 1, y: 2 }, epoch: 1, seat: 1 }))).toBe(
+			405,
+		);
 		expect(
 			await status(
 				fetch(s.url("/act"), {
 					method: "POST",
 					headers: { "content-type": "application/json" },
-					body: JSON.stringify({ action: { type: "type", text: "hunter2" }, epoch: 1 }),
+					body: JSON.stringify({ action: { type: "type", text: "hunter2" }, epoch: 1, seat: 1 }),
 				}),
 			),
 		).toBe(401);
 		expect(s.acted).not.toHaveBeenCalled();
 		// A listener without actions has no such route.
 		const looksOnly = await service(async () => ({ etag, png: picture }));
-		expect(await status(post(looksOnly.url("/act"), { action: { type: "click", x: 1, y: 2 }, epoch: 1 }))).toBe(404);
+		expect(
+			await status(post(looksOnly.url("/act"), { action: { type: "click", x: 1, y: 2 }, epoch: 1, seat: 1 })),
+		).toBe(404);
 	});
 
 	it("tells refusals by code, a token the database refused as 401, and logs only a fixed code, never the text", async () => {
@@ -225,7 +241,7 @@ describe("a member's action through the executor's member listener (202609307130
 			},
 		);
 		const ask = async () => {
-			const response = await post(s.url("/act"), { action: { type: "type", text: "hunter2" }, epoch: 1 });
+			const response = await post(s.url("/act"), { action: { type: "type", text: "hunter2" }, epoch: 1, seat: 1 });
 			return { status: response.status, body: await response.text() };
 		};
 		next = new CloudMemberMachineActRefusal("DESKTOP_CONTROL_ENDED");
@@ -356,6 +372,7 @@ describe("a member's action begun as the member (deploy/coding-worker/member-con
 		machineId: randomUUID(),
 		action: { type: "type", text: "hunter2 Åse" } as const,
 		epoch: 3,
+		seat: 11,
 	};
 	const signal = new AbortController().signal;
 
@@ -371,6 +388,7 @@ describe("a member's action begun as the member (deploy/coding-worker/member-con
 			p_machine_id: act.machineId,
 			p_action: { type: "type", length: 11 },
 			p_epoch: 3,
+			p_seat: 11,
 		});
 		expect(String(init?.body)).not.toContain("hunter2");
 	});
@@ -408,6 +426,9 @@ describe("a member's action begun as the member (deploy/coding-worker/member-con
 		// An epoch that is not a safe whole number, 0 or more, is never sent (F24).
 		for (const epoch of [-1, 1.5, Number.NaN, 2 ** 53])
 			await expect(opened.control.act(token, { ...act, epoch }, signal)).rejects.toThrow("MEMBER_ACT_BEGIN_INVALID");
+		// Nor is such a seat (F26).
+		for (const seat of [-1, 1.5, Number.NaN, 2 ** 53])
+			await expect(opened.control.act(token, { ...act, seat }, signal)).rejects.toThrow("MEMBER_ACT_BEGIN_INVALID");
 		expect(opened.fetcher).not.toHaveBeenCalled();
 		// The begin of a look now hears another member's hold too.
 		const look = control(200, {

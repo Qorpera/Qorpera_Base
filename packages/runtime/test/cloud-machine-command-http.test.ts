@@ -1607,6 +1607,7 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 			token: "eyJh.eyJz.c2ln",
 			action: typed,
 			epoch: 4,
+			seat: 9,
 		};
 		return { ...ids, answer, call, host, memberActBegin, router, act, sent, signal: new AbortController().signal };
 	}
@@ -1616,8 +1617,8 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 		expect(await f.router.memberAct(f.act, f.signal)).toEqual({ exitCode: 0 });
 		expect(f.memberActBegin).toHaveBeenCalledWith(
 			"eyJh.eyJz.c2ln",
-			// With the epoch of the hold its input was captured under (F24).
-			{ companyId: f.companyId, machineId: f.machineId, action: typed, epoch: 4 },
+			// With the epoch and the seat of the hold its input was captured under (F24, F26).
+			{ companyId: f.companyId, machineId: f.machineId, action: typed, epoch: 4, seat: 9 },
 			f.signal,
 		);
 		expect(f.call).toHaveBeenCalledWith(

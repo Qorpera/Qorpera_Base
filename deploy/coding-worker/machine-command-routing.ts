@@ -63,7 +63,8 @@ interface MachineCommandRouterOptions {
 	memberScreenLocal?(authority: MemberMachineScreenAuthority, etag: string | null, signal: AbortSignal): Promise<CloudMemberMachineScreen>;
 	/** A member's action (20260930713000): begins it as the member, recorded without its text (member-control.ts); absent
 	 * when this executor takes no member's requests. */
-	memberActBegin?(token: string, act: { companyId: string; machineId: string; action: MachineScreenAction; epoch: number }, signal: AbortSignal): Promise<string>;
+	memberActBegin?(token: string, act: { companyId: string; machineId: string; action: MachineScreenAction; epoch: number;
+		seat: number }, signal: AbortSignal): Promise<string>;
 	/** A member's action on this node's machine; absent when the executor carries no machines. */
 	memberActLocal?(authority: MemberMachineActAuthority, action: MachineScreenAction, signal: AbortSignal): Promise<CloudMemberMachineAct>;
 	fetch?: typeof fetch;
@@ -199,9 +200,10 @@ export class MachineCommandRouter {
 	 * member typed goes only to the machine. */
 	async memberAct(request: CloudMemberMachineActRequest, signal: AbortSignal): Promise<CloudMemberMachineAct> {
 		if (!this.#options.memberActBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
-		// The epoch of the hold the page captured it under goes to SQL, which runs it only under that hold (F24).
+		// The epoch and the seat of the hold the page captured it under go to SQL, which runs it only under that hold (F24,
+		// F26).
 		const actionId = await this.#options.memberActBegin(request.token, { companyId: request.companyId,
-			machineId: request.machineId, action: request.action, epoch: request.epoch }, signal);
+			machineId: request.machineId, action: request.action, epoch: request.epoch, seat: request.seat }, signal);
 		return this.#memberActServe(actionId, request.action, signal, false);
 	}
 	/** A member's action another executor sent here (the peer listener): read again, and run on this node only. */

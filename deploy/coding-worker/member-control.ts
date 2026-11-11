@@ -79,12 +79,13 @@ export class MemberMachineScreenControl {
 		throw new Error("MEMBER_SCREEN_BEGIN_INVALID");
 	}
 	/** Begins one action as the member, recorded without any text (cloudMemberMachineActRecord), under the hold its input
-	 * was captured in (`epoch`, F24): its single-use id, or the refusal the window acts on (a machine that is not running,
-	 * a disk the member may not see, another member's hold of the desktop, the member's own hold ended, or a newer hold of
-	 * theirs). Sign-in and forbidden as for a look. */
+	 * was captured in (`epoch` and `seat`, F24 and F26): its single-use id, or the refusal the window acts on (a machine
+	 * that is not running, a disk the member may not see, another member's hold of the desktop, the member's own hold
+	 * ended, or a newer hold of theirs: after a hand-back, after a lease ran out and was taken again, or another tab's).
+	 * Sign-in and forbidden as for a look. */
 	async act(
 		token: string,
-		act: { companyId: string; machineId: string; action: MachineScreenAction; epoch: number },
+		act: { companyId: string; machineId: string; action: MachineScreenAction; epoch: number; seat: number },
 		signal: AbortSignal,
 	): Promise<string> {
 		if (!TOKEN.test(token)) throw new CloudMemberMachineScreenSignIn();
@@ -93,7 +94,9 @@ export class MemberMachineScreenControl {
 			!UUID.test(act.machineId) ||
 			act.action.type === "open" ||
 			!Number.isSafeInteger(act.epoch) ||
-			act.epoch < 0
+			act.epoch < 0 ||
+			!Number.isSafeInteger(act.seat) ||
+			act.seat < 0
 		)
 			throw new Error("MEMBER_ACT_BEGIN_INVALID");
 		const answer = await this.#call(
@@ -104,6 +107,7 @@ export class MemberMachineScreenControl {
 				p_machine_id: act.machineId,
 				p_action: cloudMemberMachineActRecord(act.action),
 				p_epoch: act.epoch,
+				p_seat: act.seat,
 			},
 			"MEMBER_ACT_BEGIN",
 			signal,
