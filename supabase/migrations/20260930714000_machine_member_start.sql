@@ -133,7 +133,7 @@ begin
 	end if;
 	update public.qorpera_company_machines set last_used_at = v_now
 	where id = v_machine.id and last_used_at < v_now - interval '30 seconds';
-	-- A screen no agent drove yet is stamped as the agent's the machine was started by; one an agent drove keeps that
+	-- A screen no agent drove yet is stamped as the agent the machine was started by; one an agent drove keeps that
 	-- agent's stamp (review r1 F2 of #1681: the machine stays in the window of the agent that drove it).
 	update public.qorpera_company_machines set screen_staff_agent_id = v_machine.started_by_staff_agent_id,
 		screen_used_at = v_now

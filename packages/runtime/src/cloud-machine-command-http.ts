@@ -380,7 +380,7 @@ export interface CloudMemberMachineStartPeerRequest {
 	readonly schema: typeof CLOUD_MEMBER_MACHINE_START_HTTP_SCHEMA;
 	readonly startId: string;
 }
-/** The desktop runs now: started by this start, or running already (a member holds it, or it ran). */
+/** The desktop runs now: started by this start, or running already (the image's `desktop start` found it running). */
 export interface CloudMemberMachineStart {
 	readonly outcome: "started" | "running";
 }

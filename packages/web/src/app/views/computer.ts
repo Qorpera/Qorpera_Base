@@ -195,8 +195,9 @@ export class ComputerPanel {
 	/** A start of the desktop on its way, and when this page last asked for one. */
 	#turningOn = false;
 	#startedAt = Number.NEGATIVE_INFINITY;
-	/** The last start that answered the desktop runs, and when: a look begun after it that finds the screen off means the
-	 * start failed (no second start for it). */
+	/** The last start that answered the desktop runs, and when: while it stands for the machine, no second start goes
+	 * (review r1 F3 of #1681); a look begun after it that finds the screen off means the start failed, one begun before it
+	 * tells nothing yet. */
 	#startAnswered: { readonly machineId: string; readonly at: number } | undefined;
 	/** A start that ended the wish (too small, or failed): what the window says of that machine's screen that is off
 	 * until it shows a picture, sleeps, or the member presses again or chooses another machine. */
@@ -669,7 +670,6 @@ export class ComputerPanel {
 					// The member wants it on (Turn it on, or Wake it a moment ago): it is turned on, without a second press;
 					// a start on its way, or one a moment ago, is waited for.
 					if (this.#wishFor(machine.machineId)) {
-						// A start answered that the desktop runs, and a look begun after it finds it off: it failed.
 						// A start answered that the desktop runs: a look begun after it that finds the screen off means it
 						// failed; one begun before it tells nothing yet, and no second start goes (review r1 F3 of #1681).
 						if (this.#startAnswered?.machineId === machine.machineId) {
