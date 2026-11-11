@@ -787,6 +787,211 @@ begin
 	return jsonb_build_object('schema', c_schema, 'state', 'recorded');
 end $$;
 
+-- 4. The member's calls ------------------------------------------------------------------------------------------------
+
+-- Puts version p_version_id of a code site live, under the site's lock: the version live until now is kept for Go
+-- back, the new one is live, and the site serves it from the visitor's next request (its sessions stay).
+create function public.qorpera_code_release_switch(p_site_id uuid, p_version_id uuid)
+returns void language plpgsql volatile set search_path = '' as $$
+declare v_now timestamptz := clock_timestamp();
+begin
+	update public.qorpera_company_site_versions set state = 'kept'
+	where site_id = p_site_id and state = 'live' and id <> p_version_id;
+	update public.qorpera_company_site_versions set state = 'live', published_at = v_now where id = p_version_id;
+	update public.qorpera_company_sites set current_version_id = p_version_id,
+		title = (select version.title from public.qorpera_company_site_versions version where version.id = p_version_id),
+		published_at = v_now, published_by_user_id = auth.uid(), published_by_staff_agent_id = null, updated_at = v_now
+	where id = p_site_id;
+end $$;
+
+-- The company's repositories with a site, for any member (viewers too): each with what is live, what Go back would put
+-- live, what is ready to go live (the ready point, 6.1: its token, and its changes as the page shows them), how many
+-- changes are not ready yet, and the problem of the last upload that failed. canRelease says whether the caller (an
+-- owner or admin) may put a version live or go back. Read-only.
+-- {"schema":"qorpera.code-releases/v1","canRelease":<bool>,"sites":[{"owner","name",
+--  "site":{"slug","url","title"}|null,
+--  "live":{"version","kind":"release"|"back","since","by":"<userId>","from":<the version a back took off>|null}|null,
+--  "back":{"version"}|null,
+--  "ready":{"change","token","agent":"<staff agent id>"|null,"changes":[{"key":<n>,"notice","picture":"<path>"|null,
+--   "at","wasLive":<bool>}],"quiet":<held changes not listed>}|null,
+--  "waiting":<n>,"problem":"<CODE>"|null}]}
+-- A repository is listed when it has a site or made one (at most 10, by owner and name). A listed change has a notice
+-- (newest first, at most 20); picture is the copy of a commit's picture under changes/, or the folder file an agent
+-- gave; wasLive says it was in a release a Go back took off. waiting counts the landed changes above the ready point
+-- (above the live one when nothing is ready).
+create function public.qorpera_list_code_releases(p_profile_id uuid)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare v_role public.qorpera_profile_role := public.qorpera_member_role(p_profile_id);
+	v_repository public.qorpera_code_repositories%rowtype; v_site public.qorpera_company_sites%rowtype;
+	v_live public.qorpera_code_releases%rowtype; v_prior public.qorpera_code_releases%rowtype; v_point jsonb;
+	v_sites jsonb := '[]'::jsonb;
+begin
+	if auth.role() is distinct from 'authenticated' or auth.uid() is null or v_role is null then
+		raise exception 'Releases unavailable' using errcode = '42501'; end if;
+	for v_repository in select repository.* from public.qorpera_code_repositories repository
+		join public.qorpera_company_files file on file.environment_id = repository.environment_id
+			and file.profile_id = p_profile_id and file.core = 'folder-v2'
+		where repository.profile_id = p_profile_id and (repository.site_id is not null
+			or exists (select 1 from public.qorpera_code_changes made
+				where made.environment_id = repository.environment_id and made.owner = repository.owner
+					and made.name = repository.name and made.site_state = 'made'))
+		order by repository.owner collate "C", repository.name collate "C" limit 10
+	loop
+		v_site := null; v_prior := null;
+		select * into v_site from public.qorpera_company_sites where id = v_repository.site_id;
+		v_live := public.qorpera_code_release_live(v_repository);
+		if v_live.prior is not null then
+			select * into v_prior from public.qorpera_code_releases release
+			where release.environment_id = v_repository.environment_id and release.owner = v_repository.owner
+				and release.name = v_repository.name and release.n = v_live.prior and release.version_id is not null;
+		end if;
+		v_point := public.qorpera_code_release_point(v_repository);
+		v_sites := v_sites || jsonb_build_object('owner', v_repository.owner, 'name', v_repository.name,
+			'site', case when v_site.id is not null then jsonb_build_object('slug', v_site.slug,
+				'url', public.qorpera_site_url(v_site.slug), 'title', v_site.title) end,
+			'live', case when v_live.n is not null then jsonb_build_object('version', v_live.version, 'kind', v_live.kind,
+				'since', v_live.created_at, 'by', v_live.by_user_id,
+				'from', case when v_live.kind = 'back' then (select replaced.version from public.qorpera_code_releases replaced
+					where replaced.environment_id = v_repository.environment_id and replaced.owner = v_repository.owner
+						and replaced.name = v_repository.name and replaced.n = v_live.replaces) end) end,
+			'back', case when v_prior.n is not null then jsonb_build_object('version', v_prior.version) end,
+			'ready', case when v_point is not null then jsonb_build_object('change', v_point -> 'change',
+				'token', v_point -> 'token', 'agent', v_point -> 'agent',
+				'changes', (select coalesce(jsonb_agg(jsonb_build_object('key', listed.n, 'notice', listed.notice,
+						'picture', case listed.picture ->> 'source' when 'commit' then listed.picture ->> 'at'
+							when 'folder' then listed.picture ->> 'path' end,
+						'at', listed.created_at,
+						'wasLive', exists (select 1 from public.qorpera_code_releases release
+							where release.environment_id = v_repository.environment_id and release.owner = v_repository.owner
+								and release.name = v_repository.name and listed.n = any(release.changes)))
+						order by listed.n desc), '[]'::jsonb)
+					from public.qorpera_code_changes listed
+					where listed.environment_id = v_repository.environment_id and listed.owner = v_repository.owner
+						and listed.name = v_repository.name
+						and listed.n in (select item::integer from jsonb_array_elements_text(v_point -> 'listed') item)),
+				'quiet', (v_point ->> 'count')::integer - jsonb_array_length(v_point -> 'listed')) end,
+			'waiting', (select count(*) from public.qorpera_code_changes waiting
+				where waiting.environment_id = v_repository.environment_id and waiting.owner = v_repository.owner
+					and waiting.name = v_repository.name and waiting.state = 'landed'
+					and waiting.kind in ('landing','undo','restore')
+					and waiting.n > coalesce((v_point ->> 'change')::integer, v_live.change, 0)),
+			'problem', v_repository.site_problem);
+	end loop;
+	return jsonb_build_object('schema', 'qorpera.code-releases/v1', 'canRelease', v_role in ('owner','admin'),
+		'sites', v_sites);
+end $$;
+
+-- An owner or admin puts live what the page showed (6.2): p_shown exactly {"live":<the live version's number, null
+-- when nothing is live>,"change":<the ready point>,"token":"<its token>"}. Under the registry row's lock: the live
+-- version is still that one, and the change is still a ready point with that token (a newer one is no reason to
+-- refuse: what was shown goes live, and the newer changes wait); else nothing is written and the answer is moved. A
+-- release row takes the next number and the next version number founders see; the version goes live in place of the
+-- one before, which is kept for Go back; the list file is written again. Answers
+-- {"schema":"qorpera.code-release/v1","state":"live","version":<n>,"url":"<the site's link>"}, or {…,"state":"moved"}.
+-- 42501 for anyone but an owner or admin, P0002 for a repository the company does not keep, 55P03 after 3 s of
+-- waiting for the lock (an upload's finish holds it).
+create function public.qorpera_put_code_release_live(p_profile_id uuid, p_owner text, p_name text, p_shown jsonb)
+returns jsonb language plpgsql volatile security definer set search_path = '' set lock_timeout = '3s' as $$
+declare v_role public.qorpera_profile_role := public.qorpera_member_role(p_profile_id);
+	v_repository public.qorpera_code_repositories%rowtype; v_live public.qorpera_code_releases%rowtype; v_point jsonb;
+	v_site public.qorpera_company_sites%rowtype; v_version public.qorpera_company_site_versions%rowtype; v_n integer;
+	c_moved constant jsonb := '{"schema":"qorpera.code-release/v1","state":"moved"}';
+begin
+	if auth.role() is distinct from 'authenticated' or auth.uid() is null or v_role is null
+		or v_role not in ('owner','admin') then
+		raise exception 'Releases unavailable' using errcode = '42501'; end if;
+	if p_owner is null or p_name is null or jsonb_typeof(p_shown) is distinct from 'object'
+		or not p_shown ?& array['live','change','token'] or p_shown - array['live','change','token'] <> '{}'::jsonb
+		or not (p_shown -> 'live' = 'null'::jsonb or (public.qorpera_code_json_count(p_shown -> 'live')
+			and p_shown ->> 'live' ~ '^[1-9][0-9]{0,8}$'))
+		or not (public.qorpera_code_json_count(p_shown -> 'change') and p_shown ->> 'change' ~ '^[1-9][0-9]{0,8}$')
+		or not public.qorpera_code_json_text(p_shown -> 'token', '^[0-9a-f]{64}$') then
+		raise exception 'Release request is invalid' using errcode = '22023'; end if;
+	-- The company's profile row first: the release row checks its key.
+	perform 1 from public.qorpera_profiles profile where profile.id = p_profile_id for key share;
+	select repository.* into v_repository from public.qorpera_code_repositories repository
+	join public.qorpera_company_files file on file.environment_id = repository.environment_id
+		and file.profile_id = p_profile_id and file.core = 'folder-v2'
+	where repository.profile_id = p_profile_id and repository.owner = p_owner and repository.name = p_name
+	for update of repository;
+	if not found then raise exception 'No such repository' using errcode = 'P0002'; end if;
+	v_live := public.qorpera_code_release_live(v_repository);
+	if v_live.version is distinct from (p_shown ->> 'live')::integer then return c_moved; end if;
+	v_point := public.qorpera_code_release_point(v_repository, (p_shown ->> 'change')::integer);
+	if v_point is null or v_point ->> 'token' is distinct from p_shown ->> 'token' then return c_moved; end if;
+	select * into v_site from public.qorpera_company_sites where id = v_repository.site_id for update;
+	select * into v_version from public.qorpera_company_site_versions
+	where id = (v_point ->> 'versionId')::uuid and site_id = v_site.id for update;
+	if v_version.id is null then return c_moved; end if;
+	v_n := v_repository.last_release + 1;
+	insert into public.qorpera_code_releases (environment_id, owner, name, n, profile_id, kind, version, change, main_sha,
+		tree, version_id, replaces, prior, changes, shown_sha256, by_user_id)
+	values (v_repository.environment_id, v_repository.owner, v_repository.name, v_n, v_repository.profile_id, 'release',
+		v_repository.last_version + 1, (v_point ->> 'change')::integer, v_point ->> 'mainSha', v_point ->> 'tree',
+		v_version.id, v_live.n, v_live.n,
+		array(select held.n::integer from jsonb_array_elements_text(v_point -> 'held') with ordinality held(n, place)
+			order by held.place),
+		v_point ->> 'token', auth.uid());
+	perform public.qorpera_code_release_switch(v_site.id, v_version.id);
+	update public.qorpera_code_repositories set last_release = v_n, live_release = v_n, last_version = last_version + 1,
+		index_version = index_version + 1
+	where environment_id = v_repository.environment_id and owner = v_repository.owner and name = v_repository.name;
+	return jsonb_build_object('schema', 'qorpera.code-release/v1', 'state', 'live', 'version', v_repository.last_version + 1,
+		'url', public.qorpera_site_url(v_site.slug));
+end $$;
+
+-- An owner or admin goes back to the version that was live before (6.3): p_shown exactly {"live":<the live version's
+-- number>,"to":<the version Go back names>}. Under the registry row's lock: the live release is still that version,
+-- the release before it on the chain (its prior) still has its version, and that version's number is `to`; else
+-- moved. A release row of kind back shows that number again, with that release's change, commit, tree and version;
+-- the next Go back goes one further down the chain. The changes of the version it took off are ready again. Answers
+-- as qorpera_put_code_release_live.
+create function public.qorpera_code_release_back(p_profile_id uuid, p_owner text, p_name text, p_shown jsonb)
+returns jsonb language plpgsql volatile security definer set search_path = '' set lock_timeout = '3s' as $$
+declare v_role public.qorpera_profile_role := public.qorpera_member_role(p_profile_id);
+	v_repository public.qorpera_code_repositories%rowtype; v_live public.qorpera_code_releases%rowtype;
+	v_prior public.qorpera_code_releases%rowtype; v_site public.qorpera_company_sites%rowtype;
+	v_version public.qorpera_company_site_versions%rowtype; v_n integer;
+	c_moved constant jsonb := '{"schema":"qorpera.code-release/v1","state":"moved"}';
+begin
+	if auth.role() is distinct from 'authenticated' or auth.uid() is null or v_role is null
+		or v_role not in ('owner','admin') then
+		raise exception 'Releases unavailable' using errcode = '42501'; end if;
+	if p_owner is null or p_name is null or jsonb_typeof(p_shown) is distinct from 'object'
+		or not p_shown ?& array['live','to'] or p_shown - array['live','to'] <> '{}'::jsonb
+		or not (public.qorpera_code_json_count(p_shown -> 'live') and p_shown ->> 'live' ~ '^[1-9][0-9]{0,8}$')
+		or not (public.qorpera_code_json_count(p_shown -> 'to') and p_shown ->> 'to' ~ '^[1-9][0-9]{0,8}$') then
+		raise exception 'Release request is invalid' using errcode = '22023'; end if;
+	-- The company's profile row first: the release row checks its key.
+	perform 1 from public.qorpera_profiles profile where profile.id = p_profile_id for key share;
+	select repository.* into v_repository from public.qorpera_code_repositories repository
+	join public.qorpera_company_files file on file.environment_id = repository.environment_id
+		and file.profile_id = p_profile_id and file.core = 'folder-v2'
+	where repository.profile_id = p_profile_id and repository.owner = p_owner and repository.name = p_name
+	for update of repository;
+	if not found then raise exception 'No such repository' using errcode = 'P0002'; end if;
+	v_live := public.qorpera_code_release_live(v_repository);
+	if v_live.n is null or v_live.version <> (p_shown ->> 'live')::integer then return c_moved; end if;
+	select * into v_prior from public.qorpera_code_releases release
+	where release.environment_id = v_repository.environment_id and release.owner = v_repository.owner
+		and release.name = v_repository.name and release.n = v_live.prior;
+	if v_prior.version_id is null or v_prior.version <> (p_shown ->> 'to')::integer then return c_moved; end if;
+	select * into v_site from public.qorpera_company_sites where id = v_repository.site_id for update;
+	select * into v_version from public.qorpera_company_site_versions
+	where id = v_prior.version_id and site_id = v_site.id for update;
+	if v_version.id is null then return c_moved; end if;
+	v_n := v_repository.last_release + 1;
+	insert into public.qorpera_code_releases (environment_id, owner, name, n, profile_id, kind, version, change, main_sha,
+		tree, version_id, replaces, prior, by_user_id)
+	values (v_repository.environment_id, v_repository.owner, v_repository.name, v_n, v_repository.profile_id, 'back',
+		v_prior.version, v_prior.change, v_prior.main_sha, v_prior.tree, v_version.id, v_live.n, v_prior.prior, auth.uid());
+	perform public.qorpera_code_release_switch(v_site.id, v_version.id);
+	update public.qorpera_code_repositories set last_release = v_n, live_release = v_n, index_version = index_version + 1
+	where environment_id = v_repository.environment_id and owner = v_repository.owner and name = v_repository.name;
+	return jsonb_build_object('schema', 'qorpera.code-release/v1', 'state', 'live', 'version', v_prior.version,
+		'url', public.qorpera_site_url(v_site.slug));
+end $$;
+
 -- 5. Existing functions of the code ------------------------------------------------------------------------------------
 
 -- Applies each (old, new) pair in turn, each old text exactly once, then runs the result.
@@ -935,6 +1140,27 @@ grant execute on function public.qorpera_code_sites_due(text, text, integer),
 	public.qorpera_code_site_finish(text, text, uuid),
 	public.qorpera_code_site_failed(text, text, uuid, text, text, integer, text)
 	to service_role;
+revoke all on function public.qorpera_code_release_switch(uuid, uuid)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+revoke all on function public.qorpera_list_code_releases(uuid),
+	public.qorpera_put_code_release_live(uuid, text, text, jsonb),
+	public.qorpera_code_release_back(uuid, text, text, jsonb)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+grant execute on function public.qorpera_list_code_releases(uuid),
+	public.qorpera_put_code_release_live(uuid, text, text, jsonb),
+	public.qorpera_code_release_back(uuid, text, text, jsonb)
+	to authenticated;
+comment on function public.qorpera_list_code_releases(uuid) is
+	'What''s new, for any member: each repository site of the company with what is live, what Go back puts live, what '
+	'is ready (its changes and the token a yes names), how many changes are not ready yet, and the last upload''s '
+	'problem; canRelease says whether the caller (owner or admin) may put a version live (20260930729000).';
+comment on function public.qorpera_put_code_release_live(uuid, text, text, jsonb) is
+	'An owner or admin puts live exactly the ready version What''s new showed: the live version, the ready change and its '
+	'token; a page that moved is answered moved, and nothing is written (20260930729000).';
+comment on function public.qorpera_code_release_back(uuid, text, text, jsonb) is
+	'An owner or admin goes back to the version live before the live one, as What''s new showed it; recorded as a '
+	'release that shows that version''s number (20260930729000).';
+
 -- Every changed body carries the marker.
 do $guard$
 declare v_function regprocedure;
