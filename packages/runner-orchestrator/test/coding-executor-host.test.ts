@@ -6867,58 +6867,117 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			},
 		);
 
-		it.each([
-			"its start was never answered",
-			"its stop is not confirmed",
-			"the machine shows nothing of it",
-		] as const)("runs no drop beside a collect that may still write: %s", async (how) => {
-			const f = await siteFixture({ budgetMs: 800, collect: { state: "running" } });
-			const id = f.idOf("collect");
-			let code = "UNCLASSIFIED";
-			if (how === "its start was never answered") {
-				const run = mocked.guestRun.getMockImplementation()!;
-				mocked.guestRun.mockImplementation(async (request: unknown) => {
-					if (parseCodingGuestRequest("run", request).commandId === id) throw new Error("LXD operation failed");
-					return run(request);
+		it.each(["its start was never answered", "its stop is not confirmed"] as const)(
+			"runs no drop beside a collect that may still write: %s",
+			async (how) => {
+				const f = await siteFixture({ budgetMs: 800, collect: { state: "running" } });
+				const id = f.idOf("collect");
+				let code = "UNCLASSIFIED";
+				if (how === "its start was never answered") {
+					const run = mocked.guestRun.getMockImplementation()!;
+					mocked.guestRun.mockImplementation(async (request: unknown) => {
+						if (parseCodingGuestRequest("run", request).commandId === id) throw new Error("LXD operation failed");
+						return run(request);
+					});
+				} else if (how === "its stop is not confirmed") {
+					code = "CODE_CHECKS_BUDGET";
+					const cancel = mocked.guestCancel.getMockImplementation()!;
+					mocked.guestCancel.mockImplementation(async (request: unknown) => {
+						const asked = parseCodingGuestRequest("cancel", request);
+						if (asked.commandId !== id) return cancel(request);
+						return {
+							schema: "qorpera.coding-guest-command/v1",
+							workerId: f.claim.workerId,
+							commandId: id,
+							state: "running",
+							exit: null,
+							end: 0,
+						};
+					});
+				}
+				expect(await f.site(1, f.signal, CHECKS.slice(0, 1))).toMatchObject({
+					state: "passed",
+					site: { state: "missed", code },
 				});
-			} else if (how === "its stop is not confirmed") {
-				code = "CODE_CHECKS_BUDGET";
-				const cancel = mocked.guestCancel.getMockImplementation()!;
-				mocked.guestCancel.mockImplementation(async (request: unknown) => {
-					const asked = parseCodingGuestRequest("cancel", request);
-					if (asked.commandId !== id) return cancel(request);
-					return {
-						schema: "qorpera.coding-guest-command/v1",
-						workerId: f.claim.workerId,
-						commandId: id,
-						state: "running",
-						exit: null,
-						end: 0,
-					};
-				});
-			} else {
-				code = "CODE_CHECKS_UNCONFIRMED";
-				// It ends; then the machine's disk can no longer be said, so nothing of it may be shown.
-				let armed: number | undefined;
-				const disk = mocked.disk.getMockImplementation()!;
-				mocked.disk.mockImplementation(async (...args: unknown[]) => {
-					if (armed !== undefined && ++armed >= 2) return "not a rebuild";
-					return disk(...args);
-				});
-				f.ending((run) => {
-					if (kindOf(run) !== "collect") return {};
-					armed = 0;
-					return { code: 4 };
-				});
-			}
+				expect(f.steps()).toEqual(["started:collect", "ended:collect"]);
+				// The memories have it: the next run looks at it again after its fence.
+				expect(f.kinds()).not.toContain("drop");
+			},
+		);
+
+		it("drops what a collect wrote that ended, though the machine then showed nothing of it, and keeps it uncertain (review, F2)", async () => {
+			const f = await siteFixture();
+			// The collect makes its site and ends; then the machine's disk cannot be said once (`hidden`: unconfirmed).
+			let armed: number | undefined;
+			const disk = mocked.disk.getMockImplementation()!;
+			mocked.disk.mockImplementation(async (...args: unknown[]) => {
+				if (armed !== undefined && ++armed === 2) {
+					armed = undefined;
+					return "not a rebuild";
+				}
+				return disk(...args);
+			});
+			f.ending((run) => {
+				if (kindOf(run) === "drop") return { printed: "dropped 2\n" };
+				if (kindOf(run) !== "collect") return {};
+				armed = 0;
+				return { printed: LINES };
+			});
 			expect(await f.site(1, f.signal, CHECKS.slice(0, 1))).toMatchObject({
 				state: "passed",
-				site: { state: "missed", code },
+				site: { state: "missed", code: "CODE_CHECKS_UNCONFIRMED" },
 			});
-			expect(f.steps()).toEqual(["started:collect", "ended:collect"]);
-			// The memories have it: the next run looks at it again after its fence.
-			expect(f.kinds()).not.toContain("drop");
+			// Its receipt said it ended: the drop runs, and no boundary was asked, so none is asked for the drop.
+			expect(f.steps()).toEqual(["started:collect", "ended:collect", ...DROPPED]);
+			// Still not seen to end for certain: the next run looks at it again after its fence.
+			f.ending(() => ({}));
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+			expect(f.loggedAt("looked", f.idOf("collect"))).toHaveLength(1);
 		});
+
+		it.each(["collect", "drop"] as const)(
+			"bounds the %s by its own limit and a minute more, within the run's budget, when the machine's reads are never released (review, F1)",
+			async (kind) => {
+				const f = await siteFixture({ boundaries: [CARRIES] });
+				// Once the command starts, no boundary releases the machine's reads: it shows `running` though the guest has
+				// ended it.
+				const saved = f.boundary.getMockImplementation()!;
+				f.boundary.mockImplementation(async (machine, final, signal) =>
+					f.logged.some((event) => event.step === "started" && event.site === kind)
+						? { machine, reads: "unproven", views: [] }
+						: saved(machine, final, signal),
+				);
+				// Its own limit and a minute: 180 s for the collect, 120 s for the drop, made 400 ms here; nothing else of
+				// the run asks for that time.
+				const bound = kind === "collect" ? 180_000 : 120_000;
+				const timeout = AbortSignal.timeout.bind(AbortSignal);
+				const asked: number[] = [];
+				const spy = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+					asked.push(ms);
+					return timeout(ms === bound ? 400 : ms);
+				});
+				try {
+					const started = Date.now();
+					const run = await f.site(1, f.signal, CHECKS.slice(0, 1));
+					expect(Date.now() - started).toBeLessThan(5_000);
+					expect(run).toMatchObject(
+						kind === "collect"
+							? { state: "passed", site: { state: "missed", code: "CODE_CHECKS_BUDGET" } }
+							: { state: "site_refused", problem: SECRET_HELD },
+					);
+					// The run's own budget was 20 minutes: 300 s for the copy, the check's 600 s and 60 s, and 240 s.
+					expect(asked).toContain(1_200_000);
+					expect(asked).toContain(bound);
+					// It could not be confirmed ended either: it holds the next run, and the collect is not dropped.
+					expect(f.logged).toContainEqual(
+						expect.objectContaining({ step: "ended", site: kind, state: "not_run", stopped: false }),
+					);
+					if (kind === "collect") expect(f.steps()).toEqual(["started:collect", "ended:collect"]);
+				} finally {
+					spy.mockRestore();
+				}
+			},
+		);
 
 		it.each([
 			[
