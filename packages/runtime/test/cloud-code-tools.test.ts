@@ -576,11 +576,12 @@ describe("manage_code undo: one answer in plain words per way it can go", () => 
 				status: "ok",
 				text: "The undo of change 12 is still being made. Call manage_code undo for it again to see how it went.",
 			});
-			// It waited its whole time, looking more than once, and no longer.
+			// It waited its whole time, looking more than once, and no longer: a look at the start and one every 5 ms
+			// through the 40th is nine; one more for a timer's rounding.
 			expect(performance.now() - started).toBeGreaterThanOrEqual(35);
 			const looks = f.methods().filter((method) => method === STANDS).length;
 			expect(looks).toBeGreaterThan(1);
-			expect(looks).toBeLessThanOrEqual(8);
+			expect(looks).toBeLessThanOrEqual(10);
 			// The same call again (the kernel answers the same request to the same key) reads how it went.
 			ended = true;
 			expect((await f.invoke(undo)).text).toBe(
