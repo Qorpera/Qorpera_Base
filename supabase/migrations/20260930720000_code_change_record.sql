@@ -832,7 +832,7 @@ end $$;
 create function public.qorpera_code_requests_claim(p_owner text, p_machine_id_sha256 text, p_limit integer)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare v_now timestamptz := clock_timestamp(); v_request public.qorpera_code_requests%rowtype; v_claimed jsonb := '[]'::jsonb;
-	v_change public.qorpera_code_changes%rowtype; v_waiting text; v_item jsonb; v_spent boolean;
+	v_change public.qorpera_code_changes%rowtype; v_waiting text; v_item jsonb; v_begun jsonb; v_spent boolean;
 begin
 	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
 	if p_limit is null or p_limit not between 1 and 20 then
@@ -863,12 +863,17 @@ begin
 			where change.environment_id = v_request.environment_id and change.owner = v_request.owner
 				and change.name = v_request.name and change.n = (v_request.input ->> 'change')::integer;
 		end if;
-		-- Too many starts with no finish; or an undo whose target is not there with both ends of main (its request
-		-- checked that it was).
+		-- An undo that was handed out before keeps what its job was given then (the two ends of main and the commit's
+		-- words): its job may have moved main already, and finds its own commit again by them, whatever the target's
+		-- row has become since (a turn may have taken a target that was a filler for its own).
+		v_begun := case when v_request.kind = 'undo' then v_request.progress -> 'begun' end;
+		-- Too many starts with no finish; or an undo that was not begun whose target is not there with both ends of
+		-- main (its request checked that it was), or no longer knows where its own movement began.
 		v_spent := v_request.attempts >= case when v_request.kind = 'download' then 5 else 3 end;
-		if v_spent or (v_request.kind = 'undo' and (v_change.n is null or v_change.main_before is null
-			or v_change.main_after is null or (v_change.own_after is not null and v_change.own_before is null
-				and not (v_request.input ->> 'andLater')::boolean))) then
+		if v_spent or (v_request.kind = 'undo' and (v_change.n is null or (v_begun is null
+			and (v_change.main_before is null or v_change.main_after is null
+				or (v_change.own_after is not null and v_change.own_before is null
+					and not (v_request.input ->> 'andLater')::boolean))))) then
 			update public.qorpera_code_requests set state = 'failed', lease_token = null, lease_owner = null,
 				lease_until = null, finished_at = v_now, updated_at = v_now,
 				outcome = jsonb_build_object('schema', 'qorpera.code-request-outcome/v1', 'state', 'failed',
@@ -876,22 +881,26 @@ begin
 			where id = v_request.id;
 			continue;
 		end if;
+		-- The two ends an undo's job works from are the row's own movement where the row covers more than that (a row
+		-- that took a wider filler over): an undo of the row alone takes out what the row did, not what its span holds
+		-- beside it. With andLater and no own beginning, the span's beginning is where main goes back to.
+		if v_request.kind = 'undo' and v_begun is null then
+			v_begun := jsonb_build_object('mainBefore', coalesce(v_change.own_before, v_change.main_before),
+				'mainAfter', case when v_change.own_before is not null then v_change.own_after else v_change.main_after end,
+				'message', public.qorpera_code_undo_message(v_change.n, v_change.title, (v_request.input ->> 'andLater')::boolean));
+		end if;
 		update public.qorpera_code_requests set state = 'running', lease_token = extensions.gen_random_uuid(),
 			lease_owner = p_owner, lease_until = v_now + public.qorpera_code_request_lease(kind), attempts = attempts + 1,
-			progress = nullif(progress - 'waiting', '{}'::jsonb), updated_at = v_now
+			progress = case when kind = 'undo' then jsonb_build_object('begun', v_begun)
+				else nullif(progress - 'waiting', '{}'::jsonb) end, updated_at = v_now
 		where id = v_request.id returning * into v_request;
 		v_item := jsonb_build_object('requestId', v_request.id, 'token', v_request.lease_token,
 			'leaseUntil', v_request.lease_until, 'companyId', v_request.profile_id, 'environmentId', v_request.environment_id,
 			'owner', v_request.owner, 'name', v_request.name, 'kind', v_request.kind);
 		if v_request.kind = 'undo' then
-			-- The two ends the job works from are the row's own movement where the row covers more than that (a row
-			-- that took a wider filler over): an undo of the row alone takes out what the row did, not what its span
-			-- holds beside it. With andLater and no own beginning, the span's beginning is where main goes back to.
 			v_item := v_item || jsonb_build_object('change', jsonb_build_object('n', v_change.n,
-					'mainBefore', coalesce(v_change.own_before, v_change.main_before),
-					'mainAfter', case when v_change.own_before is not null then v_change.own_after else v_change.main_after end),
-				'andLater', (v_request.input ->> 'andLater')::boolean,
-				'message', public.qorpera_code_undo_message(v_change.n, v_change.title, (v_request.input ->> 'andLater')::boolean));
+					'mainBefore', v_begun -> 'mainBefore', 'mainAfter', v_begun -> 'mainAfter'),
+				'andLater', (v_request.input ->> 'andLater')::boolean, 'message', v_begun -> 'message');
 		elsif v_request.kind = 'download' then
 			v_item := v_item || jsonb_build_object('work', 'make', 'file', v_request.input ->> 'file',
 				'fileName', v_request.input ->> 'fileName', 'path', format('code/%s/%s/downloads/%s', v_request.owner,
@@ -1010,10 +1019,13 @@ begin
 		return jsonb_build_object('schema', 'qorpera.code-request-step/v1', 'state', 'lost'); end if;
 	-- The progress as this step will leave it: what the call brings (the row's own when it brings none), with the
 	-- kernel's words as the row has them, whatever the caller sent under their names.
-	v_progress := case when p_progress is null then v_request.progress else (p_progress - 'recorded' - 'held')
+	v_progress := case when p_progress is null then v_request.progress else (p_progress - 'recorded' - 'held' - 'begun')
 		|| case when v_request.progress ? 'recorded' then jsonb_build_object('recorded', v_request.progress -> 'recorded')
 			else '{}'::jsonb end
 		|| case when v_request.progress ? 'held' then jsonb_build_object('held', v_request.progress -> 'held')
+			else '{}'::jsonb end
+		-- (What a begun undo's job was given, which the claim wrote.)
+		|| case when v_request.progress ? 'begun' then jsonb_build_object('begun', v_request.progress -> 'begun')
 			else '{}'::jsonb end end;
 	v_place := v_request.kind = 'restore' and v_request.input ->> 'mode' = 'restore';
 	v_step := v_progress ->> 'step';

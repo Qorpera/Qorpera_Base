@@ -363,7 +363,9 @@ begin
 	perform pg_temp.base_assert(v - 'leaseUntil' = '{"schema":"qorpera.code-request-step/v1","state":"go"}'
 		and (v ->> 'leaseUntil')::timestamptz = (pg_temp.req_row(v_id)).lease_until
 		and (pg_temp.req_row(v_id)).lease_until > clock_timestamp() + interval '299 seconds'
-		and (pg_temp.req_row(v_id)).progress is null and (pg_temp.req_row(v_id)).attempts = 1, 'a step: ' || v::text);
+		-- (An undo's progress is what its claim wrote: the two ends and the words its job was given.)
+		and (pg_temp.req_row(v_id)).progress ? 'begun' and (pg_temp.req_row(v_id)).progress - 'begun' = '{}'
+		and (pg_temp.req_row(v_id)).attempts = 1, 'a step: ' || v::text);
 
 	-- The finish: an outcome of one of the request's kind's shapes, from the caller that holds the lease.
 	foreach v_bad in array array['null'::jsonb, '[]', '{"state":"done","result":"undone"}',
@@ -513,7 +515,9 @@ begin
 	perform pg_temp.base_assert(pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, pg_temp.req_outcome('{"state":"busy"}'))
 		= pg_temp.req_recorded(null), 'put off');
 	q := pg_temp.req_row(v_id);
-	perform pg_temp.base_assert(q.state = 'queued' and q.lease_token is null and q.attempts = 1 and q.progress is null
+	-- (What its job was given stays with the request: the next claim hands out the same.)
+	perform pg_temp.base_assert(q.state = 'queued' and q.lease_token is null and q.attempts = 1
+		and q.progress ? 'begun' and q.progress - 'begun' = '{}'
 		and q.not_before between clock_timestamp() + interval '119 seconds' and clock_timestamp() + interval '2 minutes'
 		and q.finished_at is null and pg_temp.req_claim() = '[]'::jsonb and pg_temp.req_read(v_id) ->> 'state' = 'queued',
 		'back in the queue: ' || to_jsonb(q)::text);
@@ -2019,7 +2023,7 @@ create function pg_temp.req_eight(p_n integer) returns public.qorpera_code_chang
 	where c.environment_id = pg_temp.rec_here() and c.owner = 'company' and c.name = 'eight' and c.n = p_n
 $$;
 do $$
-declare v jsonb; v_item jsonb; v_id uuid; r public.qorpera_code_changes%rowtype; s public.qorpera_code_repositories%rowtype;
+declare v jsonb; v_item jsonb; v_next jsonb; v_id uuid; r public.qorpera_code_changes%rowtype; s public.qorpera_code_repositories%rowtype;
 begin
 	perform pg_temp.rec_land(700, 'g0', 'g1', p_name => 'eight');
 	perform pg_temp.rec_land(701, 'g1', 'g2', p_name => 'eight');
@@ -2143,6 +2147,38 @@ begin
 	perform pg_temp.base_assert(v = pg_temp.req_recorded(15) and (pg_temp.req_eight(15)).undoes = array[14]
 		and pg_temp.req_rows('eight') = '1:R6 2:R7 3:R9 4:L 5:L 6:L 7:L 8:L 9:L 10:R13 11:L 12:- 13:L 14:R15 15:L',
 		'and it is taken out with what came after: ' || v::text || ' ' || pg_temp.req_rows('eight'));
+
+	-- An undo that was begun is taken up again with what its job was given, whatever its target's row has become
+	-- (review round 8, F1). A landing leaves a filler, row 16, and an undo of that filler is claimed: its job moves
+	-- main and no finish is heard. A session then hands in the commit the filler ends at, unchanged, and takes the
+	-- filler for its own, so the row no longer knows where its own movement began. A new undo of it alone would be
+	-- refused; this one moved main already, so the next claim hands it out with the same two ends, its job finds its
+	-- commit, and the finish records it.
+	perform pg_temp.base_assert(pg_temp.rec_land(718, 'q1', 'q2', p_name => 'eight') = pg_temp.rec_answer('recorded', 17)
+		and pg_temp.rec_is(16, 'found', 'landed', 'k2', 'q1', 'eight'), 'a filler to undo: ' || pg_temp.req_rows('eight'));
+	v_item := pg_temp.req_begun('late-9', 16);
+	v_id := (v_item ->> 'requestId')::uuid;
+	perform pg_temp.base_assert(v_item -> 'change' = jsonb_build_object('n', 16, 'mainBefore', pg_temp.rec_sha('k2'),
+		'mainAfter', pg_temp.rec_sha('q1')) and (pg_temp.req_row(v_id)).attempts = 1
+		and (pg_temp.req_row(v_id)).progress -> 'begun' ->> 'mainAfter' = pg_temp.rec_sha('q1'), 'the undo of the filler is begun: ' || v_item::text);
+	perform pg_temp.base_assert(pg_temp.rec_record(pg_temp.rec_turn(719, 1, pg_temp.rec_sha('q1'), '{}', pg_temp.own_repo('company', 'eight')),
+			pg_temp.rec_report('unchanged', pg_temp.rec_sha('q1'), pg_temp.rec_sha('x1'), pg_temp.rec_sha('q1'))) = pg_temp.rec_answer('adopted', 16)
+		and pg_temp.rec_is(16, 'landing', 'landed', 'k2', 'q1', 'eight') and (pg_temp.req_eight(16)).own_before is null
+		and (pg_temp.req_eight(16)).own_after = pg_temp.rec_sha('q1'), 'a session takes the target for its own');
+	perform pg_temp.req_lapse(v_id);
+	select item into v_next from jsonb_array_elements(pg_temp.req_claim()) item where item ->> 'requestId' = v_id::text;
+	perform pg_temp.base_assert(v_next -> 'change' = v_item -> 'change' and v_next -> 'message' = v_item -> 'message'
+		and v_next ->> 'token' <> v_item ->> 'token' and (pg_temp.req_row(v_id)).state = 'running'
+		and (pg_temp.req_row(v_id)).attempts = 2, 'it is taken up again with the same two ends: ' || coalesce(v_next::text, 'not handed out'));
+	v := pg_temp.req_finish(v_id, (v_next ->> 'token')::uuid, pg_temp.req_moved('q2', 'x1'));
+	perform pg_temp.base_assert(v = pg_temp.req_recorded(18) and pg_temp.rec_is(18, 'undo', 'landed', 'q2', 'x1', 'eight')
+		and (pg_temp.req_eight(18)).undoes = array[16] and (pg_temp.req_row(v_id)).state = 'done'
+		and pg_temp.req_rows('eight') = '1:R6 2:R7 3:R9 4:L 5:L 6:L 7:L 8:L 9:L 10:R13 11:L 12:- 13:L 14:R15 15:L 16:R18 17:L 18:L',
+		'and its finish records it: ' || v::text || ' ' || pg_temp.req_rows('eight'));
+	-- A new undo of that row alone, which was not begun, is refused: the record does not hold where its own movement began.
+	update public.qorpera_code_changes set state = 'landed', reverted_by = null
+	where environment_id = pg_temp.rec_here() and owner = 'company' and name = 'eight' and n = 16;
+	perform pg_temp.base_assert(pg_temp.req_undo('late-10', 16, false, '{}', 'eight') = pg_temp.req_refused('wall'), 'not begun, not alone');
 end $$;
 
 -- 6. More than 500 changes are not taken out at once ----------------------------------------------------------------------
