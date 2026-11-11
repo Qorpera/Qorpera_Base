@@ -6,6 +6,7 @@ import {
 	WALL_DONE_MAX,
 	WALL_HEADLINE_MAX_CHARS,
 	WALL_MAX_BYTES,
+	WALL_NOW_MAX_CHARS,
 	WALL_WAITING_MAX,
 	WALL_WORKING_MAX,
 	type Wall,
@@ -41,9 +42,15 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
  * items past the wall's limit drop off. The file is rewritten whole in the kept form under the call's receipt, against
  * the version read, so a wall that changed in between is refused and the agent calls again. The same wall again saves
  * nothing. It applies at once (review class internal): the wall is the agent's own report.
+ *
+ * `now` is the one line the sidebar shows under the agent's name: where its work stands (Jonas, 11 November 2026). Every
+ * call gives it, or null to keep the one there; a wall without one yet needs one, so each agent writes it at its next
+ * update. The rules for every line are in CLOUD_WALL_TOOL_DESCRIPTION: what a member now has or what was decided, never
+ * the step taken or the team's own housekeeping (the headlines the sidebar first showed read as a work log).
  */
 
 interface WallRequest {
+	readonly now: string | null;
 	readonly waiting: readonly WallItem[] | null;
 	readonly working: readonly WallItem[] | null;
 	readonly done: readonly WallItem[];
@@ -61,6 +68,16 @@ const ITEM_SCHEMA = {
 };
 /** Finished items an answer shows, newest first. */
 const DONE_SHOWN = 5;
+
+/** The request's Now line: one line of text, or null to keep the one there. */
+function nowLine(value: JsonValue | undefined): string | null {
+	if (value === null) return null;
+	if (typeof value !== "string")
+		throw new CloudToolArgumentRefusal("now must be one line of text, or null to keep the one there");
+	const problem = wallItemProblem(value);
+	if (problem) throw new CloudToolArgumentRefusal(`now: ${problem.replace("an item", "the line")}`);
+	return wallItemText(value);
+}
 
 /** A request's items: each {headline, detail?} (a plain line reads as a headline alone). A headline already on the wall
  * is kept as it stands, even one longer than a new headline may be (written before details existed). */
@@ -113,7 +130,13 @@ export function nextWall(stored: Wall, request: WallRequest, today: string): Wal
 		.sort((a, b) => (a.item.day === b.item.day ? a.index - b.index : a.item.day < b.item.day ? 1 : -1))
 		.map(({ item }) => item)
 		.slice(0, WALL_DONE_MAX);
-	return { waiting: request.waiting ?? stored.waiting, working: request.working ?? stored.working, done };
+	const now = request.now ?? stored.now;
+	return {
+		...(now ? { now } : {}),
+		waiting: request.waiting ?? stored.waiting,
+		working: request.working ?? stored.working,
+		done,
+	};
 }
 
 /** An item as the tool's answer shows it, in the words its arguments use. */
@@ -127,7 +150,7 @@ function dayBefore(day: string, days: number): string {
 	return date.toISOString().slice(0, 10);
 }
 
-export const CLOUD_WALL_TOOL_DESCRIPTION = `Keep your wall: the card pinned above your thread where members see at a glance what you have done, what you are working on and what waits on them. It replaces status messages: update it instead of writing to say that work started, moved on or finished. waiting: what you need from a member (a whole list, or null to keep it; at most ${WALL_WAITING_MAX}). working: what you are doing now (a whole list, or null to keep it; at most ${WALL_WORKING_MAX}). done: what you finished since the last update, added on top with today's date ([] for nothing new). Each item is {headline, detail?} in the company's language and your messages' plain words. The headline is what a member reads at a glance: a few words, at most ${WALL_HEADLINE_MAX_CHARS} characters, such as "Pick a shop name" or "Team hired". The detail opens when they click it: one or two short sentences, at most ${WALL_DETAIL_MAX_CHARS} characters, with a link to the work: [Name](folder:path/in/the/company/file), or [Title](app:<name>) for an interface app. Link what you made to look at (an image such as an SVG sketch, or an app) and the item shows it when it opens. Move an item, don't repeat it: what you finish leaves working (or waiting) and goes to done in the same call. A question a member answered leaves waiting, and a new question you ask them joins it, before you send the message. Fix a wrong item where it stands. It applies at once. When the result says the wall changed since it was read, call again.`;
+export const CLOUD_WALL_TOOL_DESCRIPTION = `Keep your wall: the card pinned above your thread where members see at a glance what you have done, what you are working on and what waits on them, and the line under your name in the sidebar. It replaces status messages: update it instead of writing to say that work started, moved on or finished. now: the one line members read under your name in the sidebar: where your work stands at this moment, at most ${WALL_NOW_MAX_CHARS} characters, such as "Prices set, now choosing suppliers" or "Logo chosen, now the shop's look". Give it on every call as it stands after the call; null keeps the one there, only while it still holds word for word. waiting: what you need from a member (a whole list, or null to keep it; at most ${WALL_WAITING_MAX}). working: what you are doing now (a whole list, or null to keep it; at most ${WALL_WORKING_MAX}). done: what you finished since the last update, added on top with today's date ([] for nothing new). Each item is {headline, detail?} in the company's language and your messages' plain words. The headline is what a member reads at a glance: a few words, at most ${WALL_HEADLINE_MAX_CHARS} characters. Every line says what a member now has, what was decided or what you need from them, in everyday words and the active voice, such as "Pick a shop name", "Price list ready" or "Logo chosen: the green one". Never name the step you took instead of what came of it: not "Question about introductions answered", "Proof requirements documented" or "Prices checked", but what the answer, the requirement or the prices are. Keep the team's own housekeeping off the wall: logins, passwords, access, the team's own tools, and rules the team set for itself are no news for members. The detail opens when they click it: one or two short sentences, at most ${WALL_DETAIL_MAX_CHARS} characters, with a link to the work: [Name](folder:path/in/the/company/file), or [Title](app:<name>) for an interface app. Link what you made to look at (an image such as an SVG sketch, or an app) and the item shows it when it opens. Move an item, don't repeat it: what you finish leaves working (or waiting) and goes to done in the same call. A question a member answered leaves waiting, and a new question you ask them joins it, before you send the message. Fix a wrong item where it stands. It applies at once. When the result says the wall changed since it was read, call again.`;
 
 /** Today in the company's time zone (the run's wake time), `YYYY-MM-DD`; UTC when the zone is unknown. */
 export function wallToday(timeZone: string | undefined, now = new Date()): string {
@@ -164,16 +187,18 @@ export function cloudWallTools(options: {
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
-			required: ["waiting", "working", "done"],
+			required: ["now", "waiting", "working", "done"],
 			properties: {
+				now: { type: ["string", "null"], maxLength: WALL_NOW_MAX_CHARS * 4 },
 				waiting: { type: ["array", "null"], maxItems: WALL_WAITING_MAX, items: ITEM_SCHEMA },
 				working: { type: ["array", "null"], maxItems: WALL_WORKING_MAX, items: ITEM_SCHEMA },
 				done: { type: "array", maxItems: 12, items: ITEM_SCHEMA },
 			},
 		},
 		parseArguments(value) {
-			const input = args(value, "update_wall", ["waiting", "working", "done"]);
+			const input = args(value, "update_wall", ["now", "waiting", "working", "done"]);
 			const request: WallRequest = {
+				now: nowLine(input.now),
 				waiting: items(input.waiting, "waiting", WALL_WAITING_MAX, true),
 				working: items(input.working, "working", WALL_WORKING_MAX, true),
 				done: items(input.done, "done", 12, false) ?? [],
@@ -208,6 +233,14 @@ export function cloudWallTools(options: {
 						)}. Read it, write it again whole with company_write, keeping what a member wrote as items of the parts, then call again`,
 				);
 			const stored = parsed.wall;
+			if (request.now === null && !stored.now)
+				throw new CloudToolRefusal(
+					`WALL_NOW_MISSING: nothing was written; your wall has no now line yet: give now, the one line under your name in the sidebar on where your work stands, at most ${WALL_NOW_MAX_CHARS} characters`,
+				);
+			if (request.now !== null && request.now !== stored.now && [...request.now].length > WALL_NOW_MAX_CHARS)
+				throw new CloudToolRefusal(
+					`WALL_NOW_TOO_LONG: nothing was written; now is at most ${WALL_NOW_MAX_CHARS} characters, a few words that fit under your name: put the rest on the wall's items`,
+				);
 			const long = longHeadlines(stored, request);
 			if (long.length)
 				throw new CloudToolRefusal(
@@ -241,6 +274,7 @@ export function cloudWallTools(options: {
 					saved,
 					...extra,
 					wall: {
+						...(wall.now ? { now: wall.now } : {}),
 						waiting: wall.waiting.map(shownItem),
 						working: wall.working.map(shownItem),
 						done: wall.done.slice(0, DONE_SHOWN).map((item) => ({ day: item.day, ...shownItem(item) })),

@@ -3222,7 +3222,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// to make one on the schema field (RUNTIME-INTERFACE-APPS.md §3a), so they moved again.
 	// Also on 10 November 2026 manage_code came after manage_worker (the change record of the company's code,
 	// 20260930720000), so they moved again.
-	// On 11 November 2026 ask_member's description says every answer the work cannot go on without goes on a card that
+	// On 11 November 2026 update_wall takes now, the line under the agent's name in the sidebar, and its description says
+	// a line names what came of the work and keeps the team's housekeeping off the wall, so they moved again.
+	// Also on 11 November 2026 ask_member's description says every answer the work cannot go on without goes on a card that
 	// says what is stopped, open questions too with allowCustom ("it's really stopped at you"), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
@@ -3269,9 +3271,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"00932fd655cfaf0dd8477ae782af3714c9443cd91d52b39e313700de14a3ad84",
+		"1501c828341c5471157fb9190c61e5091970cdb6ce35cf44c81983c8b45f9268",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"8a715ff4846ec2f2d5fb8016cdb446bc05416789cf8322c17e4bdeab95920c2c",
+		"cb52db5ed7a60a136ff7395084e35fdbc0c9b3fa2fb70934b9b50f7b7590c449",
 	);
 });
