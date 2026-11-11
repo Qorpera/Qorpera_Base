@@ -1,11 +1,20 @@
 import { CODE_CHECKS_FILE, type CodeCommitFile } from "./code-host-jobs.ts";
+import {
+	type CodeSiteCollected,
+	type CodeSiteProblem,
+	codeSiteFolderValid,
+	codeSiteNameValid,
+	codeSiteTitleValid,
+} from "./code-site.ts";
+import { bytes, cut, halfCharacter, shown, unseen } from "./code-words.ts";
 import { CodingJsonSyntaxError, parseCodingJson } from "./coding-setup.ts";
 
 export { CODE_CHECKS_FILE, type CodeCommitFile };
 
 /** A repository's checks (own code storage, step 3): the commands Qorpera runs on a clean copy of what would go into
  * its default branch, before it goes in. This file holds what is pure of them: the checks file's rules, the gate, the
- * row's value for a run that passed, and the words a failed turn reports. */
+ * row's value for a run that passed, and the words a failed turn reports. From step 4 the file may also say where the
+ * checks leave the repository's website (`site`; its rules and commands are `code-site.ts`'). */
 
 export const MAX_CODE_CHECKS_FILE_BYTES = 16 * 1024;
 export const MAX_CODE_CHECKS = 20;
@@ -32,9 +41,25 @@ export interface CodeChecksProblem {
 	readonly message: string;
 }
 
+/** A repository's website (own code storage, step 4; STEP4-RELEASES-PLAN.md 5.1): the folder of the repository its
+ * checks leave the built site in (`.` is its top), the site's name (its link's last part, used once, when the site is
+ * made) and its title, each null when the file leaves it out. */
+export interface CodeSiteRecipe {
+	readonly folder: string;
+	readonly name: string | null;
+	readonly title: string | null;
+}
+
 export type CodeChecksRead =
 	| { readonly state: "missing" }
-	| { readonly state: "ok"; readonly blob: string; readonly checks: readonly CodeCheck[] }
+	/** `site` is the file's recipe, null without one. `readCodeChecks` always says it; it is optional only while the
+	 * executor's runner (part C2) is not built on it. */
+	| {
+			readonly state: "ok";
+			readonly blob: string;
+			readonly checks: readonly CodeCheck[];
+			readonly site?: CodeSiteRecipe | null;
+	  }
 	/** `blob` is null when the path holds no regular file (a folder, a link or a submodule). */
 	| { readonly state: "refused"; readonly blob: string | null; readonly problems: readonly CodeChecksProblem[] };
 
@@ -52,13 +77,22 @@ export type CodeChecksGate =
 			readonly checks: readonly CodeCheck[];
 			readonly blob: string;
 			readonly changed: CodeChecksChanged | null;
+			/** The candidate's recipe (null: no site). `codeChecksGate` always says it; optional as `CodeChecksRead`'s. */
+			readonly site?: CodeSiteRecipe | null;
 	  }
 	| { readonly gate: "refused"; readonly summary: string };
 
 /** One run of the checks on one candidate. `run` strings are cut to 200 bytes; `tail` is `codeChecksTail` of the
- * failing check's masked output; `log` is the path of its whole output on the session's machine. */
+ * failing check's masked output; `log` is the path of its whole output on the session's machine. A run that passed
+ * says what became of the site (step 4): null when there was none to take (no recipe, or sites switched off). */
 export type CodeChecksRun =
-	| { state: "passed"; ms: number; copyMs: number; checks: { name: string; run: string; ms: number }[] }
+	| {
+			state: "passed";
+			ms: number;
+			copyMs: number;
+			checks: { name: string; run: string; ms: number }[];
+			site?: CodeSiteCollected | null;
+	  }
 	| {
 			state: "failed";
 			ms: number;
@@ -76,6 +110,16 @@ export type CodeChecksRun =
 	  }
 	| { state: "not_run"; why: "copy" | "machine" | "transport" | "authority" | "budget"; code: string };
 
+/** A run whose checks all passed, but whose site the code made wrong (step 4; STEP4-RELEASES-PLAN.md 8.1): nothing goes
+ * in, and the turn fails with `codeSiteRefusedSummary`'s words. Part C2 makes it one of `CodeChecksRun`'s answers when
+ * its runner gives it, with the landing that reads it. */
+export interface CodeChecksSiteRefused {
+	state: "site_refused";
+	ms: number;
+	checks: { name: string; run: string; ms: number }[];
+	problem: CodeSiteProblem;
+}
+
 const NAME = /^[a-z0-9][a-z0-9._-]{0,39}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const UNKNOWN = "This key is not in the checks file's schema.";
@@ -83,10 +127,12 @@ const UNKNOWN = "This key is not in the checks file's schema.";
 type Refuse = (at: string, code: string, message: string) => void;
 
 /** The checks file as git holds it at one commit, read under its rules: JSON with comments and no trailing commas
- * (the setup file's reader), one object whose only keys are `$schema` and `checks`; 1 to 20 checks, each with a unique
- * name, a command of 1 to 4096 bytes without NUL, a time limit of 10 to 1800 s (600 when left out) and a folder of the
- * repository ("." when left out); the limits at most 3600 s together. A file that breaks any rule is refused whole,
- * with every problem found. */
+ * (the setup file's reader), one object whose only keys are `$schema`, `checks` and `site`; 1 to 20 checks, each with a
+ * unique name, a command of 1 to 4096 bytes without NUL, a time limit of 10 to 1800 s (600 when left out) and a folder
+ * of the repository ("." when left out); the limits at most 3600 s together. `site`, when there, is the repository's
+ * website (`CodeSiteRecipe`): an object with `folder` (a folder of the repository as the kernel keeps a site's), and
+ * optionally `name` (a site's name) and `title` (1 to 120 characters on one line, no space at either end:
+ * `SITE_TITLE`). A file that breaks any rule is refused whole, with every problem found. */
 export function readCodeChecks(file: CodeCommitFile): CodeChecksRead {
 	const entry = file.entry;
 	if (entry.kind === "missing") return { state: "missing" };
@@ -105,12 +151,12 @@ export function readCodeChecks(file: CodeCommitFile): CodeChecksRead {
 	const blob = file.blob;
 	if (typeof blob !== "string" || !SHA.test(blob)) throw new Error("INVALID_CODE_COMMIT_FILE");
 	const problems: CodeChecksProblem[] = [];
-	const checks = parseChecks(entry.bytes, (at, code, message) => problems.push({ at, code, message }));
-	if (problems.length > 0 || checks === null) return { state: "refused", blob, problems };
-	return { state: "ok", blob, checks };
+	const parsed = parseChecks(entry.bytes, (at, code, message) => problems.push({ at, code, message }));
+	if (problems.length > 0 || parsed === null) return { state: "refused", blob, problems };
+	return { state: "ok", blob, checks: parsed.checks, site: parsed.site };
 }
 
-function parseChecks(bytes: Uint8Array, refuse: Refuse): CodeCheck[] | null {
+function parseChecks(bytes: Uint8Array, refuse: Refuse): { checks: CodeCheck[]; site: CodeSiteRecipe | null } | null {
 	if (bytes.byteLength > MAX_CODE_CHECKS_FILE_BYTES) {
 		refuse("", "TOO_LARGE", "The checks file is over 16 KiB.");
 		return null;
@@ -138,15 +184,56 @@ function parseChecks(bytes: Uint8Array, refuse: Refuse): CodeCheck[] | null {
 		return null;
 	}
 	let checks: CodeCheck[] = [];
+	let site: CodeSiteRecipe | null = null;
 	for (const [key, value] of Object.entries(root)) {
 		const at = pointer("", key);
 		if (key === "$schema") {
 			if (typeof value !== "string") refuse(at, "WRONG_TYPE", "Must be a string.");
 		} else if (key === "checks") checks = checksOf(value, at, refuse);
+		else if (key === "site") site = siteOf(value, at, refuse);
 		else refuse(at, "UNKNOWN_KEY", UNKNOWN);
 	}
 	if (!("checks" in root)) refuse("", "MISSING_KEY", "Needs checks.");
-	return checks;
+	return { checks, site };
+}
+
+/** The `site` key (STEP4-RELEASES-PLAN.md 5.1): what the kernel keeps of a made site, so that a recipe this reads is
+ * never one a report cannot carry. */
+function siteOf(value: unknown, at: string, refuse: Refuse): CodeSiteRecipe | null {
+	if (!isObject(value)) {
+		refuse(at, "WRONG_TYPE", "Must be an object.");
+		return null;
+	}
+	let folder: string | null = null;
+	let name: string | null = null;
+	let title: string | null = null;
+	for (const [key, field] of Object.entries(value)) {
+		const fieldAt = pointer(at, key);
+		if (key !== "folder" && key !== "name" && key !== "title") refuse(fieldAt, "UNKNOWN_KEY", UNKNOWN);
+		else if (typeof field !== "string") refuse(fieldAt, "WRONG_TYPE", "Must be a string.");
+		else if (key === "folder") {
+			if (codeSiteFolderValid(field)) folder = field;
+			else
+				refuse(
+					fieldAt,
+					"INVALID_PATH",
+					'Must be "." or a folder of the repository: a relative path without . or .. parts, at most 300 bytes.',
+				);
+		} else if (key === "name") {
+			if (codeSiteNameValid(field)) name = field;
+			else
+				refuse(
+					fieldAt,
+					"INVALID_VALUE",
+					"Must be 3 to 48 of a-z, 0-9 and '-', starting and ending with a letter or a digit, and not a name a site never gets (such as api, app or www).",
+				);
+		} else if (field.startsWith(" ") || field.endsWith(" "))
+			refuse(fieldAt, "SITE_TITLE", "Must not start or end with a space.");
+		else if (codeSiteTitleValid(field)) title = field;
+		else refuse(fieldAt, "INVALID_VALUE", "Must be 1 to 120 characters on one line.");
+	}
+	if (!("folder" in value)) refuse(at, "MISSING_KEY", "Needs folder.");
+	return folder === null ? null : { folder, name, title };
 }
 
 function checksOf(value: unknown, at: string, refuse: Refuse): CodeCheck[] {
@@ -240,8 +327,9 @@ function isFolder(path: string): boolean {
 }
 
 /** The gate (a `to-check` answer: at least one of the two reads is not missing). A candidate whose file is valid runs
- * its checks, whatever main has. A repository that has a checks file keeps one: a candidate with no regular file there
- * is refused. A candidate whose file has problems is refused with them. */
+ * its checks, whatever main has, and its recipe says what site they leave (main's never counts). A repository that has
+ * a checks file keeps one: a candidate with no regular file there is refused. A candidate whose file has problems is
+ * refused with them. */
 export function codeChecksGate(main: CodeChecksRead, candidate: CodeChecksRead): CodeChecksGate {
 	if (candidate.state === "ok")
 		return {
@@ -249,6 +337,7 @@ export function codeChecksGate(main: CodeChecksRead, candidate: CodeChecksRead):
 			checks: candidate.checks,
 			blob: candidate.blob,
 			changed: changedOf(main.state === "ok" ? main.checks : [], candidate.checks),
+			site: candidate.site ?? null,
 		};
 	if (main.state === "missing" && candidate.state === "missing") throw new Error("CODE_CHECKS_NOTHING_TO_CHECK");
 	return { gate: "refused", summary: codeChecksRefusedSummary(candidate, main.state !== "missing") };
@@ -337,19 +426,6 @@ const MAX_MILLIS = 999_999_999_999_999;
 
 function millis(ms: number): number {
 	return Number.isFinite(ms) && ms > 0 ? Math.min(Math.round(ms), MAX_MILLIS) : 0;
-}
-
-/** `text` cut to at most `max` bytes of UTF-8, at a whole character, with no mark. */
-function cut(text: string, max: number): string {
-	if (bytes(text) <= max) return text;
-	let kept = "";
-	let used = 0;
-	for (const character of text) {
-		used += bytes(character);
-		if (used > max) break;
-		kept += character;
-	}
-	return kept;
 }
 
 // The words of a failed turn --------------------------------------------------------------------------------------------
@@ -508,31 +584,6 @@ export function codeChecksNotRunSummary(run: Extract<CodeChecksRun, { state: "no
 export const CODE_CHECKS_MAIN_MOVED =
 	"Nothing went into main yet: main changed twice while this change's checks ran, so they never ran on what would go in. This is not a fault in the code. The work is kept on the session's branch; finishing again checks it once more. [code=CODING_CHECKS_MAIN_MOVED]";
 
-/** Whether a line may show the character: not a control (C0, DEL, C1), a separator that some readers break a line at
- * (LS, PS), or a mark that turns the direction of the text after it around. */
-function unseen(code: number): boolean {
-	return (
-		code < 0x20 ||
-		(code >= 0x7f && code <= 0x9f) ||
-		code === 0x2028 ||
-		code === 0x2029 ||
-		(code >= 0x202a && code <= 0x202e) ||
-		(code >= 0x2066 && code <= 0x2069)
-	);
-}
-const halfCharacter = (code: number): boolean => code >= 0xd800 && code <= 0xdfff;
-
-/** Text from a file or a command as part of one line of the words: every character a line may not show is U+FFFD, and
- * at most `max` bytes, cut at a whole character with an ellipsis. */
-function shown(text: string, max: number): string {
-	let line = "";
-	for (const character of text) {
-		const point = character.codePointAt(0) as number;
-		line += halfCharacter(point) || unseen(point) ? "\uFFFD" : character;
-	}
-	return bytes(line) <= max ? line : `${cut(line, max - bytes("…"))}…`;
-}
-
 /** A command as Markdown code, its fence longer than any run of backticks inside. */
 function code(text: string, max: number): string {
 	const inner = shown(text, max);
@@ -541,10 +592,6 @@ function code(text: string, max: number): string {
 	// A reader takes one space off each end of code that has one at both: so one is put there for it to take.
 	const pad = /^[ `]|[ `]$/.test(inner) ? " " : "";
 	return `${fence}${pad}${inner}${pad}${fence}`;
-}
-
-function bytes(text: string): number {
-	return Buffer.byteLength(text, "utf8");
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

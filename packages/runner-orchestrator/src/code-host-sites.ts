@@ -12,111 +12,13 @@ import {
 	treeRecords,
 	withJob,
 } from "./code-host-jobs.ts";
+import { type CodeSiteProblem, codeSiteManifest, codeSiteTreeProblem } from "./code-site.ts";
 
 /** A repository's website as the code host reads it (own code storage, step 4, part B; STEP4-RELEASES-PLAN.md 8.2).
  * Once a change's checks passed, the executor's collect writes the web files of the folder the checks file names into
  * the repository's storage as git objects, one tree of them that no ref names, and the change's row keeps the tree's
  * id. The upload pass reads that tree here, by git and never from a worktree, to put it into the site tables as a
  * version. */
-
-// Stand-in for code-site.ts (part C1): the plan's 8.1 signatures, with the eighth code and the folders' limit of
-// STEP4-BUILD.md section 2. The lead replaces this block with an import from "./code-site.ts" once C1 is merged.
-const CODE_SITE_MAX_FILES = 500;
-const CODE_SITE_MAX_BYTES = 25 * 1024 * 1024;
-const CODE_SITE_MAX_FILE_BYTES = 10 * 1024 * 1024;
-/** Folders below the site's top that lead to a listed file. */
-const CODE_SITE_MAX_FOLDERS = 100;
-/** qorpera_site_content_type's extensions (20260930550000), 30 of them. */
-const CODE_SITE_EXTENSIONS: readonly string[] = [
-	"html",
-	"htm",
-	"css",
-	"js",
-	"mjs",
-	"json",
-	"map",
-	"webmanifest",
-	"txt",
-	"csv",
-	"xml",
-	"svg",
-	"png",
-	"jpg",
-	"jpeg",
-	"gif",
-	"webp",
-	"avif",
-	"ico",
-	"woff",
-	"woff2",
-	"ttf",
-	"otf",
-	"mp4",
-	"webm",
-	"mp3",
-	"m4a",
-	"ogg",
-	"wav",
-	"pdf",
-];
-type CodeSiteProblemCode =
-	| "SITE_FOLDER_MISSING"
-	| "SITE_NO_INDEX"
-	| "SITE_TOO_MANY_FILES"
-	| "SITE_TOO_MANY_FOLDERS"
-	| "SITE_FILE_TOO_LARGE"
-	| "SITE_TOO_LARGE"
-	| "SITE_FILE_NAME"
-	| "SITE_HOLDS_SECRET";
-interface CodeSiteProblem {
-	readonly code: CodeSiteProblemCode;
-	readonly path: string | null;
-	readonly variable: string | null;
-}
-/** A site path, as the database stores it: no hidden part, no '..', no character a link would escape. */
-const CODE_SITE_PATH = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,199}(\/[A-Za-z0-9_][A-Za-z0-9._-]{0,199}){0,15}$/;
-/** site-tools' manifest: lines path TAB sha256 TAB bytes in C order, LF, SHA-256. */
-function codeSiteManifest(files: readonly { path: string; sha256: string; bytes: number }[]): string {
-	// Paths are ASCII: code-unit order is the database's byte order (collate "C").
-	const lines = [...files]
-		.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
-		.map((file) => `${file.path}\t${file.sha256}\t${file.bytes}`);
-	return createHash("sha256").update(lines.join("\n"), "utf8").digest("hex");
-}
-/** The collect's rules on a tree's entries, for the pass. The collect leaves out what is not a regular web file of a
- * path a site serves; a tree holds none of that, so here each such entry is refused as its name. Every folder on a
- * file's way counts toward the folders' limit, since each is one tree. */
-function codeSiteTreeProblem(
-	entries: readonly { mode: string; type: string; path: string; bytes: number }[],
-): CodeSiteProblem | null {
-	const problem = (code: CodeSiteProblemCode, path: string | null = null) => ({ code, path, variable: null });
-	const sorted = [...entries].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
-		folders = new Set<string>();
-	let files = 0,
-		total = 0;
-	for (const { mode, path, bytes } of sorted) {
-		const extension = /\.([A-Za-z0-9]{1,12})$/.exec(path.slice(path.lastIndexOf("/") + 1))?.[1]?.toLowerCase();
-		// A regular file's mode: a link's is 120000, a submodule's 160000.
-		if (
-			(mode !== "100644" && mode !== "100755") ||
-			path.length > 512 ||
-			!CODE_SITE_PATH.test(path) ||
-			!extension ||
-			!CODE_SITE_EXTENSIONS.includes(extension)
-		)
-			return problem("SITE_FILE_NAME", path);
-		if (bytes > CODE_SITE_MAX_FILE_BYTES) return problem("SITE_FILE_TOO_LARGE", path);
-		files += 1;
-		total += bytes;
-		if (files > CODE_SITE_MAX_FILES) return problem("SITE_TOO_MANY_FILES");
-		if (total > CODE_SITE_MAX_BYTES) return problem("SITE_TOO_LARGE");
-		for (let slash = path.indexOf("/"); slash >= 0; slash = path.indexOf("/", slash + 1))
-			folders.add(path.slice(0, slash));
-		if (folders.size > CODE_SITE_MAX_FOLDERS) return problem("SITE_TOO_MANY_FOLDERS");
-	}
-	return sorted.some((entry) => entry.path === "index.html") ? null : problem("SITE_NO_INDEX");
-}
-// End of the stand-in for code-site.ts.
 
 /** One file of a site tree: its path in the site, its size, the SHA-256 of its bytes, and the bytes. */
 export interface CodeSiteTreeFile {
