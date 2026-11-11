@@ -100,6 +100,20 @@ export interface MachineCodingValueAuthority {
 	/** The lease generation SQL's read saw (20260930713000): what the helper read leaves only while it stands, and no
 	 * member holds the desktop (v233 release review r1, F29 of #1661). */
 	desktopGeneration: number;
+	/** A read, as SQL authorized it. */
+	clear: false;
+}
+/** SQL's answer when a member held the desktop since its clipboard was last confirmed clear (F32 of #1661): nothing is
+ * read; the machine's executor clears both selections and confirms it at this generation, and the agent is refused. */
+export interface MachineCodingValueClear {
+	machineId: string;
+	placementId: string;
+	bootId: string;
+	executorOwner: string;
+	providerId: string;
+	receiptId: string;
+	desktopGeneration: number;
+	clear: true;
 }
 
 /** The calling run's live tool authority, its own executing save_coding_value receipt of exactly this envelope, the
@@ -110,7 +124,7 @@ export async function authorizeMachineCodingValue(
 	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> },
 	request: CloudMachineCodingValueHttpRequest,
 	signal: AbortSignal,
-): Promise<MachineCodingValueAuthority> {
+): Promise<MachineCodingValueAuthority | MachineCodingValueClear> {
 	const value = await control.call("qorpera_authorize_machine_coding_value", {
 		p_binding: request.binding, p_scope: request.scope, p_receipt_id: request.input.commandId, p_envelope: request.input.envelope,
 	}, signal);
@@ -119,6 +133,21 @@ export async function authorizeMachineCodingValue(
 	if (result.schema !== "qorpera.machine-coding-value-authority/v1") throw new Error("MACHINE_CODING_VALUE_AUTHORITY_INVALID");
 	if (result.state === "refused" && (result.reason === "MACHINE_NOT_RUNNING" || result.reason === "DESKTOP_MEMBER_IN_CONTROL"))
 		throw new CloudMachineCodingValueRefusal(result.reason);
+	if (result.state === "clear") {
+		if (Object.keys(result).sort().join() !==
+				"bootId,desktopGeneration,executorOwner,machineId,placementId,providerId,receiptId,schema,state" ||
+			result.machineId !== request.scope.machineId || result.receiptId !== request.input.commandId ||
+			typeof result.placementId !== "string" || !UUID.test(result.placementId) ||
+			typeof result.bootId !== "string" || !UUID.test(result.bootId) ||
+			typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
+			typeof result.providerId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(result.providerId) ||
+			typeof result.desktopGeneration !== "number" || !Number.isSafeInteger(result.desktopGeneration) || result.desktopGeneration < 0)
+			throw new Error("MACHINE_CODING_VALUE_AUTHORITY_INVALID");
+		signal.throwIfAborted();
+		return { machineId: result.machineId, placementId: result.placementId, bootId: result.bootId,
+			executorOwner: result.executorOwner, providerId: result.providerId, receiptId: result.receiptId,
+			desktopGeneration: result.desktopGeneration, clear: true };
+	}
 	const target = result.target;
 	if (result.state !== "authorized" || result.machineId !== request.scope.machineId || result.receiptId !== request.input.commandId ||
 		typeof result.placementId !== "string" || !UUID.test(result.placementId) ||
@@ -134,7 +163,8 @@ export async function authorizeMachineCodingValue(
 		throw new Error("MACHINE_CODING_VALUE_AUTHORITY_INVALID");
 	signal.throwIfAborted();
 	return { machineId: result.machineId, placementId: result.placementId, bootId: result.bootId, executorOwner: result.executorOwner,
-		providerId: result.providerId, receiptId: result.receiptId, target: { ...bound }, desktopGeneration: result.desktopGeneration };
+		providerId: result.providerId, receiptId: result.receiptId, target: { ...bound }, desktopGeneration: result.desktopGeneration,
+		clear: false };
 }
 
 /** What SQL says about one machine_screen (20260930708000): where the machine runs, the run that sees the screen, and

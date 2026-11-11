@@ -10,6 +10,7 @@ import {
 } from "../../../deploy/coding-worker/machine-command-authority.ts";
 import {
 	localMachineCodingValue,
+	localMachineCodingValueClear,
 	localMachineScreen,
 	localMachineWake,
 	localMemberMachineAct,
@@ -773,6 +774,12 @@ describe("a machine's coding value", () => {
 		const call = vi.fn(async (_method: string, _args: Record<string, unknown>) => answer as unknown);
 		const host = {
 			codingValue: vi.fn(async () => ({ box }) as { box: Record<string, string> } | { refused: string }),
+			clearClipboard: vi.fn(
+				async () =>
+					({ cleared: true }) as
+						| { cleared: boolean }
+						| { refused: "MACHINE_BOOT_CHANGED" | "MACHINE_IMAGE_WITHOUT_CODING_VALUES" },
+			),
 		};
 		const router = new MachineCommandRouter({
 			owner: "mx-a",
@@ -781,6 +788,7 @@ describe("a machine's coding value", () => {
 			control: { call },
 			credential: async () => "",
 			codingValueLocal: localMachineCodingValue(host),
+			codingValueClearLocal: localMachineCodingValueClear(host),
 		});
 		return { binding, request, target, answer, call, host, router, signal: new AbortController().signal };
 	}
@@ -813,6 +821,57 @@ describe("a machine's coding value", () => {
 			},
 			f.signal,
 		);
+	});
+
+	it("clears the clipboard instead of reading it when SQL says a member held the desktop since, and refuses the agent either way (v233 release review r1, F32 of #1661)", async () => {
+		const f = fixture();
+		const clear = {
+			schema: "qorpera.machine-coding-value-authority/v1",
+			state: "clear",
+			machineId: f.answer.machineId,
+			placementId: f.answer.placementId,
+			bootId: f.answer.bootId,
+			executorOwner: "mx-a",
+			providerId: "machine-node",
+			receiptId: f.answer.receiptId,
+			desktopGeneration: 6,
+		};
+		// Cleared and recorded, or not: nothing is read, and the agent copies the key again and calls again.
+		for (const outcome of [{ cleared: true }, { cleared: false }]) {
+			f.call.mockResolvedValueOnce(clear);
+			f.host.clearClipboard.mockResolvedValueOnce(outcome);
+			const error = await f.router.codingValue(f.request, f.signal).catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(CloudMachineCodingValueRefusal);
+			expect(error).toMatchObject({ code: "DESKTOP_MEMBER_IN_CONTROL" });
+		}
+		expect(f.host.clearClipboard).toHaveBeenCalledWith(
+			{ placementId: f.answer.placementId, bootId: f.answer.bootId, desktopGeneration: 6 },
+			f.signal,
+		);
+		expect(f.host.codingValue).not.toHaveBeenCalled();
+		// Another boot, or an image without the helper: the agent's refusal by that code, as a read's would be.
+		for (const refused of ["MACHINE_BOOT_CHANGED", "MACHINE_IMAGE_WITHOUT_CODING_VALUES"] as const) {
+			f.call.mockResolvedValueOnce(clear);
+			f.host.clearClipboard.mockResolvedValueOnce({ refused });
+			await expect(f.router.codingValue(f.request, f.signal)).rejects.toMatchObject({ code: refused });
+		}
+		// A `clear` answer of another shape is no authority: nothing is cleared.
+		for (const other of [
+			{ machineId: randomUUID() },
+			{ receiptId: randomUUID() },
+			{ placementId: "placement" },
+			{ desktopGeneration: -1 },
+			{ desktopGeneration: "6" },
+			{ target: f.target },
+		]) {
+			f.call.mockResolvedValueOnce({ ...clear, ...other });
+			await expect(f.router.codingValue(f.request, f.signal), JSON.stringify(other)).rejects.toThrow(
+				"MACHINE_CODING_VALUE_AUTHORITY_INVALID",
+			);
+		}
+		expect(f.host.clearClipboard).toHaveBeenCalledTimes(4);
+		// A machine no member held since its last clear: read as before.
+		expect(await f.router.codingValue(f.request, f.signal)).toMatchObject({ box });
 	});
 
 	it("turns a stopped machine and the helper's codes into the agent's refusals, and anything else into a failure", async () => {
