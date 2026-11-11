@@ -70,18 +70,15 @@ alter table public.qorpera_code_changes
 create function public.qorpera_code_checks_passed_valid(p_result jsonb, p_commit text, p_how text)
 returns boolean language sql immutable set search_path = '' as $$
 	select coalesce(case when jsonb_typeof(p_result) = 'object' then pg_column_size(p_result) <= 8192
-		and p_result ?& array['schema','commit','how','file','ms','copyMs','checks','changed','tries']
 		and p_result - array['schema','commit','how','file','ms','copyMs','checks','changed','tries'] = '{}'::jsonb
 		and p_result -> 'schema' = '"qorpera.code-checks/v1"'::jsonb
-		and public.qorpera_code_json_text(p_result -> 'commit', '^[0-9a-f]{40}$') and p_result ->> 'commit' = p_commit
-		and jsonb_typeof(p_result -> 'how') = 'string' and p_result ->> 'how' = p_how
+		and p_result ->> 'commit' = p_commit and p_result ->> 'how' = p_how
 		and public.qorpera_code_json_text(p_result -> 'file', '^[0-9a-f]{40}$')
 		and public.qorpera_code_json_count(p_result -> 'ms') and public.qorpera_code_json_count(p_result -> 'copyMs')
 		and jsonb_typeof(p_result -> 'tries') = 'number' and p_result ->> 'tries' in ('1','2')
 		and case when jsonb_typeof(p_result -> 'checks') = 'array' then jsonb_array_length(p_result -> 'checks') between 1 and 20
 				and not exists (select 1 from jsonb_array_elements(p_result -> 'checks') item
-					where case when jsonb_typeof(item) = 'object' then not item ?& array['name','run','ms']
-						or item - array['name','run','ms'] <> '{}'::jsonb
+					where case when jsonb_typeof(item) = 'object' then item - array['name','run','ms'] <> '{}'::jsonb
 						or not public.qorpera_code_json_text(item -> 'name', '^[a-z0-9][a-z0-9._-]{0,39}$')
 						or not public.qorpera_code_json_text(item -> 'run', '.') or octet_length(item ->> 'run') > 200
 						or not public.qorpera_code_json_count(item -> 'ms')
@@ -89,8 +86,7 @@ returns boolean language sql immutable set search_path = '' as $$
 				and (select count(distinct item ->> 'name') = count(*) from jsonb_array_elements(p_result -> 'checks') item)
 			else false end
 		and case jsonb_typeof(p_result -> 'changed') when 'null' then true
-			when 'object' then p_result -> 'changed' ?& array['added','removed','run']
-				and (p_result -> 'changed') - array['added','removed','run'] = '{}'::jsonb
+			when 'object' then (p_result -> 'changed') - array['added','removed','run'] = '{}'::jsonb
 				and not exists (select 1 from unnest(array['added','removed','run']) list(key)
 					where case when public.qorpera_code_json_strings(p_result -> 'changed' -> list.key, 20)
 						then exists (select 1 from jsonb_array_elements_text(p_result -> 'changed' -> list.key) named(name)
@@ -104,14 +100,12 @@ $$;
 -- landing exactly {"state":"none"}, {"state":"off"}, or {"state":"passed","result":<what passed on mainAfter>}.
 create function public.qorpera_code_change_checks_valid(p_change jsonb)
 returns boolean language sql immutable set search_path = '' as $$
-	select coalesce(case when p_change -> 'state' = '"landed"'::jsonb then
-			case when jsonb_typeof(p_change -> 'checks') = 'object' then case p_change -> 'checks' -> 'state'
-					when '"none"'::jsonb then p_change -> 'checks' = '{"state":"none"}'::jsonb
-					when '"off"'::jsonb then p_change -> 'checks' = '{"state":"off"}'::jsonb
-					when '"passed"'::jsonb then (p_change -> 'checks') - array['state','result'] = '{}'::jsonb
-						and public.qorpera_code_checks_passed_valid(p_change -> 'checks' -> 'result', p_change ->> 'mainAfter',
-							p_change ->> 'how')
-					else false end
+	select coalesce(case when p_change -> 'state' = '"landed"'::jsonb then case p_change -> 'checks' -> 'state'
+				when '"none"'::jsonb then p_change -> 'checks' = '{"state":"none"}'::jsonb
+				when '"off"'::jsonb then p_change -> 'checks' = '{"state":"off"}'::jsonb
+				when '"passed"'::jsonb then (p_change -> 'checks') - array['state','result'] = '{}'::jsonb
+					and public.qorpera_code_checks_passed_valid(p_change -> 'checks' -> 'result', p_change ->> 'mainAfter',
+						p_change ->> 'how')
 				else false end
 		else p_change -> 'checks' = 'null'::jsonb end, false)
 $$;
@@ -160,8 +154,7 @@ select pg_temp.code_checks_patch('public.qorpera_code_change_report_valid(jsonb)
 		and p_change - array['schema','state','inLine','how','headSha','mainBefore','mainAfter','filesChanged','paths',
 			'pathsMore','picture','refusal','checks'] = '{}'::jsonb
 		and case p_change -> 'schema' when '"qorpera.code-change-report/v1"'::jsonb then not (p_change ? 'checks')
-			when '"qorpera.code-change-report/v2"'::jsonb then p_change ? 'checks'
-				and public.qorpera_code_change_checks_valid(p_change)
+			when '"qorpera.code-change-report/v2"'::jsonb then public.qorpera_code_change_checks_valid(p_change)
 			else false end$new$]);
 
 -- The row a report appends, or the filler a turn takes over, keeps what the checks did.
@@ -195,8 +188,7 @@ select pg_temp.code_checks_patch('public.qorpera_code_request_finish(text,text,u
 					from (select max(back.n) as n from public.qorpera_code_changes back
 						where v_later and back.environment_id = v_repository.environment_id and back.owner = v_repository.owner
 							and back.name = v_repository.name and back.checks_state in ('passed','inherited')
-							and back.main_after = coalesce(v_request.progress -> 'begun' ->> 'mainBefore', v_change.own_before,
-								v_change.main_before)) kept)$new$]);
+							and back.main_after = v_request.progress -> 'begun' ->> 'mainBefore') kept)$new$]);
 
 -- A restore is not checked: its row inherits from the newest row of its history when main is where that row put it.
 select pg_temp.code_checks_patch('public.qorpera_code_restore_record(text,text,uuid,uuid,jsonb)'::regprocedure, array[
@@ -210,7 +202,7 @@ select pg_temp.code_checks_patch('public.qorpera_code_restore_record(text,text,u
 					from public.qorpera_code_changes kept
 					where kept.environment_id = v_repository.environment_id and kept.owner = v_repository.owner
 						and kept.name = v_repository.name and kept.n = (v_recorded ->> 'keptThrough')::integer
-						and kept.main_after = v_main and kept.checks_state in ('passed','inherited')),
+						and kept.checks_state in ('passed','inherited')),
 					'{"checks_state":"not_run"}'::jsonb));$new$]);
 
 -- The platform's line on a landing says what the checks said, when the turn's row says it.

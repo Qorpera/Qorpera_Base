@@ -4,15 +4,15 @@
 -- restore, the platform's line after a landing, and the failure words of the checks with the session's rounds.
 -- 1211's fixture (1210's helpers before it): company/shop with six rows, session copies that hand commits in, the record
 -- call, and an undo and a restore from the call that asks for it to the executor's finish. This file's repositories
--- are company/gate, back, late, kept and said, and its session copies are numbered from 1300.
+-- are company/gate, back, late, wide, kept and said, and its session copies are numbered from 1300.
 --   1. Rights, the columns and their rule, the marker.
 --   2. The record call: v1 as before; v2 none, off and passed; every invalid v2; a filler first and a filler taken
 --      over; a replay.
 --   3. The switch: the lease holder only, a GitHub repository refused, no registry row is on, off is off.
 --   4. The record files: checksState and checks.
---   5. Undo: one change, andLater over a passed row, over a none row and over an inherited one, and a late finish that
---      takes over a row whose checks passed.
---   6. Restore: inherited, not, and to a commit the record does not know.
+--   5. Undo: one change, andLater over a passed row, over a none row and over an inherited one, andLater of a row that
+--      took a wider filler over, and a late finish that takes over a row whose checks passed.
+--   6. Restore: inherited from a passed row and from an inherited one, not, and to a commit the record does not know.
 --   7. The platform's line after a landing, for each state and for no row.
 --   8. The failure words: each code keeps the executor's words and is the reason; the rounds counted, passed over and
 --      reset; any other code as before.
@@ -131,7 +131,7 @@ create function pg_temp.chk_failed(p_summary text, p_code text) returns jsonb la
 	select jsonb_build_object('summary', p_summary, 'reason', p_code, 'code', p_code, 'outcome', p_code)
 $$;
 
-select pg_temp.chk_repository(name) from unnest(array['gate', 'back', 'late', 'kept', 'said']) name \g /dev/null
+select pg_temp.chk_repository(name) from unnest(array['gate', 'back', 'late', 'wide', 'kept', 'said']) name \g /dev/null
 
 -- 1. Rights, the columns, the marker ------------------------------------------------------------------------------------
 do $$
@@ -149,8 +149,8 @@ begin
 	perform pg_temp.base_assert((select prosecdef and proconfig = array['search_path=""'] from pg_proc
 		where oid = 'public.qorpera_code_checks_switch(uuid,uuid)'::regprocedure), 'the switch is a definer with an empty search path');
 	-- Every repository starts with its checks on, those of before this step too; no row of before says anything of them.
-	perform pg_temp.base_assert((select bool_and(r.checks_enabled) and count(*) = 6 from public.qorpera_code_repositories r
-		where r.environment_id = pg_temp.rec_here() and r.name in ('shop', 'gate', 'back', 'late', 'kept', 'said')),
+	perform pg_temp.base_assert((select bool_and(r.checks_enabled) and count(*) = 7 from public.qorpera_code_repositories r
+		where r.environment_id = pg_temp.rec_here() and r.name in ('shop', 'gate', 'back', 'late', 'wide', 'kept', 'said')),
 		'checks are on');
 	perform pg_temp.base_assert((select count(*) = 6 and bool_and(c.checks_state is null and c.checks is null)
 		from public.qorpera_code_changes c where c.environment_id = pg_temp.rec_here() and c.name = 'shop'), 'shop''s six rows');
@@ -429,6 +429,20 @@ begin
 		and pg_temp.req_undone('chk-undo-4', 8, true, 'b5', 'u4', '{}', 'back') = pg_temp.req_recorded(9)
 		and pg_temp.chk_said(9, 'back') = pg_temp.chk_as('inherited', 7), 'andLater over an inherited row: ' || pg_temp.chk_said(9, 'back')::text);
 
+	-- company/wide: main goes back to where the undo's job is told, which for a row that took a wider filler over is
+	-- where its own movement began, not where its span began. Change 1 passed, from w1 to w2. Two movements nobody saw,
+	-- w2 to w2b and w2b to w3, then a landing in line: a filler from w2 to w3. The second movement's report comes late,
+	-- passed, and takes the filler: its own movement began at w2b, whose files no check ran on.
+	perform pg_temp.base_assert(pg_temp.chk_land(1345, 'w1', 'w2', pg_temp.chk_ok(pg_temp.chk_passed('w2')), 'wide')
+			= pg_temp.rec_answer('recorded', 1)
+		and pg_temp.chk_land(1346, 'w3', 'w4', '{"state":"none"}', 'wide') = pg_temp.rec_answer('recorded', 3)
+		and pg_temp.chk_land(1347, 'w2b', 'w3', pg_temp.chk_ok(pg_temp.chk_passed('w3')), 'wide', false) = pg_temp.rec_answer('adopted', 2)
+		and pg_temp.rec_is(2, 'landing', 'landed', 'w2', 'w3', 'wide') and (pg_temp.rec_row(2, 'wide')).own_before = pg_temp.rec_sha('w2b'),
+		'wide''s changes');
+	perform pg_temp.base_assert(pg_temp.req_undone('chk-wide-1', 2, true, 'w4', 'v1', '{}', 'wide') = pg_temp.req_recorded(4)
+		and current_setting('qorpera_test.req_item')::jsonb -> 'change' ->> 'mainBefore' = pg_temp.rec_sha('w2b')
+		and pg_temp.chk_said(4, 'wide') = pg_temp.chk_as('not_run'), 'andLater of a wider row: ' || pg_temp.chk_said(4, 'wide')::text);
+
 	-- company/late: an undo's finish that comes late, after a landing reported late took over the filler that covers the
 	-- undo and itself (1211's company/eight, change 10). The landing's checks passed; the row becomes the undo's, and
 	-- says what the undo's checks are, not the landing's.
@@ -477,6 +491,12 @@ begin
 	v := pg_temp.req_restore_to(v_bundle, 'r3', 'kept', 'r2');
 	perform pg_temp.base_assert(v ->> 'change' = '6' and v -> 'keptThrough' = '3' and pg_temp.chk_said(6, 'kept') = pg_temp.chk_as('inherited', 3)
 		and pg_temp.req_restore_end(v_bundle, 'r3') = pg_temp.req_recorded(6), 'forward to a passed row: ' || v::text);
+	-- company/back to where its change 7 put main: an undo that inherited its checks, so the restore inherits them too.
+	v_bundle := '20261111T050000Z-' || repeat('e', 12);
+	v := pg_temp.req_restore_to(v_bundle, 'u3', 'back', 'u4');
+	perform pg_temp.base_assert(v ->> 'change' = '10' and v -> 'keptThrough' = '7'
+		and pg_temp.chk_said(10, 'back') = pg_temp.chk_as('inherited', 7)
+		and pg_temp.req_restore_end(v_bundle, 'u3') = pg_temp.req_recorded(10), 'back to an inherited row: ' || v::text);
 	-- A commit no row put main at: nothing vouches for it.
 	v_bundle := '20261111T040000Z-' || repeat('d', 12);
 	v := pg_temp.req_restore_to(v_bundle, 'r9', 'kept', 'r3');
