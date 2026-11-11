@@ -29,7 +29,7 @@ const VERSIONS: Readonly<Record<string, string>> = {
 	shop: "44444444-4444-4444-8444-444444444444",
 	site: "55555555-5555-4555-8555-555555555555",
 };
-const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+const digestOf = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const size = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 
 /** STAND-IN for C1's `codeSiteManifest` and the manifest B's read answers with: `publish_site`'s (site-tools'
@@ -46,7 +46,7 @@ function file(path: string, bytes: number): CodeSiteUploadFile {
 	const content = new Uint8Array(bytes);
 	const seed = createHash("sha256").update(path).digest();
 	for (let at = 0; at < bytes; at++) content[at] = (seed[at % 32] as number) ^ (at & 0xff);
-	return { path, bytes, sha256: sha256(content), content };
+	return { path, bytes, sha256: digestOf(content), content };
 }
 
 /** A site of `count` files of `bytes` each, with its index. */
@@ -195,7 +195,7 @@ function setup(trees: Record<string, CodeSiteUploadFile[]>, options: Partial<Cod
 						Array.from({ length: part.of }, (_, at) => row.parts.get(at) as Uint8Array),
 					);
 					row.parts.clear();
-					if (joined.byteLength !== row.bytes || sha256(joined) !== row.sha256)
+					if (joined.byteLength !== row.bytes || digestOf(joined) !== row.sha256)
 						return refused("put", "SITE_FILE_DIFFERS", row.path);
 					row.content = joined;
 					filed += 1;
