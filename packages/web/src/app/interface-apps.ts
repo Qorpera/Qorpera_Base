@@ -212,8 +212,8 @@ interface WarmBudget {
 }
 
 /** Reads the files of one app's page, once each, a few at once, within the app's limits. Reading ahead (`warm`), it
- * reads no videos and nothing past the round's bytes, and makes no `data:` URLs: only the bytes are wanted, for the
- * member's file cache. */
+ * reads no video past WARM_VIDEO_MAX_BYTES and nothing past the round's bytes, and makes no `data:` URLs: only the
+ * bytes are wanted, for the member's file cache. */
 class AppFiles {
 	readonly #folder: Folder;
 	readonly #root: string;
@@ -254,7 +254,6 @@ class AppFiles {
 		const key = path.toLowerCase();
 		const known = this.#read.get(key);
 		if (known) return known;
-		if (this.#warm && APP_VIDEO_KINDS.has(appFileKind(path))) return Promise.resolve(null);
 		if (!APP_FILE_TYPES[appFileKind(path)] || this.#read.size >= APP_MAX_FILES) {
 			if (this.#read.size >= APP_MAX_FILES) this.tooLarge = true;
 			return Promise.resolve(null);
@@ -273,7 +272,11 @@ class AppFiles {
 				return null;
 			}
 			if (this.#warm) {
-				if (file.bytes > this.#warm.left) return null;
+				if (
+					file.bytes > this.#warm.left ||
+					(APP_VIDEO_KINDS.has(appFileKind(path)) && file.bytes > WARM_VIDEO_MAX_BYTES)
+				)
+					return null;
 				this.#warm.left -= file.bytes;
 			}
 			if (video) this.#videoBytes += file.bytes;
@@ -794,11 +797,14 @@ const WARM_MS = 1500;
 const WARM_AT_ONCE = 2;
 const WARM_FILES_AT_ONCE = 4;
 const WARM_BYTES = 24 * 1024 * 1024;
+/** A video read ahead, at most: a short clip on an app's page is read ahead as its pictures are, a long one waits for
+ * the open (Fjeldtur's brand page, 11 Nov 2026: three clips of 110 to 180 KiB were all its first open still fetched). */
+const WARM_VIDEO_MAX_BYTES = 2 * 1024 * 1024;
 
 /** Reads ahead what opening an app reads (the company's colours, and each app's page with every file it names, as
- * `assembleApp` reads them, but no videos), so the member's first open of each app finds them in the member's file
- * cache (company-files.ts). The most recently changed apps go first, and a round stops reading at WARM_BYTES. Only what
- * is not read yet costs a fetch; a read that fails is left for the open to try. */
+ * `assembleApp` reads them, but no video past WARM_VIDEO_MAX_BYTES), so the member's first open of each app finds them
+ * in the member's file cache (company-files.ts). The most recently changed apps go first, and a round stops reading at
+ * WARM_BYTES. Only what is not read yet costs a fetch; a read that fails is left for the open to try. */
 export async function warmApps(folder: Folder, apps: readonly CompanyApp[], signal: AbortSignal): Promise<void> {
 	const budget: WarmBudget = { left: WARM_BYTES };
 	const reads: (() => Promise<unknown>)[] = [() => readAppBrand(folder, signal)];
