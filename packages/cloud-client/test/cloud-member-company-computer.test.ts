@@ -244,6 +244,12 @@ describe("member Company Computer transport", () => {
 			[[{ ...machine, control: { mine: false, name: "Ada", until: "2026-11-10T19:00:00Z", epoch: 3 } }], {}],
 			[[{ ...machine, control: { mine: true, name: "Ada", until: "2026-11-10T19:00:00Z", epoch: -1 } }], {}],
 			[[{ ...machine, control: { mine: true, name: "Ada", until: "2026-11-10T19:00:00Z", epoch: "3" } }], {}],
+			// So are its seat and the press that seated it (F26), a whole number from 0 and a uuid.
+			[[{ ...machine, control: { mine: false, name: "Ada", until: "2026-11-10T19:00:00Z", seat: 3 } }], {}],
+			[[{ ...machine, control: { mine: true, name: "Ada", until: "2026-11-10T19:00:00Z", seat: -1 } }], {}],
+			[[{ ...machine, control: { mine: true, name: "Ada", until: "2026-11-10T19:00:00Z", seat: 2.5 } }], {}],
+			[[{ ...machine, control: { mine: false, name: "Ada", until: "2026-11-10T19:00:00Z", press: id(30) } }], {}],
+			[[{ ...machine, control: { mine: true, name: "Ada", until: "2026-11-10T19:00:00Z", press: "tab-1" } }], {}],
 			[[{ ...machine, epoch: 1.5 }], {}],
 			[[{ ...machine, epoch: -1 }], {}],
 		] as const) {
@@ -268,8 +274,15 @@ describe("member Company Computer transport", () => {
 			waitingFor: null,
 		};
 		const control = { mine: false, name: "Ada Lovelace", until: "2026-11-10T19:05:00.123+00:00" };
-		// The caller's own hold says the epoch it was taken under (review r5).
-		const own = { mine: true, name: "Owner", until: "2026-11-10T19:05:00.123+00:00", epoch: 4 };
+		// The caller's own hold says the epoch it was taken under (review r5), its seat and the press that seated it (F26).
+		const own = {
+			mine: true,
+			name: "Owner",
+			until: "2026-11-10T19:05:00.123+00:00",
+			epoch: 4,
+			seat: 9,
+			press: id(30),
+		};
 		f.fetch.mockResolvedValueOnce(
 			Response.json({
 				schema: "qorpera.agent-machines/v1",
@@ -287,7 +300,7 @@ describe("member Company Computer transport", () => {
 			canWake: true,
 			canTakeOver: false,
 			machines: [
-				{ ...machine, control: { ...control, epoch: null }, epoch: 0 },
+				{ ...machine, control: { ...control, epoch: null, seat: null, press: null }, epoch: 0 },
 				{ ...machine, machineId: id(21), control: own, epoch: 4 },
 			],
 		});
@@ -311,26 +324,29 @@ describe("member Company Computer transport", () => {
 			signal = new AbortController().signal;
 		const answer = (value: Record<string, unknown>) =>
 			f.fetch.mockResolvedValueOnce(Response.json({ schema: "qorpera.member-machine-desktop/v1", ...value }));
-		answer({ state: "ok", until: "2026-11-10T19:05:00+00:00" });
-		expect(await f.client.takeDesktop(id(20), 3, signal)).toEqual({
+		const press = "0f1e2d3c-4b5a-4987-8a6b-5c4d3e2f1a00";
+		answer({ state: "ok", until: "2026-11-10T19:05:00+00:00", seat: 12 });
+		expect(await f.client.takeDesktop(id(20), 3, press, signal)).toEqual({
 			state: "ok",
 			until: "2026-11-10T19:05:00+00:00",
+			seat: 12,
 		});
 		expect(f.fetch.mock.calls[0][0]).toBe("https://control.test/rest/v1/rpc/qorpera_member_take_machine_desktop");
 		expect(JSON.parse(f.fetch.mock.calls[0][1]!.body as string)).toEqual({
 			p_profile_id: id(1),
 			p_machine_id: id(20),
 			p_epoch: 3,
+			p_press: press,
 		});
 		answer({ state: "refused", reason: "DESKTOP_MEMBER_IN_CONTROL", memberName: "Ada" });
-		expect(await f.client.takeDesktop(id(20), 3, signal)).toEqual({
+		expect(await f.client.takeDesktop(id(20), 3, press, signal)).toEqual({
 			state: "refused",
 			reason: "DESKTOP_MEMBER_IN_CONTROL",
 			memberName: "Ada",
 			epoch: null,
 		});
 		answer({ state: "refused", reason: "MACHINE_NOT_RUNNING" });
-		expect(await f.client.takeDesktop(id(20), 3, signal)).toEqual({
+		expect(await f.client.takeDesktop(id(20), 3, press, signal)).toEqual({
 			state: "refused",
 			reason: "MACHINE_NOT_RUNNING",
 			memberName: null,
@@ -338,7 +354,7 @@ describe("member Company Computer transport", () => {
 		});
 		// Sent at an epoch a hand-back moved on (review r5): refused with the current one.
 		answer({ state: "refused", reason: "TAKE_CALLED_OFF", epoch: 4 });
-		expect(await f.client.takeDesktop(id(20), 3, signal)).toEqual({
+		expect(await f.client.takeDesktop(id(20), 3, press, signal)).toEqual({
 			state: "refused",
 			reason: "TAKE_CALLED_OFF",
 			memberName: null,
@@ -349,28 +365,33 @@ describe("member Company Computer transport", () => {
 			{ state: "refused", reason: "TAKE_CALLED_OFF" },
 			{ state: "refused", reason: "MACHINE_NOT_RUNNING", epoch: 4 },
 			{ state: "ok" },
-			{ state: "ok", until: 5 },
+			{ state: "ok", until: 5, seat: 12 },
+			// A take-over's answer names its seat (F26).
+			{ state: "ok", until: "2026-11-10T19:05:00+00:00" },
+			{ state: "ok", until: "2026-11-10T19:05:00+00:00", seat: -1 },
 		]) {
 			answer(bad);
-			await expect(f.client.takeDesktop(id(20), 3, signal), JSON.stringify(bad)).rejects.toThrow();
+			await expect(f.client.takeDesktop(id(20), 3, press, signal), JSON.stringify(bad)).rejects.toThrow();
 		}
 		answer({ state: "ok", until: "2026-11-10T19:06:00+00:00" });
-		expect(await f.client.keepDesktop(id(20), 3, signal)).toBe("2026-11-10T19:06:00+00:00");
+		expect(await f.client.keepDesktop(id(20), 3, 12, signal)).toBe("2026-11-10T19:06:00+00:00");
 		expect(JSON.parse(f.fetch.mock.calls.at(-1)![1]!.body as string)).toEqual({
 			p_profile_id: id(1),
 			p_machine_id: id(20),
 			p_epoch: 3,
+			p_seat: 12,
 		});
 		answer({ state: "ended" });
-		expect(await f.client.keepDesktop(id(20), 3, signal)).toBeNull();
+		expect(await f.client.keepDesktop(id(20), 3, 12, signal)).toBeNull();
 		expect(f.fetch.mock.calls.at(-1)![0]).toBe(
 			"https://control.test/rest/v1/rpc/qorpera_member_keep_machine_desktop",
 		);
-		answer({ state: "ok", handedBack: true, epoch: 4, holding: false });
-		expect(await f.client.handBackDesktop(id(20), "closed", 3, signal)).toEqual({
+		answer({ state: "ok", handedBack: true, epoch: 4, holding: false, seat: null });
+		expect(await f.client.handBackDesktop(id(20), "closed", 3, { seat: 12 }, signal)).toEqual({
 			handedBack: true,
 			epoch: 4,
 			holding: false,
+			seat: null,
 		});
 		expect(f.fetch.mock.calls.at(-1)![0]).toBe(
 			"https://control.test/rest/v1/rpc/qorpera_member_hand_back_machine_desktop",
@@ -380,32 +401,47 @@ describe("member Company Computer transport", () => {
 			p_machine_id: id(20),
 			p_reason: "closed",
 			p_epoch: 3,
+			p_seat: 12,
+			p_press: null,
 		});
-		// At an older epoch: nothing changed, and the member holds it now (another tab of theirs, at the newer one).
-		answer({ state: "ok", handedBack: false, epoch: 6, holding: true });
-		expect(await f.client.handBackDesktop(id(20), "handed_back", 3, signal)).toEqual({
+		// At an older epoch: nothing changed, and the member holds it now (another tab of theirs, at the newer one), in
+		// its seat (F26). A take-over whose answer was lost names its press.
+		answer({ state: "ok", handedBack: false, epoch: 6, holding: true, seat: 15 });
+		expect(await f.client.handBackDesktop(id(20), "handed_back", 3, { press }, signal)).toEqual({
 			handedBack: false,
 			epoch: 6,
 			holding: true,
+			seat: 15,
 		});
+		expect(JSON.parse(f.fetch.mock.calls.at(-1)![1]!.body as string)).toMatchObject({ p_seat: null, p_press: press });
 		for (const bad of [
-			{ state: "ok", handedBack: false, holding: false },
-			{ state: "ok", handedBack: false, epoch: -1, holding: false },
-			{ state: "ok", handedBack: false, epoch: 6 },
+			{ state: "ok", handedBack: false, holding: false, seat: null },
+			{ state: "ok", handedBack: false, epoch: -1, holding: false, seat: null },
+			{ state: "ok", handedBack: false, epoch: 6, seat: null },
+			// The seat comes exactly when the member holds the machine (F26).
+			{ state: "ok", handedBack: false, epoch: 6, holding: true, seat: null },
+			{ state: "ok", handedBack: false, epoch: 6, holding: false, seat: 15 },
+			{ state: "ok", handedBack: false, epoch: 6, holding: false },
 		]) {
 			answer(bad);
 			await expect(
-				f.client.handBackDesktop(id(20), "handed_back", 3, signal),
+				f.client.handBackDesktop(id(20), "handed_back", 3, { seat: 12 }, signal),
 				JSON.stringify(bad),
 			).rejects.toThrow();
 		}
 		f.fetch.mockResolvedValueOnce(Response.json({ schema: "qorpera.member-machine-screen/v1", state: "ok" }));
-		await expect(f.client.handBackDesktop(id(20), "handed_back", 3, signal)).rejects.toThrow();
+		await expect(f.client.handBackDesktop(id(20), "handed_back", 3, { seat: 12 }, signal)).rejects.toThrow();
 		const calls = f.fetch.mock.calls.length;
-		await expect(f.client.takeDesktop("machine", 3, signal)).rejects.toThrow();
-		await expect(f.client.takeDesktop(id(20), -1, signal)).rejects.toThrow();
-		await expect(f.client.keepDesktop(id(20), 1.5, signal)).rejects.toThrow();
-		await expect(f.client.handBackDesktop(id(20), "closed", Number.NaN, signal)).rejects.toThrow();
+		await expect(f.client.takeDesktop("machine", 3, press, signal)).rejects.toThrow();
+		await expect(f.client.takeDesktop(id(20), -1, press, signal)).rejects.toThrow();
+		await expect(f.client.takeDesktop(id(20), 3, "tab-1", signal)).rejects.toThrow();
+		await expect(f.client.keepDesktop(id(20), 1.5, 12, signal)).rejects.toThrow();
+		await expect(f.client.keepDesktop(id(20), 3, -1, signal)).rejects.toThrow();
+		await expect(f.client.handBackDesktop(id(20), "closed", Number.NaN, { seat: 12 }, signal)).rejects.toThrow();
+		// A hand-back names the hold: its seat, its press, or both.
+		await expect(f.client.handBackDesktop(id(20), "closed", 3, {}, signal)).rejects.toThrow();
+		await expect(f.client.handBackDesktop(id(20), "closed", 3, { seat: -1 }, signal)).rejects.toThrow();
+		await expect(f.client.handBackDesktop(id(20), "closed", 3, { press: "tab-1" }, signal)).rejects.toThrow();
 		// None of those reached the network.
 		expect(f.fetch.mock.calls.length).toBe(calls);
 	});
