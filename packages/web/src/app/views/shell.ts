@@ -28,6 +28,7 @@ import { RAIL_ITEM, RailDrag, type RailDrop, railItemId } from "../../ui/rail-dr
 import { glideRows, measureRows } from "../../ui/rail-flip.ts";
 import { RailSelection } from "../../ui/rail-selection.ts";
 import { railListSkeleton } from "../../ui/skeleton.ts";
+import { type IdleLine, idleLine } from "../agent-line.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
 import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
@@ -849,10 +850,12 @@ function statusDisc(look: AgentLook, className: string): HTMLElement | null {
 function railLabel(
 	agent: Pick<HostedStaffAgent, "displayName"> & { mentioned?: boolean },
 	look: AgentLook,
+	idle?: IdleLine,
 ): { "aria-label": string } {
-	// AGENT_LOOK keeps the English words; they are translated where they are drawn.
+	// AGENT_LOOK keeps the English words; they are translated where they are drawn. A row's idle line, already in the
+	// member's words, says the rest.
 	const words = look.note ?? look.line;
-	const state = words ? t(words) : undefined;
+	const state = words ? t(words) : idle?.text;
 	const mention = agent.mentioned ? t("You were mentioned") : undefined;
 	return { "aria-label": [agent.displayName, state, mention].filter(Boolean).join(" · ") };
 }
@@ -869,6 +872,8 @@ interface AgentModel extends Pick<HostedStaffAgent, "id" | "displayName" | "temp
 	state: AgentState;
 	/** Someone mentioned this member in the agent's thread and they have not looked yet. */
 	mentioned: boolean;
+	/** The row's line while the agent does not work and needs no one (app/agent-line.ts), in the member's words. */
+	idle?: IdleLine;
 }
 interface SessionModel {
 	title: string;
@@ -945,7 +950,8 @@ function pinCard(model: AgentModel, href: string): HTMLElement {
 
 function agentRow(model: AgentModel, href: string): HTMLElement {
 	const look = AGENT_LOOK[model.state];
-	const line = stateLine(look);
+	const live = stateLine(look);
+	const line = live ?? model.idle?.text;
 	return h(
 		"a",
 		{
@@ -954,7 +960,7 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 			draggable: "false",
 			"data-agent-id": model.id,
 			style: `--agent-color: ${agentColor(model)}`,
-			...railLabel(model, look),
+			...railLabel(model, look, model.idle),
 		},
 		h(
 			"span",
@@ -963,7 +969,14 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 			statusDisc(look, "rail-row-status"),
 			mentionBadge(model.mentioned),
 		),
-		h("span", { class: "rail-row-copy" }, h("strong", null, model.displayName), line ? h("small", null, line) : null),
+		h(
+			"span",
+			{ class: "rail-row-copy" },
+			h("strong", null, model.displayName),
+			line
+				? h("small", live || !model.idle?.tone ? null : { class: `rail-row-line is-${model.idle.tone}` }, line)
+				: null,
+		),
 	);
 }
 
@@ -1172,6 +1185,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			? { ...agent, appearance: { ...agent.appearance, creature: look.figure, color: look.color } }
 			: agent;
 		const figure = figureFor(shown);
+		const activity = company.agentState(agent.id);
 		return {
 			id: agent.id,
 			displayName: agent.displayName,
@@ -1180,7 +1194,17 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			// figure's own shade) are one cache key, and the row is kept when the save lands.
 			appearance: { color: agentColor(shown, figure), shape: "", creature: figure },
 			// State is part of the cache key, including idle/failed transitions with the same figure.
-			state: company.agentState(agent.id),
+			state: activity,
+			...(activity === "idle" || activity === "failed"
+				? {
+						idle: idleLine({
+							failed: activity === "failed",
+							restingUntil: company.pausedRunFor(agent.id)?.paused?.until,
+							note: state.agentNotes?.[agent.id],
+							hiredAt: agent.createdAt,
+						}),
+					}
+				: {}),
 			mentioned: mentionedIn(
 				agent.id === cofounder?.id && cofounderSessionId
 					? cofounderSessionId

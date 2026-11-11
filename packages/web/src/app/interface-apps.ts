@@ -206,11 +206,20 @@ function base64(bytes: Uint8Array): string {
 /** An app's files read at once, at most, while its page is put together. */
 const FILES_AT_ONCE = 8;
 
-/** Reads the files of one app's page, once each, a few at once, within the app's limits. */
+/** What a round of reading ahead (`warmApps`) may still read, in bytes, across all the apps. */
+interface WarmBudget {
+	left: number;
+}
+
+/** Reads the files of one app's page, once each, a few at once, within the app's limits. Reading ahead (`warm`), it
+ * reads no video past WARM_VIDEO_MAX_BYTES and nothing past the round's bytes, and makes no `data:` URLs: only the
+ * bytes are wanted, for the member's file cache. */
 class AppFiles {
 	readonly #folder: Folder;
 	readonly #root: string;
 	readonly #signal: AbortSignal;
+	readonly #atOnce: number;
+	readonly #warm: WarmBudget | undefined;
 	readonly #read = new Map<string, Promise<Uint8Array | null>>();
 	/** Reads under way, and the ones waiting for a turn. */
 	#active = 0;
@@ -219,10 +228,17 @@ class AppFiles {
 	#videoBytes = 0;
 	tooLarge = false;
 
-	constructor(folder: Folder, root: string, signal: AbortSignal) {
+	constructor(
+		folder: Folder,
+		root: string,
+		signal: AbortSignal,
+		options: { readonly atOnce?: number; readonly warm?: WarmBudget } = {},
+	) {
 		this.#folder = folder;
 		this.#root = root;
 		this.#signal = signal;
+		this.#atOnce = options.atOnce ?? FILES_AT_ONCE;
+		this.#warm = options.warm;
 	}
 
 	get count(): number {
@@ -255,17 +271,32 @@ class AppFiles {
 				this.tooLarge = true;
 				return null;
 			}
+			if (this.#warm) {
+				if (
+					file.bytes > this.#warm.left ||
+					(APP_VIDEO_KINDS.has(appFileKind(path)) && file.bytes > WARM_VIDEO_MAX_BYTES)
+				)
+					return null;
+				this.#warm.left -= file.bytes;
+			}
 			if (video) this.#videoBytes += file.bytes;
 			else this.#bytes += file.bytes;
 			return this.#folder.readFile(file, this.#signal, most, LIVE);
 		});
+		// Reading ahead, a file that fails is left for the open: the page waits for all its other reads, so a round
+		// never has more under way than it says.
+		if (this.#warm) {
+			const settled = reading.catch(() => null);
+			this.#read.set(key, settled);
+			return settled;
+		}
 		this.#read.set(key, reading);
 		return reading;
 	}
 
-	/** Runs `read` once fewer than FILES_AT_ONCE reads are under way; a read that ends hands its turn to the next. */
+	/** Runs `read` once fewer than its share of reads are under way; a read that ends hands its turn to the next. */
 	async #turn<T>(read: () => Promise<T>): Promise<T> {
-		if (this.#active >= FILES_AT_ONCE) await new Promise<void>((resolve) => this.#waiting.push(resolve));
+		if (this.#active >= this.#atOnce) await new Promise<void>((resolve) => this.#waiting.push(resolve));
 		else this.#active++;
 		try {
 			return await read();
@@ -289,7 +320,7 @@ class AppFiles {
 	async dataUrl(path: string): Promise<string | null> {
 		const bytes = await this.bytesOf(path);
 		const type = APP_FILE_TYPES[appFileKind(path)];
-		return bytes === null || !type ? null : `data:${type};base64,${base64(bytes)}`;
+		return bytes === null || !type || this.#warm ? null : `data:${type};base64,${base64(bytes)}`;
 	}
 }
 
@@ -322,8 +353,8 @@ export async function assembleApp(
 	look?: AppLook,
 ): Promise<AssembledApp> {
 	const files = new AppFiles(folder, app.path, signal);
-	const html = await files.text(app.entry);
-	if (html === null)
+	const page = await readPage(files, app.entry);
+	if (page === null)
 		return files.tooLarge
 			? {
 					ok: false,
@@ -331,9 +362,35 @@ export async function assembleApp(
 					message: "The app is larger than 4 MiB of pages and code, 48 MiB of pictures and videos, or 64 files.",
 				}
 			: { ok: false, reason: "missing", message: `The app's page, ${app.entry}, is not in its folder.` };
+	if (files.tooLarge)
+		return {
+			ok: false,
+			reason: "too_large",
+			message: "The app is larger than 4 MiB of pages and code, 48 MiB of pictures and videos, or 64 files.",
+		};
+	// Before every style of the page, and in a layer of its own: whatever the page's styles say wins.
+	let scheme: AppScheme | undefined;
+	if (look) {
+		scheme = appScheme(page, look.scheme);
+		const base = page.createElement("style");
+		base.setAttribute("data-qorpera-base", "");
+		base.textContent = appBaseStyle(scheme, look.brand);
+		page.head.prepend(base);
+	}
+	const written = `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : "<!doctype html>"}${page.documentElement.outerHTML}`;
+	const handed = framePage(written);
+	return handed === null
+		? { ok: false, reason: "not_shown", message: "This app can't be shown live." }
+		: { ok: true, page: handed, files: files.count, bytes: files.bytes, ...(scheme ? { scheme } : {}) };
+}
+
+/** An app's entry page with the files it names put in, or null when the entry can't be read. */
+async function readPage(files: AppFiles, entry: string): Promise<Document | null> {
+	const html = await files.text(entry);
+	if (html === null) return null;
 	// An inert parse: nothing here runs or loads, and it is only ever written out again for the frame.
 	const page = new DOMParser().parseFromString(html, "text/html");
-	const base = dirOf(app.entry);
+	const base = dirOf(entry);
 	// Every file the page names is read side by side (a file named twice once), then put in where it is named, in the
 	// page's order. The app's limits hold whatever the order the reads end in: past them, the whole app is refused.
 	const changes: Promise<(() => void) | null>[] = [];
@@ -384,26 +441,7 @@ export async function assembleApp(
 		changes.push(files.dataUrl(path).then((url) => (url ? () => media.setAttribute("src", url) : null)));
 	}
 	for (const change of await Promise.all(changes)) change?.();
-	if (files.tooLarge)
-		return {
-			ok: false,
-			reason: "too_large",
-			message: "The app is larger than 4 MiB of pages and code, 48 MiB of pictures and videos, or 64 files.",
-		};
-	// Before every style of the page, and in a layer of its own: whatever the page's styles say wins.
-	let scheme: AppScheme | undefined;
-	if (look) {
-		scheme = appScheme(page, look.scheme);
-		const base = page.createElement("style");
-		base.setAttribute("data-qorpera-base", "");
-		base.textContent = appBaseStyle(scheme, look.brand);
-		page.head.prepend(base);
-	}
-	const written = `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : "<!doctype html>"}${page.documentElement.outerHTML}`;
-	const handed = framePage(written);
-	return handed === null
-		? { ok: false, reason: "not_shown", message: "This app can't be shown live." }
-		: { ok: true, page: handed, files: files.count, bytes: files.bytes, ...(scheme ? { scheme } : {}) };
+	return page;
 }
 
 /* ---- The bridge --------------------------------------------------------------------------------------------- */
@@ -753,23 +791,29 @@ export function sharedFolderHints<T extends CompanyAppsSource>(
 
 const APPS_POLL_MS = 60_000;
 const APPS_HINT_MS = 1000;
-/** After the apps are read, how long their pages wait before they are read ahead, and how many are read at once. */
+/** After the apps are read, how long their pages wait before they are read ahead; how many apps are read at once, and
+ * how many of each app's files; and the bytes a round reads at most (the member's file cache keeps 64 MiB). */
 const WARM_MS = 1500;
-const WARM_AT_ONCE = 4;
+const WARM_AT_ONCE = 2;
+const WARM_FILES_AT_ONCE = 4;
+const WARM_BYTES = 24 * 1024 * 1024;
+/** A video read ahead, at most: a short clip on an app's page is read ahead as its pictures are, a long one waits for
+ * the open (Fjeldtur's brand page, 11 Nov 2026: three clips of 110 to 180 KiB were all its first open still fetched). */
+const WARM_VIDEO_MAX_BYTES = 2 * 1024 * 1024;
 
-/** Reads ahead what opening an app reads first (its page's entry file, and the company's colours), so the member's
- * first open of each app finds them in the member's file cache (company-files.ts). Only what is not read yet costs a
- * fetch; a read that fails is left for the open to try. */
+/** Reads ahead what opening an app reads (the company's colours, and each app's page with every file it names, as
+ * `assembleApp` reads them, but no video past WARM_VIDEO_MAX_BYTES), so the member's first open of each app finds them
+ * in the member's file cache (company-files.ts). The most recently changed apps go first, and a round stops reading at
+ * WARM_BYTES. Only what is not read yet costs a fetch; a read that fails is left for the open to try. */
 export async function warmApps(folder: Folder, apps: readonly CompanyApp[], signal: AbortSignal): Promise<void> {
+	const budget: WarmBudget = { left: WARM_BYTES };
 	const reads: (() => Promise<unknown>)[] = [() => readAppBrand(folder, signal)];
-	for (const app of apps) {
+	for (const app of [...apps].sort((a, b) => (b.changed ?? 0) - (a.changed ?? 0))) {
 		const entry = app.manifest?.entry;
 		if (entry === undefined || resolveAppPath("", entry) === null) continue;
-		reads.push(async () => {
-			const found = (await folder.read(`${app.path}/${entry}`, signal)).entry;
-			if (found?.kind === "file" && found.file && found.file.bytes <= APP_FILE_MAX_BYTES)
-				await folder.readFile(found.file, signal, APP_FILE_MAX_BYTES, LIVE);
-		});
+		reads.push(() =>
+			readPage(new AppFiles(folder, app.path, signal, { atOnce: WARM_FILES_AT_ONCE, warm: budget }), entry),
+		);
 	}
 	let next = 0;
 	const worker = async () => {

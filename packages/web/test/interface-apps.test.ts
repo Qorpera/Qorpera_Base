@@ -407,11 +407,18 @@ describe("the company's apps", () => {
 		]);
 	});
 
-	it("reads ahead each app's entry and the company's colours, and nothing else of an app", async () => {
+	it("reads ahead each app's page with the files it names and the company's colours, but no long videos", async () => {
 		const f = fakeFolder({
 			"apps/sales/app.toml": 'name = "Sales"\n',
-			"apps/sales/index.html": '<img src="big.png">',
+			"apps/sales/index.html":
+				'<link rel="stylesheet" href="look.css"><script src="app.js"></script><img src="big.png"><video src="clip.mp4"></video><video src="film.mp4"></video>',
+			"apps/sales/look.css": "body{background:url(back.webp)}",
+			"apps/sales/back.webp": "w",
+			"apps/sales/app.js": "1",
 			"apps/sales/big.png": "x",
+			"apps/sales/clip.mp4": "v",
+			"apps/sales/film.mp4": new Uint8Array(2 * 1024 * 1024 + 1),
+			"apps/sales/unused.png": "u",
 			"apps/plan/app.toml": 'name = "Plan"\nentry = "pages/start.html"\n',
 			"apps/plan/pages/start.html": "<p>",
 			"apps/broken/app.toml": "name =",
@@ -421,17 +428,96 @@ describe("the company's apps", () => {
 		await warmApps(f, await readApps(f, new AbortController().signal), new AbortController().signal);
 		const read = readFile.mock.calls.map(([file]) => (file as { bytes: number }).bytes);
 		expect(f.reads).toEqual(
-			expect.arrayContaining(["QorperaOS/brand/brand.toml", "apps/sales/index.html", "apps/plan/pages/start.html"]),
+			expect.arrayContaining([
+				"QorperaOS/brand/brand.toml",
+				"apps/sales/index.html",
+				"apps/sales/look.css",
+				"apps/sales/back.webp",
+				"apps/sales/app.js",
+				"apps/sales/big.png",
+				"apps/sales/clip.mp4",
+				"apps/plan/pages/start.html",
+			]),
 		);
-		expect(f.reads).not.toContain("apps/sales/big.png");
+		// A short clip is read ahead, a video past 2 MiB waits for the open (its entry is read, never its bytes), and a
+		// file the page doesn't name is never read.
+		expect(read).not.toContain(2 * 1024 * 1024 + 1);
+		expect(f.reads).not.toContain("apps/sales/unused.png");
 		expect(f.reads.filter((path) => path.startsWith("apps/broken/") && path !== "apps/broken/app.toml")).toEqual([]);
-		// The three manifests that read, the colours and two entries.
-		expect(read).toHaveLength(6);
+		// The three manifests that read, the colours, six files of Sales and Plan's entry.
+		expect(read).toHaveLength(11);
 		const stopped = new AbortController();
 		stopped.abort();
 		f.reads.length = 0;
 		await warmApps(f, await readApps(f, new AbortController().signal), stopped.signal);
 		expect(f.reads.filter((path) => !path.endsWith("app.toml") && path !== "apps")).toEqual([]);
+	});
+
+	it("reads ahead the most recently changed apps first, and stops at the round's bytes", async () => {
+		const picture = (fill: number) => new Uint8Array(10 * 1024 * 1024).fill(fill);
+		const f = fakeFolder({
+			"apps/old/index.html": '<img src="a.png">',
+			"apps/old/a.png": picture(1),
+			"apps/mid/index.html": '<img src="a.png">',
+			"apps/mid/a.png": picture(2),
+			"apps/new/index.html": '<img src="a.png">',
+			"apps/new/a.png": picture(3),
+		});
+		const parsed = parseAppManifest('name = "App"\n');
+		if (!parsed.ok) throw new Error("manifest");
+		const app = (name: string, changed: number): CompanyApp => ({
+			name,
+			path: `apps/${name}`,
+			manifest: parsed.manifest,
+			problems: [],
+			version: null,
+			changed,
+		});
+		await warmApps(f, [app("old", 1), app("mid", 2), app("new", 3)], new AbortController().signal);
+		// 24 MiB a round: the two latest pictures fit, the oldest app's page is read but not its picture.
+		expect(f.reads).toEqual(expect.arrayContaining(["apps/new/a.png", "apps/mid/a.png", "apps/old/index.html"]));
+		expect(f.reads.indexOf("apps/new/index.html")).toBeLessThan(f.reads.indexOf("apps/old/index.html"));
+		const readFile = vi.spyOn(f, "readFile");
+		await warmApps(f, [app("old", 1), app("mid", 2), app("new", 3)], new AbortController().signal);
+		expect(readFile.mock.calls.map(([file]) => (file as { bytes: number }).bytes).sort()).toEqual(
+			[17, 17, 17, 10 * 1024 * 1024, 10 * 1024 * 1024].sort(),
+		);
+	});
+
+	it("reads ahead past a file that fails, finishing an app's other reads before the next app", async () => {
+		const files: Record<string, string> = {};
+		for (const name of ["a", "b", "c"]) {
+			files[`apps/${name}/app.toml`] = 'name = "App"\n';
+			files[`apps/${name}/index.html`] = [1, 2, 3, 4].map((n) => `<img src="${n}.png">`).join("");
+			for (const n of [1, 2, 3, 4]) files[`apps/${name}/${n}.png`] = `${name}${n}`;
+		}
+		const f = fakeFolder(files);
+		const apps = await readApps(f, new AbortController().signal);
+		const read = f.readFile;
+		let active = 0;
+		let most = 0;
+		let ended = 0;
+		let started = 0;
+		f.readFile = (async (file: { bytes: number; fileSha256: string }, signal: AbortSignal) => {
+			started++;
+			active++;
+			most = Math.max(most, active);
+			try {
+				const bytes = await read(file as never, signal);
+				const text = new TextDecoder().decode(bytes);
+				if (text === "a1") throw new Error("the object fetch failed");
+				if (/^[abc]\d$/.test(text)) await new Promise((resolve) => setTimeout(resolve, 30));
+				return bytes;
+			} finally {
+				active--;
+				ended++;
+			}
+		}) as typeof f.readFile;
+		await warmApps(f, apps, new AbortController().signal);
+		// Two apps of four files at once, at most, and nothing left under way when the round ends.
+		expect(most).toBeLessThanOrEqual(8);
+		expect(ended).toBe(started);
+		expect(f.reads).toEqual(expect.arrayContaining(["apps/a/4.png", "apps/b/4.png", "apps/c/4.png"]));
 	});
 
 	it("lists the concepts of the company's product, the most recently changed first", async () => {

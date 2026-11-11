@@ -1080,6 +1080,8 @@ describe("conversation UI boundaries", () => {
 			name === "qorpera_member_interface_pages" ||
 			// The apps drawer's Sites entry.
 			name === "qorpera_list_company_sites" ||
+			// The rail's line under each agent's name reads the next planned runs (app/agent-notes.ts).
+			name === "qorpera_list_cloud_routines" ||
 			// The account marks itself online for its friends (online-mark.ts).
 			name === "qorpera_mark_online" ||
 			// Company figures ask for the company's logo (app/company-logos.ts).

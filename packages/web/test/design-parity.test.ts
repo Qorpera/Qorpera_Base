@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { dayLabel } from "../src/app/agent-line.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import type { Route } from "../src/app/router.ts";
@@ -478,15 +479,25 @@ describe("shell presentation lifecycle", () => {
 			const link = rail.querySelector(`a[data-href$="/staff/${agent.id}"]`)!;
 			const status = link.querySelector(".rail-row-status, .alert-mark");
 			expect(figures.get(agent.id), agent.displayName).toBe(figure);
-			// An idle agent has no line under its name: agents show no title (Jonas, 10 Nov 2026).
-			expect(link.querySelector("small")?.textContent, agent.displayName).toBe(
-				line === "Analyst" ? undefined : line,
-			);
+			// Agents show no title (Jonas, 10 Nov 2026). An idle one says what holds instead (Jonas, 11 Nov 2026): with
+			// nothing on its wall and no routine, when it was hired; a failed one, that its run did not finish.
+			const idle =
+				shown === "red"
+					? "Didn't finish"
+					: line === "Analyst"
+						? `Hired ${dayLabel(timestamp.slice(0, 10))}`
+						: undefined;
+			expect(link.querySelector("small")?.textContent, agent.displayName).toBe(idle ?? line);
 			expect(disc(status), agent.displayName).toBe(shown);
 			// The disc is only drawn. The link names the state in words, which the
 			// compact rail needs: it hides the text beside the figure.
 			if (status) expect(status.getAttribute("aria-hidden")).toBe("true");
-			const state = shown === "red" ? "A run did not finish" : line === "Analyst" ? undefined : line;
+			const state =
+				shown === "red"
+					? "A run did not finish"
+					: line === "Analyst"
+						? `Hired ${dayLabel(timestamp.slice(0, 10))}`
+						: line;
 			const words = [agent.displayName, state].filter(Boolean).join(" · ");
 			expect(link.getAttribute("aria-label"), agent.displayName).toBe(words);
 			// No hover popup: the row shows the name already (Jonas, 9 Nov 2026).
@@ -527,6 +538,54 @@ describe("shell presentation lifecycle", () => {
 		f.company.store.set({ activity: [] });
 		draw();
 		expect(disc()).toBeNull();
+	});
+	it("says under an idle agent's name what its wall and routines say, and gives way to work", () => {
+		stubFigureMotion();
+		const f = companyFixture();
+		const { rail, draw } = mountRail(f);
+		const row = () => rail.querySelector<HTMLElement>(`a[data-href$="/staff/${staff.id}"]`)!;
+		const line = () => row().querySelector("small")?.textContent;
+		expect(line()).toBe(`Hired ${dayLabel(timestamp.slice(0, 10))}`);
+		const today = new Date().toISOString().slice(0, 10);
+		f.company.store.set({ agentNotes: { [staff.id]: { done: { text: "Made the new logo", day: today } } } });
+		draw();
+		expect(line()).toBe(`Made the new logo · ${dayLabel(today)}`);
+		expect(row().getAttribute("aria-label")).toBe(`${staff.displayName} · Made the new logo · ${dayLabel(today)}`);
+		f.company.store.set({
+			agentNotes: { [staff.id]: { waits: "Pick a shop name", done: { text: "Made the new logo", day: today } } },
+		});
+		draw();
+		expect(line()).toBe("Waits on you: Pick a shop name");
+		// Work has its own line, and the selected row keeps its colour.
+		f.company.store.set({
+			activity: [
+				{
+					runId: id(74),
+					staffAgentId: staff.id,
+					sourceKind: "wake",
+					jobStatus: "leased",
+					activity: "working",
+					updatedAt: timestamp,
+				},
+			],
+		});
+		draw();
+		expect(line()).toBe("Working");
+		f.company.store.set({
+			activity: [
+				{
+					runId: id(74),
+					staffAgentId: staff.id,
+					sourceKind: "wake",
+					jobStatus: "failed",
+					activity: "needs_attention",
+					updatedAt: timestamp,
+				},
+			],
+		});
+		draw();
+		expect(line()).toBe("Didn't finish");
+		expect(row().querySelector("small")?.classList.contains("is-failed")).toBe(true);
 	});
 	it.each(["agent", "cofounder"])("updates the %s state without disturbing a composing search", (kind) => {
 		stubFigureMotion();
