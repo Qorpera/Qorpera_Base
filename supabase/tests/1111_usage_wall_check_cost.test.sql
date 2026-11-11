@@ -11,7 +11,9 @@
 -- 5. The due list's check is last, and one that fails stops only its own company.
 -- 6. Work paid by another login or another sponsor version is due beside it, and it goes on once its login has room.
 
--- The previous text (20260930548000, 20260930575000, 20260930577000), with its names changed and its comments left out.
+-- The previous text (20260930548000, 20260930575000, 20260930577000), with its names changed and its comments left out,
+-- and with 20260930724000's two rule changes written into it (marked 724000 below): a reading with room ends a wall from
+-- any company of the member, and a full window holds only while no newer reading of the login on a live login has room.
 create function pg_temp.d1_old_sibling(p_connection_id uuid)
 returns table(connection_id uuid, connection_version bigint)
 language sql stable security definer set search_path = '' as $$
@@ -47,6 +49,30 @@ language sql stable security definer set search_path = '' as $$
 		and jsonb_typeof(w.value -> 'resetAt') = 'string'
 		and (w.value ->> 'resetAt')::timestamptz > clock_timestamp()
 		and (w.value ->> 'resetAt')::timestamptz < clock_timestamp() + interval '90 days'
+		-- 724000: no newer reading of the login, on a live login, has room.
+		and not exists (
+			select 1 from (select current_version.connection_id, current_version.version as connection_version
+				from (select v.connection_id, v.version from public.qorpera_provider_connection_versions as v
+					where v.connection_id = p_connection_id order by v.version desc limit 1) as current_version
+				union all
+				select sibling.connection_id, sibling.connection_version
+				from pg_temp.d1_old_sibling(p_connection_id) as sibling) as newer_login
+			join public.qorpera_native_provider_account_metadata as newer on newer.connection_id = newer_login.connection_id
+				and newer.connection_version = newer_login.connection_version
+			join public.qorpera_provider_connections as newer_connection on newer_connection.id = newer.connection_id
+			join public.qorpera_provider_connection_versions as newer_version on newer_version.connection_id = newer.connection_id
+				and newer_version.version = newer.connection_version
+			where newer_connection.status = 'active' and newer_version.authorization_state = 'active'
+				and newer_version.authentication_mode = 'native_subscription'
+				and (newer.provider_account_usage ->> 'observedAt')::timestamptz <= statement_timestamp()
+				and (newer.provider_account_usage ->> 'observedAt')::timestamptz
+					>= (m.provider_account_usage ->> 'observedAt')::timestamptz
+				and jsonb_array_length(newer.provider_account_usage -> 'windows') > 0
+				and not exists (select 1 from jsonb_array_elements(newer.provider_account_usage -> 'windows') as nw
+					where (nw ->> 'usedPercent')::numeric is null or (nw ->> 'usedPercent')::numeric < 0
+						or (nw ->> 'usedPercent')::numeric >= 100
+						or (nw ? 'resetAt' and (nw ->> 'resetAt')::timestamptz
+							<= (newer.provider_account_usage ->> 'observedAt')::timestamptz)))
 $$;
 create function pg_temp.d1_old_reset_company(p_connection_id uuid)
 returns timestamptz
@@ -84,8 +110,7 @@ language sql stable security definer set search_path = '' as $$
         left join public.qorpera_native_provider_account_metadata blocked_metadata
           on blocked_metadata.connection_id = blocked.provider_connection_id
           and blocked_metadata.connection_version = blocked.provider_connection_version
-        where recovered_connection.profile_id = current_connection.profile_id
-          and recovered_connection.owner_user_id is not distinct from current_connection.owner_user_id
+        where /* 724000: any company */ recovered_connection.owner_user_id is not distinct from current_connection.owner_user_id
           and recovered_connection.provider = current_connection.provider
           and recovered_connection.status = 'active' and recovered_version.authorization_state = 'active'
           and recovered_version.authentication_mode = 'native_subscription'
