@@ -286,8 +286,13 @@ web does not already answer. What the kit adds is that the agent writes one file
     answer to the stop, or the session's close; a refused stop confirms nothing), and the next call waits for that,
     so nothing the old session still says reaches the new one; a stop not confirmed within 10 seconds ends the run's
     voice, and the run goes on without it.
-  - Nothing opens a call yet: the tool that does is the next step, and with it the one host the call's control
-    connection needs beyond the run's own (Codex joins the call at `api.openai.com`).
+  - The call's control connection needs one host beyond the run's own: Codex makes the call at `chatgpt.com`, then
+    joins it over a websocket at `api.openai.com`. The run's relay lets `api.openai.com:443` through only while a
+    call is open, from just before `thread/realtime/start` until the call's stop is confirmed or given up on, or
+    the run's process ends; then it refuses new connections to it and cuts the ones open
+    (`NATIVE_CODEX_REALTIME_EGRESS_HOSTS`, `allowRealtime` in `cloud-native-egress.ts`). Only a Codex login's relay
+    can be widened so; a ChatGPT plan's and a Claude sign-in's cannot. The call's sound never passes the relay.
+  - Nothing opens a call yet: the tool that does is the next step. Until then the host is never let through.
 
 ## 4. Web
 
