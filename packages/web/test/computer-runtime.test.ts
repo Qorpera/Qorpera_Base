@@ -1895,6 +1895,80 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		expect(p.holding).toBe(false);
 	});
 
+	it("hands back a lost take-over's epoch on I'm done though a later take-over at it was refused, so the late one is refused (r6 F12)", async () => {
+		const { s, panels, p } = await company();
+		// Take-over A: its answer is lost, and it reaches the database only later.
+		s.state.takeLost = "late";
+		await takeOver(p);
+		expect(p.holding).toBe(false);
+		// Another member takes the desktop; the member's take-over B, at the same epoch, is refused for it.
+		s.state.machines = [machine(1, { control: { mine: false, name: "Ada", until: until(), epoch: null } })];
+		s.state.take = { state: "refused", reason: "DESKTOP_MEMBER_IN_CONTROL", memberName: "Ada" };
+		p.takeOver();
+		await flush();
+		expect(takeEpochs(s)).toEqual([0, 0]);
+		// I'm done: a hand-back at that epoch is sent and answered before the card answers.
+		let done: boolean | undefined;
+		const back = panels.releaseAgent(staff.id).then((value) => {
+			done = value;
+		});
+		await back;
+		expect(done).toBe(true);
+		expect(backEpochs(s)).toEqual([0]);
+		// The other member gives it back; then A arrives: refused, holding nothing.
+		s.state.machines = [machine(1)];
+		s.state.take = { state: "ok", until: "2026-11-10T20:00:00.000Z" };
+		expect(s.state.lateCommit?.()).toBe(false);
+		expect(s.state.machines[0]?.control).toBeNull();
+	});
+
+	it.each([
+		["another member in control", { state: "refused", reason: "DESKTOP_MEMBER_IN_CONTROL", memberName: "Ada" }, true],
+		["too small", { state: "refused", reason: "DESKTOP_MACHINE_TOO_SMALL" }, true],
+		["not running", { state: "refused", reason: "MACHINE_NOT_RUNNING" }, true],
+		["needs a company view", { state: "refused", reason: "MACHINE_NEEDS_COMPANY_VIEW" }, true],
+		["called off at the same epoch", { state: "refused", reason: "TAKE_CALLED_OFF", epoch: 0 }, true],
+		// A TAKE_CALLED_OFF that names a newer epoch shows the old one fenced already: nothing is owed.
+		["called off at a newer epoch", undefined, false],
+	] as const)(
+		"keeps owing a hand-back for a sent take-over's epoch whatever a later take-over's refusal says: %s (r6 F12)",
+		async (_name, refusal, owed) => {
+			const { s, panels, p } = await company();
+			s.state.takeLost = "late";
+			await takeOver(p);
+			if (refusal) s.state.take = { ...refusal };
+			else s.state.epochs.set(machine(1).machineId, 1);
+			p.takeOver();
+			await flush();
+			expect(takeEpochs(s)).toEqual([0, 0]);
+			expect(await panels.releaseAgent(staff.id)).toBe(true);
+			expect(backEpochs(s)).toEqual(owed ? [0] : []);
+			// Either way the take-over sent first can never hold the desktop now.
+			s.state.take = { state: "ok", until: "2026-11-10T20:00:00.000Z" };
+			expect(s.state.lateCommit?.()).toBe(false);
+			expect(s.state.machines[0]?.control).toBeNull();
+		},
+	);
+
+	it("keeps owing a hand-back for a sent take-over's epoch after its lease ended by itself, and after a list read that no longer shows it (r6)", async () => {
+		const { s, panels, p } = await company();
+		await takeOver(p);
+		expect(p.holding).toBe(true);
+		// The lease ends by itself (the database says so to the heartbeat, and the list shows it no more).
+		s.state.keep = { state: "ended" };
+		s.state.machines = [machine(1)];
+		await advance(KEEP_EVERY_MS);
+		expect(p.holding).toBe(false);
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		// I'm done still hands back at that epoch, and answers after that answer.
+		expect(await panels.releaseAgent(staff.id)).toBe(true);
+		expect(backEpochs(s)).toEqual([0]);
+		// Once answered, nothing more is owed.
+		expect(await panels.releaseAgent(staff.id)).toBe(true);
+		expect(backEpochs(s)).toEqual([0]);
+	});
+
 	it("asks every hold back, best effort, as the company's page is left", async () => {
 		const { s, p } = await company();
 		await takeOver(p);

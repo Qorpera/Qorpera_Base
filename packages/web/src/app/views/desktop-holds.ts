@@ -33,8 +33,14 @@ interface Hold {
 	 * list. A take-over is sent at it. */
 	epoch: number | undefined;
 	/** What the page may hold under `epoch`: a take-over waiting for the machine's hand-back to be answered (queued),
-	 * one on its way (taking), held, or may be held (maybe: its answer was lost). */
+	 * one on its way (taking), held, or may be held (maybe: its answer was lost). It says what the window may use; what
+	 * must be given back is `sent`'s. */
 	state: "queued" | "taking" | "held" | "maybe" | undefined;
+	/** The highest epoch a take-over of this page was sent under, from the moment it left the page, until a hand-back
+	 * answered past it (review r6 F12): no refusal, timeout, list read or ended heartbeat clears it, only that answer,
+	 * or a TAKE_CALLED_OFF that names a newer epoch (the old one is fenced already). While it is set, every release of the
+	 * machine hands back, whatever the state says, and I'm done waits for that answer. */
+	sent: number | undefined;
 	/** When `state` last changed: a list read asked before then says nothing of it. */
 	changedAt: number;
 	/** The take-over the state is of, and its promise: an answer of an older one is told apart. */
@@ -165,6 +171,8 @@ export class DesktopHoldLedger {
 				this.#state(hold, undefined);
 				return { state: "uncertain" };
 			}
+			// From here the take-over may reach the database: only an answered hand-back past this epoch forgets it.
+			hold.sent = Math.max(hold.sent ?? epoch, epoch);
 			this.#state(hold, "taking");
 			let answer: MemberDesktopHold | undefined;
 			try {
@@ -190,7 +198,13 @@ export class DesktopHoldLedger {
 				return { state: "ok" };
 			}
 			if (answer?.state === "refused") {
-				if (answer.epoch !== null) hold.epoch = Math.max(epoch, answer.epoch);
+				// Refused: nothing of this one holds, but an earlier take-over at this epoch may still be on its way, so
+				// what was sent stays to be handed back; only a TAKE_CALLED_OFF at a newer epoch shows it fenced already.
+				if (answer.epoch !== null) {
+					hold.epoch = Math.max(epoch, answer.epoch);
+					if (answer.reason === "TAKE_CALLED_OFF" && hold.sent !== undefined && answer.epoch > hold.sent)
+						hold.sent = undefined;
+				}
 				this.#state(hold, undefined);
 				return answer;
 			}
@@ -224,9 +238,10 @@ export class DesktopHoldLedger {
 		if (hold?.state === "held" && hold.epoch === epoch && !hold.calling) this.#state(hold, undefined);
 	}
 
-	/** Gives this machine back: marked at once, before anything is awaited, then one hand-back at the epoch the page knows,
-	 * asked again until answered (window or not). A take-over still queued is dropped, never sent. Nothing is sent when
-	 * the page has nothing of the machine. */
+	/** Gives this machine back: marked at once, before anything is awaited, then one hand-back at the epoch of what the
+	 * page holds, or else of what it sent, asked again until answered (window or not). A take-over still queued is
+	 * dropped, never sent. Nothing is sent when the page holds nothing of the machine and sent nothing since the last
+	 * answered hand-back. */
 	release(machineId: string, agentId?: string, reason: Hold["reason"] = "handed_back"): void {
 		if (this.#left || !this.#computer) return;
 		const hold = this.#holds.get(machineId);
@@ -234,11 +249,12 @@ export class DesktopHoldLedger {
 		if (agentId) hold.agents.add(agentId);
 		hold.holdingNow = false;
 		if (hold.state === "queued") this.#state(hold, undefined);
-		if (!hold.calling && (hold.state === undefined || hold.epoch === undefined)) return;
+		const epoch = this.#owed(hold);
+		if (!hold.calling && epoch === undefined) return;
 		this.#givenBack.add(machineId);
 		if (!hold.calling) {
 			hold.calling = true;
-			hold.callEpoch = hold.epoch;
+			hold.callEpoch = epoch;
 			hold.reason = reason;
 		}
 		this.#changed();
@@ -327,8 +343,8 @@ export class DesktopHoldLedger {
 		for (const hold of this.#holds.values()) {
 			hold.gone = true;
 			clearTimeout(hold.timer);
-			const epoch = hold.calling ? hold.callEpoch : hold.epoch;
-			if (this.#busy(hold) && epoch !== undefined) this.#computer?.handBackOnLeave(hold.machineId, epoch);
+			const epoch = hold.calling ? hold.callEpoch : this.#owed(hold);
+			if (epoch !== undefined) this.#computer?.handBackOnLeave(hold.machineId, epoch);
 		}
 		if (!this.#holds.size) return;
 		this.#holds.clear();
@@ -353,6 +369,7 @@ export class DesktopHoldLedger {
 			agents: new Set(),
 			epoch: undefined,
 			state: undefined,
+			sent: undefined,
 			changedAt: Date.now(),
 			calling: false,
 			callEpoch: undefined,
@@ -365,9 +382,18 @@ export class DesktopHoldLedger {
 		return hold;
 	}
 
-	/** Whether the page may hold something of the machine, or a hand-back of it is unanswered. */
+	/** Whether the page may hold something of the machine, sent a take-over of it since the last answered hand-back, or
+	 * has a hand-back of it unanswered. */
 	#busy(hold: Hold): boolean {
-		return hold.state !== undefined || hold.calling;
+		return hold.state !== undefined || hold.sent !== undefined || hold.calling;
+	}
+
+	/** The epoch a release of the machine hands back at: that of what the page holds or may hold (never below what it
+	 * sent), else that of what it sent; none when it has neither. */
+	#owed(hold: Hold): number | undefined {
+		if (hold.state !== undefined && hold.state !== "queued" && hold.epoch !== undefined)
+			return Math.max(hold.epoch, hold.sent ?? hold.epoch);
+		return hold.sent;
 	}
 
 	#state(hold: Hold, state: Hold["state"]): void {
@@ -416,6 +442,8 @@ export class DesktopHoldLedger {
 				hold.calling = false;
 				hold.callEpoch = undefined;
 				hold.epoch = Math.max(hold.epoch ?? 0, answer.epoch);
+				// The database's epoch is past what was sent: every take-over sent at it, or before, is fenced.
+				if (hold.sent !== undefined && answer.epoch > hold.sent) hold.sent = undefined;
 				hold.holdingNow = answer.holding;
 				// A take-over asked on purpose after the release (queued) goes on at the new epoch; nothing else is left.
 				if (hold.state !== "queued") hold.state = undefined;
