@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { createHash } from "node:crypto";
-import type { CloudMemberFolderEntry } from "@qorpera/cloud-client/cloud-member-folder";
+import { type CloudMemberFolderEntry, CloudMemberFolderError } from "@qorpera/cloud-client/cloud-member-folder";
 import { parseAppManifest } from "@qorpera/cloud-client/interface-apps";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -330,6 +330,62 @@ describe("putting an app's page together", () => {
 		expect(most).toBeLessThanOrEqual(8);
 		expect(f.reads.filter((path) => path === "apps/many/p0.png")).toHaveLength(1);
 		expect(assembled.files).toBe(14);
+	});
+
+	it("reads the entries of the files a page names in one call, and each path alone where that call is missing", async () => {
+		const files = {
+			"apps/many/index.html": '<link rel="stylesheet" href="a.css"><img src="p.png"><script src="s.js"></script>',
+			"apps/many/a.css": "b{background:url(q.png)}",
+			"apps/many/p.png": "P",
+			"apps/many/q.png": "Q",
+			"apps/many/s.js": "1",
+		};
+		const withMany = (answer: (paths: readonly string[]) => Promise<unknown>) => {
+			const f = fakeFolder(files);
+			const alone: string[] = [];
+			const many: string[][] = [];
+			const read = f.read;
+			return {
+				alone,
+				many,
+				folder: Object.assign(f, {
+					read: async (path: string, signal: AbortSignal) => {
+						alone.push(path);
+						return read(path, signal);
+					},
+					readMany: async (paths: readonly string[], signal: AbortSignal) => {
+						many.push([...paths]);
+						await answer(paths);
+						return Promise.all(paths.map((path) => read(path, signal)));
+					},
+				}),
+			};
+		};
+		const signal = new AbortController().signal;
+		// One call for the entry, one for what it names, one for the stylesheet's picture.
+		const one = withMany(async () => undefined);
+		const assembled = await assembleApp(one.folder, { path: "apps/many", entry: "index.html" }, signal);
+		expect(assembled).toMatchObject({ ok: true, files: 5 });
+		expect(one.alone).toEqual([]);
+		expect(one.many).toEqual([
+			["apps/many/index.html"],
+			["apps/many/a.css", "apps/many/s.js", "apps/many/p.png"],
+			["apps/many/q.png"],
+		]);
+		// A call that fails reads each path alone, and asks again next time; a 404 (no such call yet) is not asked again.
+		const failing = withMany(async () => {
+			throw new CloudMemberFolderError("Company folder is unavailable (503)", 503);
+		});
+		expect(await assembleApp(failing.folder, { path: "apps/many", entry: "index.html" }, signal)).toEqual(assembled);
+		expect(failing.alone).toHaveLength(5);
+		expect(failing.many).toHaveLength(3);
+		const missing = withMany(async () => {
+			throw new CloudMemberFolderError("Company folder is unavailable (404)", 404);
+		});
+		expect(await assembleApp(missing.folder, { path: "apps/many", entry: "index.html" }, signal)).toEqual(assembled);
+		expect(await assembleApp(missing.folder, { path: "apps/many", entry: "index.html" }, signal)).toEqual(assembled);
+		expect(missing.many).toEqual([["apps/many/index.html"]]);
+		expect(missing.alone).toHaveLength(10);
 	});
 
 	it("starts a page from the base style, first in its head and under the page's own styles", async () => {
