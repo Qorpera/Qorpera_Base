@@ -2279,6 +2279,41 @@ describe("code host: the change record, undo and download of a repository kept i
 		expectJobCommands(c.log);
 	});
 
+	it("undo: an undo is undone by its own two ends, so a landing that came after it stays, though one wider row of the record covers both", async () => {
+		const { f, c, one, three } = await changes();
+		// The undo of change 1 moves main from three to U and takes three files out.
+		const undone = await undo(c, span(1, one));
+		if (undone.state !== "undone") throw new Error("the change was not undone");
+		// A landing after it adds a file that has nothing to do with the undo.
+		const next = await session(f, c, undone.mainAfter);
+		const landed = await land(c, next, await next.commit({ "news.txt": "news\n" }, "news"));
+		expect(landed.state).toBe("fast-forward");
+		expect((await state(f, c)).files).toEqual(["cart.js", "later.txt", "news.txt"]);
+		// The record lost both and holds them as one row, from three to the landing. The undo's own two ends are three
+		// and U: undoing the undo by those puts back exactly what it took out.
+		const back = await undo(c, { n: 5, mainBefore: undone.mainBefore, mainAfter: undone.mainAfter });
+		if (back.state !== "undone") throw new Error("the undo was not undone");
+		expect(undone.mainBefore).toBe(three.mainSha);
+		expect(back.diff).toEqual({
+			filesChanged: 3,
+			paths: [
+				{ path: "index.html", change: "added" },
+				{ path: "src/a.js", change: "added" },
+				{ path: "src/b.js", change: "added" },
+			],
+			pathsMore: 0,
+		});
+		expect((await state(f, c)).files).toEqual([
+			"cart.js",
+			"index.html",
+			"later.txt",
+			"news.txt",
+			"src/a.js",
+			"src/b.js",
+		]);
+		expect(await readFile(join(c.code, "main/news.txt"), "utf8")).toBe("news\n");
+	});
+
 	it("undo: a change later work built on is refused with its paths and nothing is written; andLater makes main's files what they were before it; a change main no longer holds is nothing", async () => {
 		const { f, c, baseSha, third, one, two } = await changes();
 		// A later change rewrote a file the first one added.

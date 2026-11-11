@@ -471,6 +471,7 @@ begin
 	perform pg_temp.base_assert(v = pg_temp.req_recorded(13) and pg_temp.rec_is(13, 'undo', 'landed', 'u5', 'u6')
 		and r.undoes = array[5] and r.title = 'Undo change 5: Session 5' and r.request_id = v_id and r.files_changed = 1
 		and r.paths = '[{"path":"src/a.ts","change":"changed"}]' and r.file_version = 2
+		and r.own_before is null and r.own_after is null
 		and pg_temp.req_rows() = '1:L 2:R9 3:C 4:L 5:R13 6:L 7:R10 8:L 9:L 10:L 11:R12 12:L 13:L 14:L'
 		and s.last_change = 14 and s.last_main = pg_temp.rec_sha('c20'), 'a late finish: ' || pg_temp.req_rows());
 	-- More was lost with it: the undo of change 4 moved main from c20 to u7, a landing after it was never recorded,
@@ -484,6 +485,8 @@ begin
 	r := pg_temp.rec_row(15); s := pg_temp.rec_shop();
 	perform pg_temp.base_assert(v = pg_temp.req_recorded(15) and pg_temp.rec_is(15, 'undo', 'landed', 'c20', 'c21')
 		and r.undoes = array[4] and r.files_changed is null and r.paths is null
+		-- The row keeps the filler's span, and the undo's own two ends beside it.
+		and r.own_before = pg_temp.rec_sha('c20') and r.own_after = pg_temp.rec_sha('u7')
 		and pg_temp.req_rows() = '1:L 2:R9 3:C 4:R15 5:R13 6:L 7:R10 8:L 9:L 10:L 11:R12 12:L 13:L 14:L 15:L 16:L'
 		and s.last_change = 16 and s.last_main = pg_temp.rec_sha('c22'), 'a late finish, and more lost: ' || pg_temp.req_rows());
 
@@ -2038,6 +2041,7 @@ begin
 	perform pg_temp.base_assert(v = pg_temp.req_recorded(6) and pg_temp.rec_is(6, 'undo', 'landed', 'g5', 'h1', 'eight')
 		and r.undoes = array[1] and r.request_id = v_id and r.title = 'Undo change 1: Session 700' and r.worker_id is null
 		and r.sequence is null and r.head_sha is null and r.how is null and r.picture is null and r.files_changed = 1
+		and r.own_before is null and r.own_after is null
 		and r.paths = '[{"path":"src/a.ts","change":"changed"}]'
 		and pg_temp.req_rows('eight') = '1:R6 2:L 3:L 4:L 5:L 6:L' and s.last_change = 6 and s.last_main = pg_temp.rec_sha('h1')
 		and (pg_temp.req_row(v_id)).state = 'done' and (pg_temp.req_row(v_id)).outcome ->> 'change' = '6'
@@ -2080,11 +2084,15 @@ begin
 	perform pg_temp.base_assert(pg_temp.rec_land(714, 'g7', 'g8', p_name => 'eight') = pg_temp.rec_answer('recorded', 11)
 		and pg_temp.rec_is(10, 'found', 'landed', 'h3', 'g7', 'eight')
 		and pg_temp.rec_land(715, 'h4', 'g7', false, p_name => 'eight') = pg_temp.rec_answer('adopted', 10)
-		and pg_temp.rec_is(10, 'landing', 'landed', 'h3', 'g7', 'eight'), 'a late landing takes the filler: ' || pg_temp.req_rows('eight'));
+		and pg_temp.rec_is(10, 'landing', 'landed', 'h3', 'g7', 'eight')
+		-- The filler began before the landing did: the landing's own two ends are kept beside the span.
+		and (pg_temp.req_eight(10)).own_before = pg_temp.rec_sha('h4') and (pg_temp.req_eight(10)).own_after = pg_temp.rec_sha('g7'),
+		'a late landing takes the filler: ' || pg_temp.req_rows('eight'));
 	v := pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, pg_temp.req_moved('h3', 'h4'));
 	r := pg_temp.req_eight(10); s := pg_temp.rec_shop('eight');
 	perform pg_temp.base_assert(v = pg_temp.req_recorded(10) and pg_temp.rec_is(10, 'undo', 'landed', 'h3', 'g7', 'eight')
 		and r.undoes = array[4] and r.worker_id is null and r.files_changed is distinct from 1
+		and r.own_before = pg_temp.rec_sha('h3') and r.own_after = pg_temp.rec_sha('h4')
 		and pg_temp.req_rows('eight') = '1:R6 2:R7 3:R9 4:R10 5:L 6:L 7:L 8:L 9:L 10:L 11:L' and s.last_change = 11
 		and s.last_main = pg_temp.rec_sha('g8'), 'the undo takes the row that starts where it started: ' || v::text || ' ' || pg_temp.req_rows('eight'));
 	perform pg_temp.base_assert(pg_temp.rec_record(pg_temp.rec_copy(715), pg_temp.rec_report('landed', pg_temp.rec_sha('g7'),
@@ -2106,6 +2114,35 @@ begin
 		and s.last_main = pg_temp.rec_sha('h5') and (pg_temp.req_row(v_id)).state = 'done'
 		and (pg_temp.req_row(v_id)).outcome -> 'unrecorded' = 'true' and not (pg_temp.req_row(v_id)).outcome ? 'change'
 		and pg_temp.req_read(v_id) -> 'change' = 'null', 'nothing is written behind the record: ' || v::text || ' ' || pg_temp.req_rows('eight'));
+
+	-- Undoing the recovered undo (the review of release v232's third cut, F1). Row 10 is the undo of change 4, and its
+	-- span, h3 to g7, also holds a landing from h4 to g7 that has nothing to do with it. An undo of row 10 alone works
+	-- from the undo's own two ends, h3 to h4: the job puts back what the undo took out, and the landing stays.
+	v_item := pg_temp.req_begun('late-6', 10);
+	v_id := (v_item ->> 'requestId')::uuid;
+	perform pg_temp.base_assert(v_item -> 'change' = jsonb_build_object('n', 10, 'mainBefore', pg_temp.rec_sha('h3'),
+		'mainAfter', pg_temp.rec_sha('h4')) and v_item -> 'andLater' = 'false', 'the undo''s own two ends: ' || v_item::text);
+	v := pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, pg_temp.req_moved('h5', 'k1'));
+	perform pg_temp.base_assert(v = pg_temp.req_recorded(13) and pg_temp.rec_is(13, 'undo', 'landed', 'h5', 'k1', 'eight')
+		and (pg_temp.req_eight(13)).undoes = array[10] and (pg_temp.req_eight(13)).own_after is null
+		and pg_temp.req_rows('eight') = '1:R6 2:R7 3:R9 4:L 5:L 6:L 7:L 8:L 9:L 10:R13 11:L 12:- 13:L',
+		'the recovered undo is undone: ' || v::text || ' ' || pg_temp.req_rows('eight'));
+	-- A row that does not know where its own movement began (a session found its commit in main already and took the
+	-- filler that ends there) is not undone alone; with everything after it, it is, back to where the filler began.
+	perform pg_temp.base_assert(pg_temp.req_same(717, 'm9') = pg_temp.rec_answer('adopted', 14)
+		and pg_temp.rec_is(14, 'landing', 'landed', 'k1', 'm9', 'eight') and (pg_temp.req_eight(14)).own_before is null
+		and (pg_temp.req_eight(14)).own_after = pg_temp.rec_sha('m9'), 'a session''s row whose beginning is not known');
+	perform pg_temp.base_assert(pg_temp.req_undo('late-7', 14, false, '{}', 'eight') = pg_temp.req_refused('wall')
+		and not exists (select 1 from public.qorpera_code_requests request where request.environment_id = pg_temp.rec_here()
+			and request.name = 'eight' and request.state in ('queued','running')), 'it is not undone alone');
+	v_id := (pg_temp.req_undo('late-8', 14, true, '{}', 'eight') ->> 'requestId')::uuid;
+	select item into v_item from jsonb_array_elements(pg_temp.req_claim()) item where item ->> 'requestId' = v_id::text;
+	perform pg_temp.base_assert(v_item -> 'change' = jsonb_build_object('n', 14, 'mainBefore', pg_temp.rec_sha('k1'),
+		'mainAfter', pg_temp.rec_sha('m9')) and v_item -> 'andLater' = 'true', 'with everything after it: ' || coalesce(v_item::text, 'none'));
+	v := pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, pg_temp.req_moved('m9', 'k2'));
+	perform pg_temp.base_assert(v = pg_temp.req_recorded(15) and (pg_temp.req_eight(15)).undoes = array[14]
+		and pg_temp.req_rows('eight') = '1:R6 2:R7 3:R9 4:L 5:L 6:L 7:L 8:L 9:L 10:R13 11:L 12:- 13:L 14:R15 15:L',
+		'and it is taken out with what came after: ' || v::text || ' ' || pg_temp.req_rows('eight'));
 end $$;
 
 -- 6. More than 500 changes are not taken out at once ----------------------------------------------------------------------

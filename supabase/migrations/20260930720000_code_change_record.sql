@@ -106,6 +106,13 @@ create table public.qorpera_code_changes (
 	main_before text check (main_before is null or main_before ~ '^[0-9a-f]{40}$'),
 	main_after text check (main_after is null or main_after ~ '^[0-9a-f]{40}$'),
 	head_sha text check (head_sha is null or head_sha ~ '^[0-9a-f]{40}$'),
+	-- A row that took a filler over can cover more than its own movement: the filler stood for everything the record had
+	-- missed, and main_before and main_after stay the span the row has in main's history. own_after set says the row's
+	-- own movement is not that whole span. With own_before these are the two ends of the row's own movement, and an
+	-- undo of this row alone takes out exactly that. Without own_before the row's own movement is not known: the row
+	-- is undone only together with everything after it.
+	own_before text check (own_before is null or own_before ~ '^[0-9a-f]{40}$'),
+	own_after text check (own_after is null or own_after ~ '^[0-9a-f]{40}$'),
 	-- Plain values, no foreign keys: a record names its session, it does not hold it.
 	worker_id uuid,
 	sequence integer check (sequence is null or sequence >= 1),
@@ -141,6 +148,7 @@ create table public.qorpera_code_changes (
 	check ((state in ('conflict','refused')) = (refusal is not null)),
 	check (state in ('conflict','refused') or main_after is not null),
 	check (kind <> 'landing' or (worker_id is not null and sequence is not null)),
+	check (own_before is null or own_after is not null),
 	check ((state = 'reverted') = (reverted_by is not null))
 );
 -- One row per turn: a replay answers the row that is there.
@@ -636,6 +644,11 @@ begin
 			staff_agent_id = v_worker.staff_agent_id, owner_user_id = v_worker.owner_user_id, title = v_worker.title,
 			summary = v_submission ->> 'summary', notice = v_submission ->> 'notice', head_sha = p_change ->> 'headSha',
 			how = coalesce(p_change ->> 'how', change.how), picture = v_picture, picture_problem = v_problem,
+			-- The filler's span may hold more than this turn's movement. A landing knows its own two ends: they are kept
+			-- when the filler began elsewhere. A turn that found its commit in main already does not know where its own
+			-- movement began: only its end is kept, which says the span is not known to be the turn's alone.
+			own_before = case when v_state = 'landed' and change.main_before is distinct from v_before then v_before end,
+			own_after = case when v_state <> 'landed' or change.main_before is distinct from v_before then v_after end,
 			file_version = change.file_version + 1
 		where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
 			and change.name = v_repository.name and change.n = v_take;
@@ -854,7 +867,8 @@ begin
 		-- checked that it was).
 		v_spent := v_request.attempts >= case when v_request.kind = 'download' then 5 else 3 end;
 		if v_spent or (v_request.kind = 'undo' and (v_change.n is null or v_change.main_before is null
-			or v_change.main_after is null)) then
+			or v_change.main_after is null or (v_change.own_after is not null and v_change.own_before is null
+				and not (v_request.input ->> 'andLater')::boolean))) then
 			update public.qorpera_code_requests set state = 'failed', lease_token = null, lease_owner = null,
 				lease_until = null, finished_at = v_now, updated_at = v_now,
 				outcome = jsonb_build_object('schema', 'qorpera.code-request-outcome/v1', 'state', 'failed',
@@ -870,8 +884,12 @@ begin
 			'leaseUntil', v_request.lease_until, 'companyId', v_request.profile_id, 'environmentId', v_request.environment_id,
 			'owner', v_request.owner, 'name', v_request.name, 'kind', v_request.kind);
 		if v_request.kind = 'undo' then
+			-- The two ends the job works from are the row's own movement where the row covers more than that (a row
+			-- that took a wider filler over): an undo of the row alone takes out what the row did, not what its span
+			-- holds beside it. With andLater and no own beginning, the span's beginning is where main goes back to.
 			v_item := v_item || jsonb_build_object('change', jsonb_build_object('n', v_change.n,
-					'mainBefore', v_change.main_before, 'mainAfter', v_change.main_after),
+					'mainBefore', coalesce(v_change.own_before, v_change.main_before),
+					'mainAfter', case when v_change.own_before is not null then v_change.own_after else v_change.main_after end),
 				'andLater', (v_request.input ->> 'andLater')::boolean,
 				'message', public.qorpera_code_undo_message(v_change.n, v_change.title, (v_request.input ->> 'andLater')::boolean));
 		elsif v_request.kind = 'download' then
@@ -1335,6 +1353,12 @@ begin
 				title = v_words ->> 'title', summary = v_words ->> 'summary', notice = v_words ->> 'notice',
 				staff_agent_id = v_request.by_agent_id, owner_user_id = v_request.by_user_id,
 				worker_id = null, sequence = null, head_sha = null, how = null, picture = null, picture_problem = null,
+				-- A row that covers more than the undo (more was lost with it) keeps its span and gets the undo's own two
+				-- ends beside it: an undo of this undo alone then puts back what it took out, and nothing else of the span.
+				own_before = case when change.main_before = p_outcome ->> 'mainBefore'
+					and change.main_after = p_outcome ->> 'mainAfter' then null else p_outcome ->> 'mainBefore' end,
+				own_after = case when change.main_before = p_outcome ->> 'mainBefore'
+					and change.main_after = p_outcome ->> 'mainAfter' then null else p_outcome ->> 'mainAfter' end,
 				files_changed = case when v_exact then (p_outcome ->> 'filesChanged')::integer else change.files_changed end,
 				paths = case when v_exact then v_paths else change.paths end,
 				paths_more = case when v_exact then (v_words ->> 'paths_more')::integer else change.paths_more end,
@@ -1486,7 +1510,10 @@ begin
 		-- A restore is a wall: undo does not reach across it. Neither does it reach before the record's first main.
 		when v_change.main_before is null or (v_later and exists (select 1 from public.qorpera_code_changes change
 			where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
-				and change.name = v_repository.name and change.n > v_n and change.kind = 'restore')) then 'wall'
+				and change.name = v_repository.name and change.n > v_n and change.kind = 'restore'))
+			-- Nor does an undo of one row alone reach a row whose own movement the record does not hold (it took a
+			-- filler over and does not know where its own part of the span began).
+			or (not v_later and v_change.own_after is not null and v_change.own_before is null) then 'wall'
 		when v_later and (select count(*) from (select 1 from public.qorpera_code_changes change
 			where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
 				and change.name = v_repository.name and change.n >= v_n and change.state = 'landed' limit 501) later) > 500
