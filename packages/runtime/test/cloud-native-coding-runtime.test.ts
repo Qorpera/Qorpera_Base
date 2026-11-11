@@ -279,7 +279,9 @@ describe("the coding composition of a native turn", () => {
 					'When the repository has no checks file, add one in this change: {"checks":[{"name":"install","run":"npm ci"},{"name":"test","run":"npm test"},{"name":"build","run":"npm run build"}]} for a Node project, or the commands that install, test and build yours;',
 					"each check has a name (lower case, digits, . _ -), a run command, and may have timeoutSeconds (10 to 1800, 600 when left out; at most 3600 in all) and cwd (a folder of the repository).",
 					"Make checks fast and honest: they must not need servers or ports your own commands hold, or files git does not track.",
-					'Before coding_finish, run them yourself the same way: git clone --quiet --shared --no-checkout "$(git rev-parse --path-format=absolute --git-common-dir)" /tmp/qorpera-check && git -C /tmp/qorpera-check checkout --quiet --detach <commit>, then each command in /tmp/qorpera-check with CI=true.',
+					// The session's copy is in its home, on the machine's disk, and is removed first, so a second run after a
+					// fix works.
+					'Before coding_finish, run them yourself the same way: rm -rf ~/qorpera-check && git clone --quiet --shared --no-checkout "$(git rev-parse --path-format=absolute --git-common-dir)" ~/qorpera-check && git -C ~/qorpera-check checkout --quiet --detach <commit>, then each command in ~/qorpera-check with CI=true.',
 					"Never remove or weaken a check or a test to make it pass: the record of your change shows every change to the checks.",
 					"Never commit test output or logs as proof; the record says which checks passed. Write tests with a change that can be tested. Keep a README that says how to install, test, build and start the project.",
 					"the landing merges your commit with it, and the checks run on that merge; if the two conflict, the turn fails and says so",
