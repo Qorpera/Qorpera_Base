@@ -159,7 +159,10 @@ export function parseAppGroups(text: string): AppGroupsFile {
 		stack.length = level + 1;
 		const space = content.search(/[ \t]/);
 		const key = space < 0 ? content : content.slice(0, space);
-		const words = space < 0 ? "" : content.slice(space).trim();
+		// A drawer key's words are trimmed; any other item keeps its words as written but the spaces after the key, so
+		// it reads back the same (trim would also take a line or paragraph separator at either end).
+		const rest = space < 0 ? "" : content.slice(space);
+		const words = isAppDrawerKey(key) ? rest.trim() : rest.replace(/^[ \t]+/, "");
 		// The first line of a drawer key wins; a line that names no drawer key is kept where it is.
 		if (isAppDrawerKey(key)) {
 			if (keys.has(key)) continue;

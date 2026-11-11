@@ -206,6 +206,17 @@ A closing note.
 		expect(oddFile.retired).toEqual(["g"]);
 		expect(writeAppGroups(oddFile)).toBe("- group g: G\u2028X\n- note a\rb\n\n<!-- retired group ids: g -->\n");
 		expect(parseAppGroups(writeAppGroups(oddFile))).toEqual(oddFile);
+		// A break at either end of such a line's words is kept too, so it never turns into a group.
+		const ends = "- group g: G\u2028\n- group \u2028h: H\n<!-- retired group ids: g, h -->\n";
+		const endsFile = parseAppGroups(ends);
+		expect(endsFile.items).toEqual([
+			{ kind: "item", key: "group", words: "g: G\u2028" },
+			{ kind: "item", key: "group", words: "\u2028h: H" },
+		]);
+		expect(writeAppGroups(endsFile)).toBe(
+			"- group g: G\u2028\n- group \u2028h: H\n\n<!-- retired group ids: g, h -->\n",
+		);
+		expect(parseAppGroups(writeAppGroups(endsFile))).toEqual(endsFile);
 	});
 
 	it("is not an app of the drawer", () => {
