@@ -85,9 +85,10 @@
 --   the read answers `clear` (with the generation) and nothing is read; the executor's host clears both selections
 --   under the one-actor rule after the fence, and qorpera_machine_desktop_clipboard_cleared(placement, generation)
 --   (service_role) records the generation only while it stands and no member holds the desktop. The agent's call is
---   refused (DESKTOP_MEMBER_IN_CONTROL) either way; its next call reads as before. No action of the agent's lifts it. The helper takes the desktop as an
---   action does, so a member's action and the clipboard read never interleave on one desktop. What cannot be undone: a
---   capture whose helper had begun before a take-over may already have cleared the clipboard.
+--   answered CLIPBOARD_EMPTY either way (true then: copy the key on the site and call again); its next call reads as
+--   before. No action of the agent's lifts it. The helper takes the desktop as an action does, so a member's action and
+--   the clipboard read never interleave on one desktop. What cannot be undone: a capture whose helper had begun before a
+--   take-over may already have cleared the clipboard.
 -- * The member's list (qorpera_list_agent_machines) says whether they may take over (canTakeOver) and, per machine, who
 --   holds its desktop (control: null, or {mine, name, until}, and for the caller's own hold the epoch it was taken
 --   under, its seat and the press that seated it), and the caller's own current hand-back epoch per machine (epoch);
@@ -723,7 +724,7 @@ do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_autho
 	-- 20260930713000 (F32 of #1661): a member held the desktop since its clipboard was last confirmed clear (the lease
 	-- generation moved since): what they copied may still be on it. Nothing is read: the executor clears both selections
 	-- (under the desktop's one-actor rule, after the fence) and confirms it with qorpera_machine_desktop_clipboard_cleared
-	-- at the generation answered here; the agent hears DESKTOP_MEMBER_IN_CONTROL, copies the key again and calls again.
+	-- at the generation answered here; the agent hears CLIPBOARD_EMPTY, copies the key again and calls again.
 	-- No action of the agent's lifts this: it proves nothing about the clipboard.
 	if v_machine.desktop_clipboard_generation is distinct from v_machine.desktop_member_generation then
 		return jsonb_build_object('schema', 'qorpera.machine-coding-value-authority/v1', 'state', 'clear',

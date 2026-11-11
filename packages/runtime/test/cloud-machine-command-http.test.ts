@@ -836,13 +836,14 @@ describe("a machine's coding value", () => {
 			receiptId: f.answer.receiptId,
 			desktopGeneration: 6,
 		};
-		// Cleared and recorded, or not: nothing is read, and the agent copies the key again and calls again.
+		// Cleared and recorded, or not: nothing is read, and the agent hears what is true then, CLIPBOARD_EMPTY (copy the
+		// key on the site and call again); DESKTOP_MEMBER_IN_CONTROL stays for a member who holds the desktop.
 		for (const outcome of [{ cleared: true }, { cleared: false }]) {
 			f.call.mockResolvedValueOnce(clear);
 			f.host.clearClipboard.mockResolvedValueOnce(outcome);
 			const error = await f.router.codingValue(f.request, f.signal).catch((caught: unknown) => caught);
 			expect(error).toBeInstanceOf(CloudMachineCodingValueRefusal);
-			expect(error).toMatchObject({ code: "DESKTOP_MEMBER_IN_CONTROL" });
+			expect(error).toMatchObject({ code: "CLIPBOARD_EMPTY" });
 		}
 		expect(f.host.clearClipboard).toHaveBeenCalledWith(
 			{ placementId: f.answer.placementId, bootId: f.answer.bootId, desktopGeneration: 6 },

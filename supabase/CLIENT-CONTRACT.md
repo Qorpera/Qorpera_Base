@@ -1325,8 +1325,10 @@ request of another shape.
   machineId, placementId, bootId, executorOwner, providerId, receiptId, desktopGeneration}` and reads nothing; the
   machine's executor takes the desktop under the one-actor rule, asks the fence, clears both selections with the image's
   helper and confirms it with `qorpera_machine_desktop_clipboard_cleared(placement, generation)` (service_role), which
-  records it only while that generation stands and no member holds the desktop. The agent's call is refused
-  (`DESKTOP_MEMBER_IN_CONTROL`) either way, and its next call reads as before. Nothing the agent does lifts it. A
+  records it only while that generation stands and no member holds the desktop. The agent's call is answered
+  `CLIPBOARD_EMPTY` either way (true then: it copies the key on the site and calls again), and its next call reads as
+  before; `DESKTOP_MEMBER_IN_CONTROL` stays for a member who holds the desktop, or took it over across a read. Nothing
+  the agent does lifts it. A
   desktop that is not running counts as cleared: the image keeps no clipboard past its desktop's session (no clipboard
   manager, no saved history; measured on image 91d433c0).
 - A stated limit: the computer is the agent's. While a member holds the desktop the agent starts nothing new on it and

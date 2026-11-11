@@ -140,11 +140,12 @@ export class MachineCommandRouter {
 		const authority = await authorizeMachineCodingValue(this.#options.control, request, signal);
 		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {
 			if (authority.clear) {
-				// A member held the desktop since its clipboard was last confirmed clear (F32): it is cleared now, nothing is read,
-				// and the agent copies the key again and calls again.
+				// A member held the desktop since its clipboard was last confirmed clear (F32): it is cleared now and nothing is
+				// read. The agent hears what is true then, CLIPBOARD_EMPTY: copy the key on the site and call again
+				// (DESKTOP_MEMBER_IN_CONTROL stays for a member who holds the desktop now, or took it over across a read).
 				if (!this.#options.codingValueClearLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
 				await this.#options.codingValueClearLocal(authority, signal);
-				throw new CloudMachineCodingValueRefusal("DESKTOP_MEMBER_IN_CONTROL");
+				throw new CloudMachineCodingValueRefusal("CLIPBOARD_EMPTY");
 			}
 			if (!this.#options.codingValueLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
 			return this.#options.codingValueLocal(authority, signal);
