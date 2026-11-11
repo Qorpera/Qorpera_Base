@@ -98,6 +98,8 @@ function setup(
 		/** A gate a take-over's answer waits on (review r1 F5), and one the next list read waits on (F6). */
 		takeGate: undefined as Promise<void> | undefined,
 		listGate: undefined as Promise<void> | undefined,
+		/** A gate the next list read's answer waits on, with the machines as they were when it was asked (review r7). */
+		listSnapshotGate: undefined as Promise<void> | undefined,
 		/** A take-over whose answer is lost (review r2 F5): the database committed it first, or it reaches the database
 		 * only later, when the test says (`lateCommit`: whether it held anything). */
 		takeLost: undefined as "committed" | "late" | undefined,
@@ -153,6 +155,20 @@ function setup(
 			if (state.listFails > 0) {
 				state.listFails--;
 				return new Response("{}", { status: 503 });
+			}
+			const snapshot = state.listSnapshotGate;
+			if (snapshot) {
+				state.listSnapshotGate = undefined;
+				const asked = state.machines.map((row) => ({ ...row, epoch: epochOf(row.machineId) }));
+				await snapshot;
+				return Response.json({
+					schema: "qorpera.agent-machines/v1",
+					profileId: profileA.profileId,
+					staffAgentId: staff.id,
+					canWake: state.canWake,
+					canTakeOver: state.canTakeOver,
+					machines: asked,
+				});
 			}
 			return Response.json({
 				schema: "qorpera.agent-machines/v1",
@@ -1967,6 +1983,80 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		// Once answered, nothing more is owed.
 		expect(await panels.releaseAgent(staff.id)).toBe(true);
 		expect(backEpochs(s)).toEqual([0]);
+	});
+
+	it.each([
+		["the window closes", false],
+		["the window switches to another machine", true],
+	] as const)(
+		"keeps owing a hold an answer named at a newer epoch while I'm done waits for an older list snapshot, when %s (r7 F13)",
+		async (_name, switching) => {
+			const { s, panels, p } = await company(setup({ machines: [machine(1), machine(2)] }));
+			await takeOver(p);
+			expect(p.holding).toBe(true);
+			// The page's lease ended unseen. I'm done gives the machine back at its epoch (the hand-back waits) and reads the
+			// list, whose answer, captured now with no hold of the member's, is delayed.
+			s.state.machines = [machine(1), machine(2)];
+			const back = gate(),
+				snapshot = gate();
+			s.state.handBackGates = [back.closed];
+			s.state.listSnapshotGate = snapshot.closed;
+			let done: boolean | undefined;
+			const answered = panels.releaseAgent(staff.id).then((value) => {
+				done = value;
+			});
+			await flush();
+			expect(backEpochs(s)).toEqual([0]);
+			// Another tab of the member's hands it back and takes it again at epoch 1; then the page's hand-back is answered:
+			// nothing changed, and the member holds it now, at epoch 1.
+			s.state.epochs.set(machine(1).machineId, 1);
+			s.state.machines = [machine(1, { control: held(1) }), machine(2)];
+			back.open();
+			await flush();
+			// The window closes, or switches to the other machine: neither erases what that answer said.
+			if (switching) {
+				s.state.answers.push({ picture: 2 });
+				p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher")!.click();
+				[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][1]!.click();
+			} else panels.close(staff.id);
+			await flush();
+			expect(done).toBeUndefined();
+			// The old snapshot arrives (no hold): it says nothing over the newer answer. I'm done hands it back at epoch 1.
+			snapshot.open();
+			await answered;
+			expect(done).toBe(true);
+			expect(backEpochs(s)).toEqual([0, 1]);
+			expect(s.state.machines[0]?.control).toBeNull();
+		},
+	);
+
+	it("says no on I'm done while each answer names a newer epoch still held, a few rounds, and keeps the card open (r7 F13)", async () => {
+		const { s, panels } = await company();
+		panels.close(staff.id);
+		await flush();
+		// Another tab holds it, and takes it again after every hand-back.
+		s.state.epochs.set(machine(1).machineId, 1);
+		s.state.machines = [machine(1, { control: held(1) })];
+		const retake = () => {
+			const next = (s.state.epochs.get(machine(1).machineId) ?? 0) + 1;
+			s.state.epochs.set(machine(1).machineId, next);
+			s.state.machines = [machine(1, { control: held(next) })];
+		};
+		const gates = Array.from({ length: 8 }, () => gate());
+		s.state.handBackGates = gates.map((one) => one.closed);
+		let done: boolean | undefined;
+		const answered = panels.releaseAgent(staff.id).then((value) => {
+			done = value;
+		});
+		for (const one of gates) {
+			await flush();
+			if (done !== undefined) break;
+			retake();
+			one.open();
+		}
+		await answered;
+		expect(done).toBe(false);
+		expect(backEpochs(s).length).toBeGreaterThan(1);
 	});
 
 	it("asks every hold back, best effort, as the company's page is left", async () => {

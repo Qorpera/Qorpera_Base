@@ -7,9 +7,9 @@ export const RELEASE_RETRY_MS = [2000, 4000, 8000, 15_000];
 export const HOLD_CALL_MS = 15_000;
 /** How many hand-backs one "give it all back" waits for in a row for a machine before it says no. */
 const SETTLE_ROUNDS = 3;
-/** How many more times Hand back and I'm done hand a machine back when a hand-back answers that the member holds it now
- * (a newer epoch: another tab of theirs). */
-const HOLDING_ROUNDS = 2;
+/** How many more rounds Hand back and I'm done hand machines back while answers say the member holds them at a newer
+ * epoch (another tab of theirs, taking it again each time) before they say no. */
+const HOLDING_ROUNDS = 3;
 
 /** A take-over as the ledger answers it: held; refused (the database said why); uncertain (the answer was lost, or the
  * epoch could not be read: the machine may be held); called off (a release was asked meanwhile: its hand-back covers
@@ -57,8 +57,15 @@ interface Hold {
 	tries: number;
 	failed: boolean;
 	timer?: ReturnType<typeof setTimeout>;
-	/** The last hand-back's answer said the member holds the machine now (at a newer epoch: another tab of theirs). */
-	holdingNow: boolean;
+	/** A hand-back answered that the member holds the machine at this epoch (another tab of theirs, or an earlier page:
+	 * review r7 F13). It stands until a hand-back answers past it, or answers at or past it that the member holds nothing:
+	 * no close, switch, list read, refusal or timeout clears it. While it stands the machine counts as held for I'm done,
+	 * and Hand back and I'm done hand it back at this epoch; a close or a switch alone still give back only what the page
+	 * took. */
+	elsewhere: number | undefined;
+	/** When the latest take-over or hand-back answer for the machine came: a list read asked before then says nothing of
+	 * it (review r7). */
+	answeredAt: number;
 	/** The company's page was left while a take-over was on its way. */
 	gone?: boolean;
 }
@@ -177,6 +184,7 @@ export class DesktopHoldLedger {
 			let answer: MemberDesktopHold | undefined;
 			try {
 				answer = await computer.takeDesktop(machineId, epoch, AbortSignal.timeout(HOLD_CALL_MS));
+				hold.answeredAt = Date.now();
 			} catch {
 				answer = undefined;
 			}
@@ -222,10 +230,11 @@ export class DesktopHoldLedger {
 	/** A hold of this member's that the list shows on this agent's machine, at the epoch it was taken under, that no window
 	 * knows (the page was loaded again): true, it is the window's now. False on a machine this page gave back (and did not
 	 * take over again), while a release or a take-over of it is on its way, or without an epoch. */
-	adopt(machineId: string, agentId: string, epoch: number | null): boolean {
+	adopt(machineId: string, agentId: string, epoch: number | null, askedAt: number): boolean {
 		if (this.#left || epoch === null || this.#givenBack.has(machineId)) return false;
 		const hold = this.#holds.get(machineId) ?? this.#entry(machineId);
-		if (hold.calling || hold.state === "queued" || hold.state === "taking") return false;
+		// A list asked before the machine's latest answer says nothing of it (review r7).
+		if (askedAt < hold.answeredAt || hold.calling || hold.state === "queued" || hold.state === "taking") return false;
 		hold.epoch = Math.max(hold.epoch ?? 0, epoch);
 		hold.agents.add(agentId);
 		this.#state(hold, "held");
@@ -242,14 +251,15 @@ export class DesktopHoldLedger {
 	 * page holds, or else of what it sent, asked again until answered (window or not). A take-over still queued is
 	 * dropped, never sent. Nothing is sent when the page holds nothing of the machine and sent nothing since the last
 	 * answered hand-back. */
-	release(machineId: string, agentId?: string, reason: Hold["reason"] = "handed_back"): void {
+	release(machineId: string, agentId?: string, reason: Hold["reason"] = "handed_back", elsewhere = false): void {
 		if (this.#left || !this.#computer) return;
 		const hold = this.#holds.get(machineId);
 		if (!hold) return;
 		if (agentId) hold.agents.add(agentId);
-		hold.holdingNow = false;
 		if (hold.state === "queued") this.#state(hold, undefined);
-		const epoch = this.#owed(hold);
+		// Hand back and I'm done also give back what an answer said the member holds elsewhere.
+		const owed = this.#owed(hold);
+		const epoch = elsewhere && hold.elsewhere !== undefined ? Math.max(owed ?? hold.elsewhere, hold.elsewhere) : owed;
 		if (!hold.calling && epoch === undefined) return;
 		this.#givenBack.add(machineId);
 		if (!hold.calling) {
@@ -278,21 +288,23 @@ export class DesktopHoldLedger {
 		// The hand-backs this asks, each waited for once: a failed one says no (it is asked again on its own, after a wait).
 		const asks = new Map<Hold, Promise<boolean>>();
 		const give = (hold: Hold) => {
-			this.release(hold.machineId, agentId, reason);
+			this.release(hold.machineId, agentId, reason, elsewhere);
 			if (hold.calling) asks.set(hold, this.#ask(hold));
 		};
 		for (const hold of [...this.#holds.values()]) if (hold.agents.has(agentId)) give(hold);
 		let listed = true;
 		if (elsewhere) {
-			const list = await this.#readList(agentId);
-			if (!list) listed = false;
+			const read = await this.#readList(agentId);
+			if (!read) listed = false;
 			else
-				for (const row of list.machines) {
+				for (const row of read.list.machines) {
 					const epoch = row.control?.mine === true ? row.control.epoch : null;
 					if (epoch === null || this.#left) continue;
 					const hold = this.#holds.get(row.machineId) ?? this.#entry(row.machineId);
 					hold.agents.add(agentId);
-					if (this.#busy(hold)) continue;
+					// A list asked before an answer for the machine came says nothing of it; nor does one of a machine the
+					// page has something of (given back above).
+					if (read.asked < hold.answeredAt || this.#busy(hold)) continue;
 					// The member holds it from elsewhere: given back at the epoch it was taken under.
 					hold.epoch = Math.max(hold.epoch ?? 0, epoch);
 					this.#state(hold, "held");
@@ -304,14 +316,13 @@ export class DesktopHoldLedger {
 			asks.clear();
 			if (!answered.every(Boolean)) return false;
 			if (!elsewhere) break;
-			// An answer said the member holds a machine now (a newer epoch, another tab): again at that epoch.
-			const again = [...this.#holds.values()].filter((hold) => hold.agents.has(agentId) && hold.holdingNow);
+			// An answer said the member holds a machine at a newer epoch (another tab): again at that epoch, a few rounds.
+			const again = [...this.#holds.values()].filter(
+				(hold) => hold.agents.has(agentId) && hold.elsewhere !== undefined,
+			);
 			if (!again.length) break;
 			if (round >= HOLDING_ROUNDS) return false;
-			for (const hold of again) {
-				this.#state(hold, "held");
-				give(hold);
-			}
+			for (const hold of again) give(hold);
 		}
 		return listed && !this.has(agentId);
 	}
@@ -322,6 +333,8 @@ export class DesktopHoldLedger {
 	listed(list: MemberAgentMachines, askedAt: number): void {
 		for (const row of list.machines) {
 			const hold = this.#holds.get(row.machineId) ?? this.#entry(row.machineId);
+			// Asked before the latest take-over or hand-back answer for the machine came: it cannot overrule that (review r7).
+			if (askedAt < hold.answeredAt) continue;
 			if (hold.epoch === undefined || row.epoch > hold.epoch) {
 				const moved = hold.epoch !== undefined;
 				hold.epoch = row.epoch;
@@ -376,16 +389,17 @@ export class DesktopHoldLedger {
 			reason: "handed_back",
 			tries: 0,
 			failed: false,
-			holdingNow: false,
+			elsewhere: undefined,
+			answeredAt: Number.NEGATIVE_INFINITY,
 		};
 		this.#holds.set(machineId, hold);
 		return hold;
 	}
 
-	/** Whether the page may hold something of the machine, sent a take-over of it since the last answered hand-back, or
-	 * has a hand-back of it unanswered. */
+	/** Whether the page may hold something of the machine, sent a take-over of it since the last answered hand-back, was
+	 * told the member holds it elsewhere, or has a hand-back of it unanswered. */
 	#busy(hold: Hold): boolean {
-		return hold.state !== undefined || hold.sent !== undefined || hold.calling;
+		return hold.state !== undefined || hold.sent !== undefined || hold.elsewhere !== undefined || hold.calling;
 	}
 
 	/** The epoch a release of the machine hands back at: that of what the page holds or may hold (never below what it
@@ -402,15 +416,16 @@ export class DesktopHoldLedger {
 		this.#changed();
 	}
 
-	/** Reads the agent's list, and learns what it says (listed); undefined when it could not be read. */
-	async #readList(agentId: string): Promise<MemberAgentMachines | undefined> {
+	/** Reads the agent's list, and learns what it says (listed); with when it was asked, or undefined when it could not be
+	 * read. */
+	async #readList(agentId: string): Promise<{ list: MemberAgentMachines; asked: number } | undefined> {
 		const computer = this.#computer;
 		if (!computer || this.#left) return undefined;
 		const asked = Date.now();
 		try {
 			const list = await computer.agentMachines(agentId, AbortSignal.timeout(HOLD_CALL_MS));
 			this.listed(list, asked);
-			return list;
+			return { list, asked };
 		} catch {
 			return undefined;
 		}
@@ -442,9 +457,12 @@ export class DesktopHoldLedger {
 				hold.calling = false;
 				hold.callEpoch = undefined;
 				hold.epoch = Math.max(hold.epoch ?? 0, answer.epoch);
+				hold.answeredAt = Date.now();
 				// The database's epoch is past what was sent: every take-over sent at it, or before, is fenced.
 				if (hold.sent !== undefined && answer.epoch > hold.sent) hold.sent = undefined;
-				hold.holdingNow = answer.holding;
+				// The member holds it now (at the answer's epoch): owed until an answer past it, or one that says nothing is.
+				if (answer.holding) hold.elsewhere = answer.epoch;
+				else if (hold.elsewhere !== undefined && answer.epoch >= hold.elsewhere) hold.elsewhere = undefined;
 				// A take-over asked on purpose after the release (queued) goes on at the new epoch; nothing else is left.
 				if (hold.state !== "queued") hold.state = undefined;
 				hold.changedAt = Date.now();

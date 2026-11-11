@@ -576,7 +576,7 @@ export class ComputerPanel {
 				!this.#taking &&
 				shown &&
 				held &&
-				this.#ledger.adopt(shown.machineId, this.agentId, held.control?.epoch ?? null)
+				this.#ledger.adopt(shown.machineId, this.agentId, held.control?.epoch ?? null, asked)
 			)
 				this.#held(shown.machineId);
 		}
