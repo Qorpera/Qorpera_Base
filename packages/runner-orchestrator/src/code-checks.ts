@@ -52,13 +52,12 @@ export interface CodeSiteRecipe {
 
 export type CodeChecksRead =
 	| { readonly state: "missing" }
-	/** `site` is the file's recipe, null without one. `readCodeChecks` always says it; it is optional only while the
-	 * executor's runner (part C2) is not built on it. */
+	/** `site` is the file's recipe, null without one. */
 	| {
 			readonly state: "ok";
 			readonly blob: string;
 			readonly checks: readonly CodeCheck[];
-			readonly site?: CodeSiteRecipe | null;
+			readonly site: CodeSiteRecipe | null;
 	  }
 	/** `blob` is null when the path holds no regular file (a folder, a link or a submodule). */
 	| { readonly state: "refused"; readonly blob: string | null; readonly problems: readonly CodeChecksProblem[] };
@@ -77,21 +76,22 @@ export type CodeChecksGate =
 			readonly checks: readonly CodeCheck[];
 			readonly blob: string;
 			readonly changed: CodeChecksChanged | null;
-			/** The candidate's recipe (null: no site). `codeChecksGate` always says it; optional as `CodeChecksRead`'s. */
-			readonly site?: CodeSiteRecipe | null;
+			/** The candidate's recipe (null: no site). */
+			readonly site: CodeSiteRecipe | null;
 	  }
 	| { readonly gate: "refused"; readonly summary: string };
 
 /** One run of the checks on one candidate. `run` strings are cut to 200 bytes; `tail` is `codeChecksTail` of the
  * failing check's masked output; `log` is the path of its whole output on the session's machine. A run that passed
- * says what became of the site (step 4): null when there was none to take (no recipe, or sites switched off). */
+ * says what became of the site (step 4): null when there was none to take (no recipe, or sites switched off). A run
+ * whose checks passed but whose site the code made wrong is `site_refused` (`CodeChecksSiteRefused`). */
 export type CodeChecksRun =
 	| {
 			state: "passed";
 			ms: number;
 			copyMs: number;
 			checks: { name: string; run: string; ms: number }[];
-			site?: CodeSiteCollected | null;
+			site: CodeSiteCollected | null;
 	  }
 	| {
 			state: "failed";
@@ -108,11 +108,11 @@ export type CodeChecksRun =
 			};
 			notRun: string[];
 	  }
-	| { state: "not_run"; why: "copy" | "machine" | "transport" | "authority" | "budget"; code: string };
+	| { state: "not_run"; why: "copy" | "machine" | "transport" | "authority" | "budget"; code: string }
+	| CodeChecksSiteRefused;
 
 /** A run whose checks all passed, but whose site the code made wrong (step 4; STEP4-RELEASES-PLAN.md 8.1): nothing goes
- * in, and the turn fails with `codeSiteRefusedSummary`'s words. Part C2 makes it one of `CodeChecksRun`'s answers when
- * its runner gives it, with the landing that reads it. */
+ * in, and the turn fails with `codeSiteRefusedSummary`'s words. */
 export interface CodeChecksSiteRefused {
 	state: "site_refused";
 	ms: number;
@@ -337,7 +337,7 @@ export function codeChecksGate(main: CodeChecksRead, candidate: CodeChecksRead):
 			checks: candidate.checks,
 			blob: candidate.blob,
 			changed: changedOf(main.state === "ok" ? main.checks : [], candidate.checks),
-			site: candidate.site ?? null,
+			site: candidate.site,
 		};
 	if (main.state === "missing" && candidate.state === "missing") throw new Error("CODE_CHECKS_NOTHING_TO_CHECK");
 	return { gate: "refused", summary: codeChecksRefusedSummary(candidate, main.state !== "missing") };

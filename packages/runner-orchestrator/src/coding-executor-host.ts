@@ -22,9 +22,19 @@ import {
 	CODE_CHECKS_EARLIER_RUN_NOT_STOPPED,
 	type CodeCheck,
 	type CodeChecksRun,
+	type CodeSiteRecipe,
 	codeChecksTail,
 } from "./code-checks.ts";
 import { codeAreaPath } from "./code-host-jobs.ts";
+import {
+	CODE_CHECKS_NEWER_RUN,
+	CODE_SITE_COLLECT,
+	CODE_SITE_DROP,
+	type CodeSiteCollected,
+	type CodeSiteProblem,
+	codeSiteCollectAnswer,
+	codeSiteDropAnswer,
+} from "./code-site.ts";
 import {
 	type CodingCommandSecrets,
 	type CodingEnvironmentSource,
@@ -54,6 +64,7 @@ import {
 	type LxdCodingFolderCommandTransportOptions,
 } from "./coding-folder-command-transport.ts";
 import {
+	type CodingFolderBoundary,
 	type CodingFolderControl,
 	codingFolderBoundaryChecking,
 	codingFolderBoundaryHeld,
@@ -241,15 +252,19 @@ export interface LxdCodingExecutorHostOptions {
 		/** Each view the guest mounted for a session, and how the view it replaced ended, if it replaced one. */
 		onMount?(mount: { workerId: string; machineId: string; viewId: string; replaced?: CodingFolderViewEnd }): void;
 		/** The log lines of a landing's checks (own code storage, step 3): `code-checks` (each command `started` and
-		 * `ended`, and the `run`) and `code-checks-error` (whose `error` is the error itself, for the log to redact).
-		 * Never a check's output. */
+		 * `ended`, the site's collect and drop among them, each `boundary` after the collect, what the drop `dropped`, and
+		 * the `run`) and `code-checks-error` (whose `error` is the error itself, for the log to redact). Never a check's
+		 * output, a site's file or a secret's value. */
 		report?(event: Record<string, unknown>): void;
 		/** How often a running check is read (default 3 s), the wall budget of a whole run of the checks (default: 300 s
-		 * for the copy, and each check's own limit and 60 s more), and how long a check is cancelled and read for until
-		 * its end is confirmed (default 20 s). */
+		 * for the copy, and each check's own limit and 60 s more; and 240 s for a run that takes a site), and how long a
+		 * check is cancelled and read for until its end is confirmed (default 20 s). */
 		checksPollMs?: number;
 		checksBudgetMs?: number;
 		checksStopMs?: number;
+		/** How long the boundary after a site's collect is asked for at most (default 120 s): again each second, or at the
+		 * read's pace (`checksPollMs`) when that is shorter. */
+		checksBoundaryMs?: number;
 	};
 }
 type FolderOptions = NonNullable<LxdCodingExecutorHostOptions["folder"]>;
@@ -268,6 +283,22 @@ interface Prepared extends Attached {
 	baseSha: string;
 	/** On the folder model: the session's user, and where its commands start. */
 	folder?: { uid: number; cwd: string };
+}
+/** A run of the checks that takes the site its checks left (own code storage, step 4): the recipe, the commit, the run's
+ * folder, the environment every command of the run gets, the repository's storage, the host's authority, the run's
+ * wall budget, its commands' ids, the collect's place after the checks (the drop's is the next), and its log lines'
+ * names. */
+interface SiteRun {
+	recipe: CodeSiteRecipe;
+	commit: string;
+	dir: string;
+	base: Readonly<Record<string, string>>;
+	repository: string;
+	authorize: LxdCodingFolderCommandTransportOptions["authorize"];
+	budget: AbortSignal;
+	commandId: (index: "site" | "drop") => string;
+	index: number;
+	step: Record<string, unknown>;
 }
 /** A session attached to one of this executor's machines under its SQL
  * attachment, standing by or in a turn: what renewing its guest lease needs. */
@@ -444,18 +475,10 @@ const CODING_FOLDER_CHECK_RETRY_MS = 1_000;
  * never the newest run's (release review r1, F1). And a command of a run that is not the newest does nothing, by these
  * scripts' own rule on the machine (review round 4, F1): a start the transport never saw acknowledged may land at any
  * time after the host moved on, so its copy or check finds a higher name and exits 91 before it removes, makes or runs
- * anything. Names compare as bytes (`LC_ALL=C`, in a subshell of its own: nothing a check runs gets it). */
-const CODE_CHECKS_NEWER_RUN = [
-	"(",
-	"\tLC_ALL=C",
-	'\tfor e in "$QORPERA_CHECKS_ROOT"/*; do',
-	'\t\tm="$(basename -- "$e")"',
-	"\t\tif [[ $m =~ ^[0-9]{10}-[0-9]{4}$ && $m > $QORPERA_CHECKS_NAME ]]; then exit 91; fi",
-	"\tdone",
-	")",
-	'if [ "$?" -eq 91 ]; then exit 91; fi',
-];
-/** The copy: a clean copy of exactly the candidate on the machine's own disk, read from the repository's storage in the
+ * anything. Names compare as bytes (`LC_ALL=C`, in a subshell of its own: nothing a check runs gets it). The rule's lines
+ * are `CODE_CHECKS_NEWER_RUN` (code-site.ts), which the site's collect and drop begin with too (step 4).
+ *
+ * The copy: a clean copy of exactly the candidate on the machine's own disk, read from the repository's storage in the
  * company folder (no untracked or ignored file of any worktree), after waiting for a merge commit job A just wrote to
  * reach the session's view. Its values come in the environment. In this order (review round 5, F1):
  * 1. A root that is a link or a file is taken away, so nothing is made or removed through it.
@@ -535,6 +558,18 @@ function codeChecksRunName(sequence: number, attempt: number): string | null {
 	if (!Number.isSafeInteger(attempt) || attempt < 0 || attempt > 9_999) return null;
 	return `${String(sequence).padStart(10, "0")}-${String(attempt).padStart(4, "0")}`;
 }
+/** What the machine's boundary after a site's collect says of it, as `publish` judges a boundary (every view of the
+ * machine; STEP4-BUILD.md 2's table): `saved` (every read released, every view saved); `carries` (the save check
+ * refused paths for one of the machine's secret values, and nothing else held them); or why it was not saved, as the
+ * code of a missed site: still checking, refused only as not checked, or held otherwise. */
+function siteBoundaryJudged(boundary: CodingFolderBoundary): string {
+	if (codingFolderBoundaryChecking(boundary)) return "CODE_SITE_BOUNDARY_CHECKING";
+	const held = codingFolderBoundaryHeld(boundary);
+	if (held === undefined) return "saved";
+	const refusal = codingFolderSaveRefused(boundary);
+	if (refusal === "carries") return "carries";
+	return refusal === "unchecked" ? "CODE_SITE_BOUNDARY_UNCHECKED" : `CODE_SITE_BOUNDARY_HELD:${held}`;
+}
 /** The copy's own time limit. */
 const CODE_CHECKS_COPY_MS = 300_000;
 /** What the wall budget gives each check beyond its own limit. */
@@ -550,6 +585,30 @@ const CODE_CHECKS_UNANSWERED_READS = 20;
 const CODE_CHECKS_STOP_MS = 20_000;
 /** A check's command in its run's answer and the change record, at most this many bytes. */
 const CODE_CHECKS_RUN_BYTES = 200;
+/** The site's collect's own time limit (own code storage, step 4; STEP4-BUILD.md 2). */
+const CODE_SITE_COLLECT_MS = 120_000;
+/** How long the boundary after the collect is asked for at most, while it is checking or does not answer. */
+const CODE_SITE_BOUNDARY_MS = 120_000;
+/** The drop's own time limit: it removes at most a site's objects. */
+const CODE_SITE_DROP_MS = 60_000;
+/** What the wall budget of a run that takes a site gives it beyond its checks': the collect's 120 s, and 120 s for the
+ * boundary and the drop. */
+const CODE_SITE_BUDGET_MS = 240_000;
+/** The names the folder command transport sets in every command's environment after its secrets
+ * (coding-folder-command-transport.ts, `sessionEnvironment`): a secret of one of these names never reaches a command
+ * with its own value, so the collect is not given it to look for. */
+const CODING_FOLDER_SESSION_NAMES: ReadonlySet<string> = new Set([
+	"HOME",
+	"USER",
+	"LOGNAME",
+	"SHELL",
+	"PATH",
+	"LANG",
+	"TMPDIR",
+	"XDG_RUNTIME_DIR",
+	"DBUS_SESSION_BUS_ADDRESS",
+	"DOCKER_HOST",
+]);
 /** A refusal of a check's run authority: the turn's, the machine's or its disk's. */
 class CodingChecksUnauthorized extends Error {
 	constructor(cause: unknown) {
@@ -1793,7 +1852,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				return { state: answer.state, change: change as number | null };
 			},
 			// Asked of the executor that holds the turn's lease. An answer lost, or not the switch's, reads as on: the
-			// landing is then checked, never let in unchecked. Only the kernel's refusal ends it.
+			// landing is then checked, never let in unchecked, and its site taken. A kernel from before step 4 says
+			// nothing of the site: on. Only the kernel's refusal ends it.
 			checksSwitch: async (checked) => {
 				try {
 					const answer = record(
@@ -1803,9 +1863,13 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 							checked,
 						),
 					);
-					if (answer.schema !== "qorpera.code-checks-switch/v1" || typeof answer.enabled !== "boolean")
+					if (
+						answer.schema !== "qorpera.code-checks-switch/v1" ||
+						typeof answer.enabled !== "boolean" ||
+						!(answer.site === undefined || typeof answer.site === "boolean")
+					)
 						throw new Error("CODING_HOST_CODE_CHECKS_SWITCH_UNCONFIRMED");
-					return answer.enabled;
+					return { checks: answer.enabled, site: typeof answer.site === "boolean" ? answer.site : true };
 				} catch (error) {
 					if (checked.aborted || error instanceof CodingControlRefused) throw error;
 					this.#checksReport({
@@ -1815,7 +1879,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 						sequence: claim.sequence,
 						error,
 					});
-					return true;
+					return { checks: true, site: true };
 				}
 			},
 			runChecks: (input, checked) => this.#runChecks(claim, input, checked),
@@ -1845,16 +1909,22 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * command whose stop could not be confirmed (its cancels rejected, or still `running`) holds every later run of the
 	 * session's checks: each is `not_run` (`machine`, CODE_CHECKS_EARLIER_RUN_NOT_STOPPED) until a cancel and a read
 	 * before it see it end, and touches no folder (#checksMayRun; release review r1, F1). The turn's abort stops the
-	 * running command with time of its own and is thrown on. */
+	 * running command with time of its own and is thrown on.
+	 *
+	 * When `site` is a recipe and every check passed, the run takes the site the checks left (own code storage, step 4;
+	 * #takeSite): its collect and, when needed, its drop are two more commands of the run, under every rule above, and
+	 * the run's wall budget gains 240 s for them. A site the code made wrong is `site_refused`; a run that passed says
+	 * what became of its site (null without a recipe). Its `ms` is the checks' own, the site's time aside. */
 	async #runChecks(
 		claim: CodingSessionClaim,
-		input: { commit: string; checks: readonly CodeCheck[]; attempt: number },
+		input: { commit: string; checks: readonly CodeCheck[]; attempt: number; site: CodeSiteRecipe | null },
 		signal: AbortSignal,
 	): Promise<CodeChecksRun> {
 		signal.throwIfAborted();
 		const began = performance.now();
 		const said = { workerId: claim.workerId, sequence: claim.sequence, attempt: input.attempt, commit: input.commit };
 		const elapsed = (since: number) => Math.round(performance.now() - since);
+		const recipe = input.site ?? null;
 		const answer = (run: CodeChecksRun): CodeChecksRun => {
 			this.#checksReport({
 				event: "code-checks",
@@ -1862,6 +1932,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				...said,
 				state: run.state,
 				...(run.state === "not_run" ? { why: run.why, code: run.code } : { ms: run.ms }),
+				// What became of the site: never a path or a value, a variable's name at most.
+				...(run.state === "passed" && run.site !== null
+					? { site: run.site.state, ...(run.site.state === "missed" ? { siteCode: run.site.code } : {}) }
+					: {}),
+				...(run.state === "site_refused" ? { problem: run.problem.code, variable: run.problem.variable } : {}),
 			});
 			return run;
 		};
@@ -1892,9 +1967,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const home = `/home/qorpera-${uid}`,
 			root = `${home}/.qorpera-checks`,
 			dir = `${root}/${name}`,
-			commandId = (index: number) =>
+			// Each command of the run by its place: the copy 0, each check from 1; the site's collect and drop by name.
+			commandId = (index: number | "site" | "drop") =>
 				codingHostId("checks", `${claim.workerId}:${claim.sequence}:${input.attempt}:${index}`);
-		// Every command of the run, the copy's and each check's, knows its run by the root and its name.
+		// Every command of the run, the copy's, each check's and the site's, knows its run by the root and its name.
 		const base = {
 			...codingFolderGitEnvironment(claim.workerId),
 			CI: "true",
@@ -1933,11 +2009,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				return answer({ state: "not_run", why: "machine", code: CODE_CHECKS_EARLIER_RUN_NOT_STOPPED });
 			if (this.#checksMayRun.get(claim.workerId) === earlier) this.#checksMayRun.delete(claim.workerId);
 		}
+		// The run's wall budget: the copy's, each check's with its slack, and the site's when it takes one.
 		const budget = AbortSignal.timeout(
 			folder.checksBudgetMs ??
 				input.checks.reduce(
 					(total, check) => total + check.timeoutSeconds * 1000 + CODE_CHECKS_SLACK_MS,
-					CODE_CHECKS_COPY_MS,
+					CODE_CHECKS_COPY_MS + (recipe === null ? 0 : CODE_SITE_BUDGET_MS),
 				),
 		);
 		let copyMs = 0;
@@ -2054,7 +2131,251 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				notRun: input.checks.slice(index).map(({ name }) => name),
 			});
 		}
-		return answer({ state: "passed", ms: elapsed(began), copyMs, checks: passed });
+		const ms = elapsed(began);
+		if (recipe === null) return answer({ state: "passed", ms, copyMs, checks: passed, site: null });
+		const site = await this.#takeSite(
+			ready,
+			folder,
+			{
+				recipe,
+				commit: input.commit,
+				dir,
+				base,
+				repository,
+				authorize: checked,
+				budget,
+				commandId,
+				index: input.checks.length + 1,
+				step: { ...said, folder: name },
+			},
+			signal,
+		);
+		return answer(
+			"problem" in site
+				? { state: "site_refused", ms, checks: passed, problem: site.problem }
+				: { state: "passed", ms, copyMs, checks: passed, site },
+		);
+	}
+	/** The site the checks of a run left, once every one of them passed (own code storage, step 4; STEP4-BUILD.md 2).
+	 * 1. The names of the session's secrets the collect looks for: the keys of the vault's environment for the collect's
+	 *    own command id (`resolve` keeps that answer for the id, so its start asks nothing again), but those the command's
+	 *    own environment or the session's (CODING_FOLDER_SESSION_NAMES) sets, whose values win in the command. Never a
+	 *    value.
+	 * 2. The collect (`CODE_SITE_COLLECT`), one more command of the run: its own command id, at the copy's `src` (so a
+	 *    newer run's copy ends it by its working folder), within the run's budget, through #checksCommand, so that every
+	 *    rule of the run's commands holds for it (the two memories, the look again, the stop, `hidden`). Its ending is
+	 *    read from its receipt's output (`codeSiteCollectAnswer`): a problem the code made is the site refused; anything
+	 *    but its own ending is the site missed, with a code.
+	 * 3. The machine's boundary, through the wrapper a command's transport asks it through (#folderBoundary), asked again
+	 *    while it is checking or does not answer, for at most CODE_SITE_BOUNDARY_MS, and judged as `publish` judges it
+	 *    (every view of the machine): saved with nothing held, the site is made.
+	 * 4. Otherwise the drop (`CODE_SITE_DROP`), a command of the run as the collect is, removes the objects the collect
+	 *    wrote, before a refused one holds the session's storage; then the boundary is asked once more. The site is
+	 *    refused when the save check found one of the machine's secret values in them (`SITE_HOLDS_SECRET`, no variable
+	 *    named), and missed for anything else, whatever the drop and the boundary after it came to.
+	 * Each step is tried once. It throws only the turn's abort, as a check's command does. */
+	async #takeSite(
+		ready: Prepared,
+		folder: FolderOptions,
+		run: SiteRun,
+		signal: AbortSignal,
+	): Promise<CodeSiteCollected | { problem: CodeSiteProblem }> {
+		const { recipe, budget } = run;
+		const missed = (code: string): CodeSiteCollected => ({ state: "missed", code });
+		const own: Record<string, string> = {
+			...run.base,
+			QORPERA_CHECKS_REPOSITORY: run.repository,
+			QORPERA_SITE_FOLDER: recipe.folder,
+		};
+		let names: string[];
+		try {
+			const secrets = this.#sessionSecrets(ready);
+			const { environment } = secrets
+				? await secrets.resolve(
+						{
+							companyId: ready.machine.companyId,
+							workerId: ready.claim.workerId,
+							machineId: ready.machine.machineId,
+							commandId: run.commandId("site"),
+							kind: "command",
+						},
+						AbortSignal.any([signal, budget]),
+					)
+				: { environment: {} };
+			names = Object.keys(environment)
+				.filter(
+					(name) =>
+						!Object.hasOwn(own, name) &&
+						name !== "QORPERA_SITE_SECRET_NAMES" &&
+						!CODING_FOLDER_SESSION_NAMES.has(name),
+				)
+				.sort();
+		} catch (error) {
+			if (signal.aborted) throw signal.reason;
+			this.#checksReport({ event: "code-checks-error", step: "secrets", ...run.step, error });
+			return missed(budget.aborted ? "CODE_CHECKS_BUDGET" : errorCodeOf(error));
+		}
+		const collected = await this.#siteCommand(
+			ready,
+			folder,
+			run,
+			"collect",
+			{ ...own, QORPERA_SITE_SECRET_NAMES: names.join(" ") },
+			signal,
+		);
+		if ("code" in collected) return missed(collected.code);
+		const { receipt } = collected;
+		if (receipt.state !== "succeeded" && receipt.state !== "failed")
+			return missed(`CODE_SITE_COLLECT_${receipt.state.toUpperCase()}`);
+		const ending = codeSiteCollectAnswer(receipt.output, receipt.exitCode);
+		if (ending === null)
+			return missed(
+				receipt.exitCode === 0 || receipt.exitCode === 3
+					? "CODE_SITE_COLLECT_ANSWER_INVALID"
+					: `CODE_SITE_COLLECT_EXIT_${receipt.exitCode}`,
+			);
+		if ("problem" in ending) return { problem: ending.problem };
+		const boundary = this.#folderBoundary(folder, ready.machine);
+		const judged = await this.#siteBoundary(boundary, ready, folder, budget, run.step, false, signal);
+		if (judged === "saved")
+			return {
+				state: "made",
+				...ending.made,
+				folder: recipe.folder,
+				name: recipe.name,
+				title: recipe.title,
+			};
+		const dropped = await this.#siteCommand(
+			ready,
+			folder,
+			run,
+			"drop",
+			{ ...run.base, QORPERA_CHECKS_REPOSITORY: run.repository },
+			signal,
+		);
+		this.#checksReport({
+			event: "code-checks",
+			step: "dropped",
+			...run.step,
+			dropped: "code" in dropped ? null : codeSiteDropAnswer(dropped.receipt.output, dropped.receipt.exitCode),
+		});
+		await this.#siteBoundary(boundary, ready, folder, budget, run.step, true, signal);
+		return judged === "carries"
+			? { problem: { code: "SITE_HOLDS_SECRET", path: null, variable: null } }
+			: missed(judged);
+	}
+	/** The site's collect or drop as a command of the run (#takeSite), to its end through #checksCommand, with its log
+	 * lines: its receipt, or the code of why it did not end on its own. */
+	async #siteCommand(
+		ready: Prepared,
+		folder: FolderOptions,
+		run: SiteRun,
+		which: "collect" | "drop",
+		environment: Readonly<Record<string, string>>,
+		signal: AbortSignal,
+	): Promise<{ receipt: CloudCodingCommandReceipt } | { code: string }> {
+		const step = { ...run.step, index: run.index + (which === "drop" ? 1 : 0), site: which };
+		let transport: LxdCodingFolderCommandTransport;
+		try {
+			transport = this.#folderTransport(folder, ready, {
+				cwd: `${run.dir}/src`,
+				environment,
+				authorize: run.authorize,
+			});
+		} catch (error) {
+			this.#checksReport({ event: "code-checks-error", step: "command", ...step, error });
+			return { code: errorCodeOf(error) };
+		}
+		const command =
+			which === "collect"
+				? {
+						commandId: run.commandId("site"),
+						inputSha256: digest(
+							JSON.stringify({
+								schema: "qorpera.code-site-command/v1",
+								commit: run.commit,
+								folder: run.recipe.folder,
+							}),
+						),
+						command: CODE_SITE_COLLECT,
+						timeoutMs: CODE_SITE_COLLECT_MS,
+					}
+				: {
+						commandId: run.commandId("drop"),
+						inputSha256: digest(JSON.stringify({ schema: "qorpera.code-site-drop/v1", commit: run.commit })),
+						command: CODE_SITE_DROP,
+						timeoutMs: CODE_SITE_DROP_MS,
+					};
+		this.#checksReport({ event: "code-checks", step: "started", ...step });
+		const started = performance.now();
+		// As the copy's: its output is its answer's lines, read from its receipt, and no failed check's tail is read.
+		const ended = await this.#checksCommand(transport, ready.scope, command, true, run.budget, signal, folder);
+		const ms = Math.round(performance.now() - started);
+		if ("why" in ended) {
+			this.#checksReport({
+				event: "code-checks",
+				step: "ended",
+				...step,
+				ms,
+				state: "not_run",
+				...(ended.stopped === undefined ? {} : { stopped: ended.stopped }),
+			});
+			if (ended.error !== undefined)
+				this.#checksReport({ event: "code-checks-error", step: "command", ...step, error: ended.error });
+			return { code: ended.code };
+		}
+		this.#checksReport({
+			event: "code-checks",
+			step: "ended",
+			...step,
+			ms,
+			state: ended.receipt.state,
+			exitCode: ended.receipt.exitCode,
+		});
+		return { receipt: ended.receipt };
+	}
+	/** The machine's boundary after the site's collect (#takeSite), judged as `publish` judges it, over every view of the
+	 * machine: `saved` when every read was released and every view saved; `carries` when the save check refused paths for
+	 * one of the machine's secret values (and nothing else held them); else why not, as a code. Asked again each second
+	 * while it is checking or does not answer, for at most CODE_SITE_BOUNDARY_MS (`once`: asked once). The turn's abort
+	 * is thrown on. */
+	async #siteBoundary(
+		control: Pick<CodingFolderControl, "boundary">,
+		ready: Prepared,
+		folder: FolderOptions,
+		budget: AbortSignal,
+		step: Record<string, unknown>,
+		once: boolean,
+		signal: AbortSignal,
+	): Promise<string> {
+		const live = AbortSignal.any([
+			signal,
+			budget,
+			AbortSignal.timeout(folder.checksBoundaryMs ?? CODE_SITE_BOUNDARY_MS),
+		]);
+		const pace = Math.min(CODING_FOLDER_CHECK_RETRY_MS, folder.checksPollMs ?? CODING_FOLDER_CHECK_RETRY_MS);
+		let boundary: CodingFolderBoundary | undefined;
+		let asked = 0;
+		for (;;) {
+			asked++;
+			try {
+				boundary = await control.boundary(ready.machine.machineId, [], live);
+			} catch (error) {
+				if (signal.aborted) throw signal.reason;
+				boundary = undefined;
+				this.#checksReport({ event: "code-checks-error", step: "boundary", ...step, error });
+			}
+			if (once || (boundary !== undefined && !codingFolderBoundaryChecking(boundary))) break;
+			try {
+				await setTimeout(pace, undefined, { signal: live });
+			} catch {
+				if (signal.aborted) throw signal.reason;
+				break;
+			}
+		}
+		const judged = boundary === undefined ? "CODE_SITE_BOUNDARY_UNANSWERED" : siteBoundaryJudged(boundary);
+		this.#checksReport({ event: "code-checks", step: "boundary", ...step, again: once, asked, answer: judged });
+		return judged;
 	}
 	/** After a run's copy made its folder (the fence), each command of an earlier run of the session's checks not seen to
 	 * end for certain (#checksUncertain) is cancelled and read once more, within CODE_CHECKS_STOP_MS. Any answer but
@@ -3602,20 +3923,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	): LxdCodingFolderCommandTransport {
 		if (!ready.folder) throw new Error("CODING_HOST_TURN_NOT_PREPARED");
 		const { machineId } = ready.machine;
-		// A boundary that says the machine holds a read no longer readable marks it for a new disk (rule 4,
-		// `unreadable`), once: until it has one, a command's outcome waits for a release that does not come.
-		let marked = false;
-		const control: Pick<CodingFolderControl, "boundary"> = {
-			boundary: async (id, final, checked) => {
-				const boundary = await folder.control.boundary(id, final, checked);
-				if (!marked && codingFolderBoundaryUnreadable(boundary))
-					marked = await this.#markForFolder(ready.machine, true, checked).then(
-						() => true,
-						() => false,
-					);
-				return boundary;
-			},
-		};
 		return new LxdCodingFolderCommandTransport({
 			machine: ready.machine,
 			scope: ready.scope,
@@ -3624,7 +3931,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			custody: ready.storage.custodySource,
 			limitBytes: this.#options.guest.resourceProfile.maxLogBytes,
 			guest: new LxdCodingGuestClient({ machine: ready.machine, client: folder.client }),
-			control,
+			control: this.#folderBoundary(folder, ready.machine),
 			withheld: (checked) => this.#newDiskDue(ready.machine, checked),
 			disk: async (checked) =>
 				codingMachineDisk(
@@ -3640,6 +3947,26 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			authorize: session.authorize,
 			secrets: this.#sessionSecrets(ready),
 		});
+	}
+	/** The machine's boundary as the turn's commands ask it, a command's transport and the boundary after a site's
+	 * collect alike: one that says the machine holds a read no longer readable marks it for a new disk (rule 4,
+	 * `unreadable`), once: until it has one, a command's outcome waits for a release that does not come. */
+	#folderBoundary(
+		folder: FolderOptions,
+		machine: Readonly<LxdCodingMachineBinding>,
+	): Pick<CodingFolderControl, "boundary"> {
+		let marked = false;
+		return {
+			boundary: async (id, final, checked) => {
+				const boundary = await folder.control.boundary(id, final, checked);
+				if (!marked && codingFolderBoundaryUnreadable(boundary))
+					marked = await this.#markForFolder(machine, true, checked).then(
+						() => true,
+						() => false,
+					);
+				return boundary;
+			},
+		};
 	}
 
 	/** One pass over this executor's machines on this node: every idle member

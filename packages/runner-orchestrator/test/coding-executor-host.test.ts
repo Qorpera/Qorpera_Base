@@ -17,7 +17,8 @@ import {
 	parseCodingGuestRequest,
 } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type CodeCheck, codeChecksTail } from "../src/code-checks.ts";
+import { type CodeCheck, type CodeSiteRecipe, codeChecksTail } from "../src/code-checks.ts";
+import { CODE_CHECKS_NEWER_RUN, CODE_SITE_COLLECT, CODE_SITE_DROP } from "../src/code-site.ts";
 import {
 	type CodingCommandSecrets,
 	type CodingEnvironmentSource,
@@ -41,7 +42,11 @@ import {
 	type LxdCodingExecutorHostOptions,
 } from "../src/coding-executor-host.ts";
 import type { LxdCodingFolderCommandTransportOptions } from "../src/coding-folder-command-transport.ts";
-import type { CodingFolderControl } from "../src/coding-folder-control.ts";
+import type {
+	CodingFolderBoundary,
+	CodingFolderBoundaryView,
+	CodingFolderControl,
+} from "../src/coding-folder-control.ts";
 import type {
 	CodeChangeReport,
 	CodingFolderRepositories,
@@ -5382,18 +5387,19 @@ describe("a run of a repository's checks in the session's machine (own code stor
 	 * folder command transport over a fake guest agent; the vault gives `secrets`. `ending` says how each command the
 	 * guest is asked to run ends (by default it succeeds, printing nothing). */
 	async function checksFixture(
-		options: { secrets?: Record<string, string>; budgetMs?: number; stopMs?: number } = {},
+		options: { secrets?: Record<string, string>; budgetMs?: number; stopMs?: number; boundaryMs?: number } = {},
 	) {
 		const f = await folderFixture();
 		f.claim.repository = { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" };
 		Object.assign(f.repositories, {
 			start: vi.fn<NonNullable<CodingFolderRepositories["start"]>>(async () => ({ baseSha: f.baseSha })),
 		});
-		const commandSecrets = options.secrets
-			? new CodingMachineCommandSecrets({
-					environment: async () => ({ environment: { ...options.secrets }, mask: [] }),
-				})
-			: undefined;
+		// The vault: each answer it gives, counted.
+		const vault = vi.fn<CodingEnvironmentSource["environment"]>(async () => ({
+			environment: { ...options.secrets },
+			mask: [],
+		}));
+		const commandSecrets = options.secrets ? new CodingMachineCommandSecrets({ environment: vault }) : undefined;
 		const logged: Record<string, unknown>[] = [];
 		// A mock, so that the order of its lines can be read beside the guest's calls (invocationCallOrder).
 		const report = vi.fn((event: Record<string, unknown>) => {
@@ -5407,6 +5413,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				checksPollMs: 5,
 				checksStopMs: options.stopMs ?? 300,
 				...(options.budgetMs === undefined ? {} : { checksBudgetMs: options.budgetMs }),
+				...(options.boundaryMs === undefined ? {} : { checksBoundaryMs: options.boundaryMs }),
 			},
 			...(commandSecrets ? { commandSecrets } : {}),
 		});
@@ -5492,6 +5499,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			...f,
 			host,
 			session,
+			vault,
 			logged,
 			/** When the log line of `step` for `commandId` was written, in the order of every mock's calls. */
 			loggedAt: (step: string, commandId: string) =>
@@ -5507,10 +5515,15 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			ending: (given: typeof ending) => {
 				ending = given;
 			},
-			/** One run of `checks` on COMMIT, as the landing asks it. */
-			run: (checks: readonly CodeCheck[] = CHECKS, attempt = 1, signal: AbortSignal = f.signal) =>
+			/** One run of `checks` on COMMIT, as the landing asks it; `site` is the recipe it is given (none by default). */
+			run: (
+				checks: readonly CodeCheck[] = CHECKS,
+				attempt = 1,
+				signal: AbortSignal = f.signal,
+				site: CodeSiteRecipe | null = null,
+			) =>
 				(session.runChecks as NonNullable<CodingFolderRepositorySession["runChecks"]>)(
-					{ commit: COMMIT, checks, attempt },
+					{ commit: COMMIT, checks, attempt, site },
 					signal,
 				),
 		};
@@ -5532,7 +5545,9 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		const seen: unknown[] = [];
 		const land = vi.fn<NonNullable<CodingFolderRepositories["land"]>>(async (session, headSha, signal) => {
 			seen.push(await session.checksSwitch?.(signal));
-			seen.push(await session.runChecks?.({ commit: headSha, checks: CHECKS.slice(0, 1), attempt: 1 }, signal));
+			seen.push(
+				await session.runChecks?.({ commit: headSha, checks: CHECKS.slice(0, 1), attempt: 1, site: null }, signal),
+			);
 			return { state: "fast-forward", mainSha: headSha, filesChanged: 1, change: 3 };
 		});
 		Object.assign(f.repositories, { land });
@@ -5541,12 +5556,13 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			{ p_worker_id: f.claim.workerId, p_lease_token: f.claim.leaseToken },
 		]);
 		expect(seen).toEqual([
-			true,
+			{ checks: true, site: true },
 			{
 				state: "passed",
 				ms: expect.any(Number),
 				copyMs: expect.any(Number),
 				checks: [{ name: "install", run: "npm ci", ms: expect.any(Number) }],
+				site: null,
 			},
 		]);
 		// The copy of exactly the submitted commit, then the one check.
@@ -5554,20 +5570,49 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			f.submission.headSha,
 			"npm ci",
 		]);
-		// Off is off; an answer lost or not the switch's reads as on; the kernel's refusal ends the landing.
+		// Off is off; an answer lost or not the switch's reads as on, the site's too; the kernel's refusal ends the
+		// landing. Sites are off only when the kernel says so (step 4); a kernel from before them says nothing: on.
 		const ask = () => f.session.checksSwitch?.(f.signal);
-		switched = { schema: "qorpera.code-checks-switch/v1", enabled: false };
-		expect(await ask()).toBe(false);
-		for (const odd of [null, { enabled: false }, { schema: "qorpera.code-checks-switch/v1", enabled: "no" }]) {
+		const schema = "qorpera.code-checks-switch/v1";
+		for (const [answer, read] of [
+			[
+				{ schema, enabled: false },
+				{ checks: false, site: true },
+			],
+			[
+				{ schema, enabled: true, site: false },
+				{ checks: true, site: false },
+			],
+			[
+				{ schema, enabled: false, site: false },
+				{ checks: false, site: false },
+			],
+			[
+				{ schema, enabled: true, site: true },
+				{ checks: true, site: true },
+			],
+		] as const) {
+			switched = answer;
+			expect(await ask()).toEqual(read);
+		}
+		for (const odd of [
+			null,
+			{ enabled: false },
+			{ schema, enabled: "no" },
+			{ schema, enabled: false, site: "no" },
+			{ schema, enabled: false, site: null },
+		]) {
 			switched = odd;
-			expect(await ask()).toBe(true);
+			expect(await ask()).toEqual({ checks: true, site: true });
 		}
 		f.call.mockImplementation(async (method, args, signal) => {
 			if (method === "qorpera_code_checks_switch") throw new Error("CODING_CONTROL_UNCONFIRMED");
 			return control(method, args, signal);
 		});
-		expect(await ask()).toBe(true);
+		expect(await ask()).toEqual({ checks: true, site: true });
 		expect(f.logged.filter((event) => event.step === "switch").map((event) => event.event)).toEqual([
+			"code-checks-error",
+			"code-checks-error",
 			"code-checks-error",
 			"code-checks-error",
 			"code-checks-error",
@@ -5589,6 +5634,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			ms: expect.any(Number),
 			copyMs: expect.any(Number),
 			checks: CHECKS.map(({ name, run }) => ({ name, run, ms: expect.any(Number) })),
+			site: null,
 		});
 		const [copy, ...checks] = f.ran();
 		// Every command as the session's user, with its own names, Git's settings, its secrets and the checks' marks;
@@ -6418,6 +6464,1011 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(f.logged).toContainEqual(
 				expect.objectContaining({ step: "earlier", attempt: 3, commandId: second, end: "unkept" }),
 			);
+		});
+	});
+
+	describe("the site the checks leave: the collect, the boundary and the drop (own code storage, step 4)", () => {
+		const RECIPE: CodeSiteRecipe = { folder: "dist", name: "shop", title: "The shop" };
+		const TREE = "a".repeat(40);
+		/** The collect's own ending: its three lines. */
+		const LINES = `tree ${TREE}\nfiles 3\nbytes 4096\n`;
+		const MADE = {
+			state: "made",
+			tree: TREE,
+			files: 3,
+			bytes: 4096,
+			folder: "dist",
+			name: "shop",
+			title: "The shop",
+		};
+		const SECRET_HELD = { code: "SITE_HOLDS_SECRET", path: null, variable: null };
+		const DIR = `${HOME}/.qorpera-checks/0000000001-0001`;
+		const PASSED = CHECKS.map(({ name, run }) => ({ name, run, ms: expect.any(Number) }));
+		type Answer = (machine: string, signal: AbortSignal) => Promise<CodingFolderBoundary>;
+		/** A boundary that answers `reads`, with one view of each report. */
+		const boundaryOf =
+			(reads: CodingFolderBoundary["reads"], ...views: Omit<CodingFolderBoundaryView, "viewId">[]): Answer =>
+			async (machine) => ({ machine, reads, views: views.map((view) => ({ viewId: randomUUID(), ...view })) });
+		const SAVED = boundaryOf("released", { unsaved: 0 });
+		const CARRIES = boundaryOf("released", { unsaved: 2, unsavedOutcome: "refused", secretRefused: 2 });
+		const UNCHECKED = boundaryOf("released", { unsaved: 1, unsavedOutcome: "refused", uncheckedRefused: 1 });
+		const CHECKING = boundaryOf("released", { unsaved: 1, unsavedOutcome: "waiting", checking: 1 });
+		/** A boundary that never answers: its call ends only with its signal. */
+		const SILENT: Answer = (_machine, signal) =>
+			new Promise((_resolve, reject) => {
+				if (signal.aborted) reject(signal.reason);
+				signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+			});
+		/** What a command of the run is, by its text. */
+		const kindOf = (run: CodingGuestRunRequest) =>
+			run.command === CODE_SITE_COLLECT
+				? "collect"
+				: run.command === CODE_SITE_DROP
+					? "drop"
+					: checkOf(run)
+						? "check"
+						: "copy";
+
+		/** The checks' fixture, whose guest ends the collect as `collect` says (its three lines, by default), the drop as
+		 * `drop` says (two objects dropped) and every other command at once; and whose folder service answers every
+		 * boundary as released and saved but those after the latest collect ended: `boundaries` in turn (the last one
+		 * again) until the drop starts, and `after` once the drop has ended. */
+		async function siteFixture(
+			options: Parameters<typeof checksFixture>[0] & {
+				collect?: Ending;
+				drop?: Ending;
+				boundaries?: Answer[];
+				after?: Answer;
+			} = {},
+		) {
+			const f = await checksFixture({ boundaryMs: 300, ...options });
+			f.ending((run) => {
+				const kind = kindOf(run);
+				if (kind === "collect") return options.collect ?? { printed: LINES };
+				if (kind === "drop") return options.drop ?? { printed: "dropped 2\n" };
+				return {};
+			});
+			/** The first line of the log at or after `from` of `step` for the site's `site` command. */
+			const lineOf = (step: string, site: string, from: number) => {
+				for (let at = Math.max(from, 0); at < f.logged.length; at++) {
+					const event = f.logged[at];
+					if (event?.event === "code-checks" && event.step === step && event.site === site) return at;
+				}
+				return -1;
+			};
+			let collectedAt = -1,
+				asked = 0;
+			f.boundary.mockImplementation(async (machine, _final, signal) => {
+				let started = -1;
+				for (let at = f.logged.length - 1; at >= 0 && started < 0; at--)
+					if (f.logged[at]?.step === "started" && f.logged[at]?.site === "collect") started = at;
+				const collected = started < 0 ? -1 : lineOf("ended", "collect", started);
+				if (collected < 0) return SAVED(machine, signal);
+				const dropping = lineOf("started", "drop", collected);
+				if (dropping >= 0)
+					return lineOf("ended", "drop", dropping) < 0
+						? SAVED(machine, signal)
+						: (options.after ?? SAVED)(machine, signal);
+				if (collected !== collectedAt) {
+					collectedAt = collected;
+					asked = 0;
+				}
+				const answers = options.boundaries ?? [SAVED];
+				return (answers[Math.min(asked++, answers.length - 1)] as Answer)(machine, signal);
+			});
+			return {
+				...f,
+				/** One run of `checks` that takes the recipe's site. */
+				site: (attempt = 1, signal: AbortSignal = f.signal, checks: readonly CodeCheck[] = CHECKS) =>
+					f.run(checks, attempt, signal, RECIPE),
+				/** The commands the guest was asked to run, by what they are. */
+				kinds: () => f.ran().map(kindOf),
+				/** The command of `kind` the guest was asked to run last. */
+				command: (kind: "collect" | "drop") =>
+					f
+						.ran()
+						.filter((run) => kindOf(run) === kind)
+						.at(-1) as CodingGuestRunRequest,
+				/** The id of the site's `kind` of the run of `attempt`. */
+				idOf: (kind: "collect" | "drop", attempt = 1) =>
+					codingHostId(
+						"checks",
+						`${f.claim.workerId}:${f.claim.sequence}:${attempt}:${kind === "collect" ? "site" : "drop"}`,
+					),
+				/** The log of the site's commands and boundaries, in order, each line by what it says. */
+				steps: () =>
+					f.logged.flatMap((event) => {
+						if (event.event !== "code-checks") return [];
+						if (event.step === "boundary") return [`boundary:${event.answer}`];
+						if (event.step === "dropped") return [`dropped:${event.dropped}`];
+						return event.site === "collect" || event.site === "drop" ? [`${event.step}:${event.site}`] : [];
+					}),
+				/** What a command's start kept, as the host keeps it. */
+				kept: async (run: CodingGuestRunRequest) =>
+					JSON.parse(
+						await readFile(
+							join(f.custody, "host-commands", run.commandId.replaceAll("-", ""), "request.json"),
+							"utf8",
+						),
+					),
+			};
+		}
+
+		it("takes nothing without a recipe: no command after the checks, no boundary of its own, and no site", async () => {
+			const f = await siteFixture();
+			expect(await f.run()).toEqual({
+				state: "passed",
+				ms: expect.any(Number),
+				copyMs: expect.any(Number),
+				checks: PASSED,
+				site: null,
+			});
+			expect(f.kinds()).toEqual(["copy", "check", "check", "check"]);
+			expect(f.steps()).toEqual([]);
+			expect(f.logged.at(-1)).not.toHaveProperty("site");
+		});
+
+		it("collects the site after the last check passed, as one more command of the run, and makes it once the boundary saved it", async () => {
+			const f = await siteFixture();
+			expect(await f.site()).toEqual({
+				state: "passed",
+				ms: expect.any(Number),
+				copyMs: expect.any(Number),
+				checks: PASSED,
+				site: MADE,
+			});
+			expect(f.kinds()).toEqual(["copy", "check", "check", "check", "collect"]);
+			const collect = f.command("collect");
+			// At the copy's src, with its own limit, id and text, the run's guard first; asked of the guest once.
+			expect(collect).toMatchObject({
+				cwd: `${DIR}/src`,
+				timeoutMs: 120_000,
+				commandId: f.idOf("collect"),
+				command: CODE_SITE_COLLECT,
+			});
+			expect(collect.command.startsWith(CODE_CHECKS_NEWER_RUN.join("\n"))).toBe(true);
+			expect(
+				mocked.guestRun.mock.calls.filter(
+					([request]) => (request as { commandId: string }).commandId === collect.commandId,
+				),
+			).toHaveLength(1);
+			expect((await f.kept(collect)).inputSha256).toBe(
+				hash(JSON.stringify({ schema: "qorpera.code-site-command/v1", commit: COMMIT, folder: "dist" })),
+			);
+			// The run's environment, the repository's storage, the recipe's folder and the secrets' names (none here).
+			expect(collect.environment).toMatchObject({
+				...codingFolderGitEnvironment(f.claim.workerId),
+				CI: "true",
+				QORPERA_CHECKS: "1",
+				QORPERA_CHECKS_ROOT: `${HOME}/.qorpera-checks`,
+				QORPERA_CHECKS_NAME: runName(f.claim.sequence, 1),
+				QORPERA_CHECKS_REPOSITORY: "/company/code/acme/shop/repo.git",
+				QORPERA_SITE_FOLDER: "dist",
+				QORPERA_SITE_SECRET_NAMES: "",
+			});
+			expect(
+				Object.keys(collect.environment).filter(
+					(name) => name.startsWith("QORPERA_CHECK_") || name === "QORPERA_CHECKS_COMMIT",
+				),
+			).toEqual([]);
+			// After the last check ended; then one boundary, saved; no drop.
+			const last = f.logged.findIndex((event) => event.step === "ended" && event.index === 3);
+			const started = f.logged.findIndex((event) => event.step === "started" && event.site === "collect");
+			expect(last).toBeGreaterThan(-1);
+			expect(started).toBeGreaterThan(last);
+			expect(f.steps()).toEqual(["started:collect", "ended:collect", "boundary:saved"]);
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({
+					event: "code-checks",
+					step: "ended",
+					site: "collect",
+					index: 4,
+					state: "succeeded",
+					exitCode: 0,
+					folder: runName(f.claim.sequence, 1),
+				}),
+			);
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "boundary", again: false, asked: 1, answer: "saved", attempt: 1 }),
+			);
+			expect(f.logged.at(-1)).toMatchObject({ event: "code-checks", step: "run", state: "passed", site: "made" });
+		});
+
+		it("gives the collect the names of the session's secrets its command gets with their own values, never a value, from one vault answer", async () => {
+			const secrets = {
+				STRIPE_SECRET: "stripe-secret-value-2",
+				API_KEY: "value-of-the-api-key-1",
+				CI: "vault-ci-value-3",
+				HOME: "/vault/home/value-4",
+				PATH: "/vault/path/value-5",
+				DOCKER_HOST: "unix:///vault/docker-6",
+				GIT_CONFIG_COUNT: "vault-git-count-7",
+				GIT_AUTHOR_NAME: "vault-author-name-8",
+				QORPERA_CHECKS_NAME: "vault-run-name-9",
+				QORPERA_CHECKS_REPOSITORY: "/vault/repository-10",
+				QORPERA_SITE_FOLDER: "vault-site-folder-11",
+				QORPERA_SITE_SECRET_NAMES: "VAULT NAMES TWELVE",
+			};
+			const f = await siteFixture({ secrets });
+			const asked = f.vault.mock.calls.length;
+			expect(await f.site()).toMatchObject({ state: "passed", site: MADE });
+			const collect = f.command("collect");
+			const names = collect.environment.QORPERA_SITE_SECRET_NAMES as string;
+			// Exactly the names whose own values the command gets, in C order: a name the host or the session sets wins in
+			// the command, and is left out.
+			expect(names).toBe(
+				Object.entries(secrets)
+					.filter(([name, value]) => collect.environment[name] === value)
+					.map(([name]) => name)
+					.sort()
+					.join(" "),
+			);
+			expect(names).toBe("API_KEY STRIPE_SECRET");
+			for (const value of Object.values(secrets)) expect(names).not.toContain(value);
+			// The values reach the command only as every command of the session gets them.
+			expect(collect.environment.API_KEY).toBe(secrets.API_KEY);
+			// One vault answer per command: the collect's names and its start share its id's.
+			expect(f.vault.mock.calls.length - asked).toBe(f.ran().length);
+		});
+
+		it.each([
+			["SITE_FOLDER_MISSING", "SITE_FOLDER_MISSING\n", null, null],
+			["SITE_NO_INDEX", "SITE_NO_INDEX\n", null, null],
+			["SITE_TOO_MANY_FILES", "SITE_TOO_MANY_FILES\n", null, null],
+			["SITE_TOO_MANY_FOLDERS", "SITE_TOO_MANY_FOLDERS\n", null, null],
+			["SITE_TOO_LARGE", "SITE_TOO_LARGE\n", null, null],
+			["SITE_FILE_TOO_LARGE", "SITE_FILE_TOO_LARGE video/intro.mp4\n", "video/intro.mp4", null],
+			["SITE_FILE_NAME", "SITE_FILE_NAME img/caf\\xc3\\xa9 1.png\n", "img/café 1.png", null],
+			["SITE_HOLDS_SECRET", "SITE_HOLDS_SECRET API_KEY assets/app.js\n", "assets/app.js", "API_KEY"],
+		] as const)(
+			"refuses a site the code made wrong (%s): no boundary of its own, no drop",
+			async (code, printed, path, variable) => {
+				const f = await siteFixture({ collect: { code: 3, printed } });
+				expect(await f.site()).toEqual({
+					state: "site_refused",
+					ms: expect.any(Number),
+					checks: PASSED,
+					problem: { code, path, variable },
+				});
+				expect(f.kinds()).toEqual(["copy", "check", "check", "check", "collect"]);
+				expect(f.steps()).toEqual(["started:collect", "ended:collect"]);
+				expect(f.logged.at(-1)).toMatchObject({ step: "run", state: "site_refused", problem: code, variable });
+			},
+		);
+
+		it.each([
+			["exits 91 (a newer run's folder stands)", { code: 91 }, "CODE_SITE_COLLECT_EXIT_91"],
+			["exits otherwise (a git command failed)", { code: 4 }, "CODE_SITE_COLLECT_EXIT_4"],
+			["is stopped at its own limit", { state: "timed_out" }, "CODE_SITE_COLLECT_EXIT_124"],
+			[
+				"ends 0 with lines that are not its answer",
+				{ printed: `tree x\nfiles 3\nbytes 1\n` },
+				"CODE_SITE_COLLECT_ANSWER_INVALID",
+			],
+			["prints more than its answer", { printed: `warning: x\n${LINES}` }, "CODE_SITE_COLLECT_ANSWER_INVALID"],
+			[
+				"ends 3 with a line that is not its answer",
+				{ code: 3, printed: "SITE_ODD\n" },
+				"CODE_SITE_COLLECT_ANSWER_INVALID",
+			],
+			["is lost by the guest (unconfirmed)", { state: "lost" }, "CODE_SITE_COLLECT_UNCONFIRMED"],
+			["is cancelled by nobody", { state: "cancelled" }, "CODE_SITE_COLLECT_CANCELLED"],
+		] as const)("misses the site when the collect %s: the change lands without one", async (_case, collect, code) => {
+			const f = await siteFixture({ collect: collect as Ending });
+			expect(await f.site()).toEqual({
+				state: "passed",
+				ms: expect.any(Number),
+				copyMs: expect.any(Number),
+				checks: PASSED,
+				site: { state: "missed", code },
+			});
+			// Tried once; nothing after it: no boundary of its own, no drop. Its lines are read from its receipt, never as
+			// a failed check's tail.
+			expect(f.kinds()).toEqual(["copy", "check", "check", "check", "collect"]);
+			expect(f.steps()).toEqual(["started:collect", "ended:collect"]);
+			expect(codeChecksTail).not.toHaveBeenCalled();
+			expect(f.logged.at(-1)).toMatchObject({ step: "run", state: "passed", site: "missed", siteCode: code });
+		});
+
+		it("misses the site when the machine stopped under the collect", async () => {
+			const f = await siteFixture();
+			f.ending((run) => {
+				if (kindOf(run) !== "collect") return {};
+				// Rebuilt while it ran: the disk it started on is gone.
+				f.state.disk = randomUUID();
+				return { printed: LINES };
+			});
+			expect(await f.site()).toMatchObject({
+				state: "passed",
+				site: { state: "missed", code: "CODE_CHECKS_MACHINE_STOPPED" },
+			});
+			expect(f.steps()).toEqual(["started:collect", "ended:collect"]);
+		});
+
+		it("misses the site when the guest agent stays unanswered about the collect, and stops it", async () => {
+			const f = await siteFixture();
+			const output = mocked.guestOutput.getMockImplementation()!;
+			mocked.guestOutput.mockImplementation(async (request: unknown) => {
+				const asked = parseCodingGuestRequest("output", request);
+				const found = f.commands.get(asked.commandId);
+				if (found && kindOf(found.run) === "collect") throw new Error("LXD operation failed");
+				return output(request);
+			});
+			expect(await f.site()).toMatchObject({ state: "passed", site: { state: "missed", code: "UNCLASSIFIED" } });
+			expect(
+				mocked.guestCancel.mock.calls.map(([request]) => (request as { commandId: string }).commandId),
+			).toContain(f.idOf("collect"));
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ event: "code-checks-error", step: "command", site: "collect", index: 4 }),
+			);
+		});
+
+		it("misses the site when the collect runs past the run's budget, and stops it", async () => {
+			const f = await siteFixture({ budgetMs: 600, collect: { state: "running" } });
+			const started = Date.now();
+			expect(await f.site(1, f.signal, CHECKS.slice(0, 1))).toMatchObject({
+				state: "passed",
+				site: { state: "missed", code: "CODE_CHECKS_BUDGET" },
+			});
+			expect(Date.now() - started).toBeLessThan(5_000);
+			expect(f.commands.get(f.idOf("collect"))?.state).toBe("cancelled");
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "ended", site: "collect", state: "not_run", stopped: true }),
+			);
+			expect(f.steps()).toEqual(["started:collect", "ended:collect"]);
+		});
+
+		it("misses the site when the run's budget passes while the secrets' names are read, and starts no collect", async () => {
+			const f = await siteFixture({ budgetMs: 600, secrets: { API_KEY: "value-of-the-api-key-1" } });
+			const vault = f.vault.getMockImplementation()!;
+			f.vault.mockImplementation(async (scope, signal) => {
+				if (f.ran().length < 2) return vault(scope, signal);
+				return await SILENT("", signal).then(() => vault(scope, signal));
+			});
+			expect(await f.site(1, f.signal, CHECKS.slice(0, 1))).toMatchObject({
+				state: "passed",
+				site: { state: "missed", code: "CODE_CHECKS_BUDGET" },
+			});
+			expect(f.kinds()).toEqual(["copy", "check"]);
+		});
+
+		it("says the checks' own time, the site's aside", async () => {
+			const f = await siteFixture({ boundaries: [SILENT], after: SILENT });
+			const started = performance.now();
+			const run = await f.site();
+			const all = performance.now() - started;
+			// The boundary after the collect and the one after the drop each waited out their 300 ms.
+			expect(all).toBeGreaterThan(600);
+			expect(run.state === "passed" && run.ms).toBeLessThan(all - 500);
+		});
+
+		it("misses the site when the secrets' names cannot be read, and starts no collect", async () => {
+			const f = await siteFixture({ secrets: { API_KEY: "value-of-the-api-key-1" } });
+			const vault = f.vault.getMockImplementation()!;
+			f.vault.mockImplementation(async (...given) => {
+				// Once the copy and each check ran, the ask is the collect's.
+				if (f.ran().length === 4) throw new Error("CODING_SECRETS_UNAVAILABLE");
+				return vault(...given);
+			});
+			expect(await f.site()).toMatchObject({
+				state: "passed",
+				site: { state: "missed", code: "CODING_SECRETS_UNAVAILABLE" },
+			});
+			expect(f.kinds()).toEqual(["copy", "check", "check", "check"]);
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ event: "code-checks-error", step: "secrets", attempt: 1 }),
+			);
+		});
+
+		it("refuses the site when the boundary's save check found a secret value in what the collect wrote: the drop removes it, and the boundary is asked once more", async () => {
+			const f = await siteFixture({ boundaries: [CARRIES] });
+			expect(await f.site()).toEqual({
+				state: "site_refused",
+				ms: expect.any(Number),
+				checks: PASSED,
+				problem: SECRET_HELD,
+			});
+			expect(f.kinds()).toEqual(["copy", "check", "check", "check", "collect", "drop"]);
+			expect(f.steps()).toEqual([
+				"started:collect",
+				"ended:collect",
+				"boundary:carries",
+				"started:drop",
+				"ended:drop",
+				"dropped:2",
+				"boundary:saved",
+			]);
+			// The drop: a command of the run as the collect is, at the copy's src, its own id, limit and text, with the
+			// run's environment and the repository's storage only.
+			const drop = f.command("drop");
+			expect(drop).toMatchObject({
+				cwd: `${DIR}/src`,
+				timeoutMs: 60_000,
+				commandId: f.idOf("drop"),
+				command: CODE_SITE_DROP,
+			});
+			expect(drop.environment).toMatchObject({
+				QORPERA_CHECKS_ROOT: `${HOME}/.qorpera-checks`,
+				QORPERA_CHECKS_NAME: runName(f.claim.sequence, 1),
+				QORPERA_CHECKS_REPOSITORY: "/company/code/acme/shop/repo.git",
+				CI: "true",
+			});
+			expect(drop.environment.QORPERA_SITE_FOLDER).toBeUndefined();
+			expect(drop.environment.QORPERA_SITE_SECRET_NAMES).toBeUndefined();
+			expect((await f.kept(drop)).inputSha256).toBe(
+				hash(JSON.stringify({ schema: "qorpera.code-site-drop/v1", commit: COMMIT })),
+			);
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "ended", site: "drop", index: 5, state: "succeeded", exitCode: 0 }),
+			);
+			expect(f.logged).toContainEqual(expect.objectContaining({ step: "boundary", again: true, asked: 1 }));
+			expect(f.logged.at(-1)).toMatchObject({ step: "run", state: "site_refused", problem: "SITE_HOLDS_SECRET" });
+		});
+
+		it.each([
+			["refused only as not checked", [UNCHECKED], "CODE_SITE_BOUNDARY_UNCHECKED"],
+			[
+				"holding a path for a conflict",
+				[boundaryOf("released", { unsaved: 1, unsavedOutcome: "conflict" })],
+				"CODE_SITE_BOUNDARY_HELD:UNSAVED_CONFLICT",
+			],
+			[
+				"with a view that had an error",
+				[boundaryOf("released", { error: "VIEW_GONE" })],
+				"CODE_SITE_BOUNDARY_HELD:VIEW_GONE",
+			],
+			[
+				"with a change set refused whole",
+				[boundaryOf("released", { unsaved: 0, refused: "denied" })],
+				"CODE_SITE_BOUNDARY_HELD:REFUSED_DENIED",
+			],
+			["with the machine's reads unproven", [boundaryOf("unproven")], "CODE_SITE_BOUNDARY_HELD:READS_UNPROVEN"],
+			[
+				"holding a secret value and something else",
+				[
+					boundaryOf(
+						"released",
+						{ unsaved: 2, unsavedOutcome: "refused", secretRefused: 2 },
+						{ unsaved: 1, unsavedOutcome: "conflict" },
+					),
+				],
+				"CODE_SITE_BOUNDARY_HELD:UNSAVED_REFUSED",
+			],
+			["still checking when its time is up", [CHECKING], "CODE_SITE_BOUNDARY_CHECKING"],
+			["never answering", [SILENT], "CODE_SITE_BOUNDARY_UNANSWERED"],
+		] as const)(
+			"misses the site when the boundary after the collect is %s: the drop, and the boundary once more",
+			async (_case, boundaries, code) => {
+				const f = await siteFixture({ boundaries: [...boundaries] });
+				const started = Date.now();
+				expect(await f.site()).toMatchObject({ state: "passed", site: { state: "missed", code } });
+				expect(Date.now() - started).toBeLessThan(5_000);
+				expect(f.steps()).toEqual([
+					"started:collect",
+					"ended:collect",
+					`boundary:${code}`,
+					"started:drop",
+					"ended:drop",
+					"dropped:2",
+					"boundary:saved",
+				]);
+			},
+		);
+
+		it("asks the boundary again each time while it is checking, or did not answer, and makes the site once it saved", async () => {
+			const f = await siteFixture({
+				boundaries: [
+					CHECKING,
+					async () => {
+						throw new Error("CODING_FOLDER_CONTROL_UNAVAILABLE");
+					},
+					CHECKING,
+					SAVED,
+				],
+			});
+			expect(await f.site()).toMatchObject({ state: "passed", site: MADE });
+			expect(f.steps()).toEqual(["started:collect", "ended:collect", "boundary:saved"]);
+			expect(f.logged).toContainEqual(expect.objectContaining({ step: "boundary", asked: 4, answer: "saved" }));
+			expect(f.logged).toContainEqual(expect.objectContaining({ event: "code-checks-error", step: "boundary" }));
+		});
+
+		it("asks the boundary through the wrapper a command's transport has: one that holds a read no longer readable marks the machine for a new disk, once", async () => {
+			const unreadable = boundaryOf("unreadable");
+			const f = await siteFixture({ boundaries: [unreadable], after: unreadable });
+			expect(await f.site()).toMatchObject({
+				state: "passed",
+				site: { state: "missed", code: "CODE_SITE_BOUNDARY_HELD:READS_UNREADABLE" },
+			});
+			expect(f.calls("qorpera_mark_coding_machine_new_disk")).toHaveLength(1);
+			expect(f.state.newDisk).toBe(true);
+			// Marked, the machine starts no command: the drop does not run, and the boundary is asked once more.
+			expect(f.steps()).toEqual([
+				"started:collect",
+				"ended:collect",
+				"boundary:CODE_SITE_BOUNDARY_HELD:READS_UNREADABLE",
+				"started:drop",
+				"ended:drop",
+				"dropped:null",
+				"boundary:CODE_SITE_BOUNDARY_HELD:READS_UNREADABLE",
+			]);
+			expect(f.kinds()).not.toContain("drop");
+		});
+
+		it.each([
+			["carries", "exits 1", CARRIES, { code: 1 }, { state: "site_refused", problem: SECRET_HELD }],
+			[
+				"unchecked",
+				"exits 1",
+				UNCHECKED,
+				{ code: 1 },
+				{ state: "passed", site: { state: "missed", code: "CODE_SITE_BOUNDARY_UNCHECKED" } },
+			],
+			[
+				"carries",
+				"prints no answer",
+				CARRIES,
+				{ printed: "dropped many\n" },
+				{ state: "site_refused", problem: SECRET_HELD },
+			],
+		] as const)(
+			"keeps the site's outcome when the drop itself fails (boundary %s, the drop %s)",
+			async (_case, _drop, boundary, drop, outcome) => {
+				const f = await siteFixture({ boundaries: [boundary], drop: drop as Ending });
+				expect(await f.site()).toMatchObject(outcome);
+				expect(f.steps().slice(-3)).toEqual(["ended:drop", "dropped:null", "boundary:saved"]);
+			},
+		);
+
+		it("keeps the site refused when the drop runs past the run's budget, stops it, and does not hang", async () => {
+			const f = await siteFixture({ budgetMs: 800, boundaries: [CARRIES], drop: { state: "running" } });
+			const started = Date.now();
+			expect(await f.site(1, f.signal, CHECKS.slice(0, 1))).toMatchObject({
+				state: "site_refused",
+				problem: SECRET_HELD,
+			});
+			expect(Date.now() - started).toBeLessThan(5_000);
+			expect(f.commands.get(f.idOf("drop"))?.state).toBe("cancelled");
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "ended", site: "drop", state: "not_run", stopped: true }),
+			);
+			// The boundary is asked once more all the same (the folder service's own client answers at once once the
+			// run's time is up).
+			expect(f.steps().slice(-3, -1)).toEqual(["ended:drop", "dropped:null"]);
+			expect(f.steps().at(-1)).toMatch(/^boundary:/);
+		});
+
+		it("keeps the site refused when the guest agent stays unanswered about the drop, and stops it", async () => {
+			const f = await siteFixture({ boundaries: [CARRIES] });
+			const output = mocked.guestOutput.getMockImplementation()!;
+			mocked.guestOutput.mockImplementation(async (request: unknown) => {
+				const asked = parseCodingGuestRequest("output", request);
+				const found = f.commands.get(asked.commandId);
+				if (found && kindOf(found.run) === "drop") throw new Error("LXD operation failed");
+				return output(request);
+			});
+			expect(await f.site()).toMatchObject({ state: "site_refused", problem: SECRET_HELD });
+			expect(
+				mocked.guestCancel.mock.calls.map(([request]) => (request as { commandId: string }).commandId),
+			).toContain(f.idOf("drop"));
+			expect(f.steps().slice(-2)).toEqual(["dropped:null", "boundary:saved"]);
+		});
+
+		it("collects again in a run made again (another attempt), in its own folder, under its own id", async () => {
+			const f = await siteFixture();
+			expect(await f.site(1)).toMatchObject({ state: "passed", site: MADE });
+			expect(await f.site(2)).toMatchObject({ state: "passed", site: MADE });
+			const collects = f.ran().filter((run) => kindOf(run) === "collect");
+			expect(collects.map((run) => run.commandId)).toEqual([f.idOf("collect", 1), f.idOf("collect", 2)]);
+			expect(collects.map((run) => run.cwd)).toEqual([
+				`${HOME}/.qorpera-checks/${runName(f.claim.sequence, 1)}/src`,
+				`${HOME}/.qorpera-checks/${runName(f.claim.sequence, 2)}/src`,
+			]);
+			expect(collects.map((run) => run.environment.QORPERA_CHECKS_NAME)).toEqual([
+				runName(f.claim.sequence, 1),
+				runName(f.claim.sequence, 2),
+			]);
+		});
+
+		it("gives a run that takes a site 240 s more of wall budget, and one without none", async () => {
+			const f = await siteFixture();
+			// The copy's 300 s, and each check's limit and 60 s.
+			const checks = 300_000 + (600 + 900 + 300) * 1000 + 3 * 60_000;
+			const timeout = vi.spyOn(AbortSignal, "timeout");
+			try {
+				await f.run();
+				expect(timeout.mock.calls.map(([ms]) => ms)).toContain(checks);
+				expect(timeout.mock.calls.map(([ms]) => ms)).not.toContain(checks + 240_000);
+				timeout.mockClear();
+				expect(await f.site(2)).toMatchObject({ site: MADE });
+				expect(timeout.mock.calls.map(([ms]) => ms)).toContain(checks + 240_000);
+				expect(timeout.mock.calls.map(([ms]) => ms)).not.toContain(checks);
+			} finally {
+				timeout.mockRestore();
+			}
+		});
+
+		describe("the turn's abort at each step: the command running stopped, the abort thrown on, and nothing after it", () => {
+			const reason = new Error("CODING_EXECUTOR_LEASE_LOST");
+
+			it("while the secrets' names are read", async () => {
+				const f = await siteFixture({ secrets: { API_KEY: "value-of-the-api-key-1" } });
+				const stop = new AbortController();
+				const vault = f.vault.getMockImplementation()!;
+				f.vault.mockImplementation(async (scope, signal) => {
+					if (f.ran().length < 4) return vault(scope, signal);
+					stop.abort(reason);
+					return await SILENT("", signal).then(() => vault(scope, signal));
+				});
+				await expect(f.site(1, stop.signal)).rejects.toBe(reason);
+				expect(f.kinds()).not.toContain("collect");
+				expect(f.logged.filter((event) => event.step === "run")).toEqual([]);
+			});
+
+			it("while the collect runs", async () => {
+				const f = await siteFixture({ collect: { state: "running" } });
+				const stop = new AbortController();
+				const running = f.site(1, stop.signal);
+				await vi.waitFor(() => expect(f.kinds()).toContain("collect"));
+				stop.abort(reason);
+				await expect(running).rejects.toBe(reason);
+				expect(f.commands.get(f.idOf("collect"))?.state).toBe("cancelled");
+				expect(f.steps()).toEqual(["started:collect"]);
+				expect(f.logged.filter((event) => event.step === "run")).toEqual([]);
+			});
+
+			it("while the boundary after the collect is asked", async () => {
+				const stop = new AbortController();
+				const f = await siteFixture({
+					boundaryMs: 60_000,
+					boundaries: [
+						async (machine, signal) => {
+							stop.abort(reason);
+							return await CHECKING(machine, signal);
+						},
+					],
+				});
+				await expect(f.site(1, stop.signal)).rejects.toBe(reason);
+				expect(f.steps()).toEqual(["started:collect", "ended:collect"]);
+				expect(f.kinds()).not.toContain("drop");
+				expect(f.logged.filter((event) => event.step === "run")).toEqual([]);
+			});
+
+			it("while the drop runs", async () => {
+				const f = await siteFixture({ boundaries: [CARRIES], drop: { state: "running" } });
+				const stop = new AbortController();
+				const running = f.site(1, stop.signal);
+				await vi.waitFor(() => expect(f.kinds()).toContain("drop"));
+				stop.abort(reason);
+				await expect(running).rejects.toBe(reason);
+				expect(f.commands.get(f.idOf("drop"))?.state).toBe("cancelled");
+				expect(f.steps()).toEqual(["started:collect", "ended:collect", "boundary:carries", "started:drop"]);
+				expect(f.logged.filter((event) => event.step === "run")).toEqual([]);
+			});
+
+			it("while the boundary after the drop is asked", async () => {
+				const stop = new AbortController();
+				const f = await siteFixture({
+					boundaries: [CARRIES],
+					after: async (machine, signal) => {
+						stop.abort(reason);
+						return await SILENT(machine, signal);
+					},
+				});
+				await expect(f.site(1, stop.signal)).rejects.toBe(reason);
+				expect(f.steps().at(-1)).toBe("dropped:2");
+				expect(f.logged.filter((event) => event.step === "run")).toEqual([]);
+			});
+		});
+
+		/** Step 3's paths of a command the host did not see end for certain (release review r1 and review rounds 4 to 6,
+		 * F1), for the collect and for the drop: each is a command of the run under the same memories and rules. */
+		describe.each(["collect", "drop"] as const)("the %s, as every command of the run", (kind) => {
+			/** The first run's answer when the `kind` did not end as itself. */
+			const lost =
+				kind === "collect"
+					? (code: string) => ({ state: "passed", site: { state: "missed", code } })
+					: (_code: string) => ({ state: "site_refused", problem: SECRET_HELD });
+			/** ...and when its start was never answered. */
+			const unanswered = lost("UNCLASSIFIED");
+			/** A fixture whose `kind` never ends by itself, past a budget: its stop is what the test says. */
+			const stuck = async () =>
+				siteFixture({
+					budgetMs: 800,
+					boundaries: [CARRIES],
+					...(kind === "collect" ? { collect: { state: "running" } } : { drop: { state: "running" } }),
+				});
+			const cancels = () =>
+				mocked.guestCancel.mock.calls.map(([request]) => (request as { commandId: string }).commandId);
+			/** The guest takes every cancel of `commandId`, and it runs on. */
+			const runsOn = (f: Awaited<ReturnType<typeof siteFixture>>, commandId: string) => {
+				const cancel = mocked.guestCancel.getMockImplementation()!;
+				mocked.guestCancel.mockImplementation(async (request: unknown) => {
+					const asked = parseCodingGuestRequest("cancel", request);
+					if (asked.commandId !== commandId) return cancel(request);
+					return {
+						schema: "qorpera.coding-guest-command/v1",
+						workerId: f.claim.workerId,
+						commandId,
+						state: f.commands.get(commandId)?.state ?? "running",
+						exit: null,
+						end: 0,
+					};
+				});
+			};
+			/** When each guest call of `commandId` came, in the order of every mock's calls. */
+			const orderOf = (mock: { mock: { calls: unknown[][]; invocationCallOrder: number[] } }, commandId: string) =>
+				mock.mock.calls.flatMap(([request], at) =>
+					(request as { commandId: string }).commandId === commandId
+						? [mock.mock.invocationCallOrder[at] as number]
+						: [],
+				);
+			/** The next run's copy (the fence) and its first check, by when the guest was asked to run them. */
+			const fenced = (f: Awaited<ReturnType<typeof siteFixture>>, attempt: number) => {
+				const [copy, check] = f.ran().filter((run) => run.environment.QORPERA_CHECKS_NAME === runName(1, attempt));
+				return {
+					copied: orderOf(mocked.guestRun, copy?.commandId as string)[0] as number,
+					checked: orderOf(mocked.guestRun, check?.commandId as string)[0] as number,
+				};
+			};
+
+			it("asks a cancel that is rejected again, and runs again in another folder once a read confirms its end", async () => {
+				const f = await stuck();
+				const cancel = mocked.guestCancel.getMockImplementation()!;
+				mocked.guestCancel
+					.mockRejectedValueOnce(new Error("LXD operation failed"))
+					.mockRejectedValueOnce(new Error("LXD operation failed"))
+					.mockImplementation(cancel);
+				expect(await f.site(1, f.signal, CHECKS.slice(0, 1))).toMatchObject(lost("CODE_CHECKS_BUDGET"));
+				const id = f.idOf(kind);
+				expect(cancels()).toEqual([id, id, id]);
+				expect(f.commands.get(id)?.state).toBe("cancelled");
+				expect(f.logged).toContainEqual(
+					expect.objectContaining({ step: "ended", site: kind, state: "not_run", stopped: true }),
+				);
+				f.ending(() => ({}));
+				expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+				expect(cancels()).toHaveLength(3);
+			});
+
+			it("reads a cancel that answers running again until it has ended", async () => {
+				const f = await stuck();
+				const cancel = mocked.guestCancel.getMockImplementation()!;
+				mocked.guestCancel
+					.mockImplementationOnce(async (request: unknown) => {
+						const asked = parseCodingGuestRequest("cancel", request);
+						return {
+							schema: "qorpera.coding-guest-command/v1",
+							workerId: f.claim.workerId,
+							commandId: asked.commandId,
+							state: "running",
+							exit: null,
+							end: 0,
+						};
+					})
+					.mockImplementation(cancel);
+				expect(await f.site(1, f.signal, CHECKS.slice(0, 1))).toMatchObject(lost("CODE_CHECKS_BUDGET"));
+				expect(cancels()).toEqual([f.idOf(kind), f.idOf(kind)]);
+				expect(f.logged).toContainEqual(expect.objectContaining({ step: "ended", site: kind, stopped: true }));
+				f.ending(() => ({}));
+				expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+			});
+
+			it("holds every later run, which touches no folder, while it has not stopped; and lets the next one run once it has ended", async () => {
+				const f = await stuck();
+				const id = f.idOf(kind);
+				runsOn(f, id);
+				expect(await f.site(1, f.signal, CHECKS.slice(0, 1))).toMatchObject(lost("CODE_CHECKS_BUDGET"));
+				expect(f.logged).toContainEqual(expect.objectContaining({ step: "ended", site: kind, stopped: false }));
+				const ran = f.ran().length;
+				expect(await f.run(CHECKS.slice(0, 1), 2)).toEqual({
+					state: "not_run",
+					why: "machine",
+					code: "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED",
+				});
+				expect(f.ran()).toHaveLength(ran);
+				expect(f.logged).toContainEqual(
+					expect.objectContaining({ step: "earlier", attempt: 2, commandId: id, end: "running" }),
+				);
+				(f.commands.get(id) as { state: CodingGuestCommandState }).state = "cancelled";
+				f.ending(() => ({}));
+				expect(await f.run(CHECKS.slice(0, 1), 3)).toMatchObject({ state: "passed" });
+				expect(f.logged).toContainEqual(
+					expect.objectContaining({ step: "earlier", attempt: 3, commandId: id, end: "ended" }),
+				);
+			});
+
+			it.each([true, false])(
+				"looks again after the next run's fence at a start never answered that landed before it (it stops: %s)",
+				async (stops) => {
+					const f = await siteFixture({ boundaries: [CARRIES] });
+					const id = f.idOf(kind);
+					const run = mocked.guestRun.getMockImplementation()!;
+					let late: CodingGuestRunRequest | undefined;
+					mocked.guestRun.mockImplementation(async (request: unknown) => {
+						const asked = parseCodingGuestRequest("run", request);
+						if (asked.commandId !== id) return run(request);
+						late = asked;
+						throw new Error("LXD operation failed");
+					});
+					expect(await f.site(1, f.signal, CHECKS.slice(0, 1))).toMatchObject(unanswered);
+					expect(f.logged).toContainEqual(
+						expect.objectContaining({ step: "ended", site: kind, state: "not_run", stopped: true }),
+					);
+					// It lands now, before the next run made anything, and runs on as a server would.
+					f.commands.set(id, {
+						run: late as CodingGuestRunRequest,
+						state: "running",
+						exit: null,
+						printed: Buffer.from(""),
+						ending: { state: "running" },
+						until: Number.POSITIVE_INFINITY,
+					});
+					if (!stops) runsOn(f, id);
+					f.ending(() => ({}));
+					const next = await f.run(CHECKS.slice(0, 1), 2);
+					if (stops) {
+						expect(next).toMatchObject({ state: "passed" });
+						const { copied, checked } = fenced(f, 2);
+						const looked = orderOf(mocked.guestCancel, id).filter((at) => at > copied);
+						expect(looked.length).toBeGreaterThan(0);
+						expect(Math.max(...looked)).toBeLessThan(checked);
+						expect(f.commands.get(id)?.state).toBe("cancelled");
+						expect(f.logged).toContainEqual(
+							expect.objectContaining({ step: "looked", attempt: 2, commandId: id, end: "ended" }),
+						);
+					} else {
+						expect(next).toEqual({
+							state: "not_run",
+							why: "machine",
+							code: "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED",
+						});
+						expect(f.logged).toContainEqual(
+							expect.objectContaining({ step: "looked", attempt: 2, commandId: id, end: "running" }),
+						);
+					}
+				},
+			);
+
+			it.each([true, false])(
+				"looks again after the retry's fence at a start never answered whose first stop timed out (review round 6's order; it stops: %s)",
+				async (stops) => {
+					const f = await siteFixture({ boundaries: [CARRIES] });
+					const id = f.idOf(kind);
+					const newer = runName(f.claim.sequence, 2);
+					const run = mocked.guestRun.getMockImplementation()!,
+						cancel = mocked.guestCancel.getMockImplementation()!;
+					let late: CodingGuestRunRequest | undefined;
+					let refuse = true;
+					mocked.guestRun.mockImplementation(async (request: unknown) => {
+						const asked = parseCodingGuestRequest("run", request);
+						if (asked.commandId === id) {
+							late = asked;
+							throw new Error("LXD operation failed");
+						}
+						// The lost start lands now, before the retry's copy runs.
+						if (
+							asked.environment.QORPERA_CHECKS_NAME === newer &&
+							kindOf(asked) === "copy" &&
+							late &&
+							!f.commands.has(id)
+						)
+							f.commands.set(id, {
+								run: late,
+								state: "running",
+								exit: null,
+								printed: Buffer.from(""),
+								ending: { state: "running" },
+								until: Number.POSITIVE_INFINITY,
+							});
+						return run(request);
+					});
+					mocked.guestCancel.mockImplementation(async (request: unknown) => {
+						const asked = parseCodingGuestRequest("cancel", request);
+						if (refuse && asked.commandId === id) throw new Error("LXD operation failed");
+						if (!stops && asked.commandId === id && f.commands.get(id)?.state === "running")
+							return {
+								schema: "qorpera.coding-guest-command/v1",
+								workerId: f.claim.workerId,
+								commandId: id,
+								state: "running",
+								exit: null,
+								end: 0,
+							};
+						return cancel(request);
+					});
+					expect(await f.site(1, f.signal, CHECKS.slice(0, 1))).toMatchObject(unanswered);
+					// Its first stop could not be confirmed.
+					expect(f.logged).toContainEqual(
+						expect.objectContaining({ step: "ended", site: kind, state: "not_run", stopped: false }),
+					);
+					refuse = false;
+					f.ending(() => ({}));
+					const next = await f.run(CHECKS.slice(0, 1), 2);
+					// The guard before the retry got the provisional `cancelled`: no longer held there.
+					expect(f.logged).toContainEqual(
+						expect.objectContaining({ step: "earlier", attempt: 2, commandId: id, end: "ended" }),
+					);
+					if (stops) {
+						expect(next).toMatchObject({ state: "passed" });
+						const { copied, checked } = fenced(f, 2);
+						expect(f.loggedAt("looked", id).every((at) => at > copied && at < checked)).toBe(true);
+						expect(f.loggedAt("looked", id)).toHaveLength(1);
+						expect(f.commands.get(id)?.state).toBe("cancelled");
+					} else {
+						expect(next).toEqual({
+							state: "not_run",
+							why: "machine",
+							code: "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED",
+						});
+						expect(
+							f
+								.ran()
+								.filter((ran) => ran.environment.QORPERA_CHECKS_NAME === newer)
+								.map(kindOf),
+						).toEqual(["copy"]);
+					}
+				},
+			);
+
+			it("looks again after the next run's fence at one whose receipt ended it as unconfirmed", async () => {
+				const f = await siteFixture({
+					boundaries: [CARRIES],
+					...(kind === "collect" ? { collect: { state: "lost" } } : { drop: { state: "lost" } }),
+				});
+				expect(await f.site(1, f.signal, CHECKS.slice(0, 1))).toMatchObject(lost("CODE_SITE_COLLECT_UNCONFIRMED"));
+				const id = f.idOf(kind);
+				f.ending(() => ({}));
+				expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+				const { copied, checked } = fenced(f, 2);
+				const looked = f.loggedAt("looked", id);
+				expect(looked).toHaveLength(1);
+				expect([copied < (looked[0] as number), (looked[0] as number) < checked]).toEqual([true, true]);
+			});
+
+			it("looks again after the next run's fence at one the machine showed nothing of when it ended", async () => {
+				const f = await siteFixture({ boundaries: [CARRIES] });
+				let armed: number | undefined;
+				const disk = mocked.disk.getMockImplementation()!;
+				mocked.disk.mockImplementation(async (...args: unknown[]) => {
+					if (armed !== undefined && ++armed >= 2) return "not a rebuild";
+					return disk(...args);
+				});
+				const ending = (run: CodingGuestRunRequest) => {
+					const which = kindOf(run);
+					if (which === kind) armed = 0;
+					if (which === "collect") return { printed: LINES };
+					return which === "drop" ? { printed: "dropped 2\n" } : {};
+				};
+				f.ending(ending);
+				expect(await f.site(1, f.signal, CHECKS.slice(0, 1))).toMatchObject(lost("CODE_CHECKS_UNCONFIRMED"));
+				armed = undefined;
+				const id = f.idOf(kind);
+				f.ending(() => ({}));
+				expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+				const { copied, checked } = fenced(f, 2);
+				const looked = f.loggedAt("looked", id);
+				expect(looked).toHaveLength(1);
+				expect([copied < (looked[0] as number), (looked[0] as number) < checked]).toEqual([true, true]);
+			});
+
+			it("believes it ended once the guest no longer has it, and the next run goes on", async () => {
+				const f = await stuck();
+				const id = f.idOf(kind);
+				runsOn(f, id);
+				await f.site(1, f.signal, CHECKS.slice(0, 1));
+				// The machine lost it: the guest no longer knows it (the faked class is given its code).
+				const unknown = () =>
+					Object.assign(new CodingGuestRefused("CODING_GUEST_COMMAND_UNKNOWN"), {
+						code: "CODING_GUEST_COMMAND_UNKNOWN",
+					});
+				mocked.guestCancel.mockRejectedValueOnce(unknown());
+				mocked.guestOutput.mockRejectedValueOnce(unknown());
+				f.ending(() => ({}));
+				expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+				expect(f.logged).toContainEqual(
+					expect.objectContaining({ step: "earlier", attempt: 2, commandId: id, end: "lost" }),
+				);
+			});
 		});
 	});
 
