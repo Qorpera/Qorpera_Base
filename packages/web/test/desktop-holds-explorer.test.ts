@@ -1,5 +1,4 @@
 import type {
-	MemberAgentMachine,
 	MemberAgentMachines,
 	MemberDesktopHandBack,
 	MemberDesktopHold,
@@ -7,6 +6,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DesktopHoldLedger } from "../src/app/views/desktop-holds.ts";
 import type { WebCompanyComputer } from "../src/cloud/computer.ts";
+import { Database, random } from "./take-over-model.ts";
 
 /* Schedules explored (review r10 of #1661): the ledger of desktop holds, as the window drives it, against a model of
  * the database's take-over rules (migration 20260930713000: one hand-back epoch per member and machine, a lease taken
@@ -32,106 +32,6 @@ const OTHER = "other";
 const AGENT = "agent";
 const MACHINES = ["11111111-1111-4111-8111-000000000041", "11111111-1111-4111-8111-000000000042"] as const;
 type Machine = (typeof MACHINES)[number];
-
-/** A small fast generator of the seed's choices (mulberry32). */
-function random(seed: number) {
-	let state = seed >>> 0;
-	return () => {
-		state = (state + 0x6d2b79f5) >>> 0;
-		let t = state;
-		t = Math.imul(t ^ (t >>> 15), t | 1);
-		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-	};
-}
-
-interface Lease {
-	member: string;
-	epoch: number;
-	live: boolean;
-	/** The take-overs that took or took it again (a page's request ids; -1 for another tab or member). */
-	takes: Set<number>;
-	takenStep: number;
-}
-
-/** The database, as migration 20260930713000 has it. */
-class Database {
-	readonly machines: readonly Machine[];
-	constructor(machines: readonly Machine[]) {
-		this.machines = machines;
-	}
-	readonly epochs = new Map<string, number>();
-	readonly leases = new Map<Machine, Lease | undefined>();
-	step = 0;
-	epoch(member: string, machine: Machine): number {
-		return this.epochs.get(`${member}:${machine}`) ?? 0;
-	}
-	take(member: string, machine: Machine, epoch: number, take: number): MemberDesktopHold {
-		const current = this.epoch(member, machine);
-		if (epoch !== current) return { state: "refused", reason: "TAKE_CALLED_OFF", memberName: null, epoch: current };
-		const lease = this.leases.get(machine);
-		if (lease?.live && lease.member !== member)
-			return { state: "refused", reason: "DESKTOP_MEMBER_IN_CONTROL", memberName: "Ada", epoch: null };
-		if (lease?.live) {
-			lease.epoch = current;
-			lease.takes.add(take);
-		} else
-			this.leases.set(machine, { member, epoch: current, live: true, takes: new Set([take]), takenStep: this.step });
-		return { state: "ok", until: "2026-11-11T00:00:00Z" };
-	}
-	keep(member: string, machine: Machine, epoch: number): boolean {
-		const lease = this.leases.get(machine);
-		return lease?.live === true && lease.member === member && lease.epoch === epoch;
-	}
-	handBack(member: string, machine: Machine, epoch: number): MemberDesktopHandBack {
-		const current = this.epoch(member, machine);
-		let handedBack = false;
-		if (epoch === current) {
-			this.epochs.set(`${member}:${machine}`, current + 1);
-			const lease = this.leases.get(machine);
-			if (lease && lease.member === member && lease.epoch === epoch) {
-				handedBack = lease.live;
-				this.leases.set(machine, undefined);
-			}
-		}
-		const now = this.leases.get(machine);
-		return { handedBack, epoch: this.epoch(member, machine), holding: now?.live === true && now.member === member };
-	}
-	list(member: string): MemberAgentMachines {
-		return {
-			canWake: true,
-			canTakeOver: true,
-			machines: this.machines.map((machine): MemberAgentMachine => {
-				const lease = this.leases.get(machine);
-				return {
-					machineId: machine,
-					name: machine.slice(-2),
-					purpose: "Explored.",
-					state: "running",
-					lifetime: "task",
-					desktopCapable: true,
-					startedByAgent: true,
-					screenUsedAt: null,
-					screenAgentName: null,
-					waitingFor: null,
-					control: lease?.live
-						? {
-								mine: lease.member === member,
-								name: lease.member,
-								until: "2026-11-11T00:00:00Z",
-								epoch: lease.member === member ? lease.epoch : null,
-							}
-						: null,
-					epoch: this.epoch(member, machine),
-				};
-			}),
-		};
-	}
-	expire(machine: Machine): void {
-		const lease = this.leases.get(machine);
-		if (lease) lease.live = false;
-	}
-}
 
 interface Request {
 	id: number;
@@ -434,7 +334,8 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 					const before = page.releases.get(machine) ?? 0;
 					const finishing = page.finishing > 0;
 					const finishes = page.finishes;
-					const taking = page.ledger.take(machine, AGENT);
+					// As the window does: the press's stamp goes with it (review r13).
+					const taking = page.ledger.take(machine, AGENT, page.ledger.stamp());
 					void taking.then((answer) => {
 						// A take-over the page did not call off (no release of the machine since the press, and no Hand back or
 						// I'm done at work, whose later rounds give back what reads show) never comes to nothing unsaid (review
