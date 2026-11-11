@@ -3228,6 +3228,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// a line names what came of the work and keeps the team's housekeeping off the wall, so they moved again.
 	// On 11 November 2026 organize_apps came after organize_sidebar (the apps drawer's groups, APP-GROUPS-SPEC §3), and
 	// save_app's schema takes group, so they moved again.
+	// Own code storage, step 4 (11 November 2026): organize_apps takes whats-new, Qorpera's What's new page in the
+	// drawer, and publish_site's and share_app's descriptions say the password is on the Sites page in the apps drawer
+	// (Sites left Settings on 9 November 2026), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3274,9 +3277,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"b8aa7b7bfb77589bc73a13369ca37f19b29eedd7aaba0c59ba1c27935d507ae3",
+		"b617f953bfea71fdbefe5532c0180ec7c9571a9e2c3ff788f5c0621f55eb5f4a",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"b3a148766db27b0d699b8c9c365ace2441d91f1065865542cf20a09085516d81",
+		"4d636db53a4820ac3929f80ae70eebc04710a5824448975d69fe4bb8977d0c3e",
 	);
 });

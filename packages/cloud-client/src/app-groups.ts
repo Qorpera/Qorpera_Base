@@ -7,7 +7,7 @@ import { isInterfaceName } from "./interfaces.ts";
  *
  * The file is a nested list, two spaces a level:
  *   - an item is `- <key>` and words for reading (ignored): `page:mailbox`, `page:members`, `page:bank`,
- *     `app:<name>`, `concepts` or `sites`;
+ *     `app:<name>`, `concepts`, `sites` or `whats-new`;
  *   - a group is `- group <id>: <name>`, its items the lines under it indented two more spaces, in order.
  * At most two group levels: a deeper line is read at its nearest allowed level. The first line of a key or group id
  * wins. Lines that are not list items are notes: the ones before the list stay before it, the others are written after
@@ -73,9 +73,10 @@ const CONTROL = /[\u0000-\u001f\u007f\u2028\u2029]/;
 /** What would end a line where a list line is written: written as a space. */
 const BREAKS = /[\r\n\u2028\u2029]+/g;
 
-/** Whether a key is one of the drawer's: a platform page, an app's folder, Concepts or Sites. */
+/** Whether a key is one of the drawer's: a platform page, an app's folder, Concepts, Sites or What's new. What's new
+ * (own code storage, step 4) is the platform's page, the bare `whats-new`; `app:whats-new` is an agent's app. */
 export function isAppDrawerKey(key: string): boolean {
-	if (key === "concepts" || key === "sites") return true;
+	if (key === "concepts" || key === "sites" || key === "whats-new") return true;
 	if (key.startsWith("page:")) return (APP_DRAWER_PAGES as readonly string[]).includes(key.slice(5));
 	return key.startsWith("app:") && isInterfaceName(key.slice(4));
 }
@@ -230,8 +231,8 @@ export function appGroupsGroups(
 }
 
 /** What the drawer draws from the file for a company that has `have` (its keys in the drawer's own order: pages, apps
- * by name, Concepts, Sites): the listed keys it has, groups with nothing to draw left out, then the rest loose. `missing`
- * is the drawer keys the file lists that the company does not have. */
+ * by name, Concepts, Sites, What's new): the listed keys it has, groups with nothing to draw left out, then the rest
+ * loose. `missing` is the drawer keys the file lists that the company does not have. */
 export function resolveAppGroups(
 	file: Pick<AppGroupsFile, "items">,
 	have: readonly string[],
