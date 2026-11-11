@@ -84,6 +84,12 @@ describe("dedicated coding executor control", () => {
 				expect.objectContaining({ redirect: "error", method: "POST" }),
 			);
 		}
+		// Whether a repository kept in Qorpera has its checks run before a landing (own code storage, step 3).
+		await control.call("qorpera_code_checks_switch", {}, new AbortController().signal);
+		expect(fetcher).toHaveBeenLastCalledWith(
+			"https://project.supabase.co/rest/v1/rpc/qorpera_code_checks_switch",
+			expect.objectContaining({ redirect: "error", method: "POST" }),
+		);
 		// The agent's, the member's and the operator's calls of the same step are not the executor's.
 		for (const method of [
 			"qorpera_folder_request_code_undo",

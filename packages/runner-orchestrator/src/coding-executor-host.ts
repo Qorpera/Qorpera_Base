@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import {
+	type CloudCodingCommandReceipt,
 	type CloudCodingCommandScope,
 	type CloudCodingNasPolicy,
 	type CloudCodingRepository,
@@ -17,6 +18,8 @@ import {
 } from "@qorpera/contracts";
 import { withAbortScope } from "./abort-scope.ts";
 import type { AgentPlug } from "./agent-plug.ts";
+import { type CodeCheck, type CodeChecksRun, codeChecksTail } from "./code-checks.ts";
+import { codeAreaPath } from "./code-host-jobs.ts";
 import {
 	type CodingCommandSecrets,
 	type CodingEnvironmentSource,
@@ -34,12 +37,17 @@ import type {
 	CodingWorkspace,
 } from "./coding-executor.ts";
 import {
+	CodingControlRefused,
 	CodingMachineUnavailable,
 	CodingPushRefused,
 	CodingSaveRefused,
 	CodingWorkspaceFailed,
 } from "./coding-executor.ts";
-import { codingFolderKeptCommand, LxdCodingFolderCommandTransport } from "./coding-folder-command-transport.ts";
+import {
+	codingFolderKeptCommand,
+	LxdCodingFolderCommandTransport,
+	type LxdCodingFolderCommandTransportOptions,
+} from "./coding-folder-command-transport.ts";
 import {
 	type CodingFolderControl,
 	codingFolderBoundaryChecking,
@@ -48,6 +56,7 @@ import {
 	codingFolderSaveRefused,
 } from "./coding-folder-control.ts";
 import {
+	CODING_FOLDER_COMPANY_ROOT,
 	type CodingFolderRepositories,
 	type CodingFolderRepositorySession,
 	codingFolderNoRepositories,
@@ -125,6 +134,8 @@ export const CODING_HOST_RPCS = [
 	"qorpera_record_coding_machine_new_disk",
 	// A landing in a repository kept in Qorpera, reported to its change record (own code storage, step 2b).
 	"qorpera_record_code_change",
+	// Whether a repository kept in Qorpera has its checks run before a landing (own code storage, step 3).
+	"qorpera_code_checks_switch",
 ] as const;
 
 /** The leased session a repository token is asked for (bundle v88): the
@@ -224,6 +235,14 @@ export interface LxdCodingExecutorHostOptions {
 		repositories?: CodingFolderRepositories;
 		/** Each view the guest mounted for a session, and how the view it replaced ended, if it replaced one. */
 		onMount?(mount: { workerId: string; machineId: string; viewId: string; replaced?: CodingFolderViewEnd }): void;
+		/** The log lines of a landing's checks (own code storage, step 3): `code-checks` (each command `started` and
+		 * `ended`, and the `run`) and `code-checks-error` (whose `error` is the error itself, for the log to redact).
+		 * Never a check's output. */
+		report?(event: Record<string, unknown>): void;
+		/** How often a running check is read (default 3 s), and the wall budget of a whole run of the checks (default:
+		 * 300 s for the copy, and each check's own limit and 60 s more). */
+		checksPollMs?: number;
+		checksBudgetMs?: number;
 	};
 }
 type FolderOptions = NonNullable<LxdCodingExecutorHostOptions["folder"]>;
@@ -411,6 +430,50 @@ const CODING_FOLDER_GUEST_READY_MS = 300_000;
 /** How long a publication waits before it asks for a boundary again while one left paths waiting for save checks that
  * had not ended (the service answers within the control's timeout, and goes on checking). */
 const CODING_FOLDER_CHECK_RETRY_MS = 1_000;
+/** A run of a repository's checks (own code storage, step 3; STEP3-CHECKS-PLAN.md 6.2). The copy: a clean copy of
+ * exactly the candidate on the machine's own disk, read from the repository's storage in the company folder (no
+ * untracked or ignored file of any worktree), after waiting for a merge commit job A just wrote to reach the session's
+ * view. Only the folder `$QORPERA_CHECKS_DIR` is removed. Its values come in the environment. */
+const CODE_CHECKS_COPY = [
+	"set -eu",
+	'd="$QORPERA_CHECKS_DIR"',
+	'rm -rf -- "$d"',
+	'mkdir -p -- "$d/out"',
+	"i=0",
+	'until git -C "$QORPERA_CHECKS_REPOSITORY" cat-file -e "$QORPERA_CHECKS_COMMIT^{commit}" 2>/dev/null; do',
+	'\ti=$((i + 1)); [ "$i" -lt 20 ] || exit 90; sleep 3',
+	"done",
+	'git clone --quiet --shared --no-checkout -- "$QORPERA_CHECKS_REPOSITORY" "$d/src"',
+	'git -C "$d/src" -c advice.detachedHead=false checkout --quiet --detach "$QORPERA_CHECKS_COMMIT"',
+	'test "$(git -C "$d/src" rev-parse HEAD)" = "$QORPERA_CHECKS_COMMIT"',
+].join("\n");
+/** One check: its own command from its folder of the copy, stdin closed, its whole output also kept on the machine's
+ * disk, and its own exit code. */
+const CODE_CHECKS_CHECK = [
+	'cd -- "$QORPERA_CHECK_CWD" || exit 2',
+	'bash --noprofile --norc -c "$QORPERA_CHECK_RUN" </dev/null 2>&1 | tee -- "$QORPERA_CHECK_LOG"',
+	// bash's own placeholder, not the template's.
+	`exit "\${PIPESTATUS[0]}"`,
+].join("\n");
+/** The copy's own time limit. */
+const CODE_CHECKS_COPY_MS = 300_000;
+/** What the wall budget gives each check beyond its own limit. */
+const CODE_CHECKS_SLACK_MS = 60_000;
+/** How often a running check is read. */
+const CODE_CHECKS_POLL_MS = 3_000;
+/** How many reads in a row a check's calls may go unanswered (the transport, the guest, the run authority) before the
+ * run ends as not run: a call that fails is asked again at the next read until then (a minute at the default pace). */
+const CODE_CHECKS_UNANSWERED_READS = 20;
+/** How long a cancel of a running check may take once the turn gave up or the budget passed. */
+const CODE_CHECKS_CANCEL_MS = 10_000;
+/** A check's command in its run's answer and the change record, at most this many bytes. */
+const CODE_CHECKS_RUN_BYTES = 200;
+/** A refusal of a check's run authority: the turn's, the machine's or its disk's. */
+class CodingChecksUnauthorized extends Error {
+	constructor(cause: unknown) {
+		super(errorCodeOf(cause), { cause });
+	}
+}
 /** Refusals a turn waits out in the queue instead of failing: the machine is
  * being removed, the node is full or not ready, the session is still on
  * another machine, the machine's plan followed a new policy after this turn
@@ -1635,7 +1698,291 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					throw new Error("CODING_HOST_CODE_CHANGE_UNCONFIRMED");
 				return { state: answer.state, change: change as number | null };
 			},
+			// Asked of the executor that holds the turn's lease. An answer lost, or not the switch's, reads as on: the
+			// landing is then checked, never let in unchecked. Only the kernel's refusal ends it.
+			checksSwitch: async (checked) => {
+				try {
+					const answer = record(
+						await this.#call(
+							"qorpera_code_checks_switch",
+							{ p_worker_id: claim.workerId, p_lease_token: claim.leaseToken },
+							checked,
+						),
+					);
+					if (answer.schema !== "qorpera.code-checks-switch/v1" || typeof answer.enabled !== "boolean")
+						throw new Error("CODING_HOST_CODE_CHECKS_SWITCH_UNCONFIRMED");
+					return answer.enabled;
+				} catch (error) {
+					if (checked.aborted || error instanceof CodingControlRefused) throw error;
+					this.#checksReport({
+						event: "code-checks-error",
+						step: "switch",
+						workerId: claim.workerId,
+						sequence: claim.sequence,
+						error,
+					});
+					return true;
+				}
+			},
+			runChecks: (input, checked) => this.#runChecks(claim, input, checked),
 		};
+	}
+	/** A line of the checks' log; the log never changes what happens. */
+	#checksReport(event: Record<string, unknown>): void {
+		try {
+			this.#options.folder?.report?.(event);
+		} catch {
+			/* not heard */
+		}
+	}
+	/** One run of a repository's checks on a clean copy of `commit` in the turn's session's machine (own code storage,
+	 * step 3; STEP3-CHECKS-PLAN.md 6.2 to 6.4). Each command (the copy, then each check in the file's order) is one of the
+	 * session's own commands, through the folder command transport its model's commands take: as the session's user, with
+	 * its environment and secrets, its output masked and kept in its custody only once the machine's reads are released.
+	 * Its authority is the host's own part of a command's (the turn still prepared, a fresh run authority, no machine
+	 * marked for a new disk), never the model's: the turn has handed in, and the model's commands are refused. Each
+	 * command gets `CI=true` and `QORPERA_CHECKS=1`. The first check that fails ends the run. It never throws for a
+	 * check's or the machine's sake: what could not run, or ran past the run's wall budget, is `not_run` with why, a
+	 * running command cancelled first. The turn's abort cancels the running command (with 10 s of its own) and is thrown
+	 * on. */
+	async #runChecks(
+		claim: CodingSessionClaim,
+		input: { commit: string; checks: readonly CodeCheck[]; attempt: number },
+		signal: AbortSignal,
+	): Promise<CodeChecksRun> {
+		signal.throwIfAborted();
+		const began = performance.now();
+		const said = { workerId: claim.workerId, sequence: claim.sequence, attempt: input.attempt, commit: input.commit };
+		const elapsed = (since: number) => Math.round(performance.now() - since);
+		const answer = (run: CodeChecksRun): CodeChecksRun => {
+			this.#checksReport({
+				event: "code-checks",
+				step: "run",
+				...said,
+				state: run.state,
+				...(run.state === "not_run" ? { why: run.why, code: run.code } : { ms: run.ms }),
+			});
+			return run;
+		};
+		const folder = this.#options.folder;
+		let ready: Prepared;
+		try {
+			ready = this.#active(claim);
+		} catch (error) {
+			this.#checksReport({ event: "code-checks-error", step: "run", ...said, error });
+			return answer({ state: "not_run", why: "authority", code: errorCodeOf(error) });
+		}
+		// The repository's storage in the company folder, as the session's view shows it.
+		let repository: string;
+		try {
+			repository = `${CODING_FOLDER_COMPANY_ROOT}/${codeAreaPath(claim.repository)}/repo.git`;
+		} catch (error) {
+			this.#checksReport({ event: "code-checks-error", step: "run", ...said, error });
+			return answer({ state: "not_run", why: "transport", code: errorCodeOf(error) });
+		}
+		if (!folder || !ready.folder)
+			return answer({ state: "not_run", why: "transport", code: "CODING_HOST_CHECKS_UNAVAILABLE" });
+		const { uid } = ready.folder;
+		// The session user's home, as the folder command transport gives each command (HOME): on the machine's own disk.
+		const home = `/home/qorpera-${uid}`,
+			dir = `${home}/.qorpera-checks`;
+		const budget = AbortSignal.timeout(
+			folder.checksBudgetMs ??
+				input.checks.reduce(
+					(total, check) => total + check.timeoutSeconds * 1000 + CODE_CHECKS_SLACK_MS,
+					CODE_CHECKS_COPY_MS,
+				),
+		);
+		const base = { ...codingFolderGitEnvironment(claim.workerId), CI: "true", QORPERA_CHECKS: "1" };
+		const authorize = this.#commandAuthority(ready);
+		const checked: LxdCodingFolderCommandTransportOptions["authorize"] = async (...call) => {
+			try {
+				await authorize(...call);
+			} catch (error) {
+				throw new CodingChecksUnauthorized(error);
+			}
+		};
+		let copyMs = 0;
+		const passed: { name: string; run: string; ms: number }[] = [];
+		for (let index = 0; index <= input.checks.length; index++) {
+			const check = index === 0 ? undefined : (input.checks[index - 1] as CodeCheck);
+			// Its whole output, on the machine's disk until the next run.
+			const log = check ? `.qorpera-checks/out/${index}-${check.name}.log` : "";
+			let transport: LxdCodingFolderCommandTransport;
+			try {
+				transport = this.#folderTransport(folder, ready, {
+					cwd: check ? `${dir}/src` : home,
+					environment: check
+						? {
+								...base,
+								QORPERA_CHECK_CWD: check.cwd,
+								QORPERA_CHECK_RUN: check.run,
+								QORPERA_CHECK_LOG: `${home}/${log}`,
+							}
+						: {
+								...base,
+								QORPERA_CHECKS_DIR: dir,
+								QORPERA_CHECKS_REPOSITORY: repository,
+								QORPERA_CHECKS_COMMIT: input.commit,
+							},
+					authorize: checked,
+				});
+			} catch (error) {
+				this.#checksReport({ event: "code-checks-error", step: "run", ...said, error });
+				return answer({ state: "not_run", why: "transport", code: errorCodeOf(error) });
+			}
+			const command = {
+				commandId: codingHostId("checks", `${claim.workerId}:${claim.sequence}:${input.attempt}:${index}`),
+				inputSha256: digest(
+					JSON.stringify({
+						schema: "qorpera.code-checks-command/v1",
+						commit: input.commit,
+						index,
+						run: check ? check.run : CODE_CHECKS_COPY,
+					}),
+				),
+				command: check ? CODE_CHECKS_CHECK : CODE_CHECKS_COPY,
+				timeoutMs: check ? check.timeoutSeconds * 1000 : CODE_CHECKS_COPY_MS,
+			};
+			const step = { ...said, index, ...(check ? { check: check.name } : {}) };
+			this.#checksReport({ event: "code-checks", step: "started", ...step });
+			const started = performance.now();
+			const ended = await this.#checksCommand(transport, ready.scope, command, !check, budget, signal, folder);
+			const ms = elapsed(started);
+			if ("why" in ended) {
+				this.#checksReport({ event: "code-checks", step: "ended", ...step, ms, state: "not_run" });
+				if (ended.error !== undefined)
+					this.#checksReport({ event: "code-checks-error", step: "command", ...step, error: ended.error });
+				return answer({ state: "not_run", why: ended.why, code: ended.code });
+			}
+			const { receipt } = ended;
+			if (ended.error !== undefined)
+				this.#checksReport({ event: "code-checks-error", step: "tail", ...step, error: ended.error });
+			this.#checksReport({
+				event: "code-checks",
+				step: "ended",
+				...step,
+				ms,
+				state: receipt.state,
+				exitCode: receipt.exitCode,
+			});
+			if (!check) {
+				// The copy is the platform's own command on a commit the code host just read: any ending but success is no
+				// fault of the code.
+				if (receipt.state === "succeeded") {
+					copyMs = ms;
+					continue;
+				}
+				return answer(
+					receipt.state === "failed"
+						? { state: "not_run", why: "copy", code: `CODE_CHECKS_COPY_EXIT_${receipt.exitCode}` }
+						: { state: "not_run", why: "machine", code: `CODE_CHECKS_${receipt.state.toUpperCase()}` },
+				);
+			}
+			const run = clipped(check.run, CODE_CHECKS_RUN_BYTES);
+			if (receipt.state === "succeeded") {
+				passed.push({ name: check.name, run, ms });
+				continue;
+			}
+			if (receipt.state !== "failed")
+				return answer({ state: "not_run", why: "machine", code: `CODE_CHECKS_${receipt.state.toUpperCase()}` });
+			return answer({
+				state: "failed",
+				ms: elapsed(began),
+				passed: passed.map(({ name, ms }) => ({ name, ms })),
+				failed: {
+					name: check.name,
+					run,
+					ms,
+					exitCode: receipt.exitCode,
+					atLimit: receipt.exitCode === 124 && ms >= check.timeoutSeconds * 1000,
+					tail: ended.tail,
+					log: `~/${log}`,
+				},
+				notRun: input.checks.slice(index).map(({ name }) => name),
+			});
+		}
+		return answer({ state: "passed", ms: elapsed(began), copyMs, checks: passed });
+	}
+	/** One command of a run of the checks, to its end: started, then read every CODE_CHECKS_POLL_MS until it ends. A
+	 * call that fails is asked again at the next read (a start again is the same command) until the time of
+	 * CODE_CHECKS_UNANSWERED_READS reads passed without an answer. A command that ended is shown only as a model's
+	 * command would be (`hidden`). A failed check's tail is read once more, the last 16 KiB of its masked output, and
+	 * cut by the words' own rule (`codeChecksTail`, 6.4); when that read fails, the failure stands without a tail
+	 * (`error`). The turn's abort, or the run's budget passing, cancels it first. */
+	async #checksCommand(
+		transport: LxdCodingFolderCommandTransport,
+		scope: CloudCodingCommandScope,
+		command: { commandId: string; inputSha256: string; command: string; timeoutMs: number },
+		copy: boolean,
+		budget: AbortSignal,
+		signal: AbortSignal,
+		folder: FolderOptions,
+	): Promise<
+		| { receipt: CloudCodingCommandReceipt; tail: string; error?: unknown }
+		| { why: "machine" | "transport" | "authority" | "budget"; code: string; error?: unknown }
+	> {
+		const live = AbortSignal.any([signal, budget]);
+		const pollMs = folder.checksPollMs ?? CODE_CHECKS_POLL_MS;
+		const { commandId } = command;
+		// Whatever runs of it stops: once the turn has given up, or the budget passed, with time of its own.
+		const stopped = async <T>(then: T): Promise<T> => {
+			await transport.cancel(scope, commandId, AbortSignal.timeout(CODE_CHECKS_CANCEL_MS)).catch(() => undefined);
+			if (signal.aborted) throw signal.reason;
+			return then;
+		};
+		const overBudget = { why: "budget" as const, code: "CODE_CHECKS_BUDGET" };
+		const failed = (error: unknown) => ({
+			why: error instanceof CodingChecksUnauthorized ? ("authority" as const) : ("transport" as const),
+			code: errorCodeOf(error),
+			error,
+		});
+		let receipt: CloudCodingCommandReceipt | undefined;
+		let unanswered: number | undefined;
+		for (;;) {
+			try {
+				receipt = receipt
+					? await transport.read(scope, { commandId, tail: true, limit: 4096 }, live)
+					: await transport.start(scope, command, live);
+				unanswered = undefined;
+				if (receipt.state !== "running") break;
+			} catch (error) {
+				// Given up (`stopped` throws the turn's abort on), or past the budget.
+				if (signal.aborted || budget.aborted) return await stopped(overBudget);
+				unanswered ??= performance.now();
+				if (performance.now() - unanswered >= CODE_CHECKS_UNANSWERED_READS * pollMs)
+					return await stopped(failed(error));
+			}
+			try {
+				await setTimeout(pollMs, undefined, { signal: live });
+			} catch {
+				return await stopped(overBudget);
+			}
+		}
+		let tail = "",
+			unread: unknown;
+		if (receipt.state === "failed" && !copy)
+			try {
+				const end = await transport.read(scope, { commandId, tail: true, limit: 16384 }, live);
+				// A read that starts inside the output may start inside a line: from its first whole line, unless it is all
+				// one line. The tail's own rule is the words' (codeChecksTail).
+				const first = end.log.offset > 0 ? end.output.indexOf("\n") : -1;
+				tail = codeChecksTail(
+					first >= 0 && first < end.output.length - 1 ? end.output.slice(first + 1) : end.output,
+				);
+			} catch (error) {
+				if (signal.aborted) throw signal.reason;
+				unread = error;
+			}
+		try {
+			// Shown as a model's command is, or not at all: the machine may hold a read it no longer may show.
+			const hidden = await transport.hidden(commandId, live);
+			if (hidden !== undefined) return { why: "machine", code: `CODE_CHECKS_${hidden.toUpperCase()}` };
+		} catch (error) {
+			if (signal.aborted) throw signal.reason;
+			return budget.aborted ? overBudget : failed(error);
+		}
+		return { receipt, tail, ...(unread === undefined ? {} : { error: unread }) };
 	}
 	/** One guest lease step of the session, so the keeper never renews it
 	 * between this attach and its first renewal. */
@@ -2932,69 +3279,19 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (!ready || !isDeepStrictEqual(scope, ready.scope)) throw new Error("CODING_HOST_TURN_NOT_PREPARED");
 		await this.#run(ready.claim, ready.machine, ready.storage, signal);
 		const folder = this.#options.folder;
+		const host = this.#commandAuthority(ready);
+		// The host's part first, then the model's own.
 		const checkedAuthorize: typeof authorize = async (action, checkedScope, commandId, inputSha256, checked) => {
-			this.#current(ready);
-			await this.#run(ready.claim, ready.machine, ready.storage, checked);
-			// On the folder model, a machine SQL holds marked for a new disk (this run's take-in may just have marked it)
-			// starts no command and shows none until it has one: its disk may hold what it read. A cancel still goes, and
-			// keeps and shows nothing of the command (the transport's `withheld` below, asked before anything is kept, and
-			// by its `hidden` after the command service's final authorization).
-			if (folder && ready.folder && action !== "cancel" && (await this.#newDiskDue(ready.machine, checked)))
-				throw new Error("CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK");
+			await host(action, checkedScope, commandId, inputSha256, checked);
 			await authorize(action, checkedScope, commandId, inputSha256, checked);
 		};
-		if (folder && ready.folder) {
-			// The session's own user runs each command through the guest agent, at its worktree, with Git's settings for
-			// the company folder, under the start the machine runs at that moment (none while it starts again), whichever
-			// start it was prepared under; the host keeps each command's start and output in the session's custody folder.
-			// That folder outlives a new disk, and goes with the session to another machine: what a command printed on a disk
-			// the machine no longer has, or on another machine, is never shown, whichever turn asks (the transport's `hidden`,
-			// by its `disk` from next to the machine's journal).
-			const { machineId } = ready.machine;
-			// A boundary that says the machine holds a read no longer readable marks it for a new disk (rule 4,
-			// `unreadable`), once: until it has one, a command's outcome waits for a release that does not come.
-			let marked = false;
-			const control: Pick<CodingFolderControl, "boundary"> = {
-				boundary: async (id, final, checked) => {
-					const boundary = await folder.control.boundary(id, final, checked);
-					if (!marked && codingFolderBoundaryUnreadable(boundary))
-						marked = await this.#markForFolder(ready.machine, true, checked).then(
-							() => true,
-							() => false,
-						);
-					return boundary;
-				},
-			};
-			return new LxdCodingFolderCommandTransport({
-				machine: ready.machine,
-				scope: ready.scope,
-				currentStart: () => this.#folderStartOperations.get(machineId),
-				session: {
-					uid: ready.folder.uid,
-					gid: ready.folder.uid,
-					cwd: ready.folder.cwd,
-					environment: codingFolderGitEnvironment(ready.claim.workerId),
-				},
-				custody: ready.storage.custodySource,
-				limitBytes: this.#options.guest.resourceProfile.maxLogBytes,
-				guest: new LxdCodingGuestClient({ machine: ready.machine, client: folder.client }),
-				control,
-				withheld: (checked) => this.#newDiskDue(ready.machine, checked),
-				disk: async (checked) =>
-					codingMachineDisk(
-						await this.#directory("machines", checked),
-						lxdCodingMachineJournalPlan(ready.machine, this.#placement),
-					),
-				dropped: async (startOperationId, checked) =>
-					codingMachineStartDropped(
-						await this.#directory("machines", checked),
-						lxdCodingMachineJournalPlan(ready.machine, this.#placement),
-						startOperationId,
-					),
+		// The session's own user runs each command at its worktree, with Git's settings for the company folder.
+		if (folder && ready.folder)
+			return this.#folderTransport(folder, ready, {
+				cwd: ready.folder.cwd,
+				environment: codingFolderGitEnvironment(ready.claim.workerId),
 				authorize: checkedAuthorize,
-				secrets: this.#sessionSecrets(ready),
 			});
-		}
 		return new LxdCodingCommandTransport({
 			machine: ready.machine,
 			storage: this.#placement,
@@ -3004,6 +3301,78 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			helperSha256: this.#options.guest.commandHelperSha256,
 			client: this.#options.client,
 			authorize: checkedAuthorize,
+		});
+	}
+	/** The host's own part of the authority of each call on one of the turn's commands, the model's or its checks':
+	 * the turn is still prepared, and has a fresh run authority on its machine. */
+	#commandAuthority(ready: Prepared): LxdCodingFolderCommandTransportOptions["authorize"] {
+		const folder = this.#options.folder;
+		return async (action, _scope, _commandId, _inputSha256, checked) => {
+			this.#current(ready);
+			await this.#run(ready.claim, ready.machine, ready.storage, checked);
+			// On the folder model, a machine SQL holds marked for a new disk (this run's take-in may just have marked it)
+			// starts no command and shows none until it has one: its disk may hold what it read. A cancel still goes, and
+			// keeps and shows nothing of the command (the transport's `withheld` below, asked before anything is kept, and
+			// by its `hidden` after the command service's final authorization).
+			if (folder && ready.folder && action !== "cancel" && (await this.#newDiskDue(ready.machine, checked)))
+				throw new Error("CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK");
+		};
+	}
+	/** One command transport of the turn's session on the folder model, the model's commands' and its checks' alike:
+	 * the session's own user runs each command through the guest agent, at `cwd` and with `environment` beside its
+	 * secrets, under the start the machine runs at that moment (none while it starts again), whichever start it was
+	 * prepared under; the host keeps each command's start and output in the session's custody folder. That folder
+	 * outlives a new disk, and goes with the session to another machine: what a command printed on a disk the machine no
+	 * longer has, or on another machine, is never shown, whichever turn asks (the transport's `hidden`, by its `disk`
+	 * from next to the machine's journal). */
+	#folderTransport(
+		folder: FolderOptions,
+		ready: Prepared,
+		session: {
+			cwd: string;
+			environment: Readonly<Record<string, string>>;
+			authorize: LxdCodingFolderCommandTransportOptions["authorize"];
+		},
+	): LxdCodingFolderCommandTransport {
+		if (!ready.folder) throw new Error("CODING_HOST_TURN_NOT_PREPARED");
+		const { machineId } = ready.machine;
+		// A boundary that says the machine holds a read no longer readable marks it for a new disk (rule 4,
+		// `unreadable`), once: until it has one, a command's outcome waits for a release that does not come.
+		let marked = false;
+		const control: Pick<CodingFolderControl, "boundary"> = {
+			boundary: async (id, final, checked) => {
+				const boundary = await folder.control.boundary(id, final, checked);
+				if (!marked && codingFolderBoundaryUnreadable(boundary))
+					marked = await this.#markForFolder(ready.machine, true, checked).then(
+						() => true,
+						() => false,
+					);
+				return boundary;
+			},
+		};
+		return new LxdCodingFolderCommandTransport({
+			machine: ready.machine,
+			scope: ready.scope,
+			currentStart: () => this.#folderStartOperations.get(machineId),
+			session: { uid: ready.folder.uid, gid: ready.folder.uid, cwd: session.cwd, environment: session.environment },
+			custody: ready.storage.custodySource,
+			limitBytes: this.#options.guest.resourceProfile.maxLogBytes,
+			guest: new LxdCodingGuestClient({ machine: ready.machine, client: folder.client }),
+			control,
+			withheld: (checked) => this.#newDiskDue(ready.machine, checked),
+			disk: async (checked) =>
+				codingMachineDisk(
+					await this.#directory("machines", checked),
+					lxdCodingMachineJournalPlan(ready.machine, this.#placement),
+				),
+			dropped: async (startOperationId, checked) =>
+				codingMachineStartDropped(
+					await this.#directory("machines", checked),
+					lxdCodingMachineJournalPlan(ready.machine, this.#placement),
+					startOperationId,
+				),
+			authorize: session.authorize,
+			secrets: this.#sessionSecrets(ready),
 		});
 	}
 

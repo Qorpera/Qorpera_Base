@@ -44,6 +44,8 @@ export const CODE_CHANGE_REFUSAL_BYTES = 6000;
  * session's picture, `code/<owner>/<name>/changes/<n>.<ext>`, is far shorter. A record shows the path whole: cut, it
  * would name no file. */
 export const CODE_CHANGE_PICTURE_PATH_BYTES = 1024;
+/** A record's `## Checks` is at most this long, from its heading to its last line, whatever its row holds. */
+export const CODE_CHANGE_CHECKS_BYTES = 4096;
 
 /** A repository kept in Qorpera, as the kernel names it for its record's files. */
 export interface CodeChangeTarget {
@@ -87,6 +89,14 @@ export interface CodeChangeFile {
 	undoes: number[] | null;
 	revertedBy: number | null;
 	restoredFrom: string | null;
+	/** How the checks went (step 3, migration `20260930721000`): passed, none (the repository has no checks file), off
+	 * (switched off for the repository), inherited (main's files are exactly those of a change whose checks passed),
+	 * not_run (an undo or a restore without such a change), or null (before step 3, or a movement nobody saw). A state
+	 * this executor does not know reads as null. */
+	checksState: "passed" | "none" | "off" | "inherited" | "not_run" | null;
+	/** The row's `checks` as the kernel sends it, never checked on the way in: a value of a shape its file cannot show
+	 * reads as unknown there, and stops nothing. */
+	checks: unknown;
 }
 /** One line of the list. `line` is what a customer will notice, or else the change's title. */
 export interface CodeChangeLine {
@@ -104,6 +114,13 @@ const YIELDED = "CODE_HOST_JOB_YIELDED";
 const KINDS = ["landing", "undo", "restore", "found"];
 const STATES = ["landed", "reverted", "conflict", "refused", "lost"];
 const CHANGES = ["added", "changed", "removed"];
+const CHECKS_STATES = ["passed", "none", "off", "inherited", "not_run"];
+const CHECKS_SCHEMA = "qorpera.code-checks/v1";
+/** A check's name as the checks file has it, and how many checks it has at most (step 3). */
+const CHECK_NAME = /^[a-z0-9][a-z0-9._-]{0,39}$/;
+const CHECKS_MOST = 20;
+/** A check's command is shown cut at this many bytes, or shorter when the checks would not fit their section. */
+const CHECK_RUN_BYTES = 200;
 const encoder = new TextEncoder();
 const bytes = (text: string): number => encoder.encode(text).byteLength;
 
@@ -315,6 +332,135 @@ const PICTURE_PROBLEMS: Readonly<Record<string, string>> = {
 	not_a_picture: "not a picture",
 	not_shared: "not in the company's shared folders",
 };
+/** A passed run's checks (`qorpera.code-checks/v1`), as much of them as a record shows. */
+interface Passed {
+	how: "fast-forward" | "merged";
+	ms: number;
+	checks: { name: string; run: string; ms: number }[];
+	changed: { added: string[]; removed: string[]; run: string[] } | null;
+	tries: 1 | 2;
+}
+const checkNames = (value: unknown): value is string[] =>
+	Array.isArray(value) &&
+	value.length <= CHECKS_MOST &&
+	value.every((name) => typeof name === "string" && CHECK_NAME.test(name));
+
+/** The checks of a passed run, or undefined when the value is not of their shape. Only what the record shows is read:
+ * the kernel checked the rest when it took the report. */
+function passedOf(value: Record<string, unknown>): Passed | undefined {
+	const { how, ms, checks, changed, tries } = value;
+	if (
+		(how !== "fast-forward" && how !== "merged") ||
+		!whole(ms) ||
+		(tries !== 1 && tries !== 2) ||
+		!Array.isArray(checks) ||
+		checks.length < 1 ||
+		checks.length > CHECKS_MOST ||
+		!checks.every(
+			(check) =>
+				isRecord(check) &&
+				typeof check.name === "string" &&
+				CHECK_NAME.test(check.name) &&
+				typeof check.run === "string" &&
+				whole(check.ms),
+		) ||
+		!(
+			changed === null ||
+			changed === undefined ||
+			(isRecord(changed) && checkNames(changed.added) && checkNames(changed.removed) && checkNames(changed.run))
+		)
+	)
+		return undefined;
+	return { how, ms, checks: checks as Passed["checks"], changed: (changed ?? null) as Passed["changed"], tries };
+}
+
+/** A run's time, in whole minutes and seconds. */
+function runTime(ms: number): string {
+	const seconds = Math.round(ms / 1000);
+	const minutes = Math.floor(seconds / 60);
+	if (!minutes) return `${seconds} s`;
+	return seconds % 60 ? `${minutes} min ${seconds % 60} s` : `${minutes} min`;
+}
+
+/** The section of checks that passed: each check with its time and its command, then what the change changed of the
+ * checks. The commands are cut at 200 bytes, all of them shorter when the section would not fit its 4 KiB otherwise,
+ * and left out as a last step: every check keeps its name. */
+function passedSection(passed: Passed): string[] {
+	const where = passed.how === "merged" ? "the merge of this change with main" : "what went into main";
+	const again = passed.tries === 2 ? ", and once more, since main moved meanwhile" : "";
+	const parts: [string, string[]][] = passed.changed
+		? [
+				["added", passed.changed.added],
+				["removed", passed.changed.removed],
+				["changed", passed.changed.run],
+			]
+		: [];
+	const changed = parts
+		.filter(([, names]) => names.length)
+		.map(([said, names]) => `${said} ${names.map((name) => code(name)).join(", ")}`);
+	const section = (cap: number) => [
+		"## Checks",
+		"",
+		`Passed on ${where}, in ${runTime(passed.ms)}${again}:`,
+		"",
+		...passed.checks.map(
+			(check) => `- ${code(check.name)}${cap ? `: ${code(check.run, cap)}` : ""} (${Math.round(check.ms / 1000)} s)`,
+		),
+		...(changed.length ? ["", `This change changed the checks: ${changed.join("; ")}.`] : []),
+	];
+	for (let cap = CHECK_RUN_BYTES; cap > 0; cap -= 10) {
+		const made = section(cap);
+		if (bytes(made.join("\n")) <= CODE_CHANGE_CHECKS_BYTES) return made;
+	}
+	// Names as the checks file allows them, and twenty of each at most: without their commands they always fit (the
+	// test of the most a row can hold says by how much).
+	return section(0);
+}
+
+const UNKNOWN = {
+	head: "unknown",
+	section: [
+		"## Checks",
+		"",
+		"Unknown: this change went in before Qorpera ran checks, or Qorpera did not see it go in.",
+	],
+};
+
+/** A change's checks: the word of its head line and its section. Null for a landing that never went in. What the
+ * record cannot say for sure (a state it does not know, a value not of its state's shape, an undo's state on any other
+ * row) reads as unknown: it never stops the file. */
+function checksWords(change: CodeChangeFile): { head: string; section: string[] } | null {
+	if (change.state === "conflict" || change.state === "refused") return null;
+	const value = isRecord(change.checks) && change.checks.schema === CHECKS_SCHEMA ? change.checks : undefined;
+	const said = (head: string, sentence: string) => ({ head, section: ["## Checks", "", sentence] });
+	switch (change.checksState) {
+		case "passed": {
+			const passed = value && passedOf(value);
+			return passed ? { head: "passed", section: passedSection(passed) } : UNKNOWN;
+		}
+		case "none":
+			return said("none", "None: the repository has no checks file (`.qorpera/checks.json`).");
+		case "off":
+			return said("off", "Not run: checks are switched off for this repository.");
+		case "inherited":
+			return value && whole(value.as, 1)
+				? said(
+						`as change ${value.as}`,
+						`Not run again: main's files are exactly those of change ${value.as}, whose checks passed.`,
+					)
+				: UNKNOWN;
+		case "not_run":
+			if (change.kind === "undo")
+				return said(
+					"not run",
+					"Not run: Qorpera does not check an undo. The next change that goes in is checked with these files.",
+				);
+			return change.kind === "restore" ? said("not run", "Not run: Qorpera does not check a restore.") : UNKNOWN;
+		default:
+			return UNKNOWN;
+	}
+}
+
 /** What the words under a change are called: a session's report, or why somebody undid or restored. */
 const SAID: Readonly<Record<CodeChangeFile["kind"], string>> = {
 	landing: "What the session said",
@@ -328,9 +474,11 @@ const SAID: Readonly<Record<CodeChangeFile["kind"], string>> = {
  *
  * What a session, an agent or a member wrote never becomes a line of the file's own. Their sentences (what a customer
  * will notice, what the session said, why a change was undone) are quoted line by line. A title is one line with
- * every Markdown character written out. A path is code. And no line holds a control character. */
+ * every Markdown character written out. A path, a check's name and its command are code. And no line holds a control
+ * character. */
 export function codeChangeRecordText(change: CodeChangeFile, diff?: CodeChangeDiff): string {
 	const filesChanged = diff ? diff.filesChanged : change.filesChanged;
+	const checks = checksWords(change);
 	const title = words(change.title, 400);
 	const head = [
 		`# Change ${change.n}${title ? `: ${title}` : ""}`,
@@ -345,6 +493,7 @@ export function codeChangeRecordText(change: CodeChangeFile, diff?: CodeChangeDi
 		...(change.mainBefore === null ? [] : [`- Main before: ${commit(change.mainBefore)}`]),
 		...(change.mainAfter === null ? [] : [`- Main after: ${commit(change.mainAfter)}`]),
 		...(filesChanged === null ? [] : [`- Files changed: ${filesChanged}`]),
+		...(checks ? [`- Checks: ${checks.head}`] : []),
 	];
 	const notice = change.notice === null ? null : quoted(change.notice, 1000);
 	const problem = change.pictureProblem === null ? undefined : PICTURE_PROBLEMS[change.pictureProblem];
@@ -374,13 +523,15 @@ export function codeChangeRecordText(change: CodeChangeFile, diff?: CodeChangeDi
 		"## Picture",
 		"",
 		picture,
+		...(checks ? ["", ...checks.section] : []),
 		...(said === null ? [] : ["", `## ${SAID[change.kind]}`, "", said]),
 		...(why.length ? ["", "## Why it did not go in", "", ...why] : []),
 	];
 	const paths = diff ? diff.paths : change.paths;
 	if (paths !== null) {
 		// The files get what the rest of the record left of its 24 KiB: every part above has a bound of its own (a path
-		// as code may be three times its bytes, when it is all backticks), and together they stay under 22 KiB.
+		// as code may be three times its bytes, when it is all backticks), and together they stay under 22 KiB for
+		// every row the kernel sends (its commits are commits' names, and a row that has checks never has a refusal).
 		const room = CODE_CHANGE_RECORD_BYTES - bytes(sections.join("\n")) - 64;
 		const more = diff ? diff.pathsMore : change.pathsMore;
 		const files = pathList(
@@ -559,6 +710,11 @@ function changeOf(value: unknown, target: CodeChangeTarget): CodeChangeFile {
 		undoes: row.undoes as number[] | null,
 		revertedBy: row.revertedBy,
 		restoredFrom: row.restoredFrom as string | null,
+		// Read leniently (a kernel from before step 3 sends neither): what the file cannot show reads as unknown there.
+		checksState: CHECKS_STATES.includes(row.checksState as string)
+			? (row.checksState as CodeChangeFile["checksState"])
+			: null,
+		checks: row.checks ?? null,
 	};
 }
 
