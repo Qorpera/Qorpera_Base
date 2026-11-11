@@ -237,6 +237,556 @@ returns boolean language sql immutable set search_path = '' as $$
 		else p_change -> 'site' = 'null'::jsonb end, false)
 $$;
 
+-- 3. The executor's calls ----------------------------------------------------------------------------------------------
+
+-- The repository's live release: the row live_release names, while the repository's site has a current version; else
+-- null (no site, a site that is not live yet, or one a member took offline and the next upload made again).
+create function public.qorpera_code_release_live(p_repository public.qorpera_code_repositories)
+returns public.qorpera_code_releases language sql stable set search_path = '' as $$
+	select release.* from public.qorpera_code_releases release
+	join public.qorpera_company_sites site on site.id = p_repository.site_id and site.current_version_id is not null
+	where release.environment_id = p_repository.environment_id and release.owner = p_repository.owner
+		and release.name = p_repository.name and release.n = p_repository.live_release
+$$;
+
+-- A repository's ready point (step 4, 6.1), as a value: the newest (p_change null) or row p_change; null when there is
+-- none. L is the change the live release is cut at (0 when the site is not live). A row r is a ready point when r.n > L,
+-- it is landed, its checks passed or it inherited them, and it made a site; its tree has a ready, live or kept version
+-- on the repository's site (unless p_versioned is false: the due list asks before the upload); and no row from L up to
+-- r is reverted by a row numbered above r, or lost to a restore numbered above r (a change taken out later is never
+-- released inside it; a row a restore at or below r went back past is no part of r). The newest is looked for among
+-- the newest 200 rows after L.
+-- What it holds: the rows after L up to r that are landed, of kind landing, undo or restore, but an undo whose every
+-- target is among them (the two cancel). Listed: those with a notice, newest first, at most 20. The token is a SHA-256
+-- over the repository, the live release, r, its commit and tree, and every row after L up to r (number, state, notice
+-- and picture): a page that names it saw exactly that. Answers
+-- {"change","mainSha","tree","site":<r's site>,"versionId":<uuid>|null,"live":<the live release's n, or 0>,"floor":L,
+--  "held":[<n>, newest first, at most 500],"count":<held rows>,"listed":[<n>, newest first],"token":"<64 hex>",
+--  "agent":<the staff agent of the newest listed row, else of the newest held row>|null}.
+create function public.qorpera_code_release_point(p_repository public.qorpera_code_repositories,
+	p_change integer default null, p_versioned boolean default true)
+returns jsonb language plpgsql stable set search_path = '' as $$
+declare v_live public.qorpera_code_releases%rowtype; v_floor integer; v_row public.qorpera_code_changes%rowtype;
+	v_version uuid; v_held integer[]; v_count integer; v_listed integer[]; v_token text; v_agent uuid;
+begin
+	if p_repository.environment_id is null then return null; end if;
+	v_live := public.qorpera_code_release_live(p_repository);
+	v_floor := coalesce(v_live.change, 0);
+	select ready.* into v_row
+	from (select candidate.* from public.qorpera_code_changes candidate
+		where candidate.environment_id = p_repository.environment_id and candidate.owner = p_repository.owner
+			and candidate.name = p_repository.name and candidate.n > v_floor and (p_change is null or candidate.n = p_change)
+		order by candidate.n desc limit 200) ready
+	where ready.state = 'landed' and ready.checks_state in ('passed','inherited') and ready.site_state = 'made'
+		and (not p_versioned or exists (select 1 from public.qorpera_company_site_versions version
+			where version.site_id = p_repository.site_id and version.tree = ready.site ->> 'tree'
+				and version.state in ('ready','live','kept')))
+		and not exists (select 1 from public.qorpera_code_changes taken
+			where taken.environment_id = p_repository.environment_id and taken.owner = p_repository.owner
+				and taken.name = p_repository.name and taken.n > v_floor and taken.n <= ready.n
+				and ((taken.state = 'reverted' and taken.reverted_by > ready.n)
+					-- (A row a restore at or below r went back past is not in r's files: r landed after that restore.)
+					or (taken.state = 'lost' and not exists (select 1 from public.qorpera_code_changes wall
+						where wall.environment_id = p_repository.environment_id and wall.owner = p_repository.owner
+							and wall.name = p_repository.name and wall.kind = 'restore' and wall.n > taken.n
+							and wall.n <= ready.n))))
+	order by ready.n desc limit 1;
+	if v_row.n is null then return null; end if;
+	select version.id into v_version from public.qorpera_company_site_versions version
+	where version.site_id = p_repository.site_id and version.tree = v_row.site ->> 'tree'
+		and version.state in ('ready','live','kept');
+	select coalesce(array_agg(held.n order by held.n desc) filter (where held.place <= 500), '{}'), count(*)::integer,
+		coalesce(array_agg(held.n order by held.n desc) filter (where held.notice is not null and held.noticed <= 20), '{}')
+	into v_held, v_count, v_listed
+	from (select change.n, change.notice, row_number() over (order by change.n desc) as place,
+			row_number() over (partition by change.notice is not null order by change.n desc) as noticed
+		from public.qorpera_code_changes change
+		where change.environment_id = p_repository.environment_id and change.owner = p_repository.owner
+			and change.name = p_repository.name and change.n > v_floor and change.n <= v_row.n and change.state = 'landed'
+			and change.kind in ('landing','undo','restore')
+			and not (change.kind = 'undo' and not exists (select 1 from unnest(change.undoes) target(n) where target.n <= v_floor))) held;
+	select coalesce((select change.staff_agent_id from public.qorpera_code_changes change
+			where change.environment_id = p_repository.environment_id and change.owner = p_repository.owner
+				and change.name = p_repository.name and change.n = v_listed[1]),
+		(select change.staff_agent_id from public.qorpera_code_changes change
+			where change.environment_id = p_repository.environment_id and change.owner = p_repository.owner
+				and change.name = p_repository.name and change.n = v_held[1])) into v_agent;
+	select encode(extensions.digest(convert_to(jsonb_build_array(p_repository.environment_id, p_repository.owner,
+			p_repository.name, coalesce(v_live.n, 0), v_row.n, v_row.main_after, v_row.site ->> 'tree',
+			coalesce(jsonb_agg(jsonb_build_array(shown.n, shown.state, shown.notice, shown.picture) order by shown.n),
+				'[]'::jsonb))::text, 'utf8'), 'sha256'), 'hex') into v_token
+	from public.qorpera_code_changes shown
+	where shown.environment_id = p_repository.environment_id and shown.owner = p_repository.owner
+		and shown.name = p_repository.name and shown.n > v_floor and shown.n <= v_row.n;
+	return jsonb_build_object('change', v_row.n, 'mainSha', v_row.main_after, 'tree', v_row.site ->> 'tree',
+		'site', v_row.site, 'versionId', v_version, 'live', coalesce(v_live.n, 0), 'floor', v_floor, 'held', to_jsonb(v_held),
+		'count', v_count, 'listed', to_jsonb(v_listed), 'token', v_token, 'agent', v_agent);
+end $$;
+
+-- A free name for a repository's new site (step 4, 7.2): the one its checks file asks for (p_wanted) when that is a
+-- valid site name and free; else the repository's name with _ and . made -, cut to 48 and trimmed of hyphens
+-- (`project` when that leaves nothing); else that cut to 46 with -2 to -9. Free: no site has it, or the one that has it
+-- is abandoned (its first upload never finished, a day ago; never a code site), and the caller deletes that one. Null
+-- when none is free.
+create function public.qorpera_code_site_slug(p_environment_id uuid, p_owner text, p_name text, p_wanted text)
+returns text language plpgsql stable set search_path = '' as $$
+declare v_base text := coalesce(nullif(btrim(left(lower(translate(p_name, '_.', '--')), 48), '-'), ''), 'project');
+	v_slug text;
+begin
+	foreach v_slug in array array[p_wanted, v_base] || array(select coalesce(nullif(btrim(left(v_base, 46), '-'), ''),
+		'project') || '-' || place from generate_series(2, 9) place) loop
+		continue when v_slug is null or not public.qorpera_site_slug_valid(v_slug);
+		if not exists (select 1 from public.qorpera_company_sites site where site.slug = v_slug
+			and not public.qorpera_site_abandoned(site)) then
+			return v_slug; end if;
+	end loop;
+	return null;
+end $$;
+
+-- Deletes the versions of a repository's site that neither Go back nor What's new needs any more, and answers how many
+-- (step 4, D13): every ready or kept version but the live one, the versions the live release's chain of Go backs names
+-- within five steps, and the newest three ready. An upload on its way is not touched.
+create function public.qorpera_code_site_prune(p_site_id uuid)
+returns integer language plpgsql volatile set search_path = '' as $$
+declare v_site public.qorpera_company_sites%rowtype; v_repository public.qorpera_code_repositories%rowtype;
+	v_live public.qorpera_code_releases%rowtype; v_keep uuid[] := '{}'; v_count integer;
+begin
+	select * into v_site from public.qorpera_company_sites where id = p_site_id;
+	if v_site.code_owner is null then return 0; end if;
+	select * into v_repository from public.qorpera_code_repositories
+	where environment_id = v_site.environment_id and owner = v_site.code_owner and name = v_site.code_name;
+	v_live := public.qorpera_code_release_live(v_repository);
+	if v_live.n is not null then
+		with recursive chain(prior, version_id, depth) as (
+			select release.prior, release.version_id, 1 from public.qorpera_code_releases release
+			where release.environment_id = v_repository.environment_id and release.owner = v_repository.owner
+				and release.name = v_repository.name and release.n = v_live.prior
+			union all
+			select release.prior, release.version_id, chain.depth + 1 from chain
+			join public.qorpera_code_releases release on release.environment_id = v_repository.environment_id
+				and release.owner = v_repository.owner and release.name = v_repository.name and release.n = chain.prior
+			where chain.depth < 5)
+		select coalesce(array_agg(chain.version_id) filter (where chain.version_id is not null), '{}') into v_keep from chain;
+	end if;
+	delete from public.qorpera_company_site_versions version
+	where version.site_id = p_site_id and version.state in ('ready','kept')
+		and version.id is distinct from v_site.current_version_id and not (version.id = any(v_keep))
+		and version.id not in (select newest.id from public.qorpera_company_site_versions newest
+			where newest.site_id = p_site_id and newest.state = 'ready'
+			order by newest.created_at desc, newest.id desc limit 3);
+	get diagnostics v_count = row_count;
+	return v_count;
+end $$;
+
+-- What a repository's list file says of its site (step 4, 7.5 item 3): what is live
+-- ({"version","kind","change","since","by":<the member's name, or null when they left>,"url"}) and what is ready
+-- ({"change"}), each null when there is none; neither key for a repository that has no site and never made one.
+create function public.qorpera_code_release_index(p_repository public.qorpera_code_repositories)
+returns jsonb language plpgsql stable set search_path = '' as $$
+declare v_live public.qorpera_code_releases%rowtype; v_point jsonb;
+begin
+	if p_repository.site_id is null and not exists (select 1 from public.qorpera_code_changes made
+		where made.environment_id = p_repository.environment_id and made.owner = p_repository.owner
+			and made.name = p_repository.name and made.site_state = 'made') then
+		return '{}'::jsonb; end if;
+	v_live := public.qorpera_code_release_live(p_repository);
+	v_point := public.qorpera_code_release_point(p_repository);
+	return jsonb_build_object('live', case when v_live.n is not null then jsonb_build_object('version', v_live.version,
+			'kind', v_live.kind, 'change', v_live.change, 'since', v_live.created_at,
+			'by', (select member.display_name from public.qorpera_profile_members member
+				where member.profile_id = v_live.profile_id and member.user_id = v_live.by_user_id),
+			'url', (select public.qorpera_site_url(site.slug) from public.qorpera_company_sites site
+				where site.id = p_repository.site_id)) end,
+		'ready', case when v_point is not null then jsonb_build_object('change', v_point -> 'change') end);
+end $$;
+
+-- The repository whose site a version made from code is of, for the executor that holds its company; null when the
+-- version is gone or is no code site's, when the caller does not hold the company, or when it is being deleted.
+create function public.qorpera_code_site_repository(p_owner text, p_machine_id_sha256 text, p_version_id uuid)
+returns public.qorpera_code_repositories language sql stable set search_path = '' as $$
+	select repository.* from public.qorpera_company_site_versions version
+	join public.qorpera_company_sites site on site.id = version.site_id and site.code_owner is not null
+	join public.qorpera_code_repositories repository on repository.environment_id = site.environment_id
+		and repository.owner = site.code_owner and repository.name = site.code_name
+	where version.id = p_version_id and version.tree is not null
+		and public.qorpera_code_care_holder(repository.environment_id, p_owner, p_machine_id_sha256)
+		and not exists (select 1 from public.qorpera_company_deletions deletion
+			where deletion.profile_id = repository.profile_id)
+$$;
+
+-- The sites to upload, for this executor: per repository whose sites are on, whose pause after a failed upload is over,
+-- whose company it holds and is not being deleted, the newest ready point (6.1 without its version), when no version of
+-- its tree is ready, live or kept on the repository's site and it is not the change the pass gave up. An older point
+-- is never due: a newer one makes it pointless. At most p_limit (1 to 20). Read-only.
+create function public.qorpera_code_sites_due(p_owner text, p_machine_id_sha256 text, p_limit integer)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare v_now timestamptz := clock_timestamp(); v_repository public.qorpera_code_repositories%rowtype; v_point jsonb;
+	v_due jsonb := '[]'::jsonb;
+begin
+	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
+	if p_limit is null or p_limit not between 1 and 20 then
+		raise exception 'Code sites limit invalid' using errcode = '22023'; end if;
+	for v_repository in select repository.* from public.qorpera_code_repositories repository
+		where repository.site_enabled and (repository.site_not_before is null or repository.site_not_before <= v_now)
+			and exists (select 1 from public.qorpera_code_changes made
+				where made.environment_id = repository.environment_id and made.owner = repository.owner
+					and made.name = repository.name and made.site_state = 'made')
+			and public.qorpera_code_care_holder(repository.environment_id, p_owner, p_machine_id_sha256)
+			and not exists (select 1 from public.qorpera_company_deletions deletion
+				where deletion.profile_id = repository.profile_id)
+		order by repository.environment_id, repository.owner collate "C", repository.name collate "C"
+	loop
+		exit when jsonb_array_length(v_due) >= p_limit;
+		v_point := public.qorpera_code_release_point(v_repository, null, false);
+		continue when v_point is null or v_point ->> 'versionId' is not null
+			or (v_point ->> 'change')::integer is not distinct from v_repository.site_given_up;
+		v_due := v_due || jsonb_build_object('companyId', v_repository.profile_id, 'environmentId', v_repository.environment_id,
+			'owner', v_repository.owner, 'name', v_repository.name, 'change', (v_point ->> 'change')::integer,
+			'site', v_point -> 'site');
+	end loop;
+	return jsonb_build_object('schema', 'qorpera.code-sites-due/v1', 'sites', v_due);
+end $$;
+
+-- An upload's first step, for row p_change of a repository: its site, made when the repository has none (also after
+-- a member took it offline), and the version of the row's tree, found (in any state) or made (`uploading`, its files
+-- not named yet). p_manifest, exactly: {"manifestSha256":"<64 hex>","files":<n>,"bytes":<n>}, which the pass computed
+-- from the tree; files and bytes are the row's site's. A new site: kind files, the repository's own, source
+-- code/<owner>/<name>, the row's site title, made for the row's agent, a new password, its name by
+-- qorpera_code_site_slug. One upload a site is open: a new version ends the site's other uploads.
+-- Answers {"schema":"qorpera.code-site-begin/v1","state":"uploading"|"ready"|"live"|"kept","versionId","slug",
+-- "listed":<bool>}, or {…,"state":"refused","code":…} and then writes nothing: SITE_ROW_GONE (no such row, or it made
+-- no site), SITE_TREE_DIFFERS (files or bytes not the row's, or the tree's version has another manifest), SITE_LIMIT
+-- (no site yet and the company has 10), SITE_NAME_TAKEN (no name free); or {…,"state":"lost"}: the caller does not
+-- hold the company, it is being deleted, or nobody registered the repository.
+create function public.qorpera_code_site_begin(p_owner text, p_machine_id_sha256 text, p_environment_id uuid,
+	p_repository_owner text, p_name text, p_change integer, p_manifest jsonb)
+returns jsonb language plpgsql volatile security definer set search_path = '' as $$
+declare v_repository public.qorpera_code_repositories%rowtype; v_row public.qorpera_code_changes%rowtype;
+	v_site public.qorpera_company_sites%rowtype; v_version public.qorpera_company_site_versions%rowtype; v_slug text;
+	v_now timestamptz := clock_timestamp(); c_schema constant text := 'qorpera.code-site-begin/v1';
+begin
+	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
+	if p_environment_id is null or p_repository_owner is null or p_name is null or p_change is null or p_change < 1
+		or jsonb_typeof(p_manifest) is distinct from 'object'
+		or not p_manifest ?& array['manifestSha256','files','bytes']
+		or p_manifest - array['manifestSha256','files','bytes'] <> '{}'::jsonb
+		or not public.qorpera_code_json_text(p_manifest -> 'manifestSha256', '^[0-9a-f]{64}$')
+		or not (public.qorpera_code_json_count(p_manifest -> 'files') and p_manifest ->> 'files' ~ '^[0-9]{1,9}$')
+		or not (public.qorpera_code_json_count(p_manifest -> 'bytes') and p_manifest ->> 'bytes' ~ '^[0-9]{1,9}$') then
+		raise exception 'Code site begin invalid' using errcode = '22023'; end if;
+	-- The company's profile row first: a site row written below checks its key.
+	perform 1 from public.qorpera_profiles profile where profile.id = (select repository.profile_id
+		from public.qorpera_code_repositories repository where repository.environment_id = p_environment_id
+			and repository.owner = p_repository_owner and repository.name = p_name) for key share;
+	select * into v_repository from public.qorpera_code_repositories
+	where environment_id = p_environment_id and owner = p_repository_owner and name = p_name for update;
+	if not found or not public.qorpera_code_care_holder(p_environment_id, p_owner, p_machine_id_sha256)
+		or exists (select 1 from public.qorpera_company_deletions deletion where deletion.profile_id = v_repository.profile_id) then
+		return jsonb_build_object('schema', c_schema, 'state', 'lost'); end if;
+	select * into v_row from public.qorpera_code_changes change
+	where change.environment_id = p_environment_id and change.owner = p_repository_owner and change.name = p_name
+		and change.n = p_change;
+	if v_row.site_state is distinct from 'made' then
+		return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_ROW_GONE'); end if;
+	if p_manifest -> 'files' <> v_row.site -> 'files' or p_manifest -> 'bytes' <> v_row.site -> 'bytes' then
+		return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_TREE_DIFFERS'); end if;
+	if v_repository.site_id is not null then
+		select * into v_site from public.qorpera_company_sites where id = v_repository.site_id for update;
+	end if;
+	if v_site.id is null then
+		-- A code site counts from its first upload, also while it waits in What's new.
+		if (select count(*) from public.qorpera_company_sites site where site.profile_id = v_repository.profile_id) >= 10 then
+			return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_LIMIT'); end if;
+		v_slug := public.qorpera_code_site_slug(p_environment_id, p_repository_owner, p_name, v_row.site ->> 'name');
+		if v_slug is null then
+			return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_NAME_TAKEN'); end if;
+		-- (The site that had the name, if any, is abandoned.)
+		delete from public.qorpera_company_sites where slug = v_slug;
+		insert into public.qorpera_company_sites (profile_id, environment_id, slug, title, source_path,
+			created_by_staff_agent_id, code_owner, code_name)
+		values (v_repository.profile_id, p_environment_id, v_slug, v_row.site ->> 'title',
+			format('code/%s/%s', p_repository_owner, p_name), v_row.staff_agent_id, p_repository_owner, p_name)
+		returning * into v_site;
+		insert into public.qorpera_company_site_secrets (site_id, password) values (v_site.id, public.qorpera_site_new_password());
+		update public.qorpera_code_repositories set site_id = v_site.id
+		where environment_id = p_environment_id and owner = p_repository_owner and name = p_name;
+	end if;
+	select * into v_version from public.qorpera_company_site_versions version
+	where version.site_id = v_site.id and version.tree = v_row.site ->> 'tree' for update;
+	if found and (v_version.manifest_sha256 <> p_manifest ->> 'manifestSha256'
+		or v_version.file_count <> (p_manifest ->> 'files')::integer
+		or v_version.total_bytes <> (p_manifest ->> 'bytes')::bigint) then
+		return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_TREE_DIFFERS'); end if;
+	-- One open upload a site: an upload a newer change overtook goes.
+	delete from public.qorpera_company_site_versions version
+	where version.site_id = v_site.id and version.state = 'uploading' and version.tree <> v_row.site ->> 'tree';
+	if v_version.id is null then
+		insert into public.qorpera_company_site_versions (site_id, first_publish, title, source_path, manifest_sha256,
+			file_count, total_bytes, tree, change, main_sha, listed)
+		values (v_site.id, v_site.current_version_id is null, v_row.site ->> 'title', v_site.source_path,
+			p_manifest ->> 'manifestSha256', (p_manifest ->> 'files')::integer, (p_manifest ->> 'bytes')::bigint,
+			v_row.site ->> 'tree', v_row.n, v_row.main_after, false)
+		returning * into v_version;
+		update public.qorpera_company_sites set updated_at = v_now where id = v_site.id;
+	end if;
+	return jsonb_build_object('schema', c_schema, 'state', v_version.state, 'versionId', v_version.id, 'slug', v_site.slug,
+		'listed', v_version.listed);
+end $$;
+
+-- An upload's files, named in pages of at most 150: p_files exactly {"files":[{"path","bytes","sha256"}],"last":<bool>}.
+-- Each file is checked as publish_site's begin checks one (a path a site holds, a type it serves, at most 10 MiB, a
+-- SHA-256) and added with no bytes; a path named again with the same values is the same file. With last: the files
+-- named are as many as the version's, as large, their manifest is its manifest, and index.html is among them; then
+-- each file's bytes are copied from any other version of the site that has a file of the same SHA-256 and size, and
+-- the version is listed. Answers {"schema":"qorpera.code-site-list/v1","state":"listing"|"listed","missing":<files with
+-- no bytes>}; or {…,"state":"refused","code":"SITE_FILE_REFUSED","path":<the file>} (a file a site cannot hold, or a
+-- path named before with other values), {…,"code":"SITE_MANIFEST_DIFFERS","path":null} (more files than the version
+-- has, or at last another count, size or manifest, or no index.html), and then every file of the version goes, so the
+-- next pass names them from the start; or {…,"state":"lost"}. A version that is listed already answers so.
+create function public.qorpera_code_site_list(p_owner text, p_machine_id_sha256 text, p_version_id uuid, p_files jsonb)
+returns jsonb language plpgsql volatile security definer set search_path = '' as $$
+declare v_repository public.qorpera_code_repositories%rowtype; v_version public.qorpera_company_site_versions%rowtype;
+	v_item jsonb; v_file public.qorpera_company_site_files%rowtype; v_refusal jsonb; v_count integer; v_total bigint;
+	v_manifest text; c_schema constant text := 'qorpera.code-site-list/v1';
+begin
+	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
+	if p_version_id is null or jsonb_typeof(p_files) is distinct from 'object' or not p_files ?& array['files','last']
+		or p_files - array['files','last'] <> '{}'::jsonb or jsonb_typeof(p_files -> 'last') is distinct from 'boolean'
+		or jsonb_typeof(p_files -> 'files') is distinct from 'array' or jsonb_array_length(p_files -> 'files') > 150
+		or exists (select 1 from jsonb_array_elements(p_files -> 'files') item(value)
+			where case when jsonb_typeof(item.value) = 'object' then not item.value ?& array['path','bytes','sha256']
+				or item.value - array['path','bytes','sha256'] <> '{}'::jsonb or jsonb_typeof(item.value -> 'path') <> 'string'
+				or jsonb_typeof(item.value -> 'bytes') <> 'number' or jsonb_typeof(item.value -> 'sha256') <> 'string'
+				else true end) then
+		raise exception 'Code site list invalid' using errcode = '22023'; end if;
+	v_repository := public.qorpera_code_site_repository(p_owner, p_machine_id_sha256, p_version_id);
+	if v_repository.environment_id is not null then
+		select * into v_version from public.qorpera_company_site_versions where id = p_version_id for update;
+	end if;
+	if v_version.id is null then return jsonb_build_object('schema', c_schema, 'state', 'lost'); end if;
+	if v_version.listed or v_version.state <> 'uploading' then
+		return jsonb_build_object('schema', c_schema, 'state', 'listed', 'missing', (select count(*)
+			from public.qorpera_company_site_files file where file.version_id = v_version.id and file.content is null));
+	end if;
+	for v_item in select item.value from jsonb_array_elements(p_files -> 'files') with ordinality item(value, place)
+		order by item.place loop
+		if not public.qorpera_site_path_valid(v_item ->> 'path') or public.qorpera_site_content_type(v_item ->> 'path') is null
+			or (case when v_item ->> 'bytes' ~ '^[0-9]{1,8}$' then (v_item ->> 'bytes')::integer > 10485760 else true end)
+			or v_item ->> 'sha256' !~ '^[0-9a-f]{64}$' then
+			v_refusal := jsonb_build_object('code', 'SITE_FILE_REFUSED', 'path', v_item ->> 'path');
+			exit;
+		end if;
+		insert into public.qorpera_company_site_files (version_id, path, bytes, sha256, content_type)
+		values (v_version.id, v_item ->> 'path', (v_item ->> 'bytes')::integer, v_item ->> 'sha256',
+			public.qorpera_site_content_type(v_item ->> 'path'))
+		on conflict (version_id, path) do nothing;
+		select * into v_file from public.qorpera_company_site_files file
+		where file.version_id = v_version.id and file.path = v_item ->> 'path';
+		if v_file.bytes <> (v_item ->> 'bytes')::integer or v_file.sha256 <> v_item ->> 'sha256' then
+			v_refusal := jsonb_build_object('code', 'SITE_FILE_REFUSED', 'path', v_item ->> 'path');
+			exit;
+		end if;
+	end loop;
+	select count(*), coalesce(sum(file.bytes), 0), encode(extensions.digest(convert_to(string_agg(file.path || chr(9)
+			|| file.sha256 || chr(9) || file.bytes::text, chr(10) order by file.path collate "C"), 'utf8'), 'sha256'), 'hex')
+	into v_count, v_total, v_manifest
+	from public.qorpera_company_site_files file where file.version_id = v_version.id;
+	if v_refusal is null and (v_count > v_version.file_count or ((p_files -> 'last')::boolean
+		and (v_count <> v_version.file_count or v_total <> v_version.total_bytes
+			or v_manifest is distinct from v_version.manifest_sha256
+			or not exists (select 1 from public.qorpera_company_site_files file
+				where file.version_id = v_version.id and file.path = 'index.html')))) then
+		v_refusal := jsonb_build_object('code', 'SITE_MANIFEST_DIFFERS', 'path', null);
+	end if;
+	if v_refusal is not null then
+		delete from public.qorpera_company_site_files where version_id = v_version.id;
+		return jsonb_build_object('schema', c_schema, 'state', 'refused') || v_refusal;
+	end if;
+	if (p_files -> 'last')::boolean then
+		update public.qorpera_company_site_files file set content = kept.content
+		from (select distinct on (other.sha256, other.bytes) other.sha256, other.bytes, other.content
+			from public.qorpera_company_site_files other
+			join public.qorpera_company_site_versions version on version.id = other.version_id
+			where version.site_id = v_version.site_id and version.id <> v_version.id and other.content is not null
+			order by other.sha256, other.bytes, other.version_id) kept
+		where file.version_id = v_version.id and file.content is null and kept.sha256 = file.sha256
+			and kept.bytes = file.bytes;
+		update public.qorpera_company_site_versions set listed = true where id = v_version.id;
+	end if;
+	return jsonb_build_object('schema', c_schema, 'state', case when (p_files -> 'last')::boolean then 'listed'
+			else 'listing' end,
+		'missing', (select count(*) from public.qorpera_company_site_files file
+			where file.version_id = v_version.id and file.content is null));
+end $$;
+
+-- The files of an upload that have no bytes yet, in C order after p_after (from the first when null), at most p_limit
+-- (1 to 100), each with its size. Read-only. Answers {"schema":"qorpera.code-site-missing/v1","missing":[{"path",
+-- "bytes"}],"more":<bool>}, or {…,"state":"lost"}.
+create function public.qorpera_code_site_missing(p_owner text, p_machine_id_sha256 text, p_version_id uuid, p_after text,
+	p_limit integer)
+returns jsonb language plpgsql stable security definer set search_path = '' as $$
+declare v_repository public.qorpera_code_repositories%rowtype; v_missing jsonb; v_more boolean;
+	c_schema constant text := 'qorpera.code-site-missing/v1';
+begin
+	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
+	if p_version_id is null or p_limit is null or p_limit not between 1 and 100 then
+		raise exception 'Code site missing invalid' using errcode = '22023'; end if;
+	v_repository := public.qorpera_code_site_repository(p_owner, p_machine_id_sha256, p_version_id);
+	if v_repository.environment_id is null then return jsonb_build_object('schema', c_schema, 'state', 'lost'); end if;
+	select coalesce(jsonb_agg(jsonb_build_object('path', due.path, 'bytes', due.bytes) order by due.path collate "C")
+			filter (where due.place <= p_limit), '[]'::jsonb), coalesce(max(due.place) > p_limit, false)
+	into v_missing, v_more
+	from (select file.path, file.bytes, row_number() over (order by file.path collate "C") as place
+		from public.qorpera_company_site_files file
+		where file.version_id = p_version_id and file.content is null
+			and (p_after is null or file.path collate "C" > p_after collate "C")
+		order by file.path collate "C" limit p_limit + 1) due;
+	return jsonb_build_object('schema', c_schema, 'missing', v_missing, 'more', v_more);
+end $$;
+
+-- An upload's bytes, in parts: p_parts exactly {"parts":[{"path","part":<0-based>,"of":<1 to 128>,"contentBase64"}]},
+-- 1 to 500 parts of at most 128 KiB each. Each part is kept; a part sent again is the same part (the first is kept).
+-- When a file has all its parts they are joined in order, checked against its size and SHA-256, written, and deleted.
+-- A file whose bytes are there already takes no part. Answers {"schema":"qorpera.code-site-put/v1","state":"kept",
+-- "filed":<files this call completed>}; or {…,"state":"refused","code":"SITE_FILE_DIFFERS","path":<the file>}: no such
+-- file in the version, a part that counts the file's parts otherwise than those kept, more bytes than the file has, or
+-- a joined file of another size or SHA-256. That file's parts go, and the call stops there (files it completed before
+-- stay). A version that is not uploading answers kept with nothing filed; one that is gone answers lost.
+create function public.qorpera_code_site_put(p_owner text, p_machine_id_sha256 text, p_version_id uuid, p_parts jsonb)
+returns jsonb language plpgsql volatile security definer set search_path = '' as $$
+declare v_repository public.qorpera_code_repositories%rowtype; v_version public.qorpera_company_site_versions%rowtype;
+	v_item jsonb; v_file public.qorpera_company_site_files%rowtype; v_content bytea; v_part integer; v_of integer;
+	v_have integer; v_size bigint; v_filed integer := 0; c_schema constant text := 'qorpera.code-site-put/v1';
+begin
+	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
+	if p_version_id is null or jsonb_typeof(p_parts) is distinct from 'object' or not p_parts ? 'parts'
+		or p_parts - 'parts' <> '{}'::jsonb or jsonb_typeof(p_parts -> 'parts') is distinct from 'array'
+		or jsonb_array_length(p_parts -> 'parts') not between 1 and 500
+		or exists (select 1 from jsonb_array_elements(p_parts -> 'parts') item(value)
+			where case when jsonb_typeof(item.value) = 'object' then not item.value ?& array['path','part','of','contentBase64']
+				or item.value - array['path','part','of','contentBase64'] <> '{}'::jsonb
+				or jsonb_typeof(item.value -> 'path') <> 'string' or jsonb_typeof(item.value -> 'contentBase64') <> 'string'
+				or not (public.qorpera_code_json_count(item.value -> 'part') and item.value ->> 'part' ~ '^[0-9]{1,3}$')
+				or not (public.qorpera_code_json_count(item.value -> 'of') and item.value ->> 'of' ~ '^[0-9]{1,3}$')
+				or case when item.value ->> 'part' ~ '^[0-9]{1,3}$' and item.value ->> 'of' ~ '^[0-9]{1,3}$'
+					then (item.value ->> 'of')::integer not between 1 and 128
+						or (item.value ->> 'part')::integer >= (item.value ->> 'of')::integer
+					else true end
+				else true end) then
+		raise exception 'Code site put invalid' using errcode = '22023'; end if;
+	v_repository := public.qorpera_code_site_repository(p_owner, p_machine_id_sha256, p_version_id);
+	if v_repository.environment_id is not null then
+		select * into v_version from public.qorpera_company_site_versions where id = p_version_id for update;
+	end if;
+	if v_version.id is null then return jsonb_build_object('schema', c_schema, 'state', 'lost'); end if;
+	if v_version.state <> 'uploading' then
+		return jsonb_build_object('schema', c_schema, 'state', 'kept', 'filed', 0); end if;
+	for v_item in select item.value from jsonb_array_elements(p_parts -> 'parts') with ordinality item(value, place)
+		order by item.place loop
+		begin
+			v_content := decode(v_item ->> 'contentBase64', 'base64');
+		exception when others then
+			raise exception 'Code site put invalid' using errcode = '22023';
+		end;
+		if octet_length(v_content) > 131072 then raise exception 'Code site put invalid' using errcode = '22023'; end if;
+		v_part := (v_item ->> 'part')::integer;
+		v_of := (v_item ->> 'of')::integer;
+		v_file := null;
+		select * into v_file from public.qorpera_company_site_files file
+		where file.version_id = v_version.id and file.path = v_item ->> 'path';
+		if v_file.path is null then
+			return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_FILE_DIFFERS',
+				'path', v_item ->> 'path'); end if;
+		continue when v_file.content is not null;
+		if not exists (select 1 from public.qorpera_company_site_file_parts kept
+			where kept.version_id = v_version.id and kept.path = v_file.path and kept.of <> v_of) then
+			insert into public.qorpera_company_site_file_parts (version_id, path, part, of, content)
+			values (v_version.id, v_file.path, v_part, v_of, v_content)
+			on conflict (version_id, path, part) do nothing;
+			select count(*), coalesce(sum(octet_length(kept.content)), 0) into v_have, v_size
+			from public.qorpera_company_site_file_parts kept where kept.version_id = v_version.id and kept.path = v_file.path;
+		end if;
+		if v_have is null or v_size > v_file.bytes then
+			delete from public.qorpera_company_site_file_parts kept where kept.version_id = v_version.id and kept.path = v_file.path;
+			return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_FILE_DIFFERS', 'path', v_file.path);
+		end if;
+		if v_have = v_of then
+			select string_agg(kept.content, ''::bytea order by kept.part) into v_content
+			from public.qorpera_company_site_file_parts kept where kept.version_id = v_version.id and kept.path = v_file.path;
+			delete from public.qorpera_company_site_file_parts kept where kept.version_id = v_version.id and kept.path = v_file.path;
+			if octet_length(v_content) <> v_file.bytes or encode(extensions.digest(v_content, 'sha256'), 'hex') <> v_file.sha256 then
+				return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_FILE_DIFFERS', 'path', v_file.path);
+			end if;
+			update public.qorpera_company_site_files file set content = v_content
+			where file.version_id = v_version.id and file.path = v_file.path;
+			v_filed := v_filed + 1;
+		end if;
+		v_have := null; v_size := null;
+	end loop;
+	return jsonb_build_object('schema', c_schema, 'state', 'kept', 'filed', v_filed);
+end $$;
+
+-- An upload's last step: a listed uploading version with every file's bytes becomes ready; the repository's failed
+-- uploads are forgotten and its list is written again; then the site is pruned (qorpera_code_site_prune). Answers
+-- {"schema":"qorpera.code-site-finish/v1","state":"ready","pruned":<versions deleted>}; {…,"state":"refused",
+-- "code":"SITE_UPLOAD_INCOMPLETE"} when a file has no bytes yet or the version is not listed; a version that is not
+-- uploading as it stands ({…,"state":"ready"|"live"|"kept","pruned":0}); or {…,"state":"lost"}.
+create function public.qorpera_code_site_finish(p_owner text, p_machine_id_sha256 text, p_version_id uuid)
+returns jsonb language plpgsql volatile security definer set search_path = '' as $$
+declare v_repository public.qorpera_code_repositories%rowtype; v_version public.qorpera_company_site_versions%rowtype;
+	v_pruned integer; c_schema constant text := 'qorpera.code-site-finish/v1';
+begin
+	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
+	if p_version_id is null then raise exception 'Code site finish invalid' using errcode = '22023'; end if;
+	v_repository := public.qorpera_code_site_repository(p_owner, p_machine_id_sha256, p_version_id);
+	if v_repository.environment_id is not null then
+		perform 1 from public.qorpera_code_repositories repository where repository.environment_id = v_repository.environment_id
+			and repository.owner = v_repository.owner and repository.name = v_repository.name for update;
+		perform 1 from public.qorpera_company_sites site where site.id = v_repository.site_id for update;
+		select * into v_version from public.qorpera_company_site_versions where id = p_version_id for update;
+	end if;
+	if v_version.id is null then return jsonb_build_object('schema', c_schema, 'state', 'lost'); end if;
+	if v_version.state <> 'uploading' then
+		return jsonb_build_object('schema', c_schema, 'state', v_version.state, 'pruned', 0); end if;
+	if not v_version.listed or exists (select 1 from public.qorpera_company_site_files file
+		where file.version_id = v_version.id and file.content is null) then
+		return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_UPLOAD_INCOMPLETE'); end if;
+	update public.qorpera_company_site_versions set state = 'ready' where id = v_version.id;
+	update public.qorpera_code_repositories set site_attempts = 0, site_change = null, site_not_before = null,
+		site_problem = null, index_version = index_version + 1
+	where environment_id = v_repository.environment_id and owner = v_repository.owner and name = v_repository.name;
+	v_pruned := public.qorpera_code_site_prune(v_version.site_id);
+	return jsonb_build_object('schema', c_schema, 'state', 'ready', 'pruned', v_pruned);
+end $$;
+
+-- An upload that failed, with its code (the read's, a refused value's, or SITE_UPLOAD_FAILED for a call that did not
+-- answer): the repository's problem; its failures in a row of change p_change (one for another change), and a pause of
+-- 2^failures seconds, at most 10 minutes; the fifth of the same change gives that change up (no pass tries it again)
+-- and writes the list again. Answers {"schema":"qorpera.code-site-failed/v1","state":"recorded"}, or {…,"state":"lost"}.
+create function public.qorpera_code_site_failed(p_owner text, p_machine_id_sha256 text, p_environment_id uuid,
+	p_repository_owner text, p_name text, p_change integer, p_code text)
+returns jsonb language plpgsql volatile security definer set search_path = '' as $$
+declare v_repository public.qorpera_code_repositories%rowtype; v_attempts integer;
+	c_schema constant text := 'qorpera.code-site-failed/v1';
+begin
+	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
+	if p_environment_id is null or p_repository_owner is null or p_name is null or p_change is null or p_change < 1
+		or coalesce(p_code, '') !~ '^[A-Z0-9_:]{1,120}$' then
+		raise exception 'Code site failure invalid' using errcode = '22023'; end if;
+	select * into v_repository from public.qorpera_code_repositories
+	where environment_id = p_environment_id and owner = p_repository_owner and name = p_name for update;
+	if not found or not public.qorpera_code_care_holder(p_environment_id, p_owner, p_machine_id_sha256)
+		or exists (select 1 from public.qorpera_company_deletions deletion where deletion.profile_id = v_repository.profile_id) then
+		return jsonb_build_object('schema', c_schema, 'state', 'lost'); end if;
+	v_attempts := case when v_repository.site_change = p_change then v_repository.site_attempts + 1 else 1 end;
+	update public.qorpera_code_repositories set site_problem = p_code, site_attempts = v_attempts, site_change = p_change,
+		site_not_before = clock_timestamp() + least(make_interval(secs => power(2, least(v_attempts, 10))), interval '10 minutes'),
+		site_given_up = case when v_attempts >= 5 then p_change else site_given_up end,
+		index_version = index_version + case when v_attempts = 5 then 1 else 0 end
+	where environment_id = p_environment_id and owner = p_repository_owner and name = p_name;
+	return jsonb_build_object('schema', c_schema, 'state', 'recorded');
+end $$;
+
 -- 5. Existing functions of the code ------------------------------------------------------------------------------------
 
 -- Applies each (old, new) pair in turn, each old text exactly once, then runs the result.
@@ -317,6 +867,13 @@ select pg_temp.code_releases_patch('public.qorpera_code_restore_record(text,text
 						-- 20260930729000: and the site that row's checks left (the restored main has its files).
 						'site_state', kept.site_state, 'site', kept.site, 'site_problem', kept.site_problem)$new$]);
 
+-- The list file says what is live and what is ready.
+select pg_temp.code_releases_patch('public.qorpera_code_change_files(text,text,uuid,text,text,integer)'::regprocedure, array[
+	$old$				'line', coalesce(line.notice, line.title)) order by line.n desc), '[]'::jsonb)) into v_index$old$,
+	$new$				'line', coalesce(line.notice, line.title)) order by line.n desc), '[]'::jsonb))
+				-- 20260930729000: what of the repository's site is live and what is ready, when it has a site or made one.
+				|| public.qorpera_code_release_index(v_repository) into v_index$new$]);
+
 -- The platform's line on a landing says whether Qorpera keeps its site for What's new.
 select pg_temp.code_releases_patch(
 	'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)'::regprocedure, array[
@@ -354,9 +911,30 @@ select pg_temp.code_releases_patch('public.qorpera_coding_turn_failure(public.qo
 -- 7. Grants, and the deploy guard --------------------------------------------------------------------------------------
 
 revoke all on function public.qorpera_code_site_valid(jsonb),
-	public.qorpera_code_change_site_valid(jsonb)
+	public.qorpera_code_change_site_valid(jsonb),
+	public.qorpera_code_release_live(public.qorpera_code_repositories),
+	public.qorpera_code_release_point(public.qorpera_code_repositories, integer, boolean),
+	public.qorpera_code_site_slug(uuid, text, text, text),
+	public.qorpera_code_site_prune(uuid),
+	public.qorpera_code_release_index(public.qorpera_code_repositories),
+	public.qorpera_code_site_repository(text, text, uuid)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
-
+revoke all on function public.qorpera_code_sites_due(text, text, integer),
+	public.qorpera_code_site_begin(text, text, uuid, text, text, integer, jsonb),
+	public.qorpera_code_site_list(text, text, uuid, jsonb),
+	public.qorpera_code_site_missing(text, text, uuid, text, integer),
+	public.qorpera_code_site_put(text, text, uuid, jsonb),
+	public.qorpera_code_site_finish(text, text, uuid),
+	public.qorpera_code_site_failed(text, text, uuid, text, text, integer, text)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+grant execute on function public.qorpera_code_sites_due(text, text, integer),
+	public.qorpera_code_site_begin(text, text, uuid, text, text, integer, jsonb),
+	public.qorpera_code_site_list(text, text, uuid, jsonb),
+	public.qorpera_code_site_missing(text, text, uuid, text, integer),
+	public.qorpera_code_site_put(text, text, uuid, jsonb),
+	public.qorpera_code_site_finish(text, text, uuid),
+	public.qorpera_code_site_failed(text, text, uuid, text, text, integer, text)
+	to service_role;
 -- Every changed body carries the marker.
 do $guard$
 declare v_function regprocedure;
@@ -365,6 +943,7 @@ begin
 		'public.qorpera_code_checks_switch(uuid,uuid)',
 		'public.qorpera_code_change_report_valid(jsonb)',
 		'public.qorpera_record_code_change(uuid,uuid,jsonb)',
+		'public.qorpera_code_change_files(text,text,uuid,text,text,integer)',
 		'public.qorpera_code_request_finish(text,text,uuid,uuid,jsonb)',
 		'public.qorpera_code_restore_record(text,text,uuid,uuid,jsonb)',
 		'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)',
