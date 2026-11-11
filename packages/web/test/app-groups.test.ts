@@ -244,4 +244,32 @@ describe("the member's own arrangement", () => {
 		mine = ungroupApps(mine, arrangeApps(company, mine, keys), "g");
 		expect(shape(arrangeApps(company, mine, keys))).toEqual(["app:a", "app:b", "app:c", "app:d"]);
 	});
+	it("never shows an app twice when its group was moved and then the app (review F1 on #1678, round 2)", () => {
+		const company = parseAppGroups("- group g: G\n  - app:planning\n  - app:b\n- group h: H\n  - app:c\n");
+		const keys = ["app:planning", "app:b", "app:c"];
+		let mine = placeApp(EMPTY_APP_LAYOUT, arrangeApps(company, EMPTY_APP_LAYOUT, keys), "group:g", "h", "app:c");
+		mine = placeApp(mine, arrangeApps(company, mine, keys), "app:planning", null, null);
+		const want = ["app:planning", ["group:h H", "app:c", ["group:g G", "app:b"]]];
+		expect(shape(arrangeApps(company, mine, keys))).toEqual(want);
+		for (const sorted of [
+			Object.entries(mine.places).sort(([a], [b]) => (a < b ? -1 : 1)),
+			Object.entries(mine.places).sort(([a], [b]) => (a < b ? 1 : -1)),
+		])
+			expect(shape(arrangeApps(company, { ...mine, places: Object.fromEntries(sorted) }, keys))).toEqual(want);
+	});
+
+	it("judges a move by where things stand after the moves before it (review F2 on #1678, round 2)", () => {
+		const company = parseAppGroups("- group a: A\n  - group b: B\n    - app:b\n  - app:a\n- group c: C\n  - app:c\n");
+		const keys = ["app:a", "app:b", "app:c"];
+		let mine = placeApp(EMPTY_APP_LAYOUT, arrangeApps(company, EMPTY_APP_LAYOUT, keys), "group:b", null, "group:a");
+		mine = placeApp(mine, arrangeApps(company, mine, keys), "group:a", "c", "app:c");
+		// B stood right after A, so it takes A's place when A goes into C.
+		expect(shape(arrangeApps(company, mine, keys))).toEqual([
+			["group:b B", "app:b"],
+			["group:c C", "app:c", ["group:a A", "app:a"]],
+		]);
+		// A group never goes into itself, nor three levels deep.
+		const loop = placeApp(mine, arrangeApps(company, mine, keys), "group:c", "a", null);
+		expect(shape(arrangeApps(company, loop, keys))).toEqual(shape(arrangeApps(company, mine, keys)));
+	});
 });

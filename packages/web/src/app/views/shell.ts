@@ -697,7 +697,8 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			() => {
 				const arranges = appsArrangeable(company);
 				return {
-					canDrag: () => created.appsOpen && !created.apps.inert,
+					// While a reset is on its way nothing moves: what it brings back decides the order.
+					canDrag: () => created.appsOpen && !created.apps.inert && !company.resettingSidebar(),
 					drop: (order: string[], moved: string) => {
 						// Where the cloud keeps the member's own arrangement, a move is a change of it; before, the order
 						// is kept on this device.
@@ -2025,7 +2026,9 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 /** Whether the drawer's arrangement is the member's own to change (20260930723000). */
 function appsArrangeable(company: CompanyController): boolean {
 	const state = company.store.get();
-	return Boolean(state.appLayout && !state.appLayoutUnavailable && company.ownSidebar());
+	return Boolean(
+		state.appLayout && !state.appLayoutUnavailable && company.ownSidebar() && !company.resettingSidebar(),
+	);
 }
 
 function toggleAppGroup(company: CompanyController, parts: RailParts, id: string): void {

@@ -23,7 +23,8 @@ export interface AppGridDragHooks {
 	readonly merge?: (dragged: string, onto: string) => void;
 }
 
-const ITEM = "[data-app-key]";
+/** An icon of the drawer's order; one fading out of an opened or folded group is not. */
+const ITEM = "[data-app-key]:not(.is-leaving)";
 /** Design pixels a press moves before it drags. */
 const THRESHOLD = 6;
 const GLIDE_MS = 260;

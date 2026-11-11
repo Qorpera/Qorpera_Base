@@ -572,6 +572,8 @@ export class CompanyController {
 	 * last one answered, which the next one names. */
 	#appLayoutReads = 0;
 	#appLayoutPending = 0;
+	/** Resets (or Undos) on their way: the drawer makes no move meanwhile. */
+	#resetting = 0;
 	#appLayoutWrites: Promise<string | null | undefined> = Promise.resolve(undefined);
 	#poll: ReturnType<typeof setInterval> | undefined;
 	/** The clock came due while the tab was hidden: its first moment back reads (#restsWhileHidden). */
@@ -1206,20 +1208,31 @@ export class CompanyController {
 	 * reset took. Contacts' places and the apps layout come back with their next read, which this starts. */
 	async resetSidebar(undo = false): Promise<boolean> {
 		if (!this.ownSidebar()) return false;
-		// One after the other with the apps layout's writes: a move on its way lands first, and a move made meanwhile
-		// waits, so a reset never comes between a move and its write.
-		const reset = this.#appLayoutWrites.then(() => this.changeSidebar({ action: undo ? "undo_reset" : "reset" }));
+		// One after the other with the apps layout's writes: a move on its way lands first. Until the reset and the apps
+		// layout's read after it are done, the drawer makes no move, so none is built on what the reset took away.
+		this.#resetting++;
+		const reset = this.#appLayoutWrites
+			.then(() => this.changeSidebar({ action: undo ? "undo_reset" : "reset" }))
+			.then(async (done) => {
+				if (done) await this.refreshAppLayout();
+				return done;
+			})
+			.finally(() => {
+				this.#resetting--;
+			});
 		// What the next write names as last written is read again after a reset: nothing is carried over it.
 		this.#appLayoutWrites = reset.then(
 			() => undefined,
 			() => undefined,
 		);
 		const done = await reset;
-		if (done) {
-			void this.memberChats.refresh();
-			void this.refreshAppLayout();
-		}
+		if (done) void this.memberChats.refresh();
 		return done;
+	}
+
+	/** Whether a Reset sidebar (or its Undo) is on its way: the drawer waits for it to move anything. */
+	resettingSidebar(): boolean {
+		return this.#resetting > 0;
 	}
 
 	/** Reads the member's own arrangement of the apps drawer. A cloud without it (before 20260930723000) says so once. */
@@ -1240,7 +1253,7 @@ export class CompanyController {
 	 * write another tab overtook is read again and said in the rail. */
 	async changeAppLayout(next: MemberAppLayout): Promise<boolean> {
 		const current = this.store.get().appLayout;
-		if (this.#stopped || !current) return false;
+		if (this.#stopped || !current || this.#resetting) return false;
 		this.store.set({ appLayout: { ...current, layout: next }, railError: undefined, sidebarReset: undefined });
 		// With nothing on its way, the time last read is the one to name; behind another write, the time it answered.
 		const behind = this.#appLayoutPending > 0;

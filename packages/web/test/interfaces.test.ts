@@ -1564,4 +1564,23 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		await Promise.all([moving, resetting]);
 		expect(manage).toHaveBeenCalledWith({ action: "reset" });
 	});
+	it("makes no move while a reset is on its way (review F3 on #1678, round 2)", async () => {
+		localStorage.clear();
+		const { controller, set } = drawer();
+		const answer = deferred<boolean>();
+		vi.spyOn(
+			controller as unknown as { changeSidebar: (r: unknown) => Promise<boolean> },
+			"changeSidebar",
+		).mockReturnValue(answer.promise);
+		const resetting = controller.resetSidebar();
+		await settle();
+		expect(controller.resettingSidebar()).toBe(true);
+		expect(await controller.changeAppLayout({ ...EMPTY_APP_LAYOUT, groups: { market: { removed: true } } })).toBe(
+			false,
+		);
+		expect(set).not.toHaveBeenCalled();
+		answer.resolve(true);
+		await resetting;
+		expect(controller.resettingSidebar()).toBe(false);
+	});
 });

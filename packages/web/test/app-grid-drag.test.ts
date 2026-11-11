@@ -421,4 +421,9 @@ describe("groups in the drawer (Jonas, 11 Nov 2026)", () => {
 			vi.useRealTimers();
 		}
 	});
+	it("leaves an icon fading out of the order (review F4 on #1678, round 2)", () => {
+		const { element } = withGroups(["a", "b", "c"]);
+		element.querySelector<HTMLElement>('[data-app-key="b"]')!.classList.add("is-leaving");
+		expect(gridOrder(element)).toEqual(["a", "c"]);
+	});
 });

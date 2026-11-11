@@ -199,17 +199,6 @@ export function groupsOf(tree: readonly AppTreeNode[], depth = 0): { group: AppG
 	);
 }
 
-const hasGroup = (group: AppGroupNode) => group.items.some((node) => node.kind === "group");
-
-/** Whether `node` may stand in `target` (undefined: the drawer): two group levels at most, never inside itself. */
-function fits(tree: AppTreeNode[], node: AppTreeNode, target: AppGroupNode | undefined): boolean {
-	if (!target || node.kind === "item") return true;
-	if (node === target || find(node.items, groupKey(target.id))) return false;
-	// A group goes into a group only when neither holds a group of its own below: the target stands in the drawer.
-	const where = find(tree, groupKey(target.id));
-	return where?.owner === undefined && !hasGroup(node);
-}
-
 /** The drawer's apps arranged: the company's groups (`company`, from the file), the member's changes over them, and
  * every key in `present` (what the drawer has, in its own order) that neither names standing loose at the end. Keys the
  * drawer does not have are left out, and so is a group with nothing in it. */
@@ -237,53 +226,69 @@ export function arrangeApps(
 		}
 	// What the drawer has that nothing names, loose at the end, before the member's places move anything.
 	for (const key of present) if (!seen.has(key)) tree.push({ kind: "item", key });
-	// The member's places that hold: the app or group is here, its group is here, and it fits there.
+	// Where everything stands before the member's places: its group (null: the drawer) and its order.
+	const parentOf = new Map<string, string | null>();
+	const nodes = new Map<string, AppTreeNode>();
+	const walkTree = (list: readonly AppTreeNode[], owner: string | null) => {
+		for (const node of list) {
+			parentOf.set(nodeKey(node), owner);
+			nodes.set(nodeKey(node), node);
+			if (node.kind === "group") walkTree(node.items, node.id);
+		}
+	};
+	walkTree(tree, null);
+	const order = [...nodes.keys()];
+	// The member's places, oldest first, each kept when it fits what the places before it made: a group stands in a
+	// group only when that group stands in the drawer and the moved one holds no group, and never inside itself.
 	interface Held {
 		readonly key: string;
-		readonly node: AppTreeNode;
-		readonly target: AppGroupNode | undefined;
+		readonly target: string | null;
 		readonly place: AppPlace;
 	}
-	const held: Held[] = [];
-	for (const [key, place] of Object.entries(layout.places)) {
-		const from = find(tree, key);
-		if (!from) continue;
-		let target: AppGroupNode | undefined;
-		if (place.group) {
-			const found = find(tree, groupKey(place.group));
-			if (!found || found.node.kind !== "group") continue;
-			target = found.node;
+	const held = new Map<string, Held>();
+	const byAt = Object.entries(layout.places).sort(([a, x], [b, y]) => (x.at ?? 0) - (y.at ?? 0) || (a < b ? -1 : 1));
+	for (const [key, place] of byAt) {
+		const node = nodes.get(key);
+		const target = place.group ?? null;
+		if (!node || (target !== null && nodes.get(groupKey(target))?.kind !== "group")) continue;
+		if (node.kind === "group" && target !== null) {
+			let up: string | null = target;
+			let inside = false;
+			while (up !== null) {
+				if (up === node.id) inside = true;
+				up = parentOf.get(groupKey(up)) ?? null;
+			}
+			const holdsGroup = [...parentOf].some(([other, owner]) => owner === node.id && isGroupKey(other));
+			if (inside || parentOf.get(groupKey(target)) !== null || holdsGroup) continue;
 		}
-		if (fits(tree, from.node, target)) held.push({ key, node: from.node, target, place });
-	}
-	for (const entry of held) {
-		const from = find(tree, entry.key);
-		if (from) from.parent.splice(from.index, 1);
+		parentOf.set(key, target);
+		held.set(key, { key, target, place });
 	}
 	const newest = (a: Held, b: Held) => (b.place.at ?? 0) - (a.place.at ?? 0) || (a.key < b.key ? -1 : 1);
 	const oldest = (a: Held, b: Held) => -newest(a, b);
 	// Each list laid in as a walk: after each item, what the member put right after it, newest first, each followed in
 	// turn by what stands after it; what stands first, newest first, before everything; what stands after something
 	// that is not here, oldest first, at the end. How old a place is never reorders what stands after it.
-	const lay = (list: AppTreeNode[], owner: AppGroupNode | undefined) => {
-		const here = held.filter((entry) => entry.target === owner);
-		const keys = new Set([...list.map(nodeKey), ...here.map((entry) => entry.key)]);
-		const out: AppTreeNode[] = [];
+	const lay = (owner: string | null): AppTreeNode[] => {
+		const base = order.filter((key) => parentOf.get(key) === owner && !held.has(key));
+		const here = [...held.values()].filter((entry) => entry.target === owner);
+		const keys = new Set([...base, ...here.map((entry) => entry.key)]);
+		const out: string[] = [];
 		const done = new Set<string>();
 		const visit = (entry: Held) => {
 			if (done.has(entry.key)) return;
 			done.add(entry.key);
-			out.push(entry.node);
-			after(entry.key);
+			out.push(entry.key);
+			follow(entry.key);
 		};
-		const after = (key: string) => {
+		const follow = (key: string) => {
 			for (const entry of here.filter((item) => !item.place.first && item.place.after === key).sort(newest))
 				visit(entry);
 		};
 		for (const entry of here.filter((item) => item.place.first).sort(newest)) visit(entry);
-		for (const node of list) {
-			out.push(node);
-			after(nodeKey(node));
+		for (const key of base) {
+			out.push(key);
+			follow(key);
 		}
 		for (const entry of here
 			.filter((item) => !item.place.first && (!item.place.after || !keys.has(item.place.after)))
@@ -291,10 +296,13 @@ export function arrangeApps(
 			visit(entry);
 		// A place that could only stand after itself goes at the end.
 		for (const entry of here.sort(oldest)) visit(entry);
-		list.splice(0, list.length, ...out);
-		for (const node of out) if (node.kind === "group") lay(node.items, node);
+		return out.map((key) => {
+			const node = nodes.get(key)!;
+			if (node.kind === "group") node.items = lay(node.id);
+			return node;
+		});
 	};
-	lay(tree, undefined);
+	tree.splice(0, tree.length, ...lay(null));
 	const prune = (nodes: AppTreeNode[]): AppTreeNode[] =>
 		nodes.flatMap((node): AppTreeNode[] => {
 			if (node.kind === "item") return [node];
