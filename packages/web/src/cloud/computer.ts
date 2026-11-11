@@ -4,7 +4,6 @@ import {
 	type MemberAgentMachines,
 	type MemberDesktopHandBack,
 	type MemberDesktopHold,
-	type MemberDesktopHoldName,
 } from "@qorpera/cloud-client/cloud-member-company-computer";
 import { isUuid } from "@qorpera/contracts";
 import type { Cloud } from "./client.ts";
@@ -94,34 +93,30 @@ export class WebCompanyComputer {
 	keepDesktop(machineId: string, epoch: number, seat: number, signal: AbortSignal): Promise<string | null> {
 		return this.client.keepDesktop(machineId, epoch, seat, signal);
 	}
-	/** Hands this member's hold named by `hold` (its seat, or the press that may have seated it) back at their hand-back
-	 * `epoch` (by their word, or as their window closes): the current epoch afterwards, and whether they hold the
-	 * machine now, in which seat. */
+	/** Hands this member's hold back at their hand-back `epoch` (by their word, or as their window closes): EXACT, the
+	 * hold in `seat`, or VOID with null, whichever seat, voiding a take-over of the page's still on its way (F27, F28).
+	 * The current epoch afterwards, and whether they hold the machine now, in which seat. */
 	handBackDesktop(
 		machineId: string,
 		reason: "handed_back" | "closed",
 		epoch: number,
-		hold: MemberDesktopHoldName,
+		seat: number | null,
 		signal: AbortSignal,
 	): Promise<MemberDesktopHandBack> {
-		return this.client.handBackDesktop(machineId, reason, epoch, hold, signal);
+		return this.client.handBackDesktop(machineId, reason, epoch, seat, signal);
 	}
 	/** Best effort, as the page goes (it is hidden for good, or the company's page is left): hands this member's hold of
-	 * a desktop named by `hold` back at `epoch`, with the token the page last used, in a request the browser finishes
-	 * after the page is gone (keepalive). It never throws and waits for nothing; a hold it does not reach runs out by
-	 * itself in 5 minutes. */
-	handBackOnLeave(machineId: string, epoch: number, hold: MemberDesktopHoldName): void {
+	 * a desktop back at `epoch`, EXACT in `seat` or VOID with null, with the token the page last used, in a request the
+	 * browser finishes after the page is gone (keepalive). It never throws and waits for nothing; a hold it does not
+	 * reach runs out by itself in 5 minutes. */
+	handBackOnLeave(machineId: string, epoch: number, seat: number | null): void {
 		const token = this.#lastToken;
-		const seat = hold.seat;
-		const press = hold.press;
 		if (
 			!token ||
 			!isUuid(machineId) ||
 			!Number.isSafeInteger(epoch) ||
 			epoch < 0 ||
-			(seat === undefined && press === undefined) ||
-			(seat !== undefined && (!Number.isSafeInteger(seat) || seat < 0)) ||
-			(press !== undefined && !isUuid(press))
+			(seat !== null && (!Number.isSafeInteger(seat) || seat < 0))
 		)
 			return;
 		try {
@@ -144,8 +139,7 @@ export class WebCompanyComputer {
 							p_machine_id: machineId,
 							p_reason: "closed",
 							p_epoch: epoch,
-							p_seat: seat ?? null,
-							p_press: press ?? null,
+							p_seat: seat,
 						}),
 					},
 				)
