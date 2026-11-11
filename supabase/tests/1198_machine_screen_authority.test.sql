@@ -146,8 +146,8 @@ create function pg_temp.ms_where(p_rest jsonb) returns jsonb language sql as $$
 		'machineId', '11980000-0000-4000-8000-0000000007a1', 'placementId', '11980000-0000-4000-8000-0000000007b1',
 		'bootId', '11980000-0000-4000-8000-0000000007c1', 'executorOwner', 'mx-1198', 'providerId', 'machine-1198',
 		'runId', run.id, 'staffAgentId', run.staff_agent_id, 'requesterUserId', run.requested_by_user_id,
-		-- The lease generation the read saw (20260930713000): no member ever took m-1198 over.
-		'desktopGeneration', 0) || p_rest
+		-- The lease generation the read saw (20260930713000): no member ever took m-1198 over, so no clear is owed (F35).
+		'desktopGeneration', 0, 'clipboardClear', false) || p_rest
 	from public.qorpera_execution_runs as run
 	where run.id = (current_setting('qorpera_test.base_binding')::jsonb ->> 'runId')::uuid
 $$;

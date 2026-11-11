@@ -52,7 +52,8 @@
 --    `clear` (with that generation) and authorizes nothing, whatever the agent did since (a look, an action); only
 --    qorpera_machine_desktop_clipboard_cleared at the generation that stands, with no member holding, lifts it (an older
 --    generation, or one while a member holds, records nothing); a second hold after a clear needs a new one; a machine no
---    member held reads as before.
+--    member held reads as before; the agent's first screen call after a hold is told the clear is owed (clipboardClear,
+--    F35), and once it is recorded its look and its copy owe nothing and the save reads at the first call.
 
 -- Alice's run acknowledges first, as a member's wake requires before any work (924).
 select pg_temp.base_claims('service_role');
@@ -673,7 +674,10 @@ do $$
 declare v_where jsonb := jsonb_build_object('schema', 'qorpera.member-machine-desktop-act-authority/v1', 'state', 'authorized',
 	'actionId', current_setting('qorpera_test.dc_a51'), 'machineId', pg_temp.dc_id('a1'), 'placementId', pg_temp.dc_id('b1'),
 	'bootId', pg_temp.dc_id('c1'), 'executorOwner', 'mx-1203', 'providerId', 'machine-1203',
-	'userId', pg_temp.dc_user('contributor'), 'action', '{"type": "type", "length": 12}'::jsonb);
+	'userId', pg_temp.dc_user('contributor'), 'action', '{"type": "type", "length": 12}'::jsonb,
+	-- The seat it was begun in (round 23 of #1661).
+	'seat', (select seat from public.qorpera_company_machine_desktop_actions
+		where id = current_setting('qorpera_test.dc_a51')::uuid));
 begin
 	perform pg_temp.base_assert(pg_temp.dc_answer(current_setting('qorpera_test.dc_r51')) = v_where || '{"served": false}'
 			and current_setting('qorpera_test.dc_s51') = 'unserved',
@@ -1484,9 +1488,19 @@ begin
 	v_clear := pg_temp.dc_answer(pg_temp.dc_coding_value('306'));
 	perform pg_temp.base_assert(v_clear ->> 'state' = 'clear' and (v_clear ->> 'desktopGeneration')::bigint = v_g,
 		'16: handed back: clear at the new generation: ' || coalesce(v_clear::text, 'none'));
+	-- The headline flow (F35): the agent's first screen call after the hold (its look) is told the clear is owed, with
+	-- the generation; the host clears and records it (here, the record) before it looks; the agent's next calls owe
+	-- nothing, and its save reads at the first call.
+	v_clear := pg_temp.dc_answer(pg_temp.dc_look('a1'));
+	perform pg_temp.base_assert(v_clear ->> 'state' = 'authorized' and (v_clear ->> 'clipboardClear')::boolean
+			and (v_clear ->> 'desktopGeneration')::bigint = v_g,
+		'16: the agent''s look after the hold owes the clear: ' || coalesce(v_clear::text, 'none'));
 	v := pg_temp.dc_cleared(v_g);
 	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_clip_ok') and pg_temp.dc_clipboard('a1') = v_g,
 		'16: the confirmed clear is recorded: ' || v);
+	perform pg_temp.base_assert(not (pg_temp.dc_answer(pg_temp.dc_look('a1')) ->> 'clipboardClear')::boolean
+			and not (pg_temp.dc_answer(pg_temp.dc_agent_act('203')) ->> 'clipboardClear')::boolean,
+		'16: once recorded, the agent''s look and its copy owe nothing');
 	v := pg_temp.dc_coding_value('307');
 	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_cv_ok'), '16: then the read goes as before: ' || v);
 	-- A second hold after the clear (taken over again from another press, then run out by time) needs a new clear.
@@ -1495,8 +1509,9 @@ begin
 	perform pg_temp.dc_shift('a1', 'desktop_member_until = clock_timestamp() - interval ''1 second''');
 	v_clear := pg_temp.dc_answer(pg_temp.dc_coding_value('308'));
 	perform pg_temp.base_assert(pg_temp.dc_generation('a1') = v_g + 2 and v_clear ->> 'state' = 'clear'
-			and (v_clear ->> 'desktopGeneration')::bigint = v_g + 2,
-		'16: a second hold needs a new clear: ' || coalesce(v_clear::text, 'none'));
+			and (v_clear ->> 'desktopGeneration')::bigint = v_g + 2
+			and (pg_temp.dc_answer(pg_temp.dc_look('a1')) ->> 'clipboardClear')::boolean,
+		'16: a second hold needs a new clear, owed at the agent''s look too: ' || coalesce(v_clear::text, 'none'));
 	-- Its lease ran out: no one holds the desktop and the generation stands, so a clear is recorded.
 	v := pg_temp.dc_cleared(v_g + 2);
 	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_clip_ok') and pg_temp.dc_clipboard('a1') = v_g + 2,

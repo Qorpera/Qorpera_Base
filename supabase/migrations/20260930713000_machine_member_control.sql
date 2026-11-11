@@ -86,7 +86,12 @@
 --   under the one-actor rule after the fence, and qorpera_machine_desktop_clipboard_cleared(placement, generation)
 --   (service_role) records the generation only while it stands and no member holds the desktop. The agent's call is
 --   answered CLIPBOARD_EMPTY either way (true then: copy the key on the site and call again); its next call reads as
---   before. No action of the agent's lifts it. The helper takes the desktop as an action does, so a member's action and
+--   before. That is the backstop (F35 of #1661): the clear is owed from the hold on, and the agent's first screen call
+--   after it (a look or an action) does it first: the screen read answers clipboardClear, and the host clears and
+--   records under that call's hold of the desktop, after the fence, before it looks or acts. A clear that fails there
+--   fails nothing: it stays owed. The host clears with a fixed script of its own (both selections, each xsel checked,
+--   then each read back by its byte count alone), never the helper's `--clear-only`, which answers cleared whatever
+--   xsel did (F34). No action of the agent's lifts it. The helper takes the desktop as an action does, so a member's action and
 --   the clipboard read never interleave on one desktop. What cannot be undone: a capture whose helper had begun before a
 --   take-over may already have cleared the clipboard.
 -- * The member's list (qorpera_list_agent_machines) says whether they may take over (canTakeOver) and, per machine, who
@@ -607,6 +612,8 @@ begin
 		'executorOwner', v_placement.owner,
 		'providerId', v_placement.binding ->> 'providerId',
 		'userId', v_act.user_id,
+		-- The seat it was begun in: the host asks the fence again once it holds the desktop (round 23 of #1661).
+		'seat', v_act.seat,
 		'action', v_act.action,
 		'served', v_served);
 end
@@ -694,7 +701,11 @@ do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_autho
 	$old$		'look', case when v_args is null then null else coalesce((v_args ->> 'look')::boolean, true) end);$old$,
 	$new$		'look', case when v_args is null then null else coalesce((v_args ->> 'look')::boolean, true) end,
 		-- 20260930713000: the lease generation this read saw; the picture leaves only while it stands.
-		'desktopGeneration', v_machine.desktop_member_generation);$new$]); end $$;
+		'desktopGeneration', v_machine.desktop_member_generation,
+		-- F35 of #1661: a member held the desktop since its clipboard was last confirmed clear: the host clears it under
+		-- this call's hold of the desktop, after the fence, and records it (qorpera_machine_desktop_clipboard_cleared)
+		-- before it looks or acts, so whatever the agent copies after it is its own when save_coding_value reads it.
+		'clipboardClear', v_machine.desktop_clipboard_generation is distinct from v_machine.desktop_member_generation);$new$]); end $$;
 
 -- The command read: no new command starts. A start sent again of a command that started before goes on (its guest has
 -- it, or has not: the executor's send again is the same command), and so do reads and cancels.
