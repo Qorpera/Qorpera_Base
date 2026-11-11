@@ -606,12 +606,14 @@ begin
 		return jsonb_build_object('schema', c_schema, 'state', 'refused') || v_refusal;
 	end if;
 	if (p_files -> 'last')::boolean then
-		update public.qorpera_company_site_files file set content = kept.content
-		from (select distinct on (other.sha256, other.bytes) other.sha256, other.bytes, other.content
-			from public.qorpera_company_site_files other
-			join public.qorpera_company_site_versions version on version.id = other.version_id
-			where version.site_id = v_version.site_id and version.id <> v_version.id and other.content is not null
-			order by other.sha256, other.bytes, other.version_id) kept
+		-- (The match is made on the files' keys alone; only a file that matched reads its bytes, by its key.)
+		update public.qorpera_company_site_files file set content = source.content
+		from (select distinct on (other.sha256, other.bytes) other.sha256, other.bytes, other.version_id, other.path
+				from public.qorpera_company_site_files other
+				join public.qorpera_company_site_versions version on version.id = other.version_id
+				where version.site_id = v_version.site_id and version.id <> v_version.id and other.content is not null
+				order by other.sha256, other.bytes, other.version_id) kept
+			join public.qorpera_company_site_files source on source.version_id = kept.version_id and source.path = kept.path
 		where file.version_id = v_version.id and file.content is null and kept.sha256 = file.sha256
 			and kept.bytes = file.bytes;
 		update public.qorpera_company_site_versions set listed = true where id = v_version.id;
