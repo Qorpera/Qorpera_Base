@@ -68,7 +68,7 @@ declare v_state jsonb; v_owner uuid := '92400000-0000-4000-8000-000000000001'; v
 begin
 	-- An empty company sidebar: every agent Unassigned, nothing pinned or hidden.
 	v_state := pg_temp.sb_read(v_owner);
-	-- 20260930722000: every agent has a place in the read, here all in no section.
+	-- 20260930727000: every agent has a place in the read, here all in no section.
 	perform pg_temp.base_assert(v_state ->> 'schema' = 'qorpera.company-sidebar/v1' and v_state -> 'sections' = '[]'
 		and not exists (select 1 from jsonb_array_elements(v_state -> 'placements') placement
 			where placement ->> 'sectionId' is not null)
@@ -98,8 +98,8 @@ begin
 		'sb-sections-viewer', v_units);
 	perform pg_temp.base_assert(v_result #>> '{units,0,outcome}' = 'denied'
 		and pg_temp.base_version('QorperaOS/agents/sections.md') = v_version, 'A viewer cannot change the sections: ' || v_result::text);
-	-- 20260930722000: the member RPC's section and move actions change the caller's own sidebar, never the file
-	-- (1214_member_own_sidebar); a request without what it names is refused.
+	-- 20260930727000: the member RPC's section and move actions change the caller's own sidebar, never the file
+	-- (1220_member_own_sidebar); a request without what it names is refused.
 	foreach v_action in array array['create_section', 'rename_section', 'delete_section', 'move_agent', 'move_room'] loop
 		perform pg_temp.sb_refused(v_owner, jsonb_build_object('action', v_action), '22023');
 	end loop;

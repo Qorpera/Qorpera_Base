@@ -1506,7 +1506,7 @@ describe("group chats in the rail", () => {
 	});
 });
 
-describe("each member's own sidebar (20260930722000)", () => {
+describe("each member's own sidebar (20260930727000)", () => {
 	const own = (changes: Partial<NonNullable<CompanySidebar["own"]>> = {}): NonNullable<CompanySidebar["own"]> => ({
 		changes: 0,
 		moved: [],

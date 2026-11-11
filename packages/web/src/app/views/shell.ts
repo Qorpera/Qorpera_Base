@@ -2067,7 +2067,7 @@ async function askSectionName(company: CompanyController, item?: SidebarItem): P
 	void company.changeSidebar({ action: "create_section", sectionId: newSectionId(), name, ...placed });
 }
 
-/** Whether the member may change sections and places: always in their own sidebar (20260930722000); on an older
+/** Whether the member may change sections and places: always in their own sidebar (20260930727000); on an older
  * cloud, where a change is the company's, with the right to write. */
 function canOrganize(company: CompanyController): boolean {
 	const state = company.store.get();
@@ -2349,7 +2349,7 @@ function sectionMenu(company: CompanyController, parts: RailParts, sectionId: st
 			danger: true,
 			select: async () => {
 				const name = `"${section.name}"`;
-				// In the member's own sidebar (20260930722000) nobody else's changes.
+				// In the member's own sidebar (20260930727000) nobody else's changes.
 				const question = !company.ownSidebar()
 					? t(
 							"Delete the section {name}? Its agents and group chats move to Unassigned, for everyone in the company.",

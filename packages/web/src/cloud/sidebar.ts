@@ -10,11 +10,11 @@ import { UUID_PATTERN } from "./parse.ts";
 export interface SidebarSection {
 	sectionId: string;
 	name: string;
-	/** A section the member made for themselves (20260930722000); others are the company's. */
+	/** A section the member made for themselves (20260930727000); others are the company's. */
 	mine?: boolean;
 }
 
-/** What the member changed in their own sidebar (20260930722000), for Reset sidebar's question. */
+/** What the member changed in their own sidebar (20260930727000), for Reset sidebar's question. */
 export interface SidebarOwnChanges {
 	changes: number;
 	/** Agents and group chats the member put somewhere, oldest change first. */
@@ -47,7 +47,7 @@ export interface CompanySidebar {
 	/** Whether QorperaOS/agents/sections.md keeps the order of what is in no section (20260930519000); before it,
 	 * Unassigned stands in roster order and a reorder there cannot be saved. */
 	unassignedOrder?: boolean;
-	/** Set where the cloud keeps each member's own sidebar over the company's (20260930722000): what this member
+	/** Set where the cloud keeps each member's own sidebar over the company's (20260930727000): what this member
 	 * changed. Then every change here is the member's own and Reset sidebar takes them all away. */
 	own?: SidebarOwnChanges;
 }
@@ -77,7 +77,7 @@ export type SidebarRequest =
 	| { action: "set_pins"; order: string[]; groupChats?: true }
 	| { action: "set_hidden"; staffAgentId: string; hidden: boolean }
 	| { action: "set_hidden"; roomId: string; hidden: boolean }
-	/** Takes away everything the member changed in this company's sidebar (20260930722000). */
+	/** Takes away everything the member changed in this company's sidebar (20260930727000). */
 	| { action: "reset" }
 	/** Puts back what the member's last reset took away. */
 	| { action: "undo_reset" };

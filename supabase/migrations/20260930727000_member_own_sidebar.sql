@@ -85,12 +85,12 @@ revoke all on public.qorpera_member_sidebar_places from public, anon, authentica
 revoke all on public.qorpera_member_sidebar_resets from public, anon, authenticated, service_role;
 comment on table public.qorpera_member_sidebar_sections is
 	'A member''s own sidebar sections, and the company''s sections they renamed or removed for themselves '
-	'(20260930722000). Written only through qorpera_manage_company_sidebar.';
+	'(20260930727000). Written only through qorpera_manage_company_sidebar.';
 comment on table public.qorpera_member_sidebar_places is
-	'Where a member put an agent or a group chat in their own sidebar (20260930722000). Written only through '
+	'Where a member put an agent or a group chat in their own sidebar (20260930727000). Written only through '
 	'qorpera_manage_company_sidebar.';
 comment on table public.qorpera_member_sidebar_resets is
-	'What a member''s last sidebar reset took away, for Undo (20260930722000).';
+	'What a member''s last sidebar reset took away, for Undo (20260930727000).';
 
 /** The sections the member sees, in order: the company's (by the member's name for one they renamed, none they
  * removed), then the member's own. */
@@ -282,7 +282,7 @@ $$;
 
 create or replace function public.qorpera_sidebar_state(p_profile_id uuid, p_user_id uuid)
 returns jsonb language sql stable security definer set search_path = '' as $$
-	-- 20260930722000: the member's own sidebar over the company's; `own` says what the member changed.
+	-- 20260930727000: the member's own sidebar over the company's; `own` says what the member changed.
 	select jsonb_build_object(
 		'schema', 'qorpera.company-sidebar/v1',
 		-- 20260930519000: agents/sections.md keeps the order of the agents and group chats in no section.
@@ -484,7 +484,7 @@ declare
 	v_action text := p_request ->> 'action';
 	v_agent uuid; v_room uuid; v_section uuid; v_order uuid[]; v_id uuid; v_index integer := 0; v_name text;
 begin
-	-- 20260930722000: sections and places are the caller's own; any member changes them, on every company.
+	-- 20260930727000: sections and places are the caller's own; any member changes them, on every company.
 	if jsonb_typeof(p_request) is distinct from 'object' or jsonb_typeof(p_request -> 'action') is distinct from 'string'
 		or p_request - array['action','sectionId','name','staffAgentId','roomId','order','unpin','hidden','groupChats']
 			<> '{}'::jsonb
@@ -693,13 +693,13 @@ declare
 	v_definition text := pg_get_functiondef('public.qorpera_place_member_contacts(uuid,jsonb)'::regprocedure);
 	v_old constant text := $old$			where section.profile_id = p_profile_id and section.id = (item ->> 'sectionId')::uuid)$old$;
 	v_new constant text := $new$			where section.profile_id = p_profile_id and section.id = (item ->> 'sectionId')::uuid)
-			-- 20260930722000: or one of the member's own.
+			-- 20260930727000: or one of the member's own.
 			and not exists (select 1 from public.qorpera_member_sidebar_sections as mine
 				where mine.profile_id = p_profile_id and mine.user_id = v_user and mine.own
 					and mine.section_id = (item ->> 'sectionId')::uuid)$new$;
 begin
 	if (length(v_definition) - length(replace(v_definition, v_old, ''))) / length(v_old) <> 1 then
-		raise exception 'qorpera_place_member_contacts is not the text 20260930722000 expects'; end if;
+		raise exception 'qorpera_place_member_contacts is not the text 20260930727000 expects'; end if;
 	execute replace(v_definition, v_old, v_new);
 end
 $$;
@@ -719,5 +719,5 @@ revoke all on function public.qorpera_manage_company_sidebar(uuid, jsonb) from p
 grant execute on function public.qorpera_manage_company_sidebar(uuid, jsonb) to authenticated;
 
 comment on function public.qorpera_manage_company_sidebar(uuid, jsonb) is
-	'Changes the caller''s own sidebar in a company (20260930722000): their sections, where agents and group chats '
+	'Changes the caller''s own sidebar in a company (20260930727000): their sections, where agents and group chats '
 	'stand, pins and hidden items; `reset` takes all of it away, `undo_reset` puts the last reset back.';

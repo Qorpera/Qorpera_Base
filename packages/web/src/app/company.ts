@@ -667,7 +667,7 @@ export class CompanyController {
 				this.store.set(placing === undefined ? { memberChats } : { memberChats, memberContactPlacing: placing }),
 			setUnavailable: () => this.store.set({ memberChatsUnavailable: true, memberChats: undefined }),
 			placeFailed: () => this.reportRailError(t("The sidebar could not be changed. Try again.")),
-			// Reset sidebar counts placed contacts among the member's changes (20260930722000).
+			// Reset sidebar counts placed contacts among the member's changes (20260930727000).
 			placed: () => {
 				if (!this.ownSidebar()) return;
 				// A newer place is never undone by an older reset's Undo.
@@ -1168,7 +1168,7 @@ export class CompanyController {
 	}
 
 	/** Makes section changes and moves edits of QorperaOS/agents/sections.md through the member's folder client, on a
-	 * cloud from before each member's own sidebar (20260930722000) only; pins and hidden items stay with the RPC. */
+	 * cloud from before each member's own sidebar (20260930727000) only; pins and hidden items stay with the RPC. */
 	useSectionsFile(folder: (signal: AbortSignal) => WebMemberFolder): void {
 		this.#sectionsFolder = folder;
 	}
@@ -1180,7 +1180,7 @@ export class CompanyController {
 		return this.#sectionsFolder !== undefined && sidebar?.own === undefined && sidebar?.unassignedOrder !== true;
 	}
 
-	/** Whether the sidebar is the member's own over the company's (20260930722000): what they change is theirs alone,
+	/** Whether the sidebar is the member's own over the company's (20260930727000): what they change is theirs alone,
 	 * and Reset sidebar brings back the company's. */
 	ownSidebar(): boolean {
 		const state = this.store.get();
@@ -1211,7 +1211,7 @@ export class CompanyController {
 		let send: () => Promise<CompanySidebar>;
 		const roster = this.sidebarRoster();
 		let drawn = applySidebarRequest(current.sidebar, request, roster);
-		// Since 20260930722000 a section change is the member's own, through the RPC; the file is the company's.
+		// Since 20260930727000 a section change is the member's own, through the RPC; the file is the company's.
 		if (folder && current.sidebar.own === undefined && isSectionsRequest(request)) {
 			const keeps = current.sidebar.unassignedOrder === true;
 			let named: ReturnType<typeof sectionsChange>;

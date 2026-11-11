@@ -291,7 +291,7 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   `20260928249100`): the web makes them as the member's edits of
   `QorperaOS/agents/sections.md` through the member commit route, and writes the Unassigned
   order only where the sidebar says `unassignedOrder`.
-- Each member's own sidebar (`20260930722000`): the company's sidebar is its
+- Each member's own sidebar (`20260930727000`): the company's sidebar is its
   sections file, kept by agents, and it is what a new member sees. Creating,
   renaming and deleting sections and moving agents and group chats through the
   RPC below change the caller's own sidebar only, for any member, viewers too,
@@ -308,7 +308,7 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   reset's rows back (P0002 when there is none). A contact place may name one of
   the caller's own sections.
 - `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
-  shape after the change. Before `20260930722000`, shared, owner/admin/contributor:
+  shape after the change. Before `20260930727000`, shared, owner/admin/contributor:
   `create_section {sectionId, name, staffAgentId?, unpin?}`,
   `rename_section {sectionId, name}`, `delete_section {sectionId}` (its agents
   go to the end of Unassigned), `move_agent {staffAgentId, sectionId|null,
