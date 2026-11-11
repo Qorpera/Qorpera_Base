@@ -8,7 +8,8 @@
 --    owner's own, and the company's, which an owner or admin answers): every open item counts, the newest is Bob's
 --    "what" (cut to 120 characters), and the admin sees the company's approval only.
 -- 3. What the member may not read or no longer answers is not listed: a thread they left, an archived thread, a closed
---    conversation; another company's list has none of it.
+--    conversation; another company's list has none of it; an email draft the member sent, also when its answer was
+--    lost.
 -- 4. Answers take the items off at once, the rest stay, and with all answered Bob is listed for nobody.
 -- 5. Privileges and the marker.
 
@@ -161,6 +162,31 @@ values ('12150000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-0000000
 select pg_temp.base_assert(pg_temp.wm_list('92400000-0000-4000-8000-000000000001', '12150000-0000-4000-8000-000000000010') = '[]',
 	'Another company of the same owner lists none of this company''s items');
 rollback to savepoint wm_other_company;
+savepoint wm_draft;
+-- An email draft card waits until it is answered, and no longer once the member sent it, also when its answer was lost
+-- after the email went out (qorpera_finish_email_draft_action swallows a refused answer).
+do $$
+declare v jsonb;
+begin
+	perform pg_temp.wm_card(current_setting('qorpera_test.wm_binding')::jsonb, '12150000-0000-4000-8000-0000000000d1',
+		'{"schema":"qorpera.interaction/v1","surface":"draft","title":"New email","payload":{"platform":"email",
+			"connectorId":"gmail","from":"sender@example.test","to":["acme@example.test"],"subject":"Digest","body":"Hello"}}');
+	v := pg_temp.wm_bob('92400000-0000-4000-8000-000000000001');
+	perform pg_temp.base_assert(v -> 'questions' = '3' and v ->> 'kind' = 'draft' and v ->> 'what' = 'New email',
+		'An email draft card waits: ' || v::text);
+	-- The draft's row as the email action leaves it once the email went out (its secret is not part of this fixture).
+	set local session_replication_role = replica;
+	insert into public.qorpera_member_email_drafts(interaction_id, session_id, user_id, secret_id, from_address, content,
+		status)
+	values ('12150000-0000-4000-8000-0000000000d1', current_setting('qorpera_test.card_thread')::uuid,
+		'92400000-0000-4000-8000-000000000001', extensions.gen_random_uuid(), 'sender@example.test', '{}', 'sent');
+	set local session_replication_role = origin;
+	v := pg_temp.wm_bob('92400000-0000-4000-8000-000000000001');
+	perform pg_temp.base_assert(v -> 'questions' = '2' and v ->> 'kind' = 'approval',
+		'A sent draft waits no more, though no answer was recorded: ' || v::text);
+end
+$$;
+rollback to savepoint wm_draft;
 
 -- 4. Answers take the items off at once.
 do $$

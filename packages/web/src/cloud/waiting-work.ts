@@ -34,7 +34,7 @@ export function parseWaitingWork(value: unknown): WaitingWork[] {
 	return array(input.agents, "waiting work").map((value): WaitingWork => {
 		const item = record(value, "waiting agent");
 		const kind = KINDS.find((candidate) => candidate === item.kind);
-		const what = typeof item.what === "string" ? item.what.replace(/\s+/gu, " ").trim().slice(0, 120) : "";
+		const what = typeof item.what === "string" ? item.what.replace(/\s+/gu, " ").trim() : "";
 		return {
 			staffAgentId: uuid(item.staffAgentId, "waiting agent"),
 			sessionId: uuid(item.sessionId, "waiting conversation"),

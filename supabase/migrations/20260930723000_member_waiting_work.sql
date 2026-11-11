@@ -87,6 +87,11 @@ begin
 							where answer.session_id = request.session_id
 								and answer.event_type in ('interaction_answer', 'authorization_decision')
 								and answer.body #>> '{entry,data,interactionId}' = request.event_id::text)
+						-- An email draft the member sent or threw away waits no more, also when its answer was lost on the
+						-- way (qorpera_finish_email_draft_action swallows a refused answer after the email went out).
+						and not exists (
+							select 1 from public.qorpera_member_email_drafts as draft
+							where draft.interaction_id = request.event_id and draft.status in ('sent', 'discarded'))
 						and not exists (
 							select 1 from public.qorpera_session_inputs as input
 							where input.session_id = request.session_id and input.kind = 'user_message'
