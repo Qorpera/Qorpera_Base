@@ -105,6 +105,13 @@ export class DesktopHoldLedger {
 	readonly #finishing = new Map<string, number>();
 	/** The company's page is gone: nothing is asked any more. */
 	#left = false;
+	/** Releases in turn (review r13 F20): every release moves this on, and records it for its machine, for the agent
+	 * whose machines all went back, or for the whole page (hidden, left). A press records it as it stands; nothing the
+	 * press asked may be sent once a release came after it (releasedSince). */
+	#releases = 0;
+	readonly #machineReleasedAt = new Map<string, number>();
+	readonly #agentReleasedAt = new Map<string, number>();
+	#pageReleasedAt = 0;
 
 	constructor(computer: WebCompanyComputer | undefined, signal?: AbortSignal) {
 		this.#computer = computer;
@@ -150,12 +157,31 @@ export class DesktopHoldLedger {
 		return hold?.state === "held" && !hold.calling ? hold.epoch : undefined;
 	}
 
-	/** A take-over the member asked for on purpose, from this agent's window, of the machine chosen at the click. It is
-	 * entered before anything is awaited; it waits for the machine's unanswered hand-back and is never sent once a release
-	 * called it off meanwhile; it is sent at the epoch the page knows (read from the list first when it knows none). */
-	take(machineId: string, agentId: string): Promise<DesktopTake> {
+	/** Where the releases stand: a press records it, and passes it to take(). */
+	stamp(): number {
+		return this.#releases;
+	}
+
+	/** Whether a release came after a press stamped `at`: of this machine, of all this agent's machines, or the page's
+	 * (review r13 F20). What such a press asked is never sent: only a new press can take the desktop over again. */
+	releasedSince(machineId: string | undefined, agentId: string, at: number): boolean {
+		return (
+			this.#pageReleasedAt > at ||
+			(this.#agentReleasedAt.get(agentId) ?? 0) > at ||
+			(machineId !== undefined && (this.#machineReleasedAt.get(machineId) ?? 0) > at)
+		);
+	}
+
+	/** A take-over the member asked for on purpose, from this agent's window, of the machine chosen at the click, by the
+	 * press stamped `pressedAt`. It is entered before anything is awaited; it waits for the machine's unanswered
+	 * hand-back and is never sent once a release called it off meanwhile, nor once any release came after the press
+	 * (review r13); it is sent at the epoch the page knows (read from the list first when it knows none). */
+	take(machineId: string, agentId: string, pressedAt?: number): Promise<DesktopTake> {
 		const computer = this.#computer;
 		if (!computer || this.#left) return Promise.resolve({ state: "uncertain" });
+		// A release came after the press: nothing of it is asked (review r13 F20).
+		if (pressedAt !== undefined && this.releasedSince(machineId, agentId, pressedAt))
+			return Promise.resolve({ state: "called-off" });
 		const hold = this.#holds.get(machineId) ?? this.#entry(machineId);
 		hold.agents.add(agentId);
 		if (this.holder(machineId) !== undefined) return Promise.resolve({ state: "ok" });
@@ -180,6 +206,11 @@ export class DesktopHoldLedger {
 			if (epoch === undefined) {
 				this.#state(hold, undefined);
 				return { state: "uncertain" };
+			}
+			// The last word before anything leaves the page: a release after the press calls it off (review r13 F20).
+			if (pressedAt !== undefined && this.releasedSince(machineId, agentId, pressedAt)) {
+				if (hold.state === "queued") this.#state(hold, undefined);
+				return { state: "called-off" };
 			}
 			// From here the take-over may reach the database: owed at this epoch until the page learns one above it.
 			hold.took = true;
@@ -271,6 +302,7 @@ export class DesktopHoldLedger {
 	 * nothing is sent. */
 	release(machineId: string, agentId?: string, reason: Hold["reason"] = "handed_back", elsewhere = false): void {
 		if (this.#left || !this.#computer) return;
+		this.#machineReleasedAt.set(machineId, ++this.#releases);
 		const hold = this.#holds.get(machineId);
 		if (!hold) return;
 		if (agentId) hold.agents.add(agentId);
@@ -318,8 +350,9 @@ export class DesktopHoldLedger {
 			if (hold.calling) asks.set(hold, this.#ask(hold));
 		};
 		if (elsewhere) this.#finishing.set(agentId, (this.#finishing.get(agentId) ?? 0) + 1);
-		// Every machine of the agent's, those the page learns of later too.
+		// Every machine of the agent's, those the page learns of later too; and no press before this one is acted on.
 		this.#agentsGivenBack.add(agentId);
+		this.#agentReleasedAt.set(agentId, ++this.#releases);
 		try {
 			// At once, before anything is awaited (review r5 F11).
 			for (const hold of [...this.#holds.values()]) if (hold.agents.has(agentId)) give(hold);
@@ -381,6 +414,7 @@ export class DesktopHoldLedger {
 	/** As the company's page is left for good (or its access is gone): each machine owed is asked back once more, at its
 	 * epoch, in a request the browser finishes after the page; nothing waits for it, and nothing is kept. */
 	leave(): void {
+		this.#pageReleasedAt = ++this.#releases;
 		for (const hold of this.#holds.values()) {
 			hold.gone = true;
 			clearTimeout(hold.timer);
@@ -396,6 +430,7 @@ export class DesktopHoldLedger {
 	 * page that comes back from the cache confirms it before I'm done answers. */
 	#hidden(): void {
 		if (this.#left) return;
+		this.#pageReleasedAt = ++this.#releases;
 		for (const hold of [...this.#holds.values()]) {
 			this.release(hold.machineId);
 			if (hold.calling && hold.epoch !== undefined) this.#computer?.handBackOnLeave(hold.machineId, hold.epoch);

@@ -1900,6 +1900,40 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		expect(p.holding).toBe(true);
 	});
 
+	it("takes nothing over after pagehide for a press made before it, when the same window goes on: no take-over, no heartbeat, Take over offered (r13 F20)", async () => {
+		const { s, p } = await company();
+		// Take over, sent at 0; its answer is delayed.
+		const late = gate();
+		s.state.takeGate = late.closed;
+		await takeOver(p);
+		expect(takeEpochs(s)).toEqual([0]);
+		s.state.takeGate = undefined;
+		// The page is put in the browser's cache: the hand-back at 0 goes (with the keepalive one) and is answered.
+		window.dispatchEvent(new Event("pagehide"));
+		await flush();
+		expect(backEpochs(s)).toEqual([0, 0]);
+		// The page comes back and the same window goes on (its loop runs, a list read, looks) before the take-over answers:
+		// nothing is taken over again.
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		await advance(MACHINES_EVERY_MS);
+		expect(takeEpochs(s)).toEqual([0]);
+		// The take-over sent before arrives at last: refused; nothing held, no heartbeat, nothing said; Take over offered.
+		late.open();
+		await flush();
+		await advance(KEEP_EVERY_MS * 2);
+		expect(takeEpochs(s)).toEqual([0]);
+		expect(p.holding).toBe(false);
+		expect(keeps(s)).toHaveLength(0);
+		expect(s.state.machines[0]?.control).toBeNull();
+		expect(controlButton(p)?.textContent).toBe("Take over");
+		expect(controlButton(p)?.disabled).toBe(false);
+		// Only a new press takes it over, at the epoch the hand-back answered.
+		await takeOver(p);
+		expect(takeEpochs(s)).toEqual([0, 1]);
+		expect(p.holding).toBe(true);
+	});
+
 	it("keeps a take-over on its way through pagehide until a hand-back at its epoch is answered, should the page come back from the cache", async () => {
 		const { s, panels, p } = await company();
 		const late = gate();
