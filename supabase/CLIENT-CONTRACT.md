@@ -1319,6 +1319,13 @@ request of another shape.
   nothing logged; the agent hears `DESKTOP_MEMBER_IN_CONTROL`). The helper takes the desktop as an action does, so a
   member's action (a copy, a paste) and the clipboard read never interleave on one desktop. What cannot be undone: a
   helper that had begun reading before a take-over may already have cleared the clipboard, the member's copy with it.
+  What a member copied stays on the clipboard after they hand back, so the read is also refused
+  (`DESKTOP_MEMBER_IN_CONTROL`) while a member's hold was live at or after the agent's last screen action
+  (`desktop_agent_acted_at`, which an action the agent's screen read lets in moves, and a look never does): the agent
+  copies the key again with its own action and calls again.
+- A stated limit: the computer is the agent's. While a member holds the desktop the agent starts nothing new on it and
+  reads nothing of its screen or clipboard through the platform's tools, but a program the agent started there before
+  the take-over keeps running and can see the screen and the clipboard.
 - One lock order with every machine path (F30 of #1661): a take-over, and a member's first look at a machine (which
   writes their watch row, keyed by the company), take the folder fence and the company row KEY SHARE
   (`qorpera_folder_machine_fence`, rank 0) before the machine's row, as the executor's custody and a member's wake do,

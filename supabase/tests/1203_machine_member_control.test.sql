@@ -46,7 +46,11 @@
 --    harness): while a holder has the folder fence and the company row as company deletion's finisher takes them (FOR
 --    UPDATE) and then wants the machine, a take-over and a member's first look wait for it at the fence before they lock
 --    the machine, so the holder gets the machine and nothing deadlocks (as it was, each locked the machine first and
---    then waited for the company row's key: 40P01).
+--    then waited for the company row's key: 40P01);
+-- 16. the clipboard after a hand-back (v233 release review r1, F29 of #1661): save_coding_value's read is refused while a
+--    member's hold was live at or after the agent's last screen action (desktop_agent_acted_at, moved by an action and
+--    never by a look): after a hold that began and ended, or was taken over again from another press and ran out,
+--    until the agent acts again; with no hold since its action it goes as before.
 
 -- Alice's run acknowledges first, as a member's wake requires before any work (924).
 select pg_temp.base_claims('service_role');
@@ -465,8 +469,9 @@ begin
 	perform pg_temp.base_assert(current_setting('qorpera_test.dc_2x') = '',
 		E'2: the agent''s reads that differ:\n' || current_setting('qorpera_test.dc_2x'));
 	perform pg_temp.base_assert(v_now.screen_staff_agent_id is not distinct from (v_before ->> 'screen_staff_agent_id')::uuid
-			and v_now.screen_used_at is not distinct from (v_before ->> 'screen_used_at')::timestamptz,
-		'2: a refused look or action stamps no agent on the screen');
+			and v_now.screen_used_at is not distinct from (v_before ->> 'screen_used_at')::timestamptz
+			and v_now.desktop_agent_acted_at is not distinct from (v_before ->> 'desktop_agent_acted_at')::timestamptz,
+		'2: a refused look or action stamps no agent on the screen, and no action of the agent''s');
 	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_company_machine_commands
 			where id = '12030000-0000-4000-8000-000000000102'),
 		'2: the refused start made no command');
@@ -778,8 +783,9 @@ select pg_temp.dc_shift('a1', 'desktop_member_input_at = clock_timestamp() - int
 	|| 'desktop_member_until = clock_timestamp() - interval ''1 minute''');
 select set_config('qorpera_test.dc_6x', pg_temp.dc_differ(jsonb_build_array(
 	jsonb_build_array('the agent''s look', pg_temp.dc_answer(pg_temp.dc_look('a1')) ->> 'state', 'authorized'),
-	jsonb_build_array('the agent''s coding value', pg_temp.dc_coding_value('302'),
-		'55000:The coding value''s capture key must be made again'),
+	-- What the member copied may still be on the clipboard (F29): refused until the agent's own next action (16).
+	jsonb_build_array('the agent''s coding value', pg_temp.dc_coding_value('302'), pg_temp.dc_refused(
+		'qorpera.machine-coding-value-authority/v1', 'DESKTOP_MEMBER_IN_CONTROL', '{"machine": "m-1203"}')),
 	jsonb_build_array('a viewer''s look', pg_temp.dc_answer(pg_temp.dc_begin_look('viewer', 'a1')) ->> 'state', 'ok'),
 	jsonb_build_array('the list', pg_temp.dc_listed('viewer', 'm-1203') -> 'control', 'null'::jsonb),
 	jsonb_build_array('the holder''s action', pg_temp.dc_act('contributor', 'a1', '{"type": "click", "x": 1, "y": 1}'),
@@ -1410,6 +1416,57 @@ begin
 			= '22023:Machine desktop action is malformed',
 		'14: a hand-back with a seat below 0, a take-over without its press, a heartbeat or an action without its seat, and '
 			|| 'an action with a seat below 0 are malformed');
+end $$;
+
+-- 16. The clipboard after a hand-back (v233 release review r1, F29 of #1661) --------------------------------------------------
+
+-- The read gets past every hold check when it reaches the capture key, which this fixture does not have (55000).
+select set_config('qorpera_test.dc_cv_ok', '55000:The coding value''s capture key must be made again', true);
+select set_config('qorpera_test.dc_cv_held', pg_temp.dc_refused('qorpera.machine-coding-value-authority/v1',
+	'DESKTOP_MEMBER_IN_CONTROL', '{"machine": "m-1203"}'), true);
+do $$
+declare v text; v_acted timestamptz;
+begin
+	-- No live hold on m-1203 now: whoever held it, their lease has run out.
+	if coalesce((pg_temp.dc_machine('a1')).desktop_member_until > clock_timestamp(), false) then
+		perform pg_temp.dc_shift('a1', 'desktop_member_until = clock_timestamp() - interval ''1 second''');
+	end if;
+	-- After 14's holds, the agent has not acted since: refused.
+	v := pg_temp.dc_coding_value('303');
+	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_cv_held'),
+		'16: a hold since the agent''s last action (it never acted): refused: ' || v);
+	-- A look moves nothing; the agent's action (its copy) does, and then the read goes as before.
+	v_acted := (pg_temp.dc_machine('a1')).desktop_agent_acted_at;
+	perform pg_temp.base_assert(pg_temp.dc_answer(pg_temp.dc_look('a1')) ->> 'state' = 'authorized'
+			and (pg_temp.dc_machine('a1')).desktop_agent_acted_at is not distinct from v_acted,
+		'16: a look moves no action stamp');
+	v := pg_temp.dc_agent_act('202');
+	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'authorized'
+			and (pg_temp.dc_machine('a1')).desktop_agent_acted_at > coalesce(v_acted, '-infinity'),
+		'16: the agent''s action is let in and stamped: ' || v);
+	v := pg_temp.dc_coding_value('304');
+	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_cv_ok'), '16: no hold since the copy: as before: ' || v);
+	-- A member takes the desktop over and hands it back between the agent's copy and its read: refused.
+	perform pg_temp.dc_take('contributor', 'a1');
+	perform pg_temp.dc_act_id('contributor', 'a1', '{"type": "key", "keys": ["ctrl+c"]}');
+	perform pg_temp.dc_back('contributor', 'a1');
+	v := pg_temp.dc_coding_value('305');
+	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_cv_held'),
+		'16: a hold that began and ended after the copy: refused: ' || v);
+	-- The agent copies again: it goes.
+	perform pg_temp.dc_agent_act('203');
+	v := pg_temp.dc_coding_value('306');
+	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_cv_ok'), '16: copied again after the hold: goes: ' || v);
+	-- A hold taken over again from another press (the same row, a new seat) that then ran out by time: refused.
+	perform pg_temp.dc_take('admin', 'a1');
+	perform pg_temp.dc_take('admin', 'a1');
+	perform pg_temp.dc_shift('a1', 'desktop_member_until = clock_timestamp() - interval ''1 second''');
+	v := pg_temp.dc_coding_value('307');
+	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_cv_held'),
+		'16: a hold taken over again that ran out after the copy: refused: ' || v);
+	perform pg_temp.dc_agent_act('204');
+	v := pg_temp.dc_coding_value('308');
+	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_cv_ok'), '16: copied again: goes: ' || v);
 end $$;
 
 -- 12. An action that waits for the machine's lock across the lease's end (review r7 F14) -------------------------------------
