@@ -2260,3 +2260,266 @@ describe("interface change notes (I10)", () => {
 		await expect(gone.client.noteInterfaceChanges(signal())).rejects.toMatchObject({ failure: "unavailable" });
 	});
 });
+
+// Own code storage, step 2b (migration 20260930720000): an agent's undo of a change in the company's code, how its
+// request stands, and a change's description. Each is sent with the run's binding, as the run effects are.
+describe("the company's code: undo, its request and a change's description (20260930720000)", () => {
+	const REQUEST = "72000000-0000-4000-8000-000000000001";
+	const undo = { operationKey: "undo-12", owner: "acme", name: "shop", change: 12, andLater: false, reason: "Broke." };
+	const queued = { schema: "qorpera.code-request/v1", state: "queued", requestId: REQUEST };
+	const stands = (over: Record<string, unknown> = {}) => ({
+		schema: "qorpera.code-request/v1",
+		requestId: REQUEST,
+		kind: "undo",
+		state: "queued",
+		result: null,
+		change: null,
+		code: null,
+		paths: null,
+		...over,
+	});
+	const transport = () =>
+		new CloudRuntimeDiagnosticError("transport_unavailable", "Company File authority unavailable");
+
+	it("asks for an undo with the run's binding and exactly the request's keys, and reads each answer", async () => {
+		const { client, calls, binding } = fixture(() => queued);
+		await expect(client.requestCodeUndo(undo, signal())).resolves.toEqual({ state: "queued", requestId: REQUEST });
+		// No folder actor and no environment: the binding and the request, and no notice when none was given.
+		expect(calls).toEqual([
+			{ method: "qorpera_folder_request_code_undo", args: { p_binding: binding, p_request: undo } },
+		]);
+		const noticed = fixture(() => queued);
+		await noticed.client.requestCodeUndo(
+			{ ...undo, andLater: true, notice: "The returns line is gone again.", extra: 1 } as never,
+			signal(),
+		);
+		expect(noticed.calls[0]?.args.p_request).toEqual({
+			...undo,
+			andLater: true,
+			notice: "The returns line is gone again.",
+		});
+		await expect(
+			fixture(() => ({
+				schema: "qorpera.code-request/v1",
+				state: "already",
+				change: 12,
+				undoneBy: 15,
+			})).client.requestCodeUndo(undo, signal()),
+		).resolves.toEqual({ state: "already", undoneBy: 15 });
+		for (const reason of ["never_landed", "lost", "restore", "wall", "too_many", "busy", "no_executor"])
+			await expect(
+				fixture(() => ({ schema: "qorpera.code-request/v1", state: "refused", reason })).client.requestCodeUndo(
+					undo,
+					signal(),
+				),
+			).resolves.toEqual({ state: "refused", reason });
+		for (const wrong of [
+			null,
+			{ ...queued, schema: "qorpera.code-request/v2" },
+			{ ...queued, requestId: "not-a-uuid" },
+			{ ...queued, extra: 1 },
+			{ schema: "qorpera.code-request/v1", state: "queued" },
+			{ schema: "qorpera.code-request/v1", state: "already", change: 13, undoneBy: 15 },
+			{ schema: "qorpera.code-request/v1", state: "already", change: 12, undoneBy: 0 },
+			{ schema: "qorpera.code-request/v1", state: "already", change: 12, undoneBy: "15" },
+			{ schema: "qorpera.code-request/v1", state: "refused", reason: "because" },
+			{ schema: "qorpera.code-request/v1", state: "done", reason: "busy" },
+		])
+			await expect(
+				fixture(() => wrong).client.requestCodeUndo(undo, signal()),
+				JSON.stringify(wrong),
+			).rejects.toThrow("Company folder response is invalid");
+	});
+
+	it("answers what SQL raised instead of taking an undo as a refusal, and any other error as a failure", async () => {
+		for (const [code, message, reason] of [
+			["P0002", "No such change", "no_change"],
+			["22023", "Code request is invalid", "invalid"],
+			["23505", "logical operation key is already bound to other work", "key_reused"],
+			["42501", "Code authority is unavailable", "authority"],
+			["55000", "Wake requires an acknowledgement before work", "acknowledgement"],
+			["55000", "Wake public output is already final", "final"],
+			["55000", "Company execution is paused", "paused"],
+		] as const) {
+			const f = fixture(() => {
+				throw sqlError(code, message);
+			});
+			await expect(f.client.requestCodeUndo(undo, signal()), message).resolves.toEqual({ state: "refused", reason });
+			// A refusal is an answer: it is not asked again.
+			expect(f.calls).toHaveLength(1);
+		}
+		// The same codes with other words are the folder's own failures.
+		const stopped = fixture(() => {
+			throw sqlError("55000", "run has an unresolved operation");
+		});
+		await expect(stopped.client.requestCodeUndo(undo, signal())).rejects.toMatchObject({ failure: "stopped" });
+		const gone = fixture(() => {
+			throw sqlError("42501", "Run is unavailable");
+		});
+		await expect(gone.client.requestCodeUndo(undo, signal())).rejects.toMatchObject({ failure: "unavailable" });
+		const other = fixture(() => {
+			throw sqlError("P0002", "No such code request");
+		});
+		await expect(other.client.requestCodeUndo(undo, signal())).rejects.toBeInstanceOf(CloudCompanyFolderRpcError);
+	});
+
+	it("asks again with the same key after a lost answer or a deadlock, and never calls a later refusal an answer", async () => {
+		let tries = 0;
+		const again = fixture(() => {
+			tries += 1;
+			if (tries === 1) throw transport();
+			if (tries === 2) throw sqlError("40P01", "deadlock detected");
+			return queued;
+		});
+		await expect(again.client.requestCodeUndo(undo, signal())).resolves.toEqual({
+			state: "queued",
+			requestId: REQUEST,
+		});
+		expect(again.calls.map((call) => call.args.p_request)).toEqual([undo, undo, undo]);
+		// The first try's answer was lost: it may have been taken, so what SQL raises on the next says nothing of it.
+		let lost = 0;
+		const unknown = fixture(() => {
+			if (++lost === 1) throw transport();
+			throw sqlError("55000", "Wake public output is already final");
+		});
+		await expect(unknown.client.requestCodeUndo(undo, signal())).rejects.toMatchObject({ failure: "unknown" });
+		// Nor on a later call with that key, while another key's refusal is still an answer.
+		await expect(unknown.client.requestCodeUndo(undo, signal())).rejects.toMatchObject({ failure: "unknown" });
+		await expect(unknown.client.requestCodeUndo({ ...undo, operationKey: "undo-12b" }, signal())).resolves.toEqual({
+			state: "refused",
+			reason: "final",
+		});
+		// An answer that does not read may have been taken too.
+		let bad = 0;
+		const unread = fixture(() => {
+			if (++bad === 1) return { ...queued, requestId: 7 };
+			throw sqlError("P0002", "No such change");
+		});
+		await expect(unread.client.requestCodeUndo(undo, signal())).rejects.toThrow("Company folder response is invalid");
+		await expect(unread.client.requestCodeUndo(undo, signal())).rejects.toMatchObject({ failure: "unknown" });
+	});
+
+	it("reads how a request stands, with the run's binding and no receipt", async () => {
+		const { client, calls, binding } = fixture(() => stands());
+		await expect(client.codeRequest(REQUEST, signal())).resolves.toEqual({
+			requestId: REQUEST,
+			kind: "undo",
+			state: "queued",
+			result: null,
+			change: null,
+			code: null,
+			paths: null,
+		});
+		expect(calls).toEqual([
+			{ method: "qorpera_folder_code_request", args: { p_binding: binding, p_request_id: REQUEST } },
+		]);
+		await expect(
+			fixture(() => stands({ state: "done", result: "undone", change: 15 })).client.codeRequest(REQUEST, signal()),
+		).resolves.toMatchObject({ state: "done", result: "undone", change: 15 });
+		await expect(
+			fixture(() =>
+				stands({ state: "refused", code: "CODE_HOST_UNDO_CONFLICT", paths: ["src/a.ts", "src/b.ts"] }),
+			).client.codeRequest(REQUEST, signal()),
+		).resolves.toMatchObject({ state: "refused", code: "CODE_HOST_UNDO_CONFLICT", paths: ["src/a.ts", "src/b.ts"] });
+		await expect(
+			fixture(() => stands({ state: "failed", code: "DID_NOT_FINISH" })).client.codeRequest(REQUEST, signal()),
+		).resolves.toMatchObject({ state: "failed", code: "DID_NOT_FINISH" });
+		for (const wrong of [
+			null,
+			stands({ schema: "qorpera.code-request/v2" }),
+			stands({ requestId: randomUUID() }),
+			stands({ kind: "push" }),
+			stands({ state: "expired" }),
+			stands({ result: 1 }),
+			stands({ change: 0 }),
+			stands({ change: "15" }),
+			stands({ code: 5 }),
+			stands({ paths: "src/a.ts" }),
+			stands({ paths: ["src/a.ts", 2] }),
+			stands({ paths: Array.from({ length: 101 }, (_, index) => `f${index}`) }),
+			stands({ extra: 1 }),
+			(({ paths: _paths, ...rest }) => rest)(stands()),
+		])
+			await expect(
+				fixture(() => wrong).client.codeRequest(REQUEST, signal()),
+				JSON.stringify(wrong),
+			).rejects.toThrow("Company folder response is invalid");
+		// A request that is not this company's is SQL's answer, and a read is asked once.
+		const none = fixture(() => {
+			throw sqlError("P0002", "No such code request");
+		});
+		await expect(none.client.codeRequest(REQUEST, signal())).rejects.toBeInstanceOf(CloudCompanyFolderRpcError);
+		const lost = fixture(() => {
+			throw transport();
+		});
+		await expect(lost.client.codeRequest(REQUEST, signal())).rejects.toMatchObject({
+			category: "transport_unavailable",
+		});
+		expect(lost.calls).toHaveLength(1);
+		await expect(fixture(() => stands()).client.codeRequest("not-a-uuid", signal())).rejects.toThrow(
+			"Company folder response is invalid",
+		);
+	});
+
+	it("describes a change with what was given, and reads what the change then holds or why its picture was not taken", async () => {
+		const describe = { operationKey: "describe-12", owner: "acme", name: "shop", change: 12 };
+		const saved = (over: Record<string, unknown> = {}) => ({
+			schema: "qorpera.code-change-described/v1",
+			state: "saved",
+			change: 12,
+			notice: "Each price now says free returns.",
+			picture: null,
+			...over,
+		});
+		const { client, calls, binding } = fixture(() => saved());
+		await expect(
+			client.describeCodeChange({ ...describe, notice: "Each price now says free returns." }, signal()),
+		).resolves.toEqual({ state: "saved", notice: "Each price now says free returns.", picture: false });
+		expect(calls).toEqual([
+			{
+				method: "qorpera_folder_describe_code_change",
+				args: { p_binding: binding, p_request: { ...describe, notice: "Each price now says free returns." } },
+			},
+		]);
+		const pictured = fixture(() =>
+			saved({
+				notice: null,
+				picture: { source: "folder", path: "product/screens/price.png", sha256: sha("png"), bytes: 3 },
+			}),
+		);
+		await expect(
+			pictured.client.describeCodeChange({ ...describe, picture: "product/screens/price.png" }, signal()),
+		).resolves.toEqual({ state: "saved", notice: null, picture: true });
+		expect(pictured.calls[0]?.args.p_request).toEqual({ ...describe, picture: "product/screens/price.png" });
+		for (const reason of ["missing", "not_a_file", "too_large", "not_a_picture", "not_shared"])
+			await expect(
+				fixture(() => ({
+					schema: "qorpera.code-change-described/v1",
+					state: "refused",
+					reason,
+				})).client.describeCodeChange({ ...describe, picture: "product/screens/price.png" }, signal()),
+			).resolves.toEqual({ state: "refused", reason });
+		const raised = fixture(() => {
+			throw sqlError("P0002", "No such change");
+		});
+		await expect(raised.client.describeCodeChange({ ...describe, notice: "n" }, signal())).resolves.toEqual({
+			state: "refused",
+			reason: "no_change",
+		});
+		for (const wrong of [
+			null,
+			saved({ schema: "qorpera.code-request/v1" }),
+			saved({ change: 13 }),
+			saved({ notice: 1 }),
+			saved({ picture: "product/screens/price.png" }),
+			saved({ picture: ["a"] }),
+			saved({ extra: 1 }),
+			{ schema: "qorpera.code-change-described/v1", state: "refused", reason: "busy" },
+			{ schema: "qorpera.code-change-described/v1", state: "queued", reason: "missing" },
+		])
+			await expect(
+				fixture(() => wrong).client.describeCodeChange({ ...describe, notice: "n" }, signal()),
+				JSON.stringify(wrong),
+			).rejects.toThrow("Company folder response is invalid");
+	});
+});

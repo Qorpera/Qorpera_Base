@@ -1388,6 +1388,33 @@ Settings → Sites. Built switched off (`qorpera_site_settings.enabled`) until t
   `removed` false when it was already gone.
 - The tables are closed to every API role; the agent's and the edge function's calls are service-only.
 
+### Downloading the company's code (20260930720000_code_change_record)
+
+The repositories a company keeps in Qorpera (`code/<owner>/<name>/` in the company folder), and their code as one file
+a member downloads: the coding executor makes it under `code/<owner>/<name>/downloads/`, and the web reads it there
+with the member folder client. Storage → the repository's folder → "Download the code".
+
+- `qorpera_list_code_repositories(profile)`: `{schema: "qorpera.code-repositories/v1", canDownload, repositories:
+  [{owner, name, changes, downloads: [{requestId, file, state, path, bytes, madeAt, expiresAt}]}]}` for any member of
+  the company (viewers too; 42501 "Code unavailable" for anyone else). `canDownload` is true for owners and admins.
+  `changes` is how many changes the repository's record holds. `downloads` are the ones on their way (`state`
+  `queued` or `running`) and the made ones whose file is still there (`ready`, with `path` and `bytes`): a made
+  download is over after 7 days, as soon as the job of a newer download of the same `file` begins (it replaces the
+  file), and as soon as a restore of the repository from its copy begins to move its folder aside. It is over
+  before the file goes, whatever becomes of that job, so `ready` always has its file.
+- `qorpera_request_code_download(profile, owner, name, file)`: owners and admins (42501 otherwise). `file` is `files`
+  (main's files, a `.zip`) or `history` (main with its history, a git `.bundle`); anything else is 22023, a repository
+  the company does not keep is P0002 "No such repository". Answers `{schema: "qorpera.code-download/v1", requestId,
+  file, state, reason, path, bytes}`: `ready` with the made file when the code has not changed since; else the open
+  request of that file (`queued` or `running`); else `refused` with `reason` `too_many` (20 download requests of the
+  company in 24 hours) or `no_executor`; else a new request, `queued`.
+- `qorpera_code_download(profile, request)`: owners and admins; how that request stands, in the same shape. Besides
+  the states above: `failed` with `reason` `too_large` (over 200 MiB), `busy` (it was put off behind coding work until
+  it ended) or `failed` (anything else, a made file that is over included: its 7 days passed, a newer download
+  began to replace it, or a restore began to move the repository's folder; ask again). P0002 "No such download" for
+  a request that is not one of the company's downloads.
+- The tables are closed to every API role; the executor's, the agent's and the operator's calls are not a member's.
+
 ## 3. Realtime
 
 Every private topic's policies on `realtime.messages` also require the row's

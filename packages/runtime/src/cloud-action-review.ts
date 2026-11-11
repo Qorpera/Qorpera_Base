@@ -384,6 +384,11 @@ export function cloudActionEffect(
 		// The agent's wall is its own report of its work, kept in place above its thread (5 November 2026).
 		case "update_wall":
 			return "internal";
+		// The company's code kept in Qorpera (20260930720000). An undo only puts main back to a state it had, as a
+		// recorded change that can itself be undone, and a card would cost the minutes a wrong change must not stay in;
+		// a description changes only the record's words. Neither is reviewed.
+		case "manage_code":
+			return "internal";
 		default:
 			return "external";
 	}
@@ -1085,6 +1090,19 @@ export function describeCloudAction(
 		quote("task", args.goal ?? args.text, CONTENT_BYTES);
 		// Where a worker saves its finished files, when the dispatch names a folder (21 October 2026).
 		add("saves in", args.saveTo);
+	} else if (tool.name === "manage_code") {
+		// 20260930720000: not reviewed today (cloudActionEffect). These are its card's words should a member's yes be
+		// asked for an undo later: the repository, the change by its number, and why.
+		title =
+			args.action === "describe"
+				? "Describe a change in the company's code"
+				: args.andLater === true
+					? "Undo a change in the company's code, and every change after it"
+					: "Undo a change in the company's code";
+		const repository = [text(args.owner), text(args.name)].filter(Boolean).join("/");
+		target = [repository, text(args.change) && `change ${text(args.change)}`].filter(Boolean).join(", ") || null;
+		add("reason", args.reason);
+		add("customers will notice", args.notice);
 	} else if (tool.name === "apply_proposal") {
 		// Changes the agent saved from a computer, as the run's list described them (cloud-folder-proposals.ts): what
 		// changes, in order, never its files.

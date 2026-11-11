@@ -71,7 +71,27 @@ const RUN_EFFECTS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_manage_hook",
 	"qorpera_folder_archive_coding_worker",
 	"qorpera_folder_note_interface_changes",
+	"qorpera_folder_request_code_undo",
+	"qorpera_folder_code_request",
+	"qorpera_folder_describe_code_change",
 ]);
+/** What SQL raises instead of taking an undo or a description of a change (20260930720000), by SQLSTATE and SQL's
+ * message: no such repository or number, a request it does not take, an operation key that names an earlier, different
+ * request, a run that is not an agent's own, and the wake's refusals of work. Each is raised before the call's
+ * transaction wrote anything, so that call changed nothing. */
+const CODE_REFUSALS: ReadonlyMap<string, CloudCompanyCodeRefusal> = new Map([
+	["P0002 No such change", "no_change"],
+	["22023 Code request is invalid", "invalid"],
+	["23505 logical operation key is already bound to other work", "key_reused"],
+	["42501 Code authority is unavailable", "authority"],
+	["55000 Wake requires an acknowledgement before work", "acknowledgement"],
+	["55000 Wake public output is already final", "final"],
+	["55000 Company execution is paused", "paused"],
+]);
+const CODE_UNDO_REASONS = ["never_landed", "lost", "restore", "wall", "too_many", "busy", "no_executor"] as const;
+const CODE_PICTURE_REASONS = ["missing", "not_a_file", "too_large", "not_a_picture", "not_shared"] as const;
+const CODE_REQUEST_KINDS = ["undo", "download", "restore"] as const;
+const CODE_REQUEST_STATES = ["queued", "running", "done", "refused", "failed"] as const;
 /** SQL's refusal (55000) of an archive or a cancel by the run that was asked about a quiet coding session, once the
  * session has a new turn (`qorpera_coding_question_stale`). */
 export const CODING_QUESTION_STALE = "The session has a new turn since you were asked; leave it";
@@ -356,6 +376,41 @@ export interface CloudCompanyFolderSignedHooks {
 		signal: AbortSignal,
 	): Promise<EventHookAnswer>;
 }
+
+/** Why SQL raised instead of taking an undo or a description of a change: that call changed nothing. */
+export type CloudCompanyCodeRefusal =
+	| "no_change"
+	| "invalid"
+	| "key_reused"
+	| "authority"
+	| "acknowledgement"
+	| "final"
+	| "paused";
+
+/** What became of an agent's ask to take a change out of a repository's main code (`qorpera_folder_request_code_undo`):
+ * a request the coding executor serves, the change that already took it out, or why nothing was asked. */
+export type CloudCompanyCodeUndo =
+	| { readonly state: "queued"; readonly requestId: string }
+	| { readonly state: "already"; readonly undoneBy: number }
+	| { readonly state: "refused"; readonly reason: (typeof CODE_UNDO_REASONS)[number] | CloudCompanyCodeRefusal };
+
+/** How a request of the company's stands (`qorpera_folder_code_request`): once it ended, its result, the number of the
+ * change it wrote, its code, and the files a refused undo named. */
+export interface CloudCompanyCodeRequest {
+	readonly requestId: string;
+	readonly kind: (typeof CODE_REQUEST_KINDS)[number];
+	readonly state: (typeof CODE_REQUEST_STATES)[number];
+	readonly result: string | null;
+	readonly change: number | null;
+	readonly code: string | null;
+	readonly paths: readonly string[] | null;
+}
+
+/** A change's description as saved (`qorpera_folder_describe_code_change`): what the change now holds, or why the
+ * picture was not taken (then nothing was saved). */
+export type CloudCompanyCodeDescribed =
+	| { readonly state: "saved"; readonly notice: string | null; readonly picture: boolean }
+	| { readonly state: "refused"; readonly reason: (typeof CODE_PICTURE_REASONS)[number] | CloudCompanyCodeRefusal };
 
 /** The run's own view of the folder, for the node's folder service (its pass opens the view there). */
 export interface CloudCompanyFolderRunView {
@@ -965,6 +1020,8 @@ export class CloudCompanyFolderClient {
 	readonly #signedHooks: CloudCompanyFolderSignedHooks | undefined;
 	/** Hook changes, by operation key, whose call ended without an answer: they may have committed. */
 	readonly #uncertainHooks = new Set<string>();
+	/** The same for an undo or a description of a change. */
+	readonly #uncertainCode = new Set<string>();
 
 	constructor(options: {
 		binding: CloudNativeToolBinding;
@@ -1373,6 +1430,176 @@ export class CloudCompanyFolderClient {
 			phase: input.phase,
 			worker: folderWorker({ ...(input.worker as Record<string, unknown>), folder: request.folder }),
 		};
+	}
+
+	/** One undo or description of a change (20260930720000): a run effect under its own receipt, keyed by the operation
+	 * key, so the same key again answers what the first call answered. A change of authority (QRC01), a deadlock and a
+	 * lost answer are asked again. What SQL raised instead of taking it comes back as `refused`, unless an earlier call
+	 * with the key ended without a checked answer: that call may have been taken, so the outcome is unknown. */
+	async #codeEffect<T>(
+		method: "qorpera_folder_request_code_undo" | "qorpera_folder_describe_code_change",
+		request: { readonly operationKey: string } & Readonly<Record<string, unknown>>,
+		signal: AbortSignal,
+		read: (answer: unknown) => T,
+	): Promise<T | { readonly state: "refused"; readonly reason: CloudCompanyCodeRefusal }> {
+		const refusal = (error: unknown) =>
+			error instanceof CloudCompanyFolderRpcError ? CODE_REFUSALS.get(`${error.code} ${error.detail}`) : undefined;
+		try {
+			return read(
+				await this.#retried(
+					method,
+					{ p_binding: this.#binding, p_request: request },
+					RELEASE_RETRY,
+					signal,
+					(error) => refusal(error) !== undefined,
+				),
+			);
+		} catch (error) {
+			const reason = refusal(error);
+			if (reason !== undefined && !this.#uncertainCode.has(request.operationKey))
+				return { state: "refused", reason };
+			this.#uncertainCode.add(request.operationKey);
+			throw reason === undefined ? error : new CloudCompanyFolderError("unknown");
+		}
+	}
+
+	/** Asks for a change of a repository kept in Qorpera to be taken out of its main code
+	 * (`qorpera_folder_request_code_undo`, 20260930720000): that change alone, or with `andLater` that change and every
+	 * later one. The coding executor serves the request; `codeRequest` says how it stands. An open undo of the same
+	 * change is answered instead of a second one. */
+	async requestCodeUndo(
+		request: {
+			readonly operationKey: string;
+			readonly owner: string;
+			readonly name: string;
+			readonly change: number;
+			readonly andLater: boolean;
+			readonly reason: string;
+			readonly notice?: string;
+		},
+		signal: AbortSignal,
+	): Promise<CloudCompanyCodeUndo> {
+		return this.#codeEffect(
+			"qorpera_folder_request_code_undo",
+			{
+				operationKey: request.operationKey,
+				owner: request.owner,
+				name: request.name,
+				change: request.change,
+				andLater: request.andLater,
+				reason: request.reason,
+				...(request.notice === undefined ? {} : { notice: request.notice }),
+			},
+			signal,
+			(answer): CloudCompanyCodeUndo => {
+				const state = (answer as { state?: unknown } | null)?.state;
+				const input = record(
+					answer,
+					state === "queued"
+						? ["schema", "state", "requestId"]
+						: state === "already"
+							? ["schema", "state", "change", "undoneBy"]
+							: ["schema", "state", "reason"],
+				);
+				if (input.schema !== "qorpera.code-request/v1") invalid();
+				if (state === "queued") return { state, requestId: uuid(input.requestId) };
+				if (state === "already") {
+					if (input.change !== request.change || counter(input.undoneBy) < 1) invalid();
+					return { state, undoneBy: input.undoneBy as number };
+				}
+				const reason = CODE_UNDO_REASONS.find((known) => known === input.reason);
+				if (state !== "refused" || reason === undefined) invalid();
+				return { state: "refused", reason };
+			},
+		);
+	}
+
+	/** How a request of the run's company stands (`qorpera_folder_code_request`, 20260930720000): a read, with no
+	 * receipt. A request that is not this company's is SQL's P0002. */
+	async codeRequest(requestId: string, signal: AbortSignal): Promise<CloudCompanyCodeRequest> {
+		const input = record(
+			await this.#once(
+				"qorpera_folder_code_request",
+				{ p_binding: this.#binding, p_request_id: uuid(requestId) },
+				signal,
+			),
+			["schema", "requestId", "kind", "state", "result", "change", "code", "paths"],
+		);
+		const kind = CODE_REQUEST_KINDS.find((known) => known === input.kind);
+		const state = CODE_REQUEST_STATES.find((known) => known === input.state);
+		if (
+			input.schema !== "qorpera.code-request/v1" ||
+			input.requestId !== requestId ||
+			kind === undefined ||
+			state === undefined ||
+			!nullableString(input.result) ||
+			(input.change !== null && counter(input.change) < 1) ||
+			!nullableString(input.code) ||
+			(input.paths !== null &&
+				(!Array.isArray(input.paths) ||
+					input.paths.length > 100 ||
+					input.paths.some((path) => typeof path !== "string")))
+		)
+			invalid();
+		return {
+			requestId,
+			kind,
+			state,
+			result: input.result,
+			change: input.change as number | null,
+			code: input.code,
+			paths: input.paths as string[] | null,
+		};
+	}
+
+	/** Says what a customer will notice of a change, or gives a picture of it (`qorpera_folder_describe_code_change`,
+	 * 20260930720000): one of the two at least, and what is left out stays as it is. The picture is a file in the part
+	 * of the company folder every agent and member reads; one SQL does not take is answered with why, and nothing is
+	 * saved then. */
+	async describeCodeChange(
+		request: {
+			readonly operationKey: string;
+			readonly owner: string;
+			readonly name: string;
+			readonly change: number;
+			readonly notice?: string;
+			readonly picture?: string;
+		},
+		signal: AbortSignal,
+	): Promise<CloudCompanyCodeDescribed> {
+		return this.#codeEffect(
+			"qorpera_folder_describe_code_change",
+			{
+				operationKey: request.operationKey,
+				owner: request.owner,
+				name: request.name,
+				change: request.change,
+				...(request.notice === undefined ? {} : { notice: request.notice }),
+				...(request.picture === undefined ? {} : { picture: request.picture }),
+			},
+			signal,
+			(answer): CloudCompanyCodeDescribed => {
+				const saved = (answer as { state?: unknown } | null)?.state === "saved";
+				const input = record(
+					answer,
+					saved ? ["schema", "state", "change", "notice", "picture"] : ["schema", "state", "reason"],
+				);
+				if (input.schema !== "qorpera.code-change-described/v1") invalid();
+				if (saved) {
+					const picture = input.picture;
+					if (
+						input.change !== request.change ||
+						!nullableString(input.notice) ||
+						(picture !== null && (typeof picture !== "object" || Array.isArray(picture)))
+					)
+						invalid();
+					return { state: "saved", notice: input.notice, picture: picture !== null };
+				}
+				const reason = CODE_PICTURE_REASONS.find((known) => known === input.reason);
+				if (input.state !== "refused" || reason === undefined) invalid();
+				return { state: "refused", reason };
+			},
+		);
 	}
 
 	/** A page of the run agent's own file routines from the routine index, which the commit updates with the files (thin

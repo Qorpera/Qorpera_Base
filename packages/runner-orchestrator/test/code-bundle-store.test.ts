@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
@@ -241,6 +241,171 @@ describe("createCodeBundleStore", () => {
 		await stopped.abort();
 		expect(readdirSync(folder)).toEqual([]);
 		await expect(store.find(TARGET, name)).resolves.toBeNull();
+	});
+
+	it("hands a stored bundle out for a restore: its manifest, and exactly its bytes in pieces of 1 MiB, read as they are taken", async () => {
+		const { store, folder, storage } = setup();
+		// Two whole pieces and a part of one.
+		const bytes = randomBytes(2 * 1024 ** 2 + 4321),
+			name = codeBundleName(at(0), MAIN);
+		const writer = await store.begin(TARGET, { expectedBytes: bytes.length });
+		await writer.write(bytes);
+		const manifest = await writer.commit(name, facts(bytes, at(0)));
+		/** The files this process holds open in the repository's folder. */
+		const held = () =>
+			readdirSync("/proc/self/fd").filter((fd) => {
+				try {
+					return realpathSync(join("/proc/self/fd", fd)).startsWith(folder);
+				} catch {
+					return false;
+				}
+			}).length;
+
+		const asserted = storage.asserted;
+		const read = await store.read(TARGET, name);
+		expect(read.manifest).toEqual(manifest);
+		// Nothing is opened before a piece is taken.
+		expect(held()).toBe(0);
+		expect(storage.asserted).toBe(asserted + 1);
+		const pieces: Buffer[] = [];
+		for await (const piece of read.pieces) {
+			pieces.push(Buffer.from(piece));
+			expect(held()).toBe(1);
+		}
+		expect(pieces.map((piece) => piece.length)).toEqual([1024 ** 2, 1024 ** 2, 4321]);
+		expect(digest(Buffer.concat(pieces))).toBe(manifest.sha256);
+		expect(held()).toBe(0);
+		// The storage was checked again when the file was opened.
+		expect(storage.asserted).toBe(asserted + 2);
+		// A second pass reads the file again.
+		const again: Buffer[] = [];
+		for await (const piece of read.pieces) again.push(Buffer.from(piece));
+		expect(Buffer.concat(again).equals(bytes)).toBe(true);
+
+		// A reader that stops lets the file go.
+		for await (const piece of read.pieces) {
+			expect(piece.length).toBe(1024 ** 2);
+			break;
+		}
+		await store.companies();
+		expect(held()).toBe(0);
+		// So does one whose caller gave up between two pieces, with the caller's own reason.
+		const gone = new AbortController(),
+			reason = new Error("the job yielded");
+		const stopped = (await store.read(TARGET, name, gone.signal)).pieces[Symbol.asyncIterator]();
+		expect((await stopped.next()).done).toBe(false);
+		gone.abort(reason);
+		await expect(stopped.next()).rejects.toBe(reason);
+		await store.companies();
+		expect(held()).toBe(0);
+
+		// What `find` does not answer is not handed out: no such bundle, another repository's or company's name for it.
+		for (const [target, bundle] of [
+			[TARGET, codeBundleName(at(1), MAIN)],
+			[{ ...TARGET, name: "other" }, name],
+			[{ ...TARGET, companyId: OTHER }, name],
+		] as const)
+			await expect(store.read(target, bundle)).rejects.toThrow("CODE_BUNDLE_MISSING");
+		expect(readdirSync(join(folder, ".."))).toEqual(["app"]);
+		for (const bad of ["", "../x", `${name}.bundle`])
+			await expect(store.read(TARGET, bad)).rejects.toThrow("INVALID_CODE_BUNDLE");
+		await expect(store.read({ ...TARGET, owner: ".." }, name)).rejects.toThrow("INVALID_CODE_BUNDLE");
+		// A file cut short after it was found: the pieces fail, and nothing of another size is handed out as the bundle.
+		const late = await store.read(TARGET, name);
+		truncateSync(join(folder, `${name}.bundle`), 10);
+		await expect(
+			(async () => {
+				for await (const _ of late.pieces) throw new Error("a piece came");
+			})(),
+		).rejects.toThrow("CODE_BUNDLE_DIFFERS");
+		expect(held()).toBe(0);
+		await expect(store.read(TARGET, name)).rejects.toThrow("CODE_BUNDLE_MISSING");
+		// A link where the bundle was is no stored bundle.
+		rmSync(join(folder, `${name}.bundle`));
+		writeFileSync(join(folder, "elsewhere"), bytes, { mode: 0o600 });
+		symlinkSync(join(folder, "elsewhere"), join(folder, `${name}.bundle`));
+		await expect(store.read(TARGET, name)).rejects.toThrow("CODE_BUNDLE_MISSING");
+		storage.mounted = false;
+		await expect(store.read(TARGET, name)).rejects.toThrow("CODING_STORAGE_MOUNT_UNCONFIRMED");
+	});
+
+	it("closes a bundle's file that is opened after its reader stopped waiting", async () => {
+		// The storage's check can be made to hang (a hard mount that stalls), one use at a time.
+		const stalls: (() => void)[] = [];
+		let stalling = false;
+		const { store, folder } = setup({
+			assert: () =>
+				new Promise<void>((resolve) => {
+					if (stalling) stalls.push(resolve);
+					else resolve();
+				}),
+		});
+		const kept = await put(store, TARGET, "a stored bundle", at(0));
+		/** The files this process holds open in the repository's folder. */
+		const held = () =>
+			readdirSync("/proc/self/fd").filter((fd) => {
+				try {
+					return realpathSync(join("/proc/self/fd", fd)).startsWith(folder);
+				} catch {
+					return false;
+				}
+			}).length;
+		const gone = new AbortController();
+		const read = await store.read(TARGET, kept.name, gone.signal);
+		// The first piece is asked for, and the check before the file is opened hangs. Another use waits behind it.
+		stalling = true;
+		const first = read.pieces[Symbol.asyncIterator]().next();
+		await vi.waitFor(() => expect(stalls).toHaveLength(1));
+		const behind = store.companies();
+		// The reader gives up (its job yielded) while the file is being opened.
+		gone.abort(new Error("the job yielded"));
+		await expect(first).rejects.toThrow("the job yielded");
+		expect(held()).toBe(0);
+		// The check answers. The work goes on and opens the file nobody waits for.
+		stalls[0]?.();
+		await vi.waitFor(() => expect(stalls).toHaveLength(2));
+		expect(held()).toBe(1);
+		// The use behind it ends, and then the store closes the file: the close is owed, and waited its turn in the line.
+		// By the end of the use after it, the file is closed.
+		stalling = false;
+		stalls[1]?.();
+		await expect(behind).resolves.toEqual([COMPANY]);
+		await store.companies();
+		expect(held()).toBe(0);
+		// The bundle is still handed out whole.
+		const pieces: Buffer[] = [];
+		for await (const piece of (await store.read(TARGET, kept.name)).pieces) pieces.push(Buffer.from(piece));
+		expect(Buffer.concat(pieces).toString()).toBe("a stored bundle");
+		expect(held()).toBe(0);
+
+		// The same for a reader whose wait ran out: the file opened after that is closed too.
+		const slow = setup({
+			stepMs: 500,
+			assert: () =>
+				new Promise<void>((resolve) => {
+					if (stalling) stalls.push(resolve);
+					else resolve();
+				}),
+		});
+		const late = await put(slow.store, TARGET, "a stored bundle", at(0));
+		const slowly = await slow.store.read(TARGET, late.name);
+		stalls.length = 0;
+		stalling = true;
+		await expect(slowly.pieces[Symbol.asyncIterator]().next()).rejects.toThrow("CODE_BUNDLE_STORE_TIMEOUT");
+		stalling = false;
+		stalls[0]?.();
+		// The use behind the open, and then one behind the close.
+		await slow.store.companies();
+		await slow.store.companies();
+		expect(
+			readdirSync("/proc/self/fd").filter((fd) => {
+				try {
+					return realpathSync(join("/proc/self/fd", fd)).startsWith(slow.folder);
+				} catch {
+					return false;
+				}
+			}),
+		).toEqual([]);
 	});
 
 	it("removes what a dead write left at the repository's next begin, and nothing else", async () => {
