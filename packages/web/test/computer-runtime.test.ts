@@ -93,6 +93,8 @@ function setup(
 		/** What the member's starts of the desktop answer, in turn (then started), and a gate each waits on. */
 		startAnswers: [] as ({ outcome: "started" | "running" } | { code: string })[],
 		startGate: undefined as Promise<void> | undefined,
+		/** A gate the next look waits on before it is answered (review r1 F3 of #1681): a look in flight. */
+		lookGate: undefined as Promise<void> | undefined,
 		/** The start explorer's own answer to a start (the machine, and the request's signal), and its screens: per machine,
 		 * off, or on with the picture of that number. */
 		startHook: undefined as ((machineId: string, signal: AbortSignal | undefined) => Promise<Response>) | undefined,
@@ -203,6 +205,11 @@ function setup(
 			expect(init?.cache).toBe("no-store");
 			const asked = headers.get("if-none-match");
 			looks.push({ url: url.slice(bridge.length), etag: asked ? asked.slice(1, -1) : null });
+			if (state.lookGate) {
+				const gate = state.lookGate;
+				state.lookGate = undefined;
+				await gate;
+			}
 			const screen = state.screens?.get(url.slice(bridge.length).split("/")[4] as string);
 			const answer =
 				screen === undefined
@@ -732,6 +739,80 @@ describe("an agent's computer window", () => {
 		action(r)!.click();
 		await flush();
 		expect(status(r)).toBe("The screen could not be turned on. Try again.");
+	});
+
+	it("turns the screen on for the member who holds the desktop, and keeps Hand back reachable without a picture (review r1 F1 of #1681)", async () => {
+		const { s, p } = await holding();
+		const handBack = () => {
+			const button = p.el.querySelector<HTMLButtonElement>(".computer-loading .computer-loading-hand-back");
+			return button?.hidden ? null : button;
+		};
+		expect(controlButton(p)?.textContent).toBe("Hand back");
+		expect(handBack()).toBeNull();
+		// The desktop the member holds is off (it stopped itself, or never ran: a take-over does not check it).
+		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		await advance(LOOK_EVERY_MS * 3);
+		expect(status(p)).toBe("The computer is on, but its screen is off.");
+		expect(action(p)?.textContent).toBe("Turn it on");
+		expect(handBack()?.textContent).toBe("Hand back");
+		// Turn it on goes through for the holder: the start runs, and the picture comes.
+		s.state.fallback = { picture: 3 };
+		action(p)!.click();
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(s.starts).toHaveLength(1);
+		expect(mark(p)).toBe("Live");
+		expect(handBack()).toBeNull();
+		expect(controlButton(p)?.textContent).toBe("Hand back");
+		// Any other state without a picture under the page's own hold: Hand back alone.
+		s.state.fallback = { code: "SCREEN_HIDDEN" };
+		await advance(LOOK_EVERY_MS * 3);
+		expect(status(p)).toBe("The screen is hidden because it may show files you can't open.");
+		expect(action(p)).toBeNull();
+		expect(handBack()?.textContent).toBe("Hand back");
+		handBack()!.click();
+		await flush();
+		expect(calls(s, "qorpera_member_hand_back_machine_desktop")).toHaveLength(1);
+		await advance(LOOK_EVERY_MS);
+		expect(handBack()).toBeNull();
+	});
+
+	it("starts no second time for a look that began before a slow start answered (review r1 F3 of #1681)", async () => {
+		const s = setup();
+		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		const p = panel(s);
+		await flush();
+		let open = () => {};
+		s.state.startGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		action(p)!.click();
+		await flush();
+		expect(s.starts).toHaveLength(1);
+		// The start takes longer than START_AGAIN_MS; the looks meanwhile start nothing.
+		await advance(START_AGAIN_MS + 1000);
+		expect(s.starts).toHaveLength(1);
+		// A look is on its way when the start answers: it began before the answer and comes back after it, screen off.
+		let release = () => {};
+		s.state.lookGate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		await advance(1000);
+		const asked = s.looks.length;
+		// Time passes while it waits; then the start answers that it started, then the look comes back with the screen off
+		// (it began before the answer); the looks after it see the drawn desktop.
+		await advance(100);
+		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" });
+		s.state.fallback = { picture: 4 };
+		open();
+		await flush();
+		release();
+		await flush();
+		expect(s.starts).toHaveLength(1);
+		await advance(1000);
+		expect(s.looks.length).toBeGreaterThan(asked);
+		expect(s.starts).toHaveLength(1);
+		expect(mark(p)).toBe("Live");
 	});
 
 	it("drops the wish when the member chooses another machine or closes the window, and after 3 minutes (20260930714000)", async () => {

@@ -136,7 +136,22 @@ export class ComputerPanel {
 	readonly #detail = h("p", { class: "computer-loading-detail", hidden: true });
 	/** Wake it, Keep watching or Try again, as the state asks. */
 	readonly #action = h("button", { type: "button", class: "computer-retry", hidden: true });
-	readonly #loading = h("div", { class: "computer-loading" }, this.#spinner, this.#status, this.#detail, this.#action);
+	/** Hand back, while this page holds the desktop and no picture shows (the controls under the picture are gone then;
+	 * review r1 of #1681): beside Turn it on when the screen is off, alone in every other state without a picture. */
+	readonly #loadingHandBack = h(
+		"button",
+		{ type: "button", class: "computer-retry computer-loading-hand-back", hidden: true },
+		t("Hand back"),
+	);
+	readonly #loading = h(
+		"div",
+		{ class: "computer-loading" },
+		this.#spinner,
+		this.#status,
+		this.#detail,
+		this.#action,
+		this.#loadingHandBack,
+	);
 	readonly #body = h("div", { class: "computer-panel-body" }, this.#loading);
 	/** The preview's own way out, top right; the entered frame has its Back button instead. */
 	readonly #closeButton = h("button", {
@@ -325,6 +340,7 @@ export class ComputerPanel {
 			{ signal },
 		);
 		this.#controlHandBack.addEventListener("click", () => void this.handBack(), { signal });
+		this.#loadingHandBack.addEventListener("click", () => void this.handBack(), { signal });
 		// The ledger's word goes first: a hold given back (here, on the card, as the page goes) takes no more input and is
 		// never renewed. The ledger itself gives everything back as the page goes.
 		const unsubscribeHolds = this.#ledger.subscribe(() => this.#holdsChanged());
@@ -654,9 +670,16 @@ export class ComputerPanel {
 					// a start on its way, or one a moment ago, is waited for.
 					if (this.#wishFor(machine.machineId)) {
 						// A start answered that the desktop runs, and a look begun after it finds it off: it failed.
-						if (this.#startAnswered?.machineId === machine.machineId && begun >= this.#startAnswered.at) {
-							this.#endStart(machine.machineId, "startFailed");
-							this.#delay = SCREEN_OFF_EVERY_MS;
+						// A start answered that the desktop runs: a look begun after it that finds the screen off means it
+						// failed; one begun before it tells nothing yet, and no second start goes (review r1 F3 of #1681).
+						if (this.#startAnswered?.machineId === machine.machineId) {
+							if (begun >= this.#startAnswered.at) {
+								this.#endStart(machine.machineId, "startFailed");
+								this.#delay = SCREEN_OFF_EVERY_MS;
+							} else {
+								this.#unpicture("turning");
+								this.#delay = BUSY_RETRY_MS;
+							}
 							break;
 						}
 						if (!this.#turningOn && Date.now() >= this.#startedAt + START_AGAIN_MS)
@@ -943,6 +966,8 @@ export class ComputerPanel {
 		// here; Take over makes it this window's, Hand back gives it back (review r14).
 		const elsewhere = offer && this.#pick()?.control?.mine === true;
 		this.#controls.hidden = !(picture && (holding || release || offer));
+		// Without a picture the controls are gone: this page's own hold keeps its Hand back in the state's place.
+		this.#loadingHandBack.hidden = !(holding && !picture);
 		this.#controls.classList.toggle("is-holding", holding || release !== undefined);
 		this.#controls.classList.toggle("is-elsewhere", elsewhere);
 		this.#controlHandBack.hidden = !elsewhere;
