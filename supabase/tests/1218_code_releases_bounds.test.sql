@@ -188,8 +188,15 @@ begin
 	perform pg_temp.rel_upload('zz-window', 1, 'zz-window:1');
 	perform pg_temp.bnd_rows('zz-window', 2, 200, false);
 	perform pg_temp.base_assert(pg_temp.rel_page('zz-window') -> 'ready' -> 'change' = '1', 'within the newest 200');
+	-- Landings refused or in conflict move no main and take no place in the window (the review of #1686).
+	insert into public.qorpera_code_changes (environment_id, owner, name, n, profile_id, kind, state, head_sha, worker_id,
+		sequence, title, refusal)
+	select pg_temp.rec_here(), 'company', 'zz-window', g, pg_temp.rel_company(), 'landing', 'refused', pg_temp.rec_sha('h' || g),
+		extensions.gen_random_uuid(), 1, 'Refused ' || g, '{"code":"CODE_HOST_LAND_CONFLICT","paths":[]}'::jsonb
+	from generate_series(201, 203) g;
+	perform pg_temp.base_assert(pg_temp.rel_page('zz-window') -> 'ready' -> 'change' = '1', 'refusals take no place in the window');
 	-- One change more: change 1 is no longer among the newest 200, and is not offered.
-	perform pg_temp.bnd_rows('zz-window', 201, 201, false);
+	perform pg_temp.bnd_rows('zz-window', 204, 204, false);
 	p := pg_temp.rel_page('zz-window');
 	perform pg_temp.base_assert(p -> 'ready' = 'null' and p -> 'waiting' = '201'
 		and public.qorpera_code_release_point(pg_temp.rec_shop('zz-window')) is null, 'beyond the newest 200: ' || p::text);

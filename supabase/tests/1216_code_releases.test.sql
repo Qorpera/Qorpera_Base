@@ -325,7 +325,7 @@ begin
 		foreach v_function in array array['public.qorpera_code_site_valid(jsonb)', 'public.qorpera_code_change_site_valid(jsonb)',
 			'public.qorpera_code_release_live(public.qorpera_code_repositories)',
 			'public.qorpera_code_release_point(public.qorpera_code_repositories,integer,boolean)',
-			'public.qorpera_code_site_slug(uuid,text,text,text)', 'public.qorpera_code_site_prune(uuid)',
+			'public.qorpera_code_site_slugs(text,text)', 'public.qorpera_code_site_prune(uuid)',
 			'public.qorpera_code_release_index(public.qorpera_code_repositories)',
 			'public.qorpera_code_site_repository(text,text,uuid)', 'public.qorpera_code_release_switch(uuid,uuid)'] loop
 			perform pg_temp.base_assert(not has_function_privilege(v_role, v_function, 'EXECUTE'), v_function || ' is closed to ' || v_role);
@@ -573,6 +573,33 @@ begin
 	perform pg_temp.base_assert(v = jsonb_build_object('summary', v_site_words || ' The checks failed for this session 3 times '
 		|| 'in a row: instead of another follow-up that tries again, narrow the change or drop it.',
 		'reason', 'CODING_CHECKS_SITE_REFUSED', 'outcome', 'CODING_CHECKS_SITE_REFUSED'), 'the third round: ' || v::text);
+end $$;
+
+-- publish_site makes a site holding the company's lock on making one (the review of #1686): a repository's first upload
+-- waits on it before it counts the ten (1219 shows the wait; an agent's run is seen by this connection alone). Here,
+-- before any upload of this file took that lock in this one transaction.
+do $$
+declare v jsonb; v_review uuid;
+begin
+	perform pg_temp.base_assert(not exists (select 1 from pg_locks lock where lock.locktype = 'advisory'
+		and lock.pid = pg_backend_pid() and lock.objsubid = 1 and ((lock.classid::bigint << 32) | lock.objid::bigint)
+			= hashtextextended('qorpera.company-sites:' || pg_temp.rel_company(), 0)), 'no lock before');
+	v_review := extensions.gen_random_uuid();
+	insert into public.qorpera_action_reviews (id, profile_id, run_id, call_id, staff_agent_id, tool_name, effect,
+		argument_sha256, action, decision, built_in, reason, reviewer_model, approver_scope, answer, answered_at, consumed_at,
+		consumed_run_id)
+	values (v_review, pg_temp.rel_company(), (pg_temp.c3_alice() ->> 'runId')::uuid, 'rel-lock-review',
+		'92400000-0000-4000-8000-000000000030', 'publish_site', 'external', repeat('c', 64), jsonb_build_object('title',
+			'Publish a new password-protected website', 'target', null, 'details', '{}'::jsonb, 'arguments',
+			jsonb_build_object('slug', 'brand-lock', 'source', 'product/lock')::text),
+		'ask', 'access_change', 'Reviewed.', 'gpt-6-luna', 'owners_admins', 'allow_once', clock_timestamp(), clock_timestamp(),
+		(pg_temp.c3_alice() ->> 'runId')::uuid);
+	v := public.qorpera_site_publish_begin(pg_temp.c3_alice(), 'rel-lock-call', pg_temp.rel_publish('brand-lock', 'product/lock'),
+		v_review);
+	perform pg_temp.base_assert(v ->> 'mode' = 'new' and exists (select 1 from pg_locks lock where lock.locktype = 'advisory'
+		and lock.pid = pg_backend_pid() and lock.objsubid = 1 and ((lock.classid::bigint << 32) | lock.objid::bigint)
+			= hashtextextended('qorpera.company-sites:' || pg_temp.rel_company(), 0)), 'publish_site holds the company''s lock: ' || v::text);
+	delete from public.qorpera_company_sites where slug = 'brand-lock';
 end $$;
 
 -- 4. The due list ---------------------------------------------------------------------------------------------------------
@@ -1238,4 +1265,17 @@ begin
 	perform public.qorpera_leave_hosted_profile(pg_temp.rel_company());
 	perform pg_temp.base_claims('service_role');
 	perform pg_temp.base_assert(pg_temp.rec_files(20, 'a3-chain') -> 'index' -> 'live' -> 'by' = 'null', 'a member who left');
+end $$;
+
+-- 10. What's new lists every repository with a site, whatever the history before it ------------------------------------
+-- (The review of #1686, F5.) Thirteen repositories here made a site once and have none now; four are live and two are
+-- uploaded, not live yet. The ten: the four live, the two others with a site, then those with none, a problem first,
+-- the newest first. By name alone, company/up (a site, not live) fell out behind the history.
+do $$
+declare v jsonb := pg_temp.rel_read();
+begin
+	perform pg_temp.base_assert((select jsonb_agg(site -> 'name' order by place) from jsonb_array_elements(v -> 'sites')
+			with ordinality listed(site, place))
+		= '["a1-web","a2-moved","a3-chain","a4-prune","due","up","given","tenth","full","abandoned"]', 'the ten: '
+		|| (select string_agg(site ->> 'name', ', ') from jsonb_array_elements(v -> 'sites') site));
 end $$;

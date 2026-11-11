@@ -31,7 +31,7 @@
 --    only as CODING_CONTROL_UNCONFIRMED.
 -- 4. The member's calls: qorpera_list_code_releases (any member), qorpera_put_code_release_live and
 --    qorpera_code_release_back (owners and admins).
--- 5. Fifteen existing functions change, each by anchors on its definition as it is (an anchor that is not found
+-- 5. Sixteen existing functions change, each by anchors on its definition as it is (an anchor that is not found
 --    exactly once fails the migration), and each changed body carries the marker 20260930729000:
 --    * qorpera_code_checks_switch answers `site` too;
 --    * qorpera_code_change_report_valid and qorpera_record_code_change take v3;
@@ -41,10 +41,12 @@
 --    * qorpera_coding_turn_failure: CODING_CHECKS_SITE_REFUSED keeps the executor's words and counts as a round;
 --    * qorpera_site_publish_check, qorpera_site_publish_begin and qorpera_site_unpublish: only Qorpera publishes or
 --      takes down a repository's site (members still take one offline in Sites), and publish_site never publishes a
---      folder under code/;
+--      folder under code/; qorpera_site_publish_begin and qorpera_site_share_app make one site at a time in a company,
+--      as a repository's first upload does, so the ten hold;
 --    * qorpera_list_company_sites: a code site only while it is live, its row exactly qorpera.company-site/v1;
 --    * qorpera_site_abandoned: never a code site.
---    * qorpera_unpublish_company_site: a member who takes a repository's site offline has its list file written again.
+--    * qorpera_unpublish_company_site: a member who takes a repository's site offline locks its registry row first and
+--      has its list file written again.
 --    * qorpera_member_app_layout_valid (20260930728000): a member's own apps drawer may place the bare key whats-new,
 --      the What's new page, beside concepts and sites.
 --
@@ -52,7 +54,10 @@
 -- qorpera_code_hosts_deleting, 42501 otherwise, and care's holder rule: an executor that is not the environment's one
 -- enabled executor on that machine gets nothing, or `lost`). Section 4 role authenticated, as a member of the company.
 -- Locks, always in this order: the company's profile row (a key share, where a row with its key is written), the
--- repository's registry row, the site row, then version rows. The member's two writes give up after 3 s of waiting.
+-- repository's registry row, the company's lock on making a site (an advisory lock, only while a site is made), the
+-- site row (another company's abandoned site that a new site takes the name of, locked and checked again before it
+-- goes), then version rows. Every call of a repository's site keeps it, the member's taking it offline in Sites too.
+-- The member's two writes give up after 3 s of waiting.
 
 set local lock_timeout = '3s';
 
@@ -258,7 +263,7 @@ $$;
 -- on the repository's site (unless p_versioned is false: the due list asks before the upload); and no row from L up to
 -- r is reverted by a row numbered above r, or lost to a restore numbered above r (a change taken out later is never
 -- released inside it; a row a restore at or below r went back past is no part of r). The newest is looked for among
--- the newest 200 rows after L.
+-- the newest 200 rows after L that moved main.
 -- What it holds: the rows after L up to r that are landed, of kind landing, undo or restore, but an undo whose every
 -- target is among them (the two cancel). Listed: those with a notice, newest first, at most 20. The token is a SHA-256
 -- over the repository, the live release, r, its commit and tree, and every row after L up to r (number, state, notice
@@ -279,6 +284,8 @@ begin
 	from (select candidate.* from public.qorpera_code_changes candidate
 		where candidate.environment_id = p_repository.environment_id and candidate.owner = p_repository.owner
 			and candidate.name = p_repository.name and candidate.n > v_floor and (p_change is null or candidate.n = p_change)
+			-- (Rows that moved main: a refused or conflicting landing takes no place in the window.)
+			and candidate.main_after is not null
 		order by candidate.n desc limit 200) ready
 	where ready.state = 'landed' and ready.checks_state in ('passed','inherited') and ready.site_state = 'made'
 		and (not p_versioned or exists (select 1 from public.qorpera_company_site_versions version
@@ -326,25 +333,22 @@ begin
 		'count', v_count, 'listed', to_jsonb(v_listed), 'token', v_token, 'agent', v_agent);
 end $$;
 
--- A free name for a repository's new site (step 4, 7.2): the one its checks file asks for (p_wanted) when that is a
--- valid site name and free; else the repository's name with _ and . made -, cut to 48 and trimmed of hyphens
--- (`project` when that leaves nothing); else that cut to 46 with -2 to -9. Free: no site has it, or the one that has it
--- is abandoned (its first upload never finished, a day ago; never a code site), and the caller deletes that one. Null
--- when none is free.
-create function public.qorpera_code_site_slug(p_environment_id uuid, p_owner text, p_name text, p_wanted text)
-returns text language plpgsql stable set search_path = '' as $$
-declare v_base text := coalesce(nullif(btrim(left(lower(translate(p_name, '_.', '--')), 48), '-'), ''), 'project');
-	v_slug text;
-begin
-	foreach v_slug in array array[p_wanted, v_base] || array(select coalesce(nullif(btrim(left(v_base, 46), '-'), ''),
-		'project') || '-' || place from generate_series(2, 9) place) loop
-		continue when v_slug is null or not public.qorpera_site_slug_valid(v_slug);
-		if not exists (select 1 from public.qorpera_company_sites site where site.slug = v_slug
-			and not public.qorpera_site_abandoned(site)) then
-			return v_slug; end if;
-	end loop;
-	return null;
-end $$;
+-- The names a repository's new site may take, in the order they are tried (step 4, 7.2): the one its checks file asks
+-- for (p_wanted); the repository's name with _ and . made -, cut to 48 and trimmed of hyphens (`project` when that leaves
+-- nothing); then that cut to 46 with -2 to -9. Only valid site names (qorpera_site_slug_valid), each once. Whether one
+-- is free is the caller's to find, under the lock of the site that has it (qorpera_code_site_begin).
+create function public.qorpera_code_site_slugs(p_name text, p_wanted text)
+returns text[] language sql immutable set search_path = '' as $$
+	select coalesce(array_agg(candidate.slug order by candidate.place), '{}') from (
+		select distinct on (named.slug) named.slug, named.place from (
+			select tried.slug, tried.place
+			from (select coalesce(nullif(btrim(left(lower(translate(p_name, '_.', '--')), 48), '-'), ''), 'project') as name) base
+			cross join lateral unnest(array[p_wanted, base.name] || array(select coalesce(nullif(btrim(left(base.name, 46), '-'),
+				''), 'project') || '-' || number from generate_series(2, 9) number)) with ordinality tried(slug, place)
+		) named
+		where public.qorpera_site_slug_valid(named.slug)
+		order by named.slug, named.place) candidate
+$$;
 
 -- Deletes the versions of a repository's site that neither Go back nor What's new needs any more, and answers how many
 -- (step 4, D13): every ready or kept version but the live one, the versions the live release's chain of Go backs names
@@ -455,7 +459,8 @@ end $$;
 -- not named yet). p_manifest, exactly: {"manifestSha256":"<64 hex>","files":<n>,"bytes":<n>}, which the pass computed
 -- from the tree; files and bytes are the row's site's. A new site: kind files, the repository's own, source
 -- code/<owner>/<name>, the row's site title, made for the row's agent, a new password, its name by
--- qorpera_code_site_slug. One upload a site is open: a new version ends the site's other uploads.
+-- qorpera_code_site_slugs, the first free or abandoned one. One upload a site is open: a new version ends the site's
+-- other uploads.
 -- Answers {"schema":"qorpera.code-site-begin/v1","state":"uploading"|"ready"|"live"|"kept","versionId","slug",
 -- "listed":<bool>}, or {…,"state":"refused","code":…} and then writes nothing: SITE_ROW_GONE (no such row, or it made
 -- no site), SITE_TREE_DIFFERS (files or bytes not the row's, or the tree's version has another manifest), SITE_LIMIT
@@ -466,7 +471,8 @@ create function public.qorpera_code_site_begin(p_owner text, p_machine_id_sha256
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare v_repository public.qorpera_code_repositories%rowtype; v_row public.qorpera_code_changes%rowtype;
 	v_site public.qorpera_company_sites%rowtype; v_version public.qorpera_company_site_versions%rowtype; v_slug text;
-	v_now timestamptz := clock_timestamp(); c_schema constant text := 'qorpera.code-site-begin/v1';
+	v_holder public.qorpera_company_sites%rowtype; v_now timestamptz := clock_timestamp();
+	c_schema constant text := 'qorpera.code-site-begin/v1';
 begin
 	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
 	if p_environment_id is null or p_repository_owner is null or p_name is null or p_change is null or p_change < 1
@@ -497,19 +503,31 @@ begin
 		select * into v_site from public.qorpera_company_sites where id = v_repository.site_id for update;
 	end if;
 	if v_site.id is null then
-		-- A code site counts from its first upload, also while it waits in What's new.
+		-- The company makes one site at a time (publish_site and share_app take the same lock before they count), so
+		-- the count holds until the new site is in. A code site counts from its first upload, also while it waits in
+		-- What's new.
+		perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('qorpera.company-sites:'
+			|| v_repository.profile_id::text, 0));
 		if (select count(*) from public.qorpera_company_sites site where site.profile_id = v_repository.profile_id) >= 10 then
 			return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_LIMIT'); end if;
-		v_slug := public.qorpera_code_site_slug(p_environment_id, p_repository_owner, p_name, v_row.site ->> 'name');
-		if v_slug is null then
+		-- Each name in turn: the site that has it is locked, and taken over only when it is still abandoned then (it may
+		-- have gone live meanwhile); a name another call takes at the same moment is passed over.
+		foreach v_slug in array public.qorpera_code_site_slugs(p_name, v_row.site ->> 'name') loop
+			v_holder := null;
+			select site.* into v_holder from public.qorpera_company_sites site where site.slug = v_slug for update;
+			continue when v_holder.id is not null and not public.qorpera_site_abandoned(v_holder);
+			if v_holder.id is not null then
+				delete from public.qorpera_company_sites where id = v_holder.id; end if;
+			insert into public.qorpera_company_sites (profile_id, environment_id, slug, title, source_path,
+				created_by_staff_agent_id, code_owner, code_name)
+			values (v_repository.profile_id, p_environment_id, v_slug, v_row.site ->> 'title',
+				format('code/%s/%s', p_repository_owner, p_name), v_row.staff_agent_id, p_repository_owner, p_name)
+			on conflict (slug) do nothing
+			returning * into v_site;
+			exit when v_site.id is not null;
+		end loop;
+		if v_site.id is null then
 			return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_NAME_TAKEN'); end if;
-		-- (The site that had the name, if any, is abandoned.)
-		delete from public.qorpera_company_sites where slug = v_slug;
-		insert into public.qorpera_company_sites (profile_id, environment_id, slug, title, source_path,
-			created_by_staff_agent_id, code_owner, code_name)
-		values (v_repository.profile_id, p_environment_id, v_slug, v_row.site ->> 'title',
-			format('code/%s/%s', p_repository_owner, p_name), v_row.staff_agent_id, p_repository_owner, p_name)
-		returning * into v_site;
 		insert into public.qorpera_company_site_secrets (site_id, password) values (v_site.id, public.qorpera_site_new_password());
 		update public.qorpera_code_repositories set site_id = v_site.id
 		where environment_id = p_environment_id and owner = p_repository_owner and name = p_name;
@@ -820,7 +838,8 @@ end $$;
 --  "ready":{"change","token","agent":"<staff agent id>"|null,"changes":[{"key":<n>,"notice","picture":"<path>"|null,
 --   "at","wasLive":<bool>}],"quiet":<held changes not listed>}|null,
 --  "waiting":<n>,"problem":"<CODE>"|null}]}
--- A repository is listed when it has a site or made one (at most 10, by owner and name). A listed change has a notice
+-- A repository is listed when it has a site or made one: at most 10, every one with a site first (live, then not),
+-- then those with none, a problem first, the newest first. A listed change has a notice
 -- (newest first, at most 20); picture is the copy of a commit's picture under changes/, or the folder file an agent
 -- gave; wasLive says it was in a release a Go back took off. waiting counts the landed changes above the ready point
 -- (above the live one when nothing is ready).
@@ -833,14 +852,23 @@ declare v_role public.qorpera_profile_role := public.qorpera_member_role(p_profi
 begin
 	if auth.role() is distinct from 'authenticated' or auth.uid() is null or v_role is null then
 		raise exception 'Releases unavailable' using errcode = '42501'; end if;
+	-- At most ten, chosen by what a member can act on: every repository with a site (a company has at most ten sites),
+	-- the live ones first; then those that made a site and have none now (never uploaded, or taken offline), a problem
+	-- first, the newest change first. A repository's history never hides a site.
 	for v_repository in select repository.* from public.qorpera_code_repositories repository
 		join public.qorpera_company_files file on file.environment_id = repository.environment_id
 			and file.profile_id = p_profile_id and file.core = 'folder-v2'
-		where repository.profile_id = p_profile_id and (repository.site_id is not null
-			or exists (select 1 from public.qorpera_code_changes made
-				where made.environment_id = repository.environment_id and made.owner = repository.owner
-					and made.name = repository.name and made.site_state = 'made'))
-		order by repository.owner collate "C", repository.name collate "C" limit 10
+		left join public.qorpera_company_sites site on site.id = repository.site_id
+		left join lateral (select made.created_at from public.qorpera_code_changes made
+			where made.environment_id = repository.environment_id and made.owner = repository.owner
+				and made.name = repository.name and made.site_state = 'made'
+			order by made.n desc limit 1) newest on true
+		where repository.profile_id = p_profile_id and (site.id is not null or newest.created_at is not null)
+		order by case when site.current_version_id is not null then 0 when site.id is not null then 1 else 2 end,
+			case when site.id is null then repository.site_problem is null end,
+			case when site.id is null then newest.created_at end desc,
+			repository.owner collate "C", repository.name collate "C"
+		limit 10
 	loop
 		v_site := null; v_prior := null;
 		select * into v_site from public.qorpera_company_sites where id = v_repository.site_id;
@@ -1135,6 +1163,11 @@ select pg_temp.code_releases_patch('public.qorpera_site_publish_check(jsonb,text
 	$new$		raise exception 'SITE_LIMIT: the company has 10 sites, counting a project''s site that waits in What''s new; update or unpublish one first'$new$]);
 
 select pg_temp.code_releases_patch('public.qorpera_site_publish_begin(jsonb,text,jsonb,uuid)'::regprocedure, array[
+	$old$	-- The site, locked for the rest of the publish.$old$,
+	$new$	-- 20260930729000: the company makes one site at a time (a repository's site at its first upload takes the same
+	-- lock before it counts), so the count of its ten below holds until the new site is in.
+	perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('qorpera.company-sites:' || v_run.profile_id::text, 0));
+	-- The site, locked for the rest of the publish.$new$,
 	$old$		or char_length(v_source) not between 1 and 4096 or v_source ~ '[[:cntrl:]]' then
 		raise exception 'Site publish request is invalid' using errcode = '22023'; end if;$old$,
 	$new$		or char_length(v_source) not between 1 and 4096 or v_source ~ '[[:cntrl:]]' then
@@ -1154,15 +1187,30 @@ select pg_temp.code_releases_patch('public.qorpera_site_publish_begin(jsonb,text
 	$old$		raise exception 'SITE_LIMIT: the company has 10 sites, as many as it can have; update or unpublish one first'$old$,
 	$new$		raise exception 'SITE_LIMIT: the company has 10 sites, counting a project''s site that waits in What''s new; update or unpublish one first'$new$]);
 
+-- share_app makes a site as publish_site does: one at a time in the company.
+select pg_temp.code_releases_patch('public.qorpera_site_share_app(jsonb,text,jsonb,uuid)'::regprocedure, array[
+	$old$	-- The site, locked for the rest of the share.$old$,
+	$new$	-- 20260930729000: the company makes one site at a time (publish_site and a repository's first upload take the same
+	-- lock before they count), so the count of its ten below holds until the new site is in.
+	perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('qorpera.company-sites:' || v_run.profile_id::text, 0));
+	-- The site, locked for the rest of the share.$new$]);
+
 -- An agent never takes a repository's site offline; a member does, in Sites.
 select pg_temp.code_releases_patch('public.qorpera_site_unpublish(jsonb,text)'::regprocedure, array[
 	$old$	with removed as (delete from public.qorpera_company_sites as site where site.slug = p_slug and site.profile_id = v_run.profile_id$old$,
-	$new$	-- 20260930729000: a site made from a repository is taken offline only by a member, in Sites.
-	if exists (select 1 from public.qorpera_company_sites as site where site.slug = p_slug and site.profile_id = v_run.profile_id
-		and site.code_owner is not null) then
-		raise exception 'SITE_FROM_CODE: this site is made from code kept in Qorpera; only a member takes it offline, in Sites'
-			using errcode = '55000'; end if;
-	with removed as (delete from public.qorpera_company_sites as site where site.slug = p_slug and site.profile_id = v_run.profile_id$new$]);
+	$new$	-- 20260930729000: a site made from a repository is taken offline only by a member, in Sites: never deleted here.
+	with removed as (delete from public.qorpera_company_sites as site where site.slug = p_slug and site.profile_id = v_run.profile_id
+		and site.code_owner is null$new$,
+	$old$	select exists (select 1 from removed) into v_removed;$old$,
+	$new$	select exists (select 1 from removed) into v_removed;
+	-- 20260930729000: nothing went, and the name is the company's code site (seen locked, as it stands then): refused.
+	if not v_removed then
+		perform 1 from public.qorpera_company_sites as site where site.slug = p_slug and site.profile_id = v_run.profile_id
+			and site.code_owner is not null for update;
+		if found then
+			raise exception 'SITE_FROM_CODE: this site is made from code kept in Qorpera; only a member takes it offline, in Sites'
+				using errcode = '55000'; end if;
+	end if;$new$]);
 
 -- The members' list shows a repository's site once it is live, in the row every site has.
 select pg_temp.code_releases_patch('public.qorpera_list_company_sites(uuid)'::regprocedure, array[
@@ -1181,6 +1229,16 @@ select pg_temp.code_releases_patch('public.qorpera_site_abandoned(public.qorpera
 
 -- A member who takes a repository's site offline in Sites: its list file says so.
 select pg_temp.code_releases_patch('public.qorpera_unpublish_company_site(uuid)'::regprocedure, array[
+	$old$	perform public.qorpera_company_site_for_admin(p_site_id);$old$,
+	$new$	-- 20260930729000: a repository's site takes its registry row first, as every call on such a site does (the registry
+	-- row, then the site, then its versions); only for an owner or admin, who alone goes on.
+	if coalesce(public.qorpera_member_role(v_profile)::text in ('owner', 'admin'), false) then
+		perform 1 from public.qorpera_code_repositories repository
+		join public.qorpera_company_sites site on site.id = p_site_id and repository.environment_id = site.environment_id
+			and repository.owner = site.code_owner and repository.name = site.code_name
+		for update of repository;
+	end if;
+	perform public.qorpera_company_site_for_admin(p_site_id);$new$,
 	$old$	delete from public.qorpera_company_sites where id = p_site_id;$old$,
 	$new$	-- 20260930729000: a repository's site goes with its kept versions and its way back: the repository's list file is
 	-- written again (nothing is live), and the next change whose checks pass makes the site anew.
@@ -1202,7 +1260,7 @@ revoke all on function public.qorpera_code_site_valid(jsonb),
 	public.qorpera_code_change_site_valid(jsonb),
 	public.qorpera_code_release_live(public.qorpera_code_repositories),
 	public.qorpera_code_release_point(public.qorpera_code_repositories, integer, boolean),
-	public.qorpera_code_site_slug(uuid, text, text, text),
+	public.qorpera_code_site_slugs(text, text),
 	public.qorpera_code_site_prune(uuid),
 	public.qorpera_code_release_index(public.qorpera_code_repositories),
 	public.qorpera_code_site_repository(text, text, uuid)
@@ -1263,7 +1321,8 @@ begin
 		'public.qorpera_list_company_sites(uuid)',
 		'public.qorpera_site_abandoned(public.qorpera_company_sites)',
 		'public.qorpera_unpublish_company_site(uuid)',
-		'public.qorpera_member_app_layout_valid(jsonb)'
+		'public.qorpera_member_app_layout_valid(jsonb)',
+		'public.qorpera_site_share_app(jsonb,text,jsonb,uuid)'
 	]::regprocedure[] loop
 		if strpos((select prosrc from pg_proc where oid = v_function), '20260930729000') = 0 then
 			raise exception '20260930729000 is missing from %', v_function; end if;
