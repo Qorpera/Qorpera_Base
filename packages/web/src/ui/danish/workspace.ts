@@ -486,8 +486,13 @@ export const WORKSPACE: Record<string, string> = {
 		"Venter på plads på vores servere. Den starter, så snart der er plads.",
 	"Out of computer hours. The machine starts by itself once hours are added.":
 		"Ingen computertimer tilbage. Maskinen starter af sig selv, når der er tilføjet timer.",
-	"The computer is on, but its screen is off. It turns on when {name} uses it.":
-		"Computeren er tændt, men skærmen er slukket. Den tænder, når {name} bruger den.",
+	// A member turns the screen on (20260930714000).
+	"The computer is on, but its screen is off.": "Computeren er tændt, men skærmen er slukket.",
+	"Turn it on": "Tænd den",
+	"Someone with edit access can turn it on.": "En med redigeringsadgang kan tænde den.",
+	"The screen is turning on…": "Skærmen tænder…",
+	"This computer is too small for a screen.": "Denne computer er for lille til en skærm.",
+	"The screen could not be turned on. Try again.": "Skærmen kunne ikke tændes. Prøv igen.",
 	"The screen is hidden because it may show files you can't open.":
 		"Skærmen er skjult, fordi den måske viser filer, du ikke har adgang til.",
 	"Updating…": "Opdaterer…",
@@ -497,6 +502,23 @@ export const WORKSPACE: Record<string, string> = {
 	"Paused to save power. Still watching?": "Sat på pause for at spare strøm. Ser du stadig med?",
 	"Keep watching": "Bliv ved",
 	"Choose a computer": "Vælg en computer",
+	// A member's take-over of the desktop (20260930713000).
+	"Hand back": "Giv tilbage",
+	"You are using the computer. {name} gets no pictures of the screen while you use it.":
+		"Du bruger computeren. {name} får ingen billeder af skærmen, mens du bruger den.",
+	"{member} is using the computer. The screen is hidden meanwhile.":
+		"{member} bruger computeren. Skærmen er skjult imens.",
+	"Someone is using the computer. The screen is hidden meanwhile.":
+		"En anden bruger computeren. Skærmen er skjult imens.",
+	"Waiting for {name} to finish a step…": "Venter på, at {name} gør et trin færdigt…",
+	"The computer could not be taken over. Try again.": "Computeren kunne ikke overtages. Prøv igen.",
+	"You are using this computer in another window.": "Du bruger denne computer i et andet vindue.",
+	"Giving the computer back…": "Giver computeren tilbage…",
+	"The computer could not be given back yet. It goes back by itself within 5 minutes.":
+		"Computeren kunne ikke gives tilbage endnu. Den går tilbage af sig selv inden for 5 minutter.",
+	"computer screen": "computerskærm",
+	"Your clicks and keys go to the computer. Shift+Escape leaves it.":
+		"Dine klik og taster går til computeren. Shift+Escape forlader den.",
 
 	// app/views/feedback.ts
 	"+ Bug": "+ Fejl",

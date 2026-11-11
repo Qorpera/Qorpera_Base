@@ -486,6 +486,8 @@ export const CONVERSATION: Record<string, string> = {
 	Skip: "Spring over",
 	"Take over": "Overtag",
 	"I'm done": "Jeg er færdig",
+	"The computer could not be given back yet. Press I'm done to try again. It goes back by itself within 5 minutes.":
+		"Computeren kunne ikke gives tilbage endnu. Tryk på Jeg er færdig for at prøve igen. Den går tilbage af sig selv inden for 5 minutter.",
 	"Paste your {label}": "Indsæt {label}",
 	"Save securely": "Gem sikkert",
 	"Encrypted in the company vault. The agent never sees the value, only that it was saved.":
