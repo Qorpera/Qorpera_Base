@@ -33,11 +33,11 @@ function hide(): void {
 	tip?.classList.remove("is-shown", "is-over");
 }
 
-/** Beside the message, on the side away from the thread's middle (an agent's on the left gets it on its right, the
- * member's own on the right gets it on its left), else on the other side, centred on the part of the message in view.
- * Without room on either side (a narrow window), centred just above the message, on the thread's own colour. */
-function place(label: HTMLElement, target: HTMLElement, root: HTMLElement): void {
-	const box = target.getBoundingClientRect();
+/** Beside the bubble, on the side away from the thread's middle (an agent's on the left gets it on its right, the
+ * member's own on the right gets it on its left), else on the other side, centred on the part of the bubble in view.
+ * Without room on either side (a narrow window), centred just above the bubble, on the thread's own colour. */
+function place(label: HTMLElement, bubble: HTMLElement, root: HTMLElement): void {
+	const box = bubble.getBoundingClientRect();
 	const area = root.getBoundingClientRect();
 	const width = label.offsetWidth;
 	const height = label.offsetHeight;
@@ -80,8 +80,8 @@ function place(label: HTMLElement, target: HTMLElement, root: HTMLElement): void
 	label.style.top = `${Math.round(top)}px`;
 }
 
-function show(target: HTMLElement, root: HTMLElement): void {
-	current = target;
+function show(target: HTMLElement, bubble: HTMLElement, root: HTMLElement): void {
+	current = bubble;
 	const text = sentTimeText(target);
 	if (!text) {
 		hide();
@@ -90,8 +90,19 @@ function show(target: HTMLElement, root: HTMLElement): void {
 	tip ??= h("div", { class: "sent-time-tip", "aria-hidden": "true" });
 	if (!tip.isConnected) document.body.append(tip);
 	if (tip.textContent !== text) tip.textContent = text;
-	place(tip, target, root);
+	place(tip, bubble, root);
 	tip.classList.add("is-shown");
+}
+
+/** A message of several bubbles (its words, a table, its files) gets the time beside the one under the pointer; its
+ * author's name above them goes with the first, a caption under them ("Seen", "Queued") with the last. Anything else
+ * (a chip, a gap between bubbles) gets it beside the whole. */
+function bubbleAt(under: Element, message: HTMLElement): HTMLElement {
+	let part: Element | null = under;
+	while (part && part !== message && part.parentElement !== message) part = part.parentElement;
+	if (part?.matches(".message-author")) part = part.nextElementSibling;
+	else if (part?.matches(".message-caption")) part = part.previousElementSibling;
+	return part instanceof HTMLElement && part.matches(".bubble, .received-attachments") ? part : message;
 }
 
 /** Shows the sent time of each `[data-sent-at]` element in `root` on a mouse hover, until `signal` aborts. */
@@ -107,7 +118,8 @@ export function sentTimeHover(root: HTMLElement, signal: AbortSignal): void {
 		if (event.buttons) return hide();
 		const target = messageAt(event);
 		if (!target) return hide();
-		if (target !== current) show(target, root);
+		const part = bubbleAt(event.target as Element, target);
+		if (part !== current) show(target, part, root);
 	};
 	root.addEventListener("pointerover", follow, options);
 	// After a press, a scroll or a key, moving on within the same message shows its time again.

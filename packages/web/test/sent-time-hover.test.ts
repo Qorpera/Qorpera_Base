@@ -93,6 +93,38 @@ describe("a message's sent time on a hover", () => {
 		expect(Number.parseFloat(shownSentTime()!.style.top)).toBe(192);
 	});
 
+	it("goes with the bubble under the pointer in a message of several", () => {
+		vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(40);
+		vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(16);
+		const author = h("div", { class: "message-author" }, "Nova");
+		const words = h("div", { class: "bubble" }, h("p", null, "Here are the numbers"));
+		const table = h("div", { class: "bubble" }, "A table");
+		const caption = h("div", { class: "message-caption" }, "Seen");
+		const message = h("article", { class: "message", "data-sent-at": sentAt }, author, words, table, caption);
+		const root = h("div", { class: "messages" }, message);
+		document.body.append(root);
+		root.getBoundingClientRect = () => box(0, 0, 800, 600);
+		message.getBoundingClientRect = () => box(20, 80, 500, 300);
+		author.getBoundingClientRect = () => box(20, 80, 60, 20);
+		words.getBoundingClientRect = () => box(20, 100, 200, 40);
+		table.getBoundingClientRect = () => box(20, 150, 500, 200);
+		caption.getBoundingClientRect = () => box(20, 360, 40, 20);
+		sentTimeHover(root, lifetime.signal);
+		over(words.firstElementChild!);
+		expect(Number.parseFloat(shownSentTime()!.style.left)).toBe(226);
+		expect(Number.parseFloat(shownSentTime()!.style.top)).toBe(112);
+		over(table);
+		expect(Number.parseFloat(shownSentTime()!.style.left)).toBe(526);
+		expect(Number.parseFloat(shownSentTime()!.style.top)).toBe(242);
+		over(author);
+		expect(Number.parseFloat(shownSentTime()!.style.top)).toBe(112);
+		over(caption);
+		expect(Number.parseFloat(shownSentTime()!.style.top)).toBe(242);
+		// Between the bubbles: beside the whole message.
+		over(message);
+		expect(Number.parseFloat(shownSentTime()!.style.top)).toBe(222);
+	});
+
 	it("hides off a message, on a press, a scroll or a key, and ignores touch and a selection", () => {
 		const { root, theirs, blank } = thread();
 		over(theirs, "touch");
