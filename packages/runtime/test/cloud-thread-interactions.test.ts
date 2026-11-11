@@ -420,6 +420,11 @@ describe("readable cards", () => {
 		])
 			expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(rule);
 		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).not.toContain("Open-ended questions belong in chat");
+		// The card's own schema says the same: an open question goes on the card with allowCustom, not to chat.
+		const schema = JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
+		expect(schema).not.toContain("belong in ordinary chat");
+		expect(schema).not.toContain("not a reason to turn an open-ended question");
+		expect(schema).toContain("add allowCustom for an open one");
 		// The tool boundary takes a description of at most 4096 bytes.
 		expect(Buffer.byteLength(CLOUD_ASK_MEMBER_INSTRUCTIONS)).toBeLessThanOrEqual(4096);
 		// The card takes a typed answer beside its options.

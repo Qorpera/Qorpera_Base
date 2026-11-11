@@ -3230,6 +3230,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// save_app's schema takes group, so they moved again.
 	// Also on 11 November 2026 ask_member's description says every answer the work cannot go on without goes on a card that
 	// says what is stopped, open questions too with allowCustom ("it's really stopped at you"), so they moved again.
+	// Its question schema says the same (an open one goes on the card with allowCustom, not to chat), so the catalog text
+	// moved once more.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3279,6 +3281,6 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"2eb694a1c73160482e0d0371f91ad3255a1f53a0043bb4a8e9a29ce4df9c3f5a",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"06482a58da8c5bbe8f40007d521499f083242f19bb6ee161169e84ab94baa2c1",
+		"fd80a6664c46a406e8085dfefe9bb9884624bd36e3eb614935b1a338f29e0bb3",
 	);
 });

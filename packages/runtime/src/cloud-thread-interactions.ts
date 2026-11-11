@@ -66,7 +66,7 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 				minItems: 1,
 				maxItems: 6,
 				description:
-					"Concrete alternatives for a decision you need from the member before proceeding. Do not invent generic choices for an open-ended question or optional next-step offer.",
+					"The likely answers to what your work cannot go on without, each a specific one, never generic ones like Get started.",
 				items: closedObject(["label"], {
 					label: chars(1, 80, "A specific answer that resolves the pending decision."),
 					value: chars(1, 200, "Returned as the answer; defaults to the label."),
@@ -82,12 +82,11 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 			multiSelect: { type: "boolean" },
 			allowCustom: {
 				type: "boolean",
-				description:
-					"An alternative to meaningful choices, not a reason to turn an open-ended question into a menu.",
+				description: "A field for the member's own answer beside the options; set it for an open question.",
 			},
 			dismissOnMoveOn: { type: "boolean" },
 		},
-		"surface question: a needed decision with 1-6 concrete choices. Open-ended questions and optional offers belong in ordinary chat.",
+		"surface question: an answer your work cannot go on without, with 1-6 likely answers; add allowCustom for an open one. Optional ideas, offers and news stay in chat.",
 	),
 	secret: closedObject(
 		["name", "label", "purpose"],
