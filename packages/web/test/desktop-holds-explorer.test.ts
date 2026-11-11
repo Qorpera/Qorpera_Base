@@ -17,16 +17,22 @@ import { Database, type HoldName, random } from "./take-over-model.ts";
  * seed also picks its shape (one page or two, one machine or two, some kinds of step left out: swarm testing) and holds
  * some requests back for several steps before they reach the database or their answers come, so that deep orderings
  * are drawn often:
- * (I1) once an I'm done answered, no lease of the member on the agent's machines holds the desktop that was taken under
- * an epoch at or below one the page owed before that answer: one it sent a take-over under, took a hold up under, or was
- * shown a hold under on a machine it had given back or after I'm done was pressed (a hold of another tab's that the page
- * saw before, and never owed, may end by itself); nor one taken before it was pressed, nor by a take-over the page sent.
+ * (I1) once an I'm done answered, no lease of the member on the agent's machines holds the desktop in a seat the page
+ * was shown on a machine it had given back or after I'm done was pressed (a hold of another tab's that the page saw
+ * before, and never owed, may end by itself; since review r19 what is owed is the seating, not the epoch: an EXACT
+ * hand-back discharges a seat without moving the epoch); nor one taken before it was pressed, nor by a take-over the
+ * page sent.
  * (I2) a page sends no input and no heartbeat for a machine after its release was asked (Hand back, I'm done and a close
  * ask all the agent's machines back), until a new take-over on purpose. (I3) no take-over a page sent holds the desktop
  * after a hand-back answer past its epoch reached that page. (I4, review r11) a take-over the page did not call off (no
  * release of that machine asked since the press) is never answered "called off", and after a TAKE_CALLED_OFF named an
  * epoch no take-over of that machine goes out below it; the ledger's calledOff, by which a window joins a press to a
- * take-over on its way (review r12), agrees with each answer. A failure prints the seed, its shape and its steps. */
+ * take-over on its way (review r12), agrees with each answer. (I10, review r19) once a page released a machine (with no
+ * take-over of it on purpose since), every request it sent reached the database and was answered or lost, and no
+ * hand-back of it is unanswered, no lease that a take-over of that page's seated is live there. (I11, review r19) a page
+ * that knows the end of every take-over it sent for a machine at an epoch hands it back EXACT, never VOID (a VOID asked
+ * again until answered is the same hand-back). A failure
+ * prints the seed, its shape and its steps. */
 
 const MEMBER = "member";
 const OTHER = "other";
@@ -40,9 +46,11 @@ interface Request {
 	kind: "take" | "back" | "list";
 	machine?: Machine;
 	epoch?: number;
-	/** A take-over's press id, and the hold a hand-back names (F26). */
+	/** A take-over's press id, and the hold a hand-back names (F26, F27: a seat, or none for VOID). */
 	press?: string;
 	name?: HoldName;
+	/** Its answer reached the page (not lost, not cut off): a take-over the page knows the end of (F27, F28). */
+	delivered?: number;
 	/** The database's answer, once its effect happened. */
 	answer?: unknown;
 	/** A read of the window's own (what it shows reaches the ledger only while the window is open). */
@@ -64,7 +72,7 @@ interface Done {
 	sent: Set<number>;
 	/** Per machine, the highest epoch the page owed by its answer: one it had sent a take-over under, or taken up a hold
 	 * under, or been shown a hold of the member's under on a machine it had given back or after I'm done was pressed. */
-	upTo: Map<Machine, number>;
+	upTo: Map<Machine, Set<number>>;
 }
 
 /** What a page sent or was shown of the member's holds: a take-over it sent, a hold its window took up, or a hold a
@@ -74,6 +82,8 @@ interface Seen {
 	machine: Machine;
 	epoch: number;
 	why: "sent" | "shown";
+	/** The seat a hold was shown in (F26): what the page owes is that seating, not the epoch (F27, R5). */
+	seat?: number;
 	released: boolean;
 }
 
@@ -155,19 +165,28 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		`${pageCount} page(s), ${machines.length} machine(s), without: ${[...off].join(", ") || "none"}`,
 	];
 	let ids = 0;
-	const raise = (page: Page, machine: Machine, epoch: number, why: Seen["why"]) =>
-		page.seen.push({ step: db.step, machine, epoch, why, released: page.released.has(machine) });
+	const raise = (page: Page, machine: Machine, epoch: number, why: Seen["why"], seat?: number) =>
+		page.seen.push({
+			step: db.step,
+			machine,
+			epoch,
+			why,
+			released: page.released.has(machine),
+			...(seat !== undefined ? { seat } : {}),
+		});
 	const shown = (page: Page, list: MemberAgentMachines) => {
 		for (const row of list.machines)
 			if (row.control?.mine && row.control.epoch !== null)
-				raise(page, row.machineId as Machine, row.control.epoch, "shown");
+				raise(page, row.machineId as Machine, row.control.epoch, "shown", row.control.seat ?? undefined);
 	};
+	/** The seatings a page owed by its I'm done's answer (F26, F27): those shown it after the press, or on a machine it
+	 * had given back. (What it sent is owed by request: `sent`.) */
 	const owed = (page: Page, pressed: number) => {
-		const upTo = new Map<Machine, number>();
+		const seats = new Map<Machine, Set<number>>();
 		for (const one of page.seen)
-			if (one.why !== "shown" || one.released || one.step > pressed)
-				upTo.set(one.machine, Math.max(upTo.get(one.machine) ?? -1, one.epoch));
-		return upTo;
+			if (one.why === "shown" && one.seat !== undefined && (one.released || one.step > pressed))
+				seats.set(one.machine, (seats.get(one.machine) ?? new Set()).add(one.seat));
+		return seats;
 	};
 	const flush = async () => {
 		for (let n = 0; n < 30; n++) await Promise.resolve();
@@ -209,17 +228,48 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 			}
 		});
 	const pages: Page[] = [];
+	/** I11 (F27, F28), as a hand-back leaves a page: one that knows the end of every take-over it sent for the machine at
+	 * that epoch is EXACT (it names a seat), never VOID, so it ends no hold but the seat it names. */
+	const certain = (index: number, machine: Machine, epoch: number, seat: number | null) => {
+		const known = requests.every(
+			(one) =>
+				one.page !== index ||
+				one.kind !== "take" ||
+				one.machine !== machine ||
+				one.epoch !== epoch ||
+				// Delivered at an earlier step: the page has read it by now.
+				(one.delivered !== undefined && one.delivered < db.step),
+		);
+		// A VOID asked again (its call was VOID while a take-over was unanswered, and stays VOID until answered: its answer is
+		// what fences an earlier copy of it) is not a new decision.
+		const again = requests.some(
+			(one) =>
+				one.page === index &&
+				one.kind === "back" &&
+				one.machine === machine &&
+				one.epoch === epoch &&
+				one.name?.seat === null &&
+				one.delivered === undefined,
+		);
+		if (known && !again && seat === null)
+			(pages[index] as Page).silent.push(
+				`I11: p${index} sent VOID for ${machine.slice(-2)} at ${epoch}, though every take-over it sent there was answered`,
+			);
+	};
 	for (let index = 0; index < pageCount; index++) {
 		const stop = new AbortController();
 		const computer = {
 			takeDesktop: (machine: string, epoch: number, press: string) =>
 				request(index, "take", machine as Machine, epoch, false, { press }),
-			handBackDesktop: (machine: string, _reason: string, epoch: number, name: HoldName) =>
-				request(index, "back", machine as Machine, epoch, false, { name }),
+			handBackDesktop: (machine: string, _reason: string, epoch: number, seat: number | null) => {
+				certain(index, machine as Machine, epoch, seat);
+				return request(index, "back", machine as Machine, epoch, false, { name: { seat } });
+			},
 			agentMachines: () => request(index, "list"),
 			// The keepalive as the page goes: best effort, its effect at once, nothing answered.
-			handBackOnLeave: (machine: string, epoch: number, name: HoldName) => {
-				db.handBack(MEMBER, machine as Machine, epoch, name);
+			handBackOnLeave: (machine: string, epoch: number, seat: number | null) => {
+				certain(index, machine as Machine, epoch, seat);
+				db.handBack(MEMBER, machine as Machine, epoch, { seat });
 			},
 		};
 		pages.push({
@@ -251,6 +301,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 	};
 	const deliver = (one: Request) => {
 		one.settled = true;
+		one.delivered = db.step;
 		const page = pages[one.page] as Page;
 		if (one.kind === "take") {
 			const answer = one.answer as MemberDesktopHold;
@@ -263,7 +314,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 			const machine = one.machine as Machine;
 			page.answered.set(machine, Math.max(page.answered.get(machine) ?? -1, answer.epoch));
 			// Holding: the member's lease, which can only be under the epoch the answer names.
-			if (answer.holding) raise(page, machine, answer.epoch, "shown");
+			if (answer.holding) raise(page, machine, answer.epoch, "shown", answer.seat ?? undefined);
 		}
 		if (one.kind === "list" && !one.window) {
 			for (const machine of machines) page.known.add(machine);
@@ -293,8 +344,22 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 	};
 	const check = (): string | undefined => {
 		for (const [index, page] of pages.entries()) {
-			// I4
-			if (page.silent.length) return `I4: ${page.silent[0]}`;
+			// I4 (and I11, noted as hand-backs leave the page)
+			if (page.silent.length) return page.silent[0]?.startsWith("I11") ? page.silent[0] : `I4: ${page.silent[0]}`;
+			// I10 (F27, F28): a machine this page released, with no take-over of it on purpose since, once every request of
+			// the page's reached the database and its answer came or was lost, and no hand-back of it is unanswered: no
+			// lease seated by a take-over of this page's is live there.
+			const settledAll = requests.every((one) => one.page !== index || (one.effect && one.settled));
+			if (settledAll)
+				for (const machine of page.released) {
+					if (page.ledger.releasing(machine) !== undefined) continue;
+					const lease = db.seatedByAny(
+						machine,
+						page.sent.map((sent) => sent.id),
+					);
+					if (lease)
+						return `I10: p${index} released ${machine.slice(-2)}, everything it sent is settled, yet the lease its take-over #${lease.seatedBy} seated (seat ${lease.seat}, epoch ${lease.epoch}) is live`;
+				}
 			// I2
 			for (const machine of page.released)
 				if (page.ledger.holder(machine) !== undefined)
@@ -316,11 +381,11 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				if (!lease?.live || lease.member !== MEMBER) continue;
 				const upTo = done.upTo.get(machine);
 				if (
-					(upTo !== undefined && lease.epoch <= upTo) ||
+					upTo?.has(lease.seat) ||
 					lease.takenStep < done.pressed ||
 					[...lease.takes].some((take) => done.sent.has(take))
 				)
-					return `I1: page ${done.page}'s I'm done answered at step ${done.answered} (up to ${upTo}), yet ${machine.slice(-2)} is held by a lease under ${lease.epoch} taken at step ${lease.takenStep} (takes ${[...lease.takes]})`;
+					return `I1: page ${done.page}'s I'm done answered at step ${done.answered} (seats owed ${[...(upTo ?? [])]}), yet ${machine.slice(-2)} is held by a lease under ${lease.epoch} taken at step ${lease.takenStep} (takes ${[...lease.takes]})`;
 			}
 		return undefined;
 	};
@@ -500,7 +565,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				run: () => {
 					const machine = pick(machines);
 					// Another tab hands back what it holds, by its seat.
-					db.handBack(MEMBER, machine, db.epoch(MEMBER, machine), { seat: db.leases.get(machine)?.seat ?? 0 });
+					db.handBack(MEMBER, machine, db.epoch(MEMBER, machine), { seat: db.leases.get(machine)?.seat ?? null });
 					return true;
 				},
 			},
@@ -520,7 +585,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				name: "another member hands back",
 				run: () => {
 					const machine = pick(machines);
-					db.handBack(OTHER, machine, db.epoch(OTHER, machine), { seat: db.leases.get(machine)?.seat ?? 0 });
+					db.handBack(OTHER, machine, db.epoch(OTHER, machine), { seat: db.leases.get(machine)?.seat ?? null });
 					return true;
 				},
 			},
@@ -537,11 +602,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		const actions = every.filter((action) => !off.has(action.kind));
 		if (due.length) {
 			const one = pick(due);
-			const named = one.name
-				? one.name.seat != null
-					? ` seat ${one.name.seat}`
-					: ` press ${one.name.press?.slice(0, 4)}`
-				: "";
+			const named = one.name ? (one.name.seat !== null ? ` seat ${one.name.seat}` : " VOID") : "";
 			const label = `${one.kind} #${one.id} of p${one.page}${one.machine ? ` ${one.machine.slice(-2)}@${one.epoch}${named}` : ""}`;
 			if (!one.effect)
 				actions.push({
@@ -610,6 +671,11 @@ afterEach(() => {
  * F12 to F16 broke I1 with I2 left out (every earlier ledger also has the two I2 gaps below); F17 and the I2 gaps break
  * the ledger of review r9 as it was, F18 that of review r10. They run first; each holds on this ledger. */
 const FOUND: readonly { seed: number; finding: string }[] = [
+	{
+		seed: 3442,
+		finding:
+			"F27 (7a40f8242, I10, over a model with that commit's SQL): another tab took the desktop at epoch 0; the page's take-over at 0 lost its answer before it arrived; the page closed and its hand-back named that press, which ended nothing and moved no epoch; the take-over then arrived and seated the member over the other tab's hold",
+	},
 	{
 		seed: 6087,
 		finding:

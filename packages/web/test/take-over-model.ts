@@ -44,11 +44,17 @@ export function seating(lease: Lease): string {
 	return `seat ${lease.seat}, seated by ${lease.seatedBy >= 0 ? `the page's take-over #${lease.seatedBy}` : "another tab or member"}${lease.fresh ? " as a new lease" : " over the member's live lease"}`;
 }
 
-/** The hold a hand-back names (F26): its seat, or the press that may have seated it. */
+/** What a hand-back names: a seat (EXACT; F27, F28) or none (VOID). Round 18's hand-back (`rules = "r18"`) also took a
+ * press. */
 export interface HoldName {
-	seat?: number | null;
+	seat: number | null;
 	press?: string | null;
 }
+
+/** Which database the model is: this one (the hand-back EXACT or VOID), round 18's (7a40f8242: a hand-back named by seat
+ * or press, the epoch moving only with no live lease left unnamed) or round 17's (2ac5b3591: the epoch alone; no seat is
+ * checked anywhere). */
+export type Rules = "now" | "r18" | "r17";
 
 /** The database, as migration 20260930713000 has it. */
 export class Database {
@@ -63,11 +69,8 @@ export class Database {
 	/** The seat each take-over request was seated at (a page's request id), when it seated anyone. */
 	readonly seatedBy = new Map<number, number>();
 	step = 0;
-	/** The seat rules of F26: a heartbeat and an action are taken only in the seat they name, and a hand-back ends only
-	 * the hold it names and moves the epoch only when no live hold of the member's is left unnamed. Off, the model is the
-	 * database of round 17 (2ac5b3591): the epoch alone, a hand-back at the current epoch ends any lease of the member's
-	 * under it. The model counts seatings either way. */
-	seats = true;
+	/** The rules (Rules); the model counts seatings under each. */
+	rules: Rules = "now";
 	epoch(member: string, machine: string): number {
 		return this.epochs.get(`${member}:${machine}`) ?? 0;
 	}
@@ -114,10 +117,10 @@ export class Database {
 			lease?.live === true &&
 			lease.member === member &&
 			lease.epoch === epoch &&
-			(!this.seats || seat === undefined || lease.seat === seat)
+			(this.rules === "r17" || seat === undefined || lease.seat === seat)
 		);
 	}
-	handBack(member: string, machine: string, epoch: number, name: HoldName = {}): MemberDesktopHandBack {
+	handBack(member: string, machine: string, epoch: number, name: HoldName = { seat: null }): MemberDesktopHandBack {
 		const current = this.epoch(member, machine);
 		const lease = this.leases.get(machine);
 		const mine = lease !== undefined && lease.member === member;
@@ -127,11 +130,19 @@ export class Database {
 			this.leases.set(machine, undefined);
 			this.#seatAnew(machine);
 		};
-		if (!this.seats) {
+		const under = mine && lease.epoch === epoch;
+		if (this.rules === "r17" || (this.rules === "now" && name.seat === null)) {
+			// VOID (and round 17's only hand-back): at the current epoch it moves, and the member's lease under it ends.
 			if (epoch === current) {
 				this.epochs.set(`${member}:${machine}`, current + 1);
-				if (mine && lease.epoch === epoch) end();
+				if (under) end();
 			}
+		} else if (this.rules === "now") {
+			// EXACT: that seat, if it is the lease; the epoch moves only when nothing of the member's is left live.
+			const named = under && lease.seat === name.seat;
+			const moves = epoch === current && !(mine && lease.live && !named);
+			if (named || (moves && under)) end();
+			if (moves) this.epochs.set(`${member}:${machine}`, current + 1);
 		} else {
 			const live = mine && lease.live;
 			const named =
@@ -187,6 +198,13 @@ export class Database {
 	/** Whether a member's action is checked against the epoch it names (F24 of #1661; off only to show what the check
 	 * catches). */
 	actEpochChecked = true;
+	/** Whether a lease seated by one of these take-over requests is live on the machine now. */
+	seatedByAny(machine: string, requests: Iterable<number>): Lease | undefined {
+		const lease = this.leases.get(machine);
+		if (!lease?.live || lease.seatedBy < 0) return undefined;
+		for (const one of requests) if (one === lease.seatedBy) return lease;
+		return undefined;
+	}
 	/** A member's action as qorpera_member_machine_desktop_act_begin takes it: from the member who holds the live lease,
 	 * and only when that lease was taken under the epoch the action names (F24) and is the seat it names (F26; an action
 	 * without one, from an earlier page, is not checked). */
@@ -201,7 +219,8 @@ export class Database {
 		if (lease.member !== member) return { ok: false, code: "DESKTOP_MEMBER_IN_CONTROL" };
 		if (this.actEpochChecked && epoch !== undefined && epoch !== lease.epoch)
 			return { ok: false, code: "DESKTOP_CONTROL_ENDED" };
-		if (this.seats && seat !== undefined && seat !== lease.seat) return { ok: false, code: "DESKTOP_CONTROL_ENDED" };
+		if (this.rules !== "r17" && seat !== undefined && seat !== lease.seat)
+			return { ok: false, code: "DESKTOP_CONTROL_ENDED" };
 		return { ok: true, lease };
 	}
 }

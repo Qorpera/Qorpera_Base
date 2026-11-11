@@ -19,8 +19,8 @@ import { Database, type HoldName, random, seating } from "./take-over-model.ts";
  * its shape (one machine or two, some kinds of step left out) and holds some requests back several steps. After every
  * step, and after a last stretch that answers everything:
  * (I1) once an I'm done answered true, no lease of the member's holds the desktop that was taken before it was pressed,
- * by a take-over the page sent before it answered, or under an epoch at or below one the page owed then (a take-over
- * sent, a hold renewed, an own hold a list showed it after the press or on a machine it had released);
+ * by a take-over the page sent before it answered, or in a seat the page owed then (an own hold a list or an answer
+ * showed it after the press or on a machine it had released: since review r19 the seating, not the epoch);
  * (I3) no take-over the page sent holds the desktop after a hand-back answer past its epoch reached the page;
  * (I4) a press of Take over that no release followed comes to something the member sees: the hold, the window's "could
  * not be taken over", a refusal for another member's hold, or the window showing that member;
@@ -33,6 +33,11 @@ import { Database, type HoldName, random, seating } from "./take-over-model.ts";
  * nothing of the window (its hold, its note); (I9) what is typed under a hold that no release followed leaves the page,
  * in the order it was typed, while that hold stands. Action requests are held as the others are, so their answers can
  * come after a hand-back, a lease that ran out, another tab's take-over and a new take-over.
+ * (I10, review r19) once the page released a machine (a close, a switch away, pagehide, Hand back, I'm done) with no
+ * press for it since, every request it sent reached the database and was answered or lost, and no hand-back of it is
+ * unanswered, no lease that a take-over of the page's seated is live there; (I11) a page that knows the end of every
+ * take-over it sent for a machine at an epoch hands it back EXACT, never VOID (a VOID asked again until answered is the
+ * same hand-back).
  * (I6, review r14) a heartbeat or input for a machine leaves the page only after a press on this page for it that no
  * release followed: nothing is ever taken up from a list; and a note ("could not be taken over") never follows a
  * press that a release followed (F22's counterpart of I4); a Hand back pressed on a hold shown from another window
@@ -77,6 +82,8 @@ interface Pending {
 	answer?: unknown;
 	effect: boolean;
 	settled: boolean;
+	/** Its answer reached the page (not lost, not cut off): a take-over the page knows the end of (F27, F28). */
+	delivered?: number;
 	effectAt: number;
 	deliverAt: number;
 	resolve: (value: Response) => void;
@@ -119,7 +126,7 @@ interface Done {
 	pressed: number;
 	answered: number;
 	sent: Set<number>;
-	upTo: Map<string, number>;
+	upTo: Map<string, Set<number>>;
 }
 
 async function flush(rounds = 3) {
@@ -133,14 +140,17 @@ function key(target: HTMLElement, value: string) {
 	target.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true }));
 }
 
-/** Where the ledger's calls are written down, for the steps printed. */
+/** Where the ledger's calls are written down, for the steps printed, and the ledger the window uses (I10 asks it whether
+ * a hand-back of a machine is unanswered). */
 let ledgerLog: string[] = [];
+let followed: DesktopHoldLedger | undefined;
 /** The ledger's take-overs and releases, as the window asks them, written into the steps printed. */
 function followLedger(): () => void {
 	// Wrapped by hand, not with vi.spyOn: a spy keeps every call (and so every page) it saw.
 	const ledger = DesktopHoldLedger.prototype;
 	const { take, release } = ledger;
 	ledger.take = function (this: DesktopHoldLedger, ...args: Parameters<typeof take>) {
+		followed = this;
 		const answer = take.apply(this, args);
 		const [machine, , pressedAt] = args;
 		const log = ledgerLog;
@@ -150,6 +160,7 @@ function followLedger(): () => void {
 		return answer;
 	};
 	ledger.release = function (this: DesktopHoldLedger, ...args: Parameters<typeof release>) {
+		followed = this;
 		ledgerLog.push(`   the ledger releases ${args[0].slice(-2)}`);
 		return release.apply(this, args);
 	};
@@ -162,6 +173,7 @@ function followLedger(): () => void {
 /** One explored schedule. `typing` (review r17) weighs typing on the picture and short moments of time far more, so a
  * hold's input meets hand-backs and new take-overs often; without it the steps are drawn as before. */
 async function explore(seed: number, steps: number, typing = false): Promise<{ log: string[]; broken?: string }> {
+	followed = undefined;
 	const next = random(seed);
 	const pick = <T>(items: readonly T[]): T => items[Math.floor(next() * items.length)] as T;
 	const machines: readonly string[] = next() < 0.4 ? [MACHINES[0]] : MACHINES;
@@ -184,7 +196,7 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 	/** What the page sent: take-overs (id, machine, epoch, step), heartbeats and actions (machine, step). */
 	const takes: { id: number; machine: string; epoch: number; step: number }[] = [];
 	const used: { machine: string; step: number; what: string }[] = [];
-	const owedSeen: { machine: string; epoch: number; step: number; released: boolean }[] = [];
+	const owedSeen: { machine: string; epoch: number; seat: number | null; step: number; released: boolean }[] = [];
 	const answeredBack = new Map<string, number>();
 	const refusedFor: { step: number; reason: string }[] = [];
 	const dones: Done[] = [];
@@ -283,11 +295,22 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 		} else if (one.kind === "list") one.answer = rows();
 		else if (one.kind === "take") {
 			const answer = db.take(MEMBER, one.machine as string, one.epoch as number, one.id, one.press);
-			one.answer = answer.state === "ok" ? { state: "ok", until: until(), seat: answer.seat } : answer;
+			// As SQL answers: `memberName` only for another member's hold, `epoch` only for TAKE_CALLED_OFF (found in round
+			// 19: the model's nulls made every other refusal look lost to the page).
+			one.answer =
+				answer.state === "ok"
+					? { state: "ok", until: until(), seat: answer.seat }
+					: {
+							state: "refused",
+							reason: answer.reason,
+							...(answer.reason === "DESKTOP_MEMBER_IN_CONTROL" ? { memberName: answer.memberName } : {}),
+							...(answer.reason === "TAKE_CALLED_OFF" ? { epoch: answer.epoch } : {}),
+						};
 		} else one.answer = db.handBack(MEMBER, one.machine as string, one.epoch as number, one.name);
 	};
 	const deliver = (one: Pending) => {
 		one.settled = true;
+		one.delivered = step;
 		if (one.kind === "act") {
 			const answer = one.answer as { exitCode?: number; code?: string };
 			one.resolve(
@@ -304,6 +327,7 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 					owedSeen.push({
 						machine: row.machineId,
 						epoch: row.control.epoch,
+						seat: row.control.seat,
 						step,
 						released: (releasedAt.get(row.machineId) ?? -1) > pressedAt,
 					});
@@ -326,13 +350,14 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 				});
 			one.resolve(Response.json({ schema: SCHEMA, ...answer }));
 		} else {
-			const answer = one.answer as { epoch: number; holding: boolean };
+			const answer = one.answer as { epoch: number; holding: boolean; seat: number | null };
 			const machine = one.machine as string;
 			answeredBack.set(machine, Math.max(answeredBack.get(machine) ?? -1, answer.epoch));
 			if (answer.holding)
 				owedSeen.push({
 					machine,
 					epoch: answer.epoch,
+					seat: answer.seat,
 					step,
 					released: (releasedAt.get(machine) ?? -1) > pressedAt,
 				});
@@ -371,9 +396,44 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 		const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
 		const machine = String(body.p_machine_id ?? "");
 		const epoch = Number(body.p_epoch);
-		const name: HoldName = { seat: body.p_seat as number | null, press: body.p_press as string | null };
+		const name: HoldName = {
+			seat: (body.p_seat ?? null) as number | null,
+			...(body.p_press !== undefined ? { press: body.p_press as string | null } : {}),
+		};
 		const named =
-			name.seat != null ? ` seat ${name.seat}` : name.press != null ? ` press ${name.press.slice(0, 4)}` : "";
+			name.seat !== null
+				? ` seat ${name.seat}`
+				: name.press
+					? ` press ${name.press.slice(0, 4)}`
+					: method === "qorpera_member_hand_back_machine_desktop"
+						? " VOID"
+						: "";
+		if (method === "qorpera_member_hand_back_machine_desktop") {
+			// I11 (review r19), as a hand-back leaves the page: one that knows the end of every take-over it sent for the
+			// machine at that epoch is EXACT, never VOID.
+			const known = requests.every(
+				// Delivered at an earlier step: the page has read it by now.
+				(one) =>
+					one.kind !== "take" ||
+					one.machine !== machine ||
+					one.epoch !== epoch ||
+					(one.delivered !== undefined && one.delivered < step),
+			);
+			// A VOID asked again (its call was VOID while a take-over was unanswered, and stays VOID until answered: its answer
+			// is what fences an earlier copy of it) is not a new decision.
+			const again = requests.some(
+				(one) =>
+					one.kind === "back" &&
+					one.machine === machine &&
+					one.epoch === epoch &&
+					one.name?.seat === null &&
+					one.delivered === undefined,
+			);
+			if (known && !again && name.seat === null && !name.press)
+				violations.push(
+					`I11: the page sent VOID for ${machine.slice(-2)} at ${epoch} at step ${step}, though every take-over it sent there was answered`,
+				);
+		}
 		if (method === "qorpera_member_keep_machine_desktop") {
 			use(machine, "heartbeat");
 			log.push(`   the page renews ${machine.slice(-2)}@${epoch}${named}`);
@@ -546,6 +606,22 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 		if (note !== lastNote && note !== "" && (lastRelease >= pressedAt || pressedAt < 0))
 			return `I4: the window says "${note}" at step ${step}, though a release (step ${lastRelease}) followed the last press (step ${pressedAt})`;
 		lastNote = note;
+		// I10 (review r19): a machine the page released (a close, a switch away, pagehide, Hand back, I'm done) with no
+		// press for it since, once every request the page sent reached the database and was answered or lost, and no
+		// hand-back of it is unanswered: no lease that a take-over of the page's seated is live there.
+		if (requests.every((one) => one.effect && one.settled))
+			for (const machine of machines) {
+				const at = releasedAt.get(machine);
+				if (at === undefined || presses.some((one) => one.step > at && (one.machine ?? machine) === machine))
+					continue;
+				if (followed?.releasing(machine) !== undefined) continue;
+				const lease = db.seatedByAny(
+					machine,
+					takes.map((take) => take.id),
+				);
+				if (lease)
+					return `I10: the page released ${machine.slice(-2)} at step ${at}, everything it sent is settled, yet the lease its take-over #${lease.seatedBy} seated (seat ${lease.seat}, epoch ${lease.epoch}) is live at step ${step}`;
+			}
 		// I3
 		for (const take of takes) {
 			const past = answeredBack.get(take.machine);
@@ -560,11 +636,11 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 				if (!lease?.live || lease.member !== MEMBER) continue;
 				const upTo = done.upTo.get(machine);
 				if (
-					(upTo !== undefined && lease.epoch <= upTo) ||
+					upTo?.has(lease.seat) ||
 					lease.takenStep < done.pressed ||
 					[...lease.takes].some((take) => done.sent.has(take))
 				)
-					return `I1: I'm done answered at step ${done.answered} (up to ${upTo}), yet ${machine.slice(-2)} is held by a lease under ${lease.epoch} taken at step ${lease.takenStep}`;
+					return `I1: I'm done answered at step ${done.answered} (seats owed ${[...(upTo ?? [])]}), yet ${machine.slice(-2)} is held by a lease under ${lease.epoch} taken at step ${lease.takenStep}`;
 			}
 		// I4: what the member sees of a press.
 		if (press && !press.outcome) {
@@ -579,13 +655,14 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 		}
 		return undefined;
 	};
+	/** The seatings the page owed by I'm done's answer (F26, F27): those shown it after the press, or on a machine it had
+	 * released. (What it sent is owed by request: `sent`.) */
 	const owed = (pressedStep: number, answered: number) => {
-		const upTo = new Map<string, number>();
-		const raise = (machine: string, epoch: number) => upTo.set(machine, Math.max(upTo.get(machine) ?? -1, epoch));
-		for (const take of takes) if (take.step <= answered) raise(take.machine, take.epoch);
+		const seats = new Map<string, Set<number>>();
 		for (const one of owedSeen)
-			if (one.step <= answered && (one.released || one.step > pressedStep)) raise(one.machine, one.epoch);
-		return upTo;
+			if (one.seat !== null && one.step <= answered && (one.released || one.step > pressedStep))
+				seats.set(one.machine, (seats.get(one.machine) ?? new Set()).add(one.seat));
+		return seats;
 	};
 	type Action = { kind: Kind; weight: number; name: string; run: () => boolean | Promise<boolean> };
 	const finish = async () => {
@@ -849,7 +926,9 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 					run: () => {
 						const machine = pick(machines);
 						// Another tab's Hand back on the hold its window shows: by that hold's seat.
-						db.handBack(MEMBER, machine, db.epoch(MEMBER, machine), { seat: db.leases.get(machine)?.seat ?? 0 });
+						db.handBack(MEMBER, machine, db.epoch(MEMBER, machine), {
+							seat: db.leases.get(machine)?.seat ?? null,
+						});
 						return true;
 					},
 				},
@@ -869,7 +948,7 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 					name: "another member hands back",
 					run: () => {
 						const machine = pick(machines);
-						db.handBack(OTHER, machine, db.epoch(OTHER, machine), { seat: db.leases.get(machine)?.seat ?? 0 });
+						db.handBack(OTHER, machine, db.epoch(OTHER, machine), { seat: db.leases.get(machine)?.seat ?? null });
 						return true;
 					},
 				},
@@ -1046,8 +1125,27 @@ const FOUND_TYPING: readonly { seed: number; finding: string }[] = [
 ];
 
 /** Seeds that broke an earlier window of this PR, each on the window and ledger of the commit named (review r13;
- * lanes/desktop-computers-20261110/TAKE-OVER-PROGRESS.md). They run first; each holds on this window. */
+ * lanes/desktop-computers-20261110/TAKE-OVER-PROGRESS.md; F27 and F28 over a model with that commit's SQL). They run
+ * first; each holds on this window. */
 const FOUND: readonly { seed: number; finding: string }[] = [
+	{
+		seed: 397,
+		finding:
+			"F27 (7a40f8242, I10): another tab took the desktop at epoch 0 while the window's take-over at 0 was on its way; the window closed and its hand-back named that take-over's press, which ended nothing and left the epoch at 0; the take-over then arrived and seated the member over the other tab's hold, its window gone",
+	},
+	{
+		seed: 87,
+		finding: "F27 (7a40f8242, I10): the same at epoch 1, after an earlier hand-back's lost answer was asked again",
+	},
+	{
+		seed: 1739,
+		finding:
+			"F28 (7a40f8242, I10): take-over #8's answer was lost, the next press sent take-over #10 at the same epoch, and the close named #10's press only; the lease #8 had seated stayed live after the window closed",
+	},
+	{
+		seed: 759,
+		finding: "F28 (7a40f8242, I10): the same, with a switch between, and the hand-back named the later press only",
+	},
 	{
 		seed: 6014,
 		finding:
