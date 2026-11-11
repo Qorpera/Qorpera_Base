@@ -15,7 +15,9 @@ import { CodingControlBusy } from "./coding-executor.ts";
 /** The change record's files (own code storage, step 2b): the coding executor's side. The kernel keeps a numbered row
  * for every movement of a repository's main, and for every landing that was refused (`qorpera_code_changes`, migration
  * `20260930720000`). Each row has a file, `code/<owner>/<name>/changes/<n>.md`, and the newest hundred are listed in
- * `changes/index.md`. The kernel says which are due and what they hold; this renders them; a code host job writes them:
+ * `changes/index.md`, under two lines that say which version of the repository's site is live and which change is ready
+ * in What's new (step 4). The kernel says which are due and what they hold; this renders them; a code host job writes
+ * them:
  *
  *   in the landing's or the undo's own job   `inJob`: what is due is written before the job saves, so the files are
  *                                            there when the agent is woken; `confirm` once the job has saved
@@ -552,17 +554,65 @@ const LISTED: Readonly<Record<CodeChangeFile["state"], string>> = {
 	lost: "lost in a restore",
 };
 
-/** The list's text, `changes/index.md`: the newest changes, one line each, newest first, at most a hundred. Pure. Each
- * line's words (what a customer will notice, or the title) are one line of at most 200 bytes with every Markdown
- * character written out. */
+/** What of a repository's site the list says (own code storage, step 4; migration `20260930729000`): the version that
+ * is live, and the change that is ready in What's new. The kernel sends each in the list's `index`, and it is never
+ * checked on the way in: a value of a shape the list cannot show reads as absent there, and stops nothing. A key the
+ * kernel does not send (a kernel from before step 4, or a repository that makes no site) is no line; null says that
+ * nothing is live yet, or that nothing is ready. */
+export interface CodeChangeReleases {
+	/** `{version, kind: "release" | "back", change, since, by, url}`: `by` is the member's name, null once the member
+	 * left; a go-back shows the number of the version it put back. */
+	live?: unknown;
+	/** `{change}`. */
+	ready?: unknown;
+}
+
+/** A time as the kernel sends one (a `timestamptz` in JSON): a day, a time and its offset. */
+const TIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}(:?\d{2})?)$/;
+/** A site's link as `qorpera_site_url` makes one for a site of files: the sites' origin, then the site's name. */
+const SITE_LINK = /^https:\/\/[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?\/[a-z0-9][a-z0-9-]{1,46}[a-z0-9]\/$/;
+
+/** The line of what is live: undefined when there is none to write. The member's name is their own text: one line of
+ * words, "a member" when there is none; a link that is not a site's is left off. */
+function liveLine(live: unknown): string | undefined {
+	if (live === null) return "Live: nothing yet.";
+	if (!isRecord(live)) return undefined;
+	const { version, kind, change, since, by, url } = live;
+	if (
+		!whole(version, 1) ||
+		(kind !== "release" && kind !== "back") ||
+		!whole(change, 1) ||
+		typeof since !== "string" ||
+		!TIME.test(since) ||
+		!Number.isFinite(Date.parse(since))
+	)
+		return undefined;
+	const back = kind === "back";
+	const name = (typeof by === "string" && words(by, 200)) || "a member";
+	const link = typeof url === "string" && SITE_LINK.test(url) ? ` ${url}` : "";
+	return `Live: version ${version}${back ? " again" : ""}, made at change ${change}, since ${minute(since)}; ${name} ${back ? "went back" : "said go"}.${link}`;
+}
+
+/** The line of what is ready in What's new: undefined when there is none to write. */
+function readyLine(ready: unknown): string | undefined {
+	if (ready === null) return "Ready in What's new: nothing.";
+	return isRecord(ready) && whole(ready.change, 1) ? `Ready in What's new: change ${ready.change}.` : undefined;
+}
+
+/** The list's text, `changes/index.md`: what of the repository's site is live and what is ready, when the kernel says
+ * so, then the newest changes, one line each, newest first, at most a hundred. Pure. Each line's words (what a customer
+ * will notice, or the title) are one line of at most 200 bytes with every Markdown character written out. */
 export function codeChangeIndexText(
 	repository: { owner: string; name: string },
 	lines: readonly CodeChangeLine[],
+	releases: CodeChangeReleases = {},
 ): string {
 	const newest = [...lines].sort((a, b) => b.n - a.n).slice(0, 100);
+	const site = [liveLine(releases.live), readyLine(releases.ready)].filter((line) => line !== undefined);
 	return `${[
 		`# Changes in ${words(`${repository.owner}/${repository.name}`, 200)}`,
 		"",
+		...(site.length ? [...site, ""] : []),
 		...(newest.length
 			? newest.map((entry) => {
 					const said = words(entry.line, 200);
@@ -737,7 +787,7 @@ function filesOf(
 	answer: unknown,
 	target: CodeChangeTarget,
 	limit: number,
-): { changes: CodeChangeFile[]; index: { version: number; lines: CodeChangeLine[] } | null } {
+): { changes: CodeChangeFile[]; index: ({ version: number; lines: CodeChangeLine[] } & CodeChangeReleases) | null } {
 	if (!isRecord(answer) || answer.schema !== "qorpera.code-change-files/v1" || !Array.isArray(answer.changes))
 		throw new Error("CODE_CHANGE_FILES_UNCONFIRMED");
 	const named = isRecord(answer.repository) ? answer.repository : {};
@@ -757,7 +807,15 @@ function filesOf(
 	return {
 		changes: answer.changes.slice(0, limit).map((change) => changeOf(change, target)),
 		index:
-			index === null ? null : { version: index.version as number, lines: (index.lines as unknown[]).map(lineOf) },
+			index === null
+				? null
+				: {
+						version: index.version as number,
+						lines: (index.lines as unknown[]).map(lineOf),
+						// What is live and what is ready (step 4), as the kernel sends them: the list reads them leniently.
+						live: index.live,
+						ready: index.ready,
+					},
 	};
 }
 
@@ -1023,7 +1081,9 @@ export class CodeChangeRecords {
 						}
 					: { n: change.n, text: codeChangeRecordText(change), ...copy(change) },
 		);
-		const index = due.index ? codeChangeIndexText(target, due.index.lines) : null;
+		const index = due.index
+			? codeChangeIndexText(target, due.index.lines, { live: due.index.live, ready: due.index.ready })
+			: null;
 		const writer = { shell: job.shell, layout: job.layout, signal };
 		const wrote = await this.#write(writer, { repository, records, index });
 		// The job names the records whose file now holds its text, also one that held it already. It leaves out a record
