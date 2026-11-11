@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
+
 import type { MemberAgentMachine } from "@qorpera/cloud-client/cloud-member-company-computer";
+import { isUuid } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	ComputerPanel,
@@ -291,7 +293,6 @@ function lists(s: Setup) {
 function calls(s: Setup, method: string) {
 	return s.rpcs.filter((call) => call.method === method);
 }
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** The take-over attempts sent, in turn (review r3). */
 function attempts(s: Setup) {
 	return calls(s, "qorpera_member_take_machine_desktop").map((call) => String(call.body.p_attempt_id));
@@ -938,7 +939,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		const { s, p } = await holding();
 		// The take-over names an attempt of the page's own (review r3).
 		const attempt = attempts(s)[0]!;
-		expect(attempt).toMatch(UUID);
+		expect(attempt).toSatisfy(isUuid);
 		expect(calls(s, "qorpera_member_take_machine_desktop")).toEqual([
 			{
 				method: "qorpera_member_take_machine_desktop",
@@ -1668,7 +1669,7 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 		const named = handBacks(s).map((call) => call.body.p_attempt_ids as string[]);
 		expect(named).toHaveLength(2);
 		expect(named[1]).toHaveLength(1);
-		expect(named[1]![0]).toMatch(UUID);
+		expect(named[1]![0]).toSatisfy(isUuid);
 		expect(named[1]![0]).not.toBe(first);
 		expect(done).toBeUndefined();
 		two.open();

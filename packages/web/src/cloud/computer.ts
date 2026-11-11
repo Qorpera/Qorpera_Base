@@ -1,9 +1,11 @@
 import type { CompanyComputerScope } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import {
 	CloudMemberCompanyComputerClient,
+	DESKTOP_ATTEMPTS_MAX,
 	type MemberAgentMachines,
 	type MemberDesktopHold,
 } from "@qorpera/cloud-client/cloud-member-company-computer";
+import { isUuid } from "@qorpera/contracts";
 import type { Cloud } from "./client.ts";
 import { memberRouteTarget } from "./deployment-config.ts";
 import { createWebMachineScreens, type WebMachineScreens } from "./machine-screens.ts";
@@ -104,9 +106,7 @@ export class WebCompanyComputer {
 	 * out by itself in 5 minutes. */
 	handBackOnLeave(machineId: string, attempts: readonly string[]): void {
 		const token = this.#lastToken;
-		const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-		if (!token || !uuid.test(machineId) || attempts.length > 32 || !attempts.every((attempt) => uuid.test(attempt)))
-			return;
+		if (!token || !isUuid(machineId) || attempts.length > DESKTOP_ATTEMPTS_MAX || !attempts.every(isUuid)) return;
 		try {
 			void globalThis
 				.fetch(
