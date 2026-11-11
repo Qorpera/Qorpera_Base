@@ -116,10 +116,29 @@ function setup(
 		lateCommit: undefined as (() => boolean) | undefined,
 		/** The member's hand-back epoch per machine, as the database keeps it (review r5); 0 when absent. */
 		epochs: new Map<string, number>(),
+		/** The lease generation per machine (F26): every seating, and every lease's end, moves it; 0 when absent. */
+		seats: new Map<string, number>(),
+		/** Actions are checked as the database checks them when they reach it, after their gate (F24, F26): run only for
+		 * the member's own hold taken under the epoch named, in the seat named; otherwise DESKTOP_CONTROL_ENDED. */
+		actAsDatabase: false,
 	};
 	const epochOf = (machineId: unknown) => state.epochs.get(String(machineId)) ?? 0;
+	/** As the database: the next seat of a machine, moved now. */
+	const seatAnew = (machineId: unknown) => {
+		const next = (state.seats.get(String(machineId)) ?? 0) + 1;
+		state.seats.set(String(machineId), next);
+		return next;
+	};
 	const looks: { url: string; etag: string | null }[] = [];
-	const acts: { url: string; action: Record<string, unknown>; epoch: number; signal: AbortSignal | undefined }[] = [];
+	const acts: {
+		url: string;
+		action: Record<string, unknown>;
+		epoch: number;
+		seat: number;
+		signal: AbortSignal | undefined;
+		/** Whether it ran, when the database checks it (actAsDatabase). */
+		ran?: boolean;
+	}[] = [];
 	const rpcs: { method: string; body: Record<string, unknown> }[] = [];
 	const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 		const url = String(input);
@@ -129,18 +148,31 @@ function setup(
 		if (url.startsWith(`${bridge}/v1/member-machine-screens/`) && url.endsWith("/act")) {
 			expect(init?.method).toBe("POST");
 			expect(headers.get("content-type")).toBe("application/json");
-			const body = JSON.parse(String(init?.body)) as { action: Record<string, unknown>; epoch: number };
-			// The action, and the epoch of the hold it was captured under (F24).
-			expect(Object.keys(body)).toEqual(["action", "epoch"]);
-			acts.push({
+			const body = JSON.parse(String(init?.body)) as {
+				action: Record<string, unknown>;
+				epoch: number;
+				seat: number;
+			};
+			// The action, and the epoch and the seat of the hold it was captured under (F24, F26).
+			expect(Object.keys(body)).toEqual(["action", "epoch", "seat"]);
+			const sent: (typeof acts)[number] = {
 				url: url.slice(bridge.length),
 				action: body.action,
 				epoch: body.epoch,
+				seat: body.seat,
 				signal: init?.signal ?? undefined,
-			});
+			};
+			acts.push(sent);
 			const answer = state.actAnswers.shift() ?? { exitCode: 0 };
 			if ("hold" in answer) await answer.hold;
 			if ("code" in answer) return Response.json({ code: answer.code }, { status: 409 });
+			if (state.actAsDatabase) {
+				// As the database, when the action reaches it: only under the hold it names.
+				const row = state.machines.find((one) => url.includes(`/${one.machineId}/act`));
+				sent.ran =
+					row?.control?.mine === true && row.control.epoch === body.epoch && row.control.seat === body.seat;
+				if (!sent.ran) return Response.json({ code: "DESKTOP_CONTROL_ENDED" }, { status: 409 });
+			}
 			return Response.json({ schema: "qorpera.member-machine-act/v1", exitCode: answer.exitCode });
 		}
 		if (url.startsWith(`${bridge}/v1/member-machine-screens/`)) {
@@ -202,13 +234,21 @@ function setup(
 		if (method === "qorpera_member_take_machine_desktop") {
 			if (state.takeGate) await state.takeGate;
 			const epoch = Number(body.p_epoch);
-			// As the database: a take-over is accepted only at the member's current epoch, when it arrives; the list then
-			// says the member holds it, taken under that epoch.
+			const press = String(body.p_press);
+			expect(press).toMatch(/^[0-9a-f-]{36}$/);
+			let seat = 0;
+			// As the database: a take-over is accepted only at the member's current epoch, when it arrives; it seats the
+			// member anew (F26: a new seat, its own live lease too), and the list then says the member holds it, taken under
+			// that epoch, in that seat, by that press.
 			const commit = () => {
 				if (epoch !== epochOf(body.p_machine_id) || state.take.state !== "ok") return false;
+				seat = seatAnew(body.p_machine_id);
 				state.machines = state.machines.map((row) =>
 					row.machineId === body.p_machine_id
-						? { ...row, control: { mine: true, name: "Owner", until: String(state.take.until), epoch } }
+						? {
+								...row,
+								control: { mine: true, name: "Owner", until: String(state.take.until), epoch, seat, press },
+							}
 						: row,
 				);
 				return true;
@@ -228,12 +268,16 @@ function setup(
 				});
 			commit();
 			if (lost === "committed") throw new TypeError("Failed to fetch");
-			return Response.json({ schema: "qorpera.member-machine-desktop/v1", ...state.take });
+			return Response.json({
+				schema: "qorpera.member-machine-desktop/v1",
+				...state.take,
+				...(state.take.state === "ok" ? { seat } : {}),
+			});
 		}
 		if (method === "qorpera_member_keep_machine_desktop") {
-			// As the database: only a lease of the member's taken under that epoch is renewed.
+			// As the database: only a lease of the member's taken under that epoch, in that seat, is renewed (F26).
 			const row = state.machines.find((machine) => machine.machineId === body.p_machine_id);
-			if (row?.control?.mine !== true || row.control.epoch !== body.p_epoch)
+			if (row?.control?.mine !== true || row.control.epoch !== body.p_epoch || row.control.seat !== body.p_seat)
 				return Response.json({ schema: "qorpera.member-machine-desktop/v1", state: "ended" });
 			return Response.json({ schema: "qorpera.member-machine-desktop/v1", ...state.keep });
 		}
@@ -245,26 +289,35 @@ function setup(
 				state.handBackFails--;
 				return new Response("{}", { status: 503 });
 			}
-			// As the database: at the current epoch it moves on, and the member's lease taken under it ends; at an older one
-			// nothing changes. It answers the current epoch and whether the member holds the machine now.
+			// As the database (F26): the member's lease taken under that epoch that is the hold named (its seat, its press)
+			// ends; the epoch moves on when it is the current one and no live lease of the member's is left unnamed; at an
+			// older one nothing changes. It answers the current epoch, whether the member holds the machine now, and its seat.
+			expect(body.p_seat !== null || body.p_press !== null).toBe(true);
 			const row = state.machines.find((machine) => machine.machineId === body.p_machine_id);
-			let handedBack = false;
-			if (body.p_epoch === epochOf(body.p_machine_id)) {
-				state.epochs.set(String(body.p_machine_id), epochOf(body.p_machine_id) + 1);
-				if (row?.control?.mine === true && row.control.epoch === body.p_epoch) {
-					handedBack = true;
-					state.machines = state.machines.map((machine) =>
-						machine.machineId === body.p_machine_id ? { ...machine, control: null } : machine,
-					);
-				}
+			const mine = row?.control?.mine === true;
+			const named =
+				mine &&
+				row?.control?.epoch === body.p_epoch &&
+				(body.p_seat === null || row?.control?.seat === body.p_seat) &&
+				(body.p_press === null || row?.control?.press === body.p_press);
+			const moves = body.p_epoch === epochOf(body.p_machine_id) && !(mine && !named);
+			const handedBack = named;
+			if (named) {
+				seatAnew(body.p_machine_id);
+				state.machines = state.machines.map((machine) =>
+					machine.machineId === body.p_machine_id ? { ...machine, control: null } : machine,
+				);
 			}
+			if (moves) state.epochs.set(String(body.p_machine_id), epochOf(body.p_machine_id) + 1);
 			const now = state.machines.find((machine) => machine.machineId === body.p_machine_id);
+			const holding = now?.control?.mine === true;
 			const answer = {
 				schema: "qorpera.member-machine-desktop/v1",
 				state: "ok",
 				handedBack,
 				epoch: epochOf(body.p_machine_id),
-				holding: now?.control?.mine === true,
+				holding,
+				seat: holding ? (now?.control?.seat ?? null) : null,
 			};
 			const delivered = state.handBackAnswerGates.shift();
 			if (delivered) await delivered;
@@ -345,6 +398,10 @@ function lists(s: Setup) {
 }
 function calls(s: Setup, method: string) {
 	return s.rpcs.filter((call) => call.method === method);
+}
+/** The press id the `n`th take-over carried (F26). */
+function pressOf(s: Setup, n = 0) {
+	return calls(s, "qorpera_member_take_machine_desktop")[n]?.body.p_press;
 }
 /** The epochs the take-overs were sent at, and the hand-backs, in turn (review r5). */
 function takeEpochs(s: Setup) {
@@ -996,11 +1053,13 @@ describe("trusted viewer configuration", () => {
 describe("a member's take-over of the desktop (20260930713000)", () => {
 	it("takes the desktop over, says what it means, renews it every minute and hands it back", async () => {
 		const { s, p } = await holding();
-		// The take-over is sent at the member's hand-back epoch the list said (review r5).
+		// The take-over is sent at the member's hand-back epoch the list said (review r5), with a press id of its own (F26).
+		const press = calls(s, "qorpera_member_take_machine_desktop")[0]?.body.p_press;
+		expect(press).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 		expect(calls(s, "qorpera_member_take_machine_desktop")).toEqual([
 			{
 				method: "qorpera_member_take_machine_desktop",
-				body: { p_profile_id: profileA.profileId, p_machine_id: machine(1).machineId, p_epoch: 0 },
+				body: { p_profile_id: profileA.profileId, p_machine_id: machine(1).machineId, p_epoch: 0, p_press: press },
 			},
 		]);
 		expect(p.holding).toBe(true);
@@ -1018,10 +1077,11 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		await advance(KEEP_EVERY_MS - 1);
 		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
 		await advance(1);
+		// Each heartbeat names the hold's seat, the take-over's answer (F26).
 		expect(calls(s, "qorpera_member_keep_machine_desktop")).toEqual([
 			{
 				method: "qorpera_member_keep_machine_desktop",
-				body: { p_profile_id: profileA.profileId, p_machine_id: machine(1).machineId, p_epoch: 0 },
+				body: { p_profile_id: profileA.profileId, p_machine_id: machine(1).machineId, p_epoch: 0, p_seat: 1 },
 			},
 		]);
 		await advance(KEEP_EVERY_MS);
@@ -1029,12 +1089,15 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		// Hand back: the database has it back, the picture takes no input, Take over again.
 		controlButton(p)!.click();
 		await flush();
+		// Hand back names the hold the list shows the member holding, by its seat (F26): here this page's own.
 		expect(calls(s, "qorpera_member_hand_back_machine_desktop").map((call) => call.body)).toEqual([
 			{
 				p_profile_id: profileA.profileId,
 				p_machine_id: machine(1).machineId,
 				p_reason: "handed_back",
 				p_epoch: 0,
+				p_seat: 1,
+				p_press: null,
 			},
 		]);
 		expect(p.holding).toBe(false);
@@ -1241,7 +1304,9 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 
 	it("shows who holds the desktop to another member, not the screen, until they give it back or their time runs out", async () => {
 		const until = new Date(Date.now() + 120_000).toISOString();
-		const s = setup({ machines: [machine(1, { control: { mine: false, name: "Ada", until, epoch: null } })] });
+		const s = setup({
+			machines: [machine(1, { control: { mine: false, name: "Ada", until, epoch: null, seat: null, press: null } })],
+		});
 		const p = panel(s);
 		await flush();
 		expect(status(p)).toBe("Ada is using the computer. The screen is hidden meanwhile.");
@@ -1255,7 +1320,9 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		await flush();
 		expect(mark(p)).toBe("Live");
 		// Taken over by Ada while this member watches: a refused look reads the list, which says who.
-		s.state.machines = [machine(1, { control: { mine: false, name: "Ada", until, epoch: null } })];
+		s.state.machines = [
+			machine(1, { control: { mine: false, name: "Ada", until, epoch: null, seat: null, press: null } }),
+		];
 		s.state.answers.push({ code: "DESKTOP_MEMBER_IN_CONTROL" });
 		await advance(LOOK_EVERY_MS);
 		await flush();
@@ -1292,7 +1359,9 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		const p = panel(s);
 		await flush();
 		const until = new Date(Date.now() + 120_000).toISOString();
-		s.state.machines = [machine(1, { control: { mine: false, name: "Ada", until, epoch: null } })];
+		s.state.machines = [
+			machine(1, { control: { mine: false, name: "Ada", until, epoch: null, seat: null, press: null } }),
+		];
 		controlButton(p)!.click();
 		await flush();
 		await flush();
@@ -1319,7 +1388,9 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 	it("shows a hold the list says is the member's from elsewhere (the page was loaded again) and never uses it; Take over makes it this window's at its epoch, given back as the page goes (r14)", async () => {
 		const until = new Date(Date.now() + 120_000).toISOString();
 		// The page was loaded again: the list says the member holds it, taken under their epoch 3, which this page never knew.
-		const s = setup({ machines: [machine(1, { control: { mine: true, name: "Owner", until, epoch: 3 } })] });
+		const s = setup({
+			machines: [machine(1, { control: { mine: true, name: "Owner", until, epoch: 3, seat: 7, press: id(97) } })],
+		});
 		s.state.epochs.set(machine(1).machineId, 3);
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
@@ -1348,11 +1419,14 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 			([url, init]) => String(url).endsWith("/qorpera_member_hand_back_machine_desktop") && init?.keepalive === true,
 		);
 		expect(left?.[1]).toMatchObject({ method: "POST", keepalive: true });
+		// It names what this page took, by the press of its take-over (F26).
 		expect(JSON.parse(String(left?.[1]?.body))).toEqual({
 			p_profile_id: profileA.profileId,
 			p_machine_id: machine(1).machineId,
 			p_reason: "closed",
 			p_epoch: 3,
+			p_seat: null,
+			p_press: calls(s, "qorpera_member_take_machine_desktop")[0]?.body.p_press,
 		});
 		// The page may come back from the browser's cache: the hold is given back as ever too, not only by the keepalive.
 		await flush();
@@ -1364,7 +1438,9 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 
 	it("hands a hold from elsewhere back at the list's epoch with the window's Hand back, never using it (r14)", async () => {
 		const until = new Date(Date.now() + 120_000).toISOString();
-		const s = setup({ machines: [machine(1, { control: { mine: true, name: "Owner", until, epoch: 3 } })] });
+		const s = setup({
+			machines: [machine(1, { control: { mine: true, name: "Owner", until, epoch: 3, seat: 7, press: id(97) } })],
+		});
 		s.state.epochs.set(machine(1).machineId, 3);
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
@@ -1382,7 +1458,9 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 
 	it("hands a hold from elsewhere back from the click though the list read after it fails, and says so until confirmed (r15 F23)", async () => {
 		const until = new Date(Date.now() + 120_000).toISOString();
-		const s = setup({ machines: [machine(1, { control: { mine: true, name: "Owner", until, epoch: 3 } })] });
+		const s = setup({
+			machines: [machine(1, { control: { mine: true, name: "Owner", until, epoch: 3, seat: 7, press: id(97) } })],
+		});
 		s.state.epochs.set(machine(1).machineId, 3);
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
@@ -1410,7 +1488,9 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 	it("never uses a hold of another tab's that the first list shows after pagehide: in another window, no input, no heartbeat; a press takes it over (r14 F21)", async () => {
 		const until = new Date(Date.now() + 120_000).toISOString();
 		// Another tab of the member's holds the desktop; this window's first list read is on its way.
-		const s = setup({ machines: [machine(1, { control: { mine: true, name: "Owner", until, epoch: 0 } })] });
+		const s = setup({
+			machines: [machine(1, { control: { mine: true, name: "Owner", until, epoch: 0, seat: 7, press: id(97) } })],
+		});
 		let arrive!: () => void;
 		s.state.listGate = new Promise<void>((resolve) => {
 			arrive = resolve;
@@ -1470,7 +1550,9 @@ describe("a member's action through the member bridge (20260930713000)", () => {
 	}
 	it("posts the action as JSON with the member's token, and takes its exit or refusal", async () => {
 		const t = transport(() => Response.json({ schema: "qorpera.member-machine-act/v1", exitCode: 0 }));
-		expect(await t.screens.act(machine(1).machineId, { type: "type", text: "Åse" }, 5, signal)).toEqual({
+		expect(
+			await t.screens.act(machine(1).machineId, { type: "type", text: "Åse" }, { epoch: 5, seat: 8 }, signal),
+		).toEqual({
 			kind: "done",
 			exitCode: 0,
 		});
@@ -1483,10 +1565,12 @@ describe("a member's action through the member bridge (20260930713000)", () => {
 			cache: "no-store",
 			credentials: "omit",
 		});
-		// With the epoch of the hold the input was captured under (F24).
-		expect(JSON.parse(String(init?.body))).toEqual({ action: { type: "type", text: "Åse" }, epoch: 5 });
+		// With the epoch and the seat of the hold the input was captured under (F24, F26).
+		expect(JSON.parse(String(init?.body))).toEqual({ action: { type: "type", text: "Åse" }, epoch: 5, seat: 8 });
 		const busy = transport(() => Response.json({ code: "DESKTOP_BUSY" }, { status: 409 }));
-		expect(await busy.screens.act(machine(1).machineId, { type: "key", keys: ["Return"] }, 0, signal)).toEqual({
+		expect(
+			await busy.screens.act(machine(1).machineId, { type: "key", keys: ["Return"] }, { epoch: 0, seat: 0 }, signal),
+		).toEqual({
 			kind: "refused",
 			code: "DESKTOP_BUSY",
 		});
@@ -1497,18 +1581,31 @@ describe("a member's action through the member bridge (20260930713000)", () => {
 			() => new Response("{}", { status: 503 }),
 		])
 			await expect(
-				transport(answer).screens.act(machine(1).machineId, { type: "key", keys: ["Return"] }, 0, signal),
+				transport(answer).screens.act(
+					machine(1).machineId,
+					{ type: "key", keys: ["Return"] },
+					{ epoch: 0, seat: 1 },
+					signal,
+				),
 			).rejects.toThrow();
 		await expect(
-			transport(() => Response.json({})).screens.act("machine", { type: "key", keys: ["a"] }, 0, signal),
+			transport(() => Response.json({})).screens.act(
+				"machine",
+				{ type: "key", keys: ["a"] },
+				{ epoch: 0, seat: 1 },
+				signal,
+			),
 		).rejects.toThrow();
-		// An epoch that is not a safe whole number, 0 or more, is never sent.
-		for (const epoch of [-1, 1.5, Number.NaN])
+		// An epoch or a seat that is not a safe whole number, 0 or more, is never sent.
+		for (const hold of [-1, 1.5, Number.NaN].flatMap((bad) => [
+			{ epoch: bad, seat: 1 },
+			{ epoch: 1, seat: bad },
+		]))
 			await expect(
 				transport(() => Response.json({})).screens.act(
 					machine(1).machineId,
 					{ type: "key", keys: ["a"] },
-					epoch,
+					hold,
 					signal,
 				),
 			).rejects.toThrow();
@@ -1611,6 +1708,8 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 				p_machine_id: machine(1).machineId,
 				p_reason: "handed_back",
 				p_epoch: 0,
+				p_seat: null,
+				p_press: pressOf(s),
 			},
 		]);
 		// The take-over reaches the database after that: refused, so nothing is held, and the window takes nothing up.
@@ -1642,6 +1741,8 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 				p_machine_id: machine(1).machineId,
 				p_reason: "closed",
 				p_epoch: 0,
+				p_seat: null,
+				p_press: pressOf(s),
 			},
 		]);
 		expect(s.state.machines[0]?.control).toBeNull();
@@ -1695,7 +1796,15 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 	const handBacks = (s: Setup) => calls(s, "qorpera_member_hand_back_machine_desktop");
 	const keeps = (s: Setup) => calls(s, "qorpera_member_keep_machine_desktop");
 	const until = () => new Date(Date.now() + 120_000).toISOString();
-	const held = (epoch: number) => ({ mine: true, name: "Owner", until: until(), epoch });
+	/** The member's hold from elsewhere (another tab), in its own seat and by its own press (F26). */
+	const held = (epoch: number, seat = 100 + epoch) => ({
+		mine: true,
+		name: "Owner",
+		until: until(),
+		epoch,
+		seat,
+		press: id(700 + seat),
+	});
 
 	it("keeps a closed window's failed hand-back: I'm done does not answer until it is answered", async () => {
 		const { s, panels, p } = await company();
@@ -2078,6 +2187,107 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		expect(backEpochs(s)).toEqual([0, 1]);
 	});
 
+	it("refuses, by its seat, an action of a hold whose lease ran out once this page took the desktop over again at the same epoch; its answer touches nothing (r18 F26)", async () => {
+		const { s, p } = await company();
+		s.state.actAsDatabase = true;
+		await takeOver(p);
+		expect(p.holding).toBe(true);
+		// Action A under the first hold (epoch 0, seat 1); it reaches the database only later.
+		const late = gate();
+		s.state.actAnswers.push({ hold: late.closed, exitCode: 0 });
+		key(canvas(p), "Enter");
+		await flush();
+		expect(s.acts.map((act) => [act.epoch, act.seat])).toEqual([[0, 1]]);
+		// The lease runs out (no heartbeat reached it for 5 minutes): the database holds nothing now; the epoch stays.
+		s.state.machines = [machine(1)];
+		// The window's heartbeat hears it ended and lets go; A's request is cut off on the page, and may still arrive.
+		await advance(KEEP_EVERY_MS);
+		expect(p.holding).toBe(false);
+		expect(s.acts[0]?.signal?.aborted).toBe(true);
+		// Taken over again on this page, with no hand-back between: the same epoch, a new seat.
+		await takeOver(p);
+		expect(takeEpochs(s)).toEqual([0, 0]);
+		expect(p.holding).toBe(true);
+		expect(s.state.machines[0]?.control?.seat).toBe(2);
+		// A arrives now, naming seat 1: refused, so it runs nowhere, and the new hold is as it was.
+		late.open();
+		await flush();
+		expect(s.acts[0]?.ran).toBe(false);
+		expect(p.holding).toBe(true);
+		// What is typed now goes under seat 2, and runs; the heartbeats named seat 1, then seat 2.
+		key(canvas(p), "Tab");
+		await flush();
+		expect(s.acts.map((act) => [act.epoch, act.seat, act.ran])).toEqual([
+			[0, 1, false],
+			[0, 2, true],
+		]);
+		await advance(KEEP_EVERY_MS);
+		expect(keeps(s).map((call) => [call.body.p_epoch, call.body.p_seat])).toEqual([
+			[0, 1],
+			[0, 2],
+		]);
+		expect(p.holding).toBe(true);
+	});
+
+	it("lets go of a hold another tab of the member's took over at the same epoch: this tab's heartbeat and its input name its seat and are refused, and closing this tab ends nothing of the other's (r18 F26)", async () => {
+		const { s, panels, p } = await company();
+		s.state.actAsDatabase = true;
+		await takeOver(p);
+		// Another tab of the member's takes the desktop over: their own live lease, the same epoch, a new seat.
+		s.state.machines = [machine(1, { control: held(0, 2) })];
+		s.state.seats.set(machine(1).machineId, 2);
+		// Just before this tab's heartbeat, A goes under seat 1 (it reaches the database only later); B waits behind it.
+		await advance(KEEP_EVERY_MS - 5000);
+		const late = gate();
+		s.state.actAnswers.push({ hold: late.closed, exitCode: 0 });
+		key(canvas(p), "Enter");
+		key(canvas(p), "Tab");
+		await flush();
+		expect(s.acts.map((act) => act.seat)).toEqual([1]);
+		// This tab's heartbeat names seat 1: ended, renewing nothing; the window lets go, so B never leaves the page.
+		await advance(5000);
+		expect(keeps(s).map((call) => [call.body.p_epoch, call.body.p_seat])).toEqual([[0, 1]]);
+		expect(p.holding).toBe(false);
+		// A arrives now, naming seat 1: refused.
+		late.open();
+		await flush();
+		expect(s.acts.map((act) => [act.seat, act.ran])).toEqual([[1, false]]);
+		// The window shows the other tab's hold as the member's in another window: no input, no heartbeat.
+		expect(controls(p)?.textContent).toContain("You are using this computer in another window.");
+		key(canvas(p), "End");
+		await advance(KEEP_EVERY_MS * 2);
+		expect(s.acts).toHaveLength(1);
+		expect(keeps(s)).toHaveLength(1);
+		// This (stale) tab's window closes: its hand-back names what this page took, by its press; the other tab's hold
+		// lives on, and the epoch stays where it is while it does.
+		panels.close(staff.id);
+		await flush();
+		expect(handBacks(s).map((call) => [call.body.p_epoch, call.body.p_seat, call.body.p_press])).toEqual([
+			[0, null, pressOf(s)],
+		]);
+		expect(s.state.machines[0]?.control?.seat).toBe(2);
+		expect(s.state.epochs.get(machine(1).machineId) ?? 0).toBe(0);
+	});
+
+	it("names the seat the list gave on the window's Hand back of a hold in another window, and ends it (r18 F26)", async () => {
+		const { s, p } = await company();
+		await takeOver(p);
+		// Another tab takes it over (seat 2); this tab's heartbeat hears it ended.
+		s.state.machines = [machine(1, { control: held(0, 2) })];
+		s.state.seats.set(machine(1).machineId, 2);
+		await advance(KEEP_EVERY_MS);
+		expect(p.holding).toBe(false);
+		expect(controls(p)?.textContent).toContain("You are using this computer in another window.");
+		// Hand back on that hold: by seat 2, so it ends and the epoch moves on.
+		handBackButton(p)!.click();
+		await flush();
+		expect(handBacks(s).map((call) => [call.body.p_epoch, call.body.p_seat, call.body.p_press])).toEqual([
+			[0, 2, null],
+		]);
+		expect(s.state.machines[0]?.control).toBeNull();
+		expect(s.state.epochs.get(machine(1).machineId)).toBe(1);
+	});
+
 	it("says nothing of a take-over queued behind a hand-back that pagehide called off, when that hand-back then fails (r14 F22)", async () => {
 		const { s, p } = await company();
 		await takeOver(p);
@@ -2166,7 +2376,9 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		await takeOver(p);
 		expect(p.holding).toBe(false);
 		// Another member takes the desktop; the member's take-over B, at the same epoch, is refused for it.
-		s.state.machines = [machine(1, { control: { mine: false, name: "Ada", until: until(), epoch: null } })];
+		s.state.machines = [
+			machine(1, { control: { mine: false, name: "Ada", until: until(), epoch: null, seat: null, press: null } }),
+		];
 		s.state.take = { state: "refused", reason: "DESKTOP_MEMBER_IN_CONTROL", memberName: "Ada" };
 		p.takeOver();
 		await flush();
@@ -2560,6 +2772,8 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 			p_machine_id: machine(1).machineId,
 			p_reason: "closed",
 			p_epoch: 0,
+			p_seat: null,
+			p_press: pressOf(s),
 		});
 	});
 });
