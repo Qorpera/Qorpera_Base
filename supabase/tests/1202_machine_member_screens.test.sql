@@ -10,7 +10,8 @@
 --    (SCREEN_TOO_SOON); the machine's last use never moves;
 -- 3. the executor's read: served once and only by the placement's own executor, within 15 seconds; a replaced, served or
 --    old use, a member who left, refused; a machine stopped meanwhile answers MACHINE_NOT_RUNNING; keepDesktop from the
---    member's word within 30 minutes; the machine's last use never moves;
+--    member's word within 30 minutes; the served read of a look the member confirmed in the last 30 minutes moves the
+--    machine's last use (20260930714000), no other read does;
 -- 4. the disk's rule for members: on a disk that has had a view, a member who does not read the root sees no screen;
 -- 5. the member's read check after the boundary: nothing to check without a view; every read the newest view holds must
 --    be the member's to read (detail qorpera.test-machine/member-unreadable), and a refusal marks neither the placement
@@ -208,8 +209,8 @@ declare
 begin
 	perform pg_temp.base_assert(v_alice - 'machines' = jsonb_build_object('schema', 'qorpera.agent-machines/v1',
 			'profileId', '92400000-0000-4000-8000-000000000010', 'staffAgentId', '92400000-0000-4000-8000-000000000030',
-			'canWake', false),
-		'1: a viewer reads Alice''s machines and may not wake one: ' || coalesce(v_alice::text, 'null'));
+			'canWake', false, 'canTakeOver', false),
+		'1: a viewer reads Alice''s machines and may not wake one (nor take one over, 20260930713000): ' || coalesce(v_alice::text, 'null'));
 	-- Running first; among them the one she drove last, then the other she drove, then the newest; then the rest, newest
 	-- first. Bob's own machine, the removed one and the one being deleted are not hers to show.
 	perform pg_temp.base_assert((select array_agg(m ->> 'name' order by n) from jsonb_array_elements(v_alice -> 'machines')
@@ -218,7 +219,9 @@ begin
 	v_first := v_alice -> 'machines' -> 0;
 	perform pg_temp.base_assert(v_first - 'screenUsedAt' = jsonb_build_object('machineId', pg_temp.mm_id('a4'),
 			'name', 'm-1202-bob', 'purpose', 'Tests the app.', 'state', 'running', 'lifetime', 'task', 'desktopCapable', true,
-			'startedByAgent', false, 'screenAgentName', 'Alice', 'waitingFor', null)
+			'startedByAgent', false, 'screenAgentName', 'Alice', 'control', null, 'waitingFor', null,
+			-- 20260930713000: the caller's own hand-back epoch for the machine (0: never handed back).
+			'epoch', 0)
 			and (v_first ->> 'screenUsedAt')::timestamptz > clock_timestamp() - interval '2 minutes',
 		'1: one machine, only what the window needs: ' || v_first::text);
 	perform pg_temp.base_assert(not exists (select 1 from jsonb_array_elements(v_alice -> 'machines') m
@@ -336,7 +339,9 @@ do $$
 declare v_where jsonb := jsonb_build_object('schema', 'qorpera.member-machine-screen-authority/v1', 'state', 'authorized',
 	'useId', current_setting('qorpera_test.mm_u31'), 'machineId', pg_temp.mm_id('a1'), 'placementId', pg_temp.mm_id('b1'),
 	'bootId', pg_temp.mm_id('c1'), 'executorOwner', 'mx-1202', 'providerId', 'machine-1202',
-	'userId', pg_temp.mm_user('viewer'), 'keepDesktop', true);
+	'userId', pg_temp.mm_user('viewer'), 'keepDesktop', true,
+	-- The lease generation the read saw (20260930713000): no member ever took m-1202 over.
+	'desktopGeneration', 0);
 begin
 	perform pg_temp.base_assert(pg_temp.mm_answer(current_setting('qorpera_test.mm_a31')) = v_where || '{"served": false}'
 			and pg_temp.mm_answer(current_setting('qorpera_test.mm_a32')) = v_where || '{"served": false}'
@@ -348,8 +353,8 @@ begin
 		'3: the machine''s own executor serves it: ' || current_setting('qorpera_test.mm_a33'));
 	perform pg_temp.base_assert(current_setting('qorpera_test.mm_a34') = '42501:Machine screen use is unavailable',
 		'3: once: ' || current_setting('qorpera_test.mm_a34'));
-	perform pg_temp.base_assert(pg_temp.mm_used('a1')::text = current_setting('qorpera_test.mm_used3'),
-		'3: the executor''s read never moves the machine''s last use');
+	perform pg_temp.base_assert(pg_temp.mm_used('a1') > current_setting('qorpera_test.mm_used3')::timestamptz,
+		'3: the served read of a look the member confirmed moves the machine''s last use (20260930714000)');
 end $$;
 
 -- A replaced use, an old one, a member who left, a machine stopped meanwhile; the member's word within 30 minutes.

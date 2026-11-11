@@ -76,13 +76,75 @@ export interface MemberAgentMachine {
 	screenAgentName: string | null;
 	/** Why a machine that wants to run waits: the company's computer hours, or room on the servers. */
 	waitingFor: "hours" | "room" | null;
+	/** The member who holds its desktop now (migration 20260930713000): the caller (`mine`) or another, by name, and
+	 * when the hold runs out unless renewed; null when no one holds it (or a database before take-over). */
+	control: MemberAgentMachineControl | null;
+	/** The caller's own hand-back epoch for the machine (review r5 of #1661): a take-over is accepted only at it, and only
+	 * the database moves it (0 when never handed back, or from a database before it). */
+	epoch: number;
+}
+export interface MemberAgentMachineControl {
+	mine: boolean;
+	name: string;
+	until: string;
+	/** The hand-back epoch the caller's own hold was taken under (review r5 of #1661); null for another member's. */
+	epoch: number | null;
+	/** The seat of the caller's own hold (F26 of #1661): a number the database gives each seating of a member on the
+	 * desktop, so two holds of the caller under one epoch (a lease that ran out and was taken again, another tab's
+	 * take-over) are told apart; null for another member's. */
+	seat: number | null;
+	/** The id of the take-over request that seated the caller's own hold (F26), for a page to recognise a hold its own
+	 * press made when that press's answer was lost; never authority. Null for another member's. */
+	press: string | null;
+}
+/** A take-over's answer (migration 20260930713000): the caller holds the desktop until `until`, in the seat `seat`
+ * (F26: everything done as holder names it beside the epoch), or why not. */
+export type MemberDesktopHold =
+	| { state: "ok"; until: string; seat: number }
+	| {
+			state: "refused";
+			reason:
+				| "DESKTOP_MACHINE_TOO_SMALL"
+				| "MACHINE_NOT_RUNNING"
+				| "MACHINE_NEEDS_COMPANY_VIEW"
+				| "DESKTOP_MEMBER_IN_CONTROL"
+				// Sent at an epoch that is not the caller's current one: a hand-back moved it on (review r5).
+				| "TAKE_CALLED_OFF";
+			memberName: string | null;
+			/** The caller's current hand-back epoch, with TAKE_CALLED_OFF; null otherwise. */
+			epoch: number | null;
+	  };
+const HOLD_REFUSALS = [
+	"DESKTOP_MACHINE_TOO_SMALL",
+	"MACHINE_NOT_RUNNING",
+	"MACHINE_NEEDS_COMPANY_VIEW",
+	"DESKTOP_MEMBER_IN_CONTROL",
+	"TAKE_CALLED_OFF",
+] as const;
+/** A hand-back epoch as the database answers it. */
+function epochOf(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 export interface MemberAgentMachines {
 	/** Owners, admins and contributors may wake a sleeping machine; viewers may only watch. */
 	canWake: boolean;
+	/** Owners, admins and contributors may take a desktop over; viewers may only watch (false from a database before
+	 * take-over, 20260930713000). */
+	canTakeOver: boolean;
 	/** At most 20: running ones first, then the ones the agent drove most recently, then the newest. */
 	machines: MemberAgentMachine[];
 }
+/** A hand-back's answer (review r5 of #1661, F26): whether it gave a live lease of the caller's back, the caller's
+ * current epoch for the machine, and whether the caller holds the machine now (another tab of theirs, at that epoch)
+ * and, if so, that hold's seat. Once an epoch above e came, nothing taken or sent at e or earlier holds the desktop or
+ * ever will. */
+export interface MemberDesktopHandBack {
+	handedBack: boolean;
+	epoch: number;
+	holding: boolean;
+	seat: number | null;
+}
+
 function field(value: unknown, error: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(error);
 	return value as Record<string, unknown>;
@@ -323,9 +385,34 @@ export class CloudMemberCompanyComputerClient {
 				typeof row.startedByAgent !== "boolean" ||
 				(row.screenUsedAt !== null && !text(row.screenUsedAt, 64)) ||
 				(row.screenAgentName !== null && !text(row.screenAgentName, 160)) ||
-				(row.waitingFor !== null && row.waitingFor !== "hours" && row.waitingFor !== "room")
+				(row.waitingFor !== null && row.waitingFor !== "hours" && row.waitingFor !== "room") ||
+				(row.epoch !== undefined && !epochOf(row.epoch))
 			)
 				throw new Error(invalid);
+			// Who holds the desktop (20260930713000); absent before the take-over migration.
+			let control: MemberAgentMachineControl | null = null;
+			if (row.control !== undefined && row.control !== null) {
+				const held = field(row.control, invalid);
+				if (
+					typeof held.mine !== "boolean" ||
+					!text(held.name, 256) ||
+					!text(held.until, 64) ||
+					(held.epoch !== undefined && held.epoch !== null && (!held.mine || !epochOf(held.epoch))) ||
+					(held.seat !== undefined && held.seat !== null && (!held.mine || !epochOf(held.seat))) ||
+					(held.press !== undefined &&
+						held.press !== null &&
+						(!held.mine || typeof held.press !== "string" || !COMPANY_COMPUTER_UUID.test(held.press)))
+				)
+					throw new Error(invalid);
+				control = {
+					mine: held.mine,
+					name: held.name,
+					until: held.until,
+					epoch: epochOf(held.epoch) ? held.epoch : null,
+					seat: epochOf(held.seat) ? held.seat : null,
+					press: typeof held.press === "string" ? held.press : null,
+				};
+			}
 			return {
 				machineId: row.machineId,
 				name: row.name,
@@ -337,10 +424,117 @@ export class CloudMemberCompanyComputerClient {
 				screenUsedAt: row.screenUsedAt as string | null,
 				screenAgentName: row.screenAgentName as string | null,
 				waitingFor: row.waitingFor as "hours" | "room" | null,
+				control,
+				epoch: epochOf(row.epoch) ? row.epoch : 0,
 			};
 		});
 		if (new Set(machines.map((machine) => machine.machineId)).size !== machines.length) throw new Error(invalid);
-		return { canWake: value.canWake, machines };
+		if (value.canTakeOver !== undefined && typeof value.canTakeOver !== "boolean") throw new Error(invalid);
+		return { canWake: value.canWake, canTakeOver: value.canTakeOver === true, machines };
+	}
+	/** Takes the machine's desktop over for the caller (qorpera_member_take_machine_desktop, 20260930713000), or takes
+	 * the caller's own hold over again (a new seat: the hold seated before ends for its page): until when and the seat,
+	 * or why not (another member's hold names them). It is sent at the caller's hand-back epoch for the machine as the
+	 * page knows it, and accepted only at the current one (TAKE_CALLED_OFF with the current one otherwise). `press` is
+	 * an id the page mints for this request (F26): the hold remembers it, and the list shows it beside the caller's own
+	 * hold, for recognition only. */
+	async takeDesktop(machineId: string, epoch: number, press: string, signal: AbortSignal): Promise<MemberDesktopHold> {
+		if (!epochOf(epoch)) throw new Error("Invalid hand-back epoch");
+		if (!COMPANY_COMPUTER_UUID.test(press)) throw new Error("Invalid take-over press");
+		const value = await this.#desktop(
+			"qorpera_member_take_machine_desktop",
+			machineId,
+			{ p_epoch: epoch, p_press: press },
+			signal,
+		);
+		if (
+			value.state === "ok" &&
+			Object.keys(value).sort().join() === "schema,seat,state,until" &&
+			typeof value.until === "string" &&
+			epochOf(value.seat)
+		)
+			return { state: "ok", until: value.until, seat: value.seat };
+		if (
+			value.state === "refused" &&
+			HOLD_REFUSALS.includes(value.reason as (typeof HOLD_REFUSALS)[number]) &&
+			(value.memberName === undefined || typeof value.memberName === "string") &&
+			(value.reason === "TAKE_CALLED_OFF" ? epochOf(value.epoch) : value.epoch === undefined)
+		)
+			return {
+				state: "refused",
+				reason: value.reason as (typeof HOLD_REFUSALS)[number],
+				memberName: (value.memberName as string | undefined) ?? null,
+				epoch: epochOf(value.epoch) ? value.epoch : null,
+			};
+		throw new Error("Invalid desktop hold");
+	}
+	/** The window's heartbeat (qorpera_member_keep_machine_desktop): the caller's hold taken under `epoch` in the seat
+	 * `seat` renewed until when, or null when there is none (F26: another seat of the caller's is none). */
+	async keepDesktop(machineId: string, epoch: number, seat: number, signal: AbortSignal): Promise<string | null> {
+		if (!epochOf(epoch)) throw new Error("Invalid hand-back epoch");
+		if (!epochOf(seat)) throw new Error("Invalid desktop seat");
+		const value = await this.#desktop(
+			"qorpera_member_keep_machine_desktop",
+			machineId,
+			{ p_epoch: epoch, p_seat: seat },
+			signal,
+		);
+		if (value.state === "ok" && typeof value.until === "string") return value.until;
+		if (value.state === "ended") return null;
+		throw new Error("Invalid desktop hold");
+	}
+	/** Hands the machine back at the caller's hand-back epoch `epoch` (qorpera_member_hand_back_machine_desktop):
+	 * `handed_back` by their word, `closed` when the window closed or the page is left; in one of two forms (F27, F28 of
+	 * #1661). EXACT, `seat` a number: the caller's lease under `epoch` in that seat ends, if it is the lease, and the
+	 * epoch moves on only when no live lease of the caller's is left (a stale tab's hand-back never ends another tab's
+	 * hold); a page sends it only when every take-over it sent for the machine at that epoch was answered. VOID, `seat`
+	 * null: at the current epoch the epoch moves on and the caller's lease under it ends, whichever seat (another tab's
+	 * too); it is what voids a take-over of the page's that may still be on its way. At an older epoch neither changes
+	 * anything. */
+	async handBackDesktop(
+		machineId: string,
+		reason: "handed_back" | "closed",
+		epoch: number,
+		seat: number | null,
+		signal: AbortSignal,
+	): Promise<MemberDesktopHandBack> {
+		if (!epochOf(epoch)) throw new Error("Invalid hand-back epoch");
+		if (seat !== null && !epochOf(seat)) throw new Error("Invalid desktop seat");
+		const value = await this.#desktop(
+			"qorpera_member_hand_back_machine_desktop",
+			machineId,
+			{ p_reason: reason, p_epoch: epoch, p_seat: seat },
+			signal,
+		);
+		if (
+			value.state === "ok" &&
+			typeof value.handedBack === "boolean" &&
+			epochOf(value.epoch) &&
+			typeof value.holding === "boolean" &&
+			(value.holding ? epochOf(value.seat) : value.seat === null)
+		)
+			return {
+				handedBack: value.handedBack,
+				epoch: value.epoch,
+				holding: value.holding,
+				seat: value.holding ? (value.seat as number) : null,
+			};
+		throw new Error("Invalid desktop hand-back");
+	}
+	async #desktop(
+		method: string,
+		machineId: string,
+		args: Record<string, unknown>,
+		signal: AbortSignal,
+	): Promise<Record<string, unknown>> {
+		if (!COMPANY_COMPUTER_UUID.test(machineId)) throw new Error("Invalid machine");
+		const value = field(
+			(await this.#rpc(method, { p_profile_id: this.#options.companyId, p_machine_id: machineId, ...args }, signal))
+				.data,
+			"Invalid desktop hold",
+		);
+		if (value.schema !== "qorpera.member-machine-desktop/v1") throw new Error("Invalid desktop hold");
+		return value;
 	}
 	/** Wakes a sleeping machine of the company (qorpera_member_manage_company_machine 'start'): it takes its place in
 	 * line, and the nodes give it room. Owners, admins and contributors only; the database refuses anyone else. */

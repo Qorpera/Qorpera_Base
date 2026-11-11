@@ -1059,6 +1059,8 @@ begin
 			'state', 'authorized', 'machineId', '11810000-0000-4000-8000-0000000007a1',
 			'placementId', '11810000-0000-4000-8000-0000000007b1', 'bootId', '11810000-0000-4000-8000-0000000007c1',
 			'executorOwner', 'mx-1181', 'providerId', 'machine-1181', 'receiptId', '11810000-0000-4000-8000-000000000171',
+			-- The lease generation the read saw (20260930713000, F29 of #1661): no member ever held m-1181.
+			'desktopGeneration', 0,
 			'target', jsonb_build_object('schema', 'qorpera.coding-value-machine-target/v1', 'service', 'github',
 				'valuePattern', '^(github_pat_[A-Za-z0-9_]{82}|ghp_[A-Za-z0-9]{36})$', 'variable', 'gh_release_token',
 				'companyId', '92400000-0000-4000-8000-000000000010', 'companyMachineId', '11810000-0000-4000-8000-0000000007a1',
@@ -1108,7 +1110,7 @@ select set_config('qorpera_test.cv_7e', pg_temp.cv_differ(jsonb_build_array(
 		'ok:' || jsonb_build_object('schema', 'qorpera.machine-coding-value-authority/v1', 'state', 'authorized',
 			'machineId', '11810000-0000-4000-8000-0000000007a1', 'placementId', '11810000-0000-4000-8000-0000000007b1',
 			'bootId', '11810000-0000-4000-8000-0000000007c1', 'executorOwner', 'mx-1181', 'providerId', 'machine-1181',
-			'receiptId', '11810000-0000-4000-8000-000000000172',
+			'receiptId', '11810000-0000-4000-8000-000000000172', 'desktopGeneration', 0,
 			'target', (pg_temp.cv_answer(current_setting('qorpera_test.cv_exec71')) -> 'target')
 				|| '{"receiptId": "11810000-0000-4000-8000-000000000172"}')::text),
 	jsonb_build_array('executor: a receipt never begun', pg_temp.cv_exec('79', current_setting('qorpera_test.cv_env72')),
