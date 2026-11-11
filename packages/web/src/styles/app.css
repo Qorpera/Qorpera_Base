@@ -240,17 +240,16 @@ label > input, label > select { font-weight: 400; }
 	max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain;
 }
 .context-menu:focus { outline: none; }
-/* When a message was sent, beside it on a hover (ui/sent-time-hover.ts): the menus' edge and face, small. */
+/* When a message was sent, beside it on a hover (ui/sent-time-hover.ts): plain small text, at once.
+ * Over the thread (no room beside the message), on the thread's own colour so it reads. */
 .sent-time-tip {
-	position: fixed; z-index: 650; left: 0; top: 0; padding: 4px 8px; pointer-events: none;
-	border: 1px solid var(--border-strong); border-radius: 7px; background: var(--overlay); color: var(--text-muted);
-	box-shadow: 0 4px 12px rgba(11, 11, 11, 0.08);
-	font-family: var(--font-sans); -webkit-font-smoothing: antialiased; font-size: 12px; font-weight: 400;
-	line-height: 1.35; white-space: nowrap; font-variant-numeric: tabular-nums;
-	opacity: 0; visibility: hidden; transition: opacity var(--motion-fast) ease, visibility 0s linear var(--motion-fast);
+	position: fixed; z-index: 650; left: 0; top: 0; padding: 0 4px; pointer-events: none; border-radius: 4px;
+	color: var(--text-muted); font-family: var(--font-sans); -webkit-font-smoothing: antialiased;
+	font-size: 12px; font-weight: 400; line-height: 16px; white-space: nowrap; font-variant-numeric: tabular-nums;
+	visibility: hidden;
 }
-.sent-time-tip.is-shown { opacity: 1; visibility: visible; transition: opacity var(--motion-fast) ease; }
-@media (prefers-reduced-motion: reduce) { .sent-time-tip, .sent-time-tip.is-shown { transition: none; } }
+.sent-time-tip.is-shown { visibility: visible; }
+.sent-time-tip.is-over { background: var(--bg); }
 .context-menu-item {
 	display: flex; flex: none; align-items: center; gap: 10px; width: 100%; padding: 7px 12px;
 	border: 0; border-radius: 8px; background: transparent; color: var(--text);
