@@ -1421,11 +1421,18 @@ export function mountApplication(
 			pages.open();
 			void reader.open();
 			// The agents' apps, for the apps drawer and the apps' own pages (RUNTIME-INTERFACE-APPS.md §4).
-			const apps = new CompanyApps(shared, (next) => {
-				if (companyApps !== apps) return;
-				controller.store.set({ apps: next });
-				decorateAppCards();
-			});
+			const apps = new CompanyApps(
+				shared,
+				(next) => {
+					if (companyApps !== apps) return;
+					controller.store.set({ apps: next });
+					decorateAppCards();
+				},
+				(groups) => {
+					if (companyApps !== apps) return;
+					controller.store.set({ appGroups: groups });
+				},
+			);
 			companyApps = apps;
 			// The rail's line under each agent's name: its wall and its next planned run, read with the member's own access
 			// and again on each change hint of the folder, as the thread's wall is.

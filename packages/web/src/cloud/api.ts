@@ -1,3 +1,4 @@
+import { type MemberAppLayout, type MemberAppLayoutRead, parseMemberAppLayoutRead } from "./app-groups.ts";
 import type { Cloud } from "./client.ts";
 import {
 	type CodingSession,
@@ -510,6 +511,28 @@ export class CloudApi {
 	/** The question cards raised for the signed-in member in the company's agent threads that still wait for them. */
 	listOpenQuestions(profileId: string): Promise<OpenQuestion[]> {
 		return listOpenQuestions(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	/** The member's own arrangement of the apps drawer over the company's apps/groups.md (20260930728000). */
+	readMemberAppLayout(profileId: string): Promise<MemberAppLayoutRead> {
+		return this.cloud
+			.rpc("qorpera_member_app_layout", { p_profile_id: requiredUuid(profileId, "Profile id") })
+			.then(parseMemberAppLayoutRead);
+	}
+
+	/** Writes it whole; refused (QAL01) when another tab wrote since `expected`. */
+	setMemberAppLayout(
+		profileId: string,
+		layout: MemberAppLayout,
+		expected: string | null,
+	): Promise<MemberAppLayoutRead> {
+		return this.cloud
+			.rpc("qorpera_set_member_app_layout", {
+				p_profile_id: requiredUuid(profileId, "Profile id"),
+				p_layout: layout,
+				p_expected: expected,
+			})
+			.then(parseMemberAppLayoutRead);
 	}
 
 	/** Sections are the company's; pins and hidden agents are the signed-in member's. */
