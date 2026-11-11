@@ -13,7 +13,7 @@
 -- Now:
 -- 1. A later reading with room ends a wall when it is a reading of the same account by the same member on a live login,
 --    in any company (before: in the wall's company only), and no newer reading of the account in that set is full (a
---    reading at the same time with room wins). The other rules of a reading with room stay as they were.
+--    reading at the same time with room wins; a full window whose reset has passed is full no more). The other rules of a reading with room stay as they were.
 -- 2. A full window holds a signal only while no newer reading of the login, on a live login, shows room.
 -- Nothing else changes: the signals that can hold a connection, the 6 hours, the 8 days, siblings, the ACLs.
 -- The bodies keep the markers 20260930577000 and 20260930611000 that the activation guards look for.
@@ -162,8 +162,10 @@ begin
 					case when jsonb_typeof(recovered.provider_account_usage -> 'windows') = 'array'
 						then exists (select 1 from jsonb_array_elements(recovered.provider_account_usage -> 'windows') as w
 							where jsonb_typeof(w -> 'usedPercent') = 'number' and (w ->> 'usedPercent')::numeric >= 100
-								and not (w ? 'resetAt' and (w ->> 'resetAt')::timestamptz
-									<= (recovered.provider_account_usage ->> 'observedAt')::timestamptz))
+								-- a window that had reset when read, or has reset since, is full no more
+								and not (w ? 'resetAt' and ((w ->> 'resetAt')::timestamptz
+									<= (recovered.provider_account_usage ->> 'observedAt')::timestamptz
+									or (w ->> 'resetAt')::timestamptz <= statement_timestamp())))
 						else false end as is_full
 				from public.qorpera_native_provider_account_metadata as recovered
 				join public.qorpera_provider_connections as recovered_connection

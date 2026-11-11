@@ -104,6 +104,11 @@ select pg_temp.w_reading(2, interval '30 seconds', 100, interval '6 days') \g /d
 select pg_temp.base_assert(pg_temp.w_near(pg_temp.w_wall(2), interval '5 days'),
 	'a reading with room ended the wall after a newer full reading: ' || pg_temp.w_text(pg_temp.w_wall(2)));
 select pg_temp.w_reading(2, interval '2 hours', 100, interval '6 days') \g /dev/null
+-- A newer full reading whose window has reset since ends nothing: it is full no more.
+select pg_temp.w_reading(2, interval '30 seconds', 100, interval '-10 seconds') \g /dev/null
+select pg_temp.base_assert(pg_temp.w_wall(2) is null,
+	'a full window that has reset since kept the wall: ' || pg_temp.w_text(pg_temp.w_wall(2)));
+select pg_temp.w_reading(2, interval '2 hours', 100, interval '6 days') \g /dev/null
 -- At the same time, room wins.
 update public.qorpera_native_provider_account_metadata as full_reading
 set provider_account_usage = jsonb_set(full_reading.provider_account_usage, '{observedAt}',

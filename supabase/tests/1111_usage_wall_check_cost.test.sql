@@ -91,8 +91,9 @@ language sql stable security definer set search_path = '' as $$
       jsonb_typeof(recovered.provider_account_usage -> 'windows') = 'array'
         and exists (select 1 from jsonb_array_elements(recovered.provider_account_usage -> 'windows') w
           where jsonb_typeof(w -> 'usedPercent') = 'number' and (w ->> 'usedPercent')::numeric >= 100
-            and not (w ? 'resetAt' and (w ->> 'resetAt')::timestamptz
-              <= (recovered.provider_account_usage ->> 'observedAt')::timestamptz))
+            and not (w ? 'resetAt' and ((w ->> 'resetAt')::timestamptz
+              <= (recovered.provider_account_usage ->> 'observedAt')::timestamptz
+              or (w ->> 'resetAt')::timestamptz <= statement_timestamp())))
     from public.qorpera_native_provider_account_metadata recovered
     join public.qorpera_provider_connections recovered_connection on recovered_connection.id = recovered.connection_id
     join public.qorpera_provider_connection_versions recovered_version
