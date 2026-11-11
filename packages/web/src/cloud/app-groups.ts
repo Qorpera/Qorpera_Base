@@ -7,6 +7,8 @@
  *
  * Keys are the file's: `page:mailbox|members|bank`, `app:<name>`, `concepts`, `sites`, and `group:<id>` for a group. */
 
+import { parseRecord } from "@qorpera/contracts";
+
 export const APP_GROUPS_PATH = "apps/groups.md";
 export const APP_GROUPS_MAX_BYTES = 64 * 1024;
 export const APP_LAYOUT_SCHEMA = "qorpera.member-app-layout/v1";
@@ -107,13 +109,19 @@ export function parseAppGroups(text: string): AppTreeNode[] {
 
 /** The member's document as the cloud keeps it; anything else is the empty one. */
 export function parseMemberAppLayout(value: unknown): MemberAppLayout {
-	const record = (item: unknown): Record<string, unknown> | undefined =>
-		item && typeof item === "object" && !Array.isArray(item) ? (item as Record<string, unknown>) : undefined;
-	const input = record(value);
+	// Lenient: what is not an object reads as nothing, never as a refusal of the whole document.
+	const objectOrNothing = (item: unknown): Record<string, unknown> | undefined => {
+		try {
+			return parseRecord(item, "apps layout");
+		} catch {
+			return undefined;
+		}
+	};
+	const input = objectOrNothing(value);
 	if (!input || input.schema !== APP_LAYOUT_SCHEMA) return EMPTY_APP_LAYOUT;
 	const places: Record<string, AppPlace> = {};
-	for (const [key, raw] of Object.entries(record(input.places) ?? {})) {
-		const place = record(raw);
+	for (const [key, raw] of Object.entries(objectOrNothing(input.places) ?? {})) {
+		const place = objectOrNothing(raw);
 		if (!place || !(KEY.test(key) || (isGroupKey(key) && GROUP_ID.test(groupIdOf(key))))) continue;
 		const group = typeof place.group === "string" && GROUP_ID.test(place.group) ? place.group : null;
 		const after = typeof place.after === "string" ? place.after : null;
@@ -121,10 +129,10 @@ export function parseMemberAppLayout(value: unknown): MemberAppLayout {
 		places[key] = { group, after, ...(place.first === true ? { first: true } : {}), at };
 	}
 	const groups: Record<string, AppGroupChange> = {};
-	for (const [id, raw] of Object.entries(record(input.groups) ?? {})) {
-		const change = record(raw);
+	for (const [id, raw] of Object.entries(objectOrNothing(input.groups) ?? {})) {
+		const change = objectOrNothing(raw);
 		if (!change || !GROUP_ID.test(id)) continue;
-		const mine = record(change.mine);
+		const mine = objectOrNothing(change.mine);
 		const entry: AppGroupChange = {
 			...(typeof change.name === "string" && change.name ? { name: change.name } : {}),
 			...(change.removed === true ? { removed: true as const } : {}),
@@ -142,7 +150,7 @@ export interface MemberAppLayoutRead {
 }
 
 export function parseMemberAppLayoutRead(value: unknown): MemberAppLayoutRead {
-	const input = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+	const input = parseRecord(value, "apps layout");
 	if (input.schema !== "qorpera.member-app-layout-read/v1") throw new Error("Invalid apps layout");
 	return {
 		layout: parseMemberAppLayout(input.layout),
