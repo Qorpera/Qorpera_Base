@@ -35,36 +35,48 @@ comment on table public.qorpera_member_app_layouts is
  * a-z, 0-9 and hyphens, a name 1-40 characters on one line. */
 create function public.qorpera_member_app_layout_valid(p_layout jsonb)
 returns boolean language sql immutable set search_path = '' as $$
-	select jsonb_typeof(p_layout) = 'object'
-		and p_layout ->> 'schema' = 'qorpera.member-app-layout/v1'
-		and p_layout - array['schema','places','groups'] = '{}'::jsonb
-		and jsonb_typeof(p_layout -> 'places') = 'object' and jsonb_typeof(p_layout -> 'groups') = 'object'
+	-- Every test is null-safe, and the whole answers false rather than null for anything missing.
+	select coalesce(jsonb_typeof(p_layout) = 'object'
+		and p_layout ->> 'schema' is not distinct from 'qorpera.member-app-layout/v1'
+		and case when jsonb_typeof(p_layout) = 'object' then p_layout - array['schema','places','groups'] = '{}'::jsonb else false end
+		and jsonb_typeof(p_layout -> 'places') is not distinct from 'object'
+		and jsonb_typeof(p_layout -> 'groups') is not distinct from 'object'
 		and pg_catalog.octet_length(p_layout::text) <= 65536
-		and (select count(*) from jsonb_object_keys(p_layout -> 'places')) <= 500
-		and (select count(*) from jsonb_object_keys(p_layout -> 'groups')) <= 200
+		and (select count(*) from jsonb_object_keys(case when jsonb_typeof(p_layout -> 'places') = 'object' then p_layout -> 'places' else '{}' end)) <= 500
+		and (select count(*) from jsonb_object_keys(case when jsonb_typeof(p_layout -> 'groups') = 'object' then p_layout -> 'groups' else '{}' end)) <= 200
 		and not exists (
-			select 1 from jsonb_each(p_layout -> 'places') place(key, value)
+			select 1 from jsonb_each(case when jsonb_typeof(p_layout -> 'places') = 'object' then p_layout -> 'places' else '{}' end) place(key, value)
 			where place.key !~ '^(page:(mailbox|members|bank)|app:[a-z0-9][a-z0-9-]{0,62}|concepts|sites|group:[a-z0-9][a-z0-9-]{0,39})$'
-				or jsonb_typeof(place.value) <> 'object'
-				or place.value - array['group','after','first'] <> '{}'::jsonb
+				or jsonb_typeof(place.value) is distinct from 'object'
+				or case when jsonb_typeof(place.value) = 'object' then place.value - array['group','after','first','at'] <> '{}'::jsonb
+					else true end
 				or coalesce(jsonb_typeof(place.value -> 'group'), 'null') not in ('null', 'string')
-				or (jsonb_typeof(place.value -> 'group') = 'string' and place.value ->> 'group' !~ '^[a-z0-9][a-z0-9-]{0,39}$')
+				or (jsonb_typeof(place.value -> 'group') = 'string'
+					and place.value ->> 'group' !~ '^[a-z0-9][a-z0-9-]{0,39}$')
 				or coalesce(jsonb_typeof(place.value -> 'after'), 'null') not in ('null', 'string')
-				or (jsonb_typeof(place.value -> 'after') = 'string' and char_length(place.value ->> 'after') > 70)
-				or coalesce(jsonb_typeof(place.value -> 'first'), 'boolean') <> 'boolean')
+				or coalesce(char_length(place.value ->> 'after'), 0) > 70
+				or coalesce(jsonb_typeof(place.value -> 'first'), 'boolean') <> 'boolean'
+				or coalesce(jsonb_typeof(place.value -> 'at'), 'number') <> 'number'
+				or (jsonb_typeof(place.value -> 'at') = 'number'
+					and ((place.value ->> 'at')::numeric < 0 or (place.value ->> 'at')::numeric <> trunc((place.value ->> 'at')::numeric))))
 		and not exists (
-			select 1 from jsonb_each(p_layout -> 'groups') grouped(id, value)
+			select 1 from jsonb_each(case when jsonb_typeof(p_layout -> 'groups') = 'object' then p_layout -> 'groups' else '{}' end) grouped(id, value)
 			where grouped.id !~ '^[a-z0-9][a-z0-9-]{0,39}$'
-				or jsonb_typeof(grouped.value) <> 'object'
-				or grouped.value - array['name','removed','mine'] <> '{}'::jsonb
-				or (grouped.value ? 'name' and (jsonb_typeof(grouped.value -> 'name') <> 'string'
-					or char_length(grouped.value ->> 'name') not between 1 and 40 or grouped.value ->> 'name' ~ '[[:cntrl:]]'))
-				or (grouped.value ? 'removed' and grouped.value -> 'removed' <> 'true'::jsonb)
-				or (grouped.value ? 'mine' and (jsonb_typeof(grouped.value -> 'mine') <> 'object'
-					or (grouped.value -> 'mine') - array['name'] <> '{}'::jsonb
-					or jsonb_typeof(grouped.value #> '{mine,name}') <> 'string'
-					or char_length(grouped.value #>> '{mine,name}') not between 1 and 40
-					or grouped.value #>> '{mine,name}' ~ '[[:cntrl:]]')))
+				or jsonb_typeof(grouped.value) is distinct from 'object'
+				or case when jsonb_typeof(grouped.value) = 'object' then grouped.value - array['name','removed','mine'] <> '{}'::jsonb
+					else true end
+				or (grouped.value ? 'name' and (jsonb_typeof(grouped.value -> 'name') is distinct from 'string'
+					or coalesce(char_length(grouped.value ->> 'name'), 0) not between 1 and 40
+					or coalesce(grouped.value ->> 'name' ~ '[[:cntrl:]]', true)))
+				or (grouped.value ? 'removed' and grouped.value -> 'removed' is distinct from 'true'::jsonb)
+				or (grouped.value ? 'mine' and (jsonb_typeof(grouped.value -> 'mine') is distinct from 'object'
+					or case when jsonb_typeof(grouped.value -> 'mine') = 'object'
+						then (grouped.value -> 'mine') - array['name'] <> '{}'::jsonb else true end
+					or jsonb_typeof(grouped.value #> '{mine,name}') is distinct from 'string'
+					or coalesce(char_length(grouped.value #>> '{mine,name}'), 0) not between 1 and 40
+					or coalesce(grouped.value #>> '{mine,name}' ~ '[[:cntrl:]]', true)))
+				or not (grouped.value ? 'name' or grouped.value ? 'removed' or grouped.value ? 'mine'))
+		, false)
 $$;
 
 create function public.qorpera_member_app_layout(p_profile_id uuid)
@@ -83,7 +95,7 @@ create function public.qorpera_set_member_app_layout(p_profile_id uuid, p_layout
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare v_user uuid := public.qorpera_sidebar_member(p_profile_id); v_at timestamptz;
 begin
-	if not public.qorpera_member_app_layout_valid(p_layout) then
+	if public.qorpera_member_app_layout_valid(p_layout) is not true then
 		raise exception 'The apps layout is invalid' using errcode = '22023'; end if;
 	-- One change to a member's own sidebar at a time (20260930722000), Reset's included.
 	perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(

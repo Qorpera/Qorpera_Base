@@ -33,6 +33,8 @@ export interface AppPlace {
 	/** The key it stands after there; with neither this nor `first`: last. */
 	after?: string | null;
 	first?: boolean;
+	/** When it was made, as a count: the cloud keeps no order of a document's keys, so places carry their own. */
+	at?: number;
 }
 export interface AppGroupChange {
 	/** The member's name for one of the company's groups. */
@@ -44,7 +46,7 @@ export interface AppGroupChange {
 }
 export interface MemberAppLayout {
 	readonly schema: typeof APP_LAYOUT_SCHEMA;
-	/** In the order they were made: a later place is laid over the earlier ones. */
+	/** Where the member put apps and groups, each with when (`at`). */
 	readonly places: Readonly<Record<string, AppPlace>>;
 	readonly groups: Readonly<Record<string, AppGroupChange>>;
 }
@@ -115,7 +117,8 @@ export function parseMemberAppLayout(value: unknown): MemberAppLayout {
 		if (!place || !(KEY.test(key) || (isGroupKey(key) && GROUP_ID.test(groupIdOf(key))))) continue;
 		const group = typeof place.group === "string" && GROUP_ID.test(place.group) ? place.group : null;
 		const after = typeof place.after === "string" ? place.after : null;
-		places[key] = { group, after, ...(place.first === true ? { first: true } : {}) };
+		const at = typeof place.at === "number" && Number.isSafeInteger(place.at) && place.at >= 0 ? place.at : 0;
+		places[key] = { group, after, ...(place.first === true ? { first: true } : {}), at };
 	}
 	const groups: Record<string, AppGroupChange> = {};
 	for (const [id, raw] of Object.entries(record(input.groups) ?? {})) {
@@ -234,6 +237,14 @@ export function arrangeApps(
 		}
 	// What the drawer has that nothing names, loose at the end, before the member's places move anything.
 	for (const key of present) if (!seen.has(key)) tree.push({ kind: "item", key });
+	// The member's places that hold: the app or group is here, its group is here, and it fits there.
+	interface Held {
+		readonly key: string;
+		readonly node: AppTreeNode;
+		readonly target: AppGroupNode | undefined;
+		readonly place: AppPlace;
+	}
+	const held: Held[] = [];
 	for (const [key, place] of Object.entries(layout.places)) {
 		const from = find(tree, key);
 		if (!from) continue;
@@ -243,13 +254,47 @@ export function arrangeApps(
 			if (!found || found.node.kind !== "group") continue;
 			target = found.node;
 		}
-		if (!fits(tree, from.node, target)) continue;
-		from.parent.splice(from.index, 1);
-		const list = target ? target.items : tree;
-		const anchor = place.after ? list.findIndex((node) => nodeKey(node) === place.after) : -1;
-		const at = place.first ? 0 : anchor >= 0 ? anchor + 1 : list.length;
-		list.splice(at, 0, from.node);
+		if (fits(tree, from.node, target)) held.push({ key, node: from.node, target, place });
 	}
+	for (const entry of held) {
+		const from = find(tree, entry.key);
+		if (from) from.parent.splice(from.index, 1);
+	}
+	const newest = (a: Held, b: Held) => (b.place.at ?? 0) - (a.place.at ?? 0) || (a.key < b.key ? -1 : 1);
+	const oldest = (a: Held, b: Held) => -newest(a, b);
+	// Each list laid in as a walk: after each item, what the member put right after it, newest first, each followed in
+	// turn by what stands after it; what stands first, newest first, before everything; what stands after something
+	// that is not here, oldest first, at the end. How old a place is never reorders what stands after it.
+	const lay = (list: AppTreeNode[], owner: AppGroupNode | undefined) => {
+		const here = held.filter((entry) => entry.target === owner);
+		const keys = new Set([...list.map(nodeKey), ...here.map((entry) => entry.key)]);
+		const out: AppTreeNode[] = [];
+		const done = new Set<string>();
+		const visit = (entry: Held) => {
+			if (done.has(entry.key)) return;
+			done.add(entry.key);
+			out.push(entry.node);
+			after(entry.key);
+		};
+		const after = (key: string) => {
+			for (const entry of here.filter((item) => !item.place.first && item.place.after === key).sort(newest))
+				visit(entry);
+		};
+		for (const entry of here.filter((item) => item.place.first).sort(newest)) visit(entry);
+		for (const node of list) {
+			out.push(node);
+			after(nodeKey(node));
+		}
+		for (const entry of here
+			.filter((item) => !item.place.first && (!item.place.after || !keys.has(item.place.after)))
+			.sort(oldest))
+			visit(entry);
+		// A place that could only stand after itself goes at the end.
+		for (const entry of here.sort(oldest)) visit(entry);
+		list.splice(0, list.length, ...out);
+		for (const node of out) if (node.kind === "group") lay(node.items, node);
+	};
+	lay(tree, undefined);
 	const prune = (nodes: AppTreeNode[]): AppTreeNode[] =>
 		nodes.flatMap((node): AppTreeNode[] => {
 			if (node.kind === "item") return [node];
@@ -284,10 +329,35 @@ export function appsIn(node: AppTreeNode): string[] {
 
 /* ---- Changes to the member's document --------------------------------------------------------------------------- */
 
+/** Sets or takes away a place; a new one is the newest (`at`). */
 function withPlace(layout: MemberAppLayout, key: string, place: AppPlace | undefined): MemberAppLayout {
-	// A changed place goes to the end: places are laid over each other in the order they were made.
 	const { [key]: _old, ...rest } = layout.places;
-	return { ...layout, places: place ? { ...rest, [key]: place } : rest };
+	if (!place) return { ...layout, places: rest };
+	const at = Math.max(0, ...Object.values(layout.places).map((other) => other.at ?? 0)) + 1;
+	return { ...layout, places: { ...rest, [key]: { ...place, at } } };
+}
+
+/** Keeps the places that stood right after `key` (in its own list) where they stood when `key` leaves: the first takes
+ * `before`'s place after it (first, with none), each next one stands after the one before it; how old each is stays. */
+function rebaseAfter(
+	layout: MemberAppLayout,
+	list: readonly AppTreeNode[],
+	container: string | null,
+	key: string,
+	before: string | null,
+): MemberAppLayout {
+	const order = new Map(list.map((node, index) => [nodeKey(node), index]));
+	const followers = Object.entries(layout.places)
+		.filter(([other, place]) => other !== key && place.after === key && (place.group ?? null) === container)
+		.sort(([a], [b]) => (order.get(a) ?? Number.MAX_SAFE_INTEGER) - (order.get(b) ?? Number.MAX_SAFE_INTEGER));
+	let anchor = before;
+	const places = { ...layout.places };
+	for (const [other, place] of followers) {
+		const { after: _a, first: _f, ...rest } = place;
+		places[other] = anchor ? { ...rest, after: anchor } : { ...rest, first: true };
+		anchor = other;
+	}
+	return { ...layout, places };
 }
 
 /** Puts `key` (an app or `group:<id>`) in `group` (null: loose), after `after` there (null: first). What the member placed
@@ -303,17 +373,7 @@ export function placeApp(
 	const here = find(tree, key);
 	if (here) {
 		const before = here.index > 0 ? nodeKey(here.parent[here.index - 1]!) : null;
-		for (const [other, place] of Object.entries(layout.places))
-			if (other !== key && place.after === key)
-				next = {
-					...next,
-					places: {
-						...next.places,
-						[other]: before
-							? { group: place.group ?? null, after: before }
-							: { group: place.group ?? null, first: true },
-					},
-				};
+		next = rebaseAfter(next, here.parent, here.owner?.id ?? null, key, before);
 	}
 	return withPlace(next, key, after ? { group, after } : { group, first: true });
 }
@@ -373,6 +433,8 @@ export function ungroupApps(layout: MemberAppLayout, tree: AppTreeNode[], id: st
 		next = withPlace(next, key, after ? { group: container, after } : { group: container, first: true });
 		after = key;
 	}
+	// What stood right after the group now stands after its last app.
+	next = rebaseAfter(next, where.parent, container, groupKey(id), after);
 	const { [id]: change, ...others } = next.groups;
 	next = withPlace({ ...next, groups: others }, groupKey(id), undefined);
 	return change?.mine ? next : { ...next, groups: { ...next.groups, [id]: { removed: true } } };

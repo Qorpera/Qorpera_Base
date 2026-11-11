@@ -34,7 +34,7 @@ do $$
 declare v_owner uuid := '92400000-0000-4000-8000-000000000001'; v_viewer uuid := '92400000-0000-4000-8000-000000000003';
 	v_read text := $q$public.qorpera_member_app_layout('92400000-0000-4000-8000-000000000010')$q$;
 	v_layout jsonb := '{"schema":"qorpera.member-app-layout/v1",
-		"places":{"app:trip-planner":{"group":"m-1a2b","after":null,"first":true},"group:m-1a2b":{"group":null,"after":"page:bank"}},
+		"places":{"app:trip-planner":{"group":"m-1a2b","after":null,"first":true,"at":2},"group:m-1a2b":{"group":null,"after":"page:bank","at":1}},
 		"groups":{"m-1a2b":{"mine":{"name":"Daily"}},"market":{"name":"Sales"},"trips":{"removed":true}}}';
 	v_state jsonb; v_at timestamptz; v_sidebar jsonb;
 begin
@@ -80,6 +80,15 @@ do $$
 declare v_viewer uuid := '92400000-0000-4000-8000-000000000003'; v_bad jsonb;
 begin
 	foreach v_bad in array array[
+		-- Missing fields are refused, never taken as an empty layout (review F3 on #1678).
+		'{}', '{"places":{},"groups":{}}', '{"schema":"qorpera.member-app-layout/v1","places":{}}',
+		'{"schema":"qorpera.member-app-layout/v1","places":{},"groups":{"g":{}}}',
+		'{"schema":"qorpera.member-app-layout/v1","places":{},"groups":{"g":{"mine":{}}}}',
+		'{"schema":"qorpera.member-app-layout/v1","places":{},"groups":{"g":{"mine":"x"}}}',
+		'{"schema":"qorpera.member-app-layout/v1","places":{"app:a":"x"},"groups":{}}',
+		'{"schema":"qorpera.member-app-layout/v1","places":{"app:a":{"at":"1"}},"groups":{}}',
+		'{"schema":"qorpera.member-app-layout/v1","places":{"app:a":{"at":-1}},"groups":{}}',
+		'{"schema":"qorpera.member-app-layout/v1","places":{"app:a":{"at":1.5}},"groups":{}}',
 		'[]', '{"schema":"other","places":{},"groups":{}}',
 		'{"schema":"qorpera.member-app-layout/v1","places":{},"groups":{},"extra":1}',
 		'{"schema":"qorpera.member-app-layout/v1","places":{"agent:x":{}},"groups":{}}',

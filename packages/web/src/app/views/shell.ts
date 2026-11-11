@@ -2009,6 +2009,8 @@ function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
 	}
 	for (const [element, was] of before) {
 		if (kept.has(element)) continue;
+		// Out of the drawer's order while it fades: no drag counts it (each draw gives a tile its key again).
+		element.removeAttribute("data-app-key");
 		element.classList.add("is-leaving");
 		element.style.left = `${was.left - box.left}px`;
 		element.style.top = `${was.top - box.top}px`;

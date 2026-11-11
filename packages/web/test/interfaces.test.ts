@@ -9,12 +9,24 @@ import { companyInterfaces, interfaceRows } from "../src/app/interfaces.ts";
 import { parseRoute, type Route, routeHash } from "../src/app/router.ts";
 import { messageText, renderInterface, renderInterfaceFile } from "../src/app/views/interface.ts";
 import { renderRail } from "../src/app/views/shell.ts";
-import { EMPTY_APP_LAYOUT, parseAppGroups } from "../src/cloud/app-groups.ts";
+import { EMPTY_APP_LAYOUT, type MemberAppLayout, parseAppGroups } from "../src/cloud/app-groups.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { colourNameHex } from "../src/ui/avatar.ts";
 import { h } from "../src/ui/dom.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
-import { fixture, id, profileA, session, settle, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
+import {
+	deferred,
+	fixture,
+	id,
+	profileA,
+	session,
+	settle,
+	staff,
+	stubFigureMotion,
+	team,
+	timestamp,
+	userA,
+} from "./fixtures.ts";
 
 const agent = (n: number, name: string): HostedStaffAgent => ({
 	...staff,
@@ -1535,5 +1547,21 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		const trips = element.querySelector<HTMLElement>("[data-app-key='app:trips']")!;
 		trips.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 9, clientY: 9 }));
 		expect(labels()[0]).toBe("Move to");
+	});
+	it("lets a move on its way land before a reset, so the reset is never undone by it (review F2 on #1678)", async () => {
+		localStorage.clear();
+		const { controller, set } = drawer();
+		const answer = deferred<{ layout: MemberAppLayout; updatedAt: string | null }>();
+		set.mockImplementationOnce(() => answer.promise);
+		const manage = vi
+			.spyOn(controller as unknown as { changeSidebar: (r: unknown) => Promise<boolean> }, "changeSidebar")
+			.mockResolvedValue(true);
+		const moving = controller.changeAppLayout({ ...EMPTY_APP_LAYOUT, groups: { market: { removed: true } } });
+		const resetting = controller.resetSidebar();
+		await settle();
+		expect(manage).not.toHaveBeenCalled();
+		answer.resolve({ layout: EMPTY_APP_LAYOUT, updatedAt: "2026-11-11T12:00:00Z" });
+		await Promise.all([moving, resetting]);
+		expect(manage).toHaveBeenCalledWith({ action: "reset" });
 	});
 });

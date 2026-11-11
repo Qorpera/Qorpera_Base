@@ -101,6 +101,8 @@ interface Drag {
 	merging?: { readonly key: string; armed: boolean; readonly timer: ReturnType<typeof setTimeout> };
 	/** With groups: a swap waiting for the pointer to rest on that place's edge. */
 	swapping?: { readonly index: number; readonly timer: ReturnType<typeof setTimeout> };
+	/** Where the pointer was last: a swap that lands while it rests keeps the icon under it. */
+	at?: { x: number; y: number };
 }
 
 /** Where `item` is laid out, on screen: from its layout offsets, which no transform, `translate` or animation moves
@@ -258,6 +260,7 @@ export class AppGridDrag {
 	/** With groups: over another icon's middle, wait to go into it; over its edge, wait a moment, then swap. */
 	#hover(drag: Drag, target: number, x: number, y: number): void {
 		const lifted = drag.lifted!;
+		drag.at = { x, y };
 		const items = itemsIn(this.#grid);
 		const under = target >= 0 ? items[target] : undefined;
 		if (!under || under === lifted.item) {
@@ -298,8 +301,11 @@ export class AppGridDrag {
 			drag.swapping = undefined;
 			const now = itemsIn(this.#grid);
 			const rest = now.filter((other) => other !== lifted.item);
-			if (rest.length + 1 === lifted.slots.length && now.indexOf(lifted.item) !== target)
+			if (rest.length + 1 === lifted.slots.length && now.indexOf(lifted.item) !== target) {
 				moveGliding(this.#grid, lifted.item, rest[target] ?? null, this.#moving);
+				// Its place changed under a resting pointer: it stays where the pointer holds it.
+				if (drag.at) this.#follow(lifted, drag.at.x, drag.at.y);
+			}
 		}, SWAP_MS);
 		drag.swapping = { index: target, timer };
 	}

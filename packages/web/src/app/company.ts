@@ -1206,7 +1206,15 @@ export class CompanyController {
 	 * reset took. Contacts' places and the apps layout come back with their next read, which this starts. */
 	async resetSidebar(undo = false): Promise<boolean> {
 		if (!this.ownSidebar()) return false;
-		const done = await this.changeSidebar({ action: undo ? "undo_reset" : "reset" });
+		// One after the other with the apps layout's writes: a move on its way lands first, and a move made meanwhile
+		// waits, so a reset never comes between a move and its write.
+		const reset = this.#appLayoutWrites.then(() => this.changeSidebar({ action: undo ? "undo_reset" : "reset" }));
+		// What the next write names as last written is read again after a reset: nothing is carried over it.
+		this.#appLayoutWrites = reset.then(
+			() => undefined,
+			() => undefined,
+		);
+		const done = await reset;
 		if (done) {
 			void this.memberChats.refresh();
 			void this.refreshAppLayout();

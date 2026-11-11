@@ -405,6 +405,8 @@ describe("groups in the drawer (Jonas, 11 Nov 2026)", () => {
 			expect(gridOrder(element)).toEqual(["a", "b", "c", "d"]);
 			vi.advanceTimersByTime(150);
 			expect(gridOrder(element)).toEqual(["b", "c", "a", "d"]);
+			// The pointer rested: the icon stays under it in its new place (review F5 on #1678).
+			expect(icon("a").style.translate).toBe("-22px 0px");
 			pointer("pointerup", 103, 30);
 			expect(drops).toEqual([[["b", "c", "a", "d"], "a"]]);
 			// d takes nothing in: resting on its middle never marks it.

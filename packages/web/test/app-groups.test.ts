@@ -219,10 +219,29 @@ describe("the member's own arrangement", () => {
 			}),
 		).toEqual({
 			schema: "qorpera.member-app-layout/v1",
-			places: { "app:a": { group: "g", after: null } },
+			places: { "app:a": { group: "g", after: null, at: 0 } },
 			groups: { g: { mine: { name: "G" } } },
 		});
 		expect(suggestGroupName("Fjeldtur brand", "fjeldtur business plan", "Group")).toBe("Fjeldtur");
 		expect(suggestGroupName("Mailbox", "Bank", "Group")).toBe("Group");
+	});
+	it("keeps the member's order however the cloud orders a document's keys (review F1 on #1678)", () => {
+		const keys = ["app:a", "app:b", "app:c"];
+		let mine = placeApp(EMPTY_APP_LAYOUT, arrangeApps([], EMPTY_APP_LAYOUT, keys), "app:c", null, null);
+		mine = placeApp(mine, arrangeApps([], mine, keys), "app:b", null, "app:c");
+		expect(shape(arrangeApps([], mine, keys))).toEqual(["app:c", "app:b", "app:a"]);
+		// The cloud's jsonb sorts keys by length, then bytes: the order of the document's keys says nothing.
+		const sorted = Object.fromEntries(Object.entries(mine.places).sort(([a], [b]) => (a < b ? -1 : 1)));
+		const reread = parseMemberAppLayout(JSON.parse(JSON.stringify({ ...mine, places: sorted })));
+		expect(shape(arrangeApps([], reread, keys))).toEqual(["app:c", "app:b", "app:a"]);
+	});
+
+	it("puts what stood after a group after its last app when the group is taken apart (review F4 on #1678)", () => {
+		const company = parseAppGroups("- group g: G\n  - app:a\n  - app:b\n- app:d\n- app:c\n");
+		const keys = ["app:a", "app:b", "app:c", "app:d"];
+		let mine = placeApp(EMPTY_APP_LAYOUT, arrangeApps(company, EMPTY_APP_LAYOUT, keys), "app:c", null, "group:g");
+		expect(shape(arrangeApps(company, mine, keys))).toEqual([["group:g G", "app:a", "app:b"], "app:c", "app:d"]);
+		mine = ungroupApps(mine, arrangeApps(company, mine, keys), "g");
+		expect(shape(arrangeApps(company, mine, keys))).toEqual(["app:a", "app:b", "app:c", "app:d"]);
 	});
 });
