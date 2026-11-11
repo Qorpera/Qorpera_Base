@@ -271,6 +271,13 @@ describe("public member Company File gateway", () => {
 		["a machine screen of one id", request(`/v1/member-machine-screens/${id}`), 404],
 		["a machine screen with another tail", request(`/v1/member-machine-screens/${id}/${id}/keep`), 404],
 		["a machine screen with a query", request(`/v1/member-machine-screens/${id}/${id}?keep=1`), 404],
+		["a machine action read", request(`/v1/member-machine-screens/${id}/${id}/act`), 405],
+		[
+			"a machine action past 16 KiB",
+			request(`/v1/member-machine-screens/${id}/${id}/act`, { method: "POST", body: "x".repeat(16 * 1024 + 1) }),
+			413,
+		],
+		["a machine action of one id", request(`/v1/member-machine-screens/${id}/act`, { method: "POST", body: "{}" }), 404],
 	] as const)
 		it(`rejects ${name} before forwarding`, async () => {
 			const response = await forward(req, {
@@ -500,6 +507,67 @@ describe("public member Company File gateway", () => {
 		assert.equal(allowed.headers.get("access-control-allow-headers"), "authorization, if-none-match");
 		assert.equal((await preflight("authorization,content-type")).status, 403);
 		assert.equal(seen.length, 3);
+	});
+	it("forwards a member's action on a desktop they hold with the member's token and its JSON alone (20260930713000)", async () => {
+		const seen: string[] = [];
+		const bodies: string[] = [];
+		let answer: () => Response = () => Response.json({ schema: "qorpera.member-machine-act/v1", exitCode: 0 });
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			const headers = new Headers(init?.headers);
+			const sent = [...headers.entries()].map(([name, value]) => `${name}=${value}`).join(" ");
+			seen.push(`${init?.method} ${new URL(String(url)).pathname} ${sent}`);
+			bodies.push(new TextDecoder().decode(init?.body as Uint8Array));
+			return answer();
+		};
+		const path = `/v1/member-machine-screens/${id}/${id}/act`;
+		const body = JSON.stringify({ action: { type: "type", text: "hunter2 Åse" } });
+		const done = await forward(
+			request(path, { method: "POST", body, headers: { "content-type": "application/json", cookie: "a=b" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(done.status, 200);
+		assert.deepEqual(await done.json(), { schema: "qorpera.member-machine-act/v1", exitCode: 0 });
+		answer = () => Response.json({ code: "DESKTOP_CONTROL_ENDED" }, { status: 409 });
+		const ended = await forward(
+			request(path, { method: "POST", body, headers: { "content-type": "application/json" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(ended.status, 409);
+		assert.deepEqual(await ended.json(), { code: "DESKTOP_CONTROL_ENDED" });
+		const length = new TextEncoder().encode(body).byteLength;
+		assert.deepEqual(seen, [
+			`POST ${path} authorization=Bearer member.jwt.token content-length=${length} content-type=application/json`,
+			`POST ${path} authorization=Bearer member.jwt.token content-length=${length} content-type=application/json`,
+		]);
+		assert.deepEqual(bodies, [body, body]);
+		// Exactly 16 KiB passes; someone signed out is not read.
+		const full = JSON.stringify({ action: { type: "click", x: 1, y: 2 }, pad: "" });
+		const padded = full.replace('"pad":""', `"pad":"${"p".repeat(16 * 1024 - full.length)}"`);
+		assert.equal(new TextEncoder().encode(padded).byteLength, 16 * 1024);
+		answer = () => Response.json({ schema: "qorpera.member-machine-act/v1", exitCode: 0 });
+		assert.equal(
+			(await forward(request(path, { method: "POST", body: padded }), { upstreamUrl, fetchImplementation })).status,
+			200,
+		);
+		const stranger = await forward(
+			request(path, { method: "POST", body, headers: { authorization: "Bearer someone.else.token" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(stranger.status, 401);
+		assert.equal(seen.length, 3);
+		// The browser may send the token and the content type, and nothing else.
+		const preflight = (headers: string) =>
+			forward(
+				request(path, {
+					method: "OPTIONS",
+					headers: { "access-control-request-method": "POST", "access-control-request-headers": headers },
+				}),
+				{ upstreamUrl, fetchImplementation },
+			);
+		const allowed = await preflight("authorization,content-type");
+		assert.equal(allowed.status, 204);
+		assert.equal(allowed.headers.get("access-control-allow-methods"), "POST");
+		assert.equal((await preflight("authorization,if-none-match")).status, 403);
 	});
 	it("forwards a chat image upload up to 8 MiB and its read with the member's headers alone", async () => {
 		const sha = "c".repeat(64);

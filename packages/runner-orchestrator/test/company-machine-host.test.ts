@@ -1,9 +1,9 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { TimerOptions } from "node:timers";
 import type * as TimersPromises from "node:timers/promises";
 import {
@@ -18,9 +18,11 @@ import { type LxdCompanyMachineBinding, lxdCompanyMachineName, lxdCompanyMachine
 import {
 	COMPANY_MACHINE_CODING_VALUE_HELPER,
 	COMPANY_MACHINE_MEMBER_LOOK,
+	COMPANY_MACHINE_MEMBER_TYPE,
 	COMPANY_MACHINE_SCREEN_HELPER,
 	type CompanyMachineCommand,
 	type CompanyMachineEntry,
+	companyMachineMemberTypeCommand,
 	LxdCompanyMachineHost,
 } from "../src/company-machine-host.ts";
 import type { FolderControl, FolderReads } from "../src/folder-control.ts";
@@ -101,6 +103,7 @@ async function fixture(
 		codingValueClearTimeoutMs?: number;
 		screenTimeoutMs?: number;
 		memberLookTimeoutMs?: number;
+		memberTypeTimeoutMs?: number;
 		now?: () => number;
 	} = {},
 ) {
@@ -123,6 +126,8 @@ async function fixture(
 	const inherits: unknown[] = [];
 	/** What SQL's member read checks answer, in turn (then nothing to check): an answer, or an error (20260930712000). */
 	const memberReads: unknown[] = [];
+	/** What SQL's fence after a capture answers, in turn (then: the picture leaves), 20260930713000. */
+	const pictureChecks: unknown[] = [];
 	/** The folder service: the reads its boundaries answer, the views it holds, and whether it answers at all. */
 	const service = {
 		reads: "released" as FolderReads,
@@ -205,6 +210,11 @@ async function fixture(
 				const next = memberReads.shift();
 				if (next instanceof Error) throw next;
 				return next ?? { schema: "qorpera.folder-member-reads/v1", viewId: null, reads: 0 };
+			}
+			if (method === "qorpera_machine_desktop_picture_check") {
+				const next = pictureChecks.shift();
+				if (next instanceof Error) throw next;
+				return next ?? { schema: "qorpera.machine-desktop-picture/v1", state: "ok" };
 			}
 			if (method === "qorpera_retire_company_machine")
 				return (
@@ -439,6 +449,7 @@ async function fixture(
 		retirements,
 		inherits,
 		memberReads,
+		pictureChecks,
 		busy,
 		client,
 		get host() {
@@ -3607,7 +3618,7 @@ describe("a machine's screen helper (machine_screen, 20260930708000)", () => {
 		settleMs: 500,
 		look: true,
 	};
-	const run = (bootId = id(7)) => ({ placementId: id(6), bootId, runId: id(9), request });
+	const run = (bootId = id(7)) => ({ placementId: id(6), bootId, runId: id(9), request, desktopGeneration: 3 });
 	type Answer = { exitCode: number; stdout: Buffer } | "hang";
 	async function piped(answer: Answer, options: Parameters<typeof fixture>[0] = {}) {
 		const f = await fixture(options);
@@ -3651,9 +3662,15 @@ describe("a machine's screen helper (machine_screen, 20260930708000)", () => {
 			maxStdoutBytes: 8 * 1024 * 1024 + 65536,
 			stderrTailBytes: 0,
 		});
-		// Without the folder service there is no /company to release: no boundary, no take-in, no command.
+		// Without the folder service there is no /company to release: no boundary, no take-in, no command; only the fence
+		// after the capture (20260930713000): the lease generation the read saw, and no member's hold (null: an agent).
 		expect(pipe).toHaveBeenCalledTimes(1);
-		expect(f.methods()).toEqual([]);
+		expect(f.methods()).toEqual(["qorpera_machine_desktop_picture_check"]);
+		expect(f.calls.find((call) => call.method === "qorpera_machine_desktop_picture_check")?.args).toEqual({
+			p_placement_id: id(6),
+			p_generation: 3,
+			p_user_id: null,
+		});
 		// A header with no picture (look false) is answered as such.
 		const none = await piped({ exitCode: 0, stdout: output(header(null)) });
 		expect(await none.f.host.screen(run(), none.f.signal)).toEqual({ header: header(null), png: null });
@@ -3726,7 +3743,13 @@ describe("a machine's screen helper (machine_screen, 20260930708000)", () => {
 		const failed = await piped({ exitCode: 1, stdout: Buffer.from("MACHINE_SCREEN_FAILED\n") });
 		await expect(failed.f.host.screen(run(), failed.f.signal)).rejects.toThrow("COMPANY_MACHINE_SCREEN_FAILED");
 		const { f, pipe } = await piped({ exitCode: 0, stdout: output(header(null)) });
-		for (const wrong of [{ bootId: "boot" }, { runId: "run" }, { placementId: "placement" }])
+		for (const wrong of [
+			{ bootId: "boot" },
+			{ runId: "run" },
+			{ placementId: "placement" },
+			{ desktopGeneration: -1 },
+			{ desktopGeneration: 1.5 },
+		])
 			await expect(f.host.screen({ ...run(), ...wrong }, f.signal)).rejects.toThrow(
 				"COMPANY_MACHINE_SCREEN_INVALID",
 			);
@@ -3773,7 +3796,12 @@ describe("a machine's screen helper (machine_screen, 20260930708000)", () => {
 		const inherit = f.calls.find((call) => call.method === "qorpera_folder_test_machine_inherit_reads");
 		expect(inherit?.args).toMatchObject({ p_placement_id: id(6), p_boot_id: f.boot, p_run_id: id(9) });
 		// The helper first, then the boundary, then the run's take-in.
-		expect(f.order).toEqual(["exec:screen", "folder:boundary", "sql:qorpera_folder_test_machine_inherit_reads"]);
+		expect(f.order).toEqual([
+			"exec:screen",
+			"sql:qorpera_machine_desktop_picture_check",
+			"folder:boundary",
+			"sql:qorpera_folder_test_machine_inherit_reads",
+		]);
 	});
 
 	it("holds the picture and the titles back when the folder does not release the reads, and tells what the action did", async () => {
@@ -3969,7 +3997,10 @@ describe("a machine's screen helper (machine_screen, 20260930708000)", () => {
 			png: picture,
 		});
 		expect(none.f.service.requests).toEqual([]);
-		expect(none.f.methods()).toEqual(["qorpera_folder_test_machine_inherit_reads"]);
+		expect(none.f.methods()).toEqual([
+			"qorpera_machine_desktop_picture_check",
+			"qorpera_folder_test_machine_inherit_reads",
+		]);
 		// SQL's boot is not the one this process settled: the placement's boundary is asked all the same.
 		expect(await f.host.screen(run(id(7)), f.signal)).toEqual({ header: header(picture), png: picture });
 		expect(f.service.requests).toEqual([{ op: "boundary", machine: id(6), final: [] }]);
@@ -3992,7 +4023,13 @@ describe("a member's look at a desktop (20260930712000)", () => {
 		]);
 	};
 	const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
-	const look = (bootId = id(7), keepDesktop = false) => ({ placementId: id(6), bootId, userId: id(21), keepDesktop });
+	const look = (bootId = id(7), keepDesktop = false) => ({
+		placementId: id(6),
+		bootId,
+		userId: id(21),
+		keepDesktop,
+		desktopGeneration: 4,
+	});
 	type Answer = { exitCode: number; stdout: Buffer } | "hang";
 	async function piped(answer: Answer, options: Parameters<typeof fixture>[0] = {}) {
 		const f = await fixture(options);
@@ -4022,8 +4059,9 @@ describe("a member's look at a desktop (20260930712000)", () => {
 		// Nothing on stdin, no environment, the picture's own bound, no stderr kept.
 		expect(given.stdin).toBeUndefined();
 		expect(given).toMatchObject({ environment: {}, cwd: "/", maxStdoutBytes: 8 * 1024 * 1024, stderrTailBytes: 0 });
-		// Without the folder service there is nothing to release.
-		expect(f.methods()).toEqual([]);
+		// Without the folder service there is nothing to release; the fence after the capture is asked, for this member.
+		expect(f.methods()).toEqual(["qorpera_machine_desktop_picture_check"]);
+		expect(f.calls[0]?.args).toEqual({ p_placement_id: id(6), p_generation: 4, p_user_id: id(21) });
 		// The member's word within 30 minutes: the desktop's idle stop is put off.
 		await f.host.memberLook(look(id(7), true), f.signal);
 		expect(pipe.mock.calls[1]![2].command.at(-1)).toBe("keep");
@@ -4126,7 +4164,12 @@ describe("a member's look at a desktop (20260930712000)", () => {
 			p_user_id: id(21),
 		});
 		// The look, then the boundary, then the member's check: never a run's take-in.
-		expect(f.order).toEqual(["exec:look", "folder:boundary", "sql:qorpera_folder_member_machine_reads"]);
+		expect(f.order).toEqual([
+			"exec:look",
+			"sql:qorpera_machine_desktop_picture_check",
+			"folder:boundary",
+			"sql:qorpera_folder_member_machine_reads",
+		]);
 		expect(f.methods()).not.toContain("qorpera_folder_test_machine_inherit_reads");
 	});
 
@@ -4205,6 +4248,7 @@ describe("a member's look at a desktop (20260930712000)", () => {
 					settleMs: 0,
 					look: true,
 				},
+				desktopGeneration: 0,
 			},
 			f.signal,
 		);
@@ -4285,5 +4329,444 @@ describe("a member's look at a desktop (20260930712000)", () => {
 			expect(bound.stdout).toHaveLength(8 * 1024 * 1024);
 			expect(readdirSync(view).sort()).toEqual(["look-222.png", "other.png"]);
 		},
+	);
+});
+
+describe("a member's action on a desktop (20260930713000)", () => {
+	/** A PNG's signature and IHDR, then `rest` bytes: what the host reads of a screenshot. */
+	const png = (width = 1600, height = 1000, rest = 64) => {
+		const ihdr = Buffer.alloc(25);
+		ihdr.writeUInt32BE(13, 0);
+		ihdr.write("IHDR", 4, "latin1");
+		ihdr.writeUInt32BE(width, 8);
+		ihdr.writeUInt32BE(height, 12);
+		ihdr.set([8, 6, 0, 0, 0], 16);
+		return Buffer.concat([
+			Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+			ihdr,
+			Buffer.alloc(rest, 7),
+		]);
+	};
+	/** The screen helper's answer: its header (an action of `verb` that exited `exitCode`, titles) and maybe a PNG. */
+	const output = (verb: string | null, picture: Buffer | null = null, exitCode: number | null = 0) =>
+		Buffer.concat([
+			Buffer.from(
+				`${JSON.stringify({
+					schema: "qorpera.machine-screen/v1",
+					started: false,
+					action: verb ? { type: verb, exitCode } : null,
+					activeWindow: "Sign in - Bank",
+					windows: ["Sign in - Bank"],
+					moreWindows: 0,
+					png: picture ? picture.length : 0,
+				})}\n`,
+				"utf8",
+			),
+			picture ?? Buffer.alloc(0),
+		]);
+	const act = (action: Record<string, unknown>, actionId = id(31)) => ({
+		placementId: id(6),
+		bootId: id(7),
+		actionId,
+		action,
+	});
+	const agent = (action: Record<string, unknown> | null, receipt: number | null = 8) => ({
+		placementId: id(6),
+		bootId: id(7),
+		runId: id(9),
+		desktopGeneration: 2,
+		request: {
+			schema: "qorpera.machine-screen-request/v1",
+			receiptId: receipt === null ? null : id(receipt),
+			action,
+			settleMs: 500,
+			look: true,
+		},
+	});
+	const answer = (exitCode: number, stdout = Buffer.alloc(0)) => ({ exitCode, stdout, stderrTail: Buffer.alloc(0) });
+	/** The pipe exec: each call recorded; `reply` answers it (or holds it until released). */
+	async function piped(
+		reply: (given: LxdExecPipeRequest, signal: AbortSignal) => Promise<ReturnType<typeof answer>>,
+		options: Parameters<typeof fixture>[0] = {},
+	) {
+		const f = await fixture(options);
+		const calls: LxdExecPipeRequest[] = [];
+		const pipe = vi.fn(async (_project: string, _name: string, given: LxdExecPipeRequest, signal: AbortSignal) => {
+			calls.push(given);
+			f.order.push(given.command.includes(COMPANY_MACHINE_CODING_VALUE_HELPER) ? "exec:clear" : "exec:act");
+			return reply(given, signal);
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		return { f, pipe, calls };
+	}
+	const stdinText = (given: LxdExecPipeRequest) => Buffer.from(given.stdin as Uint8Array).toString("utf8");
+	const cleared = answer(0, Buffer.from(`${JSON.stringify({ schema: "qorpera.machine-coding-value-cleared/v1" })}\n`));
+
+	it("runs a click through the screen helper as an agent's action, its id the receipt, with no settle and no look, and answers only its exit", async () => {
+		const { f, calls } = await piped(async () => answer(0, output("click")));
+		const outcome = await f.host.memberAct(act({ type: "click", x: 812, y: 443, button: "right" }), f.signal);
+		expect(outcome).toEqual({ done: { exitCode: 0 } });
+		// Nothing of the screen, no title, comes back to the member.
+		expect(JSON.stringify(outcome)).not.toContain("Bank");
+		expect(calls).toHaveLength(1);
+		expect(calls[0]!.command).toEqual([
+			"/bin/sh",
+			"-c",
+			expect.stringContaining('[ -f "$2" ] || exit 98; exec "$@"'),
+			id(7),
+			"/usr/bin/node",
+			COMPANY_MACHINE_SCREEN_HELPER,
+		]);
+		expect(JSON.parse(stdinText(calls[0]!))).toEqual({
+			schema: "qorpera.machine-screen-request/v1",
+			receiptId: id(31),
+			action: { type: "click", x: 812, y: 443, button: "right" },
+			settleMs: 0,
+			look: false,
+		});
+		// An action that failed on the desktop is told by its exit; the helper's own exits and refusals by code.
+		for (const [reply, outcome] of [
+			[answer(0, output("click", null, 1)), { done: { exitCode: 1 } }],
+			[answer(0, output("click", null, null)), { done: { exitCode: null } }],
+			[answer(96), { refused: "SCREEN_ACTION_TAKEN" }],
+			[answer(97), { refused: "MACHINE_BOOT_CHANGED" }],
+			[answer(98), { refused: "MACHINE_IMAGE_WITHOUT_SCREEN" }],
+			[
+				answer(
+					0,
+					Buffer.from(
+						`${JSON.stringify({ schema: "qorpera.machine-screen-refusal/v1", code: "DESKTOP_NOT_RUNNING" })}\n`,
+					),
+				),
+				{ refused: "DESKTOP_NOT_RUNNING" },
+			],
+		] as const) {
+			const one = await piped(async () => reply);
+			expect(await one.f.host.memberAct(act({ type: "click", x: 1, y: 2 }), one.f.signal)).toEqual(outcome);
+		}
+		const failed = await piped(async () => answer(1));
+		await expect(failed.f.host.memberAct(act({ type: "key", keys: ["Return"] }), failed.f.signal)).rejects.toThrow(
+			"COMPANY_MACHINE_MEMBER_ACT_FAILED",
+		);
+		const other = await piped(async () => answer(0, output("double")));
+		await expect(other.f.host.memberAct(act({ type: "click", x: 1, y: 2 }), other.f.signal)).rejects.toThrow(
+			"COMPANY_MACHINE_MEMBER_ACT_INVALID",
+		);
+	});
+
+	it("types a text from the fixed script's stdin, never through the helper or in an argument, and clears both selections after a pasted one", async () => {
+		const { f, calls } = await piped(async (given) =>
+			given.command.includes(COMPANY_MACHINE_CODING_VALUE_HELPER) ? cleared : answer(0),
+		);
+		expect(await f.host.memberAct(act({ type: "type", text: "hunter2 is my password" }), f.signal)).toEqual({
+			done: { exitCode: 0 },
+		});
+		expect(calls).toHaveLength(1);
+		// In a transient unit with a deadline systemd keeps (review r1 F3), described by a fixed text, the text on stdin.
+		expect(calls[0]!.command).toEqual(companyMachineMemberTypeCommand(id(7), "type"));
+		expect(calls[0]!.command.slice(0, 17)).toEqual([
+			"/usr/bin/systemd-run",
+			"--quiet",
+			"--wait",
+			"--pipe",
+			"--collect",
+			"--expand-environment=no",
+			"--slice=qorpera-machine.slice",
+			"-p",
+			"RuntimeMaxSec=10",
+			"-p",
+			"KillMode=control-group",
+			"-p",
+			"KillSignal=SIGKILL",
+			"--description=qorpera member text",
+			"--setenv=DISPLAY=:1",
+			"--setenv=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+			"--setenv=HOME=/root",
+		]);
+		expect(calls[0]!.command.slice(-6)).toEqual(["--", "/bin/sh", "-c", COMPANY_MACHINE_MEMBER_TYPE, id(7), "type"]);
+		expect(stdinText(calls[0]!)).toBe("hunter2 is my password");
+		expect(JSON.stringify(calls[0]!.command)).not.toContain("hunter2");
+		expect(calls[0]).toMatchObject({ environment: {}, cwd: "/", stderrTailBytes: 0 });
+		// Beyond plain ASCII the desktop pastes it, and then both selections are cleared, on the same boot.
+		f.order.length = 0;
+		expect(await f.host.memberAct(act({ type: "type", text: "Åse Ørsted" }, id(32)), f.signal)).toEqual({
+			done: { exitCode: 0 },
+		});
+		expect(calls[1]!.command).toEqual(companyMachineMemberTypeCommand(id(7), "paste"));
+		expect(stdinText(calls[1]!)).toBe("Åse Ørsted");
+		expect(calls[2]!.command).toEqual([
+			"/bin/sh",
+			"-c",
+			expect.stringContaining("exit 97"),
+			id(7),
+			"/usr/bin/node",
+			COMPANY_MACHINE_CODING_VALUE_HELPER,
+			"--clear-only",
+		]);
+		expect(f.order).toEqual(["exec:act", "exec:clear"]);
+		// A tab or a line break is pasted too, as `desktop type` does.
+		await f.host.memberAct(act({ type: "type", text: "one\ttwo" }, id(33)), f.signal);
+		expect(calls[3]!.command.at(-1)).toBe("paste");
+		expect(calls[4]!.command.at(-1)).toBe("--clear-only");
+		// The script's own exits.
+		for (const [exitCode, outcome] of [
+			[95, { refused: "DESKTOP_NOT_RUNNING" }],
+			[97, { refused: "MACHINE_BOOT_CHANGED" }],
+			[98, { refused: "MACHINE_IMAGE_WITHOUT_SCREEN" }],
+			[1, { done: { exitCode: 1 } }],
+			// systemd-run itself killed in the machine: its unit runs on to its limit.
+			[137, { done: { exitCode: null } }],
+		] as const) {
+			const one = await piped(async () => answer(exitCode));
+			expect(await one.f.host.memberAct(act({ type: "type", text: "abc" }), one.f.signal)).toEqual(outcome);
+		}
+	});
+
+	it("clears the selections after a pasted text that failed or was cut off too, and logs only a fixed word when the clear fails", async () => {
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const controller = new AbortController();
+			const { f, calls } = await piped(async (given, signal) => {
+				if (given.command.includes(COMPANY_MACHINE_CODING_VALUE_HELPER)) return answer(1);
+				return new Promise<never>((_resolve, reject) => {
+					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				});
+			});
+			const typing = f.host.memberAct(act({ type: "type", text: "pässword" }), controller.signal);
+			await vi.waitFor(() => expect(calls).toHaveLength(1));
+			controller.abort(new Error("the member's request ended"));
+			await expect(typing).rejects.toThrow("the member's request ended");
+			expect(calls).toHaveLength(2);
+			// The clear's own deadline, not the request's, which ended.
+			expect(calls[1]!.command.at(-1)).toBe("--clear-only");
+			expect(errors.mock.calls).toEqual([["COMPANY_MACHINE_MEMBER_TEXT_CLEAR_FAILED"]]);
+			expect(JSON.stringify(errors.mock.calls)).not.toContain("pässword");
+		} finally {
+			errors.mockRestore();
+		}
+	});
+
+	it("refuses an action no member may send, before anything runs", async () => {
+		const { f, pipe } = await piped(async () => answer(0, output("click")));
+		for (const [wrong, what] of [
+			[act({ type: "open", target: "https://bank.example.test" }), "open"],
+			[act({ type: "type" }), "a type without its text"],
+			[act({ type: "type", text: "" }), "an empty text"],
+			[act({ type: "type", text: "x".repeat(501) }), "a text past 500"],
+			[act({ type: "click", x: 1, y: 2, text: "x" }), "a text on a click"],
+			[act({ type: "wiggle" }), "another verb"],
+			[{ ...act({ type: "click", x: 1, y: 2 }), actionId: "action" }, "an action id of another shape"],
+			[{ ...act({ type: "click", x: 1, y: 2 }), bootId: "boot" }, "a boot of another shape"],
+		] as const)
+			await expect(f.host.memberAct(wrong, f.signal), what).rejects.toThrow("COMPANY_MACHINE_MEMBER_ACT_INVALID");
+		expect(pipe).not.toHaveBeenCalled();
+		const bare = await fixture();
+		await expect(bare.host.memberAct(act({ type: "click", x: 1, y: 2 }), bare.signal)).rejects.toThrow(
+			"COMPANY_MACHINE_MEMBER_ACT_UNAVAILABLE",
+		);
+	});
+
+	it("shares the desktop with the agent's actions: one at a time, and the grace after one that did not end cleanly", async () => {
+		let clock = 1_800_000_000_000;
+		const picture = png();
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { f, pipe } = await piped(
+			async (given) => {
+				if (pipe.mock.calls.length === 1) await gate;
+				const request = given.stdin ? JSON.parse(stdinText(given)) : {};
+				return answer(0, output(request.action?.type ?? null, request.look ? picture : null));
+			},
+			{ now: () => clock },
+		);
+		// The agent's action runs: a member's action meets it, refused before the helper.
+		const agentActing = f.host.screen(agent({ type: "click", x: 1, y: 1 }), f.signal);
+		await vi.waitFor(() => expect(pipe).toHaveBeenCalledTimes(1));
+		expect(await f.host.memberAct(act({ type: "click", x: 5, y: 5 }), f.signal)).toEqual({ refused: "DESKTOP_BUSY" });
+		expect(await f.host.memberAct(act({ type: "type", text: "abc" }), f.signal)).toEqual({ refused: "DESKTOP_BUSY" });
+		expect(pipe).toHaveBeenCalledTimes(1);
+		release();
+		expect(await agentActing).toMatchObject({ png: picture });
+		// Then the member's runs; the agent's action meets it.
+		let hold = () => {};
+		const held = new Promise<void>((resolve) => {
+			hold = resolve;
+		});
+		pipe.mockImplementationOnce(async () => {
+			await held;
+			return answer(0, output("drag"));
+		});
+		const memberActing = f.host.memberAct(act({ type: "drag", x: 1, y: 1, toX: 9, toY: 9 }), f.signal);
+		await vi.waitFor(() => expect(pipe).toHaveBeenCalledTimes(2));
+		expect(await f.host.screen(agent({ type: "click", x: 1, y: 1 }, 11), f.signal)).toEqual({
+			refused: "DESKTOP_BUSY",
+		});
+		hold();
+		expect(await memberActing).toEqual({ done: { exitCode: 0 } });
+		// A member's text cut off inside the machine (137): xdotool may type on, so the desktop stays busy 11 s.
+		pipe.mockResolvedValueOnce(answer(137));
+		expect(await f.host.memberAct(act({ type: "type", text: "abc" }, id(34)), f.signal)).toEqual({
+			done: { exitCode: null },
+		});
+		expect(await f.host.screen(agent({ type: "click", x: 1, y: 1 }, 12), f.signal)).toEqual({
+			refused: "DESKTOP_BUSY",
+		});
+		expect(await f.host.memberAct(act({ type: "click", x: 1, y: 1 }, id(35)), f.signal)).toEqual({
+			refused: "DESKTOP_BUSY",
+		});
+		clock += 11_001;
+		expect(await f.host.memberAct(act({ type: "click", x: 1, y: 1 }, id(36)), f.signal)).toEqual({
+			done: { exitCode: 0 },
+		});
+	});
+
+	it("lets no picture of a desktop a member took over since the look's read leave, to an agent or another member (review r1 F1)", async () => {
+		const picture = png();
+		const { f, pipe } = await piped(async (given) => {
+			const request = given.stdin ? JSON.parse(stdinText(given)) : {};
+			return answer(0, request.look ? output(null, picture) : png());
+		});
+		// SQL's fence answers that the lease generation moved (a member took over while the capture was on its way).
+		const held = {
+			schema: "qorpera.machine-desktop-picture/v1",
+			state: "refused",
+			reason: "DESKTOP_MEMBER_IN_CONTROL",
+		};
+		f.pictureChecks.push(held);
+		const refused = await f.host.screen(agent(null, null), f.signal);
+		expect(refused).toEqual({ refused: "DESKTOP_MEMBER_IN_CONTROL" });
+		expect(JSON.stringify(refused)).not.toContain("Bank");
+		expect(f.calls.at(-1)).toMatchObject({
+			method: "qorpera_machine_desktop_picture_check",
+			args: { p_placement_id: id(6), p_generation: 2, p_user_id: null },
+		});
+		// The same for an action's picture: the action ran (it was let in before the take-over), its picture stays.
+		f.pictureChecks.push(held);
+		expect(await f.host.screen(agent({ type: "click", x: 1, y: 1 }, 11), f.signal)).toEqual({
+			refused: "DESKTOP_MEMBER_IN_CONTROL",
+		});
+		// The fence lets it through: the picture and the titles leave.
+		expect(await f.host.screen(agent(null, null), f.signal)).toMatchObject({ png: picture });
+		// Another member's look: none, and nothing of it; the fence names this member, who may see only a hold of their own.
+		f.pictureChecks.push(held);
+		const member = { placementId: id(6), bootId: id(7), userId: id(21), keepDesktop: false, desktopGeneration: 5 };
+		expect(await f.host.memberLook(member, f.signal)).toEqual({ refused: "DESKTOP_MEMBER_IN_CONTROL" });
+		expect(f.calls.at(-1)).toMatchObject({
+			method: "qorpera_machine_desktop_picture_check",
+			args: { p_placement_id: id(6), p_generation: 5, p_user_id: id(21) },
+		});
+		// A fence that does not answer lets nothing out either: the look fails, and is asked again.
+		f.pictureChecks.push(new Error("CODING_CONTROL_UNCONFIRMED"));
+		await expect(f.host.screen(agent(null, null), f.signal)).rejects.toThrow();
+		f.pictureChecks.push(new Error("CODING_CONTROL_UNCONFIRMED"));
+		await expect(f.host.memberLook(member, f.signal)).rejects.toThrow();
+		f.pictureChecks.push({ schema: "qorpera.machine-desktop-picture/v1", state: "maybe" });
+		await expect(f.host.screen(agent(null, null), f.signal)).rejects.toThrow("COMPANY_MACHINE_PICTURE_CHECK_INVALID");
+		expect(pipe).toHaveBeenCalled();
+	});
+
+	it.skipIf(process.platform !== "linux")(
+		"types from its stdin in a real shell, pastes beyond ASCII on both selections, and keeps the text out of every argument and file",
+		async () => {
+			const bin = await realpath(await mkdtemp(join(tmpdir(), "member-type-bin-")));
+			const log = join(await realpath(await mkdtemp(join(tmpdir(), "member-type-log-"))), "log");
+			roots.push(bin, dirname(log));
+			// Each tool records its argv; xdotool type and xsel record their stdin too, an x after it (so its last line breaks show).
+			for (const [name, text] of [
+				["systemctl", "#!/bin/sh\nexit 0\n"],
+				["xdpyinfo", "#!/bin/sh\nexit 0\n"],
+				[
+					"xdotool",
+					`#!/bin/sh\necho "xdotool $* DISPLAY=$DISPLAY" >> ${log}\nif [ "$1" = type ]; then echo "stdin: [$(cat; printf x)]" >> ${log}; fi\n`,
+				],
+				["xsel", `#!/bin/sh\necho "xsel $* stdin: [$(cat; printf x)]" >> ${log}\n`],
+			]) {
+				await writeFile(join(bin, name), text);
+				await chmod(join(bin, name), 0o755);
+			}
+			const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+			const run = (text: string, mode: string, PATH = `${bin}:/usr/bin:/bin`, bootId = boot) =>
+				spawnSync("/bin/sh", ["-c", COMPANY_MACHINE_MEMBER_TYPE, bootId, mode], { env: { PATH }, input: text });
+			expect(run("hunter2 $HOME `id`", "type").status).toBe(0);
+			expect(readFileSync(log, "utf8").split("\n")).toEqual([
+				"xdotool type --delay 12 --file - DISPLAY=:1",
+				"stdin: [hunter2 $HOME `id`x]",
+				"",
+			]);
+			await writeFile(log, "");
+			expect(run("Åse\n\n", "paste").status).toBe(0);
+			expect(readFileSync(log, "utf8")).toBe(
+				[
+					"xsel --logfile /dev/null --clipboard --input stdin: [Åse\n\nx]",
+					"xsel --logfile /dev/null --primary --input stdin: [Åse\n\nx]",
+					"xdotool key --clearmodifiers shift+Insert DISPLAY=:1",
+					"",
+				].join("\n"),
+			);
+			// The text is no program's argument: only dash's own printf (no process of its own) and the shell take it.
+			for (const line of COMPANY_MACHINE_MEMBER_TYPE.split("\n").filter((entry) => entry.includes("$text")))
+				expect(line.trim(), line).toMatch(/^(text=\$\{text%x\}|printf %s "\$text" \| )/);
+			// Another boot, no xdotool or xsel, the screen off (with the test's tools alone: these checks come first).
+			expect(run("x", "type", bin, randomUUID()).status).toBe(97);
+			await rm(join(bin, "xsel"));
+			expect(run("x", "type", bin).status).toBe(98);
+			await writeFile(join(bin, "xsel"), "#!/bin/sh\nexit 0\n");
+			await chmod(join(bin, "xsel"), 0o755);
+			await writeFile(join(bin, "systemctl"), "#!/bin/sh\nexit 3\n");
+			expect(run("x", "type", bin).status).toBe(95);
+		},
+	);
+
+	it.skipIf(process.platform !== "linux" || process.getuid?.() !== 0 || !existsSync("/usr/bin/systemd-run"))(
+		"ends a stalled typing with its unit at the unit's limit, also once its client was cut off (review r1 F3; as root)",
+		async () => {
+			const bin = await realpath(await mkdtemp(join(tmpdir(), "member-unit-bin-")));
+			const marks = await realpath(await mkdtemp(join(tmpdir(), "member-unit-marks-")));
+			roots.push(bin, marks);
+			// xdotool takes the text from its stdin, stalls 3 s, then leaves a mark: what a stalled child would do on resuming.
+			for (const [name, text] of [
+				["systemctl", "#!/bin/sh\nexit 0\n"],
+				["xdpyinfo", "#!/bin/sh\nexit 0\n"],
+				["xsel", "#!/bin/sh\ncat >/dev/null\n"],
+				["xdotool", `#!/bin/sh\ncat > ${marks}/stdin-$$\nsleep 3\ntouch ${marks}/acted-$$\n`],
+			]) {
+				await writeFile(join(bin, name), text);
+				await chmod(join(bin, name), 0o755);
+			}
+			await chmod(bin, 0o755);
+			const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+			const command = companyMachineMemberTypeCommand(boot, "type", {
+				seconds: 1,
+				path: `${bin}:/usr/bin:/bin`,
+				slice: "qorpera-member-test.slice",
+			});
+			// Its client waits: the unit's limit ends it, and systemd-run answers 1.
+			const waited = spawnSync(command[0] as string, command.slice(1), { input: "secret-text-1" });
+			expect(waited.status).toBe(1);
+			// Its client cut off (SIGKILL, as LXD ends an exec the executor gave up on): the unit runs on to its limit, and no
+			// further: the stalled child never acts.
+			const client = spawn(command[0] as string, command.slice(1), { stdio: ["pipe", "ignore", "ignore"] });
+			client.stdin.end("secret-text-2");
+			await new Promise((resolve) => globalThis.setTimeout(resolve, 400));
+			client.kill("SIGKILL");
+			await new Promise((resolve) => globalThis.setTimeout(resolve, 4600));
+			expect(readdirSync(marks).filter((name) => name.startsWith("acted-"))).toEqual([]);
+			// The text reached the child on its stdin, and the journal names only the unit's fixed description.
+			expect(
+				readdirSync(marks)
+					.filter((name) => name.startsWith("stdin-"))
+					.map((name) => readFileSync(join(marks, name), "utf8"))
+					.sort(),
+			).toEqual(["secret-text-1", "secret-text-2"]);
+			const journal = spawnSync("journalctl", ["-b", "--no-pager", "--since", "-2min", "-o", "cat"], {
+				encoding: "utf8",
+			});
+			expect(journal.stdout).not.toContain("secret-text");
+			expect(journal.stdout).not.toContain("command -v xdotool");
+			expect(journal.stdout).toContain("qorpera member text");
+		},
+		20_000,
 	);
 });

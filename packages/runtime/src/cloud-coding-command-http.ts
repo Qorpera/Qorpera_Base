@@ -17,13 +17,16 @@ import {
 	CloudMachineCommandRefusal,
 	type CloudMachineCommandServiceOptions,
 	CloudMachineScreenRefusal,
+	CloudMemberMachineActRefusal,
 	CloudMemberMachineScreenRefusal,
+	cloudMemberMachineActAnswer,
 	cloudMemberMachineScreenAnswer,
 	parseCloudMachineCodingValueAnswer,
 	parseCloudMachineCodingValueHttpRequest,
 	parseCloudMachineScreenAnswer,
 	parseCloudMachineScreenHttpRequest,
 	parseCloudMachineWakeHttpRequest,
+	parseCloudMemberMachineActPeerRequest,
 	parseCloudMemberMachineScreenPeerRequest,
 	serveCloudMachineCommand,
 } from "./cloud-machine-command-http.ts";
@@ -394,10 +397,21 @@ export class HttpCloudCodingCommandService {
 				this.#options.proveBinding === null &&
 				this.#options.machines?.memberScreen &&
 				request.url === "/v1/machine-commands/member-screen";
+			// A member's action (20260930713000): on the peer listener only, from another executor, as the look.
+			const memberActRoute =
+				this.#options.proveBinding === null &&
+				this.#options.machines?.memberAct &&
+				request.url === "/v1/machine-commands/member-act";
 			const holder = request.headers["x-qorpera-identity"];
 			if (
 				request.method !== "POST" ||
-				(!route && !machineRoute && !wakeRoute && !codingValueRoute && !screenRoute && !memberScreenRoute) ||
+				(!route &&
+					!machineRoute &&
+					!wakeRoute &&
+					!codingValueRoute &&
+					!screenRoute &&
+					!memberScreenRoute &&
+					!memberActRoute) ||
 				request.headers["content-type"] !== "application/json" ||
 				authorization.length !== this.#token.length ||
 				!timingSafeEqual(authorization, this.#token) ||
@@ -471,6 +485,25 @@ export class HttpCloudCodingCommandService {
 				} catch (error) {
 					// Only a refusal the member's window acts on is told apart, by its fixed code.
 					if (!(error instanceof CloudMemberMachineScreenRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (memberActRoute && this.#options.machines?.memberAct) {
+				// The body holds what the member typed: it is read here and passed on, and never logged or answered.
+				const admitted = parseCloudMemberMachineActPeerRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						cloudMemberMachineActAnswer(
+							admitted,
+							await this.#options.machines.memberAct(admitted, controller.signal),
+						),
+					);
+				} catch (error) {
+					// Only a refusal the member's window acts on is told apart, by its fixed code.
+					if (!(error instanceof CloudMemberMachineActRefusal)) throw error;
 					replyJson(reply, 409, { code: error.code });
 				}
 				return;

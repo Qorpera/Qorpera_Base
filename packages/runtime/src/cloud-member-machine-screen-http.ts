@@ -1,6 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { UUID_PATTERN } from "@qorpera/contracts";
-import { type CloudMemberMachineScreen, CloudMemberMachineScreenRefusal } from "./cloud-machine-command-http.ts";
+import {
+	type CloudMemberMachineAct,
+	CloudMemberMachineActRefusal,
+	type CloudMemberMachineScreen,
+	CloudMemberMachineScreenRefusal,
+	parseCloudMemberMachineAction,
+} from "./cloud-machine-command-http.ts";
+import type { MachineScreenAction } from "./cloud-machine-screen.ts";
 
 // A member's look at an agent's desktop computer (20260930712000): the coding executor's third listener, on loopback
 // only, reached from the browser through the member bridge (supabase/functions/member-company-gateway) and the node's
@@ -11,10 +18,18 @@ import { type CloudMemberMachineScreen, CloudMemberMachineScreenRefusal } from "
 // says the member still watches (they opened the window, touched it, or answered "Still watching?"), which keeps the
 // desktop on for 30 minutes from then. The token is checked by the database alone (the executor begins the look as the
 // member: qorpera_member_machine_screen_begin), never by this listener; it is never logged, stored or put in an answer.
+// A member who holds the desktop (20260930713000) acts on it with
+//   POST /v1/member-machine-screens/<companyId>/<machineId>/act   {"action": {...}}
+// (application/json, at most 16 KiB): one of machine_screen's actions, never `open`. The answer is the action's exit
+// (200, {"schema": "qorpera.member-machine-act/v1", "exitCode"}) or why it did not run (409 with a fixed code); a body
+// that is not one is 400. What the member typed is in that body: it is passed to the machine and nowhere else, never
+// logged, stored, answered or put in an error.
 
-/** A company's and a machine's ids, lower-case as the database writes them, and `/watching`. */
+/** A company's and a machine's ids, lower-case as the database writes them, and `/watching` or `/act`. */
 const UUID = UUID_PATTERN.source.slice(1, -1);
-const ROUTE = new RegExp(`^/v1/member-machine-screens/(${UUID})/(${UUID})(/watching)?$`);
+const ROUTE = new RegExp(`^/v1/member-machine-screens/(${UUID})/(${UUID})(/watching|/act)?$`);
+/** A member's action: one action, a text of at most 500 characters in it. */
+const ACT_BODY_BYTES = 16384;
 const BEARER = /^Bearer ([A-Za-z0-9._~-]{1,8192})$/;
 const IF_NONE_MATCH = /^"([0-9a-f]{64})"$/;
 /** The member bridge gives a request 25 s; the look's own steps (the begin, the read, a forward, the look, the release)
@@ -32,6 +47,14 @@ export interface CloudMemberMachineScreenLook {
 	/** The etag of the picture the member has, or null. */
 	readonly etag: string | null;
 }
+/** One action, as the listener read it from the member's request. */
+export interface CloudMemberMachineActRequest {
+	readonly companyId: string;
+	readonly machineId: string;
+	/** The member's bearer token, passed on to the database and nowhere else. */
+	readonly token: string;
+	readonly action: MachineScreenAction;
+}
 /** The database did not take the member's token (401). */
 export class CloudMemberMachineScreenSignIn extends Error {
 	constructor() {
@@ -47,13 +70,37 @@ export class CloudMemberMachineScreenForbidden extends Error {
 
 export interface CloudMemberMachineScreenServiceOptions {
 	look(request: CloudMemberMachineScreenLook, signal: AbortSignal): Promise<CloudMemberMachineScreen>;
+	/** A member's action on a desktop they hold (20260930713000); without it the route is 404. */
+	act?(request: CloudMemberMachineActRequest, signal: AbortSignal): Promise<CloudMemberMachineAct>;
 	host?: "127.0.0.1" | "::1";
 	port?: number;
 	/** A look that failed for another reason than the member's, by its fixed code: for the executor's log. */
 	failed?(code: string): void;
 }
 
-function replyJson(reply: ServerResponse, status: number, value: Record<string, string>): void {
+/** The member's action: a JSON body of at most ACT_BODY_BYTES, `{"action": {...}}` and nothing else, the action one of
+ * machine_screen's but `open`; undefined for anything else. Nothing of the body is kept or told. */
+async function readAction(request: IncomingMessage, signal: AbortSignal): Promise<MachineScreenAction | undefined> {
+	if (request.headers["content-type"] !== "application/json") return undefined;
+	const chunks: Buffer[] = [];
+	let bytes = 0;
+	for await (const chunk of request) {
+		signal.throwIfAborted();
+		bytes += (chunk as Buffer).length;
+		if (bytes > ACT_BODY_BYTES) return undefined;
+		chunks.push(chunk as Buffer);
+	}
+	try {
+		const body = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks))) as unknown;
+		if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).join() !== "action")
+			return undefined;
+		return parseCloudMemberMachineAction((body as { action: unknown }).action);
+	} catch {
+		return undefined;
+	}
+}
+
+function replyJson(reply: ServerResponse, status: number, value: Record<string, string | number | null>): void {
 	const body = JSON.stringify(value);
 	reply.writeHead(status, {
 		"content-type": "application/json",
@@ -72,6 +119,7 @@ export class HttpCloudMemberMachineScreenService {
 	constructor(options: CloudMemberMachineScreenServiceOptions) {
 		if (
 			typeof options.look !== "function" ||
+			(options.act !== undefined && typeof options.act !== "function") ||
 			(options.host !== undefined && !["127.0.0.1", "::1"].includes(options.host)) ||
 			!Number.isSafeInteger(options.port ?? 0) ||
 			(options.port ?? 0) < 0 ||
@@ -138,17 +186,32 @@ export class HttpCloudMemberMachineScreenService {
 		reply.once("close", disconnect);
 		try {
 			const route = ROUTE.exec(request.url ?? "");
-			if (!route) {
+			const acting = route?.[3] === "/act";
+			if (!route || (acting && !this.#options.act)) {
 				replyJson(reply, 404, { error: "member_route_unavailable" });
 				return;
 			}
-			if (request.method !== "GET") {
+			if (request.method !== (acting ? "POST" : "GET")) {
 				replyJson(reply, 405, { error: "method_not_allowed" });
 				return;
 			}
 			const bearer = BEARER.exec(request.headers.authorization ?? "");
 			if (!bearer) {
 				replyJson(reply, 401, { error: "member_sign_in_required" });
+				return;
+			}
+			if (acting && this.#options.act) {
+				const action = await readAction(request, controller.signal);
+				if (action === undefined) {
+					replyJson(reply, 400, { error: "member_action_invalid" });
+					return;
+				}
+				const done = await this.#options.act(
+					{ companyId: route[1] as string, machineId: route[2] as string, token: bearer[1] as string, action },
+					controller.signal,
+				);
+				controller.signal.throwIfAborted();
+				replyJson(reply, 200, { schema: "qorpera.member-machine-act/v1", exitCode: done.exitCode });
 				return;
 			}
 			const asked = request.headers["if-none-match"];
@@ -182,7 +245,8 @@ export class HttpCloudMemberMachineScreenService {
 				reply.destroy();
 				return;
 			}
-			if (error instanceof CloudMemberMachineScreenRefusal) replyJson(reply, 409, { code: error.code });
+			if (error instanceof CloudMemberMachineScreenRefusal || error instanceof CloudMemberMachineActRefusal)
+				replyJson(reply, 409, { code: error.code });
 			else if (error instanceof CloudMemberMachineScreenSignIn)
 				replyJson(reply, 401, { error: "member_sign_in_required" });
 			else if (error instanceof CloudMemberMachineScreenForbidden)

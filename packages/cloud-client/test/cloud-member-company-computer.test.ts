@@ -195,11 +195,15 @@ describe("member Company Computer transport", () => {
 				waitingFor: "hours",
 				screenUsedAt: null,
 				screenAgentName: null,
+				// The caller's own hand-back epoch for it (review r5).
+				epoch: 7,
 			},
 		]);
-		const { addedLater: _ignored, ...known } = machine;
+		const { addedLater: _ignored, ...listed } = machine;
+		const known = { ...listed, control: null, epoch: 0 };
 		expect(await f.client.agentMachines(id(5), signal)).toEqual({
 			canWake: false,
+			canTakeOver: true,
 			machines: [
 				known,
 				{
@@ -209,6 +213,7 @@ describe("member Company Computer transport", () => {
 					waitingFor: "hours",
 					screenUsedAt: null,
 					screenAgentName: null,
+					epoch: 7,
 				},
 			],
 		});
@@ -230,11 +235,179 @@ describe("member Company Computer transport", () => {
 			[[], { profileId: id(9) }],
 			[[], { schema: "qorpera.agent-machines/v2" }],
 			[[], { canWake: "yes" }],
+			[[], { canTakeOver: "yes" }],
+			[[{ ...machine, control: { mine: "yes", name: "Ada", until: "2026-11-10T19:00:00Z" } }], {}],
+			[[{ ...machine, control: { mine: false, name: "", until: "2026-11-10T19:00:00Z" } }], {}],
+			[[{ ...machine, control: { mine: false, name: "Ada" } }], {}],
+			[[{ ...machine, control: "Ada" }], {}],
+			// The epoch a hold was taken under is the caller's own hold's alone, and a whole number from 0 (review r5).
+			[[{ ...machine, control: { mine: false, name: "Ada", until: "2026-11-10T19:00:00Z", epoch: 3 } }], {}],
+			[[{ ...machine, control: { mine: true, name: "Ada", until: "2026-11-10T19:00:00Z", epoch: -1 } }], {}],
+			[[{ ...machine, control: { mine: true, name: "Ada", until: "2026-11-10T19:00:00Z", epoch: "3" } }], {}],
+			[[{ ...machine, epoch: 1.5 }], {}],
+			[[{ ...machine, epoch: -1 }], {}],
 		] as const) {
 			reply([...machines], extra);
 			await expect(f.client.agentMachines(id(5), signal), JSON.stringify(extra)).rejects.toThrow();
 		}
 		await expect(f.client.agentMachines("agent", signal)).rejects.toThrow();
+	});
+	it("reads who holds a desktop, and a database before take-over as no one and no take-over (20260930713000)", async () => {
+		const f = fixture(),
+			signal = new AbortController().signal;
+		const machine = {
+			machineId: id(20),
+			name: "concept-desktop",
+			purpose: "Walks through the concepts app.",
+			state: "running",
+			lifetime: "task",
+			desktopCapable: true,
+			startedByAgent: true,
+			screenUsedAt: null,
+			screenAgentName: null,
+			waitingFor: null,
+		};
+		const control = { mine: false, name: "Ada Lovelace", until: "2026-11-10T19:05:00.123+00:00" };
+		// The caller's own hold says the epoch it was taken under (review r5).
+		const own = { mine: true, name: "Owner", until: "2026-11-10T19:05:00.123+00:00", epoch: 4 };
+		f.fetch.mockResolvedValueOnce(
+			Response.json({
+				schema: "qorpera.agent-machines/v1",
+				profileId: id(1),
+				staffAgentId: id(5),
+				canWake: true,
+				canTakeOver: false,
+				machines: [
+					{ ...machine, control },
+					{ ...machine, machineId: id(21), control: own, epoch: 4 },
+				],
+			}),
+		);
+		expect(await f.client.agentMachines(id(5), signal)).toEqual({
+			canWake: true,
+			canTakeOver: false,
+			machines: [
+				{ ...machine, control: { ...control, epoch: null }, epoch: 0 },
+				{ ...machine, machineId: id(21), control: own, epoch: 4 },
+			],
+		});
+		f.fetch.mockResolvedValueOnce(
+			Response.json({
+				schema: "qorpera.agent-machines/v1",
+				profileId: id(1),
+				staffAgentId: id(5),
+				canWake: true,
+				machines: [machine],
+			}),
+		);
+		expect(await f.client.agentMachines(id(5), signal)).toEqual({
+			canWake: true,
+			canTakeOver: false,
+			machines: [{ ...machine, control: null, epoch: 0 }],
+		});
+	});
+	it("takes a desktop over, keeps it and hands it back as the member (20260930713000)", async () => {
+		const f = fixture(),
+			signal = new AbortController().signal;
+		const answer = (value: Record<string, unknown>) =>
+			f.fetch.mockResolvedValueOnce(Response.json({ schema: "qorpera.member-machine-desktop/v1", ...value }));
+		answer({ state: "ok", until: "2026-11-10T19:05:00+00:00" });
+		expect(await f.client.takeDesktop(id(20), 3, signal)).toEqual({
+			state: "ok",
+			until: "2026-11-10T19:05:00+00:00",
+		});
+		expect(f.fetch.mock.calls[0][0]).toBe("https://control.test/rest/v1/rpc/qorpera_member_take_machine_desktop");
+		expect(JSON.parse(f.fetch.mock.calls[0][1]!.body as string)).toEqual({
+			p_profile_id: id(1),
+			p_machine_id: id(20),
+			p_epoch: 3,
+		});
+		answer({ state: "refused", reason: "DESKTOP_MEMBER_IN_CONTROL", memberName: "Ada" });
+		expect(await f.client.takeDesktop(id(20), 3, signal)).toEqual({
+			state: "refused",
+			reason: "DESKTOP_MEMBER_IN_CONTROL",
+			memberName: "Ada",
+			epoch: null,
+		});
+		answer({ state: "refused", reason: "MACHINE_NOT_RUNNING" });
+		expect(await f.client.takeDesktop(id(20), 3, signal)).toEqual({
+			state: "refused",
+			reason: "MACHINE_NOT_RUNNING",
+			memberName: null,
+			epoch: null,
+		});
+		// Sent at an epoch a hand-back moved on (review r5): refused with the current one.
+		answer({ state: "refused", reason: "TAKE_CALLED_OFF", epoch: 4 });
+		expect(await f.client.takeDesktop(id(20), 3, signal)).toEqual({
+			state: "refused",
+			reason: "TAKE_CALLED_OFF",
+			memberName: null,
+			epoch: 4,
+		});
+		for (const bad of [
+			{ state: "refused", reason: "SOMETHING" },
+			{ state: "refused", reason: "TAKE_CALLED_OFF" },
+			{ state: "refused", reason: "MACHINE_NOT_RUNNING", epoch: 4 },
+			{ state: "ok" },
+			{ state: "ok", until: 5 },
+		]) {
+			answer(bad);
+			await expect(f.client.takeDesktop(id(20), 3, signal), JSON.stringify(bad)).rejects.toThrow();
+		}
+		answer({ state: "ok", until: "2026-11-10T19:06:00+00:00" });
+		expect(await f.client.keepDesktop(id(20), 3, signal)).toBe("2026-11-10T19:06:00+00:00");
+		expect(JSON.parse(f.fetch.mock.calls.at(-1)![1]!.body as string)).toEqual({
+			p_profile_id: id(1),
+			p_machine_id: id(20),
+			p_epoch: 3,
+		});
+		answer({ state: "ended" });
+		expect(await f.client.keepDesktop(id(20), 3, signal)).toBeNull();
+		expect(f.fetch.mock.calls.at(-1)![0]).toBe(
+			"https://control.test/rest/v1/rpc/qorpera_member_keep_machine_desktop",
+		);
+		answer({ state: "ok", handedBack: true, epoch: 4, holding: false });
+		expect(await f.client.handBackDesktop(id(20), "closed", 3, signal)).toEqual({
+			handedBack: true,
+			epoch: 4,
+			holding: false,
+		});
+		expect(f.fetch.mock.calls.at(-1)![0]).toBe(
+			"https://control.test/rest/v1/rpc/qorpera_member_hand_back_machine_desktop",
+		);
+		expect(JSON.parse(f.fetch.mock.calls.at(-1)![1]!.body as string)).toEqual({
+			p_profile_id: id(1),
+			p_machine_id: id(20),
+			p_reason: "closed",
+			p_epoch: 3,
+		});
+		// At an older epoch: nothing changed, and the member holds it now (another tab of theirs, at the newer one).
+		answer({ state: "ok", handedBack: false, epoch: 6, holding: true });
+		expect(await f.client.handBackDesktop(id(20), "handed_back", 3, signal)).toEqual({
+			handedBack: false,
+			epoch: 6,
+			holding: true,
+		});
+		for (const bad of [
+			{ state: "ok", handedBack: false, holding: false },
+			{ state: "ok", handedBack: false, epoch: -1, holding: false },
+			{ state: "ok", handedBack: false, epoch: 6 },
+		]) {
+			answer(bad);
+			await expect(
+				f.client.handBackDesktop(id(20), "handed_back", 3, signal),
+				JSON.stringify(bad),
+			).rejects.toThrow();
+		}
+		f.fetch.mockResolvedValueOnce(Response.json({ schema: "qorpera.member-machine-screen/v1", state: "ok" }));
+		await expect(f.client.handBackDesktop(id(20), "handed_back", 3, signal)).rejects.toThrow();
+		const calls = f.fetch.mock.calls.length;
+		await expect(f.client.takeDesktop("machine", 3, signal)).rejects.toThrow();
+		await expect(f.client.takeDesktop(id(20), -1, signal)).rejects.toThrow();
+		await expect(f.client.keepDesktop(id(20), 1.5, signal)).rejects.toThrow();
+		await expect(f.client.handBackDesktop(id(20), "closed", Number.NaN, signal)).rejects.toThrow();
+		// None of those reached the network.
+		expect(f.fetch.mock.calls.length).toBe(calls);
 	});
 	it("wakes a sleeping machine through the members' machine start", async () => {
 		const f = fixture(),

@@ -1,24 +1,33 @@
 import type { MemberAgentMachine, MemberAgentMachines } from "@qorpera/cloud-client/cloud-member-company-computer";
 import type { WebCompanyComputer } from "../../cloud/computer.ts";
-import type { MachineScreenLook } from "../../cloud/machine-screens.ts";
+import type { MachineActAnswer, MachineDesktopAction, MachineScreenLook } from "../../cloud/machine-screens.ts";
 import type { RealtimeResource } from "../../cloud/realtime.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { attachComputerDrag } from "../../ui/computer-drag.ts";
 import { openContextMenu } from "../../ui/context-menu.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { type MachineScreenPicture, MachineScreenView } from "../../ui/machine-screen-view.ts";
+import { type MachineScreenPicture, MachineScreenView, TEXT_MAX } from "../../ui/machine-screen-view.ts";
 import { leave, zoomFrom } from "../../ui/motion.ts";
 import { t } from "../../ui/preferences.ts";
+import { DesktopHoldLedger, type DesktopRelease, type DesktopTake } from "./desktop-holds.ts";
 
-/** The least time from one look's start to the next: about a picture a second while it changes. */
-export const LOOK_EVERY_MS = 1000;
-/** After 3 unchanged pictures in a row the window looks every 2 s, after 10 every 3 s; a changed picture, a click in
- * the window or a `machines` hint brings it back to every second. */
+/** The least time from one look's start to the next while the picture changes or the member acts on it: a look takes
+ * about 0.2 s end to end (production p50 204 ms, 10 Nov 2026), and the database takes one look per 400 ms of a member. */
+export const LOOK_EVERY_MS = 450;
+/** After 3 unchanged pictures in a row the window looks every second, after 6 every 2 s, after 13 every 3 s; a changed
+ * picture, a click in the window, the member's own action or a `machines` hint brings it back to LOOK_EVERY_MS. */
 export const LOOK_UNCHANGED_MS: readonly (readonly [unchanged: number, every: number])[] = [
-	[10, 3000],
-	[3, 2000],
+	[13, 3000],
+	[6, 2000],
+	[3, 1000],
 ];
+/** How often the window renews the member's hold of a desktop while it shows it (the database's lease runs 5 min). */
+export const KEEP_EVERY_MS = 60_000;
+/** How long an action waits on a desktop another action is busy on (an agent's that began before the take-over may
+ * hold it 11 s past an end that was not clean) before it is dropped. */
+const BUSY_GIVE_UP_MS = 15_000;
+const BUSY_RETRY_MS = 1000;
 /** How often the window reads its agent's machines again while it is shown (the `machines` hint reads them at once). */
 export const MACHINES_EVERY_MS = 15_000;
 /** How often a screen that is off, or hidden, is looked at again. */
@@ -40,6 +49,9 @@ export interface ComputerPanelOptions {
 	readonly hints?: MachineHints;
 	/** How a picture is decoded (the tests' own). */
 	readonly decode?: (png: Blob) => Promise<MachineScreenPicture>;
+	/** What the member may hold of the company's desktops: the company's ledger (ComputerPanels), which outlives the
+	 * window. A window opened on its own keeps one of its own. */
+	readonly ledger?: DesktopHoldLedger;
 }
 
 /** What the window shows instead of a picture. */
@@ -55,7 +67,18 @@ type Shown =
 	| "updating"
 	| "image"
 	| "error"
-	| "paused";
+	| "paused"
+	// Another member holds the desktop (20260930713000).
+	| "controlled";
+
+/** A press of Take over (the window's button or the agent's take-over card): the machine chosen at it, and the ledger's
+ * answer it waits for (review r12 F19). */
+interface TakeAttempt {
+	readonly machineId: string | undefined;
+	/** The press's stamp in the ledger (review r13 F20). */
+	readonly pressedAt: number;
+	answer?: Promise<DesktopTake>;
+}
 
 /**
  * An agent's computer window (migration 20260930712000; lanes/desktop-computers-20261110/LIVE-VIEW-PLAN.md, stage 1a):
@@ -63,7 +86,14 @@ type Shown =
  * in its corner when the agent has more than one. Every member who reads the company may watch; owners, admins and
  * contributors may wake a sleeping machine. It looks only while a thread shows it and its tab is visible, slows down
  * while nothing changes, and stops after 30 minutes without a touch on the page until the member says they still watch.
- * There is no take-over yet (stage 1b adds a member's control of the desktop beside the picture).
+ *
+ * Owners, admins and contributors take the desktop over (migration 20260930713000, stage 1b): Take over, here or on the
+ * agent's take-over card, gives them its mouse and keyboard (the picture takes their clicks, drags, wheel, keys and
+ * text, one action at a time) while the agent gets no pictures of it and waits; Hand back, the card's I'm done, closing
+ * the window or leaving the page gives it back. The hold is the database's, renewed every minute while the window
+ * shows it; other members see who holds it, not the screen. While the picture changes or the member acts, the window
+ * looks every 450 ms. What the member may hold, and every hand-back until it is confirmed, is the company's ledger's
+ * (DesktopHoldLedger), not the window's: closing the window forgets nothing (review r2 of #1661).
  *
  * The panel belongs to the company's `ComputerPanels`, not to the thread it was opened in: a thread attaches it while
  * the member is there and hands it back on the way out. Only the member closing it, or leaving the company, ends it.
@@ -98,6 +128,8 @@ export class ComputerPanel {
 	#name: string;
 	/** Wakes the look loop before its wait ends (attached, shown again, a hint, a touch, a choice). */
 	#poke: () => void = () => {};
+	/** Whether the company's page is gone (the panel's own close is not that). */
+	#parentGone: () => boolean = () => false;
 
 	// What the loop knows. The machines as last read, the member's own choice, and the picture the member has.
 	#listed: MemberAgentMachines | undefined;
@@ -118,6 +150,43 @@ export class ComputerPanel {
 	#paused = false;
 	#confirm = true;
 	#confirmedAt = Number.NEGATIVE_INFINITY;
+	// The member's hold of the desktop (20260930713000): the machine this window holds (its input and its renewals),
+	// whether a take-over waits for the list, the one on its way, the company's ledger of what the member may hold (review
+	// r2; the window's hold follows it), the hand-back of the machine shown as the window last saw it, and the actions on
+	// their way.
+	#computer: WebCompanyComputer | undefined;
+	#holding: string | undefined;
+	/** A press of Take over waiting for the machine to run (its stamp in the ledger): dropped, silently, once any release
+	 * came after it (review r13 F20). */
+	#wantTakeOver: number | undefined;
+	/** The window's last Hand back (or the card's I'm done through it) was not confirmed: said until one is (review r15). */
+	#handBackFailed = false;
+	/** The window's take-over: the latest press's attempt, of the machine chosen at it, and the ledger's answer it waits
+	 * for (review r12 F19). An older attempt's answer is not the window's. */
+	#taking: TakeAttempt | undefined;
+	readonly #ledger: DesktopHoldLedger;
+	#releaseShown: DesktopRelease | undefined;
+	#queue: MachineDesktopAction[] = [];
+	#sending = false;
+	#keepTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Where the picture sends the member's input while they hold the desktop: one, so the picture keeps what it gathers. */
+	readonly #input = { act: (action: MachineDesktopAction) => this.#enqueue(action) };
+	readonly #controlText = h("span", { class: "machine-screen-control-text" });
+	readonly #controlNote = h("span", { class: "machine-screen-control-note", role: "status", "aria-live": "polite" });
+	readonly #controlButton = h("button", { type: "button", class: "machine-screen-control-button" });
+	/** Hand back, beside Take over, while the member holds the desktop in another window (review r14). */
+	readonly #controlHandBack = h(
+		"button",
+		{ type: "button", class: "machine-screen-control-hand-back", hidden: true },
+		t("Hand back"),
+	);
+	readonly #controls = h(
+		"div",
+		{ class: "machine-screen-control", hidden: true },
+		h("span", { class: "machine-screen-control-words" }, this.#controlText, this.#controlNote),
+		this.#controlButton,
+		this.#controlHandBack,
+	);
 
 	constructor(
 		agent: HostedStaffAgent,
@@ -127,6 +196,8 @@ export class ComputerPanel {
 	) {
 		this.agentId = agent.id;
 		this.#name = agent.displayName;
+		this.#parentGone = () => parentSignal?.aborted === true;
+		this.#ledger = options.ledger ?? new DesktopHoldLedger(computer, parentSignal);
 		const signal = AbortSignal.any([this.#stop.signal, ...(parentSignal ? [parentSignal] : [])]);
 		this.#switcher = this.#switcherButton(signal);
 		this.#frameSwitcher = this.#switcherButton(signal);
@@ -174,6 +245,8 @@ export class ComputerPanel {
 			"keydown",
 			(event) => {
 				if (!matchesKey(event, "dismiss")) return;
+				// The member holds the desktop and the picture has the keyboard: Escape is the computer's.
+				if (this.#view?.takesKeysFrom(event.target)) return;
 				if (document.fullscreenElement && this.el.contains(document.fullscreenElement)) return;
 				event.preventDefault();
 				event.stopPropagation();
@@ -191,6 +264,7 @@ export class ComputerPanel {
 			this.#show("unavailable");
 			return;
 		}
+		this.#computer = computer;
 		this.#view = new MachineScreenView({
 			mount: this.#body,
 			title: this.#titleText(),
@@ -198,6 +272,22 @@ export class ComputerPanel {
 			...(options.decode ? { decode: options.decode } : {}),
 		});
 		this.#view.setSwitcher(this.#frameSwitcher);
+		this.#view.setControls(this.#controls);
+		// The controls are the member's, not the start of a panel drag.
+		this.#controls.addEventListener("pointerdown", (event) => event.stopPropagation(), { signal });
+		this.#controlButton.addEventListener(
+			"click",
+			() =>
+				void (this.#holding || this.#handBackFailed || (this.#machineId && this.#ledger.releasing(this.#machineId))
+					? this.handBack()
+					: this.takeOver()),
+			{ signal },
+		);
+		this.#controlHandBack.addEventListener("click", () => void this.handBack(), { signal });
+		// The ledger's word goes first: a hold given back (here, on the card, as the page goes) takes no more input and is
+		// never renewed. The ledger itself gives everything back as the page goes.
+		const unsubscribeHolds = this.#ledger.subscribe(() => this.#holdsChanged());
+		signal.addEventListener("abort", unsubscribeHolds, { once: true });
 		// The member's attention: any touch on the page; coming back to the tab counts as one.
 		const touched = () => this.#touched();
 		for (const type of ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"])
@@ -248,7 +338,85 @@ export class ComputerPanel {
 			this.#confirm = true;
 		}
 		this.#touched();
+		// Coming back to a hold: renewed now, as the window shows it again.
+		if (this.#holding) this.#scheduleKeep(0);
 		this.#poke();
+	}
+
+	/** Take the desktop over (the window's Take over, or the agent's take-over card): at once when the window shows a
+	 * running desktop, or as soon as it does. */
+	takeOver(): void {
+		if (this.#stop.signal.aborted || !this.#computer) return;
+		this.#wantTakeOver = this.#ledger.stamp();
+		this.#handBackFailed = false;
+		this.#touched();
+		this.#poke();
+		this.#startTake();
+	}
+
+	/** Starts a take-over of the machine chosen now, at the click (review r4 F8), as its own attempt (review r12 F19): it
+	 * is the window's until it settles or a newer press starts another. A press joins the attempt on its way only when it
+	 * is of the same machine and no release called it off; otherwise it starts a new one (the ledger queues it behind a
+	 * hand-back that must be answered first). The window's button and the agent's take-over card both come here. */
+	#startTake(): void {
+		const pressedAt = this.#wantTakeOver;
+		if (this.#holding || pressedAt === undefined) return;
+		const machine = this.#pick();
+		// Nothing the window remembers from before a release takes the desktop over after it; only a new press does
+		// (review r13 F20).
+		if (this.#ledger.releasedSince(machine?.machineId, this.agentId, pressedAt)) {
+			this.#wantTakeOver = undefined;
+			this.#syncControls();
+			return;
+		}
+		if (this.#takingLive(machine?.machineId)) return;
+		const attempt: TakeAttempt = { machineId: machine?.machineId, pressedAt };
+		this.#taking = attempt;
+		void this.#take(machine, attempt).finally(() => {
+			if (this.#taking === attempt) this.#taking = undefined;
+			this.#syncControls();
+		});
+	}
+
+	/** Whether the window's take-over of this machine is on its way and no release called it off or came after its press. */
+	#takingLive(machineId: string | undefined): boolean {
+		const attempt = this.#taking;
+		if (!attempt || attempt.machineId !== machineId) return false;
+		if (this.#ledger.releasedSince(machineId, this.agentId, attempt.pressedAt)) return false;
+		return !attempt.answer || !this.#ledger.calledOff(attempt.answer);
+	}
+
+	/** Give back every desktop of this agent's the member may hold (the window's Hand back, the card's I'm done before it
+	 * answers, a switch to another machine), through the company's ledger. A take-over still on its way is answered
+	 * first, and a hold it gets is given back as it comes. True once the database confirmed it and a list read after
+	 * that shows no hold of the member's; false while not: the window then says so, and the ledger asks again with
+	 * growing waits, never renews the hold and never takes it up again from the list (review r1 F4, F5; r2). A hold never
+	 * given back ends by itself in 5 minutes. */
+	handBack(): Promise<boolean> {
+		this.#wantTakeOver = undefined;
+		this.#released();
+		// A hold of the member's the window shows from elsewhere is owed from this click, at the epoch the list gave: its
+		// hand-back goes at once, before the confirming list read (review r15 F23).
+		const shown = this.#pick();
+		if (shown?.control?.mine === true && shown.control.epoch !== null)
+			this.#ledger.owe(shown.machineId, this.agentId, shown.control.epoch);
+		this.#handBackFailed = false;
+		const done = this.#ledger.releaseAgent(this.agentId, "handed_back", true);
+		// Not confirmed though no hand-back is left on its way (the list read after them failed, or kept showing a hold):
+		// said, with Try again, until a Hand back or a list read shows nothing of the member's held. A hand-back not
+		// answered says so itself (the ledger asks it again), and nothing owed is ever dropped.
+		void done.then((value) => {
+			if (this.#stop.signal.aborted) return;
+			this.#handBackFailed = !value && !(this.#machineId && this.#ledger.releasing(this.#machineId));
+			this.#syncControls();
+		});
+		this.#syncControls();
+		return done;
+	}
+
+	/** Whether the member holds the desktop the window shows. */
+	get holding(): boolean {
+		return this.#holding !== undefined;
 	}
 
 	/** Leave the thread; the window stops looking until a thread shows it again. */
@@ -271,6 +439,13 @@ export class ComputerPanel {
 
 	dispose(): void {
 		if (this.#stop.signal.aborted) return;
+		// The window closes: what the member may hold of the agent's desktops goes back through the company's ledger, which
+		// outlives the window, asks again until the database confirms, and keeps the take-over card waiting till then
+		// (review r2 F4). A take-over still on its way is answered first; what it gets goes back as it comes. As the
+		// company's page goes, the ledger gives everything back itself.
+		this.#wantTakeOver = undefined;
+		this.#released();
+		if (!this.#parentGone()) void this.#ledger.releaseAgent(this.agentId, "closed");
 		this.#stop.abort();
 		this.#poke();
 		this.#close = () => {};
@@ -304,13 +479,16 @@ export class ComputerPanel {
 			}
 			const listDue = this.#listedAt + MACHINES_EVERY_MS;
 			if (this.#listStale || Date.now() >= listDue) {
+				// A hint that comes while this read is on its way asks for another after it.
+				this.#listStale = false;
 				try {
 					this.#listed = await computer.agentMachines(this.agentId, signal);
 					this.#listedAt = Date.now();
-					this.#listStale = false;
 					this.#failures = 0;
+					this.#heldPerList();
 				} catch {
 					signal.throwIfAborted();
+					this.#listStale = true;
 					this.#failed();
 					await this.#wait(this.#backoff(), signal);
 					continue;
@@ -318,6 +496,10 @@ export class ComputerPanel {
 			}
 			const machine = this.#pick();
 			if (machine?.machineId !== this.#machineId) {
+				// The window's machine changed: every machine of this agent's the ledger has but the one shown now goes back,
+				// held, may be held (a lost answer), on its way or queued; the window's own state does not decide it (review r1
+				// F6, r3 F8, r4 F8).
+				this.#ledger.releaseOthers(this.agentId, machine?.machineId);
 				this.#machineId = machine?.machineId;
 				this.#etag = null;
 				this.#lastLook = Number.NEGATIVE_INFINITY;
@@ -334,9 +516,21 @@ export class ComputerPanel {
 				this.#view?.clear();
 				this.#etag = null;
 				this.#showMachine(machine);
+				this.#syncControls();
 				await this.#wait(this.#listedAt + MACHINES_EVERY_MS - Date.now(), signal);
 				continue;
 			}
+			// Another member holds the desktop: who, and no picture, until they give it back (a hint) or their hold runs
+			// out (its time: no hint comes then).
+			if (machine.control && !machine.control.mine) {
+				this.#unpicture("controlled", machine.control.name);
+				const until = Date.parse(machine.control.until);
+				const end = Number.isFinite(until) ? until + 500 : Number.POSITIVE_INFINITY;
+				await this.#wait(Math.min(this.#listedAt + MACHINES_EVERY_MS, end) - Date.now(), signal);
+				if (Date.now() >= end) this.#listStale = true;
+				continue;
+			}
+			if (this.#wantTakeOver !== undefined && !this.#holding) this.#startTake();
 			const due = this.#lastLook + this.#delay;
 			if (Date.now() < due) {
 				await this.#wait(Math.min(due, this.#listedAt + MACHINES_EVERY_MS) - Date.now(), signal);
@@ -366,6 +560,10 @@ export class ComputerPanel {
 					this.#etag = look.etag;
 					this.#pictureOf = machine.machineId;
 					this.#unchanged = 0;
+					// The picture is up: the state text under it goes (a screen reader reads it no more), and the take-over
+					// controls show.
+					this.#loading.hidden = true;
+					this.#syncControls();
 				}
 				this.#delay = LOOK_EVERY_MS;
 				continue;
@@ -406,8 +604,267 @@ export class ComputerPanel {
 					this.#unpicture("image");
 					this.#delay = MACHINES_EVERY_MS;
 					break;
+				case "DESKTOP_MEMBER_IN_CONTROL":
+					// Another member took it: the list says who.
+					this.#listStale = true;
+					this.#unpicture("controlled");
+					this.#delay = LOOK_EVERY_MS;
+					break;
 			}
 		}
+	}
+
+	/** What the list says of the member's own holds, each by its machine's own id, never by the machine shown (review r1
+	 * F6), ordered by the member's hand-back epoch per machine, never by the page's clock (review r8): the ledger hears it
+	 * and decides (a list below the epoch it knows says nothing; an epoch above ends what the page had under the older
+	 * one; a lost answer of this page's take-over that the list shows is held), and the window's hold follows the
+	 * ledger. A hold of the member's from elsewhere (another window, or this page before it was loaded again) is never
+	 * taken up (review r14): the window shows it, with Take over and Hand back. */
+	#heldPerList(): void {
+		const list = this.#listed;
+		if (!list) return;
+		this.#ledger.listed(list, this.agentId);
+		// A read that shows nothing of the member's held, with nothing owed, confirms an unconfirmed Hand back.
+		if (
+			this.#handBackFailed &&
+			!list.machines.some((machine) => machine.control?.mine === true) &&
+			!this.#ledger.has(this.agentId)
+		)
+			this.#handBackFailed = false;
+		// A take-over of this page's whose answer was lost, which the list now shows held (the ledger's own word): the
+		// press was this page's, so the window uses it.
+		const shown = this.#pick();
+		if (shown && !this.#holding && this.#ledger.holder(shown.machineId) !== undefined) {
+			this.#controlNote.textContent = "";
+			this.#held(shown.machineId);
+		}
+		this.#syncControls();
+	}
+
+	/** The ledger changed: a hold it no longer lets this window keep (given back here, on the card, as the page goes, or
+	 * ended) takes no more input and is never renewed; a hand-back of the machine shown that was confirmed reads the list
+	 * again. */
+	#holdsChanged(): void {
+		if (this.#stop.signal.aborted) return;
+		if (this.#holding && this.#ledger.holder(this.#holding) === undefined) this.#released();
+		const release = this.#machineId ? this.#ledger.releasing(this.#machineId) : undefined;
+		if (this.#releaseShown && !release) {
+			this.#listStale = true;
+			this.#poke();
+		}
+		this.#releaseShown = release;
+		this.#syncControls();
+	}
+
+	/** Takes the machine chosen at the click over, once, through the company's ledger, at the member's hand-back epoch:
+	 * its hold, or why not. Called off meanwhile (a hand-back, the window's close, a switch to another machine), what it
+	 * got is covered by the hand-back at its epoch and never renewed (review r1 F5, r5); so is one of a machine no longer
+	 * shown. A lost answer stays in the ledger as "may be held" until a hand-back covers it or the list says it holds. */
+	async #take(machine: MemberAgentMachine | undefined, attempt: TakeAttempt): Promise<void> {
+		const computer = this.#computer;
+		if (!computer || this.#holding) return;
+		// A viewer never takes over; a machine not running yet waits for the list to say it runs.
+		if (this.#listed && !this.#listed.canTakeOver) this.#wantTakeOver = undefined;
+		if (!machine || machine.state !== "running" || !this.#listed?.canTakeOver) return;
+		attempt.answer = this.#ledger.take(machine.machineId, this.agentId, attempt.pressedAt);
+		this.#syncControls();
+		const hold = await attempt.answer;
+		if (this.#stop.signal.aborted) return;
+		if (this.#taking !== attempt) {
+			// An older attempt (a newer press started another, review r12 F19): nothing of the window's is its own, neither
+			// the wish to take over, nor the newer attempt, nor the note. What it got, should it get anything, goes back
+			// unless a newer attempt of that machine is on its way.
+			if (
+				hold.state === "ok" &&
+				this.#holding !== machine.machineId &&
+				this.#taking?.machineId !== machine.machineId
+			)
+				this.#ledger.release(machine.machineId, this.agentId);
+			return;
+		}
+		this.#wantTakeOver = undefined;
+		if (hold.state === "ok" && machine.machineId !== this.#pick()?.machineId)
+			// The member chose another machine meanwhile: the hold goes back as it comes.
+			this.#ledger.release(machine.machineId, this.agentId);
+		else if (hold.state === "ok") {
+			this.#controlNote.textContent = "";
+			this.#held(machine.machineId);
+			this.#quicken();
+		} else if (
+			hold.state === "uncertain" ||
+			// Not sent: the machine's earlier hand-back is still not answered (review r13, found by the window explorer).
+			hold.state === "releasing" ||
+			(hold.state === "refused" && hold.reason === "TAKE_CALLED_OFF")
+		)
+			// Said under the picture; the member may try again (at the epoch the refusal said, when it was a stale one).
+			this.#controlNote.textContent = t("The computer could not be taken over. Try again.");
+		if (hold.state === "refused") this.#listStale = true;
+		this.#syncControls();
+		this.#poke();
+	}
+
+	/** The member holds the machine's desktop now: the picture takes their input, and the window renews the hold. */
+	#held(machineId: string): void {
+		this.#holding = machineId;
+		this.#queue = [];
+		this.#scheduleKeep(KEEP_EVERY_MS);
+		this.#syncControls();
+		this.#view?.focusScreen();
+	}
+
+	/** The member holds it no more (handed back, run out, or the window goes): input stops, and so does the renewal. */
+	#released(): void {
+		if (!this.#holding) return;
+		this.#holding = undefined;
+		this.#queue = [];
+		clearTimeout(this.#keepTimer);
+		this.#keepTimer = undefined;
+		this.#controlNote.textContent = "";
+		this.#syncControls();
+	}
+
+	/** The next renewal of the hold, after `ms`; it is asked only while a thread shows the window. */
+	#scheduleKeep(ms: number): void {
+		clearTimeout(this.#keepTimer);
+		this.#keepTimer = setTimeout(() => void this.#keep(), ms);
+	}
+
+	async #keep(): Promise<void> {
+		const machineId = this.#holding;
+		const computer = this.#computer;
+		if (!machineId || !computer || this.#stop.signal.aborted) return;
+		// A hold the ledger no longer lets the window keep (a release was asked) is never renewed; the heartbeat names the
+		// epoch it was taken under, and renews only a lease taken under it (review r5).
+		const epoch = this.#ledger.holder(machineId);
+		if (epoch === undefined) {
+			this.#released();
+			return;
+		}
+		if (!this.attached) {
+			// Not shown: no renewal; the hold runs out in 5 minutes unless the window is shown again first.
+			this.#keepTimer = undefined;
+			return;
+		}
+		let until: string | null | undefined;
+		try {
+			until = await computer.keepDesktop(machineId, epoch, this.#stop.signal);
+		} catch {
+			until = undefined;
+		}
+		if (this.#stop.signal.aborted || this.#holding !== machineId || this.#ledger.holder(machineId) !== epoch) return;
+		if (until === null) {
+			// It ended (handed back elsewhere, run out after 30 minutes without input, or another member's now).
+			this.#released();
+			this.#ledger.ended(machineId, epoch);
+			this.#listStale = true;
+			this.#poke();
+			return;
+		}
+		// Renewed, or not reached this time: again in a minute (the hold has 5), or sooner after a miss.
+		this.#scheduleKeep(until === undefined ? KEEP_EVERY_MS / 4 : KEEP_EVERY_MS);
+	}
+
+	/** One of the member's actions, after those on their way; texts typed one after another go as one. */
+	#enqueue(action: MachineDesktopAction): void {
+		if (!this.#holding) return;
+		const last = this.#queue.at(-1);
+		if (
+			last?.type === "type" &&
+			action.type === "type" &&
+			this.#queue.length > (this.#sending ? 1 : 0) &&
+			[...last.text].length + [...action.text].length <= TEXT_MAX
+		)
+			this.#queue[this.#queue.length - 1] = { type: "type", text: last.text + action.text };
+		else this.#queue.push(action);
+		this.#touched();
+		void this.#drain();
+	}
+
+	/** Sends the member's actions one at a time: an answer before the next goes. A desktop busy with another action
+	 * (an agent's that began before the take-over) is waited for, then the action is dropped. */
+	async #drain(): Promise<void> {
+		const computer = this.#computer;
+		if (this.#sending || !computer) return;
+		this.#sending = true;
+		try {
+			let busySince: number | undefined;
+			while (this.#queue.length && this.#holding && !this.#stop.signal.aborted) {
+				const machineId = this.#holding;
+				const epoch = this.#ledger.holder(machineId);
+				const action = this.#queue[0] as MachineDesktopAction;
+				let answer: MachineActAnswer | undefined;
+				try {
+					answer = await computer.screens.act(machineId, action, this.#stop.signal);
+				} catch {
+					answer = undefined;
+				}
+				if (this.#stop.signal.aborted || this.#holding !== machineId) return;
+				if (answer?.kind === "refused" && answer.code === "DESKTOP_BUSY") {
+					busySince ??= Date.now();
+					if (Date.now() - busySince < BUSY_GIVE_UP_MS) {
+						this.#controlNote.textContent = t("Waiting for {name} to finish a step…", { name: this.#name });
+						await new Promise((resolve) => setTimeout(resolve, BUSY_RETRY_MS));
+						continue;
+					}
+				}
+				busySince = undefined;
+				this.#controlNote.textContent = "";
+				this.#queue.shift();
+				if (
+					answer?.kind === "refused" &&
+					(answer.code === "DESKTOP_CONTROL_ENDED" || answer.code === "DESKTOP_MEMBER_IN_CONTROL")
+				) {
+					// The hold ended under the action (handed back elsewhere, or it ran out): the list says where it stands.
+					this.#released();
+					if (epoch !== undefined) this.#ledger.ended(machineId, epoch);
+					this.#listStale = true;
+				}
+				// The screen changed (or may have): look again soon.
+				this.#quicken();
+			}
+		} finally {
+			this.#sending = false;
+		}
+	}
+
+	/** The take-over controls under the picture: Take over for a member who may, while there is a picture; what holding
+	 * means and Hand back while they hold it; nothing for a viewer. The picture takes input only while held. */
+	#syncControls(): void {
+		const picture = this.#view?.shown === true && this.#picturing();
+		const holding = this.#holding !== undefined && this.#holding === this.#machineId;
+		const release =
+			(this.#machineId ? this.#ledger.releasing(this.#machineId) : undefined) ??
+			(this.#handBackFailed ? "failed" : undefined);
+		const offer = !holding && !release && picture && this.#listed?.canTakeOver === true;
+		// The member holds it from elsewhere (another window, or this page before it was loaded again): shown, never used
+		// here; Take over makes it this window's, Hand back gives it back (review r14).
+		const elsewhere = offer && this.#pick()?.control?.mine === true;
+		this.#controls.hidden = !(picture && (holding || release || offer));
+		this.#controls.classList.toggle("is-holding", holding || release !== undefined);
+		this.#controls.classList.toggle("is-elsewhere", elsewhere);
+		this.#controlHandBack.hidden = !elsewhere;
+		const text = holding
+			? t("You are using the computer. {name} gets no pictures of the screen while you use it.", {
+					name: this.#name,
+				})
+			: release === "failed"
+				? t("The computer could not be given back yet. It goes back by itself within 5 minutes.")
+				: release
+					? t("Giving the computer back…")
+					: elsewhere
+						? t("You are using this computer in another window.")
+						: "";
+		if (this.#controlText.textContent !== text) this.#controlText.textContent = text;
+		const label = holding
+			? t("Hand back")
+			: release === "failed"
+				? t("Try again")
+				: release
+					? t("Hand back")
+					: t("Take over");
+		if (this.#controlButton.textContent !== label) this.#controlButton.textContent = label;
+		this.#controlButton.disabled = this.#takingLive(this.#machineId) || release === "asking";
+		this.#view?.capture(holding && picture ? this.#input : null);
 	}
 
 	/** Waits `ms` (at most until the next machines read is due), or until something pokes the loop. */
@@ -468,13 +925,14 @@ export class ComputerPanel {
 	}
 
 	/** The picture goes, and the window says why. */
-	#unpicture(shown: Shown): void {
+	#unpicture(shown: Shown, member: string | null = null): void {
 		this.#etag = null;
 		this.#view?.clear();
-		this.#show(shown);
+		this.#show(shown, null, member);
+		this.#syncControls();
 	}
 
-	#show(shown: Shown, waitingFor: "hours" | "room" | null = null): void {
+	#show(shown: Shown, waitingFor: "hours" | "room" | null = null, member: string | null = null): void {
 		const name = { name: this.#name };
 		const [status, detail, action]: [string, string | null, string | null] =
 			shown === "loading"
@@ -524,8 +982,23 @@ export class ComputerPanel {
 														]
 													: shown === "error"
 														? [t("The computer could not be reached. Try again."), null, t("Try again")]
-														: [t("Paused to save power. Still watching?"), null, t("Keep watching")];
+														: shown === "controlled"
+															? [
+																	member
+																		? t(
+																				"{member} is using the computer. The screen is hidden meanwhile.",
+																				{ member },
+																			)
+																		: t(
+																				"Someone is using the computer. The screen is hidden meanwhile.",
+																			),
+																	null,
+																	null,
+																]
+															: [t("Paused to save power. Still watching?"), null, t("Keep watching")];
 		this.#loading.dataset.state = shown;
+		// The state text shows only while there is no picture over it (a screen reader would read it under one).
+		this.#loading.hidden = this.#view?.shown === true;
 		this.#spinner.hidden = !(shown === "loading" || shown === "starting" || shown === "updating" || this.#waking);
 		if (this.#status.textContent !== status) this.#status.textContent = status;
 		this.#detail.hidden = detail === null;
@@ -571,7 +1044,7 @@ export class ComputerPanel {
 		if (Date.now() - this.#confirmedAt >= CONFIRM_EVERY_MS) this.#confirm = true;
 	}
 
-	/** Looks come every second again, from now. */
+	/** Looks come every LOOK_EVERY_MS again, from now. */
 	#quicken(): void {
 		this.#unchanged = 0;
 		if (this.#delay > LOOK_EVERY_MS && this.#failures === 0) this.#delay = LOOK_EVERY_MS;
@@ -610,7 +1083,13 @@ export class ComputerPanel {
 						hint: machine.purpose.length > 60 ? `${machine.purpose.slice(0, 59)}…` : machine.purpose,
 						checked: machine.machineId === this.#machineId,
 						select: () => {
+							const before = this.#pick()?.machineId;
 							this.#chosen = machine.machineId;
+							// At the choice, not when the loop next sees it (it may be waiting on a request): every machine of this
+							// agent's in the ledger but this one goes back (review r4 F8). A take-over asked before is not carried
+							// over to the machine chosen now.
+							if (machine.machineId !== before) this.#wantTakeOver = undefined;
+							this.#ledger.releaseOthers(this.agentId, machine.machineId);
 							this.#quicken();
 						},
 					})),
@@ -638,20 +1117,30 @@ export class ComputerPanel {
 
 /**
  * The company's open computer panels, one per agent. A panel opened in any of an agent's threads stays open until a
- * member closes it or leaves the company; the threads that show it come and go.
+ * member closes it or leaves the company; the threads that show it come and go. It keeps the company's one ledger of
+ * the desktops the member may hold (DesktopHoldLedger), which outlives every panel (review r2 of #1661).
  */
 export class ComputerPanels {
 	readonly #panels = new Map<string, ComputerPanel>();
 	readonly #computer: WebCompanyComputer | undefined;
 	readonly #signal: AbortSignal | undefined;
 	readonly #options: ComputerPanelOptions;
+	readonly #holds: DesktopHoldLedger;
 	readonly #onAbort = () => this.dispose();
 
 	constructor(computer?: WebCompanyComputer, signal?: AbortSignal, options: ComputerPanelOptions = {}) {
 		this.#computer = computer;
 		this.#signal = signal;
-		this.#options = options;
+		this.#holds = options.ledger ?? new DesktopHoldLedger(computer, signal);
+		this.#options = { ...options, ledger: this.#holds };
 		signal?.addEventListener("abort", this.#onAbort, { once: true });
+	}
+
+	/** The take-over card's I'm done: every desktop of this agent's the member may hold, given back and confirmed, window
+	 * or not (a closed window's hand-back is still the ledger's). True once nothing of the agent's is held; false while
+	 * something is not confirmed (asked again meanwhile; the lease ends by itself in 5 minutes). */
+	releaseAgent(agentId: string): Promise<boolean> {
+		return this.#panels.get(agentId)?.handBack() ?? this.#holds.releaseAgent(agentId, "handed_back", true);
 	}
 
 	/** The panel a thread left open for this agent, if any. */
@@ -680,8 +1169,11 @@ export class ComputerPanels {
 		panel?.dispose();
 	}
 
+	/** The company is left (or its access is gone): every desktop the member may hold is asked back once, best effort,
+	 * in requests the browser finishes after the page; then the panels end. */
 	dispose(): void {
 		this.#signal?.removeEventListener("abort", this.#onAbort);
+		this.#holds.leave();
 		for (const agentId of [...this.#panels.keys()]) this.close(agentId);
 	}
 }

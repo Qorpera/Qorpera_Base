@@ -496,6 +496,23 @@ export const WORKSPACE: Record<string, string> = {
 	"Paused to save power. Still watching?": "Sat på pause for at spare strøm. Ser du stadig med?",
 	"Keep watching": "Bliv ved",
 	"Choose a computer": "Vælg en computer",
+	// A member's take-over of the desktop (20260930713000).
+	"Hand back": "Giv tilbage",
+	"You are using the computer. {name} gets no pictures of the screen while you use it.":
+		"Du bruger computeren. {name} får ingen billeder af skærmen, mens du bruger den.",
+	"{member} is using the computer. The screen is hidden meanwhile.":
+		"{member} bruger computeren. Skærmen er skjult imens.",
+	"Someone is using the computer. The screen is hidden meanwhile.":
+		"En anden bruger computeren. Skærmen er skjult imens.",
+	"Waiting for {name} to finish a step…": "Venter på, at {name} gør et trin færdigt…",
+	"The computer could not be taken over. Try again.": "Computeren kunne ikke overtages. Prøv igen.",
+	"You are using this computer in another window.": "Du bruger denne computer i et andet vindue.",
+	"Giving the computer back…": "Giver computeren tilbage…",
+	"The computer could not be given back yet. It goes back by itself within 5 minutes.":
+		"Computeren kunne ikke gives tilbage endnu. Den går tilbage af sig selv inden for 5 minutter.",
+	"computer screen": "computerskærm",
+	"Your clicks and keys go to the computer. Shift+Escape leaves it.":
+		"Dine klik og taster går til computeren. Shift+Escape forlader den.",
 
 	// app/views/feedback.ts
 	"+ Bug": "+ Fejl",
