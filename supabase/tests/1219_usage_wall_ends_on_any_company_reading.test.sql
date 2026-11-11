@@ -100,6 +100,17 @@ select pg_temp.w_signal(2, interval '3 hours', interval '5 days') \g /dev/null
 select pg_temp.base_assert(pg_temp.w_wall(1) is null and pg_temp.w_wall(2) is null,
 	'a reading with room in another company did not end a signal with its own reset: ' || pg_temp.w_text(pg_temp.w_wall(2)));
 
+-- But a reading with room ends nothing once a newer reading of the account is full: company 2 reads it full again.
+select pg_temp.w_reading(2, interval '30 seconds', 100, interval '6 days') \g /dev/null
+select pg_temp.base_assert(pg_temp.w_near(pg_temp.w_wall(2), interval '5 days'),
+	'a reading with room ended the wall after a newer full reading: ' || pg_temp.w_text(pg_temp.w_wall(2)));
+select pg_temp.w_reading(2, interval '2 hours', 100, interval '6 days') \g /dev/null
+-- At the same time, room wins.
+select pg_temp.w_reading(2, interval '1 minute', 100, interval '6 days') \g /dev/null
+select pg_temp.base_assert(pg_temp.w_wall(2) is null,
+	'a full reading at the same time as the reading with room kept the wall: ' || pg_temp.w_text(pg_temp.w_wall(2)));
+select pg_temp.w_reading(2, interval '2 hours', 100, interval '6 days') \g /dev/null
+
 -- 4. What still holds the wall:
 -- a reading with room older than the signal;
 select pg_temp.w_reading(1, interval '4 hours', 0, interval '7 days') \g /dev/null

@@ -13,7 +13,8 @@
 
 -- The previous text (20260930548000, 20260930575000, 20260930577000), with its names changed and its comments left out,
 -- and with 20260930724000's two rule changes written into it (marked 724000 below): a reading with room ends a wall from
--- any company of the member, and a full window holds only while no newer reading of the login on a live login has room.
+-- any company of the member unless a newer reading of the account is full, and a full window holds only while no newer
+-- reading of the login on a live login has room.
 create function pg_temp.d1_old_sibling(p_connection_id uuid)
 returns table(connection_id uuid, connection_version bigint)
 language sql stable security definer set search_path = '' as $$
@@ -74,6 +75,41 @@ language sql stable security definer set search_path = '' as $$
 						or (nw ? 'resetAt' and (nw ->> 'resetAt')::timestamptz
 							<= (newer.provider_account_usage ->> 'observedAt')::timestamptz)))
 $$;
+-- 724000: the readings that may end a wall on a signal of p_connection/p_version: of the same account by the same member
+-- on a live login, in any company, with whether each has room or is full.
+create function pg_temp.d1_old_readings(p_owner uuid, p_provider text, p_connection uuid, p_version bigint)
+returns table(observed_at timestamptz, has_room boolean, is_full boolean)
+language sql stable security definer set search_path = '' as $$
+    select (recovered.provider_account_usage ->> 'observedAt')::timestamptz,
+      jsonb_typeof(recovered.provider_account_usage -> 'windows') = 'array'
+        and jsonb_array_length(recovered.provider_account_usage -> 'windows') > 0
+        and not exists (select 1 from jsonb_array_elements(recovered.provider_account_usage -> 'windows') w
+          where (w ->> 'usedPercent')::numeric is null or (w ->> 'usedPercent')::numeric < 0
+            or (w ->> 'usedPercent')::numeric >= 100
+            or (w ? 'resetAt' and (w ->> 'resetAt')::timestamptz
+              <= (recovered.provider_account_usage ->> 'observedAt')::timestamptz)),
+      jsonb_typeof(recovered.provider_account_usage -> 'windows') = 'array'
+        and exists (select 1 from jsonb_array_elements(recovered.provider_account_usage -> 'windows') w
+          where jsonb_typeof(w -> 'usedPercent') = 'number' and (w ->> 'usedPercent')::numeric >= 100
+            and not (w ? 'resetAt' and (w ->> 'resetAt')::timestamptz
+              <= (recovered.provider_account_usage ->> 'observedAt')::timestamptz))
+    from public.qorpera_native_provider_account_metadata recovered
+    join public.qorpera_provider_connections recovered_connection on recovered_connection.id = recovered.connection_id
+    join public.qorpera_provider_connection_versions recovered_version
+      on recovered_version.connection_id = recovered.connection_id
+      and recovered_version.version = recovered.connection_version
+    left join public.qorpera_native_provider_account_metadata blocked_metadata
+      on blocked_metadata.connection_id = p_connection and blocked_metadata.connection_version = p_version
+    where recovered_connection.owner_user_id is not distinct from p_owner
+      and recovered_connection.provider = p_provider
+      and recovered_connection.status = 'active' and recovered_version.authorization_state = 'active'
+      and recovered_version.authentication_mode = 'native_subscription'
+      and not exists (select 1 from public.qorpera_provider_connection_versions newer
+        where newer.connection_id = recovered.connection_id and newer.version > recovered.connection_version)
+      and ((recovered.connection_id = p_connection and recovered.connection_version = p_version)
+        or recovered.provider_account_identity = blocked_metadata.provider_account_identity)
+      and (recovered.provider_account_usage ->> 'observedAt')::timestamptz <= statement_timestamp()
+$$;
 create function pg_temp.d1_old_reset_company(p_connection_id uuid)
 returns timestamptz
 language sql stable security definer set search_path = '' as $$
@@ -101,33 +137,14 @@ language sql stable security definer set search_path = '' as $$
           and other_connection.owner_user_id is not distinct from current_connection.owner_user_id
           and other_connection.provider = current_connection.provider
       ))
-      and (not exists (
-        select 1 from public.qorpera_native_provider_account_metadata recovered
-        join public.qorpera_provider_connections recovered_connection on recovered_connection.id = recovered.connection_id
-        join public.qorpera_provider_connection_versions recovered_version
-          on recovered_version.connection_id = recovered.connection_id
-          and recovered_version.version = recovered.connection_version
-        left join public.qorpera_native_provider_account_metadata blocked_metadata
-          on blocked_metadata.connection_id = blocked.provider_connection_id
-          and blocked_metadata.connection_version = blocked.provider_connection_version
-        where /* 724000: any company */ recovered_connection.owner_user_id is not distinct from current_connection.owner_user_id
-          and recovered_connection.provider = current_connection.provider
-          and recovered_connection.status = 'active' and recovered_version.authorization_state = 'active'
-          and recovered_version.authentication_mode = 'native_subscription'
-          and not exists (select 1 from public.qorpera_provider_connection_versions newer
-            where newer.connection_id = recovered.connection_id and newer.version > recovered.connection_version)
-          and ((recovered.connection_id = blocked.provider_connection_id
-            and recovered.connection_version = blocked.provider_connection_version)
-            or recovered.provider_account_identity = blocked_metadata.provider_account_identity)
-          and (recovered.provider_account_usage ->> 'observedAt')::timestamptz > blocked.observed_at
-          and (recovered.provider_account_usage ->> 'observedAt')::timestamptz <= statement_timestamp()
-          and jsonb_array_length(recovered.provider_account_usage -> 'windows') > 0
-          and not exists (select 1 from jsonb_array_elements(recovered.provider_account_usage -> 'windows') w
-            where (w ->> 'usedPercent')::numeric is null or (w ->> 'usedPercent')::numeric < 0
-              or (w ->> 'usedPercent')::numeric >= 100
-              or (w ? 'resetAt' and (w ->> 'resetAt')::timestamptz
-                <= (recovered.provider_account_usage ->> 'observedAt')::timestamptz))
-      ))
+      -- 724000: a later reading with room, with no newer full reading of the account in the same set.
+      and not exists (
+        select 1 from pg_temp.d1_old_readings(current_connection.owner_user_id, current_connection.provider,
+          blocked.provider_connection_id, blocked.provider_connection_version) recovered
+        where recovered.has_room and recovered.observed_at > blocked.observed_at
+          and not exists (select 1 from pg_temp.d1_old_readings(current_connection.owner_user_id, current_connection.provider,
+            blocked.provider_connection_id, blocked.provider_connection_version) fuller
+            where fuller.is_full and fuller.observed_at > recovered.observed_at))
 $$;
 create function pg_temp.d1_old_reset(p_connection_id uuid)
 returns timestamptz

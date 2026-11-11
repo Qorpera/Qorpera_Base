@@ -12,7 +12,8 @@
 --    to 17 Nov, kept that 4 Nov signal alive after the 15:25Z readings showed room.
 -- Now:
 -- 1. A later reading with room ends a wall when it is a reading of the same account by the same member on a live login,
---    in any company (before: in the wall's company only). The other rules of a reading with room stay as they were.
+--    in any company (before: in the wall's company only), and no newer reading of the account in that set is full (a
+--    reading at the same time with room wins). The other rules of a reading with room stay as they were.
 -- 2. A full window holds a signal only while no newer reading of the login, on a live login, shows room.
 -- Nothing else changes: the signals that can hold a connection, the 6 hours, the 8 days, siblings, the ACLs.
 -- The bodies keep the markers 20260930577000 and 20260930611000 that the activation guards look for.
@@ -90,7 +91,7 @@ end $$;
 --   provider account of the same member in the same company at the version that reading names;
 -- * it holds until its reset, or, naming none, until 6 hours after it or (for 8 days) the reset a usage reading names;
 -- * a later reading of that account by the same member, in any company, on a live login, showing room in every window,
---   ends it at once.
+--   ends it at once, unless a newer such reading of the account is full.
 create or replace function public.qorpera_native_account_usage_limit_reset_company(p_connection_id uuid)
 returns timestamptz
 language plpgsql stable security definer set search_path = '' as $$
@@ -140,34 +141,51 @@ begin
 		from signal where signal.held_until > statement_timestamp()
 	), room as materialized (
 		-- 20260930575000: the newest reading with room, with or without a reset time, however old the reading;
-		-- 20260930724000: in any company of the member, as the account's usage is the same in all of them.
+		-- 20260930724000: in any company of the member, as the account's usage is the same in all of them, and only while
+		-- no newer reading of the account is full (a reading at the same time with room wins).
 		select blocked_login.provider_connection_id, blocked_login.provider_connection_version,
-			(select max((recovered.provider_account_usage ->> 'observedAt')::timestamptz)
-			from public.qorpera_native_provider_account_metadata as recovered
-			join public.qorpera_provider_connections as recovered_connection on recovered_connection.id = recovered.connection_id
-			join public.qorpera_provider_connection_versions as recovered_version
-				on recovered_version.connection_id = recovered.connection_id
-				and recovered_version.version = recovered.connection_version
-			left join public.qorpera_native_provider_account_metadata as blocked_metadata
-				on blocked_metadata.connection_id = blocked_login.provider_connection_id
-				and blocked_metadata.connection_version = blocked_login.provider_connection_version
-			where recovered_connection.owner_user_id is not distinct from login.owner_user_id
-				and recovered_connection.provider = login.provider
-				and recovered_connection.status = 'active' and recovered_version.authorization_state = 'active'
-				and recovered_version.authentication_mode = 'native_subscription'
-				and not exists (select 1 from public.qorpera_provider_connection_versions as newer
-					where newer.connection_id = recovered.connection_id and newer.version > recovered.connection_version)
-				and ((recovered.connection_id = blocked_login.provider_connection_id
-					and recovered.connection_version = blocked_login.provider_connection_version)
-					or recovered.provider_account_identity = blocked_metadata.provider_account_identity)
-				and (recovered.provider_account_usage ->> 'observedAt')::timestamptz <= statement_timestamp()
-				and jsonb_array_length(recovered.provider_account_usage -> 'windows') > 0
-				and not exists (select 1 from jsonb_array_elements(recovered.provider_account_usage -> 'windows') as w
-					where (w ->> 'usedPercent')::numeric is null or (w ->> 'usedPercent')::numeric < 0
-						or (w ->> 'usedPercent')::numeric >= 100
-						or (w ? 'resetAt' and (w ->> 'resetAt')::timestamptz
-							<= (recovered.provider_account_usage ->> 'observedAt')::timestamptz))) as observed_at
+			case when seen.full_at is null or seen.room_at >= seen.full_at then seen.room_at end as observed_at
 		from blocked_login cross join login
+		cross join lateral (
+			select max(reading.observed_at) filter (where reading.has_room) as room_at,
+				max(reading.observed_at) filter (where reading.is_full) as full_at
+			from (
+				select (recovered.provider_account_usage ->> 'observedAt')::timestamptz as observed_at,
+					case when jsonb_typeof(recovered.provider_account_usage -> 'windows') = 'array'
+						then jsonb_array_length(recovered.provider_account_usage -> 'windows') > 0
+							and not exists (select 1 from jsonb_array_elements(recovered.provider_account_usage -> 'windows') as w
+								where (w ->> 'usedPercent')::numeric is null or (w ->> 'usedPercent')::numeric < 0
+									or (w ->> 'usedPercent')::numeric >= 100
+									or (w ? 'resetAt' and (w ->> 'resetAt')::timestamptz
+										<= (recovered.provider_account_usage ->> 'observedAt')::timestamptz))
+						else false end as has_room,
+					case when jsonb_typeof(recovered.provider_account_usage -> 'windows') = 'array'
+						then exists (select 1 from jsonb_array_elements(recovered.provider_account_usage -> 'windows') as w
+							where jsonb_typeof(w -> 'usedPercent') = 'number' and (w ->> 'usedPercent')::numeric >= 100
+								and not (w ? 'resetAt' and (w ->> 'resetAt')::timestamptz
+									<= (recovered.provider_account_usage ->> 'observedAt')::timestamptz))
+						else false end as is_full
+				from public.qorpera_native_provider_account_metadata as recovered
+				join public.qorpera_provider_connections as recovered_connection
+					on recovered_connection.id = recovered.connection_id
+				join public.qorpera_provider_connection_versions as recovered_version
+					on recovered_version.connection_id = recovered.connection_id
+					and recovered_version.version = recovered.connection_version
+				left join public.qorpera_native_provider_account_metadata as blocked_metadata
+					on blocked_metadata.connection_id = blocked_login.provider_connection_id
+					and blocked_metadata.connection_version = blocked_login.provider_connection_version
+				where recovered_connection.owner_user_id is not distinct from login.owner_user_id
+					and recovered_connection.provider = login.provider
+					and recovered_connection.status = 'active' and recovered_version.authorization_state = 'active'
+					and recovered_version.authentication_mode = 'native_subscription'
+					and not exists (select 1 from public.qorpera_provider_connection_versions as newer
+						where newer.connection_id = recovered.connection_id and newer.version > recovered.connection_version)
+					and ((recovered.connection_id = blocked_login.provider_connection_id
+						and recovered.connection_version = blocked_login.provider_connection_version)
+						or recovered.provider_account_identity = blocked_metadata.provider_account_identity)
+					and (recovered.provider_account_usage ->> 'observedAt')::timestamptz <= statement_timestamp()
+			) as reading
+		) as seen
 	)
 	select max(signal.held_until) into v_reset
 	from signal
