@@ -223,6 +223,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_member_folder_object(uuid,text)', false, true, 'member: auth.uid() + membership of a folder-v2 company, read only (C4 P27a)'),
 	('public.qorpera_member_folder_path_history(uuid,text,uuid,integer)', false, true, 'member: auth.uid() + membership of a folder-v2 company, read only (C4 P27a)'),
 	('public.qorpera_member_folder_read(uuid,text)', false, true, 'member: auth.uid() + membership of a folder-v2 company, read only (C4 P27a)'),
+	('public.qorpera_member_folder_read_many(uuid,text[])', false, true, 'member: auth.uid() + membership of a folder-v2 company; each path as qorpera_member_folder_read answers it, at most 64, read only (20260930722000)'),
 	('public.qorpera_member_folder_writer(uuid)', false, true, 'member: auth.uid() + membership of a folder-v2 company; answers only the caller''s own actor, read only (C4 P34a)'),
 	('public.qorpera_member_interface_offers(uuid)', false, true, 'member: auth.uid() + membership of a folder-v2 company; open offers on tables the caller reads (I9c)'),
 	('public.qorpera_member_app_layout(uuid)', false, true, 'member: auth.uid() + membership; reads the caller''s own arrangement of the apps drawer (20260930723000)'),

@@ -1,5 +1,5 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
--- Each member's own sidebar over the company's (20260930722000). The company's sidebar is its sections file; what a
+-- Each member's own sidebar over the company's (20260930727000). The company's sidebar is its sections file; what a
 -- member changes (sections, where agents and group chats stand) is theirs, and everything they did not touch keeps
 -- following the company's. Reset takes the member's changes away; Undo puts them back.
 select pg_temp.base_claims('service_role');

@@ -1542,14 +1542,15 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // interface apps that show the company's state and overlay v13 (each owner keeps one posted app current; Jonas,
 // 10 November 2026), and for patch notes before changes go live ("Yes, wait for me"; Jonas, 10 November 2026), and
 // for a project's history and its hand-over (#1643, 10 November 2026), and for the change record of the company's code
-// (each change numbered, undone and described with manage_code; own code storage step 2b, 10 November 2026). A
+// (each change numbered, undone and described with manage_code; own code storage step 2b, 10 November 2026), and for
+// the wall's now line and what a wall line says (the sidebar's line under each name; Jonas, 11 November 2026). A
 // change to either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "4f5a7af07566602dd7095373d323069aaba3019a53ad6985af0f3799225abbc0",
+			instructions: "60e9c7db643962e37bc82f7420bcb775549f0d08a886b15e864dda259923df1e",
 			prompt: "be57a945a52a80bccd0e523d775d563455ec85f3a3ee11677e7ece894f9f0ae6",
 		},
 	],
@@ -1565,7 +1566,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "4f5a7af07566602dd7095373d323069aaba3019a53ad6985af0f3799225abbc0",
+			instructions: "60e9c7db643962e37bc82f7420bcb775549f0d08a886b15e864dda259923df1e",
 			prompt: "954569cabce5c2ead1fe5e2507f3c8367984855615fb747cf2c378ed2efce48f",
 		},
 	],

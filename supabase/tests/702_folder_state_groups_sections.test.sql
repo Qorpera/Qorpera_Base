@@ -394,7 +394,7 @@ begin
 		raise exception 'sections.md locks the company row only: %', t; end if;
 end $$;
 
--- 9. The member RPC's section actions change the member's own sidebar, never the company's (20260930722000) ----------
+-- 9. The member RPC's section actions change the member's own sidebar, never the company's (20260930727000) ----------
 
 do $$
 begin

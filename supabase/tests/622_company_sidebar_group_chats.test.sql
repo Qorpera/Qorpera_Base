@@ -88,7 +88,7 @@ begin
 	perform pg_temp.base_assert(public.qorpera_sidebar_container('92400000-0000-4000-8000-000000000010', null)
 		= array[v_alice, v_bob, v_carol, v_launch, v_hiring]::uuid[], 'Group chats follow the agents in Unassigned');
 	v_state := pg_temp.gc_read(v_owner);
-	-- 20260930722000: everything has a place in the read, here all in no section.
+	-- 20260930727000: everything has a place in the read, here all in no section.
 	perform pg_temp.base_assert(not exists (select 1 from jsonb_array_elements(v_state -> 'roomPlacements') placement
 			where placement ->> 'sectionId' is not null)
 		and not exists (select 1 from jsonb_array_elements(v_state -> 'placements') placement

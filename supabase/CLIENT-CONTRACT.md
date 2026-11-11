@@ -291,7 +291,7 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   `20260928249100`): the web makes them as the member's edits of
   `QorperaOS/agents/sections.md` through the member commit route, and writes the Unassigned
   order only where the sidebar says `unassignedOrder`.
-- Each member's own sidebar (`20260930722000`): the company's sidebar is its
+- Each member's own sidebar (`20260930727000`): the company's sidebar is its
   sections file, kept by agents, and it is what a new member sees. Creating,
   renaming and deleting sections and moving agents and group chats through the
   RPC below change the caller's own sidebar only, for any member, viewers too,
@@ -316,7 +316,7 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   `qorpera.member-app-layout/v1` `{places, groups}` (packages/web/src/cloud/app-groups.ts).
   Any member. Reset takes it away and Undo puts it back; `own.apps` counts it.
 - `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
-  shape after the change. Before `20260930722000`, shared, owner/admin/contributor:
+  shape after the change. Before `20260930727000`, shared, owner/admin/contributor:
   `create_section {sectionId, name, staffAgentId?, unpin?}`,
   `rename_section {sectionId, name}`, `delete_section {sectionId}` (its agents
   go to the end of Unassigned), `move_agent {staffAgentId, sectionId|null,
@@ -984,6 +984,9 @@ by their keys, never with a lowercase literal.
   `path`, `kind` (`file`, `folder` or `symlink`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
   `fileSha256`, `bytes`, `mediaType`, `executable`; for a link (`20260928549380_folder_links`), its `target`, the
   text it holds, never resolved. Nothing is below a link.
+- `qorpera_member_folder_read_many(environment, paths)` (`20260930722000`): `{schema: "qorpera.folder-read-many/v1",
+  reads}`, `reads[i]` what `qorpera_member_folder_read(environment, paths[i])` answers, for 1 to 64 paths, in one
+  snapshot; an invalid path refuses the whole call. A client that finds it missing reads each path alone.
 - `qorpera_member_folder_list(environment, parent, after, limit)`: `qorpera.folder-list/v1`, one folder's entries in
   folder-key order (`parent` null for the top), at most `limit` (1 to 1,000); `next` is the path to pass as `after`
   for the next page, null on the last.
