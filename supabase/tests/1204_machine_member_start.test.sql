@@ -279,14 +279,20 @@ begin
 		'2: after 30 seconds it moves');
 end $$;
 -- A screen an agent drove keeps that agent's stamp and its time (review r1 F2 of #1681): a member's start never moves the
--- machine out of the window of the agent that drove it.
+-- machine out of the window of the agent that drove it. The agent that drove it is another than the one the machine
+-- was started by (any agent of the company drives any machine by name; the column has no foreign key), so a start that
+-- stamped every screen as its starter's would move it (review r2 F2).
 do $$
 declare v_before public.qorpera_company_machines;
 begin
-	perform pg_temp.dc_shift('a1', 'screen_used_at = timestamptz ''2026-11-01 10:00:00+00''');
+	perform pg_temp.dc_shift('a1', 'screen_staff_agent_id = ''92400000-0000-4000-8000-0000000000e2'', '
+		|| 'screen_used_at = timestamptz ''2026-11-01 10:00:00+00''');
 	v_before := pg_temp.dc_machine('a1');
+	perform pg_temp.base_assert(v_before.screen_staff_agent_id = '92400000-0000-4000-8000-0000000000e2'
+			and v_before.started_by_staff_agent_id is distinct from v_before.screen_staff_agent_id,
+		'2: the screen was driven by another agent than its starter: ' || row_to_json(v_before)::text);
 	perform pg_temp.dc_start_id('contributor', 'a1');
-	perform pg_temp.base_assert((pg_temp.dc_machine('a1')).screen_staff_agent_id = v_before.screen_staff_agent_id
+	perform pg_temp.base_assert((pg_temp.dc_machine('a1')).screen_staff_agent_id = '92400000-0000-4000-8000-0000000000e2'
 			and (pg_temp.dc_machine('a1')).screen_used_at = timestamptz '2026-11-01 10:00:00+00',
 		'2: a screen an agent drove keeps its stamp: ' || row_to_json(pg_temp.dc_machine('a1'))::text);
 	perform pg_temp.dc_shift('a1', 'screen_staff_agent_id = null, screen_used_at = null');
@@ -418,9 +424,12 @@ begin
 		raise exception 'Undo' using errcode = 'QTF80';
 	exception when sqlstate 'QTF80' then null;
 	end;
-	-- A hold begun meanwhile does not stop it: authorized and served, the start runs (review r1 F1 of #1681).
+	-- A hold begun meanwhile does not stop it: authorized and served, the start runs (review r1 F1 of #1681). The hold is
+	-- live when the authority reads (review r2 F2).
 	begin
-		perform pg_temp.dc_take('owner', 'a1');
+		perform pg_temp.base_assert(pg_temp.dc_answer(pg_temp.dc_take('owner', 'a1')) ->> 'state' = 'ok'
+				and (pg_temp.dc_machine('a1')).desktop_member_until > clock_timestamp(),
+			'5: the owner takes the desktop over meanwhile');
 		v := pg_temp.dc_auth(v_start);
 		perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'authorized'
 				and not (pg_temp.dc_answer(v) ? 'held') and (pg_temp.dc_answer(v) ->> 'served')::boolean,
