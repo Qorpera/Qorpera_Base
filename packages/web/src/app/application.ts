@@ -53,6 +53,7 @@ import { OpenQuestions } from "./open-questions.ts";
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
+import { showWaitingInTitle } from "./tab-title.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
 import { AgentDetails } from "./views/agent-details.ts";
@@ -628,6 +629,7 @@ export function mountApplication(
 		company?.stop();
 		pendingCompany = undefined;
 		company = undefined;
+		showWaitingInTitle(0);
 		agentPage = undefined;
 		computer = undefined;
 		computerPanels = undefined;
@@ -1218,6 +1220,8 @@ export function mountApplication(
 			opened.dialog.findOpener = findAnchor;
 			agentCard = opened;
 		};
+		// The tab counts the agents that wait on the member here (app/tab-title.ts).
+		showWaitingInTitle(controller.agentsWaitingOnMe());
 		if (!rail.hidden)
 			renderRail(rail, controller, {
 				...context,

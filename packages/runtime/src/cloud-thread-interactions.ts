@@ -66,7 +66,7 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 				minItems: 1,
 				maxItems: 6,
 				description:
-					"Concrete alternatives for a decision you need from the member before proceeding. Do not invent generic choices for an open-ended question or optional next-step offer.",
+					"The likely answers to what your work cannot go on without, each a specific one, never generic ones like Get started.",
 				items: closedObject(["label"], {
 					label: chars(1, 80, "A specific answer that resolves the pending decision."),
 					value: chars(1, 200, "Returned as the answer; defaults to the label."),
@@ -82,12 +82,11 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 			multiSelect: { type: "boolean" },
 			allowCustom: {
 				type: "boolean",
-				description:
-					"An alternative to meaningful choices, not a reason to turn an open-ended question into a menu.",
+				description: "A field for the member's own answer beside the options; set it for an open question.",
 			},
 			dismissOnMoveOn: { type: "boolean" },
 		},
-		"surface question: a needed decision with 1-6 concrete choices. Open-ended questions and optional offers belong in ordinary chat.",
+		"surface question: an answer your work cannot go on without, with 1-6 likely answers; add allowCustom for an open one. Optional ideas, offers and news stay in chat.",
 	),
 	secret: closedObject(
 		["name", "label", "purpose"],
@@ -225,8 +224,8 @@ function payloadRefusal(surface: CloudInteractionSurface): string {
 
 export const CLOUD_ASK_MEMBER_INSTRUCTIONS =
 	"Show one member card: question, secret, takeover or draft. This ends the turn like a final send; text only introduces the card: never answer its question, guess the member's choice or start on one in it. Finish independent work first, never actions depending on an unanswered decision. " +
-	"Use question only for a missing decision needed to continue that fits a few concrete choices, such as two contact matches or open times. First use existing instructions and authorized information; do not ask for facts you can find or permission already given. Never invent generic options like Investigate a topic or Get started. allowCustom supplements meaningful choices. Open-ended questions belong in chat even when blocking; optional follow-up offers belong there too. Ask once, use selected/custom answers, and follow up only for missing information. Do not repeat the question across title, introduction and chat. " +
-	"Write every card for a member who reads it in seconds, in your messages' plain words and the company's language. The title is the question in plain words. The body is at most a few short lines or bullets: what is being chosen, the one or two things that matter for it, and a link to the full draft or file. Never put in a card what an answer does not do or allow, a list of what is not yet checked, or how approval works: that belongs in the file, if anywhere. Option labels are buttons of 1 to 3 words, such as Approve or Change it. " +
+	"Use question for every answer your work cannot go on without, never only in chat: the card shows members that work is stopped at them. Never ask for facts you can find or permission you have. Options are the likely answers, never generic ones like Get started; for an open question add allowCustom, a field for their own answer. Optional ideas, offers and news stay in chat. Ask once, use selected/custom answers, and follow up only for missing information. Do not repeat the question across title, introduction and chat. " +
+	"Write every card for a member who reads it in seconds, in your messages' plain words and the company's language. The title is the question in plain words. The body is at most a few short lines or bullets: what is stopped until they answer (I've stopped the price list until you pick one), what is being chosen, the one or two things that matter for it, and a link to the full draft or file. Never put in a card what an answer does not do or allow, a list of what is not yet checked, or how approval works: that belongs in the file, if anywhere. Option labels are buttons of 1 to 3 words, such as Approve or Change it. " +
 	"When the choice is visual (a look, a product, a layout), first make a picture of each option, an SVG sketch in the company file or an interface app, and set its preview: the card shows big pictures to pick from. " +
 	"Use email draft and platform approval cards directly; do not put an extra question confirmation before their review. A question answer never bypasses required authorization. " +
 	"Form entry and credential sign-in cards are unavailable and refused. Forms would target actual webpage fields, not general questions. For sign-in or page entry on your desktop computer use takeover; while the member holds it your calls there are refused: end your turn, I'm done wakes you. With no such computer, say so. Then look: I'm done is not login proof. Secret cards save reusable secrets to the vault; they do not fill pages or sign in. Never collect passwords, tokens or one-time codes in chat or question answers. " +

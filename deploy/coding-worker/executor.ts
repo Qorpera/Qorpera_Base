@@ -19,7 +19,9 @@ import { CodeHostRepositories } from "../../packages/runner-orchestrator/src/cod
 import { CodeHostRequests } from "../../packages/runner-orchestrator/src/code-host-requests.ts";
 import { CodeRestore } from "../../packages/runner-orchestrator/src/code-host-restore.ts";
 import { codeHostErrorCode, codingErrorDetail } from "../../packages/runner-orchestrator/src/coding-error-detail.ts";
+import { readCodeSiteTree } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
+import { CodeSiteUploads } from "../../packages/runner-orchestrator/src/code-site-uploads.ts";
 import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { CodingMachineCommandSecrets } from "../../packages/runner-orchestrator/src/coding-command-secrets.ts";
 import { codingCommandExecution } from "../../packages/runner-orchestrator/src/coding-folder-command-transport.ts";
@@ -334,6 +336,12 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		control, hosts: codeHostJobs, write: writeCodeChangeRecords, owner: config.owner,
 		machineIdSha256: createHash("sha256").update(machine).digest("hex"), report: logCodeRecord,
 	}) : undefined;
+	// A repository's site (step 4): the tree its landing's checks left in the repository's storage, read in a job that
+	// yields to a turn's and uploaded as a version a member can put live from What's new.
+	const codeSites = codeHostJobs ? new CodeSiteUploads({
+		control, hosts: codeHostJobs, read: readCodeSiteTree, owner: config.owner,
+		machineIdSha256: createHash("sha256").update(machine).digest("hex"), report: logCodeRecord,
+	}) : undefined;
 	const codeRequests = codeHostJobs && codeRecords ? new CodeHostRequests({
 		control, hosts: codeHostJobs, records: codeRecords, owner: config.owner,
 		machineIdSha256: createHash("sha256").update(machine).digest("hex"),
@@ -368,7 +376,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			views: new CodingFolderViews({ control, folder: folderControl, client: lxd, agent, program, records }), control: folderControl, client: lxd,
 			// A landing is reported to the change record in its own job, and its record's files are written there.
 			...(codeHostJobs ? { repositories: new CodeHostRepositories(codeHostJobs, {
-				...(codeRecords ? { records: codeRecords } : {}), report: logCodeRecord }) } : {}),
+				...(codeRecords ? { records: codeRecords } : {}), ...(codeSites ? { sites: codeSites } : {}), report: logCodeRecord }) } : {}),
 			onMount: (mount) => console.log(JSON.stringify({ event: "coding-folder-mount", ...mount })),
 			// A landing's checks, each command as it starts and ends, in the session's machine (own code storage, step 3).
 			report: logCodeRecord,
@@ -641,7 +649,20 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				await setTimeout(60_000, undefined, { signal: stop.signal }).catch(() => undefined);
 			}
 		})();
-		await Promise.all([claiming, keeping, housekeeping, machines, hosting, deletions, caring, requesting, recording]);
+		// The sites of changes that went in: at start, a minute after each pass, and at once when a landing made one.
+		const uploading = (async () => {
+			if (!codeSites) return;
+			while (!stop.signal.aborted) {
+				try {
+					const passed = await codeSites.pass(stop.signal);
+					if (passed.uploaded + passed.failed > 0) console.log(JSON.stringify({ event: "code-site", step: "pass", ...passed }));
+				} catch (error) {
+					if (!stop.signal.aborted) console.error(JSON.stringify({ event: "code-site-error", step: "pass", ...loggedError(error) }));
+				}
+				await codeSites.wait(60_000, stop.signal);
+			}
+		})();
+		await Promise.all([claiming, keeping, housekeeping, machines, hosting, deletions, caring, requesting, recording, uploading]);
 	} finally {
 		stop.abort();
 		await executor?.drain();

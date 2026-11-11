@@ -4,6 +4,7 @@ import { CODE_HOST_DELETION_RPCS } from "../../packages/runner-orchestrator/src/
 import { CODE_CARE_RPCS } from "../../packages/runner-orchestrator/src/code-host-care.ts";
 import { CODE_REQUEST_RPCS } from "../../packages/runner-orchestrator/src/code-host-requests.ts";
 import { CODE_HOST_RPCS } from "../../packages/runner-orchestrator/src/code-host-views.ts";
+import { CODE_SITE_RPCS } from "../../packages/runner-orchestrator/src/code-site-uploads.ts";
 import { CODING_EXECUTOR_RPCS, CodingControlBusy, CodingControlRefused } from "../../packages/runner-orchestrator/src/coding-executor.ts";
 import { CODING_HOST_RPCS } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { CODING_SNAPSHOT_RPCS } from "../../packages/runner-orchestrator/src/coding-snapshots.ts";
@@ -11,7 +12,7 @@ import { COMPANY_MACHINE_HOST_RPCS } from "../../packages/runner-orchestrator/sr
 
 /** The executor's closed RPC set (exported for the tests, which run the routes and the host against it: F33 of #1661). */
 export const CODING_CONTROL_METHODS: ReadonlySet<string> = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, ...CODING_SNAPSHOT_RPCS, ...COMPANY_MACHINE_HOST_RPCS, ...CODE_HOST_RPCS,
-	...CODE_HOST_DELETION_RPCS, ...CODE_CARE_RPCS, ...CODE_CHANGE_RPCS, ...CODE_REQUEST_RPCS,
+	...CODE_HOST_DELETION_RPCS, ...CODE_CARE_RPCS, ...CODE_CHANGE_RPCS, ...CODE_REQUEST_RPCS, ...CODE_SITE_RPCS,
 	"qorpera_authorize_coding_command", "qorpera_route_coding_command",
 	"qorpera_authorize_machine_command", "qorpera_authorize_machine_coding_value", "qorpera_authorize_machine_screen",
 	"qorpera_member_machine_screen_authority", "qorpera_member_machine_desktop_act_authority",

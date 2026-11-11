@@ -1543,15 +1543,18 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // 10 November 2026), and for patch notes before changes go live ("Yes, wait for me"; Jonas, 10 November 2026), and
 // for a project's history and its hand-over (#1643, 10 November 2026), and for the change record of the company's code
 // (each change numbered, undone and described with manage_code; own code storage step 2b, 10 November 2026), and for
-// the checks Qorpera runs before a change goes into the company's code (own code storage step 3, 11 November 2026), and
-// for the wall's now line and what a wall line says (the sidebar's line under each name; Jonas, 11 November 2026). A
-// change to either is a change to every run's bytes.
+// the checks Qorpera runs before a change goes into the company's code (own code storage step 3, 11 November 2026), for
+// the wall's now line and what a wall line says (the sidebar's line under each name; Jonas, 11 November 2026), for
+// work that waits on a member going on a card that says what is stopped, with the wall's waiting items mirroring the
+// open cards ("it's really stopped at you"; Jonas, 11 November 2026), and for What's new as Qorpera's own page, where
+// a member puts a repository's website live (own code storage step 4, 11 November 2026). A change to any is a change
+// to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "e1c8f9ccd39ea90633ced014848b9485441b95873cd7a0f8c8cf2aaf1221c147",
+			instructions: "3de5a33b3eb1d057a12541173eabf2008b2b0fb4d6fb8ffb080ce7be73299f2a",
 			prompt: "87eaa2f504945457baf071474bd7bf712ef50dfc3e99267e0dc089a2d5cd5c44",
 		},
 	],
@@ -1559,7 +1562,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "4796c5d0d07c5b7ca2c3cabaeec8456903d127cef138fb7a3e4423fef692bd79",
+			instructions: "f1619d401312264282ef667f8ba3f41be9f70486e123cc4684c5a3f0243a66c7",
 			prompt: "e9968a08aa5c4b04ee610f7f03014928730e88e9632df941d4d7912331534503",
 		},
 	],
@@ -1567,7 +1570,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "e1c8f9ccd39ea90633ced014848b9485441b95873cd7a0f8c8cf2aaf1221c147",
+			instructions: "3de5a33b3eb1d057a12541173eabf2008b2b0fb4d6fb8ffb080ce7be73299f2a",
 			prompt: "cae25d562292e7abd87158f86f29192c376cd4d484509a2a8135e14753940692",
 		},
 	],
@@ -1581,6 +1584,8 @@ it.each([
 // Own code storage, step 3 (20260930721000): Qorpera runs a repository's checks before a change goes in, so the agent
 // follows up a failed check, stops after three in a row, reads why a change changed its checks, and checks itself only
 // what checks cannot.
+// Own code storage, step 4 (20260930729000): a repository that is a website names its built site in the checks file;
+// Qorpera keeps it for What's new, and a broken live site is a member's Go back there.
 it("tells every agent where a change's record is, what its checks mean, and to undo and describe with manage_code", () => {
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
@@ -1594,6 +1599,10 @@ it("tells every agent where a change's record is, what its checks mean, and to u
 		"Check what checks cannot yourself: open what a change built on a machine (its files are at code/<owner>/<name>/main/).",
 		"When it is wrong, take it out at once with manage_code, action undo; Qorpera does not check an undo, so check main again, and then send the session a follow-up that fixes it.",
 		"When its record lacks what a customer will notice, or a picture of it, add them with manage_code, action describe.",
+		// Own code storage, step 4: a repository's website, kept for What's new, and the way back when it is broken.
+		'When a repository is a website, its checks file also says where its checks leave the built site, "site": {"folder": "dist"}: Qorpera keeps the site of every change that passes for What\'s new, and changes/index.md says which version is live.',
+		"An undo goes live only with the next change that passes.",
+		"When the live site is broken, ask a member at once to press Go back in What's new.",
 		// What #1643 said of a project's history and its hand-over stays.
 		"A project's own history says what changed: on a machine, run git in /company/code/<owner>/<name>/main",
 		"To hand someone the whole project as one file, make it there into a folder of the company",
@@ -1615,6 +1624,7 @@ it("tells every agent where a change's record is, what its checks mean, and to u
 	);
 	expect(worker).not.toContain("manage_code");
 	expect(worker).not.toContain(".qorpera/checks.json");
+	expect(worker).not.toContain('"site": {"folder": "dist"}');
 });
 
 // Jonas, 5 November 2026: members "gave up immediately because of the exhausting amount of reading material". A
@@ -1654,9 +1664,10 @@ it("tells an agent to keep its wall instead of sending status messages", () => {
 		"Where you have update_wall, keep your wall with it: the card pinned above your thread",
 		"move a finished item to done in the same call, with a link to the work, and fix a wrong item where it stands",
 		"so it takes the place of status messages: update it, never a message, to say that work started, moved on or finished",
-		"a decision that waits for a member goes on the wall and in one line of your message",
+		"a decision that waits for a member goes on a card, on the wall and in one line of your message",
 		"a member's message that opens with a quoted line (`> ...`) answers that question from your wall",
-		"Take a question they answered off waiting, whichever way they answered it, and put a new question you ask them on it, in the same turn",
+		// 11 November 2026: the wall's waiting items mirror the open cards.
+		"What waits on them mirrors your open cards: put each card you raise on it in the same turn, and take a question they answered off it, whichever way they answered it.",
 	])
 		expect(instructions).toContain(rule);
 });
@@ -1788,25 +1799,42 @@ it("has interface apps show the company's state, kept by each area's owner (10 N
 	expect(cofounder).toContain("keep one posted app for it (name it company) that shows the plan as it stands");
 });
 
-it("has changes shown as patch notes and held until a member says yes (10 November 2026)", () => {
+it("holds changes until a member says yes, and puts a repository's website live only from What's new", () => {
 	// Jonas, 10 November: "I would also like some version of an update list/patch notes for changes before they go
 	// live, if agents have worked on several changes it could just post all of them as a patchnote rundown with visuals
 	// and very brief and easy to digest text - or a video". Asked whether changes should wait for his yes on that page
-	// before they go live: "Yes, wait for me".
+	// before they go live: "Yes, wait for me". Own code storage, step 4 (20260930729000): that page is Qorpera's own What's
+	// new, where a member puts a repository's website live; agents keep no whats-new app of their own. A worker's run
+	// reads the rule too (it is in every run's core).
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	const worker = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind: "worker-dispatch", id: randomUUID(), occurrenceKey: "dispatch" } } as never,
+		false,
+	);
 	for (const rule of [
 		"Before changes go live, show them and wait for a member's yes.",
 		// What "live" means, so the rule holds back a release and nothing else.
-		"A change goes live when people outside the team meet it: an update to a site that is already published (publish_site on a live site), a new version of the product customers use, a new price, or a mail or post that goes out to many.",
-		"Keep one posted app named whats-new, titled What's new, that shows every change that is ready and not yet live",
-		"each as a picture of what changes (before and after, a screenshot of the new screen, a small drawing, or a short video for what moves) with one plain line under it on what a customer will notice, never how it was made",
-		"show them together as one rundown, short enough to take in within a minute, instead of asking about each",
-		"one question card that points at the app, with the options Put it live and Not yet, and show the same two as buttons on the page when save_app offers writes",
-		"Nothing in the rundown goes live before a member says yes: finishing the work, merging it and testing it are yours to do, and putting it where customers meet it waits.",
-		"On yes, put it live in that run and mark those changes as live on the page; on not yet, ask what to change, change it and show it again.",
-		"Only a fix for something that is broken for customers right now goes live at once: show it in the app the same day, marked as already live.",
-	])
+		"A change goes live when people outside the team meet it: an update to a site that is already published, a new version of the product customers use, a new price, or a mail or post that goes out to many. Until then it is only ready.",
+		"A website made from a repository kept in Qorpera goes live only through Qorpera: each change whose checks pass shows on Qorpera's What's new page with its notice and picture, and a member puts it live there;",
+		"never publish it yourself or ask about it in a question card, and tell the member in one line that it waits in What's new.",
+		"For anything else that goes live, ask with one question card that shows what changes, with the options Put it live and Not yet: on yes, put it live in that run; on not yet, ask what to change.",
+		"Only a fix for something that is broken for customers right now goes live at once, and you tell the members the same day what you changed; a repository's website still waits for a member, who can press Go back in What's new.",
+	]) {
 		expect(instructions).toContain(rule);
+		expect(worker).toContain(rule);
+	}
+	// The app agents kept for it, and its rundown and buttons, are gone.
+	for (const gone of [
+		"whats-new",
+		"(publish_site on a live site)",
+		"show them together as one rundown",
+		"one question card that points at the app",
+		"show the same two as buttons on the page",
+		"Nothing in the rundown goes live",
+		"mark those changes as live on the page",
+		"marked as already live",
+	])
+		expect(instructions).not.toContain(gone);
 });
 
 it("has the Co-Founder open the company's email in its first run, (10 November 2026)", () => {
@@ -2567,4 +2595,18 @@ it("tells a turn that ended with its closing act undone what is missing, and not
 	// A few sentences, within what the session takes as one more turn's input.
 	for (const text of [unanswered, spoken, undecided, decisionOnly, cloudNativeTurnCorrection(worker)])
 		expect(Buffer.byteLength(text as string)).toBeLessThan(1024);
+});
+
+// Jonas, 11 November 2026: "I would like the agents to be better at indicating when they need the users input and it's
+// really stopped at you. it's hard to tell right now." A blocking question goes on a card (the web shows the agent as
+// stopped at the member), never only in a message, and says what is stopped; nothing optional goes on one.
+it("tells an agent to ask what its work waits for on a card that says what is stopped", () => {
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"When your work cannot go on without a member's answer, ask it on a card wherever you can raise one, never only in a message: the card is how they see that the work is stopped at them.",
+		'Say on the card what is stopped until they answer, such as "I\'ve stopped the price list until you pick one".',
+		"Ideas they may take or leave and news for them never go on a card.",
+	])
+		expect(instructions).toContain(rule);
+	expect(instructions).not.toContain("put a new question you ask them on it");
 });

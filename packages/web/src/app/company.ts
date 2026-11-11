@@ -66,6 +66,7 @@ import type {
 	JsonValue,
 	PendingSessionInput,
 } from "../cloud/types.ts";
+import type { WaitingWork } from "../cloud/waiting-work.ts";
 import { withReply } from "../cloud/wall-reply.ts";
 import { type WorksForCalls, worksForCalls } from "../cloud/works-for.ts";
 import { attachmentProblemText } from "../ui/attachments.ts";
@@ -233,6 +234,12 @@ export interface CompanyState {
 	approvals?: Readonly<Record<string, number>>;
 	/** The cloud does not list waiting approval cards yet (before 20260930568000). */
 	approvalsUnavailable?: boolean;
+	/** What each agent's work waits on this member for (its cards for them and the approval cards they answer), by
+	 * agent (staff agent id → the newest item and the count; 20260930723000). Unset until the first read lands. */
+	waitingOnMe?: Readonly<Record<string, WaitingWork>>;
+	/** The cloud does not list what waits on the member yet (before 20260930723000): the approval cards alone are read,
+	 * as before. */
+	waitingWorkUnavailable?: boolean;
 	/** The other members' open browser tabs and the conversation each shows (presence). */
 	here?: readonly PresenceMember[];
 	/** This member's chats with the company's other members, by the other member (app/member-chats.ts). Unset until
@@ -859,9 +866,30 @@ export class CompanyController {
 		}
 	}
 
-	/** Re-read which agents have an approval card waiting for this member's answer. */
+	/** Re-read what each agent's work waits on this member for: its open cards for them and the approval cards they
+	 * answer (20260930723000), in one read. A cloud before that reads the approval cards alone, as before. */
 	async refreshApprovals(): Promise<void> {
-		if (this.#stopped || this.store.get().approvalsUnavailable || !this.store.get().team?.capabilities.read) return;
+		if (this.#stopped || !this.store.get().team?.capabilities.read) return;
+		if (!this.store.get().waitingWorkUnavailable) {
+			const version = ++this.#approvalReads;
+			try {
+				const work = await this.#api.listWaitingWork(this.profile.profileId);
+				if (this.#stopped || version !== this.#approvalReads) return;
+				const waitingOnMe: Record<string, WaitingWork> = {};
+				const approvals: Record<string, number> = {};
+				for (const item of work) {
+					waitingOnMe[item.staffAgentId] = item;
+					if (item.approvals) approvals[item.staffAgentId] = item.approvals;
+				}
+				this.store.set({ waitingOnMe, approvals });
+				return;
+			} catch (error) {
+				if (this.#stopped || version !== this.#approvalReads) return;
+				if (!(error instanceof CloudRpcError && error.missing)) return;
+				this.store.set({ waitingWorkUnavailable: true, waitingOnMe: undefined });
+			}
+		}
+		if (this.store.get().approvalsUnavailable) return;
 		const version = ++this.#approvalReads;
 		try {
 			const waiting = await this.#api.listWaitingApprovals(this.profile.profileId);
@@ -1705,19 +1733,42 @@ export class CompanyController {
 	 * cancelled job is one) is never "failed": the server lists it only while its
 	 * proposal waits, below all of the agent's work. An agent with no work of its own
 	 * and an approval card waiting for this member's answer (its own or a worker's, in
-	 * its thread) needs them too. */
+	 * its thread) needs them too.
+	 * An agent whose work waits on this member (waitingFor: a card it raised for them, or an approval card they
+	 * answer) needs them whatever else it lists, except while a run of its own works: then it reads as working, and the
+	 * rail marks it with a raised hand (Jonas, 11 Nov 2026: "it's really stopped at you"). */
 	agentState(staffAgentId: string | undefined): AgentState {
 		const row = this.activityFor(staffAgentId);
-		if (!row) return staffAgentId && this.store.get().approvals?.[staffAgentId] ? "decision" : "idle";
+		const waiting = this.waitingFor(staffAgentId) !== undefined;
+		if (!row) return waiting ? "decision" : "idle";
 		// A run waiting at its login's usage limit is no work in progress: the agent rests until the reset
 		// (20260930703000), and its thread says why.
-		if (pausedNow(row)) return this.store.get().approvals?.[row.staffAgentId] ? "decision" : "idle";
+		if (pausedNow(row)) return waiting ? "decision" : "idle";
 		if (row.activity !== "needs_attention")
 			return row.jobStatus === "leased" && row.phase === "writing" ? "writing" : "working";
-		if (!isFailedRun(row)) return "decision";
+		if (waiting || !isFailedRun(row)) return "decision";
 		return row.jobStatus === "cancelled" || this.store.get().recoveries[row.runId]?.proposalId
 			? "decision"
 			: "failed";
+	}
+
+	/** What the agent's work waits on this member for: the newest item in a few words (`what`, when the cloud says)
+	 * and how many wait. A cloud before 20260930723000 says only how many approval cards wait, with no words. */
+	waitingFor(staffAgentId: string | undefined): { count: number; what?: string } | undefined {
+		if (!staffAgentId) return undefined;
+		const state = this.store.get();
+		const work = state.waitingOnMe?.[staffAgentId];
+		if (work) return { count: work.count, ...(work.what ? { what: work.what } : {}) };
+		const approvals = state.approvals?.[staffAgentId];
+		return approvals ? { count: approvals } : undefined;
+	}
+
+	/** How many of the company's agents wait on this member: the tab's title counts them. */
+	agentsWaitingOnMe(): number {
+		return this.store
+			.get()
+			.staff.filter((agent) => agent.employmentStatus === "active" && this.waitingFor(agent.id) !== undefined)
+			.length;
 	}
 
 	/** When a working agent's running run last made progress, if that is the cloud's stall minutes ago or more
@@ -2553,8 +2604,9 @@ export class CompanyController {
 			throw error;
 		}
 		void this.loadConversation(sessionId);
-		// The answer wakes the agent, as a message does; watch for its run.
+		// The answer wakes the agent, as a message does; watch for its run. The card no longer waits on the member.
 		void this.refreshActivity();
+		void this.refreshApprovals();
 		this.#watchWork(20_000);
 	}
 
@@ -2626,6 +2678,7 @@ export class CompanyController {
 		}
 		void this.loadConversation(sessionId);
 		void this.refreshActivity();
+		void this.refreshApprovals();
 		this.#watchWork(20_000);
 	}
 

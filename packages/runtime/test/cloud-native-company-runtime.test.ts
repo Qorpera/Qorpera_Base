@@ -3228,6 +3228,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// a line names what came of the work and keeps the team's housekeeping off the wall, so they moved again.
 	// On 11 November 2026 organize_apps came after organize_sidebar (the apps drawer's groups, APP-GROUPS-SPEC §3), and
 	// save_app's schema takes group, so they moved again.
+	// Also on 11 November 2026 ask_member's description says every answer the work cannot go on without goes on a card that
+	// says what is stopped, open questions too with allowCustom ("it's really stopped at you"), so they moved again.
+	// Its question schema says the same (an open one goes on the card with allowCustom, not to chat), so the catalog text
+	// moved once more.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3274,9 +3278,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"2275a522e768b391582fb47ddcbfb0de1eb99dad6f2f85e6ee8c7074a35611e4",
+		"303a5e4bfd31e30cb2885a50ffee41abff8e84e7ca039e4bee5df70e78d2e3dd",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"6b61a6eeaef2b08f4224be75ffff69f6031526a3871fe4565cc7c3476dc0d42b",
+		"bd41940cc4e14181c8c6469f5a9938674a62aa762b095349d4b0726ad2fcb473",
 	);
 });

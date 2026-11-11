@@ -84,6 +84,7 @@ const TITLES: Record<string, string> = {
 	"page:bank": "Bank",
 	concepts: "Concepts",
 	sites: "Sites",
+	"whats-new": "What's new",
 };
 
 export interface OrganizeAppsRequest {
@@ -118,8 +119,8 @@ interface Company {
 }
 
 export const ORGANIZE_APPS_DESCRIPTION =
-	"Sort the company's apps into groups in the apps drawer, the grid where every member opens the company's pages and apps (Mailbox, Members, Bank, each posted app, Concepts, Sites). A group is a tile that opens into its apps, as agents sit in sidebar sections. The layout is the company's, in the file apps/groups.md: no member approval is needed and every member sees a change at once. " +
-	"action list shows the layout: each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, sites) with its title, in its group, groups by id and name with how many apps they hold, and the loose entries last, as the drawer shows them, one line each in the file's own form; a long layout comes in pages: call list again with the cursor it answers. An app marked not posted shows in the drawer only once it is posted. create_group makes a group called name and answers its id; parent puts it inside another group, and items moves those keys (or group:<id>) into it, in order. A group of that name already there is that group. rename_group renames group; its id stays. ungroup takes group away: what was in it stands where it stood. move puts item (a key, or group:<id> for a whole group) into group, or loose when group is null, before the entry named by before there, else last. save_app takes group to put a new app in a group as it is made. A change answers what it did, and list shows the layout after it. A change already made saves nothing and says so; a save can come back refused when the file changed since it was read: call again. It refuses a third group level and a key the company does not have. " +
+	"Sort the company's apps into groups in the apps drawer, the grid where every member opens the company's pages and apps (Mailbox, Members, Bank, each posted app, Concepts, Sites, What's new). A group is a tile that opens into its apps, as agents sit in sidebar sections. The layout is the company's, in the file apps/groups.md: no member approval is needed and every member sees a change at once. " +
+	"action list shows the layout: each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, sites, whats-new) with its title, in its group, groups by id and name with how many apps they hold, and the loose entries last, as the drawer shows them, one line each in the file's own form; a long layout comes in pages: call list again with the cursor it answers. An app marked not posted shows in the drawer only once it is posted. create_group makes a group called name and answers its id; parent puts it inside another group, and items moves those keys (or group:<id>) into it, in order. A group of that name already there is that group. rename_group renames group; its id stays. ungroup takes group away: what was in it stands where it stood. move puts item (a key, or group:<id> for a whole group) into group, or loose when group is null, before the entry named by before there, else last. save_app takes group to put a new app in a group as it is made. A change answers what it did, and list shows the layout after it. A change already made saves nothing and says so; a save can come back refused when the file changed since it was read: call again. It refuses a third group level and a key the company does not have. " +
 	"How to sort, plainly: 1. Group by what the founder thinks in: a product, a customer, a piece of work. Never by agent, by kind of page (such as Reports) or by date. 2. Name a group in one to three words, in the company's own words. 3. The company's basics (Mailbox, Bank, its finances, Members) stay loose at the front. 4. Two group levels at most. Three to twelve apps in a group; a group with one app goes away (ungroup it). 5. You sort the company's layout; what a member changed in their own drawer is theirs, and you leave it. 6. After a change, say it in one line to the member who asked, or on your wall.";
 
 const groupRef = (value: unknown, label: string): string => {
@@ -137,7 +138,7 @@ const entryRef = (value: unknown, label: string): string => {
 		return `${APP_GROUP_KEY_PREFIX}${groupRef(value, label)}`;
 	if (typeof value !== "string" || !isAppDrawerKey(value))
 		throw new CloudToolArgumentRefusal(
-			`${label} must be a key from organize_apps list (page:mailbox, page:members, page:bank, app:<name>, concepts, sites) or group:<id>`,
+			`${label} must be a key from organize_apps list (page:mailbox, page:members, page:bank, app:<name>, concepts, sites, whats-new) or group:<id>`,
 		);
 	return value;
 };
@@ -444,10 +445,11 @@ async function readCompany(folder: CloudCompanyFolderClient, signal: AbortSignal
 	return { have, titles, unposted, folders: new Set(names), concepts, appsUsable: true, appsExists: true, reads };
 }
 
-/** Whether the company has a drawer key. Sites is the company's while it has a published site, which this tool does
- * not read, so it is taken; the drawer leaves it out while there is none. */
+/** Whether the company has a drawer key. Sites is the company's while it has a published site, and What's new (own
+ * code storage, step 4) while a repository kept in Qorpera has a site; this tool reads neither, so both are taken, and
+ * the drawer leaves them out while there is none. */
 function has(company: Company, key: string): boolean {
-	return key === "sites" || company.have.includes(key);
+	return key === "sites" || key === "whats-new" || company.have.includes(key);
 }
 
 function refuseKey(company: Company, key: string): never {
@@ -744,7 +746,8 @@ function listPage(items: readonly Node[], company: Company, cursor: number): str
 /** A title as one line of a list. */
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
-/** A loose entry the Co-Founder's tidy pass counts: a posted app (pages, Concepts and Sites are the drawer's own). */
+/** A loose entry the Co-Founder's tidy pass counts: a posted app (pages, Concepts, Sites and What's new are the
+ * drawer's own). */
 const looseCounts = (key: string, company: Company) => key.startsWith("app:") && !company.unposted.has(key);
 
 /** At most this many keys a result names of a kind (tidied, not in the company); it says how many more. */

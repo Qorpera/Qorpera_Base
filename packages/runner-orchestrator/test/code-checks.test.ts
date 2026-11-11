@@ -36,6 +36,7 @@ const PS = char(0x2029);
 const RLO = char(0x202e);
 const LRI = char(0x2066);
 const HALF = String.fromCharCode(0xd800);
+const NBSP = char(0xa0);
 
 const BLOB = "a".repeat(40);
 const MAIN_BLOB = "b".repeat(40);
@@ -87,11 +88,13 @@ describe("the checks file's rules", () => {
 				check("build", "npm run build"),
 				check("e2e", "npx playwright test", 1200, "web"),
 			],
+			site: null,
 		});
 		expect(read('/* the checks */ {"checks": [{"name": "t", "run": "x"}]} // done')).toEqual({
 			state: "ok",
 			blob: BLOB,
 			checks: [check("t", "x")],
+			site: null,
 		});
 	});
 
@@ -292,6 +295,144 @@ describe("the checks file's rules", () => {
 	});
 });
 
+describe("the site key (own code storage, step 4)", () => {
+	const CHECK = [{ name: "build", run: "npm run build" }];
+	const withSite = (site: unknown) => withChecks(CHECK, { site });
+	const siteOf = (result: CodeChecksRead) => {
+		if (result.state !== "ok") throw new Error(`not ok: ${JSON.stringify(result)}`);
+		return result.site;
+	};
+
+	it("reads the plan's example, and null without the key", () => {
+		const example = [
+			"{",
+			'  "checks": [',
+			'    { "name": "install", "run": "npm ci" },',
+			'    { "name": "test", "run": "npm test" },',
+			'    { "name": "build", "run": "npm run build" }',
+			"  ],",
+			'  "site": { "folder": "dist", "name": "gift-message", "title": "Gift message" }',
+			"}",
+		].join("\n");
+		expect(siteOf(read(example))).toEqual({ folder: "dist", name: "gift-message", title: "Gift message" });
+		expect(siteOf(withSite({ folder: "dist" }))).toEqual({ folder: "dist", name: null, title: null });
+		expect(siteOf(withChecks(CHECK))).toBeNull();
+	});
+
+	it("needs an object with a folder, and refuses any other key in it", () => {
+		for (const site of [null, "dist", ["dist"], 1, true])
+			expect(problems(withSite(site))).toEqual(["WRONG_TYPE /site"]);
+		expect(problems(withSite({}))).toEqual(["MISSING_KEY /site"]);
+		expect(problems(withSite({ name: "shop" }))).toEqual(["MISSING_KEY /site"]);
+		expect(problems(withSite({ folder: "dist", path: "x" }))).toEqual(["UNKNOWN_KEY /site/path"]);
+		const refused = withSite({ folder: "dist", "a/b": 1 });
+		expect(refused.state === "refused" && refused.problems).toEqual([
+			{ at: "/site/a~1b", code: "UNKNOWN_KEY", message: "This key is not in the checks file's schema." },
+		]);
+		for (const key of ["folder", "name", "title"])
+			for (const value of [null, 1, ["x"], {}])
+				expect(problems(withSite({ folder: "dist", [key]: value }))).toEqual([`WRONG_TYPE /site/${key}`]);
+	});
+
+	it("takes a folder of the repository as the kernel keeps a site's, the top as '.'", () => {
+		for (const folder of [".", "dist", "web/dist", ".output/public", "a".repeat(300), "my site/build_2", "é"])
+			expect(siteOf(withSite({ folder }))?.folder).toBe(folder);
+		for (const folder of [
+			"",
+			"/dist",
+			"..",
+			"../dist",
+			"web/../dist",
+			"./dist",
+			"dist/.",
+			"dist/",
+			"a//b",
+			`a${BACKSLASH}b`,
+			"a\nb",
+			`a${DEL}b`,
+			`a${NEL}b`,
+			`a${LS}b`,
+			`a${PS}b`,
+			"a".repeat(301),
+			"é".repeat(151),
+		])
+			expect(problems(withSite({ folder }))).toEqual(["INVALID_PATH /site/folder"]);
+		const refused = withSite({ folder: "/dist" });
+		expect(refused.state === "refused" && refused.problems[0]?.message).toBe(
+			'Must be "." or a folder of the repository: a relative path without . or .. parts, at most 300 bytes.',
+		);
+	});
+
+	it("takes a site's name as the kernel does, and none it keeps for itself", () => {
+		for (const name of ["abc", "gift-message", "a1-b2", "0x0", "a".repeat(48)])
+			expect(siteOf(withSite({ folder: "dist", name }))?.name).toBe(name);
+		for (const name of [
+			"ab",
+			"a".repeat(49),
+			"-shop",
+			"shop-",
+			"Shop",
+			"shop_site",
+			"shop.site",
+			"sh op",
+			"api",
+			"app",
+			"www",
+			"well-known",
+			"realtime",
+			"site",
+			"sites",
+		])
+			expect(problems(withSite({ folder: "dist", name }))).toEqual(["INVALID_VALUE /site/name"]);
+	});
+
+	it("takes a title of 1 to 120 characters on one line, and refuses one with a space at either end as SITE_TITLE", () => {
+		for (const title of ["x", "Gift message", "Æble · 日本 🙂", "🙂".repeat(120), `${NBSP}a${NBSP}`])
+			expect(siteOf(withSite({ folder: "dist", title }))?.title).toBe(title);
+		for (const title of [" Shop", "Shop ", " ", "  "]) {
+			const refused = withSite({ folder: "dist", title });
+			expect(refused.state === "refused" && refused.problems).toEqual([
+				{ at: "/site/title", code: "SITE_TITLE", message: "Must not start or end with a space." },
+			]);
+		}
+		for (const title of [
+			"",
+			"x".repeat(121),
+			"🙂".repeat(121),
+			"a\nb",
+			"a\tb",
+			`a${DEL}`,
+			`a${NEL}b`,
+			`a${LS}b`,
+			`a${PS}b`,
+		])
+			expect(problems(withSite({ folder: "dist", title }))).toEqual(["INVALID_VALUE /site/title"]);
+	});
+
+	it("refuses the whole file for a bad site, with the checks' problems beside it, in the words", () => {
+		const bad = withChecks([{ name: "Bad", run: "x" }], { site: { folder: "../out", title: " x" } });
+		expect(problems(bad)).toEqual([
+			"INVALID_VALUE /checks/0/name",
+			"INVALID_PATH /site/folder",
+			"SITE_TITLE /site/title",
+		]);
+		expect(codeChecksRefusedSummary(withSite({ folder: "dist", title: "Shop " }), true)).toBe(
+			notRead("/site/title: Must not start or end with a space"),
+		);
+	});
+
+	it("gives the gate the candidate's recipe, never main's", () => {
+		const main = withChecks(CHECK, { site: { folder: "old" } });
+		const candidate = withChecks(CHECK, { site: { folder: "dist", name: "shop" } });
+		const gate = codeChecksGate(main, candidate);
+		expect(gate.gate === "run" && gate.site).toEqual({ folder: "dist", name: "shop", title: null });
+		const gone = codeChecksGate(main, withChecks(CHECK));
+		expect(gone.gate === "run" && gone.site).toBeNull();
+		const first = codeChecksGate({ state: "missing" }, candidate);
+		expect(first.gate === "run" && first.site).toEqual({ folder: "dist", name: "shop", title: null });
+	});
+});
+
 const GONE =
 	"Nothing went into main: the repository's checks file, .qorpera/checks.json, is gone in this change, and a repository that has checks keeps them. Fix the file, commit and finish again. [code=CODING_CHECKS_REFUSED]";
 const notRead = (problemsText: string) =>
@@ -326,6 +467,7 @@ describe("the gate", () => {
 			checks: [check("install", "npm ci"), check("e2e", "npx playwright test")],
 			blob: BLOB,
 			changed: { added: ["install", "e2e"], removed: [], run: [] },
+			site: null,
 		});
 	});
 
@@ -335,12 +477,14 @@ describe("the gate", () => {
 			checks: checksOf(candidate),
 			blob: BLOB,
 			changed: { added: ["e2e"], removed: ["test", "lint"], run: [] },
+			site: null,
 		});
 		expect(codeChecksGate(main, main)).toEqual({
 			gate: "run",
 			checks: checksOf(main),
 			blob: MAIN_BLOB,
 			changed: null,
+			site: null,
 		});
 	});
 
@@ -351,6 +495,7 @@ describe("the gate", () => {
 				checks: checksOf(candidate),
 				blob: BLOB,
 				changed: { added: ["install", "e2e"], removed: [], run: [] },
+				site: null,
 			});
 	});
 
@@ -726,7 +871,13 @@ describe("the other words", () => {
 });
 
 type Passed = Extract<CodeChecksRun, { state: "passed" }>;
-const passedRun = (checks: Passed["checks"]): Passed => ({ state: "passed", ms: 130_400.6, copyMs: 2_100, checks });
+const passedRun = (checks: Passed["checks"]): Passed => ({
+	state: "passed",
+	ms: 130_400.6,
+	copyMs: 2_100,
+	checks,
+	site: null,
+});
 
 describe("the row's value for a run that passed", () => {
 	it("is 7.1's object", () => {

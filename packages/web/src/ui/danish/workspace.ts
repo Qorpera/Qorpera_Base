@@ -90,6 +90,7 @@ export const WORKSPACE: Record<string, string> = {
 
 	// app/interfaces.ts and app/views/interface.ts
 	"{name} needs you": "{name} har brug for dig",
+	"{name} needs you: {what}": "{name} har brug for dig: {what}",
 	"{name} has a run that did not finish": "{name} har en kørsel, der ikke blev færdig",
 	"You were mentioned in {conversation}": "Du blev nævnt i {conversation}",
 	"This page isn't available here yet.": "Siden er ikke tilgængelig her endnu.",
@@ -505,6 +506,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Hand back": "Giv tilbage",
 	"You are using the computer. {name} gets no pictures of the screen while you use it.":
 		"Du bruger computeren. {name} får ingen billeder af skærmen, mens du bruger den.",
+	"You are using the computer. Choose Enter to click and type.":
+		"Du bruger computeren. Vælg Gå ind for at klikke og skrive.",
 	"{member} is using the computer. The screen is hidden meanwhile.":
 		"{member} bruger computeren. Skærmen er skjult imens.",
 	"Someone is using the computer. The screen is hidden meanwhile.":
