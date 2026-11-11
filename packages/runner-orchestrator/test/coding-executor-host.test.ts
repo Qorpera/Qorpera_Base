@@ -6709,6 +6709,22 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(collect.environment.API_KEY).toBe(secrets.API_KEY);
 			// One vault answer per command: the collect's names and its start share its id's.
 			expect(f.vault.mock.calls.length - asked).toBe(f.ran().length);
+			// Every name the collect's command had, given by the vault too: still exactly those whose own values it gets.
+			// (A name the transport comes to set beyond the host's copy of the session's names is passed, and fails here.)
+			const every = Object.fromEntries(
+				Object.keys(collect.environment).map((name) => [name, `vault-value-of-${name.toLowerCase()}`]),
+			);
+			f.vault.mockImplementation(async () => ({ environment: every, mask: [] }));
+			expect(await f.site(2)).toMatchObject({ state: "passed", site: MADE });
+			const again = f.command("collect");
+			expect(again.environment.QORPERA_SITE_SECRET_NAMES).toBe(
+				Object.entries(every)
+					.filter(([name, value]) => again.environment[name] === value)
+					.map(([name]) => name)
+					.sort()
+					.join(" "),
+			);
+			expect(again.environment.QORPERA_SITE_SECRET_NAMES).toBe("API_KEY STRIPE_SECRET");
 		});
 
 		it.each([
