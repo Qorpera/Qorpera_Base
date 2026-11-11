@@ -1319,10 +1319,16 @@ request of another shape.
   nothing logged; the agent hears `DESKTOP_MEMBER_IN_CONTROL`). The helper takes the desktop as an action does, so a
   member's action (a copy, a paste) and the clipboard read never interleave on one desktop. What cannot be undone: a
   helper that had begun reading before a take-over may already have cleared the clipboard, the member's copy with it.
-  What a member copied stays on the clipboard after they hand back, so the read is also refused
-  (`DESKTOP_MEMBER_IN_CONTROL`) while a member's hold was live at or after the agent's last screen action
-  (`desktop_agent_acted_at`, which an action the agent's screen read lets in moves, and a look never does): the agent
-  copies the key again with its own action and calls again.
+  What a member copied stays on the clipboard after they hand back, so after a member has held a desktop the platform
+  clears its clipboard before an agent can read a key from it (F32 of #1661): while the clipboard has not been confirmed
+  clear since the lease generation last moved (`desktop_clipboard_generation`), the read answers `{state: "clear",
+  machineId, placementId, bootId, executorOwner, providerId, receiptId, desktopGeneration}` and reads nothing; the
+  machine's executor takes the desktop under the one-actor rule, asks the fence, clears both selections with the image's
+  helper and confirms it with `qorpera_machine_desktop_clipboard_cleared(placement, generation)` (service_role), which
+  records it only while that generation stands and no member holds the desktop. The agent's call is refused
+  (`DESKTOP_MEMBER_IN_CONTROL`) either way, and its next call reads as before. Nothing the agent does lifts it. A
+  desktop that is not running counts as cleared: the image keeps no clipboard past its desktop's session (no clipboard
+  manager, no saved history; measured on image 91d433c0).
 - A stated limit: the computer is the agent's. While a member holds the desktop the agent starts nothing new on it and
   reads nothing of its screen or clipboard through the platform's tools, but a program the agent started there before
   the take-over keeps running and can see the screen and the clipboard.

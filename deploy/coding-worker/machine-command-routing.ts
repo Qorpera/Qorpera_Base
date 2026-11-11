@@ -1,8 +1,8 @@
 import type { CloudMachineCommandReceipt } from "../../packages/contracts/src/cloud-machine.ts";
 import type {
-	CompanyMachineCodingValue, CompanyMachineCodingValueOutcome, CompanyMachineMemberAct, CompanyMachineMemberActOutcome,
-	CompanyMachineMemberLook, CompanyMachineMemberLookOutcome, CompanyMachineMemberStart, CompanyMachineMemberStartOutcome,
-	CompanyMachineScreen, CompanyMachineScreenOutcome,
+	CompanyMachineClipboardClear, CompanyMachineClipboardCleared, CompanyMachineCodingValue, CompanyMachineCodingValueOutcome,
+	CompanyMachineMemberAct, CompanyMachineMemberActOutcome, CompanyMachineMemberLook, CompanyMachineMemberLookOutcome,
+	CompanyMachineMemberStart, CompanyMachineMemberStartOutcome, CompanyMachineScreen, CompanyMachineScreenOutcome,
 } from "../../packages/runner-orchestrator/src/company-machine-host.ts";
 import {
 	CLOUD_MACHINE_CODING_VALUE_SCHEMA,
@@ -43,8 +43,8 @@ import {
 import type { CodingCommandPeer } from "./command-routing.ts";
 import {
 	authorizeMachineCodingValue, authorizeMachineCommand, authorizeMachineScreen, authorizeMemberMachineAct,
-	authorizeMemberMachineScreen, authorizeMemberMachineStart, type MachineCodingValueAuthority, type MachineCommandAuthority,
-	type MachineScreenAuthority, type MemberMachineActAuthority, type MemberMachineScreenAuthority,
+	authorizeMemberMachineScreen, authorizeMemberMachineStart, type MachineCodingValueAuthority, type MachineCodingValueClear,
+	type MachineCommandAuthority, type MachineScreenAuthority, type MemberMachineActAuthority, type MemberMachineScreenAuthority,
 	type MemberMachineStartAuthority,
 } from "./machine-command-authority.ts";
 
@@ -60,6 +60,9 @@ interface MachineCommandRouterOptions {
 	wakeLocal?(machineId: string, wait: boolean, signal: AbortSignal): Promise<boolean>;
 	/** save_coding_value (20260930705000): runs the clipboard helper on this node's machine; absent when the executor carries no machines. */
 	codingValueLocal?(authority: MachineCodingValueAuthority, signal: AbortSignal): Promise<CloudMachineCodingValueAnswer>;
+	/** F32 of #1661: clears the desktop's clipboard on this node's machine after a member held it, and confirms it to SQL.
+	 * Never reads it: the agent's call is refused whatever came of it. */
+	codingValueClearLocal?(authority: MachineCodingValueClear, signal: AbortSignal): Promise<void>;
 	/** machine_screen (20260930708000): runs the screen helper on this node's machine; absent when the executor carries no machines. */
 	screenLocal?(authority: MachineScreenAuthority, signal: AbortSignal): Promise<CloudMachineScreenAnswer>;
 	/** A member's look (20260930712000): begins it as the member (member-control.ts); absent when this executor takes no
@@ -145,6 +148,13 @@ export class MachineCommandRouter {
 	async codingValue(request: CloudMachineCodingValueHttpRequest, signal: AbortSignal, localOnly = false): Promise<CloudMachineCodingValueAnswer> {
 		const authority = await authorizeMachineCodingValue(this.#options.control, request, signal);
 		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {
+			if (authority.clear) {
+				// A member held the desktop since its clipboard was last confirmed clear (F32): it is cleared now, nothing is read,
+				// and the agent copies the key again and calls again.
+				if (!this.#options.codingValueClearLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
+				await this.#options.codingValueClearLocal(authority, signal);
+				throw new CloudMachineCodingValueRefusal("DESKTOP_MEMBER_IN_CONTROL");
+			}
 			if (!this.#options.codingValueLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
 			return this.#options.codingValueLocal(authority, signal);
 		}
@@ -294,6 +304,21 @@ export function localMachineCodingValue(host: {
 			throw new Error("MACHINE_CODING_VALUE_FAILED");
 		}
 		return { schema: CLOUD_MACHINE_CODING_VALUE_SCHEMA, commandId: authority.receiptId, box: outcome.box };
+	};
+}
+
+/** How a router clears a desktop's clipboard on this node's machines after a member held it (MachineCommandRouter's
+ * `codingValueClearLocal`, F32 of #1661): the host clears both selections under the desktop's one-actor rule after the
+ * fence and confirms it to SQL at the generation SQL answered. A host that could not clear or confirm records nothing
+ * (the next call clears again); another boot, or an image without the clipboard helper, is the agent's refusal by its
+ * code, as a read's would be. */
+export function localMachineCodingValueClear(host: {
+	clearClipboard(run: CompanyMachineClipboardClear, signal: AbortSignal): Promise<CompanyMachineClipboardCleared>;
+}): (authority: MachineCodingValueClear, signal: AbortSignal) => Promise<void> {
+	return async (authority, signal) => {
+		const outcome = await host.clearClipboard({ placementId: authority.placementId, bootId: authority.bootId,
+			desktopGeneration: authority.desktopGeneration }, signal);
+		if ("refused" in outcome) throw new CloudMachineCodingValueRefusal(outcome.refused);
 	};
 }
 

@@ -35,8 +35,8 @@ import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../pack
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
 import {
-	localMachineCodingValue, localMachineScreen, localMachineWake, localMemberMachineAct, localMemberMachineScreen,
-	localMemberMachineStart, MachineCommandRouter,
+	localMachineCodingValue, localMachineCodingValueClear, localMachineScreen, localMachineWake, localMemberMachineAct,
+	localMemberMachineScreen, localMemberMachineStart, MachineCommandRouter,
 	machineCommandRoutes,
 } from "./machine-command-routing.ts";
 import { MemberMachineScreenControl } from "./member-control.ts";
@@ -393,6 +393,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				signal),
 			wakeLocal: localMachineWake(machineHost),
 			codingValueLocal: localMachineCodingValue(machineHost),
+			codingValueClearLocal: localMachineCodingValueClear(machineHost),
 			screenLocal: localMachineScreen(machineHost),
 			memberScreenLocal: localMemberMachineScreen(machineHost),
 			memberActLocal: localMemberMachineAct(machineHost),
