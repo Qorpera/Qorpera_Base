@@ -1365,15 +1365,17 @@ runs. Starting is not taking over: it needs no hold and takes none, and the agen
   member's own token): under the machine's lock, a running machine of the company big enough for a desktop
   (`MACHINE_NOT_RUNNING`, `DESKTOP_MACHINE_TOO_SMALL`), then exactly what an agent's first screen use marks and refuses:
   the disk rule (`MACHINE_NEEDS_COMPANY_VIEW` on a disk that had a view, for a member who does not read the folder's
-  root; a disk that never had one is marked unchecked for them), the machine's last use (at most every 30 s), and the
-  screen stamped as the agent the machine was started by. A member's live hold of the desktop answers `{state: "held"}`
-  and records and runs nothing (it runs already: a hold needs a picture); a second start of the machine within 5 s is
-  `DESKTOP_START_TOO_SOON`. It records the start (id, member, machine, time) and answers `{schema:
+  root; a disk that never had one is marked unchecked for them), the machine's last use (at most every 30 s), and a
+  screen no agent drove yet stamped as the agent the machine was started by (a screen an agent drove keeps that agent's
+  stamp, so the machine stays in that agent's window). A member's hold of the desktop, the caller's or another's, does
+  not stop a start: a hold does not prove the desktop runs (a take-over never checks it, and the desktop stops itself
+  after an hour without a desktop command), and a start takes no hold and does nothing to a desktop that runs. A second
+  start of the machine within 5 s is `DESKTOP_START_TOO_SOON`. It records the start (id, member, machine, time) and answers `{schema:
   "qorpera.member-machine-desktop-start/v1", state: "ok", startId}`; refusals are `{state: "refused", reason}`.
 - `qorpera_member_machine_desktop_start_authority(start, owner, provider)` (service_role): the executor's read, single
   use, within 15 s of the begin, of a member still an owner, admin or contributor of a company not being deleted, the
   machine still running and big enough, the disk rule read again (marking as the begin does); `served` only for the
-  placement's own executor, and `held` when a member's hold began since the begin.
+  placement's own executor.
 - The machine stays awake under a member: a member's look read moves the machine's last use (at
   most every 30 s) while their word that they watch is at most 30 minutes old, and a hold's heartbeat moves it when it
   renews the lease. Without them a task machine whose desktop a member only watched slept after its executor's
@@ -1691,7 +1693,7 @@ only after durable storage.
 - `POST /v1/member-machine-screens/<companyId>/<machineId>/start` (20260930714000; the same listener) — turns the
   desktop on, with the member's token, `content-type: application/json` and the body `{}` (at most 1 KiB; any key is a
   bad request: what to open there is for a later stage). 200 `{schema: "qorpera.member-machine-start/v1", outcome}`:
-  `started` (it was off and is drawn now) or `running` (it ran already, or another member holds it); 409 `{code}`:
+  `started` (it was off and is drawn now) or `running` (it ran already); 409 `{code}`:
   `MACHINE_NOT_RUNNING`, `MACHINE_NEEDS_COMPANY_VIEW`, `DESKTOP_MACHINE_TOO_SMALL`, `DESKTOP_START_TOO_SOON` (a start
   of this machine within 5 s), `MACHINE_BOOT_CHANGED`, `MACHINE_IMAGE_WITHOUT_SCREEN` or `DESKTOP_DID_NOT_START`; 400,
   401 and 403 as an action. Never refused because an agent runs or acts on the machine (it takes no hold); the client
