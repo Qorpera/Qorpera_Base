@@ -100,6 +100,8 @@ export class DesktopHoldLedger {
 	 * the member took the machine over again on purpose. */
 	readonly #givenBack = new Set<string>();
 	readonly #listeners = new Set<() => void>();
+	/** The agents an I'm done (or Hand back) is working on now, how many at once. */
+	readonly #finishing = new Map<string, number>();
 	/** The company's page is gone: nothing is asked any more. */
 	#left = false;
 
@@ -281,9 +283,16 @@ export class DesktopHoldLedger {
 	/** Everything this agent's windows may hold, given back: every machine of the agent's in the ledger is released at
 	 * once (review r5 F11). True once every hand-back was answered and nothing of the agent's is left; false while one
 	 * is not answered (asked again meanwhile; the lease also ends by itself in 5 minutes). With `elsewhere` (Hand back,
-	 * I'm done) it then reads the member's list and hands back, too, the agent's machines it shows the member holding
-	 * that the page has nothing of, and hands a machine back again when an answer says the member holds it now; without
-	 * a list it says no. */
+	 * I'm done) it then reads the member's list until a read that counts leaves nothing held or owed, handing back what
+	 * reads show the member holding (another tab, an earlier page, what this page took), a few rounds; without a list it
+	 * says no.
+	 *
+	 * What I'm done answers (review r9): once everything this page took or may have taken is fenced by an answered
+	 * hand-back, and a list read that counts (none of its machines below the epoch the ledger knows) shows this member
+	 * holding none of the agent's machines after every hold it observed was handed back. A take-over the member starts
+	 * from another tab after that read was taken is a new take-over, outside this answer; the agent then hears
+	 * DESKTOP_MEMBER_IN_CONTROL, as for any take-over without a card. No page can exclude what the member does a moment
+	 * later. */
 	async releaseAgent(agentId: string, reason: Hold["reason"] = "handed_back", elsewhere = false): Promise<boolean> {
 		// The hand-backs this asks, each waited for once: a failed one says no (it is asked again on its own, after a wait).
 		const asks = new Map<Hold, Promise<boolean>>();
@@ -291,52 +300,67 @@ export class DesktopHoldLedger {
 			this.release(hold.machineId, agentId, reason, elsewhere);
 			if (hold.calling) asks.set(hold, this.#ask(hold));
 		};
-		// At once, before anything is awaited (review r5 F11).
-		for (const hold of [...this.#holds.values()]) if (hold.agents.has(agentId)) give(hold);
-		for (let round = 0; ; round++) {
-			const answered = await Promise.all(asks.values());
-			asks.clear();
-			if (!answered.every(Boolean)) return false;
-			if (!elsewhere) return !this.has(agentId);
-			// Done only on a list read asked after every hand-back so far was answered (review r8): it shows no hold of the
-			// member's on the agent's machines, and nothing is owed.
-			const list = await this.#readList(agentId);
-			if (!list) return false;
-			const shown = list.machines.filter((row) => row.control?.mine === true && row.control.epoch !== null);
-			if (!shown.length && !this.has(agentId)) return true;
-			if (round >= HOLDING_ROUNDS) return false;
-			for (const row of shown) {
-				// Held at that epoch (another tab, an earlier page, or what this page took): owed there, and given back.
-				const hold = this.#holds.get(row.machineId) ?? this.#entry(row.machineId);
-				hold.agents.add(agentId);
-				const epoch = row.control?.epoch;
-				if (epoch !== null && epoch !== undefined) hold.elsewhere = Math.max(hold.elsewhere ?? epoch, epoch);
+		if (elsewhere) this.#finishing.set(agentId, (this.#finishing.get(agentId) ?? 0) + 1);
+		try {
+			// At once, before anything is awaited (review r5 F11).
+			for (const hold of [...this.#holds.values()]) if (hold.agents.has(agentId)) give(hold);
+			for (let round = 0; ; round++) {
+				const answered = await Promise.all(asks.values());
+				asks.clear();
+				if (!answered.every(Boolean)) return false;
+				if (!elsewhere) return !this.has(agentId);
+				// A read asked after every hand-back so far was answered (review r8). What it shows is reconciled into the
+				// ledger first (listed: a hold of the member's it shows is owed now); it counts only when none of its
+				// machines is below the epoch the ledger knows, and then the ledger alone decides (review r9).
+				const list = await this.#readList(agentId);
+				if (!list) return false;
+				const counts = list.machines.every((row) => {
+					const known = this.#holds.get(row.machineId)?.epoch;
+					return known === undefined || row.epoch >= known;
+				});
+				if (counts && !this.has(agentId)) return true;
+				if (round >= HOLDING_ROUNDS) return false;
+				for (const hold of [...this.#holds.values()]) if (hold.agents.has(agentId) && this.#busy(hold)) give(hold);
 			}
-			for (const hold of [...this.#holds.values()]) if (hold.agents.has(agentId) && this.#busy(hold)) give(hold);
+		} finally {
+			if (elsewhere) {
+				const left = (this.#finishing.get(agentId) ?? 1) - 1;
+				if (left > 0) this.#finishing.set(agentId, left);
+				else this.#finishing.delete(agentId);
+			}
 		}
 	}
 
 	/** A list read of an agent's machines, ordered by the database's own counter, never by the page's clock (review r8):
 	 * for a machine, a list whose epoch is below what the page knows is older and says nothing. At the epoch the page
 	 * knows or above it is at least as new: an epoch above moves the page's knowledge on (what the page had under the older
-	 * one is fenced: a hand-back of it was answered), and a hold of the member's it shows at that epoch is real, so a lost
-	 * answer whose take-over it shows is held. A list never ends a hold at the same epoch by not showing it: it cannot
-	 * tell an older read from an ended lease there; the heartbeat (its `ended`) does that. A release on its way waits for
-	 * its own answer. */
-	listed(list: MemberAgentMachines): void {
+	 * one is fenced: a hand-back of it was answered), and a hold of the member's it shows at that epoch is real: owed
+	 * (review r9) on a machine this page gave back, or while an I'm done works on its agent, whether or not a window may
+	 * take it up; and a lost answer whose take-over it shows is held. A list never ends a hold at the same epoch by not
+	 * showing it: it cannot tell an older read from an ended lease there; the heartbeat (its `ended`) does that. A release
+	 * on its way waits for its own answer. */
+	listed(list: MemberAgentMachines, agentId: string): void {
 		for (const row of list.machines) {
 			const hold = this.#holds.get(row.machineId) ?? this.#entry(row.machineId);
 			if (hold.epoch !== undefined && row.epoch < hold.epoch) continue;
+			hold.agents.add(agentId);
 			if (hold.epoch === undefined || row.epoch > hold.epoch) {
 				const moved = hold.epoch !== undefined;
 				hold.epoch = row.epoch;
-				if (moved && !hold.calling && hold.state !== "queued" && hold.state !== undefined) {
+				if (moved && !hold.calling && hold.state !== "queued" && hold.state !== undefined)
 					this.#state(hold, undefined);
-					continue;
-				}
+			}
+			const holding = row.control?.mine === true ? row.control.epoch : null;
+			// Adoption (input and heartbeats) and obligation (a hand-back owed) are apart: #givenBack blocks the first only.
+			if (
+				holding !== null &&
+				holding >= row.epoch &&
+				(this.#givenBack.has(row.machineId) || [...hold.agents].some((agent) => this.#finishing.has(agent)))
+			) {
+				hold.elsewhere = Math.max(hold.elsewhere ?? holding, holding);
+				this.#changed();
 			}
 			if (hold.calling) continue;
-			const holding = row.control?.mine === true ? row.control.epoch : null;
 			if (hold.state === "maybe" && holding === hold.epoch) this.#state(hold, "held");
 		}
 	}
@@ -410,7 +434,7 @@ export class DesktopHoldLedger {
 		if (!computer || this.#left) return undefined;
 		try {
 			const list = await computer.agentMachines(agentId, AbortSignal.timeout(HOLD_CALL_MS));
-			this.listed(list);
+			this.listed(list, agentId);
 			return list;
 		} catch {
 			return undefined;

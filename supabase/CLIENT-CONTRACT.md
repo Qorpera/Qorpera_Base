@@ -1250,8 +1250,13 @@ request of another shape.
   or their take-over card's I'm done) or `closed` (their window closed or they left the company's page). `{schema,
   state: "ok", handedBack, epoch, holding}`: `handedBack` whether it gave a live lease back; `epoch` the caller's current
   epoch afterwards (a take-over the member asks for later is sent at it); `holding` whether the caller holds the
-  machine now (another tab of theirs, at the newer epoch: hand back again at `epoch` to give that back too). A
-  take-over card is answered after this.
+  machine now (another tab of theirs, at the newer epoch: hand back again at `epoch` to give that back too).
+- The take-over card's I'm done is answered after this (review r9 of #1661): I'm done answers once everything this
+  page took or may have taken is fenced by an answered hand-back, and a list read that counts (none of its machines
+  below the epoch the page knows) shows this member holding none of the agent's machines after every hold it observed
+  was handed back. A take-over the member starts from another tab after that read was taken is a new take-over,
+  outside this answer; the agent then hears `DESKTOP_MEMBER_IN_CONTROL`, as for any take-over without a card. No page
+  can exclude what the member does a moment later.
 - `qorpera_member_machine_desktop_act_begin(profile, machine, action)`: one action, begun as the member. Clients do not
   call it: the action route (§4) does, with the member's own token and the action as SQL keeps it (a text by its length).
 #### Member contacts' places (20260930717000_member_contact_places)

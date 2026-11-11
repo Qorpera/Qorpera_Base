@@ -104,6 +104,8 @@ function setup(
 		listSnapshotGate: undefined as Promise<void> | undefined,
 		/** A gate every list read waits on while it is set, answering the machines as they are then (review r8). */
 		listHold: undefined as Promise<void> | undefined,
+		/** Gates the next list reads wait on, one each, answering the machines as they were when asked (review r9). */
+		listSnapshotGates: [] as Promise<void>[],
 		/** A take-over whose answer is lost (review r2 F5): the database committed it first, or it reaches the database
 		 * only later, when the test says (`lateCommit`: whether it held anything). */
 		takeLost: undefined as "committed" | "late" | undefined,
@@ -161,7 +163,7 @@ function setup(
 				state.listFails--;
 				return new Response("{}", { status: 503 });
 			}
-			const snapshot = state.listSnapshotGate;
+			const snapshot = state.listSnapshotGate ?? state.listSnapshotGates.shift();
 			if (snapshot) {
 				state.listSnapshotGate = undefined;
 				const asked = state.machines.map((row) => ({ ...row, epoch: epochOf(row.machineId) }));
@@ -2064,6 +2066,42 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		// I'm done handed that hold back at epoch 1, and answered only after a later read showed nothing.
 		expect(done).toBe(true);
 		expect(backEpochs(s)).toEqual([0, 1]);
+		expect(s.state.machines[0]?.control).toBeNull();
+	});
+
+	it("certifies I'm done by no stale read: an empty read below the epoch the page knows counts for nothing, and a hold a window saw is owed (r9 F16)", async () => {
+		const { s, panels, p } = await company();
+		await takeOver(p);
+		expect(p.holding).toBe(true);
+		// The window closes: its hand-back at 0 is answered (epoch 1).
+		panels.close(staff.id);
+		await flush();
+		expect(backEpochs(s)).toEqual([0]);
+		expect(s.state.epochs.get(machine(1).machineId)).toBe(1);
+		// I'm done: its read is captured now, empty at epoch 1, and held back.
+		const stale = gate();
+		s.state.listSnapshotGates = [stale.closed];
+		let done: boolean | undefined;
+		const answered = panels.releaseAgent(staff.id).then((value) => {
+			done = value;
+		});
+		await flush();
+		// Another tab moves the epoch to 2 and takes the desktop. A window, opened again, lists that hold first: it may not
+		// take it up (this page gave the machine back), but it is owed.
+		s.state.epochs.set(machine(1).machineId, 2);
+		s.state.machines = [machine(1, { control: held(2) })];
+		s.state.answers.push({ picture: 1 });
+		const again = panels.open(staff)!;
+		again.attach(document.body, () => panels.close(staff.id));
+		await flush();
+		expect(again.holding).toBe(false);
+		expect(done).toBeUndefined();
+		// The stale empty read arrives: it counts for nothing. I'm done hands back at 2, and answers after a read that
+		// counts shows nothing.
+		stale.open();
+		await answered;
+		expect(done).toBe(true);
+		expect(backEpochs(s)).toEqual([0, 2]);
 		expect(s.state.machines[0]?.control).toBeNull();
 	});
 

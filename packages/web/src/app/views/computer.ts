@@ -562,7 +562,7 @@ export class ComputerPanel {
 	#heldPerList(): void {
 		const list = this.#listed;
 		if (!list) return;
-		this.#ledger.listed(list);
+		this.#ledger.listed(list, this.agentId);
 		const shown = this.#pick();
 		const row = shown
 			? list.machines.find((machine) => machine.machineId === shown.machineId && machine.state === "running")
