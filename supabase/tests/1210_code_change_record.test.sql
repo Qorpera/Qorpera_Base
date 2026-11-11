@@ -186,7 +186,7 @@ begin
 			'public.qorpera_code_json_strings(jsonb,integer)', 'public.qorpera_code_notice_valid(text)',
 			'public.qorpera_code_change_paths_valid(jsonb)', 'public.qorpera_code_change_fit(jsonb,integer,integer)',
 			'public.qorpera_code_change_append(uuid,text,text,jsonb)', 'public.qorpera_code_change_found(uuid,text,text,text,text)',
-			'public.qorpera_code_change_set(uuid,text,text,integer,boolean,integer)',
+			'public.qorpera_code_changes_take_out(uuid,text,text,integer[],integer,boolean)',
 			'public.qorpera_code_changes_restored(uuid,text,text,text)',
 			'public.qorpera_code_undo_message(integer,text,boolean)', 'public.qorpera_code_request_lease(text)',
 			'public.qorpera_code_restore_waits(uuid,text,text,timestamptz)', 'public.qorpera_code_restore_holds(jsonb)',
