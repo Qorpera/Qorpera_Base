@@ -628,7 +628,7 @@ const FOUND: readonly { seed: number; finding: string }[] = [
 			"F17 (r9, I1): a hand-back's answer at epoch 1, taken before another tab took the desktop at 1, cleared the hold a list had shown at 1; an older read at 1 then let I'm done answer",
 	},
 	{
-		seed: 147,
+		seed: 324,
 		finding: "F16 (r8, I1): I'm done answered on a read taken before another tab's hold that a newer read had shown",
 	},
 	{
