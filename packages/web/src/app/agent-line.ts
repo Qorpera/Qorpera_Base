@@ -7,10 +7,11 @@ import type { AgentNote } from "./agent-notes.ts";
  *   1. its run did not finish;
  *   2. it rests at its login's usage limit until the reset;
  *   3. its wall says something waits on the member;
- *   4. its next planned run is within SOON_MS;
- *   5. what it last got done, from its wall, and when;
- *   6. its next planned run, however far off;
- *   7. when it was hired.
+ *   4. its wall's Now line, where its work stands (Jonas, 11 Nov 2026: the newest done headline read as a work log);
+ *   5. its next planned run is within SOON_MS;
+ *   6. what it last got done, from its wall, and when (a wall written before the Now line);
+ *   7. its next planned run, however far off;
+ *   8. when it was hired.
  * So every agent's row has a line. */
 
 export interface IdleLineInput {
@@ -38,6 +39,7 @@ export function idleLine(input: IdleLineInput, now = new Date()): IdleLine {
 	if (until && until > now.getTime()) return { text: t("Resting until {time}", { time: moment(until, now) }) };
 	const note = input.note;
 	if (note?.waits) return { text: t("Waits on you: {item}", { item: note.waits }) };
+	if (note?.now) return { text: note.now };
 	const nextAt = note?.next ? Date.parse(note.next.at) : Number.NaN;
 	const next =
 		note?.next && nextAt > now.getTime()
