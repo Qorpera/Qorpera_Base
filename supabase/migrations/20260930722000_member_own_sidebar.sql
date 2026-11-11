@@ -256,9 +256,9 @@ returns jsonb language sql stable security definer set search_path = '' as $$
 				and public.qorpera_sidebar_room_placeable(p_profile_id, mine.room_id)
 		) mark
 	), contacts as (
+		-- Any row: a contact moved in the Members group (its rank) is the member's change too.
 		select count(*) as n from public.qorpera_member_sidebar_contacts placed
 		where placed.profile_id = p_profile_id and placed.user_id = p_user_id
-			and (placed.zone <> 'members' or placed.hidden)
 	), pages as (
 		select count(*) as n
 		from public.qorpera_member_hidden_interface_pages mine
@@ -319,11 +319,33 @@ $$;
 create function public.qorpera_sidebar_own_place(p_profile_id uuid, p_user_id uuid, p_item_id uuid, p_section_id uuid,
 	p_order uuid[])
 returns void language plpgsql security definer set search_path = '' as $$
-declare v_at integer; v_after uuid; v_first boolean := false;
+declare v_at integer; v_after uuid; v_first boolean := false; v_view jsonb; v_section text; v_position integer;
+	v_before uuid;
 begin
 	if p_section_id is not null and not exists (select 1 from public.qorpera_sidebar_own_sections(p_profile_id, p_user_id) seen
 			where seen.section_id = p_section_id) then
 		raise exception 'That section is no longer in your sidebar' using errcode = 'P0002'; end if;
+	-- What the member placed right after the item stays where it stood: it now stands after what stood before the item
+	-- (first, when the item led), so no two places ever point at each other.
+	v_view := public.qorpera_sidebar_own_view(p_profile_id, p_user_id);
+	select listed.section, listed.position into v_section, v_position
+	from (select entry ->> 'staffAgentId' as id, entry ->> 'sectionId' as section, (entry ->> 'position')::integer as position
+			from jsonb_array_elements(v_view -> 'placements') entry
+		union all
+		select entry ->> 'roomId', entry ->> 'sectionId', (entry ->> 'position')::integer
+			from jsonb_array_elements(v_view -> 'roomPlacements') entry) listed
+	where listed.id = p_item_id::text;
+	if found then
+		select listed.id::uuid into v_before
+		from (select entry ->> 'staffAgentId' as id, entry ->> 'sectionId' as section, (entry ->> 'position')::integer as position
+				from jsonb_array_elements(v_view -> 'placements') entry
+			union all
+			select entry ->> 'roomId', entry ->> 'sectionId', (entry ->> 'position')::integer
+				from jsonb_array_elements(v_view -> 'roomPlacements') entry) listed
+		where listed.section is not distinct from v_section and listed.position = v_position - 1;
+		update public.qorpera_member_sidebar_places set after_item_id = v_before, first = v_before is null
+		where profile_id = p_profile_id and user_id = p_user_id and after_item_id = p_item_id and item_id <> p_item_id;
+	end if;
 	if p_order is not null then
 		v_at := pg_catalog.array_position(p_order, p_item_id);
 		if v_at is null then
@@ -343,40 +365,39 @@ end $$;
 /** Takes away everything the member changed in this company's sidebar, and keeps it for one Undo. */
 create function public.qorpera_sidebar_own_reset(p_profile_id uuid, p_user_id uuid)
 returns void language plpgsql security definer set search_path = '' as $$
-declare v_removed jsonb;
 begin
-	select jsonb_build_object(
-		'sections', coalesce((select jsonb_agg(to_jsonb(mine) - 'profile_id' - 'user_id')
-			from public.qorpera_member_sidebar_sections mine
-			where mine.profile_id = p_profile_id and mine.user_id = p_user_id), '[]'),
-		'places', coalesce((select jsonb_agg(to_jsonb(place) - 'profile_id' - 'user_id')
-			from public.qorpera_member_sidebar_places place
-			where place.profile_id = p_profile_id and place.user_id = p_user_id), '[]'),
-		'agents', coalesce((select jsonb_agg(to_jsonb(mine) - 'profile_id' - 'user_id')
-			from public.qorpera_member_sidebar_agents mine
-			where mine.profile_id = p_profile_id and mine.user_id = p_user_id), '[]'),
-		'rooms', coalesce((select jsonb_agg(to_jsonb(mine) - 'profile_id' - 'user_id')
-			from public.qorpera_member_sidebar_rooms mine
-			where mine.profile_id = p_profile_id and mine.user_id = p_user_id), '[]'),
-		'contacts', coalesce((select jsonb_agg(to_jsonb(placed) - 'profile_id' - 'user_id')
-			from public.qorpera_member_sidebar_contacts placed
-			where placed.profile_id = p_profile_id and placed.user_id = p_user_id), '[]'),
-		'pages', coalesce((select jsonb_agg(to_jsonb(mine) - 'user_id')
-			from public.qorpera_member_hidden_interface_pages mine
-			join public.qorpera_company_files file on file.environment_id = mine.environment_id
-			where file.profile_id = p_profile_id and mine.user_id = p_user_id), '[]'))
-	into v_removed;
+	-- The rows kept for Undo are the rows this statement deleted: a change another call commits meanwhile is either
+	-- deleted and kept, or made after and stays.
+	with sections as (
+		delete from public.qorpera_member_sidebar_sections mine
+		where mine.profile_id = p_profile_id and mine.user_id = p_user_id returning mine.*
+	), places as (
+		delete from public.qorpera_member_sidebar_places place
+		where place.profile_id = p_profile_id and place.user_id = p_user_id returning place.*
+	), agents as (
+		delete from public.qorpera_member_sidebar_agents mine
+		where mine.profile_id = p_profile_id and mine.user_id = p_user_id returning mine.*
+	), rooms as (
+		delete from public.qorpera_member_sidebar_rooms mine
+		where mine.profile_id = p_profile_id and mine.user_id = p_user_id returning mine.*
+	), contacts as (
+		delete from public.qorpera_member_sidebar_contacts placed
+		where placed.profile_id = p_profile_id and placed.user_id = p_user_id returning placed.*
+	), pages as (
+		delete from public.qorpera_member_hidden_interface_pages mine
+		using public.qorpera_company_files file
+		where file.environment_id = mine.environment_id and file.profile_id = p_profile_id and mine.user_id = p_user_id
+		returning mine.*
+	)
 	insert into public.qorpera_member_sidebar_resets as kept (profile_id, user_id, removed)
-	values (p_profile_id, p_user_id, v_removed)
+	select p_profile_id, p_user_id, jsonb_build_object(
+		'sections', coalesce((select jsonb_agg(to_jsonb(row_) - 'profile_id' - 'user_id') from sections row_), '[]'),
+		'places', coalesce((select jsonb_agg(to_jsonb(row_) - 'profile_id' - 'user_id') from places row_), '[]'),
+		'agents', coalesce((select jsonb_agg(to_jsonb(row_) - 'profile_id' - 'user_id') from agents row_), '[]'),
+		'rooms', coalesce((select jsonb_agg(to_jsonb(row_) - 'profile_id' - 'user_id') from rooms row_), '[]'),
+		'contacts', coalesce((select jsonb_agg(to_jsonb(row_) - 'profile_id' - 'user_id') from contacts row_), '[]'),
+		'pages', coalesce((select jsonb_agg(to_jsonb(row_) - 'user_id') from pages row_), '[]'))
 	on conflict (profile_id, user_id) do update set removed = excluded.removed, reset_at = clock_timestamp();
-	delete from public.qorpera_member_sidebar_sections where profile_id = p_profile_id and user_id = p_user_id;
-	delete from public.qorpera_member_sidebar_places where profile_id = p_profile_id and user_id = p_user_id;
-	delete from public.qorpera_member_sidebar_agents where profile_id = p_profile_id and user_id = p_user_id;
-	delete from public.qorpera_member_sidebar_rooms where profile_id = p_profile_id and user_id = p_user_id;
-	delete from public.qorpera_member_sidebar_contacts where profile_id = p_profile_id and user_id = p_user_id;
-	delete from public.qorpera_member_hidden_interface_pages mine
-	using public.qorpera_company_files file
-	where file.environment_id = mine.environment_id and file.profile_id = p_profile_id and mine.user_id = p_user_id;
 end $$;
 
 /** Puts back what the member's last reset took away. A row the member has made again since stays as it is now, and

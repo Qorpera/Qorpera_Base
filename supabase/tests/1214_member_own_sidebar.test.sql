@@ -245,3 +245,25 @@ begin
 	reset role;
 	perform pg_temp.base_claims('service_role');
 end $$;
+
+-- 6. Two moves in a row never point at each other: Research is Bob, Carol, Alice; a member moves Bob after Carol, then
+-- Carol after Bob, and sees Bob, Carol, Alice again (review F1 on #1677).
+do $$
+declare v_contributor uuid := '92400000-0000-4000-8000-000000000002';
+	v_alice text := '92400000-0000-4000-8000-000000000030'; v_bob text := '92400000-0000-4000-8000-000000000031';
+	v_carol text := '92400000-0000-4000-8000-000000000032'; v_state jsonb; v_research text;
+begin
+	v_state := pg_temp.own_read(v_contributor);
+	v_research := pg_temp.own_section(v_state, 'Research');
+	perform pg_temp.base_assert(pg_temp.own_in(v_state, v_research) = array[v_bob, v_carol, v_alice], 'The company''s order: ' || v_state::text);
+	v_state := pg_temp.own_manage(v_contributor, jsonb_build_object('action', 'move_agent', 'staffAgentId', v_bob,
+		'sectionId', v_research, 'order', jsonb_build_array(v_carol, v_bob, v_alice)));
+	perform pg_temp.base_assert(pg_temp.own_in(v_state, v_research) = array[v_carol, v_bob, v_alice], 'Bob after Carol: ' || v_state::text);
+	v_state := pg_temp.own_manage(v_contributor, jsonb_build_object('action', 'move_agent', 'staffAgentId', v_carol,
+		'sectionId', v_research, 'order', jsonb_build_array(v_bob, v_carol, v_alice)));
+	perform pg_temp.base_assert(pg_temp.own_in(v_state, v_research) = array[v_bob, v_carol, v_alice],
+		'Carol after Bob, nothing points in a circle: ' || v_state::text);
+	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_member_sidebar_places a
+		join public.qorpera_member_sidebar_places b on b.user_id = a.user_id and b.item_id = a.after_item_id and b.after_item_id = a.item_id
+		where a.user_id = v_contributor), 'No two places point at each other');
+end $$;

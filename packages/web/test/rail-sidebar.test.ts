@@ -1692,3 +1692,63 @@ describe("each member's own sidebar (20260930722000)", () => {
 		expect(company.unassignedOrderLost()).toBe(false);
 	});
 });
+
+describe("Reset sidebar's Undo (review of #1677)", () => {
+	const own = (changes: number): NonNullable<CompanySidebar["own"]> => ({
+		changes,
+		moved: [],
+		sections: [],
+		pinned: changes,
+		hidden: 0,
+		contacts: 0,
+		pages: 0,
+	});
+	async function resetOnce() {
+		const appsKey = `qorpera.web.rail-apps-order:${profileA.profileId}`;
+		localStorage.setItem(appsKey, JSON.stringify(["concepts"]));
+		cleanup.push(() => localStorage.clear());
+		const mine = { ...demo(), own: own(1) };
+		const reset = { ...demo(), pinned: [], own: own(0) };
+		const made = companyWith(mine);
+		const manage = vi.spyOn(made.f.api, "manageCompanySidebar");
+		manage.mockImplementation(async (_profileId, request) =>
+			structuredClone(request.action === "reset" ? reset : mine),
+		);
+		await made.ready;
+		await settle();
+		rightClick(made.rail.querySelector(".rail-scroll")!);
+		[...document.querySelectorAll<HTMLButtonElement>(".context-menu [role^=menuitem]")]
+			.find((item) => item.textContent?.startsWith("Reset sidebar"))!
+			.click();
+		await settle();
+		[...document.querySelectorAll<HTMLButtonElement>(".modal button")]
+			.find((b) => b.textContent === "Reset")!
+			.click();
+		await settle();
+		const undo = () =>
+			[...made.rail.querySelectorAll<HTMLButtonElement>(".notice button")].find((b) => b.textContent === "Undo");
+		return { ...made, manage, undo, appsKey };
+	}
+
+	it("keeps Undo after a failed try, and it works on the next", async () => {
+		const { manage, undo, rail } = await resetOnce();
+		manage.mockRejectedValueOnce(new Error("offline"));
+		undo()!.click();
+		await settle();
+		expect(undo()).toBeDefined();
+		expect(rail.textContent).toContain("The sidebar could not be changed. Try again.");
+		undo()!.click();
+		await settle();
+		expect(manage).toHaveBeenLastCalledWith(profileA.profileId, { action: "undo_reset" });
+		expect(undo()).toBeUndefined();
+	});
+
+	it("leaves an apps order the member made after the reset as it is", async () => {
+		const { undo, appsKey } = await resetOnce();
+		expect(localStorage.getItem(appsKey)).toBe("[]");
+		localStorage.setItem(appsKey, JSON.stringify(["page:bank", "concepts"]));
+		undo()!.click();
+		await settle();
+		expect(JSON.parse(localStorage.getItem(appsKey)!)).toEqual(["page:bank", "concepts"]);
+	});
+});

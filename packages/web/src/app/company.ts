@@ -666,6 +666,10 @@ export class CompanyController {
 				this.store.set(placing === undefined ? { memberChats } : { memberChats, memberContactPlacing: placing }),
 			setUnavailable: () => this.store.set({ memberChatsUnavailable: true, memberChats: undefined }),
 			placeFailed: () => this.reportRailError(t("The sidebar could not be changed. Try again.")),
+			// Reset sidebar counts placed contacts among the member's changes (20260930722000).
+			placed: () => {
+				if (this.ownSidebar()) void this.refreshSidebar();
+			},
 		});
 	}
 
@@ -1227,7 +1231,13 @@ export class CompanyController {
 				};
 			send = () => this.#writeSections(folder, named, "unpin" in request && request.unpin === true);
 		} else send = () => this.#api.manageCompanySidebar(this.profile.profileId, request);
-		this.store.set({ sidebar: drawn, railError: undefined, sidebarReset: undefined });
+		// The offer to undo a reset goes with any other change; Undo itself keeps it until it worked, so a failed one can
+		// be tried again.
+		this.store.set({
+			sidebar: drawn,
+			railError: undefined,
+			sidebarReset: request.action === "undo_reset" ? current.sidebarReset : undefined,
+		});
 		this.#sidebarPending++;
 		const write = this.#sidebarWrites.then(send);
 		this.#sidebarWrites = write.catch(() => {});

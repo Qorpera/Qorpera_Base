@@ -2154,13 +2154,18 @@ async function askResetSidebar(company: CompanyController, parts: RailParts): Pr
 	company.store.set({ sidebarReset: { appsOrder } });
 }
 
-/** Undo of the reset just made: the member's changes come back, the apps' order on this device too. */
+/** Undo of the reset just made: the member's changes come back, and the apps' order on this device too unless the
+ * member ordered them again since. A failed Undo keeps its offer, to try again. */
 async function undoSidebarReset(company: CompanyController, parts: RailParts): Promise<void> {
 	const reset = company.store.get().sidebarReset;
 	if (!reset || !(await company.resetSidebar(true))) return;
-	storeAppsOrder(company.profile.profileId, reset.appsOrder);
-	parts.appsOrder = reset.appsOrder;
+	const profileId = company.profile.profileId;
+	if (!storedAppsOrder(profileId).length) {
+		storeAppsOrder(profileId, reset.appsOrder);
+		parts.appsOrder = reset.appsOrder;
+	}
 	parts.context?.refreshInterfacePages?.();
+	company.store.set({ sidebarReset: undefined });
 }
 
 /** An agent's card from the rail: Pin or Unpin and Hide (or Show, for a hidden agent) where the member has a
