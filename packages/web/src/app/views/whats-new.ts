@@ -102,8 +102,9 @@ export class WhatsNewView {
 	#error: string | undefined;
 	/** The project acting, and how, while it does: every button is off meanwhile. */
 	#working: { site: string; action: "live" | "back" | "talk" } | undefined;
-	/** The last action's outcome, under its project. */
-	#outcome: { site: string; tone: "ok" | "error"; text: string } | undefined;
+	/** The last action's outcome, in its project where it happened: a version that went live under what is live, a page
+	 * that moved above what is ready now, a press that did not go through under its button. */
+	#outcome: { site: string; at: "live" | "ready" | "actions"; tone: "ok" | "error"; text: string } | undefined;
 	/** Pictures read, by path: read once while the page is open. */
 	readonly #pictures = new Map<string, Promise<string | null>>();
 	/** The change cards drawn, by what they show: a draw keeps them, and their pictures, as they are. */
@@ -186,13 +187,24 @@ export class WhatsNewView {
 			if (this.#lifetime.signal.aborted) return;
 			this.#outcome =
 				answer.state === "live"
-					? { site: key, tone: "ok", text: t("Version {version} is live.", { version: String(answer.version) }) }
-					: { site: key, tone: "ok", text: t("Something changed while you looked. Here is what is ready now.") };
+					? {
+							site: key,
+							at: "live",
+							tone: "ok",
+							text: t("Version {version} is live.", { version: String(answer.version) }),
+						}
+					: {
+							site: key,
+							at: "ready",
+							tone: "ok",
+							text: t("Something changed while you looked. Here is what is ready now."),
+						};
 		} catch (error) {
 			if (this.#lifetime.signal.aborted) return;
 			const why = failure(error);
 			this.#outcome = {
 				site: key,
+				at: action === "live" ? "actions" : "live",
 				tone: "error",
 				text:
 					action === "live"
@@ -285,6 +297,7 @@ export class WhatsNewView {
 			if (this.#lifetime.signal.aborted) return;
 			this.#outcome = {
 				site: key,
+				at: "actions",
 				tone: "error",
 				text: error instanceof Error && error.message ? error.message : t("The thread could not be opened."),
 			};
@@ -464,12 +477,21 @@ export class WhatsNewView {
 		const key = keyOf(site);
 		const busy = Boolean(this.#working);
 		const outcome = this.#outcome?.site === key ? this.#outcome : undefined;
+		const said = (at: "live" | "ready" | "actions") =>
+			outcome?.at === at
+				? h(
+						"p",
+						{ class: `service-outcome ${outcome.tone === "ok" ? "is-ok" : "is-error"}`, role: "status" },
+						outcome.text,
+					)
+				: null;
 		const waiting = String(site.waiting);
 		return h(
 			"section",
 			{ class: "whats-new-site", dataset: { site: key }, "aria-label": titleOf(site) },
 			h("h2", null, titleOf(site)),
 			this.#live(site, can, busy),
+			said("live"),
 			site.problem
 				? notice(
 						"warn",
@@ -478,14 +500,9 @@ export class WhatsNewView {
 							: t("The newest version could not be prepared. Qorpera is trying again."),
 					)
 				: null,
+			said("ready"),
 			...this.#ready(site, can, busy, cards),
-			outcome
-				? h(
-						"p",
-						{ class: `service-outcome ${outcome.tone === "ok" ? "is-ok" : "is-error"}`, role: "status" },
-						outcome.text,
-					)
-				: null,
+			said("actions"),
 			site.waiting > 0
 				? h(
 						"p",

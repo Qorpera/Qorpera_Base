@@ -370,7 +370,7 @@ describe("What's new: the page", () => {
 		answer.resolve({ state: "live", version: 4 });
 		await settle();
 		const site = block(view);
-		expect(site.querySelector(".service-outcome")?.textContent).toBe("Version 4 is live.");
+		expect(site.querySelector(".whats-new-live + .service-outcome")?.textContent).toBe("Version 4 is live.");
 		expect(client.list).toHaveBeenCalledTimes(2);
 		expect(site.querySelector(".hook-state")?.textContent).toMatch(/^Version 4 · since .+ · Ann said go$/);
 		expect(text(site)).toContain("Nothing new is ready.");
@@ -384,7 +384,7 @@ describe("What's new: the page", () => {
 		});
 		press(block(view), "Put it live");
 		await settle();
-		expect(block(view).querySelector(".service-outcome")?.textContent).toBe(
+		expect(block(view).querySelector("h3")?.previousElementSibling?.textContent).toBe(
 			"Something changed while you looked. Here is what is ready now.",
 		);
 		expect(client.list).toHaveBeenCalledTimes(2);
@@ -415,7 +415,7 @@ describe("What's new: the page", () => {
 		const { view } = await page([releasesOf([shop()])], { putLive: () => Promise.reject(error) });
 		press(block(view), "Put it live");
 		await settle();
-		const outcome = block(view).querySelector(".service-outcome.is-error");
+		const outcome = block(view).querySelector(".whats-new-actions + .service-outcome.is-error");
 		expect(outcome?.textContent).toBe(`It did not go live: ${why}. Nothing changed.`);
 		expect(outcome?.textContent).not.toContain("42501");
 		expect(labels(block(view))).toContain("Put it live");
@@ -451,7 +451,7 @@ describe("What's new: the page", () => {
 			expect.any(AbortSignal),
 		);
 		const site = block(view);
-		expect(site.querySelector(".service-outcome")?.textContent).toBe("Version 2 is live.");
+		expect(site.querySelector(".whats-new-live + .service-outcome")?.textContent).toBe("Version 2 is live.");
 		// Gone back: who put the older version up again, and the changes it took off are ready again, marked.
 		expect(site.querySelector(".hook-state")?.textContent).toMatch(/^Version 2 · since .+ · Ann went back$/);
 		expect(labels(site.querySelector(".whats-new-live")!)).toEqual([]);
@@ -470,7 +470,7 @@ describe("What's new: the page", () => {
 		await settle();
 		press(dialog(), "Go back");
 		await settle();
-		expect(block(view).querySelector(".service-outcome.is-error")?.textContent).toBe(
+		expect(block(view).querySelector(".whats-new-live + .service-outcome.is-error")?.textContent).toBe(
 			"It did not go back: only founders and admins can put a version live. Nothing changed.",
 		);
 	});
@@ -579,7 +579,7 @@ describe("What's new: Not yet", () => {
 		location.hash = `#/c/${profileA.profileId}/whats-new`;
 		press(block(view), "Not yet");
 		await settle();
-		expect(block(view).querySelector(".service-outcome.is-error")?.textContent).toBe(
+		expect(block(view).querySelector(".whats-new-actions + .service-outcome.is-error")?.textContent).toBe(
 			"The thread could not be opened.",
 		);
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/whats-new`);

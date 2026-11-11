@@ -37,10 +37,10 @@ const EMBLEMS: Readonly<Record<Emblem, readonly Part[]>> = {
 			},
 		],
 	],
-	// What's new: a big spark and a small one.
+	// What's new: a big spark and a small one, the small one top left, clear of the drawer's badge.
 	spark: [
-		["path", { d: "M20 9.5Q23.4 23.6 37.5 27Q23.4 30.4 20 44.5Q16.6 30.4 2.5 27Q16.6 23.6 20 9.5z", fill: "solid" }],
-		["path", { d: "M37 3Q38.7 9.3 45 11Q38.7 12.7 37 19Q35.3 12.7 29 11Q35.3 9.3 37 3z", fill: "solid" }],
+		["path", { d: "M28 9.5Q31.4 23.6 45.5 27Q31.4 30.4 28 44.5Q24.6 30.4 10.5 27Q24.6 23.6 28 9.5z", fill: "solid" }],
+		["path", { d: "M11 3Q12.7 9.3 19 11Q12.7 12.7 11 19Q9.3 12.7 3 11Q9.3 9.3 11 3z", fill: "solid" }],
 	],
 	pulse: [
 		["path", { d: "M24 4c11.6 0 20 8.2 20 19.4C44 35 35.4 44 24 44S4 35 4 23.4C4 12.2 12.4 4 24 4z", fill: "solid" }],
