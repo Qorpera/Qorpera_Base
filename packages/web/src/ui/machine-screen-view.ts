@@ -280,7 +280,8 @@ export class MachineScreenView {
 		this.#canvas.focus({ preventScroll: true });
 		const at = this.#at(event.clientX, event.clientY);
 		if (!at || ![0, 1, 2].includes(event.button)) return;
-		this.#flushText();
+		// A single click waiting for its second stays: this press may be that second.
+		this.#flushBesides("click");
 		this.#press = { ...at, clientX: event.clientX, clientY: event.clientY, button: event.button, moved: false };
 		try {
 			this.#canvas.setPointerCapture(event.pointerId);
@@ -304,13 +305,13 @@ export class MachineScreenView {
 			// A drag holds the left button from where it began to where it ends (only within the picture).
 			const to = this.#at(event.clientX, event.clientY);
 			if (press.button === 0 && to) {
-				this.#flushClick();
+				this.#flush();
 				this.#act({ type: "drag", x: press.x, y: press.y, toX: to.x, toY: to.y });
 			}
 			return;
 		}
 		if (press.button !== 0) {
-			this.#flushClick();
+			this.#flush();
 			this.#act({ type: "click", x: press.x, y: press.y, button: press.button === 2 ? "right" : "middle" });
 			return;
 		}
@@ -326,7 +327,7 @@ export class MachineScreenView {
 			this.#act({ type: "double", x: click.x, y: click.y });
 			return;
 		}
-		this.#flushClick();
+		this.#flush();
 		const single = {
 			x: press.x,
 			y: press.y,
@@ -352,6 +353,7 @@ export class MachineScreenView {
 		event.stopPropagation();
 		const at = this.#at(event.clientX, event.clientY);
 		if (!at) return;
+		this.#flushBesides("wheel");
 		// One notch of a mouse is about 100 pixels; a line is a third of a notch, a page ten notches.
 		const delta = event.deltaY * (event.deltaMode === 1 ? 33 : event.deltaMode === 2 ? 1000 : 1);
 		if (this.#wheel) {
@@ -369,7 +371,6 @@ export class MachineScreenView {
 		clearTimeout(wheel.timer);
 		this.#wheel = null;
 		if (wheel.delta === 0) return;
-		this.#flushText();
 		const steps = Math.min(30, Math.max(1, Math.round(Math.abs(wheel.delta) / 100)));
 		this.#act({ type: "scroll", direction: wheel.delta > 0 ? "down" : "up", steps, x: wheel.x, y: wheel.y });
 	}
@@ -414,8 +415,7 @@ export class MachineScreenView {
 			alt ? "alt" : null,
 			event.shiftKey && (!printable || command || alt) ? "shift" : null,
 		].filter((part): part is string => part !== null);
-		this.#flushText();
-		this.#flushClick();
+		this.#flush();
 		this.#act({ type: "key", keys: [[...modifiers, name].join("+")] });
 	}
 
@@ -423,7 +423,7 @@ export class MachineScreenView {
 	#typed(text: string): void {
 		const clean = text.replace(CONTROL, "");
 		if (!clean) return;
-		this.#flushClick();
+		this.#flushBesides("text");
 		this.#text += clean;
 		clearTimeout(this.#textTimer);
 		if ([...this.#text].length >= TEXT_MAX) this.#flushText();
@@ -443,8 +443,7 @@ export class MachineScreenView {
 		event.preventDefault();
 		event.stopPropagation();
 		if (!text) return;
-		this.#flushText();
-		this.#flushClick();
+		this.#flush();
 		for (const part of machineTexts(text)) this.#act({ type: "type", text: part });
 	}
 
@@ -453,6 +452,15 @@ export class MachineScreenView {
 		this.#flushClick();
 		this.#flushWheel();
 		this.#flushText();
+	}
+
+	/** Input of one kind begins (a press, a wheel turn, typed text): what is gathered of the other kinds goes first, so
+	 * the actions leave in the order the member made them (v233 release review r1, F31). Each kind's start does this, so
+	 * at most one kind is ever gathered at a time, and #flush's order never matters. */
+	#flushBesides(kind: "click" | "wheel" | "text"): void {
+		if (kind !== "click") this.#flushClick();
+		if (kind !== "wheel") this.#flushWheel();
+		if (kind !== "text") this.#flushText();
 	}
 
 	/** Shows a picture once it is decoded; a newer picture that began meanwhile wins. Resolves false when this one was
