@@ -1,12 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemberMachineScreenControl } from "../../../deploy/coding-worker/member-control.ts";
-import { CloudMemberMachineActRefusal, CloudMemberMachineScreenRefusal } from "../src/cloud-machine-command-http.ts";
+import {
+	CloudMemberMachineActRefusal,
+	CloudMemberMachineScreenRefusal,
+	CloudMemberMachineStartRefusal,
+} from "../src/cloud-machine-command-http.ts";
 import {
 	type CloudMemberMachineActRequest,
 	CloudMemberMachineScreenForbidden,
 	type CloudMemberMachineScreenLook,
 	CloudMemberMachineScreenSignIn,
+	type CloudMemberMachineStartRequest,
 	HttpCloudMemberMachineScreenService,
 } from "../src/cloud-member-machine-screen-http.ts";
 
@@ -21,17 +26,24 @@ const token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJtZW1iZXIifQ.c2lnbmF0dXJl";
 async function service(
 	look: (request: CloudMemberMachineScreenLook) => Promise<{ etag: string; png: Buffer | null }>,
 	act?: (request: CloudMemberMachineActRequest) => Promise<{ exitCode: number | null }>,
+	start?: (request: CloudMemberMachineStartRequest) => Promise<{ outcome: "started" | "running" }>,
 ) {
 	const failed = vi.fn();
 	const looked = vi.fn(look);
 	const acted = vi.fn(act ?? (async () => ({ exitCode: 0 })));
-	const http = new HttpCloudMemberMachineScreenService({ look: looked, failed, ...(act ? { act: acted } : {}) });
+	const started = vi.fn(start ?? (async () => ({ outcome: "started" as const })));
+	const http = new HttpCloudMemberMachineScreenService({
+		look: looked,
+		failed,
+		...(act ? { act: acted } : {}),
+		...(start ? { start: started } : {}),
+	});
 	const port = await http.start();
 	cleanups.push(() => http.close());
 	const companyId = randomUUID();
 	const machineId = randomUUID();
 	const url = (suffix = "") => `http://127.0.0.1:${port}/v1/member-machine-screens/${companyId}/${machineId}${suffix}`;
-	return { looked, acted, failed, url, companyId, machineId, port };
+	return { looked, acted, started, failed, url, companyId, machineId, port };
 }
 
 describe("a member's look through the executor's member listener (20260930712000)", () => {
@@ -259,6 +271,86 @@ describe("a member's action through the executor's member listener (202609307130
 	});
 });
 
+describe("a member's start of the desktop through the executor's member listener (20260930714000)", () => {
+	const post = (url: string, body: string, headers: Record<string, string> = {}) =>
+		fetch(url, {
+			method: "POST",
+			headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...headers },
+			body,
+		});
+	it("passes the start and the member's token on, and answers whether the desktop started or ran", async () => {
+		let outcome: "started" | "running" = "started";
+		const s = await service(
+			async () => ({ etag, png: picture }),
+			undefined,
+			async () => ({ outcome }),
+		);
+		const done = await post(s.url("/start"), "{}");
+		expect(done.status).toBe(200);
+		expect(done.headers.get("cache-control")).toBe("no-store");
+		expect(await done.json()).toEqual({ schema: "qorpera.member-machine-start/v1", outcome: "started" });
+		expect(s.started).toHaveBeenLastCalledWith(
+			{ companyId: s.companyId, machineId: s.machineId, token },
+			expect.any(AbortSignal),
+		);
+		outcome = "running";
+		expect(await (await post(s.url("/start"), " { } ")).json()).toEqual({
+			schema: "qorpera.member-machine-start/v1",
+			outcome: "running",
+		});
+		expect(s.looked).not.toHaveBeenCalled();
+	});
+	it("refuses a body that is not `{}` as 400, by method and token first; without the route it is 404", async () => {
+		const s = await service(
+			async () => ({ etag, png: picture }),
+			undefined,
+			async () => ({ outcome: "started" }),
+		);
+		const status = async (response: Promise<Response>) => (await response).status;
+		// What to open is for a later stage: any key today is a bad request.
+		for (const body of ['{"open": "/company/apps/shop"}', "[]", "null", '"x"', "", `{"pad":"${"p".repeat(1100)}"}`])
+			expect(await status(post(s.url("/start"), body)), body.slice(0, 40)).toBe(400);
+		expect(await status(post(s.url("/start"), "{}", { "content-type": "text/plain" }))).toBe(400);
+		expect(await status(fetch(s.url("/start"), { headers: { authorization: `Bearer ${token}` } }))).toBe(405);
+		expect(
+			await status(
+				fetch(s.url("/start"), { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }),
+			),
+		).toBe(401);
+		expect(s.started).not.toHaveBeenCalled();
+		const looksOnly = await service(async () => ({ etag, png: picture }));
+		expect(await status(post(looksOnly.url("/start"), "{}"))).toBe(404);
+	});
+	it("tells refusals by code, a token the database refused as 401, and logs only a fixed code", async () => {
+		let next: unknown;
+		const s = await service(
+			async () => ({ etag, png: picture }),
+			undefined,
+			async () => {
+				throw next;
+			},
+		);
+		const ask = async () => {
+			const response = await post(s.url("/start"), "{}");
+			return { status: response.status, body: await response.text() };
+		};
+		for (const code of [
+			"MACHINE_NOT_RUNNING",
+			"DESKTOP_MACHINE_TOO_SMALL",
+			"DESKTOP_START_TOO_SOON",
+			"DESKTOP_DID_NOT_START",
+		] as const) {
+			next = new CloudMemberMachineStartRefusal(code);
+			expect(await ask()).toEqual({ status: 409, body: JSON.stringify({ code }) });
+		}
+		next = new CloudMemberMachineScreenSignIn();
+		expect((await ask()).status).toBe(401);
+		next = new Error("MEMBER_START_BEGIN_UNCONFIRMED");
+		expect((await ask()).status).toBe(503);
+		expect(s.failed).toHaveBeenLastCalledWith("MEMBER_START_BEGIN_UNCONFIRMED");
+	});
+});
+
 describe("a member's look begun as the member (deploy/coding-worker/member-control.ts)", () => {
 	function control(status: number, body: unknown) {
 		const fetcher = vi.fn<typeof fetch>(
@@ -439,5 +531,73 @@ describe("a member's action begun as the member (deploy/coding-worker/member-con
 		await expect(
 			look.control.begin(token, { companyId: act.companyId, machineId: act.machineId, confirmed: true }, signal),
 		).rejects.toMatchObject({ code: "DESKTOP_MEMBER_IN_CONTROL" });
+	});
+});
+
+describe("a member's start begun as the member (deploy/coding-worker/member-control.ts, 20260930714000)", () => {
+	function control(status: number, body: unknown) {
+		const fetcher = vi.fn<typeof fetch>(
+			async () => new Response(typeof body === "string" ? body : JSON.stringify(body), { status }),
+		);
+		return {
+			fetcher,
+			control: new MemberMachineScreenControl({
+				supabaseUrl: "https://project.supabase.co",
+				publishableKey: "sb_publishable_xn-Yy0QJ5iGEFmsiJGmw7w_JMsDTo8N",
+				fetch: fetcher,
+			}),
+		};
+	}
+	const start = { companyId: randomUUID(), machineId: randomUUID() };
+	const signal = new AbortController().signal;
+	const schema = "qorpera.member-machine-desktop-start/v1";
+
+	it("calls the start's begin as the member, and answers its id, or held", async () => {
+		const startId = randomUUID();
+		const c = control(200, { schema, state: "ok", startId });
+		expect(await c.control.start(token, start, signal)).toEqual({ startId });
+		const [url, init] = c.fetcher.mock.calls[0]!;
+		expect(url).toBe("https://project.supabase.co/rest/v1/rpc/qorpera_member_machine_desktop_start_begin");
+		expect(init).toMatchObject({ method: "POST", redirect: "error", headers: { authorization: `Bearer ${token}` } });
+		expect(JSON.parse(String(init?.body))).toEqual({ p_profile_id: start.companyId, p_machine_id: start.machineId });
+		expect(await control(200, { schema, state: "held" }).control.start(token, start, signal)).toBe("held");
+	});
+
+	it("turns the begin's refusals into the member's, and fails closed on anything else", async () => {
+		for (const reason of [
+			"MACHINE_NOT_RUNNING",
+			"MACHINE_NEEDS_COMPANY_VIEW",
+			"DESKTOP_MACHINE_TOO_SMALL",
+			"DESKTOP_START_TOO_SOON",
+		]) {
+			const error = await control(200, { schema, state: "refused", reason })
+				.control.start(token, start, signal)
+				.catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(CloudMemberMachineStartRefusal);
+			expect(error).toMatchObject({ code: reason });
+		}
+		for (const body of [
+			{ schema, state: "refused", reason: "DESKTOP_BUSY" },
+			{ schema, state: "ok", startId: "x" },
+			{ schema, state: "ok", startId: randomUUID(), more: 1 },
+			{ schema: "qorpera.member-machine-desktop/v1", state: "held" },
+		])
+			await expect(control(200, body).control.start(token, start, signal), JSON.stringify(body)).rejects.toThrow(
+				"MEMBER_START_BEGIN_INVALID",
+			);
+		await expect(control(401, {}).control.start(token, start, signal)).rejects.toBeInstanceOf(
+			CloudMemberMachineScreenSignIn,
+		);
+		await expect(control(403, {}).control.start(token, start, signal)).rejects.toBeInstanceOf(
+			CloudMemberMachineScreenForbidden,
+		);
+		const never = control(200, {});
+		await expect(never.control.start(token, { ...start, machineId: "x" }, signal)).rejects.toThrow(
+			"MEMBER_START_BEGIN_INVALID",
+		);
+		await expect(never.control.start("not a token", start, signal)).rejects.toBeInstanceOf(
+			CloudMemberMachineScreenSignIn,
+		);
+		expect(never.fetcher).not.toHaveBeenCalled();
 	});
 });

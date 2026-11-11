@@ -369,6 +369,76 @@ export function parseCloudMemberMachineActAnswer(
 	return Object.freeze({ exitCode: answer.exitCode as number | null });
 }
 
+// /v1/machine-commands/member-start (20260930714000): a member turns a desktop computer's screen on, sent once by the
+// executor that took the member's request (cloud-member-machine-screen-http.ts) to the executor of the machine's node, on
+// the peer listener only. It carries the single-use id SQL gave the start (qorpera_member_machine_desktop_start_begin);
+// the receiving executor reads SQL again, serves the start, and only ever runs it locally: the image's own
+// `desktop start`. The answer is whether the desktop started or ran already, or why it did not.
+export const CLOUD_MEMBER_MACHINE_START_HTTP_SCHEMA = "qorpera.member-machine-start-http/v1";
+export const CLOUD_MEMBER_MACHINE_START_SCHEMA = "qorpera.member-machine-start-answer/v1";
+export interface CloudMemberMachineStartPeerRequest {
+	readonly schema: typeof CLOUD_MEMBER_MACHINE_START_HTTP_SCHEMA;
+	readonly startId: string;
+}
+/** The desktop runs now: started by this start, or running already (a member holds it, or it ran). */
+export interface CloudMemberMachineStart {
+	readonly outcome: "started" | "running";
+}
+/** Why a member's start did not end with a running desktop, sent back as 409 with its code: the machine is not running,
+ * its disk has had a company folder view the member (or the agent it was started by) may not see, it is too small for a
+ * desktop, a start of it began less than 5 seconds ago, the machine restarted, its image has no desktop, or the desktop
+ * did not start (the helper failed, or its time ran out). */
+export const CLOUD_MEMBER_MACHINE_START_REFUSALS = [
+	"MACHINE_NOT_RUNNING",
+	"MACHINE_NEEDS_COMPANY_VIEW",
+	"DESKTOP_MACHINE_TOO_SMALL",
+	"DESKTOP_START_TOO_SOON",
+	"MACHINE_BOOT_CHANGED",
+	"MACHINE_IMAGE_WITHOUT_SCREEN",
+	"DESKTOP_DID_NOT_START",
+] as const;
+export type CloudMemberMachineStartRefusalCode = (typeof CLOUD_MEMBER_MACHINE_START_REFUSALS)[number];
+export class CloudMemberMachineStartRefusal extends Error {
+	readonly code: CloudMemberMachineStartRefusalCode;
+	constructor(code: CloudMemberMachineStartRefusalCode) {
+		super(code);
+		this.code = code;
+	}
+}
+export function isCloudMemberMachineStartRefusal(code: unknown): code is CloudMemberMachineStartRefusalCode {
+	return (CLOUD_MEMBER_MACHINE_START_REFUSALS as readonly unknown[]).includes(code);
+}
+export function parseCloudMemberMachineStartPeerRequest(value: unknown): CloudMemberMachineStartPeerRequest {
+	const input = record(value, ["schema", "startId"]);
+	if (
+		input.schema !== CLOUD_MEMBER_MACHINE_START_HTTP_SCHEMA ||
+		typeof input.startId !== "string" ||
+		!UUID.test(input.startId)
+	)
+		throw new Error(ERROR);
+	return Object.freeze({ schema: CLOUD_MEMBER_MACHINE_START_HTTP_SCHEMA, startId: input.startId });
+}
+/** The peer's JSON answer to exactly this request. */
+export function cloudMemberMachineStartAnswer(
+	request: CloudMemberMachineStartPeerRequest,
+	start: CloudMemberMachineStart,
+): { schema: string; startId: string; outcome: string } {
+	return { schema: CLOUD_MEMBER_MACHINE_START_SCHEMA, startId: request.startId, outcome: start.outcome };
+}
+export function parseCloudMemberMachineStartAnswer(
+	request: CloudMemberMachineStartPeerRequest,
+	value: unknown,
+): CloudMemberMachineStart {
+	const answer = record(value, ["schema", "startId", "outcome"]);
+	if (
+		answer.schema !== CLOUD_MEMBER_MACHINE_START_SCHEMA ||
+		answer.startId !== request.startId ||
+		(answer.outcome !== "started" && answer.outcome !== "running")
+	)
+		throw new Error(ERROR);
+	return Object.freeze({ outcome: answer.outcome });
+}
+
 /** Host-side: the fixed gateway to the executor of the machine's node. */
 export interface CloudMachineCommandGateway {
 	start(
@@ -930,6 +1000,8 @@ export function createHttpMemberMachineScreenPeer(options: {
 		request: { actionId: string; action: MachineScreenAction },
 		signal: AbortSignal,
 	): Promise<CloudMemberMachineAct>;
+	/** A member's start of the desktop (20260930714000), sent once; its refusal comes back as the same refusal. */
+	memberStart(request: { startId: string }, signal: AbortSignal): Promise<CloudMemberMachineStart>;
 } {
 	const base = origin(options.url, options.allowLoopback ?? false);
 	if (!validToken(options.token)) throw new Error(ERROR);
@@ -1043,6 +1115,59 @@ export function createHttpMemberMachineScreenPeer(options: {
 				throw new Error(ERROR);
 			}
 		},
+		memberStart: async (input: { startId: string }, signal: AbortSignal) => {
+			try {
+				const admitted = parseCloudMemberMachineStartPeerRequest({
+					schema: CLOUD_MEMBER_MACHINE_START_HTTP_SCHEMA,
+					startId: input.startId,
+				});
+				return await withCloudDeadline(
+					async (requestSignal) => {
+						const response = await transport(`${base}/v1/machine-commands/member-start`, {
+							method: "POST",
+							redirect: "error",
+							signal: requestSignal,
+							headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json" },
+							body: JSON.stringify(admitted),
+						}).catch(() => {
+							throw new CloudMachineCommandUnanswered();
+						});
+						if (response.status >= 500) {
+							void response.body?.cancel().catch(() => undefined);
+							throw new CloudMachineCommandUnanswered();
+						}
+						if (response.status === 409) {
+							const { code } = JSON.parse(
+								new TextDecoder("utf8", { fatal: true }).decode(
+									await readBoundedCloudResponse(response, 4096, requestSignal),
+								),
+							) as { code?: unknown };
+							if (isCloudMemberMachineStartRefusal(code)) throw new CloudMemberMachineStartRefusal(code);
+							throw new Error(ERROR);
+						}
+						if (response.status !== 200) {
+							void response.body?.cancel().catch(() => undefined);
+							throw new Error(ERROR);
+						}
+						return parseCloudMemberMachineStartAnswer(
+							admitted,
+							JSON.parse(
+								new TextDecoder("utf8", { fatal: true }).decode(
+									await readBoundedCloudResponse(response, 4096, requestSignal),
+								),
+							),
+						);
+					},
+					SCREEN_DEADLINE_MS,
+					signal,
+				);
+			} catch (error) {
+				if (error instanceof CloudMachineCommandUnanswered || error instanceof CloudRequestTimeoutError)
+					throw new CloudMachineCommandUnanswered();
+				if (error instanceof CloudMemberMachineStartRefusal) throw error;
+				throw new Error(ERROR);
+			}
+		},
 	});
 }
 
@@ -1094,6 +1219,9 @@ export interface CloudMachineCommandServiceOptions {
 	/** A member's action (20260930713000), on the peer listener only: authorized in SQL and run on this node; a refusal
 	 * is a CloudMemberMachineActRefusal. */
 	memberAct?(request: CloudMemberMachineActPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineAct>;
+	/** A member's start of the desktop (20260930714000), on the peer listener only: authorized in SQL and run on this
+	 * node; a refusal is a CloudMemberMachineStartRefusal. */
+	memberStart?(request: CloudMemberMachineStartPeerRequest, signal: AbortSignal): Promise<CloudMemberMachineStart>;
 }
 export async function serveCloudMachineCommand(
 	options: CloudMachineCommandServiceOptions,

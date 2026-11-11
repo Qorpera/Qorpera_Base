@@ -4,7 +4,7 @@ import { isCloudMachineFolderLost } from "../../packages/contracts/src/cloud-mac
 import {
 	CLOUD_MACHINE_TOOL_VERSION, type CloudMachineCodingValueHttpRequest, CloudMachineCodingValueRefusal, type CloudMachineCommandHttpRequest,
 	cloudMachineCommandHead, CloudMachineCommandRefusal, type CloudMachineScreenHttpRequest, CloudMachineScreenRefusal,
-	CloudMemberMachineActRefusal, CloudMemberMachineScreenRefusal, cloudMemberMachineActRecord,
+	CloudMemberMachineActRefusal, CloudMemberMachineScreenRefusal, CloudMemberMachineStartRefusal, cloudMemberMachineActRecord,
 } from "../../packages/runtime/src/cloud-machine-command-http.ts";
 import { type MachineScreenAction, parseMachineScreenAction } from "../../packages/runtime/src/cloud-machine-screen.ts";
 import { parseCloudNativeToolAuthority } from "../../packages/runtime/src/cloud-native-tool-authority.ts";
@@ -254,6 +254,53 @@ export async function authorizeMemberMachineScreen(
 
 /** What SQL says about one member's action on a desktop (20260930713000): where the machine runs, and whether this
  * executor serves it (only the machine's own does, once; one that forwards reads it without serving it). */
+export interface MemberMachineStartAuthority {
+	startId: string;
+	machineId: string;
+	placementId: string;
+	bootId: string;
+	executorOwner: string;
+	providerId: string;
+	userId: string;
+	served: boolean;
+	/** A member holds the desktop (20260930713000): it runs, and nothing is to run. */
+	held: boolean;
+}
+
+/** A start's single-use id, begun as the member, read again live in SQL (qorpera_member_machine_desktop_start_authority,
+ * 20260930714000) by this executor (`owner`, `providerId`). A machine that is not running, a disk the member may not see
+ * and a machine too small for a desktop are the member's refusals; anything else SQL refuses fails the start. */
+export async function authorizeMemberMachineStart(
+	control: { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> },
+	request: { startId: string; owner: string; providerId: string },
+	signal: AbortSignal,
+): Promise<MemberMachineStartAuthority> {
+	if (!UUID.test(request.startId)) throw new Error("MEMBER_START_AUTHORITY_INVALID");
+	const value = await control.call("qorpera_member_machine_desktop_start_authority", {
+		p_start_id: request.startId, p_owner: request.owner, p_provider_id: request.providerId,
+	}, signal);
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("MEMBER_START_AUTHORITY_INVALID");
+	const result = value as Record<string, unknown>;
+	if (result.schema !== "qorpera.member-machine-desktop-start-authority/v1") throw new Error("MEMBER_START_AUTHORITY_INVALID");
+	if (result.state === "refused" && (result.reason === "MACHINE_NOT_RUNNING" || result.reason === "MACHINE_NEEDS_COMPANY_VIEW" ||
+		result.reason === "DESKTOP_MACHINE_TOO_SMALL"))
+		throw new CloudMemberMachineStartRefusal(result.reason);
+	if (result.state !== "authorized" ||
+		Object.keys(result).sort().join() !== "bootId,executorOwner,held,machineId,placementId,providerId,schema,served,startId,state,userId" ||
+		result.startId !== request.startId ||
+		![result.machineId, result.placementId, result.bootId, result.userId].every((id) => typeof id === "string" && UUID.test(id)) ||
+		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
+		typeof result.providerId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(result.providerId) ||
+		typeof result.held !== "boolean" ||
+		// Served only by the machine's own executor: what SQL says and what this executor is agree.
+		result.served !== (result.executorOwner === request.owner && result.providerId === request.providerId))
+		throw new Error("MEMBER_START_AUTHORITY_INVALID");
+	signal.throwIfAborted();
+	return { startId: result.startId, machineId: result.machineId as string, placementId: result.placementId as string,
+		bootId: result.bootId as string, executorOwner: result.executorOwner, providerId: result.providerId,
+		userId: result.userId as string, served: result.served as boolean, held: result.held };
+}
+
 export interface MemberMachineActAuthority {
 	actionId: string;
 	machineId: string;

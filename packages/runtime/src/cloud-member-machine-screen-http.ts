@@ -5,6 +5,8 @@ import {
 	CloudMemberMachineActRefusal,
 	type CloudMemberMachineScreen,
 	CloudMemberMachineScreenRefusal,
+	type CloudMemberMachineStart,
+	CloudMemberMachineStartRefusal,
 	parseCloudMemberMachineAction,
 } from "./cloud-machine-command-http.ts";
 import type { MachineScreenAction } from "./cloud-machine-screen.ts";
@@ -27,10 +29,17 @@ import type { MachineScreenAction } from "./cloud-machine-screen.ts";
 // (200, {"schema": "qorpera.member-machine-act/v1", "exitCode"}) or why it did not run (409 with a fixed code); a body
 // that is not one is 400. What the member typed is in that body: it is passed to the machine and nowhere else, never
 // logged, stored, answered or put in an error.
+// An owner, admin or contributor turns the desktop on (20260930714000) with
+//   POST /v1/member-machine-screens/<companyId>/<machineId>/start   {}
+// (application/json, at most 1 KiB; the body is an empty object now: a later stage may say what to open there, and any
+// key today is a bad request, 400). The answer is 200 {"schema": "qorpera.member-machine-start/v1", "outcome":
+// "started" | "running"} or why the desktop does not run (409 with a fixed code).
 
-/** A company's and a machine's ids, lower-case as the database writes them, and `/watching` or `/act`. */
+/** A company's and a machine's ids, lower-case as the database writes them, and `/watching`, `/act` or `/start`. */
 const UUID = UUID_PATTERN.source.slice(1, -1);
-const ROUTE = new RegExp(`^/v1/member-machine-screens/(${UUID})/(${UUID})(/watching|/act)?$`);
+const ROUTE = new RegExp(`^/v1/member-machine-screens/(${UUID})/(${UUID})(/watching|/act|/start)?$`);
+/** A member's start: `{}` today. */
+const START_BODY_BYTES = 1024;
 /** A member's action: one action, a text of at most 500 characters in it. */
 const ACT_BODY_BYTES = 16384;
 const BEARER = /^Bearer ([A-Za-z0-9._~-]{1,8192})$/;
@@ -62,6 +71,13 @@ export interface CloudMemberMachineActRequest {
 	/** The seat of that hold (F26): which seating of the member under that epoch. */
 	readonly seat: number;
 }
+/** One start of the desktop, as the listener read it from the member's request. */
+export interface CloudMemberMachineStartRequest {
+	readonly companyId: string;
+	readonly machineId: string;
+	/** The member's bearer token, passed on to the database and nowhere else. */
+	readonly token: string;
+}
 /** The database did not take the member's token (401). */
 export class CloudMemberMachineScreenSignIn extends Error {
 	constructor() {
@@ -79,6 +95,8 @@ export interface CloudMemberMachineScreenServiceOptions {
 	look(request: CloudMemberMachineScreenLook, signal: AbortSignal): Promise<CloudMemberMachineScreen>;
 	/** A member's action on a desktop they hold (20260930713000); without it the route is 404. */
 	act?(request: CloudMemberMachineActRequest, signal: AbortSignal): Promise<CloudMemberMachineAct>;
+	/** A member's start of the desktop (20260930714000); without it the route is 404. */
+	start?(request: CloudMemberMachineStartRequest, signal: AbortSignal): Promise<CloudMemberMachineStart>;
 	host?: "127.0.0.1" | "::1";
 	port?: number;
 	/** A look that failed for another reason than the member's, by its fixed code: for the executor's log. */
@@ -121,6 +139,26 @@ async function readAction(
 	}
 }
 
+/** The member's start: a JSON body of at most START_BODY_BYTES that is exactly `{}` (never guessed: anything else is a bad
+ * request). */
+async function readStart(request: IncomingMessage, signal: AbortSignal): Promise<boolean> {
+	if (request.headers["content-type"] !== "application/json") return false;
+	const chunks: Buffer[] = [];
+	let bytes = 0;
+	for await (const chunk of request) {
+		signal.throwIfAborted();
+		bytes += (chunk as Buffer).length;
+		if (bytes > START_BODY_BYTES) return false;
+		chunks.push(chunk as Buffer);
+	}
+	try {
+		const body = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks))) as unknown;
+		return !!body && typeof body === "object" && !Array.isArray(body) && Object.keys(body).length === 0;
+	} catch {
+		return false;
+	}
+}
+
 function replyJson(reply: ServerResponse, status: number, value: Record<string, string | number | null>): void {
 	const body = JSON.stringify(value);
 	reply.writeHead(status, {
@@ -141,6 +179,7 @@ export class HttpCloudMemberMachineScreenService {
 		if (
 			typeof options.look !== "function" ||
 			(options.act !== undefined && typeof options.act !== "function") ||
+			(options.start !== undefined && typeof options.start !== "function") ||
 			(options.host !== undefined && !["127.0.0.1", "::1"].includes(options.host)) ||
 			!Number.isSafeInteger(options.port ?? 0) ||
 			(options.port ?? 0) < 0 ||
@@ -208,11 +247,12 @@ export class HttpCloudMemberMachineScreenService {
 		try {
 			const route = ROUTE.exec(request.url ?? "");
 			const acting = route?.[3] === "/act";
-			if (!route || (acting && !this.#options.act)) {
+			const starting = route?.[3] === "/start";
+			if (!route || (acting && !this.#options.act) || (starting && !this.#options.start)) {
 				replyJson(reply, 404, { error: "member_route_unavailable" });
 				return;
 			}
-			if (request.method !== (acting ? "POST" : "GET")) {
+			if (request.method !== (acting || starting ? "POST" : "GET")) {
 				replyJson(reply, 405, { error: "method_not_allowed" });
 				return;
 			}
@@ -240,6 +280,19 @@ export class HttpCloudMemberMachineScreenService {
 				);
 				controller.signal.throwIfAborted();
 				replyJson(reply, 200, { schema: "qorpera.member-machine-act/v1", exitCode: done.exitCode });
+				return;
+			}
+			if (starting && this.#options.start) {
+				if (!(await readStart(request, controller.signal))) {
+					replyJson(reply, 400, { error: "member_start_invalid" });
+					return;
+				}
+				const done = await this.#options.start(
+					{ companyId: route[1] as string, machineId: route[2] as string, token: bearer[1] as string },
+					controller.signal,
+				);
+				controller.signal.throwIfAborted();
+				replyJson(reply, 200, { schema: "qorpera.member-machine-start/v1", outcome: done.outcome });
 				return;
 			}
 			const asked = request.headers["if-none-match"];
@@ -273,7 +326,11 @@ export class HttpCloudMemberMachineScreenService {
 				reply.destroy();
 				return;
 			}
-			if (error instanceof CloudMemberMachineScreenRefusal || error instanceof CloudMemberMachineActRefusal)
+			if (
+				error instanceof CloudMemberMachineScreenRefusal ||
+				error instanceof CloudMemberMachineActRefusal ||
+				error instanceof CloudMemberMachineStartRefusal
+			)
 				replyJson(reply, 409, { code: error.code });
 			else if (error instanceof CloudMemberMachineScreenSignIn)
 				replyJson(reply, 401, { error: "member_sign_in_required" });

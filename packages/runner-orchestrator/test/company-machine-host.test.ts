@@ -18,10 +18,12 @@ import { type LxdCompanyMachineBinding, lxdCompanyMachineName, lxdCompanyMachine
 import {
 	COMPANY_MACHINE_CODING_VALUE_HELPER,
 	COMPANY_MACHINE_MEMBER_LOOK,
+	COMPANY_MACHINE_MEMBER_START,
 	COMPANY_MACHINE_MEMBER_TYPE,
 	COMPANY_MACHINE_SCREEN_HELPER,
 	type CompanyMachineCommand,
 	type CompanyMachineEntry,
+	companyMachineMemberStartCommand,
 	companyMachineMemberTypeCommand,
 	LxdCompanyMachineHost,
 } from "../src/company-machine-host.ts";
@@ -4768,5 +4770,136 @@ describe("a member's action on a desktop (20260930713000)", () => {
 			expect(journal.stdout).toContain("qorpera member text");
 		},
 		20_000,
+	);
+});
+
+describe("a member's start of a desktop (20260930714000)", () => {
+	const answer = (exitCode: number) => ({ exitCode, stdout: Buffer.alloc(0), stderrTail: Buffer.alloc(0) });
+	const start = (startId = id(40)) => ({ placementId: id(6), bootId: id(7), startId });
+	async function piped(
+		reply: (given: LxdExecPipeRequest, signal: AbortSignal) => Promise<ReturnType<typeof answer>>,
+		options: Parameters<typeof fixture>[0] = {},
+	) {
+		const f = await fixture(options);
+		const calls: LxdExecPipeRequest[] = [];
+		const pipe = vi.fn(async (_project: string, _name: string, given: LxdExecPipeRequest, signal: AbortSignal) => {
+			calls.push(given);
+			return reply(given, signal);
+		});
+		Object.assign(f.client, { execInstancePipe: pipe });
+		return { f, pipe, calls };
+	}
+
+	it("runs the image's own `desktop start` in a transient unit of its own, with a limit that never reaches the desktop", async () => {
+		const { f, calls } = await piped(async () => answer(0));
+		expect(await f.host.memberStart(start(), f.signal)).toEqual({ outcome: "started" });
+		expect(calls[0]!.command).toEqual(companyMachineMemberStartCommand(id(7)));
+		expect(calls[0]!.command).toEqual([
+			"/usr/bin/systemd-run",
+			"--quiet",
+			"--wait",
+			"--collect",
+			"--expand-environment=no",
+			"--slice=qorpera-machine.slice",
+			"-p",
+			"RuntimeMaxSec=20",
+			"-p",
+			"KillMode=control-group",
+			"-p",
+			"KillSignal=SIGKILL",
+			"--description=qorpera member desktop start",
+			"--setenv=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+			"--setenv=HOME=/root",
+			"--setenv=LANG=C.UTF-8",
+			"--setenv=USER=root",
+			"--",
+			"/bin/sh",
+			"-c",
+			COMPANY_MACHINE_MEMBER_START,
+			id(7),
+		]);
+		expect(calls[0]).toMatchObject({ environment: {}, cwd: "/", stderrTailBytes: 0 });
+		expect(calls[0]!.stdin).toBeUndefined();
+		// The script: the boot first, the helper there, whether the desktop ran, then `desktop start` with no argument.
+		expect(COMPANY_MACHINE_MEMBER_START.split("\n")[0]).toContain("|| exit 97");
+		expect(COMPANY_MACHINE_MEMBER_START).toContain("desktop start >/dev/null 2>&1");
+	});
+
+	it("maps the script's exit to a fixed outcome, and anything else to a desktop that did not start", async () => {
+		for (const [exitCode, outcome] of [
+			[0, { outcome: "started" }],
+			[92, { outcome: "running" }],
+			[3, { refused: "DESKTOP_MACHINE_TOO_SMALL" }],
+			[97, { refused: "MACHINE_BOOT_CHANGED" }],
+			[98, { refused: "MACHINE_IMAGE_WITHOUT_SCREEN" }],
+			[1, { refused: "DESKTOP_DID_NOT_START" }],
+			[137, { refused: "DESKTOP_DID_NOT_START" }],
+			[2, { refused: "DESKTOP_DID_NOT_START" }],
+		] as const) {
+			const { f } = await piped(async () => answer(exitCode));
+			expect(await f.host.memberStart(start(), f.signal), String(exitCode)).toEqual(outcome);
+		}
+		// Not answered in time: the unit ends at its own limit; the start did not end with a desktop.
+		const slow = await piped(async () => {
+			throw new Error("LXD exec stalled");
+		});
+		expect(await slow.f.host.memberStart(start(), slow.f.signal)).toEqual({ refused: "DESKTOP_DID_NOT_START" });
+		// Malformed ids run nothing.
+		const never = await piped(async () => answer(0));
+		await expect(never.f.host.memberStart({ ...start(), bootId: "boot" }, never.f.signal)).rejects.toThrow(
+			"COMPANY_MACHINE_MEMBER_START_INVALID",
+		);
+		expect(never.pipe).not.toHaveBeenCalled();
+	});
+
+	it("is never refused because the desktop is busy: an action on its way holds nothing a start needs", async () => {
+		let release = () => {};
+		const held = new Promise<ReturnType<typeof answer>>((resolve) => {
+			release = () => resolve(answer(0));
+		});
+		const { f, pipe } = await piped(async (given) =>
+			given.command.includes(COMPANY_MACHINE_MEMBER_START) ? answer(0) : held,
+		);
+		const acting = f.host.memberAct(
+			{ placementId: id(6), bootId: id(7), actionId: id(31), action: { type: "key", keys: ["Return"] } },
+			f.signal,
+		);
+		await vi.waitFor(() => expect(pipe).toHaveBeenCalledTimes(1));
+		expect(await f.host.memberStart(start(), f.signal)).toEqual({ outcome: "started" });
+		release();
+		await acting.catch(() => undefined);
+	});
+
+	it.skipIf(process.platform !== "linux")(
+		"exits as the script says in a real shell: another boot, no desktop, started, running, too small, failed",
+		async () => {
+			const bin = await realpath(await mkdtemp(join(tmpdir(), "member-start-")));
+			roots.push(bin);
+			const tool = async (name: string, body: string) => {
+				await writeFile(join(bin, name), `#!/bin/sh\n${body}\n`);
+				await chmod(join(bin, name), 0o755);
+			};
+			const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+			const run = (bootId = boot) =>
+				spawnSync("/bin/sh", ["-c", COMPANY_MACHINE_MEMBER_START, bootId], { env: { PATH: bin } }).status;
+			expect(run(randomUUID())).toBe(97);
+			expect(run()).toBe(98);
+			// The desktop off: `desktop start` starts it (its arguments recorded).
+			await tool("systemctl", "exit 3");
+			await tool("xdpyinfo", "exit 1");
+			await tool("desktop", `echo "$*" > ${join(bin, "asked")}; exit 0`);
+			expect(run()).toBe(0);
+			expect(readFileSync(join(bin, "asked"), "utf8")).toBe("start\n");
+			// Running already: still asked (it only touches its idle clock), and told apart.
+			await tool("systemctl", "exit 0");
+			await tool("xdpyinfo", "exit 0");
+			expect(run()).toBe(92);
+			// Its own refusals: too small, and a failure.
+			await tool("systemctl", "exit 3");
+			await tool("desktop", "echo too small >&2; exit 3");
+			expect(run()).toBe(3);
+			await tool("desktop", "echo journal tail >&2; exit 1");
+			expect(run()).toBe(1);
+		},
 	);
 });

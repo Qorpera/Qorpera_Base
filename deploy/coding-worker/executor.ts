@@ -35,7 +35,8 @@ import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../pack
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
 import {
-	localMachineCodingValue, localMachineScreen, localMachineWake, localMemberMachineAct, localMemberMachineScreen, MachineCommandRouter,
+	localMachineCodingValue, localMachineScreen, localMachineWake, localMemberMachineAct, localMemberMachineScreen,
+	localMemberMachineStart, MachineCommandRouter,
 	machineCommandRoutes,
 } from "./machine-command-routing.ts";
 import { MemberMachineScreenControl } from "./member-control.ts";
@@ -377,7 +378,10 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			signal: AbortSignal) => memberControl.begin(token, look, signal),
 		// A member's action (20260930713000) is begun as the member too, recorded without its text.
 		memberActBegin: (token: string, act: { companyId: string; machineId: string; action: MachineScreenAction; epoch: number;
-			seat: number }, signal: AbortSignal) => memberControl.act(token, act, signal) } : {}),
+			seat: number }, signal: AbortSignal) => memberControl.act(token, act, signal),
+		// A member's start of the desktop (20260930714000) is begun as the member too.
+		memberStartBegin: (token: string, start: { companyId: string; machineId: string }, signal: AbortSignal) =>
+			memberControl.start(token, start, signal) } : {}),
 		...(machineHost ? {
 			executeLocal: (request, authority, signal) => machineHost.command(
 				{ machineId: authority.machineId, placementId: authority.placementId, commandId: request.input.commandId,
@@ -392,6 +396,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			screenLocal: localMachineScreen(machineHost),
 			memberScreenLocal: localMemberMachineScreen(machineHost),
 			memberActLocal: localMemberMachineAct(machineHost),
+			memberStartLocal: localMemberMachineStart(machineHost),
 		} : {}),
 	});
 	const router = new CodingCommandRouter({
@@ -437,6 +442,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		look: (look, signal) => machineRouter.memberScreen(look, signal),
 		// A member's action (20260930713000): what they typed goes to the machine and nowhere else, never to a log.
 		act: (act, signal) => machineRouter.memberAct(act, signal),
+		// A member's start of the desktop (20260930714000).
+		start: (start, signal) => machineRouter.memberStart(start, signal),
 		failed: (code) => console.error(JSON.stringify({ event: "member-machine-screen-error", code })),
 	}) : undefined;
 	let executor: CloudCodingExecutor | undefined;

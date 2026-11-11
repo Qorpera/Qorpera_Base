@@ -4,6 +4,8 @@ import {
 	type CloudMemberMachineActRefusalCode,
 	CloudMemberMachineScreenRefusal,
 	type CloudMemberMachineScreenRefusalCode,
+	CloudMemberMachineStartRefusal,
+	type CloudMemberMachineStartRefusalCode,
 	cloudMemberMachineActRecord,
 } from "../../packages/runtime/src/cloud-machine-command-http.ts";
 import type { MachineScreenAction } from "../../packages/runtime/src/cloud-machine-screen.ts";
@@ -23,6 +25,13 @@ const ACT_REFUSED = new Set([
 	"MACHINE_NEEDS_COMPANY_VIEW",
 	"DESKTOP_MEMBER_IN_CONTROL",
 	"DESKTOP_CONTROL_ENDED",
+]);
+/** What the begin of a start answers one it refuses (20260930714000). */
+const START_REFUSED = new Set([
+	"MACHINE_NOT_RUNNING",
+	"MACHINE_NEEDS_COMPANY_VIEW",
+	"DESKTOP_MACHINE_TOO_SMALL",
+	"DESKTOP_START_TOO_SOON",
 ]);
 
 /** The member's side of a look at a desktop (20260930712000) and of an action on one they hold (20260930713000): exactly
@@ -120,6 +129,34 @@ export class MemberMachineScreenControl {
 			answer.state === "refused" && typeof answer.reason === "string" && ACT_REFUSED.has(answer.reason))
 			throw new CloudMemberMachineActRefusal(answer.reason as CloudMemberMachineActRefusalCode);
 		throw new Error("MEMBER_ACT_BEGIN_INVALID");
+	}
+	/** Begins a start of the desktop as the member (qorpera_member_machine_desktop_start_begin, 20260930714000): its
+	 * single-use id; `held` when a member holds the desktop (it runs, and nothing is to run); or the refusal the window
+	 * acts on. Sign-in and forbidden as for a look. */
+	async start(
+		token: string,
+		start: { companyId: string; machineId: string },
+		signal: AbortSignal,
+	): Promise<{ startId: string } | "held"> {
+		if (!TOKEN.test(token)) throw new CloudMemberMachineScreenSignIn();
+		if (!UUID.test(start.companyId) || !UUID.test(start.machineId)) throw new Error("MEMBER_START_BEGIN_INVALID");
+		const answer = await this.#call(
+			token,
+			"qorpera_member_machine_desktop_start_begin",
+			{ p_profile_id: start.companyId, p_machine_id: start.machineId },
+			"MEMBER_START_BEGIN",
+			signal,
+		);
+		const keys = Object.keys(answer).sort().join();
+		if (answer.schema === "qorpera.member-machine-desktop-start/v1" && keys === "schema,startId,state" &&
+			answer.state === "ok" && typeof answer.startId === "string" && UUID.test(answer.startId))
+			return { startId: answer.startId };
+		if (answer.schema === "qorpera.member-machine-desktop-start/v1" && keys === "schema,state" && answer.state === "held")
+			return "held";
+		if (answer.schema === "qorpera.member-machine-desktop-start/v1" && keys === "reason,schema,state" &&
+			answer.state === "refused" && typeof answer.reason === "string" && START_REFUSED.has(answer.reason))
+			throw new CloudMemberMachineStartRefusal(answer.reason as CloudMemberMachineStartRefusalCode);
+		throw new Error("MEMBER_START_BEGIN_INVALID");
 	}
 	/** One RPC as the member; its JSON object, or a fixed code (`word`_UNCONFIRMED, sign-in, forbidden). */
 	async #call(

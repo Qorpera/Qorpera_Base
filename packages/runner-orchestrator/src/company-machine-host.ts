@@ -244,6 +244,81 @@ const MEMBER_TYPE_EXITS: Readonly<Record<number, string>> = Object.freeze({
 	97: "MACHINE_BOOT_CHANGED",
 	98: "MACHINE_IMAGE_WITHOUT_SCREEN",
 });
+/** A member turns the desktop on (20260930714000): the image's own `desktop start` (/usr/local/bin/desktop, on the
+ * unit's PATH), with no arguments, as root, on the boot named in `$0` (else 97). The helper must be there (else 98, an
+ * image without a desktop). It takes the desktop's
+ * own lock (`/run/qorpera-desktop.lock`: it waits for an agent's `desktop` command that holds it), checks the machine's
+ * size only when the desktop is off (exit 3: too small), runs `systemctl start qorpera-machine-desktop.service`, and
+ * waits until the display answers, the session runs and the screen is drawn (about 3 to 6 s); on a desktop that runs
+ * it only touches its idle clock. Whether the desktop ran before is read first, without the lock, as the agent's helper
+ * reads it (`desktop status` alone takes no lock either): 92 then, 0 when this start started it. Its output goes
+ * nowhere: a failure is told by a fixed code. Plain sh. It runs in a transient unit of its own
+ * (companyMachineMemberStartCommand). */
+export const COMPANY_MACHINE_MEMBER_START = [
+	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97',
+	"command -v desktop >/dev/null 2>&1 || exit 98",
+	"running=0",
+	"{ systemctl is-active --quiet qorpera-machine-desktop.service && DISPLAY=:1 xdpyinfo >/dev/null 2>&1; } && running=1",
+	"desktop start >/dev/null 2>&1",
+	"code=$?",
+	'[ "$code" = 0 ] && [ "$running" = 1 ] && exit 92',
+	'exit "$code"',
+].join("\n");
+/** A member's start runs at most this long in the machine (its unit's RuntimeMaxSec): the helper waits up to about 10 s
+ * for the display, 10 s for the session and 6 s for the drawn screen, after its lock; the member bridge gives a request
+ * 25 s. The desktop itself is a unit of its own (`systemctl start`), outside this unit's control group: the limit and
+ * KillMode end the script and what it waits with, never a desktop that started. */
+const MEMBER_START_UNIT_SECONDS = 20;
+/** The executor's own deadline for a start: the unit's limit and the way back. */
+const MEMBER_START_MS = 22000;
+/** What a start's unit is called in the journal: a fixed few words. */
+const MEMBER_START_DESCRIPTION = "qorpera member desktop start";
+/**
+ * How a member's start runs (20260930714000): COMPANY_MACHINE_MEMBER_START as a transient service, as a member's typed
+ * text runs (companyMachineMemberTypeCommand), so systemd ends it at its limit with everything it started in its own
+ * control group (the script, the helper, the helper's `systemctl`, `xdpyinfo`, `wmctrl`, `scrot` and `sleep`), also when
+ * the executor cut its client off. The desktop's own service is started by systemd outside that group and runs on.
+ * `path` and `slice` are the tests' own (stand-in tools).
+ */
+export function companyMachineMemberStartCommand(
+	bootId: string,
+	options: { seconds?: number; path?: string; slice?: string } = {},
+): string[] {
+	return [
+		"/usr/bin/systemd-run",
+		"--quiet",
+		"--wait",
+		"--collect",
+		"--expand-environment=no",
+		`--slice=${options.slice ?? "qorpera-machine.slice"}`,
+		"-p",
+		`RuntimeMaxSec=${options.seconds ?? MEMBER_START_UNIT_SECONDS}`,
+		"-p",
+		"KillMode=control-group",
+		"-p",
+		"KillSignal=SIGKILL",
+		`--description=${MEMBER_START_DESCRIPTION}`,
+		`--setenv=PATH=${options.path ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}`,
+		"--setenv=HOME=/root",
+		"--setenv=LANG=C.UTF-8",
+		"--setenv=USER=root",
+		"--",
+		"/bin/sh",
+		"-c",
+		COMPANY_MACHINE_MEMBER_START,
+		bootId,
+	];
+}
+/** The start's exits: 0 started, 92 running already, 3 too small (`desktop`'s own), 97 another boot, 98 no desktop in the
+ * image. Anything else (the helper failed: 1, or systemd's for a unit killed at its limit) is a desktop that did not
+ * start. */
+const MEMBER_START_EXITS: Readonly<Record<number, CompanyMachineMemberStartOutcome>> = Object.freeze({
+	0: { outcome: "started" },
+	92: { outcome: "running" },
+	3: { refused: "DESKTOP_MACHINE_TOO_SMALL" },
+	97: { refused: "MACHINE_BOOT_CHANGED" },
+	98: { refused: "MACHINE_IMAGE_WITHOUT_SCREEN" },
+});
 /** Text `desktop type` pastes rather than types: anything beyond printable ASCII (deploy/machine/desktop, `type`). */
 const PASTED = /[^\x20-\x7e]/;
 /** The member read check's refusal: a read the machine was served is not the watching member's to read. */
@@ -383,6 +458,8 @@ export interface CompanyMachineHostOptions {
 	memberLookTimeoutMs?: number;
 	/** How long a member's typed text may take on the machine (default 10 s): the tests' own shorter one. */
 	memberTypeTimeoutMs?: number;
+	/** How long a member's start may take on the machine (default 22 s): the tests' own shorter one. */
+	memberStartTimeoutMs?: number;
 	/** The clock a desktop's busy grace is counted on (default Date.now): the tests' own. */
 	now?: () => number;
 }
@@ -503,6 +580,17 @@ export interface CompanyMachineMemberAct {
  * busy with another action (DESKTOP_BUSY), off, or the machine changed. Nothing of the screen comes back. */
 export type CompanyMachineMemberActOutcome =
 	| { readonly done: { readonly exitCode: number | null } }
+	| { readonly refused: string };
+/** A member's start of the desktop (20260930714000): the machine's placement and boot, and the start SQL served. */
+export interface CompanyMachineMemberStart {
+	placementId: string;
+	bootId: string;
+	startId: string;
+}
+/** The desktop runs now (started by this start, or running already), or why not: too small, the machine changed, no
+ * desktop in the image, or the desktop did not start (DESKTOP_DID_NOT_START). */
+export type CompanyMachineMemberStartOutcome =
+	| { readonly outcome: "started" | "running" }
 	| { readonly refused: string };
 /** What the company folder's release of a boot's reads needs (#release): the boot, and the run that takes them in. */
 type FolderRelease = Pick<CompanyMachineCommandAuthority, "placementId" | "bootId" | "runId">;
@@ -2309,6 +2397,38 @@ export class LxdCompanyMachineHost {
 	 * did not end cleanly). An agent's look that overlapped it never shows it: the fence after each capture
 	 * (#pictureAllowed) refuses every picture once a member took the desktop over.
 	 */
+	/** A member turns the desktop on (20260930714000): the image's own `desktop start` on the boot SQL named, in a transient
+	 * unit of its own. Never refused because the desktop is busy (it takes the desktop's own lock, and an agent's action
+	 * does not), and nothing is held: starting is not taking over. */
+	async memberStart(start: CompanyMachineMemberStart, signal: AbortSignal): Promise<CompanyMachineMemberStartOutcome> {
+		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!pipe) throw new Error("COMPANY_MACHINE_MEMBER_START_UNAVAILABLE");
+		if (![start.placementId, start.bootId, start.startId].every((id) => UUID.test(id)))
+			throw new Error("COMPANY_MACHINE_MEMBER_START_INVALID");
+		let exitCode: number;
+		try {
+			exitCode = (
+				await pipe(
+					this.#policy.project,
+					lxdCompanyMachineName(start.placementId),
+					{
+						command: companyMachineMemberStartCommand(start.bootId),
+						environment: {},
+						cwd: "/",
+						maxStdoutBytes: 4096,
+						stderrTailBytes: 0,
+					},
+					AbortSignal.any([signal, AbortSignal.timeout(this.#options.memberStartTimeoutMs ?? MEMBER_START_MS)]),
+				)
+			).exitCode;
+		} catch {
+			signal.throwIfAborted();
+			// Not answered in time: the unit ends at its own limit, and a desktop it started runs on.
+			return { refused: "DESKTOP_DID_NOT_START" };
+		}
+		return MEMBER_START_EXITS[exitCode] ?? { refused: "DESKTOP_DID_NOT_START" };
+	}
+
 	async memberAct(act: CompanyMachineMemberAct, signal: AbortSignal): Promise<CompanyMachineMemberActOutcome> {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!pipe) throw new Error("COMPANY_MACHINE_MEMBER_ACT_UNAVAILABLE");
