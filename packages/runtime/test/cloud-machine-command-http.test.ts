@@ -1965,7 +1965,7 @@ describe("a member's start of a desktop (20260930714000)", () => {
 				{ owner: "mx-a", providerId: "machine-node", origin: "https://node-a.example", tokenCredential: "peer-a" },
 				{ owner: "mx-c", providerId: "machine-node", origin: "https://node-c.example", tokenCredential: "peer-c" },
 			].filter((peer) => peer.owner !== owner),
-			control: { call },
+			control: closed({ call }),
 			credential: async () => randomBytes(32).toString("base64url"),
 			memberStartBegin,
 			memberStartLocal: localMemberMachineStart(host),

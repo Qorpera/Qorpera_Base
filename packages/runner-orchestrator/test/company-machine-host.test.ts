@@ -5277,7 +5277,14 @@ describe("a member's start of a desktop (20260930714000)", () => {
 			given.command.includes(COMPANY_MACHINE_MEMBER_START) ? answer(0) : held,
 		);
 		const acting = f.host.memberAct(
-			{ placementId: id(6), bootId: id(7), actionId: id(31), action: { type: "key", keys: ["Return"] } },
+			{
+				placementId: id(6),
+				bootId: id(7),
+				actionId: id(31),
+				action: { type: "key", keys: ["Return"] },
+				seat: 2,
+				userId: id(21),
+			},
 			f.signal,
 		);
 		await vi.waitFor(() => expect(pipe).toHaveBeenCalledTimes(1));
