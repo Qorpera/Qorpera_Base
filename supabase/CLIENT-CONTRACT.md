@@ -1622,7 +1622,9 @@ the What's new page. Nothing goes live by itself.
     `wasLive` true for a change that was live before a Go back took it off; `key` is for the list only, never shown.
     `quiet` counts the other ready changes ("behind the scenes"). `agent` is the staff agent to tell "Not yet", or null.
   - `waiting`: changes that went in and are not ready yet. `problem`: the code of the last upload that failed, or
-    null (`SITE_LIMIT`: the company has 10 sites).
+    null (`SITE_LIMIT`: the company has 10 sites, and the site is made once one of them goes; `SITE_NAME_TAKEN`: every
+    name the site may take is taken, and it is made once one is free). Null again once a member took the site
+    offline.
 - `qorpera_put_code_release_live(profile, owner, name, shown)`: owners and admins (42501 otherwise). `shown` is exactly
   what the page showed, `{live: <live.version, or null>, change: <ready.change>, token: <ready.token>}` (22023
   otherwise); a repository the company does not keep is P0002 "No such repository". Answers

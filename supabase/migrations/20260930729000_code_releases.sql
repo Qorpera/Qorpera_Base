@@ -69,13 +69,14 @@ alter table public.qorpera_code_repositories
 	add column site_enabled boolean not null default true,
 	-- The repository's site, made at its first upload; null before, or once a member took it offline (the site went).
 	add column site_id uuid references public.qorpera_company_sites(id) on delete set null,
-	-- Its releases: the last row's number, the live row's (read only while the site has a current version), and the
-	-- last version number founders saw.
+	-- Its releases: the last row's number, the live row's (read only while the site has a current version; null once a
+	-- member took the site offline), and the last version number founders saw.
 	add column last_release integer not null default 0 check (last_release >= 0),
 	add column live_release integer check (live_release is null or live_release >= 1),
 	add column last_version integer not null default 0 check (last_version >= 0),
 	-- Uploads that failed: site_attempts failures in a row of change site_change, and the pass backs off until
-	-- site_not_before; site_given_up is the change it stopped trying after five.
+	-- site_not_before; site_given_up is the change it stopped trying after five. All forgotten when a member takes the
+	-- site offline.
 	add column site_attempts integer not null default 0 check (site_attempts >= 0),
 	add column site_change integer check (site_change is null or site_change >= 1),
 	add column site_not_before timestamptz,
@@ -424,8 +425,9 @@ $$;
 
 -- The sites to upload, for this executor: per repository whose sites are on, whose pause after a failed upload is over,
 -- whose company it holds and is not being deleted, the newest ready point (6.1 without its version), when no version of
--- its tree is ready, live or kept on the repository's site and it is not the change the pass gave up. An older point
--- is never due: a newer one makes it pointless. At most p_limit (1 to 20). Read-only.
+-- its tree is ready, live or kept on the repository's site and it is not the change the pass gave up (unless it gave up
+-- for the company's ten or for its names, and the company has room again or a name is free). An older point is never
+-- due: a newer one makes it pointless. At most p_limit (1 to 20). Read-only.
 create function public.qorpera_code_sites_due(p_owner text, p_machine_id_sha256 text, p_limit integer)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare v_now timestamptz := clock_timestamp(); v_repository public.qorpera_code_repositories%rowtype; v_point jsonb;
@@ -447,7 +449,15 @@ begin
 		exit when jsonb_array_length(v_due) >= p_limit;
 		v_point := public.qorpera_code_release_point(v_repository, null, false);
 		continue when v_point is null or v_point ->> 'versionId' is not null
-			or (v_point ->> 'change')::integer is not distinct from v_repository.site_given_up;
+			or ((v_point ->> 'change')::integer is not distinct from v_repository.site_given_up
+				-- (A change given up for the company's ten, or because every name it may take was taken, is due again once
+				-- a site went: the company has room, or one of its names is free or abandoned.)
+				and not (v_repository.site_problem = 'SITE_LIMIT' and (select count(*) from public.qorpera_company_sites site
+					where site.profile_id = v_repository.profile_id) < 10)
+				and not (v_repository.site_problem = 'SITE_NAME_TAKEN' and exists (select 1
+					from unnest(public.qorpera_code_site_slugs(v_repository.name, v_point -> 'site' ->> 'name')) candidate(slug)
+					where not exists (select 1 from public.qorpera_company_sites site where site.slug = candidate.slug
+						and not public.qorpera_site_abandoned(site)))));
 		v_due := v_due || jsonb_build_object('companyId', v_repository.profile_id, 'environmentId', v_repository.environment_id,
 			'owner', v_repository.owner, 'name', v_repository.name, 'change', (v_point ->> 'change')::integer,
 			'site', v_point -> 'site');
@@ -798,8 +808,9 @@ end $$;
 
 -- An upload that failed, with its code (the read's, a refused value's, or SITE_UPLOAD_FAILED for a call that did not
 -- answer): the repository's problem; its failures in a row of change p_change (one for another change), and a pause of
--- 2^failures seconds, at most 10 minutes; the fifth of the same change gives that change up (no pass tries it again)
--- and writes the list again. Answers {"schema":"qorpera.code-site-failed/v1","state":"recorded"}, or {…,"state":"lost"}.
+-- 2^failures seconds, at most 10 minutes; the fifth of the same change gives that change up (no pass tries it again,
+-- but for SITE_LIMIT or SITE_NAME_TAKEN once a site went, and after a member took the site offline) and writes the list
+-- again. Answers {"schema":"qorpera.code-site-failed/v1","state":"recorded"}, or {…,"state":"lost"}.
 create function public.qorpera_code_site_failed(p_owner text, p_machine_id_sha256 text, p_environment_id uuid,
 	p_repository_owner text, p_name text, p_change integer, p_code text)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
@@ -1256,8 +1267,12 @@ select pg_temp.code_releases_patch('public.qorpera_unpublish_company_site(uuid)'
 	$old$	delete from public.qorpera_company_sites where id = p_site_id;$old$,
 	$new$	-- 20260930729000: a repository's site goes with its kept versions and its way back: the repository's list file is
 	-- written again (nothing is live). The newest change that left a site is due again at once: the next upload pass
-	-- makes the site anew, with a new password and not live, and it waits in What's new for a member.
-	update public.qorpera_code_repositories repository set index_version = repository.index_version + 1
+	-- makes the site anew, with a new password and not live, and it waits in What's new for a member. So the repository
+	-- forgets what it kept of the old site: its live release, and its failed uploads (a pause, a change given up, the
+	-- problem), which would keep that change from being due. Its release and version numbers go on.
+	update public.qorpera_code_repositories repository set index_version = repository.index_version + 1,
+		live_release = null, site_attempts = 0, site_change = null, site_not_before = null, site_problem = null,
+		site_given_up = null
 	from public.qorpera_company_sites site
 	where site.id = p_site_id and repository.environment_id = site.environment_id and repository.owner = site.code_owner
 		and repository.name = site.code_name;
