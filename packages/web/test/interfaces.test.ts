@@ -14,6 +14,7 @@ import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { colourNameHex } from "../src/ui/avatar.ts";
 import { h } from "../src/ui/dom.ts";
+import { nameDialog } from "../src/ui/name-dialog.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 import {
 	deferred,
@@ -1646,5 +1647,32 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		await controller.changeAppLayout({ ...EMPTY_APP_LAYOUT, groups: { market: { removed: true } } });
 		await settle();
 		expect(element.textContent).toContain("The apps could not be arranged. Try again.");
+	});
+	it("takes a suggested group name as it is, while a rename must change something (review F1 on #1678, round 9)", async () => {
+		const suggested = nameDialog({
+			title: "New group",
+			label: "Group name",
+			value: "Fjeldtur",
+			confirm: "Create",
+			maxLength: 40,
+			suggested: true,
+		});
+		const create = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+			(b) => b.textContent === "Create",
+		)!;
+		expect(create.disabled).toBe(false);
+		create.click();
+		expect(await suggested).toBe("Fjeldtur");
+		const rename = nameDialog({
+			title: "Rename group",
+			label: "Group name",
+			value: "Market",
+			confirm: "Rename",
+			maxLength: 40,
+		});
+		const save = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Rename")!;
+		expect(save.disabled).toBe(true);
+		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+		expect(await rename).toBeUndefined();
 	});
 });

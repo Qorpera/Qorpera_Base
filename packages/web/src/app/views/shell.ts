@@ -2107,6 +2107,8 @@ async function mergeApps(company: CompanyController, parts: RailParts, dragged: 
 		confirm: t("Create"),
 		maxLength: APP_GROUP_NAME_LIMIT,
 		signal: company.signal,
+		// The name is filled in from the two apps: Create takes it as it is.
+		suggested: true,
 	});
 	const now = ownAppLayout(company, parts);
 	if (!name || !now) return;
