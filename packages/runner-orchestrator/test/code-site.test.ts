@@ -234,12 +234,32 @@ describe("the collect's and the drop's answers", () => {
 		expect(refused("SITE_HOLDS_SECRET STRIPE_KEY js/app.js\n")).toEqual({
 			problem: { code: "SITE_HOLDS_SECRET", path: "js/app.js", variable: "STRIPE_KEY" },
 		});
+		// The variable alone: the value is in a path the collect does not name.
+		expect(refused("SITE_HOLDS_SECRET STRIPE_KEY\n")).toEqual({
+			problem: { code: "SITE_HOLDS_SECRET", path: null, variable: "STRIPE_KEY" },
+		});
+		// A detail of 1,000 bytes, the most the collect writes.
+		expect(refused(`SITE_FILE_NAME ${"\\xc3\\xa9".repeat(125)}\n`)).toEqual({
+			problem: problem("SITE_FILE_NAME", "\u00e9".repeat(125)),
+		});
 		for (const line of [
 			"SITE_FILE_NAME\n",
 			"SITE_FILE_TOO_LARGE\n",
 			"SITE_HOLDS_SECRET\n",
-			"SITE_HOLDS_SECRET STRIPE_KEY\n",
+			"SITE_HOLDS_SECRET 1KEY\n",
 			"SITE_HOLDS_SECRET STRIPE_KEY \n",
+			// Only the collect's own spelling (release review, F1): a printable byte written as an escape, an escape in
+			// upper case or cut, a backslash or a byte outside printable ASCII as itself, more than 1,000 bytes.
+			"SITE_FILE_NAME a\\x41PI-KEY.js\n",
+			"SITE_FILE_TOO_LARGE big/\\x2fetc.mp4\n",
+			"SITE_HOLDS_SECRET KEY a\\x20b.js\n",
+			"SITE_FILE_NAME caf\\xC3\\xA9.js\n",
+			"SITE_FILE_NAME caf\\xc3\\xa.js\n",
+			"SITE_FILE_NAME caf\\xc3\\xa\n",
+			"SITE_FILE_NAME a\\b.js\n",
+			"SITE_FILE_NAME caf\u00e9.js\n",
+			"SITE_FILE_NAME a\tb.js\n",
+			`SITE_FILE_NAME ${"\\xc3\\xa9".repeat(125)}a\n`,
 			"SITE_HOLDS_SECRET 1KEY js/app.js\n",
 			"SITE_HOLDS_SECRET KEY-1 js/app.js\n",
 			"SITE_UNHEARD_OF\n",
@@ -347,6 +367,14 @@ describe("the words of a refused site", () => {
 			`${head}holds the value of STRIPE_KEY in js/app.js.${key}${foot}`,
 		);
 		expect(said(problem("SITE_HOLDS_SECRET"))).toBe(`${head}holds one of this session's secret values.${key}${foot}`);
+		// A path that holds a secret value is never named (release review, F1).
+		expect(said({ code: "SITE_HOLDS_SECRET", path: null, variable: "STRIPE_KEY" })).toBe(
+			`${head}holds the value of STRIPE_KEY in one of its files or file names.${key}${foot}`,
+		);
+		expect(said(problem("SITE_FILE_TOO_LARGE"))).toBe(`${head}has a file over 10 MB.${foot}`);
+		expect(said(problem("SITE_FILE_NAME"))).toBe(
+			`${head}has a file whose name a site cannot serve (only letters, digits, dots, hyphens and underscores, each part starting with a letter, a digit or an underscore and at most 200 bytes, at most 16 parts and 512 bytes in all).${foot}`,
+		);
 	});
 
 	it("shows a hostile name on one line, cut, and stays within 3,500 bytes", () => {
@@ -1158,5 +1186,55 @@ describe("the collect's rules on the machine, as the tree's", { timeout: 180_000
 		const made = await m.collected(clean, { ...environment, MULTI: `${multiline}\n`, STRIPE_KEY: `${value}\n` });
 		expect(made.code).toBe(0);
 		expect(made.output).toMatch(/\nfiles 4\n/);
+	});
+
+	it("never names a path that holds a secret value, whatever rule it met: only the variable (release review, F1)", async () => {
+		const m = await machineOnce();
+		const environment = {
+			QORPERA_SITE_SECRET_NAMES: "FIRST_KEY BACKSLASH_KEY UNICODE_KEY PLAIN_KEY",
+			FIRST_KEY: "first-secret-0001",
+			BACKSLASH_KEY: "live_key\\foo-1234",
+			UNICODE_KEY: "cl\u00e9-secr\u00e8te-42",
+			PLAIN_KEY: "token-abcdefgh12",
+		};
+		for (const [files, output] of [
+			// A name a site cannot serve, with a backslash or a byte outside printable ASCII the answer would spell \xHH.
+			[{ ...index, "assets/live_key\\foo-1234.js": "x" }, "SITE_HOLDS_SECRET BACKSLASH_KEY\n"],
+			[{ ...index, "cl\u00e9-secr\u00e8te-42.css": "x" }, "SITE_HOLDS_SECRET UNICODE_KEY\n"],
+			// A file over 10 MiB whose path holds a value.
+			[{ ...index, "big/token-abcdefgh12.mp4": Buffer.alloc(10 * MiB + 1) }, "SITE_HOLDS_SECRET PLAIN_KEY\n"],
+			// A path a site serves that holds a value, its bytes clean: the scan reads the paths too.
+			[{ ...index, "js/token-abcdefgh12.js": "clean" }, "SITE_HOLDS_SECRET PLAIN_KEY\n"],
+			// A file whose bytes hold one value and whose path holds another: the bytes' variable, no path.
+			[{ ...index, "token-abcdefgh12.txt": "first-secret-0001" }, "SITE_HOLDS_SECRET FIRST_KEY\n"],
+			// The bytes hold a value and the path holds none: named as before.
+			[{ ...index, "js/app.js": "token-abcdefgh12" }, "SITE_HOLDS_SECRET PLAIN_KEY js/app.js\n"],
+		] as const) {
+			const name = runName(sequence++);
+			await m.site(name, files);
+			const run = await m.collected(name, environment);
+			expect(run, output).toEqual({ code: 3, signal: null, output });
+			const answer = codeSiteCollectAnswer(run.output, run.code);
+			expect(answer).not.toBeNull();
+			for (const value of Object.values(environment).slice(1)) {
+				expect(run.output).not.toContain(value);
+				expect(JSON.stringify(answer)).not.toContain(JSON.stringify(value).slice(1, -1));
+			}
+		}
+	});
+
+	it("cuts a long name's spelling at a whole byte's, so the answer still reads", async () => {
+		// Five parts of 100 two-byte characters: 4,000 bytes spelled, cut within 1,000 at a whole \xHH.
+		const path = `a${"/".concat("\u00e9".repeat(100)).repeat(5)}.js`;
+		const { run, answer } = await judged({ ...index, [path]: "x" });
+		expect(run.code).toBe(3);
+		const detail = run.output.slice("SITE_FILE_NAME ".length, -1);
+		// "a/", the first part's 100 characters, "/", then 24 whole characters and the first byte of the next: 999 bytes,
+		// the next byte's spelling would pass 1,000. A half character reads as U+FFFD.
+		expect(detail.length).toBe(999);
+		expect(detail).toMatch(/^a\/(\\xc3\\xa9){100}\/(\\xc3\\xa9){24}\\xc3$/);
+		expect(answer).toEqual({
+			problem: problem("SITE_FILE_NAME", `a/${"\u00e9".repeat(100)}/${"\u00e9".repeat(24)}\ufffd`),
+		});
 	});
 });

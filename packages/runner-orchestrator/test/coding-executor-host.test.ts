@@ -1,10 +1,10 @@
-import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { type ChildProcess, execFile, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
 	CODING_GUEST,
@@ -18,7 +18,13 @@ import {
 } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CodeCheck, type CodeSiteRecipe, codeChecksTail } from "../src/code-checks.ts";
-import { CODE_CHECKS_NEWER_RUN, CODE_SITE_COLLECT, CODE_SITE_DROP } from "../src/code-site.ts";
+import {
+	CODE_CHECKS_NEWER_RUN,
+	CODE_SITE_COLLECT,
+	CODE_SITE_DROP,
+	type CodeSiteProblem,
+	codeSiteRefusedSummary,
+} from "../src/code-site.ts";
 import {
 	type CodingCommandSecrets,
 	type CodingEnvironmentSource,
@@ -7293,6 +7299,103 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			} finally {
 				timeout.mockRestore();
 			}
+		});
+
+		describe("a refused site's words, log lines and answer hold no secret value in any spelling (release review, F1)", () => {
+			/** Every string a value holds, as it is (an error's message too). */
+			const strings = (value: unknown): string[] =>
+				typeof value === "string"
+					? [value]
+					: value instanceof Error
+						? [value.message]
+						: value !== null && typeof value === "object"
+							? Object.values(value).flatMap(strings)
+							: [];
+			const refused = (problem: CodeSiteProblem) => ({ state: "site_refused", problem });
+			it.each([
+				{
+					case: "a value of the session's with a backslash, in a name a site cannot serve",
+					secrets: { BACKSLASH_KEY: "live_key\\foo-1234" },
+					older: [],
+					files: { "assets/live_key\\foo-1234.js": "x" },
+					outcome: refused({ code: "SITE_HOLDS_SECRET", path: null, variable: "BACKSLASH_KEY" }),
+				},
+				{
+					case: "a value of the session's with bytes outside ASCII",
+					secrets: { UNICODE_KEY: "clé-secrète-42" },
+					older: [],
+					files: { "clé-secrète-42.css": "x" },
+					outcome: refused({ code: "SITE_HOLDS_SECRET", path: null, variable: "UNICODE_KEY" }),
+				},
+				{
+					case: "an older value of the machine's with a backslash, which only the host's mask knows",
+					secrets: { OTHER_KEY: "unrelated-value-1" },
+					older: ["old\\key-value-77"],
+					files: { "old\\key-value-77.js": "x" },
+					outcome: refused({ code: "SITE_FILE_NAME", path: "***.js", variable: null }),
+				},
+				{
+					case: "an older value of the machine's outside ASCII, which only the host's mask knows",
+					secrets: { OTHER_KEY: "unrelated-value-1" },
+					older: ["vieux-clé-8899"],
+					files: { "img/vieux-clé-8899.png": "x" },
+					outcome: refused({ code: "SITE_FILE_NAME", path: "img/***.png", variable: null }),
+				},
+				{
+					case: "a value spelled only by escapes the collect never writes (an answer not the collect's)",
+					secrets: { API_KEY: "API-TOKEN-5678" },
+					older: [],
+					files: {},
+					forged: "SITE_FILE_TOO_LARGE big/\\x41PI-TOKEN-5678.mp4\n",
+					outcome: { state: "passed", site: { state: "missed", code: "CODE_SITE_COLLECT_ANSWER_INVALID" } },
+				},
+			] as {
+				case: string;
+				secrets: Record<string, string>;
+				older: string[];
+				files: Record<string, string>;
+				forged?: string;
+				outcome: Record<string, unknown>;
+			}[])("$case", async ({ secrets, older, files, forged, outcome }) => {
+				const f = await siteFixture({ secrets });
+				// The vault names the machine's older values too: masked in its output, never in an environment.
+				const vault = f.vault.getMockImplementation()!;
+				f.vault.mockImplementation(async (...given) => ({ ...(await vault(...given)), mask: older }));
+				// The site on the machine, and the real collect over it, with the environment the host gave the guest; its
+				// answer is what the guest printed, which the transport masks before the host reads it.
+				const top = await realpath(await mkdtemp(join(tmpdir(), "code-site-words-")));
+				roots.push(top);
+				const name = runName(f.claim.sequence, 1);
+				for (const [path, content] of Object.entries({ "index.html": "<p>site</p>", ...files })) {
+					const at = join(top, name, "src", "dist", path);
+					await mkdir(dirname(at), { recursive: true });
+					await writeFile(at, content);
+				}
+				f.ending((run) => {
+					const kind = kindOf(run);
+					if (kind === "drop") return { printed: "dropped 0\n" };
+					if (kind !== "collect") return {};
+					if (forged !== undefined) return { code: 3, printed: forged };
+					const ran = spawnSync("bash", ["--noprofile", "--norc", "-c", run.command], {
+						cwd: join(top, name, "src"),
+						env: {
+							...run.environment,
+							QORPERA_CHECKS_ROOT: top,
+							QORPERA_CHECKS_REPOSITORY: join(top, "repo.git"),
+							HOME: top,
+						},
+					});
+					return { code: ran.status ?? 1, printed: ran.stdout };
+				});
+				const run = await f.site(1, f.signal, CHECKS.slice(0, 1));
+				expect(run).toMatchObject(outcome);
+				// What reaches anyone: the turn's words (land's, of the problem and the recipe's folder), the run's answer
+				// (the report's site, the completion's code) and every log line.
+				const words = run.state === "site_refused" ? codeSiteRefusedSummary(run.problem, RECIPE.folder) : "";
+				const carried = [words, ...strings(run), ...strings(f.logged)];
+				for (const value of [...Object.values(secrets), ...older])
+					for (const text of carried) expect(text, value).not.toContain(value);
+			});
 		});
 
 		describe("the turn's abort at each step: the command running stopped, the abort thrown on, and nothing after it", () => {

@@ -2249,7 +2249,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 						? "CODE_SITE_COLLECT_ANSWER_INVALID"
 						: `CODE_SITE_COLLECT_EXIT_${receipt.exitCode}`,
 				);
-			else if ("problem" in ending) site = { problem: ending.problem };
+			else if ("problem" in ending)
+				site = { problem: await this.#siteProblemMasked(ready, run, ending.problem, signal) };
 			else {
 				boundary = this.#folderBoundary(folder, ready.machine);
 				const judged = await this.#siteBoundary(boundary, ready, folder, budget, run.step, false, signal);
@@ -2290,6 +2291,43 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		});
 		if (boundary) await this.#siteBoundary(boundary, ready, folder, budget, run.step, true, signal);
 		return site;
+	}
+	/** A refused site's problem as the turn's words may show it (release review, F1): the path the collect named, which
+	 * its answer spells `\xHH` for a byte outside printable ASCII and for a backslash, was masked by the transport before
+	 * the parser decoded it, so a secret value holding such a byte passed. The decoded path is masked again here with the
+	 * mask of the collect's own output (every value the machine's masks cover: the session's, the machine's other
+	 * sessions' and their older ones, beyond the collect's own environment). No mask to be had (the session released
+	 * meanwhile, or the guest never took the start with these values): the path is not shown. Without secrets (no
+	 * broker) nothing is masked, as the transport masks nothing. The variable is a name the answer spells as itself,
+	 * already masked; every other part of a problem is a fixed word. The turn's abort is thrown on. */
+	async #siteProblemMasked(
+		ready: Prepared,
+		run: SiteRun,
+		problem: CodeSiteProblem,
+		signal: AbortSignal,
+	): Promise<CodeSiteProblem> {
+		const secrets = this.#sessionSecrets(ready);
+		if (problem.path === null || !secrets) return problem;
+		try {
+			const masks = await secrets.output(
+				{
+					companyId: ready.machine.companyId,
+					workerId: ready.claim.workerId,
+					machineId: ready.machine.machineId,
+					commandId: run.commandId("site"),
+					kind: "command",
+				},
+				signal,
+			);
+			if (masks === null) return { ...problem, path: null };
+			const mask = masks();
+			const masked = Buffer.concat([mask.push(Buffer.from(problem.path, "utf8")), mask.end()]);
+			return { ...problem, path: masked.toString("utf8") };
+		} catch (error) {
+			if (signal.aborted) throw signal.reason;
+			this.#checksReport({ event: "code-checks-error", step: "mask", ...run.step, error });
+			return { ...problem, path: null };
+		}
 	}
 	/** The site's collect or drop as a command of the run (#takeSite), to its end through #checksCommand, with its log
 	 * lines: its receipt, or the code of why it did not end on its own and whether it has ended all the same
