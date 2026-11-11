@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 
 import type { MemberAgentMachine } from "@qorpera/cloud-client/cloud-member-company-computer";
-import { isUuid } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	ComputerPanel,
@@ -41,6 +40,7 @@ function machine(n: number, change: Partial<MemberAgentMachine> = {}): MemberAge
 		screenAgentName: staff.displayName,
 		waitingFor: null,
 		control: null,
+		epoch: 0,
 		...change,
 	};
 }
@@ -102,16 +102,10 @@ function setup(
 		 * only later, when the test says (`lateCommit`: whether it held anything). */
 		takeLost: undefined as "committed" | "late" | undefined,
 		lateCommit: undefined as (() => boolean) | undefined,
-		/** The take-over attempts the database called off, as machine:attempt (review r3). */
-		calledOff: new Set<string>(),
-		/** The database's clock less the page's (review r4), and whether the list says a wrong time of it. */
-		serverShift: 0,
-		listClockWrong: false,
+		/** The member's hand-back epoch per machine, as the database keeps it (review r5); 0 when absent. */
+		epochs: new Map<string, number>(),
 	};
-	/** As the database: an attempt takes only within 2 minutes of its time (its first 48 bits) either way. */
-	const fresh = (attempt: string) =>
-		Math.abs(Number.parseInt(attempt.replace(/-/g, "").slice(0, 12), 16) - (Date.now() + state.serverShift)) <=
-		120_000;
+	const epochOf = (machineId: unknown) => state.epochs.get(String(machineId)) ?? 0;
 	const looks: { url: string; etag: string | null }[] = [];
 	const acts: { url: string; action: Record<string, unknown> }[] = [];
 	const rpcs: { method: string; body: Record<string, unknown> }[] = [];
@@ -166,23 +160,22 @@ function setup(
 				staffAgentId: staff.id,
 				canWake: state.canWake,
 				canTakeOver: state.canTakeOver,
-				machines: state.machines,
-				serverNow: new Date(Date.now() + (state.listClockWrong ? 0 : state.serverShift)).toISOString(),
+				// As the database: the member's own epoch per machine.
+				machines: state.machines.map((row) => ({ ...row, epoch: epochOf(row.machineId) })),
 			});
 		}
 		if (method === "qorpera_member_manage_company_machine")
 			return Response.json({ machineId: body.p_machine_id, state: "waiting" });
 		if (method === "qorpera_member_take_machine_desktop") {
 			if (state.takeGate) await state.takeGate;
-			const attempt = String(body.p_attempt_id);
-			const calledOff = () => state.calledOff.has(`${body.p_machine_id}:${attempt}`);
-			// As the database: an attempt called off holds nothing, whenever it arrives; otherwise the list says the member
-			// holds it from now on, by this attempt.
+			const epoch = Number(body.p_epoch);
+			// As the database: a take-over is accepted only at the member's current epoch, when it arrives; the list then
+			// says the member holds it, taken under that epoch.
 			const commit = () => {
-				if (calledOff() || state.take.state !== "ok") return false;
+				if (epoch !== epochOf(body.p_machine_id) || state.take.state !== "ok") return false;
 				state.machines = state.machines.map((row) =>
 					row.machineId === body.p_machine_id
-						? { ...row, control: { mine: true, name: "Owner", until: String(state.take.until), attempt } }
+						? { ...row, control: { mine: true, name: "Owner", until: String(state.take.until), epoch } }
 						: row,
 				);
 				return true;
@@ -193,20 +186,21 @@ function setup(
 				state.lateCommit = commit;
 				throw new TypeError("Failed to fetch");
 			}
-			if (calledOff() || !fresh(attempt))
+			if (epoch !== epochOf(body.p_machine_id))
 				return Response.json({
 					schema: "qorpera.member-machine-desktop/v1",
 					state: "refused",
-					reason: calledOff() ? "TAKE_CALLED_OFF" : "TAKE_EXPIRED",
+					reason: "TAKE_CALLED_OFF",
+					epoch: epochOf(body.p_machine_id),
 				});
 			commit();
 			if (lost === "committed") throw new TypeError("Failed to fetch");
 			return Response.json({ schema: "qorpera.member-machine-desktop/v1", ...state.take });
 		}
 		if (method === "qorpera_member_keep_machine_desktop") {
-			// As the database: only the attempt that holds the member's lease renews it.
+			// As the database: only a lease of the member's taken under that epoch is renewed.
 			const row = state.machines.find((machine) => machine.machineId === body.p_machine_id);
-			if (row?.control?.mine !== true || row.control.attempt !== body.p_attempt_id)
+			if (row?.control?.mine !== true || row.control.epoch !== body.p_epoch)
 				return Response.json({ schema: "qorpera.member-machine-desktop/v1", state: "ended" });
 			return Response.json({ schema: "qorpera.member-machine-desktop/v1", ...state.keep });
 		}
@@ -218,22 +212,26 @@ function setup(
 				state.handBackFails--;
 				return new Response("{}", { status: 503 });
 			}
-			// As the database: every attempt named that could still take is called off for good, and the member's lease
-			// ends when one of them holds it; one held by another attempt stays (review r4).
-			const named = body.p_attempt_ids as string[];
-			for (const attempt of named) if (fresh(attempt)) state.calledOff.add(`${body.p_machine_id}:${attempt}`);
+			// As the database: at the current epoch it moves on, and the member's lease taken under it ends; at an older one
+			// nothing changes. It answers the current epoch and whether the member holds the machine now.
 			const row = state.machines.find((machine) => machine.machineId === body.p_machine_id);
-			const mine = row?.control?.mine === true;
-			const ours = mine && named.includes(String(row?.control?.attempt));
-			if (ours)
-				state.machines = state.machines.map((machine) =>
-					machine.machineId === body.p_machine_id ? { ...machine, control: null } : machine,
-				);
+			let handedBack = false;
+			if (body.p_epoch === epochOf(body.p_machine_id)) {
+				state.epochs.set(String(body.p_machine_id), epochOf(body.p_machine_id) + 1);
+				if (row?.control?.mine === true && row.control.epoch === body.p_epoch) {
+					handedBack = true;
+					state.machines = state.machines.map((machine) =>
+						machine.machineId === body.p_machine_id ? { ...machine, control: null } : machine,
+					);
+				}
+			}
+			const now = state.machines.find((machine) => machine.machineId === body.p_machine_id);
 			return Response.json({
 				schema: "qorpera.member-machine-desktop/v1",
 				state: "ok",
-				handedBack: ours,
-				heldElsewhere: mine && !ours,
+				handedBack,
+				epoch: epochOf(body.p_machine_id),
+				holding: now?.control?.mine === true,
 			});
 		}
 		throw new Error(`Unexpected network request ${url}`);
@@ -312,9 +310,12 @@ function lists(s: Setup) {
 function calls(s: Setup, method: string) {
 	return s.rpcs.filter((call) => call.method === method);
 }
-/** The take-over attempts sent, in turn (review r3). */
-function attempts(s: Setup) {
-	return calls(s, "qorpera_member_take_machine_desktop").map((call) => String(call.body.p_attempt_id));
+/** The epochs the take-overs were sent at, and the hand-backs, in turn (review r5). */
+function takeEpochs(s: Setup) {
+	return calls(s, "qorpera_member_take_machine_desktop").map((call) => call.body.p_epoch);
+}
+function backEpochs(s: Setup) {
+	return calls(s, "qorpera_member_hand_back_machine_desktop").map((call) => call.body.p_epoch);
 }
 function controls(p: ComputerPanel) {
 	const value = p.el.querySelector<HTMLElement>(".machine-screen-control");
@@ -956,13 +957,11 @@ describe("trusted viewer configuration", () => {
 describe("a member's take-over of the desktop (20260930713000)", () => {
 	it("takes the desktop over, says what it means, renews it every minute and hands it back", async () => {
 		const { s, p } = await holding();
-		// The take-over names an attempt of the page's own (review r3).
-		const attempt = attempts(s)[0]!;
-		expect(attempt).toSatisfy(isUuid);
+		// The take-over is sent at the member's hand-back epoch the list said (review r5).
 		expect(calls(s, "qorpera_member_take_machine_desktop")).toEqual([
 			{
 				method: "qorpera_member_take_machine_desktop",
-				body: { p_profile_id: profileA.profileId, p_machine_id: machine(1).machineId, p_attempt_id: attempt },
+				body: { p_profile_id: profileA.profileId, p_machine_id: machine(1).machineId, p_epoch: 0 },
 			},
 		]);
 		expect(p.holding).toBe(true);
@@ -983,7 +982,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		expect(calls(s, "qorpera_member_keep_machine_desktop")).toEqual([
 			{
 				method: "qorpera_member_keep_machine_desktop",
-				body: { p_profile_id: profileA.profileId, p_machine_id: machine(1).machineId, p_attempt_id: attempt },
+				body: { p_profile_id: profileA.profileId, p_machine_id: machine(1).machineId, p_epoch: 0 },
 			},
 		]);
 		await advance(KEEP_EVERY_MS);
@@ -996,7 +995,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 				p_profile_id: profileA.profileId,
 				p_machine_id: machine(1).machineId,
 				p_reason: "handed_back",
-				p_attempt_ids: [attempt],
+				p_epoch: 0,
 			},
 		]);
 		expect(p.holding).toBe(false);
@@ -1203,7 +1202,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 
 	it("shows who holds the desktop to another member, not the screen, until they give it back or their time runs out", async () => {
 		const until = new Date(Date.now() + 120_000).toISOString();
-		const s = setup({ machines: [machine(1, { control: { mine: false, name: "Ada", until, attempt: null } })] });
+		const s = setup({ machines: [machine(1, { control: { mine: false, name: "Ada", until, epoch: null } })] });
 		const p = panel(s);
 		await flush();
 		expect(status(p)).toBe("Ada is using the computer. The screen is hidden meanwhile.");
@@ -1217,7 +1216,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		await flush();
 		expect(mark(p)).toBe("Live");
 		// Taken over by Ada while this member watches: a refused look reads the list, which says who.
-		s.state.machines = [machine(1, { control: { mine: false, name: "Ada", until, attempt: null } })];
+		s.state.machines = [machine(1, { control: { mine: false, name: "Ada", until, epoch: null } })];
 		s.state.answers.push({ code: "DESKTOP_MEMBER_IN_CONTROL" });
 		await advance(LOOK_EVERY_MS);
 		await flush();
@@ -1254,7 +1253,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		const p = panel(s);
 		await flush();
 		const until = new Date(Date.now() + 120_000).toISOString();
-		s.state.machines = [machine(1, { control: { mine: false, name: "Ada", until, attempt: null } })];
+		s.state.machines = [machine(1, { control: { mine: false, name: "Ada", until, epoch: null } })];
 		controlButton(p)!.click();
 		await flush();
 		await flush();
@@ -1280,16 +1279,17 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 
 	it("resumes a hold the list says is the member's (the page was loaded again), and hands it back as the page goes", async () => {
 		const until = new Date(Date.now() + 120_000).toISOString();
-		// The page was loaded again: the list names the attempt of the member's that holds it, which this page never made.
-		const s = setup({ machines: [machine(1, { control: { mine: true, name: "Owner", until, attempt: id(90) } })] });
+		// The page was loaded again: the list says the member holds it, taken under their epoch 3, which this page never knew.
+		const s = setup({ machines: [machine(1, { control: { mine: true, name: "Owner", until, epoch: 3 } })] });
+		s.state.epochs.set(machine(1).machineId, 3);
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
 		await flush();
 		expect(p.holding).toBe(true);
 		expect(controlButton(p)?.textContent).toBe("Hand back");
-		// Its heartbeat names that attempt.
+		// Its heartbeat names that epoch.
 		await advance(KEEP_EVERY_MS);
-		expect(calls(s, "qorpera_member_keep_machine_desktop").map((call) => call.body.p_attempt_id)).toEqual([id(90)]);
+		expect(calls(s, "qorpera_member_keep_machine_desktop").map((call) => call.body.p_epoch)).toEqual([3]);
 		window.dispatchEvent(new Event("pagehide"));
 		const left = s.fetch.mock.calls.find(
 			([url, init]) => String(url).endsWith("/qorpera_member_hand_back_machine_desktop") && init?.keepalive === true,
@@ -1299,15 +1299,13 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 			p_profile_id: profileA.profileId,
 			p_machine_id: machine(1).machineId,
 			p_reason: "closed",
-			p_attempt_ids: [id(90)],
+			p_epoch: 3,
 		});
 		// The page may come back from the browser's cache: the hold is given back as ever too, not only by the keepalive.
 		await flush();
 		expect(p.holding).toBe(false);
 		expect(
-			calls(s, "qorpera_member_hand_back_machine_desktop").filter(
-				(call) => JSON.stringify(call.body.p_attempt_ids) === JSON.stringify([id(90)]),
-			),
+			calls(s, "qorpera_member_hand_back_machine_desktop").filter((call) => call.body.p_epoch === 3),
 		).toHaveLength(2);
 	});
 
@@ -1401,13 +1399,10 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 		await flush();
 		expect(p.holding).toBe(false);
 		expect(controlButton(p)?.textContent).toBe("Try again");
-		// The hand-back is asked again after its wait, naming the same attempt, and this time it is answered.
+		// The hand-back is asked again after its wait, at the same epoch, and this time it is answered.
 		await advance(2000);
 		expect(calls(s, "qorpera_member_hand_back_machine_desktop").length).toBe(asked + 1);
-		expect(calls(s, "qorpera_member_hand_back_machine_desktop").map((call) => call.body.p_attempt_ids)).toEqual([
-			attempts(s),
-			attempts(s),
-		]);
+		expect(backEpochs(s)).toEqual([0, 0]);
 		expect(controlButton(p)?.textContent).toBe("Take over");
 		await advance(KEEP_EVERY_MS * 2);
 		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
@@ -1464,16 +1459,16 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 		s.state.takeGate = late.closed;
 		controlButton(p)!.click();
 		await flush();
-		expect(attempts(s)).toHaveLength(1);
-		// I'm done while the take-over is on its way: the hand-back names its attempt, and its answer is the confirmation
-		// (review r3): nothing waits for the take-over.
+		expect(takeEpochs(s)).toEqual([0]);
+		// I'm done while the take-over is on its way: the hand-back at its epoch goes at once, and its answer is the
+		// confirmation (review r5): nothing waits for the take-over.
 		expect(await p.handBack()).toBe(true);
 		expect(calls(s, "qorpera_member_hand_back_machine_desktop").map((call) => call.body)).toEqual([
 			{
 				p_profile_id: profileA.profileId,
 				p_machine_id: machine(1).machineId,
 				p_reason: "handed_back",
-				p_attempt_ids: attempts(s),
+				p_epoch: 0,
 			},
 		]);
 		// The take-over reaches the database after that: refused, so nothing is held, and the window takes nothing up.
@@ -1504,7 +1499,7 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 				p_profile_id: profileA.profileId,
 				p_machine_id: machine(1).machineId,
 				p_reason: "closed",
-				p_attempt_ids: attempts(s),
+				p_epoch: 0,
 			},
 		]);
 		expect(s.state.machines[0]?.control).toBeNull();
@@ -1532,7 +1527,7 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 	});
 });
 
-describe("the company's ledger of the desktops a member may hold (review r2 F4, F5; r3 F5, F7, F8; r4 F5, F8, F9)", () => {
+describe("the company's ledger of the desktops a member may hold, by hand-back epoch (reviews r2 to r5)", () => {
 	/** A gate the test opens. */
 	function gate() {
 		let open = () => {};
@@ -1556,9 +1551,11 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 		await flush();
 	}
 	const handBacks = (s: Setup) => calls(s, "qorpera_member_hand_back_machine_desktop");
+	const keeps = (s: Setup) => calls(s, "qorpera_member_keep_machine_desktop");
 	const until = () => new Date(Date.now() + 120_000).toISOString();
+	const held = (epoch: number) => ({ mine: true, name: "Owner", until: until(), epoch });
 
-	it("keeps a closed window's failed hand-back: I'm done does not answer until it is confirmed", async () => {
+	it("keeps a closed window's failed hand-back: I'm done does not answer until it is answered", async () => {
 		const { s, panels, p } = await company();
 		await takeOver(p);
 		expect(p.holding).toBe(true);
@@ -1573,8 +1570,8 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 		expect(handBacks(s)).toHaveLength(2);
 		// It asks again by itself after its wait, window or not; this time it is answered, and that is the confirmation.
 		await advance(4000);
-		expect(handBacks(s)).toHaveLength(3);
-		expect(handBacks(s).map((call) => call.body.p_attempt_ids)).toEqual([attempts(s), attempts(s), attempts(s)]);
+		expect(backEpochs(s)).toEqual([0, 0, 0]);
+		expect(s.state.epochs.get(machine(1).machineId)).toBe(1);
 		// Now I'm done answers, and asks nothing more.
 		expect(await panels.releaseAgent(staff.id)).toBe(true);
 		expect(handBacks(s)).toHaveLength(3);
@@ -1603,15 +1600,15 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 		expect(handBacks(s)).toHaveLength(1);
 	});
 
-	it("counts a take-over whose answer was lost as held: I'm done names its attempt and waits for that answer alone; another attempt's hold seen later is never taken up", async () => {
+	it("hands back a take-over whose answer was lost at its epoch, and waits for that answer alone; a newer epoch's hold of another tab is never taken up", async () => {
 		const { s, panels, p } = await company();
 		// The database gives the desktop, but its answer never comes back.
 		s.state.takeLost = "committed";
 		await takeOver(p);
-		expect(attempts(s)).toHaveLength(1);
+		expect(takeEpochs(s)).toEqual([0]);
 		expect(p.holding).toBe(false);
 		expect(controls(p)?.textContent).toContain("The computer could not be taken over. Try again.");
-		// I'm done: the attempt is in the ledger, so a hand-back names it, and the card waits for its answer.
+		// I'm done: the machine may be held, so the hand-back at its epoch goes, and the card waits for its answer.
 		const slow = gate();
 		s.state.handBackGate = slow.closed;
 		let done: boolean | undefined;
@@ -1619,8 +1616,8 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 			done = value;
 		});
 		await flush();
-		expect(handBacks(s).map((call) => [call.body.p_machine_id, call.body.p_attempt_ids])).toEqual([
-			[machine(1).machineId, attempts(s)],
+		expect(handBacks(s).map((call) => [call.body.p_machine_id, call.body.p_epoch])).toEqual([
+			[machine(1).machineId, 0],
 		]);
 		expect(done).toBeUndefined();
 		s.state.handBackGate = undefined;
@@ -1629,36 +1626,36 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 		// The answer is the confirmation.
 		expect(done).toBe(true);
 		expect(s.state.machines[0]?.control).toBeNull();
-		// A later list shows a hold of the member's by an attempt this page never made (another tab of theirs): on a
-		// machine this page gave back it is never taken up, and nothing guesses it is this page's.
-		s.state.machines = [machine(1, { control: { mine: true, name: "Owner", until: until(), attempt: id(91) } })];
+		// Another tab of the member's takes it over at the new epoch: on a machine this page gave back, never taken up.
+		s.state.machines = [machine(1, { control: held(1) })];
 		s.hint("machines");
 		await advance(LOOK_EVERY_MS);
 		expect(p.holding).toBe(false);
 		await advance(KEEP_EVERY_MS * 2);
-		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
-		expect(p.holding).toBe(false);
+		expect(keeps(s)).toHaveLength(0);
 		expect(handBacks(s)).toHaveLength(1);
 	});
 
-	it("names a lost take-over's attempt before I'm done answers, so the take-over that reaches the database later is refused (r3 F5)", async () => {
+	it("refuses a lost take-over that reaches the database after I'm done answered, whenever it arrives (r3 F5, r5)", async () => {
 		const { s, panels, p } = await company();
 		// The answer is lost, and the take-over reaches the database only after the hand-back was answered (after the card
-		// answered, after any list read): with the window closed, nothing would look again.
+		// answered): with the window closed, nothing would look again.
 		s.state.takeLost = "late";
 		await takeOver(p);
 		expect(p.holding).toBe(false);
 		panels.close(staff.id);
 		await flush();
-		const answered = await panels.releaseAgent(staff.id);
-		expect(answered).toBe(true);
-		// By the time the card answered, a hand-back naming the attempt had been answered.
-		expect(handBacks(s).map((call) => call.body.p_attempt_ids)).toEqual([attempts(s)]);
-		// The take-over arrives now: refused, holding nothing.
+		expect(await panels.releaseAgent(staff.id)).toBe(true);
+		// By the time the card answered, a hand-back at the take-over's epoch had been answered.
+		expect(backEpochs(s)).toEqual([0]);
+		expect(takeEpochs(s)).toEqual([0]);
+		// The take-over arrives now (and after many more epochs): refused, holding nothing.
+		expect(s.state.lateCommit?.()).toBe(false);
+		s.state.epochs.set(machine(1).machineId, 40);
 		expect(s.state.lateCommit?.()).toBe(false);
 		expect(s.state.machines[0]?.control).toBeNull();
 		await advance(KEEP_EVERY_MS * 2);
-		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
+		expect(keeps(s)).toHaveLength(0);
 		expect(handBacks(s)).toHaveLength(1);
 	});
 
@@ -1666,22 +1663,20 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 		const { s, panels, p } = await company();
 		await takeOver(p);
 		expect(p.holding).toBe(true);
-		const [first] = attempts(s);
 		// The window closes; its hand-back waits.
-		const one = gate(),
-			two = gate();
-		s.state.handBackGates = [one.closed, two.closed];
+		const one = gate();
+		s.state.handBackGates = [one.closed];
 		panels.close(staff.id);
 		await flush();
-		expect(handBacks(s).map((call) => call.body.p_attempt_ids)).toEqual([[first]]);
-		// The card's Take over opens the window again and takes over while that hand-back waits: its attempt waits too.
+		expect(backEpochs(s)).toEqual([0]);
+		// The card's Take over opens the window again and takes over while that hand-back waits: it waits too.
 		s.state.answers.push({ picture: 1 });
 		const again = panels.open(staff)!;
 		again.attach(document.body, () => panels.close(staff.id));
 		again.takeOver();
 		await flush();
-		expect(attempts(s)).toEqual([first]);
-		// The window closes again, and I'm done comes, while the first hand-back still waits.
+		expect(takeEpochs(s)).toEqual([0]);
+		// The window closes again, and I'm done comes, while the hand-back still waits.
 		panels.close(staff.id);
 		await flush();
 		let done: boolean | undefined;
@@ -1690,25 +1685,16 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 		});
 		await flush();
 		expect(done).toBeUndefined();
-		// The first answers; the queued attempt, never sent, is named in the next hand-back, and I'm done waits for it.
 		one.open();
-		await flush();
-		const named = handBacks(s).map((call) => call.body.p_attempt_ids as string[]);
-		expect(named).toHaveLength(2);
-		expect(named[1]).toHaveLength(1);
-		expect(named[1]![0]).toSatisfy(isUuid);
-		expect(named[1]![0]).not.toBe(first);
-		expect(done).toBeUndefined();
-		two.open();
 		await back;
 		expect(done).toBe(true);
-		// The queued take-over was never sent, and no lease is left.
-		expect(attempts(s)).toEqual([first]);
+		// The queued take-over was never sent, one hand-back covered everything, and no lease is left.
+		expect(takeEpochs(s)).toEqual([0]);
+		expect(backEpochs(s)).toEqual([0]);
 		expect(s.state.machines[0]?.control).toBeNull();
 		await advance(KEEP_EVERY_MS * 2);
-		expect(attempts(s)).toEqual([first]);
-		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
-		expect(s.state.machines[0]?.control).toBeNull();
+		expect(takeEpochs(s)).toEqual([0]);
+		expect(keeps(s)).toHaveLength(0);
 	});
 
 	it("gives back a machine whose take-over answer was lost when the member switches to another (r3 F8)", async () => {
@@ -1716,96 +1702,36 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 		s.state.takeLost = "committed";
 		await takeOver(p);
 		expect(p.holding).toBe(false);
-		expect(s.state.machines[0]?.control?.attempt).toBe(attempts(s)[0]);
-		// Neither held nor on its way in the window: the switch still gives the first machine back, naming the attempt.
+		expect(s.state.machines[0]?.control?.epoch).toBe(0);
+		// Neither held nor on its way in the window: the switch still gives the first machine back, at its epoch.
 		s.state.answers.push({ picture: 2 });
 		p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher")!.click();
 		[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][1]!.click();
 		await flush();
-		expect(handBacks(s).map((call) => [call.body.p_machine_id, call.body.p_attempt_ids])).toEqual([
-			[machine(1).machineId, attempts(s)],
+		expect(handBacks(s).map((call) => [call.body.p_machine_id, call.body.p_epoch])).toEqual([
+			[machine(1).machineId, 0],
 		]);
 		expect(s.state.machines[0]?.control).toBeNull();
 		expect(p.holding).toBe(false);
 	});
 
-	it("takes a lost answer's hold up when the member asked nothing back, and a desktop taken over again on purpose", async () => {
-		const { s, panels, p } = await company();
-		s.state.takeLost = "committed";
-		await takeOver(p);
-		expect(p.holding).toBe(false);
-		// No hand-back was asked: the next list read says the member holds it, and the window takes it up.
-		s.hint("machines");
-		await flush();
-		expect(p.holding).toBe(true);
-		// Given back, then taken over again on purpose: the window holds it again and renews it.
-		expect(await panels.releaseAgent(staff.id)).toBe(true);
-		expect(p.holding).toBe(false);
-		await takeOver(p);
-		expect(p.holding).toBe(true);
-		await advance(KEEP_EVERY_MS);
-		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(1);
-	});
-
-	it("makes its attempts' times by the database's clock from the list, so a page whose clock is off still takes over (r4 F5)", async () => {
-		const s = setup();
-		s.state.serverShift = 10 * 60_000;
-		const { p } = await company(s);
-		await takeOver(p);
-		expect(p.holding).toBe(true);
-		const [attempt] = attempts(s);
-		// A version 7 uuid whose time is the database's.
-		expect(attempt?.[14]).toBe("7");
-		const time = Number.parseInt(attempt!.replace(/-/g, "").slice(0, 12), 16);
-		expect(Math.abs(time - (Date.now() + 10 * 60_000))).toBeLessThan(1000);
-	});
-
-	it("sends a take-over refused as expired once more, as a fresh attempt after a fresh list read (r4 F5)", async () => {
-		const { s, p } = await company();
-		// The database's clock is ten minutes on from what the window's list read said.
-		s.state.serverShift = 10 * 60_000;
-		const read = lists(s);
-		await takeOver(p);
-		expect(attempts(s)).toHaveLength(2);
-		expect(attempts(s)[0]).not.toBe(attempts(s)[1]);
-		expect(lists(s)).toBe(read + 1);
-		expect(p.holding).toBe(true);
-		expect(s.state.machines[0]?.control?.attempt).toBe(attempts(s)[1]);
-	});
-
-	it("says this device's clock is wrong when the take-over is refused as expired twice", async () => {
-		const s = setup();
-		s.state.serverShift = 10 * 60_000;
-		s.state.listClockWrong = true;
-		const { panels, p } = await company(s);
-		await takeOver(p);
-		expect(attempts(s)).toHaveLength(2);
-		expect(p.holding).toBe(false);
-		expect(controls(p)?.textContent).toContain(
-			"The computer could not be taken over because this device's clock is wrong. Set the clock and try again.",
-		);
-		// Both refused: nothing of them can hold the desktop, and nothing is left to give back.
-		expect(await panels.releaseAgent(staff.id)).toBe(true);
-		expect(handBacks(s)).toHaveLength(0);
-	});
-
-	it("keeps a called-off take-over until a hand-back naming it is answered, when its refusal comes back first (r4 F9)", async () => {
+	it("keeps a release pending when the take-over it called off comes back refused first (r4 F9)", async () => {
 		const { s, panels, p } = await company();
 		const late = gate();
 		s.state.takeGate = late.closed;
 		await takeOver(p);
-		expect(attempts(s)).toHaveLength(1);
+		expect(takeEpochs(s)).toEqual([0]);
 		// I'm done while the take-over is on its way; its hand-back fails.
 		s.state.handBackFails = 1;
 		expect(await panels.releaseAgent(staff.id)).toBe(false);
 		expect(handBacks(s)).toHaveLength(1);
-		// The take-over comes back refused (another member took the desktop meanwhile) before a hand-back naming it was
-		// answered: it stays, and I'm done answers only after one is.
+		// The take-over comes back refused (another member took the desktop meanwhile) before a hand-back was answered: the
+		// release stays, and I'm done answers only after one is.
 		s.state.take = { state: "refused", reason: "DESKTOP_MEMBER_IN_CONTROL", memberName: "Ada" };
 		late.open();
 		await flush();
 		expect(await panels.releaseAgent(staff.id)).toBe(true);
-		expect(handBacks(s).map((call) => call.body.p_attempt_ids)).toEqual([attempts(s), attempts(s)]);
+		expect(backEpochs(s)).toEqual([0, 0]);
 	});
 
 	it("gives back a machine taken over while the window's loop waited, when the member switches back (r4 F8)", async () => {
@@ -1830,29 +1756,31 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 		]);
 		pick(0);
 		await flush();
-		expect(handBacks(s).map((call) => [call.body.p_machine_id, call.body.p_attempt_ids])).toEqual([
-			[machine(2).machineId, attempts(s)],
+		expect(handBacks(s).map((call) => [call.body.p_machine_id, call.body.p_epoch])).toEqual([
+			[machine(2).machineId, 0],
 		]);
 		slowList.open();
 		await flush();
 		expect(s.state.machines[1]?.control).toBeNull();
 		expect(p.holding).toBe(false);
 		// The take-over pressed for the second machine is not carried over to the first.
-		expect(attempts(s)).toHaveLength(1);
+		expect(takeEpochs(s)).toHaveLength(1);
 	});
 
-	it("names on I'm done the attempt the member's list shows holding the desktop from elsewhere, and reads it again when told it is still held (r4 F9)", async () => {
+	it("hands back on I'm done what the member's list shows held from elsewhere, and again at the epoch an answer says still holds (r4 F9, r5)", async () => {
 		const { s, panels } = await company();
 		panels.close(staff.id);
 		await flush();
-		// Another tab of the member's holds the desktop: I'm done names its attempt, read from the list at the time.
-		s.state.machines = [machine(1, { control: { mine: true, name: "Owner", until: until(), attempt: id(92) } })];
+		// Another tab of the member's holds the desktop at their epoch 2: I'm done hands it back at that epoch, read from
+		// the list at the time.
+		s.state.epochs.set(machine(1).machineId, 2);
+		s.state.machines = [machine(1, { control: held(2) })];
 		expect(await panels.releaseAgent(staff.id)).toBe(true);
-		expect(handBacks(s).map((call) => call.body.p_attempt_ids)).toEqual([[id(92)]]);
+		expect(backEpochs(s)).toEqual([2]);
 		expect(s.state.machines[0]?.control).toBeNull();
-		// That tab takes it again between the list read and the hand-back: the hand-back says it is still held elsewhere,
-		// so the list is read again and that attempt is named too.
-		s.state.machines = [machine(1, { control: { mine: true, name: "Owner", until: until(), attempt: id(93) } })];
+		// That tab hands back and takes it again between the list read and this page's hand-back: the answer says the
+		// member holds it now, at a newer epoch, so it is handed back again at that one.
+		s.state.machines = [machine(1, { control: held(3) })];
 		const slow = gate();
 		s.state.handBackGates = [slow.closed];
 		let done: boolean | undefined;
@@ -1860,12 +1788,13 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 			done = value;
 		});
 		await flush();
-		expect(handBacks(s).at(-1)?.body.p_attempt_ids).toEqual([id(93)]);
-		s.state.machines = [machine(1, { control: { mine: true, name: "Owner", until: until(), attempt: id(94) } })];
+		expect(backEpochs(s).at(-1)).toBe(3);
+		s.state.epochs.set(machine(1).machineId, 4);
+		s.state.machines = [machine(1, { control: held(4) })];
 		slow.open();
 		await back;
 		expect(done).toBe(true);
-		expect(handBacks(s).at(-1)?.body.p_attempt_ids).toEqual([id(94)]);
+		expect(backEpochs(s).slice(-2)).toEqual([3, 4]);
 		expect(s.state.machines[0]?.control).toBeNull();
 		// Without its list, I'm done cannot know what is held elsewhere, and says no.
 		s.state.listFails = 1;
@@ -1873,20 +1802,92 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 		expect(await panels.releaseAgent(staff.id)).toBe(true);
 	});
 
-	it("keeps a take-over on its way through pagehide until a hand-back naming it is answered, should the page come back from the cache", async () => {
+	it("marks I'm done's release at once: a take-over that completes while the list read stalls gets no input and no heartbeat (r5 F11)", async () => {
 		const { s, panels, p } = await company();
 		const late = gate();
 		s.state.takeGate = late.closed;
 		await takeOver(p);
-		expect(attempts(s)).toHaveLength(1);
+		expect(takeEpochs(s)).toEqual([0]);
+		// I'm done while the take-over is on its way, and the list read it makes stalls; the hand-back is sent before it.
+		const slowList = gate(),
+			slowBack = gate();
+		s.state.listGate = slowList.closed;
+		s.state.handBackGates = [slowBack.closed];
+		let done: boolean | undefined;
+		const back = panels.releaseAgent(staff.id).then((value) => {
+			done = value;
+		});
+		await flush();
+		expect(backEpochs(s)).toEqual([0]);
+		// The take-over reaches the database first and gets the desktop: its answer is ignored, nothing is given input.
+		late.open();
+		await flush();
+		expect(s.state.machines[0]?.control?.mine).toBe(true);
+		expect(p.holding).toBe(false);
+		expect(canvas(p).hasAttribute("tabindex")).toBe(false);
+		await advance(1000);
+		expect(keeps(s)).toHaveLength(0);
+		expect(done).toBeUndefined();
+		// The hand-back at that epoch ends it; the list answers; I'm done answers.
+		slowBack.open();
+		slowList.open();
+		await back;
+		expect(done).toBe(true);
+		expect(s.state.machines[0]?.control).toBeNull();
+		expect(p.holding).toBe(false);
+		// No heartbeat was ever sent for it.
+		await advance(KEEP_EVERY_MS * 2);
+		expect(keeps(s)).toHaveLength(0);
+	});
+
+	it("takes over again at the epoch the hand-back answered, and takes up a lost answer's hold the list shows at its epoch", async () => {
+		const { s, panels, p } = await company();
+		s.state.takeLost = "committed";
+		await takeOver(p);
+		expect(p.holding).toBe(false);
+		// No hand-back was asked: the next list read says the member holds it at that epoch, and the window takes it up.
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		expect(p.holding).toBe(true);
+		// Given back, then taken over again on purpose: sent at the new epoch, held and renewed at it.
+		expect(await panels.releaseAgent(staff.id)).toBe(true);
+		expect(p.holding).toBe(false);
+		await takeOver(p);
+		expect(takeEpochs(s)).toEqual([0, 1]);
+		expect(p.holding).toBe(true);
+		await advance(KEEP_EVERY_MS);
+		expect(keeps(s).map((call) => call.body.p_epoch)).toEqual([1]);
+	});
+
+	it("lets go of a hold when another tab of the member's moved the epoch on, and takes over at the new one", async () => {
+		const { s, p } = await company();
+		await takeOver(p);
+		expect(p.holding).toBe(true);
+		// Another tab hands the desktop back: the epoch moves on and the lease ends.
+		s.state.epochs.set(machine(1).machineId, 1);
+		s.state.machines = [machine(1)];
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		expect(p.holding).toBe(false);
+		await takeOver(p);
+		expect(takeEpochs(s)).toEqual([0, 1]);
+		expect(p.holding).toBe(true);
+	});
+
+	it("keeps a take-over on its way through pagehide until a hand-back at its epoch is answered, should the page come back from the cache", async () => {
+		const { s, panels, p } = await company();
+		const late = gate();
+		s.state.takeGate = late.closed;
+		await takeOver(p);
+		expect(takeEpochs(s)).toEqual([0]);
 		// The page is put in the browser's cache: the keepalive hand-back and the ordinary one both fail.
 		s.state.handBackFails = 2;
 		window.dispatchEvent(new Event("pagehide"));
 		await flush();
 		expect(handBacks(s)).toHaveLength(2);
-		// It comes back: I'm done still names the take-over's attempt and waits for the answer.
+		// It comes back: I'm done still hands back at the take-over's epoch and waits for the answer.
 		expect(await panels.releaseAgent(staff.id)).toBe(true);
-		expect(handBacks(s).map((call) => call.body.p_attempt_ids)).toEqual([attempts(s), attempts(s), attempts(s)]);
+		expect(backEpochs(s)).toEqual([0, 0, 0]);
 		// The take-over arrives after that: refused, nothing held.
 		late.open();
 		await flush();
@@ -1909,7 +1910,7 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 			p_profile_id: profileA.profileId,
 			p_machine_id: machine(1).machineId,
 			p_reason: "closed",
-			p_attempt_ids: attempts(s),
+			p_epoch: 0,
 		});
 	});
 });

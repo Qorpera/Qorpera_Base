@@ -1,7 +1,6 @@
 import type { CompanyComputerScope } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import {
 	CloudMemberCompanyComputerClient,
-	DESKTOP_ATTEMPTS_MAX,
 	type MemberAgentMachines,
 	type MemberDesktopHandBack,
 	type MemberDesktopHold,
@@ -83,32 +82,31 @@ export class WebCompanyComputer {
 	wakeMachine(machineId: string, signal: AbortSignal): Promise<void> {
 		return this.client.wakeMachine(machineId, signal);
 	}
-	/** Takes a desktop over, or renews this member's hold (migration 20260930713000), as the page's take-over `attempt`:
-	 * a hand-back that names it calls it off for good. */
-	takeDesktop(machineId: string, attempt: string, signal: AbortSignal): Promise<MemberDesktopHold> {
-		return this.client.takeDesktop(machineId, attempt, signal);
+	/** Takes a desktop over, or renews this member's hold (migration 20260930713000), at this member's hand-back `epoch`
+	 * for the machine as the page knows it: accepted only at the current one. */
+	takeDesktop(machineId: string, epoch: number, signal: AbortSignal): Promise<MemberDesktopHold> {
+		return this.client.takeDesktop(machineId, epoch, signal);
 	}
-	/** The window's heartbeat: until when this member's `attempt` holds the desktop now, or null when it holds it no more. */
-	keepDesktop(machineId: string, attempt: string, signal: AbortSignal): Promise<string | null> {
-		return this.client.keepDesktop(machineId, attempt, signal);
+	/** The window's heartbeat: until when this member's hold taken under `epoch` lasts now, or null when there is none. */
+	keepDesktop(machineId: string, epoch: number, signal: AbortSignal): Promise<string | null> {
+		return this.client.keepDesktop(machineId, epoch, signal);
 	}
-	/** Calls off the attempts named and gives back this member's lease when one of them holds it (by their word, or as
-	 * their window closes); says whether they still hold the machine by an attempt it did not name. */
+	/** Hands this member's hold back at their hand-back `epoch` (by their word, or as their window closes): the current
+	 * epoch afterwards, and whether they hold the machine now. */
 	handBackDesktop(
 		machineId: string,
 		reason: "handed_back" | "closed",
-		attempts: readonly string[],
+		epoch: number,
 		signal: AbortSignal,
 	): Promise<MemberDesktopHandBack> {
-		return this.client.handBackDesktop(machineId, reason, attempts, signal);
+		return this.client.handBackDesktop(machineId, reason, epoch, signal);
 	}
-	/** Best effort, as the page goes (it is hidden for good, or the company's page is left): gives this member's hold of
-	 * a desktop back and calls off the attempts named, with the token the page last used, in a request the browser
-	 * finishes after the page is gone (keepalive). It never throws and waits for nothing; a hold it does not reach runs
-	 * out by itself in 5 minutes. */
-	handBackOnLeave(machineId: string, attempts: readonly string[]): void {
+	/** Best effort, as the page goes (it is hidden for good, or the company's page is left): hands this member's hold of
+	 * a desktop back at `epoch`, with the token the page last used, in a request the browser finishes after the page is
+	 * gone (keepalive). It never throws and waits for nothing; a hold it does not reach runs out by itself in 5 minutes. */
+	handBackOnLeave(machineId: string, epoch: number): void {
 		const token = this.#lastToken;
-		if (!token || !isUuid(machineId) || attempts.length > DESKTOP_ATTEMPTS_MAX || !attempts.every(isUuid)) return;
+		if (!token || !isUuid(machineId) || !Number.isSafeInteger(epoch) || epoch < 0) return;
 		try {
 			void globalThis
 				.fetch(
@@ -128,7 +126,7 @@ export class WebCompanyComputer {
 							p_profile_id: this.#companyId,
 							p_machine_id: machineId,
 							p_reason: "closed",
-							p_attempt_ids: [...attempts],
+							p_epoch: epoch,
 						}),
 					},
 				)
