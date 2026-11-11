@@ -10,6 +10,20 @@ import { UUID_PATTERN } from "./parse.ts";
 export interface SidebarSection {
 	sectionId: string;
 	name: string;
+	/** A section the member made for themselves (20260930727000); others are the company's. */
+	mine?: boolean;
+}
+
+/** What the member changed in their own sidebar (20260930727000), for Reset sidebar's question. */
+export interface SidebarOwnChanges {
+	changes: number;
+	/** Agents and group chats the member put somewhere, oldest change first. */
+	moved: string[];
+	sections: { change: "added" | "renamed" | "removed"; name: string; from?: string }[];
+	pinned: number;
+	hidden: number;
+	contacts: number;
+	pages: number;
 }
 
 export interface SidebarPlacement {
@@ -33,6 +47,9 @@ export interface CompanySidebar {
 	/** Whether QorperaOS/agents/sections.md keeps the order of what is in no section (20260930519000); before it,
 	 * Unassigned stands in roster order and a reorder there cannot be saved. */
 	unassignedOrder?: boolean;
+	/** Set where the cloud keeps each member's own sidebar over the company's (20260930727000): what this member
+	 * changed. Then every change here is the member's own and Reset sidebar takes them all away. */
+	own?: SidebarOwnChanges;
 }
 
 export type SidebarRequest =
@@ -59,7 +76,11 @@ export type SidebarRequest =
 	/** Agents and group chats, in one order; groupChats says the order names group chats too. */
 	| { action: "set_pins"; order: string[]; groupChats?: true }
 	| { action: "set_hidden"; staffAgentId: string; hidden: boolean }
-	| { action: "set_hidden"; roomId: string; hidden: boolean };
+	| { action: "set_hidden"; roomId: string; hidden: boolean }
+	/** Takes away everything the member changed in this company's sidebar (20260930727000). */
+	| { action: "reset" }
+	/** Puts back what the member's last reset took away. */
+	| { action: "undo_reset" };
 
 /** What a request places, pins or hides: an agent or a group chat, by its id. */
 export function sidebarItem(request: SidebarRequest): string | undefined {
@@ -89,7 +110,11 @@ export function parseCompanySidebar(value: unknown): CompanySidebar {
 	const sections = input.sections.map((item) => {
 		const section = record(item, "sidebar section");
 		if (typeof section.name !== "string" || !section.name.trim()) throw new Error("Invalid sidebar section");
-		return { sectionId: id(section.sectionId, "sidebar section"), name: section.name };
+		return {
+			sectionId: id(section.sectionId, "sidebar section"),
+			name: section.name,
+			...(section.mine === true ? { mine: true } : {}),
+		};
 	});
 	const groupChats = input.roomPlacements !== undefined;
 	if (groupChats && !Array.isArray(input.roomPlacements)) throw new Error("Invalid company sidebar");
@@ -113,6 +138,37 @@ export function parseCompanySidebar(value: unknown): CompanySidebar {
 		hidden: ids(input.hidden, "hidden agent"),
 		...(groupChats ? { groupChats } : {}),
 		...(input.unassignedOrder === true ? { unassignedOrder: true } : {}),
+		...(input.own === undefined ? {} : { own: parseOwnChanges(input.own) }),
+	};
+}
+
+function count(value: unknown, what: string): number {
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error(`Invalid ${what}`);
+	return value;
+}
+
+function parseOwnChanges(value: unknown): SidebarOwnChanges {
+	const own = record(value, "own sidebar changes");
+	if (!Array.isArray(own.sections)) throw new Error("Invalid own sidebar changes");
+	return {
+		changes: count(own.changes, "own sidebar changes"),
+		moved: ids(own.moved, "own sidebar move"),
+		sections: own.sections.map((item) => {
+			const entry = record(item, "own sidebar section");
+			if (entry.change !== "added" && entry.change !== "renamed" && entry.change !== "removed")
+				throw new Error("Invalid own sidebar section");
+			if (typeof entry.name !== "string" || (entry.from !== undefined && typeof entry.from !== "string"))
+				throw new Error("Invalid own sidebar section");
+			return {
+				change: entry.change,
+				name: entry.name,
+				...(typeof entry.from === "string" ? { from: entry.from } : {}),
+			};
+		}),
+		pinned: count(own.pinned, "own sidebar pins"),
+		hidden: count(own.hidden, "own sidebar hidden items"),
+		contacts: count(own.contacts, "own sidebar contacts"),
+		pages: count(own.pages, "own sidebar pages"),
 	};
 }
 
@@ -156,6 +212,7 @@ export function applySidebarRequest(
 		hidden: [...sidebar.hidden],
 		...(sidebar.groupChats ? { groupChats: true } : {}),
 		...(sidebar.unassignedOrder ? { unassignedOrder: true } : {}),
+		...(sidebar.own ? { own: sidebar.own } : {}),
 	};
 	// An agent and a group chat are placed alike, by their ids.
 	const place = (itemId: string, sectionId: string | undefined, order?: readonly string[]) => {
@@ -182,7 +239,11 @@ export function applySidebarRequest(
 	switch (request.action) {
 		case "create_section":
 			if (!next.sections.some((section) => section.sectionId === request.sectionId))
-				next.sections.push({ sectionId: request.sectionId, name: request.name });
+				next.sections.push({
+					sectionId: request.sectionId,
+					name: request.name,
+					...(sidebar.own ? { mine: true } : {}),
+				});
 			if (item) {
 				place(item, request.sectionId);
 				if (request.unpin) unpin(item);
@@ -216,6 +277,10 @@ export function applySidebarRequest(
 				if (!next.hidden.includes(item!)) next.hidden.push(item!);
 				unpin(item!);
 			} else next.hidden = next.hidden.filter((hidden) => hidden !== item);
+			break;
+		// Only the cloud knows what the company's sidebar is: its answer draws a reset.
+		case "reset":
+		case "undo_reset":
 			break;
 	}
 	return next;

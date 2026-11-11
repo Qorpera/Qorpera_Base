@@ -3472,6 +3472,8 @@ keep their meaning.
    the company: every member sees the same sections, and owners, admins and
    contributors create, rename and delete them and move agents between them.
    The Co-Founder stands above all sections and is never placed.
+   (Amended 2026-11-11, "Each member's own sidebar" at the end of section 19: the
+   company's sections are what a new member sees; what a member changes is theirs.)
 2. **Agents organize themselves.** Any active company agent may list, create,
    rename and delete sections and move itself or a coworker between them
    through its run authority (`organize_sidebar`), with no member approval, so
@@ -6376,6 +6378,26 @@ chats"), shown in the rail as a contact for each other member.
    their pins and hidden agents are. The company's sections file (`QorperaOS/agents/sections.md`, 5.6) names agents
    and group chats only and is the same for every member; no member's contacts are written to it, and no agent
    places them.
+
+### 2026-11-11 amendment: each member's own sidebar
+
+Jonas, 11 November 2026: "company's on creation. but when a member changes something it's specific to that member,
+like with any other change to the sidepanel. we should really add a reset sidepanel button too, getting you back to
+companywide defaults." Migration `20260930727000_member_own_sidebar`, SQL test 1220. Amends the 2026-09-24 founder
+decision above, item 1.
+
+1. **The company's sidebar** stays `QorperaOS/agents/sections.md` (5.6), kept by agents (`organize_sidebar`), and is
+   what a new member sees and what every member sees wherever they changed nothing.
+2. **A member's own sidebar.** Creating, renaming and deleting sections and moving agents and group chats change only
+   the member's own sidebar, for any member, viewers too. What the member touched is theirs; everything else keeps
+   following the company's (an agent's later re-sort reaches every item the member did not move). A member's change
+   never writes the company's file.
+3. **Reset sidebar** takes away everything the member changed in the company's sidebar: their sections and places,
+   pins, hidden agents and group chats, contact places and hidden pages (and, from `20260930728000`, their own
+   arrangement of the apps drawer). Its Undo puts back the last reset's rows where nothing newer took their place.
+4. **Follow-up, not done here:** `organize_sidebar`'s text still says every member sees a change at once; it should
+   say the tool changes the company's sidebar, which each member sees except where they placed things themselves. It
+   moves the tool catalog's pin, so it rides a runtime bundle.
 
 ## 20. Enforcement matrix
 
