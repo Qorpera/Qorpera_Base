@@ -1,7 +1,11 @@
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
+import { once } from "node:events";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import {
 	CODING_GUEST,
 	type CodingGuestCommandState,
@@ -49,7 +53,7 @@ import {
 	type CodingFolderViewHeld,
 	CodingFolderViews,
 } from "../src/coding-folder-views.ts";
-import type { LxdCodingGuestClient } from "../src/coding-guest-client.ts";
+import { CodingGuestRefused, type LxdCodingGuestClient } from "../src/coding-guest-client.ts";
 import { CodingHostLeases, judgeCodingHostLease } from "../src/coding-host-lease.ts";
 import {
 	type CodingMachineReconcileOptions,
@@ -5377,7 +5381,9 @@ describe("a run of a repository's checks in the session's machine (own code stor
 	/** The folder fixture on a repository kept in Qorpera, prepared for a turn, whose host runs commands through the real
 	 * folder command transport over a fake guest agent; the vault gives `secrets`. `ending` says how each command the
 	 * guest is asked to run ends (by default it succeeds, printing nothing). */
-	async function checksFixture(options: { secrets?: Record<string, string>; budgetMs?: number } = {}) {
+	async function checksFixture(
+		options: { secrets?: Record<string, string>; budgetMs?: number; stopMs?: number } = {},
+	) {
 		const f = await folderFixture();
 		f.claim.repository = { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" };
 		Object.assign(f.repositories, {
@@ -5389,12 +5395,17 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				})
 			: undefined;
 		const logged: Record<string, unknown>[] = [];
+		// A mock, so that the order of its lines can be read beside the guest's calls (invocationCallOrder).
+		const report = vi.fn((event: Record<string, unknown>) => {
+			logged.push(event);
+		});
 		const host = new LxdCodingExecutorHost({
 			...f.options,
 			folder: {
 				...f.folder,
-				report: (event) => logged.push(event),
+				report,
 				checksPollMs: 5,
+				checksStopMs: options.stopMs ?? 300,
 				...(options.budgetMs === undefined ? {} : { checksBudgetMs: options.budgetMs }),
 			},
 			...(commandSecrets ? { commandSecrets } : {}),
@@ -5425,7 +5436,11 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		let ending: (run: CodingGuestRunRequest, index: number) => Ending = () => ({});
 		const stateOf = (commandId: string) => {
 			const found = commands.get(commandId);
-			if (!found) throw new Error("FAKE_GUEST_COMMAND_UNKNOWN");
+			// As the guest agent answers a command it has no record of (the faked class is given its code).
+			if (!found)
+				throw Object.assign(new CodingGuestRefused("CODING_GUEST_COMMAND_UNKNOWN"), {
+					code: "CODING_GUEST_COMMAND_UNKNOWN",
+				});
 			// A command that ran its time ends as it was told to.
 			if (found.state === "running" && Date.now() >= found.until && found.ending.state !== "running") {
 				found.state = found.ending.state ?? "exited";
@@ -5478,6 +5493,13 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			host,
 			session,
 			logged,
+			/** When the log line of `step` for `commandId` was written, in the order of every mock's calls. */
+			loggedAt: (step: string, commandId: string) =>
+				report.mock.calls.flatMap(([event], at) =>
+					event.step === step && event.commandId === commandId
+						? [report.mock.invocationCallOrder[at] as number]
+						: [],
+				),
 			custody,
 			commands,
 			/** The commands the guest was asked to run, in order. */
@@ -5493,6 +5515,9 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				),
 		};
 	}
+	/** A run's folder name: its turn's sequence and its attempt, zero-padded, so that names sort by time. */
+	const runName = (sequence: number, attempt: number) =>
+		`${String(sequence).padStart(10, "0")}-${String(attempt).padStart(4, "0")}`;
 	/** The check a command of a run is, by its environment: undefined for the copy. */
 	const checkOf = (run: { environment: Readonly<Record<string, string>> }) => run.environment.QORPERA_CHECK_RUN;
 
@@ -5573,6 +5598,9 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			API_KEY: "env-value-api-key-CANARY",
 			CI: "true",
 			QORPERA_CHECKS: "1",
+			// Every command knows its run: the root, and the run's own name, ordered by the turn and the attempt.
+			QORPERA_CHECKS_ROOT: `${HOME}/.qorpera-checks`,
+			QORPERA_CHECKS_NAME: runName(f.claim.sequence, 1),
 			HOME,
 			USER: "qorpera-200000",
 		};
@@ -5580,38 +5608,44 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(ran).toMatchObject({ workerId: f.claim.workerId, uid: 200000, gid: 200000 });
 			expect(ran.environment).toMatchObject(common);
 		}
-		// The copy: in the home, its values in the environment, the repository's storage by its place in the folder.
+		// The copy: in the home, its values in the environment, the repository's storage by its place in the folder. The
+		// run's own folder is named by its turn and its attempt.
+		const dir = `${HOME}/.qorpera-checks/0000000001-0001`;
+		expect(f.claim.sequence).toBe(1);
 		expect(copy).toMatchObject({ cwd: HOME, timeoutMs: 300_000 });
 		expect(copy?.environment).toMatchObject({
-			QORPERA_CHECKS_DIR: `${HOME}/.qorpera-checks`,
 			QORPERA_CHECKS_REPOSITORY: "/company/code/acme/shop/repo.git",
 			QORPERA_CHECKS_COMMIT: COMMIT,
 		});
 		expect(Object.keys(copy?.environment ?? {}).filter((name) => name.startsWith("QORPERA_CHECK_"))).toEqual([]);
-		expect(copy?.command).toContain('rm -rf -- "$d"');
+		expect(copy?.command).toContain('d="$r/$n"');
 		expect(copy?.command).toContain(
 			'git clone --quiet --shared --no-checkout -- "$QORPERA_CHECKS_REPOSITORY" "$d/src"',
 		);
 		expect(copy?.command).toContain('checkout --quiet --detach "$QORPERA_CHECKS_COMMIT"');
 		// Each check: from the copy, with its own limit, folder, command and log.
 		expect(checks.map((ran) => [ran.cwd, ran.timeoutMs, ran.environment.QORPERA_CHECK_CWD, checkOf(ran)])).toEqual([
-			[`${HOME}/.qorpera-checks/src`, 600_000, ".", "npm ci"],
-			[`${HOME}/.qorpera-checks/src`, 900_000, "web", "npm test"],
-			[`${HOME}/.qorpera-checks/src`, 300_000, ".", "npm run build"],
+			[`${dir}/src`, 600_000, ".", "npm ci"],
+			[`${dir}/src`, 900_000, "web", "npm test"],
+			[`${dir}/src`, 300_000, ".", "npm run build"],
 		]);
 		expect(checks.map((ran) => ran.environment.QORPERA_CHECK_LOG)).toEqual([
-			`${HOME}/.qorpera-checks/out/1-install.log`,
-			`${HOME}/.qorpera-checks/out/2-test.log`,
-			`${HOME}/.qorpera-checks/out/3-build.log`,
+			`${dir}/out/1-install.log`,
+			`${dir}/out/2-test.log`,
+			`${dir}/out/3-build.log`,
 		]);
 		for (const ran of checks) {
-			expect(ran.command).toBe(
-				[
-					'cd -- "$QORPERA_CHECK_CWD" || exit 2',
-					'bash --noprofile --norc -c "$QORPERA_CHECK_RUN" </dev/null 2>&1 | tee -- "$QORPERA_CHECK_LOG"',
-					`exit "\${PIPESTATUS[0]}"`,
-				].join("\n"),
-			);
+			// First the rule that a command of a run that is not the newest does nothing; then the check itself.
+			expect(ran.command).toContain("then exit 91; fi");
+			expect(
+				ran.command.endsWith(
+					[
+						'cd -- "$QORPERA_CHECK_CWD" || exit 2',
+						'bash --noprofile --norc -c "$QORPERA_CHECK_RUN" </dev/null 2>&1 | tee -- "$QORPERA_CHECK_LOG"',
+						`exit "\${PIPESTATUS[0]}"`,
+					].join("\n"),
+				),
+			).toBe(true);
 			expect(ran.environment.QORPERA_CHECKS_COMMIT).toBeUndefined();
 		}
 		// Each command's id names the turn, the attempt and its place; its input hash names the commit and what it runs.
@@ -5711,7 +5745,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				exitCode: 1,
 				atLimit: false,
 				tail: "tail of: > test\n\n  1 failing\n",
-				log: "~/.qorpera-checks/out/2-test.log",
+				log: "~/.qorpera-checks/0000000001-0001/out/2-test.log",
 			},
 			notRun: ["build"],
 		});
@@ -5881,5 +5915,838 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		// A turn already given up runs nothing.
 		await expect(f.run(CHECKS.slice(0, 1), 2, stop.signal)).rejects.toBe(reason);
 		expect(f.ran()).toHaveLength(2);
+	});
+
+	describe("a run whose command does not stop (release review r1, F1)", () => {
+		/** A run whose one check never ends by itself, past a budget of 300 ms: its stop is what the test says. */
+		const stuck = async (stopMs?: number) => {
+			const f = await checksFixture({ budgetMs: 300, ...(stopMs === undefined ? {} : { stopMs }) });
+			f.ending((run) => (checkOf(run) ? { state: "running", printed: "building\n" } : {}));
+			return f;
+		};
+		const cancels = () =>
+			mocked.guestCancel.mock.calls.map(([request]) => (request as { commandId: string }).commandId);
+		const folderOf = (run: { environment: Readonly<Record<string, string>>; cwd: string }) =>
+			checkOf(run) ? run.cwd : `${run.environment.QORPERA_CHECKS_ROOT}/${run.environment.QORPERA_CHECKS_NAME}`;
+
+		it("asks a cancel that is rejected again, believes the end only once a read confirms it, and runs again in another folder", async () => {
+			const f = await stuck();
+			const cancel = mocked.guestCancel.getMockImplementation()!;
+			mocked.guestCancel
+				.mockRejectedValueOnce(new Error("LXD operation failed"))
+				.mockRejectedValueOnce(new Error("LXD operation failed"))
+				.mockImplementation(cancel);
+			expect(await f.run(CHECKS.slice(0, 1))).toEqual({
+				state: "not_run",
+				why: "budget",
+				code: "CODE_CHECKS_BUDGET",
+			});
+			const check = f.ran()[1]?.commandId as string;
+			expect(cancels()).toEqual([check, check, check]);
+			expect(f.commands.get(check)?.state).toBe("cancelled");
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ event: "code-checks", step: "ended", index: 1, state: "not_run", stopped: true }),
+			);
+			// Its end confirmed, the next run starts at once, asks nothing more of it, and works in a folder of its own.
+			f.ending(() => ({}));
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+			expect(cancels()).toHaveLength(3);
+			const [first, , again, checked] = f.ran();
+			const one = runName(f.claim.sequence, 1),
+				two = runName(f.claim.sequence, 2);
+			expect([first, again].map((run) => run?.environment.QORPERA_CHECKS_NAME)).toEqual([one, two]);
+			expect(one).not.toBe(two);
+			expect([f.ran()[1]?.cwd, checked?.cwd]).toEqual([
+				`${HOME}/.qorpera-checks/${one}/src`,
+				`${HOME}/.qorpera-checks/${two}/src`,
+			]);
+			expect(checked?.environment.QORPERA_CHECK_LOG).toBe(`${HOME}/.qorpera-checks/${two}/out/1-install.log`);
+		});
+
+		it("reads a cancel that answers running again until the command has ended", async () => {
+			const f = await stuck();
+			const cancel = mocked.guestCancel.getMockImplementation()!;
+			// The guest takes the first cancel and the command still runs; it has ended by the second.
+			mocked.guestCancel
+				.mockImplementationOnce(async (request: unknown) => {
+					const asked = parseCodingGuestRequest("cancel", request);
+					const found = f.commands.get(asked.commandId);
+					return {
+						schema: "qorpera.coding-guest-command/v1",
+						workerId: f.claim.workerId,
+						commandId: asked.commandId,
+						state: found?.state ?? "running",
+						exit: null,
+						end: found?.printed.length ?? 0,
+					};
+				})
+				.mockImplementation(cancel);
+			expect(await f.run(CHECKS.slice(0, 1))).toEqual({
+				state: "not_run",
+				why: "budget",
+				code: "CODE_CHECKS_BUDGET",
+			});
+			const check = f.ran()[1]?.commandId as string;
+			expect(cancels()).toEqual([check, check]);
+			expect(f.logged).toContainEqual(expect.objectContaining({ step: "ended", index: 1, stopped: true }));
+			f.ending(() => ({}));
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+		});
+
+		it("starts no run, and touches no folder, while a command of an earlier run has not stopped", async () => {
+			const f = await stuck();
+			// The guest takes every cancel, and the command runs on.
+			mocked.guestCancel.mockImplementation(async (request: unknown) => {
+				const asked = parseCodingGuestRequest("cancel", request);
+				const found = f.commands.get(asked.commandId);
+				return {
+					schema: "qorpera.coding-guest-command/v1",
+					workerId: f.claim.workerId,
+					commandId: asked.commandId,
+					state: found?.state ?? "running",
+					exit: null,
+					end: found?.printed.length ?? 0,
+				};
+			});
+			expect(await f.run(CHECKS.slice(0, 1))).toEqual({
+				state: "not_run",
+				why: "budget",
+				code: "CODE_CHECKS_BUDGET",
+			});
+			const check = f.ran()[1]?.commandId as string;
+			expect(f.logged).toContainEqual(expect.objectContaining({ step: "ended", index: 1, stopped: false }));
+			// The retry: the earlier check is cancelled and read again within the bound, still runs, and no copy starts.
+			const asked = cancels().length;
+			const started = performance.now();
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toEqual({
+				state: "not_run",
+				why: "machine",
+				code: "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED",
+			});
+			expect(performance.now() - started).toBeLessThan(5_000);
+			expect(f.ran()).toHaveLength(2);
+			expect(cancels().length).toBeGreaterThan(asked);
+			expect(new Set(cancels())).toEqual(new Set([check]));
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({
+					event: "code-checks",
+					step: "earlier",
+					attempt: 2,
+					commandId: check,
+					end: "running",
+				}),
+			);
+			// The turn's abort while it waits is thrown on, and starts nothing.
+			const stop = new AbortController();
+			const reason = new Error("CODING_EXECUTOR_LEASE_LOST");
+			mocked.guestCancel.mockImplementationOnce(async () => {
+				stop.abort(reason);
+				throw new Error("LXD operation failed");
+			});
+			await expect(f.run(CHECKS.slice(0, 1), 3, stop.signal)).rejects.toBe(reason);
+			expect(f.ran()).toHaveLength(2);
+			// Once it has ended, the next run starts, in a folder of its own, and the earlier command is asked no more.
+			(f.commands.get(check) as { state: CodingGuestCommandState }).state = "cancelled";
+			f.ending(() => ({}));
+			expect(await f.run(CHECKS.slice(0, 1), 4)).toMatchObject({ state: "passed" });
+			expect(f.ran().map(folderOf).slice(2)).toEqual([
+				`${HOME}/.qorpera-checks/${runName(f.claim.sequence, 4)}`,
+				`${HOME}/.qorpera-checks/${runName(f.claim.sequence, 4)}/src`,
+			]);
+			const after = cancels().length;
+			expect(await f.run(CHECKS.slice(0, 1), 5)).toMatchObject({ state: "passed" });
+			expect(cancels()).toHaveLength(after);
+		});
+
+		/** A run whose one check's start never reaches the guest while the host asks (every answer lost), so its cancel
+		 * finds nothing there: `cancelled`, for now. Then the lost start lands, before the retry's folder exists: the guest
+		 * runs it (`running`), as a test server would run on. `stops` says whether the guest's cancel of it ends it. */
+		const landsLate = async (stops: boolean) => {
+			const f = await checksFixture();
+			const older = runName(f.claim.sequence, 1);
+			const run = mocked.guestRun.getMockImplementation()!;
+			const lost: CodingGuestRunRequest[] = [];
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const asked = parseCodingGuestRequest("run", request);
+				if (asked.environment.QORPERA_CHECKS_NAME !== older || !checkOf(asked)) return run(request);
+				lost.push(asked);
+				throw new Error("LXD operation failed");
+			});
+			expect(await f.run(CHECKS.slice(0, 1))).toEqual({ state: "not_run", why: "transport", code: "UNCLASSIFIED" });
+			const landed = lost[0] as CodingGuestRunRequest;
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "ended", attempt: 1, index: 1, state: "not_run", stopped: true }),
+			);
+			// It lands now, before the retry made anything.
+			f.commands.set(landed.commandId, {
+				run: landed,
+				state: "running",
+				exit: null,
+				printed: Buffer.from("listening on 3000\n"),
+				ending: { state: "running" },
+				until: Number.POSITIVE_INFINITY,
+			});
+			const cancel = mocked.guestCancel.getMockImplementation()!;
+			if (!stops)
+				mocked.guestCancel.mockImplementation(async (request: unknown) => {
+					const asked = parseCodingGuestRequest("cancel", request);
+					if (asked.commandId !== landed.commandId) return cancel(request);
+					return {
+						schema: "qorpera.coding-guest-command/v1",
+						workerId: f.claim.workerId,
+						commandId: asked.commandId,
+						state: "running",
+						exit: null,
+						end: 0,
+					};
+				});
+			return { f, landed, older, newer: runName(f.claim.sequence, 2) };
+		};
+		const orderOf = (mock: { mock: { calls: unknown[][]; invocationCallOrder: number[] } }, commandId: string) =>
+			mock.mock.calls.flatMap(([request], at) =>
+				(request as { commandId: string }).commandId === commandId
+					? [mock.mock.invocationCallOrder[at] as number]
+					: [],
+			);
+
+		it("stops a check whose lost start landed before the retry's folder, after the retry's copy and before its first check (review round 5, F1)", async () => {
+			const { f, landed, newer } = await landsLate(true);
+			f.ending(() => ({}));
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+			const [copy, check] = f.ran().filter((ran) => ran.environment.QORPERA_CHECKS_NAME === newer);
+			// The retry's copy (the fence), then the landed check cancelled and read until it ended, then the first check.
+			const copied = orderOf(mocked.guestRun, copy?.commandId as string)[0] as number,
+				checked = orderOf(mocked.guestRun, check?.commandId as string)[0] as number;
+			const looked = orderOf(mocked.guestCancel, landed.commandId).filter((at) => at > copied);
+			expect(looked.length).toBeGreaterThan(0);
+			expect(Math.max(...looked)).toBeLessThan(checked);
+			expect(f.commands.get(landed.commandId)?.state).toBe("cancelled");
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({
+					event: "code-checks",
+					step: "looked",
+					attempt: 2,
+					commandId: landed.commandId,
+					end: "ended",
+				}),
+			);
+			// Looked at once: the next run asks nothing more of it.
+			const asked = mocked.guestCancel.mock.calls.length;
+			expect(await f.run(CHECKS.slice(0, 1), 3)).toMatchObject({ state: "passed" });
+			expect(mocked.guestCancel.mock.calls).toHaveLength(asked);
+		});
+
+		it("starts no check when a lost start that landed before the retry's folder cannot be stopped (review round 5, F1)", async () => {
+			const { f, landed, newer } = await landsLate(false);
+			f.ending(() => ({}));
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toEqual({
+				state: "not_run",
+				why: "machine",
+				code: "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED",
+			});
+			// The retry's copy ran (its fence stands); no check of it started.
+			expect(
+				f
+					.ran()
+					.filter((ran) => ran.environment.QORPERA_CHECKS_NAME === newer)
+					.map(checkOf),
+			).toEqual([undefined]);
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "looked", attempt: 2, commandId: landed.commandId, end: "running" }),
+			);
+			// It holds every later run before anything, until it has ended.
+			const before = f.ran().length;
+			expect(await f.run(CHECKS.slice(0, 1), 3)).toMatchObject({ code: "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED" });
+			expect(f.ran()).toHaveLength(before);
+			(f.commands.get(landed.commandId) as { state: CodingGuestCommandState }).state = "cancelled";
+			expect(await f.run(CHECKS.slice(0, 1), 4)).toMatchObject({ state: "passed" });
+		});
+
+		/** Review round 6, F1, in its order: a check's start is never answered; its first stop passes its bound (the guest
+		 * refuses every cancel); the retry's guard before the run then gets the provisional `cancelled`; the lost start lands
+		 * before the retry's folder exists (at the retry's first guest call, the stand-in guest shows it `running`). `stops`
+		 * says whether the guest's cancel of the landed command ends it. */
+		const timesOut = async (stops: boolean) => {
+			const f = await checksFixture();
+			const older = runName(f.claim.sequence, 1),
+				newer = runName(f.claim.sequence, 2);
+			const run = mocked.guestRun.getMockImplementation()!,
+				cancel = mocked.guestCancel.getMockImplementation()!;
+			let lost: CodingGuestRunRequest | undefined;
+			let refuse = true;
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const asked = parseCodingGuestRequest("run", request);
+				if (asked.environment.QORPERA_CHECKS_NAME === older && checkOf(asked)) {
+					lost = asked;
+					throw new Error("LXD operation failed");
+				}
+				// The lost start lands now, before the retry's copy runs.
+				if (
+					asked.environment.QORPERA_CHECKS_NAME === newer &&
+					!checkOf(asked) &&
+					lost &&
+					!f.commands.has(lost.commandId)
+				)
+					f.commands.set(lost.commandId, {
+						run: lost,
+						state: "running",
+						exit: null,
+						printed: Buffer.from("listening on 3000\n"),
+						ending: { state: "running" },
+						until: Number.POSITIVE_INFINITY,
+					});
+				return run(request);
+			});
+			mocked.guestCancel.mockImplementation(async (request: unknown) => {
+				const asked = parseCodingGuestRequest("cancel", request);
+				if (refuse && asked.commandId === lost?.commandId) throw new Error("LXD operation failed");
+				if (!stops && f.commands.get(asked.commandId)?.state === "running" && asked.commandId === lost?.commandId)
+					return {
+						schema: "qorpera.coding-guest-command/v1",
+						workerId: f.claim.workerId,
+						commandId: asked.commandId,
+						state: "running",
+						exit: null,
+						end: 0,
+					};
+				return cancel(request);
+			});
+			expect(await f.run(CHECKS.slice(0, 1))).toEqual({ state: "not_run", why: "transport", code: "UNCLASSIFIED" });
+			const checkId = (lost as CodingGuestRunRequest).commandId;
+			// Its first stop could not be confirmed.
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "ended", attempt: 1, index: 1, state: "not_run", stopped: false }),
+			);
+			refuse = false;
+			f.ending(() => ({}));
+			return { f, checkId, newer };
+		};
+
+		it("looks again after the retry's fence at a check whose start was never answered and whose first stop timed out (review round 6, F1)", async () => {
+			const { f, checkId, newer } = await timesOut(true);
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+			// The guard before the retry got the provisional `cancelled`: no longer held there.
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "earlier", attempt: 2, commandId: checkId, end: "ended" }),
+			);
+			// The start landed before the retry's folder; the retry's copy, then the landed check cancelled and read until it
+			// ended, then the retry's first check.
+			const [copy, check] = f.ran().filter((ran) => ran.environment.QORPERA_CHECKS_NAME === newer);
+			const copied = orderOf(mocked.guestRun, copy?.commandId as string)[0] as number,
+				checked = orderOf(mocked.guestRun, check?.commandId as string)[0] as number;
+			const looked = orderOf(mocked.guestCancel, checkId).filter((at) => at > copied);
+			expect(looked.length).toBeGreaterThan(0);
+			expect(Math.max(...looked)).toBeLessThan(checked);
+			expect(f.loggedAt("looked", checkId).every((at) => at > copied && at < checked)).toBe(true);
+			expect(f.commands.get(checkId)?.state).toBe("cancelled");
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "looked", attempt: 2, commandId: checkId, end: "ended" }),
+			);
+		});
+
+		it("starts no check of the retry when that landed check cannot be stopped (review round 6, F1)", async () => {
+			const { f, checkId, newer } = await timesOut(false);
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toEqual({
+				state: "not_run",
+				why: "machine",
+				code: "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED",
+			});
+			expect(
+				f
+					.ran()
+					.filter((ran) => ran.environment.QORPERA_CHECKS_NAME === newer)
+					.map(checkOf),
+			).toEqual([undefined]);
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "looked", attempt: 2, commandId: checkId, end: "running" }),
+			);
+		});
+
+		it("looks again after the next fence at a check whose receipt ended it as unconfirmed (review round 6, F1)", async () => {
+			const f = await checksFixture();
+			// The guest lost the check: its receipt says `unconfirmed`, with no word of how it ended.
+			f.ending((run) => (checkOf(run) ? { state: "lost" } : {}));
+			expect(await f.run(CHECKS.slice(0, 1))).toEqual({
+				state: "not_run",
+				why: "machine",
+				code: "CODE_CHECKS_UNCONFIRMED",
+			});
+			const lost = f.ran()[1]?.commandId as string;
+			f.ending(() => ({}));
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+			const [, copy, , check] = f.ran();
+			const copied = orderOf(mocked.guestRun, copy?.commandId as string)[0] as number,
+				checked = orderOf(mocked.guestRun, check?.commandId as string)[0] as number;
+			const looked = f.loggedAt("looked", lost);
+			expect(looked).toHaveLength(1);
+			expect([copied < (looked[0] as number), (looked[0] as number) < checked]).toEqual([true, true]);
+		});
+
+		it("looks again after the next fence at a check the machine showed nothing of when it ended (review round 6, F1)", async () => {
+			const f = await checksFixture();
+			// The check ends at once; then the machine's disk can no longer be said (`hidden`: `unconfirmed`), so nothing of
+			// the command may be shown, and one may still run there.
+			let armed: number | undefined;
+			const disk = mocked.disk.getMockImplementation()!;
+			mocked.disk.mockImplementation(async (...args: unknown[]) => {
+				if (armed !== undefined && ++armed >= 2) return "not a rebuild";
+				return disk(...args);
+			});
+			f.ending((run) => {
+				if (!checkOf(run)) return {};
+				armed = 0;
+				return { code: 0 };
+			});
+			expect(await f.run(CHECKS.slice(0, 1))).toEqual({
+				state: "not_run",
+				why: "machine",
+				code: "CODE_CHECKS_UNCONFIRMED",
+			});
+			armed = undefined;
+			const shown = f.ran()[1]?.commandId as string;
+			f.ending(() => ({}));
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+			const [, copy, , check] = f.ran();
+			const copied = orderOf(mocked.guestRun, copy?.commandId as string)[0] as number,
+				checked = orderOf(mocked.guestRun, check?.commandId as string)[0] as number;
+			const looked = f.loggedAt("looked", shown);
+			expect(looked).toHaveLength(1);
+			expect([copied < (looked[0] as number), (looked[0] as number) < checked]).toEqual([true, true]);
+		});
+
+		it("lets a copy whose start was never acknowledged land after the retry began: the retry is not held back, and the late copy does nothing (review round 4, F1)", async () => {
+			const f = await checksFixture();
+			const older = runName(f.claim.sequence, 1),
+				newer = runName(f.claim.sequence, 2);
+			// The first run's copy never reaches the guest while the host asks: every start's answer is lost.
+			const run = mocked.guestRun.getMockImplementation()!;
+			const lost: CodingGuestRunRequest[] = [];
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const asked = parseCodingGuestRequest("run", request);
+				if (asked.environment.QORPERA_CHECKS_NAME !== older || checkOf(asked)) return run(request);
+				lost.push(asked);
+				throw new Error("LXD operation failed");
+			});
+			expect(await f.run(CHECKS.slice(0, 1))).toEqual({ state: "not_run", why: "transport", code: "UNCLASSIFIED" });
+			const copyId = lost[0]?.commandId as string;
+			expect(new Set(lost.map((request) => request.commandId))).toEqual(new Set([copyId]));
+			// Its cancel found nothing in the guest: `cancelled` for now, never acknowledged, with no outcome kept. The host
+			// takes it as stopped.
+			const kept = join(f.custody, "host-commands", copyId.replaceAll("-", ""));
+			expect(JSON.parse(await readFile(join(kept, "progress.json"), "utf8"))).toMatchObject({
+				acknowledged: false,
+				cancelled: true,
+			});
+			await expect(readFile(join(kept, "outcome.json"))).rejects.toMatchObject({ code: "ENOENT" });
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "ended", attempt: 1, index: 0, state: "not_run", stopped: true }),
+			);
+			// The retry runs at once, held back by nothing, in its own folder with a higher name.
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+			expect(f.logged.filter((event) => event.step === "earlier")).toEqual([]);
+			const [retry] = f.ran();
+			expect(retry?.environment.QORPERA_CHECKS_NAME).toBe(newer);
+			expect(Buffer.compare(Buffer.from(newer), Buffer.from(older))).toBe(1);
+			// The lost start lands now: the guest runs what it was asked, the copy under the older run's name, beside the
+			// newer run's folder. On this machine, with bash: it exits 91 having removed and made nothing.
+			const landed = lost.at(-1) as CodingGuestRunRequest;
+			expect(landed.command).toBe(retry?.command);
+			expect(landed.environment).toMatchObject({
+				QORPERA_CHECKS_ROOT: retry?.environment.QORPERA_CHECKS_ROOT,
+				QORPERA_CHECKS_NAME: older,
+			});
+			const m = await onTheMachine();
+			const at = await m.home("landed");
+			await mkdir(join(at.root, newer, "src"), { recursive: true });
+			await writeFile(join(at.root, newer, "src", "result.txt"), "the retry's\n");
+			const late = await m.bash(
+				landed.command,
+				{
+					HOME: at.home,
+					QORPERA_CHECKS_ROOT: at.root,
+					QORPERA_CHECKS_NAME: landed.environment.QORPERA_CHECKS_NAME as string,
+					QORPERA_CHECKS_REPOSITORY: landed.environment.QORPERA_CHECKS_REPOSITORY as string,
+					QORPERA_CHECKS_COMMIT: landed.environment.QORPERA_CHECKS_COMMIT as string,
+				},
+				at.home,
+			);
+			expect(late.code).toBe(91);
+			expect(await readdir(at.root)).toEqual([newer]);
+			expect(await readFile(join(at.root, newer, "src", "result.txt"), "utf8")).toBe("the retry's\n");
+		});
+
+		it("believes an earlier command ended once the guest no longer has it, or the host never kept its start", async () => {
+			const f = await stuck();
+			// Every cancel the guest takes, and the command runs on.
+			mocked.guestCancel.mockImplementation(async (request: unknown) => {
+				const asked = parseCodingGuestRequest("cancel", request);
+				const found = f.commands.get(asked.commandId);
+				return {
+					schema: "qorpera.coding-guest-command/v1",
+					workerId: f.claim.workerId,
+					commandId: asked.commandId,
+					state: found?.state ?? "running",
+					exit: null,
+					end: found?.printed.length ?? 0,
+				};
+			});
+			await f.run(CHECKS.slice(0, 1));
+			const first = f.ran()[1]?.commandId as string;
+			// The guest no longer knows the command (its machine lost it): it ended with the machine, and the next run
+			// starts; its own check does not stop either.
+			// (The faked class keeps no code of its own: it is given one.)
+			const unknown = () =>
+				Object.assign(new CodingGuestRefused("CODING_GUEST_COMMAND_UNKNOWN"), {
+					code: "CODING_GUEST_COMMAND_UNKNOWN",
+				});
+			mocked.guestCancel.mockRejectedValueOnce(unknown());
+			mocked.guestOutput.mockRejectedValueOnce(unknown());
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toEqual({
+				state: "not_run",
+				why: "budget",
+				code: "CODE_CHECKS_BUDGET",
+			});
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "earlier", attempt: 2, commandId: first, end: "lost" }),
+			);
+			const second = f.ran()[3]?.commandId as string;
+			expect(f.ran()).toHaveLength(4);
+			// The host kept no start of a command: nothing of it ever ran.
+			await rm(join(f.custody, "host-commands", second.replaceAll("-", "")), { recursive: true });
+			f.ending(() => ({}));
+			expect(await f.run(CHECKS.slice(0, 1), 3)).toMatchObject({ state: "passed" });
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "earlier", attempt: 3, commandId: second, end: "unkept" }),
+			);
+		});
+	});
+
+	/** The scripts as the host hands them to the guest (from a run through the fixture), run for real with bash and git
+	 * on this machine, in homes of the test's own; a repository's storage with one commit. */
+	async function onTheMachine() {
+		const f = await checksFixture();
+		await f.run(CHECKS.slice(0, 1));
+		const [copyRun, checkRun] = f.ran();
+		const exec = promisify(execFile);
+		const top = await realpath(await mkdtemp(join(tmpdir(), "code-checks-scripts-")));
+		roots.push(top);
+		const env = {
+			PATH: "/usr/bin:/bin",
+			HOME: top,
+			GIT_CONFIG_NOSYSTEM: "1",
+			GIT_CONFIG_GLOBAL: "/dev/null",
+			GIT_AUTHOR_NAME: "Test",
+			GIT_AUTHOR_EMAIL: "test@example.invalid",
+			GIT_COMMITTER_NAME: "Test",
+			GIT_COMMITTER_EMAIL: "test@example.invalid",
+		};
+		const git = async (cwd: string, ...args: string[]) => (await exec("git", args, { cwd, env })).stdout.trim();
+		const source = join(top, "source"),
+			repository = join(top, "repo.git");
+		await mkdir(source);
+		await git(source, "init", "--quiet", "--initial-branch=main", ".");
+		await writeFile(join(source, "app.js"), "app\n");
+		await git(source, "add", "app.js");
+		await git(source, "commit", "--quiet", "-m", "app");
+		const commit = await git(source, "rev-parse", "HEAD");
+		await git(top, "clone", "--quiet", "--bare", source, repository);
+		/** One script with bash as the guest runs it: its exit code and what it printed. */
+		const bash = async (script: string, given: Record<string, string>, cwd: string) => {
+			try {
+				const { stdout } = await exec("bash", ["--noprofile", "--norc", "-c", script], {
+					cwd,
+					env: { ...env, ...given },
+				});
+				return { code: 0, output: stdout };
+			} catch (error) {
+				const failed = error as { code?: number; stdout?: string; stderr?: string };
+				return { code: failed.code ?? -1, output: `${failed.stdout ?? ""}${failed.stderr ?? ""}` };
+			}
+		};
+		/** A home of its own, its checks' root, and the session's own files beside it. */
+		const home = async (label: string) => {
+			const at = join(top, label);
+			await mkdir(join(at, "qorpera-check"), { recursive: true });
+			await writeFile(join(at, "qorpera-check", "keep.js"), "keep\n");
+			await writeFile(join(at, "notes.md"), "keep\n");
+			return { home: at, root: join(at, ".qorpera-checks") };
+		};
+		const copy = (at: { home: string; root: string }, name: string, extra: Record<string, string> = {}) =>
+			bash(
+				copyRun?.command as string,
+				{
+					HOME: at.home,
+					QORPERA_CHECKS_ROOT: at.root,
+					QORPERA_CHECKS_NAME: name,
+					QORPERA_CHECKS_REPOSITORY: repository,
+					QORPERA_CHECKS_COMMIT: commit,
+					...extra,
+				},
+				at.home,
+			);
+		const check = (at: { home: string; root: string }, name: string, run: string) =>
+			bash(
+				checkRun?.command as string,
+				{
+					HOME: at.home,
+					QORPERA_CHECKS_ROOT: at.root,
+					QORPERA_CHECKS_NAME: name,
+					QORPERA_CHECK_CWD: ".",
+					QORPERA_CHECK_RUN: run,
+					QORPERA_CHECK_LOG: join(at.root, name, "out", "1-test.log"),
+				},
+				join(at.root, name, "src"),
+			);
+		const exists = (path: string) =>
+			lstat(path).then(
+				() => true,
+				() => false,
+			);
+		return {
+			f,
+			top,
+			commit,
+			git,
+			bash,
+			home,
+			copy,
+			check,
+			exists,
+			copyScript: copyRun?.command as string,
+			checkScript: checkRun?.command as string,
+		};
+	}
+
+	describe("the scripts on the machine: a run's own folder, and a command of a run that is not the newest does nothing", () => {
+		it("a copy removes the run folders with a lower name, and no other entry, and makes its own", async () => {
+			const m = await onTheMachine();
+			const at = await m.home("home");
+			const name = runName(7, 2);
+			// Earlier runs (an earlier turn, an earlier attempt of this turn), entries that are not run folders (the layouts
+			// before, a stray file, a name of another shape), and this run's own name holding something already.
+			const earlier = [runName(6, 1), runName(7, 1)];
+			for (const folder of [
+				`${earlier[0]}/src/node_modules`,
+				`${earlier[1]}/out`,
+				"src/lib",
+				"out",
+				randomUUID(),
+				name,
+			])
+				await mkdir(join(at.root, folder), { recursive: true });
+			await writeFile(join(at.root, "stray.log"), "old\n");
+			await writeFile(join(at.root, "12345-1"), "not a run's name\n");
+			await writeFile(join(at.root, name, "left.txt"), "old\n");
+			const others = (await readdir(at.root)).filter((entry) => !earlier.includes(entry) && entry !== name).sort();
+			expect(await m.copy(at, name)).toEqual({ code: 0, output: "" });
+			expect((await readdir(at.root)).sort()).toEqual([...others, name].sort());
+			expect((await readdir(join(at.root, name))).sort()).toEqual(["out", "src"]);
+			expect(await readdir(join(at.root, name, "out"))).toEqual([]);
+			expect(await m.git(join(at.root, name, "src"), "rev-parse", "HEAD")).toBe(m.commit);
+			expect(await readFile(join(at.home, "qorpera-check", "keep.js"), "utf8")).toBe("keep\n");
+			expect(await readFile(join(at.home, "notes.md"), "utf8")).toBe("keep\n");
+			// The next turn's run removes this run's folder, and still nothing else.
+			const next = runName(8, 1);
+			expect((await m.copy(at, next)).code).toBe(0);
+			expect((await readdir(at.root)).sort()).toEqual([...others, next].sort());
+			expect((await readdir(at.home)).sort()).toEqual([".qorpera-checks", "notes.md", "qorpera-check"]);
+		});
+
+		it("a copy of a run that is not the newest exits 91 and removes or makes nothing", async () => {
+			const m = await onTheMachine();
+			const at = await m.home("home");
+			const older = runName(7, 1),
+				newer = runName(7, 2),
+				oldest = runName(6, 4);
+			// The newer run's folder stands, with a check's file in it; an older run's folder too.
+			await mkdir(join(at.root, newer, "src"), { recursive: true });
+			await writeFile(join(at.root, newer, "src", "result.txt"), "the newer run's\n");
+			await mkdir(join(at.root, oldest, "out"), { recursive: true });
+			const before = (await readdir(at.root)).sort();
+			const late = await m.copy(at, older);
+			expect(late.code).toBe(91);
+			expect((await readdir(at.root)).sort()).toEqual(before);
+			expect(await m.exists(join(at.root, older))).toBe(false);
+			expect(await readFile(join(at.root, newer, "src", "result.txt"), "utf8")).toBe("the newer run's\n");
+			expect(await readdir(join(at.root, oldest))).toEqual(["out"]);
+			// A later turn's name is higher whatever its attempt: the sequence comes first, both padded.
+			expect((await m.copy(at, runName(10, 1))).code).toBe(0);
+			expect(await readdir(at.root)).toEqual([runName(10, 1)]);
+			expect((await m.copy(at, runName(9, 9))).code).toBe(91);
+			expect(await readdir(at.root)).toEqual([runName(10, 1)]);
+		});
+
+		it("a check of a run that is not the newest exits 91 and runs nothing, though its folder stands", async () => {
+			const m = await onTheMachine();
+			const at = await m.home("home");
+			const older = runName(3, 1),
+				newer = runName(3, 2);
+			for (const name of [older, newer]) await mkdir(join(at.root, name, "src"), { recursive: true });
+			await mkdir(join(at.root, older, "out"), { recursive: true });
+			const late = await m.check(at, older, "touch ran.txt; echo ran");
+			expect(late.code).toBe(91);
+			expect(await m.exists(join(at.root, older, "src", "ran.txt"))).toBe(false);
+			expect(await m.exists(join(at.root, older, "out", "1-test.log"))).toBe(false);
+			// The newest run's check runs, keeps its whole output, and ends with its command's own code.
+			await mkdir(join(at.root, newer, "out"), { recursive: true });
+			expect(await m.check(at, newer, "touch ran.txt; echo ran; exit 3")).toEqual({ code: 3, output: "ran\n" });
+			expect(await m.exists(join(at.root, newer, "src", "ran.txt"))).toBe(true);
+			expect(await readFile(join(at.root, newer, "out", "1-test.log"), "utf8")).toBe("ran\n");
+		});
+
+		/** A process of this user, started by the test with its working folder at `cwd`: a shell whose child listens on a
+		 * TCP port of its own, as a check's test server does; or, without `listen`, one that only waits. */
+		const started: ChildProcess[] = [];
+		afterEach(() => {
+			// Each helper is the leader of a process group of its own: the whole group goes, its server child too, also when
+			// an assertion failed.
+			for (const child of started.splice(0))
+				try {
+					if (child.pid) process.kill(-child.pid, "SIGKILL");
+				} catch {
+					/* gone already */
+				}
+		});
+		const stale = async (cwd: string, listen = false) => {
+			const server = listen
+				? "require('net').createServer().listen(0, '127.0.0.1', function () { process.stdout.write(this.address().port + '\\n'); }); setInterval(() => {}, 1000);"
+				: "setInterval(() => {}, 1000); process.stdout.write('0\\n');";
+			const child = spawn("bash", ["--noprofile", "--norc", "-c", `"${process.execPath}" -e "${server}" & wait`], {
+				cwd,
+				detached: true,
+				stdio: ["ignore", "pipe", "ignore"],
+			});
+			started.push(child);
+			const [line] = (await once(child.stdout as NonNullable<typeof child.stdout>, "data")) as [Buffer];
+			return { child, port: Number(line.toString().trim()) };
+		};
+		const free = (port: number) =>
+			new Promise<boolean>((resolve) => {
+				const server = createServer();
+				server.once("error", () => resolve(false));
+				server.listen(port, "127.0.0.1", () => server.close(() => resolve(true)));
+			});
+		const alive = (child: ChildProcess) => child.exitCode === null && child.signalCode === null;
+
+		it("a copy ends every process left in an earlier run's folder before it goes on, and no other process", async () => {
+			const m = await onTheMachine();
+			const at = await m.home("home");
+			const older = runName(4, 1),
+				gone = runName(4, 2),
+				newer = runName(5, 1);
+			for (const folder of [`${older}/src`, `${gone}/src`, newer])
+				await mkdir(join(at.root, folder), { recursive: true });
+			// A stale check of an earlier run: its shell and its test server, holding a port, started before the newer copy.
+			const server = await stale(join(at.root, older, "src"), true);
+			expect(await free(server.port)).toBe(false);
+			// One whose working folder is an earlier run's folder itself, already gone ("<folder> (deleted)").
+			const orphan = await stale(join(at.root, gone));
+			await rm(join(at.root, gone), { recursive: true, force: true });
+			// One in the newer run's own folder, and one elsewhere in the home: never touched.
+			const own = await stale(join(at.root, newer));
+			const elsewhere = await stale(join(at.home, "qorpera-check"));
+			const ended = Promise.all([once(server.child, "exit"), once(orphan.child, "exit")]);
+			expect(await m.copy(at, newer)).toEqual({ code: 0, output: "" });
+			await ended;
+			expect(await free(server.port)).toBe(true);
+			expect([alive(own.child), alive(elsewhere.child)]).toEqual([true, true]);
+			expect(await m.git(join(at.root, newer, "src"), "rev-parse", "HEAD")).toBe(m.commit);
+			expect((await readdir(at.root)).sort()).toEqual([newer]);
+		});
+
+		it("a copy's folder stands from its first step on and is never made again: an earlier run's start that lands after it does nothing", async () => {
+			const m = await onTheMachine();
+			const at = await m.home("home");
+			const older = runName(6, 1),
+				newer = runName(6, 2);
+			// An earlier run's folder with a process in it, so the copy ends a process, waits and removes the folder.
+			await mkdir(join(at.root, older, "src"), { recursive: true });
+			await stale(join(at.root, older, "src"));
+			// Each tool the copy calls after its first step lands a check of the earlier run once (its start, late), and
+			// says whether the newer run's folder stood then and which it was.
+			const shims = join(m.top, "shims"),
+				state = join(m.top, "state");
+			await mkdir(shims);
+			await mkdir(state);
+			await writeFile(join(m.top, "check.sh"), m.checkScript);
+			await writeFile(
+				join(m.top, "hook.sh"),
+				[
+					"#!/bin/bash",
+					'mark="$SHIM_STATE/seen-$1"',
+					'[ -e "$mark" ] && exit 0',
+					': > "$mark"',
+					'd="$QORPERA_CHECKS_ROOT/$QORPERA_CHECKS_NAME"',
+					'if [ -d "$d" ]; then i="$(PATH=/usr/bin:/bin stat -c %i "$d")"; else i=none; fi',
+					"c=0",
+					'( cd "$SHIM_HOME" && PATH=/usr/bin:/bin QORPERA_CHECKS_NAME="$SHIM_OLDER" QORPERA_CHECK_CWD=. \\',
+					'\tQORPERA_CHECK_RUN="touch $SHIM_STATE/ran-$1" QORPERA_CHECK_LOG="$SHIM_STATE/log-$1" \\',
+					'\t/bin/bash --noprofile --norc "$SHIM_CHECK" ) >/dev/null 2>&1 || c=$?',
+					'echo "$1 $i $c" >> "$SHIM_STATE/steps"',
+				].join("\n"),
+				{ mode: 0o755 },
+			);
+			for (const tool of ["find", "rm", "sleep", "git"])
+				await writeFile(
+					join(shims, tool),
+					`#!/bin/bash\n"${join(m.top, "hook.sh")}" ${tool} >/dev/null 2>&1\nPATH=/usr/bin:/bin exec ${tool} "$@"\n`,
+					{ mode: 0o755 },
+				);
+			const copied = await m.copy(at, newer, {
+				PATH: `${shims}:/usr/bin:/bin`,
+				SHIM_STATE: state,
+				SHIM_HOME: at.home,
+				SHIM_OLDER: older,
+				SHIM_CHECK: join(m.top, "check.sh"),
+			});
+			expect(copied).toEqual({ code: 0, output: "" });
+			const inode = (await lstat(join(at.root, newer))).ino;
+			const steps = (await readFile(join(state, "steps"), "utf8")).trim().split("\n");
+			// The ending of processes (find), its wait (sleep), the removal of the earlier folder and the emptying of its own
+			// (rm), the copy itself (git): at each, the folder stood, the same one, and the late check exited 91.
+			expect(steps.map((line) => line.split(" ")[0]).sort()).toEqual(["find", "git", "rm", "sleep"]);
+			for (const line of steps) expect(line.split(" ").slice(1)).toEqual([String(inode), "91"]);
+			expect((await readdir(state)).filter((entry) => entry.startsWith("ran-") || entry.startsWith("log-"))).toEqual(
+				[],
+			);
+			expect((await readdir(join(at.root, newer))).sort()).toEqual(["out", "src"]);
+			expect((await readdir(at.root)).sort()).toEqual([newer]);
+			// A run's folder that is there already, with something in it, is kept and emptied, never made again.
+			const again = runName(7, 1);
+			await mkdir(join(at.root, again), { recursive: true });
+			await writeFile(join(at.root, again, "left.txt"), "old\n");
+			const kept = (await lstat(join(at.root, again))).ino;
+			expect((await m.copy(at, again)).code).toBe(0);
+			expect((await lstat(join(at.root, again))).ino).toBe(kept);
+			expect((await readdir(join(at.root, again))).sort()).toEqual(["out", "src"]);
+		});
+
+		it("a copy takes a root that is a link away and removes nothing through it, and a folder it cannot remove never stops it", async () => {
+			const m = await onTheMachine();
+			const linked = await m.home("linked"),
+				elsewhere = join(linked.home, "..", "elsewhere"),
+				name = runName(2, 1);
+			await mkdir(join(elsewhere, runName(1, 1)), { recursive: true });
+			await writeFile(join(elsewhere, runName(1, 1), "keep.js"), "keep\n");
+			await symlink(elsewhere, linked.root);
+			expect((await m.copy(linked, name)).code).toBe(0);
+			expect(await readFile(join(elsewhere, runName(1, 1), "keep.js"), "utf8")).toBe("keep\n");
+			expect((await lstat(linked.root)).isDirectory()).toBe(true);
+			expect(await readdir(linked.root)).toEqual([name]);
+			expect(await m.exists(join(linked.root, name, "src", "app.js"))).toBe(true);
+			// What an earlier run left that the session's user cannot remove stays, and the copy is made all the same.
+			const at = await m.home("home");
+			const locked = join(at.root, runName(1, 1), "cache");
+			await mkdir(locked, { recursive: true });
+			await writeFile(join(locked, "owned-by-a-container"), "x\n");
+			await chmod(locked, 0o555);
+			try {
+				expect((await m.copy(at, name)).code).toBe(0);
+				expect(await m.git(join(at.root, name, "src"), "rev-parse", "HEAD")).toBe(m.commit);
+				expect((await readdir(at.root)).sort()).toEqual([runName(1, 1), name]);
+			} finally {
+				await chmod(locked, 0o755);
+			}
+		});
 	});
 });

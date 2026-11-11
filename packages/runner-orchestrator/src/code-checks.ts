@@ -471,15 +471,29 @@ export function codeChecksRefusedSummary(candidate: CodeChecksRead, mainHadFile:
 	return `Nothing went into main: the repository's checks file, ${CODE_CHECKS_FILE}, ${what}. Fix the file, commit and finish again. [code=CODING_CHECKS_REFUSED]`;
 }
 
+/** The code of a run that was not started because a command of an earlier run of the session's checks was not seen to
+ * end: the machine is there, and the checks run again once that command has stopped. */
+export const CODE_CHECKS_EARLIER_RUN_NOT_STOPPED = "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED";
+
+/** The code of a run whose copy found the folder of a later run on the machine and did nothing (the copy's own exit
+ * 91): a copy whose start landed late, or a folder somebody made under `~/.qorpera-checks`. The session can remove it. */
+export const CODE_CHECKS_COPY_NOT_NEWEST = "CODE_CHECKS_COPY_EXIT_91";
+
 /** `CODING_CHECKS_DID_NOT_RUN`: the checks could not run, which is never the code's fault. */
 export function codeChecksNotRunSummary(run: Extract<CodeChecksRun, { state: "not_run" }>): string {
 	let why: string;
 	switch (run.why) {
 		case "machine":
-			why = "the session's machine stopped";
+			why =
+				run.code === CODE_CHECKS_EARLIER_RUN_NOT_STOPPED
+					? "an earlier run of the checks has not stopped on the session's machine yet"
+					: "the session's machine stopped";
 			break;
 		case "copy":
-			why = "the clean copy of the commit could not be made";
+			why =
+				run.code === CODE_CHECKS_COPY_NOT_NEWEST
+					? "a folder of a later run stands in ~/.qorpera-checks on the session's machine; remove the folders in it"
+					: "the clean copy of the commit could not be made";
 			break;
 		case "budget":
 			why = "the checks ran past the time Qorpera gives them";
