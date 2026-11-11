@@ -1113,6 +1113,67 @@ select pg_temp.code_releases_patch('public.qorpera_coding_turn_failure(public.qo
 	$new$						and coalesce(other.outcome ->> 'reason', '') not in ('CODING_CHECKS_FAILED', 'CODING_CHECKS_REFUSED',
 							'CODING_CHECKS_DID_NOT_RUN', 'CODING_CHECKS_MAIN_MOVED', 'CODING_CHECKS_SITE_REFUSED')), 0);$new$]);
 
+-- 6. Existing functions of the sites -----------------------------------------------------------------------------------
+
+-- publish_site never takes a repository's site, never publishes a folder under code/, and counts a code site that
+-- waits in What's new among the ten.
+select pg_temp.code_releases_patch('public.qorpera_site_publish_check(jsonb,text)'::regprocedure, array[
+	$old$	if found and v_site.profile_id = v_run.profile_id and v_site.kind = 'app' then
+		raise exception 'SITE_NAME_TAKEN: an app link of the company has this name; choose another' using errcode = '55000'; end if;$old$,
+	$new$	if found and v_site.profile_id = v_run.profile_id and v_site.kind = 'app' then
+		raise exception 'SITE_NAME_TAKEN: an app link of the company has this name; choose another' using errcode = '55000'; end if;
+	-- 20260930729000: a site made from a repository goes live only from What's new, on a member's yes.
+	if found and v_site.profile_id = v_run.profile_id and v_site.code_owner is not null then
+		raise exception 'SITE_FROM_CODE: this site is made from code kept in Qorpera; a member puts it live in What''s new'
+			using errcode = '55000'; end if;$new$,
+	$old$		raise exception 'SITE_LIMIT: the company has 10 sites, as many as it can have; update or unpublish one first'$old$,
+	$new$		raise exception 'SITE_LIMIT: the company has 10 sites, counting a project''s site that waits in What''s new; update or unpublish one first'$new$]);
+
+select pg_temp.code_releases_patch('public.qorpera_site_publish_begin(jsonb,text,jsonb,uuid)'::regprocedure, array[
+	$old$		or char_length(v_source) not between 1 and 4096 or v_source ~ '[[:cntrl:]]' then
+		raise exception 'Site publish request is invalid' using errcode = '22023'; end if;$old$,
+	$new$		or char_length(v_source) not between 1 and 4096 or v_source ~ '[[:cntrl:]]' then
+		raise exception 'Site publish request is invalid' using errcode = '22023'; end if;
+	-- 20260930729000: a repository kept in Qorpera goes live only through What's new, never from its folder.
+	if lower(split_part(ltrim(v_source, '/'), '/', 1)) = 'code' then
+		raise exception 'SITE_FROM_CODE: source must not be under code/: a repository kept in Qorpera goes live only through What''s new, on a member''s yes'
+			using errcode = '22023'; end if;$new$,
+	$old$	if v_site.kind = 'app' then
+		raise exception 'SITE_NAME_TAKEN: an app link of the company has this name; choose another' using errcode = '55000'; end if;$old$,
+	$new$	if v_site.kind = 'app' then
+		raise exception 'SITE_NAME_TAKEN: an app link of the company has this name; choose another' using errcode = '55000'; end if;
+	-- 20260930729000: a site made from a repository goes live only from What's new, on a member's yes.
+	if v_site.code_owner is not null then
+		raise exception 'SITE_FROM_CODE: this site is made from code kept in Qorpera; a member puts it live in What''s new'
+			using errcode = '55000'; end if;$new$,
+	$old$		raise exception 'SITE_LIMIT: the company has 10 sites, as many as it can have; update or unpublish one first'$old$,
+	$new$		raise exception 'SITE_LIMIT: the company has 10 sites, counting a project''s site that waits in What''s new; update or unpublish one first'$new$]);
+
+-- An agent never takes a repository's site offline; a member does, in Sites.
+select pg_temp.code_releases_patch('public.qorpera_site_unpublish(jsonb,text)'::regprocedure, array[
+	$old$	with removed as (delete from public.qorpera_company_sites as site where site.slug = p_slug and site.profile_id = v_run.profile_id$old$,
+	$new$	-- 20260930729000: a site made from a repository is taken offline only by a member, in Sites.
+	if exists (select 1 from public.qorpera_company_sites as site where site.slug = p_slug and site.profile_id = v_run.profile_id
+		and site.code_owner is not null) then
+		raise exception 'SITE_FROM_CODE: this site is made from code kept in Qorpera; only a member takes it offline, in Sites'
+			using errcode = '55000'; end if;
+	with removed as (delete from public.qorpera_company_sites as site where site.slug = p_slug and site.profile_id = v_run.profile_id$new$]);
+
+-- The members' list shows a repository's site once it is live, in the row every site has.
+select pg_temp.code_releases_patch('public.qorpera_list_company_sites(uuid)'::regprocedure, array[
+	$old$		where site.profile_id = p_profile_id), '[]'::jsonb);$old$,
+	$new$		where site.profile_id = p_profile_id
+			-- 20260930729000: a site made from a repository once it is live (before, it waits in What's new), as
+			-- qorpera.company-site/v1 with its source code/<owner>/<name> and no agent that published it.
+			and (site.code_owner is null or site.current_version_id is not null)), '[]'::jsonb);$new$]);
+
+-- A repository's site holds its name, also before it is first live.
+select pg_temp.code_releases_patch('public.qorpera_site_abandoned(public.qorpera_company_sites)'::regprocedure, array[
+	$old$	select case when p_site.kind = 'app' then p_site.published_at is null else p_site.current_version_id is null end$old$,
+	$new$	-- 20260930729000: a site made from a repository is never abandoned: it waits in What's new.
+	select p_site.code_owner is null
+		and case when p_site.kind = 'app' then p_site.published_at is null else p_site.current_version_id is null end$new$]);
+
 -- 7. Grants, and the deploy guard --------------------------------------------------------------------------------------
 
 revoke all on function public.qorpera_code_site_valid(jsonb),
@@ -1173,7 +1234,12 @@ begin
 		'public.qorpera_code_request_finish(text,text,uuid,uuid,jsonb)',
 		'public.qorpera_code_restore_record(text,text,uuid,uuid,jsonb)',
 		'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)',
-		'public.qorpera_coding_turn_failure(public.qorpera_runtime_workers,text)'
+		'public.qorpera_coding_turn_failure(public.qorpera_runtime_workers,text)',
+		'public.qorpera_site_publish_check(jsonb,text)',
+		'public.qorpera_site_publish_begin(jsonb,text,jsonb,uuid)',
+		'public.qorpera_site_unpublish(jsonb,text)',
+		'public.qorpera_list_company_sites(uuid)',
+		'public.qorpera_site_abandoned(public.qorpera_company_sites)'
 	]::regprocedure[] loop
 		if strpos((select prosrc from pg_proc where oid = v_function), '20260930729000') = 0 then
 			raise exception '20260930729000 is missing from %', v_function; end if;
