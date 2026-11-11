@@ -17,6 +17,10 @@ const MACHINE_SCREEN = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}(/
  * here. */
 const MACHINE_ACT = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}/act$`);
 const MAX_ACT_BYTES = 16 * 1024;
+/** A member turns an agent's desktop computer's screen on (20260930714000): `{}` today (a later stage may say what to
+ * open), at most 1 KiB, which the executor checks. The node's mux passes POST for this location. */
+const MACHINE_START = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}/start$`);
+const MAX_START_BYTES = 1024;
 const MAX_BYTES = 8 * 1024 * 1024;
 /** The gateway's bound for a folder commit and a presence report. */
 const MAX_WRITE_BYTES = 1024 * 1024;
@@ -87,6 +91,13 @@ function route(path: string): RoutePolicy | undefined {
 			method: "POST",
 			headers: ["authorization", "content-type"],
 			maxBody: MAX_ACT_BYTES,
+			unavailable: "The computer is unavailable just now.",
+		};
+	if (MACHINE_START.test(path))
+		return {
+			method: "POST",
+			headers: ["authorization", "content-type"],
+			maxBody: MAX_START_BYTES,
 			unavailable: "The computer is unavailable just now.",
 		};
 	const erase = ERASE.exec(path);

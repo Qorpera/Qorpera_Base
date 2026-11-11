@@ -278,6 +278,13 @@ describe("public member Company File gateway", () => {
 			413,
 		],
 		["a machine action of one id", request(`/v1/member-machine-screens/${id}/act`, { method: "POST", body: "{}" }), 404],
+		["a machine start read", request(`/v1/member-machine-screens/${id}/${id}/start`), 405],
+		[
+			"a machine start past 1 KiB",
+			request(`/v1/member-machine-screens/${id}/${id}/start`, { method: "POST", body: "x".repeat(1025) }),
+			413,
+		],
+		["a machine start of one id", request(`/v1/member-machine-screens/${id}/start`, { method: "POST", body: "{}" }), 404],
 	] as const)
 		it(`rejects ${name} before forwarding`, async () => {
 			const response = await forward(req, {
@@ -570,6 +577,31 @@ describe("public member Company File gateway", () => {
 		assert.equal(allowed.status, 204);
 		assert.equal(allowed.headers.get("access-control-allow-methods"), "POST");
 		assert.equal((await preflight("authorization,if-none-match")).status, 403);
+	});
+	it("forwards a member's start of the desktop as it came, with the member's token, up to 1 KiB (20260930714000)", async () => {
+		const seen: string[] = [];
+		const fetchImplementation: typeof fetch = async (url, init) => {
+			const headers = new Headers(init?.headers);
+			const sent = [...headers.entries()].map(([name, value]) => `${name}=${value}`).join(" ");
+			seen.push(`${init?.method} ${new URL(String(url)).pathname} ${sent} ${new TextDecoder().decode(init?.body as Uint8Array)}`);
+			return Response.json({ schema: "qorpera.member-machine-start/v1", outcome: "started" });
+		};
+		const path = `/v1/member-machine-screens/${id}/${id}/start`;
+		const done = await forward(
+			request(path, { method: "POST", body: "{}", headers: { "content-type": "application/json", cookie: "a=b" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(done.status, 200);
+		assert.deepEqual(await done.json(), { schema: "qorpera.member-machine-start/v1", outcome: "started" });
+		assert.deepEqual(seen, [
+			`POST ${path} authorization=Bearer member.jwt.token content-length=2 content-type=application/json {}`,
+		]);
+		const stranger = await forward(
+			request(path, { method: "POST", body: "{}", headers: { authorization: "Bearer someone.else.token" } }),
+			{ upstreamUrl, fetchImplementation },
+		);
+		assert.equal(stranger.status, 401);
+		assert.equal(seen.length, 1);
 	});
 	it("forwards a chat image upload up to 8 MiB and its read with the member's headers alone", async () => {
 		const sha = "c".repeat(64);
