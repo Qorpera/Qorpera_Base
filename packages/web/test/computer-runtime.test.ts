@@ -1477,6 +1477,114 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		expect(canvas(p).getAttribute("role")).toBe("img");
 	});
 
+	/** A thread for the window: its conversation's header stays reachable, a message and the composer are covered while
+	 * the window is entered. */
+	function thread() {
+		const element = document.createElement("div");
+		const conversation = document.createElement("div");
+		conversation.className = "thread-conversation";
+		const header = document.createElement("div");
+		header.className = "thread-header";
+		const message = document.createElement("div");
+		const composer = document.createElement("textarea");
+		conversation.append(header, message, composer);
+		element.append(conversation);
+		document.body.append(element);
+		cleanup.push(() => element.remove());
+		return { element, header, message, composer };
+	}
+
+	it("enters nothing for a take-over answered after the window left its thread, and comes back in the preview (review r1 F1 of #1685)", async () => {
+		const s = setup();
+		s.state.answers.push({ picture: 1 });
+		const place = thread();
+		const close = vi.fn();
+		const p = new ComputerPanel(staff, s.computer, s.stop.signal, { hints: s.hints, decode: s.decode });
+		cleanup.push(() => p.dispose());
+		p.attach(place.element, close);
+		await flush();
+		// Take over with a picture showing; the member leaves the thread before it answers.
+		let open = () => {};
+		s.state.takeGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		controlButton(p)!.click();
+		await flush();
+		expect(p.holding).toBe(false);
+		p.detach();
+		open();
+		await flush();
+		// It succeeded out of the thread: held, and nothing entered.
+		expect(p.holding).toBe(true);
+		expect(entered(p)).toBe(false);
+		expect(p.el.classList.contains("is-entered")).toBe(false);
+		// Back in the thread: the preview, with the hold and the words that say how to use it; the thread is reachable.
+		p.attach(place.element, close);
+		await advance(LOOK_EVERY_MS);
+		expect(entered(p)).toBe(false);
+		expect(p.el.classList.contains("is-entered")).toBe(false);
+		expect(place.message.inert).not.toBe(true);
+		expect(place.composer.inert).not.toBe(true);
+		expect(canvas(p).getAttribute("role")).toBe("img");
+		expect(words(p)).toBe("You are using the computer. Choose Enter to click and type.");
+	});
+
+	it("cancels an entry still pending when the window leaves its thread (review r1 F1 of #1685)", async () => {
+		const s = setup();
+		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		const place = thread();
+		const close = vi.fn();
+		const p = new ComputerPanel(staff, s.computer, s.stop.signal, { hints: s.hints, decode: s.decode });
+		cleanup.push(() => p.dispose());
+		p.attach(place.element, close);
+		await flush();
+		// Held while the screen is off: the entry waits for a picture; the member leaves the thread meanwhile.
+		p.takeOver();
+		await flush();
+		expect(p.holding).toBe(true);
+		p.detach();
+		s.state.fallback = { picture: 2 };
+		p.attach(place.element, close);
+		await advance(LOOK_EVERY_MS * 3);
+		// The picture came back in the thread: the preview, nothing covered.
+		expect(mark(p)).toBe("Live");
+		expect(entered(p)).toBe(false);
+		expect(place.message.inert).not.toBe(true);
+		expect(words(p)).toBe("You are using the computer. Choose Enter to click and type.");
+	});
+
+	it("covers the thread when a window comes back to it entered, whoever entered it (review r1 F1 of #1685)", async () => {
+		const s = setup();
+		s.state.answers.push({ picture: 1 });
+		const place = thread();
+		const close = vi.fn();
+		const p = new ComputerPanel(staff, s.computer, s.stop.signal, { hints: s.hints, decode: s.decode });
+		cleanup.push(() => p.dispose());
+		p.attach(place.element, close);
+		await flush();
+		// Entered in the thread: the conversation under it is covered, its header is not.
+		p.el.querySelector<HTMLButtonElement>(".screen-viewer-enter")!.click();
+		expect(place.message.inert).toBe(true);
+		expect(place.composer.inert).toBe(true);
+		expect(place.header.inert).not.toBe(true);
+		// Leaving the thread takes it back to the preview and uncovers the thread.
+		p.detach();
+		expect(p.el.classList.contains("is-entered")).toBe(false);
+		expect(place.message.inert).not.toBe(true);
+		// Entered while out of a thread (only a script can press Enter there; the window enters nothing by itself), it
+		// covers the thread it comes back to, as entering does.
+		p.el.querySelector<HTMLButtonElement>(".screen-viewer-enter")!.click();
+		expect(p.el.classList.contains("is-entered")).toBe(true);
+		p.attach(place.element, close);
+		expect(place.message.inert).toBe(true);
+		expect(place.composer.inert).toBe(true);
+		expect(place.header.inert).not.toBe(true);
+		// And Back uncovers it.
+		p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!.click();
+		expect(place.message.inert).not.toBe(true);
+		expect(place.composer.inert).not.toBe(true);
+	});
+
 	it("enters once a picture shows when the take-over came before it, as the agent's take-over card's does (v234)", async () => {
 		const s = setup();
 		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };

@@ -229,7 +229,9 @@ export class ComputerPanel {
 	/** The window's last Hand back (or the card's I'm done through it) was not confirmed: said until one is (review r15). */
 	#handBackFailed = false;
 	/** A take-over of this page's (its button, the agent's take-over card) enters the large view once a picture shows: the
-	 * picture takes input there only. Once: back in the preview it stays there until the member presses Enter. */
+	 * picture takes input there only. Once: back in the preview it stays there until the member presses Enter. Only in a
+	 * thread: leaving it cancels the entry, and a take-over answered out of one enters nothing (review r1 F1 of #1685);
+	 * back in the thread the member has the preview, the hold and the words that say how to use it. */
 	#enterOnHold = false;
 	/** The window's take-over: the latest press's attempt, of the machine chosen at it, and the ledger's answer it waits
 	 * for (review r12 F19). An older attempt's answer is not the window's. */
@@ -403,6 +405,9 @@ export class ComputerPanel {
 		if (this.#stop.signal.aborted) return;
 		this.#close = close;
 		body.append(this.el);
+		// A window that comes back entered covers this thread as entering does, whoever entered it (review r1 F1 of
+		// #1685): the covered conversation is never left reachable under it.
+		if (this.el.classList.contains("is-entered")) this.#setExpanded(true);
 		this.#fitPreview();
 		// Showing the window again is the member's word that they watch.
 		if (this.#paused) {
@@ -500,7 +505,9 @@ export class ComputerPanel {
 	/** Leave the thread; the window stops looking until a thread shows it again. */
 	detach(): void {
 		this.#close = () => {};
-		// A member who left mid-screen returns to a preview; the thread it covered is gone.
+		// A member who left mid-screen returns to a preview; the thread it covered is gone. An entry still pending is
+		// cancelled: nothing enters out of a thread (review r1 F1 of #1685).
+		this.#enterOnHold = false;
 		this.#view?.back();
 		this.el.remove();
 		// Removal takes focus without a focusout in every browser; the next focus in the panel starts clean.
@@ -829,7 +836,8 @@ export class ComputerPanel {
 			sending: false,
 		};
 		this.#scheduleKeep(KEEP_EVERY_MS);
-		this.#enterOnHold = true;
+		// Out of a thread (a take-over answered after the member left it) nothing is entered (review r1 F1 of #1685).
+		this.#enterOnHold = this.el.parentElement !== null;
 		this.#syncControls();
 		this.#view?.focusScreen();
 	}
@@ -978,7 +986,7 @@ export class ComputerPanel {
 		const picture = this.#view?.shown === true && this.#picturing();
 		const holding = this.#holding !== undefined && this.#holding === this.#machineId;
 		// Never full screen here: only the member's own press on Enter asks for that.
-		const entering = this.#enterOnHold && holding && picture;
+		const entering = this.#enterOnHold && holding && picture && this.el.parentElement !== null;
 		if (entering) {
 			this.#enterOnHold = false;
 			this.#view?.enterFrame();
