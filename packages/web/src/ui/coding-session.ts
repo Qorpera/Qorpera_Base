@@ -103,6 +103,9 @@ export function codingSessionStandby(
 
 /** The kernel's step while a turn waits for its company's computer hours (20260929760000). */
 const HOURS_STEP = "Waiting for computer hours";
+/** The executor's step while a finished change to code kept in Qorpera runs its checks before it goes in (own code
+ * storage, step 3: runner-orchestrator coding-executor.ts). An executor from before says "Landing the change". */
+const CHECKS_STEP = "Checking and saving the change";
 
 /** When the session's current turn started: its first claim, as `startedAt` is for the first turn (a deferred
  * turn claimed again keeps its first). A later turn's start is only in the event stream, as its first `preparing`,
@@ -177,10 +180,15 @@ export function codingSessionStatus(
 				? { text: t("Answer sent · waiting for computer hours"), tone: "idle" }
 				: { text: t("Answer sent · waiting for the session"), tone: "working" };
 		case "publishing":
-			// Code kept in Qorpera has no pull request: the finished work is saved straight into the company's code.
+			// Code kept in Qorpera has no pull request: the finished work is saved straight into the company's code, once
+			// its tests pass (the executor's step says so while they run).
 			return {
 				text: [
-					session.repository.host === "qorpera" ? t("Saving the change") : t("Opening the pull request"),
+					session.repository.host !== "qorpera"
+						? t("Opening the pull request")
+						: session.lastStep === CHECKS_STEP
+							? t("Testing the change before saving it")
+							: t("Saving the change"),
 					files,
 				]
 					.filter(Boolean)

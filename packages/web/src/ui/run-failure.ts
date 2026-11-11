@@ -289,6 +289,27 @@ const CODING_PROVIDER_OUTAGE = phrase(
 	"ChatGPT was overloaded or had a server error while the session worked. This is usually brief, and the login is fine. The workspace is kept; a follow-up continues it.",
 );
 
+/** A change to code kept in Qorpera that did not go in for its checks (own code storage, step 3): the executor's codes,
+ * which the cloud keeps as the failed turn's code. The executor's own words name the check, its command and the end of
+ * its output, for the agents; a founder reads only that nothing was saved, and whether the change or Qorpera stopped
+ * it. The session's owning agent follows up by itself, so nothing is asked of the founder. */
+const CODING_CHECKS_FAILED = phrase("Not saved yet: the change did not pass its tests, so the code is as it was.");
+const CODING_CHECKS_NOT_RUN = phrase("Not saved yet: Qorpera could not test the change just now. Nothing was lost.");
+
+function codingChecksReason(code: string | undefined): string | undefined {
+	switch (code) {
+		// A check failed, or the checks file is gone or broken: the change's own doing.
+		case "CODING_CHECKS_FAILED":
+		case "CODING_CHECKS_REFUSED":
+			return CODING_CHECKS_FAILED;
+		// The checks could not run, or main moved twice while they ran: never the code's fault.
+		case "CODING_CHECKS_DID_NOT_RUN":
+		case "CODING_CHECKS_MAIN_MOVED":
+			return CODING_CHECKS_NOT_RUN;
+	}
+	return undefined;
+}
+
 /** What the kernel tells about a coding turn that stopped at its login's usage limit (20260929993000). */
 export interface CodingUsageLimit {
 	usageLimit?: boolean;
@@ -301,7 +322,8 @@ export interface CodingUsageLimit {
  * workspace is kept. The reason is the kernel's "executor-lease-expired" or the
  * executor's summary, which carries the run's last error and its fixed code;
  * both name machinery, so neither is ever shown as it is. A turn the kernel says
- * stopped at a usage limit is told as one, in OpenAI's words for the owner's plan. */
+ * stopped at a usage limit is told as one, in OpenAI's words for the owner's plan;
+ * a change that did not go in for its checks says only that it was not saved. */
 export function codingFailureReason(reason: string | undefined, limit: CodingUsageLimit = {}, code?: string): string {
 	if (limit.usageLimit === true)
 		return limit.paidByChatgptPlan === true && limit.mine === true
@@ -309,6 +331,11 @@ export function codingFailureReason(reason: string | undefined, limit: CodingUsa
 			: t(CODING_REASONS.usage_limit);
 	// The run failed with the model provider's outage (20260930560000): ChatGPT's, usually brief; the login is fine.
 	if (code === "provider_outage") return t(CODING_PROVIDER_OUTAGE);
+	// The change's checks failed or could not run (step 3): the code decides, before any word of the summary is read,
+	// since the summary holds the check's output. A summary that still ends with its code reads the same.
+	const checks =
+		codingChecksReason(code) ?? codingChecksReason(reason?.match(/ \[code=(CODING_CHECKS_[A-Z_]{1,30})\]\s*$/)?.[1]);
+	if (checks) return t(checks);
 	// Since 20260930560000 a failed run's summary is plain words and its code travels apart (the failed event's `code`,
 	// 20260930551000): the code alone decides, as it did inside the executor's summary, and a code no class names is a
 	// step refused on Qorpera's side, as the bridge's text said. Lower-case reasons (turn_failed, stopped, ...) name no
