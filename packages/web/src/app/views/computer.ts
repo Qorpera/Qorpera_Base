@@ -1,6 +1,11 @@
 import type { MemberAgentMachine, MemberAgentMachines } from "@qorpera/cloud-client/cloud-member-company-computer";
 import type { WebCompanyComputer } from "../../cloud/computer.ts";
-import type { MachineActAnswer, MachineDesktopAction, MachineScreenLook } from "../../cloud/machine-screens.ts";
+import type {
+	MachineActAnswer,
+	MachineDesktopAction,
+	MachineScreenLook,
+	MachineStartAnswer,
+} from "../../cloud/machine-screens.ts";
 import type { RealtimeResource } from "../../cloud/realtime.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { attachComputerDrag } from "../../ui/computer-drag.ts";
@@ -32,6 +37,11 @@ const BUSY_RETRY_MS = 1000;
 export const MACHINES_EVERY_MS = 15_000;
 /** How often a screen that is off, or hidden, is looked at again. */
 export const SCREEN_OFF_EVERY_MS = 5000;
+/** How long a member's wish that the desktop be on lasts (20260930714000): Turn it on, or Wake it, which turns the
+ * screen on too once the machine runs. */
+export const WANT_ON_MS = 3 * 60_000;
+/** The least time between two starts of the desktop from one page: the database takes one per machine per 5 s. */
+export const START_AGAIN_MS = 5500;
 /** With no touch on the page for this long the window stops looking and asks whether the member still watches. */
 export const PAUSE_AFTER_MS = 30 * 60_000;
 /** How often a member who touches the page says again that they watch (the database keeps the desktop on 30 min). */
@@ -69,7 +79,11 @@ type Shown =
 	| "error"
 	| "paused"
 	// Another member holds the desktop (20260930713000).
-	| "controlled";
+	| "controlled"
+	// The member turns the screen on (20260930714000): on its way, refused as too small, or failed.
+	| "turning"
+	| "small"
+	| "startFailed";
 
 /** One hold of a desktop on the page (release review r1 of #1667, F25 of #1661): its machine, the hand-back epoch it was
  * taken under and its seat (every heartbeat and every action captured under it goes with both, and SQL runs it only
@@ -159,6 +173,19 @@ export class ComputerPanel {
 	#unchanged = 0;
 	#failures = 0;
 	#waking = false;
+	/** The member's wish that the desktop be on (20260930714000): this page's, for one machine, until its picture shows,
+	 * the member chooses another machine or closes the window, a refusal comes, or WANT_ON_MS pass. While it stands a
+	 * screen that is off is turned on by itself (after Wake it too), without a second press. */
+	#wantOn: { readonly machineId: string; readonly until: number } | undefined;
+	/** A start of the desktop on its way, and when this page last asked for one. */
+	#turningOn = false;
+	#startedAt = Number.NEGATIVE_INFINITY;
+	/** The last start that answered the desktop runs, and when: a look begun after it that finds the screen off means the
+	 * start failed (no second start for it). */
+	#startAnswered: { readonly machineId: string; readonly at: number } | undefined;
+	/** A start that ended the wish (too small, or failed): what the window says of that machine's screen that is off
+	 * until it shows a picture, sleeps, or the member presses again or chooses another machine. */
+	#startEnded: { readonly machineId: string; readonly shown: "small" | "startFailed" } | undefined;
 	// The member's attention: their last touch on the page, whether they still watch, and when they last said so.
 	#lastTouch = Date.now();
 	#paused = false;
@@ -516,6 +543,9 @@ export class ComputerPanel {
 			}
 			const machine = this.#pick();
 			if (machine?.machineId !== this.#machineId) {
+				// The wish that a desktop be on is for the machine it was made for alone (20260930714000).
+				if (this.#wantOn && this.#wantOn.machineId !== machine?.machineId) this.#wantOn = undefined;
+				this.#startEnded = undefined;
 				// The window's machine changed: every machine of this agent's the ledger has but the one shown now goes back,
 				// held, may be held (a lost answer), on its way or queued; the window's own state does not decide it (review r1
 				// F6, r3 F8, r4 F8).
@@ -533,6 +563,8 @@ export class ComputerPanel {
 			}
 			this.#syncSwitchers();
 			if (!machine || machine.state !== "running") {
+				// A machine that sleeps may wake larger: what a start said of it is gone.
+				this.#startEnded = undefined;
 				this.#view?.clear();
 				this.#etag = null;
 				this.#showMachine(machine);
@@ -556,7 +588,8 @@ export class ComputerPanel {
 				await this.#wait(Math.min(due, this.#listedAt + MACHINES_EVERY_MS) - Date.now(), signal);
 				continue;
 			}
-			this.#lastLook = Date.now();
+			const begun = Date.now();
+			this.#lastLook = begun;
 			const watching = this.#confirm;
 			let look: MachineScreenLook;
 			try {
@@ -582,6 +615,9 @@ export class ComputerPanel {
 					this.#etag = look.etag;
 					this.#pictureOf = machine.machineId;
 					this.#unchanged = 0;
+					// The desktop is on: the member's wish is met.
+					if (this.#wantOn?.machineId === machine.machineId) this.#wantOn = undefined;
+					if (this.#startEnded?.machineId === machine.machineId) this.#startEnded = undefined;
 					// The picture is up: the state text under it goes (a screen reader reads it no more), and the take-over
 					// controls show.
 					this.#loading.hidden = true;
@@ -614,7 +650,23 @@ export class ComputerPanel {
 					this.#delay = 2000;
 					break;
 				case "DESKTOP_NOT_RUNNING":
-					this.#unpicture("off");
+					// The member wants it on (Turn it on, or Wake it a moment ago): it is turned on, without a second press;
+					// a start on its way, or one a moment ago, is waited for.
+					if (this.#wishFor(machine.machineId)) {
+						// A start answered that the desktop runs, and a look begun after it finds it off: it failed.
+						if (this.#startAnswered?.machineId === machine.machineId && begun >= this.#startAnswered.at) {
+							this.#endStart(machine.machineId, "startFailed");
+							this.#delay = SCREEN_OFF_EVERY_MS;
+							break;
+						}
+						if (!this.#turningOn && Date.now() >= this.#startedAt + START_AGAIN_MS)
+							void this.#turnOn(computer, machine.machineId, signal);
+						else this.#unpicture("turning");
+						this.#delay = BUSY_RETRY_MS;
+						break;
+					}
+					// A start that ended the wish is said until the member presses again.
+					this.#unpicture(this.#startEnded?.machineId === machine.machineId ? this.#startEnded.shown : "off");
 					this.#delay = SCREEN_OFF_EVERY_MS;
 					break;
 				case "SCREEN_HIDDEN":
@@ -971,7 +1023,9 @@ export class ComputerPanel {
 			this.#show(this.#listed.machines.length ? "headless" : "none");
 			return;
 		}
-		if (machine.state === "stopped" || machine.state === "stopping") this.#show("asleep");
+		// Wake it was pressed: the machine is on its way up, and its screen comes on with it.
+		if ((machine.state === "stopped" || machine.state === "stopping") && !this.#wishFor(machine.machineId))
+			this.#show("asleep");
 		else this.#show("starting", machine.waitingFor);
 	}
 
@@ -1013,44 +1067,69 @@ export class ComputerPanel {
 											null,
 										]
 									: shown === "off"
-										? [
-												t(
-													"The computer is on, but its screen is off. It turns on when {name} uses it.",
-													name,
-												),
-												null,
-												null,
-											]
-										: shown === "hidden"
-											? [t("The screen is hidden because it may show files you can't open."), null, null]
-											: shown === "updating"
-												? [t("Updating…"), null, null]
-												: shown === "image"
-													? [
-															t("This computer cannot show its screen yet. It can after it has slept."),
-															null,
-															null,
-														]
-													: shown === "error"
-														? [t("The computer could not be reached. Try again."), null, t("Try again")]
-														: shown === "controlled"
-															? [
-																	member
-																		? t(
-																				"{member} is using the computer. The screen is hidden meanwhile.",
-																				{ member },
-																			)
-																		: t(
-																				"Someone is using the computer. The screen is hidden meanwhile.",
-																			),
-																	null,
-																	null,
-																]
-															: [t("Paused to save power. Still watching?"), null, t("Keep watching")];
+										? this.#listed?.canWake
+											? [t("The computer is on, but its screen is off."), null, t("Turn it on")]
+											: [
+													t("The computer is on, but its screen is off."),
+													t("Someone with edit access can turn it on."),
+													null,
+												]
+										: shown === "turning"
+											? [t("The screen is turning on…"), null, null]
+											: shown === "small"
+												? [t("This computer is too small for a screen."), null, null]
+												: shown === "startFailed"
+													? [t("The screen could not be turned on. Try again."), null, t("Try again")]
+													: shown === "hidden"
+														? [
+																t("The screen is hidden because it may show files you can't open."),
+																null,
+																null,
+															]
+														: shown === "updating"
+															? [t("Updating…"), null, null]
+															: shown === "image"
+																? [
+																		t(
+																			"This computer cannot show its screen yet. It can after it has slept.",
+																		),
+																		null,
+																		null,
+																	]
+																: shown === "error"
+																	? [
+																			t("The computer could not be reached. Try again."),
+																			null,
+																			t("Try again"),
+																		]
+																	: shown === "controlled"
+																		? [
+																				member
+																					? t(
+																							"{member} is using the computer. The screen is hidden meanwhile.",
+																							{ member },
+																						)
+																					: t(
+																							"Someone is using the computer. The screen is hidden meanwhile.",
+																						),
+																				null,
+																				null,
+																			]
+																		: [
+																				t("Paused to save power. Still watching?"),
+																				null,
+																				t("Keep watching"),
+																			];
 		this.#loading.dataset.state = shown;
 		// The state text shows only while there is no picture over it (a screen reader would read it under one).
 		this.#loading.hidden = this.#view?.shown === true;
-		this.#spinner.hidden = !(shown === "loading" || shown === "starting" || shown === "updating" || this.#waking);
+		this.#spinner.hidden = !(
+			shown === "loading" ||
+			shown === "starting" ||
+			shown === "updating" ||
+			shown === "turning" ||
+			this.#waking
+		);
 		if (this.#status.textContent !== status) this.#status.textContent = status;
 		this.#detail.hidden = detail === null;
 		this.#detail.textContent = detail ?? "";
@@ -1071,8 +1150,18 @@ export class ComputerPanel {
 			this.#failures = 0;
 			this.#listStale = true;
 			this.#show("loading");
+		} else if ((state === "off" || state === "startFailed") && this.#machineId && this.#listed?.canWake) {
+			// Turn it on (20260930714000): the wish, and a start at once.
+			this.#wantOn = { machineId: this.#machineId, until: Date.now() + WANT_ON_MS };
+			this.#startEnded = undefined;
+			this.#startAnswered = undefined;
+			if (!this.#turningOn) void this.#turnOn(computer, this.#machineId, signal);
 		} else if (state === "asleep" && this.#machineId && !this.#waking) {
 			const machineId = this.#machineId;
+			// One press: the machine wakes, and its screen comes on when it runs (20260930714000).
+			this.#wantOn = { machineId, until: Date.now() + WANT_ON_MS };
+			this.#startEnded = undefined;
+			this.#startAnswered = undefined;
 			this.#waking = true;
 			this.#show("asleep");
 			try {
@@ -1087,6 +1176,63 @@ export class ComputerPanel {
 		}
 		if (document.activeElement === this.#action) this.focus();
 		this.#poke();
+	}
+
+	/** Whether the member's wish that this machine's desktop be on stands (it ends after WANT_ON_MS). */
+	#wishFor(machineId: string): boolean {
+		if (this.#wantOn && Date.now() >= this.#wantOn.until) this.#wantOn = undefined;
+		return this.#wantOn?.machineId === machineId;
+	}
+
+	/** Turns the machine's desktop on (20260930714000) and looks at once. A refusal ends the wish and is said (too small, a
+	 * screen it may not show, or a start that failed: Try again); a start of another page's a moment ago, or a machine on
+	 * its way up, keeps it, and the next look tells. Nothing of it touches the window once the member chose another
+	 * machine or closed it. */
+	async #turnOn(computer: WebCompanyComputer, machineId: string, signal: AbortSignal): Promise<void> {
+		if (this.#turningOn) return;
+		this.#turningOn = true;
+		this.#startedAt = Date.now();
+		this.#unpicture("turning");
+		let answer: MachineStartAnswer | undefined;
+		try {
+			answer = await computer.screens.start(machineId, signal);
+		} catch {
+			answer = undefined;
+		} finally {
+			this.#turningOn = false;
+		}
+		if (signal.aborted || this.#wantOn?.machineId !== machineId || this.#machineId !== machineId) return;
+		if (answer?.kind === "refused") {
+			if (answer.code === "DESKTOP_MACHINE_TOO_SMALL") {
+				this.#endStart(machineId, "small");
+				return;
+			}
+			if (answer.code === "MACHINE_NEEDS_COMPANY_VIEW") {
+				this.#wantOn = undefined;
+				this.#unpicture("hidden");
+				return;
+			}
+			if (answer.code === "MACHINE_NOT_RUNNING" || answer.code === "MACHINE_BOOT_CHANGED") this.#listStale = true;
+			else if (answer.code !== "DESKTOP_START_TOO_SOON") {
+				this.#endStart(machineId, "startFailed");
+				return;
+			}
+		} else if (answer === undefined) {
+			this.#endStart(machineId, "startFailed");
+			return;
+		} else this.#startAnswered = { machineId, at: Date.now() };
+		// Started, running already, or another start on its way: look at once (the helper waited until it was drawn).
+		this.#etag = null;
+		this.#lastLook = Number.NEGATIVE_INFINITY;
+		this.#quicken();
+	}
+
+	/** A start that ends the member's wish: what it says stays until they press again. */
+	#endStart(machineId: string, shown: "small" | "startFailed"): void {
+		this.#wantOn = undefined;
+		this.#startAnswered = undefined;
+		this.#startEnded = { machineId, shown };
+		this.#unpicture(shown);
 	}
 
 	/** A touch on the page: the member is there. Every few minutes it says again that they still watch. */
@@ -1138,8 +1284,11 @@ export class ComputerPanel {
 							this.#chosen = machine.machineId;
 							// At the choice, not when the loop next sees it (it may be waiting on a request): every machine of this
 							// agent's in the ledger but this one goes back (review r4 F8). A take-over asked before is not carried
-							// over to the machine chosen now.
-							if (machine.machineId !== before) this.#wantTakeOver = undefined;
+							// over to the machine chosen now, nor a wish that its desktop be on (20260930714000).
+							if (machine.machineId !== before) {
+								this.#wantTakeOver = undefined;
+								if (this.#wantOn?.machineId !== machine.machineId) this.#wantOn = undefined;
+							}
 							this.#ledger.releaseOthers(this.agentId, machine.machineId);
 							this.#quicken();
 						},

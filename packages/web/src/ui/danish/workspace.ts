@@ -485,8 +485,13 @@ export const WORKSPACE: Record<string, string> = {
 		"Venter på plads på vores servere. Den starter, så snart der er plads.",
 	"Out of computer hours. The machine starts by itself once hours are added.":
 		"Ingen computertimer tilbage. Maskinen starter af sig selv, når der er tilføjet timer.",
-	"The computer is on, but its screen is off. It turns on when {name} uses it.":
-		"Computeren er tændt, men skærmen er slukket. Den tænder, når {name} bruger den.",
+	// A member turns the screen on (20260930714000).
+	"The computer is on, but its screen is off.": "Computeren er tændt, men skærmen er slukket.",
+	"Turn it on": "Tænd den",
+	"Someone with edit access can turn it on.": "En med redigeringsadgang kan tænde den.",
+	"The screen is turning on…": "Skærmen tænder…",
+	"This computer is too small for a screen.": "Denne computer er for lille til en skærm.",
+	"The screen could not be turned on. Try again.": "Skærmen kunne ikke tændes. Prøv igen.",
 	"The screen is hidden because it may show files you can't open.":
 		"Skærmen er skjult, fordi den måske viser filer, du ikke har adgang til.",
 	"Updating…": "Opdaterer…",

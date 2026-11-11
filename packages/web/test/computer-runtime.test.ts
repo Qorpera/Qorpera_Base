@@ -12,6 +12,8 @@ import {
 	type MachineHints,
 	PAUSE_AFTER_MS,
 	SCREEN_OFF_EVERY_MS,
+	START_AGAIN_MS,
+	WANT_ON_MS,
 } from "../src/app/views/computer.ts";
 import { WebCompanyComputer } from "../src/cloud/computer.ts";
 import { DEFAULT_CLOUD_CONFIG, parseCloudConfig } from "../src/cloud/deployment-config.ts";
@@ -88,6 +90,13 @@ function setup(
 		answers: [] as Answer[],
 		/** What the member's actions answer, in turn (then done, exit 0). */
 		actAnswers: [] as ActAnswer[],
+		/** What the member's starts of the desktop answer, in turn (then started), and a gate each waits on. */
+		startAnswers: [] as ({ outcome: "started" | "running" } | { code: string })[],
+		startGate: undefined as Promise<void> | undefined,
+		/** The start explorer's own answer to a start (the machine, and the request's signal), and its screens: per machine,
+		 * off, or on with the picture of that number. */
+		startHook: undefined as ((machineId: string, signal: AbortSignal | undefined) => Promise<Response>) | undefined,
+		screens: undefined as Map<string, "off" | number> | undefined,
 		/** What a take-over answers: held until when, or why not. */
 		take: { state: "ok", until: "2026-11-10T20:00:00.000Z" } as Record<string, unknown>,
 		/** What the heartbeat answers. */
@@ -131,6 +140,7 @@ function setup(
 		return next;
 	};
 	const looks: { url: string; etag: string | null }[] = [];
+	const starts: string[] = [];
 	const acts: {
 		url: string;
 		action: Record<string, unknown>;
@@ -146,6 +156,18 @@ function setup(
 		expect(init?.redirect).toBe("error");
 		const headers = new Headers(init?.headers);
 		expect(headers.get("authorization")).toBe("Bearer fixture-token");
+		if (url.startsWith(`${bridge}/v1/member-machine-screens/`) && url.endsWith("/start")) {
+			// A member's start of the desktop (20260930714000): `{}`, and what the test says comes of it.
+			expect(init?.method).toBe("POST");
+			expect(init?.body).toBe("{}");
+			starts.push(url.slice(bridge.length));
+			if (state.startHook)
+				return state.startHook(url.slice(bridge.length).split("/")[4] as string, init?.signal ?? undefined);
+			const answer = state.startAnswers.shift() ?? { outcome: "started" };
+			if (state.startGate) await state.startGate;
+			if ("code" in answer) return Response.json({ code: answer.code }, { status: 409 });
+			return Response.json({ schema: "qorpera.member-machine-start/v1", outcome: answer.outcome });
+		}
 		if (url.startsWith(`${bridge}/v1/member-machine-screens/`) && url.endsWith("/act")) {
 			expect(init?.method).toBe("POST");
 			expect(headers.get("content-type")).toBe("application/json");
@@ -181,7 +203,15 @@ function setup(
 			expect(init?.cache).toBe("no-store");
 			const asked = headers.get("if-none-match");
 			looks.push({ url: url.slice(bridge.length), etag: asked ? asked.slice(1, -1) : null });
-			const answer = state.answers.shift() ?? state.fallback;
+			const screen = state.screens?.get(url.slice(bridge.length).split("/")[4] as string);
+			const answer =
+				screen === undefined
+					? (state.answers.shift() ?? state.fallback)
+					: screen === "off"
+						? ({ code: "DESKTOP_NOT_RUNNING" } as const)
+						: asked === `"${etag(screen)}"`
+							? "unchanged"
+							: { picture: screen };
 			if (answer === "unchanged") return new Response(null, { status: 304, headers: { etag: asked ?? '""' } });
 			if ("picture" in answer)
 				return new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47, answer.picture]), {
@@ -351,6 +381,7 @@ function setup(
 		state,
 		looks,
 		acts,
+		starts,
 		rpcs,
 		hints,
 		decode,
@@ -512,9 +543,7 @@ describe("an agent's computer window", () => {
 		await flush();
 		const loading = p.el.querySelector<HTMLElement>(".computer-loading")!;
 		expect(loading.hidden).toBe(false);
-		expect(status(p)).toBe(
-			`The computer is on, but its screen is off. It turns on when ${staff.displayName} uses it.`,
-		);
+		expect(status(p)).toBe("The computer is on, but its screen is off.");
 		s.state.answers.push({ picture: 1 });
 		await advance(SCREEN_OFF_EVERY_MS);
 		// The picture is up: its old sentence is not under it for a screen reader to read.
@@ -528,9 +557,7 @@ describe("an agent's computer window", () => {
 		await advance(2000);
 		expect(screen(p)?.hidden).toBe(true);
 		expect(loading.hidden).toBe(false);
-		expect(status(p)).toBe(
-			`The computer is on, but its screen is off. It turns on when ${staff.displayName} uses it.`,
-		);
+		expect(status(p)).toBe("The computer is on, but its screen is off.");
 	});
 
 	it("looks every 450 ms while the picture changes, every second after three unchanged, then every 2 s and 3 s", async () => {
@@ -591,6 +618,200 @@ describe("an agent's computer window", () => {
 		expect(mark(q)).toBe("Live");
 	});
 
+	it("turns the screen on with one press when it is off, looks at once, and tells a viewer who may (20260930714000)", async () => {
+		const s = setup();
+		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" });
+		const p = panel(s);
+		await flush();
+		expect(status(p)).toBe("The computer is on, but its screen is off.");
+		expect(detail(p)).toBeNull();
+		expect(action(p)?.textContent).toBe("Turn it on");
+		const gate = (() => {
+			let open = () => {};
+			const closed = new Promise<void>((resolve) => {
+				open = resolve;
+			});
+			return { closed, open: () => open() };
+		})();
+		s.state.startGate = gate.closed;
+		action(p)!.click();
+		await flush();
+		expect(s.starts).toEqual([`/v1/member-machine-screens/${profileA.profileId}/${machine(1).machineId}/start`]);
+		expect(status(p)).toBe("The screen is turning on…");
+		expect(action(p)).toBeNull();
+		// Started: the window looks at once, and the picture shows.
+		s.state.answers.push({ picture: 1 });
+		const before = s.looks.length;
+		gate.open();
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(s.looks.length).toBeGreaterThan(before);
+		expect(mark(p)).toBe("Live");
+		expect(s.starts).toHaveLength(1);
+		// One window at a time here: both would read through the one stubbed fetch.
+		p.dispose();
+		// A viewer may not.
+		const viewer = setup({ canWake: false, role: "viewer" });
+		viewer.state.answers.push({ code: "DESKTOP_NOT_RUNNING" });
+		const q = panel(viewer);
+		await flush();
+		expect(status(q)).toBe("The computer is on, but its screen is off.");
+		expect(detail(q)).toBe("Someone with edit access can turn it on.");
+		expect(action(q)).toBeNull();
+	});
+
+	it("wakes a sleeping computer and turns its screen on with the same press, once it runs (20260930714000)", async () => {
+		const s = setup({ machines: [machine(1, { state: "stopped" })] });
+		const p = panel(s);
+		await flush();
+		expect(action(p)?.textContent).toBe("Wake it");
+		s.state.machines = [machine(1, { state: "starting" })];
+		action(p)!.click();
+		await flush();
+		expect(s.rpcs.filter((call) => call.method === "qorpera_member_manage_company_machine")).toHaveLength(1);
+		expect(status(p)).toBe("The computer is starting…");
+		expect(s.starts).toEqual([]);
+		// It runs, with its screen off: the screen is turned on by itself, no second press.
+		s.state.machines = [machine(1)];
+		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" }, { picture: 1 });
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		await advance(LOOK_EVERY_MS);
+		expect(s.starts).toHaveLength(1);
+		await advance(LOOK_EVERY_MS);
+		expect(mark(p)).toBe("Live");
+		// The wish is met: the screen going off later shows the ordinary state and its button.
+		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" });
+		await advance(LOOK_EVERY_MS * 4);
+		expect(status(p)).toBe("The computer is on, but its screen is off.");
+		expect(action(p)?.textContent).toBe("Turn it on");
+		expect(s.starts).toHaveLength(1);
+	});
+
+	it("says a computer is too small for a screen, and a start that failed with Try again, until pressed again (20260930714000)", async () => {
+		const s = setup();
+		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		const p = panel(s);
+		await flush();
+		s.state.startAnswers.push({ code: "DESKTOP_MACHINE_TOO_SMALL" });
+		action(p)!.click();
+		await flush();
+		expect(status(p)).toBe("This computer is too small for a screen.");
+		expect(action(p)).toBeNull();
+		// The looks that find its screen off say it still, and nothing is started by itself.
+		await advance(SCREEN_OFF_EVERY_MS * 3);
+		expect(status(p)).toBe("This computer is too small for a screen.");
+		expect(s.starts).toHaveLength(1);
+		p.dispose();
+		const t = setup();
+		t.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		const q = panel(t);
+		await flush();
+		t.state.startAnswers.push({ code: "DESKTOP_DID_NOT_START" });
+		action(q)!.click();
+		await flush();
+		expect(status(q)).toBe("The screen could not be turned on. Try again.");
+		expect(action(q)?.textContent).toBe("Try again");
+		await advance(SCREEN_OFF_EVERY_MS * 3);
+		expect(status(q)).toBe("The screen could not be turned on. Try again.");
+		expect(t.starts).toHaveLength(1);
+		// Try again: started, and the look after it finds the screen off all the same: failed, not started again.
+		action(q)!.click();
+		await flush();
+		expect(t.starts).toHaveLength(2);
+		await advance(START_AGAIN_MS * 3);
+		expect(status(q)).toBe("The screen could not be turned on. Try again.");
+		expect(t.starts).toHaveLength(2);
+		// A start that does not reach the executor fails the same way.
+		q.dispose();
+		const u = setup();
+		u.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		const r = panel(u);
+		await flush();
+		u.state.startAnswers.push({ code: "NOT_A_CODE" });
+		action(r)!.click();
+		await flush();
+		expect(status(r)).toBe("The screen could not be turned on. Try again.");
+	});
+
+	it("drops the wish when the member chooses another machine or closes the window, and after 3 minutes (20260930714000)", async () => {
+		// Wake it on the first desktop, then the member chooses the second while it wakes, and comes back once it runs: its
+		// screen is off, and nothing turned it on.
+		const s = setup({ machines: [machine(1, { state: "stopped" }), machine(2)] });
+		const p = panel(s);
+		await flush();
+		expect(action(p)?.textContent).toBe("Wake it");
+		s.state.machines = [machine(1, { state: "starting" }), machine(2)];
+		action(p)!.click();
+		await flush();
+		expect(status(p)).toBe("The computer is starting…");
+		const choose = (row: number) => {
+			p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher")!.click();
+			[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][row]!.click();
+		};
+		s.state.answers.push({ picture: 2 });
+		choose(1);
+		await flush();
+		expect(mark(p)).toBe("Live");
+		s.state.machines = [machine(1), machine(2)];
+		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		choose(0);
+		s.hint("machines");
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(status(p)).toBe("The computer is on, but its screen is off.");
+		expect(action(p)?.textContent).toBe("Turn it on");
+		expect(s.starts).toEqual([]);
+		p.dispose();
+		// Closed while the machine wakes: nothing is started.
+		const t = setup({ machines: [machine(1, { state: "stopped" })] });
+		const q = panel(t);
+		await flush();
+		t.state.machines = [machine(1, { state: "starting" })];
+		action(q)!.click();
+		await flush();
+		q.dispose();
+		t.state.machines = [machine(1)];
+		t.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		t.hint("machines");
+		await advance(MACHINES_EVERY_MS);
+		expect(t.starts).toEqual([]);
+		expect(t.looks).toEqual([]);
+		// Closed while the start is on its way: its answer touches nothing, and nothing more is started.
+		const v = setup();
+		v.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		const w = panel(v);
+		await flush();
+		let open = () => {};
+		v.state.startGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		action(w)!.click();
+		await flush();
+		expect(v.starts).toHaveLength(1);
+		const looked = v.looks.length;
+		w.dispose();
+		open();
+		await advance(MACHINES_EVERY_MS);
+		expect(v.starts).toHaveLength(1);
+		expect(v.looks).toHaveLength(looked);
+		// After 3 minutes the wish is gone: the screen that is off shows its button again, and nothing was started.
+		const u = setup({ machines: [machine(1, { state: "stopped" })] });
+		const r = panel(u);
+		await flush();
+		u.state.machines = [machine(1, { state: "starting" })];
+		action(r)!.click();
+		await flush();
+		await advance(WANT_ON_MS);
+		u.state.machines = [machine(1)];
+		u.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		u.hint("machines");
+		await advance(LOOK_EVERY_MS * 2);
+		expect(u.starts).toEqual([]);
+		expect(status(r)).toBe("The computer is on, but its screen is off.");
+		expect(action(r)?.textContent).toBe("Turn it on");
+	});
+
 	it("wakes a sleeping computer for those who may, and tells a viewer who may", async () => {
 		const s = setup({ machines: [machine(1, { state: "stopped" })] });
 		const p = panel(s);
@@ -629,9 +850,7 @@ describe("an agent's computer window", () => {
 		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" });
 		const p = panel(s);
 		await flush();
-		expect(status(p)).toBe(
-			`The computer is on, but its screen is off. It turns on when ${staff.displayName} uses it.`,
-		);
+		expect(status(p)).toBe("The computer is on, but its screen is off.");
 		expect(screen(p)?.hidden).toBe(true);
 		// Looked at again every 5 s: the agent turned it on.
 		s.state.answers.push({ picture: 1 });
@@ -2880,5 +3099,180 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 			p_epoch: 0,
 			p_seat: 1,
 		});
+	});
+});
+
+/**
+ * A member's start of a desktop, explored (20260930714000): random schedules on one page and the next of presses of the
+ * window's own button, switches, closes, screens going off and coming on by the agent, machines sleeping and waking,
+ * hints and time, with the starts' answers (started, running, too soon, too small, failed, not running) held back a few
+ * steps or given at once. When a start leaves the page:
+ * (S1) it follows a press on that page for that machine (Turn it on, Try again or Wake it) that no switch away from it,
+ *      no picture of it shown, and no 3 minutes followed;
+ * (S2) no other start of that page is on its way.
+ * A failure prints the seed and its steps.
+ */
+async function exploreStarts(seed: number): Promise<{ log: string[]; broken?: string }> {
+	let a = seed >>> 0;
+	const random = () => {
+		a = (a + 0x6d2b79f5) >>> 0;
+		let t = a;
+		t = Math.imul(t ^ (t >>> 15), t | 1);
+		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+	const pick = <T>(values: readonly T[]) => values[Math.floor(random() * values.length)] as T;
+	const ids = [machine(1).machineId, machine(2).machineId] as const;
+	const s = setup({ machines: [machine(1), machine(2, { state: random() < 0.5 ? "stopped" : "running" })] });
+	const screens = new Map<string, "off" | number>([
+		[ids[0], "off"],
+		[ids[1], "off"],
+	]);
+	s.state.screens = screens;
+	const log: string[] = [];
+	const violations: string[] = [];
+	let step = 0;
+	let tick = 0;
+	let page = 0;
+	/** Presses that may start a desktop, and per machine the last switch away from it or picture of it (ticks). */
+	const presses: { page: number; machine: string; tick: number; at: number }[] = [];
+	const ended = new Map<string, number>();
+	const onTheWay: { page: number; signal: AbortSignal | undefined }[] = [];
+	const heldBack: { due: number; resolve: () => void }[] = [];
+	const running = (machineId: string) =>
+		s.state.machines.find((one) => one.machineId === machineId)?.state === "running";
+	s.state.startHook = async (machineId, signal) => {
+		const mine = page;
+		if (
+			!presses.some(
+				(one) =>
+					one.page === mine &&
+					one.machine === machineId &&
+					one.tick > (ended.get(machineId) ?? -1) &&
+					Date.now() - one.at < WANT_ON_MS,
+			)
+		)
+			violations.push(
+				`S1: a start of ${machineId.slice(-2)} left page ${mine} at step ${step} with no press for it standing`,
+			);
+		if (onTheWay.some((one) => one.page === mine && !one.signal?.aborted))
+			violations.push(`S2: a second start of page ${mine} left at step ${step}`);
+		const entry = { page: mine, signal };
+		onTheWay.push(entry);
+		const outcome = pick([
+			"started",
+			"started",
+			"running",
+			"TOO_SOON",
+			"TOO_SMALL",
+			"DID_NOT_START",
+			"lost",
+		] as const);
+		log.push(`${step}: a start of ${machineId.slice(-2)} leaves page ${mine} (${outcome})`);
+		if (random() < 0.5)
+			await new Promise<void>((resolve) => heldBack.push({ due: step + 1 + Math.floor(random() * 4), resolve }));
+		onTheWay.splice(onTheWay.indexOf(entry), 1);
+		if (!running(machineId)) return Response.json({ code: "MACHINE_NOT_RUNNING" }, { status: 409 });
+		if (outcome === "lost") throw new TypeError("Failed to fetch");
+		if (outcome === "started" || outcome === "running") {
+			if (screens.get(machineId) === "off") screens.set(machineId, ids.indexOf(machineId) + 1);
+			return Response.json({ schema: "qorpera.member-machine-start/v1", outcome });
+		}
+		const code = {
+			TOO_SOON: "DESKTOP_START_TOO_SOON",
+			TOO_SMALL: "DESKTOP_MACHINE_TOO_SMALL",
+			DID_NOT_START: "DESKTOP_DID_NOT_START",
+		}[outcome];
+		return Response.json({ code }, { status: 409 });
+	};
+	let p = panel(s);
+	await flush();
+	const shown = () => {
+		const name = p.el.querySelector(":scope > .computer-switcher .computer-switcher-name")?.textContent;
+		return name === "desk-1" ? ids[0] : name === "desk-2" ? ids[1] : undefined;
+	};
+	const loading = () => p.el.querySelector<HTMLElement>(".computer-loading")!;
+	for (step = 1; step <= 60; step++) {
+		const kind = pick([
+			"press",
+			"press",
+			"press",
+			"switch",
+			"close",
+			"screen off",
+			"agent on",
+			"sleeps",
+			"wakes",
+			"hint",
+			"time",
+			"time",
+		] as const);
+		if (kind === "press") {
+			const button = action(p);
+			const state = loading().dataset.state ?? "";
+			const machineId = shown();
+			if (!button || loading().hidden) continue;
+			if (machineId && (state === "off" || state === "startFailed" || state === "asleep"))
+				presses.push({ page, machine: machineId, tick: ++tick, at: Date.now() });
+			log.push(`${step}: the window's ${button.textContent} (${state}, ${machineId?.slice(-2)})`);
+			button.click();
+		} else if (kind === "switch") {
+			const machineId = shown();
+			const switcher = p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher");
+			if (!machineId || !switcher || switcher.hidden) continue;
+			switcher.click();
+			const other = ids[0] === machineId ? 1 : 0;
+			ended.set(machineId, ++tick);
+			[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][other]!.click();
+			log.push(`${step}: switch from ${machineId.slice(-2)}`);
+		} else if (kind === "close") {
+			p.dispose();
+			page++;
+			p = panel(s);
+			log.push(`${step}: close, and open page ${page}`);
+		} else if (kind === "screen off" || kind === "agent on") {
+			const machineId = pick(ids);
+			if (!running(machineId)) continue;
+			screens.set(machineId, kind === "screen off" ? "off" : ids.indexOf(machineId) + 1);
+			log.push(
+				`${step}: ${machineId.slice(-2)}'s screen ${kind === "screen off" ? "goes off" : "is turned on by the agent"}`,
+			);
+		} else if (kind === "sleeps" || kind === "wakes") {
+			const machineId = pick(ids);
+			s.state.machines = s.state.machines.map((one) =>
+				one.machineId === machineId
+					? { ...one, state: (kind === "sleeps" ? "stopped" : "running") as MemberAgentMachine["state"] }
+					: one,
+			);
+			screens.set(machineId, "off");
+			log.push(`${step}: ${machineId.slice(-2)} ${kind}`);
+		} else if (kind === "hint") s.hint("machines");
+		else
+			await vi.advanceTimersByTimeAsync(
+				pick([LOOK_EVERY_MS, START_AGAIN_MS, SCREEN_OFF_EVERY_MS, MACHINES_EVERY_MS, 60_000, WANT_ON_MS]),
+			);
+		for (const one of heldBack.filter((entry) => entry.due <= step)) {
+			heldBack.splice(heldBack.indexOf(one), 1);
+			one.resolve();
+		}
+		await flush();
+		// A picture of the machine shown: the wish for it is met.
+		const machineId = shown();
+		if (machineId && mark(p) === "Live") ended.set(machineId, ++tick);
+		if (violations.length) return { log, broken: violations[0] };
+	}
+	for (const one of heldBack.splice(0)) one.resolve();
+	await advance(MACHINES_EVERY_MS);
+	p.dispose();
+	return { log, ...(violations.length ? { broken: violations[0] } : {}) };
+}
+
+describe("a member's start of a desktop, explored (20260930714000)", () => {
+	it("sends a start only after a press on the page for that machine, until its picture, a switch away or 3 minutes, one at a time", async () => {
+		for (let seed = 1; seed <= 80; seed++) {
+			const { log, broken } = await exploreStarts(seed);
+			if (broken) throw new Error(`seed ${seed}: ${broken}\n${log.join("\n")}`);
+			for (const close of cleanup.splice(0)) close();
+		}
 	});
 });

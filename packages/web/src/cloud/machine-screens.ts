@@ -74,6 +74,31 @@ export type MachineActAnswer =
 	| { readonly kind: "done"; readonly exitCode: number | null }
 	| { readonly kind: "refused"; readonly code: MachineActRefusal };
 
+/** Why a start of the desktop did not end with it running (20260930714000, the executor's 409 codes): the machine is not
+ * running, its disk may show what the member may not see, it is too small, a start of it began a moment ago, it
+ * restarted, its image has no desktop, or the desktop did not start. */
+export type MachineStartRefusal =
+	| "MACHINE_NOT_RUNNING"
+	| "MACHINE_NEEDS_COMPANY_VIEW"
+	| "DESKTOP_MACHINE_TOO_SMALL"
+	| "DESKTOP_START_TOO_SOON"
+	| "MACHINE_BOOT_CHANGED"
+	| "MACHINE_IMAGE_WITHOUT_SCREEN"
+	| "DESKTOP_DID_NOT_START";
+const START_REFUSALS: ReadonlySet<string> = new Set<MachineStartRefusal>([
+	"MACHINE_NOT_RUNNING",
+	"MACHINE_NEEDS_COMPANY_VIEW",
+	"DESKTOP_MACHINE_TOO_SMALL",
+	"DESKTOP_START_TOO_SOON",
+	"MACHINE_BOOT_CHANGED",
+	"MACHINE_IMAGE_WITHOUT_SCREEN",
+	"DESKTOP_DID_NOT_START",
+]);
+/** The desktop runs (started now, or running already), or why not. */
+export type MachineStartAnswer =
+	| { readonly kind: "started" | "running" }
+	| { readonly kind: "refused"; readonly code: MachineStartRefusal };
+
 /** One look: a new picture and its etag, the picture the member already has, or why there is none. */
 export type MachineScreenLook =
 	| { readonly kind: "picture"; readonly png: Blob; readonly etag: string }
@@ -108,6 +133,9 @@ export interface WebMachineScreens {
 		hold: { epoch: number; seat: number },
 		signal: AbortSignal,
 	): Promise<MachineActAnswer>;
+	/** Turns the machine's desktop on (20260930714000): owners, admins and contributors, whatever its agent does. The body
+	 * is `{}` (what to open there is for later). */
+	start(machineId: string, signal: AbortSignal): Promise<MachineStartAnswer>;
 }
 
 /** The executor answers within 30 s; this covers the bridge on the way there and back. */
@@ -242,6 +270,55 @@ export function createWebMachineScreens(options: {
 					)
 						throw new MachineScreenError("Invalid machine action answer");
 					return { kind: "done", exitCode: exit as number | null };
+				},
+				TIMEOUT_MS,
+				signal,
+			);
+		},
+		start: (machineId, signal) => {
+			if (!UUID_PATTERN.test(options.companyId) || !UUID_PATTERN.test(machineId))
+				return Promise.reject(new MachineScreenError("Invalid machine start"));
+			return withCloudDeadline(
+				async (requestSignal) => {
+					const origin = new URL(options.objectGatewayUrl).origin;
+					const token = await options.accessToken(requestSignal);
+					const url = options.route(
+						`${origin}/v1/member-machine-screens/${options.companyId.toLowerCase()}/${machineId.toLowerCase()}/start`,
+					);
+					const response = await options.fetch(url, {
+						method: "POST",
+						headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+						body: "{}",
+						signal: requestSignal,
+						redirect: "error",
+						cache: "no-store",
+						credentials: "omit",
+					});
+					if (response.status !== 200 && response.status !== 409) {
+						void response.body?.cancel().catch(() => undefined);
+						throw new MachineScreenError(`Machine start is unavailable (${response.status})`, response.status);
+					}
+					let answer: { code?: unknown; schema?: unknown; outcome?: unknown } | null;
+					try {
+						answer = JSON.parse(
+							new TextDecoder("utf-8", { fatal: true }).decode(
+								await readBoundedCloudResponse(response, 4096, requestSignal),
+							),
+						) as typeof answer;
+					} catch {
+						answer = null;
+					}
+					if (response.status === 409) {
+						if (typeof answer?.code !== "string" || !START_REFUSALS.has(answer.code))
+							throw new MachineScreenError("Invalid machine start answer", 409);
+						return { kind: "refused", code: answer.code as MachineStartRefusal };
+					}
+					if (
+						answer?.schema !== "qorpera.member-machine-start/v1" ||
+						(answer.outcome !== "started" && answer.outcome !== "running")
+					)
+						throw new MachineScreenError("Invalid machine start answer");
+					return { kind: answer.outcome };
 				},
 				TIMEOUT_MS,
 				signal,
