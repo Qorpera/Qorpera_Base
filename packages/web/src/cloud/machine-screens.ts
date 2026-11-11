@@ -99,8 +99,10 @@ export interface WebMachineScreens {
 		options: { etag: string | null; watching: boolean },
 		signal: AbortSignal,
 	): Promise<MachineScreenLook>;
-	/** One action on a desktop the member holds (20260930713000). What they typed goes in the body, to the machine alone. */
-	act(machineId: string, action: MachineDesktopAction, signal: AbortSignal): Promise<MachineActAnswer>;
+	/** One action on a desktop the member holds (20260930713000), with the hand-back epoch of the hold the input was
+	 * captured under (F24 of #1661: SQL runs it only under that hold). What they typed goes in the body, to the machine
+	 * alone. */
+	act(machineId: string, action: MachineDesktopAction, epoch: number, signal: AbortSignal): Promise<MachineActAnswer>;
 }
 
 /** The executor answers within 30 s; this covers the bridge on the way there and back. */
@@ -183,8 +185,13 @@ export function createWebMachineScreens(options: {
 				signal,
 			);
 		},
-		act: (machineId, action, signal) => {
-			if (!UUID_PATTERN.test(options.companyId) || !UUID_PATTERN.test(machineId))
+		act: (machineId, action, epoch, signal) => {
+			if (
+				!UUID_PATTERN.test(options.companyId) ||
+				!UUID_PATTERN.test(machineId) ||
+				!Number.isSafeInteger(epoch) ||
+				epoch < 0
+			)
 				return Promise.reject(new MachineScreenError("Invalid machine action"));
 			return withCloudDeadline(
 				async (requestSignal) => {
@@ -196,7 +203,7 @@ export function createWebMachineScreens(options: {
 					const response = await options.fetch(url, {
 						method: "POST",
 						headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-						body: JSON.stringify({ action }),
+						body: JSON.stringify({ action, epoch }),
 						signal: requestSignal,
 						redirect: "error",
 						cache: "no-store",

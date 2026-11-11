@@ -71,6 +71,18 @@ type Shown =
 	// Another member holds the desktop (20260930713000).
 	| "controlled";
 
+/** One hold of a desktop on the page (release review r1 of #1667, F25 of #1661): its machine, the hand-back epoch it was
+ * taken under (every action captured under it goes with that epoch, and SQL runs it only under this hold: F24), the
+ * input captured under it, sent one at a time in order, and a signal that ends with it (an action on its way is cut off
+ * on the page at once). A new hold is a new object; whatever an older one's requests answer touches nothing of it. */
+interface PageHold {
+	readonly machineId: string;
+	readonly epoch: number;
+	readonly queue: MachineDesktopAction[];
+	readonly stop: AbortController;
+	sending: boolean;
+}
+
 /** A press of Take over (the window's button or the agent's take-over card): the machine chosen at it, and the ledger's
  * answer it waits for (review r12 F19). */
 interface TakeAttempt {
@@ -155,7 +167,9 @@ export class ComputerPanel {
 	// r2; the window's hold follows it), the hand-back of the machine shown as the window last saw it, and the actions on
 	// their way.
 	#computer: WebCompanyComputer | undefined;
-	#holding: string | undefined;
+	/** The hold of the desktop on this page, while there is one (review r17 F25): a new object at every take-over that
+	 * succeeds, gone at every release. */
+	#hold: PageHold | undefined;
 	/** A press of Take over waiting for the machine to run (its stamp in the ledger): dropped, silently, once any release
 	 * came after it (review r13 F20). */
 	#wantTakeOver: number | undefined;
@@ -166,8 +180,6 @@ export class ComputerPanel {
 	#taking: TakeAttempt | undefined;
 	readonly #ledger: DesktopHoldLedger;
 	#releaseShown: DesktopRelease | undefined;
-	#queue: MachineDesktopAction[] = [];
-	#sending = false;
 	#keepTimer: ReturnType<typeof setTimeout> | undefined;
 	/** Where the picture sends the member's input while they hold the desktop: one, so the picture keeps what it gathers. */
 	readonly #input = { act: (action: MachineDesktopAction) => this.#enqueue(action) };
@@ -414,6 +426,11 @@ export class ComputerPanel {
 		return done;
 	}
 
+	/** The machine of the window's hold, while it has one. */
+	get #holding(): string | undefined {
+		return this.#hold?.machineId;
+	}
+
 	/** Whether the member holds the desktop the window shows. */
 	get holding(): boolean {
 		return this.#holding !== undefined;
@@ -554,7 +571,9 @@ export class ComputerPanel {
 				this.#confirmedAt = Date.now();
 			}
 			this.#failures = 0;
-			if (machine.machineId !== this.#machineId) continue;
+			// The answer is the machine's the window shows now, or nothing (a switch made while the look was on its way:
+			// release review r1 of #1667, the requests' audit).
+			if (machine.machineId !== this.#machineId || this.#pick()?.machineId !== machine.machineId) continue;
 			if (look.kind === "picture") {
 				if (await this.#view?.show(look.png)) {
 					this.#etag = look.etag;
@@ -703,10 +722,13 @@ export class ComputerPanel {
 		this.#poke();
 	}
 
-	/** The member holds the machine's desktop now: the picture takes their input, and the window renews the hold. */
+	/** The member holds the machine's desktop now: the picture takes their input, and the window renews the hold. A new
+	 * hold of the page's, at the epoch the ledger holds it under (F25). */
 	#held(machineId: string): void {
-		this.#holding = machineId;
-		this.#queue = [];
+		const epoch = this.#ledger.holder(machineId);
+		if (epoch === undefined) return;
+		this.#hold?.stop.abort();
+		this.#hold = { machineId, epoch, queue: [], stop: new AbortController(), sending: false };
 		this.#scheduleKeep(KEEP_EVERY_MS);
 		this.#syncControls();
 		this.#view?.focusScreen();
@@ -714,9 +736,11 @@ export class ComputerPanel {
 
 	/** The member holds it no more (handed back, run out, or the window goes): input stops, and so does the renewal. */
 	#released(): void {
-		if (!this.#holding) return;
-		this.#holding = undefined;
-		this.#queue = [];
+		const hold = this.#hold;
+		if (!hold) return;
+		// Its input is dropped and an action of it on its way is cut off on the page; nothing it answers is acted on (F25).
+		hold.stop.abort();
+		this.#hold = undefined;
 		clearTimeout(this.#keepTimer);
 		this.#keepTimer = undefined;
 		this.#controlNote.textContent = "";
@@ -730,13 +754,13 @@ export class ComputerPanel {
 	}
 
 	async #keep(): Promise<void> {
-		const machineId = this.#holding;
+		const hold = this.#hold;
 		const computer = this.#computer;
-		if (!machineId || !computer || this.#stop.signal.aborted) return;
+		if (!hold || !computer || this.#stop.signal.aborted) return;
+		const { machineId, epoch } = hold;
 		// A hold the ledger no longer lets the window keep (a release was asked) is never renewed; the heartbeat names the
 		// epoch it was taken under, and renews only a lease taken under it (review r5).
-		const epoch = this.#ledger.holder(machineId);
-		if (epoch === undefined) {
+		if (this.#ledger.holder(machineId) !== epoch) {
 			this.#released();
 			return;
 		}
@@ -747,11 +771,12 @@ export class ComputerPanel {
 		}
 		let until: string | null | undefined;
 		try {
-			until = await computer.keepDesktop(machineId, epoch, this.#stop.signal);
+			until = await computer.keepDesktop(machineId, epoch, hold.stop.signal);
 		} catch {
 			until = undefined;
 		}
-		if (this.#stop.signal.aborted || this.#holding !== machineId || this.#ledger.holder(machineId) !== epoch) return;
+		// The answer of an older hold's heartbeat touches nothing (F25).
+		if (this.#stop.signal.aborted || this.#hold !== hold || this.#ledger.holder(machineId) !== epoch) return;
 		if (until === null) {
 			// It ended (handed back elsewhere, run out after 30 minutes without input, or another member's now).
 			this.#released();
@@ -764,41 +789,44 @@ export class ComputerPanel {
 		this.#scheduleKeep(until === undefined ? KEEP_EVERY_MS / 4 : KEEP_EVERY_MS);
 	}
 
-	/** One of the member's actions, after those on their way; texts typed one after another go as one. */
+	/** One of the member's actions, captured under the window's hold, after those of it on their way; texts typed one after
+	 * another go as one. */
 	#enqueue(action: MachineDesktopAction): void {
-		if (!this.#holding) return;
-		const last = this.#queue.at(-1);
+		const hold = this.#hold;
+		if (!hold) return;
+		const last = hold.queue.at(-1);
 		if (
 			last?.type === "type" &&
 			action.type === "type" &&
-			this.#queue.length > (this.#sending ? 1 : 0) &&
+			hold.queue.length > (hold.sending ? 1 : 0) &&
 			[...last.text].length + [...action.text].length <= TEXT_MAX
 		)
-			this.#queue[this.#queue.length - 1] = { type: "type", text: last.text + action.text };
-		else this.#queue.push(action);
+			hold.queue[hold.queue.length - 1] = { type: "type", text: last.text + action.text };
+		else hold.queue.push(action);
 		this.#touched();
-		void this.#drain();
+		void this.#drain(hold);
 	}
 
-	/** Sends the member's actions one at a time: an answer before the next goes. A desktop busy with another action
-	 * (an agent's that began before the take-over) is waited for, then the action is dropped. */
-	async #drain(): Promise<void> {
+	/** Sends a hold's actions one at a time, each with the hold's epoch: an answer before the next goes. A desktop busy with
+	 * another action (an agent's that began before the take-over) is waited for, then the action is dropped. The loop is
+	 * the hold's (F25): after every wait it ends, touching nothing (the queue, the note, the state, the ledger), once the
+	 * hold is not the window's any more; a newer hold has its own queue and its own loop, which starts at once. */
+	async #drain(hold: PageHold): Promise<void> {
 		const computer = this.#computer;
-		if (this.#sending || !computer) return;
-		this.#sending = true;
+		if (hold.sending || !computer) return;
+		hold.sending = true;
+		const current = () => this.#hold === hold && !hold.stop.signal.aborted && !this.#stop.signal.aborted;
 		try {
 			let busySince: number | undefined;
-			while (this.#queue.length && this.#holding && !this.#stop.signal.aborted) {
-				const machineId = this.#holding;
-				const epoch = this.#ledger.holder(machineId);
-				const action = this.#queue[0] as MachineDesktopAction;
+			while (hold.queue.length && current()) {
+				const action = hold.queue[0] as MachineDesktopAction;
 				let answer: MachineActAnswer | undefined;
 				try {
-					answer = await computer.screens.act(machineId, action, this.#stop.signal);
+					answer = await computer.screens.act(hold.machineId, action, hold.epoch, hold.stop.signal);
 				} catch {
 					answer = undefined;
 				}
-				if (this.#stop.signal.aborted || this.#holding !== machineId) return;
+				if (!current()) return;
 				if (answer?.kind === "refused" && answer.code === "DESKTOP_BUSY") {
 					busySince ??= Date.now();
 					if (Date.now() - busySince < BUSY_GIVE_UP_MS) {
@@ -809,21 +837,21 @@ export class ComputerPanel {
 				}
 				busySince = undefined;
 				this.#controlNote.textContent = "";
-				this.#queue.shift();
+				hold.queue.shift();
 				if (
 					answer?.kind === "refused" &&
 					(answer.code === "DESKTOP_CONTROL_ENDED" || answer.code === "DESKTOP_MEMBER_IN_CONTROL")
 				) {
 					// The hold ended under the action (handed back elsewhere, or it ran out): the list says where it stands.
 					this.#released();
-					if (epoch !== undefined) this.#ledger.ended(machineId, epoch);
+					this.#ledger.ended(hold.machineId, hold.epoch);
 					this.#listStale = true;
 				}
 				// The screen changed (or may have): look again soon.
 				this.#quicken();
 			}
 		} finally {
-			this.#sending = false;
+			hold.sending = false;
 		}
 	}
 

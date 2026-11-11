@@ -47,7 +47,11 @@ function machine(n: number, change: Partial<MemberAgentMachine> = {}): MemberAge
 /** One look's answer from the bridge: a picture (its etag), the member's own picture again, or a refusal's code. */
 type Answer = { picture: number } | "unchanged" | { code: string } | { status: number };
 /** One action's answer: its exit, or a refusal's code. */
-type ActAnswer = { exitCode: number | null } | { code: string } | { hold: Promise<void>; exitCode: number };
+type ActAnswer =
+	| { exitCode: number | null }
+	| { code: string }
+	| { hold: Promise<void>; exitCode: number }
+	| { hold: Promise<void>; code: string };
 
 const cleanup: (() => void)[] = [];
 beforeEach(() => {
@@ -115,7 +119,7 @@ function setup(
 	};
 	const epochOf = (machineId: unknown) => state.epochs.get(String(machineId)) ?? 0;
 	const looks: { url: string; etag: string | null }[] = [];
-	const acts: { url: string; action: Record<string, unknown> }[] = [];
+	const acts: { url: string; action: Record<string, unknown>; epoch: number; signal: AbortSignal | undefined }[] = [];
 	const rpcs: { method: string; body: Record<string, unknown> }[] = [];
 	const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 		const url = String(input);
@@ -125,9 +129,15 @@ function setup(
 		if (url.startsWith(`${bridge}/v1/member-machine-screens/`) && url.endsWith("/act")) {
 			expect(init?.method).toBe("POST");
 			expect(headers.get("content-type")).toBe("application/json");
-			const body = JSON.parse(String(init?.body)) as { action: Record<string, unknown> };
-			expect(Object.keys(body)).toEqual(["action"]);
-			acts.push({ url: url.slice(bridge.length), action: body.action });
+			const body = JSON.parse(String(init?.body)) as { action: Record<string, unknown>; epoch: number };
+			// The action, and the epoch of the hold it was captured under (F24).
+			expect(Object.keys(body)).toEqual(["action", "epoch"]);
+			acts.push({
+				url: url.slice(bridge.length),
+				action: body.action,
+				epoch: body.epoch,
+				signal: init?.signal ?? undefined,
+			});
 			const answer = state.actAnswers.shift() ?? { exitCode: 0 };
 			if ("hold" in answer) await answer.hold;
 			if ("code" in answer) return Response.json({ code: answer.code }, { status: 409 });
@@ -1460,7 +1470,7 @@ describe("a member's action through the member bridge (20260930713000)", () => {
 	}
 	it("posts the action as JSON with the member's token, and takes its exit or refusal", async () => {
 		const t = transport(() => Response.json({ schema: "qorpera.member-machine-act/v1", exitCode: 0 }));
-		expect(await t.screens.act(machine(1).machineId, { type: "type", text: "Åse" }, signal)).toEqual({
+		expect(await t.screens.act(machine(1).machineId, { type: "type", text: "Åse" }, 5, signal)).toEqual({
 			kind: "done",
 			exitCode: 0,
 		});
@@ -1473,9 +1483,10 @@ describe("a member's action through the member bridge (20260930713000)", () => {
 			cache: "no-store",
 			credentials: "omit",
 		});
-		expect(JSON.parse(String(init?.body))).toEqual({ action: { type: "type", text: "Åse" } });
+		// With the epoch of the hold the input was captured under (F24).
+		expect(JSON.parse(String(init?.body))).toEqual({ action: { type: "type", text: "Åse" }, epoch: 5 });
 		const busy = transport(() => Response.json({ code: "DESKTOP_BUSY" }, { status: 409 }));
-		expect(await busy.screens.act(machine(1).machineId, { type: "key", keys: ["Return"] }, signal)).toEqual({
+		expect(await busy.screens.act(machine(1).machineId, { type: "key", keys: ["Return"] }, 0, signal)).toEqual({
 			kind: "refused",
 			code: "DESKTOP_BUSY",
 		});
@@ -1486,11 +1497,21 @@ describe("a member's action through the member bridge (20260930713000)", () => {
 			() => new Response("{}", { status: 503 }),
 		])
 			await expect(
-				transport(answer).screens.act(machine(1).machineId, { type: "key", keys: ["Return"] }, signal),
+				transport(answer).screens.act(machine(1).machineId, { type: "key", keys: ["Return"] }, 0, signal),
 			).rejects.toThrow();
 		await expect(
-			transport(() => Response.json({})).screens.act("machine", { type: "key", keys: ["a"] }, signal),
+			transport(() => Response.json({})).screens.act("machine", { type: "key", keys: ["a"] }, 0, signal),
 		).rejects.toThrow();
+		// An epoch that is not a safe whole number, 0 or more, is never sent.
+		for (const epoch of [-1, 1.5, Number.NaN])
+			await expect(
+				transport(() => Response.json({})).screens.act(
+					machine(1).machineId,
+					{ type: "key", keys: ["a"] },
+					epoch,
+					signal,
+				),
+			).rejects.toThrow();
 	});
 });
 
@@ -1994,6 +2015,67 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		await takeOver(p);
 		expect(takeEpochs(s)).toEqual([0, 1]);
 		expect(p.holding).toBe(true);
+	});
+
+	it("sends what is typed under a new hold of the same machine while an older hold's action is unanswered, once and in order; that answer touches nothing (r17 F25)", async () => {
+		const { s, p } = await company();
+		await takeOver(p);
+		expect(p.holding).toBe(true);
+		// Action A under the first hold (epoch 0); its answer is held back.
+		const late = gate();
+		s.state.actAnswers.push({ hold: late.closed, exitCode: 0 });
+		key(canvas(p), "Enter");
+		await flush();
+		expect(s.acts.map((act) => act.epoch)).toEqual([0]);
+		// Hand back (A's request is cut off on the page), take the same machine over again (epoch 1), and type B.
+		expect(await p.handBack()).toBe(true);
+		expect(s.acts[0]?.signal?.aborted).toBe(true);
+		await takeOver(p);
+		expect(p.holding).toBe(true);
+		key(canvas(p), "Tab");
+		await flush();
+		// B goes at once, under the new hold, though A is still unanswered.
+		expect(s.acts.map((act) => act.epoch)).toEqual([0, 1]);
+		// A's answer comes (it ran): nothing of the new hold changes, B is not sent again, and C goes after it.
+		late.open();
+		await flush();
+		expect(p.holding).toBe(true);
+		expect(s.acts.map((act) => act.epoch)).toEqual([0, 1]);
+		key(canvas(p), "End");
+		await flush();
+		expect(s.acts.map((act) => act.epoch)).toEqual([0, 1, 1]);
+		expect(s.acts.slice(1).map((act) => act.action)).toEqual([
+			{ type: "key", keys: ["Tab"] },
+			{ type: "key", keys: ["End"] },
+		]);
+	});
+
+	it("lets an older hold's refused action end nothing of the new hold: input and heartbeats go on, nothing more is owed (r17 F25)", async () => {
+		const { s, panels, p } = await company();
+		await takeOver(p);
+		const late = gate();
+		s.state.actAnswers.push({ hold: late.closed, code: "DESKTOP_CONTROL_ENDED" });
+		key(canvas(p), "Enter");
+		await flush();
+		expect(await p.handBack()).toBe(true);
+		await takeOver(p);
+		key(canvas(p), "Tab");
+		await flush();
+		expect(s.acts.map((act) => act.epoch)).toEqual([0, 1]);
+		// A's refusal comes (its hold ended): the new hold goes on.
+		late.open();
+		await flush();
+		expect(p.holding).toBe(true);
+		expect(controls(p)?.textContent ?? "").not.toContain("could not");
+		key(canvas(p), "End");
+		await flush();
+		expect(s.acts.map((act) => act.epoch)).toEqual([0, 1, 1]);
+		await advance(KEEP_EVERY_MS);
+		expect(keeps(s).map((call) => call.body.p_epoch)).toEqual([1]);
+		expect(p.holding).toBe(true);
+		// What is owed is the new hold alone: I'm done hands back at 1, once.
+		expect(await panels.releaseAgent(staff.id)).toBe(true);
+		expect(backEpochs(s)).toEqual([0, 1]);
 	});
 
 	it("says nothing of a take-over queued behind a hand-back that pagehide called off, when that hand-back then fails (r14 F22)", async () => {
