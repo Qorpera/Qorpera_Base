@@ -9,6 +9,16 @@ import {
 	codeChangeRefusalPaths,
 } from "./code-change-records.ts";
 import {
+	CODE_CHECKS_MAIN_MOVED,
+	type CodeBranchToCheck,
+	codeChecksFailedSummary,
+	codeChecksGate,
+	codeChecksNotRunSummary,
+	codeChecksPassed,
+	type LandCodeBranch,
+	readCodeChecks,
+} from "./code-checks-stand-in.ts";
+import {
 	addCodeWorktree,
 	type CodeBranchLanded,
 	type CodeHostJob,
@@ -25,6 +35,7 @@ import { CodingLandConflict, CodingLandRefused, CodingWorkspaceFailed, landRefus
 import {
 	CODING_FOLDER_COMPANY_ROOT,
 	type CodeChangeReport,
+	type CodeChangeReportV2,
 	type CodingFolderRepositories,
 	type CodingFolderRepositorySession,
 	type CodingFolderStart,
@@ -56,11 +67,15 @@ export interface CodeHostRepositoriesOptions {
 	 * the record is in the company folder when the agent reads the turn's result. Absent: the record's own pass writes
 	 * them. */
 	records?: Pick<CodeChangeRecords, "inJob">;
-	/** The log lines `code-change` and `code-change-error` (whose `error` is the error itself, for the log to redact). */
+	/** The log lines `code-change` and `code-change-error` (whose `error` is the error itself, for the log to redact), and
+	 * `code-checks`: how each landing's checks ended (never a check's output). */
 	report?: (event: Record<string, unknown>) => void;
 	/** `CODE_CHANGE_RECORD_MS`, for tests. */
 	recordMs?: number;
 }
+
+/** What the repository's checks said of a landing that moved main: its report's `checks` (step 3). */
+type LandingChecks = NonNullable<CodeChangeReportV2["checks"]>;
 
 /** What a landing's job left of the change record. */
 interface LandingRecord {
@@ -178,15 +193,107 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 	 * due are written, and the job's one save carries them with main/. A report the kernel did not confirm there is made
 	 * once more after the job, and then left: the kernel finds a main its record does not know at the next movement. A
 	 * conflict and a refusal are reported before they are thrown on. Nothing of the record fails a landing or holds its
-	 * job longer than `CODE_CHANGE_RECORD_MS`: every error of it is reported (`code-change-error`) and nothing more. */
+	 * job longer than `CODE_CHANGE_RECORD_MS`: every error of it is reported (`code-change-error`) and nothing more.
+	 *
+	 * The repository's checks gate the landing (own code storage, step 3): main only moves to a candidate whose every
+	 * check passed. Job A finds the candidate and reads the checks file at it and at main, moving nothing; the checks
+	 * run in the session's machine, outside the company's line; job B moves main only to that candidate, and only while
+	 * main is still where job A saw it. When main moved meanwhile (`CODE_HOST_LAND_STALE`), job A is made again and the
+	 * new candidate checked once more. Checks that could not run are run once more. A refused checks file, a failed
+	 * check, checks that could not run twice and main moving twice each fail the turn with their words
+	 * (CodingLandRefused) and make no row of the change record: the session's commit was not ready, and met no main. A
+	 * repository with no checks file lands in job A as before, its row saying `none`; one whose checks are switched off,
+	 * or a host that runs none, too, saying `off`. */
 	async land(
 		session: CodingFolderRepositorySession,
 		headSha: string,
 		signal: AbortSignal,
 		options: { picture?: string } = {},
 	): Promise<CodingLanded> {
-		const { repository, workerId } = session.claim;
+		const { repository } = session.claim;
 		if (repository.host !== "qorpera") throw new Error("CODE_HOST_REPOSITORY_NOT_HERE");
+		const { checksSwitch, runChecks } = session;
+		// The switch's answer lost is read as on: a landing never goes in unchecked for want of an answer.
+		const enabled = checksSwitch !== undefined && runChecks !== undefined && (await checksSwitch(signal));
+		const told = (step: string, extra: Record<string, unknown> = {}) =>
+			this.#report({ event: "code-checks", step, ...named(session), ...extra });
+		let runs = 0;
+		for (let tries: 1 | 2 = 1; ; tries = 2) {
+			const found = await this.#landing(
+				session,
+				headSha,
+				signal,
+				options,
+				enabled ? { checks: true } : {},
+				enabled ? { state: "none" } : { state: "off" },
+			);
+			if (found.state !== "to-check") return found;
+			// Only a job that was asked to read the checks answers a candidate to check.
+			if (!enabled || !runChecks) throw new Error("CODE_HOST_LANDING_INVALID");
+			const gate = codeChecksGate(readCodeChecks(found.mainChecks), readCodeChecks(found.checks));
+			if (gate.gate === "refused") {
+				told("refused", { tries });
+				throw new CodingLandRefused("CODING_CHECKS_REFUSED", gate.summary);
+			}
+			const input = { commit: found.mainAfter, checks: gate.checks };
+			let run = await runChecks({ ...input, attempt: ++runs }, signal);
+			// Checks that could not run are the machine's or Qorpera's fault, never the code's: once more.
+			if (run.state === "not_run") {
+				told("not-run", { why: run.why, code: run.code, attempt: runs });
+				run = await runChecks({ ...input, attempt: ++runs }, signal);
+			}
+			if (run.state === "not_run") {
+				told("not-run", { why: run.why, code: run.code, attempt: runs });
+				throw new CodingLandRefused("CODING_CHECKS_DID_NOT_RUN", codeChecksNotRunSummary(run));
+			}
+			if (run.state === "failed") {
+				told("failed", { attempt: runs, exitCode: run.failed.exitCode, atLimit: run.failed.atLimit });
+				throw new CodingLandRefused("CODING_CHECKS_FAILED", codeChecksFailedSummary(run, found.how));
+			}
+			const result = codeChecksPassed({
+				commit: found.mainAfter,
+				how: found.how,
+				blob: gate.blob,
+				run,
+				changed: gate.changed,
+				tries,
+			});
+			try {
+				const landed = await this.#landing(
+					session,
+					headSha,
+					signal,
+					options,
+					{ expect: { how: found.how, mainBefore: found.mainBefore, mainAfter: found.mainAfter } },
+					{ state: "passed", result },
+				);
+				if (landed.state === "to-check") throw new Error("CODE_HOST_LANDING_INVALID");
+				told("landed", { checks: landed.state === "unchanged" ? null : "passed", attempt: runs, tries });
+				return landed;
+			} catch (error) {
+				if (signal.aborted || !(error instanceof CodeHostJobFailure && error.code === "CODE_HOST_LAND_STALE"))
+					throw error;
+				told("stale", { attempt: runs, tries });
+				// Main moved twice while its checks ran: they never ran on what would go in.
+				if (tries === 2)
+					throw new CodingLandRefused("CODING_CHECKS_MAIN_MOVED", CODE_CHECKS_MAIN_MOVED, { cause: error });
+			}
+		}
+	}
+
+	/** One landing's job, made once more when it lost main to another one (`CODE_HOST_BASE_MOVED`): job A of a
+	 * repository's checks (`checks`), or job B (`expect`), or the one landing of a repository without them. A job that
+	 * moved main is reported to the change record with `checks`; a candidate to check moves nothing and reports nothing. A
+	 * conflict and a refusal are reported and thrown on with their words. */
+	async #landing(
+		session: CodingFolderRepositorySession,
+		headSha: string,
+		signal: AbortSignal,
+		options: { picture?: string },
+		step: { checks?: true; expect?: { how: "fast-forward" | "merged"; mainBefore: string; mainAfter: string } },
+		checks: LandingChecks,
+	): Promise<CodingLanded | CodeBranchToCheck> {
+		const { repository, workerId } = session.claim;
 		for (let again = true; ; again = false) {
 			const record: LandingRecord = {
 				landed: false,
@@ -197,17 +304,22 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			};
 			try {
 				const landed = await this.#job(session, signal, async (job) => {
-					const landed = await landCodeBranch(job, {
+					// STAND-IN (code-checks-stand-in.ts): with part B's types this cast goes.
+					const landed = await (landCodeBranch as LandCodeBranch)(job, {
 						repository,
 						workerId,
 						headSha,
 						...(options.picture === undefined ? {} : { picture: options.picture }),
+						...step,
 					});
+					// A candidate to check: nothing moved, and nothing is reported.
+					if (landed.state === "to-check") return landed;
 					// Main has moved, and a ref is saved where git commits it: from here on nothing may fail the job.
 					record.landed = true;
-					await this.#recordInJob(session, job, landed, headSha, record);
+					await this.#recordInJob(session, job, landed, headSha, record, checks);
 					return landed;
 				});
+				if (landed.state === "to-check") return landed;
 				// The job saved: a report it could not make is made now, and the kernel is told of the files it wrote.
 				await this.#reportOwed(session, record);
 				const confirm = record.confirm;
@@ -260,13 +372,14 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 		landed: CodeBranchLanded,
 		headSha: string,
 		record: LandingRecord,
+		checks: LandingChecks,
 	): Promise<void> {
 		let report: CodeChangeReport;
 		try {
 			const diff = landed.state === "unchanged" ? undefined : codeChangeDiffOf(landed.diff);
 			record.filesChanged = diff?.filesChanged ?? 0;
 			if (!session.recordChange) return;
-			report = landingReport(landed, headSha, diff);
+			report = landingReport(landed, headSha, diff, checks);
 		} catch (error) {
 			this.#failed(session, "report", error);
 			return;
@@ -323,7 +436,7 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			await this.#reported(
 				session,
 				{
-					schema: "qorpera.code-change-report/v1",
+					schema: "qorpera.code-change-report/v2",
 					state,
 					inLine: false,
 					how: null,
@@ -335,6 +448,7 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 					pathsMore: 0,
 					picture: null,
 					refusal: { code, paths: codeChangeRefusalPaths(paths) },
+					checks: null,
 				},
 				AbortSignal.timeout(Math.ceil(this.#recordMs / 2)),
 			);
@@ -407,16 +521,19 @@ function named(session: CodingFolderRepositorySession): Record<string, unknown> 
 	};
 }
 
-/** What the kernel is told of a landing, from what the job answered. It throws when the answer is not a landing's:
- * its caller reports that, and the landing stands. */
+/** What the kernel is told of a landing, from what the job answered, with what the repository's checks said of a
+ * landing that moved main (`checks`; an unchanged main says nothing of them). It throws when the answer is not a
+ * landing's, or a passed run's result is not of the commit that went in: its caller reports that, and the landing
+ * stands. */
 function landingReport(
 	landed: CodeBranchLanded,
 	headSha: string,
 	diff: ReturnType<typeof codeChangeDiffOf>,
+	checks: LandingChecks,
 ): CodeChangeReport {
 	const sha = (commit: unknown): commit is string => typeof commit === "string" && SHA.test(commit);
 	const report = {
-		schema: "qorpera.code-change-report/v1" as const,
+		schema: "qorpera.code-change-report/v2" as const,
 		inLine: true,
 		headSha,
 		refusal: null,
@@ -434,6 +551,7 @@ function landingReport(
 			paths: null,
 			pathsMore: 0,
 			picture: null,
+			checks: null,
 		};
 	}
 	const picture = landed.picture;
@@ -450,7 +568,8 @@ function landingReport(
 					picture.bytes >= 0 &&
 					["png", "jpeg", "webp"].includes(picture.type)
 				: ["missing", "not_a_file", "too_large", "not_a_picture"].includes(picture.state))
-		)
+		) ||
+		(checks.state === "passed" && (checks.result.commit !== landed.mainSha || checks.result.how !== landed.state))
 	)
 		throw new Error("CODE_CHANGE_LANDING_INVALID");
 	return {
@@ -466,6 +585,7 @@ function landingReport(
 				: picture.state === "ok"
 					? { state: "ok", blob: picture.blob, bytes: picture.bytes, type: picture.type }
 					: { state: picture.state },
+		checks,
 	};
 }
 
