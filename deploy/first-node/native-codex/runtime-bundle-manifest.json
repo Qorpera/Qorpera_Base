@@ -20,11 +20,11 @@
     "wakeAndSilence": "72edeb8b9d24e8bb36f5adb7bbb3aa3234567489442e441c966703208ee33571",
     "contextComposer": "2d9ae84c0f59b621bc93bc8eb8492b3f3eefb5db972193cf5a4341712061a2a0",
     "providerBootstrap": "7949964dc11856b49ea239b8bcaed3ba2408c996fb0fad7fcfadf12fe8db3b3f",
-    "authorization": "1067dfec3a097cdc28128e561197b1ddd79f1408b2d90eba73dd74a1847d64d1",
+    "authorization": "88f0435a13f7e5d1c329dcb6e5fe96a59f7ae8893f01e736b63c39c86cab6488",
     "inboundSafety": "3f8fd4d5d710c201529001a99178f78c70c7d379aeb1286f2350300d5ee8cbea",
     "outboundSafety": "0066f6597c3b87f69c002df382a08ab2388c063564478bbb2502daf8022288a7",
     "interactionSurfaces": "b15927ca94c8099dc11c81131476db35ba015072904fa01b6aec6fd19fdce827",
-    "workerLifecycle": "69c74e74e00105048ef32cf1ce92f27f366d2ed3171a22ae7615a48d06a9ecd9",
+    "workerLifecycle": "3b08ba4675c7745f38447cc5ba1dd05b8c35e6008753ea9120a9295c8d018ee2",
     "memoryAndSkills": "12d8ba416e17a0ecc4691f7af9fdd15c3c3b5a52525b720831afaf5b79783d6a"
   },
   "implementation": {
@@ -487,12 +487,12 @@
     "packages/runner-orchestrator/src/code-host-views.ts": "bedc54e71180e660da255460393b16441a032558f1fcc32187b4b7379a3aa7fc",
     "packages/runner-orchestrator/src/code-host.ts": "2a1348c2148626db9caa77b6ce411471de6874f657b5af53e8cdb347ef367f3b",
     "packages/runner-orchestrator/src/code-site-uploads.ts": "c284f4a2d9ea18f420b5c93f8e8eabbfff7b83bf1151239254f3fb72b80c1ebe",
-    "packages/runner-orchestrator/src/code-site.ts": "2fabe5713c75010a2ca8095f0801d8d04b1a4eac984cf324c999f32fd8be14c5",
+    "packages/runner-orchestrator/src/code-site.ts": "aa39d854d215238e867d081b187595a4c0b9843194d28b92c9065923d9841bf0",
     "packages/runner-orchestrator/src/code-words.ts": "5e53c71381d88a40c98e236056480512a2b7bf458be5aee43df290a741bcfcca",
     "packages/runner-orchestrator/src/coding-command-secrets.ts": "2aa2ff7f339cb5fa9a9a8d05d9bdd9c24cc959159fca2c1c9e945b6c69c45370",
     "packages/runner-orchestrator/src/coding-command-transport.ts": "90987c927276c61b1eb7fdca30d36888118b2454c90f1797839d8e138d0e3730",
     "packages/runner-orchestrator/src/coding-error-detail.ts": "009660f176130066c66653be5c705c9e4d8d3a45434158d665f82606485be30e",
-    "packages/runner-orchestrator/src/coding-executor-host.ts": "91046c03e23f2d7ca44a3526cb31efdd05b00e70c79c5e458ee4d799e803cdd3",
+    "packages/runner-orchestrator/src/coding-executor-host.ts": "74f15d86bb7d26d67dcc4c57ff7848cfc6df01778f989ab1d21c7dd73cc74781",
     "packages/runner-orchestrator/src/coding-executor.ts": "9af022ea404cd536b75eb48631942bdf92fa936f865e18c7f827e55a12b691aa",
     "packages/runner-orchestrator/src/coding-folder-command-transport.ts": "46252c501ef71e0f93dbbd23deeba7417575ffb1563dc0492ff976f3084feaab",
     "packages/runner-orchestrator/src/coding-folder-control.ts": "65e94b1e20b3ee360f8aab4b1102ec01628cf0aabaaa46f56ce31eed2b5be28b",
@@ -1958,6 +1958,6 @@
     "supabase/migrations/20260930726000_organize_apps_tool.sql": "b06f74b6f9452ca75d118861d19b8b7d3ecd2dbcbe3a78e43a95762521f97302",
     "supabase/migrations/20260930727000_member_own_sidebar.sql": "454ad5fa37ea779ca0549e1b93dbd35431c0e1fedd4e0434f5c2f3872f372cf0",
     "supabase/migrations/20260930728000_member_app_layouts.sql": "4830d091e5935ca9f06f54828f3b8f8deb19d99e21d12c7e75c7c475adb80d5a",
-    "supabase/migrations/20260930729000_code_releases.sql": "01978e35915f0a27919680db2c1cc144a168587122ade6fda40d4ece2c64c6f5"
+    "supabase/migrations/20260930729000_code_releases.sql": "b7552c79fec3284b6b680e5e9081a1ac94b7d68bf98411556895a26d96fa171b"
   }
 }
