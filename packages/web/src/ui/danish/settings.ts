@@ -511,6 +511,16 @@ export const SETTINGS: Record<string, string> = {
 		"Projektet kan ikke få en hjemmeside: virksomheden har allerede 10. Tag en offline under Hjemmesider.",
 	"The newest version could not be prepared. Qorpera is trying again.":
 		"Den nyeste version kunne ikke gøres klar. Qorpera prøver igen.",
+	"The newest version could not be prepared. The next change that is saved gets a new try.":
+		"Den nyeste version kunne ikke gøres klar. Den næste ændring, der gemmes, får et nyt forsøg.",
+	"It may not have gone live: Qorpera could not be reached. Checking…":
+		"Den er måske ikke blevet sat live: Qorpera kunne ikke nås. Tjekker…",
+	"It may not have gone back: Qorpera could not be reached. Checking…":
+		"Den er måske ikke blevet sat live igen: Qorpera kunne ikke nås. Tjekker…",
+	"Qorpera could not be reached, so it is not known whether it went live. Open this page again in a moment.":
+		"Qorpera kunne ikke nås, så det vides ikke, om den blev sat live. Åbn denne side igen om lidt.",
+	"Qorpera could not be reached, so it is not known whether it went back. Open this page again in a moment.":
+		"Qorpera kunne ikke nås, så det vides ikke, om den blev sat live igen. Åbn denne side igen om lidt.",
 
 	// Environment variables for coding, in both connections tabs (app/views/settings-coding-environment.ts)
 	"Environment variables for coding": "Miljøvariabler til kodning",

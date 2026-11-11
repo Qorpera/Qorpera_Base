@@ -66,6 +66,9 @@ export interface CodeReleaseSite {
 	readonly waiting: number;
 	/** Why the newest version could not be prepared (the kernel's code), or null. */
 	readonly problem: string | null;
+	/** No upload will try that change again until a newer one is saved (five failures). A read from before the key reads
+	 * as false. */
+	readonly givenUp: boolean;
 }
 
 export interface CodeReleases {
@@ -177,6 +180,8 @@ function parseSite(value: unknown): CodeReleaseSite {
 		}),
 		waiting: boundedInteger(input.waiting, "waiting changes", 0, MAX),
 		problem: nullable(input.problem, (problem) => nonEmptyString(problem, "site problem", 120)),
+		// Lenient: absent (a kernel before the key) or anything but true is not given up.
+		givenUp: input.givenUp === true,
 	};
 }
 

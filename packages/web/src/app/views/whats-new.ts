@@ -109,8 +109,25 @@ export class WhatsNewView {
 	/** The project acting, and how, while it does: every button is off meanwhile. */
 	#working: { site: string; action: "live" | "back" | "talk" } | undefined;
 	/** The last action's outcome, in its project where it happened: a version that went live under what is live, a page
-	 * that moved above what is ready now, a press that did not go through under its button. */
-	#outcome: { site: string; at: "live" | "ready" | "actions"; tone: "ok" | "error"; text: string } | undefined;
+	 * that moved above what is ready now, a press that did not go through under its button. It stays through the reads
+	 * that had started when it was settled (`through`; unset while its write's own read is still to come) and goes with
+	 * the first later read that succeeds: the page never keeps an old outcome over what a read shows. */
+	#outcome:
+		| {
+				site: string;
+				at: "live" | "ready" | "actions";
+				tone: "ok" | "error" | "plain";
+				text: string;
+				through?: number;
+		  }
+		| undefined;
+	/** A write whose answer never came (no network, the deadline): it may or may not have gone through, so the page claims
+	 * neither until a read that started after it (`after`) shows which. */
+	#unsettled:
+		| { site: string; action: "live" | "back"; before: number | null; to: number | null; after: number }
+		| undefined;
+	/** Reads started so far: each read knows its place, so one that left before a write never settles it. */
+	#started = 0;
 	/** Pictures read, by path: read once while the page is open. */
 	readonly #pictures = new Map<string, Promise<string | null>>();
 	/** The change cards drawn, by what they show: a draw keeps them, and their pictures, as they are. */
@@ -170,11 +187,13 @@ export class WhatsNewView {
 	}
 
 	async #read(): Promise<void> {
+		const read = ++this.#started;
 		try {
 			const releases = await this.#client.list(this.#lifetime.signal);
 			if (this.#lifetime.signal.aborted) return;
 			this.#releases = releases;
 			this.#error = undefined;
+			this.#settle(releases, read);
 			this.#listed(releases);
 		} catch (error) {
 			if (this.#lifetime.signal.aborted) return;
@@ -182,10 +201,54 @@ export class WhatsNewView {
 			// Refused (the member left or lost the company) or gone: what was read before is no longer theirs to act on. A
 			// read that got no answer keeps it, under the line that says so.
 			if (error instanceof CloudRpcError && (error.denied || error.missing)) this.#releases = undefined;
+			// A write still unsettled stays so: the member hears that it is not known, and how to find out.
+			const pending = this.#unsettled;
+			if (pending)
+				this.#outcome = {
+					site: pending.site,
+					at: "live",
+					tone: "error",
+					text:
+						pending.action === "live"
+							? t(
+									"Qorpera could not be reached, so it is not known whether it went live. Open this page again in a moment.",
+								)
+							: t(
+									"Qorpera could not be reached, so it is not known whether it went back. Open this page again in a moment.",
+								),
+				};
 		} finally {
 			this.#loading = false;
 			this.#draw();
 		}
+	}
+
+	/** What a read that succeeded does to the outcome: an unsettled write is settled by a read that started after it
+	 * (the version it asked for is live: it went through; else nothing changed and the line goes, the page showing what
+	 * is); any other outcome goes once a read started after its own has succeeded. */
+	#settle(releases: CodeReleases, read: number): void {
+		const pending = this.#unsettled;
+		if (pending && read > pending.after) {
+			this.#unsettled = undefined;
+			const now = releases.sites.find((item) => keyOf(item) === pending.site)?.live ?? null;
+			const done =
+				now !== null &&
+				(pending.action === "live"
+					? now.version !== pending.before
+					: now.kind === "back" && now.version === pending.to);
+			this.#outcome =
+				now && done
+					? {
+							site: pending.site,
+							at: "live",
+							tone: "ok",
+							text: t("Version {version} is live.", { version: String(now.version) }),
+							through: read,
+						}
+					: undefined;
+			return;
+		}
+		if (!pending && this.#outcome?.through !== undefined && read > this.#outcome.through) this.#outcome = undefined;
 	}
 
 	/** Runs one write for a project, every button off meanwhile, then reads the page again. */
@@ -200,8 +263,8 @@ export class WhatsNewView {
 		const before = site.live?.version ?? null;
 		this.#working = { site: key, action };
 		this.#outcome = undefined;
+		this.#unsettled = undefined;
 		this.#draw(focus);
-		let unknown = false;
 		try {
 			const answer = await work(this.#lifetime.signal);
 			if (this.#lifetime.signal.aborted) return;
@@ -229,33 +292,44 @@ export class WhatsNewView {
 							};
 		} catch (error) {
 			if (this.#lifetime.signal.aborted) return;
-			const { why, unknown: noAnswer } = failure(error);
-			unknown = noAnswer;
-			this.#outcome = {
-				site: key,
-				at: action === "live" ? "actions" : "live",
-				tone: "error",
-				text:
-					action === "live"
-						? t("It did not go live: {why}. Nothing changed.", { why })
-						: t("It did not go back: {why}. Nothing changed.", { why }),
-			};
+			const { why, unknown } = failure(error);
+			if (unknown) {
+				// No answer: it may have gone through. Claim neither until a read shows which.
+				this.#unsettled = {
+					site: key,
+					action,
+					before,
+					to: action === "back" ? (site.back?.version ?? null) : null,
+					after: this.#started,
+				};
+				this.#outcome = {
+					site: key,
+					at: "live",
+					tone: "plain",
+					text:
+						action === "live"
+							? t("It may not have gone live: Qorpera could not be reached. Checking…")
+							: t("It may not have gone back: Qorpera could not be reached. Checking…"),
+				};
+			} else
+				this.#outcome = {
+					site: key,
+					at: action === "live" ? "actions" : "live",
+					tone: "error",
+					text:
+						action === "live"
+							? t("It did not go live: {why}. Nothing changed.", { why })
+							: t("It did not go back: {why}. Nothing changed.", { why }),
+				};
 		} finally {
 			this.#working = undefined;
 			if (!this.#lifetime.signal.aborted) this.#draw(focus);
 		}
 		await this.#refresh();
-		// No answer came: when the read shows another version live now, the write went through (or another tab's did),
-		// and "Nothing changed" would be wrong.
-		const now = this.#releases?.sites.find((item) => keyOf(item) === key)?.live;
-		if (unknown && !this.#lifetime.signal.aborted && now && now.version !== before) {
-			this.#outcome = {
-				site: key,
-				at: "live",
-				tone: "ok",
-				text: t("Version {version} is live.", { version: String(now.version) }),
-			};
-			this.#draw();
+		// The write's own read has run: the next read that succeeds takes its line away.
+		if (this.#outcome && this.#outcome.through === undefined && !this.#unsettled) {
+			this.#outcome.through = this.#started;
+			if (!this.#lifetime.signal.aborted) this.#draw();
 		}
 	}
 
@@ -337,7 +411,13 @@ export class WhatsNewView {
 		} catch {
 			if (this.#lifetime.signal.aborted) return;
 			// One plain line whatever went wrong: the cloud's own words for a thread that would not open name machinery.
-			this.#outcome = { site: key, at: "actions", tone: "error", text: t("The thread could not be opened.") };
+			this.#outcome = {
+				site: key,
+				at: "actions",
+				tone: "error",
+				text: t("The thread could not be opened."),
+				through: this.#started,
+			};
 		} finally {
 			this.#working = undefined;
 			if (!this.#lifetime.signal.aborted) this.#draw(`talk:${key}`);
@@ -522,7 +602,13 @@ export class WhatsNewView {
 			outcome?.at === at
 				? h(
 						"p",
-						{ class: `service-outcome ${outcome.tone === "ok" ? "is-ok" : "is-error"}`, role: "status" },
+						{
+							class:
+								outcome.tone === "plain"
+									? "service-outcome"
+									: `service-outcome ${outcome.tone === "ok" ? "is-ok" : "is-error"}`,
+							role: "status",
+						},
 						outcome.text,
 					)
 				: null;
@@ -533,12 +619,15 @@ export class WhatsNewView {
 			h("h2", null, titleOf(site)),
 			this.#live(site, can, busy),
 			said("live"),
-			site.problem
+			site.problem || site.givenUp
 				? notice(
 						"warn",
 						site.problem === "SITE_LIMIT"
 							? t("This project can't get a site: the company has 10. Take one offline in Sites.")
-							: t("The newest version could not be prepared. Qorpera is trying again."),
+							: // Qorpera tries a change's upload five times; after that it waits for the next change.
+								site.givenUp
+								? t("The newest version could not be prepared. The next change that is saved gets a new try.")
+								: t("The newest version could not be prepared. Qorpera is trying again."),
 					)
 				: null,
 			said("ready"),
