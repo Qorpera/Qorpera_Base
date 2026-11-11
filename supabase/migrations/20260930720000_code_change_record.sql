@@ -106,6 +106,13 @@ create table public.qorpera_code_changes (
 	main_before text check (main_before is null or main_before ~ '^[0-9a-f]{40}$'),
 	main_after text check (main_after is null or main_after ~ '^[0-9a-f]{40}$'),
 	head_sha text check (head_sha is null or head_sha ~ '^[0-9a-f]{40}$'),
+	-- A row that took a filler over can cover more than its own movement: the filler stood for everything the record had
+	-- missed, and main_before and main_after stay the span the row has in main's history. own_after set says the row's
+	-- own movement is not that whole span. With own_before these are the two ends of the row's own movement, and an
+	-- undo of this row alone takes out exactly that. Without own_before the row's own movement is not known: the row
+	-- is undone only together with everything after it.
+	own_before text check (own_before is null or own_before ~ '^[0-9a-f]{40}$'),
+	own_after text check (own_after is null or own_after ~ '^[0-9a-f]{40}$'),
 	-- Plain values, no foreign keys: a record names its session, it does not hold it.
 	worker_id uuid,
 	sequence integer check (sequence is null or sequence >= 1),
@@ -141,6 +148,7 @@ create table public.qorpera_code_changes (
 	check ((state in ('conflict','refused')) = (refusal is not null)),
 	check (state in ('conflict','refused') or main_after is not null),
 	check (kind <> 'landing' or (worker_id is not null and sequence is not null)),
+	check (own_before is null or own_after is not null),
 	check ((state = 'reverted') = (reverted_by is not null))
 );
 -- One row per turn: a replay answers the row that is there.
@@ -313,25 +321,136 @@ returns integer language sql volatile security definer set search_path = '' as $
 		'state', 'landed', 'main_before', p_before, 'main_after', p_after, 'title', 'A change whose record was lost'))
 $$;
 
--- Sets whether a row's effect is in main: landed, or reverted by row p_by. Its file says so, so its version goes up.
--- A row that is itself an undo sets each of its targets the other way: taken out of main, an undo's targets are back
--- in it; back in main, it takes them out again. A row that never went in, or that a restore went back past, stays.
-create function public.qorpera_code_change_set(p_environment_id uuid, p_owner text, p_name text, p_n integer,
-	p_in_main boolean, p_by integer)
-returns void language plpgsql volatile security definer set search_path = '' as $$
-declare v_row public.qorpera_code_changes%rowtype; v_target integer;
+-- Takes rows out of main, and answers the rows a range took out (oldest first; none otherwise). p_by: the undo rows
+-- that take out, in the order they do it. What each of them takes:
+--   p_from, not p_later: the row p_from, as it stands.
+--   p_from, p_later: every row from p_from up to the undo row, newest first, each if it is in main when its turn comes.
+--   p_from null: the rows its own `undoes` names, newest first, each if it is in main when its turn comes (a restore
+--     does its history's undos again).
+-- A row taken out is reverted by the undo row. A row that is itself an undo sets each of its targets the other way, in
+-- the order it names them: taken out of main, its targets are back in it; back in main, it takes them out again and
+-- is the row they are reverted by. So on down the rows, and where a row is come to more than once, the last time
+-- counts. A row that never went in, or that a restore went back past, stays, and nothing is come to through it.
+--
+-- The rows are read once, the states are worked out in memory, and a row that ends otherwise than it began is written
+-- once: its file says its state, so its version goes up by one. An undo row that was undone and done again is named by
+-- every range since, so from one row there are ever more ways down to the same rows, twice as many with each range and
+-- its undo. Followed one by one, they wrote the same two rows millions of times after fifteen. Here a row is come to
+-- once each time something is taken out, and a range comes to each row once in all:
+--   - The last time a row is come to is by the way that, at every row, goes on through the last target from which it
+--     can be come to. Going through each row's targets last first, and stopping at a row already come to, the first
+--     time a row is come to is by that way: its state is set then and not again.
+--   - In a range, a row that can be set is in main when its turn comes, unless nothing came to it and it was out of
+--     main before. (Say the last of the range's rows that came to it left it out of main. Then it came to it through
+--     an undo row it had put back in main. That row is in the range, its turn is earlier, and nothing came to it in
+--     between, for that would have come to this row too, later than the last. So it was taken out at its turn, which
+--     set this row back in main: later than the last, again.) So the rows a range takes out are known from what can be
+--     come to, before anything is set. Their states are then set from the oldest of them up, each stopping at what an
+--     older one came to: an older row's turn is later, and all it came to, it set last.
+--   - The rows an undo row names are a range again when they are every row that can be set from the oldest of them up
+--     to the undo row: a row between them that cannot be set has no turn either way. A restore does such an undo
+--     again as the range it was. Rows it names that leave one out that can be set start anew one by one, each from
+--     what the one before left.
+create function public.qorpera_code_changes_take_out(p_environment_id uuid, p_owner text, p_name text, p_by integer[],
+	p_from integer, p_later boolean)
+returns integer[] language plpgsql volatile security definer set search_path = '' as $$
+declare v_size integer; v_ok boolean[]; v_in boolean[]; v_who integer[]; v_first integer[]; v_last integer[];
+	v_targets integer[]; v_seen integer[]; v_reached integer[]; v_stack integer[]; v_parent integer[];
+	v_time integer := 0; v_top integer; v_by integer; v_how text; v_from integer; v_roots integer[]; v_root integer;
+	v_at integer; v_above integer; v_taken integer[] := '{}';
 begin
-	select * into v_row from public.qorpera_code_changes
-	where environment_id = p_environment_id and owner = p_owner and name = p_name and n = p_n;
-	if not found or v_row.state not in ('landed','reverted') then return; end if;
-	update public.qorpera_code_changes set state = case when p_in_main then 'landed' else 'reverted' end,
-		reverted_by = case when p_in_main then null else p_by end, file_version = file_version + 1
-	where environment_id = p_environment_id and owner = p_owner and name = p_name and n = p_n;
-	if v_row.kind = 'undo' then
-		foreach v_target in array v_row.undoes loop
-			perform public.qorpera_code_change_set(p_environment_id, p_owner, p_name, v_target, not p_in_main, p_n);
+	select coalesce(max(change.n), 0) into v_size from public.qorpera_code_changes change
+	where change.environment_id = p_environment_id and change.owner = p_owner and change.name = p_name;
+	if v_size = 0 or coalesce(cardinality(p_by), 0) = 0 then return v_taken; end if;
+	-- Each row at its number: whether it can be set, whether it is in main, the row that took it out, and where its
+	-- targets stand in the one list of every undo row's targets (none for a row that is no undo, or is not there).
+	select array_agg(counted.ok order by counted.n), array_agg(counted.is_in order by counted.n),
+		array_agg(counted.who order by counted.n), array_agg((counted.ends - counted.targets + 1)::integer order by counted.n),
+		array_agg(counted.ends::integer order by counted.n)
+	into v_ok, v_in, v_who, v_first, v_last
+	from (select listed.*, sum(listed.targets) over (order by listed.n) as ends
+		from (select slot.n, coalesce(change.state in ('landed','reverted'), false) as ok,
+				coalesce(change.state = 'landed', false) as is_in, change.reverted_by as who,
+				case when change.kind = 'undo' then coalesce(cardinality(change.undoes), 0) else 0 end as targets
+			from generate_series(1, v_size) slot(n)
+			left join public.qorpera_code_changes change on change.environment_id = p_environment_id
+				and change.owner = p_owner and change.name = p_name and change.n = slot.n) listed) counted;
+	select coalesce(array_agg(target.n order by change.n, target.at), '{}') into v_targets
+	from public.qorpera_code_changes change cross join lateral unnest(change.undoes) with ordinality target(n, at)
+	where change.environment_id = p_environment_id and change.owner = p_owner and change.name = p_name
+		and change.kind = 'undo';
+	-- When a row was last come to (a time is one taking out, or one range), and the rows still to go through: a row is
+	-- gone through once a time, so no more wait than there are targets, and the one it starts from.
+	v_seen := array_fill(0, array[v_size]); v_reached := v_seen;
+	v_stack := array_fill(0, array[cardinality(v_targets) + 1]); v_parent := v_stack;
+	foreach v_by in array p_by loop
+		v_time := v_time + 1; v_from := p_from;
+		v_how := case when p_from is null then 'each' when coalesce(p_later, false) then 'range' else 'one' end;
+		if v_how = 'one' then
+			v_roots := array[p_from];
+		elsif v_how = 'each' then
+			v_roots := array(select named.n from unnest(v_targets[v_first[v_by]:v_last[v_by]]) named(n) order by named.n desc);
+			-- Newest first, so the oldest is last. A range: more than one, all under the undo row, and no row that can
+			-- be set between them that is not one of them.
+			v_from := v_roots[cardinality(v_roots)];
+			if cardinality(v_roots) > 1 and v_roots[1] < v_by and v_from >= 1 then
+				v_how := 'range'; v_at := 1;
+				for v_row in reverse least(v_by, v_size + 1) - 1 .. v_from loop
+					while v_roots[v_at] > v_row loop v_at := v_at + 1; end loop;
+					if v_ok[v_row] and v_roots[v_at] is distinct from v_row then v_how := 'each'; exit; end if;
+				end loop;
+			end if;
+		end if;
+		if v_how = 'range' then
+			-- The rows the range takes out: in main as the range found it, or come to from a newer one of them.
+			v_roots := '{}';
+			for v_row in reverse least(v_by, v_size + 1) - 1 .. greatest(v_from, 1) loop
+				continue when not v_ok[v_row] or (not v_in[v_row] and v_reached[v_row] <> v_time);
+				v_roots := v_row || v_roots;
+				-- (What can be come to from a row that was come to has been come to.)
+				continue when v_reached[v_row] = v_time;
+				v_top := 1; v_stack[1] := v_row;
+				while v_top > 0 loop
+					v_at := v_stack[v_top]; v_top := v_top - 1;
+					continue when v_at is null or v_at < 1 or v_at > v_size or not v_ok[v_at] or v_reached[v_at] = v_time;
+					v_reached[v_at] := v_time;
+					for v_slot in v_first[v_at] .. v_last[v_at] loop
+						v_top := v_top + 1; v_stack[v_top] := v_targets[v_slot];
+					end loop;
+				end loop;
+			end loop;
+			if p_from is not null then v_taken := v_roots; end if;
+		end if;
+		-- A range's rows, oldest first, stop at what an older one of them came to. Any other row starts anew: the one
+		-- row as it stands, each of the rows an undo row names if it is in main when its turn comes.
+		foreach v_root in array v_roots loop
+			if v_how = 'each' then
+				continue when v_root is null or v_root < 1 or v_root > v_size or not v_ok[v_root] or not v_in[v_root];
+			end if;
+			if v_how <> 'range' then v_time := v_time + 1; end if;
+			v_top := 1; v_stack[1] := v_root; v_parent[1] := 0;
+			while v_top > 0 loop
+				v_at := v_stack[v_top]; v_above := v_parent[v_top]; v_top := v_top - 1;
+				continue when v_at is null or v_at < 1 or v_at > v_size or not v_ok[v_at] or v_seen[v_at] = v_time;
+				v_seen[v_at] := v_time;
+				-- Out of main by the undo row, for the row it takes; the other way than the undo row it was come from, else.
+				v_in[v_at] := v_above > 0 and not v_in[v_above];
+				v_who[v_at] := case when v_in[v_at] then null when v_above > 0 then v_above else v_by end;
+				-- Its targets wait in the order it names them: the last is gone through first, with all under it.
+				for v_slot in v_first[v_at] .. v_last[v_at] loop
+					v_top := v_top + 1; v_stack[v_top] := v_targets[v_slot]; v_parent[v_top] := v_at;
+				end loop;
+			end loop;
 		end loop;
-	end if;
+	end loop;
+	update public.qorpera_code_changes change set state = case when worked.is_in then 'landed' else 'reverted' end,
+		reverted_by = worked.who, file_version = change.file_version + 1
+	from unnest(v_in, v_who) with ordinality worked(is_in, who, n)
+	where change.environment_id = p_environment_id and change.owner = p_owner and change.name = p_name
+		and change.n = worked.n and change.state in ('landed','reverted')
+		and (change.state <> case when worked.is_in then 'landed' else 'reverted' end
+			or change.reverted_by is distinct from worked.who);
+	return v_taken;
 end $$;
 
 -- Sets the rows' states to what main's history holds once a restore has put main at p_main, and answers what it found:
@@ -361,7 +480,7 @@ end $$;
 create function public.qorpera_code_changes_restored(p_environment_id uuid, p_owner text, p_name text, p_main text)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare v_history integer[] := '{}'; v_commits text[] := array[p_main]; v_at text := p_main; v_below integer;
-	v_step record; v_undo record; v_target integer; v_known boolean; v_floor integer := 0; v_lost integer; v_back integer;
+	v_step record; v_known boolean; v_floor integer := 0; v_lost integer; v_back integer;
 begin
 	-- Down the rows that moved main, newest first: the next one that put main where the walk stands is the history's
 	-- next row, and the walk then stands where that row began.
@@ -415,19 +534,11 @@ begin
 		and case when change.n <= v_floor then change.state = 'reverted' and change.reverted_by > v_floor
 			else change.state in ('reverted','lost') and case when change.kind = 'restore'
 				then change.main_after = any(v_commits) else change.n in (select unnest(v_history)) end end;
-	for v_undo in select change.n, change.undoes from public.qorpera_code_changes change
-		where change.environment_id = p_environment_id and change.owner = p_owner and change.name = p_name
-			and change.kind = 'undo' and change.n in (select unnest(v_history))
-		order by change.n
-	loop
-		for v_target in select target from unnest(v_undo.undoes) target order by target desc loop
-			if (select change.state from public.qorpera_code_changes change
-				where change.environment_id = p_environment_id and change.owner = p_owner and change.name = p_name
-					and change.n = v_target) = 'landed' then
-				perform public.qorpera_code_change_set(p_environment_id, p_owner, p_name, v_target, false, v_undo.n);
-			end if;
-		end loop;
-	end loop;
+	perform public.qorpera_code_changes_take_out(p_environment_id, p_owner, p_name,
+		array(select change.n from public.qorpera_code_changes change
+			where change.environment_id = p_environment_id and change.owner = p_owner and change.name = p_name
+				and change.kind = 'undo' and change.n in (select unnest(v_history))
+			order by change.n), null, false);
 	return jsonb_build_object('boundary', case when v_known then 'found' else 'unknown' end,
 		'keptThrough', case when cardinality(v_history) > 0 then v_history[1] when v_known then 0 end,
 		'lost', v_lost, 'back', v_back);
@@ -636,6 +747,11 @@ begin
 			staff_agent_id = v_worker.staff_agent_id, owner_user_id = v_worker.owner_user_id, title = v_worker.title,
 			summary = v_submission ->> 'summary', notice = v_submission ->> 'notice', head_sha = p_change ->> 'headSha',
 			how = coalesce(p_change ->> 'how', change.how), picture = v_picture, picture_problem = v_problem,
+			-- The filler's span may hold more than this turn's movement. A landing knows its own two ends: they are kept
+			-- when the filler began elsewhere. A turn that found its commit in main already does not know where its own
+			-- movement began: only its end is kept, which says the span is not known to be the turn's alone.
+			own_before = case when v_state = 'landed' and change.main_before is distinct from v_before then v_before end,
+			own_after = case when v_state <> 'landed' or change.main_before is distinct from v_before then v_after end,
 			file_version = change.file_version + 1
 		where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
 			and change.name = v_repository.name and change.n = v_take;
@@ -819,7 +935,7 @@ end $$;
 create function public.qorpera_code_requests_claim(p_owner text, p_machine_id_sha256 text, p_limit integer)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
 declare v_now timestamptz := clock_timestamp(); v_request public.qorpera_code_requests%rowtype; v_claimed jsonb := '[]'::jsonb;
-	v_change public.qorpera_code_changes%rowtype; v_waiting text; v_item jsonb; v_spent boolean;
+	v_change public.qorpera_code_changes%rowtype; v_waiting text; v_item jsonb; v_begun jsonb; v_spent boolean;
 begin
 	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
 	if p_limit is null or p_limit not between 1 and 20 then
@@ -850,11 +966,17 @@ begin
 			where change.environment_id = v_request.environment_id and change.owner = v_request.owner
 				and change.name = v_request.name and change.n = (v_request.input ->> 'change')::integer;
 		end if;
-		-- Too many starts with no finish; or an undo whose target is not there with both ends of main (its request
-		-- checked that it was).
+		-- An undo that was handed out before keeps what its job was given then (the two ends of main and the commit's
+		-- words): its job may have moved main already, and finds its own commit again by them, whatever the target's
+		-- row has become since (a turn may have taken a target that was a filler for its own).
+		v_begun := case when v_request.kind = 'undo' then v_request.progress -> 'begun' end;
+		-- Too many starts with no finish; or an undo that was not begun whose target is not there with both ends of
+		-- main (its request checked that it was), or no longer knows where its own movement began.
 		v_spent := v_request.attempts >= case when v_request.kind = 'download' then 5 else 3 end;
-		if v_spent or (v_request.kind = 'undo' and (v_change.n is null or v_change.main_before is null
-			or v_change.main_after is null)) then
+		if v_spent or (v_request.kind = 'undo' and (v_change.n is null or (v_begun is null
+			and (v_change.main_before is null or v_change.main_after is null
+				or (v_change.own_after is not null and v_change.own_before is null
+					and not (v_request.input ->> 'andLater')::boolean))))) then
 			update public.qorpera_code_requests set state = 'failed', lease_token = null, lease_owner = null,
 				lease_until = null, finished_at = v_now, updated_at = v_now,
 				outcome = jsonb_build_object('schema', 'qorpera.code-request-outcome/v1', 'state', 'failed',
@@ -862,18 +984,26 @@ begin
 			where id = v_request.id;
 			continue;
 		end if;
+		-- The two ends an undo's job works from are the row's own movement where the row covers more than that (a row
+		-- that took a wider filler over): an undo of the row alone takes out what the row did, not what its span holds
+		-- beside it. With andLater and no own beginning, the span's beginning is where main goes back to.
+		if v_request.kind = 'undo' and v_begun is null then
+			v_begun := jsonb_build_object('mainBefore', coalesce(v_change.own_before, v_change.main_before),
+				'mainAfter', case when v_change.own_before is not null then v_change.own_after else v_change.main_after end,
+				'message', public.qorpera_code_undo_message(v_change.n, v_change.title, (v_request.input ->> 'andLater')::boolean));
+		end if;
 		update public.qorpera_code_requests set state = 'running', lease_token = extensions.gen_random_uuid(),
 			lease_owner = p_owner, lease_until = v_now + public.qorpera_code_request_lease(kind), attempts = attempts + 1,
-			progress = nullif(progress - 'waiting', '{}'::jsonb), updated_at = v_now
+			progress = case when kind = 'undo' then jsonb_build_object('begun', v_begun)
+				else nullif(progress - 'waiting', '{}'::jsonb) end, updated_at = v_now
 		where id = v_request.id returning * into v_request;
 		v_item := jsonb_build_object('requestId', v_request.id, 'token', v_request.lease_token,
 			'leaseUntil', v_request.lease_until, 'companyId', v_request.profile_id, 'environmentId', v_request.environment_id,
 			'owner', v_request.owner, 'name', v_request.name, 'kind', v_request.kind);
 		if v_request.kind = 'undo' then
 			v_item := v_item || jsonb_build_object('change', jsonb_build_object('n', v_change.n,
-					'mainBefore', v_change.main_before, 'mainAfter', v_change.main_after),
-				'andLater', (v_request.input ->> 'andLater')::boolean,
-				'message', public.qorpera_code_undo_message(v_change.n, v_change.title, (v_request.input ->> 'andLater')::boolean));
+					'mainBefore', v_begun -> 'mainBefore', 'mainAfter', v_begun -> 'mainAfter'),
+				'andLater', (v_request.input ->> 'andLater')::boolean, 'message', v_begun -> 'message');
 		elsif v_request.kind = 'download' then
 			v_item := v_item || jsonb_build_object('work', 'make', 'file', v_request.input ->> 'file',
 				'fileName', v_request.input ->> 'fileName', 'path', format('code/%s/%s/downloads/%s', v_request.owner,
@@ -992,10 +1122,13 @@ begin
 		return jsonb_build_object('schema', 'qorpera.code-request-step/v1', 'state', 'lost'); end if;
 	-- The progress as this step will leave it: what the call brings (the row's own when it brings none), with the
 	-- kernel's words as the row has them, whatever the caller sent under their names.
-	v_progress := case when p_progress is null then v_request.progress else (p_progress - 'recorded' - 'held')
+	v_progress := case when p_progress is null then v_request.progress else (p_progress - 'recorded' - 'held' - 'begun')
 		|| case when v_request.progress ? 'recorded' then jsonb_build_object('recorded', v_request.progress -> 'recorded')
 			else '{}'::jsonb end
 		|| case when v_request.progress ? 'held' then jsonb_build_object('held', v_request.progress -> 'held')
+			else '{}'::jsonb end
+		-- (What a begun undo's job was given, which the claim wrote.)
+		|| case when v_request.progress ? 'begun' then jsonb_build_object('begun', v_request.progress -> 'begun')
 			else '{}'::jsonb end end;
 	v_place := v_request.kind = 'restore' and v_request.input ->> 'mode' = 'restore';
 	v_step := v_progress ->> 'step';
@@ -1240,7 +1373,7 @@ declare
 	v_now timestamptz := clock_timestamp(); v_request public.qorpera_code_requests%rowtype;
 	v_repository public.qorpera_code_repositories%rowtype; v_change public.qorpera_code_changes%rowtype;
 	v_state text := p_outcome ->> 'state'; v_result text := p_outcome ->> 'result'; v_removal boolean; v_n integer;
-	v_target integer; v_later boolean; v_each integer; v_undoes integer[] := '{}'; v_paths jsonb; v_recorded jsonb;
+	v_target integer; v_later boolean; v_undoes integer[] := '{}'; v_paths jsonb; v_recorded jsonb;
 	v_words jsonb; v_exact boolean; v_stored jsonb := p_outcome; v_displaced boolean := false; v_unrecorded boolean := false;
 	v_lost jsonb := jsonb_build_object('schema', 'qorpera.code-request-finish/v1', 'state', 'lost');
 begin
@@ -1335,6 +1468,12 @@ begin
 				title = v_words ->> 'title', summary = v_words ->> 'summary', notice = v_words ->> 'notice',
 				staff_agent_id = v_request.by_agent_id, owner_user_id = v_request.by_user_id,
 				worker_id = null, sequence = null, head_sha = null, how = null, picture = null, picture_problem = null,
+				-- A row that covers more than the undo (more was lost with it) keeps its span and gets the undo's own two
+				-- ends beside it: an undo of this undo alone then puts back what it took out, and nothing else of the span.
+				own_before = case when change.main_before = p_outcome ->> 'mainBefore'
+					and change.main_after = p_outcome ->> 'mainAfter' then null else p_outcome ->> 'mainBefore' end,
+				own_after = case when change.main_before = p_outcome ->> 'mainBefore'
+					and change.main_after = p_outcome ->> 'mainAfter' then null else p_outcome ->> 'mainAfter' end,
 				files_changed = case when v_exact then (p_outcome ->> 'filesChanged')::integer else change.files_changed end,
 				paths = case when v_exact then v_paths else change.paths end,
 				paths_more = case when v_exact then (v_words ->> 'paths_more')::integer else change.paths_more end,
@@ -1351,22 +1490,11 @@ begin
 		if v_unrecorded then
 			null;
 		elsif v_later then
-			for v_each in select change.n from public.qorpera_code_changes change
-				where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
-					and change.name = v_repository.name and change.n >= v_target and change.n < v_n
-				order by change.n desc
-			loop
-				if (select change.state from public.qorpera_code_changes change
-					where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
-						and change.name = v_repository.name and change.n = v_each) = 'landed' then
-					perform public.qorpera_code_change_set(v_repository.environment_id, v_repository.owner, v_repository.name,
-						v_each, false, v_n);
-					v_undoes := v_each || v_undoes;
-				end if;
-			end loop;
+			v_undoes := public.qorpera_code_changes_take_out(v_repository.environment_id, v_repository.owner,
+				v_repository.name, array[v_n], v_target, true);
 		else
-			perform public.qorpera_code_change_set(v_repository.environment_id, v_repository.owner, v_repository.name,
-				v_target, false, v_n);
+			perform public.qorpera_code_changes_take_out(v_repository.environment_id, v_repository.owner,
+				v_repository.name, array[v_n], v_target, false);
 			v_undoes := array[v_target];
 		end if;
 		if not v_unrecorded then
@@ -1486,7 +1614,10 @@ begin
 		-- A restore is a wall: undo does not reach across it. Neither does it reach before the record's first main.
 		when v_change.main_before is null or (v_later and exists (select 1 from public.qorpera_code_changes change
 			where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
-				and change.name = v_repository.name and change.n > v_n and change.kind = 'restore')) then 'wall'
+				and change.name = v_repository.name and change.n > v_n and change.kind = 'restore'))
+			-- Nor does an undo of one row alone reach a row whose own movement the record does not hold (it took a
+			-- filler over and does not know where its own part of the span began).
+			or (not v_later and v_change.own_after is not null and v_change.own_before is null) then 'wall'
 		when v_later and (select count(*) from (select 1 from public.qorpera_code_changes change
 			where change.environment_id = v_repository.environment_id and change.owner = v_repository.owner
 				and change.name = v_repository.name and change.n >= v_n and change.state = 'landed' limit 501) later) > 500
@@ -1931,7 +2062,7 @@ revoke all on function public.qorpera_code_executor_custody(text, text),
 	public.qorpera_code_change_fit(jsonb, integer, integer),
 	public.qorpera_code_change_append(uuid, text, text, jsonb),
 	public.qorpera_code_change_found(uuid, text, text, text, text),
-	public.qorpera_code_change_set(uuid, text, text, integer, boolean, integer),
+	public.qorpera_code_changes_take_out(uuid, text, text, integer[], integer, boolean),
 	public.qorpera_code_changes_restored(uuid, text, text, text),
 	public.qorpera_code_undo_message(integer, text, boolean),
 	public.qorpera_code_request_lease(text),

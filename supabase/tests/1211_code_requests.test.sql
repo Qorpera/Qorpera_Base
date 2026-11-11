@@ -18,8 +18,10 @@
 --      failure; record files acknowledged after a restore; restores back, forward and back again with undos among the
 --      rows; a history of more than 200 changes.
 --   6. More than 500 changes are not taken out at once.
---   7. An agent describes a change: the notice, and each thing wrong with a picture.
---   8. A worker's run asks for nothing.
+--   7. A range taken out and put back, over and over: each row written once a finish; and the states against the
+--      rule followed one row and one way at a time, in records made by chance.
+--   8. An agent describes a change: the notice, and each thing wrong with a picture.
+--   9. A worker's run asks for nothing.
 
 -- exec-1170 runs on machine 5…5 and holds this company's code alone.
 update public.qorpera_coding_executors set nas_machine_id_sha256 = repeat('5', 64) where owner = 'exec-1170';
@@ -363,7 +365,9 @@ begin
 	perform pg_temp.base_assert(v - 'leaseUntil' = '{"schema":"qorpera.code-request-step/v1","state":"go"}'
 		and (v ->> 'leaseUntil')::timestamptz = (pg_temp.req_row(v_id)).lease_until
 		and (pg_temp.req_row(v_id)).lease_until > clock_timestamp() + interval '299 seconds'
-		and (pg_temp.req_row(v_id)).progress is null and (pg_temp.req_row(v_id)).attempts = 1, 'a step: ' || v::text);
+		-- (An undo's progress is what its claim wrote: the two ends and the words its job was given.)
+		and (pg_temp.req_row(v_id)).progress ? 'begun' and (pg_temp.req_row(v_id)).progress - 'begun' = '{}'
+		and (pg_temp.req_row(v_id)).attempts = 1, 'a step: ' || v::text);
 
 	-- The finish: an outcome of one of the request's kind's shapes, from the caller that holds the lease.
 	foreach v_bad in array array['null'::jsonb, '[]', '{"state":"done","result":"undone"}',
@@ -471,6 +475,7 @@ begin
 	perform pg_temp.base_assert(v = pg_temp.req_recorded(13) and pg_temp.rec_is(13, 'undo', 'landed', 'u5', 'u6')
 		and r.undoes = array[5] and r.title = 'Undo change 5: Session 5' and r.request_id = v_id and r.files_changed = 1
 		and r.paths = '[{"path":"src/a.ts","change":"changed"}]' and r.file_version = 2
+		and r.own_before is null and r.own_after is null
 		and pg_temp.req_rows() = '1:L 2:R9 3:C 4:L 5:R13 6:L 7:R10 8:L 9:L 10:L 11:R12 12:L 13:L 14:L'
 		and s.last_change = 14 and s.last_main = pg_temp.rec_sha('c20'), 'a late finish: ' || pg_temp.req_rows());
 	-- More was lost with it: the undo of change 4 moved main from c20 to u7, a landing after it was never recorded,
@@ -484,6 +489,8 @@ begin
 	r := pg_temp.rec_row(15); s := pg_temp.rec_shop();
 	perform pg_temp.base_assert(v = pg_temp.req_recorded(15) and pg_temp.rec_is(15, 'undo', 'landed', 'c20', 'c21')
 		and r.undoes = array[4] and r.files_changed is null and r.paths is null
+		-- The row keeps the filler's span, and the undo's own two ends beside it.
+		and r.own_before = pg_temp.rec_sha('c20') and r.own_after = pg_temp.rec_sha('u7')
 		and pg_temp.req_rows() = '1:L 2:R9 3:C 4:R15 5:R13 6:L 7:R10 8:L 9:L 10:L 11:R12 12:L 13:L 14:L 15:L 16:L'
 		and s.last_change = 16 and s.last_main = pg_temp.rec_sha('c22'), 'a late finish, and more lost: ' || pg_temp.req_rows());
 
@@ -510,7 +517,9 @@ begin
 	perform pg_temp.base_assert(pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, pg_temp.req_outcome('{"state":"busy"}'))
 		= pg_temp.req_recorded(null), 'put off');
 	q := pg_temp.req_row(v_id);
-	perform pg_temp.base_assert(q.state = 'queued' and q.lease_token is null and q.attempts = 1 and q.progress is null
+	-- (What its job was given stays with the request: the next claim hands out the same.)
+	perform pg_temp.base_assert(q.state = 'queued' and q.lease_token is null and q.attempts = 1
+		and q.progress ? 'begun' and q.progress - 'begun' = '{}'
 		and q.not_before between clock_timestamp() + interval '119 seconds' and clock_timestamp() + interval '2 minutes'
 		and q.finished_at is null and pg_temp.req_claim() = '[]'::jsonb and pg_temp.req_read(v_id) ->> 'state' = 'queued',
 		'back in the queue: ' || to_jsonb(q)::text);
@@ -2016,7 +2025,7 @@ create function pg_temp.req_eight(p_n integer) returns public.qorpera_code_chang
 	where c.environment_id = pg_temp.rec_here() and c.owner = 'company' and c.name = 'eight' and c.n = p_n
 $$;
 do $$
-declare v jsonb; v_item jsonb; v_id uuid; r public.qorpera_code_changes%rowtype; s public.qorpera_code_repositories%rowtype;
+declare v jsonb; v_item jsonb; v_next jsonb; v_id uuid; r public.qorpera_code_changes%rowtype; s public.qorpera_code_repositories%rowtype;
 begin
 	perform pg_temp.rec_land(700, 'g0', 'g1', p_name => 'eight');
 	perform pg_temp.rec_land(701, 'g1', 'g2', p_name => 'eight');
@@ -2038,6 +2047,7 @@ begin
 	perform pg_temp.base_assert(v = pg_temp.req_recorded(6) and pg_temp.rec_is(6, 'undo', 'landed', 'g5', 'h1', 'eight')
 		and r.undoes = array[1] and r.request_id = v_id and r.title = 'Undo change 1: Session 700' and r.worker_id is null
 		and r.sequence is null and r.head_sha is null and r.how is null and r.picture is null and r.files_changed = 1
+		and r.own_before is null and r.own_after is null
 		and r.paths = '[{"path":"src/a.ts","change":"changed"}]'
 		and pg_temp.req_rows('eight') = '1:R6 2:L 3:L 4:L 5:L 6:L' and s.last_change = 6 and s.last_main = pg_temp.rec_sha('h1')
 		and (pg_temp.req_row(v_id)).state = 'done' and (pg_temp.req_row(v_id)).outcome ->> 'change' = '6'
@@ -2080,11 +2090,15 @@ begin
 	perform pg_temp.base_assert(pg_temp.rec_land(714, 'g7', 'g8', p_name => 'eight') = pg_temp.rec_answer('recorded', 11)
 		and pg_temp.rec_is(10, 'found', 'landed', 'h3', 'g7', 'eight')
 		and pg_temp.rec_land(715, 'h4', 'g7', false, p_name => 'eight') = pg_temp.rec_answer('adopted', 10)
-		and pg_temp.rec_is(10, 'landing', 'landed', 'h3', 'g7', 'eight'), 'a late landing takes the filler: ' || pg_temp.req_rows('eight'));
+		and pg_temp.rec_is(10, 'landing', 'landed', 'h3', 'g7', 'eight')
+		-- The filler began before the landing did: the landing's own two ends are kept beside the span.
+		and (pg_temp.req_eight(10)).own_before = pg_temp.rec_sha('h4') and (pg_temp.req_eight(10)).own_after = pg_temp.rec_sha('g7'),
+		'a late landing takes the filler: ' || pg_temp.req_rows('eight'));
 	v := pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, pg_temp.req_moved('h3', 'h4'));
 	r := pg_temp.req_eight(10); s := pg_temp.rec_shop('eight');
 	perform pg_temp.base_assert(v = pg_temp.req_recorded(10) and pg_temp.rec_is(10, 'undo', 'landed', 'h3', 'g7', 'eight')
 		and r.undoes = array[4] and r.worker_id is null and r.files_changed is distinct from 1
+		and r.own_before = pg_temp.rec_sha('h3') and r.own_after = pg_temp.rec_sha('h4')
 		and pg_temp.req_rows('eight') = '1:R6 2:R7 3:R9 4:R10 5:L 6:L 7:L 8:L 9:L 10:L 11:L' and s.last_change = 11
 		and s.last_main = pg_temp.rec_sha('g8'), 'the undo takes the row that starts where it started: ' || v::text || ' ' || pg_temp.req_rows('eight'));
 	perform pg_temp.base_assert(pg_temp.rec_record(pg_temp.rec_copy(715), pg_temp.rec_report('landed', pg_temp.rec_sha('g7'),
@@ -2106,6 +2120,67 @@ begin
 		and s.last_main = pg_temp.rec_sha('h5') and (pg_temp.req_row(v_id)).state = 'done'
 		and (pg_temp.req_row(v_id)).outcome -> 'unrecorded' = 'true' and not (pg_temp.req_row(v_id)).outcome ? 'change'
 		and pg_temp.req_read(v_id) -> 'change' = 'null', 'nothing is written behind the record: ' || v::text || ' ' || pg_temp.req_rows('eight'));
+
+	-- Undoing the recovered undo (the review of release v232's third cut, F1). Row 10 is the undo of change 4, and its
+	-- span, h3 to g7, also holds a landing from h4 to g7 that has nothing to do with it. An undo of row 10 alone works
+	-- from the undo's own two ends, h3 to h4: the job puts back what the undo took out, and the landing stays.
+	v_item := pg_temp.req_begun('late-6', 10);
+	v_id := (v_item ->> 'requestId')::uuid;
+	perform pg_temp.base_assert(v_item -> 'change' = jsonb_build_object('n', 10, 'mainBefore', pg_temp.rec_sha('h3'),
+		'mainAfter', pg_temp.rec_sha('h4')) and v_item -> 'andLater' = 'false', 'the undo''s own two ends: ' || v_item::text);
+	v := pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, pg_temp.req_moved('h5', 'k1'));
+	perform pg_temp.base_assert(v = pg_temp.req_recorded(13) and pg_temp.rec_is(13, 'undo', 'landed', 'h5', 'k1', 'eight')
+		and (pg_temp.req_eight(13)).undoes = array[10] and (pg_temp.req_eight(13)).own_after is null
+		and pg_temp.req_rows('eight') = '1:R6 2:R7 3:R9 4:L 5:L 6:L 7:L 8:L 9:L 10:R13 11:L 12:- 13:L',
+		'the recovered undo is undone: ' || v::text || ' ' || pg_temp.req_rows('eight'));
+	-- A row that does not know where its own movement began (a session found its commit in main already and took the
+	-- filler that ends there) is not undone alone; with everything after it, it is, back to where the filler began.
+	perform pg_temp.base_assert(pg_temp.req_same(717, 'm9') = pg_temp.rec_answer('adopted', 14)
+		and pg_temp.rec_is(14, 'landing', 'landed', 'k1', 'm9', 'eight') and (pg_temp.req_eight(14)).own_before is null
+		and (pg_temp.req_eight(14)).own_after = pg_temp.rec_sha('m9'), 'a session''s row whose beginning is not known');
+	perform pg_temp.base_assert(pg_temp.req_undo('late-7', 14, false, '{}', 'eight') = pg_temp.req_refused('wall')
+		and not exists (select 1 from public.qorpera_code_requests request where request.environment_id = pg_temp.rec_here()
+			and request.name = 'eight' and request.state in ('queued','running')), 'it is not undone alone');
+	v_id := (pg_temp.req_undo('late-8', 14, true, '{}', 'eight') ->> 'requestId')::uuid;
+	select item into v_item from jsonb_array_elements(pg_temp.req_claim()) item where item ->> 'requestId' = v_id::text;
+	perform pg_temp.base_assert(v_item -> 'change' = jsonb_build_object('n', 14, 'mainBefore', pg_temp.rec_sha('k1'),
+		'mainAfter', pg_temp.rec_sha('m9')) and v_item -> 'andLater' = 'true', 'with everything after it: ' || coalesce(v_item::text, 'none'));
+	v := pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, pg_temp.req_moved('m9', 'k2'));
+	perform pg_temp.base_assert(v = pg_temp.req_recorded(15) and (pg_temp.req_eight(15)).undoes = array[14]
+		and pg_temp.req_rows('eight') = '1:R6 2:R7 3:R9 4:L 5:L 6:L 7:L 8:L 9:L 10:R13 11:L 12:- 13:L 14:R15 15:L',
+		'and it is taken out with what came after: ' || v::text || ' ' || pg_temp.req_rows('eight'));
+
+	-- An undo that was begun is taken up again with what its job was given, whatever its target's row has become
+	-- (review round 8, F1). A landing leaves a filler, row 16, and an undo of that filler is claimed: its job moves
+	-- main and no finish is heard. A session then hands in the commit the filler ends at, unchanged, and takes the
+	-- filler for its own, so the row no longer knows where its own movement began. A new undo of it alone would be
+	-- refused; this one moved main already, so the next claim hands it out with the same two ends, its job finds its
+	-- commit, and the finish records it.
+	perform pg_temp.base_assert(pg_temp.rec_land(718, 'q1', 'q2', p_name => 'eight') = pg_temp.rec_answer('recorded', 17)
+		and pg_temp.rec_is(16, 'found', 'landed', 'k2', 'q1', 'eight'), 'a filler to undo: ' || pg_temp.req_rows('eight'));
+	v_item := pg_temp.req_begun('late-9', 16);
+	v_id := (v_item ->> 'requestId')::uuid;
+	perform pg_temp.base_assert(v_item -> 'change' = jsonb_build_object('n', 16, 'mainBefore', pg_temp.rec_sha('k2'),
+		'mainAfter', pg_temp.rec_sha('q1')) and (pg_temp.req_row(v_id)).attempts = 1
+		and (pg_temp.req_row(v_id)).progress -> 'begun' ->> 'mainAfter' = pg_temp.rec_sha('q1'), 'the undo of the filler is begun: ' || v_item::text);
+	perform pg_temp.base_assert(pg_temp.rec_record(pg_temp.rec_turn(719, 1, pg_temp.rec_sha('q1'), '{}', pg_temp.own_repo('company', 'eight')),
+			pg_temp.rec_report('unchanged', pg_temp.rec_sha('q1'), pg_temp.rec_sha('x1'), pg_temp.rec_sha('q1'))) = pg_temp.rec_answer('adopted', 16)
+		and pg_temp.rec_is(16, 'landing', 'landed', 'k2', 'q1', 'eight') and (pg_temp.req_eight(16)).own_before is null
+		and (pg_temp.req_eight(16)).own_after = pg_temp.rec_sha('q1'), 'a session takes the target for its own');
+	perform pg_temp.req_lapse(v_id);
+	select item into v_next from jsonb_array_elements(pg_temp.req_claim()) item where item ->> 'requestId' = v_id::text;
+	perform pg_temp.base_assert(v_next -> 'change' = v_item -> 'change' and v_next -> 'message' = v_item -> 'message'
+		and v_next ->> 'token' <> v_item ->> 'token' and (pg_temp.req_row(v_id)).state = 'running'
+		and (pg_temp.req_row(v_id)).attempts = 2, 'it is taken up again with the same two ends: ' || coalesce(v_next::text, 'not handed out'));
+	v := pg_temp.req_finish(v_id, (v_next ->> 'token')::uuid, pg_temp.req_moved('q2', 'x1'));
+	perform pg_temp.base_assert(v = pg_temp.req_recorded(18) and pg_temp.rec_is(18, 'undo', 'landed', 'q2', 'x1', 'eight')
+		and (pg_temp.req_eight(18)).undoes = array[16] and (pg_temp.req_row(v_id)).state = 'done'
+		and pg_temp.req_rows('eight') = '1:R6 2:R7 3:R9 4:L 5:L 6:L 7:L 8:L 9:L 10:R13 11:L 12:- 13:L 14:R15 15:L 16:R18 17:L 18:L',
+		'and its finish records it: ' || v::text || ' ' || pg_temp.req_rows('eight'));
+	-- A new undo of that row alone, which was not begun, is refused: the record does not hold where its own movement began.
+	update public.qorpera_code_changes set state = 'landed', reverted_by = null
+	where environment_id = pg_temp.rec_here() and owner = 'company' and name = 'eight' and n = 16;
+	perform pg_temp.base_assert(pg_temp.req_undo('late-10', 16, false, '{}', 'eight') = pg_temp.req_refused('wall'), 'not begun, not alone');
 end $$;
 
 -- 6. More than 500 changes are not taken out at once ----------------------------------------------------------------------
@@ -2133,7 +2208,237 @@ begin
 		and (pg_temp.rec_row(2, 'big')).state = 'landed', '500 changes taken out: ' || v::text);
 end $$;
 
--- 7. An agent describes a change ----------------------------------------------------------------------------------------
+-- 7. A range taken out and put back, over and over ------------------------------------------------------------------------
+-- An undo row that is undone and done again is named by every range since: from the newest row there are ever more ways
+-- down to the first rows, twice as many with each range and its undo. The states were once set by following every way:
+-- the fifteenth range in a row wrote the two first rows some sixteen million times, inside the finish of an undo that
+-- had already moved main. They are worked out once now and a row is written once a finish (20260930720000,
+-- qorpera_code_changes_take_out; review round 10).
+-- company/turn: two changes, then forty times "go back to before change 1" and the undo of that.
+insert into public.qorpera_code_repositories(environment_id, profile_id, owner, name, last_change, last_main)
+values (pg_temp.rec_here(), '92400000-0000-4000-8000-000000000010', 'company', 'turn', 2, pg_temp.rec_sha('t2')),
+	(pg_temp.rec_here(), '92400000-0000-4000-8000-000000000010', 'company', 'maze', 1, pg_temp.rec_sha('m1'));
+insert into public.qorpera_code_changes(environment_id, owner, name, n, profile_id, kind, state, main_before, main_after, title)
+select pg_temp.rec_here(), 'company', 'turn', n, '92400000-0000-4000-8000-000000000010', 'found', 'landed',
+	pg_temp.rec_sha('t' || n - 1), pg_temp.rec_sha('t' || n), 'Change ' || n
+from generate_series(1, 2) n;
+-- Every row's file version, by number; and those versions one up, with a new row's first after them.
+create function pg_temp.req_versions(p_name text) returns integer[] language sql as $$
+	select array_agg(c.file_version order by c.n) from public.qorpera_code_changes c
+	where c.environment_id = pg_temp.rec_here() and c.owner = 'company' and c.name = p_name
+$$;
+create function pg_temp.req_once_more(p_versions integer[]) returns integer[] language sql immutable as $$
+	select array(select old.version + 1 from unnest(p_versions) with ordinality old(version, n) order by old.n) || 1
+$$;
+do $$
+declare v jsonb; v_out integer; v_back integer; v_before integer[]; v_want text; v_half text;
+	v_whole text := '20261104T020000Z-0123456789ab'; v_at41 text := '20261103T020000Z-0123456789ab';
+begin
+	for v_round in 1 .. 40 loop
+		v_out := 2 * v_round + 1; v_back := v_out + 1;
+		-- Out: every row under the range's own goes by it, whoever had it out before, and the range names them all.
+		v_before := pg_temp.req_versions('turn');
+		v := pg_temp.req_undone('turn-out-' || v_round, 1, true, 't' || v_out - 1, 't' || v_out, p_name => 'turn');
+		select string_agg(n || ':R' || v_out, ' ' order by n) || ' ' || v_out || ':L' into v_want from generate_series(1, v_out - 1) n;
+		perform pg_temp.base_assert(v = pg_temp.req_recorded(v_out) and pg_temp.req_rows('turn') = v_want
+			and (pg_temp.rec_row(v_out, 'turn')).undoes = array(select generate_series(1, v_out - 1)),
+			'round ' || v_round || ', out: ' || pg_temp.req_rows('turn'));
+		-- Each older row's file says something new, and was set to say it once.
+		perform pg_temp.base_assert(pg_temp.req_versions('turn') = pg_temp.req_once_more(v_before),
+			'round ' || v_round || ', out, each row once: ' || pg_temp.req_versions('turn')::text);
+		-- Back: every row is as it was before the range. The two changes are in main, and each earlier range is out by
+		-- its own undo.
+		v_before := pg_temp.req_versions('turn');
+		v := pg_temp.req_undone('turn-back-' || v_round, v_out, false, 't' || v_out, 't' || v_back, p_name => 'turn');
+		select '1:L 2:L ' || string_agg(2 * k + 1 || ':R' || 2 * k + 2 || ' ' || 2 * k + 2 || ':L', ' ' order by k) into v_want
+		from generate_series(1, v_round) k;
+		perform pg_temp.base_assert(v = pg_temp.req_recorded(v_back) and pg_temp.req_rows('turn') = v_want
+			and (pg_temp.rec_row(v_back, 'turn')).undoes = array[v_out], 'round ' || v_round || ', back: ' || pg_temp.req_rows('turn'));
+		perform pg_temp.base_assert(pg_temp.req_versions('turn') = pg_temp.req_once_more(v_before),
+			'round ' || v_round || ', back, each row once: ' || pg_temp.req_versions('turn')::text);
+	end loop;
+	perform pg_temp.base_assert((pg_temp.rec_shop('turn')).last_change = 82
+		and (pg_temp.rec_shop('turn')).last_main = pg_temp.rec_sha('t82'), 'forty rounds');
+
+	-- A restore does its history's undos again, each range as the range it was. To main as it stands, that is all
+	-- eighty of them, and the rows end as they were. No row is set twice on the way: a file's version goes up once for
+	-- the files that went aside, once more for a row an undo had out (it starts in main), and once more for a row an
+	-- undo takes out again.
+	v_before := pg_temp.req_versions('turn');
+	v := pg_temp.req_restore_to(v_whole, 't82', 'turn', 't82');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(83, 82, 0, 0) and pg_temp.req_rows('turn') = v_want || ' 83:L'
+		and pg_temp.req_restore_end(v_whole, 't82') = pg_temp.req_recorded(83), 'turn as it stands: ' || v::text || ' ' || pg_temp.req_rows('turn'));
+	perform pg_temp.base_assert((select bool_and(now.version - old.version = case when c.state = 'reverted' then 3 else 1 end)
+		from unnest(v_before) with ordinality old(version, n)
+		join unnest(pg_temp.req_versions('turn')) with ordinality now(version, n) on now.n = old.n
+		join public.qorpera_code_changes c on c.environment_id = pg_temp.rec_here() and c.owner = 'company' and c.name = 'turn'
+			and c.n = old.n),
+		'turn as it stands, each row once: ' || pg_temp.req_versions('turn')::text);
+	-- Back to where the twentieth range left main: that range is the newest row of the history, and has every row
+	-- under it out. Then forward again: the rows that were lost are back, and every row is as the forty rounds left it.
+	v := pg_temp.req_restore_to(v_at41, 't41', 'turn', 't82');
+	select (select string_agg(n || ':R41', ' ' order by n) from generate_series(1, 40) n) || ' 41:L '
+		|| (select string_agg(n || ':-', ' ' order by n) from generate_series(42, 83) n) || ' 84:L' into v_half;
+	perform pg_temp.base_assert(v = pg_temp.req_restored(84, 41, 42, 0) and pg_temp.req_rows('turn') = v_half
+		and pg_temp.req_restore_end(v_at41, 't41') = pg_temp.req_recorded(84), 'turn at the twentieth range: ' || v::text || ' ' || pg_temp.req_rows('turn'));
+	v := pg_temp.req_restore_to(v_whole, 't82', 'turn', 't41');
+	perform pg_temp.base_assert(v = pg_temp.req_restored(85, 82, 0, 42) and pg_temp.req_rows('turn') = v_want || ' 83:L 84:L 85:L'
+		and pg_temp.req_restore_end(v_whole, 't82') = pg_temp.req_recorded(85), 'turn, forward again: ' || v::text || ' ' || pg_temp.req_rows('turn'));
+end $$;
+
+-- The same states as the rule gives when it is followed one row and one way at a time, which is how the migration
+-- first set them. company/maze holds 300 small records made by chance, one after the other: changes, rows a restore
+-- went back past and rows a later one has back, undos of one row (in main or not), ranges, an undo that takes a row
+-- in the middle over, and a restore's doing every undo again (as the range it was, or row by row when it is none). After each step, the rows and what a range took out are the same both ways.
+create function pg_temp.maze_state(p_n integer) returns text language sql as $$
+	select (pg_temp.rec_row(p_n, 'maze')).state
+$$;
+-- The rule, one row and one way at a time.
+create function pg_temp.maze_set(p_n integer, p_in boolean, p_by integer) returns void language plpgsql as $$
+declare v_row public.qorpera_code_changes := pg_temp.rec_row(p_n, 'maze'); v_target integer;
+begin
+	if v_row.n is null or v_row.state not in ('landed','reverted') then return; end if;
+	update public.qorpera_code_changes c set state = case when p_in then 'landed' else 'reverted' end,
+		reverted_by = case when p_in then null else p_by end
+	where c.environment_id = pg_temp.rec_here() and c.owner = 'company' and c.name = 'maze' and c.n = p_n;
+	if v_row.kind = 'undo' then
+		foreach v_target in array v_row.undoes loop
+			perform pg_temp.maze_set(v_target, not p_in, p_n);
+		end loop;
+	end if;
+end $$;
+create function pg_temp.maze_plain(p_by integer[], p_from integer, p_later boolean) returns integer[] language plpgsql as $$
+declare v_by integer; v_each integer; v_taken integer[] := '{}';
+begin
+	foreach v_by in array p_by loop
+		if p_from is null then
+			for v_each in select target from unnest((pg_temp.rec_row(v_by, 'maze')).undoes) target order by target desc loop
+				if pg_temp.maze_state(v_each) = 'landed' then perform pg_temp.maze_set(v_each, false, v_by); end if;
+			end loop;
+		elsif p_later then
+			for v_each in select c.n from public.qorpera_code_changes c
+				where c.environment_id = pg_temp.rec_here() and c.owner = 'company' and c.name = 'maze'
+					and c.n >= p_from and c.n < v_by
+				order by c.n desc
+			loop
+				if pg_temp.maze_state(v_each) = 'landed' then
+					perform pg_temp.maze_set(v_each, false, v_by);
+					v_taken := v_each || v_taken;
+				end if;
+			end loop;
+		else
+			perform pg_temp.maze_set(p_from, false, v_by);
+		end if;
+	end loop;
+	return v_taken;
+end $$;
+-- One step, the plain way or the kept one: the rows after it, and what it took out. one, later: a new undo row.
+-- over, over later: a row that is there becomes the undo's. again: every row an undo took out is in main, and the
+-- undos that are in main are done again.
+create function pg_temp.maze_step(p_plain boolean, p_kind text, p_by integer, p_from integer) returns text language plpgsql as $$
+declare v_here uuid := pg_temp.rec_here(); v_list integer[] := array[p_by]; v_taken integer[];
+begin
+	if p_kind in ('one', 'later') then
+		insert into public.qorpera_code_changes(environment_id, owner, name, n, profile_id, kind, state, main_before, main_after,
+			title, undoes)
+		values (v_here, 'company', 'maze', p_by, '92400000-0000-4000-8000-000000000010', 'undo', 'landed',
+			pg_temp.rec_sha('m' || p_by - 1), pg_temp.rec_sha('m' || p_by), 'An undo', '{}');
+	elsif p_kind in ('over', 'over later') then
+		update public.qorpera_code_changes c set kind = 'undo', undoes = '{}'
+		where c.environment_id = v_here and c.owner = 'company' and c.name = 'maze' and c.n = p_by;
+	else
+		update public.qorpera_code_changes c set state = 'landed', reverted_by = null
+		where c.environment_id = v_here and c.owner = 'company' and c.name = 'maze' and c.state = 'reverted';
+		v_list := array(select c.n from public.qorpera_code_changes c
+			where c.environment_id = v_here and c.owner = 'company' and c.name = 'maze' and c.kind = 'undo' and c.state = 'landed'
+			order by c.n);
+	end if;
+	if p_plain then
+		v_taken := pg_temp.maze_plain(v_list, p_from, p_kind like '%later');
+	else
+		v_taken := public.qorpera_code_changes_take_out(v_here, 'company', 'maze', v_list, p_from, p_kind like '%later');
+	end if;
+	if p_kind <> 'again' then
+		update public.qorpera_code_changes c set undoes = case when p_kind like '%later' then v_taken else array[p_from] end
+		where c.environment_id = v_here and c.owner = 'company' and c.name = 'maze' and c.n = p_by;
+	end if;
+	return pg_temp.req_rows('maze') || ' / ' || v_taken::text;
+end $$;
+do $$
+declare v_here uuid := pg_temp.rec_here(); v_last integer; v_pick double precision; v_kind text; v_by integer; v_from integer;
+	v_plain text; v_kept text; v_steps jsonb := '{}'; v_ranges integer := 0; v_others integer := 0; v_set text;
+begin
+	perform setseed(0.1211);
+	for v_maze in 1 .. 300 loop
+		delete from public.qorpera_code_changes c where c.environment_id = v_here and c.owner = 'company' and c.name = 'maze';
+		v_last := 0;
+		for v_step in 1 .. 16 loop
+			v_pick := random();
+			-- Every third record starts the same way: three changes, a restore goes back past the second, a range from
+			-- the first passes it by, and a later restore has it back. Done again, that range is no range any more.
+			v_set := case when v_maze % 3 = 0 then (array['land', 'land', 'land', 'lost', 'later', 'landed'])[v_step] end;
+			if v_last < 2 or v_set = 'land' or (v_set is null and v_pick < 0.12) then
+				v_last := v_last + 1;
+				insert into public.qorpera_code_changes(environment_id, owner, name, n, profile_id, kind, state, main_before,
+					main_after, title)
+				values (v_here, 'company', 'maze', v_last, '92400000-0000-4000-8000-000000000010', 'found', 'landed',
+					pg_temp.rec_sha('m' || v_last - 1), pg_temp.rec_sha('m' || v_last), 'A change');
+				continue;
+			elsif v_set in ('lost', 'landed') or (v_set is null and v_pick < 0.30) then
+				-- A restore went back past a row, early in a record; later a restore has such a row back.
+				v_set := coalesce(v_set, case when v_step <= 7 then 'lost' else 'landed' end);
+				update public.qorpera_code_changes c set state = v_set, reverted_by = null
+				where c.environment_id = v_here and c.owner = 'company' and c.name = 'maze'
+					and c.n = case when v_maze % 3 = 0 and v_step <= 6 then 2 else (select o.n from public.qorpera_code_changes o
+						where o.environment_id = v_here and o.owner = 'company' and o.name = 'maze'
+							and case when v_set = 'lost' then o.state in ('landed','reverted') else o.state = 'lost' end
+						order by random() limit 1) end;
+				continue;
+			end if;
+			v_kind := case when v_set = 'later' then 'later' when v_pick < 0.50 then 'one' when v_pick < 0.75 then 'later'
+				when v_pick < 0.88 then 'again' when v_pick < 0.94 then 'over' else 'over later' end;
+			v_from := case when v_set = 'later' then 1 when v_kind <> 'again' then 1 + floor(random() * v_last)::integer end;
+			v_by := v_last + 1;
+			if v_kind like 'over%' then
+				-- A row above the one the undo starts from, of main's history and no undo yet.
+				select c.n into v_by from public.qorpera_code_changes c
+				where c.environment_id = v_here and c.owner = 'company' and c.name = 'maze' and c.n > v_from and c.kind = 'found'
+					and c.state in ('landed','reverted')
+				order by random() limit 1;
+				continue when v_by is null;
+			end if;
+			if v_kind = 'again' then
+				-- An undo that names several rows is done again as a range when they are every row that can be set from
+				-- the oldest of them up to it, and row by row otherwise: both happen.
+				select v_ranges + count(*) filter (where undo.whole), v_others + count(*) filter (where not undo.whole)
+				into v_ranges, v_others
+				from (select not exists (select 1 from public.qorpera_code_changes c
+						where c.environment_id = v_here and c.owner = 'company' and c.name = 'maze' and c.n < u.n
+							and c.n >= (select min(t) from unnest(u.undoes) t) and c.state in ('landed','reverted')
+							and c.n <> all(u.undoes)) as whole
+					from public.qorpera_code_changes u
+					where u.environment_id = v_here and u.owner = 'company' and u.name = 'maze' and u.kind = 'undo'
+						and u.state in ('landed','reverted') and cardinality(u.undoes) > 1) undo;
+			end if;
+			begin
+				v_plain := pg_temp.maze_step(true, v_kind, v_by, v_from);
+				raise exception using errcode = 'QT001', message = 'the plain way is taken back';
+			exception when sqlstate 'QT001' then null;
+			end;
+			v_kept := pg_temp.maze_step(false, v_kind, v_by, v_from);
+			perform pg_temp.base_assert(v_kept = v_plain, format('maze %s, step %s, %s by %s from %s: kept %s, plain %s',
+				v_maze, v_step, v_kind, v_by, v_from, v_kept, v_plain));
+			if v_kind in ('one', 'later') then v_last := v_last + 1; end if;
+			v_steps := v_steps || jsonb_build_object(v_kind, coalesce((v_steps ->> v_kind)::integer, 0) + 1);
+		end loop;
+	end loop;
+	perform pg_temp.base_assert((v_steps ->> 'one')::integer > 500 and (v_steps ->> 'later')::integer > 500
+		and (v_steps ->> 'again')::integer > 100 and (v_steps ->> 'over')::integer > 50
+		and (v_steps ->> 'over later')::integer > 50 and v_ranges > 50 and v_others > 30,
+		'the mazes: ' || v_steps::text || ', done again as a range ' || v_ranges || ', row by row ' || v_others);
+end $$;
+
+-- 8. An agent describes a change ----------------------------------------------------------------------------------------
 -- Files in the company folder: a picture, a note, a folder with a picture's name, and a picture that is too large.
 select pg_temp.base_commit('{"kind":"platform"}', 'req-pictures', jsonb_build_array(
 	jsonb_build_object('op', 'mkdir', 'path', 'pictures'),
@@ -2215,7 +2520,7 @@ begin
 		'the picture''s problem');
 end $$;
 
--- 8. A worker's run asks for nothing ------------------------------------------------------------------------------------
+-- 9. A worker's run asks for nothing ------------------------------------------------------------------------------------
 -- A coding session's own run (b1's turn, as 928 runs one) is no agent's company run: it neither undoes nor describes.
 -- (The owner's coding machine is section 4's; no session is on it any more.)
 set local session_replication_role = replica;
