@@ -510,6 +510,8 @@ label > input, label > select { font-weight: 400; }
 .whats-new-site { margin: 0 0 40px; }
 .whats-new-site > h2 { margin: 0 0 10px; }
 .whats-new-site > h3 { margin: 22px 0 10px; }
+/* One card in the list, as much room under it as over it. */
+.whats-new-live.connection-list { padding-bottom: 4px; }
 .whats-new-live .service-card { padding: 14px 0; }
 .whats-new-live .connection-actions .btn, .whats-new-actions .btn { border-radius: var(--radius-pill); }
 /* The site's link is drawn as the button beside it is. */
