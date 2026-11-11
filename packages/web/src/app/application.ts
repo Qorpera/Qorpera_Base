@@ -32,6 +32,7 @@ import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
 import { applyLanguage, presentationLocale, t, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
+import { AgentNotes } from "./agent-notes.ts";
 import { agentWallReader } from "./agent-wall.ts";
 import { AuthController, displayName } from "./auth.ts";
 import { CompanyController } from "./company.ts";
@@ -417,6 +418,8 @@ export function mountApplication(
 	let interfaceOffers: CompanyInterfaceOffers | undefined;
 	/** The agents' interface apps in the open company's folder, followed there (RUNTIME-INTERFACE-APPS.md §4). */
 	let companyApps: CompanyApps | undefined;
+	/** The agents' walls and next runs for the rail's line under each name (app/agent-notes.ts), while the company is open. */
+	let agentNotes: AgentNotes | undefined;
 	/** The agents' walls on top of their threads, told of each change hint of the folder through whichever apps reader
 	 * the open company has now (it is made again when the company opens again). */
 	const wallListeners = new Set<() => void>();
@@ -596,6 +599,8 @@ export function mountApplication(
 		interfaceOffers = undefined;
 		companyApps?.dispose();
 		companyApps = undefined;
+		agentNotes?.dispose();
+		agentNotes = undefined;
 		sidePanel = undefined;
 		appPage?.dispose();
 		appPage = undefined;
@@ -1234,6 +1239,8 @@ export function mountApplication(
 			interfaceOffers = undefined;
 			companyApps?.dispose();
 			companyApps = undefined;
+			agentNotes?.dispose();
+			agentNotes = undefined;
 			mail?.dispose();
 			mail = undefined;
 			closeSettings(false);
@@ -1336,25 +1343,29 @@ export function mountApplication(
 			interfaceOffers = undefined;
 			companyApps?.dispose();
 			companyApps = undefined;
+			agentNotes?.dispose();
+			agentNotes = undefined;
+			controller.store.set({ agentNotes: undefined });
 		}
 		if (!interfaceFolder && state.team?.capabilities.read) {
+			const folderCurrent = () => {
+				const now = controller.store.get();
+				if (
+					disposed ||
+					company !== controller ||
+					auth.userId !== controller.userId ||
+					now.accessLost ||
+					!now.team?.capabilities.read
+				)
+					throw new Error(t("Company access changed."));
+			};
 			const files = new WebCompanyFiles(
 				cloud,
 				controller.profile,
 				controller.userId,
 				state.team.role,
 				controller.signal,
-				() => {
-					const now = controller.store.get();
-					if (
-						disposed ||
-						company !== controller ||
-						auth.userId !== controller.userId ||
-						now.accessLost ||
-						!now.team?.capabilities.read
-					)
-						throw new Error(t("Company access changed."));
-				},
+				folderCurrent,
 			);
 			// The offers of claimed cells are read with them, and again each time the folder the pages read changes,
 			// since the save that changes a cell settles its offers (step I9c) and makes or ends a supervision (I9b).
@@ -1402,11 +1413,37 @@ export function mountApplication(
 				decorateAppCards();
 			});
 			companyApps = apps;
+			// The rail's line under each agent's name: its wall and its next planned run, read with the member's own access
+			// and again on each change hint of the folder, as the thread's wall is.
+			const routines = createWebRoutines(cloud, controller.profile, files.signal, folderCurrent, () =>
+				files.folder(),
+			);
+			const notes = new AgentNotes(
+				{
+					agents: () =>
+						controller.store
+							.get()
+							.staff.filter((agent) => agent.employmentStatus === "active")
+							.map((agent) => agent.id),
+					readWall: agentWallReader(() => files.folder()),
+					listRoutines: () => routines.list(),
+					signal: files.signal,
+				},
+				(next) => {
+					if (agentNotes === notes) controller.store.set({ agentNotes: next });
+				},
+			);
+			agentNotes = notes;
+			window.addEventListener("focus", () => notes.changed(), { signal: files.signal });
 			apps.onChange(() => {
 				for (const listener of [...wallListeners]) listener();
+				notes.changed();
 			});
 			apps.open();
+			notes.open();
 		}
+		// The roster arrives after the company opens, and agents are hired and let go: the rail's notes follow it.
+		agentNotes?.agentsChanged();
 		// The company's sites, for the apps drawer's Sites entry: read once the company opens, and again when the window
 		// comes back (an agent may have published one meanwhile). A cloud without the read shows no entry.
 		if (sitesRead !== controller && state.team?.capabilities.read) {
