@@ -10,17 +10,16 @@ import {
 } from "./code-change-records.ts";
 import {
 	CODE_CHECKS_MAIN_MOVED,
-	type CodeBranchToCheck,
 	codeChecksFailedSummary,
 	codeChecksGate,
 	codeChecksNotRunSummary,
 	codeChecksPassed,
-	type LandCodeBranch,
 	readCodeChecks,
-} from "./code-checks-stand-in.ts";
+} from "./code-checks.ts";
 import {
 	addCodeWorktree,
 	type CodeBranchLanded,
+	type CodeBranchToCheck,
 	type CodeHostJob,
 	CodeHostJobFailure,
 	CodeHostRefusal,
@@ -304,8 +303,7 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			};
 			try {
 				const landed = await this.#job(session, signal, async (job) => {
-					// STAND-IN (code-checks-stand-in.ts): with part B's types this cast goes.
-					const landed = await (landCodeBranch as LandCodeBranch)(job, {
+					const landed = await landCodeBranch(job, {
 						repository,
 						workerId,
 						headSha,

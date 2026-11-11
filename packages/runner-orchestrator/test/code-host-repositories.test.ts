@@ -10,15 +10,15 @@ import {
 	CODE_CHECKS_MAIN_MOVED,
 	type CodeCheck,
 	type CodeChecksRun,
-	type CodeCommitFile,
 	codeChecksFailedSummary,
 	codeChecksGate,
 	codeChecksNotRunSummary,
 	codeChecksPassed,
 	readCodeChecks,
-} from "../src/code-checks-stand-in.ts";
+} from "../src/code-checks.ts";
 import {
 	addCodeWorktree,
+	type CodeCommitFile,
 	type CodeHostCommand,
 	type CodeHostGcBlock,
 	type CodeHostJob,
@@ -65,8 +65,8 @@ vi.mock("../src/code-host-jobs.ts", async (original) => {
 	};
 });
 // The checks file's reader, the gate and the words (part C1), watched: each test says what they answer.
-vi.mock("../src/code-checks-stand-in.ts", async (original) => {
-	const real = await original<typeof import("../src/code-checks-stand-in.ts")>();
+vi.mock("../src/code-checks.ts", async (original) => {
+	const real = await original<typeof import("../src/code-checks.ts")>();
 	return {
 		...real,
 		readCodeChecks: vi.fn(real.readCodeChecks),
@@ -1717,6 +1717,54 @@ describe("the repository's checks before a landing (own code storage, step 3)", 
 		expect(t.asked()).toHaveLength(1);
 		expect(t.recordChange).not.toHaveBeenCalled();
 		expect(codeChecksNotRunSummary).not.toHaveBeenCalled();
+	});
+
+	it("lands through part B's two real jobs and part C1's real reader, gate and result, the runner aside", async () => {
+		const t = await checked();
+		// The session's first change adds the checks file.
+		const file = JSON.stringify({ checks: CHECKS.map(({ name, run }) => ({ name, run })) });
+		await mkdir(join(t.f.tree, ".qorpera"));
+		await writeFile(join(t.f.tree, ".qorpera/checks.json"), file);
+		await t.f.git(t.f.tree, "add", ".qorpera/checks.json");
+		const head = await t.f.commit(t.f.tree, "cart.js");
+		t.runs({
+			state: "passed",
+			ms: 3_000,
+			copyMs: 1_000,
+			checks: CHECKS.map(({ name, run }) => ({ name, run, ms: 1_000 })),
+		});
+		expect(await t.land(head)).toEqual({ state: "fast-forward", mainSha: head, filesChanged: 2, change: 7 });
+		const repo = join(t.f.companyRoot, "code/qorpera/example/repo.git");
+		expect(await t.f.git(repo, "rev-parse", "main")).toBe(head);
+		expect(t.asked()).toEqual([
+			{ headSha: head, checks: true },
+			{ headSha: head, expect: { how: "fast-forward", mainBefore: t.baseSha, mainAfter: head } },
+		]);
+		expect(t.runChecks.mock.calls[0]?.[0]).toEqual({
+			commit: head,
+			checks: CHECKS.map(({ name, run }) => ({ name, run, timeoutSeconds: 600, cwd: "." })),
+			attempt: 1,
+		});
+		const blob = await t.f.git(repo, "rev-parse", `${head}:.qorpera/checks.json`);
+		expect(t.reports().at(-1)).toMatchObject({
+			schema: "qorpera.code-change-report/v2",
+			state: "landed",
+			mainAfter: head,
+			checks: {
+				state: "passed",
+				result: { schema: "qorpera.code-checks/v1", commit: head, how: "fast-forward", file: blob, tries: 1 },
+			},
+		});
+		// The next change removes the file: refused by the gate's own words, nothing moves, no row.
+		await t.f.git(t.f.tree, "rm", "--quiet", ".qorpera/checks.json");
+		const removed = await t.f.commit(t.f.tree, "more.js");
+		const refused = await t.land(removed).catch((e) => e);
+		expect(refused).toBeInstanceOf(CodingLandRefused);
+		expect(refused.message).toBe("CODING_CHECKS_REFUSED");
+		expect(refused.summary).toMatch(/\[code=CODING_CHECKS_REFUSED\]$/);
+		expect(await t.f.git(repo, "rev-parse", "main")).toBe(head);
+		expect(t.reports()).toHaveLength(1);
+		expect(t.runChecks).toHaveBeenCalledTimes(1);
 	});
 
 	it("reads a refused switch as the end of the landing, before any job", async () => {

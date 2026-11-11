@@ -18,7 +18,7 @@ import {
 } from "@qorpera/contracts";
 import { withAbortScope } from "./abort-scope.ts";
 import type { AgentPlug } from "./agent-plug.ts";
-import { type CodeCheck, type CodeChecksRun, codeChecksTail } from "./code-checks-stand-in.ts";
+import { type CodeCheck, type CodeChecksRun, codeChecksTail } from "./code-checks.ts";
 import { codeAreaPath } from "./code-host-jobs.ts";
 import {
 	type CodingCommandSecrets,

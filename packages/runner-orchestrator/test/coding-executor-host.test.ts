@@ -13,7 +13,7 @@ import {
 	parseCodingGuestRequest,
 } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type CodeCheck, codeChecksTail } from "../src/code-checks-stand-in.ts";
+import { type CodeCheck, codeChecksTail } from "../src/code-checks.ts";
 import {
 	type CodingCommandSecrets,
 	type CodingEnvironmentSource,
@@ -113,8 +113,8 @@ vi.mock("../src/coding-command-transport.ts", () => ({
 	},
 }));
 // The tail's own rule is the words' (part C1): each test sees what it is handed.
-vi.mock("../src/code-checks-stand-in.ts", async (original) => {
-	const real = await original<typeof import("../src/code-checks-stand-in.ts")>();
+vi.mock("../src/code-checks.ts", async (original) => {
+	const real = await original<typeof import("../src/code-checks.ts")>();
 	return { ...real, codeChecksTail: vi.fn(real.codeChecksTail) };
 });
 vi.mock("../src/coding-storage.ts", () => ({
