@@ -2642,20 +2642,6 @@ export class LxdCompanyMachineHost {
 		throw new Error("COMPANY_MACHINE_PICTURE_CHECK_INVALID");
 	}
 
-	/**
-	 * A member's action on a desktop of this node (20260930713000): the member's click, drag, scroll or keys through the
-	 * image's screen helper, as an agent's machine_screen action runs (the action id is its receipt, so it runs at most
-	 * once on this boot; its transient unit's deadline and the xdotool word check apply), with no settle and no look: the
-	 * member's window looks again itself (memberLook), so nothing of the screen, no title and no error text comes back
-	 * here. A typed text never goes through the helper, whose unit's description (the command line, the text in it) systemd
-	 * writes to the machine's journal: COMPANY_MACHINE_MEMBER_TYPE types it from its stdin, in a transient unit of its own
-	 * with a deadline systemd keeps (companyMachineMemberTypeCommand). After a text the desktop pasted (beyond plain ASCII,
-	 * on both selections), both selections are cleared before the desktop is let go.
-	 *
-	 * It holds the desktop as an agent's action does (#holdDesktop: one action at a time, and the grace after one that
-	 * did not end cleanly). An agent's look that overlapped it never shows it: the fence after each capture
-	 * (#pictureAllowed) refuses every picture once a member took the desktop over.
-	 */
 	/** A member turns the desktop on (20260930714000): the image's own `desktop start` on the boot SQL named, in a transient
 	 * unit of its own. Never refused because the desktop is busy (it takes the desktop's own lock, and an agent's action
 	 * does not), and nothing is held: starting is not taking over. */
@@ -2688,6 +2674,20 @@ export class LxdCompanyMachineHost {
 		return MEMBER_START_EXITS[exitCode] ?? { refused: "DESKTOP_DID_NOT_START" };
 	}
 
+	/**
+	 * A member's action on a desktop of this node (20260930713000): the member's click, drag, scroll or keys through the
+	 * image's screen helper, as an agent's machine_screen action runs (the action id is its receipt, so it runs at most
+	 * once on this boot; its transient unit's deadline and the xdotool word check apply), with no settle and no look: the
+	 * member's window looks again itself (memberLook), so nothing of the screen, no title and no error text comes back
+	 * here. A typed text never goes through the helper, whose unit's description (the command line, the text in it) systemd
+	 * writes to the machine's journal: COMPANY_MACHINE_MEMBER_TYPE types it from its stdin, in a transient unit of its own
+	 * with a deadline systemd keeps (companyMachineMemberTypeCommand). After a text the desktop pasted (beyond plain ASCII,
+	 * on both selections), both selections are cleared before the desktop is let go.
+	 *
+	 * It holds the desktop as an agent's action does (#holdDesktop: one action at a time, and the grace after one that
+	 * did not end cleanly). An agent's look that overlapped it never shows it: the fence after each capture
+	 * (#pictureAllowed) refuses every picture once a member took the desktop over.
+	 */
 	async memberAct(act: CompanyMachineMemberAct, signal: AbortSignal): Promise<CompanyMachineMemberActOutcome> {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!pipe) throw new Error("COMPANY_MACHINE_MEMBER_ACT_UNAVAILABLE");
