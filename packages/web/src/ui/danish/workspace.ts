@@ -506,6 +506,7 @@ export const WORKSPACE: Record<string, string> = {
 		"En anden bruger computeren. Skærmen er skjult imens.",
 	"Waiting for {name} to finish a step…": "Venter på, at {name} gør et trin færdigt…",
 	"The computer could not be taken over. Try again.": "Computeren kunne ikke overtages. Prøv igen.",
+	"You are using this computer in another window.": "Du bruger denne computer i et andet vindue.",
 	"Giving the computer back…": "Giver computeren tilbage…",
 	"The computer could not be given back yet. It goes back by itself within 5 minutes.":
 		"Computeren kunne ikke gives tilbage endnu. Den går tilbage af sig selv inden for 5 minutter.",

@@ -172,11 +172,18 @@ export class ComputerPanel {
 	readonly #controlText = h("span", { class: "machine-screen-control-text" });
 	readonly #controlNote = h("span", { class: "machine-screen-control-note", role: "status", "aria-live": "polite" });
 	readonly #controlButton = h("button", { type: "button", class: "machine-screen-control-button" });
+	/** Hand back, beside Take over, while the member holds the desktop in another window (review r14). */
+	readonly #controlHandBack = h(
+		"button",
+		{ type: "button", class: "machine-screen-control-hand-back", hidden: true },
+		t("Hand back"),
+	);
 	readonly #controls = h(
 		"div",
 		{ class: "machine-screen-control", hidden: true },
 		h("span", { class: "machine-screen-control-words" }, this.#controlText, this.#controlNote),
 		this.#controlButton,
+		this.#controlHandBack,
 	);
 
 	constructor(
@@ -274,6 +281,7 @@ export class ComputerPanel {
 					: this.takeOver()),
 			{ signal },
 		);
+		this.#controlHandBack.addEventListener("click", () => void this.handBack(), { signal });
 		// The ledger's word goes first: a hold given back (here, on the card, as the page goes) takes no more input and is
 		// never renewed. The ledger itself gives everything back as the page goes.
 		const unsubscribeHolds = this.#ledger.subscribe(() => this.#holdsChanged());
@@ -590,19 +598,20 @@ export class ComputerPanel {
 	/** What the list says of the member's own holds, each by its machine's own id, never by the machine shown (review r1
 	 * F6), ordered by the member's hand-back epoch per machine, never by the page's clock (review r8): the ledger hears it
 	 * and decides (a list below the epoch it knows says nothing; an epoch above ends what the page had under the older
-	 * one; a lost answer the list shows is held), and the window's hold follows the ledger. One of the member's on the
-	 * machine shown that the window does not know (the page was loaded again) is taken up at its epoch, unless this page
-	 * gave that machine back or knows a newer epoch. */
+	 * one; a lost answer of this page's take-over that the list shows is held), and the window's hold follows the
+	 * ledger. A hold of the member's from elsewhere (another window, or this page before it was loaded again) is never
+	 * taken up (review r14): the window shows it, with Take over and Hand back. */
 	#heldPerList(): void {
 		const list = this.#listed;
 		if (!list) return;
 		this.#ledger.listed(list, this.agentId);
+		// A take-over of this page's whose answer was lost, which the list now shows held (the ledger's own word): the
+		// press was this page's, so the window uses it.
 		const shown = this.#pick();
-		const row = shown
-			? list.machines.find((machine) => machine.machineId === shown.machineId && machine.state === "running")
-			: undefined;
-		if (!this.#holding && !this.#taking && row && this.#ledger.adopt(row.machineId, this.agentId, row))
-			this.#held(row.machineId);
+		if (shown && !this.#holding && this.#ledger.holder(shown.machineId) !== undefined) {
+			this.#controlNote.textContent = "";
+			this.#held(shown.machineId);
+		}
 		this.#syncControls();
 	}
 
@@ -799,8 +808,13 @@ export class ComputerPanel {
 		const holding = this.#holding !== undefined && this.#holding === this.#machineId;
 		const release = this.#machineId ? this.#ledger.releasing(this.#machineId) : undefined;
 		const offer = !holding && !release && picture && this.#listed?.canTakeOver === true;
+		// The member holds it from elsewhere (another window, or this page before it was loaded again): shown, never used
+		// here; Take over makes it this window's, Hand back gives it back (review r14).
+		const elsewhere = offer && this.#pick()?.control?.mine === true;
 		this.#controls.hidden = !(picture && (holding || release || offer));
 		this.#controls.classList.toggle("is-holding", holding || release !== undefined);
+		this.#controls.classList.toggle("is-elsewhere", elsewhere);
+		this.#controlHandBack.hidden = !elsewhere;
 		const text = holding
 			? t("You are using the computer. {name} gets no pictures of the screen while you use it.", {
 					name: this.#name,
@@ -809,7 +823,9 @@ export class ComputerPanel {
 				? t("The computer could not be given back yet. It goes back by itself within 5 minutes.")
 				: release
 					? t("Giving the computer back…")
-					: "";
+					: elsewhere
+						? t("You are using this computer in another window.")
+						: "";
 		if (this.#controlText.textContent !== text) this.#controlText.textContent = text;
 		const label = holding
 			? t("Hand back")

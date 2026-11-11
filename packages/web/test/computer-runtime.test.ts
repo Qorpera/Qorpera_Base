@@ -350,6 +350,9 @@ function controls(p: ComputerPanel) {
 function controlButton(p: ComputerPanel) {
 	return controls(p)?.querySelector<HTMLButtonElement>(".machine-screen-control-button") ?? null;
 }
+function handBackButton(p: ComputerPanel) {
+	return controls(p)?.querySelector<HTMLButtonElement>(".machine-screen-control-hand-back") ?? null;
+}
 function canvas(p: ComputerPanel) {
 	return p.el.querySelector<HTMLCanvasElement>(".machine-screen-canvas")!;
 }
@@ -1303,7 +1306,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		]);
 	});
 
-	it("resumes a hold the list says is the member's (the page was loaded again), and hands it back as the page goes", async () => {
+	it("shows a hold the list says is the member's from elsewhere (the page was loaded again) and never uses it; Take over makes it this window's at its epoch, given back as the page goes (r14)", async () => {
 		const until = new Date(Date.now() + 120_000).toISOString();
 		// The page was loaded again: the list says the member holds it, taken under their epoch 3, which this page never knew.
 		const s = setup({ machines: [machine(1, { control: { mine: true, name: "Owner", until, epoch: 3 } })] });
@@ -1311,9 +1314,23 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
 		await flush();
+		// Shown as the member's own, from another window: the picture, Take over and Hand back; no input, no heartbeat.
+		expect(p.holding).toBe(false);
+		expect(controls(p)?.textContent).toContain("You are using this computer in another window.");
+		expect(controlButton(p)?.textContent).toBe("Take over");
+		expect(handBackButton(p)?.hidden).toBe(false);
+		expect(canvas(p).hasAttribute("tabindex")).toBe(false);
+		key(canvas(p), "Enter");
+		await advance(KEEP_EVERY_MS * 2);
+		expect(s.acts).toEqual([]);
+		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
+		// Take over: sent at that epoch (the database renews the member's own lease for this page), held and renewed here.
+		controlButton(p)!.click();
+		await flush();
+		expect(calls(s, "qorpera_member_take_machine_desktop").map((call) => call.body.p_epoch)).toEqual([3]);
 		expect(p.holding).toBe(true);
 		expect(controlButton(p)?.textContent).toBe("Hand back");
-		// Its heartbeat names that epoch.
+		expect(handBackButton(p)?.hidden).toBe(true);
 		await advance(KEEP_EVERY_MS);
 		expect(calls(s, "qorpera_member_keep_machine_desktop").map((call) => call.body.p_epoch)).toEqual([3]);
 		window.dispatchEvent(new Event("pagehide"));
@@ -1333,6 +1350,57 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		expect(
 			calls(s, "qorpera_member_hand_back_machine_desktop").filter((call) => call.body.p_epoch === 3),
 		).toHaveLength(2);
+	});
+
+	it("hands a hold from elsewhere back at the list's epoch with the window's Hand back, never using it (r14)", async () => {
+		const until = new Date(Date.now() + 120_000).toISOString();
+		const s = setup({ machines: [machine(1, { control: { mine: true, name: "Owner", until, epoch: 3 } })] });
+		s.state.epochs.set(machine(1).machineId, 3);
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		handBackButton(p)!.click();
+		await flush();
+		expect(calls(s, "qorpera_member_hand_back_machine_desktop").map((call) => call.body.p_epoch)).toEqual([3]);
+		expect(s.state.machines[0]?.control).toBeNull();
+		expect(p.holding).toBe(false);
+		await advance(KEEP_EVERY_MS * 2);
+		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
+		expect(calls(s, "qorpera_member_take_machine_desktop")).toHaveLength(0);
+		expect(controls(p)?.textContent ?? "").not.toContain("in another window");
+	});
+
+	it("never uses a hold of another tab's that the first list shows after pagehide: in another window, no input, no heartbeat; a press takes it over (r14 F21)", async () => {
+		const until = new Date(Date.now() + 120_000).toISOString();
+		// Another tab of the member's holds the desktop; this window's first list read is on its way.
+		const s = setup({ machines: [machine(1, { control: { mine: true, name: "Owner", until, epoch: 0 } })] });
+		let arrive!: () => void;
+		s.state.listGate = new Promise<void>((resolve) => {
+			arrive = resolve;
+		});
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		// The page is hidden and comes back; then the list arrives.
+		window.dispatchEvent(new Event("pagehide"));
+		await flush();
+		arrive();
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(p.holding).toBe(false);
+		expect(controls(p)?.textContent).toContain("You are using this computer in another window.");
+		key(canvas(p), "Enter");
+		await advance(KEEP_EVERY_MS * 2);
+		expect(s.acts).toEqual([]);
+		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
+		expect(calls(s, "qorpera_member_take_machine_desktop")).toHaveLength(0);
+		// A press takes it over (the member's own lease, renewed for this page), and then it is used and renewed.
+		controlButton(p)!.click();
+		await flush();
+		expect(calls(s, "qorpera_member_take_machine_desktop").map((call) => call.body.p_epoch)).toEqual([0]);
+		expect(p.holding).toBe(true);
+		await advance(KEEP_EVERY_MS);
+		expect(calls(s, "qorpera_member_keep_machine_desktop").map((call) => call.body.p_epoch)).toEqual([0]);
 	});
 
 	it("gives a held desktop back when the member chooses another machine", async () => {
@@ -1871,7 +1939,8 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		s.state.takeLost = "committed";
 		await takeOver(p);
 		expect(p.holding).toBe(false);
-		// No hand-back was asked: the next list read says the member holds it at that epoch, and the window takes it up.
+		// No hand-back was asked: the next list read says the member holds it at that epoch; the take-over was this page's,
+		// so the window uses it (review r14: only a press on this page's own).
 		s.hint("machines");
 		await advance(LOOK_EVERY_MS);
 		expect(p.holding).toBe(true);
@@ -1898,6 +1967,32 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		await takeOver(p);
 		expect(takeEpochs(s)).toEqual([0, 1]);
 		expect(p.holding).toBe(true);
+	});
+
+	it("says nothing of a take-over queued behind a hand-back that pagehide called off, when that hand-back then fails (r14 F22)", async () => {
+		const { s, p } = await company();
+		await takeOver(p);
+		expect(p.holding).toBe(true);
+		// Hand back: its hand-back waits. The agent's card asks for a take-over meanwhile: queued behind it.
+		const back = gate();
+		s.state.handBackGate = back.closed;
+		void p.handBack();
+		await flush();
+		p.takeOver();
+		await flush();
+		expect(takeEpochs(s)).toEqual([0]);
+		// The page is hidden (calling the queued take-over off); then the hand-backs fail.
+		window.dispatchEvent(new Event("pagehide"));
+		await flush();
+		s.state.handBackFails = 20;
+		s.state.handBackGate = undefined;
+		back.open();
+		await flush();
+		await advance(2000);
+		// Nothing was sent and nothing is said of that take-over.
+		expect(takeEpochs(s)).toEqual([0]);
+		expect(p.holding).toBe(false);
+		expect(controls(p)?.textContent ?? "").not.toContain("could not be taken over");
 	});
 
 	it("takes nothing over after pagehide for a press made before it, when the same window goes on: no take-over, no heartbeat, Take over offered (r13 F20)", async () => {

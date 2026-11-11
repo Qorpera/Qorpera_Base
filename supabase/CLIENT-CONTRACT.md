@@ -1260,6 +1260,10 @@ request of another shape.
   A take-over the member starts from another tab after that read was taken is a new take-over, outside this answer;
   the agent then hears `DESKTOP_MEMBER_IN_CONTROL`, as for any take-over without a card. No page can exclude what the
   member does a moment later.
+- A page uses a hold (input, heartbeats) only after a Take over pressed on that page (review r14 of #1661): a hold of
+  the member's that the list shows from another window, or from before the page was loaded again, is shown, never
+  taken up, so after a reload the member presses Take over once to go on (a take-over at the current epoch renews
+  their own lease), and without that the old lease ends by itself.
 - `qorpera_member_machine_desktop_act_begin(profile, machine, action)`: one action, begun as the member. Clients do not
   call it: the action route (§4) does, with the member's own token and the action as SQL keeps it (a text by its length).
 #### Member contacts' places (20260930717000_member_contact_places)

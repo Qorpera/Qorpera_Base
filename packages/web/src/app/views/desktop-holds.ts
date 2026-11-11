@@ -1,8 +1,4 @@
-import type {
-	MemberAgentMachine,
-	MemberAgentMachines,
-	MemberDesktopHold,
-} from "@qorpera/cloud-client/cloud-member-company-computer";
+import type { MemberAgentMachines, MemberDesktopHold } from "@qorpera/cloud-client/cloud-member-company-computer";
 import type { WebCompanyComputer } from "../../cloud/computer.ts";
 
 /** The waits before a hand-back that was not answered is asked again: 2, 4, 8, then 15 s. */
@@ -50,8 +46,8 @@ interface Hold {
 	/** The take-over the state is of, and its promise: an answer of an older one is told apart. */
 	take?: object;
 	pending?: Promise<DesktopTake>;
-	/** A release was asked and its hand-back is not answered: from that moment nothing of the machine is used, renewed
-	 * or taken up, and any take-over answer for it is nothing to act on. */
+	/** A release was asked and its hand-back is not answered: from that moment nothing of the machine is used or
+	 * renewed, and any take-over answer for it is nothing to act on. */
 	calling: boolean;
 	/** The epoch that hand-back is at. */
 	callEpoch: number | undefined;
@@ -92,12 +88,14 @@ interface Hold {
 export class DesktopHoldLedger {
 	readonly #computer: WebCompanyComputer | undefined;
 	readonly #holds = new Map<string, Hold>();
-	/** Machines whose release was asked in this page's lifetime, whether or not anything was owed there: a hold a list
-	 * shows there is never taken up (it is owed instead), unless the member took the machine over again on purpose. */
+	/** Machines whose release was asked in this page's lifetime, whether or not anything was owed there: an own hold a
+	 * list shows there is owed (`saw`), until the member takes the machine over again on purpose here. (Nothing is ever
+	 * taken up from a list: review r14 removed that; a hold from elsewhere is only shown, and a press takes it over.) */
 	readonly #givenBack = new Set<string>();
-	/** Agents whose machines were all given back in this page's lifetime (Hand back, I'm done, a window's close): a machine
-	 * of theirs the page learns of only later was given back too (found by the schedule explorer). */
+	/** Agents whose machines were all given back in this page's lifetime (Hand back, I'm done, a window's close), and
+	 * whether the page's were (pagehide): a machine of theirs the page learns of only later was given back too. */
 	readonly #agentsGivenBack = new Set<string>();
+	#pageGivenBack = false;
 	readonly #listeners = new Set<() => void>();
 	/** Each take-over's answer, with the hold and the ticket it is of (calledOff). */
 	readonly #attempts = new WeakMap<Promise<DesktopTake>, { readonly hold: Hold; readonly ticket: object }>();
@@ -190,13 +188,16 @@ export class DesktopHoldLedger {
 		const ticket = {};
 		hold.take = ticket;
 		this.#state(hold, "queued");
-		// On purpose: this machine may be taken up again.
+		// On purpose: what lists show of this machine is this press's again, not owed apart.
 		this.#givenBack.delete(machineId);
 		const mine = () => !this.#left && !hold.gone && this.#holds.get(machineId) === hold && hold.take === ticket;
 		const pending = (async (): Promise<DesktopTake> => {
 			if (hold.calling && !(await this.#settle(hold))) {
-				// The earlier hand-back was not answered: this take-over is never sent.
-				if (mine() && hold.state === "queued") this.#state(hold, undefined);
+				// Called off meanwhile (a release, or one after the press): said to no one (review r14 F22).
+				if (!mine() || (pressedAt !== undefined && this.releasedSince(machineId, agentId, pressedAt)))
+					return { state: "called-off" };
+				// The earlier hand-back was not answered: this take-over is never sent, and the member is told.
+				if (hold.state === "queued") this.#state(hold, undefined);
 				return { state: "releasing" };
 			}
 			if (!mine() || hold.state !== "queued" || hold.calling) return { state: "called-off" };
@@ -270,25 +271,6 @@ export class DesktopHoldLedger {
 		);
 	}
 
-	/** A hold of this member's that the list shows on this agent's machine, at the epoch it was taken under, that no window
-	 * knows (the page was loaded again): true, it is the window's now, and owed. False on a machine this page gave back
-	 * (and did not take over again), while a release or a take-over of it is on its way, or from a list older than what
-	 * the page knows (its epoch lower: review r8). */
-	adopt(machineId: string, agentId: string, row: MemberAgentMachine): boolean {
-		const epoch = row.control?.mine === true ? row.control.epoch : null;
-		if (this.#left || epoch === null || epoch !== row.epoch) return false;
-		const hold = this.#holds.get(machineId) ?? this.#entry(machineId);
-		this.#coveredBy(hold, agentId);
-		if (this.#givenBack.has(machineId)) return false;
-		if ((hold.epoch !== undefined && row.epoch < hold.epoch) || hold.calling) return false;
-		if (hold.state === "queued" || hold.state === "taking") return false;
-		this.#learn(hold, epoch);
-		hold.agents.add(agentId);
-		hold.took = true;
-		this.#state(hold, "held");
-		return true;
-	}
-
 	/** The hold under `epoch` ended by itself (a heartbeat or an action was told so): what the window uses ends; what is
 	 * owed does not (review r10). */
 	ended(machineId: string, epoch: number): void {
@@ -310,7 +292,7 @@ export class DesktopHoldLedger {
 		// A take-over queued or on its way is called off: whatever comes of it is said to no one (review r11).
 		hold.take = undefined;
 		// Asked, so given back in this page's lifetime, whether or not anything is sent (found by the schedule explorer):
-		// a hold a list shows here later is owed, never taken up, until a take-over on purpose.
+		// an own hold a list shows here later is owed, until a take-over on purpose.
 		this.#givenBack.add(machineId);
 		const owes = hold.took || (elsewhere && hold.saw);
 		if (!hold.calling && (!owes || hold.epoch === undefined)) return;
@@ -387,9 +369,10 @@ export class DesktopHoldLedger {
 	/** A list read of an agent's machines, ordered by the database's own counter (review r8): for a machine, a list whose
 	 * epoch is below what the page knows says nothing. At the epoch the page knows or above it is used: an epoch above is
 	 * learned (and discharges what was owed below it); a hold of the member's it shows at its epoch is real: owed (`saw`)
-	 * on a machine this page gave back, or while an I'm done works on its agent, whether or not a window may take it up
-	 * (review r9); and a lost answer it shows is held. A list never ends a hold by not showing it; a release on its way
-	 * waits for its own answer. */
+	 * on a machine this page gave back, or while an I'm done works on its agent (review r9); and a take-over of this
+	 * page's whose answer was lost, shown at its epoch, is held. Nothing else a list shows is ever the page's to use
+	 * (review r14): a hold from elsewhere is the window's to show, and a press takes it over. A list never ends a hold by
+	 * not showing it; a release on its way waits for its own answer. */
 	listed(list: MemberAgentMachines, agentId: string): void {
 		for (const row of list.machines) {
 			const hold = this.#holds.get(row.machineId) ?? this.#entry(row.machineId);
@@ -398,7 +381,6 @@ export class DesktopHoldLedger {
 			hold.agents.add(agentId);
 			this.#learn(hold, row.epoch);
 			const holding = row.control?.mine === true ? row.control.epoch : null;
-			// Adoption (input and heartbeats) and obligation (a hand-back owed) are apart: #givenBack blocks the first only.
 			if (
 				holding === row.epoch &&
 				(this.#givenBack.has(row.machineId) || [...hold.agents].some((agent) => this.#finishing.has(agent)))
@@ -431,15 +413,17 @@ export class DesktopHoldLedger {
 	#hidden(): void {
 		if (this.#left) return;
 		this.#pageReleasedAt = ++this.#releases;
+		this.#pageGivenBack = true;
 		for (const hold of [...this.#holds.values()]) {
 			this.release(hold.machineId);
 			if (hold.calling && hold.epoch !== undefined) this.#computer?.handBackOnLeave(hold.machineId, hold.epoch);
 		}
 	}
 
-	/** A machine the page learns is this agent's: given back, if all the agent's machines were. */
+	/** A machine the page learns is this agent's: given back, if all the agent's machines (or the page's) were. */
 	#coveredBy(hold: Hold, agentId: string): void {
-		if (!hold.agents.has(agentId) && this.#agentsGivenBack.has(agentId)) this.#givenBack.add(hold.machineId);
+		if (!hold.agents.has(agentId) && (this.#pageGivenBack || this.#agentsGivenBack.has(agentId)))
+			this.#givenBack.add(hold.machineId);
 	}
 
 	#entry(machineId: string): Hold {
