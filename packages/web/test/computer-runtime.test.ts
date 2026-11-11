@@ -2177,6 +2177,43 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		expect(p.holding).toBe(true);
 	});
 
+	it("takes the machine chosen now over when the card asks while the window's older take-over, called off by a switch, is still on its way; that one's answer touches nothing (r12 F19)", async () => {
+		const { s, p } = await company(setup({ machines: [machine(1), machine(2)] }));
+		const pick = (n: number) => {
+			p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher")!.click();
+			[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][n]!.click();
+		};
+		const taken = () => calls(s, "qorpera_member_take_machine_desktop").map((call) => call.body.p_machine_id);
+		// Take over the first machine; its answer is delayed.
+		const late = gate();
+		s.state.takeGate = late.closed;
+		await takeOver(p);
+		expect(taken()).toEqual([machine(1).machineId]);
+		s.state.takeGate = undefined;
+		// The member switches to the second machine (the first one's take-over is called off: its hand-back goes).
+		s.state.answers.push({ picture: 2 });
+		pick(1);
+		await flush();
+		expect(handBacks(s).map((call) => [call.body.p_machine_id, call.body.p_epoch])).toEqual([
+			[machine(1).machineId, 0],
+		]);
+		// The same window's button offers Take over for the second machine; the agent's card asks before the first answers.
+		expect(controlButton(p)?.disabled).toBe(false);
+		p.takeOver();
+		await flush();
+		expect(taken()).toEqual([machine(1).machineId, machine(2).machineId]);
+		expect(p.holding).toBe(true);
+		// The first machine's take-over answers at last (refused: its hand-back came first). The window's hold of the
+		// second stays, renewed, and nothing is said.
+		late.open();
+		await flush();
+		expect(p.holding).toBe(true);
+		expect(controls(p)?.textContent).not.toContain("could not be taken over");
+		await advance(KEEP_EVERY_MS);
+		expect(keeps(s).map((call) => call.body.p_machine_id)).toContain(machine(2).machineId);
+		expect(s.state.machines[0]?.control).toBeNull();
+	});
+
 	it("starts a new take-over on a press after a release called the one on its way off, and says nothing of that one (r11)", async () => {
 		const { s, panels, p } = await company();
 		// A take-over at 0 on its way.

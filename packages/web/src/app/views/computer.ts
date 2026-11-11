@@ -10,7 +10,7 @@ import { matchesKey } from "../../ui/keys.ts";
 import { type MachineScreenPicture, MachineScreenView, TEXT_MAX } from "../../ui/machine-screen-view.ts";
 import { leave, zoomFrom } from "../../ui/motion.ts";
 import { t } from "../../ui/preferences.ts";
-import { DesktopHoldLedger, type DesktopRelease } from "./desktop-holds.ts";
+import { DesktopHoldLedger, type DesktopRelease, type DesktopTake } from "./desktop-holds.ts";
 
 /** The least time from one look's start to the next while the picture changes or the member acts on it: a look takes
  * about 0.2 s end to end (production p50 204 ms, 10 Nov 2026), and the database takes one look per 400 ms of a member. */
@@ -70,6 +70,13 @@ type Shown =
 	| "paused"
 	// Another member holds the desktop (20260930713000).
 	| "controlled";
+
+/** A press of Take over (the window's button or the agent's take-over card): the machine chosen at it, and the ledger's
+ * answer it waits for (review r12 F19). */
+interface TakeAttempt {
+	readonly machineId: string | undefined;
+	answer?: Promise<DesktopTake>;
+}
 
 /**
  * An agent's computer window (migration 20260930712000; lanes/desktop-computers-20261110/LIVE-VIEW-PLAN.md, stage 1a):
@@ -148,7 +155,9 @@ export class ComputerPanel {
 	#computer: WebCompanyComputer | undefined;
 	#holding: string | undefined;
 	#wantTakeOver = false;
-	#taking: Promise<void> | undefined;
+	/** The window's take-over: the latest press's attempt, of the machine chosen at it, and the ledger's answer it waits
+	 * for (review r12 F19). An older attempt's answer is not the window's. */
+	#taking: TakeAttempt | undefined;
 	readonly #ledger: DesktopHoldLedger;
 	#releaseShown: DesktopRelease | undefined;
 	#queue: MachineDesktopAction[] = [];
@@ -330,15 +339,27 @@ export class ComputerPanel {
 		this.#startTake();
 	}
 
-	/** Starts a take-over unless one is on its way or the desktop is held: it is the window's until it settles. It takes
-	 * the machine chosen now, at the click (review r4 F8). */
+	/** Starts a take-over of the machine chosen now, at the click (review r4 F8), as its own attempt (review r12 F19): it
+	 * is the window's until it settles or a newer press starts another. A press joins the attempt on its way only when it
+	 * is of the same machine and no release called it off; otherwise it starts a new one (the ledger queues it behind a
+	 * hand-back that must be answered first). The window's button and the agent's take-over card both come here. */
 	#startTake(): void {
-		if (this.#taking || this.#holding) return;
-		const taking = this.#take(this.#pick()).finally(() => {
-			if (this.#taking === taking) this.#taking = undefined;
+		if (this.#holding) return;
+		const machine = this.#pick();
+		if (this.#takingLive(machine?.machineId)) return;
+		const attempt: TakeAttempt = { machineId: machine?.machineId };
+		this.#taking = attempt;
+		void this.#take(machine, attempt).finally(() => {
+			if (this.#taking === attempt) this.#taking = undefined;
 			this.#syncControls();
 		});
-		this.#taking = taking;
+	}
+
+	/** Whether the window's take-over of this machine is on its way and no release called it off. */
+	#takingLive(machineId: string | undefined): boolean {
+		const attempt = this.#taking;
+		if (!attempt || attempt.machineId !== machineId) return false;
+		return !attempt.answer || !this.#ledger.calledOff(attempt.answer);
 	}
 
 	/** Give back every desktop of this agent's the member may hold (the window's Hand back, the card's I'm done before it
@@ -469,7 +490,7 @@ export class ComputerPanel {
 				if (Date.now() >= end) this.#listStale = true;
 				continue;
 			}
-			if (this.#wantTakeOver && !this.#holding && !this.#taking) this.#startTake();
+			if (this.#wantTakeOver && !this.#holding) this.#startTake();
 			const due = this.#lastLook + this.#delay;
 			if (Date.now() < due) {
 				await this.#wait(Math.min(due, this.#listedAt + MACHINES_EVERY_MS) - Date.now(), signal);
@@ -591,16 +612,29 @@ export class ComputerPanel {
 	 * its hold, or why not. Called off meanwhile (a hand-back, the window's close, a switch to another machine), what it
 	 * got is covered by the hand-back at its epoch and never renewed (review r1 F5, r5); so is one of a machine no longer
 	 * shown. A lost answer stays in the ledger as "may be held" until a hand-back covers it or the list says it holds. */
-	async #take(machine: MemberAgentMachine | undefined): Promise<void> {
+	async #take(machine: MemberAgentMachine | undefined, attempt: TakeAttempt): Promise<void> {
 		const computer = this.#computer;
 		if (!computer || this.#holding) return;
 		// A viewer never takes over; a machine not running yet waits for the list to say it runs.
 		if (this.#listed && !this.#listed.canTakeOver) this.#wantTakeOver = false;
 		if (!machine || machine.state !== "running" || !this.#listed?.canTakeOver) return;
+		attempt.answer = this.#ledger.take(machine.machineId, this.agentId);
 		this.#syncControls();
-		const hold = await this.#ledger.take(machine.machineId, this.agentId);
-		this.#wantTakeOver = false;
+		const hold = await attempt.answer;
 		if (this.#stop.signal.aborted) return;
+		if (this.#taking !== attempt) {
+			// An older attempt (a newer press started another, review r12 F19): nothing of the window's is its own, neither
+			// the wish to take over, nor the newer attempt, nor the note. What it got, should it get anything, goes back
+			// unless a newer attempt of that machine is on its way.
+			if (
+				hold.state === "ok" &&
+				this.#holding !== machine.machineId &&
+				this.#taking?.machineId !== machine.machineId
+			)
+				this.#ledger.release(machine.machineId, this.agentId);
+			return;
+		}
+		this.#wantTakeOver = false;
 		if (hold.state === "ok" && machine.machineId !== this.#pick()?.machineId)
 			// The member chose another machine meanwhile: the hold goes back as it comes.
 			this.#ledger.release(machine.machineId, this.agentId);
@@ -767,7 +801,7 @@ export class ComputerPanel {
 					? t("Hand back")
 					: t("Take over");
 		if (this.#controlButton.textContent !== label) this.#controlButton.textContent = label;
-		this.#controlButton.disabled = this.#taking !== undefined || release === "asking";
+		this.#controlButton.disabled = this.#takingLive(this.#machineId) || release === "asking";
 		this.#view?.capture(holding && picture ? this.#input : null);
 	}
 

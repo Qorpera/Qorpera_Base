@@ -24,7 +24,8 @@ import type { WebCompanyComputer } from "../src/cloud/computer.ts";
  * ask all the agent's machines back), until a new take-over on purpose. (I3) no take-over a page sent holds the desktop
  * after a hand-back answer past its epoch reached that page. (I4, review r11) a take-over the page did not call off (no
  * release of that machine asked since the press) is never answered "called off", and after a TAKE_CALLED_OFF named an
- * epoch no take-over of that machine goes out below it. A failure prints the seed, its shape and its steps. */
+ * epoch no take-over of that machine goes out below it; the ledger's calledOff, by which a window joins a press to a
+ * take-over on its way (review r12), agrees with each answer. A failure prints the seed, its shape and its steps. */
 
 const MEMBER = "member";
 const OTHER = "other";
@@ -433,7 +434,8 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 					const before = page.releases.get(machine) ?? 0;
 					const finishing = page.finishing > 0;
 					const finishes = page.finishes;
-					void page.ledger.take(machine, AGENT).then((answer) => {
+					const taking = page.ledger.take(machine, AGENT);
+					void taking.then((answer) => {
 						// A take-over the page did not call off (no release of the machine since the press, and no Hand back or
 						// I'm done at work, whose later rounds give back what reads show) never comes to nothing unsaid (review
 						// r11 F18).
@@ -442,6 +444,12 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 						if (answer.state === "called-off" && !calledOff)
 							page.silent.push(
 								`p${index}'s take-over of ${machine.slice(-2)} pressed at step ${pressed} was called off, though the page asked no release of it`,
+							);
+						// What the window joins a press by (review r12 F19) agrees with the answer: called off when it says so, live
+						// when it holds or tells the member why not (one not sent while a hand-back is unanswered may be either).
+						if (answer.state !== "releasing" && (answer.state === "called-off") !== page.ledger.calledOff(taking))
+							page.silent.push(
+								`p${index}'s take-over of ${machine.slice(-2)} pressed at step ${pressed} was answered ${answer.state}, yet the ledger says it was${page.ledger.calledOff(taking) ? "" : " not"} called off`,
 							);
 						// The window: taken while another machine was chosen goes back as it comes.
 						if (answer.state === "ok" && page.selected !== machine) {

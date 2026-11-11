@@ -99,6 +99,8 @@ export class DesktopHoldLedger {
 	 * of theirs the page learns of only later was given back too (found by the schedule explorer). */
 	readonly #agentsGivenBack = new Set<string>();
 	readonly #listeners = new Set<() => void>();
+	/** Each take-over's answer, with the hold and the ticket it is of (calledOff). */
+	readonly #attempts = new WeakMap<Promise<DesktopTake>, { readonly hold: Hold; readonly ticket: object }>();
 	/** The agents an I'm done (or Hand back) is working on now, how many at once. */
 	readonly #finishing = new Map<string, number>();
 	/** The company's page is gone: nothing is asked any more. */
@@ -220,10 +222,21 @@ export class DesktopHoldLedger {
 			return { state: "uncertain" };
 		})();
 		hold.pending = pending;
+		this.#attempts.set(pending, { hold, ticket });
 		void pending.finally(() => {
 			if (hold.pending === pending) hold.pending = undefined;
 		});
 		return pending;
+	}
+
+	/** Whether the take-over this answer is of was called off (a release of the machine, or a newer take-over of it): it
+	 * is no one's then, and a press waits for no answer of it (review r12 F19). */
+	calledOff(answer: Promise<DesktopTake>): boolean {
+		const attempt = this.#attempts.get(answer);
+		return (
+			attempt !== undefined &&
+			(attempt.hold.take !== attempt.ticket || this.#holds.get(attempt.hold.machineId) !== attempt.hold)
+		);
 	}
 
 	/** A hold of this member's that the list shows on this agent's machine, at the epoch it was taken under, that no window
