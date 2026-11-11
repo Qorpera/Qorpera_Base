@@ -32,6 +32,7 @@ import { UnixFolderControl } from "../../packages/runner-orchestrator/src/folder
 import { LxdUnixClient } from "../../packages/runner-orchestrator/src/lxd-client.ts";
 import { HttpCloudCodingCommandService } from "../../packages/runtime/src/cloud-coding-command-http.ts";
 import { HttpCloudMemberMachineScreenService } from "../../packages/runtime/src/cloud-member-machine-screen-http.ts";
+import type { MachineScreenAction } from "../../packages/runtime/src/cloud-machine-screen.ts";
 import { codingErrorCode } from "../../packages/runtime/src/cloud-coding-error-code.ts";
 import { parseCodingGuestConfiguration } from "../../packages/runtime/src/cloud-coding-guest-configuration.ts";
 import { withAbortScope } from "../../packages/runner-orchestrator/src/abort-scope.ts";
@@ -40,7 +41,7 @@ import { type CompanyMachinePolicy, parseCompanyMachinePolicy } from "../../pack
 import { BrokerCodingEnvironment } from "./coding-environment.ts";
 import { authorizeCodingCommand, proveNativeBinding } from "./command-authority.ts";
 import {
-	localMachineCodingValue, localMachineScreen, localMachineWake, localMemberMachineScreen, MachineCommandRouter,
+	localMachineCodingValue, localMachineScreen, localMachineWake, localMemberMachineAct, localMemberMachineScreen, MachineCommandRouter,
 	machineCommandRoutes,
 } from "./machine-command-routing.ts";
 import { MemberMachineScreenControl } from "./member-control.ts";
@@ -413,7 +414,10 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const machineRouter = new MachineCommandRouter({
 		owner: config.owner, providerId: config.vmPolicy.providerId, peers: config.commandPeers, control, credential,
 		...(memberControl ? { memberBegin: (token: string, look: { companyId: string; machineId: string; confirmed: boolean },
-			signal: AbortSignal) => memberControl.begin(token, look, signal) } : {}),
+			signal: AbortSignal) => memberControl.begin(token, look, signal),
+		// A member's action (20260930713000) is begun as the member too, recorded without its text.
+		memberActBegin: (token: string, act: { companyId: string; machineId: string; action: MachineScreenAction; epoch: number;
+			seat: number }, signal: AbortSignal) => memberControl.act(token, act, signal) } : {}),
 		...(machineHost ? {
 			executeLocal: (request, authority, signal) => machineHost.command(
 				{ machineId: authority.machineId, placementId: authority.placementId, commandId: request.input.commandId,
@@ -427,6 +431,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			codingValueLocal: localMachineCodingValue(machineHost),
 			screenLocal: localMachineScreen(machineHost),
 			memberScreenLocal: localMemberMachineScreen(machineHost),
+			memberActLocal: localMemberMachineAct(machineHost),
 		} : {}),
 	});
 	const router = new CodingCommandRouter({
@@ -470,6 +475,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	const memberScreens = config.memberScreens ? new HttpCloudMemberMachineScreenService({
 		port: config.memberScreens.port,
 		look: (look, signal) => machineRouter.memberScreen(look, signal),
+		// A member's action (20260930713000): what they typed goes to the machine and nowhere else, never to a log.
+		act: (act, signal) => machineRouter.memberAct(act, signal),
 		failed: (code) => console.error(JSON.stringify({ event: "member-machine-screen-error", code })),
 	}) : undefined;
 	let executor: CloudCodingExecutor | undefined;

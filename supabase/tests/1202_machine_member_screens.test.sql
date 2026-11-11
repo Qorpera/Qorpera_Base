@@ -208,8 +208,8 @@ declare
 begin
 	perform pg_temp.base_assert(v_alice - 'machines' = jsonb_build_object('schema', 'qorpera.agent-machines/v1',
 			'profileId', '92400000-0000-4000-8000-000000000010', 'staffAgentId', '92400000-0000-4000-8000-000000000030',
-			'canWake', false),
-		'1: a viewer reads Alice''s machines and may not wake one: ' || coalesce(v_alice::text, 'null'));
+			'canWake', false, 'canTakeOver', false),
+		'1: a viewer reads Alice''s machines and may not wake one (nor take one over, 20260930713000): ' || coalesce(v_alice::text, 'null'));
 	-- Running first; among them the one she drove last, then the other she drove, then the newest; then the rest, newest
 	-- first. Bob's own machine, the removed one and the one being deleted are not hers to show.
 	perform pg_temp.base_assert((select array_agg(m ->> 'name' order by n) from jsonb_array_elements(v_alice -> 'machines')
@@ -218,7 +218,9 @@ begin
 	v_first := v_alice -> 'machines' -> 0;
 	perform pg_temp.base_assert(v_first - 'screenUsedAt' = jsonb_build_object('machineId', pg_temp.mm_id('a4'),
 			'name', 'm-1202-bob', 'purpose', 'Tests the app.', 'state', 'running', 'lifetime', 'task', 'desktopCapable', true,
-			'startedByAgent', false, 'screenAgentName', 'Alice', 'waitingFor', null)
+			'startedByAgent', false, 'screenAgentName', 'Alice', 'control', null, 'waitingFor', null,
+			-- 20260930713000: the caller's own hand-back epoch for the machine (0: never handed back).
+			'epoch', 0)
 			and (v_first ->> 'screenUsedAt')::timestamptz > clock_timestamp() - interval '2 minutes',
 		'1: one machine, only what the window needs: ' || v_first::text);
 	perform pg_temp.base_assert(not exists (select 1 from jsonb_array_elements(v_alice -> 'machines') m
@@ -336,7 +338,9 @@ do $$
 declare v_where jsonb := jsonb_build_object('schema', 'qorpera.member-machine-screen-authority/v1', 'state', 'authorized',
 	'useId', current_setting('qorpera_test.mm_u31'), 'machineId', pg_temp.mm_id('a1'), 'placementId', pg_temp.mm_id('b1'),
 	'bootId', pg_temp.mm_id('c1'), 'executorOwner', 'mx-1202', 'providerId', 'machine-1202',
-	'userId', pg_temp.mm_user('viewer'), 'keepDesktop', true);
+	'userId', pg_temp.mm_user('viewer'), 'keepDesktop', true,
+	-- The lease generation the read saw (20260930713000): no member ever took m-1202 over.
+	'desktopGeneration', 0);
 begin
 	perform pg_temp.base_assert(pg_temp.mm_answer(current_setting('qorpera_test.mm_a31')) = v_where || '{"served": false}'
 			and pg_temp.mm_answer(current_setting('qorpera_test.mm_a32')) = v_where || '{"served": false}'

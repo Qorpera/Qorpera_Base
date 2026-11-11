@@ -1,8 +1,12 @@
 import { readBoundedCloudResponse } from "../../packages/cloud-client/src/cloud-request.ts";
 import {
+	CloudMemberMachineActRefusal,
+	type CloudMemberMachineActRefusalCode,
 	CloudMemberMachineScreenRefusal,
 	type CloudMemberMachineScreenRefusalCode,
+	cloudMemberMachineActRecord,
 } from "../../packages/runtime/src/cloud-machine-command-http.ts";
+import type { MachineScreenAction } from "../../packages/runtime/src/cloud-machine-screen.ts";
 import {
 	CloudMemberMachineScreenForbidden,
 	CloudMemberMachineScreenSignIn,
@@ -10,13 +14,22 @@ import {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TOKEN = /^[A-Za-z0-9._~-]{1,8192}$/;
-/** What the begin answers a look it refuses, which the member's window acts on. */
-const REFUSED = new Set(["MACHINE_NOT_RUNNING", "MACHINE_NEEDS_COMPANY_VIEW", "SCREEN_TOO_SOON"]);
+/** What the begin answers a look it refuses, which the member's window acts on (another member's hold of the desktop,
+ * 20260930713000, too). */
+const REFUSED = new Set(["MACHINE_NOT_RUNNING", "MACHINE_NEEDS_COMPANY_VIEW", "SCREEN_TOO_SOON", "DESKTOP_MEMBER_IN_CONTROL"]);
+/** What the begin of an action answers one it refuses (20260930713000). */
+const ACT_REFUSED = new Set([
+	"MACHINE_NOT_RUNNING",
+	"MACHINE_NEEDS_COMPANY_VIEW",
+	"DESKTOP_MEMBER_IN_CONTROL",
+	"DESKTOP_CONTROL_ENDED",
+]);
 
-/** The member's side of a look at a desktop (20260930712000): exactly one call, qorpera_member_machine_screen_begin, made
- * as the member with their own bearer token and the project's publishable key, to the executor's fixed project origin.
- * The database checks the token (PostgREST, auth.uid()); this client only passes it on. The token is never logged,
- * stored or put in an error: every failure is a fixed code. */
+/** The member's side of a look at a desktop (20260930712000) and of an action on one they hold (20260930713000): exactly
+ * two calls, qorpera_member_machine_screen_begin and qorpera_member_machine_desktop_act_begin, made as the member with
+ * their own bearer token and the project's publishable key, to the executor's fixed project origin. The database checks
+ * the token (PostgREST, auth.uid()); this client only passes it on. The token is never logged, stored or put in an
+ * error: every failure is a fixed code. A typed text never goes here: the action's begin carries its length alone. */
 export class MemberMachineScreenControl {
 	readonly #origin: string;
 	readonly #publishableKey: string;
@@ -38,8 +51,9 @@ export class MemberMachineScreenControl {
 		this.#fetch = options.fetch ?? fetch;
 	}
 	/** Begins one look as the member: its single-use id, or the refusal the window acts on (a machine that is not
-	 * running, a disk the member may not see, a look too soon after the last). A token the database does not take is
-	 * CloudMemberMachineScreenSignIn; a company or machine that is not the member's, CloudMemberMachineScreenForbidden. */
+	 * running, a disk the member may not see, a look too soon after the last, another member's hold of the desktop). A
+	 * token the database does not take is CloudMemberMachineScreenSignIn; a company or machine that is not the member's,
+	 * CloudMemberMachineScreenForbidden. */
 	async begin(
 		token: string,
 		look: { companyId: string; machineId: string; confirmed: boolean },
@@ -48,44 +62,13 @@ export class MemberMachineScreenControl {
 		if (!TOKEN.test(token)) throw new CloudMemberMachineScreenSignIn();
 		if (!UUID.test(look.companyId) || !UUID.test(look.machineId) || typeof look.confirmed !== "boolean")
 			throw new Error("MEMBER_SCREEN_BEGIN_INVALID");
-		const checked = AbortSignal.any([signal, AbortSignal.timeout(10000)]);
-		let response: Response;
-		try {
-			response = await this.#fetch(`${this.#origin}/rest/v1/rpc/qorpera_member_machine_screen_begin`, {
-				method: "POST",
-				redirect: "error",
-				signal: checked,
-				headers: {
-					apikey: this.#publishableKey,
-					authorization: `Bearer ${token}`,
-					"content-type": "application/json",
-				},
-				body: JSON.stringify({
-					p_profile_id: look.companyId,
-					p_machine_id: look.machineId,
-					p_watch: { confirmed: look.confirmed },
-				}),
-			});
-		} catch {
-			throw new Error("MEMBER_SCREEN_BEGIN_UNCONFIRMED");
-		}
-		if (response.status !== 200) {
-			void response.body?.cancel().catch(() => undefined);
-			// PostgREST answers a token it does not take with 401, and the function's own refusal (42501) with 403.
-			if (response.status === 401) throw new CloudMemberMachineScreenSignIn();
-			if (response.status === 403) throw new CloudMemberMachineScreenForbidden();
-			throw new Error("MEMBER_SCREEN_BEGIN_UNCONFIRMED");
-		}
-		let answer: Record<string, unknown>;
-		try {
-			const value = JSON.parse(
-				new TextDecoder("utf8", { fatal: true }).decode(await readBoundedCloudResponse(response, 4096, checked)),
-			) as unknown;
-			if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object");
-			answer = value as Record<string, unknown>;
-		} catch {
-			throw new Error("MEMBER_SCREEN_BEGIN_UNCONFIRMED");
-		}
+		const answer = await this.#call(
+			token,
+			"qorpera_member_machine_screen_begin",
+			{ p_profile_id: look.companyId, p_machine_id: look.machineId, p_watch: { confirmed: look.confirmed } },
+			"MEMBER_SCREEN_BEGIN",
+			signal,
+		);
 		const keys = Object.keys(answer).sort().join();
 		if (answer.schema === "qorpera.member-machine-screen/v1" && keys === "schema,state,useId" && answer.state === "ok" &&
 			typeof answer.useId === "string" && UUID.test(answer.useId))
@@ -94,5 +77,90 @@ export class MemberMachineScreenControl {
 			typeof answer.reason === "string" && REFUSED.has(answer.reason))
 			throw new CloudMemberMachineScreenRefusal(answer.reason as CloudMemberMachineScreenRefusalCode);
 		throw new Error("MEMBER_SCREEN_BEGIN_INVALID");
+	}
+	/** Begins one action as the member, recorded without any text (cloudMemberMachineActRecord), under the hold its input
+	 * was captured in (`epoch` and `seat`, F24 and F26): its single-use id, or the refusal the window acts on (a machine
+	 * that is not running, a disk the member may not see, another member's hold of the desktop, the member's own hold
+	 * ended, or a newer hold of theirs: after a hand-back, after a lease ran out and was taken again, or another tab's).
+	 * Sign-in and forbidden as for a look. */
+	async act(
+		token: string,
+		act: { companyId: string; machineId: string; action: MachineScreenAction; epoch: number; seat: number },
+		signal: AbortSignal,
+	): Promise<string> {
+		if (!TOKEN.test(token)) throw new CloudMemberMachineScreenSignIn();
+		if (
+			!UUID.test(act.companyId) ||
+			!UUID.test(act.machineId) ||
+			act.action.type === "open" ||
+			!Number.isSafeInteger(act.epoch) ||
+			act.epoch < 0 ||
+			!Number.isSafeInteger(act.seat) ||
+			act.seat < 0
+		)
+			throw new Error("MEMBER_ACT_BEGIN_INVALID");
+		const answer = await this.#call(
+			token,
+			"qorpera_member_machine_desktop_act_begin",
+			{
+				p_profile_id: act.companyId,
+				p_machine_id: act.machineId,
+				p_action: cloudMemberMachineActRecord(act.action),
+				p_epoch: act.epoch,
+				p_seat: act.seat,
+			},
+			"MEMBER_ACT_BEGIN",
+			signal,
+		);
+		const keys = Object.keys(answer).sort().join();
+		if (answer.schema === "qorpera.member-machine-desktop-act/v1" && keys === "actionId,schema,state" &&
+			answer.state === "ok" && typeof answer.actionId === "string" && UUID.test(answer.actionId))
+			return answer.actionId;
+		if (answer.schema === "qorpera.member-machine-desktop-act/v1" && keys === "reason,schema,state" &&
+			answer.state === "refused" && typeof answer.reason === "string" && ACT_REFUSED.has(answer.reason))
+			throw new CloudMemberMachineActRefusal(answer.reason as CloudMemberMachineActRefusalCode);
+		throw new Error("MEMBER_ACT_BEGIN_INVALID");
+	}
+	/** One RPC as the member; its JSON object, or a fixed code (`word`_UNCONFIRMED, sign-in, forbidden). */
+	async #call(
+		token: string,
+		method: string,
+		args: Record<string, unknown>,
+		word: string,
+		signal: AbortSignal,
+	): Promise<Record<string, unknown>> {
+		const checked = AbortSignal.any([signal, AbortSignal.timeout(10000)]);
+		let response: Response;
+		try {
+			response = await this.#fetch(`${this.#origin}/rest/v1/rpc/${method}`, {
+				method: "POST",
+				redirect: "error",
+				signal: checked,
+				headers: {
+					apikey: this.#publishableKey,
+					authorization: `Bearer ${token}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify(args),
+			});
+		} catch {
+			throw new Error(`${word}_UNCONFIRMED`);
+		}
+		if (response.status !== 200) {
+			void response.body?.cancel().catch(() => undefined);
+			// PostgREST answers a token it does not take with 401, and the function's own refusal (42501) with 403.
+			if (response.status === 401) throw new CloudMemberMachineScreenSignIn();
+			if (response.status === 403) throw new CloudMemberMachineScreenForbidden();
+			throw new Error(`${word}_UNCONFIRMED`);
+		}
+		try {
+			const value = JSON.parse(
+				new TextDecoder("utf8", { fatal: true }).decode(await readBoundedCloudResponse(response, 4096, checked)),
+			) as unknown;
+			if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object");
+			return value as Record<string, unknown>;
+		} catch {
+			throw new Error(`${word}_UNCONFIRMED`);
+		}
 	}
 }

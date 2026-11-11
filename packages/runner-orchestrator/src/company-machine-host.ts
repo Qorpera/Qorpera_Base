@@ -154,6 +154,98 @@ const MEMBER_LOOK_EXITS: Readonly<Record<number, CompanyMachineMemberLookRefusal
 	97: "MACHINE_BOOT_CHANGED",
 	98: "MACHINE_IMAGE_WITHOUT_SCREEN",
 });
+/** A member's typed text on a desktop (20260930713000, memberAct): one fixed script run as root on exactly the boot SQL
+ * named (`$0`, else exit 97, before anything acts), with the text on its stdin and never in an argument or a file. It is
+ * not the screen helper's `type`: that runs `desktop type TEXT` as a transient systemd unit described by its command
+ * line, which systemd writes into the machine's journal ("Started run-….service - [systemd-run] … desktop type TEXT",
+ * measured with systemd 259 on 10 Nov 2026), where a member's password must never be. xdotool and xsel must be there
+ * (else 98, an earlier image), and the desktop's unit active with its display answering (else 95: no action runs on a
+ * screen that is off). The text stays in the shell's memory (`printf` is dash's own, so no process shows it). `$1` =
+ * paste puts it on both selections and presses shift+Insert, as `desktop type` does for text beyond plain ASCII (a
+ * letter outside the keyboard's layout comes out wrong through xdotool), and the executor clears both selections
+ * after; otherwise xdotool types it from its stdin. The desktop's idle clock is touched, as the screen helper's action
+ * touches it. Plain sh, with cat and touch. It runs in a transient unit of its own (companyMachineMemberTypeCommand). */
+export const COMPANY_MACHINE_MEMBER_TYPE = [
+	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97',
+	"{ command -v xdotool && command -v xsel; } >/dev/null 2>&1 || exit 98",
+	"{ systemctl is-active --quiet qorpera-machine-desktop.service && DISPLAY=:1 xdpyinfo >/dev/null 2>&1; } || exit 95",
+	"touch -c /run/qorpera-desktop/last-use",
+	// The text whole, its last line breaks too (the x keeps them from the command substitution).
+	"text=$(cat; printf x) || exit 1",
+	// biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's own parameter expansion, not a template.
+	"text=${text%x}",
+	"export DISPLAY=:1",
+	'if [ "$1" = paste ]; then',
+	"\tfor selection in --clipboard --primary; do",
+	// xsel stays behind to own the selection, in the unit's control group: it ends with the unit, 0.2 s after the paste.
+	'\t\tprintf %s "$text" | xsel --logfile /dev/null "$selection" --input >/dev/null 2>&1 || exit 1',
+	"\tdone",
+	"\txdotool key --clearmodifiers shift+Insert || exit 1",
+	"\tsleep 0.2",
+	"else",
+	'\tprintf %s "$text" | xdotool type --delay 12 --file - || exit 1',
+	"fi",
+].join("\n");
+/** A member's typed text runs at most this long in the machine (its unit's RuntimeMaxSec): 500 characters at 12 ms a
+ * key take 6 s. The same as a helper action's deadline, so the busy grace after a text that was cut off is the same
+ * (SCREEN_ACTION_GRACE_MS: this and a second for the kill to land). */
+const MEMBER_TYPE_UNIT_SECONDS = 10;
+/** The executor's own deadline for a typed text: the unit's limit and the way back. */
+const MEMBER_TYPE_MS = 12000;
+/** What a typed text's unit is called in the journal: a fixed few words, never its command line. */
+const MEMBER_TYPE_DESCRIPTION = "qorpera member text";
+/**
+ * How a member's typed text runs (review r1 F3): COMPANY_MACHINE_MEMBER_TYPE as a transient service, as the screen
+ * helper runs an action's command (cloud-machine-screen.ts, machineScreenActionCommand), so systemd and not the shell
+ * ends it: at RuntimeMaxSec it kills the unit's whole control group with SIGKILL (the shell, xdotool and any xsel),
+ * also when the executor cut its client off, so nothing it started acts after the busy grace. `--pipe` hands the
+ * unit the text on its stdin. The unit is described by a fixed text (MEMBER_TYPE_DESCRIPTION), so the journal's line
+ * names neither the script nor the text, and its command line holds the constant script, the boot and the mode alone.
+ * `--expand-environment=no` keeps the script's `$` as written. The xsel that owns a pasted text's selections is in the
+ * unit's control group and ends with it, 0.2 s after the paste; the executor's clear runs all the same. `path` and
+ * `slice` are the tests' own (stand-in tools).
+ */
+export function companyMachineMemberTypeCommand(
+	bootId: string,
+	mode: "type" | "paste",
+	options: { seconds?: number; path?: string; slice?: string } = {},
+): string[] {
+	return [
+		"/usr/bin/systemd-run",
+		"--quiet",
+		"--wait",
+		"--pipe",
+		"--collect",
+		"--expand-environment=no",
+		`--slice=${options.slice ?? "qorpera-machine.slice"}`,
+		"-p",
+		`RuntimeMaxSec=${options.seconds ?? MEMBER_TYPE_UNIT_SECONDS}`,
+		"-p",
+		"KillMode=control-group",
+		"-p",
+		"KillSignal=SIGKILL",
+		`--description=${MEMBER_TYPE_DESCRIPTION}`,
+		"--setenv=DISPLAY=:1",
+		`--setenv=PATH=${options.path ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}`,
+		"--setenv=HOME=/root",
+		"--setenv=LANG=C.UTF-8",
+		"--setenv=USER=root",
+		"--",
+		"/bin/sh",
+		"-c",
+		COMPANY_MACHINE_MEMBER_TYPE,
+		bootId,
+		mode,
+	];
+}
+/** The script's exits besides 0: the screen is off (95), another boot (97), an image without xdotool or xsel (98). */
+const MEMBER_TYPE_EXITS: Readonly<Record<number, string>> = Object.freeze({
+	95: "DESKTOP_NOT_RUNNING",
+	97: "MACHINE_BOOT_CHANGED",
+	98: "MACHINE_IMAGE_WITHOUT_SCREEN",
+});
+/** Text `desktop type` pastes rather than types: anything beyond printable ASCII (deploy/machine/desktop, `type`). */
+const PASTED = /[^\x20-\x7e]/;
 /** The member read check's refusal: a read the machine was served is not the watching member's to read. */
 const MEMBER_UNREADABLE = "qorpera.test-machine/member-unreadable";
 /** Why a member's look is held for good while the machine holds such a read (#memberReads), told apart from a hold that
@@ -240,6 +332,8 @@ export const COMPANY_MACHINE_HOST_RPCS = [
 	"qorpera_folder_test_machine_inherit_reads",
 	"qorpera_mark_company_machine_folder_restart",
 	"qorpera_folder_member_machine_reads",
+	// The fence after a capture (20260930713000, review r1 F1).
+	"qorpera_machine_desktop_picture_check",
 ] as const;
 
 export interface CompanyMachineHostOptions {
@@ -287,6 +381,8 @@ export interface CompanyMachineHostOptions {
 	screenTimeoutMs?: number;
 	/** How long a member's look may run on the machine (default 6 s): the tests' own shorter one. */
 	memberLookTimeoutMs?: number;
+	/** How long a member's typed text may take on the machine (default 10 s): the tests' own shorter one. */
+	memberTypeTimeoutMs?: number;
 	/** The clock a desktop's busy grace is counted on (default Date.now): the tests' own. */
 	now?: () => number;
 }
@@ -358,6 +454,8 @@ export interface CompanyMachineScreen {
 	bootId: string;
 	runId: string;
 	request: Record<string, unknown>;
+	/** The lease generation SQL's read saw (20260930713000): the picture leaves only while it stands (review r1 F1). */
+	desktopGeneration: number;
 }
 /** What the helper answered: its header and the PNG (null: none), or why the company folder held both the picture and
  * the windows' titles back (`heldBack`, a HELD text; what the action did is still told). */
@@ -375,11 +473,15 @@ export interface CompanyMachineMemberLook {
 	bootId: string;
 	userId: string;
 	keepDesktop: boolean;
+	/** The lease generation SQL's read saw (20260930713000): the picture leaves only while it stands (review r1 F1). */
+	desktopGeneration: number;
 }
 export type CompanyMachineMemberLookRefusal =
 	| "DESKTOP_NOT_RUNNING"
 	| "MACHINE_BOOT_CHANGED"
-	| "MACHINE_IMAGE_WITHOUT_SCREEN";
+	| "MACHINE_IMAGE_WITHOUT_SCREEN"
+	// Another member took the desktop over since the look was read (20260930713000).
+	| "DESKTOP_MEMBER_IN_CONTROL";
 /** The picture and its etag (the hex sha-256 of its bytes), the screen off or the machine changed (`refused`), or the
  * picture held back (`held`): `hidden` while the machine holds a read the member may not read, `pending` while the
  * company folder has not released what the machine read (the member looks again). A held look carries neither the
@@ -388,6 +490,20 @@ export type CompanyMachineMemberLookOutcome =
 	| { readonly png: Buffer; readonly etag: string }
 	| { readonly refused: CompanyMachineMemberLookRefusal }
 	| { readonly held: "hidden" | "pending" };
+/** A member's action on a desktop of this node (20260930713000), as SQL authorized it
+ * (qorpera_member_machine_desktop_act_authority) and the member sent it: where it runs, its single-use id (the screen
+ * helper's receipt), and the action of machine_screen's shape (never `open`), a `type` with its text. */
+export interface CompanyMachineMemberAct {
+	placementId: string;
+	bootId: string;
+	actionId: string;
+	action: Record<string, unknown>;
+}
+/** The action ran (`exitCode`: `desktop`'s, null when it was killed at its deadline), or why it did not: the desktop is
+ * busy with another action (DESKTOP_BUSY), off, or the machine changed. Nothing of the screen comes back. */
+export type CompanyMachineMemberActOutcome =
+	| { readonly done: { readonly exitCode: number | null } }
+	| { readonly refused: string };
 /** What the company folder's release of a boot's reads needs (#release): the boot, and the run that takes them in. */
 type FolderRelease = Pick<CompanyMachineCommandAuthority, "placementId" | "bootId" | "runId">;
 
@@ -1998,10 +2114,12 @@ export class LxdCompanyMachineHost {
 	}
 	/** The executor's own clear of the machine's clipboard and primary selection: the same packaged helper with
 	 * `--clear-only`, on the run's boot only (another boot's clipboard went with it: exit 97, nothing to do), under its
-	 * own deadline and never the request's signal. It never throws; a failure is logged as a fixed word alone. */
+	 * own deadline and never the request's signal. It never throws; a failure is logged as a fixed word alone
+	 * (`failed`: save_coding_value's, or a member's pasted text's, 20260930713000). */
 	async #clearCodingValue(
 		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
-		run: CompanyMachineCodingValue,
+		run: Pick<CompanyMachineCodingValue, "placementId" | "bootId">,
+		failed = "COMPANY_MACHINE_CODING_VALUE_CLEAR_FAILED",
 	): Promise<void> {
 		try {
 			const cleared = await pipe(
@@ -2030,9 +2148,9 @@ export class LxdCompanyMachineHost {
 				new TextDecoder("utf8", { fatal: true }).decode(cleared.stdout).trim() !==
 					JSON.stringify({ schema: "qorpera.machine-coding-value-cleared/v1" })
 			)
-				throw new Error("COMPANY_MACHINE_CODING_VALUE_CLEAR_FAILED");
+				throw new Error(failed);
 		} catch {
-			console.error("COMPANY_MACHINE_CODING_VALUE_CLEAR_FAILED");
+			console.error(failed);
 		}
 	}
 
@@ -2050,60 +2168,46 @@ export class LxdCompanyMachineHost {
 	 *
 	 * One action at a time per desktop (review r1 F4): while one runs, or for SCREEN_ACTION_GRACE_MS after one that did
 	 * not end cleanly, another run's action is refused before the helper runs (DESKTOP_BUSY, no receipt marker made), so
-	 * it can never type into a window the first one changed. A look is always served.
+	 * it can never type into a window the first one changed. A look is always served. A member's action
+	 * (20260930713000, memberAct) holds the same desktop the same way.
+	 *
+	 * A look authorized before a member took the desktop over may capture what the member did after it, however the steps
+	 * interleave: after the capture, before anything leaves, SQL is asked whether the lease generation the read saw still
+	 * stands and no member holds the desktop (#pictureAllowed). If not, the outcome is DESKTOP_MEMBER_IN_CONTROL, without
+	 * the picture or the titles.
 	 */
 	async screen(run: CompanyMachineScreen, signal: AbortSignal): Promise<CompanyMachineScreenOutcome> {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!pipe) throw new Error("COMPANY_MACHINE_SCREEN_UNAVAILABLE");
-		if (![run.placementId, run.bootId, run.runId].every((id) => UUID.test(id)))
+		if (
+			![run.placementId, run.bootId, run.runId].every((id) => UUID.test(id)) ||
+			!Number.isSafeInteger(run.desktopGeneration) ||
+			run.desktopGeneration < 0
+		)
 			throw new Error("COMPANY_MACHINE_SCREEN_INVALID");
 		const acting = run.request.action !== null && run.request.action !== undefined;
-		const now = this.#options.now ?? Date.now;
-		if (acting) {
-			const busy = this.#screenBusy.get(run.placementId);
-			if (busy === "acting" || (typeof busy === "number" && busy > now())) return { refused: "DESKTOP_BUSY" };
-			this.#screenBusy.set(run.placementId, "acting");
-		}
+		if (acting && !this.#holdDesktop(run.placementId)) return { refused: "DESKTOP_BUSY" };
 		let ended = false;
 		let result: Awaited<ReturnType<typeof pipe>>;
 		try {
-			result = await pipe(
-				this.#policy.project,
-				lxdCompanyMachineName(run.placementId),
-				{
-					command: [
-						"/bin/sh",
-						"-c",
-						CODING_VALUE_ON_BOOT,
-						run.bootId,
-						"/usr/bin/node",
-						COMPANY_MACHINE_SCREEN_HELPER,
-					],
-					environment: {},
-					cwd: "/",
-					stdin: Buffer.from(JSON.stringify(run.request), "utf8"),
-					maxStdoutBytes: SCREEN_OUTPUT_BYTES,
-					stderrTailBytes: 0,
-				},
-				AbortSignal.any([signal, AbortSignal.timeout(this.#options.screenTimeoutMs ?? SCREEN_MS)]),
-			);
+			result = await this.#screenHelper(pipe, run.placementId, run.bootId, run.request, signal);
 			// The helper reached its own end (an answer, or one of its own exits) only then: it waits for the action's unit.
 			// Any other exit (137 when it was killed inside the machine, 1 when it failed) says nothing of the unit, which
 			// lives on to its limit (review r3 F4).
 			ended = result.exitCode === 0 || SCREEN_EXITS[result.exitCode] !== undefined;
 		} finally {
-			// The helper ended by itself: the desktop is free. Cut off (aborted, past its deadline, the exec lost, or the
-			// helper gone before its own end): it stays busy for as long as what the helper started may still act.
-			if (acting)
-				if (ended) this.#screenBusy.delete(run.placementId);
-				else this.#screenBusy.set(run.placementId, now() + SCREEN_ACTION_GRACE_MS);
+			if (acting) this.#releaseDesktop(run.placementId, ended);
 		}
 		const exit = SCREEN_EXITS[result.exitCode];
 		if (exit !== undefined) return { refused: exit };
 		if (result.exitCode !== 0) throw new Error("COMPANY_MACHINE_SCREEN_FAILED");
 		const shot = screenOutput(result.stdout);
+		if ("refused" in shot) return shot;
+		// The fence: nothing of a screen a member took over since the read leaves, for an agent (review r1 F1).
+		if (!(await this.#pictureAllowed(run.placementId, run.desktopGeneration, null, signal)))
+			return { refused: "DESKTOP_MEMBER_IN_CONTROL" };
 		const folder = this.#options.folder;
-		if ("refused" in shot || !folder) return shot;
+		if (!folder) return shot;
 		const at: FolderRelease = { placementId: run.placementId, bootId: run.bootId, runId: run.runId };
 		const f = this.#folders.get(run.placementId);
 		const boot = f?.bootId === run.bootId ? f : undefined;
@@ -2126,6 +2230,160 @@ export class LxdCompanyMachineHost {
 			png: null,
 			heldBack,
 		});
+	}
+	/** The screen helper once, as root on exactly the boot SQL named (CODING_VALUE_ON_BOOT), with the request on its stdin;
+	 * its stdout read within its bound and never logged, its stderr dropped. */
+	#screenHelper(
+		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
+		placementId: string,
+		bootId: string,
+		request: Record<string, unknown>,
+		signal: AbortSignal,
+	): ReturnType<NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>> {
+		return pipe(
+			this.#policy.project,
+			lxdCompanyMachineName(placementId),
+			{
+				command: ["/bin/sh", "-c", CODING_VALUE_ON_BOOT, bootId, "/usr/bin/node", COMPANY_MACHINE_SCREEN_HELPER],
+				environment: {},
+				cwd: "/",
+				stdin: Buffer.from(JSON.stringify(request), "utf8"),
+				maxStdoutBytes: SCREEN_OUTPUT_BYTES,
+				stderrTailBytes: 0,
+			},
+			AbortSignal.any([signal, AbortSignal.timeout(this.#options.screenTimeoutMs ?? SCREEN_MS)]),
+		);
+	}
+	/** An action takes the placement's desktop, unless one runs there or one that did not end cleanly may still act
+	 * (false: DESKTOP_BUSY). */
+	#holdDesktop(placementId: string): boolean {
+		const now = this.#options.now ?? Date.now;
+		const busy = this.#screenBusy.get(placementId);
+		if (busy === "acting" || (typeof busy === "number" && busy > now())) return false;
+		this.#screenBusy.set(placementId, "acting");
+		return true;
+	}
+	/** The action ended by itself: the desktop is free. Cut off (aborted, past its deadline, the exec lost, or gone before
+	 * its own end): it stays busy for as long as what it started may still act. */
+	#releaseDesktop(placementId: string, ended: boolean): void {
+		const now = this.#options.now ?? Date.now;
+		if (ended) this.#screenBusy.delete(placementId);
+		else this.#screenBusy.set(placementId, now() + SCREEN_ACTION_GRACE_MS);
+	}
+	/** The fence after a capture (20260930713000, review r1 F1): whether SQL still lets the picture of this placement out
+	 * to this looker (`userId`; null for an agent): its lease generation the one the look's read saw, and no live hold by
+	 * anyone else. Asked after the capture and before anything of the screen leaves; a take-over at any moment since the
+	 * read moved the generation. A refusal is false; any other failure throws (the look fails, and is asked again). */
+	async #pictureAllowed(
+		placementId: string,
+		generation: number,
+		userId: string | null,
+		signal: AbortSignal,
+	): Promise<boolean> {
+		const answer = record(
+			await this.#call(
+				"qorpera_machine_desktop_picture_check",
+				{ p_placement_id: placementId, p_generation: generation, p_user_id: userId },
+				signal,
+			),
+			"COMPANY_MACHINE_PICTURE_CHECK_INVALID",
+		);
+		if (answer.schema !== "qorpera.machine-desktop-picture/v1")
+			throw new Error("COMPANY_MACHINE_PICTURE_CHECK_INVALID");
+		if (answer.state === "ok") return true;
+		if (answer.state === "refused" && answer.reason === "DESKTOP_MEMBER_IN_CONTROL") return false;
+		throw new Error("COMPANY_MACHINE_PICTURE_CHECK_INVALID");
+	}
+
+	/**
+	 * A member's action on a desktop of this node (20260930713000): the member's click, drag, scroll or keys through the
+	 * image's screen helper, as an agent's machine_screen action runs (the action id is its receipt, so it runs at most
+	 * once on this boot; its transient unit's deadline and the xdotool word check apply), with no settle and no look: the
+	 * member's window looks again itself (memberLook), so nothing of the screen, no title and no error text comes back
+	 * here. A typed text never goes through the helper, whose unit's description (the command line, the text in it) systemd
+	 * writes to the machine's journal: COMPANY_MACHINE_MEMBER_TYPE types it from its stdin, in a transient unit of its own
+	 * with a deadline systemd keeps (companyMachineMemberTypeCommand). After a text the desktop pasted (beyond plain ASCII,
+	 * on both selections), both selections are cleared before the desktop is let go.
+	 *
+	 * It holds the desktop as an agent's action does (#holdDesktop: one action at a time, and the grace after one that
+	 * did not end cleanly). An agent's look that overlapped it never shows it: the fence after each capture
+	 * (#pictureAllowed) refuses every picture once a member took the desktop over.
+	 */
+	async memberAct(act: CompanyMachineMemberAct, signal: AbortSignal): Promise<CompanyMachineMemberActOutcome> {
+		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!pipe) throw new Error("COMPANY_MACHINE_MEMBER_ACT_UNAVAILABLE");
+		const verb = act.action?.type;
+		const text = act.action?.text;
+		if (
+			![act.placementId, act.bootId, act.actionId].every((id) => UUID.test(id)) ||
+			typeof verb !== "string" ||
+			!SCREEN_VERBS.includes(verb) ||
+			verb === "open" ||
+			(verb === "type") !== (typeof text === "string") ||
+			(typeof text === "string" && (text.length === 0 || [...text].length > 500))
+		)
+			throw new Error("COMPANY_MACHINE_MEMBER_ACT_INVALID");
+		const pasted = typeof text === "string" && PASTED.test(text);
+		if (!this.#holdDesktop(act.placementId)) return { refused: "DESKTOP_BUSY" };
+		let ended = false;
+		try {
+			if (typeof text === "string") {
+				const began = Date.now();
+				const typed = await pipe(
+					this.#policy.project,
+					lxdCompanyMachineName(act.placementId),
+					{
+						command: companyMachineMemberTypeCommand(act.bootId, pasted ? "paste" : "type"),
+						environment: {},
+						cwd: "/",
+						stdin: Buffer.from(text, "utf8"),
+						maxStdoutBytes: 4096,
+						stderrTailBytes: 0,
+					},
+					AbortSignal.any([signal, AbortSignal.timeout(this.#options.memberTypeTimeoutMs ?? MEMBER_TYPE_MS)]),
+				);
+				// systemd-run answered: it waited for its unit, which ended (by itself, or killed at its limit) with
+				// everything it started. Killed itself (a signal's exit), it says nothing of the unit, which runs on to its
+				// limit: the desktop stays busy for the grace.
+				ended = typed.exitCode < 128;
+				const refused = MEMBER_TYPE_EXITS[typed.exitCode];
+				if (refused !== undefined) return { refused };
+				if (typed.exitCode === 0) return { done: { exitCode: 0 } };
+				// 1: xdotool or xsel failed, or the unit was killed at its limit (systemd-run answers 1 for both: one that
+				// ended at its limit is told as cut off); anything else: cut off, the text maybe typed in part.
+				const atLimit = Date.now() - began >= MEMBER_TYPE_UNIT_SECONDS * 1000;
+				return { done: { exitCode: typed.exitCode === 1 && !atLimit ? 1 : null } };
+			}
+			const result = await this.#screenHelper(
+				pipe,
+				act.placementId,
+				act.bootId,
+				{
+					schema: "qorpera.machine-screen-request/v1",
+					receiptId: act.actionId,
+					action: act.action,
+					settleMs: 0,
+					look: false,
+				},
+				signal,
+			);
+			ended = result.exitCode === 0 || SCREEN_EXITS[result.exitCode] !== undefined;
+			const exit = SCREEN_EXITS[result.exitCode];
+			if (exit !== undefined) return { refused: exit };
+			if (result.exitCode !== 0) throw new Error("COMPANY_MACHINE_MEMBER_ACT_FAILED");
+			const shot = screenOutput(result.stdout);
+			if ("refused" in shot) return { refused: shot.refused };
+			const done = shot.header.action as { type?: unknown; exitCode?: unknown } | null;
+			if (!done || done.type !== verb) throw new Error("COMPANY_MACHINE_MEMBER_ACT_INVALID");
+			return { done: { exitCode: done.exitCode as number | null } };
+		} finally {
+			try {
+				// The desktop pasted the text: neither selection keeps it (the selection's owner, xsel, holds it until then).
+				if (pasted) await this.#clearCodingValue(pipe, act, "COMPANY_MACHINE_MEMBER_TEXT_CLEAR_FAILED");
+			} finally {
+				this.#releaseDesktop(act.placementId, ended);
+			}
+		}
 	}
 
 	/**
@@ -2151,7 +2409,9 @@ export class LxdCompanyMachineHost {
 		if (!pipe) throw new Error("COMPANY_MACHINE_MEMBER_LOOK_UNAVAILABLE");
 		if (
 			![look.placementId, look.bootId, look.userId].every((id) => UUID.test(id)) ||
-			typeof look.keepDesktop !== "boolean"
+			typeof look.keepDesktop !== "boolean" ||
+			!Number.isSafeInteger(look.desktopGeneration) ||
+			look.desktopGeneration < 0
 		)
 			throw new Error("COMPANY_MACHINE_MEMBER_LOOK_INVALID");
 		const result = await pipe(
@@ -2173,6 +2433,10 @@ export class LxdCompanyMachineHost {
 		if (result.exitCode !== 0) throw new Error("COMPANY_MACHINE_MEMBER_LOOK_FAILED");
 		const png = Buffer.from(result.stdout);
 		if (!screenPicture(png)) throw new Error("COMPANY_MACHINE_MEMBER_LOOK_INVALID");
+		// The fence (20260930713000, review r1 F1): another member took the desktop over since this look was read, or the
+		// one who held it gave it back and took it again: nothing of the picture leaves, and the window says who holds it.
+		if (!(await this.#pictureAllowed(look.placementId, look.desktopGeneration, look.userId, signal)))
+			return { refused: "DESKTOP_MEMBER_IN_CONTROL" };
 		const folder = this.#options.folder;
 		if (folder) {
 			const at: FolderRelease = { placementId: look.placementId, bootId: look.bootId };
