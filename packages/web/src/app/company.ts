@@ -262,6 +262,10 @@ export interface CompanyState {
 	/** How many websites the company's agents published, as last read: the apps drawer shows Sites while there are any.
 	 * Unset until read, and on a cloud that can't say. */
 	siteCount?: number;
+	/** What's new (app/views/whats-new.ts): set while one of the company's projects makes a website, with how many of its
+	 * changes are ready to go live that this member did not answer Not yet to. The apps drawer shows What's new while it
+	 * is set. Unset until read, and on a cloud without it. */
+	whatsNew?: { readonly ready: number };
 	/** What the rail says of each agent between runs: its wall's waiting and newest done item, its next planned run
 	 * (app/agent-notes.ts). Unset until the first read lands; an agent with nothing has no entry. */
 	agentNotes?: AgentNotesState;

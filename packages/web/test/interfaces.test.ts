@@ -365,6 +365,66 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		expect(element.querySelector(".rail-sites")).toBeNull();
 	});
 
+	it("shows What's new while a project makes a website, with the changes ready as its badge", () => {
+		const { element, draw, controller } = rail(home);
+		const entry = () => element.querySelector<HTMLAnchorElement>(".rail-app.rail-whats-new");
+		expect(entry()).toBeNull();
+		controller.store.set({ siteCount: 1, whatsNew: { ready: 3 } });
+		draw();
+		expect(icons(element)).toEqual([
+			["Members", `#/c/${profileA.profileId}/i/members`],
+			["Sites", `#/c/${profileA.profileId}/sites`],
+			["What's new", `#/c/${profileA.profileId}/whats-new`],
+		]);
+		expect(entry()?.dataset.appKey).toBe("whats-new");
+		expect(entry()?.querySelector(".rail-count")?.textContent).toBe("3");
+		expect(entry()?.getAttribute("aria-label")).toBe("What's new, 3 waiting");
+		// Shut, the drawer's button says something waits.
+		expect(apps(element).classList.contains("has-waiting")).toBe(true);
+		expect(apps(element).getAttribute("aria-label")).toBe("Apps, 3 waiting");
+		draw({ name: "company", profileId: profileA.profileId, section: "whats-new" });
+		expect(drawer(element).classList.contains("is-open")).toBe(true);
+		expect(entry()?.getAttribute("aria-current")).toBe("page");
+		// Nothing ready (or quieted with Not yet): the entry stays, without a badge.
+		controller.store.set({ whatsNew: { ready: 0 } });
+		draw();
+		expect(entry()?.querySelector(".rail-count")).toBeNull();
+		expect(entry()?.hasAttribute("aria-label")).toBe(false);
+		controller.store.set({ whatsNew: undefined });
+		draw();
+		expect(entry()).toBeNull();
+	});
+
+	it("shows the four windows for What's new alone, and leaves out an agent's app of the same name while it shows", () => {
+		const { element, draw, controller } = rail(home);
+		controller.store.set({ interfacePages: pages(false, false) });
+		draw();
+		expect(apps(element).hidden).toBe(true);
+		const manifest = {
+			name: "What's new",
+			about: null,
+			emblem: "page" as const,
+			colour: null,
+			entry: "index.html",
+			owner: ada.id,
+			posted: true,
+			reads: [],
+			writes: [],
+			concept: false,
+			cover: null,
+			kit: null,
+		};
+		controller.store.set({
+			apps: [{ name: "whats-new", path: "apps/whats-new", manifest, problems: [], version: null }],
+		});
+		draw();
+		expect(icons(element)).toEqual([["What's new", `#/c/${profileA.profileId}/a/whats-new`]]);
+		controller.store.set({ whatsNew: { ready: 0 } });
+		draw();
+		expect(apps(element).hidden).toBe(false);
+		expect(icons(element)).toEqual([["What's new", `#/c/${profileA.profileId}/whats-new`]]);
+	});
+
 	it("hides a page from the member's own rail with a right-click, and shows it again from Hidden", async () => {
 		const { element, controller } = rail(home);
 		// A cloud that answers each member's own choice: Bank hidden, Members shown though the company's switch for it is

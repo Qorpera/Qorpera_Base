@@ -505,6 +505,28 @@ label > input, label > select { font-weight: 400; }
 .sites-page-heading > svg { flex: none; }
 .sites-page-heading h1 { margin: 0; }
 .sites-page-heading p { margin: 4px 0 0; color: var(--text-muted); }
+/* What's new (#/c/<id>/whats-new), headed as the Sites page is: per project, what is live (the Sites page's card), the
+ * changes ready to go live as a picture with one line each (the look of a question's visual choices), and the buttons. */
+.whats-new-site { margin: 0 0 40px; }
+.whats-new-site > h2 { margin: 0 0 10px; }
+.whats-new-site > h3 { margin: 22px 0 10px; }
+.whats-new-live .service-card { padding: 14px 0; }
+.whats-new-live .connection-actions .btn, .whats-new-actions .btn { border-radius: var(--radius-pill); }
+.whats-new-changes { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.whats-new-change {
+	display: grid; gap: 6px; align-content: start; min-width: 0; padding: 8px 8px 10px;
+	border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg);
+}
+.whats-new-line { margin: 0; padding: 2px 2px 0; font-size: 14px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+/* A change without a picture: its line alone, on a plain tile where the picture would be. */
+.whats-new-change.is-plain .whats-new-line {
+	display: grid; place-items: center; aspect-ratio: 4 / 3; padding: 14px; border-radius: 10px;
+	background: var(--pane-strong); font-size: 15px; text-align: center;
+}
+.whats-new-was { padding: 0 2px; color: var(--text-muted); font-size: 12.5px; }
+.whats-new-behind, .whats-new-waiting, .whats-new-managers, .whats-new-empty { margin: 10px 0 0; color: var(--text-muted); }
+.whats-new-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.whats-new-site > .service-outcome { margin: 12px 0 0; font-size: 13px; }
 .rail-row:hover { background: var(--rail-hover); text-decoration: none; }
 .rail-row.active, .rail-row.active:hover { background: var(--rail-selection); color: #fff; }
 .rail-row .figure { width: var(--rail-row-figure); height: var(--rail-row-figure); }

@@ -8,7 +8,9 @@ import { phrase, t } from "../../ui/preferences.ts";
  * own password. Every member sees each site's name, link, state, when and by which agent it was last published, and
  * where in the Company File it came from. An owner or admin also reads a site's password (to share it), changes it
  * (every visitor then enters the new one) and takes a site offline; the kernel refuses anyone else. Agents never see a
- * password. An app link (v195) is a site too: one port of a company machine, shown with its machine and port.
+ * password. An app link (v195) is a site too: one port of a company machine, shown with its machine and port. A
+ * project's site made from its code kept in Qorpera (own code storage step 4) is listed once a member put it live in
+ * What's new; its source is the project's place under code/, which no agent may publish from.
  */
 
 type SitesClient = Pick<WebSites, "list" | "password" | "setPassword" | "unpublish">;
@@ -25,6 +27,12 @@ const MANAGERS_ONLY = phrase("Only founders and admins can see passwords or take
 /** A site as members call it: its title, else its name in the link. */
 function nameOf(site: CompanySite): string {
 	return site.title ?? site.slug;
+}
+
+/** A project's site made from its code: only What's new puts a version of it live (the row is the plain one, with the
+ * project's place under code/ as its source). */
+function fromCode(site: CompanySite): boolean {
+	return site.kind === "files" && site.source.startsWith("code/");
 }
 
 /** Where an app link's app runs: its machine, unless it was deleted, and its port. */
@@ -259,10 +267,15 @@ export class SitesView {
 							"Take {name} offline? Its link stops working and its password is deleted. The app keeps running on its machine.",
 							{ name: nameOf(site) },
 						)
-					: t(
-							"Take {name} offline? Its link stops working and its password is deleted. The files stay in the Company File.",
-							{ name: nameOf(site) },
-						),
+					: fromCode(site)
+						? t(
+								"Take {name} offline? Its earlier versions go with it. The next change that passes its tests makes the site again, with a new password, and it waits in What's new.",
+								{ name: nameOf(site) },
+							)
+						: t(
+								"Take {name} offline? Its link stops working and its password is deleted. The files stay in the Company File.",
+								{ name: nameOf(site) },
+							),
 				t("Unpublish"),
 				true,
 				undefined,
@@ -446,9 +459,11 @@ export class SitesView {
 				h("small", { class: "hook-state" }, this.#state(site)),
 				site.kind === "app"
 					? h("small", null, appPlace(site))
-					: site.source
-						? h("small", null, t("From {source}", { source: site.source }))
-						: null,
+					: fromCode(site)
+						? h("small", null, t("Goes live from What's new"))
+						: site.source
+							? h("small", null, t("From {source}", { source: site.source }))
+							: null,
 			),
 			h("div", { class: "connection-actions" }, ...actions),
 			this.#row(link, [copyLink]),

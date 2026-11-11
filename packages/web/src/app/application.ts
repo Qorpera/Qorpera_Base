@@ -1,7 +1,7 @@
 import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt-plan-sign-in.ts";
-import { type Cloud, describeError } from "../cloud/client.ts";
+import { type Cloud, CloudRpcError, describeError } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
@@ -14,6 +14,7 @@ import { interfaceSupervisionCalls } from "../cloud/interface-supervisions.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
+import { codeReleaseCalls } from "../cloud/releases.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
 import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
@@ -86,6 +87,7 @@ import { SitesView } from "./views/settings-sites.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
 import { renderTeam, type TeamFeedback } from "./views/team.ts";
+import { WhatsNewView, whatsNewEntry } from "./views/whats-new.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
 
 /* Entry point. One cloud client, one auth controller, one company controller
@@ -437,6 +439,12 @@ export function mountApplication(
 		| undefined;
 	/** The company whose sites were read for the apps drawer. */
 	let sitesRead: CompanyController | undefined;
+	/** The company's What's new page (`#/c/{id}/whats-new`), kept while that route shows, and the company read for the
+	 * apps drawer's entry. */
+	let whatsNewPage:
+		| { readonly company: CompanyController; readonly view: WhatsNewView; readonly el: HTMLElement }
+		| undefined;
+	let releasesRead: CompanyController | undefined;
 	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
 	let mail: CompanyMail | undefined;
 	let computer: WebCompanyComputer | undefined;
@@ -580,6 +588,8 @@ export function mountApplication(
 		conceptsView = undefined;
 		sitesPage?.view.dispose();
 		sitesPage = undefined;
+		whatsNewPage?.view.dispose();
+		whatsNewPage = undefined;
 		if (newConversation && !newConversation.hasInput) {
 			newConversation.dispose();
 			newConversation = undefined;
@@ -1469,6 +1479,24 @@ export function mountApplication(
 			readSites();
 			window.addEventListener("focus", readSites, { signal: controller.signal });
 		}
+		// What's new, read the same way for its entry and badge. A cloud without the read (before 20260930729000), or one
+		// that refuses this member, shows no entry; a read that did not answer leaves the entry as it was.
+		if (releasesRead !== controller && state.team?.capabilities.read) {
+			releasesRead = controller;
+			const releases = codeReleaseCalls(cloud, controller.profile.profileId);
+			const readReleases = () =>
+				void releases.list(controller.signal).then(
+					(read) => {
+						if (!controller.signal.aborted) controller.store.set({ whatsNew: whatsNewEntry(controller, read) });
+					},
+					(error: unknown) => {
+						if (!controller.signal.aborted && error instanceof CloudRpcError && (error.missing || error.denied))
+							controller.store.set({ whatsNew: undefined });
+					},
+				);
+			readReleases();
+			window.addEventListener("focus", readReleases, { signal: controller.signal });
+		}
 		// The company's mail, read the same way: whether it is on (the Mailbox's `mail` need) and what waits for a person.
 		if (mail && !state.team?.capabilities.read) {
 			mail.dispose();
@@ -1534,7 +1562,7 @@ export function mountApplication(
 					? `app:${route.id}`
 					: route.section === "staff" && route.id
 						? `agent:${route.id.toLowerCase()}`
-						: route.section === "concepts" || route.section === "sites"
+						: route.section === "concepts" || route.section === "sites" || route.section === "whats-new"
 							? route.section
 							: undefined,
 		);
@@ -1552,6 +1580,10 @@ export function mountApplication(
 		if (route.section !== "sites" || sitesPage?.company !== controller) {
 			sitesPage?.view.dispose();
 			sitesPage = undefined;
+		}
+		if (route.section !== "whats-new" || whatsNewPage?.company !== controller) {
+			whatsNewPage?.view.dispose();
+			whatsNewPage = undefined;
 		}
 		if (route.section !== "new") {
 			newConversation?.dispose();
@@ -2066,7 +2098,7 @@ export function mountApplication(
 										"p",
 										null,
 										t(
-											"Websites the company's agents published. Each has its own link and password; share both with the people who should see it.",
+											"The company's websites. Each has its own link and password; share both with the people who should see it.",
 										),
 									),
 								),
@@ -2077,6 +2109,38 @@ export function mountApplication(
 				}
 				sitesPage.view.update();
 				if (sitesPage.el.parentElement !== main) replace(main, sitesPage.el);
+				return;
+			}
+			case "whats-new": {
+				// The changes to the company's sites made from its code, ready to go live, and what is live (own code storage
+				// step 4). Every member sees it; owners and admins put a version live and go back (the kernel's own rule).
+				if (!whatsNewPage) {
+					const view = new WhatsNewView(
+						controller,
+						codeReleaseCalls(cloud, controller.profile.profileId),
+						controller.signal,
+						{
+							image: (path, signal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
+							listed: (read) => controller.store.set({ whatsNew: whatsNewEntry(controller, read) }),
+						},
+					);
+					whatsNewPage = {
+						company: controller,
+						view,
+						el: h(
+							"section",
+							{ class: "page whats-new-page" },
+							h(
+								"header",
+								{ class: "sites-page-heading" },
+								interfaceEmblem("spark", 40),
+								h("div", null, h("h1", null, t("What's new"))),
+							),
+							view.el,
+						),
+					};
+				}
+				if (whatsNewPage.el.parentElement !== main) replace(main, whatsNewPage.el);
 				return;
 			}
 			case "team":

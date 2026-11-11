@@ -516,6 +516,9 @@ describe("a change to code kept in Qorpera that did not go in for its checks (ow
 		"Nothing went into main: Qorpera could not run the repository's checks on this change (the session's machine did not answer). This is not a fault in the code. The work is kept on the session's branch; finishing again runs the checks again.";
 	const MAIN_MOVED =
 		"Nothing went into main yet: main changed twice while this change's checks ran, so they never ran on what would go in. This is not a fault in the code. The work is kept on the session's branch; finishing again checks it once more.";
+	// Step 4: every check passed, but the site they built cannot go out (runner-orchestrator code-site.ts).
+	const SITE_REFUSED =
+		'Nothing went into main: every check passed, but the site in "dist" holds the value of STRIPE_KEY in assets/app.js. A key must never be built into the site. Fix it in the code or in the checks file\'s "site", and finish again.';
 	// The cloud's plain words for a failed run, whose code travels apart (20260930560000).
 	const STOPPED = "The coding turn stopped. The files the turn wrote stay in the session's workspace as it left them.";
 	// What a cloud without step 3's failure words makes of any code it has no case for.
@@ -527,6 +530,7 @@ describe("a change to code kept in Qorpera that did not go in for its checks (ow
 		["CODING_CHECKS_REFUSED", REFUSED, NOT_PASSED],
 		["CODING_CHECKS_DID_NOT_RUN", DID_NOT_RUN, NOT_TESTED],
 		["CODING_CHECKS_MAIN_MOVED", MAIN_MOVED, NOT_TESTED],
+		["CODING_CHECKS_SITE_REFUSED", SITE_REFUSED, NOT_PASSED],
 	] as const)("%s", (code, summary, expected) => {
 		// The failed event's code decides, for the owner and for anyone else, whatever the output says.
 		for (const said of [
