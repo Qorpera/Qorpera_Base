@@ -505,6 +505,8 @@ export const WORKSPACE: Record<string, string> = {
 	"Hand back": "Giv tilbage",
 	"You are using the computer. {name} gets no pictures of the screen while you use it.":
 		"Du bruger computeren. {name} får ingen billeder af skærmen, mens du bruger den.",
+	"You are using the computer. Choose Enter to click and type.":
+		"Du bruger computeren. Vælg Gå ind for at klikke og skrive.",
 	"{member} is using the computer. The screen is hidden meanwhile.":
 		"{member} bruger computeren. Skærmen er skjult imens.",
 	"Someone is using the computer. The screen is hidden meanwhile.":

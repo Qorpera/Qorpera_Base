@@ -121,7 +121,11 @@ interface TakeAttempt {
  * the window or leaving the page gives it back. The hold is the database's, renewed every minute while the window
  * shows it; other members see who holds it, not the screen. While the picture changes or the member acts, the window
  * looks every 450 ms. What the member may hold, and every hand-back until it is confirmed, is the company's ledger's
- * (DesktopHoldLedger), not the window's: closing the window forgets nothing (review r2 of #1661).
+ * (DesktopHoldLedger), not the window's: closing the window forgets nothing (review r2 of #1661). The picture takes the
+ * member's input only in the large view (entered in the thread, or full screen; v234 in production: in the preview a
+ * press drags the window, and a desktop cannot be driven at that size): a take-over of this page's enters the frame in
+ * the thread by itself once a picture shows, and back in the preview the picture is watched only and the words say how
+ * to use it.
  *
  * The panel belongs to the company's `ComputerPanels`, not to the thread it was opened in: a thread attaches it while
  * the member is there and hands it back on the way out. Only the member closing it, or leaving the company, ends it.
@@ -224,6 +228,9 @@ export class ComputerPanel {
 	#wantTakeOver: number | undefined;
 	/** The window's last Hand back (or the card's I'm done through it) was not confirmed: said until one is (review r15). */
 	#handBackFailed = false;
+	/** A take-over of this page's (its button, the agent's take-over card) enters the large view once a picture shows: the
+	 * picture takes input there only. Once: back in the preview it stays there until the member presses Enter. */
+	#enterOnHold = false;
 	/** The window's take-over: the latest press's attempt, of the machine chosen at it, and the ledger's answer it waits
 	 * for (review r12 F19). An older attempt's answer is not the window's. */
 	#taking: TakeAttempt | undefined;
@@ -329,7 +336,11 @@ export class ComputerPanel {
 		this.#view = new MachineScreenView({
 			mount: this.#body,
 			title: this.#titleText(),
-			onExpandedChange: this.#setExpanded,
+			onExpandedChange: (expanded) => {
+				this.#setExpanded(expanded);
+				// Input follows the view: the picture takes it only while entered.
+				this.#syncControls();
+			},
 			...(options.decode ? { decode: options.decode } : {}),
 		});
 		this.#view.setSwitcher(this.#frameSwitcher);
@@ -818,6 +829,7 @@ export class ComputerPanel {
 			sending: false,
 		};
 		this.#scheduleKeep(KEEP_EVERY_MS);
+		this.#enterOnHold = true;
 		this.#syncControls();
 		this.#view?.focusScreen();
 	}
@@ -829,6 +841,7 @@ export class ComputerPanel {
 		// Its input is dropped and an action of it on its way is cut off on the page; nothing it answers is acted on (F25).
 		hold.stop.abort();
 		this.#hold = undefined;
+		this.#enterOnHold = false;
 		clearTimeout(this.#keepTimer);
 		this.#keepTimer = undefined;
 		this.#controlNote.textContent = "";
@@ -957,12 +970,20 @@ export class ComputerPanel {
 	}
 
 	/** The take-over controls under the picture: Take over for a member who may, while there is a picture; what holding
-	 * means and Hand back while they hold it; nothing for a viewer. The picture takes input only while held. Without a
+	 * means and Hand back while they hold it; nothing for a viewer. The picture takes input only while held and entered
+	 * (the large view); a take-over of this page's enters the frame in the thread once a picture shows. Without a
 	 * picture, the same words, label and state stand in the state's place for a hold or a hand-back (review r2 F1 of
 	 * #1681). */
 	#syncControls(): void {
 		const picture = this.#view?.shown === true && this.#picturing();
 		const holding = this.#holding !== undefined && this.#holding === this.#machineId;
+		// Never full screen here: only the member's own press on Enter asks for that.
+		const entering = this.#enterOnHold && holding && picture;
+		if (entering) {
+			this.#enterOnHold = false;
+			this.#view?.enterFrame();
+		}
+		const entered = this.#view?.entered === true;
 		const release =
 			(this.#machineId ? this.#ledger.releasing(this.#machineId) : undefined) ??
 			(this.#handBackFailed ? "failed" : undefined);
@@ -980,9 +1001,11 @@ export class ComputerPanel {
 		this.#controls.classList.toggle("is-elsewhere", elsewhere);
 		this.#controlHandBack.hidden = !elsewhere;
 		const text = holding
-			? t("You are using the computer. {name} gets no pictures of the screen while you use it.", {
-					name: this.#name,
-				})
+			? picture && !entered
+				? t("You are using the computer. Choose Enter to click and type.")
+				: t("You are using the computer. {name} gets no pictures of the screen while you use it.", {
+						name: this.#name,
+					})
 			: release === "failed"
 				? t("The computer could not be given back yet. It goes back by itself within 5 minutes.")
 				: release
@@ -1004,7 +1027,8 @@ export class ComputerPanel {
 			if (button.textContent !== label) button.textContent = label;
 			button.disabled = disabled;
 		}
-		this.#view?.capture(holding && picture ? this.#input : null);
+		this.#view?.capture(holding && picture && entered ? this.#input : null);
+		if (entering) this.#view?.focusScreen();
 	}
 
 	/** Waits `ms` (at most until the next machines read is due), or until something pokes the loop. */

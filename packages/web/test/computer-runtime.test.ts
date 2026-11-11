@@ -1398,6 +1398,114 @@ describe("trusted viewer configuration", () => {
 });
 
 describe("a member's take-over of the desktop (20260930713000)", () => {
+	/** The view's state, the picture's role and whether it takes keys (v234 in production: input only in the large view). */
+	const entered = (p: ComputerPanel) =>
+		p.el.querySelector(".machine-screen")?.classList.contains("screen-viewer-entered");
+	const words = (p: ComputerPanel) => controls(p)?.querySelector(".machine-screen-control-text")?.textContent;
+
+	it("takes input only in the large view: Take over in the preview enters the frame in the thread, never full screen (v234)", async () => {
+		const full = vi.fn(async () => {});
+		Object.defineProperty(HTMLElement.prototype, "requestFullscreen", { configurable: true, value: full });
+		cleanup.push(() => {
+			delete (HTMLElement.prototype as { requestFullscreen?: unknown }).requestFullscreen;
+		});
+		const s = setup();
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		// The preview, before the take-over: a picture to watch, no input.
+		expect(entered(p)).toBe(false);
+		expect(canvas(p).getAttribute("role")).toBe("img");
+		controlButton(p)!.click();
+		await flush();
+		// Held: the window entered the frame in the thread by itself, asked for no full screen, and the picture has the keys.
+		expect(p.holding).toBe(true);
+		expect(entered(p)).toBe(true);
+		expect(p.el.classList.contains("is-entered")).toBe(true);
+		expect(full).not.toHaveBeenCalled();
+		expect(canvas(p).getAttribute("role")).toBe("application");
+		expect(document.activeElement).toBe(canvas(p));
+		expect(words(p)).toBe(
+			`You are using the computer. ${staff.displayName} gets no pictures of the screen while you use it.`,
+		);
+		press(canvas(p), 400, 250);
+		await advance(DOUBLE_CLICK_MS);
+		expect(s.acts.map((act) => act.action)).toEqual([{ type: "click", x: 800, y: 500 }]);
+		key(canvas(p), "Enter");
+		await flush();
+		expect(s.acts.at(-1)?.action).toEqual({ type: "key", keys: ["Return"] });
+	});
+
+	it("watches only in the preview while the page holds the desktop: no press or key reaches the computer, and the words say to choose Enter (v234)", async () => {
+		const { s, p } = await holding();
+		expect(entered(p)).toBe(true);
+		// Back to the thread: the preview, still held.
+		p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!.click();
+		await flush();
+		expect(entered(p)).toBe(false);
+		expect(p.holding).toBe(true);
+		expect(canvas(p).getAttribute("role")).toBe("img");
+		expect(canvas(p).hasAttribute("tabindex")).toBe(false);
+		expect(words(p)).toBe("You are using the computer. Choose Enter to click and type.");
+		expect(controlButton(p)?.textContent).toBe("Hand back");
+		// A press on the picture, a key on it and a key on the window: nothing goes to the computer.
+		press(canvas(p), 400, 250);
+		key(canvas(p), "a");
+		key(p.el, "Enter");
+		await advance(DOUBLE_CLICK_MS + TYPE_BATCH_MS);
+		expect(s.acts).toEqual([]);
+		// It stays in the preview while held: a new picture does not enter by itself again.
+		s.state.answers.push({ picture: 2 });
+		await advance(LOOK_EVERY_MS);
+		expect(entered(p)).toBe(false);
+		// Enter: the large view, and the picture takes input again.
+		p.el.querySelector<HTMLButtonElement>(".screen-viewer-enter")!.click();
+		await flush();
+		expect(entered(p)).toBe(true);
+		expect(canvas(p).getAttribute("role")).toBe("application");
+		expect(words(p)).toBe(
+			`You are using the computer. ${staff.displayName} gets no pictures of the screen while you use it.`,
+		);
+		press(canvas(p), 400, 250);
+		await advance(DOUBLE_CLICK_MS);
+		expect(s.acts.map((act) => act.action)).toEqual([{ type: "click", x: 800, y: 500 }]);
+		// Hand back from the large view: the hold ends, and the picture takes nothing more.
+		controlButton(p)!.click();
+		await flush();
+		expect(p.holding).toBe(false);
+		expect(canvas(p).getAttribute("role")).toBe("img");
+	});
+
+	it("enters once a picture shows when the take-over came before it, as the agent's take-over card's does (v234)", async () => {
+		const s = setup();
+		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		const p = panel(s);
+		await flush();
+		// The card's Take over: the window takes the desktop over while its screen is off.
+		p.takeOver();
+		await flush();
+		expect(p.holding).toBe(true);
+		expect(entered(p)).toBe(false);
+		// The picture comes: the window enters by itself, and the picture takes input.
+		s.state.fallback = { picture: 3 };
+		await advance(LOOK_EVERY_MS * 3);
+		expect(entered(p)).toBe(true);
+		expect(canvas(p).getAttribute("role")).toBe("application");
+		// Handed back before any picture: nothing is entered later.
+		const second = setup();
+		second.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		const other = panel(second);
+		await flush();
+		other.takeOver();
+		await flush();
+		expect(await other.handBack()).toBe(true);
+		second.state.fallback = { picture: 4 };
+		await advance(LOOK_EVERY_MS * 3);
+		expect(entered(other)).toBe(false);
+		expect(canvas(other).getAttribute("role")).toBe("img");
+	});
+
 	it("takes the desktop over, says what it means, renews it every minute and hands it back", async () => {
 		const { s, p } = await holding();
 		// The take-over is sent at the member's hand-back epoch the list said (review r5), with a press id of its own (F26).

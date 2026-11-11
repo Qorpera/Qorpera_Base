@@ -1579,8 +1579,8 @@ export class ConversationView {
 		}
 	}
 
-	/** Take over the agent's computer for a card: open its screen here and take the desktop over (20260930713000), which
-	 * gives the member its mouse and keyboard once the window shows it. */
+	/** Take over the agent's computer for a card: open its screen here and take the desktop over (20260930713000). Once
+	 * the window shows the picture it enters its large view, where the picture takes the member's mouse and keyboard. */
 	#takeOver(agent: HostedStaffAgent): void {
 		const panel = this.#panel ?? this.#showPanel(agent);
 		panel?.focus();
