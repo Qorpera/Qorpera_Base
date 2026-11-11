@@ -274,8 +274,9 @@ export function logCodeCare(event: Record<string, unknown>): void {
 	}
 }
 
-/** The change record's, the code requests' and a restore's lines in the executor's log (`code-change`, `code-request`,
- * `code-restore`, and each with `-error`): an error by its code and its detail (loggedError), never as itself. */
+/** The change record's, the code requests', a restore's and a landing's checks' lines in the executor's log
+ * (`code-change`, `code-request`, `code-restore`, `code-checks`, and each with `-error`): an error by its code and its
+ * detail (loggedError), never as itself. */
 export function logCodeRecord(event: Record<string, unknown>): void {
 	if (!String(event.event).endsWith("-error")) console.log(JSON.stringify(event));
 	else {
@@ -367,6 +368,8 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			...(codeHostJobs ? { repositories: new CodeHostRepositories(codeHostJobs, {
 				...(codeRecords ? { records: codeRecords } : {}), report: logCodeRecord }) } : {}),
 			onMount: (mount) => console.log(JSON.stringify({ event: "coding-folder-mount", ...mount })),
+			// A landing's checks, each command as it starts and ends, in the session's machine (own code storage, step 3).
+			report: logCodeRecord,
 		};
 		// Which model this executor runs, and with what: a proof reads it from the log.
 		console.log(JSON.stringify({ event: "coding-executor-folder", agentSha256: config.folder.agent.sha256, programSha256: config.folder.program.sha256,
