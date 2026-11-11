@@ -4,10 +4,10 @@
 -- restore, the platform's line after a landing, and the failure words of the checks with the session's rounds.
 -- 1211's fixture (1210's helpers before it): company/shop with six rows, session copies that hand commits in, the record
 -- call, and an undo and a restore from the call that asks for it to the executor's finish. This file's repositories
--- are company/gate, back, late, wide, kept and said, and its session copies are numbered from 1300.
+-- are company/gate, large, back, late, wide, kept and said, and its session copies are numbered from 1300.
 --   1. Rights, the columns and their rule, the marker.
 --   2. The record call: v1 as before; v2 none, off and passed; every invalid v2; a filler first and a filler taken
---      over; a replay.
+--      over; a replay; the largest value a real checks file gives (C1's count: 8,145 bytes).
 --   3. The switch: the lease holder only, a GitHub repository refused, no registry row is on, off is off.
 --   4. The record files: checksState and checks.
 --   5. Undo: one change, andLater over a passed row, over a none row and over an inherited one, andLater of a row that
@@ -41,6 +41,18 @@ create function pg_temp.chk_wide(p_after text, p_changed integer) returns jsonb 
 		'changed', (select jsonb_build_object('added', coalesce(jsonb_agg(n), '[]'), 'removed', coalesce(jsonb_agg(n), '[]'),
 				'run', coalesce(jsonb_agg(n), '[]'))
 			from (select 'check-' || lpad(i::text, 34, '0') as n from generate_series(1, p_changed) i) names)))
+$$;
+-- The largest value a real checks file gives (C1, code-checks.ts): 20 checks with names of 40 bytes and commands of
+-- 200, 20 names added and 20 removed (then none can be changed), merged, tried twice, every time at the largest the row
+-- takes (15 digits; a number of 16 digits takes no more room).
+create function pg_temp.chk_largest(p_after text) returns jsonb language sql immutable as $$
+	select pg_temp.chk_passed(p_after, 'merged', jsonb_build_object('ms', 999999999999999, 'copyMs', 999999999999999,
+		'tries', 2, 'checks', (select jsonb_agg(jsonb_build_object('name', 'check-' || lpad(i::text, 34, '0'),
+			'run', repeat('r', 200), 'ms', 999999999999999) order by i) from generate_series(1, 20) i),
+		'changed', jsonb_build_object('added', (select jsonb_agg('check-' || lpad(i::text, 34, '0') order by i)
+				from generate_series(1, 20) i),
+			'removed', (select jsonb_agg('gone-' || lpad(i::text, 35, '0') order by i) from generate_series(1, 20) i),
+			'run', '[]'::jsonb)))
 $$;
 -- What passed, as the `checks` of a report.
 create function pg_temp.chk_ok(p_result jsonb) returns jsonb language sql immutable as $$
@@ -132,7 +144,7 @@ create function pg_temp.chk_failed(p_summary text, p_code text) returns jsonb la
 	select jsonb_build_object('summary', p_summary, 'reason', p_code, 'code', p_code, 'outcome', p_code)
 $$;
 
-select pg_temp.chk_repository(name) from unnest(array['gate', 'back', 'late', 'wide', 'kept', 'said']) name \g /dev/null
+select pg_temp.chk_repository(name) from unnest(array['gate', 'large', 'back', 'late', 'wide', 'kept', 'said']) name \g /dev/null
 
 -- 1. Rights, the columns, the marker ------------------------------------------------------------------------------------
 do $$
@@ -150,8 +162,8 @@ begin
 	perform pg_temp.base_assert((select prosecdef and proconfig = array['search_path=""'] from pg_proc
 		where oid = 'public.qorpera_code_checks_switch(uuid,uuid)'::regprocedure), 'the switch is a definer with an empty search path');
 	-- Every repository starts with its checks on, those of before this step too; no row of before says anything of them.
-	perform pg_temp.base_assert((select bool_and(r.checks_enabled) and count(*) = 7 from public.qorpera_code_repositories r
-		where r.environment_id = pg_temp.rec_here() and r.name in ('shop', 'gate', 'back', 'late', 'wide', 'kept', 'said')),
+	perform pg_temp.base_assert((select bool_and(r.checks_enabled) and count(*) = 8 from public.qorpera_code_repositories r
+		where r.environment_id = pg_temp.rec_here() and r.name in ('shop', 'gate', 'large', 'back', 'late', 'wide', 'kept', 'said')),
 		'checks are on');
 	perform pg_temp.base_assert((select count(*) = 6 and bool_and(c.checks_state is null and c.checks is null)
 		from public.qorpera_code_changes c where c.environment_id = pg_temp.rec_here() and c.name = 'shop'), 'shop''s six rows');
@@ -341,6 +353,12 @@ begin
 		and pg_temp.rec_record(pg_temp.rec_copy(1309), pg_temp.rec_report('landed', pg_temp.rec_sha('k10'), pg_temp.rec_sha('k9'),
 			pg_temp.rec_sha('k10'), '{"inLine":false}')) = pg_temp.rec_answer('replayed', 10)
 		and to_jsonb(pg_temp.rec_row(10, 'gate')) = to_jsonb(r) and to_jsonb(pg_temp.rec_shop('gate')) = to_jsonb(q), 'a replay');
+	-- The largest value a real checks file gives fits the row, and is kept as it was sent.
+	perform pg_temp.base_assert(pg_column_size(pg_temp.chk_largest('x1')) <= 8192
+		and pg_temp.chk_land(1390, 'x0', 'x1', pg_temp.chk_ok(pg_temp.chk_largest('x1')), 'large', p_how => 'merged')
+			= pg_temp.rec_answer('recorded', 1)
+		and (pg_temp.rec_row(1, 'large')).checks = pg_temp.chk_largest('x1'),
+		'the largest value: ' || pg_column_size(pg_temp.chk_largest('x1')) || ' bytes');
 end $$;
 
 -- 3. The switch -------------------------------------------------------------------------------------------------------
