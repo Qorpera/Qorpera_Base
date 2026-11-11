@@ -1,7 +1,7 @@
 /* Groups of apps in the drawer (Jonas, 11 Nov 2026: "the same way we have categories and groups for agents, we should
  * have so for the interfaces as well … an expandable group of interfaces can live inside an expanded category of
  * interfaces"; design page VvFVpD5DckoSgXMoEGSfqR). The company's groups are its file `apps/groups.md`, which its agents
- * keep; a member's own changes are a document of theirs in the cloud (20260930723000) laid over it: what the member
+ * keep; a member's own changes are a document of theirs in the cloud (20260930728000) laid over it: what the member
  * touched is theirs, the rest follows the file. Everything here is pure: the drawer arranges, flattens and changes the
  * member's document with these, and draws the result.
  *

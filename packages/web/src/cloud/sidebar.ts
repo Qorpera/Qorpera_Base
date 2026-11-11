@@ -24,7 +24,7 @@ export interface SidebarOwnChanges {
 	hidden: number;
 	contacts: number;
 	pages: number;
-	/** Apps and groups the member arranged in the drawer (20260930723000); 0 on a cloud before it. */
+	/** Apps and groups the member arranged in the drawer (20260930728000); 0 on a cloud before it. */
 	apps: number;
 }
 

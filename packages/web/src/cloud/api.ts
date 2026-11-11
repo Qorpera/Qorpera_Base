@@ -506,14 +506,14 @@ export class CloudApi {
 		return listOpenQuestions(this.cloud, requiredUuid(profileId, "Profile id"));
 	}
 
-	/** The member's own arrangement of the apps drawer over the company's apps/groups.md (20260930723000). */
+	/** The member's own arrangement of the apps drawer over the company's apps/groups.md (20260930728000). */
 	readMemberAppLayout(profileId: string): Promise<MemberAppLayoutRead> {
 		return this.cloud
 			.rpc("qorpera_member_app_layout", { p_profile_id: requiredUuid(profileId, "Profile id") })
 			.then(parseMemberAppLayoutRead);
 	}
 
-	/** Writes it whole; refused (40001) when another tab wrote since `expected`. */
+	/** Writes it whole; refused (QAL01) when another tab wrote since `expected`. */
 	setMemberAppLayout(
 		profileId: string,
 		layout: MemberAppLayout,

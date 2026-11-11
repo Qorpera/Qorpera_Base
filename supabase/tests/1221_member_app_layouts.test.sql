@@ -1,5 +1,5 @@
 -- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"
--- Each member's own arrangement of the apps drawer (20260930723000): read and written whole by the member, shape and
+-- Each member's own arrangement of the apps drawer (20260930728000): read and written whole by the member, shape and
 -- size checked, a write over a newer one refused; Reset sidebar takes it away with the rest and Undo puts it back.
 select pg_temp.base_claims('service_role');
 
@@ -49,8 +49,8 @@ begin
 	v_at := (v_state ->> 'updatedAt')::timestamptz;
 	perform pg_temp.base_assert(pg_temp.al_call(v_owner, v_read) #> '{layout,places}' = '{}', 'The owner''s is untouched');
 	-- A write from a tab that read before is refused; one that read the newest goes through.
-	perform pg_temp.al_refused(v_viewer, pg_temp.al_set(v_layout, null), '40001');
-	perform pg_temp.al_refused(v_viewer, pg_temp.al_set(v_layout, v_at - interval '1 second'), '40001');
+	perform pg_temp.al_refused(v_viewer, pg_temp.al_set(v_layout, null), 'QAL01');
+	perform pg_temp.al_refused(v_viewer, pg_temp.al_set(v_layout, v_at - interval '1 second'), 'QAL01');
 
 	-- The sidebar counts it among the member's changes: two places and three groups.
 	perform pg_temp.base_claims('authenticated', v_viewer);

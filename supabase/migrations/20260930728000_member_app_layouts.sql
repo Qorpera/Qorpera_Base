@@ -11,7 +11,7 @@
 --    company group renamed or removed by the member, or one of the member's own). The web arranges the drawer from the
 --    file and this document; the database keeps the document whole and checks its shape and size.
 -- 2. qorpera_member_app_layout(company) reads it; qorpera_set_member_app_layout(company, layout, expected) writes it
---    whole, refusing (40001) when the member's other tab wrote since `expected`. Any member, viewers too.
+--    whole, refusing (QAL01) when the member's other tab wrote since `expected`. Any member, viewers too.
 -- 3. Reset sidebar takes the document away with the rest, Undo puts it back, and `own` counts it as `apps`.
 
 set local lock_timeout = '3s';
@@ -28,7 +28,7 @@ create table public.qorpera_member_app_layouts (
 alter table public.qorpera_member_app_layouts enable row level security;
 revoke all on public.qorpera_member_app_layouts from public, anon, authenticated, service_role;
 comment on table public.qorpera_member_app_layouts is
-	'Each member''s own arrangement of the apps drawer over the company''s apps/groups.md (20260930723000). Written '
+	'Each member''s own arrangement of the apps drawer over the company''s apps/groups.md (20260930728000). Written '
 	'only through qorpera_set_member_app_layout.';
 
 /** Whether a layout document has the shape the web writes: a key is a drawer key or `group:<id>`, a group id 1-40 of
@@ -103,7 +103,8 @@ begin
 	select layout.updated_at into v_at from public.qorpera_member_app_layouts layout
 	where layout.profile_id = p_profile_id and layout.user_id = v_user;
 	if v_at is distinct from p_expected then
-		raise exception 'Your apps changed in another tab; read them again' using errcode = '40001'; end if;
+		-- Its own code, never the serialization failure code, which PostgREST would retry (supabase/tests/361).
+		raise exception 'Your apps changed in another tab; read them again' using errcode = 'QAL01'; end if;
 	if p_layout -> 'places' = '{}'::jsonb and p_layout -> 'groups' = '{}'::jsonb then
 		-- Nothing of the member's own is left: the company's arrangement holds.
 		delete from public.qorpera_member_app_layouts where profile_id = p_profile_id and user_id = v_user;
@@ -123,7 +124,7 @@ language plpgsql as $$
 declare v_definition text := pg_get_functiondef(p_function);
 begin
 	if p_old = '' or (length(v_definition) - length(replace(v_definition, p_old, ''))) / length(p_old) <> 1 then
-		raise exception '% is not the text 20260930723000 expects at: %', p_function, left(p_old, 60); end if;
+		raise exception '% is not the text 20260930728000 expects at: %', p_function, left(p_old, 60); end if;
 	execute replace(v_definition, p_old, p_new);
 end $$;
 
@@ -135,7 +136,7 @@ select pg_temp.app_layouts_replace('public.qorpera_sidebar_own_summary(uuid,uuid
 		'contacts', contacts.n, 'pages', pages.n)
 	from moved, sections, marks, contacts, pages$old$,
 	$new$	), apps as (
-		-- 20260930723000: each app or group the member placed, and each group they renamed, removed or made.
+		-- 20260930728000: each app or group the member placed, and each group they renamed, removed or made.
 		select coalesce((select (select count(*) from jsonb_object_keys(layout.layout -> 'places'))
 				+ (select count(*) from jsonb_object_keys(layout.layout -> 'groups'))
 			from public.qorpera_member_app_layouts layout
@@ -151,7 +152,7 @@ select pg_temp.app_layouts_replace('public.qorpera_sidebar_own_reset(uuid,uuid)'
 	$old$	), pages as (
 		delete from public.qorpera_member_hidden_interface_pages mine$old$,
 	$new$	), apps as (
-		-- 20260930723000
+		-- 20260930728000
 		delete from public.qorpera_member_app_layouts layout
 		where layout.profile_id = p_profile_id and layout.user_id = p_user_id returning layout.*
 	), pages as (
@@ -166,7 +167,7 @@ select pg_temp.app_layouts_replace('public.qorpera_sidebar_own_undo_reset(uuid,u
 	on conflict do nothing;$old$,
 	$new$		where file.environment_id = gone.environment_id and file.profile_id = p_profile_id)
 	on conflict do nothing;
-	-- 20260930723000: the apps layout, unless the member made a new one since.
+	-- 20260930728000: the apps layout, unless the member made a new one since.
 	insert into public.qorpera_member_app_layouts (profile_id, user_id, layout, updated_at)
 	select p_profile_id, p_user_id, gone.layout, gone.updated_at
 	from jsonb_populate_recordset(null::public.qorpera_member_app_layouts, coalesce(v_removed -> 'apps', '[]')) gone
@@ -180,6 +181,6 @@ grant execute on function public.qorpera_member_app_layout(uuid) to authenticate
 grant execute on function public.qorpera_set_member_app_layout(uuid, jsonb, timestamptz) to authenticated;
 
 comment on function public.qorpera_member_app_layout(uuid) is
-	'The caller''s own arrangement of the apps drawer in a company (20260930723000), or an empty one.';
+	'The caller''s own arrangement of the apps drawer in a company (20260930728000), or an empty one.';
 comment on function public.qorpera_set_member_app_layout(uuid, jsonb, timestamptz) is
-	'Writes the caller''s own arrangement of the apps drawer whole (20260930723000); 40001 when it changed since `expected`.';
+	'Writes the caller''s own arrangement of the apps drawer whole (20260930728000); QAL01 when it changed since `expected`.';

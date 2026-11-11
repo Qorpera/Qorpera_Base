@@ -263,7 +263,7 @@ export interface CompanyState {
 	/** The company's groups of apps, as its apps/groups.md says (cloud/app-groups.ts); unset until read, and while the
 	 * company has none. */
 	appGroups?: readonly AppTreeNode[];
-	/** The member's own arrangement of the drawer over them (20260930723000), as last read or written. */
+	/** The member's own arrangement of the drawer over them (20260930728000), as last read or written. */
 	appLayout?: MemberAppLayoutRead;
 	/** The cloud keeps no apps layout per member yet: the drawer draws the company's groups and changes none. */
 	appLayoutUnavailable?: boolean;
@@ -1216,7 +1216,7 @@ export class CompanyController {
 		const reset = this.#appLayoutWrites
 			.then(() => this.changeSidebar({ action: undo ? "undo_reset" : "reset" }))
 			.then(async (done) => {
-				// A cloud without each member's apps layout (before 20260930723000) has none to read again.
+				// A cloud without each member's apps layout (before 20260930728000) has none to read again.
 				if (!done || this.store.get().appLayoutUnavailable) return done;
 				// The layout as the reset left it, read here and taken whatever other read is on its way; until one is
 				// taken, moves stay held (a failed read leaves them held until a later read works).
@@ -1254,7 +1254,7 @@ export class CompanyController {
 		return this.#resetting > 0 || this.#appLayoutStale;
 	}
 
-	/** Reads the member's own arrangement of the apps drawer. A cloud without it (before 20260930723000) says so once. */
+	/** Reads the member's own arrangement of the apps drawer. A cloud without it (before 20260930728000) says so once. */
 	async refreshAppLayout(): Promise<void> {
 		if (this.#stopped || this.store.get().appLayoutUnavailable) return;
 		const version = ++this.#appLayoutReads;
@@ -1303,7 +1303,7 @@ export class CompanyController {
 			if (this.#stopped) return false;
 			this.store.set({
 				railError:
-					error instanceof CloudRpcError && error.code === "40001"
+					error instanceof CloudRpcError && error.code === "QAL01"
 						? t("Your apps changed in another tab. Try again.")
 						: t("The apps could not be arranged. Try again."),
 			});

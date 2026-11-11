@@ -2037,7 +2037,7 @@ function ownAppLayout(company: CompanyController, parts: RailParts): MemberAppLa
 	return layout && withoutRefused(layout, parts.appRefused);
 }
 
-/** Whether the drawer's arrangement is the member's own to change (20260930723000). */
+/** Whether the drawer's arrangement is the member's own to change (20260930728000). */
 function appsArrangeable(company: CompanyController): boolean {
 	const state = company.store.get();
 	return Boolean(
@@ -2760,7 +2760,7 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 	openContextMenu({ label, x: point.x, y: point.y, items, opener, ...(findOpener ? { findOpener } : {}) });
 }
 
-/** Right-click in the apps drawer. Where the member arranges their own drawer (20260930723000): an app offers Move to
+/** Right-click in the apps drawer. Where the member arranges their own drawer (20260930728000): an app offers Move to
  * (each group, or loose) and a page also Hide; a group offers Rename and Ungroup; both end with Reset sidebar. Before
  * that, a page offers to hide it, and the agents' apps and Concepts offer nothing. */
 function openDrawerMenu(company: CompanyController, parts: RailParts, event: MouseEvent): void {
