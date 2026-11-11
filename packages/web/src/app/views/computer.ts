@@ -142,14 +142,13 @@ export class ComputerPanel {
 	#confirm = true;
 	#confirmedAt = Number.NEGATIVE_INFINITY;
 	// The member's hold of the desktop (20260930713000): the machine this window holds (its input and its renewals),
-	// whether a take-over waits for the list, the one on its way, when the hold last changed (a list asked before then
-	// says nothing of it), the company's ledger of what the member may hold (review r2), the hand-back of the machine
-	// shown as the window last saw it, and the actions on their way.
+	// whether a take-over waits for the list, the one on its way, the company's ledger of what the member may hold (review
+	// r2; the window's hold follows it), the hand-back of the machine shown as the window last saw it, and the actions on
+	// their way.
 	#computer: WebCompanyComputer | undefined;
 	#holding: string | undefined;
 	#wantTakeOver = false;
 	#taking: Promise<void> | undefined;
-	#holdChangedAt = Number.NEGATIVE_INFINITY;
 	readonly #ledger: DesktopHoldLedger;
 	#releaseShown: DesktopRelease | undefined;
 	#queue: MachineDesktopAction[] = [];
@@ -419,14 +418,13 @@ export class ComputerPanel {
 			}
 			const listDue = this.#listedAt + MACHINES_EVERY_MS;
 			if (this.#listStale || Date.now() >= listDue) {
-				const asked = Date.now();
 				// A hint that comes while this read is on its way asks for another after it.
 				this.#listStale = false;
 				try {
 					this.#listed = await computer.agentMachines(this.agentId, signal);
 					this.#listedAt = Date.now();
 					this.#failures = 0;
-					this.#heldPerList(asked);
+					this.#heldPerList();
 				} catch {
 					signal.throwIfAborted();
 					this.#listStale = true;
@@ -556,30 +554,21 @@ export class ComputerPanel {
 	}
 
 	/** What the list says of the member's own holds, each by its machine's own id, never by the machine shown (review r1
-	 * F6), with the member's hand-back epoch per machine and the epoch each hold of theirs was taken under (review r5).
-	 * The ledger hears it first: a lost answer whose epoch holds is held; a held lease the list no longer shows ended; an
-	 * epoch moved on by another tab ends what the page had under the older one. The hold the window has ends when the list
-	 * no longer shows it. One of theirs on the machine shown that the window does not know (the page was loaded again) is
-	 * taken up at its epoch, unless this page gave that machine back. A list asked before the hold last changed says
-	 * nothing of it. */
-	#heldPerList(asked: number): void {
-		const machines = this.#listed?.machines ?? [];
-		if (this.#listed) this.#ledger.listed(this.#listed, asked);
-		const mine = (machineId: string | undefined) =>
-			machines.find((row) => row.machineId === machineId && row.control?.mine === true && row.state === "running");
-		if (asked >= this.#holdChangedAt) {
-			if (this.#holding && !mine(this.#holding)) this.#released();
-			const shown = this.#pick();
-			const held = shown ? mine(shown.machineId) : undefined;
-			if (
-				!this.#holding &&
-				!this.#taking &&
-				shown &&
-				held &&
-				this.#ledger.adopt(shown.machineId, this.agentId, held.control?.epoch ?? null, asked)
-			)
-				this.#held(shown.machineId);
-		}
+	 * F6), ordered by the member's hand-back epoch per machine, never by the page's clock (review r8): the ledger hears it
+	 * and decides (a list below the epoch it knows says nothing; an epoch above ends what the page had under the older
+	 * one; a lost answer the list shows is held), and the window's hold follows the ledger. One of the member's on the
+	 * machine shown that the window does not know (the page was loaded again) is taken up at its epoch, unless this page
+	 * gave that machine back or knows a newer epoch. */
+	#heldPerList(): void {
+		const list = this.#listed;
+		if (!list) return;
+		this.#ledger.listed(list);
+		const shown = this.#pick();
+		const row = shown
+			? list.machines.find((machine) => machine.machineId === shown.machineId && machine.state === "running")
+			: undefined;
+		if (!this.#holding && !this.#taking && row && this.#ledger.adopt(row.machineId, this.agentId, row))
+			this.#held(row.machineId);
 		this.#syncControls();
 	}
 
@@ -630,7 +619,6 @@ export class ComputerPanel {
 	/** The member holds the machine's desktop now: the picture takes their input, and the window renews the hold. */
 	#held(machineId: string): void {
 		this.#holding = machineId;
-		this.#holdChangedAt = Date.now();
 		this.#queue = [];
 		this.#scheduleKeep(KEEP_EVERY_MS);
 		this.#syncControls();
@@ -641,7 +629,6 @@ export class ComputerPanel {
 	#released(): void {
 		if (!this.#holding) return;
 		this.#holding = undefined;
-		this.#holdChangedAt = Date.now();
 		this.#queue = [];
 		clearTimeout(this.#keepTimer);
 		this.#keepTimer = undefined;

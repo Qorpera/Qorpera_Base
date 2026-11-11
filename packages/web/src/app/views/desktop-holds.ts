@@ -1,4 +1,8 @@
-import type { MemberAgentMachines, MemberDesktopHold } from "@qorpera/cloud-client/cloud-member-company-computer";
+import type {
+	MemberAgentMachine,
+	MemberAgentMachines,
+	MemberDesktopHold,
+} from "@qorpera/cloud-client/cloud-member-company-computer";
 import type { WebCompanyComputer } from "../../cloud/computer.ts";
 
 /** The waits before a hand-back that was not answered is asked again: 2, 4, 8, then 15 s. */
@@ -41,8 +45,6 @@ interface Hold {
 	 * or a TAKE_CALLED_OFF that names a newer epoch (the old one is fenced already). While it is set, every release of the
 	 * machine hands back, whatever the state says, and I'm done waits for that answer. */
 	sent: number | undefined;
-	/** When `state` last changed: a list read asked before then says nothing of it. */
-	changedAt: number;
 	/** The take-over the state is of, and its promise: an answer of an older one is told apart. */
 	take?: object;
 	pending?: Promise<DesktopTake>;
@@ -63,9 +65,6 @@ interface Hold {
 	 * and Hand back and I'm done hand it back at this epoch; a close or a switch alone still give back only what the page
 	 * took. */
 	elsewhere: number | undefined;
-	/** When the latest take-over or hand-back answer for the machine came: a list read asked before then says nothing of
-	 * it (review r7). */
-	answeredAt: number;
 	/** The company's page was left while a take-over was on its way. */
 	gone?: boolean;
 }
@@ -184,7 +183,6 @@ export class DesktopHoldLedger {
 			let answer: MemberDesktopHold | undefined;
 			try {
 				answer = await computer.takeDesktop(machineId, epoch, AbortSignal.timeout(HOLD_CALL_MS));
-				hold.answeredAt = Date.now();
 			} catch {
 				answer = undefined;
 			}
@@ -229,13 +227,15 @@ export class DesktopHoldLedger {
 
 	/** A hold of this member's that the list shows on this agent's machine, at the epoch it was taken under, that no window
 	 * knows (the page was loaded again): true, it is the window's now. False on a machine this page gave back (and did not
-	 * take over again), while a release or a take-over of it is on its way, or without an epoch. */
-	adopt(machineId: string, agentId: string, epoch: number | null, askedAt: number): boolean {
-		if (this.#left || epoch === null || this.#givenBack.has(machineId)) return false;
+	 * take over again), while a release or a take-over of it is on its way, or from a list older than what the page knows
+	 * (its epoch lower: review r8). */
+	adopt(machineId: string, agentId: string, row: MemberAgentMachine): boolean {
+		const epoch = row.control?.mine === true ? row.control.epoch : null;
+		if (this.#left || epoch === null || epoch !== row.epoch || this.#givenBack.has(machineId)) return false;
 		const hold = this.#holds.get(machineId) ?? this.#entry(machineId);
-		// A list asked before the machine's latest answer says nothing of it (review r7).
-		if (askedAt < hold.answeredAt || hold.calling || hold.state === "queued" || hold.state === "taking") return false;
-		hold.epoch = Math.max(hold.epoch ?? 0, epoch);
+		if ((hold.epoch !== undefined && row.epoch < hold.epoch) || hold.calling) return false;
+		if (hold.state === "queued" || hold.state === "taking") return false;
+		hold.epoch = epoch;
 		hold.agents.add(agentId);
 		this.#state(hold, "held");
 		return true;
@@ -291,50 +291,42 @@ export class DesktopHoldLedger {
 			this.release(hold.machineId, agentId, reason, elsewhere);
 			if (hold.calling) asks.set(hold, this.#ask(hold));
 		};
+		// At once, before anything is awaited (review r5 F11).
 		for (const hold of [...this.#holds.values()]) if (hold.agents.has(agentId)) give(hold);
-		let listed = true;
-		if (elsewhere) {
-			const read = await this.#readList(agentId);
-			if (!read) listed = false;
-			else
-				for (const row of read.list.machines) {
-					const epoch = row.control?.mine === true ? row.control.epoch : null;
-					if (epoch === null || this.#left) continue;
-					const hold = this.#holds.get(row.machineId) ?? this.#entry(row.machineId);
-					hold.agents.add(agentId);
-					// A list asked before an answer for the machine came says nothing of it; nor does one of a machine the
-					// page has something of (given back above).
-					if (read.asked < hold.answeredAt || this.#busy(hold)) continue;
-					// The member holds it from elsewhere: given back at the epoch it was taken under.
-					hold.epoch = Math.max(hold.epoch ?? 0, epoch);
-					this.#state(hold, "held");
-					give(hold);
-				}
-		}
 		for (let round = 0; ; round++) {
 			const answered = await Promise.all(asks.values());
 			asks.clear();
 			if (!answered.every(Boolean)) return false;
-			if (!elsewhere) break;
-			// An answer said the member holds a machine at a newer epoch (another tab): again at that epoch, a few rounds.
-			const again = [...this.#holds.values()].filter(
-				(hold) => hold.agents.has(agentId) && hold.elsewhere !== undefined,
-			);
-			if (!again.length) break;
+			if (!elsewhere) return !this.has(agentId);
+			// Done only on a list read asked after every hand-back so far was answered (review r8): it shows no hold of the
+			// member's on the agent's machines, and nothing is owed.
+			const list = await this.#readList(agentId);
+			if (!list) return false;
+			const shown = list.machines.filter((row) => row.control?.mine === true && row.control.epoch !== null);
+			if (!shown.length && !this.has(agentId)) return true;
 			if (round >= HOLDING_ROUNDS) return false;
-			for (const hold of again) give(hold);
+			for (const row of shown) {
+				// Held at that epoch (another tab, an earlier page, or what this page took): owed there, and given back.
+				const hold = this.#holds.get(row.machineId) ?? this.#entry(row.machineId);
+				hold.agents.add(agentId);
+				const epoch = row.control?.epoch;
+				if (epoch !== null && epoch !== undefined) hold.elsewhere = Math.max(hold.elsewhere ?? epoch, epoch);
+			}
+			for (const hold of [...this.#holds.values()]) if (hold.agents.has(agentId) && this.#busy(hold)) give(hold);
 		}
-		return listed && !this.has(agentId);
 	}
 
-	/** A list read of an agent's machines, asked at `askedAt`: the member's current epoch per machine (one moved on by
-	 * another tab ends what this page had under the older one), a lost answer whose epoch holds (held), and a held lease
-	 * the list no longer shows (it ended: lapsed, idle). A release on its way waits for its own answer. */
-	listed(list: MemberAgentMachines, askedAt: number): void {
+	/** A list read of an agent's machines, ordered by the database's own counter, never by the page's clock (review r8):
+	 * for a machine, a list whose epoch is below what the page knows is older and says nothing. At the epoch the page
+	 * knows or above it is at least as new: an epoch above moves the page's knowledge on (what the page had under the older
+	 * one is fenced: a hand-back of it was answered), and a hold of the member's it shows at that epoch is real, so a lost
+	 * answer whose take-over it shows is held. A list never ends a hold at the same epoch by not showing it: it cannot
+	 * tell an older read from an ended lease there; the heartbeat (its `ended`) does that. A release on its way waits for
+	 * its own answer. */
+	listed(list: MemberAgentMachines): void {
 		for (const row of list.machines) {
 			const hold = this.#holds.get(row.machineId) ?? this.#entry(row.machineId);
-			// Asked before the latest take-over or hand-back answer for the machine came: it cannot overrule that (review r7).
-			if (askedAt < hold.answeredAt) continue;
+			if (hold.epoch !== undefined && row.epoch < hold.epoch) continue;
 			if (hold.epoch === undefined || row.epoch > hold.epoch) {
 				const moved = hold.epoch !== undefined;
 				hold.epoch = row.epoch;
@@ -343,10 +335,9 @@ export class DesktopHoldLedger {
 					continue;
 				}
 			}
-			if (hold.calling || askedAt < hold.changedAt) continue;
+			if (hold.calling) continue;
 			const holding = row.control?.mine === true ? row.control.epoch : null;
 			if (hold.state === "maybe" && holding === hold.epoch) this.#state(hold, "held");
-			else if (hold.state === "held" && holding !== hold.epoch) this.#state(hold, undefined);
 		}
 	}
 
@@ -383,14 +374,12 @@ export class DesktopHoldLedger {
 			epoch: undefined,
 			state: undefined,
 			sent: undefined,
-			changedAt: Date.now(),
 			calling: false,
 			callEpoch: undefined,
 			reason: "handed_back",
 			tries: 0,
 			failed: false,
 			elsewhere: undefined,
-			answeredAt: Number.NEGATIVE_INFINITY,
 		};
 		this.#holds.set(machineId, hold);
 		return hold;
@@ -412,20 +401,17 @@ export class DesktopHoldLedger {
 
 	#state(hold: Hold, state: Hold["state"]): void {
 		hold.state = state;
-		hold.changedAt = Date.now();
 		this.#changed();
 	}
 
-	/** Reads the agent's list, and learns what it says (listed); with when it was asked, or undefined when it could not be
-	 * read. */
-	async #readList(agentId: string): Promise<{ list: MemberAgentMachines; asked: number } | undefined> {
+	/** Reads the agent's list, and learns what it says (listed); undefined when it could not be read. */
+	async #readList(agentId: string): Promise<MemberAgentMachines | undefined> {
 		const computer = this.#computer;
 		if (!computer || this.#left) return undefined;
-		const asked = Date.now();
 		try {
 			const list = await computer.agentMachines(agentId, AbortSignal.timeout(HOLD_CALL_MS));
-			this.listed(list, asked);
-			return { list, asked };
+			this.listed(list);
+			return list;
 		} catch {
 			return undefined;
 		}
@@ -457,7 +443,6 @@ export class DesktopHoldLedger {
 				hold.calling = false;
 				hold.callEpoch = undefined;
 				hold.epoch = Math.max(hold.epoch ?? 0, answer.epoch);
-				hold.answeredAt = Date.now();
 				// The database's epoch is past what was sent: every take-over sent at it, or before, is fenced.
 				if (hold.sent !== undefined && answer.epoch > hold.sent) hold.sent = undefined;
 				// The member holds it now (at the answer's epoch): owed until an answer past it, or one that says nothing is.
@@ -465,7 +450,6 @@ export class DesktopHoldLedger {
 				else if (hold.elsewhere !== undefined && answer.epoch >= hold.elsewhere) hold.elsewhere = undefined;
 				// A take-over asked on purpose after the release (queued) goes on at the new epoch; nothing else is left.
 				if (hold.state !== "queued") hold.state = undefined;
-				hold.changedAt = Date.now();
 				this.#changed();
 				return true;
 			} catch {

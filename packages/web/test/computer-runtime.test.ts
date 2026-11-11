@@ -95,11 +95,15 @@ function setup(
 		handBackGate: undefined as Promise<void> | undefined,
 		/** Gates the next hand-backs wait on, one each, in turn (review r3 F7). */
 		handBackGates: [] as Promise<void>[],
+		/** Gates the next hand-backs' answers wait on, one each, after the database's effect and its answer (review r8). */
+		handBackAnswerGates: [] as Promise<void>[],
 		/** A gate a take-over's answer waits on (review r1 F5), and one the next list read waits on (F6). */
 		takeGate: undefined as Promise<void> | undefined,
 		listGate: undefined as Promise<void> | undefined,
 		/** A gate the next list read's answer waits on, with the machines as they were when it was asked (review r7). */
 		listSnapshotGate: undefined as Promise<void> | undefined,
+		/** A gate every list read waits on while it is set, answering the machines as they are then (review r8). */
+		listHold: undefined as Promise<void> | undefined,
 		/** A take-over whose answer is lost (review r2 F5): the database committed it first, or it reaches the database
 		 * only later, when the test says (`lateCommit`: whether it held anything). */
 		takeLost: undefined as "committed" | "late" | undefined,
@@ -152,6 +156,7 @@ function setup(
 				// The machines as they are when the read is answered.
 				await gate;
 			}
+			if (state.listHold) await state.listHold;
 			if (state.listFails > 0) {
 				state.listFails--;
 				return new Response("{}", { status: 503 });
@@ -242,13 +247,16 @@ function setup(
 				}
 			}
 			const now = state.machines.find((machine) => machine.machineId === body.p_machine_id);
-			return Response.json({
+			const answer = {
 				schema: "qorpera.member-machine-desktop/v1",
 				state: "ok",
 				handedBack,
 				epoch: epochOf(body.p_machine_id),
 				holding: now?.control?.mine === true,
-			});
+			};
+			const delivered = state.handBackAnswerGates.shift();
+			if (delivered) await delivered;
+			return Response.json(answer);
 		}
 		throw new Error(`Unexpected network request ${url}`);
 	});
@@ -1989,18 +1997,14 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		["the window closes", false],
 		["the window switches to another machine", true],
 	] as const)(
-		"keeps owing a hold an answer named at a newer epoch while I'm done waits for an older list snapshot, when %s (r7 F13)",
+		"keeps owing a hold an answer named at a newer epoch across a release that cannot clear it, when %s (r7 F13)",
 		async (_name, switching) => {
 			const { s, panels, p } = await company(setup({ machines: [machine(1), machine(2)] }));
 			await takeOver(p);
 			expect(p.holding).toBe(true);
-			// The page's lease ended unseen. I'm done gives the machine back at its epoch (the hand-back waits) and reads the
-			// list, whose answer, captured now with no hold of the member's, is delayed.
-			s.state.machines = [machine(1), machine(2)];
-			const back = gate(),
-				snapshot = gate();
+			// I'm done gives the machine back at its epoch; the hand-back waits.
+			const back = gate();
 			s.state.handBackGates = [back.closed];
-			s.state.listSnapshotGate = snapshot.closed;
 			let done: boolean | undefined;
 			const answered = panels.releaseAgent(staff.id).then((value) => {
 				done = value;
@@ -2011,9 +2015,12 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 			// nothing changed, and the member holds it now, at epoch 1.
 			s.state.epochs.set(machine(1).machineId, 1);
 			s.state.machines = [machine(1, { control: held(1) }), machine(2)];
+			const read = gate();
+			s.state.listHold = read.closed;
 			back.open();
 			await flush();
-			// The window closes, or switches to the other machine: neither erases what that answer said.
+			// The window closes, or switches to the other machine, while I'm done reads the list: neither erases what that
+			// answer said.
 			if (switching) {
 				s.state.answers.push({ picture: 2 });
 				p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher")!.click();
@@ -2021,14 +2028,74 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 			} else panels.close(staff.id);
 			await flush();
 			expect(done).toBeUndefined();
-			// The old snapshot arrives (no hold): it says nothing over the newer answer. I'm done hands it back at epoch 1.
-			snapshot.open();
+			read.open();
 			await answered;
 			expect(done).toBe(true);
 			expect(backEpochs(s)).toEqual([0, 1]);
 			expect(s.state.machines[0]?.control).toBeNull();
 		},
 	);
+
+	it("finishes I'm done only on a read after its hand-backs were answered: a hold another tab took at the new epoch is handed back (r8 F15)", async () => {
+		const { s, panels, p } = await company();
+		await takeOver(p);
+		expect(p.holding).toBe(true);
+		// The window's list read and I'm done's hand-back start together; the database gives the desktop back (epoch 1,
+		// nothing held) but that answer is delivered later.
+		const read = gate(),
+			delivered = gate();
+		s.state.listGate = read.closed;
+		s.hint("machines");
+		await flush();
+		s.state.handBackAnswerGates = [delivered.closed];
+		let done: boolean | undefined;
+		const answered = panels.releaseAgent(staff.id).then((value) => {
+			done = value;
+		});
+		await flush();
+		expect(backEpochs(s)).toEqual([0]);
+		expect(s.state.epochs.get(machine(1).machineId)).toBe(1);
+		// Another tab takes it at epoch 1. The hand-back's answer comes first, then the window's list (which shows that hold).
+		s.state.machines = [machine(1, { control: held(1) })];
+		delivered.open();
+		await flush();
+		read.open();
+		await answered;
+		// I'm done handed that hold back at epoch 1, and answered only after a later read showed nothing.
+		expect(done).toBe(true);
+		expect(backEpochs(s)).toEqual([0, 1]);
+		expect(s.state.machines[0]?.control).toBeNull();
+	});
+
+	it("lets a list with a lower epoch than the page knows end and take up nothing (r8 F15)", async () => {
+		const { s, p } = await company();
+		// A read of the window's is captured while another tab holds the desktop at epoch 0, and delayed.
+		s.state.machines = [machine(1, { control: held(0) })];
+		const stale = gate();
+		s.state.listSnapshotGate = stale.closed;
+		s.hint("machines");
+		await flush();
+		// That tab gives it back (epoch 1). The member's Take over, sent at 0, is refused with epoch 1.
+		s.state.epochs.set(machine(1).machineId, 1);
+		s.state.machines = [machine(1)];
+		p.takeOver();
+		await flush();
+		expect(takeEpochs(s)).toEqual([0]);
+		expect(p.holding).toBe(false);
+		// The old read arrives: its epoch is below what the page knows; nothing is taken up.
+		stale.open();
+		await flush();
+		expect(p.holding).toBe(false);
+		// Taken over at the epoch the refusal named, held; a read with a lower epoch ends nothing.
+		await takeOver(p);
+		expect(takeEpochs(s)).toEqual([0, 1]);
+		expect(p.holding).toBe(true);
+		s.state.machines = [machine(1)];
+		s.state.epochs.set(machine(1).machineId, 0);
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		expect(p.holding).toBe(true);
+	});
 
 	it("says no on I'm done while each answer names a newer epoch still held, a few rounds, and keeps the card open (r7 F13)", async () => {
 		const { s, panels } = await company();
