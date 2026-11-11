@@ -1,21 +1,30 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { CloudMachineCommandReceipt } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CODING_CONTROL_METHODS } from "../../../deploy/coding-worker/control.ts";
 import {
 	authorizeMachineCodingValue,
 	authorizeMachineCommand,
 	authorizeMachineScreen,
+	authorizeMemberMachineAct,
 	authorizeMemberMachineScreen,
 } from "../../../deploy/coding-worker/machine-command-authority.ts";
 import {
 	localMachineCodingValue,
+	localMachineCodingValueClear,
 	localMachineScreen,
 	localMachineWake,
+	localMemberMachineAct,
 	localMemberMachineScreen,
+	localMemberMachineStart,
 	MachineCommandRouter,
 	machineCommandRoutes,
 } from "../../../deploy/coding-worker/machine-command-routing.ts";
-import type { CompanyMachineMemberLookOutcome } from "../../runner-orchestrator/src/company-machine-host.ts";
+import type {
+	CompanyMachineMemberActOutcome,
+	CompanyMachineMemberLookOutcome,
+	CompanyMachineMemberStartOutcome,
+} from "../../runner-orchestrator/src/company-machine-host.ts";
 import { HttpCloudCodingCommandService } from "../src/cloud-coding-command-http.ts";
 import {
 	CLOUD_MACHINE_TOOL_VERSION,
@@ -27,14 +36,21 @@ import {
 	type CloudMachineScreenHttpRequest,
 	CloudMachineScreenRefusal,
 	type CloudMachineWakeHttpRequest,
+	CloudMemberMachineActRefusal,
 	CloudMemberMachineScreenRefusal,
+	cloudMemberMachineActRecord,
 	createHttpCloudMachineCommandGateway,
 	createHttpMemberMachineScreenPeer,
 	parseCloudMachineCodingValueHttpRequest,
 	parseCloudMachineScreenAnswer,
 	parseCloudMachineScreenHttpRequest,
+	parseCloudMemberMachineActAnswer,
+	parseCloudMemberMachineAction,
+	parseCloudMemberMachineActPeerRequest,
 	parseCloudMemberMachineScreenAnswer,
 	parseCloudMemberMachineScreenPeerRequest,
+	parseCloudMemberMachineStartAnswer,
+	parseCloudMemberMachineStartPeerRequest,
 } from "../src/cloud-machine-command-http.ts";
 import type { CloudNativeToolBinding } from "../src/cloud-native-tool-authority.ts";
 import { cloudNativeToolOperationEnvelope } from "../src/cloud-native-tool-operations.ts";
@@ -88,6 +104,20 @@ async function service(
 	const port = await http.start();
 	cleanups.push(() => http.close());
 	return { token, url: `http://127.0.0.1:${port}`, lease, holderOf, proveBinding };
+}
+
+/** The executor's control as production has it (F33 of #1661): a closed method set (CodingExecutorHttpControl), so a
+ * route that calls a method outside it fails here as it would there. */
+function closed<
+	T extends { call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> },
+>(control: T): T {
+	return {
+		...control,
+		call: async (method: string, args: Record<string, unknown>, signal: AbortSignal) => {
+			if (!CODING_CONTROL_METHODS.has(method)) throw new Error("CODING_CONTROL_METHOD_INVALID");
+			return control.call(method, args, signal);
+		},
+	};
 }
 
 describe("machine command gateway", () => {
@@ -427,7 +457,7 @@ describe("a machine wake's route", () => {
 			owner: "mx-a",
 			providerId: "machine-node",
 			peers,
-			control: { call: vi.fn() },
+			control: closed({ call: vi.fn() }),
 			credential: async () => randomBytes(32).toString("base64url"),
 			...(options.wakeLocal ? { wakeLocal: options.wakeLocal } : {}),
 			fetch: (async (input: string | URL | Request) => {
@@ -758,18 +788,26 @@ describe("a machine's coding value", () => {
 			providerId: "machine-node",
 			receiptId: commandId,
 			target,
+			desktopGeneration: 4,
 		};
 		const call = vi.fn(async (_method: string, _args: Record<string, unknown>) => answer as unknown);
 		const host = {
 			codingValue: vi.fn(async () => ({ box }) as { box: Record<string, string> } | { refused: string }),
+			clearClipboard: vi.fn(
+				async () =>
+					({ cleared: true }) as
+						| { cleared: boolean }
+						| { refused: "MACHINE_BOOT_CHANGED" | "MACHINE_IMAGE_WITHOUT_CODING_VALUES" },
+			),
 		};
 		const router = new MachineCommandRouter({
 			owner: "mx-a",
 			providerId: "machine-node",
 			peers: [],
-			control: { call },
+			control: closed({ call }),
 			credential: async () => "",
 			codingValueLocal: localMachineCodingValue(host),
+			codingValueClearLocal: localMachineCodingValueClear(host),
 		});
 		return { binding, request, target, answer, call, host, router, signal: new AbortController().signal };
 	}
@@ -791,15 +829,69 @@ describe("a machine's coding value", () => {
 			},
 			f.signal,
 		);
+		// The lease generation SQL's read saw goes to the host's fence (v233 release review r1, F29 of #1661).
 		expect(f.host.codingValue).toHaveBeenCalledWith(
 			{
 				placementId: f.answer.placementId,
 				bootId: f.answer.bootId,
 				receiptId: f.request.input.commandId,
 				target: f.target,
+				desktopGeneration: 4,
 			},
 			f.signal,
 		);
+	});
+
+	it("clears the clipboard instead of reading it when SQL says a member held the desktop since, and refuses the agent either way (v233 release review r1, F32 of #1661)", async () => {
+		const f = fixture();
+		const clear = {
+			schema: "qorpera.machine-coding-value-authority/v1",
+			state: "clear",
+			machineId: f.answer.machineId,
+			placementId: f.answer.placementId,
+			bootId: f.answer.bootId,
+			executorOwner: "mx-a",
+			providerId: "machine-node",
+			receiptId: f.answer.receiptId,
+			desktopGeneration: 6,
+		};
+		// Cleared and recorded, or not: nothing is read, and the agent hears what is true then, CLIPBOARD_EMPTY (copy the
+		// key on the site and call again); DESKTOP_MEMBER_IN_CONTROL stays for a member who holds the desktop.
+		for (const outcome of [{ cleared: true }, { cleared: false }]) {
+			f.call.mockResolvedValueOnce(clear);
+			f.host.clearClipboard.mockResolvedValueOnce(outcome);
+			const error = await f.router.codingValue(f.request, f.signal).catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(CloudMachineCodingValueRefusal);
+			expect(error).toMatchObject({ code: "CLIPBOARD_EMPTY" });
+		}
+		expect(f.host.clearClipboard).toHaveBeenCalledWith(
+			{ placementId: f.answer.placementId, bootId: f.answer.bootId, desktopGeneration: 6 },
+			f.signal,
+		);
+		expect(f.host.codingValue).not.toHaveBeenCalled();
+		// Another boot, or an image without the helper: the agent's refusal by that code, as a read's would be.
+		for (const refused of ["MACHINE_BOOT_CHANGED", "MACHINE_IMAGE_WITHOUT_CODING_VALUES"] as const) {
+			f.call.mockResolvedValueOnce(clear);
+			f.host.clearClipboard.mockResolvedValueOnce({ refused });
+			await expect(f.router.codingValue(f.request, f.signal)).rejects.toMatchObject({ code: refused });
+		}
+		// A `clear` answer of another shape is no authority: nothing is cleared.
+		for (const other of [
+			{ machineId: randomUUID() },
+			{ receiptId: randomUUID() },
+			{ placementId: "placement" },
+			{ desktopGeneration: -1 },
+			{ desktopGeneration: "6" },
+			{ target: f.target },
+		]) {
+			f.call.mockResolvedValueOnce({ ...clear, ...other });
+			await expect(f.router.codingValue(f.request, f.signal), JSON.stringify(other)).rejects.toThrow(
+				"MACHINE_CODING_VALUE_AUTHORITY_INVALID",
+			);
+		}
+		expect(f.host.clearClipboard).toHaveBeenCalledTimes(4);
+		// A machine no member held since its last clear: read as before.
+		expect(await f.router.codingValue(f.request, f.signal)).toMatchObject({ box });
 	});
 
 	it("turns a stopped machine and the helper's codes into the agent's refusals, and anything else into a failure", async () => {
@@ -812,7 +904,13 @@ describe("a machine's coding value", () => {
 		});
 		await expect(f.router.codingValue(f.request, f.signal)).rejects.toMatchObject({ code: "MACHINE_NOT_RUNNING" });
 		expect(f.host.codingValue).not.toHaveBeenCalled();
-		for (const code of ["CLIPBOARD_EMPTY", "CLIPBOARD_MORE_THAN_ONE_KEY", "MACHINE_IMAGE_WITHOUT_CODING_VALUES"]) {
+		for (const code of [
+			"CLIPBOARD_EMPTY",
+			"CLIPBOARD_MORE_THAN_ONE_KEY",
+			"MACHINE_IMAGE_WITHOUT_CODING_VALUES",
+			// The host's fence dropped the box: a member took the desktop over since the read (F29).
+			"DESKTOP_MEMBER_IN_CONTROL",
+		]) {
 			f.host.codingValue.mockResolvedValueOnce({ refused: code });
 			const error = await f.router.codingValue(f.request, f.signal).catch((caught: unknown) => caught);
 			expect(error).toBeInstanceOf(CloudMachineCodingValueRefusal);
@@ -829,6 +927,11 @@ describe("a machine's coding value", () => {
 			{ target: { ...f.target, schema: "qorpera.coding-value-capture-target/v1" } },
 			{ target: null },
 			{ executorOwner: "" },
+			// F29: a read without the lease generation it saw is no authority.
+			{ desktopGeneration: undefined },
+			{ desktopGeneration: -1 },
+			{ desktopGeneration: "4" },
+			{ desktopGeneration: 1.5 },
 		]) {
 			f.call.mockResolvedValueOnce({ ...f.answer, ...other });
 			await expect(
@@ -898,7 +1001,7 @@ describe("a machine's coding value", () => {
 			peers: [
 				{ owner: "mx-a", providerId: "machine-node", origin: "https://node-a.example", tokenCredential: "peer-a" },
 			],
-			control: { call: f.call },
+			control: closed({ call: f.call }),
 			credential: async () => randomBytes(32).toString("base64url"),
 			fetch: (async (input: string | URL | Request) => {
 				sent.push(String(input));
@@ -976,6 +1079,10 @@ describe("a machine's screen", () => {
 			action,
 			settleMs: 500,
 			look: true,
+			// The lease generation the read saw (20260930713000).
+			desktopGeneration: 7,
+			// F35 of #1661: no member held the desktop since its clipboard was last confirmed clear.
+			clipboardClear: false,
 		};
 		const lookAnswer = { ...answer, receiptId: null, action: null, settleMs: null, look: null };
 		const call = vi.fn(async (_method: string, args: Record<string, unknown>) =>
@@ -993,7 +1100,7 @@ describe("a machine's screen", () => {
 			owner: "mx-a",
 			providerId: "machine-node",
 			peers: [],
-			control: { call },
+			control: closed({ call }),
 			credential: async () => "",
 			screenLocal: localMachineScreen(host),
 		});
@@ -1031,9 +1138,16 @@ describe("a machine's screen", () => {
 					settleMs: 500,
 					look: true,
 				},
+				// The host's fence after the capture checks it (review r1 F1).
+				desktopGeneration: 7,
+				clearClipboard: false,
 			},
 			f.signal,
 		);
+		// A clear owed (F35): the host is told, and clears under the call's hold before it looks or acts.
+		f.call.mockResolvedValueOnce({ ...f.answer, clipboardClear: true });
+		await f.router.screen(f.request, f.signal);
+		expect(f.host.screen).toHaveBeenLastCalledWith(expect.objectContaining({ clearClipboard: true }), f.signal);
 		// A look: no receipt, no action, and the request's own settle and look.
 		expect(await f.router.screen(f.look, f.signal)).toMatchObject({ commandId: null });
 		expect(f.host.screen).toHaveBeenLastCalledWith(
@@ -1111,6 +1225,11 @@ describe("a machine's screen", () => {
 			[f.request, { action: null }],
 			[f.request, { settleMs: 2500 }],
 			[f.request, { look: false }],
+			[f.request, { desktopGeneration: undefined }],
+			[f.request, { desktopGeneration: -1 }],
+			[f.request, { desktopGeneration: "7" }],
+			[f.request, { clipboardClear: undefined }],
+			[f.request, { clipboardClear: "true" }],
 			[f.look, { receiptId: null, action: f.action, settleMs: null, look: null }],
 			[f.look, { receiptId: null, action: null, settleMs: 500, look: null }],
 		] as const) {
@@ -1190,7 +1309,7 @@ describe("a machine's screen", () => {
 			peers: [
 				{ owner: "mx-a", providerId: "machine-node", origin: "https://node-a.example", tokenCredential: "peer-a" },
 			],
-			control: { call: f.call },
+			control: closed({ call: f.call }),
 			credential: async () => randomBytes(32).toString("base64url"),
 			fetch: (async (input: string | URL | Request) => {
 				sent.push(String(input));
@@ -1295,6 +1414,7 @@ describe("a member's look at a desktop (20260930712000)", () => {
 			userId: ids.userId,
 			served: requestOwner === "mx-a",
 			keepDesktop: true,
+			desktopGeneration: 3,
 		});
 		const call = vi.fn(
 			async (_method: string, args: Record<string, unknown>) => answer(args.p_owner as string) as unknown,
@@ -1311,7 +1431,7 @@ describe("a member's look at a desktop (20260930712000)", () => {
 				{ owner: "mx-a", providerId: "machine-node", origin: "https://node-a.example", tokenCredential: "peer-a" },
 				{ owner: "mx-c", providerId: "machine-node", origin: "https://node-c.example", tokenCredential: "peer-c" },
 			].filter((peer) => peer.owner !== owner),
-			control: { call },
+			control: closed({ call }),
 			credential: async () => randomBytes(32).toString("base64url"),
 			memberBegin,
 			memberScreenLocal: localMemberMachineScreen(host),
@@ -1346,7 +1466,7 @@ describe("a member's look at a desktop (20260930712000)", () => {
 		);
 		expect(JSON.stringify(f.call.mock.calls)).not.toContain("eyJh");
 		expect(f.host.memberLook).toHaveBeenCalledWith(
-			{ placementId: f.placementId, bootId: f.bootId, userId: f.userId, keepDesktop: true },
+			{ placementId: f.placementId, bootId: f.bootId, userId: f.userId, keepDesktop: true, desktopGeneration: 3 },
 			f.signal,
 		);
 		// The member has this picture: its etag alone.
@@ -1357,7 +1477,7 @@ describe("a member's look at a desktop (20260930712000)", () => {
 			owner: "mx-a",
 			providerId: "machine-node",
 			peers: [],
-			control: { call: f.call },
+			control: closed({ call: f.call }),
 			credential: async () => "",
 		});
 		await expect(plain.memberScreen(f.look, f.signal)).rejects.toThrow("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
@@ -1367,6 +1487,8 @@ describe("a member's look at a desktop (20260930712000)", () => {
 		const f = fixture();
 		for (const [outcome, code] of [
 			[{ refused: "DESKTOP_NOT_RUNNING" }, "DESKTOP_NOT_RUNNING"],
+			// The fence after the capture: another member took the desktop over since the read (20260930713000).
+			[{ refused: "DESKTOP_MEMBER_IN_CONTROL" }, "DESKTOP_MEMBER_IN_CONTROL"],
 			[{ refused: "MACHINE_BOOT_CHANGED" }, "MACHINE_BOOT_CHANGED"],
 			[{ refused: "MACHINE_IMAGE_WITHOUT_SCREEN" }, "MACHINE_IMAGE_WITHOUT_SCREEN"],
 			[{ held: "hidden" }, "SCREEN_HIDDEN"],
@@ -1388,7 +1510,7 @@ describe("a member's look at a desktop (20260930712000)", () => {
 		}
 		f.memberBegin.mockRejectedValueOnce(new CloudMemberMachineScreenRefusal("SCREEN_TOO_SOON"));
 		await expect(f.router.memberScreen(f.look, f.signal)).rejects.toMatchObject({ code: "SCREEN_TOO_SOON" });
-		expect(f.host.memberLook).toHaveBeenCalledTimes(5);
+		expect(f.host.memberLook).toHaveBeenCalledTimes(6);
 	});
 
 	it("reads SQL's answer strictly: the use asked, exactly its fields, served only to the machine's own executor", async () => {
@@ -1404,6 +1526,8 @@ describe("a member's look at a desktop (20260930712000)", () => {
 			{ executorOwner: "mx a" },
 			{ providerId: "Node" },
 			{ keepDesktop: "yes" },
+			{ desktopGeneration: -1 },
+			{ desktopGeneration: undefined },
 			{ served: false },
 			{ node: "node-01" },
 			{ state: "refused", reason: "SCREEN_TOO_SOON" },
@@ -1527,5 +1651,489 @@ describe("a member's look at a desktop (20260930712000)", () => {
 			expect(() => parseCloudMemberMachineScreenAnswer(request, bad), JSON.stringify(bad).slice(0, 120)).toThrow(
 				"Machine command gateway unavailable",
 			);
+	});
+});
+
+describe("a member's action on a desktop they hold (20260930713000)", () => {
+	const typed = { type: "type", text: "hunter2 Åse" } as const;
+	function fixture(owner = "mx-a") {
+		const ids = {
+			actionId: randomUUID(),
+			companyId: randomUUID(),
+			machineId: randomUUID(),
+			placementId: randomUUID(),
+			bootId: randomUUID(),
+			userId: randomUUID(),
+		};
+		/** SQL's read, for the machine of node A: served only to A's executor; the action as SQL recorded it. */
+		const answer = (requestOwner: string, action: Record<string, unknown> = cloudMemberMachineActRecord(typed)) => ({
+			schema: "qorpera.member-machine-desktop-act-authority/v1",
+			state: "authorized",
+			actionId: ids.actionId,
+			machineId: ids.machineId,
+			placementId: ids.placementId,
+			bootId: ids.bootId,
+			executorOwner: "mx-a",
+			providerId: "machine-node",
+			userId: ids.userId,
+			// The seat it was begun in (round 23 of #1661).
+			seat: 9,
+			action,
+			served: requestOwner === "mx-a",
+		});
+		const call = vi.fn(
+			async (_method: string, args: Record<string, unknown>) => answer(args.p_owner as string) as unknown,
+		);
+		const host = {
+			memberAct: vi.fn(async (): Promise<CompanyMachineMemberActOutcome> => ({ done: { exitCode: 0 } })),
+		};
+		const memberActBegin = vi.fn(async () => ids.actionId);
+		const sent: { url: string; body: unknown }[] = [];
+		const router = new MachineCommandRouter({
+			owner,
+			providerId: "machine-node",
+			peers: [
+				{ owner: "mx-a", providerId: "machine-node", origin: "https://node-a.example", tokenCredential: "peer-a" },
+				{ owner: "mx-c", providerId: "machine-node", origin: "https://node-c.example", tokenCredential: "peer-c" },
+			].filter((peer) => peer.owner !== owner),
+			control: closed({ call }),
+			credential: async () => randomBytes(32).toString("base64url"),
+			memberActBegin,
+			memberActLocal: localMemberMachineAct(host),
+			fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+				sent.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+				return new Response(JSON.stringify({ code: "DESKTOP_BUSY" }), { status: 409 });
+			}) as typeof fetch,
+		});
+		const act = {
+			companyId: ids.companyId,
+			machineId: ids.machineId,
+			token: "eyJh.eyJz.c2ln",
+			action: typed,
+			epoch: 4,
+			seat: 9,
+		};
+		return { ...ids, answer, call, host, memberActBegin, router, act, sent, signal: new AbortController().signal };
+	}
+
+	it("begins the action as the member, reads it as the machine's own executor and runs it on this node", async () => {
+		const f = fixture();
+		expect(await f.router.memberAct(f.act, f.signal)).toEqual({ exitCode: 0 });
+		expect(f.memberActBegin).toHaveBeenCalledWith(
+			"eyJh.eyJz.c2ln",
+			// With the epoch and the seat of the hold its input was captured under (F24, F26).
+			{ companyId: f.companyId, machineId: f.machineId, action: typed, epoch: 4, seat: 9 },
+			f.signal,
+		);
+		expect(f.call).toHaveBeenCalledWith(
+			"qorpera_member_machine_desktop_act_authority",
+			{ p_action_id: f.actionId, p_owner: "mx-a", p_provider_id: "machine-node" },
+			f.signal,
+		);
+		// SQL is asked nothing with the member's token or the text in it.
+		expect(JSON.stringify(f.call.mock.calls)).not.toContain("eyJh");
+		expect(JSON.stringify(f.call.mock.calls)).not.toContain("hunter2");
+		// The host gets the text: it alone takes it to the machine.
+		// With the seat and the member, which the host's fence asks again once it holds the desktop (round 23).
+		expect(f.host.memberAct).toHaveBeenCalledWith(
+			{
+				placementId: f.placementId,
+				bootId: f.bootId,
+				actionId: f.actionId,
+				action: typed,
+				seat: 9,
+				userId: f.userId,
+			},
+			f.signal,
+		);
+		expect(f.sent).toEqual([]);
+		// The host's refusals are the member's; anything else fails.
+		for (const refused of ["DESKTOP_BUSY", "DESKTOP_NOT_RUNNING", "MACHINE_BOOT_CHANGED", "SCREEN_ACTION_TAKEN"]) {
+			f.host.memberAct.mockResolvedValueOnce({ refused });
+			const error = await f.router.memberAct(f.act, f.signal).catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(CloudMemberMachineActRefusal);
+			expect(error).toMatchObject({ code: refused });
+		}
+		f.host.memberAct.mockResolvedValueOnce({ refused: "SOMETHING_ELSE" });
+		await expect(f.router.memberAct(f.act, f.signal)).rejects.toThrow("MEMBER_MACHINE_ACT_FAILED");
+		// SQL's refusals: a machine that is not running, a disk the member may not see, a hold that ended.
+		for (const reason of ["MACHINE_NOT_RUNNING", "MACHINE_NEEDS_COMPANY_VIEW", "DESKTOP_CONTROL_ENDED"]) {
+			f.call.mockResolvedValueOnce({
+				schema: "qorpera.member-machine-desktop-act-authority/v1",
+				state: "refused",
+				reason,
+			});
+			await expect(f.router.memberAct(f.act, f.signal)).rejects.toMatchObject({ code: reason });
+		}
+		// The begin's own, as it gave them.
+		f.memberActBegin.mockRejectedValueOnce(new CloudMemberMachineActRefusal("DESKTOP_MEMBER_IN_CONTROL"));
+		await expect(f.router.memberAct(f.act, f.signal)).rejects.toMatchObject({ code: "DESKTOP_MEMBER_IN_CONTROL" });
+		// An executor that takes no member's request never begins one.
+		const plain = new MachineCommandRouter({
+			owner: "mx-a",
+			providerId: "machine-node",
+			peers: [],
+			control: closed({ call: f.call }),
+			credential: async () => "",
+		});
+		await expect(plain.memberAct(f.act, f.signal)).rejects.toThrow("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+	});
+
+	it("runs only the action SQL let in: its record must be this one's, a text by its length", async () => {
+		const f = fixture();
+		const request = { actionId: f.actionId, action: typed, owner: "mx-a", providerId: "machine-node" };
+		expect(await authorizeMemberMachineAct({ call: f.call }, request, f.signal)).toMatchObject({ served: true });
+		expect(cloudMemberMachineActRecord(typed)).toEqual({ type: "type", length: 11 });
+		expect(cloudMemberMachineActRecord({ type: "click", x: 1, y: 2 })).toEqual({ type: "click", x: 1, y: 2 });
+		for (const other of [
+			{ action: { type: "type", length: 12 } },
+			{ action: { type: "click", x: 1, y: 2 } },
+			{ action: { type: "type", text: "hunter2 Åse" } },
+			{ actionId: randomUUID() },
+			{ placementId: null },
+			{ executorOwner: "mx a" },
+			{ served: false },
+			{ node: "node-01" },
+			{ seat: 0 },
+			{ seat: "9" },
+			{ seat: undefined },
+			{ state: "refused", reason: "DESKTOP_BUSY" },
+			{ schema: "qorpera.member-machine-screen-authority/v1" },
+		]) {
+			f.call.mockResolvedValueOnce({ ...f.answer("mx-a"), ...other });
+			await expect(
+				authorizeMemberMachineAct({ call: f.call }, request, f.signal),
+				JSON.stringify(other),
+			).rejects.toThrow(/MEMBER_ACT_(AUTHORITY_INVALID|DIFFERS)/);
+		}
+		expect(f.host.memberAct).not.toHaveBeenCalled();
+	});
+
+	it("sends an action once to the node that runs the machine, which never sends it on, and its refusal stays the member's", async () => {
+		const f = fixture("mx-c");
+		await expect(f.router.memberAct(f.act, f.signal)).rejects.toMatchObject({ code: "DESKTOP_BUSY" });
+		expect(f.sent).toEqual([
+			{
+				url: "https://node-a.example/v1/machine-commands/member-act",
+				body: { schema: "qorpera.member-machine-act-http/v1", actionId: f.actionId, action: typed },
+			},
+		]);
+		// The member's token never goes to the peer.
+		expect(JSON.stringify(f.sent)).not.toContain("eyJh");
+		expect(f.host.memberAct).not.toHaveBeenCalled();
+		await expect(
+			f.router.memberActPeer(
+				{ schema: "qorpera.member-machine-act-http/v1", actionId: f.actionId, action: typed },
+				f.signal,
+			),
+		).rejects.toThrow("MACHINE_COMMAND_WRONG_EXECUTOR");
+		expect(f.sent).toHaveLength(1);
+	});
+
+	it("crosses the peer listener only, with the peer token: the exit, a refusal as 409, the guests' ingress never", async () => {
+		const f = fixture();
+		const token = randomBytes(32).toString("base64url");
+		const start = async (
+			proveBinding: ConstructorParameters<typeof HttpCloudCodingCommandService>[0]["proveBinding"],
+		) => {
+			const http = new HttpCloudCodingCommandService({
+				token,
+				proveBinding,
+				authorize: async () => {
+					throw new Error("not a coding command");
+				},
+				execute: async () => {
+					throw new Error("not a coding command");
+				},
+				machines: machineCommandRoutes(f.router, { call: f.call }, proveBinding === null),
+			});
+			const port = await http.start();
+			cleanups.push(() => http.close());
+			return `http://127.0.0.1:${port}`;
+		};
+		const peerUrl = await start(null);
+		const peer = createHttpMemberMachineScreenPeer({ url: peerUrl, token, allowLoopback: true });
+		expect(await peer.memberAct({ actionId: f.actionId, action: typed }, f.signal)).toEqual({ exitCode: 0 });
+		expect(f.host.memberAct).toHaveBeenLastCalledWith(expect.objectContaining({ action: typed }), expect.anything());
+		f.host.memberAct.mockResolvedValueOnce({ refused: "DESKTOP_BUSY" });
+		await expect(peer.memberAct({ actionId: f.actionId, action: typed }, f.signal)).rejects.toMatchObject({
+			code: "DESKTOP_BUSY",
+		});
+		// Another token: nothing is asked of SQL.
+		const calls = f.call.mock.calls.length;
+		await expect(
+			createHttpMemberMachineScreenPeer({
+				url: peerUrl,
+				token: randomBytes(32).toString("base64url"),
+				allowLoopback: true,
+			}).memberAct({ actionId: f.actionId, action: typed }, f.signal),
+		).rejects.toThrow("Machine command gateway unavailable");
+		expect(f.call.mock.calls.length).toBe(calls);
+		// The guests' ingress has no member route, whatever the token.
+		const ingressUrl = await start(async () => {});
+		await expect(
+			createHttpMemberMachineScreenPeer({ url: ingressUrl, token, allowLoopback: true }).memberAct(
+				{ actionId: f.actionId, action: typed },
+				f.signal,
+			),
+		).rejects.toThrow("Machine command gateway unavailable");
+		expect(f.call.mock.calls.length).toBe(calls);
+	});
+
+	it("reads only its own request (never open, never a malformed action, with no word of it in the error) and its answer", () => {
+		const actionId = randomUUID();
+		const request = { schema: "qorpera.member-machine-act-http/v1", actionId, action: typed } as const;
+		expect(parseCloudMemberMachineActPeerRequest(request)).toEqual(request);
+		for (const bad of [
+			{ ...request, actionId: "action" },
+			{ ...request, action: { type: "open", target: "https://bank.example.test" } },
+			{ ...request, action: { type: "type", text: "secret\u0007" } },
+			{ ...request, action: { type: "key", keys: ["exec", "id"] } },
+			{ ...request, action: { type: "type", text: "x".repeat(501) } },
+			{ ...request, token: "eyJ" },
+			{ ...request, schema: "qorpera.member-machine-screen-http/v1" },
+		]) {
+			let error: unknown;
+			try {
+				parseCloudMemberMachineActPeerRequest(bad);
+			} catch (caught) {
+				error = caught;
+			}
+			expect(error).toBeInstanceOf(Error);
+			expect((error as Error).message).toBe("Machine command gateway unavailable");
+		}
+		expect(() => parseCloudMemberMachineAction({ type: "type", text: "secret\u0007" })).toThrow(
+			/^MEMBER_ACTION_INVALID$/,
+		);
+		expect(parseCloudMemberMachineAction({ type: "scroll", direction: "down", steps: 3, x: 1, y: 2 })).toEqual({
+			type: "scroll",
+			direction: "down",
+			steps: 3,
+			x: 1,
+			y: 2,
+		});
+		const good = { schema: "qorpera.member-machine-act-answer/v1", actionId, exitCode: 0 };
+		expect(parseCloudMemberMachineActAnswer(request, good)).toEqual({ exitCode: 0 });
+		expect(parseCloudMemberMachineActAnswer(request, { ...good, exitCode: null })).toEqual({ exitCode: null });
+		for (const bad of [
+			{ ...good, actionId: randomUUID() },
+			{ ...good, exitCode: 256 },
+			{ ...good, exitCode: "0" },
+			{ ...good, png: "" },
+		])
+			expect(() => parseCloudMemberMachineActAnswer(request, bad)).toThrow("Machine command gateway unavailable");
+	});
+});
+
+describe("a member's start of a desktop (20260930714000)", () => {
+	function fixture(owner = "mx-a") {
+		const ids = {
+			startId: randomUUID(),
+			companyId: randomUUID(),
+			machineId: randomUUID(),
+			placementId: randomUUID(),
+			bootId: randomUUID(),
+			userId: randomUUID(),
+		};
+		/** SQL's read, for the machine of node A: served only to A's executor. */
+		const answer = (requestOwner: string) => ({
+			schema: "qorpera.member-machine-desktop-start-authority/v1",
+			state: "authorized",
+			startId: ids.startId,
+			machineId: ids.machineId,
+			placementId: ids.placementId,
+			bootId: ids.bootId,
+			executorOwner: "mx-a",
+			providerId: "machine-node",
+			userId: ids.userId,
+			served: requestOwner === "mx-a",
+		});
+		const call = vi.fn(
+			async (_method: string, args: Record<string, unknown>) => answer(args.p_owner as string) as unknown,
+		);
+		const host = {
+			memberStart: vi.fn(async (): Promise<CompanyMachineMemberStartOutcome> => ({ outcome: "started" })),
+		};
+		const memberStartBegin = vi.fn(async (): Promise<{ startId: string }> => ({ startId: ids.startId }));
+		const sent: { url: string; body: unknown }[] = [];
+		const router = new MachineCommandRouter({
+			owner,
+			providerId: "machine-node",
+			peers: [
+				{ owner: "mx-a", providerId: "machine-node", origin: "https://node-a.example", tokenCredential: "peer-a" },
+				{ owner: "mx-c", providerId: "machine-node", origin: "https://node-c.example", tokenCredential: "peer-c" },
+			].filter((peer) => peer.owner !== owner),
+			control: closed({ call }),
+			credential: async () => randomBytes(32).toString("base64url"),
+			memberStartBegin,
+			memberStartLocal: localMemberMachineStart(host),
+			fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+				sent.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+				return new Response(JSON.stringify({ code: "DESKTOP_MACHINE_TOO_SMALL" }), { status: 409 });
+			}) as typeof fetch,
+		});
+		const start = { companyId: ids.companyId, machineId: ids.machineId, token: "eyJh.eyJz.c2ln" };
+		return {
+			...ids,
+			answer,
+			call,
+			host,
+			memberStartBegin,
+			router,
+			start,
+			sent,
+			signal: new AbortController().signal,
+		};
+	}
+
+	it("begins the start as the member, reads it as the machine's own executor and runs it on this node", async () => {
+		const f = fixture();
+		expect(await f.router.memberStart(f.start, f.signal)).toEqual({ outcome: "started" });
+		expect(f.memberStartBegin).toHaveBeenCalledWith(
+			"eyJh.eyJz.c2ln",
+			{ companyId: f.companyId, machineId: f.machineId },
+			f.signal,
+		);
+		expect(f.call).toHaveBeenCalledWith(
+			"qorpera_member_machine_desktop_start_authority",
+			{ p_start_id: f.startId, p_owner: "mx-a", p_provider_id: "machine-node" },
+			f.signal,
+		);
+		expect(f.host.memberStart).toHaveBeenCalledWith(
+			{ placementId: f.placementId, bootId: f.bootId, startId: f.startId },
+			f.signal,
+		);
+		// Running already, too small, a restarted machine, a desktop that did not start: the member's; anything else fails.
+		f.host.memberStart.mockResolvedValueOnce({ outcome: "running" });
+		expect(await f.router.memberStart(f.start, f.signal)).toEqual({ outcome: "running" });
+		for (const refused of ["DESKTOP_MACHINE_TOO_SMALL", "MACHINE_BOOT_CHANGED", "DESKTOP_DID_NOT_START"]) {
+			f.host.memberStart.mockResolvedValueOnce({ refused });
+			await expect(f.router.memberStart(f.start, f.signal)).rejects.toMatchObject({ code: refused });
+		}
+		f.host.memberStart.mockResolvedValueOnce({ refused: "SOMETHING_ELSE" });
+		await expect(f.router.memberStart(f.start, f.signal)).rejects.toThrow("MEMBER_MACHINE_START_FAILED");
+	});
+
+	it("runs the start whoever holds the desktop: SQL's read knows no hold (review r1 F1 of #1681)", async () => {
+		const f = fixture();
+		// A read that still names a hold is of another shape: no authority.
+		f.call.mockResolvedValueOnce({ ...f.answer("mx-a"), held: true });
+		await expect(f.router.memberStart(f.start, f.signal)).rejects.toThrow("MEMBER_START_AUTHORITY_INVALID");
+		expect(f.host.memberStart).not.toHaveBeenCalled();
+		expect(await f.router.memberStart(f.start, f.signal)).toEqual({ outcome: "started" });
+		expect(f.host.memberStart).toHaveBeenCalledTimes(1);
+	});
+
+	it("reads SQL's answer strictly: the start asked, exactly its fields, served only to the machine's own executor", async () => {
+		const f = fixture();
+		for (const [name, value] of [
+			["another start", { ...f.answer("mx-a"), startId: randomUUID() }],
+			["an extra field", { ...f.answer("mx-a"), more: 1 }],
+			["served to another", { ...f.answer("mx-a"), executorOwner: "mx-b" }],
+			["another schema", { ...f.answer("mx-a"), schema: "qorpera.member-machine-desktop-act-authority/v1" }],
+		] as const) {
+			f.call.mockResolvedValueOnce(value);
+			await expect(f.router.memberStart(f.start, f.signal), name).rejects.toThrow("MEMBER_START_AUTHORITY_INVALID");
+		}
+		for (const reason of ["MACHINE_NOT_RUNNING", "MACHINE_NEEDS_COMPANY_VIEW", "DESKTOP_MACHINE_TOO_SMALL"]) {
+			f.call.mockResolvedValueOnce({
+				schema: "qorpera.member-machine-desktop-start-authority/v1",
+				state: "refused",
+				reason,
+			});
+			await expect(f.router.memberStart(f.start, f.signal)).rejects.toMatchObject({ code: reason });
+		}
+		expect(f.host.memberStart).not.toHaveBeenCalled();
+	});
+
+	it("sends a start once to the node that runs the machine, which never sends it on, and its refusal stays the member's", async () => {
+		const f = fixture("mx-c");
+		await expect(f.router.memberStart(f.start, f.signal)).rejects.toMatchObject({
+			code: "DESKTOP_MACHINE_TOO_SMALL",
+		});
+		expect(f.sent).toEqual([
+			{
+				url: "https://node-a.example/v1/machine-commands/member-start",
+				body: { schema: "qorpera.member-machine-start-http/v1", startId: f.startId },
+			},
+		]);
+		expect(JSON.stringify(f.sent)).not.toContain("eyJh");
+		await expect(
+			f.router.memberStartPeer({ schema: "qorpera.member-machine-start-http/v1", startId: f.startId }, f.signal),
+		).rejects.toThrow("MACHINE_COMMAND_WRONG_EXECUTOR");
+		expect(f.sent).toHaveLength(1);
+	});
+
+	it("crosses the peer listener only, with the peer token: the outcome, a refusal as 409, the guests' ingress never", async () => {
+		const f = fixture();
+		const token = randomBytes(32).toString("base64url");
+		const start = async (
+			proveBinding: ConstructorParameters<typeof HttpCloudCodingCommandService>[0]["proveBinding"],
+		) => {
+			const http = new HttpCloudCodingCommandService({
+				token,
+				proveBinding,
+				authorize: async () => {
+					throw new Error("not a coding command");
+				},
+				execute: async () => {
+					throw new Error("not a coding command");
+				},
+				machines: machineCommandRoutes(f.router, { call: f.call }, proveBinding === null),
+			});
+			const port = await http.start();
+			cleanups.push(() => http.close());
+			return `http://127.0.0.1:${port}`;
+		};
+		const peerUrl = await start(null);
+		const peer = createHttpMemberMachineScreenPeer({ url: peerUrl, token, allowLoopback: true });
+		expect(await peer.memberStart({ startId: f.startId }, f.signal)).toEqual({ outcome: "started" });
+		f.host.memberStart.mockResolvedValueOnce({ refused: "DESKTOP_DID_NOT_START" });
+		await expect(peer.memberStart({ startId: f.startId }, f.signal)).rejects.toMatchObject({
+			code: "DESKTOP_DID_NOT_START",
+		});
+		const calls = f.call.mock.calls.length;
+		await expect(
+			createHttpMemberMachineScreenPeer({
+				url: peerUrl,
+				token: randomBytes(32).toString("base64url"),
+				allowLoopback: true,
+			}).memberStart({ startId: f.startId }, f.signal),
+		).rejects.toThrow("Machine command gateway unavailable");
+		const ingressUrl = await start(async () => {});
+		await expect(
+			createHttpMemberMachineScreenPeer({ url: ingressUrl, token, allowLoopback: true }).memberStart(
+				{ startId: f.startId },
+				f.signal,
+			),
+		).rejects.toThrow("Machine command gateway unavailable");
+		expect(f.call.mock.calls.length).toBe(calls);
+	});
+
+	it("reads only its own request and an answer of exactly that request", () => {
+		const startId = randomUUID();
+		const request = parseCloudMemberMachineStartPeerRequest({
+			schema: "qorpera.member-machine-start-http/v1",
+			startId,
+		});
+		for (const bad of [
+			{ schema: "qorpera.member-machine-start-http/v1", startId: "x" },
+			{ schema: "qorpera.member-machine-act-http/v1", startId },
+			{ schema: "qorpera.member-machine-start-http/v1", startId, open: "/company" },
+		])
+			expect(() => parseCloudMemberMachineStartPeerRequest(bad)).toThrow();
+		expect(
+			parseCloudMemberMachineStartAnswer(request, {
+				schema: "qorpera.member-machine-start-answer/v1",
+				startId,
+				outcome: "running",
+			}),
+		).toEqual({ outcome: "running" });
+		for (const bad of [
+			{ schema: "qorpera.member-machine-start-answer/v1", startId: randomUUID(), outcome: "started" },
+			{ schema: "qorpera.member-machine-start-answer/v1", startId, outcome: "maybe" },
+			{ schema: "qorpera.member-machine-start-answer/v1", startId, outcome: "started", more: 1 },
+		])
+			expect(() => parseCloudMemberMachineStartAnswer(request, bad)).toThrow();
 	});
 });

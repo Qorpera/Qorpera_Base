@@ -1251,6 +1251,21 @@ describe("machine tools", () => {
 				command: "npm test",
 			});
 			expect(stopped.contentItems[0].text).toContain("MACHINE_NOT_RUNNING");
+			// A member holds the machine's desktop (20260930713000): nothing started, and the agent hears what to do.
+			f.gateway.start.mockRejectedValueOnce(new CloudMachineCommandRefusal("DESKTOP_MEMBER_IN_CONTROL"));
+			const held = await f.boundary.invoke("r2b", "qorpera", "machine_run", {
+				operationKey: "suite:2b",
+				machine: "build-a",
+				command: "npm test",
+			});
+			expect(held.success).toBe(true);
+			expect(JSON.parse(JSON.parse(held.contentItems[0].text).content.text)).toMatchObject({
+				refused: {
+					reason: "DESKTOP_MEMBER_IN_CONTROL",
+					message: expect.stringMatching(/did not start.*already running on it go on.*end your turn.*wakes you/),
+				},
+			});
+			expect(f.gateway.start).toHaveBeenCalledTimes(3);
 			// A command from before the machine moved: its log went with the old disk.
 			f.gateway.read.mockRejectedValueOnce(new Error("MACHINE_COMMAND_ENDED"));
 			const gone = await f.boundary.invoke("r3", "qorpera", "machine_read", {
@@ -1652,6 +1667,8 @@ describe("machine tools", () => {
 				"CLIPBOARD_MORE_THAN_ONE_KEY",
 				"DESKTOP_NOT_RUNNING",
 				"MACHINE_IMAGE_WITHOUT_CODING_VALUES",
+				// A member holds the machine's desktop (20260930713000).
+				"DESKTOP_MEMBER_IN_CONTROL",
 			] as const) {
 				const values = vault();
 				const f = fixture(undefined, false, values);
@@ -1911,6 +1928,8 @@ describe("machine tools", () => {
 				"MACHINE_IMAGE_WITHOUT_SCREEN",
 				"DESKTOP_BUSY",
 				"MACHINE_NEEDS_COMPANY_VIEW",
+				// A member holds the desktop (20260930713000).
+				"DESKTOP_MEMBER_IN_CONTROL",
 			] as const) {
 				const f = fixture(undefined, false, undefined, true);
 				try {
@@ -1924,6 +1943,22 @@ describe("machine tools", () => {
 				} finally {
 					f.boundary.close();
 				}
+			}
+			// A look while a member holds the desktop: no picture, and the agent is told what it means and what to do.
+			const held = fixture(undefined, false, undefined, true);
+			try {
+				held.screen.mockRejectedValueOnce(new CloudMachineScreenRefusal("DESKTOP_MEMBER_IN_CONTROL"));
+				const result = await held.boundary.invoke("look-0", "qorpera", "machine_screen", { machine: "build-a" });
+				expect(f0(held, result).refused).toEqual({
+					reason: "DESKTOP_MEMBER_IN_CONTROL",
+					message: expect.stringContaining("a member is using this computer's screen"),
+				});
+				expect(f0(held, result).refused.message).toMatch(
+					/ask_member with surface takeover.*end your turn.*I'm done/,
+				);
+				expect(result.contentItems).toHaveLength(1);
+			} finally {
+				held.boundary.close();
 			}
 			const look = fixture(undefined, false, undefined, true);
 			try {
