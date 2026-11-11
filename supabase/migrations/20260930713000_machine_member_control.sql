@@ -369,7 +369,7 @@ declare
 	v_reads_root boolean;
 	v_control uuid;
 	v_action uuid := pg_catalog.gen_random_uuid();
-	v_now timestamptz := clock_timestamp();
+	v_now timestamptz;
 begin
 	-- 20260930713000
 	if auth.role() is distinct from 'authenticated' or v_user is null or p_profile_id is null or p_machine_id is null
@@ -382,6 +382,9 @@ begin
 	for no key update;
 	if not found then
 		raise exception 'Machine desktop is unavailable' using errcode = '42501'; end if;
+	-- The clock is read under the lock (review r7 F14): an action that waited for it across the lease's end finds it
+	-- ended, and renews nothing.
+	v_now := clock_timestamp();
 	v_placement := public.qorpera_company_machine_placement(v_machine.id);
 	if v_machine.desired_state <> 'running' or v_placement.id is null or v_placement.running_at is null
 		or v_placement.boot_id is null or not coalesce(public.qorpera_company_machine_placement_reserved(v_placement.id), false) then
@@ -582,8 +585,20 @@ do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_autho
 
 -- 7. While a member holds the desktop, other members see who, not the screen ---------------------------------------------
 
+-- The look's begin read its clock before the machine's lock (20260930712000); it is read under the lock now (review r7
+-- F14), so the hold below, the 400 ms throttle and the times it writes are all of the moment the lock was had.
 do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_member_machine_screen_begin(uuid,uuid,jsonb)'::regprocedure,
-	array[$old$		return jsonb_build_object('schema', 'qorpera.member-machine-screen/v1', 'state', 'refused',
+	array[$old$	v_now timestamptz := clock_timestamp();$old$,
+	$new$	v_now timestamptz;$new$,
+	$old$	for no key update;
+	if not found then
+		raise exception 'Machine screen is unavailable' using errcode = '42501'; end if;$old$,
+	$new$	for no key update;
+	if not found then
+		raise exception 'Machine screen is unavailable' using errcode = '42501'; end if;
+	-- 20260930713000: the clock, read under the lock.
+	v_now := clock_timestamp();$new$,
+	$old$		return jsonb_build_object('schema', 'qorpera.member-machine-screen/v1', 'state', 'refused',
 			'reason', 'MACHINE_NEEDS_COMPANY_VIEW'); end if;$old$,
 	$new$		return jsonb_build_object('schema', 'qorpera.member-machine-screen/v1', 'state', 'refused',
 			'reason', 'MACHINE_NEEDS_COMPANY_VIEW'); end if;

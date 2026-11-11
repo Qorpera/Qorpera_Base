@@ -33,7 +33,9 @@
 --    ends the lease and moves the epoch (and the generation, as 9 needs); a repeated hand-back changes nothing; a
 --    take-over at an older (or a later) epoch is refused and changes nothing; a late hand-back both ways (after the next
 --    take-over: it keeps its lease; before it: it takes at the new epoch); the heartbeat rule; a take-over under an
---    epoch handed back stays refused after 50 more; two members are independent, and each list says its own epoch.
+--    epoch handed back stays refused after 50 more; two members are independent, and each list says its own epoch;
+-- 12. an action that waits for the machine's lock, from a second connection, while the lease runs out (review r7 F14): it is
+--    refused and renews nothing (this part commits and cleans up after itself, with 1106's harness).
 
 -- Alice's run acknowledges first, as a member's wake requires before any work (924).
 select pg_temp.base_claims('service_role');
@@ -1163,4 +1165,130 @@ begin
 			'qorpera_member_take_machine_desktop', 'qorpera_valid_member_desktop_action'],
 		'8: the bodies that name 20260930713000: ' || (select array_agg(proname::text order by proname)::text from pg_proc
 			where pronamespace = 'public'::regnamespace and strpos(prosrc, '20260930713000') > 0));
+end $$;
+
+-- 12. An action that waits for the machine's lock across the lease's end (review r7 F14) -------------------------------------
+
+-- Row locks show only across connections, so what this test made is committed here and removed again at the end, with
+-- 1106's harness (467's and 674's): the test refuses to run beside other connections to this database, whose rows the
+-- cleanup could not tell from its own. A holder connection holds m-1203's row; the contributor's action, from a second
+-- connection, waits for it while the contributor's lease runs out. Read under the lock, the lease has ended: the action
+-- is refused and renews nothing. Read before the lock (as it was), it passed and renewed the lease for 5 more minutes.
+select set_config('qorpera_test.dc_first_xid', xid(pg_current_xact_id())::text, false);
+select dblink_connect('dc_holder', 'dbname=' || current_database());
+select dblink_connect('dc_poll', 'dbname=' || current_database());
+select set_config('qorpera_test.dc_' || name || '_pid', pid::text, false)
+from unnest(array['holder','poll']) name, lateral dblink('dc_' || name, 'select pg_backend_pid()') as backend(pid integer);
+create function pg_temp.dc_alone_in_database() returns void language plpgsql as $$
+begin
+	if exists (select 1 from pg_catalog.pg_stat_activity activity where activity.datname = current_database()
+		and activity.backend_type = 'client backend' and activity.pid <> pg_backend_pid()
+		and activity.pid::text not in (current_setting('qorpera_test.dc_holder_pid'), current_setting('qorpera_test.dc_poll_pid'))) then
+		raise exception 'The action race test needs the database to itself: another connection is open'; end if;
+end
+$$;
+select pg_temp.dc_alone_in_database();
+-- Every table's rows as other connections see them, before this test's rows are committed.
+create temporary table dc_counts as select * from dblink('dc_holder', $$
+	select format('%I.%I', namespace.nspname, class.relname),
+		(xpath('/row/n/text()', query_to_xml(format('select count(*) as n from %I.%I', namespace.nspname, class.relname), false, true, '')))[1]::text::bigint
+	from pg_catalog.pg_class class join pg_catalog.pg_namespace namespace on namespace.oid = class.relnamespace
+	where class.relkind = 'r' and namespace.nspname not in ('pg_catalog','information_schema') and namespace.nspname !~ '^pg_(temp|toast)'
+$$) as counted(table_name text, row_count bigint);
+-- Where this test changed rows that were there before it, those rows as they were.
+create temporary table dc_rows (table_name text, row_value jsonb);
+do $$
+declare v_table text; v_expected bigint; v_untouched bigint; v_first xid := current_setting('qorpera_test.dc_first_xid')::xid;
+begin
+	for v_table, v_expected in select table_name, row_count from pg_temp.dc_counts loop
+		execute format('select count(*) from %s where age(xmin) > age(%L::xid)', v_table, v_first) into v_untouched;
+		if v_untouched <> v_expected then
+			insert into pg_temp.dc_rows select v_table, kept.row_value
+			from dblink('dc_holder', format('select to_jsonb(kept) from %s kept', v_table)) as kept(row_value jsonb);
+		end if;
+	end loop;
+end $$;
+commit;
+
+-- The second connection acts as the contributor, in the role a member's request has.
+select dblink_exec('dc_poll', 'set role authenticated');
+select dblink_exec('dc_poll', format('set request.jwt.claims = %L',
+	jsonb_build_object('role', 'authenticated', 'sub', pg_temp.dc_user('contributor'))::text));
+-- The contributor holds m-1203, the lease ending in 1.5 seconds.
+select set_config('qorpera_test.dc_r12', pg_temp.dc_take('contributor', 'a1'), false);
+select pg_temp.dc_shift('a1', 'desktop_member_until = clock_timestamp() + interval ''1.5 seconds''');
+-- The holder takes m-1203's row in an open transaction; the action asks meanwhile and waits for it; the lease runs out;
+-- then the holder lets go. Answers the action's answer, whether it waited, and the lease as it stood before.
+create function pg_temp.dc_race() returns jsonb language plpgsql as $$
+declare v_holder integer := current_setting('qorpera_test.dc_holder_pid')::integer;
+	v_poll integer := current_setting('qorpera_test.dc_poll_pid')::integer;
+	v_waited boolean := false; v_answer text; v_before public.qorpera_company_machines := pg_temp.dc_machine('a1');
+	v_actions bigint := (select count(*) from public.qorpera_company_machine_desktop_actions where machine_id = pg_temp.dc_id('a1'));
+begin
+	perform dblink_exec('dc_holder', 'begin');
+	perform * from dblink('dc_holder', format('select 1 from public.qorpera_company_machines where id = %L for no key update',
+		pg_temp.dc_id('a1'))) as held(one integer);
+	perform dblink_send_query('dc_poll', format('select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L)::text',
+		'92400000-0000-4000-8000-000000000010', pg_temp.dc_id('a1'), '{"type": "click", "x": 4, "y": 4}'));
+	for attempt in 1..400 loop
+		v_waited := v_holder = any(pg_blocking_pids(v_poll));
+		exit when v_waited or dblink_is_busy('dc_poll') = 0;
+		perform pg_sleep(0.025);
+	end loop;
+	-- The lease runs out while the action waits.
+	perform pg_sleep(greatest(0, extract(epoch from v_before.desktop_member_until - clock_timestamp())) + 0.3);
+	perform dblink_exec('dc_holder', 'commit');
+	select answer into v_answer from dblink_get_result('dc_poll') as call(answer text);
+	perform * from dblink_get_result('dc_poll', false) as call(answer text);
+	return jsonb_build_object('answer', v_answer, 'waited', v_waited, 'until', v_before.desktop_member_until,
+		'inputAt', v_before.desktop_member_input_at, 'actions', v_actions);
+end $$;
+do $$
+declare v_race jsonb; v_after public.qorpera_company_machines;
+begin
+	perform pg_temp.base_assert(pg_temp.dc_answer(current_setting('qorpera_test.dc_r12')) ->> 'state' = 'ok',
+		'12: the contributor takes m-1203 over: ' || current_setting('qorpera_test.dc_r12'));
+	v_race := pg_temp.dc_race();
+	v_after := pg_temp.dc_machine('a1');
+	perform pg_temp.base_assert((v_race ->> 'waited')::boolean, '12: the action waited for the machine''s lock: ' || v_race::text);
+	perform pg_temp.base_assert((v_race ->> 'answer')::jsonb = jsonb_build_object('schema', 'qorpera.member-machine-desktop-act/v1',
+			'state', 'refused', 'reason', 'DESKTOP_CONTROL_ENDED'),
+		'12: the lease ended while it waited: refused: ' || v_race::text);
+	perform pg_temp.base_assert(v_after.desktop_member_until = (v_race ->> 'until')::timestamptz
+			and v_after.desktop_member_until < clock_timestamp()
+			and v_after.desktop_member_input_at = (v_race ->> 'inputAt')::timestamptz
+			and (select count(*) from public.qorpera_company_machine_desktop_actions where machine_id = pg_temp.dc_id('a1'))
+				= (v_race ->> 'actions')::bigint,
+		'12: and it renewed nothing and recorded no action: ' || row_to_json(v_after)::text);
+end $$;
+
+-- At the end: remove what the test committed, as 1106, 467 and 674 do.
+do $$
+declare v_table text; v_columns text; v_expected bigint; v_count bigint; v_wrong text[] := '{}'; v_first xid := current_setting('qorpera_test.dc_first_xid')::xid;
+begin
+	perform pg_temp.dc_alone_in_database();
+	perform dblink_disconnect(name) from unnest(array['dc_holder','dc_poll']) name;
+	perform set_config('session_replication_role', 'replica', true);
+	for v_table in select format('%I.%I', namespace.nspname, class.relname)
+		from pg_catalog.pg_class class join pg_catalog.pg_namespace namespace on namespace.oid = class.relnamespace
+		where class.relkind = 'r' and namespace.nspname not in ('pg_catalog','information_schema') and namespace.nspname !~ '^pg_(temp|toast)' loop
+		execute format('delete from %s where age(xmin) <= age(%L::xid)', v_table, v_first);
+	end loop;
+	for v_table in select distinct table_name from pg_temp.dc_rows loop
+		select string_agg(quote_ident(attribute.attname), ',' order by attribute.attnum) into v_columns
+		from pg_catalog.pg_attribute attribute where attribute.attrelid = v_table::regclass and attribute.attnum > 0
+			and not attribute.attisdropped and attribute.attgenerated = '';
+		execute format('insert into %1$s (%2$s) overriding system value select %2$s from (select (jsonb_populate_record(null::%1$s, kept.row_value)).*
+			from pg_temp.dc_rows kept where kept.table_name = %3$L
+				and not exists (select 1 from %1$s present where to_jsonb(present) = kept.row_value)) restored', v_table, v_columns, v_table);
+		execute format('select count(*) from pg_temp.dc_rows kept where kept.table_name = %2$L
+			and not exists (select 1 from %1$s present where to_jsonb(present) = kept.row_value)', v_table, v_table) into v_count;
+		if v_count > 0 then v_wrong := v_wrong || format('%s: %s rows not restored as they were', v_table, v_count); end if;
+	end loop;
+	for v_table, v_expected in select table_name, row_count from pg_temp.dc_counts loop
+		execute format('select count(*) from %s', v_table) into v_count;
+		if v_count <> v_expected then
+			v_wrong := v_wrong || format('%s %s/%s', v_table, v_count, v_expected); end if;
+	end loop;
+	if cardinality(v_wrong) > 0 then raise exception 'Action race test cleanup left other row counts: %', v_wrong; end if;
 end $$;
