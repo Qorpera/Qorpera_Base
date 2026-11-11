@@ -60,6 +60,15 @@ describe("company routes", () => {
 			});
 	});
 
+	it("opens What's new, the platform page of the changes ready to go live", () => {
+		const route = parseRoute(`#/c/${profileA.profileId}/whats-new`);
+		expect(route).toEqual({ name: "company", profileId: profileA.profileId, section: "whats-new" });
+		expect(routeHash(route)).toBe(`#/c/${profileA.profileId}/whats-new`);
+		// An agent's app of that name keeps its own page.
+		expect(parseRoute(`#/c/${profileA.profileId}/a/whats-new`)).toMatchObject({ section: "app", id: "whats-new" });
+		expect(parseRoute(`#/c/${profileA.profileId}/whats-new/extra`)).toMatchObject({ section: "whats-new" });
+	});
+
 	it("opens the Company File for its removed history page", () => {
 		expect(parseRoute(`#/c/${profileA.profileId}/file/history`)).toEqual({
 			name: "company",
