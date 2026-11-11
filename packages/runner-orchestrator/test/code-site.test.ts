@@ -428,7 +428,9 @@ async function machine() {
 		repository = join(top, "repo.git");
 	await mkdir(root, { recursive: true });
 	const gitEnv = { PATH, HOME: top, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
-	/** git as the test runs it, on the repository's storage unless told otherwise. */
+	/** git as the test runs it, on the repository's storage unless told otherwise. A git that ends before it read its
+	 * stdin (EPIPE on the pipe; git commands that take no input do) is not an error of the test: the call is judged by
+	 * git's exit code and output, as `localShell` judges a host command. */
 	const git = async (args: string[], options: { input?: Buffer; env?: Record<string, string> } = {}) => {
 		const child = spawn("git", [`--git-dir=${repository}`, ...args], {
 			env: { ...gitEnv, ...options.env },
@@ -438,6 +440,7 @@ async function machine() {
 		const err: Buffer[] = [];
 		child.stdout.on("data", (chunk: Buffer) => out.push(chunk));
 		child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
+		child.stdin.on("error", () => {});
 		child.stdin.end(options.input ?? Buffer.alloc(0));
 		const code = await new Promise<number | null>((resolve) => child.on("close", resolve));
 		if (code !== 0) throw new Error(`git ${args.join(" ")}: ${Buffer.concat(err).toString()}`);
