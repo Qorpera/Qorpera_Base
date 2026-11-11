@@ -1764,4 +1764,16 @@ describe("Reset sidebar's Undo (review of #1677)", () => {
 		expect(manage.mock.calls.filter(([, request]) => request.action === "undo_reset")).toHaveLength(1);
 		expect(undo()).toBeUndefined();
 	});
+	it("never puts an older offer back over a newer reset's when its Undo fails late", async () => {
+		const { manage, undo, company } = await resetOnce();
+		const answer = deferred<CompanySidebar>();
+		manage.mockImplementationOnce(() => answer.promise);
+		undo()!.click();
+		await settle();
+		const newer = { appsOrder: ["page:bank"] };
+		company.store.set({ sidebarReset: newer });
+		answer.reject(new Error("offline"));
+		await settle();
+		expect(company.store.get().sidebarReset).toBe(newer);
+	});
 });

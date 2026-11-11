@@ -334,3 +334,31 @@ begin
 	perform pg_temp.base_assert((select after_item_id = v_alice::uuid and not first from public.qorpera_member_sidebar_places
 		where user_id = v_contributor and item_id = v_erin::uuid), 'Erin''s place in Research is untouched');
 end $$;
+
+-- 9. Places after places keep their order when what they stand after moves (review F1 on #1677, round 3). The company
+-- has one section, Labs: Alice, Dave, Erin, Carol, Bob. The contributor makes Alice, Bob, Dave, Erin, Carol, then moves
+-- Bob out: Alice, Dave, Erin, Carol.
+select pg_temp.base_commit(pg_temp.base_owner(), 'own-sections-0005', jsonb_build_array(pg_temp.own_sections_file(jsonb_build_array(
+	jsonb_build_object('name', 'Labs', 'agents', jsonb_build_array('92400000-0000-4000-8000-000000000030',
+		'12140000-0000-4000-8000-0000000000d1', '12140000-0000-4000-8000-0000000000d2', '92400000-0000-4000-8000-000000000032',
+		'92400000-0000-4000-8000-000000000031'))))));
+do $$
+declare v_contributor uuid := '92400000-0000-4000-8000-000000000002';
+	v_alice text := '92400000-0000-4000-8000-000000000030'; v_bob text := '92400000-0000-4000-8000-000000000031';
+	v_carol text := '92400000-0000-4000-8000-000000000032'; v_dave text := '12140000-0000-4000-8000-0000000000d1';
+	v_erin text := '12140000-0000-4000-8000-0000000000d2'; v_state jsonb; v_labs text; v_step text[];
+begin
+	v_state := pg_temp.own_read(v_contributor);
+	v_labs := pg_temp.own_section(v_state, 'Labs');
+	perform pg_temp.base_assert(pg_temp.own_in(v_state, v_labs) = array[v_alice, v_dave, v_erin, v_carol, v_bob],
+		'The company''s Labs: ' || v_state::text);
+	foreach v_step slice 1 in array array[[v_bob, v_alice], [v_carol, v_bob], [v_dave, v_bob], [v_erin, v_dave]] loop
+		v_state := pg_temp.own_manage(v_contributor, jsonb_build_object('action', 'move_agent', 'staffAgentId', v_step[1],
+			'sectionId', v_labs, 'order', pg_temp.own_order(v_state, v_labs, v_step[1], v_step[2])));
+	end loop;
+	perform pg_temp.base_assert(pg_temp.own_in(v_state, v_labs) = array[v_alice, v_bob, v_dave, v_erin, v_carol],
+		'The contributor''s Labs: ' || v_state::text);
+	v_state := pg_temp.own_manage(v_contributor, jsonb_build_object('action', 'move_agent', 'staffAgentId', v_bob, 'sectionId', null));
+	perform pg_temp.base_assert(pg_temp.own_in(v_state, v_labs) = array[v_alice, v_dave, v_erin, v_carol],
+		'Dave, Erin and Carol keep their order when Bob leaves: ' || v_state::text);
+end $$;

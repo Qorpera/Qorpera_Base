@@ -138,9 +138,6 @@ declare
 	v_moved uuid[];
 	v_container uuid;
 	v_list uuid[];
-	v_items uuid[]; v_afters uuid[]; v_firsts boolean[]; v_done boolean[];
-	v_progress boolean;
-	v_at integer;
 	v_index integer;
 	v_agents jsonb := '[]';
 	v_rooms jsonb := '[]';
@@ -178,36 +175,47 @@ begin
 		end if;
 		select coalesce(array_agg(listed.id order by listed.n), '{}') into v_list
 		from unnest(v_list) with ordinality listed(id, n) where not listed.id = any(v_moved);
-		select coalesce(array_agg(place.item_id order by place.updated_at, place.item_id), '{}'),
-			coalesce(array_agg(place.after_item_id order by place.updated_at, place.item_id), '{}'),
-			coalesce(array_agg(place.first order by place.updated_at, place.item_id), '{}')
-		into v_items, v_afters, v_firsts
+		-- The member's places laid in as a walk: after each item (the company's or the member's), what the member put
+		-- right after it, newest first, each followed in turn by what stands after it; before everything what stands
+		-- first, newest first; at the end what stands after an item that is not here, oldest first. How old a place is
+		-- never reorders what stands after it.
+		select coalesce(array_agg(walk.item order by walk.path), '{}') into v_list
+		from (
+			with recursive mine as (
+				select place.item_id as item, place.after_item_id as after, place.first, place.updated_at as at
+				from public.qorpera_member_sidebar_places place
+				where place.profile_id = p_profile_id and place.user_id = p_user_id
+					and place.section_id is not distinct from v_container and place.item_id = any(v_moved)
+			), base as (
+				select listed.id as item, listed.n from unnest(v_list) with ordinality listed(id, n)
+			), ranked as (
+				select mine.*, row_number() over (partition by mine.first, mine.after order by mine.at desc, mine.item) as rank
+				from mine
+			), roots as (
+				select ranked.item, array[0, ranked.rank::integer] as path from ranked where ranked.first
+				union all
+				select base.item, array[1, base.n::integer] from base
+				union all
+				select ranked.item, array[2, (row_number() over (order by ranked.at, ranked.item))::integer]
+				from ranked
+				where not ranked.first and (ranked.after is null
+					or (not exists (select 1 from base where base.item = ranked.after)
+						and not exists (select 1 from mine where mine.item = ranked.after)))
+			), walk(item, path, seen) as (
+				select roots.item, roots.path, array[roots.item] from roots
+				union all
+				select ranked.item, walk.path || ranked.rank::integer, walk.seen || ranked.item
+				from walk join ranked on ranked.after = walk.item and not ranked.first
+				where not ranked.item = any(walk.seen) and pg_catalog.cardinality(walk.path) < 600
+			)
+			select walk.item, walk.path from walk
+		) walk;
+		-- A place no walk reaches (it could only stand after itself) goes at the end.
+		select v_list || coalesce(array_agg(place.item_id order by place.updated_at, place.item_id), '{}') into v_list
 		from public.qorpera_member_sidebar_places place
 		where place.profile_id = p_profile_id and place.user_id = p_user_id
-			and place.section_id is not distinct from v_container and place.item_id = any(v_moved);
-		v_done := array_fill(false, array[pg_catalog.cardinality(v_items)]);
-		loop
-			v_progress := false;
-			for v_at in 1 .. coalesce(pg_catalog.cardinality(v_items), 0) loop
-				continue when v_done[v_at];
-				if v_firsts[v_at] then
-					v_list := array[v_items[v_at]] || v_list;
-				elsif v_afters[v_at] is null then
-					v_list := v_list || v_items[v_at];
-				elsif v_afters[v_at] = any(v_list) then
-					v_n := pg_catalog.array_position(v_list, v_afters[v_at]);
-					v_list := v_list[1:v_n] || v_items[v_at] || v_list[v_n + 1:];
-				else
-					continue;
-				end if;
-				v_done[v_at] := true;
-				v_progress := true;
-			end loop;
-			exit when not v_progress;
-		end loop;
-		for v_at in 1 .. coalesce(pg_catalog.cardinality(v_items), 0) loop
-			if not v_done[v_at] then v_list := v_list || v_items[v_at]; end if;
-		end loop;
+			and place.section_id is not distinct from v_container and place.item_id = any(v_moved)
+			and not place.item_id = any(v_list);
 		v_n := 0;
 		foreach v_id in array v_list loop
 			if public.qorpera_sidebar_room_placeable(p_profile_id, v_id) then

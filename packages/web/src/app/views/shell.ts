@@ -2162,10 +2162,11 @@ async function askResetSidebar(company: CompanyController, parts: RailParts): Pr
 async function undoSidebarReset(company: CompanyController, parts: RailParts): Promise<void> {
 	const reset = company.store.get().sidebarReset;
 	if (!reset || reset.undoing) return;
-	company.store.set({ sidebarReset: { ...reset, undoing: true } });
+	const undoing = { ...reset, undoing: true };
+	company.store.set({ sidebarReset: undoing });
 	if (!(await company.resetSidebar(true))) {
-		// Tried again from the same offer, unless something newer took it away meanwhile.
-		if (company.store.get().sidebarReset) company.store.set({ sidebarReset: reset });
+		// Tried again from the same offer, unless a newer one (or nothing) took its place meanwhile.
+		if (company.store.get().sidebarReset === undoing) company.store.set({ sidebarReset: reset });
 		return;
 	}
 	const profileId = company.profile.profileId;
