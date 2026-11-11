@@ -115,6 +115,7 @@ import type {
 	StaffSessionHandle,
 	WorkerRunControl,
 } from "./types.ts";
+import { listWaitingWork, type WaitingWork } from "./waiting-work.ts";
 
 /* Typed member surface over CLIENT-CONTRACT.md §2. One method per RPC the web
  * app uses; nothing here writes a table, runs an agent, or resolves a secret. */
@@ -498,6 +499,12 @@ export class CloudApi {
 	/** The approval cards that wait for the signed-in member's answer, by agent. */
 	listWaitingApprovals(profileId: string): Promise<WaitingApproval[]> {
 		return listWaitingApprovals(this.cloud, requiredUuid(profileId, "Profile id"));
+	}
+
+	/** What each agent's work waits on the signed-in member for: its open cards for them and the approval cards they
+	 * answer, by agent (20260930723000). */
+	listWaitingWork(profileId: string): Promise<WaitingWork[]> {
+		return listWaitingWork(this.cloud, requiredUuid(profileId, "Profile id"));
 	}
 
 	/** The question cards raised for the signed-in member in the company's agent threads that still wait for them. */

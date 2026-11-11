@@ -1,6 +1,7 @@
 import { parseCloudAgentSendInput } from "@qorpera/runtime/cloud-agent-mouth";
 import { CloudToolArgumentRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
+	CLOUD_ASK_MEMBER_INSTRUCTIONS,
 	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
 	CLOUD_ASK_MEMBER_SURFACES,
 	CLOUD_INTERACTION_PAYLOAD_SCHEMA,
@@ -405,6 +406,29 @@ describe("readable cards", () => {
 		])
 			refused(visual(bad), "an option's preview is the company file path of an image you made for it");
 		expect(JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA)).toContain("Options with pictures show as big boxes");
+	});
+
+	// Jonas, 11 Nov 2026: "I would like the agents to be better at indicating when they need the users input and it's
+	// really stopped at you." Every answer the work waits for goes on a card, open questions too (allowCustom), and the
+	// card says what is stopped; nothing optional does.
+	it("puts every answer the work waits for on a card that says what is stopped, and nothing optional", () => {
+		for (const rule of [
+			"Use question for every answer your work cannot go on without, never only in chat: the card shows members that work is stopped at them.",
+			"Options are the likely answers, never generic ones like Get started; for an open question add allowCustom, a field for their own answer.",
+			"Optional ideas, offers and news stay in chat.",
+			"The body is at most a few short lines or bullets: what is stopped until they answer (I've stopped the price list until you pick one), what is being chosen,",
+		])
+			expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(rule);
+		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).not.toContain("Open-ended questions belong in chat");
+		// The tool boundary takes a description of at most 4096 bytes.
+		expect(Buffer.byteLength(CLOUD_ASK_MEMBER_INSTRUCTIONS)).toBeLessThanOrEqual(4096);
+		// The card takes a typed answer beside its options.
+		const open = {
+			...card("I've stopped the shop's front page until you pick one."),
+			title: "What should the shop be called?",
+			payload: { options: [{ label: "Nordlys" }, { label: "Fjeld" }], allowCustom: true },
+		};
+		expect(parseCloudAskMemberInput(open).data.payload).toEqual(open.payload);
 	});
 
 	it("takes a short body of a few lines with a link", () => {

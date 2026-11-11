@@ -141,6 +141,9 @@ export const CONVERSATION: Record<string, string> = {
 	Working: "Arbejder",
 	Writing: "Skriver",
 	"Needs you": "Venter på dig",
+	// The rail when an agent's work waits on the member (app/views/shell.ts)
+	"Stopped: {what}": "Stoppet: {what}",
+	"Waiting for you: {what}": "Venter på dig: {what}",
 	"A run did not finish": "En kørsel blev ikke færdig",
 	"{name} is working": "{name} arbejder",
 	"{name} is writing": "{name} skriver",

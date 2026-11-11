@@ -395,6 +395,18 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   and, for an owner or admin, the company's, in their agent's own open thread
   (`sessionId`), which the caller may read. The web shows such an agent as
   "Needs you" while it has no work of its own. Members only (42501 otherwise).
+- `qorpera_list_member_waiting_work(p_profile_id)` →
+  `qorpera.member-waiting-work/v1` (20260930723000): what each agent's work
+  waits on the caller for, `agents` of `{staffAgentId, sessionId, count,
+  questions, approvals, latestAt, kind, what}`, newest first: the ask_member
+  cards (question, secret, takeover, draft) raised for the caller in the
+  agents' own threads and still open, as
+  `qorpera_list_member_open_questions` finds them (none for a viewer), and the
+  approval cards above. `kind` (the surface, or `approval`) and `what` (the
+  card's title or the approval's action title, one line of at most 120
+  characters, null when it has none) are the newest item's. The web shows such
+  an agent as stopped at the member and counts them in the tab's title.
+  Members only (42501 otherwise).
 
 ### Company memory (2) — C5, `20260930508000_memory_mode.sql`
 

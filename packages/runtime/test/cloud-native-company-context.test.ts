@@ -1542,14 +1542,16 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // interface apps that show the company's state and overlay v13 (each owner keeps one posted app current; Jonas,
 // 10 November 2026), and for patch notes before changes go live ("Yes, wait for me"; Jonas, 10 November 2026), and
 // for a project's history and its hand-over (#1643, 10 November 2026), and for the change record of the company's code
-// (each change numbered, undone and described with manage_code; own code storage step 2b, 10 November 2026). A
-// change to either is a change to every run's bytes.
+// (each change numbered, undone and described with manage_code; own code storage step 2b, 10 November 2026), and for
+// work that waits on a member going on a card that says what is stopped, with the wall's waiting items mirroring the
+// open cards ("it's really stopped at you"; Jonas, 11 November 2026). A change to either is a change to every run's
+// bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "4f5a7af07566602dd7095373d323069aaba3019a53ad6985af0f3799225abbc0",
+			instructions: "79fa5761c17ffd03430c2d39cb4ff91c04d6f258f29737c4692e78caf3521033",
 			prompt: "be57a945a52a80bccd0e523d775d563455ec85f3a3ee11677e7ece894f9f0ae6",
 		},
 	],
@@ -1565,7 +1567,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "4f5a7af07566602dd7095373d323069aaba3019a53ad6985af0f3799225abbc0",
+			instructions: "79fa5761c17ffd03430c2d39cb4ff91c04d6f258f29737c4692e78caf3521033",
 			prompt: "954569cabce5c2ead1fe5e2507f3c8367984855615fb747cf2c378ed2efce48f",
 		},
 	],
@@ -1638,11 +1640,26 @@ it("tells an agent to keep its wall instead of sending status messages", () => {
 		"Where you have update_wall, keep your wall with it: the card pinned above your thread",
 		"move a finished item to done in the same call, with a link to the work, and fix a wrong item where it stands",
 		"so it takes the place of status messages: update it, never a message, to say that work started, moved on or finished",
-		"a decision that waits for a member goes on the wall and in one line of your message",
+		"a decision that waits for a member goes on a card, on the wall and in one line of your message",
 		"a member's message that opens with a quoted line (`> ...`) answers that question from your wall",
-		"Take a question they answered off waiting, whichever way they answered it, and put a new question you ask them on it, in the same turn",
+		// 11 November 2026: the wall's waiting items mirror the open cards.
+		"What waits on them mirrors your open cards: put each card you raise on it in the same turn, and take a question they answered off it, whichever way they answered it.",
 	])
 		expect(instructions).toContain(rule);
+});
+
+// Jonas, 11 November 2026: "I would like the agents to be better at indicating when they need the users input and it's
+// really stopped at you. it's hard to tell right now." A blocking question goes on a card (the web shows the agent as
+// stopped at the member), never only in a message, and says what is stopped; nothing optional goes on one.
+it("tells an agent to ask what its work waits for on a card that says what is stopped", () => {
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"When your work cannot go on without a member's answer, ask it on a card wherever you can raise one, never only in a message: the card is how they see that the work is stopped at them.",
+		'Say on the card what is stopped until they answer, such as "I\'ve stopped the price list until you pick one".',
+		"Ideas they may take or leave and news for them never go on a card.",
+	])
+		expect(instructions).toContain(rule);
+	expect(instructions).not.toContain("put a new question you ask them on it");
 });
 
 it("builds the founders' product at their ambition, and demos the product itself (Jonas, 7 November 2026)", () => {

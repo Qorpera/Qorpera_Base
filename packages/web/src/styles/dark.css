@@ -23,8 +23,8 @@
 :root[data-theme="dark"] .rail-drag-ghost { box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3); }
 
 /* ---- rail ------------------------------------------------------------------ */
-:root[data-theme="dark"] .rail { --rail-line: var(--bg); --rail-search-ink: var(--text-muted); --rail-small: #adaca7; --rail-status-failed: #ff453a; }
-:root[data-theme="dark"] .rail-drag-ghost { --rail-status-failed: #ff453a; }
+:root[data-theme="dark"] .rail { --rail-line: var(--bg); --rail-search-ink: var(--text-muted); --rail-small: #adaca7; --rail-status-failed: #ff453a; --rail-waiting: #ffb547; }
+:root[data-theme="dark"] .rail-drag-ghost { --rail-status-failed: #ff453a; --rail-waiting: #ffb547; }
 :root[data-theme="dark"] .rail-add, :root[data-theme="dark"] .rail-apps { color: #a9a8a3; }
 :root[data-theme="dark"] .rail-toolbar.is-searching .rail-search { box-shadow: 0 0 0 1px rgb(255 255 255 / 10%); }
 :root[data-theme="dark"] .rail-search input::placeholder { color: var(--text-muted); }
