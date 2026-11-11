@@ -789,10 +789,10 @@ describe("the row's value for a run that passed", () => {
 		expect(runs(more(...Array.from({ length: 20 }, () => 40)))).toEqual(new Set(["r".repeat(100)]));
 	});
 
-	it("keeps a number a safe integer", () => {
+	it("keeps a time within the 15 digits the kernel takes", () => {
 		const run = { ...passedRun([{ name: "t", run: "x", ms: Number.POSITIVE_INFINITY }]), copyMs: 1e300 };
 		const value = codeChecksPassed({ commit: COMMIT, how: "merged", blob: BLOB, run, changed: null, tries: 1 });
-		expect(value.copyMs).toBe(Number.MAX_SAFE_INTEGER);
+		expect(value.copyMs).toBe(999_999_999_999_999);
 		expect(value.checks).toEqual([{ name: "t", run: "x", ms: 0 }]);
 	});
 

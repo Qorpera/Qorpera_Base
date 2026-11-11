@@ -332,8 +332,11 @@ function jsonbBytes(value: unknown): number {
 	return 4 + 3 + 4 + 2 + 8;
 }
 
+/** The longest a time can say: the kernel takes a whole number of at most 15 digits (qorpera_code_json_count). */
+const MAX_MILLIS = 999_999_999_999_999;
+
 function millis(ms: number): number {
-	return Number.isFinite(ms) && ms > 0 ? Math.min(Math.round(ms), Number.MAX_SAFE_INTEGER) : 0;
+	return Number.isFinite(ms) && ms > 0 ? Math.min(Math.round(ms), MAX_MILLIS) : 0;
 }
 
 /** `text` cut to at most `max` bytes of UTF-8, at a whole character, with no mark. */
