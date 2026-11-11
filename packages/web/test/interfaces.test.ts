@@ -1621,4 +1621,30 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		expect(controller.resettingSidebar()).toBe(false);
 		expect(controller.store.get().appLayoutUnavailable).toBe(true);
 	});
+	it("says a write another tab overtook in the member's words and reads the layout again (review F2 on #1678, round 6)", async () => {
+		localStorage.clear();
+		const { controller, set, f, element } = drawer();
+		const read = vi
+			.spyOn(f.api, "readMemberAppLayout")
+			.mockResolvedValue({ layout: EMPTY_APP_LAYOUT, updatedAt: "2026-11-11T12:30:00Z" });
+		set.mockRejectedValueOnce(
+			new CloudRpcError(
+				"qorpera_set_member_app_layout",
+				{ message: "Your apps changed in another tab", code: "QAL01" },
+				400,
+			),
+		);
+		expect(await controller.changeAppLayout({ ...EMPTY_APP_LAYOUT, groups: { market: { removed: true } } })).toBe(
+			false,
+		);
+		await settle();
+		expect(element.textContent).toContain("Your apps changed in another tab. Try again.");
+		expect(read).toHaveBeenCalled();
+		expect(controller.store.get().appLayout?.updatedAt).toBe("2026-11-11T12:30:00Z");
+		// Any other refusal says the general words.
+		set.mockRejectedValueOnce(new Error("offline"));
+		await controller.changeAppLayout({ ...EMPTY_APP_LAYOUT, groups: { market: { removed: true } } });
+		await settle();
+		expect(element.textContent).toContain("The apps could not be arranged. Try again.");
+	});
 });

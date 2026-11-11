@@ -4,7 +4,7 @@
 -- should be a collapsed group of interfaces you can expand ... the agents should be able to organize the interfaces for
 -- you natively". The company's groups are its file apps/groups.md, which its agents keep (organize_apps); a member who
 -- moves an app, makes, renames or ungroups a group changes only their own drawer, as with the sidebar
--- (20260930722000): what they touched is theirs, the rest follows the company's file.
+-- (20260930727000): what they touched is theirs, the rest follows the company's file.
 --
 -- 1. qorpera_member_app_layouts: one document per member and company, `qorpera.member-app-layout/v1`:
 --    `places` (an app's or a group's place: its group or none, and what it stands after, or first) and `groups` (a
@@ -97,7 +97,7 @@ declare v_user uuid := public.qorpera_sidebar_member(p_profile_id); v_at timesta
 begin
 	if public.qorpera_member_app_layout_valid(p_layout) is not true then
 		raise exception 'The apps layout is invalid' using errcode = '22023'; end if;
-	-- One change to a member's own sidebar at a time (20260930722000), Reset's included.
+	-- One change to a member's own sidebar at a time (20260930727000), Reset's included.
 	perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(
 		'qorpera.member-sidebar:' || p_profile_id::text || ':' || v_user::text, 0));
 	select layout.updated_at into v_at from public.qorpera_member_app_layouts layout
