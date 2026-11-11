@@ -358,3 +358,65 @@ describe("the apps drawer's order", () => {
 		expect(drops).toEqual([["members", "bank", "mailbox", "app:shop"]]);
 	});
 });
+
+describe("groups in the drawer (Jonas, 11 Nov 2026)", () => {
+	function withGroups(keys: readonly string[]) {
+		const element = grid(keys);
+		const drops: [string[], string][] = [];
+		const merges: [string, string][] = [];
+		new AppGridDrag(
+			element,
+			() => ({
+				canDrag: () => true,
+				drop: (order, moved) => drops.push([order, moved]),
+				end: () => {},
+				canMerge: (_dragged, onto) => onto !== "d",
+				merge: (dragged, onto) => merges.push([dragged, onto]),
+			}),
+			stop.signal,
+		);
+		return {
+			element,
+			drops,
+			merges,
+			icon: (key: string) => element.querySelector<HTMLElement>(`[data-app-key="${key}"]`)!,
+		};
+	}
+
+	it("puts an icon held over another's middle into it, and swaps on an edge only after a moment", () => {
+		vi.useFakeTimers();
+		try {
+			const { element, merges, drops, icon } = withGroups(["a", "b", "c", "d"]);
+			// Lift a, rest on b's middle: nothing swaps; after the wait b is marked, and letting go merges.
+			pointer("pointerdown", 25, 30, icon("a"));
+			pointer("pointermove", 40, 30);
+			pointer("pointermove", 75, 30);
+			expect(gridOrder(element)).toEqual(["a", "b", "c", "d"]);
+			vi.advanceTimersByTime(500);
+			expect(icon("b").classList.contains("is-merge-target")).toBe(true);
+			pointer("pointerup", 75, 30);
+			expect(merges).toEqual([["a", "b"]]);
+			expect(drops).toEqual([]);
+			expect(gridOrder(element)).toEqual(["a", "b", "c", "d"]);
+			// Lift a again and rest on c's edge: after a moment they swap, and the drop names a.
+			pointer("pointerdown", 25, 30, icon("a"));
+			pointer("pointermove", 40, 30);
+			pointer("pointermove", 103, 30);
+			expect(gridOrder(element)).toEqual(["a", "b", "c", "d"]);
+			vi.advanceTimersByTime(150);
+			expect(gridOrder(element)).toEqual(["b", "c", "a", "d"]);
+			pointer("pointerup", 103, 30);
+			expect(drops).toEqual([[["b", "c", "a", "d"], "a"]]);
+			// d takes nothing in: resting on its middle never marks it.
+			pointer("pointerdown", 125, 30, icon("a"));
+			pointer("pointermove", 140, 30);
+			pointer("pointermove", 175, 30);
+			vi.advanceTimersByTime(500);
+			expect(icon("d").classList.contains("is-merge-target")).toBe(false);
+			pointer("pointerup", 175, 30);
+			expect(merges).toEqual([["a", "b"]]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});

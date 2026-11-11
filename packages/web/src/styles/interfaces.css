@@ -28,7 +28,7 @@
 .rail-apps-drawer[hidden] { display: none; }
 .rail-apps-drawer.is-open { grid-template-rows: 1fr; }
 .rail-apps-drawer > div { min-height: 0; overflow: hidden; }
-.rail-apps-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 2px; padding: 10px 0 8px; }
+.rail-apps-grid { position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 2px; padding: 10px 0 8px; }
 .rail-app {
 	display: grid; justify-items: center; gap: 5px; min-width: 0; padding: 6px 2px 5px; border-radius: 12px;
 	color: var(--text); text-decoration: none; opacity: 0; transform: translateY(-6px) scale(0.4);
@@ -62,10 +62,33 @@
 .rail-search { transition: width var(--motion-slow) var(--ease-spring), background-color var(--motion-base) ease, box-shadow var(--motion-base) ease; }
 .rail-search input { transition: opacity var(--motion-base) ease 80ms, visibility 0s; }
 .rail-toolbar:not(.is-searching) .rail-search input { transition: opacity var(--motion-fast) ease, visibility 0s var(--motion-fast); }
+/* Every emblem in its app's colour, no tile (Jonas, 11 Nov 2026: black only had "little distinction and contrast"); the
+ * open page's stays white on the selection. */
+.rail-app-stand .interface-emblem { --emblem-ink: var(--app-colour, var(--text)); }
+.rail-app.active .rail-app-stand .interface-emblem { --emblem-ink: #fff; }
+/* A group: two stacked cards in its first app's colour; open, they fan apart, and its apps follow it in the grid. */
+.group-emblem rect { transform-box: fill-box; transform-origin: center; transition: transform 440ms var(--ease-out); }
+.group-emblem .group-card-back { fill: none; stroke: var(--emblem-ink); stroke-width: 2; }
+.group-emblem .group-card-front { fill: var(--emblem-ink); }
+.rail-app-group.is-open .group-card-front { transform: translate(-2.2px, -2.5px) rotate(-12deg) scaleX(0.786); }
+.rail-app-group.is-open .group-card-back { transform: translate(2.2px, 2.5px) rotate(12deg) scaleX(0.786); }
+.rail-app-group { border: 0; background: none; font: inherit; cursor: pointer; }
+.rail-app-group.is-open .rail-mention { display: none; }
+/* Tiles a group brings grow in after it; tiles it takes away fade where they stood, out of the grid's flow. */
+.rail-apps-drawer.is-open .rail-app.is-entering {
+	animation: rail-app-enter 360ms var(--ease-out) both; animation-delay: calc(60ms + var(--enter-i, 0) * 22ms);
+}
+@keyframes rail-app-enter { from { opacity: 0; transform: scale(0.82); } }
+.rail-app.is-leaving { position: absolute; pointer-events: none; animation: rail-app-leave 220ms ease-in both; }
+@keyframes rail-app-leave { to { opacity: 0; transform: scale(0.82); } }
+/* Held over another icon long enough, the dragged one goes into it on release. */
+.rail-app.is-merge-target { background: var(--rail-hover); }
+.rail-app.is-merge-target .rail-app-stand { transform: scale(1.12); transition: transform var(--motion-base) var(--ease-spring); }
 .rail-compact .rail-apps-grid { grid-template-columns: minmax(0, 1fr); }
 .rail-compact .rail-app-name { display: none; }
 @media (prefers-reduced-motion: reduce) {
-	.rail-apps-drawer, .rail-app, .rail-apps .icon rect, .rail-apps-dot { transition: none; }
+	.rail-apps-drawer, .rail-app, .rail-apps .icon rect, .rail-apps-dot, .group-emblem rect { transition: none; }
+	.rail-apps-drawer.is-open .rail-app.is-entering, .rail-app.is-leaving { animation: none; }
 }
 
 /* Every emblem is black or white against the theme (Jonas, 9 Nov 2026; ui/interface-emblem.ts): the text colour. Its

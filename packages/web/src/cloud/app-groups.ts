@@ -1,0 +1,386 @@
+/* Groups of apps in the drawer (Jonas, 11 Nov 2026: "the same way we have categories and groups for agents, we should
+ * have so for the interfaces as well … an expandable group of interfaces can live inside an expanded category of
+ * interfaces"; design page VvFVpD5DckoSgXMoEGSfqR). The company's groups are its file `apps/groups.md`, which its agents
+ * keep; a member's own changes are a document of theirs in the cloud (20260930723000) laid over it: what the member
+ * touched is theirs, the rest follows the file. Everything here is pure: the drawer arranges, flattens and changes the
+ * member's document with these, and draws the result.
+ *
+ * Keys are the file's: `page:mailbox|members|bank`, `app:<name>`, `concepts`, `sites`, and `group:<id>` for a group. */
+
+export const APP_GROUPS_PATH = "apps/groups.md";
+export const APP_GROUPS_MAX_BYTES = 64 * 1024;
+export const APP_LAYOUT_SCHEMA = "qorpera.member-app-layout/v1";
+/** A group's name, as the file and the member's document allow. */
+export const APP_GROUP_NAME_LIMIT = 40;
+
+export interface AppItemNode {
+	readonly kind: "item";
+	readonly key: string;
+}
+export interface AppGroupNode {
+	readonly kind: "group";
+	readonly id: string;
+	name: string;
+	items: AppTreeNode[];
+	/** A group the member made for themselves. */
+	mine?: boolean;
+}
+export type AppTreeNode = AppItemNode | AppGroupNode;
+
+export interface AppPlace {
+	/** The group it stands in; null or absent: loose in the drawer. */
+	group?: string | null;
+	/** The key it stands after there; with neither this nor `first`: last. */
+	after?: string | null;
+	first?: boolean;
+}
+export interface AppGroupChange {
+	/** The member's name for one of the company's groups. */
+	name?: string;
+	/** The member ungrouped one of the company's groups: its apps stand where it stood. */
+	removed?: true;
+	/** A group the member made. */
+	mine?: { name: string };
+}
+export interface MemberAppLayout {
+	readonly schema: typeof APP_LAYOUT_SCHEMA;
+	/** In the order they were made: a later place is laid over the earlier ones. */
+	readonly places: Readonly<Record<string, AppPlace>>;
+	readonly groups: Readonly<Record<string, AppGroupChange>>;
+}
+
+export const EMPTY_APP_LAYOUT: MemberAppLayout = { schema: APP_LAYOUT_SCHEMA, places: {}, groups: {} };
+
+const GROUP_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
+const KEY = /^(page:(mailbox|members|bank)|app:[a-z0-9][a-z0-9-]{0,62}|concepts|sites)$/;
+
+export const groupKey = (id: string) => `group:${id}`;
+export const isGroupKey = (key: string) => key.startsWith("group:");
+export const groupIdOf = (key: string) => key.slice("group:".length);
+
+/** The drawer marks a page by its bare name (`mailbox`); the file and the member's document write `page:mailbox`. */
+export function fileKey(drawerKey: string): string {
+	return drawerKey === "mailbox" || drawerKey === "members" || drawerKey === "bank" ? `page:${drawerKey}` : drawerKey;
+}
+export function drawerKey(key: string): string {
+	return key.startsWith("page:") ? key.slice("page:".length) : key;
+}
+
+/** Reads `apps/groups.md`: a nested list, two spaces a level; `- <key> words` for an app, `- group <id>: <name>` for a
+ * group, two group levels at most. What it cannot read it skips; a key or a group named twice counts the first time. */
+export function parseAppGroups(text: string): AppTreeNode[] {
+	const root: AppTreeNode[] = [];
+	const stack: AppGroupNode[] = [];
+	const seen = new Set<string>();
+	for (const raw of text.slice(0, APP_GROUPS_MAX_BYTES).split(/\r?\n/)) {
+		const line = /^( *)- (.+?)\s*$/.exec(raw);
+		if (!line) continue;
+		const depth = Math.floor(line[1]!.length / 2);
+		const body = line[2]!;
+		const group = /^group ([a-z0-9][a-z0-9-]{0,39}):\s*(.+)$/.exec(body);
+		if (group) {
+			const id = group[1]!;
+			const name = group[2]!.trim().slice(0, APP_GROUP_NAME_LIMIT);
+			// A group stands at most one level in; a deeper one is read at the nearest allowed level.
+			const level = Math.min(depth, stack.length, 1);
+			stack.length = level;
+			if (seen.has(groupKey(id)) || !name) {
+				// Its items still need a home: they stand where the group would have.
+				continue;
+			}
+			seen.add(groupKey(id));
+			const node: AppGroupNode = { kind: "group", id, name, items: [] };
+			(stack.at(-1)?.items ?? root).push(node);
+			stack.push(node);
+			continue;
+		}
+		const key = body.split(/\s+/, 1)[0]!;
+		if (!KEY.test(key) || seen.has(key)) continue;
+		seen.add(key);
+		stack.length = Math.min(depth, stack.length);
+		(stack.at(-1)?.items ?? root).push({ kind: "item", key });
+	}
+	return root;
+}
+
+/** The member's document as the cloud keeps it; anything else is the empty one. */
+export function parseMemberAppLayout(value: unknown): MemberAppLayout {
+	const record = (item: unknown): Record<string, unknown> | undefined =>
+		item && typeof item === "object" && !Array.isArray(item) ? (item as Record<string, unknown>) : undefined;
+	const input = record(value);
+	if (!input || input.schema !== APP_LAYOUT_SCHEMA) return EMPTY_APP_LAYOUT;
+	const places: Record<string, AppPlace> = {};
+	for (const [key, raw] of Object.entries(record(input.places) ?? {})) {
+		const place = record(raw);
+		if (!place || !(KEY.test(key) || (isGroupKey(key) && GROUP_ID.test(groupIdOf(key))))) continue;
+		const group = typeof place.group === "string" && GROUP_ID.test(place.group) ? place.group : null;
+		const after = typeof place.after === "string" ? place.after : null;
+		places[key] = { group, after, ...(place.first === true ? { first: true } : {}) };
+	}
+	const groups: Record<string, AppGroupChange> = {};
+	for (const [id, raw] of Object.entries(record(input.groups) ?? {})) {
+		const change = record(raw);
+		if (!change || !GROUP_ID.test(id)) continue;
+		const mine = record(change.mine);
+		const entry: AppGroupChange = {
+			...(typeof change.name === "string" && change.name ? { name: change.name } : {}),
+			...(change.removed === true ? { removed: true as const } : {}),
+			...(mine && typeof mine.name === "string" && mine.name ? { mine: { name: mine.name } } : {}),
+		};
+		if (Object.keys(entry).length) groups[id] = entry;
+	}
+	return { schema: APP_LAYOUT_SCHEMA, places, groups };
+}
+
+/** The member's document as the cloud answers it, with when it was last written (null: never, or emptied). */
+export interface MemberAppLayoutRead {
+	layout: MemberAppLayout;
+	updatedAt: string | null;
+}
+
+export function parseMemberAppLayoutRead(value: unknown): MemberAppLayoutRead {
+	const input = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+	if (input.schema !== "qorpera.member-app-layout-read/v1") throw new Error("Invalid apps layout");
+	return {
+		layout: parseMemberAppLayout(input.layout),
+		updatedAt: typeof input.updatedAt === "string" ? input.updatedAt : null,
+	};
+}
+
+/** How many changes the member's document holds, as Reset sidebar counts them. */
+export function appLayoutChanges(layout: MemberAppLayout): number {
+	return Object.keys(layout.places).length + Object.keys(layout.groups).length;
+}
+
+function clone(nodes: readonly AppTreeNode[], present: ReadonlySet<string>, seen: Set<string>): AppTreeNode[] {
+	const out: AppTreeNode[] = [];
+	for (const node of nodes) {
+		if (node.kind === "item") {
+			if (present.has(node.key) && !seen.has(node.key)) {
+				seen.add(node.key);
+				out.push({ kind: "item", key: node.key });
+			}
+		} else if (!seen.has(groupKey(node.id))) {
+			seen.add(groupKey(node.id));
+			out.push({ kind: "group", id: node.id, name: node.name, items: clone(node.items, present, seen) });
+		}
+	}
+	return out;
+}
+
+interface Found {
+	readonly node: AppTreeNode;
+	readonly parent: AppTreeNode[];
+	/** The group the parent list belongs to; undefined: the drawer itself. */
+	readonly owner: AppGroupNode | undefined;
+	readonly index: number;
+}
+
+function find(tree: AppTreeNode[], key: string, owner?: AppGroupNode): Found | undefined {
+	for (const [index, node] of tree.entries()) {
+		if ((node.kind === "item" ? node.key : groupKey(node.id)) === key) return { node, parent: tree, owner, index };
+		if (node.kind === "group") {
+			const inside = find(node.items, key, node);
+			if (inside) return inside;
+		}
+	}
+	return undefined;
+}
+
+export const nodeKey = (node: AppTreeNode) => (node.kind === "item" ? node.key : groupKey(node.id));
+
+/** The groups of a tree, in drawing order, each with its depth (0: in the drawer, 1: in a group). */
+export function groupsOf(tree: readonly AppTreeNode[], depth = 0): { group: AppGroupNode; depth: number }[] {
+	return tree.flatMap((node) =>
+		node.kind === "group" ? [{ group: node, depth }, ...groupsOf(node.items, depth + 1)] : [],
+	);
+}
+
+const hasGroup = (group: AppGroupNode) => group.items.some((node) => node.kind === "group");
+
+/** Whether `node` may stand in `target` (undefined: the drawer): two group levels at most, never inside itself. */
+function fits(tree: AppTreeNode[], node: AppTreeNode, target: AppGroupNode | undefined): boolean {
+	if (!target || node.kind === "item") return true;
+	if (node === target || find(node.items, groupKey(target.id))) return false;
+	// A group goes into a group only when neither holds a group of its own below: the target stands in the drawer.
+	const where = find(tree, groupKey(target.id));
+	return where?.owner === undefined && !hasGroup(node);
+}
+
+/** The drawer's apps arranged: the company's groups (`company`, from the file), the member's changes over them, and
+ * every key in `present` (what the drawer has, in its own order) that neither names standing loose at the end. Keys the
+ * drawer does not have are left out, and so is a group with nothing in it. */
+export function arrangeApps(
+	company: readonly AppTreeNode[],
+	layout: MemberAppLayout,
+	present: readonly string[],
+): AppTreeNode[] {
+	const have = new Set(present);
+	const seen = new Set<string>();
+	const tree = clone(company, have, seen);
+	// The member's changes to the company's groups: names, and groups taken apart.
+	for (const [id, change] of Object.entries(layout.groups)) {
+		if (change.mine) continue;
+		const where = find(tree, groupKey(id));
+		if (!where || where.node.kind !== "group") continue;
+		if (change.removed) where.parent.splice(where.index, 1, ...where.node.items);
+		else if (change.name) where.node.name = change.name;
+	}
+	// The member's own groups, at the end until their place says otherwise.
+	for (const [id, change] of Object.entries(layout.groups))
+		if (change.mine && !seen.has(groupKey(id))) {
+			seen.add(groupKey(id));
+			tree.push({ kind: "group", id, name: change.mine.name, items: [], mine: true });
+		}
+	// What the drawer has that nothing names, loose at the end, before the member's places move anything.
+	for (const key of present) if (!seen.has(key)) tree.push({ kind: "item", key });
+	for (const [key, place] of Object.entries(layout.places)) {
+		const from = find(tree, key);
+		if (!from) continue;
+		let target: AppGroupNode | undefined;
+		if (place.group) {
+			const found = find(tree, groupKey(place.group));
+			if (!found || found.node.kind !== "group") continue;
+			target = found.node;
+		}
+		if (!fits(tree, from.node, target)) continue;
+		from.parent.splice(from.index, 1);
+		const list = target ? target.items : tree;
+		const anchor = place.after ? list.findIndex((node) => nodeKey(node) === place.after) : -1;
+		const at = place.first ? 0 : anchor >= 0 ? anchor + 1 : list.length;
+		list.splice(at, 0, from.node);
+	}
+	const prune = (nodes: AppTreeNode[]): AppTreeNode[] =>
+		nodes.flatMap((node): AppTreeNode[] => {
+			if (node.kind === "item") return [node];
+			node.items = prune(node.items);
+			return node.items.length ? [node] : [];
+		});
+	return prune(tree);
+}
+
+export interface AppTile {
+	readonly key: string;
+	readonly node: AppTreeNode;
+	/** The open groups it stands in, outermost first. */
+	readonly chain: readonly string[];
+	readonly open: boolean;
+}
+
+/** The tiles of the drawer's one grid: each item and group in order, and an open group's tiles right after it. */
+export function flattenApps(tree: readonly AppTreeNode[], open: ReadonlySet<string>, chain: string[] = []): AppTile[] {
+	return tree.flatMap((node) => {
+		if (node.kind === "item") return [{ key: node.key, node, chain, open: false }];
+		const isOpen = open.has(node.id);
+		const tile: AppTile = { key: groupKey(node.id), node, chain, open: isOpen };
+		return isOpen ? [tile, ...flattenApps(node.items, open, [...chain, node.id])] : [tile];
+	});
+}
+
+/** Every app key in a node, in order. */
+export function appsIn(node: AppTreeNode): string[] {
+	return node.kind === "item" ? [node.key] : node.items.flatMap(appsIn);
+}
+
+/* ---- Changes to the member's document --------------------------------------------------------------------------- */
+
+function withPlace(layout: MemberAppLayout, key: string, place: AppPlace | undefined): MemberAppLayout {
+	// A changed place goes to the end: places are laid over each other in the order they were made.
+	const { [key]: _old, ...rest } = layout.places;
+	return { ...layout, places: place ? { ...rest, [key]: place } : rest };
+}
+
+/** Puts `key` (an app or `group:<id>`) in `group` (null: loose), after `after` there (null: first). What the member placed
+ * right after it keeps standing where it stood, after what stood before it. */
+export function placeApp(
+	layout: MemberAppLayout,
+	tree: AppTreeNode[],
+	key: string,
+	group: string | null,
+	after: string | null,
+): MemberAppLayout {
+	let next = layout;
+	const here = find(tree, key);
+	if (here) {
+		const before = here.index > 0 ? nodeKey(here.parent[here.index - 1]!) : null;
+		for (const [other, place] of Object.entries(layout.places))
+			if (other !== key && place.after === key)
+				next = {
+					...next,
+					places: {
+						...next.places,
+						[other]: before
+							? { group: place.group ?? null, after: before }
+							: { group: place.group ?? null, first: true },
+					},
+				};
+	}
+	return withPlace(next, key, after ? { group, after } : { group, first: true });
+}
+
+/** A new group of the member's own with `onto` and then `dragged` in it, standing where `onto` stood. */
+export function makeAppGroup(
+	layout: MemberAppLayout,
+	tree: AppTreeNode[],
+	dragged: string,
+	onto: string,
+	name: string,
+	id: string,
+): MemberAppLayout {
+	const where = find(tree, onto);
+	if (!where) return layout;
+	const before = where.index > 0 ? nodeKey(where.parent[where.index - 1]!) : null;
+	let next: MemberAppLayout = { ...layout, groups: { ...layout.groups, [id]: { mine: { name } } } };
+	next = withPlace(
+		next,
+		groupKey(id),
+		before ? { group: where.owner?.id ?? null, after: before } : { group: where.owner?.id ?? null, first: true },
+	);
+	next = placeApp(next, tree, onto, id, null);
+	return placeApp(next, tree, dragged, id, onto);
+}
+
+/** Renames a group in the member's drawer; back to the company's name, nothing of the member's is left. */
+export function renameAppGroup(
+	layout: MemberAppLayout,
+	id: string,
+	name: string,
+	companyName: string | undefined,
+): MemberAppLayout {
+	const change = layout.groups[id] ?? {};
+	const { name: _old, ...rest } = change;
+	const updated: AppGroupChange = change.mine
+		? { ...change, mine: { name } }
+		: name === companyName
+			? rest
+			: { ...change, name };
+	const { [id]: _gone, ...others } = layout.groups;
+	return { ...layout, groups: Object.keys(updated).length ? { ...others, [id]: updated } : others };
+}
+
+/** Takes a group apart in the member's drawer: its apps and groups stand where it stood, in its order. */
+export function ungroupApps(layout: MemberAppLayout, tree: AppTreeNode[], id: string): MemberAppLayout {
+	const where = find(tree, groupKey(id));
+	if (!where || where.node.kind !== "group") return layout;
+	const container = where.owner?.id ?? null;
+	let after = where.index > 0 ? nodeKey(where.parent[where.index - 1]!) : null;
+	let next = layout;
+	// Places pointing into the group are dropped first: its apps are placed again just below.
+	for (const [key, place] of Object.entries(layout.places))
+		if (place.group === id) next = withPlace(next, key, undefined);
+	for (const node of where.node.items) {
+		const key = nodeKey(node);
+		next = withPlace(next, key, after ? { group: container, after } : { group: container, first: true });
+		after = key;
+	}
+	const { [id]: change, ...others } = next.groups;
+	next = withPlace({ ...next, groups: others }, groupKey(id), undefined);
+	return change?.mine ? next : { ...next, groups: { ...next.groups, [id]: { removed: true } } };
+}
+
+/** A name for a new group from its first two apps' names: the first word they share, else "Group". */
+export function suggestGroupName(first: string, second: string, fallback: string): string {
+	const a = first.trim().split(/\s+/)[0] ?? "";
+	const b = second.trim().split(/\s+/)[0] ?? "";
+	return a && a.toLocaleLowerCase() === b.toLocaleLowerCase() ? a.slice(0, APP_GROUP_NAME_LIMIT) : fallback;
+}

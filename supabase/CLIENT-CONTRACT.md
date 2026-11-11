@@ -307,6 +307,14 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   group chats, contact places, hidden pages); `undo_reset {}` puts the last
   reset's rows back (P0002 when there is none). A contact place may name one of
   the caller's own sections.
+- Each member's own apps drawer (`20260930723000`): the company's groups are its
+  file `apps/groups.md`, kept by agents. `qorpera_member_app_layout(p_profile_id)`
+  → `qorpera.member-app-layout-read/v1` `{layout, updatedAt}` and
+  `qorpera_set_member_app_layout(p_profile_id, p_layout, p_expected)` (whole
+  document, 40001 when `p_expected` is not the last `updatedAt`, 22023 for a shape
+  the web never writes; an empty layout leaves no row). The layout is
+  `qorpera.member-app-layout/v1` `{places, groups}` (packages/web/src/cloud/app-groups.ts).
+  Any member. Reset takes it away and Undo puts it back; `own.apps` counts it.
 - `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
   shape after the change. Before `20260930722000`, shared, owner/admin/contributor:
   `create_section {sectionId, name, staffAgentId?, unpin?}`,

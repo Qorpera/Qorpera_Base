@@ -1,5 +1,6 @@
 import type { NativeExecutionConnections } from "@qorpera/cloud-client/cloud-native-subscription-control";
 import type { CloudApi } from "../cloud/api.ts";
+import type { AppTreeNode, MemberAppLayout, MemberAppLayoutRead } from "../cloud/app-groups.ts";
 import { CloudRpcError, describeError } from "../cloud/client.ts";
 import { createWebCodingEnvironment } from "../cloud/coding-environment.ts";
 import {
@@ -259,6 +260,13 @@ export interface CompanyState {
 	/** The agents' interface apps in the company's folder (apps/, app/interface-apps.ts), as last read. Unset until the
 	 * first read lands. */
 	apps?: readonly CompanyApp[];
+	/** The company's groups of apps, as its apps/groups.md says (cloud/app-groups.ts); unset until read, and while the
+	 * company has none. */
+	appGroups?: readonly AppTreeNode[];
+	/** The member's own arrangement of the drawer over them (20260930723000), as last read or written. */
+	appLayout?: MemberAppLayoutRead;
+	/** The cloud keeps no apps layout per member yet: the drawer draws the company's groups and changes none. */
+	appLayoutUnavailable?: boolean;
 	/** How many websites the company's agents published, as last read: the apps drawer shows Sites while there are any.
 	 * Unset until read, and on a cloud that can't say. */
 	siteCount?: number;
@@ -560,6 +568,11 @@ export class CompanyController {
 	#sidebarWrites: Promise<unknown> = Promise.resolve();
 	/** The member's client for the company's folder, where the sections are QorperaOS/agents/sections.md. */
 	#sectionsFolder: ((signal: AbortSignal) => WebMemberFolder) | undefined;
+	/** The member's apps layout: reads (a newer one wins), writes on their way, one after the other, and the time the
+	 * last one answered, which the next one names. */
+	#appLayoutReads = 0;
+	#appLayoutPending = 0;
+	#appLayoutWrites: Promise<string | null | undefined> = Promise.resolve(undefined);
 	#poll: ReturnType<typeof setInterval> | undefined;
 	/** The clock came due while the tab was hidden: its first moment back reads (#restsWhileHidden). */
 	#skippedWhileHidden = false;
@@ -1091,6 +1104,8 @@ export class CompanyController {
 			// A change in flight answers with a newer sidebar than this read.
 			if (this.#stopped || version !== this.#versions.sidebar || this.#sidebarPending) return;
 			this.store.set({ sidebar });
+			// The member's apps layout is part of their own sidebar: a hint for one is a hint for the other.
+			if (sidebar.own) void this.refreshAppLayout();
 			// Hints from now on: on the company's topic, or by postgres_changes on a channel of their own, so a cloud without
 			// the sidebar tables must not degrade the company's hints.
 			this.#sidebarRealtime ??= this.#realtime?.followSidebar(() => this.#onHint("sidebar"));
@@ -1188,12 +1203,72 @@ export class CompanyController {
 	}
 
 	/** Takes away everything the member changed in this company's sidebar, or with `undo` puts back what the last
-	 * reset took. Contacts' places come back with the member chats' next read, which this starts. */
+	 * reset took. Contacts' places and the apps layout come back with their next read, which this starts. */
 	async resetSidebar(undo = false): Promise<boolean> {
 		if (!this.ownSidebar()) return false;
 		const done = await this.changeSidebar({ action: undo ? "undo_reset" : "reset" });
-		if (done) void this.memberChats.refresh();
+		if (done) {
+			void this.memberChats.refresh();
+			void this.refreshAppLayout();
+		}
 		return done;
+	}
+
+	/** Reads the member's own arrangement of the apps drawer. A cloud without it (before 20260930723000) says so once. */
+	async refreshAppLayout(): Promise<void> {
+		if (this.#stopped || this.store.get().appLayoutUnavailable) return;
+		const version = ++this.#appLayoutReads;
+		try {
+			const read = await this.#api.readMemberAppLayout(this.profile.profileId);
+			if (this.#stopped || version !== this.#appLayoutReads || this.#appLayoutPending) return;
+			this.store.set({ appLayout: read });
+		} catch (error) {
+			if (this.#stopped) return;
+			if (error instanceof CloudRpcError && error.missing) this.store.set({ appLayoutUnavailable: true });
+		}
+	}
+
+	/** Changes the member's own arrangement of the drawer: drawn at once, then written whole, one write at a time. A
+	 * write another tab overtook is read again and said in the rail. */
+	async changeAppLayout(next: MemberAppLayout): Promise<boolean> {
+		const current = this.store.get().appLayout;
+		if (this.#stopped || !current) return false;
+		this.store.set({ appLayout: { ...current, layout: next }, railError: undefined, sidebarReset: undefined });
+		// With nothing on its way, the time last read is the one to name; behind another write, the time it answered.
+		const behind = this.#appLayoutPending > 0;
+		this.#appLayoutPending++;
+		const write = this.#appLayoutWrites.then((last) =>
+			this.#api.setMemberAppLayout(
+				this.profile.profileId,
+				next,
+				behind && last !== undefined ? last : current.updatedAt,
+			),
+		);
+		this.#appLayoutWrites = write.then(
+			(read) => read.updatedAt,
+			() => undefined,
+		);
+		try {
+			const read = await write;
+			this.#appLayoutPending--;
+			if (this.#stopped) return false;
+			++this.#appLayoutReads;
+			if (!this.#appLayoutPending) this.store.set({ appLayout: read });
+			// Reset sidebar's count of the member's changes moves with it.
+			void this.refreshSidebar();
+			return true;
+		} catch (error) {
+			this.#appLayoutPending--;
+			if (this.#stopped) return false;
+			this.store.set({
+				railError:
+					error instanceof CloudRpcError && error.code === "40001"
+						? t("Your apps changed in another tab. Try again.")
+						: t("The apps could not be arranged. Try again."),
+			});
+			if (!this.#appLayoutPending) await this.refreshAppLayout();
+			return false;
+		}
 	}
 
 	/** Draws a sidebar change at once and sends it; changes go one at a time, in order.

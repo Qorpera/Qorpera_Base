@@ -1,0 +1,228 @@
+import { describe, expect, it } from "vitest";
+import {
+	type AppTreeNode,
+	appLayoutChanges,
+	arrangeApps,
+	EMPTY_APP_LAYOUT,
+	flattenApps,
+	type MemberAppLayout,
+	makeAppGroup,
+	parseAppGroups,
+	parseMemberAppLayout,
+	placeApp,
+	renameAppGroup,
+	suggestGroupName,
+	ungroupApps,
+} from "../src/cloud/app-groups.ts";
+
+const FILE = `# Apps
+The company's apps in the drawer, kept by its agents with organize_apps.
+
+- page:mailbox Mailbox
+- page:bank Bank
+- app:company-finances Company finances
+- group trips: Fjeldtur Trips
+  - app:trip-planner Trip planner
+  - app:travel-supply Travel supply
+  - concepts Concepts
+  - group routes: Routes
+    - app:route-jotunheimen Jotunheimen
+    - app:route-lofoten Lofoten
+      - group too-deep: Never three levels
+        - app:route-rondane Rondane
+  - app:guide-roster Guide roster
+- group market: Market
+  - app:fjeldtur-brand Fjeldtur brand
+  - app:fjeldtur-brand A second time
+  - agent:nobody Not a key
+`;
+
+const present = [
+	"page:mailbox",
+	"page:bank",
+	"app:company-finances",
+	"app:trip-planner",
+	"app:travel-supply",
+	"concepts",
+	"app:route-jotunheimen",
+	"app:route-lofoten",
+	"app:route-rondane",
+	"app:guide-roster",
+	"app:fjeldtur-brand",
+	"app:business-plan",
+];
+
+/** A tree as nested key lists, groups as `group:<id> <name>` followed by their insides. */
+function shape(tree: readonly AppTreeNode[]): unknown[] {
+	return tree.map((node) =>
+		node.kind === "item" ? node.key : [`group:${node.id} ${node.name}`, ...shape(node.items)],
+	);
+}
+const layout = (places: MemberAppLayout["places"] = {}, groups: MemberAppLayout["groups"] = {}): MemberAppLayout => ({
+	...EMPTY_APP_LAYOUT,
+	places,
+	groups,
+});
+
+describe("apps/groups.md", () => {
+	it("reads groups two levels deep, a deeper one at the nearest allowed level, each key once", () => {
+		expect(shape(parseAppGroups(FILE))).toEqual([
+			"page:mailbox",
+			"page:bank",
+			"app:company-finances",
+			[
+				"group:trips Fjeldtur Trips",
+				"app:trip-planner",
+				"app:travel-supply",
+				"concepts",
+				["group:routes Routes", "app:route-jotunheimen", "app:route-lofoten"],
+				["group:too-deep Never three levels", "app:route-rondane"],
+				"app:guide-roster",
+			],
+			["group:market Market", "app:fjeldtur-brand"],
+		]);
+		expect(parseAppGroups("no list here\n  - \n")).toEqual([]);
+	});
+});
+
+describe("the member's own arrangement", () => {
+	const company = parseAppGroups(FILE);
+
+	it("draws the company's groups, leaves out what the drawer lacks, and puts what nothing names at the end", () => {
+		const tree = arrangeApps(company, EMPTY_APP_LAYOUT, ["page:mailbox", "app:fjeldtur-brand", "app:new-one"]);
+		expect(shape(tree)).toEqual(["page:mailbox", ["group:market Market", "app:fjeldtur-brand"], "app:new-one"]);
+	});
+
+	it("lays the member's renames, ungrouped groups, own groups and places over the company's", () => {
+		const tree = arrangeApps(
+			company,
+			layout(
+				{
+					"group:m-1": { group: null, after: "page:bank" },
+					"app:fjeldtur-brand": { group: "m-1", first: true },
+					"app:business-plan": { group: "m-1", after: "app:fjeldtur-brand" },
+				},
+				{ "m-1": { mine: { name: "Daily" } }, routes: { name: "Hikes" }, trips: { removed: true } },
+			),
+			present,
+		);
+		expect(shape(tree)).toEqual([
+			"page:mailbox",
+			"page:bank",
+			["group:m-1 Daily", "app:fjeldtur-brand", "app:business-plan"],
+			"app:company-finances",
+			"app:trip-planner",
+			"app:travel-supply",
+			"concepts",
+			["group:routes Hikes", "app:route-jotunheimen", "app:route-lofoten"],
+			["group:too-deep Never three levels", "app:route-rondane"],
+			"app:guide-roster",
+		]);
+	});
+
+	it("never puts a group three levels deep, nor into itself", () => {
+		const tree = arrangeApps(
+			company,
+			layout({ "group:trips": { group: "routes", first: true }, "group:market": { group: "market", first: true } }),
+			present,
+		);
+		expect(
+			shape(tree)
+				.filter((node) => Array.isArray(node))
+				.map((node) => (node as string[])[0]),
+		).toEqual(["group:trips Fjeldtur Trips", "group:market Market"]);
+	});
+
+	it("opens groups into the grid, their tiles right after the group", () => {
+		const tiles = flattenApps(arrangeApps(company, EMPTY_APP_LAYOUT, present), new Set(["trips", "routes"]));
+		expect(tiles.map((tile) => `${tile.key}${tile.open ? "+" : ""}@${tile.chain.join("/")}`)).toEqual([
+			"page:mailbox@",
+			"page:bank@",
+			"app:company-finances@",
+			"group:trips+@",
+			"app:trip-planner@trips",
+			"app:travel-supply@trips",
+			"concepts@trips",
+			"group:routes+@trips",
+			"app:route-jotunheimen@trips/routes",
+			"app:route-lofoten@trips/routes",
+			"group:too-deep@trips",
+			"app:guide-roster@trips",
+			"group:market@",
+			"app:business-plan@",
+		]);
+	});
+
+	it("moves an app, and what the member placed after it keeps its place after what stood before it", () => {
+		const tree = arrangeApps(company, EMPTY_APP_LAYOUT, present);
+		let mine = placeApp(EMPTY_APP_LAYOUT, tree, "app:business-plan", null, "page:mailbox");
+		mine = placeApp(mine, arrangeApps(company, mine, present), "app:fjeldtur-brand", null, "app:business-plan");
+		expect(shape(arrangeApps(company, mine, present)).slice(0, 4)).toEqual([
+			"page:mailbox",
+			"app:business-plan",
+			"app:fjeldtur-brand",
+			"page:bank",
+		]);
+		mine = placeApp(mine, arrangeApps(company, mine, present), "app:business-plan", "market", null);
+		expect(shape(arrangeApps(company, mine, present)).slice(0, 3)).toEqual([
+			"page:mailbox",
+			"app:fjeldtur-brand",
+			"page:bank",
+		]);
+		expect(appLayoutChanges(mine)).toBe(2);
+	});
+
+	it("makes a group of two apps where the first stood, renames it, and takes it apart again", () => {
+		const tree = arrangeApps(company, EMPTY_APP_LAYOUT, present);
+		let mine = makeAppGroup(EMPTY_APP_LAYOUT, tree, "app:company-finances", "page:bank", "Money", "m-2");
+		expect(shape(arrangeApps(company, mine, present)).slice(0, 3)).toEqual([
+			"page:mailbox",
+			["group:m-2 Money", "page:bank", "app:company-finances"],
+			[
+				"group:trips Fjeldtur Trips",
+				"app:trip-planner",
+				"app:travel-supply",
+				"concepts",
+				expect.anything(),
+				expect.anything(),
+				"app:guide-roster",
+			],
+		]);
+		mine = renameAppGroup(mine, "m-2", "Finance", undefined);
+		expect(mine.groups["m-2"]).toEqual({ mine: { name: "Finance" } });
+		mine = ungroupApps(mine, arrangeApps(company, mine, present), "m-2");
+		expect(mine.groups["m-2"]).toBeUndefined();
+		expect(shape(arrangeApps(company, mine, present)).slice(0, 3)).toEqual([
+			"page:mailbox",
+			"page:bank",
+			"app:company-finances",
+		]);
+	});
+
+	it("keeps nothing of the member's when a company group is renamed back, and marks one taken apart", () => {
+		let mine = renameAppGroup(EMPTY_APP_LAYOUT, "market", "Sales", "Market");
+		expect(mine.groups).toEqual({ market: { name: "Sales" } });
+		mine = renameAppGroup(mine, "market", "Market", "Market");
+		expect(mine.groups).toEqual({});
+		mine = ungroupApps(mine, arrangeApps(company, mine, present), "market");
+		expect(mine.groups).toEqual({ market: { removed: true } });
+		expect(shape(arrangeApps(company, mine, present)).slice(-2)).toEqual(["app:fjeldtur-brand", "app:business-plan"]);
+	});
+
+	it("reads only the shape the cloud keeps, and suggests a name from the first word two apps share", () => {
+		expect(parseMemberAppLayout({ schema: "other" })).toEqual(EMPTY_APP_LAYOUT);
+		expect(
+			parseMemberAppLayout({
+				schema: "qorpera.member-app-layout/v1",
+				places: { "app:a": { group: "g", after: null }, "agent:x": {}, "group:BAD": {} },
+				groups: { g: { mine: { name: "G" } }, "Bad Id": { name: "x" }, e: {} },
+			}),
+		).toEqual({
+			schema: "qorpera.member-app-layout/v1",
+			places: { "app:a": { group: "g", after: null } },
+			groups: { g: { mine: { name: "G" } } },
+		});
+		expect(suggestGroupName("Fjeldtur brand", "fjeldtur business plan", "Group")).toBe("Fjeldtur");
+		expect(suggestGroupName("Mailbox", "Bank", "Group")).toBe("Group");
+	});
+});

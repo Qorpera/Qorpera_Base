@@ -9,7 +9,9 @@ import { companyInterfaces, interfaceRows } from "../src/app/interfaces.ts";
 import { parseRoute, type Route, routeHash } from "../src/app/router.ts";
 import { messageText, renderInterface, renderInterfaceFile } from "../src/app/views/interface.ts";
 import { renderRail } from "../src/app/views/shell.ts";
+import { EMPTY_APP_LAYOUT, parseAppGroups } from "../src/cloud/app-groups.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
+import { colourNameHex } from "../src/ui/avatar.ts";
 import { h } from "../src/ui/dom.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { fixture, id, profileA, session, settle, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
@@ -1423,5 +1425,115 @@ columns = ["title", "kind", "due"]
 		} finally {
 			setLanguagePreference("system");
 		}
+	});
+});
+
+describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
+	const manifest = (name: string, colour: "coral" | "gold" | "teal") => ({
+		name,
+		about: null,
+		emblem: "page" as const,
+		colour,
+		entry: "index.html",
+		owner: ada.id,
+		posted: true,
+		reads: [],
+		writes: [],
+		concept: false,
+		cover: null,
+		kit: null,
+	});
+	const own = { changes: 0, moved: [], sections: [], pinned: 0, hidden: 0, contacts: 0, pages: 0, apps: 0 };
+	function drawer() {
+		const { f, controller } = company([], { members: 3, pages: pages(false, true) });
+		controller.store.set({
+			sidebar: { sections: [], placements: {}, pinned: [], hidden: [], own },
+			apps: [
+				{ name: "brand", path: "apps/brand", manifest: manifest("Brand", "coral"), problems: [], version: null },
+				{ name: "plan", path: "apps/plan", manifest: manifest("Plan", "gold"), problems: [], version: null },
+				{ name: "trips", path: "apps/trips", manifest: manifest("Trips", "teal"), problems: [], version: null },
+			],
+			appGroups: parseAppGroups("- group market: Market\n  - app:brand Brand\n  - app:plan Plan\n"),
+			appLayout: { layout: EMPTY_APP_LAYOUT, updatedAt: null },
+		});
+		const set = vi
+			.spyOn(f.api, "setMemberAppLayout")
+			.mockImplementation(async (_profile, layout) => ({ layout, updatedAt: "2026-11-11T12:00:00Z" }));
+		vi.spyOn(f.api, "readCompanySidebar").mockResolvedValue({
+			sections: [],
+			placements: {},
+			pinned: [],
+			hidden: [],
+			own,
+		});
+		const element = h("aside", { class: "rail" });
+		document.body.append(h("div", { class: "frame" }, element));
+		const auth = new AuthController(f.cloud);
+		cleanup.push(() => auth.dispose());
+		const route: Route = { name: "company", profileId: profileA.profileId, section: "home" };
+		const draw = () =>
+			renderRail(element, controller, {
+				profiles: [profileA],
+				user: userA,
+				route,
+				auth,
+				invitations: 0,
+				openSettings: () => {},
+				openFeedback: () => {},
+				openFriends: () => {},
+				agentActions: {},
+			});
+		cleanup.push(controller.store.subscribe(draw));
+		draw();
+		element.querySelector<HTMLButtonElement>(".rail-apps")!.click();
+		return { element, controller, set };
+	}
+	const tiles = (element: HTMLElement) =>
+		[...element.querySelectorAll<HTMLElement>(".rail-apps-grid > [data-app-key]")].map(
+			(tile) =>
+				`${tile.querySelector(".rail-app-name")?.textContent}${tile.getAttribute("aria-expanded") === "true" ? "+" : ""}`,
+		);
+	const group = (element: HTMLElement) => element.querySelector<HTMLButtonElement>(".rail-app-group")!;
+
+	it("draws a group as one tile in its first app's colour, and opens it into the grid", () => {
+		localStorage.clear();
+		const { element } = drawer();
+		expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+		expect(group(element).style.getPropertyValue("--app-colour")).toBe(colourNameHex("coral"));
+		const trips = element.querySelector<HTMLElement>("[data-app-key='app:trips']")!;
+		expect(trips.style.getPropertyValue("--app-colour")).toBe(colourNameHex("teal"));
+		group(element).click();
+		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
+		expect(element.querySelector("[data-app-key='app:brand']")?.getAttribute("data-in-group")).toBe("market");
+		expect(JSON.parse(localStorage.getItem(`qorpera.web.rail-app-groups-open:${profileA.profileId}`)!)).toEqual([
+			"market",
+		]);
+		group(element).click();
+		expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+		localStorage.clear();
+	});
+
+	it("renames and takes apart a group in the member's own drawer, and moves an app into one", async () => {
+		localStorage.clear();
+		const { element, set } = drawer();
+		group(element).dispatchEvent(
+			new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 9, clientY: 9 }),
+		);
+		const labels = () =>
+			[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")].map((item) => item.textContent);
+		expect(labels()).toEqual(["Rename group", "Ungroup", "Reset sidebarYou have Company A PRIVATE's sidebar"]);
+		[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")]
+			.find((item) => item.textContent === "Ungroup")!
+			.click();
+		await settle();
+		expect(set).toHaveBeenLastCalledWith(
+			profileA.profileId,
+			expect.objectContaining({ groups: { market: { removed: true } } }),
+			null,
+		);
+		expect(tiles(element)).toEqual(["Brand", "Plan", "Members", "Trips"]);
+		const trips = element.querySelector<HTMLElement>("[data-app-key='app:trips']")!;
+		trips.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 9, clientY: 9 }));
+		expect(labels()[0]).toBe("Move to");
 	});
 });
