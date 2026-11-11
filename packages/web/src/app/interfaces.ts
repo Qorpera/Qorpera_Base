@@ -582,14 +582,19 @@ export function interfaceRows(company: CompanyController, source: string): Inter
 		for (const agent of agents) {
 			const now = company.agentState(agent.id);
 			if (now === "decision") {
+				// What it waits on this member for, when the cloud says: a card's question, an approval's action.
+				const what = company.waitingFor(agent.id)?.what;
+				const waitingSince = rowInstant(state.waitingOnMe?.[agent.id]?.latestAt);
 				rows.push({
 					row: {
 						id: agent.id,
 						// An agent waiting on a member's decision: an action or change for review.
 						kind: "review",
-						title: t("{name} needs you", { name: agent.displayName }),
+						title: what
+							? t("{name} needs you: {what}", { name: agent.displayName, what })
+							: t("{name} needs you", { name: agent.displayName }),
 						from: agent.id,
-						due: since(agent.id),
+						due: waitingSince ?? since(agent.id),
 					},
 					href: agentHref(agent.id),
 					key: runKey("review", agent.id),

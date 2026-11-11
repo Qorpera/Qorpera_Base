@@ -1543,16 +1543,18 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // 10 November 2026), and for patch notes before changes go live ("Yes, wait for me"; Jonas, 10 November 2026), and
 // for a project's history and its hand-over (#1643, 10 November 2026), and for the change record of the company's code
 // (each change numbered, undone and described with manage_code; own code storage step 2b, 10 November 2026), and for
-// the checks Qorpera runs before a change goes into the company's code (own code storage step 3, 11 November 2026), and
-// for the wall's now line and what a wall line says (the sidebar's line under each name; Jonas, 11 November 2026), and
-// for What's new as Qorpera's own page, where a member puts a repository's website live (own code storage step 4,
-// 11 November 2026). A change to either is a change to every run's bytes.
+// the checks Qorpera runs before a change goes into the company's code (own code storage step 3, 11 November 2026), for
+// the wall's now line and what a wall line says (the sidebar's line under each name; Jonas, 11 November 2026), for
+// work that waits on a member going on a card that says what is stopped, with the wall's waiting items mirroring the
+// open cards ("it's really stopped at you"; Jonas, 11 November 2026), and for What's new as Qorpera's own page, where
+// a member puts a repository's website live (own code storage step 4, 11 November 2026). A change to any is a change
+// to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "7174e002d7ff235b5943398cb546d0772d75a44643a387bc5244f1efa9a70ac6",
+			instructions: "209a52e8bc31d10d482ac85492dd903dd658b1d92a1d33b30de089d873576b10",
 			prompt: "87eaa2f504945457baf071474bd7bf712ef50dfc3e99267e0dc089a2d5cd5c44",
 		},
 	],
@@ -1568,7 +1570,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "7174e002d7ff235b5943398cb546d0772d75a44643a387bc5244f1efa9a70ac6",
+			instructions: "209a52e8bc31d10d482ac85492dd903dd658b1d92a1d33b30de089d873576b10",
 			prompt: "cae25d562292e7abd87158f86f29192c376cd4d484509a2a8135e14753940692",
 		},
 	],
@@ -1662,9 +1664,10 @@ it("tells an agent to keep its wall instead of sending status messages", () => {
 		"Where you have update_wall, keep your wall with it: the card pinned above your thread",
 		"move a finished item to done in the same call, with a link to the work, and fix a wrong item where it stands",
 		"so it takes the place of status messages: update it, never a message, to say that work started, moved on or finished",
-		"a decision that waits for a member goes on the wall and in one line of your message",
+		"a decision that waits for a member goes on a card, on the wall and in one line of your message",
 		"a member's message that opens with a quoted line (`> ...`) answers that question from your wall",
-		"Take a question they answered off waiting, whichever way they answered it, and put a new question you ask them on it, in the same turn",
+		// 11 November 2026: the wall's waiting items mirror the open cards.
+		"What waits on them mirrors your open cards: put each card you raise on it in the same turn, and take a question they answered off it, whichever way they answered it.",
 	])
 		expect(instructions).toContain(rule);
 });
@@ -2592,4 +2595,18 @@ it("tells a turn that ended with its closing act undone what is missing, and not
 	// A few sentences, within what the session takes as one more turn's input.
 	for (const text of [unanswered, spoken, undecided, decisionOnly, cloudNativeTurnCorrection(worker)])
 		expect(Buffer.byteLength(text as string)).toBeLessThan(1024);
+});
+
+// Jonas, 11 November 2026: "I would like the agents to be better at indicating when they need the users input and it's
+// really stopped at you. it's hard to tell right now." A blocking question goes on a card (the web shows the agent as
+// stopped at the member), never only in a message, and says what is stopped; nothing optional goes on one.
+it("tells an agent to ask what its work waits for on a card that says what is stopped", () => {
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"When your work cannot go on without a member's answer, ask it on a card wherever you can raise one, never only in a message: the card is how they see that the work is stopped at them.",
+		'Say on the card what is stopped until they answer, such as "I\'ve stopped the price list until you pick one".',
+		"Ideas they may take or leave and news for them never go on a card.",
+	])
+		expect(instructions).toContain(rule);
+	expect(instructions).not.toContain("put a new question you ask them on it");
 });
