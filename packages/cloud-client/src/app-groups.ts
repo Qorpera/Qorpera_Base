@@ -63,7 +63,7 @@ export type AppGroupsDrawnNode =
 	  };
 
 const GROUP_ID = /^[a-z0-9-]{1,40}$/;
-const LIST_LINE = /^([ \t]*)[-*][ \t]+(\S.*?)[ \t]*$/s;
+const LIST_LINE = /^([ \t]*)[-*][ \t]+(\S.*?)[ \t\r]*$/s;
 const GROUP_LINE = /^group[ \t]+([^\s:]+)[ \t]*:[ \t]*(.*)$/s;
 const RETIRED_LINE = /^<!--[ \t]*retired group ids:[ \t]*([^>]*?)[ \t]*-->[ \t]*$/;
 const CONTROL = /[\u0000-\u001f\u007f\u2028\u2029]/;
@@ -126,7 +126,9 @@ export function parseAppGroups(text: string): AppGroupsFile {
 	const ids = new Set<string>();
 	let listed = false;
 	for (const raw of lines) {
-		const line = raw.replace(/\r$/, "");
+		// Every carriage return at a line's end goes, so no line, key or words end in one and a written line reads back
+		// the same.
+		const line = raw.replace(/\r+$/, "");
 		const kept = RETIRED_LINE.exec(line);
 		if (kept) {
 			for (const id of (kept[1] ?? "").split(/[\s,]+/))

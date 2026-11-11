@@ -217,6 +217,17 @@ A closing note.
 			"- group g: G\u2028\n- group \u2028h: H\n\n<!-- retired group ids: g, h -->\n",
 		);
 		expect(parseAppGroups(writeAppGroups(endsFile))).toEqual(endsFile);
+		// Carriage returns at a line's end, however many and with spaces between, are no part of its words or key.
+		const returns =
+			"- group g: G\r \n- app:sales\r\r\n- group s: Sales\n  - app:sales\n<!-- retired group ids: g -->\n";
+		const returnsFile = parseAppGroups(returns);
+		expect(returnsFile.items).toEqual([
+			{ kind: "group", id: "g", name: "G", items: [] },
+			{ kind: "item", key: "app:sales", words: "" },
+			{ kind: "group", id: "s", name: "Sales", items: [] },
+		]);
+		expect(returnsFile.retired).toEqual([]);
+		expect(parseAppGroups(writeAppGroups(returnsFile))).toEqual(returnsFile);
 	});
 
 	it("is not an app of the drawer", () => {
