@@ -608,6 +608,33 @@ export const WORKSPACE: Record<string, string> = {
 	"Delete section": "Slet sektion",
 	"Delete the section {name}? Its agents and group chats move to Unassigned, for everyone in the company.":
 		"Slet sektionen {name}? Dens agenter og gruppechats flyttes til Uden sektion for alle i virksomheden.",
+	"Delete your section {name}? Its agents and group chats go back to where the company keeps them.":
+		"Slet din sektion {name}? Dens agenter og gruppechats går tilbage til, hvor virksomheden har dem.",
+	"Remove {name} from your sidebar? Its agents and group chats move to Unassigned. Nobody else's sidebar changes.":
+		"Fjern {name} fra dit sidepanel? Dens agenter og gruppechats flyttes til Uden sektion. Ingen andres sidepanel ændres.",
+	"Reset sidebar…": "Nulstil sidepanel…",
+	"Reset sidebar": "Nulstil sidepanel",
+	"1 change of yours": "1 ændring fra dig",
+	"{count} changes of yours": "{count} ændringer fra dig",
+	"You have {company}'s sidebar": "Du har {company}s sidepanel",
+	"Reset your sidebar? These changes of yours go away, and you get {company}'s sidebar:":
+		"Nulstil dit sidepanel? Disse ændringer fra dig forsvinder, og du får {company}s sidepanel:",
+	"Sidebar reset to {company}'s.": "Sidepanelet er nulstillet til {company}s.",
+	"{name} where you put it": "{name}, hvor du har placeret den",
+	"{names} where you put them": "{names}, hvor du har placeret dem",
+	"{count} agents and group chats where you put them": "{count} agenter og gruppechats, hvor du har placeret dem",
+	"Your section {name}": "Din sektion {name}",
+	"{from} renamed {name}": "{from} omdøbt til {name}",
+	"{name} removed from your sidebar": "{name} fjernet fra dit sidepanel",
+	"1 pinned": "1 fastgjort",
+	"{count} pinned": "{count} fastgjort",
+	"1 hidden": "1 skjult",
+	"{count} hidden": "{count} skjult",
+	"1 member placed or hidden": "1 medlem placeret eller skjult",
+	"{count} members placed or hidden": "{count} medlemmer placeret eller skjult",
+	"1 page hidden": "1 side skjult",
+	"{count} pages hidden": "{count} sider skjult",
+	"The order of your apps": "Rækkefølgen af dine apps",
 	"Delete {name}? The group chat is removed for everyone. This cannot be undone.":
 		"Slet {name}? Gruppechatten fjernes for alle. Det kan ikke fortrydes.",
 	"The group chat could not be deleted.": "Gruppechatten kunne ikke slettes.",

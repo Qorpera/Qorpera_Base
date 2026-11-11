@@ -20,6 +20,8 @@ export type MenuEntry =
 			lead?: HTMLElement;
 			/** A second, quieter line under the label. */
 			hint?: string;
+			/** Shown greyed out and not chosen: the hint says why. */
+			disabled?: boolean;
 			select: () => void;
 	  }
 	| { kind: "submenu"; label: string; icon?: string; items: MenuEntry[] }
@@ -73,7 +75,7 @@ function place(element: HTMLElement, x: number, y: number, flipX?: number): void
 }
 
 function menuItems(menu: HTMLElement): HTMLElement[] {
-	return [...menu.querySelectorAll<HTMLElement>(":scope > [role^=menuitem]")];
+	return [...menu.querySelectorAll<HTMLElement>(":scope > [role^=menuitem]:not(:disabled)")];
 }
 
 function moveFocus(menu: HTMLElement, event: KeyboardEvent): boolean {
@@ -178,6 +180,7 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 					class: entry.danger ? "context-menu-item danger" : "context-menu-item",
 					role: radio ? "menuitemradio" : "menuitem",
 					...(radio ? { "aria-checked": String(entry.checked) } : {}),
+					...(entry.disabled ? { disabled: true } : {}),
 				},
 				entry.lead ?? (radio ? (entry.checked ? icon("check") : glyph) : glyph),
 				entry.hint

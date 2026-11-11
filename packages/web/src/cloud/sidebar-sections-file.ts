@@ -23,7 +23,13 @@ export type SectionsRequest = Extract<
 >;
 
 export function isSectionsRequest(request: SidebarRequest): request is SectionsRequest {
-	return request.action !== "set_pins" && request.action !== "set_hidden";
+	return (
+		request.action === "create_section" ||
+		request.action === "rename_section" ||
+		request.action === "delete_section" ||
+		request.action === "move_agent" ||
+		request.action === "move_room"
+	);
 }
 
 /** A sections request with its sections named, as the file names them. Names are taken when the request is made, so
