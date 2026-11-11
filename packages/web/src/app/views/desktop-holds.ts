@@ -392,11 +392,15 @@ export class DesktopHoldLedger {
 	 * member holding (another tab, an earlier page, what this page took), a few rounds; without a list it says no.
 	 *
 	 * What I'm done answers (reviews r9, r10): once, after a list read that counts (none of its machines below the epoch
-	 * the ledger knows), nothing of the agent's machines is owed: whatever the page sent, took up or saw held under an
-	 * epoch is discharged only by learning, from the database, an epoch above it, and a hold that read shows at the
-	 * current epoch is owed like any other. A take-over the member starts from another tab after that read was taken is
-	 * a new take-over, outside this answer; the agent then hears DESKTOP_MEMBER_IN_CONTROL, as for any take-over without
-	 * a card. No page can exclude what the member does a moment later. */
+	 * the ledger knows), nothing of the agent's machines is owed. Whatever the page sent, took up or saw held under an
+	 * epoch is discharged by learning, from the database, an epoch above it, or seat by seat at that epoch (r19): a
+	 * take-over with no answer by its own answer (or a list showing the hold it seated); a seat the page's own take-over
+	 * got, or one shown it, by an EXACT hand-back's answer for that seat or a higher one, or by a heartbeat or an action
+	 * answered `ended` for it. Nothing else discharges anything (no refusal of another request, timeout or closed
+	 * window), and a hold that read shows at the current epoch is owed like any other. A take-over the member starts
+	 * from another tab after that read was taken is a new take-over, outside this answer; the agent then hears
+	 * DESKTOP_MEMBER_IN_CONTROL, as for any take-over without a card. No page can exclude what the member does a moment
+	 * later. */
 	async releaseAgent(agentId: string, reason: Hold["reason"] = "handed_back", elsewhere = false): Promise<boolean> {
 		// The hand-backs this asks, each waited for once: a failed one says no (it is asked again on its own, after a wait).
 		const asks = new Map<Hold, Promise<boolean>>();
