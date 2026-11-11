@@ -210,7 +210,12 @@ export async function launchIsolatedNativeProcess(options: {
 	/** A Claude sign-in: `codexHome` is Claude Code's config directory (the vault's helper only). */
 	harness?: "claude-code";
 	signal: AbortSignal;
-}): Promise<{ child: ChildProcessWithoutNullStreams; close(): Promise<void> }> {
+}): Promise<{
+	child: ChildProcessWithoutNullStreams;
+	close(): Promise<void>;
+	/** The relay's voice call window (NativeEgressRelay.allowRealtime): a Codex login's process only. */
+	allowRealtime?: () => () => void;
+}> {
 	if (process.platform !== "linux" || !process.getuid?.())
 		throw new Error("Native containment requires unprivileged Linux");
 	options.signal.throwIfAborted();
@@ -269,6 +274,7 @@ export async function launchIsolatedNativeProcess(options: {
 		});
 		return {
 			child: launched,
+			...(relay.allowRealtime ? { allowRealtime: relay.allowRealtime } : {}),
 			async close() {
 				options.signal.removeEventListener("abort", stop);
 				stop();

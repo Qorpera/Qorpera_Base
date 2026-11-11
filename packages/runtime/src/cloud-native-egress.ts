@@ -12,6 +12,10 @@ export const NATIVE_CHATGPT_PLAN_EGRESS_HOSTS = Object.freeze(["api.openai.com"]
 /** A member's Claude sign-in in the vault's helper: the official Claude Code exchanges Anthropic's code there and reads
  * the account it signed in. */
 export const NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS = Object.freeze(["platform.claude.com", "api.anthropic.com"]);
+/** A voice call's control connection: Codex makes the call at chatgpt.com, then joins it over a websocket at OpenAI's
+ * API (`OPENAI_REALTIME_API_BASE_URL`, Codex 0.155.1). A Codex login's relay passes it only while a call is open
+ * (`allowRealtime`); the call's sound never passes the relay. */
+export const NATIVE_CODEX_REALTIME_EGRESS_HOSTS = Object.freeze(["api.openai.com"]);
 const MAX_HELLO_BYTES = 65_536;
 // Bounds per connection only: 8 at once, 5 s to connect and 30 s idle. A run's relay counts no bytes and no connections
 // over its life (no caps on runs, 5 Oct 2026; it stopped a run after 64 MiB or 128 connections until then).
@@ -126,6 +130,17 @@ export interface NativeEgressTransport {
 	connect(address: string): Socket;
 }
 
+/** A started relay. */
+export interface NativeEgressRelay {
+	readonly path: string;
+	close(): Promise<void>;
+	/** A Codex login's relay only (absent on any other, which nothing can widen): lets the voice call's host
+	 * (NATIVE_CODEX_REALTIME_EGRESS_HOSTS) through until the returned closer runs. Windows nest: the host passes while
+	 * any closer has not run, and each closer counts once. When the last one runs, new connections to the host are
+	 * refused again and the ones open to it are cut. */
+	allowRealtime?: () => () => void;
+}
+
 /** Private per-execution Unix capability. No HTTP endpoint, bearer token,
  * credential forwarding/inspection, TLS interception, redirects or DNS from
  * the model namespace. Test transport is dependency injection, not runtime config.
@@ -136,7 +151,7 @@ export async function startNativeCodexEgress(options: {
 	transport?: NativeEgressTransport;
 	/** The hosts this run may reach; the Codex login's hosts unless the run is on a ChatGPT plan or a Claude sign-in. */
 	hosts?: readonly string[];
-}): Promise<{ path: string; close(): Promise<void> }> {
+}): Promise<NativeEgressRelay> {
 	const hosts = options.hosts ?? NATIVE_CODEX_EGRESS_HOSTS;
 	if (
 		hosts !== NATIVE_CODEX_EGRESS_HOSTS &&
@@ -160,6 +175,10 @@ export async function startNativeCodexEgress(options: {
 	};
 	const peers = new Set<Socket>();
 	const upstreams = new Set<Socket>();
+	// The voice call's windows still open, and how to cut each connection to its host.
+	let realtimeWindows = 0;
+	const realtimeTunnels = new Set<() => void>();
+	const realtime = hosts === NATIVE_CODEX_EGRESS_HOSTS;
 	const controller = new AbortController();
 	const signal = AbortSignal.any([options.signal, controller.signal]);
 	const server = createServer((peer) => {
@@ -180,9 +199,16 @@ export async function startNativeCodexEgress(options: {
 			peer.destroy();
 			upstream?.destroy();
 		};
+		// A connection to the voice call's host ends with the call's last window, even mid-attempt: the aborted attempt
+		// never dials.
+		const cut = (): void => {
+			attempt.abort();
+			close();
+		};
 		attemptSignal.addEventListener("abort", close, { once: true });
 		peer.on("error", close);
 		peer.once("close", () => {
+			realtimeTunnels.delete(cut);
 			clearTimeout(deadline);
 			attempt.abort();
 			attemptSignal.removeEventListener("abort", close);
@@ -201,7 +227,14 @@ export async function startNativeCodexEgress(options: {
 				const header = buffered.subarray(0, end).toString("latin1");
 				const lines = header.split("\r\n");
 				const target = /^CONNECT ([a-z0-9.-]+):443 HTTP\/1\.[01]$/.exec(lines.shift() ?? "")?.[1];
-				if (!target || !hosts.includes(target)) throw new Error("Native egress target denied");
+				// The voice call's host passes as the list's own hosts do, only while a window is open.
+				const realtimeTarget =
+					realtime &&
+					realtimeWindows > 0 &&
+					target !== undefined &&
+					!hosts.includes(target) &&
+					NATIVE_CODEX_REALTIME_EGRESS_HOSTS.includes(target);
+				if (!target || !(hosts.includes(target) || realtimeTarget)) throw new Error("Native egress target denied");
 				const names = new Set<string>();
 				for (const line of lines) {
 					const entry = /^([A-Za-z-]+):[ \t]*([\x20-\x7e]*)$/.exec(line);
@@ -217,6 +250,7 @@ export async function startNativeCodexEgress(options: {
 					if (name === "host" && entry[2] !== `${target}:443`) throw new Error("Native proxy host mismatch");
 				}
 				host = target;
+				if (realtimeTarget) realtimeTunnels.add(cut);
 				buffered = buffered.subarray(end + 4);
 				peer.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 			}
@@ -296,8 +330,19 @@ export async function startNativeCodexEgress(options: {
 		await chmod(path, 0o600);
 		signal.throwIfAborted();
 		let closing: Promise<void> | undefined;
+		const allowRealtime = (): (() => void) => {
+			realtimeWindows += 1;
+			let open = true;
+			return () => {
+				if (!open) return;
+				open = false;
+				realtimeWindows -= 1;
+				if (realtimeWindows === 0) for (const cut of [...realtimeTunnels]) cut();
+			};
+		};
 		return {
 			path,
+			...(realtime ? { allowRealtime } : {}),
 			close() {
 				closing ??= new Promise<void>((resolve) => {
 					controller.abort();

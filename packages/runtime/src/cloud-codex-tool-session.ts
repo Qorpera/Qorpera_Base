@@ -225,6 +225,8 @@ interface VoiceThread {
 	settled?: Promise<void>;
 	/** Confirms its stop, from a `thread/realtime/closed`. */
 	confirm?: () => void;
+	/** Closes the relay's window for the call's control connection (#voiceEgressEnd). */
+	egress?: () => void;
 }
 
 interface CompactTurn {
@@ -709,6 +711,9 @@ class CodexBoundaryRpc {
 	voiceStopMs = VOICE_STOP_MS;
 	/** Ended voice threads: what Codex still says on one stays on the voice's lane. */
 	readonly #endedVoices = new Set<string>();
+	/** Opens the relay's window for a voice call's control connection (NativeEgressRelay.allowRealtime); none without
+	 * isolation, where nothing filters the process's network. */
+	readonly #realtimeEgress?: () => () => void;
 	#startingSide?: StartingSide;
 	/** The latest side thread start, settled or not: the next one waits for it. */
 	#sideStarting: Promise<void> = Promise.resolve();
@@ -722,10 +727,12 @@ class CodexBoundaryRpc {
 		child: ChildProcessWithoutNullStreams,
 		boundary?: CloudNativeToolBoundary,
 		observability?: CloudRuntimeObservability,
+		realtimeEgress?: () => () => void,
 	) {
 		this.#child = child;
 		this.#boundary = boundary;
 		this.#observability = observability;
+		this.#realtimeEgress = realtimeEgress;
 		this.#completed = this.#awaitCompletion();
 		child.on("error", () => this.fail("Native boundary process unavailable", "transport_unavailable"));
 		child.stdin.on("error", () => this.fail("Native boundary transport unavailable", "transport_unavailable"));
@@ -1509,6 +1516,9 @@ class CodexBoundaryRpc {
 			signal.addEventListener("abort", abort, { once: true });
 			voice.release = () => signal.removeEventListener("abort", abort);
 			if (signal.aborted) abort();
+			// Codex joins the call it makes here over a websocket at OpenAI's API, which the relay passes only from now
+			// until the call's stop is confirmed or given up on (#closeVoice), or the process ends.
+			if (!voice.ended && !this.#failure && !this.#closed) voice.egress = this.#realtimeEgress?.();
 			const starting = this.#send(
 				"thread/realtime/start",
 				{
@@ -1609,6 +1619,8 @@ class CodexBoundaryRpc {
 		// new call's: the run places no more calls. The run itself goes on.
 		if (!confirmed) this.#voiceLost = true;
 		if (this.#voiceStopping === voice) this.#voiceStopping = undefined;
+		// The call's host closes with its slot: a session not confirmed stopped keeps no way out.
+		this.#voiceEgressEnd(voice);
 		settle();
 	}
 
@@ -1623,6 +1635,19 @@ class CodexBoundaryRpc {
 		voice.answer = undefined;
 		voice.speak?.reject(error);
 		voice.speak = undefined;
+	}
+
+	/** A process that failed or closed places no call: the live call's and the stopping call's windows close now. */
+	#closeVoiceWindows(): void {
+		if (this.#voice) this.#voiceEgressEnd(this.#voice);
+		if (this.#voiceStopping) this.#voiceEgressEnd(this.#voiceStopping);
+	}
+
+	/** Closes a call's relay window, once. */
+	#voiceEgressEnd(voice: VoiceThread): void {
+		const end = voice.egress;
+		voice.egress = undefined;
+		end?.();
 	}
 
 	#retireVoice(threadId: string): void {
@@ -1699,6 +1724,7 @@ class CodexBoundaryRpc {
 		} else if (method === "thread/realtime/closed") {
 			voice.stopped = true;
 			this.#endVoice(voice, new Error("Native voice call ended"));
+			this.#voiceEgressEnd(voice);
 		}
 		// The voice's deltas, items, thread status and usage are never delivered or kept.
 		return true;
@@ -1824,6 +1850,7 @@ class CodexBoundaryRpc {
 		this.#pending.clear();
 		for (const review of this.#reviews.values()) review.reject(this.#failure);
 		for (const threadId of [...this.#compactions.keys()]) this.#endCompaction(threadId, this.#compactStop());
+		this.#closeVoiceWindows();
 		if (this.#voice) this.#endVoice(this.#voice, new CloudVoiceUnavailable());
 		this.#threadStarted?.();
 		this.#rejectCompleted(this.#failure);
@@ -1919,6 +1946,7 @@ class CodexBoundaryRpc {
 		this.#pending.clear();
 		for (const review of this.#reviews.values()) review.reject(new Error("Native boundary transport closed"));
 		for (const threadId of [...this.#compactions.keys()]) this.#endCompaction(threadId, this.#compactStop());
+		this.#closeVoiceWindows();
 		if (this.#voice) this.#endVoice(this.#voice, new CloudVoiceUnavailable());
 		this.#threadStarted?.();
 		this.#child.stdin.end();
@@ -2462,7 +2490,7 @@ async function startCloudCodexProcess(
 				stdio: ["pipe", "pipe", "pipe"],
 				detached: true,
 			});
-		rpc = new CodexBoundaryRpc(child);
+		rpc = new CodexBoundaryRpc(child, undefined, undefined, isolated?.allowRealtime);
 		rpc.chatGptPlan = plan !== undefined;
 		const handshake = rpc;
 		if (state.fenceFailed) handshake.fail("Native result boundary unavailable", "authority_unavailable");

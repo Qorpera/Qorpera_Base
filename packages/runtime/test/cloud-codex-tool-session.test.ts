@@ -1,4 +1,6 @@
+import { spawn } from "node:child_process";
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -2085,6 +2087,112 @@ it("gives a run on a member's ChatGPT plan no voice", async () => {
 	await f.endTurn();
 	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
 	await expect(stat(f.evidence)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+/** Runs the fixture as the isolated launcher would, with a relay whose voice call window the test watches: each event
+ * names what the fixture had seen when the window opened or closed. */
+function voiceRelay(): string[] {
+	const events: string[] = [];
+	const seen = (): string => {
+		try {
+			const recorded = JSON.parse(readFileSync(join(root, "evidence.json"), "utf8"));
+			return `start=${recorded.start ? "sent" : "none"},stops=${recorded.stops.length}`;
+		} catch {
+			return "unread";
+		}
+	};
+	vi.spyOn(nativeIsolation, "launchIsolatedNativeProcess").mockImplementation(async (options) => {
+		const child = spawn(options.command, [...options.args], {
+			cwd: join(options.scratchRoot, "workspace"),
+			env: {
+				HOME: join(options.scratchRoot, "home"),
+				CODEX_HOME: options.codexHome,
+				PATH: process.env.PATH ?? "/usr/bin:/bin",
+				NO_COLOR: "1",
+				...(options.fenceSocket ? { QORPERA_NATIVE_RESULT_FENCE_SOCKET: options.fenceSocket } : {}),
+			},
+			stdio: ["pipe", "pipe", "pipe"],
+			detached: true,
+		});
+		return {
+			child,
+			async close() {
+				if (child.exitCode !== null || child.signalCode !== null) return;
+				const exited = new Promise<void>((resolve) => child.once("close", () => resolve()));
+				child.kill("SIGKILL");
+				await exited;
+			},
+			allowRealtime: () => {
+				events.push(`open:${seen()}`);
+				let ran = false;
+				return () => {
+					events.push(ran ? "closed again" : `close:${seen()}`);
+					ran = true;
+				};
+			},
+		};
+	});
+	return events;
+}
+const isolation = { entryPoint: "/unused-synthetic-isolation.mjs" };
+
+describe("a voice call's relay window", () => {
+	it("opens before the call's realtime start is sent, and closes once its stop is confirmed", async () => {
+		const events = voiceRelay();
+		const f = await voiceRun("voice", { isolation });
+		const signal = new AbortController().signal;
+		const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		await expect(call.speak('"One."', signal)).resolves.toEqual({ transcript: 'SAID "One."' });
+		expect(events).toEqual(["open:start=none,stops=0"]);
+		await call.close();
+		expect(events).toEqual(["open:start=none,stops=0", "close:start=sent,stops=1"]);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(events).toHaveLength(2);
+	});
+
+	it("closes when the stop is given up on", async () => {
+		const events = voiceRelay();
+		const f = await voiceRun("voice-stop-silent", { isolation, voice: new CloudVoiceChannel({ stopMs: 300 }) });
+		const signal = new AbortController().signal;
+		const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		const closing = call.close();
+		await vi.waitFor(async () => expect((await f.recorded()).stops).toHaveLength(1), { timeout: 10_000 });
+		// The stop is sent and not confirmed: the call may still be up, so its host still passes.
+		expect(events).toEqual(["open:start=none,stops=0"]);
+		await closing;
+		expect(events).toEqual(["open:start=none,stops=0", "close:start=sent,stops=1"]);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(events).toHaveLength(2);
+	});
+
+	it("closes when the run ends with a call open", async () => {
+		const events = voiceRelay();
+		const f = await voiceRun("voice-silent", { isolation });
+		const signal = new AbortController().signal;
+		const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		const speaking = call.speak('"One."', signal).catch((error: unknown) => error);
+		await vi.waitFor(async () => expect((await f.recorded()).appended).toHaveLength(1), { timeout: 10_000 });
+		expect(events).toEqual(["open:start=none,stops=0"]);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(await speaking).toBeInstanceOf(CloudVoiceUnavailable);
+		expect(events).toHaveLength(2);
+		expect(events[1]).toMatch(/^close:start=sent,/);
+	});
+
+	it("closes when the call fails to start", async () => {
+		const events = voiceRelay();
+		const f = await voiceRun("voice-start-error", { isolation });
+		const signal = new AbortController().signal;
+		const failure = await f.voice.open({ offerSdp: VOICE_OFFER }, signal).catch((error: unknown) => error);
+		expect((failure as Error).message).toBe("Native voice request rejected");
+		expect(events).toEqual(["open:start=none,stops=0", "close:start=sent,stops=1"]);
+		await f.endTurn();
+		await f.result.catch(() => undefined);
+		expect(events).toHaveLength(2);
+	});
 });
 
 async function starts(evidence: string): Promise<number> {
