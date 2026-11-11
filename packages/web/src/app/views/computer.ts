@@ -159,6 +159,8 @@ export class ComputerPanel {
 	/** A press of Take over waiting for the machine to run (its stamp in the ledger): dropped, silently, once any release
 	 * came after it (review r13 F20). */
 	#wantTakeOver: number | undefined;
+	/** The window's last Hand back (or the card's I'm done through it) was not confirmed: said until one is (review r15). */
+	#handBackFailed = false;
 	/** The window's take-over: the latest press's attempt, of the machine chosen at it, and the ledger's answer it waits
 	 * for (review r12 F19). An older attempt's answer is not the window's. */
 	#taking: TakeAttempt | undefined;
@@ -276,7 +278,7 @@ export class ComputerPanel {
 		this.#controlButton.addEventListener(
 			"click",
 			() =>
-				void (this.#holding || (this.#machineId && this.#ledger.releasing(this.#machineId))
+				void (this.#holding || this.#handBackFailed || (this.#machineId && this.#ledger.releasing(this.#machineId))
 					? this.handBack()
 					: this.takeOver()),
 			{ signal },
@@ -346,6 +348,7 @@ export class ComputerPanel {
 	takeOver(): void {
 		if (this.#stop.signal.aborted || !this.#computer) return;
 		this.#wantTakeOver = this.#ledger.stamp();
+		this.#handBackFailed = false;
 		this.#touched();
 		this.#poke();
 		this.#startTake();
@@ -392,7 +395,23 @@ export class ComputerPanel {
 	handBack(): Promise<boolean> {
 		this.#wantTakeOver = undefined;
 		this.#released();
-		return this.#ledger.releaseAgent(this.agentId, "handed_back", true);
+		// A hold of the member's the window shows from elsewhere is owed from this click, at the epoch the list gave: its
+		// hand-back goes at once, before the confirming list read (review r15 F23).
+		const shown = this.#pick();
+		if (shown?.control?.mine === true && shown.control.epoch !== null)
+			this.#ledger.owe(shown.machineId, this.agentId, shown.control.epoch);
+		this.#handBackFailed = false;
+		const done = this.#ledger.releaseAgent(this.agentId, "handed_back", true);
+		// Not confirmed though no hand-back is left on its way (the list read after them failed, or kept showing a hold):
+		// said, with Try again, until a Hand back or a list read shows nothing of the member's held. A hand-back not
+		// answered says so itself (the ledger asks it again), and nothing owed is ever dropped.
+		void done.then((value) => {
+			if (this.#stop.signal.aborted) return;
+			this.#handBackFailed = !value && !(this.#machineId && this.#ledger.releasing(this.#machineId));
+			this.#syncControls();
+		});
+		this.#syncControls();
+		return done;
 	}
 
 	/** Whether the member holds the desktop the window shows. */
@@ -605,6 +624,13 @@ export class ComputerPanel {
 		const list = this.#listed;
 		if (!list) return;
 		this.#ledger.listed(list, this.agentId);
+		// A read that shows nothing of the member's held, with nothing owed, confirms an unconfirmed Hand back.
+		if (
+			this.#handBackFailed &&
+			!list.machines.some((machine) => machine.control?.mine === true) &&
+			!this.#ledger.has(this.agentId)
+		)
+			this.#handBackFailed = false;
 		// A take-over of this page's whose answer was lost, which the list now shows held (the ledger's own word): the
 		// press was this page's, so the window uses it.
 		const shown = this.#pick();
@@ -806,7 +832,9 @@ export class ComputerPanel {
 	#syncControls(): void {
 		const picture = this.#view?.shown === true && this.#picturing();
 		const holding = this.#holding !== undefined && this.#holding === this.#machineId;
-		const release = this.#machineId ? this.#ledger.releasing(this.#machineId) : undefined;
+		const release =
+			(this.#machineId ? this.#ledger.releasing(this.#machineId) : undefined) ??
+			(this.#handBackFailed ? "failed" : undefined);
 		const offer = !holding && !release && picture && this.#listed?.canTakeOver === true;
 		// The member holds it from elsewhere (another window, or this page before it was loaded again): shown, never used
 		// here; Take over makes it this window's, Hand back gives it back (review r14).

@@ -1370,6 +1370,33 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		expect(controls(p)?.textContent ?? "").not.toContain("in another window");
 	});
 
+	it("hands a hold from elsewhere back from the click though the list read after it fails, and says so until confirmed (r15 F23)", async () => {
+		const until = new Date(Date.now() + 120_000).toISOString();
+		const s = setup({ machines: [machine(1, { control: { mine: true, name: "Owner", until, epoch: 3 } })] });
+		s.state.epochs.set(machine(1).machineId, 3);
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		expect(controls(p)?.textContent).toContain("You are using this computer in another window.");
+		// Hand back, with the list reads after it failing: the hand-back at the shown epoch goes at once and is answered.
+		s.state.listFails = 2;
+		handBackButton(p)!.click();
+		await flush();
+		expect(calls(s, "qorpera_member_hand_back_machine_desktop").map((call) => call.body.p_epoch)).toEqual([3]);
+		expect(s.state.machines[0]?.control).toBeNull();
+		// The confirming read failed: the window says the computer could not be given back yet, with Try again.
+		expect(controls(p)?.textContent).toContain("The computer could not be given back yet.");
+		expect(controlButton(p)?.textContent).toBe("Try again");
+		expect(p.holding).toBe(false);
+		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
+		// Try again: the list reads, nothing of the member's is held: done, and the words go.
+		controlButton(p)!.click();
+		await flush();
+		expect(controls(p)?.textContent ?? "").not.toContain("could not be given back");
+		expect(controlButton(p)?.textContent).toBe("Take over");
+		expect(calls(s, "qorpera_member_take_machine_desktop")).toHaveLength(0);
+	});
+
 	it("never uses a hold of another tab's that the first list shows after pagehide: in another window, no input, no heartbeat; a press takes it over (r14 F21)", async () => {
 		const until = new Date(Date.now() + 120_000).toISOString();
 		// Another tab of the member's holds the desktop; this window's first list read is on its way.

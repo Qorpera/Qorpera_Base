@@ -271,6 +271,20 @@ export class DesktopHoldLedger {
 		);
 	}
 
+	/** A hold of the member's that the window shows from elsewhere (another window, or this page before a reload), at the
+	 * epoch its list gave, which the member is handing back now (review r15 F23): owed at that epoch from the click, so
+	 * the hand-back goes at once, asked again until answered. Nothing when the page already knows a newer epoch (that
+	 * hold is fenced). */
+	owe(machineId: string, agentId: string, epoch: number): void {
+		if (this.#left || !this.#computer) return;
+		const hold = this.#holds.get(machineId) ?? this.#entry(machineId);
+		hold.agents.add(agentId);
+		if (hold.epoch !== undefined && epoch < hold.epoch) return;
+		this.#learn(hold, epoch);
+		hold.saw = true;
+		this.#changed();
+	}
+
 	/** The hold under `epoch` ended by itself (a heartbeat or an action was told so): what the window uses ends; what is
 	 * owed does not (review r10). */
 	ended(machineId: string, epoch: number): void {

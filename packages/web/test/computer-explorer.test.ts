@@ -28,7 +28,8 @@ import { Database, random } from "./take-over-model.ts";
  * close, a switch away, pagehide) followed;
  * (I6, review r14) a heartbeat or input for a machine leaves the page only after a press on this page for it that no
  * release followed: nothing is ever taken up from a list; and a note ("could not be taken over") never follows a
- * press that a release followed (F22's counterpart of I4).
+ * press that a release followed (F22's counterpart of I4); a Hand back pressed on a hold shown from another window
+ * comes to a hand-back of that machine or to "could not be given back yet", never to nothing (review r15).
  * (I2 is the ledger's, checked by desktop-holds-explorer.test.ts; I6 is what it means for the window.) A failure prints
  * the seed, its shape and its steps. */
 
@@ -90,23 +91,27 @@ function key(target: HTMLElement, value: string) {
 /** Where the ledger's calls are written down, for the steps printed. */
 let ledgerLog: string[] = [];
 /** The ledger's take-overs and releases, as the window asks them, written into the steps printed. */
-function followLedger() {
-	const take = DesktopHoldLedger.prototype.take;
-	vi.spyOn(DesktopHoldLedger.prototype, "take").mockImplementation(function (this: DesktopHoldLedger, ...args) {
+function followLedger(): () => void {
+	// Wrapped by hand, not with vi.spyOn: a spy keeps every call (and so every page) it saw.
+	const ledger = DesktopHoldLedger.prototype;
+	const { take, release } = ledger;
+	ledger.take = function (this: DesktopHoldLedger, ...args: Parameters<typeof take>) {
 		const answer = take.apply(this, args);
 		const [machine, , pressedAt] = args;
+		const log = ledgerLog;
 		void answer.then((value) =>
-			ledgerLog.push(
-				`   the ledger's take-over of ${machine.slice(-2)} (press ${pressedAt}) answers ${value.state}`,
-			),
+			log.push(`   the ledger's take-over of ${machine.slice(-2)} (press ${pressedAt}) answers ${value.state}`),
 		);
 		return answer;
-	});
-	const release = DesktopHoldLedger.prototype.release;
-	vi.spyOn(DesktopHoldLedger.prototype, "release").mockImplementation(function (this: DesktopHoldLedger, ...args) {
+	};
+	ledger.release = function (this: DesktopHoldLedger, ...args: Parameters<typeof release>) {
 		ledgerLog.push(`   the ledger releases ${args[0].slice(-2)}`);
 		return release.apply(this, args);
-	});
+	};
+	return () => {
+		ledger.take = take;
+		ledger.release = release;
+	};
 }
 
 async function explore(seed: number, steps: number): Promise<{ log: string[]; broken?: string }> {
@@ -161,6 +166,9 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		press = undefined;
 	};
 	let lastRelease = -1;
+	/** Hand-back requests the page sent, and presses of the window's Hand back on a hold shown from another window. */
+	const backs: { machine: string; step: number }[] = [];
+	const handBacks: { step: number; machine: string | undefined; met: boolean }[] = [];
 	let lastNote = "";
 	/** Every press, with the machine the window showed at it (none yet: whichever it then shows). */
 	const presses: { step: number; machine: string | undefined }[] = [];
@@ -294,6 +302,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				reject,
 			};
 			requests.push(one);
+			if (kind === "back") backs.push({ machine, step });
 			log.push(`   the page asks: ${kind} #${one.id}${kind === "list" ? "" : ` ${machine.slice(-2)}@${epoch}`}`);
 			if (kind === "take") {
 				takes.push({ id: one.id, machine, epoch, step });
@@ -363,6 +372,15 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 	};
 	const check = (): string | undefined => {
 		if (violations.length) return violations[0];
+		// A Hand back pressed on a hold shown from another window comes to a hand-back of that machine, or to the words
+		// that it could not be given back yet; never to nothing (review r15 F23).
+		for (const one of handBacks)
+			if (
+				!one.met &&
+				(backs.some((back) => back.step >= one.step && (one.machine ?? back.machine) === back.machine) ||
+					(control()?.textContent ?? "").includes("could not be given back"))
+			)
+				one.met = true;
 		// F22's counterpart (review r14): the note says nothing of a press that a release followed.
 		const note = noted();
 		if (note !== lastNote && note !== "" && (lastRelease >= pressedAt || pressedAt < 0))
@@ -445,6 +463,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 					run: () => {
 						const value = control()?.querySelector<HTMLButtonElement>(".machine-screen-control-hand-back");
 						if (!value || value.hidden || value.disabled) return false;
+						handBacks.push({ step, machine: shownMachine(), met: false });
 						release(machines);
 						value.click();
 						return true;
@@ -705,6 +724,12 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 			const broken = check();
 			if (broken) return { log, broken };
 		}
+		const unmet = handBacks.find((one) => !one.met);
+		if (unmet)
+			return {
+				log,
+				broken: `I4: the window's Hand back at step ${unmet.step}, on a hold shown from another window, came to nothing`,
+			};
 		if (press && !press.outcome && !press.finishing && press.finishes === finishes)
 			return {
 				log,
@@ -737,6 +762,11 @@ afterEach(() => {
 /** Seeds that broke an earlier window of this PR, each on the window and ledger of the commit named (review r13;
  * lanes/desktop-computers-20261110/TAKE-OVER-PROGRESS.md). They run first; each holds on this window. */
 const FOUND: readonly { seed: number; finding: string }[] = [
+	{
+		seed: 6014,
+		finding:
+			"F23 (6cc57c999, I4): Hand back on a hold shown from another window owed nothing, so no hand-back went; its list read failed, and nothing more came of it",
+	},
 	{
 		seed: 1592,
 		finding:
@@ -787,16 +817,20 @@ const FOUND: readonly { seed: number; finding: string }[] = [
 describe("the computer window's take-overs, explored", () => {
 	it("keeps I1, I3, I4, I5 and I6 over seeded schedules driven through the real window", async () => {
 		const seeds = [...FOUND.map((found) => found.seed), ...Array.from({ length: 200 }, (_, n) => n + 1)];
-		followLedger();
-		for (const seed of seeds) {
-			vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
-			const { log, broken } = await explore(seed, 30);
-			if (broken) {
-				const found = FOUND.find((one) => one.seed === seed);
-				expect.fail(
-					`seed ${seed}: ${broken}${found ? `\n(found earlier: ${found.finding})` : ""}\n${log.join("\n")}`,
-				);
+		const unfollow = followLedger();
+		try {
+			for (const seed of seeds) {
+				vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+				const { log, broken } = await explore(seed, 30);
+				if (broken) {
+					const found = FOUND.find((one) => one.seed === seed);
+					expect.fail(
+						`seed ${seed}: ${broken}${found ? `\n(found earlier: ${found.finding})` : ""}\n${log.join("\n")}`,
+					);
+				}
 			}
+		} finally {
+			unfollow();
 		}
 	}, 60_000);
 });
