@@ -3,6 +3,7 @@ import { withAbortScope } from "./abort-scope.ts";
 import { type CodeChangeRecordsOptions, codeChangeErrorCode } from "./code-change-records.ts";
 import { type CodeHostJob, CodeHostJobFailure } from "./code-host-jobs.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
+import { CODE_SITE_MAX_BYTES, CODE_SITE_MAX_FILES } from "./code-site.ts";
 import { CodingControlBusy } from "./coding-executor.ts";
 
 /** The upload of a repository's site (own code storage, step 4, part U; STEP4-RELEASES-PLAN.md 8.5 as STEP4-BUILD.md
@@ -46,9 +47,6 @@ export const CODE_SITE_LIST_BYTES = 100 * 1024;
 /** The most paths one `missing` names: a hundred of a site path's 512 bytes are an answer of about 60 KiB. */
 export const CODE_SITE_MISSING_PATHS = 100;
 
-/** A site's bounds (`publish_site`'s): what the kernel's row may name. */
-const SITE_FILES = 500;
-const SITE_BYTES = 25 * 1024 * 1024;
 const CALL_MS = 30_000;
 const SHA = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -266,9 +264,9 @@ export class CodeSiteUploads {
 				typeof site.tree === "string" &&
 				SHA.test(site.tree) &&
 				whole(site.files, 1) &&
-				site.files <= SITE_FILES &&
+				site.files <= CODE_SITE_MAX_FILES &&
 				whole(site.bytes) &&
-				site.bytes <= SITE_BYTES
+				site.bytes <= CODE_SITE_MAX_BYTES
 					? { tree: site.tree, files: site.files, bytes: site.bytes }
 					: null;
 			due.push({ target, change, site: read });
