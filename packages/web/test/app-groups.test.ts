@@ -268,6 +268,12 @@ describe("the member's own arrangement", () => {
 			["group:b B", "app:b"],
 			["group:c C", "app:c", ["group:a A", "app:a"]],
 		]);
+		// Then B moves again, after C: A stays in C (review F1 on #1678, round 3).
+		const again = placeApp(mine, arrangeApps(company, mine, keys), "group:b", null, "group:c");
+		expect(shape(arrangeApps(company, again, keys))).toEqual([
+			["group:c C", "app:c", ["group:a A", "app:a"]],
+			["group:b B", "app:b"],
+		]);
 		// A group never goes into itself, nor three levels deep.
 		const loop = placeApp(mine, arrangeApps(company, mine, keys), "group:c", "a", null);
 		expect(shape(arrangeApps(company, loop, keys))).toEqual(shape(arrangeApps(company, mine, keys)));

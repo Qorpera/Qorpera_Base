@@ -238,31 +238,50 @@ export function arrangeApps(
 	};
 	walkTree(tree, null);
 	const order = [...nodes.keys()];
-	// The member's places, oldest first, each kept when it fits what the places before it made: a group stands in a
-	// group only when that group stands in the drawer and the moved one holds no group, and never inside itself.
+	// The member's places that name what is here: the arrangement they make together must hold. A group stands in a
+	// group only when that group stands in the drawer and the moved one holds no group, and never inside itself; while
+	// it does not hold, the newest place among those that break it is dropped, and the rest are judged again.
 	interface Held {
 		readonly key: string;
 		readonly target: string | null;
 		readonly place: AppPlace;
 	}
 	const held = new Map<string, Held>();
-	const byAt = Object.entries(layout.places).sort(([a, x], [b, y]) => (x.at ?? 0) - (y.at ?? 0) || (a < b ? -1 : 1));
-	for (const [key, place] of byAt) {
-		const node = nodes.get(key);
+	for (const [key, place] of Object.entries(layout.places)) {
 		const target = place.group ?? null;
-		if (!node || (target !== null && nodes.get(groupKey(target))?.kind !== "group")) continue;
-		if (node.kind === "group" && target !== null) {
-			let up: string | null = target;
-			let inside = false;
-			while (up !== null) {
-				if (up === node.id) inside = true;
-				up = parentOf.get(groupKey(up)) ?? null;
-			}
-			const holdsGroup = [...parentOf].some(([other, owner]) => owner === node.id && isGroupKey(other));
-			if (inside || parentOf.get(groupKey(target)) !== null || holdsGroup) continue;
-		}
-		parentOf.set(key, target);
+		if (!nodes.has(key) || (target !== null && nodes.get(groupKey(target))?.kind !== "group")) continue;
 		held.set(key, { key, target, place });
+	}
+	const startOf = new Map(parentOf);
+	for (;;) {
+		parentOf.clear();
+		// A place's group is null for the drawer itself, which `??` would take for no place at all.
+		for (const [key, owner] of startOf) parentOf.set(key, held.has(key) ? held.get(key)!.target : owner);
+		const parentGroup = (id: string) => parentOf.get(groupKey(id)) ?? null;
+		const broken = new Set<string>();
+		for (const [key, owner] of parentOf) {
+			if (!isGroupKey(key) || owner === null) continue;
+			const id = groupIdOf(key);
+			// Inside itself: every group on the way up.
+			const seenUp = new Set<string>([id]);
+			let up: string | null = owner;
+			while (up !== null && !seenUp.has(up)) {
+				seenUp.add(up);
+				up = parentGroup(up);
+			}
+			if (up !== null) for (const member of seenUp) broken.add(groupKey(member));
+			// Three levels: it stands in a group that stands in a group, or it holds a group itself.
+			else if (parentGroup(owner) !== null) broken.add(key).add(groupKey(owner));
+			else
+				for (const [inner, innerOwner] of parentOf)
+					if (innerOwner === id && isGroupKey(inner)) broken.add(key).add(inner);
+		}
+		const culprits = [...broken].map((key) => held.get(key)).filter((entry): entry is Held => entry !== undefined);
+		if (!culprits.length) break;
+		const newestCulprit = culprits.reduce((a, b) =>
+			(b.place.at ?? 0) > (a.place.at ?? 0) || ((b.place.at ?? 0) === (a.place.at ?? 0) && b.key > a.key) ? b : a,
+		);
+		held.delete(newestCulprit.key);
 	}
 	const newest = (a: Held, b: Held) => (b.place.at ?? 0) - (a.place.at ?? 0) || (a.key < b.key ? -1 : 1);
 	const oldest = (a: Held, b: Held) => -newest(a, b);

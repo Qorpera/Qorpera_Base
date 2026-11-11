@@ -572,8 +572,10 @@ export class CompanyController {
 	 * last one answered, which the next one names. */
 	#appLayoutReads = 0;
 	#appLayoutPending = 0;
-	/** Resets (or Undos) on their way: the drawer makes no move meanwhile. */
+	/** Resets (or Undos) on their way: the drawer makes no move meanwhile, nor after one until the layout it left
+	 * is read (`#appLayoutStale`). */
 	#resetting = 0;
+	#appLayoutStale = false;
 	#appLayoutWrites: Promise<string | null | undefined> = Promise.resolve(undefined);
 	#poll: ReturnType<typeof setInterval> | undefined;
 	/** The clock came due while the tab was hidden: its first moment back reads (#restsWhileHidden). */
@@ -1214,7 +1216,19 @@ export class CompanyController {
 		const reset = this.#appLayoutWrites
 			.then(() => this.changeSidebar({ action: undo ? "undo_reset" : "reset" }))
 			.then(async (done) => {
-				if (done) await this.refreshAppLayout();
+				if (!done) return done;
+				// The layout as the reset left it, read here and taken whatever other read is on its way; until one is
+				// taken, moves stay held (a failed read leaves them held until a later read works).
+				this.#appLayoutStale = true;
+				++this.#appLayoutReads;
+				try {
+					const read = await this.#api.readMemberAppLayout(this.profile.profileId);
+					// Reads sent before this one are dropped when they land (their version is older); this one is always taken.
+					if (!this.#stopped) this.store.set({ appLayout: read });
+					this.#appLayoutStale = false;
+				} catch {
+					/* Moves wait for the next read that works. */
+				}
 				return done;
 			})
 			.finally(() => {
@@ -1232,7 +1246,7 @@ export class CompanyController {
 
 	/** Whether a Reset sidebar (or its Undo) is on its way: the drawer waits for it to move anything. */
 	resettingSidebar(): boolean {
-		return this.#resetting > 0;
+		return this.#resetting > 0 || this.#appLayoutStale;
 	}
 
 	/** Reads the member's own arrangement of the apps drawer. A cloud without it (before 20260930723000) says so once. */
@@ -1242,6 +1256,7 @@ export class CompanyController {
 		try {
 			const read = await this.#api.readMemberAppLayout(this.profile.profileId);
 			if (this.#stopped || version !== this.#appLayoutReads || this.#appLayoutPending) return;
+			this.#appLayoutStale = false;
 			this.store.set({ appLayout: read });
 		} catch (error) {
 			if (this.#stopped) return;
@@ -1253,7 +1268,7 @@ export class CompanyController {
 	 * write another tab overtook is read again and said in the rail. */
 	async changeAppLayout(next: MemberAppLayout): Promise<boolean> {
 		const current = this.store.get().appLayout;
-		if (this.#stopped || !current || this.#resetting) return false;
+		if (this.#stopped || !current || this.#resetting || this.#appLayoutStale) return false;
 		this.store.set({ appLayout: { ...current, layout: next }, railError: undefined, sidebarReset: undefined });
 		// With nothing on its way, the time last read is the one to name; behind another write, the time it answered.
 		const behind = this.#appLayoutPending > 0;

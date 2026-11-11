@@ -1498,7 +1498,7 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		cleanup.push(controller.store.subscribe(draw));
 		draw();
 		element.querySelector<HTMLButtonElement>(".rail-apps")!.click();
-		return { element, controller, set };
+		return { element, controller, set, f };
 	}
 	const tiles = (element: HTMLElement) =>
 		[...element.querySelectorAll<HTMLElement>(".rail-apps-grid > [data-app-key]")].map(
@@ -1566,7 +1566,8 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 	});
 	it("makes no move while a reset is on its way (review F3 on #1678, round 2)", async () => {
 		localStorage.clear();
-		const { controller, set } = drawer();
+		const { controller, set, f } = drawer();
+		vi.spyOn(f.api, "readMemberAppLayout").mockResolvedValue({ layout: EMPTY_APP_LAYOUT, updatedAt: null });
 		const answer = deferred<boolean>();
 		vi.spyOn(
 			controller as unknown as { changeSidebar: (r: unknown) => Promise<boolean> },
@@ -1582,5 +1583,27 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		answer.resolve(true);
 		await resetting;
 		expect(controller.resettingSidebar()).toBe(false);
+	});
+	it("takes the layout read after a reset over a slower read from before it (review F2 on #1678, round 3)", async () => {
+		localStorage.clear();
+		const { controller, set, f } = drawer();
+		const before = deferred<{ layout: MemberAppLayout; updatedAt: string | null }>();
+		const read = vi.spyOn(f.api, "readMemberAppLayout").mockReturnValueOnce(before.promise);
+		void controller.refreshAppLayout();
+		read.mockResolvedValueOnce({ layout: EMPTY_APP_LAYOUT, updatedAt: null });
+		vi.spyOn(
+			controller as unknown as { changeSidebar: (r: unknown) => Promise<boolean> },
+			"changeSidebar",
+		).mockResolvedValue(true);
+		await controller.resetSidebar();
+		expect(controller.resettingSidebar()).toBe(false);
+		before.resolve({
+			layout: { ...EMPTY_APP_LAYOUT, groups: { market: { removed: true } } },
+			updatedAt: "2026-11-11T09:00:00Z",
+		});
+		await settle();
+		expect(controller.store.get().appLayout).toEqual({ layout: EMPTY_APP_LAYOUT, updatedAt: null });
+		await controller.changeAppLayout({ ...EMPTY_APP_LAYOUT, groups: { market: { name: "Sales" } } });
+		expect(set).toHaveBeenLastCalledWith(profileA.profileId, expect.anything(), null);
 	});
 });
