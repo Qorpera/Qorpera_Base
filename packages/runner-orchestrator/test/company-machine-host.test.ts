@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { TimerOptions } from "node:timers";
@@ -4786,7 +4787,8 @@ describe("a member's action on a desktop (20260930713000)", () => {
 			"exec:clear",
 			"sql:qorpera_machine_desktop_clipboard_cleared",
 		]);
-		expect(calls[0]!.command).toEqual(["/bin/sh", "-c", COMPANY_MACHINE_CLIPBOARD_CLEAR, id(7)]);
+		// At save time the script's bound is the save's (round 25 P1): a fixed word, never free text.
+		expect(calls[0]!.command).toEqual(["/bin/sh", "-c", COMPANY_MACHINE_CLIPBOARD_CLEAR, id(7), "save"]);
 		expect(calls[0]!).toMatchObject({ environment: {}, cwd: "/", stderrTailBytes: 0 });
 		expect(calls[0]!.stdin).toBeUndefined();
 		expect(f.calls.find((call) => call.method === "qorpera_machine_desktop_picture_check")?.args).toEqual({
@@ -4856,8 +4858,17 @@ describe("a member's action on a desktop (20260930713000)", () => {
 	it("composes the host's own clipboard clear: the boot first, no display is clear, each xsel checked, then a byte count alone (F34 of #1661)", () => {
 		const lines = COMPANY_MACHINE_CLIPBOARD_CLEAR.split("\n");
 		expect(lines[0]).toBe('{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97');
-		expect(lines[1]).toBe("[ -S /tmp/.X11-unix/X1 ] || exit 0");
-		expect(lines[2]).toBe("[ -x /usr/bin/xsel ] || exit 98");
+		// Its bound inside the machine by a fixed word (round 25 P1): the four xsels end within 4 x 0.5 = 2 s at a screen
+		// call (the host cuts at 3 s, SCREEN_CLEAR_MS, with the fence and the record) and 4 x 2 = 8 s at save time (10 s,
+		// CODING_VALUE_CLEAR_MS, from the script's start). Any other word fails before anything runs.
+		expect(lines[1]).toBe('case "$1" in screen) bound=0.5 ;; save) bound=2 ;; *) exit 1 ;; esac');
+		expect(lines[2]).toBe("[ -S /tmp/.X11-unix/X1 ] || exit 0");
+		expect(lines[3]).toBe("[ -x /usr/bin/xsel ] || exit 98");
+		// Every xsel that runs is killed at that bound (SIGKILL: none outlives it).
+		expect(
+			COMPANY_MACHINE_CLIPBOARD_CLEAR.match(/\/usr\/bin\/timeout --signal=KILL "\$bound" \/usr\/bin\/xsel /g),
+		).toHaveLength(2);
+		expect(COMPANY_MACHINE_CLIPBOARD_CLEAR.match(/xsel --/g)).toHaveLength(2);
 		// Both clears must succeed, then both read back: a failed read counts its own word, never empty.
 		expect(COMPANY_MACHINE_CLIPBOARD_CLEAR).toContain('xsel --logfile /dev/null "$selection" --clear || exit 1');
 		expect(COMPANY_MACHINE_CLIPBOARD_CLEAR).toContain(
@@ -4868,6 +4879,64 @@ describe("a member's action on a desktop (20260930713000)", () => {
 		// Nothing of a selection is printed, kept in a file or put on a command line.
 		expect(COMPANY_MACHINE_CLIPBOARD_CLEAR).not.toMatch(/>\s*\/(?!dev\/null)|tee|echo "\$/);
 	});
+
+	it.skipIf(process.platform !== "linux")(
+		"bounds each xsel of the clear inside the machine by the word it is given, in a real shell (round 25 P1 of #1661)",
+		async () => {
+			const dir = await realpath(await mkdtemp(join(tmpdir(), "clipboard-clear-")));
+			roots.push(dir);
+			// The display's socket and xsel are the test's; timeout and wc are the machine's own (/usr/bin).
+			const display = createServer();
+			await new Promise<void>((resolve) => display.listen(join(dir, "X1"), resolve));
+			try {
+				const script = COMPANY_MACHINE_CLIPBOARD_CLEAR.replaceAll("/tmp/.X11-unix/X1", join(dir, "X1")).replaceAll(
+					"/usr/bin/xsel",
+					join(dir, "xsel"),
+				);
+				expect(script.split(join(dir, "xsel"))).toHaveLength(4);
+				const pids = join(dir, "pids");
+				// A stand-in xsel: `hang` matches the calls that hang (they note their pid first), all others answer at once.
+				const xsel = (hang: string) =>
+					writeFile(
+						join(dir, "xsel"),
+						`#!/bin/sh\ncase "$*" in ${hang}) echo $$ >> ${pids}; exec /usr/bin/sleep 30 ;; esac\nexit 0\n`,
+						{ mode: 0o755 },
+					);
+				const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+				const run = (word: string, bootId = boot) => {
+					const began = performance.now();
+					const status = spawnSync("/bin/sh", ["-c", script, bootId, word], { env: {} }).status;
+					return { status, ms: performance.now() - began };
+				};
+				await xsel("nothing");
+				expect(run("screen", randomUUID()).status).toBe(97);
+				expect(run("screen").status).toBe(0);
+				expect(run("save").status).toBe(0);
+				for (const word of ["", "0.5", "2", "Screen", "screen save", "save;"]) expect(run(word).status).toBe(1);
+				// A clear that hangs is killed at the bound: 0.5 s at a screen call, 2 s at save time (1: failed).
+				await xsel("*--clear*");
+				const screen = run("screen");
+				expect(screen).toMatchObject({ status: 1 });
+				expect(screen.ms).toBeGreaterThanOrEqual(450);
+				expect(screen.ms).toBeLessThan(1500);
+				const save = run("save");
+				expect(save).toMatchObject({ status: 1 });
+				expect(save.ms).toBeGreaterThanOrEqual(1900);
+				expect(save.ms).toBeLessThan(3500);
+				// A read-back that hangs is killed at it too, and counts as a byte left (2).
+				await xsel("*--output*");
+				const read = run("screen");
+				expect(read).toMatchObject({ status: 2 });
+				expect(read.ms).toBeLessThan(1500);
+				// Nothing of any of them runs on.
+				const hung = readFileSync(pids, "utf8").trim().split("\n");
+				expect(hung).toHaveLength(3);
+				for (const pid of hung) expect(existsSync(`/proc/${pid}`)).toBe(false);
+			} finally {
+				display.close();
+			}
+		},
+	);
 
 	it("clears an owed clipboard under the screen call's hold before it looks or acts, and fails nothing when it cannot (F35 of #1661)", async () => {
 		const held = {
@@ -4921,6 +4990,12 @@ describe("a member's action on a desktop (20260930713000)", () => {
 			"sql:qorpera_machine_desktop_clipboard_cleared",
 			"exec:act",
 		]);
+		// At a screen call the script's bound is the screen call's (round 25 P1): a fixed word after the boot id.
+		expect(
+			calls
+				.filter((given) => given.command[2] === COMPANY_MACHINE_CLIPBOARD_CLEAR)
+				.map((given) => given.command.slice(4)),
+		).toEqual([["screen"], ["screen"]]);
 		// 3. A screen call that owes nothing clears nothing.
 		f.order.length = 0;
 		await f.host.screen(agent(null, null), f.signal);

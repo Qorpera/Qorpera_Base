@@ -83,16 +83,19 @@ const CODING_VALUE_MS = 20000;
 /** How long save_coding_value waits for a desktop an agent's action holds (F29): the runtime gives the whole call 30 s,
  * and the helper itself 20 s of it. */
 const CODING_VALUE_WAIT_MS = 6000;
-/** A clear's own deadline, never the request's (the request may be what ended the run): the helper's `--clear-only`
- * after a save that did not end cleanly or a member's paste (two xsels side by side, 4 s each at most, and the helper's
- * start), and the host's own clear script at save time (COMPANY_MACHINE_CLIPBOARD_CLEAR: four xsels one after another,
- * 4 s each at most, so a slow X server is cut off here: the clear failed, nothing is recorded, it stays owed). */
+/** A clear's own deadline. The helper's `--clear-only` after a save that did not end cleanly or a member's paste runs
+ * under it alone, never the request's signal (the request may be what ended the run; two xsels side by side, 4 s each at
+ * most, and the helper's start). The host's own clear script at save time (COMPANY_MACHINE_CLIPBOARD_CLEAR: four xsels
+ * one after another, 2 s each at most inside the machine, so 8 s) runs under it and the request's signal (round 25 P2 of
+ * #1661): a request that ends cuts it off, and a cut-off clear failed, records nothing and stays owed. */
 const CODING_VALUE_CLEAR_MS = 10000;
 /** The owed clear at an agent's screen call (F35 of #1661, round 24 N2): the fence, the host's own clear script and the
  * record together, at most this long. The caller gives the call 30 s; the helper takes 22 s at most (SCREEN_MS) and the
- * folder's boundary 4 s (SCREEN_BOUNDARY_MS): 3 s is what is left with a second for the way back. A healthy desktop
- * clears in well under a second; a slow one is cut off, nothing is recorded, and the clear stays owed (the next screen
- * call, or save_coding_value's own clear, does it). */
+ * folder's boundary 4 s (SCREEN_BOUNDARY_MS): 3 s is what is left with a second for the way back. The script bounds
+ * itself to 2 s here (four xsels, 0.5 s each inside the machine), leaving 1 s for the fence, its start and the record. A
+ * healthy desktop clears in well under a second; a slow one ends its own clear (an xsel killed at its bound: failed), or
+ * is cut off here; either way nothing is recorded and the clear stays owed (the next screen call, or save_coding_value's
+ * own clear, does it). */
 const SCREEN_CLEAR_MS = 3000;
 /** machine_screen's helper (20260930708000), packaged beside the guest helper and installed by the image
  * (scripts/package-machine-guest.mjs). Not the guest helper: its pin stays as it was. It runs under the same wrapper as
@@ -172,18 +175,25 @@ const MEMBER_LOOK_EXITS: Readonly<Record<number, CompanyMachineMemberLookRefusal
  * clipboard manager, nothing saved; measured 11 Nov 2026). Otherwise both selections are cleared, each xsel must
  * succeed (else 1), and then each is read back and only its byte count kept (a read that fails counts its own word, so
  * it is never taken for empty): a byte left is 2. 97 is another boot, 98 an image without xsel. Nothing of a selection
- * leaves the pipe into wc. Plain sh; its arguments: the boot id.
+ * leaves the pipe into wc. Plain sh; its arguments: the boot id, then where it runs, a fixed word that sets each xsel's
+ * bound inside the machine (round 25 P1 of #1661: the host's cut kills only the shell, and an xsel would run on): at a
+ * screen call 0.5 s, so the four end within 2 s, under SCREEN_CLEAR_MS (3 s, with the fence and the record); at save time
+ * 2 s, so within 8 s, under CODING_VALUE_CLEAR_MS (10 s from the script's start). Any other word is 1. Each xsel is
+ * killed (SIGKILL) at its bound, so none outlives the script's own end.
  */
+/** Where the host's clear runs (COMPANY_MACHINE_CLIPBOARD_CLEAR's second argument): a closed list of fixed words. */
+type ClipboardClearUse = "screen" | "save";
 export const COMPANY_MACHINE_CLIPBOARD_CLEAR = [
 	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97',
+	'case "$1" in screen) bound=0.5 ;; save) bound=2 ;; *) exit 1 ;; esac',
 	"[ -S /tmp/.X11-unix/X1 ] || exit 0",
 	"[ -x /usr/bin/xsel ] || exit 98",
 	"export DISPLAY=:1",
 	"for selection in --clipboard --primary; do",
-	'\t/usr/bin/timeout 4 /usr/bin/xsel --logfile /dev/null "$selection" --clear || exit 1',
+	'\t/usr/bin/timeout --signal=KILL "$bound" /usr/bin/xsel --logfile /dev/null "$selection" --clear || exit 1',
 	"done",
 	"for selection in --clipboard --primary; do",
-	'\tleft=$({ /usr/bin/timeout 4 /usr/bin/xsel --logfile /dev/null "$selection" --output --selectionTimeout 3000 || echo failed; } | /usr/bin/wc -c)',
+	'\tleft=$({ /usr/bin/timeout --signal=KILL "$bound" /usr/bin/xsel --logfile /dev/null "$selection" --output --selectionTimeout 3000 || echo failed; } | /usr/bin/wc -c)',
 	'\t[ "$left" -eq 0 ] || exit 2',
 	"done",
 ].join("\n");
@@ -2375,25 +2385,30 @@ export class LxdCompanyMachineHost {
 				throw new Error("COMPANY_MACHINE_CODING_VALUE_BUSY");
 		}
 		try {
-			const outcome = await this.#clearAndRecord(pipe, run, signal, signal);
+			const outcome = await this.#clearAndRecord(pipe, run, signal, signal, "save");
 			return outcome === "held" || outcome === "failed" ? { cleared: false } : outcome;
 		} finally {
-			// The clear script ends by itself or at its own deadline: nothing of it acts after.
+			// The clear script ends by itself within 8 s (each xsel killed at 2 s inside the machine), before its 10 s
+			// deadline, so a clear cut off at that deadline leaves nothing running. A request that ends cuts it off sooner;
+			// then one xsel of it may run on for 2 s at most, which clears a selection or counts its bytes and reads nothing
+			// out (round 25 P1 of #1661).
 			this.#releaseDesktop(run.placementId, true);
 		}
 	}
 	/** Holding the desktop: the fence (that generation, no one holding), the host's own clear of both selections
 	 * (COMPANY_MACHINE_CLIPBOARD_CLEAR), and only on its success SQL's record of that generation. `held` when the fence or
 	 * the record says a member holds the desktop (round 24 N1: the caller knows it, and an action does not run), `failed`
-	 * when the clear did not get through (nothing recorded either way). `limit` bounds the script (with its own deadline). */
+	 * when the clear did not get through (nothing recorded either way). `limit` bounds the script (with its own deadline),
+	 * and `use` sets the script's own bound inside the machine. */
 	async #clearAndRecord(
 		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
 		run: CompanyMachineClipboardClear,
 		signal: AbortSignal,
 		limit: AbortSignal,
+		use: ClipboardClearUse,
 	): Promise<CompanyMachineClipboardCleared | "held" | "failed"> {
 		if (!(await this.#pictureAllowed(run.placementId, run.desktopGeneration, null, signal))) return "held";
-		const cleared = await this.#clearSelections(pipe, run, limit);
+		const cleared = await this.#clearSelections(pipe, run, limit, use);
 		if (cleared === "boot") return { refused: "MACHINE_BOOT_CHANGED" };
 		if (cleared === "image") return { refused: "MACHINE_IMAGE_WITHOUT_CODING_VALUES" };
 		if (cleared === "failed") return "failed";
@@ -2411,20 +2426,22 @@ export class LxdCompanyMachineHost {
 		if (answer.state === "refused" && answer.reason === "DESKTOP_MEMBER_IN_CONTROL") return "held";
 		throw new Error("COMPANY_MACHINE_CLIPBOARD_CLEARED_INVALID");
 	}
-	/** COMPANY_MACHINE_CLIPBOARD_CLEAR once, under its own deadline (CODING_VALUE_CLEAR_MS) and `limit`: cleared (exit 0),
-	 * another boot (97), an image without xsel (98), or failed (1: an xsel failed; 2: a byte left; anything else, or cut
-	 * off; logged as a fixed word alone). */
+	/** COMPANY_MACHINE_CLIPBOARD_CLEAR once, bounded inside the machine by `use` (each xsel 0.5 s at a screen call, 2 s at
+	 * save time) and here by its own deadline (CODING_VALUE_CLEAR_MS) and `limit`: cleared (exit 0), another boot (97), an
+	 * image without xsel (98), or failed (1: an xsel failed or met its bound; 2: a byte left; anything else, or cut off;
+	 * logged as a fixed word alone). */
 	async #clearSelections(
 		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
 		run: Pick<CompanyMachineClipboardClear, "placementId" | "bootId">,
 		limit: AbortSignal,
+		use: ClipboardClearUse,
 	): Promise<"cleared" | "boot" | "image" | "failed"> {
 		try {
 			const result = await pipe(
 				this.#policy.project,
 				lxdCompanyMachineName(run.placementId),
 				{
-					command: ["/bin/sh", "-c", COMPANY_MACHINE_CLIPBOARD_CLEAR, run.bootId],
+					command: ["/bin/sh", "-c", COMPANY_MACHINE_CLIPBOARD_CLEAR, run.bootId, use],
 					environment: {},
 					cwd: "/",
 					maxStdoutBytes: 4096,
@@ -2467,6 +2484,7 @@ export class LxdCompanyMachineHost {
 				{ placementId: run.placementId, bootId: run.bootId, desktopGeneration: run.desktopGeneration },
 				limit,
 				limit,
+				"screen",
 			);
 			if (outcome === "held") return "held";
 			return typeof outcome === "object" && "cleared" in outcome && outcome.cleared ? "cleared" : "owed";
