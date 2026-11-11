@@ -45,7 +45,9 @@ import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts
  *   (the site with a new password on its first publish, and a new version naming every file; bytes the live version
  *   already has are copied in the database), the missing bytes in batches of at most 10 MiB, and finish, which switches
  *   the site to the new version at once. The same call again (its call id) continues or answers its own version.
- * - The agent never sees the password: the founder reads, copies and changes it in Settings → Sites.
+ * - A source under code/ is refused before anything (own code storage, step 4): a repository kept in Qorpera goes live
+ *   only from the What's new page, where a member puts a version its checks made live.
+ * - The agent never sees the password: the founder reads, copies and changes it on the Sites page in the apps drawer.
  * - unpublish_site takes one of the company's sites offline: its copy, password and visitors' sessions go.
  * - share_app (private app links, v195; migration 20260930562000, deploy/sites/APP-PREVIEW.md) shares one port of one
  *   of the company's always-on machines at https://<slug>-preview.qorpera.com/, behind a site's password: an app site
@@ -125,7 +127,7 @@ export const CLOUD_PUBLISH_SITE_TOOL_DESCRIPTION =
 	"slug is the site's name in its link: 3 to 48 lowercase letters, digits and hyphens. title is optional. " +
 	"Each page runs sandboxed on its own: scripts, forms and links work, but it cannot keep data in the browser (localStorage, cookies) or show the site's own pages in an iframe, and a PDF may only download. " +
 	"A site's first publish waits for an owner or admin to approve it on a card, and so does publishing it from another folder. Publishing the same slug again replaces the whole site at once and keeps its password. " +
-	"You never see the password: tell the member the link and that the password is in Settings → Sites, where founders and admins see, copy and change it.";
+	"You never see the password: tell the member the link and that the password is on the Sites page in the apps drawer, where founders and admins see, copy and change it.";
 
 export const CLOUD_UNPUBLISH_SITE_TOOL_DESCRIPTION =
 	"Take one of the company's websites or app links offline: its link stops working. A website's published copy and password are deleted (the files stay in the company folder); an app link keeps its name and password for its next share_app, and the app keeps running on its machine. slug is the site's name in its link.";
@@ -137,7 +139,7 @@ export const CLOUD_SHARE_APP_TOOL_DESCRIPTION =
 	"slug is the link's name: 3 to 48 lowercase letters, digits and hyphens. title is optional. " +
 	"The machine must be running. The platform starts the link program that connects the link to the app on that machine, as a command with no time limit (machine_list counts it; machine_read shows its status lines, machine_cancel stops it). Its command carries a one-time code that the program spends within seconds; only that program can use it again. The link works while the program and the app run; otherwise the link says the app is not running. If it stops, call share_app again. The link passes HTTP requests, not WebSockets (a dev server's live reload does not work through it). " +
 	"A first share waits for an owner or admin to approve it on a card, and so does sharing the link from another machine or port. Sharing the same slug again keeps its link and password. " +
-	"You never see the password: tell the member the link and that the password is in Settings → Sites, where founders and admins see, copy and change it. unpublish_site turns the link off.";
+	"You never see the password: tell the member the link and that the password is on the Sites page in the apps drawer, where founders and admins see, copy and change it. unpublish_site turns the link off.";
 
 /** One file a site will serve: its path in the site and the folder entry it is read from. */
 interface SiteFile {
@@ -465,9 +467,16 @@ export function cloudSiteTools(options: {
 					"source must be a company-relative path to a folder or an .html file, like product/webshop (no leading or trailing /)",
 				);
 			}
-			if (PLATFORM_TOPS.has(companyPathKey(source).split("/")[0] ?? ""))
+			const top = companyPathKey(source).split("/")[0] ?? "";
+			if (PLATFORM_TOPS.has(top))
 				throw new CloudToolArgumentRefusal(
 					"source must be the company's own work, not a platform folder (QorperaOS, hooks, digital-post, bank, members)",
+				);
+			// Own code storage, step 4: a repository kept in Qorpera goes live only from the What's new page, on a member's
+			// yes, never through this tool; refused here, before the review and any card (SQL refuses it again in begin).
+			if (top === "code")
+				throw new CloudToolArgumentRefusal(
+					"source must not be under code/: a repository kept in Qorpera goes live only through What's new, on a member's yes",
 				);
 			return { slug, source, title: parseTitle(input.title) };
 		},
@@ -660,9 +669,9 @@ export function cloudSiteTools(options: {
 					...(prepared.skipped.length ? { leftOut: prepared.skipped, leftOutMore: prepared.skippedOmitted } : {}),
 					password:
 						receipt.mode === "new"
-							? "The site has a new password. You never see it: the founder finds, copies and changes it in Settings → Sites."
-							: "The password is unchanged. You never see it: it is in Settings → Sites.",
-					next: "Tell the member the link, and that the password is in Settings → Sites. Visitors open the link and enter the password.",
+							? "The site has a new password. You never see it: the founder finds, copies and changes it on the Sites page in the apps drawer."
+							: "The password is unchanged. You never see it: it is on the Sites page in the apps drawer.",
+					next: "Tell the member the link, and that the password is on the Sites page in the apps drawer. Visitors open the link and enter the password.",
 				}),
 			};
 		},
@@ -917,8 +926,8 @@ export function cloudSiteTools(options: {
 				started = undefined;
 			}
 			const password = shared.newPassword
-				? "The link has a new password. You never see it: the founder finds, copies and changes it in Settings → Sites."
-				: "The password is unchanged. You never see it: it is in Settings → Sites.";
+				? "The link has a new password. You never see it: the founder finds, copies and changes it on the Sites page in the apps drawer."
+				: "The password is unchanged. You never see it: it is on the Sites page in the apps drawer.";
 			const link = {
 				url,
 				slug: prepared.slug,
@@ -953,7 +962,7 @@ export function cloudSiteTools(options: {
 				});
 			return reply("connecting", {
 				linkProgram,
-				next: `The platform started the link program on ${prepared.machine} (command ${started.commandId}); it connects the link to the app on port ${prepared.port}, and the link works while it runs and the app answers on that port. A program from an earlier share of this link stops by itself. machine_read shows its status lines; if it stops, call share_app again. Tell the member the link, and that the password is in Settings → Sites.`,
+				next: `The platform started the link program on ${prepared.machine} (command ${started.commandId}); it connects the link to the app on port ${prepared.port}, and the link works while it runs and the app answers on that port. A program from an earlier share of this link stops by itself. machine_read shows its status lines; if it stops, call share_app again. Tell the member the link, and that the password is on the Sites page in the apps drawer.`,
 			});
 		},
 	};

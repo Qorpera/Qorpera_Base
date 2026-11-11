@@ -162,19 +162,23 @@ screenshot of each read back with `company_read`, the weakest thing fixed, and a
 **Patch notes before changes go live** (Jonas, 10 November 2026: "I would also like some version of an update
 list/patch notes for changes before they go live, if agents have worked on several changes it could just post all of
 them as a patchnote rundown with visuals and very brief and easy to digest text - or a video"; asked whether changes
-should wait for his yes on that page: "Yes, wait for me"). The company context tells every agent:
-- A change goes live when people outside the team meet it: an update to a published site (`publish_site` on a live
-  site), a new version of the product, a new price, a mail or post that goes out to many. Until then it is ready.
-- One posted app, `whats-new` ("What's new"), shows every change that is ready and not yet live: a picture of what
-  changes and one plain line on what a customer will notice, several changes as one rundown a member takes in within
-  a minute.
-- The go-ahead is one question card that points at the app, options "Put it live" and "Not yet", and the same two as
-  buttons on the page (§5 "Changes": `qorpera.answer`). Nothing in the rundown goes live before a member's yes;
-  finishing, merging and testing stay the agents' own.
-- One exception: a fix for something broken for customers right now goes live at once and is shown the same day.
-This is a rule of the agents' instructions. The platform does not hold a publish back for it: `publish_site` on a
-live site is still reviewed as any outside effect (cloud-action-review.ts). Making the member's yes a condition of
-that publish is a follow-up, if the rule alone proves too weak.
+should wait for his yes on that page: "Yes, wait for me"). Since own code storage step 4 (migration
+`20260930729000_code_releases.sql`), What's new is Qorpera's own page in the apps drawer (drawer key `whats-new`, the
+bare word; `app:whats-new` is an agent's app, which the drawer hides while the page shows), and agents no longer keep
+an app of that name. The company context tells every agent:
+- A change goes live when people outside the team meet it: an update to a published site, a new version of the
+  product, a new price, a mail or post that goes out to many. Until then it is ready.
+- A website made from a repository kept in Qorpera goes live only through Qorpera: each change whose checks pass shows
+  on What's new with its notice and picture, and a member puts it live there. The agent never publishes it
+  (`publish_site` refuses a source under `code/` before any card) and never asks about it in a question card; it tells
+  the member in one line that the change waits in What's new.
+- Anything else that goes live gets one question card that shows what changes, options "Put it live" and "Not yet":
+  on yes it goes live in that run; on not yet the agent asks what to change.
+- One exception: a fix for something broken for customers right now goes live at once, and the members hear the same
+  day what changed. A repository's website still waits for a member, who can press Go back in What's new.
+For a repository's website the platform holds the rule: only an owner's or admin's press on What's new changes the
+live version. For anything else it is a rule of the agents' instructions: `publish_site` of a plain folder on a live
+site is still reviewed as any outside effect (cloud-action-review.ts).
 
 ## 3a. The explainer kit (10 November 2026)
 

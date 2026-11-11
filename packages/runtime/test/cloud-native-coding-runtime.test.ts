@@ -278,6 +278,12 @@ describe("the coding composition of a native turn", () => {
 					"Only work whose every check passes goes in; otherwise nothing goes in and the turn fails with the check that failed and the end of its output.",
 					'When the repository has no checks file, add one in this change: {"checks":[{"name":"install","run":"npm ci"},{"name":"test","run":"npm test"},{"name":"build","run":"npm run build"}]} for a Node project, or the commands that install, test and build yours;',
 					"each check has a name (lower case, digits, . _ -), a run command, and may have timeoutSeconds (10 to 1800, 600 when left out; at most 3600 in all) and cwd (a folder of the repository).",
+					// Own code storage, step 4 (20260930729000): a website's built folder, named in the checks file, is the
+					// change's site for What's new, within a site's limits and with none of the session's secret values.
+					'When the project is a website, add "site": {"folder": "dist"} to the checks file, with the folder your build writes:',
+					"once every check passed, Qorpera takes the web files in that folder (index.html at its top, at most 500 files and 25 MB in at most 100 folders, none hidden) as the site of this change, and nothing goes in when they are missing or hold one of this session's secret values.",
+					'It may also give "name", the site\'s address (3 to 48 lower-case letters, digits and hyphens), used once, when the site is first made.',
+					"Never build a key into the site.",
 					"Make checks fast and honest: they must not need servers or ports your own commands hold, or files git does not track.",
 					// The session's copy is in its home, on the machine's disk, and is removed first, so a second run after a
 					// fix works.
