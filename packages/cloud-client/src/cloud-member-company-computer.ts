@@ -144,12 +144,7 @@ export interface MemberDesktopHandBack {
 	holding: boolean;
 	seat: number | null;
 }
-/** The hold a hand-back names (F26): its seat, or, for a take-over whose answer was lost, the press that may have
- * seated it; at least one. */
-export interface MemberDesktopHoldName {
-	seat?: number;
-	press?: string;
-}
+
 function field(value: unknown, error: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(error);
 	return value as Record<string, unknown>;
@@ -489,28 +484,26 @@ export class CloudMemberCompanyComputerClient {
 		throw new Error("Invalid desktop hold");
 	}
 	/** Hands the machine back at the caller's hand-back epoch `epoch` (qorpera_member_hand_back_machine_desktop):
-	 * `handed_back` by their word, `closed` when the window closed or the page is left. It gives back the caller's lease
-	 * taken under `epoch` that is the hold named (F26: by its seat, or by the press that may have seated it), and moves
-	 * the epoch on when `epoch` is the current one and no live lease of the caller's is left that it did not name (a
-	 * stale tab's hand-back never ends another tab's hold); at an older epoch it changes nothing. */
+	 * `handed_back` by their word, `closed` when the window closed or the page is left; in one of two forms (F27, F28 of
+	 * #1661). EXACT, `seat` a number: the caller's lease under `epoch` in that seat ends, if it is the lease, and the
+	 * epoch moves on only when no live lease of the caller's is left (a stale tab's hand-back never ends another tab's
+	 * hold); a page sends it only when every take-over it sent for the machine at that epoch was answered. VOID, `seat`
+	 * null: at the current epoch the epoch moves on and the caller's lease under it ends, whichever seat (another tab's
+	 * too); it is what voids a take-over of the page's that may still be on its way. At an older epoch neither changes
+	 * anything. */
 	async handBackDesktop(
 		machineId: string,
 		reason: "handed_back" | "closed",
 		epoch: number,
-		hold: MemberDesktopHoldName,
+		seat: number | null,
 		signal: AbortSignal,
 	): Promise<MemberDesktopHandBack> {
 		if (!epochOf(epoch)) throw new Error("Invalid hand-back epoch");
-		if (
-			(hold.seat === undefined && hold.press === undefined) ||
-			(hold.seat !== undefined && !epochOf(hold.seat)) ||
-			(hold.press !== undefined && !COMPANY_COMPUTER_UUID.test(hold.press))
-		)
-			throw new Error("Invalid desktop hold");
+		if (seat !== null && !epochOf(seat)) throw new Error("Invalid desktop seat");
 		const value = await this.#desktop(
 			"qorpera_member_hand_back_machine_desktop",
 			machineId,
-			{ p_reason: reason, p_epoch: epoch, p_seat: hold.seat ?? null, p_press: hold.press ?? null },
+			{ p_reason: reason, p_epoch: epoch, p_seat: seat },
 			signal,
 		);
 		if (

@@ -387,7 +387,7 @@ describe("member Company Computer transport", () => {
 			"https://control.test/rest/v1/rpc/qorpera_member_keep_machine_desktop",
 		);
 		answer({ state: "ok", handedBack: true, epoch: 4, holding: false, seat: null });
-		expect(await f.client.handBackDesktop(id(20), "closed", 3, { seat: 12 }, signal)).toEqual({
+		expect(await f.client.handBackDesktop(id(20), "closed", 3, 12, signal)).toEqual({
 			handedBack: true,
 			epoch: 4,
 			holding: false,
@@ -402,18 +402,23 @@ describe("member Company Computer transport", () => {
 			p_reason: "closed",
 			p_epoch: 3,
 			p_seat: 12,
-			p_press: null,
 		});
-		// At an older epoch: nothing changed, and the member holds it now (another tab of theirs, at the newer one), in
-		// its seat (F26). A take-over whose answer was lost names its press.
+		// VOID (no seat: F27, F28) at an older epoch: nothing changed, and the member holds it now (another tab of theirs,
+		// at the newer one), in its seat.
 		answer({ state: "ok", handedBack: false, epoch: 6, holding: true, seat: 15 });
-		expect(await f.client.handBackDesktop(id(20), "handed_back", 3, { press }, signal)).toEqual({
+		expect(await f.client.handBackDesktop(id(20), "handed_back", 3, null, signal)).toEqual({
 			handedBack: false,
 			epoch: 6,
 			holding: true,
 			seat: 15,
 		});
-		expect(JSON.parse(f.fetch.mock.calls.at(-1)![1]!.body as string)).toMatchObject({ p_seat: null, p_press: press });
+		expect(JSON.parse(f.fetch.mock.calls.at(-1)![1]!.body as string)).toEqual({
+			p_profile_id: id(1),
+			p_machine_id: id(20),
+			p_reason: "handed_back",
+			p_epoch: 3,
+			p_seat: null,
+		});
 		for (const bad of [
 			{ state: "ok", handedBack: false, holding: false, seat: null },
 			{ state: "ok", handedBack: false, epoch: -1, holding: false, seat: null },
@@ -425,23 +430,21 @@ describe("member Company Computer transport", () => {
 		]) {
 			answer(bad);
 			await expect(
-				f.client.handBackDesktop(id(20), "handed_back", 3, { seat: 12 }, signal),
+				f.client.handBackDesktop(id(20), "handed_back", 3, 12, signal),
 				JSON.stringify(bad),
 			).rejects.toThrow();
 		}
 		f.fetch.mockResolvedValueOnce(Response.json({ schema: "qorpera.member-machine-screen/v1", state: "ok" }));
-		await expect(f.client.handBackDesktop(id(20), "handed_back", 3, { seat: 12 }, signal)).rejects.toThrow();
+		await expect(f.client.handBackDesktop(id(20), "handed_back", 3, 12, signal)).rejects.toThrow();
 		const calls = f.fetch.mock.calls.length;
 		await expect(f.client.takeDesktop("machine", 3, press, signal)).rejects.toThrow();
 		await expect(f.client.takeDesktop(id(20), -1, press, signal)).rejects.toThrow();
 		await expect(f.client.takeDesktop(id(20), 3, "tab-1", signal)).rejects.toThrow();
 		await expect(f.client.keepDesktop(id(20), 1.5, 12, signal)).rejects.toThrow();
 		await expect(f.client.keepDesktop(id(20), 3, -1, signal)).rejects.toThrow();
-		await expect(f.client.handBackDesktop(id(20), "closed", Number.NaN, { seat: 12 }, signal)).rejects.toThrow();
-		// A hand-back names the hold: its seat, its press, or both.
-		await expect(f.client.handBackDesktop(id(20), "closed", 3, {}, signal)).rejects.toThrow();
-		await expect(f.client.handBackDesktop(id(20), "closed", 3, { seat: -1 }, signal)).rejects.toThrow();
-		await expect(f.client.handBackDesktop(id(20), "closed", 3, { press: "tab-1" }, signal)).rejects.toThrow();
+		await expect(f.client.handBackDesktop(id(20), "closed", Number.NaN, 12, signal)).rejects.toThrow();
+		await expect(f.client.handBackDesktop(id(20), "closed", 3, -1, signal)).rejects.toThrow();
+		await expect(f.client.handBackDesktop(id(20), "closed", 3, 1.5, signal)).rejects.toThrow();
 		// None of those reached the network.
 		expect(f.fetch.mock.calls.length).toBe(calls);
 	});
