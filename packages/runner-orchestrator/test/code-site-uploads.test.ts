@@ -8,6 +8,7 @@ import {
 	CODE_SITE_LIST_FILES,
 	CODE_SITE_MISSING_PATHS,
 	CODE_SITE_PART_BYTES,
+	CODE_SITE_PUT_PARTS,
 	CODE_SITE_REQUEST_BYTES,
 	CODE_SITE_RPCS,
 	type CodeSiteUploadFile,
@@ -490,6 +491,14 @@ describe("CodeSiteUploads", () => {
 		expect(huge.of("qorpera_code_site_put")).toEqual([]);
 		expect(Math.max(...huge.calls.map((call) => call.bytes))).toBeLessThanOrEqual(CODE_SITE_REQUEST_BYTES);
 		expect(huge.errors()).toEqual([`put:SITE_UPLOAD_FAILED:${"h".repeat(3000)}.js:CODE_SITE_PART_TOO_LARGE`]);
+		// More than 500 files, all empty, would fit one request: a put carries at most the kernel's 500 parts. (The row
+		// says 500 here, or the pass would not take it; the stand-in's begin does not count.)
+		const empty = setup({
+			shop: [file("index.html", 10), ...Array.from({ length: 700 }, (_, at) => file(`e/${at}.txt`, 0))],
+		});
+		(empty.kernel.due[0] as { site: { files: number } }).site.files = 500;
+		await expect(empty.pass()).resolves.toEqual({ uploaded: 1, failed: 0 });
+		expect(empty.puts().map((parts) => parts.length)).toEqual([CODE_SITE_PUT_PARTS, 701 - CODE_SITE_PUT_PARTS]);
 	});
 
 	it("lists in C order, whatever order the read gave", async () => {

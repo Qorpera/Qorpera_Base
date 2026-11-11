@@ -37,6 +37,8 @@ export const CODE_SITE_REQUEST_BYTES = 120 * 1024;
 /** The most file bytes one put carries, before base64: its base64 and the parts' paths stay within a request. A file
  * larger than this is cut into parts of this size, numbered from 0 (a site's largest file, 10 MiB, into 117). */
 export const CODE_SITE_PART_BYTES = 88 * 1024;
+/** The most parts one put carries (the kernel's bound; a site's 500 files never need more). */
+export const CODE_SITE_PUT_PARTS = 500;
 /** The most files one call lists, and the most its request is as JSON. */
 export const CODE_SITE_LIST_FILES = 150;
 export const CODE_SITE_LIST_BYTES = 100 * 1024;
@@ -429,9 +431,9 @@ export class CodeSiteUploads {
 		throw unread("missing");
 	}
 
-	/** The files' bytes as parts of at most 88 KiB, in C order: parts share a call while together they are at most 88 KiB
-	 * and the request at most 120 KiB. A file's parts are cut at fixed places, so an upload that stopped half way sends
-	 * the same parts again. Answers the bytes sent, before base64. */
+	/** The files' bytes as parts of at most 88 KiB, in C order: parts share a call while together they are at most 88 KiB,
+	 * 500 parts and a request of 120 KiB. A file's parts are cut at fixed places, so an upload that stopped half way
+	 * sends the same parts again. Answers the bytes sent, before base64. */
 	async #put(
 		version: Record<string, unknown>,
 		files: readonly CodeSiteUploadFile[],
@@ -464,7 +466,9 @@ export class CodeSiteUploads {
 				const size = jsonBytes(entry) + 1;
 				if (
 					parts.length &&
-					(carried + piece.byteLength > CODE_SITE_PART_BYTES || used + size > CODE_SITE_REQUEST_BYTES)
+					(parts.length >= CODE_SITE_PUT_PARTS ||
+						carried + piece.byteLength > CODE_SITE_PART_BYTES ||
+						used + size > CODE_SITE_REQUEST_BYTES)
 				)
 					await send();
 				// A site path is at most 512 bytes, so a whole part always fits: this holds without it.
