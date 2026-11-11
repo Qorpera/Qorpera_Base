@@ -254,6 +254,8 @@ export function cloudActionEffect(
 		case "company_mkdir":
 		case "update_memory":
 		case "organize_sidebar":
+		// The apps drawer's groups: shared structure as the sidebar's sections, and every app stays where members open it.
+		case "organize_apps":
 		// An Ask first rule only makes agents more careful.
 		case "add_review_rule":
 		// Sorting a payment changes only what Qorpera charges the company; members see and can change each one.

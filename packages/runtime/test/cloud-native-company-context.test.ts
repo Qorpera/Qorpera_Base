@@ -1549,24 +1549,24 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "4f5a7af07566602dd7095373d323069aaba3019a53ad6985af0f3799225abbc0",
-			prompt: "be57a945a52a80bccd0e523d775d563455ec85f3a3ee11677e7ece894f9f0ae6",
+			instructions: "a94efae2d43d871d2ecae1369811497e4e7cefd772736066d13903e0d6be3c54",
+			prompt: "87eaa2f504945457baf071474bd7bf712ef50dfc3e99267e0dc089a2d5cd5c44",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "1640fabc8e45fb1e3d46572498e4ce55e1755854a5759db6f9ab2dd92986226d",
-			prompt: "9939ba06da7ba749d0a047691bd02c41d28668decdd1d00d34ecd1f23a7ad2e8",
+			instructions: "4796c5d0d07c5b7ca2c3cabaeec8456903d127cef138fb7a3e4423fef692bd79",
+			prompt: "e9968a08aa5c4b04ee610f7f03014928730e88e9632df941d4d7912331534503",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "4f5a7af07566602dd7095373d323069aaba3019a53ad6985af0f3799225abbc0",
-			prompt: "954569cabce5c2ead1fe5e2507f3c8367984855615fb747cf2c378ed2efce48f",
+			instructions: "a94efae2d43d871d2ecae1369811497e4e7cefd772736066d13903e0d6be3c54",
+			prompt: "cae25d562292e7abd87158f86f29192c376cd4d484509a2a8135e14753940692",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {

@@ -16,6 +16,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { isAppGroupId } from "@qorpera/cloud-client/app-groups";
 import { AGENT_COLOURS, companyPathKey } from "@qorpera/cloud-client/company-state-shared";
 import {
 	APP_CLOSED_FOLDERS,
@@ -66,6 +67,7 @@ import {
 	cloudCompanyFolderRelease,
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
+import { placeAppInGroup } from "./cloud-folder-app-groups.ts";
 import {
 	args,
 	cloudFolderRefusal,
@@ -168,7 +170,22 @@ interface SaveRequest {
 	readonly operationKey: string;
 	readonly manifest: ManifestInput | null;
 	readonly files: readonly AppFile[];
+	/** A group of apps/groups.md the app is put in, last, when the file does not list it yet (APP-GROUPS-SPEC §3). */
+	readonly group?: string;
 }
+
+/** Where save_app put the app in the drawer's layout. */
+interface Grouped {
+	readonly group: string;
+	readonly placed: "added" | "already_listed";
+}
+
+/**
+ * What save_app's schema says of `group` (APP-GROUPS-SPEC §3): the drawer's groups are organize_apps' work, and a new app
+ * goes into one as it is made. On the field because the description holds 4096 bytes.
+ */
+const SAVE_APP_GROUP =
+	"The id of a group of the apps drawer (organize_apps list shows them) to put this app in, last, as it is saved. Give it when you make an app that belongs to a group: to a product, a customer or a piece of work the drawer already groups. An app the layout already lists stays where it stands: organize_apps move moves it. Leave it out to leave the app loose. A group that does not exist is refused and nothing is saved; a concept never goes in a group, it shows inside Concepts.";
 
 const text = (value: JsonValue | undefined, label: string, max: number, required: boolean): string | null => {
 	if (value === undefined || value === null) {
@@ -181,6 +198,12 @@ const text = (value: JsonValue | undefined, label: string, max: number, required
 	if (required && trimmed.length === 0) throw new CloudToolArgumentRefusal(`${label} is required`);
 	return trimmed.length === 0 ? null : trimmed;
 };
+
+function groupId(value: JsonValue): string {
+	if (typeof value !== "string" || !isAppGroupId(value))
+		throw new CloudToolArgumentRefusal("group must be a group's id from organize_apps list, such as trips");
+	return value;
+}
 
 function appName(value: JsonValue | undefined): string {
 	if (typeof value !== "string" || !isInterfaceName(value))
@@ -423,6 +446,7 @@ function savedText(
 	units: readonly CloudCompanyFolderUnitResult[],
 	created: boolean,
 	notes: readonly string[],
+	grouped: Grouped | null,
 ): string {
 	const saved = units.filter((unit) => unit.outcome === "saved").length;
 	const state = saved === units.length ? "applied" : saved === 0 ? "not_applied" : "partly_applied";
@@ -444,6 +468,15 @@ function savedText(
 			...(unit.problems.length > 0 ? { problems: unit.problems.map((problem) => problem.message) } : {}),
 		})),
 		...(look.length > 0 ? { look } : {}),
+		...(grouped
+			? {
+					group: grouped.group,
+					groupPlaced:
+						grouped.placed === "added"
+							? "last in the group"
+							: "not moved: the drawer's layout already lists it; organize_apps move moves it",
+				}
+			: {}),
 		next:
 			state === "applied"
 				? `Saved. ${look.length > 0 ? "First fix what look names, unless it does not fit this page. Then show" : "Show"} it to the member with a link in your message: [${request.name}](app:${request.name}). post_app shows it to every member in their apps.`
@@ -572,6 +605,7 @@ export function cloudAppTools(options: {
 						kit: { type: ["string", "null"], enum: [...APP_KITS, null], description: SAVE_APP_KIT },
 					},
 				},
+				group: { type: "string", maxLength: 46, description: SAVE_APP_GROUP },
 				files: {
 					type: "array",
 					maxItems: FILES_PER_CALL,
@@ -589,12 +623,16 @@ export function cloudAppTools(options: {
 			},
 		},
 		parseArguments(value) {
-			const input = args(value, "save_app", ["name", "operationKey", "manifest", "files"]);
+			// group is the one field a call may leave out.
+			const given = value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+			const { group, ...rest } = given ?? {};
+			const input = args(given === null ? value : rest, "save_app", ["name", "operationKey", "manifest", "files"]);
 			const request: SaveRequest = {
 				name: appName(input.name),
 				operationKey: operationKey(input.operationKey),
 				manifest: parseManifest(input.manifest),
 				files: parseFiles(input.files),
+				...(group === undefined || group === null ? {} : { group: groupId(group) }),
 			};
 			if (request.manifest === null && request.files.length === 0)
 				throw new CloudToolArgumentRefusal("give a manifest, files, or both");
@@ -627,7 +665,22 @@ export function cloudAppTools(options: {
 				name: request.name,
 				manifestSha256: sha256hex(JSON.stringify(request.manifest)),
 				files: request.files.map((file) => ({ path: file.path, textSha256: sha256hex(file.text) })),
+				...(request.group ? { group: request.group } : {}),
 			};
+			// The app's place in the drawer's layout, read and checked before anything is written; its unit goes in the
+			// same commit as the app's own.
+			const place = async (concept: boolean): Promise<Grouped | null> => {
+				if (!request.group) return null;
+				if (concept)
+					throw new CloudToolRefusal(
+						"APP_GROUP_CONCEPT: a concept shows inside Concepts in the drawer, never in a group; leave group out",
+					);
+				const placed = await placeAppInGroup(folder, request.name, request.group, context.signal);
+				reads.push(placed.read);
+				if (placed.unit) groupUnits.push(placed.unit);
+				return { group: request.group, placed: placed.placed };
+			};
+			const groupUnits: CloudCompanyFolderUnit[] = [];
 			if (at === null) {
 				// A new app: its whole folder in one unit, the apps folder with it when the company has none yet.
 				if (request.manifest === null)
@@ -697,13 +750,21 @@ export function cloudAppTools(options: {
 								],
 							}
 						: { op: "new_folder", path: root, contents };
+				const grouped = await place(manifest.concept);
 				const answer = await commit(
 					"save_app",
 					request,
 					digest,
-					[unit],
+					[unit, ...groupUnits],
 					(receiptId, units) =>
-						savedText(request, receiptId, units, true, lookNotes(request.files, manifest.kit, manifest.entry)),
+						savedText(
+							request,
+							receiptId,
+							units,
+							true,
+							lookNotes(request.files, manifest.kit, manifest.entry),
+							grouped,
+						),
 					context,
 				);
 				return showCommitted(context, answer, reads);
@@ -721,6 +782,7 @@ export function cloudAppTools(options: {
 			// The kit and the title the app has after this call: the kit's page is written from them below.
 			let kit = before?.kit ?? null;
 			let title = before?.name ?? request.name;
+			let concept = before?.concept ?? false;
 			if (request.manifest !== null) {
 				const manifest: AppManifest = {
 					name: request.manifest.name,
@@ -743,6 +805,7 @@ export function cloudAppTools(options: {
 				entry = manifest.entry;
 				kit = manifest.kit;
 				title = manifest.name;
+				concept = manifest.concept;
 				const textOut = writeAppManifest(manifest);
 				if (stored === "unreadable")
 					throw new CloudToolRefusal(
@@ -855,12 +918,14 @@ export function cloudAppTools(options: {
 				throw new CloudToolRefusal(
 					`APP_ENTRY_MISSING: the app's entry, ${entry}, is not in its folder; write it among files`,
 				);
+			const grouped = await place(concept);
 			const answer = await commit(
 				"save_app",
 				request,
 				digest,
-				units,
-				(receiptId, results) => savedText(request, receiptId, results, false, lookNotes(request.files, kit, entry)),
+				[...units, ...groupUnits],
+				(receiptId, results) =>
+					savedText(request, receiptId, results, false, lookNotes(request.files, kit, entry), grouped),
 				context,
 			);
 			return showCommitted(context, answer, reads);
