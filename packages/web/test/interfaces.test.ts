@@ -1672,7 +1672,8 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		});
 		const save = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Rename")!;
 		expect(save.disabled).toBe(true);
-		document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+		const dialog = save.closest<HTMLElement>(".modal-backdrop, [role=dialog]") ?? document.body;
+		[...dialog.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Cancel")!.click();
 		expect(await rename).toBeUndefined();
 	});
 });
