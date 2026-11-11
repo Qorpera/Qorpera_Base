@@ -84,6 +84,8 @@ export interface MemberAgentMachineControl {
 	mine: boolean;
 	name: string;
 	until: string;
+	/** The caller's take-over attempt that holds it (review r3 of #1661): the caller's own hold alone, else null. */
+	attempt: string | null;
 }
 /** A take-over's answer (migration 20260930713000): the caller holds the desktop until `until`, or why not. */
 export type MemberDesktopHold =
@@ -94,14 +96,19 @@ export type MemberDesktopHold =
 				| "DESKTOP_MACHINE_TOO_SMALL"
 				| "MACHINE_NOT_RUNNING"
 				| "MACHINE_NEEDS_COMPANY_VIEW"
-				| "DESKTOP_MEMBER_IN_CONTROL";
+				| "DESKTOP_MEMBER_IN_CONTROL"
+				// The attempt was called off by a hand-back that named it: it holds nothing, ever (review r3).
+				| "TAKE_CALLED_OFF";
 			memberName: string | null;
 	  };
+/** The most take-over attempts one hand-back calls off (the database's own limit). */
+export const DESKTOP_ATTEMPTS_MAX = 32;
 const HOLD_REFUSALS = [
 	"DESKTOP_MACHINE_TOO_SMALL",
 	"MACHINE_NOT_RUNNING",
 	"MACHINE_NEEDS_COMPANY_VIEW",
 	"DESKTOP_MEMBER_IN_CONTROL",
+	"TAKE_CALLED_OFF",
 ] as const;
 export interface MemberAgentMachines {
 	/** Owners, admins and contributors may wake a sleeping machine; viewers may only watch. */
@@ -359,9 +366,21 @@ export class CloudMemberCompanyComputerClient {
 			let control: MemberAgentMachineControl | null = null;
 			if (row.control !== undefined && row.control !== null) {
 				const held = field(row.control, invalid);
-				if (typeof held.mine !== "boolean" || !text(held.name, 256) || !text(held.until, 64))
+				if (
+					typeof held.mine !== "boolean" ||
+					!text(held.name, 256) ||
+					!text(held.until, 64) ||
+					(held.attempt !== undefined &&
+						held.attempt !== null &&
+						(!held.mine || typeof held.attempt !== "string" || !COMPANY_COMPUTER_UUID.test(held.attempt)))
+				)
 					throw new Error(invalid);
-				control = { mine: held.mine, name: held.name, until: held.until };
+				control = {
+					mine: held.mine,
+					name: held.name,
+					until: held.until,
+					attempt: typeof held.attempt === "string" ? held.attempt : null,
+				};
 			}
 			return {
 				machineId: row.machineId,
@@ -382,9 +401,16 @@ export class CloudMemberCompanyComputerClient {
 		return { canWake: value.canWake, canTakeOver: value.canTakeOver === true, machines };
 	}
 	/** Takes the machine's desktop over for the caller (qorpera_member_take_machine_desktop, 20260930713000), or renews
-	 * the caller's own hold: until when, or why not (another member's hold names them). */
-	async takeDesktop(machineId: string, signal: AbortSignal): Promise<MemberDesktopHold> {
-		const value = await this.#desktop("qorpera_member_take_machine_desktop", machineId, {}, signal);
+	 * the caller's own hold: until when, or why not (another member's hold names them). `attempt` is the caller's own uuid
+	 * for this take-over; a hand-back that names it calls it off for good (TAKE_CALLED_OFF). */
+	async takeDesktop(machineId: string, attempt: string, signal: AbortSignal): Promise<MemberDesktopHold> {
+		if (!COMPANY_COMPUTER_UUID.test(attempt)) throw new Error("Invalid take-over attempt");
+		const value = await this.#desktop(
+			"qorpera_member_take_machine_desktop",
+			machineId,
+			{ p_attempt_id: attempt },
+			signal,
+		);
 		if (
 			value.state === "ok" &&
 			Object.keys(value).sort().join() === "schema,state,until" &&
@@ -404,20 +430,35 @@ export class CloudMemberCompanyComputerClient {
 		throw new Error("Invalid desktop hold");
 	}
 	/** The window's heartbeat (qorpera_member_keep_machine_desktop): the caller's hold renewed until when, or null when
-	 * they hold it no more. */
-	async keepDesktop(machineId: string, signal: AbortSignal): Promise<string | null> {
-		const value = await this.#desktop("qorpera_member_keep_machine_desktop", machineId, {}, signal);
+	 * that attempt holds it no more. */
+	async keepDesktop(machineId: string, attempt: string, signal: AbortSignal): Promise<string | null> {
+		if (!COMPANY_COMPUTER_UUID.test(attempt)) throw new Error("Invalid take-over attempt");
+		const value = await this.#desktop(
+			"qorpera_member_keep_machine_desktop",
+			machineId,
+			{ p_attempt_id: attempt },
+			signal,
+		);
 		if (value.state === "ok" && typeof value.until === "string") return value.until;
 		if (value.state === "ended") return null;
 		throw new Error("Invalid desktop hold");
 	}
 	/** Gives the caller's hold back (qorpera_member_hand_back_machine_desktop): `handed_back` by their word, `closed` when
-	 * the window closed or the page is left. Whether there was one to give back. */
-	async handBackDesktop(machineId: string, reason: "handed_back" | "closed", signal: AbortSignal): Promise<boolean> {
+	 * the window closed or the page is left; and calls off for good each take-over attempt named (at most 32). Whether
+	 * there was a hold to give back. Its answer means the caller holds nothing of the machine and none of those attempts
+	 * ever will. */
+	async handBackDesktop(
+		machineId: string,
+		reason: "handed_back" | "closed",
+		attempts: readonly string[],
+		signal: AbortSignal,
+	): Promise<boolean> {
+		if (attempts.length > DESKTOP_ATTEMPTS_MAX || attempts.some((attempt) => !COMPANY_COMPUTER_UUID.test(attempt)))
+			throw new Error("Invalid take-over attempts");
 		const value = await this.#desktop(
 			"qorpera_member_hand_back_machine_desktop",
 			machineId,
-			{ p_reason: reason },
+			{ p_reason: reason, p_attempt_ids: [...attempts] },
 			signal,
 		);
 		if (value.state === "ok" && typeof value.handedBack === "boolean") return value.handedBack;

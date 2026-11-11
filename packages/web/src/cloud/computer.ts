@@ -80,24 +80,33 @@ export class WebCompanyComputer {
 	wakeMachine(machineId: string, signal: AbortSignal): Promise<void> {
 		return this.client.wakeMachine(machineId, signal);
 	}
-	/** Takes a desktop over, or renews this member's hold (migration 20260930713000). */
-	takeDesktop(machineId: string, signal: AbortSignal): Promise<MemberDesktopHold> {
-		return this.client.takeDesktop(machineId, signal);
+	/** Takes a desktop over, or renews this member's hold (migration 20260930713000), as the page's take-over `attempt`:
+	 * a hand-back that names it calls it off for good. */
+	takeDesktop(machineId: string, attempt: string, signal: AbortSignal): Promise<MemberDesktopHold> {
+		return this.client.takeDesktop(machineId, attempt, signal);
 	}
-	/** The window's heartbeat: until when this member holds the desktop now, or null when they hold it no more. */
-	keepDesktop(machineId: string, signal: AbortSignal): Promise<string | null> {
-		return this.client.keepDesktop(machineId, signal);
+	/** The window's heartbeat: until when this member's `attempt` holds the desktop now, or null when it holds it no more. */
+	keepDesktop(machineId: string, attempt: string, signal: AbortSignal): Promise<string | null> {
+		return this.client.keepDesktop(machineId, attempt, signal);
 	}
-	/** Gives this member's hold back: by their word, or as their window closes. */
-	handBackDesktop(machineId: string, reason: "handed_back" | "closed", signal: AbortSignal): Promise<boolean> {
-		return this.client.handBackDesktop(machineId, reason, signal);
+	/** Gives this member's hold back (by their word, or as their window closes) and calls off the attempts named. */
+	handBackDesktop(
+		machineId: string,
+		reason: "handed_back" | "closed",
+		attempts: readonly string[],
+		signal: AbortSignal,
+	): Promise<boolean> {
+		return this.client.handBackDesktop(machineId, reason, attempts, signal);
 	}
 	/** Best effort, as the page goes (it is hidden for good, or the company's page is left): gives this member's hold of
-	 * a desktop back with the token the page last used, in a request the browser finishes after the page is gone
-	 * (keepalive). It never throws and waits for nothing; a hold it does not reach runs out by itself in 5 minutes. */
-	handBackOnLeave(machineId: string): void {
+	 * a desktop back and calls off the attempts named, with the token the page last used, in a request the browser
+	 * finishes after the page is gone (keepalive). It never throws and waits for nothing; a hold it does not reach runs
+	 * out by itself in 5 minutes. */
+	handBackOnLeave(machineId: string, attempts: readonly string[]): void {
 		const token = this.#lastToken;
-		if (!token || !/^[0-9a-f-]{36}$/i.test(machineId)) return;
+		const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+		if (!token || !uuid.test(machineId) || attempts.length > 32 || !attempts.every((attempt) => uuid.test(attempt)))
+			return;
 		try {
 			void globalThis
 				.fetch(
@@ -113,7 +122,12 @@ export class WebCompanyComputer {
 							apikey: this.#cloud.config.publishableKey,
 							"content-type": "application/json",
 						},
-						body: JSON.stringify({ p_profile_id: this.#companyId, p_machine_id: machineId, p_reason: "closed" }),
+						body: JSON.stringify({
+							p_profile_id: this.#companyId,
+							p_machine_id: machineId,
+							p_reason: "closed",
+							p_attempt_ids: [...attempts],
+						}),
 					},
 				)
 				.catch(() => undefined);

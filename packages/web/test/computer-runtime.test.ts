@@ -91,13 +91,17 @@ function setup(
 		/** Hand-backs that fail (503) before one goes through, and a gate each waits on (review r1 F4). */
 		handBackFails: 0,
 		handBackGate: undefined as Promise<void> | undefined,
+		/** Gates the next hand-backs wait on, one each, in turn (review r3 F7). */
+		handBackGates: [] as Promise<void>[],
 		/** A gate a take-over's answer waits on (review r1 F5), and one the next list read waits on (F6). */
 		takeGate: undefined as Promise<void> | undefined,
 		listGate: undefined as Promise<void> | undefined,
-		/** A take-over whose answer is lost (review r2 F5): the database committed it first, or commits it only after the
-		 * next hand-back was answered (the member had given up on it). */
+		/** A take-over whose answer is lost (review r2 F5): the database committed it first, or it reaches the database
+		 * only later, when the test says (`lateCommit`: whether it held anything). */
 		takeLost: undefined as "committed" | "late" | undefined,
-		lateCommit: undefined as (() => void) | undefined,
+		lateCommit: undefined as (() => boolean) | undefined,
+		/** The take-over attempts the database called off, as machine:attempt (review r3). */
+		calledOff: new Set<string>(),
 	};
 	const looks: { url: string; etag: string | null }[] = [];
 	const acts: { url: string; action: Record<string, unknown> }[] = [];
@@ -160,13 +164,18 @@ function setup(
 			return Response.json({ machineId: body.p_machine_id, state: "waiting" });
 		if (method === "qorpera_member_take_machine_desktop") {
 			if (state.takeGate) await state.takeGate;
-			// As the database: the list says the member holds it from now on.
+			const attempt = String(body.p_attempt_id);
+			const calledOff = () => state.calledOff.has(`${body.p_machine_id}:${attempt}`);
+			// As the database: an attempt called off holds nothing, whenever it arrives; otherwise the list says the member
+			// holds it from now on, by this attempt.
 			const commit = () => {
+				if (calledOff() || state.take.state !== "ok") return false;
 				state.machines = state.machines.map((row) =>
 					row.machineId === body.p_machine_id
-						? { ...row, control: { mine: true, name: "Owner", until: String(state.take.until) } }
+						? { ...row, control: { mine: true, name: "Owner", until: String(state.take.until), attempt } }
 						: row,
 				);
+				return true;
 			};
 			const lost = state.takeLost;
 			state.takeLost = undefined;
@@ -174,25 +183,36 @@ function setup(
 				state.lateCommit = commit;
 				throw new TypeError("Failed to fetch");
 			}
-			if (state.take.state === "ok") commit();
+			if (calledOff())
+				return Response.json({
+					schema: "qorpera.member-machine-desktop/v1",
+					state: "refused",
+					reason: "TAKE_CALLED_OFF",
+				});
+			commit();
 			if (lost === "committed") throw new TypeError("Failed to fetch");
 			return Response.json({ schema: "qorpera.member-machine-desktop/v1", ...state.take });
 		}
-		if (method === "qorpera_member_keep_machine_desktop")
+		if (method === "qorpera_member_keep_machine_desktop") {
+			// As the database: only the attempt that holds the member's lease renews it.
+			const row = state.machines.find((machine) => machine.machineId === body.p_machine_id);
+			if (row?.control?.mine !== true || row.control.attempt !== body.p_attempt_id)
+				return Response.json({ schema: "qorpera.member-machine-desktop/v1", state: "ended" });
 			return Response.json({ schema: "qorpera.member-machine-desktop/v1", ...state.keep });
+		}
 		if (method === "qorpera_member_hand_back_machine_desktop") {
 			if (state.handBackGate) await state.handBackGate;
+			const gate = state.handBackGates.shift();
+			if (gate) await gate;
 			if (state.handBackFails > 0) {
 				state.handBackFails--;
 				return new Response("{}", { status: 503 });
 			}
+			// As the database: every attempt named is called off for good, and the member's lease ends.
+			for (const attempt of body.p_attempt_ids as string[]) state.calledOff.add(`${body.p_machine_id}:${attempt}`);
 			state.machines = state.machines.map((row) =>
 				row.machineId === body.p_machine_id && row.control?.mine ? { ...row, control: null } : row,
 			);
-			// A take-over the member gave up on commits now, after the hand-back's answer.
-			const late = state.lateCommit;
-			state.lateCommit = undefined;
-			late?.();
 			return Response.json({ schema: "qorpera.member-machine-desktop/v1", state: "ok", handedBack: true });
 		}
 		throw new Error(`Unexpected network request ${url}`);
@@ -270,6 +290,11 @@ function lists(s: Setup) {
 }
 function calls(s: Setup, method: string) {
 	return s.rpcs.filter((call) => call.method === method);
+}
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/** The take-over attempts sent, in turn (review r3). */
+function attempts(s: Setup) {
+	return calls(s, "qorpera_member_take_machine_desktop").map((call) => String(call.body.p_attempt_id));
 }
 function controls(p: ComputerPanel) {
 	const value = p.el.querySelector<HTMLElement>(".machine-screen-control");
@@ -911,10 +936,13 @@ describe("trusted viewer configuration", () => {
 describe("a member's take-over of the desktop (20260930713000)", () => {
 	it("takes the desktop over, says what it means, renews it every minute and hands it back", async () => {
 		const { s, p } = await holding();
+		// The take-over names an attempt of the page's own (review r3).
+		const attempt = attempts(s)[0]!;
+		expect(attempt).toMatch(UUID);
 		expect(calls(s, "qorpera_member_take_machine_desktop")).toEqual([
 			{
 				method: "qorpera_member_take_machine_desktop",
-				body: { p_profile_id: profileA.profileId, p_machine_id: machine(1).machineId },
+				body: { p_profile_id: profileA.profileId, p_machine_id: machine(1).machineId, p_attempt_id: attempt },
 			},
 		]);
 		expect(p.holding).toBe(true);
@@ -935,7 +963,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		expect(calls(s, "qorpera_member_keep_machine_desktop")).toEqual([
 			{
 				method: "qorpera_member_keep_machine_desktop",
-				body: { p_profile_id: profileA.profileId, p_machine_id: machine(1).machineId },
+				body: { p_profile_id: profileA.profileId, p_machine_id: machine(1).machineId, p_attempt_id: attempt },
 			},
 		]);
 		await advance(KEEP_EVERY_MS);
@@ -944,7 +972,12 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		controlButton(p)!.click();
 		await flush();
 		expect(calls(s, "qorpera_member_hand_back_machine_desktop").map((call) => call.body)).toEqual([
-			{ p_profile_id: profileA.profileId, p_machine_id: machine(1).machineId, p_reason: "handed_back" },
+			{
+				p_profile_id: profileA.profileId,
+				p_machine_id: machine(1).machineId,
+				p_reason: "handed_back",
+				p_attempt_ids: [attempt],
+			},
 		]);
 		expect(p.holding).toBe(false);
 		expect(controlButton(p)?.textContent).toBe("Take over");
@@ -1150,7 +1183,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 
 	it("shows who holds the desktop to another member, not the screen, until they give it back or their time runs out", async () => {
 		const until = new Date(Date.now() + 120_000).toISOString();
-		const s = setup({ machines: [machine(1, { control: { mine: false, name: "Ada", until } })] });
+		const s = setup({ machines: [machine(1, { control: { mine: false, name: "Ada", until, attempt: null } })] });
 		const p = panel(s);
 		await flush();
 		expect(status(p)).toBe("Ada is using the computer. The screen is hidden meanwhile.");
@@ -1164,7 +1197,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		await flush();
 		expect(mark(p)).toBe("Live");
 		// Taken over by Ada while this member watches: a refused look reads the list, which says who.
-		s.state.machines = [machine(1, { control: { mine: false, name: "Ada", until } })];
+		s.state.machines = [machine(1, { control: { mine: false, name: "Ada", until, attempt: null } })];
 		s.state.answers.push({ code: "DESKTOP_MEMBER_IN_CONTROL" });
 		await advance(LOOK_EVERY_MS);
 		await flush();
@@ -1201,7 +1234,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		const p = panel(s);
 		await flush();
 		const until = new Date(Date.now() + 120_000).toISOString();
-		s.state.machines = [machine(1, { control: { mine: false, name: "Ada", until } })];
+		s.state.machines = [machine(1, { control: { mine: false, name: "Ada", until, attempt: null } })];
 		controlButton(p)!.click();
 		await flush();
 		await flush();
@@ -1227,12 +1260,16 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 
 	it("resumes a hold the list says is the member's (the page was loaded again), and hands it back as the page goes", async () => {
 		const until = new Date(Date.now() + 120_000).toISOString();
-		const s = setup({ machines: [machine(1, { control: { mine: true, name: "Owner", until } })] });
+		// The page was loaded again: the list names the attempt of the member's that holds it, which this page never made.
+		const s = setup({ machines: [machine(1, { control: { mine: true, name: "Owner", until, attempt: id(90) } })] });
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
 		await flush();
 		expect(p.holding).toBe(true);
 		expect(controlButton(p)?.textContent).toBe("Hand back");
+		// Its heartbeat names that attempt.
+		await advance(KEEP_EVERY_MS);
+		expect(calls(s, "qorpera_member_keep_machine_desktop").map((call) => call.body.p_attempt_id)).toEqual([id(90)]);
 		window.dispatchEvent(new Event("pagehide"));
 		const left = s.fetch.mock.calls.find(([url]) =>
 			String(url).endsWith("/qorpera_member_hand_back_machine_desktop"),
@@ -1242,6 +1279,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 			p_profile_id: profileA.profileId,
 			p_machine_id: machine(1).machineId,
 			p_reason: "closed",
+			p_attempt_ids: [id(90)],
 		});
 	});
 
@@ -1329,13 +1367,19 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 		expect(controlButton(p)?.textContent).toBe("Try again");
 		// The picture takes no input meanwhile.
 		expect(canvas(p).hasAttribute("tabindex")).toBe(false);
-		// A list read that still shows the hold (the database has it yet) neither takes it up again nor renews it: it asks
-		// again.
+		// A list read that still shows the hold (the database has it yet) neither takes it up again nor renews it.
 		const asked = calls(s, "qorpera_member_hand_back_machine_desktop").length;
 		s.hint("machines");
 		await flush();
 		expect(p.holding).toBe(false);
+		expect(controlButton(p)?.textContent).toBe("Try again");
+		// The hand-back is asked again after its wait, naming the same attempt, and this time it is answered.
+		await advance(2000);
 		expect(calls(s, "qorpera_member_hand_back_machine_desktop").length).toBe(asked + 1);
+		expect(calls(s, "qorpera_member_hand_back_machine_desktop").map((call) => call.body.p_attempt_ids)).toEqual([
+			attempts(s),
+			attempts(s),
+		]);
 		expect(controlButton(p)?.textContent).toBe("Take over");
 		await advance(KEEP_EVERY_MS * 2);
 		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
@@ -1383,7 +1427,7 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 		expect(controlButton(p)?.textContent).toBe("Take over");
 	});
 
-	it("calls off a take-over still on its way: the hold that comes back late is given back at once and never renewed", async () => {
+	it("calls off a take-over still on its way: the hand-back names it at once, and the take-over is refused when it arrives", async () => {
 		const s = setup();
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
@@ -1392,24 +1436,26 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 		s.state.takeGate = late.closed;
 		controlButton(p)!.click();
 		await flush();
-		expect(calls(s, "qorpera_member_take_machine_desktop")).toHaveLength(1);
-		// I'm done while the take-over is on its way: it waits for it.
-		let done: boolean | undefined;
-		const back = p.handBack().then((value) => {
-			done = value;
-		});
-		await flush();
-		expect(done).toBeUndefined();
-		expect(calls(s, "qorpera_member_hand_back_machine_desktop")).toHaveLength(0);
-		late.open();
-		await back;
-		expect(done).toBe(true);
-		expect(calls(s, "qorpera_member_hand_back_machine_desktop").map((call) => call.body.p_machine_id)).toEqual([
-			machine(1).machineId,
+		expect(attempts(s)).toHaveLength(1);
+		// I'm done while the take-over is on its way: the hand-back names its attempt, and its answer is the confirmation
+		// (review r3): nothing waits for the take-over.
+		expect(await p.handBack()).toBe(true);
+		expect(calls(s, "qorpera_member_hand_back_machine_desktop").map((call) => call.body)).toEqual([
+			{
+				p_profile_id: profileA.profileId,
+				p_machine_id: machine(1).machineId,
+				p_reason: "handed_back",
+				p_attempt_ids: attempts(s),
+			},
 		]);
+		// The take-over reaches the database after that: refused, so nothing is held, and the window takes nothing up.
+		late.open();
+		await flush();
+		expect(s.state.machines[0]?.control).toBeNull();
 		expect(p.holding).toBe(false);
 		await advance(KEEP_EVERY_MS * 2);
 		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
+		expect(calls(s, "qorpera_member_hand_back_machine_desktop")).toHaveLength(1);
 		expect(p.holding).toBe(false);
 	});
 
@@ -1425,9 +1471,15 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 		p.dispose();
 		late.open();
 		await flush();
-		expect(calls(s, "qorpera_member_hand_back_machine_desktop").map((call) => call.body.p_reason)).toEqual([
-			"closed",
+		expect(calls(s, "qorpera_member_hand_back_machine_desktop").map((call) => call.body)).toEqual([
+			{
+				p_profile_id: profileA.profileId,
+				p_machine_id: machine(1).machineId,
+				p_reason: "closed",
+				p_attempt_ids: attempts(s),
+			},
 		]);
+		expect(s.state.machines[0]?.control).toBeNull();
 	});
 
 	it("gives the held machine back when the member switches during a list read that is still on its way", async () => {
@@ -1452,7 +1504,7 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 	});
 });
 
-describe("the company's ledger of the desktops a member may hold (review r2 F4, F5)", () => {
+describe("the company's ledger of the desktops a member may hold (review r2 F4, F5; r3 F5, F7, F8)", () => {
 	/** A gate the test opens. */
 	function gate() {
 		let open = () => {};
@@ -1491,11 +1543,10 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 		// I'm done on the card: no window, but the ledger still has the machine; it asks again, fails, and says no.
 		expect(await panels.releaseAgent(staff.id)).toBe(false);
 		expect(handBacks(s)).toHaveLength(2);
-		// It asks again by itself after its wait, window or not; this time it goes through and a list read confirms it.
-		const read = lists(s);
+		// It asks again by itself after its wait, window or not; this time it is answered, and that is the confirmation.
 		await advance(4000);
 		expect(handBacks(s)).toHaveLength(3);
-		expect(lists(s)).toBe(read + 1);
+		expect(handBacks(s).map((call) => call.body.p_attempt_ids)).toEqual([attempts(s), attempts(s), attempts(s)]);
 		// Now I'm done answers, and asks nothing more.
 		expect(await panels.releaseAgent(staff.id)).toBe(true);
 		expect(handBacks(s)).toHaveLength(3);
@@ -1524,15 +1575,15 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 		expect(handBacks(s)).toHaveLength(1);
 	});
 
-	it("counts a take-over whose answer was lost as held: I'm done gives it back first; a hold seen later goes back, never taken up nor renewed", async () => {
+	it("counts a take-over whose answer was lost as held: I'm done names its attempt and waits for that answer alone; another attempt's hold seen later is never taken up", async () => {
 		const { s, panels, p } = await company();
 		// The database gives the desktop, but its answer never comes back.
 		s.state.takeLost = "committed";
 		await takeOver(p);
-		expect(calls(s, "qorpera_member_take_machine_desktop")).toHaveLength(1);
+		expect(attempts(s)).toHaveLength(1);
 		expect(p.holding).toBe(false);
 		expect(controls(p)?.textContent).toContain("The computer could not be taken over. Try again.");
-		// I'm done: the machine is in the ledger, so a hand-back goes, and the card waits for it and the list read after it.
+		// I'm done: the attempt is in the ledger, so a hand-back names it, and the card waits for its answer.
 		const slow = gate();
 		s.state.handBackGate = slow.closed;
 		let done: boolean | undefined;
@@ -1540,42 +1591,114 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 			done = value;
 		});
 		await flush();
-		expect(handBacks(s).map((call) => call.body.p_machine_id)).toEqual([machine(1).machineId]);
+		expect(handBacks(s).map((call) => [call.body.p_machine_id, call.body.p_attempt_ids])).toEqual([
+			[machine(1).machineId, attempts(s)],
+		]);
 		expect(done).toBeUndefined();
 		s.state.handBackGate = undefined;
 		slow.open();
 		await back;
+		// The answer is the confirmation.
 		expect(done).toBe(true);
 		expect(s.state.machines[0]?.control).toBeNull();
-		// A later list shows the member's hold on it again: it is given back again, never taken up, never renewed.
-		s.state.machines = [machine(1, { control: { mine: true, name: "Owner", until: until() } })];
-		const read = lists(s);
+		// A later list shows a hold of the member's by an attempt this page never made (another tab of theirs): on a
+		// machine this page gave back it is never taken up, and nothing guesses it is this page's.
+		s.state.machines = [machine(1, { control: { mine: true, name: "Owner", until: until(), attempt: id(91) } })];
 		s.hint("machines");
 		await advance(LOOK_EVERY_MS);
-		expect(lists(s)).toBeGreaterThan(read);
-		expect(handBacks(s)).toHaveLength(2);
-		expect(s.state.machines[0]?.control).toBeNull();
 		expect(p.holding).toBe(false);
 		await advance(KEEP_EVERY_MS * 2);
 		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
 		expect(p.holding).toBe(false);
-		expect(handBacks(s)).toHaveLength(2);
+		expect(handBacks(s)).toHaveLength(1);
 	});
 
-	it("reads the list after a confirmed hand-back, and gives back a take-over the database committed after the member gave up on it", async () => {
+	it("names a lost take-over's attempt before I'm done answers, so the take-over that reaches the database later is refused (r3 F5)", async () => {
 		const { s, panels, p } = await company();
-		// The answer is lost, and the database commits the take-over only after the hand-back found nothing to give back.
+		// The answer is lost, and the take-over reaches the database only after the hand-back was answered (after the card
+		// answered, after any list read): with the window closed, nothing would look again.
 		s.state.takeLost = "late";
 		await takeOver(p);
 		expect(p.holding).toBe(false);
-		expect(await panels.releaseAgent(staff.id)).toBe(true);
-		// The list read after the first answer still showed the hold: it was asked back again, and that was confirmed.
-		expect(handBacks(s)).toHaveLength(2);
+		panels.close(staff.id);
+		await flush();
+		const answered = await panels.releaseAgent(staff.id);
+		expect(answered).toBe(true);
+		// By the time the card answered, a hand-back naming the attempt had been answered.
+		expect(handBacks(s).map((call) => call.body.p_attempt_ids)).toEqual([attempts(s)]);
+		// The take-over arrives now: refused, holding nothing.
+		expect(s.state.lateCommit?.()).toBe(false);
 		expect(s.state.machines[0]?.control).toBeNull();
-		expect(p.holding).toBe(false);
 		await advance(KEEP_EVERY_MS * 2);
 		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
-		expect(handBacks(s)).toHaveLength(2);
+		expect(handBacks(s)).toHaveLength(1);
+	});
+
+	it("never sends a take-over queued behind a hand-back once it is called off: close, Take over again while the hand-back waits, close again, I'm done (r3 F7)", async () => {
+		const { s, panels, p } = await company();
+		await takeOver(p);
+		expect(p.holding).toBe(true);
+		const [first] = attempts(s);
+		// The window closes; its hand-back waits.
+		const one = gate(),
+			two = gate();
+		s.state.handBackGates = [one.closed, two.closed];
+		panels.close(staff.id);
+		await flush();
+		expect(handBacks(s).map((call) => call.body.p_attempt_ids)).toEqual([[first]]);
+		// The card's Take over opens the window again and takes over while that hand-back waits: its attempt waits too.
+		s.state.answers.push({ picture: 1 });
+		const again = panels.open(staff)!;
+		again.attach(document.body, () => panels.close(staff.id));
+		again.takeOver();
+		await flush();
+		expect(attempts(s)).toEqual([first]);
+		// The window closes again, and I'm done comes, while the first hand-back still waits.
+		panels.close(staff.id);
+		await flush();
+		let done: boolean | undefined;
+		const back = panels.releaseAgent(staff.id).then((value) => {
+			done = value;
+		});
+		await flush();
+		expect(done).toBeUndefined();
+		// The first answers; the queued attempt, never sent, is named in the next hand-back, and I'm done waits for it.
+		one.open();
+		await flush();
+		const named = handBacks(s).map((call) => call.body.p_attempt_ids as string[]);
+		expect(named).toHaveLength(2);
+		expect(named[1]).toHaveLength(1);
+		expect(named[1]![0]).toMatch(UUID);
+		expect(named[1]![0]).not.toBe(first);
+		expect(done).toBeUndefined();
+		two.open();
+		await back;
+		expect(done).toBe(true);
+		// The queued take-over was never sent, and no lease is left.
+		expect(attempts(s)).toEqual([first]);
+		expect(s.state.machines[0]?.control).toBeNull();
+		await advance(KEEP_EVERY_MS * 2);
+		expect(attempts(s)).toEqual([first]);
+		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
+		expect(s.state.machines[0]?.control).toBeNull();
+	});
+
+	it("gives back a machine whose take-over answer was lost when the member switches to another (r3 F8)", async () => {
+		const { s, p } = await company(setup({ machines: [machine(1), machine(2)] }));
+		s.state.takeLost = "committed";
+		await takeOver(p);
+		expect(p.holding).toBe(false);
+		expect(s.state.machines[0]?.control?.attempt).toBe(attempts(s)[0]);
+		// Neither held nor on its way in the window: the switch still gives the first machine back, naming the attempt.
+		s.state.answers.push({ picture: 2 });
+		p.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher")!.click();
+		[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][1]!.click();
+		await flush();
+		expect(handBacks(s).map((call) => [call.body.p_machine_id, call.body.p_attempt_ids])).toEqual([
+			[machine(1).machineId, attempts(s)],
+		]);
+		expect(s.state.machines[0]?.control).toBeNull();
+		expect(p.holding).toBe(false);
 	});
 
 	it("takes a lost answer's hold up when the member asked nothing back, and a desktop taken over again on purpose", async () => {
@@ -1611,6 +1734,7 @@ describe("the company's ledger of the desktops a member may hold (review r2 F4, 
 			p_profile_id: profileA.profileId,
 			p_machine_id: machine(1).machineId,
 			p_reason: "closed",
+			p_attempt_ids: attempts(s),
 		});
 	});
 });

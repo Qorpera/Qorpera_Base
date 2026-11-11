@@ -237,6 +237,12 @@ describe("member Company Computer transport", () => {
 			[[{ ...machine, control: { mine: false, name: "", until: "2026-11-10T19:00:00Z" } }], {}],
 			[[{ ...machine, control: { mine: false, name: "Ada" } }], {}],
 			[[{ ...machine, control: "Ada" }], {}],
+			// The attempt that holds it is the caller's own hold's alone, and a uuid (review r3).
+			[[{ ...machine, control: { mine: false, name: "Ada", until: "2026-11-10T19:00:00Z", attempt: id(30) } }], {}],
+			[
+				[{ ...machine, control: { mine: true, name: "Ada", until: "2026-11-10T19:00:00Z", attempt: "attempt" } }],
+				{},
+			],
 		] as const) {
 			reply([...machines], extra);
 			await expect(f.client.agentMachines(id(5), signal), JSON.stringify(extra)).rejects.toThrow();
@@ -259,6 +265,8 @@ describe("member Company Computer transport", () => {
 			waitingFor: null,
 		};
 		const control = { mine: false, name: "Ada Lovelace", until: "2026-11-10T19:05:00.123+00:00" };
+		// The caller's own hold names the take-over attempt that holds it (review r3).
+		const own = { mine: true, name: "Owner", until: "2026-11-10T19:05:00.123+00:00", attempt: id(30) };
 		f.fetch.mockResolvedValueOnce(
 			Response.json({
 				schema: "qorpera.agent-machines/v1",
@@ -266,13 +274,19 @@ describe("member Company Computer transport", () => {
 				staffAgentId: id(5),
 				canWake: true,
 				canTakeOver: false,
-				machines: [{ ...machine, control }],
+				machines: [
+					{ ...machine, control },
+					{ ...machine, machineId: id(21), control: own },
+				],
 			}),
 		);
 		expect(await f.client.agentMachines(id(5), signal)).toEqual({
 			canWake: true,
 			canTakeOver: false,
-			machines: [{ ...machine, control }],
+			machines: [
+				{ ...machine, control: { ...control, attempt: null } },
+				{ ...machine, machineId: id(21), control: own },
+			],
 		});
 		f.fetch.mockResolvedValueOnce(
 			Response.json({
@@ -294,38 +308,55 @@ describe("member Company Computer transport", () => {
 			signal = new AbortController().signal;
 		const answer = (value: Record<string, unknown>) =>
 			f.fetch.mockResolvedValueOnce(Response.json({ schema: "qorpera.member-machine-desktop/v1", ...value }));
+		const attempt = id(30);
 		answer({ state: "ok", until: "2026-11-10T19:05:00+00:00" });
-		expect(await f.client.takeDesktop(id(20), signal)).toEqual({ state: "ok", until: "2026-11-10T19:05:00+00:00" });
+		expect(await f.client.takeDesktop(id(20), attempt, signal)).toEqual({
+			state: "ok",
+			until: "2026-11-10T19:05:00+00:00",
+		});
 		expect(f.fetch.mock.calls[0][0]).toBe("https://control.test/rest/v1/rpc/qorpera_member_take_machine_desktop");
 		expect(JSON.parse(f.fetch.mock.calls[0][1]!.body as string)).toEqual({
 			p_profile_id: id(1),
 			p_machine_id: id(20),
+			p_attempt_id: attempt,
 		});
 		answer({ state: "refused", reason: "DESKTOP_MEMBER_IN_CONTROL", memberName: "Ada" });
-		expect(await f.client.takeDesktop(id(20), signal)).toEqual({
+		expect(await f.client.takeDesktop(id(20), attempt, signal)).toEqual({
 			state: "refused",
 			reason: "DESKTOP_MEMBER_IN_CONTROL",
 			memberName: "Ada",
 		});
 		answer({ state: "refused", reason: "MACHINE_NOT_RUNNING" });
-		expect(await f.client.takeDesktop(id(20), signal)).toEqual({
+		expect(await f.client.takeDesktop(id(20), attempt, signal)).toEqual({
 			state: "refused",
 			reason: "MACHINE_NOT_RUNNING",
 			memberName: null,
 		});
+		// An attempt a hand-back called off (review r3).
+		answer({ state: "refused", reason: "TAKE_CALLED_OFF" });
+		expect(await f.client.takeDesktop(id(20), attempt, signal)).toEqual({
+			state: "refused",
+			reason: "TAKE_CALLED_OFF",
+			memberName: null,
+		});
 		for (const bad of [{ state: "refused", reason: "SOMETHING" }, { state: "ok" }, { state: "ok", until: 5 }]) {
 			answer(bad);
-			await expect(f.client.takeDesktop(id(20), signal), JSON.stringify(bad)).rejects.toThrow();
+			await expect(f.client.takeDesktop(id(20), attempt, signal), JSON.stringify(bad)).rejects.toThrow();
 		}
 		answer({ state: "ok", until: "2026-11-10T19:06:00+00:00" });
-		expect(await f.client.keepDesktop(id(20), signal)).toBe("2026-11-10T19:06:00+00:00");
+		expect(await f.client.keepDesktop(id(20), attempt, signal)).toBe("2026-11-10T19:06:00+00:00");
+		expect(JSON.parse(f.fetch.mock.calls.at(-1)![1]!.body as string)).toEqual({
+			p_profile_id: id(1),
+			p_machine_id: id(20),
+			p_attempt_id: attempt,
+		});
 		answer({ state: "ended" });
-		expect(await f.client.keepDesktop(id(20), signal)).toBeNull();
+		expect(await f.client.keepDesktop(id(20), attempt, signal)).toBeNull();
 		expect(f.fetch.mock.calls.at(-1)![0]).toBe(
 			"https://control.test/rest/v1/rpc/qorpera_member_keep_machine_desktop",
 		);
 		answer({ state: "ok", handedBack: true });
-		expect(await f.client.handBackDesktop(id(20), "closed", signal)).toBe(true);
+		expect(await f.client.handBackDesktop(id(20), "closed", [attempt, id(31)], signal)).toBe(true);
 		expect(f.fetch.mock.calls.at(-1)![0]).toBe(
 			"https://control.test/rest/v1/rpc/qorpera_member_hand_back_machine_desktop",
 		);
@@ -333,10 +364,25 @@ describe("member Company Computer transport", () => {
 			p_profile_id: id(1),
 			p_machine_id: id(20),
 			p_reason: "closed",
+			p_attempt_ids: [attempt, id(31)],
 		});
 		f.fetch.mockResolvedValueOnce(Response.json({ schema: "qorpera.member-machine-screen/v1", state: "ok" }));
-		await expect(f.client.handBackDesktop(id(20), "handed_back", signal)).rejects.toThrow();
-		await expect(f.client.takeDesktop("machine", signal)).rejects.toThrow();
+		await expect(f.client.handBackDesktop(id(20), "handed_back", [], signal)).rejects.toThrow();
+		const calls = f.fetch.mock.calls.length;
+		await expect(f.client.takeDesktop("machine", attempt, signal)).rejects.toThrow();
+		await expect(f.client.takeDesktop(id(20), "attempt", signal)).rejects.toThrow();
+		await expect(f.client.keepDesktop(id(20), "attempt", signal)).rejects.toThrow();
+		await expect(f.client.handBackDesktop(id(20), "closed", ["attempt"], signal)).rejects.toThrow();
+		await expect(
+			f.client.handBackDesktop(
+				id(20),
+				"closed",
+				Array.from({ length: 33 }, (_, n) => id(100 + n)),
+				signal,
+			),
+		).rejects.toThrow();
+		// None of those reached the network.
+		expect(f.fetch.mock.calls.length).toBe(calls);
 	});
 	it("wakes a sleeping machine through the members' machine start", async () => {
 		const f = fixture(),

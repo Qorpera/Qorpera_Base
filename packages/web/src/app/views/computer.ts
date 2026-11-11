@@ -436,12 +436,14 @@ export class ComputerPanel {
 			}
 			const machine = this.#pick();
 			if (machine?.machineId !== this.#machineId) {
-				// The member chose another machine: the desktop they held (or are taking over) goes back (review r1 F6).
-				if (
-					this.#machineId !== undefined &&
-					((this.#holding && this.#holding !== machine?.machineId) || this.#taking)
-				)
-					void this.handBack();
+				// The member chose another machine: whatever the ledger has of the one shown before goes back, held, may be held
+				// (a lost answer), on its way or queued; the window's own state does not decide it (review r1 F6, r3 F8).
+				for (const before of new Set([this.#machineId, this.#holding])) {
+					if (before === undefined || before === machine?.machineId) continue;
+					if (this.#holding === before) this.#released();
+					this.#ledger.release(before, this.agentId);
+					if (this.#ledger.releasing(before)) this.#wantTakeOver = false;
+				}
 				this.#machineId = machine?.machineId;
 				this.#etag = null;
 				this.#lastLook = Number.NEGATIVE_INFINITY;
@@ -557,25 +559,26 @@ export class ComputerPanel {
 	}
 
 	/** What the list says of the member's own holds, each by its machine's own id, never by the machine shown (review r1
-	 * F6). The ledger hears it first: hand-backs it confirms, ones it still shows held (asked again), lost answers, and
-	 * holds on machines given back in this page's lifetime (given back again). The hold the window has ends when the list
+	 * F6), and by the take-over attempt that holds each (review r3). The ledger hears it first: a lost answer whose attempt
+	 * holds the lease is held; a held attempt that no longer holds it lost it. The hold the window has ends when the list
 	 * no longer shows it. One of theirs on the machine shown that the window does not know (the page was loaded again) is
-	 * taken up, unless the ledger says it was given back in this page's lifetime (review r2 F5). A list asked before the
-	 * hold last changed says nothing of it. */
+	 * taken up by its attempt, unless this page gave that machine back. A list asked before the hold last changed says
+	 * nothing of it. */
 	#heldPerList(asked: number): void {
 		const machines = this.#listed?.machines ?? [];
-		this.#ledger.listed(this.agentId, machines, asked);
+		this.#ledger.listed(machines, asked);
 		const mine = (machineId: string | undefined) =>
-			machines.some((row) => row.machineId === machineId && row.control?.mine === true && row.state === "running");
+			machines.find((row) => row.machineId === machineId && row.control?.mine === true && row.state === "running");
 		if (asked >= this.#holdChangedAt) {
 			if (this.#holding && !mine(this.#holding)) this.#released();
 			const shown = this.#pick();
+			const held = shown ? mine(shown.machineId) : undefined;
 			if (
 				!this.#holding &&
 				!this.#taking &&
 				shown &&
-				mine(shown.machineId) &&
-				this.#ledger.adopt(shown.machineId, this.agentId)
+				held &&
+				this.#ledger.adopt(shown.machineId, this.agentId, held.control?.attempt ?? null)
 			)
 				this.#held(shown.machineId);
 		}
@@ -587,7 +590,7 @@ export class ComputerPanel {
 	 * again. */
 	#holdsChanged(): void {
 		if (this.#stop.signal.aborted) return;
-		if (this.#holding && !this.#ledger.mayKeep(this.#holding)) this.#released();
+		if (this.#holding && !this.#ledger.holder(this.#holding)) this.#released();
 		const release = this.#machineId ? this.#ledger.releasing(this.#machineId) : undefined;
 		if (this.#releaseShown && !release) {
 			this.#listStale = true;
@@ -597,9 +600,10 @@ export class ComputerPanel {
 		this.#syncControls();
 	}
 
-	/** Takes the desktop shown over, once, through the company's ledger: its hold, or why not. Called off meanwhile (a
-	 * hand-back, the window's close, a switch to another machine), a hold that comes back is given back at once and never
-	 * renewed (review r1 F5); so is one of a machine no longer shown. A lost answer stays in the ledger as "may be held". */
+	/** Takes the desktop shown over, once, through the company's ledger, as a take-over attempt of its own: its hold, or
+	 * why not. Called off meanwhile (a hand-back, the window's close, a switch to another machine), what it got goes back
+	 * with the hand-back that names it and is never renewed (review r1 F5, r3); so is one of a machine no longer shown. A
+	 * lost answer stays in the ledger as "may be held" until a hand-back names it or the list says it holds. */
 	async #take(): Promise<void> {
 		const computer = this.#computer;
 		const machine = this.#pick();
@@ -658,8 +662,10 @@ export class ComputerPanel {
 		const machineId = this.#holding;
 		const computer = this.#computer;
 		if (!machineId || !computer || this.#stop.signal.aborted) return;
-		// A hold the ledger no longer lets the window keep (a hand-back was asked) is never renewed.
-		if (!this.#ledger.mayKeep(machineId)) {
+		// A hold the ledger no longer lets the window keep (a hand-back was asked) is never renewed; the heartbeat names the
+		// attempt that holds it, and renews only that attempt's lease (review r3).
+		const attempt = this.#ledger.holder(machineId);
+		if (!attempt) {
 			this.#released();
 			return;
 		}
@@ -670,15 +676,17 @@ export class ComputerPanel {
 		}
 		let until: string | null | undefined;
 		try {
-			until = await computer.keepDesktop(machineId, this.#stop.signal);
+			until = await computer.keepDesktop(machineId, attempt, this.#stop.signal);
 		} catch {
 			until = undefined;
 		}
-		if (this.#stop.signal.aborted || this.#holding !== machineId || !this.#ledger.mayKeep(machineId)) return;
+		if (this.#stop.signal.aborted || this.#holding !== machineId || this.#ledger.holder(machineId) !== attempt)
+			return;
 		if (until === null) {
-			// It ended (handed back elsewhere, run out after 30 minutes without input, or another member's now).
+			// It ended (handed back elsewhere, run out after 30 minutes without input, taken again by a newer take-over of
+			// the member's, or another member's now).
 			this.#released();
-			this.#ledger.ended(machineId);
+			this.#ledger.ended(machineId, attempt);
 			this.#listStale = true;
 			this.#poke();
 			return;
@@ -713,6 +721,7 @@ export class ComputerPanel {
 			let busySince: number | undefined;
 			while (this.#queue.length && this.#holding && !this.#stop.signal.aborted) {
 				const machineId = this.#holding;
+				const attempt = this.#ledger.holder(machineId);
 				const action = this.#queue[0] as MachineDesktopAction;
 				let answer: MachineActAnswer | undefined;
 				try {
@@ -738,7 +747,7 @@ export class ComputerPanel {
 				) {
 					// The hold ended under the action (handed back elsewhere, or it ran out): the list says where it stands.
 					this.#released();
-					this.#ledger.ended(machineId);
+					if (attempt) this.#ledger.ended(machineId, attempt);
 					this.#listStale = true;
 				}
 				// The screen changed (or may have): look again soon.
