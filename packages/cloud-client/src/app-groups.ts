@@ -63,9 +63,12 @@ export type AppGroupsDrawnNode =
 	  };
 
 const GROUP_ID = /^[a-z0-9-]{1,40}$/;
-const LIST_LINE = /^([ \t]*)[-*][ \t]+(\S.*?)[ \t\r]*$/s;
+// Every pattern here runs in time linear in its line, whatever a line holds (a run of 60,000 spaces included): no two
+// quantifiers next to each other can take the same character. Trailing spaces, tabs and carriage returns are cut with
+// a loop (`trimTail`), not a pattern.
+const LIST_LINE = /^([ \t]*)[-*][ \t]+(\S.*)$/s;
 const GROUP_LINE = /^group[ \t]+([^\s:]+)[ \t]*:[ \t]*(.*)$/s;
-const RETIRED_LINE = /^<!--[ \t]*retired group ids:[ \t]*([^>]*?)[ \t]*-->[ \t]*$/;
+const RETIRED_LINE = /^<!--[ \t]*retired group ids:([^>]*)-->[ \t]*$/;
 const CONTROL = /[\u0000-\u001f\u007f\u2028\u2029]/;
 /** What would end a line where a list line is written: written as a space. */
 const BREAKS = /[\r\n\u2028\u2029]+/g;
@@ -124,15 +127,19 @@ export function parseAppGroups(text: string): AppGroupsFile {
 	const stack: AppGroupNode[][] = [root];
 	const keys = new Set<string>();
 	const ids = new Set<string>();
+	const retiredSeen = new Set<string>();
 	let listed = false;
 	for (const raw of lines) {
 		// Every carriage return at a line's end goes, so no line, key or words end in one and a written line reads back
 		// the same.
-		const line = raw.replace(/\r+$/, "");
+		const line = trimTail(raw, "\r");
 		const kept = RETIRED_LINE.exec(line);
 		if (kept) {
 			for (const id of (kept[1] ?? "").split(/[\s,]+/))
-				if (isAppGroupId(id) && !retired.includes(id)) retired.push(id);
+				if (isAppGroupId(id) && !retiredSeen.has(id)) {
+					retiredSeen.add(id);
+					retired.push(id);
+				}
 			continue;
 		}
 		const item = LIST_LINE.exec(line);
@@ -142,7 +149,7 @@ export function parseAppGroups(text: string): AppGroupsFile {
 		}
 		listed = true;
 		const width = [...(item[1] ?? "")].reduce((sum, character) => sum + (character === "\t" ? 2 : 1), 0);
-		const content = item[2] ?? "";
+		const content = trimTail(item[2] ?? "", " \t\r");
 		const group = GROUP_LINE.exec(content);
 		const id = group?.[1] ?? "";
 		const name = group ? appGroupName(group[2] ?? "") : null;
@@ -261,6 +268,13 @@ function bounded(text: string): string {
 	const cut = new TextDecoder().decode(bytes.subarray(0, APP_GROUPS_MAX_BYTES));
 	const end = cut.lastIndexOf("\n");
 	return end < 0 ? "" : cut.slice(0, end + 1);
+}
+
+/** `text` without the characters of `cut` at its end. */
+function trimTail(text: string, cut: string): string {
+	let end = text.length;
+	while (end > 0 && cut.includes(text[end - 1] as string)) end--;
+	return end === text.length ? text : text.slice(0, end);
 }
 
 function trimBlank(lines: readonly string[]): string[] {

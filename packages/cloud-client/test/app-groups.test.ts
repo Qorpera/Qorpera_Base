@@ -230,6 +230,28 @@ A closing note.
 		expect(parseAppGroups(writeAppGroups(returnsFile))).toEqual(returnsFile);
 	});
 
+	it("reads lines of long runs of spaces or carriage returns in time linear in the line", () => {
+		const spaces = " ".repeat(60_000);
+		const returns = "\r".repeat(60_000);
+		for (const line of [
+			`<!-- retired group ids:${spaces}x`,
+			`- a${returns}b`,
+			`- a${spaces}b`,
+			`- a${spaces}`,
+			`- app:a${returns}`,
+			`x${returns}y`,
+		]) {
+			const started = performance.now();
+			const file = parseAppGroups(`${line}\n`);
+			expect(performance.now() - started).toBeLessThan(500);
+			expect(parseAppGroups(writeAppGroups(file))).toEqual(file);
+		}
+		expect(parseAppGroups(`- app:a${spaces}\n`).items).toEqual([{ kind: "item", key: "app:a", words: "" }]);
+		expect(
+			parseAppGroups(`<!-- retired group ids: ${spaces.slice(30_000)}g, h ${spaces.slice(30_000)}-->\n`).retired,
+		).toEqual(["g", "h"]);
+	});
+
 	it("is not an app of the drawer", () => {
 		expect(appPath("apps/groups.md")).toBeNull();
 	});
