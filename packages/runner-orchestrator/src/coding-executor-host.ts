@@ -457,11 +457,23 @@ const CODE_CHECKS_NEWER_RUN = [
 ];
 /** The copy: a clean copy of exactly the candidate on the machine's own disk, read from the repository's storage in the
  * company folder (no untracked or ignored file of any worktree), after waiting for a merge commit job A just wrote to
- * reach the session's view. A root that is a link or a file is taken away first, so nothing is removed through it;
- * then a copy of a run that is not the newest exits 91, having removed and made nothing. Otherwise it removes the run
- * folders with a lower name, as far as it can (what a check left that its user cannot remove, a container's files,
- * never stops a copy), and no other entry: two copies that land at once never remove each other's newer folder. Its
- * values come in the environment. */
+ * reach the session's view. Its values come in the environment. In this order (review round 5, F1):
+ * 1. A root that is a link or a file is taken away, so nothing is made or removed through it.
+ * 2. A copy of a run that is not the newest exits 91, having removed and made nothing (CODE_CHECKS_NEWER_RUN).
+ * 3. The fence: its own folder is made at once (one that is a link or a file is taken away first), and stands from here
+ *    on, never removed and made again. From this step on any start of an earlier run that lands finds a higher name
+ *    and does nothing.
+ * 4. What earlier runs left running ends: every process of this user whose working folder is inside a run folder with
+ *    a lower name (`/proc/<pid>/cwd`, also when its folder is gone, " (deleted)") is killed (KILL), and they are looked
+ *    for again after a short wait, at most five times. That ends a check that landed before the fence stood, and one
+ *    left running by a turn that was given up or by an executor that restarted. Nothing else is killed: not a process in
+ *    this run's folder, not one elsewhere in the home, not another user's (its `/proc` entry cannot be read). It cannot
+ *    reach a process that left its folder (a server that changed its working folder, a daemon that went to `/`), nor one
+ *    in a container under another uid.
+ * 5. The run folders with a lower name are removed, as far as they can be (what a check left that its user cannot
+ *    remove, a container's files, never stops a copy), and no other entry: two copies that land at once never remove
+ *    each other's newer folder.
+ * 6. Its own folder is emptied (only what is in it), and the copy is made in it. */
 const CODE_CHECKS_COPY = [
 	"set -eu",
 	'r="$QORPERA_CHECKS_ROOT"',
@@ -470,6 +482,24 @@ const CODE_CHECKS_COPY = [
 	'if [ -L "$r" ] || { [ -e "$r" ] && [ ! -d "$r" ]; }; then rm -f -- "$r"; fi',
 	'mkdir -p -- "$r"',
 	...CODE_CHECKS_NEWER_RUN,
+	'if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then rm -f -- "$d"; fi',
+	'mkdir -p -- "$d"',
+	"(",
+	"\tLC_ALL=C",
+	"\tfor t in 1 2 3 4 5; do",
+	"\t\tk=0",
+	"\t\twhile IFS= read -r -d '' h && IFS= read -r -d '' c; do",
+	`\t\t\tc="\${c% (deleted)}"`,
+	'\t\t\tcase "$c" in "$r"/*) ;; *) continue ;; esac',
+	`\t\t\tm="\${c#"$r"/}"; m="\${m%%/*}"`,
+	"\t\t\tif [[ $m =~ ^[0-9]{10}-[0-9]{4}$ && $m < $n ]]; then",
+	`\t\t\t\tkill -KILL "\${h#/proc/}" 2>/dev/null || true; k=1`,
+	"\t\t\tfi",
+	"\t\tdone < <(find /proc -mindepth 2 -maxdepth 2 -name cwd -printf '%h\\0%l\\0' 2>/dev/null)",
+	'\t\t[ "$k" -eq 1 ] || break',
+	"\t\tsleep 0.2",
+	"\tdone",
+	")",
 	"(",
 	"\tLC_ALL=C",
 	'\tfor e in "$r"/*; do',
@@ -477,7 +507,7 @@ const CODE_CHECKS_COPY = [
 	'\t\tif [[ $m =~ ^[0-9]{10}-[0-9]{4}$ && $m < $n ]]; then rm -rf -- "$e" || true; fi',
 	"\tdone",
 	")",
-	'rm -rf -- "$d"',
+	'find "$d" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +',
 	'mkdir -p -- "$d/out"',
 	"i=0",
 	'until git -C "$QORPERA_CHECKS_REPOSITORY" cat-file -e "$QORPERA_CHECKS_COMMIT^{commit}" 2>/dev/null; do',
@@ -669,6 +699,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	/** Per session, a command of a run of its checks whose end this process could not confirm (release review r1, F1):
 	 * no new run of its checks starts until a cancel and a read confirm it ended. */
 	readonly #checksUnended = new Map<string, string>();
+	/** Per session, commands of runs of its checks whose start was never answered when they were cancelled (review round
+	 * 5, F1): the guest may never have had them, and their `cancelled` is provisional, so one may still land. After the
+	 * copy of a later run has made its folder (the fence that refuses any of them that lands later), and before that
+	 * run's first check, each is cancelled and read once more: one that landed is stopped and confirmed, or the run does
+	 * not go on; one still absent is forgotten. */
+	readonly #checksMayLand = new Map<string, Set<string>>();
 	#archiveScanAt = Number.NEGATIVE_INFINITY;
 	constructor(options: LxdCodingExecutorHostOptions) {
 		if (
@@ -1798,7 +1834,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * marked for a new disk), never the model's: the turn has handed in, and the model's commands are refused. Each
 	 * command gets `CI=true` and `QORPERA_CHECKS=1`. The run works in a folder of its own, `~/.qorpera-checks/<its turn's
 	 * sequence>-<its attempt>` (codeChecksRunName), and its copy removes the earlier runs' folders; a command of a run
-	 * that is not the newest does nothing (CODE_CHECKS_NEWER_RUN). The first check that fails ends the run. It never
+	 * that is not the newest does nothing (CODE_CHECKS_NEWER_RUN). The copy makes that folder first (the fence) and ends
+	 * what earlier runs left running in theirs; after it, before the first check, each command of an earlier run whose
+	 * start may still land is cancelled and read once more (#checksLanded; review round 5, F1). The first check that
+	 * fails ends the run. It never
 	 * throws for a check's or the machine's sake: what could not run, or ran past the run's wall budget, is `not_run`
 	 * with why, a running command stopped first (#stopChecksCommand). A command whose end could not be confirmed (its
 	 * cancels rejected, or still `running`) holds every later run of the session's checks: each is `not_run` (`machine`,
@@ -1874,13 +1913,14 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (earlier !== undefined) {
 			let ended = false;
 			try {
-				ended = await this.#stopChecksCommand(
-					this.#folderTransport(folder, ready, { cwd: home, environment: base, authorize: checked }),
-					ready.scope,
-					earlier,
-					folder,
-					signal,
-				);
+				ended =
+					(await this.#stopChecksCommand(
+						this.#folderTransport(folder, ready, { cwd: home, environment: base, authorize: checked }),
+						ready.scope,
+						earlier,
+						folder,
+						signal,
+					)) !== "unconfirmed";
 			} catch (error) {
 				if (signal.aborted) throw signal.reason;
 				this.#checksReport({ event: "code-checks-error", step: "earlier", ...said, error });
@@ -1971,6 +2011,14 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				// fault of the code.
 				if (receipt.state === "succeeded") {
 					copyMs = ms;
+					// The fence stands: a command of an earlier run that may still land is cancelled and read once more before
+					// the first check starts. One that landed before the fence and still runs is stopped and confirmed, or no
+					// check of this run starts.
+					const landed = await this.#checksLanded(claim, ready, folder, home, base, checked, said, signal);
+					if (landed !== undefined) {
+						this.#checksUnended.set(claim.workerId, landed);
+						return answer({ state: "not_run", why: "machine", code: CODE_CHECKS_EARLIER_RUN_NOT_STOPPED });
+					}
 					continue;
 				}
 				return answer(
@@ -2004,6 +2052,43 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		}
 		return answer({ state: "passed", ms: elapsed(began), copyMs, checks: passed });
 	}
+	/** After a run's copy made its folder (the fence), each command of an earlier run of the session's checks that may
+	 * still land (#checksMayLand) is cancelled and read once more, within CODE_CHECKS_STOP_MS: ended, or never kept, or
+	 * still absent (its provisional `cancelled` again: the fence now refuses it if it lands), it is forgotten. Answers the
+	 * first one whose end could not be confirmed (it landed and still runs), or undefined. The turn's abort is thrown on. */
+	async #checksLanded(
+		claim: CodingSessionClaim,
+		ready: Prepared,
+		folder: FolderOptions,
+		home: string,
+		environment: Readonly<Record<string, string>>,
+		authorize: LxdCodingFolderCommandTransportOptions["authorize"],
+		said: Record<string, unknown>,
+		signal: AbortSignal,
+	): Promise<string | undefined> {
+		const may = this.#checksMayLand.get(claim.workerId);
+		for (const commandId of [...(may ?? [])]) {
+			let end: "ended" | "unkept" | "unconfirmed" = "unconfirmed";
+			try {
+				end = await this.#stopChecksCommand(
+					this.#folderTransport(folder, ready, { cwd: home, environment, authorize }),
+					ready.scope,
+					commandId,
+					folder,
+					signal,
+				);
+			} catch (error) {
+				if (signal.aborted) throw signal.reason;
+				this.#checksReport({ event: "code-checks-error", step: "landed", ...said, error });
+			}
+			this.#checksReport({ event: "code-checks", step: "landed", ...said, commandId, end });
+			// Looked at now: one still running is the guard's before every later run (#checksUnended), and no more this one's.
+			may?.delete(commandId);
+			if (may?.size === 0) this.#checksMayLand.delete(claim.workerId);
+			if (end === "unconfirmed") return commandId;
+		}
+		return undefined;
+	}
 	/** One command of a run of the checks, to its end: started, then read every CODE_CHECKS_POLL_MS until it ends. A
 	 * call that fails is asked again at the next read (a start again is the same command) until the time of
 	 * CODE_CHECKS_UNANSWERED_READS reads passed without an answer. A command that ended is shown only as a model's
@@ -2032,13 +2117,20 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const live = AbortSignal.any([signal, budget]);
 		const pollMs = folder.checksPollMs ?? CODE_CHECKS_POLL_MS;
 		const { commandId } = command;
+		// The command's last receipt: none while its start was never answered.
+		let receipt: CloudCodingCommandReceipt | undefined;
 		// Whatever runs of it stops, with time of its own: once the turn has given up (its abort is thrown on after), the
-		// budget passed, or its calls went unanswered. An end not confirmed holds every later run of the session's checks.
+		// budget passed, or its calls went unanswered. An end not confirmed holds every later run of the session's checks;
+		// one whose start was never answered may still land, and is looked at again once the next run's fence stands.
 		const stopped = async <T extends object>(then: T): Promise<T & { stopped: boolean }> => {
-			const ended = await this.#stopChecksCommand(transport, scope, commandId, folder);
-			if (!ended) this.#checksUnended.set(scope.workerId, commandId);
+			const end = await this.#stopChecksCommand(transport, scope, commandId, folder);
+			if (end === "unconfirmed") this.#checksUnended.set(scope.workerId, commandId);
+			else if (end === "ended" && receipt === undefined) {
+				const may = this.#checksMayLand.get(scope.workerId) ?? new Set<string>();
+				this.#checksMayLand.set(scope.workerId, may.add(commandId));
+			}
 			if (signal.aborted) throw signal.reason;
-			return { ...then, stopped: ended };
+			return { ...then, stopped: end !== "unconfirmed" };
 		};
 		const overBudget = { why: "budget" as const, code: "CODE_CHECKS_BUDGET" };
 		const failed = (error: unknown) => ({
@@ -2046,7 +2138,6 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			code: errorCodeOf(error),
 			error,
 		});
-		let receipt: CloudCodingCommandReceipt | undefined;
 		let unanswered: number | undefined;
 		for (;;) {
 			try {
@@ -2105,25 +2196,31 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * reads it, and nothing may read it again). It is believed all the same, and the next run goes on, because such a
 	 * command is harmless by the scripts' own rule on the machine: it belongs to a run that is no longer the newest, and
 	 * its copy or check finds the newer run's folder (a higher name) and exits 91 having removed, made and run nothing
-	 * (CODE_CHECKS_NEWER_RUN). The guard for a command that still reads `running` stays: that one did start. */
+	 * (CODE_CHECKS_NEWER_RUN). Since review round 5 the host also remembers such a command (#checksMayLand) and looks
+	 * at it once more after the next run's fence stands: a start that landed in the moment before the fence is stopped
+	 * then, besides the copy ending every process left in an earlier run's folder. The guard for a command that still
+	 * reads `running` stays: that one did start.
+	 *
+	 * Answers `ended` (confirmed), `unkept` (the host never kept a start of it: nothing of it reached the guest), or
+	 * `unconfirmed` (the bound passed). */
 	async #stopChecksCommand(
 		transport: LxdCodingFolderCommandTransport,
 		scope: CloudCodingCommandScope,
 		commandId: string,
 		folder: FolderOptions,
 		turn?: AbortSignal,
-	): Promise<boolean> {
+	): Promise<"ended" | "unkept" | "unconfirmed"> {
 		const bound = AbortSignal.timeout(folder.checksStopMs ?? CODE_CHECKS_STOP_MS);
 		const checked = turn ? AbortSignal.any([turn, bound]) : bound;
 		const pollMs = folder.checksPollMs ?? CODE_CHECKS_POLL_MS;
 		for (;;) {
 			try {
-				if ((await transport.cancel(scope, commandId, checked)).state !== "running") return true;
+				if ((await transport.cancel(scope, commandId, checked)).state !== "running") return "ended";
 			} catch (error) {
 				if (turn?.aborted) throw turn.reason;
-				if (error instanceof Error && error.message === "CODING_COMMAND_UNKNOWN") return true;
+				if (error instanceof Error && error.message === "CODING_COMMAND_UNKNOWN") return "unkept";
 				try {
-					if ((await transport.hidden(commandId, checked)) === "machine_stopped") return true;
+					if ((await transport.hidden(commandId, checked)) === "machine_stopped") return "ended";
 				} catch {
 					if (turn?.aborted) throw turn.reason;
 				}
@@ -2132,7 +2229,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				await setTimeout(pollMs, undefined, { signal: checked });
 			} catch {
 				if (turn?.aborted) throw turn.reason;
-				return false;
+				return "unconfirmed";
 			}
 		}
 	}

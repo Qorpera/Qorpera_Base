@@ -1,6 +1,8 @@
-import { execFile } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -6045,6 +6047,110 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(cancels()).toHaveLength(after);
 		});
 
+		/** A run whose one check's start never reaches the guest while the host asks (every answer lost), so its cancel
+		 * finds nothing there: `cancelled`, for now. Then the lost start lands, before the retry's folder exists: the guest
+		 * runs it (`running`), as a test server would run on. `stops` says whether the guest's cancel of it ends it. */
+		const landsLate = async (stops: boolean) => {
+			const f = await checksFixture();
+			const older = runName(f.claim.sequence, 1);
+			const run = mocked.guestRun.getMockImplementation()!;
+			const lost: CodingGuestRunRequest[] = [];
+			mocked.guestRun.mockImplementation(async (request: unknown) => {
+				const asked = parseCodingGuestRequest("run", request);
+				if (asked.environment.QORPERA_CHECKS_NAME !== older || !checkOf(asked)) return run(request);
+				lost.push(asked);
+				throw new Error("LXD operation failed");
+			});
+			expect(await f.run(CHECKS.slice(0, 1))).toEqual({ state: "not_run", why: "transport", code: "UNCLASSIFIED" });
+			const landed = lost[0] as CodingGuestRunRequest;
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "ended", attempt: 1, index: 1, state: "not_run", stopped: true }),
+			);
+			// It lands now, before the retry made anything.
+			f.commands.set(landed.commandId, {
+				run: landed,
+				state: "running",
+				exit: null,
+				printed: Buffer.from("listening on 3000\n"),
+				ending: { state: "running" },
+				until: Number.POSITIVE_INFINITY,
+			});
+			const cancel = mocked.guestCancel.getMockImplementation()!;
+			if (!stops)
+				mocked.guestCancel.mockImplementation(async (request: unknown) => {
+					const asked = parseCodingGuestRequest("cancel", request);
+					if (asked.commandId !== landed.commandId) return cancel(request);
+					return {
+						schema: "qorpera.coding-guest-command/v1",
+						workerId: f.claim.workerId,
+						commandId: asked.commandId,
+						state: "running",
+						exit: null,
+						end: 0,
+					};
+				});
+			return { f, landed, older, newer: runName(f.claim.sequence, 2) };
+		};
+		const orderOf = (mock: { mock: { calls: unknown[][]; invocationCallOrder: number[] } }, commandId: string) =>
+			mock.mock.calls.flatMap(([request], at) =>
+				(request as { commandId: string }).commandId === commandId
+					? [mock.mock.invocationCallOrder[at] as number]
+					: [],
+			);
+
+		it("stops a check whose lost start landed before the retry's folder, after the retry's copy and before its first check (review round 5, F1)", async () => {
+			const { f, landed, newer } = await landsLate(true);
+			f.ending(() => ({}));
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toMatchObject({ state: "passed" });
+			const [copy, check] = f.ran().filter((ran) => ran.environment.QORPERA_CHECKS_NAME === newer);
+			// The retry's copy (the fence), then the landed check cancelled and read until it ended, then the first check.
+			const copied = orderOf(mocked.guestRun, copy?.commandId as string)[0] as number,
+				checked = orderOf(mocked.guestRun, check?.commandId as string)[0] as number;
+			const looked = orderOf(mocked.guestCancel, landed.commandId).filter((at) => at > copied);
+			expect(looked.length).toBeGreaterThan(0);
+			expect(Math.max(...looked)).toBeLessThan(checked);
+			expect(f.commands.get(landed.commandId)?.state).toBe("cancelled");
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({
+					event: "code-checks",
+					step: "landed",
+					attempt: 2,
+					commandId: landed.commandId,
+					end: "ended",
+				}),
+			);
+			// Looked at once: the next run asks nothing more of it.
+			const asked = mocked.guestCancel.mock.calls.length;
+			expect(await f.run(CHECKS.slice(0, 1), 3)).toMatchObject({ state: "passed" });
+			expect(mocked.guestCancel.mock.calls).toHaveLength(asked);
+		});
+
+		it("starts no check when a lost start that landed before the retry's folder cannot be stopped (review round 5, F1)", async () => {
+			const { f, landed, newer } = await landsLate(false);
+			f.ending(() => ({}));
+			expect(await f.run(CHECKS.slice(0, 1), 2)).toEqual({
+				state: "not_run",
+				why: "machine",
+				code: "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED",
+			});
+			// The retry's copy ran (its fence stands); no check of it started.
+			expect(
+				f
+					.ran()
+					.filter((ran) => ran.environment.QORPERA_CHECKS_NAME === newer)
+					.map(checkOf),
+			).toEqual([undefined]);
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "landed", attempt: 2, commandId: landed.commandId, end: "unconfirmed" }),
+			);
+			// It holds every later run before anything, until it has ended.
+			const before = f.ran().length;
+			expect(await f.run(CHECKS.slice(0, 1), 3)).toMatchObject({ code: "CODE_CHECKS_EARLIER_RUN_NOT_STOPPED" });
+			expect(f.ran()).toHaveLength(before);
+			(f.commands.get(landed.commandId) as { state: CodingGuestCommandState }).state = "cancelled";
+			expect(await f.run(CHECKS.slice(0, 1), 4)).toMatchObject({ state: "passed" });
+		});
+
 		it("lets a copy whose start was never acknowledged land after the retry began: the retry is not held back, and the late copy does nothing (review round 4, F1)", async () => {
 			const f = await checksFixture();
 			const older = runName(f.claim.sequence, 1),
@@ -6202,7 +6308,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			await writeFile(join(at, "notes.md"), "keep\n");
 			return { home: at, root: join(at, ".qorpera-checks") };
 		};
-		const copy = (at: { home: string; root: string }, name: string) =>
+		const copy = (at: { home: string; root: string }, name: string, extra: Record<string, string> = {}) =>
 			bash(
 				copyRun?.command as string,
 				{
@@ -6211,6 +6317,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 					QORPERA_CHECKS_NAME: name,
 					QORPERA_CHECKS_REPOSITORY: repository,
 					QORPERA_CHECKS_COMMIT: commit,
+					...extra,
 				},
 				at.home,
 			);
@@ -6232,7 +6339,19 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				() => true,
 				() => false,
 			);
-		return { f, commit, git, bash, home, copy, check, exists, copyScript: copyRun?.command as string };
+		return {
+			f,
+			top,
+			commit,
+			git,
+			bash,
+			home,
+			copy,
+			check,
+			exists,
+			copyScript: copyRun?.command as string,
+			checkScript: checkRun?.command as string,
+		};
 	}
 
 	describe("the scripts on the machine: a run's own folder, and a command of a run that is not the newest does nothing", () => {
@@ -6310,6 +6429,125 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(await m.check(at, newer, "touch ran.txt; echo ran; exit 3")).toEqual({ code: 3, output: "ran\n" });
 			expect(await m.exists(join(at.root, newer, "src", "ran.txt"))).toBe(true);
 			expect(await readFile(join(at.root, newer, "out", "1-test.log"), "utf8")).toBe("ran\n");
+		});
+
+		/** A process of this user, started by the test with its working folder at `cwd`: a shell whose child listens on a
+		 * TCP port of its own, as a check's test server does; or, without `listen`, one that only waits. */
+		const started: ChildProcess[] = [];
+		afterEach(() => {
+			for (const child of started.splice(0)) child.kill("SIGKILL");
+		});
+		const stale = async (cwd: string, listen = false) => {
+			const server = listen
+				? "require('net').createServer().listen(0, '127.0.0.1', function () { process.stdout.write(this.address().port + '\\n'); }); setInterval(() => {}, 1000);"
+				: "setInterval(() => {}, 1000); process.stdout.write('0\\n');";
+			const child = spawn("bash", ["--noprofile", "--norc", "-c", `"${process.execPath}" -e "${server}" & wait`], {
+				cwd,
+				stdio: ["ignore", "pipe", "ignore"],
+			});
+			started.push(child);
+			const [line] = (await once(child.stdout as NonNullable<typeof child.stdout>, "data")) as [Buffer];
+			return { child, port: Number(line.toString().trim()) };
+		};
+		const free = (port: number) =>
+			new Promise<boolean>((resolve) => {
+				const server = createServer();
+				server.once("error", () => resolve(false));
+				server.listen(port, "127.0.0.1", () => server.close(() => resolve(true)));
+			});
+		const alive = (child: ChildProcess) => child.exitCode === null && child.signalCode === null;
+
+		it("a copy ends every process left in an earlier run's folder before it goes on, and no other process", async () => {
+			const m = await onTheMachine();
+			const at = await m.home("home");
+			const older = runName(4, 1),
+				gone = runName(4, 2),
+				newer = runName(5, 1);
+			for (const folder of [`${older}/src`, `${gone}/src`, newer])
+				await mkdir(join(at.root, folder), { recursive: true });
+			// A stale check of an earlier run: its shell and its test server, holding a port, started before the newer copy.
+			const server = await stale(join(at.root, older, "src"), true);
+			expect(await free(server.port)).toBe(false);
+			// One whose working folder is an earlier run's folder itself, already gone ("<folder> (deleted)").
+			const orphan = await stale(join(at.root, gone));
+			await rm(join(at.root, gone), { recursive: true, force: true });
+			// One in the newer run's own folder, and one elsewhere in the home: never touched.
+			const own = await stale(join(at.root, newer));
+			const elsewhere = await stale(join(at.home, "qorpera-check"));
+			const ended = Promise.all([once(server.child, "exit"), once(orphan.child, "exit")]);
+			expect(await m.copy(at, newer)).toEqual({ code: 0, output: "" });
+			await ended;
+			expect(await free(server.port)).toBe(true);
+			expect([alive(own.child), alive(elsewhere.child)]).toEqual([true, true]);
+			expect(await m.git(join(at.root, newer, "src"), "rev-parse", "HEAD")).toBe(m.commit);
+			expect((await readdir(at.root)).sort()).toEqual([newer]);
+		});
+
+		it("a copy's folder stands from its first step on and is never made again: an earlier run's start that lands after it does nothing", async () => {
+			const m = await onTheMachine();
+			const at = await m.home("home");
+			const older = runName(6, 1),
+				newer = runName(6, 2);
+			// An earlier run's folder with a process in it, so the copy ends a process, waits and removes the folder.
+			await mkdir(join(at.root, older, "src"), { recursive: true });
+			await stale(join(at.root, older, "src"));
+			// Each tool the copy calls after its first step lands a check of the earlier run once (its start, late), and
+			// says whether the newer run's folder stood then and which it was.
+			const shims = join(m.top, "shims"),
+				state = join(m.top, "state");
+			await mkdir(shims);
+			await mkdir(state);
+			await writeFile(join(m.top, "check.sh"), m.checkScript);
+			await writeFile(
+				join(m.top, "hook.sh"),
+				[
+					"#!/bin/bash",
+					'mark="$SHIM_STATE/seen-$1"',
+					'[ -e "$mark" ] && exit 0',
+					': > "$mark"',
+					'd="$QORPERA_CHECKS_ROOT/$QORPERA_CHECKS_NAME"',
+					'if [ -d "$d" ]; then i="$(PATH=/usr/bin:/bin stat -c %i "$d")"; else i=none; fi',
+					"c=0",
+					'( cd "$SHIM_HOME" && PATH=/usr/bin:/bin QORPERA_CHECKS_NAME="$SHIM_OLDER" QORPERA_CHECK_CWD=. \\',
+					'\tQORPERA_CHECK_RUN="touch $SHIM_STATE/ran-$1" QORPERA_CHECK_LOG="$SHIM_STATE/log-$1" \\',
+					'\t/bin/bash --noprofile --norc "$SHIM_CHECK" ) >/dev/null 2>&1 || c=$?',
+					'echo "$1 $i $c" >> "$SHIM_STATE/steps"',
+				].join("\n"),
+				{ mode: 0o755 },
+			);
+			for (const tool of ["find", "rm", "sleep", "git"])
+				await writeFile(
+					join(shims, tool),
+					`#!/bin/bash\n"${join(m.top, "hook.sh")}" ${tool} >/dev/null 2>&1\nPATH=/usr/bin:/bin exec ${tool} "$@"\n`,
+					{ mode: 0o755 },
+				);
+			const copied = await m.copy(at, newer, {
+				PATH: `${shims}:/usr/bin:/bin`,
+				SHIM_STATE: state,
+				SHIM_HOME: at.home,
+				SHIM_OLDER: older,
+				SHIM_CHECK: join(m.top, "check.sh"),
+			});
+			expect(copied).toEqual({ code: 0, output: "" });
+			const inode = (await lstat(join(at.root, newer))).ino;
+			const steps = (await readFile(join(state, "steps"), "utf8")).trim().split("\n");
+			// The ending of processes (find), its wait (sleep), the removal of the earlier folder and the emptying of its own
+			// (rm), the copy itself (git): at each, the folder stood, the same one, and the late check exited 91.
+			expect(steps.map((line) => line.split(" ")[0]).sort()).toEqual(["find", "git", "rm", "sleep"]);
+			for (const line of steps) expect(line.split(" ").slice(1)).toEqual([String(inode), "91"]);
+			expect((await readdir(state)).filter((entry) => entry.startsWith("ran-") || entry.startsWith("log-"))).toEqual(
+				[],
+			);
+			expect((await readdir(join(at.root, newer))).sort()).toEqual(["out", "src"]);
+			expect((await readdir(at.root)).sort()).toEqual([newer]);
+			// A run's folder that is there already, with something in it, is kept and emptied, never made again.
+			const again = runName(7, 1);
+			await mkdir(join(at.root, again), { recursive: true });
+			await writeFile(join(at.root, again, "left.txt"), "old\n");
+			const kept = (await lstat(join(at.root, again))).ino;
+			expect((await m.copy(at, again)).code).toBe(0);
+			expect((await lstat(join(at.root, again))).ino).toBe(kept);
+			expect((await readdir(join(at.root, again))).sort()).toEqual(["out", "src"]);
 		});
 
 		it("a copy takes a root that is a link away and removes nothing through it, and a folder it cannot remove never stops it", async () => {
