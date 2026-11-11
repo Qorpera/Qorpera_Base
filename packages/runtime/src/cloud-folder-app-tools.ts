@@ -16,7 +16,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { isAppGroupId } from "@qorpera/cloud-client/app-groups";
+import { APP_GROUPS_PATH, isAppGroupId } from "@qorpera/cloud-client/app-groups";
 import { AGENT_COLOURS, companyPathKey } from "@qorpera/cloud-client/company-state-shared";
 import {
 	APP_CLOSED_FOLDERS,
@@ -438,6 +438,16 @@ function lookNotes(files: readonly AppFile[], kit: AppManifest["kit"], entry: st
 	return kit === "explainer" ? explainerNotes(written) : appLookNotes(written);
 }
 
+/** Where the app stands in the drawer's layout after the commit, by the layout unit's own outcome. */
+function groupPlaced(grouped: Grouped, units: readonly CloudCompanyFolderUnitResult[]): string {
+	if (grouped.placed === "already_listed")
+		return "not moved: the drawer's layout already lists it; organize_apps move moves it";
+	const unit = units.find((each) => companyPathKey(each.path) === companyPathKey(APP_GROUPS_PATH));
+	return unit?.outcome === "saved"
+		? "last in the group"
+		: `not placed (${unit?.reason ?? unit?.outcome ?? "not saved"}): organize_apps move puts it in the group`;
+}
+
 /** What the model is told after a commit, by each unit's outcome. `notes` is what a quick read of what this call
  * wrote found (`lookNotes`). */
 function savedText(
@@ -468,15 +478,7 @@ function savedText(
 			...(unit.problems.length > 0 ? { problems: unit.problems.map((problem) => problem.message) } : {}),
 		})),
 		...(look.length > 0 ? { look } : {}),
-		...(grouped
-			? {
-					group: grouped.group,
-					groupPlaced:
-						grouped.placed === "added"
-							? "last in the group"
-							: "not moved: the drawer's layout already lists it; organize_apps move moves it",
-				}
-			: {}),
+		...(grouped ? { group: grouped.group, groupPlaced: groupPlaced(grouped, units) } : {}),
 		next:
 			state === "applied"
 				? `Saved. ${look.length > 0 ? "First fix what look names, unless it does not fit this page. Then show" : "Show"} it to the member with a link in your message: [${request.name}](app:${request.name}). post_app shows it to every member in their apps.`

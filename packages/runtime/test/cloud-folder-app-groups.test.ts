@@ -68,28 +68,23 @@ it("lists the drawer as the company has it: the file's order, every group, the r
 		schema: "qorpera.app-groups/v1",
 		action: "list",
 		file: PATH,
-		changed: false,
-		layout: [
-			{ key: "page:mailbox", title: "Mailbox" },
-			{
-				group: "trips",
-				name: "Trips",
-				apps: 2,
-				items: [
-					{ key: "app:trip-planner", title: "Trip planner" },
-					{ group: "routes", name: "Routes", apps: 1, items: [{ key: "app:route-lofoten", title: "Lofoten" }] },
-				],
-			},
-			// Not listed: the pages, then the apps by name, then Concepts (the concept app is inside it).
-			{ key: "page:members", title: "Members" },
-			{ key: "page:bank", title: "Bank" },
-			{ key: "app:draft", title: "Draft", posted: false },
-			{ key: "app:finances", title: "Company finances" },
-			{ key: "app:travel-supply", title: "Travel supply" },
-			{ key: "concepts", title: "Concepts" },
-		],
+		groups: 2,
 		looseApps: 2,
 		notInCompany: ["app:gone"],
+		layout: [
+			"page:mailbox Mailbox",
+			"group trips: Trips (2 apps)",
+			"  app:trip-planner Trip planner",
+			"  group routes: Routes (1 app)",
+			"    app:route-lofoten Lofoten",
+			// Not listed: the pages, then the apps by name, then Concepts (the concept app is inside it).
+			"page:members Members",
+			"page:bank Bank",
+			"app:draft Draft (not posted)",
+			"app:finances Company finances",
+			"app:travel-supply Travel supply",
+			"concepts Concepts",
+		],
 	});
 	expect(f.commits).toHaveLength(0);
 	expect(f.releases).toHaveLength(1);
@@ -187,7 +182,8 @@ it("refuses a third level, a group inside itself, and keys the company does not 
 	const tool = f.tool();
 	for (const [value, text] of [
 		[{ action: "move", item: "app:finances" }, "move needs group"],
-		[{ action: "list", name: "x" }, "list takes nothing else"],
+		[{ action: "list", name: "x" }, "list takes cursor"],
+		[{ action: "list", cursor: -1 }, "cursor must be the cursor"],
 		[{ action: "create_group", name: "x".repeat(41) }, "1 to 40 characters"],
 		[{ action: "move", item: "Finances", group: null }, "item must be a key"],
 		[{ action: "move", item: "app:finances", group: "Trips!" }, "group must be a group's id"],
@@ -325,4 +321,102 @@ it("puts a new app in a group as save_app makes it, in the same commit, and refu
 	expect(() =>
 		save.parseArguments({ name: "x", operationKey: "k", manifest: null, files: page, group: "No!" }),
 	).toThrow("group must be a group's id");
+});
+
+it("lists a long layout a page at a time, and a change answers only what it did, however many apps there are", async () => {
+	const files: Record<string, string> = {};
+	const title = (n: number) => `App number ${n} ${"x".repeat(44)}`.slice(0, 60);
+	for (let n = 0; n < 150; n++) files[`apps/app-${String(n).padStart(3, "0")}/app.toml`] = app(title(n));
+	const f = await fixture(files);
+	const lines: string[] = [];
+	let cursor: number | undefined;
+	let pages = 0;
+	do {
+		const tool = f.tool();
+		const value: JsonValue = cursor === undefined ? { action: "list" } : { action: "list", cursor };
+		const content = await tool.execute(tool.parseArguments(value), { ...f.context, callId: randomUUID() });
+		const text = String(content.value);
+		expect(Buffer.byteLength(text)).toBeLessThan(8 * 1024);
+		const page = JSON.parse(text);
+		lines.push(...page.layout);
+		cursor = page.cursor;
+		pages++;
+	} while (cursor !== undefined && pages < 20);
+	expect(pages).toBeGreaterThan(1);
+	expect(lines).toHaveLength(3 + 150);
+	expect(lines[3]).toBe(`app:app-000 ${title(0)}`);
+	expect(lines.at(-1)).toBe(`app:app-149 ${title(149)}`);
+	// Every app into one group: the answer stays small.
+	const keys = Array.from({ length: 64 }, (_, n) => `app:app-${String(n).padStart(3, "0")}`);
+	const tool = f.tool();
+	const content = await tool.execute(tool.parseArguments({ action: "create_group", name: "Many", items: keys }), {
+		...f.context,
+		callId: randomUUID(),
+	});
+	expect(Buffer.byteLength(String(content.value))).toBeLessThan(1024);
+	expect(JSON.parse(String(content.value))).toMatchObject({ changed: true, group: "many" });
+});
+
+it("puts an entry moved loose without before last, after the ones the file does not list", async () => {
+	const f = await fixture({
+		"apps/a/app.toml": app("A"),
+		"apps/b/app.toml": app("B"),
+		[PATH]: "- group g: G\n  - app:a A\n  - page:bank\n",
+	});
+	await expect(f.call({ action: "move", item: "app:a", group: null })).resolves.toMatchObject({ changed: true });
+	expect(f.text(PATH)).toBe(`- group g: G
+  - page:bank
+- page:mailbox Mailbox
+- page:members Members
+- app:b B
+- app:a A
+`);
+	// Loose already, without before: it stays.
+	await expect(f.call({ action: "move", item: "app:b", group: null })).resolves.toMatchObject({ changed: false });
+});
+
+it("keeps a title with a line or paragraph separator on its one line", async () => {
+	const f = await fixture({ "apps/sales/app.toml": app("Sales\u2028Dash\u2029board"), [PATH]: "- group g: G\n" });
+	await f.call({ action: "move", item: "app:sales", group: "g" });
+	expect(f.text(PATH)).toBe("- group g: G\n  - app:sales Sales Dash board\n");
+	await expect(f.call({ action: "list" })).resolves.toMatchObject({
+		layout: [
+			"group g: G (1 app)",
+			"  app:sales Sales Dash board",
+			"page:mailbox Mailbox",
+			"page:members Members",
+			"page:bank Bank",
+		],
+	});
+});
+
+it("says when save_app saved the app but its place in a group did not save", async () => {
+	const f = await fixture();
+	const tools = cloudAppTools({ folder: f.folder, operations: f.operations(), identity: f.identity });
+	const save = tools.find((tool) => tool.name === "save_app") as CloudNativeTool;
+	const original = CloudCompanyFolderClient.prototype.commit;
+	const stored = f.files.get(PATH);
+	if (!stored) throw new Error("Missing fixture file");
+	const commit = vi.spyOn(CloudCompanyFolderClient.prototype, "commit").mockImplementationOnce(async function (
+		this: CloudCompanyFolderClient,
+		...args
+	) {
+		stored.version = randomUUID();
+		return original.apply(this, args);
+	});
+	const parsed = save.parseArguments({
+		name: "route-bergen",
+		operationKey: "bergen-1",
+		manifest: { title: "Bergen" },
+		files: [{ path: "index.html", text: "<!doctype html><h1>Bergen</h1>" }],
+		group: "routes",
+	});
+	const answer = JSON.parse(String((await save.execute(parsed, { ...f.context, callId: randomUUID() })).value));
+	commit.mockRestore();
+	expect(answer).toMatchObject({
+		state: "partly_applied",
+		group: "routes",
+		groupPlaced: expect.stringMatching(/^not placed \(version_changed\)/),
+	});
+	expect(f.text(PATH)).not.toContain("app:route-bergen");
 });

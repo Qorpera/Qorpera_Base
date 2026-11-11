@@ -182,6 +182,22 @@ A closing note.
 		expect(shape(parseAppGroups("- app:one\r\n- app:two\r\n").items)).toEqual(["app:one", "app:two"]);
 	});
 
+	it("reads a line or paragraph separator in an item's words, and writes it as a space", () => {
+		const file = parseAppGroups("- group g: G\n  - app:sales Sales\u2028Dash\u2029board\n");
+		expect(file.items).toEqual([
+			{
+				kind: "group",
+				id: "g",
+				name: "G",
+				items: [{ kind: "item", key: "app:sales", words: "Sales\u2028Dash\u2029board" }],
+			},
+		]);
+		const written = writeAppGroups(file);
+		expect(written).toBe("- group g: G\n  - app:sales Sales Dash board\n");
+		expect(writeAppGroups(parseAppGroups(written))).toBe(written);
+		expect(appGroupName("Sales\u2028Dash")).toBeNull();
+	});
+
 	it("is not an app of the drawer", () => {
 		expect(appPath("apps/groups.md")).toBeNull();
 	});

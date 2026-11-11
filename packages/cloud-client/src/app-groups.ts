@@ -63,10 +63,12 @@ export type AppGroupsDrawnNode =
 	  };
 
 const GROUP_ID = /^[a-z0-9-]{1,40}$/;
-const LIST_LINE = /^([ \t]*)[-*][ \t]+(\S.*?)[ \t]*$/;
-const GROUP_LINE = /^group[ \t]+([^\s:]+)[ \t]*:[ \t]*(.*)$/;
+const LIST_LINE = /^([ \t]*)[-*][ \t]+(\S.*?)[ \t]*$/s;
+const GROUP_LINE = /^group[ \t]+([^\s:]+)[ \t]*:[ \t]*(.*)$/s;
 const RETIRED_LINE = /^<!--[ \t]*retired group ids:[ \t]*([^>]*?)[ \t]*-->[ \t]*$/;
-const CONTROL = /[\u0000-\u001f\u007f]/;
+const CONTROL = /[\u0000-\u001f\u007f\u2028\u2029]/;
+/** What would end a line where a list line is written: written as a space. */
+const BREAKS = /[\r\n\u2028\u2029]+/g;
 
 /** Whether a key is one of the drawer's: a platform page, an app's folder, Concepts or Sites. */
 export function isAppDrawerKey(key: string): boolean {
@@ -179,9 +181,12 @@ export function writeAppGroups(file: AppGroupsFile): string {
 		const indent = "  ".repeat(level);
 		for (const node of items) {
 			if (node.kind === "group") {
-				list.push(`${indent}- group ${node.id}: ${node.name}`);
+				list.push(`${indent}- group ${node.id}: ${node.name.replace(BREAKS, " ")}`);
 				walk(node.items, level + 1);
-			} else list.push(`${indent}- ${node.key}${node.words ? ` ${node.words}` : ""}`);
+			} else {
+				const words = node.words.replace(BREAKS, " ").trim();
+				list.push(`${indent}- ${node.key}${words ? ` ${words}` : ""}`);
+			}
 		}
 	};
 	walk(file.items, 0);

@@ -38,6 +38,7 @@ import {
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
+import { fitsOneResult } from "./cloud-worker-tools.ts";
 
 /*
  * `organize_apps` (APP-GROUPS-SPEC §3; Jonas, 11 November 2026: "the agents should be able to organize the interfaces
@@ -60,7 +61,7 @@ const TOOL_VERSION = "folder-v2/1";
 const ACTIONS = ["list", "create_group", "rename_group", "ungroup", "move"] as const;
 type Action = (typeof ACTIONS)[number];
 const FIELDS: Record<Action, { required: readonly string[]; optional: readonly string[] }> = {
-	list: { required: [], optional: [] },
+	list: { required: [], optional: ["cursor"] },
 	create_group: { required: ["name"], optional: ["parent", "items"] },
 	rename_group: { required: ["group", "name"], optional: [] },
 	ungroup: { required: ["group"], optional: [] },
@@ -92,6 +93,8 @@ export interface OrganizeAppsRequest {
 	/** A drawer key or `group:<id>`. */
 	readonly item?: string;
 	readonly before?: string | null;
+	/** Where a page of list starts: a line of the layout. */
+	readonly cursor?: number;
 }
 
 type Node = { kind: "item"; key: string; words: string } | { kind: "group"; id: string; name: string; items: Node[] };
@@ -113,7 +116,7 @@ interface Company {
 
 export const ORGANIZE_APPS_DESCRIPTION =
 	"Sort the company's apps into groups in the apps drawer, the grid where every member opens the company's pages and apps (Mailbox, Members, Bank, each posted app, Concepts, Sites). A group is a tile that opens into its apps, as agents sit in sidebar sections. The layout is the company's, in the file apps/groups.md: no member approval is needed and every member sees a change at once. " +
-	"action list shows the layout: each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, sites) with its title, in its group, groups by id and name with how many apps they hold, and the loose entries last, as the drawer shows them; an app with posted false shows in the drawer only once it is posted. create_group makes a group called name and answers its id; parent puts it inside another group, and items moves those keys (or group:<id>) into it, in order. A group of that name already there is that group. rename_group renames group; its id stays. ungroup takes group away: what was in it stands where it stood. move puts item (a key, or group:<id> for a whole group) into group, or loose when group is null, before the entry named by before there, else last. save_app takes group to put a new app in a group as it is made. A change already made saves nothing and says so; a save can come back refused when the file changed since it was read: call again. It refuses a third group level and a key the company does not have. " +
+	"action list shows the layout: each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, sites) with its title, in its group, groups by id and name with how many apps they hold, and the loose entries last, as the drawer shows them, one line each in the file's own form; a long layout comes in pages: call list again with the cursor it answers. An app marked not posted shows in the drawer only once it is posted. create_group makes a group called name and answers its id; parent puts it inside another group, and items moves those keys (or group:<id>) into it, in order. A group of that name already there is that group. rename_group renames group; its id stays. ungroup takes group away: what was in it stands where it stood. move puts item (a key, or group:<id> for a whole group) into group, or loose when group is null, before the entry named by before there, else last. save_app takes group to put a new app in a group as it is made. A change answers what it did, and list shows the layout after it. A change already made saves nothing and says so; a save can come back refused when the file changed since it was read: call again. It refuses a third group level and a key the company does not have. " +
 	"How to sort, plainly: 1. Group by what the founder thinks in: a product, a customer, a piece of work. Never by agent, by kind of page (such as Reports) or by date. 2. Name a group in one to three words, in the company's own words. 3. The company's basics (Mailbox, Bank, its finances, Members) stay loose at the front. 4. Two group levels at most. Three to twelve apps in a group; a group with one app goes away (ungroup it). 5. You sort the company's layout; what a member changed in their own drawer is theirs, and you leave it. 6. After a change, say it in one line to the member who asked, or on your wall.";
 
 const groupRef = (value: unknown, label: string): string => {
@@ -170,6 +173,11 @@ export function parseOrganizeAppsArguments(value: JsonValue): OrganizeAppsReques
 		request.items = [...new Set(items)];
 	}
 	if (Object.hasOwn(a, "item")) request.item = entryRef(a.item, "item");
+	if (Object.hasOwn(a, "cursor")) {
+		if (typeof a.cursor !== "number" || !Number.isSafeInteger(a.cursor) || a.cursor < 0 || a.cursor > 100000)
+			throw new CloudToolArgumentRefusal("cursor must be the cursor a page of list answered");
+		request.cursor = a.cursor;
+	}
 	if (Object.hasOwn(a, "before")) request.before = a.before === null ? null : entryRef(a.before, "before");
 	return request as unknown as OrganizeAppsRequest;
 }
@@ -197,6 +205,7 @@ export function cloudAppGroupsTool(options: {
 				items: { type: "array", maxItems: ITEMS_MAX, items: { type: "string", maxLength: 80 } },
 				item: { type: "string", maxLength: 80 },
 				before: { type: ["string", "null"], maxLength: 80 },
+				cursor: { type: "integer", minimum: 0, maximum: 100000 },
 			},
 		},
 		parseArguments: (value) => parseOrganizeAppsArguments(value) as unknown as JsonValue,
@@ -214,19 +223,21 @@ export function cloudAppGroupsTool(options: {
 			const read = structuredClone(file.items) as Node[];
 			const tree = structuredClone(read);
 			const retired = [...file.retired];
-			const show = (shown: readonly Node[], extra: Record<string, unknown>) =>
+			// A change answers what it did, never the whole layout, so its answer and its receipt stay small however many
+			// apps the company has: list shows the layout, a page at a time.
+			const show = (extra: Record<string, unknown>) =>
 				cloudToolJsonText({
 					schema: "qorpera.app-groups/v1",
 					action: request.action,
 					file: APP_GROUPS_PATH,
 					...extra,
-					...layout(shown, company),
+					next: "organize_apps list shows the layout",
 				});
 			const answer = async (text: string) => released(folder, identity.runId, context, text, reads);
-			if (request.action === "list") return answer(show(read, { changed: false }));
+			if (request.action === "list") return answer(listPage(read, company, request.cursor ?? 0));
 			const made = apply(request, tree, retired, company);
 			if (shape(tree, retired) === shape(read, file.retired))
-				return answer(show(read, { changed: false, ...made, note: "Already so: nothing changed" }));
+				return answer(show({ changed: false, ...made, note: "Already so: nothing changed" }));
 			const tidied = tidy(tree, company);
 			const text = writeAppGroups({ ...file, items: tree, retired });
 			if (new TextEncoder().encode(text).byteLength > APP_GROUPS_MAX_BYTES)
@@ -252,8 +263,8 @@ export function cloudAppGroupsTool(options: {
 						throw new Error("Company folder commit answered other units");
 					const value =
 						written.outcome === "saved"
-							? show(tree, { changed: true, ...made, ...(tidied.length ? { tidied } : {}) })
-							: show(read, {
+							? show({ changed: true, ...made, ...named("tidied", tidied) })
+							: show({
 									changed: false,
 									refused:
 										written.outcome === "conflict"
@@ -531,17 +542,17 @@ function move(
 	} else {
 		if (!has(company, item)) refuseKey(company, item);
 		const found = findItem(tree, item);
-		node = found?.node ?? { kind: "item", key: item, words: company.titles.get(item) ?? "" };
+		node = found?.node ?? { kind: "item", key: item, words: oneLine(company.titles.get(item) ?? "") };
 	}
 	if (before === item) throw new CloudToolRefusal("before must name another entry");
 	// Already in that group (or loose) with no place asked: it stays where it stands, as organize_sidebar's move does.
 	if (before === null && container.includes(node)) return;
-	// An entry the file does not list stands loose at the end; to put something before one, the loose ones are listed
-	// first, in the drawer's order.
-	if (before !== null && !target && !container.some((other) => refOf(other) === before) && !findRef(tree, before))
+	// An entry the file does not list stands loose at the end. To put something last among the loose ones, or before one
+	// the file does not list, the unlisted ones are listed first, in the drawer's order.
+	if (!target && (before === null || (!container.some((other) => refOf(other) === before) && !findRef(tree, before))))
 		for (const key of company.have)
 			if (!findItem(tree, key) && key !== item)
-				tree.push({ kind: "item", key, words: company.titles.get(key) ?? "" });
+				tree.push({ kind: "item", key, words: oneLine(company.titles.get(key) ?? "") });
 	detach(tree, node);
 	if (before === null) {
 		container.push(node);
@@ -625,54 +636,93 @@ const shape = (items: readonly AppGroupNode[] | Node[], retired: readonly string
 const walkShape = (items: readonly AppGroupNode[]): unknown[] =>
 	items.map((node) => (node.kind === "group" ? [node.id, node.name, walkShape(node.items)] : node.key));
 
-/** What a result shows: the drawer as the company has it, every group (empty ones too, to be tidied), and the loose
- * entries the file does not list after the rest; the keys the file lists that the company does not have. */
-function layout(items: readonly Node[], company: Company): Record<string, unknown> {
+/** What `list` shows, one line an entry in the file's own form, two spaces a level: the drawer as the company has it,
+ * every group (empty ones too, to be tidied) with how many posted apps it holds, and the loose entries the file does not
+ * list after the rest; the keys the file lists that the company does not have. */
+function layout(
+	items: readonly Node[],
+	company: Company,
+): { lines: string[]; looseApps: number; groups: number; missing: string[] } {
 	const seen = new Set<string>();
 	const missing: string[] = [];
+	const lines: string[] = [];
 	let looseApps = 0;
-	const entry = (key: string) => ({
-		key,
-		title: company.titles.get(key) ?? key,
-		...(company.unposted.has(key) ? { posted: false } : {}),
-	});
-	const count = (shown: readonly Record<string, unknown>[]): number =>
-		shown.reduce(
-			(sum, node) =>
-				sum +
-				(Array.isArray(node.items)
-					? count(node.items as Record<string, unknown>[])
-					: node.posted === false
-						? 0
-						: 1),
-			0,
-		);
-	const walk = (nodes: readonly Node[], top: boolean): Record<string, unknown>[] =>
-		nodes.flatMap((node): Record<string, unknown>[] => {
+	let groups = 0;
+	const entry = (key: string, level: number) =>
+		`${"  ".repeat(level)}${key} ${oneLine(company.titles.get(key) ?? key)}${company.unposted.has(key) ? " (not posted)" : ""}`;
+	/** Writes the nodes' lines; answers how many posted apps they hold. */
+	const walk = (nodes: readonly Node[], level: number): number => {
+		let apps = 0;
+		for (const node of nodes) {
 			if (node.kind === "group") {
-				const inner = walk(node.items, false);
-				return [{ group: node.id, name: node.name, apps: count(inner), items: inner }];
+				groups++;
+				const at = lines.length;
+				lines.push("");
+				const inner = walk(node.items, level + 1);
+				lines[at] =
+					`${"  ".repeat(level)}group ${node.id}: ${node.name} (${inner} ${inner === 1 ? "app" : "apps"})`;
+				apps += inner;
+				continue;
 			}
-			if (!isAppDrawerKey(node.key) || seen.has(node.key)) return [];
+			if (!isAppDrawerKey(node.key) || seen.has(node.key)) continue;
 			seen.add(node.key);
 			if (!has(company, node.key)) {
 				missing.push(node.key);
-				return [];
+				continue;
 			}
-			if (top && looseCounts(node.key, company)) looseApps++;
-			return [entry(node.key)];
-		});
-	const shown = walk(items, true);
+			if (looseCounts(node.key, company)) {
+				apps++;
+				if (level === 0) looseApps++;
+			}
+			lines.push(entry(node.key, level));
+		}
+		return apps;
+	};
+	walk(items, 0);
 	for (const key of company.have)
 		if (!seen.has(key)) {
-			shown.push(entry(key));
+			lines.push(entry(key, 0));
 			if (looseCounts(key, company)) looseApps++;
 		}
-	return { layout: shown, looseApps, ...(missing.length ? { notInCompany: missing } : {}) };
+	return { lines, looseApps, groups, missing };
 }
+
+/** One page of `list`: the lines from `cursor` on, as many as one tool result holds, and the cursor of the next page. */
+function listPage(items: readonly Node[], company: Company, cursor: number): string {
+	const { lines, looseApps, groups, missing } = layout(items, company);
+	const page = (count: number) =>
+		cloudToolJsonText({
+			schema: "qorpera.app-groups/v1",
+			action: "list",
+			file: APP_GROUPS_PATH,
+			groups,
+			looseApps,
+			...(cursor === 0 ? named("notInCompany", missing) : {}),
+			layout: lines.slice(cursor, cursor + count),
+			...(cursor + count < lines.length
+				? { cursor: cursor + count, next: "More lines: call list again with this cursor" }
+				: {}),
+		});
+	let count = Math.max(0, lines.length - cursor);
+	while (count > 1 && !fitsOneResult(page(count))) count = Math.floor(count * 0.8);
+	return page(count);
+}
+
+/** A title as one line of a list. */
+const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
 /** A loose entry the Co-Founder's tidy pass counts: a posted app (pages, Concepts and Sites are the drawer's own). */
 const looseCounts = (key: string, company: Company) => key.startsWith("app:") && !company.unposted.has(key);
+
+/** At most this many keys a result names of a kind (tidied, not in the company); it says how many more. */
+const NAMED_MAX = 20;
+const named = (label: string, keys: readonly string[]) =>
+	keys.length === 0
+		? {}
+		: {
+				[label]: keys.slice(0, NAMED_MAX),
+				...(keys.length > NAMED_MAX ? { [`${label}More`]: keys.length - NAMED_MAX } : {}),
+			};
 
 /** The unit that saves the file: over the version read, as a new file, or with the apps folder when there is none. */
 function groupsUnit(text: string, entry: CloudCompanyFolderFileEntry | null, company: Company): CloudCompanyFolderUnit {
