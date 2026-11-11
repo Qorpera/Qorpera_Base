@@ -533,8 +533,9 @@ describe("a change to code kept in Qorpera that did not go in for its checks (ow
 			codingFailureReason(summary, {}, code),
 			codingFailureReason(summary, { mine: true }, code),
 			codingFailureReason(summary, { mine: false }, code),
-			// A summary that still ends with its code, and no code beside it, reads the same.
+			// A summary that still ends with its code, and no code beside it, reads the same, as the cloud reads it.
 			codingFailureReason(`${summary} [code=${code}]`),
+			codingFailureReason(`${summary}\n[code=${code}]\n`),
 			// A cloud whose failure words do not know the code yet: the code still decides.
 			codingFailureReason(QORPERA_WORDS, {}, code),
 		]) {

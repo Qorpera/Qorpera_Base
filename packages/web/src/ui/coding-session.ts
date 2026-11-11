@@ -104,7 +104,8 @@ export function codingSessionStandby(
 /** The kernel's step while a turn waits for its company's computer hours (20260929760000). */
 const HOURS_STEP = "Waiting for computer hours";
 /** The executor's step while a finished change to code kept in Qorpera runs its checks before it goes in (own code
- * storage, step 3: runner-orchestrator coding-executor.ts). An executor from before says "Landing the change". */
+ * storage, step 3: CODING_LANDING_STEP in runner-orchestrator coding-executor.ts). An executor from before says
+ * "Landing the change". */
 const CHECKS_STEP = "Checking and saving the change";
 
 /** When the session's current turn started: its first claim, as `startedAt` is for the first turn (a deferred

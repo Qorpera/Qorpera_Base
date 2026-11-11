@@ -332,9 +332,10 @@ export function codingFailureReason(reason: string | undefined, limit: CodingUsa
 	// The run failed with the model provider's outage (20260930560000): ChatGPT's, usually brief; the login is fine.
 	if (code === "provider_outage") return t(CODING_PROVIDER_OUTAGE);
 	// The change's checks failed or could not run (step 3): the code decides, before any word of the summary is read,
-	// since the summary holds the check's output. A summary that still ends with its code reads the same.
+	// since the summary holds the check's output. A summary that still ends with its code reads the same (the code read
+	// as 20260930721000's qorpera_coding_turn_failure reads it).
 	const checks =
-		codingChecksReason(code) ?? codingChecksReason(reason?.match(/ \[code=(CODING_CHECKS_[A-Z_]{1,30})\]\s*$/)?.[1]);
+		codingChecksReason(code) ?? codingChecksReason(reason?.match(/\[code=(CODING_CHECKS_[A-Z_]{1,40})\]\s*$/)?.[1]);
 	if (checks) return t(checks);
 	// Since 20260930560000 a failed run's summary is plain words and its code travels apart (the failed event's `code`,
 	// 20260930551000): the code alone decides, as it did inside the executor's summary, and a code no class names is a
