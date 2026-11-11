@@ -54,6 +54,13 @@ describe("the idle line", () => {
 		expect(idleLine({ ...base, note }, NOW)).toEqual({ text: "Waits on you: Pick a shop name" });
 	});
 
+	it("then its wall's Now line, before any planned run or what was done", () => {
+		const { waits: _, ...rest } = note;
+		expect(idleLine({ ...base, note: { ...rest, now: "Prices set, now choosing suppliers" } }, NOW)).toEqual({
+			text: "Prices set, now choosing suppliers",
+		});
+	});
+
 	it("puts a next run within 12 hours before what was done, and a later one after it", () => {
 		const { waits: _, ...rest } = note;
 		expect(idleLine({ ...base, note: rest }, NOW).text).toMatch(/^Next: Market check · \d/);
@@ -89,7 +96,14 @@ describe("the idle line", () => {
 });
 
 describe("agent notes", () => {
-	it("reads the first waiting item and the newest done item from a wall", () => {
+	it("reads the Now line, the first waiting item and the newest done item from a wall", () => {
+		expect(
+			wallNote(`# Wall\n\n## Now\n- Prices set, now choosing suppliers\n${WALL.slice("# Wall\n".length)}`),
+		).toEqual({
+			now: "Prices set, now choosing suppliers",
+			waits: "Pick a shop name",
+			done: { text: "Made the new logo", day: "2026-11-10" },
+		});
 		expect(wallNote(WALL)).toEqual({
 			waits: "Pick a shop name",
 			done: { text: "Made the new logo", day: "2026-11-10" },
