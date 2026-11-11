@@ -512,7 +512,11 @@ label > input, label > select { font-weight: 400; }
 .whats-new-site > h3 { margin: 22px 0 10px; }
 .whats-new-live .service-card { padding: 14px 0; }
 .whats-new-live .connection-actions .btn, .whats-new-actions .btn { border-radius: var(--radius-pill); }
+/* The site's link is drawn as the button beside it is. */
+.whats-new-live a.btn, .whats-new-live a.btn:hover { color: var(--text); text-decoration: none; }
 .whats-new-changes { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+/* Two to a row on a phone, so the buttons are near (as a question's visual choices are). */
+@media (max-width: 520px) { .whats-new-changes { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; } }
 .whats-new-change {
 	display: grid; gap: 6px; align-content: start; min-width: 0; padding: 8px 8px 10px;
 	border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg);
