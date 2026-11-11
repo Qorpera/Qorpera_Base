@@ -80,6 +80,9 @@ const CODING_VALUE_OUTPUT_BYTES = 16384;
  * MACHINE_XSEL_MS; the clears side by side): about 8 s, so its own clear runs well before this deadline, which is inside
  * the gateway's 30 s. */
 const CODING_VALUE_MS = 20000;
+/** How long save_coding_value waits for a desktop an agent's action holds (F29): the runtime gives the whole call 30 s,
+ * and the helper itself 20 s of it. */
+const CODING_VALUE_WAIT_MS = 6000;
 /** The executor's own clear after a save that did not end cleanly (`--clear-only`): its own deadline, never the
  * request's, as the request may be what ended it. Two xsels side by side, 4 s each at most, and the helper's start. */
 const CODING_VALUE_CLEAR_MS = 10000;
@@ -441,6 +444,9 @@ export interface CompanyMachineCodingValue {
 	bootId: string;
 	receiptId: string;
 	target: Record<string, unknown>;
+	/** The lease generation SQL's read saw (20260930713000): the box leaves only while it stands and no member holds the
+	 * desktop (v233 release review r1, F29 of #1661). */
+	desktopGeneration: number;
 }
 /** The helper's answer: the box it sealed the key in, or why it sealed nothing (its code). */
 export type CompanyMachineCodingValueOutcome =
@@ -2040,19 +2046,52 @@ export class LxdCompanyMachineHost {
 	 * A run that did not end cleanly (the request cancelled or past its deadline, which kills the helper, a failed exit,
 	 * an answer lost or not the helper's) may have left the key on the clipboard, which Chromium keeps owning: the
 	 * executor then clears it itself (#clearCodingValue), on the same boot, whatever ended the run.
+	 *
+	 * The clipboard is a member's while they hold the desktop (20260930713000; v233 release review r1, F29 of #1661). The
+	 * helper takes the desktop as an action does (#holdDesktop), so a member's action (a copy, a paste) and the clipboard
+	 * read never interleave: while a member's action runs, the read is refused at once (a member holds the desktop); while
+	 * an agent's runs, it waits for it (CODING_VALUE_WAIT_MS). Before the helper reads the clipboard and again after it,
+	 * before the box leaves, SQL is asked what a picture is asked (#pictureAllowed, no looker): the lease generation the
+	 * read saw, and no live hold. A take-over at any moment since the read drops the box whole: the outcome is
+	 * DESKTOP_MEMBER_IN_CONTROL, and nothing of the box is kept or logged. What cannot be undone: a helper that had begun
+	 * before the take-over may already have cleared the clipboard.
 	 */
 	async codingValue(run: CompanyMachineCodingValue, signal: AbortSignal): Promise<CompanyMachineCodingValueOutcome> {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
 		if (!pipe) throw new Error("COMPANY_MACHINE_CODING_VALUE_UNAVAILABLE");
-		if (![run.placementId, run.bootId, run.receiptId].every((id) => UUID.test(id)))
+		if (
+			![run.placementId, run.bootId, run.receiptId].every((id) => UUID.test(id)) ||
+			!Number.isSafeInteger(run.desktopGeneration) ||
+			run.desktopGeneration < 0
+		)
 			throw new Error("COMPANY_MACHINE_CODING_VALUE_INVALID");
-		let clean = false;
+		if (!this.#holdDesktop(run.placementId)) {
+			// Busy: a member's action holds it (a member holds the desktop: refused now), or an agent's (waited for).
+			if (!(await this.#pictureAllowed(run.placementId, run.desktopGeneration, null, signal)))
+				return { refused: "DESKTOP_MEMBER_IN_CONTROL" };
+			if (!(await this.#holdDesktopWithin(run.placementId, CODING_VALUE_WAIT_MS, signal)))
+				throw new Error("COMPANY_MACHINE_CODING_VALUE_BUSY");
+		}
+		let ended = true;
 		try {
-			const outcome = await this.#runCodingValue(pipe, run, signal);
-			clean = true;
-			return outcome;
+			// Before anything is read off the clipboard.
+			if (!(await this.#pictureAllowed(run.placementId, run.desktopGeneration, null, signal)))
+				return { refused: "DESKTOP_MEMBER_IN_CONTROL" };
+			ended = false;
+			let clean = false;
+			try {
+				const outcome = await this.#runCodingValue(pipe, run, signal);
+				clean = true;
+				// After it, before the box leaves.
+				if ("box" in outcome && !(await this.#pictureAllowed(run.placementId, run.desktopGeneration, null, signal)))
+					return { refused: "DESKTOP_MEMBER_IN_CONTROL" };
+				return outcome;
+			} finally {
+				if (!clean) await this.#clearCodingValue(pipe, run);
+				ended = clean;
+			}
 		} finally {
-			if (!clean) await this.#clearCodingValue(pipe, run);
+			this.#releaseDesktop(run.placementId, ended);
 		}
 	}
 	/** One run of the helper and its answer. Another boot (exit 97) and an earlier image (98) never ran it. */
@@ -2262,6 +2301,16 @@ export class LxdCompanyMachineHost {
 		if (busy === "acting" || (typeof busy === "number" && busy > now())) return false;
 		this.#screenBusy.set(placementId, "acting");
 		return true;
+	}
+	/** #holdDesktop, waiting up to `ms` for the desktop to be free (save_coding_value, F29). */
+	async #holdDesktopWithin(placementId: string, ms: number, signal: AbortSignal): Promise<boolean> {
+		const now = this.#options.now ?? Date.now;
+		const until = now() + ms;
+		for (;;) {
+			if (this.#holdDesktop(placementId)) return true;
+			if (now() >= until) return false;
+			await setTimeout(100, undefined, { signal });
+		}
 	}
 	/** The action ended by itself: the desktop is free. Cut off (aborted, past its deadline, the exec lost, or gone before
 	 * its own end): it stays busy for as long as what it started may still act. */
