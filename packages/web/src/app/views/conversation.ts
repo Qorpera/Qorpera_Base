@@ -253,7 +253,7 @@ interface ContinueLogin {
  * DECISIONS.md "Transcript projection rules": member inputs and agent sends
  * only. Composer drafts remain local until a message adapter is supplied. */
 
-/** A peer chip's time for a screen reader, as its description: the hover label (ui/sent-time-hover.ts) is only drawn,
+/** A peer chip's time for a screen reader, as its description: the time on a hover (ui/sent-time-hover.ts) is only drawn,
  * and the chip's name says what it opens. */
 const peerTimeId = (linkId: string) => `peer-time-${linkId}`;
 const peerTime = (linkId: string, at: string) =>
@@ -3481,13 +3481,7 @@ export class ConversationView {
 				{
 					type: "button",
 					class: compact ? "peer-chip figure-only" : "peer-chip",
-					// A chip of a face alone names the agent with its time.
-					dataset: {
-						pairSessionId: link.pairSessionId,
-						linkIds: ids,
-						sentAt: link.createdAt,
-						...(compact ? { sentLabel: name } : {}),
-					},
+					dataset: { pairSessionId: link.pairSessionId, linkIds: ids, sentAt: link.createdAt },
 					"aria-label": t("{label}. Open the conversation", { label: name }),
 					"aria-describedby": peerTimeId(link.id),
 					onclick: (event: MouseEvent) =>
