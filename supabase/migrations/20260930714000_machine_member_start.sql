@@ -12,15 +12,19 @@
 --   qorpera_authorize_machine_screen, with the agent the machine was started by: a disk that has had a company folder
 --   view needs that agent and this member to read the folder's root (else MACHINE_NEEDS_COMPANY_VIEW); without that read,
 --   a disk that never had a view is marked (folder_unchecked_at), as by an action, since starting the desktop runs
---   programs on it; the machine's last use moves (at most every 30 seconds); and the screen is stamped as that agent's
---   (screen_staff_agent_id, screen_used_at), so every rule about a machine with a screen holds as it is. A desktop a
---   member holds (a live lease of 20260930713000, theirs or another member's) is running: the start is answered `held`
---   and records, marks and runs nothing. Otherwise starts of one machine are at least 5 seconds apart (else
---   DESKTOP_START_TOO_SOON). It records the start (id, member, machine, time) and answers its single-use id.
+--   programs on it; the machine's last use moves (at most every 30 seconds); and a screen no agent drove yet
+--   (screen_staff_agent_id null) is stamped as that agent's (screen_staff_agent_id, screen_used_at), so every rule about
+--   a machine with a screen holds as it is; a screen an agent drove keeps that agent's stamp, so the machine stays in
+--   the window of the agent that drove it (review r1 F2 of #1681). A member's hold of the desktop (a live lease of
+--   20260930713000, the caller's or another member's) does not stop a start: a hold does not prove the desktop runs (a
+--   take-over never checks it, the desktop stops itself after an hour without a desktop command, a machine can restart
+--   under a renewed hold), and a start takes no hold and does nothing to a desktop that runs (review r1 F1). Starts of
+--   one machine are at least 5 seconds apart (else DESKTOP_START_TOO_SOON). It records the start (id, member, machine,
+--   time) and answers its single-use id.
 -- * qorpera_member_machine_desktop_start_authority(start, owner, provider), the executor's read (service_role): the
 --   start begun in the last 15 seconds and not served, its member still an owner, admin or contributor of a company not
---   being deleted; everything the begin checked again, live under the machine's lock (a hold that began since answers
---   `held`); served by the machine's own executor only, once. The host then runs the image's own `desktop start`.
+--   being deleted; everything the begin checked again, live under the machine's lock; served by the machine's own
+--   executor only, once. The host then runs the image's own `desktop start`.
 -- * The machine's idle rule under a member (the brief's point 5): a member's look never moved the machine's last use,
 --   so a task machine whose only use was a member watching its desktop slept after its quiet window
 --   (qorpera_machine_executors.sleep_after_seconds, an hour by default) under the member; and a hold's heartbeat moved
@@ -114,9 +118,8 @@ begin
 	if not v_reads_root and exists (select 1 from public.qorpera_folder_views v where v.placement_id = v_placement.id) then
 		return jsonb_build_object('schema', 'qorpera.member-machine-desktop-start/v1', 'state', 'refused',
 			'reason', 'MACHINE_NEEDS_COMPANY_VIEW'); end if;
-	-- A member holds the desktop (take-over): it runs. Nothing is recorded, marked or run.
-	if coalesce(v_machine.desktop_member_until > v_now, false) then
-		return jsonb_build_object('schema', 'qorpera.member-machine-desktop-start/v1', 'state', 'held'); end if;
+	-- A member's hold (take-over), the caller's or another's, does not stop it: a hold does not prove the desktop runs, and
+	-- a start takes no hold and does nothing to a desktop that runs (review r1 F1 of #1681).
 	-- A floor between starts of one machine: a button cannot hammer a node.
 	if exists (select 1 from public.qorpera_company_machine_desktop_starts as start
 		where start.machine_id = v_machine.id and start.begun_at > v_now - interval '5 seconds') then
@@ -130,10 +133,11 @@ begin
 	end if;
 	update public.qorpera_company_machines set last_used_at = v_now
 	where id = v_machine.id and last_used_at < v_now - interval '30 seconds';
+	-- A screen no agent drove yet is stamped as the agent's the machine was started by; one an agent drove keeps that
+	-- agent's stamp (review r1 F2 of #1681: the machine stays in the window of the agent that drove it).
 	update public.qorpera_company_machines set screen_staff_agent_id = v_machine.started_by_staff_agent_id,
 		screen_used_at = v_now
-	where id = v_machine.id and (screen_staff_agent_id is distinct from v_machine.started_by_staff_agent_id
-		or screen_used_at is null or screen_used_at < v_now - interval '30 seconds');
+	where id = v_machine.id and screen_staff_agent_id is null;
 	delete from public.qorpera_company_machine_desktop_starts as start
 	where start.machine_id = v_machine.id and start.begun_at < v_now - interval '1 hour';
 	insert into public.qorpera_company_machine_desktop_starts(id, machine_id, user_id, begun_at)
@@ -190,8 +194,8 @@ begin
 		return jsonb_build_object('schema', 'qorpera.member-machine-desktop-start-authority/v1', 'state', 'refused',
 			'reason', 'MACHINE_NEEDS_COMPANY_VIEW'); end if;
 	-- The start runs: the disk's mark is decided again here, under this lock, as an action's read decides it (a root
-	-- read taken away since the begin). A hold that began since the begin: the desktop runs; nothing is run.
-	if not coalesce(v_machine.desktop_member_until > clock_timestamp(), false) and not v_reads_root then
+	-- read taken away since the begin). A member's hold does not stop it (review r1 F1 of #1681).
+	if not v_reads_root then
 		update public.qorpera_company_machine_placements set folder_unchecked_at = clock_timestamp()
 		where id = v_placement.id and folder_unchecked_at is null
 			and not exists (select 1 from public.qorpera_folder_views v where v.placement_id = v_placement.id);
@@ -210,8 +214,7 @@ begin
 		'executorOwner', v_placement.owner,
 		'providerId', v_placement.binding ->> 'providerId',
 		'userId', v_start.user_id,
-		'served', v_served,
-		'held', coalesce(v_machine.desktop_member_until > clock_timestamp(), false));
+		'served', v_served);
 end
 $$;
 revoke all on function public.qorpera_member_machine_desktop_start_authority(uuid, text, text)

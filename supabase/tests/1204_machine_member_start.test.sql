@@ -5,14 +5,17 @@
 -- 1. the begin: an owner, admin or contributor; a viewer, a stranger, another company's machine refused (42501); a
 --    malformed call (22023); the service role may not; stopped (MACHINE_NOT_RUNNING), too small
 --    (DESKTOP_MACHINE_TOO_SMALL); the start recorded (id, member, machine, time) and its id answered;
--- 2. what it marks is what an agent's first screen use marks: the machine's last use (at most every 30 seconds) and the
---    screen stamped as the agent the machine was started by, as the agent's own read stamps it; a disk that never had a
+-- 2. what it marks is what an agent's first screen use marks: the machine's last use (at most every 30 seconds) and a
+--    screen no agent drove yet stamped as the agent the machine was started by, as the agent's own read stamps it (a
+--    screen an agent drove keeps that agent's stamp and its time: review r1 F2 of #1681); a disk that never had a
 --    view marked for a caller without the folder's root (as an agent's action), never for one with it; on a disk that has
 --    had a view, MACHINE_NEEDS_COMPANY_VIEW without the root, marking nothing;
 -- 3. the floor: a second start of the machine within 5 seconds (any member's) is DESKTOP_START_TOO_SOON; after it, fine;
--- 4. a member's hold (take-over), another member's or the caller's own: `held`, nothing recorded or marked;
+-- 4. a member's hold (take-over), another member's or the caller's own, does not stop a start (review r1 F1 of #1681: a
+--    hold does not prove the desktop runs): recorded and marked as any start;
 -- 5. the executor's read: served once and only by the placement's own executor, within 15 seconds; an old start, a member
---    made a viewer, a machine stopped meanwhile, a hold begun meanwhile (`held`), a root read taken away (it marks then);
+--    made a viewer, a machine stopped meanwhile; a hold begun meanwhile does not stop it; a root read taken away (it
+--    marks then);
 -- 6. never refused for an agent's run: neither body reads a run, a receipt or a wake;
 -- 7. the machine stays awake under a member: a look's read moves the last use when the member's word stands (an
 --    unconfirmed or unserved look does not), and so does a hold's renewed heartbeat (one that renews nothing does not);
@@ -275,6 +278,23 @@ begin
 	perform pg_temp.base_assert((pg_temp.dc_machine('a1')).last_used_at > v_at + interval '30 seconds',
 		'2: after 30 seconds it moves');
 end $$;
+-- A screen an agent drove keeps that agent's stamp and its time (review r1 F2 of #1681): a member's start never moves the
+-- machine out of the window of the agent that drove it.
+do $$
+declare v_before public.qorpera_company_machines;
+begin
+	perform pg_temp.dc_shift('a1', 'screen_used_at = timestamptz ''2026-11-01 10:00:00+00''');
+	v_before := pg_temp.dc_machine('a1');
+	perform pg_temp.dc_start_id('contributor', 'a1');
+	perform pg_temp.base_assert((pg_temp.dc_machine('a1')).screen_staff_agent_id = v_before.screen_staff_agent_id
+			and (pg_temp.dc_machine('a1')).screen_used_at = timestamptz '2026-11-01 10:00:00+00',
+		'2: a screen an agent drove keeps its stamp: ' || row_to_json(pg_temp.dc_machine('a1'))::text);
+	perform pg_temp.dc_shift('a1', 'screen_staff_agent_id = null, screen_used_at = null');
+	perform pg_temp.dc_start_id('contributor', 'a1');
+	perform pg_temp.base_assert((pg_temp.dc_machine('a1')).screen_staff_agent_id = v_before.started_by_staff_agent_id
+			and (pg_temp.dc_machine('a1')).screen_used_at > clock_timestamp() - interval '5 seconds',
+		'2: a screen no agent drove is stamped as the agent the machine was started by');
+end $$;
 -- Without the root: a disk that never had a view is marked (as an agent's action marks it); one that has had a view is
 -- refused, and nothing is marked or recorded (undone after).
 do $$
@@ -326,25 +346,31 @@ end $$;
 -- 4. A member's hold ------------------------------------------------------------------------------------------------------------
 
 do $$
-declare v text; v_starts jsonb; v_before public.qorpera_company_machines;
+declare v text; v_count bigint; v_before public.qorpera_company_machines;
 begin
 	perform pg_temp.base_assert(pg_temp.dc_answer(pg_temp.dc_take('admin', 'a1')) ->> 'state' = 'ok', '4: the admin takes over');
 	perform pg_temp.dc_age('a1', interval '6 seconds');
-	perform pg_temp.dc_shift('a1', 'last_used_at = clock_timestamp() - interval ''1 hour'', screen_used_at = null');
-	v_starts := pg_temp.dc_starts('a1');
+	perform pg_temp.dc_shift('a1', 'last_used_at = clock_timestamp() - interval ''1 hour''');
+	v_count := (select count(*) from public.qorpera_company_machine_desktop_starts where machine_id = pg_temp.dc_id('a1'));
 	v_before := pg_temp.dc_machine('a1');
+	-- Another member holds it: the start goes as any (a hold does not prove the desktop runs).
 	v := pg_temp.dc_start('contributor', 'a1');
-	perform pg_temp.base_assert(v = 'ok:' || jsonb_build_object('schema', 'qorpera.member-machine-desktop-start/v1',
-				'state', 'held')::text
-			and pg_temp.dc_starts('a1') = v_starts and (pg_temp.dc_machine('a1')).last_used_at = v_before.last_used_at
-			and (pg_temp.dc_machine('a1')).screen_used_at is null,
-		'4: another member holds it: it runs; held, nothing recorded or marked: ' || v);
+	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'ok'
+			and (select count(*) from public.qorpera_company_machine_desktop_starts where machine_id = pg_temp.dc_id('a1'))
+				= v_count + 1
+			and (pg_temp.dc_machine('a1')).last_used_at > v_before.last_used_at,
+		'4: another member holds it: the start is recorded and marked: ' || v);
+	-- The holder's own start goes too (their desktop may be off under their own hold).
+	perform pg_temp.dc_age('a1', interval '6 seconds');
 	v := pg_temp.dc_start('admin', 'a1');
-	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'held' and pg_temp.dc_starts('a1') = v_starts,
-		'4: so for the holder: ' || v);
+	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'ok'
+			and coalesce((pg_temp.dc_machine('a1')).desktop_member_until > clock_timestamp(), false),
+		'4: and the holder''s own, still holding: ' || v);
+	-- The floor holds for them as for anyone.
+	v := pg_temp.dc_start('contributor', 'a1');
+	perform pg_temp.base_assert(v = pg_temp.dc_refused('qorpera.member-machine-desktop-start/v1', 'DESKTOP_START_TOO_SOON'),
+		'4: the floor: ' || v);
 	perform pg_temp.dc_shift('a1', 'desktop_member_until = clock_timestamp() - interval ''1 second''');
-	perform pg_temp.base_assert(pg_temp.dc_answer(pg_temp.dc_start('contributor', 'a1')) ->> 'state' = 'ok',
-		'4: once the lease ran out, the start goes');
 end $$;
 
 -- 5. The executor's read --------------------------------------------------------------------------------------------------------
@@ -357,7 +383,7 @@ do $$
 declare v_where jsonb := jsonb_build_object('schema', 'qorpera.member-machine-desktop-start-authority/v1',
 	'state', 'authorized', 'startId', current_setting('qorpera_test.dc_s51'), 'machineId', pg_temp.dc_id('a1'),
 	'placementId', pg_temp.dc_id('b1'), 'bootId', pg_temp.dc_id('c1'), 'executorOwner', 'mx-1204',
-	'providerId', 'machine-1204', 'userId', pg_temp.dc_user('contributor'), 'held', false);
+	'providerId', 'machine-1204', 'userId', pg_temp.dc_user('contributor'));
 begin
 	perform pg_temp.base_assert(pg_temp.dc_answer(current_setting('qorpera_test.dc_r51')) = v_where || '{"served": false}',
 		'5: another executor reads where it runs and serves nothing: ' || current_setting('qorpera_test.dc_r51'));
@@ -392,12 +418,12 @@ begin
 		raise exception 'Undo' using errcode = 'QTF80';
 	exception when sqlstate 'QTF80' then null;
 	end;
-	-- A hold begun meanwhile: held, served, and nothing to run.
+	-- A hold begun meanwhile does not stop it: authorized and served, the start runs (review r1 F1 of #1681).
 	begin
 		perform pg_temp.dc_take('owner', 'a1');
 		v := pg_temp.dc_auth(v_start);
 		perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'authorized'
-				and (pg_temp.dc_answer(v) ->> 'held')::boolean and (pg_temp.dc_answer(v) ->> 'served')::boolean,
+				and not (pg_temp.dc_answer(v) ? 'held') and (pg_temp.dc_answer(v) ->> 'served')::boolean,
 			'5: a hold begun meanwhile: ' || v);
 		raise exception 'Undo' using errcode = 'QTF80';
 	exception when sqlstate 'QTF80' then null;
