@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	CODE_CHECK_DEFAULT_SECONDS,
 	CODE_CHECK_MAX_SECONDS,
+	CODE_CHECKS_COPY_NOT_NEWEST,
 	CODE_CHECKS_EARLIER_RUN_NOT_STOPPED,
 	CODE_CHECKS_FILE,
 	CODE_CHECKS_MAIN_MOVED,
@@ -707,6 +708,14 @@ describe("the other words", () => {
 		expect(
 			codeChecksNotRunSummary({ state: "not_run", why: "transport", code: CODE_CHECKS_EARLIER_RUN_NOT_STOPPED }),
 		).toBe(said("the session's machine did not answer"));
+		// The copy did nothing because a later run's folder stands there: the session is told what to remove.
+		expect(CODE_CHECKS_COPY_NOT_NEWEST).toBe("CODE_CHECKS_COPY_EXIT_91");
+		expect(codeChecksNotRunSummary({ state: "not_run", why: "copy", code: CODE_CHECKS_COPY_NOT_NEWEST })).toBe(
+			said("a folder of a later run stands in ~/.qorpera-checks on the session's machine; remove the folders in it"),
+		);
+		expect(codeChecksNotRunSummary({ state: "not_run", why: "copy", code: "CODE_CHECKS_COPY_EXIT_90" })).toBe(
+			said("the clean copy of the commit could not be made"),
+		);
 	});
 
 	it("says main kept moving", () => {
