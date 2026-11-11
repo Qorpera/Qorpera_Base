@@ -41,7 +41,12 @@
 --    authority under the next;
 -- 14. a hold is named by its seat too (F26): after a lease ran out and was taken again, and after another tab took the
 --    member's own lease over, input and heartbeats of the seat before are refused; the hand-back's two forms, EXACT and
---    VOID, and F27's order (F27, F28).
+--    VOID, and F27's order (F27, F28);
+-- 15. one lock order with every machine path (v233 release review r1, F30 of #1661), from two connections (with 12's
+--    harness): while a holder has the folder fence and the company row as company deletion's finisher takes them (FOR
+--    UPDATE) and then wants the machine, a take-over and a member's first look wait for it at the fence before they lock
+--    the machine, so the holder gets the machine and nothing deadlocks (as it was, each locked the machine first and
+--    then waited for the company row's key: 40P01).
 
 -- Alice's run acknowledges first, as a member's wake requires before any work (924).
 select pg_temp.base_claims('service_role');
@@ -970,6 +975,25 @@ begin
 	perform pg_temp.dc_back('admin', 'a1');
 	v := pg_temp.dc_check((v_look ->> 'desktopGeneration')::bigint);
 	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_held'), '9 (ii): the agent''s picture stays: ' || v);
+
+	-- (iii) save_coding_value (v233 release review r1, F29 of #1661): its read answers the lease generation it saw (here
+	--       read from its body: this fixture has no capture key, 1181 shows the answer), and the executor asks the same
+	--       check, with no looker, before the helper reads the clipboard and after: a read authorized before a take-over
+	--       and a member's copy gets none, with the member holding and after they handed back.
+	perform pg_temp.base_assert(strpos((select prosrc from pg_proc
+			where oid = 'public.qorpera_authorize_machine_coding_value(jsonb,jsonb,uuid,text)'::regprocedure),
+			'''desktopGeneration'', v_machine.desktop_member_generation') > 0,
+		'9 (iii): the coding value read answers the generation it saw');
+	v_g := pg_temp.dc_generation('a1');
+	perform pg_temp.base_assert(pg_temp.dc_check(v_g) = current_setting('qorpera_test.dc_ok'),
+		'9 (iii): no hold: the clipboard may be read');
+	perform pg_temp.dc_take('contributor', 'a1');
+	perform pg_temp.dc_act_id('contributor', 'a1', '{"type": "key", "keys": ["ctrl+c"]}');
+	v := pg_temp.dc_check(v_g);
+	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_held'), '9 (iii): a member holds it: no box: ' || v);
+	perform pg_temp.dc_back('contributor', 'a1');
+	v := pg_temp.dc_check(v_g);
+	perform pg_temp.base_assert(v = current_setting('qorpera_test.dc_held'), '9 (iii): handed back since: no box: ' || v);
 end $$;
 
 select set_config('qorpera_test.dc_9x', pg_temp.dc_differ(jsonb_build_array(
@@ -1482,6 +1506,72 @@ begin
 			and (select count(*) from public.qorpera_company_machine_desktop_actions where machine_id = pg_temp.dc_id('a1'))
 				= (v_race ->> 'actions')::bigint,
 		'12: and it renewed nothing and recorded no action: ' || row_to_json(v_after)::text);
+end $$;
+
+-- 15. One lock order with every machine path (v233 release review r1, F30 of #1661) -------------------------------------------
+
+-- The holder takes the folder fence and then the company row FOR UPDATE, as company deletion's finisher and purge do
+-- (qorpera_folder_deletion_drain, then the row as the purge takes it), and after them a machine (the finisher's stop and
+-- the purge's cascade lock the company's machines); the contributor's call, from the second connection, comes in
+-- between. Answers whether the call waited for the holder, what the holder's machine lock came to, and the call's answer
+-- (or its error). The holder's transaction is rolled back: it only holds the locks.
+create function pg_temp.dc_custody_race(p_machine text, p_call text) returns jsonb language plpgsql as $$
+declare v_holder integer := current_setting('qorpera_test.dc_holder_pid')::integer;
+	v_poll integer := current_setting('qorpera_test.dc_poll_pid')::integer;
+	v_waited boolean := false; v_custody text; v_answer text;
+begin
+	perform dblink_exec('dc_holder', 'begin');
+	perform * from dblink('dc_holder', format('select 1 from public.qorpera_folder_fences where profile_id = %L for update',
+		'92400000-0000-4000-8000-000000000010')) as fenced(one integer);
+	perform * from dblink('dc_holder', format('select 1 from public.qorpera_profiles where id = %L for update',
+		'92400000-0000-4000-8000-000000000010')) as rowed(one integer);
+	perform dblink_send_query('dc_poll', p_call);
+	for attempt in 1..400 loop
+		v_waited := v_holder = any(pg_blocking_pids(v_poll));
+		exit when v_waited or dblink_is_busy('dc_poll') = 0;
+		perform pg_sleep(0.025);
+	end loop;
+	-- The call gets as far as it can before the holder asks for the machine.
+	perform pg_sleep(0.2);
+	begin
+		perform * from dblink('dc_holder', format('select 1 from public.qorpera_company_machines where id = %L for update',
+			pg_temp.dc_id(p_machine))) as locked(one integer);
+		v_custody := 'locked';
+	exception when others then
+		v_custody := sqlstate || ':' || sqlerrm;
+	end;
+	perform dblink_exec('dc_holder', 'rollback');
+	begin
+		select answer into v_answer from dblink_get_result('dc_poll') as call(answer text);
+	exception when others then
+		v_answer := sqlstate || ':' || sqlerrm;
+	end;
+	perform * from dblink_get_result('dc_poll', false) as call(answer text);
+	return jsonb_build_object('waited', v_waited, 'custody', v_custody, 'answer', v_answer);
+end $$;
+-- The contributor's first look at m-1203-other: no watch row of theirs there yet.
+delete from public.qorpera_company_machine_screen_watches
+where machine_id = pg_temp.dc_id('a4') and user_id = pg_temp.dc_user('contributor');
+do $$
+declare v_race jsonb; v_epoch bigint := coalesce((select epochs.epoch from public.qorpera_company_machine_desktop_epochs as epochs
+	where epochs.machine_id = pg_temp.dc_id('a1') and epochs.user_id = pg_temp.dc_user('contributor')), 0);
+begin
+	-- A take-over of m-1203 (the contributor's lease there ran out in 12: a new lease row).
+	perform pg_temp.base_assert(not coalesce((pg_temp.dc_machine('a1')).desktop_member_until > clock_timestamp(), false),
+		'15: no live lease on m-1203');
+	v_race := pg_temp.dc_custody_race('a1', format('select public.qorpera_member_take_machine_desktop(%L, %L, %L, %L)::text',
+		'92400000-0000-4000-8000-000000000010', pg_temp.dc_id('a1'), v_epoch, extensions.gen_random_uuid()));
+	perform pg_temp.base_assert((v_race ->> 'waited')::boolean and v_race ->> 'custody' = 'locked'
+			and case when v_race ->> 'answer' like '{%' then (v_race ->> 'answer')::jsonb ->> 'state' end = 'ok',
+		'15: a take-over waits at the fence, the holder gets the machine, and the take-over then holds it: '
+			|| v_race::text);
+	-- A member's first look at m-1203-other.
+	v_race := pg_temp.dc_custody_race('a4', format('select public.qorpera_member_machine_screen_begin(%L, %L, %L)::text',
+		'92400000-0000-4000-8000-000000000010', pg_temp.dc_id('a4'), '{"confirmed": false}'));
+	perform pg_temp.base_assert((v_race ->> 'waited')::boolean and v_race ->> 'custody' = 'locked'
+			and case when v_race ->> 'answer' like '{%' then (v_race ->> 'answer')::jsonb ->> 'state' end = 'ok',
+		'15: a first look waits at the fence, the holder gets the machine, and the look then begins: '
+			|| v_race::text);
 end $$;
 
 -- At the end: remove what the test committed, as 1106, 467 and 674 do.

@@ -76,6 +76,12 @@
 --   or title leaves, the executor asks qorpera_machine_desktop_picture_check (service_role): the same generation, and
 --   no live hold by anyone but the one who looks. Otherwise the picture is dropped, so a look authorized before a
 --   take-over never shows what the member did after it, however the steps interleave.
+-- * save_coding_value's clipboard is fenced the same way (v233 release review r1, F29 of #1661): its read answers the
+--   generation it saw (desktopGeneration), and the executor asks the same check, with no looker, before the helper
+--   reads the clipboard and again after it, before the box is answered: a take-over since the read drops the box whole
+--   (nothing stored, nothing logged; the agent hears DESKTOP_MEMBER_IN_CONTROL). The helper takes the desktop as an
+--   action does, so a member's action and the clipboard read never interleave on one desktop. What cannot be undone: a
+--   capture whose helper had begun before a take-over may already have cleared the clipboard.
 -- * The member's list (qorpera_list_agent_machines) says whether they may take over (canTakeOver) and, per machine, who
 --   holds its desktop (control: null, or {mine, name, until}, and for the caller's own hold the epoch it was taken
 --   under, its seat and the press that seated it), and the caller's own current hand-back epoch per machine (epoch);
@@ -208,7 +214,8 @@ revoke all on function public.qorpera_valid_member_desktop_action(jsonb)
 -- 3. Take, keep and hand back --------------------------------------------------------------------------------------------
 
 -- The machine is locked as a member's look locks it (FOR NO KEY UPDATE): the agent's screen read (FOR UPDATE) waits for
--- it and it for that, so an agent's look or action is authorized either before the lease or not at all.
+-- it and it for that, so an agent's look or action is authorized either before the lease or not at all. The folder fence
+-- and the company row (KEY SHARE, rank 0) are taken before the machine, in the order of every machine path (F30).
 create function public.qorpera_member_take_machine_desktop(p_profile_id uuid, p_machine_id uuid, p_epoch bigint,
 	p_press uuid)
 returns jsonb language plpgsql security definer set search_path = '' as $$
@@ -226,6 +233,14 @@ begin
 		raise exception 'Machine desktop request is malformed' using errcode = '22023'; end if;
 	if not public.qorpera_can_write_profile(p_profile_id) or public.qorpera_company_deleting(p_profile_id) then
 		raise exception 'Machine desktop is unavailable' using errcode = '42501'; end if;
+	-- The lease's row names the company, whose key it locks (KEY SHARE): that lock, with the folder fence, comes first,
+	-- before the machine, as every machine path on the company folder takes them (C1c-3f, rank 0:
+	-- qorpera_folder_machine_fence, the folder fence KEY SHARE and then the company row KEY SHARE; the executor's custody
+	-- through qorpera_company_machine_fence_briefly, a member's wake). A holder of the fence or the company row stronger
+	-- that then wants the machine (company deletion's finisher and purge: the fence FOR UPDATE, the company row FOR
+	-- UPDATE, then the machines) is then waited for at the fence, never met in a circle (v233 release review r1, F30 of
+	-- #1661).
+	perform public.qorpera_folder_machine_fence(p_profile_id);
 	select machine.* into v_machine from public.qorpera_company_machines as machine
 	where machine.id = p_machine_id and machine.profile_id = p_profile_id and machine.removed_at is null
 	for no key update;
@@ -650,7 +665,9 @@ do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_autho
 		return jsonb_build_object('schema','qorpera.machine-command-authority/v1','state','refused','reason','DESKTOP_MEMBER_IN_CONTROL',
 			'machine',v_machine.name,'machineState',public.qorpera_company_machine_state(v_machine)); end if;$new$]); end $$;
 
--- The coding value read: nothing is read off the clipboard of a desktop a member holds.
+-- The coding value read: nothing is read off the clipboard of a desktop a member holds, and the lease generation it saw,
+-- which the executor's fence before the helper reads the clipboard and after it, before the box leaves, checks (v233
+-- release review r1, F29 of #1661).
 do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_authorize_machine_coding_value(jsonb,jsonb,uuid,text)'::regprocedure,
 	array[$old$		return jsonb_build_object('schema', 'qorpera.machine-coding-value-authority/v1', 'state', 'refused',
 			'reason', 'MACHINE_NOT_RUNNING', 'machine', v_machine.name); end if;$old$,
@@ -659,14 +676,31 @@ do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_autho
 	-- 20260930713000: a member holds the desktop: nothing is read off its clipboard until they hand it back.
 	if coalesce(v_machine.desktop_member_until > clock_timestamp(), false) then
 		return jsonb_build_object('schema', 'qorpera.machine-coding-value-authority/v1', 'state', 'refused',
-			'reason', 'DESKTOP_MEMBER_IN_CONTROL', 'machine', v_machine.name); end if;$new$]); end $$;
+			'reason', 'DESKTOP_MEMBER_IN_CONTROL', 'machine', v_machine.name); end if;$new$,
+	$old$		'receiptId', p_receipt_id,
+		-- What the helper checks the value against, seals it to and binds the box to.$old$,
+	$new$		'receiptId', p_receipt_id,
+		-- 20260930713000: the lease generation this read saw; what the helper read leaves only while it stands (F29).
+		'desktopGeneration', v_machine.desktop_member_generation,
+		-- What the helper checks the value against, seals it to and binds the box to.$new$]); end $$;
 
 -- 7. While a member holds the desktop, other members see who, not the screen ---------------------------------------------
 
 -- The look's begin read its clock before the machine's lock (20260930712000); it is read under the lock now (review r7
--- F14), so the hold below, the 400 ms throttle and the times it writes are all of the moment the lock was had.
+-- F14), so the hold below, the 400 ms throttle and the times it writes are all of the moment the lock was had. A first
+-- look takes the folder fence and the company row KEY SHARE before the machine (F30), as a take-over does.
 do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_member_machine_screen_begin(uuid,uuid,jsonb)'::regprocedure,
-	array[$old$	v_now timestamptz := clock_timestamp();$old$,
+	array[$old$	select machine.* into v_machine from public.qorpera_company_machines as machine$old$,
+	$new$	-- 20260930713000 (v233 release review r1, F30 of #1661): a member's first look at this machine writes their watch
+	-- row, which names the company and locks its key (KEY SHARE): then the folder fence and that lock come first, as
+	-- every machine path on the company folder takes them (qorpera_folder_machine_fence, rank 0), and only then the
+	-- machine, so a holder of the fence that then wants the machine (deletion's finisher) is waited for, never met in a
+	-- circle. A later look writes no new row and takes nothing more.
+	if not exists (select 1 from public.qorpera_company_machine_screen_watches as watch
+		where watch.machine_id = p_machine_id and watch.user_id = v_user) then
+		perform public.qorpera_folder_machine_fence(p_profile_id); end if;
+	select machine.* into v_machine from public.qorpera_company_machines as machine$new$,
+	$old$	v_now timestamptz := clock_timestamp();$old$,
 	$new$	v_now timestamptz;$new$,
 	$old$	for no key update;
 	if not found then

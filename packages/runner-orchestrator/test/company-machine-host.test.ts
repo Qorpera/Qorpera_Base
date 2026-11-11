@@ -3409,6 +3409,7 @@ describe("a machine's clipboard helper", () => {
 		bootId: id(7),
 		receiptId: id(8),
 		target: { schema: "qorpera.coding-value-machine-target/v1" },
+		desktopGeneration: 2,
 	};
 	const cleared = `${JSON.stringify({ schema: "qorpera.machine-coding-value-cleared/v1" })}\n`;
 	type Answer = { exitCode: number; stdout: string } | "hang";
@@ -3491,6 +3492,11 @@ describe("a machine's clipboard helper", () => {
 		await expect(f.host.codingValue({ ...run, bootId: "boot" }, f.signal)).rejects.toThrow(
 			"COMPANY_MACHINE_CODING_VALUE_INVALID",
 		);
+		// Without the lease generation SQL's read saw (F29): never run.
+		for (const desktopGeneration of [-1, 1.5, Number.NaN])
+			await expect(f.host.codingValue({ ...run, desktopGeneration }, f.signal)).rejects.toThrow(
+				"COMPANY_MACHINE_CODING_VALUE_INVALID",
+			);
 		// A client without the pipe exec: never run.
 		const bare = await fixture();
 		await expect(bare.host.codingValue(run, bare.signal)).rejects.toThrow("COMPANY_MACHINE_CODING_VALUE_UNAVAILABLE");
@@ -4622,6 +4628,104 @@ describe("a member's action on a desktop (20260930713000)", () => {
 		expect(await f.host.memberAct(act({ type: "click", x: 1, y: 1 }, id(36)), f.signal)).toEqual({
 			done: { exitCode: 0 },
 		});
+	});
+
+	it("reads no clipboard a member holds or took over since SQL's read, and never beside a member's action (v233 release review r1, F29 of #1661)", async () => {
+		const box = {
+			schema: "qorpera.coding-value-machine-box/v1",
+			ephemeralPublicKey: "ZXBo",
+			iv: "aXY",
+			tag: "dGFn",
+			ciphertext: "Y2lwaGVy",
+		};
+		const boxed = answer(
+			0,
+			Buffer.from(`${JSON.stringify({ schema: "qorpera.machine-coding-value-box/v1", box })}\n`),
+		);
+		const ok = { schema: "qorpera.machine-desktop-picture/v1", state: "ok" };
+		const held = {
+			schema: "qorpera.machine-desktop-picture/v1",
+			state: "refused",
+			reason: "DESKTOP_MEMBER_IN_CONTROL",
+		};
+		const save = {
+			placementId: id(6),
+			bootId: id(7),
+			receiptId: id(40),
+			target: { schema: "qorpera.coding-value-machine-target/v1" },
+			desktopGeneration: 2,
+		};
+		let gate: Promise<void> | undefined;
+		let open = () => {};
+		const close = () => {
+			gate = new Promise<void>((resolve) => {
+				open = () => {
+					gate = undefined;
+					resolve();
+				};
+			});
+		};
+		const { f, calls } = await piped(async (given) => {
+			if (gate) await gate;
+			if (given.command.includes(COMPANY_MACHINE_CODING_VALUE_HELPER))
+				return given.command.at(-1) === "--clear-only" ? cleared : boxed;
+			const request = given.stdin ? JSON.parse(stdinText(given)) : {};
+			return answer(0, output(request.action?.type ?? null, request.look ? png() : null));
+		});
+		const reads = () =>
+			calls.filter(
+				(given) =>
+					given.command.includes(COMPANY_MACHINE_CODING_VALUE_HELPER) && given.command.at(-1) !== "--clear-only",
+			).length;
+		const fenced = () => f.calls.filter((call) => call.method === "qorpera_machine_desktop_picture_check");
+		// 1. A member took the desktop over since SQL's read, before the helper: nothing is read off the clipboard.
+		f.pictureChecks.push(held);
+		expect(await f.host.codingValue(save, f.signal)).toEqual({ refused: "DESKTOP_MEMBER_IN_CONTROL" });
+		expect(reads()).toBe(0);
+		expect(fenced().map((call) => call.args)).toEqual([{ p_placement_id: id(6), p_generation: 2, p_user_id: null }]);
+		// 2. ... while the helper read it: the box is dropped whole (the helper's own clear stands; nothing else runs).
+		f.pictureChecks.push(ok, held);
+		const dropped = await f.host.codingValue(save, f.signal);
+		expect(dropped).toEqual({ refused: "DESKTOP_MEMBER_IN_CONTROL" });
+		expect(JSON.stringify(dropped)).not.toContain(box.ciphertext);
+		expect(reads()).toBe(1);
+		expect(calls).toHaveLength(1);
+		expect(fenced()).toHaveLength(3);
+		// 3. A fence that does not answer after the read: nothing leaves either; the call fails.
+		f.pictureChecks.push(ok, new Error("fence unavailable"));
+		await expect(f.host.codingValue(save, f.signal)).rejects.toThrow();
+		expect(reads()).toBe(2);
+		// 4. While the helper reads, a member's action (their copy) is refused before it runs; with no take-over the box
+		//    leaves.
+		close();
+		const reading = f.host.codingValue(save, f.signal);
+		await vi.waitFor(() => expect(reads()).toBe(3));
+		expect(await f.host.memberAct(act({ type: "key", keys: ["ctrl+c"] }), f.signal)).toEqual({
+			refused: "DESKTOP_BUSY",
+		});
+		expect(calls).toHaveLength(3);
+		open();
+		expect(await reading).toEqual({ box });
+		// 5. While a member's action runs, a read is refused at once (a member holds the desktop), and reads nothing.
+		close();
+		const acting = f.host.memberAct(act({ type: "click", x: 5, y: 5 }, id(41)), f.signal);
+		await vi.waitFor(() => expect(calls).toHaveLength(4));
+		f.pictureChecks.push(held);
+		expect(await f.host.codingValue(save, f.signal)).toEqual({ refused: "DESKTOP_MEMBER_IN_CONTROL" });
+		expect(reads()).toBe(3);
+		open();
+		expect(await acting).toEqual({ done: { exitCode: 0 } });
+		// 6. While an agent's action runs (no member holds it), a read waits for it, then reads.
+		close();
+		const agentActing = f.host.screen(agent({ type: "click", x: 1, y: 1 }, 13), f.signal);
+		await vi.waitFor(() => expect(calls).toHaveLength(5));
+		const waiting = f.host.codingValue(save, f.signal);
+		await new Promise((resolve) => setTimeout(resolve, 250));
+		expect(reads()).toBe(3);
+		open();
+		expect(await agentActing).toMatchObject({ header: { action: { type: "click", exitCode: 0 } } });
+		expect(await waiting).toEqual({ box });
+		expect(reads()).toBe(4);
 	});
 
 	it("lets no picture of a desktop a member took over since the look's read leave, to an agent or another member (review r1 F1)", async () => {

@@ -772,6 +772,7 @@ describe("a machine's coding value", () => {
 			providerId: "machine-node",
 			receiptId: commandId,
 			target,
+			desktopGeneration: 4,
 		};
 		const call = vi.fn(async (_method: string, _args: Record<string, unknown>) => answer as unknown);
 		const host = {
@@ -805,12 +806,14 @@ describe("a machine's coding value", () => {
 			},
 			f.signal,
 		);
+		// The lease generation SQL's read saw goes to the host's fence (v233 release review r1, F29 of #1661).
 		expect(f.host.codingValue).toHaveBeenCalledWith(
 			{
 				placementId: f.answer.placementId,
 				bootId: f.answer.bootId,
 				receiptId: f.request.input.commandId,
 				target: f.target,
+				desktopGeneration: 4,
 			},
 			f.signal,
 		);
@@ -826,7 +829,13 @@ describe("a machine's coding value", () => {
 		});
 		await expect(f.router.codingValue(f.request, f.signal)).rejects.toMatchObject({ code: "MACHINE_NOT_RUNNING" });
 		expect(f.host.codingValue).not.toHaveBeenCalled();
-		for (const code of ["CLIPBOARD_EMPTY", "CLIPBOARD_MORE_THAN_ONE_KEY", "MACHINE_IMAGE_WITHOUT_CODING_VALUES"]) {
+		for (const code of [
+			"CLIPBOARD_EMPTY",
+			"CLIPBOARD_MORE_THAN_ONE_KEY",
+			"MACHINE_IMAGE_WITHOUT_CODING_VALUES",
+			// The host's fence dropped the box: a member took the desktop over since the read (F29).
+			"DESKTOP_MEMBER_IN_CONTROL",
+		]) {
 			f.host.codingValue.mockResolvedValueOnce({ refused: code });
 			const error = await f.router.codingValue(f.request, f.signal).catch((caught: unknown) => caught);
 			expect(error).toBeInstanceOf(CloudMachineCodingValueRefusal);
@@ -843,6 +852,11 @@ describe("a machine's coding value", () => {
 			{ target: { ...f.target, schema: "qorpera.coding-value-capture-target/v1" } },
 			{ target: null },
 			{ executorOwner: "" },
+			// F29: a read without the lease generation it saw is no authority.
+			{ desktopGeneration: undefined },
+			{ desktopGeneration: -1 },
+			{ desktopGeneration: "4" },
+			{ desktopGeneration: 1.5 },
 		]) {
 			f.call.mockResolvedValueOnce({ ...f.answer, ...other });
 			await expect(

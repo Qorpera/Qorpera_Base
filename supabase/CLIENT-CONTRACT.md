@@ -1312,6 +1312,21 @@ request of another shape.
 - The action route's body is `{"action": {...}, "epoch": n, "seat": s}`; the page sends the epoch and the seat of the
   hold the key, click or text was captured under, never those at send time, and its queue and every answer belong to
   that one hold: an answer for an older hold changes nothing of the current one (F25).
+- An agent's `save_coding_value` is fenced as a picture is (v233 release review r1, F29 of #1661): its read
+  (`qorpera_authorize_machine_coding_value`) answers `desktopGeneration`, the lease generation it saw, and the executor
+  asks `qorpera_machine_desktop_picture_check` (no looker) before the clipboard helper reads the clipboard and again
+  after it, before the box is answered: a take-over at any moment since the read drops the box whole (nothing stored,
+  nothing logged; the agent hears `DESKTOP_MEMBER_IN_CONTROL`). The helper takes the desktop as an action does, so a
+  member's action (a copy, a paste) and the clipboard read never interleave on one desktop. What cannot be undone: a
+  helper that had begun reading before a take-over may already have cleared the clipboard, the member's copy with it.
+- One lock order with every machine path (F30 of #1661): a take-over, and a member's first look at a machine (which
+  writes their watch row, keyed by the company), take the folder fence and the company row KEY SHARE
+  (`qorpera_folder_machine_fence`, rank 0) before the machine's row, as the executor's custody and a member's wake do,
+  so a holder of the fence that then wants the machine (company deletion's finisher) is waited for, never met in a
+  circle.
+- The window sends the member's input in the order it was made (F31 of #1661): a click waiting for its second, typed
+  text and a wheel turn are each gathered a moment, and when input of another kind begins, what is gathered goes first.
+
 ### A member turns an agent's desktop on (20260930714000_machine_member_start)
 
 An owner, admin or contributor turns the desktop (the screen) of an agent's running desktop computer on, whatever the

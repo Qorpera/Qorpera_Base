@@ -1368,6 +1368,77 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		expect(p.el.classList.contains("is-dragging")).toBe(false);
 	});
 
+	it("sends the member's input in the order they made it across kinds: what is gathered of one kind goes when another begins (v233 release review r1, F31)", async () => {
+		const { s, p } = await holding();
+		const target = canvas(p);
+		const wheel = (deltaY = 100) =>
+			target.dispatchEvent(
+				new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: 400, clientY: 100, deltaY }),
+			);
+		/** The actions sent since `from`, by their verbs. */
+		const sent = (from: number) => s.acts.slice(from).map((act) => act.action.type);
+		// A click, then a wheel turn 20 ms later: the click waits for a second no more, and goes before the scroll.
+		let from = s.acts.length;
+		press(target, 400, 250);
+		await advance(20);
+		wheel();
+		await advance(DOUBLE_CLICK_MS);
+		expect(sent(from)).toEqual(["click", "scroll"]);
+		// A wheel turn, then a click 20 ms later: the scroll first.
+		from = s.acts.length;
+		wheel();
+		await advance(20);
+		press(target, 400, 250);
+		await advance(DOUBLE_CLICK_MS);
+		expect(sent(from)).toEqual(["scroll", "click"]);
+		// A wheel turn, then a key: the scroll first.
+		from = s.acts.length;
+		wheel();
+		await advance(20);
+		key(target, "Enter");
+		await advance(DOUBLE_CLICK_MS);
+		expect(sent(from)).toEqual(["scroll", "key"]);
+		// Text, then a wheel turn: the text first; a wheel turn, then text: the scroll first.
+		from = s.acts.length;
+		key(target, "a");
+		await advance(20);
+		wheel();
+		await advance(20);
+		key(target, "b");
+		await advance(TYPE_BATCH_MS + DOUBLE_CLICK_MS);
+		expect(sent(from)).toEqual(["type", "scroll", "type"]);
+		expect(s.acts.slice(from).map((act) => act.action.text ?? null)).toEqual(["a", null, "b"]);
+		// A wheel turn, then a drag and a right click: the scroll first.
+		from = s.acts.length;
+		wheel();
+		await advance(20);
+		press(target, 50, 50, {}, [300, 200]);
+		press(target, 10, 20, { button: 2 });
+		await advance(DOUBLE_CLICK_MS);
+		expect(sent(from)).toEqual(["scroll", "drag", "click"]);
+		// A click, then typed text and a paste: the click first.
+		from = s.acts.length;
+		press(target, 400, 250);
+		await advance(20);
+		key(target, "c");
+		await advance(20);
+		const clip = new Event("paste", { bubbles: true, cancelable: true }) as ClipboardEvent;
+		Object.defineProperty(clip, "clipboardData", { value: { getData: () => "d" } });
+		target.dispatchEvent(clip);
+		await advance(TYPE_BATCH_MS + DOUBLE_CLICK_MS);
+		expect(s.acts.slice(from).map((act) => [act.action.type, act.action.text ?? null])).toEqual([
+			["click", null],
+			["type", "c"],
+			["type", "d"],
+		]);
+		// A double click still is one, with nothing between its two presses.
+		from = s.acts.length;
+		press(target, 100, 50);
+		press(target, 101, 50);
+		await advance(DOUBLE_CLICK_MS);
+		expect(sent(from)).toEqual(["double"]);
+	});
+
 	it("maps a press by the picture as drawn, letterboxed, and takes none outside it", async () => {
 		const { s, p } = await holding();
 		// 1000 x 500 box: the 1600 x 1000 picture drawn at half size, 100 px in from each side.

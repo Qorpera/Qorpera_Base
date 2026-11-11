@@ -288,7 +288,7 @@ export function localMachineCodingValue(host: {
 }): (authority: MachineCodingValueAuthority, signal: AbortSignal) => Promise<CloudMachineCodingValueAnswer> {
 	return async (authority, signal) => {
 		const outcome = await host.codingValue({ placementId: authority.placementId, bootId: authority.bootId,
-			receiptId: authority.receiptId, target: authority.target }, signal);
+			receiptId: authority.receiptId, target: authority.target, desktopGeneration: authority.desktopGeneration }, signal);
 		if ("refused" in outcome) {
 			if (isCloudMachineCodingValueRefusal(outcome.refused)) throw new CloudMachineCodingValueRefusal(outcome.refused);
 			throw new Error("MACHINE_CODING_VALUE_FAILED");
