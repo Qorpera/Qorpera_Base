@@ -291,8 +291,9 @@ export async function authorizeMemberMachineScreen(
 		desktopGeneration: result.desktopGeneration as number };
 }
 
-/** What SQL says about one member's action on a desktop (20260930713000): where the machine runs, and whether this
- * executor serves it (only the machine's own does, once; one that forwards reads it without serving it). */
+/** What SQL says about one member's start of a desktop (20260930714000): where the machine runs, and whether this
+ * executor serves it (only the machine's own does, once; one that forwards reads it without serving it). A member's hold
+ * of the desktop does not stop a start (review r1 F1 of #1681). */
 export interface MemberMachineStartAuthority {
 	startId: string;
 	machineId: string;
@@ -302,8 +303,6 @@ export interface MemberMachineStartAuthority {
 	providerId: string;
 	userId: string;
 	served: boolean;
-	/** A member holds the desktop (20260930713000): it runs, and nothing is to run. */
-	held: boolean;
 }
 
 /** A start's single-use id, begun as the member, read again live in SQL (qorpera_member_machine_desktop_start_authority,
@@ -325,21 +324,22 @@ export async function authorizeMemberMachineStart(
 		result.reason === "DESKTOP_MACHINE_TOO_SMALL"))
 		throw new CloudMemberMachineStartRefusal(result.reason);
 	if (result.state !== "authorized" ||
-		Object.keys(result).sort().join() !== "bootId,executorOwner,held,machineId,placementId,providerId,schema,served,startId,state,userId" ||
+		Object.keys(result).sort().join() !== "bootId,executorOwner,machineId,placementId,providerId,schema,served,startId,state,userId" ||
 		result.startId !== request.startId ||
 		![result.machineId, result.placementId, result.bootId, result.userId].every((id) => typeof id === "string" && UUID.test(id)) ||
 		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
 		typeof result.providerId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(result.providerId) ||
-		typeof result.held !== "boolean" ||
 		// Served only by the machine's own executor: what SQL says and what this executor is agree.
 		result.served !== (result.executorOwner === request.owner && result.providerId === request.providerId))
 		throw new Error("MEMBER_START_AUTHORITY_INVALID");
 	signal.throwIfAborted();
 	return { startId: result.startId, machineId: result.machineId as string, placementId: result.placementId as string,
 		bootId: result.bootId as string, executorOwner: result.executorOwner, providerId: result.providerId,
-		userId: result.userId as string, served: result.served as boolean, held: result.held };
+		userId: result.userId as string, served: result.served as boolean };
 }
 
+/** What SQL says about one member's action on a desktop (20260930713000): where the machine runs, and whether this
+ * executor serves it (only the machine's own does, once; one that forwards reads it without serving it). */
 export interface MemberMachineActAuthority {
 	actionId: string;
 	machineId: string;

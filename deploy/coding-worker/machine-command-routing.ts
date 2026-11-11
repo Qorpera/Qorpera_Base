@@ -79,7 +79,7 @@ interface MachineCommandRouterOptions {
 	memberActLocal?(authority: MemberMachineActAuthority, action: MachineScreenAction, signal: AbortSignal): Promise<CloudMemberMachineAct>;
 	/** A member's start of the desktop (20260930714000): begins it as the member (member-control.ts); absent when this
 	 * executor takes no member's requests. */
-	memberStartBegin?(token: string, start: { companyId: string; machineId: string }, signal: AbortSignal): Promise<{ startId: string } | "held">;
+	memberStartBegin?(token: string, start: { companyId: string; machineId: string }, signal: AbortSignal): Promise<{ startId: string }>;
 	/** A member's start on this node's machine; absent when the executor carries no machines. */
 	memberStartLocal?(authority: MemberMachineStartAuthority, signal: AbortSignal): Promise<CloudMemberMachineStart>;
 	fetch?: typeof fetch;
@@ -249,13 +249,14 @@ export class MachineCommandRouter {
 			fetch: this.#options.fetch }).memberAct({ actionId, action }, signal);
 	}
 	/** A member turns a desktop on (20260930714000), as this executor's member listener took it: begun as the member (the
-	 * database checks their token and answers a single-use id, or that a member holds the desktop, so it runs), then read
-	 * again as the executor, and run on this node or sent once to the machine's node. No hold, no run of the agent's. */
+	 * database checks their token and answers a single-use id), then read again as the executor, and run on this node or
+	 * sent once to the machine's node. It takes no hold and needs no run of the agent's; a member's hold of the desktop
+	 * does not stop it (review r1 F1 of #1681: a hold does not prove the desktop runs, and a start of one that runs does
+	 * nothing). */
 	async memberStart(request: CloudMemberMachineStartRequest, signal: AbortSignal): Promise<CloudMemberMachineStart> {
 		if (!this.#options.memberStartBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
 		const begun = await this.#options.memberStartBegin(request.token, { companyId: request.companyId,
 			machineId: request.machineId }, signal);
-		if (begun === "held") return { outcome: "running" };
 		return this.#memberStartServe(begun.startId, signal, false);
 	}
 	/** A member's start another executor sent here (the peer listener): read again, and run on this node only. */
@@ -263,12 +264,10 @@ export class MachineCommandRouter {
 		return this.#memberStartServe(request.startId, signal, true);
 	}
 	/** SQL names the machine's executor and serves the start only to it, once: this node runs it, or another node's
-	 * executor is sent it once (it reads SQL again, which serves it there, and never forwards). A desktop a member holds
-	 * runs: nothing is run for it. */
+	 * executor is sent it once (it reads SQL again, which serves it there, and never forwards). */
 	async #memberStartServe(startId: string, signal: AbortSignal, localOnly: boolean): Promise<CloudMemberMachineStart> {
 		const authority = await authorizeMemberMachineStart(this.#options.control,
 			{ startId, owner: this.#options.owner, providerId: this.#options.providerId }, signal);
-		if (authority.held) return { outcome: "running" };
 		if (authority.served) {
 			if (!this.#options.memberStartLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
 			return this.#options.memberStartLocal(authority, signal);

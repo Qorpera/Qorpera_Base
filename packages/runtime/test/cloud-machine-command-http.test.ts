@@ -1935,7 +1935,6 @@ describe("a member's start of a desktop (20260930714000)", () => {
 			bootId: randomUUID(),
 			userId: randomUUID(),
 		};
-		let held = false;
 		/** SQL's read, for the machine of node A: served only to A's executor. */
 		const answer = (requestOwner: string) => ({
 			schema: "qorpera.member-machine-desktop-start-authority/v1",
@@ -1948,7 +1947,6 @@ describe("a member's start of a desktop (20260930714000)", () => {
 			providerId: "machine-node",
 			userId: ids.userId,
 			served: requestOwner === "mx-a",
-			held,
 		});
 		const call = vi.fn(
 			async (_method: string, args: Record<string, unknown>) => answer(args.p_owner as string) as unknown,
@@ -1956,7 +1954,7 @@ describe("a member's start of a desktop (20260930714000)", () => {
 		const host = {
 			memberStart: vi.fn(async (): Promise<CompanyMachineMemberStartOutcome> => ({ outcome: "started" })),
 		};
-		const memberStartBegin = vi.fn(async (): Promise<{ startId: string } | "held"> => ({ startId: ids.startId }));
+		const memberStartBegin = vi.fn(async (): Promise<{ startId: string }> => ({ startId: ids.startId }));
 		const sent: { url: string; body: unknown }[] = [];
 		const router = new MachineCommandRouter({
 			owner,
@@ -1975,15 +1973,11 @@ describe("a member's start of a desktop (20260930714000)", () => {
 			}) as typeof fetch,
 		});
 		const start = { companyId: ids.companyId, machineId: ids.machineId, token: "eyJh.eyJz.c2ln" };
-		const hold = (value: boolean) => {
-			held = value;
-		};
 		return {
 			...ids,
 			answer,
 			call,
 			host,
-			hold,
 			memberStartBegin,
 			router,
 			start,
@@ -2020,14 +2014,14 @@ describe("a member's start of a desktop (20260930714000)", () => {
 		await expect(f.router.memberStart(f.start, f.signal)).rejects.toThrow("MEMBER_MACHINE_START_FAILED");
 	});
 
-	it("runs nothing while a member holds the desktop: at the begin, or since it", async () => {
+	it("runs the start whoever holds the desktop: SQL's read knows no hold (review r1 F1 of #1681)", async () => {
 		const f = fixture();
-		f.memberStartBegin.mockResolvedValueOnce("held");
-		expect(await f.router.memberStart(f.start, f.signal)).toEqual({ outcome: "running" });
-		expect(f.call).not.toHaveBeenCalled();
-		f.hold(true);
-		expect(await f.router.memberStart(f.start, f.signal)).toEqual({ outcome: "running" });
+		// A read that still names a hold is of another shape: no authority.
+		f.call.mockResolvedValueOnce({ ...f.answer("mx-a"), held: true });
+		await expect(f.router.memberStart(f.start, f.signal)).rejects.toThrow("MEMBER_START_AUTHORITY_INVALID");
 		expect(f.host.memberStart).not.toHaveBeenCalled();
+		expect(await f.router.memberStart(f.start, f.signal)).toEqual({ outcome: "started" });
+		expect(f.host.memberStart).toHaveBeenCalledTimes(1);
 	});
 
 	it("reads SQL's answer strictly: the start asked, exactly its fields, served only to the machine's own executor", async () => {
@@ -2036,7 +2030,6 @@ describe("a member's start of a desktop (20260930714000)", () => {
 			["another start", { ...f.answer("mx-a"), startId: randomUUID() }],
 			["an extra field", { ...f.answer("mx-a"), more: 1 }],
 			["served to another", { ...f.answer("mx-a"), executorOwner: "mx-b" }],
-			["held of no kind", { ...f.answer("mx-a"), held: "no" }],
 			["another schema", { ...f.answer("mx-a"), schema: "qorpera.member-machine-desktop-act-authority/v1" }],
 		] as const) {
 			f.call.mockResolvedValueOnce(value);

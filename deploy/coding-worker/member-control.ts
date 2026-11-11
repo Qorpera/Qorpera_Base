@@ -34,8 +34,9 @@ const START_REFUSED = new Set([
 	"DESKTOP_START_TOO_SOON",
 ]);
 
-/** The member's side of a look at a desktop (20260930712000) and of an action on one they hold (20260930713000): exactly
- * two calls, qorpera_member_machine_screen_begin and qorpera_member_machine_desktop_act_begin, made as the member with
+/** The member's side of a look at a desktop (20260930712000), of an action on one they hold (20260930713000) and of a
+ * start of one (20260930714000): exactly three calls, qorpera_member_machine_screen_begin,
+ * qorpera_member_machine_desktop_act_begin and qorpera_member_machine_desktop_start_begin, made as the member with
  * their own bearer token and the project's publishable key, to the executor's fixed project origin. The database checks
  * the token (PostgREST, auth.uid()); this client only passes it on. The token is never logged, stored or put in an
  * error: every failure is a fixed code. A typed text never goes here: the action's begin carries its length alone. */
@@ -131,13 +132,12 @@ export class MemberMachineScreenControl {
 		throw new Error("MEMBER_ACT_BEGIN_INVALID");
 	}
 	/** Begins a start of the desktop as the member (qorpera_member_machine_desktop_start_begin, 20260930714000): its
-	 * single-use id; `held` when a member holds the desktop (it runs, and nothing is to run); or the refusal the window
-	 * acts on. Sign-in and forbidden as for a look. */
+	 * single-use id, or the refusal the window acts on. Sign-in and forbidden as for a look. */
 	async start(
 		token: string,
 		start: { companyId: string; machineId: string },
 		signal: AbortSignal,
-	): Promise<{ startId: string } | "held"> {
+	): Promise<{ startId: string }> {
 		if (!TOKEN.test(token)) throw new CloudMemberMachineScreenSignIn();
 		if (!UUID.test(start.companyId) || !UUID.test(start.machineId)) throw new Error("MEMBER_START_BEGIN_INVALID");
 		const answer = await this.#call(
@@ -151,8 +151,6 @@ export class MemberMachineScreenControl {
 		if (answer.schema === "qorpera.member-machine-desktop-start/v1" && keys === "schema,startId,state" &&
 			answer.state === "ok" && typeof answer.startId === "string" && UUID.test(answer.startId))
 			return { startId: answer.startId };
-		if (answer.schema === "qorpera.member-machine-desktop-start/v1" && keys === "schema,state" && answer.state === "held")
-			return "held";
 		if (answer.schema === "qorpera.member-machine-desktop-start/v1" && keys === "reason,schema,state" &&
 			answer.state === "refused" && typeof answer.reason === "string" && START_REFUSED.has(answer.reason))
 			throw new CloudMemberMachineStartRefusal(answer.reason as CloudMemberMachineStartRefusalCode);

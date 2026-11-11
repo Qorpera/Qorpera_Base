@@ -554,7 +554,7 @@ describe("a member's start begun as the member (deploy/coding-worker/member-cont
 	const signal = new AbortController().signal;
 	const schema = "qorpera.member-machine-desktop-start/v1";
 
-	it("calls the start's begin as the member, and answers its id, or held", async () => {
+	it("calls the start's begin as the member, and answers its id", async () => {
 		const startId = randomUUID();
 		const c = control(200, { schema, state: "ok", startId });
 		expect(await c.control.start(token, start, signal)).toEqual({ startId });
@@ -562,7 +562,6 @@ describe("a member's start begun as the member (deploy/coding-worker/member-cont
 		expect(url).toBe("https://project.supabase.co/rest/v1/rpc/qorpera_member_machine_desktop_start_begin");
 		expect(init).toMatchObject({ method: "POST", redirect: "error", headers: { authorization: `Bearer ${token}` } });
 		expect(JSON.parse(String(init?.body))).toEqual({ p_profile_id: start.companyId, p_machine_id: start.machineId });
-		expect(await control(200, { schema, state: "held" }).control.start(token, start, signal)).toBe("held");
 	});
 
 	it("turns the begin's refusals into the member's, and fails closed on anything else", async () => {
@@ -583,6 +582,8 @@ describe("a member's start begun as the member (deploy/coding-worker/member-cont
 			{ schema, state: "ok", startId: "x" },
 			{ schema, state: "ok", startId: randomUUID(), more: 1 },
 			{ schema: "qorpera.member-machine-desktop/v1", state: "held" },
+			// No begin answers `held` any more (review r1 F1 of #1681): a hold does not stop a start.
+			{ schema, state: "held" },
 		])
 			await expect(control(200, body).control.start(token, start, signal), JSON.stringify(body)).rejects.toThrow(
 				"MEMBER_START_BEGIN_INVALID",
