@@ -6,8 +6,9 @@ import type {
 } from "@qorpera/cloud-client/cloud-member-company-computer";
 
 /* The database's take-over rules as migration 20260930713000 has them (one hand-back epoch per member and machine, a
- * lease taken under it; take / keep / hand-back / list as SQL answers them), for the schedule explorers of the ledger
- * (desktop-holds-explorer.test.ts) and of the window (computer-explorer.test.ts), reviews r10 and r13 of #1661. */
+ * lease taken under it, a seat for every seating: F26; take / keep / hand-back / list as SQL answers them), for the
+ * schedule explorers of the ledger (desktop-holds-explorer.test.ts) and of the window (computer-explorer.test.ts),
+ * reviews r10, r13 and r18 of #1661. */
 
 /** A small fast generator of the seed's choices (mulberry32). */
 export function random(seed: number) {
@@ -28,6 +29,25 @@ export interface Lease {
 	/** The take-overs that took or took it again (a page's request ids; -1 for another tab or member). */
 	takes: Set<number>;
 	takenStep: number;
+	/** The model's own count of seatings (F26 of #1661): every take-over that seats a member, a new lease or the member's
+	 * own taken again, is a new seat, whatever the product's fields say; and the press id that seated it. */
+	seat: number;
+	press: string;
+	/** Who seated it (a page's request id; -1 for another tab or member), and whether that seating began this lease (no
+	 * live lease of the member's was there: none, or one that had run out) or took the member's live lease over. */
+	seatedBy: number;
+	fresh: boolean;
+}
+
+/** How a lease's seat came, for the steps printed. */
+export function seating(lease: Lease): string {
+	return `seat ${lease.seat}, seated by ${lease.seatedBy >= 0 ? `the page's take-over #${lease.seatedBy}` : "another tab or member"}${lease.fresh ? " as a new lease" : " over the member's live lease"}`;
+}
+
+/** The hold a hand-back names (F26): its seat, or the press that may have seated it. */
+export interface HoldName {
+	seat?: number | null;
+	press?: string | null;
 }
 
 /** The database, as migration 20260930713000 has it. */
@@ -38,40 +58,94 @@ export class Database {
 	}
 	readonly epochs = new Map<string, number>();
 	readonly leases = new Map<string, Lease | undefined>();
+	/** Seatings so far, per machine: the model's own count, which the product's seat (the lease generation) must follow. */
+	readonly seatings = new Map<string, number>();
+	/** The seat each take-over request was seated at (a page's request id), when it seated anyone. */
+	readonly seatedBy = new Map<number, number>();
 	step = 0;
+	/** The seat rules of F26: a heartbeat and an action are taken only in the seat they name, and a hand-back ends only
+	 * the hold it names and moves the epoch only when no live hold of the member's is left unnamed. Off, the model is the
+	 * database of round 17 (2ac5b3591): the epoch alone, a hand-back at the current epoch ends any lease of the member's
+	 * under it. The model counts seatings either way. */
+	seats = true;
 	epoch(member: string, machine: string): number {
 		return this.epochs.get(`${member}:${machine}`) ?? 0;
 	}
-	take(member: string, machine: string, epoch: number, take: number): MemberDesktopHold {
+	#seatAnew(machine: string): number {
+		const seat = (this.seatings.get(machine) ?? 0) + 1;
+		this.seatings.set(machine, seat);
+		return seat;
+	}
+	/** Presses of another tab's or member's take-overs: ids of their own. */
+	#presses = 0;
+	take(member: string, machine: string, epoch: number, take: number, given?: string): MemberDesktopHold {
+		const press = given ?? `00000000-0000-4000-8000-${String(++this.#presses).padStart(12, "0")}`;
 		const current = this.epoch(member, machine);
 		if (epoch !== current) return { state: "refused", reason: "TAKE_CALLED_OFF", memberName: null, epoch: current };
 		const lease = this.leases.get(machine);
 		if (lease?.live && lease.member !== member)
 			return { state: "refused", reason: "DESKTOP_MEMBER_IN_CONTROL", memberName: "Ada", epoch: null };
+		const seat = this.#seatAnew(machine);
+		if (take >= 0) this.seatedBy.set(take, seat);
 		if (lease?.live) {
 			lease.epoch = current;
 			lease.takes.add(take);
+			lease.seat = seat;
+			lease.press = press;
+			lease.seatedBy = take;
+			lease.fresh = false;
 		} else
-			this.leases.set(machine, { member, epoch: current, live: true, takes: new Set([take]), takenStep: this.step });
-		return { state: "ok", until: "2026-11-11T00:00:00Z" };
+			this.leases.set(machine, {
+				member,
+				epoch: current,
+				live: true,
+				takes: new Set([take]),
+				takenStep: this.step,
+				seat,
+				press,
+				seatedBy: take,
+				fresh: true,
+			});
+		return { state: "ok", until: "2026-11-11T00:00:00Z", seat };
 	}
-	keep(member: string, machine: string, epoch: number): boolean {
+	keep(member: string, machine: string, epoch: number, seat?: number): boolean {
 		const lease = this.leases.get(machine);
-		return lease?.live === true && lease.member === member && lease.epoch === epoch;
+		return (
+			lease?.live === true &&
+			lease.member === member &&
+			lease.epoch === epoch &&
+			(!this.seats || seat === undefined || lease.seat === seat)
+		);
 	}
-	handBack(member: string, machine: string, epoch: number): MemberDesktopHandBack {
+	handBack(member: string, machine: string, epoch: number, name: HoldName = {}): MemberDesktopHandBack {
 		const current = this.epoch(member, machine);
+		const lease = this.leases.get(machine);
+		const mine = lease !== undefined && lease.member === member;
 		let handedBack = false;
-		if (epoch === current) {
-			this.epochs.set(`${member}:${machine}`, current + 1);
-			const lease = this.leases.get(machine);
-			if (lease && lease.member === member && lease.epoch === epoch) {
-				handedBack = lease.live;
-				this.leases.set(machine, undefined);
+		const end = () => {
+			handedBack = lease?.live === true;
+			this.leases.set(machine, undefined);
+			this.#seatAnew(machine);
+		};
+		if (!this.seats) {
+			if (epoch === current) {
+				this.epochs.set(`${member}:${machine}`, current + 1);
+				if (mine && lease.epoch === epoch) end();
 			}
+		} else {
+			const live = mine && lease.live;
+			const named =
+				mine &&
+				lease.epoch === epoch &&
+				(name.seat == null || lease.seat === name.seat) &&
+				(name.press == null || lease.press === name.press);
+			const moves = epoch === current && !(live && !named);
+			if (named || (moves && mine && lease.epoch === epoch)) end();
+			if (moves) this.epochs.set(`${member}:${machine}`, current + 1);
 		}
 		const now = this.leases.get(machine);
-		return { handedBack, epoch: this.epoch(member, machine), holding: now?.live === true && now.member === member };
+		const holding = now?.live === true && now.member === member;
+		return { handedBack, epoch: this.epoch(member, machine), holding, seat: holding ? now.seat : null };
 	}
 	list(member: string): MemberAgentMachines {
 		return {
@@ -79,6 +153,7 @@ export class Database {
 			canTakeOver: true,
 			machines: this.machines.map((machine): MemberAgentMachine => {
 				const lease = this.leases.get(machine);
+				const mine = lease?.member === member;
 				return {
 					machineId: machine,
 					name: machine.slice(-2),
@@ -92,10 +167,12 @@ export class Database {
 					waitingFor: null,
 					control: lease?.live
 						? {
-								mine: lease.member === member,
+								mine,
 								name: lease.member,
 								until: "2026-11-11T00:00:00Z",
-								epoch: lease.member === member ? lease.epoch : null,
+								epoch: mine ? lease.epoch : null,
+								seat: mine ? lease.seat : null,
+								press: mine ? lease.press : null,
 							}
 						: null,
 					epoch: this.epoch(member, machine),
@@ -111,18 +188,20 @@ export class Database {
 	 * catches). */
 	actEpochChecked = true;
 	/** A member's action as qorpera_member_machine_desktop_act_begin takes it: from the member who holds the live lease,
-	 * and (F24) only when that lease was taken under the epoch the action names (an action without one, from an earlier
-	 * page, is not checked). */
+	 * and only when that lease was taken under the epoch the action names (F24) and is the seat it names (F26; an action
+	 * without one, from an earlier page, is not checked). */
 	act(
 		member: string,
 		machine: string,
 		epoch: number | undefined,
+		seat?: number,
 	): { ok: true; lease: Lease } | { ok: false; code: "DESKTOP_CONTROL_ENDED" | "DESKTOP_MEMBER_IN_CONTROL" } {
 		const lease = this.leases.get(machine);
 		if (!lease?.live) return { ok: false, code: "DESKTOP_CONTROL_ENDED" };
 		if (lease.member !== member) return { ok: false, code: "DESKTOP_MEMBER_IN_CONTROL" };
 		if (this.actEpochChecked && epoch !== undefined && epoch !== lease.epoch)
 			return { ok: false, code: "DESKTOP_CONTROL_ENDED" };
+		if (this.seats && seat !== undefined && seat !== lease.seat) return { ok: false, code: "DESKTOP_CONTROL_ENDED" };
 		return { ok: true, lease };
 	}
 }

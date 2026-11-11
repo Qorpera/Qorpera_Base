@@ -8,7 +8,7 @@ import { WebCompanyComputer } from "../src/cloud/computer.ts";
 import type { RealtimeResource } from "../src/cloud/realtime.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { fixture, id, profileA, settle, staff, userA } from "./fixtures.ts";
-import { Database, random } from "./take-over-model.ts";
+import { Database, type HoldName, random, seating } from "./take-over-model.ts";
 
 /* Schedules explored through the real window (review r13 of #1661): a company's ComputerPanels and the agent's
  * ComputerPanel, driven as a member does (the window's button, the take-over card's Take over, Hand back, I'm done,
@@ -26,10 +26,13 @@ import { Database, random } from "./take-over-model.ts";
  * not be taken over", a refusal for another member's hold, or the window showing that member;
  * (I5) a take-over request leaves the page only after a press that no release of that machine (Hand back, I'm done,
  * close, a switch away, pagehide) followed;
- * (I7, review r17) the database runs an action only under the hold it was captured in (its epoch); (I8) whatever an
- * older hold's action answers changes nothing of the window (its hold, its note); (I9) what is typed under a hold that
- * no release followed leaves the page, in the order it was typed, while that hold stands. Action requests are held as
- * the others are, so their answers can come after a hand-back and a new take-over.
+ * (I7, reviews r17 and r18) an action takes effect, and a heartbeat renews the lease, only while the model's own seat
+ * (it counts every seating itself: a new lease, one after a lease ran out, another tab's take-over of the member's own)
+ * is the one the page hold it came from was given: the seat the page's own latest take-over got, as the model saw it
+ * (each key is recorded with the page hold it was captured in); (I8) whatever an older hold's action answers changes
+ * nothing of the window (its hold, its note); (I9) what is typed under a hold that no release followed leaves the page,
+ * in the order it was typed, while that hold stands. Action requests are held as the others are, so their answers can
+ * come after a hand-back, a lease that ran out, another tab's take-over and a new take-over.
  * (I6, review r14) a heartbeat or input for a machine leaves the page only after a press on this page for it that no
  * release followed: nothing is ever taken up from a list; and a note ("could not be taken over") never follows a
  * press that a release followed (F22's counterpart of I4); a Hand back pressed on a hold shown from another window
@@ -65,6 +68,10 @@ interface Pending {
 	kind: "list" | "take" | "back" | "act";
 	machine?: string;
 	epoch?: number;
+	/** What the page named beside the epoch (F26): an action's seat, a take-over's press, the hold a hand-back names. */
+	seat?: number;
+	press?: string;
+	name?: HoldName;
 	/** An action's key press, as the explorer recorded it (review r17). */
 	capture?: Capture;
 	answer?: unknown;
@@ -76,14 +83,15 @@ interface Pending {
 	reject: (error: unknown) => void;
 }
 
-/** A key pressed on the picture while the page held the desktop: its key, the hold it was captured under (the page's
- * hold count and the epoch of the take-over that made it), and whether an action of it left the page. */
+/** A key pressed on the picture while the page held the desktop: its key, the page hold it was captured under (the
+ * page's hold count), the model's seat that hold was given (F26: none when the page's own latest take-over seated no one),
+ * and whether an action of it left the page. */
 interface Capture {
 	name: string;
 	step: number;
 	machine: string;
-	epoch: number | undefined;
 	serial: number;
+	given: number | undefined;
 	sent: boolean;
 }
 
@@ -213,13 +221,19 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 		press = undefined;
 	};
 	let lastRelease = -1;
-	/** Keys pressed on the picture (review r17), the page's holds counted as they begin, the epoch of the last take-over
-	 * the page sent per machine (the epoch of the hold it makes), and an older hold's action answer to look after. */
+	/** Keys pressed on the picture (review r17), the page's holds counted as they begin, the model's seat each was given
+	 * (F26: the seat the page's own latest take-over of the machine got, as the model saw it), and an older hold's action
+	 * answer to look after. */
 	const captures: Capture[] = [];
 	let serial = 0;
 	let wasHolding = false;
-	const tookAt = new Map<string, number>();
+	const given = new Map<number, number | undefined>();
 	let older: { holding: boolean; note: string; name: string } | undefined;
+	/** The model's seat the page's own latest take-over of this machine got, if it seated anyone. */
+	const seatGiven = (machine: string | undefined) => {
+		const latest = takes.filter((take) => take.machine === machine).at(-1);
+		return latest === undefined ? undefined : db.seatedBy.get(latest.id);
+	};
 	/** Hand-back requests the page sent, and presses of the window's Hand back on a hold shown from another window. */
 	const backs: { machine: string; step: number }[] = [];
 	const handBacks: { step: number; machine: string | undefined; met: boolean }[] = [];
@@ -243,7 +257,14 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 				screenAgentName: staff.displayName,
 				waitingFor: null,
 				control: lease?.live
-					? { mine, name: mine ? "Owner" : "Ada", until: until(), epoch: mine ? lease.epoch : null }
+					? {
+							mine,
+							name: mine ? "Owner" : "Ada",
+							until: until(),
+							epoch: mine ? lease.epoch : null,
+							seat: mine ? lease.seat : null,
+							press: mine ? lease.press : null,
+						}
 					: null,
 				epoch: db.epoch(MEMBER, machineId),
 			};
@@ -252,18 +273,18 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 		one.effect = true;
 		one.deliverAt = step + (one.kind === "act" ? actLag() : beside(one.kind) ? 0 : lag());
 		if (one.kind === "act") {
-			const done = db.act(MEMBER, one.machine as string, one.epoch);
-			// I7 (review r17): an action runs only under the hold it was captured in.
-			if (done.ok && one.capture && one.capture.epoch !== done.lease.epoch)
+			const done = db.act(MEMBER, one.machine as string, one.epoch, one.seat);
+			// I7 (reviews r17, r18): an action takes effect only while the model's seat is the one its page hold was given.
+			if (done.ok && one.capture && one.capture.given !== done.lease.seat)
 				violations.push(
-					`I7: the action of ${one.capture.name}, captured at step ${one.capture.step} under ${one.capture.epoch}, ran at step ${step} under the lease taken at ${done.lease.epoch}`,
+					`I7: the action of ${one.capture.name}, captured at step ${one.capture.step} under the page's hold ${one.capture.serial} (given seat ${one.capture.given ?? "none"}), took effect at step ${step} in ${seating(done.lease)}`,
 				);
 			one.answer = done.ok ? { exitCode: 0 } : { code: done.code };
 		} else if (one.kind === "list") one.answer = rows();
 		else if (one.kind === "take") {
-			const answer = db.take(MEMBER, one.machine as string, one.epoch as number, one.id);
-			one.answer = answer.state === "ok" ? { state: "ok", until: until() } : answer;
-		} else one.answer = db.handBack(MEMBER, one.machine as string, one.epoch as number);
+			const answer = db.take(MEMBER, one.machine as string, one.epoch as number, one.id, one.press);
+			one.answer = answer.state === "ok" ? { state: "ok", until: until(), seat: answer.seat } : answer;
+		} else one.answer = db.handBack(MEMBER, one.machine as string, one.epoch as number, one.name);
 	};
 	const deliver = (one: Pending) => {
 		one.settled = true;
@@ -324,7 +345,11 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 			const machine = url.slice(bridge.length).split("/")[4] as string;
 			if (url.endsWith("/act")) {
 				use(machine, "input");
-				const sent = JSON.parse(String(init?.body)) as { action: { keys?: string[] }; epoch?: number };
+				const sent = JSON.parse(String(init?.body)) as {
+					action: { keys?: string[] };
+					epoch?: number;
+					seat?: number;
+				};
 				const name = sent.action.keys?.[0] ?? "";
 				const capture = captures.find((one) => !one.sent && one.name === name && one.machine === machine);
 				if (capture) {
@@ -333,7 +358,7 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 						violations.push(`I9: the action of ${name} left the page before an earlier key of its hold`);
 					capture.sent = true;
 				}
-				return held("act", machine, sent.epoch, init, capture);
+				return held("act", machine, sent.epoch, init, capture, { seat: sent.seat });
 			}
 			if (new Headers(init?.headers).get("if-none-match") === TAG)
 				return new Response(null, { status: 304, headers: { etag: TAG } });
@@ -346,18 +371,26 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 		const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
 		const machine = String(body.p_machine_id ?? "");
 		const epoch = Number(body.p_epoch);
+		const name: HoldName = { seat: body.p_seat as number | null, press: body.p_press as string | null };
+		const named =
+			name.seat != null ? ` seat ${name.seat}` : name.press != null ? ` press ${name.press.slice(0, 4)}` : "";
 		if (method === "qorpera_member_keep_machine_desktop") {
 			use(machine, "heartbeat");
-			log.push(`   the page renews ${machine.slice(-2)}@${epoch}`);
+			log.push(`   the page renews ${machine.slice(-2)}@${epoch}${named}`);
+			const renewed = db.keep(MEMBER, machine, epoch, Number(body.p_seat));
+			// I7 (review r18): a heartbeat renews the lease only while the model's seat is the one its page hold was given.
+			const lease = db.leases.get(machine);
+			if (renewed && lease && given.get(serial) !== lease.seat)
+				violations.push(
+					`I7: a heartbeat of the page's hold ${serial} (given seat ${given.get(serial) ?? "none"}) renewed ${machine.slice(-2)} in ${seating(lease)} at step ${step}`,
+				);
 			return Response.json(
-				db.keep(MEMBER, machine, epoch)
-					? { schema: SCHEMA, state: "ok", until: until() }
-					: { schema: SCHEMA, state: "ended" },
+				renewed ? { schema: SCHEMA, state: "ok", until: until() } : { schema: SCHEMA, state: "ended" },
 			);
 		}
 		if (method === "qorpera_member_hand_back_machine_desktop" && init?.keepalive) {
-			log.push(`   the page hands back as it goes: ${machine.slice(-2)}@${epoch}`);
-			const answer = db.handBack(MEMBER, machine, epoch);
+			log.push(`   the page hands back as it goes: ${machine.slice(-2)}@${epoch}${named}`);
+			const answer = db.handBack(MEMBER, machine, epoch, name);
 			return Response.json({ schema: SCHEMA, state: "ok", ...answer });
 		}
 		const kind =
@@ -369,7 +402,14 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 						? "back"
 						: undefined;
 		if (!kind) throw new Error(`Unexpected request ${url}`);
-		return held(kind, machine, epoch, init);
+		return held(
+			kind,
+			machine,
+			epoch,
+			init,
+			undefined,
+			kind === "take" ? { press: String(body.p_press) } : kind === "back" ? { name } : {},
+		);
 	};
 	/** A request held until the explorer lets it reach the database and lets its answer come (or be lost). */
 	const held = (
@@ -378,12 +418,14 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 		epoch: number | undefined,
 		init?: RequestInit,
 		capture?: Capture,
+		extra: { seat?: number; press?: string; name?: HoldName } = {},
 	): Promise<Response> => {
 		return new Promise<Response>((resolve, reject) => {
 			const one: Pending = {
 				id: ++ids,
 				kind,
 				...(kind === "list" ? {} : { machine, epoch }),
+				...extra,
 				...(capture ? { capture } : {}),
 				effect: false,
 				settled: false,
@@ -394,12 +436,19 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 			};
 			requests.push(one);
 			if (kind === "back") backs.push({ machine, step });
+			const named =
+				extra.seat !== undefined
+					? ` seat ${extra.seat}`
+					: extra.name?.seat != null
+						? ` seat ${extra.name.seat}`
+						: extra.name?.press != null
+							? ` press ${extra.name.press.slice(0, 4)}`
+							: "";
 			log.push(
-				`   the page asks: ${kind} #${one.id}${kind === "list" ? "" : ` ${machine.slice(-2)}@${epoch}`}${capture ? ` (${capture.name})` : ""}`,
+				`   the page asks: ${kind} #${one.id}${kind === "list" ? "" : ` ${machine.slice(-2)}@${epoch}${named}`}${capture ? ` (${capture.name})` : ""}`,
 			);
 			if (kind === "take" && epoch !== undefined) {
 				takes.push({ id: one.id, machine, epoch, step });
-				tookAt.set(machine, epoch);
 				// I5: only after a press that no release of that machine followed.
 				if (pressedAt < 0 || (releasedAt.get(machine) ?? -1) >= pressedAt)
 					violations.push(
@@ -470,8 +519,11 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 	};
 	const check = (): string | undefined => {
 		if (violations.length) return violations[0];
-		// The page's holds, counted as they begin (review r17).
-		if (p?.holding && !wasHolding) serial++;
+		// The page's holds, counted as they begin (review r17), each with the model's seat it was given (F26).
+		if (p?.holding && !wasHolding) {
+			serial++;
+			given.set(serial, seatGiven(shownMachine()));
+		}
 		wasHolding = p?.holding === true;
 		// I8 (review r17): an older hold's action answered; the current hold is as it was.
 		if (older) {
@@ -745,7 +797,7 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 						// Only while the picture takes input (the page holds the desktop it shows).
 						if (!canvas || !p?.holding || !machine || !canvas.hasAttribute("tabindex")) return false;
 						const name = KEYS[captures.length % KEYS.length] as string;
-						captures.push({ name, step, machine, epoch: tookAt.get(machine), serial, sent: false });
+						captures.push({ name, step, machine, serial, given: given.get(serial), sent: false });
 						key(canvas, name);
 						return true;
 					},
@@ -761,6 +813,17 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 				},
 				{
 					kind: "time",
+					// Typing schedules come to the hold's heartbeat often, so a lease that ran out, or another tab's take-over, is
+					// learned while an action of the hold is still on its way (F26).
+					weight: typing ? 3 : 0,
+					name: "a minute passes",
+					run: async () => {
+						await vi.advanceTimersByTimeAsync(KEEP_EVERY_MS);
+						return true;
+					},
+				},
+				{
+					kind: "time",
 					weight: 3,
 					name: "time passes",
 					run: async () => {
@@ -770,7 +833,8 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 				},
 				{
 					kind: "tab takes",
-					weight: 1,
+					// Typing schedules meet another tab's take-over of the member's own hold often (F26).
+					weight: typing ? 3 : 1,
 					name: "another tab takes over",
 					run: () => {
 						const machine = pick(machines);
@@ -784,7 +848,8 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 					name: "another tab hands back",
 					run: () => {
 						const machine = pick(machines);
-						db.handBack(MEMBER, machine, db.epoch(MEMBER, machine));
+						// Another tab's Hand back on the hold its window shows: by that hold's seat.
+						db.handBack(MEMBER, machine, db.epoch(MEMBER, machine), { seat: db.leases.get(machine)?.seat ?? 0 });
 						return true;
 					},
 				},
@@ -804,13 +869,14 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 					name: "another member hands back",
 					run: () => {
 						const machine = pick(machines);
-						db.handBack(OTHER, machine, db.epoch(OTHER, machine));
+						db.handBack(OTHER, machine, db.epoch(OTHER, machine), { seat: db.leases.get(machine)?.seat ?? 0 });
 						return true;
 					},
 				},
 				{
 					kind: "lease runs out",
-					weight: 1,
+					// Typing schedules meet a lease that ran out and was taken again often (F26).
+					weight: typing ? 3 : 1,
 					name: "a lease runs out",
 					run: () => {
 						db.expire(pick(machines));
@@ -938,9 +1004,35 @@ afterEach(() => {
 	document.body.replaceChildren();
 });
 
-/** Typing seeds (explore's `typing`) that broke the window of ac5d378fc (release review r1 of #1667: F25), or a model
- * without SQL's action epoch (F24). They run first; each holds now. */
+/** Typing seeds (explore's `typing`) that broke the window of ac5d378fc (release review r1 of #1667: F25) or a model
+ * without SQL's action epoch (F24), with the typing steps of review r17; and the window and SQL of 2ac5b3591 (review r18:
+ * F26, the hold named by its epoch alone), with the steps as they are now. They run first; each holds now. */
 const FOUND_TYPING: readonly { seed: number; finding: string }[] = [
+	{
+		seed: 1479,
+		finding:
+			"F26 (2ac5b3591, I7): a key went under the page's hold in seat 1; the lease ran out, the heartbeat said so, and the same page took the desktop over again at the same epoch (seat 2); the key then ran in seat 2",
+	},
+	{
+		seed: 667,
+		finding:
+			"F26 (2ac5b3591, I7): a key went under the page's hold in seat 2; the lease ran out, and a late take-over of the page's from long before seated anew at the same epoch (seat 3); the key then ran in seat 3",
+	},
+	{
+		seed: 4023,
+		finding:
+			"F26 (2ac5b3591, I7): the lease ran out and another tab of the member's took the desktop at the same epoch (a new lease, seat 4); a key the page sent under seat 3 ran in it",
+	},
+	{
+		seed: 1548,
+		finding:
+			"F26 (2ac5b3591, I7): another tab of the member's took their live lease over at the same epoch (seat 2); a key the page then sent under seat 1 ran in it",
+	},
+	{
+		seed: 294,
+		finding:
+			"F26 (2ac5b3591, I7): another tab of the member's took their live lease over at the same epoch (seat 2); the page's heartbeat of seat 1 renewed it",
+	},
 	{
 		seed: 15811,
 		finding:

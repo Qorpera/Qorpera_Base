@@ -6,11 +6,12 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DesktopHoldLedger } from "../src/app/views/desktop-holds.ts";
 import type { WebCompanyComputer } from "../src/cloud/computer.ts";
-import { Database, random } from "./take-over-model.ts";
+import { Database, type HoldName, random } from "./take-over-model.ts";
 
 /* Schedules explored (review r10 of #1661): the ledger of desktop holds, as the window drives it, against a model of
  * the database's take-over rules (migration 20260930713000: one hand-back epoch per member and machine, a lease taken
- * under it, take / keep / hand-back / list exactly as SQL answers them). Two pages of one member, another tab of theirs
+ * under it, a seat for every seating and a hand-back that names its hold (F26), take / keep / hand-back / list exactly as
+ * SQL answers them). Two pages of one member, another tab of theirs
  * and another member act on two machines of one agent; every request's effect on the database and its answer's delivery
  * (or loss) are separate steps. A seeded generator picks the steps; after every step three invariants are checked. Each
  * seed also picks its shape (one page or two, one machine or two, some kinds of step left out: swarm testing) and holds
@@ -39,6 +40,9 @@ interface Request {
 	kind: "take" | "back" | "list";
 	machine?: Machine;
 	epoch?: number;
+	/** A take-over's press id, and the hold a hand-back names (F26). */
+	press?: string;
+	name?: HoldName;
 	/** The database's answer, once its effect happened. */
 	answer?: unknown;
 	/** A read of the window's own (what it shows reaches the ledger only while the window is open). */
@@ -120,16 +124,16 @@ type Kind = (typeof OPTIONAL)[number] | "take over" | "I'm done" | "close" | "re
 function told(one: Request): string {
 	if (one.kind === "take") {
 		const answer = one.answer as MemberDesktopHold;
-		return answer.state === "ok" ? "ok" : `${answer.reason}, epoch ${answer.epoch}`;
+		return answer.state === "ok" ? `ok, seat ${answer.seat}` : `${answer.reason}, epoch ${answer.epoch}`;
 	}
 	if (one.kind === "back") {
 		const answer = one.answer as MemberDesktopHandBack;
-		return `epoch ${answer.epoch}${answer.handedBack ? ", handed back" : ""}${answer.holding ? ", holding" : ""}`;
+		return `epoch ${answer.epoch}${answer.handedBack ? ", handed back" : ""}${answer.holding ? `, holding in seat ${answer.seat}` : ""}`;
 	}
 	return (one.answer as MemberAgentMachines).machines
 		.map(
 			(row) =>
-				`${row.machineId.slice(-2)} epoch ${row.epoch}${row.control ? (row.control.mine ? ` mine at ${row.control.epoch}` : " theirs") : ""}`,
+				`${row.machineId.slice(-2)} epoch ${row.epoch}${row.control ? (row.control.mine ? ` mine at ${row.control.epoch} seat ${row.control.seat}` : " theirs") : ""}`,
 		)
 		.join("; ");
 }
@@ -168,7 +172,14 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 	const flush = async () => {
 		for (let n = 0; n < 30; n++) await Promise.resolve();
 	};
-	const request = (page: number, kind: Request["kind"], machine?: Machine, epoch?: number, window = false) =>
+	const request = (
+		page: number,
+		kind: Request["kind"],
+		machine?: Machine,
+		epoch?: number,
+		window = false,
+		extra: { press?: string; name?: HoldName } = {},
+	) =>
 		new Promise<unknown>((resolve, reject) => {
 			requests.push({
 				id: ++ids,
@@ -176,6 +187,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				kind,
 				machine,
 				epoch,
+				...extra,
 				window,
 				effect: false,
 				settled: false,
@@ -200,13 +212,14 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 	for (let index = 0; index < pageCount; index++) {
 		const stop = new AbortController();
 		const computer = {
-			takeDesktop: (machine: string, epoch: number) => request(index, "take", machine as Machine, epoch),
-			handBackDesktop: (machine: string, _reason: string, epoch: number) =>
-				request(index, "back", machine as Machine, epoch),
+			takeDesktop: (machine: string, epoch: number, press: string) =>
+				request(index, "take", machine as Machine, epoch, false, { press }),
+			handBackDesktop: (machine: string, _reason: string, epoch: number, name: HoldName) =>
+				request(index, "back", machine as Machine, epoch, false, { name }),
 			agentMachines: () => request(index, "list"),
 			// The keepalive as the page goes: best effort, its effect at once, nothing answered.
-			handBackOnLeave: (machine: string, epoch: number) => {
-				db.handBack(MEMBER, machine as Machine, epoch);
+			handBackOnLeave: (machine: string, epoch: number, name: HoldName) => {
+				db.handBack(MEMBER, machine as Machine, epoch, name);
 			},
 		};
 		pages.push({
@@ -230,8 +243,10 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 	const effect = (one: Request) => {
 		one.effect = true;
 		one.deliverAt = db.step + lag();
-		if (one.kind === "take") one.answer = db.take(MEMBER, one.machine as Machine, one.epoch as number, one.id);
-		else if (one.kind === "back") one.answer = db.handBack(MEMBER, one.machine as Machine, one.epoch as number);
+		if (one.kind === "take")
+			one.answer = db.take(MEMBER, one.machine as Machine, one.epoch as number, one.id, one.press);
+		else if (one.kind === "back")
+			one.answer = db.handBack(MEMBER, one.machine as Machine, one.epoch as number, one.name);
 		else one.answer = db.list(MEMBER);
 	};
 	const deliver = (one: Request) => {
@@ -452,9 +467,10 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				weight: 2,
 				name: `p${index} heartbeat and input`,
 				run: () => {
-					const epoch = page.ledger.holder(page.selected);
-					if (!page.open || epoch === undefined) return false;
-					if (!db.keep(MEMBER, page.selected, epoch)) page.ledger.ended(page.selected, epoch);
+					const held = page.ledger.holder(page.selected);
+					if (!page.open || held === undefined) return false;
+					if (!db.keep(MEMBER, page.selected, held.epoch, held.seat))
+						page.ledger.ended(page.selected, held.epoch, held.seat);
 					return true;
 				},
 			},
@@ -483,7 +499,8 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				name: "another tab hands back",
 				run: () => {
 					const machine = pick(machines);
-					db.handBack(MEMBER, machine, db.epoch(MEMBER, machine));
+					// Another tab hands back what it holds, by its seat.
+					db.handBack(MEMBER, machine, db.epoch(MEMBER, machine), { seat: db.leases.get(machine)?.seat ?? 0 });
 					return true;
 				},
 			},
@@ -503,7 +520,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				name: "another member hands back",
 				run: () => {
 					const machine = pick(machines);
-					db.handBack(OTHER, machine, db.epoch(OTHER, machine));
+					db.handBack(OTHER, machine, db.epoch(OTHER, machine), { seat: db.leases.get(machine)?.seat ?? 0 });
 					return true;
 				},
 			},
@@ -520,7 +537,12 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		const actions = every.filter((action) => !off.has(action.kind));
 		if (due.length) {
 			const one = pick(due);
-			const label = `${one.kind} #${one.id} of p${one.page}${one.machine ? ` ${one.machine.slice(-2)}@${one.epoch}` : ""}`;
+			const named = one.name
+				? one.name.seat != null
+					? ` seat ${one.name.seat}`
+					: ` press ${one.name.press?.slice(0, 4)}`
+				: "";
+			const label = `${one.kind} #${one.id} of p${one.page}${one.machine ? ` ${one.machine.slice(-2)}@${one.epoch}${named}` : ""}`;
 			if (!one.effect)
 				actions.push({
 					kind: "take over",
