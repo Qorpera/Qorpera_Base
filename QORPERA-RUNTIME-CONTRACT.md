@@ -6395,9 +6395,9 @@ decision above, item 1.
 3. **Reset sidebar** takes away everything the member changed in the company's sidebar: their sections and places,
    pins, hidden agents and group chats, contact places and hidden pages (and, from `20260930728000`, their own
    arrangement of the apps drawer). Its Undo puts back the last reset's rows where nothing newer took their place.
-4. **Follow-up, not done here:** `organize_sidebar`'s text still says every member sees a change at once; it should
-   say the tool changes the company's sidebar, which each member sees except where they placed things themselves. It
-   moves the tool catalog's pin, so it rides a runtime bundle.
+4. **`organize_sidebar`'s text** says the tool changes the company's sidebar, which every member sees except where a
+   member placed things themself, and that what a member placed is theirs, like pins and hidden agents (done after
+   this amendment; it changes the tool catalog, so it rides a runtime bundle).
 
 ### 2026-11-11 amendment: groups of apps
 
