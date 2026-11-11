@@ -4,6 +4,7 @@ import {
 	CLOUD_MEMBER_FOLDER_PAGE,
 	CloudMemberFolderAccessDenied,
 	CloudMemberFolderClient,
+	CloudMemberFolderFileCache,
 	CloudMemberFolderHints,
 	cloudMemberFolderHintTopic,
 	parseCloudMemberCompanyStateFolders,
@@ -360,11 +361,15 @@ describe("member folder answers", () => {
 	});
 });
 
-function client(responder: (url: URL, init: RequestInit) => Response) {
+function client(
+	responder: (url: URL, init: RequestInit) => Response | Promise<Response>,
+	files?: CloudMemberFolderFileCache,
+) {
 	const calls: Array<{ url: string; init: RequestInit }> = [];
 	return {
 		calls,
 		folder: new CloudMemberFolderClient({
+			...(files ? { files } : {}),
 			environmentId: env,
 			supabaseUrl: "https://cloud.test/",
 			objectGatewayUrl: "https://objects.test/",
@@ -564,6 +569,87 @@ describe("the member folder client", () => {
 	});
 });
 
+describe("the member's file cache", () => {
+	const signal = new AbortController().signal;
+
+	it("answers a version read before with no round trip, a copy each time, across the member's clients", async () => {
+		const { store, file } = stored("Hello, cached folder.", [5, 16]);
+		const files = new CloudMemberFolderFileCache();
+		const first = client(objects(store), files);
+		const bytes = await first.folder.readFile(file, signal);
+		expect(first.calls).toHaveLength(3);
+		bytes.fill(0);
+		const second = client(objects(store), files);
+		expect(new TextDecoder().decode(await second.folder.readFile(file, signal))).toBe("Hello, cached folder.");
+		expect(second.calls).toHaveLength(0);
+		expect(files.bytes).toBe(file.bytes);
+		// Another version, and the same version under a limit it does not fit, are not answered from it.
+		const other = stored("Hello, other version.");
+		await second.folder.readFile(other.file, signal).catch(() => undefined);
+		expect(second.calls).toHaveLength(1);
+		expect(() => second.folder.readFile(file, signal, file.bytes - 1)).toThrow("limit");
+		files.clear();
+		await second.folder.readFile(file, signal);
+		expect(second.calls).toHaveLength(4);
+	});
+
+	it("shares a read under way, and a second reader reads for itself when the first stops", async () => {
+		const { store, file } = stored("Shared bytes.");
+		const files = new CloudMemberFolderFileCache();
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const slow = client(async (url) => {
+			await gate;
+			return objects(store)(url);
+		}, files);
+		const [a, b] = [slow.folder.readFile(file, signal), slow.folder.readFile(file, signal)];
+		release();
+		expect(new TextDecoder().decode(await a)).toBe("Shared bytes.");
+		expect(new TextDecoder().decode(await b)).toBe("Shared bytes.");
+		expect(slow.calls).toHaveLength(2);
+
+		const later = stored("Bytes after a stop.");
+		const stop = new AbortController();
+		const reader = client((url, init) => {
+			init.signal?.throwIfAborted();
+			return objects(later.store)(url);
+		}, new CloudMemberFolderFileCache());
+		const stopped = reader.folder.readFile(later.file, stop.signal);
+		const waiting = reader.folder.readFile(later.file, signal);
+		stop.abort();
+		await expect(stopped).rejects.toThrow();
+		expect(new TextDecoder().decode(await waiting)).toBe("Bytes after a stop.");
+	});
+
+	it("keeps the most recently read up to its size, and never a file over a quarter of it", async () => {
+		const files = new CloudMemberFolderFileCache(40);
+		const a = stored("a".repeat(10));
+		const b = stored("b".repeat(10));
+		const c = stored("c".repeat(10));
+		const d = stored("d".repeat(10));
+		const big = stored("e".repeat(11));
+		const store = new Map([...a.store, ...b.store, ...c.store, ...d.store, ...big.store]);
+		const reader = client(objects(store), files);
+		for (const file of [a.file, b.file, c.file, d.file]) await reader.folder.readFile(file, signal);
+		expect(files.bytes).toBe(40);
+		await reader.folder.readFile(a.file, signal);
+		await reader.folder.readFile(big.file, signal);
+		expect(files.bytes).toBe(40);
+		const e = stored("f".repeat(10));
+		for (const [key, value] of e.store) store.set(key, value);
+		await reader.folder.readFile(e.file, signal);
+		const before = reader.calls.length;
+		// b was the least recently read: it went; a, read again, stayed.
+		await reader.folder.readFile(a.file, signal);
+		expect(reader.calls.length).toBe(before);
+		await reader.folder.readFile(b.file, signal);
+		expect(reader.calls.length).toBe(before + 2);
+		expect(() => new CloudMemberFolderFileCache(-1)).toThrow("cache size");
+	});
+});
+
 describe("a file read piece by piece", () => {
 	const MIB = 1024 * 1024;
 	const signal = new AbortController().signal;
@@ -701,8 +787,9 @@ describe("a file read piece by piece", () => {
 		const { store, file, chunks } = large(Array<number>(9).fill(MIB));
 		const later = (ms: number, bytes: Uint8Array | undefined) =>
 			new Promise<Response>((resolve) => setTimeout(() => resolve(answer(bytes)), ms));
-		// Ten answers of 60 ms each pass a deadline of 400 ms one at a time; under one deadline they do not.
-		const slow = piecewise((hash) => later(60, store.get(hash)), { timeoutMs: 400 });
+		// Ten answers of 120 ms each pass a deadline of 400 ms one at a time; under one deadline they do not, even with
+		// readFile asking for four chunks at once (the manifest, then three rounds: 480 ms).
+		const slow = piecewise((hash) => later(120, store.get(hash)), { timeoutMs: 400 });
 		const each = pieces(slow.folder, file);
 		await each.read;
 		expect(each.got).toHaveLength(9);

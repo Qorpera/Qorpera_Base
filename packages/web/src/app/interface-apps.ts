@@ -42,7 +42,7 @@ import {
 	prepareAnswer,
 	prepareRow,
 } from "./app-actions.ts";
-import { type AppLook, type AppScheme, appBaseStyle, appScheme } from "./interface-app-style.ts";
+import { type AppLook, type AppScheme, appBaseStyle, appScheme, readAppBrand } from "./interface-app-style.ts";
 
 /* Interface apps on the web (deploy/first-node/RUNTIME-INTERFACE-APPS.md §2, §4 and §5; Jonas, 5 November 2026): the
  * company's apps as their manifests say (`readApps`, for the apps drawer and the cards), one app's page put together
@@ -200,12 +200,18 @@ function base64(bytes: Uint8Array): string {
 	return btoa(text);
 }
 
-/** Reads the files of one app's page, once each, within the app's limits. */
+/** An app's files read at once, at most, while its page is put together. */
+const FILES_AT_ONCE = 8;
+
+/** Reads the files of one app's page, once each, a few at once, within the app's limits. */
 class AppFiles {
 	readonly #folder: Folder;
 	readonly #root: string;
 	readonly #signal: AbortSignal;
 	readonly #read = new Map<string, Promise<Uint8Array | null>>();
+	/** Reads under way, and the ones waiting for a turn. */
+	#active = 0;
+	readonly #waiting: (() => void)[] = [];
 	#bytes = 0;
 	#videoBytes = 0;
 	tooLarge = false;
@@ -233,7 +239,7 @@ class AppFiles {
 			if (this.#read.size >= APP_MAX_FILES) this.tooLarge = true;
 			return Promise.resolve(null);
 		}
-		const reading = (async () => {
+		const reading = this.#turn(async () => {
 			const entry = (await this.#folder.read(`${this.#root}/${path}`, this.#signal)).entry;
 			const file: CloudMemberFolderFile | null | undefined = entry?.kind === "file" ? entry.file : null;
 			if (!file) return null;
@@ -249,9 +255,22 @@ class AppFiles {
 			if (video) this.#videoBytes += file.bytes;
 			else this.#bytes += file.bytes;
 			return this.#folder.readFile(file, this.#signal, most);
-		})();
+		});
 		this.#read.set(key, reading);
 		return reading;
+	}
+
+	/** Runs `read` once fewer than FILES_AT_ONCE reads are under way; a read that ends hands its turn to the next. */
+	async #turn<T>(read: () => Promise<T>): Promise<T> {
+		if (this.#active >= FILES_AT_ONCE) await new Promise<void>((resolve) => this.#waiting.push(resolve));
+		else this.#active++;
+		try {
+			return await read();
+		} finally {
+			const next = this.#waiting.shift();
+			if (next) next();
+			else this.#active--;
+		}
 	}
 
 	async text(path: string): Promise<string | null> {
@@ -273,14 +292,18 @@ class AppFiles {
 
 const MEDIA_KINDS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
 
-/** A stylesheet's `url(...)`s that name pictures of the app, as `data:` URLs. */
+/** A stylesheet's `url(...)`s that name pictures of the app, as `data:` URLs, the pictures read side by side. */
 async function inlineCssUrls(files: AppFiles, css: string, base: string): Promise<string> {
 	const found = [...css.matchAll(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g)];
+	const urls = await Promise.all(
+		found.map((match) => {
+			const path = resolveAppPath(base, match[2] ?? "");
+			return path === null || !MEDIA_KINDS.has(appFileKind(path)) ? null : files.dataUrl(path);
+		}),
+	);
 	let out = css;
-	for (const match of found) {
-		const path = resolveAppPath(base, match[2] ?? "");
-		if (path === null || !MEDIA_KINDS.has(appFileKind(path))) continue;
-		const url = await files.dataUrl(path);
+	for (const [index, match] of found.entries()) {
+		const url = urls[index];
 		if (url) out = out.split(match[0]).join(`url("${url}")`);
 	}
 	return out;
@@ -308,38 +331,56 @@ export async function assembleApp(
 	// An inert parse: nothing here runs or loads, and it is only ever written out again for the frame.
 	const page = new DOMParser().parseFromString(html, "text/html");
 	const base = dirOf(app.entry);
+	// Every file the page names is read side by side (a file named twice once), then put in where it is named, in the
+	// page's order. The app's limits hold whatever the order the reads end in: past them, the whole app is refused.
+	const changes: Promise<(() => void) | null>[] = [];
 	for (const link of [...page.querySelectorAll<HTMLLinkElement>("link[rel~='stylesheet' i][href]")]) {
 		const path = resolveAppPath(base, link.getAttribute("href") ?? "");
 		if (path === null || appFileKind(path) !== "css") continue;
-		const css = await files.text(path);
-		if (css === null) continue;
-		const style = page.createElement("style");
-		style.textContent = (await inlineCssUrls(files, css, dirOf(path))).replace(/<\/style/gi, "<\\/style");
-		link.replaceWith(style);
+		changes.push(
+			files.text(path).then(async (css) => {
+				if (css === null) return null;
+				const inlined = (await inlineCssUrls(files, css, dirOf(path))).replace(/<\/style/gi, "<\\/style");
+				return () => {
+					const style = page.createElement("style");
+					style.textContent = inlined;
+					link.replaceWith(style);
+				};
+			}),
+		);
 	}
 	for (const style of [...page.querySelectorAll("style")])
-		style.textContent = await inlineCssUrls(files, style.textContent ?? "", base);
+		changes.push(
+			inlineCssUrls(files, style.textContent ?? "", base).then((css) => () => {
+				style.textContent = css;
+			}),
+		);
 	for (const script of [...page.querySelectorAll<HTMLScriptElement>("script[src]")]) {
 		const path = resolveAppPath(base, script.getAttribute("src") ?? "");
 		if (path === null || !["js", "mjs"].includes(appFileKind(path))) continue;
-		const js = await files.text(path);
-		if (js === null) continue;
-		script.removeAttribute("src");
-		script.textContent = js.replace(/<\/script/gi, "<\\/script");
+		changes.push(
+			files.text(path).then((js) =>
+				js === null
+					? null
+					: () => {
+							script.removeAttribute("src");
+							script.textContent = js.replace(/<\/script/gi, "<\\/script");
+						},
+			),
+		);
 	}
 	for (const media of [...page.querySelectorAll("img[src], source[src], video[poster], image[href]")]) {
 		const attribute = media.localName === "video" ? "poster" : media.localName === "image" ? "href" : "src";
 		const path = resolveAppPath(base, media.getAttribute(attribute) ?? "");
 		if (path === null || !MEDIA_KINDS.has(appFileKind(path))) continue;
-		const url = await files.dataUrl(path);
-		if (url) media.setAttribute(attribute, url);
+		changes.push(files.dataUrl(path).then((url) => (url ? () => media.setAttribute(attribute, url) : null)));
 	}
 	for (const media of [...page.querySelectorAll("video[src], source[src]")]) {
 		const path = resolveAppPath(base, media.getAttribute("src") ?? "");
 		if (path === null || !APP_VIDEO_KINDS.has(appFileKind(path))) continue;
-		const url = await files.dataUrl(path);
-		if (url) media.setAttribute("src", url);
+		changes.push(files.dataUrl(path).then((url) => (url ? () => media.setAttribute("src", url) : null)));
 	}
+	for (const change of await Promise.all(changes)) change?.();
 	if (files.tooLarge)
 		return {
 			ok: false,
@@ -709,6 +750,30 @@ export function sharedFolderHints<T extends CompanyAppsSource>(
 
 const APPS_POLL_MS = 60_000;
 const APPS_HINT_MS = 1000;
+/** After the apps are read, how long their pages wait before they are read ahead, and how many are read at once. */
+const WARM_MS = 1500;
+const WARM_AT_ONCE = 4;
+
+/** Reads ahead what opening an app reads first (its page's entry file, and the company's colours), so the member's
+ * first open of each app finds them in the member's file cache (company-files.ts). Only what is not read yet costs a
+ * fetch; a read that fails is left for the open to try. */
+export async function warmApps(folder: Folder, apps: readonly CompanyApp[], signal: AbortSignal): Promise<void> {
+	const reads: (() => Promise<unknown>)[] = [() => readAppBrand(folder, signal)];
+	for (const app of apps) {
+		const entry = app.manifest?.entry;
+		if (entry === undefined || resolveAppPath("", entry) === null) continue;
+		reads.push(async () => {
+			const found = (await folder.read(`${app.path}/${entry}`, signal)).entry;
+			if (found?.kind === "file" && found.file && found.file.bytes <= APP_FILE_MAX_BYTES)
+				await folder.readFile(found.file, signal, APP_FILE_MAX_BYTES);
+		});
+	}
+	let next = 0;
+	const worker = async () => {
+		while (next < reads.length && !signal.aborted) await reads[next++]!().catch(() => undefined);
+	};
+	await Promise.all(Array.from({ length: WARM_AT_ONCE }, worker));
+}
 
 /** The company's apps, read when the company opens, after each folder hint (at most once a second) and each minute
  * (in a hidden tab only while the hint's channel is down), published when they change; and every hint passed on to the
@@ -721,6 +786,9 @@ export class CompanyApps {
 	#hints?: { close(): Promise<void> };
 	#poll?: ReturnType<typeof setInterval>;
 	#timer?: ReturnType<typeof setTimeout>;
+	#warming?: ReturnType<typeof setTimeout>;
+	/** The apps changed while a round was waiting or under way: another follows it. */
+	#warmAgain = false;
 	#shown: string | undefined;
 	#last: readonly CompanyApp[] = [];
 	/** The hint's channel is subscribed. */
@@ -776,6 +844,7 @@ export class CompanyApps {
 		this.#stop.abort();
 		clearInterval(this.#poll);
 		clearTimeout(this.#timer);
+		clearTimeout(this.#warming);
 		void this.#hints?.close().catch(() => undefined);
 		this.#listeners.clear();
 	}
@@ -800,11 +869,36 @@ export class CompanyApps {
 			if (shown !== this.#shown && !this.#stop.signal.aborted) {
 				this.#shown = shown;
 				this.#publish(apps);
+				this.#warm();
 			}
 		} catch {
 			/* What was read before stands. */
 		}
 		return this.#last;
+	}
+
+	/** Reads the apps' pages ahead (`warmApps`), a moment after they changed, so the company's own first reads go
+	 * first; one round at a time, and the latest apps when it starts. */
+	#warm(): void {
+		if (this.#stop.signal.aborted) return;
+		if (this.#warming !== undefined) {
+			this.#warmAgain = true;
+			return;
+		}
+		// A company with no app that reads has nothing to read ahead.
+		if (!this.#last.some((app) => app.manifest)) return;
+		this.#warming = setTimeout(() => {
+			if (this.#stop.signal.aborted) return;
+			void Promise.resolve()
+				.then(() => warmApps(this.#source.folder(), this.#last, this.#stop.signal))
+				.catch(() => undefined)
+				.finally(() => {
+					this.#warming = undefined;
+					if (!this.#warmAgain) return;
+					this.#warmAgain = false;
+					this.#warm();
+				});
+		}, WARM_MS);
 	}
 
 	#hinted(): void {

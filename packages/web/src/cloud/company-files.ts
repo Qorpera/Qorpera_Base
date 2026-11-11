@@ -1,4 +1,8 @@
-import { CloudMemberFolderClient, CloudMemberFolderHints } from "@qorpera/cloud-client/cloud-member-folder";
+import {
+	CloudMemberFolderClient,
+	CloudMemberFolderFileCache,
+	CloudMemberFolderHints,
+} from "@qorpera/cloud-client/cloud-member-folder";
 import { withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import { createClient } from "@supabase/supabase-js";
 import type { Cloud } from "./client.ts";
@@ -15,6 +19,27 @@ interface MemberFolderOptions {
 	readonly objectGatewayUrl: string;
 	readonly accessToken: (signal: AbortSignal) => Promise<string>;
 	readonly fetch: typeof fetch;
+	readonly files: CloudMemberFolderFileCache;
+}
+
+/** The bytes of files this tab's member has read, for every company they open: an app or a page opened again, and
+ * the files it reads, are not fetched again (cloud-member-folder.ts `CloudMemberFolderFileCache`). Each read still asks
+ * the folder for the file's entry as the member, so what they may read is decided live. Another member signed in here
+ * starts from an empty one. */
+let memberFiles: { readonly memberId: string; readonly files: CloudMemberFolderFileCache } | undefined;
+
+function memberFileCache(memberId: string): CloudMemberFolderFileCache {
+	if (memberFiles?.memberId !== memberId) {
+		memberFiles?.files.clear();
+		memberFiles = { memberId, files: new CloudMemberFolderFileCache() };
+	}
+	return memberFiles.files;
+}
+
+/** Forgets every file read in this tab: at sign-out. */
+export function forgetMemberFiles(): void {
+	memberFiles?.files.clear();
+	memberFiles = undefined;
 }
 
 /** The product owns member lifetime; the shared SDK owns the company folder's calls. Every company is folder-v2
@@ -59,6 +84,7 @@ export class WebCompanyFiles {
 					throw new Error("Sign in again to open Company File.");
 				return data.session.access_token;
 			},
+			files: memberFileCache(memberId),
 			fetch: async (input, init) => {
 				this.current();
 				// Enable the public bridge only after its deployment has been accepted.
@@ -97,6 +123,7 @@ export class WebCompanyFiles {
 			publishableKey: this.#options.publishableKey,
 			accessToken: this.#options.accessToken,
 			fetch: this.#options.fetch,
+			files: this.#options.files,
 		});
 	}
 	/** The company's code kept in Qorpera: its repositories, and a download of one (cloud/code-downloads.ts). */

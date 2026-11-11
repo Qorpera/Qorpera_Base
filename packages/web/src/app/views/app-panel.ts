@@ -414,6 +414,13 @@ export class AppPanel {
 			const target = this.target;
 			// Read afresh when opened or asked to; after a change, as the company's reader just read them.
 			const afresh = fresh || !this.#frame;
+			// The company's colours are read beside the apps, not after them; they are used for any app but a concept.
+			const brand = afresh
+				? readAppBrand(folder, signal).then(
+						(read) => ({ read }),
+						() => null,
+					)
+				: null;
 			const apps = afresh ? await this.#host.readApps(signal) : this.#host.apps();
 			const app = apps.find((entry) => entry.name === target.name);
 			if (signal.aborted) return;
@@ -444,12 +451,9 @@ export class AppPanel {
 			// before stand, as they do when they can't be read now (with none read yet, Qorpera's own).
 			let look: AppLook | undefined;
 			if (!manifest.concept) {
-				if (afresh)
-					try {
-						this.#brand = await readAppBrand(folder, signal);
-					} catch {
-						/* What was read before stands. */
-					}
+				// A read that failed leaves what was read before standing.
+				const read = await brand;
+				if (read) this.#brand = read.read;
 				if (signal.aborted) return;
 				// The theme on screen (ui/appearance.ts `applyTheme`).
 				const scheme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
