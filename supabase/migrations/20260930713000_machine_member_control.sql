@@ -21,24 +21,28 @@
 --   the epoch it was taken under.
 -- * Every seating of a member on a desktop gets a seat (release review r1 of #1667, F26 of #1661): the lease generation
 --   (desktop_member_generation), which moves at a take-over that starts a lease (after one ran out too), at one that
---   takes the member's own live lease over from another press (another tab, a page loaded again, a late copy of a
---   press), and at a hand-back that ends a lease. The take-over answers it. The epoch orders take-overs against
+--   takes the member's own live lease over from another press (another tab, a page loaded again), and at a hand-back
+--   that ends a lease. The take-over answers it. The epoch orders take-overs against
 --   hand-backs; the seat names a hold: two holds of one member can live under one epoch (after a lease ran out and was
 --   taken again, or another tab took the member's own lease over), and everything a page does as holder names both.
 --   `press` is an id the page mints for each take-over request: the lease remembers the press that seated it, and the
 --   list shows it to the caller beside their hold's seat, so a page whose take-over answer was lost knows the hold is
---   its own press's; it is for recognition only, never authority. A late copy of an old press is refused by the epoch,
---   or seats anew with a new seat (the page's hold of another seat then ends at its next heartbeat).
+--   its own press's; it is for recognition only, never authority: no call here reads it but the list.
 -- * qorpera_member_keep_machine_desktop(profile, machine, epoch, seat) (authenticated): the window's heartbeat; it
 --   renews the member's own lease only when it was taken under that epoch and is that seat, or says it ended.
--- * qorpera_member_hand_back_machine_desktop(profile, machine, reason, epoch, seat, press) (authenticated): under the
---   machine's lock it gives back the member's lease taken under `epoch` that is the hold named, by its seat or, for a
---   take-over whose answer was lost, by its press ('handed_back', or 'closed' when their window closed or they left the
---   company's page). The epoch moves on by one when `epoch` is the current one and no live lease of the member's is
---   left that this hand-back did not name (F26): a stale tab's hand-back never ends another tab's live hold of the
---   member's, and an epoch above e still means that nothing taken under e or earlier holds the desktop, and nothing
---   sent under e or earlier ever can, whenever it arrives: no clock is read for any of it. At an older epoch nothing
---   moves. It answers the current epoch, whether the member holds the machine now and, if so, that hold's seat.
+-- * qorpera_member_hand_back_machine_desktop(profile, machine, reason, epoch, seat) (authenticated): under the
+--   machine's lock, in one of two forms ('handed_back', or 'closed' when their window closed or they left the
+--   company's page; F27, F28 of #1661). EXACT (a seat): the member's lease taken under `epoch` in that seat ends, if it
+--   is the lease; the epoch moves on by one only when `epoch` is the current one and no live lease of the member's is
+--   left, so a stale tab's hand-back never ends another tab's live hold. A page sends it only when every take-over it
+--   sent for the machine at that epoch was answered. VOID (no seat): the rule of reviews r5 to r16: at the current
+--   epoch the epoch moves on and the member's lease taken under it ends, whichever seat; at an older one nothing. It is
+--   what a page sends while a take-over of its own may still be on its way: it voids that take-over (it is refused at
+--   the old epoch whenever it arrives), and it also ends another tab's hold under that epoch. Either way an epoch above
+--   e means that nothing taken under e or earlier holds the desktop, and nothing sent under e or earlier ever can: a
+--   live lease of the member's is always under the current epoch (a take-over is accepted only at it, and the epoch
+--   moves only when no live lease of the member's is left under it). It answers the current epoch, whether the member
+--   holds the machine now and, if so, that hold's seat.
 -- * qorpera_member_machine_desktop_act_begin(profile, machine, action, epoch, seat) (authenticated; the node's executor
 --   makes it with the member's own token): one action of the member who holds the desktop, of a closed shape per verb
 --   as an agent's (qorpera_valid_machine_screen_call: positions in screen pixels, no key an xdotool command word) but
@@ -255,7 +259,7 @@ begin
 				'reason', 'DESKTOP_MEMBER_IN_CONTROL',
 				'memberName', public.qorpera_review_member_name(v_machine.profile_id, v_machine.desktop_member_user_id)); end if;
 		-- Their own lease (taken under this epoch: a hand-back at an epoch ends the lease taken under it): taking it
-		-- again is an input, from another press (another tab, a page loaded again, a late copy): a new seat (F26), so
+		-- again is an input, from another press (another tab, a page loaded again): a new seat (F26), so
 		-- the hold seated before ends for its page at its next heartbeat or action.
 		update public.qorpera_company_machines set desktop_member_input_at = v_now,
 			desktop_member_until = v_now + interval '5 minutes', desktop_member_epoch = v_epoch,
@@ -327,18 +331,20 @@ grant execute on function public.qorpera_member_keep_machine_desktop(uuid, uuid,
 
 -- The member's lease, given back at their hand-back epoch ('handed_back': their word or their take-over card's "I'm
 -- done"; 'closed': their window closed or they left the company's page; a lease that already ended by time is closed as
--- it ended). It names the hold it gives back (F26): by its seat, or, for a take-over whose answer was lost, by the
--- press that may have seated it (at least one; both must match when both are named). The member's lease taken under
--- `p_epoch` that is the hold named ends. The epoch moves on by one when `p_epoch` is the current one and no live lease
--- of the member's is left that this hand-back did not name: a stale tab's hand-back (or its window closing) never ends
--- another tab's live hold of the member's, and the epoch stays where it is while that hold lives, so a live lease of
--- the member's is always taken under the current epoch and an epoch above e still means that nothing taken under e
--- holds. A lapsed lease of the member's is closed as it ended when the epoch moves. At an older epoch nothing moves: a
--- hand-back that arrives late or again never ends a newer take-over's lease (review r4 F9, r5). Either way the answer
--- says the current epoch, whether the member holds the machine now and, if so, that hold's seat. Any member gives back
--- only their own.
+-- it ended), in one of two forms (F27, F28):
+-- * EXACT, `p_seat` given: the member's lease taken under `p_epoch` in that seat ends, if it is the lease. The epoch
+--   moves on by one when `p_epoch` is the current one and no live lease of the member's is left: a stale tab's
+--   hand-back (or its window closing) never ends another tab's live hold, and the epoch stays while that hold lives.
+-- * VOID, `p_seat` null: at the current epoch the epoch moves on by one and the member's lease taken under it ends,
+--   whichever seat (another tab's too). A page sends it while a take-over of its own may still be on its way: moving the
+--   epoch is the only thing that voids that take-over whenever it arrives.
+-- When the epoch moves, a lease of the member's under `p_epoch` that already ran out is closed as it ended, so the
+-- member's lease (live or not) is always taken under the current epoch, and an epoch above e means that nothing taken
+-- under e holds. At an older epoch nothing moves in either form: a hand-back that arrives late or again never ends a
+-- newer take-over's lease (review r4 F9, r5). Either way the answer says the current epoch, whether the member holds the
+-- machine now and, if so, that hold's seat. Any member gives back only their own.
 create function public.qorpera_member_hand_back_machine_desktop(p_profile_id uuid, p_machine_id uuid, p_reason text,
-	p_epoch bigint, p_seat bigint, p_press uuid)
+	p_epoch bigint, p_seat bigint)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_user uuid := auth.uid();
@@ -347,14 +353,15 @@ declare
 	v_epoch bigint;
 	v_mine boolean;
 	v_live boolean;
-	v_named boolean;
+	v_under boolean;
+	v_ends boolean;
 	v_moves boolean;
 	v_handed boolean := false;
 begin
 	-- 20260930713000
 	if auth.role() is distinct from 'authenticated' or v_user is null or p_profile_id is null or p_machine_id is null
 		or p_reason is null or p_reason not in ('handed_back', 'closed') or p_epoch is null or p_epoch < 0
-		or (p_seat is null and p_press is null) or p_seat < 0 then
+		or p_seat < 0 then
 		raise exception 'Machine desktop request is malformed' using errcode = '22023'; end if;
 	if not public.qorpera_can_read_profile(p_profile_id) then
 		raise exception 'Machine desktop is unavailable' using errcode = '42501'; end if;
@@ -368,11 +375,18 @@ begin
 		where epochs.machine_id = v_machine.id and epochs.user_id = v_user), 0);
 	v_mine := coalesce(v_machine.desktop_member_user_id = v_user, false);
 	v_live := v_mine and coalesce(v_machine.desktop_member_until > v_now, false);
-	v_named := v_mine and v_machine.desktop_member_epoch is not distinct from p_epoch
-		and (p_seat is null or v_machine.desktop_member_generation = p_seat)
-		and (p_press is null or v_machine.desktop_member_press is not distinct from p_press);
-	v_moves := p_epoch = v_epoch and not (v_live and not v_named);
-	if v_named or (v_moves and v_mine and v_machine.desktop_member_epoch is not distinct from p_epoch) then
+	v_under := v_mine and v_machine.desktop_member_epoch is not distinct from p_epoch;
+	if p_seat is null then
+		-- VOID: at the current epoch, whichever seat.
+		v_moves := p_epoch = v_epoch;
+		v_ends := v_moves and v_under;
+	else
+		-- EXACT: that seat, if it is the lease; the epoch moves only when no live lease of the member's is left.
+		v_ends := v_under and v_machine.desktop_member_generation = p_seat;
+		v_moves := p_epoch = v_epoch and not (v_live and not v_ends);
+		v_ends := v_ends or (v_moves and v_under);
+	end if;
+	if v_ends then
 		v_handed := v_live;
 		update public.qorpera_company_machine_desktop_controls
 		set ended_at = case when v_live then v_now else v_machine.desktop_member_until end,
@@ -398,9 +412,9 @@ begin
 		'seat', case when v_live then v_machine.desktop_member_generation end);
 end
 $$;
-revoke all on function public.qorpera_member_hand_back_machine_desktop(uuid, uuid, text, bigint, bigint, uuid)
+revoke all on function public.qorpera_member_hand_back_machine_desktop(uuid, uuid, text, bigint, bigint)
 	from public, anon, service_role, qorpera_secret_broker;
-grant execute on function public.qorpera_member_hand_back_machine_desktop(uuid, uuid, text, bigint, bigint, uuid)
+grant execute on function public.qorpera_member_hand_back_machine_desktop(uuid, uuid, text, bigint, bigint)
 	to authenticated;
 
 -- 4. A member's action: begun as the member ------------------------------------------------------------------------------
@@ -735,7 +749,7 @@ begin
 		'public.qorpera_valid_member_desktop_action(jsonb)',
 		'public.qorpera_member_take_machine_desktop(uuid,uuid,bigint,uuid)',
 		'public.qorpera_member_keep_machine_desktop(uuid,uuid,bigint,bigint)',
-		'public.qorpera_member_hand_back_machine_desktop(uuid,uuid,text,bigint,bigint,uuid)',
+		'public.qorpera_member_hand_back_machine_desktop(uuid,uuid,text,bigint,bigint)',
 		'public.qorpera_member_machine_desktop_act_begin(uuid,uuid,jsonb,bigint,bigint)',
 		'public.qorpera_member_machine_desktop_act_authority(uuid,text,text)',
 		'public.qorpera_machine_desktop_picture_check(uuid,bigint,uuid)',

@@ -1236,9 +1236,10 @@ request of another shape.
   `seat`, its seat, and `press`, the id of the take-over that seated it (never for another member's).
 - Hand-back epochs (review r5 of #1661): one counter per member and machine that only the database moves. A take-over
   is sent at the epoch the page knows and accepted only at the current one; a hand-back at the current epoch moves it
-  on (when no live hold of the member's is left that it did not name, below), one at an older epoch changes nothing.
-  So once a hand-back's answer named an epoch above e, nothing taken or sent at e or before holds the desktop or ever
-  will, whenever it arrives: the answer is the confirmation, and no clock or list read is involved.
+  on (always for VOID; for EXACT when nothing of the member's is left live, below), one at an older epoch changes
+  nothing. So once an answer named an epoch above e, nothing taken or sent at e or before holds the desktop or ever
+  will, whenever it arrives: a live lease of the member's is always under the current epoch, and no clock or list read
+  is involved.
 - Seats (release review r1 of #1667, F26 of #1661): the epoch orders take-overs against hand-backs, but two holds of one
   member can live under one epoch (a lease that ran out and was taken again; another tab's take-over of the member's
   own live lease). So the database gives every seating a seat, a number that only grows per machine: a take-over that
@@ -1247,9 +1248,10 @@ request of another shape.
   and is taken only in that seat: a stale tab's heartbeat renews nothing and its input runs nowhere, and that tab
   hears at its next heartbeat or action that it holds nothing. A page holds a seat only from the answer to its own
   take-over, or, when that answer was lost, from a list that shows the hold seated by that very take-over's `press`.
-  A press id is for recognition only, never authority. A late copy of an old take-over is refused by the epoch or
-  seats anew with a new seat: the page's current hold then ends at its next heartbeat or action, and the window shows
-  the hold as the member's in another window (Take over and Hand back).
+  A press id is for recognition only, never authority: no call but the list reads it. A page never has two
+  take-overs of a machine that may both be alive (F28 of #1661): before it sends a new one while an earlier one of its
+  own at that epoch has no answer (lost, timed out, cut off: none of these is an answer), it sends VOID at that epoch
+  and waits for its answer, and the new one goes at the epoch that answer names.
 - `qorpera_member_take_machine_desktop(profile, machine, epoch, press)`: `press` is a uuid the page mints for each
   take-over request. `{schema: "qorpera.member-machine-desktop/v1", state: "ok", until, seat}`, or `state: "refused"`
   with `reason` `DESKTOP_MACHINE_TOO_SMALL`, `MACHINE_NOT_RUNNING`, `MACHINE_NEEDS_COMPANY_VIEW`,
@@ -1259,25 +1261,37 @@ request of another shape.
   shows the member holding the desktop: `state: "ok"` with the new `until`, or `state: "ended"` (handed back, run out,
   seated anew by another take-over of the member's, or another member's now). It renews only the lease taken under
   that epoch in that seat.
-- `qorpera_member_hand_back_machine_desktop(profile, machine, reason, epoch, seat, press)`: `reason` `handed_back` (the
+- `qorpera_member_hand_back_machine_desktop(profile, machine, reason, epoch, seat)`: `reason` `handed_back` (the
   member's word, or their take-over card's I'm done) or `closed` (their window closed or they left the company's page).
-  It names the hold it gives back: `seat`, or, for a take-over whose answer was lost, `press` (at least one; both must
-  match when both are given). The caller's lease taken under `epoch` that is the hold named ends. The epoch moves on
-  when `epoch` is the current one and no live lease of the caller's is left that this hand-back did not name, so a
-  stale tab's hand-back (or its window closing) never ends another tab's live hold, and the epoch stays while that
-  hold lives (a live hold of the member's is always under the current epoch). A lease of the caller's that ran out is
-  closed as it ended when the epoch moves. Hand back and I'm done name the seat the list (or an answer) showed the
-  member holding, whichever tab's; a close, a switch and a page that goes name what that page took, by the press of
-  its latest take-over. `{schema, state: "ok", handedBack, epoch, holding, seat}`: `handedBack` whether it gave a live
-  lease back; `epoch` the caller's current epoch afterwards (a take-over the member asks for later is sent at it);
-  `holding` whether the caller holds the machine now (another tab of theirs) and `seat` that hold's seat (null when
-  not): hand back again at `epoch` naming that seat to give it back too.
+  Two forms, chosen by what the page knows (F27, F28 of #1661):
+  - EXACT, `seat` a number: the caller's lease taken under `epoch` in that seat ends, if it is the lease; the epoch
+    moves on when `epoch` is the current one and no live lease of the caller's is left. A page sends it only when every
+    take-over it sent for that machine at that epoch was answered: a tab that closes then never ends another tab's
+    hold. Its answer discharges that seat on the page (ended now, or gone already), and every lower one.
+  - VOID, `seat` null: at the current epoch the epoch moves on and the caller's lease taken under it ends, whichever
+    seat; at an older epoch nothing. A page sends it whenever a take-over of its own for that machine at that epoch has
+    no answer: moving the epoch is the only thing that voids that take-over whenever it arrives. It also ends another
+    tab's hold of the member's under that epoch: a tab that closes while a take-over of its own is unanswered, while
+    another tab of the same member holds the desktop under the same epoch, ends that tab's hold (it hears so at its
+    next heartbeat or action, and its window offers Take over again). This race is the one place a closing tab ends
+    another's; it keeps a take-over that outlives its window from seating anyone.
+  A lease of the caller's that ran out is closed as it ended when the epoch moves. Which form each release sends:
+  a close, a switch away, pagehide and leaving the page send VOID when uncertain, else EXACT by the seat the page's
+  own take-over got, else nothing (a hold only seen from another window is not theirs to end); Hand back and I'm done
+  send VOID when uncertain, else EXACT by the highest of that seat and the seat a list or an answer showed the member
+  holding (the lower one is gone: seats only grow). A VOID asked again until answered stays VOID: its answer is what
+  fences a copy of it still on its way. `{schema, state: "ok", handedBack, epoch, holding, seat}`: `handedBack`
+  whether it gave a live lease back; `epoch` the caller's current epoch afterwards (a take-over the member asks for
+  later is sent at it); `holding` whether the caller holds the machine now (another tab of theirs) and `seat` that
+  hold's seat (null when not): hand back again at `epoch` naming that seat to give it back too.
 - The take-over card's I'm done is answered after this (reviews r9 and r10 of #1661): I'm done answers once, after a
   list read that counts (none of its machines below the epoch the page knows), the page owes nothing for the agent's
-  machines. What it owes about an epoch (a take-over it sent at it, a hold it took up or was shown there) is
-  discharged only by learning from the database that the member's epoch is above it (a hand-back's answer, a
-  `TAKE_CALLED_OFF`, a list): no answer or read at that epoch, whatever it says about holding, and no refusal,
-  timeout or closed window discharges it; a hold the read itself shows at the current epoch is owed like any other.
+  machines. What it owes at an epoch is discharged by learning from the database that the member's epoch is above it
+  (a hand-back's answer, a `TAKE_CALLED_OFF`, a list), or, seat by seat (F27, F28): a take-over with no answer by its
+  own answer (or a list showing the hold seated by it); the seat the page's own take-over got, or one shown it, by an
+  EXACT hand-back's answer for that seat or a higher one, or by a heartbeat or an action answered `ended` for it. No
+  refusal of another request, timeout or closed window discharges anything; a hold the read itself shows at the
+  current epoch is owed like any other.
   A take-over the member starts from another tab after that read was taken is a new take-over, outside this answer;
   the agent then hears `DESKTOP_MEMBER_IN_CONTROL`, as for any take-over without a card. No page can exclude what the
   member does a moment later.
