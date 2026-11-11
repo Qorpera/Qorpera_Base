@@ -1319,25 +1319,30 @@ request of another shape.
   nothing logged; the agent hears `DESKTOP_MEMBER_IN_CONTROL`). The helper takes the desktop as an action does, so a
   member's action (a copy, a paste) and the clipboard read never interleave on one desktop. What cannot be undone: a
   helper that had begun reading before a take-over may already have cleared the clipboard, the member's copy with it.
-  What a member copied stays on the clipboard after they hand back, so after a member has held a desktop the platform
-  clears its clipboard before an agent can read a key from it (F32 of #1661): while the clipboard has not been confirmed
-  clear since the lease generation last moved (`desktop_clipboard_generation`), the read answers `{state: "clear",
-  machineId, placementId, bootId, executorOwner, providerId, receiptId, desktopGeneration}` and reads nothing; the
-  machine's executor takes the desktop under the one-actor rule, asks the fence, clears both selections with a fixed
-  script of its own (each xsel must succeed, then each selection is read back by its byte count alone; F34) and confirms
-  it with `qorpera_machine_desktop_clipboard_cleared(placement, generation)` (service_role), which records it only while
-  that generation stands and no member holds the desktop. That is the backstop: the clear is owed from the hold on, and
-  the agent's first screen call after it (a look or an action) does it first (F35): `qorpera_authorize_machine_screen`
-  answers `clipboardClear`, and the host clears and records under that call's hold of the desktop, after the fence,
-  before it looks or acts, so whatever the agent copies after is its own and its save reads it at the first call. A clear
-  that fails there fails nothing: it stays owed. A member's action asks the fence for its seat again once the host holds
-  the desktop (`qorpera_member_machine_desktop_act_authority` answers the seat), so one authorized before a hand-back
-  never runs after it. The agent's call is answered
-  `CLIPBOARD_EMPTY` either way (true then: it copies the key on the site and calls again), and its next call reads as
-  before; `DESKTOP_MEMBER_IN_CONTROL` stays for a member who holds the desktop, or took it over across a read. Nothing
-  the agent does lifts it. A
-  desktop that is not running counts as cleared: the image keeps no clipboard past its desktop's session (no clipboard
-  manager, no saved history; measured on image 91d433c0).
+- After a member has held a desktop, the platform clears its clipboard before an agent can read a key from it (F32 to
+  F35 of #1661): what a member copied stays on the clipboard after they hand back.
+  - The clear is owed from the hold on: `desktop_clipboard_generation` (the lease generation at the last confirmed
+    clear) differs from the lease generation, which moves at every seating and every hand-back. Only the platform's
+    confirmed clear lifts it; nothing the agent does (a look, a click, a copy) does.
+  - The clear: the machine's executor takes the desktop under the one-actor rule, asks the fence, clears both
+    selections with a fixed script of its own (each xsel must succeed, then each selection is read back by its byte
+    count alone; never the helper's `--clear-only`, which answers cleared whatever xsel did), and confirms it with
+    `qorpera_machine_desktop_clipboard_cleared(placement, generation)` (service_role), which records it only while that
+    generation stands and no member holds the desktop. A desktop that is not running counts as cleared: the image keeps
+    no clipboard past its desktop's session (no clipboard manager, no saved history; measured on image 91d433c0).
+  - First, at the agent's first screen call after the hold (a look or an action): `qorpera_authorize_machine_screen`
+    answers `clipboardClear`, and the host clears and records under that call's hold of the desktop, within 3 s,
+    before it looks or acts, so whatever the agent copies after is its own and its save reads it at the first call. If
+    the fence or the record says a member holds the desktop again, an action does not run (`DESKTOP_MEMBER_IN_CONTROL`);
+    any other failure fails nothing, and the clear stays owed.
+  - The backstop is `save_coding_value`: while the clear is owed, its read answers `{state: "clear", machineId,
+    placementId, bootId, executorOwner, providerId, receiptId, desktopGeneration}` and reads nothing; the executor
+    clears and records the same way, and the agent hears `CLIPBOARD_EMPTY` (true then: it copies the key on the site
+    and calls again); its next call reads as before. `DESKTOP_MEMBER_IN_CONTROL` stays for a member who holds the
+    desktop, or took it over across a read.
+- A member's action asks the fence for its seat again once the host holds the desktop
+  (`qorpera_member_machine_desktop_act_authority` answers the seat), so one authorized before a hand-back never runs
+  after it.
 - A stated limit: the computer is the agent's. While a member holds the desktop the agent starts nothing new on it and
   reads nothing of its screen or clipboard through the platform's tools, but a program the agent started there before
   the take-over keeps running and can see the screen and the clipboard.

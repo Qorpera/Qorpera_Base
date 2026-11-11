@@ -83,9 +83,17 @@ const CODING_VALUE_MS = 20000;
 /** How long save_coding_value waits for a desktop an agent's action holds (F29): the runtime gives the whole call 30 s,
  * and the helper itself 20 s of it. */
 const CODING_VALUE_WAIT_MS = 6000;
-/** The executor's own clear after a save that did not end cleanly (`--clear-only`): its own deadline, never the
- * request's, as the request may be what ended it. Two xsels side by side, 4 s each at most, and the helper's start. */
+/** A clear's own deadline, never the request's (the request may be what ended the run): the helper's `--clear-only`
+ * after a save that did not end cleanly or a member's paste (two xsels side by side, 4 s each at most, and the helper's
+ * start), and the host's own clear script at save time (COMPANY_MACHINE_CLIPBOARD_CLEAR: four xsels one after another,
+ * 4 s each at most, so a slow X server is cut off here: the clear failed, nothing is recorded, it stays owed). */
 const CODING_VALUE_CLEAR_MS = 10000;
+/** The owed clear at an agent's screen call (F35 of #1661, round 24 N2): the fence, the host's own clear script and the
+ * record together, at most this long. The caller gives the call 30 s; the helper takes 22 s at most (SCREEN_MS) and the
+ * folder's boundary 4 s (SCREEN_BOUNDARY_MS): 3 s is what is left with a second for the way back. A healthy desktop
+ * clears in well under a second; a slow one is cut off, nothing is recorded, and the clear stays owed (the next screen
+ * call, or save_coding_value's own clear, does it). */
+const SCREEN_CLEAR_MS = 3000;
 /** machine_screen's helper (20260930708000), packaged beside the guest helper and installed by the image
  * (scripts/package-machine-guest.mjs). Not the guest helper: its pin stays as it was. It runs under the same wrapper as
  * save_coding_value's (CODING_VALUE_ON_BOOT): on the boot SQL named (else exit 97) and where the image has it (else 98). */
@@ -96,7 +104,7 @@ const SCREEN_PNG_BYTES = 8 * 1024 * 1024;
 const SCREEN_OUTPUT_BYTES = SCREEN_PNG_BYTES + SCREEN_HEADER_BYTES;
 /** The helper's steps take 21 s at most (cloud-machine-screen.ts, MACHINE_SCREEN_STEP_MS: the desktop's status, its
  * start or the action, the settle and the shot); then the company folder's release (SCREEN_BOUNDARY_MS) and the run's
- * take-in, inside the gateway's 30 s. */
+ * take-in. With an owed clear before it (SCREEN_CLEAR_MS, 3 s) that is 29 s, inside the gateway's 30 s. */
 const SCREEN_MS = 22000;
 /** A boundary before a screen leaves: short, as the request is bounded at 30 s. One that does not answer in time holds
  * the picture back (the agent looks again), as a read's holds its output. */
@@ -157,20 +165,9 @@ const MEMBER_LOOK_EXITS: Readonly<Record<number, CompanyMachineMemberLookRefusal
 	97: "MACHINE_BOOT_CHANGED",
 	98: "MACHINE_IMAGE_WITHOUT_SCREEN",
 });
-/** A member's typed text on a desktop (20260930713000, memberAct): one fixed script run as root on exactly the boot SQL
- * named (`$0`, else exit 97, before anything acts), with the text on its stdin and never in an argument or a file. It is
- * not the screen helper's `type`: that runs `desktop type TEXT` as a transient systemd unit described by its command
- * line, which systemd writes into the machine's journal ("Started run-….service - [systemd-run] … desktop type TEXT",
- * measured with systemd 259 on 10 Nov 2026), where a member's password must never be. xdotool and xsel must be there
- * (else 98, an earlier image), and the desktop's unit active with its display answering (else 95: no action runs on a
- * screen that is off). The text stays in the shell's memory (`printf` is dash's own, so no process shows it). `$1` =
- * paste puts it on both selections and presses shift+Insert, as `desktop type` does for text beyond plain ASCII (a
- * letter outside the keyboard's layout comes out wrong through xdotool), and the executor clears both selections
- * after; otherwise xdotool types it from its stdin. The desktop's idle clock is touched, as the screen helper's action
- * touches it. Plain sh, with cat and touch. It runs in a transient unit of its own (companyMachineMemberTypeCommand). */
 /**
- * The host's own clear of a desktop's clipboard after a member held it (F32, F34 of #1661), as root on exactly the boot
- * SQL named, with no helper of the image: the helper's `--clear-only` answers cleared whatever xsel did, so it confirms
+ * The host's own clear of a desktop's clipboard after a member held it (F32 to F35 of #1661; the one clear that is
+ * recorded), as root on exactly the boot SQL named, with no helper of the image: the helper's `--clear-only` answers cleared whatever xsel did, so it confirms
  * nothing. With no display there is no clipboard (exit 0): image 91d433c0 keeps none past its desktop's session (no
  * clipboard manager, nothing saved; measured 11 Nov 2026). Otherwise both selections are cleared, each xsel must
  * succeed (else 1), and then each is read back and only its byte count kept (a read that fails counts its own word, so
@@ -191,6 +188,17 @@ export const COMPANY_MACHINE_CLIPBOARD_CLEAR = [
 	"done",
 ].join("\n");
 
+/** A member's typed text on a desktop (20260930713000, memberAct): one fixed script run as root on exactly the boot SQL
+ * named (`$0`, else exit 97, before anything acts), with the text on its stdin and never in an argument or a file. It is
+ * not the screen helper's `type`: that runs `desktop type TEXT` as a transient systemd unit described by its command
+ * line, which systemd writes into the machine's journal ("Started run-….service - [systemd-run] … desktop type TEXT",
+ * measured with systemd 259 on 10 Nov 2026), where a member's password must never be. xdotool and xsel must be there
+ * (else 98, an earlier image), and the desktop's unit active with its display answering (else 95: no action runs on a
+ * screen that is off). The text stays in the shell's memory (`printf` is dash's own, so no process shows it). `$1` =
+ * paste puts it on both selections and presses shift+Insert, as `desktop type` does for text beyond plain ASCII (a
+ * letter outside the keyboard's layout comes out wrong through xdotool), and the executor clears both selections
+ * after; otherwise xdotool types it from its stdin. The desktop's idle clock is touched, as the screen helper's action
+ * touches it. Plain sh, with cat and touch. It runs in a transient unit of its own (companyMachineMemberTypeCommand). */
 export const COMPANY_MACHINE_MEMBER_TYPE = [
 	'{ read -r boot < /proc/sys/kernel/random/boot_id && [ "$boot" = "$0" ]; } || exit 97',
 	"{ command -v xdotool && command -v xsel; } >/dev/null 2>&1 || exit 98",
@@ -481,6 +489,8 @@ export interface CompanyMachineHostOptions {
 	 * tests' own shorter ones. */
 	codingValueTimeoutMs?: number;
 	codingValueClearTimeoutMs?: number;
+	/** How long the owed clipboard clear at a screen call may take (default 3 s, SCREEN_CLEAR_MS): the tests' own. */
+	screenClearTimeoutMs?: number;
 	/** How long machine_screen's helper may run (default 22 s): the tests' own shorter one. */
 	screenTimeoutMs?: number;
 	/** How long a member's look may run on the machine (default 6 s): the tests' own shorter one. */
@@ -551,15 +561,15 @@ export interface CompanyMachineCodingValue {
 	 * desktop (v233 release review r1, F29 of #1661). */
 	desktopGeneration: number;
 }
-/** A clear of a desktop's clipboard after a member held it (F32 of #1661), as SQL answered save_coding_value: where it
- * runs, and the lease generation SQL saw. */
+/** The clipboard clear owed after a member held a desktop, as SQL answered save_coding_value (its backstop, F32 to F35
+ * of #1661): where it runs, and the lease generation SQL saw. */
 export interface CompanyMachineClipboardClear {
 	placementId: string;
 	bootId: string;
 	desktopGeneration: number;
 }
 /** Whether the clear was done and SQL recorded it (`cleared`), or the agent's refusal by code: another boot, or an image
- * without the clipboard helper. */
+ * without xsel (the host's own clear script's 98). */
 export type CompanyMachineClipboardCleared =
 	| { readonly cleared: boolean }
 	| { readonly refused: "MACHINE_BOOT_CHANGED" | "MACHINE_IMAGE_WITHOUT_CODING_VALUES" };
@@ -2283,11 +2293,13 @@ export class LxdCompanyMachineHost {
 			throw new Error("COMPANY_MACHINE_CODING_VALUE_INVALID");
 		return { box: Object.freeze({ ...(box as Record<string, string>) }) };
 	}
-	/** The executor's own clear of the machine's clipboard and primary selection: the same packaged helper with
-	 * `--clear-only`, on the run's boot only (another boot's clipboard went with it: exit 97, nothing to do), under its
-	 * own deadline and never the request's signal. It never throws; a failure is logged as a fixed word alone
-	 * (`failed`: save_coding_value's, or a member's pasted text's, 20260930713000). It answers what came of it: cleared
-	 * (the helper said so), another boot (97), an image without the helper (98), or failed. */
+	/** The executor's own clear of the machine's clipboard and primary selection after a save that did not end cleanly, or
+	 * a member's pasted text (20260930713000): the same packaged helper with `--clear-only`, on the run's boot only
+	 * (another boot's clipboard went with it: exit 97, nothing to do), under its own deadline and never the request's
+	 * signal. It never throws; a failure is logged as a fixed word alone (`failed`). It confirms nothing (the helper says
+	 * cleared whatever xsel did), and nothing of it is recorded: the clear owed after a member's hold is the host's own
+	 * script's (#clearAndRecord). It answers what came of it: cleared as the helper says, another boot (97), an image
+	 * without the helper (98), or failed. */
 	async #clearCodingValue(
 		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
 		run: Pick<CompanyMachineCodingValue, "placementId" | "bootId">,
@@ -2329,17 +2341,20 @@ export class LxdCompanyMachineHost {
 	}
 
 	/**
-	 * After a member held a desktop, its clipboard is cleared before an agent may read a key from it (F32 of #1661): SQL
-	 * answered save_coding_value `clear`, with the lease generation it saw. The clear takes the desktop as an action does
-	 * (#holdDesktop: a member's action meanwhile is DESKTOP_BUSY; one that runs now is waited for no more than it is for a
-	 * read: refused at once while a member holds the desktop, CODING_VALUE_WAIT_MS behind an agent's action), asks the
-	 * fence (#pictureAllowed, no looker: that generation, no one holding), clears both selections with the image's own
-	 * helper (`--clear-only`, as the paste path and an unclean read do), and only then asks SQL to record it
-	 * (qorpera_machine_desktop_clipboard_cleared), still holding the desktop: SQL records it only while that generation
-	 * stands and no member holds the desktop. A fence that says no, a clear that failed and a refused record leave nothing
-	 * recorded (`cleared: false`): the next save_coding_value clears again. A desktop that is not running has no clipboard:
-	 * the helper's clear finds no display and says cleared, and the machine image keeps no clipboard past its desktop's
-	 * session (no clipboard manager, no saved history; measured on 91d433c0, 11 Nov 2026), so that counts as clear.
+	 * After a member held a desktop, its clipboard is cleared by the platform before an agent may read a key from it (F32
+	 * to F35 of #1661). The clear is owed from the hold on (SQL: desktop_clipboard_generation differs from the lease
+	 * generation), and only the platform's confirmed clear lifts it. It is done at the agent's first screen call after the
+	 * hold (#clearOwed, under that call's hold of the desktop, before it looks or acts); this is the backstop, when SQL
+	 * answered save_coding_value `clear` with the lease generation it saw (the agent called it without a screen call
+	 * since, or the clear there did not get through). It takes the desktop as an action does (#holdDesktop: a member's
+	 * action meanwhile is DESKTOP_BUSY; one that runs now is refused at once, as a member holds the desktop, and an agent's
+	 * action is waited for CODING_VALUE_WAIT_MS at most), then #clearAndRecord: the fence, the host's own clear script
+	 * (COMPANY_MACHINE_CLIPBOARD_CLEAR, never the helper's `--clear-only`, which answers cleared whatever xsel did), and
+	 * only on its success SQL's record, still holding the desktop. A fence or a record that says a member holds the
+	 * desktop, or a clear that failed, records nothing (`cleared: false`): the clear stays owed. A desktop that is not
+	 * running has no clipboard: the script finds no display and exits 0, and the image keeps no clipboard past its
+	 * desktop's session (no clipboard manager, no saved history; measured on 91d433c0, 11 Nov 2026), so that counts as
+	 * clear.
 	 */
 	async clearClipboard(
 		run: CompanyMachineClipboardClear,
@@ -2360,25 +2375,28 @@ export class LxdCompanyMachineHost {
 				throw new Error("COMPANY_MACHINE_CODING_VALUE_BUSY");
 		}
 		try {
-			return await this.#clearAndRecord(pipe, run, signal);
+			const outcome = await this.#clearAndRecord(pipe, run, signal, signal);
+			return outcome === "held" || outcome === "failed" ? { cleared: false } : outcome;
 		} finally {
 			// The clear script ends by itself or at its own deadline: nothing of it acts after.
 			this.#releaseDesktop(run.placementId, true);
 		}
 	}
 	/** Holding the desktop: the fence (that generation, no one holding), the host's own clear of both selections
-	 * (COMPANY_MACHINE_CLIPBOARD_CLEAR), and only on its success SQL's record of that generation. */
+	 * (COMPANY_MACHINE_CLIPBOARD_CLEAR), and only on its success SQL's record of that generation. `held` when the fence or
+	 * the record says a member holds the desktop (round 24 N1: the caller knows it, and an action does not run), `failed`
+	 * when the clear did not get through (nothing recorded either way). `limit` bounds the script (with its own deadline). */
 	async #clearAndRecord(
 		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
 		run: CompanyMachineClipboardClear,
 		signal: AbortSignal,
-	): Promise<CompanyMachineClipboardCleared> {
-		if (!(await this.#pictureAllowed(run.placementId, run.desktopGeneration, null, signal)))
-			return { cleared: false };
-		const cleared = await this.#clearSelections(pipe, run);
+		limit: AbortSignal,
+	): Promise<CompanyMachineClipboardCleared | "held" | "failed"> {
+		if (!(await this.#pictureAllowed(run.placementId, run.desktopGeneration, null, signal))) return "held";
+		const cleared = await this.#clearSelections(pipe, run, limit);
 		if (cleared === "boot") return { refused: "MACHINE_BOOT_CHANGED" };
 		if (cleared === "image") return { refused: "MACHINE_IMAGE_WITHOUT_CODING_VALUES" };
-		if (cleared === "failed") return { cleared: false };
+		if (cleared === "failed") return "failed";
 		const answer = record(
 			await this.#call(
 				"qorpera_machine_desktop_clipboard_cleared",
@@ -2390,14 +2408,16 @@ export class LxdCompanyMachineHost {
 		if (answer.schema !== "qorpera.machine-desktop-clipboard/v1")
 			throw new Error("COMPANY_MACHINE_CLIPBOARD_CLEARED_INVALID");
 		if (answer.state === "ok") return { cleared: true };
-		if (answer.state === "refused" && answer.reason === "DESKTOP_MEMBER_IN_CONTROL") return { cleared: false };
+		if (answer.state === "refused" && answer.reason === "DESKTOP_MEMBER_IN_CONTROL") return "held";
 		throw new Error("COMPANY_MACHINE_CLIPBOARD_CLEARED_INVALID");
 	}
-	/** COMPANY_MACHINE_CLIPBOARD_CLEAR once, under its own deadline and never the request's signal: cleared (exit 0),
-	 * another boot (97), an image without xsel (98), or failed (anything else; logged as a fixed word alone). */
+	/** COMPANY_MACHINE_CLIPBOARD_CLEAR once, under its own deadline (CODING_VALUE_CLEAR_MS) and `limit`: cleared (exit 0),
+	 * another boot (97), an image without xsel (98), or failed (1: an xsel failed; 2: a byte left; anything else, or cut
+	 * off; logged as a fixed word alone). */
 	async #clearSelections(
 		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
 		run: Pick<CompanyMachineClipboardClear, "placementId" | "bootId">,
+		limit: AbortSignal,
 	): Promise<"cleared" | "boot" | "image" | "failed"> {
 		try {
 			const result = await pipe(
@@ -2410,7 +2430,10 @@ export class LxdCompanyMachineHost {
 					maxStdoutBytes: 4096,
 					stderrTailBytes: 0,
 				},
-				AbortSignal.timeout(this.#options.codingValueClearTimeoutMs ?? CODING_VALUE_CLEAR_MS),
+				AbortSignal.any([
+					limit,
+					AbortSignal.timeout(this.#options.codingValueClearTimeoutMs ?? CODING_VALUE_CLEAR_MS),
+				]),
 			);
 			if (result.exitCode === 0) return "cleared";
 			if (result.exitCode === 97) return "boot";
@@ -2422,25 +2445,35 @@ export class LxdCompanyMachineHost {
 		return "failed";
 	}
 	/** An agent's screen call that owes the clear (F35 of #1661): under its hold of the desktop (an action's; a look takes
-	 * the desktop for the clear alone when it is free), before it looks or acts. Nothing of it fails the call: a desktop
-	 * an action of someone else's holds, a fence that says no, a failed clear or record, any error: it stays owed, and
-	 * save_coding_value's own clear is the backstop. */
+	 * the desktop for the clear alone when it is free), before it looks or acts, within SCREEN_CLEAR_MS (round 24 N2).
+	 * `held` when the fence or the record says a member holds the desktop (round 24 N1): an action then does not run. Any
+	 * other outcome fails nothing: a desktop someone else's action holds, a failed clear or record, a clear cut off at its
+	 * limit, any error: the clear stays owed (the next screen call, or save_coding_value's own clear, does it). */
 	async #clearOwed(
 		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
 		run: CompanyMachineScreen,
 		holding: boolean,
 		signal: AbortSignal,
-	): Promise<void> {
+	): Promise<"held" | "owed" | "cleared"> {
 		const took = !holding && this.#holdDesktop(run.placementId);
-		if (!holding && !took) return;
+		if (!holding && !took) return "owed";
+		const limit = AbortSignal.any([
+			signal,
+			AbortSignal.timeout(this.#options.screenClearTimeoutMs ?? SCREEN_CLEAR_MS),
+		]);
 		try {
-			await this.#clearAndRecord(
+			const outcome = await this.#clearAndRecord(
 				pipe,
 				{ placementId: run.placementId, bootId: run.bootId, desktopGeneration: run.desktopGeneration },
-				signal,
+				limit,
+				limit,
 			);
+			if (outcome === "held") return "held";
+			return typeof outcome === "object" && "cleared" in outcome && outcome.cleared ? "cleared" : "owed";
 		} catch {
+			signal.throwIfAborted();
 			console.error("COMPANY_MACHINE_CLIPBOARD_CLEAR_FAILED");
+			return "owed";
 		} finally {
 			if (took) this.#releaseDesktop(run.placementId, true);
 		}
@@ -2467,6 +2500,11 @@ export class LxdCompanyMachineHost {
 	 * interleave: after the capture, before anything leaves, SQL is asked whether the lease generation the read saw still
 	 * stands and no member holds the desktop (#pictureAllowed). If not, the outcome is DESKTOP_MEMBER_IN_CONTROL, without
 	 * the picture or the titles.
+	 *
+	 * A call that owes the clipboard clear after a member's hold (`clearClipboard`, F35 of #1661) does it first, under its
+	 * hold of the desktop, within SCREEN_CLEAR_MS (#clearOwed). If the fence or the record says a member holds the desktop
+	 * again, an action does not run (DESKTOP_MEMBER_IN_CONTROL, no receipt marker made); a look goes on, and its fence
+	 * after the capture refuses the picture. Any other failure of the clear fails nothing: it stays owed.
 	 */
 	async screen(run: CompanyMachineScreen, signal: AbortSignal): Promise<CompanyMachineScreenOutcome> {
 		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
@@ -2482,8 +2520,13 @@ export class LxdCompanyMachineHost {
 		let ended = false;
 		let result: Awaited<ReturnType<typeof pipe>>;
 		try {
-			// A member held the desktop since its clipboard was last confirmed clear: cleared and recorded first (F35).
-			if (run.clearClipboard === true) await this.#clearOwed(pipe, run, acting, signal);
+			// A member held the desktop since its clipboard was last confirmed clear: cleared and recorded first (F35). If the
+			// fence or the record says a member holds the desktop now, an action does not run (round 24 N1: no receipt
+			// marker is made yet); a look goes on, and its fence after the capture refuses the picture.
+			if (run.clearClipboard === true && (await this.#clearOwed(pipe, run, acting, signal)) === "held" && acting) {
+				ended = true;
+				return { refused: "DESKTOP_MEMBER_IN_CONTROL" };
+			}
 			result = await this.#screenHelper(pipe, run.placementId, run.bootId, run.request, signal);
 			// The helper reached its own end (an answer, or one of its own exits) only then: it waits for the action's unit.
 			// Any other exit (137 when it was killed inside the machine, 1 when it failed) says nothing of the unit, which

@@ -60,8 +60,9 @@ interface MachineCommandRouterOptions {
 	wakeLocal?(machineId: string, wait: boolean, signal: AbortSignal): Promise<boolean>;
 	/** save_coding_value (20260930705000): runs the clipboard helper on this node's machine; absent when the executor carries no machines. */
 	codingValueLocal?(authority: MachineCodingValueAuthority, signal: AbortSignal): Promise<CloudMachineCodingValueAnswer>;
-	/** F32 of #1661: clears the desktop's clipboard on this node's machine after a member held it, and confirms it to SQL.
-	 * Never reads it: the agent's call is refused whatever came of it. */
+	/** The backstop of the clipboard clear owed after a member held the desktop (F32 to F35 of #1661): clears it on this
+	 * node's machine and confirms it to SQL. Never reads it: the agent's call is answered CLIPBOARD_EMPTY whatever came of
+	 * it. */
 	codingValueClearLocal?(authority: MachineCodingValueClear, signal: AbortSignal): Promise<void>;
 	/** machine_screen (20260930708000): runs the screen helper on this node's machine; absent when the executor carries no machines. */
 	screenLocal?(authority: MachineScreenAuthority, signal: AbortSignal): Promise<CloudMachineScreenAnswer>;
@@ -149,7 +150,7 @@ export class MachineCommandRouter {
 		const authority = await authorizeMachineCodingValue(this.#options.control, request, signal);
 		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {
 			if (authority.clear) {
-				// A member held the desktop since its clipboard was last confirmed clear (F32): it is cleared now and nothing is
+				// A member held the desktop since its clipboard was last confirmed clear (F32 to F35): it is cleared now and nothing is
 				// read. The agent hears what is true then, CLIPBOARD_EMPTY: copy the key on the site and call again
 				// (DESKTOP_MEMBER_IN_CONTROL stays for a member who holds the desktop now, or took it over across a read).
 				if (!this.#options.codingValueClearLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
@@ -308,11 +309,12 @@ export function localMachineCodingValue(host: {
 	};
 }
 
-/** How a router clears a desktop's clipboard on this node's machines after a member held it (MachineCommandRouter's
- * `codingValueClearLocal`, F32 of #1661): the host clears both selections under the desktop's one-actor rule after the
- * fence and confirms it to SQL at the generation SQL answered. A host that could not clear or confirm records nothing
- * (the next call clears again); another boot, or an image without the clipboard helper, is the agent's refusal by its
- * code, as a read's would be. */
+/** How a router does the clipboard clear owed after a member held a desktop on this node, when save_coding_value meets
+ * it (MachineCommandRouter's `codingValueClearLocal`, F32 to F35 of #1661; the agent's first screen call after the hold
+ * does it first): the host clears both selections with its own fixed script under the desktop's one-actor rule after
+ * the fence, and confirms it to SQL at the generation SQL answered. A host that could not clear or confirm records
+ * nothing (the clear stays owed); another boot, or an image without xsel, is the agent's refusal by its code, as a read's
+ * would be. */
 export function localMachineCodingValueClear(host: {
 	clearClipboard(run: CompanyMachineClipboardClear, signal: AbortSignal): Promise<CompanyMachineClipboardCleared>;
 }): (authority: MachineCodingValueClear, signal: AbortSignal) => Promise<void> {

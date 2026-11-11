@@ -106,6 +106,7 @@ async function fixture(
 		codingValueTimeoutMs?: number;
 		codingValueClearTimeoutMs?: number;
 		screenTimeoutMs?: number;
+		screenClearTimeoutMs?: number;
 		memberLookTimeoutMs?: number;
 		memberTypeTimeoutMs?: number;
 		now?: () => number;
@@ -4956,6 +4957,89 @@ describe("a member's action on a desktop (20260930713000)", () => {
 		expect(await looked).toMatchObject({ png: expect.any(Buffer) });
 		expect(await acting).toEqual({ done: { exitCode: 0 } });
 		expect(clears()).toBe(5);
+	});
+
+	it("runs no action when the owed clear learns a member holds the desktop again, and a look goes on (round 24 N1)", async () => {
+		const held = {
+			schema: "qorpera.machine-desktop-picture/v1",
+			state: "refused",
+			reason: "DESKTOP_MEMBER_IN_CONTROL",
+		};
+		const { f, calls } = await piped(async (given) => {
+			if (given.command[2] === COMPANY_MACHINE_CLIPBOARD_CLEAR) return answer(0);
+			const request = given.stdin ? JSON.parse(stdinText(given)) : {};
+			return answer(0, output(request.action?.type ?? null, request.look ? png() : null));
+		});
+		const owed = (action: Record<string, unknown> | null, receipt: number | null = null) => ({
+			...agent(action, receipt),
+			desktopGeneration: 4,
+			clearClipboard: true,
+		});
+		const acts = () => calls.filter((given) => given.command.includes(COMPANY_MACHINE_SCREEN_HELPER)).length;
+		// The clear's fence says a member holds it: the action never reaches the helper (no receipt marker), the desktop is
+		// free at once.
+		f.order.length = 0;
+		f.pictureChecks.push(held);
+		expect(await f.host.screen(owed({ type: "click", x: 1, y: 1 }, 16), f.signal)).toEqual({
+			refused: "DESKTOP_MEMBER_IN_CONTROL",
+		});
+		expect(f.order).toEqual(["sql:qorpera_machine_desktop_picture_check"]);
+		expect(acts()).toBe(0);
+		// The record says it: cleared, but the action does not run either.
+		f.order.length = 0;
+		f.clipboardClears.push({
+			schema: "qorpera.machine-desktop-clipboard/v1",
+			state: "refused",
+			reason: "DESKTOP_MEMBER_IN_CONTROL",
+		});
+		expect(await f.host.screen(owed({ type: "click", x: 1, y: 1 }, 17), f.signal)).toEqual({
+			refused: "DESKTOP_MEMBER_IN_CONTROL",
+		});
+		expect(f.order).toEqual([
+			"sql:qorpera_machine_desktop_picture_check",
+			"exec:clear",
+			"sql:qorpera_machine_desktop_clipboard_cleared",
+		]);
+		expect(acts()).toBe(0);
+		// The desktop was let go: the next action runs.
+		expect(await f.host.screen(agent({ type: "click", x: 1, y: 1 }, 18), f.signal)).toMatchObject({
+			header: { action: { type: "click", exitCode: 0 } },
+		});
+		// A look goes on (its own fence after the capture decides the picture).
+		f.pictureChecks.push(held);
+		expect(await f.host.screen(owed(null), f.signal)).toMatchObject({ png: expect.any(Buffer) });
+	});
+
+	it("gives the owed clear at a screen call its own short limit: a slow X server leaves it owed and the call goes on (round 24 N2)", async () => {
+		const { f, calls } = await piped(
+			async (given, signal) => {
+				if (given.command[2] === COMPANY_MACHINE_CLIPBOARD_CLEAR)
+					return new Promise<never>((_resolve, reject) => {
+						if (signal.aborted) reject(signal.reason);
+						signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+					});
+				const request = given.stdin ? JSON.parse(stdinText(given)) : {};
+				return answer(0, output(request.action?.type ?? null, request.look ? png() : null));
+			},
+			{ screenClearTimeoutMs: 50 },
+		);
+		const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			const began = Date.now();
+			expect(
+				await f.host.screen(
+					{ ...agent({ type: "click", x: 1, y: 1 }, 19), desktopGeneration: 4, clearClipboard: true },
+					f.signal,
+				),
+			).toMatchObject({ header: { action: { type: "click", exitCode: 0 } } });
+			// Cut off at its limit, not at the clear script's own 10 s: nothing recorded, the action ran.
+			expect(Date.now() - began).toBeLessThan(2000);
+			expect(f.calls.filter((call) => call.method === "qorpera_machine_desktop_clipboard_cleared")).toHaveLength(0);
+			expect(calls.filter((given) => given.command[2] === COMPANY_MACHINE_CLIPBOARD_CLEAR)[0]).toBeDefined();
+			expect(errors.mock.calls).toEqual([["COMPANY_MACHINE_CLIPBOARD_CLEAR_FAILED"]]);
+		} finally {
+			errors.mockRestore();
+		}
 	});
 
 	it("the headline flow: a member held the desktop and handed it back; the agent's look clears and records, its copy is its own, and its save reads it at the first call (F35 of #1661)", async () => {
