@@ -2169,11 +2169,20 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * 3. The machine's boundary, through the wrapper a command's transport asks it through (#folderBoundary), asked again
 	 *    while it is checking or does not answer, for at most CODE_SITE_BOUNDARY_MS, and judged as `publish` judges it
 	 *    (every view of the machine): saved with nothing held, the site is made.
-	 * 4. Otherwise the drop (`CODE_SITE_DROP`), a command of the run as the collect is, removes the objects the collect
-	 *    wrote, before a refused one holds the session's storage; then the boundary is asked once more. The site is
-	 *    refused when the save check found one of the machine's secret values in them (`SITE_HOLDS_SECRET`, no variable
-	 *    named), and missed for anything else, whatever the drop and the boundary after it came to.
-	 * Each step is tried once. It throws only the turn's abort, as a check's command does. */
+	 * 4. Saved, the site is made; not saved, it is refused when the save check found one of the machine's secret values
+	 *    in what the collect wrote (`SITE_HOLDS_SECRET`, no variable named), and missed for anything else.
+	 * 5. Whenever the collect started and the site is not made and saved, the drop (`CODE_SITE_DROP`), a command of the
+	 *    run as the collect is, removes the objects the collect wrote (`site.wrote` stands before its first write), so that
+	 *    nothing of it stays pending in the session's view for a later boundary to hold on: after a refused or missed
+	 *    boundary, after the code's refusal, and after a collect that failed, ended at its limit, was stopped or was lost
+	 *    by the guest. Only once the collect is known to have ended (#checksCommand's `ended`): never beside one that may
+	 *    still write (a start never answered, a stop not confirmed, a machine that shows nothing of its commands), which
+	 *    the memories and the next run's look again end, and never after its exit 91 (a newer run's folder stood: it
+	 *    wrote nothing, and the drop would find the same). Inside the run's budget: once that passed, the drop cannot
+	 *    start. When a boundary was asked and did not save, it is asked once more after the drop; when none was asked,
+	 *    none is asked for the drop. What the drop came to changes nothing of the site.
+	 * Each step is tried once. It throws only the turn's abort, as a check's command does, and starts nothing after it:
+	 * no drop either. */
 	async #takeSite(
 		ready: Prepared,
 		folder: FolderOptions,
@@ -2223,28 +2232,46 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			{ ...own, QORPERA_SITE_SECRET_NAMES: names.join(" ") },
 			signal,
 		);
-		if ("code" in collected) return missed(collected.code);
-		const { receipt } = collected;
-		if (receipt.state !== "succeeded" && receipt.state !== "failed")
-			return missed(`CODE_SITE_COLLECT_${receipt.state.toUpperCase()}`);
-		const ending = codeSiteCollectAnswer(receipt.output, receipt.exitCode);
-		if (ending === null)
-			return missed(
-				receipt.exitCode === 0 || receipt.exitCode === 3
-					? "CODE_SITE_COLLECT_ANSWER_INVALID"
-					: `CODE_SITE_COLLECT_EXIT_${receipt.exitCode}`,
-			);
-		if ("problem" in ending) return { problem: ending.problem };
-		const boundary = this.#folderBoundary(folder, ready.machine);
-		const judged = await this.#siteBoundary(boundary, ready, folder, budget, run.step, false, signal);
-		if (judged === "saved")
-			return {
-				state: "made",
-				...ending.made,
-				folder: recipe.folder,
-				name: recipe.name,
-				title: recipe.title,
-			};
+		// What the collect came to, and the boundary asked after a made one (none otherwise).
+		let site: CodeSiteCollected | { problem: CodeSiteProblem };
+		let boundary: Pick<CodingFolderControl, "boundary"> | undefined;
+		if ("code" in collected) site = missed(collected.code);
+		else if (collected.receipt.state !== "succeeded" && collected.receipt.state !== "failed")
+			site = missed(`CODE_SITE_COLLECT_${collected.receipt.state.toUpperCase()}`);
+		else {
+			const { receipt } = collected;
+			const ending = codeSiteCollectAnswer(receipt.output, receipt.exitCode);
+			if (ending === null)
+				site = missed(
+					receipt.exitCode === 0 || receipt.exitCode === 3
+						? "CODE_SITE_COLLECT_ANSWER_INVALID"
+						: `CODE_SITE_COLLECT_EXIT_${receipt.exitCode}`,
+				);
+			else if ("problem" in ending) site = { problem: ending.problem };
+			else {
+				boundary = this.#folderBoundary(folder, ready.machine);
+				const judged = await this.#siteBoundary(boundary, ready, folder, budget, run.step, false, signal);
+				if (judged === "saved")
+					return {
+						state: "made",
+						...ending.made,
+						folder: recipe.folder,
+						name: recipe.name,
+						title: recipe.title,
+					};
+				site =
+					judged === "carries"
+						? { problem: { code: "SITE_HOLDS_SECRET", path: null, variable: null } }
+						: missed(judged);
+			}
+		}
+		// The drop, once the collect is known to have ended, and not after its exit 91 (it wrote nothing).
+		if (
+			("code" in collected && !collected.ended) ||
+			(!("code" in collected) && collected.receipt.state === "failed" && collected.receipt.exitCode === 91)
+		)
+			return site;
+		if (signal.aborted) throw signal.reason;
 		const dropped = await this.#siteCommand(
 			ready,
 			folder,
@@ -2259,13 +2286,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			...run.step,
 			dropped: "code" in dropped ? null : codeSiteDropAnswer(dropped.receipt.output, dropped.receipt.exitCode),
 		});
-		await this.#siteBoundary(boundary, ready, folder, budget, run.step, true, signal);
-		return judged === "carries"
-			? { problem: { code: "SITE_HOLDS_SECRET", path: null, variable: null } }
-			: missed(judged);
+		if (boundary) await this.#siteBoundary(boundary, ready, folder, budget, run.step, true, signal);
+		return site;
 	}
 	/** The site's collect or drop as a command of the run (#takeSite), to its end through #checksCommand, with its log
-	 * lines: its receipt, or the code of why it did not end on its own. */
+	 * lines: its receipt, or the code of why it did not end on its own and whether it has ended all the same
+	 * (#checksCommand's `ended`; not for a command that never started). */
 	async #siteCommand(
 		ready: Prepared,
 		folder: FolderOptions,
@@ -2273,7 +2299,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		which: "collect" | "drop",
 		environment: Readonly<Record<string, string>>,
 		signal: AbortSignal,
-	): Promise<{ receipt: CloudCodingCommandReceipt } | { code: string }> {
+	): Promise<{ receipt: CloudCodingCommandReceipt } | { code: string; ended: boolean }> {
 		const step = { ...run.step, index: run.index + (which === "drop" ? 1 : 0), site: which };
 		let transport: LxdCodingFolderCommandTransport;
 		try {
@@ -2284,7 +2310,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			});
 		} catch (error) {
 			this.#checksReport({ event: "code-checks-error", step: "command", ...step, error });
-			return { code: errorCodeOf(error) };
+			return { code: errorCodeOf(error), ended: false };
 		}
 		const command =
 			which === "collect"
@@ -2322,7 +2348,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			});
 			if (ended.error !== undefined)
 				this.#checksReport({ event: "code-checks-error", step: "command", ...step, error: ended.error });
-			return { code: ended.code };
+			return { code: ended.code, ended: ended.ended };
 		}
 		this.#checksReport({
 			event: "code-checks",
@@ -2423,7 +2449,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * (`error`). The turn's abort, the run's budget passing, or calls unanswered stop it first (#stopChecksCommand), and
 	 * the answer says whether its end was confirmed (`stopped`). Every way the host stops watching it without seeing it
 	 * end for certain leaves it in the session's memories (#checksMayRun, #checksUncertain): a start never answered, a
-	 * stop not confirmed, a receipt or a `hidden` that says `unconfirmed` (review round 6, F1). */
+	 * stop not confirmed, a receipt or a `hidden` that says `unconfirmed` (review round 6, F1). An answer that is not a
+	 * receipt says whether the command has ended all the same (`ended`, the site's drop asks it): the guest's own word,
+	 * a receipt in any state but `running` (`unconfirmed` too: the guest's unit is no longer live), or a stop that
+	 * confirmed the end of a start that was answered; or `hidden` saying the machine it ran on stopped. Not ended: a
+	 * start never answered, a stop not confirmed, `hidden` saying `unconfirmed`. */
 	async #checksCommand(
 		transport: LxdCodingFolderCommandTransport,
 		scope: CloudCodingCommandScope,
@@ -2439,6 +2469,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				code: string;
 				error?: unknown;
 				stopped?: boolean;
+				ended: boolean;
 		  }
 	> {
 		const live = AbortSignal.any([signal, budget]);
@@ -2455,12 +2486,16 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		// memories already written), the budget passed, or its calls went unanswered. A stop not confirmed holds every
 		// later run of the session's checks before anything. A start never answered is uncertain whatever its stop said
 		// (a `cancelled` may be provisional, and the start may land later); one the host never kept is not.
-		const stopped = async <T extends object>(then: T): Promise<T & { stopped: boolean }> => {
+		const stopped = async <T extends object>(then: T): Promise<T & { stopped: boolean; ended: boolean }> => {
 			const end = await this.#stopChecksCommand(transport, scope, commandId, folder);
 			if (end === "running") this.#checksMayRun.set(scope.workerId, commandId);
 			if (end !== "unkept" && (receipt === undefined || end !== "ended")) uncertain();
 			if (signal.aborted) throw signal.reason;
-			return { ...then, stopped: end !== "running" };
+			return {
+				...then,
+				stopped: end !== "running",
+				ended: receipt !== undefined && (end === "ended" || end === "lost"),
+			};
 		};
 		const overBudget = { why: "budget" as const, code: "CODE_CHECKS_BUDGET" };
 		const failed = (error: unknown) => ({
@@ -2512,10 +2547,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			// The machine shows nothing of its commands now (`unconfirmed`): one may still run there. A machine that
 			// stopped, or a disk it no longer has, ended it for certain.
 			if (hidden === "unconfirmed") uncertain();
-			if (hidden !== undefined) return { why: "machine", code: `CODE_CHECKS_${hidden.toUpperCase()}` };
+			if (hidden !== undefined)
+				return { why: "machine", code: `CODE_CHECKS_${hidden.toUpperCase()}`, ended: hidden === "machine_stopped" };
 		} catch (error) {
 			if (signal.aborted) throw signal.reason;
-			return budget.aborted ? overBudget : failed(error);
+			// Its receipt said it ended.
+			return { ...(budget.aborted ? overBudget : failed(error)), ended: true };
 		}
 		return { receipt, tail, ...(unread === undefined ? {} : { error: unread }) };
 	}

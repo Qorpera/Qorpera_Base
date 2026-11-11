@@ -6482,6 +6482,8 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			title: "The shop",
 		};
 		const SECRET_HELD = { code: "SITE_HOLDS_SECRET", path: null, variable: null };
+		/** The drop's lines when it ran and removed two objects. */
+		const DROPPED = ["started:drop", "ended:drop", "dropped:2"];
 		const DIR = `${HOME}/.qorpera-checks/0000000001-0001`;
 		const PASSED = CHECKS.map(({ name, run }) => ({ name, run, ms: expect.any(Number) }));
 		type Answer = (machine: string, signal: AbortSignal) => Promise<CodingFolderBoundary>;
@@ -6737,7 +6739,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			["SITE_FILE_NAME", "SITE_FILE_NAME img/caf\\xc3\\xa9 1.png\n", "img/café 1.png", null],
 			["SITE_HOLDS_SECRET", "SITE_HOLDS_SECRET API_KEY assets/app.js\n", "assets/app.js", "API_KEY"],
 		] as const)(
-			"refuses a site the code made wrong (%s): no boundary of its own, no drop",
+			"refuses a site the code made wrong (%s): the drop after it, and no boundary of its own",
 			async (code, printed, path, variable) => {
 				const f = await siteFixture({ collect: { code: 3, printed } });
 				expect(await f.site()).toEqual({
@@ -6746,49 +6748,61 @@ describe("a run of a repository's checks in the session's machine (own code stor
 					checks: PASSED,
 					problem: { code, path, variable },
 				});
-				expect(f.kinds()).toEqual(["copy", "check", "check", "check", "collect"]);
-				expect(f.steps()).toEqual(["started:collect", "ended:collect"]);
+				expect(f.kinds()).toEqual(["copy", "check", "check", "check", "collect", "drop"]);
+				expect(f.steps()).toEqual(["started:collect", "ended:collect", ...DROPPED]);
 				expect(f.logged.at(-1)).toMatchObject({ step: "run", state: "site_refused", problem: code, variable });
 			},
 		);
 
 		it.each([
-			["exits 91 (a newer run's folder stands)", { code: 91 }, "CODE_SITE_COLLECT_EXIT_91"],
-			["exits otherwise (a git command failed)", { code: 4 }, "CODE_SITE_COLLECT_EXIT_4"],
-			["is stopped at its own limit", { state: "timed_out" }, "CODE_SITE_COLLECT_EXIT_124"],
+			["exits otherwise (a git command failed)", { code: 4 }, "CODE_SITE_COLLECT_EXIT_4", true],
+			["is stopped at its own limit", { state: "timed_out" }, "CODE_SITE_COLLECT_EXIT_124", true],
 			[
 				"ends 0 with lines that are not its answer",
 				{ printed: `tree x\nfiles 3\nbytes 1\n` },
 				"CODE_SITE_COLLECT_ANSWER_INVALID",
+				true,
 			],
-			["prints more than its answer", { printed: `warning: x\n${LINES}` }, "CODE_SITE_COLLECT_ANSWER_INVALID"],
+			["prints more than its answer", { printed: `warning: x\n${LINES}` }, "CODE_SITE_COLLECT_ANSWER_INVALID", true],
 			[
 				"ends 3 with a line that is not its answer",
 				{ code: 3, printed: "SITE_ODD\n" },
 				"CODE_SITE_COLLECT_ANSWER_INVALID",
+				true,
 			],
-			["is lost by the guest (unconfirmed)", { state: "lost" }, "CODE_SITE_COLLECT_UNCONFIRMED"],
-			["is cancelled by nobody", { state: "cancelled" }, "CODE_SITE_COLLECT_CANCELLED"],
-		] as const)("misses the site when the collect %s: the change lands without one", async (_case, collect, code) => {
-			const f = await siteFixture({ collect: collect as Ending });
-			expect(await f.site()).toEqual({
-				state: "passed",
-				ms: expect.any(Number),
-				copyMs: expect.any(Number),
-				checks: PASSED,
-				site: { state: "missed", code },
-			});
-			// Tried once; nothing after it: no boundary of its own, no drop. Its lines are read from its receipt, never as
-			// a failed check's tail.
-			expect(f.kinds()).toEqual(["copy", "check", "check", "check", "collect"]);
-			expect(f.steps()).toEqual(["started:collect", "ended:collect"]);
-			expect(codeChecksTail).not.toHaveBeenCalled();
-			expect(f.logged.at(-1)).toMatchObject({ step: "run", state: "passed", site: "missed", siteCode: code });
-		});
+			[
+				"is lost by the guest (unconfirmed: its unit is no longer live)",
+				{ state: "lost" },
+				"CODE_SITE_COLLECT_UNCONFIRMED",
+				true,
+			],
+			["is cancelled by nobody", { state: "cancelled" }, "CODE_SITE_COLLECT_CANCELLED", true],
+			// Its guard found a newer run's folder before it made or wrote anything; the drop would find the same.
+			["exits 91 (a newer run's folder stands)", { code: 91 }, "CODE_SITE_COLLECT_EXIT_91", false],
+		] as const)(
+			"misses the site when the collect %s: the change lands without one, the drop after it (%s)",
+			async (_case, collect, code, drops) => {
+				const f = await siteFixture({ collect: collect as Ending });
+				expect(await f.site()).toEqual({
+					state: "passed",
+					ms: expect.any(Number),
+					copyMs: expect.any(Number),
+					checks: PASSED,
+					site: { state: "missed", code },
+				});
+				// Tried once. Ended, it is dropped (but after its 91), and no boundary is asked for the drop: none was asked
+				// before it. Its lines are read from its receipt, never as a failed check's tail.
+				expect(f.kinds()).toEqual(["copy", "check", "check", "check", "collect", ...(drops ? ["drop"] : [])]);
+				expect(f.steps()).toEqual(["started:collect", "ended:collect", ...(drops ? DROPPED : [])]);
+				expect(codeChecksTail).not.toHaveBeenCalled();
+				expect(f.logged.at(-1)).toMatchObject({ step: "run", state: "passed", site: "missed", siteCode: code });
+			},
+		);
 
 		it("misses the site when the machine stopped under the collect", async () => {
 			const f = await siteFixture();
 			f.ending((run) => {
+				if (kindOf(run) === "drop") return { printed: "dropped 2\n" };
 				if (kindOf(run) !== "collect") return {};
 				// Rebuilt while it ran: the disk it started on is gone.
 				f.state.disk = randomUUID();
@@ -6798,7 +6812,8 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				state: "passed",
 				site: { state: "missed", code: "CODE_CHECKS_MACHINE_STOPPED" },
 			});
-			expect(f.steps()).toEqual(["started:collect", "ended:collect"]);
+			// It ended with the disk it ran on: the drop runs all the same, on the machine as it is.
+			expect(f.steps()).toEqual(["started:collect", "ended:collect", ...DROPPED]);
 		});
 
 		it("misses the site when the guest agent stays unanswered about the collect, and stops it", async () => {
@@ -6817,7 +6832,119 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(f.logged).toContainEqual(
 				expect.objectContaining({ event: "code-checks-error", step: "command", site: "collect", index: 4 }),
 			);
+			// Its stop could not be confirmed either (the guest stays unanswered): it may still write, so no drop.
+			expect(f.logged).toContainEqual(expect.objectContaining({ step: "ended", site: "collect", stopped: false }));
+			expect(f.steps()).toEqual(["started:collect", "ended:collect"]);
 		});
+
+		it.each(["cancelled", "lost"] as const)(
+			"drops what a collect stopped once its calls went unanswered wrote, once its stop confirmed its end (%s)",
+			async (end) => {
+				const f = await siteFixture({ collect: { state: "running" } });
+				if (end === "lost") {
+					// The guest's unit is no longer live, with no word of how it ended: its cancel's receipt says unconfirmed.
+					const cancel = mocked.guestCancel.getMockImplementation()!;
+					mocked.guestCancel.mockImplementation(async (request: unknown) => {
+						const found = f.commands.get(parseCodingGuestRequest("cancel", request).commandId);
+						if (found && kindOf(found.run) === "collect") found.state = "lost";
+						return cancel(request);
+					});
+				}
+				const output = mocked.guestOutput.getMockImplementation()!;
+				let answered = 0;
+				mocked.guestOutput.mockImplementation(async (request: unknown) => {
+					const asked = parseCodingGuestRequest("output", request);
+					const found = f.commands.get(asked.commandId);
+					// Its start is answered; then the guest goes quiet about it until it was cancelled.
+					if (found && kindOf(found.run) === "collect" && found.state === "running" && answered++ > 0)
+						throw new Error("LXD operation failed");
+					return output(request);
+				});
+				expect(await f.site()).toMatchObject({ state: "passed", site: { state: "missed", code: "UNCLASSIFIED" } });
+				expect(f.commands.get(f.idOf("collect"))?.state).toBe(end);
+				expect(f.logged).toContainEqual(expect.objectContaining({ step: "ended", site: "collect", stopped: true }));
+				expect(f.steps()).toEqual(["started:collect", "ended:collect", ...DROPPED]);
+			},
+		);
+
+		it.each([
+			"its start was never answered",
+			"its stop is not confirmed",
+			"the machine shows nothing of it",
+		] as const)("runs no drop beside a collect that may still write: %s", async (how) => {
+			const f = await siteFixture({ budgetMs: 800, collect: { state: "running" } });
+			const id = f.idOf("collect");
+			let code = "UNCLASSIFIED";
+			if (how === "its start was never answered") {
+				const run = mocked.guestRun.getMockImplementation()!;
+				mocked.guestRun.mockImplementation(async (request: unknown) => {
+					if (parseCodingGuestRequest("run", request).commandId === id) throw new Error("LXD operation failed");
+					return run(request);
+				});
+			} else if (how === "its stop is not confirmed") {
+				code = "CODE_CHECKS_BUDGET";
+				const cancel = mocked.guestCancel.getMockImplementation()!;
+				mocked.guestCancel.mockImplementation(async (request: unknown) => {
+					const asked = parseCodingGuestRequest("cancel", request);
+					if (asked.commandId !== id) return cancel(request);
+					return {
+						schema: "qorpera.coding-guest-command/v1",
+						workerId: f.claim.workerId,
+						commandId: id,
+						state: "running",
+						exit: null,
+						end: 0,
+					};
+				});
+			} else {
+				code = "CODE_CHECKS_UNCONFIRMED";
+				// It ends; then the machine's disk can no longer be said, so nothing of it may be shown.
+				let armed: number | undefined;
+				const disk = mocked.disk.getMockImplementation()!;
+				mocked.disk.mockImplementation(async (...args: unknown[]) => {
+					if (armed !== undefined && ++armed >= 2) return "not a rebuild";
+					return disk(...args);
+				});
+				f.ending((run) => {
+					if (kindOf(run) !== "collect") return {};
+					armed = 0;
+					return { code: 4 };
+				});
+			}
+			expect(await f.site(1, f.signal, CHECKS.slice(0, 1))).toMatchObject({
+				state: "passed",
+				site: { state: "missed", code },
+			});
+			expect(f.steps()).toEqual(["started:collect", "ended:collect"]);
+			// The memories have it: the next run looks at it again after its fence.
+			expect(f.kinds()).not.toContain("drop");
+		});
+
+		it.each([
+			[
+				"the collect failed",
+				{ code: 4 },
+				{ state: "passed", site: { state: "missed", code: "CODE_SITE_COLLECT_EXIT_4" } },
+			],
+			[
+				"the code made the site wrong",
+				{ code: 3, printed: "SITE_NO_INDEX\n" },
+				{ state: "site_refused", problem: { code: "SITE_NO_INDEX", path: null, variable: null } },
+			],
+		] as const)(
+			"keeps the site's outcome when the drop after it fails (%s), and asks no boundary",
+			async (_case, collect, outcome) => {
+				const f = await siteFixture({ collect: collect as Ending, drop: { code: 1 } });
+				expect(await f.site()).toMatchObject(outcome);
+				expect(f.steps()).toEqual([
+					"started:collect",
+					"ended:collect",
+					"started:drop",
+					"ended:drop",
+					"dropped:null",
+				]);
+			},
+		);
 
 		it("misses the site when the collect runs past the run's budget, and stops it", async () => {
 			const f = await siteFixture({ budgetMs: 600, collect: { state: "running" } });
@@ -6831,7 +6958,13 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(f.logged).toContainEqual(
 				expect.objectContaining({ step: "ended", site: "collect", state: "not_run", stopped: true }),
 			);
-			expect(f.steps()).toEqual(["started:collect", "ended:collect"]);
+			// Its end confirmed, the drop is asked; but it runs inside the run's budget, which has passed: its start is
+			// refused before anything of it is kept, and nothing of it reaches the machine.
+			expect(f.steps()).toEqual(["started:collect", "ended:collect", "started:drop", "ended:drop", "dropped:null"]);
+			expect(f.kinds()).not.toContain("drop");
+			expect(f.logged).toContainEqual(
+				expect.objectContaining({ step: "ended", site: "drop", state: "not_run", stopped: true }),
+			);
 		});
 
 		it("misses the site when the run's budget passes while the secrets' names are read, and starts no collect", async () => {
@@ -7146,6 +7279,21 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				await expect(f.site(1, stop.signal)).rejects.toBe(reason);
 				expect(f.steps()).toEqual(["started:collect", "ended:collect"]);
 				expect(f.kinds()).not.toContain("drop");
+				expect(f.logged.filter((event) => event.step === "run")).toEqual([]);
+			});
+
+			it("as the boundary after the collect answers it held a secret value: no drop is started", async () => {
+				const stop = new AbortController();
+				const f = await siteFixture({
+					boundaries: [
+						async (machine, signal) => {
+							stop.abort(reason);
+							return await CARRIES(machine, signal);
+						},
+					],
+				});
+				await expect(f.site(1, stop.signal)).rejects.toBe(reason);
+				expect(f.steps()).toEqual(["started:collect", "ended:collect", "boundary:carries"]);
 				expect(f.logged.filter((event) => event.step === "run")).toEqual([]);
 			});
 
