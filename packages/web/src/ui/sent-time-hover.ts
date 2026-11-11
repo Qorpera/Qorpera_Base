@@ -1,61 +1,42 @@
-import { conversationTimestampLabel, parseConversationTimestamp } from "./conversation-timestamps.ts";
+import { conversationClockLabel, parseConversationTimestamp } from "./conversation-timestamps.ts";
 import { h } from "./dom.ts";
 import { uiScale } from "./scale.ts";
 
 /* When a message was sent, shown on a mouse hover (Jonas, 10 Nov 2026): every message in a
  * thread (an agent's, a group chat's, a member's chat, two agents' talk) carries its moment in
- * `data-sent-at`, and a small label beside it reads that moment ("Today 10:04") a moment after
- * the pointer rests on it. Moving on to the next message shows its time at once. The label is
- * read when it shows, so it follows the clock, the language and the time zone. A message's own
- * aria-label already names its time for a screen reader; the label is only drawn. */
+ * `data-sent-at`, and the time of day ("10:04") stands beside it the moment the pointer is on it
+ * (Jonas, 11 Nov 2026: "the hover should be instant, … should only show the timestamp, not date,
+ * be centered to the message, and have no composer around it"). It is plain small text, centred
+ * on the message's height. The time is read when it shows, so it follows the clock, the language
+ * and the time zone. A message's own aria-label already names its time for a screen reader; the
+ * time beside it is only drawn. */
 
-/** The pointer rests this long on a message before its time shows. */
-const DELAY_MS = 350;
-/** After a label hid, the next message within this long shows its time at once. */
-const WARM_MS = 500;
-const GAP = 8;
+const GAP = 6;
 const MARGIN = 8;
 
 let tip: HTMLElement | undefined;
 let current: HTMLElement | undefined;
-let timer: number | undefined;
-let hiddenAt = 0;
 
-interface Point {
-	x: number;
-	y: number;
-}
-
-/** The text shown for a message: its time, after `data-sent-label` when it has one ("Messaged Nova · Today 10:04"). */
-export function sentTimeText(target: HTMLElement, now = new Date()): string {
+/** The time shown for a message: the time of day alone ("10:04", "2:18 PM"). */
+export function sentTimeText(target: HTMLElement): string {
 	const date = target.dataset.sentAt ? parseConversationTimestamp(target.dataset.sentAt) : undefined;
-	if (!date) return "";
-	const time = conversationTimestampLabel(date, now);
-	return target.dataset.sentLabel ? `${target.dataset.sentLabel} · ${time}` : time;
+	return date ? conversationClockLabel(date) : "";
 }
 
-/** The label shown now, if any (tests read it). */
+/** The time shown now, if any (tests read it). */
 export function shownSentTime(): HTMLElement | undefined {
 	return tip?.classList.contains("is-shown") ? tip : undefined;
 }
 
-/** `moved`: the pointer went on (to another message, a gap, out of the thread), so a message reached next shows its
- * time at once. Otherwise the label was dismissed (a press, a scroll, a key), and the next one waits again. */
-function hide(moved = false): void {
-	if (timer !== undefined) window.clearTimeout(timer);
-	timer = undefined;
-	// A move that finds nothing showing (a second gap on the way) keeps the moment the label last went.
-	if (!moved) hiddenAt = 0;
-	else if (current && tip?.classList.contains("is-shown")) hiddenAt = Date.now();
+function hide(): void {
 	current = undefined;
-	tip?.classList.remove("is-shown");
+	tip?.classList.remove("is-shown", "is-over");
 }
-const dismiss = () => hide();
 
 /** Beside the message, on the side away from the thread's middle (an agent's on the left gets it on its right, the
- * member's own on the right gets it on its left), at the pointer's height within the message. Without room beside (a
- * narrow window), just above the pointer, or below it at the thread's top edge. */
-function place(label: HTMLElement, target: HTMLElement, root: HTMLElement, pointer: Point): void {
+ * member's own on the right gets it on its left), else on the other side, centred on the part of the message in view.
+ * Without room on either side (a narrow window), centred just above the message, on the thread's own colour. */
+function place(label: HTMLElement, target: HTMLElement, root: HTMLElement): void {
 	const box = target.getBoundingClientRect();
 	const area = root.getBoundingClientRect();
 	const width = label.offsetWidth;
@@ -63,94 +44,88 @@ function place(label: HTMLElement, target: HTMLElement, root: HTMLElement, point
 	const scale = uiScale();
 	const gap = GAP * scale;
 	const margin = MARGIN * scale;
-	const rightSide = box.left + box.width / 2 <= area.left + area.width / 2;
-	const fitsRight = box.right + gap + width <= Math.min(area.right, window.innerWidth) - margin;
-	const fitsLeft = box.left - gap - width >= Math.max(area.left, 0) + margin;
+	const leftmost = Math.max(area.left, 0) + margin;
+	const rightmost = Math.min(area.right, window.innerWidth) - margin;
+	const fitsRight = box.right + gap + width <= rightmost;
+	const fitsLeft = box.left - gap - width >= leftmost;
+	const rightFirst = box.left + box.width / 2 <= area.left + area.width / 2;
+	const side = rightFirst
+		? fitsRight
+			? "right"
+			: fitsLeft
+				? "left"
+				: ""
+		: fitsLeft
+			? "left"
+			: fitsRight
+				? "right"
+				: "";
 	let left: number;
 	let top: number;
-	if ((rightSide && fitsRight) || (!rightSide && fitsLeft)) {
-		left = rightSide ? box.right + gap : box.left - gap - width;
-		const low = Math.max(box.top, area.top + margin);
-		const high = Math.min(box.bottom, area.bottom - margin) - height;
-		top = high < low ? box.top + (box.height - height) / 2 : Math.min(Math.max(pointer.y - height / 2, low), high);
+	if (side) {
+		left = side === "right" ? box.right + gap : box.left - gap - width;
+		const seenTop = Math.max(box.top, area.top, 0);
+		const seenBottom = Math.min(box.bottom, area.bottom, window.innerHeight);
+		top = (seenBottom > seenTop ? (seenTop + seenBottom) / 2 : box.top + box.height / 2) - height / 2;
 	} else {
-		left = pointer.x - width / 2;
-		top = pointer.y - 2 * gap - height;
-		if (top < Math.max(area.top, 0) + margin) top = pointer.y + 3 * gap;
+		left = box.left + (box.width - width) / 2;
+		top = box.top - height - gap / 2;
+		if (top < Math.max(area.top, 0) + margin) top = box.bottom + gap / 2;
 	}
-	// Inside the thread as it is on screen: a panel's label never stands over what is beside it.
-	const leftmost = Math.max(area.left, 0) + margin;
-	left = Math.max(Math.min(left, Math.min(area.right, window.innerWidth) - margin - width), leftmost);
+	label.classList.toggle("is-over", !side);
+	// Inside the thread as it is on screen: a panel's time never stands over what is beside it.
+	left = Math.max(Math.min(left, rightmost - width), leftmost);
 	top = Math.min(Math.max(top, margin), window.innerHeight - height - margin);
 	label.style.left = `${Math.round(left)}px`;
 	label.style.top = `${Math.round(top)}px`;
 }
 
-function show(target: HTMLElement, root: HTMLElement, pointer: Point): void {
-	timer = undefined;
-	if (!target.isConnected || !root.contains(target)) return;
+function show(target: HTMLElement, root: HTMLElement): void {
+	current = target;
 	const text = sentTimeText(target);
-	if (!text) return;
+	if (!text) {
+		hide();
+		return;
+	}
 	tip ??= h("div", { class: "sent-time-tip", "aria-hidden": "true" });
 	if (!tip.isConnected) document.body.append(tip);
 	if (tip.textContent !== text) tip.textContent = text;
-	place(tip, target, root, pointer);
+	place(tip, target, root);
 	tip.classList.add("is-shown");
 }
 
 /** Shows the sent time of each `[data-sent-at]` element in `root` on a mouse hover, until `signal` aborts. */
 export function sentTimeHover(root: HTMLElement, signal: AbortSignal): void {
-	const pointer: Point = { x: 0, y: 0 };
 	const options = { signal };
 	const messageAt = (event: PointerEvent) => {
 		const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-sent-at]") : null;
 		return target && root.contains(target) ? target : undefined;
 	};
-	const arm = (target: HTMLElement) => {
-		const warm = Boolean(current && tip?.classList.contains("is-shown")) || Date.now() - hiddenAt < WARM_MS;
-		hide(true);
-		current = target;
-		if (warm) show(target, root, pointer);
-		else timer = window.setTimeout(() => show(target, root, pointer), DELAY_MS);
+	const follow = (event: PointerEvent) => {
+		if (event.pointerType !== "mouse") return;
+		// A press held down is a selection being made: no time over it.
+		if (event.buttons) return hide();
+		const target = messageAt(event);
+		if (!target) return hide();
+		if (target !== current) show(target, root);
 	};
-	root.addEventListener(
-		"pointerover",
-		(event) => {
-			if (event.pointerType !== "mouse") return;
-			pointer.x = event.clientX;
-			pointer.y = event.clientY;
-			// A press held down is a selection being made: no label over it.
-			if (event.buttons) return hide();
-			const target = messageAt(event);
-			if (!target) return hide(true);
-			if (target !== current) arm(target);
-		},
-		options,
-	);
+	root.addEventListener("pointerover", follow, options);
+	// After a press, a scroll or a key, moving on within the same message shows its time again.
 	root.addEventListener(
 		"pointermove",
 		(event) => {
-			if (event.pointerType !== "mouse") return;
-			pointer.x = event.clientX;
-			pointer.y = event.clientY;
-			if (event.buttons) {
-				if (current) hide();
-				return;
-			}
-			// After a press, a scroll or a selection, moving on within the same message asks for its time again.
-			if (current || timer !== undefined) return;
-			const target = messageAt(event);
-			if (target) arm(target);
+			if (!current) follow(event);
+			else if (event.buttons) hide();
 		},
 		options,
 	);
-	root.addEventListener("pointerleave", () => hide(true), options);
-	root.addEventListener("pointerdown", dismiss, options);
-	// The thread scrolls under a still pointer: the label would point at another message.
-	root.addEventListener("scroll", dismiss, { capture: true, signal });
-	root.addEventListener("wheel", dismiss, { passive: true, signal });
-	window.addEventListener("keydown", dismiss, options);
-	window.addEventListener("blur", dismiss, options);
+	root.addEventListener("pointerleave", hide, options);
+	root.addEventListener("pointerdown", hide, options);
+	// The thread scrolls under a still pointer: the time would stand beside another message.
+	root.addEventListener("scroll", hide, { capture: true, signal });
+	root.addEventListener("wheel", hide, { passive: true, signal });
+	window.addEventListener("keydown", hide, options);
+	window.addEventListener("blur", hide, options);
 	signal.addEventListener("abort", () => {
 		if (!current?.isConnected || root.contains(current)) hide();
 	});
