@@ -93,6 +93,9 @@ const LIST_PAGE = 50;
 /** Apps a company lists, at most. */
 const MAX_APPS = 200;
 const TEXT = new TextDecoder("utf-8", { fatal: true });
+/** Every read here reads a file's entry live, as the member, just before its bytes: those may come from the member's
+ * file cache (company-files.ts). */
+const LIVE = { cached: true } as const;
 
 async function listAll(
 	folder: Folder,
@@ -113,7 +116,7 @@ async function listAll(
 async function readText(folder: Folder, entry: CloudMemberFolderEntry, signal: AbortSignal, max: number) {
 	if (entry.kind !== "file" || !entry.file || entry.file.bytes > max) return null;
 	try {
-		return TEXT.decode(await folder.readFile(entry.file, signal, max));
+		return TEXT.decode(await folder.readFile(entry.file, signal, max, LIVE));
 	} catch {
 		return null;
 	}
@@ -254,7 +257,7 @@ class AppFiles {
 			}
 			if (video) this.#videoBytes += file.bytes;
 			else this.#bytes += file.bytes;
-			return this.#folder.readFile(file, this.#signal, most);
+			return this.#folder.readFile(file, this.#signal, most, LIVE);
 		});
 		this.#read.set(key, reading);
 		return reading;
@@ -765,7 +768,7 @@ export async function warmApps(folder: Folder, apps: readonly CompanyApp[], sign
 		reads.push(async () => {
 			const found = (await folder.read(`${app.path}/${entry}`, signal)).entry;
 			if (found?.kind === "file" && found.file && found.file.bytes <= APP_FILE_MAX_BYTES)
-				await folder.readFile(found.file, signal, APP_FILE_MAX_BYTES);
+				await folder.readFile(found.file, signal, APP_FILE_MAX_BYTES, LIVE);
 		});
 	}
 	let next = 0;

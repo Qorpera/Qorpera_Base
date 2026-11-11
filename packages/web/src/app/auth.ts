@@ -139,6 +139,8 @@ export class AuthController {
 		const current = this.store.get().session;
 		// The member signed in again meanwhile: that session is a new one and stays.
 		if (current && current.access_token !== session.access_token) return;
+		// Auth may not have said it signed out (its sign-out failed): no file read as the member stays in this tab.
+		forgetMemberFiles();
 		this.store.set({
 			session: null,
 			user: null,

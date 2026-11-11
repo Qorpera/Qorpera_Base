@@ -148,7 +148,7 @@ describe("the product's member folder transport", () => {
 		const read = async () => {
 			const folder = f.company.folder();
 			const entry = (await folder.read("notes.txt", f.signal)).entry!;
-			return new TextDecoder().decode(await folder.readFile(entry.file!, f.signal));
+			return new TextDecoder().decode(await folder.readFile(entry.file!, f.signal, undefined, { cached: true }));
 		};
 		const objects = () => urls(f.fetch).filter((url) => url.includes("/v1/member-folder-objects/")).length;
 		expect(await read()).toBe("Original text");
@@ -160,6 +160,10 @@ describe("the product's member folder transport", () => {
 		forgetMemberFiles();
 		expect(await read()).toBe("Original text");
 		expect(objects()).toBe(4);
+		// Storage's previews read a reference from an earlier listing, uncached: the gateway decides each time.
+		const listed = (await f.company.folder().read("notes.txt", f.signal)).entry!.file!;
+		await f.company.folder().readFile(listed, f.signal);
+		expect(objects()).toBe(6);
 	});
 
 	it("refuses a different member's token before anything is sent", async () => {

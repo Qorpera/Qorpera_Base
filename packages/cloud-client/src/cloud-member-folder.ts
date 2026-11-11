@@ -724,12 +724,15 @@ function untilAborted<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
  * member may read is decided live every time; only the bytes are not fetched again. In memory only, up to `maxBytes`,
  * the least recently read going first; a file larger than a quarter of that is never kept. A read under way is shared:
  * a second reader of the same version waits for it, and reads by itself if the first stops or fails. Every reader is
- * handed its own copy. One cache serves one member: give each member their own. */
+ * handed its own copy. A read under way when the cache is cleared keeps nothing. One cache serves one member: give
+ * each member their own. */
 export class CloudMemberFolderFileCache {
 	readonly #max: number;
 	readonly #held = new Map<string, Uint8Array>();
 	readonly #reading = new Map<string, Promise<Uint8Array>>();
 	#bytes = 0;
+	/** Counts `clear()`s: a read begun before one keeps nothing when it ends. */
+	#generation = 0;
 
 	constructor(maxBytes = 64 * 1024 * 1024) {
 		if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new CloudMemberFolderError("Invalid file cache size");
@@ -742,6 +745,7 @@ export class CloudMemberFolderFileCache {
 	}
 
 	clear(): void {
+		this.#generation++;
 		this.#held.clear();
 		this.#reading.clear();
 		this.#bytes = 0;
@@ -769,11 +773,12 @@ export class CloudMemberFolderFileCache {
 				if (signal.aborted) throw error;
 				// The first reader stopped, or its read failed: this reader reads for itself.
 			}
+		const generation = this.#generation;
 		const reading = load(signal);
 		this.#reading.set(key, reading);
 		try {
 			const bytes = await reading;
-			this.#keep(key, bytes);
+			if (generation === this.#generation) this.#keep(key, bytes);
 			return bytes.slice();
 		} finally {
 			if (this.#reading.get(key) === reading) this.#reading.delete(key);
@@ -973,14 +978,21 @@ export class CloudMemberFolderClient {
 	}
 
 	/** A file's bytes: its manifest, then its chunks (a few at once), each checked against its hash, and the whole against
-	 * the file's. With the client's file cache, a version read before is answered from it. */
-	readFile(reference: CloudMemberFolderFile, signal: AbortSignal, maximumBytes = MAX_FILE_BYTES): Promise<Uint8Array> {
+	 * the file's. With `cached`, and the client's file cache, a version read before is answered from it with no fetch:
+	 * only for a caller that read the entry live just now, as the member, so the read's authority is still the folder's
+	 * (a reference kept from an earlier listing reads uncached, and the gateway decides). */
+	readFile(
+		reference: CloudMemberFolderFile,
+		signal: AbortSignal,
+		maximumBytes = MAX_FILE_BYTES,
+		options?: { readonly cached?: boolean },
+	): Promise<Uint8Array> {
 		if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes > MAX_FILE_BYTES)
 			throw new CloudMemberFolderError("Invalid company folder read limit");
 		if (reference.bytes > maximumBytes)
 			throw new CloudMemberFolderError("Company folder file exceeds this viewer's limit");
 		const files = this.#files;
-		if (!files) return this.#readFile(reference, signal);
+		if (!files || options?.cached !== true) return this.#readFile(reference, signal);
 		const key = `${this.#environmentId}/${reference.manifestSha256}/${reference.fileSha256}/${reference.bytes}`;
 		return files.read(key, signal, (readSignal) => this.#readFile(reference, readSignal));
 	}
