@@ -198,7 +198,7 @@ export const AGENTS: Record<string, string> = {
 	"Answer sent · waiting for computer hours": "Svar sendt · venter på computertimer",
 	"Opening the pull request": "Åbner pull requesten",
 	"Saving the change": "Gemmer ændringen",
-	"Testing the change before saving it": "Tester ændringen, før den gemmes",
+	"Checking the change before saving it": "Tjekker ændringen, før den gemmes",
 	"Draft PR ready · session kept for follow-ups": "PR-kladde klar · sessionen gemmes til opfølgning",
 	"Finished · session kept for follow-ups": "Færdig · sessionen gemmes til opfølgning",
 	"Failed · workspace kept": "Mislykkedes · arbejdsområdet er gemt",

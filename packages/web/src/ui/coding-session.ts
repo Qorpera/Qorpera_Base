@@ -181,14 +181,15 @@ export function codingSessionStatus(
 				? { text: t("Answer sent · waiting for computer hours"), tone: "idle" }
 				: { text: t("Answer sent · waiting for the session"), tone: "working" };
 		case "publishing":
-			// Code kept in Qorpera has no pull request: the finished work is saved straight into the company's code, once
-			// its tests pass (the executor's step says so while they run).
+			// Code kept in Qorpera has no pull request: the finished work is saved straight into the company's code. The
+			// executor's step says it is checked first: its tests run when the repository has them; with none, or with
+			// checks off, it goes in at once, so the words never claim a test ran.
 			return {
 				text: [
 					session.repository.host !== "qorpera"
 						? t("Opening the pull request")
 						: session.lastStep === CHECKS_STEP
-							? t("Testing the change before saving it")
+							? t("Checking the change before saving it")
 							: t("Saving the change"),
 					files,
 				]

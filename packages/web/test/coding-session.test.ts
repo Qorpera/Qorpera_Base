@@ -188,16 +188,16 @@ describe("the captions the kernel state produces", () => {
 		expect(codingSessionStatus(codingSession({ phase: "completed", repository: kept }), owner, NOW).text).toBe(
 			"Finished · session kept for follow-ups",
 		);
-		// While its tests run before it goes in (own code storage, step 3), the executor's step says so; an executor from
-		// before says "Landing the change", and a pull request has no such wait.
-		const testing = { phase: "publishing" as const, lastStep: "Checking and saving the change" };
-		expect(codingSessionStatus(codingSession({ ...testing, repository: kept }), owner, NOW)).toEqual({
-			text: "Testing the change before saving it · 3 files changed",
+		// While it is checked before it goes in (own code storage, step 3), with tests of its own or none, the executor's
+		// step says so; an executor from before says "Landing the change", and a pull request has no such wait.
+		const checking = { phase: "publishing" as const, lastStep: "Checking and saving the change" };
+		expect(codingSessionStatus(codingSession({ ...checking, repository: kept }), owner, NOW)).toEqual({
+			text: "Checking the change before saving it · 3 files changed",
 			tone: "working",
 		});
 		expect(
-			codingSessionStatus(codingSession({ ...testing, repository: kept, filesChanged: 0 }), other, NOW).text,
-		).toBe("Testing the change before saving it");
+			codingSessionStatus(codingSession({ ...checking, repository: kept, filesChanged: 0 }), other, NOW).text,
+		).toBe("Checking the change before saving it");
 		expect(
 			codingSessionStatus(
 				codingSession({ phase: "publishing", lastStep: "Landing the change", repository: kept }),
@@ -205,13 +205,13 @@ describe("the captions the kernel state produces", () => {
 				NOW,
 			).text,
 		).toBe("Saving the change · 3 files changed");
-		expect(codingSessionStatus(codingSession(testing), owner, NOW).text).toBe(
+		expect(codingSessionStatus(codingSession(checking), owner, NOW).text).toBe(
 			"Opening the pull request · 3 files changed",
 		);
 		setLanguagePreference("da");
 		try {
-			expect(codingSessionStatus(codingSession({ ...testing, repository: kept }), owner, NOW).text).toBe(
-				"Tester ændringen, før den gemmes · 3 filer ændret",
+			expect(codingSessionStatus(codingSession({ ...checking, repository: kept }), owner, NOW).text).toBe(
+				"Tjekker ændringen, før den gemmes · 3 filer ændret",
 			);
 		} finally {
 			setLanguagePreference("system");
