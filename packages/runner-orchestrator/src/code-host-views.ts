@@ -172,10 +172,13 @@ export interface CodeHostSession {
 	baseSha: string;
 }
 
-/** How a job takes its place in its company's line. `yields`: the job gives way to the company's other work (nightly
- * care, `code-host-care.ts`). It is cancelled with `CODE_HOST_JOB_YIELDED` as soon as another job of its company joins
- * the line, while it waits and until its own steps are done; it then ends as a failed job does, with nothing published.
- * Once its steps are done it publishes like any other job, so a job that yielded published nothing. */
+/** How a job takes its place in its company's line. `yields`: the job is background work that gives way to the
+ * company's coding (nightly care, the record files' pass, a download, a restore before it holds the place). It is
+ * cancelled with `CODE_HOST_JOB_YIELDED` as soon as a job of its company that does not yield joins the line (a turn's
+ * job, an undo), while it waits and until its own steps are done; it then ends as a failed job does, with nothing
+ * published. Once its steps are done it publishes like any other job, so a job that yielded published nothing. Jobs
+ * that yield do not cancel each other: among themselves they wait in line in the order they came, or two long ones
+ * (two downloads of one company) would end each other for ever. */
 export interface CodeHostJobOptions {
 	yields?: boolean;
 }
@@ -267,12 +270,13 @@ export class CodeHostJobs {
 	}
 
 	/** A company's jobs, one at a time, in the order they came. One that stops waiting leaves its place. A job that joins
-	 * cancels the company's jobs in line that yield; `yielding` is what cancels this one, until its place is given back
-	 * or its steps are done. */
+	 * and does not yield itself cancels the company's jobs in line that yield; `yielding` is what cancels this one,
+	 * until its place is given back or its steps are done. */
 	async #turn(companyId: string, signal: AbortSignal, yielding?: AbortController): Promise<() => void> {
 		const before = this.#tails.get(companyId) ?? Promise.resolve();
-		// A job cancelled before it came takes no place, and cancels nothing.
-		if (!signal.aborted)
+		// A job cancelled before it came takes no place, and cancels nothing. Nor does a job that yields: it waits its
+		// turn behind the other background work.
+		if (!signal.aborted && !yielding)
 			for (const other of this.#yielding.get(companyId) ?? [])
 				other.abort(new CodeHostJobFailure("CODE_HOST_JOB_YIELDED", "another job of the company joined the line"));
 		let leave!: () => void;
