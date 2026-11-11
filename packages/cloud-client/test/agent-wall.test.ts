@@ -111,7 +111,7 @@ it("names each problem with its line, and keeps every item that reads", () => {
 	]);
 	expect(parsed.problems.map((problem) => [problem.line, problem.message.slice(0, 40)])).toEqual([
 		[3, "each line under a part is an item, start"],
-		[4, 'a wall has the parts "## Waits on you", '],
+		[4, 'a wall has the parts "## Now", "## Waits'],
 		[7, "a done item starts with the day it was d"],
 		[8, "a done item starts with the day it was d"],
 		[12, "an item is at most 240 characters: put t"],
@@ -191,4 +191,23 @@ it("finds the picture or app an item shows when it opens", () => {
 		name: "shop-demo",
 	});
 	expect(wallPreview({ text: "Plan [Plan](folder:a/plan.md)" })).toBeNull();
+});
+
+it("keeps a Now line on top: one line, no detail, absent from a wall written before it", () => {
+	const text = renderWall({ ...WALL, now: "Prices set, picking suppliers now" });
+	expect(text.startsWith("# Wall\n\n## Now\n- Prices set, picking suppliers now\n\n## Waits on you\n")).toBe(true);
+	expect(parseWall(text)).toEqual({
+		wall: { ...WALL, now: "Prices set, picking suppliers now" },
+		problems: [],
+		head: "# Wall",
+	});
+	expect(parseWall(renderWall(WALL)).wall).not.toHaveProperty("now");
+	const twice = parseWall("## Now\n- One\n- Two\n");
+	expect(twice.wall.now).toBe("One");
+	expect(twice.problems).toEqual([{ code: "limit", line: 1, message: '"Now" holds one line' }]);
+	const detailed = parseWall("## Now\n- One\n  More words\n");
+	expect(detailed.wall.now).toBe("One");
+	expect(detailed.problems).toEqual([
+		{ code: "line", line: 3, message: "the Now line is one line, with no detail under it" },
+	]);
 });
