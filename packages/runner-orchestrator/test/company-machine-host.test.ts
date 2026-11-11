@@ -128,6 +128,8 @@ async function fixture(
 	const memberReads: unknown[] = [];
 	/** What SQL's fence after a capture answers, in turn (then: the picture leaves), 20260930713000. */
 	const pictureChecks: unknown[] = [];
+	/** What qorpera_machine_desktop_clipboard_cleared answers, in turn (then ok; F32). */
+	const clipboardClears: unknown[] = [];
 	/** The folder service: the reads its boundaries answer, the views it holds, and whether it answers at all. */
 	const service = {
 		reads: "released" as FolderReads,
@@ -215,6 +217,11 @@ async function fixture(
 				const next = pictureChecks.shift();
 				if (next instanceof Error) throw next;
 				return next ?? { schema: "qorpera.machine-desktop-picture/v1", state: "ok" };
+			}
+			if (method === "qorpera_machine_desktop_clipboard_cleared") {
+				const next = clipboardClears.shift();
+				if (next instanceof Error) throw next;
+				return next ?? { schema: "qorpera.machine-desktop-clipboard/v1", state: "ok" };
 			}
 			if (method === "qorpera_retire_company_machine")
 				return (
@@ -450,6 +457,7 @@ async function fixture(
 		inherits,
 		memberReads,
 		pictureChecks,
+		clipboardClears,
 		busy,
 		client,
 		get host() {
@@ -4724,6 +4732,113 @@ describe("a member's action on a desktop (20260930713000)", () => {
 		expect(await agentActing).toMatchObject({ header: { action: { type: "click", exitCode: 0 } } });
 		expect(await waiting).toEqual({ box });
 		expect(reads()).toBe(4);
+	});
+
+	it("clears a clipboard a member held before an agent may read it: under the desktop's lock, after the fence, then SQL records it (v233 release review r1, F32 of #1661)", async () => {
+		const held = {
+			schema: "qorpera.machine-desktop-picture/v1",
+			state: "refused",
+			reason: "DESKTOP_MEMBER_IN_CONTROL",
+		};
+		const clear = { placementId: id(6), bootId: id(7), desktopGeneration: 4 };
+		let clearAnswer = cleared;
+		let gate: Promise<void> | undefined;
+		let open = () => {};
+		const close = () => {
+			gate = new Promise<void>((resolve) => {
+				open = () => {
+					gate = undefined;
+					resolve();
+				};
+			});
+		};
+		const { f, calls } = await piped(async (given) => {
+			if (gate) await gate;
+			if (given.command.includes(COMPANY_MACHINE_CODING_VALUE_HELPER)) return clearAnswer;
+			const request = given.stdin ? JSON.parse(stdinText(given)) : {};
+			return answer(0, output(request.action?.type ?? null, request.look ? png() : null));
+		});
+		const clears = () => calls.filter((given) => given.command.at(-1) === "--clear-only").length;
+		const recorded = () => f.calls.filter((call) => call.method === "qorpera_machine_desktop_clipboard_cleared");
+		// 1. The fence (that generation, no one holding), the helper's own clear of both selections, then SQL's record of
+		//    that generation: in that order, the clipboard never read.
+		f.order.length = 0;
+		expect(await f.host.clearClipboard(clear, f.signal)).toEqual({ cleared: true });
+		expect(f.order).toEqual([
+			"sql:qorpera_machine_desktop_picture_check",
+			"exec:clear",
+			"sql:qorpera_machine_desktop_clipboard_cleared",
+		]);
+		expect(calls[0]!.command).toEqual([
+			"/bin/sh",
+			"-c",
+			expect.stringContaining('[ "$boot" = "$0" ]; } || exit 97'),
+			id(7),
+			"/usr/bin/node",
+			COMPANY_MACHINE_CODING_VALUE_HELPER,
+			"--clear-only",
+		]);
+		expect(f.calls.find((call) => call.method === "qorpera_machine_desktop_picture_check")?.args).toEqual({
+			p_placement_id: id(6),
+			p_generation: 4,
+			p_user_id: null,
+		});
+		expect(recorded().map((call) => call.args)).toEqual([{ p_placement_id: id(6), p_generation: 4 }]);
+		// 2. The fence says a member holds it, or took it over since SQL's read: nothing is cleared or recorded.
+		f.pictureChecks.push(held);
+		expect(await f.host.clearClipboard(clear, f.signal)).toEqual({ cleared: false });
+		expect(clears()).toBe(1);
+		expect(recorded()).toHaveLength(1);
+		// 3. A clear that failed confirms nothing; another boot and an image without the helper are the agent's codes.
+		const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			clearAnswer = answer(1);
+			expect(await f.host.clearClipboard(clear, f.signal)).toEqual({ cleared: false });
+			clearAnswer = answer(0, Buffer.from("something else\n"));
+			expect(await f.host.clearClipboard(clear, f.signal)).toEqual({ cleared: false });
+			clearAnswer = answer(98);
+			expect(await f.host.clearClipboard(clear, f.signal)).toEqual({
+				refused: "MACHINE_IMAGE_WITHOUT_CODING_VALUES",
+			});
+			clearAnswer = answer(97);
+			expect(await f.host.clearClipboard(clear, f.signal)).toEqual({ refused: "MACHINE_BOOT_CHANGED" });
+		} finally {
+			errors.mockRestore();
+		}
+		expect(clears()).toBe(5);
+		expect(recorded()).toHaveLength(1);
+		clearAnswer = cleared;
+		// 4. SQL refuses the record (a take-over between the clear and the record): not cleared.
+		f.clipboardClears.push({
+			schema: "qorpera.machine-desktop-clipboard/v1",
+			state: "refused",
+			reason: "DESKTOP_MEMBER_IN_CONTROL",
+		});
+		expect(await f.host.clearClipboard(clear, f.signal)).toEqual({ cleared: false });
+		// 5. While the clear runs, a member's action (their copy) is refused before it runs.
+		close();
+		const clearing = f.host.clearClipboard(clear, f.signal);
+		await vi.waitFor(() => expect(clears()).toBe(7));
+		expect(await f.host.memberAct(act({ type: "key", keys: ["ctrl+c"] }), f.signal)).toEqual({
+			refused: "DESKTOP_BUSY",
+		});
+		open();
+		expect(await clearing).toEqual({ cleared: true });
+		// 6. While a member's action runs, a clear is not made beside it: the fence says a member holds the desktop.
+		close();
+		const acting = f.host.memberAct(act({ type: "click", x: 5, y: 5 }, id(42)), f.signal);
+		await vi.waitFor(() => expect(calls).toHaveLength(8));
+		f.pictureChecks.push(held);
+		expect(await f.host.clearClipboard(clear, f.signal)).toEqual({ cleared: false });
+		expect(clears()).toBe(7);
+		open();
+		expect(await acting).toEqual({ done: { exitCode: 0 } });
+		// 7. Malformed: never run.
+		for (const wrong of [
+			{ ...clear, bootId: "boot" },
+			{ ...clear, desktopGeneration: -1 },
+		])
+			await expect(f.host.clearClipboard(wrong, f.signal)).rejects.toThrow("COMPANY_MACHINE_CODING_VALUE_INVALID");
 	});
 
 	it("lets no picture of a desktop a member took over since the look's read leave, to an agent or another member (review r1 F1)", async () => {

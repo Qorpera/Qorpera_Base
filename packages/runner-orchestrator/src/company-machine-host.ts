@@ -448,6 +448,18 @@ export interface CompanyMachineCodingValue {
 	 * desktop (v233 release review r1, F29 of #1661). */
 	desktopGeneration: number;
 }
+/** A clear of a desktop's clipboard after a member held it (F32 of #1661), as SQL answered save_coding_value: where it
+ * runs, and the lease generation SQL saw. */
+export interface CompanyMachineClipboardClear {
+	placementId: string;
+	bootId: string;
+	desktopGeneration: number;
+}
+/** Whether the clear was done and SQL recorded it (`cleared`), or the agent's refusal by code: another boot, or an image
+ * without the clipboard helper. */
+export type CompanyMachineClipboardCleared =
+	| { readonly cleared: boolean }
+	| { readonly refused: "MACHINE_BOOT_CHANGED" | "MACHINE_IMAGE_WITHOUT_CODING_VALUES" };
 /** The helper's answer: the box it sealed the key in, or why it sealed nothing (its code). */
 export type CompanyMachineCodingValueOutcome =
 	| { readonly box: Readonly<Record<string, string>> }
@@ -2154,12 +2166,13 @@ export class LxdCompanyMachineHost {
 	/** The executor's own clear of the machine's clipboard and primary selection: the same packaged helper with
 	 * `--clear-only`, on the run's boot only (another boot's clipboard went with it: exit 97, nothing to do), under its
 	 * own deadline and never the request's signal. It never throws; a failure is logged as a fixed word alone
-	 * (`failed`: save_coding_value's, or a member's pasted text's, 20260930713000). */
+	 * (`failed`: save_coding_value's, or a member's pasted text's, 20260930713000). It answers what came of it: cleared
+	 * (the helper said so), another boot (97), an image without the helper (98), or failed. */
 	async #clearCodingValue(
 		pipe: NonNullable<LxdInstanceExecPipeClient["execInstancePipe"]>,
 		run: Pick<CompanyMachineCodingValue, "placementId" | "bootId">,
 		failed = "COMPANY_MACHINE_CODING_VALUE_CLEAR_FAILED",
-	): Promise<void> {
+	): Promise<"cleared" | "boot" | "image" | "failed"> {
 		try {
 			const cleared = await pipe(
 				this.#policy.project,
@@ -2181,15 +2194,74 @@ export class LxdCompanyMachineHost {
 				},
 				AbortSignal.timeout(this.#options.codingValueClearTimeoutMs ?? CODING_VALUE_CLEAR_MS),
 			);
-			if (cleared.exitCode === 97) return;
+			if (cleared.exitCode === 97) return "boot";
 			if (
 				cleared.exitCode !== 0 ||
 				new TextDecoder("utf8", { fatal: true }).decode(cleared.stdout).trim() !==
 					JSON.stringify({ schema: "qorpera.machine-coding-value-cleared/v1" })
 			)
-				throw new Error(failed);
-		} catch {
+				throw new Error(cleared.exitCode === 98 ? "image" : failed);
+			return "cleared";
+		} catch (error) {
 			console.error(failed);
+			return error instanceof Error && error.message === "image" ? "image" : "failed";
+		}
+	}
+
+	/**
+	 * After a member held a desktop, its clipboard is cleared before an agent may read a key from it (F32 of #1661): SQL
+	 * answered save_coding_value `clear`, with the lease generation it saw. The clear takes the desktop as an action does
+	 * (#holdDesktop: a member's action meanwhile is DESKTOP_BUSY; one that runs now is waited for no more than it is for a
+	 * read: refused at once while a member holds the desktop, CODING_VALUE_WAIT_MS behind an agent's action), asks the
+	 * fence (#pictureAllowed, no looker: that generation, no one holding), clears both selections with the image's own
+	 * helper (`--clear-only`, as the paste path and an unclean read do), and only then asks SQL to record it
+	 * (qorpera_machine_desktop_clipboard_cleared), still holding the desktop: SQL records it only while that generation
+	 * stands and no member holds the desktop. A fence that says no, a clear that failed and a refused record leave nothing
+	 * recorded (`cleared: false`): the next save_coding_value clears again. A desktop that is not running has no clipboard:
+	 * the helper's clear finds no display and says cleared, and the machine image keeps no clipboard past its desktop's
+	 * session (no clipboard manager, no saved history; measured on 91d433c0, 11 Nov 2026), so that counts as clear.
+	 */
+	async clearClipboard(
+		run: CompanyMachineClipboardClear,
+		signal: AbortSignal,
+	): Promise<CompanyMachineClipboardCleared> {
+		const pipe = this.#options.client.execInstancePipe?.bind(this.#options.client);
+		if (!pipe) throw new Error("COMPANY_MACHINE_CODING_VALUE_UNAVAILABLE");
+		if (
+			![run.placementId, run.bootId].every((id) => UUID.test(id)) ||
+			!Number.isSafeInteger(run.desktopGeneration) ||
+			run.desktopGeneration < 0
+		)
+			throw new Error("COMPANY_MACHINE_CODING_VALUE_INVALID");
+		if (!this.#holdDesktop(run.placementId)) {
+			if (!(await this.#pictureAllowed(run.placementId, run.desktopGeneration, null, signal)))
+				return { cleared: false };
+			if (!(await this.#holdDesktopWithin(run.placementId, CODING_VALUE_WAIT_MS, signal)))
+				throw new Error("COMPANY_MACHINE_CODING_VALUE_BUSY");
+		}
+		try {
+			if (!(await this.#pictureAllowed(run.placementId, run.desktopGeneration, null, signal)))
+				return { cleared: false };
+			const cleared = await this.#clearCodingValue(pipe, run);
+			if (cleared === "boot") return { refused: "MACHINE_BOOT_CHANGED" };
+			if (cleared === "image") return { refused: "MACHINE_IMAGE_WITHOUT_CODING_VALUES" };
+			if (cleared === "failed") return { cleared: false };
+			const answer = record(
+				await this.#call(
+					"qorpera_machine_desktop_clipboard_cleared",
+					{ p_placement_id: run.placementId, p_generation: run.desktopGeneration },
+					signal,
+				),
+				"COMPANY_MACHINE_CLIPBOARD_CLEARED_INVALID",
+			);
+			if (answer.schema !== "qorpera.machine-desktop-clipboard/v1")
+				throw new Error("COMPANY_MACHINE_CLIPBOARD_CLEARED_INVALID");
+			if (answer.state === "ok") return { cleared: true };
+			if (answer.state === "refused" && answer.reason === "DESKTOP_MEMBER_IN_CONTROL") return { cleared: false };
+			throw new Error("COMPANY_MACHINE_CLIPBOARD_CLEARED_INVALID");
+		} finally {
+			// The clear helper ends by itself or at its own deadline: nothing of it acts after.
+			this.#releaseDesktop(run.placementId, true);
 		}
 	}
 
