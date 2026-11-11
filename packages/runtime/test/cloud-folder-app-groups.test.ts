@@ -88,8 +88,16 @@ it("lists the drawer as the company has it: the file's order, every group, the r
 	});
 	expect(f.commits).toHaveLength(0);
 	expect(f.releases).toHaveLength(1);
-	const released = (f.releases[0]?.p_reads as { path: string }[]).map((read) => read.path);
-	expect(released).toEqual(expect.arrayContaining([PATH, "apps", "apps/finances/app.toml"]));
+	const released = f.releases[0]?.p_reads as { path: string; fileSha256?: string }[];
+	expect(released.map((read) => read.path)).toEqual(expect.arrayContaining([PATH, "apps", "apps/finances/app.toml"]));
+	expect(released.find((read) => read.path === PATH)?.fileSha256).toMatch(/^[0-9a-f]{64}$/);
+	// A runtime tool's answer names no Company File read: the boundary takes that only from a company_file tool, and
+	// would answer the model that the call's outcome is unknown.
+	const tool = f.tool();
+	for (const value of [{ action: "list" }, { action: "create_group", name: "Money" }] as JsonValue[]) {
+		const content = await tool.execute(tool.parseArguments(value), { ...f.context, callId: randomUUID() });
+		expect(content).toEqual({ kind: "text", value: expect.any(String) });
+	}
 });
 
 it("makes a group where its first item stood, answers its id, and keeps the notes", async () => {
@@ -355,6 +363,26 @@ it("lists a long layout a page at a time, and a change answers only what it did,
 	});
 	expect(Buffer.byteLength(String(content.value))).toBeLessThan(1024);
 	expect(JSON.parse(String(content.value))).toMatchObject({ changed: true, group: "many" });
+});
+
+it("pages a layout larger than a tool's JSON may hold at all", async () => {
+	const files: Record<string, string> = {};
+	const name = (n: number) => `a-${String(n).padStart(3, "0")}-${"b".repeat(54)}`;
+	for (let n = 0; n < 300; n++) files[`apps/${name(n)}/app.toml`] = app("€".repeat(60));
+	const f = await fixture(files);
+	const lines: string[] = [];
+	let cursor: number | undefined;
+	let pages = 0;
+	do {
+		const value: JsonValue = cursor === undefined ? { action: "list" } : { action: "list", cursor };
+		const page = await f.call(value);
+		lines.push(...page.layout);
+		cursor = page.cursor;
+		pages++;
+	} while (cursor !== undefined && pages < 40);
+	expect(Buffer.byteLength(lines.join("\n"))).toBeGreaterThan(64 * 1024);
+	expect(lines).toHaveLength(3 + 300);
+	expect(lines.at(-1)).toBe(`app:${name(299)} ${"€".repeat(60)}`);
 });
 
 it("puts an entry moved loose without before last, after the ones the file does not list", async () => {

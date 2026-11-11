@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
 	APP_DRAWER_PAGES,
 	APP_GROUP_KEY_PREFIX,
@@ -21,18 +22,20 @@ import {
 } from "@qorpera/cloud-client/interface-apps";
 import { isInterfaceName } from "@qorpera/cloud-client/interfaces";
 import type { JsonValue } from "@qorpera/contracts";
-import type {
-	CloudCompanyFolderClient,
-	CloudCompanyFolderEntry,
-	CloudCompanyFolderFileEntry,
-	CloudCompanyFolderUnit,
+import {
+	type CloudCompanyFolderClient,
+	type CloudCompanyFolderEntry,
+	type CloudCompanyFolderFileEntry,
+	type CloudCompanyFolderUnit,
+	cloudCompanyFolderRelease,
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
-import { released, unavailable } from "./cloud-folder-file-tools.ts";
+import { releaseId, unavailable } from "./cloud-folder-file-tools.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import {
 	type CloudNativeTool,
 	CloudToolArgumentRefusal,
+	type CloudToolContent,
 	CloudToolRefusal,
 	cloudToolJsonText,
 } from "./cloud-native-tool-boundary.ts";
@@ -233,7 +236,24 @@ export function cloudAppGroupsTool(options: {
 					...extra,
 					next: "organize_apps list shows the layout",
 				});
-			const answer = async (text: string) => released(folder, identity.runId, context, text, reads);
+			// The reads are released as organize_sidebar releases its own: a runtime tool's answer names no Company File read
+			// (the boundary takes a read's provenance only from a company_file tool).
+			const answer = async (text: string): Promise<CloudToolContent> => {
+				if (!fitsOneResult(text)) throw new Error("An organize_apps answer is larger than one tool result");
+				context.observation?.update({ outputBytes: Buffer.byteLength(text) });
+				const outputSha256 = createHash("sha256").update(text, "utf8").digest("hex");
+				try {
+					await folder.release(
+						releaseId(identity.runId, context.callId, outputSha256),
+						reads.map(cloudCompanyFolderRelease),
+						outputSha256,
+						context.signal,
+					);
+				} catch (error) {
+					unavailable(error, "shown");
+				}
+				return { kind: "text", value: text };
+			};
 			if (request.action === "list") return answer(listPage(read, company, request.cursor ?? 0));
 			const made = apply(request, tree, retired, company);
 			if (shape(tree, retired) === shape(read, file.retired))
@@ -703,9 +723,22 @@ function listPage(items: readonly Node[], company: Company, cursor: number): str
 				? { cursor: cursor + count, next: "More lines: call list again with this cursor" }
 				: {}),
 		});
-	let count = Math.max(0, lines.length - cursor);
-	while (count > 1 && !fitsOneResult(page(count))) count = Math.floor(count * 0.8);
-	return page(count);
+	// The most lines that fit one tool result: a page too large for a tool's JSON at all does not fit either.
+	const fits = (count: number) => {
+		try {
+			return fitsOneResult(page(count));
+		} catch {
+			return false;
+		}
+	};
+	let low = Math.min(1, Math.max(0, lines.length - cursor));
+	let high = Math.max(0, lines.length - cursor);
+	while (low < high) {
+		const middle = Math.ceil((low + high) / 2);
+		if (fits(middle)) low = middle;
+		else high = middle - 1;
+	}
+	return page(low);
 }
 
 /** A title as one line of a list. */

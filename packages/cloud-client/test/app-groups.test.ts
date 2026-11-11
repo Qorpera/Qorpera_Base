@@ -196,6 +196,16 @@ A closing note.
 		expect(written).toBe("- group g: G\n  - app:sales Sales Dash board\n");
 		expect(writeAppGroups(parseAppGroups(written))).toBe(written);
 		expect(appGroupName("Sales\u2028Dash")).toBeNull();
+		// A line that names no drawer key is written as it was read: a group whose name breaks is no group, and stays so.
+		const odd = "- group g: G\u2028X\n- note a\rb\n<!-- retired group ids: g -->\n";
+		const oddFile = parseAppGroups(odd);
+		expect(oddFile.items).toEqual([
+			{ kind: "item", key: "group", words: "g: G\u2028X" },
+			{ kind: "item", key: "note", words: "a\rb" },
+		]);
+		expect(oddFile.retired).toEqual(["g"]);
+		expect(writeAppGroups(oddFile)).toBe("- group g: G\u2028X\n- note a\rb\n\n<!-- retired group ids: g -->\n");
+		expect(parseAppGroups(writeAppGroups(oddFile))).toEqual(oddFile);
 	});
 
 	it("is not an app of the drawer", () => {

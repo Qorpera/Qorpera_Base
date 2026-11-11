@@ -184,7 +184,9 @@ export function writeAppGroups(file: AppGroupsFile): string {
 				list.push(`${indent}- group ${node.id}: ${node.name.replace(BREAKS, " ")}`);
 				walk(node.items, level + 1);
 			} else {
-				const words = node.words.replace(BREAKS, " ").trim();
+				// A drawer key's words may come from a title: a break in them is written as a space. Any other item's line
+				// is written as it was read, so it reads back the same.
+				const words = isAppDrawerKey(node.key) ? node.words.replace(BREAKS, " ").trim() : node.words;
 				list.push(`${indent}- ${node.key}${words ? ` ${words}` : ""}`);
 			}
 		}
