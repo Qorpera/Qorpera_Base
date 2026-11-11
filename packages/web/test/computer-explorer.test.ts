@@ -26,7 +26,9 @@ import { Database, random } from "./take-over-model.ts";
  * not be taken over", a refusal for another member's hold, or the window showing that member;
  * (I5) a take-over request leaves the page only after a press that no release of that machine (Hand back, I'm done,
  * close, a switch away, pagehide) followed;
- * (I6) after a release of a machine, no heartbeat and no input for it leaves the page until such a press.
+ * (I6, review r14) a heartbeat or input for a machine leaves the page only after a press on this page for it that no
+ * release followed: nothing is ever taken up from a list; and a note ("could not be taken over") never follows a
+ * press that a release followed (F22's counterpart of I4).
  * (I2 is the ledger's, checked by desktop-holds-explorer.test.ts; I6 is what it means for the window.) A failure prints
  * the seed, its shape and its steps. */
 
@@ -143,10 +145,25 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		return run;
 	};
 	const violations: string[] = [];
+	/** I6 (review r14), as a heartbeat or an action leaves the page: only after a press on this page for that machine
+	 * that no release of it followed (a press made before the window knew its machine counts for the one it shows). */
+	const use = (machine: string, what: string) => {
+		used.push({ machine, step, what });
+		const at = releasedAt.get(machine) ?? -1;
+		if (!presses.some((one) => one.step > at && (one.machine ?? machine) === machine))
+			violations.push(
+				`I6: a ${what} for ${machine.slice(-2)} left the page at step ${step} with no press on this page for it since its release at step ${at}`,
+			);
+	};
 	const release = (which: readonly string[]) => {
 		for (const machine of which) releasedAt.set(machine, step);
+		lastRelease = step;
 		press = undefined;
 	};
+	let lastRelease = -1;
+	let lastNote = "";
+	/** Every press, with the machine the window showed at it (none yet: whichever it then shows). */
+	const presses: { step: number; machine: string | undefined }[] = [];
 	const until = () => new Date(Date.now() + 120_000).toISOString();
 	const rows = (): MemberAgentMachine[] =>
 		machines.map((machineId, n) => {
@@ -227,7 +244,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		if (url.startsWith(`${bridge}/v1/member-machine-screens/`)) {
 			const machine = url.slice(bridge.length).split("/")[4] as string;
 			if (url.endsWith("/act")) {
-				used.push({ machine, step, what: "input" });
+				use(machine, "input");
 				return Response.json({ schema: "qorpera.member-machine-act/v1", exitCode: 0 });
 			}
 			if (new Headers(init?.headers).get("if-none-match") === TAG)
@@ -242,7 +259,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		const machine = String(body.p_machine_id ?? "");
 		const epoch = Number(body.p_epoch);
 		if (method === "qorpera_member_keep_machine_desktop") {
-			used.push({ machine, step, what: "heartbeat" });
+			use(machine, "heartbeat");
 			log.push(`   the page renews ${machine.slice(-2)}@${epoch}`);
 			return Response.json(
 				db.keep(MEMBER, machine, epoch)
@@ -314,8 +331,10 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		decode,
 	});
 	let p: ComputerPanel | undefined;
+	let chosen: string | undefined;
 	const open = () => {
 		p = panels.open(staff);
+		chosen = undefined;
 		if (!p) return;
 		// The window's Hand back (its button, the card's I'm done through the panels) is followed while at work.
 		const handBack = p.handBack.bind(p);
@@ -329,23 +348,26 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 	};
 	const button = () => control()?.querySelector<HTMLButtonElement>(".machine-screen-control-button") ?? null;
 	const noted = () => p?.el.querySelector(".machine-screen-control-note")?.textContent ?? "";
+	/** The machine the window shows: the one chosen in its switcher, else its first (as #pick does), once its list came
+	 * (the switcher shows then); its own label may lag while the window's loop waits on a request. */
 	const shownMachine = (): string | undefined => {
+		if (machines.length === 1) return machines[0];
 		const switcher = p?.el.querySelector<HTMLButtonElement>(":scope > .computer-switcher");
-		if (switcher && !switcher.hidden) return machines[Number(switcher.textContent?.slice(5)) - 1];
-		return machines.length === 1 ? machines[0] : undefined;
+		if (!switcher || switcher.hidden) return undefined;
+		return chosen ?? machines[0];
 	};
 	const pressed = () => {
 		pressedAt = step;
+		presses.push({ step, machine: shownMachine() });
 		press = { step, outcome: false, finishing: finishing > 0, finishes };
 	};
 	const check = (): string | undefined => {
 		if (violations.length) return violations[0];
-		// I6
-		for (const one of used) {
-			const at = releasedAt.get(one.machine);
-			if (at !== undefined && at >= pressedAt && one.step > at)
-				return `I6: a ${one.what} for ${one.machine.slice(-2)} left the page at step ${one.step}, after its release at step ${at} and no press since`;
-		}
+		// F22's counterpart (review r14): the note says nothing of a press that a release followed.
+		const note = noted();
+		if (note !== lastNote && note !== "" && (lastRelease >= pressedAt || pressedAt < 0))
+			return `I4: the window says "${note}" at step ${step}, though a release (step ${lastRelease}) followed the last press (step ${pressedAt})`;
+		lastNote = note;
 		// I3
 		for (const take of takes) {
 			const past = answeredBack.get(take.machine);
@@ -412,6 +434,18 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 						if (!value || value.disabled) return false;
 						if (value.textContent === "Take over") pressed();
 						else release(machines);
+						value.click();
+						return true;
+					},
+				},
+				{
+					kind: "button",
+					weight: 2,
+					name: "the window's Hand back (a hold from another window)",
+					run: () => {
+						const value = control()?.querySelector<HTMLButtonElement>(".machine-screen-control-hand-back");
+						if (!value || value.hidden || value.disabled) return false;
+						release(machines);
 						value.click();
 						return true;
 					},
@@ -494,6 +528,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 						if (!item) return false;
 						release([shown]);
 						item.click();
+						chosen = other;
 						return true;
 					},
 				},
@@ -645,6 +680,9 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 			if (!(await action.run())) continue;
 			log.push(`${step}: ${action.name}`);
 			await flush();
+			log.push(
+				`   (shows ${shownMachine()?.slice(-2) ?? "nothing yet"}${p?.holding ? ", held" : ""}${noted() ? `, says "${noted()}"` : ""})`,
+			);
 			const broken = check();
 			if (broken) return { log, broken };
 		}
@@ -699,6 +737,21 @@ afterEach(() => {
 /** Seeds that broke an earlier window of this PR, each on the window and ledger of the commit named (review r13;
  * lanes/desktop-computers-20261110/TAKE-OVER-PROGRESS.md). They run first; each holds on this window. */
 const FOUND: readonly { seed: number; finding: string }[] = [
+	{
+		seed: 1592,
+		finding:
+			"F21 (9f7a4af31, I6): the window's first list was on its way while another tab took the desktop; pagehide; the list came and the window took that hold up and renewed it, with no press",
+	},
+	{
+		seed: 1815,
+		finding:
+			"9f7a4af31 and earlier (I6): the window took up another tab's hold a list showed and sent input, with no press on this page at all",
+	},
+	{
+		seed: 271,
+		finding:
+			"F22 (9f7a4af31, I4): Take over queued behind a hand-back, then Hand back called it off; the hand-back timed out and the window said the take-over could not be done",
+	},
 	{
 		seed: 7,
 		finding:

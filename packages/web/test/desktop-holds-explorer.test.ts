@@ -69,7 +69,7 @@ interface Seen {
 	step: number;
 	machine: Machine;
 	epoch: number;
-	why: "sent" | "adopted" | "shown";
+	why: "sent" | "shown";
 	released: boolean;
 }
 
@@ -265,10 +265,8 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				if (!page.open || page.window !== window) return;
 				for (const machine of machines) page.known.add(machine);
 				shown(page, list as MemberAgentMachines);
+				// The window takes nothing up from a list (review r14): it only tells the ledger.
 				page.ledger.listed(list as MemberAgentMachines, AGENT);
-				const row = (list as MemberAgentMachines).machines.find((machine) => machine.machineId === page.selected);
-				if (row && page.ledger.holder(page.selected) === undefined && page.ledger.adopt(page.selected, AGENT, row))
-					raise(page, page.selected, row.control?.epoch ?? row.epoch, "adopted");
 			},
 			() => undefined,
 		);
@@ -622,12 +620,12 @@ const FOUND: readonly { seed: number; finding: string }[] = [
 	{
 		seed: 4,
 		finding:
-			"r9 and earlier (I2): a release with nothing owed did not mark the machine given back; after I'm done the window took up another tab's hold",
+			"r9 and earlier (I2): a release with nothing owed did not mark the machine given back; after I'm done the window took up another tab's hold (taking up was removed in r14)",
 	},
 	{
 		seed: 60,
 		finding:
-			"r9 and earlier (I2): a close and I'm done asked before the page knew the agent's machine; the window then took up another tab's hold there",
+			"r9 and earlier (I2): a close and I'm done asked before the page knew the agent's machine; the window then took up another tab's hold there (taking up was removed in r14)",
 	},
 ];
 
