@@ -1542,7 +1542,8 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // interface apps that show the company's state and overlay v13 (each owner keeps one posted app current; Jonas,
 // 10 November 2026), and for patch notes before changes go live ("Yes, wait for me"; Jonas, 10 November 2026), and
 // for a project's history and its hand-over (#1643, 10 November 2026), and for the change record of the company's code
-// (each change numbered, undone and described with manage_code; own code storage step 2b, 10 November 2026). A
+// (each change numbered, undone and described with manage_code; own code storage step 2b, 10 November 2026), and for
+// the wall's now line and what a wall line says (the sidebar's line under each name; Jonas, 11 November 2026). A
 // change to either is a change to every run's bytes.
 it.each([
 	[

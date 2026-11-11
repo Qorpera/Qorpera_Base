@@ -3,14 +3,16 @@ import type { CloudRoutine } from "@qorpera/cloud-client/cloud-routines";
 
 /* What the rail says of an agent between runs (Jonas, 11 Nov 2026: the line under an agent's name was empty unless it
  * worked, and its last message is not worth much there). It comes from two things the company already keeps: the
- * agent's wall (QorperaOS/agents/<handle>/wall.md, app/agent-wall.ts), for what waits on a member and what the agent
- * last got done, and the company's routines, for its next planned run. Both are read with the member's own access, once
+ * agent's wall (QorperaOS/agents/<handle>/wall.md, app/agent-wall.ts), for its Now line (where its work stands), what
+ * waits on a member and what the agent last got done, and the company's routines, for its next planned run. Both are read with the member's own access, once
  * when the company opens and again after a change hint of its folder (walls and routines are files of it) or when the
  * window comes back; the routines also when a listed next run has passed, since a run moves it without a file change.
  * app/agent-line.ts picks the one line the rail shows. */
 
 /** One agent's note. */
 export interface AgentNote {
+	/** Its wall's Now line: where its work stands, written for the line under its name. */
+	readonly now?: string;
 	/** The first thing its wall says waits on a member. */
 	readonly waits?: string;
 	/** Its wall's newest done item, with the day it was done (`YYYY-MM-DD`). */
@@ -25,11 +27,13 @@ type ListedRoutine = Pick<CloudRoutine, "status" | "staffAgentId" | "title" | "n
 	Partial<Pick<CloudRoutine, "triggers">>;
 
 /** What a wall says for the rail; nothing for a wall that has neither. */
-export function wallNote(text: string): Pick<AgentNote, "waits" | "done"> {
+export function wallNote(text: string): Pick<AgentNote, "now" | "waits" | "done"> {
 	const { wall } = parseWall(text);
+	const now = wall.now && wallItemText(wall.now);
 	const waits = wall.waiting[0] && wallItemText(wall.waiting[0].text);
 	const done = wall.done[0];
 	return {
+		...(now ? { now } : {}),
 		...(waits ? { waits } : {}),
 		...(done && wallItemText(done.text) ? { done: { text: wallItemText(done.text), day: done.day } } : {}),
 	};
@@ -85,7 +89,7 @@ const UNSETTLED_MS = 5 * 60 * 1000;
 export class AgentNotes {
 	readonly #source: AgentNotesSource;
 	readonly #publish: (notes: AgentNotesState) => void;
-	readonly #walls = new Map<string, Pick<AgentNote, "waits" | "done">>();
+	readonly #walls = new Map<string, Pick<AgentNote, "now" | "waits" | "done">>();
 	#next = new Map<string, { title: string; at: string }>();
 	#unsettled = false;
 	/** The agents the last read was for: when the roster changes, the new ones are read at once. */

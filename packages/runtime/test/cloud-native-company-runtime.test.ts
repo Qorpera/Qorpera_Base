@@ -3224,6 +3224,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// to make one on the schema field (RUNTIME-INTERFACE-APPS.md §3a), so they moved again.
 	// Also on 10 November 2026 manage_code came after manage_worker (the change record of the company's code,
 	// 20260930720000), so they moved again.
+	// On 11 November 2026 update_wall takes now, the line under the agent's name in the sidebar, and its description says
+	// a line names what came of the work and keeps the team's housekeeping off the wall, so they moved again.
 	// On 11 November 2026 organize_apps came after organize_sidebar (the apps drawer's groups, APP-GROUPS-SPEC §3), and
 	// save_app's schema takes group, so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
