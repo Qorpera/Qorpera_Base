@@ -183,6 +183,9 @@ export interface MachineScreenAuthority {
 	look: boolean;
 	/** The lease generation SQL's read saw (20260930713000): the host lets the picture out only while it stands. */
 	desktopGeneration: number;
+	/** A member held the desktop since its clipboard was last confirmed clear (F35 of #1661): the host clears it under this
+	 * call's hold of the desktop and records it before it looks or acts. */
+	clipboardClear: boolean;
 }
 
 /** The calling run's live tool authority, for an action its own executing machine_screen receipt of exactly this
@@ -212,7 +215,8 @@ export async function authorizeMachineScreen(
 		typeof result.runId !== "string" || !UUID.test(result.runId) ||
 		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
 		typeof result.providerId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(result.providerId) ||
-		!Number.isSafeInteger(result.desktopGeneration) || (result.desktopGeneration as number) < 0)
+		!Number.isSafeInteger(result.desktopGeneration) || (result.desktopGeneration as number) < 0 ||
+		typeof result.clipboardClear !== "boolean")
 		throw new Error("MACHINE_SCREEN_AUTHORITY_INVALID");
 	let action: MachineScreenAction | null = null;
 	if (request.input.commandId === null) {
@@ -228,7 +232,8 @@ export async function authorizeMachineScreen(
 	signal.throwIfAborted();
 	return { machineId: result.machineId, placementId: result.placementId, bootId: result.bootId, executorOwner: result.executorOwner,
 		providerId: result.providerId, runId: result.runId, receiptId: request.input.commandId, action,
-		settleMs: request.input.settleMs, look: request.input.look, desktopGeneration: result.desktopGeneration as number };
+		settleMs: request.input.settleMs, look: request.input.look, desktopGeneration: result.desktopGeneration as number,
+		clipboardClear: result.clipboardClear };
 }
 
 /** What SQL says about one member's look at a desktop (20260930712000): where the machine runs, the member, whether the
@@ -296,6 +301,8 @@ export interface MemberMachineActAuthority {
 	executorOwner: string;
 	providerId: string;
 	userId: string;
+	/** The seat the action was begun in: the host asks the fence again once it holds the desktop (round 23 of #1661). */
+	seat: number;
 	served: boolean;
 }
 
@@ -320,7 +327,9 @@ export async function authorizeMemberMachineAct(
 		result.reason === "DESKTOP_CONTROL_ENDED"))
 		throw new CloudMemberMachineActRefusal(result.reason);
 	if (result.state !== "authorized" ||
-		Object.keys(result).sort().join() !== "action,actionId,bootId,executorOwner,machineId,placementId,providerId,schema,served,state,userId" ||
+		Object.keys(result).sort().join() !==
+			"action,actionId,bootId,executorOwner,machineId,placementId,providerId,schema,seat,served,state,userId" ||
+		typeof result.seat !== "number" || !Number.isSafeInteger(result.seat) || result.seat < 1 ||
 		result.actionId !== request.actionId ||
 		![result.machineId, result.placementId, result.bootId, result.userId].every((id) => typeof id === "string" && UUID.test(id)) ||
 		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
@@ -333,5 +342,5 @@ export async function authorizeMemberMachineAct(
 	signal.throwIfAborted();
 	return { actionId: result.actionId, machineId: result.machineId as string, placementId: result.placementId as string,
 		bootId: result.bootId as string, executorOwner: result.executorOwner, providerId: result.providerId,
-		userId: result.userId as string, served: result.served as boolean };
+		userId: result.userId as string, seat: result.seat, served: result.served as boolean };
 }

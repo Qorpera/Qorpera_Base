@@ -292,7 +292,8 @@ export function localMachineScreen(host: {
 	return async (authority, signal) => {
 		const outcome = await host.screen({ placementId: authority.placementId, bootId: authority.bootId, runId: authority.runId,
 			request: { schema: MACHINE_SCREEN_REQUEST_SCHEMA, receiptId: authority.receiptId, action: authority.action,
-				settleMs: authority.settleMs, look: authority.look }, desktopGeneration: authority.desktopGeneration }, signal);
+				settleMs: authority.settleMs, look: authority.look }, desktopGeneration: authority.desktopGeneration,
+			clearClipboard: authority.clipboardClear }, signal);
 		if ("refused" in outcome) {
 			if (isCloudMachineScreenRefusal(outcome.refused)) throw new CloudMachineScreenRefusal(outcome.refused);
 			throw new Error("MACHINE_SCREEN_FAILED");
@@ -326,7 +327,7 @@ export function localMemberMachineAct(host: {
 }): (authority: MemberMachineActAuthority, action: MachineScreenAction, signal: AbortSignal) => Promise<CloudMemberMachineAct> {
 	return async (authority, action, signal) => {
 		const outcome = await host.memberAct({ placementId: authority.placementId, bootId: authority.bootId,
-			actionId: authority.actionId, action: { ...action } }, signal);
+			actionId: authority.actionId, action: { ...action }, seat: authority.seat, userId: authority.userId }, signal);
 		if ("refused" in outcome) {
 			if (isCloudMemberMachineActRefusal(outcome.refused)) throw new CloudMemberMachineActRefusal(outcome.refused);
 			throw new Error("MEMBER_MACHINE_ACT_FAILED");
