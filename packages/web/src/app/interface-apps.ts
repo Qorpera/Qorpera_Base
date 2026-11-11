@@ -29,6 +29,7 @@ import {
 	parseAppManifest,
 } from "@qorpera/cloud-client/interface-apps";
 import { isInterfaceName, parseTableFile, parseTableRows } from "@qorpera/cloud-client/interfaces";
+import { APP_GROUPS_MAX_BYTES, APP_GROUPS_PATH, type AppTreeNode, parseAppGroups } from "../cloud/app-groups.ts";
 import type { WebMemberFolder } from "../cloud/company-folder-writes.ts";
 import type { AppAnswer, AppCall } from "../ui/app-frame.ts";
 import { folderLinkPath } from "../ui/folder-links.ts";
@@ -123,6 +124,14 @@ async function readText(folder: Folder, entry: CloudMemberFolderEntry, signal: A
 	} catch {
 		return null;
 	}
+}
+
+/** The company's groups of apps, from `apps/groups.md` (cloud/app-groups.ts); undefined when it has none. */
+export async function readAppGroups(folder: Folder, signal: AbortSignal): Promise<AppTreeNode[] | undefined> {
+	const entry = (await folder.read(APP_GROUPS_PATH, signal)).entry;
+	// A bigger file is read too (up to a mebibyte): the reader keeps its first 64 KiB, as the agents' tool does.
+	const text = entry ? await readText(folder, entry, signal, 16 * APP_GROUPS_MAX_BYTES) : null;
+	return text === null ? undefined : parseAppGroups(text);
 }
 
 /** The company's apps, in name order: every folder of `apps/` with its manifest read. */
@@ -875,6 +884,8 @@ export async function warmApps(folder: Folder, apps: readonly CompanyApp[], sign
 export class CompanyApps {
 	readonly #source: CompanyAppsSource;
 	readonly #publish: (apps: readonly CompanyApp[]) => void;
+	readonly #publishGroups: ((groups: readonly AppTreeNode[] | undefined) => void) | undefined;
+	#shownGroups: string | undefined;
 	readonly #stop = new AbortController();
 	readonly #listeners = new Set<() => void>();
 	#hints?: { close(): Promise<void> };
@@ -888,9 +899,15 @@ export class CompanyApps {
 	/** The hint's channel is subscribed. */
 	#hintsLive = false;
 
-	constructor(source: CompanyAppsSource, publish: (apps: readonly CompanyApp[]) => void) {
+	constructor(
+		source: CompanyAppsSource,
+		publish: (apps: readonly CompanyApp[]) => void,
+		/** The company's groups of apps, read with the apps (apps/groups.md), when they change. */
+		publishGroups?: (groups: readonly AppTreeNode[] | undefined) => void,
+	) {
 		this.#source = source;
 		this.#publish = publish;
+		this.#publishGroups = publishGroups;
 		source.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#stop.signal });
 	}
 
@@ -957,7 +974,19 @@ export class CompanyApps {
 	async read(): Promise<readonly CompanyApp[]> {
 		if (this.#stop.signal.aborted) return this.#last;
 		try {
-			const apps = await readApps(this.#source.folder(), this.#stop.signal);
+			const folder = this.#source.folder();
+			const [apps, groups] = await Promise.all([
+				readApps(folder, this.#stop.signal),
+				this.#publishGroups ? readAppGroups(folder, this.#stop.signal).catch(() => null) : null,
+			]);
+			// A failed read of the groups keeps what was read before.
+			if (groups !== null) {
+				const shownGroups = JSON.stringify(groups ?? null);
+				if (shownGroups !== this.#shownGroups && !this.#stop.signal.aborted) {
+					this.#shownGroups = shownGroups;
+					this.#publishGroups?.(groups);
+				}
+			}
 			const shown = JSON.stringify(apps);
 			this.#last = apps;
 			if (shown !== this.#shown && !this.#stop.signal.aborted) {

@@ -6399,6 +6399,21 @@ decision above, item 1.
    say the tool changes the company's sidebar, which each member sees except where they placed things themselves. It
    moves the tool catalog's pin, so it rides a runtime bundle.
 
+### 2026-11-11 amendment: groups of apps
+
+Jonas, 11 November 2026: "the same way we have categories and groups for agents, we should have so for the
+interfaces as well … the agents should be able to organize the interfaces for you natively and help group interfaces
+to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1221.
+
+1. **The company's groups of apps** are the plain file `apps/groups.md` (a nested list, two group levels; keys
+   `page:<name>`, `app:<name>`, `concepts`, `sites`; `group <id>: <name>`), kept by agents. It is what a new member
+   sees; a drawer key the file does not name stands loose at the end.
+2. **A member's own arrangement** is a document of theirs in the cloud (`qorpera_member_app_layouts`), laid over the
+   file the same way as the sidebar: what the member moved, grouped, renamed or ungrouped is theirs, the rest follows
+   the file. Reset sidebar takes it away with the rest; Undo puts it back.
+3. **Every emblem in the drawer is drawn in its app's colour** (its manifest's `colour`; fixed colours for the
+   built-in pages), no longer black only.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema
