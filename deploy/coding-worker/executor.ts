@@ -376,7 +376,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			views: new CodingFolderViews({ control, folder: folderControl, client: lxd, agent, program, records }), control: folderControl, client: lxd,
 			// A landing is reported to the change record in its own job, and its record's files are written there.
 			...(codeHostJobs ? { repositories: new CodeHostRepositories(codeHostJobs, {
-				...(codeRecords ? { records: codeRecords } : {}), report: logCodeRecord }) } : {}),
+				...(codeRecords ? { records: codeRecords } : {}), ...(codeSites ? { sites: codeSites } : {}), report: logCodeRecord }) } : {}),
 			onMount: (mount) => console.log(JSON.stringify({ event: "coding-folder-mount", ...mount })),
 			// A landing's checks, each command as it starts and ends, in the session's machine (own code storage, step 3).
 			report: logCodeRecord,
