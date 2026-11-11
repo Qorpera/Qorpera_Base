@@ -69,7 +69,6 @@ select pg_temp.w_connection(1, 1, 1), pg_temp.w_connection(2, 2, 1), pg_temp.w_c
 	pg_temp.w_connection(4, 1, 2), pg_temp.w_connection(5, 3, 1, 'revoked') \g /dev/null
 select pg_temp.w_version(1, true), pg_temp.w_version(2, true), pg_temp.w_version(3, false), pg_temp.w_version(4, false),
 	pg_temp.w_version(5, true) \g /dev/null
-reset session_replication_role;
 select pg_temp.base_assert((select count(*) = 2 from public.qorpera_account_login_sibling_connections(pg_temp.w_id(1, 1))),
 	'connection 1''s login has its two other companies: 2 and 5');
 
