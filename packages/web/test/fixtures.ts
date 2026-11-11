@@ -259,6 +259,10 @@ export function fixture() {
 	vi.spyOn(api, "listWaitingApprovals").mockRejectedValue(
 		new CloudRpcError("qorpera_list_member_waiting_approvals", { message: "missing", code: "PGRST202" }, 404),
 	);
+	// A cloud before 20260930723000: it does not say what each agent's work waits on the member for.
+	vi.spyOn(api, "listWaitingWork").mockRejectedValue(
+		new CloudRpcError("qorpera_list_member_waiting_work", { message: "missing", code: "PGRST202" }, 404),
+	);
 	vi.spyOn(api, "companyWaitingForHours").mockResolvedValue(false);
 	vi.spyOn(api, "readSessionEvents").mockResolvedValue([]);
 	// No message of the fixture's conversations was ever erased.

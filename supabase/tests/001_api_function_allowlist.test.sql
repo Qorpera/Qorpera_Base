@@ -182,6 +182,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_list_member_recovery_identities(uuid,uuid,integer)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_list_member_recovery_targets(uuid,uuid,uuid,integer)', false, true, 'internal: auth.uid() + membership/ownership'),
 	('public.qorpera_list_member_waiting_approvals(uuid)', false, true, 'member: auth.uid() + membership/ownership'),
+	('public.qorpera_list_member_waiting_work(uuid)', false, true, 'member: auth.uid() + membership; only the cards raised for the caller and the approval cards they answer, in agent threads they may read, viewers no cards (20260930723000)'),
 	('public.qorpera_list_presence_devices(uuid,uuid[])', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_list_profile_invitations()', true, true, 'member: self-scoped or pure helper; anon only through the platform default'),
 	('public.qorpera_list_profile_staff(uuid)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),

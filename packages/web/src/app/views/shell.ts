@@ -431,6 +431,8 @@ interface RailParts {
 	settled: boolean;
 	/** Mentions had been read at the last draw, so a mention now is news. */
 	mentionsRead: boolean;
+	/** What waits on the member had been read at the last draw, so a raised hand now is news. */
+	waitingRead: boolean;
 	/** The latest draw's context: the menus and the drag act on it. */
 	context?: ShellContext;
 	readonly drag: RailDrag;
@@ -566,7 +568,7 @@ const isCollapsed = (element: Element) => element.closest(".rail-compact") !== n
  * a child is out of place, so a child that keeps its place never leaves the page. */
 /** A row built anew, once the company has loaded, says what changed (styles/motion.css): an
  * agent that starts work gets its dot and its line, a failed run folds the figure into a red
- * "!" (and unfolds it when the failure is dealt with), a mention's badge pops, and an agent the
+ * "!" (and unfolds it when the failure is dealt with), a mention's badge and a raised hand pop, and an agent the
  * company never listed before is placed like a card (a new chat drops in). */
 function changedRow(
 	before: string | undefined,
@@ -574,6 +576,7 @@ function changedRow(
 	element: HTMLElement,
 	unseen: boolean,
 	mentionsRead: boolean,
+	waitingRead: boolean,
 ): void {
 	if (before === undefined) {
 		if (unseen) playOnce(element, element.dataset.agentId ? "is-hired" : "is-arriving");
@@ -593,6 +596,7 @@ function changedRow(
 						: "state-changed",
 		);
 	if (mentionsRead && !was.mentioned && now.mentioned) playOnce(element, "mention-arrived");
+	if (waitingRead && !was.waiting && now.waiting) playOnce(element, "hand-arrived");
 }
 
 function reconcile(parent: HTMLElement, children: readonly HTMLElement[]): void {
@@ -691,6 +695,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			known: new Set(),
 			settled: false,
 			mentionsRead: false,
+			waitingRead: false,
 			drag: undefined as unknown as RailDrag,
 			redraw,
 		};
@@ -930,18 +935,33 @@ function statusDisc(look: AgentLook, className: string): HTMLElement | null {
 /** The link's name. No tooltip: the row already shows the name, and a hover
  * popup over every row was noise (Jonas, 9 Nov 2026). Any state also goes into the name,
  * which the compact rail needs: it hides the text beside the figure and the disc says
- * nothing aloud. */
+ * nothing aloud. What the agent waits on the member for is said too, while it works as
+ * well, since the raised hand says nothing aloud either. */
 function railLabel(
-	agent: Pick<HostedStaffAgent, "displayName"> & { mentioned?: boolean },
+	agent: Pick<AgentModel, "displayName" | "state" | "waiting"> & { mentioned?: boolean },
 	look: AgentLook,
 	idle?: IdleLine,
 ): { "aria-label": string } {
 	// AGENT_LOOK keeps the English words; they are translated where they are drawn. A row's idle line, already in the
 	// member's words, says the rest.
 	const words = look.note ?? look.line;
-	const state = words ? t(words) : idle?.text;
+	// Stopped at the member: what for takes the place of "Needs you"; with no words, "Needs you" says it alone.
+	const decision = agent.state === "decision";
+	const what = agent.waiting?.what;
+	const waiting = what
+		? t("Waiting for you: {what}", { what })
+		: agent.waiting && !decision
+			? t("Waiting for you")
+			: undefined;
+	const state = decision && what ? undefined : words ? t(words) : idle?.text;
 	const mention = agent.mentioned ? t("You were mentioned") : undefined;
-	return { "aria-label": [agent.displayName, state, mention].filter(Boolean).join(" · ") };
+	return { "aria-label": [agent.displayName, state, waiting, mention].filter(Boolean).join(" · ") };
+}
+
+/** A raised hand on the figure's top-right while the agent's work waits on this member (a card it raised for them,
+ * or an approval card they answer), also while it works on something else. Its words are in the link's name. */
+function handMark(waiting: AgentModel["waiting"]): HTMLElement | null {
+	return waiting ? h("span", { class: "rail-hand", "aria-hidden": "true" }, icon("hand")) : null;
 }
 
 /** "@" on a conversation where someone mentioned this member and they have not looked yet. */
@@ -958,6 +978,9 @@ interface AgentModel extends Pick<HostedStaffAgent, "id" | "displayName" | "temp
 	mentioned: boolean;
 	/** The row's line while the agent does not work and needs no one (app/agent-line.ts), in the member's words. */
 	idle?: IdleLine;
+	/** Its work waits on this member (CompanyController.waitingFor): the newest item in a few words, when the cloud
+	 * says. */
+	waiting?: { what?: string };
 }
 interface SessionModel {
 	title: string;
@@ -979,6 +1002,7 @@ function cofounderCard(model: AgentModel, href: string): HTMLElement {
 			{ class: "cofounder-stand" },
 			agentFigure(model, model.displayName, { size: 82, activity: look.figure }),
 			statusDisc(look, "cofounder-status"),
+			handMark(model.waiting),
 			mentionBadge(model.mentioned),
 		),
 		h("strong", null, model.displayName),
@@ -1026,6 +1050,7 @@ function pinCard(model: AgentModel, href: string): HTMLElement {
 			{ class: "rail-pin-stand" },
 			agentFigure(model, model.displayName, { size: 52, activity: look.figure }),
 			statusDisc(look, "rail-row-status"),
+			handMark(model.waiting),
 			mentionBadge(model.mentioned),
 		),
 		h("strong", { class: "rail-pin-name" }, model.displayName),
@@ -1034,8 +1059,13 @@ function pinCard(model: AgentModel, href: string): HTMLElement {
 
 function agentRow(model: AgentModel, href: string): HTMLElement {
 	const look = AGENT_LOOK[model.state];
-	const live = stateLine(look);
+	// Stopped at this member: what for, in the warning colour. A decision with no words (a proposal, a stopped run)
+	// keeps "Needs you", in the same colour.
+	const decision = model.state === "decision";
+	const what = decision ? model.waiting?.what : undefined;
+	const live = what ? t("Stopped: {what}", { what }) : stateLine(look);
 	const line = live ?? model.idle?.text;
+	const tone = decision ? "waiting" : live ? undefined : model.idle?.tone;
 	return h(
 		"a",
 		{
@@ -1051,15 +1081,14 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 			{ class: "rail-row-stand" },
 			agentFigure(model, model.displayName, { size: 50, activity: look.figure }),
 			statusDisc(look, "rail-row-status"),
+			handMark(model.waiting),
 			mentionBadge(model.mentioned),
 		),
 		h(
 			"span",
 			{ class: "rail-row-copy" },
 			h("strong", null, model.displayName),
-			line
-				? h("small", live || !model.idle?.tone ? null : { class: `rail-row-line is-${model.idle.tone}` }, line)
-				: null,
+			line ? h("small", tone ? { class: `rail-row-line is-${tone}` } : null, line) : null,
 		),
 	);
 }
@@ -1254,7 +1283,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				: { shown, element: build(model, href) };
 		if (kept && entry !== kept && kept.element === focused) successor = entry.element;
 		if (entry !== kept && parts.settled)
-			changedRow(kept?.shown, shown, entry.element, !parts.known.has(href), parts.mentionsRead);
+			changedRow(kept?.shown, shown, entry.element, !parts.known.has(href), parts.mentionsRead, parts.waitingRead);
 		rows.set(key, entry);
 		entry.element.classList.toggle("active", current);
 		if (current) entry.element.setAttribute("aria-current", "page");
@@ -1270,6 +1299,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			: agent;
 		const figure = figureFor(shown);
 		const activity = company.agentState(agent.id);
+		const waiting = company.waitingFor(agent.id);
 		return {
 			id: agent.id,
 			displayName: agent.displayName,
@@ -1294,6 +1324,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 					? cofounderSessionId
 					: company.primarySessionFor(agent.id)?.sessionId,
 			),
+			...(waiting ? { waiting: waiting.what ? { what: waiting.what } : {} } : {}),
 		};
 	};
 	const cofounderElement =
@@ -1688,6 +1719,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	for (const member of state.team?.members ?? []) parts.known.add(`#/c/${profileId}/member/${member.userId}`);
 	if (!state.loading) parts.settled = true;
 	parts.mentionsRead = parts.settled && state.mentions !== undefined;
+	parts.waitingRead = parts.settled && (state.waitingOnMe !== undefined || state.approvals !== undefined);
 	parts.notices = notices;
 	// A row moved to a new place loses focus on the way, so it gets it back too.
 	if (focused && document.activeElement !== focused) {
