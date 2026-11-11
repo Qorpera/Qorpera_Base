@@ -35,7 +35,8 @@ function hide(): void {
 
 /** Beside the bubble, on the side away from the thread's middle (an agent's on the left gets it on its right, the
  * member's own on the right gets it on its left), else on the other side, centred on the part of the bubble in view.
- * Without room on either side (a narrow window), centred just above the bubble, on the thread's own colour. */
+ * Without room on either side (a narrow window), centred just above the bubble, on the thread's own colour.
+ * Always inside the thread as it is on screen, never over its header, its foot or what is beside it. */
 function place(label: HTMLElement, bubble: HTMLElement, root: HTMLElement): void {
 	const box = bubble.getBoundingClientRect();
 	const area = root.getBoundingClientRect();
@@ -46,6 +47,8 @@ function place(label: HTMLElement, bubble: HTMLElement, root: HTMLElement): void
 	const margin = MARGIN * scale;
 	const leftmost = Math.max(area.left, 0) + margin;
 	const rightmost = Math.min(area.right, window.innerWidth) - margin;
+	const topmost = Math.max(area.top, 0) + margin;
+	const bottommost = Math.min(area.bottom, window.innerHeight) - margin;
 	const fitsRight = box.right + gap + width <= rightmost;
 	const fitsLeft = box.left - gap - width >= leftmost;
 	const rightFirst = box.left + box.width / 2 <= area.left + area.width / 2;
@@ -69,13 +72,15 @@ function place(label: HTMLElement, bubble: HTMLElement, root: HTMLElement): void
 		top = (seenBottom > seenTop ? (seenTop + seenBottom) / 2 : box.top + box.height / 2) - height / 2;
 	} else {
 		left = box.left + (box.width - width) / 2;
-		top = box.top - height - gap / 2;
-		if (top < Math.max(area.top, 0) + margin) top = box.bottom + gap / 2;
+		// Above the bubble, else below it, else (a bubble taller than the thread in view) at the thread's top.
+		const above = box.top - height - gap / 2;
+		const below = box.bottom + gap / 2;
+		top = above >= topmost ? above : below + height <= bottommost ? below : topmost;
 	}
 	label.classList.toggle("is-over", !side);
 	// Inside the thread as it is on screen: a panel's time never stands over what is beside it.
 	left = Math.max(Math.min(left, rightmost - width), leftmost);
-	top = Math.min(Math.max(top, margin), window.innerHeight - height - margin);
+	top = Math.max(Math.min(top, bottommost - height), topmost);
 	label.style.left = `${Math.round(left)}px`;
 	label.style.top = `${Math.round(top)}px`;
 }

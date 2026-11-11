@@ -188,6 +188,18 @@ describe("a message's sent time on a hover", () => {
 		panel.dispatchEvent(new PointerEvent("pointerleave"));
 		over(message);
 		expect(Number.parseFloat(shownSentTime()!.style.top)).toBe(87);
+		// Review of #1664 round 1, F1: a bubble past both of the panel's edges keeps its time inside the panel (not at
+		// 703, below the bubble's hidden bottom, over the panel's foot), at the panel's top.
+		message.getBoundingClientRect = () => box(612, -100, 376, 800);
+		panel.dispatchEvent(new PointerEvent("pointerleave"));
+		over(message);
+		expect(Number.parseFloat(shownSentTime()!.style.top)).toBe(8);
+		// A panel that starts lower down: its own top, not the window's.
+		panel.getBoundingClientRect = () => box(600, 120, 400, 300);
+		message.getBoundingClientRect = () => box(612, 100, 376, 400);
+		panel.dispatchEvent(new PointerEvent("pointerleave"));
+		over(message);
+		expect(Number.parseFloat(shownSentTime()!.style.top)).toBe(128);
 	});
 
 	it("hides when its thread goes", () => {
