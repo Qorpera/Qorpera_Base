@@ -26,6 +26,10 @@ import { Database, random } from "./take-over-model.ts";
  * not be taken over", a refusal for another member's hold, or the window showing that member;
  * (I5) a take-over request leaves the page only after a press that no release of that machine (Hand back, I'm done,
  * close, a switch away, pagehide) followed;
+ * (I7, review r17) the database runs an action only under the hold it was captured in (its epoch); (I8) whatever an
+ * older hold's action answers changes nothing of the window (its hold, its note); (I9) what is typed under a hold that
+ * no release followed leaves the page, in the order it was typed, while that hold stands. Action requests are held as
+ * the others are, so their answers can come after a hand-back and a new take-over.
  * (I6, review r14) a heartbeat or input for a machine leaves the page only after a press on this page for it that no
  * release followed: nothing is ever taken up from a list; and a note ("could not be taken over") never follows a
  * press that a release followed (F22's counterpart of I4); a Hand back pressed on a hold shown from another window
@@ -58,9 +62,11 @@ type Kind = (typeof OPTIONAL)[number] | "button" | "card" | "close" | "reopen" |
 
 interface Pending {
 	id: number;
-	kind: "list" | "take" | "back";
+	kind: "list" | "take" | "back" | "act";
 	machine?: string;
 	epoch?: number;
+	/** An action's key press, as the explorer recorded it (review r17). */
+	capture?: Capture;
 	answer?: unknown;
 	effect: boolean;
 	settled: boolean;
@@ -69,6 +75,37 @@ interface Pending {
 	resolve: (value: Response) => void;
 	reject: (error: unknown) => void;
 }
+
+/** A key pressed on the picture while the page held the desktop: its key, the hold it was captured under (the page's
+ * hold count and the epoch of the take-over that made it), and whether an action of it left the page. */
+interface Capture {
+	name: string;
+	step: number;
+	machine: string;
+	epoch: number | undefined;
+	serial: number;
+	sent: boolean;
+}
+
+/** Keys that go as themselves, one name each, so every action tells which key press it is. */
+const KEYS = [
+	"F1",
+	"F2",
+	"F3",
+	"F4",
+	"F5",
+	"F6",
+	"F7",
+	"F8",
+	"F9",
+	"F10",
+	"F11",
+	"F12",
+	"Home",
+	"End",
+	"Insert",
+	"Delete",
+];
 
 interface Done {
 	pressed: number;
@@ -114,12 +151,22 @@ function followLedger(): () => void {
 	};
 }
 
-async function explore(seed: number, steps: number): Promise<{ log: string[]; broken?: string }> {
+/** One explored schedule. `typing` (review r17) weighs typing on the picture and short moments of time far more, so a
+ * hold's input meets hand-backs and new take-overs often; without it the steps are drawn as before. */
+async function explore(seed: number, steps: number, typing = false): Promise<{ log: string[]; broken?: string }> {
 	const next = random(seed);
 	const pick = <T>(items: readonly T[]): T => items[Math.floor(next() * items.length)] as T;
 	const machines: readonly string[] = next() < 0.4 ? [MACHINES[0]] : MACHINES;
 	const off = new Set<Kind>(OPTIONAL.filter(() => next() < 1 / 3));
 	const lag = () => (next() < 0.3 ? 2 + Math.floor(next() * 10) : 0);
+	/** Action requests (review r17) go on their own stream of choices, beside the steps (so the steps the explorer drew
+	 * before them stay as they were): most are held 1 to 12 steps before they reach the database, and again before
+	 * their answers come; one in ten answers is lost. */
+	const nextAct = random(seed ^ 0x9e3779b9);
+	const actLag = () => (nextAct() < 0.7 ? 1 + Math.floor(nextAct() * 12) : 0);
+	/** Requests answered beside the steps: actions, and in typing schedules list reads too (each at the next step, so
+	 * the window's loop gets its machines and its picture, and the steps go to holds, typing and hand-backs). */
+	const beside = (kind: Pending["kind"]) => kind === "act" || (typing && kind === "list");
 	const db = new Database(machines);
 	const log: string[] = [`${machines.length} machine(s), without: ${[...off].join(", ") || "none"}`];
 	ledgerLog = log;
@@ -166,6 +213,13 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		press = undefined;
 	};
 	let lastRelease = -1;
+	/** Keys pressed on the picture (review r17), the page's holds counted as they begin, the epoch of the last take-over
+	 * the page sent per machine (the epoch of the hold it makes), and an older hold's action answer to look after. */
+	const captures: Capture[] = [];
+	let serial = 0;
+	let wasHolding = false;
+	const tookAt = new Map<string, number>();
+	let older: { holding: boolean; note: string; name: string } | undefined;
 	/** Hand-back requests the page sent, and presses of the window's Hand back on a hold shown from another window. */
 	const backs: { machine: string; step: number }[] = [];
 	const handBacks: { step: number; machine: string | undefined; met: boolean }[] = [];
@@ -196,8 +250,16 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		});
 	const effect = (one: Pending) => {
 		one.effect = true;
-		one.deliverAt = step + lag();
-		if (one.kind === "list") one.answer = rows();
+		one.deliverAt = step + (one.kind === "act" ? actLag() : beside(one.kind) ? 0 : lag());
+		if (one.kind === "act") {
+			const done = db.act(MEMBER, one.machine as string, one.epoch);
+			// I7 (review r17): an action runs only under the hold it was captured in.
+			if (done.ok && one.capture && one.capture.epoch !== done.lease.epoch)
+				violations.push(
+					`I7: the action of ${one.capture.name}, captured at step ${one.capture.step} under ${one.capture.epoch}, ran at step ${step} under the lease taken at ${done.lease.epoch}`,
+				);
+			one.answer = done.ok ? { exitCode: 0 } : { code: done.code };
+		} else if (one.kind === "list") one.answer = rows();
 		else if (one.kind === "take") {
 			const answer = db.take(MEMBER, one.machine as string, one.epoch as number, one.id);
 			one.answer = answer.state === "ok" ? { state: "ok", until: until() } : answer;
@@ -205,6 +267,15 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 	};
 	const deliver = (one: Pending) => {
 		one.settled = true;
+		if (one.kind === "act") {
+			const answer = one.answer as { exitCode?: number; code?: string };
+			one.resolve(
+				answer.code
+					? Response.json({ code: answer.code }, { status: 409 })
+					: Response.json({ schema: "qorpera.member-machine-act/v1", exitCode: answer.exitCode }),
+			);
+			return;
+		}
 		if (one.kind === "list") {
 			const listed = one.answer as MemberAgentMachine[];
 			for (const row of listed)
@@ -253,7 +324,16 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 			const machine = url.slice(bridge.length).split("/")[4] as string;
 			if (url.endsWith("/act")) {
 				use(machine, "input");
-				return Response.json({ schema: "qorpera.member-machine-act/v1", exitCode: 0 });
+				const sent = JSON.parse(String(init?.body)) as { action: { keys?: string[] }; epoch?: number };
+				const name = sent.action.keys?.[0] ?? "";
+				const capture = captures.find((one) => !one.sent && one.name === name && one.machine === machine);
+				if (capture) {
+					// I9 (review r17): a hold's input goes in the order it was captured.
+					if (captures.some((one) => one.serial === capture.serial && !one.sent && one.step < capture.step))
+						violations.push(`I9: the action of ${name} left the page before an earlier key of its hold`);
+					capture.sent = true;
+				}
+				return held("act", machine, sent.epoch, init, capture);
 			}
 			if (new Headers(init?.headers).get("if-none-match") === TAG)
 				return new Response(null, { status: 304, headers: { etag: TAG } });
@@ -289,23 +369,37 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 						? "back"
 						: undefined;
 		if (!kind) throw new Error(`Unexpected request ${url}`);
+		return held(kind, machine, epoch, init);
+	};
+	/** A request held until the explorer lets it reach the database and lets its answer come (or be lost). */
+	const held = (
+		kind: Pending["kind"],
+		machine: string,
+		epoch: number | undefined,
+		init?: RequestInit,
+		capture?: Capture,
+	): Promise<Response> => {
 		return new Promise<Response>((resolve, reject) => {
 			const one: Pending = {
 				id: ++ids,
 				kind,
 				...(kind === "list" ? {} : { machine, epoch }),
+				...(capture ? { capture } : {}),
 				effect: false,
 				settled: false,
-				effectAt: step + lag(),
+				effectAt: step + (kind === "act" ? actLag() : beside(kind) ? 0 : lag()),
 				deliverAt: 0,
 				resolve,
 				reject,
 			};
 			requests.push(one);
 			if (kind === "back") backs.push({ machine, step });
-			log.push(`   the page asks: ${kind} #${one.id}${kind === "list" ? "" : ` ${machine.slice(-2)}@${epoch}`}`);
-			if (kind === "take") {
+			log.push(
+				`   the page asks: ${kind} #${one.id}${kind === "list" ? "" : ` ${machine.slice(-2)}@${epoch}`}${capture ? ` (${capture.name})` : ""}`,
+			);
+			if (kind === "take" && epoch !== undefined) {
 				takes.push({ id: one.id, machine, epoch, step });
+				tookAt.set(machine, epoch);
 				// I5: only after a press that no release of that machine followed.
 				if (pressedAt < 0 || (releasedAt.get(machine) ?? -1) >= pressedAt)
 					violations.push(
@@ -341,13 +435,17 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 	});
 	let p: ComputerPanel | undefined;
 	let chosen: string | undefined;
+	let lastHandBack: Promise<boolean> | undefined;
 	const open = () => {
 		p = panels.open(staff);
 		chosen = undefined;
 		if (!p) return;
 		// The window's Hand back (its button, the card's I'm done through the panels) is followed while at work.
 		const handBack = p.handBack.bind(p);
-		p.handBack = () => finishingOn(handBack());
+		p.handBack = () => {
+			lastHandBack = finishingOn(handBack());
+			return lastHandBack;
+		};
 		p.attach(document.body, () => panels.close(staff.id));
 	};
 	open();
@@ -372,6 +470,16 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 	};
 	const check = (): string | undefined => {
 		if (violations.length) return violations[0];
+		// The page's holds, counted as they begin (review r17).
+		if (p?.holding && !wasHolding) serial++;
+		wasHolding = p?.holding === true;
+		// I8 (review r17): an older hold's action answered; the current hold is as it was.
+		if (older) {
+			const before = older;
+			older = undefined;
+			if (before.holding !== (p?.holding === true) || before.note !== noted())
+				return `I8: the answer to ${before.name}, an action of an older hold, changed the window (${before.holding ? "held" : "not held"} to ${p?.holding ? "held" : "not held"}; note "${before.note}" to "${noted()}")`;
+		}
 		// A Hand back pressed on a hold shown from another window comes to a hand-back of that machine, or to the words
 		// that it could not be given back yet; never to nothing (review r15 F23).
 		for (const one of handBacks)
@@ -439,8 +547,39 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 		await flush();
 		for (step = 1; step <= steps; step++) {
 			db.step = step;
-			const due = requests.filter((one) =>
-				one.effect ? !one.settled && step >= one.deliverAt : step >= one.effectAt,
+			// Action requests reach the database and are answered (or lost) by their own lags, beside the step.
+			for (const one of requests.filter((request) => beside(request.kind))) {
+				const label =
+					one.kind === "act"
+						? `${one.machine?.slice(-2)}@${one.epoch} (${one.capture?.name ?? "?"})`
+						: `list #${one.id}`;
+				if (!one.effect && step >= one.effectAt) {
+					effect(one);
+					log.push(
+						`${step}: ${one.kind === "act" ? "the action " : ""}${label} reaches the database${one.kind === "act" ? `: ${JSON.stringify(one.answer)}` : ""}`,
+					);
+				} else if (one.effect && !one.settled && step >= one.deliverAt) {
+					if (one.kind === "act" && nextAct() < 0.1) {
+						one.settled = true;
+						one.reject(new TypeError("Failed to fetch"));
+						log.push(`${step}: the answer of the action ${label} is lost`);
+					} else {
+						// I8 (review r17): what an older hold's action answers changes nothing of the window. What the
+						// window had still to do settles first, so the answer alone is looked at.
+						if (one.kind === "act" && one.capture && (one.capture.serial !== serial || !p?.holding)) {
+							await flush();
+							older = { holding: p?.holding === true, note: noted(), name: one.capture.name };
+						}
+						deliver(one);
+						log.push(`${step}: the answer of ${one.kind === "act" ? "the action " : ""}${label} comes`);
+					}
+					await flush();
+					const broken = check();
+					if (broken) return { log, broken };
+				}
+			}
+			const due = requests.filter(
+				(one) => !beside(one.kind) && (one.effect ? !one.settled && step >= one.deliverAt : step >= one.effectAt),
 			);
 			const every: Action[] = [
 				{
@@ -463,9 +602,25 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 					run: () => {
 						const value = control()?.querySelector<HTMLButtonElement>(".machine-screen-control-hand-back");
 						if (!value || value.hidden || value.disabled) return false;
-						handBacks.push({ step, machine: shownMachine(), met: false });
+						const machine = shownMachine();
+						// A hand-back of it already on its way counts (the press joins it).
+						const entry = {
+							step,
+							machine,
+							met: requests.some(
+								(one) => one.kind === "back" && !one.settled && (machine ?? one.machine) === one.machine,
+							),
+						};
+						handBacks.push(entry);
 						release(machines);
+						lastHandBack = undefined;
 						value.click();
+						// Confirmed comes to something too: the hold shown was fenced already (its epoch handed back).
+						// (the click set it: TypeScript cannot see that)
+						const run = lastHandBack as Promise<boolean> | undefined;
+						void run?.then((done) => {
+							if (done) entry.met = true;
+						});
 						return true;
 					},
 				},
@@ -482,7 +637,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				},
 				{
 					kind: "hand back",
-					weight: 1,
+					weight: typing ? 3 : 1,
 					name: "Hand back",
 					run: () => {
 						if (!p) return false;
@@ -582,12 +737,25 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				},
 				{
 					kind: "input",
-					weight: 2,
-					name: "a key on the picture",
+					weight: typing ? 10 : 2,
+					name: `a key on the picture (${KEYS[captures.length % KEYS.length]})`,
 					run: () => {
 						const canvas = p?.el.querySelector<HTMLCanvasElement>(".machine-screen-canvas");
-						if (!canvas || !p?.holding) return false;
-						key(canvas, "Enter");
+						const machine = shownMachine();
+						// Only while the picture takes input (the page holds the desktop it shows).
+						if (!canvas || !p?.holding || !machine || !canvas.hasAttribute("tabindex")) return false;
+						const name = KEYS[captures.length % KEYS.length] as string;
+						captures.push({ name, step, machine, epoch: tookAt.get(machine), serial, sent: false });
+						key(canvas, name);
+						return true;
+					},
+				},
+				{
+					kind: "time",
+					weight: typing ? 4 : 0,
+					name: "a moment passes",
+					run: async () => {
+						await vi.advanceTimersByTimeAsync(LOOK_EVERY_MS);
 						return true;
 					},
 				},
@@ -650,7 +818,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 					},
 				},
 			];
-			const actions = every.filter((action) => !off.has(action.kind));
+			const actions = every.filter((action) => action.weight > 0 && !off.has(action.kind));
 			if (due.length) {
 				const one = pick(due);
 				const label = `${one.kind} #${one.id}${one.machine ? ` ${one.machine.slice(-2)}@${one.epoch}` : ""}`;
@@ -700,7 +868,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 			log.push(`${step}: ${action.name}`);
 			await flush();
 			log.push(
-				`   (shows ${shownMachine()?.slice(-2) ?? "nothing yet"}${p?.holding ? ", held" : ""}${noted() ? `, says "${noted()}"` : ""})`,
+				`   (shows ${shownMachine()?.slice(-2) ?? "nothing yet"}${p?.holding ? ", held" : ""}${p?.el.querySelector(".machine-screen-canvas")?.hasAttribute("tabindex") ? ", takes input" : ""}${noted() ? `, says "${noted()}"` : ""})`,
 			);
 			const broken = check();
 			if (broken) return { log, broken };
@@ -723,6 +891,17 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 			await flush(2);
 			const broken = check();
 			if (broken) return { log, broken };
+		}
+		// I9 (review r17): what was typed under the hold that still stands, with no release since, left the page.
+		if (p?.holding) {
+			const lost = captures.find(
+				(one) => one.serial === serial && !one.sent && (releasedAt.get(one.machine) ?? -1) < one.step,
+			);
+			if (lost)
+				return {
+					log,
+					broken: `I9: ${lost.name}, pressed at step ${lost.step} under the hold that still stands, never left the page`,
+				};
 		}
 		const unmet = handBacks.find((one) => !one.met);
 		if (unmet)
@@ -758,6 +937,21 @@ afterEach(() => {
 	localStorage.clear();
 	document.body.replaceChildren();
 });
+
+/** Typing seeds (explore's `typing`) that broke the window of ac5d378fc (release review r1 of #1667: F25), or a model
+ * without SQL's action epoch (F24). They run first; each holds now. */
+const FOUND_TYPING: readonly { seed: number; finding: string }[] = [
+	{
+		seed: 15811,
+		finding:
+			"F25 (ac5d378fc, I8): an action of a hold that had ended answered DESKTOP_CONTROL_ENDED after the same machine was taken over again; the window ended the new hold for it (and the new hold's typing had waited behind it)",
+	},
+	{
+		seed: 1406,
+		finding:
+			"F24 (I7, with the model's action epoch taken out, as SQL had it): a key captured under the hold taken at 0 ran under the lease taken at 2",
+	},
+];
 
 /** Seeds that broke an earlier window of this PR, each on the window and ledger of the commit named (review r13;
  * lanes/desktop-computers-20261110/TAKE-OVER-PROGRESS.md). They run first; each holds on this window. */
@@ -826,6 +1020,25 @@ describe("the computer window's take-overs, explored", () => {
 					const found = FOUND.find((one) => one.seed === seed);
 					expect.fail(
 						`seed ${seed}: ${broken}${found ? `\n(found earlier: ${found.finding})` : ""}\n${log.join("\n")}`,
+					);
+				}
+			}
+		} finally {
+			unfollow();
+		}
+	}, 60_000);
+
+	it("keeps them all, I7 to I9 above all, over schedules that type on the picture across hand-backs and take-overs", async () => {
+		const seeds = [...FOUND_TYPING.map((found) => found.seed), ...Array.from({ length: 100 }, (_, n) => n + 1)];
+		const unfollow = followLedger();
+		try {
+			for (const seed of seeds) {
+				vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+				const { log, broken } = await explore(seed, 40, true);
+				if (broken) {
+					const found = FOUND_TYPING.find((one) => one.seed === seed);
+					expect.fail(
+						`typing seed ${seed}: ${broken}${found ? `\n(found earlier: ${found.finding})` : ""}\n${log.join("\n")}`,
 					);
 				}
 			}

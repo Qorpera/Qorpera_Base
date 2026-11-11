@@ -107,4 +107,22 @@ export class Database {
 		const lease = this.leases.get(machine);
 		if (lease) lease.live = false;
 	}
+	/** Whether a member's action is checked against the epoch it names (F24 of #1661; off only to show what the check
+	 * catches). */
+	actEpochChecked = true;
+	/** A member's action as qorpera_member_machine_desktop_act_begin takes it: from the member who holds the live lease,
+	 * and (F24) only when that lease was taken under the epoch the action names (an action without one, from an earlier
+	 * page, is not checked). */
+	act(
+		member: string,
+		machine: string,
+		epoch: number | undefined,
+	): { ok: true; lease: Lease } | { ok: false; code: "DESKTOP_CONTROL_ENDED" | "DESKTOP_MEMBER_IN_CONTROL" } {
+		const lease = this.leases.get(machine);
+		if (!lease?.live) return { ok: false, code: "DESKTOP_CONTROL_ENDED" };
+		if (lease.member !== member) return { ok: false, code: "DESKTOP_MEMBER_IN_CONTROL" };
+		if (this.actEpochChecked && epoch !== undefined && epoch !== lease.epoch)
+			return { ok: false, code: "DESKTOP_CONTROL_ENDED" };
+		return { ok: true, lease };
+	}
 }
