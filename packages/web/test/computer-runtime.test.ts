@@ -777,6 +777,56 @@ describe("an agent's computer window", () => {
 		expect(handBack()).toBeNull();
 	});
 
+	it("says a hand-back without a picture where the picture would be: asking, failed with Try again, then confirmed (review r2 F1 of #1681)", async () => {
+		const { s, p } = await holding();
+		const standIn = () => {
+			const button = p.el.querySelector<HTMLButtonElement>(".computer-loading .computer-loading-hand-back");
+			return button?.hidden ? null : button;
+		};
+		const standInWords = () => {
+			const words = p.el.querySelector<HTMLElement>(".computer-loading .computer-loading-control");
+			return words?.hidden ? null : words?.textContent;
+		};
+		const backs = () => calls(s, "qorpera_member_hand_back_machine_desktop").length;
+		// The member holds the desktop and its screen is off: no picture, so no controls under it.
+		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		await advance(LOOK_EVERY_MS * 3);
+		expect(status(p)).toBe("The computer is on, but its screen is off.");
+		expect(controls(p)).toBeNull();
+		expect(standInWords()).toBe(
+			`You are using the computer. ${staff.displayName} gets no pictures of the screen while you use it.`,
+		);
+		expect(standIn()?.textContent).toBe("Hand back");
+		// Hand back is slow, then answered 503: the window says so where the picture would be, as the controls would.
+		let open = () => {};
+		s.state.handBackGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		s.state.handBackFails = 1;
+		standIn()!.click();
+		await flush();
+		expect(standInWords()).toBe("Giving the computer back…");
+		expect(standIn()?.textContent).toBe("Hand back");
+		expect(standIn()?.disabled).toBe(true);
+		s.state.handBackGate = undefined;
+		open();
+		await flush();
+		expect(backs()).toBe(1);
+		expect(standInWords()).toBe("The computer could not be given back yet. It goes back by itself within 5 minutes.");
+		expect(standIn()?.textContent).toBe("Try again");
+		expect(standIn()?.disabled).toBe(false);
+		expect(status(p)).toBe("The computer is on, but its screen is off.");
+		// Try again asks at once, and the database answers: given back, nothing more to say.
+		standIn()!.click();
+		await flush();
+		expect(backs()).toBe(2);
+		expect(standIn()).toBeNull();
+		expect(standInWords()).toBeNull();
+		expect(p.holding).toBe(false);
+		await advance(30_000);
+		expect(backs()).toBe(2);
+	});
+
 	it("starts no second time for a look that began before a slow start answered (review r1 F3 of #1681)", async () => {
 		const s = setup();
 		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };

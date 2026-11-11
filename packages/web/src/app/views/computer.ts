@@ -136,8 +136,11 @@ export class ComputerPanel {
 	readonly #detail = h("p", { class: "computer-loading-detail", hidden: true });
 	/** Wake it, Keep watching or Try again, as the state asks. */
 	readonly #action = h("button", { type: "button", class: "computer-retry", hidden: true });
-	/** Hand back, while this page holds the desktop and no picture shows (the controls under the picture are gone then;
-	 * review r1 of #1681): beside Turn it on when the screen is off, alone in every other state without a picture. */
+	/** While no picture shows (the controls under the picture are gone then; review r1 and r2 of #1681), the controls'
+	 * words and button stand in the state's place for this page's own hold and its hand-back: what holding means and
+	 * Hand back (beside Turn it on when the screen is off), "Giving the computer back…" with Hand back disabled, or "could
+	 * not be given back yet" with Try again. #syncControls gives both places the same words, label and state. */
+	readonly #loadingControlText = h("p", { class: "computer-loading-control", "aria-live": "polite", hidden: true });
 	readonly #loadingHandBack = h(
 		"button",
 		{ type: "button", class: "computer-retry computer-loading-hand-back", hidden: true },
@@ -149,6 +152,7 @@ export class ComputerPanel {
 		this.#spinner,
 		this.#status,
 		this.#detail,
+		this.#loadingControlText,
 		this.#action,
 		this.#loadingHandBack,
 	);
@@ -332,16 +336,15 @@ export class ComputerPanel {
 		this.#view.setControls(this.#controls);
 		// The controls are the member's, not the start of a panel drag.
 		this.#controls.addEventListener("pointerdown", (event) => event.stopPropagation(), { signal });
-		this.#controlButton.addEventListener(
-			"click",
-			() =>
-				void (this.#holding || this.#handBackFailed || (this.#machineId && this.#ledger.releasing(this.#machineId))
-					? this.handBack()
-					: this.takeOver()),
-			{ signal },
-		);
+		// The controls' button and its stand-in without a picture do one thing: Hand back (or Try again) while the member
+		// holds the desktop or a hand-back of it is asking or failed, else Take over.
+		const press = () =>
+			void (this.#holding || this.#handBackFailed || (this.#machineId && this.#ledger.releasing(this.#machineId))
+				? this.handBack()
+				: this.takeOver());
+		this.#controlButton.addEventListener("click", press, { signal });
+		this.#loadingHandBack.addEventListener("click", press, { signal });
 		this.#controlHandBack.addEventListener("click", () => void this.handBack(), { signal });
-		this.#loadingHandBack.addEventListener("click", () => void this.handBack(), { signal });
 		// The ledger's word goes first: a hold given back (here, on the card, as the page goes) takes no more input and is
 		// never renewed. The ledger itself gives everything back as the page goes.
 		const unsubscribeHolds = this.#ledger.subscribe(() => this.#holdsChanged());
@@ -954,7 +957,9 @@ export class ComputerPanel {
 	}
 
 	/** The take-over controls under the picture: Take over for a member who may, while there is a picture; what holding
-	 * means and Hand back while they hold it; nothing for a viewer. The picture takes input only while held. */
+	 * means and Hand back while they hold it; nothing for a viewer. The picture takes input only while held. Without a
+	 * picture, the same words, label and state stand in the state's place for a hold or a hand-back (review r2 F1 of
+	 * #1681). */
 	#syncControls(): void {
 		const picture = this.#view?.shown === true && this.#picturing();
 		const holding = this.#holding !== undefined && this.#holding === this.#machineId;
@@ -966,8 +971,11 @@ export class ComputerPanel {
 		// here; Take over makes it this window's, Hand back gives it back (review r14).
 		const elsewhere = offer && this.#pick()?.control?.mine === true;
 		this.#controls.hidden = !(picture && (holding || release || offer));
-		// Without a picture the controls are gone: this page's own hold keeps its Hand back in the state's place.
-		this.#loadingHandBack.hidden = !(holding && !picture);
+		// Without a picture the controls are gone: this page's own hold and its hand-back keep their words and button in
+		// the state's place (review r2 F1 of #1681: a hand-back that is asking or failed says so there too).
+		const standIn = !picture && (holding || release !== undefined);
+		this.#loadingControlText.hidden = !standIn;
+		this.#loadingHandBack.hidden = !standIn;
 		this.#controls.classList.toggle("is-holding", holding || release !== undefined);
 		this.#controls.classList.toggle("is-elsewhere", elsewhere);
 		this.#controlHandBack.hidden = !elsewhere;
@@ -982,7 +990,8 @@ export class ComputerPanel {
 					: elsewhere
 						? t("You are using this computer in another window.")
 						: "";
-		if (this.#controlText.textContent !== text) this.#controlText.textContent = text;
+		for (const words of [this.#controlText, this.#loadingControlText])
+			if (words.textContent !== text) words.textContent = text;
 		const label = holding
 			? t("Hand back")
 			: release === "failed"
@@ -990,8 +999,11 @@ export class ComputerPanel {
 				: release
 					? t("Hand back")
 					: t("Take over");
-		if (this.#controlButton.textContent !== label) this.#controlButton.textContent = label;
-		this.#controlButton.disabled = this.#takingLive(this.#machineId) || release === "asking";
+		const disabled = this.#takingLive(this.#machineId) || release === "asking";
+		for (const button of [this.#controlButton, this.#loadingHandBack]) {
+			if (button.textContent !== label) button.textContent = label;
+			button.disabled = disabled;
+		}
 		this.#view?.capture(holding && picture ? this.#input : null);
 	}
 
