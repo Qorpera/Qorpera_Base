@@ -1607,7 +1607,7 @@ its password, which is in Sites), and only an owner or admin puts a version live
 the What's new page. Nothing goes live by itself.
 
 - `qorpera_list_code_releases(profile)`: `{schema: "qorpera.code-releases/v1", canRelease, sites: [{owner, name, site,
-  live, back, ready, waiting, problem}]}` for any member of the company (viewers too; 42501 "Releases unavailable" for
+  live, back, ready, waiting, problem, givenUp}]}` for any member of the company (viewers too; 42501 "Releases unavailable" for
   anyone else). `canRelease` is true for owners and admins. One entry per repository that has a site or made one, at
   most 10: every repository with a site first (a company has at most 10 sites), live ones before the rest, then those
   that made a site and have none now, a `problem` first, the newest change first (by owner and name within each):
@@ -1625,6 +1625,11 @@ the What's new page. Nothing goes live by itself.
     null (`SITE_LIMIT`: the company has 10 sites, and the site is made once one of them goes; `SITE_NAME_TAKEN`: every
     name the site may take is taken, and it is made once one is free). Null again once a member took the site
     offline.
+  - `givenUp`: true while Qorpera has stopped trying: the newest change that left a site has no version, it is the
+    change whose upload failed five times, and nothing has changed since that lets it try again. False otherwise, and
+    always when `problem` is null. It turns false with a newer change that leaves a site, an upload that finishes, a
+    member taking the site offline, and, for `SITE_LIMIT`, once the company has fewer than 10 sites, or for
+    `SITE_NAME_TAKEN`, once one of the names is free.
 - `qorpera_put_code_release_live(profile, owner, name, shown)`: owners and admins (42501 otherwise). `shown` is exactly
   what the page showed, `{live: <live.version, or null>, change: <ready.change>, token: <ready.token>}` (22023
   otherwise); a repository the company does not keep is P0002 "No such repository". Answers
