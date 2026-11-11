@@ -350,10 +350,18 @@ const ICON_PATHS: Record<string, string[]> = {
 	folder: [
 		"M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
 	],
-	folder_plus: [
-		"M12 10v6M9 13h6",
-		"M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
+	/* A section's title over two agents' rows, and a plus (Jonas, 11 Nov 2026: the folder with a plus read as files). */
+	section_plus: [
+		"M3.5 5h7",
+		"M18 2.5v6",
+		"M15 5.5h6",
+		"M9.5 12h11",
+		"M9.5 18.5h11",
+		"M6.5 12a1.5 1.5 0 1 1-3 0 1.5 1.5 0 1 1 3 0",
+		"M6.5 18.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 1 1 3 0",
 	],
+	/* Back to how it was: Reset sidebar. */
+	reset: ["M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", "M3 3v5h5"],
 	hide: [
 		"M10.73 5.08a10.74 10.74 0 0 1 11.2 6.57 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-1.44 2.49",
 		"M14.08 14.16a3 3 0 0 1-4.24-4.24",
@@ -475,6 +483,8 @@ export function confirmDialog(
 	danger = false,
 	typed?: string,
 	signal?: AbortSignal,
+	/** Lines under the message, as a list: what the choice changes. */
+	details?: readonly string[],
 ): Promise<boolean> {
 	if (signal?.aborted) return Promise.resolve(false);
 	return new Promise((resolve) => {
@@ -525,6 +535,7 @@ export function confirmDialog(
 				"div",
 				{ class: "modal", role: "alertdialog", "aria-modal": "true" },
 				h("p", null, message),
+				details?.length ? h("ul", { class: "modal-list" }, ...details.map((line) => h("li", null, line))) : null,
 				input ?? null,
 				h(
 					"div",

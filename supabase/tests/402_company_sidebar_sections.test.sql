@@ -68,8 +68,11 @@ declare v_state jsonb; v_owner uuid := '92400000-0000-4000-8000-000000000001'; v
 begin
 	-- An empty company sidebar: every agent Unassigned, nothing pinned or hidden.
 	v_state := pg_temp.sb_read(v_owner);
+	-- 20260930727000: every agent has a place in the read, here all in no section.
 	perform pg_temp.base_assert(v_state ->> 'schema' = 'qorpera.company-sidebar/v1' and v_state -> 'sections' = '[]'
-		and v_state -> 'placements' = '[]' and v_state -> 'pinned' = '[]' and v_state -> 'hidden' = '[]',
+		and not exists (select 1 from jsonb_array_elements(v_state -> 'placements') placement
+			where placement ->> 'sectionId' is not null)
+		and v_state -> 'pinned' = '[]' and v_state -> 'hidden' = '[]',
 		'A company starts with no sections: ' || v_state::text);
 	-- The owner saves a section with two agents in order; the read draws it as the file has it.
 	perform pg_temp.base_commit(pg_temp.base_owner(), 'sb-sections-0001', jsonb_build_array(pg_temp.sb_sections(jsonb_build_array(
@@ -95,12 +98,12 @@ begin
 		'sb-sections-viewer', v_units);
 	perform pg_temp.base_assert(v_result #>> '{units,0,outcome}' = 'denied'
 		and pg_temp.base_version('QorperaOS/agents/sections.md') = v_version, 'A viewer cannot change the sections: ' || v_result::text);
-	-- The member RPC's section and move actions are file edits on folder-v2: they refuse, and so for a viewer.
+	-- 20260930727000: the member RPC's section and move actions change the caller's own sidebar, never the file
+	-- (1220_member_own_sidebar); a request without what it names is refused.
 	foreach v_action in array array['create_section', 'rename_section', 'delete_section', 'move_agent', 'move_room'] loop
-		perform pg_temp.sb_refused(v_owner, jsonb_build_object('action', v_action), '55000',
-			'This company keeps its sections in QorperaOS/agents/sections.md; edit that file');
+		perform pg_temp.sb_refused(v_owner, jsonb_build_object('action', v_action), '22023');
 	end loop;
-	perform pg_temp.sb_refused(v_viewer, '{"action":"rename_section"}', '42501');
+	perform pg_temp.sb_refused(v_viewer, '{"action":"rename_section"}', '22023');
 	-- Pins are the member's own and never reach another member.
 	v_state := pg_temp.sb_manage(v_viewer, jsonb_build_object('action', 'set_pins', 'order', jsonb_build_array(v_bob, v_alice)));
 	perform pg_temp.base_assert(v_state -> 'pinned' = jsonb_build_array(v_bob, v_alice), 'A viewer pins for themself');

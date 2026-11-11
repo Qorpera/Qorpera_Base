@@ -8,6 +8,7 @@ import {
 	containerOrder,
 	PIN_LIMIT,
 	SECTION_NAME_LIMIT,
+	type SidebarOwnChanges,
 	type SidebarRequest,
 } from "../../cloud/sidebar.ts";
 import type { HostedProfile, HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
@@ -77,6 +78,8 @@ export interface ShellContext {
 	/** Hides a page (Mailbox, Members, Bank) from the member's own rail, or shows it again: a right-click on it, as on
 	 * an agent (Jonas, 9 Nov 2026: each member's own, not the company's). */
 	hideInterfacePage?: (page: InterfacePageName, hidden: boolean) => Promise<void>;
+	/** Reads the member's pages again: after Reset sidebar, or its Undo, a hidden page may show or hide again. */
+	refreshInterfacePages?: () => void;
 }
 
 /* The account menu is one long-lived element: the shell re-renders on every
@@ -1467,6 +1470,29 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		notices.set(about, entry);
 		return entry.element;
 	};
+	// After Reset sidebar: one line with Undo, until dismissed or the sidebar changes again.
+	const resetNotice = () => {
+		if (!state.sidebarReset) return null;
+		const text = t("Sidebar reset to {company}'s.", { company: company.profile.profileName });
+		const kept = parts.notices.get("reset");
+		const entry =
+			kept?.text === text
+				? kept
+				: {
+						text,
+						element: notice(
+							"neutral",
+							text,
+							button(t("Undo"), () => void undoSidebarReset(company, parts), { small: true }),
+							button(t("Dismiss"), () => company.store.set({ sidebarReset: undefined }), { small: true }),
+						),
+					};
+		// Undo is pressed once: it waits while its request is on its way.
+		const undo = entry.element.querySelector("button");
+		if (undo) undo.disabled = state.sidebarReset.undoing === true;
+		notices.set("reset", entry);
+		return entry.element;
+	};
 	const anyRows =
 		memberRows.length +
 		pinnedElements.length +
@@ -1557,6 +1583,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			errorNotice("rail", state.railError, () =>
 				button(t("Dismiss"), () => company.reportRailError(undefined), { small: true }),
 			),
+			resetNotice(),
 			cofounderElement ? parts.cofounderGroup : null,
 			// The pinned row stays in place while empty, hidden, so a drag can still reach it.
 			sidebar && !railQuery ? parts.pinnedGroup : pinnedElements.length ? parts.pinnedGroup : null,
@@ -2040,9 +2067,115 @@ async function askSectionName(company: CompanyController, item?: SidebarItem): P
 	void company.changeSidebar({ action: "create_section", sectionId: newSectionId(), name, ...placed });
 }
 
+/** Whether the member may change sections and places: always in their own sidebar (20260930727000); on an older
+ * cloud, where a change is the company's, with the right to write. */
 function canOrganize(company: CompanyController): boolean {
 	const state = company.store.get();
-	return Boolean(state.sidebar && !state.sidebarUnavailable && state.team?.capabilities.write);
+	return company.ownSidebar() || Boolean(state.sidebar && !state.sidebarUnavailable && state.team?.capabilities.write);
+}
+
+/** Reset sidebar (Jonas, 11 Nov 2026): back to the company's sidebar, from the menu of the rail's empty space and of a
+ * section's title. With nothing of the member's own it shows greyed out and says why. */
+function resetEntries(company: CompanyController, parts: RailParts): MenuEntry[] {
+	const own = company.ownSidebar() ? company.store.get().sidebar?.own : undefined;
+	if (!own) return [];
+	const changes = own.changes + (storedAppsOrder(company.profile.profileId).length ? 1 : 0);
+	return [
+		{ kind: "separator" },
+		changes
+			? {
+					label: t("Reset sidebar…"),
+					icon: "reset",
+					hint: changes === 1 ? t("1 change of yours") : t("{count} changes of yours", { count: changes }),
+					select: () => void askResetSidebar(company, parts),
+				}
+			: {
+					label: t("Reset sidebar"),
+					icon: "reset",
+					hint: t("You have {company}'s sidebar", { company: company.profile.profileName }),
+					disabled: true,
+					select: () => {},
+				},
+	];
+}
+
+/** What a reset takes away, one line each, in the member's words. */
+function ownChangeLines(company: CompanyController, own: SidebarOwnChanges): string[] {
+	const lines: string[] = [];
+	const rooms = company.groupChatRooms();
+	const names = own.moved
+		.map((id) => company.staffById(id)?.displayName ?? rooms.get(id)?.title)
+		.filter((name): name is string => Boolean(name));
+	if (names.length === 1) lines.push(t("{name} where you put it", { name: names[0]! }));
+	else if (names.length > 1)
+		lines.push(
+			names.length <= 3
+				? t("{names} where you put them", { names: names.join(", ") })
+				: t("{count} agents and group chats where you put them", { count: names.length }),
+		);
+	for (const section of own.sections) {
+		if (section.change === "added") lines.push(t("Your section {name}", { name: `"${section.name}"` }));
+		else if (section.change === "renamed")
+			lines.push(t("{from} renamed {name}", { from: `"${section.from ?? ""}"`, name: `"${section.name}"` }));
+		else lines.push(t("{name} removed from your sidebar", { name: `"${section.name}"` }));
+	}
+	if (own.pinned) lines.push(own.pinned === 1 ? t("1 pinned") : t("{count} pinned", { count: own.pinned }));
+	if (own.hidden) lines.push(own.hidden === 1 ? t("1 hidden") : t("{count} hidden", { count: own.hidden }));
+	if (own.contacts)
+		lines.push(
+			own.contacts === 1
+				? t("1 member placed or hidden")
+				: t("{count} members placed or hidden", { count: own.contacts }),
+		);
+	if (own.pages) lines.push(own.pages === 1 ? t("1 page hidden") : t("{count} pages hidden", { count: own.pages }));
+	if (storedAppsOrder(company.profile.profileId).length) lines.push(t("The order of your apps"));
+	return lines;
+}
+
+/** Asks first, listing what goes, then resets: the cloud takes the member's changes away and the apps drawer's order
+ * on this device goes with them. The rail then offers Undo. */
+async function askResetSidebar(company: CompanyController, parts: RailParts): Promise<void> {
+	const own = company.store.get().sidebar?.own;
+	if (!own) return;
+	const sure = await confirmDialog(
+		t("Reset your sidebar? These changes of yours go away, and you get {company}'s sidebar:", {
+			company: company.profile.profileName,
+		}),
+		t("Reset"),
+		false,
+		undefined,
+		company.signal,
+		ownChangeLines(company, own),
+	);
+	if (!sure) return;
+	const profileId = company.profile.profileId;
+	const appsOrder = storedAppsOrder(profileId);
+	if (!(await company.resetSidebar())) return;
+	storeAppsOrder(profileId, []);
+	parts.appsOrder = [];
+	parts.context?.refreshInterfacePages?.();
+	company.store.set({ sidebarReset: { appsOrder } });
+}
+
+/** Undo of the reset just made: the member's changes come back, and the apps' order on this device too unless the
+ * member ordered them again since. A failed Undo keeps its offer, to try again. */
+async function undoSidebarReset(company: CompanyController, parts: RailParts): Promise<void> {
+	const reset = company.store.get().sidebarReset;
+	if (!reset || reset.undoing) return;
+	const undoing = { ...reset, undoing: true };
+	company.store.set({ sidebarReset: undoing });
+	if (!(await company.resetSidebar(true))) {
+		// Tried again from the same offer, unless a newer one (or nothing) took its place meanwhile.
+		if (company.store.get().sidebarReset === undoing) company.store.set({ sidebarReset: reset });
+		return;
+	}
+	const profileId = company.profile.profileId;
+	if (!storedAppsOrder(profileId).length) {
+		storeAppsOrder(profileId, reset.appsOrder);
+		parts.appsOrder = reset.appsOrder;
+	}
+	parts.context?.refreshInterfacePages?.();
+	company.store.set({ sidebarReset: undefined });
 }
 
 /** An agent's card from the rail: Pin or Unpin and Hide (or Show, for a hidden agent) where the member has a
@@ -2185,7 +2318,7 @@ async function deleteAgent(company: CompanyController, parts: RailParts, agent: 
 	}
 }
 
-function sectionMenu(company: CompanyController, sectionId: string): MenuEntry[] {
+function sectionMenu(company: CompanyController, parts: RailParts, sectionId: string): MenuEntry[] {
 	const sidebar = company.store.get().sidebar;
 	const section = sidebar?.sections.find((item) => item.sectionId === sectionId);
 	if (!sidebar || !section || !canOrganize(company)) return [];
@@ -2215,23 +2348,27 @@ function sectionMenu(company: CompanyController, sectionId: string): MenuEntry[]
 			icon: "trash",
 			danger: true,
 			select: async () => {
-				if (
-					await confirmDialog(
-						t(
+				const name = `"${section.name}"`;
+				// In the member's own sidebar (20260930727000) nobody else's changes.
+				const question = !company.ownSidebar()
+					? t(
 							"Delete the section {name}? Its agents and group chats move to Unassigned, for everyone in the company.",
-							{
-								name: `"${section.name}"`,
-							},
-						),
-						t("Delete section"),
-						true,
-						undefined,
-						company.signal,
-					)
-				)
+							{ name },
+						)
+					: section.mine
+						? t(
+								"Delete your section {name}? Its agents and group chats go back to where the company keeps them.",
+								{ name },
+							)
+						: t(
+								"Remove {name} from your sidebar? Its agents and group chats move to Unassigned. Nobody else's sidebar changes.",
+								{ name },
+							);
+				if (await confirmDialog(question, t("Delete section"), true, undefined, company.signal))
 					void company.changeSidebar({ action: "delete_section", sectionId });
 			},
 		},
+		...resetEntries(company, parts),
 	];
 }
 
@@ -2293,12 +2430,15 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 		return;
 	} else if (titleElement?.dataset.sectionId) {
 		const sectionId = titleElement.dataset.sectionId;
-		items = sectionMenu(company, sectionId);
+		items = sectionMenu(company, parts, sectionId);
 		label = t("{name} actions", { name: titleElement.textContent ?? t("Section") });
 		opener = titleElement;
 		findOpener = () => parts.list.querySelector<HTMLElement>(`.rail-section-title[data-section-id="${sectionId}"]`);
 	} else if (!target.closest("a[href], a[data-href], button, input") && canOrganize(company)) {
-		items = [{ label: t("New section"), icon: "folder_plus", select: () => void askSectionName(company) }];
+		items = [
+			{ label: t("New section"), icon: "section_plus", select: () => void askSectionName(company) },
+			...resetEntries(company, parts),
+		];
 	}
 	// Nothing to offer: the browser's own menu stays.
 	if (!items.length) return;

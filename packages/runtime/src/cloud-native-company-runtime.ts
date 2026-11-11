@@ -34,6 +34,7 @@ import {
 	observeCloudCompanyPathPresence,
 } from "./cloud-company-path-presence.ts";
 import { cloudEventTools } from "./cloud-event-tools.ts";
+import { cloudAppGroupsTool } from "./cloud-folder-app-groups.ts";
 import { cloudAppTools } from "./cloud-folder-app-tools.ts";
 import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
 import { CloudFolderGroupChats } from "./cloud-folder-group-chats.ts";
@@ -1069,6 +1070,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 													peopleComplete: !context.coworkersTruncated,
 												}),
 											}),
+											// The apps drawer's groups, the twin of the sidebar's sections (APP-GROUPS-SPEC §3).
+											cloudAppGroupsTool({ folder: folder.client, operations, identity }),
 											...cloudReviewRuleTools(binding, identity, this.#paths),
 											// Good will (20260930566000): last month's payments and sorting them, the Co-Founder's until
 											// an agent owns the company's money.

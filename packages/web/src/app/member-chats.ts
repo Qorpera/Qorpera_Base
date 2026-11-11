@@ -75,6 +75,8 @@ export interface MemberChatsHost {
 	setUnavailable(): void;
 	/** A place the member made was not kept: the rail says so, and shows what the cloud has. */
 	placeFailed(): void;
+	/** The cloud kept the places the member made: what counts as the member's own changes has changed. */
+	placed?(): void;
 }
 
 const EMPTY: MemberChatThread = {
@@ -263,6 +265,7 @@ export class MemberChats {
 			// Reads sent while this was on its way may be from before it.
 			++this.#listReads;
 			if (failed) this.#host.placeFailed();
+			else this.#host.placed?.();
 			if (this.#placesPending) return;
 			// The last change's answer is the list as it stands. After a failure the list is read again: it shows what
 			// the cloud kept, and whether it keeps places at all.

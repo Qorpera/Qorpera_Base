@@ -712,7 +712,8 @@ export function mountApplication(
 					)
 					.catch(() => undefined);
 			});
-			// The company's sections are QorperaOS/agents/sections.md: the rail's moves are the member's edits of it.
+			// On a cloud from before each member's own sidebar (20260930727000), the company's sections are
+			// QorperaOS/agents/sections.md and the rail's moves are the member's edits of it.
 			controller.useSectionsFile((signal) => {
 				const current = () => {
 					if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
@@ -1213,7 +1214,16 @@ export function mountApplication(
 				agentActions: { ...agentActions, ...groupActions, ...workspaceActions },
 				openAgentCard,
 				openGroupCard,
-				hideInterfacePage: (page, hidden) => interfacePages?.hide(page, hidden) ?? Promise.resolve(),
+				hideInterfacePage: (page, hidden) =>
+					(interfacePages?.hide(page, hidden) ?? Promise.resolve()).then(() => {
+						// Reset sidebar counts hidden pages among the member's changes (20260930727000), and a newer choice
+						// is never undone by an older reset's Undo.
+						if (controller.ownSidebar()) {
+							controller.store.set({ sidebarReset: undefined });
+							void controller.refreshSidebar();
+						}
+					}),
+				refreshInterfacePages: () => void interfacePages?.refresh(),
 			});
 		if (navigationFocus) {
 			// The drawer opens on its first control: the company's name, or the search field when it is open (the
