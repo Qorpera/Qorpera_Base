@@ -10,7 +10,8 @@
 --    (SCREEN_TOO_SOON); the machine's last use never moves;
 -- 3. the executor's read: served once and only by the placement's own executor, within 15 seconds; a replaced, served or
 --    old use, a member who left, refused; a machine stopped meanwhile answers MACHINE_NOT_RUNNING; keepDesktop from the
---    member's word within 30 minutes; the machine's last use never moves;
+--    member's word within 30 minutes; the served read of a look the member confirmed in the last 30 minutes moves the
+--    machine's last use (20260930714000), no other read does;
 -- 4. the disk's rule for members: on a disk that has had a view, a member who does not read the root sees no screen;
 -- 5. the member's read check after the boundary: nothing to check without a view; every read the newest view holds must
 --    be the member's to read (detail qorpera.test-machine/member-unreadable), and a refusal marks neither the placement
@@ -352,8 +353,8 @@ begin
 		'3: the machine''s own executor serves it: ' || current_setting('qorpera_test.mm_a33'));
 	perform pg_temp.base_assert(current_setting('qorpera_test.mm_a34') = '42501:Machine screen use is unavailable',
 		'3: once: ' || current_setting('qorpera_test.mm_a34'));
-	perform pg_temp.base_assert(pg_temp.mm_used('a1')::text = current_setting('qorpera_test.mm_used3'),
-		'3: the executor''s read never moves the machine''s last use');
+	perform pg_temp.base_assert(pg_temp.mm_used('a1') > current_setting('qorpera_test.mm_used3')::timestamptz,
+		'3: the served read of a look the member confirmed moves the machine''s last use (20260930714000)');
 end $$;
 
 -- A replaced use, an old one, a member who left, a machine stopped meanwhile; the member's word within 30 minutes.
