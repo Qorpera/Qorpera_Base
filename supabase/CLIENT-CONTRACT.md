@@ -1606,8 +1606,9 @@ the What's new page. Nothing goes live by itself.
 
 - `qorpera_list_code_releases(profile)`: `{schema: "qorpera.code-releases/v1", canRelease, sites: [{owner, name, site,
   live, back, ready, waiting, problem}]}` for any member of the company (viewers too; 42501 "Releases unavailable" for
-  anyone else). `canRelease` is true for owners and admins. One entry per repository that has a site or made one (at
-  most 10, by owner and name):
+  anyone else). `canRelease` is true for owners and admins. One entry per repository that has a site or made one, at
+  most 10: every repository with a site first (a company has at most 10 sites), live ones before the rest, then those
+  that made a site and have none now, a `problem` first, the newest change first (by owner and name within each):
   - `site`: `{slug, url, title}`, or null until the first version was kept.
   - `live`: `{version, kind, since, by, from}` or null when nothing is live. `version` is the number members see;
     `kind` is `release` (a member put it live) or `back` (a member went back to it, showing its number again, and
