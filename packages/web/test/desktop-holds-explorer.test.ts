@@ -22,7 +22,9 @@ import type { WebCompanyComputer } from "../src/cloud/computer.ts";
  * saw before, and never owed, may end by itself); nor one taken before it was pressed, nor by a take-over the page sent.
  * (I2) a page sends no input and no heartbeat for a machine after its release was asked (Hand back, I'm done and a close
  * ask all the agent's machines back), until a new take-over on purpose. (I3) no take-over a page sent holds the desktop
- * after a hand-back answer past its epoch reached that page. A failure prints the seed, its shape and its steps. */
+ * after a hand-back answer past its epoch reached that page. (I4, review r11) a take-over the page did not call off (no
+ * release of that machine asked since the press) is never answered "called off", and after a TAKE_CALLED_OFF named an
+ * epoch no take-over of that machine goes out below it. A failure prints the seed, its shape and its steps. */
 
 const MEMBER = "member";
 const OTHER = "other";
@@ -185,6 +187,15 @@ interface Page {
 	sent: { id: number; machine: Machine; epoch: number }[];
 	/** The highest epoch a hand-back answer for each machine reached this page with. */
 	answered: Map<Machine, number>;
+	/** How many releases of each machine this page asked: a take-over answered "called off" must follow one. */
+	releases: Map<Machine, number>;
+	/** The highest epoch a TAKE_CALLED_OFF named to this page for each machine: no later take-over goes out below it. */
+	floor: Map<Machine, number>;
+	/** I4 breaches seen as answers came. */
+	silent: string[];
+	/** Hand back and I'm done of this page's at work now, and how many began: their later rounds give back too. */
+	finishing: number;
+	finishes: number;
 	seen: Seen[];
 }
 
@@ -274,6 +285,11 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 			});
 			const one = pages[page] as Page;
 			if (kind === "take") {
+				const floor = one.floor.get(machine as Machine);
+				if (floor !== undefined && (epoch as number) < floor)
+					one.silent.push(
+						`p${page}'s take-over of ${machine?.slice(-2)} went out at ${epoch}, below the ${floor} a refusal named`,
+					);
 				one.sent.push({ id: ids, machine: machine as Machine, epoch: epoch as number });
 				one.known.add(machine as Machine);
 				raise(one, machine as Machine, epoch as number, "sent");
@@ -302,6 +318,11 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 			known: new Set(),
 			sent: [],
 			answered: new Map(),
+			releases: new Map(),
+			floor: new Map(),
+			silent: [],
+			finishing: 0,
+			finishes: 0,
 			seen: [],
 		});
 	}
@@ -315,6 +336,12 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 	const deliver = (one: Request) => {
 		one.settled = true;
 		const page = pages[one.page] as Page;
+		if (one.kind === "take") {
+			const answer = one.answer as MemberDesktopHold;
+			const machine = one.machine as Machine;
+			if (answer.state === "refused" && answer.reason === "TAKE_CALLED_OFF" && answer.epoch !== null)
+				page.floor.set(machine, Math.max(page.floor.get(machine) ?? -1, answer.epoch));
+		}
 		if (one.kind === "back") {
 			const answer = one.answer as MemberDesktopHandBack;
 			const machine = one.machine as Machine;
@@ -345,8 +372,15 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 			() => undefined,
 		);
 	};
+	/** The page asks this machine back (the explorer's own account, for I2 and I4). */
+	const letGo = (page: Page, machine: Machine) => {
+		page.released.add(machine);
+		page.releases.set(machine, (page.releases.get(machine) ?? 0) + 1);
+	};
 	const check = (): string | undefined => {
 		for (const [index, page] of pages.entries()) {
+			// I4
+			if (page.silent.length) return `I4: ${page.silent[0]}`;
 			// I2
 			for (const machine of page.released)
 				if (page.ledger.holder(machine) !== undefined)
@@ -394,11 +428,25 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 					if (!page.open) return false;
 					const machine = page.selected;
 					page.released.delete(machine);
+					page.known.add(machine);
+					const pressed = step;
+					const before = page.releases.get(machine) ?? 0;
+					const finishing = page.finishing > 0;
+					const finishes = page.finishes;
 					void page.ledger.take(machine, AGENT).then((answer) => {
+						// A take-over the page did not call off (no release of the machine since the press, and no Hand back or
+						// I'm done at work, whose later rounds give back what reads show) never comes to nothing unsaid (review
+						// r11 F18).
+						const calledOff =
+							(page.releases.get(machine) ?? 0) !== before || finishing || page.finishes !== finishes;
+						if (answer.state === "called-off" && !calledOff)
+							page.silent.push(
+								`p${index}'s take-over of ${machine.slice(-2)} pressed at step ${pressed} was called off, though the page asked no release of it`,
+							);
 						// The window: taken while another machine was chosen goes back as it comes.
 						if (answer.state === "ok" && page.selected !== machine) {
 							page.ledger.release(machine, AGENT);
-							page.released.add(machine);
+							letGo(page, machine);
 						}
 					});
 					return true;
@@ -409,8 +457,12 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				weight: 2,
 				name: `p${index} hand back`,
 				run: () => {
-					for (const machine of machines) page.released.add(machine);
-					void page.ledger.releaseAgent(AGENT, "handed_back", true);
+					for (const machine of machines) letGo(page, machine);
+					page.finishing++;
+					page.finishes++;
+					void page.ledger.releaseAgent(AGENT, "handed_back", true).finally(() => {
+						page.finishing--;
+					});
 					return true;
 				},
 			},
@@ -419,18 +471,25 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				weight: 3,
 				name: `p${index} I'm done`,
 				run: () => {
-					for (const machine of machines) page.released.add(machine);
+					for (const machine of machines) letGo(page, machine);
 					const pressed = step;
-					void page.ledger.releaseAgent(AGENT, "handed_back", true).then((done) => {
-						if (done)
-							dones.push({
-								page: index,
-								pressed,
-								answered: db.step,
-								sent: new Set(page.sent.map((sent) => sent.id)),
-								upTo: owed(page, pressed),
-							});
-					});
+					page.finishing++;
+					page.finishes++;
+					void page.ledger
+						.releaseAgent(AGENT, "handed_back", true)
+						.then((done) => {
+							if (done)
+								dones.push({
+									page: index,
+									pressed,
+									answered: db.step,
+									sent: new Set(page.sent.map((sent) => sent.id)),
+									upTo: owed(page, pressed),
+								});
+						})
+						.finally(() => {
+							page.finishing--;
+						});
 					return true;
 				},
 			},
@@ -442,7 +501,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 					if (!page.open) return false;
 					page.open = false;
 					page.window++;
-					for (const machine of machines) page.released.add(machine);
+					for (const machine of machines) letGo(page, machine);
 					void page.ledger.releaseAgent(AGENT, "closed");
 					return true;
 				},
@@ -466,7 +525,7 @@ async function explore(seed: number, steps: number): Promise<{ log: string[]; br
 				run: () => {
 					if (!page.open || machines.length < 2) return false;
 					page.selected = page.selected === MACHINES[0] ? MACHINES[1] : MACHINES[0];
-					for (const machine of page.known) if (machine !== page.selected) page.released.add(machine);
+					for (const machine of page.known) if (machine !== page.selected) letGo(page, machine);
 					page.ledger.releaseOthers(AGENT, page.selected);
 					return true;
 				},
@@ -620,8 +679,13 @@ afterEach(() => {
 
 /** Seeds that broke an earlier ledger of this PR (review r10; lanes/desktop-computers-20261110/TAKE-OVER-PROGRESS.md).
  * F12 to F16 broke I1 with I2 left out (every earlier ledger also has the two I2 gaps below); F17 and the I2 gaps break
- * the ledger of review r9 as it was. They run first; each holds on this ledger. */
+ * the ledger of review r9 as it was, F18 that of review r10. They run first; each holds on this ledger. */
 const FOUND: readonly { seed: number; finding: string }[] = [
+	{
+		seed: 6087,
+		finding:
+			"F18 (r10, I4): another tab gave the machine back before the take-over at 0 arrived; its TAKE_CALLED_OFF (epoch 1) came back as called off, and the member was told nothing",
+	},
 	{
 		seed: 3439,
 		finding:

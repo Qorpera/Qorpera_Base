@@ -157,7 +157,8 @@ export class DesktopHoldLedger {
 		const hold = this.#holds.get(machineId) ?? this.#entry(machineId);
 		hold.agents.add(agentId);
 		if (this.holder(machineId) !== undefined) return Promise.resolve({ state: "ok" });
-		if ((hold.state === "queued" || hold.state === "taking") && hold.pending) return hold.pending;
+		// One on its way that no release called off is this press's too; one called off is not (review r11).
+		if ((hold.state === "queued" || hold.state === "taking") && hold.pending && hold.take) return hold.pending;
 		const ticket = {};
 		hold.take = ticket;
 		this.#state(hold, "queued");
@@ -194,12 +195,16 @@ export class DesktopHoldLedger {
 			}
 			// A refusal that names the member's epoch is knowledge from the database, whatever came of this one.
 			if (answer?.state === "refused" && answer.epoch !== null) this.#learn(hold, answer.epoch);
-			// A release was asked meanwhile: its hand-back covers whatever this got (review r5 F11).
+			// This page asked a release meanwhile (it calls the take-over off): its hand-back covers whatever this got
+			// (review r5 F11), and nothing is said.
 			if (!mine() || hold.calling) return { state: "called-off" };
 			if (hold.epoch !== epoch) {
-				// The epoch moved on meanwhile: nothing taken at the older one holds. (The state is read anew.)
+				// The database moved the epoch on meanwhile (another tab gave the machine back): nothing taken at the older
+				// one holds. The member is told, as of a refusal, and the next press goes out at the epoch now known (review
+				// r11 F18): the database's own refusal, or the one it would give this take-over now. (The state is read anew.)
 				if ((hold.state as Hold["state"]) === "taking") this.#state(hold, undefined);
-				return { state: "called-off" };
+				if (answer?.state === "refused") return answer;
+				return { state: "refused", reason: "TAKE_CALLED_OFF", memberName: null, epoch: hold.epoch ?? null };
 			}
 			if (answer?.state === "ok") {
 				this.#state(hold, "held");
@@ -257,6 +262,8 @@ export class DesktopHoldLedger {
 		if (!hold) return;
 		if (agentId) hold.agents.add(agentId);
 		if (hold.state === "queued") this.#state(hold, undefined);
+		// A take-over queued or on its way is called off: whatever comes of it is said to no one (review r11).
+		hold.take = undefined;
 		// Asked, so given back in this page's lifetime, whether or not anything is sent (found by the schedule explorer):
 		// a hold a list shows here later is owed, never taken up, until a take-over on purpose.
 		this.#givenBack.add(machineId);
@@ -407,14 +414,15 @@ export class DesktopHoldLedger {
 
 	/** The member's epoch for the machine, as the database said it. An epoch above the known one discharges everything
 	 * owed (it was owed at the known one, and the epoch moves past it only by a hand-back that ends what was taken under
-	 * it) and ends what the window had there; one at or below it changes nothing (review r10). */
+	 * it) and ends what the window had there (held, may be held); one at or below it changes nothing (review r10). A
+	 * take-over on its way keeps its state: its own answer settles it, and a press meanwhile waits for that (r11). */
 	#learn(hold: Hold, epoch: number): void {
 		if (hold.epoch !== undefined && epoch <= hold.epoch) return;
 		const moved = hold.epoch !== undefined;
 		hold.epoch = epoch;
 		hold.took = false;
 		hold.saw = false;
-		if (moved && !hold.calling && hold.state !== "queued" && hold.state !== undefined) hold.state = undefined;
+		if (moved && !hold.calling && (hold.state === "held" || hold.state === "maybe")) hold.state = undefined;
 		this.#changed();
 	}
 

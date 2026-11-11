@@ -2152,6 +2152,64 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		expect(s.state.lateCommit?.()).toBe(false);
 	});
 
+	it("tells the member when another tab's hand-back overtook their take-over, reads the list again, and sends the next press at the new epoch (r11 F18)", async () => {
+		const { s, p } = await company();
+		expect(controls(p)?.textContent).not.toContain("could not be taken over");
+		// Take over, sent at 0; before it reaches the database another tab gives the desktop back (epoch 0 to 1).
+		const late = gate();
+		s.state.takeGate = late.closed;
+		p.takeOver();
+		await flush();
+		expect(takeEpochs(s)).toEqual([0]);
+		s.state.takeGate = undefined;
+		s.state.epochs.set(machine(1).machineId, 1);
+		const read = lists(s);
+		late.open();
+		await flush();
+		// Refused (TAKE_CALLED_OFF, epoch 1): the member is told, and the list is read again.
+		expect(p.holding).toBe(false);
+		expect(controls(p)?.textContent).toContain("The computer could not be taken over. Try again.");
+		expect(lists(s)).toBeGreaterThan(read);
+		// No take-over on its own; the member's next press goes out at the epoch the refusal named, and holds.
+		expect(takeEpochs(s)).toEqual([0]);
+		await takeOver(p);
+		expect(takeEpochs(s)).toEqual([0, 1]);
+		expect(p.holding).toBe(true);
+	});
+
+	it("starts a new take-over on a press after a release called the one on its way off, and says nothing of that one (r11)", async () => {
+		const { s, panels, p } = await company();
+		// A take-over at 0 on its way.
+		const late = gate();
+		s.state.takeGate = late.closed;
+		p.takeOver();
+		await flush();
+		expect(takeEpochs(s)).toEqual([0]);
+		s.state.takeGate = undefined;
+		// The window closes (it calls that take-over off); its hand-back at 0 fails, to be asked again after a wait.
+		s.state.handBackFails = 1;
+		panels.close(staff.id);
+		await flush();
+		expect(backEpochs(s)).toEqual([0]);
+		// Opened again, the agent's take-over card asks for a take-over (the window's own button says Try again until the
+		// hand-back is answered): a new take-over, which asks the hand-back again first and goes out at the epoch it
+		// answers (never joined to the one called off).
+		s.state.answers.push({ picture: 1 });
+		const again = panels.open(staff)!;
+		again.attach(document.body, () => panels.close(staff.id));
+		await flush();
+		again.takeOver();
+		await flush();
+		expect(backEpochs(s)).toEqual([0, 0]);
+		expect(takeEpochs(s)).toEqual([0, 1]);
+		expect(again.holding).toBe(true);
+		// The take-over called off arrives at last: refused at 0, said to no one; the new hold stands.
+		late.open();
+		await flush();
+		expect(again.holding).toBe(true);
+		expect(controls(again)?.textContent).not.toContain("could not be taken over");
+	});
+
 	it("lets a list with a lower epoch than the page knows end and take up nothing (r8 F15)", async () => {
 		const { s, p } = await company();
 		// A read of the window's is captured while another tab holds the desktop at epoch 0, and delayed.
