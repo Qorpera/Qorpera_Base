@@ -1977,3 +1977,75 @@ describe("a ChatGPT plan's first-routine card in the app", () => {
 		expect(f.calls).not.toContain("member-folder-commit");
 	});
 });
+
+describe("the rail's line under an idle agent's name in the app", () => {
+	it("reads the agents' notes once the roster arrives, also when the team answers first", async () => {
+		const routine = {
+			routine_id: id(62),
+			client_routine_id: id(162),
+			version: 1,
+			status: "active",
+			staff_agent_id: staff.id,
+			title: "Morning brief",
+			prompt: "Brief me.",
+			triggers: [{ id: "agent", kind: "schedule", intervalMinutes: 60, replyPolicy: "silent" }],
+			effort: "medium",
+			sponsor_binding_id: id(87),
+			sponsor_version: 1,
+			logical_computer_id: null,
+			required_capability: "agent_turn",
+			job_type: "agent_turn",
+			publication_mode: "automatic",
+			review_policy_key: null,
+			reviewer_staff_ids: [],
+			created_at: userA.created_at,
+			updated_at: userA.created_at,
+			next_run_at: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+		};
+		const answer = async (method: string): Promise<unknown> => {
+			if (method === "qorpera_member_company_state_folders")
+				return {
+					schema: "qorpera.member-company-state-folders/v1",
+					agents: [{ staffAgentId: staff.id, file: "QorperaOS/agents/nora/agent.md" }],
+					groups: [],
+					routines: [],
+				};
+			if (method === "qorpera_member_folder_read")
+				return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: false };
+			if (method === "qorpera_list_cloud_routines") return [routine];
+			if (method === "qorpera_list_member_notifications") return [];
+			throw new Error(`Unexpected fixture RPC: ${method}`);
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request) =>
+				Response.json(await answer(new URL(String(input)).pathname.split("/").at(-1)!)),
+			),
+		);
+		history.replaceState(null, "", `/#/c/${profileA.profileId}`);
+		const f = fixture();
+		f.cloud.config.objectGatewayUrl = "https://objects.fixture.invalid";
+		vi.mocked(f.cloud.rpc).mockImplementation((method: string) => answer(method));
+		// The team answers at once; the roster later, so the notes first read with no agents.
+		const roster = deferred<HostedStaffAgent[]>();
+		vi.mocked(f.api.listStaff).mockReturnValue(roster.promise);
+		const root = document.createElement("div");
+		document.body.append(root);
+		dispose = mountApplication(root, f.cloud, f.api);
+		await vi.waitFor(
+			() =>
+				expect(vi.mocked(f.cloud.rpc).mock.calls.some(([method]) => method === "qorpera_list_cloud_routines")).toBe(
+					true,
+				),
+			{ timeout: 3000 },
+		);
+		roster.resolve([staff]);
+		await vi.waitFor(
+			() =>
+				expect(root.querySelector(`.rail [data-agent-id="${staff.id}"] small`)?.textContent).toMatch(
+					/^Next: Morning brief · /,
+				),
+			{ timeout: 3000 },
+		);
+	});
+});

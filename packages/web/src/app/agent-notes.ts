@@ -21,7 +21,8 @@ export interface AgentNote {
 
 export type AgentNotesState = Readonly<Record<string, AgentNote>>;
 
-type ListedRoutine = Pick<CloudRoutine, "status" | "staffAgentId" | "title" | "nextRunAt">;
+type ListedRoutine = Pick<CloudRoutine, "status" | "staffAgentId" | "title" | "nextRunAt"> &
+	Partial<Pick<CloudRoutine, "triggers">>;
 
 /** What a wall says for the rail; nothing for a wall that has neither. */
 export function wallNote(text: string): Pick<AgentNote, "waits" | "done"> {
@@ -48,6 +49,18 @@ export function nextRuns(routines: readonly ListedRoutine[], now: number): Map<s
 	return next;
 }
 
+/** An active routine on a clock whose next run the cloud has not worked out yet: none listed (a schedule just saved
+ * waits for the scheduler) or one that has passed (its occurrence still waits). The scheduler moves it on without a
+ * file change, so nothing else says when to look again. */
+export function unsettledRuns(routines: readonly ListedRoutine[], now: number): boolean {
+	return routines.some(
+		(routine) =>
+			routine.status === "active" &&
+			(routine.triggers ?? []).some((trigger) => trigger.kind === "schedule" || trigger.kind === "once") &&
+			(!routine.nextRunAt || !(Date.parse(routine.nextRunAt) > now)),
+	);
+}
+
 export interface AgentNotesSource {
 	/** The active agents of the company. */
 	agents(): readonly string[];
@@ -65,6 +78,8 @@ const SPACING_MS = 15_000;
 const AFTER_RUN_MS = 90_000;
 /** The longest a timer for a next run waits (a timer can't wait weeks). */
 const MAX_WAIT_MS = 6 * 60 * 60 * 1000;
+/** How often the routines are listed again while a next run is unsettled. */
+const UNSETTLED_MS = 5 * 60 * 1000;
 
 /** The company's agent notes, kept current while the company is open. */
 export class AgentNotes {
@@ -72,6 +87,9 @@ export class AgentNotes {
 	readonly #publish: (notes: AgentNotesState) => void;
 	readonly #walls = new Map<string, Pick<AgentNote, "waits" | "done">>();
 	#next = new Map<string, { title: string; at: string }>();
+	#unsettled = false;
+	/** The agents the last read was for: when the roster changes, the new ones are read at once. */
+	#readFor = "";
 	#shown = "";
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	#nextTimer: ReturnType<typeof setTimeout> | undefined;
@@ -87,6 +105,15 @@ export class AgentNotes {
 	}
 
 	open(): void {
+		void this.#read();
+	}
+
+	/** The company's agents may have changed (the roster arrives after the company opens, an agent is hired): a new
+	 * set is read at once. */
+	agentsChanged(): void {
+		if (this.#disposed || this.#source.agents().join("\n") === this.#readFor) return;
+		clearTimeout(this.#timer);
+		this.#timer = undefined;
 		void this.#read();
 	}
 
@@ -117,10 +144,12 @@ export class AgentNotes {
 		this.#lastRead = Date.now();
 		this.#reading = this.#readAll().finally(() => {
 			this.#reading = undefined;
-			if (this.#again && !this.#disposed) {
-				this.#again = false;
-				this.changed();
-			}
+			if (this.#disposed) return;
+			const again = this.#again;
+			this.#again = false;
+			// Agents that came meanwhile are read now; a hint meanwhile once things settle.
+			if (this.#source.agents().join("\n") !== this.#readFor) void this.#read();
+			else if (again) this.changed();
 		});
 		return this.#reading;
 	}
@@ -128,6 +157,7 @@ export class AgentNotes {
 	async #readAll(): Promise<void> {
 		const { signal } = this.#source;
 		const agents = this.#source.agents();
+		this.#readFor = agents.join("\n");
 		const walls = Promise.all(
 			agents.map(async (id) => {
 				try {
@@ -142,6 +172,7 @@ export class AgentNotes {
 		const routines = this.#source.listRoutines().then(
 			(listed) => {
 				this.#next = nextRuns(listed, Date.now());
+				this.#unsettled = unsettledRuns(listed, Date.now());
 			},
 			() => {},
 		);
@@ -164,13 +195,18 @@ export class AgentNotes {
 		this.#publish(notes);
 	}
 
-	/** Lists the routines again once the soonest next run has run (the run moves it on). */
+	/** Lists the routines again once the soonest next run has run (the run moves it on), and every few minutes while a
+	 * next run is unsettled. */
 	#watchNextRun(): void {
 		clearTimeout(this.#nextTimer);
 		this.#nextTimer = undefined;
 		const soonest = Math.min(...[...this.#next.values()].map((next) => Date.parse(next.at)));
-		if (!Number.isFinite(soonest)) return;
-		const wait = Math.min(MAX_WAIT_MS, Math.max(0, soonest - Date.now()) + AFTER_RUN_MS);
+		const waits = [
+			...(Number.isFinite(soonest) ? [Math.max(0, soonest - Date.now()) + AFTER_RUN_MS] : []),
+			...(this.#unsettled ? [UNSETTLED_MS] : []),
+		];
+		if (!waits.length) return;
+		const wait = Math.min(MAX_WAIT_MS, ...waits);
 		this.#nextTimer = setTimeout(() => {
 			this.#nextTimer = undefined;
 			void this.#read();

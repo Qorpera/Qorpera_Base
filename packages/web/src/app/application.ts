@@ -1442,6 +1442,8 @@ export function mountApplication(
 			apps.open();
 			notes.open();
 		}
+		// The roster arrives after the company opens, and agents are hired and let go: the rail's notes follow it.
+		agentNotes?.agentsChanged();
 		// The company's sites, for the apps drawer's Sites entry: read once the company opens, and again when the window
 		// comes back (an agent may have published one meanwhile). A cloud without the read shows no entry.
 		if (sitesRead !== controller && state.team?.capabilities.read) {

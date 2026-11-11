@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { dayLabel, idleLine } from "../src/app/agent-line.ts";
-import { AgentNotes, nextRuns, wallNote } from "../src/app/agent-notes.ts";
+import { AgentNotes, nextRuns, unsettledRuns, wallNote } from "../src/app/agent-notes.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 
 /* The line under an idle agent's name in the rail (Jonas, 11 Nov 2026, option A): the most useful thing that holds. */
@@ -171,5 +171,71 @@ describe("agent notes", () => {
 		notes.changed();
 		await vi.advanceTimersByTimeAsync(60_000);
 		expect(readWall).not.toHaveBeenCalled();
+	});
+
+	it("reads a roster that arrives after the company opened at once, and the same roster not again", async () => {
+		vi.useFakeTimers({ now: NOW });
+		let agents: string[] = [];
+		const readWall = vi.fn(async () => WALL);
+		const publish = vi.fn();
+		const notes = new AgentNotes(
+			{ agents: () => agents, readWall, listRoutines: async () => [], signal: new AbortController().signal },
+			publish,
+		);
+		notes.open();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(readWall).not.toHaveBeenCalled();
+		agents = ["a"];
+		notes.agentsChanged();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(publish).toHaveBeenLastCalledWith({
+			a: { waits: "Pick a shop name", done: { text: "Made the new logo", day: "2026-11-10" } },
+		});
+		notes.agentsChanged();
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(readWall).toHaveBeenCalledTimes(1);
+		// A hint reads whoever the roster holds by then.
+		agents = ["a", "b"];
+		notes.changed();
+		await vi.advanceTimersByTimeAsync(15_000);
+		expect(readWall).toHaveBeenCalledTimes(3);
+		notes.dispose();
+	});
+
+	it("lists the routines every five minutes while a scheduled next run is unsettled", async () => {
+		vi.useFakeTimers({ now: NOW });
+		const schedule = [{ kind: "schedule" as const }] as never;
+		const listener = [{ kind: "listener" as const }] as never;
+		const routine = (nextRunAt: string | null, triggers = schedule) => ({
+			staffAgentId: "a",
+			title: "Market check",
+			status: "active" as const,
+			nextRunAt,
+			triggers,
+		});
+		expect(unsettledRuns([routine(null)], NOW.getTime())).toBe(true);
+		expect(unsettledRuns([routine(at(-1))], NOW.getTime())).toBe(true);
+		expect(unsettledRuns([routine(at(1))], NOW.getTime())).toBe(false);
+		// A routine that waits for a file change or an event has no next run to wait for.
+		expect(unsettledRuns([routine(null, listener)], NOW.getTime())).toBe(false);
+		let listed = [routine(null)];
+		const listRoutines = vi.fn(async () => listed);
+		const publish = vi.fn();
+		const notes = new AgentNotes(
+			{ agents: () => ["a"], readWall: async () => null, listRoutines, signal: new AbortController().signal },
+			publish,
+		);
+		notes.open();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(publish).toHaveBeenLastCalledWith({});
+		// The scheduler works the next run out with no change to the folder: the next look finds it.
+		listed = [routine(at(30))];
+		await vi.advanceTimersByTimeAsync(5 * 60_000);
+		expect(listRoutines).toHaveBeenCalledTimes(2);
+		expect(publish).toHaveBeenLastCalledWith({ a: { next: { title: "Market check", at: at(30) } } });
+		// Settled, it waits for that run, not five minutes.
+		await vi.advanceTimersByTimeAsync(60 * 60_000);
+		expect(listRoutines).toHaveBeenCalledTimes(2);
+		notes.dispose();
 	});
 });
