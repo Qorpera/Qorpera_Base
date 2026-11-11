@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
 	CLOUD_MEMBER_FOLDER_PAGE,
+	CLOUD_MEMBER_FOLDER_READ_MANY,
 	CloudMemberFolderAccessDenied,
 	CloudMemberFolderClient,
 	CloudMemberFolderFileCache,
@@ -443,6 +444,41 @@ describe("the member folder client", () => {
 		expect(new Request(calls[0]!.url, calls[0]!.init).cache).toBe("default");
 		expect(() => folder.list(null, null, 0, new AbortController().signal)).toThrow();
 		expect(() => folder.pathHistory("a", "not-a-version", 10, new AbortController().signal)).toThrow();
+	});
+
+	it("reads several paths in one call, each as its own read answers, and refuses an answer of the wrong length", async () => {
+		const read = (found: boolean) =>
+			found
+				? {
+						schema: "qorpera.folder-read/v1",
+						asOfSeq: 4,
+						found: true,
+						entry: { path: "apps/a/index.html", kind: "folder", version, seq: 3, updatedAt: at },
+					}
+				: { schema: "qorpera.folder-read/v1", asOfSeq: 4, found: false, entry: null };
+		const { folder, calls } = client(() =>
+			Response.json({ schema: "qorpera.folder-read-many/v1", reads: [read(true), read(false)] }),
+		);
+		const reads = await folder.readMany(["apps/a/index.html", "apps/a/gone.png"], new AbortController().signal);
+		expect(calls[0]!.url).toBe("https://cloud.test/rest/v1/rpc/qorpera_member_folder_read_many");
+		expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+			p_environment_id: env,
+			p_paths: ["apps/a/index.html", "apps/a/gone.png"],
+		});
+		expect(reads.map((one) => one.entry?.path ?? null)).toEqual(["apps/a/index.html", null]);
+		await expect(folder.readMany(["apps/a/index.html"], new AbortController().signal)).rejects.toThrow(
+			"Invalid company folder reads",
+		);
+		expect(() => folder.readMany([], new AbortController().signal)).toThrow("Invalid company folder reads");
+		expect(() =>
+			folder.readMany(
+				Array.from({ length: CLOUD_MEMBER_FOLDER_READ_MANY + 1 }, (_, index) => `f${index}`),
+				new AbortController().signal,
+			),
+		).toThrow("Invalid company folder reads");
+		// A database without the call answers 404: the caller reads each path alone.
+		const missing = client(() => new Response(null, { status: 404 }));
+		await expect(missing.folder.readMany(["a"], new AbortController().signal)).rejects.toMatchObject({ status: 404 });
 	});
 
 	it("reads a page of 200 links with the longest paths and targets, each character escaped at worst", async () => {
