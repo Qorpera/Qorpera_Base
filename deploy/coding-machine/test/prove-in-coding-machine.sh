@@ -12,7 +12,10 @@
 #   FORWARD policy at ACCEPT), Chromium with its
 #   sandbox, tmux, the pinned git, and the toolbox and languages of the contract's 2026-10-14 amendment (items 7 and
 #   11): TypeScript (tsc, tsx, node), C and C++ (gcc, clang), Ruby, Python with uv, mise installing a language in the
-#   user's home, LibreOffice converting a document, and sqlite3, zip and unzip.
+#   user's home, LibreOffice converting a document, and sqlite3, zip and unzip;
+# - a repository's checks and site (own code storage, steps 3 and 4): the executor's own clean copy, collect and drop
+#   (QORPERA_PROOF_SCRIPTS, printed by test/code-checks-scripts.mjs), run as the session's commands are, on a
+#   repository's storage in the session's /company.
 # Prints PASS lines, then ALL PASSED.
 set -euo pipefail
 
@@ -33,6 +36,8 @@ MISE_NODE=22.20.0
 # The test machine's proxy (test/proof-proxy.py): its bridge forwards nothing, so this machine's downloads, the
 # session's Docker pulls among them, go through it. A coding machine on a node has no proxy.
 PROXY=${QORPERA_PROOF_PROXY:?the proxy of the test machine}
+# The executor's commands for a repository's checks and site: copy.sh, collect.sh and drop.sh.
+SCRIPTS=${QORPERA_PROOF_SCRIPTS:?the folder of the executor's commands for a repository's checks and site}
 # Docker's official images from their public mirror, which has no pull limit worth the name.
 LIBRARY=public.ecr.aws/docker/library
 ALPINE=$LIBRARY/alpine:3.22
@@ -51,13 +56,13 @@ pass() { echo "PASS: $*"; }
 # A version line; sed reads to the end, so the tool never writes into a closed pipe.
 first() { "$@" 2>&1 | sed -n 1p; }
 # One command of the session, as 5g runs it: a transient unit in the session's slice, as its uid, with its walls and
-# its environment. (5g also gives each command the session's own network namespace: README.md, "What 5g does for each
-# session".)
+# its environment, from its home (or from SESSION_CWD). (5g also gives each command the session's own network
+# namespace: README.md, "What 5g does for each session".)
 as_session() {
 	systemd-run --quiet --pipe --wait --collect --service-type=exec \
 		--uid="$SESSION_UID" --gid="$SESSION_UID" --slice="qorpera-coding-$W32.slice" \
 		--property=ProtectProc=invisible --property=PrivateIPC=yes --property="BindPaths=$MOUNT:/company" \
-		--working-directory="$HOMEDIR" \
+		--working-directory="${SESSION_CWD:-$HOMEDIR}" \
 		--setenv=HOME="$HOMEDIR" --setenv=XDG_RUNTIME_DIR="/run/user/$SESSION_UID" \
 		--setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$SESSION_UID/bus" \
 		--setenv=DOCKER_HOST="unix:///run/user/$SESSION_UID/docker.sock" \
@@ -296,4 +301,98 @@ TOOLS=$(as_session bash -c 'cd ~/languages && sqlite3 :memory: "select 40 + 2" &
 	rg -c Qorpera note.txt && fd --type f --glob note.txt && jq -n "1 + 1"') || fail "the command-line tools failed: $TOOLS"
 [[ $TOOLS == $'42\nQorpera proof\n1\nnote.txt\n2' ]] || fail "the command-line tools gave '$TOOLS'"
 pass "sqlite3, zip, unzip, ripgrep, fd and jq work as the session"
+
+# --- A repository's checks and site, as the session (own code storage, steps 3 and 4) -------------------------------
+# The executor's own commands, as its runner starts them: each one command of the session's, its text run by bash from
+# the run's folder with the run's variables (here bash reads it from a file: systemd-run would expand the $ of an
+# argument). A repository's storage in the session's /company holds one commit whose build writes a small website:
+# step 3's copy makes the clean copy of it, the build runs there, and step 4's collect takes the site's web files as
+# git objects into the storage, which the drop takes away again. Only the image's bash, git and python3 do the work
+# (its coreutils are uutils).
+install -d -m 0755 /run/qorpera-proof-scripts
+install -m 0644 "$SCRIPTS/copy.sh" "$SCRIPTS/collect.sh" "$SCRIPTS/drop.sh" /run/qorpera-proof-scripts/
+STORE=$MOUNT/code/proof/site/repo.git
+REPO=/company/code/proof/site/repo.git
+CHECKS=$HOMEDIR/.qorpera-checks
+SOURCE=$(mktemp -d)
+cat >"$SOURCE/build.sh" <<'SH'
+mkdir -p dist/css dist/.cache
+printf '<h1>Proof</h1>\n' >dist/index.html
+printf 'body { color: #333; }\n' >dist/css/app.css
+printf 'hidden\n' >dist/.cache/x.js
+printf 'not served\n' >dist/notes.md
+ln -s index.html dist/link.html
+SH
+git -C "$SOURCE" init -q -b main
+git -C "$SOURCE" add build.sh
+git -C "$SOURCE" -c user.name=proof -c user.email=proof@example.invalid commit -q -m proof
+COMMIT=$(git -C "$SOURCE" rev-parse HEAD)
+install -d "$MOUNT/code/proof/site"
+git clone -q --bare "$SOURCE" "$STORE"
+chown -R "$SESSION_UID:$SESSION_UID" "$MOUNT/code"
+# One of the commands as the session: from <cwd>, with the run's variables and the rest; its output (stdout and
+# stderr as one, as the guest keeps them) in OUT, its exit code in CODE.
+command_as_session() {
+	local script=$1 cwd=$2
+	shift 2
+	CODE=0
+	OUT=$(SESSION_CWD=$cwd as_session env QORPERA_CHECKS_ROOT="$CHECKS" QORPERA_CHECKS_REPOSITORY="$REPO" "$@" \
+		bash --noprofile --norc "/run/qorpera-proof-scripts/$script" 2>&1) || CODE=$?
+}
+# One run: its copy, then the build in it as a check runs.
+run_copy() {
+	command_as_session copy.sh "$HOMEDIR" QORPERA_CHECKS_NAME="$1" QORPERA_CHECKS_COMMIT="$COMMIT"
+	[[ $CODE == 0 && -z $OUT ]] || fail "the copy of run $1 gave $CODE: $OUT"
+	SESSION_CWD=$CHECKS/$1/src as_session bash build.sh || fail "the build of run $1 failed"
+}
+collect() { command_as_session collect.sh "$CHECKS/$1/src" QORPERA_CHECKS_NAME="$1" QORPERA_SITE_FOLDER=dist "${@:2}"; }
+drop() { command_as_session drop.sh "$CHECKS/$1/src" QORPERA_CHECKS_NAME="$1"; }
+store() { git -c safe.directory='*' --git-dir="$STORE" "$@"; }
+wrote() { as_session cat "$CHECKS/$1/site.wrote"; }
+SITE=$'files 2\nbytes 37'
+
+run_copy 0000000001-0001
+[[ $(SESSION_CWD=$CHECKS/0000000001-0001/src as_session git rev-parse HEAD) == "$COMMIT" ]] ||
+	fail "the copy is not at the commit"
+pass "step 3's copy makes a clean copy of the commit as the session"
+collect 0000000001-0001 QORPERA_SITE_SECRET_NAMES=PROOF_SECRET PROOF_SECRET=proof-secret-value-0123
+[[ $CODE == 0 && $OUT =~ ^tree\ ([0-9a-f]{40})$'\n'"$SITE"$ ]] || fail "the collect gave $CODE: $OUT"
+TREE=${BASH_REMATCH[1]}
+WROTE=$(wrote 0000000001-0001)
+[[ $(wc -l <<<"$WROTE") == 4 ]] || fail "site.wrote names other than 4 objects: $WROTE"
+for id in $WROTE; do [[ -f $STORE/objects/${id:0:2}/${id:2} ]] || fail "$id is not at its name"; done
+DIST=$CHECKS/0000000001-0001/src/dist
+EXPECTED=$(printf '100644 blob %s\tcss/app.css\n100644 blob %s\tindex.html' \
+	"$(git hash-object --no-filters "$DIST/css/app.css")" "$(git hash-object --no-filters "$DIST/index.html")")
+[[ $(store ls-tree -r "$TREE") == "$EXPECTED" ]] || fail "the tree holds $(store ls-tree -r "$TREE")"
+store fsck --no-dangling --connectivity-only >/dev/null || fail "the storage does not check after the collect"
+pass "the collect wrote the site's two web files and two trees into the storage, without its hidden file, other type and link"
+drop 0000000001-0001
+[[ $CODE == 0 && $OUT == "dropped 4" ]] || fail "the drop gave $CODE: $OUT"
+for id in $WROTE; do [[ ! -e $STORE/objects/${id:0:2}/${id:2} ]] || fail "$id is still there"; done
+pass "the drop removed the four objects the collect wrote"
+run_copy 0000000002-0001
+collect 0000000002-0001
+[[ $CODE == 0 && $OUT == "tree $TREE"$'\n'"$SITE" && $(wrote 0000000002-0001 | wc -l) == 4 ]] ||
+	fail "the collect again gave $CODE: $OUT"
+run_copy 0000000003-0001
+collect 0000000003-0001
+[[ $CODE == 0 && $OUT == "tree $TREE"$'\n'"$SITE" && -z $(wrote 0000000003-0001) ]] ||
+	fail "a collect of the same files wrote again: $CODE: $OUT"
+pass "a collect of the same files writes no object the storage holds"
+as_session mkdir "$CHECKS/0000000009-0001"
+collect 0000000003-0001
+[[ $CODE == 91 && -z $OUT ]] || fail "a collect of a run that is not the newest gave $CODE: $OUT"
+drop 0000000003-0001
+[[ $CODE == 91 && -z $OUT ]] || fail "a drop of a run that is not the newest gave $CODE: $OUT"
+as_session rmdir "$CHECKS/0000000009-0001"
+pass "the collect and the drop of a run that is not the newest exit 91"
+SESSION_CWD=$CHECKS/0000000003-0001/src as_session bash -c 'printf "key proof-secret-value-0123\n" >>dist/index.html'
+collect 0000000003-0001 QORPERA_SITE_SECRET_NAMES=PROOF_SECRET PROOF_SECRET=proof-secret-value-0123
+[[ $CODE == 3 && $OUT == "SITE_HOLDS_SECRET PROOF_SECRET index.html" ]] || fail "a secret in the site gave $CODE: $OUT"
+pass "the collect refuses a site that holds a secret value, by its variable and file"
+as_session rm -r "$CHECKS/0000000003-0001/src/dist"
+collect 0000000003-0001
+[[ $CODE == 3 && $OUT == SITE_FOLDER_MISSING ]] || fail "a missing folder gave $CODE: $OUT"
+pass "the collect refuses a folder that is not there"
 echo "ALL PASSED"

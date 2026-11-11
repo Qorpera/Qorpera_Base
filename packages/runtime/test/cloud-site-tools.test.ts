@@ -360,7 +360,9 @@ describe("publish_site", () => {
 		expect(f.calls("qorpera_site_publish_finish")).toHaveLength(1);
 		expect(result.answer).toMatchObject({ state: "live", url: URL_OF("wristband-shop"), mode: "new" });
 		expect(result.answer.leftOut).toEqual([".DS_Store", "notes.md"]);
-		expect(result.text).toContain("Settings → Sites");
+		// Sites left Settings for the apps drawer (9 November 2026).
+		expect(result.text).toContain("the password is on the Sites page in the apps drawer");
+		expect(result.text).not.toContain("Settings");
 		expect(result.text).not.toMatch(/password":\s*"[a-z0-9]{4}-/);
 	});
 
@@ -429,6 +431,37 @@ describe("publish_site", () => {
 		expect(result.status).toBe("denied");
 		expect(f.call).not.toHaveBeenCalled();
 		expect(f.folder.read).not.toHaveBeenCalled();
+	});
+
+	// Own code storage, step 4: a repository kept in Qorpera goes live only from What's new, on a member's yes. The
+	// source is refused in any letters, code/ itself too, before prepare: no folder read, no database check, no card.
+	it.each([
+		["a repository's main", "code/qorpera/shop/main/dist"],
+		["the code folder in other letters", "Code/qorpera/shop/main"],
+		["the code folder itself", "code"],
+	])("refuses %s as a source before prepare, the review or any card", async (_label, source) => {
+		const f = await fixture({ [`${source}/index.html`]: "<h1>Shop</h1>" });
+		const publish = f.tools.find((tool) => tool.name === "publish_site") as CloudNativeTool;
+		const prepare = vi.spyOn(publish, "prepare");
+		const result = outcome(await f.boundary.invoke("code", "qorpera", "publish_site", { slug: "shop", source }));
+		expect(result.status).toBe("denied");
+		expect(result.text).toBe(
+			"INVALID_ARGUMENTS: source must not be under code/: a repository kept in Qorpera goes live only through What's new, on a member's yes",
+		);
+		expect(prepare).not.toHaveBeenCalled();
+		expect(f.call).not.toHaveBeenCalled();
+		expect(f.folder.read).not.toHaveBeenCalled();
+		expect(f.reviewed).toEqual([]);
+	});
+
+	it.each([
+		["a website folder", "website"],
+		["a folder whose name starts with code", "codebase/site"],
+	])("still publishes %s", async (_label, source) => {
+		const f = await fixture({ [`${source}/index.html`]: "<h1>Shop</h1>" });
+		const result = outcome(await f.boundary.invoke("site", "qorpera", "publish_site", { slug: "shop", source }));
+		expect(result.status, result.text).toBe("ok");
+		expect(f.reviewed[0]).toMatchObject({ source, files: 1 });
 	});
 
 	it.each([
@@ -715,7 +748,7 @@ describe("share_app", () => {
 			next: expect.stringContaining("The platform started the link program on shop-server"),
 			password: expect.stringContaining("new password"),
 		});
-		expect(result.answer.next).toContain("the password is in Settings → Sites");
+		expect(result.answer.next).toContain("the password is on the Sites page in the apps drawer");
 		// The tool's answer never holds the claim.
 		expect(result.text).not.toContain(CLAIM);
 		expect(result.text).not.toContain("curl");
@@ -992,7 +1025,13 @@ describe("share_app", () => {
 		expect(share.description).toContain("The platform starts the link program");
 		expect(share.description).toContain("only that program can use it again");
 		expect(share.description).not.toContain("timeoutMs");
-		expect(share.description).toContain("Settings → Sites");
+		expect(share.description).toContain("the password is on the Sites page in the apps drawer");
 		expect(Buffer.byteLength(share.description)).toBeLessThanOrEqual(4096);
+		// Sites left Settings for the apps drawer (9 November 2026).
+		const publish = tools.find((tool) => tool.name === "publish_site")!;
+		expect(publish.description).toContain(
+			"the password is on the Sites page in the apps drawer, where founders and admins see, copy and change it.",
+		);
+		for (const tool of tools) expect(tool.description).not.toContain("Settings");
 	});
 });

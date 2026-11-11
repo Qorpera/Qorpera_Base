@@ -15,7 +15,8 @@
 # addresses are left out, and so are the sysctls of links that come and go, the sysctls that changed on their own in
 # the 15 seconds before, and LXD projects that come and go (this run's own are checked gone). Both projects and
 # everything in them are removed at the end, also on failure. Prints PASS lines (the inner proof's among them), then
-# ALL PASSED.
+# ALL PASSED. The proof inside also runs the executor's commands for a repository's checks and site, as the test
+# machine's Node prints them from the source (test/code-checks-scripts.mjs).
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -35,7 +36,7 @@ lx() { lxc --project "$CODING" "$@" </dev/null; }
 [[ $(id -u) -eq 0 ]] || fail "run as root (run-on-node.mjs --sudo)"
 [[ $(hostname) == qorpera-testvm-* ]] || fail "this runs on a test machine only"
 export PATH=$PATH:/snap/bin
-for tool in lxc jq nft python3 sysctl setpriv; do command -v "$tool" >/dev/null || fail "no $tool here"; done
+for tool in lxc jq nft python3 sysctl setpriv node; do command -v "$tool" >/dev/null || fail "no $tool here"; done
 SOURCE=$(lxc storage get "$POOL" source </dev/null) || fail "no storage pool $POOL"
 lxc network show "$NETWORK" </dev/null >/dev/null || fail "no network $NETWORK"
 FREE=$(df --output=avail -B1G "$SOURCE" | tail -1 | tr -d ' ')
@@ -133,13 +134,15 @@ set +e
 	pass "a coding machine from the image booted to running in $((SECONDS - start)) s, its LXD agent answering without cloud-init"
 
 	lx file push "$HERE/test/prove-in-coding-machine.sh" "$VM/root/prove-in-coding-machine.sh" >/dev/null
+	node "$HERE/test/code-checks-scripts.mjs" "$WORK/code-checks" </dev/null
+	lx file push -r "$WORK/code-checks" "$VM/root/" >/dev/null
 	timeout 1800 lxc --project "$CODING" exec "$VM" -- env QORPERA_PROOF_GIT="$(jq -r .git "$WORK/image-build.json")" \
 		QORPERA_PROOF_NODE="$(jq -r .node "$WORK/image-build.json")" \
 		QORPERA_PROOF_CHROMIUM="$(jq -r .chromium "$WORK/image-build.json")" \
 		QORPERA_PROOF_TYPESCRIPT="$(jq -r .typescript "$WORK/image-build.json")" \
 		QORPERA_PROOF_TSX="$(jq -r .tsx "$WORK/image-build.json")" QORPERA_PROOF_UV="$(jq -r .uv "$WORK/image-build.json")" \
 		QORPERA_PROOF_MISE="$(jq -r .mise "$WORK/image-build.json")" QORPERA_PROOF_PROXY="$PROXY" \
-		bash /root/prove-in-coding-machine.sh </dev/null | tee "$WORK/inner.out"
+		QORPERA_PROOF_SCRIPTS=/root/code-checks bash /root/prove-in-coding-machine.sh </dev/null | tee "$WORK/inner.out"
 	grep -qx "ALL PASSED" "$WORK/inner.out" || fail "the proof inside the machine did not finish"
 
 	snapshot during

@@ -129,3 +129,25 @@ begin
 		'places', jsonb_build_object(v_long || 'a', '{}'::jsonb), 'groups', '{}'::jsonb),
 		(v_state ->> 'updatedAt')::timestamptz), '22023');
 end $$;
+
+-- What's new, the platform's page (20260930729000), is a bare key as Sites is: a member places it loose and inside a
+-- group of their own; an unknown bare key is still refused.
+do $$
+declare v_viewer uuid := '92400000-0000-4000-8000-000000000003'; v_state jsonb; v_at timestamptz;
+	v_loose jsonb := '{"schema":"qorpera.member-app-layout/v1","places":{"whats-new":{"group":null,"after":"sites","at":3},
+		"sites":{"group":null,"after":"concepts","at":2}},"groups":{}}';
+	v_grouped jsonb := '{"schema":"qorpera.member-app-layout/v1","places":{"whats-new":{"group":"m-news","after":null,
+		"first":true,"at":1},"group:m-news":{"group":null,"after":"sites","at":4}},"groups":{"m-news":{"mine":{"name":"News"}}}}';
+begin
+	v_at := (pg_temp.al_call(v_viewer, $q$public.qorpera_member_app_layout('92400000-0000-4000-8000-000000000010')$q$)
+		->> 'updatedAt')::timestamptz;
+	v_state := pg_temp.al_call(v_viewer, pg_temp.al_set(v_loose, v_at));
+	perform pg_temp.base_assert(v_state -> 'layout' = v_loose, 'What''s new placed loose: ' || v_state::text);
+	v_state := pg_temp.al_call(v_viewer, pg_temp.al_set(v_grouped, (v_state ->> 'updatedAt')::timestamptz));
+	perform pg_temp.base_assert(v_state -> 'layout' = v_grouped, 'What''s new placed in a group: ' || v_state::text);
+	foreach v_loose in array array['{"schema":"qorpera.member-app-layout/v1","places":{"whats-old":{}},"groups":{}}',
+		'{"schema":"qorpera.member-app-layout/v1","places":{"whats-new-2":{}},"groups":{}}',
+		'{"schema":"qorpera.member-app-layout/v1","places":{"page:whats-new":{}},"groups":{}}']::jsonb[] loop
+		perform pg_temp.al_refused(v_viewer, pg_temp.al_set(v_loose, (v_state ->> 'updatedAt')::timestamptz), '22023');
+	end loop;
+end $$;
