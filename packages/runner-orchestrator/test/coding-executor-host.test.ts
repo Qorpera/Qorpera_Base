@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
 	CODING_GUEST,
 	type CodingGuestCommandState,
+	type CodingGuestRunRequest,
 	type CodingGuestUsage,
 	cloudCodingSessionLayout,
 	parseCloudCodingNasPolicy,
@@ -12,12 +13,14 @@ import {
 	parseCodingGuestRequest,
 } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type CodeCheck, codeChecksTail } from "../src/code-checks-stand-in.ts";
 import {
 	type CodingCommandSecrets,
 	type CodingEnvironmentSource,
 	CodingMachineCommandSecrets,
 } from "../src/coding-command-secrets.ts";
 import {
+	CodingControlRefused,
 	CodingMachineUnavailable,
 	CodingPushRefused,
 	CodingSaveRefused,
@@ -35,7 +38,11 @@ import {
 } from "../src/coding-executor-host.ts";
 import type { LxdCodingFolderCommandTransportOptions } from "../src/coding-folder-command-transport.ts";
 import type { CodingFolderControl } from "../src/coding-folder-control.ts";
-import type { CodeChangeReport, CodingFolderRepositories } from "../src/coding-folder-repositories.ts";
+import type {
+	CodeChangeReport,
+	CodingFolderRepositories,
+	CodingFolderRepositorySession,
+} from "../src/coding-folder-repositories.ts";
 import {
 	CodingFolderRestartRequired,
 	type CodingFolderViewEnd,
@@ -78,11 +85,15 @@ const mocked = vi.hoisted(() => ({
 	disk: vi.fn(),
 	keptCommand: vi.fn(),
 	guestCancel: vi.fn(),
+	guestRun: vi.fn(),
+	guestOutput: vi.fn(),
 	guestQuiesce: vi.fn(),
 	guestStop: vi.fn(),
 	guestStatus: vi.fn(),
 	guestMount: vi.fn(),
 	folderTransports: [] as Record<string, unknown>[],
+	/** The folder model's transports the host builds are the real ones, over the guest agent's client faked here. */
+	realTransports: false,
 	leaseTransports: [] as { scope: { workerId: string; turn: number; requestId: string }; open: boolean }[],
 	commandTransports: [] as {
 		authorize: (
@@ -101,6 +112,11 @@ vi.mock("../src/coding-command-transport.ts", () => ({
 		}
 	},
 }));
+// The tail's own rule is the words' (part C1): each test sees what it is handed.
+vi.mock("../src/code-checks-stand-in.ts", async (original) => {
+	const real = await original<typeof import("../src/code-checks-stand-in.ts")>();
+	return { ...real, codeChecksTail: vi.fn(real.codeChecksTail) };
+});
 vi.mock("../src/coding-storage.ts", () => ({
 	createCodingNasStorage: (policy: { rootPath: string }) => ({
 		controlPath: `${policy.rootPath}/control`,
@@ -110,17 +126,24 @@ vi.mock("../src/coding-storage.ts", () => ({
 		assert: mocked.storageAssert,
 	}),
 }));
-vi.mock("../src/coding-folder-command-transport.ts", () => ({
-	LxdCodingFolderCommandTransport: class {
-		constructor(options: Record<string, unknown>) {
-			mocked.folderTransports.push(options);
-		}
-	},
-	codingFolderKeptCommand: mocked.keptCommand,
-}));
+vi.mock("../src/coding-folder-command-transport.ts", async (original) => {
+	const real = await original<typeof import("../src/coding-folder-command-transport.ts")>();
+	return {
+		LxdCodingFolderCommandTransport: class {
+			constructor(options: LxdCodingFolderCommandTransportOptions) {
+				mocked.folderTransports.push(options as unknown as Record<string, unknown>);
+				// biome-ignore lint/correctness/noConstructorReturn: a test that runs commands gets the real transport.
+				if (mocked.realTransports) return new real.LxdCodingFolderCommandTransport(options);
+			}
+		},
+		codingFolderKeptCommand: mocked.keptCommand,
+	};
+});
 // The guest agent on the folder model, as its client answers.
 vi.mock("../src/coding-guest-client.ts", () => ({
 	LxdCodingGuestClient: class {
+		run = mocked.guestRun;
+		output = mocked.guestOutput;
 		cancel = mocked.guestCancel;
 		quiesce = mocked.guestQuiesce;
 		stopSession = mocked.guestStop;
@@ -183,6 +206,7 @@ beforeEach(() => {
 	for (const mock of Object.values(mocked)) if (typeof mock === "function") mock.mockReset();
 	mocked.commandTransports.length = 0;
 	mocked.folderTransports.length = 0;
+	mocked.realTransports = false;
 	mocked.leaseTransports.length = 0;
 });
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -5331,5 +5355,531 @@ describe("a coding machine's secret values for the folder service's save check (
 				code: "CODING_FOLDER_SECRETS_UNSUPPORTED",
 			},
 		]);
+	});
+});
+
+describe("a run of a repository's checks in the session's machine (own code storage, step 3)", () => {
+	const CHECKS: CodeCheck[] = [
+		{ name: "install", run: "npm ci", timeoutSeconds: 600, cwd: "." },
+		{ name: "test", run: "npm test", timeoutSeconds: 900, cwd: "web" },
+		{ name: "build", run: "npm run build", timeoutSeconds: 300, cwd: "." },
+	];
+	const COMMIT = "c".repeat(40);
+	const HOME = "/home/qorpera-200000";
+	/** How the fake guest agent ends a command: at once unless `after` (ms of running first); `printed` is its output. */
+	interface Ending {
+		state?: CodingGuestCommandState;
+		code?: number;
+		printed?: string | Buffer;
+		after?: number;
+	}
+
+	/** The folder fixture on a repository kept in Qorpera, prepared for a turn, whose host runs commands through the real
+	 * folder command transport over a fake guest agent; the vault gives `secrets`. `ending` says how each command the
+	 * guest is asked to run ends (by default it succeeds, printing nothing). */
+	async function checksFixture(options: { secrets?: Record<string, string>; budgetMs?: number } = {}) {
+		const f = await folderFixture();
+		f.claim.repository = { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" };
+		Object.assign(f.repositories, {
+			start: vi.fn<NonNullable<CodingFolderRepositories["start"]>>(async () => ({ baseSha: f.baseSha })),
+		});
+		const commandSecrets = options.secrets
+			? new CodingMachineCommandSecrets({
+					environment: async () => ({ environment: { ...options.secrets }, mask: [] }),
+				})
+			: undefined;
+		const logged: Record<string, unknown>[] = [];
+		const host = new LxdCodingExecutorHost({
+			...f.options,
+			folder: {
+				...f.folder,
+				report: (event) => logged.push(event),
+				checksPollMs: 5,
+				...(options.budgetMs === undefined ? {} : { checksBudgetMs: options.budgetMs }),
+			},
+			...(commandSecrets ? { commandSecrets } : {}),
+		});
+		mocked.realTransports = true;
+		// The tail as the words' rule cuts it (part C1's own tests hold its bounds): here it says what it was handed.
+		vi.mocked(codeChecksTail)
+			.mockReset()
+			.mockImplementation((output) => `tail of: ${output}`);
+		await host.prepareWorkspace(f.claim, f.turn(), f.signal);
+		const session = f.repositories.prepare.mock.calls.at(-1)?.[0] as CodingFolderRepositorySession;
+		const custody = lxdCodingSessionStorage(f.machine, f.placement, f.claim.workerId).custodySource;
+		await mkdir(custody, { recursive: true, mode: 0o700 });
+		await chmod(custody, 0o700);
+		// The guest agent: each command it is asked to run, once, as `ending` says.
+		const { workerId } = f.claim;
+		const commands = new Map<
+			string,
+			{
+				run: CodingGuestRunRequest;
+				state: CodingGuestCommandState;
+				exit: { code: number | null; signal: string | null } | null;
+				printed: Buffer;
+				ending: Ending;
+				until: number;
+			}
+		>();
+		let ending: (run: CodingGuestRunRequest, index: number) => Ending = () => ({});
+		const stateOf = (commandId: string) => {
+			const found = commands.get(commandId);
+			if (!found) throw new Error("FAKE_GUEST_COMMAND_UNKNOWN");
+			// A command that ran its time ends as it was told to.
+			if (found.state === "running" && Date.now() >= found.until && found.ending.state !== "running") {
+				found.state = found.ending.state ?? "exited";
+				found.exit = found.state === "exited" ? { code: found.ending.code ?? 0, signal: null } : null;
+			}
+			return { commandId, state: found.state, exit: found.exit, end: found.printed.length };
+		};
+		mocked.guestRun.mockImplementation(async (request: unknown) => {
+			const run = parseCodingGuestRequest("run", request);
+			if (!commands.has(run.commandId)) {
+				const said = ending(run, commands.size);
+				commands.set(run.commandId, {
+					run,
+					state: "running",
+					exit: null,
+					printed: Buffer.from(said.printed ?? ""),
+					ending: said,
+					until: Date.now() + (said.after ?? 0),
+				});
+			}
+			return { schema: "qorpera.coding-guest-command/v1", workerId, ...stateOf(run.commandId) };
+		});
+		mocked.guestOutput.mockImplementation(async (request: unknown) => {
+			const asked = parseCodingGuestRequest("output", request);
+			const at = stateOf(asked.commandId);
+			const bytes = Buffer.from(
+				(commands.get(asked.commandId) as { printed: Buffer }).printed.subarray(
+					asked.offset,
+					asked.offset + asked.maxBytes,
+				),
+			);
+			const answer = parseCodingGuestAnswer("output", asked, {
+				schema: "qorpera.coding-guest-output/v1",
+				workerId,
+				...at,
+				offset: asked.offset,
+				bytes: bytes.length,
+				gap: 0,
+			});
+			return { answer, bytes };
+		});
+		mocked.guestCancel.mockImplementation(async (request: unknown) => {
+			const asked = parseCodingGuestRequest("cancel", request);
+			const found = commands.get(asked.commandId);
+			if (found?.state === "running") found.state = "cancelled";
+			return { schema: "qorpera.coding-guest-command/v1", workerId, ...stateOf(asked.commandId) };
+		});
+		return {
+			...f,
+			host,
+			session,
+			logged,
+			custody,
+			commands,
+			/** The commands the guest was asked to run, in order. */
+			ran: () => [...commands.values()].map(({ run }) => run),
+			ending: (given: typeof ending) => {
+				ending = given;
+			},
+			/** One run of `checks` on COMMIT, as the landing asks it. */
+			run: (checks: readonly CodeCheck[] = CHECKS, attempt = 1, signal: AbortSignal = f.signal) =>
+				(session.runChecks as NonNullable<CodingFolderRepositorySession["runChecks"]>)(
+					{ commit: COMMIT, checks, attempt },
+					signal,
+				),
+		};
+	}
+	/** The check a command of a run is, by its environment: undefined for the copy. */
+	const checkOf = (run: { environment: Readonly<Record<string, string>> }) => run.environment.QORPERA_CHECK_RUN;
+
+	it("lands through a session that runs the checks: the switch under the turn's lease, then a run that passes", async () => {
+		const f = await checksFixture();
+		expect(CODING_HOST_RPCS).toContain("qorpera_code_checks_switch");
+		const control = f.call.getMockImplementation()!;
+		let switched: unknown = { schema: "qorpera.code-checks-switch/v1", enabled: true };
+		f.call.mockImplementation(async (method, args, signal) =>
+			method === "qorpera_code_checks_switch" ? switched : control(method, args, signal),
+		);
+		const seen: unknown[] = [];
+		const land = vi.fn<NonNullable<CodingFolderRepositories["land"]>>(async (session, headSha, signal) => {
+			seen.push(await session.checksSwitch?.(signal));
+			seen.push(await session.runChecks?.({ commit: headSha, checks: CHECKS.slice(0, 1), attempt: 1 }, signal));
+			return { state: "fast-forward", mainSha: headSha, filesChanged: 1, change: 3 };
+		});
+		Object.assign(f.repositories, { land });
+		await f.host.publish(f.claim, f.submission, f.signal);
+		expect(f.calls("qorpera_code_checks_switch")).toEqual([
+			{ p_worker_id: f.claim.workerId, p_lease_token: f.claim.leaseToken },
+		]);
+		expect(seen).toEqual([
+			true,
+			{
+				state: "passed",
+				ms: expect.any(Number),
+				copyMs: expect.any(Number),
+				checks: [{ name: "install", run: "npm ci", ms: expect.any(Number) }],
+			},
+		]);
+		// The copy of exactly the submitted commit, then the one check.
+		expect(f.ran().map((run) => run.environment.QORPERA_CHECKS_COMMIT ?? checkOf(run))).toEqual([
+			f.submission.headSha,
+			"npm ci",
+		]);
+		// Off is off; an answer lost or not the switch's reads as on; the kernel's refusal ends the landing.
+		const ask = () => f.session.checksSwitch?.(f.signal);
+		switched = { schema: "qorpera.code-checks-switch/v1", enabled: false };
+		expect(await ask()).toBe(false);
+		for (const odd of [null, { enabled: false }, { schema: "qorpera.code-checks-switch/v1", enabled: "no" }]) {
+			switched = odd;
+			expect(await ask()).toBe(true);
+		}
+		f.call.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_code_checks_switch") throw new Error("CODING_CONTROL_UNCONFIRMED");
+			return control(method, args, signal);
+		});
+		expect(await ask()).toBe(true);
+		expect(f.logged.filter((event) => event.step === "switch").map((event) => event.event)).toEqual([
+			"code-checks-error",
+			"code-checks-error",
+			"code-checks-error",
+			"code-checks-error",
+		]);
+		const refusal = new CodingControlRefused(null);
+		f.call.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_code_checks_switch") throw refusal;
+			return control(method, args, signal);
+		});
+		await expect(ask()).rejects.toBe(refusal);
+	});
+
+	it("copies the candidate in the session's home and runs each check from its folder of the copy, as the session's user, with CI=true", async () => {
+		const f = await checksFixture({ secrets: { API_KEY: "env-value-api-key-CANARY", CI: "false-from-the-vault" } });
+		const run = await f.run();
+		expect(run).toEqual({
+			state: "passed",
+			ms: expect.any(Number),
+			copyMs: expect.any(Number),
+			checks: CHECKS.map(({ name, run }) => ({ name, run, ms: expect.any(Number) })),
+		});
+		const [copy, ...checks] = f.ran();
+		// Every command as the session's user, with its own names, Git's settings, its secrets and the checks' marks;
+		// the vault never turns CI off.
+		const common = {
+			...codingFolderGitEnvironment(f.claim.workerId),
+			API_KEY: "env-value-api-key-CANARY",
+			CI: "true",
+			QORPERA_CHECKS: "1",
+			HOME,
+			USER: "qorpera-200000",
+		};
+		for (const ran of f.ran()) {
+			expect(ran).toMatchObject({ workerId: f.claim.workerId, uid: 200000, gid: 200000 });
+			expect(ran.environment).toMatchObject(common);
+		}
+		// The copy: in the home, its values in the environment, the repository's storage by its place in the folder.
+		expect(copy).toMatchObject({ cwd: HOME, timeoutMs: 300_000 });
+		expect(copy?.environment).toMatchObject({
+			QORPERA_CHECKS_DIR: `${HOME}/.qorpera-checks`,
+			QORPERA_CHECKS_REPOSITORY: "/company/code/acme/shop/repo.git",
+			QORPERA_CHECKS_COMMIT: COMMIT,
+		});
+		expect(Object.keys(copy?.environment ?? {}).filter((name) => name.startsWith("QORPERA_CHECK_"))).toEqual([]);
+		expect(copy?.command).toContain('rm -rf -- "$d"');
+		expect(copy?.command).toContain(
+			'git clone --quiet --shared --no-checkout -- "$QORPERA_CHECKS_REPOSITORY" "$d/src"',
+		);
+		expect(copy?.command).toContain('checkout --quiet --detach "$QORPERA_CHECKS_COMMIT"');
+		// Each check: from the copy, with its own limit, folder, command and log.
+		expect(checks.map((ran) => [ran.cwd, ran.timeoutMs, ran.environment.QORPERA_CHECK_CWD, checkOf(ran)])).toEqual([
+			[`${HOME}/.qorpera-checks/src`, 600_000, ".", "npm ci"],
+			[`${HOME}/.qorpera-checks/src`, 900_000, "web", "npm test"],
+			[`${HOME}/.qorpera-checks/src`, 300_000, ".", "npm run build"],
+		]);
+		expect(checks.map((ran) => ran.environment.QORPERA_CHECK_LOG)).toEqual([
+			`${HOME}/.qorpera-checks/out/1-install.log`,
+			`${HOME}/.qorpera-checks/out/2-test.log`,
+			`${HOME}/.qorpera-checks/out/3-build.log`,
+		]);
+		for (const ran of checks) {
+			expect(ran.command).toBe(
+				[
+					'cd -- "$QORPERA_CHECK_CWD" || exit 2',
+					'bash --noprofile --norc -c "$QORPERA_CHECK_RUN" </dev/null 2>&1 | tee -- "$QORPERA_CHECK_LOG"',
+					`exit "\${PIPESTATUS[0]}"`,
+				].join("\n"),
+			);
+			expect(ran.environment.QORPERA_CHECKS_COMMIT).toBeUndefined();
+		}
+		// Each command's id names the turn, the attempt and its place; its input hash names the commit and what it runs.
+		expect(f.ran().map((ran) => ran.commandId)).toEqual(
+			[0, 1, 2, 3].map((index) => codingHostId("checks", `${f.claim.workerId}:${f.claim.sequence}:1:${index}`)),
+		);
+		for (const [index, ran] of f.ran().entries()) {
+			const kept = JSON.parse(
+				await readFile(join(f.custody, "host-commands", ran.commandId.replaceAll("-", ""), "request.json"), "utf8"),
+			);
+			expect(kept).toMatchObject({ command: ran.command, timeoutMs: ran.timeoutMs, turn: f.claim.sequence });
+			expect(kept.inputSha256).toBe(
+				hash(
+					JSON.stringify({
+						schema: "qorpera.code-checks-command/v1",
+						commit: COMMIT,
+						index,
+						run: index ? CHECKS[index - 1]?.run : copy?.command,
+					}),
+				),
+			);
+		}
+		// The next attempt's commands are its own.
+		await f.run(CHECKS.slice(0, 1), 2);
+		expect(
+			f
+				.ran()
+				.slice(4)
+				.map((ran) => ran.commandId),
+		).toEqual([0, 1].map((index) => codingHostId("checks", `${f.claim.workerId}:${f.claim.sequence}:2:${index}`)));
+		// The log says each command's start and end, and the run's answer, and never what a check printed.
+		expect(f.logged.filter((event) => event.step === "run")).toEqual([
+			expect.objectContaining({ event: "code-checks", attempt: 1, commit: COMMIT, state: "passed" }),
+			expect.objectContaining({ event: "code-checks", attempt: 2, state: "passed" }),
+		]);
+		expect(f.logged.filter((event) => event.step === "ended")[1]).toMatchObject({
+			index: 1,
+			check: "install",
+			state: "succeeded",
+			exitCode: 0,
+			ms: expect.any(Number),
+		});
+	});
+
+	it("asks the host's own authority for each call of a check, never the model's", async () => {
+		const f = await checksFixture();
+		// The model's commands ask the model's authority as well.
+		const model = vi.fn(async () => undefined);
+		const transport = await f.host.commandTransport(f.scope(), model, f.signal);
+		const runs = f.calls("qorpera_authorize_coding_machine_run").length;
+		await f.run(CHECKS.slice(0, 1));
+		expect(model).not.toHaveBeenCalled();
+		expect(f.calls("qorpera_authorize_coding_command")).toEqual([]);
+		// Each call of the copy's and of the check's asks run authority, before its work and before its answer.
+		expect(f.calls("qorpera_authorize_coding_machine_run").length).toBeGreaterThanOrEqual(runs + 4);
+		expect(transport).toBeInstanceOf(Object);
+		// A machine marked for a new disk runs no check: the run did not run, by the run authority.
+		f.state.newDisk = true;
+		expect(await f.run(CHECKS.slice(0, 1), 2)).toEqual({
+			state: "not_run",
+			why: "authority",
+			code: "CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK",
+		});
+		f.state.newDisk = false;
+		// A run authority SQL refuses: the same.
+		f.state.runRefusal = "SESSION_NOT_RUNNING";
+		expect(await f.run(CHECKS.slice(0, 1), 3)).toEqual({
+			state: "not_run",
+			why: "authority",
+			code: "CODING_HOST_MACHINE_REFUSED:SESSION_NOT_RUNNING",
+		});
+		f.state.runRefusal = null;
+		// A turn that is no longer prepared runs nothing at all.
+		f.host.endTurn(f.claim);
+		const asked = f.ran().length;
+		expect(await f.run(CHECKS.slice(0, 1), 4)).toEqual({
+			state: "not_run",
+			why: "authority",
+			code: "CODING_HOST_TURN_NOT_PREPARED",
+		});
+		expect(f.ran()).toHaveLength(asked);
+		expect(f.logged.filter((event) => event.event === "code-checks-error")).toHaveLength(3);
+	});
+
+	it("ends with the first check that fails: what passed before it, its exit and the end of its output, and the rest not run", async () => {
+		const f = await checksFixture();
+		f.ending((run) => (checkOf(run) === "npm test" ? { code: 1, printed: "> test\n\n  1 failing\n" } : {}));
+		const run = await f.run();
+		expect(run).toEqual({
+			state: "failed",
+			ms: expect.any(Number),
+			passed: [{ name: "install", ms: expect.any(Number) }],
+			failed: {
+				name: "test",
+				run: "npm test",
+				ms: expect.any(Number),
+				exitCode: 1,
+				atLimit: false,
+				tail: "tail of: > test\n\n  1 failing\n",
+				log: "~/.qorpera-checks/out/2-test.log",
+			},
+			notRun: ["build"],
+		});
+		expect(f.ran().map(checkOf)).toEqual([undefined, "npm ci", "npm test"]);
+		// Killed (often for memory): a failure of the code all the same.
+		f.ending((run) => (checkOf(run) === "npm ci" ? { state: "exited", code: 137 } : {}));
+		expect(await f.run(CHECKS, 2)).toMatchObject({
+			state: "failed",
+			passed: [],
+			failed: { name: "install", exitCode: 137, atLimit: false, tail: "tail of: " },
+			notRun: ["test", "build"],
+		});
+	});
+
+	it("keeps a failure whose tail could not be read, without its tail", async () => {
+		const f = await checksFixture();
+		// The run authority is refused from the read of the failed check's tail on.
+		const control = f.call.getMockImplementation()!;
+		let since: number | undefined;
+		f.call.mockImplementation(async (method, args, signal) => {
+			if (method === "qorpera_authorize_coding_machine_run" && since !== undefined && ++since >= 2)
+				return { state: "refused", reason: "SESSION_NOT_RUNNING" };
+			return control(method, args, signal);
+		});
+		f.ending((run) => {
+			if (!checkOf(run)) return {};
+			since = 0;
+			return { code: 1, printed: "boom\n" };
+		});
+		expect(await f.run(CHECKS.slice(0, 1))).toMatchObject({
+			state: "failed",
+			failed: { name: "install", exitCode: 1, tail: "" },
+		});
+		expect(f.logged).toContainEqual(
+			expect.objectContaining({ event: "code-checks-error", step: "tail", check: "install" }),
+		);
+	});
+
+	it("says a check that the guest stopped at its own limit ended at its time limit", async () => {
+		const f = await checksFixture();
+		const quick: CodeCheck = { name: "slow", run: "sleep 600", timeoutSeconds: 1, cwd: "." };
+		f.ending((run) => (checkOf(run) ? { after: 1_100, state: "timed_out", printed: "waiting\n" } : {}));
+		expect(await f.run([quick])).toMatchObject({
+			state: "failed",
+			failed: { name: "slow", exitCode: 124, atLimit: true, tail: "tail of: waiting\n" },
+		});
+		// A command that exits 124 itself before its limit did not reach it.
+		f.ending((run) => (checkOf(run) ? { code: 124 } : {}));
+		expect(await f.run([quick], 2)).toMatchObject({ failed: { exitCode: 124, atLimit: false } });
+	});
+
+	it("cuts a failed check's tail from the end of its masked output, at a whole line", async () => {
+		const SECRET = "env-value-api-key-CANARY";
+		const f = await checksFixture({ secrets: { API_KEY: SECRET } });
+		const handed = async (printed: string, attempt: number) => {
+			f.ending((run) => (checkOf(run) ? { code: 2, printed } : {}));
+			const run = await f.run(CHECKS.slice(0, 1), attempt);
+			if (run.state !== "failed") throw new Error(`not failed: ${run.state}`);
+			const given = vi.mocked(codeChecksTail).mock.calls.at(-1)?.[0] as string;
+			// The answer's tail is the rule's.
+			expect(run.failed.tail).toBe(`tail of: ${given}`);
+			return given;
+		};
+		// 5,000 lines: the last 16 KiB the transport kept, from its first whole line on.
+		const lines = Array.from({ length: 5000 }, (_, at) => `line ${at}`);
+		const printed = `${lines.join("\n")}\n`;
+		const end = await handed(printed, 1);
+		expect(Buffer.byteLength(end)).toBeLessThanOrEqual(16384);
+		expect(Buffer.byteLength(end)).toBeGreaterThan(16000);
+		expect(printed.endsWith(end)).toBe(true);
+		expect(end.startsWith("line ")).toBe(true);
+		expect(printed.slice(0, -end.length).endsWith("\n")).toBe(true);
+		// One line of 20,000 bytes: its end, whole characters only.
+		const wide = `${"\u00e9".repeat(9_000)}${"z".repeat(2_000)}`;
+		const one = await handed(wide, 2);
+		expect(wide.endsWith(one)).toBe(true);
+		expect(Buffer.byteLength(one)).toBeLessThanOrEqual(16384);
+		expect(one.length).toBeGreaterThan(7000);
+		// The session's secret value is masked as its commands' output is, before anything of it is kept or handed on.
+		const masked = await handed(`key=${SECRET}\nbell\u0007\n`, 3);
+		expect(masked).toBe("key=***\nbell\u0007\n");
+		const id = f.ran().at(-1)?.commandId as string;
+		const kept = await readFile(join(f.custody, "host-commands", id.replaceAll("-", ""), "output.log"), "utf8");
+		expect(kept).toBe("key=***\nbell\u0007\n");
+		// The copy's output, and a check that passed, are never handed on.
+		expect(codeChecksTail).toHaveBeenCalledTimes(3);
+	});
+
+	it.each([
+		["the copy fails (the commit never reached the view)", 0, { code: 90 }, "copy", "CODE_CHECKS_COPY_EXIT_90"],
+		["the copy is cancelled by nobody", 0, { state: "cancelled" }, "machine", "CODE_CHECKS_CANCELLED"],
+		["a check is cancelled by nobody", 2, { state: "cancelled" }, "machine", "CODE_CHECKS_CANCELLED"],
+		["the guest lost a check", 1, { state: "lost" }, "machine", "CODE_CHECKS_UNCONFIRMED"],
+	] as const)(
+		"does not run the checks when %s, which is no fault of the code",
+		async (_case, index, said, why, code) => {
+			const f = await checksFixture();
+			f.ending((_run, at) => (at === index ? (said as Ending) : {}));
+			expect(await f.run()).toEqual({ state: "not_run", why, code });
+			// Nothing after it ran.
+			expect(f.ran()).toHaveLength(index + 1);
+			expect(f.logged.at(-1)).toMatchObject({ event: "code-checks", step: "run", state: "not_run", why, code });
+		},
+	);
+
+	it("does not run the checks when the guest agent stays unanswered, and stops what it started", async () => {
+		const f = await checksFixture();
+		mocked.guestOutput.mockRejectedValue(new Error("LXD operation failed"));
+		const run = await f.run(CHECKS.slice(0, 1));
+		expect(run).toEqual({ state: "not_run", why: "transport", code: "UNCLASSIFIED" });
+		expect(mocked.guestCancel).toHaveBeenCalled();
+		expect(f.logged).toContainEqual(
+			expect.objectContaining({ event: "code-checks-error", step: "command", index: 0 }),
+		);
+	});
+
+	it("asks a call that failed once again at the next read, and goes on", async () => {
+		const f = await checksFixture();
+		f.ending((run) => (checkOf(run) ? { after: 200 } : {}));
+		// The guest agent does not answer the first look at the check's output: the start is asked again, and is the same
+		// command, which runs once.
+		const output = mocked.guestOutput.getMockImplementation()!;
+		let failures = 0;
+		mocked.guestOutput.mockImplementation(async (request: unknown) => {
+			const asked = parseCodingGuestRequest("output", request);
+			if (checkOf(f.commands.get(asked.commandId)?.run ?? { environment: {} }) && !failures++)
+				throw new Error("LXD operation failed");
+			return output(request);
+		});
+		expect(await f.run(CHECKS.slice(0, 1))).toMatchObject({ state: "passed" });
+		expect(failures).toBeGreaterThan(1);
+		// The guest had the start already: it is not asked to run it again.
+		expect(f.ran()).toHaveLength(2);
+		expect(mocked.guestRun).toHaveBeenCalledTimes(2);
+	});
+
+	it("cancels a check that runs past the run's budget, and says it did not run", async () => {
+		const f = await checksFixture({ budgetMs: 300 });
+		f.ending((run) => (checkOf(run) ? { state: "running", printed: "still going\n" } : {}));
+		const started = Date.now();
+		expect(await f.run(CHECKS.slice(0, 1))).toEqual({ state: "not_run", why: "budget", code: "CODE_CHECKS_BUDGET" });
+		expect(Date.now() - started).toBeLessThan(5_000);
+		const check = f.ran()[1]?.commandId;
+		expect(mocked.guestCancel.mock.calls.map(([request]) => (request as { commandId: string }).commandId)).toEqual([
+			check,
+		]);
+		expect(f.commands.get(check as string)?.state).toBe("cancelled");
+	});
+
+	it("cancels the running check when the turn gives up, with time of its own, and throws the turn's reason on", async () => {
+		const f = await checksFixture();
+		f.ending((run) => (checkOf(run) ? { state: "running" } : {}));
+		const stop = new AbortController();
+		const reason = new Error("CODING_EXECUTOR_LEASE_LOST");
+		const running = f.run(CHECKS.slice(0, 1), 1, stop.signal);
+		await vi.waitFor(() => expect(f.ran()).toHaveLength(2));
+		stop.abort(reason);
+		await expect(running).rejects.toBe(reason);
+		const check = f.ran()[1]?.commandId as string;
+		expect(mocked.guestCancel).toHaveBeenCalledTimes(1);
+		const [request, cancelled] = mocked.guestCancel.mock.calls[0] as [{ commandId: string }, AbortSignal];
+		expect(request.commandId).toBe(check);
+		expect(cancelled.aborted).toBe(false);
+		expect(f.commands.get(check)?.state).toBe("cancelled");
+		// Nothing is reported of an aborted run.
+		expect(f.logged.filter((event) => event.step === "run")).toEqual([]);
+		// A turn already given up runs nothing.
+		await expect(f.run(CHECKS.slice(0, 1), 2, stop.signal)).rejects.toBe(reason);
+		expect(f.ran()).toHaveLength(2);
 	});
 });
