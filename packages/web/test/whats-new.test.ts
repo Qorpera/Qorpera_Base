@@ -417,8 +417,15 @@ describe("What's new: the page", () => {
 			"Qorpera was busy for a moment",
 		],
 		[new CloudRpcError("x", { message: "no such repository", code: "P0002" }, 404), "the project is no longer there"],
-		[new CloudRpcError("x", { message: "boom", code: "XX000" }, 500), "something went wrong on Qorpera's side"],
-	])("says why it did not go live when Qorpera refused it, and that nothing changed (%s)", async (error, why) => {
+		[
+			new CloudRpcError("x", { message: "canceling statement due to statement timeout", code: "57014" }, 500),
+			"Qorpera was busy for a moment",
+		],
+		[
+			new CloudRpcError("x", { message: "p_shown is invalid", code: "22023" }, 400),
+			"something went wrong on Qorpera's side",
+		],
+	])("says why it did not go live when the database refused it, and that nothing changed (%s)", async (error, why) => {
 		const { view } = await page([releasesOf([shop()])], { putLive: () => Promise.reject(error) });
 		press(block(view), "Put it live");
 		await settle();
@@ -507,6 +514,77 @@ describe("What's new: the page", () => {
 		await focus();
 		expect(list).toHaveBeenCalledTimes(5);
 		expect(said(view)).toEqual([]);
+	});
+
+	/** Failures that may come after the write committed: nothing in them proves it did not go through. */
+	const ambiguous: [string, CloudRpcError][] = [
+		[
+			"a gateway's 502",
+			new CloudRpcError(
+				"qorpera_put_code_release_live",
+				{ message: "An invalid response was received from the upstream server" },
+				502,
+			),
+		],
+		[
+			"a gateway's 504 page",
+			new CloudRpcError(
+				"qorpera_put_code_release_live",
+				{ message: "<html><body><h1>504 Gateway Time-out</h1></body></html>" },
+				504,
+			),
+		],
+		[
+			"a 500 with no SQLSTATE",
+			new CloudRpcError("qorpera_put_code_release_live", { message: "Internal Server Error", code: "" }, 500),
+		],
+		[
+			"a 500 with another SQLSTATE",
+			new CloudRpcError("qorpera_put_code_release_live", { message: "internal", code: "XX000" }, 500),
+		],
+		[
+			"a 200 whose body is no JSON",
+			new CloudRpcError("qorpera_put_code_release_live", { message: "<html>ok</html>" }, 200),
+		],
+		[
+			"a token refused by the gateway",
+			new CloudRpcError("qorpera_put_code_release_live", { message: "JWT expired", code: "PGRST301" }, 401),
+		],
+	];
+
+	it.each(ambiguous)(
+		"says it went live when %s came after the write committed and the read shows it",
+		async (_kind, error) => {
+			const { view } = await stepped([releasesOf([shop()]), fourLive()], { putLive: () => Promise.reject(error) });
+			press(block(view), "Put it live");
+			await settle();
+			expect(said(view)).toEqual(["Version 4 is live."]);
+			expect(text(view.el)).not.toContain("Nothing changed");
+		},
+	);
+
+	it.each(ambiguous)("says it is not known when %s came and the read fails too", async (_kind, error) => {
+		const { view } = await stepped([releasesOf([shop()]), new Error("Failed to fetch")], {
+			putLive: () => Promise.reject(error),
+		});
+		press(block(view), "Put it live");
+		await settle();
+		expect(said(view)).toEqual([
+			"Qorpera could not be reached, so it is not known whether it went live. Open this page again in a moment.",
+		]);
+		expect(text(view.el)).not.toContain("Nothing changed");
+	});
+
+	it("says the same of a Go back that a gateway's 502 answered after it committed", async () => {
+		const gone = shop({ live: { version: 2, kind: "back", since: timestamp, by: userA.id }, back: null });
+		const { view } = await stepped([releasesOf([shop()]), releasesOf([gone])], {
+			goBack: () => Promise.reject(ambiguous[0]![1]),
+		});
+		press(block(view), "Go back to version 2");
+		await settle();
+		press(dialog(), "Go back");
+		await settle();
+		expect(said(view)).toEqual(["Version 2 is live."]);
 	});
 
 	it("takes the line away when the read after a lost answer shows nothing changed, with the ready changes there again", async () => {
