@@ -20,7 +20,7 @@
     "wakeAndSilence": "bf9e4aa3eb530e5ec8a9b07bc2a482478493ed0c460e97c4342776b281a5f3c4",
     "contextComposer": "7c60f96c14f37951fc05cb657dc932ca5a5bd044429f9cdc10bebfbbcbe67229",
     "providerBootstrap": "29feeb1009d7e0522fba1705aebdcc152ca79a4eeb86c1a39a11c575f649163f",
-    "authorization": "cb6f6ceaed7fe320d986a4e0e211bba417db8601e67c8495b07d7b8e9aa6af66",
+    "authorization": "da39a546b40b1880cca87fcd294cb56dce69999e87f3855ae59d2930817e9a0f",
     "inboundSafety": "3f8fd4d5d710c201529001a99178f78c70c7d379aeb1286f2350300d5ee8cbea",
     "outboundSafety": "0066f6597c3b87f69c002df382a08ab2388c063564478bbb2502daf8022288a7",
     "interactionSurfaces": "f0ca897ca0e6bf0c7d03aac507b3dfb2c415cdb3e2037b7fb92de95d8985ddec",
@@ -1938,6 +1938,6 @@
     "supabase/migrations/20260930715000_member_messages.sql": "a347830153706e2c9a4c5a2df2ec46fe082a7b77b103cf0de0268c5a501c19e7",
     "supabase/migrations/20260930716000_member_mail_send.sql": "95dff8f136895cc3057fe198d895223cac4ba7bbeab1c01ada57ca04d8ec8f4f",
     "supabase/migrations/20260930717000_member_contact_places.sql": "acf3f44a85a1990f246a42b4555957f1733897587d1070ef7b29165bc79fd364",
-    "supabase/migrations/20260930720000_code_change_record.sql": "26078c94641dbaf11d730ae17909e25db79b278804e138fde0ec443189efb5c3"
+    "supabase/migrations/20260930720000_code_change_record.sql": "a75a440fe3cec64a10095a5825ed12c77ebd5f740d87bf52e674f7f26a211856"
   }
 }
