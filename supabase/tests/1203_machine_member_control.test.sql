@@ -38,7 +38,10 @@
 --    refused and renews nothing (this part commits and cleans up after itself, with 1106's harness);
 -- 13. an action carries the epoch of the hold its input was captured under (F24): one captured before a hand-back and a
 --    new take-over is refused and records nothing; one begun under a hold that ends before the executor's read gets no
---    authority under the next.
+--    authority under the next;
+-- 14. a hold is named by its seat too (F26): after a lease ran out and was taken again, and after another tab took the
+--    member's own lease over, input and heartbeats of the seat before are refused; the hand-back's rules for a stale
+--    seat, a press, and a lease that ran out.
 
 -- Alice's run acknowledges first, as a member's wake requires before any work (924).
 select pg_temp.base_claims('service_role');
@@ -145,43 +148,60 @@ create function pg_temp.dc_epoch(p_who text, p_machine text) returns bigint lang
 	select coalesce((select epochs.epoch from public.qorpera_company_machine_desktop_epochs as epochs
 		where epochs.machine_id = pg_temp.dc_id(p_machine) and epochs.user_id = pg_temp.dc_user(p_who)), 0)
 $$;
--- A take-over at the member's current epoch, as their page knows it, unless the test names another.
+-- A take-over at the member's current epoch, as their page knows it, unless the test names another; each by a press of
+-- its own unless the test names one (F26).
 create function pg_temp.dc_take(p_who text, p_machine text, p_profile uuid default '92400000-0000-4000-8000-000000000010',
-	p_epoch bigint default null)
+	p_epoch bigint default null, p_press uuid default null)
 returns text language sql as $$
-	select pg_temp.dc_as(pg_temp.dc_user(p_who), format('select public.qorpera_member_take_machine_desktop(%L, %L, %L)',
-		p_profile, pg_temp.dc_id(p_machine), coalesce(p_epoch, pg_temp.dc_epoch(p_who, p_machine))))
+	select pg_temp.dc_as(pg_temp.dc_user(p_who), format('select public.qorpera_member_take_machine_desktop(%L, %L, %L, %L)',
+		p_profile, pg_temp.dc_id(p_machine), coalesce(p_epoch, pg_temp.dc_epoch(p_who, p_machine)),
+		coalesce(p_press, pg_catalog.gen_random_uuid())))
 $$;
--- A heartbeat at the epoch the lease was taken under (as the holder's window knows it) unless the test names one.
-create function pg_temp.dc_keep(p_who text, p_machine text, p_epoch bigint default null) returns text language sql as $$
-	select pg_temp.dc_as(pg_temp.dc_user(p_who), format('select public.qorpera_member_keep_machine_desktop(%L, %L, %L)',
+-- The seat of a machine's lease now (its generation, F26): what its holder's page knows unless the test names one.
+create function pg_temp.dc_seat(p_machine text) returns bigint language sql as $$
+	select desktop_member_generation from public.qorpera_company_machines where id = pg_temp.dc_id(p_machine)
+$$;
+-- A heartbeat at the epoch the lease was taken under and its seat (as the holder's window knows them) unless the test
+-- names them.
+create function pg_temp.dc_keep(p_who text, p_machine text, p_epoch bigint default null, p_seat bigint default null)
+returns text language sql as $$
+	select pg_temp.dc_as(pg_temp.dc_user(p_who), format('select public.qorpera_member_keep_machine_desktop(%L, %L, %L, %L)',
 		'92400000-0000-4000-8000-000000000010', pg_temp.dc_id(p_machine), coalesce(p_epoch,
 			(select machine.desktop_member_epoch from public.qorpera_company_machines as machine
-				where machine.id = pg_temp.dc_id(p_machine)), pg_temp.dc_epoch(p_who, p_machine))))
+				where machine.id = pg_temp.dc_id(p_machine)), pg_temp.dc_epoch(p_who, p_machine)),
+		coalesce(p_seat, pg_temp.dc_seat(p_machine))))
 $$;
--- A hand-back at the member's current epoch unless the test names one.
-create function pg_temp.dc_back(p_who text, p_machine text, p_reason text default 'handed_back', p_epoch bigint default null)
+-- A hand-back at the member's current epoch, naming the lease's seat now, unless the test names them (or a press
+-- instead: F26).
+create function pg_temp.dc_back(p_who text, p_machine text, p_reason text default 'handed_back', p_epoch bigint default null,
+	p_seat bigint default null, p_press uuid default null)
 returns text language sql as $$
-	select pg_temp.dc_as(pg_temp.dc_user(p_who), format('select public.qorpera_member_hand_back_machine_desktop(%L, %L, %L, %L)',
+	select pg_temp.dc_as(pg_temp.dc_user(p_who), format(
+		'select public.qorpera_member_hand_back_machine_desktop(%L, %L, %L, %L, %L, %L)',
 		'92400000-0000-4000-8000-000000000010', pg_temp.dc_id(p_machine), p_reason,
-		coalesce(p_epoch, pg_temp.dc_epoch(p_who, p_machine))))
+		coalesce(p_epoch, pg_temp.dc_epoch(p_who, p_machine)),
+		case when p_press is null then coalesce(p_seat, pg_temp.dc_seat(p_machine)) else p_seat end, p_press))
 $$;
 -- Whether a hand-back answered ok, as expected: a lease given back or not, the member holding the machine now or not
--- (its epoch read apart).
+-- (its epoch read apart; a seat exactly when holding).
 create function pg_temp.dc_backed(p_result text, p_handed boolean, p_holding boolean default false) returns boolean
 language sql as $$
-	select coalesce(p_result like 'ok:%' and pg_temp.dc_answer(p_result) - 'epoch' = jsonb_build_object(
+	select coalesce(p_result like 'ok:%' and pg_temp.dc_answer(p_result) - 'epoch' - 'seat' = jsonb_build_object(
 		'schema', 'qorpera.member-machine-desktop/v1', 'state', 'ok', 'handedBack', p_handed, 'holding', p_holding)
-		and jsonb_typeof(pg_temp.dc_answer(p_result) -> 'epoch') = 'number', false)
+		and jsonb_typeof(pg_temp.dc_answer(p_result) -> 'epoch') = 'number'
+		and jsonb_typeof(pg_temp.dc_answer(p_result) -> 'seat') = case when p_holding then 'number' else 'null' end, false)
 $$;
--- An action as the member, captured under the hold at the epoch the machine's lease was taken under (as the holder's
--- page knows it) unless the test names one (F24).
-create function pg_temp.dc_act(p_who text, p_machine text, p_action jsonb, p_epoch bigint default null) returns text
+-- An action as the member, captured under the hold at the epoch the machine's lease was taken under and its seat (as the
+-- holder's page knows them) unless the test names them (F24, F26).
+create function pg_temp.dc_act(p_who text, p_machine text, p_action jsonb, p_epoch bigint default null,
+	p_seat bigint default null) returns text
 language sql as $$
-	select pg_temp.dc_as(pg_temp.dc_user(p_who), format('select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L, %L)',
+	select pg_temp.dc_as(pg_temp.dc_user(p_who), format(
+		'select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L, %L, %L)',
 		'92400000-0000-4000-8000-000000000010', pg_temp.dc_id(p_machine), p_action, coalesce(p_epoch,
 			(select machine.desktop_member_epoch from public.qorpera_company_machines as machine
-				where machine.id = pg_temp.dc_id(p_machine)), pg_temp.dc_epoch(p_who, p_machine))))
+				where machine.id = pg_temp.dc_id(p_machine)), pg_temp.dc_epoch(p_who, p_machine)),
+		coalesce(p_seat, pg_temp.dc_seat(p_machine))))
 $$;
 -- An action begun as the member, its id (or an exception).
 create function pg_temp.dc_act_id(p_who text, p_machine text, p_action jsonb) returns uuid language plpgsql as $$
@@ -345,8 +365,10 @@ declare
 	v_after public.qorpera_company_machines := pg_temp.dc_machine('a1');
 	v_take jsonb := pg_temp.dc_answer(current_setting('qorpera_test.dc_t1'));
 begin
-	perform pg_temp.base_assert(v_take - 'until' = '{"schema": "qorpera.member-machine-desktop/v1", "state": "ok"}'::jsonb
-			and (v_take ->> 'until')::timestamptz = (v_machine ->> 'desktop_member_until')::timestamptz,
+	perform pg_temp.base_assert(v_take - 'until' - 'seat' = '{"schema": "qorpera.member-machine-desktop/v1", "state": "ok"}'::jsonb
+			and (v_take ->> 'until')::timestamptz = (v_machine ->> 'desktop_member_until')::timestamptz
+			and (v_take ->> 'seat')::bigint = (v_machine ->> 'desktop_member_generation')::bigint
+			and (v_machine ->> 'desktop_member_press') is not null,
 		'1: a contributor takes over: ' || current_setting('qorpera_test.dc_t1'));
 	perform pg_temp.base_assert((v_machine ->> 'desktop_member_user_id')::uuid = pg_temp.dc_user('contributor')
 			and (v_machine ->> 'desktop_member_until')::timestamptz = (v_machine ->> 'desktop_member_since')::timestamptz + interval '5 minutes'
@@ -370,7 +392,8 @@ begin
 		'1: a viewer''s list: who holds it, and no take-over: ' || pg_temp.dc_list('viewer')::text);
 	perform pg_temp.base_assert(pg_temp.dc_listed('contributor', 'm-1203') -> 'control' = jsonb_build_object('mine', true,
 				'name', pg_temp.dc_name('contributor'), 'until', v_after.desktop_member_until,
-				'epoch', v_after.desktop_member_epoch)
+				'epoch', v_after.desktop_member_epoch, 'seat', v_after.desktop_member_generation,
+				'press', v_after.desktop_member_press)
 			and v_after.desktop_member_epoch = pg_temp.dc_epoch('contributor', 'a1')
 			and (pg_temp.dc_listed('contributor', 'm-1203') ->> 'epoch')::bigint = pg_temp.dc_epoch('contributor', 'a1')
 			and (pg_temp.dc_list('contributor') ->> 'canTakeOver')::boolean and (pg_temp.dc_list('owner') ->> 'canTakeOver')::boolean
@@ -392,15 +415,17 @@ select set_config('qorpera_test.dc_1x', pg_temp.dc_differ(jsonb_build_array(
 	jsonb_build_array('another company', pg_temp.dc_take('owner', 'a5', '12030000-0000-4000-8000-000000000011'),
 		'42501:Machine desktop is unavailable'),
 	jsonb_build_array('no machine', pg_temp.dc_as(pg_temp.dc_user('owner'), format(
-		'select public.qorpera_member_take_machine_desktop(%L, null, 0)', '92400000-0000-4000-8000-000000000010')),
+		'select public.qorpera_member_take_machine_desktop(%L, null, 0, %L)', '92400000-0000-4000-8000-000000000010',
+		pg_catalog.gen_random_uuid())),
 		'22023:Machine desktop request is malformed'),
 	jsonb_build_array('no epoch', pg_temp.dc_as(pg_temp.dc_user('owner'), format(
-		'select public.qorpera_member_take_machine_desktop(%L, %L, null)', '92400000-0000-4000-8000-000000000010',
-		pg_temp.dc_id('a4'))), '22023:Machine desktop request is malformed'),
+		'select public.qorpera_member_take_machine_desktop(%L, %L, null, %L)', '92400000-0000-4000-8000-000000000010',
+		pg_temp.dc_id('a4'), pg_catalog.gen_random_uuid())), '22023:Machine desktop request is malformed'),
 	jsonb_build_array('an epoch below 0', pg_temp.dc_take('owner', 'a4', p_epoch => -1),
 		'22023:Machine desktop request is malformed'),
-	jsonb_build_array('the service role', pg_temp.dc_service(format('select public.qorpera_member_take_machine_desktop(%L, %L, %L)',
-		'92400000-0000-4000-8000-000000000010', pg_temp.dc_id('a4'), 0)),
+	jsonb_build_array('the service role', pg_temp.dc_service(format(
+		'select public.qorpera_member_take_machine_desktop(%L, %L, %L, %L)', '92400000-0000-4000-8000-000000000010',
+		pg_temp.dc_id('a4'), 0, pg_catalog.gen_random_uuid())),
 		'42501:permission denied for function qorpera_member_take_machine_desktop')
 )), true);
 do $$
@@ -549,18 +574,18 @@ do $$
 declare v text;
 begin
 	begin
-		insert into public.qorpera_company_machine_desktop_actions(id, control_id, machine_id, user_id, action, begun_at)
+		insert into public.qorpera_company_machine_desktop_actions(id, control_id, machine_id, user_id, action, begun_at, seat)
 		select pg_catalog.gen_random_uuid(), act.control_id, act.machine_id, act.user_id, '{"type": "type", "text": "hunter2"}',
-			clock_timestamp()
+			clock_timestamp(), act.seat
 		from public.qorpera_company_machine_desktop_actions as act where act.id = current_setting('qorpera_test.dc_a41')::uuid;
 		v := 'inserted';
 	exception when check_violation then v := 'refused';
 	end;
 	perform pg_temp.base_assert(v = 'refused', '4: the table refuses a text: ' || v);
 	begin
-		insert into public.qorpera_company_machine_desktop_actions(id, control_id, machine_id, user_id, action, begun_at)
+		insert into public.qorpera_company_machine_desktop_actions(id, control_id, machine_id, user_id, action, begun_at, seat)
 		select pg_catalog.gen_random_uuid(), act.control_id, act.machine_id, act.user_id, '{"type": "open", "target": "/x"}',
-			clock_timestamp()
+			clock_timestamp(), act.seat
 		from public.qorpera_company_machine_desktop_actions as act where act.id = current_setting('qorpera_test.dc_a41')::uuid;
 		v := 'inserted';
 	exception when check_violation then v := 'refused';
@@ -580,7 +605,7 @@ select set_config('qorpera_test.dc_4y', pg_temp.dc_differ(jsonb_build_array(
 	jsonb_build_array('a stopped machine', pg_temp.dc_act('contributor', 'a3', '{"type": "click", "x": 1, "y": 1}'),
 		pg_temp.dc_refused('qorpera.member-machine-desktop-act/v1', 'MACHINE_NOT_RUNNING')),
 	jsonb_build_array('the service role', pg_temp.dc_service(format(
-		'select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L, 0)', '92400000-0000-4000-8000-000000000010',
+		'select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L, 0, 1)', '92400000-0000-4000-8000-000000000010',
 		pg_temp.dc_id('a1'), '{"type": "click", "x": 1, "y": 1}')),
 		'42501:permission denied for function qorpera_member_machine_desktop_act_begin')
 )), true);
@@ -812,8 +837,8 @@ select set_config('qorpera_test.dc_6y', pg_temp.dc_differ(jsonb_build_array(
 		'authorized'),
 	jsonb_build_array('another reason', pg_temp.dc_back('contributor', 'a1', 'idle'), '22023:Machine desktop request is malformed'),
 	jsonb_build_array('no epoch', pg_temp.dc_as(pg_temp.dc_user('contributor'), format(
-		'select public.qorpera_member_hand_back_machine_desktop(%L, %L, %L, null)', '92400000-0000-4000-8000-000000000010',
-		pg_temp.dc_id('a1'), 'handed_back')), '22023:Machine desktop request is malformed'),
+		'select public.qorpera_member_hand_back_machine_desktop(%L, %L, %L, null, 1, null)',
+		'92400000-0000-4000-8000-000000000010', pg_temp.dc_id('a1'), 'handed_back')), '22023:Machine desktop request is malformed'),
 	jsonb_build_array('an epoch below 0', pg_temp.dc_back('contributor', 'a1', 'handed_back', -1),
 		'22023:Machine desktop request is malformed'),
 	jsonb_build_array('a stranger', pg_temp.dc_back('outsider', 'a1'), '42501:Machine desktop is unavailable')
@@ -899,33 +924,38 @@ begin
 		'9: the agent''s look answers the lease generation it saw: ' || v_look::text);
 	perform pg_temp.base_assert(pg_temp.dc_check(v_g) = current_setting('qorpera_test.dc_ok'),
 		'9: no hold, the same generation: the agent''s picture leaves');
-	-- A take-over moves it; taking again, an action and a heartbeat do not; a hand-back does.
+	-- A take-over moves it, and so does taking the member's own lease again from another press (a new seat, F26); an
+	-- action and a heartbeat do not; a hand-back does.
 	perform pg_temp.dc_take('contributor', 'a1');
 	perform pg_temp.base_assert(pg_temp.dc_generation('a1') = v_g + 1, '9: a take-over moves the generation');
 	perform pg_temp.dc_take('contributor', 'a1');
+	perform pg_temp.base_assert(pg_temp.dc_generation('a1') = v_g + 2, '9: taking again from another press moves it too');
 	perform pg_temp.dc_act_id('contributor', 'a1', '{"type": "type", "length": 3}');
 	perform pg_temp.dc_keep('contributor', 'a1');
-	perform pg_temp.base_assert(pg_temp.dc_generation('a1') = v_g + 1, '9: taking again, an action and a heartbeat do not');
-	-- The holder sees their own screen; nobody else does, no agent either, and no picture of before the take-over.
-	perform pg_temp.base_assert(pg_temp.dc_check(v_g + 1, 'contributor') = current_setting('qorpera_test.dc_ok'),
+	perform pg_temp.base_assert(pg_temp.dc_generation('a1') = v_g + 2, '9: an action and a heartbeat do not');
+	-- The holder sees their own screen; nobody else does, no agent either, and no picture of before the take-over or of
+	-- the seat before.
+	perform pg_temp.base_assert(pg_temp.dc_check(v_g + 2, 'contributor') = current_setting('qorpera_test.dc_ok'),
 		'9: the holder''s own picture leaves');
-	perform pg_temp.base_assert(pg_temp.dc_check(v_g + 1, 'admin') = current_setting('qorpera_test.dc_held')
-			and pg_temp.dc_check(v_g + 1) = current_setting('qorpera_test.dc_held')
-			and pg_temp.dc_check(v_g, 'contributor') = current_setting('qorpera_test.dc_held'),
-		'9: another member''s, an agent''s and a picture from before the take-over do not');
+	perform pg_temp.base_assert(pg_temp.dc_check(v_g + 2, 'admin') = current_setting('qorpera_test.dc_held')
+			and pg_temp.dc_check(v_g + 2) = current_setting('qorpera_test.dc_held')
+			and pg_temp.dc_check(v_g, 'contributor') = current_setting('qorpera_test.dc_held')
+			and pg_temp.dc_check(v_g + 1, 'contributor') = current_setting('qorpera_test.dc_held'),
+		'9: another member''s, an agent''s, and a picture from before the take-over or the seat before do not');
 	perform pg_temp.dc_back('contributor', 'a1');
-	perform pg_temp.base_assert(pg_temp.dc_generation('a1') = v_g + 2, '9: a hand-back moves the generation');
+	perform pg_temp.base_assert(pg_temp.dc_generation('a1') = v_g + 3, '9: a hand-back moves the generation');
 	-- Taken over and handed back while a look was on its way: no hold now, but that picture never leaves.
 	perform pg_temp.base_assert(pg_temp.dc_check(v_g) = current_setting('qorpera_test.dc_held')
 			and pg_temp.dc_check(v_g + 1) = current_setting('qorpera_test.dc_held')
-			and pg_temp.dc_check(v_g + 2) = current_setting('qorpera_test.dc_ok'),
+			and pg_temp.dc_check(v_g + 2) = current_setting('qorpera_test.dc_held')
+			and pg_temp.dc_check(v_g + 3) = current_setting('qorpera_test.dc_ok'),
 		'9: only the generation of now lets a picture out');
 
 	-- (i) Member B (the viewer) begins a look and the executor reads it; then A (the contributor) takes over and types;
 	--     then B's capture returns: B's picture does not leave.
 	v_begin := pg_temp.dc_begin_look('viewer', 'a1');
 	v_member := pg_temp.dc_answer(pg_temp.dc_look_auth(v_begin));
-	perform pg_temp.base_assert(v_member ->> 'state' = 'authorized' and (v_member ->> 'desktopGeneration')::bigint = v_g + 2,
+	perform pg_temp.base_assert(v_member ->> 'state' = 'authorized' and (v_member ->> 'desktopGeneration')::bigint = v_g + 3,
 		'9: a member''s look read answers the generation: ' || coalesce(v_member::text, v_begin));
 	perform pg_temp.dc_take('contributor', 'a1');
 	perform pg_temp.dc_act_id('contributor', 'a1', '{"type": "type", "length": 8}');
@@ -1121,7 +1151,7 @@ begin
 			and (pg_temp.dc_listed('admin', 'm-1203') ->> 'epoch')::bigint = v_admin
 			and (pg_temp.dc_listed('admin', 'm-1203') -> 'control' ->> 'epoch')::bigint = v_admin
 			and (pg_temp.dc_listed('contributor', 'm-1203') ->> 'epoch')::bigint = v_e + 1
-			and not (pg_temp.dc_listed('contributor', 'm-1203') -> 'control' ? 'epoch'),
+			and not (pg_temp.dc_listed('contributor', 'm-1203') -> 'control' ?| array['epoch', 'seat', 'press']),
 		'11: the contributor''s hand-back leaves the admin''s epoch and lease; each list says its own: ' || v);
 	perform pg_temp.base_assert(pg_temp.dc_backed(pg_temp.dc_back('admin', 'a1', 'handed_back', v_admin), true)
 			and pg_temp.dc_epoch('admin', 'a1') = v_admin + 1
@@ -1135,10 +1165,10 @@ do $$
 declare v_role text; v_function text;
 begin
 	foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
-		foreach v_function in array array['public.qorpera_member_take_machine_desktop(uuid,uuid,bigint)',
-			'public.qorpera_member_keep_machine_desktop(uuid,uuid,bigint)',
-			'public.qorpera_member_hand_back_machine_desktop(uuid,uuid,text,bigint)',
-			'public.qorpera_member_machine_desktop_act_begin(uuid,uuid,jsonb,bigint)'] loop
+		foreach v_function in array array['public.qorpera_member_take_machine_desktop(uuid,uuid,bigint,uuid)',
+			'public.qorpera_member_keep_machine_desktop(uuid,uuid,bigint,bigint)',
+			'public.qorpera_member_hand_back_machine_desktop(uuid,uuid,text,bigint,bigint,uuid)',
+			'public.qorpera_member_machine_desktop_act_begin(uuid,uuid,jsonb,bigint,bigint)'] loop
 			perform pg_temp.base_assert(has_function_privilege(v_role, v_function, 'execute') = (v_role = 'authenticated'),
 				format('8: %s may%s call %s', v_role, case when v_role = 'authenticated' then '' else ' not' end, v_function));
 		end loop;
@@ -1222,11 +1252,127 @@ begin
 	perform pg_temp.base_assert(pg_temp.dc_act('admin', 'a4', '{"type": "click", "x": 1, "y": 1}', -1)
 			= '22023:Machine desktop action is malformed'
 		and pg_temp.dc_as(pg_temp.dc_user('admin'), format(
-			'select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L, null)', '92400000-0000-4000-8000-000000000010',
-			pg_temp.dc_id('a4'), '{"type": "click", "x": 1, "y": 1}')) = '22023:Machine desktop action is malformed',
+			'select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L, null, %L)', '92400000-0000-4000-8000-000000000010',
+			pg_temp.dc_id('a4'), '{"type": "click", "x": 1, "y": 1}', pg_temp.dc_seat('a4')))
+			= '22023:Machine desktop action is malformed',
 		'13: an epoch below 0 or none is malformed');
 	-- m-1203-other is no one's again.
 	perform pg_temp.base_assert(pg_temp.dc_backed(pg_temp.dc_back('admin', 'a4'), true), '13: given back at the end');
+end $$;
+
+-- 14. A hold is named by its seat as well as its epoch (release review r1 of #1667, F26 of #1661) --------------------------
+
+-- On m-1203-other, the admin. (i) Taken (seat s1), the lease runs out, taken again without a hand-back: the same epoch, a
+-- new seat s2. Input captured under s1 is refused, nothing recorded, counted or renewed, and a heartbeat with s1 renews
+-- nothing; under s2 both go. (ii) Another tab takes the admin's own live lease over: seat s3; input and a heartbeat with
+-- s2 are refused and change nothing; with s3 they go; an action begun under s3 before another tab's take-over (s4) gets
+-- no authority. (iii) The hand-back's rules: a stale tab's hand-back naming s3 while s4 lives (its window closing) ends
+-- nothing and moves no epoch, and answers that the admin holds the machine under s4; so does one naming a press that
+-- did not seat the lease (a take-over whose answer was lost); naming s4's own press ends it and moves the epoch. A lease
+-- that ran out is closed as it ended, and the epoch moves, by a hand-back at the current epoch naming any seat.
+do $$
+declare
+	v_e bigint := pg_temp.dc_epoch('admin', 'a4');
+	v_press uuid := '12030000-0000-4000-8000-0000000009f4';
+	v text; v_s1 bigint; v_s2 bigint; v_s3 bigint; v_s4 bigint; v_s5 bigint; v_begun uuid;
+	v_before public.qorpera_company_machines; v_actions bigint; v_controls jsonb;
+	v_count text := 'select count(*) from public.qorpera_company_machine_desktop_actions where machine_id = $1';
+	v_n bigint;
+begin
+	-- (i)
+	v := pg_temp.dc_take('admin', 'a4');
+	v_s1 := (pg_temp.dc_answer(v) ->> 'seat')::bigint;
+	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'ok' and v_s1 = pg_temp.dc_seat('a4'),
+		'14 (i): the take-over answers its seat: ' || v);
+	perform pg_temp.dc_shift('a4', 'desktop_member_until = clock_timestamp() - interval ''1 second''');
+	v := pg_temp.dc_take('admin', 'a4');
+	v_s2 := (pg_temp.dc_answer(v) ->> 'seat')::bigint;
+	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'ok' and v_s2 > v_s1
+			and (pg_temp.dc_machine('a4')).desktop_member_epoch = v_e and pg_temp.dc_epoch('admin', 'a4') = v_e,
+		'14 (i): taken again after it ran out, without a hand-back: the same epoch, a new seat: ' || v);
+	v_before := pg_temp.dc_machine('a4');
+	execute v_count into v_actions using pg_temp.dc_id('a4');
+	v_controls := pg_temp.dc_controls('a4');
+	v := pg_temp.dc_act('admin', 'a4', '{"type": "click", "x": 5, "y": 5}', v_e, v_s1);
+	execute v_count into v_n using pg_temp.dc_id('a4');
+	perform pg_temp.base_assert(v = pg_temp.dc_refused('qorpera.member-machine-desktop-act/v1', 'DESKTOP_CONTROL_ENDED')
+			and v_n = v_actions and pg_temp.dc_controls('a4') = v_controls
+			and (pg_temp.dc_machine('a4')).desktop_member_until = v_before.desktop_member_until
+			and (pg_temp.dc_machine('a4')).desktop_member_input_at = v_before.desktop_member_input_at,
+		'14 (i): input captured under the seat that ran out is refused, nothing recorded, counted or renewed: ' || v);
+	v := pg_temp.dc_keep('admin', 'a4', v_e, v_s1);
+	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'ended'
+			and (pg_temp.dc_machine('a4')).desktop_member_until = v_before.desktop_member_until,
+		'14 (i): a heartbeat with the old seat renews nothing: ' || v);
+	perform pg_temp.base_assert(pg_temp.dc_answer(pg_temp.dc_act('admin', 'a4', '{"type": "click", "x": 6, "y": 6}', v_e, v_s2))
+			->> 'state' = 'ok' and pg_temp.dc_answer(pg_temp.dc_keep('admin', 'a4', v_e, v_s2)) ->> 'state' = 'ok',
+		'14 (i): under the new seat both go');
+	-- (ii)
+	v := pg_temp.dc_take('admin', 'a4');
+	v_s3 := (pg_temp.dc_answer(v) ->> 'seat')::bigint;
+	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'ok' and v_s3 > v_s2
+			and (pg_temp.dc_machine('a4')).desktop_member_epoch = v_e,
+		'14 (ii): another tab takes the admin''s own live lease over: a new seat: ' || v);
+	v_before := pg_temp.dc_machine('a4');
+	execute v_count into v_actions using pg_temp.dc_id('a4');
+	v_controls := pg_temp.dc_controls('a4');
+	v := pg_temp.dc_act('admin', 'a4', '{"type": "key", "keys": ["Return"]}', v_e, v_s2);
+	execute v_count into v_n using pg_temp.dc_id('a4');
+	perform pg_temp.base_assert(v = pg_temp.dc_refused('qorpera.member-machine-desktop-act/v1', 'DESKTOP_CONTROL_ENDED')
+			and v_n = v_actions and pg_temp.dc_controls('a4') = v_controls
+			and pg_temp.dc_answer(pg_temp.dc_keep('admin', 'a4', v_e, v_s2)) ->> 'state' = 'ended'
+			and (pg_temp.dc_machine('a4')).desktop_member_until = v_before.desktop_member_until,
+		'14 (ii): the first tab''s input and heartbeat are refused and change nothing: ' || v);
+	v := pg_temp.dc_act('admin', 'a4', '{"type": "key", "keys": ["Tab"]}', v_e, v_s3);
+	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'ok', '14 (ii): the other tab''s input goes: ' || v);
+	v_begun := (pg_temp.dc_answer(v) ->> 'actionId')::uuid;
+	v := pg_temp.dc_take('admin', 'a4', p_press => v_press);
+	v_s4 := (pg_temp.dc_answer(v) ->> 'seat')::bigint;
+	perform pg_temp.base_assert(v_s4 > v_s3 and pg_temp.dc_auth(v_begun)
+			= pg_temp.dc_refused('qorpera.member-machine-desktop-act-authority/v1', 'DESKTOP_CONTROL_ENDED'),
+		'14 (ii): an action begun under a seat taken over by another press before the executor reads it: refused');
+	-- (iii)
+	v := pg_temp.dc_back('admin', 'a4', 'closed', v_e, v_s3);
+	perform pg_temp.base_assert(pg_temp.dc_backed(v, false, true) and (pg_temp.dc_answer(v) ->> 'epoch')::bigint = v_e
+			and (pg_temp.dc_answer(v) ->> 'seat')::bigint = v_s4 and pg_temp.dc_epoch('admin', 'a4') = v_e
+			and pg_temp.dc_seat('a4') = v_s4 and (pg_temp.dc_machine('a4')).desktop_member_user_id = pg_temp.dc_user('admin'),
+		'14 (iii): a stale tab''s hand-back ends nothing and moves no epoch while another tab''s seat lives: ' || v);
+	v := pg_temp.dc_back('admin', 'a4', 'closed', v_e, null, pg_catalog.gen_random_uuid());
+	perform pg_temp.base_assert(pg_temp.dc_backed(v, false, true) and pg_temp.dc_epoch('admin', 'a4') = v_e
+			and pg_temp.dc_seat('a4') = v_s4,
+		'14 (iii): so does one naming a press that did not seat the lease: ' || v);
+	v := pg_temp.dc_back('admin', 'a4', 'handed_back', v_e, null, v_press);
+	perform pg_temp.base_assert(pg_temp.dc_backed(v, true) and pg_temp.dc_epoch('admin', 'a4') = v_e + 1
+			and (pg_temp.dc_machine('a4')).desktop_member_user_id is null,
+		'14 (iii): naming the press that seated it ends it and moves the epoch: ' || v);
+	v := pg_temp.dc_take('admin', 'a4');
+	v_s5 := (pg_temp.dc_answer(v) ->> 'seat')::bigint;
+	perform pg_temp.dc_shift('a4', 'desktop_member_until = clock_timestamp() - interval ''1 second''');
+	v := pg_temp.dc_back('admin', 'a4', 'closed', v_e + 1, v_s5 + 7);
+	perform pg_temp.base_assert(pg_temp.dc_backed(v, false) and pg_temp.dc_epoch('admin', 'a4') = v_e + 2
+			and (pg_temp.dc_machine('a4')).desktop_member_user_id is null
+			and pg_temp.dc_controls('a4') -> -1 ->> 1 = 'lapsed',
+		'14 (iii): a lease that ran out is closed as it ended, and the epoch moves, whatever seat is named: ' || v);
+	-- Malformed: no seat and no press; a seat below 0; a take-over without its press; a heartbeat without its seat.
+	perform pg_temp.base_assert(
+		pg_temp.dc_as(pg_temp.dc_user('admin'), format(
+			'select public.qorpera_member_hand_back_machine_desktop(%L, %L, %L, %L, null, null)',
+			'92400000-0000-4000-8000-000000000010', pg_temp.dc_id('a4'), 'closed', v_e + 2))
+			= '22023:Machine desktop request is malformed'
+		and pg_temp.dc_back('admin', 'a4', 'closed', v_e + 2, -1) = '22023:Machine desktop request is malformed'
+		and pg_temp.dc_as(pg_temp.dc_user('admin'), format(
+			'select public.qorpera_member_take_machine_desktop(%L, %L, %L, null)', '92400000-0000-4000-8000-000000000010',
+			pg_temp.dc_id('a4'), v_e + 2)) = '22023:Machine desktop request is malformed'
+		and pg_temp.dc_as(pg_temp.dc_user('admin'), format(
+			'select public.qorpera_member_keep_machine_desktop(%L, %L, %L, null)', '92400000-0000-4000-8000-000000000010',
+			pg_temp.dc_id('a4'), v_e + 2)) = '22023:Machine desktop request is malformed'
+		and pg_temp.dc_as(pg_temp.dc_user('admin'), format(
+			'select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L, %L, null)', '92400000-0000-4000-8000-000000000010',
+			pg_temp.dc_id('a4'), '{"type": "click", "x": 1, "y": 1}', v_e + 2)) = '22023:Machine desktop action is malformed'
+		and pg_temp.dc_act('admin', 'a4', '{"type": "click", "x": 1, "y": 1}', v_e + 2, -1)
+			= '22023:Machine desktop action is malformed',
+		'14: a hand-back naming nothing, a seat below 0, a take-over without its press, a heartbeat or an action without its '
+			|| 'seat, and an action with a seat below 0 are malformed');
 end $$;
 
 -- 12. An action that waits for the machine's lock across the lease's end (review r7 F14) -------------------------------------
@@ -1290,9 +1436,9 @@ begin
 	perform dblink_exec('dc_holder', 'begin');
 	perform * from dblink('dc_holder', format('select 1 from public.qorpera_company_machines where id = %L for no key update',
 		pg_temp.dc_id('a1'))) as held(one integer);
-	perform dblink_send_query('dc_poll', format('select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L, %L)::text',
+	perform dblink_send_query('dc_poll', format('select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L, %L, %L)::text',
 		'92400000-0000-4000-8000-000000000010', pg_temp.dc_id('a1'), '{"type": "click", "x": 4, "y": 4}',
-		v_before.desktop_member_epoch));
+		v_before.desktop_member_epoch, v_before.desktop_member_generation));
 	for attempt in 1..400 loop
 		v_waited := v_holder = any(pg_blocking_pids(v_poll));
 		exit when v_waited or dblink_is_busy('dc_poll') = 0;

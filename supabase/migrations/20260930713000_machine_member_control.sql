@@ -10,39 +10,53 @@
 --   from the member's last word (taking, an action, or the window's heartbeat every 60 seconds) and never past 30 minutes
 --   after their last input (taking or an action); it ends at once when they hand it back. It ends by itself by time
 --   alone: every check here compares _until with the clock, so no job ends it.
--- * qorpera_member_take_machine_desktop(profile, machine, epoch) (authenticated): an owner, admin or contributor of the
---   company; a machine of it big enough for a desktop (else DESKTOP_MACHINE_TOO_SMALL), running on its placement with a
---   known boot (else MACHINE_NOT_RUNNING), whose disk the member may see (MACHINE_NEEDS_COMPANY_VIEW, as for a look); held
---   by no other member now (else DESKTOP_MEMBER_IN_CONTROL with that member's name). The member's own lease is renewed.
---   `epoch` is the member's hand-back epoch for the machine as their page knows it (review r5 of #1661): a counter only
---   the database moves, one per member and machine (qorpera_company_machine_desktop_epochs; 0 while there is no row). A
---   take-over is accepted only at the current epoch, under the machine's lock; at any other it is refused
+-- * qorpera_member_take_machine_desktop(profile, machine, epoch, press) (authenticated): an owner, admin or contributor
+--   of the company; a machine of it big enough for a desktop (else DESKTOP_MACHINE_TOO_SMALL), running on its placement
+--   with a known boot (else MACHINE_NOT_RUNNING), whose disk the member may see (MACHINE_NEEDS_COMPANY_VIEW, as for a
+--   look); held by no other member now (else DESKTOP_MEMBER_IN_CONTROL with that member's name). The member's own lease
+--   is renewed. `epoch` is the member's hand-back epoch for the machine as their page knows it (review r5 of #1661): a
+--   counter only the database moves, one per member and machine (qorpera_company_machine_desktop_epochs; 0 while there
+--   is no row). A take-over is accepted only at the current epoch, under the machine's lock; at any other it is refused
 --   (TAKE_CALLED_OFF, with the current epoch) before it holds, renews, moves or records anything. The lease remembers
 --   the epoch it was taken under.
--- * qorpera_member_keep_machine_desktop(profile, machine, epoch) (authenticated): the window's heartbeat; it renews the
---   member's own lease only when it was taken under that epoch, or says it ended.
--- * qorpera_member_hand_back_machine_desktop(profile, machine, reason, epoch) (authenticated): under the machine's lock,
---   at the current epoch it moves the epoch on by one and gives back the member's lease taken under it ('handed_back', or
---   'closed' when their window closed or they left the company's page); at an older one it changes nothing, so a late or
---   repeated hand-back never ends a newer take-over. It answers the current epoch and whether the member holds the
---   machine now. An answered hand-back at epoch e means that nothing taken under e or earlier holds the desktop, and
---   nothing sent under e or earlier ever can, whenever it arrives: no clock is read for any of it.
--- * qorpera_member_machine_desktop_act_begin(profile, machine, action, epoch) (authenticated; the node's executor makes it
---   with the member's own token): one action of the member who holds the desktop, of a closed shape per verb as an agent's
---   (qorpera_valid_machine_screen_call: positions in screen pixels, no key an xdotool command word) but never `open`, and
---   a typed text by its length alone (qorpera_valid_member_desktop_action). `epoch` is the hand-back epoch of the hold the
---   member's page captured the input under (release review r1 of #1667, F24 of #1661): under the machine's lock the
---   action is taken only from the member whose live lease was taken under exactly that epoch; otherwise that hold has
---   ended (DESKTOP_CONTROL_ENDED) and nothing is recorded, so input delayed across a hand-back and a new take-over never
---   runs under the new lease. It records the action without any text, renews the lease, moves the machine's last use (at
---   most every 30 seconds: a member at the desktop is a use) and marks a disk that never had a view when the member does
---   not read the folder's root, as an agent's action does. It answers a single-use action id, nothing else.
+-- * Every seating of a member on a desktop gets a seat (release review r1 of #1667, F26 of #1661): the lease generation
+--   (desktop_member_generation), which moves at a take-over that starts a lease (after one ran out too), at one that
+--   takes the member's own live lease over from another press (another tab, a page loaded again, a late copy of a
+--   press), and at a hand-back that ends a lease. The take-over answers it. The epoch orders take-overs against
+--   hand-backs; the seat names a hold: two holds of one member can live under one epoch (after a lease ran out and was
+--   taken again, or another tab took the member's own lease over), and everything a page does as holder names both.
+--   `press` is an id the page mints for each take-over request: the lease remembers the press that seated it, and the
+--   list shows it to the caller beside their hold's seat, so a page whose take-over answer was lost knows the hold is
+--   its own press's; it is for recognition only, never authority. A late copy of an old press is refused by the epoch,
+--   or seats anew with a new seat (the page's hold of another seat then ends at its next heartbeat).
+-- * qorpera_member_keep_machine_desktop(profile, machine, epoch, seat) (authenticated): the window's heartbeat; it
+--   renews the member's own lease only when it was taken under that epoch and is that seat, or says it ended.
+-- * qorpera_member_hand_back_machine_desktop(profile, machine, reason, epoch, seat, press) (authenticated): under the
+--   machine's lock it gives back the member's lease taken under `epoch` that is the hold named, by its seat or, for a
+--   take-over whose answer was lost, by its press ('handed_back', or 'closed' when their window closed or they left the
+--   company's page). The epoch moves on by one when `epoch` is the current one and no live lease of the member's is
+--   left that this hand-back did not name (F26): a stale tab's hand-back never ends another tab's live hold of the
+--   member's, and an epoch above e still means that nothing taken under e or earlier holds the desktop, and nothing
+--   sent under e or earlier ever can, whenever it arrives: no clock is read for any of it. At an older epoch nothing
+--   moves. It answers the current epoch, whether the member holds the machine now and, if so, that hold's seat.
+-- * qorpera_member_machine_desktop_act_begin(profile, machine, action, epoch, seat) (authenticated; the node's executor
+--   makes it with the member's own token): one action of the member who holds the desktop, of a closed shape per verb
+--   as an agent's (qorpera_valid_machine_screen_call: positions in screen pixels, no key an xdotool command word) but
+--   never `open`, and a typed text by its length alone (qorpera_valid_member_desktop_action). `epoch` and `seat` name
+--   the hold the member's page captured the input under (release review r1 of #1667, F24 and F26 of #1661): under the
+--   machine's lock the action is taken only from the member whose live lease was taken under exactly that epoch and is
+--   exactly that seat; otherwise that hold has ended (DESKTOP_CONTROL_ENDED) and nothing is recorded, so input delayed
+--   across a hand-back and a new take-over, a lease that ran out and was taken again, or another tab's take-over never
+--   runs under the new hold. It records the action without any text, renews the lease, moves the machine's last use (at
+--   most every 30 seconds: a member at the desktop is a use) and marks a disk that never had a view when the member
+--   does not read the folder's root, as an agent's action does. It answers a single-use action id, nothing else.
 -- * qorpera_member_machine_desktop_act_authority(action, owner, provider), the executor's read (service_role): the
---   action, begun in the last 15 seconds and not served, of a member who still may take over and still holds the desktop
---   under the same lease (the lease row the begin counted it on, by its start, not ended: a hand-back and a new take-over
---   between the begin and this read end that row and start another, so the action is refused); everything above checked
---   again live under the machine's lock; where the machine runs, and the action as recorded. It is served only by the
---   machine's own executor, once, which runs the helper with the action id as its receipt.
+--   action, begun in the last 15 seconds and not served, of a member who still may take over and still holds the
+--   desktop under the same seat (the seat the begin recorded, and the lease row it counted the action on, not ended: a
+--   hand-back, a new take-over, or another press's take-over of the same lease between the begin and this read moves
+--   the seat, so the action is refused); everything above checked again live under the machine's lock; where the
+--   machine runs, and the action as recorded. It is served only by the machine's own executor, once, which runs the
+--   helper with the action id as its receipt.
 -- * Each lease is a row of qorpera_company_machine_desktop_controls (begun, ended and how, how many actions) and each
 --   action one of qorpera_company_machine_desktop_actions (the verb, its positions, key names and a text's length). Both
 --   are the company's record of who drove its computer: they go with the machine, not with a member's account.
@@ -52,19 +66,20 @@
 -- * Another member's look is refused while one member holds the desktop (DESKTOP_MEMBER_IN_CONTROL), at the begin and at
 --   the executor's read; the member who holds it keeps looking.
 -- * Every picture is fenced by the lease's generation (review r1 F1): desktop_member_generation moves in the statement
---   that begins a lease and in the one that gives it back. Both look reads (the agent's qorpera_authorize_machine_screen,
---   a member's qorpera_member_machine_screen_authority) answer the generation they saw, and after the capture, before any
---   picture or title leaves, the executor asks qorpera_machine_desktop_picture_check (service_role): the same generation,
---   and no live hold by anyone but the one who looks. Otherwise the picture is dropped, so a look authorized before a
+--   that begins a lease, in one that seats the member anew on their own live lease (F26: it is the seat), and in the
+--   one that gives a lease back. Both look reads (the agent's qorpera_authorize_machine_screen, a member's
+--   qorpera_member_machine_screen_authority) answer the generation they saw, and after the capture, before any picture
+--   or title leaves, the executor asks qorpera_machine_desktop_picture_check (service_role): the same generation, and
+--   no live hold by anyone but the one who looks. Otherwise the picture is dropped, so a look authorized before a
 --   take-over never shows what the member did after it, however the steps interleave.
 -- * The member's list (qorpera_list_agent_machines) says whether they may take over (canTakeOver) and, per machine, who
---   holds its desktop (control: null, or {mine, name, until}, and for the caller's own hold the epoch it was taken under),
---   and the caller's own current hand-back epoch per machine (epoch); the `machines` hint also goes when a lease begins
---   or ends by a word (never on an action's renewal).
+--   holds its desktop (control: null, or {mine, name, until}, and for the caller's own hold the epoch it was taken
+--   under, its seat and the press that seated it), and the caller's own current hand-back epoch per machine (epoch);
+--   the `machines` hint also goes when a lease begins or ends by a word (never on an action's renewal).
 -- Every new or patched body names this migration (20260930713000), for the deploy guards.
 
 do $$ begin
-	if to_regprocedure('public.qorpera_member_take_machine_desktop(uuid,uuid,bigint)') is not null then
+	if to_regprocedure('public.qorpera_member_take_machine_desktop(uuid,uuid,bigint,uuid)') is not null then
 		raise exception '20260930713000 is already applied'; end if;
 	if to_regprocedure('public.qorpera_member_machine_screen_begin(uuid,uuid,jsonb)') is null
 		or to_regprocedure('public.qorpera_authorize_machine_coding_value(jsonb,jsonb,uuid,text)') is null
@@ -106,9 +121,12 @@ alter table public.qorpera_company_machines
 	-- The member's hand-back epoch the lease was taken under (review r5): a hand-back at that epoch ends it, and only a
 	-- heartbeat at it renews it.
 	add column desktop_member_epoch bigint,
-	-- Moves when a lease begins and when one is given back (review r1 F1): a picture is let out only when it has not moved
-	-- since its look was authorized.
-	add column desktop_member_generation bigint not null default 0;
+	-- Moves when a lease begins, when the member is seated anew on their own live lease, and when one is given back
+	-- (review r1 F1): a picture is let out only when it has not moved since its look was authorized. It is the hold's
+	-- seat (F26).
+	add column desktop_member_generation bigint not null default 0,
+	-- The press that seated the hold (F26): the id the page minted for that take-over request; recognition only.
+	add column desktop_member_press uuid;
 
 -- One row per lease: who, when it began and ended, and how ('handed_back' by the member's word, 'closed' with their window
 -- or page, 'lapsed' when the window's heartbeat stopped, 'idle' after 30 minutes without input), and how many actions.
@@ -136,6 +154,8 @@ create table public.qorpera_company_machine_desktop_actions (
 	machine_id uuid not null references public.qorpera_company_machines(id) on delete cascade,
 	user_id uuid not null,
 	action jsonb not null check (jsonb_typeof(action) = 'object' and not action ? 'text' and action ->> 'type' <> 'open'),
+	-- The seat it was begun under (F26): the executor's read serves it only while that seat stands.
+	seat bigint not null check (seat > 0),
 	begun_at timestamptz not null,
 	served_at timestamptz
 );
@@ -185,7 +205,8 @@ revoke all on function public.qorpera_valid_member_desktop_action(jsonb)
 
 -- The machine is locked as a member's look locks it (FOR NO KEY UPDATE): the agent's screen read (FOR UPDATE) waits for
 -- it and it for that, so an agent's look or action is authorized either before the lease or not at all.
-create function public.qorpera_member_take_machine_desktop(p_profile_id uuid, p_machine_id uuid, p_epoch bigint)
+create function public.qorpera_member_take_machine_desktop(p_profile_id uuid, p_machine_id uuid, p_epoch bigint,
+	p_press uuid)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_user uuid := auth.uid();
@@ -197,7 +218,7 @@ declare
 begin
 	-- 20260930713000
 	if auth.role() is distinct from 'authenticated' or v_user is null or p_profile_id is null or p_machine_id is null
-		or p_epoch is null or p_epoch < 0 then
+		or p_epoch is null or p_epoch < 0 or p_press is null then
 		raise exception 'Machine desktop request is malformed' using errcode = '22023'; end if;
 	if not public.qorpera_can_write_profile(p_profile_id) or public.qorpera_company_deleting(p_profile_id) then
 		raise exception 'Machine desktop is unavailable' using errcode = '42501'; end if;
@@ -233,13 +254,15 @@ begin
 			return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'refused',
 				'reason', 'DESKTOP_MEMBER_IN_CONTROL',
 				'memberName', public.qorpera_review_member_name(v_machine.profile_id, v_machine.desktop_member_user_id)); end if;
-		-- Their own lease (taken under this epoch: a hand-back at an epoch ends the lease taken under it): taking again is
-		-- an input.
+		-- Their own lease (taken under this epoch: a hand-back at an epoch ends the lease taken under it): taking it
+		-- again is an input, from another press (another tab, a page loaded again, a late copy): a new seat (F26), so
+		-- the hold seated before ends for its page at its next heartbeat or action.
 		update public.qorpera_company_machines set desktop_member_input_at = v_now,
-			desktop_member_until = v_now + interval '5 minutes', desktop_member_epoch = v_epoch
+			desktop_member_until = v_now + interval '5 minutes', desktop_member_epoch = v_epoch,
+			desktop_member_generation = desktop_member_generation + 1, desktop_member_press = p_press
 		where id = v_machine.id;
 		return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'ok',
-			'until', v_now + interval '5 minutes');
+			'until', v_now + interval '5 minutes', 'seat', v_machine.desktop_member_generation + 1);
 	end if;
 	-- A lease that ended by time is closed now: its heartbeat stopped, or 30 minutes passed without input.
 	if v_machine.desktop_member_user_id is not null then
@@ -254,20 +277,22 @@ begin
 	update public.qorpera_company_machines set desktop_member_user_id = v_user, desktop_member_since = v_now,
 		desktop_member_until = v_now + interval '5 minutes', desktop_member_input_at = v_now,
 		desktop_member_epoch = v_epoch, desktop_member_generation = desktop_member_generation + 1,
+		desktop_member_press = p_press,
 		last_used_at = case when last_used_at < v_now - interval '30 seconds' then v_now else last_used_at end
 	where id = v_machine.id;
 	return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'ok',
-		'until', v_now + interval '5 minutes');
+		'until', v_now + interval '5 minutes', 'seat', v_machine.desktop_member_generation + 1);
 end
 $$;
-revoke all on function public.qorpera_member_take_machine_desktop(uuid, uuid, bigint)
+revoke all on function public.qorpera_member_take_machine_desktop(uuid, uuid, bigint, uuid)
 	from public, anon, service_role, qorpera_secret_broker;
-grant execute on function public.qorpera_member_take_machine_desktop(uuid, uuid, bigint) to authenticated;
+grant execute on function public.qorpera_member_take_machine_desktop(uuid, uuid, bigint, uuid) to authenticated;
 
 -- The window's heartbeat: the member's own lease, renewed 5 minutes from now and never past 30 minutes after their last
--- input, only when it was taken under the epoch named (a stale window renews no newer take-over's lease); `ended` when it
--- is not (handed back, lapsed, idle, or another member's now).
-create function public.qorpera_member_keep_machine_desktop(p_profile_id uuid, p_machine_id uuid, p_epoch bigint)
+-- input, only when it was taken under the epoch named and is the seat named (a stale window renews no newer take-over's
+-- lease, nor another tab's: F26); `ended` when it is not (handed back, lapsed, idle, seated anew, or another member's).
+create function public.qorpera_member_keep_machine_desktop(p_profile_id uuid, p_machine_id uuid, p_epoch bigint,
+	p_seat bigint)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_user uuid := auth.uid();
@@ -277,7 +302,7 @@ declare
 begin
 	-- 20260930713000
 	if auth.role() is distinct from 'authenticated' or v_user is null or p_profile_id is null or p_machine_id is null
-		or p_epoch is null or p_epoch < 0 then
+		or p_epoch is null or p_epoch < 0 or p_seat is null or p_seat < 0 then
 		raise exception 'Machine desktop request is malformed' using errcode = '22023'; end if;
 	if not public.qorpera_can_write_profile(p_profile_id) then
 		raise exception 'Machine desktop is unavailable' using errcode = '42501'; end if;
@@ -289,37 +314,47 @@ begin
 	v_now := clock_timestamp();
 	v_until := least(v_now + interval '5 minutes', v_machine.desktop_member_input_at + interval '30 minutes');
 	if v_machine.desktop_member_user_id is distinct from v_user or v_machine.desktop_member_epoch is distinct from p_epoch
+		or v_machine.desktop_member_generation is distinct from p_seat
 		or not coalesce(v_machine.desktop_member_until > v_now, false) or not coalesce(v_until > v_now, false) then
 		return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'ended'); end if;
 	update public.qorpera_company_machines set desktop_member_until = v_until where id = v_machine.id;
 	return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'ok', 'until', v_until);
 end
 $$;
-revoke all on function public.qorpera_member_keep_machine_desktop(uuid, uuid, bigint)
+revoke all on function public.qorpera_member_keep_machine_desktop(uuid, uuid, bigint, bigint)
 	from public, anon, service_role, qorpera_secret_broker;
-grant execute on function public.qorpera_member_keep_machine_desktop(uuid, uuid, bigint) to authenticated;
+grant execute on function public.qorpera_member_keep_machine_desktop(uuid, uuid, bigint, bigint) to authenticated;
 
 -- The member's lease, given back at their hand-back epoch ('handed_back': their word or their take-over card's "I'm
 -- done"; 'closed': their window closed or they left the company's page; a lease that already ended by time is closed as
--- it ended). At the current epoch the epoch moves on by one, and the member's lease taken under it ends (a live lease of
--- theirs is always taken under the current epoch: a take-over is accepted only at it, and the hand-back that moves it
--- ends that lease). At an older epoch nothing changes: a hand-back that arrives late or again never ends a newer
--- take-over's lease (review r4 F9, r5). Either way the answer says the current epoch and whether the member holds the
--- machine now; once answered, nothing taken or sent under that epoch or an earlier one holds it or ever will. Any member
--- gives back only their own.
+-- it ended). It names the hold it gives back (F26): by its seat, or, for a take-over whose answer was lost, by the
+-- press that may have seated it (at least one; both must match when both are named). The member's lease taken under
+-- `p_epoch` that is the hold named ends. The epoch moves on by one when `p_epoch` is the current one and no live lease
+-- of the member's is left that this hand-back did not name: a stale tab's hand-back (or its window closing) never ends
+-- another tab's live hold of the member's, and the epoch stays where it is while that hold lives, so a live lease of
+-- the member's is always taken under the current epoch and an epoch above e still means that nothing taken under e
+-- holds. A lapsed lease of the member's is closed as it ended when the epoch moves. At an older epoch nothing moves: a
+-- hand-back that arrives late or again never ends a newer take-over's lease (review r4 F9, r5). Either way the answer
+-- says the current epoch, whether the member holds the machine now and, if so, that hold's seat. Any member gives back
+-- only their own.
 create function public.qorpera_member_hand_back_machine_desktop(p_profile_id uuid, p_machine_id uuid, p_reason text,
-	p_epoch bigint)
+	p_epoch bigint, p_seat bigint, p_press uuid)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_user uuid := auth.uid();
 	v_machine public.qorpera_company_machines%rowtype;
 	v_now timestamptz;
 	v_epoch bigint;
-	v_live boolean := false;
+	v_mine boolean;
+	v_live boolean;
+	v_named boolean;
+	v_moves boolean;
+	v_handed boolean := false;
 begin
 	-- 20260930713000
 	if auth.role() is distinct from 'authenticated' or v_user is null or p_profile_id is null or p_machine_id is null
-		or p_reason is null or p_reason not in ('handed_back', 'closed') or p_epoch is null or p_epoch < 0 then
+		or p_reason is null or p_reason not in ('handed_back', 'closed') or p_epoch is null or p_epoch < 0
+		or (p_seat is null and p_press is null) or p_seat < 0 then
 		raise exception 'Machine desktop request is malformed' using errcode = '22023'; end if;
 	if not public.qorpera_can_read_profile(p_profile_id) then
 		raise exception 'Machine desktop is unavailable' using errcode = '42501'; end if;
@@ -331,42 +366,50 @@ begin
 	v_now := clock_timestamp();
 	v_epoch := coalesce((select epochs.epoch from public.qorpera_company_machine_desktop_epochs as epochs
 		where epochs.machine_id = v_machine.id and epochs.user_id = v_user), 0);
-	if p_epoch = v_epoch then
+	v_mine := coalesce(v_machine.desktop_member_user_id = v_user, false);
+	v_live := v_mine and coalesce(v_machine.desktop_member_until > v_now, false);
+	v_named := v_mine and v_machine.desktop_member_epoch is not distinct from p_epoch
+		and (p_seat is null or v_machine.desktop_member_generation = p_seat)
+		and (p_press is null or v_machine.desktop_member_press is not distinct from p_press);
+	v_moves := p_epoch = v_epoch and not (v_live and not v_named);
+	if v_named or (v_moves and v_mine and v_machine.desktop_member_epoch is not distinct from p_epoch) then
+		v_handed := v_live;
+		update public.qorpera_company_machine_desktop_controls
+		set ended_at = case when v_live then v_now else v_machine.desktop_member_until end,
+			ended_by = case when v_live then p_reason
+				when v_machine.desktop_member_until >= v_machine.desktop_member_input_at + interval '30 minutes' then 'idle'
+				else 'lapsed' end
+		where machine_id = v_machine.id and began_at = v_machine.desktop_member_since and ended_at is null;
+		update public.qorpera_company_machines set desktop_member_user_id = null, desktop_member_since = null,
+			desktop_member_until = null, desktop_member_input_at = null, desktop_member_epoch = null,
+			desktop_member_press = null, desktop_member_generation = desktop_member_generation + 1
+		where id = v_machine.id;
+		v_machine.desktop_member_user_id := null;
+		v_live := false;
+	end if;
+	if v_moves then
 		v_epoch := v_epoch + 1;
 		insert into public.qorpera_company_machine_desktop_epochs(machine_id, user_id, epoch)
 		values (v_machine.id, v_user, v_epoch)
 		on conflict (machine_id, user_id) do update set epoch = excluded.epoch;
-		if v_machine.desktop_member_user_id = v_user and v_machine.desktop_member_epoch = p_epoch then
-			v_live := coalesce(v_machine.desktop_member_until > v_now, false);
-			update public.qorpera_company_machine_desktop_controls
-			set ended_at = case when v_live then v_now else v_machine.desktop_member_until end,
-				ended_by = case when v_live then p_reason
-					when v_machine.desktop_member_until >= v_machine.desktop_member_input_at + interval '30 minutes' then 'idle'
-					else 'lapsed' end
-			where machine_id = v_machine.id and began_at = v_machine.desktop_member_since and ended_at is null;
-			update public.qorpera_company_machines set desktop_member_user_id = null, desktop_member_since = null,
-				desktop_member_until = null, desktop_member_input_at = null, desktop_member_epoch = null,
-				desktop_member_generation = desktop_member_generation + 1
-			where id = v_machine.id;
-			v_machine.desktop_member_user_id := null;
-		end if;
 	end if;
-	return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'ok', 'handedBack', v_live,
-		'epoch', v_epoch, 'holding', v_machine.desktop_member_user_id is not distinct from v_user
-			and coalesce(v_machine.desktop_member_until > v_now, false));
+	return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'ok', 'handedBack', v_handed,
+		'epoch', v_epoch, 'holding', v_live,
+		'seat', case when v_live then v_machine.desktop_member_generation end);
 end
 $$;
-revoke all on function public.qorpera_member_hand_back_machine_desktop(uuid, uuid, text, bigint)
+revoke all on function public.qorpera_member_hand_back_machine_desktop(uuid, uuid, text, bigint, bigint, uuid)
 	from public, anon, service_role, qorpera_secret_broker;
-grant execute on function public.qorpera_member_hand_back_machine_desktop(uuid, uuid, text, bigint) to authenticated;
+grant execute on function public.qorpera_member_hand_back_machine_desktop(uuid, uuid, text, bigint, bigint, uuid)
+	to authenticated;
 
 -- 4. A member's action: begun as the member ------------------------------------------------------------------------------
 
 -- The executor sends the member's action here without its text (a `type` by its length), as the member, before it runs
--- anything; it compares the action this answers it later (the authority below) with the one it holds. `p_epoch` is the
--- hand-back epoch of the hold the page captured the input under (F24): only that hold may run it.
+-- anything; it compares the action this answers it later (the authority below) with the one it holds. `p_epoch` and
+-- `p_seat` name the hold the page captured the input under (F24, F26): only that hold may run it.
 create function public.qorpera_member_machine_desktop_act_begin(p_profile_id uuid, p_machine_id uuid, p_action jsonb,
-	p_epoch bigint)
+	p_epoch bigint, p_seat bigint)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_user uuid := auth.uid();
@@ -380,7 +423,8 @@ declare
 begin
 	-- 20260930713000
 	if auth.role() is distinct from 'authenticated' or v_user is null or p_profile_id is null or p_machine_id is null
-		or p_epoch is null or p_epoch < 0 or not coalesce(public.qorpera_valid_member_desktop_action(p_action), false) then
+		or p_epoch is null or p_epoch < 0 or p_seat is null or p_seat < 0
+		or not coalesce(public.qorpera_valid_member_desktop_action(p_action), false) then
 		raise exception 'Machine desktop action is malformed' using errcode = '22023'; end if;
 	if not public.qorpera_can_write_profile(p_profile_id) or public.qorpera_company_deleting(p_profile_id) then
 		raise exception 'Machine desktop is unavailable' using errcode = '42501'; end if;
@@ -408,9 +452,12 @@ begin
 	if v_machine.desktop_member_user_id is distinct from v_user then
 		return jsonb_build_object('schema', 'qorpera.member-machine-desktop-act/v1', 'state', 'refused',
 			'reason', 'DESKTOP_MEMBER_IN_CONTROL'); end if;
-	-- The hold the input was captured under (F24): a lease taken under another epoch is a newer take-over (the epoch moves
-	-- only by a hand-back, which ends the lease taken under the old one), so this input's hold has ended. Nothing recorded.
-	if v_machine.desktop_member_epoch is distinct from p_epoch then
+	-- The hold the input was captured under (F24, F26): a lease taken under another epoch is a newer take-over (the
+	-- epoch moves only by a hand-back, which ends the lease taken under the old one), and another seat under the same
+	-- epoch is a newer seating (the lease ran out and was taken again, or another press took it over): this input's
+	-- hold has ended. Nothing recorded.
+	if v_machine.desktop_member_epoch is distinct from p_epoch
+		or v_machine.desktop_member_generation is distinct from p_seat then
 		return jsonb_build_object('schema', 'qorpera.member-machine-desktop-act/v1', 'state', 'refused',
 			'reason', 'DESKTOP_CONTROL_ENDED'); end if;
 	update public.qorpera_company_machine_desktop_controls set actions = actions + 1
@@ -418,8 +465,8 @@ begin
 	returning id into v_control;
 	if v_control is null then
 		raise exception 'Machine desktop lease is unavailable' using errcode = '42501'; end if;
-	insert into public.qorpera_company_machine_desktop_actions(id, control_id, machine_id, user_id, action, begun_at)
-	values (v_action, v_control, v_machine.id, v_user, p_action, v_now);
+	insert into public.qorpera_company_machine_desktop_actions(id, control_id, machine_id, user_id, action, seat, begun_at)
+	values (v_action, v_control, v_machine.id, v_user, p_action, p_seat, v_now);
 	-- The member's input renews the lease; their use moves the machine's last use, at most every 30 seconds.
 	update public.qorpera_company_machines set desktop_member_input_at = v_now,
 		desktop_member_until = v_now + interval '5 minutes',
@@ -435,19 +482,19 @@ begin
 	return jsonb_build_object('schema', 'qorpera.member-machine-desktop-act/v1', 'state', 'ok', 'actionId', v_action);
 end
 $$;
-revoke all on function public.qorpera_member_machine_desktop_act_begin(uuid, uuid, jsonb, bigint)
+revoke all on function public.qorpera_member_machine_desktop_act_begin(uuid, uuid, jsonb, bigint, bigint)
 	from public, anon, service_role, qorpera_secret_broker;
-grant execute on function public.qorpera_member_machine_desktop_act_begin(uuid, uuid, jsonb, bigint) to authenticated;
+grant execute on function public.qorpera_member_machine_desktop_act_begin(uuid, uuid, jsonb, bigint, bigint) to authenticated;
 
 -- 5. The executor's read of a member's action ----------------------------------------------------------------------------
 
 -- Everything the begin checked, again and live, under the machine's lock: the action begun within 15 seconds and not
 -- served, its member still an owner, admin or contributor of a company not being deleted, and still holding the desktop
--- under the lease the action was begun in: the lease row the begin counted it on (control_id), not ended, and the
--- machine's lease started when that row did. A hand-back ends that row and a new take-over starts another, so an action
--- begun under one hold never gets authority under the next (F24: the begin's epoch, the read's lease row). Served by the
--- placement's own executor only, once. The disk's mark is decided again here, as the action is let run (a root read taken
--- away since the begin).
+-- under the seat the action was begun in (F26: a hand-back, a new take-over and another press's take-over of the
+-- member's own lease all move it), on the lease row the begin counted it on (control_id), not ended, the machine's
+-- lease started when that row did. So an action begun under one hold never gets authority under the next (F24, F26).
+-- Served by the placement's own executor only, once. The disk's mark is decided again here, as the action is let run (a
+-- root read taken away since the begin).
 create function public.qorpera_member_machine_desktop_act_authority(p_action_id uuid, p_owner text, p_provider_id text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
@@ -493,7 +540,8 @@ begin
 			'reason', 'MACHINE_NEEDS_COMPANY_VIEW'); end if;
 	if not coalesce(v_machine.desktop_member_until > clock_timestamp(), false)
 		or v_machine.desktop_member_user_id is distinct from v_act.user_id
-		or v_machine.desktop_member_since is distinct from v_control.began_at or v_control.ended_at is not null then
+		or v_machine.desktop_member_since is distinct from v_control.began_at or v_control.ended_at is not null
+		or v_machine.desktop_member_generation is distinct from v_act.seat then
 		return jsonb_build_object('schema', 'qorpera.member-machine-desktop-act-authority/v1', 'state', 'refused',
 			'reason', 'DESKTOP_CONTROL_ENDED'); end if;
 	-- The action runs: a member who does not read the root now (it may have been taken away since the begin, which marked
@@ -529,8 +577,9 @@ grant execute on function public.qorpera_member_machine_desktop_act_authority(uu
 
 -- Asked by the executor after a look's capture and before its picture or titles leave: the placement's machine, not
 -- removed, still at the lease generation the look's read answered, and held live by no one, or by the member who looks
--- (p_user_id; null for an agent's look, which no hold lets through). Any lease begun or given back since the read moved
--- the generation, so what the picture may show of a member's input after it never leaves. Plain reads; writes nothing.
+-- (p_user_id; null for an agent's look, which no hold lets through). Any lease begun, seated anew (F26) or given back
+-- since the read moved the generation, so what the picture may show of a member's input after it never leaves. Plain
+-- reads; writes nothing.
 create function public.qorpera_machine_desktop_picture_check(p_placement_id uuid, p_generation bigint, p_user_id uuid)
 returns jsonb language plpgsql stable security definer set search_path = '' as $$
 declare
@@ -649,9 +698,11 @@ do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_list_
 						'mine', listed.desktop_member_user_id = auth.uid(),
 						'name', public.qorpera_review_member_name(p_profile_id, listed.desktop_member_user_id),
 						'until', listed.desktop_member_until)
-						-- The epoch the caller's own hold was taken under, to the caller alone (review r5).
+						-- The epoch the caller's own hold was taken under, its seat and the press that seated it, to
+						-- the caller alone (review r5, F26).
 						|| case when listed.desktop_member_user_id = auth.uid()
-							then jsonb_build_object('epoch', listed.desktop_member_epoch) else '{}'::jsonb end end,
+							then jsonb_build_object('epoch', listed.desktop_member_epoch, 'seat', listed.desktop_member_generation,
+								'press', listed.desktop_member_press) else '{}'::jsonb end end,
 					-- The caller's own hand-back epoch for the machine (review r5): a take-over is accepted only at it.
 					'epoch', coalesce((select epochs.epoch from public.qorpera_company_machine_desktop_epochs as epochs
 						where epochs.machine_id = listed.id and epochs.user_id = auth.uid()), 0),
@@ -682,10 +733,10 @@ declare v_function regprocedure;
 begin
 	foreach v_function in array array[
 		'public.qorpera_valid_member_desktop_action(jsonb)',
-		'public.qorpera_member_take_machine_desktop(uuid,uuid,bigint)',
-		'public.qorpera_member_keep_machine_desktop(uuid,uuid,bigint)',
-		'public.qorpera_member_hand_back_machine_desktop(uuid,uuid,text,bigint)',
-		'public.qorpera_member_machine_desktop_act_begin(uuid,uuid,jsonb,bigint)',
+		'public.qorpera_member_take_machine_desktop(uuid,uuid,bigint,uuid)',
+		'public.qorpera_member_keep_machine_desktop(uuid,uuid,bigint,bigint)',
+		'public.qorpera_member_hand_back_machine_desktop(uuid,uuid,text,bigint,bigint,uuid)',
+		'public.qorpera_member_machine_desktop_act_begin(uuid,uuid,jsonb,bigint,bigint)',
 		'public.qorpera_member_machine_desktop_act_authority(uuid,text,text)',
 		'public.qorpera_machine_desktop_picture_check(uuid,bigint,uuid)',
 		'public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)',
