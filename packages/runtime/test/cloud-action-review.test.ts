@@ -213,6 +213,7 @@ describe("which calls are reviewed", () => {
 		["good_will_list", { month: "2026-11" }, "read"],
 		["good_will_mark", { marks: [] }, "internal"],
 		["organize_sidebar", { action: "list" }, "internal"],
+		["organize_apps", { action: "move", item: "app:sales", group: null }, "internal"],
 		["manage_worker", { action: "status" }, "internal"],
 		["manage_worker", { action: "dispatch" }, "delegation"],
 		// Changes the agent saved from a computer apply with the effect their list gave them (P40b); dropping them
