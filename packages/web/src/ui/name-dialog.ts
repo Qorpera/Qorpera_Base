@@ -10,11 +10,13 @@ export interface NameDialogOptions {
 	confirm: string;
 	maxLength: number;
 	signal?: AbortSignal;
+	/** `value` is a suggestion for something new (a group's name), not a name being changed: it may be taken as it is. */
+	suggested?: boolean;
 }
 
 /** Asks for one short name (a new section, a rename). Resolves to the trimmed
- * name, or undefined when cancelled or left unchanged. Enter saves, Escape
- * cancels, and focus goes back to where it was. */
+ * name, or undefined when cancelled or left unchanged (a `suggested` name may be
+ * taken unchanged). Enter saves, Escape cancels, and focus goes back to where it was. */
 export function nameDialog(options: NameDialogOptions): Promise<string | undefined> {
 	if (options.signal?.aborted) return Promise.resolve(undefined);
 	const initial = options.value?.trim() ?? "";
@@ -31,9 +33,14 @@ export function nameDialog(options: NameDialogOptions): Promise<string | undefin
 			"aria-label": options.label,
 		});
 		const value = () => input.value.trim().replace(/\s+/g, " ");
-		const save = button(options.confirm, () => close(value()), { primary: true, disabled: true });
+		// A rename that changes nothing is no rename; a suggestion is a name to take as it is.
+		const unchanged = (name: string) => !options.suggested && name === initial;
+		const save = button(options.confirm, () => close(value()), {
+			primary: true,
+			disabled: !options.suggested || !initial,
+		});
 		const update = () => {
-			save.disabled = !value() || value() === initial;
+			save.disabled = !value() || unchanged(value());
 		};
 		const close = (result: string | undefined) => {
 			if (closed) return;
@@ -42,7 +49,7 @@ export function nameDialog(options: NameDialogOptions): Promise<string | undefin
 			options.signal?.removeEventListener("abort", cancel);
 			window.removeEventListener("hashchange", cancel);
 			if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
-			resolve(result && result !== initial ? result : undefined);
+			resolve(result && !unchanged(result) ? result : undefined);
 		};
 		const cancel = () => close(undefined);
 		input.addEventListener("input", update);

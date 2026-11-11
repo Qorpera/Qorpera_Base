@@ -1,5 +1,27 @@
 import type { AppManifest } from "@qorpera/cloud-client/interface-apps";
 import type { User } from "@supabase/supabase-js";
+import {
+	APP_GROUP_NAME_LIMIT,
+	type AppTile,
+	type AppTreeNode,
+	appsIn,
+	arrangeAppsFully,
+	drawerKey,
+	EMPTY_APP_LAYOUT,
+	fileKey,
+	flattenApps,
+	groupIdOf,
+	groupsOf,
+	isGroupKey,
+	type MemberAppLayout,
+	makeAppGroup,
+	nodeKey,
+	placeApp,
+	renameAppGroup,
+	suggestGroupName,
+	ungroupApps,
+	withoutRefused,
+} from "../../cloud/app-groups.ts";
 import type { InterfacePageName } from "../../cloud/interface-pages.ts";
 import type { MemberContactPlacing } from "../../cloud/member-chats.ts";
 import { UUID_PATTERN } from "../../cloud/parse.ts";
@@ -14,13 +36,13 @@ import {
 import type { HostedProfile, HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
 import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
 import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
-import { agentColor, agentFigure, figureFor } from "../../ui/avatar.ts";
+import { agentColor, agentFigure, colourNameHex, figureFor } from "../../ui/avatar.ts";
 import { type MenuEntry, menuPoint, openContextMenu, openMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { playOnce } from "../../ui/motion.ts";
+import { easing, playOnce, reducedMotion } from "../../ui/motion.ts";
 import { nameDialog } from "../../ui/name-dialog.ts";
 import { attachPersonPicture, personPicturesEpoch } from "../../ui/person-pictures.ts";
 import { phrase, presentationLocale, t, uiText } from "../../ui/preferences.ts";
@@ -353,6 +375,15 @@ interface RailParts {
 	interfaceRows: Map<string, { shown: string; element: HTMLElement }>;
 	/** The member's own order of the drawer's icons, by key, as last dragged on this device (empty: the default). */
 	appsOrder: readonly string[];
+	/** The drawer's apps as arranged last (cloud/app-groups.ts): the tree, its tiles in the grid, the groups open on this
+	 * device, each group's tile, and the keys the grid showed, so a change of them glides. */
+	appTree: AppTreeNode[];
+	appTiles: AppTile[];
+	/** The member's places the arrangement refused; the next change leaves them out. */
+	appRefused: ReadonlySet<string>;
+	appGroupsOpen: Set<string>;
+	groupRows: Map<string, { shown: string; element: HTMLElement }>;
+	appKeysShown: string | undefined;
 	/** Dragging the drawer's icons to reorder them. */
 	readonly appsDrag: AppGridDrag;
 	readonly toolbar: HTMLElement;
@@ -426,6 +457,23 @@ function storedAppsOrder(profileId: string): string[] {
 		return Array.isArray(value) ? value.filter((key): key is string => typeof key === "string") : [];
 	} catch {
 		return [];
+	}
+}
+/** Which of the drawer's groups are open is kept per company on this device (Jonas, 11 Nov 2026). */
+const APP_GROUPS_OPEN_KEY = "qorpera.web.rail-app-groups-open";
+function storedGroupsOpen(profileId: string): Set<string> {
+	try {
+		const value: unknown = JSON.parse(localStorage.getItem(`${APP_GROUPS_OPEN_KEY}:${profileId}`) ?? "[]");
+		return new Set(Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : []);
+	} catch {
+		return new Set();
+	}
+}
+function storeGroupsOpen(profileId: string, open: ReadonlySet<string>): void {
+	try {
+		localStorage.setItem(`${APP_GROUPS_OPEN_KEY}:${profileId}`, JSON.stringify([...open]));
+	} catch {
+		/* The choice lasts this view. */
 	}
 }
 function storeAppsOrder(profileId: string, order: readonly string[]): void {
@@ -604,6 +652,12 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			appsRoute: "",
 			interfaceRows: new Map(),
 			appsOrder: storedAppsOrder(company.profile.profileId),
+			appTree: [],
+			appTiles: [],
+			appRefused: new Set(),
+			appGroupsOpen: storedGroupsOpen(company.profile.profileId),
+			groupRows: new Map(),
+			appKeysShown: undefined,
 			appsDrag: undefined as unknown as AppGridDrag,
 			toolbar: h("div", { class: "rail-toolbar" }, close, companyButton, apps, search, add),
 			close,
@@ -645,16 +699,43 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		// The drawer's icons reorder by dragging (or Alt with an arrow); the order is the member's own, on this device.
 		(created as { appsDrag: AppGridDrag }).appsDrag = new AppGridDrag(
 			appsGrid,
-			() => ({
-				canDrag: () => created.appsOpen && !created.apps.inert,
-				drop: (order) => {
-					created.appsOrder = order;
-					storeAppsOrder(company.profile.profileId, order);
-				},
-				// Whatever changed while an icon was lifted draws now, the order kept or not.
-				end: () => created.redraw(),
-			}),
+			() => {
+				const arranges = appsArrangeable(company);
+				return {
+					// While a reset is on its way nothing moves: what it brings back decides the order.
+					canDrag: () => created.appsOpen && !created.apps.inert && !company.resettingSidebar(),
+					drop: (order: string[], moved: string) => {
+						// Where the cloud keeps the member's own arrangement, a move is a change of it; before, the order
+						// is kept on this device.
+						if (arranges) {
+							moveInDrawer(company, created, order, moved);
+							return;
+						}
+						created.appsOrder = order;
+						storeAppsOrder(company.profile.profileId, order);
+					},
+					// Whatever changed while an icon was lifted draws now, the order kept or not.
+					end: () => created.redraw(),
+					...(arranges
+						? {
+								canMerge: (dragged: string, onto: string) => canMergeApps(created, dragged, onto),
+								merge: (dragged: string, onto: string) => void mergeApps(company, created, dragged, onto),
+							}
+						: {}),
+				};
+			},
 			company.signal,
+		);
+		// A group's tile opens it into the grid, or folds it again (a drag's release is no click: the drag eats it).
+		appsGrid.addEventListener(
+			"click",
+			(event) => {
+				const tile = (event.target as Element).closest<HTMLElement>(".rail-app-group[data-app-key]");
+				if (!tile) return;
+				event.preventDefault();
+				toggleAppGroup(company, created, groupIdOf(tile.dataset.appKey!));
+			},
+			{ signal: company.signal },
 		);
 		// The four windows open or close the interfaces; the choice is kept for this company on this device.
 		apps.addEventListener(
@@ -1739,10 +1820,15 @@ function drawInterfaces(
 	const activeName = route.name === "company" && route.section === "interface" ? route.id : undefined;
 	const rows = new Map<string, { shown: string; element: HTMLElement }>();
 	let waiting = 0;
+	// What waits in each entry and the colour of its emblem, by its key in the drawer.
+	const counts = new Map<string, number>();
+	const colours = new Map<string, string | undefined>();
 	const elements = shown.map((entry) => {
 		const { name, file } = entry;
 		const count = interfaceBadge(company, file);
 		waiting += count;
+		counts.set(name, count);
+		colours.set(name, PAGE_COLOURS[name]);
 		const model = JSON.stringify([name, file.name, file.about, file.emblem, count]);
 		const kept = parts.interfaceRows.get(name);
 		const element = kept?.shown === model ? kept.element : appIcon(entry, `#/c/${profileId}/i/${name}`, count);
@@ -1759,6 +1845,7 @@ function drawInterfaces(
 		const manifest = app.manifest;
 		if (!manifest) continue;
 		const key = `app:${app.name}`;
+		colours.set(key, manifest.colour ?? undefined);
 		const model = JSON.stringify([app.name, manifest.name, manifest.about, manifest.emblem]);
 		const kept = parts.interfaceRows.get(key);
 		const element = kept?.shown === model ? kept.element : agentAppIcon(manifest, appHash(profileId, app.name));
@@ -1772,6 +1859,7 @@ function drawInterfaces(
 	// The company's concepts: one entry for the Concepts viewer, which lists them all.
 	if (concepts > 0) {
 		const key = "concepts";
+		colours.set(key, "gold");
 		const model = JSON.stringify([key, t("Concepts"), concepts]);
 		const kept = parts.interfaceRows.get(key);
 		const element = kept?.shown === model ? kept.element : conceptsIcon(conceptsHash(profileId));
@@ -1786,6 +1874,7 @@ function drawInterfaces(
 	// The company's websites: one entry for the Sites page, which lists them all.
 	if (sites > 0) {
 		const key = "sites";
+		colours.set(key, "blue");
 		const model = JSON.stringify([key, t("Sites"), sites]);
 		const kept = parts.interfaceRows.get(key);
 		const element = kept?.shown === model ? kept.element : sitesIcon(`#/c/${profileId}/sites`);
@@ -1817,9 +1906,47 @@ function drawInterfaces(
 	}
 	parts.interfaceRows = rows;
 	const ordered = orderApps(elements, (element) => element.dataset.appKey ?? "", parts.appsOrder);
-	for (const [index, element] of ordered.entries()) element.style.setProperty("--i", String(index));
+	// Groups (Jonas, 11 Nov 2026): the company's, from apps/groups.md, and the member's own changes over them. What
+	// neither names stands loose in the order above.
+	const state = company.store.get();
+	const byKey = new Map(ordered.map((element) => [fileKey(element.dataset.appKey ?? ""), element]));
+	const { tree, refused } = arrangeAppsFully(state.appGroups ?? [], state.appLayout?.layout ?? EMPTY_APP_LAYOUT, [
+		...byKey.keys(),
+	]);
+	parts.appRefused = refused;
+	const tiles = flattenApps(tree, parts.appGroupsOpen);
+	const colourOf = (key: string | undefined) => (key ? colourHex(colours.get(drawerKey(key))) : undefined);
+	const groupRows = new Map<string, { shown: string; element: HTMLElement }>();
+	const drawn = tiles.map((tile) => {
+		let element: HTMLElement;
+		if (tile.node.kind === "group") {
+			const group = tile.node;
+			const inside = appsIn(group);
+			const count = inside.reduce((sum, key) => sum + (counts.get(drawerKey(key)) ?? 0), 0);
+			const colour = colourOf(inside[0]);
+			const model = JSON.stringify([group.id, group.name, count, colour]);
+			const kept = parts.groupRows.get(group.id);
+			element = kept?.shown === model ? kept.element : groupIcon(group.name, count, colour);
+			groupRows.set(group.id, { shown: model, element });
+			element.dataset.appKey = tile.key;
+			element.classList.toggle("is-open", tile.open);
+			element.setAttribute("aria-expanded", String(tile.open));
+		} else {
+			element = byKey.get(tile.key)!;
+			const colour = colourOf(tile.key);
+			if (colour) element.style.setProperty("--app-colour", colour);
+			else element.style.removeProperty("--app-colour");
+		}
+		if (tile.chain.length) element.dataset.inGroup = tile.chain.join(" ");
+		else delete element.dataset.inGroup;
+		return element;
+	});
+	parts.groupRows = groupRows;
+	parts.appTree = tree;
+	parts.appTiles = tiles;
+	for (const [index, element] of drawn.entries()) element.style.setProperty("--i", String(index));
 	// A lifted icon keeps the order the drag shows; the drag's end draws the drawer afresh.
-	if (!parts.appsDrag.dragging) reconcile(parts.appsGrid, ordered);
+	if (!parts.appsDrag.dragging) placeTiles(parts, drawn);
 	const dot = waiting > 0 && !parts.appsOpen;
 	parts.apps.classList.toggle("has-waiting", dot);
 	const label = dot ? `${t("Apps")}, ${t("{count} waiting", { count: waiting })}` : t("Apps");
@@ -1831,6 +1958,190 @@ function countBadge(count: number): HTMLElement | null {
 	return count > 0
 		? h("span", { class: "rail-mention rail-count", "aria-hidden": "true" }, count > 99 ? "99+" : String(count))
 		: null;
+}
+
+/** Each page's colour; an agent's app takes the colour its manifest names (Jonas, 11 Nov 2026: black only had
+ * "little distinction and contrast"). Charcoal and none draw in the text's colour. */
+const PAGE_COLOURS: Record<string, string> = { mailbox: "blue", members: "purple", bank: "green" };
+function colourHex(colour: string | undefined): string | undefined {
+	return colour && colour !== "charcoal" ? colourNameHex(colour) : undefined;
+}
+
+/** A group's tile: two stacked cards in its first app's colour, its name under it, and what waits inside. Open, the
+ * cards fan apart (styles/interfaces.css). */
+function groupIcon(name: string, count: number, colour: string | undefined): HTMLElement {
+	const ns = "http://www.w3.org/2000/svg";
+	const svg = document.createElementNS(ns, "svg");
+	svg.setAttribute("viewBox", "0 0 24 24");
+	svg.setAttribute("width", "34");
+	svg.setAttribute("height", "34");
+	svg.setAttribute("aria-hidden", "true");
+	svg.setAttribute("class", "interface-emblem group-emblem");
+	const card = (cls: string, x: number, y: number) => {
+		const rect = document.createElementNS(ns, "rect");
+		for (const [attr, value] of Object.entries({ class: cls, x, y, width: 14, height: 14, rx: 3.5 }))
+			rect.setAttribute(attr, String(value));
+		svg.append(rect);
+	};
+	card("group-card-back", 7.5, 2.5);
+	card("group-card-front", 2.5, 7.5);
+	const waiting = count > 0 ? t("{count} waiting", { count }) : null;
+	const tile = h(
+		"button",
+		{
+			type: "button",
+			class: "rail-app rail-app-group",
+			"aria-expanded": "false",
+			"aria-label": waiting ? `${t("Group {name}", { name })}, ${waiting}` : t("Group {name}", { name }),
+		},
+		h("span", { class: "rail-app-stand" }, svg, countBadge(count)),
+		h("span", { class: "rail-app-name" }, name),
+	);
+	if (colour) tile.style.setProperty("--app-colour", colour);
+	return tile;
+}
+
+/** Puts the drawer's tiles in the grid. When which tiles it shows changed (a group opened or folded, an app moved),
+ * the tiles that stay glide to their new places, new ones grow in after them, and those that go fade where they stood. */
+function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
+	const grid = parts.appsGrid;
+	const keys = drawn.map((element) => element.dataset.appKey ?? "").join("\n");
+	const changed = parts.appKeysShown !== undefined && parts.appKeysShown !== keys;
+	parts.appKeysShown = keys;
+	const animate = changed && parts.appsOpen && !reducedMotion() && typeof grid.animate === "function";
+	const before = animate
+		? new Map([...grid.children].map((child) => [child as HTMLElement, child.getBoundingClientRect()]))
+		: undefined;
+	const box = animate ? grid.getBoundingClientRect() : undefined;
+	// A tile that went and comes back is an ordinary tile again.
+	for (const element of drawn)
+		if (element.classList.contains("is-leaving")) {
+			element.classList.remove("is-leaving");
+			for (const property of ["left", "top", "width"]) element.style.removeProperty(property);
+		}
+	reconcile(grid, drawn);
+	if (!before || !box) return;
+	const kept = new Set(drawn);
+	let entering = 0;
+	for (const element of drawn) {
+		const was = before.get(element);
+		if (!was || element.classList.contains("is-leaving")) {
+			element.style.setProperty("--enter-i", String(entering++));
+			element.classList.remove("is-entering");
+			void element.offsetWidth;
+			element.classList.add("is-entering");
+			element.addEventListener("animationend", () => element.classList.remove("is-entering"), { once: true });
+			continue;
+		}
+		const now = element.getBoundingClientRect();
+		const dx = was.left - now.left;
+		const dy = was.top - now.top;
+		if (Math.abs(dx) >= 1 || Math.abs(dy) >= 1)
+			element.animate([{ translate: `${dx}px ${dy}px` }, { translate: "0 0" }], {
+				duration: 400,
+				easing: easing("--ease-out"),
+			});
+	}
+	for (const [element, was] of before) {
+		if (kept.has(element)) continue;
+		// Out of the drawer's order while it fades: no drag counts it (each draw gives a tile its key again).
+		element.removeAttribute("data-app-key");
+		element.classList.add("is-leaving");
+		element.style.left = `${was.left - box.left}px`;
+		element.style.top = `${was.top - box.top}px`;
+		element.style.width = `${was.width}px`;
+		grid.append(element);
+		setTimeout(() => {
+			if (element.classList.contains("is-leaving")) element.remove();
+		}, 240);
+	}
+}
+
+/** The member's document as the next change builds on it: without the places the drawer's arrangement refused. */
+function ownAppLayout(company: CompanyController, parts: RailParts): MemberAppLayout | undefined {
+	const layout = company.store.get().appLayout?.layout;
+	return layout && withoutRefused(layout, parts.appRefused);
+}
+
+/** Whether the drawer's arrangement is the member's own to change (20260930728000). */
+function appsArrangeable(company: CompanyController): boolean {
+	const state = company.store.get();
+	return Boolean(
+		state.appLayout && !state.appLayoutUnavailable && company.ownSidebar() && !company.resettingSidebar(),
+	);
+}
+
+function toggleAppGroup(company: CompanyController, parts: RailParts, id: string): void {
+	if (parts.appGroupsOpen.has(id)) {
+		parts.appGroupsOpen.delete(id);
+		// A group inside folds with it.
+		const group = parts.appTree.length
+			? groupsOf(parts.appTree).find((entry) => entry.group.id === id)?.group
+			: undefined;
+		for (const inner of group ? groupsOf(group.items) : []) parts.appGroupsOpen.delete(inner.group.id);
+	} else parts.appGroupsOpen.add(id);
+	storeGroupsOpen(company.profile.profileId, parts.appGroupsOpen);
+	parts.redraw();
+}
+
+/** A drag or Alt-arrow move in the drawer: the moved tile joins the group of the tile before it (the group itself when
+ * that tile is an open group's), standing after it. */
+function moveInDrawer(company: CompanyController, parts: RailParts, order: readonly string[], moved: string): void {
+	const layout = ownAppLayout(company, parts);
+	if (!layout) return;
+	const keys = order.map(fileKey);
+	const key = fileKey(moved);
+	const at = keys.indexOf(key);
+	const previous = at > 0 ? parts.appTiles.find((tile) => tile.key === keys[at - 1]) : undefined;
+	let group: string | null = null;
+	let after: string | null = null;
+	if (previous?.node.kind === "group" && previous.open) group = previous.node.id;
+	else if (previous) {
+		group = previous.chain.at(-1) ?? null;
+		after = previous.key;
+	}
+	// A group never goes into itself; the drawer draws it back where it was.
+	if (isGroupKey(key) && (group === groupIdOf(key) || previous?.chain.includes(groupIdOf(key)))) return;
+	void company.changeAppLayout(placeApp(layout, parts.appTree, key, group, after));
+}
+
+/** An app held over another app makes a group of the two; over a group, goes into it. A group never goes into a group
+ * this way, and no group stands deeper than one group in. */
+function canMergeApps(parts: RailParts, dragged: string, onto: string): boolean {
+	const from = parts.appTiles.find((tile) => tile.key === fileKey(dragged));
+	const to = parts.appTiles.find((tile) => tile.key === fileKey(onto));
+	if (!from || !to || from === to || from.node.kind === "group") return false;
+	return to.node.kind === "group" || to.chain.length < 2;
+}
+
+async function mergeApps(company: CompanyController, parts: RailParts, dragged: string, onto: string): Promise<void> {
+	const layout = ownAppLayout(company, parts);
+	const to = parts.appTiles.find((tile) => tile.key === fileKey(onto));
+	if (!layout || !to) return;
+	const key = fileKey(dragged);
+	if (to.node.kind === "group") {
+		const last = to.node.items.at(-1);
+		void company.changeAppLayout(placeApp(layout, parts.appTree, key, to.node.id, last ? nodeKey(last) : null));
+		return;
+	}
+	const nameOf = (drawer: string) =>
+		parts.appsGrid.querySelector(`[data-app-key="${drawer}"] .rail-app-name`)?.textContent ?? "";
+	const name = await nameDialog({
+		title: t("New group"),
+		label: t("Group name"),
+		value: suggestGroupName(nameOf(onto), nameOf(dragged), t("Group")),
+		confirm: t("Create"),
+		maxLength: APP_GROUP_NAME_LIMIT,
+		signal: company.signal,
+		// The name is filled in from the two apps: Create takes it as it is.
+		suggested: true,
+	});
+	const now = ownAppLayout(company, parts);
+	if (!name || !now) return;
+	const id = `m-${crypto.randomUUID().slice(0, 8)}`;
+	parts.appGroupsOpen.add(id);
+	storeGroupsOpen(company.profile.profileId, parts.appGroupsOpen);
+	void company.changeAppLayout(makeAppGroup(now, parts.appTree, key, to.key, name, id));
 }
 
 /** A page's icon in the drawer: its emblem with its name under it. */
@@ -2172,6 +2483,10 @@ function ownChangeLines(company: CompanyController, own: SidebarOwnChanges): str
 				: t("{count} members placed or hidden", { count: own.contacts }),
 		);
 	if (own.pages) lines.push(own.pages === 1 ? t("1 page hidden") : t("{count} pages hidden", { count: own.pages }));
+	if (own.apps)
+		lines.push(
+			own.apps === 1 ? t("1 app or group arranged") : t("{count} apps or groups arranged", { count: own.apps }),
+		);
 	if (storedAppsOrder(company.profile.profileId).length) lines.push(t("The order of your apps"));
 	return lines;
 }
@@ -2491,21 +2806,105 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 	openContextMenu({ label, x: point.x, y: point.y, items, opener, ...(findOpener ? { findOpener } : {}) });
 }
 
-/** Right-click in the apps drawer: a page offers to hide it. The agents' apps and Concepts offer nothing. */
+/** Right-click in the apps drawer. Where the member arranges their own drawer (20260930728000): an app offers Move to
+ * (each group, or loose) and a page also Hide; a group offers Rename and Ungroup; both end with Reset sidebar. Before
+ * that, a page offers to hide it, and the agents' apps and Concepts offer nothing. */
 function openDrawerMenu(company: CompanyController, parts: RailParts, event: MouseEvent): void {
 	if (event.shiftKey && (event.clientX || event.clientY)) return;
-	const element = (event.target as Element).closest<HTMLElement>("[data-interface-page]");
-	if (element) openPageMenu(company, parts, element, event);
+	const tile = (event.target as Element).closest<HTMLElement>("[data-app-key]");
+	if (!appsArrangeable(company) || !tile) {
+		const element = (event.target as Element).closest<HTMLElement>("[data-interface-page]");
+		if (element) openPageMenu(company, parts, element, event);
+		return;
+	}
+	const key = fileKey(tile.dataset.appKey!);
+	const name = tile.querySelector(".rail-app-name")?.textContent ?? key;
+	const items: MenuEntry[] = isGroupKey(key)
+		? groupMenu(company, parts, groupIdOf(key))
+		: [moveToMenu(company, parts, key), ...pageMenuItems(company, parts, tile)];
+	if (!items.length) return;
+	event.preventDefault();
+	const point = menuPoint(event, tile);
+	const drawer = tile.dataset.appKey!;
+	openContextMenu({
+		label: t("{name} actions", { name }),
+		x: point.x,
+		y: point.y,
+		opener: tile,
+		findOpener: () => parts.appsGrid.querySelector<HTMLElement>(`[data-app-key="${drawer}"]`),
+		items: [...items, ...resetEntries(company, parts)],
+	});
+}
+
+/** Move to: loose in the drawer, or any group, the one it is in checked. */
+function moveToMenu(company: CompanyController, parts: RailParts, key: string): MenuEntry {
+	const here = parts.appTiles.find((tile) => tile.key === key)?.chain.at(-1) ?? null;
+	const move = (group: string | null) => () => {
+		const layout = ownAppLayout(company, parts);
+		if (!layout || group === here) return;
+		const target = group ? groupsOf(parts.appTree).find((entry) => entry.group.id === group)?.group : undefined;
+		const last = target ? target.items.at(-1) : parts.appTree.at(-1);
+		void company.changeAppLayout(placeApp(layout, parts.appTree, key, group, last ? nodeKey(last) : null));
+	};
+	return {
+		kind: "submenu",
+		label: t("Move to"),
+		icon: "section_plus",
+		items: [
+			{ label: t("No group"), checked: here === null, select: move(null) },
+			...groupsOf(parts.appTree).map(({ group, depth }) => ({
+				label: depth ? `${"\u2002".repeat(depth * 2)}${group.name}` : group.name,
+				checked: here === group.id,
+				select: move(group.id),
+			})),
+		],
+	};
+}
+
+/** A group's menu: Rename group and Ungroup, in the member's own drawer. */
+function groupMenu(company: CompanyController, parts: RailParts, id: string): MenuEntry[] {
+	const group = groupsOf(parts.appTree).find((entry) => entry.group.id === id)?.group;
+	if (!group) return [];
+	const companyTree = (company.store.get().appGroups ?? []) as AppTreeNode[];
+	const companyName = groupsOf(companyTree).find((entry) => entry.group.id === id)?.group.name;
+	return [
+		{
+			label: t("Rename group"),
+			icon: "edit",
+			select: async () => {
+				const name = await nameDialog({
+					title: t("Rename group"),
+					label: t("Group name"),
+					value: group.name,
+					confirm: t("Rename"),
+					maxLength: APP_GROUP_NAME_LIMIT,
+					signal: company.signal,
+				});
+				const layout = ownAppLayout(company, parts);
+				if (name && layout) void company.changeAppLayout(renameAppGroup(layout, id, name, companyName));
+			},
+		},
+		{
+			label: t("Ungroup"),
+			icon: "grid",
+			select: () => {
+				const layout = ownAppLayout(company, parts);
+				if (!layout) return;
+				parts.appGroupsOpen.delete(id);
+				storeGroupsOpen(company.profile.profileId, parts.appGroupsOpen);
+				void company.changeAppLayout(ungroupApps(layout, parts.appTree, id));
+			},
+		},
+	];
 }
 
 /** A page's menu: Hide from sidebar in the drawer, Show in sidebar in Hidden. It changes the member's own rail only;
  * nothing the page showed is removed. On a cloud from before each member's own choice, the browser's own menu. */
 function openPageMenu(company: CompanyController, parts: RailParts, element: HTMLElement, event: MouseEvent): void {
-	const page = element.dataset.interfacePage as InterfacePageName;
-	const hide = parts.context?.hideInterfacePage;
-	const pages = company.store.get().interfacePages;
-	if (!hide || !pages?.personal || !pages.pages.some((entry) => entry.page === page)) return;
+	const items = pageMenuItems(company, parts, element);
+	if (!items.length) return;
 	event.preventDefault();
+	const page = element.dataset.interfacePage as InterfacePageName;
 	const shown = parts.appsDrawer.contains(element);
 	const name = element.dataset.pageName ?? element.querySelector(".rail-app-name")?.textContent ?? page;
 	const point = menuPoint(event, element);
@@ -2516,19 +2915,30 @@ function openPageMenu(company: CompanyController, parts: RailParts, element: HTM
 		opener: element,
 		findOpener: () =>
 			(shown ? parts.appsDrawer : parts.list).querySelector<HTMLElement>(`[data-interface-page="${page}"]`),
-		items: [
-			{
-				label: shown ? t("Hide from sidebar") : t("Show in sidebar"),
-				icon: shown ? "hide" : "show",
-				select: () => {
-					company.reportRailError(undefined);
-					hide(page, shown).catch(() =>
-						company.reportRailError(t("{page} could not be changed. Try again.", { page: name })),
-					);
-				},
-			},
-		],
+		items,
 	});
+}
+
+/** Hide from sidebar (or Show in sidebar, in Hidden) for a page; nothing for anything else. */
+function pageMenuItems(company: CompanyController, parts: RailParts, element: HTMLElement): MenuEntry[] {
+	const page = element.dataset.interfacePage as InterfacePageName | undefined;
+	const hide = parts.context?.hideInterfacePage;
+	const pages = company.store.get().interfacePages;
+	if (!page || !hide || !pages?.personal || !pages.pages.some((entry) => entry.page === page)) return [];
+	const shown = parts.appsDrawer.contains(element);
+	const name = element.dataset.pageName ?? element.querySelector(".rail-app-name")?.textContent ?? page;
+	return [
+		{
+			label: shown ? t("Hide from sidebar") : t("Show in sidebar"),
+			icon: shown ? "hide" : "show",
+			select: () => {
+				company.reportRailError(undefined);
+				hide(page, shown).catch(() =>
+					company.reportRailError(t("{page} could not be changed. Try again.", { page: name })),
+				);
+			},
+		},
+	];
 }
 
 /** A page hidden from the rail, in Hidden: its emblem and name. A press, like a right-click, offers to show it. */

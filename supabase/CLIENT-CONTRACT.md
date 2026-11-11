@@ -307,6 +307,14 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   group chats, contact places, hidden pages); `undo_reset {}` puts the last
   reset's rows back (P0002 when there is none). A contact place may name one of
   the caller's own sections.
+- Each member's own apps drawer (`20260930728000`): the company's groups are its
+  file `apps/groups.md`, kept by agents. `qorpera_member_app_layout(p_profile_id)`
+  → `qorpera.member-app-layout-read/v1` `{layout, updatedAt}` and
+  `qorpera_set_member_app_layout(p_profile_id, p_layout, p_expected)` (whole
+  document, QAL01 when `p_expected` is not the last `updatedAt`, 22023 for a shape
+  the web never writes; an empty layout leaves no row). The layout is
+  `qorpera.member-app-layout/v1` `{places, groups}` (packages/web/src/cloud/app-groups.ts).
+  Any member. Reset takes it away and Undo puts it back; `own.apps` counts it.
 - `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
   shape after the change. Before `20260930727000`, shared, owner/admin/contributor:
   `create_section {sectionId, name, staffAgentId?, unpin?}`,
@@ -1237,6 +1245,169 @@ before). Each call answers 42501 for a caller who is not a member of the company
   every 15 s while the window is open without hints. Fields may be added; a client ignores the ones it does not know.
 - `qorpera_member_machine_screen_begin(profile, machine, watch)`: one look, begun as the member. Clients do not call it:
   the look route (§4) does, with the member's own token. `watch` is `{"confirmed": boolean}`.
+
+### An agent's computer, taken over (20260930713000_machine_member_control)
+
+An owner, admin or contributor takes over an agent's desktop computer in the computer window and hands it back; a viewer
+watches only. While a member holds the desktop, the agent gets no picture of that machine and neither acts on it, starts
+a new command there nor saves a key off it (`DESKTOP_MEMBER_IN_CONTROL`); other members see who holds it, not the
+screen. The hold is a lease: 5 minutes from the member's last word (taking it, an action, the heartbeat), never more
+than 30 minutes from their last input (taking it, an action); it ends at once when they hand it back and by itself at
+its time (no job ends it: every check compares the time). Each call answers 42501 for a caller who may not, 22023 for a
+request of another shape.
+
+- `qorpera_list_agent_machines` also answers `canTakeOver` (owners, admins, contributors) and, per machine, `epoch`
+  (the caller's own hand-back epoch for it, 0 when never handed back) and `control`: null, or `{mine, name, until}`
+  while a member holds its desktop (`mine` when it is the caller; `name` the holder's; `until` when the lease runs out
+  unless renewed: read the list again then). The caller's own hold also says `epoch`, the epoch it was taken under,
+  `seat`, its seat, and `press`, the id of the take-over that seated it (never for another member's).
+- Hand-back epochs (review r5 of #1661): one counter per member and machine that only the database moves. A take-over
+  is sent at the epoch the page knows and accepted only at the current one; a hand-back at the current epoch moves it
+  on (always for VOID; for EXACT when nothing of the member's is left live, below), one at an older epoch changes
+  nothing. So once an answer named an epoch above e, nothing taken or sent at e or before holds the desktop or ever
+  will, whenever it arrives: a live lease of the member's is always under the current epoch, and no clock or list read
+  is involved.
+- Seats (release review r1 of #1667, F26 of #1661): the epoch orders take-overs against hand-backs, but two holds of one
+  member can live under one epoch (a lease that ran out and was taken again; another tab's take-over of the member's
+  own live lease). So the database gives every seating a seat, a number that only grows per machine: a take-over that
+  starts a lease, one after a lease ran out, and one that takes the member's own live lease over from another press
+  each get a new one. Everything a page does as holder names the seat beside the epoch (the heartbeat, every action),
+  and is taken only in that seat: a stale tab's heartbeat renews nothing and its input runs nowhere, and that tab
+  hears at its next heartbeat or action that it holds nothing. A page holds a seat only from the answer to its own
+  take-over, or, when that answer was lost, from a list that shows the hold seated by that very take-over's `press`.
+  A press id is for recognition only, never authority: no call but the list reads it. A page never has two
+  take-overs of a machine that may both be alive (F28 of #1661): before it sends a new one while an earlier one of its
+  own at that epoch has no answer (lost, timed out, cut off: none of these is an answer), it sends VOID at that epoch
+  and waits for its answer, and the new one goes at the epoch that answer names.
+- `qorpera_member_take_machine_desktop(profile, machine, epoch, press)`: `press` is a uuid the page mints for each
+  take-over request. `{schema: "qorpera.member-machine-desktop/v1", state: "ok", until, seat}`, or `state: "refused"`
+  with `reason` `DESKTOP_MACHINE_TOO_SMALL`, `MACHINE_NOT_RUNNING`, `MACHINE_NEEDS_COMPANY_VIEW`,
+  `DESKTOP_MEMBER_IN_CONTROL` (with `memberName`, the holder's) or `TAKE_CALLED_OFF` (not the current epoch; with
+  `epoch`, the current one). Taking it again at the same epoch takes the caller's own lease over: a new seat.
+- `qorpera_member_keep_machine_desktop(profile, machine, epoch, seat)`: the window's heartbeat, every 60 s while it
+  shows the member holding the desktop: `state: "ok"` with the new `until`, or `state: "ended"` (handed back, run out,
+  seated anew by another take-over of the member's, or another member's now). It renews only the lease taken under
+  that epoch in that seat.
+- `qorpera_member_hand_back_machine_desktop(profile, machine, reason, epoch, seat)`: `reason` `handed_back` (the
+  member's word, or their take-over card's I'm done) or `closed` (their window closed or they left the company's page).
+  Two forms, chosen by what the page knows (F27, F28 of #1661):
+  - EXACT, `seat` a number: the caller's lease taken under `epoch` in that seat ends, if it is the lease; the epoch
+    moves on when `epoch` is the current one and no live lease of the caller's is left. A page sends it only when every
+    take-over it sent for that machine at that epoch was answered: a tab that closes then never ends another tab's
+    hold. Its answer discharges that seat on the page (ended now, or gone already), and every lower one.
+  - VOID, `seat` null: at the current epoch the epoch moves on and the caller's lease taken under it ends, whichever
+    seat; at an older epoch nothing. A page sends it whenever a take-over of its own for that machine at that epoch has
+    no answer: moving the epoch is the only thing that voids that take-over whenever it arrives. It also ends another
+    tab's hold of the member's under that epoch: a tab that closes while a take-over of its own is unanswered, while
+    another tab of the same member holds the desktop under the same epoch, ends that tab's hold (it hears so at its
+    next heartbeat or action, and its window offers Take over again). This race is the one place a closing tab ends
+    another's; it keeps a take-over that outlives its window from seating anyone.
+  A lease of the caller's that ran out is closed as it ended when the epoch moves. Which form each release sends:
+  a close, a switch away, pagehide and leaving the page send VOID when uncertain, else EXACT by the seat the page's
+  own take-over got, else nothing (a hold only seen from another window is not theirs to end); Hand back and I'm done
+  send VOID when uncertain, else EXACT by the highest of that seat and the seat a list or an answer showed the member
+  holding (the lower one is gone: seats only grow). A VOID asked again until answered stays VOID: its answer is what
+  fences a copy of it still on its way. `{schema, state: "ok", handedBack, epoch, holding, seat}`: `handedBack`
+  whether it gave a live lease back; `epoch` the caller's current epoch afterwards (a take-over the member asks for
+  later is sent at it); `holding` whether the caller holds the machine now (another tab of theirs) and `seat` that
+  hold's seat (null when not): hand back again at `epoch` naming that seat to give it back too.
+- The take-over card's I'm done is answered after this (reviews r9 and r10 of #1661): I'm done answers once, after a
+  list read that counts (none of its machines below the epoch the page knows), the page owes nothing for the agent's
+  machines. What it owes at an epoch is discharged by learning from the database that the member's epoch is above it
+  (a hand-back's answer, a `TAKE_CALLED_OFF`, a list), or, seat by seat (F27, F28): a take-over with no answer by its
+  own answer (or a list showing the hold seated by it); the seat the page's own take-over got, or one shown it, by an
+  EXACT hand-back's answer for that seat or a higher one, or by a heartbeat or an action answered `ended` for it. No
+  refusal of another request, timeout or closed window discharges anything; a hold the read itself shows at the
+  current epoch is owed like any other.
+  A take-over the member starts from another tab after that read was taken is a new take-over, outside this answer;
+  the agent then hears `DESKTOP_MEMBER_IN_CONTROL`, as for any take-over without a card. No page can exclude what the
+  member does a moment later.
+- A page uses a hold (input, heartbeats) only after a Take over pressed on that page (review r14 of #1661): a hold of
+  the member's that the list shows from another window, or from before the page was loaded again, is shown, never
+  taken up, so after a reload the member presses Take over once to go on (a take-over at the current epoch takes
+  their own lease over, in a new seat), and without that the old lease ends by itself.
+- `qorpera_member_machine_desktop_act_begin(profile, machine, action, epoch, seat)`: one action, begun as the member.
+  Clients do not call it: the action route (§4) does, with the member's own token, the action as SQL keeps it (a text
+  by its length), `epoch` and `seat`, the hold the page captured the input under (release review r1 of #1667, F24 and
+  F26 of #1661). Under the machine's lock it is taken only from the member whose live lease was taken under exactly
+  that epoch and is exactly that seat; otherwise `DESKTOP_CONTROL_ENDED` (that hold has ended) and nothing is recorded,
+  counted or renewed, so input delayed across a hand-back and a new take-over, a lease that ran out and was taken
+  again, or another tab's take-over never runs under the new hold. An `epoch` or `seat` that is null or below 0 is
+  malformed (22023). The executor's read (`qorpera_member_machine_desktop_act_authority`) then serves the action only
+  while the lease row it was begun on stands and is still in the seat the begin recorded, so a hand-back, a new
+  take-over or another press's take-over between the begin and the read refuses it too.
+- The action route's body is `{"action": {...}, "epoch": n, "seat": s}`; the page sends the epoch and the seat of the
+  hold the key, click or text was captured under, never those at send time, and its queue and every answer belong to
+  that one hold: an answer for an older hold changes nothing of the current one (F25).
+- An agent's `save_coding_value` is fenced as a picture is (v233 release review r1, F29 of #1661): its read
+  (`qorpera_authorize_machine_coding_value`) answers `desktopGeneration`, the lease generation it saw, and the executor
+  asks `qorpera_machine_desktop_picture_check` (no looker) before the clipboard helper reads the clipboard and again
+  after it, before the box is answered: a take-over at any moment since the read drops the box whole (nothing stored,
+  nothing logged; the agent hears `DESKTOP_MEMBER_IN_CONTROL`). The helper takes the desktop as an action does, so a
+  member's action (a copy, a paste) and the clipboard read never interleave on one desktop. What cannot be undone: a
+  helper that had begun reading before a take-over may already have cleared the clipboard, the member's copy with it.
+- After a member has held a desktop, the platform clears its clipboard before an agent can read a key from it (F32 to
+  F35 of #1661): what a member copied stays on the clipboard after they hand back.
+  - The clear is owed from the hold on: `desktop_clipboard_generation` (the lease generation at the last confirmed
+    clear) differs from the lease generation, which moves at every seating and every hand-back. Only the platform's
+    confirmed clear lifts it; nothing the agent does (a look, a click, a copy) does.
+  - The clear: the machine's executor takes the desktop under the one-actor rule, asks the fence, clears both
+    selections with a fixed script of its own (each xsel must succeed, then each selection is read back by its byte
+    count alone; never the helper's `--clear-only`, which answers cleared whatever xsel did), and confirms it with
+    `qorpera_machine_desktop_clipboard_cleared(placement, generation)` (service_role), which records it only while that
+    generation stands and no member holds the desktop. A desktop that is not running counts as cleared: the image keeps
+    no clipboard past its desktop's session (no clipboard manager, no saved history; measured on image 91d433c0).
+  - First, at the agent's first screen call after the hold (a look or an action): `qorpera_authorize_machine_screen`
+    answers `clipboardClear`, and the host clears and records under that call's hold of the desktop, within 3 s,
+    before it looks or acts, so whatever the agent copies after is its own and its save reads it at the first call. If
+    the fence or the record says a member holds the desktop again, an action does not run (`DESKTOP_MEMBER_IN_CONTROL`);
+    any other failure fails nothing, and the clear stays owed.
+  - The backstop is `save_coding_value`: while the clear is owed, its read answers `{state: "clear", machineId,
+    placementId, bootId, executorOwner, providerId, receiptId, desktopGeneration}` and reads nothing; the executor
+    clears and records the same way, and the agent hears `CLIPBOARD_EMPTY` (true then: it copies the key on the site
+    and calls again); its next call reads as before. `DESKTOP_MEMBER_IN_CONTROL` stays for a member who holds the
+    desktop, or took it over across a read.
+- A member's action asks the fence for its seat again once the host holds the desktop
+  (`qorpera_member_machine_desktop_act_authority` answers the seat), so one authorized before a hand-back never runs
+  after it.
+- A stated limit: the computer is the agent's. While a member holds the desktop the agent starts nothing new on it and
+  reads nothing of its screen or clipboard through the platform's tools, but a program the agent started there before
+  the take-over keeps running and can see the screen and the clipboard.
+- One lock order with every machine path (F30 of #1661): a take-over, and a member's first look at a machine (which
+  writes their watch row, keyed by the company), take the folder fence and the company row KEY SHARE
+  (`qorpera_folder_machine_fence`, rank 0) before the machine's row, as the executor's custody and a member's wake do,
+  so a holder of the fence that then wants the machine (company deletion's finisher) is waited for, never met in a
+  circle.
+- The window sends the member's input in the order it was made (F31 of #1661): a click waiting for its second, typed
+  text and a wheel turn are each gathered a moment, and when input of another kind begins, what is gathered goes first.
+
+### A member turns an agent's desktop on (20260930714000_machine_member_start)
+
+An owner, admin or contributor turns the desktop (the screen) of an agent's running desktop computer on, whatever the
+agent does (Jonas, 11 Nov 2026): the window's Turn it on, and Wake it, which turns the screen on too once the machine
+runs. Starting is not taking over: it needs no hold and takes none, and the agent is told nothing (its next
+`machine_screen` or `desktop start` finds the desktop running).
+
+- `qorpera_member_machine_desktop_start_begin(profile, machine)` (authenticated; the start route calls it with the
+  member's own token): under the machine's lock, a running machine of the company big enough for a desktop
+  (`MACHINE_NOT_RUNNING`, `DESKTOP_MACHINE_TOO_SMALL`), then exactly what an agent's first screen use marks and refuses:
+  the disk rule (`MACHINE_NEEDS_COMPANY_VIEW` on a disk that had a view, for a member who does not read the folder's
+  root; a disk that never had one is marked unchecked for them), the machine's last use (at most every 30 s), and a
+  screen no agent drove yet stamped as the agent the machine was started by (a screen an agent drove keeps that agent's
+  stamp, so the machine stays in that agent's window). A member's hold of the desktop, the caller's or another's, does
+  not stop a start: a hold does not prove the desktop runs (a take-over never checks it, and the desktop stops itself
+  after an hour without a desktop command), and a start takes no hold and does nothing to a desktop that runs. A second
+  start of the machine within 5 s is `DESKTOP_START_TOO_SOON`. It records the start (id, member, machine, time) and answers `{schema:
+  "qorpera.member-machine-desktop-start/v1", state: "ok", startId}`; refusals are `{state: "refused", reason}`.
+- `qorpera_member_machine_desktop_start_authority(start, owner, provider)` (service_role): the executor's read, single
+  use, within 15 s of the begin, of a member still an owner, admin or contributor of a company not being deleted, the
+  machine still running and big enough, the disk rule read again (marking as the begin does); `served` only for the
+  placement's own executor.
+- The machine stays awake under a member: a member's look read moves the machine's last use (at
+  most every 30 s) while their word that they watch is at most 30 minutes old, and a hold's heartbeat moves it when it
+  renews the lease. Without them a task machine whose desktop a member only watched slept after its executor's
+  `sleep_after_seconds` (an hour by default), and a hold kept by heartbeats alone could too.
+
 #### Member contacts' places (20260930717000_member_contact_places)
 
 A contact is a rail row like an agent's (Jonas, 10 Nov 2026: "not sure I like the member contacts at the top,
@@ -1452,7 +1623,9 @@ topic's rows. A new private topic's policies must do the same.
   `postgres_changes` gets no such hint and reads the member chats on its slow poll. Since
   `20260930712000_machine_member_screens` also `machines`, to every member of the company, when one of its machines is
   made, wanted on or off, removed or fails, another agent drives its screen (or one drives it again after 10 minutes),
-  or its placement is made, starts, gets a boot, retires or goes: read `qorpera_list_agent_machines` again. Who hears a change is decided per change, at commit: only the topics of the members
+  or its placement is made, starts, gets a boot, retires or goes, and since `20260930713000_machine_member_control` when
+  a member takes its desktop over or hands it back (not on an action or a heartbeat, nor when a lease runs out: read the
+  list again at its `until`): read `qorpera_list_agent_machines` again. Who hears a change is decided per change, at commit: only the topics of the members
   who may read the changed row under its table's read policy then, so a member who leaves hears nothing of the company
   from that commit on but the change to their own access row (which they may read). A member may join only their own
   topic, of a company they are a member of or have an access row in (RLS on `realtime.messages` via
@@ -1554,7 +1727,31 @@ only after durable storage.
   is off), `MACHINE_BOOT_CHANGED`, `MACHINE_IMAGE_WITHOUT_SCREEN`, `SCREEN_HIDDEN` (the machine holds a read of the
   company folder this member may not read) or `SCREEN_HELD` (the folder has not released what the machine read: look
   again); 401 for a token the database does not take; 403 for a machine that is not there for the member. Behind the
-  member company gateway like the other member routes.
+  member company gateway like the other member routes. Since 20260930713000 also `DESKTOP_MEMBER_IN_CONTROL`: another
+  member holds the desktop (the list says who), or took it over while this look was on its way (its picture never
+  leaves: review r1 F1).
+- `POST /v1/member-machine-screens/<companyId>/<machineId>/act` (20260930713000; the same listener) — an action of the
+  member who holds the desktop, with their token, `content-type: application/json` and `{"action": {...}, "epoch": n,
+  "seat": s}` (at most 16 KiB; `epoch` and `seat` the hold the input was captured under, each a whole number from 0:
+  F24 and F26 of #1661): `{type: click, x, y, button?}`, `{type: double|move, x, y}`, `{type: drag, x, y, toX, toY}`, `{type: type,
+  text}` (1 to 500 characters, no control character but a line break or a tab), `{type: key, keys}` (1 to 16 names such
+  as Return or ctrl+l, none an xdotool command word), `{type: scroll, direction, steps?, x?, y?}`; positions are the
+  screen's pixels (the picture's own size). Never `open`. 200 `{schema: "qorpera.member-machine-act/v1", exitCode}`
+  (the action's exit; null when it was cut off); 400 for a body that is not one action; 409 `{code}`:
+  `MACHINE_NOT_RUNNING`, `MACHINE_NEEDS_COMPANY_VIEW`, `DESKTOP_MEMBER_IN_CONTROL`, `DESKTOP_CONTROL_ENDED` (the
+  hold the action names ended: handed back, run out, or seated anew by another take-over of the member's), `DESKTOP_BUSY` (another action runs on the desktop: an agent's that
+  began before the take-over), `DESKTOP_NOT_RUNNING` (the screen is off), `MACHINE_BOOT_CHANGED`,
+  `MACHINE_IMAGE_WITHOUT_SCREEN`, `SCREEN_ACTION_TAKEN`, or the screen helper's own refusals; 401 and 403 as a look.
+  The text goes to the machine and nowhere else: never to the database, a log or an answer. Nothing of the screen comes
+  back: the client looks again. Behind the member company gateway, which reads a body only for a signed-in member.
+- `POST /v1/member-machine-screens/<companyId>/<machineId>/start` (20260930714000; the same listener) — turns the
+  desktop on, with the member's token, `content-type: application/json` and the body `{}` (at most 1 KiB; any key is a
+  bad request: what to open there is for a later stage). 200 `{schema: "qorpera.member-machine-start/v1", outcome}`:
+  `started` (it was off and is drawn now) or `running` (it ran already); 409 `{code}`:
+  `MACHINE_NOT_RUNNING`, `MACHINE_NEEDS_COMPANY_VIEW`, `DESKTOP_MACHINE_TOO_SMALL`, `DESKTOP_START_TOO_SOON` (a start
+  of this machine within 5 s), `MACHINE_BOOT_CHANGED`, `MACHINE_IMAGE_WITHOUT_SCREEN` or `DESKTOP_DID_NOT_START`; 400,
+  401 and 403 as an action. Never refused because an agent runs or acts on the machine (it takes no hold); the client
+  looks again at once.
 
 `/v1/profile-objects/<profileId>/<sha256>` answers only the private `DELETE` folder GC and erasure use (with the
 gateway control token, never a member token); the gateway serves no raw object reads or uploads by hash, no read

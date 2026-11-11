@@ -1579,10 +1579,12 @@ export class ConversationView {
 		}
 	}
 
-	/** Take over the agent's computer for a card: open its screen here and give it the keyboard. */
+	/** Take over the agent's computer for a card: open its screen here and take the desktop over (20260930713000), which
+	 * gives the member its mouse and keyboard once the window shows it. */
 	#takeOver(agent: HostedStaffAgent): void {
 		const panel = this.#panel ?? this.#showPanel(agent);
 		panel?.focus();
+		panel?.takeOver();
 	}
 
 	/** Show the agent's computer here: the one already open, or one started now. */
@@ -2873,7 +2875,25 @@ export class ConversationView {
 								memberName: (userId) => this.#company.memberName(userId),
 								canAnswer: answers,
 								...(this.#actions.folderImage ? { image: this.#actions.folderImage } : {}),
-								answer: (outcome, answer) => this.#answerInteraction(item.id, outcome, answer),
+								answer: async (outcome, answer) => {
+									// The take-over card's I'm done gives the agent's desktop back first; the answer then wakes the agent, whose
+									// looks are let in again (20260930713000).
+									// It answers only once the database confirmed it has the desktop back (review r1 F4): otherwise the card
+									// stays open and says so, and I'm done asks again. It asks the company's ledger, not a window: a window
+									// closed meanwhile may still have a hand-back on its way (review r2 F4).
+									if (takeOver && outcome === "handed_back") {
+										const current = currentAgent();
+										if (current && !(await this.#panels.releaseAgent(current.id))) {
+											this.#company.conversation(this.#sessionId).set({
+												interactionError: t(
+													"The computer could not be given back yet. Press I'm done to try again. It goes back by itself within 5 minutes.",
+												),
+											});
+											throw new Error("The computer was not given back");
+										}
+									}
+									return this.#answerInteraction(item.id, outcome, answer);
+								},
 								...(email
 									? {
 											emailDraft: this.#company.emailDraftEditor(item.id),

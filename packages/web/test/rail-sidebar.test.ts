@@ -1515,6 +1515,7 @@ describe("each member's own sidebar (20260930727000)", () => {
 		hidden: 0,
 		contacts: 0,
 		pages: 0,
+		apps: 0,
 		...changes,
 	});
 	const viewerTeam = { ...team, role: "viewer" as const, capabilities: { ...team.capabilities, write: false } };
@@ -1702,6 +1703,7 @@ describe("Reset sidebar's Undo (review of #1677)", () => {
 		hidden: 0,
 		contacts: 0,
 		pages: 0,
+		apps: 0,
 	});
 	async function resetOnce() {
 		const appsKey = `qorpera.web.rail-apps-order:${profileA.profileId}`;

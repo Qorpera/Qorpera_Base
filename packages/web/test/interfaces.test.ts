@@ -9,10 +9,26 @@ import { companyInterfaces, interfaceRows } from "../src/app/interfaces.ts";
 import { parseRoute, type Route, routeHash } from "../src/app/router.ts";
 import { messageText, renderInterface, renderInterfaceFile } from "../src/app/views/interface.ts";
 import { renderRail } from "../src/app/views/shell.ts";
+import { EMPTY_APP_LAYOUT, type MemberAppLayout, parseAppGroups } from "../src/cloud/app-groups.ts";
+import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
+import { colourNameHex } from "../src/ui/avatar.ts";
 import { h } from "../src/ui/dom.ts";
+import { nameDialog } from "../src/ui/name-dialog.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
-import { fixture, id, profileA, session, settle, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
+import {
+	deferred,
+	fixture,
+	id,
+	profileA,
+	session,
+	settle,
+	staff,
+	stubFigureMotion,
+	team,
+	timestamp,
+	userA,
+} from "./fixtures.ts";
 
 const agent = (n: number, name: string): HostedStaffAgent => ({
 	...staff,
@@ -1483,5 +1499,241 @@ columns = ["title", "kind", "due"]
 		} finally {
 			setLanguagePreference("system");
 		}
+	});
+});
+
+describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
+	const manifest = (name: string, colour: "coral" | "gold" | "teal") => ({
+		name,
+		about: null,
+		emblem: "page" as const,
+		colour,
+		entry: "index.html",
+		owner: ada.id,
+		posted: true,
+		reads: [],
+		writes: [],
+		concept: false,
+		cover: null,
+		kit: null,
+	});
+	const own = { changes: 0, moved: [], sections: [], pinned: 0, hidden: 0, contacts: 0, pages: 0, apps: 0 };
+	function drawer() {
+		const { f, controller } = company([], { members: 3, pages: pages(false, true) });
+		controller.store.set({
+			sidebar: { sections: [], placements: {}, pinned: [], hidden: [], own },
+			apps: [
+				{ name: "brand", path: "apps/brand", manifest: manifest("Brand", "coral"), problems: [], version: null },
+				{ name: "plan", path: "apps/plan", manifest: manifest("Plan", "gold"), problems: [], version: null },
+				{ name: "trips", path: "apps/trips", manifest: manifest("Trips", "teal"), problems: [], version: null },
+			],
+			appGroups: parseAppGroups("- group market: Market\n  - app:brand Brand\n  - app:plan Plan\n"),
+			appLayout: { layout: EMPTY_APP_LAYOUT, updatedAt: null },
+		});
+		const set = vi
+			.spyOn(f.api, "setMemberAppLayout")
+			.mockImplementation(async (_profile, layout) => ({ layout, updatedAt: "2026-11-11T12:00:00Z" }));
+		vi.spyOn(f.api, "readCompanySidebar").mockResolvedValue({
+			sections: [],
+			placements: {},
+			pinned: [],
+			hidden: [],
+			own,
+		});
+		const element = h("aside", { class: "rail" });
+		document.body.append(h("div", { class: "frame" }, element));
+		const auth = new AuthController(f.cloud);
+		cleanup.push(() => auth.dispose());
+		const route: Route = { name: "company", profileId: profileA.profileId, section: "home" };
+		const draw = () =>
+			renderRail(element, controller, {
+				profiles: [profileA],
+				user: userA,
+				route,
+				auth,
+				invitations: 0,
+				openSettings: () => {},
+				openFeedback: () => {},
+				openFriends: () => {},
+				agentActions: {},
+			});
+		cleanup.push(controller.store.subscribe(draw));
+		draw();
+		element.querySelector<HTMLButtonElement>(".rail-apps")!.click();
+		return { element, controller, set, f };
+	}
+	const tiles = (element: HTMLElement) =>
+		[...element.querySelectorAll<HTMLElement>(".rail-apps-grid > [data-app-key]")].map(
+			(tile) =>
+				`${tile.querySelector(".rail-app-name")?.textContent}${tile.getAttribute("aria-expanded") === "true" ? "+" : ""}`,
+		);
+	const group = (element: HTMLElement) => element.querySelector<HTMLButtonElement>(".rail-app-group")!;
+
+	it("draws a group as one tile in its first app's colour, and opens it into the grid", () => {
+		localStorage.clear();
+		const { element } = drawer();
+		expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+		expect(group(element).style.getPropertyValue("--app-colour")).toBe(colourNameHex("coral"));
+		const trips = element.querySelector<HTMLElement>("[data-app-key='app:trips']")!;
+		expect(trips.style.getPropertyValue("--app-colour")).toBe(colourNameHex("teal"));
+		group(element).click();
+		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
+		expect(element.querySelector("[data-app-key='app:brand']")?.getAttribute("data-in-group")).toBe("market");
+		expect(JSON.parse(localStorage.getItem(`qorpera.web.rail-app-groups-open:${profileA.profileId}`)!)).toEqual([
+			"market",
+		]);
+		group(element).click();
+		expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+		localStorage.clear();
+	});
+
+	it("renames and takes apart a group in the member's own drawer, and moves an app into one", async () => {
+		localStorage.clear();
+		const { element, set } = drawer();
+		group(element).dispatchEvent(
+			new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 9, clientY: 9 }),
+		);
+		const labels = () =>
+			[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")].map((item) => item.textContent);
+		expect(labels()).toEqual(["Rename group", "Ungroup", "Reset sidebarYou have Company A PRIVATE's sidebar"]);
+		[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")]
+			.find((item) => item.textContent === "Ungroup")!
+			.click();
+		await settle();
+		expect(set).toHaveBeenLastCalledWith(
+			profileA.profileId,
+			expect.objectContaining({ groups: { market: { removed: true } } }),
+			null,
+		);
+		expect(tiles(element)).toEqual(["Brand", "Plan", "Members", "Trips"]);
+		const trips = element.querySelector<HTMLElement>("[data-app-key='app:trips']")!;
+		trips.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 9, clientY: 9 }));
+		expect(labels()[0]).toBe("Move to");
+	});
+	it("lets a move on its way land before a reset, so the reset is never undone by it (review F2 on #1678)", async () => {
+		localStorage.clear();
+		const { controller, set } = drawer();
+		const answer = deferred<{ layout: MemberAppLayout; updatedAt: string | null }>();
+		set.mockImplementationOnce(() => answer.promise);
+		const manage = vi
+			.spyOn(controller as unknown as { changeSidebar: (r: unknown) => Promise<boolean> }, "changeSidebar")
+			.mockResolvedValue(true);
+		const moving = controller.changeAppLayout({ ...EMPTY_APP_LAYOUT, groups: { market: { removed: true } } });
+		const resetting = controller.resetSidebar();
+		await settle();
+		expect(manage).not.toHaveBeenCalled();
+		answer.resolve({ layout: EMPTY_APP_LAYOUT, updatedAt: "2026-11-11T12:00:00Z" });
+		await Promise.all([moving, resetting]);
+		expect(manage).toHaveBeenCalledWith({ action: "reset" });
+	});
+	it("makes no move while a reset is on its way (review F3 on #1678, round 2)", async () => {
+		localStorage.clear();
+		const { controller, set, f } = drawer();
+		vi.spyOn(f.api, "readMemberAppLayout").mockResolvedValue({ layout: EMPTY_APP_LAYOUT, updatedAt: null });
+		const answer = deferred<boolean>();
+		vi.spyOn(
+			controller as unknown as { changeSidebar: (r: unknown) => Promise<boolean> },
+			"changeSidebar",
+		).mockReturnValue(answer.promise);
+		const resetting = controller.resetSidebar();
+		await settle();
+		expect(controller.resettingSidebar()).toBe(true);
+		expect(await controller.changeAppLayout({ ...EMPTY_APP_LAYOUT, groups: { market: { removed: true } } })).toBe(
+			false,
+		);
+		expect(set).not.toHaveBeenCalled();
+		answer.resolve(true);
+		await resetting;
+		expect(controller.resettingSidebar()).toBe(false);
+	});
+	it("takes the layout read after a reset over a slower read from before it (review F2 on #1678, round 3)", async () => {
+		localStorage.clear();
+		const { controller, set, f } = drawer();
+		const before = deferred<{ layout: MemberAppLayout; updatedAt: string | null }>();
+		const read = vi.spyOn(f.api, "readMemberAppLayout").mockReturnValueOnce(before.promise);
+		void controller.refreshAppLayout();
+		read.mockResolvedValueOnce({ layout: EMPTY_APP_LAYOUT, updatedAt: null });
+		vi.spyOn(
+			controller as unknown as { changeSidebar: (r: unknown) => Promise<boolean> },
+			"changeSidebar",
+		).mockResolvedValue(true);
+		await controller.resetSidebar();
+		expect(controller.resettingSidebar()).toBe(false);
+		before.resolve({
+			layout: { ...EMPTY_APP_LAYOUT, groups: { market: { removed: true } } },
+			updatedAt: "2026-11-11T09:00:00Z",
+		});
+		await settle();
+		expect(controller.store.get().appLayout).toEqual({ layout: EMPTY_APP_LAYOUT, updatedAt: null });
+		await controller.changeAppLayout({ ...EMPTY_APP_LAYOUT, groups: { market: { name: "Sales" } } });
+		expect(set).toHaveBeenLastCalledWith(profileA.profileId, expect.anything(), null);
+	});
+	it("keeps the drawer draggable after a reset on a cloud without each member's apps layout (review F2 on #1678, round 4)", async () => {
+		localStorage.clear();
+		const { controller, f } = drawer();
+		vi.spyOn(f.api, "readMemberAppLayout").mockRejectedValue(
+			new CloudRpcError("qorpera_member_app_layout", { message: "missing", code: "PGRST202" }, 404),
+		);
+		vi.spyOn(
+			controller as unknown as { changeSidebar: (r: unknown) => Promise<boolean> },
+			"changeSidebar",
+		).mockResolvedValue(true);
+		await controller.resetSidebar();
+		expect(controller.resettingSidebar()).toBe(false);
+		expect(controller.store.get().appLayoutUnavailable).toBe(true);
+	});
+	it("says a write another tab overtook in the member's words and reads the layout again (review F2 on #1678, round 6)", async () => {
+		localStorage.clear();
+		const { controller, set, f, element } = drawer();
+		const read = vi
+			.spyOn(f.api, "readMemberAppLayout")
+			.mockResolvedValue({ layout: EMPTY_APP_LAYOUT, updatedAt: "2026-11-11T12:30:00Z" });
+		set.mockRejectedValueOnce(
+			new CloudRpcError(
+				"qorpera_set_member_app_layout",
+				{ message: "Your apps changed in another tab", code: "QAL01" },
+				400,
+			),
+		);
+		expect(await controller.changeAppLayout({ ...EMPTY_APP_LAYOUT, groups: { market: { removed: true } } })).toBe(
+			false,
+		);
+		await settle();
+		expect(element.textContent).toContain("Your apps changed in another tab. Try again.");
+		expect(read).toHaveBeenCalled();
+		expect(controller.store.get().appLayout?.updatedAt).toBe("2026-11-11T12:30:00Z");
+		// Any other refusal says the general words.
+		set.mockRejectedValueOnce(new Error("offline"));
+		await controller.changeAppLayout({ ...EMPTY_APP_LAYOUT, groups: { market: { removed: true } } });
+		await settle();
+		expect(element.textContent).toContain("The apps could not be arranged. Try again.");
+	});
+	it("takes a suggested group name as it is, while a rename must change something (review F1 on #1678, round 9)", async () => {
+		const suggested = nameDialog({
+			title: "New group",
+			label: "Group name",
+			value: "Fjeldtur",
+			confirm: "Create",
+			maxLength: 40,
+			suggested: true,
+		});
+		const create = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+			(b) => b.textContent === "Create",
+		)!;
+		expect(create.disabled).toBe(false);
+		create.click();
+		expect(await suggested).toBe("Fjeldtur");
+		const rename = nameDialog({
+			title: "Rename group",
+			label: "Group name",
+			value: "Market",
+			confirm: "Rename",
+			maxLength: 40,
+		});
+		const save = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Rename")!;
+		expect(save.disabled).toBe(true);
+		const dialog = save.closest<HTMLElement>(".modal-backdrop, [role=dialog]") ?? document.body;
+		[...dialog.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Cancel")!.click();
+		expect(await rename).toBeUndefined();
 	});
 });

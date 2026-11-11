@@ -233,9 +233,14 @@ export const CLOUD_MACHINE_SAVE_CODING_VALUE_DESCRIPTION =
 	"The vault stores it (a new version when the variable exists) and grants it to the repository in the name of the member you work for, who must be an owner or an admin. The result says saved, with the version, or why not; the clipboard is cleared either way, so copy the key again (or make a new one) before you call again. " +
 	"Never type, paste, print, echo or write a key anywhere (a command, a file, a message), and take no desktop shot while a key is on the screen: shots are kept in the company folder. " +
 	"A key of another service, or one only a person has, comes from a member: ask_member with surface secret and connectorId environment.";
+/** What the agent is told when a member holds a machine's desktop (20260930713000): what it means, and what to do. A
+ * member's hand-back wakes the agent only through its takeover card ("I'm done"). */
+const MEMBER_IN_CONTROL =
+	"a member is using this computer's screen: until they hand it back you get no pictures of it, and you cannot act on it, start commands on it or save a key off it. Tell the member what you need (for a sign-in, a captcha or a payment, ask_member with surface takeover says what to do) and end your turn: their I'm done on that card hands the computer back and wakes you";
 /** What the agent does about each refusal of the machine's (the clipboard is cleared in each). */
 const CODING_VALUE_REFUSED: Readonly<Record<CloudMachineCodingValueRefusalCode, string>> = {
 	MACHINE_NOT_RUNNING: "the machine is not running: start it, make or copy the key again, then call again",
+	DESKTOP_MEMBER_IN_CONTROL: `${MEMBER_IN_CONTROL}; then copy the key again and call again`,
 	MACHINE_IMAGE_WITHOUT_CODING_VALUES:
 		"this machine runs an earlier image that cannot save keys; a machine started on the current image can (one that sleeps wakes on it)",
 	DESKTOP_NOT_RUNNING:
@@ -270,6 +275,7 @@ const SCREEN_REFUSED: Readonly<Record<CloudMachineScreenRefusalCode, string>> = 
 		"this action was taken on the machine before and is never taken twice: look (no action) to see what came of it",
 	DESKTOP_BUSY:
 		"another run is acting on this desktop right now, so this action did not run: look, then act again with a new operationKey",
+	DESKTOP_MEMBER_IN_CONTROL: MEMBER_IN_CONTROL,
 	DESKTOP_MACHINE_TOO_SMALL:
 		"this machine is too small for a desktop: start a desktop computer (machine_start with desktop true)",
 	DESKTOP_DID_NOT_START:
@@ -776,6 +782,14 @@ export function cloudMachineTools(options: {
 						const refusal = cloudMachineCommandRefusal(error);
 						if (refusal === "MACHINE_NOT_RUNNING")
 							return { content: refused(refusal, `${machine.name} stopped before the command started`) };
+						// 20260930713000: nothing started; commands that run already go on.
+						if (refusal === "DESKTOP_MEMBER_IN_CONTROL")
+							return {
+								content: refused(
+									refusal,
+									`this command did not start, and commands already running on it go on: ${MEMBER_IN_CONTROL}`,
+								),
+							};
 						if (refusal === "MACHINE_COMMAND_ENDED") {
 							const lost = folderLost(error);
 							return {
