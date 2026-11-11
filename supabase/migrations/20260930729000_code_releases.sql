@@ -423,6 +423,20 @@ returns public.qorpera_code_repositories language sql stable set search_path = '
 			where deletion.profile_id = repository.profile_id)
 $$;
 
+-- The problem a member is told of (the read's problem): the code of the last failed upload, while the change of those
+-- failures is the repository's due point (the newest point as the due list takes it, p_point when the caller has it)
+-- and its tree has no version yet, and while the repository's sites are on; else null, whatever the columns still say
+-- (a finish whose answer was lost, a newer change, a version found again, sites switched off).
+create function public.qorpera_code_site_problem(p_repository public.qorpera_code_repositories, p_point jsonb default null)
+returns text language plpgsql stable set search_path = '' as $$
+declare v_point jsonb := p_point;
+begin
+	if p_repository.site_problem is null or not p_repository.site_enabled then return null; end if;
+	v_point := coalesce(v_point, public.qorpera_code_release_point(p_repository, null, false));
+	return case when v_point ->> 'versionId' is null and (v_point ->> 'change')::integer = p_repository.site_change
+		then p_repository.site_problem end;
+end $$;
+
 -- Whether no upload pass tries the repository's newest point again until something changes: that point (6.1 without
 -- its version, as the due list takes it; p_point when the caller has it) has no version and is the change the pass
 -- gave up after five failures, and the give-up still holds. One given up for the company's ten (SITE_LIMIT) holds while
@@ -825,11 +839,16 @@ end $$;
 -- answer): the repository's problem; its failures in a row of change p_change (one for another change), and a pause of
 -- 2^failures seconds, at most 10 minutes; the fifth of the same change gives that change up (no pass tries it again,
 -- but for SITE_LIMIT or SITE_NAME_TAKEN once a site went, and after a member took the site offline) and writes the list
--- again. Answers {"schema":"qorpera.code-site-failed/v1","state":"recorded"}, or {…,"state":"lost"}.
+-- again. Only a failure of the repository's due point counts: the newest point as the due list takes it, while its
+-- tree has no ready, live or kept version. A report of any other change (one a newer change overtook, one whose tree
+-- has its version, as when a finish was done and its answer lost, or one that left no site) writes nothing and is
+-- answered as recorded, so the pass goes on; nor does it count against the due point. A failure of a change other than
+-- the one counted so far starts at one and forgets that change's give-up. Answers
+-- {"schema":"qorpera.code-site-failed/v1","state":"recorded"}, or {…,"state":"lost"}.
 create function public.qorpera_code_site_failed(p_owner text, p_machine_id_sha256 text, p_environment_id uuid,
 	p_repository_owner text, p_name text, p_change integer, p_code text)
 returns jsonb language plpgsql volatile security definer set search_path = '' as $$
-declare v_repository public.qorpera_code_repositories%rowtype; v_attempts integer;
+declare v_repository public.qorpera_code_repositories%rowtype; v_attempts integer; v_point jsonb;
 	c_schema constant text := 'qorpera.code-site-failed/v1';
 begin
 	perform public.qorpera_code_executor_custody(p_owner, p_machine_id_sha256);
@@ -841,10 +860,15 @@ begin
 	if not found or not public.qorpera_code_care_holder(p_environment_id, p_owner, p_machine_id_sha256)
 		or exists (select 1 from public.qorpera_company_deletions deletion where deletion.profile_id = v_repository.profile_id) then
 		return jsonb_build_object('schema', c_schema, 'state', 'lost'); end if;
+	-- Not the due point (overtaken, or its version is there already): nothing to count.
+	v_point := public.qorpera_code_release_point(v_repository, null, false);
+	if v_point is null or v_point ->> 'versionId' is not null or (v_point ->> 'change')::integer <> p_change then
+		return jsonb_build_object('schema', c_schema, 'state', 'recorded'); end if;
 	v_attempts := case when v_repository.site_change = p_change then v_repository.site_attempts + 1 else 1 end;
 	update public.qorpera_code_repositories set site_problem = p_code, site_attempts = v_attempts, site_change = p_change,
 		site_not_before = clock_timestamp() + least(make_interval(secs => power(2, least(v_attempts, 10))), interval '10 minutes'),
-		site_given_up = case when v_attempts >= 5 then p_change else site_given_up end,
+		-- (A failure of another change forgets the change given up before: the columns are always of one change.)
+		site_given_up = case when v_attempts >= 5 then p_change when v_repository.site_change = p_change then site_given_up end,
 		index_version = index_version + case when v_attempts = 5 then 1 else 0 end
 	where environment_id = p_environment_id and owner = p_repository_owner and name = p_name;
 	return jsonb_build_object('schema', c_schema, 'state', 'recorded');
@@ -869,9 +893,10 @@ end $$;
 
 -- The company's repositories with a site, for any member (viewers too): each with what is live, what Go back would put
 -- live, what is ready to go live (the ready point, 6.1: its token, and its changes as the page shows them), how many
--- changes are not ready yet, and the problem of the last upload that failed, with givenUp: true while no upload pass
--- tries again (qorpera_code_site_given_up), false otherwise and whenever problem is null. canRelease says whether the
--- caller (an owner or admin) may put a version live or go back. Read-only.
+-- changes are not ready yet, and the problem of the last upload that failed while it is about the change due now
+-- (qorpera_code_site_problem), with givenUp: true while no upload pass tries again (qorpera_code_site_given_up), false
+-- otherwise and whenever problem is null. canRelease says whether the caller (an owner or admin) may put a version live
+-- or go back. Read-only.
 -- {"schema":"qorpera.code-releases/v1","canRelease":<bool>,"sites":[{"owner","name",
 --  "site":{"slug","url","title"}|null,
 --  "live":{"version","kind":"release"|"back","since","by":"<userId>","from":<the version a back took off>|null}|null,
@@ -889,7 +914,7 @@ returns jsonb language plpgsql stable security definer set search_path = '' as $
 declare v_role public.qorpera_profile_role := public.qorpera_member_role(p_profile_id);
 	v_repository public.qorpera_code_repositories%rowtype; v_site public.qorpera_company_sites%rowtype;
 	v_live public.qorpera_code_releases%rowtype; v_prior public.qorpera_code_releases%rowtype; v_point jsonb;
-	v_sites jsonb := '[]'::jsonb;
+	v_due jsonb; v_problem text; v_sites jsonb := '[]'::jsonb;
 begin
 	if auth.role() is distinct from 'authenticated' or auth.uid() is null or v_role is null then
 		raise exception 'Releases unavailable' using errcode = '42501'; end if;
@@ -906,7 +931,7 @@ begin
 			order by made.n desc limit 1) newest on true
 		where repository.profile_id = p_profile_id and (site.id is not null or newest.created_at is not null)
 		order by case when site.current_version_id is not null then 0 when site.id is not null then 1 else 2 end,
-			case when site.id is null then repository.site_problem is null end,
+			case when site.id is null then public.qorpera_code_site_problem(repository) is null end,
 			case when site.id is null then newest.created_at end desc,
 			repository.owner collate "C", repository.name collate "C"
 		limit 10
@@ -920,6 +945,9 @@ begin
 				and release.name = v_repository.name and release.n = v_live.prior and release.version_id is not null;
 		end if;
 		v_point := public.qorpera_code_release_point(v_repository);
+		-- The due point, read only when there is a problem to check against it.
+		v_due := case when v_repository.site_problem is not null then public.qorpera_code_release_point(v_repository, null, false) end;
+		v_problem := public.qorpera_code_site_problem(v_repository, v_due);
 		v_sites := v_sites || jsonb_build_object('owner', v_repository.owner, 'name', v_repository.name,
 			'site', case when v_site.id is not null then jsonb_build_object('slug', v_site.slug,
 				'url', public.qorpera_site_url(v_site.slug), 'title', v_site.title) end,
@@ -949,9 +977,8 @@ begin
 					and waiting.name = v_repository.name and waiting.state = 'landed'
 					and waiting.kind in ('landing','undo','restore')
 					and waiting.n > coalesce((v_point ->> 'change')::integer, v_live.change, 0)),
-			'problem', v_repository.site_problem,
-			'givenUp', case when v_repository.site_problem is not null and v_repository.site_given_up is not null
-				then public.qorpera_code_site_given_up(v_repository) else false end);
+			'problem', v_problem,
+			'givenUp', case when v_problem is not null then public.qorpera_code_site_given_up(v_repository, v_due) else false end);
 	end loop;
 	return jsonb_build_object('schema', 'qorpera.code-releases/v1', 'canRelease', v_role in ('owner','admin'),
 		'sites', v_sites);
@@ -1310,6 +1337,7 @@ revoke all on function public.qorpera_code_site_valid(jsonb),
 	public.qorpera_code_release_point(public.qorpera_code_repositories, integer, boolean),
 	public.qorpera_code_site_slugs(text, text),
 	public.qorpera_code_site_given_up(public.qorpera_code_repositories, jsonb),
+	public.qorpera_code_site_problem(public.qorpera_code_repositories, jsonb),
 	public.qorpera_code_site_prune(uuid),
 	public.qorpera_code_release_index(public.qorpera_code_repositories),
 	public.qorpera_code_site_repository(text, text, uuid)

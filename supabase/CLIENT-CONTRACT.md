@@ -1621,15 +1621,18 @@ the What's new page. Nothing goes live by itself.
     customer will notice, newest first (at most 20): `picture` a Company File path or null, `at` when it went in,
     `wasLive` true for a change that was live before a Go back took it off; `key` is for the list only, never shown.
     `quiet` counts the other ready changes ("behind the scenes"). `agent` is the staff agent to tell "Not yet", or null.
-  - `waiting`: changes that went in and are not ready yet. `problem`: the code of the last upload that failed, or
-    null (`SITE_LIMIT`: the company has 10 sites, and the site is made once one of them goes; `SITE_NAME_TAKEN`: every
-    name the site may take is taken, and it is made once one is free). Null again once a member took the site
-    offline.
-  - `givenUp`: true while Qorpera has stopped trying: the newest change that left a site has no version, it is the
-    change whose upload failed five times, and nothing has changed since that lets it try again. False otherwise, and
-    always when `problem` is null. It turns false with a newer change that leaves a site, an upload that finishes, a
-    member taking the site offline, and, for `SITE_LIMIT`, once the company has fewer than 10 sites, or for
-    `SITE_NAME_TAKEN`, once one of the names is free.
+  - `waiting`: changes that went in and are not ready yet.
+  - `problem`: why the site of the change due now could not be prepared: the code of its last failed upload, while
+    that change is the newest one that left a site and its version is not ready yet (`SITE_LIMIT`: the company has 10
+    sites, and the site is made once one of them goes; `SITE_NAME_TAKEN`: every name the site may take is taken, and
+    it is made once one is free). Otherwise null: as soon as that version is ready (also when an upload's last answer
+    was lost), when a newer change that leaves a site overtook it, after a member took the site offline, and while
+    Qorpera's operators have the repository's sites switched off (then nothing is prepared and nothing is said).
+  - `givenUp`: true while Qorpera has stopped trying: `problem` is set, its change failed five times, and nothing has
+    changed since that lets it try again. False otherwise, and always when `problem` is null. It turns false with a
+    newer change that leaves a site, an upload that finishes, a member taking the site offline, and, for `SITE_LIMIT`,
+    once the company has fewer than 10 sites, or for `SITE_NAME_TAKEN`, once one of the names is free. A `problem`
+    with `givenUp` false means Qorpera tries again.
 - `qorpera_put_code_release_live(profile, owner, name, shown)`: owners and admins (42501 otherwise). `shown` is exactly
   what the page showed, `{live: <live.version, or null>, change: <ready.change>, token: <ready.token>}` (22023
   otherwise); a repository the company does not keep is P0002 "No such repository". Answers
