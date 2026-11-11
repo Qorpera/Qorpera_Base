@@ -758,6 +758,8 @@ export class CloudMemberFolderFileCache {
 		load: (signal: AbortSignal) => Promise<Uint8Array>,
 	): Promise<Uint8Array> {
 		signal.throwIfAborted();
+		// As this reader asked: a read it waits for or makes itself after a clear() keeps nothing.
+		const generation = this.#generation;
 		const held = this.#held.get(key);
 		if (held) {
 			// The most recently read goes last, and so leaves last.
@@ -773,7 +775,6 @@ export class CloudMemberFolderFileCache {
 				if (signal.aborted) throw error;
 				// The first reader stopped, or its read failed: this reader reads for itself.
 			}
-		const generation = this.#generation;
 		const reading = load(signal);
 		this.#reading.set(key, reading);
 		try {

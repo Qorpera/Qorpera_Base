@@ -619,6 +619,31 @@ describe("the member's file cache", () => {
 		await reader.folder.readFile(file, signal, undefined, cached);
 		expect(reader.calls).toHaveLength(4);
 		expect(files.bytes).toBe(file.bytes);
+
+		// A reader that waited for a read under way, cleared and then stopped, reads for itself and keeps nothing either.
+		const later = stored("Bytes a waiter read after a sign-out.");
+		const shared = new CloudMemberFolderFileCache();
+		const stop = new AbortController();
+		let open: () => void = () => {};
+		const opened = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		const slow = client(async (url, init) => {
+			await opened;
+			init.signal?.throwIfAborted();
+			return objects(later.store)(url);
+		}, shared);
+		const first = slow.folder.readFile(later.file, stop.signal, undefined, cached);
+		const waiter = slow.folder.readFile(later.file, signal, undefined, cached);
+		shared.clear();
+		stop.abort();
+		await expect(first).rejects.toThrow();
+		open();
+		expect(new TextDecoder().decode(await waiter)).toBe("Bytes a waiter read after a sign-out.");
+		expect(shared.bytes).toBe(0);
+		const before = slow.calls.length;
+		await slow.folder.readFile(later.file, signal, undefined, cached);
+		expect(slow.calls.length).toBe(before + 2);
 	});
 
 	it("shares a read under way, and a second reader reads for itself when the first stops", async () => {
