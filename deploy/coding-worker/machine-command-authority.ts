@@ -97,6 +97,9 @@ export interface MachineCodingValueAuthority {
 	providerId: string;
 	receiptId: string;
 	target: Record<string, unknown>;
+	/** The lease generation SQL's read saw (20260930713000): what the helper read leaves only while it stands, and no
+	 * member holds the desktop (v233 release review r1, F29 of #1661). */
+	desktopGeneration: number;
 }
 
 /** The calling run's live tool authority, its own executing save_coding_value receipt of exactly this envelope, the
@@ -122,6 +125,7 @@ export async function authorizeMachineCodingValue(
 		typeof result.bootId !== "string" || !UUID.test(result.bootId) ||
 		typeof result.executorOwner !== "string" || !/^[A-Za-z0-9_.:-]{1,120}$/.test(result.executorOwner) ||
 		typeof result.providerId !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(result.providerId) ||
+		typeof result.desktopGeneration !== "number" || !Number.isSafeInteger(result.desktopGeneration) || result.desktopGeneration < 0 ||
 		!target || typeof target !== "object" || Array.isArray(target)) throw new Error("MACHINE_CODING_VALUE_AUTHORITY_INVALID");
 	const bound = target as Record<string, unknown>;
 	// The helper's target names the same machine, placement, boot and receipt the executor runs it for.
@@ -130,7 +134,7 @@ export async function authorizeMachineCodingValue(
 		throw new Error("MACHINE_CODING_VALUE_AUTHORITY_INVALID");
 	signal.throwIfAborted();
 	return { machineId: result.machineId, placementId: result.placementId, bootId: result.bootId, executorOwner: result.executorOwner,
-		providerId: result.providerId, receiptId: result.receiptId, target: { ...bound } };
+		providerId: result.providerId, receiptId: result.receiptId, target: { ...bound }, desktopGeneration: result.desktopGeneration };
 }
 
 /** What SQL says about one machine_screen (20260930708000): where the machine runs, the run that sees the screen, and
