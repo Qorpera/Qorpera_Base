@@ -361,18 +361,21 @@ export class WhatsNewView {
 							)
 						: null,
 				),
-				h(
-					"div",
-					{ class: "connection-actions" },
-					shown
-						? h(
-								"a",
-								{ class: "btn", href: shown.url, target: "_blank", rel: "noopener noreferrer" },
-								t("Open the site"),
-							)
-						: null,
-					back,
-				),
+				// Not live yet, there is nothing to open or go back to: no row for it (a phone would keep it empty).
+				shown || back
+					? h(
+							"div",
+							{ class: "connection-actions" },
+							shown
+								? h(
+										"a",
+										{ class: "btn", href: shown.url, target: "_blank", rel: "noopener noreferrer" },
+										t("Open the site"),
+									)
+								: null,
+							back,
+						)
+					: null,
 			),
 		);
 	}

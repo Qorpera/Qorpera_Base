@@ -302,6 +302,8 @@ describe("What's new: the page", () => {
 		expect(site.querySelector("h2")?.textContent).toBe("wristband-shop");
 		expect(site.querySelector(".whats-new-live strong")?.textContent).toBe("Not live yet");
 		expect(site.querySelector(".whats-new-live a")).toBeNull();
+		// Nothing to open or go back to: no empty row of buttons.
+		expect(site.querySelector(".whats-new-live .connection-actions")).toBeNull();
 		expect(site.querySelector("h3")?.textContent).toBe("4 changes are ready");
 		expect(site.querySelector(".whats-new-behind")).toBeNull();
 		expect(labels(site)).toEqual(["Put the first version live", "Not yet"]);
