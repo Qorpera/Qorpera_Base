@@ -330,9 +330,12 @@ export class HttpCloudMemberMachineScreenService {
 				error instanceof CloudMemberMachineScreenRefusal ||
 				error instanceof CloudMemberMachineActRefusal ||
 				error instanceof CloudMemberMachineStartRefusal
-			)
+			) {
+				// A desktop that did not start is the member's answer and a failure of the machine's: logged by its code.
+				if (error instanceof CloudMemberMachineStartRefusal && error.code === "DESKTOP_DID_NOT_START")
+					this.#options.failed?.(error.code);
 				replyJson(reply, 409, { code: error.code });
-			else if (error instanceof CloudMemberMachineScreenSignIn)
+			} else if (error instanceof CloudMemberMachineScreenSignIn)
 				replyJson(reply, 401, { error: "member_sign_in_required" });
 			else if (error instanceof CloudMemberMachineScreenForbidden)
 				replyJson(reply, 403, { error: "machine_screen_unavailable" });

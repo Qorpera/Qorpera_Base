@@ -343,6 +343,8 @@ describe("a member's start of the desktop through the executor's member listener
 			next = new CloudMemberMachineStartRefusal(code);
 			expect(await ask()).toEqual({ status: 409, body: JSON.stringify({ code }) });
 		}
+		// Of these only a desktop that did not start is a failure, logged by its code.
+		expect(s.failed.mock.calls).toEqual([["DESKTOP_DID_NOT_START"]]);
 		next = new CloudMemberMachineScreenSignIn();
 		expect((await ask()).status).toBe(401);
 		next = new Error("MEMBER_START_BEGIN_UNCONFIRMED");
