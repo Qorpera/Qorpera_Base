@@ -180,10 +180,20 @@ begin
 		status)
 	values ('12150000-0000-4000-8000-0000000000d1', current_setting('qorpera_test.card_thread')::uuid,
 		'92400000-0000-4000-8000-000000000001', extensions.gen_random_uuid(), 'sender@example.test', '{}', 'sent');
-	set local session_replication_role = origin;
 	v := pg_temp.wm_bob('92400000-0000-4000-8000-000000000001');
 	perform pg_temp.base_assert(v -> 'questions' = '2' and v ->> 'kind' = 'approval',
 		'A sent draft waits no more, though no answer was recorded: ' || v::text);
+	-- Nor one whose send ended unconfirmed: no Send, Save, Discard or answer can settle it.
+	update public.qorpera_member_email_drafts set status = 'unconfirmed'
+	where interaction_id = '12150000-0000-4000-8000-0000000000d1';
+	v := pg_temp.wm_bob('92400000-0000-4000-8000-000000000001');
+	perform pg_temp.base_assert(v -> 'questions' = '2', 'An unconfirmed send waits no more: ' || v::text);
+	update public.qorpera_member_email_drafts set status = 'saved'
+	where interaction_id = '12150000-0000-4000-8000-0000000000d1';
+	v := pg_temp.wm_bob('92400000-0000-4000-8000-000000000001');
+	perform pg_temp.base_assert(v -> 'questions' = '3' and v ->> 'kind' = 'draft',
+		'A draft the member only saved still waits: ' || v::text);
+	set local session_replication_role = origin;
 end
 $$;
 rollback to savepoint wm_draft;
