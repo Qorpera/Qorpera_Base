@@ -10,26 +10,23 @@
 --   from the member's last word (taking, an action, or the window's heartbeat every 60 seconds) and never past 30 minutes
 --   after their last input (taking or an action); it ends at once when they hand it back. It ends by itself by time
 --   alone: every check here compares _until with the clock, so no job ends it.
--- * qorpera_member_take_machine_desktop(profile, machine, attempt) (authenticated): an owner, admin or contributor of the
+-- * qorpera_member_take_machine_desktop(profile, machine, epoch) (authenticated): an owner, admin or contributor of the
 --   company; a machine of it big enough for a desktop (else DESKTOP_MACHINE_TOO_SMALL), running on its placement with a
 --   known boot (else MACHINE_NOT_RUNNING), whose disk the member may see (MACHINE_NEEDS_COMPANY_VIEW, as for a look); held
 --   by no other member now (else DESKTOP_MEMBER_IN_CONTROL with that member's name). The member's own lease is renewed.
---   `attempt` is a uuid the member's page makes for each take-over it asks, of version 7: its first 48 bits are the
---   milliseconds since the epoch it was made at; the lease remembers the attempt that made it (or took it again). An
---   attempt the member called off (below) is refused (TAKE_CALLED_OFF) whenever it arrives, and so is one whose time is
---   more than 2 minutes from the database's clock either way (TAKE_EXPIRED): both before it holds, renews or moves
---   anything (reviews r3 and r4 of #1661). So an attempt can take only within 2 minutes of its making.
--- * qorpera_member_keep_machine_desktop(profile, machine, attempt) (authenticated): the window's heartbeat; it renews the
---   member's own lease only when that attempt holds it, or says it ended.
--- * qorpera_member_hand_back_machine_desktop(profile, machine, reason, attempts) (authenticated): calls off every attempt
---   named (at most 32), for good, under the machine's lock, and gives back the member's lease when the attempt that holds
---   it is one of them ('handed_back', or 'closed' when their window closed or they left the company's page); no other
---   lease of theirs ends, so a hand-back that arrives late never ends a newer take-over's lease (review r4 F9). Its
---   answer is the confirmation that none of those attempts holds the machine or ever will, whatever the network did to
---   them, and says whether the member still holds it by an attempt it did not name (heldElsewhere: another tab of
---   theirs, or an earlier page). The called-off attempts are rows of qorpera_company_machine_desktop_called_off, kept an
---   hour and tidied by age alone by the hand-back itself; an attempt whose time is already outside the 2 minutes is
---   recorded by none (it can never take).
+--   `epoch` is the member's hand-back epoch for the machine as their page knows it (review r5 of #1661): a counter only
+--   the database moves, one per member and machine (qorpera_company_machine_desktop_epochs; 0 while there is no row). A
+--   take-over is accepted only at the current epoch, under the machine's lock; at any other it is refused
+--   (TAKE_CALLED_OFF, with the current epoch) before it holds, renews, moves or records anything. The lease remembers
+--   the epoch it was taken under.
+-- * qorpera_member_keep_machine_desktop(profile, machine, epoch) (authenticated): the window's heartbeat; it renews the
+--   member's own lease only when it was taken under that epoch, or says it ended.
+-- * qorpera_member_hand_back_machine_desktop(profile, machine, reason, epoch) (authenticated): under the machine's lock,
+--   at the current epoch it moves the epoch on by one and gives back the member's lease taken under it ('handed_back', or
+--   'closed' when their window closed or they left the company's page); at an older one it changes nothing, so a late or
+--   repeated hand-back never ends a newer take-over. It answers the current epoch and whether the member holds the
+--   machine now. An answered hand-back at epoch e means that nothing taken under e or earlier holds the desktop, and
+--   nothing sent under e or earlier ever can, whenever it arrives: no clock is read for any of it.
 -- * qorpera_member_machine_desktop_act_begin(profile, machine, action) (authenticated; the node's executor makes it with
 --   the member's own token): one action of the member who holds the desktop, of a closed shape per verb as an agent's
 --   (qorpera_valid_machine_screen_call: positions in screen pixels, no key an xdotool command word) but never `open`, and
@@ -56,13 +53,13 @@
 --   and no live hold by anyone but the one who looks. Otherwise the picture is dropped, so a look authorized before a
 --   take-over never shows what the member did after it, however the steps interleave.
 -- * The member's list (qorpera_list_agent_machines) says whether they may take over (canTakeOver) and, per machine, who
---   holds its desktop (control: null, or {mine, name, until, attempt}: the attempt that holds it, to its own member
---   alone), and the database's time (serverNow), by which the page makes its attempts' times; the `machines` hint also
---   goes when a lease begins or ends by a word (never on an action's renewal).
+--   holds its desktop (control: null, or {mine, name, until}, and for the caller's own hold the epoch it was taken under),
+--   and the caller's own current hand-back epoch per machine (epoch); the `machines` hint also goes when a lease begins
+--   or ends by a word (never on an action's renewal).
 -- Every new or patched body names this migration (20260930713000), for the deploy guards.
 
 do $$ begin
-	if to_regprocedure('public.qorpera_member_take_machine_desktop(uuid,uuid,uuid)') is not null then
+	if to_regprocedure('public.qorpera_member_take_machine_desktop(uuid,uuid,bigint)') is not null then
 		raise exception '20260930713000 is already applied'; end if;
 	if to_regprocedure('public.qorpera_member_machine_screen_begin(uuid,uuid,jsonb)') is null
 		or to_regprocedure('public.qorpera_authorize_machine_coding_value(jsonb,jsonb,uuid,text)') is null
@@ -101,9 +98,9 @@ alter table public.qorpera_company_machines
 	add column desktop_member_since timestamptz,
 	add column desktop_member_until timestamptz,
 	add column desktop_member_input_at timestamptz,
-	-- The take-over attempt (the member's page's uuid) that made the lease or took it again last (review r3): only it
-	-- renews the lease, and the member's own list says which it is.
-	add column desktop_member_attempt_id uuid,
+	-- The member's hand-back epoch the lease was taken under (review r5): a hand-back at that epoch ends it, and only a
+	-- heartbeat at it renews it.
+	add column desktop_member_epoch bigint,
 	-- Moves when a lease begins and when one is given back (review r1 F1): a picture is let out only when it has not moved
 	-- since its look was authorized.
 	add column desktop_member_generation bigint not null default 0;
@@ -142,21 +139,17 @@ create index qorpera_company_machine_desktop_actions_machine on public.qorpera_c
 alter table public.qorpera_company_machine_desktop_actions enable row level security;
 revoke all on public.qorpera_company_machine_desktop_actions from public, anon, authenticated, service_role, qorpera_secret_broker;
 
--- The take-over attempts a member called off on a machine (reviews r3 and r4 of #1661): a take naming one is refused
--- whenever it arrives. Written and tidied only by the hand-back, under the machine's lock, by age alone: a row goes after
--- an hour, long after its attempt expired (an attempt takes only within 2 minutes of its time, and only attempts within
--- those 2 minutes are written). Bounded by that hour and by 32 rows a call: the worst case is a member who hands back 32
--- fresh attempts in every call, which leaves at most 32 rows per hand-back of the last hour (the machine's lock lets
--- one hand-back of a machine run at a time).
-create table public.qorpera_company_machine_desktop_called_off (
+-- Each member's hand-back epoch per machine (review r5 of #1661): moved on by one only by a hand-back at it, under the
+-- machine's lock; a take-over is accepted only at it. No row means 0. One row per member and machine that was ever
+-- handed back; it goes with the machine.
+create table public.qorpera_company_machine_desktop_epochs (
 	machine_id uuid not null references public.qorpera_company_machines(id) on delete cascade,
 	user_id uuid not null,
-	attempt_id uuid not null,
-	called_off_at timestamptz not null,
-	primary key (machine_id, user_id, attempt_id)
+	epoch bigint not null check (epoch > 0),
+	primary key (machine_id, user_id)
 );
-alter table public.qorpera_company_machine_desktop_called_off enable row level security;
-revoke all on public.qorpera_company_machine_desktop_called_off from public, anon, authenticated, service_role, qorpera_secret_broker;
+alter table public.qorpera_company_machine_desktop_epochs enable row level security;
+revoke all on public.qorpera_company_machine_desktop_epochs from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 -- 2. A member's action, as SQL takes it -----------------------------------------------------------------------------------
 
@@ -187,18 +180,19 @@ revoke all on function public.qorpera_valid_member_desktop_action(jsonb)
 
 -- The machine is locked as a member's look locks it (FOR NO KEY UPDATE): the agent's screen read (FOR UPDATE) waits for
 -- it and it for that, so an agent's look or action is authorized either before the lease or not at all.
-create function public.qorpera_member_take_machine_desktop(p_profile_id uuid, p_machine_id uuid, p_attempt_id uuid)
+create function public.qorpera_member_take_machine_desktop(p_profile_id uuid, p_machine_id uuid, p_epoch bigint)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_user uuid := auth.uid();
 	v_machine public.qorpera_company_machines%rowtype;
 	v_placement public.qorpera_company_machine_placements%rowtype;
 	v_root public.qorpera_company_path_resources%rowtype;
-	v_now timestamptz := clock_timestamp();
+	v_now timestamptz;
+	v_epoch bigint;
 begin
 	-- 20260930713000
 	if auth.role() is distinct from 'authenticated' or v_user is null or p_profile_id is null or p_machine_id is null
-		or p_attempt_id is null or substr(p_attempt_id::text, 15, 1) <> '7' then
+		or p_epoch is null or p_epoch < 0 then
 		raise exception 'Machine desktop request is malformed' using errcode = '22023'; end if;
 	if not public.qorpera_can_write_profile(p_profile_id) or public.qorpera_company_deleting(p_profile_id) then
 		raise exception 'Machine desktop is unavailable' using errcode = '42501'; end if;
@@ -207,18 +201,14 @@ begin
 	for no key update;
 	if not found then
 		raise exception 'Machine desktop is unavailable' using errcode = '42501'; end if;
-	-- An attempt the member called off holds nothing, whenever it arrives (review r3): the hand-back that named it writes
-	-- its row under this same lock, so the two are ordered, and nothing below runs for it.
-	if exists (select 1 from public.qorpera_company_machine_desktop_called_off as called_off
-		where called_off.machine_id = v_machine.id and called_off.user_id = v_user and called_off.attempt_id = p_attempt_id) then
+	v_now := clock_timestamp();
+	-- Accepted only at the member's current hand-back epoch (review r5): a hand-back moves it under this same lock, so a
+	-- take-over sent before a hand-back that was answered is refused whenever it arrives, and nothing below runs for it.
+	v_epoch := coalesce((select epochs.epoch from public.qorpera_company_machine_desktop_epochs as epochs
+		where epochs.machine_id = v_machine.id and epochs.user_id = v_user), 0);
+	if p_epoch <> v_epoch then
 		return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'refused',
-			'reason', 'TAKE_CALLED_OFF'); end if;
-	-- Nor one made more than 2 minutes from now either way (review r4 F5): an attempt takes only within 2 minutes of its
-	-- time, whatever became of its call-off record.
-	if abs(('x' || substr(replace(p_attempt_id::text, '-', ''), 1, 12))::bit(48)::bigint
-			- (extract(epoch from v_now) * 1000)::bigint) > 120000 then
-		return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'refused',
-			'reason', 'TAKE_EXPIRED'); end if;
+			'reason', 'TAKE_CALLED_OFF', 'epoch', v_epoch); end if;
 	-- deploy/machine/desktop: MIN_CPUS 2, MIN_MEMORY_KB 4 GiB.
 	if v_machine.cpus < 2 or v_machine.memory_bytes < 4294967296 then
 		return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'refused',
@@ -238,10 +228,10 @@ begin
 			return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'refused',
 				'reason', 'DESKTOP_MEMBER_IN_CONTROL',
 				'memberName', public.qorpera_review_member_name(v_machine.profile_id, v_machine.desktop_member_user_id)); end if;
-		-- Their own lease: taking again is an input, and the lease is this attempt's from now on (the newest take-over of
-		-- theirs renews it).
+		-- Their own lease (taken under this epoch: a hand-back at an epoch ends the lease taken under it): taking again is
+		-- an input.
 		update public.qorpera_company_machines set desktop_member_input_at = v_now,
-			desktop_member_until = v_now + interval '5 minutes', desktop_member_attempt_id = p_attempt_id
+			desktop_member_until = v_now + interval '5 minutes', desktop_member_epoch = v_epoch
 		where id = v_machine.id;
 		return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'ok',
 			'until', v_now + interval '5 minutes');
@@ -258,32 +248,31 @@ begin
 	-- A member at the desktop uses the machine: its last use moves, at most every 30 seconds.
 	update public.qorpera_company_machines set desktop_member_user_id = v_user, desktop_member_since = v_now,
 		desktop_member_until = v_now + interval '5 minutes', desktop_member_input_at = v_now,
-		desktop_member_attempt_id = p_attempt_id, desktop_member_generation = desktop_member_generation + 1,
+		desktop_member_epoch = v_epoch, desktop_member_generation = desktop_member_generation + 1,
 		last_used_at = case when last_used_at < v_now - interval '30 seconds' then v_now else last_used_at end
 	where id = v_machine.id;
 	return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'ok',
 		'until', v_now + interval '5 minutes');
 end
 $$;
-revoke all on function public.qorpera_member_take_machine_desktop(uuid, uuid, uuid)
+revoke all on function public.qorpera_member_take_machine_desktop(uuid, uuid, bigint)
 	from public, anon, service_role, qorpera_secret_broker;
-grant execute on function public.qorpera_member_take_machine_desktop(uuid, uuid, uuid) to authenticated;
+grant execute on function public.qorpera_member_take_machine_desktop(uuid, uuid, bigint) to authenticated;
 
 -- The window's heartbeat: the member's own lease, renewed 5 minutes from now and never past 30 minutes after their last
--- input, only when the attempt named made it or took it again last (a stale window renews neither another's lease nor a
--- newer one); `ended` when it holds it no more (handed back, lapsed, idle, taken again by a newer attempt, or another
--- member's now).
-create function public.qorpera_member_keep_machine_desktop(p_profile_id uuid, p_machine_id uuid, p_attempt_id uuid)
+-- input, only when it was taken under the epoch named (a stale window renews no newer take-over's lease); `ended` when it
+-- is not (handed back, lapsed, idle, or another member's now).
+create function public.qorpera_member_keep_machine_desktop(p_profile_id uuid, p_machine_id uuid, p_epoch bigint)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_user uuid := auth.uid();
 	v_machine public.qorpera_company_machines%rowtype;
-	v_now timestamptz := clock_timestamp();
+	v_now timestamptz;
 	v_until timestamptz;
 begin
 	-- 20260930713000
 	if auth.role() is distinct from 'authenticated' or v_user is null or p_profile_id is null or p_machine_id is null
-		or p_attempt_id is null then
+		or p_epoch is null or p_epoch < 0 then
 		raise exception 'Machine desktop request is malformed' using errcode = '22023'; end if;
 	if not public.qorpera_can_write_profile(p_profile_id) then
 		raise exception 'Machine desktop is unavailable' using errcode = '42501'; end if;
@@ -292,39 +281,40 @@ begin
 	for no key update;
 	if not found then
 		raise exception 'Machine desktop is unavailable' using errcode = '42501'; end if;
+	v_now := clock_timestamp();
 	v_until := least(v_now + interval '5 minutes', v_machine.desktop_member_input_at + interval '30 minutes');
-	if v_machine.desktop_member_user_id is distinct from v_user or v_machine.desktop_member_attempt_id is distinct from p_attempt_id
+	if v_machine.desktop_member_user_id is distinct from v_user or v_machine.desktop_member_epoch is distinct from p_epoch
 		or not coalesce(v_machine.desktop_member_until > v_now, false) or not coalesce(v_until > v_now, false) then
 		return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'ended'); end if;
 	update public.qorpera_company_machines set desktop_member_until = v_until where id = v_machine.id;
 	return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'ok', 'until', v_until);
 end
 $$;
-revoke all on function public.qorpera_member_keep_machine_desktop(uuid, uuid, uuid)
+revoke all on function public.qorpera_member_keep_machine_desktop(uuid, uuid, bigint)
 	from public, anon, service_role, qorpera_secret_broker;
-grant execute on function public.qorpera_member_keep_machine_desktop(uuid, uuid, uuid) to authenticated;
+grant execute on function public.qorpera_member_keep_machine_desktop(uuid, uuid, bigint) to authenticated;
 
--- Every take-over attempt named is called off for good (review r3), whatever it did or will do: one that holds the
--- member's lease gives it back here ('handed_back': their word or their take-over card's "I'm done"; 'closed': their
--- window closed or they left the company's page; a lease that already ended by time is closed as it ended), one still on
--- its way is refused when it arrives. Only a lease held by an attempt named ends (review r4 F9): a hand-back that comes
--- late never ends a newer take-over's lease. So the answer confirms that none of those attempts holds the machine or
--- ever will, and says whether the member still holds it by an attempt it did not name (heldElsewhere). Any member gives
--- back only their own; naming an attempt again answers the same.
+-- The member's lease, given back at their hand-back epoch ('handed_back': their word or their take-over card's "I'm
+-- done"; 'closed': their window closed or they left the company's page; a lease that already ended by time is closed as
+-- it ended). At the current epoch the epoch moves on by one, and the member's lease taken under it ends (a live lease of
+-- theirs is always taken under the current epoch: a take-over is accepted only at it, and the hand-back that moves it
+-- ends that lease). At an older epoch nothing changes: a hand-back that arrives late or again never ends a newer
+-- take-over's lease (review r4 F9, r5). Either way the answer says the current epoch and whether the member holds the
+-- machine now; once answered, nothing taken or sent under that epoch or an earlier one holds it or ever will. Any member
+-- gives back only their own.
 create function public.qorpera_member_hand_back_machine_desktop(p_profile_id uuid, p_machine_id uuid, p_reason text,
-	p_attempt_ids uuid[])
+	p_epoch bigint)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
 	v_user uuid := auth.uid();
 	v_machine public.qorpera_company_machines%rowtype;
-	v_now timestamptz := clock_timestamp();
-	v_live boolean;
+	v_now timestamptz;
+	v_epoch bigint;
+	v_live boolean := false;
 begin
 	-- 20260930713000
 	if auth.role() is distinct from 'authenticated' or v_user is null or p_profile_id is null or p_machine_id is null
-		or p_reason is null or p_reason not in ('handed_back', 'closed') or p_attempt_ids is null
-		or coalesce(array_ndims(p_attempt_ids), 1) <> 1 or coalesce(cardinality(p_attempt_ids), 0) > 32
-		or array_position(p_attempt_ids, null) is not null then
+		or p_reason is null or p_reason not in ('handed_back', 'closed') or p_epoch is null or p_epoch < 0 then
 		raise exception 'Machine desktop request is malformed' using errcode = '22023'; end if;
 	if not public.qorpera_can_read_profile(p_profile_id) then
 		raise exception 'Machine desktop is unavailable' using errcode = '42501'; end if;
@@ -333,43 +323,37 @@ begin
 	for no key update;
 	if not found then
 		raise exception 'Machine desktop is unavailable' using errcode = '42501'; end if;
-	-- The attempts named that could still take (version 7, made within 2 minutes of now either way) are called off under
-	-- the machine's lock; one outside those 2 minutes never takes, so nothing is written for it. The member's rows for the
-	-- machine an hour old go, by age alone.
-	insert into public.qorpera_company_machine_desktop_called_off(machine_id, user_id, attempt_id, called_off_at)
-	select v_machine.id, v_user, named.attempt, v_now from (select distinct attempt from unnest(p_attempt_ids) as attempt) as named
-	where substr(named.attempt::text, 15, 1) = '7'
-		and abs(('x' || substr(replace(named.attempt::text, '-', ''), 1, 12))::bit(48)::bigint
-			- (extract(epoch from v_now) * 1000)::bigint) <= 120000
-	on conflict (machine_id, user_id, attempt_id) do nothing;
-	delete from public.qorpera_company_machine_desktop_called_off as called_off
-	where called_off.machine_id = v_machine.id and called_off.user_id = v_user
-		and called_off.called_off_at < v_now - interval '1 hour';
-	v_live := coalesce(v_machine.desktop_member_until > v_now, false);
-	if v_machine.desktop_member_user_id is distinct from v_user then
-		return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'ok', 'handedBack', false,
-			'heldElsewhere', false); end if;
-	-- Held by an attempt this hand-back does not name: it stays (review r4 F9).
-	if not coalesce(v_machine.desktop_member_attempt_id = any(p_attempt_ids), false) then
-		return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'ok', 'handedBack', false,
-			'heldElsewhere', v_live); end if;
-	update public.qorpera_company_machine_desktop_controls
-	set ended_at = case when v_live then v_now else v_machine.desktop_member_until end,
-		ended_by = case when v_live then p_reason
-			when v_machine.desktop_member_until >= v_machine.desktop_member_input_at + interval '30 minutes' then 'idle'
-			else 'lapsed' end
-	where machine_id = v_machine.id and began_at = v_machine.desktop_member_since and ended_at is null;
-	update public.qorpera_company_machines set desktop_member_user_id = null, desktop_member_since = null,
-		desktop_member_until = null, desktop_member_input_at = null, desktop_member_attempt_id = null,
-		desktop_member_generation = desktop_member_generation + 1
-	where id = v_machine.id;
+	v_now := clock_timestamp();
+	v_epoch := coalesce((select epochs.epoch from public.qorpera_company_machine_desktop_epochs as epochs
+		where epochs.machine_id = v_machine.id and epochs.user_id = v_user), 0);
+	if p_epoch = v_epoch then
+		v_epoch := v_epoch + 1;
+		insert into public.qorpera_company_machine_desktop_epochs(machine_id, user_id, epoch)
+		values (v_machine.id, v_user, v_epoch)
+		on conflict (machine_id, user_id) do update set epoch = excluded.epoch;
+		if v_machine.desktop_member_user_id = v_user and v_machine.desktop_member_epoch = p_epoch then
+			v_live := coalesce(v_machine.desktop_member_until > v_now, false);
+			update public.qorpera_company_machine_desktop_controls
+			set ended_at = case when v_live then v_now else v_machine.desktop_member_until end,
+				ended_by = case when v_live then p_reason
+					when v_machine.desktop_member_until >= v_machine.desktop_member_input_at + interval '30 minutes' then 'idle'
+					else 'lapsed' end
+			where machine_id = v_machine.id and began_at = v_machine.desktop_member_since and ended_at is null;
+			update public.qorpera_company_machines set desktop_member_user_id = null, desktop_member_since = null,
+				desktop_member_until = null, desktop_member_input_at = null, desktop_member_epoch = null,
+				desktop_member_generation = desktop_member_generation + 1
+			where id = v_machine.id;
+			v_machine.desktop_member_user_id := null;
+		end if;
+	end if;
 	return jsonb_build_object('schema', 'qorpera.member-machine-desktop/v1', 'state', 'ok', 'handedBack', v_live,
-		'heldElsewhere', false);
+		'epoch', v_epoch, 'holding', v_machine.desktop_member_user_id is not distinct from v_user
+			and coalesce(v_machine.desktop_member_until > v_now, false));
 end
 $$;
-revoke all on function public.qorpera_member_hand_back_machine_desktop(uuid, uuid, text, uuid[])
+revoke all on function public.qorpera_member_hand_back_machine_desktop(uuid, uuid, text, bigint)
 	from public, anon, service_role, qorpera_secret_broker;
-grant execute on function public.qorpera_member_hand_back_machine_desktop(uuid, uuid, text, uuid[]) to authenticated;
+grant execute on function public.qorpera_member_hand_back_machine_desktop(uuid, uuid, text, bigint) to authenticated;
 
 -- 4. A member's action: begun as the member ------------------------------------------------------------------------------
 
@@ -627,19 +611,20 @@ do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_membe
 do $$ begin execute pg_temp.machine_member_control_patched('public.qorpera_list_agent_machines(uuid,uuid)'::regprocedure,
 	array[$old$		'canWake', public.qorpera_can_write_profile(p_profile_id),$old$,
 	$new$		'canWake', public.qorpera_can_write_profile(p_profile_id),
-		-- 20260930713000: owners, admins and contributors take over a desktop; viewers watch. The database's time: the page
-		-- makes its take-over attempts' times by it (review r4).
-		'canTakeOver', public.qorpera_can_write_profile(p_profile_id),
-		'serverNow', clock_timestamp(),$new$,
+		-- 20260930713000: owners, admins and contributors take over a desktop; viewers watch.
+		'canTakeOver', public.qorpera_can_write_profile(p_profile_id),$new$,
 	$old$					'waitingFor', case when listed.state = 'waiting' then$old$,
 	$new$					-- 20260930713000: who holds the desktop now, by name, and until when (null: no one).
 					'control', case when listed.desktop_member_until > clock_timestamp() then jsonb_build_object(
 						'mine', listed.desktop_member_user_id = auth.uid(),
 						'name', public.qorpera_review_member_name(p_profile_id, listed.desktop_member_user_id),
 						'until', listed.desktop_member_until)
-						-- The take-over attempt that holds it, to the member who holds it alone (review r3).
+						-- The epoch the caller's own hold was taken under, to the caller alone (review r5).
 						|| case when listed.desktop_member_user_id = auth.uid()
-							then jsonb_build_object('attempt', listed.desktop_member_attempt_id) else '{}'::jsonb end end,
+							then jsonb_build_object('epoch', listed.desktop_member_epoch) else '{}'::jsonb end end,
+					-- The caller's own hand-back epoch for the machine (review r5): a take-over is accepted only at it.
+					'epoch', coalesce((select epochs.epoch from public.qorpera_company_machine_desktop_epochs as epochs
+						where epochs.machine_id = listed.id and epochs.user_id = auth.uid()), 0),
 					'waitingFor', case when listed.state = 'waiting' then$new$]); end $$;
 
 -- 8. The `machines` hint, when a lease begins or ends by a word ----------------------------------------------------------
@@ -667,9 +652,9 @@ declare v_function regprocedure;
 begin
 	foreach v_function in array array[
 		'public.qorpera_valid_member_desktop_action(jsonb)',
-		'public.qorpera_member_take_machine_desktop(uuid,uuid,uuid)',
-		'public.qorpera_member_keep_machine_desktop(uuid,uuid,uuid)',
-		'public.qorpera_member_hand_back_machine_desktop(uuid,uuid,text,uuid[])',
+		'public.qorpera_member_take_machine_desktop(uuid,uuid,bigint)',
+		'public.qorpera_member_keep_machine_desktop(uuid,uuid,bigint)',
+		'public.qorpera_member_hand_back_machine_desktop(uuid,uuid,text,bigint)',
 		'public.qorpera_member_machine_desktop_act_begin(uuid,uuid,jsonb)',
 		'public.qorpera_member_machine_desktop_act_authority(uuid,text,text)',
 		'public.qorpera_machine_desktop_picture_check(uuid,bigint,uuid)',
