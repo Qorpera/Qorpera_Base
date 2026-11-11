@@ -62,6 +62,8 @@ select pg_temp.acct_assert(not exists (
 		'qorpera_member_pictures', 'qorpera_member_session_accounts', 'qorpera_member_sidebar_agents',
 		-- Where a member keeps their member contacts in their own rail; it hangs on the memberships (20260930717000).
 		'qorpera_member_sidebar_contacts',
+		-- A member's own sidebar sections, places and last reset; they hang on the memberships (20260930727000).
+		'qorpera_member_sidebar_places', 'qorpera_member_sidebar_resets', 'qorpera_member_sidebar_sections',
 		'qorpera_member_sidebar_rooms', 'qorpera_native_presence_devices', 'qorpera_presence_devices',
 		'qorpera_product_feedback', 'qorpera_profile_access_state', 'qorpera_profile_invitation_deliveries',
 		'qorpera_profile_invitations', 'qorpera_profile_members', 'qorpera_review_rules', 'qorpera_room_drafts',

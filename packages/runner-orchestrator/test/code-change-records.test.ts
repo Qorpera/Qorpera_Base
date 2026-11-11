@@ -2,6 +2,7 @@ import type { CloudCodingRepository } from "@qorpera/contracts";
 import { describe, expect, it, vi } from "vitest";
 import {
 	answeredBefore,
+	CODE_CHANGE_CHECKS_BYTES,
 	CODE_CHANGE_PICTURE_PATH_BYTES,
 	CODE_CHANGE_RECORD_BYTES,
 	CODE_CHANGE_RPCS,
@@ -51,6 +52,23 @@ const ISOLATE = String.fromCharCode(0x2067);
 const HALF = String.fromCharCode(0xd83d);
 const GONE = String.fromCharCode(0xfffd);
 
+/** The checks of a landing whose every check passed (step 3, `checks` of the row), as the plan's example has them. */
+const PASSED = {
+	schema: "qorpera.code-checks/v1",
+	commit: AFTER,
+	how: "fast-forward",
+	file: "f".repeat(40),
+	ms: 130_400,
+	copyMs: 2100,
+	checks: [
+		{ name: "install", run: "npm ci", ms: 38_012 },
+		{ name: "test", run: "npm test", ms: 60_600 },
+		{ name: "build", run: "npm run build", ms: 30_501 },
+	],
+	changed: null,
+	tries: 1,
+};
+
 /** The plan's own example: change 14, a landing. */
 function change(extra: Partial<CodeChangeFile> = {}): CodeChangeFile {
 	return {
@@ -87,6 +105,8 @@ function change(extra: Partial<CodeChangeFile> = {}): CodeChangeFile {
 		undoes: null,
 		revertedBy: null,
 		restoredFrom: null,
+		checksState: "passed",
+		checks: PASSED,
 		...extra,
 	};
 }
@@ -100,6 +120,21 @@ function sent(extra: Partial<CodeChangeFile> = {}): Record<string, unknown> {
 	};
 }
 const text = (...lines: string[]) => `${lines.join("\n")}\n`;
+/** A record's checks: its head line, and its section without the heading; undefined where it has none. */
+function checksIn(made: string): { head: string | undefined; section: string | undefined } {
+	return {
+		head: made.split("\n").find((line) => line.startsWith("- Checks: ")),
+		section: made.split("\n## Checks\n\n")[1]?.split("\n\n## ")[0]?.replace(/\n$/, ""),
+	};
+}
+/** The section of the plan's example, as the record writes it. */
+const EXAMPLE = [
+	"Passed on what went into main, in 2 min 10 s:",
+	"",
+	"- `install`: `npm ci` (38 s)",
+	"- `test`: `npm test` (61 s)",
+	"- `build`: `npm run build` (31 s)",
+];
 
 describe("codeChangeRecordText", () => {
 	it("writes a landing as the plan's example, byte for byte", () => {
@@ -115,6 +150,7 @@ describe("codeChangeRecordText", () => {
 				`- Main before: ${BEFORE}`,
 				`- Main after: ${AFTER}`,
 				"- Files changed: 3",
+				"- Checks: passed",
 				"",
 				"## What a customer will notice",
 				"",
@@ -123,6 +159,10 @@ describe("codeChangeRecordText", () => {
 				"## Picture",
 				"",
 				"`code/qorpera/shop/changes/14.png`",
+				"",
+				"## Checks",
+				"",
+				...EXAMPLE,
 				"",
 				"## What the session said",
 				"",
@@ -149,6 +189,8 @@ describe("codeChangeRecordText", () => {
 					summary: null,
 					filesChanged: null,
 					paths: null,
+					checksState: null,
+					checks: null,
 				}),
 			),
 		).toBe(
@@ -161,6 +203,8 @@ describe("codeChangeRecordText", () => {
 				"- Went in as: a merge",
 				`- Main before: ${BEFORE}`,
 				`- Main after: ${AFTER}`,
+				// With no count of files, the checks' line is the head's last.
+				"- Checks: unknown",
 				"",
 				"## What a customer will notice",
 				"",
@@ -169,6 +213,10 @@ describe("codeChangeRecordText", () => {
 				"## Picture",
 				"",
 				"None.",
+				"",
+				"## Checks",
+				"",
+				"Unknown: this change went in before Qorpera ran checks, or Qorpera did not see it go in.",
 			),
 		);
 		// Each picture that was given and did not pass, in words; a picture an agent named later, by its folder path.
@@ -364,6 +412,7 @@ describe("codeChangeRecordText", () => {
 				`- Main before: ${BEFORE}`,
 				`- Main after: ${AFTER}`,
 				"- Files changed: 3",
+				"- Checks: passed",
 				"",
 				"## What a customer will notice",
 				"",
@@ -375,6 +424,10 @@ describe("codeChangeRecordText", () => {
 				"## Picture",
 				"",
 				"`code/qorpera/shop/changes/14.png`",
+				"",
+				"## Checks",
+				"",
+				...EXAMPLE,
 				"",
 				"## What the session said",
 				"",
@@ -545,6 +598,277 @@ describe("codeChangeRecordText", () => {
 		expect(bytes(worst.split("\n## Files\n")[0] ?? "")).toBeLessThan(22 * 1024);
 		expect(worst.endsWith("\n## Files\n\n- 9050 not named here\n")).toBe(true);
 		expect(worst).toContain("\n## Why it did not go in\n\n- 20 not named here\n");
+	});
+});
+
+describe("codeChangeRecordText: the checks (step 3)", () => {
+	const passed = (checks: Record<string, unknown>, extra: Partial<CodeChangeFile> = {}) =>
+		checksIn(codeChangeRecordText(change({ ...extra, checks: { ...PASSED, ...checks } })));
+
+	it("writes checks that passed on a merge, ran once more and changed the checks, byte for byte", () => {
+		expect(
+			passed(
+				{ how: "merged", tries: 2, changed: { added: ["e2e"], removed: ["lint"], run: ["test"] } },
+				{ how: "merged" },
+			),
+		).toEqual({
+			head: "- Checks: passed",
+			section: [
+				"Passed on the merge of this change with main, in 2 min 10 s, and once more, since main moved meanwhile:",
+				"",
+				"- `install`: `npm ci` (38 s)",
+				"- `test`: `npm test` (61 s)",
+				"- `build`: `npm run build` (31 s)",
+				"",
+				"This change changed the checks: added `e2e`; removed `lint`; changed `test`.",
+			].join("\n"),
+		});
+		// A part of the last paragraph only when it has names, and the paragraph only when one has.
+		const changed = (value: unknown) => passed({ changed: value }).section?.split("\n\n")[2];
+		expect(changed({ added: ["install", "test", "build"], removed: [], run: [] })).toBe(
+			"This change changed the checks: added `install`, `test`, `build`.",
+		);
+		expect(changed({ added: [], removed: ["lint", "e2e"], run: ["test"] })).toBe(
+			"This change changed the checks: removed `lint`, `e2e`; changed `test`.",
+		);
+		expect(changed({ added: [], removed: [], run: [] })).toBeUndefined();
+		expect(changed(null)).toBeUndefined();
+		expect(changed(undefined)).toBeUndefined();
+		expect(passed({ changed: undefined }).section).toBe(EXAMPLE.join("\n"));
+	});
+
+	it("gives the run's time in minutes and seconds and a check's in seconds", () => {
+		const times = (ms: number, check: number) =>
+			passed({ ms, checks: [{ name: "test", run: "npm test", ms: check }] }).section?.split("\n");
+		expect(times(45_000, 400)).toEqual(["Passed on what went into main, in 45 s:", "", "- `test`: `npm test` (0 s)"]);
+		expect(times(120_000, 500)).toEqual([
+			"Passed on what went into main, in 2 min:",
+			"",
+			"- `test`: `npm test` (1 s)",
+		]);
+		expect(times(3_599_499, 1_800_000)).toEqual([
+			"Passed on what went into main, in 59 min 59 s:",
+			"",
+			"- `test`: `npm test` (1800 s)",
+		]);
+		expect(times(0, 0)?.[0]).toBe("Passed on what went into main, in 0 s:");
+	});
+
+	it("says a repository with no checks file had none", () => {
+		expect(checksIn(codeChangeRecordText(change({ checksState: "none", checks: null })))).toEqual({
+			head: "- Checks: none",
+			section: "None: the repository has no checks file (`.qorpera/checks.json`).",
+		});
+		// A value the state carries none of changes nothing.
+		expect(codeChangeRecordText(change({ checksState: "none" }))).toBe(
+			codeChangeRecordText(change({ checksState: "none", checks: null })),
+		);
+	});
+
+	it("says checks that are switched off did not run", () => {
+		expect(checksIn(codeChangeRecordText(change({ checksState: "off", checks: null })))).toEqual({
+			head: "- Checks: off",
+			section: "Not run: checks are switched off for this repository.",
+		});
+	});
+
+	it("names the change whose checks an undo or a restore takes over", () => {
+		const inherited = { checksState: "inherited" as const, checks: { schema: "qorpera.code-checks/v1", as: 11 } };
+		const expected = {
+			head: "- Checks: as change 11",
+			section: "Not run again: main's files are exactly those of change 11, whose checks passed.",
+		};
+		expect(checksIn(codeChangeRecordText(change({ kind: "undo", undoes: [12, 13], ...inherited })))).toEqual(
+			expected,
+		);
+		expect(checksIn(codeChangeRecordText(change({ kind: "restore", ...inherited })))).toEqual(expected);
+	});
+
+	it("says Qorpera does not check an undo or a restore", () => {
+		const notRun = (extra: Partial<CodeChangeFile>) =>
+			checksIn(codeChangeRecordText(change({ checksState: "not_run", checks: null, ...extra })));
+		expect(notRun({ kind: "undo", undoes: [12] })).toEqual({
+			head: "- Checks: not run",
+			section: "Not run: Qorpera does not check an undo. The next change that goes in is checked with these files.",
+		});
+		expect(notRun({ kind: "restore", restoredFrom: "20261109T021455Z-aaaaaaaaaaaa" })).toEqual({
+			head: "- Checks: not run",
+			section: "Not run: Qorpera does not check a restore.",
+		});
+	});
+
+	it("says unknown for a row from before Qorpera ran checks, and for a movement nobody saw", () => {
+		const unknown = {
+			head: "- Checks: unknown",
+			section: "Unknown: this change went in before Qorpera ran checks, or Qorpera did not see it go in.",
+		};
+		for (const extra of [{}, { kind: "found" as const }, { kind: "undo" as const, undoes: [3] }])
+			expect(checksIn(codeChangeRecordText(change({ ...extra, checksState: null, checks: null })))).toEqual(unknown);
+	});
+
+	it("writes no checks for a landing that never went in, and keeps them for one that went in and went out again", () => {
+		for (const state of ["conflict", "refused"] as const)
+			expect(
+				checksIn(codeChangeRecordText(change({ state, refusal: { code: "CODE_HOST_LAND_CONFLICT", paths: [] } }))),
+			).toEqual({ head: undefined, section: undefined });
+		expect(checksIn(codeChangeRecordText(change({ state: "reverted", revertedBy: 15 })))).toEqual({
+			head: "- Checks: passed",
+			section: EXAMPLE.join("\n"),
+		});
+		expect(checksIn(codeChangeRecordText(change({ state: "lost" }))).head).toBe("- Checks: passed");
+	});
+
+	it("reads checks that are not of their shape as unknown, and the rest of the record is as it was", () => {
+		const as = (extra: Partial<CodeChangeFile>) => {
+			const made = codeChangeRecordText(change(extra));
+			expect(checksIn(made).head).toBe("- Checks: unknown");
+			expect(made).toBe(codeChangeRecordText(change({ ...extra, checksState: null, checks: null })));
+		};
+		const named = (count: number, name = (at: number) => `c${at}`) =>
+			Array.from({ length: count }, (_, at) => ({ name: name(at), run: "true", ms: 1 }));
+		for (const checks of [
+			null,
+			"passed",
+			[],
+			7,
+			{ ...PASSED, schema: "qorpera.code-checks/v2" },
+			{ ...PASSED, schema: undefined },
+			{ ...PASSED, how: "rebased" },
+			{ ...PASSED, ms: -1 },
+			{ ...PASSED, ms: 1.5 },
+			{ ...PASSED, ms: "130400" },
+			{ ...PASSED, tries: 3 },
+			{ ...PASSED, tries: undefined },
+			{ ...PASSED, checks: [] },
+			{ ...PASSED, checks: named(21) },
+			{ ...PASSED, checks: named(1, () => "Install") },
+			{ ...PASSED, checks: named(1, () => "in`stall") },
+			{ ...PASSED, checks: named(1, () => "a".repeat(41)) },
+			{ ...PASSED, checks: [{ name: "install", run: null, ms: 1 }] },
+			{ ...PASSED, checks: [{ name: "install", run: "npm ci" }] },
+			{ ...PASSED, checks: ["install"] },
+			{ ...PASSED, changed: [] },
+			{ ...PASSED, changed: "test" },
+			{ ...PASSED, changed: { added: ["e2e"], removed: [] } },
+			{ ...PASSED, changed: { added: ["E2E"], removed: [], run: [] } },
+			{ ...PASSED, changed: { added: named(21).map((check) => check.name), removed: [], run: [] } },
+			{ schema: "qorpera.code-checks/v1", as: 11 },
+		])
+			as({ checksState: "passed", checks });
+		for (const checks of [
+			null,
+			{},
+			PASSED,
+			{ schema: "qorpera.code-checks/v1", as: 0 },
+			{ schema: "qorpera.code-checks/v1", as: 1.5 },
+			{ schema: "qorpera.code-checks/v1", as: "11" },
+			{ schema: "qorpera.code-checks/v2", as: 11 },
+		])
+			as({ kind: "undo", undoes: [12], checksState: "inherited", checks });
+		// A state this executor does not know, and not run for a row that is neither an undo nor a restore.
+		as({ checksState: "skipped" as CodeChangeFile["checksState"] });
+		as({ checksState: "not_run" });
+		as({ checksState: "not_run", kind: "found" });
+	});
+
+	it("keeps twenty checks with commands of 200 bytes within the section's 4 KiB, each named with its time, and the record within 24 KiB", () => {
+		expect(CODE_CHANGE_CHECKS_BYTES).toBe(4096);
+		const names = Array.from({ length: 20 }, (_, at) => `check-${String(at + 1).padStart(2, "0")}`);
+		const run = (name: string) => `npm run ${name} -- `.padEnd(200, "x");
+		const twenty = {
+			...PASSED,
+			checks: names.map((name) => ({ name, run: run(name), ms: 30_000 })),
+			changed: { added: names, removed: [], run: [] },
+		};
+		expect(twenty.checks.every((check) => bytes(check.run) === 200)).toBe(true);
+		const section = checksIn(codeChangeRecordText(change({ checks: twenty }))).section ?? "";
+		expect(bytes(`## Checks\n\n${section}`)).toBeLessThanOrEqual(CODE_CHANGE_CHECKS_BYTES);
+		// Every command is cut at one length, the longest that lets all twenty fit: 160 bytes.
+		expect(section.split("\n")).toEqual([
+			"Passed on what went into main, in 2 min 10 s:",
+			"",
+			...names.map((name) => `- \`${name}\`: \`${run(name).slice(0, 157)}…\` (30 s)`),
+			"",
+			`This change changed the checks: added ${names.map((name) => `\`${name}\``).join(", ")}.`,
+		]);
+		// Commands that fit are whole, and a command longer than 200 bytes is cut there.
+		const fit = {
+			...twenty,
+			changed: null,
+			checks: twenty.checks.map((check) => ({ ...check, run: check.run.slice(0, 150) })),
+		};
+		expect(
+			checksIn(codeChangeRecordText(change({ checks: fit })))
+				.section?.split("\n")
+				.slice(2),
+		).toEqual(names.map((name) => `- \`${name}\`: \`${run(name).slice(0, 150)}\` (30 s)`));
+		expect(passed({ checks: [{ name: "long", run: "y".repeat(300), ms: 1000 }] }).section?.split("\n")[2]).toBe(
+			`- \`long\`: \`${"y".repeat(197)}…\` (1 s)`,
+		);
+		// With every other part of the record at its bound, of characters that take the most room.
+		const tick = "`".repeat(4000);
+		const worst = codeChangeRecordText(
+			change({
+				title: "*".repeat(400),
+				session: tick,
+				summary: Array.from({ length: 4000 }, () => "").join("x\n"),
+				notice: "é".repeat(200),
+				picture: { source: "folder", path: tick },
+				filesChanged: 50,
+				paths: Array.from({ length: 50 }, () => ({ path: tick, change: "removed" as const })),
+				pathsMore: 9000,
+				checks: twenty,
+			}),
+		);
+		expect(bytes(worst)).toBeLessThanOrEqual(CODE_CHANGE_RECORD_BYTES);
+		expect(checksIn(worst).section).toBe(section);
+		// Everything but the files: they keep 2 KiB at the least.
+		expect(bytes(worst.split("\n## Files\n")[0] ?? "")).toBeLessThan(22 * 1024);
+		expect(worst.endsWith("\n## Files\n\n- 9050 not named here\n")).toBe(true);
+	});
+
+	it("keeps the most a row's checks can hold within 4 KiB, with every check named", () => {
+		// Names of 40 characters, commands of 200 backticks, three lists of twenty changed names, the longest time.
+		const name = (letter: string, at: number) => `${letter}${String(at).padStart(2, "0")}`.padEnd(40, "-");
+		const list = (letter: string) => Array.from({ length: 20 }, (_, at) => name(letter, at));
+		const checks = list("c").map((check) => ({ name: check, run: "`".repeat(200), ms: Number.MAX_SAFE_INTEGER }));
+		const section =
+			passed(
+				{
+					how: "merged",
+					tries: 2,
+					ms: Number.MAX_SAFE_INTEGER,
+					checks,
+					changed: { added: list("a"), removed: list("r"), run: list("c") },
+				},
+				{ how: "merged" },
+			).section ?? "";
+		expect(bytes(`## Checks\n\n${section}`)).toBeLessThanOrEqual(CODE_CHANGE_CHECKS_BYTES);
+		const lines = section.split("\n");
+		expect(lines[0]).toBe(
+			"Passed on the merge of this change with main, in 150119987579 min 1 s, and once more, since main moved meanwhile:",
+		);
+		// No room is left for the commands: each check is named with its time.
+		expect(lines.slice(2, 22)).toEqual(checks.map((check) => `- \`${check.name}\` (9007199254741 s)`));
+		expect(lines.slice(22)).toEqual([
+			"",
+			`This change changed the checks: added ${list("a")
+				.map((entry) => `\`${entry}\``)
+				.join(", ")}; removed ${list("r")
+				.map((entry) => `\`${entry}\``)
+				.join(", ")}; changed ${list("c")
+				.map((entry) => `\`${entry}\``)
+				.join(", ")}.`,
+		]);
+	});
+
+	it("shows a command as code on its own line, whatever it holds", () => {
+		const run = `npm test\n## Files\n- added \`evil\`${NUL}${ESC}[2J${RLO}${LS}${HALF}\`\`\` fence`;
+		expect(passed({ checks: [{ name: "test", run, ms: 1000 }] }).section?.split("\n")).toEqual([
+			"Passed on what went into main, in 2 min 10 s:",
+			"",
+			`- \`test\`: \`\`\`\`npm test${GONE}## Files${GONE}- added \`evil\`${GONE}${GONE}[2J${GONE}${GONE}${GONE}\`\`\` fence\`\`\`\` (1 s)`,
+		]);
 	});
 });
 
@@ -1030,6 +1354,46 @@ describe("CodeChangeRecords", () => {
 				: undefined;
 		await expect(t.pass()).resolves.toEqual({ written: 0, failed: 1 });
 		expect(t.write).not.toHaveBeenCalled();
+	});
+
+	it("writes each row's checks as the kernel says them, and never fails a repository for them", async () => {
+		const t = setup();
+		// A kernel from before step 3 sends neither key.
+		const old = Object.fromEntries(
+			Object.entries(sent({ n: 2, picture: null })).filter(([key]) => key !== "checksState" && key !== "checks"),
+		);
+		t.kernel.changes = [
+			sent({ n: 1, picture: null }),
+			old,
+			sent({ n: 3, picture: null, checksState: "skipped" as CodeChangeFile["checksState"] }),
+			sent({ n: 4, picture: null, checks: { ...PASSED, checks: "every one" } }),
+			{ ...sent({ n: 5, picture: null }), checksState: 7, checks: [] },
+			sent({
+				n: 6,
+				picture: null,
+				kind: "undo",
+				undoes: [1],
+				checksState: "inherited",
+				checks: { schema: "qorpera.code-checks/v1", as: 1 },
+			}),
+			sent({ n: 7, picture: null, checksState: "none", checks: null }),
+		];
+		await expect(t.pass()).resolves.toEqual({ written: 1, failed: 0 });
+		const texts = (t.wrote[0]?.records ?? []).map((record) => (record as { text: string }).text);
+		expect(texts.map((made) => checksIn(made).head)).toEqual([
+			"- Checks: passed",
+			"- Checks: unknown",
+			"- Checks: unknown",
+			"- Checks: unknown",
+			"- Checks: unknown",
+			"- Checks: as change 1",
+			"- Checks: none",
+		]);
+		expect(checksIn(texts[0] ?? "").section).toBe(EXAMPLE.join("\n"));
+		expect((t.calls.at(-1)?.args.p_written as { changes: { n: number }[] }).changes.map((row) => row.n)).toEqual([
+			1, 2, 3, 4, 5, 6, 7,
+		]);
+		expect(t.errors()).toEqual([]);
 	});
 
 	it("counts a write the kernel did not take as failed, and leaves the files due", async () => {

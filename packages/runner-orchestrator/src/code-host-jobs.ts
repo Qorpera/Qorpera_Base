@@ -1176,6 +1176,12 @@ async function firstHeldAt(run: Run, head: string, main: string): Promise<string
 	}
 }
 
+/** The repository's checks file (own code storage, step 3): read from git at the commit that would become the default
+ * branch and at the default branch, never from a worktree. */
+export const CODE_CHECKS_FILE = ".qorpera/checks.json";
+/** The checks file is read up to this size; a larger one comes back cut one byte after it. */
+const CODE_CHECKS_READ_BYTES = 16 * 1024;
+
 export interface CodeBranchLanding {
 	repository: CloudCodingRepository;
 	workerId: string;
@@ -1184,6 +1190,27 @@ export interface CodeBranchLanding {
 	/** The picture the session gave with its hand-in: a file's path in the repository. Checked at the commit that
 	 * becomes the default branch (`CodeBranchLanded.picture`); it never stops a landing. */
 	picture?: string;
+	/** Read .qorpera/checks.json at the commit that would become the default branch and at the default branch. When
+	 * either has anything at that path, answer `to-check`, having moved nothing. */
+	checks?: true;
+	/** Land exactly this candidate, made by an earlier job's `to-check`. When the default branch is not at `mainBefore`
+	 * any more, or the session's branch no longer holds `headSha`, or (merged) `mainAfter`'s parents are not
+	 * `[mainBefore, headSha]`, refuse with CodeHostJobFailure CODE_HOST_LAND_STALE before any write. */
+	expect?: { how: "fast-forward" | "merged"; mainBefore: string; mainAfter: string };
+}
+/** A landing that waits for its checks (own code storage, step 3): the commit that would become the default branch, and
+ * the checks file at it and at the default branch. Nothing moved; for a merge, the merge commit is written. */
+export interface CodeBranchToCheck {
+	state: "to-check";
+	how: "fast-forward" | "merged";
+	/** The default branch now. */
+	mainBefore: string;
+	/** The candidate: headSha, or the merge commit this job wrote (no ref names it; it stays an object). */
+	mainAfter: string;
+	/** .qorpera/checks.json at mainAfter and at mainBefore, read with maxBytes 16 KiB. */
+	checks: CodeCommitFile;
+	mainChecks: CodeCommitFile;
+	restored: string[];
 }
 export interface CodeBranchLanded {
 	/** `fast-forward`: the default branch moved to the submitted commit. `merged`: to a merge of it with the default
@@ -1208,25 +1235,53 @@ export interface CodeBranchLanded {
  * worktree); a conflict lands nothing and is refused naming its paths (`CODE_HOST_LAND_CONFLICT`), for the session to
  * merge itself. The landed tree passes the same name checks as a seed. For the change's record (step 2b) the answer
  * says where the default branch was before, what the landing changed in its files and what the session's picture
- * is; all of that is read before the branch moves, so the move is the landing's last step. */
-export async function landCodeBranch(job: CodeHostJob, value: CodeBranchLanding): Promise<CodeBranchLanded> {
-	const input = closedWith(value, ["repository", "workerId", "headSha"], ["picture"]);
+ * is; all of that is read before the branch moves, so the move is the landing's last step.
+ *
+ * A landing whose checks run between two jobs (own code storage, step 3): with `checks`, after the names of the
+ * commit that would become the default branch passed, the checks file is read there and at the default branch, and
+ * when either has anything at its path the job answers `to-check` without the picture, the diff or the move (a merge
+ * commit is written all the same). With `expect`, the next job lands exactly that candidate, as a landing does, or is
+ * refused as stale before any write; it merges nothing and reads no checks file. A commit the default branch already
+ * holds is `unchanged` in every case. */
+export function landCodeBranch(
+	job: CodeHostJob,
+	value: CodeBranchLanding & { checks?: undefined },
+): Promise<CodeBranchLanded>;
+export function landCodeBranch(
+	job: CodeHostJob,
+	value: CodeBranchLanding,
+): Promise<CodeBranchLanded | CodeBranchToCheck>;
+export async function landCodeBranch(
+	job: CodeHostJob,
+	value: CodeBranchLanding,
+): Promise<CodeBranchLanded | CodeBranchToCheck> {
+	const input = closedWith(value, ["repository", "workerId", "headSha"], ["picture", "checks", "expect"]);
 	const repository = repositoryOf(input.repository),
 		workerId = workerIdOf(input.workerId),
 		headSha = sha(input.headSha),
-		picture = input.picture;
-	if (repository.host !== "qorpera" || (picture !== undefined && typeof picture !== "string"))
+		picture = input.picture,
+		checks = input.checks === true;
+	let expected: CodeBranchLanding["expect"];
+	if (input.expect !== undefined) {
+		const given = closed(input.expect, ["how", "mainBefore", "mainAfter"]);
+		if (given.how !== "fast-forward" && given.how !== "merged") throw new Error("INVALID_CODE_HOST_JOB");
+		expected = { how: given.how, mainBefore: sha(given.mainBefore), mainAfter: sha(given.mainAfter) };
+	}
+	if (
+		repository.host !== "qorpera" ||
+		(picture !== undefined && typeof picture !== "string") ||
+		(input.checks !== undefined && !checks) ||
+		(checks && expected)
+	)
 		throw new Error("INVALID_CODE_HOST_JOB");
 	const ref = `refs/heads/qorpera/coding/${workerId}`,
 		base = `refs/heads/${repository.baseBranch}`;
-	return withJob(job, repository, async (run) => {
+	const stale = (detail: string) => new CodeHostJobFailure("CODE_HOST_LAND_STALE", detail);
+	return withJob(job, repository, async (run): Promise<CodeBranchLanded | CodeBranchToCheck> => {
 		const area = await run.prepare();
 		if (!area.seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
 		if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null)
 			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
-		const branch = await run.ref(ref);
-		if (!branch) throw new CodeHostRefusal("CODE_HOST_EXPORT_NO_BRANCH", [ref]);
-		if (!(await run.isCommit(run.repo, headSha))) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
 		const ancestor = async (older: string, newer: string): Promise<boolean> => {
 			const result = await run.git(run.repo, ["merge-base", "--is-ancestor", older, newer]);
 			if (result.status !== 0 && result.status !== 1)
@@ -1234,7 +1289,11 @@ export async function landCodeBranch(job: CodeHostJob, value: CodeBranchLanding)
 			return result.status === 0;
 		};
 		// The branch may have moved on since the session submitted; it must still hold what was submitted.
-		if (!(await ancestor(headSha, branch))) throw new CodeHostRefusal("CODE_HOST_EXPORT_MOVED", [ref]);
+		const branch = await run.ref(ref);
+		if (!branch || !(await run.isCommit(run.repo, headSha)) || !(await ancestor(headSha, branch))) {
+			if (expected) throw stale("the session's branch no longer holds the commit");
+			throw new CodeHostRefusal(branch ? "CODE_HOST_EXPORT_MOVED" : "CODE_HOST_EXPORT_NO_BRANCH", [ref]);
+		}
 		const current = await run.ref(base);
 		if (!current) throw new CodeHostRefusal("CODE_HOST_AREA_NO_BASE", [base]);
 		if (await ancestor(headSha, current)) {
@@ -1253,9 +1312,26 @@ export async function landCodeBranch(job: CodeHostJob, value: CodeBranchLanding)
 				restored: run.restored,
 			};
 		}
-		let next = headSha,
-			state: CodeBranchLanded["state"] = "fast-forward";
-		if (!(await ancestor(current, headSha))) {
+		if (expected && current !== expected.mainBefore) throw stale("the default branch moved");
+		const state = (await ancestor(current, headSha)) ? ("fast-forward" as const) : ("merged" as const);
+		let next = headSha;
+		if (expected) {
+			// Exactly the candidate that was checked: the session's commit, or the merge of the two in that order.
+			const same =
+				expected.how === state &&
+				(state === "fast-forward"
+					? expected.mainAfter === headSha
+					: (await run.isCommit(run.repo, expected.mainAfter)) &&
+						(
+							await run.gitOk(
+								run.repo,
+								["rev-list", "--max-count=1", "--parents", expected.mainAfter],
+								"CODE_HOST_LAND_FAILED",
+							)
+						).toString("latin1") === `${expected.mainAfter} ${current} ${headSha}\n`);
+			if (!same) throw stale("not the candidate that was checked");
+			next = expected.mainAfter;
+		} else if (state === "merged") {
 			const merged = await run.git(run.repo, [
 				"merge-tree",
 				"--write-tree",
@@ -1293,9 +1369,22 @@ export async function landCodeBranch(job: CodeHostJob, value: CodeBranchLanding)
 				.toString("utf8")
 				.trim();
 			if (!SHA.test(next)) throw new CodeHostJobFailure("CODE_HOST_LAND_FAILED", "no merge commit");
-			state = "merged";
 		}
 		const records = await run.checkNames(run.repo, next);
+		if (checks) {
+			const found = await commitFile(run, next, CODE_CHECKS_FILE, CODE_CHECKS_READ_BYTES),
+				mainFound = await commitFile(run, current, CODE_CHECKS_FILE, CODE_CHECKS_READ_BYTES);
+			if (found.entry.kind !== "missing" || mainFound.entry.kind !== "missing")
+				return {
+					state: "to-check",
+					how: state,
+					mainBefore: current,
+					mainAfter: next,
+					checks: found,
+					mainChecks: mainFound,
+					restored: run.restored,
+				};
+		}
 		const diff = await changeDiff(run, current, next, "CODE_HOST_LAND_FAILED"),
 			checked = picture === undefined ? null : await checkPicture(run, records, picture);
 		await moveBase(run, area.main, base, next, current);
@@ -2400,6 +2489,12 @@ export async function removeCodeDownloads(
 /** One path of a commit: a regular file (mode 100644 or 100755) with its bytes, something else (a folder, a link or a
  * submodule), or nothing. The shape of 5h's `CodingSetupSource`. */
 export type CodeCommitEntry = { kind: "missing" } | { kind: "file"; bytes: Uint8Array } | { kind: "other" };
+/** A path of one commit, as git holds it: its entry (a file's bytes cut after maxBytes + 1), and its blob's id when it
+ * is a regular file. */
+export interface CodeCommitFile {
+	entry: CodeCommitEntry;
+	blob: string | null;
+}
 export interface CodeCommitSource {
 	/** `path` is repository-relative, without `.` or `..` parts. A file over maxBytes comes back cut after maxBytes + 1
 	 * bytes. A failed read throws; it is never `missing`. */
@@ -2416,6 +2511,44 @@ function repositoryPath(value: unknown): string {
 	)
 		throw new Error("INVALID_CODE_HOST_PATH");
 	return value;
+}
+
+/** One path of a commit of the code area, read by git (`ls-tree`, then `cat-file`) and never from a worktree. `path`
+ * and `maxBytes` are the caller's to check. */
+async function commitFile(run: Run, commit: string, path: string, maxBytes: number): Promise<CodeCommitFile> {
+	// Without -r, ls-tree walks down to the path and shows its own entry.
+	const listing = await run.gitOk(
+		run.repo,
+		["ls-tree", "-l", "-z", "--full-tree", commit, "--", path],
+		"CODE_HOST_TREE_UNREADABLE",
+	);
+	const wantedPath = Buffer.from(path, "utf8");
+	const entry = treeRecords(listing).find((record) => record.path.equals(wantedPath));
+	if (!entry) return { entry: { kind: "missing" }, blob: null };
+	const { mode, type, name, size } = entry;
+	if (type !== "blob" || (mode !== "100644" && mode !== "100755")) return { entry: { kind: "other" }, blob: null };
+	const bytes = Number(size);
+	if (!SHA.test(name) || !Number.isSafeInteger(bytes)) throw new CodeHostJobFailure("CODE_HOST_TREE_UNREADABLE");
+	const wanted = Math.min(bytes, maxBytes + 1);
+	const result =
+		bytes <= maxBytes
+			? await run.git(run.repo, ["cat-file", "blob", name], { maximumOutputBytes: wanted })
+			: await run.sh(
+					'n=$1; shift; "$@" | exec /usr/bin/head -c "$n"',
+					[
+						String(wanted),
+						run.layout.git,
+						"--no-replace-objects",
+						`--git-dir=${run.repo}`,
+						"cat-file",
+						"blob",
+						name,
+					],
+					{ maximumOutputBytes: wanted },
+				);
+	if (result.status !== 0 || result.stdout.length !== wanted)
+		throw new CodeHostJobFailure("CODE_HOST_FILE_UNREADABLE", tail(result.stderr));
+	return { entry: { kind: "file", bytes: new Uint8Array(result.stdout) }, blob: name };
 }
 
 /** Files of one commit, read by git from the code area's objects and never from a worktree, for the setup file and
@@ -2437,39 +2570,7 @@ export async function withCodeCommit<T>(
 			const path = repositoryPath(pathValue);
 			if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes >= MAX_READ)
 				throw new Error("INVALID_CODE_HOST_JOB");
-			// Without -r, ls-tree walks down to the path and shows its own entry.
-			const listing = await run.gitOk(
-				run.repo,
-				["ls-tree", "-l", "-z", "--full-tree", commit, "--", path],
-				"CODE_HOST_TREE_UNREADABLE",
-			);
-			const wantedPath = Buffer.from(path, "utf8");
-			const entry = treeRecords(listing).find((record) => record.path.equals(wantedPath));
-			if (!entry) return { kind: "missing" };
-			const { mode, type, name, size } = entry;
-			if (type !== "blob" || (mode !== "100644" && mode !== "100755")) return { kind: "other" };
-			const bytes = Number(size);
-			if (!SHA.test(name) || !Number.isSafeInteger(bytes)) throw new CodeHostJobFailure("CODE_HOST_TREE_UNREADABLE");
-			const wanted = Math.min(bytes, maxBytes + 1);
-			const result =
-				bytes <= maxBytes
-					? await run.git(run.repo, ["cat-file", "blob", name], { maximumOutputBytes: wanted })
-					: await run.sh(
-							'n=$1; shift; "$@" | exec /usr/bin/head -c "$n"',
-							[
-								String(wanted),
-								run.layout.git,
-								"--no-replace-objects",
-								`--git-dir=${run.repo}`,
-								"cat-file",
-								"blob",
-								name,
-							],
-							{ maximumOutputBytes: wanted },
-						);
-			if (result.status !== 0 || result.stdout.length !== wanted)
-				throw new CodeHostJobFailure("CODE_HOST_FILE_UNREADABLE", tail(result.stderr));
-			return { kind: "file", bytes: new Uint8Array(result.stdout) };
+			return (await commitFile(run, commit, path, maxBytes)).entry;
 		};
 		try {
 			return await use({ read });

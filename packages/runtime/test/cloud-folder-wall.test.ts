@@ -1,7 +1,7 @@
 import { parseWall, renderWall } from "@qorpera/cloud-client/agent-wall";
 import type { JsonValue } from "@qorpera/contracts";
 import { cloudFolderFileTools } from "@qorpera/runtime/cloud-folder-file-tools";
-import { cloudWallTools, nextWall, wallToday } from "@qorpera/runtime/cloud-folder-wall";
+import { CLOUD_WALL_TOOL_DESCRIPTION, cloudWallTools, nextWall, wallToday } from "@qorpera/runtime/cloud-folder-wall";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
 	type CloudNativeTool,
@@ -41,7 +41,13 @@ async function fixture(seed: Parameters<typeof folderWriterFixture>[0] = {}, tod
 }
 
 const read = (content: CloudToolContent) => JSON.parse(String(content.value));
-const wall = (waiting: JsonValue, working: JsonValue, done: JsonValue = []) => ({ waiting, working, done });
+/** A call's arguments; the Now line is the same short one unless a test gives its own. */
+const wall = (waiting: JsonValue, working: JsonValue, done: JsonValue = [], now: JsonValue = "Shop name next") => ({
+	now,
+	waiting,
+	working,
+	done,
+});
 
 it("offers update_wall as a Company File tool", async () => {
 	const f = await fixture();
@@ -84,6 +90,9 @@ it("makes the wall in the agent's folder, then keeps it in place", async () => {
 	expect(f.text(WALL)).toBe(
 		[
 			"# Wall",
+			"",
+			"## Now",
+			"- Shop name next",
 			"",
 			"## Waits on you",
 			"- Pick a shop name. My pick is Båndklar. [Names](folder:research/names.md)",
@@ -136,6 +145,7 @@ it("keeps a short headline with its detail, refuses a new long headline, and kee
 		),
 	);
 	expect(answer.wall).toEqual({
+		now: "Shop name next",
 		waiting: [
 			{ headline: "Pick a bundle", detail: "Two looks to choose from. [Sketches](folder:sketches/bundles.svg)" },
 		],
@@ -145,6 +155,9 @@ it("keeps a short headline with its detail, refuses a new long headline, and kee
 	expect(f.text(WALL)).toBe(
 		[
 			"# Wall",
+			"",
+			"## Now",
+			"- Shop name next",
 			"",
 			"## Waits on you",
 			"- Pick a bundle",
@@ -195,6 +208,9 @@ it("never rewrites a wall with lines that read as no item, and keeps the file's 
 			"# Wall",
 			"",
 			"Notes.",
+			"",
+			"## Now",
+			"- Shop name next",
 			"",
 			"## Waits on you",
 			"",
@@ -285,7 +301,7 @@ it("keeps done newest first and at most 40 items", () => {
 		working: [],
 		done: Array.from({ length: 40 }, (_, index) => ({ day: "2026-10-01", text: `Old ${index}` })),
 	};
-	const next = nextWall(stored, { waiting: null, working: null, done: [{ text: "New" }] }, "2026-11-05");
+	const next = nextWall(stored, { now: null, waiting: null, working: null, done: [{ text: "New" }] }, "2026-11-05");
 	expect(next.done).toHaveLength(40);
 	expect(next.done[0]).toEqual({ day: "2026-11-05", text: "New" });
 	expect(next.done.at(-1)?.text).toBe("Old 38");
@@ -293,12 +309,14 @@ it("keeps done newest first and at most 40 items", () => {
 	expect(
 		nextWall(
 			{ waiting: [], working: [], done: [{ day: "2026-11-02", text: "Sent the weekly report" }] },
-			{ waiting: null, working: null, done: [{ text: "Sent the weekly report" }] },
+			{ now: null, waiting: null, working: null, done: [{ text: "Sent the weekly report" }] },
 			"2026-11-09",
 		).done,
 	).toHaveLength(2);
 	// An item done more than a week ago may be done again.
-	expect(nextWall(stored, { waiting: null, working: null, done: [{ text: "Old 0" }] }, "2026-11-05").done[0]).toEqual({
+	expect(
+		nextWall(stored, { now: null, waiting: null, working: null, done: [{ text: "Old 0" }] }, "2026-11-05").done[0],
+	).toEqual({
 		day: "2026-11-05",
 		text: "Old 0",
 	});
@@ -321,4 +339,54 @@ it("refuses a wall written with the file tools that breaks its rules", async () 
 	expect((error as Error).message).toContain("WALL_INVALID: nothing was written");
 	expect((error as Error).message).toContain("a done item starts with the day it was done");
 	expect(f.commits).toEqual([]);
+});
+
+it("keeps the line under the agent's name: needed once, kept by null, short when new", async () => {
+	const f = await fixture();
+	const tool = f.tool("update_wall");
+	expect(() => tool.parseArguments(wall([], [], [], 3))).toThrow("now must be one line of text");
+	expect(() => tool.parseArguments(wall([], [], [], "a\nb"))).toThrow("now: the line is one line");
+	expect(() => tool.parseArguments({ waiting: [], working: [], done: [] })).toThrow("update_wall takes exactly");
+	// A wall without a Now line needs one.
+	const missing = await f.call("update_wall", wall([], ["Pricing"], [], null)).then(
+		() => null,
+		(error: unknown) => error,
+	);
+	expect(missing).toBeInstanceOf(CloudToolRefusal);
+	expect(String((missing as Error).message)).toContain("WALL_NOW_MISSING");
+	const long = await f.call("update_wall", wall([], ["Pricing"], [], "x".repeat(61))).then(
+		() => null,
+		(error: unknown) => error,
+	);
+	expect(String((long as Error).message)).toContain("WALL_NOW_TOO_LONG");
+	expect(f.commits).toEqual([]);
+	const first = read(await f.call("update_wall", wall([], ["Pricing"], [], "Prices next")));
+	expect(first).toMatchObject({ saved: true, wall: { now: "Prices next" } });
+	// null keeps it; a new line takes its place.
+	await f.call("update_wall", wall(null, [], ["Price list ready"], null));
+	expect(parseWall(f.text(WALL) ?? "").wall.now).toBe("Prices next");
+	await f.call("update_wall", wall(null, null, [], "Prices set, now choosing suppliers"));
+	expect(parseWall(f.text(WALL) ?? "").wall.now).toBe("Prices set, now choosing suppliers");
+	// A member who wrote two Now lines keeps both: the wall is not rewritten until it is put in shape.
+	const twice = "# Wall\n\n## Now\n- One\n- Two\n";
+	const h = await fixture({ files: { [WALL]: twice } });
+	const refused = await h.call("update_wall", wall(null, ["Pricing"], [], null)).then(
+		() => null,
+		(error: unknown) => error,
+	);
+	expect(refused).toBeInstanceOf(CloudToolRefusal);
+	expect(String((refused as Error).message)).toContain("WALL_OUT_OF_SHAPE: nothing was written");
+	expect(String((refused as Error).message)).toContain("line 5: the Now part holds one line");
+	expect(h.text(WALL)).toBe(twice);
+	expect(h.commits).toEqual([]);
+	// One already on the wall that is longer than a new one may be is kept as it stands.
+	const g = await fixture({ files: { [WALL]: `# Wall\n\n## Now\n- ${"y".repeat(70)}\n` } });
+	expect(read(await g.call("update_wall", wall([], ["Pricing"], [], "y".repeat(70)))).saved).toBe(true);
+});
+
+it("tells the agent to say what came of its work, and to keep the team's housekeeping off the wall", () => {
+	const description = CLOUD_WALL_TOOL_DESCRIPTION;
+	expect(description).toContain("now: the one line members read under your name in the sidebar");
+	expect(description).toContain("Never name the step you took instead of what came of it");
+	expect(description).toContain("Keep the team's own housekeeping off the wall");
 });

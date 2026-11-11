@@ -261,6 +261,10 @@ label > input, label > select { font-weight: 400; }
 .context-menu-chevron { display: grid; margin-right: -3px; color: var(--text-muted); }
 .context-menu-chevron .icon { width: 14px; height: 14px; }
 .context-menu-item.danger, .context-menu-item.danger .icon { color: var(--danger); }
+.context-menu-item:disabled, .context-menu-item:disabled .icon { color: var(--text-muted); }
+.context-menu-item:disabled:hover { background: transparent; }
+/* What a confirmation changes, listed under its question. */
+.modal-list { margin: -4px 0 0; padding-left: 20px; display: grid; gap: 2px; color: var(--text-muted); }
 .context-menu-separator { height: 1px; flex: none; margin: 4px 6px; background: var(--border); }
 /* A line of plain text among the rows, a row's second line, a face in the icon's place. */
 .context-menu-caption { flex: none; padding: 6px 12px 5px; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; }
@@ -545,6 +549,8 @@ label > input, label > select { font-weight: 400; }
 /* Every rail label is one line; it shortens with the rail instead of wrapping. */
 .cofounder-home strong, .rail-row-copy strong, .rail-row-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.92); }
+/* A run that did not finish says so in red under the name; the selected row keeps its white. */
+.rail-row:not(.active) .rail-row-copy small.is-failed { color: #c4161c; }
 /* The ink wave over a live state ("Working", "Writing"): the rail card and the
  * thread caption share one clock (agent-activity.ts), so they move together;
  * the caption rebuilds its letters when shown (conversation.css pauses it while hidden). */

@@ -184,6 +184,9 @@ async function setup() {
 		fetcher.mock.calls.filter(
 			([url]) =>
 				!String(url).includes("/qorpera_member_folder_") &&
+				// The rail's line under each agent's name reads the agents' walls and next planned runs (app/agent-notes.ts).
+				!String(url).endsWith("/qorpera_member_company_state_folders") &&
+				!String(url).endsWith("/qorpera_list_cloud_routines") &&
 				!String(url).endsWith("/qorpera_list_member_notifications") &&
 				!String(url).endsWith("/qorpera_list_session_turn_requests") &&
 				!String(url).endsWith("/qorpera_select_member_session_account") &&
@@ -219,6 +222,8 @@ describe("actual product conversation attachments", () => {
 			name === "qorpera_member_interface_pages" ||
 			// The apps drawer's Sites entry.
 			name === "qorpera_list_company_sites" ||
+			// The rail's line under each agent's name reads the next planned runs (app/agent-notes.ts).
+			name === "qorpera_list_cloud_routines" ||
 			// The account marks itself online for its friends (online-mark.ts).
 			name === "qorpera_mark_online" ||
 			// Company figures ask for the company's logo (app/company-logos.ts).

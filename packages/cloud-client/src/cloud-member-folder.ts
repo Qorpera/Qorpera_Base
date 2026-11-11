@@ -193,6 +193,16 @@ export function parseCloudMemberFolderRead(value: unknown): CloudMemberFolderRea
 	return { asOfSeq: seq(read.asOfSeq, "read"), entry: read.found ? parseCloudMemberFolderEntry(read.entry) : null };
 }
 
+/** The most paths one `readMany` reads (an app's limit of files). */
+export const CLOUD_MEMBER_FOLDER_READ_MANY = 64;
+
+export function parseCloudMemberFolderReadMany(value: unknown, count: number): CloudMemberFolderRead[] {
+	const answer = closed(value, ["schema", "reads"], [], "reads");
+	if (answer.schema !== "qorpera.folder-read-many/v1" || !Array.isArray(answer.reads) || answer.reads.length !== count)
+		invalid("reads");
+	return answer.reads.map(parseCloudMemberFolderRead);
+}
+
 export interface CloudMemberFolderListPage {
 	readonly asOfSeq: number;
 	readonly entries: readonly CloudMemberFolderEntry[];
@@ -855,6 +865,16 @@ export class CloudMemberFolderClient {
 	read(pathValue: string, signal: AbortSignal): Promise<CloudMemberFolderRead> {
 		return this.#call("qorpera_member_folder_read", { p_path: path(pathValue) }, signal).then(
 			parseCloudMemberFolderRead,
+		);
+	}
+
+	/** Several paths' reads in one call, each what `read` answers for it, in the order asked (1 to
+	 * CLOUD_MEMBER_FOLDER_READ_MANY). A database without the call answers 404: read each path alone then. */
+	readMany(paths: readonly string[], signal: AbortSignal): Promise<CloudMemberFolderRead[]> {
+		if (paths.length < 1 || paths.length > CLOUD_MEMBER_FOLDER_READ_MANY)
+			throw new CloudMemberFolderError("Invalid company folder reads");
+		return this.#call("qorpera_member_folder_read_many", { p_paths: paths.map(path) }, signal).then((value) =>
+			parseCloudMemberFolderReadMany(value, paths.length),
 		);
 	}
 

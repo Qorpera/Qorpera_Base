@@ -42,6 +42,8 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"update_skill",
 	// Company sidebar sections, shared with members (2026-09-24).
 	"organize_sidebar",
+	// The apps drawer's groups, the company's layout of its apps (APP-GROUPS-SPEC §3, 11 November 2026).
+	"organize_apps",
 	// Auto-review (v130): an agent adds an Ask first rule for its member.
 	"add_review_rule",
 	// Good will (20260930566000): a company agent lists and sorts the payments the company's good will counts.

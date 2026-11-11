@@ -1103,6 +1103,8 @@ it.each([
 				// The company's code kept in Qorpera (20260930720000): an agent's own run, never a worker's.
 				"manage_code",
 				"organize_sidebar",
+				// The apps drawer's groups (APP-GROUPS-SPEC §3).
+				"organize_apps",
 				"add_review_rule",
 				"good_will_list",
 				"good_will_mark",
@@ -1137,7 +1139,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v13",
+			schema: "qorpera.hire-overlay/v14",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -3222,6 +3224,10 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// to make one on the schema field (RUNTIME-INTERFACE-APPS.md §3a), so they moved again.
 	// Also on 10 November 2026 manage_code came after manage_worker (the change record of the company's code,
 	// 20260930720000), so they moved again.
+	// On 11 November 2026 update_wall takes now, the line under the agent's name in the sidebar, and its description says
+	// a line names what came of the work and keeps the team's housekeeping off the wall, so they moved again.
+	// On 11 November 2026 organize_apps came after organize_sidebar (the apps drawer's groups, APP-GROUPS-SPEC §3), and
+	// save_app's schema takes group, so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3240,6 +3246,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"send_coworker_message",
 		"manage_routine",
 		"organize_sidebar",
+		"organize_apps",
 		"add_review_rule",
 		"good_will_list",
 		"good_will_mark",
@@ -3267,9 +3274,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"63728d56fe28c16f62d97ef4555309096824f68a61fc2f05b2a8d4320473419b",
+		"b8aa7b7bfb77589bc73a13369ca37f19b29eedd7aaba0c59ba1c27935d507ae3",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"58bc3382f1ce1ea785e400096c05064029056edd95d80b1707447687a81bbe91",
+		"b3a148766db27b0d699b8c9c365ace2441d91f1065865542cf20a09085516d81",
 	);
 });

@@ -1,4 +1,5 @@
 import type { CloudCodingRepository } from "@qorpera/contracts";
+import type { CodeCheck, CodeChecksRun } from "./code-checks.ts";
 import type { CodeChangePath, CodePictureChecked } from "./code-host-jobs.ts";
 import type { CodingSessionClaim } from "./coding-executor.ts";
 import type { CodingBrokerGitRunner } from "./coding-git.ts";
@@ -36,6 +37,15 @@ export interface CodingFolderRepositorySession {
 	 * (`qorpera_record_code_change`, with the claim's worker and lease), and answers what the kernel made of it and the
 	 * change's number when it has one. Absent: this host records no changes. */
 	recordChange?(report: CodeChangeReport, signal: AbortSignal): Promise<{ state: string; change: number | null }>;
+	/** qorpera_code_checks_switch under the turn's lease: whether Qorpera's checks run for this repository. True when the
+	 * answer was lost; a refusal is thrown. Absent: this host runs no checks. */
+	checksSwitch?(signal: AbortSignal): Promise<boolean>;
+	/** One run of `checks` on a clean copy of `commit` in the session's machine (own code storage, step 3). Never throws
+	 * for a check's or the machine's sake (`not_run`); throws only the turn's abort. Absent: this host runs no checks. */
+	runChecks?(
+		input: { commit: string; checks: readonly CodeCheck[]; attempt: number },
+		signal: AbortSignal,
+	): Promise<CodeChecksRun>;
 }
 
 export interface CodingFolderRepositories {
@@ -81,7 +91,8 @@ export interface CodingLanded {
  * default branch cannot have moved again. `landed`: `mainBefore` and `mainAfter` are the default branch before and
  * after. `unchanged`: `mainBefore` is the default branch now, `mainAfter` the commit of it that first held `headSha`.
  * `conflict` and `refused` never went in: they name no commit of the default branch, and say why in `refusal`. */
-export interface CodeChangeReport {
+export type CodeChangeReport = CodeChangeReportV1 | CodeChangeReportV2;
+export interface CodeChangeReportV1 {
 	schema: "qorpera.code-change-report/v1";
 	state: "landed" | "unchanged" | "conflict" | "refused";
 	inLine: boolean;
@@ -96,6 +107,14 @@ export interface CodeChangeReport {
 	picture: CodePictureChecked | null;
 	/** The code host's own code and the paths it named, at most 20. */
 	refusal: { code: string; paths: string[] } | null;
+}
+/** The same report with what the repository's checks said of a landing (`qorpera.code-change-report/v2`, own code
+ * storage step 3): null for every state but `landed`. `none`: the repository has no checks file; `off`: its checks are
+ * switched off, or this host runs none; `passed`: every check passed on `mainAfter`, and `result` is the row's `checks`
+ * (`codeChecksPassed`). */
+export interface CodeChangeReportV2 extends Omit<CodeChangeReportV1, "schema"> {
+	schema: "qorpera.code-change-report/v2";
+	checks: { state: "none" } | { state: "off" } | { state: "passed"; result: Record<string, unknown> } | null;
 }
 
 /** Where a coding machine mounts its session's view of the company folder, and where the session's commands start
