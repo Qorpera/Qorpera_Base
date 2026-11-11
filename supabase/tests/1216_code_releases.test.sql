@@ -576,7 +576,7 @@ begin
 end $$;
 
 -- publish_site makes a site holding the company's lock on making one (the review of #1686): a repository's first upload
--- waits on it before it counts the ten (1219 shows the wait; an agent's run is seen by this connection alone). Here,
+-- waits on it before it counts the ten (1222 shows the wait; an agent's run is seen by this connection alone). Here,
 -- before any upload of this file took that lock in this one transaction.
 do $$
 declare v jsonb; v_review uuid;
