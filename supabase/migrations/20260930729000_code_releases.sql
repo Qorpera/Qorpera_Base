@@ -186,3 +186,191 @@ revoke all on public.qorpera_code_releases from public, anon, authenticated, ser
 comment on table public.qorpera_code_releases is
 	'20260930729000: the releases of a repository kept in Qorpera: a member put a ready version of its site live, or '
 	'went back to the one live before. Numbered without gaps under the registry row''s lock. Its functions write it.';
+
+-- 2. What a report says of the site ------------------------------------------------------------------------------------
+
+-- Whether p_site is a made site's value, as a landing's row keeps it (its `site`):
+-- {"schema":"qorpera.code-site/v1","tree":"<40 hex>","files":1..500,"bytes":0..26214400,"folder":"<folder>",
+--  "name":"<a site name>"|null,"title":"<title>"|null}
+-- Exactly those keys; the folder `.` or a folder of the repository as a check's cwd is (a relative path of at most 300
+-- bytes, no part empty, `.` or `..`, no control character or backslash); the title 1 to 120 characters on one line with
+-- no space at either end (a version's own rule); all of it at most 2 KiB.
+create function public.qorpera_code_site_valid(p_site jsonb)
+returns boolean language sql immutable set search_path = '' as $$
+	select coalesce(case when jsonb_typeof(p_site) = 'object' then pg_column_size(p_site) <= 2048
+		and p_site ?& array['schema','tree','files','bytes','folder','name','title']
+		and p_site - array['schema','tree','files','bytes','folder','name','title'] = '{}'::jsonb
+		and p_site -> 'schema' = '"qorpera.code-site/v1"'::jsonb
+		and public.qorpera_code_json_text(p_site -> 'tree', '^[0-9a-f]{40}$')
+		and case when public.qorpera_code_json_count(p_site -> 'files') then (p_site ->> 'files')::bigint between 1 and 500
+			else false end
+		and case when public.qorpera_code_json_count(p_site -> 'bytes') then (p_site ->> 'bytes')::bigint <= 26214400
+			else false end
+		and case when jsonb_typeof(p_site -> 'folder') = 'string' then p_site ->> 'folder' = '.'
+				or (octet_length(p_site ->> 'folder') between 1 and 300 and p_site ->> 'folder' !~ '[[:cntrl:]\\]'
+					and not exists (select 1 from unnest(string_to_array(p_site ->> 'folder', '/')) part
+						where part in ('', '.', '..')))
+			else false end
+		and case jsonb_typeof(p_site -> 'name') when 'null' then true
+			when 'string' then public.qorpera_site_slug_valid(p_site ->> 'name') else false end
+		and case jsonb_typeof(p_site -> 'title') when 'null' then true
+			when 'string' then char_length(p_site ->> 'title') between 1 and 120 and p_site ->> 'title' !~ '[[:cntrl:]]'
+				and p_site ->> 'title' = btrim(p_site ->> 'title')
+			else false end
+		else false end, false)
+$$;
+
+-- Whether a report of schema v3 says what became of the site as its state asks: JSON null for every report but a
+-- landing whose checks passed; for that, JSON null (the repository has no site, or sites are switched off),
+-- {"state":"made","site":<qorpera_code_site_valid>} or {"state":"missed","code":"<CODE>"}.
+create function public.qorpera_code_change_site_valid(p_change jsonb)
+returns boolean language sql immutable set search_path = '' as $$
+	select coalesce(case when p_change -> 'state' = '"landed"'::jsonb and p_change -> 'checks' -> 'state' = '"passed"'::jsonb
+			then case jsonb_typeof(p_change -> 'site') when 'null' then true
+				when 'object' then case p_change -> 'site' -> 'state'
+					when '"made"'::jsonb then (p_change -> 'site') - array['state','site'] = '{}'::jsonb
+						and public.qorpera_code_site_valid(p_change -> 'site' -> 'site')
+					when '"missed"'::jsonb then (p_change -> 'site') - array['state','code'] = '{}'::jsonb
+						and public.qorpera_code_json_text(p_change -> 'site' -> 'code', '^[A-Z0-9_:]{1,120}$')
+					else false end
+				else false end
+		else p_change -> 'site' = 'null'::jsonb end, false)
+$$;
+
+-- 5. Existing functions of the code ------------------------------------------------------------------------------------
+
+-- Applies each (old, new) pair in turn, each old text exactly once, then runs the result.
+create or replace function pg_temp.code_releases_patch(p_target regprocedure, p_edits text[]) returns void language plpgsql as $$
+declare v_definition text := pg_get_functiondef(p_target); v_found integer;
+begin
+	if position('20260930729000' in v_definition) > 0 then
+		raise exception '20260930729000 is already in %', p_target; end if;
+	for i in 1..cardinality(p_edits) / 2 loop
+		v_found := (length(v_definition) - length(replace(v_definition, p_edits[2 * i - 1], ''))) / length(p_edits[2 * i - 1]);
+		if v_found <> 1 then
+			raise exception '20260930729000 anchor found % time(s) in %, expected 1: %', v_found, p_target, left(p_edits[2 * i - 1], 80);
+		end if;
+		v_definition := replace(v_definition, p_edits[2 * i - 1], p_edits[2 * i]);
+	end loop;
+	execute v_definition;
+end $$;
+
+-- The switch says whether the repository's site is made too.
+select pg_temp.code_releases_patch('public.qorpera_code_checks_switch(uuid,uuid)'::regprocedure, array[
+	$old$			and repository.name = v_session.repository ->> 'name'), true));$old$,
+	$new$			and repository.name = v_session.repository ->> 'name'), true),
+		-- 20260930729000: and whether the site of a change whose checks passed is kept: the registry's switch, on when
+		-- the repository has no row.
+		'site', coalesce((select repository.site_enabled from public.qorpera_code_repositories repository
+			where repository.environment_id = v_session.environment_id and repository.owner = v_session.repository ->> 'owner'
+				and repository.name = v_session.repository ->> 'name'), true));$new$]);
+
+-- A report may say what became of the site: v3.
+select pg_temp.code_releases_patch('public.qorpera_code_change_report_valid(jsonb)'::regprocedure, array[
+	$old$			'pathsMore','picture','refusal','checks'] = '{}'::jsonb
+		and case p_change -> 'schema' when '"qorpera.code-change-report/v1"'::jsonb then not (p_change ? 'checks')
+			when '"qorpera.code-change-report/v2"'::jsonb then public.qorpera_code_change_checks_valid(p_change)
+			else false end$old$,
+	$new$			'pathsMore','picture','refusal','checks','site'] = '{}'::jsonb
+		-- 20260930729000: v3 is v2 with what became of the site (site), as its state and its checks ask.
+		and case p_change -> 'schema' when '"qorpera.code-change-report/v1"'::jsonb then not (p_change ? 'checks')
+				and not (p_change ? 'site')
+			when '"qorpera.code-change-report/v2"'::jsonb then public.qorpera_code_change_checks_valid(p_change)
+				and not (p_change ? 'site')
+			when '"qorpera.code-change-report/v3"'::jsonb then public.qorpera_code_change_checks_valid(p_change)
+				and public.qorpera_code_change_site_valid(p_change)
+			else false end$new$]);
+
+-- The row a report appends, or the filler a turn takes over, keeps what became of the site.
+select pg_temp.code_releases_patch('public.qorpera_record_code_change(uuid,uuid,jsonb)'::regprocedure, array[
+	$old$		'checks_state', p_change -> 'checks' ->> 'state', 'checks', p_change -> 'checks' -> 'result');$old$,
+	$new$		'checks_state', p_change -> 'checks' ->> 'state', 'checks', p_change -> 'checks' -> 'result',
+		-- 20260930729000: the site the checks left, or why Qorpera could not keep it, from a v3 report of a passed
+		-- landing (none from v1 or v2, or another state).
+		'site_state', p_change -> 'site' ->> 'state', 'site', p_change -> 'site' -> 'site',
+		'site_problem', p_change -> 'site' ->> 'code');$new$,
+	$old$			checks_state = p_change -> 'checks' ->> 'state', checks = p_change -> 'checks' -> 'result',$old$,
+	$new$			checks_state = p_change -> 'checks' ->> 'state', checks = p_change -> 'checks' -> 'result',
+			-- 20260930729000: and what became of the site, as the report says (none from v1 or v2).
+			site_state = p_change -> 'site' ->> 'state', site = p_change -> 'site' -> 'site',
+			site_problem = p_change -> 'site' ->> 'code',$new$]);
+
+-- An undo that inherits its checks inherits the site the same row's checks left.
+select pg_temp.code_releases_patch('public.qorpera_code_request_finish(text,text,uuid,uuid,jsonb)'::regprocedure, array[
+	$old$				(checks_state, checks) = (select case when kept.n is null then 'not_run' else 'inherited' end,$old$,
+	$new$				(checks_state, checks, site_state, site, site_problem) = (select case when kept.n is null then 'not_run'
+						else 'inherited' end,$new$,
+	$old$						case when kept.n is not null then jsonb_build_object('schema', 'qorpera.code-checks/v1', 'as', kept.n) end$old$,
+	$new$						case when kept.n is not null then jsonb_build_object('schema', 'qorpera.code-checks/v1', 'as', kept.n) end,
+						-- 20260930729000: main has that row's files, so its site is the site of this row's files too.
+						inherited.site_state, inherited.site, inherited.site_problem$new$,
+	$old$							and back.main_after = v_request.progress -> 'begun' ->> 'mainBefore') kept)$old$,
+	$new$							and back.main_after = v_request.progress -> 'begun' ->> 'mainBefore') kept
+					left join public.qorpera_code_changes inherited on inherited.environment_id = v_repository.environment_id
+						and inherited.owner = v_repository.owner and inherited.name = v_repository.name
+						and inherited.n = kept.n)$new$]);
+
+-- A restore that inherits its checks inherits the site the same row's checks left.
+select pg_temp.code_releases_patch('public.qorpera_code_restore_record(text,text,uuid,uuid,jsonb)'::regprocedure, array[
+	$old$						jsonb_build_object('schema', 'qorpera.code-checks/v1', 'as', kept.n))$old$,
+	$new$						jsonb_build_object('schema', 'qorpera.code-checks/v1', 'as', kept.n),
+						-- 20260930729000: and the site that row's checks left (the restored main has its files).
+						'site_state', kept.site_state, 'site', kept.site, 'site_problem', kept.site_problem)$new$]);
+
+-- The platform's line on a landing says whether Qorpera keeps its site for What's new.
+select pg_temp.code_releases_patch(
+	'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)'::regprocedure, array[
+	$old$					when 'off' then ' Checks are switched off for this repository, so nothing checked this change.' end
+				from public.qorpera_code_changes change
+				where change.worker_id = v_worker.id and change.sequence = v_worker.sequence and change.state = 'landed'), '');$old$,
+	$new$					when 'off' then ' Checks are switched off for this repository, so nothing checked this change.' end
+				from public.qorpera_code_changes change
+				where change.worker_id = v_worker.id and change.sequence = v_worker.sequence and change.state = 'landed'), '')
+			-- 20260930729000: whether Qorpera keeps the site the checks left, for a member to put live on What's new.
+			|| coalesce((select case change.site_state
+					when 'made' then ' Qorpera keeps its site for What''s new, where a member puts it live.'
+					when 'missed' then ' Qorpera could not keep its site this time (' || change.site_problem
+						|| '); the next change that goes in keeps one.' end
+				from public.qorpera_code_changes change
+				where change.worker_id = v_worker.id and change.sequence = v_worker.sequence and change.state = 'landed'), '');$new$]);
+
+-- A site the code made wrong fails the turn as a failed check does: the executor's words, its code, and a round.
+select pg_temp.code_releases_patch('public.qorpera_coding_turn_failure(public.qorpera_runtime_workers,text)'::regprocedure, array[
+	$old$	elsif substring(p_summary from '\[code=(CODING_CHECKS_[A-Z_]{1,40})\]\s*$') in ('CODING_CHECKS_FAILED',
+		'CODING_CHECKS_REFUSED', 'CODING_CHECKS_DID_NOT_RUN', 'CODING_CHECKS_MAIN_MOVED') then$old$,
+	$new$	-- 20260930729000: the site the checks left was refused (CODING_CHECKS_SITE_REFUSED): the code's fault, as a failed
+	-- check is, so a round too.
+	elsif substring(p_summary from '\[code=(CODING_CHECKS_[A-Z_]{1,40})\]\s*$') in ('CODING_CHECKS_FAILED',
+		'CODING_CHECKS_REFUSED', 'CODING_CHECKS_DID_NOT_RUN', 'CODING_CHECKS_MAIN_MOVED', 'CODING_CHECKS_SITE_REFUSED') then$new$,
+	$old$		if v_code in ('CODING_CHECKS_FAILED', 'CODING_CHECKS_REFUSED') then$old$,
+	$new$		if v_code in ('CODING_CHECKS_FAILED', 'CODING_CHECKS_REFUSED', 'CODING_CHECKS_SITE_REFUSED') then$new$,
+	$old$				and turn.outcome ->> 'reason' in ('CODING_CHECKS_FAILED', 'CODING_CHECKS_REFUSED')$old$,
+	$new$				and turn.outcome ->> 'reason' in ('CODING_CHECKS_FAILED', 'CODING_CHECKS_REFUSED', 'CODING_CHECKS_SITE_REFUSED')$new$,
+	$old$						and coalesce(other.outcome ->> 'reason', '') not in ('CODING_CHECKS_FAILED', 'CODING_CHECKS_REFUSED',
+							'CODING_CHECKS_DID_NOT_RUN', 'CODING_CHECKS_MAIN_MOVED')), 0);$old$,
+	$new$						and coalesce(other.outcome ->> 'reason', '') not in ('CODING_CHECKS_FAILED', 'CODING_CHECKS_REFUSED',
+							'CODING_CHECKS_DID_NOT_RUN', 'CODING_CHECKS_MAIN_MOVED', 'CODING_CHECKS_SITE_REFUSED')), 0);$new$]);
+
+-- 7. Grants, and the deploy guard --------------------------------------------------------------------------------------
+
+revoke all on function public.qorpera_code_site_valid(jsonb),
+	public.qorpera_code_change_site_valid(jsonb)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
+-- Every changed body carries the marker.
+do $guard$
+declare v_function regprocedure;
+begin
+	foreach v_function in array array[
+		'public.qorpera_code_checks_switch(uuid,uuid)',
+		'public.qorpera_code_change_report_valid(jsonb)',
+		'public.qorpera_record_code_change(uuid,uuid,jsonb)',
+		'public.qorpera_code_request_finish(text,text,uuid,uuid,jsonb)',
+		'public.qorpera_code_restore_record(text,text,uuid,uuid,jsonb)',
+		'public.qorpera_complete_coding_turn(uuid,uuid,text,text,text,jsonb,jsonb,jsonb,text,integer,jsonb)',
+		'public.qorpera_coding_turn_failure(public.qorpera_runtime_workers,text)'
+	]::regprocedure[] loop
+		if strpos((select prosrc from pg_proc where oid = v_function), '20260930729000') = 0 then
+			raise exception '20260930729000 is missing from %', v_function; end if;
+	end loop;
+end $guard$;
