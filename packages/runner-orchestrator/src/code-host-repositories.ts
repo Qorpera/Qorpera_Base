@@ -1,7 +1,16 @@
 import { isDeepStrictEqual } from "node:util";
 import type { CloudCodingRepository } from "@qorpera/contracts";
 import {
+	answeredBefore,
+	type CodeChangeRecords,
+	type CodeChangeTarget,
+	codeChangeDiffOf,
+	codeChangeDiffReported,
+	codeChangeRefusalPaths,
+} from "./code-change-records.ts";
+import {
 	addCodeWorktree,
+	type CodeBranchLanded,
 	type CodeHostJob,
 	CodeHostJobFailure,
 	CodeHostRefusal,
@@ -15,6 +24,7 @@ import type { CodeHostJobs } from "./code-host-views.ts";
 import { CodingLandConflict, CodingLandRefused, CodingWorkspaceFailed, landRefusal } from "./coding-executor.ts";
 import {
 	CODING_FOLDER_COMPANY_ROOT,
+	type CodeChangeReport,
 	type CodingFolderRepositories,
 	type CodingFolderRepositorySession,
 	type CodingFolderStart,
@@ -31,6 +41,39 @@ const CODE_START_FAILED = "Opening the company's repository failed. Nothing was 
 /** And when its folder already holds a copy of a GitHub repository. */
 const CODE_AREA_TAKEN =
 	"The company folder already holds a copy of a GitHub repository at this repository's place under code/. Nothing was changed; start the work again with another owner or name.";
+/** What they read when a turn cannot start because its repository is being put back from its stored copy: every job on
+ * it is refused until then. A landing that meets it has its words with the other refusals (`landRefusal`). */
+export const CODE_RESTORING =
+	"The repository is being restored from its copy. Nothing was changed; a follow-up in a few minutes works.";
+const RESTORING = "CODE_HOST_RESTORE_IN_PROGRESS";
+/** How long the change record may hold a landing's job, which holds its company's line: the report to the kernel and
+ * the record's files together. A call made once the job has ended gets half of it. */
+export const CODE_CHANGE_RECORD_MS = 10_000;
+const SHA = /^[0-9a-f]{40}$/;
+
+export interface CodeHostRepositoriesOptions {
+	/** The change record's files (`code-change-records.ts`): what is due is written inside the landing's own job, so
+	 * the record is in the company folder when the agent reads the turn's result. Absent: the record's own pass writes
+	 * them. */
+	records?: Pick<CodeChangeRecords, "inJob">;
+	/** The log lines `code-change` and `code-change-error` (whose `error` is the error itself, for the log to redact). */
+	report?: (event: Record<string, unknown>) => void;
+	/** `CODE_CHANGE_RECORD_MS`, for tests. */
+	recordMs?: number;
+}
+
+/** What a landing's job left of the change record. */
+interface LandingRecord {
+	/** The job's landing answered: main moved, or already held the commit. */
+	landed: boolean;
+	filesChanged: number;
+	/** The change's number, once the kernel gave one. */
+	change: number | null;
+	/** A report the kernel did not confirm inside the job: it is made once more after it. */
+	owed: CodeChangeReport | undefined;
+	/** What tells the kernel that the record's files are written, once the job has saved them. */
+	confirm: (() => Promise<void>) | undefined;
+}
 
 /** The coding sessions' repositories on the folder path (F3 step 5g-6b). A session works in its own locked worktree
  * of its company's code area, `/company/code/<owner>/<name>/worktrees/<workerId>` (lower-case, `codeAreaPath`) on
@@ -39,9 +82,25 @@ const CODE_AREA_TAKEN =
  * and the host's broker pushes that. The repository token never reaches the code host or the machine. */
 export class CodeHostRepositories implements CodingFolderRepositories {
 	readonly #jobs: Pick<CodeHostJobs, "run">;
+	readonly #records: Pick<CodeChangeRecords, "inJob"> | undefined;
+	readonly #report: (event: Record<string, unknown>) => void;
+	readonly #recordMs: number;
 
-	constructor(jobs: Pick<CodeHostJobs, "run">) {
+	constructor(jobs: Pick<CodeHostJobs, "run">, options: CodeHostRepositoriesOptions = {}) {
+		const recordMs = options.recordMs ?? CODE_CHANGE_RECORD_MS;
+		if (!Number.isSafeInteger(recordMs) || recordMs < 1) throw new Error("INVALID_CODE_HOST_REPOSITORIES");
 		this.#jobs = jobs;
+		this.#records = options.records;
+		const report = options.report;
+		// The log must never change what happens: a reporter that throws is not heard.
+		this.#report = (event) => {
+			try {
+				report?.(event);
+			} catch {
+				/* not heard */
+			}
+		};
+		this.#recordMs = recordMs;
 	}
 
 	/** A job that failed at one of its steps or was refused by rule (the code host's own error, which names its code)
@@ -64,7 +123,9 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			});
 		} catch (error) {
 			if (signal.aborted || !(error instanceof CodeHostJobFailure || error instanceof CodeHostRefusal)) throw error;
-			throw new CodingWorkspaceFailed(error.code, CODE_COPY_FAILED, { cause: error });
+			throw new CodingWorkspaceFailed(error.code, error.code === RESTORING ? CODE_RESTORING : CODE_COPY_FAILED, {
+				cause: error,
+			});
 		}
 		return { cwd: `${CODING_FOLDER_COMPANY_ROOT}/${codeAreaPath(repository)}/worktrees/${workerId}` };
 	}
@@ -97,7 +158,11 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			if (signal.aborted || !(error instanceof CodeHostJobFailure || error instanceof CodeHostRefusal)) throw error;
 			throw new CodingWorkspaceFailed(
 				error.code,
-				error.code === "CODE_HOST_AREA_FROM_GITHUB" ? CODE_AREA_TAKEN : CODE_START_FAILED,
+				error.code === "CODE_HOST_AREA_FROM_GITHUB"
+					? CODE_AREA_TAKEN
+					: error.code === RESTORING
+						? CODE_RESTORING
+						: CODE_START_FAILED,
 				{ cause: error },
 			);
 		}
@@ -106,21 +171,71 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 	/** The session's submitted commit landed on the default branch of its repository kept in Qorpera. A landing that
 	 * lost the default branch to another one (the move's compare-and-swap, `CODE_HOST_BASE_MOVED`) wrote nothing and is
 	 * made once more, from the branch as it stands then. A refusal by rule, and refs that could not be read, say what to
-	 * do (CodingLandConflict, CodingLandRefused), since the same work would be refused again. */
-	async land(session: CodingFolderRepositorySession, headSha: string, signal: AbortSignal): Promise<CodingLanded> {
+	 * do (CodingLandConflict, CodingLandRefused), since the same work would be refused again.
+	 *
+	 * The landing is reported to the repository's change record (own code storage, step 2b) inside its own job, while
+	 * the company's line is held, so the record's rows are in the order main moved; then the record's files that are
+	 * due are written, and the job's one save carries them with main/. A report the kernel did not confirm there is made
+	 * once more after the job, and then left: the kernel finds a main its record does not know at the next movement. A
+	 * conflict and a refusal are reported before they are thrown on. Nothing of the record fails a landing or holds its
+	 * job longer than `CODE_CHANGE_RECORD_MS`: every error of it is reported (`code-change-error`) and nothing more. */
+	async land(
+		session: CodingFolderRepositorySession,
+		headSha: string,
+		signal: AbortSignal,
+		options: { picture?: string } = {},
+	): Promise<CodingLanded> {
 		const { repository, workerId } = session.claim;
 		if (repository.host !== "qorpera") throw new Error("CODE_HOST_REPOSITORY_NOT_HERE");
 		for (let again = true; ; again = false) {
+			const record: LandingRecord = {
+				landed: false,
+				filesChanged: 0,
+				change: null,
+				owed: undefined,
+				confirm: undefined,
+			};
 			try {
-				const landed = await this.#job(session, signal, (job) =>
-					landCodeBranch(job, { repository, workerId, headSha }),
-				);
-				return { state: landed.state, mainSha: landed.mainSha };
+				const landed = await this.#job(session, signal, async (job) => {
+					const landed = await landCodeBranch(job, {
+						repository,
+						workerId,
+						headSha,
+						...(options.picture === undefined ? {} : { picture: options.picture }),
+					});
+					// Main has moved, and a ref is saved where git commits it: from here on nothing may fail the job.
+					record.landed = true;
+					await this.#recordInJob(session, job, landed, headSha, record);
+					return landed;
+				});
+				// The job saved: a report it could not make is made now, and the kernel is told of the files it wrote.
+				await this.#reportOwed(session, record);
+				const confirm = record.confirm;
+				if (confirm)
+					try {
+						await answeredBefore(confirm, AbortSignal.timeout(Math.ceil(this.#recordMs / 2)));
+					} catch (error) {
+						this.#failed(session, "written", error);
+					}
+				return {
+					state: landed.state,
+					mainSha: landed.mainSha,
+					filesChanged: record.filesChanged,
+					change: record.change,
+				};
 			} catch (error) {
 				if (signal.aborted) throw error;
 				if (again && error instanceof CodeHostJobFailure && error.code === "CODE_HOST_BASE_MOVED") continue;
-				if (error instanceof CodeHostRefusal && error.code === "CODE_HOST_LAND_CONFLICT")
+				// A job that failed after its landing saved the ref all the same: the report is still owed. Its files were
+				// not saved, so nothing of them is confirmed.
+				if (record.landed) {
+					await this.#reportOwed(session, record);
+					throw error;
+				}
+				if (error instanceof CodeHostRefusal && error.code === "CODE_HOST_LAND_CONFLICT") {
+					await this.#reportRefused(session, headSha, "conflict", error.code, error.paths);
 					throw new CodingLandConflict(error.paths);
+				}
 				// A refusal by rule, and refs git could not read (a failed command, `Run.ref`): both have their own words.
 				let code: string | undefined;
 				let paths: readonly string[] = [];
@@ -131,9 +246,130 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 					code = error.code;
 				const summary = code === undefined ? undefined : landRefusal(repository.baseBranch, code, paths);
 				if (code === undefined || summary === undefined) throw error;
+				await this.#reportRefused(session, headSha, "refused", code, paths);
 				throw new CodingLandRefused(code, summary, { cause: error });
 			}
 		}
+	}
+
+	/** Inside the landing's job, after the landing: the report to the kernel, then the record's files that are due,
+	 * under one deadline for both. It never throws. */
+	async #recordInJob(
+		session: CodingFolderRepositorySession,
+		job: CodeHostJob,
+		landed: CodeBranchLanded,
+		headSha: string,
+		record: LandingRecord,
+	): Promise<void> {
+		let report: CodeChangeReport;
+		try {
+			const diff = landed.state === "unchanged" ? undefined : codeChangeDiffOf(landed.diff);
+			record.filesChanged = diff?.filesChanged ?? 0;
+			if (!session.recordChange) return;
+			report = landingReport(landed, headSha, diff);
+		} catch (error) {
+			this.#failed(session, "report", error);
+			return;
+		}
+		// One deadline for the report and the files: the company's line is held meanwhile.
+		const bounded = AbortSignal.any([job.signal, AbortSignal.timeout(this.#recordMs)]);
+		try {
+			record.change = await this.#reported(session, report, bounded);
+		} catch (error) {
+			// The kernel may have the row all the same: the same report again answers it.
+			record.owed = report;
+			this.#failed(session, "report", error);
+			return;
+		}
+		const records = this.#records;
+		if (!records) return;
+		try {
+			record.confirm = await answeredBefore(
+				() => records.inJob({ shell: job.shell, layout: job.layout, signal: bounded }, targetOf(session), bounded),
+				bounded,
+			);
+		} catch (error) {
+			this.#failed(session, "files", error);
+		}
+	}
+
+	/** A report the job could not make, made once more now that the job has ended: not in line any more. It never
+	 * throws; a second failure is left to the kernel, which finds the movement at the next one it records. */
+	async #reportOwed(session: CodingFolderRepositorySession, record: LandingRecord): Promise<void> {
+		const owed = record.owed;
+		if (!owed) return;
+		record.owed = undefined;
+		try {
+			record.change = await this.#reported(
+				session,
+				{ ...owed, inLine: false },
+				AbortSignal.timeout(Math.ceil(this.#recordMs / 2)),
+			);
+		} catch (error) {
+			this.#failed(session, "report-again", error);
+		}
+	}
+
+	/** A landing that never went in, reported before it is thrown on. It never throws. */
+	async #reportRefused(
+		session: CodingFolderRepositorySession,
+		headSha: string,
+		state: "conflict" | "refused",
+		code: string,
+		paths: readonly string[],
+	): Promise<void> {
+		if (!session.recordChange) return;
+		try {
+			await this.#reported(
+				session,
+				{
+					schema: "qorpera.code-change-report/v1",
+					state,
+					inLine: false,
+					how: null,
+					headSha,
+					mainBefore: null,
+					mainAfter: null,
+					filesChanged: null,
+					paths: null,
+					pathsMore: 0,
+					picture: null,
+					refusal: { code, paths: codeChangeRefusalPaths(paths) },
+				},
+				AbortSignal.timeout(Math.ceil(this.#recordMs / 2)),
+			);
+		} catch (error) {
+			this.#failed(session, "report", error);
+		}
+	}
+
+	/** One report to the kernel, answered within `signal` or not at all, and the change's number when it gave one. */
+	async #reported(
+		session: CodingFolderRepositorySession,
+		report: CodeChangeReport,
+		signal: AbortSignal,
+	): Promise<number | null> {
+		const answer = await answeredBefore(async () => {
+			if (!session.recordChange) throw new Error("CODE_CHANGE_RECORD_UNAVAILABLE");
+			return await session.recordChange(report, signal);
+		}, signal);
+		const change = answer?.change;
+		if (typeof answer?.state !== "string" || !(change === null || (Number.isSafeInteger(change) && change >= 1)))
+			throw new Error("CODE_CHANGE_RECORD_UNCONFIRMED");
+		this.#report({
+			event: "code-change",
+			step: "reported",
+			...named(session),
+			reported: report.state,
+			inLine: report.inLine,
+			state: answer.state,
+			change,
+		});
+		return change;
+	}
+
+	#failed(session: CodingFolderRepositorySession, step: string, error: unknown): void {
+		this.#report({ event: "code-change-error", step, ...named(session), error });
 	}
 
 	/** One job on the code host of the session's company, in that company's line. The session's run authority is asked
@@ -152,6 +388,85 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			return result;
 		});
 	}
+}
+
+/** The repository of a session, as the change record names it. */
+function targetOf(session: CodingFolderRepositorySession): CodeChangeTarget {
+	const { profileId, environmentId, repository } = session.claim;
+	return { companyId: profileId, environmentId, owner: repository.owner, name: repository.name };
+}
+
+function named(session: CodingFolderRepositorySession): Record<string, unknown> {
+	const { profileId, environmentId, repository, workerId, sequence } = session.claim;
+	return {
+		companyId: profileId,
+		environmentId,
+		repository: `${repository.owner}/${repository.name}`,
+		workerId,
+		sequence,
+	};
+}
+
+/** What the kernel is told of a landing, from what the job answered. It throws when the answer is not a landing's:
+ * its caller reports that, and the landing stands. */
+function landingReport(
+	landed: CodeBranchLanded,
+	headSha: string,
+	diff: ReturnType<typeof codeChangeDiffOf>,
+): CodeChangeReport {
+	const sha = (commit: unknown): commit is string => typeof commit === "string" && SHA.test(commit);
+	const report = {
+		schema: "qorpera.code-change-report/v1" as const,
+		inLine: true,
+		headSha,
+		refusal: null,
+	};
+	if (landed.state === "unchanged") {
+		// Main held the commit already: where main is, and the commit of main that first held it.
+		if (!sha(landed.mainBefore) || !sha(landed.containedAt)) throw new Error("CODE_CHANGE_LANDING_INVALID");
+		return {
+			...report,
+			state: "unchanged",
+			how: null,
+			mainBefore: landed.mainBefore,
+			mainAfter: landed.containedAt,
+			filesChanged: null,
+			paths: null,
+			pathsMore: 0,
+			picture: null,
+		};
+	}
+	const picture = landed.picture;
+	if (
+		(landed.state !== "fast-forward" && landed.state !== "merged") ||
+		!sha(landed.mainBefore) ||
+		!sha(landed.mainSha) ||
+		!diff ||
+		!(
+			picture === null ||
+			(picture.state === "ok"
+				? sha(picture.blob) &&
+					Number.isSafeInteger(picture.bytes) &&
+					picture.bytes >= 0 &&
+					["png", "jpeg", "webp"].includes(picture.type)
+				: ["missing", "not_a_file", "too_large", "not_a_picture"].includes(picture.state))
+		)
+	)
+		throw new Error("CODE_CHANGE_LANDING_INVALID");
+	return {
+		...report,
+		state: "landed",
+		how: landed.state,
+		mainBefore: landed.mainBefore,
+		mainAfter: landed.mainSha,
+		...codeChangeDiffReported(diff),
+		picture:
+			picture === null
+				? null
+				: picture.state === "ok"
+					? { state: "ok", blob: picture.blob, bytes: picture.bytes, type: picture.type }
+					: { state: picture.state },
+	};
 }
 
 /** The host's broker for this session only: its authority and its token, for the claimed repository and no other. */

@@ -1100,6 +1100,8 @@ it.each([
 				"manage_routine",
 				"manage_todo",
 				"manage_worker",
+				// The company's code kept in Qorpera (20260930720000): an agent's own run, never a worker's.
+				"manage_code",
 				"organize_sidebar",
 				"add_review_rule",
 				"good_will_list",
@@ -2517,6 +2519,7 @@ it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-2
 	// Still no mouth, coworkers or delegation.
 	expect(tools.map((tool) => tool.name)).not.toContain("send_message");
 	expect(tools.map((tool) => tool.name)).not.toContain("manage_worker");
+	expect(tools.map((tool) => tool.name)).not.toContain("manage_code");
 	expect(tools.map((tool) => tool.name)).not.toContain("send_coworker_message");
 });
 
@@ -3217,6 +3220,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// (20260930709000); the names and descriptions are as before, so only the catalog text moved again.
 	// Still on 10 November 2026 save_app's manifest takes kit: explainer makes an app a short narrated video, with how
 	// to make one on the schema field (RUNTIME-INTERFACE-APPS.md §3a), so they moved again.
+	// Also on 10 November 2026 manage_code came after manage_worker (the change record of the company's code,
+	// 20260930720000), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3257,6 +3262,7 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"create_group_chat",
 		"manage_todo",
 		"manage_worker",
+		"manage_code",
 		"send_message",
 		"ask_member",
 	]);

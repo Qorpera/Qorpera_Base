@@ -104,6 +104,9 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			"_native_run_check_one_call.sql",
 			// The Co-Founder deals agents out to members (20260930702000).
 			"_cofounder_offers_agents.sql",
+			// An agent's undo of a change in the company's code, how its request stands, and a change's description
+			// (20260930720000).
+			"_code_change_record.sql",
 		].flatMap((suffix) =>
 			rowsOf(
 				read(
@@ -136,7 +139,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, name, scope]) => scope !== "identity" && !removed.has(name))
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(127);
+	expect(rows).toHaveLength(130);
 	expect([...removed]).toEqual([
 		"qorpera_native_mail_attachment",
 		"qorpera_manage_agent_todo",

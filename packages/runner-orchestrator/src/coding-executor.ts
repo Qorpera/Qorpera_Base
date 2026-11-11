@@ -244,6 +244,9 @@ export function landRefusal(baseBranch: string, code: string, paths: readonly st
 		case "CODE_HOST_LINK":
 		case "CODE_HOST_UNEXPECTED_FILE":
 			return `${not}: the repository's own storage in the company folder is not as Qorpera left it, so nothing can go into ${baseBranch} until Qorpera has repaired it. Finishing again will not help. The work is kept on the session's branch; say so in your report.`;
+		case "CODE_HOST_RESTORE_IN_PROGRESS":
+			// Every job on the repository is refused while it is put back from its stored copy (own code storage, step 2b).
+			return `${not}: the repository is being restored from its copy. A follow-up in a few minutes works.`;
 		default:
 			return undefined;
 	}
@@ -304,9 +307,11 @@ export interface CodingSessionClaim {
 	followUp: string | null;
 }
 
-/** What the harness left behind at the end of its turn (qorpera_submit_coding_turn). */
+/** What the harness left behind at the end of its turn (qorpera_submit_coding_turn). `picture`: the screenshot the
+ * session committed to show its change, by its path in the repository (own code storage, step 2b). The sentence on
+ * what a customer will notice stays in the kernel: the executor never needs it. */
 export type CodingSubmission =
-	| { kind: "finish"; summary: string; headSha: string; operationKey: string }
+	| { kind: "finish"; summary: string; headSha: string; operationKey: string; picture?: string }
 	| { kind: "ask"; summary: string; question: string; options: string[]; operationKey: string };
 
 /** The turn as qorpera_describe_coding_turn reports it. */
@@ -337,8 +342,14 @@ export interface CodingExecutorPublication {
 	/** True only after a trusted comparison against the pinned original head. */
 	readonly noChange: boolean;
 	/** A repository kept in Qorpera (own code storage, slice 1): where the submitted commit landed on its default
-	 * branch. It has no pull request. */
-	readonly landed?: { readonly state: "fast-forward" | "merged" | "unchanged"; readonly mainSha: string };
+	 * branch. It has no pull request. `filesChanged`: how many paths differ between the default branch before and after
+	 * (0 when unchanged). `change`: the landing's number in the repository's change record, when the kernel gave it one. */
+	readonly landed?: {
+		readonly state: "fast-forward" | "merged" | "unchanged";
+		readonly mainSha: string;
+		readonly filesChanged: number;
+		readonly change: number | null;
+	};
 }
 export interface CodingExecutorHost {
 	/** Plan and wake the member's coding machine on genuine node capacity, attach
@@ -432,6 +443,11 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 	};
 }
 
+/** A picture's path in the repository, as qorpera_submit_coding_turn takes it: plain names, no part that is `.` or
+ * `..`, a picture's ending, at most 300 bytes. */
+const PICTURE_PATH =
+	/^[A-Za-z0-9._-][A-Za-z0-9._ -]*(?:\/[A-Za-z0-9._-][A-Za-z0-9._ -]*)*\.(?:png|jpg|jpeg|webp|PNG|JPG|JPEG|WEBP)$/;
+
 export function parseCodingSubmission(value: unknown): CodingSubmission | null {
 	if (value === null || value === undefined) return null;
 	const item = record(value, "Invalid coding submission");
@@ -444,7 +460,21 @@ export function parseCodingSubmission(value: unknown): CodingSubmission | null {
 		throw new Error("Invalid coding submission");
 	if (item.kind === "finish") {
 		if (typeof item.headSha !== "string" || !SHA40.test(item.headSha)) throw new Error("Invalid coding submission");
-		return { kind: "finish", summary: item.summary, headSha: item.headSha, operationKey: item.operationKey };
+		// A picture that is not a path the kernel takes is dropped: the work is handed in without one.
+		const picture =
+			typeof item.picture === "string" &&
+			Buffer.byteLength(item.picture) <= 300 &&
+			PICTURE_PATH.test(item.picture) &&
+			!item.picture.split("/").some((part) => part === "." || part === "..")
+				? { picture: item.picture }
+				: {};
+		return {
+			kind: "finish",
+			summary: item.summary,
+			headSha: item.headSha,
+			operationKey: item.operationKey,
+			...picture,
+		};
 	}
 	if (item.kind === "ask") {
 		if (typeof item.question !== "string" || !item.question.trim()) throw new Error("Invalid coding submission");
@@ -961,21 +991,33 @@ export class CloudCodingExecutor {
 				if (!publication.pullRequest && !publication.noChange && !publication.landed)
 					throw new Error("Coding publication unconfirmed");
 				end();
+				const landed = publication.landed;
+				// How many files the landing changed on the default branch, for the session's card: only for a landing that
+				// moved it, and only a count the kernel takes.
+				const filesChanged =
+					landed &&
+					landed.state !== "unchanged" &&
+					Number.isSafeInteger(landed.filesChanged) &&
+					landed.filesChanged >= 0 &&
+					landed.filesChanged <= 2_147_483_647
+						? landed.filesChanged
+						: null;
 				await complete("succeeded", submission.summary, {
 					p_pull_request: publication.pullRequest,
 					p_harness_session_ref: claimed.harnessSessionRef,
 					// Where a repository kept in Qorpera got the commit: the session's record, and its agent's report.
-					...(publication.landed
+					...(landed
 						? {
 								p_artifacts: [
 									{
 										kind: "landed",
-										state: publication.landed.state,
+										state: landed.state,
 										branch: claimed.repository.baseBranch,
 										headSha: submission.headSha,
-										mainSha: publication.landed.mainSha,
+										mainSha: landed.mainSha,
 									},
 								],
+								p_files_changed: filesChanged,
 							}
 						: {}),
 				});

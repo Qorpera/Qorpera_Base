@@ -1540,14 +1540,16 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // cards and overlay v10 ("approval cards are completely unreadable"; Jonas, 5 November 2026), and for overlay v11
 // (each agent works for one member and the Co-Founder deals the team out; Jonas, 9 November 2026), and for
 // interface apps that show the company's state and overlay v13 (each owner keeps one posted app current; Jonas,
-// 10 November 2026), and for patch notes before changes go live ("Yes, wait for me"; Jonas, 10 November 2026). A
+// 10 November 2026), and for patch notes before changes go live ("Yes, wait for me"; Jonas, 10 November 2026), and
+// for a project's history and its hand-over (#1643, 10 November 2026), and for the change record of the company's code
+// (each change numbered, undone and described with manage_code; own code storage step 2b, 10 November 2026). A
 // change to either is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "431a2fee4d8e9bca41d029f361e04e52b28a41c971fd0facdc97406dca3b5336",
+			instructions: "4f5a7af07566602dd7095373d323069aaba3019a53ad6985af0f3799225abbc0",
 			prompt: "be57a945a52a80bccd0e523d775d563455ec85f3a3ee11677e7ece894f9f0ae6",
 		},
 	],
@@ -1563,12 +1565,40 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "431a2fee4d8e9bca41d029f361e04e52b28a41c971fd0facdc97406dca3b5336",
+			instructions: "4f5a7af07566602dd7095373d323069aaba3019a53ad6985af0f3799225abbc0",
 			prompt: "954569cabce5c2ead1fe5e2507f3c8367984855615fb747cf2c378ed2efce48f",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
 	expect(stableFolderRun(kind)).toEqual(pinned);
+});
+
+// Own code storage, step 2b (20260930720000): every change in a repository kept in Qorpera has a number and a record,
+// and a wrong one is taken out with manage_code before it is fixed. The sentence that sent an undo to the session as a
+// follow-up (#1643) is gone: two ways to undo would be one too many.
+it("tells every agent where a change's record is, and to undo and describe with manage_code", () => {
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"A change landed in a repository kept in Qorpera is in its main code before you read the result, and rejecting it takes nothing out.",
+		"Qorpera numbers each change and writes its record at code/<owner>/<name>/changes/<number>.md; changes/index.md lists them, newest first.",
+		"Check a new change yourself first (its files are at code/<owner>/<name>/main/; run its tests or open what it built on a machine).",
+		"When it is wrong, take it out at once with manage_code, action undo, check main again, and then send the session a follow-up that fixes it.",
+		"When its record lacks what a customer will notice, or a picture of it, add them with manage_code, action describe.",
+		// What #1643 said of a project's history and its hand-over stays.
+		"A project's own history says what changed: on a machine, run git in /company/code/<owner>/<name>/main",
+		"To hand someone the whole project as one file, make it there into a folder of the company",
+		"Pull requests, branches, commits, diffs and checks are your tools, never the members' words",
+	])
+		expect(instructions).toContain(rule);
+	for (const gone of ["fixes or undoes it at once", "To undo a landed change", "revert that commit"])
+		expect(instructions).not.toContain(gone);
+	// A worker reports to its agent and gets none of it.
+	expect(
+		cloudCompanyRuntimeInstructions(
+			{ kind: "agent", source: { kind: "worker-dispatch", id: randomUUID(), occurrenceKey: "dispatch" } } as never,
+			false,
+		),
+	).not.toContain("manage_code");
 });
 
 // Jonas, 5 November 2026: members "gave up immediately because of the exhausting amount of reading material". A
