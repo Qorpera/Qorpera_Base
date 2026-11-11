@@ -6162,5 +6162,18 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		expect((await lstat(join(linked, ".qorpera-checks"))).isDirectory()).toBe(true);
 		expect(await readdir(join(linked, ".qorpera-checks"))).toEqual([name]);
 		expect(await exists(join(linked, ".qorpera-checks", name, "src", "app.js"))).toBe(true);
+		// What an earlier run left that the session's user cannot remove stays, and the copy is made all the same.
+		const locked = join(checksRoot, randomUUID(), "cache");
+		await mkdir(locked, { recursive: true });
+		await writeFile(join(locked, "owned-by-a-container"), "x\n");
+		await chmod(locked, 0o555);
+		try {
+			const third = randomUUID();
+			await copy(home, third);
+			expect(await git(join(checksRoot, third, "src"), "rev-parse", "HEAD")).toBe(commit);
+			expect((await readdir(checksRoot)).length).toBe(2);
+		} finally {
+			await chmod(locked, 0o755);
+		}
 	});
 });

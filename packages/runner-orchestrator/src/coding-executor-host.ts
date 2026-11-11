@@ -438,8 +438,9 @@ const CODING_FOLDER_CHECK_RETRY_MS = 1_000;
  * view. Each run has a folder of its own, `$QORPERA_CHECKS_ROOT/$QORPERA_CHECKS_NAME` (the name is the copy's command
  * id: the session, its turn and the run's attempt), so a process left of an earlier run holds paths into another
  * folder, never this run's (release review r1, F1). The earlier runs' folders are removed to give the disk back, and
- * nothing else; a root that is a link or a file is taken away first, so nothing is removed through it. Its values come
- * in the environment. */
+ * nothing else, as far as they can be: what a check left that its user cannot remove (a container's files) never stops
+ * a copy. A root that is a link or a file is taken away first, so nothing is removed through it. Its values come in the
+ * environment. */
 const CODE_CHECKS_COPY = [
 	"set -eu",
 	'r="$QORPERA_CHECKS_ROOT"',
@@ -447,7 +448,7 @@ const CODE_CHECKS_COPY = [
 	'd="$r/$n"',
 	'if [ -L "$r" ] || { [ -e "$r" ] && [ ! -d "$r" ]; }; then rm -f -- "$r"; fi',
 	'mkdir -p -- "$r"',
-	'find "$r" -mindepth 1 -maxdepth 1 ! -name "$n" -exec rm -rf -- {} +',
+	'find "$r" -mindepth 1 -maxdepth 1 ! -name "$n" -exec rm -rf -- {} + || true',
 	'rm -rf -- "$d"',
 	'mkdir -p -- "$d/out"',
 	"i=0",
