@@ -3,9 +3,13 @@ import {
 	captionHash,
 	EXPLAINER_ENGINE_JS,
 	EXPLAINER_MAX_CLIPS,
+	EXPLAINER_VOICE_CAPTIONS_CJS,
+	EXPLAINER_VOICE_ENCODE_CJS,
+	EXPLAINER_VOICE_PEER_CJS,
 	explainerCaptions,
 	explainerNotes,
 	explainerPage,
+	explainerSpokenMatches,
 	parseExplainerClips,
 } from "@qorpera/runtime/cloud-app-kit-explainer";
 import { cloudAppTools } from "@qorpera/runtime/cloud-folder-app-tools";
@@ -18,6 +22,7 @@ import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
  * itself runs in a browser: packages/web/test/explainer-kit-engine.test.ts runs this same file in a DOM. */
 
 const ENGINE_SOURCE = new URL("../kits/explainer/engine.js", import.meta.url);
+const kitFile = (name: string) => readFileSync(new URL(`../kits/explainer/${name}`, import.meta.url), "utf8");
 
 const runs: CloudNativeToolRun[] = [];
 afterEach(() => {
@@ -30,6 +35,84 @@ it("holds the engine's text exactly as its source file has it", () => {
 	// One function around everything, so an agent's scenes.js may name its own things as it likes.
 	expect(EXPLAINER_ENGINE_JS).toMatch(/\n\(\(\) => \{\n"use strict";\n/);
 	expect(EXPLAINER_ENGINE_JS.trimEnd().endsWith("})();")).toBe(true);
+});
+
+it("holds the voice scripts' text exactly as their source files have it", () => {
+	expect(EXPLAINER_VOICE_CAPTIONS_CJS).toBe(kitFile("voice-captions.cjs"));
+	expect(EXPLAINER_VOICE_PEER_CJS).toBe(kitFile("voice-peer.cjs"));
+	expect(EXPLAINER_VOICE_ENCODE_CJS).toBe(kitFile("voice-encode.cjs"));
+	// A machine runs each as one command with the script's text in it: a command holds at most 16384 bytes
+	// (cloud-machine-tools.ts), and the text travels as base64 with a few words around it.
+	for (const script of [EXPLAINER_VOICE_CAPTIONS_CJS, EXPLAINER_VOICE_PEER_CJS, EXPLAINER_VOICE_ENCODE_CJS])
+		expect(Math.ceil(Buffer.byteLength(script) / 3) * 4).toBeLessThan(16384 - 512);
+	// The recorder is handed no sign-in and reads none: only the offer and the answer pass.
+	expect(EXPLAINER_VOICE_PEER_CJS).not.toMatch(/auth\.json|CODEX_HOME|access[-_ ]?token|Authorization/i);
+	// Every line a script prints for the runtime is marked, so other output of a machine's command is no line of it.
+	for (const script of [EXPLAINER_VOICE_CAPTIONS_CJS, EXPLAINER_VOICE_PEER_CJS, EXPLAINER_VOICE_ENCODE_CJS])
+		expect(script).toContain("QORPERA-VOICE ");
+});
+
+it("keeps a clip only when the voice said its caption, numbers aside", () => {
+	// As spoken on 10 November 2026 (the call's own transcripts).
+	const kept: [string, string][] = [
+		[
+			"Fjeldtur plans cabin weekends for groups of friends. How would it make money?",
+			"Fjeldtur plans cabin weekends for groups of friends. How would it make money?",
+		],
+		[
+			"So four friends see NOK 596 in fees before they commit.",
+			"So four friends see NOK five hundred and ninety-six in fees before they commit.",
+		],
+		[
+			"NOK 82.50 is left per group, before fixed costs.",
+			"NOK eighty-two point five zero is left per group, before fixed costs.",
+		],
+		[
+			"At NOK 1,200 a failure, five leave 22.50. Ten push it below zero.",
+			"At NOK one thousand two hundred a failure, five leave twenty-two point five zero. Ten push it below zero.",
+		],
+		[
+			"That one loss wipes out what about 3.6 good groups leave.",
+			"That one loss wipes out what about three point six good groups leave.",
+		],
+		[
+			"Hver rejsende betaler ét synligt gebyr: 149 kroner, inklusive moms.",
+			"Hver rejsende betaler ét synligt gebyr: et hundrede niogfyrre kroner, inklusive moms.",
+		],
+		[
+			"Så fire venner ser 596 kroner i gebyrer, før de binder sig.",
+			"Så fire venner ser fem hundrede seksoghalvfems kroner i gebyrer, før de binder sig.",
+		],
+		// Said as digits, in other punctuation and case, with a curly apostrophe.
+		["The organiser's cost isn't priced yet.", "the organiser\u2019s cost isn\u2019t priced yet"],
+		["Each traveller pays 149 kroner.", "Each traveller pays 149 kroner."],
+		// The letters around a digit are words of the caption; the digit is a number.
+		["Our B2B plan is ready.", "Our B two B plan is ready."],
+	];
+	for (const [caption, said] of kept) expect(explainerSpokenMatches(caption, said), caption).toBe(true);
+	const dropped: [string, string][] = [
+		// The one of 28 that came back with sentences of the voice's own.
+		[
+			"Failures cost money. One cabin charges NOK 300, even five or more days ahead.",
+			"Failures cost money. One cabin charges NOK three hundred, even five or more days ahead. One carrier keeps vouchers when they cancel. Another keeps NOK fifty per change and gives nothing back inside twenty-four hours.",
+		],
+		// Talked about instead of read (the voice with no rule, 10 November).
+		[
+			"Fjeldtur plans cabin weekends for groups of friends. How would it make money?",
+			"Imagine an app called Fjeldtur. It plans cabin weekends for groups of friends. What's one way it could make money?",
+		],
+		// A word left out, a word changed, a word added to a caption with no number, words in another order, nothing.
+		["Planning the trip is free. So is voting on it.", "Planning the trip is free. So is voting."],
+		["Planning the trip is free. So is voting on it.", "Planning the trip is free. So is voting for it."],
+		["Planning the trip is free. So is voting on it.", "Sure. Planning the trip is free. So is voting on it."],
+		["Planning the trip is free. So is voting on it.", "So is voting on it. Planning the trip is free."],
+		["Planning the trip is free.", ""],
+		// A name with a digit in it is not a number: other letters, or none, are not the caption (review r1 of #1660).
+		["Our B2B plan is ready.", "Our B2C plan is ready."],
+		["Our B2B plan is ready.", "Our plan is ready."],
+		["The X200 ships in May.", "The Y200 ships in May."],
+	];
+	for (const [caption, said] of dropped) expect(explainerSpokenMatches(caption, said), said).toBe(false);
 });
 
 it("names a caption's clip as the engine does", () => {

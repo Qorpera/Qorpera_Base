@@ -175,6 +175,17 @@ describe("the explainer kit's engine", () => {
 		expect(broken.root.querySelector(".vp-fail")?.textContent).toBe(
 			"This video's script has a mistake (line 7): Uncaught ReferenceError: fee is not defined",
 		);
+		// A scenes.js that stops halfway: the page says so, and the page's own start after it starts no player.
+		const halfway = page();
+		halfway.V.scene((s) => s.say("A caption that was reached."));
+		window.dispatchEvent(
+			new ErrorEvent("error", { message: "Uncaught TypeError: s.cube is not a function", lineno: 12 }),
+		);
+		expect(() => halfway.V.start()).not.toThrow();
+		expect(halfway.root.querySelector(".vp")).toBeNull();
+		expect(halfway.root.querySelector(".vp-fail")?.textContent).toBe(
+			"This video's script has a mistake (line 12): Uncaught TypeError: s.cube is not a function",
+		);
 		// One wrong word for an icon does not stop the video.
 		const { V } = page();
 		expect(() =>

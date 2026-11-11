@@ -535,7 +535,9 @@ https://claude.ai/artifact/UWehPVysVzAmWcwvkuU6on.
   (`https://api.openai.com/v1`, Responses) with the token as the bearer, read by Codex's token command
   (`/bin/cat` on the file, run again each minute and after a refused request), at standard speed (Fast
   mode is a Codex login's). The sandbox binds the token directory read-only, and the run reaches
-  `api.openai.com` alone (not `chatgpt.com` or `auth.openai.com`: the vault renews). The agent's tools
+  `api.openai.com` alone (not `chatgpt.com` or `auth.openai.com`: the vault renews). A run on a Codex
+  login reaches `chatgpt.com` and `auth.openai.com`, and `api.openai.com` only while a voice call of the
+  run is open (RUNTIME-INTERFACE-APPS.md §3a, "The call"); no other relay is ever widened. The agent's tools
   never reach the host's run root, and Codex's own shell is off. A 429 on a plan run is the plan's usage
   limit (OpenAI's only 429 for plan use), which stops the work; Codex 0.155.1 reports it as a 429 it gave
   up on. OpenAI takes the host id (`ext_agent_host_id`) at sign-in only, not on each request, so runs

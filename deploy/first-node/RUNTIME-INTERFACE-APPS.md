@@ -230,7 +230,31 @@ web does not already answer. What the kit adds is that the agent writes one file
   play on. A clip that stopped while its caption still has some of it to say (the picture stood still and the clip
   ran out) is taken up again from where the timeline is, at most once a second (review r1 of #1659). Voice on/off
   is a button (and M), shown only when the video has clips; the captions always stay, for a silent phone.
-- **How the clips are made is the next step** (§7): the kit, the engine and the page are ready for them. The plan is
+- **The machine's part of making the clips** (10 November 2026) is three scripts the runtime holds as text
+  (`packages/runtime/kits/explainer/voice-*.cjs`, in `cloud-app-kit-explainer-voice.generated.ts`), each small
+  enough to travel in one machine command, each printing lines marked `QORPERA-VOICE ` with one JSON object:
+  - `voice-captions.cjs` opens the explainer's page in the machine's browser and prints the captions the running
+    video speaks, with each caption's clip name. The engine decides what a caption is; a read of `scenes.js` only
+    guesses. A page that says its video is broken gives no captions, though a `scenes.js` that stopped halfway
+    leaves the ones it got to in the video.
+  - `voice-peer.cjs` is the other end of the voice call: a headless browser makes the WebRTC offer (one silent
+    track out, the call's events channel), waits for the answer as a file in its work folder, and records what the
+    voice says, one file a turn. A turn is the call's own (`turn.created` to `turn.done`, then 0.7 s of quiet), so
+    the two ends need no shared clock. It is handed no sign-in and reads none: the call is placed where the sign-in
+    is, and only the offer and the answer pass between the two. A `stop` file ends it; so does its time (at most
+    290 s). A turn whose end has come is finished first, whatever ends the recording: its file is written and its
+    line printed. A turn that cannot be written, or is still not written 40 s after the recording was told to
+    end, ends the recording as a failure (reviews r1 to r3 of #1660).
+  - `voice-encode.cjs` writes the turns that were kept as clips into the app's `voice/` folder: silence cut from
+    both ends, AAC in `.mp4`, mono, 72 kbit/s, each written beside its place and moved in.
+  A clip is kept only when the voice said its caption (`explainerSpokenMatches`): every run of letters in the
+  caption is in the call's transcript, in order (the letters around a digit too: "B2B" is not "B2C"), and the
+  transcript has no more other words than six for each run of digits in the caption (a number is said in words no
+  rule lists for every language). That passes "596"
+  said in English or Danish and drops the caption that came back with two sentences of the voice's own.
+  Run together on a Mac with the official Codex placing the call (10 November): six captions read from the page,
+  spoken, checked and written as clips, with no turn started on the call's thread.
+- **The tool that drives them is the next step** (§7): the kit, the engine, the page and the scripts are ready. The plan is
   ChatGPT's own voice through the Codex the agent already runs on, one caption at a time, each clip checked against
   its caption by the call's transcript (Jonas, 10 November 2026: "if it can just be ChatGPT's AI voice driven on
   your subscription it would be ideal probably"; a trial on his Mac that day read 28 captions, and one of them came
@@ -262,8 +286,13 @@ web does not already answer. What the kit adds is that the agent writes one file
     answer to the stop, or the session's close; a refused stop confirms nothing), and the next call waits for that,
     so nothing the old session still says reaches the new one; a stop not confirmed within 10 seconds ends the run's
     voice, and the run goes on without it.
-  - Nothing opens a call yet: the tool that does is the next step, and with it the one host the call's control
-    connection needs beyond the run's own (Codex joins the call at `api.openai.com`).
+  - The call's control connection needs one host beyond the run's own: Codex makes the call at `chatgpt.com`, then
+    joins it over a websocket at `api.openai.com`. The run's relay lets `api.openai.com:443` through only while a
+    call is open, from just before `thread/realtime/start` until the call's stop is confirmed or given up on, or
+    the run's process ends; then it refuses new connections to it and cuts the ones open
+    (`NATIVE_CODEX_REALTIME_EGRESS_HOSTS`, `allowRealtime` in `cloud-native-egress.ts`). Only a Codex login's relay
+    can be widened so; a ChatGPT plan's and a Claude sign-in's cannot. The call's sound never passes the relay.
+  - Nothing opens a call yet: the tool that does is the next step. Until then the host is never let through.
 
 ## 4. Web
 

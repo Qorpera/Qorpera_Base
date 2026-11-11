@@ -594,6 +594,8 @@ class Video {
     // Once: a scenes.js that starts the video itself and the page that starts it after are one start.
     if (this.started) return;
     this.started = true;
+    // The page already says what is wrong (a scenes.js that stopped halfway): there is no player left to start.
+    if (this.root.querySelector(".vp-fail")) return;
     if (this.scenes.length === 0) { fail(this.root, "This video has no scenes yet."); return; }
     this.layout();
     const V = this, q = (c) => this.root.querySelector(c);

@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	NATIVE_CHATGPT_PLAN_EGRESS_HOSTS,
+	NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS,
+	NATIVE_CODEX_REALTIME_EGRESS_HOSTS,
 	type NativeEgressTransport,
 	nativeClientHelloServerName,
 	nativeEgressPublicAddress,
@@ -116,7 +118,7 @@ async function relay(transport: NativeEgressTransport, hosts?: readonly string[]
 		client.destroy();
 	});
 	await once(client, "connect");
-	return { client, abort, path: server.path };
+	return { client, abort, path: server.path, server };
 }
 
 async function rejected(client: Socket, bytes: Buffer | string): Promise<void> {
@@ -331,5 +333,151 @@ describe("private native egress relay", () => {
 		abort.abort();
 		await closed;
 		expect(transport.connect).not.toHaveBeenCalled();
+	});
+
+	describe("a voice call's window", () => {
+		const marker = "synthetic-encrypted-response";
+		async function target() {
+			const listener = createServer((socket) => {
+				socket.on("data", () => socket.write(marker));
+				socket.on("error", () => undefined);
+			});
+			listener.listen(0, "127.0.0.1");
+			await once(listener, "listening");
+			cleanup.push(() => new Promise<void>((resolve) => listener.close(() => resolve())));
+			const address = listener.address();
+			if (!address || typeof address === "string") throw new Error("Missing listener");
+			return {
+				resolve: vi.fn(async () => ["93.184.216.34"]),
+				connect: vi.fn(() => createConnection(address.port, "127.0.0.1")),
+			};
+		}
+		async function open(path: string): Promise<Socket> {
+			const socket = createConnection(path);
+			socket.on("error", () => undefined);
+			// Read, so the relay's close is seen.
+			socket.on("data", () => undefined);
+			cleanup.push(async () => {
+				socket.destroy();
+			});
+			await once(socket, "connect");
+			return socket;
+		}
+		/** Sends `bytes` and waits for the target's answer through the tunnel. */
+		function answered(socket: Socket, bytes: Buffer | string): Promise<void> {
+			return new Promise<void>((resolve, reject) => {
+				let text = "";
+				const data = (chunk: Buffer): void => {
+					text += chunk.toString();
+					if (!text.includes(marker)) return;
+					socket.removeListener("data", data);
+					socket.removeListener("close", closed);
+					resolve();
+				};
+				const closed = (): void => reject(new Error("Tunnel closed"));
+				socket.on("data", data);
+				socket.once("close", closed);
+				socket.write(bytes);
+			});
+		}
+		const connect = (host: string, name = host): Buffer =>
+			Buffer.concat([Buffer.from(`CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\n\r\n`), hello(name)]);
+		async function tunnel(path: string, host: string): Promise<Socket> {
+			const socket = await open(path);
+			await answered(socket, connect(host));
+			return socket;
+		}
+
+		it("lets OpenAI's API through a Codex login's relay only while a window is open, under the same checks", async () => {
+			expect(NATIVE_CODEX_REALTIME_EGRESS_HOSTS).toEqual(["api.openai.com"]);
+			expect(Object.isFrozen(NATIVE_CODEX_REALTIME_EGRESS_HOSTS)).toBe(true);
+			const transport = await target();
+			const { client, path, server } = await relay(transport);
+			client.destroy();
+			if (!server.allowRealtime) throw new Error("A Codex login's relay has a voice window");
+			await rejected(await open(path), connect("api.openai.com"));
+			expect(transport.resolve).not.toHaveBeenCalled();
+			const end = server.allowRealtime();
+			// The SNI must still name the host the CONNECT named, and only port 443 passes.
+			await rejected(await open(path), connect("api.openai.com", "chatgpt.com"));
+			await rejected(await open(path), "CONNECT api.openai.com:80 HTTP/1.1\r\n\r\n");
+			await rejected(await open(path), connect("api.anthropic.com"));
+			expect(transport.resolve).not.toHaveBeenCalled();
+			await tunnel(path, "api.openai.com");
+			expect(transport.resolve).toHaveBeenCalledExactlyOnceWith("api.openai.com", expect.any(AbortSignal));
+			end();
+			await rejected(await open(path), connect("api.openai.com"));
+			expect(transport.resolve).toHaveBeenCalledTimes(1);
+			// The list's own hosts are as they were.
+			await tunnel(path, "chatgpt.com");
+		});
+
+		it("nests windows, counts each closer once, and cuts the host's tunnels with the last one", async () => {
+			const transport = await target();
+			const { client, path, server } = await relay(transport);
+			client.destroy();
+			if (!server.allowRealtime) throw new Error("A Codex login's relay has a voice window");
+			const first = server.allowRealtime();
+			const second = server.allowRealtime();
+			const call = await tunnel(path, "api.openai.com");
+			const login = await tunnel(path, "chatgpt.com");
+			first();
+			first();
+			// One window is still open: the tunnel carries on, and a new one opens.
+			await answered(call, "more");
+			const later = await tunnel(path, "api.openai.com");
+			const cut = Promise.all([once(call, "close"), once(later, "close")]);
+			second();
+			await cut;
+			await rejected(await open(path), connect("api.openai.com"));
+			// A tunnel to the list's own host stands.
+			await answered(login, "more");
+			// A closer that already ran opens nothing again; a new window opens the host again.
+			second();
+			await rejected(await open(path), connect("api.openai.com"));
+			const third = server.allowRealtime();
+			await tunnel(path, "api.openai.com");
+			third();
+		});
+
+		it("cuts a connection to the host that is still dialling when the window closes", async () => {
+			let resolving: () => void = () => undefined;
+			const started = new Promise<void>((resolve) => {
+				resolving = resolve;
+			});
+			let answer: (addresses: string[]) => void = () => undefined;
+			const transport = {
+				resolve: vi.fn(
+					() =>
+						new Promise<string[]>((resolve) => {
+							answer = resolve;
+							resolving();
+						}),
+				),
+				connect: vi.fn(() => new Socket()),
+			};
+			const { client, path, server } = await relay(transport);
+			client.destroy();
+			if (!server.allowRealtime) throw new Error("A Codex login's relay has a voice window");
+			const end = server.allowRealtime();
+			const socket = await open(path);
+			const closed = once(socket, "close");
+			socket.write(connect("api.openai.com"));
+			await started;
+			end();
+			answer(["93.184.216.34"]);
+			await closed;
+			expect(transport.connect).not.toHaveBeenCalled();
+		});
+
+		it.each([
+			["a ChatGPT plan", NATIVE_CHATGPT_PLAN_EGRESS_HOSTS],
+			["a Claude sign-in", NATIVE_CLAUDE_SIGN_IN_EGRESS_HOSTS],
+		])("cannot widen the relay of %s", async (_name, hosts) => {
+			const transport = await target();
+			const { server } = await relay(transport, hosts);
+			expect(server.allowRealtime).toBeUndefined();
+			expect("allowRealtime" in server).toBe(false);
+		});
 	});
 });
