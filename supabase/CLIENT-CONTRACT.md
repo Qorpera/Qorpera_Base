@@ -1362,7 +1362,7 @@ runs. Starting is not taking over: it needs no hold and takes none, and the agen
   use, within 15 s of the begin, of a member still an owner, admin or contributor of a company not being deleted, the
   machine still running and big enough, the disk rule read again (marking as the begin does); `served` only for the
   placement's own executor, and `held` when a member's hold began since the begin.
-- The machine stays awake under a member (point 5 of the brief): a member's look read moves the machine's last use (at
+- The machine stays awake under a member: a member's look read moves the machine's last use (at
   most every 30 s) while their word that they watch is at most 30 minutes old, and a hold's heartbeat moves it when it
   renews the lease. Without them a task machine whose desktop a member only watched slept after its executor's
   `sleep_after_seconds` (an hour by default), and a hold kept by heartbeats alone could too.
