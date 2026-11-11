@@ -1,5 +1,4 @@
 import { CloudRpcError } from "../../cloud/client.ts";
-import { CloudShapeError } from "../../cloud/parse.ts";
 import type {
 	CodeReleaseCalls,
 	CodeReleaseChange,
@@ -79,21 +78,27 @@ function titleOf(site: CodeReleaseSite): string {
 	return site.site?.title ?? site.site?.slug ?? site.name;
 }
 
-/** Why a write did not go through, in the interface language. `unknown`: no answer came (the deadline, no network),
- * so the write may have gone through all the same: the read after it tells. */
-function failure(error: unknown): { why: string; unknown: boolean } {
-	if (error instanceof CloudRpcError) {
-		if (error.code === "42501") return { why: t("only founders and admins can put a version live"), unknown: false };
-		// The 3 s lock wait (the executor was keeping a new version) or the statement's time.
-		if (error.code === "55P03" || error.code === "57014")
-			return { why: t("Qorpera was busy for a moment"), unknown: false };
-		if (error.code === "P0002") return { why: t("the project is no longer there"), unknown: false };
-		// A request that never got an answer has no status.
-		if (error.status !== undefined && error.status > 0)
-			return { why: t("something went wrong on Qorpera's side"), unknown: false };
-	} else if (error instanceof CloudShapeError)
-		return { why: t("something went wrong on Qorpera's side"), unknown: true };
-	return { why: t("Qorpera could not be reached"), unknown: true };
+/** Why the database refused a write, in the interface language; undefined when nothing proves it did not go through.
+ * Only an error PostgREST answers with one of these SQLSTATEs proves that the call's transaction rolled back: the two
+ * functions raise 42501 (not an owner or admin), P0002 (no such repository) and 22023 (a malformed argument), and
+ * Postgres raises 55P03 (the 3 s lock wait) and 57014 (the statement's time). Anything else may have come after a
+ * commit (a gateway's 502 or 504, a 5xx with no SQLSTATE, a body that is no JSON, a malformed answer, the deadline, no
+ * network): the write may have gone through, so the page claims neither until a read shows which (E.md lists every
+ * kind). */
+function refusal(error: unknown): string | undefined {
+	if (!(error instanceof CloudRpcError)) return undefined;
+	switch (error.code) {
+		case "42501":
+			return t("only founders and admins can put a version live");
+		case "55P03":
+		case "57014":
+			return t("Qorpera was busy for a moment");
+		case "P0002":
+			return t("the project is no longer there");
+		case "22023":
+			return t("something went wrong on Qorpera's side");
+	}
+	return undefined;
 }
 
 export class WhatsNewView {
@@ -292,8 +297,8 @@ export class WhatsNewView {
 							};
 		} catch (error) {
 			if (this.#lifetime.signal.aborted) return;
-			const { why, unknown } = failure(error);
-			if (unknown) {
+			const why = refusal(error);
+			if (why === undefined) {
 				// No answer: it may have gone through. Claim neither until a read shows which.
 				this.#unsettled = {
 					site: key,

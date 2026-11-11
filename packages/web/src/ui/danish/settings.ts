@@ -502,7 +502,6 @@ export const SETTINGS: Record<string, string> = {
 		"Noget har ændret sig, mens du kiggede. Her er det, der er live nu.",
 	"It did not go live: {why}. Nothing changed.": "Det blev ikke sat live: {why}. Intet er ændret.",
 	"It did not go back: {why}. Nothing changed.": "Den blev ikke sat live igen: {why}. Intet er ændret.",
-	"Qorpera could not be reached": "Qorpera kunne ikke nås",
 	"only founders and admins can put a version live": "kun stiftere og administratorer kan sætte en version live",
 	"Qorpera was busy for a moment": "Qorpera havde travlt et øjeblik",
 	"the project is no longer there": "projektet findes ikke længere",
