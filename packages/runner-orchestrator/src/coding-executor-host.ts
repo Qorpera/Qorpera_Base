@@ -2176,13 +2176,15 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 *    nothing of it stays pending in the session's view for a later boundary to hold on: after a refused or missed
 	 *    boundary, after the code's refusal, and after a collect that failed, ended at its limit, was stopped or was lost
 	 *    by the guest. Only once the collect is known to have ended (#checksCommand's `ended`): never beside one that may
-	 *    still write (a start never answered, a stop not confirmed, a machine that shows nothing of its commands), which
-	 *    the memories and the next run's look again end, and never after its exit 91 (a newer run's folder stood: it
-	 *    wrote nothing, and the drop would find the same). Inside the run's budget: once that passed, the drop cannot
-	 *    start. When a boundary was asked and did not save, it is asked once more after the drop; when none was asked,
+	 *    still write (a start never answered, a stop not confirmed), which the memories and the next run's look again
+	 *    end, and never after its exit 91 (a newer run's folder stood: it wrote nothing, and the drop would find the
+	 *    same). When a boundary was asked and did not save, it is asked once more after the drop; when none was asked,
 	 *    none is asked for the drop. What the drop came to changes nothing of the site.
-	 * Each step is tried once. It throws only the turn's abort, as a check's command does, and starts nothing after it:
-	 * no drop either. */
+	 * The collect and the drop each run within their own limit and a minute more, and within what is left of the run's
+	 * budget (review, F1: a command whose reads are never released shows `running` until its bound): once the budget
+	 * passed, the drop cannot start. Each command starts once; the boundary is asked again while it checks or does not
+	 * answer, for at most CODE_SITE_BOUNDARY_MS. It throws only the turn's abort, as a check's command does, and starts
+	 * nothing after it: no drop either. */
 	async #takeSite(
 		ready: Prepared,
 		folder: FolderOptions,
@@ -2334,8 +2336,12 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					};
 		this.#checksReport({ event: "code-checks", step: "started", ...step });
 		const started = performance.now();
-		// As the copy's: its output is its answer's lines, read from its receipt, and no failed check's tail is read.
-		const ended = await this.#checksCommand(transport, ready.scope, command, true, run.budget, signal, folder);
+		// As the copy's: its output is its answer's lines, read from its receipt, and no failed check's tail is read. Its
+		// deadline is its own limit and a minute more, within the run's budget: the transport shows `running` for as long
+		// as the machine's reads are not released, also for a command the guest has ended (review, F1). Both signals are
+		// the run's own, never the turn's or the process's.
+		const bounded = AbortSignal.any([run.budget, AbortSignal.timeout(command.timeoutMs + CODE_CHECKS_SLACK_MS)]);
+		const ended = await this.#checksCommand(transport, ready.scope, command, true, bounded, signal, folder);
 		const ms = Math.round(performance.now() - started);
 		if ("why" in ended) {
 			this.#checksReport({
@@ -2451,9 +2457,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * end for certain leaves it in the session's memories (#checksMayRun, #checksUncertain): a start never answered, a
 	 * stop not confirmed, a receipt or a `hidden` that says `unconfirmed` (review round 6, F1). An answer that is not a
 	 * receipt says whether the command has ended all the same (`ended`, the site's drop asks it): the guest's own word,
-	 * a receipt in any state but `running` (`unconfirmed` too: the guest's unit is no longer live), or a stop that
-	 * confirmed the end of a start that was answered; or `hidden` saying the machine it ran on stopped. Not ended: a
-	 * start never answered, a stop not confirmed, `hidden` saying `unconfirmed`. */
+	 * a receipt in any state but `running` (`unconfirmed` too: the guest's unit is no longer live), so also when
+	 * `hidden` then shows nothing of it (it is asked only after such a receipt), or a stop that confirmed the end of a
+	 * start that was answered. Not ended: a start never answered, a stop not confirmed. */
 	async #checksCommand(
 		transport: LxdCodingFolderCommandTransport,
 		scope: CloudCodingCommandScope,
@@ -2524,7 +2530,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				return await stopped(overBudget);
 			}
 		}
-		// Ended without a word of how (the guest lost it): it may still run.
+		// Ended without a word of how (the guest lost it: its unit is no longer live). The host did not see how, so it is
+		// not an end for certain: looked at again after the next run's fence.
 		if (receipt.state === "unconfirmed") uncertain();
 		let tail = "",
 			unread: unknown;
@@ -2544,11 +2551,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		try {
 			// Shown as a model's command is, or not at all: the machine may hold a read it no longer may show.
 			const hidden = await transport.hidden(commandId, live);
-			// The machine shows nothing of its commands now (`unconfirmed`): one may still run there. A machine that
-			// stopped, or a disk it no longer has, ended it for certain.
+			// The machine shows nothing of its commands now (`unconfirmed`): its receipt said it ended, but nothing of the
+			// machine's is believed until it shows its commands again, so it is looked at again after the next run's fence.
+			// A machine that stopped, or a disk it no longer has, ended it for certain. Either way it has ended (review, F2).
 			if (hidden === "unconfirmed") uncertain();
-			if (hidden !== undefined)
-				return { why: "machine", code: `CODE_CHECKS_${hidden.toUpperCase()}`, ended: hidden === "machine_stopped" };
+			if (hidden !== undefined) return { why: "machine", code: `CODE_CHECKS_${hidden.toUpperCase()}`, ended: true };
 		} catch (error) {
 			if (signal.aborted) throw signal.reason;
 			// Its receipt said it ended.

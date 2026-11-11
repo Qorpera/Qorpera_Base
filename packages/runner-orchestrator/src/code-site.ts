@@ -6,10 +6,11 @@ import { bytes, shown } from "./code-words.ts";
  * (`"site": {"folder": "dist"}`). Once every check of a run passed, the executor's runner starts one more command of the
  * run, the collect (`CODE_SITE_COLLECT`): it takes the folder's web files from the clean copy on the session's machine
  * and writes them as git objects, their blobs and one tree, into the repository's own storage, where the upload pass
- * reads the tree later (`code-host-sites.ts`). When the folder's boundary after it did not save everything, the drop
- * (`CODE_SITE_DROP`) removes again what the collect wrote. This file holds what is pure of it: the site's rules, both
- * commands' texts and how their answers read, the report's value and the words of a refused site. It imports nothing
- * of the platform's (`deploy/coding-machine/test/code-checks-scripts.mjs` prints its commands with Node alone). */
+ * reads the tree later (`code-host-sites.ts`). Whenever a collect that started has ended without a site made and saved
+ * by the folder's boundary, the drop (`CODE_SITE_DROP`) removes again what it wrote (not after its exit 91, nor after
+ * the turn's abort). This file holds what is pure of it: the site's rules, both commands' texts and how their answers
+ * read, the report's value and the words of a refused site. It imports nothing of the platform's
+ * (`deploy/coding-machine/test/code-checks-scripts.mjs` prints its commands with Node alone). */
 
 /** A site's bounds, `publish_site`'s: files, bytes in all, bytes a file, and folders below the site's top that lead to a
  * file (every folder on a file's way counts: `a/b/c.css` counts `a` and `a/b`, each one tree the collect writes, so
@@ -414,9 +415,10 @@ for i in lines:
 			pass
 os.write(1,b"dropped %d\n"%dropped)`;
 
-/** The drop (part C2 runs it when the boundary after the collect did not save everything, then asks the boundary once
- * more): the objects the collect wrote go again, before a refused one holds the session's storage (a secret value the
- * machine's masks cover is in one, or the save check could not finish). Its environment: QORPERA_CHECKS_ROOT,
+/** The drop (part C2 runs it whenever a collect that started has ended without a site made and saved, but not after
+ * its exit 91 nor after the turn's abort, and asks the boundary once more when one was asked after the collect): the
+ * objects the collect wrote go again, before a refused one holds the session's storage (a secret value the machine's
+ * masks cover is in one, or the save check could not finish). Its environment: QORPERA_CHECKS_ROOT,
  * QORPERA_CHECKS_NAME, QORPERA_CHECKS_REPOSITORY. Uses bash, python3 and the guard's `basename`. Exits 0 with
  * `dropped <n>` (`codeSiteDropAnswer`), 91 when a newer run's folder stands (nothing removed). */
 export const CODE_SITE_DROP = [
