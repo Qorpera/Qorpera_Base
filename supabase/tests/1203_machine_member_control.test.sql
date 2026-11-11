@@ -29,11 +29,14 @@
 --    both get none;
 -- 10. a root read taken away between an action's begin and the executor's read (review r1 F2): the action runs, the
 --    disk that never had a view is marked, and the platform's open then refuses it;
--- 11. take-over attempts called off (review r3): called off before it arrives, a take-over is refused (TAKE_CALLED_OFF)
---    and holds, moves and records nothing; called off while it holds, the lease is given back and the attempt never takes
+-- 11. take-over attempts (reviews r3, r4): called off before it arrives, a take-over is refused (TAKE_CALLED_OFF) and
+--    holds, moves and records nothing; called off while it holds, the lease is given back and the attempt never takes
 --    again; calling off twice answers the same; a new attempt takes over as ever; another member's attempt of the same id
---    is untouched; only the attempt that holds the lease renews it, and the holder's list says which; the generation
---    moves as 9 needs; the hand-back tidies its rows (a day old, beyond the newest 256), never another member's.
+--    is untouched; only the attempt that holds the lease renews it, and the holder's list says which; a hand-back ends
+--    only a lease held by an attempt it names and says whether the member holds it elsewhere; a late hand-back, both
+--    ways; the generation moves as 9 needs; an attempt more than 2 minutes from the database's clock is refused
+--    (TAKE_EXPIRED), with or without a call-off record, after 300 newer call-offs, and after its record was tidied;
+--    records go after an hour by age alone, never another member's; the list answers the database's time.
 
 -- Alice's run acknowledges first, as a member's wake requires before any work (924).
 select pg_temp.base_claims('service_role');
@@ -135,12 +138,18 @@ $$;
 create function pg_temp.dc_name(p_who text) returns text language sql as $$
 	select public.qorpera_review_member_name('92400000-0000-4000-8000-000000000010', pg_temp.dc_user(p_who))
 $$;
+-- A take-over attempt as the member's page makes one: a version 7 uuid whose first 48 bits are its time in milliseconds
+-- since the epoch (now, unless shifted), the rest random.
+create function pg_temp.dc_attempt(p_shift interval default interval '0') returns uuid language sql volatile as $$
+	select (lpad(to_hex((extract(epoch from clock_timestamp() + p_shift) * 1000)::bigint), 12, '0') || '7'
+		|| substr(md5(random()::text), 1, 3) || '8' || substr(md5(random()::text), 1, 15))::uuid
+$$;
 -- A take-over names its attempt, a fresh one as the member's page makes it unless the test names it.
 create function pg_temp.dc_take(p_who text, p_machine text, p_profile uuid default '92400000-0000-4000-8000-000000000010',
 	p_attempt uuid default null)
 returns text language sql as $$
 	select pg_temp.dc_as(pg_temp.dc_user(p_who), format('select public.qorpera_member_take_machine_desktop(%L, %L, %L)',
-		p_profile, pg_temp.dc_id(p_machine), coalesce(p_attempt, pg_catalog.gen_random_uuid())))
+		p_profile, pg_temp.dc_id(p_machine), coalesce(p_attempt, pg_temp.dc_attempt())))
 $$;
 -- A heartbeat names the attempt that holds the lease now (as the holder's window knows it) unless the test names one.
 create function pg_temp.dc_keep(p_who text, p_machine text, p_attempt uuid default null) returns text language sql as $$
@@ -149,11 +158,14 @@ create function pg_temp.dc_keep(p_who text, p_machine text, p_attempt uuid defau
 			(select machine.desktop_member_attempt_id from public.qorpera_company_machines as machine
 				where machine.id = pg_temp.dc_id(p_machine)), pg_catalog.gen_random_uuid())))
 $$;
--- A hand-back calls off the attempts named (none unless the test names them).
+-- A hand-back calls off the attempts named: unless the test names them, the attempt that holds the machine's lease now
+-- (as the holder's window knows it), or none.
 create function pg_temp.dc_back(p_who text, p_machine text, p_reason text default 'handed_back',
-	p_attempts uuid[] default '{}') returns text language sql as $$
+	p_attempts uuid[] default null) returns text language sql as $$
 	select pg_temp.dc_as(pg_temp.dc_user(p_who), format('select public.qorpera_member_hand_back_machine_desktop(%L, %L, %L, %L)',
-		'92400000-0000-4000-8000-000000000010', pg_temp.dc_id(p_machine), p_reason, p_attempts))
+		'92400000-0000-4000-8000-000000000010', pg_temp.dc_id(p_machine), p_reason, coalesce(p_attempts,
+			(select array_remove(array[machine.desktop_member_attempt_id], null) from public.qorpera_company_machines as machine
+				where machine.id = pg_temp.dc_id(p_machine)), '{}'::uuid[])))
 $$;
 create function pg_temp.dc_act(p_who text, p_machine text, p_action jsonb) returns text language sql as $$
 	select pg_temp.dc_as(pg_temp.dc_user(p_who), format('select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L)',
@@ -368,12 +380,14 @@ select set_config('qorpera_test.dc_1x', pg_temp.dc_differ(jsonb_build_array(
 		'42501:Machine desktop is unavailable'),
 	jsonb_build_array('no machine', pg_temp.dc_as(pg_temp.dc_user('owner'), format(
 		'select public.qorpera_member_take_machine_desktop(%L, null, %L)', '92400000-0000-4000-8000-000000000010',
-		pg_catalog.gen_random_uuid())), '22023:Machine desktop request is malformed'),
+		pg_temp.dc_attempt())), '22023:Machine desktop request is malformed'),
 	jsonb_build_array('no attempt', pg_temp.dc_as(pg_temp.dc_user('owner'), format(
 		'select public.qorpera_member_take_machine_desktop(%L, %L, null)', '92400000-0000-4000-8000-000000000010',
 		pg_temp.dc_id('a4'))), '22023:Machine desktop request is malformed'),
+	jsonb_build_array('an attempt of another version', pg_temp.dc_take('owner', 'a4', p_attempt => pg_catalog.gen_random_uuid()),
+		'22023:Machine desktop request is malformed'),
 	jsonb_build_array('the service role', pg_temp.dc_service(format('select public.qorpera_member_take_machine_desktop(%L, %L, %L)',
-		'92400000-0000-4000-8000-000000000010', pg_temp.dc_id('a4'), pg_catalog.gen_random_uuid())),
+		'92400000-0000-4000-8000-000000000010', pg_temp.dc_id('a4'), pg_temp.dc_attempt())),
 		'42501:permission denied for function qorpera_member_take_machine_desktop')
 )), true);
 do $$
@@ -748,9 +762,9 @@ begin
 			and current_setting('qorpera_test.dc_c61')::jsonb -> 0 -> 1 = '"idle"'
 			and current_setting('qorpera_test.dc_c61')::jsonb -> 1 = jsonb_build_array(pg_temp.dc_user('admin'), null, 0),
 		'6: a take-over after an idle lease closes it as idle: ' || current_setting('qorpera_test.dc_c61'));
-	perform pg_temp.base_assert(current_setting('qorpera_test.dc_b61') = 'ok:{"state": "ok", "schema": "qorpera.member-machine-desktop/v1", "handedBack": false}',
+	perform pg_temp.base_assert(current_setting('qorpera_test.dc_b61') = 'ok:{"state": "ok", "schema": "qorpera.member-machine-desktop/v1", "handedBack": false, "heldElsewhere": false}',
 		'6: a member gives back only their own: ' || current_setting('qorpera_test.dc_b61'));
-	perform pg_temp.base_assert(current_setting('qorpera_test.dc_b62') = 'ok:{"state": "ok", "schema": "qorpera.member-machine-desktop/v1", "handedBack": true}'
+	perform pg_temp.base_assert(current_setting('qorpera_test.dc_b62') = 'ok:{"state": "ok", "schema": "qorpera.member-machine-desktop/v1", "handedBack": true, "heldElsewhere": false}'
 			and pg_temp.dc_controls('a1') -> 1 -> 1 = '"closed"'
 			and v_machine.desktop_member_user_id is null and v_machine.desktop_member_since is null
 			and v_machine.desktop_member_until is null and v_machine.desktop_member_input_at is null,
@@ -770,7 +784,7 @@ begin
 	perform pg_temp.base_assert(pg_temp.dc_answer(current_setting('qorpera_test.dc_t63')) ->> 'state' = 'ok'
 			and current_setting('qorpera_test.dc_c63')::jsonb -> 2 -> 1 = '"lapsed"',
 		'6: a lease whose heartbeat stopped lapses: ' || current_setting('qorpera_test.dc_c63'));
-	perform pg_temp.base_assert(current_setting('qorpera_test.dc_b63') = 'ok:{"state": "ok", "schema": "qorpera.member-machine-desktop/v1", "handedBack": false}'
+	perform pg_temp.base_assert(current_setting('qorpera_test.dc_b63') = 'ok:{"state": "ok", "schema": "qorpera.member-machine-desktop/v1", "handedBack": false, "heldElsewhere": false}'
 			and pg_temp.dc_controls('a1') -> 3 -> 1 = '"lapsed"' and (pg_temp.dc_machine('a1')).desktop_member_user_id is null,
 		'6: handing back a lapsed lease closes it as it ended: ' || current_setting('qorpera_test.dc_b63') || pg_temp.dc_controls('a1')::text);
 end $$;
@@ -779,7 +793,7 @@ select pg_temp.dc_take('contributor', 'a1');
 select set_config('qorpera_test.dc_b64', pg_temp.dc_back('contributor', 'a1'), true);
 select set_config('qorpera_test.dc_6y', pg_temp.dc_differ(jsonb_build_array(
 	jsonb_build_array('handed back', current_setting('qorpera_test.dc_b64'),
-		'ok:{"state": "ok", "schema": "qorpera.member-machine-desktop/v1", "handedBack": true}'),
+		'ok:{"state": "ok", "schema": "qorpera.member-machine-desktop/v1", "handedBack": true, "heldElsewhere": false}'),
 	jsonb_build_array('its row', pg_temp.dc_controls('a1') -> 4 ->> 1, 'handed_back'),
 	jsonb_build_array('the agent looks again', pg_temp.dc_answer(pg_temp.dc_look('a1')) ->> 'state', 'authorized'),
 	jsonb_build_array('the agent starts a command again', pg_temp.dc_answer(pg_temp.dc_command('103', 'start')) ->> 'state',
@@ -976,22 +990,23 @@ begin
 	perform pg_temp.dc_back('contributor', 'a1');
 end $$;
 
--- 11. Take-over attempts called off (review r3 of #1661) ------------------------------------------------------------------
+-- 11. Take-over attempts: called off, and expired (reviews r3 and r4 of #1661) -------------------------------------------
 
 do $$
 declare
-	v_x uuid := '12030000-0000-4000-8000-000000001101';
-	v_y uuid := '12030000-0000-4000-8000-000000001102';
-	v_z uuid := '12030000-0000-4000-8000-000000001103';
-	v_w uuid := '12030000-0000-4000-8000-000000001104';
+	v_x uuid := pg_temp.dc_attempt();
+	v_y uuid := pg_temp.dc_attempt();
+	v_z uuid := pg_temp.dc_attempt();
+	v_w uuid := pg_temp.dc_attempt();
 	v_before public.qorpera_company_machines;
 	v_after public.qorpera_company_machines;
 	v_controls jsonb;
 	v_g bigint;
 	v text;
 	v_ended text := 'ok:{"state": "ended", "schema": "qorpera.member-machine-desktop/v1"}';
-	v_none text := 'ok:{"state": "ok", "schema": "qorpera.member-machine-desktop/v1", "handedBack": false}';
-	v_held text := 'ok:{"state": "ok", "schema": "qorpera.member-machine-desktop/v1", "handedBack": true}';
+	v_none text := 'ok:{"state": "ok", "schema": "qorpera.member-machine-desktop/v1", "handedBack": false, "heldElsewhere": false}';
+	v_held text := 'ok:{"state": "ok", "schema": "qorpera.member-machine-desktop/v1", "handedBack": true, "heldElsewhere": false}';
+	v_elsewhere text := 'ok:{"state": "ok", "schema": "qorpera.member-machine-desktop/v1", "handedBack": false, "heldElsewhere": true}';
 	v_called_off text := pg_temp.dc_refused('qorpera.member-machine-desktop/v1', 'TAKE_CALLED_OFF');
 begin
 	perform pg_temp.base_assert((pg_temp.dc_machine('a1')).desktop_member_user_id is null, '11: no one holds m-1203');
@@ -1047,8 +1062,8 @@ begin
 	v := pg_temp.dc_keep('contributor', 'a1', v_y);
 	perform pg_temp.base_assert(v = v_ended and (pg_temp.dc_machine('a1')).desktop_member_until = v_before.desktop_member_until,
 		'11: another attempt''s heartbeat renews nothing: ' || v);
-	-- Taken again by a newer attempt of the member's: the lease is that one's (the generation stays), the older one's
-	-- heartbeat ends, and the holder's list names the newer one (to the holder alone).
+	-- Taken again by a newer attempt of the member's (another tab of theirs): the lease is that one's (the generation
+	-- stays), the older one's heartbeat ends, and the holder's list names the newer one (to the holder alone).
 	v := pg_temp.dc_take('contributor', 'a1', p_attempt => v_w);
 	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'ok' and pg_temp.dc_generation('a1') = v_g + 3
 			and pg_temp.dc_keep('contributor', 'a1', v_z) = v_ended
@@ -1056,45 +1071,142 @@ begin
 			and pg_temp.dc_listed('contributor', 'm-1203') -> 'control' ->> 'attempt' = v_w::text
 			and not (pg_temp.dc_listed('viewer', 'm-1203') -> 'control' ? 'attempt'),
 		'11: taken again by a newer attempt: that one renews it, and the holder''s list names it: ' || v);
-	-- One hand-back naming both gives it back, and neither takes again.
+	-- A hand-back that names only the older attempt ends nothing of the newer one's, and says the member still holds it
+	-- (review r4 F9); one naming the newer one gives it back.
+	v := pg_temp.dc_back('contributor', 'a1', 'handed_back', array[v_z]);
+	v_after := pg_temp.dc_machine('a1');
+	perform pg_temp.base_assert(v = v_elsewhere and v_after.desktop_member_user_id = pg_temp.dc_user('contributor')
+			and v_after.desktop_member_attempt_id = v_w and v_after.desktop_member_until > clock_timestamp()
+			and v_after.desktop_member_generation = v_g + 3,
+		'11: a hand-back of the older attempt leaves the newer one''s lease, and says it is held elsewhere: ' || v);
 	v := pg_temp.dc_back('contributor', 'a1', 'handed_back', array[v_z, v_w]);
 	perform pg_temp.base_assert(v = v_held and pg_temp.dc_generation('a1') = v_g + 4
 			and pg_temp.dc_take('contributor', 'a1', p_attempt => v_w) = v_called_off
 			and pg_temp.dc_take('contributor', 'a1', p_attempt => v_z) = v_called_off
 			and (pg_temp.dc_machine('a1')).desktop_member_user_id is null,
-		'11: one hand-back naming both: ' || v);
+		'11: naming the newer one gives it back, and neither takes again: ' || v);
 end $$;
 
--- The hand-back tidies the member's called-off attempts on the machine: a day old, or beyond their newest 256; another
--- member's stay.
+-- A hand-back that arrives late (review r4 F9), both ways: R1 for attempt A times out on its way and its retry R2 gives A's
+-- lease back; then (i) B takes the desktop and R1 arrives: B keeps it; or (ii) R1 arrives before B takes: B takes normally.
 do $$
 declare
-	v_new uuid := '12030000-0000-4000-8000-000000001199';
-	v_old uuid := '12030000-0000-4000-8000-000000001198';
+	v_a uuid := pg_temp.dc_attempt();
+	v_b uuid := pg_temp.dc_attempt();
+	v text;
+	v_none text := 'ok:{"state": "ok", "schema": "qorpera.member-machine-desktop/v1", "handedBack": false, "heldElsewhere": false}';
+	v_held text := 'ok:{"state": "ok", "schema": "qorpera.member-machine-desktop/v1", "handedBack": true, "heldElsewhere": false}';
+	v_elsewhere text := 'ok:{"state": "ok", "schema": "qorpera.member-machine-desktop/v1", "handedBack": false, "heldElsewhere": true}';
+	v_machine public.qorpera_company_machines;
+begin
+	-- (i)
+	perform pg_temp.base_assert(pg_temp.dc_answer(pg_temp.dc_take('contributor', 'a1', p_attempt => v_a)) ->> 'state' = 'ok',
+		'11 (i): A takes over');
+	v := pg_temp.dc_back('contributor', 'a1', 'closed', array[v_a]);
+	perform pg_temp.base_assert(v = v_held, '11 (i): R2 gives A''s lease back: ' || v);
+	perform pg_temp.base_assert(pg_temp.dc_answer(pg_temp.dc_take('contributor', 'a1', p_attempt => v_b)) ->> 'state' = 'ok',
+		'11 (i): B takes over');
+	v := pg_temp.dc_back('contributor', 'a1', 'closed', array[v_a]);
+	v_machine := pg_temp.dc_machine('a1');
+	perform pg_temp.base_assert(v = v_elsewhere and v_machine.desktop_member_attempt_id = v_b
+			and v_machine.desktop_member_until > clock_timestamp()
+			and pg_temp.dc_answer(pg_temp.dc_keep('contributor', 'a1', v_b)) ->> 'state' = 'ok',
+		'11 (i): R1 arrives late and ends nothing of B''s: ' || v);
+	perform pg_temp.base_assert(pg_temp.dc_back('contributor', 'a1', 'handed_back', array[v_b]) = v_held, '11 (i): B gives it back');
+	-- (ii)
+	v_a := pg_temp.dc_attempt();
+	v_b := pg_temp.dc_attempt();
+	perform pg_temp.base_assert(pg_temp.dc_answer(pg_temp.dc_take('contributor', 'a1', p_attempt => v_a)) ->> 'state' = 'ok',
+		'11 (ii): A takes over');
+	perform pg_temp.base_assert(pg_temp.dc_back('contributor', 'a1', 'closed', array[v_a]) = v_held, '11 (ii): R2 gives it back');
+	v := pg_temp.dc_back('contributor', 'a1', 'closed', array[v_a]);
+	perform pg_temp.base_assert(v = v_none, '11 (ii): R1 arrives before B: nothing to give back: ' || v);
+	v := pg_temp.dc_take('contributor', 'a1', p_attempt => v_b);
+	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'ok'
+			and (pg_temp.dc_machine('a1')).desktop_member_attempt_id = v_b, '11 (ii): B takes over normally: ' || v);
+	perform pg_temp.base_assert(pg_temp.dc_back('contributor', 'a1', 'handed_back', array[v_b]) = v_held, '11 (ii): B gives it back');
+end $$;
+
+-- An attempt takes only within 2 minutes of its time, either way (review r4 F5), whatever became of its call-off record;
+-- call-off records go after an hour, by age alone.
+do $$
+declare
+	v_expired text := pg_temp.dc_refused('qorpera.member-machine-desktop/v1', 'TAKE_EXPIRED');
+	v_called_off text := pg_temp.dc_refused('qorpera.member-machine-desktop/v1', 'TAKE_CALLED_OFF');
+	v_none text := 'ok:{"state": "ok", "schema": "qorpera.member-machine-desktop/v1", "handedBack": false, "heldElsewhere": false}';
+	v_old uuid := pg_temp.dc_attempt(interval '-3 minutes');
+	v_future uuid := pg_temp.dc_attempt(interval '3 minutes');
+	v_recent uuid := pg_temp.dc_attempt(interval '-90 seconds');
+	v_kept uuid := pg_temp.dc_attempt();
+	v_tidied uuid := pg_temp.dc_attempt(interval '-2 hours');
+	v_before public.qorpera_company_machines := pg_temp.dc_machine('a1');
+	v_rows bigint;
 	v_admin bigint;
 	v text;
+	n integer;
 begin
+	-- Three minutes old, and three minutes ahead: refused, nothing held or moved.
+	v := pg_temp.dc_take('contributor', 'a1', p_attempt => v_old);
+	perform pg_temp.base_assert(v = v_expired, '11: an attempt three minutes old is refused: ' || v);
+	v := pg_temp.dc_take('contributor', 'a1', p_attempt => v_future);
+	perform pg_temp.base_assert(v = v_expired, '11: an attempt three minutes ahead is refused: ' || v);
+	perform pg_temp.base_assert((pg_temp.dc_machine('a1')).desktop_member_user_id is null
+			and (pg_temp.dc_machine('a1')).desktop_member_generation = v_before.desktop_member_generation,
+		'11: an expired attempt holds and moves nothing');
+	-- A hand-back naming an expired attempt writes nothing for it (it can never take), answers as ever, and the attempt
+	-- stays refused; one with a call-off record of its own is refused as called off.
+	v := pg_temp.dc_back('contributor', 'a1', 'closed', array[v_old, v_future]);
+	perform pg_temp.base_assert(v = v_none and not exists (select 1 from public.qorpera_company_machine_desktop_called_off
+			where machine_id = pg_temp.dc_id('a1') and attempt_id in (v_old, v_future)),
+		'11: a hand-back naming expired attempts writes nothing for them: ' || v);
+	perform pg_temp.base_assert(pg_temp.dc_take('contributor', 'a1', p_attempt => v_old) = v_expired,
+		'11: without a call-off record, an old attempt is refused as expired');
 	insert into public.qorpera_company_machine_desktop_called_off(machine_id, user_id, attempt_id, called_off_at)
-	select pg_temp.dc_id('a1'), pg_temp.dc_user(who), pg_catalog.gen_random_uuid(), clock_timestamp() - n * interval '1 second'
-	from generate_series(1, 300) as n cross join unnest(array['contributor', 'admin']) as who
-	union all select pg_temp.dc_id('a1'), pg_temp.dc_user(who), v_old, clock_timestamp() - interval '2 days'
-	from unnest(array['contributor', 'admin']) as who;
+	values (pg_temp.dc_id('a1'), pg_temp.dc_user('contributor'), v_old, clock_timestamp() - interval '3 minutes');
+	perform pg_temp.base_assert(pg_temp.dc_take('contributor', 'a1', p_attempt => v_old) = v_called_off,
+		'11: with one, it is refused as called off');
+	-- Ninety seconds old: within the 2 minutes, it takes over.
+	v := pg_temp.dc_take('contributor', 'a1', p_attempt => v_recent);
+	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'ok', '11: an attempt 90 seconds old takes over: ' || v);
+	perform pg_temp.dc_back('contributor', 'a1', 'handed_back', array[v_recent]);
+	-- Called off, then 300 newer attempts called off (ten hand-backs of 30): it stays refused (no count rule).
+	perform pg_temp.dc_back('contributor', 'a1', 'handed_back', array[v_kept]);
+	for n in 1 .. 10 loop
+		perform pg_temp.dc_back('contributor', 'a1', 'handed_back',
+			array(select pg_temp.dc_attempt() from generate_series(1, 30)));
+	end loop;
+	perform pg_temp.base_assert(pg_temp.dc_take('contributor', 'a1', p_attempt => v_kept) = v_called_off
+			and (select count(*) from public.qorpera_company_machine_desktop_called_off
+				where machine_id = pg_temp.dc_id('a1') and user_id = pg_temp.dc_user('contributor')) >= 301,
+		'11: called off, then 300 newer call-offs: still refused, every record kept');
+	-- An attempt made two hours ago, called off back then: its record goes with the next hand-back (an hour old), and it
+	-- stays refused, as expired. A retried hand-back of it writes nothing and takes away nothing that is to be kept.
+	insert into public.qorpera_company_machine_desktop_called_off(machine_id, user_id, attempt_id, called_off_at)
+	values (pg_temp.dc_id('a1'), pg_temp.dc_user('contributor'), v_tidied, clock_timestamp() - interval '2 hours'),
+		(pg_temp.dc_id('a1'), pg_temp.dc_user('admin'), v_tidied, clock_timestamp() - interval '2 hours');
 	select count(*) into v_admin from public.qorpera_company_machine_desktop_called_off
 	where machine_id = pg_temp.dc_id('a1') and user_id = pg_temp.dc_user('admin');
-	v := pg_temp.dc_back('contributor', 'a1', 'handed_back', array[v_new]);
-	perform pg_temp.base_assert(pg_temp.dc_answer(v) ->> 'state' = 'ok'
-			and (select count(*) from public.qorpera_company_machine_desktop_called_off
-				where machine_id = pg_temp.dc_id('a1') and user_id = pg_temp.dc_user('contributor')) = 256
-			and exists (select 1 from public.qorpera_company_machine_desktop_called_off where machine_id = pg_temp.dc_id('a1')
-				and user_id = pg_temp.dc_user('contributor') and attempt_id = v_new)
-			and exists (select 1 from public.qorpera_company_machine_desktop_called_off where machine_id = pg_temp.dc_id('a1')
-				and user_id = pg_temp.dc_user('contributor') and attempt_id = '12030000-0000-4000-8000-000000001104')
+	select count(*) into v_rows from public.qorpera_company_machine_desktop_called_off
+	where machine_id = pg_temp.dc_id('a1') and user_id = pg_temp.dc_user('contributor');
+	v := pg_temp.dc_back('contributor', 'a1', 'closed', array[v_tidied]);
+	perform pg_temp.base_assert(v = v_none
 			and not exists (select 1 from public.qorpera_company_machine_desktop_called_off where machine_id = pg_temp.dc_id('a1')
-				and user_id = pg_temp.dc_user('contributor') and attempt_id = v_old),
-		'11: the hand-back keeps the member''s newest 256, none a day old: ' || v);
-	perform pg_temp.base_assert((select count(*) from public.qorpera_company_machine_desktop_called_off
-			where machine_id = pg_temp.dc_id('a1') and user_id = pg_temp.dc_user('admin')) = v_admin,
-		'11: another member''s called-off attempts stay');
+				and user_id = pg_temp.dc_user('contributor') and attempt_id = v_tidied)
+			and (select count(*) from public.qorpera_company_machine_desktop_called_off
+				where machine_id = pg_temp.dc_id('a1') and user_id = pg_temp.dc_user('contributor')) = v_rows - 1
+			and exists (select 1 from public.qorpera_company_machine_desktop_called_off where machine_id = pg_temp.dc_id('a1')
+				and user_id = pg_temp.dc_user('contributor') and attempt_id = v_kept)
+			and (select count(*) from public.qorpera_company_machine_desktop_called_off
+				where machine_id = pg_temp.dc_id('a1') and user_id = pg_temp.dc_user('admin')) = v_admin,
+		'11: a retried old hand-back tidies only the hour-old record, writes nothing, and leaves another member''s: ' || v);
+	perform pg_temp.base_assert(pg_temp.dc_take('contributor', 'a1', p_attempt => v_tidied) = v_expired
+			and pg_temp.dc_take('contributor', 'a1', p_attempt => v_kept) = v_called_off,
+		'11: its record tidied, the old attempt stays refused; the kept one too');
+	perform pg_temp.base_assert((pg_temp.dc_machine('a1')).desktop_member_user_id is null, '11: nothing is held at the end');
+	-- The list says the database's time, by which the page makes its attempts' times.
+	perform pg_temp.base_assert((pg_temp.dc_list('contributor') ->> 'serverNow')::timestamptz
+			between clock_timestamp() - interval '5 seconds' and clock_timestamp(),
+		'11: the list answers the database''s time: ' || pg_temp.dc_list('contributor')::text);
 end $$;
 
 -- 8. Grants, the closed tables and the marker ---------------------------------------------------------------------------------

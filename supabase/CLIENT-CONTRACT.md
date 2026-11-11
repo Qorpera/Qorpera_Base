@@ -1229,26 +1229,36 @@ than 30 minutes from their last input (taking it, an action); it ends at once wh
 its time (no job ends it: every check compares the time). Each call answers 42501 for a caller who may not, 22023 for a
 request of another shape.
 
-- `qorpera_list_agent_machines` also answers `canTakeOver` (owners, admins, contributors) and, per machine, `control`:
-  null, or `{mine, name, until}` while a member holds its desktop (`mine` when it is the caller; `name` the holder's;
-  `until` when the lease runs out unless renewed: read the list again then). The caller's own hold also names
-  `attempt`, the take-over attempt that holds it (never for another member's).
-- Every take-over is an attempt: a uuid the page makes for it before it asks (review r3 of #1661). A hand-back names
-  attempts and calls them off for good under the machine's lock; a take-over naming a called-off attempt is refused
-  whenever it arrives, before it holds anything. So once a hand-back naming an attempt was answered, that attempt never
-  holds the desktop, whatever the network did to it: the answer is the confirmation, and no list read is needed.
+- `qorpera_list_agent_machines` also answers `canTakeOver` (owners, admins, contributors), `serverNow` (the database's
+  time as it answered) and, per machine, `control`: null, or `{mine, name, until}` while a member holds its desktop
+  (`mine` when it is the caller; `name` the holder's; `until` when the lease runs out unless renewed: read the list
+  again then). The caller's own hold also names `attempt`, the take-over attempt that holds it (never for another
+  member's).
+- Every take-over is an attempt (reviews r3 and r4 of #1661): a version 7 uuid the page makes for it before it asks,
+  its first 48 bits the milliseconds since the epoch by the database's clock (the page keeps its offset from
+  `serverNow`). A take-over is refused when its attempt was called off, and when its time is more than 2 minutes from the
+  database's clock either way, whenever it arrives and before it holds anything. A hand-back names attempts and calls
+  them off for good under the machine's lock, and gives back only a lease that one of them holds. So once a hand-back
+  naming an attempt was answered, that attempt never holds the desktop, whatever the network did to it: the answer is
+  the confirmation, and no list read is needed.
 - `qorpera_member_take_machine_desktop(profile, machine, attempt)`: `{schema: "qorpera.member-machine-desktop/v1", state:
   "ok", until}`, or `state: "refused"` with `reason` `DESKTOP_MACHINE_TOO_SMALL`, `MACHINE_NOT_RUNNING`,
-  `MACHINE_NEEDS_COMPANY_VIEW`, `DESKTOP_MEMBER_IN_CONTROL` (with `memberName`, the holder's) or `TAKE_CALLED_OFF` (the
-  attempt was called off). Taking it again renews the caller's own lease, which is the newer attempt's from then on.
+  `MACHINE_NEEDS_COMPANY_VIEW`, `DESKTOP_MEMBER_IN_CONTROL` (with `memberName`, the holder's), `TAKE_CALLED_OFF` (the
+  attempt was called off) or `TAKE_EXPIRED` (its time is more than 2 minutes from the database's: read the list for
+  `serverNow` and try once more with a fresh attempt). An attempt of another uuid version is 22023. Taking it again
+  renews the caller's own lease, which is the newer attempt's from then on.
 - `qorpera_member_keep_machine_desktop(profile, machine, attempt)`: the window's heartbeat, every 60 s while it shows
   the member holding the desktop: `state: "ok"` with the new `until`, or `state: "ended"` (handed back, run out, taken
   again by a newer attempt of the caller's, or another member's now). It renews only the lease that attempt holds.
 - `qorpera_member_hand_back_machine_desktop(profile, machine, reason, attempts)`: `reason` `handed_back` (the member's
   word, or their take-over card's I'm done) or `closed` (their window closed or they left the company's page);
-  `attempts` the caller's take-over attempts for the machine to call off (an array of uuids, at most 32; empty is
-  allowed). `{schema, state: "ok", handedBack}`: false when the caller held nothing (any more). Naming an attempt again
-  answers the same. A take-over card is answered after this.
+  `attempts` the take-over attempts to call off (an array of uuids, at most 32; empty is allowed). It ends the caller's
+  lease only when one of them holds it, so a hand-back that arrives late never ends a newer take-over's lease. `{schema,
+  state: "ok", handedBack, heldElsewhere}`: `handedBack` whether it gave a live lease back; `heldElsewhere` whether the
+  caller still holds the machine by an attempt it did not name (another tab of theirs, an earlier page: read the list
+  for its `control.attempt` and name it to give it back too). Naming an attempt again answers the same. Attempts
+  already outside their 2 minutes are not recorded (they can never take); the records go after an hour. A take-over card
+  is answered after this.
 - `qorpera_member_machine_desktop_act_begin(profile, machine, action)`: one action, begun as the member. Clients do not
   call it: the action route (§4) does, with the member's own token and the action as SQL keeps it (a text by its length).
 #### Member contacts' places (20260930717000_member_contact_places)

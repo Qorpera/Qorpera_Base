@@ -206,9 +206,11 @@ declare
 	v_carol jsonb := pg_temp.mm_answer(pg_temp.mm_list('owner', '92400000-0000-4000-8000-000000000032'));
 	v_first jsonb;
 begin
-	perform pg_temp.base_assert(v_alice - 'machines' = jsonb_build_object('schema', 'qorpera.agent-machines/v1',
+	-- 20260930713000 adds the database's time (serverNow), a timestamp of now.
+	perform pg_temp.base_assert(v_alice - 'machines' - 'serverNow' = jsonb_build_object('schema', 'qorpera.agent-machines/v1',
 			'profileId', '92400000-0000-4000-8000-000000000010', 'staffAgentId', '92400000-0000-4000-8000-000000000030',
-			'canWake', false, 'canTakeOver', false),
+			'canWake', false, 'canTakeOver', false)
+			and (v_alice ->> 'serverNow')::timestamptz <= clock_timestamp(),
 		'1: a viewer reads Alice''s machines and may not wake one (nor take one over, 20260930713000): ' || coalesce(v_alice::text, 'null'));
 	-- Running first; among them the one she drove last, then the other she drove, then the newest; then the rest, newest
 	-- first. Bob's own machine, the removed one and the one being deleted are not hers to show.
