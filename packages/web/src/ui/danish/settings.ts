@@ -417,8 +417,8 @@ export const SETTINGS: Record<string, string> = {
 
 	// Sites: the websites the company's agents published (app/views/settings-sites.ts)
 	Sites: "Hjemmesider",
-	"Websites the company's agents published. Each has its own link and password; share both with the people who should see it.":
-		"Hjemmesider, som virksomhedens agenter har udgivet. Hver har sit eget link og sin egen adgangskode; del begge med dem, der skal se den.",
+	"The company's websites. Each has its own link and password; share both with the people who should see it.":
+		"Virksomhedens hjemmesider. Hver har sit eget link og sin egen adgangskode; del begge med dem, der skal se den.",
 	"Only founders and admins can see passwords or take sites offline.":
 		"Kun stiftere og administratorer kan se adgangskoder eller tage hjemmesider offline.",
 	"No sites yet. When an agent publishes a website for the company, it shows here with its link and password.":
@@ -459,6 +459,67 @@ export const SETTINGS: Record<string, string> = {
 	"App on port {port} of a machine that was deleted": "App på port {port} på en maskine, der er slettet",
 	"Take {name} offline? Its link stops working and its password is deleted. The app keeps running on its machine.":
 		"Tag {name} offline? Linket holder op med at virke, og adgangskoden slettes. Appen bliver ved med at køre på sin maskine.",
+	// A project's site made from its code kept in Qorpera: it goes live from What's new (own code storage step 4)
+	"Goes live from What's new": "Sættes live under Nyheder",
+	"Take {name} offline? Its earlier versions go with it. Qorpera prepares the newest version again, with a new password, and it waits in What's new until you put it live.":
+		"Tag {name} offline? Dens tidligere versioner forsvinder med den. Qorpera gør den nyeste version klar igen med en ny adgangskode, og den venter under Nyheder, til du sætter den live.",
+
+	// What's new: the changes to the company's sites made from its code, ready to go live (app/views/whats-new.ts)
+	"What's new": "Nyheder",
+	"What's new could not be read.": "Nyheder kunne ikke hentes.",
+	"Live now": "Live nu",
+	"Not live yet": "Ikke live endnu",
+	"Version {version} · since {time}": "Version {version} · siden {time}",
+	"Version {version} · since {time} · {name} said go": "Version {version} · siden {time} · {name} sagde ja",
+	"Version {version} · since {time} · {name} went back":
+		"Version {version} · siden {time} · {name} satte den live igen",
+	"The password is in Sites.": "Adgangskoden står under Hjemmesider.",
+	"Open the site": "Åbn hjemmesiden",
+	"Go back to version {version}": "Gå tilbage til version {version}",
+	"Put version {version} back up? Version {current} comes off the site at once; its changes stay ready.":
+		"Sæt version {version} live igen? Version {current} tages af hjemmesiden med det samme; dens ændringer er stadig klar.",
+	"Go back": "Gå tilbage",
+	"1 change is ready": "1 ændring er klar",
+	"{count} changes are ready": "{count} ændringer er klar",
+	"and 1 change behind the scenes": "og 1 ændring bag kulisserne",
+	"and {count} changes behind the scenes": "og {count} ændringer bag kulisserne",
+	"1 change behind the scenes": "1 ændring bag kulisserne",
+	"{count} changes behind the scenes": "{count} ændringer bag kulisserne",
+	"Was live before": "Har været live før",
+	"Put it live": "Sæt live",
+	"Put the first version live": "Sæt den første version live",
+	"Not yet": "Ikke endnu",
+	"Not yet: ": "Ikke endnu: ",
+	"Putting it live…": "Sætter den live…",
+	"Version {version} is live.": "Version {version} er live.",
+	"Nothing new is ready.": "Intet nyt er klar.",
+	"1 more change is not ready yet.": "1 ændring mere er ikke klar endnu.",
+	"{count} more changes are not ready yet.": "{count} ændringer mere er ikke klar endnu.",
+	"Founders and admins put changes live.": "Stiftere og administratorer sætter ændringer live.",
+	"Something changed while you looked. Here is what is ready now.":
+		"Noget har ændret sig, mens du kiggede. Her er det, der er klar nu.",
+	"Something changed while you looked. Here is what is live now.":
+		"Noget har ændret sig, mens du kiggede. Her er det, der er live nu.",
+	"It did not go live: {why}. Nothing changed.": "Det blev ikke sat live: {why}. Intet er ændret.",
+	"It did not go back: {why}. Nothing changed.": "Den blev ikke sat live igen: {why}. Intet er ændret.",
+	"only founders and admins can put a version live": "kun stiftere og administratorer kan sætte en version live",
+	"Qorpera was busy for a moment": "Qorpera havde travlt et øjeblik",
+	"the project is no longer there": "projektet findes ikke længere",
+	"something went wrong on Qorpera's side": "noget gik galt hos Qorpera",
+	"This project can't get a site: the company has 10. Take one offline in Sites.":
+		"Projektet kan ikke få en hjemmeside: virksomheden har allerede 10. Tag en offline under Hjemmesider.",
+	"The newest version could not be prepared. Qorpera is trying again.":
+		"Den nyeste version kunne ikke gøres klar. Qorpera prøver igen.",
+	"The newest version could not be prepared. The next change that is saved gets a new try.":
+		"Den nyeste version kunne ikke gøres klar. Den næste ændring, der gemmes, får et nyt forsøg.",
+	"It may not have gone live: Qorpera could not be reached. Checking…":
+		"Den er måske ikke blevet sat live: Qorpera kunne ikke nås. Tjekker…",
+	"It may not have gone back: Qorpera could not be reached. Checking…":
+		"Den er måske ikke blevet sat live igen: Qorpera kunne ikke nås. Tjekker…",
+	"Qorpera could not be reached, so it is not known whether it went live. Open this page again in a moment.":
+		"Qorpera kunne ikke nås, så det vides ikke, om den blev sat live. Åbn denne side igen om lidt.",
+	"Qorpera could not be reached, so it is not known whether it went back. Open this page again in a moment.":
+		"Qorpera kunne ikke nås, så det vides ikke, om den blev sat live igen. Åbn denne side igen om lidt.",
 
 	// Environment variables for coding, in both connections tabs (app/views/settings-coding-environment.ts)
 	"Environment variables for coding": "Miljøvariabler til kodning",

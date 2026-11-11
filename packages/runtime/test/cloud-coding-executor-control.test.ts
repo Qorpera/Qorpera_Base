@@ -90,12 +90,31 @@ describe("dedicated coding executor control", () => {
 			"https://project.supabase.co/rest/v1/rpc/qorpera_code_checks_switch",
 			expect.objectContaining({ redirect: "error", method: "POST" }),
 		);
+		// A repository's site, read from its storage and uploaded as a version (own code storage, step 4).
+		for (const method of [
+			"qorpera_code_sites_due",
+			"qorpera_code_site_begin",
+			"qorpera_code_site_list",
+			"qorpera_code_site_missing",
+			"qorpera_code_site_put",
+			"qorpera_code_site_finish",
+			"qorpera_code_site_failed",
+		]) {
+			await control.call(method, {}, new AbortController().signal);
+			expect(fetcher).toHaveBeenLastCalledWith(
+				`https://project.supabase.co/rest/v1/rpc/${method}`,
+				expect.objectContaining({ redirect: "error", method: "POST" }),
+			);
+		}
 		// The agent's, the member's and the operator's calls of the same step are not the executor's.
 		for (const method of [
 			"qorpera_folder_request_code_undo",
 			"qorpera_request_code_download",
 			"qorpera_request_code_restore",
 		])
+			await expect(control.call(method, {}, new AbortController().signal)).rejects.toThrow("METHOD_INVALID");
+		// Putting a version live and going back are a member's, and the member's read is not the executor's either.
+		for (const method of ["qorpera_put_code_release_live", "qorpera_code_release_back", "qorpera_list_code_releases"])
 			await expect(control.call(method, {}, new AbortController().signal)).rejects.toThrow("METHOD_INVALID");
 		// The per-session VM authority is gone.
 		await expect(control.call("qorpera_describe_coding_cleanup", {}, new AbortController().signal)).rejects.toThrow(

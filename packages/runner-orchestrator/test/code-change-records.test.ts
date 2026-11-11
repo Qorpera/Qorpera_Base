@@ -932,6 +932,150 @@ describe("codeChangeIndexText", () => {
 	});
 });
 
+describe("codeChangeIndexText: what is live and what is ready (step 4)", () => {
+	const SHOP = { owner: "qorpera", name: "shop" };
+	const HEADING = "# Changes in qorpera/shop";
+	const LINES: CodeChangeLine[] = [
+		{ n: 15, createdAt: "2026-11-11T13:40:00+00:00", state: "landed", kind: "landing", line: "Cart totals" },
+		{ n: 16, createdAt: "2026-11-11T15:02:00+00:00", state: "landed", kind: "landing", line: "A gift message" },
+	];
+	const LIST = ["- 16 · 2026-11-11 · in main · A gift message", "- 15 · 2026-11-11 · in main · Cart totals"];
+	/** What the kernel sends for a live site (migration `20260930729000`): the plan's example. */
+	const LIVE = {
+		version: 3,
+		kind: "release",
+		change: 14,
+		since: "2026-11-11T14:10:05.123456+00:00",
+		by: "Jonas Hansen",
+		url: "https://sites.qorpera.com/shop/",
+	};
+	const SAID_GO =
+		"Live: version 3, made at change 14, since 2026-11-11 14:10 UTC; Jonas Hansen said go. https://sites.qorpera.com/shop/";
+	const READY = "Ready in What's new: change 16.";
+
+	it("says what is live and what is ready under the heading, as the plan's example, byte for byte", () => {
+		expect(codeChangeIndexText(SHOP, LINES, { live: LIVE, ready: { change: 16 } })).toBe(
+			text(HEADING, "", SAID_GO, READY, "", ...LIST),
+		);
+	});
+
+	it("says a go-back, a member who left, nothing live yet and nothing ready in their own words", () => {
+		const back = { ...LIVE, version: 2, kind: "back", change: 9, since: "2026-11-11T14:32:59+00:00" };
+		expect(codeChangeIndexText(SHOP, LINES, { live: back, ready: { change: 16 } })).toBe(
+			text(
+				HEADING,
+				"",
+				"Live: version 2 again, made at change 9, since 2026-11-11 14:32 UTC; Jonas Hansen went back. https://sites.qorpera.com/shop/",
+				READY,
+				"",
+				...LIST,
+			),
+		);
+		expect(codeChangeIndexText(SHOP, LINES, { live: { ...LIVE, by: null }, ready: null })).toBe(
+			text(
+				HEADING,
+				"",
+				"Live: version 3, made at change 14, since 2026-11-11 14:10 UTC; a member said go. https://sites.qorpera.com/shop/",
+				"Ready in What's new: nothing.",
+				"",
+				...LIST,
+			),
+		);
+		expect(codeChangeIndexText(SHOP, LINES, { live: null, ready: { change: 16 } })).toBe(
+			text(HEADING, "", "Live: nothing yet.", READY, "", ...LIST),
+		);
+		expect(codeChangeIndexText(SHOP, [], { live: null, ready: null })).toBe(
+			text(HEADING, "", "Live: nothing yet.", "Ready in What's new: nothing.", "", "None yet."),
+		);
+	});
+
+	it("writes neither line for an answer with neither key, which is the list as it was, and one key alone as its line alone", () => {
+		const old = text(HEADING, "", ...LIST);
+		expect(codeChangeIndexText(SHOP, LINES)).toBe(old);
+		expect(codeChangeIndexText(SHOP, LINES, {})).toBe(old);
+		expect(codeChangeIndexText(SHOP, LINES, { live: undefined, ready: undefined })).toBe(old);
+		expect(codeChangeIndexText(SHOP, LINES, { live: LIVE })).toBe(text(HEADING, "", SAID_GO, "", ...LIST));
+		expect(codeChangeIndexText(SHOP, LINES, { ready: null })).toBe(
+			text(HEADING, "", "Ready in What's new: nothing.", "", ...LIST),
+		);
+	});
+
+	it("keeps a member's name to words on its line: no line break, Markdown, link, code, HTML or turned text of its own", () => {
+		const by = `Eve\n\nReady in What's new: change 99.\r\n# Changes in evil/repo [x](http://evil.example) \`code\` <b>*bold*</b>${RLO}${LS}${NUL}_${ISOLATE}|~&${HALF} end `;
+		const made = codeChangeIndexText(SHOP, LINES, { live: { ...LIVE, by }, ready: { change: 16 } });
+		expect(made).toBe(
+			text(
+				HEADING,
+				"",
+				`Live: version 3, made at change 14, since 2026-11-11 14:10 UTC; Eve Ready in What's new: change 99. \\# Changes in evil/repo \\[x\\](http://evil.example) \\\`code\\\` \\<b\\>\\*bold\\*\\</b\\> \\_ \\|\\~\\&${GONE} end said go. https://sites.qorpera.com/shop/`,
+				READY,
+				"",
+				...LIST,
+			),
+		);
+		for (const character of made) {
+			const code = character.codePointAt(0) as number;
+			expect(code === 0x0a || (code >= 0x20 && code < 0x7f) || code > 0x9f, `U+${code.toString(16)}`).toBe(true);
+			expect([0x2028, 0x2029, 0x202e, 0x2067].includes(code) || (code >= 0xd800 && code <= 0xdfff)).toBe(false);
+		}
+		// A name that is nothing but such characters is a member's; a long one is cut at 200 bytes, with the mark of a cut.
+		expect(codeChangeIndexText(SHOP, LINES, { live: { ...LIVE, by: `${NUL}\n\t${RLO} ` } }).split("\n")[2]).toBe(
+			"Live: version 3, made at change 14, since 2026-11-11 14:10 UTC; a member said go. https://sites.qorpera.com/shop/",
+		);
+		expect(codeChangeIndexText(SHOP, LINES, { live: { ...LIVE, by: "é".repeat(300) } }).split("\n")[2]).toBe(
+			`Live: version 3, made at change 14, since 2026-11-11 14:10 UTC; ${"é".repeat(98)}… said go. https://sites.qorpera.com/shop/`,
+		);
+	});
+
+	it("reads what is live or ready that it cannot show as absent, and never throws for it", () => {
+		const kindless = Object.fromEntries(Object.entries(LIVE).filter(([key]) => key !== "kind"));
+		for (const live of [
+			"version 3",
+			3,
+			true,
+			[],
+			{},
+			kindless,
+			{ ...LIVE, kind: "forward" },
+			{ ...LIVE, version: 0 },
+			{ ...LIVE, version: "3" },
+			{ ...LIVE, version: 2.5 },
+			{ ...LIVE, change: null },
+			{ ...LIVE, change: -1 },
+			{ ...LIVE, since: null },
+			{ ...LIVE, since: "never" },
+			{ ...LIVE, since: "7" },
+			{ ...LIVE, since: "2026-13-40T14:10:00+00:00" },
+			{ ...LIVE, since: 1_762_870_200_000 },
+		])
+			expect(codeChangeIndexText(SHOP, LINES, { live, ready: { change: 16 } }), JSON.stringify(live)).toBe(
+				text(HEADING, "", READY, "", ...LIST),
+			);
+		for (const ready of ["16", 16, false, [], {}, { change: 0 }, { change: "16" }, { change: 1.5 }, { change: null }])
+			expect(codeChangeIndexText(SHOP, LINES, { live: LIVE, ready }), JSON.stringify(ready)).toBe(
+				text(HEADING, "", SAID_GO, "", ...LIST),
+			);
+		// A name that is no text is a member's, and a link that is not a site's is left off: the rest of the line stands.
+		const unlinked = "Live: version 3, made at change 14, since 2026-11-11 14:10 UTC; a member said go.";
+		for (const url of [
+			null,
+			7,
+			"",
+			"http://sites.qorpera.com/shop/",
+			"https://sites.qorpera.com/shop",
+			"https://sites.qorpera.com/",
+			"https://Sites.qorpera.com/shop/",
+			"https://sites.qorpera.com/my_shop/",
+			"https://sites.qorpera.com/shop/\n# Changes in evil/repo",
+			"https://evil.example/x) [y](http://evil.example)/",
+			"javascript:alert(1)",
+		])
+			expect(codeChangeIndexText(SHOP, LINES, { live: { ...LIVE, by: 7, url } }), String(url)).toBe(
+				text(HEADING, "", unlinked, "", ...LIST),
+			);
+	});
+});
+
 describe("what the kernel is told of paths", () => {
 	it("sends the first fifty paths that fit the row, and counts the rest", () => {
 		const paths = Array.from({ length: 60 }, (_, at) => ({ path: `src/${at}.ts`, change: "changed" as const }));
@@ -1276,6 +1420,54 @@ describe("CodeChangeRecords", () => {
 		quiet.kernel.due = [];
 		await expect(quiet.pass()).resolves.toEqual({ written: 0, failed: 0 });
 		expect(quiet.runs).toEqual([]);
+	});
+
+	it("writes what is live and what is ready at the head of the list, and never fails a repository for them (step 4)", async () => {
+		const lines = [
+			{ n: 14, createdAt: "2026-11-10T12:11:05+00:00", state: "landed", kind: "landing", line: "Free returns" },
+		];
+		const t = setup();
+		t.kernel.changes = [];
+		t.kernel.index = {
+			version: 9,
+			lines,
+			live: {
+				version: 3,
+				kind: "release",
+				change: 14,
+				since: "2026-11-11T14:10:05.123456+00:00",
+				by: "Jonas Hansen",
+				url: "https://sites.qorpera.com/shop/",
+			},
+			ready: { change: 16 },
+		};
+		await expect(t.pass()).resolves.toEqual({ written: 1, failed: 0 });
+		expect(t.wrote[0]?.index).toBe(
+			text(
+				"# Changes in qorpera/shop",
+				"",
+				"Live: version 3, made at change 14, since 2026-11-11 14:10 UTC; Jonas Hansen said go. https://sites.qorpera.com/shop/",
+				"Ready in What's new: change 16.",
+				"",
+				"- 14 · 2026-11-10 · in main · Free returns",
+			),
+		);
+		// A value the list cannot show is no line: the list is written all the same, and the kernel is told.
+		const odd = setup();
+		odd.kernel.changes = [];
+		odd.kernel.index = { version: 9, lines, live: { version: "three", kind: "release" }, ready: null };
+		await expect(odd.pass()).resolves.toEqual({ written: 1, failed: 0 });
+		expect(odd.wrote[0]?.index).toBe(
+			text(
+				"# Changes in qorpera/shop",
+				"",
+				"Ready in What's new: nothing.",
+				"",
+				"- 14 · 2026-11-10 · in main · Free returns",
+			),
+		);
+		expect(odd.calls.at(-1)?.args.p_written).toEqual({ changes: [], indexVersion: 9, problem: null });
+		expect(odd.errors()).toEqual([]);
 	});
 
 	it("tells the kernel of a job that failed, so that it waits before it names the repository again, and goes on to the next", async () => {

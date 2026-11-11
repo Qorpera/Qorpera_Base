@@ -1198,16 +1198,23 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const interfacesShown = companyInterfaces(company);
 	// The agents' apps that are posted for every member (RUNTIME-INTERFACE-APPS.md §4), after the platform's pages. The
 	// concepts of the company's product are one Concepts entry instead, posted or not (Jonas, 8 November 2026).
-	const postedApps = (state.apps ?? []).filter((app) => app.manifest?.posted === true && !app.manifest.concept);
+	// While What's new shows, an agent's own app of that name stays out: two pages of one name (own code storage step 4).
+	const postedApps = (state.apps ?? []).filter(
+		(app) => app.manifest?.posted === true && !app.manifest.concept && !(state.whatsNew && app.name === "whats-new"),
+	);
 	const concepts = companyConcepts(state.apps ?? []).length;
 	// The websites the company's agents published: one Sites entry while there are any (Jonas, 9 Nov 2026).
 	const sites = state.siteCount ?? 0;
-	const hasApps = interfacesShown.length > 0 || postedApps.length > 0 || concepts > 0 || sites > 0;
+	const hasApps =
+		interfacesShown.length > 0 || postedApps.length > 0 || concepts > 0 || sites > 0 || state.whatsNew !== undefined;
 	// An interface's page opens the drawer once, so the page it shows stands lit; after that the member's press decides.
 	const routeKey = route.name === "company" ? `${route.section}/${route.id ?? ""}` : "";
 	if (routeKey !== parts.appsRoute) {
 		parts.appsRoute = routeKey;
-		if ((section === "interface" || section === "app" || section === "sites") && !parts.appsOpen)
+		if (
+			(section === "interface" || section === "app" || section === "sites" || section === "whats-new") &&
+			!parts.appsOpen
+		)
 			setAppsOpen(parts, profileId, true);
 	}
 	const appsOpen = hasApps && parts.appsOpen;
@@ -1763,7 +1770,9 @@ function placeOf(element: HTMLElement): string | undefined {
 	if (agentId || cofounderId) return `agent:${(agentId ?? cofounderId)!.toLowerCase()}`;
 	if (roomId) return `room:${roomId.toLowerCase()}`;
 	if (!appKey) return undefined;
-	return appKey.startsWith("app:") || appKey === "concepts" || appKey === "sites" ? appKey : `page:${appKey}`;
+	return appKey.startsWith("app:") || appKey === "concepts" || appKey === "sites" || appKey === "whats-new"
+		? appKey
+		: `page:${appKey}`;
 }
 
 /** The other members in the company now, each as a small picture on the agent, group chat, page or app they are in
@@ -1905,6 +1914,26 @@ function drawInterfaces(
 		// Its key, as every drawer entry has: the member's drag and Alt-arrow order it, and the order is kept.
 		element.dataset.appKey = key;
 		const open = route.name === "company" && route.section === "sites";
+		element.classList.toggle("active", open);
+		if (open) element.setAttribute("aria-current", "page");
+		else element.removeAttribute("aria-current");
+		elements.push(element);
+	}
+	// What's new (own code storage step 4): one entry while a project of the company makes a website, its badge the
+	// changes ready to go live.
+	const whatsNew = company.store.get().whatsNew;
+	if (whatsNew) {
+		const key = "whats-new";
+		waiting += whatsNew.ready;
+		// A group it stands in sums its count, as a page's; its spark is orange, beside the other platform pages' colours.
+		counts.set(key, whatsNew.ready);
+		colours.set(key, "orange");
+		const model = JSON.stringify([key, t("What's new"), whatsNew.ready]);
+		const kept = parts.interfaceRows.get(key);
+		const element = kept?.shown === model ? kept.element : whatsNewIcon(`#/c/${profileId}/whats-new`, whatsNew.ready);
+		rows.set(key, { shown: model, element });
+		element.dataset.appKey = key;
+		const open = route.name === "company" && route.section === "whats-new";
 		element.classList.toggle("active", open);
 		if (open) element.setAttribute("aria-current", "page");
 		else element.removeAttribute("aria-current");
@@ -2215,6 +2244,24 @@ function sitesIcon(href: string): HTMLElement {
 		},
 		h("span", { class: "rail-app-stand" }, interfaceEmblem("globe", 34)),
 		h("span", { class: "rail-app-name" }, t("Sites")),
+	);
+}
+
+/** The What's new entry in the drawer: its spark with "What's new" under it and how many changes are ready, a link to
+ * the page. */
+function whatsNewIcon(href: string, count: number): HTMLElement {
+	const label = t("What's new");
+	const waiting = count > 0 ? t("{count} waiting", { count }) : null;
+	return h(
+		"a",
+		{
+			class: "rail-app rail-whats-new",
+			href,
+			draggable: "false",
+			...(waiting ? { "aria-label": `${label}, ${waiting}` } : {}),
+		},
+		h("span", { class: "rail-app-stand" }, interfaceEmblem("spark", 34), countBadge(count)),
+		h("span", { class: "rail-app-name" }, label),
 	);
 }
 

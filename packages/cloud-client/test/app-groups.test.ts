@@ -259,10 +259,48 @@ A closing note.
 
 describe("keys, names and ids", () => {
 	it("knows the drawer's keys", () => {
-		for (const key of ["page:mailbox", "page:members", "page:bank", "app:sales-board", "concepts", "sites"])
+		// What's new (own code storage, step 4) is the platform's page, the bare whats-new; app:whats-new is an agent's app.
+		for (const key of [
+			"page:mailbox",
+			"page:members",
+			"page:bank",
+			"app:sales-board",
+			"concepts",
+			"sites",
+			"whats-new",
+			"app:whats-new",
+		])
 			expect(isAppDrawerKey(key)).toBe(true);
-		for (const key of ["page:pulse", "app:", "app:Sales", "app:a--b", "group:trips", "mailbox", "Concepts"])
+		for (const key of [
+			"page:pulse",
+			"app:",
+			"app:Sales",
+			"app:a--b",
+			"group:trips",
+			"mailbox",
+			"Concepts",
+			"page:whats-new",
+			"Whats-new",
+			"whats_new",
+			"news",
+		])
 			expect(isAppDrawerKey(key)).toBe(false);
+	});
+
+	it("reads What's new as a drawer key: its first line wins, and the drawer draws it in its group", () => {
+		const file = parseAppGroups("- group launch: Launch\n  - whats-new What's new\n- whats-new again\n");
+		expect(file.items).toEqual([
+			{
+				kind: "group",
+				id: "launch",
+				name: "Launch",
+				items: [{ kind: "item", key: "whats-new", words: "What's new" }],
+			},
+		]);
+		expect(resolveAppGroups(file, ["page:mailbox", "whats-new"]).items).toEqual([
+			{ kind: "group", id: "launch", name: "Launch", items: [{ kind: "item", key: "whats-new" }] },
+			{ kind: "item", key: "page:mailbox" },
+		]);
 	});
 
 	it("takes a group's name as one line of 1 to 40 characters", () => {

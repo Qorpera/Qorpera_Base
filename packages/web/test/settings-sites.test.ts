@@ -180,6 +180,35 @@ describe("Settings → Sites", () => {
 		expect(ids()).toEqual([id(84)]);
 	});
 
+	it("says a project's site made from its code goes live from What's new, and what taking it offline does", async () => {
+		// The row is the plain one (qorpera.company-site/v1): its source is the project's place under code/, no agent.
+		const fromCode: CompanySite = {
+			...shop,
+			id: id(85),
+			slug: "gift-message",
+			title: "Gift message",
+			url: `${ORIGIN}/gift-message/`,
+			source: "code/qorpera/gift-message",
+			publishedBy: null,
+		};
+		const { client } = setup([fromCode, shop]);
+		await settle();
+		const card = cardOf(fromCode.id)!;
+		expect(card.querySelector(".hook-state")?.textContent).toMatch(/^Live · Published [^·]+ · 12 files, 2\.0 KiB$/);
+		expect(card.textContent).toContain("Goes live from What's new");
+		expect(card.textContent).not.toContain("code/");
+		expect(labels(card)).toEqual(["Show password", "Change password", "Unpublish", "Copy"]);
+		// A site an agent published from a folder still says where it came from.
+		expect(cardOf(shop.id)?.textContent).toContain("From product/webshop-preview.html");
+		press(card, "Unpublish");
+		expect(dialog().textContent).toContain(
+			"Take Gift message offline? Its earlier versions go with it. Qorpera prepares the newest version again, with a new password, and it waits in What's new until you put it live.",
+		);
+		press(dialog(), "Unpublish");
+		await settle();
+		expect(client.unpublish).toHaveBeenCalledWith(fromCode.id, expect.any(AbortSignal));
+	});
+
 	it("shows other members the sites and their links, without passwords or actions", async () => {
 		const role = { manage: false };
 		const { client } = setup([shop], { canManage: () => role.manage });
@@ -486,6 +515,11 @@ describe("sites client", () => {
 		expect(
 			parseCompanySite(row({ title: null, state: "publishing", publishedAt: null, publishedBy: null })),
 		).toMatchObject({ title: null, state: "publishing", publishedAt: null, publishedBy: null });
+		// A project's site made from its code (step 4) is the same row: its source is the project's place, no agent.
+		expect(parseCompanySite(row({ source: "code/qorpera/gift-message", publishedBy: null }))).toMatchObject({
+			source: "code/qorpera/gift-message",
+			publishedBy: null,
+		});
 		for (const bad of [
 			row({ schema: "qorpera.company-site/v2" }),
 			row({ extra: true }),

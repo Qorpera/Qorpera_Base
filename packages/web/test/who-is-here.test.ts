@@ -271,4 +271,29 @@ describe("who is where in the company (the rail's markers)", () => {
 		expect(rail.querySelector(`[data-agent-id="${staff.id}"]`)?.hasAttribute("aria-description")).toBe(false);
 		expect(row.style.getPropertyValue("--here-count")).toBe("");
 	});
+
+	it("says a member is on What's new, on its entry and on the apps button while the drawer is shut", async () => {
+		const s = await setup();
+		const rail = document.createElement("aside");
+		document.body.append(rail);
+		const context = {
+			profiles: [profileA],
+			user: userA,
+			auth: new AuthController(fixture().cloud),
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+			openFriends: () => {},
+			route: { name: "company", profileId: profileA.profileId, section: "home" } as const,
+		};
+		s.company.store.set({ whatsNew: { ready: 0 } });
+		s.view.dispose();
+		s.company.setOpenPlace("whats-new");
+		expect(s.handle.setOpenThread).toHaveBeenLastCalledWith("@whats-new");
+		await s.publish([tab(userB.id, "@whats-new")]);
+		renderRail(rail, s.company, context);
+		const entry = rail.querySelector<HTMLElement>('.rail-app[data-app-key="whats-new"]')!;
+		expect(entry.getAttribute("aria-description")).toBe("Sofie Lund is here");
+		expect(rail.querySelector(".rail-apps")?.getAttribute("aria-description")).toBe("Sofie Lund is here");
+	});
 });
