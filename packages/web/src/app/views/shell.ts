@@ -1893,6 +1893,9 @@ function drawInterfaces(
 	if (whatsNew) {
 		const key = "whats-new";
 		waiting += whatsNew.ready;
+		// A group it stands in sums its count, as a page's; its spark is orange, beside the other platform pages' colours.
+		counts.set(key, whatsNew.ready);
+		colours.set(key, "orange");
 		const model = JSON.stringify([key, t("What's new"), whatsNew.ready]);
 		const kept = parts.interfaceRows.get(key);
 		const element = kept?.shown === model ? kept.element : whatsNewIcon(`#/c/${profileId}/whats-new`, whatsNew.ready);

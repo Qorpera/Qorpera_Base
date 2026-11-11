@@ -9,7 +9,12 @@ import { companyInterfaces, interfaceRows } from "../src/app/interfaces.ts";
 import { parseRoute, type Route, routeHash } from "../src/app/router.ts";
 import { messageText, renderInterface, renderInterfaceFile } from "../src/app/views/interface.ts";
 import { renderRail } from "../src/app/views/shell.ts";
-import { EMPTY_APP_LAYOUT, type MemberAppLayout, parseAppGroups } from "../src/cloud/app-groups.ts";
+import {
+	EMPTY_APP_LAYOUT,
+	type MemberAppLayout,
+	parseAppGroups,
+	parseMemberAppLayout,
+} from "../src/cloud/app-groups.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
 import { colourNameHex } from "../src/ui/avatar.ts";
@@ -1584,6 +1589,78 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		]);
 		group(element).click();
 		expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+		localStorage.clear();
+	});
+
+	it("stands What's new loose after the company's apps, orange, with its count (own code storage step 4)", async () => {
+		localStorage.clear();
+		const { element, controller } = drawer();
+		controller.store.set({ whatsNew: { ready: 2 } });
+		await settle();
+		expect(tiles(element)).toEqual(["Market", "Members", "Trips", "What's new"]);
+		const tile = element.querySelector<HTMLElement>("[data-app-key='whats-new']")!;
+		expect(tile.style.getPropertyValue("--app-colour")).toBe(colourNameHex("orange"));
+		expect(tile.querySelector(".rail-count")?.textContent).toBe("2");
+		localStorage.clear();
+	});
+
+	it("puts What's new in the group the company's file names, sums its count on the group, and leaves out an agent's app of its name", async () => {
+		localStorage.clear();
+		const { element, controller } = drawer();
+		const apps = controller.store.get().apps ?? [];
+		controller.store.set({
+			apps: [
+				...apps,
+				{
+					name: "whats-new",
+					path: "apps/whats-new",
+					manifest: manifest("Old notes", "teal"),
+					problems: [],
+					version: null,
+				},
+			],
+			appGroups: parseAppGroups(
+				"- group launch: Launch\n  - whats-new What's new\n  - app:whats-new The agent's old page\n  - app:brand Brand\n",
+			),
+			whatsNew: { ready: 3 },
+		});
+		await settle();
+		expect(tiles(element)).toEqual(["Launch", "Members", "Plan", "Trips"]);
+		// The group carries what waits inside it, and the colour of its first entry.
+		expect(group(element).querySelector(".rail-count")?.textContent).toBe("3");
+		expect(group(element).getAttribute("aria-label")).toBe("Group Launch, 3 waiting");
+		expect(group(element).style.getPropertyValue("--app-colour")).toBe(colourNameHex("orange"));
+		// Shut, the drawer's button says it too.
+		element.querySelector<HTMLButtonElement>(".rail-apps")!.click();
+		expect(element.querySelector(".rail-apps")?.getAttribute("aria-label")).toBe("Apps, 3 waiting");
+		element.querySelector<HTMLButtonElement>(".rail-apps")!.click();
+		group(element).click();
+		expect(tiles(element)).toEqual(["Launch+", "What's new", "Brand", "Members", "Plan", "Trips"]);
+		expect(element.querySelector("[data-app-key='whats-new']")?.getAttribute("data-in-group")).toBe("launch");
+		expect(element.querySelector("[data-app-key='app:whats-new']")).toBeNull();
+		// Without the platform's page, the agent's app is back, in the group the file names.
+		controller.store.set({ whatsNew: undefined });
+		await settle();
+		expect(tiles(element)).toEqual(["Launch+", "Old notes", "Brand", "Members", "Plan", "Trips"]);
+		localStorage.clear();
+	});
+
+	it("keeps a member's own place for What's new when the layout is read (no move is sent here)", async () => {
+		localStorage.clear();
+		const layout = parseMemberAppLayout({
+			schema: "qorpera.member-app-layout/v1",
+			places: { "whats-new": { group: "market", after: "app:plan", at: 1 } },
+			groups: {},
+		});
+		expect(layout.places).toEqual({ "whats-new": { group: "market", after: "app:plan", at: 1 } });
+		const { element, controller, set } = drawer();
+		controller.store.set({ appLayout: { layout, updatedAt: "2026-11-11T12:00:00Z" }, whatsNew: { ready: 1 } });
+		await settle();
+		expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+		expect(group(element).querySelector(".rail-count")?.textContent).toBe("1");
+		group(element).click();
+		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "What's new", "Members", "Trips"]);
+		expect(set).not.toHaveBeenCalled();
 		localStorage.clear();
 	});
 
