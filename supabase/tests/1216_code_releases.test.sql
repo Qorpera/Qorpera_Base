@@ -18,7 +18,7 @@
 --      member taking a code site offline.
 --  10. What's new lists every repository with a site first.
 --  11. What a site that went leaves behind: nothing that keeps the next upload from making it again, and a change given
---      up for the company's ten or for its names is due again once a site went.
+--      up for the company's ten or for its names is due again once a site went; the read's givenUp through each.
 
 select pg_temp.base_claims('service_role') \g /dev/null
 update public.qorpera_site_settings set enabled = true;
@@ -329,6 +329,7 @@ begin
 			'public.qorpera_code_release_live(public.qorpera_code_repositories)',
 			'public.qorpera_code_release_point(public.qorpera_code_repositories,integer,boolean)',
 			'public.qorpera_code_site_slugs(text,text)', 'public.qorpera_code_site_prune(uuid)',
+			'public.qorpera_code_site_given_up(public.qorpera_code_repositories,jsonb)',
 			'public.qorpera_code_release_index(public.qorpera_code_repositories)',
 			'public.qorpera_code_site_repository(text,text,uuid)', 'public.qorpera_code_release_switch(uuid,uuid)'] loop
 			perform pg_temp.base_assert(not has_function_privilege(v_role, v_function, 'EXECUTE'), v_function || ' is closed to ' || v_role);
@@ -963,12 +964,13 @@ begin
 		'{"notice":"A new home page"}') = pg_temp.rec_answer('recorded', 1), 'web''s change');
 	p := pg_temp.rel_page('a1-web');
 	perform pg_temp.base_assert(p = '{"owner":"company","name":"a1-web","site":null,"live":null,"back":null,"ready":null,'
-		'"waiting":1,"problem":null}', 'not uploaded: ' || coalesce(p::text, 'none'));
+		'"waiting":1,"problem":null,"givenUp":false}', 'not uploaded: ' || coalesce(p::text, 'none'));
 	-- Uploaded: the site and its first version are ready. Every member reads it; owners and admins may put it live.
 	v1 := pg_temp.rel_upload('a1-web', 1, 'w1');
 	p := pg_temp.rel_page('a1-web');
 	perform pg_temp.base_assert(p - 'ready' = '{"owner":"company","name":"a1-web","site":{"slug":"webshop",'
-			'"url":"https://sites.qorpera.com/webshop/","title":"The web shop"},"live":null,"back":null,"waiting":0,"problem":null}'
+			'"url":"https://sites.qorpera.com/webshop/","title":"The web shop"},"live":null,"back":null,"waiting":0,"problem":null,'
+			'"givenUp":false}'
 		and (p -> 'ready') - 'token' = jsonb_build_object('change', 1, 'agent', (pg_temp.rec_row(1, 'a1-web')).staff_agent_id,
 			'changes', jsonb_build_array(jsonb_build_object('key', 1, 'notice', 'A new home page', 'picture', null,
 				'at', (pg_temp.rec_row(1, 'a1-web')).created_at, 'wasLive', false)), 'quiet', 0)
@@ -1248,7 +1250,8 @@ begin
 	perform pg_temp.base_assert((pg_temp.rec_shop('a1-web')).site_id is null
 		and not exists (select 1 from public.qorpera_company_site_versions where site_id = s.id)
 		and (select count(*) = 4 and bool_and(version_id is null) from public.qorpera_code_releases where name = 'a1-web')
-		and p = '{"owner":"company","name":"a1-web","site":null,"live":null,"back":null,"ready":null,"waiting":4,"problem":null}'
+		and p = '{"owner":"company","name":"a1-web","site":null,"live":null,"back":null,"ready":null,"waiting":4,"problem":null,'
+			'"givenUp":false}'
 		and pg_temp.rel_due_of('a1-web') = 4 and (pg_temp.rec_shop('a1-web')).index_version = v_index + 1
 		and pg_temp.rec_files(20, 'a1-web') -> 'index' -> 'live' = 'null'
 		and pg_temp.rec_files(20, 'a1-web') -> 'index' -> 'ready' = 'null', 'gone: ' || p::text);
@@ -1289,7 +1292,7 @@ end $$;
 -- the change given up, the problem), so change 2 is due again at once and the next upload makes the site anew. Then a
 -- change given up for the company's ten (company/a6-room), or because every name it may take was taken
 -- (company/a7-names), is due again once a site went.
-select pg_temp.rel_repository(name) from unnest(array['a5-retry', 'a6-room', 'a7-names']) name \g /dev/null
+select pg_temp.rel_repository(name) from unnest(array['a5-retry', 'a6-room', 'a7-names', 'a8-newer']) name \g /dev/null
 do $$
 declare s public.qorpera_company_sites%rowtype; r public.qorpera_code_repositories%rowtype; p jsonb; v_count integer;
 begin
@@ -1308,7 +1311,8 @@ begin
 	perform pg_temp.base_assert(r.site_given_up = 2 and r.site_attempts = 5 and r.site_change = 2
 		and r.site_not_before > clock_timestamp() and r.site_problem = 'CODE_HOST_SITE_READ_FAILED' and r.live_release = 1
 		and r.last_release = 1 and r.last_version = 1 and pg_temp.rel_due_of('a5-retry') is null
-		and pg_temp.rel_page('a5-retry') -> 'problem' = '"CODE_HOST_SITE_READ_FAILED"', 'given up: ' || to_jsonb(r)::text);
+		and pg_temp.rel_page('a5-retry') -> 'problem' = '"CODE_HOST_SITE_READ_FAILED"'
+		and pg_temp.rel_page('a5-retry') -> 'givenUp' = 'true', 'given up: ' || to_jsonb(r)::text);
 	-- Offline in Sites while its pause is not over yet.
 	s := pg_temp.rel_site_row('a5-retry');
 	perform pg_temp.base_assert(pg_temp.req_as(pg_temp.req_owner(), format('public.qorpera_unpublish_company_site(%L)', s.id))
@@ -1318,7 +1322,7 @@ begin
 	perform pg_temp.base_assert(r.site_id is null and r.live_release is null and r.site_attempts = 0 and r.site_change is null
 		and r.site_not_before is null and r.site_problem is null and r.site_given_up is null and r.last_release = 1
 		and r.last_version = 1 and r.site_enabled and pg_temp.rel_due_of('a5-retry') = 2
-		and p -> 'site' = 'null' and p -> 'live' = 'null' and p -> 'problem' = 'null',
+		and p -> 'site' = 'null' and p -> 'live' = 'null' and p -> 'problem' = 'null' and p -> 'givenUp' = 'false',
 		'forgotten: ' || to_jsonb(r)::text || ' ' || p::text);
 	-- The next upload makes the site anew; its first release is version 2, with nothing to go back to.
 	perform pg_temp.rel_upload('a5-retry', 2, 'q2');
@@ -1344,10 +1348,12 @@ begin
 	end loop;
 	update public.qorpera_code_repositories set site_not_before = null
 	where environment_id = pg_temp.rec_here() and owner = 'company' and name = 'a6-room';
-	perform pg_temp.base_assert((pg_temp.rec_shop('a6-room')).site_given_up = 1 and pg_temp.rel_due_of('a6-room') is null,
-		'a6-room given up at the ten');
+	perform pg_temp.base_assert((pg_temp.rec_shop('a6-room')).site_given_up = 1 and pg_temp.rel_due_of('a6-room') is null
+		and pg_temp.rel_page('a6-room') -> 'problem' = '"SITE_LIMIT"' and pg_temp.rel_page('a6-room') -> 'givenUp' = 'true',
+		'a6-room given up at the ten: ' || coalesce(pg_temp.rel_page('a6-room')::text, 'not read'));
 	delete from public.qorpera_company_sites where profile_id = pg_temp.rel_company() and slug = 'room-1';
-	perform pg_temp.base_assert(pg_temp.rel_due_of('a6-room') = 1, 'a6-room has room again');
+	perform pg_temp.base_assert(pg_temp.rel_due_of('a6-room') = 1 and pg_temp.rel_page('a6-room') -> 'problem' = '"SITE_LIMIT"'
+		and pg_temp.rel_page('a6-room') -> 'givenUp' = 'false', 'a6-room has room again');
 	delete from public.qorpera_company_sites where profile_id = pg_temp.rel_company() and slug like 'room-%';
 
 	-- company/a7-names: every name it may take is another company's, so it is refused five times and given up; due again
@@ -1362,8 +1368,33 @@ begin
 	end loop;
 	update public.qorpera_code_repositories set site_not_before = null
 	where environment_id = pg_temp.rec_here() and owner = 'company' and name = 'a7-names';
-	perform pg_temp.base_assert((pg_temp.rec_shop('a7-names')).site_given_up = 1 and pg_temp.rel_due_of('a7-names') is null,
-		'a7-names given up');
+	perform pg_temp.base_assert((pg_temp.rec_shop('a7-names')).site_given_up = 1 and pg_temp.rel_due_of('a7-names') is null
+		and pg_temp.rel_page('a7-names') -> 'givenUp' = 'true', 'a7-names given up: '
+		|| coalesce(pg_temp.rel_page('a7-names')::text, 'not read'));
 	update public.qorpera_company_sites set updated_at = clock_timestamp() - interval '2 days' where slug = 'a7-names-5';
-	perform pg_temp.base_assert(pg_temp.rel_due_of('a7-names') = 1, 'a7-names has a name again');
+	perform pg_temp.base_assert(pg_temp.rel_due_of('a7-names') = 1 and pg_temp.rel_page('a7-names') -> 'givenUp' = 'false',
+		'a7-names has a name again');
+
+	-- company/a8-newer: change 1 given up reads its problem, given up; a newer change that leaves a site is due and reads
+	-- false (the problem is still the last upload's until one finishes); its upload forgets the problem and the give-up.
+	perform pg_temp.base_assert(pg_temp.rel_land(1724, 'q0', 'q1', pg_temp.rel_made('q1'), 'a8-newer') = pg_temp.rec_answer('recorded', 1),
+		'a8-newer''s change 1');
+	for i in 1..5 loop
+		perform pg_temp.base_assert(pg_temp.rel_failed('a8-newer', 1, 'SITE_FILE_REFUSED') ->> 'state' = 'recorded',
+			'a8-newer''s failure ' || i);
+	end loop;
+	update public.qorpera_code_repositories set site_not_before = null
+	where environment_id = pg_temp.rec_here() and owner = 'company' and name = 'a8-newer';
+	p := pg_temp.rel_page('a8-newer');
+	perform pg_temp.base_assert(p -> 'problem' = '"SITE_FILE_REFUSED"' and p -> 'givenUp' = 'true'
+		and pg_temp.rel_due_of('a8-newer') is null, 'a8-newer given up: ' || coalesce(p::text, 'not read'));
+	perform pg_temp.base_assert(pg_temp.rel_land(1725, 'q1', 'q2', pg_temp.rel_made('q2'), 'a8-newer') = pg_temp.rec_answer('recorded', 2),
+		'a8-newer''s change 2');
+	p := pg_temp.rel_page('a8-newer');
+	perform pg_temp.base_assert(p -> 'problem' = '"SITE_FILE_REFUSED"' and p -> 'givenUp' = 'false'
+		and pg_temp.rel_due_of('a8-newer') = 2, 'a8-newer''s newer change: ' || coalesce(p::text, 'not read'));
+	perform pg_temp.rel_upload('a8-newer', 2, 'q2');
+	p := pg_temp.rel_page('a8-newer');
+	perform pg_temp.base_assert(p -> 'problem' = 'null' and p -> 'givenUp' = 'false'
+		and (pg_temp.rec_shop('a8-newer')).site_given_up is null, 'a8-newer uploaded: ' || coalesce(p::text, 'not read'));
 end $$;

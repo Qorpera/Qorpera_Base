@@ -423,6 +423,27 @@ returns public.qorpera_code_repositories language sql stable set search_path = '
 			where deletion.profile_id = repository.profile_id)
 $$;
 
+-- Whether no upload pass tries the repository's newest point again until something changes: that point (6.1 without
+-- its version, as the due list takes it; p_point when the caller has it) has no version and is the change the pass
+-- gave up after five failures, and the give-up still holds. One given up for the company's ten (SITE_LIMIT) holds while
+-- the company has 10 sites; one given up because every name it may take was taken (SITE_NAME_TAKEN), while each of
+-- those names is had by a site that is not abandoned. Ends with a newer change that leaves a site (a newer point), an
+-- upload that finishes, a member taking the site offline, room among the ten, or a free name.
+create function public.qorpera_code_site_given_up(p_repository public.qorpera_code_repositories, p_point jsonb default null)
+returns boolean language plpgsql stable set search_path = '' as $$
+declare v_point jsonb := p_point;
+begin
+	if p_repository.site_given_up is null then return false; end if;
+	v_point := coalesce(v_point, public.qorpera_code_release_point(p_repository, null, false));
+	return coalesce(v_point ->> 'versionId' is null and (v_point ->> 'change')::integer = p_repository.site_given_up, false)
+		and not (p_repository.site_problem is not distinct from 'SITE_LIMIT' and (select count(*)
+			from public.qorpera_company_sites site where site.profile_id = p_repository.profile_id) < 10)
+		and not (p_repository.site_problem is not distinct from 'SITE_NAME_TAKEN' and exists (select 1
+			from unnest(public.qorpera_code_site_slugs(p_repository.name, v_point -> 'site' ->> 'name')) candidate(slug)
+			where not exists (select 1 from public.qorpera_company_sites site where site.slug = candidate.slug
+				and not public.qorpera_site_abandoned(site))));
+end $$;
+
 -- The sites to upload, for this executor: per repository whose sites are on, whose pause after a failed upload is over,
 -- whose company it holds and is not being deleted, the newest ready point (6.1 without its version), when no version of
 -- its tree is ready, live or kept on the repository's site and it is not the change the pass gave up (unless it gave up
@@ -448,16 +469,10 @@ begin
 	loop
 		exit when jsonb_array_length(v_due) >= p_limit;
 		v_point := public.qorpera_code_release_point(v_repository, null, false);
+		-- (A change given up for the company's ten, or because every name it may take was taken, is due again once a site
+		-- went: the company has room, or one of its names is free or abandoned.)
 		continue when v_point is null or v_point ->> 'versionId' is not null
-			or ((v_point ->> 'change')::integer is not distinct from v_repository.site_given_up
-				-- (A change given up for the company's ten, or because every name it may take was taken, is due again once
-				-- a site went: the company has room, or one of its names is free or abandoned.)
-				and not (v_repository.site_problem = 'SITE_LIMIT' and (select count(*) from public.qorpera_company_sites site
-					where site.profile_id = v_repository.profile_id) < 10)
-				and not (v_repository.site_problem = 'SITE_NAME_TAKEN' and exists (select 1
-					from unnest(public.qorpera_code_site_slugs(v_repository.name, v_point -> 'site' ->> 'name')) candidate(slug)
-					where not exists (select 1 from public.qorpera_company_sites site where site.slug = candidate.slug
-						and not public.qorpera_site_abandoned(site)))));
+			or public.qorpera_code_site_given_up(v_repository, v_point);
 		v_due := v_due || jsonb_build_object('companyId', v_repository.profile_id, 'environmentId', v_repository.environment_id,
 			'owner', v_repository.owner, 'name', v_repository.name, 'change', (v_point ->> 'change')::integer,
 			'site', v_point -> 'site');
@@ -774,7 +789,7 @@ begin
 end $$;
 
 -- An upload's last step: a listed uploading version with every file's bytes becomes ready; the repository's failed
--- uploads are forgotten and its list is written again; then the site is pruned (qorpera_code_site_prune). Answers
+-- uploads are forgotten (the change it gave up too) and its list is written again; then the site is pruned (qorpera_code_site_prune). Answers
 -- {"schema":"qorpera.code-site-finish/v1","state":"ready","pruned":<versions deleted>}; {…,"state":"refused",
 -- "code":"SITE_UPLOAD_INCOMPLETE"} when a file has no bytes yet or the version is not listed; a version that is not
 -- uploading as it stands ({…,"state":"ready"|"live"|"kept","pruned":0}); or {…,"state":"lost"}.
@@ -800,7 +815,7 @@ begin
 		return jsonb_build_object('schema', c_schema, 'state', 'refused', 'code', 'SITE_UPLOAD_INCOMPLETE'); end if;
 	update public.qorpera_company_site_versions set state = 'ready' where id = v_version.id;
 	update public.qorpera_code_repositories set site_attempts = 0, site_change = null, site_not_before = null,
-		site_problem = null, index_version = index_version + 1
+		site_problem = null, site_given_up = null, index_version = index_version + 1
 	where environment_id = v_repository.environment_id and owner = v_repository.owner and name = v_repository.name;
 	v_pruned := public.qorpera_code_site_prune(v_version.site_id);
 	return jsonb_build_object('schema', c_schema, 'state', 'ready', 'pruned', v_pruned);
@@ -854,15 +869,16 @@ end $$;
 
 -- The company's repositories with a site, for any member (viewers too): each with what is live, what Go back would put
 -- live, what is ready to go live (the ready point, 6.1: its token, and its changes as the page shows them), how many
--- changes are not ready yet, and the problem of the last upload that failed. canRelease says whether the caller (an
--- owner or admin) may put a version live or go back. Read-only.
+-- changes are not ready yet, and the problem of the last upload that failed, with givenUp: true while no upload pass
+-- tries again (qorpera_code_site_given_up), false otherwise and whenever problem is null. canRelease says whether the
+-- caller (an owner or admin) may put a version live or go back. Read-only.
 -- {"schema":"qorpera.code-releases/v1","canRelease":<bool>,"sites":[{"owner","name",
 --  "site":{"slug","url","title"}|null,
 --  "live":{"version","kind":"release"|"back","since","by":"<userId>","from":<the version a back took off>|null}|null,
 --  "back":{"version"}|null,
 --  "ready":{"change","token","agent":"<staff agent id>"|null,"changes":[{"key":<n>,"notice","picture":"<path>"|null,
 --   "at","wasLive":<bool>}],"quiet":<held changes not listed>}|null,
---  "waiting":<n>,"problem":"<CODE>"|null}]}
+--  "waiting":<n>,"problem":"<CODE>"|null,"givenUp":<bool>}]}
 -- A repository is listed when it has a site or made one: at most 10, every one with a site first (live, then not),
 -- then those with none, a problem first, the newest first. A listed change has a notice
 -- (newest first, at most 20); picture is the copy of a commit's picture under changes/, or the folder file an agent
@@ -933,7 +949,9 @@ begin
 					and waiting.name = v_repository.name and waiting.state = 'landed'
 					and waiting.kind in ('landing','undo','restore')
 					and waiting.n > coalesce((v_point ->> 'change')::integer, v_live.change, 0)),
-			'problem', v_repository.site_problem);
+			'problem', v_repository.site_problem,
+			'givenUp', case when v_repository.site_problem is not null and v_repository.site_given_up is not null
+				then public.qorpera_code_site_given_up(v_repository) else false end);
 	end loop;
 	return jsonb_build_object('schema', 'qorpera.code-releases/v1', 'canRelease', v_role in ('owner','admin'),
 		'sites', v_sites);
@@ -1291,6 +1309,7 @@ revoke all on function public.qorpera_code_site_valid(jsonb),
 	public.qorpera_code_release_live(public.qorpera_code_repositories),
 	public.qorpera_code_release_point(public.qorpera_code_repositories, integer, boolean),
 	public.qorpera_code_site_slugs(text, text),
+	public.qorpera_code_site_given_up(public.qorpera_code_repositories, jsonb),
 	public.qorpera_code_site_prune(uuid),
 	public.qorpera_code_release_index(public.qorpera_code_repositories),
 	public.qorpera_code_site_repository(text, text, uuid)
