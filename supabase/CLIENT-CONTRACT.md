@@ -1264,8 +1264,17 @@ request of another shape.
   the member's that the list shows from another window, or from before the page was loaded again, is shown, never
   taken up, so after a reload the member presses Take over once to go on (a take-over at the current epoch renews
   their own lease), and without that the old lease ends by itself.
-- `qorpera_member_machine_desktop_act_begin(profile, machine, action)`: one action, begun as the member. Clients do not
-  call it: the action route (§4) does, with the member's own token and the action as SQL keeps it (a text by its length).
+- `qorpera_member_machine_desktop_act_begin(profile, machine, action, epoch)`: one action, begun as the member. Clients
+  do not call it: the action route (§4) does, with the member's own token, the action as SQL keeps it (a text by its
+  length) and `epoch`, the hand-back epoch of the hold the page captured the input under (release review r1 of #1667,
+  F24 of #1661). Under the machine's lock it is taken only from the member whose live lease was taken under exactly
+  that epoch; otherwise `DESKTOP_CONTROL_ENDED` (that hold has ended) and nothing is recorded, so input delayed across a
+  hand-back and a new take-over never runs under the new lease. An `epoch` that is null or below 0 is malformed
+  (22023). The executor's read (`qorpera_member_machine_desktop_act_authority`) then serves the action only while the
+  lease row it was begun on stands, so a hand-back and a new take-over between the begin and the read refuse it too.
+- The action route's body is `{"action": {...}, "epoch": n}`; the page sends the epoch of the hold the key, click or
+  text was captured under, never the epoch at send time, and its queue and every answer belong to that one hold: an
+  answer for an older hold changes nothing of the current one (F25).
 #### Member contacts' places (20260930717000_member_contact_places)
 
 A contact is a rail row like an agent's (Jonas, 10 Nov 2026: "not sure I like the member contacts at the top,

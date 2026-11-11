@@ -1601,7 +1601,13 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 				return new Response(JSON.stringify({ code: "DESKTOP_BUSY" }), { status: 409 });
 			}) as typeof fetch,
 		});
-		const act = { companyId: ids.companyId, machineId: ids.machineId, token: "eyJh.eyJz.c2ln", action: typed };
+		const act = {
+			companyId: ids.companyId,
+			machineId: ids.machineId,
+			token: "eyJh.eyJz.c2ln",
+			action: typed,
+			epoch: 4,
+		};
 		return { ...ids, answer, call, host, memberActBegin, router, act, sent, signal: new AbortController().signal };
 	}
 
@@ -1610,7 +1616,8 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 		expect(await f.router.memberAct(f.act, f.signal)).toEqual({ exitCode: 0 });
 		expect(f.memberActBegin).toHaveBeenCalledWith(
 			"eyJh.eyJz.c2ln",
-			{ companyId: f.companyId, machineId: f.machineId, action: typed },
+			// With the epoch of the hold its input was captured under (F24).
+			{ companyId: f.companyId, machineId: f.machineId, action: typed, epoch: 4 },
 			f.signal,
 		);
 		expect(f.call).toHaveBeenCalledWith(

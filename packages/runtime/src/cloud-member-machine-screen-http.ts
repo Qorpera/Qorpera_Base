@@ -19,8 +19,10 @@ import type { MachineScreenAction } from "./cloud-machine-screen.ts";
 // desktop on for 30 minutes from then. The token is checked by the database alone (the executor begins the look as the
 // member: qorpera_member_machine_screen_begin), never by this listener; it is never logged, stored or put in an answer.
 // A member who holds the desktop (20260930713000) acts on it with
-//   POST /v1/member-machine-screens/<companyId>/<machineId>/act   {"action": {...}}
-// (application/json, at most 16 KiB): one of machine_screen's actions, never `open`. The answer is the action's exit
+//   POST /v1/member-machine-screens/<companyId>/<machineId>/act   {"action": {...}, "epoch": n}
+// (application/json, at most 16 KiB): one of machine_screen's actions, never `open`, and the hand-back epoch of the hold
+// the member's page captured it under (a safe whole number, 0 or more; F24 of #1661: SQL runs it only under that hold).
+// The answer is the action's exit
 // (200, {"schema": "qorpera.member-machine-act/v1", "exitCode"}) or why it did not run (409 with a fixed code); a body
 // that is not one is 400. What the member typed is in that body: it is passed to the machine and nowhere else, never
 // logged, stored, answered or put in an error.
@@ -54,6 +56,8 @@ export interface CloudMemberMachineActRequest {
 	/** The member's bearer token, passed on to the database and nowhere else. */
 	readonly token: string;
 	readonly action: MachineScreenAction;
+	/** The hand-back epoch of the hold the member's page captured the action under (F24). */
+	readonly epoch: number;
 }
 /** The database did not take the member's token (401). */
 export class CloudMemberMachineScreenSignIn extends Error {
@@ -78,9 +82,13 @@ export interface CloudMemberMachineScreenServiceOptions {
 	failed?(code: string): void;
 }
 
-/** The member's action: a JSON body of at most ACT_BODY_BYTES, `{"action": {...}}` and nothing else, the action one of
- * machine_screen's but `open`; undefined for anything else. Nothing of the body is kept or told. */
-async function readAction(request: IncomingMessage, signal: AbortSignal): Promise<MachineScreenAction | undefined> {
+/** The member's action: a JSON body of at most ACT_BODY_BYTES, `{"action": {...}, "epoch": n}` and nothing else, the
+ * action one of machine_screen's but `open` and the epoch a safe whole number, 0 or more (never guessed: anything else
+ * is undefined, a bad request). Nothing of the body is kept or told. */
+async function readAction(
+	request: IncomingMessage,
+	signal: AbortSignal,
+): Promise<{ action: MachineScreenAction; epoch: number } | undefined> {
 	if (request.headers["content-type"] !== "application/json") return undefined;
 	const chunks: Buffer[] = [];
 	let bytes = 0;
@@ -92,9 +100,17 @@ async function readAction(request: IncomingMessage, signal: AbortSignal): Promis
 	}
 	try {
 		const body = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks))) as unknown;
-		if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).join() !== "action")
+		if (
+			!body ||
+			typeof body !== "object" ||
+			Array.isArray(body) ||
+			Object.keys(body).sort().join() !== "action,epoch"
+		)
 			return undefined;
-		return parseCloudMemberMachineAction((body as { action: unknown }).action);
+		const { action, epoch } = body as { action: unknown; epoch: unknown };
+		if (typeof epoch !== "number" || !Number.isSafeInteger(epoch) || epoch < 0) return undefined;
+		const parsed = parseCloudMemberMachineAction(action);
+		return parsed === undefined ? undefined : { action: parsed, epoch };
 	} catch {
 		return undefined;
 	}
@@ -201,13 +217,19 @@ export class HttpCloudMemberMachineScreenService {
 				return;
 			}
 			if (acting && this.#options.act) {
-				const action = await readAction(request, controller.signal);
-				if (action === undefined) {
+				const asked = await readAction(request, controller.signal);
+				if (asked === undefined) {
 					replyJson(reply, 400, { error: "member_action_invalid" });
 					return;
 				}
 				const done = await this.#options.act(
-					{ companyId: route[1] as string, machineId: route[2] as string, token: bearer[1] as string, action },
+					{
+						companyId: route[1] as string,
+						machineId: route[2] as string,
+						token: bearer[1] as string,
+						action: asked.action,
+						epoch: asked.epoch,
+					},
 					controller.signal,
 				);
 				controller.signal.throwIfAborted();

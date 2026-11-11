@@ -520,7 +520,8 @@ describe("public member Company File gateway", () => {
 			return answer();
 		};
 		const path = `/v1/member-machine-screens/${id}/${id}/act`;
-		const body = JSON.stringify({ action: { type: "type", text: "hunter2 Åse" } });
+		// The epoch of the hold the input was captured under (F24) passes as it came, as the rest of the body.
+		const body = JSON.stringify({ action: { type: "type", text: "hunter2 Åse" }, epoch: 7 });
 		const done = await forward(
 			request(path, { method: "POST", body, headers: { "content-type": "application/json", cookie: "a=b" } }),
 			{ upstreamUrl, fetchImplementation },
@@ -541,7 +542,7 @@ describe("public member Company File gateway", () => {
 		]);
 		assert.deepEqual(bodies, [body, body]);
 		// Exactly 16 KiB passes; someone signed out is not read.
-		const full = JSON.stringify({ action: { type: "click", x: 1, y: 2 }, pad: "" });
+		const full = JSON.stringify({ action: { type: "click", x: 1, y: 2 }, epoch: 7, pad: "" });
 		const padded = full.replace('"pad":""', `"pad":"${"p".repeat(16 * 1024 - full.length)}"`);
 		assert.equal(new TextEncoder().encode(padded).byteLength, 16 * 1024);
 		answer = () => Response.json({ schema: "qorpera.member-machine-act/v1", exitCode: 0 });

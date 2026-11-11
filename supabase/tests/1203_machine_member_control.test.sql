@@ -35,7 +35,10 @@
 --    take-over: it keeps its lease; before it: it takes at the new epoch); the heartbeat rule; a take-over under an
 --    epoch handed back stays refused after 50 more; two members are independent, and each list says its own epoch;
 -- 12. an action that waits for the machine's lock, from a second connection, while the lease runs out (review r7 F14): it is
---    refused and renews nothing (this part commits and cleans up after itself, with 1106's harness).
+--    refused and renews nothing (this part commits and cleans up after itself, with 1106's harness);
+-- 13. an action carries the epoch of the hold its input was captured under (F24): one captured before a hand-back and a
+--    new take-over is refused and records nothing; one begun under a hold that ends before the executor's read gets no
+--    authority under the next.
 
 -- Alice's run acknowledges first, as a member's wake requires before any work (924).
 select pg_temp.base_claims('service_role');
@@ -171,9 +174,14 @@ language sql as $$
 		'schema', 'qorpera.member-machine-desktop/v1', 'state', 'ok', 'handedBack', p_handed, 'holding', p_holding)
 		and jsonb_typeof(pg_temp.dc_answer(p_result) -> 'epoch') = 'number', false)
 $$;
-create function pg_temp.dc_act(p_who text, p_machine text, p_action jsonb) returns text language sql as $$
-	select pg_temp.dc_as(pg_temp.dc_user(p_who), format('select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L)',
-		'92400000-0000-4000-8000-000000000010', pg_temp.dc_id(p_machine), p_action))
+-- An action as the member, captured under the hold at the epoch the machine's lease was taken under (as the holder's
+-- page knows it) unless the test names one (F24).
+create function pg_temp.dc_act(p_who text, p_machine text, p_action jsonb, p_epoch bigint default null) returns text
+language sql as $$
+	select pg_temp.dc_as(pg_temp.dc_user(p_who), format('select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L, %L)',
+		'92400000-0000-4000-8000-000000000010', pg_temp.dc_id(p_machine), p_action, coalesce(p_epoch,
+			(select machine.desktop_member_epoch from public.qorpera_company_machines as machine
+				where machine.id = pg_temp.dc_id(p_machine)), pg_temp.dc_epoch(p_who, p_machine))))
 $$;
 -- An action begun as the member, its id (or an exception).
 create function pg_temp.dc_act_id(p_who text, p_machine text, p_action jsonb) returns uuid language plpgsql as $$
@@ -572,7 +580,7 @@ select set_config('qorpera_test.dc_4y', pg_temp.dc_differ(jsonb_build_array(
 	jsonb_build_array('a stopped machine', pg_temp.dc_act('contributor', 'a3', '{"type": "click", "x": 1, "y": 1}'),
 		pg_temp.dc_refused('qorpera.member-machine-desktop-act/v1', 'MACHINE_NOT_RUNNING')),
 	jsonb_build_array('the service role', pg_temp.dc_service(format(
-		'select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L)', '92400000-0000-4000-8000-000000000010',
+		'select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L, 0)', '92400000-0000-4000-8000-000000000010',
 		pg_temp.dc_id('a1'), '{"type": "click", "x": 1, "y": 1}')),
 		'42501:permission denied for function qorpera_member_machine_desktop_act_begin')
 )), true);
@@ -1130,7 +1138,7 @@ begin
 		foreach v_function in array array['public.qorpera_member_take_machine_desktop(uuid,uuid,bigint)',
 			'public.qorpera_member_keep_machine_desktop(uuid,uuid,bigint)',
 			'public.qorpera_member_hand_back_machine_desktop(uuid,uuid,text,bigint)',
-			'public.qorpera_member_machine_desktop_act_begin(uuid,uuid,jsonb)'] loop
+			'public.qorpera_member_machine_desktop_act_begin(uuid,uuid,jsonb,bigint)'] loop
 			perform pg_temp.base_assert(has_function_privilege(v_role, v_function, 'execute') = (v_role = 'authenticated'),
 				format('8: %s may%s call %s', v_role, case when v_role = 'authenticated' then '' else ' not' end, v_function));
 		end loop;
@@ -1165,6 +1173,60 @@ begin
 			'qorpera_member_take_machine_desktop', 'qorpera_valid_member_desktop_action'],
 		'8: the bodies that name 20260930713000: ' || (select array_agg(proname::text order by proname)::text from pg_proc
 			where pronamespace = 'public'::regnamespace and strpos(prosrc, '20260930713000') > 0));
+end $$;
+
+-- 13. An action carries the epoch of the hold it was captured under (release review r1 of #1667, F24 of #1661) ---------------
+
+-- The admin takes m-1203-other over at E, hands it back (the epoch moves to E+1) and takes it again at E+1. Input
+-- captured under E arrives now: refused (that hold ended), and nothing is recorded, counted on the lease or renewed.
+-- Under E+1 it goes. Then an action begun under E+1, a hand-back and a take-over at E+2 before the executor's read: the
+-- read refuses it (the lease row it was begun on ended). An epoch that is null or below 0 is malformed.
+do $$
+declare
+	v_e bigint := pg_temp.dc_epoch('admin', 'a4');
+	v_take text := pg_temp.dc_take('admin', 'a4');
+	v_back text; v_again text; v_old text; v_new text; v_auth text; v_before public.qorpera_company_machines;
+	v_actions bigint; v_controls jsonb;
+begin
+	perform pg_temp.base_assert(pg_temp.dc_answer(v_take) ->> 'state' = 'ok'
+			and (pg_temp.dc_machine('a4')).desktop_member_epoch = v_e,
+		'13: the admin takes m-1203-other over at E: ' || v_take);
+	v_back := pg_temp.dc_back('admin', 'a4');
+	perform pg_temp.base_assert(pg_temp.dc_backed(v_back, true), '13: and hands it back: ' || v_back);
+	v_again := pg_temp.dc_take('admin', 'a4');
+	perform pg_temp.base_assert(pg_temp.dc_answer(v_again) ->> 'state' = 'ok'
+			and (pg_temp.dc_machine('a4')).desktop_member_epoch = v_e + 1,
+		'13: and takes it again at E+1: ' || v_again);
+	v_before := pg_temp.dc_machine('a4');
+	v_actions := (select count(*) from public.qorpera_company_machine_desktop_actions where machine_id = pg_temp.dc_id('a4'));
+	v_controls := pg_temp.dc_controls('a4');
+	v_old := pg_temp.dc_act('admin', 'a4', '{"type": "click", "x": 2, "y": 2}', v_e);
+	perform pg_temp.base_assert(v_old = pg_temp.dc_refused('qorpera.member-machine-desktop-act/v1', 'DESKTOP_CONTROL_ENDED'),
+		'13: input captured under E is refused under the lease taken at E+1: ' || v_old);
+	perform pg_temp.base_assert(
+		(select count(*) from public.qorpera_company_machine_desktop_actions where machine_id = pg_temp.dc_id('a4')) = v_actions
+			and pg_temp.dc_controls('a4') = v_controls
+			and (pg_temp.dc_machine('a4')).desktop_member_until = v_before.desktop_member_until
+			and (pg_temp.dc_machine('a4')).desktop_member_input_at = v_before.desktop_member_input_at,
+		'13: and nothing is recorded, counted or renewed for it: ' || pg_temp.dc_controls('a4')::text);
+	v_new := pg_temp.dc_act('admin', 'a4', '{"type": "click", "x": 3, "y": 3}', v_e + 1);
+	perform pg_temp.base_assert(pg_temp.dc_answer(v_new) ->> 'state' = 'ok', '13: input captured under E+1 goes: ' || v_new);
+	perform pg_temp.base_assert(pg_temp.dc_backed(pg_temp.dc_back('admin', 'a4'), true)
+			and pg_temp.dc_answer(pg_temp.dc_take('admin', 'a4')) ->> 'state' = 'ok'
+			and (pg_temp.dc_machine('a4')).desktop_member_epoch = v_e + 2,
+		'13: handed back at E+1 and taken again at E+2 before the executor reads the action');
+	v_auth := pg_temp.dc_auth((pg_temp.dc_answer(v_new) ->> 'actionId')::uuid);
+	perform pg_temp.base_assert(
+		v_auth = pg_temp.dc_refused('qorpera.member-machine-desktop-act-authority/v1', 'DESKTOP_CONTROL_ENDED'),
+		'13: the action begun under E+1 gets no authority under the lease taken at E+2: ' || v_auth);
+	perform pg_temp.base_assert(pg_temp.dc_act('admin', 'a4', '{"type": "click", "x": 1, "y": 1}', -1)
+			= '22023:Machine desktop action is malformed'
+		and pg_temp.dc_as(pg_temp.dc_user('admin'), format(
+			'select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L, null)', '92400000-0000-4000-8000-000000000010',
+			pg_temp.dc_id('a4'), '{"type": "click", "x": 1, "y": 1}')) = '22023:Machine desktop action is malformed',
+		'13: an epoch below 0 or none is malformed');
+	-- m-1203-other is no one's again.
+	perform pg_temp.base_assert(pg_temp.dc_backed(pg_temp.dc_back('admin', 'a4'), true), '13: given back at the end');
 end $$;
 
 -- 12. An action that waits for the machine's lock across the lease's end (review r7 F14) -------------------------------------
@@ -1228,8 +1290,9 @@ begin
 	perform dblink_exec('dc_holder', 'begin');
 	perform * from dblink('dc_holder', format('select 1 from public.qorpera_company_machines where id = %L for no key update',
 		pg_temp.dc_id('a1'))) as held(one integer);
-	perform dblink_send_query('dc_poll', format('select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L)::text',
-		'92400000-0000-4000-8000-000000000010', pg_temp.dc_id('a1'), '{"type": "click", "x": 4, "y": 4}'));
+	perform dblink_send_query('dc_poll', format('select public.qorpera_member_machine_desktop_act_begin(%L, %L, %L, %L)::text',
+		'92400000-0000-4000-8000-000000000010', pg_temp.dc_id('a1'), '{"type": "click", "x": 4, "y": 4}',
+		v_before.desktop_member_epoch));
 	for attempt in 1..400 loop
 		v_waited := v_holder = any(pg_blocking_pids(v_poll));
 		exit when v_waited or dblink_is_busy('dc_poll') = 0;

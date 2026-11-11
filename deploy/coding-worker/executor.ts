@@ -376,7 +376,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		...(memberControl ? { memberBegin: (token: string, look: { companyId: string; machineId: string; confirmed: boolean },
 			signal: AbortSignal) => memberControl.begin(token, look, signal),
 		// A member's action (20260930713000) is begun as the member too, recorded without its text.
-		memberActBegin: (token: string, act: { companyId: string; machineId: string; action: MachineScreenAction },
+		memberActBegin: (token: string, act: { companyId: string; machineId: string; action: MachineScreenAction; epoch: number },
 			signal: AbortSignal) => memberControl.act(token, act, signal) } : {}),
 		...(machineHost ? {
 			executeLocal: (request, authority, signal) => machineHost.command(

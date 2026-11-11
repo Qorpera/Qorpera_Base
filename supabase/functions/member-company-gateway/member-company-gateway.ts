@@ -11,8 +11,9 @@ const ERASE = new RegExp(`^/v1/member-message-erases/${UUID}/${UUID}(/${UUID})?$
 /** A member's look at an agent's desktop computer (20260930712000): a company and a machine, and `/watching` when the
  * member says they still watch. The coding executor of the bridge's node answers it (deploy/coding-worker/README.md). */
 const MACHINE_SCREEN = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}(/watching)?$`);
-/** A member's action on an agent's desktop they took over (20260930713000): one click, drag, scroll, key or text, at most
- * 16 KiB. What the member typed is in that body: it passes through, never kept or logged here. */
+/** A member's action on an agent's desktop they took over (20260930713000): one click, drag, scroll, key or text, with
+ * the epoch of the hold the member's page captured it under (F24 of #1661; the executor and SQL check both), at most
+ * 16 KiB. The body passes through as it came: what the member typed is in it, never kept or logged here. */
 const MACHINE_ACT = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}/act$`);
 const MAX_ACT_BYTES = 16 * 1024;
 const MAX_BYTES = 8 * 1024 * 1024;

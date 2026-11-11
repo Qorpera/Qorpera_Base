@@ -227,7 +227,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_member_interface_pages(uuid)', false, true, 'member: auth.uid() + membership of a folder-v2 company; whether Mailbox and Members are on, read only (C6a)'),
 	('public.qorpera_member_interface_supervisions(uuid)', false, true, 'member: auth.uid() + membership of a folder-v2 company; live consents on tables the caller reads (I9b)'),
 	('public.qorpera_member_keep_machine_desktop(uuid,uuid,bigint)', false, true, 'member: auth.uid() + qorpera_can_write_profile; renews only the caller''s own lease of a desktop, and only when it was taken under the epoch named (20260930713000)'),
-	('public.qorpera_member_machine_desktop_act_begin(uuid,uuid,jsonb)', false, true, 'member: auth.uid() + qorpera_can_write_profile and the caller''s own live lease; records one action without any text and answers its single-use id (20260930713000)'),
+	('public.qorpera_member_machine_desktop_act_begin(uuid,uuid,jsonb,bigint)', false, true, 'member: auth.uid() + qorpera_can_write_profile and the caller''s own live lease taken under the epoch named; records one action without any text and answers its single-use id (20260930713000)'),
 	('public.qorpera_member_machine_screen_begin(uuid,uuid,jsonb)', false, true, 'member: auth.uid() + qorpera_can_read_profile (viewers too); records one look and answers its single-use id, nothing of the machine (20260930712000)'),
 	('public.qorpera_member_mail_addresses(uuid)', false, true, 'member: auth.uid() + membership, before any lock (I5a)'),
 	('public.qorpera_member_mail_thread(uuid,text,jsonb)', false, true, 'member: auth.uid() + membership, before any lock (I5a; older pages C6e)'),
