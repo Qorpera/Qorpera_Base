@@ -280,6 +280,13 @@ class AppFiles {
 			else this.#bytes += file.bytes;
 			return this.#folder.readFile(file, this.#signal, most, LIVE);
 		});
+		// Reading ahead, a file that fails is left for the open: the page waits for all its other reads, so a round
+		// never has more under way than it says.
+		if (this.#warm) {
+			const settled = reading.catch(() => null);
+			this.#read.set(key, settled);
+			return settled;
+		}
 		this.#read.set(key, reading);
 		return reading;
 	}

@@ -481,6 +481,42 @@ describe("the company's apps", () => {
 		);
 	});
 
+	it("reads ahead past a file that fails, finishing an app's other reads before the next app", async () => {
+		const files: Record<string, string> = {};
+		for (const name of ["a", "b", "c"]) {
+			files[`apps/${name}/app.toml`] = 'name = "App"\n';
+			files[`apps/${name}/index.html`] = [1, 2, 3, 4].map((n) => `<img src="${n}.png">`).join("");
+			for (const n of [1, 2, 3, 4]) files[`apps/${name}/${n}.png`] = `${name}${n}`;
+		}
+		const f = fakeFolder(files);
+		const apps = await readApps(f, new AbortController().signal);
+		const read = f.readFile;
+		let active = 0;
+		let most = 0;
+		let ended = 0;
+		let started = 0;
+		f.readFile = (async (file: { bytes: number; fileSha256: string }, signal: AbortSignal) => {
+			started++;
+			active++;
+			most = Math.max(most, active);
+			try {
+				const bytes = await read(file as never, signal);
+				const text = new TextDecoder().decode(bytes);
+				if (text === "a1") throw new Error("the object fetch failed");
+				if (/^[abc]\d$/.test(text)) await new Promise((resolve) => setTimeout(resolve, 30));
+				return bytes;
+			} finally {
+				active--;
+				ended++;
+			}
+		}) as typeof f.readFile;
+		await warmApps(f, apps, new AbortController().signal);
+		// Two apps of four files at once, at most, and nothing left under way when the round ends.
+		expect(most).toBeLessThanOrEqual(8);
+		expect(ended).toBe(started);
+		expect(f.reads).toEqual(expect.arrayContaining(["apps/a/4.png", "apps/b/4.png", "apps/c/4.png"]));
+	});
+
 	it("lists the concepts of the company's product, the most recently changed first", async () => {
 		const f = fakeFolder({
 			"apps/shop-a/app.toml": 'name = "Shop A"\nconcept = true\ncover = "cover.webp"\n',
