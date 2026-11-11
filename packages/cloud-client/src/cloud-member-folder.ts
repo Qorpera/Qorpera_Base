@@ -708,6 +708,99 @@ export function parseCloudMemberFolderCommit(
 /** A member's change set's operation key: what makes a retry of the same change set a replay, never a second change. */
 const OPERATION_KEY = /^[A-Za-z0-9._:-]{1,128}$/;
 
+/** Waits for `pending`, or rejects as soon as `signal` ends. */
+function untilAborted<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) return Promise.reject(signal.reason);
+	return new Promise<T>((resolve, reject) => {
+		const stop = () => reject(signal.reason);
+		signal.addEventListener("abort", stop, { once: true });
+		pending.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
+	});
+}
+
+/** Files' bytes already read and checked, by the version they are of: a version's bytes never change (its manifest
+ * names every chunk by its hash), so reading the same version again needs no round trip. It holds only bytes a reader
+ * was handed after a live read of the path or its folder: each use still asks the folder for the entry, so what the
+ * member may read is decided live every time; only the bytes are not fetched again. In memory only, up to `maxBytes`,
+ * the least recently read going first; a file larger than a quarter of that is never kept. A read under way is shared:
+ * a second reader of the same version waits for it, and reads by itself if the first stops or fails. Every reader is
+ * handed its own copy. A read under way when the cache is cleared keeps nothing. One cache serves one member: give
+ * each member their own. */
+export class CloudMemberFolderFileCache {
+	readonly #max: number;
+	readonly #held = new Map<string, Uint8Array>();
+	readonly #reading = new Map<string, Promise<Uint8Array>>();
+	#bytes = 0;
+	/** Counts `clear()`s: a read begun before one keeps nothing when it ends. */
+	#generation = 0;
+
+	constructor(maxBytes = 64 * 1024 * 1024) {
+		if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new CloudMemberFolderError("Invalid file cache size");
+		this.#max = maxBytes;
+	}
+
+	/** The bytes held now. */
+	get bytes(): number {
+		return this.#bytes;
+	}
+
+	clear(): void {
+		this.#generation++;
+		this.#held.clear();
+		this.#reading.clear();
+		this.#bytes = 0;
+	}
+
+	/** The bytes of the version `key` names: held, being read, or read now with `load`. */
+	async read(
+		key: string,
+		signal: AbortSignal,
+		load: (signal: AbortSignal) => Promise<Uint8Array>,
+	): Promise<Uint8Array> {
+		signal.throwIfAborted();
+		// As this reader asked: a read it waits for or makes itself after a clear() keeps nothing.
+		const generation = this.#generation;
+		const held = this.#held.get(key);
+		if (held) {
+			// The most recently read goes last, and so leaves last.
+			this.#held.delete(key);
+			this.#held.set(key, held);
+			return held.slice();
+		}
+		const pending = this.#reading.get(key);
+		if (pending)
+			try {
+				return (await untilAborted(pending, signal)).slice();
+			} catch (error) {
+				if (signal.aborted) throw error;
+				// The first reader stopped, or its read failed: this reader reads for itself.
+			}
+		const reading = load(signal);
+		this.#reading.set(key, reading);
+		try {
+			const bytes = await reading;
+			if (generation === this.#generation) this.#keep(key, bytes);
+			return bytes.slice();
+		} finally {
+			if (this.#reading.get(key) === reading) this.#reading.delete(key);
+		}
+	}
+
+	#keep(key: string, bytes: Uint8Array): void {
+		if (bytes.byteLength > this.#max / 4 || this.#held.has(key)) return;
+		this.#held.set(key, bytes);
+		this.#bytes += bytes.byteLength;
+		for (const [oldest, old] of this.#held) {
+			if (this.#bytes <= this.#max) break;
+			this.#held.delete(oldest);
+			this.#bytes -= old.byteLength;
+		}
+	}
+}
+
+/** At most this many of a file's chunks are asked for at once. */
+const CHUNKS_AT_ONCE = 4;
+
 export class CloudMemberFolderClient {
 	readonly #environmentId: string;
 	readonly #controlOrigin: string;
@@ -717,6 +810,7 @@ export class CloudMemberFolderClient {
 	readonly #fetch: typeof fetch;
 	readonly #timeoutMs: number;
 	readonly #pieceRetryMs: number;
+	readonly #files: CloudMemberFolderFileCache | undefined;
 
 	constructor(options: {
 		environmentId: string;
@@ -728,6 +822,8 @@ export class CloudMemberFolderClient {
 		timeoutMs?: number;
 		/** `readFilePieces`: the pause before a piece is asked for a second time; twice it before the third. */
 		pieceRetryMs?: number;
+		/** `readFile`: bytes already read, kept across this member's clients of the same company. */
+		files?: CloudMemberFolderFileCache;
 	}) {
 		if (
 			!isUuid(options.environmentId) ||
@@ -744,6 +840,7 @@ export class CloudMemberFolderClient {
 		this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
 		this.#timeoutMs = options.timeoutMs ?? 30_000;
 		this.#pieceRetryMs = options.pieceRetryMs ?? 1000;
+		this.#files = options.files;
 		if (
 			!Number.isSafeInteger(this.#timeoutMs) ||
 			this.#timeoutMs < 1 ||
@@ -881,12 +978,27 @@ export class CloudMemberFolderClient {
 		).then(parseCloudMemberFolderChanges);
 	}
 
-	/** A file's bytes: its manifest, then its chunks, each checked against its hash, and the whole against the file's. */
-	readFile(reference: CloudMemberFolderFile, signal: AbortSignal, maximumBytes = MAX_FILE_BYTES): Promise<Uint8Array> {
+	/** A file's bytes: its manifest, then its chunks (a few at once), each checked against its hash, and the whole against
+	 * the file's. With `cached`, and the client's file cache, a version read before is answered from it with no fetch:
+	 * only for a caller that read the entry live just now, as the member, so the read's authority is still the folder's
+	 * (a reference kept from an earlier listing reads uncached, and the gateway decides). */
+	readFile(
+		reference: CloudMemberFolderFile,
+		signal: AbortSignal,
+		maximumBytes = MAX_FILE_BYTES,
+		options?: { readonly cached?: boolean },
+	): Promise<Uint8Array> {
 		if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes > MAX_FILE_BYTES)
 			throw new CloudMemberFolderError("Invalid company folder read limit");
 		if (reference.bytes > maximumBytes)
 			throw new CloudMemberFolderError("Company folder file exceeds this viewer's limit");
+		const files = this.#files;
+		if (!files || options?.cached !== true) return this.#readFile(reference, signal);
+		const key = `${this.#environmentId}/${reference.manifestSha256}/${reference.fileSha256}/${reference.bytes}`;
+		return files.read(key, signal, (readSignal) => this.#readFile(reference, readSignal));
+	}
+
+	#readFile(reference: CloudMemberFolderFile, signal: AbortSignal): Promise<Uint8Array> {
 		return withCloudDeadline(
 			async (requestSignal) => {
 				const chunks = manifestPieces(
@@ -894,13 +1006,23 @@ export class CloudMemberFolderClient {
 					await this.#object(reference.manifestSha256, MAX_MANIFEST_BYTES, requestSignal),
 				);
 				const bytes = new Uint8Array(reference.bytes);
+				const offsets: number[] = [];
 				let offset = 0;
 				for (const chunk of chunks) {
-					const part = await this.#object(chunk.sha256, chunk.bytes, requestSignal);
-					if (part.byteLength !== chunk.bytes) invalid("chunk");
-					bytes.set(part, offset);
-					offset += part.byteLength;
+					offsets.push(offset);
+					offset += chunk.bytes;
 				}
+				let next = 0;
+				const worker = async () => {
+					while (next < chunks.length) {
+						const index = next++;
+						const chunk = chunks[index]!;
+						const part = await this.#object(chunk.sha256, chunk.bytes, requestSignal);
+						if (part.byteLength !== chunk.bytes) invalid("chunk");
+						bytes.set(part, offsets[index]);
+					}
+				};
+				await Promise.all(Array.from({ length: Math.min(CHUNKS_AT_ONCE, chunks.length) }, worker));
 				// The chunks are the manifest's; the manifest's fileSha256 is only its writer's word.
 				if ((await cloudFileBytesSha256(bytes)) !== reference.fileSha256)
 					throw new CloudMemberFolderError("Company folder bytes do not match their entry");

@@ -15,6 +15,7 @@ import {
 	readApps,
 	resolveAppPath,
 	sharedFolderHints,
+	warmApps,
 } from "../src/app/interface-apps.ts";
 import { markdown } from "../src/ui/markdown.ts";
 
@@ -293,6 +294,44 @@ describe("putting an app's page together", () => {
 		expect(assembled.files).toBe(4);
 	});
 
+	it("reads the page's files side by side, a few at once and each once, and puts each where it is named", async () => {
+		const names = Array.from({ length: 12 }, (_, index) => `p${index}.png`);
+		const files: Record<string, string> = {
+			"apps/many/index.html": `<link rel="stylesheet" href="a.css">${names.map((name) => `<img src="${name}">`).join("")}<img src="p0.png">`,
+			"apps/many/a.css": "b{background:url(p1.png)}",
+		};
+		for (const [index, name] of names.entries()) files[`apps/many/${name}`] = String.fromCharCode(65 + index);
+		const f = fakeFolder(files);
+		let active = 0;
+		let most = 0;
+		const read = f.read;
+		const slow = Object.assign(f, {
+			read: async (path: string, signal: AbortSignal) => {
+				active++;
+				most = Math.max(most, active);
+				// The later a file is named, the sooner its read ends.
+				await new Promise((resolve) => setTimeout(resolve, 30 - (names.indexOf(path.split("/").at(-1)!) + 1) * 2));
+				active--;
+				return read(path, signal);
+			},
+		});
+		const assembled = await assembleApp(
+			slow,
+			{ path: "apps/many", entry: "index.html" },
+			new AbortController().signal,
+		);
+		expect(assembled.ok).toBe(true);
+		if (!assembled.ok) return;
+		const page = new DOMParser().parseFromString(assembled.page, "text/html");
+		const sources = [...page.querySelectorAll("img")].map((image) => atob(image.getAttribute("src")!.split(",")[1]!));
+		expect(sources).toEqual([...names.map((_, index) => String.fromCharCode(65 + index)), "A"]);
+		expect(page.querySelector("style")?.textContent).toBe('b{background:url("data:image/png;base64,Qg==")}');
+		expect(most).toBeGreaterThan(1);
+		expect(most).toBeLessThanOrEqual(8);
+		expect(f.reads.filter((path) => path === "apps/many/p0.png")).toHaveLength(1);
+		expect(assembled.files).toBe(14);
+	});
+
 	it("starts a page from the base style, first in its head and under the page's own styles", async () => {
 		const files = fakeFolder({
 			"apps/plain/index.html": "<!doctype html><title>Plain</title><style>h1{color:red}</style><h1>Hi</h1>",
@@ -366,6 +405,33 @@ describe("the company's apps", () => {
 			["empty", null, true],
 			["sales", true, false],
 		]);
+	});
+
+	it("reads ahead each app's entry and the company's colours, and nothing else of an app", async () => {
+		const f = fakeFolder({
+			"apps/sales/app.toml": 'name = "Sales"\n',
+			"apps/sales/index.html": '<img src="big.png">',
+			"apps/sales/big.png": "x",
+			"apps/plan/app.toml": 'name = "Plan"\nentry = "pages/start.html"\n',
+			"apps/plan/pages/start.html": "<p>",
+			"apps/broken/app.toml": "name =",
+			"QorperaOS/brand/brand.toml": 'accent = "#123456"\n',
+		});
+		const readFile = vi.spyOn(f, "readFile");
+		await warmApps(f, await readApps(f, new AbortController().signal), new AbortController().signal);
+		const read = readFile.mock.calls.map(([file]) => (file as { bytes: number }).bytes);
+		expect(f.reads).toEqual(
+			expect.arrayContaining(["QorperaOS/brand/brand.toml", "apps/sales/index.html", "apps/plan/pages/start.html"]),
+		);
+		expect(f.reads).not.toContain("apps/sales/big.png");
+		expect(f.reads.filter((path) => path.startsWith("apps/broken/") && path !== "apps/broken/app.toml")).toEqual([]);
+		// The three manifests that read, the colours and two entries.
+		expect(read).toHaveLength(6);
+		const stopped = new AbortController();
+		stopped.abort();
+		f.reads.length = 0;
+		await warmApps(f, await readApps(f, new AbortController().signal), stopped.signal);
+		expect(f.reads.filter((path) => !path.endsWith("app.toml") && path !== "apps")).toEqual([]);
 	});
 
 	it("lists the concepts of the company's product, the most recently changed first", async () => {

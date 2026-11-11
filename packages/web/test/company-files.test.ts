@@ -2,7 +2,7 @@
 import { webcrypto } from "node:crypto";
 import { cloudFileBytesSha256 } from "@qorpera/cloud-client/cloud-file-bytes";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WebCompanyFiles } from "../src/cloud/company-files.ts";
+import { forgetMemberFiles, WebCompanyFiles } from "../src/cloud/company-files.ts";
 import { deferred, fixture, id, profileA, timestamp, userA, userB } from "./fixtures.ts";
 
 /* The product's member transport for the company folder (WebCompanyFiles.folder()): reads over PostgREST, bytes and
@@ -14,6 +14,7 @@ beforeEach(() => {
 	vi.stubGlobal("crypto", webcrypto);
 });
 afterEach(() => {
+	forgetMemberFiles();
 	for (const dispose of disposers.splice(0)) dispose();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
@@ -140,6 +141,29 @@ describe("the product's member folder transport", () => {
 			called.filter((url) => url.startsWith(`${f.cloud.config.objectGatewayUrl}/v1/member-folder-`)),
 		).toHaveLength(3);
 		expect(called.some((url) => url.includes("/functions/v1/member-company-gateway"))).toBe(false);
+	});
+
+	it("reads a file's version once for the member across the company's clients, and again after sign-out", async () => {
+		const f = await setup();
+		const read = async () => {
+			const folder = f.company.folder();
+			const entry = (await folder.read("notes.txt", f.signal)).entry!;
+			return new TextDecoder().decode(await folder.readFile(entry.file!, f.signal, undefined, { cached: true }));
+		};
+		const objects = () => urls(f.fetch).filter((url) => url.includes("/v1/member-folder-objects/")).length;
+		expect(await read()).toBe("Original text");
+		expect(objects()).toBe(2);
+		// Each read still asks for the entry as the member: only the bytes are not fetched again.
+		expect(await read()).toBe("Original text");
+		expect(objects()).toBe(2);
+		expect(urls(f.fetch).filter((url) => url.endsWith("/qorpera_member_folder_read"))).toHaveLength(2);
+		forgetMemberFiles();
+		expect(await read()).toBe("Original text");
+		expect(objects()).toBe(4);
+		// Storage's previews read a reference from an earlier listing, uncached: the gateway decides each time.
+		const listed = (await f.company.folder().read("notes.txt", f.signal)).entry!.file!;
+		await f.company.folder().readFile(listed, f.signal);
+		expect(objects()).toBe(6);
 	});
 
 	it("refuses a different member's token before anything is sent", async () => {
