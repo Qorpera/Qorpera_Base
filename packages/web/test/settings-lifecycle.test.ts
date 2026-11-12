@@ -87,8 +87,10 @@ function sdkRpcs(f: { cloud: Cloud }): string[] {
 			name !== "qorpera_member_interface_pages" &&
 			// Leaving reads how many agents work for the member, so the confirmation can say it.
 			name !== "qorpera_read_works_for" &&
-			// The apps drawer's Sites entry: the company's sites are read once it opens.
+			// The apps drawer's Sites and What's new entries: the company's sites and its projects' releases are read once
+			// it opens.
 			name !== "qorpera_list_company_sites" &&
+			name !== "qorpera_list_code_releases" &&
 			// The rail's line under each agent's name reads the next planned runs (app/agent-notes.ts).
 			name !== "qorpera_list_cloud_routines",
 	);

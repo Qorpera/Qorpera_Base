@@ -93,8 +93,9 @@ begin
 	reset role;
 	return v;
 end $$;
+-- (Since 20260930729000 the switch also says whether a site is kept: on here; 1216 switches it.)
 create function pg_temp.chk_enabled(p_enabled boolean) returns jsonb language sql immutable as $$
-	select jsonb_build_object('schema', 'qorpera.code-checks-switch/v1', 'enabled', p_enabled)
+	select jsonb_build_object('schema', 'qorpera.code-checks-switch/v1', 'enabled', p_enabled, 'site', true)
 $$;
 -- A session copy's turn as a turn that is ending: its submission (whose receipt rec_turn made up, so the settle of the
 -- turn would find no such receipt) is read already.

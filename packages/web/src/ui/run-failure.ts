@@ -298,9 +298,11 @@ const CODING_CHECKS_NOT_RUN = phrase("Not saved yet: Qorpera could not test the 
 
 function codingChecksReason(code: string | undefined): string | undefined {
 	switch (code) {
-		// A check failed, or the checks file is gone or broken: the change's own doing.
+		// A check failed, or the checks file is gone or broken, or the site the checks built cannot go out (step 4: no
+		// index.html, over the limits, a secret in it): the change's own doing.
 		case "CODING_CHECKS_FAILED":
 		case "CODING_CHECKS_REFUSED":
+		case "CODING_CHECKS_SITE_REFUSED":
 			return CODING_CHECKS_FAILED;
 		// The checks could not run, or main moved twice while they ran: never the code's fault.
 		case "CODING_CHECKS_DID_NOT_RUN":

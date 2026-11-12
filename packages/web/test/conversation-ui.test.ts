@@ -1078,8 +1078,9 @@ describe("conversation UI boundaries", () => {
 			name === "qorpera_member_interface_offers" ||
 			name === "qorpera_member_interface_supervisions" ||
 			name === "qorpera_member_interface_pages" ||
-			// The apps drawer's Sites entry.
+			// The apps drawer's Sites and What's new entries.
 			name === "qorpera_list_company_sites" ||
+			name === "qorpera_list_code_releases" ||
 			// The rail's line under each agent's name reads the next planned runs (app/agent-notes.ts).
 			name === "qorpera_list_cloud_routines" ||
 			// The account marks itself online for its friends (online-mark.ts).

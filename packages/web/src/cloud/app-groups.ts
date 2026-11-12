@@ -5,7 +5,8 @@
  * touched is theirs, the rest follows the file. Everything here is pure: the drawer arranges, flattens and changes the
  * member's document with these, and draws the result.
  *
- * Keys are the file's: `page:mailbox|members|bank`, `app:<name>`, `concepts`, `sites`, and `group:<id>` for a group. */
+ * Keys are the file's: `page:mailbox|members|bank`, `app:<name>`, `concepts`, `sites`, `whats-new` (the platform's What's
+ * new page; `app:whats-new` is an agent's app), and `group:<id>` for a group. */
 
 import {
 	isAppDrawerKey,

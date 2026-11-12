@@ -8,7 +8,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
  * "app" is an agent's interface app (`apps/<name>/` of the Company File) as a page of its own, `#/c/{id}/a/{name}`
  * (Jonas, 8 November 2026: an app is a whole product prototype, not a panel beside the chat). "concepts" is the
  * company's concepts of its product, full screen with a side panel to pick one, `#/c/{id}/concepts` (the most
- * recently changed one) or `#/c/{id}/concepts/{name}` (Jonas, 8 November 2026). */
+ * recently changed one) or `#/c/{id}/concepts/{name}` (Jonas, 8 November 2026). "whats-new" is What's new, the
+ * changes to the company's sites made from its code, ready to go live, `#/c/{id}/whats-new` (own code storage step 4). */
 export type CompanySection =
 	| "home"
 	| "chat"
@@ -21,6 +22,7 @@ export type CompanySection =
 	| "app"
 	| "concepts"
 	| "sites"
+	| "whats-new"
 	| "member";
 
 const INTERFACE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -62,9 +64,9 @@ export function parseRoute(hash: string): Route {
 		if ((section === "chat" || section === "staff" || section === "member") && id) {
 			return { name: "company", profileId, section, id };
 		}
-		if (section === "file" || section === "team" || section === "new" || section === "meet" || section === "sites") {
-			return { name: "company", profileId, section };
-		}
+		// The pages named by their section alone, as one pattern: shorter in theme.js than a comparison each.
+		if (/^(file|team|new|meet|sites|whats-new)$/.test(section))
+			return { name: "company", profileId, section: section as CompanySection };
 		return { name: "company", profileId, section: "home" };
 	}
 	return { name: "hub" };

@@ -207,6 +207,64 @@ it("refuses a third level, a group inside itself, and keys the company does not 
 	});
 });
 
+// Own code storage, step 4: What's new is the platform's page in the drawer, the bare whats-new. As Sites, it is the
+// company's while a repository kept in Qorpera has a site, which this tool does not read: it is taken. app:whats-new is
+// an agent's app, and a bare key the drawer does not know is still refused.
+it("lists and places What's new, the platform's page, and still refuses a bare key the drawer does not know", async () => {
+	const f = await fixture();
+	await expect(f.call({ action: "move", item: "whats-new", group: "trips" })).resolves.toMatchObject({
+		changed: true,
+	});
+	expect(f.text(PATH)).toBe(`# Apps
+Our own note: trips first.
+
+- page:mailbox Mailbox
+- group trips: Trips
+  - app:trip-planner Trip planner
+  - group routes: Routes
+    - app:route-lofoten
+  - whats-new What's new
+`);
+	await expect(f.call({ action: "list" })).resolves.toMatchObject({
+		groups: 2,
+		layout: [
+			"page:mailbox Mailbox",
+			"group trips: Trips (2 apps)",
+			"  app:trip-planner Trip planner",
+			"  group routes: Routes (1 app)",
+			"    app:route-lofoten Lofoten",
+			"  whats-new What's new",
+			"page:members Members",
+			"page:bank Bank",
+			"app:draft Draft (not posted)",
+			"app:finances Company finances",
+			"app:travel-supply Travel supply",
+			"concepts Concepts",
+		],
+	});
+	// A new group takes it, and it stands before another entry there.
+	await expect(
+		f.call({ action: "create_group", name: "Launch", items: ["whats-new", "app:finances"] }),
+	).resolves.toMatchObject({ changed: true, group: "launch" });
+	expect(f.text(PATH)).toContain(
+		"- group launch: Launch\n  - whats-new What's new\n  - app:finances Company finances\n",
+	);
+	await refuses(f.call({ action: "move", item: "app:whats-new", group: null }), "has no app:whats-new");
+	const tool = f.tool();
+	for (const item of ["whats_new", "Whats-new", "page:whats-new", "news"]) {
+		expect(() => tool.parseArguments({ action: "move", item, group: null })).toThrow(CloudToolArgumentRefusal);
+		expect(() => tool.parseArguments({ action: "move", item, group: null })).toThrow(
+			"item must be a key from organize_apps list (page:mailbox, page:members, page:bank, app:<name>, concepts, sites, whats-new) or group:<id>",
+		);
+	}
+	expect(ORGANIZE_APPS_DESCRIPTION).toContain(
+		"(Mailbox, Members, Bank, each posted app, Concepts, Sites, What's new)",
+	);
+	expect(ORGANIZE_APPS_DESCRIPTION).toContain(
+		"each entry by its key (page:mailbox, page:members, page:bank, app:<name>, concepts, sites, whats-new)",
+	);
+});
+
 it("makes the file, and the apps folder, when the company has none", async () => {
 	const f = await fixture({ "apps/finances/app.toml": app("Company finances") });
 	await expect(f.call({ action: "list" })).resolves.toMatchObject({ layout: expect.any(Array), looseApps: 1 });

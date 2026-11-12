@@ -12,9 +12,9 @@ const INK = "#161615";
 
 type Part = readonly [tag: string, attrs: Readonly<Record<string, string>>];
 
-/** An emblem a file may name, or the Bank page's or the Sites page's, which only the web draws (app/bank-page.ts,
- * views/sites-page.ts). */
-export type Emblem = InterfaceEmblem | "bank" | "globe";
+/** An emblem a file may name, or the Bank page's, the Sites page's or What's new's, which only the web draws
+ * (app/bank-page.ts, views/settings-sites.ts, views/whats-new.ts). */
+export type Emblem = InterfaceEmblem | "bank" | "globe" | "spark";
 
 /** Each emblem on a 48×48 grid: the solid parts take the ink, the cuts the page colour. */
 const EMBLEMS: Readonly<Record<Emblem, readonly Part[]>> = {
@@ -36,6 +36,11 @@ const EMBLEMS: Readonly<Record<Emblem, readonly Part[]>> = {
 				stroke: "cut",
 			},
 		],
+	],
+	// What's new: a big spark and a small one, the small one top left, clear of the drawer's badge.
+	spark: [
+		["path", { d: "M28 9.5Q31.4 23.6 45.5 27Q31.4 30.4 28 44.5Q24.6 30.4 10.5 27Q24.6 23.6 28 9.5z", fill: "solid" }],
+		["path", { d: "M11 3Q12.7 9.3 19 11Q12.7 12.7 11 19Q9.3 12.7 3 11Q9.3 9.3 11 3z", fill: "solid" }],
 	],
 	pulse: [
 		["path", { d: "M24 4c11.6 0 20 8.2 20 19.4C44 35 35.4 44 24 44S4 35 4 23.4C4 12.2 12.4 4 24 4z", fill: "solid" }],

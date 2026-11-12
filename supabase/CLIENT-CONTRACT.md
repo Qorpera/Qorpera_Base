@@ -314,6 +314,8 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   document, QAL01 when `p_expected` is not the last `updatedAt`, 22023 for a shape
   the web never writes; an empty layout leaves no row). The layout is
   `qorpera.member-app-layout/v1` `{places, groups}` (packages/web/src/cloud/app-groups.ts).
+  A place's key is `page:mailbox|members|bank`, `app:<name>`, `concepts`, `sites`,
+  `whats-new` (the What's new page, since `20260930729000`) or `group:<id>`.
   Any member. Reset takes it away and Undo puts it back; `own.apps` counts it.
 - `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
   shape after the change. Before `20260930727000`, shared, owner/admin/contributor:
@@ -1420,6 +1422,37 @@ runs. Starting is not taking over: it needs no hold and takes none, and the agen
   renews the lease. Without them a task machine whose desktop a member only watched slept after its executor's
   `sleep_after_seconds` (an hour by default), and a hold kept by heartbeats alone could too.
 
+### A member starts a computer for an agent that has none (20260930730000_member_agent_computer)
+
+An owner, admin or contributor starts a desktop computer for an agent from its computer window (Jonas, 12 Nov 2026),
+when the agent has no machine or none big enough for a screen. One press; never on opening the window (a computer
+costs hours). The agent is told nothing: the machine is its own (its machine list shows it, started by it) and it uses,
+stops and deletes it as one it started.
+
+- `qorpera_member_start_agent_computer(profile, agent)` (authenticated): owners, admins and contributors
+  (`qorpera_can_write_profile`, as a member's wake). An agent of the company on staff and not deleted, else
+  `AGENT_UNAVAILABLE` (an unknown agent is 42501). Under the company's machine lock: a machine of the agent's (started by
+  it, or whose screen it drove last) big enough for a desktop and not being deleted is answered as `{state:
+  "existing", machine}` and nothing is made (the client wakes it when it sleeps); at most one new computer per agent a
+  minute (`START_TOO_SOON`); else ONE machine as the agent's own `machine_start` with desktop true and its defaults makes
+  it (2 cpus, 4 GiB, 40 GiB of disk, lifetime task, the standard image), named after the agent with `-desktop` (a
+  number added when taken), its purpose naming the member, the agent as the one it is started by and the member as the
+  one who asked, no run. It goes through machine_start's admission: `MACHINE_TOO_LARGE` (no server could ever hold it)
+  and `MACHINES_UNAVAILABLE` (no node runs machines) refuse and keep nothing; otherwise it waits in line for room or
+  hours as any wanted machine (only the service role reserves room on a node, so a member's start waits for the node
+  executor's next pass, as a member's wake does). Answers `{schema: "qorpera.member-agent-computer/v1", state:
+  "started" | "existing", machine: {machineId, name, state}}`, or `{state: "refused", reason}`.
+- Such a machine has no starting run: `started_by_run_id` and `started_by_receipt_id` are null together. Its folder view
+  acts as its agent and member, company-wide, as a view whose starter's run has ended; a save through it checks the
+  read sets of every run with a command or an authorized `machine_screen` action on its disk, as a starter's is checked
+  (`qorpera_company_machine_screen_runs` records the action's run once per placement; a look records nothing). The disk
+  is the placement's: a machine keeps it while it sleeps and wakes on its node, and a new placement starts empty.
+- The computer window's list (`qorpera_list_agent_machines`) takes the agent's machines big enough for a desktop first
+  into its 20, and `existing` is the first of them in the list's own order: the window always lists the machine a start
+  answers. A busy record moves its last use only
+  while a command whose conversation the busy check-in asks runs on it: with no one to ask, it sleeps after its quiet
+  window without use, busy or not.
+
 #### Member contacts' places (20260930717000_member_contact_places)
 
 A contact is a rail row like an agent's (Jonas, 10 Nov 2026: "not sure I like the member contacts at the top,
@@ -1579,7 +1612,10 @@ Settings → Sites. Built switched off (`qorpera_site_settings.enabled`) until t
   files, bytes, publishedAt, publishedBy, createdAt, passwordChangedAt}]`, newest published first, for any member of
   the company (viewers too; 42501 for anyone else). `state` is `live`, or `publishing` while a site's first upload has
   not finished (its link does not work yet). `source` is the Company File path it was published from; `publishedBy`
-  is `{agentId, name}`, or null when that agent is gone. Never a password.
+  is `{agentId, name}`, or null when that agent is gone. Never a password. A repository's own site (20260930729000,
+  "What's new" below) is listed only once a member has put a version of it live, in the same row: `source` is
+  `code/<owner>/<name>` (tell a code site by that prefix; `publish_site` never publishes a folder under `code/`) and
+  `publishedBy` is null. Until then it waits in What's new, and it still counts toward the company's 10 sites.
 - `qorpera_company_site_password(site)`: `{schema: "qorpera.company-site-password/v1", siteId, password, changedAt}`,
   owners and admins only (42501 for anyone else, a site that is gone included).
 - `qorpera_set_company_site_password(site, password)`: owners and admins. `password` null makes a new random one;
@@ -1588,7 +1624,56 @@ Settings → Sites. Built switched off (`qorpera_site_settings.enabled`) until t
 - `qorpera_unpublish_company_site(site)`: owners and admins. Deletes the site, its files, password and sessions at
   once (the Company File keeps the source). `{schema: "qorpera.company-site-unpublish/v1", siteId, removed}`;
   `removed` false when it was already gone.
+  For a repository's site its kept versions and the way back go with it. The site is then off, not gone for good: the
+  newest change that left a site is due again at once, so the executor's next upload pass (within about a minute, no
+  new change needed) makes the site again under its name, with a new password and not live, and it waits in What's
+  new until a member puts it live.
 - The tables are closed to every API role; the agent's and the edge function's calls are service-only.
+
+### What's new: a repository's site, put live by a member (20260930729000_code_releases)
+
+A repository kept in Qorpera whose checks file has a `site` key: the checks of each change that goes in build its
+website, Qorpera keeps it as a version of the repository's own site (at `https://sites.qorpera.com/<slug>/`, behind
+its password, which is in Sites), and only an owner or admin puts a version live, or goes back to the one before, on
+the What's new page. Nothing goes live by itself.
+
+- `qorpera_list_code_releases(profile)`: `{schema: "qorpera.code-releases/v1", canRelease, sites: [{owner, name, site,
+  live, back, ready, waiting, problem, givenUp}]}` for any member of the company (viewers too; 42501 "Releases unavailable" for
+  anyone else). `canRelease` is true for owners and admins. One entry per repository that has a site or made one, at
+  most 10: every repository with a site first (a company has at most 10 sites), live ones before the rest, then those
+  that made a site and have none now, a `problem` first, the newest change first (by owner and name within each):
+  - `site`: `{slug, url, title}`, or null until the first version was kept.
+  - `live`: `{version, kind, since, by, from}` or null when nothing is live. `version` is the number members see;
+    `kind` is `release` (a member put it live) or `back` (a member went back to it, showing its number again, and
+    `from` is the version it took off); `by` is the member's user id.
+  - `back`: `{version}`, what Go back puts live, or null when no earlier version is kept.
+  - `ready`: what goes live with the next yes, or null: `{change, token, agent, changes: [{key, notice, picture, at,
+    wasLive}], quiet}`. `change` and `token` are what the yes names. `changes` are the ready changes that say what a
+    customer will notice, newest first (at most 20): `picture` a Company File path or null, `at` when it went in,
+    `wasLive` true for a change that was live before a Go back took it off; `key` is for the list only, never shown.
+    `quiet` counts the other ready changes ("behind the scenes"). `agent` is the staff agent to tell "Not yet", or null.
+  - `waiting`: changes that went in and are not ready yet.
+  - `problem`: why the site of the change due now could not be prepared: the code of its last failed upload, while
+    that change is the newest one that left a site and its version is not ready yet (`SITE_LIMIT`: the company has 10
+    sites, and the site is made once one of them goes; `SITE_NAME_TAKEN`: every name the site may take is taken, and
+    it is made once one is free). Otherwise null: as soon as that version is ready (also when an upload's last answer
+    was lost), when a newer change that leaves a site overtook it, after a member took the site offline, and while
+    Qorpera's operators have the repository's sites switched off (then nothing is prepared and nothing is said).
+  - `givenUp`: true while Qorpera has stopped trying: `problem` is set, its change failed five times, and nothing has
+    changed since that lets it try again. False otherwise, and always when `problem` is null. It turns false with a
+    newer change that leaves a site, an upload that finishes, a member taking the site offline, and, for `SITE_LIMIT`,
+    once the company has fewer than 10 sites, or for `SITE_NAME_TAKEN`, once one of the names is free. A `problem`
+    with `givenUp` false means Qorpera tries again.
+- `qorpera_put_code_release_live(profile, owner, name, shown)`: owners and admins (42501 otherwise). `shown` is exactly
+  what the page showed, `{live: <live.version, or null>, change: <ready.change>, token: <ready.token>}` (22023
+  otherwise); a repository the company does not keep is P0002 "No such repository". Answers
+  `{schema: "qorpera.code-release/v1", state: "live", version, url}`, or `{schema, state: "moved"}` when the page is
+  no longer what is live and ready (read it again; nothing changed). Changes ready after the page was drawn wait for
+  the next version. The site serves the new version from the visitor's next request.
+- `qorpera_code_release_back(profile, owner, name, shown)`: owners and admins. `shown` is exactly `{live:
+  <live.version>, to: <back.version>}`. Answers as above; the changes of the version it took off are ready again.
+- Both writes give up after 3 s of waiting for the repository (55P03; nothing changed).
+- The tables are closed to every API role; the executor's calls are not a member's.
 
 ### Downloading the company's code (20260930720000_code_change_record)
 

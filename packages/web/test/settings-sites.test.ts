@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type SitesAccess, SitesView } from "../src/app/views/settings-sites.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
@@ -178,6 +180,35 @@ describe("Settings → Sites", () => {
 		await settle();
 		expect(client.unpublish).toHaveBeenCalledWith(app.id, expect.any(AbortSignal));
 		expect(ids()).toEqual([id(84)]);
+	});
+
+	it("says a project's site made from its code goes live from What's new, and what taking it offline does", async () => {
+		// The row is the plain one (qorpera.company-site/v1): its source is the project's place under code/, no agent.
+		const fromCode: CompanySite = {
+			...shop,
+			id: id(85),
+			slug: "gift-message",
+			title: "Gift message",
+			url: `${ORIGIN}/gift-message/`,
+			source: "code/qorpera/gift-message",
+			publishedBy: null,
+		};
+		const { client } = setup([fromCode, shop]);
+		await settle();
+		const card = cardOf(fromCode.id)!;
+		expect(card.querySelector(".hook-state")?.textContent).toMatch(/^Live · Published [^·]+ · 12 files, 2\.0 KiB$/);
+		expect(card.textContent).toContain("Goes live from What's new");
+		expect(card.textContent).not.toContain("code/");
+		expect(labels(card)).toEqual(["Show password", "Change password", "Unpublish", "Copy"]);
+		// A site an agent published from a folder still says where it came from.
+		expect(cardOf(shop.id)?.textContent).toContain("From product/webshop-preview.html");
+		press(card, "Unpublish");
+		expect(dialog().textContent).toContain(
+			"Take Gift message offline? Its earlier versions go with it. Qorpera prepares the newest version again, with a new password, and it waits in What's new until you put it live.",
+		);
+		press(dialog(), "Unpublish");
+		await settle();
+		expect(client.unpublish).toHaveBeenCalledWith(fromCode.id, expect.any(AbortSignal));
 	});
 
 	it("shows other members the sites and their links, without passwords or actions", async () => {
@@ -441,6 +472,32 @@ describe("Settings → Sites", () => {
 	});
 });
 
+describe("a site's card at every width", () => {
+	// jsdom lays nothing out, so the stylesheet's rules are what is pinned here; measured in headless Chrome at 390, 768,
+	// 1024 and 1440 px, the sidebar open and compact, in English and Danish (lanes/own-code-storage/build4/S.md).
+	const app = readFileSync(resolve("src/styles/app.css"), "utf8");
+
+	it("follows the card's own width: the list is the cards' container, not the window", () => {
+		expect(app).toContain(":is(.sites, .whats-new) .connection-list { container: page-cards / inline-size; }");
+	});
+
+	it("keeps the text at least 10em wide beside the buttons, never 0", () => {
+		// The shared card's column is minmax(0, 1fr) beside an auto column the buttons fill first: at a 1024 px window
+		// with the sidebar open the text column got 0 px.
+		expect(app).toContain(
+			":is(.sites, .whats-new) .service-card { grid-template-columns: 42px minmax(min(10em, 100%), 1fr) auto; }",
+		);
+	});
+
+	it("puts the buttons under the text when the card cannot hold both side by side", () => {
+		const narrow = app.match(/@container page-cards \(max-width: 46em\) \{([^@]*?)\n\}/)?.[1] ?? "";
+		expect(narrow).toContain(":is(.sites, .whats-new) .service-card { grid-template-columns: 42px minmax(0, 1fr); }");
+		expect(narrow).toContain(
+			":is(.sites, .whats-new) .service-card > .connection-actions { grid-column: 2; justify-content: start; }",
+		);
+	});
+});
+
 describe("sites client", () => {
 	const row = (extra: Record<string, unknown> = {}) => ({
 		schema: "qorpera.company-site/v1",
@@ -486,6 +543,11 @@ describe("sites client", () => {
 		expect(
 			parseCompanySite(row({ title: null, state: "publishing", publishedAt: null, publishedBy: null })),
 		).toMatchObject({ title: null, state: "publishing", publishedAt: null, publishedBy: null });
+		// A project's site made from its code (step 4) is the same row: its source is the project's place, no agent.
+		expect(parseCompanySite(row({ source: "code/qorpera/gift-message", publishedBy: null }))).toMatchObject({
+			source: "code/qorpera/gift-message",
+			publishedBy: null,
+		});
 		for (const bad of [
 			row({ schema: "qorpera.company-site/v2" }),
 			row({ extra: true }),
