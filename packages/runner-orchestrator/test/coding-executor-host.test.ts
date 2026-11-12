@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
 	CODING_GUEST,
+	CODING_PACKAGE_CACHE_ENVIRONMENT,
 	type CodingGuestCommandState,
 	type CodingGuestRunRequest,
 	type CodingGuestUsage,
@@ -2753,11 +2754,14 @@ async function folderFixture(repositories = true) {
 	mocked.guestStop.mockResolvedValue({});
 	/** The view each session holds, as its record names it: from its attach until its end. */
 	const held = new Map<string, CodingFolderViewHeld>();
+	/** What the machine's agent says of its package caches at the mount: a new agent that made them, unless a test says
+	 * otherwise (an agent from before, or one that could not make them, says false). */
+	const agent = { packageCaches: true };
 	const views = {
 		attach: vi.fn<CodingFolderViews["attach"]>(async (session) => {
 			const { machineId } = session.machine;
 			held.set(session.workerId, { machineId, bootId: session.bootId, attachmentToken: session.attachmentToken });
-			return { viewId };
+			return { viewId, packageCaches: agent.packageCaches };
 		}),
 		held: vi.fn<CodingFolderViews["held"]>(async (workerId) => held.get(workerId)),
 		end: vi.fn<CodingFolderViews["end"]>(async (workerId) => {
@@ -2812,6 +2816,7 @@ async function folderFixture(repositories = true) {
 		viewId,
 		cwd,
 		status,
+		agent,
 	};
 }
 
@@ -2930,8 +2935,8 @@ describe("a coding session on the folder model", () => {
 		expect(mocked.seedTransfer).not.toHaveBeenCalled();
 		expect(mocked.refresh).not.toHaveBeenCalled();
 		expect(mocked.leaseTransports).toEqual([]);
-		// Its commands run as its user, at its worktree, with Git's settings for the company folder, under this boot's
-		// start, and kept in the session's custody folder.
+		// Its commands run as its user, at its worktree, with Git's settings for the company folder and the machine's
+		// package caches, under this boot's start, and kept in the session's custody folder.
 		const authorize = vi.fn(async () => undefined);
 		await f.host.commandTransport(f.scope(), authorize, f.signal);
 		expect(mocked.commandTransports).toEqual([]);
@@ -2944,7 +2949,7 @@ describe("a coding session on the folder model", () => {
 					uid: 200000,
 					gid: 200000,
 					cwd: f.cwd,
-					environment: codingFolderGitEnvironment(f.claim.workerId),
+					environment: { ...codingFolderGitEnvironment(f.claim.workerId), ...CODING_PACKAGE_CACHE_ENVIRONMENT },
 				},
 				custody: lxdCodingSessionStorage(f.machine, f.placement, f.claim.workerId).custodySource,
 				limitBytes: 67108864,
@@ -5393,9 +5398,17 @@ describe("a run of a repository's checks in the session's machine (own code stor
 	 * folder command transport over a fake guest agent; the vault gives `secrets`. `ending` says how each command the
 	 * guest is asked to run ends (by default it succeeds, printing nothing). */
 	async function checksFixture(
-		options: { secrets?: Record<string, string>; budgetMs?: number; stopMs?: number; boundaryMs?: number } = {},
+		options: {
+			secrets?: Record<string, string>;
+			budgetMs?: number;
+			stopMs?: number;
+			boundaryMs?: number;
+			/** What the machine's agent says of its package caches at the mount (true: a new agent that made them). */
+			packageCaches?: boolean;
+		} = {},
 	) {
 		const f = await folderFixture();
+		f.agent.packageCaches = options.packageCaches ?? true;
 		f.claim.repository = { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" };
 		Object.assign(f.repositories, {
 			start: vi.fn<NonNullable<CodingFolderRepositories["start"]>>(async () => ({ baseSha: f.baseSha })),
@@ -5630,6 +5643,43 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			return control(method, args, signal);
 		});
 		await expect(ask()).rejects.toBe(refusal);
+	});
+
+	it("gives a session command the machine's package caches over the company's values of their names, as every command of its runs, once its agent said they are ready (own code storage, step 6)", async () => {
+		// Each tool's download cache in the machine's shared folder (the guest agent makes it).
+		expect(CODING_PACKAGE_CACHE_ENVIRONMENT).toEqual({
+			npm_config_cache: "/var/cache/qorpera-packages/npm",
+			npm_config_store_dir: "/var/cache/qorpera-packages/pnpm",
+			pnpm_config_store_dir: "/var/cache/qorpera-packages/pnpm",
+			PIP_CACHE_DIR: "/var/cache/qorpera-packages/pip",
+			UV_CACHE_DIR: "/var/cache/qorpera-packages/uv",
+			PLAYWRIGHT_BROWSERS_PATH: "/var/cache/qorpera-packages/ms-playwright",
+			// Playwright's own GC would remove another session's browsers, its install unreadable in that session's home.
+			PLAYWRIGHT_SKIP_BROWSER_GC: "1",
+		});
+		const company = Object.fromEntries(
+			Object.keys(CODING_PACKAGE_CACHE_ENVIRONMENT).map((name) => [name, `/company/value/of/${name}`]),
+		);
+		const f = await checksFixture({ secrets: { ...company, API_KEY: "env-value-api-key-CANARY" } });
+		// A command of the session's own, through the transport its model's commands take, as the guest is asked to run it.
+		const transport = await f.host.commandTransport(
+			f.scope(),
+			vi.fn(async () => undefined),
+			f.signal,
+		);
+		const input = { commandId: randomUUID(), inputSha256: "a".repeat(64), command: "npm ci", timeoutMs: null };
+		expect(await transport.start(f.scope(), input, f.signal)).toMatchObject({ state: "succeeded" });
+		const [session] = f.ran();
+		expect(session).toMatchObject({ commandId: input.commandId, command: "npm ci", cwd: f.cwd });
+		expect(session?.environment).toMatchObject({
+			...codingFolderGitEnvironment(f.claim.workerId),
+			...CODING_PACKAGE_CACHE_ENVIRONMENT,
+			API_KEY: "env-value-api-key-CANARY",
+		});
+		// And the copy and each check of a run.
+		expect(await f.run()).toMatchObject({ state: "passed" });
+		expect(f.ran()).toHaveLength(1 + 1 + CHECKS.length);
+		for (const ran of f.ran()) expect(ran.environment).toMatchObject(CODING_PACKAGE_CACHE_ENVIRONMENT);
 	});
 
 	it("copies the candidate in the session's home and runs each check from its folder of the copy, as the session's user, with CI=true", async () => {
@@ -6696,6 +6746,10 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				QORPERA_CHECKS_REPOSITORY: "/vault/repository-10",
 				QORPERA_SITE_FOLDER: "vault-site-folder-11",
 				QORPERA_SITE_SECRET_NAMES: "VAULT NAMES TWELVE",
+				// The machine's package caches win over a company value of their names (own code storage, step 6).
+				...Object.fromEntries(
+					Object.keys(CODING_PACKAGE_CACHE_ENVIRONMENT).map((name, index) => [name, `/vault/cache-${13 + index}`]),
+				),
 			};
 			const f = await siteFixture({ secrets });
 			const asked = f.vault.mock.calls.length;
@@ -6735,24 +6789,74 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(again.environment.QORPERA_SITE_SECRET_NAMES).toBe("API_KEY STRIPE_SECRET");
 		});
 
+		it("gives no command of a machine whose agent did not make the package caches (from before them, or they failed) any of their variables: a company value of such a name reaches them as before, and the collect looks for it (own code storage, step 6)", async () => {
+			const company = Object.fromEntries(
+				Object.keys(CODING_PACKAGE_CACHE_ENVIRONMENT).map((name) => [name, `/company/value/of/${name}`]),
+			);
+			const f = await siteFixture({
+				secrets: { ...company, API_KEY: "value-of-the-api-key-1" },
+				packageCaches: false,
+			});
+			// A session command first, through the transport its model's commands take.
+			const transport = await f.host.commandTransport(
+				f.scope(),
+				vi.fn(async () => undefined),
+				f.signal,
+			);
+			const input = { commandId: randomUUID(), inputSha256: "a".repeat(64), command: "npm ci", timeoutMs: null };
+			expect(await transport.start(f.scope(), input, f.signal)).toMatchObject({ state: "succeeded" });
+			expect(await f.site()).toMatchObject({ state: "passed", site: MADE });
+			const [session, ...run] = f.ran();
+			expect(session?.environment).toMatchObject({ ...codingFolderGitEnvironment(f.claim.workerId), ...company });
+			expect(run.map(kindOf)).toEqual(["copy", "check", "check", "check", "collect"]);
+			for (const ran of [session, ...run]) {
+				expect(ran?.environment).toMatchObject(company);
+				for (const [name, value] of Object.entries(CODING_PACKAGE_CACHE_ENVIRONMENT))
+					expect(ran?.environment[name]).not.toBe(value);
+			}
+			expect(f.command("collect").environment.QORPERA_SITE_SECRET_NAMES).toBe(
+				["API_KEY", ...Object.keys(company)].sort().join(" "),
+			);
+		});
+
+		it("gives the collect and the drop the machine's package caches over the company's values of their names (own code storage, step 6)", async () => {
+			const company = Object.fromEntries(
+				Object.keys(CODING_PACKAGE_CACHE_ENVIRONMENT).map((name) => [name, `/company/value/of/${name}`]),
+			);
+			const f = await siteFixture({
+				secrets: { ...company, API_KEY: "value-of-the-api-key-1" },
+				collect: { code: 4 },
+			});
+			expect(await f.site()).toMatchObject({ state: "passed", site: { state: "missed" } });
+			expect(f.kinds()).toEqual(["copy", "check", "check", "check", "collect", "drop"]);
+			for (const ran of f.ran())
+				expect(ran.environment).toMatchObject({
+					...CODING_PACKAGE_CACHE_ENVIRONMENT,
+					API_KEY: "value-of-the-api-key-1",
+				});
+			expect(f.command("collect").environment.QORPERA_SITE_SECRET_NAMES).toBe("API_KEY");
+		});
+
 		it.each([
-			["SITE_FOLDER_MISSING", "SITE_FOLDER_MISSING\n", null, null],
-			["SITE_NO_INDEX", "SITE_NO_INDEX\n", null, null],
-			["SITE_TOO_MANY_FILES", "SITE_TOO_MANY_FILES\n", null, null],
-			["SITE_TOO_MANY_FOLDERS", "SITE_TOO_MANY_FOLDERS\n", null, null],
-			["SITE_TOO_LARGE", "SITE_TOO_LARGE\n", null, null],
-			["SITE_FILE_TOO_LARGE", "SITE_FILE_TOO_LARGE video/intro.mp4\n", "video/intro.mp4", null],
-			["SITE_FILE_NAME", "SITE_FILE_NAME img/caf\\xc3\\xa9 1.png\n", "img/café 1.png", null],
-			["SITE_HOLDS_SECRET", "SITE_HOLDS_SECRET API_KEY assets/app.js\n", "assets/app.js", "API_KEY"],
+			["SITE_FOLDER_MISSING", "SITE_FOLDER_MISSING\n", null, null, undefined],
+			["SITE_NO_INDEX", "SITE_NO_INDEX\n", null, null, undefined],
+			["SITE_TOO_MANY_FILES", "SITE_TOO_MANY_FILES\n", null, null, undefined],
+			["SITE_TOO_MANY_FOLDERS", "SITE_TOO_MANY_FOLDERS\n", null, null, undefined],
+			["SITE_TOO_LARGE", "SITE_TOO_LARGE\n", null, null, undefined],
+			["SITE_FILE_TOO_LARGE", "SITE_FILE_TOO_LARGE video/intro.mp4\n", "video/intro.mp4", null, undefined],
+			["SITE_FILE_NAME", "SITE_FILE_NAME img/caf\\xc3\\xa9 1.png\n", "img/café 1.png", null, undefined],
+			["SITE_HOLDS_SECRET", "SITE_HOLDS_SECRET API_KEY assets/app.js\n", "assets/app.js", "API_KEY", undefined],
+			// A page that loads its style from the top of the domain (the first live site, 11 November 2026).
+			["SITE_LINKS_FROM_ROOT", "SITE_LINKS_FROM_ROOT index.html 2\n", "index.html", null, 2],
 		] as const)(
 			"refuses a site the code made wrong (%s): the drop after it, and no boundary of its own",
-			async (code, printed, path, variable) => {
+			async (code, printed, path, variable, links) => {
 				const f = await siteFixture({ collect: { code: 3, printed } });
 				expect(await f.site()).toEqual({
 					state: "site_refused",
 					ms: expect.any(Number),
 					checks: PASSED,
-					problem: { code, path, variable },
+					problem: { code, path, variable, ...(links === undefined ? {} : { links }) },
 				});
 				expect(f.kinds()).toEqual(["copy", "check", "check", "check", "collect", "drop"]);
 				expect(f.steps()).toEqual(["started:collect", "ended:collect", ...DROPPED]);
@@ -7341,6 +7445,53 @@ describe("a run of a repository's checks in the session's machine (own code stor
 					files: { "img/vieux-clé-8899.png": "x" },
 					outcome: refused({ code: "SITE_FILE_NAME", path: "img/***.png", variable: null }),
 				},
+				// Review round 3 of #1691: a link is never printed, so no value in one reaches anyone in any spelling: one only
+				// the host's mask knows (with a backslash; at the end of a long link, where a cut would have carried its
+				// start), the session's by character references, and the review's CSS escape of a parenthesis (the URL token
+				// takes it whole; neither the file's bytes nor a mask hold the value as it is written).
+				{
+					case: "an older value of the machine's with a backslash, in a link from the root",
+					secrets: { OTHER_KEY: "unrelated-value-1" },
+					older: ["old\\link-value-77"],
+					files: { "index.html": '<a href="/old\\link-value-77/x.html">x</a>' },
+					outcome: refused({ code: "SITE_LINKS_FROM_ROOT", path: "index.html", variable: null, links: 1 }),
+				},
+				{
+					case: "a value of the session's spelled by character references, in a link from the root",
+					secrets: { LINK_KEY: "link-secret-4242" },
+					older: [],
+					files: { "index.html": '<a href="/k/&#108;ink-secret-4242">x</a>' },
+					outcome: refused({ code: "SITE_LINKS_FROM_ROOT", path: "index.html", variable: null, links: 1 }),
+				},
+				{
+					case: "an older value of the machine's at the end of a long link",
+					secrets: { OTHER_KEY: "unrelated-value-1" },
+					older: ["OLDsecret-0123456789abcdefghijKL"],
+					files: { "index.html": `<a href="/${"é".repeat(120)}OLDsecret-0123456789abcdefghijKL">x</a>` },
+					outcome: refused({ code: "SITE_LINKS_FROM_ROOT", path: "index.html", variable: null, links: 1 }),
+				},
+				{
+					case: "the session's value in a style sheet's URL, a parenthesis escaped (the review's case)",
+					secrets: { ESCAPED_KEY: "prefix-secret-1234)tail-5678" },
+					older: [],
+					files: { "a.css": "a{background:url(/prefix-secret-1234\\)tail-5678)}" },
+					outcome: refused({ code: "SITE_LINKS_FROM_ROOT", path: "a.css", variable: null, links: 1 }),
+				},
+				{
+					case: "an older value of the machine's in a style sheet's URL, a parenthesis escaped",
+					secrets: { OTHER_KEY: "unrelated-value-1" },
+					older: ["prefix-secret-1234)tail-5678"],
+					files: { "a.css": "a{background:url(/prefix-secret-1234\\)tail-5678)}" },
+					outcome: refused({ code: "SITE_LINKS_FROM_ROOT", path: "a.css", variable: null, links: 1 }),
+				},
+				{
+					// The same for a name a site cannot serve: cut, it would carry the value's first 15 bytes.
+					case: "an older value of the machine's at the end of a name too long to name whole",
+					secrets: { OTHER_KEY: "unrelated-value-1" },
+					older: ["OLDname-0123456789abcdefghijKLMN"],
+					files: { [`${"é".repeat(100)}/${"é".repeat(23)}OLDname-0123456789abcdefghijKLMN.js`]: "x" },
+					outcome: refused({ code: "SITE_FILE_NAME", path: null, variable: null }),
+				},
 				{
 					case: "a value spelled only by escapes the collect never writes (an answer not the collect's)",
 					secrets: { API_KEY: "API-TOKEN-5678" },
@@ -7393,8 +7544,10 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				// (the report's site, the completion's code) and every log line.
 				const words = run.state === "site_refused" ? codeSiteRefusedSummary(run.problem, RECIPE.folder) : "";
 				const carried = [words, ...strings(run), ...strings(f.logged)];
+				// No value, and no 8 bytes of one (review of #1691, F1: a cut detail carried a value's start).
 				for (const value of [...Object.values(secrets), ...older])
-					for (const text of carried) expect(text, value).not.toContain(value);
+					for (let at = 0; at + 8 <= value.length; at++)
+						for (const text of carried) expect(text, value).not.toContain(value.slice(at, at + 8));
 			});
 		});
 

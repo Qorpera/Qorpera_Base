@@ -283,6 +283,10 @@ describe("the coding composition of a native turn", () => {
 					'When the project is a website, add "site": {"folder": "dist"} to the checks file, with the folder your build writes:',
 					"once every check passed, Qorpera takes the web files in that folder (index.html at its top, at most 500 files and 25 MB in at most 100 folders, none hidden) as the site of this change, and nothing goes in when they are missing or hold one of this session's secret values.",
 					'It may also give "name", the site\'s address (3 to 48 lower-case letters, digits and hyphens), used once, when the site is first made.',
+					// The first live site (Wristband, 11 November 2026) loaded /src/style.css from the top of the sites' domain: a site
+					// links its files relatively, and the collect refuses pages and styles that link from the top.
+					'The site is served under an address of its own, never at the top of a domain: its pages, styles and scripts link its files with relative links (src/app.js, ../img/logo.png), never with links that start with /; a bundler needs its base path set, such as Vite\'s base: "./".',
+					"Qorpera refuses a site whose pages or styles link from the top.",
 					"Never build a key into the site.",
 					"Make checks fast and honest: they must not need servers or ports your own commands hold, or files git does not track.",
 					// The session's copy is in its home, on the machine's disk, and is removed first, so a second run after a
@@ -824,6 +828,10 @@ describe("the coding composition of a native turn", () => {
 		expect(instructions).toContain("FOLDER_RESTART: the machine restarted because the company folder");
 		expect(instructions).toContain("MACHINE_NEW_DISK: the machine got a new disk");
 		expect(instructions).toContain("a new disk keeps only /company, which holds the repository");
+		// Own code storage, step 6: the machine's package caches, which its sessions and the checks share.
+		expect(instructions).toContain(
+			"start fresh. Packages you download with npm, pnpm, pip, uv and Playwright are kept on this machine for later sessions and for Qorpera's checks. ",
+		);
 		expect(f.gateway.start).not.toHaveBeenCalled();
 		expect(f.coding.submission).toMatchObject({
 			kind: "finish",
