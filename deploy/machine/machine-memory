@@ -71,14 +71,18 @@ swap() {
 # compressed memory is really used first. Measured on 12 Nov 2026 (2 processors, 4 GiB, heavy web apps, a 1.5 GB job
 # and tabs until three were ended): with 17 % the first tab was ended with about 300 MB available and the reserve
 # full, pages kept loading in about a second and `desktop click` answered in 0.9 s at worst; with 6.7 % (114 MB
-# available) pages took 6 to 36 s before the first end and a click up to 2.7 s.
+# available) pages took 6 to 36 s before the first end and a click up to 2.7 s. At the edge it ends a few tabs one
+# after the other (up to 4 in the measurements), until a tenth of the reserve is free again.
 #
-# It ends a process at once (SIGKILL: both limits of each pair are the same): earlyoom then frees the process's
-# memory itself before it looks again, so one end is one process, where a process asked to end (SIGTERM) was still
-# giving its memory back when the next was picked. An agent's command ended this way ends as killed (exit 137).
+# It ends a process at once (SIGKILL: both limits of each pair are the same), as the kernel's own killer does, and
+# frees its memory itself before it looks again. A program ended this way was killed (137 where a shell says so).
 #
-# A machine without the reserve (the line above said why) is judged on its memory alone, and later: there programs
+# A machine without the reserve (the boot's line said why) is judged on its memory alone, and later: there programs
 # hold about twice as much in memory, and 8 % is about the same 300 MB on 4 GiB.
+#
+# What it cannot see: memory that does not compress fills the reserve without freeing anything, and the share above
+# stays high to the end. The kernel's own killer then ends the program (measured: a job of twice the memory, all
+# random, was ended by the kernel after about 10 s, in which two clicks took 3.5 s).
 guard_limits() {
 	if on; then echo "-m 17,17 -s 10,10"; else echo "-m 8,8"; fi
 }
