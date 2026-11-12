@@ -1,16 +1,27 @@
 import { CloudRpcError } from "../../cloud/client.ts";
 import type { CompanySite, CompanySitePassword, WebSites } from "../../cloud/sites.ts";
-import { button, confirmDialog, fmtBytes, fmtTime, h, icon, replace } from "../../ui/dom.ts";
+import { openContextMenu } from "../../ui/context-menu.ts";
+import { button, confirmDialog, fmtTime, h, icon, replace } from "../../ui/dom.ts";
+import { interfaceEmblem } from "../../ui/interface-emblem.ts";
+import { leave } from "../../ui/motion.ts";
 import { phrase, t } from "../../ui/preferences.ts";
+import { uiScale } from "../../ui/scale.ts";
+import { listSkeleton } from "../../ui/skeleton.ts";
 
 /**
- * The Sites page (`#/c/<id>/sites`, opened from the apps drawer; Jonas, 9 Nov 2026: out of Settings): the websites the company's agents published, each at its own link on sites.qorpera.com with its
- * own password. Every member sees each site's name, link, state, when and by which agent it was last published, and
- * where in the Company File it came from. An owner or admin also reads a site's password (to share it), changes it
- * (every visitor then enters the new one) and takes a site offline; the kernel refuses anyone else. Agents never see a
- * password. An app link (v195) is a site too: one port of a company machine, shown with its machine and port. A
- * project's site made from its code kept in Qorpera (own code storage step 4) is listed once a member put it live in
- * What's new; its source is the project's place under code/, which no agent may publish from.
+ * The Sites page (`#/c/<id>/sites`, opened from the apps drawer; Jonas, 9 Nov 2026: out of Settings): the websites the
+ * company's agents published, each at its own link on sites.qorpera.com with its own password. Redone on 12 Nov 2026 as
+ * the Mailbox was (Jonas: "easy, minimalistic and pleasing"): a title and one short line, then one row per site on a
+ * hairline, with no box: the Sites globe, the site's title and whether it is live, then its link as a pill (a press
+ * copies it, the arrow opens it) and, for an owner or admin, its password as a pill beside it, hidden as dots, with an
+ * eye to show it. What is done rarely is in the row's "⋯" menu: Change password and Take offline. What just happened is
+ * said in a small dark toast at the foot (styles/sites.css).
+ *
+ * Every member sees each site's title, link and state. An owner or admin also reads a site's password (to share it),
+ * changes it (every visitor then enters the new one) and takes a site offline; the kernel refuses anyone else. Agents
+ * never see a password. An app link (v195) is a site too, at its own host. A project's site made from its code kept in
+ * Qorpera (own code storage step 4) is listed once a member put it live in What's new; its source is the project's place
+ * under code/, which no agent may publish from, and its row names the version What's new has live.
  */
 
 type SitesClient = Pick<WebSites, "list" | "password" | "setPassword" | "unpublish">;
@@ -21,8 +32,29 @@ export interface SitesAccess {
 	canManage(): boolean;
 }
 
+/** Sites made from a project's code: where What's new is, and the version of each that it has live (as last read). */
+export interface SitesReleases {
+	readonly href: string;
+	version(site: CompanySite): number | undefined;
+}
+
+export interface SitesOptions {
+	access?: SitesAccess;
+	/** Told the sites after each read and after one is taken offline: the apps drawer shows Sites while there are any. */
+	listed?: (sites: readonly CompanySite[]) => void;
+	releases?: SitesReleases;
+	/** The company's Co-Founder, on the page while there is no site. */
+	mascot?: () => HTMLElement | null;
+}
+
 const FULL_ACCESS: SitesAccess = { canManage: () => true };
 const MANAGERS_ONLY = phrase("Only founders and admins can see passwords or take sites offline.");
+/** How long the toast stays. */
+const TOAST_MS = 4000;
+/** How long a pill shows its check after a copy. */
+const COPIED_MS = 1600;
+/** A hidden password: twelve dots, whatever its length (the kernel's own are twelve letters and two dashes). */
+const DOTS = "••••••••••••";
 
 /** A site as members call it: its title, else its name in the link. */
 function nameOf(site: CompanySite): string {
@@ -35,12 +67,17 @@ function fromCode(site: CompanySite): boolean {
 	return site.kind === "files" && site.source.startsWith("code/");
 }
 
-/** Where an app link's app runs: its machine, unless it was deleted, and its port. */
-function appPlace(site: CompanySite): string {
-	const port = String(site.port);
-	return site.machine
-		? t("App on machine {name}, port {port}", { name: site.machine, port })
-		: t("App on port {port} of a machine that was deleted", { port });
+/** A site's link as the page shows it: no https:// in front and no slash at the end. */
+export function shownLink(url: string): string {
+	return url.replace(/^https:\/\//, "").replace(/\/$/, "");
+}
+
+/** The globe a site carries, in the Sites app's colour (styles/sites.css): each row of the Sites page, and What's new's
+ * live row. */
+export function siteEmblem(): SVGSVGElement {
+	const emblem = interfaceEmblem("globe", 28);
+	emblem.classList.add("site-emblem");
+	return emblem;
 }
 
 /** Why a change was refused, in the interface language. */
@@ -59,52 +96,112 @@ function passwordProblem(password: string): string | undefined {
 		: undefined;
 }
 
+/** What to press to copy a text the page selected, when the browser would not let the page copy it. */
+function pressToCopy(): string {
+	return /Mac|iPhone|iPad/.test(navigator.userAgent) ? t("Press ⌘C to copy.") : t("Press Ctrl+C to copy.");
+}
+
+/** Puts a text on the clipboard; false when the browser refuses. A text still being read is handed over as it is read,
+ * where the browser takes that (a ClipboardItem of a promise), so the copy keeps the press it came from: Safari copies
+ * only within the press. */
+async function toClipboard(text: string | Promise<string>): Promise<boolean> {
+	const clipboard = navigator.clipboard as Clipboard | undefined;
+	if (typeof text !== "string" && typeof ClipboardItem === "function" && typeof clipboard?.write === "function") {
+		try {
+			const blob = text.then((value) => new Blob([value], { type: "text/plain" }));
+			// A read that fails is told by the caller, which waits on the read itself.
+			blob.catch(() => {});
+			await clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+			return true;
+		} catch {
+			// A browser that takes no promise there may still take the text itself.
+		}
+	}
+	try {
+		if (!clipboard) return false;
+		await clipboard.writeText(await text);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** The site's state as a dot and a word; when and by whom it was published as its tip. */
+function stateOf(site: CompanySite): HTMLElement {
+	const published = site.publishedAt
+		? site.publishedBy
+			? t("Published {time} by {agent}", { time: fmtTime(site.publishedAt), agent: site.publishedBy.name })
+			: t("Published {time}", { time: fmtTime(site.publishedAt) })
+		: undefined;
+	return h(
+		"span",
+		{ class: `site-state is-${site.state}`, ...(published ? { title: published } : {}) },
+		h("span", { class: "site-dot", "aria-hidden": "true" }),
+		site.state === "live" ? t("Live") : site.state === "off" ? t("Off") : t("Publishing…"),
+	);
+}
+
 export class SitesView {
 	readonly el = h("div", { class: "sites" });
+	/** The page's scroller: it stays, so a redraw keeps its scroll. */
+	readonly #scroll = h("div", { class: "sites-scroll" });
+	/** Where the toast is said: a live region that stays, its words drawn anew each time. */
+	readonly #toast = h("div", { class: "sites-toast-area", role: "status" });
 	readonly #client: SitesClient;
 	readonly #lifetime = new AbortController();
 	readonly #access: SitesAccess;
-	/** Told the sites after each read and after one is taken offline: the apps drawer shows Sites while there are any. */
 	readonly #listed: (sites: readonly CompanySite[]) => void;
-	#drawnManage: boolean | undefined;
+	readonly #releases: SitesReleases | undefined;
+	readonly #mascot: (() => HTMLElement | null) | undefined;
+	#mascotEl: HTMLElement | null | undefined;
+	/** What the last draw drew from outside the page: the member's authority and the code sites' versions. */
+	#drawn: { manage: boolean; versions: string } | undefined;
 	#sites: CompanySite[] | undefined;
 	#loading = true;
 	#error: string | undefined;
-	/** The site changing, and how, while it does. */
-	#working: { site: string; action: "show" | "set" | "unpublish" } | undefined;
+	/** The site changing, and how, while it does: the password pills and the menus are off meanwhile. */
+	#working: { site: string; action: "show" | "copy" | "set" | "unpublish" } | undefined;
 	/** Passwords shown, by site, until hidden or the member's authority goes. */
 	readonly #passwords = new Map<string, CompanySitePassword>();
-	/** The site whose change-password form is open, and what is typed in it. */
-	#changing: string | undefined;
-	#draft = "";
-	/** The last action's outcome, under its site's card. */
-	#outcome: { key: string; tone: "ok" | "error"; text: string } | undefined;
+	/** A text the browser would not copy, shown whole in its pill as a field, selected for the member to copy by hand. */
+	#byHand: { key: string; text: string } | undefined;
+	/** Rows drawn before: only a new row moves in. */
+	readonly #seen = new Set<string>();
+	/** The site whose row is leaving after it was taken offline. */
+	#leaving: string | undefined;
+	/** The press that shut a row's menu, so the click it ends in opens nothing. */
+	#menuShut: { site: string; press: Event } | undefined;
+	/** The change-password question, while it is open. */
+	#asking: { site: string; close(): void } | undefined;
+	#said = 0;
 	#refreshing: Promise<void> | undefined;
 	/** One more read, asked for while a read was out, and the focus it draws with. */
 	#again: { read: Promise<void>; focusKey: string | undefined } | undefined;
 
-	constructor(
-		client: SitesClient,
-		signal: AbortSignal,
-		options: { access?: SitesAccess; listed?: (sites: readonly CompanySite[]) => void } = {},
-	) {
+	constructor(client: SitesClient, signal: AbortSignal, options: SitesOptions = {}) {
 		this.#client = client;
 		this.#access = options.access ?? FULL_ACCESS;
 		this.#listed = options.listed ?? (() => {});
+		this.#releases = options.releases;
+		this.#mascot = options.mascot;
+		this.el.append(this.#scroll, this.#toast);
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.#draw();
 		void this.#refresh();
 	}
 
-	/** Redraws when the member's authority over the company's sites changed (the team loads after the page, or a role
-	 * changes while it is open). A member who is no longer an owner or admin keeps no password on screen. */
+	/** Redraws when what the page shows from outside it changed: the member's authority over the company's sites (the
+	 * team loads after the page, or a role changes while it is open), or the version What's new has live of a site made
+	 * from code. A member who is no longer an owner or admin keeps no password on screen. */
 	update(): void {
-		if (this.#lifetime.signal.aborted || this.#access.canManage() === this.#drawnManage) return;
-		if (!this.#access.canManage()) {
+		if (this.#lifetime.signal.aborted) return;
+		const manage = this.#access.canManage();
+		if (manage === this.#drawn?.manage && this.#versions() === this.#drawn.versions) return;
+		if (!manage) {
 			this.#passwords.clear();
-			this.#changing = undefined;
-			this.#draft = "";
+			if (this.#byHand?.key.startsWith("password:")) this.#byHand = undefined;
+			this.#asking?.close();
 		}
 		this.#draw();
 	}
@@ -112,8 +209,15 @@ export class SitesView {
 	dispose(): void {
 		this.#lifetime.abort();
 		this.#passwords.clear();
+		this.#asking?.close();
 		this.el.replaceChildren();
 		this.el.remove();
+	}
+
+	#versions(): string {
+		return JSON.stringify(
+			(this.#sites ?? []).filter(fromCode).map((site) => [site.id, this.#releases?.version(site) ?? null]),
+		);
 	}
 
 	/** Reads the list. A read already out may have left before the caller's change, so a caller then gets one more
@@ -151,7 +255,9 @@ export class SitesView {
 			// A site gone meanwhile (taken offline elsewhere) leaves nothing of its own behind.
 			const ids = new Set(sites.map((site) => site.id));
 			for (const id of this.#passwords.keys()) if (!ids.has(id)) this.#passwords.delete(id);
-			if (this.#changing && !ids.has(this.#changing)) this.#changing = undefined;
+			if (this.#byHand && !ids.has(this.#byHand.key.slice(this.#byHand.key.indexOf(":") + 1)))
+				this.#byHand = undefined;
+			if (this.#asking && !ids.has(this.#asking.site)) this.#asking.close();
 		} catch {
 			if (this.#lifetime.signal.aborted) return;
 			this.#error = t("The company's sites could not be read.");
@@ -161,373 +267,579 @@ export class SitesView {
 		}
 	}
 
-	/** Runs one action on a site, every card's buttons off meanwhile; a refusal shows under its card. A change
-	 * (`read`), and any failure, reads the list again afterwards. */
-	async #act(
-		site: CompanySite,
-		action: "show" | "set" | "unpublish",
-		work: () => Promise<void>,
-		fallback: string,
-		focusKey: string,
-		read: boolean,
-	): Promise<void> {
-		if (this.#working || this.#lifetime.signal.aborted) return;
-		this.#working = { site: site.id, action };
-		this.#outcome = undefined;
-		this.#draw();
-		let drawn = focusKey;
-		let again = read;
-		try {
-			await work();
-		} catch (error) {
-			if (this.#lifetime.signal.aborted) return;
-			this.#outcome = { key: site.id, tone: "error", text: changeError(error, fallback) };
-			// The focus stays on what the member pressed. The site may be gone (taken offline elsewhere): the read
-			// drops it.
-			drawn =
-				action === "show"
-					? `site-show-password:${site.id}`
-					: action === "set"
-						? `site-password-input:${site.id}`
-						: `site-unpublish:${site.id}`;
-			again = true;
-		} finally {
-			this.#working = undefined;
-			if (!this.#lifetime.signal.aborted) this.#draw(drawn);
-		}
-		if (again) await this.#refresh(drawn);
+	/** Says what just happened at the foot of the page, for a few seconds. */
+	#say(text: string): void {
+		if (this.#lifetime.signal.aborted) return;
+		const id = ++this.#said;
+		const toast = h("div", { class: "sites-toast" }, text);
+		replace(this.#toast, toast);
+		setTimeout(() => {
+			if (this.#said !== id || this.#lifetime.signal.aborted) return;
+			leave(toast, "is-leaving", () => toast.remove());
+		}, TOAST_MS);
 	}
 
-	#showPassword(site: CompanySite): Promise<void> {
-		return this.#act(
-			site,
-			"show",
-			async () => {
-				const password = await this.#client.password(site.id, this.#lifetime.signal);
-				if (!this.#lifetime.signal.aborted && this.#access.canManage()) this.#passwords.set(site.id, password);
-			},
-			phrase("The password could not be read. Try again."),
-			`site-copy-password:${site.id}`,
-			false,
+	/** A pill's check, for a moment after its text was copied. */
+	#copied(focusKey: string): void {
+		const pill = this.#control(focusKey);
+		if (!pill) return;
+		pill.classList.add("is-copied");
+		setTimeout(() => pill.classList.remove("is-copied"), COPIED_MS);
+	}
+
+	#control(focusKey: string): HTMLElement | undefined {
+		return [...this.el.querySelectorAll<HTMLElement>("[data-focus-key]")].find(
+			(item) => item.dataset.focusKey === focusKey,
 		);
+	}
+
+	/** The browser would not copy: the text is shown whole in its pill, selected, and the toast says what to press. */
+	#copyByHand(key: string, text: string, focusKey: string): void {
+		this.#byHand = { key, text };
+		this.#draw(focusKey);
+		const field = this.#control(focusKey);
+		if (field instanceof HTMLInputElement) {
+			field.focus();
+			field.select();
+		}
+		this.#say(pressToCopy());
+	}
+
+	async #copyLink(site: CompanySite): Promise<void> {
+		const focusKey = `site-copy-link:${site.id}`;
+		const copied = await toClipboard(site.url);
+		if (this.#lifetime.signal.aborted) return;
+		if (!copied) return this.#copyByHand(`link:${site.id}`, site.url, `site-by-hand:link:${site.id}`);
+		if (this.#byHand?.key === `link:${site.id}`) {
+			this.#byHand = undefined;
+			this.#draw(focusKey);
+		}
+		this.#copied(focusKey);
+		this.#say(t("The link is copied."));
+	}
+
+	/** Copies a site's password: the one shown, or one read for it there and then (it stays hidden). */
+	async #copyPassword(site: CompanySite): Promise<void> {
+		if (this.#working || this.#lifetime.signal.aborted) return;
+		const focusKey = `site-copy-password:${site.id}`;
+		const byHand = `site-by-hand:password:${site.id}`;
+		const shown = this.#passwords.get(site.id);
+		if (shown) {
+			const copied = await toClipboard(shown.password);
+			if (this.#lifetime.signal.aborted) return;
+			if (!copied) return this.#copyByHand(`password:${site.id}`, shown.password, byHand);
+			this.#copied(focusKey);
+			this.#say(t("The password is copied."));
+			return;
+		}
+		this.#working = { site: site.id, action: "copy" };
+		this.#draw(focusKey);
+		const read = this.#client.password(site.id, this.#lifetime.signal);
+		const copied = await toClipboard(read.then((answer) => answer.password));
+		let password: CompanySitePassword;
+		try {
+			password = await read;
+		} catch (error) {
+			if (this.#lifetime.signal.aborted) return;
+			this.#working = undefined;
+			this.#draw(focusKey);
+			this.#say(changeError(error, phrase("The password could not be read. Try again.")));
+			// The site may be gone (taken offline elsewhere): the read drops it.
+			void this.#refresh(focusKey);
+			return;
+		}
+		if (this.#lifetime.signal.aborted) return;
+		this.#working = undefined;
+		if (!copied) {
+			if (!this.#access.canManage()) return this.#draw(focusKey);
+			this.#passwords.set(site.id, password);
+			return this.#copyByHand(`password:${site.id}`, password.password, byHand);
+		}
+		this.#draw(focusKey);
+		this.#copied(focusKey);
+		this.#say(t("The password is copied."));
+	}
+
+	async #showPassword(site: CompanySite): Promise<void> {
+		if (this.#working || this.#lifetime.signal.aborted) return;
+		const focusKey = `site-eye:${site.id}`;
+		this.#working = { site: site.id, action: "show" };
+		this.#draw(focusKey);
+		let failed = false;
+		try {
+			const password = await this.#client.password(site.id, this.#lifetime.signal);
+			if (!this.#lifetime.signal.aborted && this.#access.canManage()) this.#passwords.set(site.id, password);
+		} catch (error) {
+			if (this.#lifetime.signal.aborted) return;
+			failed = true;
+			this.#say(changeError(error, phrase("The password could not be read. Try again.")));
+		} finally {
+			this.#working = undefined;
+			if (!this.#lifetime.signal.aborted) this.#draw(focusKey);
+		}
+		// The site may be gone (taken offline elsewhere): the read drops it.
+		if (failed) await this.#refresh(focusKey);
 	}
 
 	#hidePassword(site: CompanySite): void {
 		this.#passwords.delete(site.id);
-		if (this.#outcome?.key === site.id) this.#outcome = undefined;
-		this.#draw(`site-show-password:${site.id}`);
+		if (this.#byHand?.key === `password:${site.id}`) this.#byHand = undefined;
+		this.#draw(`site-eye:${site.id}`);
 	}
 
-	/** Opens or closes a site's change-password form. */
-	#toggleChange(site: CompanySite): void {
-		const open = this.#changing === site.id;
-		this.#changing = open ? undefined : site.id;
-		this.#draft = "";
-		if (this.#outcome?.key === site.id) this.#outcome = undefined;
-		this.#draw(open ? `site-change:${site.id}` : `site-password-input:${site.id}`);
-	}
-
-	/** Sets the password: the one typed, or (null) a new random one. */
-	#setPassword(site: CompanySite, password: string | null): Promise<void> {
-		if (password !== null) {
-			const problem = passwordProblem(password);
-			if (problem) {
-				this.#outcome = { key: site.id, tone: "error", text: problem };
-				this.#draw(`site-password-input:${site.id}`);
-				return Promise.resolve();
-			}
-		}
-		return this.#act(
-			site,
-			"set",
-			async () => {
-				const next = await this.#client.setPassword(site.id, password, this.#lifetime.signal);
-				if (this.#lifetime.signal.aborted) return;
-				this.#changing = undefined;
-				this.#draft = "";
-				if (this.#access.canManage()) this.#passwords.set(site.id, next);
-				this.#outcome = {
-					key: site.id,
-					tone: "ok",
-					text: t("The password is changed. Every visitor enters the new one."),
-				};
+	/** The row's menu: what is done rarely. A press on "⋯" while its menu is open only shuts it. */
+	#openMenu(site: CompanySite, opener: HTMLElement): void {
+		const findOpener = () => this.#control(`site-more:${site.id}`) ?? null;
+		const box = opener.getBoundingClientRect();
+		const menu = openContextMenu({
+			label: nameOf(site),
+			x: box.left,
+			y: box.bottom + 4 * uiScale(),
+			opener,
+			findOpener,
+			onClose: (press) => {
+				this.#menuShut = press ? { site: site.id, press } : undefined;
+				findOpener()?.setAttribute("aria-expanded", "false");
 			},
-			phrase("The password could not be changed. Try again."),
-			`site-copy-password:${site.id}`,
-			true,
+			items: [
+				{ label: t("Change password"), icon: "key", select: () => this.#askPassword(site) },
+				{ kind: "separator" },
+				{ label: t("Take offline"), icon: "power", danger: true, select: () => void this.#unpublish(site) },
+			],
+		});
+		// The menu hangs from the button's right edge, as the button stands at the row's end.
+		const left = Math.max(8 * uiScale(), box.right - menu.el.offsetWidth);
+		if (left < box.left) {
+			menu.el.style.left = `${left}px`;
+			menu.el.style.transformOrigin = "top right";
+		}
+		opener.setAttribute("aria-expanded", "true");
+	}
+
+	/** Asks for a site's new password: one the member types, or a new random one. The question stays while the change
+	 * is on its way, and says there why one was refused, keeping what was typed. */
+	#askPassword(site: CompanySite): void {
+		if (this.#working || this.#asking || this.#lifetime.signal.aborted || !this.#access.canManage()) return;
+		const signal = this.#lifetime.signal;
+		const name = nameOf(site);
+		const title = `site-password-title-${site.id}`;
+		let busy = false;
+		let closed = false;
+		const input = h("input", {
+			type: "text",
+			class: "sites-question-input",
+			maxlength: "128",
+			autocomplete: "off",
+			autocapitalize: "none",
+			spellcheck: "false",
+			placeholder: t("Type a new password, 10 to 128 characters"),
+			"aria-label": t("New password for {name}", { name }),
+		});
+		const problem = h("p", { class: "sites-question-problem", role: "alert" });
+		const save = button(t("Save password"), () => {}, { primary: true });
+		save.type = "submit";
+		// A new random password: a quiet line under the field, so the question keeps two buttons on a phone too.
+		const randomLabel = h("span", null, t("Make a new password"));
+		const random = h(
+			"button",
+			{ type: "button", class: "sites-question-random", onclick: () => void submit(null) },
+			icon("reload"),
+			randomLabel,
 		);
+		const cancel = button(t("Cancel"), () => close());
+		const controls = [input, save, random, cancel];
+		const close = (focusKey?: string) => {
+			if (closed) return;
+			closed = true;
+			if (this.#asking?.site === site.id) this.#asking = undefined;
+			leave(backdrop, "is-leaving", () => backdrop.remove());
+			window.removeEventListener("hashchange", onHash);
+			const back = (focusKey ? this.#control(focusKey) : undefined) ?? this.#control(`site-more:${site.id}`);
+			if (back && !back.matches(":disabled")) back.focus();
+		};
+		const onHash = () => close();
+		const submit = async (password: string | null) => {
+			if (busy || closed) return;
+			if (password !== null) {
+				const wrong = passwordProblem(password);
+				if (wrong) {
+					problem.textContent = wrong;
+					input.focus();
+					return;
+				}
+			}
+			busy = true;
+			problem.textContent = "";
+			for (const control of controls) control.disabled = true;
+			const pressed = password === null ? randomLabel : save;
+			const words = pressed.textContent;
+			pressed.textContent = t("Working…");
+			this.#working = { site: site.id, action: "set" };
+			this.#draw();
+			try {
+				const next = await this.#client.setPassword(site.id, password, signal);
+				if (signal.aborted) return;
+				this.#working = undefined;
+				// The new password is shown, ready to copy and share.
+				if (this.#access.canManage()) this.#passwords.set(site.id, next);
+				if (this.#byHand?.key === `password:${site.id}`) this.#byHand = undefined;
+				this.#draw();
+				close(`site-copy-password:${site.id}`);
+				this.#say(t("The password is changed."));
+				void this.#refresh(`site-copy-password:${site.id}`);
+			} catch (error) {
+				if (signal.aborted) return;
+				this.#working = undefined;
+				this.#draw();
+				busy = false;
+				for (const control of controls) control.disabled = false;
+				pressed.textContent = words;
+				problem.textContent = changeError(error, phrase("The password could not be changed. Try again."));
+				if (!closed) input.focus();
+				// The site may be gone (taken offline elsewhere): the read drops it, and the question with it.
+				void this.#refresh();
+			}
+		};
+		const form = h(
+			"form",
+			{
+				class: "modal sites-question",
+				role: "dialog",
+				"aria-modal": "true",
+				"aria-labelledby": title,
+				onsubmit: (event: SubmitEvent) => {
+					event.preventDefault();
+					void submit(input.value);
+				},
+			},
+			h("h2", { id: title }, t("New password for {name}", { name })),
+			h("p", null, t("Every visitor enters the new password; the old one stops working at once.")),
+			input,
+			problem,
+			random,
+			h("div", { class: "modal-actions" }, cancel, save),
+		);
+		const backdrop = h(
+			"div",
+			{ class: "modal-backdrop", onclick: (event: MouseEvent) => event.target === backdrop && !busy && close() },
+			form,
+		);
+		backdrop.addEventListener("keydown", (event) => {
+			if (event.key === "Escape" && !event.isComposing) {
+				event.preventDefault();
+				event.stopPropagation();
+				if (!busy) close();
+			}
+			if (event.key !== "Tab") return;
+			const fields = [...backdrop.querySelectorAll<HTMLElement>("input:not(:disabled), button:not(:disabled)")];
+			const first = fields[0];
+			const last = fields[fields.length - 1];
+			if (event.shiftKey ? document.activeElement === first : document.activeElement === last) {
+				event.preventDefault();
+				(event.shiftKey ? last : first)?.focus();
+			}
+		});
+		this.#asking = { site: site.id, close: () => close() };
+		document.body.append(backdrop);
+		window.addEventListener("hashchange", onHash);
+		input.focus();
 	}
 
 	async #unpublish(site: CompanySite): Promise<void> {
 		if (this.#working || this.#lifetime.signal.aborted) return;
+		const name = nameOf(site);
+		const more = `site-more:${site.id}`;
 		if (
 			!(await confirmDialog(
 				site.kind === "app"
 					? t(
 							"Take {name} offline? Its link stops working and its password is deleted. The app keeps running on its machine.",
-							{ name: nameOf(site) },
+							{ name },
 						)
 					: fromCode(site)
 						? t(
-								"Take {name} offline? Its earlier versions go with it. Qorpera prepares the newest version again, with a new password, and it waits in What's new until you put it live.",
-								{ name: nameOf(site) },
+								"Take {name} offline? Its earlier versions go with it. The newest one waits in What's new, with a new password, until you put it live.",
+								{ name },
 							)
 						: t(
 								"Take {name} offline? Its link stops working and its password is deleted. The files stay in the Company File.",
-								{ name: nameOf(site) },
+								{ name },
 							),
-				t("Unpublish"),
+				t("Take offline"),
 				true,
 				undefined,
 				this.#lifetime.signal,
 			))
 		)
 			return;
-		await this.#act(
-			site,
-			"unpublish",
-			async () => {
-				await this.#client.unpublish(site.id, this.#lifetime.signal);
-				if (this.#lifetime.signal.aborted) return;
-				this.#passwords.delete(site.id);
-				if (this.#changing === site.id) this.#changing = undefined;
-				// It leaves the list at once; the read after it confirms it.
-				this.#sites = this.#sites?.filter((item) => item.id !== site.id);
-				this.#listed(this.#sites ?? []);
-			},
-			phrase("The site could not be taken offline. Try again."),
-			`site-unpublish:${site.id}`,
-			true,
-		);
-	}
-
-	async #copy(site: CompanySite, text: string, kind: "link" | "password"): Promise<void> {
+		if (this.#working || this.#lifetime.signal.aborted) return;
+		this.#working = { site: site.id, action: "unpublish" };
+		this.#draw(more);
 		try {
-			await navigator.clipboard.writeText(text);
-			this.#outcome = {
-				key: site.id,
-				tone: "ok",
-				text: kind === "link" ? t("The link is copied.") : t("The password is copied."),
-			};
-		} catch {
-			this.#outcome = {
-				key: site.id,
-				tone: "error",
-				text:
-					kind === "link"
-						? t("The link could not be copied. Select it and copy it.")
-						: t("The password could not be copied. Select it and copy it."),
-			};
+			await this.#client.unpublish(site.id, this.#lifetime.signal);
+		} catch (error) {
+			if (this.#lifetime.signal.aborted) return;
+			this.#working = undefined;
+			this.#draw(more);
+			this.#say(changeError(error, phrase("The site could not be taken offline. Try again.")));
+			// Taken offline elsewhere meanwhile: the read after the failure drops it.
+			await this.#refresh(more);
+			return;
 		}
-		if (!this.#lifetime.signal.aborted) this.#draw(`site-copy-${kind}:${site.id}`);
+		if (this.#lifetime.signal.aborted) return;
+		this.#working = undefined;
+		this.#passwords.delete(site.id);
+		if (this.#byHand?.key.endsWith(`:${site.id}`)) this.#byHand = undefined;
+		// The focus goes to the next site's menu, else the one before, as the row leaves.
+		const list = this.#sites ?? [];
+		const at = list.findIndex((item) => item.id === site.id);
+		const neighbour = list[at + 1] ?? list[at - 1];
+		const focusKey = neighbour ? `site-more:${neighbour.id}` : undefined;
+		this.#leaving = site.id;
+		this.#draw(focusKey);
+		this.#say(t("{name} is offline.", { name }));
+		const gone = () => {
+			if (this.#leaving === site.id) this.#leaving = undefined;
+			// It leaves the list at once; the read after it confirms it.
+			this.#sites = this.#sites?.filter((item) => item.id !== site.id);
+			this.#listed(this.#sites ?? []);
+			if (!this.#lifetime.signal.aborted) this.#draw(focusKey);
+		};
+		const row = this.el.querySelector<HTMLElement>(`[data-site="${site.id}"]`);
+		if (row) leave(row, "is-leaving", gone);
+		else gone();
+		await this.#refresh(focusKey);
 	}
 
-	/** The site's state: live or still publishing, when and by whom it was last published, and how big it is (an app
-	 * link has no files). */
-	#state(site: CompanySite): string {
-		const files = site.files === 1 ? t("1 file") : t("{count} files", { count: String(site.files) });
-		return [
-			site.state === "live" ? t("Live") : site.state === "off" ? t("Off") : t("Publishing…"),
-			site.publishedAt
-				? site.publishedBy
-					? t("Published {time} by {agent}", { time: fmtTime(site.publishedAt), agent: site.publishedBy.name })
-					: t("Published {time}", { time: fmtTime(site.publishedAt) })
-				: "",
-			site.kind === "app" ? "" : `${files}, ${fmtBytes(site.bytes)}`,
-		]
-			.filter(Boolean)
-			.join(" · ");
+	/** What a pill shows when the browser would not copy its text: the text whole, in a field that selects it. */
+	#byHandField(text: string, label: string, focusKey: string): HTMLElement {
+		const field = h("input", {
+			type: "text",
+			class: "site-pill-field",
+			readonly: true,
+			value: text,
+			"aria-label": label,
+			onfocus: (event: FocusEvent) => (event.target as HTMLInputElement).select(),
+		});
+		field.dataset.focusKey = focusKey;
+		return field;
 	}
 
-	#outcomeLine(key: string): HTMLElement | null {
-		if (this.#outcome?.key !== key) return null;
-		return h(
-			"p",
-			{ class: `service-outcome ${this.#outcome.tone === "ok" ? "is-ok" : "is-error"}`, role: "status" },
-			this.#outcome.text,
+	#row(site: CompanySite, manage: boolean, index: number): HTMLElement {
+		const busy = Boolean(this.#working);
+		const name = nameOf(site);
+		const lead = (kind: string) => h("span", { class: "site-pill-lead" }, icon(kind), icon("copy"), icon("check"));
+		// The link: a press on it copies it, the arrow opens the site.
+		const byHandLink = this.#byHand?.key === `link:${site.id}` ? this.#byHand.text : undefined;
+		const copyLink = h(
+			"button",
+			{
+				type: "button",
+				class: "site-pill-main site-link-copy",
+				title: t("Copy the link"),
+				// Its name is the link it shows; with the link in the field beside it, what it does.
+				...(byHandLink === undefined ? {} : { "aria-label": t("Copy the link") }),
+				onclick: () => void this.#copyLink(site),
+			},
+			lead("link"),
+			byHandLink === undefined ? h("span", { class: "site-pill-text" }, shownLink(site.url)) : null,
 		);
+		copyLink.dataset.focusKey = `site-copy-link:${site.id}`;
+		const link = h(
+			"div",
+			{ class: "site-pill site-link" },
+			copyLink,
+			byHandLink === undefined ? null : this.#byHandField(byHandLink, t("The link"), `site-by-hand:link:${site.id}`),
+			h(
+				"a",
+				{
+					class: "site-pill-icon site-link-open",
+					href: site.url,
+					target: "_blank",
+					rel: "noopener noreferrer",
+					title: t("Open the site"),
+					"aria-label": t("Open the site"),
+				},
+				icon("external"),
+			),
+		);
+		let secret: HTMLElement | null = null;
+		let more: HTMLElement | null = null;
+		if (manage) {
+			const shown = this.#passwords.get(site.id);
+			const reading = this.#working?.site === site.id && this.#working.action !== "unpublish";
+			const byHandPassword = this.#byHand?.key === `password:${site.id}` ? this.#byHand.text : undefined;
+			const copyPassword = h(
+				"button",
+				{
+					type: "button",
+					class: `site-pill-main site-secret-copy${shown ? " is-shown" : ""}`,
+					title: t("Copy the password"),
+					disabled: busy,
+					// Its name is the password once shown; hidden, or in the field beside it, what it does.
+					...(shown && byHandPassword === undefined ? {} : { "aria-label": t("Copy the password") }),
+					...(reading ? { "aria-busy": "true" } : {}),
+					onclick: () => void this.#copyPassword(site),
+				},
+				lead("key"),
+				byHandPassword === undefined
+					? h(
+							"span",
+							{ class: "site-pill-text site-secret-text", ...(shown ? {} : { "aria-hidden": "true" }) },
+							shown ? shown.password : DOTS,
+						)
+					: null,
+			);
+			copyPassword.dataset.focusKey = `site-copy-password:${site.id}`;
+			const eye = h(
+				"button",
+				{
+					type: "button",
+					class: "site-pill-icon site-eye",
+					title: shown ? t("Hide password") : t("Show password"),
+					"aria-label": shown ? t("Hide password") : t("Show password"),
+					disabled: busy,
+					onclick: () => (shown ? this.#hidePassword(site) : void this.#showPassword(site)),
+				},
+				icon(shown ? "hide" : "show"),
+			);
+			eye.dataset.focusKey = `site-eye:${site.id}`;
+			secret = h(
+				"div",
+				{ class: `site-pill site-secret${reading ? " is-reading" : ""}` },
+				copyPassword,
+				byHandPassword === undefined
+					? null
+					: this.#byHandField(byHandPassword, t("The password"), `site-by-hand:password:${site.id}`),
+				eye,
+			);
+			const menu = h(
+				"button",
+				{
+					type: "button",
+					class: "site-more",
+					title: t("More options for {name}", { name }),
+					"aria-label": t("More options for {name}", { name }),
+					"aria-haspopup": "menu",
+					"aria-expanded": "false",
+					disabled: busy,
+				},
+				icon("more"),
+			);
+			menu.dataset.focusKey = `site-more:${site.id}`;
+			// A press on "⋯" while its menu is open only shuts the menu: the menu says which press shut it, and the click
+			// that press ends in opens nothing. A click from the keyboard has no press before it.
+			let shuts = false;
+			menu.addEventListener("pointerdown", (event) => {
+				shuts = this.#menuShut?.site === site.id && this.#menuShut.press === event;
+			});
+			menu.addEventListener("click", (event) => {
+				const shut = shuts && event.detail > 0;
+				shuts = false;
+				this.#menuShut = undefined;
+				if (!shut && !this.#working) this.#openMenu(site, menu);
+			});
+			more = menu;
+		}
+		// A site made from code: the version What's new has live, and the way there.
+		const releases = this.#releases;
+		const version = releases && fromCode(site) ? releases.version(site) : undefined;
+		const from =
+			releases && fromCode(site)
+				? h(
+						"span",
+						{ class: "site-from" },
+						version === undefined ? null : `${t("Version {version}", { version: String(version) })} · `,
+						h("a", { href: releases.href }, t("What's new")),
+					)
+				: null;
+		// Only a row new on the page moves in, one after another.
+		const first = !this.#seen.has(site.id);
+		this.#seen.add(site.id);
+		const row = h(
+			"article",
+			{
+				class: ["site-row", `is-${site.state}`, first && "is-new", this.#leaving === site.id && "is-leaving"]
+					.filter(Boolean)
+					.join(" "),
+				dataset: { site: site.id },
+				"aria-label": name,
+			},
+			siteEmblem(),
+			h("div", { class: "site-head" }, h("strong", { class: "site-name" }, name), stateOf(site), from),
+			more,
+			h("div", { class: "site-share" }, link, secret),
+		);
+		if (first) row.style.setProperty("--i", String(index));
+		return row;
 	}
 
-	/** A row of the card: a value in a code box, its buttons, and a line under it. */
-	#row(value: HTMLElement, buttons: HTMLElement[], note?: string): HTMLElement {
+	#empty(): HTMLElement {
+		this.#mascotEl ??= this.#mascot?.() ?? null;
 		return h(
 			"div",
-			{ class: "hook-address" },
-			h("div", { class: "hook-address-row" }, h("code", null, value), ...buttons),
-			note ? h("small", null, note) : null,
-		);
-	}
-
-	#changeForm(site: CompanySite): HTMLElement {
-		const busy = Boolean(this.#working);
-		const input = h("input", {
-			type: "text",
-			class: "service-token",
-			value: this.#draft,
-			maxlength: "128",
-			autocomplete: "off",
-			autocapitalize: "none",
-			spellcheck: "false",
-			placeholder: t("Type a new password, 10 to 128 characters"),
-			"aria-label": t("New password for {name}", { name: nameOf(site) }),
-			oninput: () => {
-				this.#draft = input.value;
-			},
-		});
-		input.dataset.focusKey = `site-password-input:${site.id}`;
-		const save = h(
-			"button",
-			{ type: "submit", class: "btn btn-primary", disabled: busy },
-			this.#working?.site === site.id && this.#working.action === "set" ? t("Working…") : t("Save password"),
-		);
-		save.dataset.focusKey = `site-password-save:${site.id}`;
-		const random = button(t("Make a new password"), () => void this.#setPassword(site, null), { disabled: busy });
-		random.dataset.focusKey = `site-password-random:${site.id}`;
-		const cancel = button(t("Cancel"), () => this.#toggleChange(site), { disabled: busy });
-		return h(
-			"form",
-			{
-				id: `site-password-form-${site.id}`,
-				class: "service-token-form",
-				onsubmit: (event: Event) => {
-					event.preventDefault();
-					void this.#setPassword(site, this.#draft);
-				},
-			},
-			h("div", { class: "service-token-row" }, input, save),
-			h("div", { class: "hook-form-actions" }, random, cancel),
-			h("small", null, t("Every visitor enters the new password; the old one stops working at once.")),
-		);
-	}
-
-	#card(site: CompanySite): HTMLElement {
-		const manage = this.#access.canManage();
-		const busy = Boolean(this.#working);
-		const shown = manage ? this.#passwords.get(site.id) : undefined;
-		const actions: HTMLElement[] = [];
-		if (manage) {
-			if (!shown) {
-				const show = button(
-					this.#working?.site === site.id && this.#working.action === "show" ? t("Working…") : t("Show password"),
-					() => void this.#showPassword(site),
-					{ disabled: busy },
-				);
-				show.dataset.focusKey = `site-show-password:${site.id}`;
-				actions.push(show);
-			}
-			const change = button(t("Change password"), () => this.#toggleChange(site), { disabled: busy });
-			change.dataset.focusKey = `site-change:${site.id}`;
-			change.setAttribute("aria-expanded", String(this.#changing === site.id));
-			change.setAttribute("aria-controls", `site-password-form-${site.id}`);
-			const unpublish = button(
-				this.#working?.site === site.id && this.#working.action === "unpublish" ? t("Working…") : t("Unpublish"),
-				() => void this.#unpublish(site),
-				{ danger: true, disabled: busy },
-			);
-			unpublish.dataset.focusKey = `site-unpublish:${site.id}`;
-			actions.push(change, unpublish);
-		}
-		const copyLink = button([icon("copy"), t("Copy")], () => void this.#copy(site, site.url, "link"), {
-			small: true,
-		});
-		copyLink.dataset.focusKey = `site-copy-link:${site.id}`;
-		const link = h("a", { href: site.url, target: "_blank", rel: "noopener noreferrer" }, site.url);
-		let password: HTMLElement | null = null;
-		if (shown) {
-			const copy = button([icon("copy"), t("Copy")], () => void this.#copy(site, shown.password, "password"), {
-				small: true,
-			});
-			copy.dataset.focusKey = `site-copy-password:${site.id}`;
-			const hide = button(t("Hide"), () => this.#hidePassword(site), { small: true });
-			hide.dataset.focusKey = `site-hide-password:${site.id}`;
-			password = this.#row(
-				h("span", { class: "site-password" }, shown.password),
-				[copy, hide],
-				t(
-					"Share the link and this password only with the people who should see the site. A visitor's own link opens the site for 7 days; a new password ends every visit.",
-				),
-			);
-		}
-		return h(
-			"article",
-			{ class: "service-card hook-card site-card", dataset: { site: site.id }, "aria-label": nameOf(site) },
-			h("span", { class: "hook-icon" }, icon("globe")),
-			h(
-				"div",
-				{ class: "settings-copy" },
-				h("strong", null, nameOf(site)),
-				h("small", { class: "hook-state" }, this.#state(site)),
-				site.kind === "app"
-					? h("small", null, appPlace(site))
-					: fromCode(site)
-						? h("small", null, t("Goes live from What's new"))
-						: site.source
-							? h("small", null, t("From {source}", { source: site.source }))
-							: null,
-			),
-			h("div", { class: "connection-actions" }, ...actions),
-			this.#row(link, [copyLink]),
-			password,
-			manage && this.#changing === site.id ? this.#changeForm(site) : null,
-			this.#outcomeLine(site.id),
+			{ class: "sites-empty" },
+			this.#mascotEl,
+			h("h2", null, t("No sites yet")),
+			h("p", null, t("Ask an agent for a website and it shows up here.")),
 		);
 	}
 
 	#draw(focusKey?: string): void {
 		if (this.#lifetime.signal.aborted) return;
-		this.#drawnManage = this.#access.canManage();
+		const manage = this.#access.canManage();
+		this.#drawn = { manage, versions: this.#versions() };
 		const active = document.activeElement as HTMLElement | null;
 		const key = focusKey ?? (this.el.contains(active) ? active?.dataset.focusKey : undefined);
 		let error: HTMLElement | null = null;
 		if (this.#error) {
-			const retry = button(
-				t("Try again"),
-				() => {
-					this.#loading = true;
-					this.#error = undefined;
-					this.#draw();
-					void this.#refresh();
+			const retry = h(
+				"button",
+				{
+					type: "button",
+					class: "site-button",
+					onclick: () => {
+						this.#loading = true;
+						this.#error = undefined;
+						this.#draw();
+						void this.#refresh();
+					},
 				},
-				{ small: true },
+				t("Try again"),
 			);
 			retry.dataset.focusKey = "site-retry";
-			error = h("p", { class: "connection-empty service-error", role: "alert" }, this.#error, " ", retry);
+			error = h("p", { class: "sites-error", role: "alert" }, h("span", null, this.#error), retry);
 		}
 		const sites = this.#sites ?? [];
 		replace(
-			this.el,
-			error,
-			// Without a first read there is nothing to show but the way to try again.
-			this.#sites || this.#loading
-				? h(
-						"section",
-						{ class: "settings-group", dataset: { sites: "list" } },
-						this.#access.canManage()
-							? null
-							: h("div", { class: "connection-section-heading" }, h("small", null, t(MANAGERS_ONLY))),
-						h(
+			this.#scroll,
+			h(
+				"div",
+				{ class: "sites-column" },
+				h(
+					"header",
+					{ class: "sites-head" },
+					h("h1", null, t("Sites")),
+					sites.length
+						? h("p", null, manage ? t("Share a site with its link and password.") : t(MANAGERS_ONLY))
+						: null,
+				),
+				error,
+				// Without a first read there is nothing to show but the way to try again.
+				this.#loading && !sites.length ? listSkeleton(t("Checking…"), 2) : null,
+				sites.length
+					? h(
 							"div",
-							{ class: "connection-list" },
-							...sites.map((site) => this.#card(site)),
-							this.#loading
-								? h("p", { class: "connection-empty muted", role: "status" }, t("Checking…"))
-								: sites.length
-									? null
-									: h(
-											"p",
-											{ class: "connection-empty muted" },
-											t(
-												"No sites yet. When an agent publishes a website for the company, it shows here with its link and password.",
-											),
-										),
-						),
-					)
-				: null,
+							{ class: "site-rows", dataset: { sites: "list" } },
+							...sites.map((site, index) => this.#row(site, manage, index)),
+						)
+					: this.#sites && !this.#loading
+						? this.#empty()
+						: null,
+			),
 		);
 		if (key) {
-			const target = [...this.el.querySelectorAll<HTMLElement>("[data-focus-key]")].find(
-				(item) => item.dataset.focusKey === key,
-			);
+			const target = this.#control(key);
 			if (target && !target.matches(":disabled")) target.focus();
 		}
 	}
