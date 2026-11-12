@@ -1890,7 +1890,7 @@ function drawInterfaces(
 			kept?.shown === model ? kept.element : withEmblem(appIcon(entry, `#/c/${profileId}/i/${name}`, count), choice);
 		rows.set(name, { shown: model, element });
 		element.dataset.appKey = name;
-		element.dataset.ownEmblem = name === "bank" ? "bank" : file.emblem;
+		element.dataset.ownEmblem = name === "bank" ? "bank" : (file.emblem ?? "page");
 		element.classList.toggle("active", name === activeName);
 		if (name === activeName) element.setAttribute("aria-current", "page");
 		else element.removeAttribute("aria-current");
