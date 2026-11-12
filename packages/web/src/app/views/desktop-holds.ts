@@ -203,6 +203,12 @@ export class DesktopHoldLedger {
 		return hold !== undefined && (hold.state !== undefined || this.#busy(hold));
 	}
 
+	/** The member's hand-back epoch for this machine, the highest the page learned (a hand-back's answer, a
+	 * TAKE_CALLED_OFF, a list); undefined while it learned none. Every move up is told to the listeners. */
+	epochOf(machineId: string): number | undefined {
+		return this.#holds.get(machineId)?.epoch;
+	}
+
 	/** Where the releases stand: a press records it, and passes it to take(). */
 	stamp(): number {
 		return this.#releases;

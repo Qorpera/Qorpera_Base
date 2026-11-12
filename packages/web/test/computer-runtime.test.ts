@@ -7,6 +7,7 @@ import {
 	ComputerPanel,
 	ComputerPanels,
 	INPUT_MAX_AGE_MS,
+	inputTooOld,
 	KEEP_EVERY_MS,
 	LOOK_EVERY_MS,
 	MACHINES_EVERY_MS,
@@ -3163,6 +3164,280 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 		open();
 		await flush();
 		expect(s.acts.map((act) => act.action.type)).toEqual(["click", "type"]);
+	});
+
+	const lost = "Your last input did not go through. Try again.";
+
+	it("ends shared input when the list shows only a higher epoch: a private hold of the member's taken and given back between two reads (review r4 F1 of #1701)", async () => {
+		const { s, p } = await shown();
+		press(canvas(p), 400, 250);
+		await flush();
+		const onOne = await waiting(s, p);
+		// Another window of the member's took the desktop and gave it back before this one read or retried: the list
+		// shows no hold, only the hand-back's higher epoch, and the desktop is free again (a retry would run).
+		s.state.epochs.set(machine(1).machineId, 1);
+		s.state.actAnswers.splice(0);
+		s.hint("machines");
+		await flush();
+		await advance(5000);
+		expect(onOne().map((act) => act.action.type)).toEqual(["click"]);
+		expect(controls(p)?.textContent).toContain(lost);
+		// A new sharing, under the new epoch: what the member does now goes, alone.
+		expect(canvas(p).getAttribute("role")).toBe("application");
+		key(canvas(p), "b");
+		await advance(TYPE_BATCH_MS);
+		await flush();
+		expect(onOne().map((act) => act.action)).toEqual([
+			{ type: "click", x: 20, y: 20, button: "right" },
+			{ type: "type", text: "b" },
+		]);
+		expect(controls(p)?.textContent ?? "").not.toContain(lost);
+	});
+
+	it("reads the list before shared input that waited goes: a hold taken and given back with no hint is seen before a retry, and behind a slow action (review r4 F1 of #1701)", async () => {
+		const reads = (s: Setup) => calls(s, "qorpera_list_agent_machines").length;
+		// A retry on a busy desktop: no hint comes, no read is due; the retry reads first, and sees the epoch.
+		{
+			const { s, p } = await shown();
+			press(canvas(p), 400, 250);
+			await flush();
+			const onOne = await waiting(s, p);
+			const before = reads(s);
+			s.state.epochs.set(machine(1).machineId, 1);
+			s.state.actAnswers.splice(0);
+			await advance(5000);
+			expect
+				.soft(
+					onOne().map((act) => act.action.type),
+					"a retry",
+				)
+				.toEqual(["click"]);
+			expect.soft(controls(p)?.textContent, "a retry").toContain(lost);
+			expect.soft(reads(s), "a retry").toBeGreaterThan(before);
+			p.dispose();
+		}
+		// Behind an action that took 2 s: the text that waited reads first, and sees the epoch.
+		{
+			const { s, p } = await shown();
+			press(canvas(p), 400, 250);
+			await flush();
+			let open = () => {};
+			s.state.actAnswers.push({
+				hold: new Promise<void>((resolve) => {
+					open = resolve;
+				}),
+				exitCode: 0,
+			});
+			press(canvas(p), 10, 10, { button: 2 });
+			await flush();
+			key(canvas(p), "a");
+			await advance(TYPE_BATCH_MS);
+			await advance(2000);
+			s.state.epochs.set(machine(1).machineId, 1);
+			open();
+			await flush();
+			await advance(1000);
+			expect
+				.soft(
+					s.acts.map((act) => act.action.type),
+					"behind a slow action",
+				)
+				.toEqual(["click"]);
+			expect.soft(controls(p)?.textContent, "behind a slow action").toContain(lost);
+			p.dispose();
+		}
+		// A read that does not answer within 3 s: what waited is dropped, never sent unseen.
+		{
+			const { s, p } = await shown();
+			press(canvas(p), 400, 250);
+			await flush();
+			const onOne = await waiting(s, p);
+			let open = () => {};
+			s.state.listGate = new Promise<void>((resolve) => {
+				open = resolve;
+			});
+			s.state.actAnswers.splice(0);
+			await advance(5000);
+			expect
+				.soft(
+					onOne().map((act) => act.action.type),
+					"no read",
+				)
+				.toEqual(["click"]);
+			expect.soft(controls(p)?.textContent, "no read").toContain(lost);
+			open();
+			await flush();
+			p.dispose();
+		}
+	});
+
+	it("sends nothing queued under one private hold under the next: an epoch moved on elsewhere ends it with its queue (review r4 F1 of #1701)", async () => {
+		const { s, p } = await shown();
+		press(canvas(p), 400, 250);
+		await flush();
+		controlButton(p)!.click();
+		await flush();
+		expect(p.holding).toBe(true);
+		// Under the first hold (epoch 0, seat 1): a click the busy desktop keeps waiting, and a text behind it.
+		s.state.actAnswers.push(...Array.from({ length: 40 }, () => ({ code: "DESKTOP_BUSY" })));
+		press(canvas(p), 10, 10, { button: 2 });
+		await flush();
+		key(canvas(p), "p");
+		await advance(TYPE_BATCH_MS);
+		// Another tab of the member's gave it back: the epoch moves on, the lease is gone.
+		s.state.epochs.set(machine(1).machineId, 1);
+		s.state.machines = [machine(1)];
+		s.state.actAnswers.splice(0);
+		s.hint("machines");
+		await flush();
+		expect(p.holding).toBe(false);
+		// Typing privately again: a new hold (epoch 1, seat 2); only what is typed under it goes, under it.
+		controlButton(p)!.click();
+		await flush();
+		expect(p.holding).toBe(true);
+		key(canvas(p), "q");
+		await advance(TYPE_BATCH_MS);
+		await advance(5000);
+		expect(s.acts.map((act) => [act.action.type, act.epoch, act.seat])).toEqual([
+			["click", 0, 1],
+			["type", 1, 2],
+		]);
+		expect(s.acts.at(-1)?.action).toEqual({ type: "type", text: "q" });
+	});
+
+	it("goes on with a waiting queue through what does not touch the predicate: list fields, a failed read, a look too soon", async () => {
+		const { s, p } = await shown();
+		press(canvas(p), 400, 250);
+		await flush();
+		const onOne = await waiting(s, p);
+		// Every field of the list that says nothing of a hold or of the screen's state.
+		s.state.machines = [
+			machine(1, {
+				name: "Renamed",
+				purpose: "Something else",
+				lifetime: "always-on",
+				startedByAgent: false,
+				screenUsedAt: new Date().toISOString(),
+				screenAgentName: "Another agent",
+				others: ["Ada"],
+			}),
+		];
+		s.state.canWake = false;
+		s.hint("machines");
+		await flush();
+		expect(who(p)).toBe("Ada is using it too.");
+		// A list read that fails, and a look the database finds too soon.
+		s.state.listFails = 1;
+		s.state.answers.push({ code: "SCREEN_TOO_SOON" });
+		s.hint("machines");
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		// The desktop is free: the click and the text behind it go, in order, shared.
+		s.state.actAnswers.splice(0);
+		await advance(2000);
+		expect(
+			onOne()
+				.map((act) => [act.action, act.seat])
+				.slice(-2),
+		).toEqual([
+			[{ type: "click", x: 20, y: 20, button: "right" }, null],
+			[{ type: "type", text: "a" }, null],
+		]);
+		expect(controls(p)?.textContent ?? "").not.toContain(lost);
+	});
+
+	it("is too old by either clock, or when the wall clock went back (review r4 F2 of #1701)", () => {
+		const made = { wall: 1_000_000, mono: 5_000 };
+		const at = (wall: number, mono: number) => inputTooOld(made, { wall: made.wall + wall, mono: made.mono + mono });
+		expect(at(0, 0)).toBe(false);
+		expect(at(INPUT_MAX_AGE_MS, INPUT_MAX_AGE_MS)).toBe(false);
+		// A sleeping laptop: the wall clock moved on, the monotonic clock stopped.
+		expect(at(INPUT_MAX_AGE_MS + 1, 10)).toBe(true);
+		// The monotonic clock says so, the wall clock not (it was set back meanwhile, or lags).
+		expect(at(10, INPUT_MAX_AGE_MS + 1)).toBe(true);
+		// The wall clock went back, by any amount: never trusted.
+		expect(at(-1, 10)).toBe(true);
+		expect(at(-60_000, 10)).toBe(true);
+		expect(at(10, -1)).toBe(true);
+	});
+
+	it("ages input from the member's own event, through the picture's buffers: a tab suspended before a batch went sends nothing of it (review r4 F2 of #1701)", async () => {
+		const gathers: [string, (p: ComputerPanel) => void, (p: ComputerPanel) => void][] = [
+			["a text not sent yet", (p) => key(canvas(p), "a"), () => {}],
+			["a click waiting for its second", (p) => press(canvas(p), 100, 100), () => {}],
+			[
+				"a wheel burst",
+				(p) =>
+					canvas(p).dispatchEvent(
+						new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: 100, clientY: 100, deltaY: 120 }),
+					),
+				() => {},
+			],
+			[
+				"a press held (a right click), let go after",
+				(p) => canvas(p).dispatchEvent(pointer("pointerdown", 100, 100, { button: 2 })),
+				(p) => canvas(p).dispatchEvent(pointer("pointerup", 100, 100, { button: 2 })),
+			],
+		];
+		/** How the time passes while the tab is suspended; what it returns undoes it. */
+		const clocks: [string, () => () => void][] = [
+			[
+				"the wall clock 21 s on (the monotonic one stopped)",
+				() => {
+					vi.setSystemTime(Date.now() + INPUT_MAX_AGE_MS + 1000);
+					return () => {};
+				},
+			],
+			[
+				"the monotonic clock 21 s on (the wall clock not)",
+				() => {
+					const real = performance.now.bind(performance);
+					const spy = vi.spyOn(performance, "now").mockImplementation(() => real() + INPUT_MAX_AGE_MS + 1000);
+					return () => spy.mockRestore();
+				},
+			],
+			[
+				"the wall clock set back 5 s",
+				() => {
+					vi.setSystemTime(Date.now() - 5000);
+					return () => {};
+				},
+			],
+		];
+		for (const mode of ["shared", "private"] as const)
+			for (const [what, gather, after] of gathers)
+				for (const [clock, pass] of clocks) {
+					const name = `${mode}, ${what}, ${clock}`;
+					const { s, p } = await shown();
+					press(canvas(p), 400, 250);
+					await flush();
+					if (mode === "private") {
+						controlButton(p)!.click();
+						await flush();
+						expect(p.holding, name).toBe(true);
+					}
+					const sent = () => s.acts.filter((act) => act.url.endsWith("/act"));
+					gather(p);
+					// The tab is suspended: time passes and no timer fires; the batch goes only once it resumes.
+					const undo = pass();
+					after(p);
+					await advance(DOUBLE_CLICK_MS + TYPE_BATCH_MS);
+					await flush();
+					// Soft: every case is checked and named, not only the first that fails.
+					expect.soft(sent(), name).toEqual([]);
+					expect.soft(controls(p)?.textContent, name).toContain(lost);
+					// What the member does now goes.
+					key(canvas(p), "Enter");
+					await flush();
+					expect
+						.soft(
+							sent().map((act) => act.action),
+							name,
+						)
+						.toEqual([{ type: "key", keys: ["Return"] }]);
+					undo();
+					p.dispose();
+				}
 	});
 });
 

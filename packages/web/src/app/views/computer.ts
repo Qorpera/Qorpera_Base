@@ -18,6 +18,8 @@ import { openContextMenu } from "../../ui/context-menu.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import {
+	type InputTime,
+	inputTime,
 	type MachineScreenInput,
 	type MachineScreenPicture,
 	MachineScreenView,
@@ -43,11 +45,30 @@ export const KEEP_EVERY_MS = 60_000;
  * hold it 11 s past an end that was not clean) before it is dropped. */
 const BUSY_GIVE_UP_MS = 15_000;
 const BUSY_RETRY_MS = 1000;
+/** Shared input that waited (a busy desktop's retry, or behind an action that took longer than BUSY_RETRY_MS) is sent
+ * only after a list read begun after the wait answered (review r4 F1 of #1701): a private hold taken and given back
+ * meanwhile shows there as a higher epoch even when no hint came. No such read within this, and the input is dropped. */
+const FRESH_LIST_MS = 3000;
 /** No input older than this is ever sent (review r3 of #1701): the window waits at most BUSY_GIVE_UP_MS (15 s) on a
  * desktop busy with another step, itself past the host's 11 s grace after an action that did not end cleanly, plus one
  * retry (1 s) and the few seconds a send takes. Anything older was kept by a path that should have dropped it: it is
- * dropped, never replayed, and the window says so. */
+ * dropped, never replayed, and the window says so. Its age is from the member's own event (the widget carries it
+ * through its buffers, review r4 F2), by both clocks (inputTooOld). */
 export const INPUT_MAX_AGE_MS = 20_000;
+
+/** Whether an input made at `madeAt` may no longer be sent (review r4 F2 of #1701): too old by the wall clock, OR by the
+ * monotonic clock, OR the wall clock went back since it was made. A suspended tab moves both clocks; a sleeping laptop
+ * moves the wall clock while some browsers stop the monotonic one there; a clock set back would make an old input look
+ * new by the wall clock alone. Either clock alone saying too old is enough, and a clock that went back is never trusted:
+ * the input is dropped, never sent. */
+export function inputTooOld(madeAt: InputTime, now: InputTime): boolean {
+	return (
+		now.wall < madeAt.wall ||
+		now.mono < madeAt.mono ||
+		now.wall - madeAt.wall > INPUT_MAX_AGE_MS ||
+		now.mono - madeAt.mono > INPUT_MAX_AGE_MS
+	);
+}
 /** How often the window reads its agent's machines again while it is shown (the `machines` hint reads them at once). */
 export const MACHINES_EVERY_MS = 15_000;
 /** How often a screen that is off, or hidden, is looked at again. */
@@ -126,6 +147,10 @@ interface PageHold {
  * types privately, or the window goes. */
 interface SharedInput {
 	readonly machineId: string;
+	/** The member's hand-back epoch for the machine when this sharing began, the highest the window knew (the list's, the
+	 * ledger's): a higher one seen later (a private hold of the member's taken and given back in any window, even one
+	 * the window never saw held) ends the sharing and its queue (review r4 F1 of #1701). */
+	readonly epoch: number;
 	readonly queue: QueuedAction[];
 	readonly stop: AbortController;
 	sending: boolean;
@@ -135,10 +160,10 @@ interface SharedInput {
 	readonly input: MachineScreenInput;
 }
 
-/** One input on its way, and when it was made (INPUT_MAX_AGE_MS). */
+/** One input on its way, and when the member made it (INPUT_MAX_AGE_MS: from their event, through every buffer). */
 interface QueuedAction {
 	readonly action: MachineDesktopAction;
-	readonly madeAt: number;
+	readonly madeAt: InputTime;
 }
 
 /** Whether this browser was told once that a member and the agent share a computer (20260930734000). */
@@ -260,6 +285,9 @@ export class ComputerPanel {
 	#listed: MemberAgentMachines | undefined;
 	#listedAt = Number.NEGATIVE_INFINITY;
 	#listStale = true;
+	/** List reads begun so far, and the shared senders waiting for one begun after a moment (#freshList). */
+	#listReads = 0;
+	#listWaiters: { readonly after: number; readonly done: () => void }[] = [];
 	#chosen: string | undefined;
 	#machineId: string | undefined;
 	#etag: string | null = null;
@@ -697,11 +725,16 @@ export class ComputerPanel {
 			if (this.#listStale || Date.now() >= listDue) {
 				// A hint that comes while this read is on its way asks for another after it.
 				this.#listStale = false;
+				const read = ++this.#listReads;
 				try {
 					this.#listed = await computer.agentMachines(this.agentId, signal);
 					this.#listedAt = Date.now();
 					this.#failures = 0;
 					this.#heldPerList();
+					// Senders waiting for a read begun after they asked: this is one (it has been applied above).
+					const waiting = this.#listWaiters;
+					this.#listWaiters = waiting.filter((waiter) => waiter.after >= read);
+					for (const waiter of waiting) if (waiter.after < read) waiter.done();
 				} catch {
 					signal.throwIfAborted();
 					this.#listStale = true;
@@ -990,7 +1023,7 @@ export class ComputerPanel {
 			queue: [],
 			stop: new AbortController(),
 			sending: false,
-			input: { act: (action) => this.#enqueue(hold, action) },
+			input: { act: (action, madeAt) => this.#enqueue(hold, action, madeAt) },
 		};
 		this.#hold = hold;
 		this.#scheduleKeep(KEEP_EVERY_MS);
@@ -1067,7 +1100,7 @@ export class ComputerPanel {
 
 	/** One of the member's actions, captured under `hold`, after those of it on their way: only while that hold is the
 	 * window's, of the computer chosen now (review r2 F1 of #1701). */
-	#enqueue(hold: PageHold, action: MachineDesktopAction): void {
+	#enqueue(hold: PageHold, action: MachineDesktopAction, madeAt: InputTime): void {
 		if (
 			this.#hold !== hold ||
 			hold.stop.signal.aborted ||
@@ -1075,20 +1108,20 @@ export class ComputerPanel {
 			this.#pick()?.machineId !== hold.machineId
 		)
 			return;
-		this.#queue(hold, action);
+		this.#queue(hold, action, madeAt);
 		void this.#drain(hold);
 	}
 
 	/** One of the member's actions on the desktop they share with the agent (20260930734000), after those on their way:
 	 * only while that sharing is the window's, of the computer chosen now (the input of a computer or a mode gone is
 	 * dropped, never sent to another or in another: review r2 F1 of #1701). */
-	#share(shared: SharedInput, action: MachineDesktopAction): void {
+	#share(shared: SharedInput, action: MachineDesktopAction, madeAt: InputTime): void {
 		if (this.#shared !== shared || shared.stop.signal.aborted || !this.#sharingOf(shared)) {
 			// The predicate is false: the sharing and its queue go now, never to be used again (review r3 of #1701).
-			if (this.#shared === shared) this.#endShared();
+			if (this.#shared === shared) this.#endShared(true);
 			return;
 		}
-		this.#queue(shared, action);
+		this.#queue(shared, action, madeAt);
 		void this.#drain(shared);
 	}
 
@@ -1099,10 +1132,11 @@ export class ComputerPanel {
 		this.#endShared();
 		const shared: SharedInput = {
 			machineId,
+			epoch: this.#epochOf(machineId),
 			queue: [],
 			stop: new AbortController(),
 			sending: false,
-			input: { act: (action) => this.#share(shared, action) },
+			input: { act: (action, madeAt) => this.#share(shared, action, madeAt) },
 		};
 		this.#shared = shared;
 		return shared;
@@ -1110,7 +1144,7 @@ export class ComputerPanel {
 
 	/** The action joins its queue; texts typed one after another, not sent yet, go as one. A new input ends the word that
 	 * an earlier one did not go through. */
-	#queue(sender: PageHold | SharedInput, action: MachineDesktopAction): void {
+	#queue(sender: PageHold | SharedInput, action: MachineDesktopAction, madeAt: InputTime): void {
 		const last = sender.queue.at(-1);
 		if (
 			last?.action.type === "type" &&
@@ -1118,12 +1152,15 @@ export class ComputerPanel {
 			sender.queue.length > (sender.sending ? 1 : 0) &&
 			[...last.action.text].length + [...action.text].length <= TEXT_MAX
 		)
-			// The older one's time: the joined text is as old as its first key.
+			// The joined text is as old as its oldest part, by each clock.
 			sender.queue[sender.queue.length - 1] = {
 				action: { type: "type", text: last.action.text + action.text },
-				madeAt: last.madeAt,
+				madeAt: {
+					wall: Math.min(last.madeAt.wall, madeAt.wall),
+					mono: Math.min(last.madeAt.mono, madeAt.mono),
+				},
 			};
-		else sender.queue.push({ action, madeAt: Date.now() });
+		else sender.queue.push({ action, madeAt });
 		if (this.#lostShown) {
 			this.#lostShown = false;
 			this.#controlNote.textContent = "";
@@ -1132,11 +1169,16 @@ export class ComputerPanel {
 	}
 
 	/** The shared input ends: its queue is emptied, an action of it on its way is cut off on the page, and it is never
-	 * used again (a new sharing is made when the predicate holds again: review r3 of #1701). */
-	#endShared(): void {
+	 * used again (a new sharing is made when the predicate holds again: review r3 of #1701). Ended because the predicate
+	 * turned false (`lost`), input that was waiting is said lost; the member's own switch or press says nothing. */
+	#endShared(lost = false): void {
 		const shared = this.#shared;
 		this.#shared = undefined;
 		if (!shared) return;
+		if (lost && shared.queue.length > 0) {
+			this.#lostShown = true;
+			this.#controlNote.textContent = t("Your last input did not go through. Try again.");
+		}
 		shared.stop.abort();
 		shared.queue.length = 0;
 	}
@@ -1172,9 +1214,49 @@ export class ComputerPanel {
 		);
 	}
 
-	/** The predicate, for this sharing: it is the window's, of the computer it was made for. */
+	/** Waits for a list read begun after now to answer and be applied: true then; false when none answered within
+	 * FRESH_LIST_MS or `stop` ended first. */
+	#freshList(stop: AbortSignal): Promise<boolean> {
+		return new Promise<boolean>((resolve) => {
+			let settled = false;
+			const end = (fresh: boolean) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				stop.removeEventListener("abort", aborted);
+				this.#listWaiters = this.#listWaiters.filter((waiter) => waiter !== entry);
+				resolve(fresh);
+			};
+			const aborted = () => end(false);
+			const timer = setTimeout(() => end(false), FRESH_LIST_MS);
+			const entry = { after: this.#listReads, done: () => end(true) };
+			if (stop.aborted) {
+				end(false);
+				return;
+			}
+			stop.addEventListener("abort", aborted, { once: true });
+			this.#listWaiters.push(entry);
+			this.#listStale = true;
+			this.#poke();
+		});
+	}
+
+	/** The predicate, for this sharing: it is the window's, of the computer it was made for, and no hand-back of the
+	 * member's came since it began (an epoch above its own, from the list or the ledger: review r4 F1 of #1701). */
 	#sharingOf(shared: SharedInput): boolean {
-		return this.#shared === shared && this.#pick()?.machineId === shared.machineId && this.#sharing();
+		return (
+			this.#shared === shared &&
+			this.#pick()?.machineId === shared.machineId &&
+			this.#epochOf(shared.machineId) <= shared.epoch &&
+			this.#sharing()
+		);
+	}
+
+	/** The member's hand-back epoch for a machine, the highest the window knows: the list's (as last read) or the
+	 * ledger's (a hand-back's answer, TAKE_CALLED_OFF, a list). It only moves up. Looks and actions answer no epoch. */
+	#epochOf(machineId: string): number {
+		const listed = this.#listed?.machines.find((machine) => machine.machineId === machineId)?.epoch ?? 0;
+		return Math.max(listed, this.#ledger.epochOf(machineId) ?? 0);
 	}
 
 	/** Sends a hold's actions, or the shared ones, one at a time: an answer before the next goes. A private hold's go with
@@ -1209,18 +1291,38 @@ export class ComputerPanel {
 		};
 		try {
 			let busySince: number | undefined;
+			/** The input a fresh list read was waited for, for its next send alone. */
+			let observed: QueuedAction | undefined;
 			while (sender.queue.length) {
 				if (!current()) {
 					// The predicate went false: a shared sender and its queue end now, never to be used again.
-					if (shared && this.#shared === shared) this.#endShared();
+					if (shared && this.#shared === shared) this.#endShared(true);
 					else sender.queue.length = 0;
 					return;
 				}
 				const item = sender.queue[0] as QueuedAction;
-				if (Date.now() - item.madeAt > INPUT_MAX_AGE_MS) {
+				const now = inputTime();
+				if (inputTooOld(item.madeAt, now)) {
 					drop(t("Your last input did not go through. Try again."));
 					return;
 				}
+				// Shared input that waited is sent only once a list read begun after the wait answered: what happened
+				// meanwhile (a private hold taken and given back, in any window of the member's) is seen first (review r4 F1).
+				const waited =
+					busySince !== undefined ||
+					now.wall - item.madeAt.wall > BUSY_RETRY_MS ||
+					now.mono - item.madeAt.mono > BUSY_RETRY_MS;
+				if (shared && waited && observed !== item) {
+					const fresh = await this.#freshList(sender.stop.signal);
+					if (!current()) continue;
+					if (!fresh) {
+						drop(t("Your last input did not go through. Try again."));
+						return;
+					}
+					observed = item;
+					continue;
+				}
+				observed = undefined;
 				let answer: MachineActAnswer | undefined;
 				try {
 					answer = await computer.screens.act(
@@ -1302,8 +1404,8 @@ export class ComputerPanel {
 	 * the state's place for a private hold or its end (review r2 F1 of #1681). */
 	#syncControls(): void {
 		// The predicate is checked at every change the window draws: once false, the sharing and its queue are gone, and a
-		// new one is made only when it holds again (review r3 of #1701).
-		if (this.#shared && !this.#sharingOf(this.#shared)) this.#endShared();
+		// new one is made only when it holds again (review r3 of #1701). Input that was waiting is said lost.
+		if (this.#shared && !this.#sharingOf(this.#shared)) this.#endShared(true);
 		const picture = this.#view?.shown === true && this.#picturing();
 		const holding = this.#holding !== undefined && this.#holding === this.#machineId;
 		// Never full screen here: only the member's own press on Enter asks for that.
