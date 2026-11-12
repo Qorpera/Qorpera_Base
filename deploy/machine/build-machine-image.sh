@@ -430,7 +430,9 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	# bus. One bar, holding exactly three launchers between two gaps and two clocks and nothing else; each launcher is
 	# one entry that runs the dock press for its program under a picture that is there; no icons on the backdrop, one
 	# workspace, no compositor.
-	look() { runuser -u desktop -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/qorpera-desktop/bus xfconf-query "$@"; }
+	look() { runuser -u desktop -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/qorpera-desktop/session/bus xfconf-query "$@"; }
+	# What each dock icon shows, as the look keeps it in the account own folder (read as the account).
+	marks() { runuser -u desktop -- sh -c "cd /run/qorpera-desktop/session && cat dock-browser.shows dock-files.shows dock-terminal.shows" 2>/dev/null | tr "\n" " "; }
 	dock_whole() {
 		local entry launcher
 		[[ $(look -c xfce4-panel -p /panels | tail -n +3 | tr "\n" " ") == "1 " ]] || return 1
@@ -493,11 +495,10 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	[[ $browser_width == 1600 ]] && (( browser_height > 800 && browser_height <= 920 )) ||
 		{ echo "the dock browser does not fill the screen above the dock: ${browser_width}x${browser_height}" >&2; exit 1; }
 	for _ in $(seq 1 50); do
-		[[ $(cat /run/qorpera-desktop/dock-browser.shows /run/qorpera-desktop/dock-files.shows /run/qorpera-desktop/dock-terminal.shows 2>/dev/null | tr "\n" " ") == "running running running " ]] && break
+		[[ $(marks) == "running running running " ]] && break
 		sleep 0.1
 	done
-	[[ $(cat /run/qorpera-desktop/dock-browser.shows /run/qorpera-desktop/dock-files.shows /run/qorpera-desktop/dock-terminal.shows | tr "\n" " ") == "running running running " ]] ||
-		{ echo "a dock icon does not mark its open program" >&2; exit 1; }
+	[[ $(marks) == "running running running " ]] || { echo "a dock icon does not mark its open program" >&2; exit 1; }
 	desktop click 720 960
 	sleep 1.5
 	[[ $(pgrep -u desktop -o -x chrome) == "$browser" && $(desktop windows | grep -c "Chrome for Testing$") == 1 ]] ||
@@ -523,6 +524,88 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	desktop start >/dev/null
 	dock_whole && backdrop_is neutral || { echo "the look did not come back in an emptied account" >&2; exit 1; }
 	desktop stop >/dev/null
+	# Root and the desktop account (review r1 F1 of #1704). Root keeps what it notes about the desktop in a folder of
+	# its own, and does nothing with its own rights in a place the account owns: the account, or a page or a program
+	# run as it, can make any name there a link to a file only root may read. A file only root can read stands in for
+	# such a file (the company folder view, with its pass): none of its bytes may reach a program of the account, and
+	# nothing may be written through a link to it.
+	secret=/root/qorpera-root-only-check
+	marker="qorpera-root-only-$(od -An -N12 -tx1 /dev/urandom | tr -d " \n")"
+	echo "$marker" >"$secret"
+	chmod 0600 "$secret"
+	untouched() { [[ $(cat "$secret") == "$marker" && $(stat -c "%U:%G %a" "$secret") == "root:root 600" ]]; }
+	desktop start --lang da-DK --tz Europe/Copenhagen >/dev/null
+	[[ $(stat -c "%U:%G %a" /run/qorpera-desktop) == "root:root 755" && $(stat -c "%U:%G %a" /run/qorpera-desktop/session) == "desktop:desktop 700" ]] ||
+		{ echo "the notes of root about the desktop are not in a folder of root, beside the account own one" >&2; exit 1; }
+	# The account can put nothing among the notes of root: no link, no pipe, no file, under any name root reads or writes.
+	for note in lang tz last-use serve-8600 serve-8699 "drawn-$$.png" anything; do
+		if runuser -u desktop -- ln -sfn "$secret" "/run/qorpera-desktop/$note" 2>/dev/null ||
+			runuser -u desktop -- mkfifo "/run/qorpera-desktop/$note.pipe" 2>/dev/null ||
+			runuser -u desktop -- sh -c ": >/run/qorpera-desktop/$note.new" 2>/dev/null; then
+			echo "the desktop account put $note among the notes of root" >&2; exit 1
+		fi
+	done
+	[[ -f /run/qorpera-desktop/last-use && ! -L /run/qorpera-desktop/last-use && $(cat /run/qorpera-desktop/lang) == da-DK &&
+		$(cat /run/qorpera-desktop/tz) == Europe/Copenhagen ]] || { echo "the notes of root are not as root wrote them" >&2; exit 1; }
+	# What the account plants in its own folders, under the names root uses for its notes, root never reads: a program
+	# root starts for an agent, and one it starts for a press on the dock, get the language and the time zone root
+	# noted, and nothing of the file only root can read, in their environment or their command line.
+	for note in lang tz last-use; do runuser -u desktop -- ln -sfn "$secret" "/run/qorpera-desktop/session/$note"; done
+	gets() { # pid: what a started program was handed
+		tr "\0" "\n" <"/proc/$1/environ"
+		tr "\0" " " <"/proc/$1/cmdline"
+	}
+	desktop run sleep 300 >/dev/null
+	runuser -u desktop -- sh -c ": >/run/qorpera-desktop-dock/terminal"
+	window " Terminal$" || { echo "a press on the dock opened no terminal beside planted links" >&2; exit 1; }
+	for program in sleep xfce4-terminal; do
+		pid=$(pgrep -u desktop -n -x "$program")
+		if gets "$pid" | grep -q "$marker"; then echo "a program of the desktop account ($program) was handed a file only root can read" >&2; exit 1; fi
+		[[ $(gets "$pid" | grep -c -x -e "TZ=Europe/Copenhagen" -e "LANGUAGE=da-DK") == 2 ]] ||
+			{ echo "a program of the desktop account ($program) did not get the language and time zone root noted" >&2; exit 1; }
+	done
+	# A request to the dock is its name alone: a link or a pipe of that name is removed, never opened.
+	runuser -u desktop -- ln -s "$secret" /run/qorpera-desktop-dock/files
+	runuser -u desktop -- mkfifo /run/qorpera-desktop-dock/other
+	window " - Thunar$" || { echo "a dock request that was a link opened nothing" >&2; exit 1; }
+	for _ in $(seq 1 50); do [[ -z $(ls -A /run/qorpera-desktop-dock) ]] && break; sleep 0.1; done
+	[[ -z $(ls -A /run/qorpera-desktop-dock) ]] && untouched || { echo "a dock request that was a link or a pipe was followed, or stayed" >&2; exit 1; }
+	# The account own Desktop folder made a link to a folder of root: root changes nothing there and puts nothing in it
+	# (opening then fails: the account cannot write there).
+	mkdir -p /tmp/site-root && echo "<title>qorpera-site-root</title>" >/tmp/site-root/index.html
+	runuser -u desktop -- sh -c "rm -rf /home/desktop/Desktop && ln -s /etc/qorpera-machine /home/desktop/Desktop"
+	if desktop open /tmp/site-root >/dev/null 2>&1 || desktop open /tmp/site-root --copy >/dev/null 2>&1; then
+		echo "a file was put on a desktop folder that is a link to a folder of root" >&2; exit 1
+	fi
+	[[ $(stat -c "%U:%G %a" /etc/qorpera-machine) == "root:root 755" && -z $(ls -A /etc/qorpera-machine) && -z $(ls -d /home/.qorpera-desktop-copy.* 2>/dev/null) ]] ||
+		{ echo "root changed a folder of its own through the desktop account link, or left a copy behind" >&2; exit 1; }
+	runuser -u desktop -- rm /home/desktop/Desktop
+	# A link in the account home to the file only root can read: opening it, with --copy too, gives the account nothing
+	# of it (it is read as the account). A file of root that an agent itself names is still copied: root reads it where
+	# only root can, and the account gets a copy that is its own.
+	runuser -u desktop -- ln -s "$secret" /home/desktop/planted.txt
+	if desktop open /home/desktop/planted.txt >/dev/null 2>&1 || desktop open /home/desktop/planted.txt --copy >/dev/null 2>&1; then
+		echo "a link of the desktop account to a file only root can read was opened" >&2; exit 1
+	fi
+	if grep -rqs -- "$marker" /home/desktop /run/qorpera-desktop/session; then echo "bytes of a file only root can read are in the desktop account folders" >&2; exit 1; fi
+	echo "qorpera-agent-chose-this" >/root/qorpera-agent-file.txt
+	chmod 0600 /root/qorpera-agent-file.txt
+	desktop open /root/qorpera-agent-file.txt --copy >/dev/null
+	[[ $(stat -c "%U:%G %F" /home/desktop/Desktop/qorpera-agent-file.txt) == "desktop:desktop regular file" &&
+		$(cat /home/desktop/Desktop/qorpera-agent-file.txt) == qorpera-agent-chose-this && -z $(ls -d /home/.qorpera-desktop-copy.* 2>/dev/null) ]] ||
+		{ echo "a file of root that an agent named was not copied to the desktop as the account own file" >&2; exit 1; }
+	# A picture saved where the account owns is saved as the account: a name there that links to the file only root can
+	# read is not written through, and a new picture there is the account own file.
+	runuser -u desktop -- ln -s "$secret" /home/desktop/planted.png
+	desktop shot /home/desktop/planted.png >/dev/null 2>&1 || true
+	untouched || { echo "a picture was written through a link of the desktop account, with the rights of root" >&2; exit 1; }
+	desktop shot /home/desktop/pictures/a.png | grep -q " 1600 x 1000$" && [[ $(stat -c %U /home/desktop/pictures/a.png) == desktop ]] ||
+		{ echo "a picture saved in the desktop account home is not a 1600x1000 picture of the account" >&2; exit 1; }
+	untouched || { echo "the file only root can read was changed" >&2; exit 1; }
+	desktop stop >/dev/null
+	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
+	[[ -d /run/qorpera-desktop && -z $(ls -A /run/qorpera-desktop) ]] || { echo "the notes of root outlived the desktop" >&2; exit 1; }
+	rm -f "$secret" /root/qorpera-agent-file.txt
 	# save_coding_value (20260930705000): no clipboard manager keeps what is copied, and the clipboard helper seals a key
 	# copied on the desktop (a made-up npm one), prints only the box, leaves both selections empty, and refuses an empty
 	# clipboard and a stopped desktop with a code. It runs as the executor runs it: root, the target on stdin.

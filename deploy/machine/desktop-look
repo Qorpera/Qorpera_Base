@@ -25,10 +25,12 @@
 # Nothing here can stop a desktop: desktop-session starts XFCE whatever this script came to, and the watcher is no
 # part of what keeps the desktop's unit alive.
 set -uo pipefail
-# The pictures, the figure's file and the folder a press asks in are these on every machine; only this script's own
-# test names stand-ins for them.
+# The pictures, the figure's file, root's notes about the desktop and the folder a press asks in are these on every
+# machine; only this script's own test names stand-ins for them.
 ART=${QORPERA_DESKTOP_ART:-/usr/share/qorpera-desktop}
 FIGURE=${QORPERA_DESKTOP_FIGURE:-/etc/qorpera-machine/desktop-figure}
+# Root's notes (qorpera-machine-desktop.service): this account reads the time zone there and can change nothing in it.
+NOTES=${QORPERA_DESKTOP_NOTES:-/run/qorpera-desktop}
 # Where a press asks root for a program: an empty file named for it (qorpera-machine-desktop-dock.path).
 ASK=${QORPERA_DESKTOP_ASK:-/run/qorpera-desktop-dock}
 SELF=/opt/qorpera-machine/desktop-look
@@ -59,11 +61,11 @@ backdrop_set() {
 	[[ $word != ghost ]] || word=moon
 	if [[ $word =~ $plain && -f $ART/backdrops/$word/00.png ]]; then echo "$word"; else echo neutral; fi
 }
-# The time zone the desktop's programs were given (`desktop start --tz`, which keeps it in the desktop's runtime
-# folder once the desktop is up), else UTC.
+# The time zone the desktop's programs were given (`desktop start --tz`, which root keeps in its notes once the
+# desktop is up), else UTC.
 desktop_zone() {
 	local name= plain='^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$'
-	if [[ -s $RUN/tz ]]; then read -r -n 64 name _ <"$RUN/tz" || true; fi
+	if [[ -f $NOTES/tz && -s $NOTES/tz ]]; then read -r -n 64 name _ <"$NOTES/tz" || true; fi
 	if [[ $name =~ $plain && -f /usr/share/zoneinfo/$name ]]; then echo "$name"; else echo UTC; fi
 }
 # The hour of the day in a time zone, two digits (the shell's own clock: no program is started for it). Asked in a

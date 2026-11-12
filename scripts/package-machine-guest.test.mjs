@@ -501,11 +501,18 @@ test("a desktop is asked for: small machines refuse it, chosen files open on it,
 	assert.match(command, /if \(\( cpus < MIN_CPUS \|\| memory < MIN_MEMORY_KB \)\); then\n\t\t\tfail "this machine is too small for a desktop: [^\n]*machine_start with desktop true" 3\n/);
 	// Files and folders are put on the desktop as links (the company's stay where they are) and opened; a folder with a
 	// page is served on the machine's loopback only.
-	assert.match(command, /ln -s -- "\$path" "\$place"\n/);
+	// Since review r1 F1 of #1704 everything in the desktop's folder is done as the desktop's account.
+	assert.match(command, /as_desktop ln -sT -- "\$path" "\$place" \|\| fail /);
 	// Nothing on the desktop is ever replaced: the same link is used again, and a taken name gets a number (review r1 F1).
 	assert.doesNotMatch(command, /rm -rf -- "\$place"/);
-	assert.match(command, /if \(\( ! copy \)\) && \[\[ -L \$place && \$\(readlink -- "\$place"\) == "\$path" \]\]; then break; fi\n/);
-	assert.match(command, /if \[\[ ! -e \$place && ! -L \$place \]\]; then\n\t\t\tif \(\( copy \)\); then\n\t\t\t\tcp -a -- "\$path" "\$place"\n/);
+	assert.match(
+		command,
+		/if \(\( ! copy \)\) && \[\[ \$\(as_desktop readlink -- "\$place" 2>\/dev\/null\) == "\$path" \]\]; then break; fi\n/,
+	);
+	assert.match(
+		command,
+		/if ! as_desktop test -e "\$place" -o -L "\$place"; then\n\t\t\tif \(\( copy && theirs \)\); then\n\t\t\t\tas_desktop cp -a -- "\$path" "\$place" \|\| fail /,
+	);
 	for (const line of [
 		'\tdesktop open /tmp/site --copy | grep "as site-2)" >/dev/null || { echo "a copy did not get a name of its own" >&2; exit 1; }\n',
 		"\techo edited >/home/desktop/Desktop/site-2/kept.txt\n",
@@ -516,7 +523,7 @@ test("a desktop is asked for: small machines refuse it, chosen files open on it,
 	assert.match(command, /for target in "\$@"; do open_target "\$target" 0; done\n/);
 	// 3D drawing, no test bar, the session's bus for launched programs.
 	assert.match(command, /--disable-infobars\n\t\t--enable-unsafe-swiftshader\)/);
-	assert.match(command, /--setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=\$RUN\/bus"/);
+	assert.match(command, /--setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=\$SESSION\/bus"/);
 	// Text beyond plain ASCII is pasted (xdotool types a capital Å small), on both selections.
 	assert.match(command, /if \[\[ \$text == \*\[!\[:ascii:\]\]\* \|\| \$text == \*\[\[:cntrl:\]\]\* \]\]; then\n/);
 	assert.match(command, /xdotool key --clearmodifiers shift\+Insert\n/);
@@ -892,8 +899,9 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 		const home = join(temporary, "home");
 		const run = join(temporary, "run");
 		const ask = join(temporary, "ask");
+		const notes = join(temporary, "notes");
 		const figureFile = join(temporary, "desktop-figure");
-		for (const folder of [home, run, ask]) await mkdir(folder);
+		for (const folder of [home, run, ask, notes]) await mkdir(folder);
 		const env = {
 			...process.env,
 			PATH: `${tools}:${process.env.PATH}`,
@@ -905,6 +913,7 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 			QORPERA_DESKTOP_ART: art,
 			QORPERA_DESKTOP_FIGURE: figureFile,
 			QORPERA_DESKTOP_ASK: ask,
+			QORPERA_DESKTOP_NOTES: notes,
 		};
 		const lookRun = (...args) => spawnSync("bash", [join(repositoryRoot, "deploy/machine/desktop-look"), ...args], { encoding: "utf8", env });
 		const config = join(home, ".config");
@@ -958,18 +967,21 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 			assert.ok(readFileSync(join(config, file), "utf8").length > 0, file);
 		for (const name of ["xfwm4", "xfce4-terminal", "xsettings"]) assert.match(channel(name), new RegExp(`<channel name="${name}" version="1\\.0">`));
 		// The figure the machine names, a saved ghost as the moon, a word the image has no set for as the neutral one; and
-		// the zone `desktop start --tz` keeps in the desktop's runtime folder.
+		// the zone `desktop start --tz` keeps in root's notes. A zone named in the account's own runtime folder, where
+		// root kept it before review r1 F1 of #1704, is nobody's word.
 		writeFileSync(figureFile, "star\n");
 		written("star", "UTC");
 		writeFileSync(figureFile, "ghost");
 		written("moon", "UTC");
-		writeFileSync(join(run, "tz"), "Pacific/Auckland");
+		writeFileSync(join(run, "tz"), "Asia/Tokyo");
+		written("moon", "UTC");
+		writeFileSync(join(notes, "tz"), "Pacific/Auckland");
 		written("moon", "Pacific/Auckland");
 		writeFileSync(figureFile, "../../etc\n");
 		written("neutral", "Pacific/Auckland");
 		writeFileSync(figureFile, "planet\n");
 		written("neutral", "Pacific/Auckland");
-		writeFileSync(join(run, "tz"), "No/Such_Zone");
+		writeFileSync(join(notes, "tz"), "No/Such_Zone");
 		written("neutral", "UTC");
 		// Written anew every time: what was changed or removed in the account is put back.
 		await rm(config, { recursive: true, force: true });
@@ -1134,6 +1146,7 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 		"\nART=${QORPERA_DESKTOP_ART:-/usr/share/qorpera-desktop}\n",
 		"\nFIGURE=${QORPERA_DESKTOP_FIGURE:-/etc/qorpera-machine/desktop-figure}\n",
 		"\nASK=${QORPERA_DESKTOP_ASK:-/run/qorpera-desktop-dock}\n",
+		"\nNOTES=${QORPERA_DESKTOP_NOTES:-/run/qorpera-desktop}\n",
 		"\nSELF=/opt/qorpera-machine/desktop-look\n",
 	])
 		assert.ok(look.includes(line), line);
@@ -1172,4 +1185,177 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 	assert.match(read("scripts/prove-machine-memory.sh"), / -- desktop click 400 960 <\/dev\/null >\/dev\/null 2>&1 \|\| status=\$\?\n/);
 	for (const file of ["deploy/machine/desktop-look", "deploy/machine/desktop-dock-open", "deploy/machine/backdrops-source/render.sh"])
 		assert.equal(spawnSync("bash", ["-n", join(repositoryRoot, file)], { encoding: "utf8" }).status, 0, file);
+});
+
+test("root does nothing with its own rights where the desktop's account owns (review r1 F1 of #1704)", async () => {
+	// The finding: root's `desktop` kept its notes (the language, the time zone, the idle clock, the folders it serves) in
+	// the desktop account's own runtime folder and read them there. The account could make `lang` a link to a file only
+	// root may read (the company folder's view, with its pass) and ask the dock for a terminal: root's launch read the file
+	// and handed it to a program of the account as LANGUAGE. The same reads ran before #1704 for an agent's own
+	// `desktop open`, so the hole was in the live image too.
+	const unit = read("deploy/machine/qorpera-machine-desktop.service");
+	const command = read("deploy/machine/desktop");
+	const session = read("deploy/machine/desktop-session");
+	const look = read("deploy/machine/desktop-look");
+	const opener = read("deploy/machine/desktop-dock-open");
+
+	// Two folders, two owners: /run/qorpera-desktop is root's (systemd makes the way to a runtime folder as root's, and
+	// the unit says so again, empties it and sets the idle clock as root); only its `session` folder is the account's.
+	for (const line of [
+		"Environment=HOME=/home/desktop XDG_RUNTIME_DIR=/run/qorpera-desktop/session",
+		"RuntimeDirectory=qorpera-desktop/session",
+		"RuntimeDirectoryMode=0700",
+		"ExecStartPre=+/usr/bin/install -d -o root -g root -m 0755 /run/qorpera-desktop",
+		"ExecStartPre=+/usr/bin/find /run/qorpera-desktop -mindepth 1 -maxdepth 1 ! -name session -exec /usr/bin/rm -rf -- {} +",
+		"ExecStartPre=+/usr/bin/touch /run/qorpera-desktop/last-use",
+		"ExecStopPost=-+/usr/bin/find /run/qorpera-desktop -mindepth 1 -maxdepth 1 ! -name session -exec /usr/bin/rm -rf -- {} +",
+	])
+		assert.ok(unit.includes(`\n${line}\n`), line);
+	assert.doesNotMatch(unit, /^RuntimeDirectory=qorpera-desktop$/m);
+	// The paths root's other programs use stay root's notes: the screen helper and the executor touch the idle clock there.
+	assert.match(read("packages/runtime/src/cloud-machine-screen.ts"), /\nconst LAST_USE = "\/run\/qorpera-desktop\/last-use";\n/);
+	assert.match(read("packages/runner-orchestrator/src/company-machine-host.ts"), /"touch -c \/run\/qorpera-desktop\/last-use",/);
+
+	// The command: its notes are in root's folder, each one a name it writes itself; the account's folder is only ever
+	// handed to the account's programs as a path, never read; and in what the account owns, things are done as the account.
+	const code = command
+		.split("\n")
+		.filter((line) => !line.trimStart().startsWith("#"))
+		.join("\n");
+	assert.match(code, /\nRUN=\/run\/qorpera-desktop\nSESSION=\$RUN\/session\n/);
+	assert.deepEqual(
+		[...new Set([...code.matchAll(/\$RUN\/([a-z-]+)/g)].map((match) => match[1]))].toSorted(),
+		["drawn-", "lang", "last-use", "serve-", "session", "tz"],
+	);
+	assert.deepEqual(
+		[...code.matchAll(/\$SESSION[^\n]*/g)].map((match) => match[0]),
+		['$SESSION" \\', '$SESSION/bus" "${extra[@]}" -- "$@"'],
+	);
+	assert.match(code, /\nas_desktop\(\) \{ runuser -u desktop -- "\$@"; \}\n/);
+	for (const gone of [/install -d -o desktop/, /chown -h desktop/, /chown -R desktop:desktop -- "\$place"/, /\n\t+(?:cp|ln|mv|mkdir|touch|rm)\b[^\n]*"\$(?:DESK|place)"/])
+		assert.doesNotMatch(code, gone);
+	// The one read with root's rights that reaches the desktop: a copy an agent asks for of a file the account may not
+	// read, of a target that leads through nothing the account owns, made the account's where only root can enter and
+	// moved onto the desktop by the account.
+	assert.match(code, /\n\tif through_desktop "\$target" \|\| through_desktop "\$path"; then\n\t\ttheirs=1\n\t\tpath=\$\(as_desktop realpath -e -- "\$target" 2>\/dev\/null\) \|\| fail /);
+	assert.match(
+		code,
+		/\n\t\t\t\tstage=\$\(mktemp -d \/home\/\.qorpera-desktop-copy\.XXXXXXXX\)\n\t\t\t\tif cp -a -- "\$path" "\$stage\/copy" && chown -R desktop:desktop -- "\$stage\/copy" && chown desktop:desktop -- "\$stage"; then\n\t\t\t\t\tas_desktop mv -nT -- "\$stage\/copy" "\$place" \|\| true\n\t\t\t\t\trm -rf -- "\$stage"\n/,
+	);
+	// The session reads the idle clock where root keeps it, and the look reads the time zone there; neither writes it.
+	assert.match(session, /\nLAST=\/run\/qorpera-desktop\/last-use\n/);
+	assert.doesNotMatch(session, /touch "\$LAST"|XDG_RUNTIME_DIR\/last-use/);
+	assert.match(look, /if \[\[ -f \$NOTES\/tz && -s \$NOTES\/tz \]\]; then read -r -n 64 name _ <"\$NOTES\/tz" \|\| true; fi\n/);
+	assert.doesNotMatch(look, /\$RUN\/tz|\$RUN\/lang/);
+	// The dock's root side takes a request's name alone and reads nothing of the account's.
+	assert.doesNotMatch(opener, /\/run\/qorpera-desktop\/|\$\(<|\bcat\b|\bsource\b|\n\. /);
+
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-desktop-boundary-"));
+	try {
+		const tools = join(temporary, "tools");
+		const asked = join(temporary, "asked");
+		const theirs = join(temporary, "theirs");
+		const roots = join(temporary, "roots");
+		for (const folder of [tools, theirs, roots]) await mkdir(folder);
+		const tool = (name, body) => writeFile(join(tools, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+		// Stand-ins: the desktop runs; `stat -c %U` says the desktop's account owns everything under THEIRS and the one
+		// name PLANTED, and root the rest (a part that is not there fails, as the real one); runuser notes that it was
+		// asked and runs the command marked as the account's; scrot notes whose it is and writes its file.
+		await tool("systemctl", "echo active");
+		await tool("xdpyinfo", 'echo "  dimensions:    $DIMENSIONS pixels (423x264 millimeters)"');
+		await tool("touch", "exit 0");
+		await tool("wmctrl", "exit 0");
+		await tool(
+			"stat",
+			[
+				'if [ "$1" = -c ] && [ "$2" = %U ]; then',
+				'\t[ -e "$4" ] || [ -L "$4" ] || exit 1',
+				'\tcase "$4" in "$THEIRS" | "$THEIRS"/* | "$PLANTED") echo desktop ;; *) echo root ;; esac',
+				"\texit 0",
+				"fi",
+				'exec /usr/bin/stat "$@"',
+			].join("\n"),
+		);
+		await tool("runuser", ['echo "runuser $*" >>"$ASKED"', 'while [ "$1" != -- ]; do shift; done', "shift", 'AS=desktop exec "$@"'].join("\n"));
+		await tool("scrot", ['for word in "$@"; do file=$word; done', 'echo "scrot as ${AS:-root} $file" >>"$ASKED"', 'printf png >"$file"'].join("\n"));
+		const desktop = (more, ...args) => {
+			writeFileSync(asked, "");
+			const result = spawnSync("bash", [join(repositoryRoot, "deploy/machine/desktop"), ...args], {
+				encoding: "utf8",
+				env: { ...process.env, PATH: `${tools}:${process.env.PATH}`, ASKED: asked, THEIRS: theirs, PLANTED: "", DIMENSIONS: "1600x1000", ...more },
+			});
+			return { status: result.status, stdout: result.stdout, stderr: result.stderr, asked: readFileSync(asked, "utf8").trim().split("\n") };
+		};
+		// A picture where root alone owns the way: taken and saved by root, as ever.
+		const rootShot = desktop({}, "shot", join(roots, "a.png"));
+		assert.equal(rootShot.status, 0, rootShot.stderr);
+		assert.deepEqual(rootShot.asked, [`scrot as root ${join(roots, "a.png")}`]);
+		// A picture in a folder the account owns, a new folder under it, or under a name that is the account's own link in
+		// a folder of root: the folder is made, the picture taken and its size read as the account; root's scrot never runs.
+		for (const [file, more] of [
+			[join(theirs, "a.png"), {}],
+			[join(theirs, "new", "deeper", "b.png"), {}],
+			[join(roots, "planted.png"), { PLANTED: join(roots, "planted.png") }],
+		]) {
+			if (file.startsWith(roots)) writeFileSync(file, "the account made this name");
+			const shot = desktop(more, "shot", file);
+			assert.equal(shot.status, 0, `${file}: ${shot.stderr}`);
+			assert.ok(shot.asked.includes(`scrot as desktop ${file}`), `${file}: ${shot.asked.join(" | ")}`);
+			assert.ok(!shot.asked.some((line) => line.startsWith("scrot as root")), file);
+			assert.ok(shot.asked.includes(`runuser -u desktop -- scrot --overwrite --silent -- ${file}`), file);
+			assert.ok(shot.asked.some((line) => line.startsWith("runuser -u desktop -- mkdir -p -- ")), file);
+		}
+		// A way that is root's own link into what the account owns counts by where it leads.
+		spawnSync("ln", ["-s", theirs, join(roots, "way")]);
+		const led = desktop({}, "shot", join(roots, "way", "c.png"));
+		assert.equal(led.status, 0, led.stderr);
+		assert.ok(led.asked.includes(`scrot as desktop ${join(roots, "way", "c.png")}`), led.asked.join(" | "));
+		assert.ok(!led.asked.some((line) => line.startsWith("scrot as root")));
+
+		// What the display says of its size is only ever digits. The display is the account's program; a name in an
+		// arithmetic expression runs what its index says (bash), so an unchecked size could run a command as root.
+		const canary = join(temporary, "canary");
+		const hostile = `a[$(id>${canary})]x1`;
+		const status = desktop({ DIMENSIONS: hostile }, "status");
+		assert.equal(status.status, 0, status.stderr);
+		assert.equal(status.stdout.split("\n")[0], "running ()");
+		assert.equal(existsSync(canary), false);
+		assert.equal(desktop({ DIMENSIONS: "1280x800" }, "status").stdout.split("\n")[0], "running (1280x800)");
+		assert.match(code, /\n\tif \[\[ \$dims =~ \^\[0-9\]\{1,5\}x\[0-9\]\{1,5\}\$ \]\]; then echo "\$dims"; fi\n/);
+		assert.match(code, /\n\t\tdims=\$\(size\)\n\t\t\[\[ -n \$dims \]\] \|\| dims=1600x1000\n/);
+		assert.equal(code.match(/xdpyinfo/g).length, 2, "the display's size is read in one place");
+		// That the danger is real, with the very expression `desktop start` uses: unchecked, the index runs.
+		const arithmetic = (dims) =>
+			spawnSync("bash", ["-c", 'dims=$1; (( 5000 > ${dims%x*} * ${dims#*x} * 3 / 1000 + 3000 )) || true', "bash", dims], { encoding: "utf8" });
+		arithmetic(hostile);
+		assert.equal(existsSync(canary), true, "an unchecked size runs what it says");
+		await rm(canary);
+	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
+
+	// The image build proves the boundary with the two real accounts and a file only root can read: the account can put
+	// nothing among root's notes; what it plants in its own folders is never read; a program root starts, for an agent
+	// or for a press on the dock, is handed nothing of the file; no link of the account is followed with root's rights.
+	for (const line of [
+		"\tsecret=/root/qorpera-root-only-check\n",
+		'\tchmod 0600 "$secret"\n',
+		'\t[[ $(stat -c "%U:%G %a" /run/qorpera-desktop) == "root:root 755" && $(stat -c "%U:%G %a" /run/qorpera-desktop/session) == "desktop:desktop 700" ]] ||\n',
+		'\tfor note in lang tz last-use serve-8600 serve-8699 "drawn-$$.png" anything; do\n',
+		'\t\tif runuser -u desktop -- ln -sfn "$secret" "/run/qorpera-desktop/$note" 2>/dev/null ||\n',
+		'\t\t\trunuser -u desktop -- mkfifo "/run/qorpera-desktop/$note.pipe" 2>/dev/null ||\n',
+		'\tfor note in lang tz last-use; do runuser -u desktop -- ln -sfn "$secret" "/run/qorpera-desktop/session/$note"; done\n',
+		'\trunuser -u desktop -- sh -c ": >/run/qorpera-desktop-dock/terminal"\n',
+		'\t\tif gets "$pid" | grep -q "$marker"; then echo "a program of the desktop account ($program) was handed a file only root can read" >&2; exit 1; fi\n',
+		'\t\t[[ $(gets "$pid" | grep -c -x -e "TZ=Europe/Copenhagen" -e "LANGUAGE=da-DK") == 2 ]] ||\n',
+		'\trunuser -u desktop -- ln -s "$secret" /run/qorpera-desktop-dock/files\n',
+		'\trunuser -u desktop -- sh -c "rm -rf /home/desktop/Desktop && ln -s /etc/qorpera-machine /home/desktop/Desktop"\n',
+		'\tif desktop open /home/desktop/planted.txt >/dev/null 2>&1 || desktop open /home/desktop/planted.txt --copy >/dev/null 2>&1; then\n',
+		'\tif grep -rqs -- "$marker" /home/desktop /run/qorpera-desktop/session; then echo "bytes of a file only root can read are in the desktop account folders" >&2; exit 1; fi\n',
+		"\tdesktop open /root/qorpera-agent-file.txt --copy >/dev/null\n",
+		"\tdesktop shot /home/desktop/planted.png >/dev/null 2>&1 || true\n",
+		'\tuntouched || { echo "a picture was written through a link of the desktop account, with the rights of root" >&2; exit 1; }\n',
+		'\t[[ -d /run/qorpera-desktop && -z $(ls -A /run/qorpera-desktop) ]] || { echo "the notes of root outlived the desktop" >&2; exit 1; }\n',
+	])
+		assert.ok(imageScript.includes(line), line);
 });

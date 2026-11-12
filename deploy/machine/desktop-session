@@ -11,8 +11,10 @@ SIZE=${QORPERA_DESKTOP_SIZE:-1600x1000}
 # A desktop nobody has used for this long stops by itself: a page left open would otherwise keep the machine awake.
 IDLE=${QORPERA_DESKTOP_IDLE_SECONDS:-3600}
 [[ $IDLE =~ ^[0-9]{2,6}$ ]] || { echo "invalid idle time $IDLE" >&2; exit 1; }
-LAST=$XDG_RUNTIME_DIR/last-use
-touch "$LAST"
+# The idle clock is root's note (the unit makes it before this starts, in root's folder beside this account's own:
+# qorpera-machine-desktop.service): every desktop command of root touches it, and this account only reads when.
+LAST=/run/qorpera-desktop/last-use
+STARTED=$(date +%s)
 Xvnc :1 -geometry "$SIZE" -depth 24 -SecurityTypes None -localhost yes -rfbport 5901 -nolisten tcp -AlwaysShared \
 	-desktop "Qorpera machine" &
 export DISPLAY=:1
@@ -44,10 +46,12 @@ for _ in $(seq 1 50); do [[ -S $XDG_RUNTIME_DIR/bus ]] && break; sleep 0.1; done
 # The dock's marks and the backdrop's hours (desktop-look watch) run beside the session and stop with the unit. Started
 # from a shell that ends at once, the watcher is none of this script's jobs: its end never ends the desktop.
 (/opt/qorpera-machine/desktop-look watch >/dev/null 2>&1 &)
-# Every desktop command touches LAST (deploy/machine/desktop, need).
+# Every desktop command touches LAST (deploy/machine/desktop, need). A clock that cannot be read counts from this start.
 (
 	while sleep 30; do
-		(( $(date +%s) - $(stat -c %Y "$LAST" 2>/dev/null || echo 0) < IDLE )) || { echo "no desktop command for $IDLE s: stopping"; exit 0; }
+		used=$(stat -c %Y "$LAST" 2>/dev/null) || used=$STARTED
+		[[ $used =~ ^[0-9]{1,12}$ ]] || used=$STARTED
+		(( $(date +%s) - used < IDLE )) || { echo "no desktop command for $IDLE s: stopping"; exit 0; }
 	done
 ) &
 # Any of them ending ends the desktop: systemd then stops what is left of it.
