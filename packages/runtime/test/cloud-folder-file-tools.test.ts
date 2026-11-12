@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { JsonValue } from "@qorpera/contracts";
-import { CloudCompanyFolderError } from "@qorpera/runtime/cloud-company-folder-client";
+import { CloudCompanyFolderClient, CloudCompanyFolderError } from "@qorpera/runtime/cloud-company-folder-client";
 import { cloudFolderFileTools } from "@qorpera/runtime/cloud-folder-file-tools";
 import type { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
@@ -10,7 +10,11 @@ import {
 	type CloudToolContent,
 	CloudToolRefusal,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
-import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
+import {
+	CloudRuntimeDiagnosticError,
+	CloudRuntimeObservability,
+	type CloudRuntimeObservation,
+} from "@qorpera/runtime/cloud-runtime-observability";
 import { fitsOneResult } from "@qorpera/runtime/cloud-worker-tools";
 import { afterEach, expect, it, vi } from "vitest";
 import { folderWriterFixture } from "./fixtures/folder-writer-fixture.ts";
@@ -448,6 +452,35 @@ it("answers each path on its own, without failing the others: absent, a folder, 
 		{ path: "docs/plan.md", refused: "COMPANY_FOLDER_UNAVAILABLE: it could not be read now; read it again" },
 		expect.objectContaining({ path: "docs/latest", target: "plan.md" }),
 	]);
+	// So is one whose request timed out or lost its connection, its entry's read or its bytes'.
+	const folderRead = (path: string, signal: AbortSignal) =>
+		CloudCompanyFolderClient.prototype.read.call(f.folder, path, signal);
+	read.mockImplementation(async (path, signal) => {
+		if (path === "docs/latest") throw new CloudRuntimeDiagnosticError("transport_unavailable");
+		return folderRead(path, signal);
+	});
+	const range = vi.spyOn(f.folder, "readRange").mockImplementation(async (entry, offset, length, signal) => {
+		if (entry.path === "docs/plan.md") throw new CloudRuntimeDiagnosticError("timeout");
+		return CloudCompanyFolderClient.prototype.readRange.call(f.folder, entry, offset, length, signal);
+	});
+	const unavailable = { refused: "COMPANY_FOLDER_UNAVAILABLE: it could not be read now; read it again" };
+	expect(
+		parse(await f.call("company_read", { paths: ["docs/latest", "docs/plan.md", "bin/data", "docs"] })).files,
+	).toEqual([
+		{ path: "docs/latest", ...unavailable },
+		{ path: "docs/plan.md", ...unavailable },
+		expect.objectContaining({ path: "bin/data", refused: expect.stringContaining("COMPANY_FILE_NOT_TEXT") }),
+		{ path: "docs", kind: "folder", version: expect.any(String) },
+	]);
+	// Bytes that fail their check are a defect, never one path's answer: the call fails, as a read of one path does.
+	range.mockImplementation(async () => {
+		throw new CloudRuntimeDiagnosticError("invalid_response", "Company folder bytes do not match their entry");
+	});
+	const broken = await f.call("company_read", { paths: ["docs/plan.md", "docs"] }).catch((error: unknown) => error);
+	expect(broken).toBeInstanceOf(CloudRuntimeDiagnosticError);
+	expect(broken).not.toBeInstanceOf(CloudToolRefusal);
+	range.mockRestore();
+	read.mockImplementation(folderRead);
 	// Stopped work, or a read the run may no longer show, shows nothing at all.
 	const before = f.releases.length;
 	read.mockRejectedValueOnce(new CloudCompanyFolderError("stopped"));

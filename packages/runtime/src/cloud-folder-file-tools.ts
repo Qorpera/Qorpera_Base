@@ -23,6 +23,7 @@ import {
 	cloudCompanyFolderRelease,
 } from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
+import { CloudCompanyFolderRpcError } from "./cloud-company-path-refusal.ts";
 import {
 	FolderImageRefusal,
 	folderImageFormat,
@@ -46,7 +47,11 @@ import {
 	MAX_TOOL_ARGUMENT_BYTES,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
-import type { CloudRuntimeErrorCategory, CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
+import {
+	CloudRuntimeDiagnosticError,
+	type CloudRuntimeErrorCategory,
+	type CloudRuntimeToolOperation,
+} from "./cloud-runtime-observability.ts";
 import { fitsOneResult } from "./cloud-worker-tools.ts";
 
 /*
@@ -607,9 +612,18 @@ export function cloudFolderFileTools(options: {
 		readonly release?: CloudCompanyFolderRelease;
 	};
 	const readPart = async (path: string, signal: AbortSignal): Promise<ManyPart> => {
+		// The folder's own failures other than a stop, and a read or byte range whose request timed out or lost its
+		// connection (this call not cancelled), are this path's; a stop, a cancel, an answer that fails its checks and
+		// any other defect fail the call, as for a read of one path.
 		const failed = (error: unknown): ManyPart => {
-			if (!(error instanceof CloudCompanyFolderError) || error.failure === "stopped")
-				return unavailable(error, "read");
+			const lost =
+				error instanceof CloudCompanyFolderError
+					? error.failure !== "stopped"
+					: error instanceof CloudRuntimeDiagnosticError &&
+						!(error instanceof CloudCompanyFolderRpcError) &&
+						(error.category === "timeout" || error.category === "transport_unavailable") &&
+						!signal.aborted;
+			if (!lost) return unavailable(error, "read");
 			return { answer: { path, refused: "COMPANY_FOLDER_UNAVAILABLE: it could not be read now; read it again" } };
 		};
 		let entry: CloudCompanyFolderEntry | null;
