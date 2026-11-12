@@ -991,6 +991,10 @@ describe("the machine's package caches (own code storage, step 6)", () => {
 			mount: "mounted",
 			packageCaches: true,
 		});
+		// Once a boot: asked again in v2, from the boot's record.
+		const again = await call(m, "mount", { ...mountRequest(workerId), schema: "qorpera.coding-guest-mount/v2" });
+		expect(again.line).toMatchObject({ mount: "mounted", packageCaches: true });
+		expect(m.calls.filter(([tool]) => tool === "systemd-tmpfiles")).toHaveLength(1);
 		// An executor from before asks in v1 and reads exactly the four keys it knows (its parse is closed).
 		const v1 = await call(m, "mount", mountRequest(workerId));
 		expect(Object.keys(v1.line).sort()).toEqual(["mount", "schema", "viewId", "workerId"]);
