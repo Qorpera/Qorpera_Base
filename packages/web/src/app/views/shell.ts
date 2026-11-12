@@ -729,7 +729,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 					...(arranges
 						? {
 								canMerge: (dragged: string, onto: string) => canMergeApps(created, dragged, onto),
-								merge: (dragged: string, onto: string) => void mergeApps(company, created, dragged, onto),
+								merge: (dragged: string, onto: string) => mergeApps(company, created, dragged, onto),
 							}
 						: {}),
 				};
@@ -2196,7 +2196,7 @@ function canMergeApps(parts: RailParts, dragged: string, onto: string): boolean 
 	return to.node.kind === "group" || to.chain.length < 2;
 }
 
-async function mergeApps(company: CompanyController, parts: RailParts, dragged: string, onto: string): Promise<void> {
+function mergeApps(company: CompanyController, parts: RailParts, dragged: string, onto: string): void {
 	const layout = ownAppLayout(company, parts);
 	const to = parts.appTiles.find((tile) => tile.key === fileKey(onto));
 	if (!layout || !to) return;
@@ -2208,22 +2208,13 @@ async function mergeApps(company: CompanyController, parts: RailParts, dragged: 
 	}
 	const nameOf = (drawer: string) =>
 		parts.appsGrid.querySelector(`[data-app-key="${drawer}"] .rail-app-name`)?.textContent ?? "";
-	const name = await nameDialog({
-		title: t("New group"),
-		label: t("Group name"),
-		value: suggestGroupName(nameOf(onto), nameOf(dragged), t("Group")),
-		confirm: t("Create"),
-		maxLength: APP_GROUP_NAME_LIMIT,
-		signal: company.signal,
-		// The name is filled in from the two apps: Create takes it as it is.
-		suggested: true,
-	});
-	const now = ownAppLayout(company, parts);
-	if (!name || !now) return;
+	// Letting go makes the group at once, open, named from the two apps (Jonas, 12 Nov 2026: "if i drag interfaces over
+	// each other and let go it should create a group"); Rename group in its menu changes the name.
+	const name = suggestGroupName(nameOf(onto), nameOf(dragged), t("Group"));
 	const id = `m-${crypto.randomUUID().slice(0, 8)}`;
 	parts.appGroupsOpen.add(id);
 	storeGroupsOpen(company.profile.profileId, parts.appGroupsOpen);
-	void company.changeAppLayout(makeAppGroup(now, parts.appTree, key, to.key, name, id));
+	void company.changeAppLayout(makeAppGroup(layout, parts.appTree, key, to.key, name, id));
 }
 
 /** A page's icon in the drawer: its emblem with its name under it. */

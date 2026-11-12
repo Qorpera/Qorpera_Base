@@ -383,16 +383,16 @@ describe("groups in the drawer (Jonas, 11 Nov 2026)", () => {
 		};
 	}
 
-	it("puts an icon held over another's middle into it, and swaps on an edge only after a moment", () => {
+	it("puts an icon let go over another's middle into it, marks it after a moment, and swaps on an edge after one", () => {
 		vi.useFakeTimers();
 		try {
 			const { element, merges, drops, icon } = withGroups(["a", "b", "c", "d"]);
-			// Lift a, rest on b's middle: nothing swaps; after the wait b is marked, and letting go merges.
+			// Lift a, rest on b's middle: nothing swaps; after a moment b is marked, and letting go merges.
 			pointer("pointerdown", 25, 30, icon("a"));
 			pointer("pointermove", 40, 30);
 			pointer("pointermove", 75, 30);
 			expect(gridOrder(element)).toEqual(["a", "b", "c", "d"]);
-			vi.advanceTimersByTime(500);
+			vi.advanceTimersByTime(200);
 			expect(icon("b").classList.contains("is-merge-target")).toBe(true);
 			pointer("pointerup", 75, 30);
 			expect(merges).toEqual([["a", "b"]]);
@@ -409,7 +409,7 @@ describe("groups in the drawer (Jonas, 11 Nov 2026)", () => {
 			expect(icon("a").style.translate).toBe("-22px 0px");
 			pointer("pointerup", 103, 30);
 			expect(drops).toEqual([[["b", "c", "a", "d"], "a"]]);
-			// d takes nothing in: resting on its middle never marks it.
+			// d takes nothing in: resting on its middle never marks it, and letting go there takes its place.
 			pointer("pointerdown", 125, 30, icon("a"));
 			pointer("pointermove", 140, 30);
 			pointer("pointermove", 175, 30);
@@ -417,6 +417,39 @@ describe("groups in the drawer (Jonas, 11 Nov 2026)", () => {
 			expect(icon("d").classList.contains("is-merge-target")).toBe(false);
 			pointer("pointerup", 175, 30);
 			expect(merges).toEqual([["a", "b"]]);
+			expect(drops.at(-1)).toEqual([["b", "c", "d", "a"], "a"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+	it("decides a quick drag by where it is let go: into an icon, onto a place, past the end (Jonas, 12 Nov 2026)", () => {
+		vi.useFakeTimers();
+		try {
+			const { element, merges, drops, icon } = withGroups(["a", "b", "c", "d", "e"]);
+			element.getBoundingClientRect = () => new DOMRect(0, 0, 200, 120);
+			// Straight onto c's middle and let go at once: no wait, a goes into c.
+			pointer("pointerdown", 25, 30, icon("a"));
+			pointer("pointermove", 125, 30);
+			pointer("pointerup", 125, 30);
+			expect(merges).toEqual([["a", "c"]]);
+			expect(drops).toEqual([]);
+			expect(gridOrder(element)).toEqual(["a", "b", "c", "d", "e"]);
+			// Straight onto c's edge and let go at once: a takes c's place.
+			pointer("pointerdown", 25, 30, icon("a"));
+			pointer("pointermove", 103, 30);
+			pointer("pointerup", 103, 30);
+			expect(drops.at(-1)).toEqual([["b", "c", "a", "d", "e"], "a"]);
+			// Past the last icon, on its row: last.
+			pointer("pointerdown", 25, 30, icon("b"));
+			pointer("pointermove", 90, 90);
+			pointer("pointerup", 90, 90);
+			expect(drops.at(-1)).toEqual([["c", "a", "d", "e", "b"], "b"]);
+			// Below the grid's rows but outside it: nothing moves.
+			pointer("pointerdown", 25, 30, icon("c"));
+			pointer("pointermove", 260, 30);
+			pointer("pointerup", 260, 30);
+			expect(drops).toHaveLength(2);
+			expect(merges).toHaveLength(1);
 		} finally {
 			vi.useRealTimers();
 		}
