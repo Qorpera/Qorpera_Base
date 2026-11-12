@@ -502,10 +502,11 @@ test("the proof's parts run where errexit is really on, and every step on the ma
 	assert.match(proof, /\n\t: >"\$work\/probe"\n\tprobe >>"\$work\/probe" &\n\tprobe_pid=\$!\n\tbeside >>"\$work\/probe" &\n\tbeside_pid=\$!\n\tleg_started=\$EPOCHREALTIME\n\tguest "\$@"\n\tleg_ended=\$EPOCHREALTIME\n\ttouch "\$work\/stop"\n(?:\t#[^\n]*\n)+\twait "\$probe_pid" \|\| probe_status=\$\?\n\twait "\$beside_pid" \|\| beside_status=\$\?\n\tif \(\( probe_status == 0 && beside_status == 0 \)\) && grep -q '\^P-END clicks ' "\$work\/probe" && grep -q '\^P-END beside ' "\$work\/probe"; then\n/);
 	assert.equal(proof.match(/\n\t\[\[ -e \$work\/stop \]\] \|\| return 1\n\techo "P-END (?:clicks|beside) [^\n]+\n\}\n/g).length, 2);
 	// The clicks' loop holds the click and the pause, nothing else (review round 4): the memory numbers and the looks
-	// are asked by the loop beside it, where they hold up no click.
+	// are asked by the loop beside it, where they hold up no click. The click lands on an empty spot of the dock: since
+	// the desktop's look the top of the screen is the browser's tabs, where a click would change the load.
 	const loop = (name) => proof.slice(proof.indexOf(`\n${name}() {\n`), proof.indexOf("\n}\n", proof.indexOf(`\n${name}() {\n`)));
 	assert.equal(loop("probe").match(/lxc --project "\$PROJECT" exec "\$MACHINE" -- /g).length, 1);
-	assert.match(loop("probe"), /\n\t\ttimeout 30 lxc --project "\$PROJECT" exec "\$MACHINE" -- desktop click 800 12 <\/dev\/null >\/dev\/null 2>&1 \|\| status=\$\?\n\t\techo "P \$\(date -u \+%T\) click_s=\$\(seconds "\$started"\) rc=\$status at=\$started"\n\t\tround=\$\(\( round \+ 1 \)\)\n\t\tsleep "\$PROBE_PAUSE"\n\tdone\n/);
+	assert.match(loop("probe"), /\n\t\ttimeout 30 lxc --project "\$PROJECT" exec "\$MACHINE" -- desktop click 400 960 <\/dev\/null >\/dev\/null 2>&1 \|\| status=\$\?\n\t\techo "P \$\(date -u \+%T\) click_s=\$\(seconds "\$started"\) rc=\$status at=\$started"\n\t\tround=\$\(\( round \+ 1 \)\)\n\t\tsleep "\$PROBE_PAUSE"\n\tdone\n/);
 	assert.doesNotMatch(loop("probe"), /meminfo|guest\.sh/);
 	assert.match(loop("beside"), /\/proc\/meminfo <\/dev\/null 2>\/dev\/null\) \|\| true\n\t\techo "C \$\(date -u \+%T\) read_s=\$\(seconds "\$started"\) at=\$started \$numbers"\n/);
 	assert.match(loop("beside"), /guest\.sh look <\/dev\/null >\/dev\/null 2>&1 \|\| status=\$\?\n/);
