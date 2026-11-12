@@ -3886,11 +3886,13 @@ async function exploreStarts(seed: number): Promise<{ log: string[]; broken?: st
 }
 
 describe("a member's start of a desktop, explored (20260930714000)", () => {
+	// 80 explored runs take about five seconds alone, the test's default limit, and more on a busy test machine: the whole
+	// web suite failed on master (12 Nov 2026) with this test past 5 s and passing alone. It gets 30 s.
 	it("sends a start only after a press on the page for that machine, until its picture, a switch away or 3 minutes, one at a time", async () => {
 		for (let seed = 1; seed <= 80; seed++) {
 			const { log, broken } = await exploreStarts(seed);
 			if (broken) throw new Error(`seed ${seed}: ${broken}\n${log.join("\n")}`);
 			for (const close of cleanup.splice(0)) close();
 		}
-	});
+	}, 30_000);
 });

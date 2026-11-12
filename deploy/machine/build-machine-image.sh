@@ -18,7 +18,14 @@
 # command (README, "The desktop"), and xsel with save_coding_value's clipboard
 # helper (20260930705000), which seals a key copied on the desktop for the vault
 # and clears the clipboard, and machine_screen's screen helper (20260930708000),
-# with which an agent acts on the desktop and sees it in one tool call. Since 10 Nov 2026 a desktop is something an agent
+# with which an agent acts on the desktop and sees it in one tool call. Since 12 Nov 2026 every machine also has
+# compressed memory from its boot on (zram as large as its memory) and a guard that ends one program when memory and
+# that reserve are both nearly gone (earlyoom, from apt), so a machine at the edge keeps answering (README, "Memory").
+# Since 12 Nov 2026 the desktop also has the look the office desktops had: one dark dock with the browser, the files and
+# a terminal under Qorpera's own icons, a backdrop with the agent's figure for each hour of the day, tidy windows. The
+# pictures are in the image; the session writes the look into the desktop's account at every start (README, "The
+# desktop's look").
+# Since 10 Nov 2026 a desktop is something an agent
 # asks for (machine_start with desktop true; a smaller machine refuses `desktop
 # start`), `desktop start` opens chosen company files and folders on it, pages
 # get 3D drawing, and Playwright with its Chromium, ffmpeg and a `chromium` that
@@ -69,9 +76,11 @@ exec 3>&1 1>&2
 [[ $NODE_VERSION =~ ^2[4-9]\.[0-9]+\.[0-9]+$ ]] || { echo "invalid Node.js version" >&2; exit 1; }
 [[ $NODE_SHA256 =~ ^[0-9a-f]{64}$ ]] || { echo "invalid Node.js sha-256" >&2; exit 1; }
 for file in cloud-machine-guest.mjs cloud-machine-coding-value.mjs cloud-machine-screen.mjs qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer \
-	qorpera-machine-folder.service qorpera-machine-desktop.service desktop-session desktop qorpera-chromium.apparmor \
+	qorpera-machine-folder.service qorpera-machine-desktop.service qorpera-machine-memory.service \
+	qorpera-machine-memory-guard.service desktop-session desktop qorpera-chromium.apparmor \
 	desktop-selftest.html qorpera-chromium-policy.json chromium qorpera-machine-profile.sh playwright-check.cjs \
-	qorpera-folder manifest.json; do
+	machine-memory lxd-agent-memory.conf qorpera-machine-desktop-dock.path qorpera-machine-desktop-dock.service \
+	desktop-look desktop-dock-open desktop-files qorpera-machine-desktop.tmpfiles desktop-art.tar qorpera-folder manifest.json; do
 	[[ -f $PACKAGE/$file ]] || { echo "package misses $file" >&2; exit 1; }
 done
 [[ $(sha256sum <"$PACKAGE/qorpera-folder" | cut -d' ' -f1) == "$EXPECTED_FOLDER_PROGRAM_SHA256" ]] ||
@@ -122,7 +131,8 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 		build-essential python3 python3-venv python3-pip docker.io docker-compose-v2 docker-buildx \
 		ripgrep fd-find sqlite3 libreoffice-nogui fuse3 file ffmpeg \
 		tigervnc-standalone-server xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-terminal xfconf thunar dbus-x11 \
-		x11-utils x11-xserver-utils xdotool wmctrl scrot xsel apparmor \
+		adwaita-icon-theme \
+		x11-utils x11-xserver-utils xdotool wmctrl scrot xsel apparmor earlyoom \
 		libnss3 libnspr4 libasound2t64 libgbm1 libcups2t64 libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 \
 		libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libxext6 libx11-6 libxcb1 libpango-1.0-0 \
 		libcairo2 libdbus-1-3 libexpat1 libglib2.0-0t64 libdrm2 libudev1 fonts-dejavu-core fonts-liberation \
@@ -164,12 +174,12 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	rm -rf /tmp/chromium.zip /tmp/chromium
 	# The desktop runs as its own account, so Chromium keeps its sandbox; root (the agents commands) drives it.
 	useradd --create-home --shell /bin/bash --user-group desktop
-	# Its panel starts with the default XFCE layout instead of asking on the first start.
-	install -d -o desktop -g desktop -m 0755 /home/desktop/.config /home/desktop/.config/xfce4 \
-		/home/desktop/.config/xfce4/xfconf /home/desktop/.config/xfce4/xfconf/xfce-perchannel-xml
-	install -o desktop -g desktop -m 0644 /etc/xdg/xfce4/panel/default.xml \
-		/home/desktop/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
-	install -d -o root -g root -m 0755 /opt/qorpera-machine /opt/qorpera-folder
+	# Its look (the dock, the backdrop, the windows) is written into the account by its session at every start
+	# (desktop-look, which the package brings), from the pictures unpacked here; nothing of it is kept in the account.
+	install -d -o root -g root -m 0755 /opt/qorpera-machine /opt/qorpera-folder /usr/share/qorpera-desktop
+	# Where a machine names the figure of the agent it belongs to (one word in desktop-figure; no file: the neutral
+	# backdrop).
+	install -d -o root -g root -m 0755 /etc/qorpera-machine
 	# Where Chrome for Testing reads its managed policy (the package brings the file).
 	install -d -o root -g root -m 0755 /etc/opt/chrome_for_testing/policies/managed
 	# Where the company folder is mounted; until then an empty folder.
@@ -183,6 +193,12 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	# name hands activation to systemd). That work counts like any other, so a quiet machine looked busy and never slept
 	# (C8 MA-5b). A masked unit refuses every start, the bus activation too.
 	systemctl mask fwupd-refresh.timer fwupd-refresh.service fwupd.service
+	# The guard runs earlyoom from a unit of its own, with limits worked out for the machine (machine-memory guard): the
+	# package unit, which apt started with its own, is off for good.
+	systemctl disable --now earlyoom.service
+	systemctl mask earlyoom.service
+	# Where the LXD agent gets its protection from (the package brings the file).
+	install -d -o root -g root -m 0755 /etc/systemd/system/lxd-agent.service.d
 '
 lx file push "$PACKAGE/cloud-machine-guest.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-guest.mjs" --uid 0 --gid 0 --mode 0444
 lx file push "$PACKAGE/cloud-machine-coding-value.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-coding-value.mjs" --uid 0 --gid 0 --mode 0444
@@ -196,15 +212,134 @@ lx file push "$PACKAGE/playwright-check.cjs" "$BUILDER/opt/qorpera-machine/playw
 lx file push "$PACKAGE/chromium" "$BUILDER/usr/local/bin/chromium" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/qorpera-machine-profile.sh" "$BUILDER/etc/profile.d/qorpera-machine.sh" --uid 0 --gid 0 --mode 0644
 lx file push "$PACKAGE/qorpera-chromium-policy.json" "$BUILDER/etc/opt/chrome_for_testing/policies/managed/qorpera.json" --uid 0 --gid 0 --mode 0644
+lx file push "$PACKAGE/machine-memory" "$BUILDER/opt/qorpera-machine/machine-memory" --uid 0 --gid 0 --mode 0555
+lx file push "$PACKAGE/lxd-agent-memory.conf" "$BUILDER/etc/systemd/system/lxd-agent.service.d/qorpera-memory.conf" --uid 0 --gid 0 --mode 0644
+lx file push "$PACKAGE/desktop-look" "$BUILDER/opt/qorpera-machine/desktop-look" --uid 0 --gid 0 --mode 0555
+lx file push "$PACKAGE/desktop-dock-open" "$BUILDER/opt/qorpera-machine/desktop-dock-open" --uid 0 --gid 0 --mode 0555
+lx file push "$PACKAGE/desktop-files" "$BUILDER/opt/qorpera-machine/desktop-files" --uid 0 --gid 0 --mode 0555
+lx file push "$PACKAGE/qorpera-machine-desktop.tmpfiles" "$BUILDER/etc/tmpfiles.d/qorpera-machine-desktop.conf" --uid 0 --gid 0 --mode 0644
+# The desktop pictures, unpacked by the checks below.
+lx file push "$PACKAGE/desktop-art.tar" "$BUILDER/tmp/desktop-art.tar" --uid 0 --gid 0 --mode 0644
 for unit in qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer qorpera-machine-folder.service \
-	qorpera-machine-desktop.service; do
+	qorpera-machine-desktop.service qorpera-machine-memory.service qorpera-machine-memory-guard.service \
+	qorpera-machine-desktop-dock.path qorpera-machine-desktop-dock.service; do
 	lx file push "$PACKAGE/$unit" "$BUILDER/etc/systemd/system/$unit" --uid 0 --gid 0 --mode 0644
 done
 lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGRAM_SHA256" \
 	PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" bash -euo pipefail -c '
 	systemctl daemon-reload
-	systemctl enable qorpera-machine-watchdog.timer
+	systemctl enable qorpera-machine-watchdog.timer qorpera-machine-memory.service qorpera-machine-memory-guard.service
+	# The desktop look (12 Nov 2026): the pictures, root-owned and read-only for everyone else; the unit that hears a
+	# press on the dock, from every boot on; and the folder such a press asks in, as a boot makes it.
+	tar -xf /tmp/desktop-art.tar -C /usr/share/qorpera-desktop --no-same-owner
+	rm /tmp/desktop-art.tar
+	chown -R root:root /usr/share/qorpera-desktop
+	chmod -R u=rwX,go=rX /usr/share/qorpera-desktop
+	systemctl enable qorpera-machine-desktop-dock.path
+	systemd-tmpfiles --create /etc/tmpfiles.d/qorpera-machine-desktop.conf
+	systemctl start qorpera-machine-desktop-dock.path
 	# Checks the reviewed image must pass.
+	# The desktop look. Every picture the look names is there and is what it says: the nine dock icons, and a frame for
+	# each hour of the day for every figure an agent can have and for the neutral backdrop, nothing else beside them.
+	for icon in browser-idle browser-running browser-launching browser-launching-2 browser-failed files-idle files-running \
+		terminal-idle terminal-running; do
+		[[ $(file -b "/usr/share/qorpera-desktop/dock/$icon.png") == "PNG image data, 112 x 112,"* ]] ||
+			{ echo "the dock icon $icon is missing or no 112x112 PNG" >&2; exit 1; }
+	done
+	for figure in planet acorn flame rocket crown heart star cloud bolt mushroom moon puzzle neutral; do
+		for hour in $(seq -w 0 23); do
+			[[ $(file -b "/usr/share/qorpera-desktop/backdrops/$figure/$hour.png") == "PNG image data, 1920 x 1200,"* ]] ||
+				{ echo "the backdrop of $figure for hour $hour is missing or no 1920x1200 PNG" >&2; exit 1; }
+		done
+	done
+	[[ $(find /usr/share/qorpera-desktop -type f | wc -l) == $(( 9 + 13 * 24 )) ]] ||
+		{ echo "the desktop pictures are not the 9 icons and 13 sets of 24 frames" >&2; exit 1; }
+	[[ -z $(find /usr/share/qorpera-desktop ! -user root -o ! -group root -o -perm /022) ]] ||
+		{ echo "someone but root could change a desktop picture" >&2; exit 1; }
+	echo "the desktop pictures take $(du -sk /usr/share/qorpera-desktop | cut -f1) KiB of the image" >&2
+	# The programs own pictures (the file manager arrows and folders, the terminal menus) come from the Adwaita icon
+	# set, which the look names: without it every toolbar would show the same placeholder.
+	for icon in symbolic/actions/go-previous-symbolic.svg symbolic/actions/go-up-symbolic.svg scalable/places/folder.svg; do
+		[[ -s /usr/share/icons/Adwaita/$icon ]] || { echo "the icon set lacks $icon" >&2; exit 1; }
+	done
+	[[ $(stat -c "%U:%G %a %F" /run/qorpera-desktop-dock) == "root:desktop 730 directory" ]] ||
+		{ echo "the folder a press on the dock asks in is not the root folder only the desktop account may write" >&2; exit 1; }
+	[[ $(systemctl is-enabled qorpera-machine-desktop-dock.path) == enabled &&
+		$(systemctl is-active qorpera-machine-desktop-dock.path) == active &&
+		$(systemctl is-enabled qorpera-machine-desktop-dock.service || true) == static ]] ||
+		{ echo "the unit that hears a press on the dock is not enabled, or its service starts by itself" >&2; exit 1; }
+	[[ -d /etc/qorpera-machine && -z $(ls -A /etc/qorpera-machine) ]] ||
+		{ echo "the image names a figure of its own" >&2; exit 1; }
+	# Memory (12 Nov 2026). Every kernel this image holds has the zram module: a later kernel without it would leave
+	# every machine without compressed memory, with only a line in each journal to say so.
+	[[ -n $(ls /lib/modules) ]] || { echo "the image holds no kernel modules" >&2; exit 1; }
+	for kernel in /lib/modules/*; do
+		modinfo -k "$(basename "$kernel")" zram >/dev/null ||
+			{ echo "the kernel $(basename "$kernel") has no zram module: machines would run without compressed memory" >&2; exit 1; }
+	done
+	# The boot unit, run here as a boot runs it: the swap is zram as large as the memory, at priority 100, with zstd and
+	# the measured settings, and the unit run again changes nothing.
+	memory_swap() { awk "\$1 == \"/dev/zram0\" {print \$3, \$5}" /proc/swaps; }
+	systemctl start qorpera-machine-memory.service
+	read -r swap_kb swap_priority <<<"$(memory_swap)"
+	memory_kb=$(awk "/^MemTotal:/ {print \$2}" /proc/meminfo)
+	[[ -n ${swap_kb:-} ]] && (( memory_kb - swap_kb >= 0 && memory_kb - swap_kb <= 64 )) && [[ $swap_priority == 100 ]] ||
+		{ echo "compressed memory is not the size of the memory at priority 100: $(memory_swap) of $memory_kb" >&2; exit 1; }
+	grep -q "\[zstd\]" /sys/block/zram0/comp_algorithm || { echo "compressed memory does not use zstd" >&2; exit 1; }
+	[[ $(cat /proc/sys/vm/swappiness) == 150 && $(cat /proc/sys/vm/page-cluster) == 0 ]] ||
+		{ echo "vm.swappiness and vm.page-cluster are not the measured 150 and 0" >&2; exit 1; }
+	before="$(memory_swap) $(cat /sys/block/zram0/disksize /sys/block/zram0/comp_algorithm)"
+	systemctl restart qorpera-machine-memory.service
+	[[ "$(memory_swap) $(cat /sys/block/zram0/disksize /sys/block/zram0/comp_algorithm)" == "$before" ]] ||
+		{ echo "the memory unit run again changed something" >&2; exit 1; }
+	# A machine where it cannot be set up starts all the same: with the module hidden the unit ends well, there is no
+	# swap, and the journal says so in one line. With the module back, the unit run again sets it up.
+	# Right after a swapoff the device can still be held open for a moment (udev looks at a device that changed), and
+	# its reset and the unload of the module are then refused as busy: one image build failed here on 12 Nov 2026 and
+	# the same commit built on the next try. Each is asked again for up to 5 s while it is refused; the last try shows
+	# its answer and, if it fails, fails the build. (A boot never does this: the memory unit only sets the device up.)
+	patient() {
+		local try
+		for try in $(seq 1 50); do
+			"$@" 2>/dev/null && return 0
+			sleep 0.1
+		done
+		"$@"
+	}
+	swapoff /dev/zram0
+	patient bash -c "echo 1 >/sys/block/zram0/reset"
+	patient rmmod zram
+	mkdir -p /run/modprobe.d && echo "install zram /bin/false" >/run/modprobe.d/qorpera-image-check.conf
+	said=$(journalctl -b -t qorpera-machine-memory -o cat | grep -c "^compressed memory is OFF on this machine" || true)
+	systemctl restart qorpera-machine-memory.service ||
+		{ echo "the memory unit fails where compressed memory cannot be set up: a boot would show a failed unit" >&2; exit 1; }
+	[[ -z $(memory_swap) && $(systemctl is-active qorpera-machine-memory.service) == active ]] ||
+		{ echo "the memory unit did not end well without the zram module" >&2; exit 1; }
+	(( $(journalctl -b -t qorpera-machine-memory -o cat | grep -c "^compressed memory is OFF on this machine") == said + 1 )) ||
+		{ echo "the journal does not say in one line that compressed memory is off" >&2; exit 1; }
+	rm /run/modprobe.d/qorpera-image-check.conf
+	systemctl restart qorpera-machine-memory.service
+	[[ -n $(memory_swap) ]] || { echo "compressed memory did not come back with the module" >&2; exit 1; }
+	# The guard: earlyoom from our own unit, beside the commands slice, never ended itself; the package unit and
+	# systemd-oomd (which ends whole control groups) do not run; the LXD agent and the machine own services are protected.
+	systemctl start qorpera-machine-memory-guard.service
+	# Its script becomes earlyoom a moment after the unit counts as started.
+	for _ in $(seq 1 50); do
+		guard=$(systemctl show qorpera-machine-memory-guard.service -p MainPID --value)
+		[[ $(cat "/proc/$guard/comm" 2>/dev/null) == earlyoom ]] && break
+		sleep 0.1
+	done
+	[[ $(cat "/proc/$guard/comm") == earlyoom && $(cat "/proc/$guard/oom_score_adj") == -1000 ]] ||
+		{ echo "the memory guard does not run earlyoom, protected" >&2; exit 1; }
+	grep -q "/qorpera-control.slice/" "/proc/$guard/cgroup" || { echo "the memory guard is not in the control slice" >&2; exit 1; }
+	journalctl -b -t qorpera-machine-memory-guard -o cat | grep -q "sending SIGTERM when mem avail <= " ||
+		{ echo "the memory guard did not say its limits" >&2; exit 1; }
+	[[ $(readlink /etc/systemd/system/earlyoom.service) == /dev/null ]] || { echo "the package earlyoom unit is not masked" >&2; exit 1; }
+	if systemctl is-active --quiet earlyoom.service systemd-oomd.service; then echo "another memory guard runs" >&2; exit 1; fi
+	for unit in lxd-agent qorpera-machine-folder qorpera-machine-watchdog qorpera-machine-desktop; do
+		[[ $(systemctl show "$unit.service" -p OOMScoreAdjust --value) == -900 ]] ||
+			{ echo "$unit is not protected when memory runs out" >&2; exit 1; }
+	done
 	docker --version && docker compose version && docker buildx version
 	node --version | grep -q "^v2[4-9]\."
 	python3 --version && git --version && gcc --version | head -1
@@ -277,6 +412,22 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	desktop windows | grep -q qorpera-machine-desktop || { echo "chromium shows no window on the desktop" >&2; exit 1; }
 	desktop key ctrl+l && desktop type about:blank && desktop key Return
 	desktop click 800 500
+	# A click where the pointer already is never waits for a move that cannot come (15 s each before 12 Nov 2026): a
+	# second click, a double-click, a move and a drag on that one spot, together well inside 5 s.
+	pointer_started=$(date +%s%N)
+	desktop click 800 500
+	desktop double 800 500
+	desktop move 800 500
+	desktop drag 800 500 800 500
+	(( ($(date +%s%N) - pointer_started) / 1000000 < 5000 )) ||
+		{ echo "desktop actions on the spot the pointer is on took $(( ($(date +%s%N) - pointer_started) / 1000000 )) ms" >&2; exit 1; }
+	# When memory runs out the screen is not what is ended, and a browser tab goes first: the X server keeps the unit
+	# protection, the XFCE session the milder one its script gives it, the browser none, and Chromium marks its tabs.
+	scores() { for pid in "$@"; do cat "/proc/$pid/oom_score_adj"; done | sort -u | tr "\n" " "; }
+	[[ $(scores $(pgrep -u desktop -x Xvnc)) == "-900 " && $(scores $(pgrep -u desktop -x xfwm4)) == "-100 " ]] ||
+		{ echo "the desktop is not protected when memory runs out: Xvnc $(scores $(pgrep -u desktop -x Xvnc)), xfwm4 $(scores $(pgrep -u desktop -x xfwm4))" >&2; exit 1; }
+	[[ $(scores $(pgrep -u desktop -o -x chrome)) == "0 " && $(scores $(pgrep -u desktop -f -- "--type=renderer")) == "300 " ]] ||
+		{ echo "a browser tab would not be the first to go: the browser $(scores $(pgrep -u desktop -o -x chrome)), its tabs $(scores $(pgrep -u desktop -f -- "--type=renderer"))" >&2; exit 1; }
 	desktop shot /tmp/desktop.png | grep -q " 1600 x 1000$" || { echo "the screenshot is not 1600x1000" >&2; exit 1; }
 	# A program gets its arguments as given (no $ expansion by systemd), and none starts on a stopped desktop.
 	desktop run sh -c "v=literal; echo \"\${v} \\\$HOME\" > /tmp/desktop-run"
@@ -288,6 +439,424 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	if desktop run sleep 600 2>/dev/null; then echo "a program started on a stopped desktop" >&2; exit 1; fi
 	sleep 1
 	[[ -z $(pgrep -u desktop || true) ]] || { echo "a program runs without the desktop" >&2; exit 1; }
+	# The desktop look on a running desktop (12 Nov 2026), asked of XFCE itself as the desktop account on the session
+	# bus. One bar, holding exactly three launchers between two gaps and two clocks and nothing else; each launcher is
+	# one entry that runs the dock press for its program under a picture that is there; no icons on the backdrop, one
+	# workspace, no compositor.
+	look() { runuser -u desktop -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/qorpera-desktop/session/bus xfconf-query "$@"; }
+	# What each dock icon shows, as the look keeps it in the account own folder (read as the account).
+	marks() { runuser -u desktop -- sh -c "cd /run/qorpera-desktop/session && cat dock-browser.shows dock-files.shows dock-terminal.shows" 2>/dev/null | tr "\n" " "; }
+	dock_whole() {
+		local entry launcher
+		[[ $(look -c xfce4-panel -p /panels | tail -n +3 | tr "\n" " ") == "1 " ]] || return 1
+		[[ $(look -c xfce4-panel -lv | awk "\$1 ~ /^\/plugins\/plugin-[0-9]+\$/ {print \$2}" | sort | uniq -c | tr -s " \n" " ") == " 2 clock 3 launcher 2 separator " ]] ||
+			return 1
+		for entry in 4:terminal 5:files 6:browser; do
+			launcher=(/home/desktop/.config/xfce4/panel/launcher-${entry%:*}/*.desktop)
+			[[ ${#launcher[@]} == 1 ]] && grep -qx "Exec=/opt/qorpera-machine/desktop-look press ${entry#*:}" "${launcher[0]}" &&
+				[[ -s $(sed -n "s/^Icon=//p" "${launcher[0]}") ]] || return 1
+		done
+	}
+	shown() { look -c xfce4-desktop -p /backdrop/screen0/monitorVNC-0/workspace0/last-image; }
+	# The backdrop is the frame of a set for the hour it is in a time zone, within 10 s (the watcher looks every 3 s).
+	backdrop_is() { # set [zone]
+		for _ in $(seq 1 100); do
+			[[ $(shown) == "/usr/share/qorpera-desktop/backdrops/$1/$(TZ=${2:-UTC} date +%H).png" ]] && return 0
+			sleep 0.1
+		done
+		return 1
+	}
+	window() { for _ in $(seq 1 150); do desktop windows | grep -q -- "$1" && return 0; sleep 0.1; done; return 1; }
+	desktop start >/dev/null
+	dock_whole || { echo "the dock is not one bar with the browser, the files and a terminal: $(look -c xfce4-panel -lv | tr "\n" " ")" >&2; exit 1; }
+	[[ $(look -c xfce4-desktop -p /desktop-icons/style) == 0 && $(look -c xfwm4 -p /general/workspace_count) == 1 &&
+		$(look -c xfwm4 -p /general/use_compositing) == false ]] ||
+		{ echo "the desktop shows icons, more than one workspace or a compositor" >&2; exit 1; }
+	# A machine that names no figure shows the neutral backdrop. A figure named while the desktop runs shows within
+	# seconds, a saved ghost as the moon; a word that is no figure, and no file, give the neutral backdrop again.
+	backdrop_is neutral || { echo "a machine that names no figure does not show the neutral backdrop: $(shown)" >&2; exit 1; }
+	for figure in star:star ghost:moon nonsense:neutral; do
+		echo "${figure%:*}" >/etc/qorpera-machine/desktop-figure
+		backdrop_is "${figure#*:}" || { echo "the backdrop did not follow the figure ${figure%:*}: $(shown)" >&2; exit 1; }
+	done
+	echo rocket >/etc/qorpera-machine/desktop-figure
+	backdrop_is rocket || { echo "the backdrop did not follow the figure rocket: $(shown)" >&2; exit 1; }
+	# The dock clocks and the backdrop hour follow the time zone the desktop is given.
+	desktop start --tz Pacific/Auckland >/dev/null
+	backdrop_is rocket Pacific/Auckland && [[ $(look -c xfce4-panel -p /plugins/plugin-3/timezone) == Pacific/Auckland &&
+		$(look -c xfce4-panel -p /plugins/plugin-7/timezone) == Pacific/Auckland ]] ||
+		{ echo "the dock clocks or the backdrop did not follow the time zone: $(shown)" >&2; exit 1; }
+	rm /etc/qorpera-machine/desktop-figure
+	backdrop_is neutral Pacific/Auckland || { echo "the backdrop stayed after its figure was taken away: $(shown)" >&2; exit 1; }
+	# A press on each dock icon, as a member presses it (a click on the icon, in the middle of the bar at the bottom of
+	# the screen). The program shows its window, started the way desktop open and desktop run start it: a unit of its
+	# own, no part of the session, whose protection it would inherit. The terminal runs the desktop account shell; the
+	# browser is maximised above the dock on its new tab page. Each icon gets its mark, and a second press brings the
+	# same window back and starts nothing.
+	desktop click 880 960
+	window " Terminal$" || { echo "a press on the dock terminal icon opened no terminal" >&2; exit 1; }
+	[[ $(scores $(pgrep -u desktop -x xfce4-terminal)) == "0 " && -n $(pgrep -u desktop -x bash -P "$(pgrep -u desktop -o -x xfce4-terminal)") ]] ||
+		{ echo "the dock terminal is no unit of its own, or runs no shell of the desktop account" >&2; exit 1; }
+	desktop click 800 960
+	window " - Thunar$" || { echo "a press on the dock files icon opened no file manager" >&2; exit 1; }
+	desktop click 720 960
+	window "Chrome for Testing$" || { echo "a press on the dock browser icon opened no browser" >&2; exit 1; }
+	browser=$(pgrep -u desktop -o -x chrome)
+	[[ $(scores "$browser") == "0 " ]] && tr "\0" " " <"/proc/$browser/cmdline" | grep -q -- " --start-maximized .* chrome://newtab/ *$" ||
+		{ echo "the dock browser is no unit of its own, or was not started as desktop open starts it" >&2; exit 1; }
+	read -r _ _ _ _ browser_width browser_height _ <<<"$(DISPLAY=:1 wmctrl -lG | grep "Chrome for Testing$")"
+	[[ $browser_width == 1600 ]] && (( browser_height > 800 && browser_height <= 920 )) ||
+		{ echo "the dock browser does not fill the screen above the dock: ${browser_width}x${browser_height}" >&2; exit 1; }
+	for _ in $(seq 1 50); do
+		[[ $(marks) == "running running running " ]] && break
+		sleep 0.1
+	done
+	[[ $(marks) == "running running running " ]] || { echo "a dock icon does not mark its open program" >&2; exit 1; }
+	desktop click 720 960
+	sleep 1.5
+	[[ $(pgrep -u desktop -o -x chrome) == "$browser" && $(desktop windows | grep -c "Chrome for Testing$") == 1 ]] ||
+		{ echo "a second press on the dock browser icon started a second browser" >&2; exit 1; }
+	# Opened and closed eight times in a row, the dock still answers: no start limit of systemd switches it off (the
+	# sixth start of a service within ten seconds is refused unless its unit says otherwise). Each window stays half a
+	# second, the least a person leaves it: the press that opened it has seen it by then and waits for nothing.
+	for round in 1 2 3 4 5 6 7 8; do
+		sleep 0.5
+		DISPLAY=:1 wmctrl -c Terminal
+		for _ in $(seq 1 50); do desktop windows | grep -q " Terminal$" || break; sleep 0.1; done
+		if desktop windows | grep -q " Terminal$"; then echo "the terminal did not close in round $round" >&2; exit 1; fi
+		desktop click 880 960
+		window " Terminal$" || { echo "the dock stopped answering at press $round of a program opened and closed in a row" >&2; exit 1; }
+	done
+	[[ $(systemctl is-active qorpera-machine-desktop-dock.path) == active ]] && ! systemctl is-failed --quiet qorpera-machine-desktop-dock.service ||
+		{ echo "the dock unit did not survive a program opened and closed in a row" >&2; exit 1; }
+	desktop stop >/dev/null
+	# Nothing of the desktop account runs any more. With the dock programs open, something of the account was listed in
+	# the instant after the stop and was gone a few milliseconds later (once in a build, once in four runs of these
+	# checks on a machine; not seen again in 51 stops looked at one by one). So a process that has ended and only waits
+	# to be collected is not counted, what still runs gets two seconds to end, and what is left then is named.
+	gone() {
+		local left=
+		for _ in $(seq 1 20); do
+			left=$(ps -u desktop -o stat=,pid=,args= 2>/dev/null | grep -v "^Z" | cut -c1-120 || true)
+			[[ -z $left ]] && return 0
+			sleep 0.1
+		done
+		echo "programs of the desktop outlived it: $(tr "\n" "|" <<<"$left")" >&2
+		return 1
+	}
+	gone || exit 1
+	[[ -z $(ls -A /run/qorpera-desktop-dock) ]] || { echo "a press on the dock left its request behind" >&2; exit 1; }
+	# The look is the image, never the account: with everything the account held gone, the next start shows it whole.
+	rm -rf /home/desktop/.config
+	desktop start >/dev/null
+	dock_whole && backdrop_is neutral || { echo "the look did not come back in an emptied account" >&2; exit 1; }
+	desktop stop >/dev/null
+	# The company time zone (12 Nov 2026): one word in /etc/qorpera-machine/desktop-timezone, the file of root that the
+	# machine executor writes. A desktop started without --tz takes it: its note, the dock clocks and the backdrop hour
+	# follow it. A desktop that runs keeps the zone it has: a word that changes meanwhile is taken at the next start.
+	# --tz still wins. And a file that is a link leaves the desktop on UTC, as a machine without the file is.
+	zone_is() { # zone, or nothing for a desktop nobody gave a zone (UTC)
+		if [[ -n ${1:-} ]]; then
+			desktop status | grep "^running (.*, time zone $1)\$" >/dev/null || return 1
+		elif desktop status | grep "^running (.*time zone" >/dev/null; then
+			return 1
+		fi
+		backdrop_is neutral "${1:-UTC}" && [[ $(look -c xfce4-panel -p /plugins/plugin-3/timezone) == "${1:-UTC}" &&
+			$(look -c xfce4-panel -p /plugins/plugin-7/timezone) == "${1:-UTC}" ]]
+	}
+	echo Pacific/Auckland >/etc/qorpera-machine/desktop-timezone
+	desktop start >/dev/null
+	zone_is Pacific/Auckland || { echo "a desktop started without --tz did not take the company time zone: $(desktop status | tr "\n" " ") $(shown)" >&2; exit 1; }
+	echo America/New_York >/etc/qorpera-machine/desktop-timezone
+	desktop start >/dev/null
+	zone_is Pacific/Auckland || { echo "a desktop that runs changed its time zone at a start that started nothing: $(desktop status | tr "\n" " ")" >&2; exit 1; }
+	desktop stop >/dev/null
+	desktop start >/dev/null
+	zone_is America/New_York || { echo "the next start did not take the company time zone that had changed: $(desktop status | tr "\n" " ") $(shown)" >&2; exit 1; }
+	desktop stop >/dev/null
+	desktop start --tz Asia/Tokyo >/dev/null
+	zone_is Asia/Tokyo || { echo "--tz did not win over the company time zone: $(desktop status | tr "\n" " ") $(shown)" >&2; exit 1; }
+	desktop stop >/dev/null
+	echo Pacific/Auckland >/root/qorpera-zone-check
+	ln -sfn /root/qorpera-zone-check /etc/qorpera-machine/desktop-timezone
+	desktop start >/dev/null
+	zone_is || { echo "a company time zone file that is a link was followed: $(desktop status | tr "\n" " ") $(shown)" >&2; exit 1; }
+	desktop stop >/dev/null
+	rm /etc/qorpera-machine/desktop-timezone /root/qorpera-zone-check
+	[[ -z $(ls -A /etc/qorpera-machine) ]] || { echo "the check of the company time zone left its file" >&2; exit 1; }
+	# Root and the desktop account (review r1 F1 of #1704). Root keeps what it notes about the desktop in a folder of
+	# its own, and reads none of them from a place the account owns: the account, or a page or a program run as it, can
+	# make any name there a link to a file only root may read. A file only root can read stands in for such a file (the
+	# company folder view, with its pass): none of its bytes may reach a program of the account through a note or a
+	# request to the dock. (What desktop open, --copy and desktop shot do with files comes after, below.)
+	secret=/root/qorpera-root-only-check
+	marker="qorpera-root-only-$(od -An -N12 -tx1 /dev/urandom | tr -d " \n")"
+	echo "$marker" >"$secret"
+	chmod 0600 "$secret"
+	untouched() { [[ $(cat "$secret") == "$marker" && $(stat -c "%U:%G %a" "$secret") == "root:root 600" ]]; }
+	desktop start --lang da-DK --tz Europe/Copenhagen >/dev/null
+	[[ $(stat -c "%U:%G %a" /run/qorpera-desktop) == "root:root 755" && $(stat -c "%U:%G %a" /run/qorpera-desktop/session) == "desktop:desktop 700" ]] ||
+		{ echo "the notes of root about the desktop are not in a folder of root, beside the account own one" >&2; exit 1; }
+	# The account can put nothing among the notes of root: no link, no pipe, no file, under any name root reads or writes.
+	for note in lang tz last-use serve-8600 serve-8699 "drawn-$$.png" anything; do
+		if runuser -u desktop -- ln -sfn "$secret" "/run/qorpera-desktop/$note" 2>/dev/null ||
+			runuser -u desktop -- mkfifo "/run/qorpera-desktop/$note.pipe" 2>/dev/null ||
+			runuser -u desktop -- sh -c ": >/run/qorpera-desktop/$note.new" 2>/dev/null; then
+			echo "the desktop account put $note among the notes of root" >&2; exit 1
+		fi
+	done
+	[[ -f /run/qorpera-desktop/last-use && ! -L /run/qorpera-desktop/last-use && $(cat /run/qorpera-desktop/lang) == da-DK &&
+		$(cat /run/qorpera-desktop/tz) == Europe/Copenhagen ]] || { echo "the notes of root are not as root wrote them" >&2; exit 1; }
+	# What the account plants in its own folders, under the names root uses for its notes, root never reads: a program
+	# root starts for an agent, and one it starts for a press on the dock, get the language and the time zone root
+	# noted, and nothing of the file only root can read, in their environment or their command line.
+	for note in lang tz last-use; do runuser -u desktop -- ln -sfn "$secret" "/run/qorpera-desktop/session/$note"; done
+	gets() { # pid: what a started program was handed
+		tr "\0" "\n" <"/proc/$1/environ"
+		tr "\0" " " <"/proc/$1/cmdline"
+	}
+	desktop run sleep 300 >/dev/null
+	runuser -u desktop -- sh -c ": >/run/qorpera-desktop-dock/terminal"
+	window " Terminal$" || { echo "a press on the dock opened no terminal beside planted links" >&2; exit 1; }
+	for program in sleep xfce4-terminal; do
+		pid=$(pgrep -u desktop -n -x "$program")
+		if gets "$pid" | grep -q "$marker"; then echo "a program of the desktop account ($program) was handed a file only root can read" >&2; exit 1; fi
+		[[ $(gets "$pid" | grep -c -x -e "TZ=Europe/Copenhagen" -e "LANGUAGE=da-DK") == 2 ]] ||
+			{ echo "a program of the desktop account ($program) did not get the language and time zone root noted" >&2; exit 1; }
+	done
+	# A request to the dock is its name alone: a link or a pipe of that name is removed, never opened.
+	runuser -u desktop -- ln -s "$secret" /run/qorpera-desktop-dock/files
+	runuser -u desktop -- mkfifo /run/qorpera-desktop-dock/other
+	window " - Thunar$" || { echo "a dock request that was a link opened nothing" >&2; exit 1; }
+	for _ in $(seq 1 50); do [[ -z $(ls -A /run/qorpera-desktop-dock) ]] && break; sleep 0.1; done
+	[[ -z $(ls -A /run/qorpera-desktop-dock) ]] && untouched || { echo "a dock request that was a link or a pipe was followed, or stayed" >&2; exit 1; }
+	# A press on the dock starts one of three fixed programs and can steer nothing else (review r3 F1 of #1704). The
+	# account may put any name into the folder a press asks in. Until this was closed, a folder there shaped like the
+	# browser address (chrome:/newtab) made root take the address for that folder and put a link to it on the desktop:
+	# with the Desktop folder of the account made a link to a folder of root, root wrote a link into that folder, under
+	# a name the account chose. Now the broker and the command it runs work in /, look no word up as a file and put
+	# nothing on the desktop. The account keeps planting, while each icon is pressed: the address as a folder and as a
+	# link to a folder it named, the shapes of the folders and programs root names, and programs named like the tools
+	# root runs. Each press starts its program, none of the planted programs runs, and the folder of root is as it
+	# was: its owner, its rights, nothing in it.
+	guarded=/etc/qorpera-dock-check
+	mkdir "$guarded" && chmod 0755 "$guarded"
+	install -d -o desktop -g desktop /tmp/qorpera-dock-planted
+	cat >/tmp/qorpera-dock-planted/plant.sh <<"PLANT"
+cd /run/qorpera-desktop-dock || exit 1
+mkdir -p /home/desktop/planted/a-name-the-account-chose
+while [ ! -e /tmp/qorpera-dock-planted/stop ]; do
+	mkdir -p chrome: home/desktop company usr/bin usr/local/bin opt/qorpera-machine
+	if [ "$1" = link ]; then ln -sfn /home/desktop/planted/a-name-the-account-chose chrome:/newtab; else mkdir -p chrome:/newtab; fi
+	for tool in desktop bash env find rm systemctl xdpyinfo flock touch mountpoint systemd-run usr/bin/thunar usr/bin/xfce4-terminal usr/local/bin/desktop; do
+		[ -e "$tool" ] || { printf "#!/bin/sh\nid >>/tmp/qorpera-dock-planted/ran\n" >"$tool"; chmod 0755 "$tool"; }
+	done
+done 2>/dev/null
+PLANT
+	runuser -u desktop -- sh -c "rm -rf /home/desktop/Desktop && ln -s $guarded /home/desktop/Desktop"
+	declare -A shows=([browser]="Chrome for Testing" [files]=" - Thunar" [terminal]="Terminal")
+	for shape in folder link; do
+		for app in browser files terminal; do
+			# The program is closed first, so the press is what starts it.
+			for _ in $(seq 1 40); do desktop windows | grep -q -- "${shows[$app]}$" || break; DISPLAY=:1 wmctrl -c "${shows[$app]}"; sleep 0.25; done
+			runuser -u desktop -- sh /tmp/qorpera-dock-planted/plant.sh "$shape" &
+			sleep 0.3
+			runuser -u desktop -- sh -c ": >/run/qorpera-desktop-dock/$app"
+			started=yes
+			window "${shows[$app]}$" || started=no
+			sleep 0.5
+			runuser -u desktop -- touch /tmp/qorpera-dock-planted/stop
+			wait || true
+			rm -f /tmp/qorpera-dock-planted/stop
+			for _ in $(seq 1 50); do [[ -z $(ls -A /run/qorpera-desktop-dock) ]] && break; sleep 0.1; done
+			[[ $(stat -c "%U:%G %a" "$guarded") == "root:root 755" && -z $(ls -A "$guarded") ]] ||
+				{ echo "a press on the dock $app icon changed a folder of root through planted names ($shape): $(stat -c "%U:%G %a" "$guarded") $(ls -A "$guarded" | tr "\n" " ")" >&2; exit 1; }
+			[[ ! -e /tmp/qorpera-dock-planted/ran ]] ||
+				{ echo "a press on the dock $app icon ran a program the desktop account planted ($shape): $(head -1 /tmp/qorpera-dock-planted/ran)" >&2; exit 1; }
+			[[ $started == yes ]] || { echo "a press on the dock $app icon started nothing beside planted names ($shape)" >&2; exit 1; }
+			[[ -z $(ls -A /run/qorpera-desktop-dock) ]] || { echo "planted names stayed in the folder a press asks in" >&2; exit 1; }
+		done
+	done
+	runuser -u desktop -- rm /home/desktop/Desktop
+	rm -rf "$guarded" /tmp/qorpera-dock-planted
+	untouched || { echo "the file only root can read was changed" >&2; exit 1; }
+	# Root follows no link for the desktop account (review r2 of #1704). What desktop open, --copy and desktop shot do
+	# with files is done by desktop-files: as the account, or by root inside folders it holds, on a way of folders that
+	# root alone can change with no link on it. Root never looks at a path and then uses the path. The account plants
+	# here what the review planted, before the command and while it runs: no byte of the file only root can read may
+	# reach it, and nothing of root may be written to, gain a name or change hands.
+	files=/opt/qorpera-machine/desktop-files
+	mine=/root/qorpera-links
+	leaked() { grep -rqs -- "$marker" /home/desktop /run/qorpera-desktop/session /tmp/qorpera-links /srv/qorpera-links; }
+	roots_own() { [[ $(ls -A "$mine/folder") == keep && -z $(find "$mine" /etc/qorpera-machine ! -user root) ]] && untouched; }
+	swapping() { runuser -u desktop -- sh -c "cd $1 && while [ ! -e /tmp/qorpera-links/stop ]; do $2; done" 2>/dev/null & }
+	swapped() { runuser -u desktop -- touch /tmp/qorpera-links/stop; wait || true; rm -f /tmp/qorpera-links/stop; }
+	mkdir -p "$mine/folder" "$mine/tree/inner" /srv/qorpera-links/group /srv/qorpera-links/acl /tmp/site-links
+	install -d -o desktop -g desktop /tmp/qorpera-links
+	echo keep >"$mine/folder/keep"
+	echo qorpera-agent-chose-this >"$mine/agent.txt" && chmod 0600 "$mine/agent.txt"
+	echo inner >"$mine/tree/inner/b.txt" && ln -s "$secret" "$mine/tree/to-the-file" && chmod 0700 "$mine/tree/inner"
+	echo "<title>qorpera-links</title>" >/tmp/site-links/index.html
+	# Review r2 F1: a link of root, on a way of root alone, that leads into the home of the account, where the account
+	# points it on to the file; as the last name of the way and as a folder in the middle of it. It is copied by
+	# neither root nor the account, and opened by neither, also while the account keeps changing its end of the link.
+	runuser -u desktop -- ln -s "$secret" /home/desktop/input
+	runuser -u desktop -- mkdir /home/desktop/way
+	runuser -u desktop -- ln -s "$secret" /home/desktop/way/file.txt
+	ln -s /home/desktop/input "$mine/input" && ln -s /home/desktop/input /srv/qorpera-links/input && ln -s /home/desktop/way "$mine/way"
+	for target in "$mine/input" /srv/qorpera-links/input /home/desktop/input "$mine/way/file.txt" /home/desktop/way/file.txt; do
+		if desktop open "$target" --copy >/dev/null 2>&1 || desktop open "$target" >/dev/null 2>&1; then
+			echo "a link that leads to a file only root can read was opened for the desktop account ($target)" >&2; exit 1
+		fi
+	done
+	swapping /home/desktop "echo mine >input.new; mv -f input.new input; ln -sfn $secret input"
+	for _ in $(seq 1 25); do "$files" open --copy -- /srv/qorpera-links/input >/dev/null 2>&1 || true; done
+	swapped
+	if leaked; then echo "bytes of a file only root can read reached the desktop account through a link" >&2; exit 1; fi
+	# Review r2 F2: the place of a picture, planted by the account before root writes there: a folder on the way made
+	# a link to a folder of root, and the name of the picture made a link to the file. Root writes through neither
+	# (the way is not of root alone) and the account cannot; also while the account keeps swapping the folder.
+	runuser -u desktop -- ln -s "$mine/folder" /tmp/qorpera-links/capture
+	runuser -u desktop -- ln -s "$secret" /tmp/qorpera-links/frame.png
+	if desktop shot /tmp/qorpera-links/capture/frame.png >/dev/null 2>&1; then
+		echo "a picture was saved through a folder link the desktop account planted" >&2; exit 1
+	fi
+	# (Where the name of the picture is the account own link, the account puts the picture in the place of the link:
+	# a picture is written beside its place and moved onto it. What the link named is not written.)
+	desktop shot /tmp/qorpera-links/frame.png >/dev/null 2>&1 || true
+	[[ ! -L /tmp/qorpera-links/frame.png ]] && untouched ||
+		{ echo "a picture was written through a link the desktop account planted, or the link stayed" >&2; exit 1; }
+	rm -f /tmp/qorpera-links/capture /tmp/qorpera-links/frame.png
+	swapping /tmp/qorpera-links "rm -rf capture; mkdir capture; rm -rf capture; ln -s $mine/folder capture"
+	for _ in $(seq 1 25); do desktop shot /tmp/qorpera-links/capture/frame.png >/dev/null 2>&1 || true; done
+	swapped
+	rm -rf /tmp/qorpera-links/capture
+	roots_own || { echo "a picture was written into a folder of root, or over the file only root can read, through a planted link" >&2; exit 1; }
+	# Where the whole way is of root alone, root saves the picture and makes the folders for it; elsewhere the account
+	# saves it, as its own file. A folder of root that its group may write, or that an ACL opens to the account, is
+	# not of root alone: root writes nothing in it, whatever name the account has planted there.
+	desktop shot "$mine/pictures/new/a.png" | grep -q " 1600 x 1000$" &&
+		[[ $(stat -c "%U:%G %a" "$mine/pictures/new" "$mine/pictures/new/a.png" | tr "\n" " ") == "root:root 755 root:root 644 " ]] ||
+		{ echo "a picture on a way of root alone is not a 1600x1000 picture of root in a folder of root" >&2; exit 1; }
+	desktop shot /tmp/qorpera-links/own.png | grep -q " 1600 x 1000$" && [[ $(stat -c %U /tmp/qorpera-links/own.png) == desktop ]] ||
+		{ echo "a picture saved where the desktop account may write is not a 1600x1000 picture of the account" >&2; exit 1; }
+	chgrp desktop /srv/qorpera-links/group && chmod 0775 /srv/qorpera-links/group
+	python3 -I -c "import os, struct, sys; os.setxattr(sys.argv[1], \"system.posix_acl_access\", struct.pack(\"<I\", 2) + b\"\".join(struct.pack(\"<HHI\", *entry) for entry in ((1, 7, 0xFFFFFFFF), (2, 7, int(sys.argv[2])), (4, 5, 0xFFFFFFFF), (16, 5, 0xFFFFFFFF), (32, 5, 0xFFFFFFFF))))" /srv/qorpera-links/acl "$(id -u desktop)"
+	[[ $(stat -c "%U:%G %a" /srv/qorpera-links/acl) == "root:root 755" ]] || { echo "the folder with an ACL does not look like a folder of root alone" >&2; exit 1; }
+	runuser -u desktop -- ln -s "$secret" /srv/qorpera-links/group/planted.png
+	desktop shot /srv/qorpera-links/group/planted.png >/dev/null 2>&1 || true
+	[[ ! -L /srv/qorpera-links/group/planted.png ]] && untouched ||
+		{ echo "a picture was written through a link in a folder a group can write, or the link stayed" >&2; exit 1; }
+	desktop shot /srv/qorpera-links/group/a.png >/dev/null && [[ $(stat -c %U /srv/qorpera-links/group/a.png) == desktop ]] ||
+		{ echo "root wrote a picture in a folder that a group can write" >&2; exit 1; }
+	refused=$(desktop shot /srv/qorpera-links/acl/a.png 2>&1 || true)
+	[[ $refused == *"/srv/qorpera-links/acl has an ACL that lets others write"* && ! -e /srv/qorpera-links/acl/a.png ]] ||
+		{ echo "root wrote a picture in a folder that an ACL opens to another account: $refused" >&2; exit 1; }
+	roots_own || { echo "saving pictures changed something of root" >&2; exit 1; }
+	# Rows 9 and 10 of the list: the Desktop folder of the account. Made a link to a folder of root, nothing is put
+	# there: not a link, not a copy the account could read itself, not a copy root reads for it.
+	runuser -u desktop -- sh -c "rm -rf /home/desktop/Desktop && ln -s /etc/qorpera-machine /home/desktop/Desktop"
+	for words in "/tmp/site-links" "/tmp/site-links --copy" "$mine/agent.txt --copy"; do
+		if desktop open $words >/dev/null 2>&1; then echo "something was put on a desktop folder that is a link to a folder of root" >&2; exit 1; fi
+	done
+	[[ $(stat -c "%U:%G %a" /etc/qorpera-machine) == "root:root 755" && -z $(ls -A /etc/qorpera-machine) ]] ||
+		{ echo "a folder of root was changed through the desktop account link" >&2; exit 1; }
+	runuser -u desktop -- rm /home/desktop/Desktop
+	# And while the account keeps making the names root would use there links to a folder of root and to the file:
+	# root links, copies and hands over nothing in that folder itself, so nothing of root gains a name, an owner or a byte.
+	runuser -u desktop -- mkdir /home/desktop/Desktop
+	swapping /home/desktop/Desktop "for name in site-links site-links-2 site-links-3 agent.txt agent-2.txt tree tree-2; do ln -sfn $mine/folder \$name 2>/dev/null; rm -rf \$name; ln -sfn $secret \$name 2>/dev/null; rm -rf \$name; done"
+	for _ in $(seq 1 10); do
+		for words in "-- /tmp/site-links" "--copy -- /tmp/site-links" "--copy -- $mine/agent.txt" "--copy -- $mine/tree"; do
+			"$files" open $words >/dev/null 2>&1 || true
+		done
+	done
+	swapped
+	roots_own || { echo "a race in the desktop folder changed something of root" >&2; exit 1; }
+	if leaked; then echo "a race in the desktop folder gave the account bytes of a file only root can read" >&2; exit 1; fi
+	# What an agent itself names on a way of root alone is still copied, as the account own: a file only root can
+	# read, and a folder, in which a link stays a link (the account gets the name it points at, never what is there).
+	runuser -u desktop -- sh -c "cd /home/desktop/Desktop && find . -mindepth 1 -delete"
+	desktop open "$mine/agent.txt" --copy | grep -q "(on the desktop as agent.txt)$" && "$files" open --copy -- "$mine/tree" >/dev/null
+	[[ $(stat -c "%U:%G %F" /home/desktop/Desktop/agent.txt) == "desktop:desktop regular file" &&
+		$(cat /home/desktop/Desktop/agent.txt) == qorpera-agent-chose-this && $(cat /home/desktop/Desktop/tree/inner/b.txt) == inner &&
+		$(readlink /home/desktop/Desktop/tree/to-the-file) == "$secret" && -z $(find /home/desktop/Desktop ! -user desktop) ]] ||
+		{ echo "what an agent named on a way of root alone was not copied to the desktop as the account own" >&2; exit 1; }
+	# A folder in it that another than root can write makes the whole not of root alone: root reads none of it for the
+	# account, and the copy that had begun does not stay.
+	chmod 0777 "$mine/tree/inner"
+	if "$files" open --copy -- "$mine/tree" >/dev/null 2>&1; then echo "root read a folder that others can write, for the desktop account" >&2; exit 1; fi
+	chmod 0700 "$mine/tree/inner"
+	[[ ! -e /home/desktop/Desktop/tree-2 ]] || { echo "a copy that did not come whole stayed on the desktop" >&2; exit 1; }
+	# A copy that is cut off leaves nothing that is not whole (review r1 F1 of #1712): it is made under a name the
+	# desktop does not show and gets its name in one step. Here the account side is ended by another (as the memory
+	# guard would end it) once a part of a large folder is written: what is then on the desktop under the name is the
+	# whole folder or nothing, and nothing stays on its way, because root has the account take that away.
+	mkdir "$mine/large"
+	for part in a b c; do head -c 100000000 /dev/zero >"$mine/large/$part.bin"; done
+	"$files" open --copy -- "$mine/large" >/dev/null 2>&1 &
+	for _ in $(seq 1 500); do [[ -n $(find /home/desktop/Desktop -maxdepth 2 -path "*/.qorpera-desktop-copy.*/*.bin" 2>/dev/null) ]] && break; sleep 0.01; done
+	pkill -KILL -u desktop -f "desktop-files account take" || true
+	wait || true
+	[[ ! -e /home/desktop/Desktop/large ]] || diff -r "$mine/large" /home/desktop/Desktop/large >/dev/null ||
+		{ echo "a copy that was cut off left a part of itself on the desktop" >&2; exit 1; }
+	[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||
+		{ echo "a copy on its way stayed on the desktop: $(ls -A /home/desktop/Desktop | tr "\n" " ")" >&2; exit 1; }
+	# The same for a copy the account makes itself, with its cp (review r2 F1 of #1712). The cp is held, the account
+	# side is ended by another, and root has what was on its way taken away. The cp, let go again, must not be there
+	# to write after that: it is ended with its side and collected before anything is taken away.
+	mkdir /tmp/large-links && cp "$mine/large"/*.bin /tmp/large-links/
+	"$files" open --copy -- /tmp/large-links >/dev/null 2>&1 &
+	for _ in $(seq 1 500); do pkill -STOP -u desktop -x cp && break; sleep 0.01; done
+	# (Root holds its own stop signals back; a process of the account holds none back.)
+	blocked=$(awk "/^SigBlk:/ { print \$2 }" "/proc/$(pgrep -u desktop -x cp | head -1)/status" 2>/dev/null || true)
+	pkill -KILL -u desktop -f "desktop-files account copy" || true
+	wait || true
+	left=$(pgrep -u desktop -x cp || true)
+	pkill -CONT -u desktop -x cp || true
+	sleep 1
+	[[ -z $left ]] || { echo "the cp of a copy whose side was ended was still there when root had the copy taken away" >&2; exit 1; }
+	[[ -z $blocked || $blocked == 0000000000000000 ]] || { echo "the cp of the desktop account holds signals back: $blocked" >&2; exit 1; }
+	[[ ! -e /home/desktop/Desktop/large-links ]] || diff -r /tmp/large-links /home/desktop/Desktop/large-links >/dev/null ||
+		{ echo "a copy whose side was ended left a part of itself on the desktop" >&2; exit 1; }
+	[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||
+		{ echo "a copy on its way came back after it was taken away: $(ls -A /home/desktop/Desktop | tr "\n" " ")" >&2; exit 1; }
+	# Root asked to stop while such a copy is being made (review r4 F1 of #1712): its stop signals are held back
+	# from its start to its last statement, so nothing of it runs because of one. It ends the account side, collects
+	# it, has what was on its way taken away, and only then ends, by the signal. A second signal changes nothing.
+	runuser -u desktop -- rm -rf /home/desktop/Desktop/large-links
+	"$files" open --copy -- /tmp/large-links >/dev/null 2>&1 &
+	asked=$!
+	for _ in $(seq 1 500); do [[ -n $(find /home/desktop/Desktop -maxdepth 2 -path "*/.qorpera-desktop-copy.*/*.bin" 2>/dev/null) ]] && break; sleep 0.01; done
+	kill -TERM "$asked" && kill -HUP "$asked" || true
+	status=0
+	wait "$asked" || status=$?
+	[[ $status == 129 || $status == 143 || $status == 0 ]] || { echo "root asked to stop while copying ended with $status" >&2; exit 1; }
+	[[ -z $(pgrep -u desktop -f "desktop-files account" || true) && -z $(pgrep -u desktop -x cp || true) ]] ||
+		{ echo "root asked to stop while copying left a process of the desktop account" >&2; exit 1; }
+	[[ ! -e /home/desktop/Desktop/large-links ]] || diff -r /tmp/large-links /home/desktop/Desktop/large-links >/dev/null ||
+		{ echo "root asked to stop while copying left a part of the copy on the desktop" >&2; exit 1; }
+	[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||
+		{ echo "root asked to stop while copying left the copy on its way: $(ls -A /home/desktop/Desktop | tr "\n" " ")" >&2; exit 1; }
+	# A caller that ignores a signal (nohup) has it ignored by root too (review r5 F1 of #1712): held back, even an
+	# ignored signal would wait and be read as a stop. Under ten SIGHUP the copy runs to its end.
+	runuser -u desktop -- rm -rf /home/desktop/Desktop/large-links
+	(trap "" HUP; exec "$files" open --copy -- /tmp/large-links >/dev/null 2>&1) &
+	asked=$!
+	for _ in $(seq 1 500); do [[ -n $(find /home/desktop/Desktop -maxdepth 2 -path "*/.qorpera-desktop-copy.*/*.bin" 2>/dev/null) ]] && break; sleep 0.01; done
+	for _ in $(seq 1 10); do kill -HUP "$asked" 2>/dev/null || true; done
+	status=0
+	wait "$asked" || status=$?
+	[[ $status == 0 ]] && diff -r /tmp/large-links /home/desktop/Desktop/large-links >/dev/null ||
+		{ echo "a copy whose caller ignores SIGHUP did not run to its end under SIGHUP (exit $status)" >&2; exit 1; }
+	rm -rf "$mine/large" /tmp/large-links
+	roots_own || { echo "copying for the desktop changed something of root" >&2; exit 1; }
+	if leaked; then echo "bytes of a file only root can read are in the desktop account folders" >&2; exit 1; fi
+	rm -rf "$mine" /srv/qorpera-links /tmp/qorpera-links /tmp/site-links
+	desktop stop >/dev/null
+	gone || exit 1
+	[[ -d /run/qorpera-desktop && -z $(ls -A /run/qorpera-desktop) ]] || { echo "the notes of root outlived the desktop" >&2; exit 1; }
+	rm -f "$secret"
 	# save_coding_value (20260930705000): no clipboard manager keeps what is copied, and the clipboard helper seals a key
 	# copied on the desktop (a made-up npm one), prints only the box, leaves both selections empty, and refuses an empty
 	# clipboard and a stopped desktop with a code. It runs as the executor runs it: root, the target on stdin.
@@ -448,14 +1017,13 @@ JS
 	[[ $code == 2 ]] || { echo "desktop key took a key that does not exist (exit $code)" >&2; exit 1; }
 	desktop stop >/dev/null
 	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
-	# Nothing of that check stays in the desktop account but its panel layout.
-	find /home/desktop -mindepth 1 -maxdepth 1 ! -name .config ! -name .bashrc ! -name .profile ! -name .bash_logout \
-		-exec rm -rf -- {} +
-	find /home/desktop/.config -mindepth 1 -maxdepth 1 ! -name xfce4 -exec rm -rf -- {} +
-	find /home/desktop/.config/xfce4 -mindepth 1 -maxdepth 1 ! -name xfconf -exec rm -rf -- {} +
-	find /home/desktop/.config/xfce4/xfconf/xfce-perchannel-xml -mindepth 1 ! -name xfce4-panel.xml -exec rm -rf -- {} +
+	# Nothing of these checks stays in the desktop account (its look is written anew at every start), and the image
+	# names no figure.
+	find /home/desktop -mindepth 1 -maxdepth 1 ! -name .bashrc ! -name .profile ! -name .bash_logout -exec rm -rf -- {} +
+	[[ $(ls -A /home/desktop | sort | tr "\n" " ") == ".bash_logout .bashrc .profile " && -z $(ls -A /etc/qorpera-machine) ]] ||
+		{ echo "the checks left something in the desktop account, or a figure" >&2; exit 1; }
 	for unit in apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service \
-		fwupd-refresh.timer fwupd-refresh.service fwupd.service; do
+		fwupd-refresh.timer fwupd-refresh.service fwupd.service earlyoom.service; do
 		[[ $(readlink "/etc/systemd/system/$unit") == /dev/null ]]
 	done
 	# Nothing else refreshes firmware either, whatever fwupd names its units: no fwupd timer runs and no other fwupd unit
@@ -475,6 +1043,8 @@ JS
 	systemd-analyze verify /etc/systemd/system/qorpera-machine-watchdog.service /etc/systemd/system/qorpera-machine.slice \
 		/etc/systemd/system/qorpera-machine-folder.service
 	systemd-analyze verify /etc/systemd/system/qorpera-machine-desktop.service
+	systemd-analyze verify /etc/systemd/system/qorpera-machine-desktop-dock.path /etc/systemd/system/qorpera-machine-desktop-dock.service
+	systemd-analyze verify /etc/systemd/system/qorpera-machine-memory.service /etc/systemd/system/qorpera-machine-memory-guard.service
 	# Nothing of this build stays: logs, keys, caches (the LibreOffice profile too), the machine id.
 	apt-get clean
 	rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.cache /root/.npm /root/.config/libreoffice

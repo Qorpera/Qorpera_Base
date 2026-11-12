@@ -324,6 +324,22 @@ describe("agent event tools", () => {
 			}
 		});
 
+		it("shows a database piece of plain text whole: 16,000 characters, as read_event's description says", async () => {
+			const body = Buffer.from(
+				Array.from({ length: 900 }, (_, n) => `Line ${n} of a long plain message in words. `).join(""),
+				"utf8",
+			);
+			const f = await delivery(body, mailHeaders);
+			try {
+				const pieces = await readAll(f);
+				expect(pieces.map((piece) => piece.text).join("")).toBe(body.toString("utf8"));
+				expect(pieces.length).toBe(Math.ceil(body.length / 16000));
+				for (const piece of pieces.slice(0, -1)) expect([...(piece.text as string)]).toHaveLength(16000);
+			} finally {
+				f.run.close();
+			}
+		});
+
 		it("cuts base64 pieces after whole bytes, so the bytes join up exactly", async () => {
 			const body = Buffer.from(Array.from({ length: 60001 }, (_, n) => (n * 151 + 7) % 256));
 			expect(Buffer.from(body.toString("utf8"), "utf8").equals(body)).toBe(false);
@@ -339,6 +355,8 @@ describe("agent event tools", () => {
 				for (const piece of pieces.slice(0, -1)) {
 					const bytes = Buffer.from(piece.data as string, "base64").length;
 					expect(bytes).toBeLessThan(24576);
+					// About 23 KiB, as read_event's description says, with the longest call id.
+					expect(bytes).toBeGreaterThan(22 * 1024);
 					expect(bytes % 3).toBe(0);
 				}
 				for (const piece of pieces) {

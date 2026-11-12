@@ -1283,7 +1283,8 @@ export class CompanyFolderBrowser {
 		await this.#show({ path, file: entry.file, target: entry.target });
 	}
 
-	/** Reads the file piece by piece and hands it to the browser as one file. A large one says how far it is. */
+	/** Reads the file piece by piece and hands it to the browser as one file. A large one says how far it is. Then it is
+	 * ready: the page cannot know when the browser has saved it. */
 	async #download(path: string, file: CloudMemberFolderFile): Promise<void> {
 		const name = baseName(path);
 		const far = h("span", { "aria-hidden": "true" });
@@ -1296,7 +1297,7 @@ export class CompanyFolderBrowser {
 		});
 		this.#live();
 		this.#downloads!.offerPieces(path, pieces, file.bytes);
-		this.#say(t("Downloading {name}.", { name }));
+		this.#say(t("{name} is ready: your browser saves it in your downloads.", { name }));
 	}
 
 	// ---- history ----------------------------------------------------------------

@@ -16,8 +16,8 @@ import { CodingControlBusy } from "./coding-executor.ts";
  * for every movement of a repository's main, and for every landing that was refused (`qorpera_code_changes`, migration
  * `20260930720000`). Each row has a file, `code/<owner>/<name>/changes/<n>.md`, and the newest hundred are listed in
  * `changes/index.md`, under two lines that say which version of the repository's site is live and which change is ready
- * in What's new (step 4). The kernel says which are due and what they hold; this renders them; a code host job writes
- * them:
+ * in What's new (step 4), and for 30 days after a restore under one that names the changes it took out of main (step
+ * 6). The kernel says which are due and what they hold; this renders them; a code host job writes them:
  *
  *   in the landing's or the undo's own job   `inJob`: what is due is written before the job saves, so the files are
  *                                            there when the agent is woken; `confirm` once the job has saved
@@ -599,19 +599,62 @@ function readyLine(ready: unknown): string | undefined {
 	return isRecord(ready) && whole(ready.change, 1) ? `Ready in What's new: change ${ready.change}.` : undefined;
 }
 
-/** The list's text, `changes/index.md`: what of the repository's site is live and what is ready, when the kernel says
- * so, then the newest changes, one line each, newest first, at most a hundred. Pure. Each line's words (what a customer
- * will notice, or the title) are one line of at most 200 bytes with every Markdown character written out. */
+/** How long after a restore the list opens with the changes it took out of main. */
+const RESTORE_LINE_MS = 30 * 86_400_000;
+/** How many numbers, or runs of numbers, that line names at most: the changes past them are counted. */
+const RESTORE_LINE_PARTS = 10;
+
+/** The line that opens the list for 30 days after a restore, from the lines' own kinds and states: the day of the
+ * newest restore, and every change the record holds as lost in a restore (a restore's own row is no change to make
+ * again, and is left out). A lost change is always older than the newest restore, and it is not in main whichever
+ * restore took it out. Runs of three or more are `a to b`; after ten numbers or runs the rest are counted. Undefined
+ * when no restore is among the lines, its time cannot be read, 30 days have passed since, or no change is lost.
+ * `lines` are newest first. (The list is written only when the kernel says it is behind: the line goes the first time
+ * it is written after the 30 days.) */
+function restoreLine(lines: readonly CodeChangeLine[], now: number): string | undefined {
+	const restore = lines.find((line) => line.kind === "restore");
+	const at = restore ? Date.parse(restore.createdAt) : Number.NaN;
+	if (!restore || !Number.isFinite(at) || now - at >= RESTORE_LINE_MS) return undefined;
+	const lost = lines
+		.filter((line) => line.state === "lost" && line.kind !== "restore")
+		.map((line) => line.n)
+		.sort((a, b) => a - b);
+	if (!lost.length) return undefined;
+	const runs: { from: number; to: number }[] = [];
+	for (const n of lost) {
+		const run = runs.at(-1);
+		if (run && n === run.to + 1) run.to = n;
+		else runs.push({ from: n, to: n });
+	}
+	const parts = runs.flatMap(({ from, to }) =>
+		to - from >= 2
+			? [{ said: `${from} to ${to}`, count: to - from + 1 }]
+			: Array.from({ length: to - from + 1 }, (_, k) => ({ said: `${from + k}`, count: 1 })),
+	);
+	const more = parts.slice(RESTORE_LINE_PARTS).reduce((sum, part) => sum + part.count, 0);
+	const named = [...parts.slice(0, RESTORE_LINE_PARTS).map((part) => part.said), ...(more ? [`${more} more`] : [])];
+	const list = named.length > 1 ? `${named.slice(0, -1).join(", ")} and ${named.at(-1)}` : named[0];
+	const one = lost.length === 1;
+	return `Put back to an earlier copy on ${day(restore.createdAt)}: ${one ? "change" : "changes"} ${list} ${one ? "is" : "are"} no longer in main.`;
+}
+
+/** The list's text, `changes/index.md`: for 30 days after a restore, the changes it took out of main; what of the
+ * repository's site is live and what is ready, when the kernel says so; then the newest changes, one line each, newest
+ * first, at most a hundred. Pure but for the time it is made at (`now`, the clock's by default). Each line's words (what
+ * a customer will notice, or the title) are one line of at most 200 bytes with every Markdown character written out. */
 export function codeChangeIndexText(
 	repository: { owner: string; name: string },
 	lines: readonly CodeChangeLine[],
 	releases: CodeChangeReleases = {},
+	now: number = Date.now(),
 ): string {
 	const newest = [...lines].sort((a, b) => b.n - a.n).slice(0, 100);
 	const site = [liveLine(releases.live), readyLine(releases.ready)].filter((line) => line !== undefined);
+	const restored = restoreLine(newest, now);
 	return `${[
 		`# Changes in ${words(`${repository.owner}/${repository.name}`, 200)}`,
 		"",
+		...(restored ? [restored, ""] : []),
 		...(site.length ? [...site, ""] : []),
 		...(newest.length
 			? newest.map((entry) => {
@@ -835,6 +878,8 @@ export interface CodeChangeRecordsOptions {
 	limit?: number;
 	/** How many changes one job writes, 1 to 20. Default 20. */
 	changes?: number;
+	/** The clock the list's line about a restore is read by. */
+	now?: () => number;
 }
 
 /** Whether the job that writes a change's file is to find what differs between its two ends of main first. Never for a
@@ -867,6 +912,7 @@ export class CodeChangeRecords {
 	readonly #report: (event: Record<string, unknown>) => void;
 	readonly #limit: number;
 	readonly #changes: number;
+	readonly #now: () => number;
 
 	constructor(options: CodeChangeRecordsOptions) {
 		const limit = options.limit ?? 20,
@@ -899,6 +945,7 @@ export class CodeChangeRecords {
 		};
 		this.#limit = limit;
 		this.#changes = changes;
+		this.#now = options.now ?? Date.now;
 	}
 
 	/** Inside a job of the repository's company, which holds that company's line: the files that are due are written,
@@ -1082,7 +1129,7 @@ export class CodeChangeRecords {
 					: { n: change.n, text: codeChangeRecordText(change), ...copy(change) },
 		);
 		const index = due.index
-			? codeChangeIndexText(target, due.index.lines, { live: due.index.live, ready: due.index.ready })
+			? codeChangeIndexText(target, due.index.lines, { live: due.index.live, ready: due.index.ready }, this.#now())
 			: null;
 		const writer = { shell: job.shell, layout: job.layout, signal };
 		const wrote = await this.#write(writer, { repository, records, index });

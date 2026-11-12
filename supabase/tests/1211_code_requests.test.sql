@@ -560,7 +560,7 @@ begin
 	v := pg_temp.req_list();
 	perform pg_temp.base_assert(v = jsonb_build_object('schema', 'qorpera.code-repositories/v1', 'canDownload', true,
 		'repositories', jsonb_build_array(jsonb_build_object('owner', 'company', 'name', 'shop', 'changes', 16,
-			'downloads', '[]'::jsonb))), 'the owner''s list: ' || v::text);
+			'downloads', '[]'::jsonb)), 'githubCopies', '[]'::jsonb), 'the owner''s list: ' || v::text);
 	perform pg_temp.base_assert((pg_temp.req_list(v_admin) ->> 'canDownload')::boolean
 		and not (pg_temp.req_list(v_member) ->> 'canDownload')::boolean and not (pg_temp.req_list(v_viewer) ->> 'canDownload')::boolean
 		and pg_temp.req_list(v_viewer) -> 'repositories' = v -> 'repositories', 'who may ask');

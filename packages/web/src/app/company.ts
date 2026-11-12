@@ -24,6 +24,7 @@ import {
 import { type GroupChatDetails, listGroupChatDetails, readGroupChatDetails } from "../cloud/group-details.ts";
 import type { InteractionAnswer, InteractionOutcome, InteractionRequest } from "../cloud/interactions.ts";
 import { type MemberChatSummary, memberChatCalls } from "../cloud/member-chats.ts";
+import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import type { OpenQuestion } from "../cloud/open-questions.ts";
 import { buildCompanyHierarchy, type CompanyHierarchy, type HostedCompanyOrganization } from "../cloud/organization.ts";
 import type { PageCursor } from "../cloud/pagination.ts";
@@ -76,7 +77,7 @@ import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
 import type { AgentNotesState } from "./agent-notes.ts";
 import type { MailState } from "./company-mail.ts";
-import type { CompanyApp } from "./interface-apps.ts";
+import type { CompanyApp, CompanyAppIcon } from "./interface-apps.ts";
 import type { InterfaceFolderState } from "./interface-folder.ts";
 import type { InterfaceOffersState } from "./interface-offers.ts";
 import type { InterfacePagesState } from "./interface-pages.ts";
@@ -274,6 +275,12 @@ export interface CompanyState {
 	appLayout?: MemberAppLayoutRead;
 	/** The cloud keeps no apps layout per member yet: the drawer draws the company's groups and changes none. */
 	appLayoutUnavailable?: boolean;
+	/** Each app's own icons (`apps/<name>/icons/`, app/interface-apps.ts), by the app's name, for the apps whose icons
+	 * were asked for: the member opened its Icon and colour panel, or picked one of them. Newest first. */
+	appIcons?: Readonly<Record<string, readonly CompanyAppIcon[]>>;
+	/** The apps whose agent was asked to draw new icons, by name: since when, and the icons it had then. The drawer shows
+	 * the app drawing until a new one is read, or for ten minutes. */
+	appIconsDrawing?: Readonly<Record<string, { readonly since: number; readonly known: readonly string[] }>>;
 	/** How many websites the company's agents published, as last read: the apps drawer shows Sites while there are any.
 	 * Unset until read, and on a cloud that can't say. */
 	siteCount?: number;
@@ -794,6 +801,7 @@ export class CompanyController {
 				retrySend: undefined,
 				executionSponsor: undefined,
 			}));
+		clearInterval(this.#iconWatch);
 		this.#realtime?.stop();
 		this.#sidebarRealtime?.stop();
 		void this.#presence?.stop().catch(() => {});
@@ -1282,6 +1290,149 @@ export class CompanyController {
 		const done = await reset;
 		if (done) void this.memberChats.refresh();
 		return done;
+	}
+
+	/** Reads an app's own icons; the application sets it to the apps' reader. */
+	appIconReader?: (app: string) => Promise<CompanyAppIcon[]>;
+	/** The member's model accounts, for Generate icon's message: the thread's own account, chosen as its thread chooses
+	 * it (as Mailbox's note does, app/company-mail.ts). The application sets it. */
+	appIconAccounts?: Pick<WebNativeSubscription, "listConnections" | "selectSessionAccount">;
+	readonly #iconReads = new Map<string, Promise<void>>();
+	#iconWatch?: ReturnType<typeof setInterval>;
+
+	/** Reads an app's own icons into `appIcons`, one read at a time for each app. A read that fails keeps what was read
+	 * before. A new icon ends the app's drawing. */
+	loadAppIcons(app: string): Promise<void> {
+		const running = this.#iconReads.get(app);
+		if (running || this.#stopped || !this.appIconReader) return running ?? Promise.resolve();
+		const read = this.appIconReader(app)
+			.then((icons) => {
+				if (this.#stopped) return;
+				const state = this.store.get();
+				const drawing = state.appIconsDrawing?.[app];
+				// A new icon, or an old id drawn again (an app at its 12 replaces one), ends the drawing.
+				const done = drawing && icons.some((icon) => !drawing.known.includes(iconVersion(icon)));
+				this.store.set({
+					appIcons: { ...state.appIcons, [app]: icons },
+					...(done ? { appIconsDrawing: withoutKey(state.appIconsDrawing, app) } : {}),
+				});
+			})
+			.catch(() => undefined)
+			.finally(() => this.#iconReads.delete(app));
+		this.#iconReads.set(app, read);
+		return read;
+	}
+
+	/** Reads again the icons of every app whose icons were read: the apps' folder changed. */
+	refreshAppIcons(): void {
+		for (const app of Object.keys(this.store.get().appIcons ?? {})) void this.loadAppIcons(app);
+	}
+
+	/** Generate icon (Jonas, 12 Nov 2026): asks the agent who made the app, or the Co-Founder when none did or it left, to
+	 * draw three new icons, as a message in its thread the member can see and answer. The drawer shows the app drawing
+	 * until a new icon is read (every ten seconds), or for ten minutes. Says why when it could not ask. */
+	async requestAppIcons(app: CompanyApp): Promise<{ ok: true; agent: string } | { ok: false; reason: string }> {
+		if (this.#stopped || !app.manifest) return { ok: false, reason: t("This company is no longer open.") };
+		const state = this.store.get();
+		const owner = app.manifest.owner
+			? state.staff.find((agent) => agent.id === app.manifest?.owner && agent.employmentStatus === "active")
+			: undefined;
+		let sessionId: string | undefined;
+		let name: string;
+		try {
+			if (owner) {
+				sessionId = await this.openStaffConversation(owner);
+				name = owner.displayName;
+			} else {
+				const opened = await this.openCofounderConversation();
+				if (!opened.sessionId)
+					return { ok: false, reason: opened.reason ?? t("The Co-Founder could not be reached.") };
+				sessionId = opened.sessionId;
+				name = this.staffById(this.cofounderId() ?? "")?.displayName ?? t("The Co-Founder");
+			}
+		} catch (error) {
+			return { ok: false, reason: describeError(error) };
+		}
+		const text = t("Please draw 3 new icons for {name} (apps/{app}), from its name and what it shows.", {
+			name: app.manifest.name,
+			app: app.name,
+		});
+		// The ask goes only into an empty composer, as Mailbox's note does (app/company-mail.ts): a draft the member (or
+		// another member, in a shared draft) is writing to this agent, its images and a message on its way stay as they
+		// are, and the member is told why nothing was sent.
+		const room = this.roomDrafts.room(sessionId);
+		if (room) await room.refresh();
+		const busy = () => {
+			const now = this.conversation(sessionId, false).get();
+			return (
+				(room !== undefined && !room.usable()) ||
+				Boolean((room?.draft(this.#userId)?.body ?? "").trim()) ||
+				Boolean((now.draft ?? "").trim()) ||
+				Boolean(now.attachments?.length) ||
+				// An answer the member chose to a question of the agent's: the send would prefix it (review F1 on #1696, r2).
+				now.answering !== undefined ||
+				Boolean(now.sending) ||
+				Boolean(now.retrySend)
+			);
+		};
+		const started = t("You have a message started to {agent}. Send or clear it, then press Generate icon again.", {
+			agent: name,
+		});
+		if (this.#stopped) return { ok: false, reason: t("This company is no longer open.") };
+		if (busy()) return { ok: false, reason: started };
+		await this.#chooseThreadAccount(sessionId);
+		if (busy()) return { ok: false, reason: started };
+		// What the icons were before the ask, by id and version: a new one, or one drawn again, ends the drawing.
+		const known = (this.store.get().appIcons?.[app.name] ?? []).map(iconVersion);
+		if (!(await this.sendPrompt(sessionId, text)))
+			return {
+				ok: false,
+				reason: this.conversation(sessionId, false).get().sendError ?? t("The message could not be sent."),
+			};
+		this.store.set((now) => ({
+			appIconsDrawing: { ...now.appIconsDrawing, [app.name]: { since: Date.now(), known } },
+		}));
+		this.#watchIcons();
+		return { ok: true, agent: name };
+	}
+
+	/** Gives a thread the model account the cloud chooses for it now, as its view does when it opens: the conversation's
+	 * own account, never another; a message on its way keeps the one it carries. Without accounts, nothing changes. */
+	async #chooseThreadAccount(sessionId: string): Promise<void> {
+		const accounts = this.appIconAccounts;
+		const conversation = this.conversation(sessionId, false).get();
+		if (!accounts?.selectSessionAccount || conversation.sending || conversation.retrySend) return;
+		try {
+			const connectionId = await accounts.selectSessionAccount(sessionId, this.signal);
+			if (!connectionId) return;
+			const observed = await accounts.listConnections(this.signal);
+			const now = this.conversation(sessionId, false).get();
+			if (now.sending || now.retrySend) return;
+			this.setExecutionSponsor(sessionId, observed, connectionId);
+		} catch {
+			// The send says what is missing.
+		}
+	}
+
+	/** While an app is drawing: its icons are read every ten seconds, and a drawing older than ten minutes ends. */
+	#watchIcons(): void {
+		if (this.#iconWatch) return;
+		this.#iconWatch = setInterval(() => {
+			const drawing = this.store.get().appIconsDrawing ?? {};
+			const names = Object.keys(drawing);
+			if (this.#stopped || !names.length) {
+				clearInterval(this.#iconWatch);
+				this.#iconWatch = undefined;
+				return;
+			}
+			const now = Date.now();
+			const stale = names.filter((name) => now - drawing[name]!.since > APP_ICONS_DRAWING_MS);
+			if (stale.length)
+				this.store.set((state) => ({
+					appIconsDrawing: stale.reduce((all, name) => withoutKey(all, name), state.appIconsDrawing),
+				}));
+			for (const name of names) if (!stale.includes(name)) void this.loadAppIcons(name);
+		}, APP_ICONS_WATCH_MS);
 	}
 
 	/** Whether a Reset sidebar (or its Undo) is on its way: the drawer waits for it to move anything. */
@@ -3149,4 +3300,16 @@ export class CompanyController {
 			this.#polling = false;
 		}
 	}
+}
+
+/** How long the drawer shows an app drawing new icons at most, and how often their folder is read meanwhile. */
+const APP_ICONS_DRAWING_MS = 10 * 60_000;
+const APP_ICONS_WATCH_MS = 10_000;
+
+/** An icon by its id and the version of its file: the same id drawn again is a new version. */
+const iconVersion = (icon: CompanyAppIcon) => `${icon.id}@${icon.seq}`;
+
+function withoutKey<T>(record: Readonly<Record<string, T>> | undefined, key: string): Record<string, T> {
+	const { [key]: _gone, ...rest } = record ?? {};
+	return rest;
 }

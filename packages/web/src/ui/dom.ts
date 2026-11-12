@@ -258,6 +258,19 @@ const ICON_PATHS: Record<string, string[]> = {
 		"M9 8V6a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 6v2M4 13h16",
 	],
 	brush: ["M14.5 5.5l4 4-2 2-4-4z", "M12.5 7.5L5 15l4 4 7.5-7.5"],
+	// Two sparks: Generate icon, which asks an agent to draw.
+	sparkle: [
+		"M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15.5l-1.9-4.6L5.5 9l4.6-1.4z",
+		"M18 15l.9 2.1 2.1.9-2.1.9L18 21l-.9-2.1-2.1-.9 2.1-.9z",
+	],
+	// A painter's palette (Lucide palette): the drawer's Colour menu.
+	palette: [
+		"M12 2.5a9.5 9.5 0 1 0 0 19c1.2 0 1.8-.8 1.8-1.7 0-.5-.2-.9-.5-1.2-.3-.4-.5-.8-.5-1.3 0-1 .8-1.8 1.8-1.8h2.1a4.8 4.8 0 0 0 4.8-4.8c0-4.6-4.3-8.2-9.5-8.2z",
+		"M7.5 11.5h.01",
+		"M9.5 7h.01",
+		"M14.5 7h.01",
+		"M17 10.5h.01",
+	],
 	code: ["M9 8l-4 4 4 4M15 8l4 4-4 4"],
 	feedback: ["M21 15a4 4 0 0 1-4 4H7l-4 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"],
 	close: ["m6 6 12 12M6 18 18 6"],

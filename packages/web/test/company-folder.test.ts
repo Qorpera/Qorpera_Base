@@ -20,7 +20,7 @@ import {
 } from "../src/app/views/company-folder.ts";
 import { LiveCompanyFileView } from "../src/app/views/live-company-file.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
-import { setTimeZonePreference } from "../src/ui/preferences.ts";
+import { setLanguagePreference, setTimeZonePreference } from "../src/ui/preferences.ts";
 import { deferred, fixture, id, profileA, settle, team, visibleText } from "./fixtures.ts";
 
 const me = id(1);
@@ -1671,7 +1671,16 @@ describe("a folder-v2 company's Company File", () => {
 		expect(saved).toEqual([{ name: "readme.txt", href: "blob:fixture-picture" }]);
 		const handed = vi.mocked(URL.createObjectURL).mock.calls.at(-1)![0] as Blob;
 		expect(handed.size).toBe(6);
-		expect(status(host)).toBe("Downloading readme.txt.");
+		// Handed over, the file is ready: the page cannot know when the browser has saved it, so it says no more.
+		expect(status(host)).toBe("readme.txt is ready: your browser saves it in your downloads.");
+		// The line's words are taken when it is said: in Danish, once the language is Danish.
+		setLanguagePreference("da");
+		try {
+			await click(action(host, "Download"));
+			expect(status(host)).toBe("readme.txt er klar: din browser gemmer den i dine overførsler.");
+		} finally {
+			setLanguagePreference("system");
+		}
 		// A file of 20 MiB arrives as five pieces: the line says how far it is, and the browser gets one Blob of them.
 		const MIB = 1024 * 1024;
 		const big = { ...entry("big/site.zip", "x"), file: { ...file("x"), bytes: 20 * MIB } };
@@ -1699,7 +1708,7 @@ describe("a folder-v2 company's Company File", () => {
 			reader.readAsArrayBuffer(whole.slice(8 * MIB - 1, 8 * MIB + 1));
 		});
 		expect(seam).toEqual(Uint8Array.of(2, 3));
-		expect(status(host)).toBe("Downloading site.zip.");
+		expect(status(host)).toBe("site.zip is ready: your browser saves it in your downloads.");
 		expect(fake.client.readFile).toHaveBeenCalledTimes(1);
 	});
 

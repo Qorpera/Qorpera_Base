@@ -1,0 +1,39 @@
+#!/bin/bash
+# A press on the desktop's dock asked for a program (deploy/machine/desktop-look press): the browser, the files or a
+# terminal. Installed as /opt/qorpera-machine/desktop-dock-open; root runs it, started by
+# qorpera-machine-desktop-dock.path whenever the request folder holds something.
+#
+# A request is an empty file named browser, files or terminal in /run/qorpera-desktop-dock (root's folder, which only
+# the desktop's account may put names into: qorpera-machine-desktop.tmpfiles). It carries no data and nothing in it is
+# read: the name alone says which of three fixed programs is wanted. Each is started by the image's own `desktop`
+# command (`desktop dock`), the way an agent's `desktop open URL` and `desktop run` start one: as the account
+# `desktop`, in a unit of its own in the machine's slice, bound to the desktop, on its session bus, under the
+# desktop's lock, with the browser's own flags and profile (maximised). So the browser a member opens from the dock is
+# the browser an agent's next `desktop open` finds, and the memory guard treats it as any program on the desktop. A
+# press also counts as use: `desktop` puts off the idle stop.
+#
+# The desktop's account can put anything into the request folder, under any name. So nothing here takes more from
+# that folder than which of the three names is in it (review r3 F1 of #1704):
+# - this program and the command it runs work in `/`, never in the folder, with an environment that is set here;
+# - the names are read without following or opening any, and a name is only ever removed;
+# - `desktop dock` starts its program with words that are all written in `desktop`: none is looked up as a file, and
+#   nothing is linked or copied anywhere.
+if [[ ${QORPERA_DOCK_ENVIRONMENT:-} != set ]]; then
+	exec /usr/bin/env -i QORPERA_DOCK_ENVIRONMENT=set PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+		HOME=/root LANG=C.UTF-8 /bin/bash "${BASH_SOURCE[0]}"
+fi
+set -uo pipefail
+cd / || exit 1
+ASK=/run/qorpera-desktop-dock
+DESKTOP=/usr/local/bin/desktop
+# Which of the three names are there, whatever they are (a file, a link, a pipe, a folder).
+asked=$(find "$ASK" -mindepth 1 -maxdepth 1 \( -name browser -o -name files -o -name terminal \) -printf "%f\n" 2>/dev/null)
+for app in browser files terminal; do
+	[[ $'\n'$asked$'\n' == *$'\n'$app$'\n'* ]] || continue
+	# Removed before the program starts: a press made meanwhile asks again, and the path unit starts this once more.
+	rm -rf -- "$ASK/$app"
+	"$DESKTOP" dock "$app" >/dev/null || echo "the dock's $app did not start" >&2
+done
+# Any other name is no request.
+find "$ASK" -mindepth 1 -maxdepth 1 ! -name browser ! -name files ! -name terminal -exec rm -rf -- {} +
+exit 0

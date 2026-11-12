@@ -1,0 +1,4 @@
+# Where a press on the desktop's dock asks for a program (deploy/machine/desktop-look press, desktop-dock-open): root's
+# folder, made at every boot, into which only the desktop's account may put a name. Nobody but root can read or
+# replace it.
+d /run/qorpera-desktop-dock 0730 root desktop -
