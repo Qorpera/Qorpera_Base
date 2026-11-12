@@ -186,6 +186,8 @@ export function createHttpCloudCodingCommandGateway(options: {
 		admittedScope: CloudCodingCommandScope,
 		input: CommandInput | CloudCodingCommandRead,
 		signal: AbortSignal,
+		/** Set when the executor answered with a refusal of its own (4xx), not a proxy's or a server's failure (5xx). */
+		answer: { refused: boolean } = { refused: false },
 	): Promise<unknown> => {
 		try {
 			// A read asks the executor for no more than it said it takes; a smaller page answers it as well.
@@ -212,6 +214,7 @@ export function createHttpCloudCodingCommandGateway(options: {
 					});
 					pages.heard(origin, response.headers);
 					if (!response.ok || response.status !== 200) {
+						answer.refused = response.status < 500;
 						void response.body?.cancel().catch(() => undefined);
 						throw new Error(ERROR);
 					}
@@ -243,7 +246,8 @@ export function createHttpCloudCodingCommandGateway(options: {
 		}
 	};
 	/** A call; a read once more when the executor stopped saying what it takes (one rolled back under this process),
-	 * since such an executor refuses a page past what it takes and says nothing, and a refused read showed nothing. */
+	 * since such an executor refuses a page past what it takes and says nothing, and a refused read showed nothing. A
+	 * failure that is not the executor's refusal (5xx, no answer) is never asked again. */
 	const request = async (
 		action: "start" | "read" | "cancel",
 		admittedScope: CloudCodingCommandScope,
@@ -260,10 +264,11 @@ export function createHttpCloudCodingCommandGateway(options: {
 			}
 		};
 		const asked = limit();
+		const answer = { refused: false };
 		try {
-			return await send(action, admittedScope, input, signal);
+			return await send(action, admittedScope, input, signal, answer);
 		} catch (error) {
-			if (limit() >= asked) throw error;
+			if (!answer.refused || limit() >= asked) throw error;
 			return send(action, admittedScope, input, signal);
 		}
 	};

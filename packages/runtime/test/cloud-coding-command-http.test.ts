@@ -198,12 +198,19 @@ describe("isolated coding command HTTP gateway", () => {
 		// page past 16,384 (403) and answers without the header. A 403 of this tree's executor says what it takes.
 		let rolledBack = false;
 		const refusedId = randomUUID();
+		const proxiedId = randomUUID();
 		const executor = createServer(async (request, reply) => {
 			const chunks: Buffer[] = [];
 			for await (const chunk of request) chunks.push(chunk as Buffer);
 			const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 			bodies.push(body);
 			const said = rolledBack ? {} : { [CLOUD_COMMAND_PAGE_HEADER]: "65536" };
+			// A proxy in front of the executor that answers for it (502), without the header.
+			if (body.input.commandId === proxiedId) {
+				reply.writeHead(502, { "content-type": "text/html" });
+				reply.end("<html>Bad Gateway</html>");
+				return;
+			}
 			const refused = (rolledBack && body.input.limit > 16384) || body.input.commandId === refusedId;
 			reply.writeHead(refused ? 403 : 200, { "content-type": "application/json", ...said });
 			reply.end(JSON.stringify(refused ? { error: "coding_command_unavailable" } : f.receipt));
@@ -230,6 +237,12 @@ describe("isolated coding command HTTP gateway", () => {
 		rolledBack = true;
 		await expect(client.read(f.scope, { commandId, limit: 32768 }, signal)).resolves.toEqual(f.receipt);
 		expect(bodies.map((body) => body.input.limit)).toEqual([16384, 32768, 32768, 32768, 16384]);
+		// A proxy's failure without the header is never asked again, though the executor now counts as unsaid.
+		rolledBack = false;
+		await client.read(f.scope, { commandId, limit: 32768 }, signal);
+		await expect(client.read(f.scope, { commandId: proxiedId, limit: 32768 }, signal)).rejects.toThrow();
+		await client.read(f.scope, { commandId, limit: 32768 }, signal);
+		expect(bodies.map((body) => body.input.limit).slice(5)).toEqual([16384, 32768, 16384]);
 	});
 	it("transports bounded tail requests and rejects ambiguous page cursors before authority", async () => {
 		const f = await fixture();

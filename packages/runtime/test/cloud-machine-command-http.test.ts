@@ -195,7 +195,8 @@ describe("machine command gateway", () => {
 		const machineId = randomUUID(),
 			commandId = randomUUID(),
 			inputSha256 = "a".repeat(64),
-			stopped = randomUUID();
+			stopped = randomUUID(),
+			proxied = randomUUID();
 		const limits: unknown[] = [];
 		// This tree's executor first; then one from before keyholes S1 behind the same origin (rolled back): it refuses a
 		// page past 16,384 (403) and answers without the header. A refusal of a machine that stopped (409) stands.
@@ -207,6 +208,12 @@ describe("machine command gateway", () => {
 			const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 			limits.push(body.input.limit);
 			const said = rolledBack ? {} : { "x-qorpera-command-page-bytes": "65536" };
+			// A proxy in front of the executor that answers for it (502), without the header.
+			if (body.scope.machineId === proxied) {
+				reply.writeHead(502, { "content-type": "text/html" });
+				reply.end("<html>Bad Gateway</html>");
+				return;
+			}
 			const [status, answer] =
 				body.scope.machineId === stopped
 					? [409, { code: "MACHINE_NOT_RUNNING" }]
@@ -244,6 +251,13 @@ describe("machine command gateway", () => {
 			commandId,
 		});
 		expect(limits).toEqual([16384, 31968, 16384, 16384, 31968, 16384]);
+		// A proxy's failure without the header is unanswered, and never asked again.
+		rolledBack = false;
+		await gateway.read({ machineId }, { commandId, offset: 0, limit: 31968 }, signal);
+		await expect(
+			gateway.read({ machineId: proxied }, { commandId, offset: 0, limit: 31968 }, signal),
+		).rejects.toThrow(CloudMachineCommandUnanswered);
+		expect(limits.slice(6)).toEqual([16384, 31968]);
 	});
 
 	it("tells the agent a machine is not running by its code, and hides every other failure", async () => {
