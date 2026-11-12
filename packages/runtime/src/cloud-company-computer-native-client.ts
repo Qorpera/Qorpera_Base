@@ -15,6 +15,13 @@ import { type JsonValue, parseCompanyComputerNativeRoute, parseCompanyComputerNa
 export { parseCompanyComputerNativeRoute, parseCompanyComputerNativeUrl } from "@qorpera/contracts";
 
 import type {
+	CodingValueCaptureAnswer,
+	CodingValueCaptureCall,
+	CodingValueCaptureRequest,
+	CodingValuePrepareAnswer,
+	CodingValueRefusal,
+} from "./cloud-coding-value-vault.ts";
+import type {
 	CompanyAccountFillAnswer,
 	CompanyAccountFillRequest,
 	CompanyAccountRefusal,
@@ -70,6 +77,25 @@ const HOOKS_UNAVAILABLE = {
 	schema: "qorpera.event-hook-refusal/v1",
 	code: "0A000",
 	message: "Signed hooks are not set up for this company's computers",
+} as const;
+
+/** The vault, for a vault_capture of a coding value (20260930695000): its capture key before the office reads the
+ * page, and the office's box after: HttpCloudSecretBrokerClient. */
+export interface CompanyComputerCodingValues {
+	codingValuePrepare(
+		call: CodingValueCaptureCall,
+		signal: AbortSignal,
+	): Promise<CodingValuePrepareAnswer | CodingValueRefusal>;
+	codingValueCapture(
+		request: CodingValueCaptureRequest,
+		signal: AbortSignal,
+	): Promise<CodingValueCaptureAnswer | CodingValueRefusal>;
+}
+
+const CODING_VALUES_UNAVAILABLE = {
+	schema: "qorpera.coding-value-refusal/v1",
+	code: "0A000",
+	message: "Coding values are not set up for this company's computers",
 } as const;
 
 /** A vault's refusal as the call's answer, in the model's words: nothing was typed or stored. */
@@ -163,6 +189,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 	readonly #fetch: typeof fetch;
 	readonly #accountFills: CompanyComputerAccountFills | undefined;
 	readonly #hookFills: CompanyComputerHookFills | undefined;
+	readonly #codingValues: CompanyComputerCodingValues | undefined;
 	readonly #screenshots: Pick<CloudCompanyComputerScreenshots, "holdInline"> | undefined;
 	readonly #leases = new Map<string, CompanyComputerScreenLease>();
 	#closed = false;
@@ -178,6 +205,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		fetch?: typeof fetch;
 		accountFills?: CompanyComputerAccountFills;
 		hookFills?: CompanyComputerHookFills;
+		codingValues?: CompanyComputerCodingValues;
 		/** The run's capture reader, which keeps a screenshot's pixels from its perform answer for the model. */
 		screenshots?: Pick<CloudCompanyComputerScreenshots, "holdInline">;
 	}) {
@@ -198,6 +226,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		this.#fetch = options.fetch ?? fetch;
 		this.#accountFills = options.accountFills;
 		this.#hookFills = options.hookFills;
+		this.#codingValues = options.codingValues;
 		this.#screenshots = options.screenshots;
 		this.#effects = new CloudCompanyComputerEffectControl({
 			run: options.run,
@@ -298,7 +327,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		// refusal (accounts switched off, no such account, an older computer) is the call's answer, unsent. A signed
 		// hook's secret (E3b-3) comes the same way, from the vault's hook route.
 		let fill: Readonly<Record<string, string>> | undefined;
-		const action = operation.arguments as { kind?: unknown; action?: unknown; hook?: unknown };
+		const action = operation.arguments as { kind?: unknown; action?: unknown; hook?: unknown; codingValue?: unknown };
 		const request = {
 			binding: this.#run.binding,
 			receiptId: context.receiptId,
@@ -309,7 +338,19 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 		// an older broker authority or company key is made again first (a current one is only read). A refusal is the
 		// call's answer, and the office is never asked.
 		const capture = action.kind === "browser" && action.action === "vault_capture";
-		if (capture) {
+		// A coding value's (20260930695000) the same way: its capture key is made, made again or kept first, under the
+		// company's current key and for the id the value keeps.
+		const codingValue = capture
+			? (action.codingValue as { service: string; variable: string; repository: string } | undefined)
+			: undefined;
+		if (codingValue) {
+			const prepared = this.#codingValues
+				? await this.#codingValues.codingValuePrepare(request, signal)
+				: CODING_VALUES_UNAVAILABLE;
+			if (prepared.schema === "qorpera.coding-value-refusal/v1") return vaultRefused("vault_capture", prepared);
+			if (prepared.schema !== "qorpera.coding-value-prepare-answer/v1" || prepared.variable !== codingValue.variable)
+				throw new Error("OFFICE_NATIVE_UNCONFIRMED");
+		} else if (capture) {
 			const rekey = this.#hookFills
 				? await this.#hookFills.eventHook(
 						{ binding: this.#run.binding, request: { action: "rekey", hook: action.hook as string } },
@@ -401,7 +442,7 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 			const box = officeNativeRecord(response.box, "ciphertext,ephemeralPublicKey,iv,schema,tag");
 			const read = content.value as { action?: unknown; completed?: unknown } | null;
 			if (
-				!this.#hookFills ||
+				!(codingValue ? this.#codingValues : this.#hookFills) ||
 				content.kind !== "json" ||
 				!read ||
 				typeof read !== "object" ||
@@ -410,6 +451,33 @@ export class HttpCompanyComputerNativeEndpoint implements CompanyComputerCloudEn
 				Object.values(box).some((part) => typeof part !== "string")
 			)
 				throw new Error("INVALID_OFFICE_NATIVE_RESULT");
+			if (codingValue && this.#codingValues) {
+				// The value read off the service's page, sealed to its capture key: the vault stores it as the value's next
+				// version and grants it to the call's repository. The answer names it, never the value.
+				const stored = await this.#codingValues.codingValueCapture(
+					{ ...request, box: box as Record<string, string> },
+					signal,
+				);
+				await this.#run.assertActive(signal);
+				if (stored.schema === "qorpera.coding-value-refusal/v1") return vaultRefused("vault_capture", stored);
+				if (stored.variable !== codingValue.variable || stored.repository !== codingValue.repository)
+					throw new Error("OFFICE_NATIVE_UNCONFIRMED");
+				return {
+					kind: "json",
+					value: {
+						action: "vault_capture",
+						completed: true,
+						captured: {
+							service: codingValue.service,
+							variable: stored.variable,
+							repository: stored.repository,
+							version: stored.version,
+							unchanged: stored.unchanged,
+						},
+					},
+				};
+			}
+			if (!this.#hookFills) throw new Error("INVALID_OFFICE_NATIVE_RESULT");
 			const stored = await this.#hookFills.eventHookCapture(
 				{ ...request, box: box as Record<string, string> },
 				signal,
@@ -484,6 +552,9 @@ export function createHttpCompanyComputerSessionFactory(options: {
 	accountFills?: CompanyComputerAccountFills;
 	/** The vault, for vault_fill of a signed hook's secret (E3b-3); without it every such fill is refused likewise. */
 	hookFills?: CompanyComputerHookFills;
+	/** The vault, for vault_capture of a coding value (20260930695000); without it every such capture is refused
+	 * before the office. */
+	codingValues?: CompanyComputerCodingValues;
 }): CloudCompanyComputerSessionFactory {
 	// One computer, or every computer of the company: the run reaches the one its screen is on.
 	const route = parseCompanyComputerNativeRoute(options.url);

@@ -112,11 +112,12 @@ describe("the captions the kernel state produces", () => {
 		}
 	});
 
-	it("draws each harness with its maker's own mark", () => {
-		// OpenAI's mark for Codex (as on the Connections card), the Claude spark for Claude Code.
+	it("draws each harness with its own mark", () => {
+		// Codex's prompt ">_" (so it reads as coding, not as ChatGPT), the Claude spark for Claude Code.
 		const codex = harnessMark("codex", 14);
-		expect(codex.getAttribute("viewBox")).toBe("146.694 227.042 267.198 264.812");
-		expect(codex.querySelector("path")?.getAttribute("d")).toMatch(/^M249\.176 323\.434V298\.276/);
+		expect(codex.getAttribute("viewBox")).toBe("3 3 18 18");
+		expect(codex.querySelector("path")?.getAttribute("d")).toBe("M5.5 7.5 10 12l-4.5 4.5M12.5 17h6");
+		expect(codex.querySelector("path")?.getAttribute("stroke")).toBe("currentColor");
 		expect(codex.getAttribute("width")).toBe("14");
 		const claude = harnessMark("claude-code", 14);
 		expect(claude.getAttribute("viewBox")).toBe("0 0 24 24");
@@ -176,6 +177,46 @@ describe("the captions the kernel state produces", () => {
 			text: "Failed · workspace kept",
 			tone: "failed",
 		});
+		// Handing in: a pull request on GitHub; code the company keeps in Qorpera has none, and is saved.
+		const kept = { host: "qorpera", owner: "company", name: "shop", baseBranch: "main" };
+		expect(codingSessionStatus(codingSession({ phase: "publishing" }), owner, NOW).text).toBe(
+			"Opening the pull request · 3 files changed",
+		);
+		expect(codingSessionStatus(codingSession({ phase: "publishing", repository: kept }), owner, NOW).text).toBe(
+			"Saving the change · 3 files changed",
+		);
+		expect(codingSessionStatus(codingSession({ phase: "completed", repository: kept }), owner, NOW).text).toBe(
+			"Finished · session kept for follow-ups",
+		);
+		// While it is checked before it goes in (own code storage, step 3), with tests of its own or none, the executor's
+		// step says so; an executor from before says "Landing the change", and a pull request has no such wait.
+		const checking = { phase: "publishing" as const, lastStep: "Checking and saving the change" };
+		expect(codingSessionStatus(codingSession({ ...checking, repository: kept }), owner, NOW)).toEqual({
+			text: "Checking the change before saving it · 3 files changed",
+			tone: "working",
+		});
+		expect(
+			codingSessionStatus(codingSession({ ...checking, repository: kept, filesChanged: 0 }), other, NOW).text,
+		).toBe("Checking the change before saving it");
+		expect(
+			codingSessionStatus(
+				codingSession({ phase: "publishing", lastStep: "Landing the change", repository: kept }),
+				owner,
+				NOW,
+			).text,
+		).toBe("Saving the change · 3 files changed");
+		expect(codingSessionStatus(codingSession(checking), owner, NOW).text).toBe(
+			"Opening the pull request · 3 files changed",
+		);
+		setLanguagePreference("da");
+		try {
+			expect(codingSessionStatus(codingSession({ ...checking, repository: kept }), owner, NOW).text).toBe(
+				"Tjekker ændringen, før den gemmes · 3 filer ændret",
+			);
+		} finally {
+			setLanguagePreference("system");
+			localStorage.clear();
+		}
 		// Between turns: where the session is, instead of the generic "kept".
 		const done = { phase: "completed" as const, pullRequest: { url: "https://x.invalid/pull/1", number: 1 } };
 		expect(codingSessionStatus(codingSession({ ...done, attached: true }), owner, NOW).text).toBe(
@@ -486,6 +527,15 @@ describe("the element in the thread", () => {
 		expect(element.el.querySelector(".coding-meta")?.textContent).toBe(
 			`Qorpera_Base·qorpera/coding/1111…·claude-sonnet-5`,
 		);
+		expect(element.el.querySelector(".coding-meta .coding-mono")?.textContent).toBe("qorpera/coding/1111…");
+		// Code kept in Qorpera: the project's name and the model, never the session's own branch.
+		const kept = mount(
+			codingSession({ repository: { host: "qorpera", owner: "company", name: "shop", baseBranch: "main" } }),
+			{ events },
+		);
+		await settle();
+		expect(kept.element.el.querySelector(".coding-meta")?.textContent).toBe("shop·claude-sonnet-5");
+		expect(kept.element.el.querySelector(".coding-meta .coding-mono")).toBeNull();
 		// One turn for the harness, behind its mark: its steps, then what it said, a bubble a paragraph, then a step.
 		const turns = [...element.el.querySelectorAll<HTMLElement>(".coding-body .coding-turn")];
 		expect(turns.map((turn) => turn.className)).toEqual(["coding-turn coding-turn-harness"]);
@@ -1041,6 +1091,60 @@ describe("the element in the thread", () => {
 		expect(notes).toEqual([
 			"The company ran out of computer hours. The workspace is kept; a follow-up continues once hours are added.",
 		]);
+	});
+
+	it("says a change that did not go in for its tests in plain words, never with the check's own", async () => {
+		// The cloud keeps the executor's words, which name the check, its command and its output, and the code apart.
+		const failed = (id: number, code: string, summary: string) => event(id, "failed", { summary, code }, "executor");
+		const events = [
+			failed(
+				1,
+				"CODING_CHECKS_FAILED",
+				'Nothing went into main: the check "test" failed on this change. It ran `npm test` and ended with exit code 1 after 41 s. The end of its output:\n\n    Error: Provider credential is invalid\n\nIts whole output is in ~/.qorpera-checks/out/2-test.log on the session\'s machine.',
+			),
+			failed(
+				2,
+				"CODING_CHECKS_REFUSED",
+				"Nothing went into main: the repository's checks file, .qorpera/checks.json, is gone in this change, and a repository that has checks keeps them. Fix the file, commit and finish again.",
+			),
+			failed(
+				3,
+				"CODING_CHECKS_DID_NOT_RUN",
+				"Nothing went into main: Qorpera could not run the repository's checks on this change (the session's machine stopped). This is not a fault in the code.",
+			),
+			failed(
+				4,
+				"CODING_CHECKS_MAIN_MOVED",
+				"Nothing went into main yet: main changed twice while this change's checks ran, so they never ran on what would go in.",
+			),
+		];
+		const notPassed = "Not saved yet: the change did not pass its tests, so the code is as it was.";
+		const notTested = "Not saved yet: Qorpera could not test the change just now. Nothing was lost.";
+		for (const viewer of ["owner", "other"] as const) {
+			const { element } = mount(codingSession({ phase: "failed", workerState: "failed" }), { events, viewer });
+			await settle();
+			const notes = [...element.el.querySelectorAll(".coding-note")].map((note) => note.textContent);
+			expect(notes).toEqual([notPassed, notPassed, notTested, notTested]);
+			expect(element.el.querySelector(".coding-log")?.textContent).not.toMatch(
+				/npm|checks\.json|credential|exit code|Nothing went into/,
+			);
+			element.dispose?.();
+		}
+		setLanguagePreference("da");
+		try {
+			const { element } = mount(codingSession({ phase: "failed", workerState: "failed" }), { events });
+			await settle();
+			const notes = [...element.el.querySelectorAll(".coding-note")].map((note) => note.textContent);
+			expect(notes).toEqual([
+				"Ikke gemt endnu: ændringen bestod ikke sine tests, så koden er, som den var.",
+				"Ikke gemt endnu: ændringen bestod ikke sine tests, så koden er, som den var.",
+				"Ikke gemt endnu: Qorpera kunne ikke teste ændringen lige nu. Intet gik tabt.",
+				"Ikke gemt endnu: Qorpera kunne ikke teste ændringen lige nu. Intet gik tabt.",
+			]);
+		} finally {
+			setLanguagePreference("system");
+			localStorage.clear();
+		}
 	});
 
 	it("says a turn that stopped at its login's usage limit, in OpenAI's words for the owner's own plan", async () => {

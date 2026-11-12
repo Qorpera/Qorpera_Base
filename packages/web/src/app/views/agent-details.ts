@@ -1,10 +1,10 @@
 import type { HostedStaffAgent } from "../../cloud/types.ts";
-import { wallNews } from "../../ui/agent-wall-poster.ts";
 import { figureElement } from "../../ui/avatar.ts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { type FigureChoice, FigurePicker } from "../../ui/figure-picker.ts";
 import { matchesKey } from "../../ui/keys.ts";
+import { markdown, markdownSourceOffset } from "../../ui/markdown.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import type { AgentDraft, WorkspaceActions } from "../workspace-actions.ts";
@@ -12,11 +12,12 @@ import { type AgentEdits, editsFor, savedAgentDraft } from "./agent-edits.ts";
 import { AgentRoutines, routineAccessFor } from "./agent-routines.ts";
 import { type CardFootActions, cardFoot } from "./card-foot.ts";
 
-type TextKey = "displayName" | "role" | "charter";
+/** A name and responsibilities, and no title under the name (Jonas, 10 November 2026: a name and responsibility is
+ * enough). The agent's role still lives in its agent.md; the card neither shows nor edits it. */
+type TextKey = "displayName" | "charter";
 
 const FIELDS: Record<TextKey, { label: string; empty: string }> = {
 	displayName: { label: phrase("Agent name"), empty: phrase("An agent needs a name.") },
-	role: { label: phrase("Agent title"), empty: phrase("An agent needs a title.") },
 	// The description is the agent's responsibilities in plain prose, and what the agent works from.
 	charter: { label: phrase("Responsibilities"), empty: phrase("An agent needs its responsibilities written down.") },
 };
@@ -25,16 +26,16 @@ const FIELDS: Record<TextKey, { label: string; empty: string }> = {
  * member can't use it, and the card then shows no control for it. */
 export interface AgentCardActions extends CardFootActions {
 	computer?: () => void;
-	/** "Latest notes": the agent's wall above its composer, open. The row shows once `read` finds a
-	 * wall with something on it. */
-	notes?: { open: () => void; read: (signal: AbortSignal) => Promise<string | null> };
 }
 
 /** An agent's card: what a right-click on the agent in the rail opens (and, on a phone,
- * the conversation title). Name, title and responsibilities are edited where they stand
+ * the conversation title). Name and responsibilities are edited where they stand
  * and save on their own; the figure changes from a picker under it, as on the desktop. The
  * responsibilities field is the agent's description in plain prose and what the agent works
- * from. Under it, the agent's computer, latest notes (its wall) and routines, then Copy, Hide and Delete.
+ * from. It is written in Markdown and the card draws it so (Jonas, 10 November 2026: "the description isn't
+ * rendering the markdown designs they are written in"); the text itself takes the drawing's place while it is
+ * edited. Under it, the agent's computer and routines, then Copy, Hide and Delete. Latest notes
+ * left the card again (Jonas, 10 November 2026): the wall stays above the agent's composer.
  * Routines are a page of the card itself, with a way back. */
 export class AgentDetails {
 	readonly dialog: SurfaceDialog;
@@ -55,6 +56,14 @@ export class AgentDetails {
 	readonly #picker: HTMLElement;
 	readonly #figures: FigurePicker;
 	readonly #status = h("p", { class: "agent-details-status", role: "status" });
+	/** The responsibilities drawn as the Markdown they are written in: what the card shows while their field does not
+	 * have the focus. A picture of the field's text, so assistive technology reads the field alone, and Tab stops at
+	 * the field alone: left to itself, a browser makes a stop of anything that scrolls. */
+	readonly #reading = h("div", { class: "agent-inline-reading", "aria-hidden": "true", tabindex: "-1" });
+	/** The text `#reading` was last drawn from. */
+	#drawnText: string | undefined;
+	/** Where the pointer last went down on the responsibilities: a press that moved before it let go selected text. */
+	#pressedAt: { x: number; y: number } | undefined;
 	/** The field being typed in, if any. */
 	#open: TextKey | undefined;
 	#drawn = "";
@@ -104,8 +113,7 @@ export class AgentDetails {
 			icon("chevron"),
 		) as HTMLButtonElement;
 		this.#routinesLink = routines;
-		const notes = card.notes ? this.#notesLink(card.notes, then) : null;
-		const links = [link(t("Computer"), "computer", card.computer), notes, routines];
+		const links = [link(t("Computer"), "computer", card.computer), routines];
 		const foot = cardFoot(card, {
 			close: () => this.dialog.close(false),
 			copyFailed: () => {
@@ -142,6 +150,8 @@ export class AgentDetails {
 			),
 			this.#figures.el,
 		);
+		// It hangs below the card: a card low in the rail moves up while it shows, so it stays inside the window.
+		this.dialog.overhang(this.#picker);
 		this.#figureButton = h(
 			"button",
 			{
@@ -163,7 +173,7 @@ export class AgentDetails {
 				"div",
 				{ class: "agent-details-identity" },
 				h("div", { class: "agent-figure-area" }, this.#figureButton, this.#picker),
-				h("div", { class: "agent-details-names" }, this.#field("displayName"), this.#field("role")),
+				h("div", { class: "agent-details-names" }, this.#field("displayName")),
 			),
 			this.#field("charter"),
 			links.some(Boolean) ? h("div", { class: "agent-card-links" }, ...links) : null,
@@ -217,36 +227,6 @@ export class AgentDetails {
 		onClose();
 	}
 
-	/** "Latest notes", shown once the agent's wall is read and has an item; it says how many items are new since the
-	 * member last saw it open. A wall that cannot be read leaves the row away. */
-	#notesLink(notes: NonNullable<AgentCardActions["notes"]>, then: (act: () => void) => () => void): HTMLElement {
-		const count = h("span", { class: "agent-card-count", hidden: true });
-		const row = h(
-			"button",
-			{ type: "button", class: "agent-card-link", hidden: true, onclick: then(notes.open) },
-			icon("pin"),
-			h("span", null, t("Latest notes")),
-			count,
-			icon("chevron"),
-		);
-		const signal = this.#lifetime.signal;
-		void notes.read(signal).then(
-			(text) => {
-				if (signal.aborted || text === null) return;
-				const member = this.#company.userId;
-				const { items, unseen } = wallNews(member, this.#agent.id, text);
-				if (!items) return;
-				count.hidden = !unseen;
-				count.textContent = unseen === 1 ? t("1 new") : unseen ? t("{n} new", { n: unseen }) : "";
-				row.hidden = false;
-			},
-			() => {
-				/* No row: the wall could not be read. */
-			},
-		);
-		return row;
-	}
-
 	#current(): AgentDraft {
 		return this.#edits.current();
 	}
@@ -284,20 +264,55 @@ export class AgentDetails {
 					type: "text",
 					// No width of its own: the sizer gives it the width of its text.
 					size: "1",
-					maxlength: key === "displayName" ? "64" : "160",
+					maxlength: "64",
 					autocomplete: "off",
 					...events,
 				});
 		this.#fields[key] = control;
-		// The sizer mirrors the text so the name and title are as wide as what they hold;
+		// The sizer mirrors the text so the name is as wide as what it holds;
 		// the description fills the popup's static frame instead (conversation.css).
 		const sizer = h("span", { class: "agent-inline-size" }, control);
+		if (!multiline) return h("label", { class: "agent-inline-field agent-inline-name" }, sizer, icon("edit"));
+		// The drawn text stands in the field's place until the field has the focus (conversation.css).
 		return h(
 			"label",
-			{ class: `agent-inline-field agent-inline-${multiline ? "description" : key === "role" ? "title" : "name"}` },
+			{
+				class: "agent-inline-field agent-inline-description has-reading",
+				onpointerdown: (event: PointerEvent) => {
+					this.#pressedAt = { x: event.clientX, y: event.clientY };
+				},
+				onclick: (event: MouseEvent) => this.#editAt(event),
+			},
 			sizer,
+			this.#reading,
 			icon("edit"),
 		);
+	}
+
+	/** A click on the drawn responsibilities opens their field with the caret where the click fell. The click is
+	 * answered here, not by the label: a member who can only read keeps the drawing, and so does a press that was
+	 * dragged over the text, which selects it for copying. (A selection alone can't tell: a browser may clear the one
+	 * a click falls in only after the click.) */
+	#editAt(event: MouseEvent): void {
+		const control = this.#fields.charter;
+		// A click in the field itself is the field's own.
+		if (!(event.target instanceof Node) || control.parentElement?.contains(event.target)) return;
+		event.preventDefault();
+		const pressed = this.#pressedAt;
+		this.#pressedAt = undefined;
+		const dragged = pressed !== undefined && Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) > 4;
+		if (!this.#canWrite() || dragged) return;
+		const caret = document.caretPositionFromPoint?.(event.clientX, event.clientY);
+		// WebKit's older name for the same, where the first is missing.
+		const range = caret ? undefined : document.caretRangeFromPoint?.(event.clientX, event.clientY);
+		const node = caret?.offsetNode ?? range?.startContainer;
+		const at =
+			node && this.#reading.contains(node)
+				? markdownSourceOffset(node, caret?.offset ?? range?.startOffset ?? 0)
+				: undefined;
+		if (at !== undefined) control.setSelectionRange(at, at);
+		// Focusing brings the caret into view.
+		control.focus();
 	}
 
 	#show(key: TextKey, value: string): void {
@@ -305,6 +320,14 @@ export class AgentDetails {
 		if (control.value !== value) control.value = value;
 		const sizer = control.parentElement;
 		if (sizer) sizer.dataset.value = value;
+		// The field covers the drawing while it is typed in, so the drawing follows once the typing is over.
+		if (key !== "charter" || key === this.#open || value === this.#drawnText) return;
+		this.#drawnText = value;
+		// Links read as their text: a click here edits, and nothing leaves the card.
+		const drawn = markdown(value, { links: false, sourceRanges: true });
+		// A table is a stop for the keyboard in a message; here the field is the only one.
+		for (const stop of drawn.querySelectorAll("[tabindex]")) stop.setAttribute("tabindex", "-1");
+		replace(this.#reading, drawn);
 	}
 
 	/** Leaves a field for the panel itself, so the keyboard stays in the panel. */

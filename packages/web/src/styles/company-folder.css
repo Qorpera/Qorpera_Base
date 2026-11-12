@@ -34,7 +34,7 @@ button.files-crumb:hover { background: var(--hover); color: var(--text); }
 .files-crumb-sep .icon { width: 12px; height: 12px; }
 
 .files-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
-.files-page.has-preview .files-body { grid-template-columns: minmax(0, 1fr) minmax(300px, 42%); }
+.files-page.has-preview:not(.is-embedded) .files-body { grid-template-columns: minmax(0, 1fr) minmax(300px, 42%); }
 .files-main { min-width: 0; }
 .files-list { list-style: none; margin: 0; padding: 0; }
 .files-row { position: relative; display: flex; align-items: center; border-radius: var(--radius-sm); }
@@ -105,7 +105,7 @@ button.folder-history-path:hover { text-decoration: underline; }
 	.files-tools { flex: 1 1 100%; }
 	.files-search { flex: 1; }
 	.files-search-input { width: 100%; }
-	.files-page.has-preview .files-body { grid-template-columns: minmax(0, 1fr); }
-	.files-page.has-preview .files-main, .files-page.has-preview .files-crumbs { display: none; }
+	.files-page.has-preview:not(.is-embedded) .files-body { grid-template-columns: minmax(0, 1fr); }
+	.files-page.has-preview:not(.is-embedded) .files-main, .files-page.has-preview:not(.is-embedded) .files-crumbs { display: none; }
 	.files-preview { position: static; padding-left: 0; border-left: 0; }
 }

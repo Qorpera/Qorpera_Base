@@ -18,6 +18,7 @@ export type RunFailureKind =
 	| "step_timeout"
 	| "timeout"
 	| "bridge"
+	| "no_reply"
 	| "cancelled"
 	| "other";
 
@@ -37,6 +38,14 @@ export function classifyRunFailure(
 	// is unknown (30 October 2026). The runner fails it at once with this code; it used to go silent and read as lost
 	// contact minutes later.
 	if ((lastError ?? "").includes("[code=RUN_COMPLETION_REFUSED]")) return "completion_refused";
+	// The agent's turn ended without its final send_message, so the member got no reply (10 November 2026). Nothing was
+	// refused: the runtime's own code says so, and older runs carry the stage's code with the category "unknown", which
+	// only that ending produces. A member's stop stays a stop; any other category at that stage reads as below.
+	if (
+		(lastError ?? "").includes("[code=AGENT_TURN_ENDED_WITHOUT_FINAL_SEND]") ||
+		(lastError ?? "").includes("[code=NATIVE_PUBLIC_COMPLETION:UNKNOWN]")
+	)
+		return jobStatus === "cancelled" ? "cancelled" : "no_reply";
 	// Any other refused step carries the provider's fixed code (e.g. "[code=NATIVE_CREDENTIAL_SEALING:STORAGE_BUDGET]").
 	// Most name Qorpera's own machinery, not a member's account, so the words inside a code never decide the class: the
 	// step stays "bridge", as it was before the code. Only its category can (the part after the colon, from the runtime's
@@ -111,6 +120,8 @@ const REASONS: Record<RunFailureKind, string> = {
 	step_timeout: phrase("One of the run's steps got no answer in time. The problem is on Qorpera's side."),
 	timeout: phrase("The run took too long and was stopped."),
 	bridge: phrase("The run started, but one of its steps was refused. The problem is on Qorpera's side."),
+	// Try again is offered as for lost contact; the words never ask for it.
+	no_reply: phrase("The agent finished without sending its answer. The problem is on Qorpera's side."),
 	cancelled: phrase("The run was stopped before it finished."),
 	other: phrase("The run stopped because of an internal error."),
 };
@@ -132,6 +143,11 @@ export interface RunPayer {
 	own?: boolean;
 	/** Said only for a usage limit, and only while it is ahead. */
 	resetsAt?: string;
+	/** The card offers the member whose own login paid their other logins that can pay now ("Continue with …"). */
+	continuable?: boolean;
+	/** For anyone else: the name of the member whose login paid, the only one who can continue the work on another
+	 * login of theirs. */
+	payerName?: string;
 }
 
 /** Where OpenAI sends a member to manage their ChatGPT plan's usage (Sign in with ChatGPT UI guidelines). */
@@ -163,12 +179,50 @@ export function runFailureReason(
 ): string {
 	const kind = classifyRunFailure(lastError, jobStatus, usageLimit);
 	const resetsAt = payer.resetsAt;
-	if (kind === "usage_limit" && resetsAt && Date.parse(resetsAt) > Date.now())
+	const time = kind === "usage_limit" && resetsAt && Date.parse(resetsAt) > Date.now() ? fmtTime(resetsAt) : undefined;
+	// The work never moves by itself. The member whose own login paid may continue it with another login of theirs that
+	// can pay now (the card's "Continue with …"); anyone else reads who can.
+	if (kind === "usage_limit" && payer.own === true && payer.continuable === true)
+		return time
+			? t(
+					"The model account paying for this work reached its usage limit, so the work stopped. It can run again when the limit resets ({time}), or you can continue it now with another of your logins.",
+					{ time },
+				)
+			: t(
+					"The model account paying for this work reached its usage limit, so the work stopped. It can run again once the limit resets, or you can continue it now with another of your logins.",
+				);
+	if (kind === "usage_limit" && payer.own !== true && payer.payerName)
+		return t(
+			"The model account paying for this work reached its usage limit, so the work stopped. It can run again once the limit resets. Only {name} can continue it now with another of their logins.",
+			{ name: payer.payerName },
+		);
+	if (time)
 		return t(
 			"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again when the limit resets ({time}).",
-			{ time: fmtTime(resetsAt) },
+			{ time },
 		);
 	return t((payer.own === true ? undefined : REASONS_FOR_OTHERS[kind]) ?? REASONS[kind]);
+}
+
+/** Why a run waits at its login's usage limit, until `until` (20260930703000): it goes on by itself, on the same login,
+ * then. The member whose own login pays may continue it now with another login of theirs (the card's "Continue with …",
+ * `payer.continuable`); anyone else reads who can. */
+export function runWaitingReason(until: string, payer: RunPayer = {}): string {
+	const time = fmtTime(until);
+	if (payer.own === true && payer.continuable === true)
+		return t(
+			"The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets ({time}), or you can continue it now with another of your logins.",
+			{ time },
+		);
+	if (payer.own !== true && payer.payerName)
+		return t(
+			"The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets ({time}). Only {name} can continue it now with another of their logins.",
+			{ time, name: payer.payerName },
+		);
+	return t(
+		"The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets ({time}).",
+		{ time },
+	);
 }
 
 // The coding executor's own words for a turn that ended with no coding_finish or
@@ -212,6 +266,10 @@ const CODING_REASONS: Record<RunFailureKind | "no_submission", string> = {
 	bridge: phrase(
 		"Something on Qorpera's side refused one of the session's steps. The workspace is kept; a follow-up continues it.",
 	),
+	// A coding session never ends its turn this way; its words are the refused step's.
+	no_reply: phrase(
+		"Something on Qorpera's side refused one of the session's steps. The workspace is kept; a follow-up continues it.",
+	),
 	cancelled: phrase("The session was stopped before it finished. The workspace is kept; a follow-up continues it."),
 	other: phrase("The session stopped because of an internal error. The workspace is kept; a follow-up continues it."),
 };
@@ -231,6 +289,29 @@ const CODING_PROVIDER_OUTAGE = phrase(
 	"ChatGPT was overloaded or had a server error while the session worked. This is usually brief, and the login is fine. The workspace is kept; a follow-up continues it.",
 );
 
+/** A change to code kept in Qorpera that did not go in for its checks (own code storage, step 3): the executor's codes,
+ * which the cloud keeps as the failed turn's code. The executor's own words name the check, its command and the end of
+ * its output, for the agents; a founder reads only that nothing was saved, and whether the change or Qorpera stopped
+ * it. The session's owning agent follows up by itself, so nothing is asked of the founder. */
+const CODING_CHECKS_FAILED = phrase("Not saved yet: the change did not pass its tests, so the code is as it was.");
+const CODING_CHECKS_NOT_RUN = phrase("Not saved yet: Qorpera could not test the change just now. Nothing was lost.");
+
+function codingChecksReason(code: string | undefined): string | undefined {
+	switch (code) {
+		// A check failed, or the checks file is gone or broken, or the site the checks built cannot go out (step 4: no
+		// index.html, over the limits, a secret in it): the change's own doing.
+		case "CODING_CHECKS_FAILED":
+		case "CODING_CHECKS_REFUSED":
+		case "CODING_CHECKS_SITE_REFUSED":
+			return CODING_CHECKS_FAILED;
+		// The checks could not run, or main moved twice while they ran: never the code's fault.
+		case "CODING_CHECKS_DID_NOT_RUN":
+		case "CODING_CHECKS_MAIN_MOVED":
+			return CODING_CHECKS_NOT_RUN;
+	}
+	return undefined;
+}
+
 /** What the kernel tells about a coding turn that stopped at its login's usage limit (20260929993000). */
 export interface CodingUsageLimit {
 	usageLimit?: boolean;
@@ -243,7 +324,8 @@ export interface CodingUsageLimit {
  * workspace is kept. The reason is the kernel's "executor-lease-expired" or the
  * executor's summary, which carries the run's last error and its fixed code;
  * both name machinery, so neither is ever shown as it is. A turn the kernel says
- * stopped at a usage limit is told as one, in OpenAI's words for the owner's plan. */
+ * stopped at a usage limit is told as one, in OpenAI's words for the owner's plan;
+ * a change that did not go in for its checks says only that it was not saved. */
 export function codingFailureReason(reason: string | undefined, limit: CodingUsageLimit = {}, code?: string): string {
 	if (limit.usageLimit === true)
 		return limit.paidByChatgptPlan === true && limit.mine === true
@@ -251,6 +333,12 @@ export function codingFailureReason(reason: string | undefined, limit: CodingUsa
 			: t(CODING_REASONS.usage_limit);
 	// The run failed with the model provider's outage (20260930560000): ChatGPT's, usually brief; the login is fine.
 	if (code === "provider_outage") return t(CODING_PROVIDER_OUTAGE);
+	// The change's checks failed or could not run (step 3): the code decides, before any word of the summary is read,
+	// since the summary holds the check's output. A summary that still ends with its code reads the same (the code read
+	// as 20260930721000's qorpera_coding_turn_failure reads it).
+	const checks =
+		codingChecksReason(code) ?? codingChecksReason(reason?.match(/\[code=(CODING_CHECKS_[A-Z_]{1,40})\]\s*$/)?.[1]);
+	if (checks) return t(checks);
 	// Since 20260930560000 a failed run's summary is plain words and its code travels apart (the failed event's `code`,
 	// 20260930551000): the code alone decides, as it did inside the executor's summary, and a code no class names is a
 	// step refused on Qorpera's side, as the bridge's text said. Lower-case reasons (turn_failed, stopped, ...) name no
@@ -268,7 +356,8 @@ export function codingFailureReason(reason: string | undefined, limit: CodingUsa
 
 /** Whether the run was interrupted rather than refused: Qorpera lost contact with
  * it, a step got no answer in time or lost its connection, it was stopped for time,
- * cancelled, or never got a computer. Those are worth trying again as they are.
+ * cancelled, never got a computer, or the agent finished its turn without sending its
+ * answer. Those are worth trying again as they are.
  * A reached usage limit, a disconnected account, a login ChatGPT refused or that
  * could not be loaded, or a company out of computer hours need someone to act
  * first, so their card offers Dismiss only and says what to do.
@@ -288,6 +377,7 @@ export function runFailureInterrupted(
 		kind === "connection" ||
 		kind === "timeout" ||
 		kind === "dispatch" ||
+		kind === "no_reply" ||
 		kind === "cancelled"
 	);
 }
@@ -301,14 +391,30 @@ export interface RunFailureCard {
 	retrying?: boolean;
 	/** What went wrong with the last Try again. */
 	retryError?: string;
-	dismiss: () => void;
+	/** Absent for a run that waits rather than failed: there is nothing to dismiss. */
+	dismiss?: () => void;
 	/** A link that replaces Try again, e.g. "Review" for a run that left a proposal. */
 	action?: HTMLElement;
+	/** A run that stopped at its usage limit, for the member whose own login paid: their other logins that can pay now,
+	 * each a "Continue with …" button. Nothing goes on until they pick one. */
+	continueWith?: RunFailureContinue;
+}
+
+export interface RunFailureContinue {
+	logins: readonly { connectionId: string; account: string }[];
+	choose: (connectionId: string) => void;
+	/** The login being continued with now. */
+	continuing?: string;
+	/** No pick now: a read of the logins or a message is on its way. */
+	waiting?: boolean;
+	/** What the last pick left to say: that it failed, or that the member's own message continues the work. */
+	note?: string;
 }
 
 /** A failed run, shown as one quiet line right above the composer, in the same
  * band and shape as a company notice, with Dismiss and, for an interrupted run,
- * Try again. Dismissing is durable: the run stops counting against the agent. */
+ * Try again. Dismissing is durable: the run stops counting against the agent. A run
+ * waiting at its login's usage limit takes the same line with no Dismiss. */
 export function runFailureCard(card: RunFailureCard): HTMLElement {
 	const busy = card.retrying === true;
 	const guarded = (action: () => void) => (event: MouseEvent) => {
@@ -328,10 +434,31 @@ export function runFailureCard(card: RunFailureCard): HTMLElement {
 		primary.dataset.action = "retry-run";
 		if (busy) primary.setAttribute("aria-disabled", "true");
 	}
-	const dismiss = button(t("Dismiss"), guarded(card.dismiss), { small: true });
-	dismiss.classList.add("run-failure-secondary");
-	dismiss.dataset.action = "dismiss-run";
-	if (busy) dismiss.setAttribute("aria-disabled", "true");
+	const onDismiss = card.dismiss;
+	const dismiss = onDismiss ? button(t("Dismiss"), guarded(onDismiss), { small: true }) : null;
+	if (dismiss) {
+		dismiss.classList.add("run-failure-secondary");
+		dismiss.dataset.action = "dismiss-run";
+		if (busy) dismiss.setAttribute("aria-disabled", "true");
+	}
+	const offer = card.continueWith;
+	const held = offer !== undefined && (offer.continuing !== undefined || offer.waiting === true);
+	const logins = (offer?.logins ?? []).map((login) => {
+		const choose = button(
+			offer?.continuing === login.connectionId
+				? t("Continuing…")
+				: t("Continue with {account}", { account: login.account }),
+			(event: MouseEvent) => {
+				if (!held && event.detail < 2) offer?.choose(login.connectionId);
+			},
+			{ small: true },
+		);
+		choose.classList.add("run-failure-continue");
+		choose.dataset.action = "continue-run";
+		choose.dataset.connectionId = login.connectionId;
+		if (held) choose.setAttribute("aria-disabled", "true");
+		return choose;
+	});
 	return h(
 		"div",
 		{
@@ -339,15 +466,15 @@ export function runFailureCard(card: RunFailureCard): HTMLElement {
 			role: "group",
 			"aria-label": card.title,
 			onkeydown: (event: KeyboardEvent) => {
-				if (!matchesKey(event, "dismiss")) return;
+				if (!onDismiss || !matchesKey(event, "dismiss")) return;
 				event.preventDefault();
 				event.stopPropagation();
-				if (!busy) card.dismiss();
+				if (!busy) onDismiss();
 			},
 		},
 		h(
 			"div",
-			{ class: "run-failure-card" },
+			{ class: logins.length ? "run-failure-card has-logins" : "run-failure-card" },
 			h(
 				"p",
 				{ class: "run-failure-text" },
@@ -356,8 +483,10 @@ export function runFailureCard(card: RunFailureCard): HTMLElement {
 				card.reason ? h("span", { class: "run-failure-reason" }, card.reason) : null,
 				card.retryError ? " " : null,
 				card.retryError ? h("span", { class: "run-failure-error", role: "alert" }, card.retryError) : null,
+				offer?.note ? " " : null,
+				offer?.note ? h("span", { class: "run-failure-note", role: "status" }, offer.note) : null,
 			),
-			h("div", { class: "run-failure-actions" }, primary, dismiss),
+			h("div", { class: "run-failure-actions" }, primary, ...logins, dismiss),
 		),
 	);
 }

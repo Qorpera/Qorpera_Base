@@ -1,4 +1,5 @@
 import type { WebCompanyComputer } from "../cloud/computer.ts";
+import type { WebEventHooks } from "../cloud/event-hooks.ts";
 import type { GroupChatDetails, GroupChatDraft } from "../cloud/group-details.ts";
 import type { InterfaceChange, InterfaceUndo } from "../cloud/interface-changes.ts";
 import type { WebMessageErases } from "../cloud/message-erases.ts";
@@ -44,6 +45,8 @@ export interface WorkspaceActions {
 	sessionModel?: WebSessionModel;
 	nativeSubscription?: WebNativeSubscription;
 	routines?: WebRoutines;
+	/** The company's webhooks, shown under an agent's routines: what arrives at one starts the routines that wait for it. */
+	eventHooks?: WebEventHooks;
 	/** Takes back an agent's change to the company's interfaces or tables, as the member's own change (I10). Not
 	 * passed while agents make no pages (Interfaces C6a), so the thread offers no Undo. */
 	undoInterfaceChange?: (change: InterfaceChange, signal: AbortSignal) => Promise<InterfaceUndo>;
@@ -56,8 +59,6 @@ export interface WorkspaceActions {
 		read(staffAgentId: string, signal: AbortSignal): Promise<string | null>;
 		/** Calls `listener` after a change hint of the company's folder; answers the way to stop. */
 		onFolderChange(listener: () => void): () => void;
-		/** Opens the agent's wall, above the composer of its own thread: "Latest notes" on its card. */
-		show?(staffAgentId: string): void;
 	};
 	/** A picture of the company's folder for a preview (a wall item's, a question option's), read with the member's own
 	 * folder client; null when the path names no picture to show (app/folder-images.ts). */

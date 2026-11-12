@@ -155,6 +155,22 @@ function folder(
 }
 
 describe("coding results claims", () => {
+	it("keeps a landing line whole when the summary fits its bytes plus one per line (own code storage, 20260930670000)", () => {
+		// The database cuts a landed turn's own words so that their bytes and one more per line (the '#' a heading line
+		// gets here) leave room for its line; that line, last, must reach results.md whole.
+		const landed =
+			"\n\nQorpera landed this commit on main: main is at cccccccccccc, and the files are in the company folder at code/company/shop/main/.";
+		// The database makes every line break \n first, as the writer does (a bare \r too), then counts.
+		let words = `The shop has a cart. ${"## Files\n".repeat(20)}${"## Files\r".repeat(20)}`;
+		const normal = () => (words + landed).replace(/\r\n?/g, "\n");
+		const budget = () => bytesOf(normal()) + normal().split("\n").length;
+		while (budget() < 4000) words += "å";
+		while (budget() > 4000) words = words.slice(0, -1);
+		const file = parsed({ summary: normal(), pullRequest: null });
+		expect(file.parse.summary.endsWith(landed.trim())).toBe(true);
+		expect(file.parse.summary).toContain("### Files");
+		expect(bytesOf(file.parse.summary)).toBeLessThanOrEqual(4000);
+	});
 	it("reads a claim; null when nothing is due", () => {
 		expect(parseCodingResultsClaim(null)).toBeNull();
 		expect(parseCodingResultsClaim(claim())).toEqual({

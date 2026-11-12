@@ -43,6 +43,8 @@ export interface HostedFriend {
 	status: HostedFriendStatus;
 	direction: "incoming" | "outgoing";
 	since: string;
+	/** When an accepted friend was last online (migration 20260930690000); never for a pending request. */
+	lastSeenAt?: string;
 }
 
 /* The account `qorpera_find_account_by_email` found for a whole address. The
@@ -233,7 +235,25 @@ export interface HostedStaffExecutionActivity {
 	/** A failure from before the agent's newer work (migration 20260930542000): listed apart from the agent's current
 	 * row, never its state. Only a failure is. */
 	superseded?: true;
+	/** A run waiting at its login's usage limit (migration 20260930703000): it goes on by itself, on the same login, at
+	 * this time (the reset), unless the member whose login pays moves it to another of theirs. */
+	paused?: PausedRun;
 	updatedAt: string;
+}
+
+/** What the agents' activity says of a run waiting at its login's usage limit (20260930703000). */
+export interface PausedRun {
+	/** When the pause ends: the login's reset, else the cloud's next look (6 hours after the limit). */
+	until: string;
+	/** The sponsor binding (the login) that pays: a member's own logins name theirs. */
+	sponsorBindingId: string;
+	/** The member the run was started for, whose login pays for it. */
+	requestedByUserId?: string;
+	paidByChatgptPlan: boolean;
+	/** The login that pays may work while its member is away: only such a login of theirs may take the run over. */
+	paidWhileAway: boolean;
+	/** Its member may move it at all: a member's own login pays, it is no routine's run, and it still resumes. */
+	movable: boolean;
 }
 
 /** A worker's own run, for a member's Stop (qorpera_get_worker_run_control; gap 4b, 20260930002800). */

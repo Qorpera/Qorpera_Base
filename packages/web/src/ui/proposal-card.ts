@@ -45,8 +45,8 @@ export function proposalChange(unit: FolderProposalUnit, createsAgent: boolean):
 		const name = nameOf(agent, agent.name);
 		if (agent.status === "archived") return t("Archive the agent “{name}”", { name });
 		if (!createsAgent) return t("Make the agent “{name}” active again", { name });
-		const role = agent.role?.replace(/\s+/g, " ").trim();
-		return role ? t("Hire “{name}” as {role}", { name, role: nameOf(agent, role) }) : t("Hire “{name}”", { name });
+		// No title after the name: agents show none (Jonas, 10 November 2026).
+		return t("Hire “{name}”", { name });
 	}
 	const group = file("group");
 	if (group) return t("Start the group chat “{name}”", { name: nameOf(group, group.name) });

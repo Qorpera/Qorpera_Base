@@ -7,7 +7,9 @@
      its own, with them). The frame waits for its page from the app that framed it, then becomes that page. Escape
      pressed in the page (and not taken by it) is passed to the app, which has no other way to hear a key pressed in
      here: it closes what the page is shown in, as Escape does everywhere else. An interface app's page is handed one
-     message port with it, which only this document holds: its `qorpera` object reads the company's data through it. -->
+     message port with it, which only this document holds: its `qorpera` object reads the company's data through it,
+     and asks for a change, which the app makes only when the member allows it outside this frame; and a link the
+     member clicks in the page goes to the app over it, which opens what it allows: the frame follows no link itself. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -42,6 +44,28 @@
 	const keyOf = getter(KeyboardEvent.prototype, "key");
 	const composing = getter(KeyboardEvent.prototype, "isComposing");
 	const prevented = getter(Event.prototype, "defaultPrevented");
+	const prevent = Event.prototype.preventDefault;
+	const composedPath = Event.prototype.composedPath;
+	const stop = Event.prototype.stopPropagation;
+	const stopNow = Event.prototype.stopImmediatePropagation;
+	const bubble = Object.getOwnPropertyDescriptor(Event.prototype, "cancelBubble");
+	const currentOf = getter(Event.prototype, "currentTarget");
+	const phaseOf = getter(Event.prototype, "eventPhase");
+	const bubblesOf = getter(Event.prototype, "bubbles");
+	const modeOf = getter(ShadowRoot.prototype, "mode");
+	const unlisten = EventTarget.prototype.removeEventListener;
+	const soon = queueMicrotask;
+	const attribute = Element.prototype.getAttribute;
+	const attributeNS = Element.prototype.getAttributeNS;
+	const setAttribute = Element.prototype.setAttribute;
+	const setAttributeNS = Element.prototype.setAttributeNS;
+	const removeAttribute = Element.prototype.removeAttribute;
+	const removeAttributeNS = Element.prototype.removeAttributeNS;
+	const codeAt = String.prototype.charCodeAt;
+	const linkOf = WeakMap.prototype.get;
+	const setLink = WeakMap.prototype.set;
+	const inSet = WeakSet.prototype.has;
+	const addTo = WeakSet.prototype.add;
 	// Options handed to the browser are objects with no prototype: a property the page puts on Object.prototype
 	// (`clonable`, a throwing `attributeFilter`) is never read from them.
 	const create = Object.create;
@@ -75,6 +99,163 @@
 	});
 	const watch = (target) => apply(observe, watcher, [target, watching]);
 	watch(document);
+
+	// Links (deploy/first-node/RUNTIME-INTERFACE-APPS.md §4). The frame follows no link itself: in an app's page a
+	// click on one is stopped, and where it leads goes to the app, which opens what it allows (`follow`, there once
+	// an app's page is handed over with its port; without it nothing below does anything).
+	// - The link is noted on the click's way down, before any handler of the page has the click: at the window, which
+	//   is heard first, and at the root of each shadow tree, where a closed tree's own nodes still show. It is the
+	//   innermost link on the click's path, also one around a slot that the clicked node sits in.
+	// - The click is settled when the page's handlers are done with it, and by what the browser itself then says of
+	//   it: a click a handler took, in any way a handler can, is the page's. Nothing the page reads or says of a
+	//   click is changed for that. The frame is heard behind the page's handlers: at the window, for a click that
+	//   travels all the way, and on every node of the click's path, each way, for a click a handler stops there.
+	//   Those listeners are put last again at every click, so a handler the page added since still comes first.
+	// - A handler that stops the click at once (stopImmediatePropagation) keeps every later listener from it, and so
+	//   do the two places where the frame cannot be behind the page's handlers in time: the window on the click's
+	//   way down, and a closed shadow tree's root on the way down. A click stopped so is settled when the handler
+	//   that stopped it returns (each handler of a real click runs on an empty stack, so that is before the browser
+	//   acts on the click).
+	// - Settling a click the page left alone keeps the browser from following the link, and sends where it leads once
+	//   the click is over. A click settled while a passive handler has it cannot be stopped; the link's address is
+	//   taken out of the link for as long as the click lasts instead (`park`).
+	// - A click a script made opens nothing: it is stopped on its way down, and never sent.
+	const links = "a[*|href], area[href]";
+	const clicked = new WeakMap();
+	const settled = new WeakSet();
+	const stops = new WeakSet();
+	const closed = new WeakSet();
+	let follow = null;
+	const isLink = (node) => {
+		try {
+			return apply(nodeType, node, []) === 1 && apply(matches, node, [links]);
+		} catch {
+			// The window is on the path too, and is no node.
+			return false;
+		}
+	};
+	// A jump inside the page (#…) is the page's own, like any click its scripts handle, and a javascript: address is
+	// the browser's to run or not, as before (Chromium runs none in this frame): neither is a place to go. Read as the
+	// browser reads an address: what it skips in front is skipped, and the scheme counts in any case.
+	const ownLink = (href) => {
+		let at = 0;
+		while (apply(codeAt, href, [at]) <= 32) at++;
+		if (apply(codeAt, href, [at]) === 35) return true;
+		const scheme = "javascript";
+		for (let index = 0; index < 10; index++)
+			if ((apply(codeAt, href, [at + index]) | 32) !== apply(codeAt, scheme, [index])) return false;
+		return apply(codeAt, href, [at + 10]) === 58;
+	};
+	// Where a link leads, as it is written now (a handler of the page may have changed it), or null for the page's own.
+	const older = "http://www.w3.org/1999/xlink";
+	const placeOf = (link) => {
+		let href = apply(attribute, link, ["href"]);
+		if (href === null) href = apply(attributeNS, link, [older, "href"]);
+		return typeof href === "string" && !ownLink(href) ? href : null;
+	};
+	// A click that a passive handler has at the moment cannot be stopped by anyone, the frame included. The link is
+	// then kept from leading anywhere while the click ends: its address is taken out of it, and put back once the
+	// click is over, unless the page has written one meanwhile.
+	const park = (link) => {
+		const plain = apply(attribute, link, ["href"]);
+		const drawn = apply(attributeNS, link, [older, "href"]);
+		if (plain !== null) apply(removeAttribute, link, ["href"]);
+		if (drawn !== null) apply(removeAttributeNS, link, [older, "href"]);
+		apply(later, window, [
+			() => {
+				if (plain !== null && apply(attribute, link, ["href"]) === null) apply(setAttribute, link, ["href", plain]);
+				if (drawn !== null && apply(attributeNS, link, [older, "href"]) === null)
+					apply(setAttributeNS, link, [older, "xlink:href", drawn]);
+			},
+			0,
+		]);
+	};
+	// Once for each click, when the page's handlers are done with it.
+	const settle = (click) => {
+		const link = apply(linkOf, clicked, [click]);
+		if (!link || apply(inSet, settled, [click])) return;
+		apply(addTo, settled, [click]);
+		// A click the page took is the page's, and one that stays in the page is the browser's.
+		const href = apply(prevented, click, []) ? null : placeOf(link);
+		if (href === null) return;
+		apply(prevent, click, []);
+		if (!apply(prevented, click, [])) park(link);
+		// Only a click the member made goes on, once it is over, to where the link led when it was settled.
+		if (click.isTrusted === true && href.length <= 2048) apply(later, window, [() => follow(href), 0]);
+	};
+	// Heard behind the page's handlers on each node of the click's path: where one of them has stopped the click,
+	// no node after this one hears it, so this is where it is settled.
+	const settleStopped = (click) => {
+		if (apply(inSet, stops, [click]) || (bubble && apply(bubble.get, click, []) === true)) settle(click);
+	};
+	const last = (node, listener, down) => {
+		apply(unlisten, node, ["click", listener, down]);
+		apply(listen, node, ["click", listener, down]);
+	};
+	const noteLink = (click) => {
+		if (!follow) return;
+		let link = null;
+		let path;
+		try {
+			path = apply(composedPath, click, []);
+			for (let index = 0; index < path.length && !link; index++) if (isLink(path[index])) link = path[index];
+		} catch {}
+		if (!link) return;
+		apply(setLink, clicked, [click, link]);
+		// A click a script made: stopped here and now, wherever it would travel, and no listener is moved for it (it
+		// may run inside a real click, whose listeners are being heard).
+		if (click.isTrusted !== true) {
+			if (placeOf(link) !== null) apply(prevent, click, []);
+			return;
+		}
+		// Not on the node that is hearing this very listener, on the way down: a listener put there now is not heard
+		// for this click (`unheard`).
+		const here = apply(currentOf, click, []);
+		for (let index = 0; index < path.length; index++) {
+			try {
+				if (path[index] !== here) last(path[index], settleStopped, true);
+				last(path[index], settleStopped, false);
+			} catch {}
+		}
+	};
+	// Heard first at the window (it is listened for before the page is written).
+	const hear = (click) => {
+		noteLink(click);
+		if (click.isTrusted === true) last(window, settle, false);
+	};
+	// The ways a handler stops a click from travelling on. They do what they did. A link's click that no listener of
+	// the frame will hear after the handler that stopped it is settled when that handler returns, or at once when a
+	// script made the click (its handlers do not run on an empty stack).
+	const unheard = (event) =>
+		apply(phaseOf, event, []) === 1 &&
+		(apply(currentOf, event, []) === window || apply(inSet, closed, [apply(currentOf, event, [])]));
+	const stopping = (event, atOnce) => {
+		if (!apply(linkOf, clicked, [event]) || apply(inSet, settled, [event])) return;
+		apply(addTo, stops, [event]);
+		if (!atOnce && !unheard(event)) return;
+		if (event.isTrusted === true) apply(soon, window, [() => settle(event)]);
+		else settle(event);
+	};
+	Event.prototype.stopPropagation = function stopPropagation() {
+		stopping(this, false);
+		apply(stop, this, []);
+	};
+	Event.prototype.stopImmediatePropagation = function stopImmediatePropagation() {
+		stopping(this, true);
+		apply(stopNow, this, []);
+	};
+	// (The older way to say it, where a browser has it.)
+	if (bubble)
+		Object.defineProperty(Event.prototype, "cancelBubble", {
+			configurable: true,
+			enumerable: true,
+			get: bubble.get,
+			set(value) {
+				if (value) stopping(this, false);
+				apply(bubble.set, this, [value]);
+			},
+		});
+
 	define(Element.prototype, "attachShadow", function attachShadowWatched(init) {
 		const options = create(null);
 		options.mode = init?.mode;
@@ -82,6 +263,8 @@
 		options.slotAssignment = init?.slotAssignment;
 		const root = apply(attachShadow, this, [options]);
 		watch(root);
+		if (apply(modeOf, root, []) === "closed") apply(addTo, closed, [root]);
+		apply(listen, root, ["click", noteLink, true]);
 		return root;
 	});
 	for (const [target, name] of [
@@ -105,7 +288,9 @@
 	// An interface app's live data (deploy/first-node/RUNTIME-INTERFACE-APPS.md §5) comes over the one port the app hands
 	// over with the page: kept in here, never on the page's reach, so only this document's own window ever talks to the
 	// app, and a document the frame later shows has none. The page gets a frozen `qorpera` object whose calls go out on
-	// it; the app checks each.
+	// it; the app checks each. A call that asks for a change (answer, setRow, addRow) changes nothing here: the app shows
+	// the member what it would save, outside this frame, and the promise settles once the member chose. A link the
+	// member clicked goes out on it too (`follow`), from this document alone: the page's object has no call for it.
 	const send = MessagePort.prototype.postMessage;
 	// An event's data is read with the browser's own getter: a page that redefines it would be handed the event, and
 	// through it the port.
@@ -148,16 +333,24 @@
 				apply(set, pending, [id, [resolve, reject]]);
 				apply(send, port, [{ type: "qorpera-app-call", id, method, params }]);
 			});
-		return freeze({
+		const page = freeze({
 			read: freeze((path) => call("read", { path: String(path) })),
 			list: freeze((path) => call("list", { path: path === undefined ? "" : String(path) })),
 			table: freeze((name) => call("table", { name: String(name) })),
 			todos: freeze(() => call("todos", {})),
 			agents: freeze(() => call("agents", {})),
+			questions: freeze(() => call("questions", {})),
+			answer: freeze((id, value) => call("answer", { id: String(id), value })),
+			setRow: freeze((table, key, cells) => call("setRow", { table: String(table), key, cells })),
+			addRow: freeze((table, cells) => call("addRow", { table: String(table), cells })),
 			onChange: freeze((listener) => {
 				if (typeof listener === "function") apply(push, changes, [listener]);
 			}),
 		});
+		// Sent as a call, so the app counts it as one; nothing here waits for its answer.
+		const follow = (href) =>
+			apply(send, port, [{ type: "qorpera-app-call", id: ++next, method: "open", params: { href } }]);
+		return { page, follow };
 	};
 
 	addEventListener("message", function take(event) {
@@ -165,8 +358,16 @@
 		if (event.source !== app || !data || data.type !== "qorpera-page" || typeof data.html !== "string") return;
 		removeEventListener("message", take);
 		const port = event.ports && event.ports.length === 1 ? event.ports[0] : null;
+		const live = port ? bridge(port) : null;
 		apply(open, document, []);
-		if (port) define(window, "qorpera", bridge(port));
+		if (live) {
+			define(window, "qorpera", live.page);
+			// Only for a page handed a port (an app's; the app refuses the links of any other page it hands one).
+			// Listened for now: after the document is opened, which drops the window's listeners, and before the page
+			// is written, so before any listener of the page's.
+			follow = live.follow;
+			apply(listen, window, ["click", hear, true]);
+		}
 		apply(write, document, [data.html]);
 		apply(close, document, []);
 		// Added once the page is written (opening the document drops the window's listeners). Passed on only after every

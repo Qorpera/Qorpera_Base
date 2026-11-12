@@ -44,6 +44,8 @@ import {
 	CLOUD_TOOL_RESULT_INSTRUCTIONS,
 	type CloudNativeFencedResult,
 	type CloudNativeToolBoundary,
+	redactCloudWebhookSecrets,
+	redactCloudWebhookSecretsIn,
 } from "./cloud-native-tool-boundary.ts";
 import {
 	CloudRuntimeDiagnosticError,
@@ -61,6 +63,17 @@ import {
 	isCloudRuntimeReasoningEffort,
 	isCloudRuntimeServiceTier,
 } from "./cloud-runtime-policy.ts";
+import {
+	CLOUD_VOICE_READER_RULE,
+	type CloudVoiceCall,
+	type CloudVoiceChannel,
+	type CloudVoiceOpenInput,
+	type CloudVoiceSpoken,
+	CloudVoiceUnavailable,
+	cloudVoiceOpenInput,
+	MAX_CLOUD_VOICE_SDP_BYTES,
+	MAX_CLOUD_VOICE_TEXT_BYTES,
+} from "./cloud-voice-channel.ts";
 import {
 	COMPACT_EFFORT,
 	COMPACT_MODEL,
@@ -96,6 +109,16 @@ const MAX_PROMPT_BYTES = 1024 * 1024;
 /** The developer instructions (RUNTIME-AGENT-MEMORY-TREE.md §6.1): the host-owned rules, about 25 KB, with the head
  * (16,000 bytes, §5.6) and the primary view (96,000, M1) as labelled data, and room to spare. */
 const MAX_RUNTIME_INSTRUCTIONS_BYTES = 256 * 1024;
+/** What the host tells the model in the one turn it adds when the agent's turn left its closing act undone
+ * (`turnCorrection`): a few sentences, never a second prompt. */
+const MAX_TURN_CORRECTION_BYTES = 4 * 1024;
+/** How long Codex may take to answer a control request: its handshake, a thread's start and a turn's start. Each is
+ * answered at once (a turn's start before its first model request), so one that gets no answer is a stuck process, and
+ * the run used to wait on it for good, holding its conversation (reliability audit, 10 November 2026, A3). A model
+ * request of Codex's for the very thread or turn being started, reaching the fence meanwhile, lifts that start's
+ * deadline: it is under way then, and what its answer waits for may be this host. It is no cap on a run: a turn runs
+ * as long as its work takes (founder, 2026-09-22 and 2026-09-24). */
+const CONTROL_REQUEST_MS = 120_000;
 const TOKEN_COUNTERS = [
 	"inputTokens",
 	"outputTokens",
@@ -117,6 +140,12 @@ function tokenCounters(snapshot: Record<string, unknown>): CloudRuntimeObservati
 	};
 }
 
+/** The head of a text, at most `limit` UTF-8 bytes; a character cut at the limit is left out whole. */
+function headBytes(text: string, limit: number): string {
+	if (Buffer.byteLength(text) <= limit) return text;
+	return new StringDecoder("utf8").write(Buffer.from(text).subarray(0, limit));
+}
+
 /** Waits for a promise unless the signal stops the wait first. */
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal, cancelled = "Native review cancelled"): Promise<T> {
 	if (signal.aborted) return Promise.reject(new Error(cancelled));
@@ -135,6 +164,13 @@ const COMPACT_UNAVAILABLE_OUTPUT = JSON.stringify({ available: false });
 /** A bound on one compactor reply, far above any line (RUNTIME-AGENT-MEMORY-TREE.md §7.3 sends a line over NODE back
  * to its thread): a reply past it fails its send, and the thread's turn is ended. */
 const MAX_COMPACT_REPLY_BYTES = 16 * 1024;
+/** What a voice line's transcript keeps: a caption said back, with room for what a voice adds. */
+const MAX_VOICE_TRANSCRIPT_BYTES = 4 * 1024;
+/** How long closing a voice call waits for Codex to confirm its stop; the call is retired either way, but a stop not
+ * confirmed in time ends the run's voice (#closeVoice). */
+const VOICE_STOP_MS = 10_000;
+/** What ends a voice call whose voice started a turn: it may only read. */
+const VOICE_ACTED = "Native voice tried to act";
 
 /** What binds a model request: a context composition request has no outputs. */
 type ModelRequestIdentity = Pick<CloudNativeFenceRequest, "threadId" | "turnId" | "purpose"> & {
@@ -151,8 +187,11 @@ interface ReviewThread {
 	reject(error: Error): void;
 }
 
-/** The threads a run's app-server holds beside the agent's: auto-review's and the memory compactor's. */
-type SideThreadKind = "review" | "compact";
+/** The threads a run's app-server holds beside the agent's: auto-review's, the memory compactor's and a voice call's. */
+type SideThreadKind = "review" | "compact" | "voice";
+/** What a control request starts: the handshake's requests start nothing of a run's, a thread's start the agent's
+ * thread or a side thread (one at a time), a turn's start the agent's turn or a side thread's. */
+type ControlStart = "handshake" | "agent-thread" | "agent-turn" | "side-thread" | `side-turn:${string}`;
 
 /** The side thread now starting: the prewarm that arrives before its id is its own. */
 interface StartingSide {
@@ -167,6 +206,27 @@ interface CompactThread {
 	/** The thread's latest cumulative usage, and the one its last reply counted up to. */
 	total?: Record<string, unknown>;
 	counted?: Record<string, unknown>;
+}
+
+/** A voice call's thread (cloud-voice-channel.ts): no tools, no turn, one line at a time. */
+interface VoiceThread {
+	readonly threadId: string;
+	/** The provider's answer, until it comes. */
+	answer?: { resolve(sdp: string): void; reject(error: Error): void };
+	/** The line being spoken, until its transcript comes. */
+	speak?: { resolve(spoken: CloudVoiceSpoken): void; reject(error: Error): void };
+	/** Why the call ended; set once. */
+	ended?: Error;
+	/** The realtime session was stopped, by this host or by Codex. */
+	stopped: boolean;
+	/** Stops watching the signal the call was opened with. */
+	release?: () => void;
+	/** Settled once its stop is confirmed or given up on: the next call waits for it. */
+	settled?: Promise<void>;
+	/** Confirms its stop, from a `thread/realtime/closed`. */
+	confirm?: () => void;
+	/** Closes the relay's window for the call's control connection (#voiceEgressEnd). */
+	egress?: () => void;
 }
 
 interface CompactTurn {
@@ -571,8 +631,12 @@ class CodexBoundaryRpc {
 		{ span?: CloudRuntimeObservationSpan; contextRecorded: boolean; finished: boolean }
 	>();
 	#turnObservation?: CloudRuntimeObservationSpan;
-	/** The turn's last valid cumulative usage snapshot, to tell a model request's usage from a repeat. */
+	/** The thread's last valid cumulative usage snapshot, to tell a model request's usage from a repeat. */
 	#usageTotal?: Record<string, unknown>;
+	/** The agent's turns before the current one (beginNextTurn), and the thread's usage when the current one began: a
+	 * turn's observation counts its own usage, not the thread's. */
+	#earlierTurns = 0;
+	#turnUsageBase?: Record<string, unknown>;
 	readonly #compositions = new Map<
 		string,
 		{ span?: CloudRuntimeObservationSpan; timer?: ReturnType<typeof setTimeout>; finished: boolean }
@@ -583,10 +647,18 @@ class CodexBoundaryRpc {
 	/** Codex's last terminal error discriminant as a fixed name (nativeCodexErrorToken); a name is kept over `unknown`
 	 * and `null`, which say nothing of the cause. */
 	#providerErrorToken?: string;
-	readonly #pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+	/** `quiet`: a voice call's request, whose refusal is the call's and never the run's. */
+	readonly #pending = new Map<
+		number,
+		{ resolve: (value: unknown) => void; reject: (error: Error) => void; quiet?: boolean }
+	>();
+	/** The deadlines of the control requests Codex has not answered yet, by request id, each with what it starts. */
+	readonly #controlDeadlines = new Map<number, { starts: ControlStart; timer: ReturnType<typeof setTimeout> }>();
+	/** The agent's turns that have completed (beginNextTurn): nothing binds to one again. */
+	readonly #endedTurnIds = new Set<string>();
 	readonly #requestIds = new Set<string>();
 	readonly #lines = new CodexLineReader();
-	readonly completed: Promise<void>;
+	#completed: Promise<void>;
 	#resolveCompleted: () => void = () => undefined;
 	#rejectCompleted: (error: Error) => void = () => undefined;
 	#failure?: Error;
@@ -626,6 +698,22 @@ class CodexBoundaryRpc {
 	readonly #compactions = new Map<string, CompactThread>();
 	/** Ended compactor threads: a request already on its way stays on the compactor's lane. */
 	readonly #endedCompactions = new Set<string>();
+	/** The voice call (cloud-voice-channel.ts): at most one at a time, opening or live. Its model requests, a prewarm or
+	 * a turn its voice started, pass the fence on its own lane with nothing released, and never fail the run. */
+	#voice?: VoiceThread;
+	#voiceOpening = false;
+	/** The call being stopped: it holds the slot until Codex confirms the stop, and a realtime notification without a
+	 * thread meanwhile is its own. */
+	#voiceStopping?: VoiceThread;
+	/** A stop Codex never confirmed: the run opens no more calls (#closeVoice). */
+	#voiceLost = false;
+	/** How long a stop may take to be confirmed (CloudVoiceChannel.stopMs). */
+	voiceStopMs = VOICE_STOP_MS;
+	/** Ended voice threads: what Codex still says on one stays on the voice's lane. */
+	readonly #endedVoices = new Set<string>();
+	/** Opens the relay's window for a voice call's control connection (NativeEgressRelay.allowRealtime); none without
+	 * isolation, where nothing filters the process's network. */
+	readonly #realtimeEgress?: () => () => void;
 	#startingSide?: StartingSide;
 	/** The latest side thread start, settled or not: the next one waits for it. */
 	#sideStarting: Promise<void> = Promise.resolve();
@@ -639,15 +727,13 @@ class CodexBoundaryRpc {
 		child: ChildProcessWithoutNullStreams,
 		boundary?: CloudNativeToolBoundary,
 		observability?: CloudRuntimeObservability,
+		realtimeEgress?: () => () => void,
 	) {
 		this.#child = child;
 		this.#boundary = boundary;
 		this.#observability = observability;
-		this.completed = new Promise<void>((resolve, reject) => {
-			this.#resolveCompleted = resolve;
-			this.#rejectCompleted = reject;
-		});
-		void this.completed.catch(() => undefined);
+		this.#realtimeEgress = realtimeEgress;
+		this.#completed = this.#awaitCompletion();
 		child.on("error", () => this.fail("Native boundary process unavailable", "transport_unavailable"));
 		child.stdin.on("error", () => this.fail("Native boundary transport unavailable", "transport_unavailable"));
 		child.on("close", () => {
@@ -725,12 +811,60 @@ class CodexBoundaryRpc {
 		}
 	}
 
+	/** The agent's current turn: settled when it completed, rejected when the boundary failed. */
+	get completed(): Promise<void> {
+		return this.#completed;
+	}
+	#awaitCompletion(): Promise<void> {
+		const completed = new Promise<void>((resolve, reject) => {
+			this.#resolveCompleted = resolve;
+			this.#rejectCompleted = reject;
+		});
+		void completed.catch(() => undefined);
+		return completed;
+	}
+
+	/** One more turn in the agent's thread, after its turn completed (runCloudCodexToolSession's `turnCorrection`). The
+	 * thread and what it has carried so far stay: its request ids, its model requests and its fenced outputs, so the
+	 * next request's new outputs are still told from the old. The turn's binding, its end and its observation start
+	 * anew, as they stood before the first turn/start. */
+	beginNextTurn(inputBytes: number): void {
+		if (this.#failure) throw this.#failure;
+		if (this.#closed || !this.#threadId || !this.#finished || this.#startingTurn || this.#activeCalls > 0)
+			throw new Error("Native boundary turn binding failed");
+		// A reply the ended turn was still composing is no longer being written.
+		for (const callId of this.#compositions.keys()) this.#finishComposition(callId, "unconfirmed");
+		try {
+			this.#turnObservation?.finish("succeeded");
+		} catch {
+			// Optional diagnostics cannot change native execution or authority.
+		}
+		this.#turnObservation = undefined;
+		this.#earlierTurns++;
+		this.#turnUsageBase = this.#usageTotal;
+		// The ended turn is over for good: a request that still names it is no part of the next one.
+		if (this.#turnId !== undefined) this.#endedTurnIds.add(this.#turnId);
+		this.#turnId = undefined;
+		this.#turnEndRequested = false;
+		this.#finished = false;
+		this.#completed = this.#awaitCompletion();
+		this.#startingTurn = true;
+		this.observeTurnStart(inputBytes);
+	}
+
 	/** One host invocation, including tools/retries/compaction; not a provider HTTP attempt. */
 	observeTurnStart(inputBytes: number): void {
 		try {
 			this.#turnObservation = this.#observability?.start("model_turn", {
 				logicalOperationSha256: createHash("sha256")
-					.update(JSON.stringify([this.#threadId, "model_turn"]))
+					// The thread's first turn keeps the name it always had; a later one adds its number.
+					.update(
+						JSON.stringify(
+							this.#earlierTurns === 0
+								? [this.#threadId, "model_turn"]
+								: [this.#threadId, "model_turn", this.#earlierTurns],
+						),
+					)
 					.digest("hex"),
 				// Exact admitted prompt bytes, not the full provider request or network traffic.
 				inputBytes,
@@ -821,6 +955,17 @@ class CodexBoundaryRpc {
 		);
 	}
 
+	/** A model request of a voice call's thread. */
+	isVoiceRequest(request: Pick<CloudNativeFenceRequest, "threadId" | "purpose">): boolean {
+		return (
+			request.threadId !== this.#threadId &&
+			request.threadId !== this.#prewarmThreadId &&
+			(this.#voice?.threadId === request.threadId ||
+				this.#endedVoices.has(request.threadId) ||
+				this.#startingPrewarm("voice", request))
+		);
+	}
+
 	/** The prewarm of the side thread of this kind now starting: the first one while it starts, then only its own. A
 	 * known side thread's late prewarm is never it. */
 	#startingPrewarm(kind: SideThreadKind, request: Pick<CloudNativeFenceRequest, "threadId" | "purpose">): boolean {
@@ -833,13 +978,15 @@ class CodexBoundaryRpc {
 		);
 	}
 
-	/** A reviewer's or a compactor's thread, live or ended. */
+	/** A reviewer's, a compactor's or a voice call's thread, live or ended. */
 	#sideThread(threadId: string): boolean {
 		return (
 			this.#reviews.has(threadId) ||
 			this.#endedReviews.has(threadId) ||
 			this.#compactions.has(threadId) ||
-			this.#endedCompactions.has(threadId)
+			this.#endedCompactions.has(threadId) ||
+			this.#voice?.threadId === threadId ||
+			this.#endedVoices.has(threadId)
 		);
 	}
 
@@ -894,6 +1041,23 @@ class CodexBoundaryRpc {
 			callId: output.callId,
 			output: COMPACT_UNAVAILABLE_OUTPUT,
 		}));
+	}
+
+	/** The voice's lane: its thread's prewarm, and any turn its voice started, which ends the call. Never a throw: what a
+	 * voice does never fails the run. */
+	#assertVoiceRequest(request: ModelRequestIdentity): void {
+		if (request.purpose === "prewarm") {
+			const starting = this.#startingSide;
+			if (starting?.kind === "voice" && !this.#sideThread(request.threadId))
+				starting.prewarmThreadId = request.threadId;
+			return;
+		}
+		if (this.#voice?.threadId === request.threadId) this.#voiceActed(request.threadId, request.turnId);
+	}
+
+	/** Released outputs of a voice request: its thread has no tools, so each one is unavailable. */
+	releaseVoiceOutputs(request: CloudNativeFenceRequest): CloudNativeFencedResult[] {
+		return this.releaseCompactOutputs(request);
 	}
 
 	/** One review: a fresh reviewer thread, its turn, and the verdict its one tool call carries. */
@@ -976,14 +1140,18 @@ class CodexBoundaryRpc {
 		signal.addEventListener("abort", abort, { once: true });
 		try {
 			const turn = object(
-				await this.request("turn/start", {
-					threadId,
-					input: [{ type: "text", text: input.prompt, text_elements: [] }],
-					effort: input.effort,
-					environments: [],
-					runtimeWorkspaceRoots: [],
-					sandboxPolicy: { type: "readOnly", networkAccess: false },
-				}),
+				await this.request(
+					"turn/start",
+					{
+						threadId,
+						input: [{ type: "text", text: input.prompt, text_elements: [] }],
+						effort: input.effort,
+						environments: [],
+						runtimeWorkspaceRoots: [],
+						sandboxPolicy: { type: "readOnly", networkAccess: false },
+					},
+					`side-turn:${threadId}`,
+				),
 			);
 			const turnId = identifier(object(turn.turn).id);
 			if (review.turnId !== undefined && review.turnId !== turnId) throw new Error("Native review binding failed");
@@ -1070,13 +1238,17 @@ class CodexBoundaryRpc {
 			const starting: StartingSide = { kind };
 			this.#startingSide = starting;
 			try {
-				const id = identifier(object(object(await this.request("thread/start", params)).thread).id);
+				const id = identifier(
+					object(object(await this.#send("thread/start", params, "side-thread", kind === "voice")).thread).id,
+				);
 				if (
 					id === this.#threadId ||
 					this.#sideThread(id) ||
 					(starting.prewarmThreadId !== undefined && starting.prewarmThreadId !== id)
 				)
-					throw new Error(`Native ${kind === "review" ? "review" : "compaction"} binding failed`);
+					throw new Error(
+						`Native ${kind === "review" ? "review" : kind === "voice" ? "voice" : "compaction"} binding failed`,
+					);
 				return id;
 			} finally {
 				if (this.#startingSide === starting) this.#startingSide = undefined;
@@ -1160,14 +1332,18 @@ class CodexBoundaryRpc {
 		signal.addEventListener("abort", abort, { once: true });
 		try {
 			const started = object(
-				await this.request("turn/start", {
-					threadId: thread.threadId,
-					input: [{ type: "text", text, text_elements: [] }],
-					effort,
-					environments: [],
-					runtimeWorkspaceRoots: [],
-					sandboxPolicy: { type: "readOnly", networkAccess: false },
-				}),
+				await this.request(
+					"turn/start",
+					{
+						threadId: thread.threadId,
+						input: [{ type: "text", text, text_elements: [] }],
+						effort,
+						environments: [],
+						runtimeWorkspaceRoots: [],
+						sandboxPolicy: { type: "readOnly", networkAccess: false },
+					},
+					`side-turn:${thread.threadId}`,
+				),
 			);
 			const turnId = identifier(object(started.turn).id);
 			if (thread.turn !== turn) {
@@ -1291,18 +1467,295 @@ class CodexBoundaryRpc {
 		}
 	}
 
+	/** Opens a voice call (cloud-voice-channel.ts): a fresh thread that can do nothing, and a realtime session on it
+	 * whose voice reads the lines it is handed. The call lasts until its `close`, the abort of `signal`, or its end at
+	 * the provider. What goes wrong with it rejects the call, never the run. */
+	async voice(input: CloudVoiceOpenInput & { cwd: string }, signal: AbortSignal): Promise<CloudVoiceCall> {
+		signal.throwIfAborted();
+		const offer = cloudVoiceOpenInput(input);
+		if (this.#failure || this.#closed || !this.#boundary) throw new CloudVoiceUnavailable();
+		if (this.#voice || this.#voiceOpening) throw new Error("Native voice call already open");
+		this.#voiceOpening = true;
+		let opened: VoiceThread | undefined;
+		try {
+			// The call before is still stopping: its late words must not reach this one.
+			while (this.#voiceStopping?.settled)
+				await untilAborted(this.#voiceStopping.settled, signal, "Native voice cancelled");
+			if (this.#voiceLost || this.#failure || this.#closed) throw new CloudVoiceUnavailable();
+			const started = this.#startSide("voice", signal, {
+				cwd: input.cwd,
+				runtimeWorkspaceRoots: [],
+				environments: [],
+				ephemeral: true,
+				approvalPolicy: "never",
+				approvalsReviewer: "user",
+				sandbox: "read-only",
+				developerInstructions: CLOUD_VOICE_READER_RULE,
+				dynamicTools: [],
+			});
+			let threadId: string;
+			try {
+				threadId = await untilAborted(started, signal, "Native voice cancelled");
+			} catch (error) {
+				// A thread that starts after its caller stopped is retired at once: its messages stay on this lane.
+				void started.then(
+					(id) => this.#retireVoice(id),
+					() => undefined,
+				);
+				throw error;
+			}
+			const voice: VoiceThread = { threadId, stopped: false };
+			opened = voice;
+			this.#voice = voice;
+			const answer = new Promise<string>((resolve, reject) => {
+				voice.answer = { resolve, reject };
+			});
+			void answer.catch(() => undefined);
+			const close = (): Promise<void> => this.#closeVoice(voice);
+			const abort = (): void => void this.#closeVoice(voice, new Error("Native voice cancelled"));
+			signal.addEventListener("abort", abort, { once: true });
+			voice.release = () => signal.removeEventListener("abort", abort);
+			if (signal.aborted) abort();
+			// Codex joins the call it makes here over a websocket at OpenAI's API, which the relay passes only from now
+			// until the call's stop is confirmed or given up on (#closeVoice), or the process ends.
+			if (!voice.ended && !this.#failure && !this.#closed) voice.egress = this.#realtimeEgress?.();
+			const starting = this.#send(
+				"thread/realtime/start",
+				{
+					threadId,
+					outputModality: "audio",
+					transport: { type: "webrtc", sdp: offer.offerSdp },
+					version: "v3",
+					...(offer.voice ? { voice: offer.voice } : {}),
+					// The voice hands nothing over to a model turn of its own accord, and starts from nothing of the thread.
+					clientManagedHandoffs: true,
+					includeStartupContext: false,
+					initialItems: [{ role: "developer", text: CLOUD_VOICE_READER_RULE }],
+				},
+				undefined,
+				true,
+			);
+			const [, answerSdp] = await Promise.all([starting, answer]);
+			return { answerSdp, speak: (text, speakSignal) => this.#voiceSpeak(voice, text, speakSignal), close };
+		} catch (error) {
+			if (opened) await this.#closeVoice(opened, error instanceof Error ? error : undefined);
+			throw this.#failure || this.#closed ? new CloudVoiceUnavailable() : error;
+		} finally {
+			this.#voiceOpening = false;
+		}
+	}
+
+	/** One line: appended to the call's realtime session, answered with what the voice said of it. */
+	async #voiceSpeak(voice: VoiceThread, text: string, signal: AbortSignal): Promise<CloudVoiceSpoken> {
+		signal.throwIfAborted();
+		if (this.#failure || this.#closed) throw new CloudVoiceUnavailable();
+		if (voice.ended)
+			throw voice.ended instanceof CloudVoiceUnavailable
+				? new CloudVoiceUnavailable()
+				: new Error(voice.ended.message);
+		if (voice.speak) throw new Error("Native voice call is already speaking");
+		if (typeof text !== "string" || !text.trim() || Buffer.byteLength(text) > MAX_CLOUD_VOICE_TEXT_BYTES)
+			throw new Error("Invalid voice line");
+		const spoken = new Promise<CloudVoiceSpoken>((resolve, reject) => {
+			voice.speak = { resolve, reject };
+		});
+		void spoken.catch(() => undefined);
+		// A line given up on ends the call: the voice may still be saying it, and its transcript would pass for the next.
+		const abort = (): void => void this.#closeVoice(voice, new Error("Native voice cancelled"));
+		signal.addEventListener("abort", abort, { once: true });
+		try {
+			const appended = this.#send(
+				"thread/realtime/appendSpeech",
+				{ threadId: voice.threadId, text },
+				undefined,
+				true,
+			);
+			const [, said] = await Promise.all([appended, spoken]);
+			return said;
+		} catch (error) {
+			const failure =
+				this.#failure || this.#closed
+					? new CloudVoiceUnavailable()
+					: error instanceof Error
+						? error
+						: new Error("Native voice call failed");
+			if (!voice.ended) await this.#closeVoice(voice, failure);
+			throw failure;
+		} finally {
+			signal.removeEventListener("abort", abort);
+		}
+	}
+
+	/** Ends a voice call and stops its realtime session, once; never rejects. */
+	async #closeVoice(voice: VoiceThread, error: Error = new Error("Native voice call ended")): Promise<void> {
+		this.#endVoice(voice, error);
+		if (voice.stopped) return;
+		voice.stopped = true;
+		// The slot stays taken until the stop is confirmed: a successful answer to the stop, or the session's close. A
+		// refused stop confirms nothing, so the close is still waited for. Its pending work was rejected above.
+		let settle: () => void = () => undefined;
+		voice.settled = new Promise<void>((resolve) => {
+			settle = resolve;
+		});
+		const closed = new Promise<boolean>((resolve) => {
+			voice.confirm = () => resolve(true);
+		});
+		this.#voiceStopping = voice;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const confirmed = await Promise.race([
+			this.#send("thread/realtime/stop", { threadId: voice.threadId }, undefined, true).then(
+				() => true,
+				// A process that ended can say no more, and opens no more calls.
+				() => (this.#failure || this.#closed ? true : closed),
+			),
+			closed,
+			new Promise<boolean>((resolve) => {
+				timer = setTimeout(() => resolve(false), this.voiceStopMs);
+				timer.unref?.();
+			}),
+		]);
+		clearTimeout(timer);
+		// Unconfirmed, the old session may still speak, and its notifications without a thread could not be told from a
+		// new call's: the run places no more calls. The run itself goes on.
+		if (!confirmed) this.#voiceLost = true;
+		if (this.#voiceStopping === voice) this.#voiceStopping = undefined;
+		// The call's host closes with its slot: a session not confirmed stopped keeps no way out.
+		this.#voiceEgressEnd(voice);
+		settle();
+	}
+
+	/** Ends a voice call's lane: its pending answer and line are rejected, and its thread is retired. */
+	#endVoice(voice: VoiceThread, error: Error): void {
+		if (voice.ended) return;
+		voice.ended = error;
+		if (this.#voice === voice) this.#voice = undefined;
+		this.#retireVoice(voice.threadId);
+		voice.release?.();
+		voice.answer?.reject(error);
+		voice.answer = undefined;
+		voice.speak?.reject(error);
+		voice.speak = undefined;
+	}
+
+	/** A process that failed or closed places no call: the live call's and the stopping call's windows close now. */
+	#closeVoiceWindows(): void {
+		if (this.#voice) this.#voiceEgressEnd(this.#voice);
+		if (this.#voiceStopping) this.#voiceEgressEnd(this.#voiceStopping);
+	}
+
+	/** Closes a call's relay window, once. */
+	#voiceEgressEnd(voice: VoiceThread): void {
+		const end = voice.egress;
+		voice.egress = undefined;
+		end?.();
+	}
+
+	#retireVoice(threadId: string): void {
+		this.#endedVoices.add(threadId);
+		if (this.#endedVoices.size > TRACKED_REQUESTS)
+			this.#endedVoices.delete(this.#endedVoices.values().next().value as string);
+	}
+
+	/** A turn on a voice thread: the voice tried to hand over to a model turn. The turn is interrupted, and a live call
+	 * ends. */
+	#voiceActed(threadId: string, turnId: unknown): void {
+		if (typeof turnId === "string" && /^[A-Za-z0-9_:.-]{1,160}$/.test(turnId))
+			void this.#send("turn/interrupt", { threadId, turnId }, undefined, true).catch(() => undefined);
+		const voice = this.#voice;
+		if (voice?.threadId === threadId) void this.#closeVoice(voice, new Error(VOICE_ACTED));
+	}
+
+	/** Messages of a voice call's thread. Returns false when the message is not the voice's. Nothing on it fails the
+	 * run: what is malformed ends only the call. */
+	#voiceMessage(message: Record<string, unknown>): boolean {
+		const params =
+			message.params && typeof message.params === "object" && !Array.isArray(message.params)
+				? (message.params as Record<string, unknown>)
+				: undefined;
+		const method = message.method;
+		let threadId = typeof params?.threadId === "string" ? params.threadId : undefined;
+		// A realtime notification without its thread can only be the one call's: the one stopping, else the live one.
+		const only = this.#voiceStopping ?? this.#voice;
+		if (threadId === undefined && typeof method === "string" && method.startsWith("thread/realtime/") && only)
+			threadId = only.threadId;
+		if (
+			!threadId ||
+			threadId === this.#threadId ||
+			!(this.#voice?.threadId === threadId || this.#endedVoices.has(threadId))
+		)
+			return false;
+		if (message.id !== undefined) {
+			// The voice has no tools and no say: every request of its thread is refused.
+			this.#write({
+				id: message.id,
+				error: { code: -32601, message: "Operation not available in this cloud voice call" },
+			});
+			return true;
+		}
+		if (method === "turn/started") {
+			const turn =
+				params?.turn && typeof params.turn === "object" && !Array.isArray(params.turn)
+					? (params.turn as Record<string, unknown>)
+					: undefined;
+			this.#voiceActed(threadId, turn?.id);
+			return true;
+		}
+		if (method === "thread/realtime/closed" && this.#voiceStopping?.threadId === threadId)
+			this.#voiceStopping.confirm?.();
+		const voice = this.#voice?.threadId === threadId ? this.#voice : undefined;
+		if (!voice) return true;
+		if (method === "thread/realtime/sdp") {
+			const answer = voice.answer;
+			const sdp = params?.sdp;
+			if (!answer) return true;
+			if (typeof sdp === "string" && sdp.trim() && Buffer.byteLength(sdp) <= MAX_CLOUD_VOICE_SDP_BYTES) {
+				voice.answer = undefined;
+				answer.resolve(sdp);
+			} else void this.#closeVoice(voice, new Error("Invalid native voice answer"));
+		} else if (method === "thread/realtime/transcript/done") {
+			const speak = voice.speak;
+			if (speak && params?.role === "assistant" && typeof params.text === "string") {
+				voice.speak = undefined;
+				speak.resolve({ transcript: headBytes(params.text, MAX_VOICE_TRANSCRIPT_BYTES) });
+			}
+		} else if (method === "thread/realtime/error") {
+			// The provider's words are never kept.
+			void this.#closeVoice(voice, new Error("Native voice call failed"));
+		} else if (method === "thread/realtime/closed") {
+			voice.stopped = true;
+			this.#endVoice(voice, new Error("Native voice call ended"));
+			this.#voiceEgressEnd(voice);
+		}
+		// The voice's deltas, items, thread status and usage are never delivered or kept.
+		return true;
+	}
+
 	/** A model request's thread and turn: the run's, its prewarm's, a reviewer's or the compactor's. Both requests
 	 * Codex makes before a provider request, its context composition and then its fence, are bound here. */
-	#bindModelRequest(request: ModelRequestIdentity): "review" | "compact" | "prewarm" | "turn" {
+	#bindModelRequest(request: ModelRequestIdentity): "review" | "compact" | "voice" | "prewarm" | "turn" {
 		if (this.#failure || this.#closed) throw new Error("Native result boundary stopped");
+		// A side thread's prewarm while that thread starts, as against a known thread's late one.
+		const sideStarting = request.purpose === "prewarm" && !this.#sideThread(request.threadId);
 		// The compactor's lane stays open after the agent's turn: closing builds its lines then (§7.1).
 		if (this.isCompactRequest(request)) {
 			this.#assertCompactRequest(request);
+			this.#underWay(
+				request.purpose !== "prewarm" ? `side-turn:${request.threadId}` : sideStarting && "side-thread",
+			);
 			return "compact";
+		}
+		// A voice call may outlive the agent's turn (closing), and its requests never fail the run.
+		if (this.isVoiceRequest(request)) {
+			this.#assertVoiceRequest(request);
+			this.#underWay(request.purpose === "prewarm" && sideStarting && "side-thread");
+			return "voice";
 		}
 		if (this.#finished) throw new Error("Native result boundary stopped");
 		if (this.isReviewRequest(request)) {
 			this.#assertReviewRequest(request);
+			this.#underWay(
+				request.purpose !== "prewarm" ? `side-turn:${request.threadId}` : sideStarting && "side-thread",
+			);
 			return "review";
 		}
 		if (request.purpose === "prewarm") {
@@ -1314,6 +1767,7 @@ class CodexBoundaryRpc {
 			)
 				throw new Error("Native prewarm binding failed");
 			this.#prewarmThreadId = request.threadId;
+			this.#underWay("agent-thread");
 			return "prewarm";
 		}
 		if (
@@ -1324,7 +1778,20 @@ class CodexBoundaryRpc {
 		)
 			throw new Error("Native result binding failed");
 		this.confirmTurn(request.turnId);
+		this.#underWay("agent-turn");
 		return "turn";
+	}
+
+	/** A model request of Codex's has reached the fence for the thread or turn a control request starts: that start is
+	 * under way, and its answer may now wait on this host's own fence work (a slow database is not Codex's silence), so
+	 * it is held to its deadline no longer. Only that start: a request of another thread says nothing of it. */
+	#underWay(starts: ControlStart | false): void {
+		if (starts === false) return;
+		for (const [id, deadline] of this.#controlDeadlines) {
+			if (deadline.starts !== starts) continue;
+			clearTimeout(deadline.timer);
+			this.#controlDeadlines.delete(id);
+		}
 	}
 
 	/** A context composition request (`qorpera.native-context-composition/v1`): bound as its fence request is, and
@@ -1340,7 +1807,7 @@ class CodexBoundaryRpc {
 
 	assertModelRequest(request: CloudNativeFenceRequest): void {
 		const lane = this.#bindModelRequest(request);
-		if (lane === "review" || lane === "compact") return;
+		if (lane === "review" || lane === "compact" || lane === "voice") return;
 		if (lane === "prewarm") {
 			this.#observeFence(request);
 			return;
@@ -1383,17 +1850,57 @@ class CodexBoundaryRpc {
 		this.#pending.clear();
 		for (const review of this.#reviews.values()) review.reject(this.#failure);
 		for (const threadId of [...this.#compactions.keys()]) this.#endCompaction(threadId, this.#compactStop());
+		this.#closeVoiceWindows();
+		if (this.#voice) this.#endVoice(this.#voice, new CloudVoiceUnavailable());
 		this.#threadStarted?.();
 		this.#rejectCompleted(this.#failure);
 	}
 
-	async request(method: string, params: JsonValue): Promise<unknown> {
+	/** `starts`: for a control request, which Codex answers at once. One left unanswered for CONTROL_REQUEST_MS, with
+	 * no model request for what it starts reaching the fence meanwhile (#underWay), fails the boundary, and with it
+	 * the run, as a step that got no answer in time. */
+	request(method: string, params: JsonValue, starts?: ControlStart): Promise<unknown> {
+		return this.#send(method, params, starts, false);
+	}
+
+	/** `quiet`: a refusal rejects with fixed words and leaves the run's failure category as it is. */
+	async #send(method: string, params: JsonValue, starts: ControlStart | undefined, quiet: boolean): Promise<unknown> {
 		if (this.#failure) throw this.#failure;
 		if (this.#closed) throw new Error("Native boundary transport closed");
 		const id = ++this.#sequence;
+		// Every request the host makes of Codex passes here: the agent's, the reviewer's and the compactor's threads and
+		// turns, their instructions and every turn's input. A webhook signing secret is cut out of each text in it, as
+		// the tool boundary cuts one out of every tool answer (E3c-2, the only other text the host sends Codex), so no
+		// source, today's or a later one, reaches the model with one. A text cut already where it was composed comes
+		// through as it is, so a hash taken of it there still names what Codex is sent.
+		const cut = redactCloudWebhookSecretsIn(params);
 		return new Promise((resolve, reject) => {
-			this.#pending.set(id, { resolve, reject });
-			this.#write({ id, method, params });
+			if (starts === undefined) this.#pending.set(id, { resolve, reject, quiet });
+			else {
+				// Still pending then: the answer never came. Failing the boundary rejects this request with the rest.
+				const timer = setTimeout(() => {
+					this.#controlDeadlines.delete(id);
+					if (this.#pending.has(id)) this.fail("Native boundary request got no answer", "timeout");
+				}, CONTROL_REQUEST_MS);
+				timer.unref?.();
+				this.#controlDeadlines.set(id, { starts, timer });
+				const settled = (): void => {
+					clearTimeout(timer);
+					this.#controlDeadlines.delete(id);
+				};
+				this.#pending.set(id, {
+					resolve: (value) => {
+						settled();
+						resolve(value);
+					},
+					reject: (error) => {
+						settled();
+						reject(error);
+					},
+					quiet,
+				});
+			}
+			this.#write({ id, method, params: cut });
 		});
 	}
 
@@ -1426,7 +1933,8 @@ class CodexBoundaryRpc {
 	}
 	confirmTurn(turnId: unknown): void {
 		const id = identifier(turnId);
-		if (this.#turnId !== undefined && this.#turnId !== id) throw new Error("Native boundary turn binding failed");
+		if ((this.#turnId !== undefined && this.#turnId !== id) || this.#endedTurnIds.has(id))
+			throw new Error("Native boundary turn binding failed");
 		this.#turnId = id;
 	}
 
@@ -1438,6 +1946,8 @@ class CodexBoundaryRpc {
 		this.#pending.clear();
 		for (const review of this.#reviews.values()) review.reject(new Error("Native boundary transport closed"));
 		for (const threadId of [...this.#compactions.keys()]) this.#endCompaction(threadId, this.#compactStop());
+		this.#closeVoiceWindows();
+		if (this.#voice) this.#endVoice(this.#voice, new CloudVoiceUnavailable());
 		this.#threadStarted?.();
 		this.#child.stdin.end();
 	}
@@ -1541,8 +2051,18 @@ class CodexBoundaryRpc {
 			if (!usage) return;
 			const { total, last } = usage;
 			// Native cumulative snapshots can be replayed/recomputed. Never sum updates
-			// or label these counters billing-exact provider usage.
-			this.#turnObservation.update(tokenCounters(total));
+			// or label these counters billing-exact provider usage. They count the thread: a turn after the first
+			// (beginNextTurn) reports what the thread used since that turn began.
+			const base = this.#turnUsageBase;
+			this.#turnObservation.update(
+				tokenCounters(
+					base
+						? Object.fromEntries(
+								TOKEN_COUNTERS.map((key) => [key, Math.max(0, (total[key] as number) - (base[key] as number))]),
+							)
+						: total,
+				),
+			);
 			// Codex adds each completed provider response's usage to `total` and sends it as `last`
 			// (codex-rs `TokenUsageInfo::append_last_usage`), from zero on a new thread. Repeats,
 			// estimates and a filled context window do not add up that way, so only a report with input
@@ -1564,7 +2084,11 @@ class CodexBoundaryRpc {
 	#message(message: Record<string, unknown>): void {
 		if (this.#failure || this.#closed) return;
 		this.#lastActivityAt = Date.now();
-		if (message.method !== undefined && (this.#reviewMessage(message) || this.#compactMessage(message))) return;
+		if (
+			message.method !== undefined &&
+			(this.#reviewMessage(message) || this.#compactMessage(message) || this.#voiceMessage(message))
+		)
+			return;
 		if (message.method === undefined) {
 			if (typeof message.id !== "number") throw new Error("Invalid native response id");
 			const pending = this.#pending.get(message.id);
@@ -1572,7 +2096,8 @@ class CodexBoundaryRpc {
 			if (message.error === undefined && !Object.hasOwn(message, "result"))
 				throw new Error("Missing native response");
 			this.#pending.delete(message.id);
-			if (message.error !== undefined) {
+			if (message.error !== undefined && pending.quiet) pending.reject(new Error("Native voice request rejected"));
+			else if (message.error !== undefined) {
 				this.#failureCategory = "provider_failed";
 				pending.reject(new CloudRuntimeDiagnosticError("provider_failed", "Native boundary request rejected"));
 			} else if (Object.hasOwn(message, "result")) pending.resolve(message.result);
@@ -1639,6 +2164,7 @@ class CodexBoundaryRpc {
 			if (
 				!this.#startingTurn ||
 				(this.#turnId !== undefined && this.#turnId !== turnId) ||
+				this.#endedTurnIds.has(turnId) ||
 				params.threadId !== this.#threadId
 			)
 				throw new Error("Native turn binding failed");
@@ -1902,15 +2428,17 @@ async function startCloudCodexProcess(
 					? rpc.releaseReviewOutputs(request)
 					: rpc?.isCompactRequest(request)
 						? rpc.releaseCompactOutputs(request)
-						: undefined,
+						: rpc?.isVoiceRequest(request)
+							? rpc.releaseVoiceOutputs(request)
+							: undefined,
 			context: {
 				assertRequest: (request) => {
 					if (!rpc?.bound) throw new Error("Native result boundary not initialized");
 					rpc.assertContextRequest(request);
 				},
-				// A reviewer's or the compactor's request is its own, never composed from the agent's run.
+				// A reviewer's, the compactor's or a voice call's request is its own, never composed from the agent's run.
 				compose: (request, composeSignal) =>
-					rpc?.isReviewRequest(request) || rpc?.isCompactRequest(request)
+					rpc?.isReviewRequest(request) || rpc?.isCompactRequest(request) || rpc?.isVoiceRequest(request)
 						? undefined
 						: binding.composeContext?.(request, composeSignal),
 			},
@@ -1962,17 +2490,18 @@ async function startCloudCodexProcess(
 				stdio: ["pipe", "pipe", "pipe"],
 				detached: true,
 			});
-		rpc = new CodexBoundaryRpc(child);
+		rpc = new CodexBoundaryRpc(child, undefined, undefined, isolated?.allowRealtime);
 		rpc.chatGptPlan = plan !== undefined;
 		const handshake = rpc;
 		if (state.fenceFailed) handshake.fail("Native result boundary unavailable", "authority_unavailable");
 		if (signal.aborted) stop();
 		progress.stage = "codex-initialize";
 		const initialized = object(
-			await handshake.request("initialize", {
-				clientInfo: { name: CLIENT_NAME, version: "1" },
-				capabilities: { experimentalApi: true },
-			}),
+			await handshake.request(
+				"initialize",
+				{ clientInfo: { name: CLIENT_NAME, version: "1" }, capabilities: { experimentalApi: true } },
+				"handshake",
+			),
 		);
 		if (
 			typeof initialized.userAgent !== "string" ||
@@ -1992,13 +2521,15 @@ async function startCloudCodexProcess(
 		handshake.initialized();
 		progress.stage = "codex-configuration";
 		verifyConfiguration(
-			await handshake.request("config/read", { includeLayers: false, cwd: workspace }),
+			await handshake.request("config/read", { includeLayers: false, cwd: workspace }, "handshake"),
 			inputs.effort,
 			inputs.serviceTier,
 			plan,
 		);
 		progress.stage = "codex-skills";
-		const skills = object(await handshake.request("skills/list", { cwds: [workspace], forceReload: true }));
+		const skills = object(
+			await handshake.request("skills/list", { cwds: [workspace], forceReload: true }, "handshake"),
+		);
 		if (!Array.isArray(skills.data) || skills.data.length !== 1)
 			throw new Error("Native skill catalog could not be verified");
 		const catalog = object(skills.data[0]);
@@ -2232,9 +2763,17 @@ export async function runCloudCodexToolSession(options: {
 	/** The memory compactor (RUNTIME-AGENT-MEMORY-TREE.md §7.1): this session answers the run's compactor calls, at the
 	 * opening, while the agent's turn runs and at closing. */
 	compactor?: MemoryCompactChannel;
+	/** A voice call's lane (cloud-voice-channel.ts): open from the agent's thread to the process's end, and only for a
+	 * Codex login's run; a run on a member's ChatGPT plan has none. */
+	voice?: CloudVoiceChannel;
 	/** Closing (§7.1): runs once the agent's turn has completed and been checked, before the process goes. What it
 	 * throws never fails the run: the lines it left unbuilt stay missing, for a settle to build (§5.4). */
 	closing?: (signal: AbortSignal) => Promise<void>;
+	/** Asked once, when the agent's turn has completed and been checked, before closing: whether the turn left undone
+	 * what the run has to end with (the caller knows what that is: a final send, a worker's report, a coding
+	 * submission). The text it answers is the input of one more turn in the same thread, a few sentences saying what
+	 * is missing; undefined ends the run as it stands. What that turn leaves undone is the caller's to judge. */
+	turnCorrection?: (signal: AbortSignal) => Promise<string | undefined>;
 	/** Optional metadata-only logical-turn/gate observations; not provider HTTP timing. */
 	observability?: CloudRuntimeObservability;
 	recordContextView?: (
@@ -2366,27 +2905,33 @@ export async function runCloudCodexToolSession(options: {
 		// Generate one host-owned bootstrap and explicitly load these exact bytes.
 		// Ambient project/home instruction discovery remains disabled: a Company
 		// File or restored auth home must never add a second platform prompt.
-		const nativeInstructions = [CLOUD_TOOL_RESULT_INSTRUCTIONS, opening.runtimeInstructions]
-			.filter(Boolean)
-			.join("\n");
+		// A webhook signing secret is cut out of them, as out of everything the session writes to Codex (#write): the
+		// file and the thread's instructions are the same bytes.
+		const nativeInstructions = redactCloudWebhookSecrets(
+			[CLOUD_TOOL_RESULT_INSTRUCTIONS, opening.runtimeInstructions].filter(Boolean).join("\n"),
+		);
 		await writeFile(join(started.workspace, "AGENTS.md"), nativeInstructions, { mode: 0o400, flag: "wx" });
 		stage = "codex-thread-start";
 		await rpc.startThread();
 		const thread = object(
-			await rpc.request("thread/start", {
-				// provider-default omits the model: the pinned Codex chooses its own default. An explicit
-				// name is only sent for a session override; the provider rejects names newer than the binary.
-				...(options.model === "provider-default" ? {} : { model: options.model }),
-				cwd: started.workspace,
-				runtimeWorkspaceRoots: [],
-				environments: [],
-				ephemeral: true,
-				approvalPolicy: "never",
-				approvalsReviewer: "user",
-				sandbox: "read-only",
-				developerInstructions: nativeInstructions,
-				dynamicTools: [options.boundary.specification],
-			}),
+			await rpc.request(
+				"thread/start",
+				{
+					// provider-default omits the model: the pinned Codex chooses its own default. An explicit
+					// name is only sent for a session override; the provider rejects names newer than the binary.
+					...(options.model === "provider-default" ? {} : { model: options.model }),
+					cwd: started.workspace,
+					runtimeWorkspaceRoots: [],
+					environments: [],
+					ephemeral: true,
+					approvalPolicy: "never",
+					approvalsReviewer: "user",
+					sandbox: "read-only",
+					developerInstructions: nativeInstructions,
+					dynamicTools: [options.boundary.specification],
+				},
+				"agent-thread",
+			),
 		);
 		const threadId = identifier(object(thread.thread).id);
 		rpc.bindThread(threadId);
@@ -2394,23 +2939,53 @@ export async function runCloudCodexToolSession(options: {
 		options.reviewer?.attach({
 			review: (input, reviewSignal) => reviewing.review({ ...input, cwd: started.workspace }, reviewSignal),
 		});
+		// Only a Codex login places voice calls: a plan run's Codex reaches OpenAI's API with the plan's token instead.
+		if (!rpc.chatGptPlan && options.voice) {
+			if (options.voice.stopMs !== undefined) rpc.voiceStopMs = options.voice.stopMs;
+			options.voice.attach((input, voiceSignal) => rpc.voice({ ...input, cwd: started.workspace }, voiceSignal));
+		}
+		const startTurn = async (text: string): Promise<void> => {
+			const turnStarted = object(
+				await rpc.request(
+					"turn/start",
+					{
+						threadId,
+						input: [{ type: "text", text, text_elements: [] }],
+						effort,
+						environments: [],
+						runtimeWorkspaceRoots: [],
+						sandboxPolicy: { type: "readOnly", networkAccess: false },
+					},
+					"agent-turn",
+				),
+			);
+			rpc.confirmTurn(object(turnStarted.turn).id);
+		};
 		stage = "codex-turn-start";
 		rpc.startTurn();
 		rpc.observeTurnStart(Buffer.byteLength(opening.prompt));
-		const turnRequest = rpc.request("turn/start", {
-			threadId,
-			input: [{ type: "text", text: opening.prompt, text_elements: [] }],
-			effort,
-			environments: [],
-			runtimeWorkspaceRoots: [],
-			sandboxPolicy: { type: "readOnly", networkAccess: false },
-		});
-		const turnStarted = object(await turnRequest);
-		rpc.confirmTurn(object(turnStarted.turn).id);
+		await startTurn(opening.prompt);
 		stage = "codex-turn-completion";
 		await rpc.completed;
 		rpc.assertCompleted();
 		signal.throwIfAborted();
+		// The turn completed. When it left undone what the run has to end with, the model is told so in one more turn
+		// of the same thread, with everything the first one read and did still in front of it; a run gets one such
+		// turn, and what that one leaves undone the caller fails as before (10 November 2026: a turn that ended on four
+		// tokens of private text, with no final send, failed its run and left the member unanswered).
+		const correction = await options.turnCorrection?.(signal);
+		signal.throwIfAborted();
+		if (correction !== undefined) {
+			if (!correction.trim() || Buffer.byteLength(correction) > MAX_TURN_CORRECTION_BYTES)
+				throw new Error("Invalid native boundary input");
+			stage = "codex-turn-start";
+			rpc.beginNextTurn(Buffer.byteLength(correction));
+			await startTurn(correction);
+			stage = "codex-turn-completion";
+			await rpc.completed;
+			rpc.assertCompleted();
+			signal.throwIfAborted();
+		}
 		rpc.finishObservations(true, signal);
 		try {
 			await options.closing?.(signal);
@@ -2441,6 +3016,7 @@ export async function runCloudCodexToolSession(options: {
 	} finally {
 		options.reviewer?.attach(undefined);
 		options.compactor?.attach(undefined);
+		options.voice?.attach(undefined);
 		if (idleWatch !== undefined) clearInterval(idleWatch);
 		signal.removeEventListener("abort", abort);
 		options.boundary.close();

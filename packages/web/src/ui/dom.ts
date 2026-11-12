@@ -2,6 +2,7 @@
  * Text always goes through textContent, never innerHTML. */
 
 import { figureElement } from "./avatar.ts";
+import { attachCompanyLogo } from "./company-logos.ts";
 import { leave } from "./motion.ts";
 import { attachPersonPicture } from "./person-pictures.ts";
 import { presentationDay, presentationLocale, t, timeZoneOption } from "./preferences.ts";
@@ -20,6 +21,72 @@ function append(parent: Node, children: Child[]): void {
 	}
 }
 
+/* In-app links carry their place in data-href, not href. A real href makes the browser show the address in a
+ * bubble at the bottom of the window on every hover (Jonas, 9 Nov 2026: "can I get rid of this?"), and no page
+ * can turn that off. So an in-app link is an <a role="link" tabindex="0"> that one listener on the document
+ * follows: a click or Enter goes there, Cmd/Ctrl/Shift-click or a middle click opens it in a new tab. A
+ * handler that prevents the click's default still stops it, as it would stop a real link. Links that leave the
+ * app (http, mailto, blob) keep their href, so the browser still shows where they go. */
+const isInAppHref = (href: string) => href.startsWith("#");
+
+/** Where a link goes, in-app (data-href) or out (href). */
+export function linkHref(link: Element): string | null {
+	return link.getAttribute("data-href") ?? link.getAttribute("href");
+}
+
+/** Points a link somewhere, the way h() would have. */
+export function setLinkHref(link: HTMLAnchorElement, href: string): void {
+	if (!isInAppHref(href)) {
+		link.removeAttribute("data-href");
+		link.setAttribute("href", href);
+		return;
+	}
+	link.removeAttribute("href");
+	link.setAttribute("data-href", href);
+	link.setAttribute("role", "link");
+	if (!link.hasAttribute("tabindex")) link.setAttribute("tabindex", "0");
+	followInAppLinks(link.ownerDocument);
+}
+
+const following = new WeakSet<Document>();
+function followInAppLinks(doc: Document): void {
+	if (following.has(doc)) return;
+	following.add(doc);
+	const view = doc.defaultView;
+	const target = (event: Event) =>
+		event.target instanceof Element ? event.target.closest<HTMLElement>("a[data-href]") : null;
+	const go = (link: HTMLElement, newTab: boolean) => {
+		const url = new URL(link.getAttribute("data-href")!, doc.baseURI);
+		if (!view) return;
+		if (newTab) view.open(url.href, "_blank", "noopener");
+		// The router's own way (router.ts navigate): only the hash moves.
+		else if (url.href.split("#")[0] === view.location.href.split("#")[0]) view.location.hash = url.hash;
+		else view.location.assign(url.href);
+	};
+	doc.addEventListener("click", (event) => {
+		const link = target(event);
+		if (!link || event.defaultPrevented || event.button !== 0) return;
+		// Handled here; jsdom would otherwise follow the link without an href to the page's bare address.
+		event.preventDefault();
+		go(link, event.metaKey || event.ctrlKey || event.shiftKey);
+	});
+	doc.addEventListener("auxclick", (event) => {
+		const link = target(event);
+		if (!link || event.defaultPrevented || event.button !== 1) return;
+		event.preventDefault();
+		go(link, true);
+	});
+	doc.addEventListener("keydown", (event) => {
+		const link = target(event);
+		if (!link || link !== event.target || event.defaultPrevented || event.key !== "Enter" || event.isComposing)
+			return;
+		event.preventDefault();
+		// Enter on a real link fires its click, so the link's own click handlers run first here too.
+		if (event.metaKey || event.ctrlKey || event.shiftKey) go(link, true);
+		else link.click();
+	});
+}
+
 export function h<K extends keyof HTMLElementTagNameMap>(
 	tag: K,
 	attrs: Attrs | null = null,
@@ -30,7 +97,13 @@ export function h<K extends keyof HTMLElementTagNameMap>(
 		for (const [key, value] of Object.entries(attrs)) {
 			if (value === undefined || value === null || value === false) continue;
 			if (key === "class") element.className = String(value);
-			else if (key === "dataset") Object.assign(element.dataset, value as Record<string, string>);
+			else if (key === "href" && element instanceof HTMLAnchorElement && isInAppHref(String(value))) {
+				// tabindex given in attrs is applied after this and wins.
+				setLinkHref(element, String(value));
+			} else if (key === "dataset") Object.assign(element.dataset, value as Record<string, string>);
+			// Through the CSSOM: the app's Content-Security-Policy (`style-src 'self'`, public/_headers) drops a style
+			// attribute the page sets, so a bar's height or a custom property given as an attribute never applied.
+			else if (key === "style") element.style.cssText = String(value);
 			else if (key.startsWith("on") && typeof value === "function") {
 				element.addEventListener(key.slice(2).toLowerCase(), value as EventListener);
 			} else if (
@@ -197,14 +270,25 @@ const ICON_PATHS: Record<string, string[]> = {
 	attach: ["m8 12 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l8-8", "m8 12 5-5"],
 	more: ["M5 12h.01M12 12h.01M19 12h.01"],
 	send: ["M12 19V5m-6 6 6-6 6 6"],
+	// Lucide mic.
+	mic: ["M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z", "M19 10v2a7 7 0 0 1-14 0v-2", "M12 19v3"],
 	edit: ["m4 16 11-11a2 2 0 0 1 4 4L8 20H4v-4Z", "m13 7 4 4"],
 	file: ["M14 2H5v20h14V7l-5-5ZM14 2v6h5", "M8 12h8M8 16h6"],
 	link: ["M9 17H7A5 5 0 0 1 7 7h2", "M15 7h2a5 5 0 1 1 0 10h-2", "M8 12h8"],
+	// Lucide arrow-up-right: open in a new tab.
+	external: ["M7 17 17 7", "M7 7h10v10"],
+	// Lucide power: take something offline.
+	power: ["M12 2v10", "M18.4 6.6a9 9 0 1 1-12.77.04"],
 	copy: ["M8 8h12v13H8Z", "M16 8V3H3v13h5"],
 	mail: [
 		"M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z",
 		"m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7",
 	],
+	inbox: [
+		"M22 12h-6l-2 3h-4l-2-3H2",
+		"M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z",
+	],
+	at: ["M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z", "M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"],
 	webhook: [
 		"M18 16.98h-5.99c-1.1 0-1.95.94-2.48 1.9A4 4 0 0 1 2 17c.01-.7.2-1.4.57-2",
 		"m6 17 3.13-5.78c.53-.97.1-2.18-.5-3.1a4 4 0 1 1 6.89-4.06",
@@ -226,9 +310,24 @@ const ICON_PATHS: Record<string, string[]> = {
 		"m8.3 10.9 7.4-4.8M8.3 13.1l7.4 4.8",
 	],
 	info: ["M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z", "M12 11v5M12 8h.01"],
+	// Lucide hand: the rail's raised hand on an agent whose work waits on the member.
+	hand: [
+		"M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2",
+		"M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2",
+		"M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8",
+		"M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15",
+	],
 	settings: [
 		"M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z",
 		"M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z",
+	],
+	trophy: [
+		"M6 9H4.5a2.5 2.5 0 0 1 0-5H6",
+		"M18 9h1.5a2.5 2.5 0 0 0 0-5H18",
+		"M4 22h16",
+		"M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22",
+		"M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22",
+		"M18 2H6v7a6 6 0 0 0 12 0V2Z",
 	],
 	friends: [
 		"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2",
@@ -262,10 +361,18 @@ const ICON_PATHS: Record<string, string[]> = {
 	folder: [
 		"M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
 	],
-	folder_plus: [
-		"M12 10v6M9 13h6",
-		"M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
+	/* A section's title over two agents' rows, and a plus (Jonas, 11 Nov 2026: the folder with a plus read as files). */
+	section_plus: [
+		"M3.5 5h7",
+		"M18 2.5v6",
+		"M15 5.5h6",
+		"M9.5 12h11",
+		"M9.5 18.5h11",
+		"M6.5 12a1.5 1.5 0 1 1-3 0 1.5 1.5 0 1 1 3 0",
+		"M6.5 18.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 1 1 3 0",
 	],
+	/* Back to how it was: Reset sidebar. */
+	reset: ["M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", "M3 3v5h5"],
 	hide: [
 		"M10.73 5.08a10.74 10.74 0 0 1 11.2 6.57 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-1.44 2.49",
 		"M14.08 14.16a3 3 0 0 1-4.24-4.24",
@@ -336,21 +443,48 @@ export function spinner(label = t("Loading")): HTMLElement {
 /* The company logo. A company's picture is its logo, and the cloud carries
  * none (CLIENT-CONTRACT.md request 10 asks for a logo field, either a named
  * figure or an uploaded image). Until it exists, a company wears a placeholder
- * figure derived from its profile id, which survives a rename. The Crown is
- * left out: it is the Co-Founder's. */
-const COMPANY_FIGURES = ["planet", "acorn", "flame", "rocket", "heart", "ghost"] as const;
+ * figure and colour derived from its profile id, which survive a rename. The
+ * Crown is left out: it is the Co-Founder's. The colour is one of the
+ * palette's bright colours (avatar-appearance.js), never Charcoal or Slate, so
+ * the hub is not a row of black figures (Jonas, 8 November 2026). The moon
+ * took the retired ghost's place (10 November 2026); the list keeps its
+ * length, so every other company keeps its figure. */
+const COMPANY_FIGURES = ["planet", "acorn", "flame", "rocket", "heart", "moon"] as const;
 export type CompanyFigure = (typeof COMPANY_FIGURES)[number];
-const COMPANY_INK = "#312f2d";
+export const COMPANY_COLORS = [
+	"#87674c",
+	"#e22538",
+	"#f96e2d",
+	"#fcb51b",
+	"#0fbd59",
+	"#3faff3",
+	"#2047bd",
+	"#a145f7",
+	"#fa59ac",
+] as const;
 
-export function companyFigure(seed: string): CompanyFigure {
+function seedHash(seed: string, multiplier: bigint): bigint {
 	let value = 0n;
-	for (const character of seed) value = (value * 33n + BigInt(character.codePointAt(0) ?? 0)) & 0xffffffffffffffffn;
-	return COMPANY_FIGURES[Number(value % BigInt(COMPANY_FIGURES.length))] ?? "planet";
+	for (const character of seed)
+		value = (value * multiplier + BigInt(character.codePointAt(0) ?? 0)) & 0xffffffffffffffffn;
+	return value;
 }
 
+export function companyFigure(seed: string): CompanyFigure {
+	return COMPANY_FIGURES[Number(seedHash(seed, 33n) % BigInt(COMPANY_FIGURES.length))] ?? "planet";
+}
+
+/** A second hash, so a company's colour does not follow its figure. */
+export function companyColor(seed: string): string {
+	return COMPANY_COLORS[Number(seedHash(seed, 131n) % BigInt(COMPANY_COLORS.length))] ?? COMPANY_COLORS[0];
+}
+
+/** A company's logo: its own, laid over its figure once the logo store has it (ui/company-logos.ts), else the figure
+ * derived from its id. `seed` is the company's id. */
 export function companyLogo(seed: string, className = ""): HTMLElement {
-	const logo = figureElement(companyFigure(seed), COMPANY_INK, { still: true });
+	const logo = figureElement(companyFigure(seed), companyColor(seed), { still: true });
 	logo.className = [logo.className, "company-logo", className].filter(Boolean).join(" ");
+	attachCompanyLogo(logo, seed);
 	return logo;
 }
 
@@ -360,6 +494,8 @@ export function confirmDialog(
 	danger = false,
 	typed?: string,
 	signal?: AbortSignal,
+	/** Lines under the message, as a list: what the choice changes. */
+	details?: readonly string[],
 ): Promise<boolean> {
 	if (signal?.aborted) return Promise.resolve(false);
 	return new Promise((resolve) => {
@@ -410,6 +546,7 @@ export function confirmDialog(
 				"div",
 				{ class: "modal", role: "alertdialog", "aria-modal": "true" },
 				h("p", null, message),
+				details?.length ? h("ul", { class: "modal-list" }, ...details.map((line) => h("li", null, line))) : null,
 				input ?? null,
 				h(
 					"div",

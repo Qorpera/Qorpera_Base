@@ -80,6 +80,7 @@ export function cropPicture(
 	picture: Pick<LoadedPicture, "url" | "width" | "height">,
 	signal?: AbortSignal,
 	opened?: () => void,
+	shape: "circle" | "square" = "circle",
 ): Promise<PictureCrop | undefined> {
 	return new Promise((resolve) => {
 		if (signal?.aborted) {
@@ -103,7 +104,11 @@ export function cropPicture(
 			"div",
 			{ class: "picture-crop-view" },
 			image,
-			h("div", { class: "picture-crop-circle", "aria-hidden": "true" }),
+			// A company logo is fitted to a rounded square, a person's picture to the circle.
+			h("div", {
+				class: shape === "square" ? "picture-crop-circle is-square" : "picture-crop-circle",
+				"aria-hidden": "true",
+			}),
 		);
 		const stage = h(
 			"div",
@@ -339,10 +344,11 @@ export async function choosePictureCrop(
 	file: File,
 	signal?: AbortSignal,
 	opened?: () => void,
+	shape: "circle" | "square" = "circle",
 ): Promise<PictureCrop | undefined> {
 	const picture = await loadPicture(file);
 	try {
-		return signal?.aborted ? undefined : await cropPicture(picture, signal, opened);
+		return signal?.aborted ? undefined : await cropPicture(picture, signal, opened, shape);
 	} finally {
 		picture.release();
 	}

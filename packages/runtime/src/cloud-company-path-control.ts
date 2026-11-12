@@ -43,6 +43,9 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_archive_coding_worker",
 	"qorpera_folder_manage_hook",
 	"qorpera_folder_note_interface_changes",
+	"qorpera_folder_request_code_undo",
+	"qorpera_folder_code_request",
+	"qorpera_folder_describe_code_change",
 ]);
 
 /** No end-user token, arbitrary URL, redirect, provider credential or retry. */
@@ -109,6 +112,8 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			// Good will (20260930566000).
 			"qorpera_good_will_agent_list",
 			"qorpera_good_will_agent_mark",
+			"qorpera_cofounder_crew",
+			"qorpera_offer_agents_to_member",
 			// Machines agents start (2026-09-28).
 			"qorpera_native_machine_start",
 			"qorpera_native_machine_manage",
@@ -149,6 +154,10 @@ export class HttpCloudCompanyPathControl implements CloudCompanyPathControl {
 			"qorpera_folder_close_proposal",
 			// A coding session's archive (C3b).
 			"qorpera_folder_archive_coding_worker",
+			// The company's code kept in Qorpera (20260930720000): an undo, how its request stands, and a change's description.
+			"qorpera_folder_request_code_undo",
+			"qorpera_folder_code_request",
+			"qorpera_folder_describe_code_change",
 			// An agent's page and table changes in its conversation, with Undo (I10).
 			"qorpera_folder_note_interface_changes",
 			// Event wakes (W2), and a folder-v2 agent's own hooks and mailboxes (E3a).

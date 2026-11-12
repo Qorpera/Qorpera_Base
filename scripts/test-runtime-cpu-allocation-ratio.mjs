@@ -1,16 +1,21 @@
 // Local PostgreSQL only. No hosted credentials or deployed node is touched.
+// Its own database from the suite's replay under the hosted-db suite, else from a cluster of its own built as the suite
+// builds one (from the machine's warm copy when it keeps one): each migration in a session of its own. Until 8 Nov it
+// replayed every migration in ONE psql session, which has failed since 16 Oct (v179's re-slot): two migrations
+// (20260928549390, 20260928549470) both create pg_temp.s5a_patch, so the second stopped psql ("function s5a_patch
+// already exists") while this script was still writing the rest of the chain to it: `spawnSync docker EPIPE`.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkLocale, expandTestFixture, LOCALE_QUERY, POSTGRES_IMAGE, POSTGRES_LOCALE, sortMigrationNames } from "./test-hosted-db.mjs";
+import { hostedDatabase, migrationNames } from "./test-hosted-db-cluster.mjs";
+import { expandTestFixture } from "./test-hosted-db.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const container = `qorpera-cpu-ratio-${randomBytes(6).toString("hex")}`;
 const read = (path) => readFileSync(join(root, path), "utf8");
-const psql = ["exec", "-i", container, "psql", "-X", "-qAt", "-U", "postgres", "-d", "fleet", "-v", "ON_ERROR_STOP=1"];
+const database = await hostedDatabase("cpu_ratio");
+const psql = database.cluster.psqlArgs("cpu_ratio", ["-qAt"]);
 function docker(args, input) {
 	const result = spawnSync("docker", args, { input, encoding: "utf8", timeout: 120_000, maxBuffer: 16 * 1024 * 1024 });
 	assert(!result.error && result.status === 0, `${result.stderr}\n${result.stdout ?? ""}\n${result.error ?? ""}`);
@@ -29,23 +34,8 @@ function concurrentSql(text) {
 		child.stdin.end(text);
 	});
 }
-let started = false;
 try {
-	docker(["run", "-d", "--rm", "--name", container, "--network", "none", "-e", "POSTGRES_PASSWORD=disposable-fleet", "-e", "POSTGRES_DB=fleet", ...POSTGRES_LOCALE, POSTGRES_IMAGE]);
-	started = true;
-	let ready = 0;
-	for (let attempt = 0; attempt < 60 && ready < 2; attempt++) {
-		const logs = spawnSync("docker", ["logs", container], { encoding: "utf8", timeout: 2000 });
-		const initialized = `${logs.stdout ?? ""}${logs.stderr ?? ""}`.includes("PostgreSQL init process complete; ready for start up.");
-		const result = spawnSync("docker", ["exec", container, "pg_isready", "-U", "postgres", "-d", "fleet"], { timeout: 2000 });
-		ready = initialized && result.status === 0 ? ready + 1 : 0;
-		if (ready < 2) await new Promise((resolve) => setTimeout(resolve, 500));
-	}
-	assert.equal(ready, 2, "PostgreSQL did not become ready");
-	checkLocale(sql(LOCALE_QUERY));
-	sql(read("supabase/tests/bootstrap.sql"));
-	const migrations = sortMigrationNames(readdirSync(join(root, "supabase/migrations")));
-	sql(migrations.map((name) => read(`supabase/migrations/${name}`)).join("\n"));
+	const migrations = migrationNames();
 	// 403 and 404 run on the folder-v2 base fixture (924). The coding fleet tests 602 and 604 went with C1c-3i
 	// (20260930026000), coding sessions folder-v2 only.
 	const tests = ["403_runtime_node_capacity_fits_demand.test.sql", "404_runtime_cpu_allocation_ratio.test.sql"];
@@ -100,5 +90,5 @@ try {
 	 concurrentLastBudgetSingleWinner:true,physicalInventoryPreserved:true,hardMemoryLimit:true,passed:true})+"\n");
 
 } finally {
-	if (started) spawnSync("docker", ["rm", "-f", container], { timeout: 30_000 });
+	database.close();
 }

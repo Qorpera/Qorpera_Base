@@ -16,6 +16,8 @@ import {
 	type MailAddress,
 	type MailCursor,
 	type MailDirection,
+	type MailMemberSend,
+	type MailMemberSent,
 	type MailMessage,
 	type MailMessageCursor,
 	type MailThread,
@@ -27,6 +29,7 @@ import {
 	readMailThread,
 	readMailThreads,
 	readMailWaiting,
+	sendMemberMail,
 } from "../cloud/mail.ts";
 import type { WebNativeSubscription } from "../cloud/native-subscription.ts";
 import type { ActionReviewAnswer } from "../cloud/review-rules.ts";
@@ -247,6 +250,12 @@ export class CompanyMail {
 			if (document.visibilityState === "visible") void this.#refreshCompany();
 		}, COMPANY_POLL_MS);
 		await this.#refreshCompany();
+	}
+
+	/** Reads the addresses and Digital Post's state again: an address was made or removed, or Digital Post connected
+	 * (the Mailbox's Addresses). */
+	reread(): Promise<void> {
+		return this.#closed ? Promise.resolve() : this.#refreshCompany();
 	}
 
 	dispose(): void {
@@ -756,6 +765,15 @@ export class CompanyMail {
 			this.#refreshCompany(),
 			...[...this.#watched.lists].map(([key, request]) => this.#readFirst(key, request)),
 		]);
+	}
+
+	/** Sends the member's own email from one of the company's addresses, with no agent (the Mailbox's "Send",
+	 * views/mailbox.ts; cloud/mail.ts `sendMemberMail`). It throws what the cloud refuses, for the Write window to say.
+	 * The lists a page shows are then read again, so the email is in Sent. */
+	async send(request: MailMemberSend): Promise<MailMemberSent> {
+		const sent = await sendMemberMail(this.#cloud, this.#environmentId, request);
+		await Promise.all([...this.#watched.lists].map(([key, listed]) => this.#readFirst(key, listed)));
+		return sent;
 	}
 
 	/** Sends the member's note to an agent as the member's own message, its outside words as quotes (the Mailbox's

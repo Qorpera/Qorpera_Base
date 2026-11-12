@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { isInterfaceName } from "@qorpera/cloud-client/interfaces";
 import type { JsonValue } from "@qorpera/contracts";
+import { CODING_VALUE_REPOSITORY, codingValueNameAllowed } from "./cloud-coding-value-names.ts";
 import { CloudToolArgumentRefusal } from "./cloud-native-tool-boundary.ts";
 
 /* Thread interactions (design: THREAD-WIDGETS-DESIGN-20260922.md): an agent asks
@@ -65,7 +66,7 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 				minItems: 1,
 				maxItems: 6,
 				description:
-					"Concrete alternatives for a decision you need from the member before proceeding. Do not invent generic choices for an open-ended question or optional next-step offer.",
+					"The likely answers to what your work cannot go on without, each a specific one, never generic ones like Get started.",
 				items: closedObject(["label"], {
 					label: chars(1, 80, "A specific answer that resolves the pending decision."),
 					value: chars(1, 200, "Returned as the answer; defaults to the label."),
@@ -81,12 +82,11 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 			multiSelect: { type: "boolean" },
 			allowCustom: {
 				type: "boolean",
-				description:
-					"An alternative to meaningful choices, not a reason to turn an open-ended question into a menu.",
+				description: "A field for the member's own answer beside the options; set it for an open question.",
 			},
 			dismissOnMoveOn: { type: "boolean" },
 		},
-		"surface question: a needed decision with 1-6 concrete choices. Open-ended questions and optional offers belong in ordinary chat.",
+		"surface question: an answer your work cannot go on without, with 1-6 likely answers; add allowCustom for an open one. Optional ideas, offers and news stay in chat.",
 	),
 	secret: closedObject(
 		["name", "label", "purpose"],
@@ -95,9 +95,18 @@ const PAYLOAD_SCHEMAS: Record<CloudInteractionSurface, Schema> = {
 			label: chars(1, 80),
 			purpose: chars(1, 300),
 			kind: { type: "string", enum: ["token", "password", "text"] },
-			connectorId: matching(VAULT_NAME_PATTERN, "Default vault."),
+			connectorId: matching(
+				VAULT_NAME_PATTERN,
+				"Default vault. environment for a coding value: an environment variable your coding sessions get.",
+			),
+			repository: matching(
+				CODING_VALUE_REPOSITORY,
+				"With connectorId environment only: the repository (owner/name, lower case) whose coding sessions get it.",
+			),
 		},
-		"surface secret: the member saves a value into the company vault; you never see it.",
+		"surface secret: the member saves a value into the company vault; you never see it. " +
+			// The guidance lives here: ask_member's description is at its 4096-byte limit.
+			"A coding value: when a coding session needs an environment variable only a person can give (a token for private packages, a build's API key), set connectorId environment, name the variable in lower case (npm_token for NPM_TOKEN), label it with the variable's name, say what it is for in plain words as purpose, and set repository owner/name; the member pastes it in the card and your next coding session in that repository gets it. Ask once, before you need it; never ask for one in chat. A key you can make yourself on npm, GitHub, Stripe or Resend needs no card: make it on that site in your machine's browser, press the site's Copy and save it with save_coding_value (on a company computer, computer_browser vault_capture with codingValue).",
 	),
 	form: closedObject(
 		["domain", "fields"],
@@ -215,11 +224,11 @@ function payloadRefusal(surface: CloudInteractionSurface): string {
 
 export const CLOUD_ASK_MEMBER_INSTRUCTIONS =
 	"Show one member card: question, secret, takeover or draft. This ends the turn like a final send; text only introduces the card: never answer its question, guess the member's choice or start on one in it. Finish independent work first, never actions depending on an unanswered decision. " +
-	"Use question only for a missing decision needed to continue that fits a few concrete choices, such as two contact matches or open times. First use existing instructions and authorized information; do not ask for facts you can find or permission already given. Never invent generic options like Investigate a topic or Get started. allowCustom supplements meaningful choices. Open-ended questions belong in chat even when blocking; optional follow-up offers belong there too. Ask once, use selected/custom answers, and follow up only for missing information. Do not repeat the question across title, introduction and chat. " +
-	"Write every card for a member who reads it in seconds, in your messages' plain words and the company's language. The title is the question in plain words. The body is at most a few short lines or bullets: what is being chosen, the one or two things that matter for it, and a link to the full draft or file. Never put in a card what an answer does not do or allow, a list of what is not yet checked, or how approval works: that belongs in the file, if anywhere. Option labels are buttons of 1 to 3 words, such as Approve or Change it. " +
+	"Use question for every answer your work cannot go on without, never only in chat: the card shows members that work is stopped at them. Never ask for facts you can find or permission you have. Options are the likely answers, never generic ones like Get started; for an open question add allowCustom, a field for their own answer. Optional ideas, offers and news stay in chat. Ask once, use selected/custom answers, and follow up only for missing information. Do not repeat the question across title, introduction and chat. " +
+	"Write every card for a member who reads it in seconds, in your messages' plain words and the company's language. The title is the question in plain words. The body is at most a few short lines or bullets: what is stopped until they answer (I've stopped the price list until you pick one), what is being chosen, the one or two things that matter for it, and a link to the full draft or file. Never put in a card what an answer does not do or allow, a list of what is not yet checked, or how approval works: that belongs in the file, if anywhere. Option labels are buttons of 1 to 3 words, such as Approve or Change it. " +
 	"When the choice is visual (a look, a product, a layout), first make a picture of each option, an SVG sketch in the company file or an interface app, and set its preview: the card shows big pictures to pick from. " +
 	"Use email draft and platform approval cards directly; do not put an extra question confirmation before their review. A question answer never bypasses required authorization. " +
-	"Form entry and credential sign-in cards are unavailable and refused. Forms would target actual webpage fields, not general questions. For page entry or authentication, offer takeover only when a member-controllable computer is available; otherwise explain the limitation. After handback, inspect the page before claiming success: I am done is not login proof. Secret cards save reusable secrets to the vault; they do not fill pages or sign in. Never collect passwords, tokens or one-time codes in chat or question answers. " +
+	"Form entry and credential sign-in cards are unavailable and refused. Forms would target actual webpage fields, not general questions. For sign-in or page entry on your desktop computer use takeover; while the member holds it your calls there are refused: end your turn, I'm done wakes you. With no such computer, say so. Then look: I'm done is not login proof. Secret cards save reusable secrets to the vault; they do not fill pages or sign in. Never collect passwords, tokens or one-time codes in chat or question answers. " +
 	"For an email draft when Gmail tools are available, call gmail_get_profile for the real sender, then ask_member with surface draft, title New email, payload {platform: email, connectorId: gmail, from: email_address, to: [recipients], subject, body, cc?}. Put the complete email in the card, not just chat. The member can edit recipients, subject and body, save to Gmail, send or discard. Creating a card neither sends nor saves a Gmail draft; a draft request never authorizes sending. Report saved/sent only after a successful tool result or card outcome. A sent outcome already sent it: never send again. For replies, replyTo is the original Gmail message id; threadRef alone is insufficient. If explicitly asked to save in Gmail immediately, use gmail_create_draft and report draft_id; do not create a separate unlinked card. Never invent the sender or infer a connection from conversation alone. " +
 	"payload must match the closed schema for surface. For question use {options: [{label, value?, description?, style?, preview?}], multiSelect?, allowCustom?}; options are objects, not strings. Text limits count UTF-8 bytes. Correct refused arguments before retrying; unsupported surfaces require a supported alternative. Reuse identical idempotencyKey and arguments for a retry of the same action. " +
 	"In your own shared thread, only the member you answer can answer the card. The answer wakes you as qorpera.interaction-answer/v1: the next wake input, or the request with the card it answers. It carries an outcome and chosen values for questions. Secret answers contain only the vault secret id/version and connectorId (default vault), never its value. A declined, dismissed or expired card is an answer; do not immediately raise it again.";
@@ -309,17 +318,25 @@ function payloadValid(surface: CloudInteractionSurface, payload: Record<string, 
 				);
 			});
 		}
-		case "secret":
+		case "secret": {
+			const coding = payload.connectorId === "environment";
 			return (
-				closedKeys(payload, ["name", "label", "purpose", "kind", "connectorId"]) &&
+				closedKeys(payload, ["name", "label", "purpose", "kind", "connectorId", "repository"]) &&
 				typeof payload.name === "string" &&
 				VAULT_NAME_PATTERN.test(payload.name) &&
 				(!("connectorId" in payload) ||
 					(typeof payload.connectorId === "string" && VAULT_NAME_PATTERN.test(payload.connectorId))) &&
+				// A coding value (20260930693000): a name the capture takes, and the repository only beside it.
+				(!coding || codingValueNameAllowed(payload.name)) &&
+				(!("repository" in payload) ||
+					(coding &&
+						typeof payload.repository === "string" &&
+						CODING_VALUE_REPOSITORY.test(payload.repository))) &&
 				text(payload.label, 1, 80) &&
 				text(payload.purpose, 1, 300) &&
 				optionalEnum(payload, "kind", ["token", "password", "text"])
 			);
+		}
 		case "form": {
 			if (
 				!closedKeys(payload, ["domain", "reason", "submitAfterFill", "fields"]) ||

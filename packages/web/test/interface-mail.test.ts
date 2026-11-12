@@ -143,6 +143,7 @@ function rail(controller: CompanyController, f: ReturnType<typeof fixture>) {
 		invitations: 0,
 		openSettings: () => {},
 		openFeedback: () => {},
+		openFriends: () => {},
 		agentActions: {},
 	});
 	return element;
@@ -767,7 +768,7 @@ describe("a send that waits for a person", () => {
 		);
 		const link = main.querySelector<HTMLAnchorElement>(".interface-mail-thread")!;
 		expect(link.textContent).toBe("Open Ada's thread");
-		expect(link.getAttribute("href")).toBe(`#/c/${profileA.profileId}/staff/${ada.id}`);
+		expect(link.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/staff/${ada.id}`);
 		// Once the conversation has its account (chosen in the thread), the same answer goes, on that account.
 		accounts.selectSessionAccount.mockResolvedValue(id(880));
 		expect(controller.conversation(session.sessionId, false).get().executionSponsor).toBeUndefined();

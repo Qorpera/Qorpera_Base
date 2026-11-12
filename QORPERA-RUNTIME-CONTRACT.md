@@ -2305,6 +2305,16 @@ kernel resolves the effort when it creates the run and pins it as before
 rules above. Built, not live: it goes live with the release cut whose bundle
 declares it.
 
+2026-11-08 amendment: an agent's own work runs high after a chat too (founder,
+8 November: "they should default to use high for their own work, while the
+low reasoning is only for light conversations with users"). Only a chain whose
+first run was a wake (a routine's, a coworker's message, an agent's own work)
+keeps the effort that run was pinned with, so a routine's chain still keeps its
+routine's effort. Work that carries on a chain a member's turn started (a
+worker's report, a machine event or check-in, an office start) runs as a run no
+member waits on: the agent.md's effort, else high. The member's turn itself
+keeps its conversation's Model menu effort (migration 20260930661000).
+
 2026-09-22 amendment: no turn caps. A turn is not capped by a number of tool
 calls, effectful operations, transcript events or wall-clock time. The agent
 works until the task is done or genuinely blocked. The remaining bounds are
@@ -2477,6 +2487,32 @@ itself. What changed:
 - The usage-limit notice names the login to its own member. The member's own
   pick of another login stays as it was.
 
+2026-11-09 amendment: a run in Agent notebooks mode waits at its usage limit
+too (founder: make "Work will go on by itself when it resets" true; migration
+20260930703000). Since 20260930539000 such a run, which keeps no run log,
+resumes from its own receipts after a cut-off, but at a usage limit it still
+ended, failed and waiting for review. Now:
+
+- At its login's usage limit it pauses as a run with a log does, on the same
+  login, and goes on from its receipts at the reset (or once a usage reading
+  shows room), with nothing to press. A run that cannot resume still stops: a
+  narrow run, one that already sent its final answer, a coding session's turn
+  (its session's next turn waits instead), a run in tree mode with no log, one
+  out of attempts or with an unsettled step. Its card, its agent and the
+  usage-limit notice say that the work stopped and does not go on by itself.
+- While it waits, it holds its conversation (one run at a time, 20260930538000);
+  its members may stop it as they stop a working run. The agents' activity says
+  until when, whose login pays and whether its member may move it.
+- The member whose own login pays for a waiting run may move it, by their own
+  pick, to another of their logins that can pay now, on the run's own computer
+  identity: never onto or off a ChatGPT plan, never from a login that may work
+  while the member is away onto one that may not, never a routine's run (its
+  routine names its payer). The run, its wake and its reservation move together,
+  and the move is recorded; the wake's identity changes only with that record,
+  as it does with a recorded sponsor handoff. The run then goes on at once from
+  its receipts or log on the chosen login, so it never also comes back on the
+  old one. Nothing else moves, and nothing moves by itself.
+
 This supersedes the follow-up order of the 2026-09-28 amendment above (the
 requester's login with room left first, then a company account).
 
@@ -2507,6 +2543,25 @@ pay for it (their own, for its harness, allowed to work while they are away,
 not a ChatGPT plan); a pick moves the session's payer to that login's binding
 from its next turn, never while a turn runs. Nothing moves a session by itself,
 and nobody but its owner moves it.
+
+2026-11-09 amendment: work handed to an agent is paid by the member the agent
+works for (founder, 9 November 2026, the Members page; migrations
+20260930700000 and 20260930701000). Each agent but the Co-Founder works for one
+member: its saved row, else the member who hired it while a member, else nobody.
+A move needs the other side's yes, and a member who leaves leaves their agents
+with nobody. A coworker wake (one agent hands work to another) is requested by
+the receiving agent's member and paid by that member's own login, the one the
+first-choice order above picks for new work of theirs, only when it is their
+own (never a company account) and not a ChatGPT plan login; whatever paid the
+sending run does not decide it. When the agent works for nobody, for the sending
+run's requester, or its member has no such login, the wake is requested and
+paid as above (the sending run's requester and login). This supersedes, for
+coworker wakes only, "everything that follows from them — coworker messages"
+in the 2026-09-28 amendment and "a coworker's" wake staying on the run's login
+in the 2026-10-04 list above. A member's own turns and room posts, routines
+(paid by their saver; moving an agent does not move them), workers, machine
+events, reviews and human tasks are unchanged, and no running work changes
+payer.
 
 Routines follow the same rule (migration 20260930095000):
 
@@ -3417,6 +3472,8 @@ keep their meaning.
    the company: every member sees the same sections, and owners, admins and
    contributors create, rename and delete them and move agents between them.
    The Co-Founder stands above all sections and is never placed.
+   (Amended 2026-11-11, "Each member's own sidebar" at the end of section 19: the
+   company's sections are what a new member sees; what a member changes is theirs.)
 2. **Agents organize themselves.** Any active company agent may list, create,
    rename and delete sections and move itself or a coworker between them
    through its run authority (`organize_sidebar`), with no member approval, so
@@ -4626,15 +4683,33 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    (item 5); the provider's SPF, DKIM and DMARC results travel with it. An
    agent sends from a live mailbox of its company as itself (M2b): plain
    text from "<agent> at <company>" at the mailbox's address, always ending
-   with a line saying an AI agent wrote and sent it. Every email passes the
-   automatic review as an outside action first, and only the platform's
-   sender, which alone holds the provider key, sends it. A reply to a
-   received email joins its thread and says it is an automatic response; an
-   email sent automatically is never answered, and a company never emails
-   its own mailboxes. No email goes out as if from Qorpera: a sender name or
-   mailbox that reads as Qorpera is refused (founder decision, 1 October
-   2026). Sending has its own platform switch, built off, and each company
-   an hourly and a daily limit on recipients that operators set.
+   with a line saying an AI agent wrote and sent it. Every email an agent
+   sends passes the automatic review as an outside action first, and only
+   the platform's sender, which alone holds the provider key, sends any
+   email. A reply to a received email joins its thread and says it is an
+   automatic response; an email sent automatically is never answered, and a
+   company never emails its own mailboxes. No email goes out as if from
+   Qorpera: a sender name or mailbox that reads as Qorpera is refused
+   (founder decision, 1 October 2026). Sending has its own platform switch,
+   built off, and each company an hourly and a daily limit on recipients
+   that operators set.
+
+   A member sends too (founder decision, 10 November 2026: "Let a member
+   send an email with no agent"; it amends this item and the decisions of
+   1 October 2026, under which company email left only through an agent).
+   A member who may write in the company (owner, admin or contributor)
+   sends a new plain-text email from a live mailbox of the company as
+   themself: from "<member> at <company>" at the mailbox's address, the
+   text as they wrote it. It is the member's own act, so it carries no AI
+   line, does not say it is an automatic response and passes no automatic
+   review. Everything else stands for it: the same address, count, subject
+   and text rules, the sending switch, never to the company's own
+   mailboxes, never as if from Qorpera, the company's limits counted
+   together with the agents' email, and only the platform's sender sends
+   it. No mail is private to a member: the email begins a thread every
+   member of the company reads, with who sent it, and an outside answer
+   joins that thread and wakes routines as any received email does. Agents
+   read received email only, as before.
 
 Section 21, item 33, is the event-wake acceptance item.
 
@@ -6304,6 +6379,69 @@ each step. It now leaves the envelope.
    Codex and raises the runtime's bound, with the images and hosts that carry that binary, together. A runtime ahead
    of its binary would have every larger result refused at the fence. Undo is the same pair rolled back; the migration
    stays.
+
+### 2026-11-10 amendment: members message each other
+
+> **Asked for by Jonas, 10 November 2026** ("for multiplayer companies, I should also have a contact for the members I
+> work with that's a direct way to message and communicate with my friends im building with"). Migration
+> `20260930715000_member_messages`; database and web only, no runtime bundle. It adds to section 14 and changes
+> nothing there.
+
+Members of a company can write to each other: one chat per pair of members per company (the client contract's "Member
+chats"), shown in the rail as a contact for each other member.
+
+1. **What a member chat is.** Plain messages between two people. It is not a conversation of section 14: it has no
+   agent, no room, no session and no transcript events, and it is in no agent's context.
+2. **What it never does.** It wakes no agent, takes no model account and no computer hours, and writes nothing to
+   the company folder. A company's pause does not stop it. Every member may write, viewers too.
+3. **Whose it is.** The company's: a chat is deleted with its company and kept when an account is deleted, as a
+   conversation's messages are. The same two people have another chat in another company.
+4. **Who reads it.** Its two members, through the member functions only. This does not bring back member-private
+   conversations (the 2026-09-17 amendment): an agent's conversations stay shared with every member, and a member chat
+   holds no agent.
+5. **Not decided.** Whether agents read member chats (memory is company first, section 15). Until that is decided, no
+   run reads them and no memory holds them.
+6. **Where a contact stands in the rail** (added the same day, migration `20260930717000_member_contact_places`;
+   Jonas: "not sure I like the member contacts at the top, undraggable and un-hideable"). A contact is a rail row
+   like an agent's: its member drags it among the agents, pins it and hides it. That place is the member's own, as
+   their pins and hidden agents are. The company's sections file (`QorperaOS/agents/sections.md`, 5.6) names agents
+   and group chats only and is the same for every member; no member's contacts are written to it, and no agent
+   places them.
+
+### 2026-11-11 amendment: each member's own sidebar
+
+Jonas, 11 November 2026: "company's on creation. but when a member changes something it's specific to that member,
+like with any other change to the sidepanel. we should really add a reset sidepanel button too, getting you back to
+companywide defaults." Migration `20260930727000_member_own_sidebar`, SQL test 1220. Amends the 2026-09-24 founder
+decision above, item 1.
+
+1. **The company's sidebar** stays `QorperaOS/agents/sections.md` (5.6), kept by agents (`organize_sidebar`), and is
+   what a new member sees and what every member sees wherever they changed nothing.
+2. **A member's own sidebar.** Creating, renaming and deleting sections and moving agents and group chats change only
+   the member's own sidebar, for any member, viewers too. What the member touched is theirs; everything else keeps
+   following the company's (an agent's later re-sort reaches every item the member did not move). A member's change
+   never writes the company's file.
+3. **Reset sidebar** takes away everything the member changed in the company's sidebar: their sections and places,
+   pins, hidden agents and group chats, contact places and hidden pages (and, from `20260930728000`, their own
+   arrangement of the apps drawer). Its Undo puts back the last reset's rows where nothing newer took their place.
+4. **`organize_sidebar`'s text** says the tool changes the company's sidebar, which every member sees except where a
+   member placed things themself, and that what a member placed is theirs, like pins and hidden agents (done after
+   this amendment; it changes the tool catalog, so it rides a runtime bundle).
+
+### 2026-11-11 amendment: groups of apps
+
+Jonas, 11 November 2026: "the same way we have categories and groups for agents, we should have so for the
+interfaces as well … the agents should be able to organize the interfaces for you natively and help group interfaces
+to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1221.
+
+1. **The company's groups of apps** are the plain file `apps/groups.md` (a nested list, two group levels; keys
+   `page:<name>`, `app:<name>`, `concepts`, `sites`; `group <id>: <name>`), kept by agents. It is what a new member
+   sees; a drawer key the file does not name stands loose at the end.
+2. **A member's own arrangement** is a document of theirs in the cloud (`qorpera_member_app_layouts`), laid over the
+   file the same way as the sidebar: what the member moved, grouped, renamed or ungrouped is theirs, the rest follows
+   the file. Reset sidebar takes it away with the rest; Undo puts it back.
+3. **Every emblem in the drawer is drawn in its app's colour** (its manifest's `colour`; fixed colours for the
+   built-in pages), no longer black only.
 
 ## 20. Enforcement matrix
 

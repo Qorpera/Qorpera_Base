@@ -6,6 +6,7 @@ import {
 	assertCompanyComputerScope,
 	type CompanyComputerScope,
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
+import { codingValuePattern } from "./cloud-coding-value-capture-box.ts";
 import type {
 	CompanyComputerGuestEffectCheck,
 	CompanyComputerGuestEffectInput,
@@ -16,7 +17,10 @@ import { cloudNativeToolOperationEnvelope } from "./cloud-native-tool-operations
 
 export interface CompanyComputerEffectRegistry {
 	call(
-		method: "qorpera_native_office_operation" | "qorpera_native_office_hook_capture",
+		method:
+			| "qorpera_native_office_operation"
+			| "qorpera_native_office_hook_capture"
+			| "qorpera_native_office_coding_value_capture",
 		args: Record<string, unknown>,
 		signal: AbortSignal,
 	): Promise<unknown>;
@@ -35,6 +39,22 @@ export interface CompanyComputerHookCaptureTarget {
 	readonly receiptId: string;
 	readonly field: "signing_secret";
 	/** The hook's capture key (X25519, base64url): the box is sealed to it, and only the vault holds its private half. */
+	readonly capturePublicKey: string;
+}
+
+/** Where a vault_capture of a coding value's box goes (20260930695000), as the database answered for this one call. */
+export interface CompanyComputerCodingValueCaptureTarget {
+	readonly service: string;
+	/** The service's site: the page must be on it. */
+	readonly site: string;
+	/** The service's whole-value pattern (POSIX, `^…$`): the value read must match it (cloud-coding-value-capture-box.ts). */
+	readonly valuePattern: string;
+	readonly variable: string;
+	readonly companyId: string;
+	readonly companyComputerId: string;
+	readonly computerGeneration: number;
+	readonly receiptId: string;
+	/** The value's capture key (X25519, base64url): the box is sealed to it, and only the vault holds its private half. */
 	readonly capturePublicKey: string;
 }
 
@@ -204,22 +224,26 @@ export class CloudCompanyComputerEffectControl implements CompanyComputerGuestEf
 	}
 
 	/**
-	 * E3c-3: where this vault_capture's box goes, read by the office itself through its own registry, never from the
-	 * native host (which could swap in a key of its own and read the value). The database first checks the call as a
-	 * check does (the executing receipt of exactly this call, this run's screen lease, the resource its begin made),
-	 * then the hook and its capture key; it writes nothing. Only inside this receipt, after its begin.
+	 * Where this vault_capture's box goes, read by the office itself through its own registry, never from the native
+	 * host (which could swap in a key of its own and read the value). The database first checks the call as a check does
+	 * (the executing receipt of exactly this call, this run's screen lease, the resource its begin made), then what the
+	 * capture is of and its capture key; it writes nothing. Only inside this receipt, after its begin. The answer, checked
+	 * here against the call and the lease for what both name, or an error.
 	 */
-	async hookCaptureTarget(
+	async #captureTarget(
+		method: "qorpera_native_office_hook_capture" | "qorpera_native_office_coding_value_capture",
 		input: CompanyComputerGuestEffectInput,
 		signal: AbortSignal,
-	): Promise<CompanyComputerHookCaptureTarget> {
+		keys: string,
+		schema: string,
+	): Promise<Record<string, unknown>> {
 		input = this.#checked(input, true);
 		this.#live(input);
-		const call = input.operation.arguments as { action?: unknown; hook?: unknown; field?: unknown };
+		const call = input.operation.arguments as { action?: unknown };
 		if (input.operation.tool !== "computer_browser" || call.action !== "vault_capture")
 			throw new Error("OFFICE_HOOK_CAPTURE_INVALID");
 		const result = await cloudToolRequest(
-			(requestSignal) => this.#control.call("qorpera_native_office_hook_capture", this.#args(input), requestSignal),
+			(requestSignal) => this.#control.call(method, this.#args(input), requestSignal),
 			AbortSignal.any([signal, this.#run.signal]),
 		);
 		const target = (result && typeof result === "object" && !Array.isArray(result) ? result : {}) as Record<
@@ -227,20 +251,12 @@ export class CloudCompanyComputerEffectControl implements CompanyComputerGuestEf
 			unknown
 		>;
 		if (
-			Object.keys(target).sort().join() !==
-				"address,capturePublicKey,companyComputerId,companyId,computerGeneration,field,hookId,receiptId,schema,site" ||
-			target.schema !== "qorpera.event-hook-capture-target/v1" ||
-			target.hookId !== call.hook ||
-			target.field !== call.field ||
-			target.field !== "signing_secret" ||
+			Object.keys(target).sort().join() !== keys ||
+			target.schema !== schema ||
 			target.receiptId !== input.receipt!.receiptId ||
 			target.companyId !== this.#scope.companyId ||
 			target.companyComputerId !== input.lease.binding.companyComputerId ||
 			target.computerGeneration !== input.lease.binding.computerGeneration ||
-			typeof target.hookId !== "string" ||
-			!UUID.test(target.hookId) ||
-			typeof target.address !== "string" ||
-			!/^[A-Za-z0-9_-]{43}$/.test(target.address) ||
 			typeof target.capturePublicKey !== "string" ||
 			!/^[A-Za-z0-9_-]{43}$/.test(target.capturePublicKey) ||
 			typeof target.site !== "string" ||
@@ -248,6 +264,60 @@ export class CloudCompanyComputerEffectControl implements CompanyComputerGuestEf
 			!HOST.test(target.site)
 		)
 			throw new Error("OFFICE_HOOK_CAPTURE_UNCONFIRMED");
+		return target;
+	}
+
+	/** E3c-3: where this vault_capture of a Stripe hook's signing secret goes. */
+	async hookCaptureTarget(
+		input: CompanyComputerGuestEffectInput,
+		signal: AbortSignal,
+	): Promise<CompanyComputerHookCaptureTarget> {
+		const call = input.operation.arguments as { hook?: unknown; field?: unknown };
+		const target = await this.#captureTarget(
+			"qorpera_native_office_hook_capture",
+			input,
+			signal,
+			"address,capturePublicKey,companyComputerId,companyId,computerGeneration,field,hookId,receiptId,schema,site",
+			"qorpera.event-hook-capture-target/v1",
+		);
+		if (
+			target.hookId !== call.hook ||
+			target.field !== call.field ||
+			target.field !== "signing_secret" ||
+			typeof target.hookId !== "string" ||
+			!UUID.test(target.hookId) ||
+			typeof target.address !== "string" ||
+			!/^[A-Za-z0-9_-]{43}$/.test(target.address)
+		)
+			throw new Error("OFFICE_HOOK_CAPTURE_UNCONFIRMED");
 		return Object.freeze(target) as unknown as CompanyComputerHookCaptureTarget;
+	}
+
+	/** 20260930695000: where this vault_capture of a coding value goes, and what the page and the value must be. */
+	async codingValueCaptureTarget(
+		input: CompanyComputerGuestEffectInput,
+		signal: AbortSignal,
+	): Promise<CompanyComputerCodingValueCaptureTarget> {
+		const call = (input.operation.arguments as { codingValue?: { service?: unknown; variable?: unknown } })
+			.codingValue;
+		const target = await this.#captureTarget(
+			"qorpera_native_office_coding_value_capture",
+			input,
+			signal,
+			"capturePublicKey,companyComputerId,companyId,computerGeneration,receiptId,schema,service,site,valuePattern,variable",
+			"qorpera.coding-value-capture-target/v1",
+		);
+		if (
+			!call ||
+			target.service !== call.service ||
+			target.variable !== call.variable ||
+			typeof target.service !== "string" ||
+			typeof target.variable !== "string" ||
+			typeof target.valuePattern !== "string"
+		)
+			throw new Error("OFFICE_HOOK_CAPTURE_UNCONFIRMED");
+		// A pattern the office cannot read as the database does refuses the capture before anything is clicked.
+		codingValuePattern(target.valuePattern);
+		return Object.freeze(target) as unknown as CompanyComputerCodingValueCaptureTarget;
 	}
 }

@@ -1,24 +1,31 @@
 import type { User } from "@supabase/supabase-js";
 import { CloudApi } from "../cloud/api.ts";
 import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt-plan-sign-in.ts";
-import { type Cloud, describeError } from "../cloud/client.ts";
+import { type Cloud, CloudRpcError, describeError } from "../cloud/client.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { WebCompanyComputer } from "../cloud/computer.ts";
 import { createWebConnectors, takeConnectorReturn } from "../cloud/connectors.ts";
+import { createDigitalPostKeys, readDigitalPost } from "../cloud/digital-post.ts";
+import { createWebEventHooks } from "../cloud/event-hooks.ts";
 import { interfaceOfferCalls } from "../cloud/interface-offers.ts";
 import { interfacePageCalls } from "../cloud/interface-pages.ts";
 import { interfaceSupervisionCalls } from "../cloud/interface-supervisions.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
+import { UUID_PATTERN } from "../cloud/parse.ts";
+import { codeReleaseCalls } from "../cloud/releases.ts";
 import { createWebRoutines } from "../cloud/routines.ts";
 import { createWebSessionAttachments } from "../cloud/session-attachments.ts";
 import { createWebSessionInputWriter } from "../cloud/session-input.ts";
 import { createWebSessionModel } from "../cloud/session-model.ts";
 import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
+import { createWebSites } from "../cloud/sites.ts";
 import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
-import { nativeColorOf } from "../ui/avatar.ts";
+import { agentFigure, nativeColorOf } from "../ui/avatar.ts";
+import { watchBrowserBar } from "../ui/browser-bar.ts";
+import { companyLogos, setCompanyLogos } from "../ui/company-logos.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
 import { interfaceEmblem } from "../ui/interface-emblem.ts";
 import { isPhoneLayout } from "../ui/layout.ts";
@@ -26,37 +33,45 @@ import { personPictures, setPersonPictures } from "../ui/person-pictures.ts";
 import { applyLanguage, presentationLocale, t, watchTheme } from "../ui/preferences.ts";
 import { RailLayout } from "../ui/rail-layout.ts";
 import { blankSkeleton, pageSkeleton, railSkeleton, threadSkeleton } from "../ui/skeleton.ts";
+import { AgentNotes } from "./agent-notes.ts";
 import { agentWallReader } from "./agent-wall.ts";
 import { AuthController, displayName } from "./auth.ts";
 import { CompanyController } from "./company.ts";
+import { CompanyLogos } from "./company-logos.ts";
 import { CompanyMail } from "./company-mail.ts";
 import { folderImageReader } from "./folder-images.ts";
 import { FoundingController } from "./founding.ts";
-import { CompanyApps, sharedFolderHints } from "./interface-apps.ts";
+import { CompanyApps, companyConcepts, sharedFolderHints } from "./interface-apps.ts";
 import { CompanyInterfaceFolder } from "./interface-folder.ts";
 import { CompanyInterfaceOffers } from "./interface-offers.ts";
 import { CompanyInterfacePages } from "./interface-pages.ts";
 import { pagesOn } from "./interfaces.ts";
 import { MemberPictures } from "./member-pictures.ts";
 import { newVersionNotice, runningBuildFiles, watchNewVersion } from "./new-version.ts";
+import { watchOnline } from "./online-mark.ts";
+import { OpenQuestions } from "./open-questions.ts";
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
+import { showWaitingInTitle } from "./tab-title.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
 import { type AccountViewState, renderAccount } from "./views/account.ts";
 import { AgentDetails } from "./views/agent-details.ts";
 import { savedAgentDraft } from "./views/agent-edits.ts";
-import { AppPanel, type SidePanelTarget, sameTarget } from "./views/app-panel.ts";
+import { AppPanel, type AppPanelHost, type SidePanelTarget, sameTarget } from "./views/app-panel.ts";
 import { noteBankReturn } from "./views/bank.ts";
 import { ComputerPanels } from "./views/computer.ts";
+import { ConceptsView } from "./views/concepts.ts";
 import { type AgentPage, ConversationView } from "./views/conversation.ts";
 import { ExecutionNotices } from "./views/execution-notices.ts";
 import { FeedbackView } from "./views/feedback.ts";
 import { FoundingView } from "./views/founding.ts";
+import { FriendsWindow } from "./views/friends-window.ts";
 import { GroupDetails } from "./views/group-details.ts";
 import { HubController, renderHub } from "./views/hub.ts";
 import { renderInterface } from "./views/interface.ts";
 import { type MeetState, renderMeet } from "./views/meet.ts";
+import { MemberChatView } from "./views/member-chat.ts";
 import {
 	hasWebsiteIdea,
 	keepWebsiteIdea,
@@ -65,13 +80,15 @@ import {
 	type Viewer,
 } from "./views/new-company.ts";
 import { NewConversationView } from "./views/new-conversation.ts";
+import type { QuestionDockHost } from "./views/question-dock.ts";
 import { type SettingsTab, SettingsView } from "./views/settings.ts";
 import { finishPlanSignIn, memberPlanSignIn } from "./views/settings-connections.ts";
 import { MyGoodWillView, takeGoodWillReturn } from "./views/settings-good-will.ts";
-import { noteConnectorReturn } from "./views/settings-services.ts";
+import { SitesView } from "./views/settings-sites.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
 import { renderTeam, type TeamFeedback } from "./views/team.ts";
+import { liveVersions, WhatsNewView, whatsNewEntry } from "./views/whats-new.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
 
 /* Entry point. One cloud client, one auth controller, one company controller
@@ -101,6 +118,9 @@ export function mountApplication(
 	// Every initials disc on the page shows the person's own picture through this store.
 	const pictures = new MemberPictures(api);
 	setPersonPictures(pictures);
+	// Every company figure shows the company's own logo through this store, once it has one.
+	const logos = new CompanyLogos(api);
+	setCompanyLogos(logos);
 
 	const topbar = h("header", { class: "topbar" });
 	const rail = h("aside", { id: "company-navigation", class: "rail", "aria-label": t("Company navigation") });
@@ -138,9 +158,35 @@ export function mountApplication(
 	window.addEventListener("qorpera-language-change", onLanguage);
 	window.addEventListener("qorpera-time-zone-change", redrawScreens);
 	const unwatchTheme = watchTheme();
+	const unwatchBrowserBar = watchBrowserBar(root);
 	let disposed = false;
 	let settings: SettingsView | undefined;
 	let feedback: FeedbackView | undefined;
+	let friendsWindow: FriendsWindow | undefined;
+	/** Friends see this account online while a tab is in front (online-mark.ts). */
+	const online = watchOnline(
+		() => api.markOnline(),
+		() => Boolean(auth.userId),
+	);
+	function closeFriends(restoreFocus = true): void {
+		if (!friendsWindow) return;
+		friendsWindow.dispose();
+		friendsWindow = undefined;
+		if (!restoreFocus) return;
+		// Opened over Settings, Friends give the focus back to Settings' own Friends button.
+		(
+			settings?.el.querySelector<HTMLElement>(".settings-friends") ??
+			frame.querySelector<HTMLElement>(".account-friends")
+		)?.focus();
+	}
+	/** Friends as a window of its own, over whatever is open: Settings stay open behind it (Jonas, 9 Nov 2026). */
+	function openFriends(): void {
+		if (friendsWindow || feedback || !auth.userId) return;
+		// Over Settings it shares their friends list, so the invitation picker behind it follows every change.
+		friendsWindow = new FriendsWindow(api, hub, () => closeFriends(), settings?.friends);
+		root.append(friendsWindow.el);
+		friendsWindow.open();
+	}
 	function closeFeedback(restoreFocus = true): void {
 		if (!feedback) return;
 		feedback.dispose();
@@ -148,7 +194,7 @@ export function mountApplication(
 		if (restoreFocus) frame.querySelector<HTMLElement>(".account-trigger")?.focus();
 	}
 	function openFeedback(): void {
-		if (feedback || settings || !auth.userId) return;
+		if (feedback || settings || friendsWindow || !auth.userId) return;
 		feedback = new FeedbackView(api, () => closeFeedback());
 		root.append(feedback.el);
 		feedback.open();
@@ -157,6 +203,8 @@ export function mountApplication(
 	 * so what the founder types next goes into their message. */
 	let settingsFromConversation = false;
 	function closeSettings(restoreFocus = true): void {
+		// A Friends window over Settings uses their friends list: it closes with them (access to the company lost).
+		if (settings) closeFriends(false);
 		settings?.dispose();
 		settings = undefined;
 		frame.inert = false;
@@ -169,6 +217,7 @@ export function mountApplication(
 	/** `folderPath`: a folder link's path (ui/folder-links.ts), shown in Storage. */
 	function openSettings(tab?: SettingsTab, folderPath?: string): void {
 		if (settings || feedback || !auth.userId) return;
+		closeFriends(false);
 		settings = new SettingsView(
 			api,
 			auth,
@@ -178,57 +227,91 @@ export function mountApplication(
 			() => closeSettings(),
 			companyRemovedHandler(),
 			tab,
-			// A page switched on or off in the open company shows or leaves its Interfaces tab at once.
-			(environmentId) => {
-				if (company?.profile.environmentId === environmentId) void interfacePages?.refresh();
-			},
+			openFriends,
 		);
 		frame.inert = true;
 		root.append(settings.el);
 		if (folderPath !== undefined) settings.openFolderPath(folderPath);
 		settings.focus();
 	}
-	/** Shows an app or a page beside the open chat; with none open, opens the app's owner's chat (or the Co-Founder's)
-	 * and shows it there. Again on what is shown already, it reads it again. */
+	/** Shows a Company File page beside the open chat. Again on what is shown already, it reads it again. */
 	function openSide(target: SidePanelTarget): void {
-		const controller = company;
-		if (!controller || !sidePanel) return;
-		if (conversation?.el.isConnected) {
-			const shown = conversation.beside;
-			if (shown instanceof AppPanel && sameTarget(shown.target, target)) {
-				void shown.reload(true);
-				shown.focus();
-				return;
-			}
-			conversation.showBeside(sidePanel(target));
+		if (!conversation?.el.isConnected || !sidePanel) return;
+		const shown = conversation.beside;
+		if (shown instanceof AppPanel && sameTarget(shown.target, target)) {
+			void shown.reload(true);
+			shown.focus();
 			return;
 		}
-		pendingSide = target;
-		const owner =
-			target.kind === "app" ? companyApps?.apps.find((app) => app.name === target.name)?.manifest?.owner : undefined;
-		const agent = owner ? controller.staffById(owner) : undefined;
-		navigate(
-			agent && agent.id !== controller.cofounderId()
-				? { name: "company", profileId: controller.profile.profileId, section: "staff", id: agent.id }
-				: { name: "company", profileId: controller.profile.profileId, section: "home" },
-		);
+		conversation.showBeside(sidePanel(target));
+	}
+	/** Opens an agent's app as a page of its own (`#/c/{id}/a/{name}`), or a concept of the company's product in the
+	 * Concepts viewer (`#/c/{id}/concepts/{name}`); shown already, it reads it again. */
+	function openApp(name: string): void {
+		const controller = company;
+		if (!controller) return;
+		const route = currentRoute();
+		if (isConcept(controller, name)) {
+			if (
+				conceptsView &&
+				route.name === "company" &&
+				route.profileId === controller.profile.profileId &&
+				route.section === "concepts" &&
+				conceptsView.selected === name
+			) {
+				conceptsView.reload();
+				return;
+			}
+			navigate({ name: "company", profileId: controller.profile.profileId, section: "concepts", id: name });
+			return;
+		}
+		if (
+			appPage &&
+			route.name === "company" &&
+			route.profileId === controller.profile.profileId &&
+			route.section === "app" &&
+			route.id === name
+		) {
+			void appPage.reload(true);
+			appPage.focus();
+			return;
+		}
+		navigate({ name: "company", profileId: controller.profile.profileId, section: "app", id: name });
+	}
+	/** Whether the open company's app `name` is a concept of its product, as its apps were last read. */
+	function isConcept(controller: CompanyController, name: string): boolean {
+		return companyConcepts(controller.store.get().apps ?? []).some((app) => app.name === name);
 	}
 	// A folder link in an agent's message opens Storage at what it names, over the page it is on: the conversation
-	// stays where it was below Settings. Storage answers the links in the documents it shows itself.
+	// stays where it was below Settings. Storage answers the links in the documents it shows itself. An app's link or
+	// card, in a message, on a wall or in a choice, opens the app's page.
 	function onFolderLink(event: MouseEvent): void {
 		const app = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-app-name]") : null;
 		if (app?.dataset.appName && !event.defaultPrevented) {
 			event.preventDefault();
-			openSide({ kind: "app", name: app.dataset.appName });
+			openApp(app.dataset.appName);
 			return;
+		}
+		// A link to the page of the app that is already open (its icon in the rail) leads nowhere new, and the app's page
+		// has no Reload of its own: an ordinary press on it reads the app again, which also lets it ask again (§5). A
+		// modified click stays the link's own (a new tab), and a link to any other place goes there by itself.
+		const here = event.target instanceof Element ? event.target.closest<HTMLElement>("a[data-href]") : null;
+		if (here && !event.defaultPrevented && appPage && here.getAttribute("data-href") === location.hash) {
+			const route = currentRoute();
+			const ordinary = event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+			if (ordinary && route.name === "company" && route.section === "app" && route.id) {
+				event.preventDefault();
+				openApp(route.id);
+				return;
+			}
 		}
 		const link = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-folder-path]") : null;
 		const path = link?.dataset.folderPath;
 		if (path === undefined || event.defaultPrevented) return;
 		event.preventDefault();
 		const fromConversation = conversation !== undefined && main.contains(link);
-		// An HTML page in an agent's message opens beside the chat, live, as an app does.
-		if (fromConversation && sidePanel && /\.html?$/i.test(path)) {
+		// An HTML page in an agent's message opens beside the chat, live.
+		if (fromConversation && conversation?.el.isConnected && sidePanel && /\.html?$/i.test(path)) {
 			openSide({ kind: "page", path });
 			return;
 		}
@@ -244,10 +327,10 @@ export function mountApplication(
 		if (!apps) return;
 		for (const card of main.querySelectorAll<HTMLElement>(".app-card[data-app-name]")) {
 			const manifest = apps.find((app) => app.name === card.dataset.appName)?.manifest;
-			const shown = manifest ? JSON.stringify([manifest.emblem, manifest.colour, manifest.about]) : "";
+			const shown = manifest ? JSON.stringify([manifest.emblem, manifest.about]) : "";
 			if (!manifest || card.dataset.shown === shown) continue;
 			card.dataset.shown = shown;
-			card.querySelector(".app-card-emblem")?.replaceChildren(interfaceEmblem(manifest.emblem, manifest.colour, 30));
+			card.querySelector(".app-card-emblem")?.replaceChildren(interfaceEmblem(manifest.emblem, 30));
 			const note = card.querySelector(".app-card-note");
 			if (note && manifest.about) note.textContent = `${manifest.about} · ${t("App")}`;
 		}
@@ -316,6 +399,8 @@ export function mountApplication(
 		checkoutReturn = takeGoodWillReturn() ?? checkoutReturn;
 		closeSettings(false);
 		closeFeedback(false);
+		// An accepted company invitation opens the company: the Friends window gives way to it.
+		closeFriends(false);
 		settingsAfterHome = undefined;
 		routeRevision++;
 		resolvingRoute = undefined;
@@ -336,24 +421,44 @@ export function mountApplication(
 	let interfaceOffers: CompanyInterfaceOffers | undefined;
 	/** The agents' interface apps in the open company's folder, followed there (RUNTIME-INTERFACE-APPS.md §4). */
 	let companyApps: CompanyApps | undefined;
+	/** The agents' walls and next runs for the rail's line under each name (app/agent-notes.ts), while the company is open. */
+	let agentNotes: AgentNotes | undefined;
 	/** The agents' walls on top of their threads, told of each change hint of the folder through whichever apps reader
 	 * the open company has now (it is made again when the company opens again). */
 	const wallListeners = new Set<() => void>();
-	/** Makes the side panel of an app or page for the open company: set while one is drawn. */
+	/** Makes the side panel of a Company File page for the open company: set while one is drawn. */
 	let sidePanel: ((target: SidePanelTarget) => AppPanel) | undefined;
-	/** An app or page asked for while no chat was open: shown beside the chat once it is. */
-	let pendingSide: SidePanelTarget | undefined;
+	/** The agent's app on its own page (`#/c/{id}/a/{name}`), while that route shows. */
+	let appPage: AppPanel | undefined;
+	/** The open company's last conversation, where an app's page leads back to. */
+	let appReturn: string | undefined;
+	/** The company's concepts, full screen (`#/c/{id}/concepts`), while that route shows. */
+	let conceptsView: ConceptsView | undefined;
+	/** The company's Sites page (`#/c/{id}/sites`), kept while that route shows. */
+	let sitesPage:
+		| { readonly company: CompanyController; readonly view: SitesView; readonly el: HTMLElement }
+		| undefined;
+	/** The company whose sites were read for the apps drawer. */
+	let sitesRead: CompanyController | undefined;
+	/** The company's What's new page (`#/c/{id}/whats-new`), kept while that route shows, and the company read for the
+	 * apps drawer's entry. */
+	let whatsNewPage:
+		| { readonly company: CompanyController; readonly view: WhatsNewView; readonly el: HTMLElement }
+		| undefined;
+	let releasesRead: CompanyController | undefined;
 	/** The open company's mail as the member reads it, for the Mailbox page (Interfaces step I5c). */
 	let mail: CompanyMail | undefined;
 	let computer: WebCompanyComputer | undefined;
 	let computerPanels: ComputerPanels | undefined;
 	let conversation: ConversationView | undefined;
+	/** The chat with another member on screen, and the company it is in. */
+	let memberChat: { view: MemberChatView; company: CompanyController } | undefined;
 	/** The agent or group chat card opened from the rail, and what an agent card asked for once its chat is on screen. */
 	let agentCard: AgentDetails | GroupDetails | undefined;
 	let agentPage: { agentId: string; page: AgentPage; until: number } | undefined;
-	/** Each company's walls as the rail's agent cards read them, for their "Latest notes" row. */
-	const cardWalls = new WeakMap<CompanyController, ReturnType<typeof agentWallReader>>();
 	const cardImages = new WeakMap<CompanyController, ReturnType<typeof folderImageReader>>();
+	/** Each company's open questions for its app pages and Concepts viewer, read only while one is on screen. */
+	const appQuestions = new WeakMap<CompanyController, OpenQuestions>();
 	let newConversation: NewConversationView | undefined;
 	let startingSession: { sessionId: string } | undefined;
 	let profiles: HostedProfile[] = [];
@@ -392,8 +497,11 @@ export function mountApplication(
 			}
 			closeSettings(false);
 			closeFeedback(false);
+			closeFriends(false);
 			accountUserId = userId;
+			online.mark();
 			pictures.reset();
+			logos.reset();
 			accountRevision++;
 			routeRevision++;
 			teardownCompany();
@@ -429,6 +537,7 @@ export function mountApplication(
 			auth,
 			openSettings,
 			openFeedback,
+			openFriends,
 			invitations: hub.store.get().invitations.length,
 			...(route.name === "company" && route.section !== "meet" && company && !company.store.get().accessLost
 				? { navigation: { open: navigationOpen, toggle: () => setNavigationOpen(!navigationOpen) } }
@@ -472,6 +581,16 @@ export function mountApplication(
 		executionNotices.replaceChildren();
 		conversation?.dispose();
 		conversation = undefined;
+		memberChat?.view.dispose();
+		memberChat = undefined;
+		appPage?.dispose();
+		appPage = undefined;
+		conceptsView?.dispose();
+		conceptsView = undefined;
+		sitesPage?.view.dispose();
+		sitesPage = undefined;
+		whatsNewPage?.view.dispose();
+		whatsNewPage = undefined;
 		if (newConversation && !newConversation.hasInput) {
 			newConversation.dispose();
 			newConversation = undefined;
@@ -491,17 +610,26 @@ export function mountApplication(
 		interfaceOffers = undefined;
 		companyApps?.dispose();
 		companyApps = undefined;
+		agentNotes?.dispose();
+		agentNotes = undefined;
 		sidePanel = undefined;
-		pendingSide = undefined;
+		appPage?.dispose();
+		appPage = undefined;
+		appReturn = undefined;
+		conceptsView?.dispose();
+		conceptsView = undefined;
 		mail?.dispose();
 		mail = undefined;
 		executionNotices.replaceChildren();
 		unsubscribeCompany?.();
 		conversation?.dispose();
+		memberChat?.view.dispose();
+		memberChat = undefined;
 		newConversation?.dispose();
 		company?.stop();
 		pendingCompany = undefined;
 		company = undefined;
+		showWaitingInTitle(0);
 		agentPage = undefined;
 		computer = undefined;
 		computerPanels = undefined;
@@ -577,7 +705,27 @@ export function mountApplication(
 					)(sessionId, clientInputId, text, signal, files, executionSponsor, roomTarget),
 			);
 			company = controller;
-			// The company's sections are QorperaOS/agents/sections.md: the rail's moves are the member's edits of it.
+			// A member who may write the folder brings the logo everyone sees in step with QorperaOS/brand/logo.svg once
+			// the company has opened: its Branding & Identity agent may have drawn a new one meanwhile.
+			const syncLogo = controller.store.subscribe(() => {
+				const team = controller.store.get().team;
+				if (!team || controller.store.get().accessLost) return;
+				syncLogo();
+				if (!team.capabilities.write) return;
+				const current = () => {
+					if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
+						throw new Error(t("Company access changed."));
+				};
+				void logos
+					.sync(
+						profile.profileId,
+						() => new WebCompanyFiles(cloud, profile, userId, team.role, controller.signal, current).folder(),
+						controller.signal,
+					)
+					.catch(() => undefined);
+			});
+			// On a cloud from before each member's own sidebar (20260930727000), the company's sections are
+			// QorperaOS/agents/sections.md and the rail's moves are the member's edits of it.
 			controller.useSectionsFile((signal) => {
 				const current = () => {
 					if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
@@ -614,25 +762,19 @@ export function mountApplication(
 					});
 				}
 			}
-			if (connectorReturn?.connector === "bank") {
-				// The bank's sign-in sent the member back to the Bank page they started it on, which finishes it.
-				noteBankReturn(connectorReturn);
-				connectorReturn = undefined;
-			} else if (connectorReturn) {
-				// A provider sign-in (Step 7 connector) sent the member back to this
-				// company: show the outcome where the connection was started.
-				noteConnectorReturn(connectorReturn);
-				connectorReturn = undefined;
-				queueMicrotask(() => {
-					if (!disposed && company === controller) openSettings("company-connections");
-				});
-			}
+			// The bank's sign-in sent the member back to the Bank page they started it on, which finishes it. No other
+			// connector is signed in from the web since Company connections left Settings (10 Nov 2026).
+			if (connectorReturn?.connector === "bank") noteBankReturn(connectorReturn);
+			connectorReturn = undefined;
 			computer = new WebCompanyComputer(cloud, profile, userId, controller.signal, () => {
 				if (disposed || company !== controller || auth.userId !== userId || controller.store.get().accessLost)
 					throw new Error(t("Company access is unavailable."));
 			});
-			// Open computers outlive the thread they were opened in; leaving the company ends them.
-			computerPanels = new ComputerPanels(computer, controller.signal);
+			// Open computers outlive the thread they were opened in; leaving the company ends them. A `machines` hint
+			// reads an open window's machines at once.
+			computerPanels = new ComputerPanels(computer, controller.signal, {
+				hints: (listener) => controller.onInvalidate(listener),
+			});
 			unsubscribeCompany = controller.store.subscribe(() => render());
 			void controller.start();
 			return controller;
@@ -710,9 +852,10 @@ export function mountApplication(
 		const current = captureRoute();
 		const authState = auth.store.get();
 		if (!authState.ready) {
-			// A start that failed keeps saying so; a redraw (a route change) never blanks it again.
+			// A start that failed keeps saying so; a redraw (a route change) never blanks it again. index.html's
+			// first screen (ui/boot.ts) stands until the app knows which screen to draw.
 			if (startError) replace(root!, startError);
-			else replace(root!, blankSkeleton(t("Connecting to the cloud")));
+			else if (!root!.querySelector(":scope > .boot")) replace(root!, blankSkeleton(t("Connecting to the cloud")));
 			return;
 		}
 		if (!authState.session) {
@@ -732,8 +875,11 @@ export function mountApplication(
 		}
 		frame.classList.toggle(
 			"has-thread",
-			route.name === "company" && (route.section === "chat" || route.section === "new"),
+			route.name === "company" &&
+				(route.section === "chat" || route.section === "new" || route.section === "member"),
 		);
+		// The Concepts viewer is full screen: no rail and no top bar, its own side panel instead.
+		frame.classList.toggle("has-concepts", route.name === "company" && route.section === "concepts");
 		if (route.name !== "company") {
 			teardownCompany();
 			rail.hidden = true;
@@ -830,13 +976,14 @@ export function mountApplication(
 			topbar.classList.remove("topbar-plain");
 			topbar.classList.add("topbar-company");
 			replace(topbar);
-			rail.hidden = route.section === "meet";
+			rail.hidden = route.section === "meet" || route.section === "concepts";
 			if (!rail.hidden) replace(rail, ...railSkeleton());
 			if (
 				route.section === "home" ||
 				route.section === "chat" ||
 				route.section === "staff" ||
-				route.section === "new"
+				route.section === "new" ||
+				route.section === "member"
 			)
 				showThreadSkeleton(t("Opening company"));
 			else replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
@@ -919,39 +1066,69 @@ export function mountApplication(
 				current,
 			).folder();
 		};
-		// An agent's app or a Company File page beside the chat (RUNTIME-INTERFACE-APPS.md §4, §5): read with the member's
-		// own folder client, under the company's checks.
+		// An agent's app on its page, or a Company File page beside the chat (RUNTIME-INTERFACE-APPS.md §4, §5): read with
+		// the member's own folder client, under the company's checks.
+		// The agents' open questions about an app, answered on its page and in the Concepts viewer as in the chat
+		// (app/open-questions.ts): the member's own model account for the thread, chosen as the thread chooses it.
+		const questionsHost = (): QuestionDockHost => {
+			let questions = appQuestions.get(controller);
+			if (!questions) {
+				questions = new OpenQuestions(
+					controller,
+					createWebNativeSubscription(
+						cloud,
+						controller.profile.profileId,
+						controller.userId,
+						controller.signal,
+						companyCurrent,
+					),
+				);
+				appQuestions.set(controller, questions);
+			}
+			return {
+				questions,
+				agent: (agentId) => controller.staffById(agentId),
+				memberName: (userId) => controller.memberName(userId),
+				image: (path, signal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
+				conversation: (sessionId) => controller.conversation(sessionId, false),
+				chatHref: (sessionId) =>
+					routeHash({ name: "company", profileId: controller.profile.profileId, section: "chat", id: sessionId }),
+			};
+		};
+		const panelHost = (beside: boolean): AppPanelHost => ({
+			folder: () => memberFolder(companyCurrent, t("Company access changed.")),
+			agents: () =>
+				controller.store
+					.get()
+					.staff.filter((agent) => agent.employmentStatus === "active")
+					.map((agent) => {
+						const now = controller.agentState(agent.id);
+						return {
+							name: agent.displayName,
+							role: agent.role,
+							working: now === "working" || now === "writing",
+						};
+					}),
+			readApps: () => companyApps?.read() ?? Promise.resolve([]),
+			apps: () => companyApps?.apps ?? [],
+			agentName: (agentId) => (agentId ? (controller.staffById(agentId)?.displayName ?? null) : null),
+			onFolderChange: (listener) => companyApps?.onChange(listener) ?? (() => {}),
+			// Beside the chat, as a folder link in it: closing Storage gives the composer focus again.
+			openInStorage: (path) => {
+				const open = settings;
+				openSettings("storage", path);
+				if (settings && settings !== open) settingsFromConversation = beside && conversation !== undefined;
+			},
+			// A link to an app in an app's page, as its card in a message.
+			openApp,
+			budgetKey: controller.profile.profileId,
+			questions: questionsHost(),
+			// A change an app asked for and the member allowed is the member's own save, under the company's checks.
+			writer: () => memberFolder(companyCurrent, t("Company access changed.")),
+			current: companyCurrent,
+		});
 		sidePanel = (target) =>
-			new AppPanel(
-				{
-					folder: () => memberFolder(companyCurrent, t("Company access changed.")),
-					agents: () =>
-						controller.store
-							.get()
-							.staff.filter((agent) => agent.employmentStatus === "active")
-							.map((agent) => {
-								const now = controller.agentState(agent.id);
-								return {
-									name: agent.displayName,
-									role: agent.role,
-									working: now === "working" || now === "writing",
-								};
-							}),
-					readApps: () => companyApps?.read() ?? Promise.resolve([]),
-					apps: () => companyApps?.apps ?? [],
-					agentName: (agentId) => (agentId ? (controller.staffById(agentId)?.displayName ?? null) : null),
-					onFolderChange: (listener) => companyApps?.onChange(listener) ?? (() => {}),
-					// As a folder link in the chat: closing Storage gives the composer focus again.
-					openInStorage: (path) => {
-						const open = settings;
-						openSettings("storage", path);
-						if (settings && settings !== open) settingsFromConversation = conversation !== undefined;
-					},
-					budgetKey: controller.profile.profileId,
-				},
-				target,
-				() => conversation?.closeBeside(true),
-			);
+			new AppPanel(panelHost(true), target, { kind: "beside", onClose: () => conversation?.closeBeside(true) });
 		// The member's erases of single messages under a caller's checks (summary trees M3c).
 		const messageErases = (current: () => void) => {
 			current();
@@ -972,10 +1149,12 @@ export function mountApplication(
 		};
 		// First run is a moment, not a workspace: the rail stays away until the
 		// Co-Founder has a face.
-		rail.hidden = route.section === "meet" || controller.store.get().accessLost === true;
+		// The Concepts viewer is full screen: its own side panel leads back.
+		rail.hidden =
+			route.section === "meet" || route.section === "concepts" || controller.store.get().accessLost === true;
 		const context = shellContext(authState.user, route);
 		renderTopbar(topbar, context, rail.hidden ? undefined : controller);
-		// The card's Computer and Latest notes open in the agent's own chat: here when it is on screen, else once it opens.
+		// The card's Computer opens in the agent's own chat: here when it is on screen, else once it opens.
 		const showAgentPage = (agentId: string, page: AgentPage) => {
 			if (conversation?.show(agentId, page)) return;
 			// It waits a little while for the chat; a request the member moved away from does not come back later.
@@ -987,11 +1166,6 @@ export function mountApplication(
 		if (!cardImage) {
 			cardImage = folderImageReader(() => memberFolder(companyCurrent, t("Company access changed.")));
 			cardImages.set(controller, cardImage);
-		}
-		let cardWall = cardWalls.get(controller);
-		if (!cardWall) {
-			cardWall = agentWallReader(() => memberFolder(companyCurrent, t("Company access changed.")));
-			cardWalls.set(controller, cardWall);
 		}
 		const openAgentCard: ShellContext["openAgentCard"] = (agent, anchor, card, findAnchor) => {
 			agentCard?.dispose();
@@ -1006,6 +1180,7 @@ export function mountApplication(
 					routines: createWebRoutines(cloud, controller.profile, controller.signal, companyCurrent, () =>
 						memberFolder(companyCurrent, t("Company access changed.")),
 					),
+					eventHooks: createWebEventHooks(cloud, controller.profile),
 					nativeSubscription: createWebNativeSubscription(
 						cloud,
 						controller.profile.profileId,
@@ -1021,7 +1196,6 @@ export function mountApplication(
 				controller.signal,
 				{
 					computer: () => showAgentPage(agent.id, "computer"),
-					notes: { open: () => showAgentPage(agent.id, "wall"), read: (signal) => cardWall(agent.id, signal) },
 					...card,
 				},
 				"beside",
@@ -1046,12 +1220,24 @@ export function mountApplication(
 			opened.dialog.findOpener = findAnchor;
 			agentCard = opened;
 		};
+		// The tab counts the agents that wait on the member here (app/tab-title.ts).
+		showWaitingInTitle(controller.agentsWaitingOnMe());
 		if (!rail.hidden)
 			renderRail(rail, controller, {
 				...context,
 				agentActions: { ...agentActions, ...groupActions, ...workspaceActions },
 				openAgentCard,
 				openGroupCard,
+				hideInterfacePage: (page, hidden) =>
+					(interfacePages?.hide(page, hidden) ?? Promise.resolve()).then(() => {
+						// Reset sidebar counts hidden pages among the member's changes (20260930727000), and a newer choice
+						// is never undone by an older reset's Undo.
+						if (controller.ownSidebar()) {
+							controller.store.set({ sidebarReset: undefined });
+							void controller.refreshSidebar();
+						}
+					}),
+				refreshInterfacePages: () => void interfacePages?.refresh(),
 			});
 		if (navigationFocus) {
 			// The drawer opens on its first control: the company's name, or the search field when it is open (the
@@ -1077,11 +1263,19 @@ export function mountApplication(
 			interfaceOffers = undefined;
 			companyApps?.dispose();
 			companyApps = undefined;
+			agentNotes?.dispose();
+			agentNotes = undefined;
 			mail?.dispose();
 			mail = undefined;
 			closeSettings(false);
 			conversation?.dispose();
+			memberChat?.view.dispose();
+			memberChat = undefined;
 			newConversation?.dispose();
+			appPage?.dispose();
+			appPage = undefined;
+			conceptsView?.dispose();
+			conceptsView = undefined;
 			// Revoked access ends every retained screen connection, not only the shown one.
 			computerPanels?.dispose();
 			navigationOpen = false;
@@ -1173,25 +1367,29 @@ export function mountApplication(
 			interfaceOffers = undefined;
 			companyApps?.dispose();
 			companyApps = undefined;
+			agentNotes?.dispose();
+			agentNotes = undefined;
+			controller.store.set({ agentNotes: undefined });
 		}
 		if (!interfaceFolder && state.team?.capabilities.read) {
+			const folderCurrent = () => {
+				const now = controller.store.get();
+				if (
+					disposed ||
+					company !== controller ||
+					auth.userId !== controller.userId ||
+					now.accessLost ||
+					!now.team?.capabilities.read
+				)
+					throw new Error(t("Company access changed."));
+			};
 			const files = new WebCompanyFiles(
 				cloud,
 				controller.profile,
 				controller.userId,
 				state.team.role,
 				controller.signal,
-				() => {
-					const now = controller.store.get();
-					if (
-						disposed ||
-						company !== controller ||
-						auth.userId !== controller.userId ||
-						now.accessLost ||
-						!now.team?.capabilities.read
-					)
-						throw new Error(t("Company access changed."));
-				},
+				folderCurrent,
 			);
 			// The offers of claimed cells are read with them, and again each time the folder the pages read changes,
 			// since the save that changes a cell settles its offers (step I9c) and makes or ends a supervision (I9b).
@@ -1232,17 +1430,87 @@ export function mountApplication(
 			offers.open();
 			pages.open();
 			void reader.open();
-			// The agents' apps, for the apps drawer and the panel beside the chat (RUNTIME-INTERFACE-APPS.md §4).
-			const apps = new CompanyApps(shared, (next) => {
-				if (companyApps !== apps) return;
-				controller.store.set({ apps: next });
-				decorateAppCards();
-			});
+			// The agents' apps, for the apps drawer and the apps' own pages (RUNTIME-INTERFACE-APPS.md §4).
+			const apps = new CompanyApps(
+				shared,
+				(next) => {
+					if (companyApps !== apps) return;
+					controller.store.set({ apps: next });
+					decorateAppCards();
+				},
+				(groups) => {
+					if (companyApps !== apps) return;
+					controller.store.set({ appGroups: groups });
+				},
+			);
 			companyApps = apps;
+			// The rail's line under each agent's name: its wall and its next planned run, read with the member's own access
+			// and again on each change hint of the folder, as the thread's wall is.
+			const routines = createWebRoutines(cloud, controller.profile, files.signal, folderCurrent, () =>
+				files.folder(),
+			);
+			const notes = new AgentNotes(
+				{
+					agents: () =>
+						controller.store
+							.get()
+							.staff.filter((agent) => agent.employmentStatus === "active")
+							.map((agent) => agent.id),
+					readWall: agentWallReader(() => files.folder()),
+					listRoutines: () => routines.list(),
+					signal: files.signal,
+				},
+				(next) => {
+					if (agentNotes === notes) controller.store.set({ agentNotes: next });
+				},
+			);
+			agentNotes = notes;
+			window.addEventListener("focus", () => notes.changed(), { signal: files.signal });
 			apps.onChange(() => {
 				for (const listener of [...wallListeners]) listener();
+				notes.changed();
 			});
 			apps.open();
+			notes.open();
+		}
+		// The roster arrives after the company opens, and agents are hired and let go: the rail's notes follow it.
+		agentNotes?.agentsChanged();
+		// The company's sites, for the apps drawer's Sites entry: read once the company opens, and again when the window
+		// comes back (an agent may have published one meanwhile). A cloud without the read shows no entry.
+		if (sitesRead !== controller && state.team?.capabilities.read) {
+			sitesRead = controller;
+			const sites = createWebSites(cloud, controller.profile);
+			const readSites = () =>
+				void sites.list(controller.signal).then(
+					(list) => {
+						if (!controller.signal.aborted) controller.store.set({ siteCount: list.length });
+					},
+					() => {},
+				);
+			readSites();
+			window.addEventListener("focus", readSites, { signal: controller.signal });
+		}
+		// What's new, read the same way for its entry and badge. A cloud without the read (before 20260930729000), or one
+		// that refuses this member, shows no entry; a read that did not answer leaves the entry as it was.
+		if (releasesRead !== controller && state.team?.capabilities.read) {
+			releasesRead = controller;
+			const releases = codeReleaseCalls(cloud, controller.profile.profileId);
+			const readReleases = () =>
+				void releases.list(controller.signal).then(
+					(read) => {
+						if (!controller.signal.aborted)
+							controller.store.set({
+								whatsNew: whatsNewEntry(controller, read),
+								siteVersions: liveVersions(read),
+							});
+					},
+					(error: unknown) => {
+						if (!controller.signal.aborted && error instanceof CloudRpcError && (error.missing || error.denied))
+							controller.store.set({ whatsNew: undefined, siteVersions: undefined });
+					},
+				);
+			readReleases();
+			window.addEventListener("focus", readReleases, { signal: controller.signal });
 		}
 		// The company's mail, read the same way: whether it is on (the Mailbox's `mail` need) and what waits for a person.
 		if (mail && !state.team?.capabilities.read) {
@@ -1297,9 +1565,41 @@ export function mountApplication(
 			conversation = undefined;
 			controller.setOpenSession(undefined);
 		}
+		if (route.section !== "member") {
+			memberChat?.view.dispose();
+			memberChat = undefined;
+		}
+		// Where this tab is in the rail, for the other members' rails (a conversation says its own: company.ts).
+		controller.setOpenPlace(
+			route.section === "interface" && route.id
+				? `page:${route.id}`
+				: route.section === "app" && route.id
+					? `app:${route.id}`
+					: route.section === "staff" && route.id
+						? `agent:${route.id.toLowerCase()}`
+						: route.section === "concepts" || route.section === "sites" || route.section === "whats-new"
+							? route.section
+							: undefined,
+		);
 		// A card's request waits only while its agent's chat is on the way.
 		if (route.section !== "chat" && route.section !== "staff") agentPage = undefined;
-		if (route.section !== "chat" && route.section !== "staff" && route.section !== "home") pendingSide = undefined;
+		if (route.section === "chat") appReturn = routeHash(route);
+		if (route.section !== "app" || (appPage && !sameTarget(appPage.target, { kind: "app", name: route.id ?? "" }))) {
+			appPage?.dispose();
+			appPage = undefined;
+		}
+		if (route.section !== "concepts") {
+			conceptsView?.dispose();
+			conceptsView = undefined;
+		}
+		if (route.section !== "sites" || sitesPage?.company !== controller) {
+			sitesPage?.view.dispose();
+			sitesPage = undefined;
+		}
+		if (route.section !== "whats-new" || whatsNewPage?.company !== controller) {
+			whatsNewPage?.view.dispose();
+			whatsNewPage = undefined;
+		}
 		if (route.section !== "new") {
 			newConversation?.dispose();
 			newConversation = undefined;
@@ -1550,6 +1850,7 @@ export function mountApplication(
 								checkConversationAccess,
 								() => memberFolder(() => checkConversationAccess(), t("Conversation access changed.")),
 							),
+							eventHooks: createWebEventHooks(cloud, controller.profile),
 							// No Undo on an agent's interface change: agents don't make pages (Interfaces C6a), and the save
 							// check refuses an agent's change under QorperaOS/interfaces/ or to a table's definition (C6c).
 							// A message is erased for the whole company through the member's own route; the route checks the
@@ -1564,7 +1865,6 @@ export function mountApplication(
 									wallListeners.add(listener);
 									return () => wallListeners.delete(listener);
 								},
-								show: (agentId) => showAgentPage(agentId, "wall"),
 							},
 							folderImage: cardImage,
 							messageErases: {
@@ -1589,12 +1889,130 @@ export function mountApplication(
 				// Asked for from an agent's card before its chat was open: shown once the chat knows its agent.
 				if (agentPage && (Date.now() > agentPage.until || conversation.show(agentPage.agentId, agentPage.page)))
 					agentPage = undefined;
-				// An app asked for from the apps drawer while no chat was open: beside the chat it opened.
-				if (pendingSide && sidePanel) {
-					const target = pendingSide;
-					pendingSide = undefined;
-					conversation.showBeside(sidePanel(target));
+				return;
+			}
+			case "member": {
+				// This member's chat with another member of the company. A link to oneself, or to no member's id, leads home.
+				const userId = route.id?.toLowerCase() ?? "";
+				if (!UUID_PATTERN.test(userId) || userId === controller.userId) {
+					navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }, true);
+					return;
 				}
+				if (!state.team) {
+					showThreadSkeleton(t("Opening company"));
+					return;
+				}
+				if (memberChat?.view.userId !== userId || memberChat.company !== controller) {
+					memberChat?.view.dispose();
+					memberChat = {
+						view: new MemberChatView(controller, userId, () => setNavigationOpen(!navigationOpen)),
+						company: controller,
+					};
+					replace(main, memberChat.view.el);
+					if (!frame.inert) memberChat.view.focus();
+				} else {
+					if (!main.contains(memberChat.view.el)) replace(main, memberChat.view.el);
+					memberChat.view.update();
+				}
+				memberChat.view.setNavigationOpen(navigationOpen);
+				return;
+			}
+			case "app": {
+				// An agent's app as a page of its own, in the frame the app's own folder fills (Jonas, 8 November 2026). It
+				// stays as it is through the company's redraws; its page follows the folder itself. A concept of the
+				// company's product opens in the Concepts viewer instead, once the apps are read that say it is one.
+				if (route.id && isConcept(controller, route.id)) {
+					navigate(
+						{ name: "company", profileId: controller.profile.profileId, section: "concepts", id: route.id },
+						true,
+					);
+					return;
+				}
+				if (appPage && main.contains(appPage.el)) return;
+				const home = `#/c/${controller.profile.profileId}`;
+				// A deep link or a reload: the page waits for the company's first read, so its header names the agent that
+				// made it and the app's first `agents()` gets the whole roster (the staff read may land after the folder's).
+				if (state.loading) {
+					if (!main.querySelector(":scope > .page > .skeleton-page"))
+						replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
+					return;
+				}
+				if (!companyApps) {
+					replace(
+						main,
+						h(
+							"section",
+							{ class: "page" },
+							notice("danger", t("This can't be opened right now.")),
+							h("a", { href: home }, t("Back to the company")),
+						),
+					);
+					return;
+				}
+				appPage?.dispose();
+				appPage = new AppPanel(
+					panelHost(false),
+					{ kind: "app", name: route.id ?? "" },
+					{
+						kind: "page",
+						back: appReturn
+							? { href: appReturn, label: t("Back to the conversation") }
+							: { href: home, label: t("Back to the company") },
+					},
+				);
+				replace(main, appPage.el);
+				if (!frame.inert) appPage.focus();
+				return;
+			}
+			case "concepts": {
+				// The company's concepts, full screen with a side panel to pick one (Jonas, 8 November 2026). The viewer
+				// stays through the company's redraws and a change of concept: only the stage's frame changes.
+				const home = `#/c/${controller.profile.profileId}`;
+				if (state.loading) {
+					if (!main.querySelector(":scope > .page > .skeleton-page"))
+						replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
+					return;
+				}
+				if (!companyApps) {
+					replace(
+						main,
+						h(
+							"section",
+							{ class: "page" },
+							notice("danger", t("This can't be opened right now.")),
+							h("a", { href: home }, t("Back to the company")),
+						),
+					);
+					return;
+				}
+				// An app the route names that is no concept opens as a page of its own.
+				const named = route.id ? (state.apps ?? []).find((app) => app.name === route.id) : undefined;
+				if (route.id && named?.manifest && !named.manifest.concept) {
+					navigate(
+						{ name: "company", profileId: controller.profile.profileId, section: "app", id: route.id },
+						true,
+					);
+					return;
+				}
+				if (conceptsView && main.contains(conceptsView.el)) {
+					conceptsView.update(state.apps ?? [], route.id);
+					return;
+				}
+				conceptsView?.dispose();
+				const reader = cardImage;
+				conceptsView = new ConceptsView(
+					{
+						panel: panelHost(false),
+						profileId: controller.profile.profileId,
+						companyName: () => controller.profile.profileName,
+						back: () => appReturn ?? home,
+						picture: (path, signal) => reader(path, signal),
+					},
+					state.apps ?? [],
+					route.id,
+				);
+				replace(main, conceptsView.el);
+				if (!frame.inert) conceptsView.focus();
 				return;
 			}
 			case "staff": {
@@ -1644,10 +2062,99 @@ export function mountApplication(
 					current: companyCurrent,
 					...(interfaceOffers ? { offers: interfaceOffers } : {}),
 					...(interfaceFolder ? { reread: interfaceFolder.sync.bind(interfaceFolder) } : {}),
-					openSettings: () => openSettings("company-connections"),
+					mailManage: () => {
+						const environment = {
+							profileId: controller.profile.profileId,
+							environmentId: controller.profile.environmentId,
+						};
+						const keys = createDigitalPostKeys(cloud, environment);
+						return {
+							hooks: createWebEventHooks(cloud, environment),
+							digitalPost: {
+								read: () => readDigitalPost(cloud, environment.environmentId),
+								save: (apiKey, existingSecretId, abort) => keys.save(apiKey, existingSecretId, abort),
+								disconnect: (secretId, abort) => keys.disconnect(secretId, abort),
+							},
+						};
+					},
 					bankConnection: () => createWebConnectors(cloud, controller.profile),
+					openSettings: (tab) => openSettings(tab),
 				});
 				return;
+			case "sites": {
+				// The websites the company's agents published (Jonas, 9 Nov 2026: out of Settings, into the apps drawer).
+				// Every member sees them and their links; owners and admins also read and change their passwords and take
+				// them offline (the kernel enforces the same rule).
+				if (!sitesPage) {
+					const view = new SitesView(createWebSites(cloud, controller.profile), controller.signal, {
+						access: {
+							canManage: () => {
+								const role = controller.store.get().team?.role;
+								return role === "owner" || role === "admin";
+							},
+						},
+						listed: (list) => controller.store.set({ siteCount: list.length }),
+						// A site made from a project's code names the version What's new has live, and links there.
+						releases: {
+							href: `#/c/${controller.profile.profileId}/whats-new`,
+							version: (site) => controller.store.get().siteVersions?.[site.slug],
+						},
+						// No site yet: the Co-Founder stands on the page (its crown while the roster is still on its way).
+						mascot: () =>
+							agentFigure(
+								controller.staffById(controller.cofounderId()) ?? {
+									id: "",
+									displayName: "Co-Founder",
+									appearance: { color: "", shape: "" },
+									templateId: "co-founder",
+								},
+								"Co-Founder",
+								{ size: 96, className: "sites-mascot" },
+							),
+					});
+					// The page draws its own title and line (views/settings-sites.ts).
+					sitesPage = { company: controller, view, el: h("section", { class: "page sites-page" }, view.el) };
+				}
+				sitesPage.view.update();
+				if (sitesPage.el.parentElement !== main) replace(main, sitesPage.el);
+				return;
+			}
+			case "whats-new": {
+				// The changes to the company's sites made from its code, ready to go live, and what is live (own code storage
+				// step 4). Every member sees it; owners and admins put a version live and go back (the kernel's own rule).
+				if (!whatsNewPage) {
+					const view = new WhatsNewView(
+						controller,
+						codeReleaseCalls(cloud, controller.profile.profileId),
+						controller.signal,
+						{
+							image: (path, signal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
+							listed: (read) =>
+								controller.store.set({
+									whatsNew: whatsNewEntry(controller, read),
+									siteVersions: liveVersions(read),
+								}),
+						},
+					);
+					whatsNewPage = {
+						company: controller,
+						view,
+						el: h(
+							"section",
+							{ class: "page whats-new-page" },
+							h(
+								"header",
+								{ class: "sites-page-heading" },
+								interfaceEmblem("spark", 40),
+								h("div", null, h("h1", null, t("What's new"))),
+							),
+							view.el,
+						),
+					};
+				}
+				if (whatsNewPage.el.parentElement !== main) replace(main, whatsNewPage.el);
+				return;
+			}
 			case "team":
 				renderTeam(
 					api,
@@ -1659,7 +2166,7 @@ export function mountApplication(
 						teamFeedback = next;
 						render();
 					},
-					{ onCompanyRemoved: companyRemovedHandler(), addFriend: () => openSettings("friends") },
+					{ onCompanyRemoved: companyRemovedHandler(), addFriend: openFriends },
 				);
 				return;
 		}
@@ -1686,8 +2193,11 @@ export function mountApplication(
 		window.removeEventListener("qorpera-language-change", onLanguage);
 		window.removeEventListener("qorpera-time-zone-change", redrawScreens);
 		unwatchTheme();
+		unwatchBrowserBar();
 		closeSettings(false);
 		closeFeedback(false);
+		closeFriends(false);
+		online.stop();
 		auth.dispose();
 		hub.dispose();
 		teardownFounding();
@@ -1695,6 +2205,8 @@ export function mountApplication(
 		accountPayments?.dispose();
 		pictures.reset();
 		if (personPictures() === pictures) setPersonPictures(undefined);
+		logos.reset();
+		if (companyLogos() === logos) setCompanyLogos(undefined);
 		window.removeEventListener("hashchange", onRouteChange);
 		root.removeEventListener("click", onFolderLink);
 		window.removeEventListener("keydown", onEscape);
@@ -1705,7 +2217,7 @@ export function mountApplication(
 
 /** The query keys qorpera.com's box sends (landing/src/site/site.js): the idea, and the kind of company picked.
  * "kind", not "type": the sign-in callback takes a type parameter. */
-const WEBSITE_KEYS = ["ide", "idea", "kind"] as const;
+export const WEBSITE_KEYS = ["ide", "idea", "kind"] as const;
 /** How long a card's request for its agent's computer or wall waits for that agent's chat to open. */
 const AGENT_PAGE_WAIT_MS = 20_000;
 

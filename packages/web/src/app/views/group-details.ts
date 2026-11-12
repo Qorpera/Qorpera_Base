@@ -310,7 +310,7 @@ export class GroupDetails {
 							? t("{name} (You)", { name })
 							: name,
 					),
-					h("span", null, agent?.role ?? (participant.kind === "staff_agent" ? t("Agent") : t("Member"))),
+					h("span", null, participant.kind === "staff_agent" ? t("Agent") : t("Member")),
 				),
 			);
 		});
@@ -384,8 +384,11 @@ export class GroupDetails {
 					h(
 						"small",
 						null,
-						agent?.role ??
-							(member.kind === "staff_agent" ? t("Unavailable agent — remove to save") : t("Member")),
+						agent
+							? t("Agent")
+							: member.kind === "staff_agent"
+								? t("Unavailable agent — remove to save")
+								: t("Member"),
 					),
 				),
 			);

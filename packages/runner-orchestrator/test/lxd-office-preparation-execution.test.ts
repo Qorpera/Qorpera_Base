@@ -34,6 +34,7 @@ import {
 	type LxdOfficeServiceStopIdentity,
 	LxdOfficeServiceStopJournal,
 } from "../src/lxd-office-service-stop-journal.ts";
+import { withShortDeadline } from "./helpers/short-deadline.ts";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const command = { commandId: id(10), bootId: id(11), requestSha256: "c".repeat(64) };
@@ -391,11 +392,14 @@ for (const lane of [
 					response.writeHead(method === "post" ? 202 : 200);
 					response.write("{");
 				};
-				await expect(
-					method === "post"
-						? f.client[lane.submit]("offices", name, command, signal())
-						: f.client[lane.inspect](reference, signal()),
-				).rejects.toThrow("UNCONFIRMED");
+				const deadlines = await withShortDeadline(5000, () =>
+					expect(
+						method === "post"
+							? f.client[lane.submit]("offices", name, command, signal())
+							: f.client[lane.inspect](reference, signal()),
+					).rejects.toThrow("UNCONFIRMED"),
+				);
+				expect(deadlines).toBeGreaterThan(0);
 			},
 			8000,
 		);

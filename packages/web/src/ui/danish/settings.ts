@@ -2,7 +2,7 @@
  * passes it to t() / uiText(). One file per area of the app; a key lives in
  * one file only (test/translations.test.ts checks). Wording follows
  * qorpera.com. */
-/** Settings: General, Good will, Friends, Company, AI subscriptions, Company connections, Sites. */
+/** Settings: General, Good will, Friends, Company, AI subscriptions, Sites. */
 export const SETTINGS: Record<string, string> = {
 	// Settings dialog (app/views/settings.ts)
 	"Search settings": "Søg i indstillinger",
@@ -62,9 +62,7 @@ export const SETTINGS: Record<string, string> = {
 	"Clear search": "Ryd søgning",
 
 	// Storage (app/views/storage-summary.ts)
-	"{used} used of {total}": "{used} brugt af {total}",
-	"{used} used": "{used} brugt",
-	"Company storage used": "Brugt virksomhedslager",
+	"{used} in total": "{used} i alt",
 	"Loading storage…": "Henter lager…",
 	"Storage information unavailable": "Lageroplysninger ikke tilgængelige",
 	"Open a company to see its storage.": "Åbn en virksomhed for at se dens lager.",
@@ -193,36 +191,12 @@ export const SETTINGS: Record<string, string> = {
 		"Forlad {company}? Du mister adgangen, indtil nogen inviterer dig igen.",
 	Leave: "Forlad",
 
-	// Company: memory (app/views/settings-memory.ts)
-	Memory: "Hukommelse",
-	"Agent notebooks": "Agenternes notesbøger",
-	"Shared context — Beta": "Delt kontekst — beta",
-	"Each agent keeps its own notebook of what it learns.": "Hver agent fører sin egen notesbog over det, den lærer.",
-	"Agents share one summary of the company's conversations and work.":
-		"Agenterne deler ét sammendrag af virksomhedens samtaler og arbejde.",
-	"Not available for this company yet.": "Endnu ikke tilgængelig for denne virksomhed.",
-	"Shared context — Beta is not available for this company yet.":
-		"Delt kontekst — beta er endnu ikke tilgængelig for denne virksomhed.",
-	"Shared context — Beta is not available now, so new runs use Agent notebooks.":
-		"Delt kontekst — beta er ikke tilgængelig nu, så nye kørsler bruger Agenternes notesbøger.",
-	"One run that started before the change still uses {mode} until it finishes.":
-		"Én kørsel, der startede før ændringen, bruger stadig {mode}, til den er færdig.",
-	"{count} runs that started before the change still use {mode} until they finish.":
-		"{count} kørsler, der startede før ændringen, bruger stadig {mode}, til de er færdige.",
-	"Saved. New runs use {mode}.": "Gemt. Nye kørsler bruger {mode}.",
-	"Owners and admins choose the company's memory.": "Ejere og administratorer vælger virksomhedens hukommelse.",
-	"A change applies to new runs. A run already started keeps its memory until it ends. Nothing is deleted or rewritten.":
-		"En ændring gælder nye kørsler. En kørsel, der allerede er startet, beholder sin hukommelse, til den slutter. Intet slettes eller skrives om.",
-
 	// Company execution (app/views/company-execution.ts)
 
-	// AI subscriptions and Company connections (app/views/settings.ts)
+	// AI subscriptions (app/views/settings.ts)
 	"AI subscriptions": "AI-abonnementer",
-	"Company connections": "Virksomhedens forbindelser",
 	"Your own AI subscriptions. They pay for the work you start, including your routines, and they leave with you.":
 		"Dine egne AI-abonnementer. De betaler for det arbejde, du starter, også for dine rutiner, og de følger med dig, når du går.",
-	"The company's own accounts, webhooks and mailboxes. Every agent can use them, and they stay when someone leaves.":
-		"Virksomhedens egne konti, webhooks og postkasser. Alle agenter kan bruge dem, og de bliver, når nogen går.",
 
 	// AI subscriptions: model accounts (app/views/settings-connections.ts)
 	"Continue with ChatGPT": "Fortsæt med ChatGPT",
@@ -315,29 +289,11 @@ export const SETTINGS: Record<string, string> = {
 	"The Claude sign-in could not be finished. Try again.": "Login hos Claude kunne ikke afsluttes. Prøv igen.",
 	"Claude · coding only": "Claude · kun kode",
 
-	// Company connections: services (app/views/settings-services.ts, texts from cloud/connectors.ts)
-	Services: "Tjenester",
-	"Only founders and admins can connect or disconnect them.":
-		"Kun stiftere og administratorer kan forbinde eller afbryde dem.",
-	"Read and search the mailbox, send email.": "Læs og søg i postkassen, send e-mail.",
-	"Find, read, create and update documents.": "Find, læs, opret og opdater dokumenter.",
-	"Repositories, issues, pull requests and files.": "Repositories, issues, pull requests og filer.",
-	"Use a personal access token instead": "Brug et personligt adgangstoken i stedet",
-	"A fine-grained token with the repositories the agents may use.":
-		"Et fine-grained token med de repositories, agenterne må bruge.",
+	// Connect, Disconnect, Working… and Connected (several pages)
 	Connect: "Forbind",
-	"Opening sign-in…": "Åbner login…",
 	Disconnect: "Afbryd",
 	"Working…": "Arbejder…",
 	Connected: "Forbundet",
-	"Connected as {account}": "Forbundet som {account}",
-	"Connected by {member}": "Forbundet af {member}",
-	"Connected as {account} by {member}": "Forbundet som {account} af {member}",
-	"Available to every agent in the company, including new hires.":
-		"Tilgængelig for alle virksomhedens agenter, også nyansatte.",
-	"Paste the token": "Indsæt tokenet",
-	"{service} token": "Token til {service}",
-	"Save token": "Gem token",
 	// Digital Post (app/views/settings-digital-post.ts)
 	"Digital Post could not be read.": "Digital Post kunne ikke læses.",
 	"This is not a Digital Post API key. Copy the key from the receipt Administrativ Adgang shows.":
@@ -388,25 +344,11 @@ export const SETTINGS: Record<string, string> = {
 	"Every agent in the company can read the letters.": "Alle agenter i virksomheden kan læse brevene.",
 	"Only founders and admins can connect or disconnect it.":
 		"Kun stiftere og administratorer kan forbinde eller afbryde den.",
-	"Finishing the {service} connection…": "Afslutter forbindelsen til {service}…",
-	"{service} is connected. The company's agents can use it from their next run.":
-		"{service} er forbundet. Virksomhedens agenter kan bruge den fra deres næste kørsel.",
-	"{service} was not connected.": "{service} blev ikke forbundet.",
-	"Try again.": "Prøv igen.",
-	"The sign-in was cancelled before access was granted.": "Login blev annulleret, før der blev givet adgang.",
 	"The sign-in took too long. Try again.": "Login tog for lang tid. Prøv igen.",
-	"Google did not grant lasting access. Try again and allow all requested access.":
-		"Google gav ikke varig adgang. Prøv igen, og tillad al den adgang, der bliver bedt om.",
-	"The service did not complete the sign-in. Try again.": "Tjenesten gennemførte ikke login. Prøv igen.",
 	"This sign-in link is no longer valid. Try again.": "Dette loginlink er ikke længere gyldigt. Prøv igen.",
 	"The sign-in was finished in another browser. Start it again here.":
 		"Login blev afsluttet i en anden browser. Start det igen her.",
-	"The account is connected, but the company's agents could not get it yet. Disconnect it and connect it again.":
-		"Kontoen er forbundet, men virksomhedens agenter kunne ikke få adgang til den endnu. Afbryd den, og forbind den igen.",
-	"The company's services could not be read.": "Virksomhedens tjenester kunne ikke hentes.",
 	"The sign-in could not be started. Try again.": "Login kunne ikke startes. Prøv igen.",
-	"The token could not be saved. Try again.": "Tokenet kunne ikke gemmes. Prøv igen.",
-	"The service could not be disconnected. Try again.": "Tjenesten kunne ikke afbrydes. Prøv igen.",
 
 	// Company connections: webhooks and mailboxes (app/views/settings-hooks.ts)
 	Webhooks: "Webhooks",
@@ -448,7 +390,6 @@ export const SETTINGS: Record<string, string> = {
 	"e.g. invoices": "f.eks. fakturaer",
 	"What it is for": "Hvad den er til",
 	"What it is for, e.g. new orders from the shop": "Hvad den er til, f.eks. nye ordrer fra webshoppen",
-	"What it is for, e.g. invoices from suppliers": "Hvad den er til, f.eks. fakturaer fra leverandører",
 	"Lowercase letters, digits and hyphens, starting with a letter. The company's agents read what it is for when something arrives.":
 		"Små bogstaver, tal og bindestreger, og den starter med et bogstav. Virksomhedens agenter læser, hvad den er til, når der kommer noget.",
 	"The part before the @: lowercase letters, digits, dots, hyphens and underscores.":
@@ -476,28 +417,27 @@ export const SETTINGS: Record<string, string> = {
 
 	// Sites: the websites the company's agents published (app/views/settings-sites.ts)
 	Sites: "Hjemmesider",
-	"Websites the company's agents published. Each has its own link and password; share both with the people who should see it.":
-		"Hjemmesider, som virksomhedens agenter har udgivet. Hver har sit eget link og sin egen adgangskode; del begge med dem, der skal se den.",
+	"Share a site with its link and password.": "Del en hjemmeside med dens link og adgangskode.",
 	"Only founders and admins can see passwords or take sites offline.":
 		"Kun stiftere og administratorer kan se adgangskoder eller tage hjemmesider offline.",
-	"No sites yet. When an agent publishes a website for the company, it shows here with its link and password.":
-		"Ingen hjemmesider endnu. Når en agent udgiver en hjemmeside for virksomheden, vises den her med sit link og sin adgangskode.",
+	"No sites yet": "Ingen hjemmesider endnu",
+	"Ask an agent for a website and it shows up here.": "Bed en agent om en hjemmeside, så dukker den op her.",
 	"The company's sites could not be read.": "Virksomhedens hjemmesider kunne ikke hentes.",
 	"Publishing…": "Udgiver…",
 	"Published {time} by {agent}": "Udgivet {time} af {agent}",
 	"Published {time}": "Udgivet {time}",
-	"1 file": "1 fil",
-	"From {source}": "Fra {source}",
+	"Copy the link": "Kopiér linket",
+	"The link": "Linket",
 	"The link is copied.": "Linket er kopieret.",
-	"The link could not be copied. Select it and copy it.": "Linket kunne ikke kopieres. Markér det, og kopiér det.",
 	"Show password": "Vis adgangskode",
-	Hide: "Skjul",
+	"Hide password": "Skjul adgangskode",
+	"Copy the password": "Kopiér adgangskoden",
+	"The password": "Adgangskoden",
 	"The password is copied.": "Adgangskoden er kopieret.",
-	"The password could not be copied. Select it and copy it.":
-		"Adgangskoden kunne ikke kopieres. Markér den, og kopiér den.",
-	"Share the link and this password only with the people who should see the site. A visitor's own link opens the site for 7 days; a new password ends every visit.":
-		"Del kun linket og denne adgangskode med dem, der skal se hjemmesiden. En besøgendes eget link åbner hjemmesiden i 7 dage; en ny adgangskode afslutter alle besøg.",
+	"Press ⌘C to copy.": "Tryk ⌘C for at kopiere.",
+	"Press Ctrl+C to copy.": "Tryk Ctrl+C for at kopiere.",
 	"The password could not be read. Try again.": "Adgangskoden kunne ikke hentes. Prøv igen.",
+	"More options for {name}": "Flere muligheder for {name}",
 	"Change password": "Skift adgangskode",
 	"Type a new password, 10 to 128 characters": "Skriv en ny adgangskode på 10 til 128 tegn",
 	"New password for {name}": "Ny adgangskode til {name}",
@@ -506,18 +446,77 @@ export const SETTINGS: Record<string, string> = {
 	"Every visitor enters the new password; the old one stops working at once.":
 		"Alle besøgende skal skrive den nye adgangskode; den gamle holder op med at virke med det samme.",
 	"A site password is 10 to 128 characters.": "En adgangskode til en hjemmeside er på 10 til 128 tegn.",
-	"The password is changed. Every visitor enters the new one.":
-		"Adgangskoden er skiftet. Alle besøgende skal skrive den nye.",
+	"The password is changed.": "Adgangskoden er skiftet.",
 	"The password could not be changed. Try again.": "Adgangskoden kunne ikke skiftes. Prøv igen.",
-	Unpublish: "Tag offline",
+	"Take offline": "Tag offline",
 	"Take {name} offline? Its link stops working and its password is deleted. The files stay in the Company File.":
 		"Tag {name} offline? Linket holder op med at virke, og adgangskoden slettes. Filerne bliver i Virksomhedsfilen.",
+	"{name} is offline.": "{name} er offline.",
 	"The site could not be taken offline. Try again.": "Hjemmesiden kunne ikke tages offline. Prøv igen.",
 	// An app link: one port of a company machine at a site's link (v195)
-	"App on machine {name}, port {port}": "App på maskinen {name}, port {port}",
-	"App on port {port} of a machine that was deleted": "App på port {port} på en maskine, der er slettet",
 	"Take {name} offline? Its link stops working and its password is deleted. The app keeps running on its machine.":
 		"Tag {name} offline? Linket holder op med at virke, og adgangskoden slettes. Appen bliver ved med at køre på sin maskine.",
+	// A project's site made from its code kept in Qorpera: its version goes live from What's new (own code storage step 4)
+	"Version {version}": "Version {version}",
+	"Take {name} offline? Its earlier versions go with it. The newest one waits in What's new, with a new password, until you put it live.":
+		"Tag {name} offline? Dens tidligere versioner forsvinder med den. Den nyeste venter under Nyheder med en ny adgangskode, til du sætter den live.",
+
+	// What's new: the changes to the company's sites made from its code, ready to go live (app/views/whats-new.ts)
+	"What's new": "Nyheder",
+	"What's new could not be read.": "Nyheder kunne ikke hentes.",
+	"Live now": "Live nu",
+	"Not live yet": "Ikke live endnu",
+	"Version {version} · since {time}": "Version {version} · siden {time}",
+	"Version {version} · since {time} · {name} said go": "Version {version} · siden {time} · {name} sagde ja",
+	"Version {version} · since {time} · {name} went back":
+		"Version {version} · siden {time} · {name} satte den live igen",
+	"The password is in Sites.": "Adgangskoden står under Hjemmesider.",
+	"Open the site": "Åbn hjemmesiden",
+	"Go back to version {version}": "Gå tilbage til version {version}",
+	"Put version {version} back up? Version {current} comes off the site at once; its changes stay ready.":
+		"Sæt version {version} live igen? Version {current} tages af hjemmesiden med det samme; dens ændringer er stadig klar.",
+	"Go back": "Gå tilbage",
+	"1 change is ready": "1 ændring er klar",
+	"{count} changes are ready": "{count} ændringer er klar",
+	"and 1 change behind the scenes": "og 1 ændring bag kulisserne",
+	"and {count} changes behind the scenes": "og {count} ændringer bag kulisserne",
+	"1 change behind the scenes": "1 ændring bag kulisserne",
+	"{count} changes behind the scenes": "{count} ændringer bag kulisserne",
+	"Was live before": "Har været live før",
+	"Put it live": "Sæt live",
+	"Put the first version live": "Sæt den første version live",
+	"Not yet": "Ikke endnu",
+	"Not yet: ": "Ikke endnu: ",
+	"Putting it live…": "Sætter den live…",
+	"Version {version} is live.": "Version {version} er live.",
+	"Nothing new is ready.": "Intet nyt er klar.",
+	"1 more change is not ready yet.": "1 ændring mere er ikke klar endnu.",
+	"{count} more changes are not ready yet.": "{count} ændringer mere er ikke klar endnu.",
+	"Founders and admins put changes live.": "Stiftere og administratorer sætter ændringer live.",
+	"Something changed while you looked. Here is what is ready now.":
+		"Noget har ændret sig, mens du kiggede. Her er det, der er klar nu.",
+	"Something changed while you looked. Here is what is live now.":
+		"Noget har ændret sig, mens du kiggede. Her er det, der er live nu.",
+	"It did not go live: {why}. Nothing changed.": "Det blev ikke sat live: {why}. Intet er ændret.",
+	"It did not go back: {why}. Nothing changed.": "Den blev ikke sat live igen: {why}. Intet er ændret.",
+	"only founders and admins can put a version live": "kun stiftere og administratorer kan sætte en version live",
+	"Qorpera was busy for a moment": "Qorpera havde travlt et øjeblik",
+	"the project is no longer there": "projektet findes ikke længere",
+	"something went wrong on Qorpera's side": "noget gik galt hos Qorpera",
+	"This project can't get a site: the company has 10. Take one offline in Sites.":
+		"Projektet kan ikke få en hjemmeside: virksomheden har allerede 10. Tag en offline under Hjemmesider.",
+	"The newest version could not be prepared. Qorpera is trying again.":
+		"Den nyeste version kunne ikke gøres klar. Qorpera prøver igen.",
+	"The newest version could not be prepared. The next change that is saved gets a new try.":
+		"Den nyeste version kunne ikke gøres klar. Den næste ændring, der gemmes, får et nyt forsøg.",
+	"It may not have gone live: Qorpera could not be reached. Checking…":
+		"Den er måske ikke blevet sat live: Qorpera kunne ikke nås. Tjekker…",
+	"It may not have gone back: Qorpera could not be reached. Checking…":
+		"Den er måske ikke blevet sat live igen: Qorpera kunne ikke nås. Tjekker…",
+	"Qorpera could not be reached, so it is not known whether it went live. Open this page again in a moment.":
+		"Qorpera kunne ikke nås, så det vides ikke, om den blev sat live. Åbn denne side igen om lidt.",
+	"Qorpera could not be reached, so it is not known whether it went back. Open this page again in a moment.":
+		"Qorpera kunne ikke nås, så det vides ikke, om den blev sat live igen. Åbn denne side igen om lidt.",
 
 	// Environment variables for coding, in both connections tabs (app/views/settings-coding-environment.ts)
 	"Environment variables for coding": "Miljøvariabler til kodning",
@@ -579,8 +578,8 @@ export const SETTINGS: Record<string, string> = {
 	"Coding sessions in {repository} will stop getting {name}.":
 		"Kodesessioner i {repository} holder op med at få {name}.",
 
-	// Rules, auto-review (Settings → General, settings-rules.ts)
-	Rules: "Regler",
+	// Agent rules, auto-review (Settings → Company, settings-rules.ts)
+	"Agent rules": "Agentregler",
 	"e.g. reply to emails for me": "f.eks. svare på e-mails for mig",
 	"When an agent wants to:": "Når en agent vil:",
 	"It should:": "Så skal den:",
@@ -600,21 +599,68 @@ export const SETTINGS: Record<string, string> = {
 	Locked: "Låst",
 	"Rules are not available on this cloud yet.": "Regler er ikke tilgængelige i denne sky endnu.",
 	"Built-in safety checks always apply.": "Indbyggede sikkerhedstjek gælder altid.",
-	"Open a company to see its rules.": "Åbn en virksomhed for at se dens regler.",
-	// Settings → Company → Pages (views/settings-pages.ts)
-	Pages: "Sider",
+	// The pages, hidden and shown from the rail (views/shell.ts)
 	Mailbox: "Postkasse",
-	Members: "Medlemmer",
-	"The company's mail, for every member. It shows once the company has a mail address (Company connections → Mailboxes).":
-		"Virksomhedens post, for alle medlemmer. Den vises, når virksomheden har en mailadresse (Virksomhedens forbindelser → Postkasser).",
-	"Who owns and supervises each agent. It shows once the company has a second member.":
-		"Hvem der ejer og har tilsyn med hver agent. Den vises, når virksomheden har mindst to medlemmer.",
 	Bank: "Bank",
-	"The company's bank account: the saldo, and what comes in and goes out each month.":
-		"Virksomhedens bankkonto: saldoen, og hvad der kommer ind og går ud hver måned.",
 	"{page} could not be changed. Try again.": "{page} kunne ikke ændres. Prøv igen.",
-	"Pages are not available on this cloud yet.": "Sider er ikke tilgængelige i denne sky endnu.",
-	"Switching a page off only hides it. Nothing it showed is removed.":
-		"At slå en side fra skjuler den kun. Intet af det, den viste, bliver fjernet.",
-	"Only owners and admins can switch pages on or off.": "Kun ejere og administratorer kan slå sider til og fra.",
+	// The Friends window and Settings → Leaderboard (views/friends-window.ts, views/leaderboard.ts)
+	"Online now": "Online nu",
+	"Last online {when}": "Sidst online {when}",
+	"Last online 2+ weeks ago": "Sidst online for over 2 uger siden",
+	"Friends {since}": "Venner {since}",
+	"Close friends": "Luk venner",
+	"Friends: {count} company invitations waiting": "Venner: {count} virksomhedsinvitationer venter",
+	Leaderboard: "Rangliste",
+	"Show me on my friends' leaderboards": "Vis mig på mine venners ranglister",
+	"The leaderboard isn't available yet.": "Ranglisten er ikke tilgængelig endnu.",
+	"Loading leaderboard": "Indlæser rangliste",
+	"Place {place}": "Plads {place}",
+	"Better with friends": "Sjovere med venner",
+	"Add friends": "Tilføj venner",
+	"All sales so far, without VAT.": "Alt salg indtil nu, uden moms.",
+	"Your friends see you and your companies.": "Dine venner ser dig og dine virksomheder.",
+	"No companies yet.": "Ingen virksomheder endnu.",
+	"Your friends don't see you now. You still see yourself here.":
+		"Dine venner kan ikke se dig nu. Du ser stadig dig selv her.",
+	"Add friends to see how you and your companies compare.":
+		"Tilføj venner for at se, hvordan du og dine virksomheder klarer jer.",
+	"Busiest friends": "Travleste venner",
+	"This week": "Denne uge",
+	"Busiest companies": "Travleste virksomheder",
+	"Top-earning friends": "Venner med mest omsætning",
+	"All time": "Altid",
+	"Top-earning companies": "Virksomheder med mest omsætning",
+	"1 task": "1 opgave",
+	"{count} tasks": "{count} opgaver",
+	Leaderboards: "Ranglister",
+	"{amount} behind {name}": "{amount} efter {name}",
+	"{count} to pass {name}": "{count} for at overhale {name}",
+	"Up {count} since last week": "{count} op siden sidste uge",
+	"Down {count} since last week": "{count} ned siden sidste uge",
+	"Same place as last week": "Samme plads som sidste uge",
+	"Week {week} ends tonight at midnight. Last chance to catch up.":
+		"Uge {week} slutter i nat ved midnat. Sidste chance for at indhente.",
+	"Week {week} ends Sunday at midnight. {days} days left to catch up.":
+		"Uge {week} slutter søndag ved midnat. {days} dage tilbage til at indhente.",
+	"Most revenue": "Mest omsætning",
+	"Busiest this week": "Travlest denne uge",
+	"Nobody is ahead yet": "Ingen fører endnu",
+	"The first sale takes the lead.": "Det første salg tager føringen.",
+	"The first task this week takes the lead.": "Ugens første opgave tager føringen.",
+	"{amount} ahead of {name}": "{amount} foran {name}",
+	"Most revenue so far": "Mest omsætning indtil nu",
+	"Busiest this week, so far": "Travlest denne uge indtil nu",
+	"{amount} each": "{amount} hver",
+	"Sharing the lead": "Deler føringen",
+	// Settings → Company → Brand (views/settings-brand.ts) and company logos (app/company-logos.ts)
+	"The logo could not be removed. Try again.": "Logoet kunne ikke fjernes. Prøv igen.",
+	"The logo could not be saved. Try again.": "Logoet kunne ikke gemmes. Prøv igen.",
+	"Add a company logo": "Tilføj et logo",
+	Brand: "Brand",
+	"Change the company logo": "Skift logoet",
+	"Choose a new logo": "Vælg et nyt logo",
+	"Company logo": "Virksomhedens logo",
+	"Remove logo": "Fjern logo",
+	"The logo could not be removed.": "Logoet kunne ikke fjernes.",
+	"The logo could not be saved.": "Logoet kunne ikke gemmes.",
 };

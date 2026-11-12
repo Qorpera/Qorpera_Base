@@ -8,10 +8,14 @@
 @import "./founding.css";
 @import "./interfaces.css";
 @import "./bank.css";
+@import "./members.css";
 @import "./mailbox.css";
+@import "./sites.css";
 @import "./agent-routines.css";
+@import "./social.css";
 @import "./dark.css";
 @import "./motion.css";
+@import "./boot.css";
 
 /* Layout and components for the web client. Values derive from tokens.css
  * (shared with the desktop). Selectors are the contract with the views. */
@@ -45,6 +49,8 @@ body {
 .scroll-quiet[data-scrolled] { -webkit-mask-position: 0 0; mask-position: 0 0; }
 a { color: var(--blue); text-decoration: none; }
 a:hover { text-decoration: underline; }
+/* In-app links carry data-href instead of href (ui/dom.ts), so the browser gives them no pointer of its own. */
+a[data-href] { cursor: pointer; }
 h1 { font-size: 22px; font-weight: 650; letter-spacing: -0.01em; }
 h2 { font-size: 16px; font-weight: 650; margin-top: 24px; }
 h3 { font-size: 14px; font-weight: 650; margin-top: 16px; }
@@ -71,7 +77,15 @@ label > input, label > select { font-weight: 400; }
 .fineprint { color: var(--text-soft); font-size: 12px; }
 
 .app { height: 100%; }
-.frame { display: flex; flex-direction: column; height: 100%; background: var(--bg); font-family: var(--font-sans); }
+/* The frame is the window: nothing inside it may stretch the page below the screen. A part
+ * that reached past the bottom made the document scrollable, and the browser then scrolled
+ * it, leaving an empty band under the app (9 Nov). Clip, not hidden, so focus and
+ * scrollIntoView cannot scroll the frame either; position makes it the box absolute parts
+ * clip to. Fixed menus and dialogs are not clipped. */
+.frame {
+	position: relative; overflow: clip; display: flex; flex-direction: column; height: 100%;
+	background: var(--bg); font-family: var(--font-sans);
+}
 .body { position: relative; display: flex; flex: 1; min-height: 0; }
 
 /* buttons */
@@ -188,50 +202,76 @@ label > input, label > select { font-weight: 400; }
 .account-popover {
 	position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; width: 232px;
 	display: flex; flex-direction: column; gap: 1px; padding: 6px;
-	border: 1px solid var(--border); border-radius: 14px; background: var(--overlay);
-	box-shadow: 0 22px 48px rgba(11, 11, 11, 0.14), 0 2px 8px rgba(11, 11, 11, 0.06);
+	/* A crisp thin edge carries the shape; the shadow only lifts it. */
+	border: 1px solid var(--border-strong); border-radius: 10px; background: var(--overlay);
+	box-shadow: 0 8px 24px rgba(11, 11, 11, 0.1), 0 1px 3px rgba(11, 11, 11, 0.06);
 	max-height: calc(100dvh - var(--titlebar-height) - 16px); overflow-y: auto; overscroll-behavior: contain;
 }
 /* An author `display` beats the browser's [hidden] rule, so restore it. */
 .account-popover[hidden] { display: none; }
-.account-identity { padding: 9px 12px 10px; margin-bottom: 4px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+/* The menu reads in the system's own UI face at a regular weight, as native menus do
+ * (Jonas, 9 Nov 2026: like Claude's menus); the name above it is a quiet caption. */
+.account-popover { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
+.account-identity { padding: 8px 12px 9px; margin-bottom: 4px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; font-size: 13px; color: var(--text-muted); }
+.account-identity strong { font-weight: 400; }
 .account-company-name { padding: 6px 12px; font-size: 12px; font-weight: 600; color: var(--text-muted); overflow-wrap: anywhere; }
 .account-item {
 	display: flex; flex: none; align-items: center; gap: 10px; width: 100%;
-	padding: 8px 12px; border: 0; border-radius: 9px; background: transparent; color: var(--text);
-	font: inherit; font-weight: 550; text-align: left; cursor: pointer;
+	padding: 7px 12px; border: 0; border-radius: 8px; background: transparent; color: var(--text);
+	font: inherit; font-size: 15px; font-weight: 400; line-height: 1.4; text-align: left; cursor: pointer;
 }
 .account-item:hover { background: var(--hover); text-decoration: none; }
-.account-item .icon { width: 16px; height: 16px; flex: none; color: var(--text-soft); }
+.account-item .icon { width: 18px; height: 18px; flex: none; color: var(--text); }
 .account-item-label { flex: 1; min-width: 0; }
 .account-count {
 	min-width: 19px; height: 19px; padding: 0 6px; border-radius: 999px; display: grid; place-items: center;
 	background: var(--primary); color: var(--on-primary); font-size: 11px; font-weight: 700;
 }
 .account-separator { height: 1px; flex: none; margin: 4px 6px; background: var(--border); }
-.account-signout { color: var(--text-muted); }
 
-/* Right-click menus (the rail's agents and sections), Grok Bot's shape. */
+/* Right-click menus (the rail's agents and sections) and the menus opened from a
+ * button: the account menu's look, the system UI face at a regular weight with a
+ * thin, clearly drawn edge (Jonas, 9 Nov 2026). */
 .context-menu {
 	position: fixed; z-index: 700; min-width: 216px; max-width: 320px;
-	display: flex; flex-direction: column; gap: 1px; padding: 5px;
-	border: 1px solid var(--border); border-radius: 12px; background: var(--overlay);
-	box-shadow: 0 22px 48px rgba(11, 11, 11, 0.14), 0 2px 8px rgba(11, 11, 11, 0.06);
+	display: flex; flex-direction: column; gap: 1px; padding: 6px;
+	border: 1px solid var(--border-strong); border-radius: 10px; background: var(--overlay);
+	box-shadow: 0 8px 24px rgba(11, 11, 11, 0.1), 0 1px 3px rgba(11, 11, 11, 0.06);
+	font-family: var(--font-sans); -webkit-font-smoothing: antialiased;
 	max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain;
 }
 .context-menu:focus { outline: none; }
+/* When a message was sent, beside it on a hover (ui/sent-time-hover.ts): plain small text, at once.
+ * Over the thread (no room beside the message), on the thread's own colour so it reads. */
+.sent-time-tip {
+	position: fixed; z-index: 650; left: 0; top: 0; padding: 0 4px; pointer-events: none; border-radius: 4px;
+	color: var(--text-muted); font-family: var(--font-sans); -webkit-font-smoothing: antialiased;
+	font-size: 12px; font-weight: 400; line-height: 16px; white-space: nowrap; font-variant-numeric: tabular-nums;
+	visibility: hidden;
+}
+.sent-time-tip.is-shown { visibility: visible; }
+.sent-time-tip.is-over { background: var(--bg); }
 .context-menu-item {
-	display: flex; flex: none; align-items: center; gap: 10px; width: 100%; padding: 7px 10px;
+	display: flex; flex: none; align-items: center; gap: 10px; width: 100%; padding: 7px 12px;
 	border: 0; border-radius: 8px; background: transparent; color: var(--text);
-	font: inherit; font-size: 13.5px; font-weight: 500; line-height: 18px; text-align: left; cursor: default;
+	font: inherit; font-size: 15px; font-weight: 400; line-height: 1.4; text-align: left; cursor: default;
 }
 .context-menu-item:hover, .context-menu-item:focus-visible, .context-menu-item.is-open { background: var(--hover); outline: none; }
-.context-menu-item .icon { width: 16px; height: 16px; flex: none; color: var(--text-soft); }
+.context-menu-item .icon { width: 18px; height: 18px; flex: none; color: var(--text); }
 .context-menu-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.context-menu-chevron { display: grid; margin-right: -3px; color: var(--text-soft); }
+.context-menu-chevron { display: grid; margin-right: -3px; color: var(--text-muted); }
 .context-menu-chevron .icon { width: 14px; height: 14px; }
 .context-menu-item.danger, .context-menu-item.danger .icon { color: var(--danger); }
+.context-menu-item:disabled, .context-menu-item:disabled .icon { color: var(--text-muted); }
+.context-menu-item:disabled:hover { background: transparent; }
+/* What a confirmation changes, listed under its question. */
+.modal-list { margin: -4px 0 0; padding-left: 20px; display: grid; gap: 2px; color: var(--text-muted); }
 .context-menu-separator { height: 1px; flex: none; margin: 4px 6px; background: var(--border); }
+/* A line of plain text among the rows, a row's second line, a face in the icon's place. */
+.context-menu-caption { flex: none; padding: 6px 12px 5px; color: var(--text-muted); font-size: 12.5px; line-height: 1.4; }
+.context-menu-text { flex: 1; min-width: 0; display: grid; }
+.context-menu-hint { color: var(--text-muted); font-size: 12.5px; line-height: 1.35; }
+.context-menu-item > .person-avatar { flex: none; width: 22px; height: 22px; font-size: 9.5px; }
 .name-dialog-title { margin: 0; font-size: 16px; font-weight: 650; line-height: 22px; }
 .name-dialog-input { width: 100%; }
 
@@ -244,10 +284,12 @@ label > input, label > select { font-weight: 400; }
 	--rail-search: var(--sidebar-search); --rail-search-ink: #85857f;
 	--rail-selection: var(--composer-accent); --rail-small: #71716b; --rail-status: var(--agent-active);
 	--rail-status-failed: #ff3b30;
+	/* Stopped at the member: the line's text (4.5:1 on the rail at 11px) and the raised hand's disc. */
+	--rail-waiting: #8f5000; --rail-waiting-mark: var(--warning);
 	display: flex; flex-direction: column; min-height: 0;
 	width: var(--rail-width); flex: none;
-	/* The trailer's rail: 15px insets, a darker edge line than the other dividers. */
-	padding: 0 15px 11px; background: var(--rail); border-right: 1px solid var(--rail-line);
+	/* Messages' sidebar: 10px insets, a darker edge line than the other dividers (Jonas, 9 Nov 2026). */
+	padding: 0 10px 11px; background: var(--rail); border-right: 1px solid var(--rail-line);
 	/* One figure size and one lift; every card measure below derives from them. */
 	--figure: 82px; --lift: 37px;
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
@@ -372,7 +414,7 @@ label > input, label > select { font-weight: 400; }
 .rail-pin.active .rail-row-status { border-color: var(--rail-selection); }
 .rail-drop-slot { display: none; }
 /* The company's sections: a quiet title over its agents. Unassigned carries the rest
- * and the group chats; its title shows only once a section exists. */
+ * and the group chats; its title shows only once a section exists and someone is in it. */
 .rail-section { border-radius: 12px; }
 .rail-section-title {
 	padding: 12px 8px 5px; font-size: 12px; font-weight: 600; line-height: 16px; color: var(--rail-small);
@@ -380,10 +422,15 @@ label > input, label > select { font-weight: 400; }
 	user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
 }
 .rail-section-title[hidden] { display: none; }
+/* Unassigned with no one in it names nothing; a drag shows it again as a place to drop,
+ * except in the collapsed rail, where no section shows a title. */
+.rail-section.is-empty > .rail-section-title { display: none; }
+.frame:not(.rail-compact) .rail-dragging .rail-section.is-empty > .rail-section-title:not([hidden]) { display: block; }
 .rail-section-title:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 .rail-section-list { display: grid; gap: 0; }
 /* Grok Bot's "Hidden Bots": a quiet row at the foot of the list, the count on the right;
- * open, it lists the hidden agents, and a chevron takes the count's place. */
+ * open, it lists the hidden agents and contacts, and a chevron takes the count's place. A
+ * hidden contact can still write: how many of their messages wait stands before the count. */
 .rail-hidden { margin-top: 10px; }
 .rail-hidden-toggle {
 	display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 8px; border: 0; border-radius: 8px;
@@ -393,60 +440,155 @@ label > input, label > select { font-weight: 400; }
 .rail-hidden-toggle:hover { background: var(--rail-hover); }
 .rail-hidden-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-hidden-count { font-weight: 500; font-variant-numeric: tabular-nums; }
+.rail-hidden-unread {
+	min-width: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: var(--sidebar-selection); color: #fff;
+	font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums;
+}
 .rail-hidden-chevron { display: grid; }
 .rail-hidden-chevron .icon { width: 14px; height: 14px; }
-:is(.rail-hidden-count, .rail-hidden-chevron, .rail-hidden-list)[hidden] { display: none; }
+:is(.rail-hidden-count, .rail-hidden-unread, .rail-hidden-chevron, .rail-hidden-list)[hidden] { display: none; }
 .rail-scroll > :is(.rail-section, .rail-pinned):first-child { margin-top: 14px; }
 .rail-row, .rail-pin, .cofounder-home { -webkit-touch-callout: none; }
 .rail-row.menu-open, .rail-pin.menu-open, .cofounder-home.menu-open { background: var(--rail-hover); }
 .rail-row.active.menu-open, .rail-pin.active.menu-open, .cofounder-home.active.menu-open { background: var(--rail-selection); }
-/* Dragging an agent: every place it can land is an invisible container; the one under
- * the pointer lights up (no border) and a thin line shows where the agent lands. */
+/* Dragging an agent: the rows make way for it, as the apps drawer's icons do (ui/rail-drag.ts). The row
+ * lifts off as an image under the pointer, an empty space of its shape stands where it would land, and
+ * the row itself is out of the list until it is let go (then unseen until the image reaches it). */
 .rail-scroll { position: relative; }
-.rail-dragging :is(.rail-section, .rail-pinned) { transition: background-color 120ms ease; }
-.rail-dragging [data-drop-zone].is-drop-target { background: var(--rail-hover); }
-.rail-dragging .rail-pinned.is-empty { display: flex; margin-bottom: 6px; padding: 0; }
-.rail-dragging .rail-pinned.is-empty .rail-drop-slot {
+/* A pinned row with no card (empty, or its only card lifted) opens to take one when the pointer comes up to
+ * it (rail-pin-open), so lifting a row never pushes the list down under the pointer. */
+.rail-dragging .rail-pinned.is-empty:has(> .rail-drop-gap), .rail-dragging.rail-pin-open .rail-pinned.is-empty { display: flex; }
+.rail-dragging.rail-pin-open .rail-pinned:not(:has(> :is(.rail-pin:not(.is-drag-source), .rail-drop-gap))) { margin-bottom: 6px; padding: 0; }
+.rail-dragging.rail-pin-open .rail-pinned:not(:has(> :is(.rail-pin:not(.is-drag-source), .rail-drop-gap))) .rail-drop-slot {
 	display: grid; flex: 1; place-items: center; height: 64px; color: var(--rail-small); font-size: 12px; font-weight: 550;
 }
-.rail-dragging .rail-section-list:empty { min-height: 44px; }
+.rail-dragging .rail-section-list:not(:has(> :not(.is-drag-source))) { min-height: 44px; }
 .rail-dragging :is(.rail-row, .rail-pin):hover:not(.active) { background: transparent; }
-.is-drag-source { opacity: 0.28; }
+.rail-scroll .is-drag-source { display: none !important; }
+.rail-scroll .is-drag-landing { visibility: hidden; }
+.rail-drop-gap { flex: none; height: 63.75px; pointer-events: none; }
+.rail-drop-gap.is-pin { width: 86px; height: 86px; }
 .rail-drag-ghost {
 	--rail: var(--sidebar-surface); --rail-hover: var(--sidebar-hover); --rail-selection: var(--composer-accent);
 	--rail-status: var(--agent-active); --rail-status-failed: #ff3b30;
+	--rail-waiting: #8f5000; --rail-waiting-mark: var(--warning);
 	position: fixed; left: 0; top: 0; z-index: 600; margin: 0; pointer-events: none;
 	background: var(--rail); border-radius: 12px; opacity: 0.96;
 	box-shadow: 0 14px 32px rgba(11, 11, 11, 0.18), 0 2px 8px rgba(11, 11, 11, 0.08);
 }
-.rail-drop-marker { position: absolute; z-index: 5; height: 2px; border-radius: 1px; background: var(--rail-selection); pointer-events: none; }
-.rail-drop-marker.vertical { width: 2px; }
 /* Dragged from the collapsed rail, the image is the figure alone, as the row shows it there. */
 .rail-drag-ghost.compact :is(.rail-row-copy, .rail-pin-name) { display: none; }
 .rail-drag-ghost.compact.rail-row { grid-template-columns: 1fr; justify-items: center; padding: 5px; }
 .rail-drag-active, .rail-drag-active * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
 .rail-row {
 	--rail-row-figure: 40px;
-	display: grid; grid-template-columns: var(--rail-row-figure) minmax(0, 1fr); align-items: center; gap: 2px;
-	min-height: 51px; padding: 3px 8px 3px 12px; border-radius: 9px; color: var(--text);
+	/* 8px between the figure and the name, as Messages leaves after a contact's picture (Jonas, 9 Nov 2026). */
+	display: grid; grid-template-columns: var(--rail-row-figure) minmax(0, 1fr); align-items: center; gap: 8px;
+	min-height: 51px; padding: 3px 8px 3px 12px; border-radius: 6px; color: var(--text);
 }
 .rail-row-agent, .rail-row-group { --rail-row-figure: 50px; min-height: 63.75px; }
+/* The company's other members, each a contact (Jonas, 10 Nov 2026): their face where an agent has a figure, a green
+ * dot while they are online and the count of their unread messages. A contact is a row like an agent's wherever its
+ * member puts it (a card in the pinned row); until then it stands in the Members group at the foot of the list. That
+ * group takes contacts only: with nobody in it, it shows only while a contact is dragged, as the place to drop one
+ * back (ui/rail-drag.ts says what is dragged). */
+.rail-members.is-empty { display: none; }
+.rail-scroll[data-dragging="member"] .rail-members.is-empty { display: block; }
+.rail-row-member { --rail-row-figure: 50px; min-height: 63.75px; }
+.rail-row-member .person-avatar { width: 44px; height: 44px; font-size: 15px; }
+:is(.rail-row-member, .rail-pin-member) .person-online-dot { right: 0; bottom: 0; width: 13px; height: 13px; box-shadow: 0 0 0 2px var(--rail); }
+:is(.rail-row-member, .rail-pin-member):hover .person-online-dot { box-shadow: 0 0 0 2px var(--rail-hover); }
+:is(.rail-row-member, .rail-pin-member).active .person-online-dot { box-shadow: 0 0 0 2px var(--rail-selection); }
+:is(.rail-row-member, .rail-pin-member) .rail-mention { top: 0; right: 0; }
+:is(.rail-row-member, .rail-pin-member).active .rail-mention { background: #fff; color: var(--rail-selection); box-shadow: 0 0 0 2px var(--rail-selection); }
+.rail-pin-member .person-avatar { width: 48px; height: 48px; font-size: 16px; }
+/* A page hidden from the rail, in Hidden: a button that opens its menu. */
+.rail-row-page { width: 100%; border: 0; background: none; font: inherit; text-align: left; cursor: pointer; }
+/* What's new's heading (#/c/<id>/whats-new): its spark beside the title. */
+.sites-page-heading { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+.sites-page-heading > svg { flex: none; }
+.sites-page-heading h1 { margin: 0; }
+/* What's new: per project, what is live (a row of the Sites page, styles/sites.css), the changes ready to go live as a
+ * picture with one line each (the look of a question's visual choices), and the buttons. */
+.whats-new-site { margin: 0 0 40px; }
+.whats-new-site > h2 { margin: 0 0 4px; overflow-wrap: anywhere; }
+.whats-new-site > h3 { margin: 22px 0 10px; }
+.whats-new-actions .btn { border-radius: var(--radius-pill); }
+.whats-new-changes { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+/* Two to a row on a phone, so the buttons are near (as a question's visual choices are). */
+@media (max-width: 520px) { .whats-new-changes { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; } }
+.whats-new-change {
+	display: grid; gap: 6px; align-content: start; min-width: 0; padding: 8px 8px 10px;
+	border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg);
+}
+.whats-new-line { margin: 0; padding: 2px 2px 0; font-size: 14px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+/* A change without a picture: its line alone, on a plain tile where the picture would be. */
+.whats-new-change.is-plain .whats-new-line {
+	display: grid; place-items: center; aspect-ratio: 4 / 3; padding: 14px; border-radius: 10px;
+	background: var(--pane-strong); font-size: 15px; text-align: center;
+}
+.whats-new-was { padding: 0 2px; color: var(--text-muted); font-size: 12.5px; }
+.whats-new-behind, .whats-new-waiting, .whats-new-managers, .whats-new-empty { margin: 10px 0 0; color: var(--text-muted); }
+.whats-new-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.whats-new-site > .service-outcome { margin: 12px 0 0; font-size: 13px; }
 .rail-row:hover { background: var(--rail-hover); text-decoration: none; }
 .rail-row.active, .rail-row.active:hover { background: var(--rail-selection); color: #fff; }
 .rail-row .figure { width: var(--rail-row-figure); height: var(--rail-row-figure); }
 /* Keep the tracks within the stand so larger group canvases overflow symmetrically. */
 .rail-row-stand { position: relative; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; width: var(--rail-row-figure); height: var(--rail-row-figure); }
 .rail-row-status { position: absolute; z-index: 2; right: -2px; bottom: -2px; width: 15px; height: 15px; border-radius: 50%; background: var(--rail-status); border: 2px solid var(--rail); }
+/* A raised hand: the agent's work waits on this member (a card it raised for them, or an approval card they answer;
+ * Jonas, 11 Nov 2026: "it's really stopped at you"), also while it works on something else. It takes the figure's
+ * top-right; a mention's "@" beside it makes way to the top-left. */
+.rail-hand { position: absolute; z-index: 2; top: -3px; right: -3px; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--rail-waiting-mark); color: #3b2a00; box-shadow: 0 0 0 2px var(--rail); pointer-events: none; }
+.rail-hand .icon { width: 12px; height: 12px; stroke-width: 2.3; }
+.cofounder-stand > .rail-hand { top: 0; right: 0; width: 22px; height: 22px; }
+.cofounder-stand > .rail-hand .icon { width: 14px; height: 14px; }
+:is(.rail-row, .rail-pin, .cofounder-home):hover .rail-hand { box-shadow: 0 0 0 2px var(--rail-hover); }
+:is(.rail-row, .rail-pin, .cofounder-home).active .rail-hand { box-shadow: 0 0 0 2px var(--rail-selection); }
+:is(.rail-row-stand, .rail-pin-stand, .cofounder-stand):has(> .rail-hand) > .rail-mention { right: auto; left: -3px; }
 /* "@": someone mentioned this member here and they have not looked yet. */
 .rail-mention { position: absolute; z-index: 2; top: -3px; right: -3px; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--sidebar-selection); color: #fff; font-size: 11px; font-weight: 700; line-height: 1; box-shadow: 0 0 0 2px var(--rail); }
+/* Who is where (Jonas, 9 Nov 2026): the other members in the company now, as small pictures on the agent, group chat,
+ * page or app they are in. A row has them at its right edge, a card or an app's tile at its top-right corner, and the
+ * apps button (shut) at its corner. Each picture is ringed in the colour under it, so they read as cut out of it. */
+.rail-here { --here-size: 22px; --here-ring: var(--rail); position: absolute; z-index: 3; display: flex; align-items: center; pointer-events: none; }
+.rail-here .person-avatar, .rail-here-more { width: var(--here-size); height: var(--here-size); box-shadow: 0 0 0 2px var(--here-ring); }
+.rail-here .person-avatar { font-size: calc(var(--here-size) * 0.42); font-weight: 650; }
+.rail-here > * + * { margin-left: calc(var(--here-size) * -0.18); }
+.rail-here-more { display: grid; place-items: center; width: auto; min-width: var(--here-size); padding: 0 4px; border-radius: 999px; background: var(--rail-hover); color: var(--text-muted); font-size: 10px; font-weight: 650; }
+.rail-row > .rail-here { top: 50%; right: 10px; transform: translateY(-50%); }
+/* Room for the marker: its first circle, then 82% of one for each further one (they overlap by 18%), and 10px either side. */
+.rail-row:has(> .rail-here) { padding-right: calc(20px + var(--here-size, 22px) * (1 + (var(--here-count, 1) - 1) * 0.82)); }
+.rail-row:hover > .rail-here, .rail-app:hover > .rail-here { --here-ring: var(--rail-hover); }
+:is(.rail-row, .rail-app).active > .rail-here, :is(.rail-pin, .cofounder-home).active .rail-here { --here-ring: var(--rail-selection); }
+.rail-pin:hover .rail-here, .cofounder-home:hover .rail-here { --here-ring: var(--rail-hover); }
+/* On a card, against the figure's top-right, where a row's "@" would be on its own figure. */
+:is(.cofounder-stand, .rail-pin-stand) > .rail-here { --here-size: 20px; top: 2px; left: calc(100% - 6px); }
+.rail-app { position: relative; }
+.rail-app > .rail-here { --here-size: 18px; top: 2px; right: 4px; }
+.rail-apps > .rail-here { --here-size: 16px; top: -4px; right: -4px; }
+.rail-apps:hover > .rail-here, .rail-apps.is-open > .rail-here { --here-ring: var(--rail-hover); }
+.rail-compact .rail-row > .rail-here { --here-size: 18px; top: 2px; right: 2px; transform: none; }
+.rail-compact .rail-row:has(> .rail-here) { padding-right: 8px; }
 .rail-row:hover .rail-row-status { border-color: var(--rail-hover); }
 .rail-row.active .rail-row-status { border-color: var(--rail-selection); }
-.rail-row-copy { display: flex; flex-direction: column; justify-content: flex-start; gap: 2px; min-width: 0; }
-.rail-row-copy strong { font-size: 13px; font-weight: 600; line-height: 16px; }
+/* As in a Messages contact row: the name sits at the top of the row, 10px under the
+ * selection's edge, in bold; the figure stays centered (Jonas, 9 Nov 2026). */
+.rail-row-copy { display: flex; flex-direction: column; justify-content: flex-start; gap: 2px; min-width: 0; align-self: start; padding-top: 3px; }
+.rail-row-copy strong { font-size: 13px; font-weight: 700; line-height: 16px; }
 .rail-row-copy small { font-size: 11px; line-height: 15px; color: #5f5e5d; }
+/* The rail's names and lines draw with macOS's own text smoothing, as Messages' sidebar does:
+ * body's "antialiased" draws them about a fifth lighter than the native row beside them
+ * (Jonas, 9 Nov 2026). */
+.rail-row-copy, .rail-pin-name, .cofounder-home strong { -webkit-font-smoothing: auto; -moz-osx-font-smoothing: auto; }
 /* Every rail label is one line; it shortens with the rail instead of wrapping. */
 .cofounder-home strong, .rail-row-copy strong, .rail-row-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.92); }
+/* A run that did not finish says so in red under the name; the selected row keeps its white. */
+.rail-row:not(.active) .rail-row-copy small.is-failed { color: #c4161c; }
+/* Stopped at the member ("Stopped: …", or "Needs you"): in the warning colour; the selected row keeps its white. */
+.rail-row:not(.active) .rail-row-copy small.is-waiting { color: var(--rail-waiting); }
 /* The ink wave over a live state ("Working", "Writing"): the rail card and the
  * thread caption share one clock (agent-activity.ts), so they move together;
  * the caption rebuilds its letters when shown (conversation.css pauses it while hidden). */
@@ -477,17 +619,20 @@ label > input, label > select { font-weight: 400; }
 /* Collapsed, hidden agents stay out of the figure column; widen the rail to reach them. */
 .rail-compact .rail-hidden { display: none; }
 .rail-compact .rail-pin-stand, .rail-compact .rail-pin .figure { width: 50px; height: 50px; }
-.rail-compact .rail-dragging .rail-pinned.is-empty .rail-drop-slot { height: 44px; font-size: 0; }
+.rail-compact .rail-dragging .rail-pinned .rail-drop-slot { height: 44px; font-size: 0; }
+.rail-compact .rail-drop-gap.is-pin { width: 60px; height: 60px; }
 .rail-compact .rail-divided::before { content: ""; display: block; height: 1px; margin: 4px 8px; background: var(--border-strong); }
 .rail-compact .account-menu-rail .account-trigger { justify-content: center; }
-.rail-compact .account-menu-rail .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; width: 260px; z-index: 50; }
+.rail-compact .account-menu-rail .account-popover { position: fixed; left: 8px; right: auto; bottom: 66px; z-index: 50; }
 /* The rail's placeholder (ui/skeleton.ts) stands on the real rail's geometry: the
  * search field, the Co-Founder's tier, 63.75px agent rows and the account foot. */
 .skeleton-rail-search { grid-area: 1 / 2; height: var(--rail-control); margin-right: calc(2 * var(--rail-control) + 12px); border-radius: 11px; }
 .skeleton-rail-cofounder { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: -7.5px; padding: 0 0 24.5px; }
 .skeleton-cofounder-figure { width: 76px; height: 76px; }
 .skeleton-cofounder-name { width: 72px; height: 13px; }
-.skeleton-rail-row { display: grid; grid-template-columns: 50px minmax(0, 1fr); align-items: center; gap: 10px; min-height: 63.75px; padding: 3px 8px 3px 12px; }
+.skeleton-rail-row { display: grid; grid-template-columns: 50px minmax(0, 1fr); align-items: center; gap: 8px; min-height: 63.75px; padding: 3px 8px 3px 12px; }
+/* Its two lines stand where the name and the role draw: at the top of the row. */
+.skeleton-rail-row .skeleton-stack { align-self: start; gap: 4px; padding-top: 6px; }
 .skeleton-rail-figure { width: 42px; height: 42px; justify-self: center; }
 .skeleton-rail-account { display: flex; align-items: center; gap: 10px; height: 53px; padding-inline: 8px; }
 .skeleton-account-chip { width: 45px; height: 45px; }
@@ -506,8 +651,9 @@ label > input, label > select { font-weight: 400; }
 .account-menu-rail .account-chip { width: 45px; height: 45px; font-size: 18px; }
 /* The member's name at 1.5x the 14px body text. */
 .account-menu-rail .account-trigger-name { flex: 1; min-width: 0; max-width: none; font-size: 21px; }
+/* A fixed width from the rail's left edge, so a wide rail never stretches the menu. */
 .account-menu-rail .account-popover {
-	top: auto; bottom: calc(100% + 8px); left: 0; right: 0; width: auto;
+	top: auto; bottom: calc(100% + 8px); left: 0; right: auto; width: 232px; max-width: calc(100vw - 16px);
 	max-height: calc(100dvh - var(--titlebar-height) - 88px);
 }
 
@@ -519,6 +665,8 @@ label > input, label > select { font-weight: 400; }
 	.cofounder-home.active, .rail-row.active, .rail-pin.active { outline: 2px solid Highlight; }
 	/* Forced colours empty the disc into a ring; a failed run's "!" stays filled. */
 	:is(.rail, .rail-drag-ghost) .alert-mark::before, :is(.rail, .rail-drag-ghost) .alert-mark::after { forced-color-adjust: none; background: CanvasText; }
+	/* The raised hand keeps its disc. */
+	:is(.rail, .rail-drag-ghost) .rail-hand { forced-color-adjust: none; background: Mark; color: MarkText; }
 }
 
 .avatar {
@@ -627,6 +775,23 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 .hero-title { margin: 0; font: 750 clamp(34px, 4.2vw, 50px) / 1.02 var(--font-display); letter-spacing: -0.035em; text-wrap: balance; }
 .hero-sub { margin: 16px 0 0; max-width: 34em; color: var(--text-muted); font-size: 17px; line-height: 1.45; text-wrap: balance; }
 .hero-ask { position: relative; width: 100%; max-width: 600px; margin-top: 60px; }
+/* The company's name, over the idea box: a labelled field (Jonas, 9 Nov 2026). */
+.hero-name-field { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 100%; max-width: 600px; margin-top: 36px; text-align: left; }
+.hero-name-label { display: block; padding-left: 6px; color: var(--text-muted); font: 600 13px / 1.2 var(--font-sans); }
+.hero-name-box {
+	position: relative; display: flex; align-items: center; border: 1px solid var(--border-strong); border-radius: 16px;
+	background: var(--overlay); transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
+}
+.hero-name-box:hover { border-color: var(--text-soft); }
+.hero-name-box:focus-within { border-color: var(--text); box-shadow: 0 0 0 1px var(--text); }
+.hero-name-box .icon { position: absolute; right: 16px; width: 18px; height: 18px; color: var(--text-soft); pointer-events: none; }
+input.hero-name {
+	width: 100%; min-height: 0; padding: 12px 46px 12px 18px; border: 0; border-radius: 16px; background: transparent;
+	color: var(--text); font: 650 18px / 1.3 var(--font-sans);
+}
+input.hero-name::placeholder { color: var(--text-soft); font-weight: 500; }
+input.hero-name:focus-visible { outline: none; }
+input.hero-name:disabled { opacity: 0.6; }
 .hero-crown { position: absolute; left: 18px; top: -40px; z-index: 2; width: 52px; pointer-events: none; }
 .hero-box {
 	position: relative; display: flex; flex-direction: column; gap: 10px; padding: 16px 8px 8px; border-radius: 26px;
@@ -645,6 +810,8 @@ details > summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
 	resize: none; background: transparent; color: var(--text); font: 18px / 26px var(--font-sans); overflow-y: auto;
 }
 .hero-idea::placeholder { color: var(--text-soft); }
+/* The box itself shows focus; the field inside it draws no edge of its own (Jonas, 9 November 2026). */
+textarea.hero-idea:focus-visible { outline: none; }
 .hero-row { display: flex; align-items: center; gap: 10px; }
 .hero-invite {
 	display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px 0 4px;
@@ -715,11 +882,11 @@ a.hero-invitation:hover { text-decoration: none; background: color-mix(in srgb, 
 .meet-name { font-size: 19px; font-weight: 600; letter-spacing: 0; }
 .meet .notice { width: min(420px, 100%); text-align: left; margin: 14px 0 0; }
 
-/* The approved selector: seven figures in one row, then eleven colours in
- * centred rows of six and five. */
+/* The approved selector: twelve figures in two rows of six, then eleven
+ * colours in centred rows of six and five. */
 .figure-grid {
-	display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); justify-items: center; align-items: center;
-	gap: 4px; width: min(100%, 324px); margin: 24px auto 0;
+	display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); justify-items: center; align-items: center;
+	gap: 6px 4px; width: min(100%, 284px); margin: 24px auto 0;
 }
 .figure-choice {
 	position: relative; display: grid; place-items: center; width: min(100%, 40px); aspect-ratio: 1; padding: 3px;

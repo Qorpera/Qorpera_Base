@@ -122,11 +122,27 @@ describe("runner orchestrator service boundary", () => {
 				QORPERA_RUNNER_ORCHESTRATOR_WAKE: "notify",
 			}),
 		).toThrow("must be off or realtime");
-		expect(() =>
+		// A backstop equal to the 250 ms poll keeps the claim cadence; wake-ups then only bring work forward.
+		expect(
 			cloudRunnerOrchestratorServiceConfigFromEnvironment({
 				...environment,
 				QORPERA_RUNNER_ORCHESTRATOR_WAKE: "realtime",
 				QORPERA_RUNNER_ORCHESTRATOR_WAKE_BACKSTOP_MS: "250",
+			}).wake,
+		).toEqual({ backstopMs: 250 });
+		expect(() =>
+			cloudRunnerOrchestratorServiceConfigFromEnvironment({
+				...environment,
+				QORPERA_RUNNER_ORCHESTRATOR_WAKE: "realtime",
+				QORPERA_RUNNER_ORCHESTRATOR_WAKE_BACKSTOP_MS: "200",
+			}),
+		).toThrow("outside the supported range");
+		expect(() =>
+			cloudRunnerOrchestratorServiceConfigFromEnvironment({
+				...environment,
+				QORPERA_RUNNER_ORCHESTRATOR_POLL_MS: "2000",
+				QORPERA_RUNNER_ORCHESTRATOR_WAKE: "realtime",
+				QORPERA_RUNNER_ORCHESTRATOR_WAKE_BACKSTOP_MS: "1000",
 			}),
 		).toThrow("outside the supported range");
 	});

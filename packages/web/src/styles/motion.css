@@ -151,6 +151,7 @@
 @keyframes figure-unfold { from { opacity: 0; transform: scale(0.3, 0.6); } }
 @keyframes disc-pop { from { transform: scale(0); } }
 .mention-arrived .rail-mention { animation: disc-pop var(--motion-spring) var(--ease-bounce) both; }
+.hand-arrived .rail-hand { animation: disc-pop var(--motion-spring) var(--ease-bounce) both; }
 
 /* A new hire or a new chat drops into the rail with a little squash. */
 :is(.rail-row, .rail-pin).is-arriving { animation: row-drop var(--motion-spring) var(--ease-out) both; }
@@ -232,7 +233,6 @@
 .account-popover,
 .account-picture-menu,
 .preference-picker-popover { transform-origin: top left; animation: menu-in var(--motion-base) var(--ease-spring) both; }
-.composer-menu,
 .skill-menu,
 .mention-picker,
 .recipient-menu { transform-origin: bottom left; animation: menu-in var(--motion-base) var(--ease-spring) both; }
@@ -243,6 +243,21 @@
 }
 .context-menu.is-leaving { animation: menu-out var(--motion-fast) var(--ease-in) both; }
 @keyframes menu-out { to { opacity: 0; transform: scale(0.97); } }
+
+/* The composer's "+" menu springs up out of the "+" under its corner and drops back into it, quicker, when it
+ * closes; the "+" turns to a cross while the menu is open. A page of the menu (Model, Login) comes in from the
+ * side it lies on, and the menu takes the page's height as it does (conversation.ts). */
+.composer-menu { transform-origin: 18px calc(100% + 26px); animation: composer-menu-in var(--motion-slow) var(--ease-spring) both, composer-menu-show var(--motion-fast) ease-out both; }
+@keyframes composer-menu-in { from { transform: translateY(8px) scale(0.86); } }
+@keyframes composer-menu-show { from { opacity: 0; } }
+.composer-menu.is-leaving { animation: composer-menu-out var(--motion-fast) var(--ease-in) both; }
+@keyframes composer-menu-out { to { opacity: 0; transform: translateY(6px) scale(0.92); } }
+.composer-more > .icon { transition: transform var(--motion-slow) var(--ease-spring); }
+.composer-more[aria-expanded="true"] > .icon { transform: rotate(45deg); }
+.composer-menu > .is-page-arriving { animation: composer-page-in var(--motion-base) var(--ease-out) both; }
+.composer-menu > .is-page-returning { animation: composer-page-back var(--motion-base) var(--ease-out) both; }
+@keyframes composer-page-in { from { opacity: 0; transform: translateX(10px); } }
+@keyframes composer-page-back { from { opacity: 0; transform: translateX(-10px); } }
 
 /* ---- dialogs and settings ---- */
 
@@ -290,3 +305,49 @@
 	to { clip-path: circle(var(--theme-r, 150vmax) at var(--theme-x, 50%) var(--theme-y, 50%)); }
 }
 
+
+/* ---- the questions dock (views/question-dock.ts): the question springs up out of the corner, a tap answers at once,
+ * the agent cheers and the card flies off to it ---- */
+
+.question-dock.is-arriving { animation: dock-arrive var(--motion-spring) var(--ease-spring) both; }
+@keyframes dock-arrive {
+	from { opacity: 0; transform: translateY(18px) scale(0.9); }
+	35% { opacity: 1; }
+}
+.question-dock.is-arriving .question-dock-figure { animation: dock-hop 640ms var(--ease-bounce) 160ms both; }
+@keyframes dock-hop {
+	0% { transform: none; }
+	35% { transform: translateY(-7px) rotate(-6deg); }
+	65% { transform: translateY(0) rotate(3deg); }
+	100% { transform: none; }
+}
+/* Folded, a new question gives the pill a nudge. */
+.question-dock.is-folded.is-nudging { animation: dock-nudge 700ms var(--ease-bounce) both; }
+@keyframes dock-nudge {
+	0%, 100% { transform: none; }
+	30% { transform: translateY(-6px) scale(1.04); }
+	60% { transform: translateY(1px) scale(0.99); }
+}
+.question-dock.is-folded .question-dock-badge { animation: dock-badge 2.4s ease-in-out 1s infinite; }
+@keyframes dock-badge { 0%, 70%, 100% { transform: none; } 80% { transform: scale(1.18); } 90% { transform: scale(0.96); } }
+/* The chosen picture pops, the check bursts in, the title settles. */
+.question-dock.is-answered .choice-box.is-chosen { animation: dock-chosen 520ms var(--ease-spring) both; }
+@keyframes dock-chosen { 0% { transform: scale(1); } 40% { transform: scale(1.05); } 100% { transform: scale(1); } }
+.question-dock.is-answered .interaction-chosen { animation: dock-chosen 520ms var(--ease-spring) both; }
+.question-dock-burst { animation: dock-burst 560ms var(--ease-bounce) both; }
+@keyframes dock-burst {
+	0% { opacity: 0; transform: scale(0.2) rotate(-40deg); }
+	60% { opacity: 1; transform: scale(1.25) rotate(8deg); }
+	100% { transform: none; }
+}
+.question-dock.is-answered .question-dock-title { animation: decided-line var(--motion-slow) var(--ease-out) both; }
+/* Off to the agent: it shrinks away to the corner. */
+.question-dock.is-flying { animation: dock-fly 260ms var(--ease-in) both; }
+@keyframes dock-fly { to { opacity: 0; transform: translate(10px, 14px) scale(0.86); } }
+.question-dock.is-leaving { animation: dock-fly 220ms var(--ease-in) both; }
+@media (prefers-reduced-motion: reduce) {
+	.question-dock.is-arriving, .question-dock.is-arriving .question-dock-figure, .question-dock.is-folded.is-nudging,
+	.question-dock.is-folded .question-dock-badge, .question-dock.is-answered .choice-box.is-chosen,
+	.question-dock.is-answered .interaction-chosen, .question-dock-burst, .question-dock.is-answered .question-dock-title,
+	.question-dock.is-flying, .question-dock.is-leaving { animation: none; }
+}

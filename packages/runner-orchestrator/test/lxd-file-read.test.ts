@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { LxdUnixClient } from "../src/lxd-client.ts";
+import { withShortDeadline } from "./helpers/short-deadline.ts";
 
 const directories: string[] = [];
 const servers: Server[] = [];
@@ -102,7 +103,10 @@ describe("bounded LXD guest file readback", () => {
 	});
 	it("has a total deadline even before response headers", async () => {
 		const value = await client(() => undefined);
-		await expect(read(value)).rejects.toThrow(/^LXD_INSTANCE_FILE_UNCONFIRMED$/);
+		const deadlines = await withShortDeadline(5000, () =>
+			expect(read(value)).rejects.toThrow(/^LXD_INSTANCE_FILE_UNCONFIRMED$/),
+		);
+		expect(deadlines).toBeGreaterThan(0);
 	}, 10000);
 	it.each(["/", "relative", "/run/../secret", "/run/file\n", "/run/file\\name"])(
 		"rejects unsafe path %s without a request",

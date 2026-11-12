@@ -235,11 +235,17 @@ publishes to it. While the channel is joined and the loop has been idle for
 30 s, it asks for work on a wake-up and every
 `QORPERA_RUNNER_ORCHESTRATOR_WAKE_BACKSTOP_MS` (default 5 s) instead of every
 poll interval. Wake-ups that bring a claim forward stay at least one poll
-interval apart. While the channel is not joined, the loop polls as without
-wake-ups. A backstop claim that finds work no wake-up announced makes it poll
-that way for ten minutes and is reported. The database side (migration
-`20260928319550`) broadcasts only while `qorpera_orchestrator_wake_settings.enabled`
-is on; switch it on before the nodes.
+interval apart. A wake-up also brings the next reconcile pass forward, since a
+wake occurrence or a conversation's next input becomes a job only in a pass; a
+pass brought forward starts at least 500 ms after the pass before it ended, and
+no sooner than the reconcile interval while the pass summary call is failing. A
+backstop equal to the poll interval (`250`) keeps the claim cadence as without
+wake-ups, so wake-ups then only bring claims and passes forward. While the
+channel is not joined, the loop polls as without wake-ups. A backstop claim that
+finds work no wake-up announced makes it poll that way for ten minutes and is
+reported. The database side (migration `20260928319550`) broadcasts only while
+`qorpera_orchestrator_wake_settings.enabled` is on; switch it on before the
+nodes.
 
 The bootstrap orchestrator token is used only when the control-state file does
 not exist. The service persists a pending replacement before rotation, sends

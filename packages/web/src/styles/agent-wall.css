@@ -24,9 +24,8 @@
 .agent-wall-count-waiting { color: color-mix(in srgb, var(--agent-wall-accent) 78%, var(--text)); font-weight: 600; }
 .agent-wall.is-folded .agent-wall-close-word { display: none; }
 .agent-wall-state { flex: none; width: 8px; height: 8px; border-radius: 50%; }
-.agent-wall-state:not(.is-waiting, .is-working) { display: none; }
+.agent-wall-state:not(.is-waiting) { display: none; }
 .agent-wall-state.is-waiting { background: var(--agent-wall-accent); }
-.agent-wall-state.is-working { box-sizing: border-box; border: 2px solid color-mix(in srgb, var(--agent-wall-accent) 30%, transparent); border-top-color: var(--agent-wall-accent); border-right-color: var(--agent-wall-accent); animation: agent-wall-spin 1.4s linear infinite; }
 /* Open, the rows say all of it: the button is the word Close, in the place the member just clicked. */
 .agent-wall:not(.is-folded) .agent-wall-toggle { border-color: transparent; background: transparent; }
 .agent-wall:not(.is-folded) .agent-wall-toggle:hover { background: var(--hover); }
@@ -46,23 +45,19 @@
 	display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 13px; align-items: start; padding: 6px 16px; border-radius: var(--radius);
 	color: var(--text-muted); font-size: 13.5px; line-height: 1.4; overflow-wrap: anywhere;
 }
-.agent-wall-part.is-working .agent-wall-item { color: var(--text); }
 .agent-wall-part.is-waiting .agent-wall-item { color: var(--text); font-weight: 600; }
 .agent-wall-item.is-entering { animation: agent-wall-enter var(--motion-spring) var(--ease-spring) both; }
 @keyframes agent-wall-enter { from { opacity: 0; transform: translateY(8px) scale(0.97); } }
 .agent-wall-mark { display: grid; place-items: center; width: 14px; height: 14px; margin-top: 2px; font-size: 11px; line-height: 1; color: var(--text-muted); }
-.agent-wall-part.is-done .agent-wall-mark { color: var(--ok); }
 .agent-wall-part.is-waiting .agent-wall-mark::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--agent-wall-accent); }
 .agent-wall-part.is-waiting .agent-wall-item.is-answered { color: var(--text-muted); font-weight: 400; }
 .agent-wall .is-answered .agent-wall-answer { border-color: transparent; background: transparent; color: var(--text-muted); font-weight: 400; }
 .agent-wall-part.is-waiting .is-answered .agent-wall-mark::before { background: transparent; box-shadow: inset 0 0 0 2px var(--text-muted); }
-.agent-wall-part.is-working .agent-wall-mark::before { content: ""; box-sizing: border-box; width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--agent-wall-accent) 30%, transparent); border-top-color: var(--agent-wall-accent); border-right-color: var(--agent-wall-accent); animation: agent-wall-spin 1.4s linear infinite; }
 /* What waits has its answer at hand. */
 .agent-wall-item.has-answer { position: relative; }
 .agent-wall-item.has-answer > .agent-wall-row, .agent-wall-item.has-answer:not(.is-expandable) { padding-right: 96px; }
 .agent-wall .agent-wall-answer { position: absolute; right: 16px; top: 3px; border-radius: var(--radius-pill); color: color-mix(in srgb, var(--agent-wall-accent) 78%, var(--text)); font-weight: 600; }
 
-@keyframes agent-wall-spin { to { transform: rotate(360deg); } }
 .agent-wall-text { min-width: 0; }
 /* An item with more to it is a row that opens: the headline is its button, the detail and a preview show under it. */
 .agent-wall-item.is-expandable { display: block; padding: 0; }
@@ -76,11 +71,6 @@
 /* Its arrow right after its words, so the two read as one control. */
 .agent-wall-row > .icon { width: 11px; height: 11px; margin: 4px 0 0 -6px; color: var(--text-muted); transform: rotate(90deg); transition: transform var(--motion-base) var(--ease-out); }
 .agent-wall-item.is-open > .agent-wall-row > .icon { transform: rotate(-90deg); }
-/* It grows upward: its arrow says so. */
-.agent-wall-done > .icon { transform: rotate(-90deg); }
-.agent-wall-done[aria-expanded="true"] > .icon { transform: rotate(90deg); }
-/* The done line: as quiet as what it holds. */
-.agent-wall-done { color: var(--text-muted); font-size: 13.5px; line-height: 1.4; }
 .agent-wall-detail { display: grid; gap: 6px; padding: 0 16px 8px 43px; color: var(--text-muted); font-size: 13px; font-weight: 400; line-height: 1.45; animation: agent-wall-open var(--motion-base) var(--ease-out) both; }
 .agent-wall-detail[hidden] { display: none; }
 @keyframes agent-wall-open { from { opacity: 0; transform: translateY(-3px); } }
@@ -110,17 +100,18 @@
 
 /* One draft's button shares the line with the wall's: the draft on the left, the wall in the centre. The drafts' row keeps
  * its width, which a draft's preview is measured against. Several drafts, an open draft or a note take their own place
- * above the composer, clear of the wall's button. */
-.agent-wall:not([hidden]) ~ .composer > .composer-drafts:has(> .draft-notches > .draft-notch:only-child):not(:has(> .draft-panel, > .draft-helpers:not([hidden]), > .draft-own-note:not([hidden]))) {
+ * above the composer, clear of the wall's button. So does a draft while coding sessions go: their pill has the line's left
+ * (conversation.css), so the draft keeps its own place. */
+.agent-wall:not([hidden]) + .coding-dock[hidden] + .composer > .composer-drafts:has(> .draft-notches > .draft-notch:only-child):not(:has(> .draft-panel, > .draft-helpers:not([hidden]), > .draft-own-note:not([hidden]))) {
 	position: relative; z-index: 1; margin-top: -40px; pointer-events: none;
 }
-.agent-wall:not([hidden]) ~ .composer > .composer-drafts .draft-notch { pointer-events: auto; }
+.agent-wall:not([hidden]) + .coding-dock[hidden] + .composer > .composer-drafts .draft-notch { pointer-events: auto; }
 /* Room for that button on the line, on both sides so the wall's stays centred. */
-.agent-wall:has(~ .composer > .composer-drafts > .draft-notches > .draft-notch:only-child) .agent-wall-bar { padding-inline: 96px; }
+.agent-wall:has(+ .coding-dock[hidden] + .composer > .composer-drafts > .draft-notches > .draft-notch:only-child) .agent-wall-bar { padding-inline: 96px; }
 /* A narrow conversation, on a phone or beside a panel: the button says only its first count, and gives up the centre. */
 @container agent-wall (max-width: 30em) {
 	.agent-wall-summary > :not(:first-child) { display: none; }
-	.agent-wall:has(~ .composer > .composer-drafts > .draft-notches > .draft-notch:only-child) .agent-wall-bar { padding-inline: 96px 0; }
+	.agent-wall:has(+ .coding-dock[hidden] + .composer > .composer-drafts > .draft-notches > .draft-notch:only-child) .agent-wall-bar { padding-inline: 96px 0; }
 }
 /* A finger's reach, without a bigger outline. */
 @media (pointer: coarse) { .agent-wall-toggle { position: relative; } .agent-wall-toggle::after { content: ""; position: absolute; inset: -6px 0; } .agent-wall .agent-wall-answer::after { content: ""; position: absolute; inset: -8px -4px; } }
@@ -128,6 +119,6 @@
 	.agent-wall-body { max-height: 40dvh; }
 }
 @media (prefers-reduced-motion: reduce) {
-	.agent-wall, .agent-wall-detail, .agent-wall-preview.is-loading, .agent-wall-item.is-entering, .agent-wall-state.is-working, .agent-wall-part.is-working .agent-wall-mark::before { animation: none; }
+	.agent-wall, .agent-wall-detail, .agent-wall-preview.is-loading, .agent-wall-item.is-entering { animation: none; }
 	.agent-wall-fold, .agent-wall-toggle, .agent-wall-toggle > .icon, .agent-wall-row, .agent-wall-row > .icon { transition: none; }
 }

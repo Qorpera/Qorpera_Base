@@ -181,3 +181,355 @@ test("the guest helper with the folder mount stays under the executor's 64 KiB r
 		await rm(temporary, { recursive: true, force: true });
 	}
 });
+
+test("the image has a desktop that only `desktop start` starts, with Chromium sandboxed, and checks it end to end", () => {
+	// deploy/machine/README.md, "The desktop" (9 Nov 2026).
+	const packager = read("scripts/package-machine-guest.mjs");
+	const files = [...packager.matchAll(/\{\s*file: "([^"]+)",\s*installedPath: "([^"]+)",\s*mode: "(\d{4})",?\s*\}/g)].map(
+		([, file, installedPath, mode]) => ({ file, installedPath, mode }),
+	);
+	assert.deepEqual(files, [
+		{ file: "desktop-session", installedPath: "/opt/qorpera-machine/desktop-session", mode: "0555" },
+		{ file: "desktop", installedPath: "/usr/local/bin/desktop", mode: "0555" },
+		{ file: "qorpera-chromium.apparmor", installedPath: "/etc/apparmor.d/qorpera-chromium", mode: "0644" },
+		{ file: "desktop-selftest.html", installedPath: "/opt/qorpera-machine/desktop-selftest.html", mode: "0444" },
+		{ file: "playwright-check.cjs", installedPath: "/opt/qorpera-machine/playwright-check.cjs", mode: "0444" },
+		{ file: "chromium", installedPath: "/usr/local/bin/chromium", mode: "0555" },
+		{ file: "qorpera-machine-profile.sh", installedPath: "/etc/profile.d/qorpera-machine.sh", mode: "0644" },
+		{
+			file: "qorpera-chromium-policy.json",
+			installedPath: "/etc/opt/chrome_for_testing/policies/managed/qorpera.json",
+			mode: "0644",
+		},
+	]);
+	const required = words(imageScript.match(/for file in ([^;]+); do\n\t\[\[ -f \$PACKAGE\/\$file \]\]/)[1]);
+	for (const { file, installedPath, mode } of files) {
+		assert.ok(required.includes(file), file);
+		assert.ok(
+			imageScript.includes(`lx file push "$PACKAGE/${file}" "$BUILDER${installedPath}" --uid 0 --gid 0 --mode ${mode}\n`),
+			file,
+		);
+	}
+	const unit = read("deploy/machine/qorpera-machine-desktop.service");
+	assert.doesNotMatch(unit, /^\[Install\]/m);
+	assert.match(unit, /\nSlice=qorpera-machine\.slice\n/);
+	assert.match(unit, /\nUser=desktop\n/);
+	assert.match(unit, /\nExecStart=\/opt\/qorpera-machine\/desktop-session\n/);
+	const session = read("deploy/machine/desktop-session");
+	// VNC only on the machine's loopback, no TCP X.
+	assert.match(session, /Xvnc :1 [^\n]*-localhost yes [^\n]*-nolisten tcp/);
+	const apt = words(imageScript.match(/apt-get install -y --no-install-recommends((?:[^\n]*\\\n)*[^\n]*)/)[1]);
+	for (const tool of ["tigervnc-standalone-server", "xfce4-session", "xdotool", "wmctrl", "scrot", "x11-utils", "file"])
+		assert.ok(apt.includes(tool), tool);
+	// The coding image's Chromium pin, the same bytes.
+	const coding = JSON.parse(read("deploy/coding-machine/coding-image.json")).chromium;
+	assert.match(imageScript, new RegExp(`\\nCHROMIUM_VERSION=${coding.version.replaceAll(".", "\\.")}\\n`));
+	assert.ok(imageScript.includes(`\nCHROMIUM_URL=${coding.url}\n`));
+	assert.ok(imageScript.includes(`\nCHROMIUM_SHA256=${coding.sha256}\n`));
+	assert.ok(imageScript.includes(`[[ $(chromium --version) == *" ${coding.version}"* ]]`));
+	assert.match(read("deploy/machine/qorpera-chromium.apparmor"), /profile qorpera-chromium \/usr\/lib\/qorpera-chromium\/chrome flags=\(unconfined\) \{\n\s+userns,/);
+	// The build's own check: started, Chromium on it, a 1600x1000 shot, stopped with nothing left.
+	for (const line of [
+		"\tdesktop start\n",
+		'\tdesktop shot /tmp/desktop.png | grep -q " 1600 x 1000$"',
+		"\tdesktop stop\n",
+		"\t[[ -z $(pgrep -u desktop || true) ]]",
+		"\tsystemd-analyze verify /etc/systemd/system/qorpera-machine-desktop.service\n",
+	])
+		assert.ok(imageScript.includes(line), line);
+	// A program on the desktop: refused unless the desktop is active, stopped with it, its arguments not expanded by
+	// systemd, and start/stop/launch take turns under one lock (review r1 F3, F4).
+	const command = read("deploy/machine/desktop");
+	assert.match(command, /systemd-run --quiet --collect --expand-environment=no /);
+	assert.match(command, /-p Requisite="\$UNIT" -p BindsTo="\$UNIT" -p After="\$UNIT"/);
+	assert.doesNotMatch(command, /PartOf=/);
+	assert.match(command, /start \| stop \| open \| run\)\n\texec 9>\/run\/qorpera-desktop\.lock\n\tflock 9\n/);
+	for (const line of [
+		'\t[[ $(cat /tmp/desktop-run) == "literal \\$HOME" ]]',
+		'\tif desktop run sleep 600 2>/dev/null; then echo "a program started on a stopped desktop" >&2; exit 1; fi\n',
+	])
+		assert.ok(imageScript.includes(line), line);
+	// The proof changes nothing on its host: no module loads, no firewall rules (review r1 F1).
+	const proof = read("scripts/prove-machine-desktop-vm.sh");
+	assert.doesNotMatch(proof, /modprobe|iptables -[ID]/);
+	const cli = spawnSync("bash", [join(repositoryRoot, "deploy/machine/desktop"), "help"], { encoding: "utf8" });
+	assert.equal(cli.status, 0);
+	for (const command of ["start", "stop", "status", "shot", "open", "run", "click", "double", "move", "drag", "type", "key", "scroll", "windows", "size", "selftest"])
+		assert.match(cli.stdout, new RegExp(`^desktop ${command}\\b`, "m"), command);
+	const unknown = spawnSync("bash", [join(repositoryRoot, "deploy/machine/desktop"), "fly"], { encoding: "utf8" });
+	assert.equal(unknown.status, 2);
+});
+
+test("the image carries save_coding_value's clipboard helper as its own file, with xsel, and checks it on the desktop", async () => {
+	// 20260930705000: the helper is built beside the guest helper, never into it, so the guest helper's pin stays as it was.
+	const packager = read("scripts/package-machine-guest.mjs");
+	assert.match(packager, /entryPoints: \["packages\/runtime\/src\/cloud-machine-coding-value-main\.ts"\]/);
+	assert.match(
+		packager,
+		/file: "cloud-machine-coding-value\.mjs",\n\tsource: "packages\/runtime\/src\/cloud-machine-coding-value-main\.ts",\n\tinstalledPath: "\/opt\/qorpera-machine\/cloud-machine-coding-value\.mjs",\n\towner: "root:root",\n\tmode: "0444",/,
+	);
+	// The runtime imports the helper's module (its refusal codes), and every service bundle with it: loading it runs
+	// nothing. Only its entry, which nothing imports, runs the program.
+	assert.doesNotMatch(read("packages/runtime/src/cloud-machine-coding-value.ts"), /process\.(argv|stdin|exitCode)|import\.meta/);
+	assert.match(read("packages/runtime/src/cloud-machine-coding-value-main.ts"), /^runMachineCodingValueCli\(/m);
+	// The guest helper stays the manifest's first artifact: the build record and the proofs read its pin there.
+	assert.ok(packager.indexOf('file: "cloud-machine-guest.mjs"') < packager.indexOf('file: "cloud-machine-coding-value.mjs"'));
+	assert.match(imageScript, /--arg helperSha256 "\$\(jq -r '\.artifacts\[0\]\.sha256' "\$PACKAGE\/manifest\.json"\)"/);
+	const required = words(imageScript.match(/for file in ([^;]+); do\n\t\[\[ -f \$PACKAGE\/\$file \]\]/)[1]);
+	assert.ok(required.includes("cloud-machine-coding-value.mjs"));
+	assert.ok(
+		imageScript.includes(
+			'lx file push "$PACKAGE/cloud-machine-coding-value.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-coding-value.mjs" --uid 0 --gid 0 --mode 0444\n',
+		),
+	);
+	const apt = words(imageScript.match(/apt-get install -y --no-install-recommends((?:[^\n]*\\\n)*[^\n]*)/)[1]);
+	assert.ok(apt.includes("xsel"));
+	// The build's own check: a key copied on the desktop is sealed, never printed, both selections left empty, and an
+	// empty clipboard and a stopped desktop refused; no clipboard manager keeps what is copied.
+	for (const line of [
+		'\t[[ -z $(command -v xfce4-clipman || true) ]] || { echo "a clipboard manager would keep copied keys" >&2; exit 1; }\n',
+		'spawnSync("/usr/bin/node", ["/opt/qorpera-machine/cloud-machine-coding-value.mjs"]',
+		'fail("the clipboard helper printed the key")',
+		'fail("the clipboard helper left the key on the clipboard")',
+		'fail("the clipboard helper did not refuse an empty clipboard")',
+		'fail("the clipboard helper did not refuse a stopped desktop")',
+		'fail("--clear-only left the key on the clipboard")',
+	])
+		assert.ok(imageScript.includes(line), line);
+	// The check's script sits in the build's single-quoted script: it must hold no single quote.
+	const check = imageScript.slice(imageScript.indexOf('\tnode - <<"JS"\n'), imageScript.indexOf("\nJS\n"));
+	assert.ok(check.length > 0 && !check.includes("'"));
+	// The helper's time fits the executor's deadlines: a read and both clears side by side are two xsels' time, killed
+	// at MACHINE_XSEL_MS each, plus its start, well inside the run's deadline; the executor's own clear (--clear-only)
+	// is one xsel's time and its start, inside its own.
+	const helperSource = read("packages/runtime/src/cloud-machine-coding-value.ts");
+	const hostSource = read("packages/runner-orchestrator/src/company-machine-host.ts");
+	const xselMs = Number(helperSource.match(/\nexport const MACHINE_XSEL_MS = ([0-9_]+);\n/)[1].replaceAll("_", ""));
+	const runMs = Number(hostSource.match(/\nconst CODING_VALUE_MS = (\d+);\n/)[1]);
+	const clearMs = Number(hostSource.match(/\nconst CODING_VALUE_CLEAR_MS = (\d+);\n/)[1]);
+	assert.ok(2 * xselMs + 4000 <= runMs / 1.5, `${xselMs} ms per xsel against ${runMs} ms`);
+	assert.ok(xselMs + 4000 <= clearMs, `${xselMs} ms per xsel against the clear's ${clearMs} ms`);
+	assert.match(helperSource, /timeout: timeoutMs,\n\t\t\tkillSignal: "SIGKILL",/);
+	assert.match(helperSource, /return Promise\.all\(\[clipboard\.clear\("clipboard"\), clipboard\.clear\("primary"\)\]\);/);
+	// The executor's own clear runs on a deadline of its own, never the request's signal.
+	assert.match(hostSource, /AbortSignal\.timeout\(this\.#options\.codingValueClearTimeoutMs \?\? CODING_VALUE_CLEAR_MS\)/);
+	// The executor runs it where the image put it.
+	assert.match(
+		read("packages/runner-orchestrator/src/company-machine-host.ts"),
+		/COMPANY_MACHINE_CODING_VALUE_HELPER = "\/opt\/qorpera-machine\/cloud-machine-coding-value\.mjs"/,
+	);
+	// Built with the packager's options, the guest helper holds none of it, and the clipboard helper reads the clipboard
+	// with xsel against the desktop's display only.
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-machine-coding-value-"));
+	try {
+		const options = { bundle: true, platform: "node", format: "esm", target: "node22.19", legalComments: "none", logLevel: "silent" };
+		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-guest.ts")], outfile: join(temporary, "guest.mjs") });
+		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-coding-value-main.ts")], outfile: join(temporary, "coding-value.mjs") });
+		const guest = await readFile(join(temporary, "guest.mjs"), "utf8");
+		const helper = await readFile(join(temporary, "coding-value.mjs"), "utf8");
+		assert.doesNotMatch(guest, /coding-value-machine|xsel/);
+		assert.match(helper, /"\/usr\/bin\/xsel"/);
+		assert.match(helper, /DISPLAY = ":1"/);
+		assert.ok(helper.length < 65536, `the clipboard helper is ${helper.length} bytes`);
+	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
+});
+
+test("the image carries machine_screen's screen helper as its own file, and checks it on the desktop as the executor runs it", async () => {
+	// 20260930708000: the helper is built beside the guest helper, never into it, so the guest helper's pin stays as it was.
+	const packager = read("scripts/package-machine-guest.mjs");
+	assert.match(packager, /entryPoints: \["packages\/runtime\/src\/cloud-machine-screen-main\.ts"\]/);
+	assert.match(
+		packager,
+		/file: "cloud-machine-screen\.mjs",\n\tsource: "packages\/runtime\/src\/cloud-machine-screen-main\.ts",\n\tinstalledPath: "\/opt\/qorpera-machine\/cloud-machine-screen\.mjs",\n\towner: "root:root",\n\tmode: "0444",/,
+	);
+	// The runtime imports the helper's module (the action's shape, the refusal codes): loading it runs nothing. Only its
+	// entry, which nothing imports, runs the program.
+	assert.doesNotMatch(read("packages/runtime/src/cloud-machine-screen.ts"), /process\.(argv|stdin|exitCode)|import\.meta/);
+	assert.match(read("packages/runtime/src/cloud-machine-screen-main.ts"), /^runMachineScreenCli\(/m);
+	// The guest helper stays the manifest's first artifact, and its source does not reach the screen helper's module.
+	assert.ok(packager.indexOf('file: "cloud-machine-guest.mjs"') < packager.indexOf('file: "cloud-machine-screen.mjs"'));
+	assert.doesNotMatch(read("packages/runtime/src/cloud-machine-guest.ts"), /cloud-machine-screen/);
+	const required = words(imageScript.match(/for file in ([^;]+); do\n\t\[\[ -f \$PACKAGE\/\$file \]\]/)[1]);
+	assert.ok(required.includes("cloud-machine-screen.mjs"));
+	assert.ok(
+		imageScript.includes(
+			'lx file push "$PACKAGE/cloud-machine-screen.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-screen.mjs" --uid 0 --gid 0 --mode 0444\n',
+		),
+	);
+	// The build's own check runs the helper under the executor's boot wrapper, with the request on stdin.
+	const hostSource = read("packages/runner-orchestrator/src/company-machine-host.ts");
+	const wrapper = hostSource.match(/\nconst CODING_VALUE_ON_BOOT =\n\t'([^']+)';\n/)[1];
+	assert.ok(imageScript.includes(`const ON_BOOT = \`${wrapper}\`;`), "the image check runs the executor's own wrapper");
+	assert.match(hostSource, /COMPANY_MACHINE_SCREEN_HELPER = "\/opt\/qorpera-machine\/cloud-machine-screen\.mjs"/);
+	for (const line of [
+		'spawnSync("/bin/sh", ["-c", ON_BOOT, on, "/usr/bin/node", "/opt/qorpera-machine/cloud-machine-screen.mjs"]',
+		'fail("a look did not start the stopped desktop")',
+		'fail("the same receipt acted a second time")',
+		'fail("the screen helper ran on another boot")',
+		'fail("the screen helper acted on a stopped desktop")',
+		'fail("the screen helper left a picture on the disk")',
+		// Review r2 F4: an action cut off while it waits on the desktop lock dies at its own deadline, and never runs.
+		'fail("the open did not wait on the desktop lock, so the cut-off check tests nothing")',
+		'if (waiting()) fail("the cut-off open outlived its deadline: "',
+		'fail("the cut-off open ran once the desktop lock was free")',
+		'\t[[ -z $(ls -A /company) ]] || { echo "the screen helper wrote into /company" >&2; exit 1; }\n',
+	])
+		assert.ok(imageScript.includes(line), line);
+	// Every check of the build sits in its one single-quoted script: no single quote may appear in it, comments too.
+	const opening = "bash -euo pipefail -c '\n";
+	const start = imageScript.indexOf(opening, imageScript.indexOf('lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256='));
+	const end = imageScript.indexOf("\n'\nlx stop \"$BUILDER\"");
+	assert.ok(start > 0 && end > start);
+	const script = imageScript.slice(start + opening.length, end);
+	assert.ok(script.includes("cloud-machine-screen.mjs") && !script.includes("'"), "a single quote in the build's checks");
+	// The helper's steps fit the executor's deadline, which fits the gateway's 30 s with the folder's release.
+	const helperSource = read("packages/runtime/src/cloud-machine-screen.ts");
+	const steps = helperSource.match(
+		/MACHINE_SCREEN_STEP_MS = Object\.freeze\(\{ status: (\d+), start: (\d+), action: (\d+), shot: (\d+) \}\)/,
+	);
+	const [status, startMs, action, shot] = steps.slice(1).map(Number);
+	const settle = Number(helperSource.match(/\nexport const MACHINE_SCREEN_MAX_SETTLE_MS = (\d+);\n/)[1]);
+	const runMs = Number(hostSource.match(/\nconst SCREEN_MS = (\d+);\n/)[1]);
+	const boundaryMs = Number(hostSource.match(/\nconst SCREEN_BOUNDARY_MS = (\d+);\n/)[1]);
+	assert.ok(status + Math.max(startMs, action) + settle + shot < runMs, "the helper's steps against the executor's deadline");
+	assert.ok(runMs + boundaryMs + 2000 <= 30000, "the executor's deadline and the release against the gateway's 30 s");
+	// A desktop cut off mid-action stays busy for the action's deadline, which each command's own transient unit keeps on
+	// the machine (RuntimeMaxSec, its whole control group killed with SIGKILL), and a second for its kill to land (review
+	// r1 F4, r2 F4). Not coreutils' timeout: the image's is uutils', whose KILL ends only its direct child.
+	const killMs = Number(helperSource.match(/\nexport const MACHINE_SCREEN_KILL_MS = (\d+);\n/)[1]);
+	assert.equal(Number(hostSource.match(/\nconst SCREEN_ACTION_GRACE_MS = (\d+);\n/)[1]), action + killMs);
+	assert.match(helperSource, /\nconst SYSTEMD_RUN = "\/usr\/bin\/systemd-run";\n/);
+	for (const option of [
+		'"--wait",',
+		'"--pipe",',
+		'"--collect",',
+		'"--expand-environment=no",',
+		'"--slice=qorpera-machine.slice",',
+		"`RuntimeMaxSec=${seconds}`,",
+		'"KillMode=control-group",',
+		'"KillSignal=SIGKILL",',
+		'"--",\n\t\t\tDESKTOP,\n\t\t\t...args,',
+	])
+		assert.ok(helperSource.includes(option), option);
+	assert.doesNotMatch(helperSource, /usr\/bin\/timeout/);
+	// Keys (review r1 F2): the build checks every word of the installed xdotool help against the helper and the desktop
+	// command, and that real keys still work and an unknown one fails.
+	for (const line of [
+		'fail(`the screen helper took ${word} as a key`)',
+		"\twords=$(DISPLAY=:1 xdotool help | tail -n +2)\n",
+		'\t[[ ! -e /tmp/qorpera-key-ran ]] || { echo "a key ran a program" >&2; exit 1; }\n',
+		'\t[[ $code == 2 ]] || { echo "desktop key took a key that does not exist (exit $code)" >&2; exit 1; }\n',
+	])
+		assert.ok(imageScript.includes(line), line);
+	// Built with the packager's options, the guest helper holds none of it, and the screen helper drives the desktop only
+	// through its command and scrot.
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-machine-screen-"));
+	try {
+		const options = { bundle: true, platform: "node", format: "esm", target: "node22.19", legalComments: "none", logLevel: "silent" };
+		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-guest.ts")], outfile: join(temporary, "guest.mjs") });
+		await build({ ...options, entryPoints: [join(repositoryRoot, "packages/runtime/src/cloud-machine-screen-main.ts")], outfile: join(temporary, "screen.mjs") });
+		const guest = await readFile(join(temporary, "guest.mjs"), "utf8");
+		const helper = await readFile(join(temporary, "screen.mjs"), "utf8");
+		assert.doesNotMatch(guest, /machine-screen|scrot/);
+		assert.match(helper, /"\/usr\/local\/bin\/desktop"/);
+		assert.match(helper, /"\/usr\/bin\/scrot"/);
+		assert.match(helper, /DISPLAY: ":1"/);
+		assert.doesNotMatch(helper, /shell: true|execSync|"\/bin\/sh"/);
+		assert.ok(helper.length < 65536, `the screen helper is ${helper.length} bytes`);
+	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
+});
+
+test("desktop key presses no xdotool command word, whatever its case, by the installed xdotool's own list (review r1 F2)", async () => {
+	// A stand-in xdotool whose help lists the commands as xdotool 3.20160805.1 prints them; any other use of it is a
+	// failure here, since a refused key must never reach xdotool.
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-desktop-key-"));
+	try {
+		const stub = join(temporary, "xdotool");
+		await writeFile(
+			stub,
+			'#!/bin/sh\nif [ "$1" = help ]; then printf "Available commands:\\n  key\\n  type\\n  exec\\n  sleep\\n  windowkill\\n"; exit 0; fi\necho "xdotool ran: $*" >&2\nexit 9\n',
+			{ mode: 0o755 },
+		);
+		const env = { ...process.env, PATH: `${temporary}:${process.env.PATH}` };
+		const key = (...args) =>
+			spawnSync("bash", [join(repositoryRoot, "deploy/machine/desktop"), "key", ...args], { encoding: "utf8", env });
+		for (const args of [["exec", "id"], ["EXEC", "id"], ["Return", "Sleep"], ["WindowKill"]]) {
+			const refused = key(...args);
+			assert.equal(refused.status, 2, `${args.join(" ")}: ${refused.stderr}`);
+			assert.match(refused.stderr, /^not a key: [A-Za-z]+ \(it is an xdotool command\)\n$/);
+		}
+		// A real key passes the check and goes on to the desktop (which is not running here); nothing ran xdotool's key.
+		const real = key("Return", "ctrl+exec");
+		assert.equal(real.status, 1);
+		assert.match(real.stderr, /^the desktop is not running/);
+		assert.doesNotMatch(real.stderr, /xdotool ran/);
+		// Without xdotool's list no key is pressed.
+		await writeFile(stub, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+		assert.notEqual(key("Return").status, 0);
+	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
+	// An unknown key name, which xdotool only reports on stderr, fails the command instead of passing as pressed.
+	assert.match(read("deploy/machine/desktop"), /if \[\[ \$skipped == \*"No such key name"\* \]\]; then\n\t\tfail "no such key: /);
+});
+
+test("a desktop is asked for: small machines refuse it, chosen files open on it, and pages work without a screen too", () => {
+	// deploy/machine/README.md, "The desktop" (10 Nov 2026: Jonas's shape, and the audit's fixes).
+	const command = read("deploy/machine/desktop");
+	// A machine below a desktop computer's size refuses `desktop start`, and names the way to get one.
+	assert.match(command, /\nMIN_CPUS=2\n/);
+	assert.match(command, /\nMIN_MEMORY_KB=3500000\n/);
+	assert.match(command, /if \(\( cpus < MIN_CPUS \|\| memory < MIN_MEMORY_KB \)\); then\n\t\t\tfail "this machine is too small for a desktop: [^\n]*machine_start with desktop true" 3\n/);
+	// Files and folders are put on the desktop as links (the company's stay where they are) and opened; a folder with a
+	// page is served on the machine's loopback only.
+	assert.match(command, /ln -s -- "\$path" "\$place"\n/);
+	// Nothing on the desktop is ever replaced: the same link is used again, and a taken name gets a number (review r1 F1).
+	assert.doesNotMatch(command, /rm -rf -- "\$place"/);
+	assert.match(command, /if \(\( ! copy \)\) && \[\[ -L \$place && \$\(readlink -- "\$place"\) == "\$path" \]\]; then break; fi\n/);
+	assert.match(command, /if \[\[ ! -e \$place && ! -L \$place \]\]; then\n\t\t\tif \(\( copy \)\); then\n\t\t\t\tcp -a -- "\$path" "\$place"\n/);
+	for (const line of [
+		'\tdesktop open /tmp/site --copy | grep "as site-2)" >/dev/null || { echo "a copy did not get a name of its own" >&2; exit 1; }\n',
+		"\techo edited >/home/desktop/Desktop/site-2/kept.txt\n",
+		'\t\t{ echo "opening again replaced something on the desktop" >&2; exit 1; }\n',
+	])
+		assert.ok(imageScript.includes(line), line);
+	assert.match(command, /launch \/usr\/bin\/python3 -m http\.server "\$port" --bind 127\.0\.0\.1 --directory "\$folder"\n/);
+	assert.match(command, /for target in "\$@"; do open_target "\$target" 0; done\n/);
+	// 3D drawing, no test bar, the session's bus for launched programs.
+	assert.match(command, /--disable-infobars\n\t\t--enable-unsafe-swiftshader\)/);
+	assert.match(command, /--setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=\$RUN\/bus"/);
+	// Text beyond plain ASCII is pasted (xdotool types a capital Å small), on both selections.
+	assert.match(command, /if \[\[ \$text == \*\[!\[:ascii:\]\]\* \|\| \$text == \*\[\[:cntrl:\]\]\* \]\]; then\n/);
+	assert.match(command, /xdotool key --clearmodifiers shift\+Insert\n/);
+	// A picture nothing could show is refused.
+	assert.match(command, /&& ! mountpoint -q \/company; then\n\t\tfail "this machine has no company folder at \/company/);
+	// A forgotten desktop stops itself; every desktop command puts that off.
+	const session = read("deploy/machine/desktop-session");
+	assert.match(session, /\nIDLE=\$\{QORPERA_DESKTOP_IDLE_SECONDS:-3600\}\n/);
+	assert.match(command, /\ttouch "\$RUN\/last-use"\n/);
+	assert.match(session, /dbus-daemon --session --address="\$DBUS_SESSION_BUS_ADDRESS" --nofork --nopidfile &\n/);
+	// Root's Chromium runs without the sandbox root cannot use; any other account keeps it.
+	const wrapper = read("deploy/machine/chromium");
+	assert.match(wrapper, /if \[ "\$\(id -u\)" = 0 \]; then\n\texec \/usr\/lib\/qorpera-chromium\/chrome --no-sandbox --enable-unsafe-swiftshader "\$@"\nfi\nexec \/usr\/lib\/qorpera-chromium\/chrome --enable-unsafe-swiftshader "\$@"\n$/);
+	assert.ok(!imageScript.includes("ln -sf /usr/lib/qorpera-chromium/chrome /usr/local/bin/chromium"), "the wrapper is a file, never a link to the binary");
+	assert.deepEqual(JSON.parse(read("deploy/machine/qorpera-chromium-policy.json")).TranslateEnabled, false);
+	// Playwright by pinned version with its own browsers, found from any folder; ffmpeg; the build proves each.
+	assert.match(imageScript, /\nPLAYWRIGHT_VERSION=\d+\.\d+\.\d+\n/);
+	assert.match(imageScript, /npm install -g --ignore-scripts --no-fund --no-audit "playwright@\$\{PLAYWRIGHT_VERSION\}"\n/);
+	assert.match(read("deploy/machine/qorpera-machine-profile.sh"), /\nexport PLAYWRIGHT_BROWSERS_PATH=\/opt\/ms-playwright\n/);
+	const apt = words(imageScript.match(/apt-get install -y --no-install-recommends((?:[^\n]*\\\n)*[^\n]*)/)[1]);
+	for (const tool of ["ffmpeg", "fonts-noto-cjk", "xsel"]) assert.ok(apt.includes(tool), tool);
+	for (const line of [
+		"\tdesktop selftest\n",
+		'\tmkdir /tmp/empty && (cd /tmp/empty && bash -lc "node /opt/qorpera-machine/playwright-check.cjs")\n',
+		'\tif desktop shot /company/never.png 2>/dev/null; then echo "a screenshot went into an unmounted /company" >&2; exit 1; fi\n',
+		"\tdesktop start --lang da-DK --tz Europe/Copenhagen\n",
+	])
+		assert.ok(imageScript.includes(line), line);
+	// The selftest reads 3D drawing and the typed text from the page's title.
+	assert.match(read("deploy/machine/desktop-selftest.html"), /"SELFTEST\[webgl=" \+ \(context \? "yes" : "no"\) \+ "\|typed=" \+ typed\.value \+ "\]"/);
+});

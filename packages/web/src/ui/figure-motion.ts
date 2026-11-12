@@ -1,6 +1,6 @@
 import type { Activity, MotionPose } from "../../public/assets/avatars/status-2d-v1/motion.mjs";
 import type { EyeGeometry } from "../../public/assets/avatars/status-2d-v1/recorded-motion.mjs";
-import { bucketOf, level, reduce } from "./figure-levels.ts";
+import { alignRegion, boxCanvas, bucketOf, level, type Region, reduce } from "./figure-levels.ts";
 import type * as MotionData from "./figure-motion-data.ts";
 import type { WorkingSchedule } from "./working-sequence.ts";
 
@@ -8,7 +8,8 @@ export type { Activity };
 
 export interface FigureArtwork {
 	faces: Record<string, EyeGeometry[]>;
-	prepare(id: string, image: HTMLImageElement): void;
+	/** Resolves once the plate can be drawn (its light field runs in a worker where it can). */
+	prepare(id: string, image: HTMLImageElement): Promise<void> | void;
 	drawable(id: string, color: string): CanvasImageSource;
 	/** The approved shade of `color` on a dark surface. */
 	colorOnDark(id: string, color: string): string;
@@ -81,6 +82,8 @@ interface LiveMotion {
 	ready: boolean;
 	painted: string;
 	side: number;
+	/** This figure's eye boxes by level (figure-levels boxCanvas). */
+	boxes: Map<number, HTMLCanvasElement>;
 }
 
 /* On the dark theme a figure takes its dark-surface shade from the approved
@@ -126,9 +129,9 @@ async function prepare(entry: LiveMotion): Promise<void> {
 				return image;
 			}),
 		)
-			.then(([image, face]) => {
-				artwork.prepare(id, image!);
-				artwork.prepare(`${id}-face`, face!);
+			.then(async ([image, face]) => {
+				await artwork.prepare(id, image!);
+				await artwork.prepare(`${id}-face`, face!);
 			})
 			.catch((error: unknown) => {
 				prepared.delete(id);
@@ -205,7 +208,8 @@ function strokes(ctx: CanvasRenderingContext2D, paths: MotionPose["strokes"], fr
 let eyesCanvas: HTMLCanvasElement | undefined;
 function paint(entry: LiveMotion): void {
 	const { canvas, artwork, activity } = entry;
-	const { drawRecordedEyes, drawWorkingStrokes, localTime, pose, stepKey, timelines, workingStep } = motion!;
+	const { drawRecordedEyes, drawWorkingStrokes, localTime, pose, recordedEyesBox, stepKey, timelines, workingStep } =
+		motion!;
 	const reduced = Boolean(media?.matches) || entry.still;
 	const duration = timelines[activity].end - timelines[activity].start;
 	const elapsed = reduced ? (activity === "Working" ? 1 : duration) : entry.clock.elapsed;
@@ -238,19 +242,59 @@ function paint(entry: LiveMotion): void {
 	if (p.body > 0.001) {
 		const bucket = bucketOf(side),
 			surface = entry.id + entry.shown;
-		if (!eyesCanvas) {
-			eyesCanvas = document.createElement("canvas");
-			eyesCanvas.width = eyesCanvas.height = 512;
-		}
-		const ec = eyesCanvas.getContext("2d")!;
-		ec.setTransform(1, 0, 0, 1, 0, 0);
-		ec.clearRect(0, 0, 512, 512);
-		ec.setTransform(5.12, 0, 0, 5.12, 0, 0);
-		ec.globalCompositeOperation = "source-over";
-		ec.fillStyle = "#fff";
 		const eyes = artwork.faces[entry.id]!;
-		if (recorded) drawRecordedEyes(ec, eyes, clip, sample, step?.eyes);
-		else {
+		const scale = Math.min(512, bucket);
+		// The eyes are drawn at 512 as the studio draws them (recorded ones are a small raster,
+		// stretched), halved to the body's level, then cut to the body there: the same silhouette
+		// (its level is cached) on a quarter or less of the pixels. Recorded eyes do all of it on
+		// canvases the size of the box they cover, a fraction of the layer: in Safari, a full 512px
+		// layer per moving figure per frame was most of the page's main-thread time while agents
+		// worked, and visible as dropped frames. `layer` is that box's canvas at the body's level,
+		// `at` where its corner sits on the figure (in 512px units), and `size` its extent there.
+		let layer: HTMLCanvasElement | undefined,
+			at: [number, number] = [0, 0],
+			size: [number, number] = [scale, scale];
+		if (recorded) {
+			const box = recordedEyesBox(eyes, clip, sample, step?.eyes);
+			if (box) {
+				// Aligned to two pixels at the body's level, so the box's halvings and the final resampling
+				// fall on the same pixel grid as the whole layer's would.
+				const region = alignRegion(box.map((value) => value * 5.12) as Region, Math.max(1, scale / 2));
+				at = [region[0], region[1]];
+				let width = region[2] - region[0],
+					height = region[3] - region[1],
+					level512 = 512;
+				let current = boxCanvas(entry.boxes, 512, width, height);
+				const ec = current.getContext("2d")!;
+				ec.setTransform(5.12, 0, 0, 5.12, -region[0], -region[1]);
+				ec.globalCompositeOperation = "source-over";
+				ec.fillStyle = "#fff";
+				drawRecordedEyes(ec, eyes, clip, sample, step?.eyes);
+				while (level512 > scale) {
+					level512 /= 2;
+					const next = boxCanvas(entry.boxes, level512, width / 2, height / 2);
+					const nc = next.getContext("2d")!;
+					// At exactly 2:1 plain bilinear sampling is the 2x2 average (figure-levels.ts).
+					nc.imageSmoothingQuality = "low";
+					nc.drawImage(current, 0, 0, width, height, 0, 0, width / 2, height / 2);
+					width /= 2;
+					height /= 2;
+					current = next;
+				}
+				layer = current;
+				size = [width, height];
+			}
+		} else {
+			if (!eyesCanvas) {
+				eyesCanvas = document.createElement("canvas");
+				eyesCanvas.width = eyesCanvas.height = 512;
+			}
+			const ec = eyesCanvas.getContext("2d")!;
+			ec.setTransform(1, 0, 0, 1, 0, 0);
+			ec.clearRect(0, 0, 512, 512);
+			ec.setTransform(5.12, 0, 0, 5.12, 0, 0);
+			ec.globalCompositeOperation = "source-over";
+			ec.fillStyle = "#fff";
 			const spacing = eyes[1]!.x - eyes[0]!.x,
 				height = (eyes[0]!.height + eyes[1]!.height) / 2;
 			for (let i = 0; i < 2; i++) {
@@ -266,11 +310,33 @@ function paint(entry: LiveMotion): void {
 					eye.rotation + f.rotation,
 				);
 			}
+			ec.globalAlpha = 1;
+			layer = reduce(eyesCanvas, bucket) as HTMLCanvasElement;
 		}
-		ec.globalAlpha = 1;
-		ec.setTransform(1, 0, 0, 1, 0, 0);
-		ec.globalCompositeOperation = "destination-in";
-		ec.drawImage(asset.source, 0, 0, 512, 512);
+		const k = scale / 512;
+		if (layer) {
+			const lc = layer.getContext("2d")!;
+			lc.save();
+			// In layer pixels: at 512 nothing is halved, and the layer is the canvas the eyes were drawn on, still
+			// under their 5.12x (and box) transform.
+			lc.setTransform(1, 0, 0, 1, 0, 0);
+			lc.beginPath();
+			lc.rect(0, 0, size[0], size[1]);
+			lc.clip();
+			lc.globalCompositeOperation = "destination-in";
+			lc.drawImage(
+				level(`${surface}:source`, asset.source, bucket),
+				at[0] * k,
+				at[1] * k,
+				size[0],
+				size[1],
+				0,
+				0,
+				size[0],
+				size[1],
+			);
+			lc.restore();
+		}
 		ctx.save();
 		ctx.translate(50 + p.x, 50 + p.y);
 		ctx.rotate((p.turn * Math.PI) / 180);
@@ -280,9 +346,18 @@ function paint(entry: LiveMotion): void {
 		// coverage, smoothed by the halving (Jonas, 20 Oct).
 		ctx.drawImage(level(`${surface}:body`, asset.body, bucket), 0, 0, 100, 100);
 		ctx.globalAlpha = p.eyes;
-		// The eyes (recorded ones are a small raster, stretched) are drawn at
-		// 512 as the studio draws them, then halved to the body's level.
-		ctx.drawImage(reduce(eyesCanvas, bucket), 0, 0, 100, 100);
+		if (layer)
+			ctx.drawImage(
+				layer,
+				0,
+				0,
+				size[0],
+				size[1],
+				(at[0] * k * 100) / scale,
+				(at[1] * k * 100) / scale,
+				(size[0] * 100) / scale,
+				(size[1] * 100) / scale,
+			);
 		ctx.restore();
 	}
 	ctx.fillStyle = entry.shown;
@@ -320,8 +395,9 @@ function paint(entry: LiveMotion): void {
 	canvas.dataset.frame = String(sample);
 	if (step) canvas.dataset.clip = clip;
 	else delete canvas.dataset.clip;
-	canvas.hidden = false;
-	entry.fallback.hidden = true;
+	// Only on the first paint: rewriting an unchanged attribute every frame still costs a style check.
+	if (canvas.hidden) canvas.hidden = false;
+	if (!entry.fallback.hidden) entry.fallback.hidden = true;
 }
 
 /** Repaint a ready figure whose shown colour the theme has changed. */
@@ -404,6 +480,7 @@ export function mountFigureMotion(
 		ready: false,
 		painted: "",
 		side: 36,
+		boxes: new Map(),
 	};
 	live.add(entry);
 	if (!lifetime) {

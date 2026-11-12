@@ -147,10 +147,19 @@ function shippedInterfaces(): readonly CompanyInterface[] {
 	return shipped;
 }
 
-/** The pages `pages` has on, in its order, each with its shipped definition. */
+/** Whether the member's rail shows a page: unless they hid it, or, on a cloud from before each member's own choice,
+ * while the company has it on. */
+function pageShown(pages: InterfacePagesState, entry: InterfacePagesState["pages"][number]): boolean {
+	return pages.personal ? entry.hidden !== true : entry.on;
+}
+
+/** The pages the member's rail shows, in its order, each with its shipped definition. */
 function pagesShown(pages: InterfacePagesState | undefined): CompanyInterface[] {
-	return (pages?.pages ?? []).flatMap(({ page, on }) => {
-		const entry = on ? shippedInterfaces().find((candidate) => candidate.name === page) : undefined;
+	if (!pages) return [];
+	return pages.pages.flatMap((each) => {
+		const entry = pageShown(pages, each)
+			? shippedInterfaces().find((candidate) => candidate.name === each.page)
+			: undefined;
 		return entry ? [entry] : [];
 	});
 }
@@ -522,6 +531,17 @@ export function companyInterfaces(company: CompanyController): CompanyInterface[
 	return pagesShown(company.store.get().interfacePages).filter(({ file }) => listed(file, company));
 }
 
+/** The pages the member hid from their own rail that would show there again: they may see them and their needs are
+ * met. Empty on a cloud from before each member's own choice. */
+export function hiddenInterfaces(company: CompanyController): CompanyInterface[] {
+	const pages = company.store.get().interfacePages;
+	if (!pages?.personal) return [];
+	return pages.pages.flatMap(({ page, hidden }) => {
+		const entry = hidden ? shippedInterfaces().find((candidate) => candidate.name === page) : undefined;
+		return entry && memberMaySee(entry.file, company) && needsMet(entry.file, company) ? [entry] : [];
+	});
+}
+
 export function companyInterface(company: CompanyController, name: string): CompanyInterface | undefined {
 	return companyInterfaces(company).find((entry) => entry.name === name);
 }
@@ -562,14 +582,19 @@ export function interfaceRows(company: CompanyController, source: string): Inter
 		for (const agent of agents) {
 			const now = company.agentState(agent.id);
 			if (now === "decision") {
+				// What it waits on this member for, when the cloud says: a card's question, an approval's action.
+				const what = company.waitingFor(agent.id)?.what;
+				const waitingSince = rowInstant(state.waitingOnMe?.[agent.id]?.latestAt);
 				rows.push({
 					row: {
 						id: agent.id,
 						// An agent waiting on a member's decision: an action or change for review.
 						kind: "review",
-						title: t("{name} needs you", { name: agent.displayName }),
+						title: what
+							? t("{name} needs you: {what}", { name: agent.displayName, what })
+							: t("{name} needs you", { name: agent.displayName }),
 						from: agent.id,
-						due: since(agent.id),
+						due: waitingSince ?? since(agent.id),
 					},
 					href: agentHref(agent.id),
 					key: runKey("review", agent.id),

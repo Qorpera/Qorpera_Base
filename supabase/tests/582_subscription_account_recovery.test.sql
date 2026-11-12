@@ -1,10 +1,11 @@
 -- @fixture 164_native_account_usage_wall_identity.test.sql until "set constraints all immediate;"
 -- Recovery from a usage wall on folder-v2 (ported from snapshot-v1 in the legacy sweep; 20260920016000). The original
 -- credential has rotated to account B. Its old account A wall must still cover duplicate A, and only current, scoped
--- evidence can clear it.
+-- evidence can clear it. Since 20260930724000 the scope is the member's live logins of account A in any company: the
+-- member's login of A in 164's other company is read before the limit here, until the check that it may clear it.
 do $$
 declare original_id uuid := (current_setting('qorpera_test.base_connection')::jsonb ->> 'connection_id')::uuid;
-	duplicate_id uuid; observed timestamptz := statement_timestamp(); usage jsonb; invalid_usage jsonb;
+	duplicate_id uuid; other_company_id uuid; observed timestamptz := statement_timestamp(); usage jsonb; invalid_usage jsonb;
 begin
 	select m.connection_id into strict duplicate_id
 	from public.qorpera_native_provider_account_metadata m
@@ -15,6 +16,14 @@ begin
 	update public.qorpera_provider_connection_usage_signals
 	set resets_at = null,observed_at = observed - interval '2 minutes'
 	where provider_connection_id = original_id;
+	select m.connection_id into strict other_company_id
+	from public.qorpera_native_provider_account_metadata m
+	join public.qorpera_provider_connections c on c.id = m.connection_id
+	where c.profile_id = '16400000-0000-4000-8000-000000000110'
+	  and c.owner_user_id = '92400000-0000-4000-8000-000000000001' and m.provider_account_identity = repeat('a',64);
+	update public.qorpera_native_provider_account_metadata
+	set provider_account_usage = jsonb_set(provider_account_usage,'{observedAt}',to_jsonb(observed - interval '3 minutes'))
+	where connection_id = other_company_id;
 	usage := jsonb_build_object('observedAt',observed - interval '1 second','windows',jsonb_build_array(
 		jsonb_build_object('id','primary','label','5 hours','usedPercent',20)));
 	-- This positive historical version is no longer authoritative, even though
@@ -37,6 +46,16 @@ begin
 		if public.qorpera_native_account_usage_limit_reset(duplicate_id) is null then
 			raise exception 'Insufficient, stale, future or exhausted metadata cleared the wall: %',invalid_usage; end if;
 	end loop;
+	-- 20260930724000: the member's login of the same account in another company, read with room after the limit, clears it.
+	update public.qorpera_native_provider_account_metadata set provider_account_usage = null where connection_id = duplicate_id;
+	update public.qorpera_native_provider_account_metadata
+	set provider_account_usage = jsonb_set(provider_account_usage,'{observedAt}',to_jsonb(observed - interval '1 second'))
+	where connection_id = other_company_id;
+	if public.qorpera_native_account_usage_limit_reset(duplicate_id) is not null then
+		raise exception 'A reading with room of the member''s login in another company did not clear the wall'; end if;
+	update public.qorpera_native_provider_account_metadata
+	set provider_account_usage = jsonb_set(provider_account_usage,'{observedAt}',to_jsonb(observed - interval '3 minutes'))
+	where connection_id = other_company_id;
 	update public.qorpera_native_provider_account_metadata set provider_account_usage = usage where connection_id = duplicate_id;
 	if public.qorpera_native_account_usage_limit_reset(duplicate_id) is not null
 	  or public.qorpera_native_account_remaining(duplicate_id,1) <> 80 then

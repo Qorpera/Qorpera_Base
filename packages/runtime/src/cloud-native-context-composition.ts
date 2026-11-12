@@ -9,6 +9,8 @@
 // request only, so the work message never enters Codex's history; the result fence then runs over what was kept.
 // The reply may also set the request's prompt cache key (§6.2), a capability of its own.
 
+import { redactCloudWebhookSecrets } from "./cloud-native-tool-boundary.ts";
+
 export const CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA = "qorpera.native-context-composition/v1";
 /** The patch's marker for a prompt cache key set by the composition's reply. */
 export const CLOUD_NATIVE_PROMPT_CACHE_KEY_CAPABILITY = "qorpera.native-prompt-cache-key/v1";
@@ -167,7 +169,9 @@ export function cloudNativeContextReply(
 			typeof entry.work === "string" &&
 			Buffer.byteLength(entry.work) <= CLOUD_NATIVE_WORK_MESSAGE_BYTES
 		)
-			return { work: entry.work };
+			// The run's work message, from its steps and receipts: a webhook signing secret is cut out of it, as out of
+			// everything else the run's requests carry (the tool boundary's rule, E3c-2).
+			return { work: redactCloudWebhookSecrets(entry.work) };
 		throw new Error("Invalid native context composition");
 	});
 	if (composition.promptCacheKey !== undefined && !/^qorpera:[A-Za-z0-9_-]{43}$/.test(composition.promptCacheKey))

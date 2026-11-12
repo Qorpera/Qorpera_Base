@@ -4,8 +4,10 @@ import {
 	appLinkName,
 	appPath,
 	appRelativePath,
+	appWriteTable,
 	isAppManifestPath,
 	parseAppManifest,
+	parseAppWrites,
 	setAppPosted,
 	writeAppManifest,
 } from "../src/interface-apps.ts";
@@ -25,6 +27,10 @@ describe("interface apps", () => {
 				owner: null,
 				posted: false,
 				reads: [],
+				writes: [],
+				concept: false,
+				cover: null,
+				kit: null,
 			},
 		});
 		const full = parseAppManifest(
@@ -41,6 +47,10 @@ describe("interface apps", () => {
 				owner: OWNER,
 				posted: true,
 				reads: ["tables", "todos"],
+				writes: [],
+				concept: false,
+				cover: null,
+				kit: null,
 			},
 		});
 	});
@@ -67,8 +77,88 @@ describe("interface apps", () => {
 			owner: OWNER,
 			posted: false,
 			reads: ["files" as const],
+			writes: [],
+			concept: false,
+			cover: null,
+			kit: null,
 		};
 		expect(parseAppManifest(writeAppManifest(manifest))).toEqual({ ok: true, manifest });
+		// A concept with its cover writes both, and reads back as itself.
+		const concept = { ...manifest, concept: true, cover: "shots/cover.webp" };
+		const written = writeAppManifest(concept);
+		expect(written).toContain('concept = true\ncover = "shots/cover.webp"\n');
+		expect(parseAppManifest(written)).toEqual({ ok: true, manifest: concept });
+		// Not a concept and no cover: neither line is written.
+		expect(writeAppManifest(manifest)).not.toMatch(/concept|cover/);
+	});
+
+	it("reads the kit an app is made from, whose page is always index.html", () => {
+		const kit = parseAppManifest('name = "How the fee works"\nkit = "explainer"\n');
+		expect(kit.ok && kit.manifest).toMatchObject({ kit: "explainer", entry: "index.html" });
+		// Written out it reads back as itself, with the line last.
+		const written = kit.ok ? writeAppManifest(kit.manifest) : "";
+		expect(written.endsWith('kit = "explainer"\n')).toBe(true);
+		expect(parseAppManifest(written)).toEqual(kit);
+		// No kit: no line.
+		expect(writeAppManifest({ ...(kit.ok ? kit.manifest : null)!, kit: null })).not.toContain("kit");
+		// A kit that is none of Qorpera's, and a kit with a page of its own, are problems with their lines.
+		expect(parseAppManifest('name = "X"\nkit = "slides"\n')).toEqual({
+			ok: false,
+			problems: [{ line: 2, message: "kit must be one of explainer" }],
+		});
+		expect(parseAppManifest('name = "X"\nentry = "main.html"\nkit = "explainer"\n')).toEqual({
+			ok: false,
+			problems: [{ line: 2, message: "an app made from a kit opens index.html: leave entry out" }],
+		});
+	});
+
+	it("reads what a page may ask a member to change, and refuses anything else", () => {
+		const parsed = parseAppManifest(
+			'name = "Orders"\nreads = ["tables", "questions"]\nwrites = ["answers", "table:orders", "answers"]\n',
+		);
+		expect(parsed.ok && parsed.manifest).toMatchObject({
+			reads: ["tables", "questions"],
+			writes: ["answers", "table:orders"],
+		});
+		// It is written out and reads back as itself; a page that only shows writes no such line.
+		if (parsed.ok) {
+			expect(writeAppManifest(parsed.manifest)).toContain('writes = ["answers", "table:orders"]\n');
+			expect(parseAppManifest(writeAppManifest(parsed.manifest))).toEqual(parsed);
+			expect(writeAppManifest({ ...parsed.manifest, writes: [] })).not.toContain("writes");
+		}
+		// Only answers and a table by its folder's name; never the table the Members page keeps.
+		for (const writes of [
+			'"files"',
+			'"tables"',
+			'"table:"',
+			'"table:Bad_Name"',
+			'"table:orders/rows.csv"',
+			'"table:areas"',
+			'"answers", "everything"',
+			Array.from({ length: 17 }, (_, at) => `"table:t${at}"`).join(", "),
+		]) {
+			const bad = parseAppManifest(`name = "A"\nwrites = [${writes}]\n`);
+			expect(bad.ok, writes).toBe(false);
+			if (!bad.ok) expect(bad.problems.map((problem) => problem.line)).toEqual([2]);
+		}
+		expect(parseAppManifest('name = "A"\nwrites = "answers"\n').ok).toBe(false);
+		expect(parseAppWrites(["table:orders"])).toEqual({ writes: ["table:orders"] });
+		expect(parseAppWrites([1])).toHaveProperty("problem");
+		expect(appWriteTable("table:orders")).toBe("orders");
+		expect(appWriteTable("answers")).toBeNull();
+	});
+
+	it("reads concept and cover, and refuses a cover that is no picture of the app", () => {
+		const parsed = parseAppManifest('name = "Shop"\nconcept = true\ncover = "./cover.PNG"\n');
+		expect(parsed.ok && parsed.manifest).toMatchObject({ concept: true, cover: "cover.PNG" });
+		for (const cover of ["cover.jpg", "img/cover.jpeg", "cover.webp"])
+			expect(parseAppManifest(`name = "Shop"\ncover = "${cover}"\n`).ok).toBe(true);
+		const bad = parseAppManifest('name = "Shop"\nconcept = "yes"\ncover = "../cover.png"\n');
+		expect(bad.ok).toBe(false);
+		if (!bad.ok) expect(bad.problems.map((problem) => problem.line)).toEqual([2, 3]);
+		for (const cover of ["cover.gif", "cover.svg", "index.html", "/cover.png", "https://x.test/a.png", ""])
+			expect(parseAppManifest(`name = "Shop"\ncover = "${cover}"\n`).ok).toBe(false);
+		expect(parseAppManifest('name = "Shop"\ncover = 1\n').ok).toBe(false);
 	});
 
 	it("sets posted in place", () => {

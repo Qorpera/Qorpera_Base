@@ -19,6 +19,8 @@ create table auth.users (
 	-- Present on real Supabase auth.users; the friends listing reads display
 	-- names from it, so the fixture must carry it too.
 	raw_user_meta_data jsonb not null default '{}'::jsonb,
+	-- Present on real Supabase auth.users; a friend's "last online" falls back to it.
+	last_sign_in_at timestamptz,
 	created_at timestamptz not null default statement_timestamp()
 );
 

@@ -39,6 +39,7 @@ function setup(initial: HostedSession) {
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 		});
 		view.update();
 	};
@@ -55,11 +56,12 @@ describe("group chat identity", () => {
 	it("uses the group artwork canvas and label in the rail and header, preserving them through refresh and rename", () => {
 		const group = { ...session, title: "Co-Founder, Yang Tang", executionScope: { roomId: id(79) } };
 		const { company, rail, view, draw } = setup(group);
-		const row = () => rail.querySelector<HTMLAnchorElement>(`a[href$="/chat/${session.sessionId}"]`)!;
+		const row = () => rail.querySelector<HTMLAnchorElement>(`a[data-href$="/chat/${session.sessionId}"]`)!;
 		const identity = view.el.querySelector<HTMLButtonElement>(".thread-identity")!;
 		expect(row().querySelector("small")?.textContent).toBe("Group chat");
 		expect(row().getAttribute("aria-current")).toBe("page");
-		expect(row().title).toBe(`${group.title} · Group chat`);
+		expect(row().getAttribute("aria-label")).toBe(`${group.title} · Group chat`);
+		expect(row().hasAttribute("title")).toBe(false);
 		for (const root of [row(), identity]) {
 			expect(root.querySelector("canvas.group-chat-avatar")).not.toBeNull();
 			expect(root.querySelector(".group-chat-avatar svg")).toBeNull();
@@ -106,7 +108,7 @@ describe("group chat identity", () => {
 	it("refreshes the group rail subtitle independently of its title and keeps group artwork", () => {
 		const roomId = id(79);
 		const { company, rail, draw } = setup({ ...session, executionScope: { roomId } });
-		const row = () => rail.querySelector<HTMLAnchorElement>(`a[href$="/chat/${session.sessionId}"]`)!;
+		const row = () => rail.querySelector<HTMLAnchorElement>(`a[data-href$="/chat/${session.sessionId}"]`)!;
 		const previous = row();
 		const details = {
 			roomId,
@@ -123,7 +125,7 @@ describe("group chat identity", () => {
 		draw();
 		expect(row()).not.toBe(previous);
 		expect(row().querySelector("small")?.textContent).toBe("Launch planning");
-		expect(row().title).toBe(`${session.title} · Launch planning`);
+		expect(row().getAttribute("aria-label")).toBe(`${session.title} · Launch planning`);
 		expect(row().querySelector("canvas.group-chat-avatar")).not.toBeNull();
 		const unchanged = row();
 		draw();
@@ -131,7 +133,7 @@ describe("group chat identity", () => {
 		company.store.set({ groups: { [roomId]: { ...details, subtitle: "", version: 2 } } });
 		draw();
 		expect(row().querySelector("small")?.textContent).toBe("");
-		expect(row().title).toBe(session.title);
+		expect(row().getAttribute("aria-label")).toBe(session.title);
 	});
 
 	it("keeps an agent's shared room as an individual agent conversation", () => {
@@ -141,7 +143,7 @@ describe("group chat identity", () => {
 			executionScope: { roomId: id(79), agentThread: true },
 		});
 		expect(rail.querySelector(".group-chat-avatar")).toBeNull();
-		expect(rail.querySelector(`a[href$="/chat/${session.sessionId}"]`)).toBeNull();
+		expect(rail.querySelector(`a[data-href$="/chat/${session.sessionId}"]`)).toBeNull();
 		const identity = view.el.querySelector<HTMLButtonElement>(".thread-identity")!;
 		expect(identity.querySelector(".figure")).not.toBeNull();
 		expect(identity.querySelector("h1")?.textContent).toBe(staff.displayName);

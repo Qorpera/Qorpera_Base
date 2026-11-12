@@ -90,6 +90,7 @@ export const WORKSPACE: Record<string, string> = {
 
 	// app/interfaces.ts and app/views/interface.ts
 	"{name} needs you": "{name} har brug for dig",
+	"{name} needs you: {what}": "{name} har brug for dig: {what}",
 	"{name} has a run that did not finish": "{name} har en kørsel, der ikke blev færdig",
 	"You were mentioned in {conversation}": "Du blev nævnt i {conversation}",
 	"This page isn't available here yet.": "Siden er ikke tilgængelig her endnu.",
@@ -136,6 +137,46 @@ export const WORKSPACE: Record<string, string> = {
 	// A board and the members source (app/interface-board.ts, app/interface-claims.ts, app/views/interface.ts)
 	Shared: "Fælles",
 	"Open pile": "Åben bunke",
+	// The Members page: who each agent works for (app/views/members.ts)
+	Members: "Medlemmer",
+	"1 agent": "1 agent",
+	"1 agent works for you": "1 agent arbejder for dig",
+	"1 agent works for {member}": "1 agent arbejder for {member}",
+	ChatGPT: "ChatGPT",
+	Everyone: "Alle",
+	"Full for now.": "Fuld lige nu.",
+	"Full until {time}.": "Fuld til {time}.",
+	"Move to me": "Flyt til mig",
+	"Move to {member}": "Flyt til {member}",
+	"Needs a new sign-in.": "Skal logges ind igen.",
+	"No ChatGPT connected": "Ingen ChatGPT forbundet",
+	"No agents work for you yet.": "Ingen agenter arbejder for dig endnu.",
+	"No agents work for {member} yet.": "Ingen agenter arbejder for {member} endnu.",
+	Nobody: "Ingen",
+	"Reading who each agent works for…": "Læser, hvem hver agent arbejder for …",
+	"Sign in again": "Log ind igen",
+	"Take back": "Træk tilbage",
+	"The Co-Founder works for everyone.": "Co-Founderen arbejder for alle.",
+	"Waiting for {member}": "Venter på {member}",
+	"You have not connected ChatGPT.": "Du har ikke forbundet ChatGPT.",
+	"an agent": "en agent",
+	nobody: "ingen",
+	"someone who left": "en, der er stoppet",
+	"{agent} works for you": "{agent} arbejder for dig",
+	"{agent} works for {member}": "{agent} arbejder for {member}",
+	"{asker} asks to take {agent} from you.": "{asker} spørger, om de må tage {agent} fra dig.",
+	"{asker} asks you to take {agent}. Your ChatGPT then carries the work handed to {agent}.":
+		"{asker} spørger, om du vil tage {agent}. Så bærer din ChatGPT det arbejde, {agent} får.",
+	"{member} has no ChatGPT yet.": "{member} har ingen ChatGPT endnu.",
+	"{member} says yes first.": "{member} siger ja først.",
+	"{name} (you)": "{name} (dig)",
+	"{n} % used": "{n} % brugt",
+	"{n} agents": "{n} agenter",
+	"{n} agents work for you": "{n} agenter arbejder for dig",
+	"{n} agents work for {member}": "{n} agenter arbejder for {member}",
+	"{agent}, your Co-Founder,": "{agent}, din Co-Founder,",
+	"Leave {company}? You lose access until someone invites you again. {n} agents work for you: they go to the open pile, where another member can take them. To hand them over first, use the Members page.":
+		"Forlad {company}? Du mister adgangen, til nogen inviterer dig igen. {n} agenter arbejder for dig: de kommer i den åbne bunke, hvor et andet medlem kan tage dem. Brug siden Medlemmer, hvis du vil give dem videre først.",
 	"Someone who left": "En, der er stoppet",
 	"{name} (left)": "{name} (stoppet)",
 	"Nothing here.": "Intet her.",
@@ -229,15 +270,14 @@ export const WORKSPACE: Record<string, string> = {
 	Inbox: "Indbakke",
 	Addresses: "Adresser",
 	"Search mail": "Søg i posten",
-	Search: "Søg",
 	Write: "Skriv",
 	"The company has no email address yet": "Virksomheden har ingen e-mailadresse endnu",
 	"Make one, and pick the agent who answers what comes in.":
 		"Lav en, og vælg den agent, der svarer på det, der kommer ind.",
-	"Make an address": "Lav en adresse",
+	"An owner or admin makes the company's addresses.": "En ejer eller administrator laver virksomhedens adresser.",
 	// Digital Post in the Mailbox (app/views/mailbox.ts)
-	"Letters from public authorities come here too, once Digital Post is connected in Settings.":
-		"Breve fra offentlige myndigheder kommer også her, når Digital Post er forbundet under Indstillinger.",
+	"Letters from public authorities come here too, once Digital Post is connected.":
+		"Breve fra offentlige myndigheder kommer også her, når Digital Post er forbundet.",
 	"No Digital Post yet": "Ingen Digital Post endnu",
 	"Letters from public authorities come here as Digital Post delivers them.":
 		"Breve fra offentlige myndigheder kommer her, efterhånden som Digital Post leverer dem.",
@@ -280,6 +320,8 @@ export const WORKSPACE: Record<string, string> = {
 	"{name} used the account": "{name} brugte kontoen",
 	"{name} hasn't handled it yet": "{name} har ikke taget sig af den endnu",
 	"{name} handles it": "{name} tager sig af den",
+	"You sent it": "Du sendte den",
+	"{name} sent it": "{name} sendte den",
 	"{name} wants to send this": "{name} vil sende denne",
 	"Back to Sent": "Tilbage til Sendt",
 	"Back to Inbox": "Tilbage til Indbakke",
@@ -299,7 +341,6 @@ export const WORKSPACE: Record<string, string> = {
 	"Please have {name} answer the email that comes to {address}.":
 		"Lad venligst {name} svare på de e-mails, der kommer til {address}.",
 	"Asked {cofounder} to give {address} to {name}": "Bad {cofounder} om at give {address} til {name}",
-	"New address": "Ny adresse",
 	"Please write an email to {to} from {from}: {words}": "Skriv venligst en e-mail til {to} fra {from}: {words}",
 	"Please write an email to {to}: {words}": "Skriv venligst en e-mail til {to}: {words}",
 	"{name} is writing it": "{name} skriver den",
@@ -309,6 +350,20 @@ export const WORKSPACE: Record<string, string> = {
 	"Name or email address": "Navn eller e-mailadresse",
 	"What should it say": "Hvad skal der stå",
 	"What should it say?": "Hvad skal der stå?",
+	"Write your email": "Skriv din e-mail",
+	"Email address": "E-mailadresse",
+	"Not an email address": "Ikke en e-mailadresse",
+	"Which address it goes from": "Hvilken adresse den sendes fra",
+	"Add who the email goes to": "Tilføj, hvem e-mailen skal til",
+	"{address} is not an email address": "{address} er ikke en e-mailadresse",
+	"An email goes to at most {count} addresses": "En e-mail kan højst gå til {count} adresser",
+	"The email needs a subject": "E-mailen mangler et emne",
+	"The email needs its text": "E-mailen mangler sin tekst",
+	"Your email is on its way": "Din e-mail er på vej",
+	"This email could not be sent. Send it again to try once more.":
+		"Denne e-mail kunne ikke sendes. Send den igen for at prøve en gang til.",
+	"This email was cancelled before it went. Send it again if it should still go.":
+		"Denne e-mail blev annulleret, før den blev sendt. Send den igen, hvis den stadig skal afsted.",
 	"Ask {name} to write it": "Bed {name} om at skrive den",
 	"{name} writes and sends it": "{name} skriver og sender den",
 	"That agent is no longer at work.": "Den agent er ikke længere på arbejde.",
@@ -360,8 +415,6 @@ export const WORKSPACE: Record<string, string> = {
 	"The conversation could not be started. Your draft is still here.":
 		"Samtalen kunne ikke startes. Din kladde er her stadig.",
 	"Agent name": "Agentnavn",
-	"For example, Research": "For eksempel Forskning",
-	"Agent title": "Agentens titel",
 	"What should this agent be responsible for?": "Hvad skal denne agent have ansvar for?",
 	"Agent responsibilities": "Agentens ansvarsområder",
 	Name: "Navn",
@@ -373,7 +426,7 @@ export const WORKSPACE: Record<string, string> = {
 	"Add created agent": "Tilføj den oprettede agent",
 	"Create agent": "Opret agent",
 	"Create an agent": "Opret en agent",
-	"Enter a name and title.": "Skriv et navn og en titel.",
+	"Enter a name.": "Skriv et navn.",
 	"Creating agent…": "Opretter agent…",
 	"Creation could not be confirmed. Retry to check the same agent.":
 		"Oprettelsen kunne ikke bekræftes. Prøv igen for at kontrollere den samme agent.",
@@ -414,44 +467,72 @@ export const WORKSPACE: Record<string, string> = {
 		"Ændringen af udseendet kunne ikke bekræftes. Åbn virksomheden og tjek det, før du gemmer igen.",
 	"Open the company without changing appearance": "Åbn virksomheden uden at ændre udseende",
 
-	// app/views/computer.ts
+	// app/views/computer.ts, ui/machine-screen-view.ts: an agent's computer window (20260930712000)
 	"Connecting…": "Forbinder…",
 	"Close computer": "Luk computer",
 	"{name} · Computer": "{name} · Computer",
-	"{name} · Computer · Machine {number}": "{name} · Computer · Maskine {number}",
 	"Agent computer": "Agentens computer",
 	"Drag to move, drag an edge to resize. When focused, arrow keys move it and plus or minus resize it.":
 		"Træk for at flytte, træk i en kant for at ændre størrelse. Med fokus flytter piletasterne den, og plus eller minus ændrer størrelsen.",
 	"Computer access is not available yet.": "Adgang til computeren er ikke tilgængelig endnu.",
-	"This company has no machine yet.": "Denne virksomhed har ingen maskine endnu.",
-	"The machine is restarting. It comes back on its own.": "Maskinen genstarter. Den kommer tilbage af sig selv.",
-	"This machine has been retired.": "Denne maskine er taget ud af brug.",
-	"The machine is off. An owner or admin can start it.":
-		"Maskinen er slukket. En ejer eller administrator kan starte den.",
-	"You have read-only access. A company member with write access can wake the machine.":
-		"Du har kun læseadgang. Et medlem af virksomheden med skriveadgang kan vække maskinen.",
-	"Starting the machine…": "Starter maskinen…",
-	"Computer viewing is not set up here.": "Computervisning er ikke sat op her.",
-	"All computers on this machine are in use. Try again when one is free.":
-		"Alle computere på denne maskine er i brug. Prøv igen, når en er ledig.",
-	"{name} does not have access to the computer.": "{name} har ikke adgang til computeren.",
-	"{name}'s computer is being handed over. It opens here in a moment.":
-		"Computeren for {name} bliver overdraget. Den åbner her om et øjeblik.",
-	"The machine is not ready yet.": "Maskinen er ikke klar endnu.",
-	"The machine is private right now. Shared viewing returns when that ends.":
-		"Maskinen er privat lige nu. Delt visning kommer tilbage, når det slutter.",
-	"The computer could not be reached. Try again.": "Computeren kunne ikke nås. Prøv igen.",
-	"The computer screen could not be loaded in this tab. Reload the page to open it.":
-		"Computerskærmen kunne ikke indlæses i denne fane. Genindlæs siden for at åbne den.",
-	"Reload page": "Genindlæs siden",
-	"All computers are in use. An owner or admin can start another machine.":
-		"Alle computere er i brug. En ejer eller administrator kan starte en maskine mere.",
-	"Setting up another machine. This can take a while.": "Sætter en maskine mere op. Det kan tage et stykke tid.",
-	"Setting up the machine. This can take a while.": "Sætter maskinen op. Det kan tage et stykke tid.",
+	"{name} is not using a computer right now.": "{name} bruger ikke en computer lige nu.",
+	"{name} gets one when a task needs a screen.": "{name} får en, når en opgave kræver en skærm.",
+	"{name} is working on a machine without a screen.": "{name} arbejder på en maskine uden skærm.",
+	// A member starts a computer for an agent that has none (20260930730000).
+	"{name} has no computer yet.": "{name} har ingen computer endnu.",
+	"Start one": "Start en",
+	"Someone with edit access can start one.": "En med redigeringsadgang kan starte en.",
+	"No server can run a computer right now. Try again later.":
+		"Ingen server kan køre en computer lige nu. Prøv igen senere.",
+	"No server is large enough for a computer with a screen.": "Ingen server er stor nok til en computer med skærm.",
+	"A computer was started for {name} a moment ago. Try again in a minute.":
+		"Der blev startet en computer til {name} for et øjeblik siden. Prøv igen om et minut.",
+	"{name} is no longer on the team, so it gets no computer.":
+		"{name} er ikke længere med på holdet og får ingen computer.",
+	"The computer could not be started. Try again.": "Computeren kunne ikke startes. Prøv igen.",
+	"The computer is asleep.": "Computeren sover.",
+	"Wake it": "Væk den",
+	"Someone with edit access can wake it.": "En med redigeringsadgang kan vække den.",
+	"The computer is starting…": "Computeren starter…",
 	"Waiting for room on our servers. It starts as soon as there is room.":
 		"Venter på plads på vores servere. Den starter, så snart der er plads.",
 	"Out of computer hours. The machine starts by itself once hours are added.":
 		"Ingen computertimer tilbage. Maskinen starter af sig selv, når der er tilføjet timer.",
+	// A member turns the screen on (20260930714000).
+	"The computer is on, but its screen is off.": "Computeren er tændt, men skærmen er slukket.",
+	"Turn it on": "Tænd den",
+	"Someone with edit access can turn it on.": "En med redigeringsadgang kan tænde den.",
+	"The screen is turning on…": "Skærmen tænder…",
+	"This computer is too small for a screen.": "Denne computer er for lille til en skærm.",
+	"The screen could not be turned on. Try again.": "Skærmen kunne ikke tændes. Prøv igen.",
+	"The screen is hidden because it may show files you can't open.":
+		"Skærmen er skjult, fordi den måske viser filer, du ikke har adgang til.",
+	"Updating…": "Opdaterer…",
+	"This computer cannot show its screen yet. It can after it has slept.":
+		"Denne computer kan ikke vise sin skærm endnu. Det kan den, når den har sovet.",
+	"The computer could not be reached. Try again.": "Computeren kunne ikke nås. Prøv igen.",
+	"Paused to save power. Still watching?": "Sat på pause for at spare strøm. Ser du stadig med?",
+	"Keep watching": "Bliv ved",
+	"Choose a computer": "Vælg en computer",
+	// A member's take-over of the desktop (20260930713000).
+	"Hand back": "Giv tilbage",
+	"You are using the computer. {name} gets no pictures of the screen while you use it.":
+		"Du bruger computeren. {name} får ingen billeder af skærmen, mens du bruger den.",
+	"You are using the computer. Choose Enter to click and type.":
+		"Du bruger computeren. Vælg Gå ind for at klikke og skrive.",
+	"{member} is using the computer. The screen is hidden meanwhile.":
+		"{member} bruger computeren. Skærmen er skjult imens.",
+	"Someone is using the computer. The screen is hidden meanwhile.":
+		"En anden bruger computeren. Skærmen er skjult imens.",
+	"Waiting for {name} to finish a step…": "Venter på, at {name} gør et trin færdigt…",
+	"The computer could not be taken over. Try again.": "Computeren kunne ikke overtages. Prøv igen.",
+	"You are using this computer in another window.": "Du bruger denne computer i et andet vindue.",
+	"Giving the computer back…": "Giver computeren tilbage…",
+	"The computer could not be given back yet. It goes back by itself within 5 minutes.":
+		"Computeren kunne ikke gives tilbage endnu. Den går tilbage af sig selv inden for 5 minutter.",
+	"computer screen": "computerskærm",
+	"Your clicks and keys go to the computer. Shift+Escape leaves it.":
+		"Dine klik og taster går til computeren. Shift+Escape forlader den.",
 
 	// app/views/feedback.ts
 	"+ Bug": "+ Fejl",
@@ -485,16 +566,21 @@ export const WORKSPACE: Record<string, string> = {
 	rocket: "raket",
 	crown: "krone",
 	heart: "hjerte",
-	ghost: "spøgelse",
+	star: "stjerne",
+	cloud: "sky",
+	bolt: "lyn",
+	mushroom: "svamp",
+	moon: "måne",
+	puzzle: "puslespilsbrik",
 	Charcoal: "Koksgrå",
 	Brown: "Brun",
-	Coral: "Koral",
+	Red: "Rød",
 	Orange: "Orange",
 	Gold: "Guld",
-	Teal: "Blågrøn",
+	Sky: "Himmelblå",
 	Purple: "Lilla",
 	Pink: "Pink",
-	Gray: "Grå",
+	Slate: "Skifergrå",
 	// ui/computer-viewer.ts: the desktop's screen viewer, translated where it shows
 	"Back to thread": "Tilbage til tråden",
 	"Checking your private sign-in access": "Tjekker din private login-adgang",
@@ -547,6 +633,7 @@ export const WORKSPACE: Record<string, string> = {
 	Hidden: "Skjulte",
 	"Hidden: {count}": "Skjulte: {count}",
 	"Hide from sidebar": "Skjul fra sidepanelet",
+	"Hidden for you": "Skjult for dig",
 	Delete: "Slet",
 	"Delete {name}? The agent leaves the company for everyone, with its conversations and routines. This cannot be undone.":
 		"Slet {name}? Agenten forlader virksomheden for alle, med sine samtaler og rutiner. Det kan ikke fortrydes.",
@@ -557,6 +644,45 @@ export const WORKSPACE: Record<string, string> = {
 	"Delete section": "Slet sektion",
 	"Delete the section {name}? Its agents and group chats move to Unassigned, for everyone in the company.":
 		"Slet sektionen {name}? Dens agenter og gruppechats flyttes til Uden sektion for alle i virksomheden.",
+	"Delete your section {name}? Its agents and group chats go back to where the company keeps them.":
+		"Slet din sektion {name}? Dens agenter og gruppechats går tilbage til, hvor virksomheden har dem.",
+	"Remove {name} from your sidebar? Its agents and group chats move to Unassigned. Nobody else's sidebar changes.":
+		"Fjern {name} fra dit sidepanel? Dens agenter og gruppechats flyttes til Uden sektion. Ingen andres sidepanel ændres.",
+	"Reset sidebar…": "Nulstil sidepanel…",
+	"Reset sidebar": "Nulstil sidepanel",
+	"1 change of yours": "1 ændring fra dig",
+	"{count} changes of yours": "{count} ændringer fra dig",
+	"You have {company}'s sidebar": "Du har {company}s sidepanel",
+	"Reset your sidebar? These changes of yours go away, and you get {company}'s sidebar:":
+		"Nulstil dit sidepanel? Disse ændringer fra dig forsvinder, og du får {company}s sidepanel:",
+	"Sidebar reset to {company}'s.": "Sidepanelet er nulstillet til {company}s.",
+	"{name} where you put it": "{name}, hvor du har placeret den",
+	"{names} where you put them": "{names}, hvor du har placeret dem",
+	"{count} agents and group chats where you put them": "{count} agenter og gruppechats, hvor du har placeret dem",
+	"Your section {name}": "Din sektion {name}",
+	"{from} renamed {name}": "{from} omdøbt til {name}",
+	"{name} removed from your sidebar": "{name} fjernet fra dit sidepanel",
+	"1 pinned": "1 fastgjort",
+	"{count} pinned": "{count} fastgjort",
+	"1 hidden": "1 skjult",
+	"{count} hidden": "{count} skjult",
+	"1 member placed or hidden": "1 medlem placeret eller skjult",
+	"{count} members placed or hidden": "{count} medlemmer placeret eller skjult",
+	"1 page hidden": "1 side skjult",
+	"{count} pages hidden": "{count} sider skjult",
+	"The order of your apps": "Rækkefølgen af dine apps",
+	"1 app or group arranged": "1 app eller gruppe arrangeret",
+	"{count} apps or groups arranged": "{count} apps eller grupper arrangeret",
+	"Group {name}": "Gruppen {name}",
+	"New group": "Ny gruppe",
+	"Group name": "Gruppens navn",
+	Group: "Gruppe",
+	"Move to": "Flyt til",
+	"No group": "Ingen gruppe",
+	"Rename group": "Omdøb gruppe",
+	Ungroup: "Opløs gruppe",
+	"Your apps changed in another tab. Try again.": "Dine apps blev ændret i en anden fane. Prøv igen.",
+	"The apps could not be arranged. Try again.": "Dine apps kunne ikke arrangeres. Prøv igen.",
 	"Delete {name}? The group chat is removed for everyone. This cannot be undone.":
 		"Slet {name}? Gruppechatten fjernes for alle. Det kan ikke fortrydes.",
 	"The group chat could not be deleted.": "Gruppechatten kunne ikke slettes.",
@@ -580,9 +706,6 @@ export const WORKSPACE: Record<string, string> = {
 	"The bank summary can't be read": "Bankoversigten kan ikke læses",
 	"Its file in the company folder doesn't follow the bank summary format.":
 		"Dens fil i virksomhedsmappen følger ikke formatet for bankoversigten.",
-	"No bank yet": "Ingen bank endnu",
-	"When the company's bank is connected, its saldo and what comes in and goes out show here.":
-		"Når virksomhedens bank er forbundet, vises saldoen og hvad der kommer ind og går ud her.",
 	"{bank} paused sharing on {date}.": "{bank} stoppede med at dele den {date}.",
 	"Banks ask again every 180 days. It takes half a minute with MitID.":
 		"Banker spørger igen hver 180. dag. Det tager et halvt minut med MitID.",
@@ -597,6 +720,44 @@ export const WORKSPACE: Record<string, string> = {
 		"Saldo og det, der går ind og ud, vises her inden for få minutter.",
 	"An owner or admin can connect the company's bank.": "En ejer eller administrator kan forbinde virksomhedens bank.",
 	"Connect the bank": "Forbind banken",
+	"Let's get the company a bank account": "Lad os skaffe virksomheden en bankkonto",
+	"{name} does the paperwork. You only sign with MitID when it's your turn.":
+		"{name} klarer papirarbejdet. Du skriver kun under med MitID, når det er din tur.",
+	"The finance agent": "Økonomiagenten",
+	"Already have a bank account?": "Har I allerede en bankkonto?",
+	"Step {step} of {steps}": "Trin {step} af {steps}",
+	"Bank setup": "Opsætning af bank",
+	"Hire a finance agent": "Ansæt en økonomiagent",
+	"{name} finds one for the company. Getting the bank in place is their job.":
+		"{name} finder en til virksomheden. Det er deres job at få banken på plads.",
+	"The Co-Founder finds one for the company. Getting the bank in place is their job.":
+		"Co-Founderen finder en til virksomheden. Det er deres job at få banken på plads.",
+	"{name} is on the team.": "{name} er med på holdet.",
+	"Register the company": "Registrér virksomheden",
+	"{name} helps you choose between ApS and sole trader, and prepares the registration on virk.dk. You sign with MitID.":
+		"{name} hjælper dig med at vælge mellem ApS og enkeltmandsvirksomhed og forbereder registreringen på virk.dk. Du skriver under med MitID.",
+	"CVR {number}": "CVR {number}",
+	Registered: "Registreret",
+	"Open a business account": "Åbn en erhvervskonto",
+	"{name} finds a bank Qorpera can read and fills in the application. You sign with MitID.":
+		"{name} finder en bank, som Qorpera kan læse, og udfylder ansøgningen. Du skriver under med MitID.",
+	Opened: "Åbnet",
+	"Connect it here": "Forbind den her",
+	"Half a minute with MitID on the bank's own page. Then the saldo shows here.":
+		"Et halvt minut med MitID på bankens egen side. Så vises saldoen her.",
+	"Ask {name} to hire one": "Bed {name} om at ansætte en",
+	"Ask the Co-Founder to hire one": "Bed Co-Founderen om at ansætte en",
+	"Please hire a finance agent for the company. I'd like them to register the company with a CVR number and open a business bank account that Qorpera can read.":
+		"Vil du ansætte en økonomiagent til virksomheden? Jeg vil gerne have, at de registrerer virksomheden med et CVR-nummer og åbner en erhvervskonto, som Qorpera kan læse.",
+	"Ask {name} to start": "Bed {name} om at gå i gang",
+	"Please register the company with a CVR number and open a business bank account that Qorpera can read. Tell me when I need to sign with MitID.":
+		"Vil du registrere virksomheden med et CVR-nummer og åbne en erhvervskonto, som Qorpera kan læse? Sig til, når jeg skal skrive under med MitID.",
+	"Please open a business bank account for the company that Qorpera can read. Tell me when I need to sign with MitID.":
+		"Vil du åbne en erhvervskonto til virksomheden, som Qorpera kan læse? Sig til, når jeg skal skrive under med MitID.",
+	"Your turn": "Din tur",
+	"{name} has something for you to sign.": "{name} har noget, du skal skrive under på.",
+	"{name} is on it": "{name} er i gang",
+	"The thread could not be opened.": "Tråden kunne ikke åbnes.",
 	"The bank connection could not be read.": "Bankforbindelsen kunne ikke læses.",
 	"Connect again": "Forbind igen",
 	"Connect the company's bank": "Forbind virksomhedens bank",

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { LxdSubmissionRefused, LxdUnixClient } from "../src/lxd-client.ts";
+import { withShortDeadline } from "./helpers/short-deadline.ts";
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -413,7 +414,10 @@ describe("journalable LXD operations over a real Unix HTTP socket", () => {
 			response.writeHead(200);
 			response.write('{"metadata":');
 		});
-		await expect(client.inspectInstanceOperation(reference, signal())).rejects.toThrow(/^LXD_OPERATION_UNCONFIRMED$/);
+		const deadlines = await withShortDeadline(5000, () =>
+			expect(client.inspectInstanceOperation(reference, signal())).rejects.toThrow(/^LXD_OPERATION_UNCONFIRMED$/),
+		);
+		expect(deadlines).toBeGreaterThan(0);
 	}, 8000);
 	it("rejects a truncated response instead of waiting forever or treating it as completion", async () => {
 		const client = await fixture((_request, response) => {

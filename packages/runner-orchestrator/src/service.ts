@@ -90,13 +90,12 @@ export function cloudRunnerOrchestratorServiceConfigFromEnvironment(
 	if (wakeMode !== "off" && wakeMode !== "realtime") {
 		throw new Error("QORPERA_RUNNER_ORCHESTRATOR_WAKE must be off or realtime");
 	}
+	// A backstop equal to the poll interval keeps the claim cadence as without wake-ups (the runtime contract's
+	// 250 ms poll); wake-ups then only bring claims and reconcile passes forward.
 	const wakeBackstopMs = Number(environment.QORPERA_RUNNER_ORCHESTRATOR_WAKE_BACKSTOP_MS?.trim() || "5000");
 	if (
 		wakeMode === "realtime" &&
-		(!Number.isSafeInteger(wakeBackstopMs) ||
-			wakeBackstopMs < 1000 ||
-			wakeBackstopMs > 60_000 ||
-			wakeBackstopMs < pollIntervalMs)
+		(!Number.isSafeInteger(wakeBackstopMs) || wakeBackstopMs > 60_000 || wakeBackstopMs < pollIntervalMs)
 	) {
 		throw new Error("QORPERA_RUNNER_ORCHESTRATOR_WAKE_BACKSTOP_MS is outside the supported range");
 	}

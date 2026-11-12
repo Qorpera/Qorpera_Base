@@ -115,7 +115,9 @@ describe("group details from the conversation header", () => {
 		expect(field("purpose").value).toBe("Plan launch");
 		expect(panel.textContent).toContain("Participants (2)");
 		expect(panel.textContent).toContain(staff.displayName);
-		expect(panel.textContent).toContain(staff.role);
+		// An agent is called an agent there, with no title of its own.
+		expect(panel.textContent).toContain(`${staff.displayName}Agent`);
+		expect(panel.textContent).not.toContain(staff.role);
 		expect(panel.textContent).toContain("Account A");
 		expect(panel.textContent).toContain("You");
 		expect(panel.textContent).not.toContain("Unrelated agent");

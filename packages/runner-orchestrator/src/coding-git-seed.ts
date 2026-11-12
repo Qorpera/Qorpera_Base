@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { type CloudCodingRepository, parseCloudCodingRepository } from "@qorpera/contracts";
+import { type CloudCodingRepository, parseGitHubCodingRepository } from "@qorpera/contracts";
 import { type CodingBrokerGitRunner, runCodingBrokerGit } from "./coding-git.ts";
 import { checkDirectory } from "./lxd-office-journal-files.ts";
 
@@ -43,7 +43,7 @@ export async function resolveCloudCodingBase(
 	value: CloudCodingRepository,
 	options: CodingGitBaseResolutionOptions,
 ): Promise<string> {
-	const repository = parseCloudCodingRepository(value);
+	const repository = parseGitHubCodingRepository(value);
 	const authorize = async (): Promise<void> => {
 		options.signal.throwIfAborted();
 		await options.assertAuthorized(repository, options.signal);
@@ -146,7 +146,7 @@ export async function fetchCloudCodingSeed(
 		!/^[0-9a-f]{40}$/.test(value.baseSha)
 	)
 		throw new Error("INVALID_CODING_GIT_SEED");
-	const input = Object.freeze({ ...value, repository: parseCloudCodingRepository(value.repository) });
+	const input = Object.freeze({ ...value, repository: parseGitHubCodingRepository(value.repository) });
 	const authorize = async (): Promise<void> => {
 		options.signal.throwIfAborted();
 		try {

@@ -15,6 +15,7 @@ import {
 } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import type { JsonValue } from "@qorpera/contracts";
 import type { BrowserContext, Page } from "playwright-core";
+import { codingValuePattern, sealCodingValueCapture } from "./cloud-coding-value-capture-box.ts";
 import type { CompanyComputerFillKey } from "./cloud-company-account-fill-box.ts";
 import {
 	COMPANY_ACCOUNT_FILLED_ATTRIBUTE,
@@ -23,12 +24,17 @@ import {
 	fillCompanyAccountBox,
 } from "./cloud-company-computer-account-fill.ts";
 import { CompanyComputerBrowserNetworkPausedError } from "./cloud-company-computer-browser-control.ts";
-import type { CompanyComputerHookCaptureTarget } from "./cloud-company-computer-effect-control.ts";
+import type {
+	CompanyComputerCodingValueCaptureTarget,
+	CompanyComputerHookCaptureTarget,
+} from "./cloud-company-computer-effect-control.ts";
 import type { CompanyComputerGuestEffectInput } from "./cloud-company-computer-endpoint.ts";
 import {
 	type CompanyComputerHookCaptureBoxes,
 	CompanyHookCaptureRefusedError,
 	captureCompanyHookSecret,
+	captureCompanyPageValue,
+	companyCodingValuesShown,
 } from "./cloud-company-computer-hook-capture.ts";
 import { assertCompanyComputerGuestLayout, type CompanyComputerGuestLayout } from "./cloud-company-computer-layout.ts";
 import { CompanyComputerActionFailedError, companyComputerActionCheck } from "./cloud-company-computer-leases.ts";
@@ -468,6 +474,11 @@ export class CompanyComputerGuestAutomation {
 		input: CompanyComputerGuestEffectInput,
 		signal: AbortSignal,
 	) => Promise<CompanyComputerHookCaptureTarget>;
+	/** Where a vault_capture of a coding value's box goes (20260930695000), and what the page and the value must be. */
+	readonly #codingValueTarget?: (
+		input: CompanyComputerGuestEffectInput,
+		signal: AbortSignal,
+	) => Promise<CompanyComputerCodingValueCaptureTarget>;
 	/** The boxes vault_captures sealed, each kept for its call's answer only (the session's, outliving this automation). */
 	readonly #captures?: CompanyComputerHookCaptureBoxes;
 	#tabLease?: string;
@@ -493,6 +504,10 @@ export class CompanyComputerGuestAutomation {
 			input: CompanyComputerGuestEffectInput,
 			signal: AbortSignal,
 		) => Promise<CompanyComputerHookCaptureTarget>;
+		codingValueTarget?: (
+			input: CompanyComputerGuestEffectInput,
+			signal: AbortSignal,
+		) => Promise<CompanyComputerCodingValueCaptureTarget>;
 		captures?: CompanyComputerHookCaptureBoxes;
 	}) {
 		assertCompanyComputerScreenBinding(options.binding, options.binding);
@@ -511,6 +526,7 @@ export class CompanyComputerGuestAutomation {
 		this.#siteStops = options.siteStops ?? new CompanyComputerSiteStops();
 		this.#capture = options.capture;
 		this.#captureTarget = options.captureTarget;
+		this.#codingValueTarget = options.codingValueTarget;
 		this.#captures = options.captures;
 	}
 
@@ -961,11 +977,14 @@ export class CompanyComputerGuestAutomation {
 					);
 				}
 			} else if (action.action === "vault_capture") {
-				// A Stripe hook's signing secret, read off its page into the vault (E3c-3). Where the box goes this office
-				// reads from the database itself (the native host could name a key of its own); the one value the named
-				// control shows is read while the page is covered, and sealed to it. The agent, the screen and the native
-				// host never see the value; the box leaves only in this call's answer, to the vault.
-				const read = this.#captureTarget;
+				// A Stripe hook's signing secret (E3c-3), or a coding value (20260930695000), read off its page into the
+				// vault. Where the box goes this office reads from the database itself (the native host could name a key of
+				// its own), with the site the page must be on and, for a coding value, the pattern the whole value must
+				// match; the one value the named control shows is read while the page is covered, and sealed to it. The
+				// agent, the screen and the native host never see the value; the box leaves only in this call's answer, to
+				// the vault.
+				const coding = "codingValue" in action;
+				const read = coding ? this.#codingValueTarget : this.#captureTarget;
 				if (!read || !this.#captures) throw new CompanyComputerActionNotStartedError("VAULT_CAPTURE_UNAVAILABLE");
 				const receipt = { receiptId: effect.receiptId, idempotencyKey: effect.idempotencyKey };
 				const target = await read({ operation, identity: effect.identity, lease, receipt }, signal).catch(
@@ -978,29 +997,53 @@ export class CompanyComputerGuestAutomation {
 					throw new CompanyComputerActionNotStartedError("BROWSER_TARGET_AMBIGUOUS");
 				await companyComputerActionCheck(this.#browser.assertActive(signal));
 				signal.throwIfAborted();
-				const field = action.field;
 				try {
 					// Every value the page shows is hidden from then on, wherever the agent would see it.
-					const value = await captureCompanyHookSecret(
-						page,
-						control,
-						target,
-						(shown) => this.#filled.add(shown, field),
-						undefined,
-						async () => {
-							captureStop.reason = await readCompanyComputerSiteStop(page);
-							if (captureStop.reason) this.#siteStops.add(page.url(), captureStop.reason);
-							return captureStop.reason !== undefined;
-						},
-					);
-					captured = sealEventHookCapture({ value, site: target.site }, target.capturePublicKey, {
-						companyId: target.companyId,
-						companyComputerId: target.companyComputerId,
-						computerGeneration: target.computerGeneration,
-						receiptId: target.receiptId,
-						hookId: target.hookId,
-						field: target.field,
-					});
+					const stop = async () => {
+						captureStop.reason = await readCompanyComputerSiteStop(page);
+						if (captureStop.reason) this.#siteStops.add(page.url(), captureStop.reason);
+						return captureStop.reason !== undefined;
+					};
+					if ("hookId" in target) {
+						const value = await captureCompanyHookSecret(
+							page,
+							control,
+							target,
+							(shown) => this.#filled.add(shown, target.field),
+							undefined,
+							stop,
+						);
+						captured = sealEventHookCapture({ value, site: target.site }, target.capturePublicKey, {
+							companyId: target.companyId,
+							companyComputerId: target.companyComputerId,
+							computerGeneration: target.computerGeneration,
+							receiptId: target.receiptId,
+							hookId: target.hookId,
+							field: target.field,
+						});
+					} else {
+						const value = await captureCompanyPageValue(
+							page,
+							control,
+							{ site: target.site, shown: companyCodingValuesShown(target.valuePattern) },
+							(shown) => this.#filled.add(shown, "coding_value"),
+							undefined,
+							stop,
+						);
+						captured = sealCodingValueCapture(
+							{ value, site: target.site },
+							codingValuePattern(target.valuePattern),
+							target.capturePublicKey,
+							{
+								companyId: target.companyId,
+								companyComputerId: target.companyComputerId,
+								computerGeneration: target.computerGeneration,
+								receiptId: target.receiptId,
+								service: target.service,
+								variable: target.variable,
+							},
+						);
+					}
 				} catch (error) {
 					const reason = error instanceof CompanyHookCaptureRefusedError ? error.reason : "VAULT_CAPTURE_FAILED";
 					// A check the click brought up: the call's answer is the stop (below), with no box.

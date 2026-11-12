@@ -45,6 +45,9 @@
 	--text-soft: #92928e;
 	--border: rgba(18, 18, 17, 0.09);
 	--border-strong: rgba(18, 18, 17, 0.17);
+	/* A thread's scrollbar thumb, the thin grey pill Claude Code draws. */
+	--scrollbar-thumb: rgba(18, 18, 17, 0.22);
+	--scrollbar-thumb-hover: rgba(18, 18, 17, 0.36);
 	/* Messages header and the Assets Room's sRGB sidebar reference. */
 	--header-surface: #fbf7f4;
 	--sidebar-surface: #e9e7e6;
@@ -177,6 +180,8 @@
 	--text-soft: #908f8a;
 	--border: rgba(255, 255, 255, 0.09);
 	--border-strong: rgba(255, 255, 255, 0.17);
+	--scrollbar-thumb: rgba(255, 255, 255, 0.24);
+	--scrollbar-thumb-hover: rgba(255, 255, 255, 0.38);
 	--header-surface: var(--bg);
 	--sidebar-surface: #3c3c3c;
 	--sidebar-search: #494949;
@@ -200,6 +205,21 @@
 	--ok-soft: rgba(16, 185, 129, 0.16);
 
 	--send-idle: rgba(255, 255, 255, 0.12);
+}
+
+/* Safari on a Mac (ui/appearance.ts applyBrowserChrome): the sidebars take the toolbar's
+ * own grey, lighter while the window is in front and darker behind it, so toolbar and
+ * sidebar read as one surface (Jonas, 9 Nov 2026; measured off Safari's light toolbar).
+ * Only while both the page and the Mac are light: Safari's toolbar follows the Mac. */
+@media (prefers-color-scheme: light) {
+	:root[data-chrome="safari"][data-theme="light"] {
+		--sidebar-surface: #f6f6f7;
+		--sidebar-hover: color-mix(in srgb, #000 4.5%, var(--sidebar-surface));
+		--sidebar-search: color-mix(in srgb, #000 4.5%, var(--sidebar-surface));
+	}
+	:root[data-chrome="safari"][data-theme="light"][data-window-inactive] {
+		--sidebar-surface: #e9eaeb;
+	}
 }
 
 /* Conversation colour is independent of the page's light/dark appearance. */

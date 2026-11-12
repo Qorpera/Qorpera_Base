@@ -1,10 +1,13 @@
-import type {
-	CloudMemberFolderClient,
-	CloudMemberFolderEntry,
-	CloudMemberFolderFile,
+import {
+	CLOUD_MEMBER_FOLDER_READ_MANY,
+	type CloudMemberFolderClient,
+	type CloudMemberFolderEntry,
+	CloudMemberFolderError,
+	type CloudMemberFolderFile,
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { companyPathKey, parseCompanyStateFile } from "@qorpera/cloud-client/company-state-files";
 import {
+	APP_CLOSED_FOLDERS,
 	APP_FILE_MAX_BYTES,
 	APP_FILE_TYPES,
 	APP_MANIFEST,
@@ -15,17 +18,34 @@ import {
 	APP_VIDEO_FILE_MAX_BYTES,
 	APP_VIDEO_KINDS,
 	APP_VIDEOS_MAX_BYTES,
+	APP_WRITE_ANSWERS,
 	APPS_FOLDER,
 	type AppManifest,
 	type AppProblem,
 	type AppRead,
 	appFileKind,
+	appLinkName,
 	appRelativePath,
 	parseAppManifest,
 } from "@qorpera/cloud-client/interface-apps";
 import { isInterfaceName, parseTableFile, parseTableRows } from "@qorpera/cloud-client/interfaces";
+import { APP_GROUPS_MAX_BYTES, APP_GROUPS_PATH, type AppTreeNode, parseAppGroups } from "../cloud/app-groups.ts";
+import type { WebMemberFolder } from "../cloud/company-folder-writes.ts";
 import type { AppAnswer, AppCall } from "../ui/app-frame.ts";
+import { folderLinkPath } from "../ui/folder-links.ts";
+import { webHref } from "../ui/markdown.ts";
 import { framePage } from "../ui/page-frame.ts";
+import {
+	AppActionRefused,
+	type AppGate,
+	type AppGateOutcome,
+	type AppQuestionSource,
+	appQuestions,
+	type PreparedAsk,
+	prepareAnswer,
+	prepareRow,
+} from "./app-actions.ts";
+import { type AppLook, type AppScheme, appBaseStyle, appScheme, readAppBrand } from "./interface-app-style.ts";
 
 /* Interface apps on the web (deploy/first-node/RUNTIME-INTERFACE-APPS.md §2, §4 and §5; Jonas, 5 November 2026): the
  * company's apps as their manifests say (`readApps`, for the apps drawer and the cards), one app's page put together
@@ -37,8 +57,17 @@ import { framePage } from "../ui/page-frame.ts";
  *   what is read here too, since a machine's mounted folder can write past the write tools.
  * - The bridge reads only what the manifest's `reads` names, and only what an agent of the company reads too: the app's
  *   own folder always; with `files`, the company's own work (never QorperaOS/ or what the platform writes: mail, bank,
- *   members, events, digital post); with `tables`, a table's rows; with `agents` and `todos`, plain lines about them.
- *   It never hands over who the member is, a token, or anything of this app's own state. */
+ *   members, events, digital post); with `tables`, a table's rows; with `agents` and `todos`, plain lines about them;
+ *   with `questions`, the agents' open question cards that point at this app.
+ *   It never hands over who the member is, a token, or anything of this app's own state.
+ * - The bridge changes nothing by itself. A page may ask for what the manifest's `writes` names (an answer to such a
+ *   question, a row of a named table): the request is checked (app/app-actions.ts), put to the member on the bar outside
+ *   the frame (views/app-ask-bar.ts), and made as the member's own change only when they allow it there.
+ * - A link the member clicks in the page comes over the bridge too (`open`): checked here (`appLink`), it opens another
+ *   app, a file of the company's own work or a web page, and nothing else. The page learns nothing from it.
+ * - An app's page starts from Qorpera's base style (app/interface-app-style.ts), put first in its head when it is put
+ *   together: the company's colours, the scheme, the system font and plain defaults, all of which the page's own
+ *   styles override. */
 
 /** One app of the company, as its folder and manifest say. */
 export interface CompanyApp {
@@ -49,17 +78,28 @@ export interface CompanyApp {
 	readonly problems: readonly AppProblem[];
 	/** The manifest's version, so a change shows. */
 	readonly version: string | null;
+	/** When its folder or manifest last changed, as the folder's change number: the larger, the later. */
+	readonly changed?: number;
 }
 
-type Folder = Pick<CloudMemberFolderClient, "read" | "list" | "readFile">;
+/** The company's concepts of its product (`concept = true`, with a manifest that reads), the most recently changed
+ * first, for the Concepts viewer. */
+export function companyConcepts(apps: readonly CompanyApp[]): (CompanyApp & { readonly manifest: AppManifest })[] {
+	return apps
+		.filter((app): app is CompanyApp & { readonly manifest: AppManifest } => app.manifest?.concept === true)
+		.sort((a, b) => (b.changed ?? 0) - (a.changed ?? 0) || a.name.localeCompare(b.name));
+}
+
+type Folder = Pick<CloudMemberFolderClient, "read" | "list" | "readFile"> &
+	Partial<Pick<CloudMemberFolderClient, "readMany">>;
 
 const LIST_PAGE = 50;
 /** Apps a company lists, at most. */
 const MAX_APPS = 200;
-/** Folders the platform writes or keeps, whose files an app never reads (the agents' prompt: "the platform writes
- * digital-post/, bank/, members/ and hooks/"). */
-const PLATFORM_FOLDERS = ["qorperaos", "hooks", "digital-post", "bank", "members", "code"];
 const TEXT = new TextDecoder("utf-8", { fatal: true });
+/** Every read here reads a file's entry live, as the member, just before its bytes: those may come from the member's
+ * file cache (company-files.ts). */
+const LIVE = { cached: true } as const;
 
 async function listAll(
 	folder: Folder,
@@ -80,10 +120,18 @@ async function listAll(
 async function readText(folder: Folder, entry: CloudMemberFolderEntry, signal: AbortSignal, max: number) {
 	if (entry.kind !== "file" || !entry.file || entry.file.bytes > max) return null;
 	try {
-		return TEXT.decode(await folder.readFile(entry.file, signal, max));
+		return TEXT.decode(await folder.readFile(entry.file, signal, max, LIVE));
 	} catch {
 		return null;
 	}
+}
+
+/** The company's groups of apps, from `apps/groups.md` (cloud/app-groups.ts); undefined when it has none. */
+export async function readAppGroups(folder: Folder, signal: AbortSignal): Promise<AppTreeNode[] | undefined> {
+	const entry = (await folder.read(APP_GROUPS_PATH, signal)).entry;
+	// A bigger file is read too (up to a mebibyte): the reader keeps its first 64 KiB, as the agents' tool does.
+	const text = entry ? await readText(folder, entry, signal, 16 * APP_GROUPS_MAX_BYTES) : null;
+	return text === null ? undefined : parseAppGroups(text);
 }
 
 /** The company's apps, in name order: every folder of `apps/` with its manifest read. */
@@ -97,6 +145,7 @@ export async function readApps(folder: Folder, signal: AbortSignal): Promise<Com
 			if (!isInterfaceName(name)) return null;
 			const manifest = (await folder.read(`${entry.path}/${APP_MANIFEST}`, signal)).entry;
 			const text = manifest ? await readText(folder, manifest, signal, APP_MANIFEST_MAX_BYTES) : null;
+			const changed = Math.max(entry.seq, manifest?.seq ?? 0);
 			if (text === null)
 				return {
 					name,
@@ -104,6 +153,7 @@ export async function readApps(folder: Folder, signal: AbortSignal): Promise<Com
 					manifest: null,
 					problems: [{ line: null, message: manifest ? "app.toml is not text" : "app.toml is missing" }],
 					version: manifest?.version ?? null,
+					changed,
 				};
 			const parsed = parseAppManifest(text);
 			return {
@@ -112,6 +162,7 @@ export async function readApps(folder: Folder, signal: AbortSignal): Promise<Com
 				manifest: parsed.ok ? parsed.manifest : null,
 				problems: parsed.ok ? [] : parsed.problems,
 				version: manifest?.version ?? null,
+				changed,
 			};
 		}),
 	);
@@ -121,7 +172,14 @@ export async function readApps(folder: Folder, signal: AbortSignal): Promise<Com
 /* ---- Putting a page together ----------------------------------------------------------------------------------- */
 
 export type AssembledApp =
-	| { readonly ok: true; readonly page: string; readonly files: number; readonly bytes: number }
+	| {
+			readonly ok: true;
+			readonly page: string;
+			readonly files: number;
+			readonly bytes: number;
+			/** The scheme of the base style the page starts from; undefined for a page given none. */
+			readonly scheme?: AppScheme;
+	  }
 	| { readonly ok: false; readonly reason: "missing" | "too_large" | "not_shown"; readonly message: string };
 
 /** A path a page names, resolved against the folder of the file that names it (`base`, relative to the app's folder):
@@ -157,20 +215,52 @@ function base64(bytes: Uint8Array): string {
 	return btoa(text);
 }
 
-/** Reads the files of one app's page, once each, within the app's limits. */
+/** An app's files read at once, at most, while its page is put together. */
+const FILES_AT_ONCE = 8;
+
+/** What a round of reading ahead (`warmApps`) may still read, in bytes, across all the apps. */
+interface WarmBudget {
+	left: number;
+}
+
+/** Folders whose database has no qorpera_member_folder_read_many yet (it answered 404): each path is read alone there. */
+const NO_READ_MANY = new WeakSet<object>();
+
+/** Reads the files of one app's page, once each, a few at once, within the app's limits. The entries of the files the
+ * page names together are read as the member in one call (`readMany`), each file's bytes then a few at once. Reading ahead (`warm`), it
+ * reads no video past WARM_VIDEO_MAX_BYTES and nothing past the round's bytes, and makes no `data:` URLs: only the
+ * bytes are wanted, for the member's file cache. */
 class AppFiles {
 	readonly #folder: Folder;
 	readonly #root: string;
 	readonly #signal: AbortSignal;
+	readonly #atOnce: number;
+	readonly #warm: WarmBudget | undefined;
 	readonly #read = new Map<string, Promise<Uint8Array | null>>();
+	/** Reads under way, and the ones waiting for a turn. */
+	#active = 0;
+	readonly #waiting: (() => void)[] = [];
 	#bytes = 0;
 	#videoBytes = 0;
+	/** Entries asked for since the last call went out: they go in the next one, a moment later. */
+	#asked: {
+		readonly path: string;
+		readonly resolve: (entry: CloudMemberFolderEntry | null) => void;
+		readonly reject: (error: unknown) => void;
+	}[] = [];
 	tooLarge = false;
 
-	constructor(folder: Folder, root: string, signal: AbortSignal) {
+	constructor(
+		folder: Folder,
+		root: string,
+		signal: AbortSignal,
+		options: { readonly atOnce?: number; readonly warm?: WarmBudget } = {},
+	) {
 		this.#folder = folder;
 		this.#root = root;
 		this.#signal = signal;
+		this.#atOnce = options.atOnce ?? FILES_AT_ONCE;
+		this.#warm = options.warm;
 	}
 
 	get count(): number {
@@ -191,7 +281,7 @@ class AppFiles {
 			return Promise.resolve(null);
 		}
 		const reading = (async () => {
-			const entry = (await this.#folder.read(`${this.#root}/${path}`, this.#signal)).entry;
+			const entry = await this.#entry(`${this.#root}/${path}`);
 			const file: CloudMemberFolderFile | null | undefined = entry?.kind === "file" ? entry.file : null;
 			if (!file) return null;
 			const video = APP_MEDIA_KINDS.has(appFileKind(path));
@@ -203,12 +293,74 @@ class AppFiles {
 				this.tooLarge = true;
 				return null;
 			}
+			if (this.#warm) {
+				if (
+					file.bytes > this.#warm.left ||
+					(APP_VIDEO_KINDS.has(appFileKind(path)) && file.bytes > WARM_VIDEO_MAX_BYTES)
+				)
+					return null;
+				this.#warm.left -= file.bytes;
+			}
 			if (video) this.#videoBytes += file.bytes;
 			else this.#bytes += file.bytes;
-			return this.#folder.readFile(file, this.#signal, most);
+			return this.#turn(() => this.#folder.readFile(file, this.#signal, most, LIVE));
 		})();
+		// Reading ahead, a file that fails is left for the open: the page waits for all its other reads, so a round
+		// never has more under way than it says.
+		if (this.#warm) {
+			const settled = reading.catch(() => null);
+			this.#read.set(key, settled);
+			return settled;
+		}
 		this.#read.set(key, reading);
 		return reading;
+	}
+
+	/** A path's entry, read live as the member: with the other paths asked for in the same moment, in one call. */
+	#entry(path: string): Promise<CloudMemberFolderEntry | null> {
+		if (!this.#folder.readMany || NO_READ_MANY.has(this.#folder)) return this.#readAlone(path);
+		return new Promise((resolve, reject) => {
+			if (this.#asked.push({ path, resolve, reject }) === 1) queueMicrotask(() => this.#readAsked());
+		});
+	}
+
+	#readAlone(path: string): Promise<CloudMemberFolderEntry | null> {
+		return this.#turn(async () => (await this.#folder.read(path, this.#signal)).entry);
+	}
+
+	/** Reads the entries asked for, up to CLOUD_MEMBER_FOLDER_READ_MANY a call. A call that fails reads each of its paths
+	 * alone, so each answers or fails as its own read would; a database without the call is not asked again. */
+	#readAsked(): void {
+		const asked = this.#asked.splice(0);
+		const folder = this.#folder;
+		for (let start = 0; start < asked.length; start += CLOUD_MEMBER_FOLDER_READ_MANY) {
+			const part = asked.slice(start, start + CLOUD_MEMBER_FOLDER_READ_MANY);
+			folder.readMany!(
+				part.map((item) => item.path),
+				this.#signal,
+			).then(
+				(reads) => {
+					for (const [index, item] of part.entries()) item.resolve(reads[index]?.entry ?? null);
+				},
+				(error: unknown) => {
+					if (error instanceof CloudMemberFolderError && error.status === 404) NO_READ_MANY.add(folder);
+					for (const item of part) this.#readAlone(item.path).then(item.resolve, item.reject);
+				},
+			);
+		}
+	}
+
+	/** Runs `read` once fewer than its share of reads are under way; a read that ends hands its turn to the next. */
+	async #turn<T>(read: () => Promise<T>): Promise<T> {
+		if (this.#active >= this.#atOnce) await new Promise<void>((resolve) => this.#waiting.push(resolve));
+		else this.#active++;
+		try {
+			return await read();
+		} finally {
+			const next = this.#waiting.shift();
+			if (next) next();
+			else this.#active--;
+		}
 	}
 
 	async text(path: string): Promise<string | null> {
@@ -224,35 +376,41 @@ class AppFiles {
 	async dataUrl(path: string): Promise<string | null> {
 		const bytes = await this.bytesOf(path);
 		const type = APP_FILE_TYPES[appFileKind(path)];
-		return bytes === null || !type ? null : `data:${type};base64,${base64(bytes)}`;
+		return bytes === null || !type || this.#warm ? null : `data:${type};base64,${base64(bytes)}`;
 	}
 }
 
 const MEDIA_KINDS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
 
-/** A stylesheet's `url(...)`s that name pictures of the app, as `data:` URLs. */
+/** A stylesheet's `url(...)`s that name pictures of the app, as `data:` URLs, the pictures read side by side. */
 async function inlineCssUrls(files: AppFiles, css: string, base: string): Promise<string> {
 	const found = [...css.matchAll(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g)];
+	const urls = await Promise.all(
+		found.map((match) => {
+			const path = resolveAppPath(base, match[2] ?? "");
+			return path === null || !MEDIA_KINDS.has(appFileKind(path)) ? null : files.dataUrl(path);
+		}),
+	);
 	let out = css;
-	for (const match of found) {
-		const path = resolveAppPath(base, match[2] ?? "");
-		if (path === null || !MEDIA_KINDS.has(appFileKind(path))) continue;
-		const url = await files.dataUrl(path);
+	for (const [index, match] of found.entries()) {
+		const url = urls[index];
 		if (url) out = out.split(match[0]).join(`url("${url}")`);
 	}
 	return out;
 }
 
 /** One app's page as the frame is handed it: its entry with the app's own stylesheets, scripts and pictures put in,
- * then through framePage (ui/page-frame.ts). */
+ * then through framePage (ui/page-frame.ts). With `look`, the page starts from Qorpera's base style
+ * (app/interface-app-style.ts), first in its head, in the look's colours and in the scheme the page supports. */
 export async function assembleApp(
 	folder: Folder,
 	app: Pick<CompanyApp, "path"> & { readonly entry: string },
 	signal: AbortSignal,
+	look?: AppLook,
 ): Promise<AssembledApp> {
 	const files = new AppFiles(folder, app.path, signal);
-	const html = await files.text(app.entry);
-	if (html === null)
+	const page = await readPage(files, app.entry);
+	if (page === null)
 		return files.tooLarge
 			? {
 					ok: false,
@@ -260,52 +418,86 @@ export async function assembleApp(
 					message: "The app is larger than 4 MiB of pages and code, 48 MiB of pictures and videos, or 64 files.",
 				}
 			: { ok: false, reason: "missing", message: `The app's page, ${app.entry}, is not in its folder.` };
-	// An inert parse: nothing here runs or loads, and it is only ever written out again for the frame.
-	const page = new DOMParser().parseFromString(html, "text/html");
-	const base = dirOf(app.entry);
-	for (const link of [...page.querySelectorAll<HTMLLinkElement>("link[rel~='stylesheet' i][href]")]) {
-		const path = resolveAppPath(base, link.getAttribute("href") ?? "");
-		if (path === null || appFileKind(path) !== "css") continue;
-		const css = await files.text(path);
-		if (css === null) continue;
-		const style = page.createElement("style");
-		style.textContent = (await inlineCssUrls(files, css, dirOf(path))).replace(/<\/style/gi, "<\\/style");
-		link.replaceWith(style);
-	}
-	for (const style of [...page.querySelectorAll("style")])
-		style.textContent = await inlineCssUrls(files, style.textContent ?? "", base);
-	for (const script of [...page.querySelectorAll<HTMLScriptElement>("script[src]")]) {
-		const path = resolveAppPath(base, script.getAttribute("src") ?? "");
-		if (path === null || !["js", "mjs"].includes(appFileKind(path))) continue;
-		const js = await files.text(path);
-		if (js === null) continue;
-		script.removeAttribute("src");
-		script.textContent = js.replace(/<\/script/gi, "<\\/script");
-	}
-	for (const media of [...page.querySelectorAll("img[src], source[src], video[poster], image[href]")]) {
-		const attribute = media.localName === "video" ? "poster" : media.localName === "image" ? "href" : "src";
-		const path = resolveAppPath(base, media.getAttribute(attribute) ?? "");
-		if (path === null || !MEDIA_KINDS.has(appFileKind(path))) continue;
-		const url = await files.dataUrl(path);
-		if (url) media.setAttribute(attribute, url);
-	}
-	for (const media of [...page.querySelectorAll("video[src], source[src]")]) {
-		const path = resolveAppPath(base, media.getAttribute("src") ?? "");
-		if (path === null || !APP_VIDEO_KINDS.has(appFileKind(path))) continue;
-		const url = await files.dataUrl(path);
-		if (url) media.setAttribute("src", url);
-	}
 	if (files.tooLarge)
 		return {
 			ok: false,
 			reason: "too_large",
 			message: "The app is larger than 4 MiB of pages and code, 48 MiB of pictures and videos, or 64 files.",
 		};
+	// Before every style of the page, and in a layer of its own: whatever the page's styles say wins.
+	let scheme: AppScheme | undefined;
+	if (look) {
+		scheme = appScheme(page, look.scheme);
+		const base = page.createElement("style");
+		base.setAttribute("data-qorpera-base", "");
+		base.textContent = appBaseStyle(scheme, look.brand);
+		page.head.prepend(base);
+	}
 	const written = `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : "<!doctype html>"}${page.documentElement.outerHTML}`;
 	const handed = framePage(written);
 	return handed === null
 		? { ok: false, reason: "not_shown", message: "This app can't be shown live." }
-		: { ok: true, page: handed, files: files.count, bytes: files.bytes };
+		: { ok: true, page: handed, files: files.count, bytes: files.bytes, ...(scheme ? { scheme } : {}) };
+}
+
+/** An app's entry page with the files it names put in, or null when the entry can't be read. */
+async function readPage(files: AppFiles, entry: string): Promise<Document | null> {
+	const html = await files.text(entry);
+	if (html === null) return null;
+	// An inert parse: nothing here runs or loads, and it is only ever written out again for the frame.
+	const page = new DOMParser().parseFromString(html, "text/html");
+	const base = dirOf(entry);
+	// Every file the page names is read side by side (a file named twice once), then put in where it is named, in the
+	// page's order. The app's limits hold whatever the order the reads end in: past them, the whole app is refused.
+	const changes: Promise<(() => void) | null>[] = [];
+	for (const link of [...page.querySelectorAll<HTMLLinkElement>("link[rel~='stylesheet' i][href]")]) {
+		const path = resolveAppPath(base, link.getAttribute("href") ?? "");
+		if (path === null || appFileKind(path) !== "css") continue;
+		changes.push(
+			files.text(path).then(async (css) => {
+				if (css === null) return null;
+				const inlined = (await inlineCssUrls(files, css, dirOf(path))).replace(/<\/style/gi, "<\\/style");
+				return () => {
+					const style = page.createElement("style");
+					style.textContent = inlined;
+					link.replaceWith(style);
+				};
+			}),
+		);
+	}
+	for (const style of [...page.querySelectorAll("style")])
+		changes.push(
+			inlineCssUrls(files, style.textContent ?? "", base).then((css) => () => {
+				style.textContent = css;
+			}),
+		);
+	for (const script of [...page.querySelectorAll<HTMLScriptElement>("script[src]")]) {
+		const path = resolveAppPath(base, script.getAttribute("src") ?? "");
+		if (path === null || !["js", "mjs"].includes(appFileKind(path))) continue;
+		changes.push(
+			files.text(path).then((js) =>
+				js === null
+					? null
+					: () => {
+							script.removeAttribute("src");
+							script.textContent = js.replace(/<\/script/gi, "<\\/script");
+						},
+			),
+		);
+	}
+	for (const media of [...page.querySelectorAll("img[src], source[src], video[poster], image[href]")]) {
+		const attribute = media.localName === "video" ? "poster" : media.localName === "image" ? "href" : "src";
+		const path = resolveAppPath(base, media.getAttribute(attribute) ?? "");
+		if (path === null || !MEDIA_KINDS.has(appFileKind(path))) continue;
+		changes.push(files.dataUrl(path).then((url) => (url ? () => media.setAttribute(attribute, url) : null)));
+	}
+	for (const media of [...page.querySelectorAll("video[src], source[src]")]) {
+		const path = resolveAppPath(base, media.getAttribute("src") ?? "");
+		if (path === null || !APP_VIDEO_KINDS.has(appFileKind(path))) continue;
+		changes.push(files.dataUrl(path).then((url) => (url ? () => media.setAttribute("src", url) : null)));
+	}
+	for (const change of await Promise.all(changes)) change?.();
+	return page;
 }
 
 /* ---- The bridge --------------------------------------------------------------------------------------------- */
@@ -314,6 +506,15 @@ export async function assembleApp(
 export interface AppBridgeHost {
 	readonly folder: () => Folder;
 	readonly agents: () => readonly { readonly name: string; readonly role: string; readonly working: boolean }[];
+	/** The agents' open questions and an agent by its id, for an app that shows or answers them; absent where the
+	 * company has none to show. */
+	readonly questions?: AppQuestionSource & {
+		readonly agent: (agentId: string) => { readonly displayName: string } | undefined;
+	};
+	/** The member's own client for a change they allowed, and the check that the company is still the one on screen
+	 * (it throws when it is not). Absent where nothing can be changed. */
+	readonly writer?: () => WebMemberFolder;
+	readonly current?: () => void;
 }
 
 /** Calls in flight, and calls a minute, for one app in this tab. */
@@ -323,6 +524,18 @@ const MAX_PER_MINUTE = 120;
 const MAX_ANSWER_BYTES = 1024 * 1024;
 const MAX_PATH_CHARS = 1024;
 const MAX_PARAMS_CHARS = 4096;
+/** A row's cells may be longer than a read's few short values. */
+const MAX_ROW_PARAMS_CHARS = 16 * 1024;
+/** What a call spends of the minute's budget, when it is more than one: todos reads every agent's todos folder, and a
+ * request for a change reads the table or the questions before anything is shown. */
+const CALL_COST: Readonly<Record<string, number>> = { todos: 10, answer: 5, setRow: 5, addRow: 5 };
+/** What a page is told when its request did not become a change. */
+const GATE_SAYS: Readonly<Record<Exclude<AppGateOutcome["outcome"], "saved" | "failed">, string>> = {
+	declined: "The member said not now",
+	busy: "Another request is waiting for the member's answer",
+	quiet: "The member said not now three times: this page asks again after the member reloads it",
+	gone: "The page was put away, or what it may ask for changed, before the member answered",
+};
 const TODO_FILES = 200;
 /** The budget of an app in this tab, kept across its frames, so a Reload starts no new one. */
 const budgets = new Map<string, { inFlight: number; minute: number; calls: number }>();
@@ -347,7 +560,32 @@ export function appReadablePath(value: unknown): string | null {
 	const plain = appRelativePath(path);
 	if (plain === null || /%/.test(plain)) return null;
 	const top = companyPathKey(plain).split("/")[0] ?? "";
-	return PLATFORM_FOLDERS.includes(top) ? null : plain;
+	return APP_CLOSED_FOLDERS.includes(top) ? null : plain;
+}
+
+/** Where a link in an app's page leads, once checked. */
+export type AppLink =
+	| { readonly kind: "app"; readonly name: string }
+	| { readonly kind: "file"; readonly path: string }
+	| { readonly kind: "web"; readonly href: string };
+
+const MAX_LINK_CHARS = 2048;
+
+/** A link's address as an app's page gave it, which is anything a page can write, checked. It leads to an app of the
+ * company (`app:<name>`, as in a message), to a file or folder of the company's own work (`folder:<path>`, as in a
+ * message, and under the rules a read is under: `appReadablePath`), or to a web page (`http:` or `https:`, checked as a
+ * link in a message is). Null for anything else: a relative address, another scheme, a platform folder. */
+export function appLink(value: unknown): AppLink | null {
+	if (typeof value !== "string" || value.length > MAX_LINK_CHARS) return null;
+	const href = value.trim();
+	const name = appLinkName(href);
+	if (name !== undefined) return { kind: "app", name };
+	if (href.startsWith("folder:")) {
+		const path = appReadablePath(folderLinkPath(href));
+		return path === null || path === "" ? null : { kind: "file", path };
+	}
+	const web = webHref(href);
+	return web !== undefined && /^https?:/.test(web) ? { kind: "web", href: web } : null;
 }
 
 /** The answers to one app's live-data calls, with the member's own reads. */
@@ -356,17 +594,25 @@ export class AppBridge {
 	readonly #app: CompanyApp & { readonly manifest: AppManifest };
 	readonly #key: string;
 	readonly #signal: AbortSignal;
+	readonly #gate: AppGate | undefined;
+	readonly #follow: ((link: AppLink) => void) | undefined;
 
+	/** `gate`: where a request for a change is put to the member; without one the app only reads. `follow` opens a
+	 * link the member clicked in the page, once it is checked; without it no link opens. */
 	constructor(
 		host: AppBridgeHost,
 		app: CompanyApp & { readonly manifest: AppManifest },
 		key: string,
 		signal: AbortSignal,
+		gate?: AppGate,
+		follow?: (link: AppLink) => void,
 	) {
 		this.#host = host;
 		this.#app = app;
 		this.#key = key;
 		this.#signal = signal;
+		this.#gate = gate;
+		this.#follow = follow;
 	}
 
 	#may(read: AppRead): boolean {
@@ -374,14 +620,18 @@ export class AppBridge {
 	}
 
 	async answer(call: AppCall): Promise<AppAnswer> {
-		// A call is a method and a few short values: anything larger is no call this bridge takes.
-		if (call.method.length > 32 || JSON.stringify(call.params).length > MAX_PARAMS_CHARS)
+		// A call is a method and a few short values (a row's cells may be longer): anything larger is no call this bridge
+		// takes.
+		const row = call.method === "setRow" || call.method === "addRow";
+		if (
+			call.method.length > 32 ||
+			JSON.stringify(call.params).length > (row ? MAX_ROW_PARAMS_CHARS : MAX_PARAMS_CHARS)
+		)
 			return refuse("Not a call the app answers");
 		const spent = budget(this.#key);
 		if (spent.inFlight >= MAX_IN_FLIGHT || spent.calls >= MAX_PER_MINUTE)
 			return refuse("Too many calls: wait a moment and try again");
-		// todos reads every agent's todos folder: it costs as ten calls.
-		spent.calls += call.method === "todos" ? 10 : 1;
+		spent.calls += CALL_COST[call.method] ?? 1;
 		spent.inFlight++;
 		try {
 			const value = await this.#value(call);
@@ -455,9 +705,68 @@ export class AppBridge {
 				if (!this.#may("todos")) return refuse('Add "todos" to reads in app.toml to read the todos');
 				return { ok: true, value: await this.#todos(folder) };
 			}
+			case "questions": {
+				if (!this.#may("questions"))
+					return refuse('Add "questions" to reads in app.toml to read the open questions');
+				const source = this.#host.questions;
+				if (!source) return { ok: true, value: [] };
+				return {
+					ok: true,
+					value: await appQuestions(source, this.#app.name, (id) => source.agent(id)?.displayName ?? ""),
+				};
+			}
+			case "answer":
+			case "setRow":
+			case "addRow":
+				return this.#change(call);
+			case "open": {
+				// A link the member clicked (the frame document sends it; the page's `qorpera` object has no such call). It
+				// needs nothing in `reads`: nothing is read for it, and the answer is the same whether or not what it names
+				// is there, so a page learns nothing by it.
+				const link = appLink(call.params.href);
+				if (link === null || !this.#follow)
+					return refuse("A link opens an app (app:name), a company file (folder:path) or a web page (https://…)");
+				this.#follow(link);
+				return { ok: true, value: null };
+			}
 			default:
 				return refuse("Not a call the app answers");
 		}
+	}
+
+	/** A request for a change: only what the manifest's `writes` names, checked, then put to the member. The page is
+	 * answered once the member chose and, when they allowed it, the change is saved or refused. */
+	async #change(call: AppCall): Promise<AppAnswer> {
+		const writes = this.#app.manifest.writes;
+		const gate = this.#gate;
+		let prepare: () => Promise<PreparedAsk>;
+		if (call.method === "answer") {
+			if (!writes.includes(APP_WRITE_ANSWERS))
+				return refuse('Add "answers" to writes in app.toml to answer a question from the page');
+			const questions = this.#host.questions;
+			if (!gate || !questions) return refuse("Nothing can be changed from this page");
+			prepare = () => prepareAnswer(questions, this.#app.name, call.params);
+		} else {
+			const table = call.params.table;
+			if (typeof table !== "string" || !isInterfaceName(table) || !writes.includes(`table:${table}`))
+				return refuse('Add "table:<name>" to writes in app.toml to change rows of that table');
+			const { writer, current } = this.#host;
+			if (!gate || !writer || !current) return refuse("Nothing can be changed from this page");
+			prepare = () => prepareRow(writer(), call.method === "addRow", call.params, this.#signal, current);
+		}
+		// One request at a time: while one waits for the member, another is refused before anything is read.
+		const closed = gate.closed();
+		if (closed) return refuse(GATE_SAYS[closed]);
+		let prepared: PreparedAsk;
+		try {
+			prepared = await prepare();
+		} catch (error) {
+			if (error instanceof AppActionRefused) return refuse(error.message);
+			throw error;
+		}
+		const result = await gate.ask(prepared.ask, prepared.perform);
+		if ("message" in result) return refuse(result.message);
+		return result.outcome === "saved" ? { ok: true, value: { saved: true } } : refuse(GATE_SAYS[result.outcome]);
 	}
 
 	/** Each agent's todos, as their files' first heading and status say. */
@@ -538,6 +847,36 @@ export function sharedFolderHints<T extends CompanyAppsSource>(
 
 const APPS_POLL_MS = 60_000;
 const APPS_HINT_MS = 1000;
+/** After the apps are read, how long their pages wait before they are read ahead; how many apps are read at once, and
+ * how many of each app's files; and the bytes a round reads at most (the member's file cache keeps 64 MiB). */
+const WARM_MS = 1500;
+const WARM_AT_ONCE = 2;
+const WARM_FILES_AT_ONCE = 4;
+const WARM_BYTES = 24 * 1024 * 1024;
+/** A video read ahead, at most: a short clip on an app's page is read ahead as its pictures are, a long one waits for
+ * the open (Fjeldtur's brand page, 11 Nov 2026: three clips of 110 to 180 KiB were all its first open still fetched). */
+const WARM_VIDEO_MAX_BYTES = 2 * 1024 * 1024;
+
+/** Reads ahead what opening an app reads (the company's colours, and each app's page with every file it names, as
+ * `assembleApp` reads them, but no video past WARM_VIDEO_MAX_BYTES), so the member's first open of each app finds them
+ * in the member's file cache (company-files.ts). The most recently changed apps go first, and a round stops reading at
+ * WARM_BYTES. Only what is not read yet costs a fetch; a read that fails is left for the open to try. */
+export async function warmApps(folder: Folder, apps: readonly CompanyApp[], signal: AbortSignal): Promise<void> {
+	const budget: WarmBudget = { left: WARM_BYTES };
+	const reads: (() => Promise<unknown>)[] = [() => readAppBrand(folder, signal)];
+	for (const app of [...apps].sort((a, b) => (b.changed ?? 0) - (a.changed ?? 0))) {
+		const entry = app.manifest?.entry;
+		if (entry === undefined || resolveAppPath("", entry) === null) continue;
+		reads.push(() =>
+			readPage(new AppFiles(folder, app.path, signal, { atOnce: WARM_FILES_AT_ONCE, warm: budget }), entry),
+		);
+	}
+	let next = 0;
+	const worker = async () => {
+		while (next < reads.length && !signal.aborted) await reads[next++]!().catch(() => undefined);
+	};
+	await Promise.all(Array.from({ length: WARM_AT_ONCE }, worker));
+}
 
 /** The company's apps, read when the company opens, after each folder hint (at most once a second) and each minute
  * (in a hidden tab only while the hint's channel is down), published when they change; and every hint passed on to the
@@ -545,19 +884,30 @@ const APPS_HINT_MS = 1000;
 export class CompanyApps {
 	readonly #source: CompanyAppsSource;
 	readonly #publish: (apps: readonly CompanyApp[]) => void;
+	readonly #publishGroups: ((groups: readonly AppTreeNode[] | undefined) => void) | undefined;
+	#shownGroups: string | undefined;
 	readonly #stop = new AbortController();
 	readonly #listeners = new Set<() => void>();
 	#hints?: { close(): Promise<void> };
 	#poll?: ReturnType<typeof setInterval>;
 	#timer?: ReturnType<typeof setTimeout>;
+	#warming?: ReturnType<typeof setTimeout>;
+	/** The apps changed while a round was waiting or under way: another follows it. */
+	#warmAgain = false;
 	#shown: string | undefined;
 	#last: readonly CompanyApp[] = [];
 	/** The hint's channel is subscribed. */
 	#hintsLive = false;
 
-	constructor(source: CompanyAppsSource, publish: (apps: readonly CompanyApp[]) => void) {
+	constructor(
+		source: CompanyAppsSource,
+		publish: (apps: readonly CompanyApp[]) => void,
+		/** The company's groups of apps, read with the apps (apps/groups.md), when they change. */
+		publishGroups?: (groups: readonly AppTreeNode[] | undefined) => void,
+	) {
 		this.#source = source;
 		this.#publish = publish;
+		this.#publishGroups = publishGroups;
 		source.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#stop.signal });
 	}
 
@@ -605,6 +955,7 @@ export class CompanyApps {
 		this.#stop.abort();
 		clearInterval(this.#poll);
 		clearTimeout(this.#timer);
+		clearTimeout(this.#warming);
 		void this.#hints?.close().catch(() => undefined);
 		this.#listeners.clear();
 	}
@@ -623,17 +974,54 @@ export class CompanyApps {
 	async read(): Promise<readonly CompanyApp[]> {
 		if (this.#stop.signal.aborted) return this.#last;
 		try {
-			const apps = await readApps(this.#source.folder(), this.#stop.signal);
+			const folder = this.#source.folder();
+			const [apps, groups] = await Promise.all([
+				readApps(folder, this.#stop.signal),
+				this.#publishGroups ? readAppGroups(folder, this.#stop.signal).catch(() => null) : null,
+			]);
+			// A failed read of the groups keeps what was read before.
+			if (groups !== null) {
+				const shownGroups = JSON.stringify(groups ?? null);
+				if (shownGroups !== this.#shownGroups && !this.#stop.signal.aborted) {
+					this.#shownGroups = shownGroups;
+					this.#publishGroups?.(groups);
+				}
+			}
 			const shown = JSON.stringify(apps);
 			this.#last = apps;
 			if (shown !== this.#shown && !this.#stop.signal.aborted) {
 				this.#shown = shown;
 				this.#publish(apps);
+				this.#warm();
 			}
 		} catch {
 			/* What was read before stands. */
 		}
 		return this.#last;
+	}
+
+	/** Reads the apps' pages ahead (`warmApps`), a moment after they changed, so the company's own first reads go
+	 * first; one round at a time, and the latest apps when it starts. */
+	#warm(): void {
+		if (this.#stop.signal.aborted) return;
+		if (this.#warming !== undefined) {
+			this.#warmAgain = true;
+			return;
+		}
+		// A company with no app that reads has nothing to read ahead.
+		if (!this.#last.some((app) => app.manifest)) return;
+		this.#warming = setTimeout(() => {
+			if (this.#stop.signal.aborted) return;
+			void Promise.resolve()
+				.then(() => warmApps(this.#source.folder(), this.#last, this.#stop.signal))
+				.catch(() => undefined)
+				.finally(() => {
+					this.#warming = undefined;
+					if (!this.#warmAgain) return;
+					this.#warmAgain = false;
+					this.#warm();
+				});
+		}, WARM_MS);
 	}
 
 	#hinted(): void {

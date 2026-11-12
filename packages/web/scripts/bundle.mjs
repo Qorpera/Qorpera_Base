@@ -3,8 +3,9 @@
 //
 // main.js is split (esbuild `splitting`): the vendor chunk (src/vendor.ts),
 // which main.js imports and index.html preloads, plus chunks main.js loads
-// only when needed: the figures' recorded motion (ui/figure-motion-data.ts)
-// and the computer screen renderer with noVNC (ui/screen-viewer.mjs).
+// only when needed: the figures' recorded motion (ui/figure-motion-data.ts),
+// and the computer screen renderer with noVNC (ui/screen-viewer.mjs) once the
+// stream imports it again (the computer window shows pictures since 20260930712000).
 // theme.js is a separate classic script for the head.
 import { join, relative, resolve, sep } from "node:path";
 import { assertMemberWebInputs } from "../../../scripts/check-headless-packages.mjs";
@@ -120,7 +121,11 @@ export function bundleLayout(metafile, { root, outdir }) {
 /** The vendored classic scripts index.html loads by a fixed name from
  * `/assets/`, which is cached for a day; each gets its content hash as a
  * query, so a deploy that changes one is fetched at once. */
-export const VENDORED_SCRIPTS = ["assets/avatars/motion-model.js", "assets/avatars/avatar-appearance.js"];
+export const VENDORED_SCRIPTS = [
+	"assets/avatars/motion-model.js",
+	"assets/avatars/light-field.js",
+	"assets/avatars/avatar-appearance.js",
+];
 
 /** Point index.html at the hashed files and preload main.js's static chunks,
  * so splitting adds no request that waits for main.js to be parsed.

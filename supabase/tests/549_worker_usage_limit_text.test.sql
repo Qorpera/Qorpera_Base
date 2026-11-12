@@ -5,7 +5,7 @@
 -- window is full); the executor then completes the turn failed with the provider bridge's code, and the agent reads,
 -- in the worker's result, its `reported` event and its results.md claim, the fixed words with the window's reset, and
 -- the `failed` event says the same and keeps usageLimit. An in-house worker whose run stops the same way fails with
--- reason usage_limit and the same words. The reset is the signal's own when it is ahead, else the full window's, else
+-- reason usage_limit and the same words (a run that started and can resume waits for the reset instead, 20260930703000). The reset is the signal's own when it is ahead, else the full window's, else
 -- left out; a run without the signal, or no run, has no text, nor has the signal of an attempt that paused and went on
 -- (only a later attempt's own signal counts); and no API role calls the new function.
 
@@ -34,9 +34,9 @@ create function pg_temp.ul_words(p_reset timestamptz) returns text language sql 
 	select 'The login paying for this work reached its usage limit. '
 		|| case when p_reset is null then ''
 			else 'It resets on ' || to_char(p_reset at time zone 'UTC', 'FMDD FMMonth YYYY "at" HH24:MI "UTC"') || '. ' end
-		|| 'The work does not move to another login by itself. It waits and goes on by itself on this login once the limit '
-		|| 'resets (its usage is checked at least once a day). The member can also choose another of their logins for it '
-		|| '(in the conversation''s Login menu).'
+		|| 'This run could not wait for the reset, so the work stopped. It does not go on by itself and does not move to '
+		|| 'another login by itself. Start it again to go on: on this login it waits until the limit resets. The member '
+		|| 'can also continue it with another of their logins from the agent''s thread.'
 $$;
 -- The account's usage as the login's refresh records it: a 5-hour window with room and a weekly window that is full.
 create function pg_temp.ul_usage(p_signal public.qorpera_provider_connection_usage_signals, p_week timestamptz)
@@ -99,7 +99,8 @@ begin
 	-- The executor completes the turn failed with the bridge's code; the agent reads the plain words instead. A coding
 	-- session's words name its own card as the place to choose another login, and its reason is usage_limit
 	-- (20260930551000).
-	v_coding := replace(v_words, '(in the conversation''s Login menu)', '(on the coding session''s card in the conversation)');
+	v_coding := replace(v_words, 'continue it with another of their logins from the agent''s thread',
+		'choose another of their logins for it (on the coding session''s card in the conversation)');
 	perform pg_temp.base_assert(v_coding <> v_words, 'the coding words name the session''s card');
 	perform pg_temp.base_claims('service_role');
 	perform public.qorpera_complete_coding_turn('92800000-0000-4000-8000-0000000000b1', v_token, 'failed', v_bridge);
@@ -179,6 +180,8 @@ begin
 end $$;
 
 -- 3. An in-house worker stopped at the login's usage limit ---------------------------------------------------------------
+-- Its run never started its native turn, so it cannot resume and stops there (a run that started waits for the reset
+-- instead, 20260930703000; test 1194).
 -- The earlier limits have ended (20260930575000: while the login is at its limit, a worker's run waits and never starts).
 update public.qorpera_provider_connection_usage_signals set observed_at = observed_at - interval '2 days',
 	resets_at = null where signal_kind = 'usage_limit';
@@ -199,7 +202,7 @@ begin
 	perform pg_temp.ul_fail(v_research, 'Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED]');
 	w := pg_temp.c3_worker('92800000-0000-4000-8000-0000000000c9');
 	v_words := public.qorpera_worker_usage_limit_text(w.occurrence_id);
-	perform pg_temp.base_assert(v_words like 'The login paying for this work reached its usage limit. %', 'its words: ' || coalesce(v_words, 'none'));
+	perform pg_temp.base_assert(v_words = pg_temp.ul_words(null), 'its words: ' || coalesce(v_words, 'none'));
 	perform pg_temp.base_claims('service_role');
 	v_drain := public.qorpera_folder_workers_company('92400000-0000-4000-8000-000000000020', 32);
 	w := pg_temp.c3_worker(w.id);

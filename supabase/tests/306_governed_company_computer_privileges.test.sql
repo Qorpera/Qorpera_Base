@@ -54,6 +54,9 @@ begin
 	-- Account model logins (20260930548000) add completing a member's account sign-in on the company's own authority,
 	-- and the shared vault's own account login calls on its principal: saving and giving back a renewal, the idle pass,
 	-- recording a login's account and switching off the logins an account login replaced.
+	-- Coding value captures (20260930695000) add preparing a coding value's capture key, and reading and storing a
+	-- value a vault_capture browser call took from its service's screen, each bound to the agent's effect receipt;
+	-- 20260930698000 adds describing what the key is derived from, bound the same way.
 	select array_agg(function.oid::regprocedure::text order by function.oid::regprocedure::text collate "C") into v_functions
 	from pg_proc as function
 	join pg_namespace as namespace on namespace.oid = function.pronamespace
@@ -102,12 +105,16 @@ begin
 		'qorpera_finish_digital_post_sync(uuid,text,uuid,bigint,uuid,text,uuid,jsonb,integer,text)',
 		'qorpera_finish_email_draft_action(uuid,text,uuid,text,jsonb)',
 		'qorpera_finish_event_verification(uuid,text,uuid,uuid,text,text,text,text)',
+		'qorpera_folder_describe_coding_value_capture(uuid,text,jsonb,uuid,text,text)',
 		'qorpera_folder_describe_hook_capture_key(uuid,text,jsonb,uuid)',
 		'qorpera_folder_describe_signed_hook(uuid,text,jsonb)',
 		'qorpera_folder_open_signed_hook(uuid,text,jsonb,jsonb,uuid,uuid,uuid,text,bytea,text)',
 		'qorpera_folder_open_stripe_hook(uuid,text,jsonb,jsonb,uuid,uuid,uuid,text,text)',
+		'qorpera_folder_prepare_coding_value_capture(uuid,text,jsonb,uuid,text,text,uuid,text,text)',
+		'qorpera_folder_read_coding_value_capture(uuid,text,jsonb,uuid,text,text)',
 		'qorpera_folder_read_hook_capture(uuid,text,jsonb,uuid,text,text)',
 		'qorpera_folder_replace_hook_capture_key(uuid,text,jsonb,uuid,text,text)',
+		'qorpera_folder_store_coding_value_capture(uuid,text,jsonb,uuid,text,text,uuid,bigint,uuid,uuid,text,bytea,text)',
 		'qorpera_folder_store_hook_capture(uuid,text,jsonb,uuid,text,text,uuid,bigint,uuid,uuid,text,bytea,text)',
 		'qorpera_hold_digital_post_letter(uuid,text,uuid,bigint,uuid,uuid,text)',
 		'qorpera_issue_model_login(uuid,text,jsonb,bigint,boolean)',

@@ -3,6 +3,7 @@ import { LxdUnixClient } from "../src/lxd-client.ts";
 import { LxdOfficePhysicalGate } from "../src/lxd-office-physical-gate.ts";
 import * as host from "../src/lxd-office-physical-host.ts";
 import { officePhysicalFixture } from "./fixtures/office-physical-policy.ts";
+import { withShortDeadline } from "./helpers/short-deadline.ts";
 
 vi.mock("../src/lxd-office-physical-host.ts", () => ({
 	readLxdOfficeProtectedFile: vi.fn(),
@@ -165,9 +166,12 @@ describe("physical preparation gate composition", () => {
 				}),
 		);
 		try {
-			await expect(f.gate.check(f.binding, new AbortController().signal)).rejects.toThrow(
-				"LXD_OFFICE_PHYSICAL_INSPECTION_ABORTED",
+			const deadlines = await withShortDeadline(5000, () =>
+				expect(f.gate.check(f.binding, new AbortController().signal)).rejects.toThrow(
+					"LXD_OFFICE_PHYSICAL_INSPECTION_ABORTED",
+				),
 			);
+			expect(deadlines).toBeGreaterThan(0);
 			await expect(f.gate.check(f.binding, new AbortController().signal)).rejects.toThrow(
 				"LXD_OFFICE_PHYSICAL_INSPECTION_PENDING",
 			);

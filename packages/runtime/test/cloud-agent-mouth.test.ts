@@ -1,6 +1,7 @@
 import {
 	CLOUD_AGENT_SEND_SCHEMA,
 	CloudAgentMouth,
+	CloudAgentNoFinalSend,
 	type CloudAgentSendInput,
 	type CloudAgentSendReceipt,
 	parseCloudAgentSendInput,
@@ -130,6 +131,51 @@ describe("cloud agent public mouth", () => {
 		await expect(second.finish()).rejects.toThrow("without a final send");
 		const silent = create(async (input) => receipt(input));
 		await expect(silent.finish(false)).resolves.toEqual({ messageCount: 0, finalMessageId: null });
+	});
+
+	it("says what it has delivered without closing, and names a missing final send by its own failure", async () => {
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const mouth = create(async (input) => {
+			if (input.phase === "progress") await held;
+			return receipt(input);
+		});
+		expect(await mouth.settled()).toEqual({ messageCount: 0, final: false });
+		// A send in flight is waited for: what it delivers counts.
+		const progress = mouth.send({ idempotencyKey: "ack", text: "On it", phase: "progress" });
+		let settled: { messageCount: number; final: boolean } | undefined;
+		const asked = mouth.settled().then((value) => {
+			settled = value;
+		});
+		await Promise.resolve();
+		expect(settled).toBeUndefined();
+		release();
+		await Promise.all([progress, asked]);
+		expect(settled).toEqual({ messageCount: 1, final: false });
+		// Still open: the run may be given one more turn to make the final send it owes.
+		await mouth.send({ idempotencyKey: "last", text: "Done", phase: "final" });
+		expect(await mouth.settled()).toEqual({ messageCount: 2, final: true });
+		expect(await mouth.finish()).toEqual({ messageCount: 2, finalMessageId });
+		const silent = create(async (input) => receipt(input));
+		await expect(silent.finish()).rejects.toBeInstanceOf(CloudAgentNoFinalSend);
+	});
+
+	it("hands a send its tool call's signal, and starts none for a call that has ended", async () => {
+		const deliver = vi.fn(async (input: CloudAgentSendInput, _signal?: AbortSignal) => receipt(input));
+		const mouth = create(deliver);
+		const call = new AbortController();
+		await mouth.send({ idempotencyKey: "ack", text: "On it", phase: "progress" }, call.signal);
+		expect(deliver.mock.calls[0][1]).toBe(call.signal);
+		call.abort(new Error("tool call ended"));
+		await expect(mouth.send({ idempotencyKey: "last", text: "Done", phase: "final" }, call.signal)).rejects.toThrow(
+			"tool call ended",
+		);
+		expect(deliver).toHaveBeenCalledOnce();
+		// The mouth itself is still open for a later call.
+		await mouth.send({ idempotencyKey: "last", text: "Done", phase: "final" });
+		expect(await mouth.finish()).toEqual({ messageCount: 2, finalMessageId });
 	});
 
 	it("refuses sends on cancellation and does not treat malformed receipts as delivery", async () => {

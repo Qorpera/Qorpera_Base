@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import {
+	type CloudCodingCommandReceipt,
 	type CloudCodingCommandScope,
 	type CloudCodingNasPolicy,
 	type CloudCodingRepository,
@@ -17,6 +18,23 @@ import {
 } from "@qorpera/contracts";
 import { withAbortScope } from "./abort-scope.ts";
 import type { AgentPlug } from "./agent-plug.ts";
+import {
+	CODE_CHECKS_EARLIER_RUN_NOT_STOPPED,
+	type CodeCheck,
+	type CodeChecksRun,
+	type CodeSiteRecipe,
+	codeChecksTail,
+} from "./code-checks.ts";
+import { codeAreaPath } from "./code-host-jobs.ts";
+import {
+	CODE_CHECKS_NEWER_RUN,
+	CODE_SITE_COLLECT,
+	CODE_SITE_DROP,
+	type CodeSiteCollected,
+	type CodeSiteProblem,
+	codeSiteCollectAnswer,
+	codeSiteDropAnswer,
+} from "./code-site.ts";
 import {
 	type CodingCommandSecrets,
 	type CodingEnvironmentSource,
@@ -34,13 +52,19 @@ import type {
 	CodingWorkspace,
 } from "./coding-executor.ts";
 import {
+	CodingControlRefused,
 	CodingMachineUnavailable,
 	CodingPushRefused,
 	CodingSaveRefused,
 	CodingWorkspaceFailed,
 } from "./coding-executor.ts";
-import { codingFolderKeptCommand, LxdCodingFolderCommandTransport } from "./coding-folder-command-transport.ts";
 import {
+	codingFolderKeptCommand,
+	LxdCodingFolderCommandTransport,
+	type LxdCodingFolderCommandTransportOptions,
+} from "./coding-folder-command-transport.ts";
+import {
+	type CodingFolderBoundary,
 	type CodingFolderControl,
 	codingFolderBoundaryChecking,
 	codingFolderBoundaryHeld,
@@ -48,6 +72,7 @@ import {
 	codingFolderSaveRefused,
 } from "./coding-folder-control.ts";
 import {
+	CODING_FOLDER_COMPANY_ROOT,
 	type CodingFolderRepositories,
 	type CodingFolderRepositorySession,
 	codingFolderNoRepositories,
@@ -123,6 +148,10 @@ export const CODING_HOST_RPCS = [
 	// A machine given a new disk from its image (rule 4, `unreadable`): its disk holds a read no longer readable.
 	"qorpera_mark_coding_machine_new_disk",
 	"qorpera_record_coding_machine_new_disk",
+	// A landing in a repository kept in Qorpera, reported to its change record (own code storage, step 2b).
+	"qorpera_record_code_change",
+	// Whether a repository kept in Qorpera has its checks run before a landing (own code storage, step 3).
+	"qorpera_code_checks_switch",
 ] as const;
 
 /** The leased session a repository token is asked for (bundle v88): the
@@ -222,6 +251,20 @@ export interface LxdCodingExecutorHostOptions {
 		repositories?: CodingFolderRepositories;
 		/** Each view the guest mounted for a session, and how the view it replaced ended, if it replaced one. */
 		onMount?(mount: { workerId: string; machineId: string; viewId: string; replaced?: CodingFolderViewEnd }): void;
+		/** The log lines of a landing's checks (own code storage, step 3): `code-checks` (each command `started` and
+		 * `ended`, the site's collect and drop among them, each `boundary` after the collect, what the drop `dropped`, and
+		 * the `run`) and `code-checks-error` (whose `error` is the error itself, for the log to redact). Never a check's
+		 * output, a site's file or a secret's value. */
+		report?(event: Record<string, unknown>): void;
+		/** How often a running check is read (default 3 s), the wall budget of a whole run of the checks (default: 300 s
+		 * for the copy, and each check's own limit and 60 s more; and 240 s for a run that takes a site), and how long a
+		 * check is cancelled and read for until its end is confirmed (default 20 s). */
+		checksPollMs?: number;
+		checksBudgetMs?: number;
+		checksStopMs?: number;
+		/** How long the boundary after a site's collect is asked for at most (default 120 s): again each second, or at the
+		 * read's pace (`checksPollMs`) when that is shorter. */
+		checksBoundaryMs?: number;
 	};
 }
 type FolderOptions = NonNullable<LxdCodingExecutorHostOptions["folder"]>;
@@ -240,6 +283,22 @@ interface Prepared extends Attached {
 	baseSha: string;
 	/** On the folder model: the session's user, and where its commands start. */
 	folder?: { uid: number; cwd: string };
+}
+/** A run of the checks that takes the site its checks left (own code storage, step 4): the recipe, the commit, the run's
+ * folder, the environment every command of the run gets, the repository's storage, the host's authority, the run's
+ * wall budget, its commands' ids, the collect's place after the checks (the drop's is the next), and its log lines'
+ * names. */
+interface SiteRun {
+	recipe: CodeSiteRecipe;
+	commit: string;
+	dir: string;
+	base: Readonly<Record<string, string>>;
+	repository: string;
+	authorize: LxdCodingFolderCommandTransportOptions["authorize"];
+	budget: AbortSignal;
+	commandId: (index: "site" | "drop") => string;
+	index: number;
+	step: Record<string, unknown>;
 }
 /** A session attached to one of this executor's machines under its SQL
  * attachment, standing by or in a turn: what renewing its guest lease needs. */
@@ -370,6 +429,21 @@ export const CODING_FOLDER_GIT_ENVIRONMENT: Readonly<Record<string, string>> = O
 		]),
 	]),
 );
+/** A folder session's environment: Git's settings, and who its commits are by. Until 10 Nov 2026 the platform set no
+ * author, and sessions' commits carried names the model made up ("Qorpera Coding", "Codex"): nothing in a commit said
+ * which session made it. Now author and committer name the session by its worker id, which the kernel maps to its
+ * agent, its member and its turns. Git reads these before any setting a command writes; only an explicit `--author`
+ * overrides the author, and nothing a command passes overrides the committer. */
+export function codingFolderGitEnvironment(workerId: string): Readonly<Record<string, string>> {
+	const who = { name: "Qorpera coding session", email: `${workerId}@coding.qorpera.com` };
+	return Object.freeze({
+		...CODING_FOLDER_GIT_ENVIRONMENT,
+		GIT_AUTHOR_NAME: who.name,
+		GIT_AUTHOR_EMAIL: who.email,
+		GIT_COMMITTER_NAME: who.name,
+		GIT_COMMITTER_EMAIL: who.email,
+	});
+}
 /** The most of a running command's text the keeper reports (qorpera_keep_coding_attachments). */
 const CODING_OBSERVED_COMMAND_BYTES = 300;
 /** How often quiet sessions are looked for (qorpera_archive_quiet_coding_sessions). */
@@ -394,6 +468,153 @@ const CODING_FOLDER_GUEST_READY_MS = 300_000;
 /** How long a publication waits before it asks for a boundary again while one left paths waiting for save checks that
  * had not ended (the service answers within the control's timeout, and goes on checking). */
 const CODING_FOLDER_CHECK_RETRY_MS = 1_000;
+/** A run of a repository's checks (own code storage, step 3; STEP3-CHECKS-PLAN.md 6.2). Each run has a folder of its
+ * own, `$QORPERA_CHECKS_ROOT/$QORPERA_CHECKS_NAME`, named `<the turn's sequence, 10 digits>-<the run's attempt, 4 digits>`
+ * (codeChecksRunName): the session user's home is one session's (SQL gives each session its own uid, never another's),
+ * so the names sort by time, the newest run's last. A process left of an earlier run holds paths into another folder,
+ * never the newest run's (release review r1, F1). And a command of a run that is not the newest does nothing, by these
+ * scripts' own rule on the machine (review round 4, F1): a start the transport never saw acknowledged may land at any
+ * time after the host moved on, so its copy or check finds a higher name and exits 91 before it removes, makes or runs
+ * anything. Names compare as bytes (`LC_ALL=C`, in a subshell of its own: nothing a check runs gets it). The rule's lines
+ * are `CODE_CHECKS_NEWER_RUN` (code-site.ts), which the site's collect and drop begin with too (step 4).
+ *
+ * The copy: a clean copy of exactly the candidate on the machine's own disk, read from the repository's storage in the
+ * company folder (no untracked or ignored file of any worktree), after waiting for a merge commit job A just wrote to
+ * reach the session's view. Its values come in the environment. In this order (review round 5, F1):
+ * 1. A root that is a link or a file is taken away, so nothing is made or removed through it.
+ * 2. A copy of a run that is not the newest exits 91, having removed and made nothing (CODE_CHECKS_NEWER_RUN).
+ * 3. The fence: its own folder is made at once (one that is a link or a file is taken away first), and stands from here
+ *    on, never removed and made again. From this step on any start of an earlier run that lands finds a higher name
+ *    and does nothing.
+ * 4. What earlier runs left running ends: every process of this user whose working folder is inside a run folder with
+ *    a lower name (`/proc/<pid>/cwd`, also when its folder is gone, " (deleted)") is killed (KILL), and they are looked
+ *    for again after a short wait, at most five times. That ends a check that landed before the fence stood, and one
+ *    left running by a turn that was given up or by an executor that restarted. Nothing else is killed: not a process in
+ *    this run's folder, not one elsewhere in the home, not another user's (its `/proc` entry cannot be read). It cannot
+ *    reach a process that left its folder (a server that changed its working folder, a daemon that went to `/`), nor one
+ *    in a container under another uid.
+ * 5. The run folders with a lower name are removed, as far as they can be (what a check left that its user cannot
+ *    remove, a container's files, never stops a copy), and no other entry: two copies that land at once never remove
+ *    each other's newer folder.
+ * 6. Its own folder is emptied (only what is in it), and the copy is made in it. */
+const CODE_CHECKS_COPY = [
+	"set -eu",
+	'r="$QORPERA_CHECKS_ROOT"',
+	'n="$QORPERA_CHECKS_NAME"',
+	'd="$r/$n"',
+	'if [ -L "$r" ] || { [ -e "$r" ] && [ ! -d "$r" ]; }; then rm -f -- "$r"; fi',
+	'mkdir -p -- "$r"',
+	...CODE_CHECKS_NEWER_RUN,
+	'if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then rm -f -- "$d"; fi',
+	'mkdir -p -- "$d"',
+	"(",
+	"\tLC_ALL=C",
+	"\tfor t in 1 2 3 4 5; do",
+	"\t\tk=0",
+	"\t\twhile IFS= read -r -d '' h && IFS= read -r -d '' c; do",
+	`\t\t\tc="\${c% (deleted)}"`,
+	'\t\t\tcase "$c" in "$r"/*) ;; *) continue ;; esac',
+	`\t\t\tm="\${c#"$r"/}"; m="\${m%%/*}"`,
+	"\t\t\tif [[ $m =~ ^[0-9]{10}-[0-9]{4}$ && $m < $n ]]; then",
+	`\t\t\t\tkill -KILL "\${h#/proc/}" 2>/dev/null || true; k=1`,
+	"\t\t\tfi",
+	"\t\tdone < <(find /proc -mindepth 2 -maxdepth 2 -name cwd -printf '%h\\0%l\\0' 2>/dev/null)",
+	'\t\t[ "$k" -eq 1 ] || break',
+	"\t\tsleep 0.2",
+	"\tdone",
+	")",
+	"(",
+	"\tLC_ALL=C",
+	'\tfor e in "$r"/*; do',
+	'\t\tm="$(basename -- "$e")"',
+	'\t\tif [[ $m =~ ^[0-9]{10}-[0-9]{4}$ && $m < $n ]]; then rm -rf -- "$e" || true; fi',
+	"\tdone",
+	")",
+	'find "$d" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +',
+	'mkdir -p -- "$d/out"',
+	"i=0",
+	'until git -C "$QORPERA_CHECKS_REPOSITORY" cat-file -e "$QORPERA_CHECKS_COMMIT^{commit}" 2>/dev/null; do',
+	'\ti=$((i + 1)); [ "$i" -lt 20 ] || exit 90; sleep 3',
+	"done",
+	'git clone --quiet --shared --no-checkout -- "$QORPERA_CHECKS_REPOSITORY" "$d/src"',
+	'git -C "$d/src" -c advice.detachedHead=false checkout --quiet --detach "$QORPERA_CHECKS_COMMIT"',
+	'test "$(git -C "$d/src" rev-parse HEAD)" = "$QORPERA_CHECKS_COMMIT"',
+].join("\n");
+/** One check: its own command from its folder of the copy, stdin closed, its whole output also kept on the machine's
+ * disk, and its own exit code. A check of a run that is not the newest exits 91 and runs nothing. Its folder is most
+ * often gone by then (the newer copy removed it, and the guest agent cannot start a command in a folder that is not
+ * there), but the removal is best effort, and a start may land before the newer copy ran: the rule holds either way. */
+const CODE_CHECKS_CHECK = [
+	...CODE_CHECKS_NEWER_RUN,
+	'cd -- "$QORPERA_CHECK_CWD" || exit 2',
+	'bash --noprofile --norc -c "$QORPERA_CHECK_RUN" </dev/null 2>&1 | tee -- "$QORPERA_CHECK_LOG"',
+	// bash's own placeholder, not the template's.
+	`exit "\${PIPESTATUS[0]}"`,
+].join("\n");
+/** The folder name of a run of a session's checks: its turn's sequence and its attempt, zero-padded so that names sort
+ * by time as bytes; null for numbers that do not fit. */
+function codeChecksRunName(sequence: number, attempt: number): string | null {
+	if (!Number.isSafeInteger(sequence) || sequence < 0 || sequence > 9_999_999_999) return null;
+	if (!Number.isSafeInteger(attempt) || attempt < 0 || attempt > 9_999) return null;
+	return `${String(sequence).padStart(10, "0")}-${String(attempt).padStart(4, "0")}`;
+}
+/** What the machine's boundary after a site's collect says of it, as `publish` judges a boundary (every view of the
+ * machine; STEP4-BUILD.md 2's table): `saved` (every read released, every view saved); `carries` (the save check
+ * refused paths for one of the machine's secret values, and nothing else held them); or why it was not saved, as the
+ * code of a missed site: still checking, refused only as not checked, or held otherwise. */
+function siteBoundaryJudged(boundary: CodingFolderBoundary): string {
+	if (codingFolderBoundaryChecking(boundary)) return "CODE_SITE_BOUNDARY_CHECKING";
+	const held = codingFolderBoundaryHeld(boundary);
+	if (held === undefined) return "saved";
+	const refusal = codingFolderSaveRefused(boundary);
+	if (refusal === "carries") return "carries";
+	return refusal === "unchecked" ? "CODE_SITE_BOUNDARY_UNCHECKED" : `CODE_SITE_BOUNDARY_HELD:${held}`;
+}
+/** The copy's own time limit. */
+const CODE_CHECKS_COPY_MS = 300_000;
+/** What the wall budget gives each check beyond its own limit. */
+const CODE_CHECKS_SLACK_MS = 60_000;
+/** How often a running check is read. */
+const CODE_CHECKS_POLL_MS = 3_000;
+/** How many reads in a row a check's calls may go unanswered (the transport, the guest, the run authority) before the
+ * run ends as not run: a call that fails is asked again at the next read until then (a minute at the default pace). */
+const CODE_CHECKS_UNANSWERED_READS = 20;
+/** How long a running check is cancelled and read for, once the turn gave up, the budget passed or its calls went
+ * unanswered, until its end is confirmed; and how long an earlier run's command left unconfirmed is cancelled and read
+ * again before a new run. Within the executor's stop (TimeoutStopSec 75 s, its cleanup 45 s). */
+const CODE_CHECKS_STOP_MS = 20_000;
+/** A check's command in its run's answer and the change record, at most this many bytes. */
+const CODE_CHECKS_RUN_BYTES = 200;
+/** The site's collect's own time limit (own code storage, step 4; STEP4-BUILD.md 2). */
+const CODE_SITE_COLLECT_MS = 120_000;
+/** How long the boundary after the collect is asked for at most, while it is checking or does not answer. */
+const CODE_SITE_BOUNDARY_MS = 120_000;
+/** The drop's own time limit: it removes at most a site's objects. */
+const CODE_SITE_DROP_MS = 60_000;
+/** What the wall budget of a run that takes a site gives it beyond its checks': the collect's 120 s, and 120 s for the
+ * boundary and the drop. */
+const CODE_SITE_BUDGET_MS = 240_000;
+/** The names the folder command transport sets in every command's environment after its secrets
+ * (coding-folder-command-transport.ts, `sessionEnvironment`): a secret of one of these names never reaches a command
+ * with its own value, so the collect is not given it to look for. */
+const CODING_FOLDER_SESSION_NAMES: ReadonlySet<string> = new Set([
+	"HOME",
+	"USER",
+	"LOGNAME",
+	"SHELL",
+	"PATH",
+	"LANG",
+	"TMPDIR",
+	"XDG_RUNTIME_DIR",
+	"DBUS_SESSION_BUS_ADDRESS",
+	"DOCKER_HOST",
+]);
+/** A refusal of a check's run authority: the turn's, the machine's or its disk's. */
+class CodingChecksUnauthorized extends Error {
+	constructor(cause: unknown) {
+		super(errorCodeOf(cause), { cause });
+	}
+}
 /** Refusals a turn waits out in the queue instead of failing: the machine is
  * being removed, the node is full or not ready, the session is still on
  * another machine, the machine's plan followed a new policy after this turn
@@ -534,6 +755,18 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	readonly #folderStartOperations = new Map<string, string>();
 	/** The vault environments this process asked for the sessions attached to its machines (5j-4). */
 	readonly #commandSecrets: CodingMachineCommandSecrets | undefined;
+	// The two memories of the commands of a session's runs of its checks (release review r1 and review rounds 5 and 6,
+	// F1), by one rule: every command the host did not see end for certain is cancelled and read again after the next
+	// run's fence stands, before that run's first check. For certain: its start was answered, and a later receipt showed
+	// it ended (succeeded, failed, cancelled, machine_stopped). They live in this process: an executor that restarts
+	// forgets them, and then only the scripts' own rules and the copy's end of earlier runs' processes hold.
+	/** Per session, the command whose stop could not be confirmed: it may still run. No run of the session's checks
+	 * starts, nor touches a folder, until a cancel and a read before it confirm that it ended. It is uncertain too. */
+	readonly #checksMayRun = new Map<string, string>();
+	/** Per session, every command not seen to end for certain: a start never answered (its `cancelled` may be
+	 * provisional, and the start may land at any time), a stop not confirmed, a receipt or a `hidden` that says
+	 * `unconfirmed`. Looked at again after the next run's fence stands, before its first check (#checksLookAgain). */
+	readonly #checksUncertain = new Map<string, Set<string>>();
 	#archiveScanAt = Number.NEGATIVE_INFINITY;
 	constructor(options: LxdCodingExecutorHostOptions) {
 		if (
@@ -1265,13 +1498,16 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			baseSha = String(record((await readRecord(join(root, baseName))).value).baseSha);
 		} catch (error) {
 			if (!code(error, "ENOENT")) throw error;
-			const sha = await resolveCloudCodingBase(claim.repository, {
-				journalRoot: root,
-				signal,
-				assertAuthorized: authorize,
-				withRepositoryToken: this.#repositoryToken(claim),
-				runGit: this.#options.runGit,
-			});
+			const sha =
+				claim.repository.host === "qorpera"
+					? await this.#startRepository(claim, authorize, signal)
+					: await resolveCloudCodingBase(claim.repository, {
+							journalRoot: root,
+							signal,
+							assertAuthorized: authorize,
+							withRepositoryToken: this.#repositoryToken(claim),
+							runGit: this.#options.runGit,
+						});
 			await publish(
 				root,
 				baseName,
@@ -1289,6 +1525,22 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		)
 			throw new Error("CODING_HOST_BASE_CHANGED");
 		return { root, baseSha };
+	}
+	/** The base of a session on a repository kept in Qorpera (own code storage, slice 1): the repository made empty when
+	 * it is not there yet, by the company's code host, and its default branch's commit. Only the folder model with code
+	 * hosts keeps repositories; without them the turn fails before the model runs, saying so. No token is asked for. */
+	async #startRepository(
+		claim: CodingSessionClaim,
+		authorize: () => Promise<void>,
+		signal: AbortSignal,
+	): Promise<string> {
+		const repositories = this.#options.folder?.repositories;
+		if (!repositories?.start)
+			throw new CodingWorkspaceFailed(
+				"CODING_REPOSITORY_NOT_HERE",
+				"This coding service keeps no repositories in the company folder, so the session could not start. Nothing was changed.",
+			);
+		return (await repositories.start({ claim, assertAuthorized: () => authorize() }, signal)).baseSha;
 	}
 	/** A turn on the folder model (5g-6a): the machine runs and its LXD agent answers, the session's repositories are
 	 * made ready in the company folder and published there, and then the session is attached in SQL and its view mounted
@@ -1579,7 +1831,827 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			},
 			withRepositoryToken: this.#repositoryToken(claim),
 			runGit: this.#options.runGit,
+			// The kernel takes the report only from the executor that holds the turn's lease, and takes the row's words
+			// (title, summary, what a customer will notice) from its own rows.
+			recordChange: async (report, checked) => {
+				const answer = record(
+					await this.#call(
+						"qorpera_record_code_change",
+						{ p_worker_id: claim.workerId, p_lease_token: claim.leaseToken, p_change: report },
+						checked,
+					),
+				);
+				const change = answer.change;
+				if (
+					answer.schema !== "qorpera.code-change-recorded/v1" ||
+					typeof answer.state !== "string" ||
+					!["recorded", "adopted", "replayed", "known", "late", "nothing"].includes(answer.state) ||
+					!(change === null || (Number.isSafeInteger(change) && (change as number) >= 1))
+				)
+					throw new Error("CODING_HOST_CODE_CHANGE_UNCONFIRMED");
+				return { state: answer.state, change: change as number | null };
+			},
+			// Asked of the executor that holds the turn's lease. An answer lost, or not the switch's, reads as on: the
+			// landing is then checked, never let in unchecked, and its site taken. A kernel from before step 4 says
+			// nothing of the site: on. Only the kernel's refusal ends it.
+			checksSwitch: async (checked) => {
+				try {
+					const answer = record(
+						await this.#call(
+							"qorpera_code_checks_switch",
+							{ p_worker_id: claim.workerId, p_lease_token: claim.leaseToken },
+							checked,
+						),
+					);
+					if (
+						answer.schema !== "qorpera.code-checks-switch/v1" ||
+						typeof answer.enabled !== "boolean" ||
+						!(answer.site === undefined || typeof answer.site === "boolean")
+					)
+						throw new Error("CODING_HOST_CODE_CHECKS_SWITCH_UNCONFIRMED");
+					return { checks: answer.enabled, site: typeof answer.site === "boolean" ? answer.site : true };
+				} catch (error) {
+					if (checked.aborted || error instanceof CodingControlRefused) throw error;
+					this.#checksReport({
+						event: "code-checks-error",
+						step: "switch",
+						workerId: claim.workerId,
+						sequence: claim.sequence,
+						error,
+					});
+					return { checks: true, site: true };
+				}
+			},
+			runChecks: (input, checked) => this.#runChecks(claim, input, checked),
 		};
+	}
+	/** A line of the checks' log; the log never changes what happens. */
+	#checksReport(event: Record<string, unknown>): void {
+		try {
+			this.#options.folder?.report?.(event);
+		} catch {
+			/* not heard */
+		}
+	}
+	/** One run of a repository's checks on a clean copy of `commit` in the turn's session's machine (own code storage,
+	 * step 3; STEP3-CHECKS-PLAN.md 6.2 to 6.4). Each command (the copy, then each check in the file's order) is one of the
+	 * session's own commands, through the folder command transport its model's commands take: as the session's user, with
+	 * its environment and secrets, its output masked and kept in its custody only once the machine's reads are released.
+	 * Its authority is the host's own part of a command's (the turn still prepared, a fresh run authority, no machine
+	 * marked for a new disk), never the model's: the turn has handed in, and the model's commands are refused. Each
+	 * command gets `CI=true` and `QORPERA_CHECKS=1`. The run works in a folder of its own, `~/.qorpera-checks/<its turn's
+	 * sequence>-<its attempt>` (codeChecksRunName), and its copy removes the earlier runs' folders; a command of a run
+	 * that is not the newest does nothing (CODE_CHECKS_NEWER_RUN). The copy makes that folder first (the fence) and ends
+	 * what earlier runs left running in theirs; after it, before the first check, every command of an earlier run the
+	 * host did not see end for certain is cancelled and read once more (#checksLookAgain; review rounds 5 and 6, F1).
+	 * The first check that fails ends the run. It never throws for a check's or the machine's sake: what could not run,
+	 * or ran past the run's wall budget, is `not_run` with why, a running command stopped first (#stopChecksCommand). A
+	 * command whose stop could not be confirmed (its cancels rejected, or still `running`) holds every later run of the
+	 * session's checks: each is `not_run` (`machine`, CODE_CHECKS_EARLIER_RUN_NOT_STOPPED) until a cancel and a read
+	 * before it see it end, and touches no folder (#checksMayRun; release review r1, F1). The turn's abort stops the
+	 * running command with time of its own and is thrown on.
+	 *
+	 * When `site` is a recipe and every check passed, the run takes the site the checks left (own code storage, step 4;
+	 * #takeSite): its collect and, when needed, its drop are two more commands of the run, under every rule above, and
+	 * the run's wall budget gains 240 s for them. A site the code made wrong is `site_refused`; a run that passed says
+	 * what became of its site (null without a recipe). Its `ms` is the checks' own, the site's time aside. */
+	async #runChecks(
+		claim: CodingSessionClaim,
+		input: { commit: string; checks: readonly CodeCheck[]; attempt: number; site: CodeSiteRecipe | null },
+		signal: AbortSignal,
+	): Promise<CodeChecksRun> {
+		signal.throwIfAborted();
+		const began = performance.now();
+		const said = { workerId: claim.workerId, sequence: claim.sequence, attempt: input.attempt, commit: input.commit };
+		const elapsed = (since: number) => Math.round(performance.now() - since);
+		const recipe = input.site ?? null;
+		const answer = (run: CodeChecksRun): CodeChecksRun => {
+			this.#checksReport({
+				event: "code-checks",
+				step: "run",
+				...said,
+				state: run.state,
+				...(run.state === "not_run" ? { why: run.why, code: run.code } : { ms: run.ms }),
+				// What became of the site: never a path or a value, a variable's name at most.
+				...(run.state === "passed" && run.site !== null
+					? { site: run.site.state, ...(run.site.state === "missed" ? { siteCode: run.site.code } : {}) }
+					: {}),
+				...(run.state === "site_refused" ? { problem: run.problem.code, variable: run.problem.variable } : {}),
+			});
+			return run;
+		};
+		const folder = this.#options.folder;
+		let ready: Prepared;
+		try {
+			ready = this.#active(claim);
+		} catch (error) {
+			this.#checksReport({ event: "code-checks-error", step: "run", ...said, error });
+			return answer({ state: "not_run", why: "authority", code: errorCodeOf(error) });
+		}
+		// The repository's storage in the company folder, as the session's view shows it.
+		let repository: string;
+		try {
+			repository = `${CODING_FOLDER_COMPANY_ROOT}/${codeAreaPath(claim.repository)}/repo.git`;
+		} catch (error) {
+			this.#checksReport({ event: "code-checks-error", step: "run", ...said, error });
+			return answer({ state: "not_run", why: "transport", code: errorCodeOf(error) });
+		}
+		if (!folder || !ready.folder)
+			return answer({ state: "not_run", why: "transport", code: "CODING_HOST_CHECKS_UNAVAILABLE" });
+		const { uid } = ready.folder;
+		// The run's own folder, named by its turn and its attempt so that the session's runs sort by time (the scripts'
+		// rule: a command of a run that is not the newest does nothing).
+		const name = codeChecksRunName(claim.sequence, input.attempt);
+		if (name === null) return answer({ state: "not_run", why: "transport", code: "CODE_CHECKS_RUN_NAME_INVALID" });
+		// The session user's home, as the folder command transport gives each command (HOME): on the machine's own disk.
+		const home = `/home/qorpera-${uid}`,
+			root = `${home}/.qorpera-checks`,
+			dir = `${root}/${name}`,
+			// Each command of the run by its place: the copy 0, each check from 1; the site's collect and drop by name.
+			commandId = (index: number | "site" | "drop") =>
+				codingHostId("checks", `${claim.workerId}:${claim.sequence}:${input.attempt}:${index}`);
+		// Every command of the run, the copy's, each check's and the site's, knows its run by the root and its name.
+		const base = {
+			...codingFolderGitEnvironment(claim.workerId),
+			CI: "true",
+			QORPERA_CHECKS: "1",
+			QORPERA_CHECKS_ROOT: root,
+			QORPERA_CHECKS_NAME: name,
+		};
+		const authorize = this.#commandAuthority(ready);
+		const checked: LxdCodingFolderCommandTransportOptions["authorize"] = async (...call) => {
+			try {
+				await authorize(...call);
+			} catch (error) {
+				throw new CodingChecksUnauthorized(error);
+			}
+		};
+		// A command of an earlier run that may still run is cancelled and read again first: while it may, no run starts
+		// and no folder is touched. Its end seen here clears only this guard: it stays uncertain, and is looked at again
+		// after this run's fence (a provisional `cancelled` here proves nothing). The turn's abort is thrown on.
+		const earlier = this.#checksMayRun.get(claim.workerId);
+		if (earlier !== undefined) {
+			let end: "ended" | "lost" | "unkept" | "running" = "running";
+			try {
+				end = await this.#stopChecksCommand(
+					this.#folderTransport(folder, ready, { cwd: home, environment: base, authorize: checked }),
+					ready.scope,
+					earlier,
+					folder,
+					signal,
+				);
+			} catch (error) {
+				if (signal.aborted) throw signal.reason;
+				this.#checksReport({ event: "code-checks-error", step: "earlier", ...said, error });
+			}
+			this.#checksReport({ event: "code-checks", step: "earlier", ...said, commandId: earlier, end });
+			if (end === "running")
+				return answer({ state: "not_run", why: "machine", code: CODE_CHECKS_EARLIER_RUN_NOT_STOPPED });
+			if (this.#checksMayRun.get(claim.workerId) === earlier) this.#checksMayRun.delete(claim.workerId);
+		}
+		// The run's wall budget: the copy's, each check's with its slack, and the site's when it takes one.
+		const budget = AbortSignal.timeout(
+			folder.checksBudgetMs ??
+				input.checks.reduce(
+					(total, check) => total + check.timeoutSeconds * 1000 + CODE_CHECKS_SLACK_MS,
+					CODE_CHECKS_COPY_MS + (recipe === null ? 0 : CODE_SITE_BUDGET_MS),
+				),
+		);
+		let copyMs = 0;
+		const passed: { name: string; run: string; ms: number }[] = [];
+		for (let index = 0; index <= input.checks.length; index++) {
+			const check = index === 0 ? undefined : (input.checks[index - 1] as CodeCheck);
+			// Its whole output, on the machine's disk until the next run.
+			const log = check ? `.qorpera-checks/${name}/out/${index}-${check.name}.log` : "";
+			let transport: LxdCodingFolderCommandTransport;
+			try {
+				transport = this.#folderTransport(folder, ready, {
+					cwd: check ? `${dir}/src` : home,
+					environment: check
+						? {
+								...base,
+								QORPERA_CHECK_CWD: check.cwd,
+								QORPERA_CHECK_RUN: check.run,
+								QORPERA_CHECK_LOG: `${home}/${log}`,
+							}
+						: {
+								...base,
+								QORPERA_CHECKS_REPOSITORY: repository,
+								QORPERA_CHECKS_COMMIT: input.commit,
+							},
+					authorize: checked,
+				});
+			} catch (error) {
+				this.#checksReport({ event: "code-checks-error", step: "run", ...said, error });
+				return answer({ state: "not_run", why: "transport", code: errorCodeOf(error) });
+			}
+			const command = {
+				commandId: commandId(index),
+				inputSha256: digest(
+					JSON.stringify({
+						schema: "qorpera.code-checks-command/v1",
+						commit: input.commit,
+						index,
+						run: check ? check.run : CODE_CHECKS_COPY,
+					}),
+				),
+				command: check ? CODE_CHECKS_CHECK : CODE_CHECKS_COPY,
+				timeoutMs: check ? check.timeoutSeconds * 1000 : CODE_CHECKS_COPY_MS,
+			};
+			const step = { ...said, folder: name, index, ...(check ? { check: check.name } : {}) };
+			this.#checksReport({ event: "code-checks", step: "started", ...step });
+			const started = performance.now();
+			const ended = await this.#checksCommand(transport, ready.scope, command, !check, budget, signal, folder);
+			const ms = elapsed(started);
+			if ("why" in ended) {
+				this.#checksReport({
+					event: "code-checks",
+					step: "ended",
+					...step,
+					ms,
+					state: "not_run",
+					...(ended.stopped === undefined ? {} : { stopped: ended.stopped }),
+				});
+				if (ended.error !== undefined)
+					this.#checksReport({ event: "code-checks-error", step: "command", ...step, error: ended.error });
+				return answer({ state: "not_run", why: ended.why, code: ended.code });
+			}
+			const { receipt } = ended;
+			if (ended.error !== undefined)
+				this.#checksReport({ event: "code-checks-error", step: "tail", ...step, error: ended.error });
+			this.#checksReport({
+				event: "code-checks",
+				step: "ended",
+				...step,
+				ms,
+				state: receipt.state,
+				exitCode: receipt.exitCode,
+			});
+			if (!check) {
+				// The copy is the platform's own command on a commit the code host just read: any ending but success is no
+				// fault of the code.
+				if (receipt.state === "succeeded") {
+					copyMs = ms;
+					// The fence stands: every command of an earlier run not seen to end for certain is cancelled and read once
+					// more before the first check starts. One that landed before the fence and still runs is stopped and
+					// confirmed, or no check of this run starts.
+					const running = await this.#checksLookAgain(claim, ready, folder, home, base, checked, said, signal);
+					if (running !== undefined) {
+						this.#checksMayRun.set(claim.workerId, running);
+						return answer({ state: "not_run", why: "machine", code: CODE_CHECKS_EARLIER_RUN_NOT_STOPPED });
+					}
+					continue;
+				}
+				return answer(
+					receipt.state === "failed"
+						? { state: "not_run", why: "copy", code: `CODE_CHECKS_COPY_EXIT_${receipt.exitCode}` }
+						: { state: "not_run", why: "machine", code: `CODE_CHECKS_${receipt.state.toUpperCase()}` },
+				);
+			}
+			const run = clipped(check.run, CODE_CHECKS_RUN_BYTES);
+			if (receipt.state === "succeeded") {
+				passed.push({ name: check.name, run, ms });
+				continue;
+			}
+			if (receipt.state !== "failed")
+				return answer({ state: "not_run", why: "machine", code: `CODE_CHECKS_${receipt.state.toUpperCase()}` });
+			return answer({
+				state: "failed",
+				ms: elapsed(began),
+				passed: passed.map(({ name, ms }) => ({ name, ms })),
+				failed: {
+					name: check.name,
+					run,
+					ms,
+					exitCode: receipt.exitCode,
+					atLimit: receipt.exitCode === 124 && ms >= check.timeoutSeconds * 1000,
+					tail: ended.tail,
+					log: `~/${log}`,
+				},
+				notRun: input.checks.slice(index).map(({ name }) => name),
+			});
+		}
+		const ms = elapsed(began);
+		if (recipe === null) return answer({ state: "passed", ms, copyMs, checks: passed, site: null });
+		const site = await this.#takeSite(
+			ready,
+			folder,
+			{
+				recipe,
+				commit: input.commit,
+				dir,
+				base,
+				repository,
+				authorize: checked,
+				budget,
+				commandId,
+				index: input.checks.length + 1,
+				step: { ...said, folder: name },
+			},
+			signal,
+		);
+		return answer(
+			"problem" in site
+				? { state: "site_refused", ms, checks: passed, problem: site.problem }
+				: { state: "passed", ms, copyMs, checks: passed, site },
+		);
+	}
+	/** The site the checks of a run left, once every one of them passed (own code storage, step 4; STEP4-BUILD.md 2).
+	 * 1. The names of the session's secrets the collect looks for: the keys of the vault's environment for the collect's
+	 *    own command id (`resolve` keeps that answer for the id, so its start asks nothing again), but those the command's
+	 *    own environment or the session's (CODING_FOLDER_SESSION_NAMES) sets, whose values win in the command. Never a
+	 *    value.
+	 * 2. The collect (`CODE_SITE_COLLECT`), one more command of the run: its own command id, at the copy's `src` (so a
+	 *    newer run's copy ends it by its working folder), within the run's budget, through #checksCommand, so that every
+	 *    rule of the run's commands holds for it (the two memories, the look again, the stop, `hidden`). Its ending is
+	 *    read from its receipt's output (`codeSiteCollectAnswer`): a problem the code made is the site refused; anything
+	 *    but its own ending is the site missed, with a code.
+	 * 3. The machine's boundary, through the wrapper a command's transport asks it through (#folderBoundary), asked again
+	 *    while it is checking or does not answer, for at most CODE_SITE_BOUNDARY_MS, and judged as `publish` judges it
+	 *    (every view of the machine): saved with nothing held, the site is made.
+	 * 4. Saved, the site is made; not saved, it is refused when the save check found one of the machine's secret values
+	 *    in what the collect wrote (`SITE_HOLDS_SECRET`, no variable named), and missed for anything else.
+	 * 5. Whenever the collect started and the site is not made and saved, the drop (`CODE_SITE_DROP`), a command of the
+	 *    run as the collect is, removes the objects the collect wrote (`site.wrote` stands before its first write), so that
+	 *    nothing of it stays pending in the session's view for a later boundary to hold on: after a refused or missed
+	 *    boundary, after the code's refusal, and after a collect that failed, ended at its limit, was stopped or was lost
+	 *    by the guest. Only once the collect is known to have ended (#checksCommand's `ended`): never beside one that may
+	 *    still write (a start never answered, a stop not confirmed), which the memories and the next run's look again
+	 *    end, and never after its exit 91 (a newer run's folder stood: it wrote nothing, and the drop would find the
+	 *    same). When a boundary was asked and did not save, it is asked once more after the drop; when none was asked,
+	 *    none is asked for the drop. What the drop came to changes nothing of the site.
+	 * The collect and the drop each run within their own limit and a minute more, and within what is left of the run's
+	 * budget (review, F1: a command whose reads are never released shows `running` until its bound): once the budget
+	 * passed, the drop cannot start. Each command starts once; the boundary is asked again while it checks or does not
+	 * answer, for at most CODE_SITE_BOUNDARY_MS. It throws only the turn's abort, as a check's command does, and starts
+	 * nothing after it: no drop either. */
+	async #takeSite(
+		ready: Prepared,
+		folder: FolderOptions,
+		run: SiteRun,
+		signal: AbortSignal,
+	): Promise<CodeSiteCollected | { problem: CodeSiteProblem }> {
+		const { recipe, budget } = run;
+		const missed = (code: string): CodeSiteCollected => ({ state: "missed", code });
+		const own: Record<string, string> = {
+			...run.base,
+			QORPERA_CHECKS_REPOSITORY: run.repository,
+			QORPERA_SITE_FOLDER: recipe.folder,
+		};
+		let names: string[];
+		try {
+			const secrets = this.#sessionSecrets(ready);
+			const { environment } = secrets
+				? await secrets.resolve(
+						{
+							companyId: ready.machine.companyId,
+							workerId: ready.claim.workerId,
+							machineId: ready.machine.machineId,
+							commandId: run.commandId("site"),
+							kind: "command",
+						},
+						AbortSignal.any([signal, budget]),
+					)
+				: { environment: {} };
+			names = Object.keys(environment)
+				.filter(
+					(name) =>
+						!Object.hasOwn(own, name) &&
+						name !== "QORPERA_SITE_SECRET_NAMES" &&
+						!CODING_FOLDER_SESSION_NAMES.has(name),
+				)
+				.sort();
+		} catch (error) {
+			if (signal.aborted) throw signal.reason;
+			this.#checksReport({ event: "code-checks-error", step: "secrets", ...run.step, error });
+			return missed(budget.aborted ? "CODE_CHECKS_BUDGET" : errorCodeOf(error));
+		}
+		const collected = await this.#siteCommand(
+			ready,
+			folder,
+			run,
+			"collect",
+			{ ...own, QORPERA_SITE_SECRET_NAMES: names.join(" ") },
+			signal,
+		);
+		// What the collect came to, and the boundary asked after a made one (none otherwise).
+		let site: CodeSiteCollected | { problem: CodeSiteProblem };
+		let boundary: Pick<CodingFolderControl, "boundary"> | undefined;
+		if ("code" in collected) site = missed(collected.code);
+		else if (collected.receipt.state !== "succeeded" && collected.receipt.state !== "failed")
+			site = missed(`CODE_SITE_COLLECT_${collected.receipt.state.toUpperCase()}`);
+		else {
+			const { receipt } = collected;
+			const ending = codeSiteCollectAnswer(receipt.output, receipt.exitCode);
+			if (ending === null)
+				site = missed(
+					receipt.exitCode === 0 || receipt.exitCode === 3
+						? "CODE_SITE_COLLECT_ANSWER_INVALID"
+						: `CODE_SITE_COLLECT_EXIT_${receipt.exitCode}`,
+				);
+			else if ("problem" in ending)
+				site = { problem: await this.#siteProblemMasked(ready, run, ending.problem, signal) };
+			else {
+				boundary = this.#folderBoundary(folder, ready.machine);
+				const judged = await this.#siteBoundary(boundary, ready, folder, budget, run.step, false, signal);
+				if (judged === "saved")
+					return {
+						state: "made",
+						...ending.made,
+						folder: recipe.folder,
+						name: recipe.name,
+						title: recipe.title,
+					};
+				site =
+					judged === "carries"
+						? { problem: { code: "SITE_HOLDS_SECRET", path: null, variable: null } }
+						: missed(judged);
+			}
+		}
+		// The drop, once the collect is known to have ended, and not after its exit 91 (it wrote nothing).
+		if (
+			("code" in collected && !collected.ended) ||
+			(!("code" in collected) && collected.receipt.state === "failed" && collected.receipt.exitCode === 91)
+		)
+			return site;
+		if (signal.aborted) throw signal.reason;
+		const dropped = await this.#siteCommand(
+			ready,
+			folder,
+			run,
+			"drop",
+			{ ...run.base, QORPERA_CHECKS_REPOSITORY: run.repository },
+			signal,
+		);
+		this.#checksReport({
+			event: "code-checks",
+			step: "dropped",
+			...run.step,
+			dropped: "code" in dropped ? null : codeSiteDropAnswer(dropped.receipt.output, dropped.receipt.exitCode),
+		});
+		if (boundary) await this.#siteBoundary(boundary, ready, folder, budget, run.step, true, signal);
+		return site;
+	}
+	/** A refused site's problem as the turn's words may show it (release review, F1): the path the collect named, which
+	 * its answer spells `\xHH` for a byte outside printable ASCII and for a backslash, was masked by the transport before
+	 * the parser decoded it, so a secret value holding such a byte passed. The decoded path is masked again here with the
+	 * mask of the collect's own output (every value the machine's masks cover: the session's, the machine's other
+	 * sessions' and their older ones, beyond the collect's own environment). No mask to be had (the session released
+	 * meanwhile, or the guest never took the start with these values): the path is not shown. Without secrets (no
+	 * broker) nothing is masked, as the transport masks nothing. The variable is a name the answer spells as itself,
+	 * already masked; every other part of a problem is a fixed word. The turn's abort is thrown on. */
+	async #siteProblemMasked(
+		ready: Prepared,
+		run: SiteRun,
+		problem: CodeSiteProblem,
+		signal: AbortSignal,
+	): Promise<CodeSiteProblem> {
+		const secrets = this.#sessionSecrets(ready);
+		if (problem.path === null || !secrets) return problem;
+		try {
+			const masks = await secrets.output(
+				{
+					companyId: ready.machine.companyId,
+					workerId: ready.claim.workerId,
+					machineId: ready.machine.machineId,
+					commandId: run.commandId("site"),
+					kind: "command",
+				},
+				signal,
+			);
+			if (masks === null) return { ...problem, path: null };
+			const mask = masks();
+			const masked = Buffer.concat([mask.push(Buffer.from(problem.path, "utf8")), mask.end()]);
+			return { ...problem, path: masked.toString("utf8") };
+		} catch (error) {
+			if (signal.aborted) throw signal.reason;
+			this.#checksReport({ event: "code-checks-error", step: "mask", ...run.step, error });
+			return { ...problem, path: null };
+		}
+	}
+	/** The site's collect or drop as a command of the run (#takeSite), to its end through #checksCommand, with its log
+	 * lines: its receipt, or the code of why it did not end on its own and whether it has ended all the same
+	 * (#checksCommand's `ended`; not for a command that never started). */
+	async #siteCommand(
+		ready: Prepared,
+		folder: FolderOptions,
+		run: SiteRun,
+		which: "collect" | "drop",
+		environment: Readonly<Record<string, string>>,
+		signal: AbortSignal,
+	): Promise<{ receipt: CloudCodingCommandReceipt } | { code: string; ended: boolean }> {
+		const step = { ...run.step, index: run.index + (which === "drop" ? 1 : 0), site: which };
+		let transport: LxdCodingFolderCommandTransport;
+		try {
+			transport = this.#folderTransport(folder, ready, {
+				cwd: `${run.dir}/src`,
+				environment,
+				authorize: run.authorize,
+			});
+		} catch (error) {
+			this.#checksReport({ event: "code-checks-error", step: "command", ...step, error });
+			return { code: errorCodeOf(error), ended: false };
+		}
+		const command =
+			which === "collect"
+				? {
+						commandId: run.commandId("site"),
+						inputSha256: digest(
+							JSON.stringify({
+								schema: "qorpera.code-site-command/v1",
+								commit: run.commit,
+								folder: run.recipe.folder,
+							}),
+						),
+						command: CODE_SITE_COLLECT,
+						timeoutMs: CODE_SITE_COLLECT_MS,
+					}
+				: {
+						commandId: run.commandId("drop"),
+						inputSha256: digest(JSON.stringify({ schema: "qorpera.code-site-drop/v1", commit: run.commit })),
+						command: CODE_SITE_DROP,
+						timeoutMs: CODE_SITE_DROP_MS,
+					};
+		this.#checksReport({ event: "code-checks", step: "started", ...step });
+		const started = performance.now();
+		// As the copy's: its output is its answer's lines, read from its receipt, and no failed check's tail is read. Its
+		// deadline is its own limit and a minute more, within the run's budget: the transport shows `running` for as long
+		// as the machine's reads are not released, also for a command the guest has ended (review, F1). Both signals are
+		// the run's own, never the turn's or the process's.
+		const bounded = AbortSignal.any([run.budget, AbortSignal.timeout(command.timeoutMs + CODE_CHECKS_SLACK_MS)]);
+		const ended = await this.#checksCommand(transport, ready.scope, command, true, bounded, signal, folder);
+		const ms = Math.round(performance.now() - started);
+		if ("why" in ended) {
+			this.#checksReport({
+				event: "code-checks",
+				step: "ended",
+				...step,
+				ms,
+				state: "not_run",
+				...(ended.stopped === undefined ? {} : { stopped: ended.stopped }),
+			});
+			if (ended.error !== undefined)
+				this.#checksReport({ event: "code-checks-error", step: "command", ...step, error: ended.error });
+			return { code: ended.code, ended: ended.ended };
+		}
+		this.#checksReport({
+			event: "code-checks",
+			step: "ended",
+			...step,
+			ms,
+			state: ended.receipt.state,
+			exitCode: ended.receipt.exitCode,
+		});
+		return { receipt: ended.receipt };
+	}
+	/** The machine's boundary after the site's collect (#takeSite), judged as `publish` judges it, over every view of the
+	 * machine: `saved` when every read was released and every view saved; `carries` when the save check refused paths for
+	 * one of the machine's secret values (and nothing else held them); else why not, as a code. Asked again each second
+	 * while it is checking or does not answer, for at most CODE_SITE_BOUNDARY_MS (`once`: asked once). The turn's abort
+	 * is thrown on. */
+	async #siteBoundary(
+		control: Pick<CodingFolderControl, "boundary">,
+		ready: Prepared,
+		folder: FolderOptions,
+		budget: AbortSignal,
+		step: Record<string, unknown>,
+		once: boolean,
+		signal: AbortSignal,
+	): Promise<string> {
+		const live = AbortSignal.any([
+			signal,
+			budget,
+			AbortSignal.timeout(folder.checksBoundaryMs ?? CODE_SITE_BOUNDARY_MS),
+		]);
+		const pace = Math.min(CODING_FOLDER_CHECK_RETRY_MS, folder.checksPollMs ?? CODING_FOLDER_CHECK_RETRY_MS);
+		let boundary: CodingFolderBoundary | undefined;
+		let asked = 0;
+		for (;;) {
+			asked++;
+			try {
+				boundary = await control.boundary(ready.machine.machineId, [], live);
+			} catch (error) {
+				if (signal.aborted) throw signal.reason;
+				boundary = undefined;
+				this.#checksReport({ event: "code-checks-error", step: "boundary", ...step, error });
+			}
+			if (once || (boundary !== undefined && !codingFolderBoundaryChecking(boundary))) break;
+			try {
+				await setTimeout(pace, undefined, { signal: live });
+			} catch {
+				if (signal.aborted) throw signal.reason;
+				break;
+			}
+		}
+		const judged = boundary === undefined ? "CODE_SITE_BOUNDARY_UNANSWERED" : siteBoundaryJudged(boundary);
+		this.#checksReport({ event: "code-checks", step: "boundary", ...step, again: once, asked, answer: judged });
+		return judged;
+	}
+	/** After a run's copy made its folder (the fence), each command of an earlier run of the session's checks not seen to
+	 * end for certain (#checksUncertain) is cancelled and read once more, within CODE_CHECKS_STOP_MS. Any answer but
+	 * `running` forgets it: it ended, or the host never kept it, or it is still absent (its provisional `cancelled`
+	 * again) or lost, and from now on the fence refuses it if it lands, and the copy has ended whatever of it ran in an
+	 * earlier run's folder. Answers the first one that still runs (it stays uncertain), or undefined. The turn's abort
+	 * is thrown on, the memory as it was. */
+	async #checksLookAgain(
+		claim: CodingSessionClaim,
+		ready: Prepared,
+		folder: FolderOptions,
+		home: string,
+		environment: Readonly<Record<string, string>>,
+		authorize: LxdCodingFolderCommandTransportOptions["authorize"],
+		said: Record<string, unknown>,
+		signal: AbortSignal,
+	): Promise<string | undefined> {
+		const uncertain = this.#checksUncertain.get(claim.workerId);
+		for (const commandId of [...(uncertain ?? [])]) {
+			let end: "ended" | "lost" | "unkept" | "running" = "running";
+			try {
+				end = await this.#stopChecksCommand(
+					this.#folderTransport(folder, ready, { cwd: home, environment, authorize }),
+					ready.scope,
+					commandId,
+					folder,
+					signal,
+				);
+			} catch (error) {
+				if (signal.aborted) throw signal.reason;
+				this.#checksReport({ event: "code-checks-error", step: "looked", ...said, error });
+			}
+			this.#checksReport({ event: "code-checks", step: "looked", ...said, commandId, end });
+			if (end === "running") return commandId;
+			uncertain?.delete(commandId);
+			if (uncertain?.size === 0) this.#checksUncertain.delete(claim.workerId);
+		}
+		return undefined;
+	}
+	/** One command of a run of the checks, to its end: started, then read every CODE_CHECKS_POLL_MS until it ends. A
+	 * call that fails is asked again at the next read (a start again is the same command) until the time of
+	 * CODE_CHECKS_UNANSWERED_READS reads passed without an answer. A command that ended is shown only as a model's
+	 * command would be (`hidden`). A failed check's tail is read once more, the last 16 KiB of its masked output, and
+	 * cut by the words' own rule (`codeChecksTail`, 6.4); when that read fails, the failure stands without a tail
+	 * (`error`). The turn's abort, the run's budget passing, or calls unanswered stop it first (#stopChecksCommand), and
+	 * the answer says whether its end was confirmed (`stopped`). Every way the host stops watching it without seeing it
+	 * end for certain leaves it in the session's memories (#checksMayRun, #checksUncertain): a start never answered, a
+	 * stop not confirmed, a receipt or a `hidden` that says `unconfirmed` (review round 6, F1). An answer that is not a
+	 * receipt says whether the command has ended all the same (`ended`, the site's drop asks it): the guest's own word,
+	 * a receipt in any state but `running` (`unconfirmed` too: the guest's unit is no longer live), so also when
+	 * `hidden` then shows nothing of it (it is asked only after such a receipt), or a stop that confirmed the end of a
+	 * start that was answered. Not ended: a start never answered, a stop not confirmed. */
+	async #checksCommand(
+		transport: LxdCodingFolderCommandTransport,
+		scope: CloudCodingCommandScope,
+		command: { commandId: string; inputSha256: string; command: string; timeoutMs: number },
+		copy: boolean,
+		budget: AbortSignal,
+		signal: AbortSignal,
+		folder: FolderOptions,
+	): Promise<
+		| { receipt: CloudCodingCommandReceipt; tail: string; error?: unknown }
+		| {
+				why: "machine" | "transport" | "authority" | "budget";
+				code: string;
+				error?: unknown;
+				stopped?: boolean;
+				ended: boolean;
+		  }
+	> {
+		const live = AbortSignal.any([signal, budget]);
+		const pollMs = folder.checksPollMs ?? CODE_CHECKS_POLL_MS;
+		const { commandId } = command;
+		// The command's last receipt: none while its start was never answered.
+		let receipt: CloudCodingCommandReceipt | undefined;
+		// Not seen to end for certain: looked at again after the next run's fence.
+		const uncertain = () => {
+			const commands = this.#checksUncertain.get(scope.workerId) ?? new Set<string>();
+			this.#checksUncertain.set(scope.workerId, commands.add(commandId));
+		};
+		// Whatever runs of it stops, with time of its own: once the turn has given up (its abort is thrown on after, the
+		// memories already written), the budget passed, or its calls went unanswered. A stop not confirmed holds every
+		// later run of the session's checks before anything. A start never answered is uncertain whatever its stop said
+		// (a `cancelled` may be provisional, and the start may land later); one the host never kept is not.
+		const stopped = async <T extends object>(then: T): Promise<T & { stopped: boolean; ended: boolean }> => {
+			const end = await this.#stopChecksCommand(transport, scope, commandId, folder);
+			if (end === "running") this.#checksMayRun.set(scope.workerId, commandId);
+			if (end !== "unkept" && (receipt === undefined || end !== "ended")) uncertain();
+			if (signal.aborted) throw signal.reason;
+			return {
+				...then,
+				stopped: end !== "running",
+				ended: receipt !== undefined && (end === "ended" || end === "lost"),
+			};
+		};
+		const overBudget = { why: "budget" as const, code: "CODE_CHECKS_BUDGET" };
+		const failed = (error: unknown) => ({
+			why: error instanceof CodingChecksUnauthorized ? ("authority" as const) : ("transport" as const),
+			code: errorCodeOf(error),
+			error,
+		});
+		let unanswered: number | undefined;
+		for (;;) {
+			try {
+				receipt = receipt
+					? await transport.read(scope, { commandId, tail: true, limit: 4096 }, live)
+					: await transport.start(scope, command, live);
+				unanswered = undefined;
+				if (receipt.state !== "running") break;
+			} catch (error) {
+				// Given up (`stopped` throws the turn's abort on), or past the budget.
+				if (signal.aborted || budget.aborted) return await stopped(overBudget);
+				unanswered ??= performance.now();
+				if (performance.now() - unanswered >= CODE_CHECKS_UNANSWERED_READS * pollMs)
+					return await stopped(failed(error));
+			}
+			try {
+				await setTimeout(pollMs, undefined, { signal: live });
+			} catch {
+				return await stopped(overBudget);
+			}
+		}
+		// Ended without a word of how (the guest lost it: its unit is no longer live). The host did not see how, so it is
+		// not an end for certain: looked at again after the next run's fence.
+		if (receipt.state === "unconfirmed") uncertain();
+		let tail = "",
+			unread: unknown;
+		if (receipt.state === "failed" && !copy)
+			try {
+				const end = await transport.read(scope, { commandId, tail: true, limit: 16384 }, live);
+				// A read that starts inside the output may start inside a line: from its first whole line, unless it is all
+				// one line. The tail's own rule is the words' (codeChecksTail).
+				const first = end.log.offset > 0 ? end.output.indexOf("\n") : -1;
+				tail = codeChecksTail(
+					first >= 0 && first < end.output.length - 1 ? end.output.slice(first + 1) : end.output,
+				);
+			} catch (error) {
+				if (signal.aborted) throw signal.reason;
+				unread = error;
+			}
+		try {
+			// Shown as a model's command is, or not at all: the machine may hold a read it no longer may show.
+			const hidden = await transport.hidden(commandId, live);
+			// The machine shows nothing of its commands now (`unconfirmed`): its receipt said it ended, but nothing of the
+			// machine's is believed until it shows its commands again, so it is looked at again after the next run's fence.
+			// A machine that stopped, or a disk it no longer has, ended it for certain. Either way it has ended (review, F2).
+			if (hidden === "unconfirmed") uncertain();
+			if (hidden !== undefined) return { why: "machine", code: `CODE_CHECKS_${hidden.toUpperCase()}`, ended: true };
+		} catch (error) {
+			if (signal.aborted) throw signal.reason;
+			// Its receipt said it ended.
+			return { ...(budget.aborted ? overBudget : failed(error)), ended: true };
+		}
+		return { receipt, tail, ...(unread === undefined ? {} : { error: unread }) };
+	}
+	/** Cancels one command of a run of the checks and reads it until it has ended, within CODE_CHECKS_STOP_MS: a cancel
+	 * that is rejected, or whose receipt still says `running`, is asked again at the next read. Answers whether its end
+	 * was confirmed: a receipt in any state but `running` (`machine_stopped` for a machine that stopped or was rebuilt
+	 * under it), no start of it the host ever kept (`CODING_COMMAND_UNKNOWN`), or `hidden` saying the machine it ran on
+	 * stopped or lost its disk. A cancel's own signal is the bound's, never the turn's: a turn that gave up still stops
+	 * what it started. `turn`, when given, is the turn's signal, whose abort is thrown on.
+	 *
+	 * One `cancelled` is not an end for certain (review round 4, F1): a start the guest never acknowledged may still land
+	 * after it, at any time or never, and nothing the host waits for can say which (the transport stops it when it next
+	 * reads it, and nothing may read it again). It is believed all the same, and the next run goes on, because such a
+	 * command is harmless by the scripts' own rule on the machine: it belongs to a run that is no longer the newest, and
+	 * its copy or check finds the newer run's folder (a higher name) and exits 91 having removed, made and run nothing
+	 * (CODE_CHECKS_NEWER_RUN). The host also keeps such a command as uncertain (#checksUncertain) and looks at it once
+	 * more after the next run's fence stands: a start that landed in the moment before the fence is stopped then,
+	 * besides the copy ending every process left in an earlier run's folder. Which answer is certain is the caller's
+	 * to judge: it alone knows whether the start was answered.
+	 *
+	 * Answers `ended` (a receipt in any state but `running` and `unconfirmed`, or `hidden` saying `machine_stopped`),
+	 * `lost` (a receipt `unconfirmed`: ended with no word of how), `unkept` (the host never kept a start of it: nothing
+	 * of it reached the guest), or `running` (the bound passed: it may still run). */
+	async #stopChecksCommand(
+		transport: LxdCodingFolderCommandTransport,
+		scope: CloudCodingCommandScope,
+		commandId: string,
+		folder: FolderOptions,
+		turn?: AbortSignal,
+	): Promise<"ended" | "lost" | "unkept" | "running"> {
+		const bound = AbortSignal.timeout(folder.checksStopMs ?? CODE_CHECKS_STOP_MS);
+		const checked = turn ? AbortSignal.any([turn, bound]) : bound;
+		const pollMs = folder.checksPollMs ?? CODE_CHECKS_POLL_MS;
+		for (;;) {
+			try {
+				const { state } = await transport.cancel(scope, commandId, checked);
+				if (state === "unconfirmed") return "lost";
+				if (state !== "running") return "ended";
+			} catch (error) {
+				if (turn?.aborted) throw turn.reason;
+				if (error instanceof Error && error.message === "CODING_COMMAND_UNKNOWN") return "unkept";
+				try {
+					if ((await transport.hidden(commandId, checked)) === "machine_stopped") return "ended";
+				} catch {
+					if (turn?.aborted) throw turn.reason;
+				}
+			}
+			try {
+				await setTimeout(pollMs, undefined, { signal: checked });
+			} catch {
+				if (turn?.aborted) throw turn.reason;
+				return "running";
+			}
+		}
 	}
 	/** One guest lease step of the session, so the keeper never renews it
 	 * between this attach and its first renewal. */
@@ -1807,6 +2879,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const root = await this.#directory("git"),
 			token = this.#repositoryToken(claim);
 		const folder = this.#options.folder;
+		// Only the folder model keeps repositories in Qorpera (its base came from the code host): never a push to GitHub.
+		if (claim.repository.host === "qorpera" && !(folder && ready.folder))
+			throw new Error("CODING_REPOSITORY_NOT_HERE");
 		let bundle: Buffer;
 		if (folder && ready.folder) {
 			// What the machine's views have pending is saved first: the export reads the session's work from the folder, so
@@ -1845,6 +2920,22 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			if (refusal) throw new CodingSaveRefused(refusal === "unchecked");
 			if (held !== undefined) throw new Error(`CODING_FOLDER_BOUNDARY_HELD:${held}`);
 			this.#current(ready);
+			// A repository kept in Qorpera (own code storage, slice 1): the commit lands on its default branch in the
+			// company folder. Nothing is pushed, no token is asked for, and there is no pull request. What the session
+			// saved was checked for its secret values by the folder's save check above.
+			if (claim.repository.host === "qorpera") {
+				const repositories = folder.repositories;
+				if (!repositories?.land) throw new Error("CODING_REPOSITORY_NOT_HERE");
+				if (submission.headSha === ready.baseSha) return { pullRequest: null, noChange: true };
+				// The picture the session named with its hand-in is checked by the landing, in the commit that lands.
+				const landed = await repositories.land(
+					this.#repositorySession(claim, ready.machine, ready.storage, ready.folder.uid, ready.baseSha, root),
+					submission.headSha,
+					signal,
+					submission.picture === undefined ? {} : { picture: submission.picture },
+				);
+				return { pullRequest: null, noChange: false, landed };
+			}
 			const exported = await (folder.repositories ?? codingFolderNoRepositories).export(
 				this.#repositorySession(claim, ready.machine, ready.storage, ready.folder.uid, ready.baseSha, root),
 				submission.headSha,
@@ -2857,69 +3948,19 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (!ready || !isDeepStrictEqual(scope, ready.scope)) throw new Error("CODING_HOST_TURN_NOT_PREPARED");
 		await this.#run(ready.claim, ready.machine, ready.storage, signal);
 		const folder = this.#options.folder;
+		const host = this.#commandAuthority(ready);
+		// The host's part first, then the model's own.
 		const checkedAuthorize: typeof authorize = async (action, checkedScope, commandId, inputSha256, checked) => {
-			this.#current(ready);
-			await this.#run(ready.claim, ready.machine, ready.storage, checked);
-			// On the folder model, a machine SQL holds marked for a new disk (this run's take-in may just have marked it)
-			// starts no command and shows none until it has one: its disk may hold what it read. A cancel still goes, and
-			// keeps and shows nothing of the command (the transport's `withheld` below, asked before anything is kept, and
-			// by its `hidden` after the command service's final authorization).
-			if (folder && ready.folder && action !== "cancel" && (await this.#newDiskDue(ready.machine, checked)))
-				throw new Error("CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK");
+			await host(action, checkedScope, commandId, inputSha256, checked);
 			await authorize(action, checkedScope, commandId, inputSha256, checked);
 		};
-		if (folder && ready.folder) {
-			// The session's own user runs each command through the guest agent, at its worktree, with Git's settings for
-			// the company folder, under the start the machine runs at that moment (none while it starts again), whichever
-			// start it was prepared under; the host keeps each command's start and output in the session's custody folder.
-			// That folder outlives a new disk, and goes with the session to another machine: what a command printed on a disk
-			// the machine no longer has, or on another machine, is never shown, whichever turn asks (the transport's `hidden`,
-			// by its `disk` from next to the machine's journal).
-			const { machineId } = ready.machine;
-			// A boundary that says the machine holds a read no longer readable marks it for a new disk (rule 4,
-			// `unreadable`), once: until it has one, a command's outcome waits for a release that does not come.
-			let marked = false;
-			const control: Pick<CodingFolderControl, "boundary"> = {
-				boundary: async (id, final, checked) => {
-					const boundary = await folder.control.boundary(id, final, checked);
-					if (!marked && codingFolderBoundaryUnreadable(boundary))
-						marked = await this.#markForFolder(ready.machine, true, checked).then(
-							() => true,
-							() => false,
-						);
-					return boundary;
-				},
-			};
-			return new LxdCodingFolderCommandTransport({
-				machine: ready.machine,
-				scope: ready.scope,
-				currentStart: () => this.#folderStartOperations.get(machineId),
-				session: {
-					uid: ready.folder.uid,
-					gid: ready.folder.uid,
-					cwd: ready.folder.cwd,
-					environment: CODING_FOLDER_GIT_ENVIRONMENT,
-				},
-				custody: ready.storage.custodySource,
-				limitBytes: this.#options.guest.resourceProfile.maxLogBytes,
-				guest: new LxdCodingGuestClient({ machine: ready.machine, client: folder.client }),
-				control,
-				withheld: (checked) => this.#newDiskDue(ready.machine, checked),
-				disk: async (checked) =>
-					codingMachineDisk(
-						await this.#directory("machines", checked),
-						lxdCodingMachineJournalPlan(ready.machine, this.#placement),
-					),
-				dropped: async (startOperationId, checked) =>
-					codingMachineStartDropped(
-						await this.#directory("machines", checked),
-						lxdCodingMachineJournalPlan(ready.machine, this.#placement),
-						startOperationId,
-					),
+		// The session's own user runs each command at its worktree, with Git's settings for the company folder.
+		if (folder && ready.folder)
+			return this.#folderTransport(folder, ready, {
+				cwd: ready.folder.cwd,
+				environment: codingFolderGitEnvironment(ready.claim.workerId),
 				authorize: checkedAuthorize,
-				secrets: this.#sessionSecrets(ready),
 			});
-		}
 		return new LxdCodingCommandTransport({
 			machine: ready.machine,
 			storage: this.#placement,
@@ -2930,6 +3971,84 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			client: this.#options.client,
 			authorize: checkedAuthorize,
 		});
+	}
+	/** The host's own part of the authority of each call on one of the turn's commands, the model's or its checks':
+	 * the turn is still prepared, and has a fresh run authority on its machine. */
+	#commandAuthority(ready: Prepared): LxdCodingFolderCommandTransportOptions["authorize"] {
+		const folder = this.#options.folder;
+		return async (action, _scope, _commandId, _inputSha256, checked) => {
+			this.#current(ready);
+			await this.#run(ready.claim, ready.machine, ready.storage, checked);
+			// On the folder model, a machine SQL holds marked for a new disk (this run's take-in may just have marked it)
+			// starts no command and shows none until it has one: its disk may hold what it read. A cancel still goes, and
+			// keeps and shows nothing of the command (the transport's `withheld` below, asked before anything is kept, and
+			// by its `hidden` after the command service's final authorization).
+			if (folder && ready.folder && action !== "cancel" && (await this.#newDiskDue(ready.machine, checked)))
+				throw new Error("CODING_HOST_MACHINE_REFUSED:MACHINE_NEW_DISK");
+		};
+	}
+	/** One command transport of the turn's session on the folder model, the model's commands' and its checks' alike:
+	 * the session's own user runs each command through the guest agent, at `cwd` and with `environment` beside its
+	 * secrets, under the start the machine runs at that moment (none while it starts again), whichever start it was
+	 * prepared under; the host keeps each command's start and output in the session's custody folder. That folder
+	 * outlives a new disk, and goes with the session to another machine: what a command printed on a disk the machine no
+	 * longer has, or on another machine, is never shown, whichever turn asks (the transport's `hidden`, by its `disk`
+	 * from next to the machine's journal). */
+	#folderTransport(
+		folder: FolderOptions,
+		ready: Prepared,
+		session: {
+			cwd: string;
+			environment: Readonly<Record<string, string>>;
+			authorize: LxdCodingFolderCommandTransportOptions["authorize"];
+		},
+	): LxdCodingFolderCommandTransport {
+		if (!ready.folder) throw new Error("CODING_HOST_TURN_NOT_PREPARED");
+		const { machineId } = ready.machine;
+		return new LxdCodingFolderCommandTransport({
+			machine: ready.machine,
+			scope: ready.scope,
+			currentStart: () => this.#folderStartOperations.get(machineId),
+			session: { uid: ready.folder.uid, gid: ready.folder.uid, cwd: session.cwd, environment: session.environment },
+			custody: ready.storage.custodySource,
+			limitBytes: this.#options.guest.resourceProfile.maxLogBytes,
+			guest: new LxdCodingGuestClient({ machine: ready.machine, client: folder.client }),
+			control: this.#folderBoundary(folder, ready.machine),
+			withheld: (checked) => this.#newDiskDue(ready.machine, checked),
+			disk: async (checked) =>
+				codingMachineDisk(
+					await this.#directory("machines", checked),
+					lxdCodingMachineJournalPlan(ready.machine, this.#placement),
+				),
+			dropped: async (startOperationId, checked) =>
+				codingMachineStartDropped(
+					await this.#directory("machines", checked),
+					lxdCodingMachineJournalPlan(ready.machine, this.#placement),
+					startOperationId,
+				),
+			authorize: session.authorize,
+			secrets: this.#sessionSecrets(ready),
+		});
+	}
+	/** The machine's boundary as the turn's commands ask it, a command's transport and the boundary after a site's
+	 * collect alike: one that says the machine holds a read no longer readable marks it for a new disk (rule 4,
+	 * `unreadable`), once: until it has one, a command's outcome waits for a release that does not come. */
+	#folderBoundary(
+		folder: FolderOptions,
+		machine: Readonly<LxdCodingMachineBinding>,
+	): Pick<CodingFolderControl, "boundary"> {
+		let marked = false;
+		return {
+			boundary: async (id, final, checked) => {
+				const boundary = await folder.control.boundary(id, final, checked);
+				if (!marked && codingFolderBoundaryUnreadable(boundary))
+					marked = await this.#markForFolder(machine, true, checked).then(
+						() => true,
+						() => false,
+					);
+				return boundary;
+			},
+		};
 	}
 
 	/** One pass over this executor's machines on this node: every idle member

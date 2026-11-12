@@ -1,19 +1,22 @@
-/* An interface's emblem (RUNTIME-INTERFACES.md §3): one solid shape in the interface's colour with white cuts,
- * the same two materials as the agents' figures, so an interface reads as a sibling of an agent in the rail
- * without wearing a figure. The shapes are fixed here; a file only names one. */
+/* An interface's emblem (RUNTIME-INTERFACES.md §3): one solid shape with cuts. Every emblem is black or white,
+ * against the member's theme (Jonas, 9 November 2026: simpler interfaces): the solid parts take the text colour, from
+ * `--emblem-ink` (styles/interfaces.css), and the cuts are holes, so a light theme shows black emblems and a dark one
+ * white. A file's `colour` no longer tints it. The shapes are fixed here; a file only
+ * names one. */
 
 import type { InterfaceEmblem } from "@qorpera/cloud-client/interfaces";
-import { colourNameHex } from "./avatar.ts";
 
 const NS = "http://www.w3.org/2000/svg";
-const CUT = "#ffffff";
+/** What the ink is drawn with before the stylesheet says otherwise: the light theme's text colour. */
+const INK = "#161615";
 
 type Part = readonly [tag: string, attrs: Readonly<Record<string, string>>];
 
-/** An emblem a file may name, or the Bank page's, which only the web draws (app/bank-page.ts). */
-export type Emblem = InterfaceEmblem | "bank";
+/** An emblem a file may name, or the Bank page's, the Sites page's or What's new's, which only the web draws
+ * (app/bank-page.ts, views/settings-sites.ts, views/whats-new.ts). */
+export type Emblem = InterfaceEmblem | "bank" | "globe" | "spark";
 
-/** Each emblem on a 48×48 grid: the solid parts take the colour, the cuts are white. */
+/** Each emblem on a 48×48 grid: the solid parts take the ink, the cuts the page colour. */
 const EMBLEMS: Readonly<Record<Emblem, readonly Part[]>> = {
 	bank: [
 		["path", { d: "M24 3.5 44.5 14.6a1.6 1.6 0 0 1-.8 3H4.3a1.6 1.6 0 0 1-.8-3z", fill: "solid" }],
@@ -23,6 +26,21 @@ const EMBLEMS: Readonly<Record<Emblem, readonly Part[]>> = {
 		["rect", { x: "26.5", y: "21", width: "5.5", height: "15", rx: "1.6", fill: "solid" }],
 		["rect", { x: "35.5", y: "21", width: "5.5", height: "15", rx: "1.6", fill: "solid" }],
 		["rect", { x: "3.5", y: "38.5", width: "41", height: "5.5", rx: "2.2", fill: "solid" }],
+	],
+	globe: [
+		["circle", { cx: "24", cy: "24", r: "20", fill: "solid" }],
+		[
+			"path",
+			{
+				d: "M4.5 24h39M24 4.5c-6 5.4-8.6 12-8.6 19.5S18 38.1 24 43.5M24 4.5c6 5.4 8.6 12 8.6 19.5S30 38.1 24 43.5",
+				stroke: "cut",
+			},
+		],
+	],
+	// What's new: a big spark and a small one, the small one top left, clear of the drawer's badge.
+	spark: [
+		["path", { d: "M28 9.5Q31.4 23.6 45.5 27Q31.4 30.4 28 44.5Q24.6 30.4 10.5 27Q24.6 23.6 28 9.5z", fill: "solid" }],
+		["path", { d: "M11 3Q12.7 9.3 19 11Q12.7 12.7 11 19Q9.3 12.7 3 11Q9.3 9.3 11 3z", fill: "solid" }],
 	],
 	pulse: [
 		["path", { d: "M24 4c11.6 0 20 8.2 20 19.4C44 35 35.4 44 24 44S4 35 4 23.4C4 12.2 12.4 4 24 4z", fill: "solid" }],
@@ -70,28 +88,67 @@ const EMBLEMS: Readonly<Record<Emblem, readonly Part[]>> = {
 	],
 };
 
-/** The emblem, `size` pixels square. `colour` is an agent colour name; without one the emblem is gray. */
-export function interfaceEmblem(emblem: Emblem | null, colour: string | null, size: number): SVGSVGElement {
-	const hue = colourNameHex(colour ?? "") ?? colourNameHex("gray") ?? "#7c7c7a";
+/** Each drawing gets its own mask, as a mask is found by its id across the whole page. */
+let masks = 0;
+
+/** The emblem, `size` pixels square, in the theme's ink (see above). The cuts are holes, not paint: every part's cut
+ * goes into one mask over the ink, so whatever the emblem sits on (a page, the rail, a tinted header) shows through
+ * them and nothing outside the ink is ever drawn (Jonas, 9 November 2026: a white rim showed around one of the Members
+ * emblem's two people on the page header). One mask is the same drawing as painting the parts in order, because no
+ * emblem draws ink over a cut drawn before it. */
+export function interfaceEmblem(emblem: Emblem | null, size: number): SVGSVGElement {
 	const svg = document.createElementNS(NS, "svg");
 	svg.setAttribute("viewBox", "0 0 48 48");
 	svg.setAttribute("width", String(size));
 	svg.setAttribute("height", String(size));
 	svg.setAttribute("aria-hidden", "true");
 	svg.setAttribute("class", "interface-emblem");
+	const id = `emblem-cuts-${++masks}`;
+	const mask = document.createElementNS(NS, "mask");
+	mask.setAttribute("id", id);
+	mask.setAttribute("maskUnits", "userSpaceOnUse");
+	for (const [name, value] of Object.entries({ x: "0", y: "0", width: "48", height: "48" }))
+		mask.setAttribute(name, value);
+	const whole = document.createElementNS(NS, "rect");
+	for (const [name, value] of Object.entries({ x: "0", y: "0", width: "48", height: "48", fill: "#fff" }))
+		whole.setAttribute(name, value);
+	mask.append(whole);
+	const ink = document.createElementNS(NS, "g");
+	ink.setAttribute("mask", `url(#${id})`);
 	for (const [tag, attrs] of EMBLEMS[emblem ?? "page"]) {
-		const part = document.createElementNS(NS, tag);
-		for (const [name, value] of Object.entries(attrs)) {
-			if (name === "fill") part.setAttribute("fill", value === "solid" ? hue : CUT);
-			else if (name === "stroke") {
-				part.setAttribute("stroke", value === "solid-line" ? hue : CUT);
-				part.setAttribute("stroke-width", value === "cut-thin" ? "2.6" : value === "cut-dot" ? "5.2" : "3.4");
-				part.setAttribute("stroke-linecap", "round");
-				part.setAttribute("stroke-linejoin", "round");
-				if (!("fill" in attrs)) part.setAttribute("fill", "none");
-			} else part.setAttribute(name, value);
+		const shape = Object.entries(attrs).filter(([name]) => name !== "fill" && name !== "stroke");
+		const make = () => {
+			const part = document.createElementNS(NS, tag);
+			for (const [name, value] of shape) part.setAttribute(name, value);
+			return part;
+		};
+		const { fill, stroke } = attrs;
+		const inked = fill === "solid" || stroke === "solid-line";
+		if (inked) {
+			const part = make();
+			part.setAttribute("fill", fill === "solid" ? INK : "none");
+			if (fill === "solid") part.setAttribute("data-fill", "ink");
+			if (stroke === "solid-line") lineOf(part, stroke, INK, "ink");
+			ink.append(part);
 		}
-		svg.append(part);
+		if (fill === "cut" || (stroke !== undefined && stroke !== "solid-line")) {
+			const hole = make();
+			hole.setAttribute("fill", fill === "cut" ? "#000" : "none");
+			if (stroke !== undefined && stroke !== "solid-line") lineOf(hole, stroke, "#000", "cut");
+			mask.append(hole);
+		}
 	}
+	const defs = document.createElementNS(NS, "defs");
+	defs.append(mask);
+	svg.append(defs, ink);
 	return svg;
+}
+
+/** A part's line: its colour, width and round ends. */
+function lineOf(part: Element, stroke: string, colour: string, kind: "ink" | "cut") {
+	part.setAttribute("stroke", colour);
+	part.setAttribute("data-stroke", kind);
+	part.setAttribute("stroke-width", stroke === "cut-thin" ? "2.6" : stroke === "cut-dot" ? "5.2" : "3.4");
+	part.setAttribute("stroke-linecap", "round");
+	part.setAttribute("stroke-linejoin", "round");
 }

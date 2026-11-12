@@ -17,7 +17,9 @@ import {
 	cloudCompanyContextTool,
 	cloudCompanyRuntimeInstructions,
 	cloudNativeStableInstructions,
+	cloudNativeTurnCorrection,
 	compileCloudNativeCompanyInstructions,
+	composeCloudContinuation,
 	composeCloudNativeCompanyPrompt,
 	composeCloudRoomRequest,
 	parseCloudNativeCompanyContext,
@@ -329,7 +331,7 @@ it.each([
 		"# Standing work",
 		"When a routine wakes you for your own work",
 		"When a member stopped your work, it stays stopped",
-		"A coding session cannot push, open a pull request or send messages itself",
+		"A coding session cannot push, merge, open a pull request or send messages itself",
 		"# Writing to people",
 	])
 		expect(instructions.includes(staff)).toBe(continues);
@@ -668,6 +670,11 @@ it.each(["cofounder", "employee"] as const)(
 			company: { path: "QorperaOS/skills", skills: [] },
 		});
 		expect(instructions).toContain("\n# Skills\nWhen update_skill is offered, keep your know-how as skills.");
+		// The notebook is explained, not pushed: what it is, when to use it, and that a run with nothing to note is fine.
+		expect(instructions).toContain(
+			"\n# Your notebook\nWhen update_memory is offered, you have a notebook of your own.",
+		);
+		expect(instructions).toContain("many runs have nothing to note, and that is fine.");
 		expect(instructions).toContain("- skills: step-by-step procedures you can follow, never permissions.");
 		// A member calls a skill from the composer as /name; the agent loads it before acting.
 		expect(instructions).toContain("such as /monthly-vat-report: load that skill with read_skill before you act");
@@ -705,10 +712,22 @@ it("points the Co-Founder at the company folder's own files, with no formation f
 	expect(cofounder).toContain("Your first job is building the vision with the founders");
 	expect(cofounder).toContain("You hire and manage: domain work, such as research, finance, sales or product");
 	expect(cofounder).toContain(
-		"As soon as you know what the company is about, hire the team that builds the vision with you: at least a researcher for the customers and their problem, a market watcher for competitors and the market, and a strategist",
+		"As soon as you know what the company is about, hire the team that builds the vision with you: at least a researcher for the customers and their problem, a market watcher for competitors and the market, a strategist who works out the options and weighs them, and a Branding & Identity specialist who owns the company's logo and look",
 	);
+	// v11 (Jonas, 9 November 2026): the Branding & Identity specialist makes a first identity at once, with the official
+	// logo where the app shows it, and keeps the brand current; renaming the company is deferred.
+	expect(cofounder).toContain("the official logo saved as QorperaOS/brand/logo.svg");
+	expect(cofounder).toContain("It leaves the company's name as it is");
+	expect(cofounder).not.toContain("proposes a new name");
+	expect(cofounder).toContain("brand and identity, suppliers and stock");
 	expect(cofounder).toContain("In that run, set up your daily plan routine");
-	expect(cofounder).toContain("the team's work runs on the model login of the founder whose conversation started it");
+	// v11 (Jonas, 9 November 2026): each agent works for one member; with two or more founders the team is dealt out.
+	expect(cofounder).not.toContain(
+		"the team's work runs on the model login of the founder whose conversation started it",
+	);
+	expect(cofounder).toContain("Each agent works for one member, whose ChatGPT carries the work handed to it");
+	expect(cofounder).toContain("With two or more founders, deal the team out between them by area");
+	expect(cofounder).toContain("offer agents to another member with offer_agents_to_member");
 	expect(cofounder).toContain("Hire freely for continuing work; never hire for a one-off task");
 	// v8 (Jonas, 4 November 2026): the team grows like a company of employees, not only once the vision is agreed.
 	expect(cofounder).toContain("Continuing work appears as soon as it exists, not only once the vision is agreed");
@@ -1521,35 +1540,94 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // level follows the agent's place ("the higher up the chain ... the less technical"; Jonas, 5 November 2026), and for
 // interface apps (what an agent wants members to see is an app beside the chat; Jonas, 5 November 2026), and for
 // the wall (status kept in place above the thread instead of messages; Jonas, 5 November 2026), and for readable
-// cards and overlay v10 ("approval cards are completely unreadable"; Jonas, 5 November 2026). A change to
-// either is a change to every run's bytes.
+// cards and overlay v10 ("approval cards are completely unreadable"; Jonas, 5 November 2026), and for overlay v11
+// (each agent works for one member and the Co-Founder deals the team out; Jonas, 9 November 2026), and for
+// interface apps that show the company's state and overlay v13 (each owner keeps one posted app current; Jonas,
+// 10 November 2026), and for patch notes before changes go live ("Yes, wait for me"; Jonas, 10 November 2026), and
+// for a project's history and its hand-over (#1643, 10 November 2026), and for the change record of the company's code
+// (each change numbered, undone and described with manage_code; own code storage step 2b, 10 November 2026), and for
+// the checks Qorpera runs before a change goes into the company's code (own code storage step 3, 11 November 2026), for
+// the wall's now line and what a wall line says (the sidebar's line under each name; Jonas, 11 November 2026), for
+// work that waits on a member going on a card that says what is stopped, with the wall's waiting items mirroring the
+// open cards ("it's really stopped at you"; Jonas, 11 November 2026), and for What's new as Qorpera's own page, where
+// a member puts a repository's website live (own code storage step 4, 11 November 2026). A change to any is a change
+// to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "c772cebb99c914a08014793ad6b9f57c4c3731cd75b1799ea78c99e7692ae6a1",
-			prompt: "5088f6d23c2a8393cde020abbca2d67b63cfbe5fe01ea553010236654c99c131",
+			instructions: "3de5a33b3eb1d057a12541173eabf2008b2b0fb4d6fb8ffb080ce7be73299f2a",
+			prompt: "87eaa2f504945457baf071474bd7bf712ef50dfc3e99267e0dc089a2d5cd5c44",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "0fc30ec213e757e7cc6c8b5a86a54b30d589ec912c752fb77d9026c1961b9402",
-			prompt: "69e519f56876b0be7bf4ad8f86491a8aca4a9996c16149f6c4674650f505cda0",
+			instructions: "f1619d401312264282ef667f8ba3f41be9f70486e123cc4684c5a3f0243a66c7",
+			prompt: "e9968a08aa5c4b04ee610f7f03014928730e88e9632df941d4d7912331534503",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "c772cebb99c914a08014793ad6b9f57c4c3731cd75b1799ea78c99e7692ae6a1",
-			prompt: "03f89e0a0ef624160697b40693ef59c921d5472236d894fd992186d85dcb25ed",
+			instructions: "3de5a33b3eb1d057a12541173eabf2008b2b0fb4d6fb8ffb080ce7be73299f2a",
+			prompt: "cae25d562292e7abd87158f86f29192c376cd4d484509a2a8135e14753940692",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
 	expect(stableFolderRun(kind)).toEqual(pinned);
+});
+
+// Own code storage, step 2b (20260930720000): every change in a repository kept in Qorpera has a number and a record,
+// and a wrong one is taken out with manage_code before it is fixed. The sentence that sent an undo to the session as a
+// follow-up (#1643) is gone: two ways to undo would be one too many.
+// Own code storage, step 3 (20260930721000): Qorpera runs a repository's checks before a change goes in, so the agent
+// follows up a failed check, stops after three in a row, reads why a change changed its checks, and checks itself only
+// what checks cannot.
+// Own code storage, step 4 (20260930729000): a repository that is a website names its built site in the checks file;
+// Qorpera keeps it for What's new, and a broken live site is a member's Go back there.
+it("tells every agent where a change's record is, what its checks mean, and to undo and describe with manage_code", () => {
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"Before a change goes into a repository kept in Qorpera, Qorpera runs the repository's checks (.qorpera/checks.json: the commands that install, test and build it) on a clean copy;",
+		"a change whose checks fail goes nowhere, and its session's turn fails with what failed: send the session a follow-up to fix it, and after three failures in a row narrow the change or drop it instead.",
+		"When the checks could not run, the code is not at fault: the session only finishes again.",
+		"A change that went in is in its main code before you read the result, and rejecting it takes nothing out.",
+		"Qorpera numbers each change and writes its record at code/<owner>/<name>/changes/<number>.md; changes/index.md lists them, newest first.",
+		"Its record says which checks passed and whether the change changed the checks themselves: when it did, read why before you rely on it.",
+		"A repository with no checks file takes its changes unchecked: have its next session add one.",
+		"Check what checks cannot yourself: open what a change built on a machine (its files are at code/<owner>/<name>/main/).",
+		"When it is wrong, take it out at once with manage_code, action undo; Qorpera does not check an undo, so check main again, and then send the session a follow-up that fixes it.",
+		"When its record lacks what a customer will notice, or a picture of it, add them with manage_code, action describe.",
+		// Own code storage, step 4: a repository's website, kept for What's new, and the way back when it is broken.
+		'When a repository is a website, its checks file also says where its checks leave the built site, "site": {"folder": "dist"}: Qorpera keeps the site of every change that passes for What\'s new, and changes/index.md says which version is live.',
+		"An undo goes live only with the next change that passes.",
+		"When the live site is broken, ask a member at once to press Go back in What's new.",
+		// What #1643 said of a project's history and its hand-over stays.
+		"A project's own history says what changed: on a machine, run git in /company/code/<owner>/<name>/main",
+		"To hand someone the whole project as one file, make it there into a folder of the company",
+		"Pull requests, branches, commits, diffs and checks are your tools, never the members' words",
+	])
+		expect(instructions).toContain(rule);
+	for (const gone of [
+		"fixes or undoes it at once",
+		"To undo a landed change",
+		"revert that commit",
+		"A change landed in a repository kept in Qorpera",
+		"Check a new change yourself first",
+	])
+		expect(instructions).not.toContain(gone);
+	// A worker reports to its agent and gets none of it.
+	const worker = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind: "worker-dispatch", id: randomUUID(), occurrenceKey: "dispatch" } } as never,
+		false,
+	);
+	expect(worker).not.toContain("manage_code");
+	expect(worker).not.toContain(".qorpera/checks.json");
+	expect(worker).not.toContain('"site": {"folder": "dist"}');
 });
 
 // Jonas, 5 November 2026: members "gave up immediately because of the exhausting amount of reading material". A
@@ -1589,9 +1667,10 @@ it("tells an agent to keep its wall instead of sending status messages", () => {
 		"Where you have update_wall, keep your wall with it: the card pinned above your thread",
 		"move a finished item to done in the same call, with a link to the work, and fix a wrong item where it stands",
 		"so it takes the place of status messages: update it, never a message, to say that work started, moved on or finished",
-		"a decision that waits for a member goes on the wall and in one line of your message",
+		"a decision that waits for a member goes on a card, on the wall and in one line of your message",
 		"a member's message that opens with a quoted line (`> ...`) answers that question from your wall",
-		"Take a question they answered off waiting, whichever way they answered it, and put a new question you ask them on it, in the same turn",
+		// 11 November 2026: the wall's waiting items mirror the open cards.
+		"What waits on them mirrors your open cards: put each card you raise on it in the same turn, and take a question they answered off it, whichever way they answered it.",
 	])
 		expect(instructions).toContain(rule);
 });
@@ -1605,19 +1684,195 @@ it("builds the founders' product at their ambition, and demos the product itself
 		"As soon as the vision names a product, hire the people who build it",
 		"once the product is clear, add the people who build it",
 		"Write the product in the vision as the founders describe it, at their ambition",
-		"The first thing they show the founders is the vision realized as a prototype of the finished product, at its full ambition",
+		"The first thing they show the founders is concepts: the vision realized as the finished product, at its full ambition. This is vision alignment through concepts",
 	])
 		expect(cofounder).toContain(rule);
 	const instructions = cloudCompanyRuntimeInstructions(null, false);
 	for (const rule of [
-		"The first demos prototype the vision realized: the finished product at the founders' full ambition, never a sketch of early work",
+		"The first things the company shows the founders are concepts: the vision realized as the finished product at the founders' full ambition, never a sketch of early work. This is vision alignment through concepts",
+		"Call them concepts, never demos, in what you say and in an app's title, such as the product's name followed by \"concepts\"",
 		"how the founders check that the company understood them and how the idea's potential is put to the test",
-		"A demo or prototype shows the company's own product as its customers will use it",
+		"A concept, like any prototype of the product, shows the company's own product as its customers will use it",
 		"on the platform it will run on, such as a phone app or a desktop or web application, at the quality the product promises",
 		"(for 3D, rendering in Blender on a machine), never a diagram or a toy in its place",
 		"choose what a strong team in that field would use",
 	])
 		expect(instructions).toContain(rule);
+});
+
+it("works out the solution before the brief, whatever example the founders showed (8 November 2026)", () => {
+	// Jonas, 8 November: a founder who only shows a post's AI-made picture and asks for "an app like this" must still
+	// get a product that works at scale; the platform derives it, without the founder knowing software.
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"Before the concepts comes the solution.",
+		"treat what they show as the need, never as the way to build it, and never ask them how to build it",
+		"write it in plain words in strategy/solution.md before the brief",
+		"how the strongest companies in the field build it, and why the quick ways fail",
+		"the foundation that follows, such as the data, the catalog of real items and how every item is prepared",
+		"Have people with the expertise research it, hiring them if the company lacks them",
+		"the product in one sentence, who it is for, how it works from the solution,",
+	])
+		expect(instructions).toContain(rule);
+	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
+		"Before the brief, the Co-Founder has the team work out the solution",
+	);
+});
+
+it("decides one full product as the solution, starting narrow in market, never in product (8 November 2026)", () => {
+	// Dekora, 8 November: Strategy listed image generation, editing and shopping as options and proposed selling
+	// generated pictures first, putting off real items until a cheaper test proved demand, in heavily hedged text.
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"The solution is one product, decided: the one that meets the need in full, not a menu of options for later and not a first version made the quick way.",
+		"Where to start narrows the market and the suppliers, never the product",
+		"until a lesser product proves demand, because testing a lesser product tests the wrong thing",
+		"say once, in one line, what still has to be checked, instead of hedging every paragraph",
+		"check it against what the founders said they want, and update it when they say more",
+	])
+		expect(instructions).toContain(rule);
+	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
+		"The solution is one product that meets the need in full: where to start narrows the market and the suppliers, never the product.",
+	);
+});
+
+it("makes concepts in four steps, looks at pictures, and writes to coworkers in plain words (8 November 2026)", () => {
+	// Jonas, 8 November: the agents jumped to building, researched only in text and never judged how anything looks,
+	// and their threads read as test reports.
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"Concepts are made in four steps, none skipped",
+		"write the concept brief in plain words in strategy/concept-brief.md, show it in the concepts app and put it on your wall for the founders",
+		"screenshots of their real screens saved as image files in research/moodboard/",
+		"Research that is only text does not count as looking.",
+		"make several clearly different directions of the key moments, each in the form that shows it best (clickable screens for software)",
+		"look at them as a demanding designer would, against the brief, the moodboard and the best reference",
+		"Passing tests is not done",
+		"Each built concept is its own interface app with concept = true, so the founders can open each one on its own.",
+		"A concept's directions are the exception to what follows: their workers make quick directions of the key moments, not finished apps or videos",
+		"never logs, check counts or file lists, because the founders read these threads",
+	])
+		expect(instructions).toContain(rule);
+	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
+		"The Co-Founder writes the concept brief with the founders before anything is built",
+	);
+});
+
+it("shows the company's work in interface apps from the first day, as fun quick choices (10 November 2026)", () => {
+	// Jonas, 10 November: in Dekora and Brooks no interface was made; a moodboard and PNG sketches lay in the folder,
+	// there was no concepts app, and the founders had nothing engaging to do while the agents worked.
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"Interface apps are where members see the company's work.",
+		"goes into one with save_app, when it is offered, on the day you make it",
+		"A file that sits only in the folder is not shown to anyone.",
+		"Keep one app per topic and grow it as the work moves on",
+		"clickable screens for an app or a website, a 3D view or a rendered turntable for an object or a space",
+		"A picture of a screen is not a screen.",
+		"Make following the work fun, not a chore",
+		"raise the choice as a question card whose options preview the app or its pictures, and show the same choice in the app",
+		'From the company\'s first day it keeps one concepts app, named after the product followed by "concepts", with concept = true and a cover',
+		"Show the moodboard in the concepts app, each picture with its note.",
+		"ask the founders to pick one with a question whose options preview them",
+	])
+		expect(instructions).toContain(rule);
+	expect(instructions).not.toContain("an SVG sketch written to the company file is enough");
+});
+
+it("has interface apps show the company's state, kept by each area's owner (10 November 2026)", () => {
+	// Jonas, 10 November: "agents lets you interact with your employees — interfaces let's you interact with your
+	// company directly". In Fjeldtur the seven agent-made apps were dated reports typed in by hand: none read the
+	// company's live data, one in three was out of date within hours, and nobody owned keeping them true.
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"in conversations they talk with you, its people, and in interface apps they look at the company itself",
+		"An app is not a report and not a message",
+		"keep one app that shows the state of that area, post it, and change it in the same run that changes the state",
+		"A page that no longer matches the company is worse than no page.",
+		"never open a page with a dated headline or a list of what you did",
+		"save_app tells you how to make a page worth opening",
+		"Before you link or post an app, look at it: when machine_run is offered, open its entry from /company/apps/<name>/ in a browser on a machine at 1280 and at 390 px wide",
+	])
+		expect(instructions).toContain(rule);
+	expect(cloudRuntimeHireBehavior("employee")).toContain(
+		"one interface app, posted, that shows how the area stands now",
+	);
+	const cofounder = cloudRuntimeHireBehavior("cofounder");
+	expect(cofounder).toContain("when one is missing, out of date or reads as a report of what was done");
+	expect(cofounder).toContain("keep one posted app for it (name it company) that shows the plan as it stands");
+});
+
+it("holds changes until a member says yes, and puts a repository's website live only from What's new", () => {
+	// Jonas, 10 November: "I would also like some version of an update list/patch notes for changes before they go
+	// live, if agents have worked on several changes it could just post all of them as a patchnote rundown with visuals
+	// and very brief and easy to digest text - or a video". Asked whether changes should wait for his yes on that page
+	// before they go live: "Yes, wait for me". Own code storage, step 4 (20260930729000): that page is Qorpera's own What's
+	// new, where a member puts a repository's website live; agents keep no whats-new app of their own. A worker's run
+	// reads the rule too (it is in every run's core).
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	const worker = cloudCompanyRuntimeInstructions(
+		{ kind: "agent", source: { kind: "worker-dispatch", id: randomUUID(), occurrenceKey: "dispatch" } } as never,
+		false,
+	);
+	for (const rule of [
+		"Before changes go live, show them and wait for a member's yes.",
+		// What "live" means, so the rule holds back a release and nothing else.
+		"A change goes live when people outside the team meet it: an update to a site that is already published, a new version of the product customers use, a new price, or a mail or post that goes out to many. Until then it is only ready.",
+		"A website made from a repository kept in Qorpera goes live only through Qorpera: each change whose checks pass shows on Qorpera's What's new page with its notice and picture, and a member puts it live there;",
+		"never publish it yourself or ask about it in a question card, and tell the member in one line that it waits in What's new.",
+		"For anything else that goes live, ask with one question card that shows what changes, with the options Put it live and Not yet: on yes, put it live in that run; on not yet, ask what to change.",
+		"Only a fix for something that is broken for customers right now goes live at once, and you tell the members the same day what you changed; a repository's website still waits for a member, who can press Go back in What's new.",
+	]) {
+		expect(instructions).toContain(rule);
+		expect(worker).toContain(rule);
+	}
+	// The app agents kept for it, and its rundown and buttons, are gone.
+	for (const gone of [
+		"whats-new",
+		"(publish_site on a live site)",
+		"show them together as one rundown",
+		"one question card that points at the app",
+		"show the same two as buttons on the page",
+		"Nothing in the rundown goes live",
+		"mark those changes as live on the page",
+		"marked as already live",
+	])
+		expect(instructions).not.toContain(gone);
+});
+
+it("has the Co-Founder open the company's email in its first run, (10 November 2026)", () => {
+	// Jonas, 10 November: a company should have its email from the start; no company had a mailbox.
+	const cofounder = cloudRuntimeHireBehavior("cofounder");
+	expect(cofounder).toContain(
+		"In that first run, before your hello, open the company's email so it works from day one: when manage_hook is offered, create the company's main mailbox (action create, kind mailbox) with the company's name in lowercase letters as its localPart",
+	);
+	expect(cofounder).toContain("Give the founders the address in your hello.");
+});
+
+it("has the finance owner set up the CVR and bank account and keep the Bank page's progress file (10 November 2026)", () => {
+	// Jonas, 10 November: the Bank page assumes most companies register and open their bank account from inside Qorpera;
+	// the page reads finance/bank-setup.json (packages/web/src/app/bank-setup.ts), which an agent must keep.
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	expect(instructions).toContain(
+		"A company registers (CVR) and opens its business bank account from inside Qorpera: the agent that owns the company's money does the work.",
+	);
+	expect(instructions).toContain(
+		"The founders decide what is theirs to decide, such as the company form (ApS or sole trader), its owners and their shares, and the share capital",
+	);
+	expect(instructions).toContain("record what exists as done instead of starting it again");
+	expect(instructions).toContain(
+		"When the company's existing account is at another bank, tell the founders it cannot show in Qorpera and let them choose whether to open one at a bank on this list.",
+	);
+	expect(instructions).toContain(
+		"Open the account only at a bank the Bank page can connect: Danske Bank, Nordea, Jyske Bank, Sydbank, Nykredit Bank, Arbejdernes Landsbank, Spar Nord Bank or Lunar",
+	);
+	expect(instructions).toContain(
+		'{"schema": "qorpera.bank-setup/v1", "agent": "<your name>", "company": {"status": "working"',
+	);
+	expect(instructions).toContain("where each status is todo, working, your_turn or done.");
+	expect(cloudRuntimeHireBehavior("cofounder")).toContain(
+		"hire a money owner and put the CVR registration, the bank account and finance/bank-setup.json in its job description.",
+	);
 });
 
 it("tells an agent to explore what is to be seen in loops, with demo videos in one posted app", () => {
@@ -1672,9 +1927,9 @@ it("tells every agent the seeded folders, how to make files and how to link them
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"A file they asked for, such as a page, a document, a plan or a prototype, is the work: make it.",
 	);
-	// Interface apps (Jonas, 5 November 2026): what an agent wants members to see is an app beside the chat.
+	// Interface apps (Jonas, 5 November 2026): what an agent wants members to see is an app; since 8 November it opens as a page of its own.
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
-		"make it an interface app with save_app when it is offered: a small web page in apps/<name>/ that members open beside the chat. Link it in your message as [Title](app:<name>) instead of pasting long text",
+		"An app is a small web page in apps/<name>/ that members open as a page of its own. A file that sits only in the folder is not shown to anyone. Keep one app per topic and grow it as the work moves on, instead of a new app for every step. Link it in your message as [Title](app:<name>) instead of pasting long text",
 	);
 	expect(CLOUD_COMPANY_RUNTIME_INSTRUCTIONS).toContain(
 		"its context names the company folder where the results belong, such as product/designs/.",
@@ -1698,7 +1953,11 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"It is the only work that needs a repository, and its files are under code/.",
 		// C4-1 (26 October 2026): the Co-Founder passed a member's "push it and open a draft PR, report the link" on to
 		// Codex, which cannot do any of that, and its turn ended with a written answer. Those words mean a hand-in.
-		"A coding session cannot push, open a pull request or send messages itself: when a member asks to push, open a PR or report its link, tell the session to commit and hand in with coding_finish, or to ask with coding_ask when it is blocked; the system then pushes the branch, opens the draft PR and brings you its link.",
+		"A coding session cannot push, merge, open a pull request or send messages itself: when a member asks for any of that, tell the session to commit and hand in with coding_finish, or to ask with coding_ask when it is blocked;",
+		// Own code storage, slice 1 (8 Nov 2026): the company's code is kept in Qorpera, and members hear outcomes only.
+		"The company's code lives in Qorpera: start a new repository there yourself (host qorpera), without asking anyone, and keep all new code there, also when the company has a GitHub connection.",
+		"Use GitHub only for code that already lives there, or when a member asks for GitHub by name: never create a GitHub repository or move code to GitHub otherwise, and never ask a member to connect GitHub, create a repository or give access for code you write.",
+		"Pull requests, branches, commits, diffs and checks are your tools, never the members' words",
 		"never guess the answer, or start on one, in the message that asks",
 		'Never end with a promise such as "I\'ll do it"',
 		// The 2026-10-22 amendment, items 5 and 6 (Jonas, 22 October): a conversation is the members' quick way in and
@@ -1986,4 +2245,371 @@ it("reads an answered card the history no longer holds by its id, and lets read_
 	} finally {
 		quiet.mockRestore();
 	}
+});
+
+/** A continuation as the context shows it: the source's first `shown` characters, with the whole text's length and hash. */
+function continuationExcerpt(
+	f: ReturnType<typeof nativeCompanyContextFixture>,
+	text: string,
+	shown: number,
+): CloudCompanyContextSource {
+	const whole = f.source("continuation", f.binding.runId, text);
+	const excerpt = [...text].slice(0, shown).join("");
+	return excerpt.length < [...text].length
+		? { ...whole, content: { ...whole.content, text: excerpt, nextOffset: shown, truncated: true } }
+		: whole;
+}
+
+/** The page read_context reads of a continuation from `offset`, up to `limit` bytes, as qorpera_read_company_run_context
+ * answers it (ASCII text here, so characters and bytes count alike). */
+function continuationPage(
+	f: ReturnType<typeof nativeCompanyContextFixture>,
+	text: string,
+	offset: number,
+	limit: number,
+): CloudCompanyContextSource {
+	const whole = f.source("continuation", f.binding.runId, text);
+	const end = Math.min(text.length, offset + limit);
+	return {
+		...whole,
+		content: {
+			...whole.content,
+			text: text.slice(offset, end),
+			offset,
+			nextOffset: end < text.length ? end : null,
+			truncated: true,
+		},
+	};
+}
+
+it("shows a continuation past 16 KiB to 32 KiB, its next page read as read_context reads it, and read_context reads on (perf T7)", async () => {
+	const f = nativeCompanyContextFixture();
+	const text = JSON.stringify({ schema: "qorpera.worker-completion-continuation/v1", results: "w".repeat(40000) });
+	f.context.continuation = continuationExcerpt(f, text, 16384);
+	f.context.initialAcknowledgementSatisfied = true;
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const call = vi.fn<CloudCompanyPathControl["call"]>(async (_method, args) =>
+		continuationPage(f, text, args.p_offset as number, args.p_limit as number),
+	);
+	const shown = await composeCloudContinuation(context, { call }, f.binding, new AbortController().signal);
+	// One page, from where the context's excerpt ends, of the same source by its hash: what the run's first
+	// read_context call asks for.
+	expect(call).toHaveBeenCalledTimes(1);
+	expect(call.mock.calls[0]?.[0]).toBe("qorpera_read_company_run_context");
+	expect(call.mock.calls[0]?.[1]).toEqual({
+		p_binding: f.binding,
+		p_source_kind: "continuation",
+		p_source_id: f.binding.runId,
+		p_expected_sha256: createHash("sha256").update(text).digest("hex"),
+		p_offset: 16384,
+		p_limit: 16384,
+	});
+	// The source's own first 32 KiB, from offset 0, with the handle read_context goes on from.
+	expect(shown?.content).toEqual({
+		text: text.slice(0, 32768),
+		originalBytes: Buffer.byteLength(text),
+		sha256: createHash("sha256").update(text).digest("hex"),
+		offset: 0,
+		nextOffset: 32768,
+		truncated: true,
+	});
+	expect({ ...shown, content: undefined }).toEqual({ ...context.continuation, content: undefined });
+	// The prompt shows it where the continuation always was; the run is still told to read it first.
+	const prompt = JSON.parse(composeCloudNativeCompanyPrompt({ ...context, continuation: shown }));
+	expect(prompt.continuation).toEqual(shown);
+	expect(prompt.delivery.beforeWork).toBe("read_continuation");
+	// read_context admits the same source by its id and hash, reads on from the nextOffset shown, and the run then
+	// holds the whole text, as it did after reading it page by page from 16 KiB.
+	const read = vi.fn<CloudCompanyPathControl["call"]>(async (_method, args) =>
+		continuationPage(f, text, args.p_offset as number, args.p_limit as number),
+	);
+	const tool = cloudCompanyContextTool(context, f.binding, { call: read });
+	const result = await tool.execute(
+		tool.parseArguments({
+			sourceKind: "continuation",
+			id: f.binding.runId,
+			sha256: shown?.content.sha256 as string,
+			offset: shown?.content.nextOffset as number,
+			limit: 16384,
+		}),
+		{
+			companyId: context.identity.companyId,
+			runId: f.binding.runId,
+			callId: "continuation-page",
+			argumentSha256: "a".repeat(64),
+			signal: new AbortController().signal,
+		},
+	);
+	const rest = JSON.parse(String(result.value)).content;
+	expect(rest.offset).toBe(32768);
+	expect(`${shown?.content.text}${rest.text}`).toBe(text.slice(0, rest.nextOffset ?? text.length));
+});
+
+it("shows a continuation two pages hold whole, and reads nothing for one the context shows whole or for none (perf T7)", async () => {
+	const f = nativeCompanyContextFixture();
+	const text = JSON.stringify({ schema: "qorpera.worker-stream/v1", reports: "r".repeat(25000) });
+	f.context.continuation = continuationExcerpt(f, text, 16384);
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const call = vi.fn<CloudCompanyPathControl["call"]>(async (_method, args) =>
+		continuationPage(f, text, args.p_offset as number, args.p_limit as number),
+	);
+	const shown = await composeCloudContinuation(context, { call }, f.binding, new AbortController().signal);
+	expect(call).toHaveBeenCalledTimes(1);
+	// The whole source, exactly as a continuation the context shows whole: nothing is left to read.
+	expect(shown).toEqual(f.source("continuation", f.binding.runId, text));
+	// A continuation the context shows whole, and no continuation, read nothing.
+	f.context.continuation = continuationExcerpt(f, "x".repeat(16000), 16384);
+	const whole = parseCloudNativeCompanyContext(f.context, f.binding);
+	expect(await composeCloudContinuation(whole, { call }, f.binding, new AbortController().signal)).toBe(
+		whole.continuation,
+	);
+	f.context.continuation = null;
+	const none = parseCloudNativeCompanyContext(f.context, f.binding);
+	expect(await composeCloudContinuation(none, { call }, f.binding, new AbortController().signal)).toBeNull();
+	expect(call).toHaveBeenCalledTimes(1);
+});
+
+it("keeps the context's continuation excerpt when its next page cannot be read or does not join to it (perf T7)", async () => {
+	const f = nativeCompanyContextFixture();
+	const text = JSON.stringify({ schema: "qorpera.worker-completion-continuation/v1", results: "v".repeat(25000) });
+	f.context.continuation = continuationExcerpt(f, text, 16384);
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	try {
+		// The read fails: the run starts with the excerpt, which read_context reads on from.
+		const failing = vi.fn<CloudCompanyPathControl["call"]>(async () => {
+			throw new Error("Cloud tool authority unavailable");
+		});
+		expect(await composeCloudContinuation(context, { call: failing }, f.binding, new AbortController().signal)).toBe(
+			context.continuation,
+		);
+		// A page that says it is the last but leaves text out does not join to the source by its length and hash.
+		const short = vi.fn<CloudCompanyPathControl["call"]>(async () => ({
+			...continuationPage(f, text, 16384, 4000),
+			content: { ...continuationPage(f, text, 16384, 4000).content, nextOffset: null },
+		}));
+		expect(await composeCloudContinuation(context, { call: short }, f.binding, new AbortController().signal)).toBe(
+			context.continuation,
+		);
+		// A page of another text (the continuation changed since the context was read) is refused as read_context
+		// refuses it.
+		const other = vi.fn<CloudCompanyPathControl["call"]>(async () => continuationPage(f, `${text} `, 16384, 16384));
+		expect(await composeCloudContinuation(context, { call: other }, f.binding, new AbortController().signal)).toBe(
+			context.continuation,
+		);
+		// Only the category is logged, never the text.
+		for (const [message] of error.mock.calls) expect(String(message)).not.toContain("vvvv");
+		expect(error).toHaveBeenCalledTimes(3);
+	} finally {
+		error.mockRestore();
+	}
+	// An aborted run stops instead of starting with the excerpt.
+	const aborted = new AbortController();
+	const hanging = vi.fn<CloudCompanyPathControl["call"]>(async () => {
+		aborted.abort(new Error("run cancelled"));
+		throw new Error("aborted");
+	});
+	await expect(composeCloudContinuation(context, { call: hanging }, f.binding, aborted.signal)).rejects.toThrow(
+		"run cancelled",
+	);
+});
+
+/** A value shaped like a webhook signing secret, made up for these tests: never a real one. */
+const FAKE_WEBHOOK_SECRET = `whsec_${"T7fakeNotASecret".repeat(2)}0000`;
+
+it("cuts webhook signing secrets out of the continuation the context shows, as read_context's pages have them cut", () => {
+	const f = nativeCompanyContextFixture();
+	// A machine event's continuation with a command's output that printed a signing secret twice: once in the first
+	// 4 KiB, and once past it, where #1468 (20260930617000) now shows the text instead of a read_context page.
+	const text = JSON.stringify({
+		schema: "qorpera.machine-event-continuation/v1",
+		events: [
+			{ outputTail: `${"a".repeat(1000)} ${FAKE_WEBHOOK_SECRET} ${"b".repeat(7000)}` },
+			{ outputTail: `export STRIPE_WEBHOOK_SECRET=${FAKE_WEBHOOK_SECRET}\n${"c".repeat(12000)}` },
+		],
+	});
+	const whole = f.source("continuation", f.binding.runId, text);
+	f.context.continuation = {
+		...whole,
+		content: { ...whole.content, text: text.slice(0, 16384), nextOffset: 16384, truncated: true },
+	};
+	expect(text.indexOf(FAKE_WEBHOOK_SECRET)).toBeLessThan(4096);
+	expect(text.lastIndexOf(FAKE_WEBHOOK_SECRET)).toBeGreaterThan(4096);
+	expect(text.lastIndexOf(FAKE_WEBHOOK_SECRET)).toBeLessThan(16384);
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const promptText = composeCloudNativeCompanyPrompt(context);
+	expect(promptText).not.toContain(FAKE_WEBHOOK_SECRET);
+	expect(promptText).not.toMatch(/whsec_[A-Za-z0-9+/=]{10,}/);
+	const shown = JSON.parse(promptText).continuation;
+	expect(shown.content.text.split("whsec_[REDACTED]")).toHaveLength(3);
+	// Only the text: the handle read_context reads on from is the source's own.
+	expect({ ...shown.content, text: undefined }).toEqual({ ...context.continuation?.content, text: undefined });
+	// The rest of the text is unchanged.
+	expect(shown.content.text).toBe(
+		context.continuation?.content.text.replaceAll(FAKE_WEBHOOK_SECRET, "whsec_[REDACTED]"),
+	);
+	// A continuation without one is shown as it is, and so is a bare or short whsec_, as the boundary leaves them.
+	f.context.continuation = f.source("continuation", f.binding.runId, '{"note":"whsec_ whsec_short"}');
+	const plain = parseCloudNativeCompanyContext(f.context, f.binding);
+	expect(JSON.parse(composeCloudNativeCompanyPrompt(plain)).continuation).toEqual(plain.continuation);
+});
+
+it.each(["currentInputs", "history", "request", "job", "jobSpecification", "continuation", "wake.payload"] as const)(
+	"cuts a webhook signing secret out of %s in the prompt, and keeps the source's handle",
+	(where) => {
+		const f = nativeCompanyContextFixture();
+		const text = `Paste from the terminal: STRIPE_WEBHOOK_SECRET=${FAKE_WEBHOOK_SECRET} (and more text)`;
+		const secretSource = (sourceKind: CloudCompanyContextSource["sourceKind"], id: string) =>
+			f.source(sourceKind, id, text);
+		let request: Parameters<typeof composeCloudNativeCompanyPrompt>[9] = [];
+		if (where === "currentInputs") f.context.currentInputs = [secretSource("input", f.context.currentInputs[0].id)];
+		if (where === "history") f.context.history = [secretSource("history", f.context.history[0].id)];
+		if (where === "job") f.context.job = secretSource("job", f.binding.runId);
+		if (where === "jobSpecification") f.context.jobSpecification = secretSource("job_spec", f.context.agent.id);
+		if (where === "continuation") f.context.continuation = secretSource("continuation", f.binding.runId);
+		const context = parseCloudNativeCompanyContext(f.context, f.binding);
+		const postId = randomUUID();
+		const room = roomWake(context, postId);
+		const wake = where === "wake.payload" ? { ...room, payload: { ...room.payload, note: text } } : room;
+		if (where === "request") request = [{ input: historyEntry(postId, 2, text, context.identity.requesterUserId) }];
+		const promptText = composeCloudNativeCompanyPrompt(
+			context,
+			wake,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			request,
+		);
+		expect(promptText).not.toContain(FAKE_WEBHOOK_SECRET);
+		const prompt = JSON.parse(promptText);
+		const shown =
+			where === "wake.payload"
+				? { content: { text: prompt.wake.payload.note } }
+				: where === "request"
+					? prompt.request[0].input
+					: where === "jobSpecification"
+						? prompt.hireOverlay.jobSpecification
+						: where === "currentInputs" || where === "history"
+							? prompt[where][0]
+							: prompt[where];
+		expect(shown.content.text).toBe(text.replace(FAKE_WEBHOOK_SECRET, "whsec_[REDACTED]"));
+		// The handle is the whole text's, as read_context and the run's checks know it.
+		if (where !== "wake.payload") {
+			const original = createHash("sha256").update(text).digest("hex");
+			expect(shown.content).toMatchObject({
+				sha256: original,
+				originalBytes: Buffer.byteLength(text),
+				offset: 0,
+				nextOffset: null,
+			});
+		}
+	},
+);
+
+it("fills a continuation from a 4 KiB excerpt to 32 KiB in two reads, and cuts a secret out of a page it read (perf T7)", async () => {
+	const f = nativeCompanyContextFixture();
+	// Under 20260930657100 the context shows 4 KiB; the second page here holds a made-up secret.
+	const text = JSON.stringify({
+		schema: "qorpera.machine-event-continuation/v1",
+		events: [{ outputTail: `${"e".repeat(9000)} STRIPE_WEBHOOK_SECRET=${FAKE_WEBHOOK_SECRET} ${"g".repeat(30000)}` }],
+	});
+	f.context.continuation = continuationExcerpt(f, text, 4096);
+	f.context.initialAcknowledgementSatisfied = true;
+	const context = parseCloudNativeCompanyContext(f.context, f.binding);
+	const call = vi.fn<CloudCompanyPathControl["call"]>(async (_method, args) =>
+		continuationPage(f, text, args.p_offset as number, args.p_limit as number),
+	);
+	const shown = await composeCloudContinuation(context, { call }, f.binding, new AbortController().signal);
+	// Two reads, as read_context would make them, up to 32 KiB in all and never past it.
+	expect(call.mock.calls.map(([, args]) => [args.p_offset, args.p_limit])).toEqual([
+		[4096, 16384],
+		[20480, 12288],
+	]);
+	expect(shown?.content).toMatchObject({ text: text.slice(0, 32768), offset: 0, nextOffset: 32768, truncated: true });
+	// What the model sees: the page's secret cut out, as a read_context page has it, and the source's own handle.
+	const promptText = composeCloudNativeCompanyPrompt({ ...context, continuation: shown });
+	expect(promptText).not.toContain(FAKE_WEBHOOK_SECRET);
+	const prompt = JSON.parse(promptText);
+	expect(prompt.continuation.content).toEqual({
+		...shown?.content,
+		text: text.slice(0, 32768).replace(FAKE_WEBHOOK_SECRET, "whsec_[REDACTED]"),
+	});
+});
+
+it.each([
+	["URL-encoded", "whsec_T7f%2BakeNotASecret%2F%3D"],
+	["JSON-escaped (PHP)", "whsec_T7f\\/akeNotASecret"],
+	["JSON-escaped (.NET)", "whsec_T7f\\u002BakeNotASecret"],
+])(
+	"cuts a webhook signing secret written %s out of the context message, where its escapes are doubled",
+	(_name, secret) => {
+		const f = nativeCompanyContextFixture();
+		f.context.currentInputs = [f.source("input", f.context.currentInputs[0].id, `The key: ${secret} (pasted)`)];
+		const context = parseCloudNativeCompanyContext(f.context, f.binding);
+		const promptText = composeCloudNativeCompanyPrompt(context);
+		expect(promptText).not.toContain("T7f");
+		const shown = JSON.parse(promptText).currentInputs[0];
+		expect(shown.content.text).toBe("The key: whsec_[REDACTED] (pasted)");
+		expect(shown.content.sha256).toBe(context.currentInputs[0].content.sha256);
+	},
+);
+
+it("tells a turn that ended with its closing act undone what is missing, and nothing when the run owes nothing", () => {
+	const run = {
+		worker: false,
+		reported: false,
+		canSend: true,
+		finalRequired: true,
+		sent: 0,
+		final: false,
+		askOffered: true,
+		routineDecisionOwed: false,
+	};
+	// A member's message: the final send, or a card.
+	const unanswered = cloudNativeTurnCorrection(run);
+	expect(unanswered).toContain("Your turn ended without a final send");
+	expect(unanswered).toContain("call send_message with phase final (a card from ask_member counts as one)");
+	expect(unanswered).toContain("This is the last turn of this run");
+	// A group chat offers no card.
+	expect(cloudNativeTurnCorrection({ ...run, askOffered: false })).not.toContain("ask_member");
+	// Sent, or optional and silent: the run ended as it may.
+	expect(cloudNativeTurnCorrection({ ...run, sent: 2, final: true })).toBeUndefined();
+	expect(cloudNativeTurnCorrection({ ...run, finalRequired: false })).toBeUndefined();
+	// A run with no public voice owes no send, whatever its policy says.
+	expect(cloudNativeTurnCorrection({ ...run, canSend: false })).toBeUndefined();
+	// A progress message is never a run's last word, also where the final is optional.
+	const spoken = cloudNativeTurnCorrection({ ...run, finalRequired: false, sent: 1 });
+	expect(spoken).toContain("after a progress message but without a final send");
+	// A dynamic routine's run decides first, and a silent one owes only its decision.
+	const undecided = cloudNativeTurnCorrection({ ...run, routineDecisionOwed: true }) as string;
+	expect(undecided.indexOf("decide_routine")).toBeGreaterThan(0);
+	expect(undecided.indexOf("decide_routine")).toBeLessThan(undecided.indexOf("Then send it now"));
+	const decisionOnly = cloudNativeTurnCorrection({ ...run, finalRequired: false, routineDecisionOwed: true });
+	expect(decisionOnly).toContain("call decide_routine now, with next or conclude");
+	expect(decisionOnly).not.toContain("send_message");
+	// A worker owes its report, and nothing once the folder saved it.
+	const worker = { ...run, worker: true, canSend: false, finalRequired: false };
+	expect(cloudNativeTurnCorrection(worker)).toContain("Call report_work now, once");
+	expect(cloudNativeTurnCorrection({ ...worker, reported: true })).toBeUndefined();
+	// A few sentences, within what the session takes as one more turn's input.
+	for (const text of [unanswered, spoken, undecided, decisionOnly, cloudNativeTurnCorrection(worker)])
+		expect(Buffer.byteLength(text as string)).toBeLessThan(1024);
+});
+
+// Jonas, 11 November 2026: "I would like the agents to be better at indicating when they need the users input and it's
+// really stopped at you. it's hard to tell right now." A blocking question goes on a card (the web shows the agent as
+// stopped at the member), never only in a message, and says what is stopped; nothing optional goes on one.
+it("tells an agent to ask what its work waits for on a card that says what is stopped", () => {
+	const instructions = cloudCompanyRuntimeInstructions(null, false);
+	for (const rule of [
+		"When your work cannot go on without a member's answer, ask it on a card wherever you can raise one, never only in a message: the card is how they see that the work is stopped at them.",
+		'Say on the card what is stopped until they answer, such as "I\'ve stopped the price list until you pick one".',
+		"Ideas they may take or leave and news for them never go on a card.",
+	])
+		expect(instructions).toContain(rule);
+	expect(instructions).not.toContain("put a new question you ask them on it");
 });

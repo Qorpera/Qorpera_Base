@@ -42,7 +42,12 @@ import {
 	parseMemoryTreeFile,
 } from "./memory-run-files.ts";
 import { NETWORK_RULES_PATH, type NetworkRulesFile, parseNetworkRulesFile } from "./network-rules.ts";
-import { STAFF_CHARACTER_IDS } from "./staff-characters.ts";
+import {
+	RETIRED_STAFF_CHARACTERS,
+	type RetiredStaffCharacterId,
+	STAFF_CHARACTER_IDS,
+	type StaffCharacterId,
+} from "./staff-characters.ts";
 
 export type CompanyStateFileKind =
 	| "vision"
@@ -170,7 +175,8 @@ export const HUMAN_TASK_CONTACT_REFUSED_ROOTS = Object.freeze([
 	"hooks",
 ] as const);
 
-export type AgentFigure = (typeof STAFF_CHARACTER_IDS)[number];
+/** A figure clients offer, or a retired one a saved agent.md still names (clients draw its replacement). */
+export type AgentFigure = StaffCharacterId | RetiredStaffCharacterId;
 export type AgentModel = (typeof AGENT_MODELS)[number];
 export type CompanyStateEffort = (typeof COMPANY_STATE_EFFORTS)[number];
 export type RoutineDay = (typeof DAYS)[number];
@@ -926,10 +932,16 @@ class Fields {
 		return text;
 	}
 
-	choice<const T extends string>(key: string, required: boolean, allowed: readonly T[]): T | null {
+	/** `alsoRead` holds values a saved file may still carry; a refusal names only `allowed`. */
+	choice<const T extends string, const R extends string = never>(
+		key: string,
+		required: boolean,
+		allowed: readonly T[],
+		alsoRead: readonly R[] = [],
+	): T | R | null {
 		const item = this.one(key, required);
 		if (!item) return null;
-		if ((allowed as readonly string[]).includes(item.text)) return item.text as T;
+		if ([...allowed, ...alsoRead].includes(item.text as T | R)) return item.text as T | R;
 		this.problems.add(
 			"value",
 			item.line,
@@ -1144,7 +1156,12 @@ function agent(split: Split, fields: Fields, problems: Problems): AgentFile | nu
 	const agentKind = fields.choice("kind", true, ["co-founder", "agent"] as const);
 	const status = fields.choice("status", true, ["active", "archived"] as const);
 	const colour = fields.choice("colour", false, AGENT_COLOURS);
-	const figure = fields.choice("figure", false, STAFF_CHARACTER_IDS);
+	const figure = fields.choice(
+		"figure",
+		false,
+		STAFF_CHARACTER_IDS,
+		Object.keys(RETIRED_STAFF_CHARACTERS) as RetiredStaffCharacterId[],
+	);
 	const model = fields.choice("model", false, AGENT_MODELS);
 	const effort = fields.choice("effort", false, COMPANY_STATE_EFFORTS);
 	const instructions = body(split, problems, "the agent's instructions", true, 32768);
@@ -1755,7 +1772,7 @@ function workerBrief(split: Split, fields: Fields, problems: Problems): WorkerBr
 	};
 }
 
-/** A coding brief's `harness`, `repository` (`github.com/<owner>/<name>`) and `base_branch` (C3a), or null with its
+/** A coding brief's `harness`, `repository` (`<host>/<owner>/<name>`: `qorpera/...` or `github.com/...`) and `base_branch` (C3a), or null with its
  * problems; an in-house brief has none of them. */
 function workerCoding(
 	fields: Fields,
@@ -1785,7 +1802,7 @@ function workerCoding(
 				"value",
 				fields.line("repository"),
 				"repository",
-				"repository must be a GitHub repository like github.com/acme/app",
+				"repository must be one kept in Qorpera like qorpera/company/app, or on GitHub like github.com/acme/app",
 			);
 	}
 	let branch: string | null = null;

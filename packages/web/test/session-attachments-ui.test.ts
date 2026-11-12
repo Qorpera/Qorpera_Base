@@ -184,6 +184,9 @@ async function setup() {
 		fetcher.mock.calls.filter(
 			([url]) =>
 				!String(url).includes("/qorpera_member_folder_") &&
+				// The rail's line under each agent's name reads the agents' walls and next planned runs (app/agent-notes.ts).
+				!String(url).endsWith("/qorpera_member_company_state_folders") &&
+				!String(url).endsWith("/qorpera_list_cloud_routines") &&
 				!String(url).endsWith("/qorpera_list_member_notifications") &&
 				!String(url).endsWith("/qorpera_list_session_turn_requests") &&
 				!String(url).endsWith("/qorpera_select_member_session_account") &&
@@ -202,9 +205,10 @@ describe("actual product conversation attachments", () => {
 		text.dispatchEvent(new Event("input"));
 		button(f.root, "Send message").click();
 		await vi.waitFor(() => expect(f.root.querySelector(".attachment-chip")).toBeNull());
-		await vi.waitFor(() => expect(f.root.querySelector(".received-file")).not.toBeNull());
+		// The sent image shows in the thread once the cloud has it, read once through the verified bytes route.
+		await vi.waitFor(() => expect(f.root.querySelector(".received-file.has-thumbnail img")).not.toBeNull());
 		expect(text.value).toBe("");
-		expect(f.requests()).toHaveLength(2);
+		expect(f.requests()).toHaveLength(3);
 		button(f.root, "Preview Image attachment").click();
 		await vi.waitFor(() => expect(document.querySelector("dialog img")).not.toBeNull());
 		expect(f.requests()).toHaveLength(3);
@@ -215,7 +219,16 @@ describe("actual product conversation attachments", () => {
 			name === "qorpera_member_digital_post" ||
 			name === "qorpera_member_interface_offers" ||
 			name === "qorpera_member_interface_supervisions" ||
-			name === "qorpera_member_interface_pages";
+			name === "qorpera_member_interface_pages" ||
+			// The apps drawer's Sites and What's new entries.
+			name === "qorpera_list_company_sites" ||
+			name === "qorpera_list_code_releases" ||
+			// The rail's line under each agent's name reads the next planned runs (app/agent-notes.ts).
+			name === "qorpera_list_cloud_routines" ||
+			// The account marks itself online for its friends (online-mark.ts).
+			name === "qorpera_mark_online" ||
+			// Company figures ask for the company's logo (app/company-logos.ts).
+			name === "qorpera_company_logos";
 		expect(vi.mocked(f.cloud.rpc).mock.calls.filter(([name]) => !companyRead(name))).toEqual([]);
 	});
 	it("retains files and the exact input ID after a lost sponsored response without replaying automatically", async () => {
@@ -264,7 +277,10 @@ describe("actual product conversation attachments", () => {
 		button(f.root, "Send message").click();
 		await vi.waitFor(() => expect(f.root.querySelector(".attachment-chip")).toBeNull());
 		expect(f.requests()[0]![0]).toBe(f.requests()[1]![0]);
-		expect(f.requests()).toHaveLength(3);
+		// Two uploads and one turn; the thread's own read of the sent image for its thumbnail may follow.
+		expect(f.requests().filter(([url]) => !String(url).includes("/member-session-attachments/input/"))).toHaveLength(
+			3,
+		);
 	});
 	it("fences an account change during upload and clears local images", async () => {
 		const f = await setup(),

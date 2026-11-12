@@ -86,6 +86,7 @@ export const HOSTED_DB_SCRIPTS = [
 	"scripts/test-runtime-bundle-activation.mjs",
 	"scripts/test-email-draft-e2e.mjs",
 	"scripts/test-runtime-node-capacity.mjs",
+	"scripts/test-runtime-cpu-allocation-ratio.mjs",
 	"scripts/test-runtime-office-delete-disposition.mjs",
 	"scripts/test-runtime-office-current-provider-activation.mjs",
 	"scripts/test-folder-service-core-shapes.mjs",

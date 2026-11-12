@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BANK_SUMMARY_PATH } from "../src/app/bank-page.ts";
+import { BANK_INTERFACE, BANK_SUMMARY_PATH } from "../src/app/bank-page.ts";
+import { BANK_SETUP_PATH, BANK_SETUP_SCHEMA, parseBankSetup } from "../src/app/bank-setup.ts";
 import { BANK_SUMMARY_SCHEMA, parseBankSummary } from "../src/app/bank-summary.ts";
 import { CompanyController } from "../src/app/company.ts";
 import type { InterfacePagesState } from "../src/app/interface-pages.ts";
-import { companyInterfaces } from "../src/app/interfaces.ts";
+import { companyInterfaces, folderSources } from "../src/app/interfaces.ts";
 import { type BankConnectionClient, noteBankReturn, parseKroner, renderBank } from "../src/app/views/bank.ts";
 import { renderInterface } from "../src/app/views/interface.ts";
 import { interfaceEmblem } from "../src/ui/interface-emblem.ts";
@@ -203,11 +204,11 @@ describe("the Bank page (app/views/bank.ts)", () => {
 	it("is listed once it is switched on, before the company has a summary, with the bank emblem", () => {
 		expect(companyInterfaces(company(false)).map((entry) => entry.name)).toEqual([]);
 		expect(companyInterfaces(company(true)).map((entry) => entry.name)).toEqual(["bank"]);
-		expect(interfaceEmblem("bank", "green", 40).querySelectorAll("rect")).toHaveLength(5);
+		expect(interfaceEmblem("bank", 40).querySelectorAll("g rect")).toHaveLength(5);
 	});
 
 	it("says there is no bank yet, or that its summary can't be read", () => {
-		expect(draw().textContent).toContain("No bank yet");
+		expect(draw().textContent).toContain("Let's get the company a bank account");
 		expect(draw("{}").textContent).toContain("The bank summary can't be read");
 	});
 
@@ -395,8 +396,8 @@ describe("connecting the company's bank (app/views/bank.ts)", () => {
 	it("lets an owner pick the bank, says where the login happens, and goes to the bank's own page", async () => {
 		const bank = client();
 		const { container, navigate } = await connectable(bank);
-		expect(container.textContent).toContain("No bank yet");
-		click(container, "Connect the bank");
+		expect(container.textContent).toContain("Let's get the company a bank account");
+		click(container, "Already have a bank account?");
 		expect(dialog()?.textContent).toContain("Which bank does the company use?");
 		expect(radio("Danske Bank")?.getAttribute("aria-checked")).toBe("true");
 		radio("Nordea")?.click();
@@ -422,7 +423,7 @@ describe("connecting the company's bank (app/views/bank.ts)", () => {
 		const bank = client();
 		bank.beginSignIn.mockRejectedValueOnce(new Error("broker"));
 		const { container, navigate } = await connectable(bank);
-		click(container, "Connect the bank");
+		click(container, "Already have a bank account?");
 		click(dialog() as HTMLElement, "Continue");
 		click(dialog() as HTMLElement, "Go to Danske Bank");
 		await settle();
@@ -432,16 +433,18 @@ describe("connecting the company's bank (app/views/bank.ts)", () => {
 
 	it("leaves connecting to owners and admins", async () => {
 		const { container } = await connectable(client(), undefined, "contributor");
-		expect(container.textContent).toContain("An owner or admin can connect the company's bank.");
+		expect(container.textContent).toContain("Let's get the company a bank account");
 		expect(
-			[...container.querySelectorAll("button")].some((button) => button.textContent === "Connect the bank"),
+			[...container.querySelectorAll("button")].some((button) =>
+				["Connect the bank", "Already have a bank account?"].includes(button.textContent ?? ""),
+			),
 		).toBe(false);
 	});
 
 	it("says a connected bank's numbers are on their way before its first summary", async () => {
 		const { container } = await connectable(client([connection()]));
 		expect(container.textContent).toContain("The bank is connected");
-		expect(container.textContent).not.toContain("Connect the bank");
+		expect(container.textContent).not.toContain("Already have a bank account?");
 	});
 
 	it("finishes the bank's sign-in when the member comes back, or says why it was not connected", async () => {
@@ -482,7 +485,7 @@ describe("connecting the company's bank (app/views/bank.ts)", () => {
 				}),
 		);
 		const { container, navigate } = await connectable(bank);
-		click(container, "Connect the bank");
+		click(container, "Already have a bank account?");
 		click(dialog() as HTMLElement, "Continue");
 		click(dialog() as HTMLElement, "Go to Danske Bank");
 		const signal = bank.beginSignIn.mock.calls[0]?.[2] as AbortSignal;
@@ -527,12 +530,12 @@ describe("connecting the company's bank (app/views/bank.ts)", () => {
 		bank.list.mockRejectedValueOnce(new Error("rpc"));
 		const { container } = await connectable(bank);
 		expect(container.textContent).toContain("The bank connection could not be read.");
-		expect(container.textContent).not.toContain("Connect the bank");
+		expect(container.textContent).not.toContain("Already have a bank account?");
 		click(container, "Try again");
 		await settle();
 		expect(bank.list).toHaveBeenCalledTimes(2);
 		expect(container.textContent).not.toContain("could not be read");
-		click(container, "Connect the bank");
+		click(container, "Already have a bank account?");
 		expect(dialog()).not.toBeNull();
 	});
 
@@ -540,14 +543,14 @@ describe("connecting the company's bank (app/views/bank.ts)", () => {
 		const bank = client();
 		const { container, controller } = await connectable(bank, undefined, "contributor");
 		const buttons = () => [...container.querySelectorAll("button")].map((button) => button.textContent?.trim());
-		expect(buttons()).not.toContain("Connect the bank");
+		expect(buttons()).not.toContain("Already have a bank account?");
 		const team = controller.store.get().team;
 		if (team) controller.store.set({ team: { ...team, role: "admin" } });
 		renderBank(container, controller, { connection: () => bank });
-		expect(buttons()).toContain("Connect the bank");
+		expect(buttons()).toContain("Already have a bank account?");
 		if (team) controller.store.set({ team: { ...team, role: "contributor" as "owner" } });
 		renderBank(container, controller, { connection: () => bank });
-		expect(buttons()).not.toContain("Connect the bank");
+		expect(buttons()).not.toContain("Already have a bank account?");
 	});
 
 	it("offers Connect again when the bank paused sharing, replacing the company's connection", async () => {
@@ -563,5 +566,249 @@ describe("connecting the company's bank (app/views/bank.ts)", () => {
 			country: "DK",
 			psuType: "business",
 		});
+	});
+});
+
+describe("how far the bank setup is (app/bank-setup.ts)", () => {
+	it("reads what the finance agent keeps, and forgives what it can't use", () => {
+		expect(
+			parseBankSetup(
+				JSON.stringify({
+					schema: BANK_SETUP_SCHEMA,
+					company: { status: "done", cvr: "4512 3456" },
+					account: { status: "your_turn", bank: "  Danske   Bank " },
+					yourTurn: "Sign the application in the Danske Bank app.",
+					agent: "Vera",
+				}),
+			),
+		).toEqual({
+			company: { status: "done", cvr: "45123456" },
+			account: { status: "your_turn", bank: "Danske Bank" },
+			yourTurn: "Sign the application in the Danske Bank app.",
+			agent: "Vera",
+		});
+		expect(
+			parseBankSetup(JSON.stringify({ schema: BANK_SETUP_SCHEMA, company: { status: "finished", cvr: "123" } })),
+		).toEqual({ company: { status: "todo" }, account: { status: "todo" } });
+		expect(parseBankSetup(JSON.stringify({ schema: "other", company: { status: "done" } }))).toBeNull();
+		expect(parseBankSetup("not json")).toBeNull();
+		expect(parseBankSetup(undefined)).toBeNull();
+		const long = parseBankSetup(
+			JSON.stringify({ schema: BANK_SETUP_SCHEMA, yourTurn: "x".repeat(500), agent: "y".repeat(500) }),
+		);
+		expect([...(long?.yourTurn ?? "")]).toHaveLength(200);
+		expect([...(long?.agent ?? "")]).toHaveLength(200);
+		expect(parseBankSetup(JSON.stringify({ schema: BANK_SETUP_SCHEMA, agent: "  Vera\n  Finance " }))?.agent).toBe(
+			"Vera Finance",
+		);
+		expect(parseBankSetup(JSON.stringify({ schema: BANK_SETUP_SCHEMA, agent: 7 }))).not.toHaveProperty("agent");
+	});
+
+	it("is a file the Bank page reads from the folder", () => {
+		const bank = companyInterfaces(company(true)).find((entry) => entry.name === "bank");
+		expect(bank).toBeDefined();
+		expect(folderSources(bank?.file as Parameters<typeof folderSources>[0]).files).toEqual([
+			BANK_SUMMARY_PATH,
+			BANK_SETUP_PATH,
+		]);
+		expect(BANK_INTERFACE).toContain(`from = "file:${BANK_SETUP_PATH}"`);
+	});
+});
+
+describe("getting the company a bank from inside Qorpera (app/views/bank.ts)", () => {
+	const vera = {
+		...staff,
+		id: id(41),
+		displayName: "Vera",
+		role: "Finance lead",
+		templateId: "financial-officer",
+		createdAt: "2026-11-01T10:00:00Z",
+	};
+	function client() {
+		return {
+			list: vi.fn(async () => []),
+			beginSignIn: vi.fn(async () => "https://tilisy.enablebanking.com/ais/start?sessionid=abc"),
+			finishSignIn: vi.fn(async () => "••6243"),
+		} as unknown as BankConnectionClient;
+	}
+	/** The Bank page with no bank yet, a finance agent or not, and how far the setup is. */
+	async function setupPage(
+		options: { finance?: boolean; staff?: (typeof staff)[]; setup?: Record<string, unknown>; role?: string } = {},
+	) {
+		const controller = company(true);
+		const state = controller.store.get();
+		controller.store.set({
+			staff: [cofounder, ...(options.finance ? [vera] : []), ...(options.staff ?? [])],
+			...(state.team ? { team: { ...state.team, role: (options.role ?? "owner") as "owner" } } : {}),
+			interfaceFolder: {
+				tables: new Map(),
+				files: options.setup
+					? new Map([[BANK_SETUP_PATH, JSON.stringify({ schema: BANK_SETUP_SCHEMA, ...options.setup })]])
+					: new Map(),
+				sources: new Map(),
+			},
+		});
+		const container = document.createElement("main");
+		document.body.append(container);
+		renderBank(container, controller, { connection: client, navigate: vi.fn() });
+		await settle();
+		return { container, controller };
+	}
+	const step = (root: ParentNode) => root.querySelector<HTMLElement>('.bank-setup-step[aria-current="step"]');
+	const buttons = (root: ParentNode) =>
+		[...root.querySelectorAll("button")].map((button) => button.textContent?.trim() ?? "");
+
+	it("starts with the Co-Founder hiring a finance agent, and keeps Connect the bank in the corner", async () => {
+		const { container } = await setupPage();
+		expect(container.textContent).toContain("Let's get the company a bank account");
+		expect(container.querySelector(".bank-setup-progress")?.textContent).toContain("Step 1 of 4");
+		expect(step(container)?.textContent).toContain("Hire a finance agent");
+		expect(step(container)?.textContent).toContain("Kaya finds one for the company.");
+		expect(buttons(container)).toEqual(["Already have a bank account?", "Ask Kaya to hire one"]);
+		expect([...container.querySelectorAll(".bank-setup-step h2")].map((title) => title.textContent)).toEqual([
+			"Hire a finance agent",
+			"Register the company",
+			"Open a business account",
+			"Connect it here",
+		]);
+		click(container, "Already have a bank account?");
+		expect(document.querySelector(".bank-connect-dialog")?.textContent).toContain("Which bank does the company use?");
+	});
+
+	it("opens the Co-Founder's thread with the hiring message waiting, and sends nothing", async () => {
+		const { container, controller } = await setupPage();
+		const opened = vi
+			.spyOn(controller, "openCofounderConversation")
+			.mockResolvedValue({ sessionId: session.sessionId });
+		const draft = vi.spyOn(controller, "addToDraft").mockImplementation(() => {});
+		const sent = vi.spyOn(controller, "sendPrompt");
+		location.hash = `#/c/${profileA.profileId}/i/bank`;
+		click(container, "Ask Kaya to hire one");
+		await settle();
+		expect(opened).toHaveBeenCalledOnce();
+		expect(draft).toHaveBeenCalledWith(session.sessionId, {
+			text: expect.stringContaining("Please hire a finance agent for the company."),
+			quotes: [],
+		});
+		expect(sent).not.toHaveBeenCalled();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}`);
+	});
+
+	it("hands the CVR and the account to the finance agent, in the agent's own thread", async () => {
+		const { container, controller } = await setupPage({ finance: true });
+		expect(container.querySelector(".bank-setup-progress")?.textContent).toContain("Step 2 of 4");
+		expect(container.querySelector(".bank-setup-step.is-done")?.textContent).toContain("Vera is on the team.");
+		expect(step(container)?.textContent).toContain("Register the company");
+		expect(step(container)?.textContent).toContain("Vera helps you choose between ApS and sole trader");
+		const opened = vi.spyOn(controller, "openStaffConversation").mockResolvedValue(session.sessionId);
+		const draft = vi.spyOn(controller, "addToDraft").mockImplementation(() => {});
+		location.hash = `#/c/${profileA.profileId}/i/bank`;
+		click(container, "Ask Vera to start");
+		await settle();
+		expect(opened).toHaveBeenCalledWith(expect.objectContaining({ id: vera.id }));
+		expect(draft).toHaveBeenCalledWith(session.sessionId, {
+			text: expect.stringContaining("Please register the company with a CVR number"),
+			quotes: [],
+		});
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/staff/${vera.id}`);
+	});
+
+	it("says the thread could not be opened, and stays on the page", async () => {
+		const { container, controller } = await setupPage({ finance: true });
+		vi.spyOn(controller, "openStaffConversation").mockRejectedValue(new Error(""));
+		location.hash = `#/c/${profileA.profileId}/i/bank`;
+		click(container, "Ask Vera to start");
+		await settle();
+		expect(container.textContent).toContain("The thread could not be opened.");
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/i/bank`);
+	});
+
+	it("shows the agent at work, then the founder's turn, as the agent keeps the setup file", async () => {
+		const working = await setupPage({ finance: true, setup: { company: { status: "working" } } });
+		expect(step(working.container)?.textContent).toContain("Vera is on it");
+		expect(buttons(working.container)).toContain("Open Vera's thread");
+		expect(buttons(working.container)).not.toContain("Ask Vera to start");
+		document.body.replaceChildren();
+		const { container } = await setupPage({
+			finance: true,
+			setup: {
+				company: { status: "done", cvr: "45123456" },
+				account: { status: "your_turn", bank: "Danske Bank" },
+				yourTurn: "Sign the application in the Danske Bank app.",
+			},
+		});
+		expect(container.querySelector(".bank-setup-progress")?.textContent).toContain("Step 3 of 4");
+		expect(container.textContent).toContain("CVR 45123456");
+		expect(step(container)?.textContent).toContain("Open a business account");
+		expect(step(container)?.querySelector(".bank-setup-turn")?.textContent).toBe(
+			"Your turnSign the application in the Danske Bank app.",
+		);
+		expect(step(container)?.querySelector(".btn-primary")?.textContent).toBe("Open Vera's thread");
+	});
+
+	it("ends with Connect the bank once the account is open, leaving connecting to owners and admins", async () => {
+		const setup = { company: { status: "done" }, account: { status: "done", bank: "Danske Bank" } };
+		const { container } = await setupPage({ finance: true, setup });
+		expect(container.querySelector(".bank-setup-progress")?.textContent).toContain("Step 4 of 4");
+		expect(container.textContent).toContain("Danske Bank");
+		expect(buttons(container)).toEqual(["Connect the bank"]);
+		document.body.replaceChildren();
+		const contributor = await setupPage({ finance: true, setup, role: "contributor" });
+		expect(contributor.container.textContent).toContain("An owner or admin can connect the company's bank.");
+		expect(buttons(contributor.container)).toEqual([]);
+	});
+
+	it("calls a Co-Founder still named Co-Founder the Co-Founder", async () => {
+		const { container, controller } = await setupPage();
+		controller.store.set({ staff: [{ ...cofounder, displayName: "Co-Founder" }] });
+		renderBank(container, controller, { connection: client, navigate: vi.fn() });
+		expect(step(container)?.textContent).toContain("The Co-Founder finds one for the company.");
+		expect(buttons(container)).toContain("Ask the Co-Founder to hire one");
+	});
+
+	it("knows the finance owner from the setup file, since agents hired through the folder carry no template", async () => {
+		const ida = {
+			...staff,
+			id: id(42),
+			displayName: "Ida",
+			role: "Finance",
+			appearance: { color: "#336699", shape: "round" },
+		};
+		const { container, controller } = await setupPage({
+			staff: [ida],
+			setup: { company: { status: "working" }, account: { status: "todo" }, agent: " ida " },
+		});
+		expect(container.querySelector(".bank-setup-progress")?.textContent).toContain("Step 2 of 4");
+		expect(container.querySelector(".bank-setup-step.is-done")?.textContent).toContain("Ida is on the team.");
+		expect(step(container)?.textContent).toContain("Ida is on it");
+		expect(container.querySelector(".bank-setup-hero p")?.textContent).toContain("Ida does the paperwork.");
+		expect(container.querySelector(".bank-setup-figure.is-waiting")).toBeNull();
+		const opened = vi.spyOn(controller, "openStaffConversation").mockResolvedValue(session.sessionId);
+		click(container, "Open Ida's thread");
+		await settle();
+		expect(opened).toHaveBeenCalledWith(expect.objectContaining({ id: ida.id }));
+	});
+
+	it("counts a setup file as the finance owner hired, even when its name matches no agent", async () => {
+		const unnamed = await setupPage({ setup: { company: { status: "todo" } } });
+		expect(unnamed.container.querySelector(".bank-setup-progress")?.textContent).toContain("Step 2 of 4");
+		expect(unnamed.container.querySelector(".bank-setup-step.is-done")?.textContent).toContain(
+			"The finance agent is on the team.",
+		);
+		document.body.replaceChildren();
+		const { container } = await setupPage({ setup: { company: { status: "working" }, agent: "Bo" } });
+		expect(step(container)?.textContent).toContain("Bo is on it");
+		expect(container.querySelector(".bank-setup-figure")).not.toBeNull();
+		expect(container.querySelector(".bank-setup-figure.is-waiting")).toBeNull();
+		// No agent by that name to write to, so no thread to open.
+		expect(buttons(container)).toEqual(["Already have a bank account?"]);
+	});
+
+	it("draws the steps again when the finance agent is hired", async () => {
+		const { container, controller } = await setupPage();
+		expect(step(container)?.textContent).toContain("Hire a finance agent");
+		controller.store.set({ staff: [cofounder, vera] });
+		renderBank(container, controller, { connection: client, navigate: vi.fn() });
+		expect(step(container)?.textContent).toContain("Register the company");
 	});
 });

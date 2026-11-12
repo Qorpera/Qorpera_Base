@@ -4,7 +4,7 @@ import { parseTomlSubset, TomlSubsetError } from "./toml-subset.ts";
 
 /* Interface apps (deploy/first-node/RUNTIME-INTERFACE-APPS.md, Jonas 5 November 2026): a small web page an agent makes
  * to show members something, kept as ordinary files in `apps/<name>/` of the Company File with an `app.toml` manifest.
- * The web runs it in the Company File's locked frame (packages/web/src/ui/page-frame.ts) and shows it beside the chat.
+ * The web runs it in the Company File's locked frame (packages/web/src/ui/page-frame.ts) and shows it as a page of its own.
  * This module is the format both sides read: names, the manifest's parser, which files an app may load, and the one
  * edit a reviewed post makes (`setAppPosted`). Browser-safe. */
 
@@ -26,9 +26,59 @@ export const APP_NAME_MAX_CHARS = 60;
 export const APP_ABOUT_MAX_CHARS = 200;
 export const APP_DEFAULT_ENTRY = "index.html";
 export const APP_DEFAULT_EMBLEM: InterfaceEmblem = "page";
-/** The live sources a manifest may ask for (§5). */
-export const APP_READS = Object.freeze(["files", "tables", "todos", "agents"] as const);
+/** The live sources a manifest may ask for (§5). `questions`: the agents' open question cards that point at the app. */
+export const APP_READS = Object.freeze(["files", "tables", "todos", "agents", "questions"] as const);
 export type AppRead = (typeof APP_READS)[number];
+/** The folders at the top of the Company File that the platform writes or keeps (the agents' prompt: "the platform
+ * writes digital-post/, bank/, members/ and hooks/"), by their keys (`companyPathKey`): an app's page reads no file in
+ * them and its links open none (§4, §5). */
+export const APP_CLOSED_FOLDERS: readonly string[] = Object.freeze([
+	"qorperaos",
+	"hooks",
+	"digital-post",
+	"bank",
+	"members",
+	"code",
+]);
+/** What a manifest's `writes` may list (§5): `answers`, an answer to an agent's open question that points at the app,
+ * and `table:<name>`, a row of that company table. The page only asks; the member allows each one on a bar the web
+ * draws outside the app's frame, and the save is the member's own. */
+export const APP_WRITE_ANSWERS = "answers";
+export const APP_WRITE_TABLE = "table:";
+export type AppWrite = typeof APP_WRITE_ANSWERS | `${typeof APP_WRITE_TABLE}${string}`;
+export const APP_WRITES_MAX = 16;
+/** Tables no app writes: the platform's own pages keep them (who owns and supervises what, on Members). */
+export const APP_WRITE_KEPT_TABLES: readonly string[] = Object.freeze(["areas"]);
+/** What `writes` must be, as a problem says it. */
+export const APP_WRITES_SHAPE = `a list of at most ${APP_WRITES_MAX} of ${APP_WRITE_ANSWERS} and ${APP_WRITE_TABLE}<name>, a company table's folder name`;
+
+/** The table a `writes` entry names, or null when the entry is not a table's. */
+export function appWriteTable(write: string): string | null {
+	return write.startsWith(APP_WRITE_TABLE) ? write.slice(APP_WRITE_TABLE.length) : null;
+}
+
+/** A manifest's `writes` as given (a TOML or JSON list), checked: the entries without repeats, or why not. */
+export function parseAppWrites(
+	value: unknown,
+): { readonly writes: readonly AppWrite[] } | { readonly problem: string } {
+	if (!Array.isArray(value) || value.length > APP_WRITES_MAX) return { problem: `writes must be ${APP_WRITES_SHAPE}` };
+	const writes: AppWrite[] = [];
+	for (const write of value) {
+		const table = typeof write === "string" ? appWriteTable(write) : null;
+		if (write !== APP_WRITE_ANSWERS && (table === null || !isInterfaceName(table)))
+			return { problem: `writes must be ${APP_WRITES_SHAPE}` };
+		if (table !== null && APP_WRITE_KEPT_TABLES.includes(table))
+			return { problem: `writes may not name the table ${table}: members change it on its own page` };
+		if (!writes.includes(write as AppWrite)) writes.push(write as AppWrite);
+	}
+	return { writes };
+}
+
+/** The kits an app can be made from (RUNTIME-INTERFACE-APPS.md §3a): `save_app` writes the kit's own files into the
+ * app's folder, and the agent writes only what the kit leaves to it. `explainer` is a short narrated video: the kit
+ * writes `engine.js` and `index.html`, the agent `scenes.js`. */
+export const APP_KITS = Object.freeze(["explainer"] as const);
+export type AppKit = (typeof APP_KITS)[number];
 
 /** The kinds of file a page may load, by extension, with the media type each is handed to the frame as. */
 export const APP_FILE_TYPES: Readonly<Record<string, string>> = Object.freeze({
@@ -81,6 +131,15 @@ export interface AppManifest {
 	readonly owner: string | null;
 	readonly posted: boolean;
 	readonly reads: readonly AppRead[];
+	/** What the page may ask the member to change (§5); empty for a page that only shows. */
+	readonly writes: readonly AppWrite[];
+	/** A concept of the company's product (Jonas, 8 November 2026: "vision alignment through concepts"): it shows in the
+	 * Concepts viewer, beside the company's other concepts, not as an app of its own. */
+	readonly concept: boolean;
+	/** A picture of the app, relative to its folder (.png, .jpg or .webp), shown as its thumbnail; null for none. */
+	readonly cover: string | null;
+	/** The kit the app is made from, or null for a page the agent wrote whole. A kit's page is `index.html`. */
+	readonly kit: AppKit | null;
 }
 
 export interface AppProblem {
@@ -92,7 +151,22 @@ export type AppManifestParse =
 	| { readonly ok: true; readonly manifest: AppManifest }
 	| { readonly ok: false; readonly problems: readonly AppProblem[] };
 
-const KEYS = ["name", "about", "emblem", "colour", "entry", "owner", "posted", "reads"];
+const KEYS = [
+	"name",
+	"about",
+	"emblem",
+	"colour",
+	"entry",
+	"owner",
+	"posted",
+	"reads",
+	"writes",
+	"concept",
+	"cover",
+	"kit",
+];
+/** The kinds a cover may be. */
+export const APP_COVER_KINDS: ReadonlySet<string> = new Set(["png", "jpg", "jpeg", "webp"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** A file's kind: its extension, lowercase, or "" for none. */
@@ -206,6 +280,18 @@ export function parseAppManifest(text: string): AppManifestParse {
 		if (typeof value.posted !== "boolean") problem("posted", "posted must be true or false");
 		else posted = value.posted;
 	}
+	let concept = false;
+	if (value.concept !== undefined) {
+		if (typeof value.concept !== "boolean") problem("concept", "concept must be true or false");
+		else concept = value.concept;
+	}
+	let cover: string | null = null;
+	if (value.cover !== undefined) {
+		const relative = typeof value.cover === "string" ? appRelativePath(value.cover) : null;
+		if (relative === null || !APP_COVER_KINDS.has(appFileKind(relative)))
+			problem("cover", "cover must be a relative path to a .png, .jpg or .webp picture in the app's folder");
+		else cover = relative;
+	}
 	const reads: AppRead[] = [];
 	if (value.reads !== undefined) {
 		if (!Array.isArray(value.reads)) problem("reads", `reads must be a list of ${APP_READS.join(", ")}`);
@@ -216,8 +302,21 @@ export function parseAppManifest(text: string): AppManifestParse {
 				else if (!reads.includes(read as AppRead)) reads.push(read as AppRead);
 			}
 	}
+	let writes: readonly AppWrite[] = [];
+	if (value.writes !== undefined) {
+		const parsed = parseAppWrites(value.writes);
+		if ("problem" in parsed) problem("writes", parsed.problem);
+		else writes = parsed.writes;
+	}
+	const kit = choice("kit", APP_KITS);
+	// A kit writes its own page, so there is one place it opens.
+	if (kit !== null && entry !== APP_DEFAULT_ENTRY)
+		problem("entry", `an app made from a kit opens ${APP_DEFAULT_ENTRY}: leave entry out`);
 	if (problems.length > 0 || name === null) return { ok: false, problems };
-	return { ok: true, manifest: { name, about, emblem, colour, entry, owner, posted, reads } };
+	return {
+		ok: true,
+		manifest: { name, about, emblem, colour, entry, owner, posted, reads, writes, concept, cover, kit },
+	};
 }
 
 /** A TOML basic string. */
@@ -235,6 +334,10 @@ export function writeAppManifest(manifest: AppManifest): string {
 	if (manifest.owner) lines.push(`owner = ${tomlString(manifest.owner)}`);
 	lines.push(`posted = ${manifest.posted}`);
 	if (manifest.reads.length > 0) lines.push(`reads = [${manifest.reads.map(tomlString).join(", ")}]`);
+	if (manifest.writes.length > 0) lines.push(`writes = [${manifest.writes.map(tomlString).join(", ")}]`);
+	if (manifest.concept) lines.push("concept = true");
+	if (manifest.cover) lines.push(`cover = ${tomlString(manifest.cover)}`);
+	if (manifest.kit) lines.push(`kit = ${tomlString(manifest.kit)}`);
 	return `${lines.join("\n")}\n`;
 }
 

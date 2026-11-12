@@ -19,17 +19,19 @@
 
 /* ---- account menu ---------------------------------------------------------- */
 :root[data-theme="dark"] .account-chip { background: #5c5b58; }
-:root[data-theme="dark"] :is(.account-popover, .context-menu, .rail-drag-ghost) { box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3); }
+:root[data-theme="dark"] :is(.account-popover, .context-menu, .composer-menu) { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3); }
+:root[data-theme="dark"] .rail-drag-ghost { box-shadow: 0 22px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3); }
 
 /* ---- rail ------------------------------------------------------------------ */
-:root[data-theme="dark"] .rail { --rail-line: var(--bg); --rail-search-ink: var(--text-muted); --rail-small: #adaca7; --rail-status-failed: #ff453a; }
-:root[data-theme="dark"] .rail-drag-ghost { --rail-status-failed: #ff453a; }
+:root[data-theme="dark"] .rail { --rail-line: var(--bg); --rail-search-ink: var(--text-muted); --rail-small: #adaca7; --rail-status-failed: #ff453a; --rail-waiting: #ffb547; }
+:root[data-theme="dark"] .rail-drag-ghost { --rail-status-failed: #ff453a; --rail-waiting: #ffb547; }
 :root[data-theme="dark"] .rail-add, :root[data-theme="dark"] .rail-apps { color: #a9a8a3; }
 :root[data-theme="dark"] .rail-toolbar.is-searching .rail-search { box-shadow: 0 0 0 1px rgb(255 255 255 / 10%); }
 :root[data-theme="dark"] .rail-search input::placeholder { color: var(--text-muted); }
 :root[data-theme="dark"] .cofounder-stand::before { background: rgba(0, 0, 0, 0.5); }
 :root[data-theme="dark"] .rail-row-copy small { color: #adaca7; }
 :root[data-theme="dark"] .rail-row.active .rail-row-copy small { color: rgba(255, 255, 255, 0.92); }
+:root[data-theme="dark"] .rail-row:not(.active) .rail-row-copy small.is-failed { color: #ff6961; }
 
 /* ---- hub ------------------------------------------------------------------- */
 :root[data-theme="dark"] .company-card:is(:hover, :focus-visible) .company-stage { box-shadow: 0 22px 40px -24px rgba(0, 0, 0, 0.75); }
@@ -99,11 +101,13 @@
 :root[data-theme="dark"] .mine .bubble { background: var(--composer-accent); color: var(--composer-on-accent); box-shadow: none; }
 :root[data-theme="dark"] .message-progress .bubble { color: #dedcd8; }
 :root[data-theme="dark"] .composer-shell { background: #242423; }
+/* The thread foot's glass, on the dark surface (conversation.css). */
+:root[data-theme="dark"] .thread-foot { --glass-bg: color-mix(in srgb, #242423 74%, transparent); --glass-edge: rgb(255 255 255 / 10%); --glass-shadow: 0 1px 2px rgb(0 0 0 / 30%), 0 8px 26px rgb(0 0 0 / 35%); }
+:root[data-theme="dark"] .thread-foot .composer-shell { background: transparent; }
 :root[data-theme="dark"] .draft-panel { background: #242423; }
 :root[data-theme="dark"] .composer-shell.is-dragging { border-color: var(--composer-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--composer-accent) 22%, transparent); }
 :root[data-theme="dark"] .composer-send:disabled { background: #353534; color: #71706c; }
 :root[data-theme="dark"] .composer-send:not(:disabled):hover { background: var(--composer-accent-hover); }
-:root[data-theme="dark"] .composer-menu { box-shadow: 0 12px 30px rgb(0 0 0 / 45%); }
 /* The Fast switch when off: a soft grey knob, not a white one, on the dim track. */
 :root[data-theme="dark"] .composer-model-fast:not([aria-checked="true"]) .composer-switch::after { background: #c4c3be; box-shadow: none; }
 :root[data-theme="dark"] .attachment-chip { background: #2c2c2b; }
@@ -156,10 +160,6 @@
 :root[data-theme="dark"] .picture-crop-stage { background: #111110; }
 :root[data-theme="dark"] :is(.account-picture-remove, .account-picture-remove .icon) { color: #ff9084; }
 :root[data-theme="dark"] :is(.settings-copy small, .settings-help, .connection-sign-in small, .settings-lead) { color: #a3a29d; }
-:root[data-theme="dark"] .settings-file-card > .icon:first-child { color: #8f8e89; }
-:root[data-theme="dark"] .settings-file-card progress::-webkit-progress-bar { background: #4a4a48; }
-:root[data-theme="dark"] .settings-file-card progress::-webkit-progress-value { background: #a9a8a3; }
-:root[data-theme="dark"] .settings-file-card progress::-moz-progress-bar { background: #a9a8a3; }
 :root[data-theme="dark"] .settings-link:hover { background: #3a3a38; }
 :root[data-theme="dark"] .settings-choice-label { color: #9d9c97; }
 :root[data-theme="dark"] .settings-choice > input:checked ~ .settings-choice-label { color: #fff; }

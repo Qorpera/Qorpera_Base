@@ -21,6 +21,12 @@ export class SurfaceDialog {
 	readonly #beside: boolean;
 	/** Where the anchor last stood, for when the rail has rebuilt it (its agent started working). */
 	#anchorRect: DOMRect | undefined;
+	/** Parts that hang out of the dialog's box while they show (the agent card's figure picker). */
+	readonly #overhangs = new Set<HTMLElement>();
+	/** Watches the card and its overhangs beside a row, so it moves when either changes size. */
+	#sizes: ResizeObserver | undefined;
+	/** A press inside a card beside a row is under way: the card holds still until it ends. */
+	#pressed = false;
 	readonly #lifetime = new AbortController();
 	#modal = true;
 	#closed = false;
@@ -64,7 +70,9 @@ export class SurfaceDialog {
 			if (this.#modal && matchesKey(event, "tab")) {
 				const controls = [
 					// A frame takes Tab into its own page, and back out after its last control.
-					...this.el.querySelectorAll<HTMLElement>("button, a[href], input, textarea, select, iframe, [tabindex]"),
+					...this.el.querySelectorAll<HTMLElement>(
+						"button, a[href], a[data-href], input, textarea, select, iframe, [tabindex]",
+					),
 				].filter(
 					(control) =>
 						control.tabIndex >= 0 && !control.matches(":disabled") && control.getClientRects().length > 0,
@@ -106,12 +114,60 @@ export class SurfaceDialog {
 		window.addEventListener("resize", () => this.#layout(), { signal: this.#lifetime.signal });
 		window.addEventListener("qorpera-rail-resize", () => this.#layout(), { signal: this.#lifetime.signal });
 		// A card beside a row stays inside the window when it grows (a longer description, an error line).
+		// So does what hangs below it, such as the figure picker opening from a card low in the rail.
 		if (this.#beside && typeof ResizeObserver !== "undefined") {
 			const sizes = new ResizeObserver(() => this.#layout());
 			sizes.observe(this.el);
+			for (const part of this.#overhangs) sizes.observe(part);
+			this.#sizes = sizes;
 			this.#lifetime.signal.addEventListener("abort", () => sizes.disconnect());
 		}
+		// A press can change the card's size, as a press outside the figure picker puts it away. The card holds still
+		// until the press ends, then moves after its click: moved under the pointer, it would lose the click (the review
+		// of PR #1653: Close, pressed with the picker open, went from under the pointer before it was let go).
+		if (this.#beside) {
+			const signal = this.#lifetime.signal;
+			this.el.addEventListener(
+				"pointerdown",
+				() => {
+					this.#pressed = true;
+				},
+				{ capture: true, signal },
+			);
+			const release = () => {
+				if (!this.#pressed) return;
+				this.#pressed = false;
+				setTimeout(() => {
+					if (!signal.aborted) this.#layout();
+				});
+			};
+			window.addEventListener("pointerup", release, { capture: true, signal });
+			window.addEventListener("pointercancel", release, { capture: true, signal });
+		}
 		this.#close.focus({ preventScroll: true });
+	}
+	/** A part of the dialog that hangs out of its box while it shows (Jonas, 10 November 2026: the agent card's
+	 * figure picker went under the window's bottom edge for an agent low in the rail). A card beside a row keeps
+	 * the part inside the window too, moving up while it shows and back level with its row once it hides (after the
+	 * press that hid it). */
+	overhang(part: HTMLElement): void {
+		this.#overhangs.add(part);
+		this.#sizes?.observe(part);
+	}
+	/** How far below the dialog's top its lowest showing overhang reaches, in screen pixels. Measured from the part's
+	 * positioned parent, which does not move: the part itself slides in, and a box measured mid-slide is short. */
+	#reach(top: number): number {
+		let reach = 0;
+		for (const part of this.#overhangs) {
+			if (part.hidden || !this.el.contains(part) || part.getClientRects().length === 0) continue;
+			const parent = part.offsetParent;
+			const bottom =
+				parent instanceof HTMLElement && this.el.contains(parent)
+					? parent.getBoundingClientRect().top + parent.clientTop + part.offsetTop + part.offsetHeight
+					: part.getBoundingClientRect().bottom;
+			reach = Math.max(reach, bottom - top);
+		}
+		return reach;
 	}
 	#layout(): void {
 		const modal = !this.#anchor || isPhoneLayout();
@@ -129,8 +185,12 @@ export class SurfaceDialog {
 			const rect = this.#anchorRect;
 			const scale = uiScale();
 			const box = this.el.getBoundingClientRect();
-			this.el.style.left = `${Math.min(rect.right + 8 * scale, window.innerWidth - box.width - 12 * scale)}px`;
-			this.el.style.top = `${Math.max(12 * scale, Math.min(rect.top - 8 * scale, window.innerHeight - box.height - 12 * scale))}px`;
+			const height = Math.max(box.height, this.#reach(box.top));
+			// Held still while a press inside it lasts; it moves once the press ends.
+			if (!this.#pressed || !this.el.style.top) {
+				this.el.style.left = `${Math.min(rect.right + 8 * scale, window.innerWidth - box.width - 12 * scale)}px`;
+				this.el.style.top = `${Math.max(12 * scale, Math.min(rect.top - 8 * scale, window.innerHeight - height - 12 * scale))}px`;
+			}
 			this.el.style.maxHeight = `${window.innerHeight - 24 * scale}px`;
 		} else if (this.#anchor && !modal && this.#anchorRect) {
 			const rect = this.#anchorRect;

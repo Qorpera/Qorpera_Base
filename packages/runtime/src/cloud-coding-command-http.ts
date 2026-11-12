@@ -11,10 +11,26 @@ import {
 } from "@qorpera/contracts";
 import type { CloudCodingCommandGateway } from "./cloud-coding-command-tools.ts";
 import {
+	CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
 	CLOUD_MACHINE_WAKE_SCHEMA,
+	CloudMachineCodingValueRefusal,
 	CloudMachineCommandRefusal,
 	type CloudMachineCommandServiceOptions,
+	CloudMachineScreenRefusal,
+	CloudMemberMachineActRefusal,
+	CloudMemberMachineScreenRefusal,
+	CloudMemberMachineStartRefusal,
+	cloudMemberMachineActAnswer,
+	cloudMemberMachineScreenAnswer,
+	cloudMemberMachineStartAnswer,
+	parseCloudMachineCodingValueAnswer,
+	parseCloudMachineCodingValueHttpRequest,
+	parseCloudMachineScreenAnswer,
+	parseCloudMachineScreenHttpRequest,
 	parseCloudMachineWakeHttpRequest,
+	parseCloudMemberMachineActPeerRequest,
+	parseCloudMemberMachineScreenPeerRequest,
+	parseCloudMemberMachineStartPeerRequest,
 	serveCloudMachineCommand,
 } from "./cloud-machine-command-http.ts";
 import {
@@ -278,9 +294,10 @@ async function readRequest(request: IncomingMessage, signal: AbortSignal): Promi
 		signal.removeEventListener("abort", abort);
 	}
 }
-function replyJson(reply: ServerResponse, status: number, value: unknown): void {
+/** One JSON answer, within its bound: a receipt's (128 KiB), or a screen's with its picture (machine_screen). */
+function replyJson(reply: ServerResponse, status: number, value: unknown, limit = RESULT_LIMIT): void {
 	const body = JSON.stringify(value);
-	if (Buffer.byteLength(body) > RESULT_LIMIT) throw new Error(ERROR);
+	if (Buffer.byteLength(body) > limit) throw new Error(ERROR);
 	reply.writeHead(status, {
 		"content-type": "application/json",
 		"content-length": Buffer.byteLength(body),
@@ -373,10 +390,37 @@ export class HttpCloudCodingCommandService {
 				? /^\/v1\/machine-commands\/(start|read|cancel)$/.exec(request.url ?? "")
 				: null;
 			const wakeRoute = this.#options.machines?.wake && request.url === "/v1/machine-commands/wake";
+			// save_coding_value (20260930705000): the machine's clipboard helper, for one executing receipt.
+			const codingValueRoute =
+				this.#options.machines?.codingValue && request.url === "/v1/machine-commands/coding-value";
+			// machine_screen (20260930708000): the machine's screen helper, for a look or one executing receipt.
+			const screenRoute = this.#options.machines?.screen && request.url === "/v1/machine-commands/screen";
+			// A member's look (20260930712000): on the peer listener only (no run's lease to prove), from another executor.
+			const memberScreenRoute =
+				this.#options.proveBinding === null &&
+				this.#options.machines?.memberScreen &&
+				request.url === "/v1/machine-commands/member-screen";
+			// A member's action (20260930713000): on the peer listener only, from another executor, as the look.
+			const memberActRoute =
+				this.#options.proveBinding === null &&
+				this.#options.machines?.memberAct &&
+				request.url === "/v1/machine-commands/member-act";
+			// A member's start of the desktop (20260930714000): on the peer listener only, from another executor, as the look.
+			const memberStartRoute =
+				this.#options.proveBinding === null &&
+				this.#options.machines?.memberStart &&
+				request.url === "/v1/machine-commands/member-start";
 			const holder = request.headers["x-qorpera-identity"];
 			if (
 				request.method !== "POST" ||
-				(!route && !machineRoute && !wakeRoute) ||
+				(!route &&
+					!machineRoute &&
+					!wakeRoute &&
+					!codingValueRoute &&
+					!screenRoute &&
+					!memberScreenRoute &&
+					!memberActRoute &&
+					!memberStartRoute) ||
 				request.headers["content-type"] !== "application/json" ||
 				authorization.length !== this.#token.length ||
 				!timingSafeEqual(authorization, this.#token) ||
@@ -396,6 +440,99 @@ export class HttpCloudCodingCommandService {
 			if (wakeRoute && this.#options.machines?.wake) {
 				const told = await this.#options.machines.wake(parseCloudMachineWakeHttpRequest(body), controller.signal);
 				replyJson(reply, 200, { schema: CLOUD_MACHINE_WAKE_SCHEMA, told });
+				return;
+			}
+			if (codingValueRoute && this.#options.machines?.codingValue) {
+				const admitted = parseCloudMachineCodingValueHttpRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						parseCloudMachineCodingValueAnswer(
+							admitted,
+							await this.#options.machines.codingValue(admitted, controller.signal),
+						),
+					);
+				} catch (error) {
+					// Only a refusal the agent can act on is told apart, by its fixed code.
+					if (!(error instanceof CloudMachineCodingValueRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (screenRoute && this.#options.machines?.screen) {
+				const admitted = parseCloudMachineScreenHttpRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						parseCloudMachineScreenAnswer(
+							admitted,
+							await this.#options.machines.screen(admitted, controller.signal),
+						),
+						CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
+					);
+				} catch (error) {
+					// Only a refusal the agent can act on is told apart, by its fixed code.
+					if (!(error instanceof CloudMachineScreenRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (memberScreenRoute && this.#options.machines?.memberScreen) {
+				const admitted = parseCloudMemberMachineScreenPeerRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						cloudMemberMachineScreenAnswer(
+							admitted,
+							await this.#options.machines.memberScreen(admitted, controller.signal),
+						),
+						CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
+					);
+				} catch (error) {
+					// Only a refusal the member's window acts on is told apart, by its fixed code.
+					if (!(error instanceof CloudMemberMachineScreenRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (memberActRoute && this.#options.machines?.memberAct) {
+				// The body holds what the member typed: it is read here and passed on, and never logged or answered.
+				const admitted = parseCloudMemberMachineActPeerRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						cloudMemberMachineActAnswer(
+							admitted,
+							await this.#options.machines.memberAct(admitted, controller.signal),
+						),
+					);
+				} catch (error) {
+					// Only a refusal the member's window acts on is told apart, by its fixed code.
+					if (!(error instanceof CloudMemberMachineActRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
+				return;
+			}
+			if (memberStartRoute && this.#options.machines?.memberStart) {
+				const admitted = parseCloudMemberMachineStartPeerRequest(body);
+				try {
+					replyJson(
+						reply,
+						200,
+						cloudMemberMachineStartAnswer(
+							admitted,
+							await this.#options.machines.memberStart(admitted, controller.signal),
+						),
+					);
+				} catch (error) {
+					// Only a refusal the member's window acts on is told apart, by its fixed code.
+					if (!(error instanceof CloudMemberMachineStartRefusal)) throw error;
+					replyJson(reply, 409, { code: error.code });
+				}
 				return;
 			}
 			if (machineRoute && this.#options.machines) {

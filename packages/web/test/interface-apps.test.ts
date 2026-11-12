@@ -1,17 +1,21 @@
 // @vitest-environment jsdom
 import { createHash } from "node:crypto";
-import type { CloudMemberFolderEntry } from "@qorpera/cloud-client/cloud-member-folder";
+import { type CloudMemberFolderEntry, CloudMemberFolderError } from "@qorpera/cloud-client/cloud-member-folder";
 import { parseAppManifest } from "@qorpera/cloud-client/interface-apps";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	AppBridge,
+	type AppLink,
+	appLink,
 	appReadablePath,
 	assembleApp,
 	type CompanyApp,
 	CompanyApps,
+	companyConcepts,
 	readApps,
 	resolveAppPath,
 	sharedFolderHints,
+	warmApps,
 } from "../src/app/interface-apps.ts";
 import { markdown } from "../src/ui/markdown.ts";
 
@@ -116,6 +120,61 @@ describe("an app's paths", () => {
 	});
 });
 
+describe("a link in an app's page", () => {
+	it("leads to an app, a file of the company's own work or a web page", () => {
+		expect(appLink("app:sales-board")).toEqual({ kind: "app", name: "sales-board" });
+		expect(appLink(" folder:reports/Q1%20plan.md ")).toEqual({ kind: "file", path: "reports/Q1 plan.md" });
+		expect(appLink("folder:apps/sales")).toEqual({ kind: "file", path: "apps/sales" });
+		expect(appLink("https://example.com/a?b=1#c")).toEqual({ kind: "web", href: "https://example.com/a?b=1#c" });
+		// As the browser reads the address, which is what opens.
+		expect(appLink("HTTP://Example.com")).toEqual({ kind: "web", href: "http://example.com/" });
+	});
+
+	it("leads nowhere else, whatever a page writes", () => {
+		for (const bad of [
+			// Not an app's name.
+			"app:",
+			"app:Bad",
+			"app:sales/../x",
+			"APP:sales",
+			// Not a path of the company's own work: the platform's folders, and no way around the path rules.
+			"folder:",
+			"folder:/abs",
+			"folder:QorperaOS/vision/vision.md",
+			"folder:qorperaos/agents",
+			"folder:hooks/mail/a.eml",
+			"folder:bank/x",
+			"folder:digital-post/x",
+			"folder:members/x",
+			"folder:code/repo/a.ts",
+			"folder:../x",
+			"folder:a/%2e%2e/b",
+			"folder:a%252fb",
+			"folder:a%5cb",
+			"folder:a?x=1",
+			// Not a web page a link in a message would open.
+			"other.html",
+			"/c/x",
+			"//example.com/x",
+			"#top",
+			"",
+			"javascript:alert(1)",
+			"data:text/html,<p>x",
+			"blob:https://example.com/1",
+			"file:///etc/passwd",
+			"ftp://example.com/x",
+			"mailto:someone@example.com",
+			"https://user:secret@example.com/",
+			"https://",
+			`https://example.com/${"a".repeat(2048)}`,
+			5,
+			null,
+			{ href: "app:sales" },
+		])
+			expect(appLink(bad), String(bad)).toBeNull();
+	});
+});
+
 describe("putting an app's page together", () => {
 	const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
 	const folder = () =>
@@ -159,6 +218,62 @@ describe("putting an app's page together", () => {
 		expect(tooBig.ok).toBe(false);
 	});
 
+	it("puts an explainer together as any app: its engine, its scenes and its voice clips, in a dark page", async () => {
+		// The page as save_app's explainer kit writes it (packages/runtime/src/cloud-app-kit-explainer.ts
+		// `explainerPage`, whose test holds this text): the web needs to know nothing of the kit.
+		const page = [
+			"<!doctype html>",
+			'<html lang="en">',
+			"<head>",
+			'<meta charset="utf-8">',
+			'<meta name="viewport" content="width=device-width, initial-scale=1">',
+			'<meta name="color-scheme" content="dark">',
+			"<title>How the fee works</title>",
+			"</head>",
+			"<body>",
+			'<div id="video"></div>',
+			'<audio data-caption="3f0a9c1e" data-seconds="5.42" preload="none"><source src="voice/3f0a9c1e.mp4"></audio>',
+			'<audio data-caption="0000beef" data-seconds="2" preload="none"><source src="voice/0000beef.mp4"></audio>',
+			'<script src="engine.js"></script>',
+			'<script>window.V = new Video(document.getElementById("video"), { title: "How the fee works" });</script>',
+			'<script src="scenes.js"></script>',
+			"<script>V.start();</script>",
+			"</body>",
+			"</html>",
+			"",
+		].join("\n");
+		const assembled = await assembleApp(
+			fakeFolder({
+				"apps/fee/index.html": page,
+				"apps/fee/engine.js": "window.Video = class {};",
+				"apps/fee/scenes.js": 'V.part("The fee");',
+				"apps/fee/voice/3f0a9c1e.mp4": new Uint8Array([0, 0, 0, 28]),
+				// The second clip is listed in the page and gone from the folder: it stays a name the frame can't load.
+			}) as never,
+			{ path: "apps/fee", entry: "index.html" },
+			new AbortController().signal,
+			{ scheme: "light", brand: null },
+		);
+		expect(assembled.ok).toBe(true);
+		if (!assembled.ok) return;
+		// It says it is dark, so it is dark whatever the member's scheme, and so is what stands behind it meanwhile.
+		expect(assembled.scheme).toBe("dark");
+		const handed = new DOMParser().parseFromString(assembled.page, "text/html");
+		const scripts = [...handed.querySelectorAll("script")].map((script) => script.textContent);
+		expect(scripts).toEqual([
+			"window.Video = class {};",
+			'window.V = new Video(document.getElementById("video"), { title: "How the fee works" });',
+			'V.part("The fee");',
+			"V.start();",
+		]);
+		expect(handed.querySelector("script[src]")).toBeNull();
+		const clips = [...handed.querySelectorAll("audio[data-caption] > source")].map((source) =>
+			source.getAttribute("src"),
+		);
+		expect(clips).toEqual(["data:video/mp4;base64,AAAAHA==", "voice/0000beef.mp4"]);
+		expect(handed.querySelector("audio")?.getAttribute("data-seconds")).toBe("5.42");
+	});
+
 	it("puts the app's own stylesheets, scripts and pictures in, and leaves everything else as written", async () => {
 		const assembled = await assembleApp(
 			folder(),
@@ -177,6 +292,149 @@ describe("putting an app's page together", () => {
 		// A script's text can't end its own element early.
 		expect(script?.textContent).toBe('document.body.append("<\\/script><b>x</b>")');
 		expect(assembled.files).toBe(4);
+	});
+
+	it("reads the page's files side by side, a few at once and each once, and puts each where it is named", async () => {
+		const names = Array.from({ length: 12 }, (_, index) => `p${index}.png`);
+		const files: Record<string, string> = {
+			"apps/many/index.html": `<link rel="stylesheet" href="a.css">${names.map((name) => `<img src="${name}">`).join("")}<img src="p0.png">`,
+			"apps/many/a.css": "b{background:url(p1.png)}",
+		};
+		for (const [index, name] of names.entries()) files[`apps/many/${name}`] = String.fromCharCode(65 + index);
+		const f = fakeFolder(files);
+		let active = 0;
+		let most = 0;
+		const read = f.read;
+		const slow = Object.assign(f, {
+			read: async (path: string, signal: AbortSignal) => {
+				active++;
+				most = Math.max(most, active);
+				// The later a file is named, the sooner its read ends.
+				await new Promise((resolve) => setTimeout(resolve, 30 - (names.indexOf(path.split("/").at(-1)!) + 1) * 2));
+				active--;
+				return read(path, signal);
+			},
+		});
+		const assembled = await assembleApp(
+			slow,
+			{ path: "apps/many", entry: "index.html" },
+			new AbortController().signal,
+		);
+		expect(assembled.ok).toBe(true);
+		if (!assembled.ok) return;
+		const page = new DOMParser().parseFromString(assembled.page, "text/html");
+		const sources = [...page.querySelectorAll("img")].map((image) => atob(image.getAttribute("src")!.split(",")[1]!));
+		expect(sources).toEqual([...names.map((_, index) => String.fromCharCode(65 + index)), "A"]);
+		expect(page.querySelector("style")?.textContent).toBe('b{background:url("data:image/png;base64,Qg==")}');
+		expect(most).toBeGreaterThan(1);
+		expect(most).toBeLessThanOrEqual(8);
+		expect(f.reads.filter((path) => path === "apps/many/p0.png")).toHaveLength(1);
+		expect(assembled.files).toBe(14);
+	});
+
+	it("reads the entries of the files a page names in one call, and each path alone where that call is missing", async () => {
+		const files = {
+			"apps/many/index.html": '<link rel="stylesheet" href="a.css"><img src="p.png"><script src="s.js"></script>',
+			"apps/many/a.css": "b{background:url(q.png)}",
+			"apps/many/p.png": "P",
+			"apps/many/q.png": "Q",
+			"apps/many/s.js": "1",
+		};
+		const withMany = (answer: (paths: readonly string[]) => Promise<unknown>) => {
+			const f = fakeFolder(files);
+			const alone: string[] = [];
+			const many: string[][] = [];
+			const read = f.read;
+			return {
+				alone,
+				many,
+				folder: Object.assign(f, {
+					read: async (path: string, signal: AbortSignal) => {
+						alone.push(path);
+						return read(path, signal);
+					},
+					readMany: async (paths: readonly string[], signal: AbortSignal) => {
+						many.push([...paths]);
+						await answer(paths);
+						return Promise.all(paths.map((path) => read(path, signal)));
+					},
+				}),
+			};
+		};
+		const signal = new AbortController().signal;
+		// One call for the entry, one for what it names, one for the stylesheet's picture.
+		const one = withMany(async () => undefined);
+		const assembled = await assembleApp(one.folder, { path: "apps/many", entry: "index.html" }, signal);
+		expect(assembled).toMatchObject({ ok: true, files: 5 });
+		expect(one.alone).toEqual([]);
+		expect(one.many).toEqual([
+			["apps/many/index.html"],
+			["apps/many/a.css", "apps/many/s.js", "apps/many/p.png"],
+			["apps/many/q.png"],
+		]);
+		// A call that fails reads each path alone, and asks again next time; a 404 (no such call yet) is not asked again.
+		const failing = withMany(async () => {
+			throw new CloudMemberFolderError("Company folder is unavailable (503)", 503);
+		});
+		expect(await assembleApp(failing.folder, { path: "apps/many", entry: "index.html" }, signal)).toEqual(assembled);
+		expect(failing.alone).toHaveLength(5);
+		expect(failing.many).toHaveLength(3);
+		const missing = withMany(async () => {
+			throw new CloudMemberFolderError("Company folder is unavailable (404)", 404);
+		});
+		expect(await assembleApp(missing.folder, { path: "apps/many", entry: "index.html" }, signal)).toEqual(assembled);
+		expect(await assembleApp(missing.folder, { path: "apps/many", entry: "index.html" }, signal)).toEqual(assembled);
+		expect(missing.many).toEqual([["apps/many/index.html"]]);
+		expect(missing.alone).toHaveLength(10);
+	});
+
+	it("starts a page from the base style, first in its head and under the page's own styles", async () => {
+		const files = fakeFolder({
+			"apps/plain/index.html": "<!doctype html><title>Plain</title><style>h1{color:red}</style><h1>Hi</h1>",
+			"apps/both/index.html": '<meta name="Color-Scheme" content="Light Dark"><p>Hi</p>',
+			"QorperaOS/brand/brand.toml": 'accent = "#1f6f5b"',
+		});
+		const signal = new AbortController().signal;
+		const brand = {
+			light: { accent: "#1f6f5b", background: null, text: null },
+			dark: { accent: null, background: null, text: null },
+		};
+		const plain = await assembleApp(files, { path: "apps/plain", entry: "index.html" }, signal, {
+			scheme: "dark",
+			brand,
+		});
+		if (!plain.ok) throw new Error(plain.message);
+		const page = new DOMParser().parseFromString(plain.page, "text/html");
+		const [base, own] = [...page.querySelectorAll("style")];
+		expect(page.head.firstElementChild).toBe(base);
+		expect(base?.hasAttribute("data-qorpera-base")).toBe(true);
+		// One layer, and the page's own styles in none: whatever the page writes wins.
+		expect(base?.textContent?.startsWith("@layer qorpera-base {")).toBe(true);
+		expect(base?.textContent?.match(/@layer/g)).toHaveLength(1);
+		expect(own?.textContent).toBe("h1{color:red}");
+		expect(base?.textContent).toContain("--q-accent: #1f6f5b;");
+		// A page that does not say it supports dark is shown light, in a dark app too.
+		expect(plain.scheme).toBe("light");
+		expect(base?.textContent).toContain("color-scheme: light;");
+		expect(plain.page.startsWith("<!DOCTYPE html><html><head><style data-qorpera-base")).toBe(true);
+		// One that says it supports both follows the app.
+		const both = await assembleApp(files, { path: "apps/both", entry: "index.html" }, signal, {
+			scheme: "dark",
+			brand: null,
+		});
+		expect(both).toMatchObject({ ok: true, scheme: "dark" });
+		expect(both.ok && both.page).toContain("color-scheme: dark;");
+		const light = await assembleApp(files, { path: "apps/both", entry: "index.html" }, signal, {
+			scheme: "light",
+			brand: null,
+		});
+		expect(light).toMatchObject({ ok: true, scheme: "light" });
+		// The company's colours are handed in: putting a page together reads only the app's own folder.
+		expect(files.reads.every((path) => path.startsWith("apps/"))).toBe(true);
+		// With no look (a concept of the product), the page is as written.
+		const asWritten = await assembleApp(files, { path: "apps/plain", entry: "index.html" }, signal);
+		expect(asWritten.ok && asWritten.page).not.toContain("qorpera-base");
+		expect(asWritten.ok && asWritten.scheme).toBeUndefined();
 	});
 
 	it("says when the entry is missing, and never reads outside the app", async () => {
@@ -203,6 +461,136 @@ describe("the company's apps", () => {
 			["empty", null, true],
 			["sales", true, false],
 		]);
+	});
+
+	it("reads ahead each app's page with the files it names and the company's colours, but no long videos", async () => {
+		const f = fakeFolder({
+			"apps/sales/app.toml": 'name = "Sales"\n',
+			"apps/sales/index.html":
+				'<link rel="stylesheet" href="look.css"><script src="app.js"></script><img src="big.png"><video src="clip.mp4"></video><video src="film.mp4"></video>',
+			"apps/sales/look.css": "body{background:url(back.webp)}",
+			"apps/sales/back.webp": "w",
+			"apps/sales/app.js": "1",
+			"apps/sales/big.png": "x",
+			"apps/sales/clip.mp4": "v",
+			"apps/sales/film.mp4": new Uint8Array(2 * 1024 * 1024 + 1),
+			"apps/sales/unused.png": "u",
+			"apps/plan/app.toml": 'name = "Plan"\nentry = "pages/start.html"\n',
+			"apps/plan/pages/start.html": "<p>",
+			"apps/broken/app.toml": "name =",
+			"QorperaOS/brand/brand.toml": 'accent = "#123456"\n',
+		});
+		const readFile = vi.spyOn(f, "readFile");
+		await warmApps(f, await readApps(f, new AbortController().signal), new AbortController().signal);
+		const read = readFile.mock.calls.map(([file]) => (file as { bytes: number }).bytes);
+		expect(f.reads).toEqual(
+			expect.arrayContaining([
+				"QorperaOS/brand/brand.toml",
+				"apps/sales/index.html",
+				"apps/sales/look.css",
+				"apps/sales/back.webp",
+				"apps/sales/app.js",
+				"apps/sales/big.png",
+				"apps/sales/clip.mp4",
+				"apps/plan/pages/start.html",
+			]),
+		);
+		// A short clip is read ahead, a video past 2 MiB waits for the open (its entry is read, never its bytes), and a
+		// file the page doesn't name is never read.
+		expect(read).not.toContain(2 * 1024 * 1024 + 1);
+		expect(f.reads).not.toContain("apps/sales/unused.png");
+		expect(f.reads.filter((path) => path.startsWith("apps/broken/") && path !== "apps/broken/app.toml")).toEqual([]);
+		// The three manifests that read, the colours, six files of Sales and Plan's entry.
+		expect(read).toHaveLength(11);
+		const stopped = new AbortController();
+		stopped.abort();
+		f.reads.length = 0;
+		await warmApps(f, await readApps(f, new AbortController().signal), stopped.signal);
+		expect(f.reads.filter((path) => !path.endsWith("app.toml") && path !== "apps")).toEqual([]);
+	});
+
+	it("reads ahead the most recently changed apps first, and stops at the round's bytes", async () => {
+		const picture = (fill: number) => new Uint8Array(10 * 1024 * 1024).fill(fill);
+		const f = fakeFolder({
+			"apps/old/index.html": '<img src="a.png">',
+			"apps/old/a.png": picture(1),
+			"apps/mid/index.html": '<img src="a.png">',
+			"apps/mid/a.png": picture(2),
+			"apps/new/index.html": '<img src="a.png">',
+			"apps/new/a.png": picture(3),
+		});
+		const parsed = parseAppManifest('name = "App"\n');
+		if (!parsed.ok) throw new Error("manifest");
+		const app = (name: string, changed: number): CompanyApp => ({
+			name,
+			path: `apps/${name}`,
+			manifest: parsed.manifest,
+			problems: [],
+			version: null,
+			changed,
+		});
+		await warmApps(f, [app("old", 1), app("mid", 2), app("new", 3)], new AbortController().signal);
+		// 24 MiB a round: the two latest pictures fit, the oldest app's page is read but not its picture.
+		expect(f.reads).toEqual(expect.arrayContaining(["apps/new/a.png", "apps/mid/a.png", "apps/old/index.html"]));
+		expect(f.reads.indexOf("apps/new/index.html")).toBeLessThan(f.reads.indexOf("apps/old/index.html"));
+		const readFile = vi.spyOn(f, "readFile");
+		await warmApps(f, [app("old", 1), app("mid", 2), app("new", 3)], new AbortController().signal);
+		expect(readFile.mock.calls.map(([file]) => (file as { bytes: number }).bytes).sort()).toEqual(
+			[17, 17, 17, 10 * 1024 * 1024, 10 * 1024 * 1024].sort(),
+		);
+	});
+
+	it("reads ahead past a file that fails, finishing an app's other reads before the next app", async () => {
+		const files: Record<string, string> = {};
+		for (const name of ["a", "b", "c"]) {
+			files[`apps/${name}/app.toml`] = 'name = "App"\n';
+			files[`apps/${name}/index.html`] = [1, 2, 3, 4].map((n) => `<img src="${n}.png">`).join("");
+			for (const n of [1, 2, 3, 4]) files[`apps/${name}/${n}.png`] = `${name}${n}`;
+		}
+		const f = fakeFolder(files);
+		const apps = await readApps(f, new AbortController().signal);
+		const read = f.readFile;
+		let active = 0;
+		let most = 0;
+		let ended = 0;
+		let started = 0;
+		f.readFile = (async (file: { bytes: number; fileSha256: string }, signal: AbortSignal) => {
+			started++;
+			active++;
+			most = Math.max(most, active);
+			try {
+				const bytes = await read(file as never, signal);
+				const text = new TextDecoder().decode(bytes);
+				if (text === "a1") throw new Error("the object fetch failed");
+				if (/^[abc]\d$/.test(text)) await new Promise((resolve) => setTimeout(resolve, 30));
+				return bytes;
+			} finally {
+				active--;
+				ended++;
+			}
+		}) as typeof f.readFile;
+		await warmApps(f, apps, new AbortController().signal);
+		// Two apps of four files at once, at most, and nothing left under way when the round ends.
+		expect(most).toBeLessThanOrEqual(8);
+		expect(ended).toBe(started);
+		expect(f.reads).toEqual(expect.arrayContaining(["apps/a/4.png", "apps/b/4.png", "apps/c/4.png"]));
+	});
+
+	it("lists the concepts of the company's product, the most recently changed first", async () => {
+		const f = fakeFolder({
+			"apps/shop-a/app.toml": 'name = "Shop A"\nconcept = true\ncover = "cover.webp"\n',
+			"apps/shop-b/app.toml": 'name = "Shop B"\nconcept = true\n',
+			"apps/sales/app.toml": 'name = "Sales"\nposted = true\n',
+			"apps/broken/app.toml": "name = \nconcept = true\n",
+		});
+		const apps = await readApps(f, new AbortController().signal);
+		expect(apps.find((app) => app.name === "shop-a")?.manifest).toMatchObject({ concept: true, cover: "cover.webp" });
+		expect(apps.every((app) => app.changed === 1)).toBe(true);
+		// The same change number: by name. A later change comes first.
+		expect(companyConcepts(apps).map((app) => app.name)).toEqual(["shop-a", "shop-b"]);
+		const later = apps.map((app) => (app.name === "shop-b" ? { ...app, changed: 9 } : app));
+		expect(companyConcepts(later).map((app) => app.name)).toEqual(["shop-b", "shop-a"]);
+		expect(companyConcepts([])).toEqual([]);
 	});
 
 	it("shares one hint channel between readers", async () => {
@@ -285,6 +673,45 @@ describe("the bridge", () => {
 		expect(await bridge('"files"').answer({ method: "token", params: {} })).toMatchObject({ ok: false });
 	});
 
+	it("opens a link the member clicked once it is checked, reads nothing for it, and tells the page nothing", async () => {
+		const folder = fakeFolder(files);
+		const followed: AppLink[] = [];
+		const key = crypto.randomUUID();
+		const open = (href: unknown, follows = true) =>
+			new AppBridge(
+				{ folder: () => folder, agents: () => [] },
+				app(""),
+				key,
+				new AbortController().signal,
+				undefined,
+				follows ? (link) => followed.push(link) : undefined,
+			).answer({ method: "open", params: { href } });
+		// It needs nothing in reads, and the answer is the same whether or not what the link names is there.
+		for (const href of ["app:hiring", "folder:sales/report.md", "folder:sales/missing.md", "https://example.com/"])
+			expect(await open(href), href).toEqual({ ok: true, value: null });
+		expect(followed).toEqual([
+			{ kind: "app", name: "hiring" },
+			{ kind: "file", path: "sales/report.md" },
+			{ kind: "file", path: "sales/missing.md" },
+			{ kind: "web", href: "https://example.com/" },
+		]);
+		for (const bad of ["folder:QorperaOS/tables/tasks/table.toml", "other.html", "javascript:alert(1)", 7])
+			expect(await open(bad), String(bad)).toEqual({
+				ok: false,
+				error: "A link opens an app (app:name), a company file (folder:path) or a web page (https://…)",
+			});
+		expect(followed).toHaveLength(4);
+		expect(folder.reads).toEqual([]);
+		// A bridge given no way to open one (none is today) opens none.
+		expect(await open("app:hiring", false)).toMatchObject({ ok: false });
+		// Each link is a call of the app's budget: 120 a minute, with its reads.
+		let refused = 0;
+		for (let index = 0; index < 115; index++) if (!(await open("app:hiring")).ok) refused++;
+		expect(refused).toBe(4);
+		expect(followed).toHaveLength(4 + 111);
+		expect(await open("app:hiring")).toEqual({ ok: false, error: "Too many calls: wait a moment and try again" });
+	});
+
 	it("keeps an app's budget across its frames", async () => {
 		const key = crypto.randomUUID();
 		let refused = 0;
@@ -319,6 +746,15 @@ describe("an app's card in a message", () => {
 		expect(card?.querySelector(".app-card-title")?.textContent).toBe("Sales this week");
 		expect(body.querySelectorAll(".app-card")).toHaveLength(1);
 		expect(body.querySelector("a")).toBeNull();
+	});
+
+	it("says the card and the link open the app's own page, not a panel beside the chat", () => {
+		const prose = markdown("See [Sales this week](app:sales-board) for the numbers.");
+		const [link, card] = prose.querySelectorAll<HTMLButtonElement>("[data-app-name]");
+		expect(link?.title).toBe("Open sales-board");
+		expect(card?.title).toBe("Open sales-board");
+		expect(card?.querySelector(".app-card-note")?.textContent).toBe("App · opens on its own page");
+		expect(prose.textContent).not.toContain("beside the chat");
 	});
 });
 

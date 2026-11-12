@@ -47,6 +47,7 @@ function setup() {
 			route: { name: "company", profileId: profileA.profileId, section: "chat", id: session.sessionId },
 			openSettings() {},
 			openFeedback() {},
+			openFriends() {},
 		});
 	cleanup.push(() => {
 		view.dispose();
@@ -93,7 +94,8 @@ describe("shared agent activity", () => {
 			expect(caption.querySelectorAll(".status-wave-letter")).toHaveLength(sentence.replace(/\s/g, "").length);
 			expect(f.rail.querySelector(".rail-row-copy small")?.textContent).toBe(label);
 			expect(f.rail.querySelectorAll(".rail-row-copy small .status-wave-letter")).toHaveLength(label.length);
-			expect(f.rail.querySelector(".rail-row")?.getAttribute("title")).toContain(label);
+			expect(f.rail.querySelector(".rail-row")?.getAttribute("aria-label")).toContain(label);
+			expect(f.rail.querySelector(".rail-row")?.hasAttribute("title")).toBe(false);
 			expect(indicator.querySelector(".bubble, .typing")).toBeNull();
 			const calls = f.mount.mock.calls.filter(([, , , , options]) => options?.identity === staff.id);
 			expect(calls).toHaveLength(2);
@@ -139,7 +141,7 @@ describe("shared agent activity", () => {
 		expect(waiting).toHaveBeenCalledWith(profileA.profileId);
 		expect(f.company.agentState(staff.id)).toBe("decision");
 		expect(f.rail.querySelector(".rail-row-copy small")?.textContent).toBe("Needs you");
-		expect(f.rail.querySelector(".rail-row")?.getAttribute("title")).toContain("Needs you");
+		expect(f.rail.querySelector(".rail-row")?.getAttribute("aria-label")).toContain("Needs you");
 		// Work of its own comes first; the card shows again once the agent is idle, and goes once it is answered.
 		f.company.store.set({ activity: [working] });
 		expect(f.company.agentState(staff.id)).toBe("working");
@@ -232,12 +234,77 @@ describe("shared agent activity", () => {
 			expect(() => parseStaffExecutionActivity([entry])).toThrow("superseded activity that is not a failure");
 	});
 
-	it("waves only a live state; Needs you and roles stay still", () => {
-		expect(stateLine(AGENT_LOOK.decision, "Marketing Lead")).toBe("Needs you");
-		expect(stateLine(AGENT_LOOK.idle, "Marketing Lead")).toBe("Marketing Lead");
-		expect(stateLine(AGENT_LOOK.failed, "Marketing Lead")).toBe("Marketing Lead");
+	it("reads a run waiting at its login's usage limit, only on a queued run (20260930703000)", () => {
+		const row = {
+			run_id: id(92),
+			staff_agent_id: staff.id,
+			source_kind: "wake",
+			job_status: "queued",
+			activity: "waiting",
+			updated_at: timestamp,
+		};
+		const pause = {
+			paused_until: "2099-01-01T00:00:00Z",
+			sponsor_binding_id: id(93).toUpperCase(),
+			requested_by_user_id: id(94),
+			paid_by_chatgpt_plan: false,
+			paid_while_away: true,
+			movable: true,
+		};
+		expect(parseStaffExecutionActivity([{ ...row, ...pause }])[0]?.paused).toEqual({
+			until: "2099-01-01T00:00:00Z",
+			sponsorBindingId: id(93),
+			requestedByUserId: id(94),
+			paidByChatgptPlan: false,
+			paidWhileAway: true,
+			movable: true,
+		});
+		// An older cloud, or a run that does not wait: nothing.
+		expect(parseStaffExecutionActivity([row])[0]).not.toHaveProperty("paused");
+		expect(parseStaffExecutionActivity([{ ...row, paused_until: null }])[0]).not.toHaveProperty("paused");
+		for (const entry of [
+			{ ...row, ...pause, job_status: "leased", activity: "working" },
+			{ ...row, ...pause, sponsor_binding_id: "not-a-uuid" },
+			{ ...row, ...pause, paid_by_chatgpt_plan: "no" },
+			{ ...row, ...pause, movable: undefined },
+			{ ...row, ...pause, paid_while_away: null },
+			{ ...row, ...pause, paused_until: "soon" },
+		])
+			expect(() => parseStaffExecutionActivity([entry])).toThrow();
+	});
+
+	it("shows an agent whose run waits at its login's usage limit as resting, not working", async () => {
+		const f = setup();
+		const paused: HostedStaffExecutionActivity = {
+			runId: id(92),
+			staffAgentId: staff.id,
+			sourceKind: "wake",
+			jobStatus: "queued",
+			activity: "waiting",
+			paused: {
+				until: "2099-01-01T00:00:00Z",
+				sponsorBindingId: id(93),
+				paidByChatgptPlan: false,
+				paidWhileAway: true,
+				movable: true,
+			},
+			updatedAt: timestamp,
+		};
+		f.company.store.set({ activity: [paused] });
+		expect(f.company.agentState(staff.id)).toBe("idle");
+		expect(f.company.pausedRunFor(staff.id)?.runId).toBe(id(92));
+		// Its pause is over (the reset passed): it is the agent's work again.
+		f.company.store.set({ activity: [{ ...paused, paused: { ...paused.paused!, until: "2000-01-01T00:00:00Z" } }] });
+		expect(f.company.agentState(staff.id)).toBe("working");
+		expect(f.company.pausedRunFor(staff.id)).toBeUndefined();
+	});
+
+	it("waves only a live state; Needs you stays still, and an idle agent has no line", () => {
+		expect(stateLine(AGENT_LOOK.decision)).toBe("Needs you");
+		expect(stateLine(AGENT_LOOK.idle)).toBeNull();
+		expect(stateLine(AGENT_LOOK.failed)).toBeNull();
 		for (const state of ["working", "writing"] as const) {
-			const line = stateLine(AGENT_LOOK[state], "Marketing Lead") as HTMLElement;
+			const line = stateLine(AGENT_LOOK[state]) as HTMLElement;
 			expect(line.textContent).toBe(AGENT_LOOK[state].line);
 			expect(line.querySelectorAll(".status-wave-letter")).toHaveLength(7);
 		}
@@ -247,9 +314,9 @@ describe("shared agent activity", () => {
 		vi.useFakeTimers();
 		try {
 			const delay = (el: Element) => Number.parseFloat((el as HTMLElement).style.getPropertyValue("--wave-delay"));
-			const first = stateLine(AGENT_LOOK.working, "") as HTMLElement;
+			const first = stateLine(AGENT_LOOK.working) as HTMLElement;
 			vi.advanceTimersByTime(500);
-			const second = stateLine(AGENT_LOOK.working, "") as HTMLElement;
+			const second = stateLine(AGENT_LOOK.working) as HTMLElement;
 			const a = delay(first.querySelector(".status-wave-letter")!);
 			const b = delay(second.querySelector(".status-wave-letter")!);
 			expect(((a - b - 500) % 1400) + 0).toBe(0);
@@ -298,8 +365,8 @@ describe("agent activity in Danish", () => {
 				["status-caption-name", "Nova"],
 				["status-caption-detail", " arbejder"],
 			]);
-			expect((stateLine(AGENT_LOOK.working, "Marketing Lead") as HTMLElement).textContent).toBe("Arbejder");
-			expect(stateLine(AGENT_LOOK.decision, "Marketing Lead")).toBe("Venter på dig");
+			expect((stateLine(AGENT_LOOK.working) as HTMLElement).textContent).toBe("Arbejder");
+			expect(stateLine(AGENT_LOOK.decision)).toBe("Venter på dig");
 			// Each word is translated once, from its English key.
 			expect(untranslated()).toEqual([]);
 		} finally {

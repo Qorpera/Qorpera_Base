@@ -1,4 +1,6 @@
+import { spawn } from "node:child_process";
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -21,6 +23,7 @@ import { CloudNativeCaptureImages } from "@qorpera/runtime/cloud-native-capture-
 import {
 	CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
 	type CloudNativeContextRequest,
+	cloudNativeContextReply,
 } from "@qorpera/runtime/cloud-native-context-composition";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
 import * as nativeIsolation from "@qorpera/runtime/cloud-native-isolation";
@@ -32,6 +35,11 @@ import {
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { CloudRunLog } from "@qorpera/runtime/cloud-run-log";
 import { CloudRuntimeObservability, type CloudRuntimeObservation } from "@qorpera/runtime/cloud-runtime-observability";
+import {
+	CLOUD_VOICE_READER_RULE,
+	CloudVoiceChannel,
+	CloudVoiceUnavailable,
+} from "@qorpera/runtime/cloud-voice-channel";
 import { MemoryCompactChannel, MemoryCompactStop } from "@qorpera/runtime/memory-tree/compact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -68,8 +76,10 @@ function run(
 		composeContext?: Parameters<typeof runCloudCodexToolSession>[0]["composeContext"];
 		runLog?: CloudRunLog;
 		compactor?: MemoryCompactChannel;
+		voice?: CloudVoiceChannel;
 		closing?: Parameters<typeof runCloudCodexToolSession>[0]["closing"];
 		opening?: Parameters<typeof runCloudCodexToolSession>[0]["opening"];
+		turnCorrection?: Parameters<typeof runCloudCodexToolSession>[0]["turnCorrection"];
 	} = {},
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => new Promise(() => undefined));
@@ -252,6 +262,30 @@ it("refuses a context request outside the run's turn before composing it", async
 	expect(composeContext).not.toHaveBeenCalled();
 });
 
+/** A value shaped like a webhook signing secret, made up for these tests: never a real one. */
+const FAKE_WEBHOOK_SECRET = `whsec_${"T7fakeNotASecret".repeat(2)}0000`;
+
+it("cuts webhook signing secrets out of the compactor's instructions and windows it sends Codex", async () => {
+	const compactor = new MemoryCompactChannel();
+	const { result, evidence } = run("compact", {
+		compactor,
+		composeContext: async (request) => ({ input: request.items.map((_, keep) => ({ keep })) }),
+		closing: async (signal) => {
+			// Raw conversation events, as the compactor's leaf windows carry them: a member pasted a secret.
+			const thread = await compactor.call(`PRIVATE_COMPACT_SYSTEM ${FAKE_WEBHOOK_SECRET}`, signal);
+			await thread.send(`PRIVATE_WINDOW_1 member: ${FAKE_WEBHOOK_SECRET}`, signal);
+			await thread.send("PRIVATE_WINDOW_2", signal);
+			thread.close?.();
+		},
+	});
+	await result;
+	const raw = await readFile(evidence, "utf8");
+	expect(raw).not.toContain(FAKE_WEBHOOK_SECRET);
+	const recorded = JSON.parse(raw);
+	expect(recorded.compactThreads[0].developerInstructions).toBe("PRIVATE_COMPACT_SYSTEM whsec_[REDACTED]");
+	expect(recorded.compactTurns[0].input[0].text).toBe("PRIVATE_WINDOW_1 member: whsec_[REDACTED]");
+});
+
 it("ends the run when its composition is not one Codex can send", async () => {
 	// A position past the request's items: refused here, before Codex sees it.
 	const composeContext = vi.fn(async () => ({ input: [{ keep: 2 }] }));
@@ -272,6 +306,48 @@ it("loads the exact host-generated AGENTS.md bytes without enabling ambient inst
 	expect(recorded.mode).toBe(0o400);
 	expect(CLOUD_CODEX_BOUNDARY_CONFIG).toContain("project_doc_max_bytes=0");
 	await expect(stat(recorded.threadParameters.cwd)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("cuts webhook signing secrets out of the instructions file and the thread's instructions it sends Codex", async () => {
+	const { result, evidence } = run("bootstrap", { runtimeInstructions: `HOST_LAW ${FAKE_WEBHOOK_SECRET} END` });
+	await result;
+	const raw = await readFile(evidence, "utf8");
+	expect(raw).not.toContain(FAKE_WEBHOOK_SECRET);
+	const recorded = JSON.parse(raw);
+	// The file and the thread's instructions stay the same bytes.
+	expect(recorded.bootstrap).toBe(recorded.threadParameters.developerInstructions);
+	expect(recorded.bootstrap).toContain("HOST_LAW whsec_[REDACTED] END");
+});
+
+it("cuts webhook signing secrets out of every turn input it sends Codex, whatever composed it", async () => {
+	const { result, evidence } = run("model-selection", {
+		opening: async () => ({
+			prompt: `Private test input ${FAKE_WEBHOOK_SECRET}`,
+			runtimeInstructions: `Opening law ${FAKE_WEBHOOK_SECRET}`,
+		}),
+	});
+	await result;
+	const raw = await readFile(evidence, "utf8");
+	expect(raw).not.toContain(FAKE_WEBHOOK_SECRET);
+	const recorded = JSON.parse(raw);
+	expect(recorded.turnParameters.input[0].text).toBe("Private test input whsec_[REDACTED]");
+	expect(recorded.threadParameters.developerInstructions).toContain("Opening law whsec_[REDACTED]");
+});
+
+it("cuts webhook signing secrets out of a work message it hands Codex, and keeps Codex's own items by position", () => {
+	const request = {
+		schema: CLOUD_NATIVE_CONTEXT_COMPOSITION_SCHEMA,
+		requestId: randomUUID(),
+		threadId: randomUUID(),
+		turnId: randomUUID(),
+		purpose: "turn",
+		model: "offline-probe",
+		items: [{ kind: "message", role: "user", callId: null, bytes: 10 }],
+	} as unknown as CloudNativeContextRequest;
+	const work = JSON.stringify({ schema: "qorpera.run-work/v1", lines: [`printed ${FAKE_WEBHOOK_SECRET}`] });
+	const reply = cloudNativeContextReply(request, { input: [{ keep: 0 }, { work }] });
+	expect(JSON.stringify(reply)).not.toContain(FAKE_WEBHOOK_SECRET);
+	expect(reply.input).toEqual([{ keep: 0 }, { work: work.replace(FAKE_WEBHOOK_SECRET, "whsec_[REDACTED]") }]);
 });
 
 it.each(["capture-image", "missing-capture-image"])(
@@ -942,6 +1018,157 @@ it("does not end the turn after a progress send", async () => {
 	const recorded = JSON.parse(await readFile(evidence, "utf8"));
 	expect(recorded.interrupt).toBeNull();
 });
+describe("a turn that ended with the run's closing act undone", () => {
+	it("gives the model one more turn in the same thread, told what is missing, and ends on its final send", async () => {
+		const { rows, observability } = observationCollector();
+		const turnCorrection = vi.fn(async () => "You sent no final message. Send it now.");
+		const { result, evidence } = run("correct-final", { observability, tools: [publicSendTool()], turnCorrection });
+		// The first turn's request, the added turn's first one, and the one after its final send.
+		await expect(result).resolves.toEqual({
+			providerSessionId: "thread_fixture",
+			toolCalls: 1,
+			codexVersion: "0.155.1",
+			fencedRequests: 3,
+		});
+		await observability.close();
+		expect(turnCorrection).toHaveBeenCalledOnce();
+		const recorded = JSON.parse(await readFile(`${evidence}.correction`, "utf8"));
+		expect(recorded.turns).toBe(2);
+		expect(recorded.turn).toMatchObject({
+			threadId: "thread_fixture",
+			input: [{ type: "text", text: "You sent no final message. Send it now.", text_elements: [] }],
+		});
+		// The final send ends the added turn as it ends any turn, and its marker stays with the host.
+		expect(recorded.interrupt).toEqual({ threadId: "thread_fixture", turnId: "turn_fixture_2" });
+		expect(Object.keys(recorded.reply.result).sort()).toEqual(["contentItems", "success"]);
+		// Each turn is observed by itself: the second counts what the thread used since it began, not the thread.
+		const turns = rows.filter((row) => row.operation === "model_turn" && row.phase === "finish");
+		expect(turns.map((row) => [row.status, row.inputTokens, row.cachedInputTokens, row.outputTokens])).toEqual([
+			["succeeded", 100, 0, 5],
+			["succeeded", 60, 90, 4],
+		]);
+		expect(turns[0].logicalOperationSha256).not.toBe(turns[1].logicalOperationSha256);
+		const requests = rows.filter((row) => row.operation === "model_request" && row.phase === "finish");
+		expect(requests.map((row) => [row.parentAttemptId, row.inputTokens])).toEqual([
+			[turns[0].attemptId, 100],
+			[turns[1].attemptId, 60],
+		]);
+		expect(JSON.stringify(rows)).not.toContain("PRIVATE_");
+	});
+
+	it("asks once: what the added turn leaves undone is the caller's to judge", async () => {
+		const turnCorrection = vi.fn(async () => "You sent no final message. Send it now.");
+		const { result, evidence } = run("correct-silent", { tools: [publicSendTool()], turnCorrection });
+		await expect(result).resolves.toMatchObject({ toolCalls: 0, fencedRequests: 2 });
+		expect(turnCorrection).toHaveBeenCalledOnce();
+		expect(JSON.parse(await readFile(`${evidence}.correction`, "utf8")).turns).toBe(2);
+	});
+
+	it("starts no second turn when the caller owes nothing", async () => {
+		const turnCorrection = vi.fn(async () => undefined);
+		const { result, evidence } = run("correct-silent", { turnCorrection });
+		await expect(result).resolves.toMatchObject({ toolCalls: 0, fencedRequests: 1 });
+		expect(turnCorrection).toHaveBeenCalledOnce();
+		await expect(stat(`${evidence}.correction`)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("asks only once the turn has completed, and before closing", async () => {
+		const order: string[] = [];
+		const { result } = run("correct-silent", {
+			turnCorrection: async () => {
+				order.push("correction");
+				return undefined;
+			},
+			closing: async () => {
+				order.push("closing");
+			},
+		});
+		await result;
+		expect(order).toEqual(["correction", "closing"]);
+	});
+
+	it.each([
+		["", "blank"],
+		["x".repeat(4097), "too long"],
+	])("refuses a correction that is not a few sentences: %#", async (text) => {
+		const { result, evidence } = run("correct-silent", { turnCorrection: async () => text });
+		await expect(result).rejects.toThrow("Invalid native boundary input");
+		await expect(stat(`${evidence}.correction`)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("asks nothing of a turn that failed", async () => {
+		const turnCorrection = vi.fn(async () => "Send it now.");
+		await expect(run("failed-turn", { turnCorrection }).result).rejects.toThrow(
+			"Native boundary turn did not complete",
+		);
+		expect(turnCorrection).not.toHaveBeenCalled();
+	});
+
+	it("binds nothing to the turn that ended: a request that still names it fails the run", async () => {
+		const { result } = run("correct-stale-turn", { turnCorrection: async () => "Send it now." });
+		await expect(result).rejects.toThrow("Native result boundary unavailable");
+	});
+});
+
+describe("a control request Codex never answers", () => {
+	const pending = Symbol("pending");
+	/** The run's outcome if it has one by now. setImmediate is not faked, so pipes and promises get their turn. */
+	const soFar = (outcome: Promise<unknown>) =>
+		Promise.race([outcome, new Promise((resolve) => setImmediate(() => resolve(pending)))]);
+	/** The run's failure. waitFor moves the faked clock on, so the process stop's own short wait ends too. */
+	const failureOf = (outcome: Promise<unknown>) =>
+		vi.waitFor(
+			async () => {
+				const settled = await soFar(outcome);
+				if (settled === pending) throw new Error("The run has not ended");
+				return settled;
+			},
+			{ timeout: 10_000 },
+		);
+	// The host's own timers only: the fixture's process and its pipes run on.
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it.each([
+		["stalled", ".starts", "codex-initialize"],
+		["turn-start-stalled", ".turn-start", "codex-turn-start"],
+	])("fails the run as a step that got no answer in time: %s", async (mode, marker, stage) => {
+		const { result, evidence } = run(mode);
+		const outcome = result.then(
+			() => undefined,
+			(failure: unknown) => failure,
+		);
+		// The request is with Codex, unanswered.
+		await vi.waitFor(() => stat(`${evidence}${marker}`), { timeout: 10_000 });
+		expect(await soFar(outcome)).toBe(pending);
+		await vi.advanceTimersByTimeAsync(120_000);
+		const error = await failureOf(outcome);
+		expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage, category: "timeout", usageSignal: null });
+		expect((error as Error).message).toBe("Native boundary request got no answer");
+	});
+
+	it("holds a stalled turn start to its deadline while another thread's request reaches the fence", async () => {
+		const compactor = new MemoryCompactChannel();
+		const { result, evidence } = run("compact-turn-start-stalled", { compactor });
+		const outcome = result.then(
+			() => undefined,
+			(failure: unknown) => failure,
+		);
+		await vi.waitFor(() => stat(`${evidence}.turn-start`), { timeout: 10_000 });
+		// A compactor thread starts meanwhile, and its prewarm reaches the fence. That shows its own thread under way,
+		// and says nothing of the agent's turn, whose start stays unanswered.
+		await compactor.call("PRIVATE_COMPACT_SYSTEM", new AbortController().signal);
+		expect(await soFar(outcome)).toBe(pending);
+		await vi.advanceTimersByTimeAsync(120_000);
+		const error = await failureOf(outcome);
+		expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage: "codex-turn-start", category: "timeout" });
+	});
+});
+
 it("ends an interrupted native turn as cancelled while preserving the public failure", async () => {
 	const { rows, observability } = observationCollector();
 	await expect(run("interrupted-turn", { observability }).result).rejects.toThrow(
@@ -1246,6 +1473,7 @@ function reviewRun(
 	mode: "review" | "review-no-verdict" | "review-wrong-tool" | "review-context" | "review-compact",
 	composeContext?: Parameters<typeof runCloudCodexToolSession>[0]["composeContext"],
 	compactor?: MemoryCompactChannel,
+	request = "Email Bob.",
 ) {
 	const execute = vi.fn<CloudNativeTool["execute"]>(async () => ({ kind: "text", value: "Sent." }));
 	const reviewer = new CloudActionReviewChannel();
@@ -1274,7 +1502,7 @@ function reviewRun(
 						: { reviewId: "review-1", decision: "allow", card: false, reason: "Fine." },
 			},
 			reviewer,
-			request: "Email Bob.",
+			request,
 			holdMs: 0,
 		}),
 	});
@@ -1296,6 +1524,18 @@ function reviewRun(
 	});
 	return { result, execute, evidence, contextViews };
 }
+
+it("cuts webhook signing secrets out of the action review's prompt it sends Codex", async () => {
+	// A member pasted one into the request the review quotes.
+	const { result, evidence } = reviewRun("review", undefined, undefined, `Email Bob the key ${FAKE_WEBHOOK_SECRET}.`);
+	await expect(result).resolves.toMatchObject({ toolCalls: 1 });
+	const raw = await readFile(evidence, "utf8");
+	expect(raw).not.toContain(FAKE_WEBHOOK_SECRET);
+	const recorded = JSON.parse(raw);
+	expect(JSON.parse(recorded.reviewerTurn.input[0].text)).toMatchObject({
+		request: "Email Bob the key whsec_[REDACTED].",
+	});
+});
 
 it("reviews an acting call in a second thread of the same app-server before running it", async () => {
 	const { result, execute, evidence, contextViews } = reviewRun("review");
@@ -1647,6 +1887,311 @@ it("keeps the agent's turn when closing fails, and stops the compactor once the 
 	// With no process to answer, a call stops the lane as an outage does; the next run builds what is missing.
 	await expect(compactor.call("PRIVATE_COMPACT_SYSTEM", new AbortController().signal)).rejects.toMatchObject({
 		reason: "outage",
+	});
+});
+
+// A voice call (VOICE-TOOL-DESIGN-20261110): a side thread of the run's own app-server that can do nothing, with a
+// realtime session whose voice reads one line at a time. Whatever the voice does, the agent's run stands.
+const VOICE_OFFER = "v=0\r\nPRIVATE_OFFER_SDP\r\n";
+
+/** A run whose agent's turn waits, once it is under way, until the test lets it end. */
+async function voiceRun(mode: string, options: Parameters<typeof run>[1] = {}) {
+	const voice = options.voice ?? new CloudVoiceChannel();
+	const contextViews: string[] = [];
+	const started = run(mode, {
+		voice,
+		recordContextView: async (frame) => {
+			contextViews.push(frame.threadId);
+		},
+		...options,
+	});
+	await vi.waitFor(() => stat(`${started.evidence}.voice-ready`), { timeout: 10_000 });
+	return {
+		...started,
+		voice,
+		contextViews,
+		recorded: async () => JSON.parse(await readFile(started.evidence, "utf8")),
+		endTurn: () => writeFile(`${started.evidence}.continue`, ""),
+	};
+}
+
+it("places a voice call on a side thread that can do nothing, and reads its lines one at a time", async () => {
+	const f = await voiceRun("voice");
+	const signal = new AbortController().signal;
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER, voice: "cove" }, signal);
+	expect(call.answerSdp).toBe("v=0\r\nPRIVATE_ANSWER_SDP\r\n");
+	await expect(f.voice.open({ offerSdp: VOICE_OFFER }, signal)).rejects.toThrow("Native voice call already open");
+	await expect(call.speak('"One."', signal)).resolves.toEqual({ transcript: 'SAID "One."' });
+	// This transcript comes without its thread, and past the bound: its head is kept, never a cut character.
+	await expect(call.speak("LONG", signal)).resolves.toEqual({ transcript: "é".repeat(2048) });
+	await call.close();
+	await expect(call.speak('"Three."', signal)).rejects.toThrow("Native voice call ended");
+	await f.endTurn();
+	// The voice's prewarm is not the agent's request, nor its context.
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture", fencedRequests: 1 });
+	expect(f.contextViews.every((threadId) => threadId === "thread_fixture")).toBe(true);
+	const recorded = await f.recorded();
+	expect(recorded.thread).toMatchObject({
+		ephemeral: true,
+		approvalPolicy: "never",
+		sandbox: "read-only",
+		developerInstructions: CLOUD_VOICE_READER_RULE,
+		dynamicTools: [],
+	});
+	expect(recorded.thread.cwd).toBe(recorded.mainThread.cwd);
+	expect(recorded.prewarm).toMatchObject({ threadId: "thread_voice", outputs: [] });
+	expect(recorded.start).toEqual({
+		threadId: "thread_voice",
+		outputModality: "audio",
+		transport: { type: "webrtc", sdp: VOICE_OFFER },
+		version: "v3",
+		voice: "cove",
+		clientManagedHandoffs: true,
+		includeStartupContext: false,
+		initialItems: [{ role: "developer", text: CLOUD_VOICE_READER_RULE }],
+	});
+	expect(recorded.appended).toEqual([
+		{ threadId: "thread_voice", text: '"One."' },
+		{ threadId: "thread_voice", text: "LONG" },
+	]);
+	expect(recorded.stops).toEqual([{ threadId: "thread_voice" }]);
+	expect(recorded.interrupts).toEqual([]);
+});
+
+it("interrupts a turn the voice starts, ends the call, and the agent's turn stands", async () => {
+	const f = await voiceRun("voice-delegates");
+	const signal = new AbortController().signal;
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+	await expect(call.speak('"One."', signal)).rejects.toThrow("Native voice tried to act");
+	await vi.waitFor(async () => expect((await f.recorded()).delegatedFence).not.toBeNull(), { timeout: 10_000 });
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture", fencedRequests: 1 });
+	const recorded = await f.recorded();
+	expect(recorded.start).not.toHaveProperty("voice");
+	expect(recorded.interrupts).toContainEqual({ threadId: "thread_voice", turnId: "turn_voice" });
+	expect(recorded.stops).toEqual([{ threadId: "thread_voice" }]);
+	// The turn's request gets nothing of the agent's, and is not its context.
+	expect(recorded.delegatedFence.outputs).toEqual([
+		{ kind: "function_call_output", callId: "voice_call", output: '{"available":false}' },
+	]);
+	expect(f.contextViews).not.toContain("thread_voice");
+});
+
+it("refuses every request of the voice's thread", async () => {
+	const f = await voiceRun("voice-request");
+	const signal = new AbortController().signal;
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+	await expect(call.speak('"One."', signal)).resolves.toEqual({ transcript: 'SAID "One."' });
+	await call.close();
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture", toolCalls: 0 });
+	expect((await f.recorded()).refused.error).toMatchObject({ code: -32601 });
+	expect(f.execute).not.toHaveBeenCalled();
+});
+
+it("ends the call on a realtime error without the provider's words, and the run stands", async () => {
+	const f = await voiceRun("voice-error");
+	const signal = new AbortController().signal;
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+	const failure = await call.speak('"One."', signal).catch((error: unknown) => error);
+	expect((failure as Error).message).toBe("Native voice call failed");
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	expect((await f.recorded()).stops).toEqual([{ threadId: "thread_voice" }]);
+});
+
+it("rejects the call when Codex refuses its realtime start, and leaves the run's failure category as it was", async () => {
+	const f = await voiceRun("voice-start-error", {
+		// The run fails afterwards for a reason of its own: the category it reports is not the voice's.
+		turnCorrection: async () => {
+			throw new Error("PRIVATE_CORRECTION_FAILURE");
+		},
+	});
+	const signal = new AbortController().signal;
+	const failure = await f.voice.open({ offerSdp: VOICE_OFFER }, signal).catch((error: unknown) => error);
+	expect((failure as Error).message).toBe("Native voice request rejected");
+	await vi.waitFor(async () => expect((await f.recorded()).stops).toHaveLength(1), { timeout: 10_000 });
+	await f.endTurn();
+	const ended = await f.result.catch((error: unknown) => error);
+	expect(nativeRuntimeFailureMetadata(ended)).toMatchObject({ category: "unknown" });
+});
+
+it("closes the call when the signal it was opened with aborts", async () => {
+	const f = await voiceRun("voice");
+	const opened = new AbortController();
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER }, opened.signal);
+	opened.abort();
+	await vi.waitFor(async () => expect((await f.recorded()).stops).toEqual([{ threadId: "thread_voice" }]), {
+		timeout: 10_000,
+	});
+	await expect(call.speak('"One."', new AbortController().signal)).rejects.toThrow("Native voice cancelled");
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+});
+
+it("rejects a line still being spoken when the run ends, and detaches the voice", async () => {
+	const f = await voiceRun("voice-silent");
+	const signal = new AbortController().signal;
+	const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+	const speaking = call.speak('"One."', signal).catch((error: unknown) => error);
+	await vi.waitFor(async () => expect((await f.recorded()).appended).toHaveLength(1), { timeout: 10_000 });
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	expect(await speaking).toBeInstanceOf(CloudVoiceUnavailable);
+	await expect(f.voice.open({ offerSdp: VOICE_OFFER }, signal)).rejects.toBeInstanceOf(CloudVoiceUnavailable);
+});
+
+it.each(["voice-reopen", "voice-reopen-refused"])(
+	"keeps the slot of a call being stopped until its stop is confirmed, and gives its late words to no other call: %s",
+	async (mode) => {
+		const f = await voiceRun(mode);
+		const signal = new AbortController().signal;
+		const first = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		const line = new AbortController();
+		const speaking = first.speak('"One."', line.signal).catch((error: unknown) => error);
+		await vi.waitFor(async () => expect((await f.recorded()).appended).toHaveLength(1), { timeout: 10_000 });
+		line.abort();
+		// The line is rejected at once; the next call waits for the stop, and does not fail.
+		expect(((await speaking) as Error).message).toBe("Native voice cancelled");
+		const second = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		await expect(second.speak('"Two."', signal)).resolves.toEqual({ transcript: 'SAID "Two."' });
+		await second.close();
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		const recorded = await f.recorded();
+		// The second thread started only after the first call's late transcript and close, which went to neither call.
+		expect(recorded.events).toEqual(["thread-start:thread_voice", "stop", "late", "thread-start:thread_voice_2"]);
+		expect(recorded.stops).toEqual([{ threadId: "thread_voice" }, { threadId: "thread_voice_2" }]);
+	},
+);
+
+it.each(["voice-stop-silent", "voice-stop-refused"])(
+	"places no more calls in a run once a stop went unconfirmed, and the run stands: %s",
+	async (mode) => {
+		const f = await voiceRun(mode, { voice: new CloudVoiceChannel({ stopMs: 200 }) });
+		const signal = new AbortController().signal;
+		const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		await call.close();
+		await expect(f.voice.open({ offerSdp: VOICE_OFFER }, signal)).rejects.toBeInstanceOf(CloudVoiceUnavailable);
+		expect((await f.recorded()).events).toEqual(["thread-start:thread_voice"]);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	},
+);
+
+it("gives a run on a member's ChatGPT plan no voice", async () => {
+	const f = await voiceRun("voice", { identityRoot: await planRoot() });
+	await expect(f.voice.open({ offerSdp: VOICE_OFFER }, new AbortController().signal)).rejects.toBeInstanceOf(
+		CloudVoiceUnavailable,
+	);
+	await f.endTurn();
+	await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+	await expect(stat(f.evidence)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+/** Runs the fixture as the isolated launcher would, with a relay whose voice call window the test watches: each event
+ * names what the fixture had seen when the window opened or closed. */
+function voiceRelay(): string[] {
+	const events: string[] = [];
+	const seen = (): string => {
+		try {
+			const recorded = JSON.parse(readFileSync(join(root, "evidence.json"), "utf8"));
+			return `start=${recorded.start ? "sent" : "none"},stops=${recorded.stops.length}`;
+		} catch {
+			return "unread";
+		}
+	};
+	vi.spyOn(nativeIsolation, "launchIsolatedNativeProcess").mockImplementation(async (options) => {
+		const child = spawn(options.command, [...options.args], {
+			cwd: join(options.scratchRoot, "workspace"),
+			env: {
+				HOME: join(options.scratchRoot, "home"),
+				CODEX_HOME: options.codexHome,
+				PATH: process.env.PATH ?? "/usr/bin:/bin",
+				NO_COLOR: "1",
+				...(options.fenceSocket ? { QORPERA_NATIVE_RESULT_FENCE_SOCKET: options.fenceSocket } : {}),
+			},
+			stdio: ["pipe", "pipe", "pipe"],
+			detached: true,
+		});
+		return {
+			child,
+			async close() {
+				if (child.exitCode !== null || child.signalCode !== null) return;
+				const exited = new Promise<void>((resolve) => child.once("close", () => resolve()));
+				child.kill("SIGKILL");
+				await exited;
+			},
+			allowRealtime: () => {
+				events.push(`open:${seen()}`);
+				let ran = false;
+				return () => {
+					events.push(ran ? "closed again" : `close:${seen()}`);
+					ran = true;
+				};
+			},
+		};
+	});
+	return events;
+}
+const isolation = { entryPoint: "/unused-synthetic-isolation.mjs" };
+
+describe("a voice call's relay window", () => {
+	it("opens before the call's realtime start is sent, and closes once its stop is confirmed", async () => {
+		const events = voiceRelay();
+		const f = await voiceRun("voice", { isolation });
+		const signal = new AbortController().signal;
+		const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		await expect(call.speak('"One."', signal)).resolves.toEqual({ transcript: 'SAID "One."' });
+		expect(events).toEqual(["open:start=none,stops=0"]);
+		await call.close();
+		expect(events).toEqual(["open:start=none,stops=0", "close:start=sent,stops=1"]);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(events).toHaveLength(2);
+	});
+
+	it("closes when the stop is given up on", async () => {
+		const events = voiceRelay();
+		const f = await voiceRun("voice-stop-silent", { isolation, voice: new CloudVoiceChannel({ stopMs: 300 }) });
+		const signal = new AbortController().signal;
+		const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		const closing = call.close();
+		await vi.waitFor(async () => expect((await f.recorded()).stops).toHaveLength(1), { timeout: 10_000 });
+		// The stop is sent and not confirmed: the call may still be up, so its host still passes.
+		expect(events).toEqual(["open:start=none,stops=0"]);
+		await closing;
+		expect(events).toEqual(["open:start=none,stops=0", "close:start=sent,stops=1"]);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(events).toHaveLength(2);
+	});
+
+	it("closes when the run ends with a call open", async () => {
+		const events = voiceRelay();
+		const f = await voiceRun("voice-silent", { isolation });
+		const signal = new AbortController().signal;
+		const call = await f.voice.open({ offerSdp: VOICE_OFFER }, signal);
+		const speaking = call.speak('"One."', signal).catch((error: unknown) => error);
+		await vi.waitFor(async () => expect((await f.recorded()).appended).toHaveLength(1), { timeout: 10_000 });
+		expect(events).toEqual(["open:start=none,stops=0"]);
+		await f.endTurn();
+		await expect(f.result).resolves.toMatchObject({ providerSessionId: "thread_fixture" });
+		expect(await speaking).toBeInstanceOf(CloudVoiceUnavailable);
+		expect(events).toHaveLength(2);
+		expect(events[1]).toMatch(/^close:start=sent,/);
+	});
+
+	it("closes when the call fails to start", async () => {
+		const events = voiceRelay();
+		const f = await voiceRun("voice-start-error", { isolation });
+		const signal = new AbortController().signal;
+		const failure = await f.voice.open({ offerSdp: VOICE_OFFER }, signal).catch((error: unknown) => error);
+		expect((failure as Error).message).toBe("Native voice request rejected");
+		expect(events).toEqual(["open:start=none,stops=0", "close:start=sent,stops=1"]);
+		await f.endTurn();
+		await f.result.catch(() => undefined);
+		expect(events).toHaveLength(2);
 	});
 });
 

@@ -135,6 +135,32 @@ export function stubFigureMotion(dispose: () => void = () => {}) {
 	return vi.spyOn(figureMotion, "mountFigureMotion").mockReturnValue({ dispose });
 }
 
+/** Scrolls `element` as a browser has it: one that has left the page says it is at its top, where jsdom keeps what
+ * was set. A redraw that reads the old page's scroll only after taking it out fails here, as it does in a browser. */
+export function scrolledTo(element: HTMLElement, top: number): void {
+	let at = top;
+	Object.defineProperty(element, "scrollTop", {
+		configurable: true,
+		get: () => (element.isConnected ? at : 0),
+		set: (next: number) => {
+			at = next;
+		},
+	});
+}
+
+/** The table each pushed hint event is about (migration 20260930653000). */
+const HINT_TABLES: ReadonlyMap<string, string> = new Map([
+	["sessions", "qorpera_shared_sessions"],
+	["staff", "qorpera_profile_staff"],
+	["access", "qorpera_profile_access_state"],
+	["company-file", "qorpera_company_files"],
+	["sidebar", "qorpera_company_sidebar_revisions"],
+	// Member chats (20260930715000): pushed to the two members of the changed chat.
+	["member-chats", "qorpera_member_messages"],
+	// A company's machines (20260930712000): pushed to every member.
+	["machines", "qorpera_company_machines"],
+]);
+
 export function fixture() {
 	let authCallback: ((event: AuthChangeEvent, session: Session | null) => void) | undefined;
 	let currentUser: User | null = userA;
@@ -148,11 +174,14 @@ export function fixture() {
 					token_type: "bearer",
 				}
 			: null;
+	/** A company's hint, by the table it is about: by postgres_changes the binding names the table, by push the event
+	 * names its resource. */
 	const hints = new Map<string, () => void>();
 	const unsubscribe = vi.fn();
 	const channel = {
-		on: vi.fn((_kind: string, filter: { table: string }, callback: () => void) => {
-			hints.set(filter.table, callback);
+		on: vi.fn((_kind: string, filter: { table?: string; event?: string }, callback: () => void) => {
+			const table = filter.table ?? (filter.event === undefined ? undefined : HINT_TABLES.get(filter.event));
+			if (table) hints.set(table, callback);
 			return channel;
 		}),
 		subscribe: vi.fn(() => channel),
@@ -230,11 +259,11 @@ export function fixture() {
 	vi.spyOn(api, "listWaitingApprovals").mockRejectedValue(
 		new CloudRpcError("qorpera_list_member_waiting_approvals", { message: "missing", code: "PGRST202" }, 404),
 	);
-	vi.spyOn(api, "companyWaitingForHours").mockResolvedValue(false);
-	// A cloud before the memory choice (C5): Settings show no Memory section.
-	vi.spyOn(api, "getCompanyMemory").mockRejectedValue(
-		new CloudRpcError("qorpera_company_memory_mode", { message: "missing", code: "PGRST202" }, 404),
+	// A cloud before 20260930723000: it does not say what each agent's work waits on the member for.
+	vi.spyOn(api, "listWaitingWork").mockRejectedValue(
+		new CloudRpcError("qorpera_list_member_waiting_work", { message: "missing", code: "PGRST202" }, 404),
 	);
+	vi.spyOn(api, "companyWaitingForHours").mockResolvedValue(false);
 	vi.spyOn(api, "readSessionEvents").mockResolvedValue([]);
 	// No message of the fixture's conversations was ever erased.
 	vi.spyOn(api, "readSessionMemoryGeneration").mockResolvedValue(0);

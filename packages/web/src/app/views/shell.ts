@@ -1,39 +1,69 @@
 import type { AppManifest } from "@qorpera/cloud-client/interface-apps";
 import type { User } from "@supabase/supabase-js";
+import {
+	APP_GROUP_NAME_LIMIT,
+	type AppTile,
+	type AppTreeNode,
+	appsIn,
+	arrangeAppsFully,
+	drawerKey,
+	EMPTY_APP_LAYOUT,
+	fileKey,
+	flattenApps,
+	groupIdOf,
+	groupsOf,
+	isGroupKey,
+	type MemberAppLayout,
+	makeAppGroup,
+	nodeKey,
+	placeApp,
+	renameAppGroup,
+	suggestGroupName,
+	ungroupApps,
+	withoutRefused,
+} from "../../cloud/app-groups.ts";
+import type { InterfacePageName } from "../../cloud/interface-pages.ts";
+import type { MemberContactPlacing } from "../../cloud/member-chats.ts";
 import { UUID_PATTERN } from "../../cloud/parse.ts";
 import {
 	type CompanySidebar,
 	containerOrder,
 	PIN_LIMIT,
 	SECTION_NAME_LIMIT,
+	type SidebarOwnChanges,
 	type SidebarRequest,
 } from "../../cloud/sidebar.ts";
 import type { HostedProfile, HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
 import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
-import { agentColor, agentFigure, figureFor } from "../../ui/avatar.ts";
+import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
+import { agentColor, agentFigure, colourNameHex, figureFor } from "../../ui/avatar.ts";
 import { type MenuEntry, menuPoint, openContextMenu, openMenu } from "../../ui/context-menu.ts";
-import { badge, button, confirmDialog, h, icon, initials, notice, replace } from "../../ui/dom.ts";
+import { badge, button, confirmDialog, h, icon, initials, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { playOnce } from "../../ui/motion.ts";
+import { easing, playOnce, reducedMotion } from "../../ui/motion.ts";
 import { nameDialog } from "../../ui/name-dialog.ts";
 import { attachPersonPicture, personPicturesEpoch } from "../../ui/person-pictures.ts";
 import { phrase, presentationLocale, t, uiText } from "../../ui/preferences.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
-import { RailDrag, type RailDrop } from "../../ui/rail-drag.ts";
+import { RAIL_ITEM, RailDrag, type RailDrop, railItemId } from "../../ui/rail-drag.ts";
 import { glideRows, measureRows } from "../../ui/rail-flip.ts";
 import { RailSelection } from "../../ui/rail-selection.ts";
 import { railListSkeleton } from "../../ui/skeleton.ts";
+import { type IdleLine, idleLine } from "../agent-line.ts";
 import { type AuthController, displayName } from "../auth.ts";
 import { type AgentState, type CompanyController, isAgentPairSession } from "../company.ts";
-import type { CompanyApp } from "../interface-apps.ts";
+import { type CompanyApp, companyConcepts } from "../interface-apps.ts";
 import { interfaceBadge } from "../interface-badge.ts";
-import { type CompanyInterface, companyInterfaces } from "../interfaces.ts";
-import type { Route } from "../router.ts";
+import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../interfaces.ts";
+import { contactPlaces, MEMBERS_ZONE, type RailContact, railContacts, weave } from "../rail-contacts.ts";
+import { appHash, conceptsHash, type Route } from "../router.ts";
 import type { WorkspaceActions } from "../workspace-actions.ts";
 import type { AgentCardActions } from "./agent-details.ts";
 import type { CardFootActions } from "./card-foot.ts";
+import { personFace } from "./friends.ts";
+import { memberPresence } from "./member-chat.ts";
 import type { SettingsTab } from "./settings.ts";
 
 /* The company shell: a rail with conversations and the account menu, and the
@@ -48,6 +78,8 @@ export interface ShellContext {
 	invitations: number;
 	openSettings: (tab?: SettingsTab) => void;
 	openFeedback: () => void;
+	/** Friends, a window of its own beside the account (friends-window.ts). */
+	openFriends: () => void;
 	navigation?: { open: boolean; toggle: () => void };
 	/** What the rail's agent and group chat menus can do beyond the sidebar itself. */
 	agentActions?: Pick<WorkspaceActions, "updateAgent" | "deleteAgent" | "updateGroup" | "deleteGroup">;
@@ -65,6 +97,11 @@ export interface ShellContext {
 		card: CardFootActions,
 		findAnchor: () => HTMLElement | null,
 	) => void;
+	/** Hides a page (Mailbox, Members, Bank) from the member's own rail, or shows it again: a right-click on it, as on
+	 * an agent (Jonas, 9 Nov 2026: each member's own, not the company's). */
+	hideInterfacePage?: (page: InterfacePageName, hidden: boolean) => Promise<void>;
+	/** Reads the member's pages again: after Reset sidebar, or its Undo, a hidden page may show or hide again. */
+	refreshInterfacePages?: () => void;
 }
 
 /* The account menu is one long-lived element: the shell re-renders on every
@@ -72,6 +109,8 @@ export interface ShellContext {
 let accountMenu: HTMLElement | undefined;
 let accountMenuOpen = false;
 let accountTrigger: HTMLButtonElement | undefined;
+/** The friends button left of the account (Jonas's sketch, 9 Nov 2026); it opens the Friends window. */
+let accountFriends: HTMLButtonElement | undefined;
 let accountPopover: HTMLElement | undefined;
 let accountUserId: string | undefined;
 /** What the menu last showed; a redraw that changes none of it leaves the menu alone. */
@@ -135,7 +174,20 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 				items[next]?.focus();
 			}
 		});
-		accountMenu = h("div", { class: "account-menu" }, accountTrigger, accountPopover);
+		accountFriends = h(
+			"button",
+			{
+				type: "button",
+				class: "account-friends",
+				onclick: (event: MouseEvent) => {
+					event.stopPropagation();
+					setAccountMenuOpen(false);
+					accountContext?.openFriends();
+				},
+			},
+			icon("friends"),
+		);
+		accountMenu = h("div", { class: "account-menu" }, accountFriends, accountTrigger, accountPopover);
 		document.addEventListener("click", (event) => {
 			if (accountMenuOpen && !accountMenu?.contains(event.target as Node)) setAccountMenuOpen(false);
 		});
@@ -162,7 +214,18 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 	if (shown === accountShown) return accountMenu;
 	accountTrigger!.setAttribute("aria-label", t("Profile: {name}", { name }));
 	accountTrigger!.title = name;
-	// Friends and the company invitations waiting for this account share one settings tab.
+	// Friends and the company invitations waiting for this account share the Friends window.
+	const friendsLabel =
+		context.invitations > 0
+			? t("Friends: {count} company invitations waiting", { count: context.invitations })
+			: t("Friends");
+	accountFriends!.setAttribute("aria-label", friendsLabel);
+	accountFriends!.title = friendsLabel;
+	replace(
+		accountFriends!,
+		icon("friends"),
+		context.invitations > 0 ? h("span", { class: "account-friends-dot", "aria-hidden": "true" }) : null,
+	);
 	const settingsItem = (tab: SettingsTab, iconName: string, label: string, count = 0) =>
 		h(
 			"button",
@@ -192,7 +255,22 @@ function accountMenuElement(context: ShellContext, company?: CompanyController):
 		accountPopover!,
 		h("div", { class: "account-identity" }, h("strong", null, name)),
 		settingsItem("general", "settings", phrase("Account and settings")),
-		settingsItem("friends", "friends", phrase("Friends"), context.invitations),
+		h(
+			"button",
+			{
+				type: "button",
+				class: "account-item",
+				role: "menuitem",
+				"data-account-action": "friends",
+				onclick: () => {
+					setAccountMenuOpen(false);
+					accountContext?.openFriends();
+				},
+			},
+			icon("friends"),
+			h("span", { class: "account-item-label" }, uiText(phrase("Friends"))),
+			context.invitations > 0 ? h("span", { class: "account-count" }, String(context.invitations)) : null,
+		),
 		h(
 			"button",
 			{
@@ -271,8 +349,11 @@ export function renderTopbar(
  * right-click on an agent or a group chat opens its menu (pin, move to a section,
  * rename, copy the conversation id, hide, delete); on a section, rename or delete it;
  * on the rail, make a new section. Agents and group chats drag between sections and
- * into or out of the pinned row. Search and creation share the toolbar, with the
- * account menu at the foot. Company management lives in settings. */
+ * into or out of the pinned row. The company's other members are contacts (2026-11-10):
+ * rows of the same kind, in a Members group at the foot of the list until their member
+ * drags them among the agents or pins them, and hidden like an agent; where a contact
+ * stands is each member's own (app/rail-contacts.ts). Search and creation share the
+ * toolbar, with the account menu at the foot. Company management lives in settings. */
 
 /* The rail's parts are built once per company: the toolbar with its search field,
  * the scrolling list and the foot. A store update changes what they show in place,
@@ -292,6 +373,19 @@ interface RailParts {
 	/** The route the drawer was last opened for: an interface's page opens it once. */
 	appsRoute: string;
 	interfaceRows: Map<string, { shown: string; element: HTMLElement }>;
+	/** The member's own order of the drawer's icons, by key, as last dragged on this device (empty: the default). */
+	appsOrder: readonly string[];
+	/** The drawer's apps as arranged last (cloud/app-groups.ts): the tree, its tiles in the grid, the groups open on this
+	 * device, each group's tile, and the keys the grid showed, so a change of them glides. */
+	appTree: AppTreeNode[];
+	appTiles: AppTile[];
+	/** The member's places the arrangement refused; the next change leaves them out. */
+	appRefused: ReadonlySet<string>;
+	appGroupsOpen: Set<string>;
+	groupRows: Map<string, { shown: string; element: HTMLElement }>;
+	appKeysShown: string | undefined;
+	/** Dragging the drawer's icons to reorder them. */
+	readonly appsDrag: AppGridDrag;
 	readonly toolbar: HTMLElement;
 	readonly close: HTMLButtonElement;
 	readonly add: HTMLAnchorElement;
@@ -310,7 +404,10 @@ interface RailParts {
 	/** The company's sections by id, and Unassigned, each built once and kept. */
 	sections: Map<string, SectionParts>;
 	readonly unassigned: SectionParts;
-	/** Grok Bot's "Hidden Bots": this member's hidden agents, folded at the foot of the list. */
+	/** The company's other members, each a contact (this member's chat with them): those the member has not put
+	 * elsewhere in the rail, after everything the company arranges. */
+	readonly members: SectionParts;
+	/** Grok Bot's "Hidden Bots": this member's hidden agents and contacts, folded at the foot of the list. */
 	readonly hiddenGroup: HiddenParts;
 	/** The list's placeholder, built when first shown so it breathes with the page's. */
 	loading: HTMLElement | undefined;
@@ -334,6 +431,8 @@ interface RailParts {
 	settled: boolean;
 	/** Mentions had been read at the last draw, so a mention now is news. */
 	mentionsRead: boolean;
+	/** What waits on the member had been read at the last draw, so a raised hand now is news. */
+	waitingRead: boolean;
 	/** The latest draw's context: the menus and the drag act on it. */
 	context?: ShellContext;
 	readonly drag: RailDrag;
@@ -343,6 +442,8 @@ interface HiddenParts {
 	readonly el: HTMLElement;
 	readonly toggle: HTMLButtonElement;
 	readonly label: HTMLElement;
+	/** How many messages wait from contacts in the fold: a hidden contact is still heard. */
+	readonly unread: HTMLElement;
 	readonly count: HTMLElement;
 	readonly chevron: HTMLElement;
 	readonly list: HTMLElement;
@@ -350,6 +451,41 @@ interface HiddenParts {
 }
 const HIDDEN_OPEN_KEY = "qorpera.web.rail-hidden-open";
 const APPS_OPEN_KEY = "qorpera.web.rail-apps-open";
+/** The drawer's order is kept per company on this device, as whether it is open is (Jonas, 9 Nov 2026). */
+const APPS_ORDER_KEY = "qorpera.web.rail-apps-order";
+function storedAppsOrder(profileId: string): string[] {
+	try {
+		const value: unknown = JSON.parse(localStorage.getItem(`${APPS_ORDER_KEY}:${profileId}`) ?? "[]");
+		return Array.isArray(value) ? value.filter((key): key is string => typeof key === "string") : [];
+	} catch {
+		return [];
+	}
+}
+/** Which of the drawer's groups are open is kept per company on this device (Jonas, 11 Nov 2026). */
+const APP_GROUPS_OPEN_KEY = "qorpera.web.rail-app-groups-open";
+function storedGroupsOpen(profileId: string): Set<string> {
+	try {
+		const value: unknown = JSON.parse(localStorage.getItem(`${APP_GROUPS_OPEN_KEY}:${profileId}`) ?? "[]");
+		return new Set(Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : []);
+	} catch {
+		return new Set();
+	}
+}
+function storeGroupsOpen(profileId: string, open: ReadonlySet<string>): void {
+	try {
+		localStorage.setItem(`${APP_GROUPS_OPEN_KEY}:${profileId}`, JSON.stringify([...open]));
+	} catch {
+		/* The choice lasts this view. */
+	}
+}
+function storeAppsOrder(profileId: string, order: readonly string[]): void {
+	try {
+		localStorage.setItem(`${APPS_ORDER_KEY}:${profileId}`, JSON.stringify(order));
+	} catch {
+		/* The order lasts this view. */
+	}
+}
+
 function storedAppsOpen(profileId: string): boolean {
 	try {
 		return localStorage.getItem(`${APPS_OPEN_KEY}:${profileId}`) === "1";
@@ -365,6 +501,7 @@ function hiddenParts(redraw: () => void): HiddenParts {
 		/* Storage may be unavailable; the group starts folded. */
 	}
 	const label = h("span", { class: "rail-hidden-label" });
+	const unread = h("span", { class: "rail-hidden-unread", "aria-hidden": "true", hidden: true });
 	const count = h("span", { class: "rail-hidden-count" });
 	const chevron = h("span", { class: "rail-hidden-chevron", "aria-hidden": "true" }, icon("chevron-down"));
 	const list = h("div", { class: "rail-section-list rail-hidden-list", id: "rail-hidden-list" });
@@ -372,6 +509,7 @@ function hiddenParts(redraw: () => void): HiddenParts {
 		"button",
 		{ type: "button", class: "rail-hidden-toggle", "aria-controls": "rail-hidden-list" },
 		label,
+		unread,
 		count,
 		chevron,
 	);
@@ -379,6 +517,7 @@ function hiddenParts(redraw: () => void): HiddenParts {
 		el: h("div", { class: "rail-hidden" }, toggle, list),
 		toggle,
 		label,
+		unread,
 		count,
 		chevron,
 		list,
@@ -429,7 +568,7 @@ const isCollapsed = (element: Element) => element.closest(".rail-compact") !== n
  * a child is out of place, so a child that keeps its place never leaves the page. */
 /** A row built anew, once the company has loaded, says what changed (styles/motion.css): an
  * agent that starts work gets its dot and its line, a failed run folds the figure into a red
- * "!" (and unfolds it when the failure is dealt with), a mention's badge pops, and an agent the
+ * "!" (and unfolds it when the failure is dealt with), a mention's badge and a raised hand pop, and an agent the
  * company never listed before is placed like a card (a new chat drops in). */
 function changedRow(
 	before: string | undefined,
@@ -437,6 +576,7 @@ function changedRow(
 	element: HTMLElement,
 	unseen: boolean,
 	mentionsRead: boolean,
+	waitingRead: boolean,
 ): void {
 	if (before === undefined) {
 		if (unseen) playOnce(element, element.dataset.agentId ? "is-hired" : "is-arriving");
@@ -456,6 +596,7 @@ function changedRow(
 						: "state-changed",
 		);
 	if (mentionsRead && !was.mentioned && now.mentioned) playOnce(element, "mention-arrived");
+	if (waitingRead && !was.waiting && now.waiting) playOnce(element, "hand-arrived");
 }
 
 function reconcile(parent: HTMLElement, children: readonly HTMLElement[]): void {
@@ -514,6 +655,14 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			appsOpen: storedAppsOpen(company.profile.profileId),
 			appsRoute: "",
 			interfaceRows: new Map(),
+			appsOrder: storedAppsOrder(company.profile.profileId),
+			appTree: [],
+			appTiles: [],
+			appRefused: new Set(),
+			appGroupsOpen: storedGroupsOpen(company.profile.profileId),
+			groupRows: new Map(),
+			appKeysShown: undefined,
+			appsDrag: undefined as unknown as AppGridDrag,
 			toolbar: h("div", { class: "rail-toolbar" }, close, companyButton, apps, search, add),
 			close,
 			add,
@@ -533,6 +682,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			),
 			sections: new Map(),
 			unassigned: sectionParts("unassigned"),
+			members: sectionParts(MEMBERS_ZONE),
 			hiddenGroup: hiddenParts(() => created.redraw()),
 			loading: undefined,
 			empty: h("p", { class: "rail-empty" }),
@@ -545,10 +695,53 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			known: new Set(),
 			settled: false,
 			mentionsRead: false,
+			waitingRead: false,
 			drag: undefined as unknown as RailDrag,
 			redraw,
 		};
+		created.members.el.classList.add("rail-members");
 		(created as { drag: RailDrag }).drag = new RailDrag(list, () => dragHooks(company, created), company.signal);
+		// The drawer's icons reorder by dragging (or Alt with an arrow); the order is the member's own, on this device.
+		(created as { appsDrag: AppGridDrag }).appsDrag = new AppGridDrag(
+			appsGrid,
+			() => {
+				const arranges = appsArrangeable(company);
+				return {
+					// While a reset is on its way nothing moves: what it brings back decides the order.
+					canDrag: () => created.appsOpen && !created.apps.inert && !company.resettingSidebar(),
+					drop: (order: string[], moved: string) => {
+						// Where the cloud keeps the member's own arrangement, a move is a change of it; before, the order
+						// is kept on this device.
+						if (arranges) {
+							moveInDrawer(company, created, order, moved);
+							return;
+						}
+						created.appsOrder = order;
+						storeAppsOrder(company.profile.profileId, order);
+					},
+					// Whatever changed while an icon was lifted draws now, the order kept or not.
+					end: () => created.redraw(),
+					...(arranges
+						? {
+								canMerge: (dragged: string, onto: string) => canMergeApps(created, dragged, onto),
+								merge: (dragged: string, onto: string) => void mergeApps(company, created, dragged, onto),
+							}
+						: {}),
+				};
+			},
+			company.signal,
+		);
+		// A group's tile opens it into the grid, or folds it again (a drag's release is no click: the drag eats it).
+		appsGrid.addEventListener(
+			"click",
+			(event) => {
+				const tile = (event.target as Element).closest<HTMLElement>(".rail-app-group[data-app-key]");
+				if (!tile) return;
+				event.preventDefault();
+				toggleAppGroup(company, created, groupIdOf(tile.dataset.appKey!));
+			},
+			{ signal: company.signal },
+		);
 		// The four windows open or close the interfaces; the choice is kept for this company on this device.
 		apps.addEventListener(
 			"click",
@@ -662,16 +855,22 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		list.addEventListener("contextmenu", (event) => openRailMenu(company, created, event), {
 			signal: company.signal,
 		});
-		pressToOpenMenu(list, company, created);
-		// Dragging has a keyboard twin: Alt with an arrow moves the focused agent or group chat one place.
+		pressToOpenMenu(list, company, (event) => openRailMenu(company, created, event));
+		// A right-click on a page in the drawer hides it, as on an agent.
+		appsDrawer.addEventListener("contextmenu", (event) => openDrawerMenu(company, created, event), {
+			signal: company.signal,
+		});
+		pressToOpenMenu(appsDrawer, company, (event) => openDrawerMenu(company, created, event));
+		// Dragging has a keyboard twin: Alt with an arrow moves the focused agent, group chat or contact one place.
 		list.addEventListener(
 			"keydown",
 			(event) => {
 				const delta = matchesKey(event, "previous") ? -1 : matchesKey(event, "next") ? 1 : 0;
-				const item = railItemOf(event.target as HTMLElement);
+				const element = event.target as HTMLElement;
+				const item = railItemOf(element);
 				if (!event.altKey || !delta || !item) return;
 				event.preventDefault();
-				nudgeItem(company, item, delta);
+				nudgeItem(company, created, element, item, delta);
 			},
 			{ signal: company.signal },
 		);
@@ -708,6 +907,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 		parts.appsDrawer.setAttribute("aria-label", t("Apps"));
 		parts.interfaceRows = new Map();
 		parts.pinnedGroup.setAttribute("aria-label", t("Pinned"));
+		parts.members.title.textContent = t("Members");
 		const slot = parts.pinnedGroup.querySelector<HTMLElement>(".rail-drop-slot");
 		if (slot) slot.textContent = t("Drop here to pin");
 		parts.unassigned.title.textContent = t("Unassigned");
@@ -732,18 +932,36 @@ function statusDisc(look: AgentLook, className: string): HTMLElement | null {
 	return h("span", { class: className, "aria-hidden": "true" });
 }
 
-/** The tooltip. Any state also goes into the link's name, which the compact rail
- * needs: it hides the text beside the figure and the disc says nothing aloud. */
+/** The link's name. No tooltip: the row already shows the name, and a hover
+ * popup over every row was noise (Jonas, 9 Nov 2026). Any state also goes into the name,
+ * which the compact rail needs: it hides the text beside the figure and the disc says
+ * nothing aloud. What the agent waits on the member for is said too, while it works as
+ * well, since the raised hand says nothing aloud either. */
 function railLabel(
-	agent: Pick<HostedStaffAgent, "displayName" | "role"> & { mentioned?: boolean },
+	agent: Pick<AgentModel, "displayName" | "state" | "waiting"> & { mentioned?: boolean },
 	look: AgentLook,
-): { title: string; "aria-label"?: string } {
-	// AGENT_LOOK keeps the English words; they are translated where they are drawn.
+	idle?: IdleLine,
+): { "aria-label": string } {
+	// AGENT_LOOK keeps the English words; they are translated where they are drawn. A row's idle line, already in the
+	// member's words, says the rest.
 	const words = look.note ?? look.line;
-	const state = words ? t(words) : undefined;
+	// Stopped at the member: what for takes the place of "Needs you"; with no words, "Needs you" says it alone.
+	const decision = agent.state === "decision";
+	const what = agent.waiting?.what;
+	const waiting = what
+		? t("Waiting for you: {what}", { what })
+		: agent.waiting && !decision
+			? t("Waiting for you")
+			: undefined;
+	const state = decision && what ? undefined : words ? t(words) : idle?.text;
 	const mention = agent.mentioned ? t("You were mentioned") : undefined;
-	const label = [agent.displayName, agent.role, state, mention].filter(Boolean).join(" · ");
-	return state || mention ? { title: label, "aria-label": label } : { title: label };
+	return { "aria-label": [agent.displayName, state, waiting, mention].filter(Boolean).join(" · ") };
+}
+
+/** A raised hand on the figure's top-right while the agent's work waits on this member (a card it raised for them,
+ * or an approval card they answer), also while it works on something else. Its words are in the link's name. */
+function handMark(waiting: AgentModel["waiting"]): HTMLElement | null {
+	return waiting ? h("span", { class: "rail-hand", "aria-hidden": "true" }, icon("hand")) : null;
 }
 
 /** "@" on a conversation where someone mentioned this member and they have not looked yet. */
@@ -754,10 +972,15 @@ function mentionBadge(mentioned: boolean | undefined): HTMLElement | null {
 /* Each rail row is built from its model alone, and the model is also what decides
  * whether the row is rebuilt: whatever a row shows is in its key by construction.
  * Which row is current is set in place instead, since it changes with every navigation. */
-interface AgentModel extends Pick<HostedStaffAgent, "id" | "displayName" | "role" | "templateId" | "appearance"> {
+interface AgentModel extends Pick<HostedStaffAgent, "id" | "displayName" | "templateId" | "appearance"> {
 	state: AgentState;
 	/** Someone mentioned this member in the agent's thread and they have not looked yet. */
 	mentioned: boolean;
+	/** The row's line while the agent does not work and needs no one (app/agent-line.ts), in the member's words. */
+	idle?: IdleLine;
+	/** Its work waits on this member (CompanyController.waitingFor): the newest item in a few words, when the cloud
+	 * says. */
+	waiting?: { what?: string };
 }
 interface SessionModel {
 	title: string;
@@ -779,6 +1002,7 @@ function cofounderCard(model: AgentModel, href: string): HTMLElement {
 			{ class: "cofounder-stand" },
 			agentFigure(model, model.displayName, { size: 82, activity: look.figure }),
 			statusDisc(look, "cofounder-status"),
+			handMark(model.waiting),
 			mentionBadge(model.mentioned),
 		),
 		h("strong", null, model.displayName),
@@ -794,7 +1018,7 @@ function groupPinCard(model: SessionModel, href: string): HTMLElement {
 			href,
 			draggable: "false",
 			"data-room-id": model.roomId,
-			title: [model.title, model.subtitle, model.mentioned ? t("You were mentioned") : ""]
+			"aria-label": [model.title, model.subtitle, model.mentioned ? t("You were mentioned") : ""]
 				.filter(Boolean)
 				.join(" · "),
 		},
@@ -826,6 +1050,7 @@ function pinCard(model: AgentModel, href: string): HTMLElement {
 			{ class: "rail-pin-stand" },
 			agentFigure(model, model.displayName, { size: 52, activity: look.figure }),
 			statusDisc(look, "rail-row-status"),
+			handMark(model.waiting),
 			mentionBadge(model.mentioned),
 		),
 		h("strong", { class: "rail-pin-name" }, model.displayName),
@@ -834,6 +1059,13 @@ function pinCard(model: AgentModel, href: string): HTMLElement {
 
 function agentRow(model: AgentModel, href: string): HTMLElement {
 	const look = AGENT_LOOK[model.state];
+	// Stopped at this member: what for, in the warning colour. A decision with no words (a proposal, a stopped run)
+	// keeps "Needs you", in the same colour.
+	const decision = model.state === "decision";
+	const what = decision ? model.waiting?.what : undefined;
+	const live = what ? t("Stopped: {what}", { what }) : stateLine(look);
+	const line = live ?? model.idle?.text;
+	const tone = decision ? "waiting" : live ? undefined : model.idle?.tone;
 	return h(
 		"a",
 		{
@@ -842,21 +1074,85 @@ function agentRow(model: AgentModel, href: string): HTMLElement {
 			draggable: "false",
 			"data-agent-id": model.id,
 			style: `--agent-color: ${agentColor(model)}`,
-			...railLabel(model, look),
+			...railLabel(model, look, model.idle),
 		},
 		h(
 			"span",
 			{ class: "rail-row-stand" },
 			agentFigure(model, model.displayName, { size: 50, activity: look.figure }),
 			statusDisc(look, "rail-row-status"),
+			handMark(model.waiting),
 			mentionBadge(model.mentioned),
 		),
 		h(
 			"span",
 			{ class: "rail-row-copy" },
 			h("strong", null, model.displayName),
-			h("small", null, stateLine(look, model.role)),
+			line ? h("small", tone ? { class: `rail-row-line is-${tone}` } : null, line) : null,
 		),
+	);
+}
+
+/** Another member of the company, as a contact: their face where an agent has a figure, green-dotted while they are
+ * online, with how many of their messages wait. Under the name stands their newest unread message, else whether they
+ * are online or when they last were. A row wherever an agent would be a row; in the pinned row a square card, the face
+ * over the first name. */
+interface MemberModel {
+	userId: string;
+	name: string;
+	online: boolean;
+	line: string;
+	unread: number;
+	/** Something waits: the count pops when it arrives, as a mention's badge does. */
+	mentioned: boolean;
+}
+function memberRow(model: MemberModel, href: string): HTMLElement {
+	return h(
+		"a",
+		{
+			class: "rail-row rail-row-member",
+			href,
+			draggable: "false",
+			"data-member-id": model.userId,
+			"aria-label": memberLabel(model),
+		},
+		h(
+			"span",
+			{ class: "rail-row-stand" },
+			personFace(model.name, model.userId, model.online),
+			countBadge(model.unread),
+		),
+		h(
+			"span",
+			{ class: "rail-row-copy" },
+			h("strong", null, model.name),
+			model.line ? h("small", null, model.line) : null,
+		),
+	);
+}
+
+function memberLabel(model: MemberModel): string {
+	return [model.name, model.line, model.unread ? t("Unread: {count}", { count: model.unread }) : ""]
+		.filter(Boolean)
+		.join(" · ");
+}
+function memberCard(model: MemberModel, href: string): HTMLElement {
+	return h(
+		"a",
+		{
+			class: "rail-pin rail-pin-member",
+			href,
+			draggable: "false",
+			"data-member-id": model.userId,
+			"aria-label": memberLabel(model),
+		},
+		h(
+			"span",
+			{ class: "rail-pin-stand" },
+			personFace(model.name, model.userId, model.online),
+			countBadge(model.unread),
+		),
+		h("strong", { class: "rail-pin-name" }, model.name.trim().split(/\s+/)[0] ?? model.name),
 	);
 }
 
@@ -866,7 +1162,7 @@ function sessionRow(model: SessionModel, href: string): HTMLElement {
 		{
 			class: model.kind === "Group chat" ? "rail-row rail-row-group" : "rail-row",
 			href,
-			title: [model.title, model.subtitle, model.mentioned ? t("You were mentioned") : ""]
+			"aria-label": [model.title, model.subtitle, model.mentioned ? t("You were mentioned") : ""]
 				.filter(Boolean)
 				.join(" · "),
 			...(model.roomId ? { draggable: "false", "data-room-id": model.roomId } : {}),
@@ -885,6 +1181,9 @@ function sessionRow(model: SessionModel, href: string): HTMLElement {
 
 export function renderRail(container: HTMLElement, company: CompanyController, context: ShellContext): void {
 	const parts = partsFor(company, () => renderRail(container, company, context));
+	// A lifted row keeps the rail still: the rows make way for it by hand (ui/rail-drag.ts), and what changed
+	// meanwhile draws when it is let go.
+	if (parts.drag.dragging) return;
 	const restoreFocus = preserveAccountFocus();
 	const route = context.route;
 	const state = company.store.get();
@@ -897,14 +1196,26 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	const cofounderSessionId = state.organization?.cofounder.memberSessionId;
 	const section = route.name === "company" ? route.section : undefined;
 	const interfacesShown = companyInterfaces(company);
-	// The agents' apps that are posted for every member (RUNTIME-INTERFACE-APPS.md §4), after the platform's pages.
-	const postedApps = (state.apps ?? []).filter((app) => app.manifest?.posted === true);
-	const hasApps = interfacesShown.length > 0 || postedApps.length > 0;
+	// The agents' apps that are posted for every member (RUNTIME-INTERFACE-APPS.md §4), after the platform's pages. The
+	// concepts of the company's product are one Concepts entry instead, posted or not (Jonas, 8 November 2026).
+	// While What's new shows, an agent's own app of that name stays out: two pages of one name (own code storage step 4).
+	const postedApps = (state.apps ?? []).filter(
+		(app) => app.manifest?.posted === true && !app.manifest.concept && !(state.whatsNew && app.name === "whats-new"),
+	);
+	const concepts = companyConcepts(state.apps ?? []).length;
+	// The websites the company's agents published: one Sites entry while there are any (Jonas, 9 Nov 2026).
+	const sites = state.siteCount ?? 0;
+	const hasApps =
+		interfacesShown.length > 0 || postedApps.length > 0 || concepts > 0 || sites > 0 || state.whatsNew !== undefined;
 	// An interface's page opens the drawer once, so the page it shows stands lit; after that the member's press decides.
 	const routeKey = route.name === "company" ? `${route.section}/${route.id ?? ""}` : "";
 	if (routeKey !== parts.appsRoute) {
 		parts.appsRoute = routeKey;
-		if (section === "interface" && !parts.appsOpen) setAppsOpen(parts, profileId, true);
+		if (
+			(section === "interface" || section === "app" || section === "sites" || section === "whats-new") &&
+			!parts.appsOpen
+		)
+			setAppsOpen(parts, profileId, true);
 	}
 	const appsOpen = hasApps && parts.appsOpen;
 	parts.apps.hidden = !hasApps;
@@ -944,14 +1255,16 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	if (section === "new") parts.add.setAttribute("aria-current", "page");
 	else parts.add.removeAttribute("aria-current");
 
-	drawInterfaces(parts, company, interfacesShown, postedApps, route);
+	drawInterfaces(parts, company, interfacesShown, postedApps, concepts, sites, route);
 	parts.context = context;
 	const active = state.staff.filter((agent) => agent.employmentStatus === "active");
 	const cofounderId = company.cofounderId();
 	const cofounder = cofounderId ? company.staffById(cofounderId) : undefined;
 	// Keyboard focus in the list stays on its element. A rebuilt row hands it to the row
 	// built in its place; an element that left hands it to whatever now stands where it stood.
-	const focusables = () => [...parts.list.querySelectorAll<HTMLElement>("a[href], button, [tabindex='0']")];
+	const focusables = () => [
+		...parts.list.querySelectorAll<HTMLElement>("a[href], a[data-href], button, [tabindex='0']"),
+	];
 	const focused =
 		document.activeElement instanceof HTMLElement && parts.list.contains(document.activeElement)
 			? document.activeElement
@@ -977,7 +1290,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				: { shown, element: build(model, href) };
 		if (kept && entry !== kept && kept.element === focused) successor = entry.element;
 		if (entry !== kept && parts.settled)
-			changedRow(kept?.shown, shown, entry.element, !parts.known.has(href), parts.mentionsRead);
+			changedRow(kept?.shown, shown, entry.element, !parts.known.has(href), parts.mentionsRead, parts.waitingRead);
 		rows.set(key, entry);
 		entry.element.classList.toggle("active", current);
 		if (current) entry.element.setAttribute("aria-current", "page");
@@ -992,25 +1305,37 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			? { ...agent, appearance: { ...agent.appearance, creature: look.figure, color: look.color } }
 			: agent;
 		const figure = figureFor(shown);
+		const activity = company.agentState(agent.id);
+		const waiting = company.waitingFor(agent.id);
 		return {
 			id: agent.id,
 			displayName: agent.displayName,
-			role: agent.role,
 			templateId: agent.templateId,
 			// Resolved, so the pick and the roster's words for it once saved (a colour's name, no colour for the
 			// figure's own shade) are one cache key, and the row is kept when the save lands.
 			appearance: { color: agentColor(shown, figure), shape: "", creature: figure },
-			// State is part of the cache key, including idle/failed transitions with the same figure and role.
-			state: company.agentState(agent.id),
+			// State is part of the cache key, including idle/failed transitions with the same figure.
+			state: activity,
+			...(activity === "idle" || activity === "failed"
+				? {
+						idle: idleLine({
+							failed: activity === "failed",
+							restingUntil: company.pausedRunFor(agent.id)?.paused?.until,
+							note: state.agentNotes?.[agent.id],
+							hiredAt: agent.createdAt,
+						}),
+					}
+				: {}),
 			mentioned: mentionedIn(
 				agent.id === cofounder?.id && cofounderSessionId
 					? cofounderSessionId
 					: company.primarySessionFor(agent.id)?.sessionId,
 			),
+			...(waiting ? { waiting: waiting.what ? { what: waiting.what } : {} } : {}),
 		};
 	};
 	const cofounderElement =
-		cofounder && matches(`${cofounder.displayName} ${cofounder.role}`)
+		cofounder && matches(cofounder.displayName)
 			? row(
 					`#/c/${profileId}`,
 					`#/c/${profileId}`,
@@ -1027,19 +1352,65 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// sections. A cloud without it shows every agent in one list, as before; one that
 	// places agents only lists the group chats after them.
 	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
+	// The company's other members, each a contact that opens this member's chat with them (Jonas, 10 Nov 2026). None
+	// alone in the company, on a cloud without member chats, or before the first read. A contact stands where its
+	// member put it (app/rail-contacts.ts): in the Members group, in the order the members joined, until then.
+	const activeMemberId = route.name === "company" && route.section === "member" ? route.id?.toLowerCase() : undefined;
+	const memberChats = state.memberChatsUnavailable ? undefined : state.memberChats;
+	const { others, contacts } = companyContacts(company);
+	const contactOf = new Map(contacts.map((contact) => [contact.userId, contact]));
+	const contactsIn = (zone: string) => contacts.filter((contact) => contact.zone === zone);
+	const memberElement = (userId: string, keyPrefix = "", build = memberRow) => {
+		const member = others.get(userId)!;
+		const chat = memberChats![userId]!;
+		const presence = memberPresence(state, userId);
+		const href = `#/c/${profileId}/member/${userId}`;
+		const waiting = chat.unread > 0 && chat.last?.authorUserId === userId ? chat.last.text : undefined;
+		const model: MemberModel = {
+			userId,
+			name: member.displayName,
+			online: presence?.online === true,
+			line: waiting ?? presence?.text ?? "",
+			unread: chat.unread,
+			mentioned: chat.unread > 0,
+		};
+		return row(`${keyPrefix}${href}`, href, model, activeMemberId === userId, build);
+	};
 	const roster = company.sidebarRoster();
 	const rooms = company.groupChatRooms();
 	// Group chats the sidebar places; the others stand after the Unassigned agents.
 	const placedRooms: ReadonlyMap<string, HostedSession> = sidebar?.groupChats ? rooms : new Map();
 	const pinned = (sidebar?.pinned ?? []).filter((itemId) => roster.includes(itemId));
 	const hidden = new Set(sidebar?.hidden ?? []);
+	// A search that names a section lists everyone in it, pinned ones too; "Unassigned" names
+	// what is in no section once there are sections to tell it from.
+	const sectionNames = sidebar?.sections ?? [];
+	const wholeSections = new Set(
+		railQuery
+			? sectionNames.filter((item) => matches(item.name)).map((item) => item.sectionId as string | undefined)
+			: [],
+	);
+	if (railQuery && sectionNames.length && matches(t("Unassigned"))) wholeSections.add(undefined);
+	const sectionOf = (itemId: string) => {
+		const placed = sidebar?.placements[itemId]?.sectionId;
+		return placed && sectionNames.some((item) => item.sectionId === placed) ? placed : undefined;
+	};
+	const inWholeSection = (itemId: string) => wholeSections.has(sectionOf(itemId));
 	const shown = (agent: HostedStaffAgent | undefined): agent is HostedStaffAgent =>
 		// A hidden agent is still found by searching for it.
 		Boolean(agent) &&
-		matches(`${agent!.displayName} ${agent!.role}`) &&
+		(matches(agent!.displayName) || inWholeSection(agent!.id)) &&
 		(!hidden.has(agent!.id) || Boolean(railQuery));
 	const roomShown = (roomId: string) =>
-		matches(placedRooms.get(roomId)?.title ?? "") && (!hidden.has(roomId) || Boolean(railQuery));
+		(matches(placedRooms.get(roomId)?.title ?? "") || inWholeSection(roomId)) &&
+		(!hidden.has(roomId) || Boolean(railQuery));
+	// A contact shows as an agent does: where it stands unless hidden, and a search finds a hidden one too. A search
+	// that names the section it stands in lists it with the section.
+	const contactShown = (contact: RailContact) =>
+		(matches(others.get(contact.userId)!.displayName) ||
+			(contact.zone === "unassigned" && wholeSections.has(undefined)) ||
+			(contact.zone.startsWith("section:") && wholeSections.has(contact.zone.slice("section:".length)))) &&
+		(!contact.hidden || Boolean(railQuery));
 	const agentElement = (agent: HostedStaffAgent) =>
 		row(
 			`#/c/${profileId}/staff/${agent.id}`,
@@ -1063,7 +1434,10 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		const href = `#/c/${profileId}/chat/${session.sessionId}`;
 		return row(`${keyPrefix}${href}`, href, roomModel(session, roomId), activeSessionId === session.sessionId, build);
 	};
-	const pinnedElements = pinned.flatMap((itemId) => {
+	// The member's pinned contacts stand among the pinned agents and group chats, each after the one it was put after.
+	const pinnedElements = weave(pinned, contactsIn("pinned")).flatMap((itemId) => {
+		const contact = contactOf.get(itemId);
+		if (contact) return contactShown(contact) ? [memberElement(itemId, "pin:", memberCard)] : [];
 		if (placedRooms.has(itemId)) return roomShown(itemId) ? [roomElement(itemId, "pin:", groupPinCard)] : [];
 		const agent = company.staffById(itemId);
 		return shown(agent)
@@ -1078,14 +1452,25 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				]
 			: [];
 	});
+	// A container's rows: the company's order of its agents and group chats, with the member's contacts woven in
+	// before the pinned and hidden ones are left out, so a contact keeps its place beside one that is pinned or hidden.
 	const inContainer = (sectionId: string | undefined) =>
-		(sidebar ? containerOrder(sidebar, sectionId, roster) : sectionId ? [] : roster)
+		weave(
+			sidebar ? containerOrder(sidebar, sectionId, roster) : sectionId ? [] : roster,
+			contactsIn(sectionId ? `section:${sectionId}` : "unassigned"),
+		)
 			.filter((itemId) => !pinned.includes(itemId))
 			.flatMap((itemId) => {
+				const contact = contactOf.get(itemId);
+				if (contact) return contactShown(contact) ? [memberElement(itemId)] : [];
 				if (placedRooms.has(itemId)) return roomShown(itemId) ? [roomElement(itemId)] : [];
 				const agent = company.staffById(itemId);
 				return shown(agent) ? [agentElement(agent)] : [];
 			});
+	// The Members group: the contacts their member has put nowhere else, the dragged ones first, then as they joined.
+	const memberRows = weave([], contactsIn(MEMBERS_ZONE)).flatMap((userId) =>
+		contactShown(contactOf.get(userId)!) ? [memberElement(userId)] : [],
+	);
 	const sectionGroups = (sidebar?.sections ?? []).map((item) => {
 		let group = parts.sections.get(item.sectionId);
 		if (!group) {
@@ -1100,31 +1485,58 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// Hidden agents and group chats fold at the foot of the list, where they can be shown
 	// again. A search already lists the matching ones in their places.
 	const hiddenItems = railQuery ? [] : roster.filter((itemId) => hidden.has(itemId));
+	// With them, the pages an owner or admin hid, for owners and admins: from here they show them again.
+	const hiddenPages = railQuery ? [] : hiddenInterfaces(company);
+	// And the contacts the member hid. A hidden contact can still write: how many of their messages wait stands on
+	// the fold, so nothing a person sent goes unseen.
+	const hiddenContacts = railQuery ? [] : contacts.filter((contact) => contact.hidden);
+	const hiddenUnread = hiddenContacts.reduce((sum, contact) => sum + (memberChats?.[contact.userId]?.unread ?? 0), 0);
+	const hiddenCount = hiddenItems.length + hiddenPages.length + hiddenContacts.length;
 	const hiddenGroup = parts.hiddenGroup;
-	hiddenGroup.count.textContent = String(hiddenItems.length);
+	hiddenGroup.count.textContent = String(hiddenCount);
 	hiddenGroup.count.hidden = hiddenGroup.open;
+	// Empty with nothing waiting, so the fold reads as its name and its count alone.
+	hiddenGroup.unread.textContent = hiddenUnread === 0 ? "" : hiddenUnread > 99 ? "99+" : String(hiddenUnread);
+	hiddenGroup.unread.hidden = hiddenUnread === 0 || hiddenGroup.open;
 	hiddenGroup.chevron.hidden = !hiddenGroup.open;
 	hiddenGroup.toggle.setAttribute("aria-expanded", String(hiddenGroup.open));
-	hiddenGroup.toggle.setAttribute("aria-label", t("Hidden: {count}", { count: hiddenItems.length }));
+	hiddenGroup.toggle.setAttribute(
+		"aria-label",
+		[t("Hidden: {count}", { count: hiddenCount }), hiddenUnread ? t("Unread: {count}", { count: hiddenUnread }) : ""]
+			.filter(Boolean)
+			.join(" · "),
+	);
 	hiddenGroup.list.hidden = !hiddenGroup.open;
 	reconcile(
 		hiddenGroup.list,
 		hiddenGroup.open
-			? hiddenItems.flatMap((itemId) => {
-					if (placedRooms.has(itemId)) return [roomElement(itemId, "hidden:")];
-					const agent = company.staffById(itemId);
-					return agent
-						? [
-								row(
-									`hidden:#/c/${profileId}/staff/${agent.id}`,
-									`#/c/${profileId}/staff/${agent.id}`,
-									agentModel(agent),
-									isActive(agent.id),
-									agentRow,
-								),
-							]
-						: [];
-				})
+			? [
+					...hiddenPages.map((entry) =>
+						row(
+							`hidden-page:${entry.name}`,
+							"",
+							{ name: entry.name, title: entry.file.name, emblem: entry.file.emblem },
+							false,
+							hiddenPageRow,
+						),
+					),
+					...hiddenItems.flatMap((itemId) => {
+						if (placedRooms.has(itemId)) return [roomElement(itemId, "hidden:")];
+						const agent = company.staffById(itemId);
+						return agent
+							? [
+									row(
+										`hidden:#/c/${profileId}/staff/${agent.id}`,
+										`#/c/${profileId}/staff/${agent.id}`,
+										agentModel(agent),
+										isActive(agent.id),
+										agentRow,
+									),
+								]
+							: [];
+					}),
+					...hiddenContacts.map((contact) => memberElement(contact.userId, "hidden:")),
+				]
 			: [],
 	);
 	const unassignedRows = [
@@ -1135,7 +1547,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			.filter(
 				(session) =>
 					session.status === "open" &&
-					matches(session.title) &&
+					(matches(session.title) || wholeSections.has(undefined)) &&
 					// A pair transcript is reached from the chips in the agents' threads, never from the rail.
 					!isAgentPairSession(session) &&
 					!placedRooms.has(String(session.executionScope?.roomId).toLowerCase()) &&
@@ -1177,10 +1589,34 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		notices.set(about, entry);
 		return entry.element;
 	};
+	// After Reset sidebar: one line with Undo, until dismissed or the sidebar changes again.
+	const resetNotice = () => {
+		if (!state.sidebarReset) return null;
+		const text = t("Sidebar reset to {company}'s.", { company: company.profile.profileName });
+		const kept = parts.notices.get("reset");
+		const entry =
+			kept?.text === text
+				? kept
+				: {
+						text,
+						element: notice(
+							"neutral",
+							text,
+							button(t("Undo"), () => void undoSidebarReset(company, parts), { small: true }),
+							button(t("Dismiss"), () => company.store.set({ sidebarReset: undefined }), { small: true }),
+						),
+					};
+		// Undo is pressed once: it waits while its request is on its way.
+		const undo = entry.element.querySelector("button");
+		if (undo) undo.disabled = state.sidebarReset.undoing === true;
+		notices.set("reset", entry);
+		return entry.element;
+	};
 	const anyRows =
+		memberRows.length +
 		pinnedElements.length +
 		unassignedRows.length +
-		hiddenItems.length +
+		hiddenCount +
 		sectionGroups.reduce((n, g) => n + g.rows.length, 0);
 	if (!state.loading || state.staff.length) parts.loading = undefined;
 	else parts.loading ??= railListSkeleton();
@@ -1219,6 +1655,9 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	}
 	zone(parts.unassigned.el, Boolean(sidebar));
 	parts.unassigned.title.hidden = !sectioned;
+	// With no one in it, Unassigned is not a category: its title shows only while an agent
+	// is dragged, so it can still be dropped there (styles/app.css).
+	parts.unassigned.el.classList.toggle("is-empty", !unassignedRows.length);
 	// Without sections the list is not a group: nothing would name it but a hidden title.
 	if (sectioned) {
 		parts.unassigned.el.setAttribute("role", "group");
@@ -1228,12 +1667,21 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		parts.unassigned.el.removeAttribute("aria-labelledby");
 	}
 	reconcile(parts.unassigned.list, unassignedRows);
+	// The Members group is a zone only contacts land in, where the cloud keeps their places. Its title parts it from
+	// the sections above it, as Unassigned's does. With nobody in it, it shows only while a contact is dragged, so one
+	// can be dropped back there (styles/app.css).
+	const placing = state.memberContactPlacing === true && contacts.length > 0;
+	zone(parts.members.el, placing);
+	parts.members.title.hidden = !sectioned;
+	parts.members.el.classList.toggle("is-empty", !memberRows.length);
+	reconcile(parts.members.list, memberRows);
 	// Collapsed, where section titles hide, a short line parts each group of agents from the
 	// group above it: never under the Co-Founder, never around a section with no one in it.
 	let above = pinnedElements.length > 0;
 	for (const [element, count] of [
 		...sectionGroups.map(({ group, rows: sectionRows }) => [group.el, sectionRows.length] as const),
 		[parts.unassigned.el, unassignedRows.length] as const,
+		[parts.members.el, memberRows.length] as const,
 	]) {
 		element.classList.toggle("rail-divided", above && count > 0);
 		above ||= count > 0;
@@ -1254,6 +1702,7 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			errorNotice("rail", state.railError, () =>
 				button(t("Dismiss"), () => company.reportRailError(undefined), { small: true }),
 			),
+			resetNotice(),
 			cofounderElement ? parts.cofounderGroup : null,
 			// The pinned row stays in place while empty, hidden, so a drag can still reach it.
 			sidebar && !railQuery ? parts.pinnedGroup : pinnedElements.length ? parts.pinnedGroup : null,
@@ -1261,7 +1710,8 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			// A section shows while it has rows, and always when nothing is being searched.
 			...sectionGroups.filter(({ rows: r }) => r.length || !railQuery).map(({ group }) => group.el),
 			unassignedRows.length || (sectioned && !railQuery) ? parts.unassigned.el : null,
-			hiddenItems.length ? hiddenGroup.el : null,
+			memberRows.length || (placing && !railQuery) ? parts.members.el : null,
+			hiddenCount ? hiddenGroup.el : null,
 			empty ? parts.empty : null,
 			parts.selection.moving ?? null,
 		].filter((element) => element !== null),
@@ -1273,10 +1723,11 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	parts.known.add(`#/c/${profileId}`);
 	for (const agent of state.staff) parts.known.add(`#/c/${profileId}/staff/${agent.id}`);
 	for (const listed of state.sessions) parts.known.add(`#/c/${profileId}/chat/${listed.sessionId}`);
+	for (const member of state.team?.members ?? []) parts.known.add(`#/c/${profileId}/member/${member.userId}`);
 	if (!state.loading) parts.settled = true;
 	parts.mentionsRead = parts.settled && state.mentions !== undefined;
+	parts.waitingRead = parts.settled && (state.waitingOnMe !== undefined || state.approvals !== undefined);
 	parts.notices = notices;
-	parts.drag.refresh();
 	// A row moved to a new place loses focus on the way, so it gets it back too.
 	if (focused && document.activeElement !== focused) {
 		const replacement = focused.isConnected ? focused : successor;
@@ -1307,7 +1758,71 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// The account menu is shared with the top bar; it moves back only when it is not here.
 	const menu = accountMenuElement(context, company);
 	if (menu.parentElement !== parts.foot) parts.foot.append(menu);
+	paintPresence(container, parts, company);
 	restoreFocus();
+}
+
+/* ---- Who is where ---------------------------------------------------------------- */
+
+/** The rail place an entry stands for (app/presence-place.ts): its agent, its group chat, or its page or app. */
+function placeOf(element: HTMLElement): string | undefined {
+	const { agentId, cofounderId, roomId, appKey } = element.dataset;
+	if (agentId || cofounderId) return `agent:${(agentId ?? cofounderId)!.toLowerCase()}`;
+	if (roomId) return `room:${roomId.toLowerCase()}`;
+	if (!appKey) return undefined;
+	return appKey.startsWith("app:") || appKey === "concepts" || appKey === "sites" || appKey === "whats-new"
+		? appKey
+		: `page:${appKey}`;
+}
+
+/** The other members in the company now, each as a small picture on the agent, group chat, page or app they are in
+ * (Jonas, 9 Nov 2026: "a visual in the sidepanel that indicates what agent/interface the user is inside of, like a
+ * little notch"). Pages and apps show theirs on the apps button too while the drawer is shut. Set in place, like the
+ * current row, so a member moving never rebuilds a row. */
+function paintPresence(container: HTMLElement, parts: RailParts, company: CompanyController): void {
+	const places = company.peopleByPlace();
+	const inApps = new Map<string, { userId: string; name: string }>();
+	for (const element of container.querySelectorAll<HTMLElement>(
+		"[data-agent-id], [data-cofounder-id], [data-room-id], [data-app-key]",
+	)) {
+		const place = placeOf(element);
+		const people = (place && places.get(place)) || [];
+		if (element.dataset.appKey) for (const person of people) inApps.set(person.userId, person);
+		paintHere(element, people);
+	}
+	paintHere(parts.apps, parts.appsOpen ? [] : [...inApps.values()]);
+}
+
+function paintHere(element: HTMLElement, people: readonly { userId: string; name: string }[]): void {
+	const kept = element.querySelector<HTMLElement>(":scope > .rail-here, :scope > * > .rail-here");
+	// Who and by what name: a renamed member is drawn anew.
+	const key = JSON.stringify(people.map((person) => [person.userId, person.name]));
+	if (!people.length) {
+		kept?.remove();
+		element.removeAttribute("aria-description");
+		element.style.removeProperty("--here-count");
+		return;
+	}
+	if (kept?.dataset.people === key) return;
+	const names = people.map((person) => person.name);
+	const said =
+		names.length === 1
+			? t("{name} is here", { name: names[0]! })
+			: t("{names} are here", { names: new Intl.ListFormat(presentationLocale()).format(names) });
+	const marker = h(
+		"span",
+		{ class: "rail-here", "data-people": key, title: said, "aria-hidden": "true" },
+		...people.slice(0, 3).map((person) => personAvatar(person.name, person.userId)),
+		people.length > 3 ? h("span", { class: "rail-here-more" }, `+${people.length - 3}`) : null,
+	);
+	if (kept) kept.replaceWith(marker);
+	else element.append(marker);
+	// How many circles the marker draws (pictures and "+n"), so a row keeps its text clear of them.
+	element.style.setProperty("--here-count", String(Math.min(people.length, 4)));
+	// A card's marker sits against its figure (in the stand), not in the card's far corner.
+	const stand = element.querySelector<HTMLElement>(":scope > .cofounder-stand, :scope > .rail-pin-stand");
+	if (stand) stand.append(marker);
+	element.setAttribute("aria-description", said);
 }
 
 /* ---- The apps drawer --------------------------------------------------------------- */
@@ -1329,40 +1844,144 @@ function drawInterfaces(
 	company: CompanyController,
 	shown: readonly CompanyInterface[],
 	apps: readonly CompanyApp[],
+	concepts: number,
+	sites: number,
 	route: Route,
 ): void {
 	const profileId = company.profile.profileId;
 	const activeName = route.name === "company" && route.section === "interface" ? route.id : undefined;
 	const rows = new Map<string, { shown: string; element: HTMLElement }>();
 	let waiting = 0;
-	const elements = shown.map((entry, index) => {
+	// What waits in each entry and the colour of its emblem, by its key in the drawer.
+	const counts = new Map<string, number>();
+	const colours = new Map<string, string | undefined>();
+	const elements = shown.map((entry) => {
 		const { name, file } = entry;
 		const count = interfaceBadge(company, file);
 		waiting += count;
-		const model = JSON.stringify([name, file.name, file.about, file.emblem, file.colour, count]);
+		counts.set(name, count);
+		colours.set(name, PAGE_COLOURS[name]);
+		const model = JSON.stringify([name, file.name, file.about, file.emblem, count]);
 		const kept = parts.interfaceRows.get(name);
 		const element = kept?.shown === model ? kept.element : appIcon(entry, `#/c/${profileId}/i/${name}`, count);
 		rows.set(name, { shown: model, element });
-		element.style.setProperty("--i", String(index));
+		element.dataset.appKey = name;
 		element.classList.toggle("active", name === activeName);
 		if (name === activeName) element.setAttribute("aria-current", "page");
 		else element.removeAttribute("aria-current");
 		return element;
 	});
-	// An agent's app opens beside the chat (app/application.ts answers its data-app-name), not as a page of its own.
+	// An agent's app opens as a page of its own, `#/c/{id}/a/{name}`, as the pages do.
+	const activeApp = route.name === "company" && route.section === "app" ? route.id : undefined;
 	for (const app of apps) {
 		const manifest = app.manifest;
 		if (!manifest) continue;
 		const key = `app:${app.name}`;
-		const model = JSON.stringify([app.name, manifest.name, manifest.about, manifest.emblem, manifest.colour]);
+		colours.set(key, manifest.colour ?? undefined);
+		const model = JSON.stringify([app.name, manifest.name, manifest.about, manifest.emblem]);
 		const kept = parts.interfaceRows.get(key);
-		const element = kept?.shown === model ? kept.element : agentAppIcon(app.name, manifest);
+		const element = kept?.shown === model ? kept.element : agentAppIcon(manifest, appHash(profileId, app.name));
 		rows.set(key, { shown: model, element });
-		element.style.setProperty("--i", String(elements.length));
+		element.dataset.appKey = key;
+		element.classList.toggle("active", app.name === activeApp);
+		if (app.name === activeApp) element.setAttribute("aria-current", "page");
+		else element.removeAttribute("aria-current");
+		elements.push(element);
+	}
+	// The company's concepts: one entry for the Concepts viewer, which lists them all.
+	if (concepts > 0) {
+		const key = "concepts";
+		colours.set(key, "gold");
+		const model = JSON.stringify([key, t("Concepts"), concepts]);
+		const kept = parts.interfaceRows.get(key);
+		const element = kept?.shown === model ? kept.element : conceptsIcon(conceptsHash(profileId));
+		rows.set(key, { shown: model, element });
+		element.dataset.appKey = key;
+		const open = route.name === "company" && route.section === "concepts";
+		element.classList.toggle("active", open);
+		if (open) element.setAttribute("aria-current", "page");
+		else element.removeAttribute("aria-current");
+		elements.push(element);
+	}
+	// The company's websites: one entry for the Sites page, which lists them all.
+	if (sites > 0) {
+		const key = "sites";
+		colours.set(key, "blue");
+		const model = JSON.stringify([key, t("Sites"), sites]);
+		const kept = parts.interfaceRows.get(key);
+		const element = kept?.shown === model ? kept.element : sitesIcon(`#/c/${profileId}/sites`);
+		rows.set(key, { shown: model, element });
+		// Its key, as every drawer entry has: the member's drag and Alt-arrow order it, and the order is kept.
+		element.dataset.appKey = key;
+		const open = route.name === "company" && route.section === "sites";
+		element.classList.toggle("active", open);
+		if (open) element.setAttribute("aria-current", "page");
+		else element.removeAttribute("aria-current");
+		elements.push(element);
+	}
+	// What's new (own code storage step 4): one entry while a project of the company makes a website, its badge the
+	// changes ready to go live.
+	const whatsNew = company.store.get().whatsNew;
+	if (whatsNew) {
+		const key = "whats-new";
+		waiting += whatsNew.ready;
+		// A group it stands in sums its count, as a page's; its spark is orange, beside the other platform pages' colours.
+		counts.set(key, whatsNew.ready);
+		colours.set(key, "orange");
+		const model = JSON.stringify([key, t("What's new"), whatsNew.ready]);
+		const kept = parts.interfaceRows.get(key);
+		const element = kept?.shown === model ? kept.element : whatsNewIcon(`#/c/${profileId}/whats-new`, whatsNew.ready);
+		rows.set(key, { shown: model, element });
+		element.dataset.appKey = key;
+		const open = route.name === "company" && route.section === "whats-new";
+		element.classList.toggle("active", open);
+		if (open) element.setAttribute("aria-current", "page");
+		else element.removeAttribute("aria-current");
 		elements.push(element);
 	}
 	parts.interfaceRows = rows;
-	reconcile(parts.appsGrid, elements);
+	const ordered = orderApps(elements, (element) => element.dataset.appKey ?? "", parts.appsOrder);
+	// Groups (Jonas, 11 Nov 2026): the company's, from apps/groups.md, and the member's own changes over them. What
+	// neither names stands loose in the order above.
+	const state = company.store.get();
+	const byKey = new Map(ordered.map((element) => [fileKey(element.dataset.appKey ?? ""), element]));
+	const { tree, refused } = arrangeAppsFully(state.appGroups ?? [], state.appLayout?.layout ?? EMPTY_APP_LAYOUT, [
+		...byKey.keys(),
+	]);
+	parts.appRefused = refused;
+	const tiles = flattenApps(tree, parts.appGroupsOpen);
+	const colourOf = (key: string | undefined) => (key ? colourHex(colours.get(drawerKey(key))) : undefined);
+	const groupRows = new Map<string, { shown: string; element: HTMLElement }>();
+	const drawn = tiles.map((tile) => {
+		let element: HTMLElement;
+		if (tile.node.kind === "group") {
+			const group = tile.node;
+			const inside = appsIn(group);
+			const count = inside.reduce((sum, key) => sum + (counts.get(drawerKey(key)) ?? 0), 0);
+			const colour = colourOf(inside[0]);
+			const model = JSON.stringify([group.id, group.name, count, colour]);
+			const kept = parts.groupRows.get(group.id);
+			element = kept?.shown === model ? kept.element : groupIcon(group.name, count, colour);
+			groupRows.set(group.id, { shown: model, element });
+			element.dataset.appKey = tile.key;
+			element.classList.toggle("is-open", tile.open);
+			element.setAttribute("aria-expanded", String(tile.open));
+		} else {
+			element = byKey.get(tile.key)!;
+			const colour = colourOf(tile.key);
+			if (colour) element.style.setProperty("--app-colour", colour);
+			else element.style.removeProperty("--app-colour");
+		}
+		if (tile.chain.length) element.dataset.inGroup = tile.chain.join(" ");
+		else delete element.dataset.inGroup;
+		return element;
+	});
+	parts.groupRows = groupRows;
+	parts.appTree = tree;
+	parts.appTiles = tiles;
+	for (const [index, element] of drawn.entries()) element.style.setProperty("--i", String(index));
+	// A lifted icon keeps the order the drag shows; the drag's end draws the drawer afresh.
+	if (!parts.appsDrag.dragging) placeTiles(parts, drawn);
 	const dot = waiting > 0 && !parts.appsOpen;
 	parts.apps.classList.toggle("has-waiting", dot);
 	const label = dot ? `${t("Apps")}, ${t("{count} waiting", { count: waiting })}` : t("Apps");
@@ -1376,6 +1995,190 @@ function countBadge(count: number): HTMLElement | null {
 		: null;
 }
 
+/** Each page's colour; an agent's app takes the colour its manifest names (Jonas, 11 Nov 2026: black only had
+ * "little distinction and contrast"). Charcoal and none draw in the text's colour. */
+const PAGE_COLOURS: Record<string, string> = { mailbox: "blue", members: "purple", bank: "green" };
+function colourHex(colour: string | undefined): string | undefined {
+	return colour && colour !== "charcoal" ? colourNameHex(colour) : undefined;
+}
+
+/** A group's tile: two stacked cards in its first app's colour, its name under it, and what waits inside. Open, the
+ * cards fan apart (styles/interfaces.css). */
+function groupIcon(name: string, count: number, colour: string | undefined): HTMLElement {
+	const ns = "http://www.w3.org/2000/svg";
+	const svg = document.createElementNS(ns, "svg");
+	svg.setAttribute("viewBox", "0 0 24 24");
+	svg.setAttribute("width", "34");
+	svg.setAttribute("height", "34");
+	svg.setAttribute("aria-hidden", "true");
+	svg.setAttribute("class", "interface-emblem group-emblem");
+	const card = (cls: string, x: number, y: number) => {
+		const rect = document.createElementNS(ns, "rect");
+		for (const [attr, value] of Object.entries({ class: cls, x, y, width: 14, height: 14, rx: 3.5 }))
+			rect.setAttribute(attr, String(value));
+		svg.append(rect);
+	};
+	card("group-card-back", 7.5, 2.5);
+	card("group-card-front", 2.5, 7.5);
+	const waiting = count > 0 ? t("{count} waiting", { count }) : null;
+	const tile = h(
+		"button",
+		{
+			type: "button",
+			class: "rail-app rail-app-group",
+			"aria-expanded": "false",
+			"aria-label": waiting ? `${t("Group {name}", { name })}, ${waiting}` : t("Group {name}", { name }),
+		},
+		h("span", { class: "rail-app-stand" }, svg, countBadge(count)),
+		h("span", { class: "rail-app-name" }, name),
+	);
+	if (colour) tile.style.setProperty("--app-colour", colour);
+	return tile;
+}
+
+/** Puts the drawer's tiles in the grid. When which tiles it shows changed (a group opened or folded, an app moved),
+ * the tiles that stay glide to their new places, new ones grow in after them, and those that go fade where they stood. */
+function placeTiles(parts: RailParts, drawn: readonly HTMLElement[]): void {
+	const grid = parts.appsGrid;
+	const keys = drawn.map((element) => element.dataset.appKey ?? "").join("\n");
+	const changed = parts.appKeysShown !== undefined && parts.appKeysShown !== keys;
+	parts.appKeysShown = keys;
+	const animate = changed && parts.appsOpen && !reducedMotion() && typeof grid.animate === "function";
+	const before = animate
+		? new Map([...grid.children].map((child) => [child as HTMLElement, child.getBoundingClientRect()]))
+		: undefined;
+	const box = animate ? grid.getBoundingClientRect() : undefined;
+	// A tile that went and comes back is an ordinary tile again.
+	for (const element of drawn)
+		if (element.classList.contains("is-leaving")) {
+			element.classList.remove("is-leaving");
+			for (const property of ["left", "top", "width"]) element.style.removeProperty(property);
+		}
+	reconcile(grid, drawn);
+	if (!before || !box) return;
+	const kept = new Set(drawn);
+	let entering = 0;
+	for (const element of drawn) {
+		const was = before.get(element);
+		if (!was || element.classList.contains("is-leaving")) {
+			element.style.setProperty("--enter-i", String(entering++));
+			element.classList.remove("is-entering");
+			void element.offsetWidth;
+			element.classList.add("is-entering");
+			element.addEventListener("animationend", () => element.classList.remove("is-entering"), { once: true });
+			continue;
+		}
+		const now = element.getBoundingClientRect();
+		const dx = was.left - now.left;
+		const dy = was.top - now.top;
+		if (Math.abs(dx) >= 1 || Math.abs(dy) >= 1)
+			element.animate([{ translate: `${dx}px ${dy}px` }, { translate: "0 0" }], {
+				duration: 400,
+				easing: easing("--ease-out"),
+			});
+	}
+	for (const [element, was] of before) {
+		if (kept.has(element)) continue;
+		// Out of the drawer's order while it fades: no drag counts it (each draw gives a tile its key again).
+		element.removeAttribute("data-app-key");
+		element.classList.add("is-leaving");
+		element.style.left = `${was.left - box.left}px`;
+		element.style.top = `${was.top - box.top}px`;
+		element.style.width = `${was.width}px`;
+		grid.append(element);
+		setTimeout(() => {
+			if (element.classList.contains("is-leaving")) element.remove();
+		}, 240);
+	}
+}
+
+/** The member's document as the next change builds on it: without the places the drawer's arrangement refused. */
+function ownAppLayout(company: CompanyController, parts: RailParts): MemberAppLayout | undefined {
+	const layout = company.store.get().appLayout?.layout;
+	return layout && withoutRefused(layout, parts.appRefused);
+}
+
+/** Whether the drawer's arrangement is the member's own to change (20260930728000). */
+function appsArrangeable(company: CompanyController): boolean {
+	const state = company.store.get();
+	return Boolean(
+		state.appLayout && !state.appLayoutUnavailable && company.ownSidebar() && !company.resettingSidebar(),
+	);
+}
+
+function toggleAppGroup(company: CompanyController, parts: RailParts, id: string): void {
+	if (parts.appGroupsOpen.has(id)) {
+		parts.appGroupsOpen.delete(id);
+		// A group inside folds with it.
+		const group = parts.appTree.length
+			? groupsOf(parts.appTree).find((entry) => entry.group.id === id)?.group
+			: undefined;
+		for (const inner of group ? groupsOf(group.items) : []) parts.appGroupsOpen.delete(inner.group.id);
+	} else parts.appGroupsOpen.add(id);
+	storeGroupsOpen(company.profile.profileId, parts.appGroupsOpen);
+	parts.redraw();
+}
+
+/** A drag or Alt-arrow move in the drawer: the moved tile joins the group of the tile before it (the group itself when
+ * that tile is an open group's), standing after it. */
+function moveInDrawer(company: CompanyController, parts: RailParts, order: readonly string[], moved: string): void {
+	const layout = ownAppLayout(company, parts);
+	if (!layout) return;
+	const keys = order.map(fileKey);
+	const key = fileKey(moved);
+	const at = keys.indexOf(key);
+	const previous = at > 0 ? parts.appTiles.find((tile) => tile.key === keys[at - 1]) : undefined;
+	let group: string | null = null;
+	let after: string | null = null;
+	if (previous?.node.kind === "group" && previous.open) group = previous.node.id;
+	else if (previous) {
+		group = previous.chain.at(-1) ?? null;
+		after = previous.key;
+	}
+	// A group never goes into itself; the drawer draws it back where it was.
+	if (isGroupKey(key) && (group === groupIdOf(key) || previous?.chain.includes(groupIdOf(key)))) return;
+	void company.changeAppLayout(placeApp(layout, parts.appTree, key, group, after));
+}
+
+/** An app held over another app makes a group of the two; over a group, goes into it. A group never goes into a group
+ * this way, and no group stands deeper than one group in. */
+function canMergeApps(parts: RailParts, dragged: string, onto: string): boolean {
+	const from = parts.appTiles.find((tile) => tile.key === fileKey(dragged));
+	const to = parts.appTiles.find((tile) => tile.key === fileKey(onto));
+	if (!from || !to || from === to || from.node.kind === "group") return false;
+	return to.node.kind === "group" || to.chain.length < 2;
+}
+
+async function mergeApps(company: CompanyController, parts: RailParts, dragged: string, onto: string): Promise<void> {
+	const layout = ownAppLayout(company, parts);
+	const to = parts.appTiles.find((tile) => tile.key === fileKey(onto));
+	if (!layout || !to) return;
+	const key = fileKey(dragged);
+	if (to.node.kind === "group") {
+		const last = to.node.items.at(-1);
+		void company.changeAppLayout(placeApp(layout, parts.appTree, key, to.node.id, last ? nodeKey(last) : null));
+		return;
+	}
+	const nameOf = (drawer: string) =>
+		parts.appsGrid.querySelector(`[data-app-key="${drawer}"] .rail-app-name`)?.textContent ?? "";
+	const name = await nameDialog({
+		title: t("New group"),
+		label: t("Group name"),
+		value: suggestGroupName(nameOf(onto), nameOf(dragged), t("Group")),
+		confirm: t("Create"),
+		maxLength: APP_GROUP_NAME_LIMIT,
+		signal: company.signal,
+		// The name is filled in from the two apps: Create takes it as it is.
+		suggested: true,
+	});
+	const now = ownAppLayout(company, parts);
+	if (!name || !now) return;
+	const id = `m-${crypto.randomUUID().slice(0, 8)}`;
+	parts.appGroupsOpen.add(id);
+	storeGroupsOpen(company.profile.profileId, parts.appGroupsOpen);
+	void company.changeAppLayout(makeAppGroup(now, parts.appTree, key, to.key, name, id));
+}
+
 /** A page's icon in the drawer: its emblem with its name under it. */
 function appIcon(entry: CompanyInterface, href: string, count: number): HTMLElement {
 	const file = entry.file;
@@ -1386,31 +2189,79 @@ function appIcon(entry: CompanyInterface, href: string, count: number): HTMLElem
 			class: "rail-app",
 			href,
 			draggable: "false",
-			title: file.about ? `${file.name} · ${file.about}` : file.name,
+			"data-interface-page": entry.name,
 			...(waiting ? { "aria-label": `${file.name}, ${waiting}` } : {}),
 		},
 		h(
 			"span",
 			{ class: "rail-app-stand" },
-			interfaceEmblem(entry.name === "bank" ? "bank" : file.emblem, file.colour, 34),
+			interfaceEmblem(entry.name === "bank" ? "bank" : file.emblem, 34),
 			countBadge(count),
 		),
 		h("span", { class: "rail-app-name" }, file.name),
 	);
 }
 
-/** An agent's posted app in the drawer: its emblem with its name under it, a button that opens it beside the chat. */
-function agentAppIcon(name: string, manifest: AppManifest): HTMLElement {
+/** An agent's posted app in the drawer: its emblem with its name under it, a link to the app's own page. A press on
+ * the icon of the app that is already open reads the app again (application.ts follows a link to the open app's page
+ * that way): the app's page has no Reload of its own. */
+function agentAppIcon(manifest: AppManifest, href: string): HTMLElement {
 	return h(
-		"button",
+		"a",
 		{
-			type: "button",
 			class: "rail-app",
-			"data-app-name": name,
-			title: manifest.about ? `${manifest.name} · ${manifest.about}` : manifest.name,
+			href,
+			draggable: "false",
 		},
-		h("span", { class: "rail-app-stand" }, interfaceEmblem(manifest.emblem, manifest.colour, 34)),
+		h("span", { class: "rail-app-stand" }, interfaceEmblem(manifest.emblem, 34)),
 		h("span", { class: "rail-app-name" }, manifest.name),
+	);
+}
+
+/** The Concepts entry in the drawer: the concepts' emblem with "Concepts" under it, a link to the Concepts viewer. */
+function conceptsIcon(href: string): HTMLElement {
+	const label = t("Concepts");
+	return h(
+		"a",
+		{
+			class: "rail-app rail-concepts",
+			href,
+			draggable: "false",
+		},
+		h("span", { class: "rail-app-stand" }, interfaceEmblem("board", 34)),
+		h("span", { class: "rail-app-name" }, label),
+	);
+}
+
+/** The Sites entry in the drawer: a globe with "Sites" under it, a link to the Sites page. */
+function sitesIcon(href: string): HTMLElement {
+	return h(
+		"a",
+		{
+			class: "rail-app rail-sites",
+			href,
+			draggable: "false",
+		},
+		h("span", { class: "rail-app-stand" }, interfaceEmblem("globe", 34)),
+		h("span", { class: "rail-app-name" }, t("Sites")),
+	);
+}
+
+/** The What's new entry in the drawer: its spark with "What's new" under it and how many changes are ready, a link to
+ * the page. */
+function whatsNewIcon(href: string, count: number): HTMLElement {
+	const label = t("What's new");
+	const waiting = count > 0 ? t("{count} waiting", { count }) : null;
+	return h(
+		"a",
+		{
+			class: "rail-app rail-whats-new",
+			href,
+			draggable: "false",
+			...(waiting ? { "aria-label": `${label}, ${waiting}` } : {}),
+		},
+		h("span", { class: "rail-app-stand" }, interfaceEmblem("spark", 34), countBadge(count)),
+		h("span", { class: "rail-app-name" }, label),
 	);
 }
 
@@ -1424,8 +2275,14 @@ function sameName(sidebar: CompanySidebar, name: string, except?: string) {
 	);
 }
 
-/** What the rail places: an agent or a group chat, known by the row it was picked from. */
+/** What the rail places: an agent, a group chat or a member contact, known by the row it was picked from. */
 interface RailItem {
+	id: string;
+	kind: "agent" | "room" | "member";
+}
+/** An agent or a group chat: what the company's sidebar itself places, pins and hides. A contact's place is its
+ * member's own (app/rail-contacts.ts). */
+interface SidebarItem {
 	id: string;
 	kind: "agent" | "room";
 }
@@ -1434,12 +2291,124 @@ interface RailItem {
 function railItemOf(element: HTMLElement | undefined): RailItem | undefined {
 	const agentId = element?.dataset.agentId;
 	const roomId = element?.dataset.roomId;
-	return agentId ? { id: agentId, kind: "agent" } : roomId ? { id: roomId, kind: "room" } : undefined;
+	const memberId = element?.dataset.memberId;
+	return agentId
+		? { id: agentId, kind: "agent" }
+		: roomId
+			? { id: roomId, kind: "room" }
+			: memberId
+				? { id: memberId, kind: "member" }
+				: undefined;
+}
+
+/** The company's other members this member has a chat with, in the order they joined, and each as a contact where
+ * the rail draws it. */
+function companyContacts(company: CompanyController) {
+	const state = company.store.get();
+	const chats = state.memberChatsUnavailable ? undefined : state.memberChats;
+	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
+	const others = new Map(
+		(state.team?.members ?? [])
+			.filter((member) => member.userId !== company.userId && chats?.[member.userId])
+			.map((member) => [member.userId, member]),
+	);
+	const contacts = railContacts(
+		[...others.keys()],
+		chats ?? {},
+		sidebar ? new Set(sidebar.sections.map((item) => item.sectionId)) : undefined,
+	);
+	return { others, contacts };
+}
+
+/** The member's chats, where the cloud keeps contacts' places (20260930717000): what a contact's menu, drag and
+ * Alt-arrow need. Undefined on a cloud that keeps none: contacts stay where the cloud lists them. */
+function placedChats(company: CompanyController) {
+	const state = company.store.get();
+	return state.memberChatsUnavailable || state.memberContactPlacing !== true ? undefined : state.memberChats;
+}
+
+/** The pinned row or the Members group as the company holds it, whatever a search hides: the pinned agents and group
+ * chats the company still has, with the member's contacts that show there among them. A menu's Pin and Unpin put a
+ * contact after these. */
+function keptOrder(company: CompanyController, zone: "pinned" | typeof MEMBERS_ZONE): string[] {
+	const state = company.store.get();
+	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
+	const roster = company.sidebarRoster();
+	return weave(
+		zone === "pinned" ? (sidebar?.pinned ?? []).filter((itemId) => roster.includes(itemId)) : [],
+		companyContacts(company).contacts.filter((contact) => contact.zone === zone && !contact.hidden),
+	);
+}
+
+/** Whether the pinned row has room for one more card. It holds PIN_LIMIT of them, whatever they are: the pinned
+ * agents and group chats and the member's pinned contacts count alike, by drag and from a menu or a card. */
+const pinnedRowFull = (company: CompanyController) => keptOrder(company, "pinned").length >= PIN_LIMIT;
+
+/** Keeps the member's contacts where a zone's rows stand after a drop or a step (`order`, as the member sees the
+ * zone then): each after the agent or group chat before it. `show` names a contact that shows again there. */
+function settleContacts(company: CompanyController, zone: string, order: readonly string[], show?: string): void {
+	const chats = placedChats(company);
+	if (!chats) return;
+	const changes = contactPlaces(zone, order, chats, show);
+	if (changes.length) placeContacts(company, changes);
+}
+
+/** Keeps places the member just made; what an earlier try said in the rail goes with the new one. */
+function placeContacts(company: CompanyController, changes: readonly MemberContactPlacing[]): void {
+	company.reportRailError(undefined);
+	company.memberChats.place(changes);
+}
+
+/** A contact's menu: Pin or Unpin where the rail has a pinned row, and Hide from sidebar (Show in sidebar, for a
+ * hidden one). It is the member's own rail, so any member may. Moving is a drag, or Alt with an arrow. Nothing to
+ * offer on a cloud that keeps no places. */
+function contactMenu(company: CompanyController, userId: string): MenuEntry[] {
+	const contact = companyContacts(company).contacts.find((item) => item.userId === userId);
+	if (!contact || !placedChats(company)) return [];
+	const state = company.store.get();
+	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
+	const items: MenuEntry[] = [];
+	if (sidebar && !contact.hidden && contact.zone === "pinned")
+		items.push({
+			label: t("Unpin"),
+			icon: "unpin",
+			// Back to the Members group, after the contacts there.
+			select: () => settleContacts(company, MEMBERS_ZONE, [...keptOrder(company, MEMBERS_ZONE), userId]),
+		});
+	else if (sidebar && !contact.hidden)
+		items.push({
+			label: t("Pin"),
+			icon: "pin",
+			select: () => {
+				if (pinnedRowFull(company)) company.reportRailError(t("The pinned row is full. Unpin something first."));
+				else settleContacts(company, "pinned", [...keptOrder(company, "pinned"), userId]);
+			},
+		});
+	items.push({
+		label: contact.hidden ? t("Show in sidebar") : t("Hide from sidebar"),
+		icon: contact.hidden ? "show" : "hide",
+		select: () => {
+			// Hidden, a contact keeps its place: shown again, it stands where it stood. Not in the pinned row: a hidden
+			// contact loses its pin, as a hidden agent does, so the row's cards are always the ones that show. (A
+			// contact another page left hidden with its pin comes back to the row only while it has room.)
+			const unpinned =
+				contact.zone === "pinned" && (!contact.hidden || pinnedRowFull(company))
+					? contactPlaces(MEMBERS_ZONE, [...keptOrder(company, MEMBERS_ZONE), userId], placedChats(company) ?? {})
+					: undefined;
+			placeContacts(
+				company,
+				unpinned
+					? unpinned.map((change) => (change.userId === userId ? { ...change, hidden: !contact.hidden } : change))
+					: [{ userId, place: contact.place, hidden: !contact.hidden }],
+			);
+		},
+	});
+	return items;
 }
 
 /** Moves an agent or a group chat: the sidebar names each by its own kind of id. */
 function moveRequest(
-	item: RailItem,
+	item: SidebarItem,
 	sectionId: string | null,
 	options: { order?: string[]; unpin?: boolean } = {},
 ): SidebarRequest {
@@ -1448,7 +2417,7 @@ function moveRequest(
 		: { action: "move_agent", staffAgentId: item.id, sectionId, ...options };
 }
 
-function hideRequest(item: RailItem, hidden: boolean): SidebarRequest {
+function hideRequest(item: SidebarItem, hidden: boolean): SidebarRequest {
 	return item.kind === "room"
 		? { action: "set_hidden", roomId: item.id, hidden }
 		: { action: "set_hidden", staffAgentId: item.id, hidden };
@@ -1456,7 +2425,7 @@ function hideRequest(item: RailItem, hidden: boolean): SidebarRequest {
 
 /** Asks for a new section's name and makes it; with an agent or a group chat, moves it
  * into the section (a name that already exists moves it there instead). */
-async function askSectionName(company: CompanyController, item?: RailItem): Promise<void> {
+async function askSectionName(company: CompanyController, item?: SidebarItem): Promise<void> {
 	const name = await nameDialog({
 		title: t("New section"),
 		label: t("Section name"),
@@ -1488,9 +2457,119 @@ async function askSectionName(company: CompanyController, item?: RailItem): Prom
 	void company.changeSidebar({ action: "create_section", sectionId: newSectionId(), name, ...placed });
 }
 
+/** Whether the member may change sections and places: always in their own sidebar (20260930727000); on an older
+ * cloud, where a change is the company's, with the right to write. */
 function canOrganize(company: CompanyController): boolean {
 	const state = company.store.get();
-	return Boolean(state.sidebar && !state.sidebarUnavailable && state.team?.capabilities.write);
+	return company.ownSidebar() || Boolean(state.sidebar && !state.sidebarUnavailable && state.team?.capabilities.write);
+}
+
+/** Reset sidebar (Jonas, 11 Nov 2026): back to the company's sidebar, from the menu of the rail's empty space and of a
+ * section's title. With nothing of the member's own it shows greyed out and says why. */
+function resetEntries(company: CompanyController, parts: RailParts): MenuEntry[] {
+	const own = company.ownSidebar() ? company.store.get().sidebar?.own : undefined;
+	if (!own) return [];
+	const changes = own.changes + (storedAppsOrder(company.profile.profileId).length ? 1 : 0);
+	return [
+		{ kind: "separator" },
+		changes
+			? {
+					label: t("Reset sidebar…"),
+					icon: "reset",
+					hint: changes === 1 ? t("1 change of yours") : t("{count} changes of yours", { count: changes }),
+					select: () => void askResetSidebar(company, parts),
+				}
+			: {
+					label: t("Reset sidebar"),
+					icon: "reset",
+					hint: t("You have {company}'s sidebar", { company: company.profile.profileName }),
+					disabled: true,
+					select: () => {},
+				},
+	];
+}
+
+/** What a reset takes away, one line each, in the member's words. */
+function ownChangeLines(company: CompanyController, own: SidebarOwnChanges): string[] {
+	const lines: string[] = [];
+	const rooms = company.groupChatRooms();
+	const names = own.moved
+		.map((id) => company.staffById(id)?.displayName ?? rooms.get(id)?.title)
+		.filter((name): name is string => Boolean(name));
+	if (names.length === 1) lines.push(t("{name} where you put it", { name: names[0]! }));
+	else if (names.length > 1)
+		lines.push(
+			names.length <= 3
+				? t("{names} where you put them", { names: names.join(", ") })
+				: t("{count} agents and group chats where you put them", { count: names.length }),
+		);
+	for (const section of own.sections) {
+		if (section.change === "added") lines.push(t("Your section {name}", { name: `"${section.name}"` }));
+		else if (section.change === "renamed")
+			lines.push(t("{from} renamed {name}", { from: `"${section.from ?? ""}"`, name: `"${section.name}"` }));
+		else lines.push(t("{name} removed from your sidebar", { name: `"${section.name}"` }));
+	}
+	if (own.pinned) lines.push(own.pinned === 1 ? t("1 pinned") : t("{count} pinned", { count: own.pinned }));
+	if (own.hidden) lines.push(own.hidden === 1 ? t("1 hidden") : t("{count} hidden", { count: own.hidden }));
+	if (own.contacts)
+		lines.push(
+			own.contacts === 1
+				? t("1 member placed or hidden")
+				: t("{count} members placed or hidden", { count: own.contacts }),
+		);
+	if (own.pages) lines.push(own.pages === 1 ? t("1 page hidden") : t("{count} pages hidden", { count: own.pages }));
+	if (own.apps)
+		lines.push(
+			own.apps === 1 ? t("1 app or group arranged") : t("{count} apps or groups arranged", { count: own.apps }),
+		);
+	if (storedAppsOrder(company.profile.profileId).length) lines.push(t("The order of your apps"));
+	return lines;
+}
+
+/** Asks first, listing what goes, then resets: the cloud takes the member's changes away and the apps drawer's order
+ * on this device goes with them. The rail then offers Undo. */
+async function askResetSidebar(company: CompanyController, parts: RailParts): Promise<void> {
+	const own = company.store.get().sidebar?.own;
+	if (!own) return;
+	const sure = await confirmDialog(
+		t("Reset your sidebar? These changes of yours go away, and you get {company}'s sidebar:", {
+			company: company.profile.profileName,
+		}),
+		t("Reset"),
+		false,
+		undefined,
+		company.signal,
+		ownChangeLines(company, own),
+	);
+	if (!sure) return;
+	const profileId = company.profile.profileId;
+	const appsOrder = storedAppsOrder(profileId);
+	if (!(await company.resetSidebar())) return;
+	storeAppsOrder(profileId, []);
+	parts.appsOrder = [];
+	parts.context?.refreshInterfacePages?.();
+	company.store.set({ sidebarReset: { appsOrder } });
+}
+
+/** Undo of the reset just made: the member's changes come back, and the apps' order on this device too unless the
+ * member ordered them again since. A failed Undo keeps its offer, to try again. */
+async function undoSidebarReset(company: CompanyController, parts: RailParts): Promise<void> {
+	const reset = company.store.get().sidebarReset;
+	if (!reset || reset.undoing) return;
+	const undoing = { ...reset, undoing: true };
+	company.store.set({ sidebarReset: undoing });
+	if (!(await company.resetSidebar(true))) {
+		// Tried again from the same offer, unless a newer one (or nothing) took its place meanwhile.
+		if (company.store.get().sidebarReset === undoing) company.store.set({ sidebarReset: reset });
+		return;
+	}
+	const profileId = company.profile.profileId;
+	if (!storedAppsOrder(profileId).length) {
+		storeAppsOrder(profileId, reset.appsOrder);
+		parts.appsOrder = reset.appsOrder;
+	}
+	parts.context?.refreshInterfacePages?.();
+	company.store.set({ sidebarReset: undefined });
 }
 
 /** An agent's card from the rail: Pin or Unpin and Hide (or Show, for a hidden agent) where the member has a
@@ -1500,7 +2579,7 @@ function canOrganize(company: CompanyController): boolean {
  * sidebar as it is then: a card stays open across refreshes, and another tab may have pinned meanwhile. */
 function pinActions(company: CompanyController, sidebar: CompanySidebar, itemId: string): CardFootActions {
 	const pinned = sidebar.pinned.includes(itemId);
-	if (!pinned && sidebar.pinned.length >= PIN_LIMIT) return {};
+	if (!pinned && pinnedRowFull(company)) return {};
 	return {
 		pinned,
 		pin: () => {
@@ -1512,7 +2591,7 @@ function pinActions(company: CompanyController, sidebar: CompanySidebar, itemId:
 			const pins = current.pinned.filter((pin) => roster.includes(pin));
 			// What the card offered: already done elsewhere meanwhile is nothing to send.
 			if (pinned !== pins.includes(itemId)) return;
-			if (!pinned && pins.length >= PIN_LIMIT) {
+			if (!pinned && pinnedRowFull(company)) {
 				company.reportRailError(t("The pinned row is full. Unpin something first."));
 				return;
 			}
@@ -1529,7 +2608,7 @@ function agentCard(company: CompanyController, parts: RailParts, agent: HostedSt
 	const actions = parts.context?.agentActions;
 	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
 	const isCofounder = agent.id === company.cofounderId();
-	const item: RailItem = { id: agent.id, kind: "agent" };
+	const item: SidebarItem = { id: agent.id, kind: "agent" };
 	const hidden = Boolean(sidebar?.hidden.includes(agent.id));
 	const conversationId = company.primarySessionFor(agent.id)?.sessionId;
 	return {
@@ -1556,7 +2635,7 @@ function groupCard(
 	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
 	const placeable = Boolean(sidebar?.groupChats) && company.groupChatRooms().has(roomId);
 	const canAuthorize = state.team?.capabilities.authorize === true && state.team.capabilities.write === true;
-	const item: RailItem = { id: roomId, kind: "room" };
+	const item: SidebarItem = { id: roomId, kind: "room" };
 	const hidden = Boolean(sidebar?.hidden.includes(roomId));
 	return {
 		conversationId: session.sessionId,
@@ -1633,7 +2712,7 @@ async function deleteAgent(company: CompanyController, parts: RailParts, agent: 
 	}
 }
 
-function sectionMenu(company: CompanyController, sectionId: string): MenuEntry[] {
+function sectionMenu(company: CompanyController, parts: RailParts, sectionId: string): MenuEntry[] {
 	const sidebar = company.store.get().sidebar;
 	const section = sidebar?.sections.find((item) => item.sectionId === sectionId);
 	if (!sidebar || !section || !canOrganize(company)) return [];
@@ -1663,27 +2742,31 @@ function sectionMenu(company: CompanyController, sectionId: string): MenuEntry[]
 			icon: "trash",
 			danger: true,
 			select: async () => {
-				if (
-					await confirmDialog(
-						t(
+				const name = `"${section.name}"`;
+				// In the member's own sidebar (20260930727000) nobody else's changes.
+				const question = !company.ownSidebar()
+					? t(
 							"Delete the section {name}? Its agents and group chats move to Unassigned, for everyone in the company.",
-							{
-								name: `"${section.name}"`,
-							},
-						),
-						t("Delete section"),
-						true,
-						undefined,
-						company.signal,
-					)
-				)
+							{ name },
+						)
+					: section.mine
+						? t(
+								"Delete your section {name}? Its agents and group chats go back to where the company keeps them.",
+								{ name },
+							)
+						: t(
+								"Remove {name} from your sidebar? Its agents and group chats move to Unassigned. Nobody else's sidebar changes.",
+								{ name },
+							);
+				if (await confirmDialog(question, t("Delete section"), true, undefined, company.signal))
 					void company.changeSidebar({ action: "delete_section", sectionId });
 			},
 		},
+		...resetEntries(company, parts),
 	];
 }
 
-/** Right-click anywhere in the rail list: an agent, a group chat, a section's title, or the rail itself. */
+/** Right-click anywhere in the rail list: an agent, a group chat, a contact, a section's title, or the rail itself. */
 function openRailMenu(company: CompanyController, parts: RailParts, event: MouseEvent): void {
 	const target = event.target as Element;
 	if (parts.drag.dragging) {
@@ -1696,11 +2779,21 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 	const agentElement = target.closest<HTMLElement>("[data-agent-id], [data-cofounder-id]");
 	const roomElement = target.closest<HTMLElement>("[data-room-id]");
 	const titleElement = target.closest<HTMLElement>(".rail-section-title[data-section-id]");
+	const pageElement = target.closest<HTMLElement>("[data-interface-page]");
+	const memberElement = target.closest<HTMLElement>("[data-member-id]");
 	let items: MenuEntry[] = [];
 	let label = t("Sidebar");
 	let opener: HTMLElement = parts.list;
 	let findOpener: (() => HTMLElement | null) | undefined;
-	if (agentElement) {
+	if (memberElement?.dataset.memberId) {
+		const userId = memberElement.dataset.memberId;
+		// The row is rebuilt when a message arrives; focus goes back to the new one, in the zone it was opened from.
+		const prefix = memberElement.closest(".rail-hidden") ? ".rail-hidden " : "";
+		items = contactMenu(company, userId);
+		label = t("{name} actions", { name: memberElement.querySelector("strong")?.textContent ?? t("Members") });
+		opener = memberElement;
+		findOpener = () => parts.list.querySelector<HTMLElement>(`${prefix}[data-member-id="${userId}"]`);
+	} else if (agentElement) {
 		const agent = company.staffById(agentElement.dataset.agentId ?? agentElement.dataset.cofounderId);
 		const open = parts.context?.openAgentCard;
 		if (agent && open) {
@@ -1725,14 +2818,21 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 			);
 		}
 		return;
+	} else if (pageElement?.dataset.interfacePage) {
+		// A hidden page, in Hidden.
+		openPageMenu(company, parts, pageElement, event);
+		return;
 	} else if (titleElement?.dataset.sectionId) {
 		const sectionId = titleElement.dataset.sectionId;
-		items = sectionMenu(company, sectionId);
+		items = sectionMenu(company, parts, sectionId);
 		label = t("{name} actions", { name: titleElement.textContent ?? t("Section") });
 		opener = titleElement;
 		findOpener = () => parts.list.querySelector<HTMLElement>(`.rail-section-title[data-section-id="${sectionId}"]`);
-	} else if (!target.closest("a[href], button, input") && canOrganize(company)) {
-		items = [{ label: t("New section"), icon: "folder_plus", select: () => void askSectionName(company) }];
+	} else if (!target.closest("a[href], a[data-href], button, input") && canOrganize(company)) {
+		items = [
+			{ label: t("New section"), icon: "section_plus", select: () => void askSectionName(company) },
+			...resetEntries(company, parts),
+		];
 	}
 	// Nothing to offer: the browser's own menu stays.
 	if (!items.length) return;
@@ -1741,8 +2841,174 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 	openContextMenu({ label, x: point.x, y: point.y, items, opener, ...(findOpener ? { findOpener } : {}) });
 }
 
+/** Right-click in the apps drawer. Where the member arranges their own drawer (20260930728000): an app offers Move to
+ * (each group, or loose) and a page also Hide; a group offers Rename and Ungroup; both end with Reset sidebar. Before
+ * that, a page offers to hide it, and the agents' apps and Concepts offer nothing. */
+function openDrawerMenu(company: CompanyController, parts: RailParts, event: MouseEvent): void {
+	if (event.shiftKey && (event.clientX || event.clientY)) return;
+	const tile = (event.target as Element).closest<HTMLElement>("[data-app-key]");
+	if (!appsArrangeable(company) || !tile) {
+		const element = (event.target as Element).closest<HTMLElement>("[data-interface-page]");
+		if (element) openPageMenu(company, parts, element, event);
+		return;
+	}
+	const key = fileKey(tile.dataset.appKey!);
+	const name = tile.querySelector(".rail-app-name")?.textContent ?? key;
+	const items: MenuEntry[] = isGroupKey(key)
+		? groupMenu(company, parts, groupIdOf(key))
+		: [moveToMenu(company, parts, key), ...pageMenuItems(company, parts, tile)];
+	if (!items.length) return;
+	event.preventDefault();
+	const point = menuPoint(event, tile);
+	const drawer = tile.dataset.appKey!;
+	openContextMenu({
+		label: t("{name} actions", { name }),
+		x: point.x,
+		y: point.y,
+		opener: tile,
+		findOpener: () => parts.appsGrid.querySelector<HTMLElement>(`[data-app-key="${drawer}"]`),
+		items: [...items, ...resetEntries(company, parts)],
+	});
+}
+
+/** Move to: loose in the drawer, or any group, the one it is in checked. */
+function moveToMenu(company: CompanyController, parts: RailParts, key: string): MenuEntry {
+	const here = parts.appTiles.find((tile) => tile.key === key)?.chain.at(-1) ?? null;
+	const move = (group: string | null) => () => {
+		const layout = ownAppLayout(company, parts);
+		if (!layout || group === here) return;
+		const target = group ? groupsOf(parts.appTree).find((entry) => entry.group.id === group)?.group : undefined;
+		const last = target ? target.items.at(-1) : parts.appTree.at(-1);
+		void company.changeAppLayout(placeApp(layout, parts.appTree, key, group, last ? nodeKey(last) : null));
+	};
+	return {
+		kind: "submenu",
+		label: t("Move to"),
+		icon: "section_plus",
+		items: [
+			{ label: t("No group"), checked: here === null, select: move(null) },
+			...groupsOf(parts.appTree).map(({ group, depth }) => ({
+				label: depth ? `${"\u2002".repeat(depth * 2)}${group.name}` : group.name,
+				checked: here === group.id,
+				select: move(group.id),
+			})),
+		],
+	};
+}
+
+/** A group's menu: Rename group and Ungroup, in the member's own drawer. */
+function groupMenu(company: CompanyController, parts: RailParts, id: string): MenuEntry[] {
+	const group = groupsOf(parts.appTree).find((entry) => entry.group.id === id)?.group;
+	if (!group) return [];
+	const companyTree = (company.store.get().appGroups ?? []) as AppTreeNode[];
+	const companyName = groupsOf(companyTree).find((entry) => entry.group.id === id)?.group.name;
+	return [
+		{
+			label: t("Rename group"),
+			icon: "edit",
+			select: async () => {
+				const name = await nameDialog({
+					title: t("Rename group"),
+					label: t("Group name"),
+					value: group.name,
+					confirm: t("Rename"),
+					maxLength: APP_GROUP_NAME_LIMIT,
+					signal: company.signal,
+				});
+				const layout = ownAppLayout(company, parts);
+				if (name && layout) void company.changeAppLayout(renameAppGroup(layout, id, name, companyName));
+			},
+		},
+		{
+			label: t("Ungroup"),
+			icon: "grid",
+			select: () => {
+				const layout = ownAppLayout(company, parts);
+				if (!layout) return;
+				parts.appGroupsOpen.delete(id);
+				storeGroupsOpen(company.profile.profileId, parts.appGroupsOpen);
+				void company.changeAppLayout(ungroupApps(layout, parts.appTree, id));
+			},
+		},
+	];
+}
+
+/** A page's menu: Hide from sidebar in the drawer, Show in sidebar in Hidden. It changes the member's own rail only;
+ * nothing the page showed is removed. On a cloud from before each member's own choice, the browser's own menu. */
+function openPageMenu(company: CompanyController, parts: RailParts, element: HTMLElement, event: MouseEvent): void {
+	const items = pageMenuItems(company, parts, element);
+	if (!items.length) return;
+	event.preventDefault();
+	const page = element.dataset.interfacePage as InterfacePageName;
+	const shown = parts.appsDrawer.contains(element);
+	const name = element.dataset.pageName ?? element.querySelector(".rail-app-name")?.textContent ?? page;
+	const point = menuPoint(event, element);
+	openContextMenu({
+		label: t("{name} actions", { name }),
+		x: point.x,
+		y: point.y,
+		opener: element,
+		findOpener: () =>
+			(shown ? parts.appsDrawer : parts.list).querySelector<HTMLElement>(`[data-interface-page="${page}"]`),
+		items,
+	});
+}
+
+/** Hide from sidebar (or Show in sidebar, in Hidden) for a page; nothing for anything else. */
+function pageMenuItems(company: CompanyController, parts: RailParts, element: HTMLElement): MenuEntry[] {
+	const page = element.dataset.interfacePage as InterfacePageName | undefined;
+	const hide = parts.context?.hideInterfacePage;
+	const pages = company.store.get().interfacePages;
+	if (!page || !hide || !pages?.personal || !pages.pages.some((entry) => entry.page === page)) return [];
+	const shown = parts.appsDrawer.contains(element);
+	const name = element.dataset.pageName ?? element.querySelector(".rail-app-name")?.textContent ?? page;
+	return [
+		{
+			label: shown ? t("Hide from sidebar") : t("Show in sidebar"),
+			icon: shown ? "hide" : "show",
+			select: () => {
+				company.reportRailError(undefined);
+				hide(page, shown).catch(() =>
+					company.reportRailError(t("{page} could not be changed. Try again.", { page: name })),
+				);
+			},
+		},
+	];
+}
+
+/** A page hidden from the rail, in Hidden: its emblem and name. A press, like a right-click, offers to show it. */
+function hiddenPageRow(model: {
+	name: string;
+	title: string;
+	emblem: CompanyInterface["file"]["emblem"];
+}): HTMLElement {
+	const row = h(
+		"button",
+		{
+			type: "button",
+			class: "rail-row rail-row-page",
+			"data-interface-page": model.name,
+			"data-page-name": model.title,
+			"aria-haspopup": "menu",
+		},
+		h("span", { class: "rail-row-stand" }, interfaceEmblem(model.name === "bank" ? "bank" : model.emblem, 34)),
+		h("span", { class: "rail-row-copy" }, h("strong", null, model.title), h("small", null, t("Hidden for you"))),
+	);
+	row.addEventListener("click", (event) => {
+		row.dispatchEvent(
+			new MouseEvent("contextmenu", {
+				bubbles: true,
+				cancelable: true,
+				clientX: event.clientX,
+				clientY: event.clientY,
+			}),
+		);
+	});
+	return row;
+}
+
 /** A long press is the right-click of a touch screen (iOS Safari sends no contextmenu event). */
-function pressToOpenMenu(list: HTMLElement, company: CompanyController, parts: RailParts): void {
+function pressToOpenMenu(list: HTMLElement, company: CompanyController, open: (event: MouseEvent) => void): void {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let start: { x: number; y: number } | undefined;
 	// When a press last opened a menu; never, at first, so the page's first 800 ms
@@ -1770,7 +3036,7 @@ function pressToOpenMenu(list: HTMLElement, company: CompanyController, parts: R
 					cancelable: true,
 				});
 				Object.defineProperty(synthetic, "target", { value: target });
-				openRailMenu(company, parts, synthetic);
+				open(synthetic);
 			}, 550);
 		},
 		{ signal },
@@ -1823,24 +3089,59 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 		return state.sidebarUnavailable ? undefined : state.sidebar;
 	};
 	return {
-		// The collapsed rail hides the search field and ignores its text.
+		// The collapsed rail hides the search field and ignores its text. A contact drags wherever the cloud keeps
+		// its place; an agent or a group chat, where the company has a sidebar.
 		canDrag: (itemId: string) =>
-			Boolean(sidebarOf()) &&
 			(parts.collapsed || !parts.input.value.trim()) &&
-			company.sidebarRoster().includes(itemId),
+			(placedChats(company)?.[itemId] ? true : Boolean(sidebarOf()) && company.sidebarRoster().includes(itemId)),
 		accepts: (zone: string, itemId: string) => {
+			// The pinned row holds so many cards, whatever is dragged: one that is in it already moves within it.
+			const pinnable = () => keptOrder(company, "pinned").includes(itemId) || !pinnedRowFull(company);
+			// A contact lands in any zone: where it stands is its member's own.
+			if (placedChats(company)?.[itemId]) return zone !== "pinned" || pinnable();
 			const sidebar = sidebarOf();
-			if (!sidebar) return false;
-			if (zone === "pinned") return sidebar.pinned.includes(itemId) || sidebar.pinned.length < PIN_LIMIT;
+			// The Members group takes contacts only.
+			if (!sidebar || zone === MEMBERS_ZONE) return false;
+			if (zone === "pinned") return pinnable();
 			return canOrganize(company);
 		},
 		drop: ({ itemId, kind, zone, order }: RailDrop) => {
-			const item: RailItem = { id: itemId, kind };
+			// A contact: only where it stands changes. Dragged out of Hidden, it shows again where it lands.
+			if (kind === "member") {
+				settleContacts(company, zone, dropInto(heldOrder(company, zone), itemId, order), itemId);
+				return;
+			}
+			const item: SidebarItem = { id: itemId, kind };
 			const sidebar = sidebarOf();
 			if (!sidebar) return;
+			// The member's contacts stand among a zone's rows, and the sidebar orders agents and group chats only: its
+			// requests name those, and the contacts are then kept where the rows stand, here and in the zone the item
+			// left (as the member saw it, before anything is drawn anew).
+			const chats = placedChats(company);
+			const placed = chats ? order.filter((member) => !chats[member]) : order;
+			const from = parts.list
+				.querySelector<HTMLElement>(
+					`[data-drop-zone] [data-agent-id="${itemId}"], [data-drop-zone] [data-room-id="${itemId}"]`,
+				)
+				?.closest<HTMLElement>("[data-drop-zone]")?.dataset.dropZone;
+			// Both zones' rows as the company holds them now, read before the sidebar change below moves the item (a
+			// contact placed after it would move with it): only the item goes in or out, and contacts moved meanwhile
+			// stay moved.
+			const landed = dropInto(heldOrder(company, zone), itemId, order);
+			const left =
+				from && from !== zone ? heldOrder(company, from).filter((member) => member !== itemId) : undefined;
+			const settle = () => {
+				settleContacts(company, zone, landed);
+				if (from && left) settleContacts(company, from, left);
+			};
 			const pinned = sidebar.pinned.includes(itemId);
+			const into = (now: readonly string[]) => dropInto(now, itemId, placed);
 			if (zone === "pinned") {
-				if (order.join() !== sidebar.pinned.join()) void company.changeSidebar({ action: "set_pins", order });
+				// A pin list can still name an item deleted since it was read; the cloud refuses those.
+				const roster = company.sidebarRoster();
+				const pins = into(sidebar.pinned.filter((pin) => roster.includes(pin)));
+				if (pins.join() !== sidebar.pinned.join()) void company.changeSidebar({ action: "set_pins", order: pins });
+				settle();
 				return;
 			}
 			const sectionId = zone === "unassigned" ? undefined : zone.slice("section:".length);
@@ -1849,28 +3150,95 @@ function dragHooks(company: CompanyController, parts: RailParts) {
 			// The rail shows no hidden or pinned items; the new order keeps them where they stood.
 			const roster = company.sidebarRoster();
 			const before = containerOrder(sidebar, sectionId, roster);
-			const next = before.filter((member) => member !== itemId);
-			const following = order[order.indexOf(itemId) + 1];
-			const at = following ? next.indexOf(following) : -1;
-			next.splice(at < 0 ? next.length : at, 0, itemId);
-			if (!pinned && !wasHidden && next.join() === before.join()) return;
-			if (!sectionId && !pinned && !wasHidden && !homeSection(sidebar, itemId) && company.unassignedOrderLost()) {
-				company.reportRailError(unassignedOrder());
-				return;
+			const next = into(before);
+			// Dropped where it stood among the agents, it may still have stepped over a contact: then only that moves.
+			if (pinned || wasHidden || next.join() !== before.join()) {
+				if (!sectionId && !pinned && !wasHidden && !homeSection(sidebar, itemId) && company.unassignedOrderLost()) {
+					company.reportRailError(unassignedOrder());
+					return;
+				}
+				if (wasHidden) void company.changeSidebar(hideRequest(item, false));
+				void company.changeSidebar(
+					moveRequest(item, sectionId ?? null, { order: next, ...(pinned ? { unpin: true } : {}) }),
+				);
 			}
-			if (wasHidden) void company.changeSidebar(hideRequest(item, false));
-			void company.changeSidebar(
-				moveRequest(item, sectionId ?? null, { order: next, ...(pinned ? { unpin: true } : {}) }),
-			);
+			settle();
 		},
+		end: () => parts.redraw(),
 	};
 }
 
-/** Moves an agent or a group chat one place up or down among what the member sees: in
- * the pinned row (the member's own order) or in its section (the company's; hidden and
- * pinned items keep their places). */
-function nudgeItem(company: CompanyController, item: RailItem, delta: number): void {
+/** `itemId` put into `now` (a zone's rows as the company holds them now) where it was dropped among `dropped` (the
+ * rows a lifted rail showed): before the first row that followed it there and is still in `now`, else last. The rail
+ * is not drawn afresh while a row is lifted, so the rows it showed may be older than the company's: a pin made or a
+ * contact moved meanwhile (on another device) stays so. */
+function dropInto(now: readonly string[], itemId: string, dropped: readonly string[]): string[] {
+	const next = now.filter((member) => member !== itemId);
+	const following = dropped.slice(dropped.indexOf(itemId) + 1).find((member) => next.includes(member));
+	next.splice(following ? next.indexOf(following) : next.length, 0, itemId);
+	return next;
+}
+
+/** A zone's rows as the company holds them now, as the rail draws them with no search running: its agents and group
+ * chats in their order with the member's contacts woven in, and nothing hidden, or pinned outside the pinned row. */
+function heldOrder(company: CompanyController, zone: string): string[] {
+	const state = company.store.get();
+	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
+	const roster = company.sidebarRoster();
+	const pinned = (sidebar?.pinned ?? []).filter((itemId) => roster.includes(itemId));
+	const hidden = new Set(sidebar?.hidden ?? []);
+	const contacts = companyContacts(company).contacts.filter((contact) => contact.zone === zone);
+	for (const contact of contacts) if (contact.hidden) hidden.add(contact.userId);
+	const sectionId = zone.startsWith("section:") ? zone.slice("section:".length) : undefined;
+	const items =
+		zone === "pinned"
+			? pinned
+			: zone === MEMBERS_ZONE
+				? []
+				: sidebar
+					? containerOrder(sidebar, sectionId, roster)
+					: sectionId
+						? []
+						: roster;
+	return weave(items, contacts).filter(
+		(itemId) => !hidden.has(itemId) && (zone === "pinned" || !pinned.includes(itemId)),
+	);
+}
+
+/** Moves an agent, a group chat or a contact one place up or down among what the member sees in its zone: the
+ * pinned row (the member's own order) or a section (the company's order of agents and group chats; hidden and pinned
+ * ones keep their places). A contact's step, and a step over a contact, change only where the contact stands, which
+ * is its member's own. */
+function nudgeItem(
+	company: CompanyController,
+	parts: RailParts,
+	element: HTMLElement,
+	item: RailItem,
+	delta: number,
+): void {
 	const itemId = item.id;
+	// What the member sees in the row's zone. A row in Hidden stands in no zone: it has no place to move from.
+	const zoneElement = element.closest<HTMLElement>("[data-drop-zone]");
+	const zone = zoneElement?.dataset.dropZone;
+	if (!zoneElement || !zone) return;
+	const seen = [...zoneElement.querySelectorAll<HTMLElement>(RAIL_ITEM)].map((row) => railItemId(row)!);
+	const at = seen.indexOf(itemId);
+	const beside = seen[at + delta];
+	if (at < 0 || !beside) return;
+	const stepped = [...seen];
+	stepped.splice(at, 1);
+	stepped.splice(at + delta, 0, itemId);
+	// A contact's place is read off the rows the member sees. While a search hides some of them none is made, as none
+	// is dragged then: an agent that steps then moves in the company's order alone, and every contact keeps standing
+	// after the agent it stood after.
+	const settle = () => {
+		if (parts.collapsed || !parts.input.value.trim()) settleContacts(company, zone, stepped);
+	};
+	if (item.kind === "member" || placedChats(company)?.[beside]) {
+		settle();
+		return;
+	}
+	const moved: SidebarItem = { id: itemId, kind: item.kind };
 	const state = company.store.get();
 	const sidebar = state.sidebarUnavailable ? undefined : state.sidebar;
 	if (!sidebar) return;
@@ -1885,6 +3253,7 @@ function nudgeItem(company: CompanyController, item: RailItem, delta: number): v
 		order.splice(from, 1);
 		order.splice(to, 0, itemId);
 		void company.changeSidebar({ action: "set_pins", order });
+		settle();
 		return;
 	}
 	if (!canOrganize(company)) return;
@@ -1899,5 +3268,6 @@ function nudgeItem(company: CompanyController, item: RailItem, delta: number): v
 	}
 	order.splice(order.indexOf(itemId), 1);
 	order.splice(order.indexOf(neighbour) + (delta > 0 ? 1 : 0), 0, itemId);
-	void company.changeSidebar(moveRequest(item, sectionId ?? null, { order }));
+	void company.changeSidebar(moveRequest(moved, sectionId ?? null, { order }));
+	settle();
 }

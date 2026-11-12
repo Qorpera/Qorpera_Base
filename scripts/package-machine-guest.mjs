@@ -10,6 +10,11 @@ import { RECORD, readFolderProgramRecord } from "./folder-program-artifact.mjs";
 // Since F3 step 6c it also carries the company folder's program (the build
 // RECORD names, made by scripts/build-folder-program.mjs) and its unit, which
 // mounts the folder at /company once the host hands the machine a view.
+// Since 20260930705000 it also carries save_coding_value's clipboard helper,
+// built as its own file after the guest helper, so the guest helper (the
+// manifest's first artifact, whose sha-256 the executor pins) stays as it was.
+// Since 20260930708000 it also carries machine_screen's screen helper, built the
+// same way and for the same reason.
 const USAGE = "Usage: package-machine-guest.mjs --out <new-directory> --folder-program <built qorpera-folder>";
 const args = process.argv.slice(2);
 if (args.length !== 4 || args[0] !== "--out" || args[2] !== "--folder-program") throw new Error(USAGE);
@@ -19,8 +24,27 @@ const units = [
 	"qorpera-machine-watchdog.service",
 	"qorpera-machine-watchdog.timer",
 	"qorpera-machine-folder.service",
+	"qorpera-machine-desktop.service",
 ];
-await Promise.all(units.map((unit) => readFile(`deploy/machine/${unit}`)));
+// The desktop (9 Nov 2026): its session, the agents' `desktop` command and Chromium's AppArmor profile. Since 10 Nov
+// 2026 also the page `desktop selftest` opens, the browser's managed policy (no translate offer, no sign-in), a
+// `chromium` that runs from root's shell, the login shells' paths to the installed Playwright, and the build's
+// Playwright check.
+const files = [
+	{ file: "desktop-session", installedPath: "/opt/qorpera-machine/desktop-session", mode: "0555" },
+	{ file: "desktop", installedPath: "/usr/local/bin/desktop", mode: "0555" },
+	{ file: "qorpera-chromium.apparmor", installedPath: "/etc/apparmor.d/qorpera-chromium", mode: "0644" },
+	{ file: "desktop-selftest.html", installedPath: "/opt/qorpera-machine/desktop-selftest.html", mode: "0444" },
+	{ file: "playwright-check.cjs", installedPath: "/opt/qorpera-machine/playwright-check.cjs", mode: "0444" },
+	{ file: "chromium", installedPath: "/usr/local/bin/chromium", mode: "0555" },
+	{ file: "qorpera-machine-profile.sh", installedPath: "/etc/profile.d/qorpera-machine.sh", mode: "0644" },
+	{
+		file: "qorpera-chromium-policy.json",
+		installedPath: "/etc/opt/chrome_for_testing/policies/managed/qorpera.json",
+		mode: "0644",
+	},
+];
+await Promise.all([...units, ...files.map((entry) => entry.file)].map((file) => readFile(`deploy/machine/${file}`)));
 // Only the recorded build: the image script pins the same bytes.
 const program = await readFile(resolve(args[3]));
 const record = readFolderProgramRecord();
@@ -52,6 +76,50 @@ artifacts.push({
 	sha256: createHash("sha256").update(helper).digest("hex"),
 	bytes: helper.length,
 });
+// save_coding_value's clipboard helper (20260930705000): the executor runs it with node; it reads the desktop's
+// clipboard, seals the key in it for the vault and clears it.
+await build({
+	entryPoints: ["packages/runtime/src/cloud-machine-coding-value-main.ts"],
+	outfile: resolve(output, "cloud-machine-coding-value.mjs"),
+	bundle: true,
+	platform: "node",
+	format: "esm",
+	target: "node22.19",
+	legalComments: "none",
+	logLevel: "silent",
+});
+const codingValues = await readFile(resolve(output, "cloud-machine-coding-value.mjs"));
+artifacts.push({
+	file: "cloud-machine-coding-value.mjs",
+	source: "packages/runtime/src/cloud-machine-coding-value-main.ts",
+	installedPath: "/opt/qorpera-machine/cloud-machine-coding-value.mjs",
+	owner: "root:root",
+	mode: "0444",
+	sha256: createHash("sha256").update(codingValues).digest("hex"),
+	bytes: codingValues.length,
+});
+// machine_screen's screen helper (20260930708000): the executor runs it with node; it takes one desktop action through
+// `desktop`, takes a screenshot and prints it.
+await build({
+	entryPoints: ["packages/runtime/src/cloud-machine-screen-main.ts"],
+	outfile: resolve(output, "cloud-machine-screen.mjs"),
+	bundle: true,
+	platform: "node",
+	format: "esm",
+	target: "node22.19",
+	legalComments: "none",
+	logLevel: "silent",
+});
+const screen = await readFile(resolve(output, "cloud-machine-screen.mjs"));
+artifacts.push({
+	file: "cloud-machine-screen.mjs",
+	source: "packages/runtime/src/cloud-machine-screen-main.ts",
+	installedPath: "/opt/qorpera-machine/cloud-machine-screen.mjs",
+	owner: "root:root",
+	mode: "0444",
+	sha256: createHash("sha256").update(screen).digest("hex"),
+	bytes: screen.length,
+});
 for (const unit of units) {
 	const bytes = await readFile(`deploy/machine/${unit}`);
 	await writeFile(resolve(output, unit), bytes, { mode: 0o644 });
@@ -61,6 +129,19 @@ for (const unit of units) {
 		installedPath: `/etc/systemd/system/${unit}`,
 		owner: "root:root",
 		mode: "0644",
+		sha256: createHash("sha256").update(bytes).digest("hex"),
+		bytes: bytes.length,
+	});
+}
+for (const { file, installedPath, mode } of files) {
+	const bytes = await readFile(`deploy/machine/${file}`);
+	await writeFile(resolve(output, file), bytes, { mode: Number.parseInt(mode, 8) });
+	artifacts.push({
+		file,
+		source: `deploy/machine/${file}`,
+		installedPath,
+		owner: "root:root",
+		mode,
 		sha256: createHash("sha256").update(bytes).digest("hex"),
 		bytes: bytes.length,
 	});

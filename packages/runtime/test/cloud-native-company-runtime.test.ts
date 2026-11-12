@@ -6,7 +6,11 @@ import { fileURLToPath } from "node:url";
 import type { CompanyComputerScreenLease } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
 import { CLOUD_AGENT_HEAD_BYTES, CLOUD_AGENT_HEAD_SCHEMA } from "@qorpera/runtime/cloud-agent-head";
-import type { CloudAgentSendReceipt } from "@qorpera/runtime/cloud-agent-mouth";
+import {
+	CLOUD_AGENT_NO_FINAL_SEND_CODE,
+	CloudAgentNoFinalSend,
+	type CloudAgentSendReceipt,
+} from "@qorpera/runtime/cloud-agent-mouth";
 import {
 	type CloudCompanyComputerSessionFactory,
 	createCloudCompanyComputerSession,
@@ -19,6 +23,7 @@ import type {
 	CloudCompanyPathPresenceFactory,
 } from "@qorpera/runtime/cloud-company-path-presence";
 import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
+import { CloudControlRpcEnded } from "@qorpera/runtime/cloud-control-errors";
 import { compileCloudNativeCompanyInstructions } from "@qorpera/runtime/cloud-native-company-context";
 import { CloudNativeCompanyRuntime } from "@qorpera/runtime/cloud-native-company-runtime";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
@@ -30,7 +35,10 @@ import {
 	openNativeCredentialCapsule,
 	sealNativeCredentialCapsule,
 } from "@qorpera/runtime/cloud-native-provider-host";
-import { HttpNativeProviderHostService } from "@qorpera/runtime/cloud-native-provider-service";
+import {
+	HttpNativeProviderHostService,
+	nativeProviderFailureCode,
+} from "@qorpera/runtime/cloud-native-provider-service";
 import { CLOUD_RUN_ROW_READ_MS } from "@qorpera/runtime/cloud-native-tool-authority";
 import { CLOUD_TOOL_RESULT_INSTRUCTIONS } from "@qorpera/runtime/cloud-native-tool-boundary";
 import type { CloudNativeToolOperationControlPlane } from "@qorpera/runtime/cloud-native-tool-operations";
@@ -823,6 +831,93 @@ it.each(["available", "unavailable"])(
 	},
 );
 
+it.each([true, false])(
+	"starts a run with its continuation shown to 32 KiB, read before the model starts and in its context hash (perf T7; page read: %s)",
+	async (readable) => {
+		const f = await fixture("company-silent");
+		// The second page holds a value shaped like a webhook signing secret (made up: never a real one), which the run
+		// would have read cut, as a read_context page.
+		const fake = `whsec_${"T7fakeNotASecret".repeat(2)}0000`;
+		const text = JSON.stringify({
+			schema: "qorpera.worker-completion-continuation/v1",
+			results: `${"c".repeat(20000)} STRIPE_WEBHOOK_SECRET=${fake} ${"d".repeat(5000)}`,
+		});
+		const whole = f.source("continuation", f.binding.runId, text);
+		const excerpt = {
+			...whole,
+			content: { ...whole.content, text: text.slice(0, 16384), nextOffset: 16384, truncated: true },
+		};
+		f.context.continuation = excerpt;
+		const original = f.pathCall.getMockImplementation()!;
+		f.pathCall.mockImplementation(async (method, args, signal) => {
+			if (method !== "qorpera_read_company_run_context") return original(method, args, signal);
+			expect(args).toEqual({
+				p_binding: f.binding,
+				p_source_kind: "continuation",
+				p_source_id: f.binding.runId,
+				p_expected_sha256: whole.content.sha256,
+				p_offset: 16384,
+				p_limit: 16384,
+			});
+			if (!readable) throw new Error("Cloud tool authority unavailable");
+			return { ...whole, content: { ...whole.content, text: text.slice(16384), offset: 16384, truncated: true } };
+		});
+		const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		try {
+			await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		} finally {
+			error.mockRestore();
+		}
+		const raw = await readFile(f.evidence, "utf8");
+		expect(raw).not.toContain(fake);
+		const evidence = JSON.parse(raw);
+		const promptText: string = evidence.turnParameters.input[0].text;
+		// Two pages hold it whole: the run is shown all of it at once, with the secret cut out as a page has it, and the
+		// whole text's handle. A page that cannot be read leaves the context's excerpt, which read_context reads on from,
+		// and the run goes on.
+		const cut = { ...whole, content: { ...whole.content, text: text.replace(fake, "whsec_[REDACTED]") } };
+		expect(JSON.parse(promptText).continuation).toEqual(readable ? cut : excerpt);
+		const methods = f.pathCall.mock.calls.map(([method]) => method);
+		expect(methods.filter((method) => method === "qorpera_read_company_run_context")).toHaveLength(1);
+		expect(methods.indexOf("qorpera_read_company_run_context")).toBeLessThan(
+			methods.indexOf("qorpera_bind_native_company_context"),
+		);
+		// The run's context, bound before the model starts, is the context the run was shown.
+		const start = f.pathCall.mock.calls.find(([method]) => method === "qorpera_bind_native_company_context")![1];
+		const composed = `${headLine(evidence.threadParameters.developerInstructions)}\n\n${promptText}`;
+		expect(start.p_context_sha256).toBe(createHash("sha256").update(composed).digest("hex"));
+	},
+);
+it("starts a run whose continuation printed a webhook signing secret without the secret in what Codex gets", async () => {
+	const f = await fixture("company-silent");
+	// Made up for this test: never a real secret.
+	const fake = `whsec_${"T7fakeNotASecret".repeat(2)}0000`;
+	const text = JSON.stringify({
+		schema: "qorpera.machine-event-continuation/v1",
+		events: [{ outputTail: `${"o".repeat(8000)}\nSTRIPE_WEBHOOK_SECRET=${fake}\n${"p".repeat(12000)}` }],
+	});
+	const whole = f.source("continuation", f.binding.runId, text);
+	f.context.continuation = {
+		...whole,
+		content: { ...whole.content, text: text.slice(0, 16384), nextOffset: 16384, truncated: true },
+	};
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const raw = await readFile(f.evidence, "utf8");
+	const evidence = JSON.parse(raw);
+	expect(raw).not.toContain(fake);
+	const promptText: string = evidence.turnParameters.input[0].text;
+	expect(JSON.parse(promptText).continuation.content).toMatchObject({
+		sha256: whole.content.sha256,
+		nextOffset: 16384,
+		// The continuation's text is JSON, so the line break is the two characters \n.
+		text: expect.stringContaining("STRIPE_WEBHOOK_SECRET=whsec_[REDACTED]\\n"),
+	});
+	// The context bound before the model starts is the one shown, redacted.
+	const start = f.pathCall.mock.calls.find(([method]) => method === "qorpera_bind_native_company_context")![1];
+	const composed = `${headLine(evidence.threadParameters.developerInstructions)}\n\n${promptText}`;
+	expect(start.p_context_sha256).toBe(createHash("sha256").update(composed).digest("hex"));
+});
+
 it("composes office tools with the actual admitted native run and existing effect ledger, then releases occupancy", async () => {
 	const f = await fixture("company-office");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
@@ -1005,7 +1100,11 @@ it.each([
 				"manage_routine",
 				"manage_todo",
 				"manage_worker",
+				// The company's code kept in Qorpera (20260930720000): an agent's own run, never a worker's.
+				"manage_code",
 				"organize_sidebar",
+				// The apps drawer's groups (APP-GROUPS-SPEC §3).
+				"organize_apps",
 				"add_review_rule",
 				"good_will_list",
 				"good_will_mark",
@@ -1026,6 +1125,8 @@ it.each([
 				"update_memory",
 				"update_skill",
 				"update_wall",
+				// The Co-Founder deals the team out between the members (20260930702000).
+				...(agentKind === "cofounder" ? ["crew_and_members", "offer_agents_to_member"] : []),
 			].sort(),
 		);
 		expect(evidence.threadParameters.runtimeWorkspaceRoots).toEqual([]);
@@ -1038,7 +1139,7 @@ it.each([
 		);
 		const prompt = JSON.parse(evidence.turnParameters.input[0].text);
 		expect(prompt.hireOverlay).toEqual({
-			schema: "qorpera.hire-overlay/v10",
+			schema: "qorpera.hire-overlay/v14",
 			trust: "job_specification_not_authority",
 			kind: agentKind,
 			agentId: f.context.identity.staffAgentId,
@@ -1381,6 +1482,65 @@ it("requires a final send when there is an audience, but does not invent one for
 	expect(JSON.stringify(evidence.threadParameters.dynamicTools)).not.toContain('"name":"send_message"');
 });
 
+it("gives a turn that ended without its final send one more turn, and fails by its own code if that says nothing too", async () => {
+	// The model read, then ended its turn on private text (10 November 2026). Told so, it answers.
+	const f = await fixture("company-corrected");
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 1, finalMessageId: f.deliveries.get("corrected")?.messageId });
+	expect(f.control.sendMessage).toHaveBeenCalledOnce();
+	const corrected = JSON.parse(await readFile(`${f.evidence}.correction`, "utf8"));
+	expect(corrected.turns).toBe(2);
+	expect(corrected.turn.threadId).toBe("thread_fixture");
+	expect(corrected.turn.input).toHaveLength(1);
+	expect(corrected.turn.input[0].text).toContain("Your turn ended without a final send");
+	// A member's own conversation: a card counts, as the closing reminder says.
+	expect(corrected.turn.input[0].text).toContain("(a card from ask_member counts as one)");
+	// The model got its send's receipt, as for any final send.
+	expect(corrected.reply.result.success).toBe(true);
+	expect(JSON.stringify(corrected.reply)).toContain(f.deliveries.get("corrected")?.messageId);
+	// A distinct private identity and company root keep the first fixture's state out of the second.
+	await rm(f.identityRoot, { recursive: true, force: true });
+	await rm(f.companyRoot, { recursive: true, force: true });
+	// One more turn, not more: a model that says nothing again fails its run, by a code of its own.
+	const failed = await fixture("company-no-send");
+	const error = await failed.runtime
+		.execute(failed.request, failed.identityRoot, new AbortController().signal)
+		.catch((failure: unknown) => failure);
+	expect(error).toBeInstanceOf(CloudAgentNoFinalSend);
+	expect(nativeRuntimeFailureMetadata(error)).toMatchObject({ stage: "public-completion", category: "unknown" });
+	expect(nativeProviderFailureCode(error)).toBe(CLOUD_AGENT_NO_FINAL_SEND_CODE);
+	expect(JSON.parse(await readFile(`${failed.evidence}.correction`, "utf8")).turns).toBe(2);
+	expect(failed.control.sendMessage).not.toHaveBeenCalled();
+});
+
+it("asks a worker whose turn ended without its report for it, once", async () => {
+	const f = await fixture("company-worker");
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const corrected = JSON.parse(await readFile(`${f.evidence}.correction`, "utf8"));
+	expect(corrected.turns).toBe(2);
+	expect(corrected.turn.input[0].text).toContain("Your turn ended without report_work");
+	expect(corrected.turn.input[0].text).not.toContain("send_message");
+});
+
+it("asks a reply's save again while its answer is lost, by the same key", async () => {
+	const f = await fixture("company-corrected");
+	// The first try's answer is lost (the database says its statement ended, so the copy is not waited out): the
+	// same key is sent again, and replays whatever the first try stored.
+	f.control.sendMessage.mockImplementationOnce(async () => {
+		throw new CloudControlRpcEnded("Native control-plane RPC failed (500)");
+	});
+	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	expect(result.delivery).toEqual({ messageCount: 1, finalMessageId: f.deliveries.get("corrected")?.messageId });
+	expect(f.control.sendMessage.mock.calls.map(([, input]) => input.idempotencyKey)).toEqual([
+		"corrected",
+		"corrected",
+	]);
+	// The model saw one confirmed send, never an unconfirmed outcome.
+	const reply = JSON.parse(await readFile(`${f.evidence}.correction`, "utf8")).reply;
+	expect(reply.result.success).toBe(true);
+	expect(JSON.stringify(reply)).not.toContain("TOOL_OUTCOME_UNCONFIRMED");
+});
+
 it("has a dynamic routine run decide its next run before its final message", async () => {
 	const f = await fixture("company-dynamic");
 	const result = await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
@@ -1614,6 +1774,47 @@ it("gives an agent's runs, whoever woke them, one head in the developer instruct
 	}
 	expect(heads[1]).toBe(heads[0]);
 });
+
+it.each(["vision", "job", "profile"] as const)(
+	"cuts a webhook signing secret out of the head's %s part before it is hashed and sent, keeping the part's version",
+	async (part) => {
+		const f = await fixture("company-dynamic");
+		// Made up for this test: never a real secret.
+		const fake = `whsec_${"T7fakeNotASecret".repeat(2)}0000`;
+		const vision = part === "vision" ? `# Vision\nWebhook: ${fake}\n` : "# Vision\nCalm books for small firms.\n";
+		const profile =
+			part === "profile" ? `- (2026-09-01) The Stripe secret is ${fake}\n` : "- (2026-09-01) I am Nora\n";
+		f.context.jobSpecification = f.source(
+			"job_spec",
+			f.context.identity.staffAgentId,
+			part === "job" ? `Keep the books. Our hook signs with ${fake}.` : "Keep the books.",
+		);
+		f.folderFiles.set("QorperaOS/vision/vision.md", vision);
+		f.folderFiles.set("QorperaOS/agents/nora/memory/profile.md", profile);
+		await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+		const raw = await readFile(f.evidence, "utf8");
+		expect(raw).not.toContain(fake);
+		const evidence = JSON.parse(raw);
+		const head = headLine(evidence.threadParameters.developerInstructions);
+		const shown = (JSON.parse(head).parts as { part: string; text: string; version?: string }[]).find(
+			(item) => item.part === part,
+		);
+		expect(shown?.text).toContain("whsec_[REDACTED]");
+		// The part names the version that was read, as before.
+		if (part === "vision") expect(shown?.version).toBe(folderVersion("QorperaOS/vision/vision.md", vision));
+		if (part === "profile")
+			expect(shown?.version).toBe(folderVersion("QorperaOS/agents/nora/memory/profile.md", profile));
+		// The context bound and released before the model starts is what the run was shown.
+		const promptText: string = evidence.turnParameters.input[0].text;
+		const composed = createHash("sha256").update(`${head}\n\n${promptText}`).digest("hex");
+		const start = f.pathCall.mock.calls.find(([method]) => method === "qorpera_bind_native_company_context")![1];
+		expect(start.p_context_sha256).toBe(composed);
+		const released = f.folderReleases.find((release) =>
+			(release.p_reads as { path: string }[]).some((read) => read.path === "QorperaOS/vision/vision.md"),
+		);
+		expect(released?.p_output_sha256).toBe(composed);
+	},
+);
 
 it("leaves a head part that does not fit out whole, names it, and keeps the rest", async () => {
 	const f = await fixture("company-dynamic");
@@ -1928,6 +2129,8 @@ async function memoryTreeFixture(
 		bare?: boolean;
 		release?: Error;
 		record?: Error;
+		/** Text added to the first line, as a member's pasted words could be in a summary. */
+		lineExtra?: string;
 	} = {},
 ) {
 	const f = await fixture(options.mode ?? "company-context");
@@ -1944,7 +2147,7 @@ async function memoryTreeFixture(
 			const path = `${root}/${memoryBlockPath(l, k)}`;
 			let block = blocks.findIndex((item) => item.path === path);
 			if (block < 0) block = blocks.push({ path, version: randomUUID() }) - 1;
-			lines.push({ l, k, text: `${MEMORY_LINE} ${l}.${k}`, block });
+			lines.push({ l, k, text: `${MEMORY_LINE} ${l}.${k}${l + k === 0 ? (options.lineExtra ?? "") : ""}`, block });
 		}
 	let views = 0;
 	const thread = {
@@ -2069,6 +2272,30 @@ it("shows an own-thread run its summary tree, released and recorded before the m
 			conversationId: f.context.identity.sessionId as string,
 		}),
 	);
+});
+
+it("cuts a webhook signing secret out of the conversation view before it is released, recorded and sent", async () => {
+	// Made up for this test: never a real secret.
+	const fake = `whsec_${"T7fakeNotASecret".repeat(2)}0000`;
+	const f = await memoryTreeFixture({ lineExtra: ` (pasted: ${fake})` });
+	await f.runtime.execute(f.request, f.identityRoot, new AbortController().signal);
+	const raw = await readFile(f.evidence, "utf8");
+	expect(raw).not.toContain(fake);
+	const evidence = JSON.parse(raw);
+	const instructions: string = evidence.threadParameters.developerInstructions;
+	expect(instructions).toContain(MEMORY_LINE);
+	expect(instructions).toContain("(pasted: whsec_[REDACTED])");
+	// The lines are released under the context the run starts with, and what is recorded holds no secret either.
+	const calls = f.pathCall.mock.calls;
+	const methods = calls.map(([method]) => method);
+	const start = calls[methods.indexOf("qorpera_bind_native_company_context")]![1] as { p_context_sha256: string };
+	const release = (calls[methods.indexOf("qorpera_memory_release")]![1] as { p_request: { outputSha256: string } })
+		.p_request;
+	expect(release.outputSha256).toBe(start.p_context_sha256);
+	const viewRecord = (
+		calls[methods.indexOf("qorpera_memory_view_record")]![1] as { p_request: Record<string, unknown> }
+	).p_request;
+	expect(JSON.stringify(viewRecord)).not.toContain(fake);
 });
 
 it("shows a group-chat run the chat's summary tree, with the agent's own thread as a branch", async () => {
@@ -2260,6 +2487,8 @@ it("runs a background worker blank: reading tools and its report, no mouth, no c
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# Standing work");
 	// A read-only worker follows skills but writes none, so it gets no guidance on keeping them.
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# Skills");
+	// Nor on its notebook: it reports to its agent, which keeps the notebook.
+	expect(evidence.threadParameters.developerInstructions).not.toContain("# Your notebook");
 	expect(evidence.threadParameters.developerInstructions).not.toContain("# This wake: a message from a coworker");
 });
 
@@ -2292,6 +2521,7 @@ it("gives a worker the company's machine tools, without notify (Jonas, 2026-09-2
 	// Still no mouth, coworkers or delegation.
 	expect(tools.map((tool) => tool.name)).not.toContain("send_message");
 	expect(tools.map((tool) => tool.name)).not.toContain("manage_worker");
+	expect(tools.map((tool) => tool.name)).not.toContain("manage_code");
 	expect(tools.map((tool) => tool.name)).not.toContain("send_coworker_message");
 });
 
@@ -2324,6 +2554,9 @@ it("gives manage_todo, organize_sidebar, hire_agent, create_group_chat and manag
 	const sidebar = tools.find((tool) => tool.name === "organize_sidebar")?.description ?? "";
 	expect(sidebar).toContain("the sections live in the file QorperaOS/agents/sections.md");
 	expect(sidebar).not.toContain("by its id or name");
+	// The 2026-11-11 amendment (each member's own sidebar), item 4: the change is the company's, not every member's at once.
+	expect(sidebar).toContain("every member sees your change, except where a member placed things themself");
+	expect(sidebar).not.toContain("everyone sees the change at once");
 	const hire = tools.find((tool) => tool.name === "hire_agent")?.description ?? "";
 	expect(hire).toContain("saved as the agent's own folder");
 	expect(hire).not.toContain("under organization/agents");
@@ -2972,6 +3205,36 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// adds update_wall after post_app, so they moved again. Readable cards (5 November 2026) shorten ask_member's body
 	// and say how a card reads; every other tool is as on master.
 	// On 7 November 2026 update_wall's description said a question a member answered leaves waiting, so they moved again.
+	// On 8 November 2026 save_app's description says an app opens as a page of its own, so they moved again.
+	// Later on 8 November 2026 save_app's manifest takes concept and cover (the Concepts viewer), so they moved again.
+	// On 9 November 2026 ask_member's secret card takes a coding value's repository (20260930693000), and its schema
+	// says when to ask for one; the names and descriptions are as before, so only the catalog text moved.
+	// Later on 9 November 2026 that schema says a key an agent can make on npm, GitHub, Stripe or Resend is taken with
+	// computer_browser vault_capture instead (20260930695000); the names and descriptions are as before, so only the
+	// catalog text moved again.
+	// On 9 November 2026 the Co-Founder's crew_and_members and offer_agents_to_member (20260930702000) came after
+	// good_will_mark, so they moved again.
+	// Later on 9 November 2026 ask_member's secret card schema says such a key is saved off the machine's clipboard with
+	// save_coding_value (20260930705000), computer_browser vault_capture only on a company computer; the names and
+	// descriptions are as before, so only the catalog text moved again.
+	// On 10 November 2026 save_app's manifest takes writes, with questions among its reads (a member allows a change
+	// an app asks for, RUNTIME-INTERFACE-APPS.md §5), so they moved again. Later that day its description says which
+	// links in an app open and that every app starts from Qorpera's base style, and its schema says the style's
+	// variables on files (the web opens an app's links and gives it the style, §2 and §4), so they moved again.
+	// Also on 10 November 2026 hire_agent's figure takes star, cloud, bolt, mushroom, moon and puzzle, and no ghost
+	// (20260930709000); the names and descriptions are as before, so only the catalog text moved again.
+	// Still on 10 November 2026 save_app's manifest takes kit: explainer makes an app a short narrated video, with how
+	// to make one on the schema field (RUNTIME-INTERFACE-APPS.md §3a), so they moved again.
+	// Also on 10 November 2026 manage_code came after manage_worker (the change record of the company's code,
+	// 20260930720000), so they moved again.
+	// On 11 November 2026 update_wall takes now, the line under the agent's name in the sidebar, and its description says
+	// a line names what came of the work and keeps the team's housekeeping off the wall, so they moved again.
+	// On 11 November 2026 organize_apps came after organize_sidebar (the apps drawer's groups, APP-GROUPS-SPEC §3), and
+	// save_app's schema takes group, so they moved again.
+	// Also on 11 November 2026 ask_member's description says every answer the work cannot go on without goes on a card that
+	// says what is stopped, open questions too with allowCustom ("it's really stopped at you"), so they moved again.
+	// Its question schema says the same (an open one goes on the card with allowCustom, not to chat), so the catalog text
+	// moved once more.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -2990,9 +3253,12 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"send_coworker_message",
 		"manage_routine",
 		"organize_sidebar",
+		"organize_apps",
 		"add_review_rule",
 		"good_will_list",
 		"good_will_mark",
+		"crew_and_members",
+		"offer_agents_to_member",
 		"list_hooks",
 		"read_event",
 		"send_mail",
@@ -3010,13 +3276,14 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"create_group_chat",
 		"manage_todo",
 		"manage_worker",
+		"manage_code",
 		"send_message",
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"7b4eeed6010f6815a4150fe354f58cd4511e4eeee1ddab2692cd4e966c011013",
+		"29ebd15b036a3e22ad5744e2b96fe936316595951522c385bfa0079b9ebe7e83",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"6ab035251ef6d7c8319c2ede9e0e7bd454de7c44797301e0d0fa5444f9b6e8c7",
+		"0c8427ff56381b1e1fdb60d8221e88a75bbcc3b686bc2f5271941b8f562cd7f0",
 	);
 });

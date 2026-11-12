@@ -11,23 +11,26 @@ import {
 	type CloudMemberFolderVersion,
 } from "@qorpera/cloud-client/cloud-member-folder";
 import { WebFileDownloads } from "../../../../member-web/src/files.ts";
+import type { CodeDownloadCalls } from "../../cloud/code-downloads.ts";
 import { withProblems } from "../../cloud/company-folder-writes.ts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { button, fmtBytes, fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
+import { reducedMotion } from "../../ui/motion.ts";
 import { framePage, PageFrames } from "../../ui/page-frame.ts";
 import { presentationDay, presentationLocale, previousDay, t, timeZoneOption } from "../../ui/preferences.ts";
-import { listSkeleton } from "../../ui/skeleton.ts";
+import { linesSkeleton, listSkeleton } from "../../ui/skeleton.ts";
+import { CodeDownload } from "./code-download.ts";
 
 /* A folder-v2 company's Company File (folder core C4, P33; deploy/first-node/RUNTIME-COMPANY-FOLDER-C4-MEMBERS.md):
  * the file browser Jonas approved for #386. A breadcrumb, one list of folders, files and links, and a preview beside it
- * with the path's history, where an earlier version of a file or a link is restored (RUNTIME-FOLDER-LINKS.md, LK6);
+ * (inside Settings, in its own window over Settings, the way a picture is viewed) with the path's history, where an earlier version of a file or a link is restored (RUNTIME-FOLDER-LINKS.md, LK6);
  * the company's recent changes on the clock button. The folder's hint (P30) nudges a sync from the feed, and a slow
  * poll backs it up. */
 
 type Client = Pick<
 	CloudMemberFolderClient,
-	"list" | "read" | "readFile" | "pathHistory" | "history" | "changes" | "commit"
+	"list" | "read" | "readFile" | "readFilePieces" | "pathHistory" | "history" | "changes" | "commit"
 >;
 
 /** What the page needs from the product: the folder, its hint, and the company's lifetime. */
@@ -36,6 +39,9 @@ export interface CompanyFolderSource {
 	current(): void;
 	folder(): Client;
 	folderHints(onHint: (seq: number) => void): { close(): Promise<void> };
+	/** The calls behind "Download the code" on a repository's folder (code-download.ts); without them it is not
+	 * offered. */
+	codeDownloads?(): CodeDownloadCalls;
 }
 
 /** The names a change's author is shown by. */
@@ -151,8 +157,9 @@ const HISTORY_PAGE = 50;
 /** Text larger than this only downloads. */
 const MAX_PREVIEW_TEXT_BYTES = 1024 * 1024;
 const MAX_PREVIEW_IMAGE_BYTES = 8 * 1024 * 1024;
-/** The browser hands out at most this much in one download (member-web's WebFileDownloads). */
-const MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024;
+/** The browser hands out at most this much in one download (member-web's WebFileDownloads): a folder file's most,
+ * read piece by piece. */
+const MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024;
 const POLL_MS = 60_000;
 const SYNC_DELAY_MS = 1000;
 /** How many newest Recents pages a refresh reads to reach the changes already shown. */
@@ -225,6 +232,15 @@ export class CompanyFolderBrowser {
 	readonly #views = h("div", { class: "storage-view-toggle", role: "group", "aria-label": t("File view") });
 	readonly #more = button(t("More files"), () => void this.#run(() => this.#load(this.#dir, true)), { small: true });
 	readonly #preview = h("aside", { class: "files-preview" });
+	/** Inside Settings, the preview's own window over Settings; null in the standalone browser, where it sits beside
+	 * the files. It stays inside the browser's root, so it rests with the list while an action runs. */
+	readonly #viewer: HTMLDialogElement | null;
+	/** The window going back into its file: it is still open, with what it showed, until the motion ends. */
+	#leaving: { readonly motion: Animation[] } | null = null;
+	/** The window's last motion: dropped before the next, so a held end never stays on the closed window. */
+	#motion: Animation[] = [];
+	/** Set while the window shows a file still being read, so what comes in fades in. */
+	#loading = false;
 	readonly #search: HTMLInputElement;
 	readonly #frames: PageFrames;
 	/** A page's view, kept while the same page stays open. */
@@ -233,6 +249,8 @@ export class CompanyFolderBrowser {
 	#large: SurfaceDialog | undefined;
 	#client?: Client;
 	#downloads?: WebFileDownloads;
+	/** "Download the code", on a repository's folder; absent where the product has no calls for it. */
+	#code?: CodeDownload;
 	#hints?: { close(): Promise<void> };
 	#poll?: ReturnType<typeof setInterval>;
 	#syncTimer?: ReturnType<typeof setTimeout>;
@@ -245,7 +263,6 @@ export class CompanyFolderBrowser {
 	#pendingSection: "documents" | "recents" | null = null;
 	/** A folder link's path, opened once the folder is open and no other action runs (reveal). */
 	#pendingPath: string | null = null;
-	#revealPreview = false;
 	#items: CloudMemberFolderEntry[] = [];
 	#next: string | null = null;
 	/** Where the feed is followed from: everything up to it is on screen. */
@@ -279,6 +296,25 @@ export class CompanyFolderBrowser {
 			});
 		this.#stop = new AbortController();
 		this.#frames = new PageFrames(this.#stop.signal);
+		this.#viewer = options.embedded
+			? h("dialog", { class: "surface-dialog storage-viewer", tabindex: "-1" }, this.#preview)
+			: null;
+		// Escape and a click beside the window close it, never while an action runs.
+		this.#viewer?.addEventListener(
+			"cancel",
+			(event) => {
+				event.preventDefault();
+				if (!this.#busy) this.#close();
+			},
+			{ signal: this.#stop.signal },
+		);
+		this.#viewer?.addEventListener(
+			"click",
+			(event) => {
+				if (event.target === this.#viewer && !this.#busy) this.#close();
+			},
+			{ signal: this.#stop.signal },
+		);
 		source.signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#stop.signal });
 		// A folder link in a document shown here opens what it names here.
 		this.#preview.addEventListener(
@@ -388,10 +424,13 @@ export class CompanyFolderBrowser {
 		host.addEventListener(
 			"keydown",
 			(event) => {
-				if (event.key !== "Escape" || this.#preview.hidden || this.#busy || event.defaultPrevented) return;
-				if (!this.#preview.contains(event.target as Node) && !this.#list.contains(event.target as Node)) return;
+				if (event.key !== "Escape" || this.#preview.hidden || event.defaultPrevented) return;
+				const target = event.target as Node;
+				const inViewer = this.#viewer?.contains(target) === true;
+				if (!inViewer && (this.#busy || (!this.#preview.contains(target) && !this.#list.contains(target)))) return;
+				// Escape in the window is the window's, even while an action runs: Settings under it stays open.
 				event.preventDefault();
-				this.#close();
+				if (!this.#busy) this.#close();
 			},
 			{ signal: this.#stop.signal },
 		);
@@ -403,6 +442,17 @@ export class CompanyFolderBrowser {
 		replace(this.#root, listSkeleton(t("Opening Company File"), 4));
 		this.#client = this.#source.folder();
 		this.#downloads ??= new WebFileDownloads({ signal: this.#signal(), current: () => this.#live() });
+		const downloads = this.#downloads;
+		const client = this.#client;
+		const calls = this.#source.codeDownloads?.bind(this.#source);
+		if (calls)
+			this.#code ??= new CodeDownload({
+				signal: this.#signal(),
+				live: () => this.#live(),
+				calls,
+				folder: () => client,
+				offer: (name, pieces, bytes) => downloads.offerPieces(name, pieces, bytes),
+			});
 		replace(
 			this.#documents,
 			this.#crumbs,
@@ -410,8 +460,10 @@ export class CompanyFolderBrowser {
 				"div",
 				{ class: "storage-toolbar" },
 				this.#title,
+				this.#code?.button ?? null,
 				h("div", { class: "storage-controls" }, this.#filter, this.#sort, this.#views),
 			),
+			this.#code?.line ?? null,
 			h(
 				"div",
 				{ class: "files-body" },
@@ -423,7 +475,7 @@ export class CompanyFolderBrowser {
 					h("div", { class: "files-list-more" }, this.#more),
 					this.#count,
 				),
-				this.#preview,
+				this.#viewer ?? this.#preview,
 			),
 		);
 		replace(this.#root, this.#documents, this.#recents);
@@ -519,8 +571,12 @@ export class CompanyFolderBrowser {
 		void this.#hints?.close();
 		this.#downloads?.close();
 		this.#large?.close(false);
+		if (this.#viewer?.open) this.#viewer.close();
 		this.#forget(this.#opened);
 		this.#opened = null;
+		// An embedded host (Storage in Settings) leaves with its owner, often while Settings fades out: stripping
+		// its look here would flash the bare, unstyled list for that fade. A page host is reused, so it is reset.
+		if (this.#options.embedded) return;
 		this.#host.classList.remove("files-page", "folder-page", "has-preview", "storage-browser", "is-embedded");
 	}
 
@@ -541,6 +597,12 @@ export class CompanyFolderBrowser {
 		this.#busy = true;
 		const focus = document.activeElement;
 		this.#root.inert = true;
+		// A modal window is not made inert by its ancestors, so its content rests on its own. Focus waits on the window
+		// itself, where Escape is the window's: the control that had it may rest or go (a Try again is removed at once).
+		if (this.#viewer?.open) {
+			this.#preview.inert = true;
+			if (document.activeElement !== this.#viewer) this.#viewer.focus({ preventScroll: true });
+		}
 		this.#say("");
 		try {
 			this.#live();
@@ -563,17 +625,18 @@ export class CompanyFolderBrowser {
 		} finally {
 			this.#busy = false;
 			this.#root.inert = false;
+			this.#preview.inert = false;
 			if (
 				focus instanceof HTMLElement &&
 				focus.isConnected &&
-				(!document.activeElement || document.activeElement === document.body)
+				(!document.activeElement ||
+					document.activeElement === document.body ||
+					(this.#viewer !== null && document.activeElement === this.#viewer && this.#viewer.contains(focus)))
 			)
 				focus.focus();
-			if (this.#revealPreview) {
-				this.#revealPreview = false;
-				if (!this.#disposed && !this.#pendingSection && !this.#preview.hidden)
-					this.#preview.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-			}
+			// The window was drawn while the root rested, so nothing in it could take focus then.
+			if (!this.#disposed && this.#viewer?.open && !this.#viewer.contains(document.activeElement))
+				this.#viewer.focus({ preventScroll: true });
 			this.#navigate();
 		}
 	}
@@ -603,6 +666,7 @@ export class CompanyFolderBrowser {
 		if (moved) this.#search.value = "";
 		this.#drawCrumbs();
 		this.#title.textContent = dir ? baseName(dir) : t("Documents");
+		this.#code?.enter(dir);
 		this.#drawList(!append);
 		if (jumped) await this.#refreshOpened();
 	}
@@ -882,9 +946,26 @@ export class CompanyFolderBrowser {
 
 	async #open(entry: CloudMemberFolderEntry, refresh = false): Promise<void> {
 		if (!entry.file && entry.target === null) return;
-		if (refresh || this.#opened?.path !== entry.path || this.#opened?.version)
+		if (!refresh && this.#opened?.path === entry.path && !this.#opened.version) return;
+		// Inside Settings the window opens at once, out of the file, and the file fills it once it is read.
+		const waiting = this.#viewer !== null && !refresh;
+		if (waiting) this.#drawLoading(entry.path);
+		try {
 			await this.#show({ path: entry.path, file: entry.file, target: entry.target });
-		if (!refresh && this.#options.embedded) this.#revealPreview = true;
+		} catch (error) {
+			if (waiting && this.#loading) {
+				this.#loading = false;
+				if (this.#opened) this.#drawFile();
+				else this.#close();
+			}
+			throw error;
+		}
+	}
+
+	/** The window, open while a file is read: its name, and lines that breathe where its content comes. */
+	#drawLoading(path: string): void {
+		this.#panel(baseName(path), [h("div", { class: "files-preview-body" }, linesSkeleton(t("Loading")))], [], path);
+		this.#loading = true;
 	}
 
 	/** Reads what has a preview, and draws the preview. A link's is its target: nothing is read. */
@@ -908,13 +989,85 @@ export class CompanyFolderBrowser {
 	}
 
 	#close(): void {
-		this.#revealPreview = false;
+		if (this.#leaving) return;
+		this.#loading = false;
+		const path = this.#viewer?.open ? this.#opened?.path : undefined;
+		// The window goes back into its file before it closes; what it shows stays until then.
+		const motion = this.#viewer?.open ? this.#zoom(path, "out") : [];
+		if (this.#viewer?.open) this.#root.before(this.#status, this.#retries);
 		this.#forget(this.#opened);
 		this.#opened = null;
-		this.#preview.hidden = true;
-		this.#preview.replaceChildren();
 		this.#host.classList.remove("has-preview");
 		for (const row of this.#list.querySelectorAll(".files-row.is-open")) row.classList.remove("is-open");
+		const done = () => {
+			this.#leaving = null;
+			this.#preview.inert = false;
+			if (this.#viewer?.open) this.#viewer.close();
+			for (const each of this.#motion.splice(0)) each.cancel();
+			this.#preview.hidden = true;
+			this.#preview.replaceChildren();
+			// Focus goes back to the file's row, once the list shows again: the window kept it out of reach.
+			if (path !== undefined)
+				[...this.#list.querySelectorAll<HTMLElement>(".files-row-main")]
+					.find((row) => row.dataset.path === path)
+					?.focus({ preventScroll: true });
+		};
+		if (!motion.length) {
+			done();
+			return;
+		}
+		const leaving = { motion };
+		this.#leaving = leaving;
+		this.#preview.inert = true;
+		this.#viewer?.focus({ preventScroll: true });
+		void Promise.all(motion.map((each) => each.finished)).then(
+			() => this.#leaving === leaving && done(),
+			// Cancelled: a file opened again while the window went (#panel takes it back).
+			() => {},
+		);
+	}
+
+	/** The file's icon in the list, when it shows there: where the window comes from and goes back to. */
+	#tile(path: string | undefined): Element | null {
+		if (path === undefined || this.#section !== "documents") return null;
+		const row = [...this.#list.querySelectorAll<HTMLElement>(".files-row-main")].find(
+			(each) => each.dataset.path === path,
+		);
+		return row?.querySelector(".files-kind") ?? null;
+	}
+
+	/** The window grows out of its file's icon, the way a picture opens, and shrinks back into it; with no icon in
+	 * sight it rises in place. Nothing moves under reduced motion or without an animation engine. */
+	#zoom(path: string | undefined, way: "in" | "out"): Animation[] {
+		const viewer = this.#viewer;
+		// The last motion goes first, whatever comes next: its held end must not stay on the window or be measured.
+		for (const each of this.#motion.splice(0)) each.cancel();
+		if (!viewer || reducedMotion() || typeof viewer.animate !== "function") return [];
+		const box = viewer.getBoundingClientRect();
+		const from = this.#tile(path)?.getBoundingClientRect();
+		let start = "translateY(10px) scale(0.96)";
+		if (from && from.width > 0 && box.width > 0) {
+			const x = from.left + from.width / 2 - (box.left + box.width / 2);
+			const y = from.top + from.height / 2 - (box.top + box.height / 2);
+			start = `translate(${Math.round(x)}px, ${Math.round(y)}px) scale(${Math.max(0.2, from.width / box.width).toFixed(3)})`;
+		}
+		const timing: KeyframeAnimationOptions =
+			way === "in"
+				? { duration: 300, easing: "cubic-bezier(0.2, 0.9, 0.25, 1)" }
+				: // Held at its end until the window closes (#close drops it then).
+					{ duration: 200, easing: "cubic-bezier(0.4, 0, 0.8, 0.6)", fill: "forwards", direction: "reverse" };
+		this.#motion = [
+			viewer.animate(
+				[
+					{ transform: start, opacity: 0 },
+					{ opacity: 1, offset: 0.35 },
+					{ transform: "none", opacity: 1 },
+				],
+				timing,
+			),
+			viewer.animate([{ opacity: 0 }, { opacity: 1 }], { ...timing, pseudoElement: "::backdrop" }),
+		];
+		return this.#motion;
 	}
 
 	#forget(opened: Opened | null): void {
@@ -929,8 +1082,13 @@ export class CompanyFolderBrowser {
 		);
 	}
 
-	/** `tools`: icon buttons before Close. */
-	#panel(title: string, children: (HTMLElement | null)[], tools: HTMLElement[] = []): void {
+	/** `tools`: icon buttons before Close. `from`: the file whose icon the window grows out of when it opens. */
+	#panel(
+		title: string,
+		children: (HTMLElement | null)[],
+		tools: HTMLElement[] = [],
+		from: string | undefined = this.#opened?.path,
+	): void {
 		replace(
 			this.#preview,
 			h(
@@ -947,6 +1105,31 @@ export class CompanyFolderBrowser {
 		this.#preview.setAttribute("aria-label", title);
 		this.#preview.hidden = false;
 		this.#host.classList.add("has-preview");
+		// What a read brings in fades into the window that waited for it.
+		if (this.#loading) {
+			this.#loading = false;
+			this.#preview.querySelector(".files-preview-body")?.classList.add("is-arriving");
+		}
+		if (this.#viewer) {
+			this.#viewer.setAttribute("aria-label", title);
+			// Opened again while it went back into its file: it stays, as it is now.
+			if (this.#leaving) {
+				for (const each of this.#leaving.motion) each.cancel();
+				this.#leaving = null;
+				this.#viewer.append(this.#status, this.#retries);
+				this.#preview.inert = this.#busy;
+			}
+			if (!this.#viewer.open && this.#viewer.isConnected) {
+				// What an action says, and a lost restore's Try again, show in the window: the page under it is out of reach.
+				this.#viewer.append(this.#status, this.#retries);
+				this.#viewer.showModal();
+				this.#zoom(from, "in");
+				// Opened while an action runs: it rests until the action is done, and focus waits on the window itself
+				// (the content's Close it took on opening is out of reach now), so Escape stays the window's.
+				this.#preview.inert = this.#busy;
+				if (this.#busy) this.#viewer.focus({ preventScroll: true });
+			}
+		}
 	}
 
 	#drawFile(): void {
@@ -1100,11 +1283,20 @@ export class CompanyFolderBrowser {
 		await this.#show({ path, file: entry.file, target: entry.target });
 	}
 
+	/** Reads the file piece by piece and hands it to the browser as one file. A large one says how far it is. */
 	async #download(path: string, file: CloudMemberFolderFile): Promise<void> {
-		const bytes = await this.#client!.readFile(file, this.#signal(), MAX_DOWNLOAD_BYTES);
+		const name = baseName(path);
+		const far = h("span", { "aria-hidden": "true" });
+		const pieces: Blob[] = [];
+		await this.#client!.readFilePieces(file, this.#signal(), (piece, index, count) => {
+			pieces.push(new Blob([piece as BlobPart]));
+			if (count <= 2) return;
+			if (!far.isConnected) this.#say(t("Getting {name}…", { name }), far);
+			far.textContent = t("{percent}%", { percent: Math.round(((index + 1) / count) * 100) });
+		});
 		this.#live();
-		this.#downloads!.offer(path, bytes);
-		this.#say(t("Downloading {name}.", { name: baseName(path) }));
+		this.#downloads!.offerPieces(path, pieces, file.bytes);
+		this.#say(t("Downloading {name}.", { name }));
 	}
 
 	// ---- history ----------------------------------------------------------------
@@ -1507,7 +1699,6 @@ export class CompanyFolderBrowser {
 		if (parentOf(path) !== this.#dir) await this.#load(parentOf(path));
 		else this.#drawList(false);
 		await this.#show({ path, file: entry.file, target: entry.target });
-		if (this.#options.embedded) this.#revealPreview = true;
 	}
 
 	/** Opens a file's or a link's folder and the file or link, when it is still there. */
@@ -1525,6 +1716,5 @@ export class CompanyFolderBrowser {
 		this.#drawList(false);
 		this.#setSection("documents");
 		await this.#show({ path, file: entry.file, target: entry.target });
-		if (this.#options.embedded) this.#revealPreview = true;
 	}
 }

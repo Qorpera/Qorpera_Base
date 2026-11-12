@@ -57,8 +57,17 @@ function rpcs(f: ReturnType<typeof fixture>): string[] {
 				!name.startsWith("qorpera_member_mail_") &&
 				name !== "qorpera_member_digital_post" &&
 				name !== "qorpera_member_interface_offers" &&
+				// The apps drawer's Sites and What's new entries.
+				name !== "qorpera_list_company_sites" &&
+				name !== "qorpera_list_code_releases" &&
+				// The rail's line under each agent's name reads the next planned runs (app/agent-notes.ts).
+				name !== "qorpera_list_cloud_routines" &&
 				name !== "qorpera_member_interface_supervisions" &&
-				name !== "qorpera_member_interface_pages",
+				name !== "qorpera_member_interface_pages" &&
+				// The account marks itself online for its friends (online-mark.ts).
+				name !== "qorpera_mark_online" &&
+				// Company figures ask for the company's logo (app/company-logos.ts).
+				name !== "qorpera_company_logos",
 		);
 }
 function fill(details: HTMLTextAreaElement, value = "The sidebar is clearer."): void {

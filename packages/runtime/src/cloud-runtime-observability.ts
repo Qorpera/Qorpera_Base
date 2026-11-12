@@ -42,6 +42,8 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"update_skill",
 	// Company sidebar sections, shared with members (2026-09-24).
 	"organize_sidebar",
+	// The apps drawer's groups, the company's layout of its apps (APP-GROUPS-SPEC §3, 11 November 2026).
+	"organize_apps",
 	// Auto-review (v130): an agent adds an Ask first rule for its member.
 	"add_review_rule",
 	// Good will (20260930566000): a company agent lists and sorts the payments the company's good will counts.
@@ -92,6 +94,14 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"post_app",
 	// The agent's wall above its thread (5 November 2026).
 	"update_wall",
+	"crew_and_members",
+	"offer_agents_to_member",
+	// A key the agent made, saved off its company machine's clipboard into the vault (20260930705000).
+	"save_coding_value",
+	// A look at, or one action on, a company machine's desktop, with the screen shown to the model (20260930708000).
+	"machine_screen",
+	// The company's code kept in Qorpera (20260930720000): taking a change out of main, and describing one.
+	"manage_code",
 ] as const;
 /** Closed vocabulary; the SQL ingestion function checks the same list. */
 export const CLOUD_RUNTIME_OPERATIONS = [

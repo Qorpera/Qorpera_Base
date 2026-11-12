@@ -1,0 +1,159 @@
+/* The Members page (app/views/members.ts): pictures only, with no header and no boxes. A line per member: their face,
+ * name and ChatGPT meter, then the figures of the agents that work for them. An agent moves by a drag onto another line
+ * or by a tap and a choice. A member's colour (`--seat`, their person colour) is on their face and their meter only. */
+.members-page {
+	flex: 1; min-height: 0; overflow-y: auto; display: grid; gap: 14px; align-content: start;
+	padding: 40px 24px 32px; container: members / inline-size;
+}
+.members-page > * { width: 100%; max-width: 860px; justify-self: center; }
+.members-page.is-dragging { user-select: none; }
+/* The broken line of an empty place, of an agent on its way and of nobody's face. */
+.members-page { --members-dash: color-mix(in srgb, var(--text) 34%, transparent); }
+.members-foot { margin: 0; color: var(--text-soft); font-size: 12.5px; }
+/* Why the last call failed. */
+.members-note { margin: 0; color: color-mix(in srgb, var(--warning) 62%, var(--text)); font-size: 13px; font-weight: 600; }
+
+/* A member's line. `--pic` is how big its figures and its face are. */
+.members-rows { --pic: 72px; --tile: 94px; display: grid; gap: 22px; }
+.members-row {
+	display: grid; grid-template-columns: 140px minmax(0, 1fr); align-items: start; gap: 0 18px; padding: 4px;
+	border-radius: 22px; transition: background-color var(--motion-fast) ease;
+}
+.members-who { display: grid; justify-items: center; align-content: start; gap: 5px; min-width: 0; padding: 8px 0 7px; }
+.members-face { width: var(--pic); height: var(--pic); font-size: calc(var(--pic) * 0.36); font-weight: 600; }
+.members-nobody-face {
+	display: grid; place-items: center; box-sizing: border-box; border: 1.5px dashed var(--members-dash);
+	border-radius: 50%; color: var(--text-soft);
+}
+/* Everyone: the members' faces, one over the next. */
+.members-faces { display: flex; align-items: center; justify-content: center; height: var(--pic); }
+.members-faces .person-avatar {
+	width: calc(var(--pic) * 0.62); height: calc(var(--pic) * 0.62); font-size: calc(var(--pic) * 0.23); font-weight: 600;
+	box-shadow: 0 0 0 2px var(--bg);
+}
+.members-faces .person-avatar + .person-avatar { margin-left: calc(var(--pic) * -0.16); }
+/* Alone on its line, the Co-Founder's name stays in one piece. */
+.members-row.is-everyone .members-agent-name { margin-inline: -1em; white-space: nowrap; }
+.members-who-text { display: grid; justify-items: center; gap: 3px; min-width: 0; max-width: 100%; }
+.members-who-text b {
+	max-width: 100%; overflow: hidden; font-size: 13.5px; font-weight: 650; line-height: 1.3; white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+/* A member's ChatGPT: its mark, then a meter of how much is used. */
+.members-sub {
+	display: flex; align-items: center; gap: 6px; min-height: 16px; color: var(--text-muted); font-size: 11.5px;
+	font-variant-numeric: tabular-nums; line-height: 1; white-space: nowrap;
+}
+.members-gpt { width: 13px; height: 13px; flex: none; opacity: 0.85; }
+.members-sub .icon { width: 13px; height: 13px; }
+.members-meter { display: block; width: 46px; height: 5px; flex: none; border-radius: 99px; background: var(--pane-strong); overflow: hidden; }
+.members-meter i { display: block; height: 100%; border-radius: 99px; background: var(--seat); }
+.members-sub.is-warn { color: color-mix(in srgb, var(--warning) 62%, var(--text)); font-weight: 600; }
+/* A full one says when it has room again, so its meter is short. */
+.members-sub.is-warn .members-meter { width: 24px; }
+.members-sub.is-warn .members-meter i { background: var(--warning); }
+/* Not connected, or signed out: the mark fades and the meter is a broken line. */
+.members-sub:is(.is-none, .is-out) .members-gpt { opacity: 0.35; }
+.members-sub:is(.is-none, .is-out) .members-meter {
+	height: 0; border-top: 2px dotted var(--members-dash); border-radius: 0; background: none;
+}
+.members-sub.is-out .members-meter { border-top-color: var(--warning); }
+
+/* The agents of a line. */
+.members-crew { display: flex; flex-wrap: wrap; align-items: start; min-width: 0; }
+.members-tile { display: grid; justify-items: center; align-content: start; }
+.members-agent {
+	position: relative; display: grid; justify-items: center; align-content: start; gap: 1px; width: var(--tile);
+	padding: 8px 2px 7px; border: 0; border-radius: 14px; background: transparent; color: var(--text); font: inherit;
+	cursor: pointer; transition: background-color var(--motion-fast) ease, transform var(--motion-fast) var(--ease-spring);
+}
+.members-agent:disabled { cursor: default; }
+.members-agent:not(:disabled):hover, .members-agent.menu-open { background: var(--hover); }
+.members-agent:not(:disabled):hover { transform: translateY(-2px); }
+.members-agent:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: 1px; }
+.members-pic { position: relative; display: grid; transition: transform var(--motion-fast) var(--ease-spring); }
+.members-pic .figure { width: var(--pic); height: var(--pic); }
+.members-agent-name { margin-top: 5px; font-size: 13px; font-weight: 650; line-height: 1.3; text-align: center; }
+/* A member whose ChatGPT is full or signed out: their agents wait, and stand grey. */
+.members-row.is-stuck .members-crew .figure { filter: grayscale(1); opacity: 0.5; }
+
+/* An open ask. Where the agent works, the face of the member it would go to sits on its figure; in that member's line
+ * it stands faded in a broken ring. The member who answers has yes and no under it. */
+.members-to { position: absolute; right: -5px; bottom: -3px; display: grid; border-radius: 50%; box-shadow: 0 0 0 2px var(--bg); }
+.members-to .person-avatar { width: 24px; height: 24px; font-size: 10px; font-weight: 650; }
+.members-agent.is-coming .figure { opacity: 0.38; }
+.members-agent.is-coming .members-pic::after {
+	content: ""; position: absolute; inset: -4px; border: 1.5px dashed var(--members-dash); border-radius: 50%;
+}
+.members-agent.is-coming .members-agent-name { color: var(--text-soft); }
+.members-answer { display: flex; gap: 8px; padding: 1px 0 6px; }
+.members-answer button {
+	display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 1px solid var(--border-strong);
+	border-radius: 50%; background: var(--bg); color: var(--text); cursor: pointer;
+	transition: transform var(--motion-fast) var(--ease-spring), background-color var(--motion-fast) ease;
+}
+.members-answer button.is-yes { border-color: var(--primary); background: var(--primary); color: var(--on-primary); }
+.members-answer button:not(:disabled):hover { transform: scale(1.08); }
+.members-answer button:disabled { opacity: 0.5; cursor: default; }
+.members-answer button:focus-visible { outline: 2px solid var(--composer-accent); outline-offset: 2px; }
+.members-answer .icon { width: 15px; height: 15px; }
+
+/* An empty place: all an empty line shows, and where a dragged agent lands. */
+.members-slot { display: none; width: var(--tile); padding: 8px 2px 7px; justify-items: center; }
+.members-slot i {
+	display: block; box-sizing: border-box; width: var(--pic); height: var(--pic); border: 1.5px dashed var(--members-dash);
+	border-radius: 50%; transition: background-color var(--motion-fast) ease, transform var(--motion-fast) var(--ease-spring);
+}
+.members-row:is(.is-empty, .is-drop-target) .members-slot { display: grid; }
+
+/* Many members: smaller agents, and the member beside their face. */
+.members-rows.is-compact { --pic: 40px; --tile: 68px; gap: 6px; }
+.members-rows.is-compact .members-row { grid-template-columns: 190px minmax(0, 1fr); align-items: center; gap: 0 12px; }
+.members-rows.is-compact .members-who { grid-template-columns: auto minmax(0, 1fr); justify-items: start; align-items: center; gap: 0 11px; padding: 6px 0 6px 6px; }
+.members-rows.is-compact .members-who-text { justify-items: start; gap: 5px; }
+.members-rows.is-compact .members-faces { width: 40px; height: 40px; }
+.members-rows.is-compact .members-faces .person-avatar { width: 24px; height: 24px; font-size: 9px; }
+.members-rows.is-compact .members-faces .person-avatar + .person-avatar { margin-left: -8px; }
+.members-rows.is-compact .members-faces .person-avatar:nth-child(n + 3) { display: none; }
+.members-rows.is-compact .members-agent { padding: 6px 2px 5px; }
+.members-rows.is-compact .members-agent-name { margin-top: 2px; font-size: 12.5px; }
+.members-rows.is-compact .members-slot { padding: 6px 2px 5px; }
+.members-rows.is-compact .members-to .person-avatar { width: 18px; height: 18px; font-size: 8px; }
+.members-rows.is-compact .members-answer button { width: 24px; height: 24px; }
+
+/* A drag: the figure alone lifts, an empty place opens in each line it may land on, and the line under it lights up. */
+.members-agent.is-draggable { cursor: grab; }
+.members-agent.is-dragging { z-index: 3; background: transparent; cursor: grabbing; pointer-events: none; transition: none; }
+.members-agent.is-dragging .members-pic { transform: scale(1.12); filter: drop-shadow(0 10px 12px rgb(0 0 0 / 22%)); }
+.members-agent.is-dragging :is(.members-agent-name, .members-to) { visibility: hidden; }
+.members-agent.is-settling { transition: transform var(--motion-base) var(--ease-spring); }
+.members-row.is-drop-target .members-slot i { border-color: var(--composer-accent); }
+.members-row.is-drop-over { background: color-mix(in srgb, var(--composer-accent) 7%, transparent); }
+.members-row.is-drop-over .members-slot i {
+	border-style: solid; background: color-mix(in srgb, var(--composer-accent) 16%, transparent); transform: scale(1.06);
+}
+
+/* A narrow page: the member beside their face, their agents under them. */
+@container members (max-width: 40em) {
+	.members-rows { --pic: 60px; --tile: 78px; gap: 18px; }
+	.members-rows.is-compact { --pic: 44px; --tile: 66px; gap: 14px; }
+	.members-rows .members-row, .members-rows.is-compact .members-row { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+	.members-rows .members-who {
+		grid-template-columns: auto minmax(0, 1fr); justify-items: start; align-items: center; gap: 0 11px;
+		padding: 4px 0 2px 6px;
+	}
+	.members-rows .members-face { --pic: 36px; }
+	.members-rows .members-faces { width: 36px; height: 36px; }
+	.members-rows .members-faces .person-avatar { width: 22px; height: 22px; font-size: 8.5px; }
+	.members-rows .members-faces .person-avatar + .person-avatar { margin-left: -8px; }
+	.members-rows .members-faces .person-avatar:nth-child(n + 3) { display: none; }
+	.members-rows .members-who-text { justify-items: start; gap: 5px; }
+	.members-rows .members-agent-name { font-size: 12.5px; }
+}
+@media (max-width: 760px) {
+	.members-page { padding: 18px 12px 24px; }
+}
+@media (prefers-reduced-motion: reduce) {
+	.members-agent, .members-pic, .members-row, .members-slot i, .members-answer button { transition: none; }
+}

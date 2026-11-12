@@ -8,6 +8,19 @@ const PRESENCE = new RegExp(`^/v1/member-company-presence/${UUID}/${UUID}$`);
 const ATTACHMENT = new RegExp(`^/v1/member-session-attachments/(upload|input)/${UUID}/${UUID}/[0-9a-f]{64}$`);
 /** A member's erase of one message: its request (an event id after the session) or where it stands (M3c). */
 const ERASE = new RegExp(`^/v1/member-message-erases/${UUID}/${UUID}(/${UUID})?$`);
+/** A member's look at an agent's desktop computer (20260930712000): a company and a machine, and `/watching` when the
+ * member says they still watch. The coding executor of the bridge's node answers it (deploy/coding-worker/README.md). */
+const MACHINE_SCREEN = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}(/watching)?$`);
+/** A member's action on an agent's desktop they took over (20260930713000): one click, drag, scroll, key or text, with
+ * the epoch and the seat of the hold the member's page captured it under (F24 and F26 of #1661; the executor and SQL
+ * check both), at most 16 KiB. The body passes through as it came: what the member typed is in it, never kept or logged
+ * here. */
+const MACHINE_ACT = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}/act$`);
+const MAX_ACT_BYTES = 16 * 1024;
+/** A member turns an agent's desktop computer's screen on (20260930714000): `{}` today (a later stage may say what to
+ * open), at most 1 KiB, which the executor checks. The node's mux passes POST for this location. */
+const MACHINE_START = new RegExp(`^/v1/member-machine-screens/${UUID}/${UUID}/start$`);
+const MAX_START_BYTES = 1024;
 const MAX_BYTES = 8 * 1024 * 1024;
 /** The gateway's bound for a folder commit and a presence report. */
 const MAX_WRITE_BYTES = 1024 * 1024;
@@ -66,6 +79,27 @@ function route(path: string): RoutePolicy | undefined {
 					unavailable: IMAGE_UNAVAILABLE,
 				}
 			: { method: "GET", headers: ["authorization"], unavailable: IMAGE_UNAVAILABLE };
+	// A picture of at most 8 MiB, or 304 to the etag the member has: its If-None-Match goes with it.
+	if (MACHINE_SCREEN.test(path))
+		return {
+			method: "GET",
+			headers: ["authorization", "if-none-match"],
+			unavailable: "The computer's screen is unavailable just now.",
+		};
+	if (MACHINE_ACT.test(path))
+		return {
+			method: "POST",
+			headers: ["authorization", "content-type"],
+			maxBody: MAX_ACT_BYTES,
+			unavailable: "The computer is unavailable just now.",
+		};
+	if (MACHINE_START.test(path))
+		return {
+			method: "POST",
+			headers: ["authorization", "content-type"],
+			maxBody: MAX_START_BYTES,
+			unavailable: "The computer is unavailable just now.",
+		};
 	const erase = ERASE.exec(path);
 	if (erase)
 		return {

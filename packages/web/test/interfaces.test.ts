@@ -9,10 +9,31 @@ import { companyInterfaces, interfaceRows } from "../src/app/interfaces.ts";
 import { parseRoute, type Route, routeHash } from "../src/app/router.ts";
 import { messageText, renderInterface, renderInterfaceFile } from "../src/app/views/interface.ts";
 import { renderRail } from "../src/app/views/shell.ts";
+import {
+	EMPTY_APP_LAYOUT,
+	type MemberAppLayout,
+	parseAppGroups,
+	parseMemberAppLayout,
+} from "../src/cloud/app-groups.ts";
+import { CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedStaffAgent, HostedStaffExecutionActivity } from "../src/cloud/types.ts";
+import { colourNameHex } from "../src/ui/avatar.ts";
 import { h } from "../src/ui/dom.ts";
+import { nameDialog } from "../src/ui/name-dialog.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
-import { fixture, id, profileA, session, staff, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
+import {
+	deferred,
+	fixture,
+	id,
+	profileA,
+	session,
+	settle,
+	staff,
+	stubFigureMotion,
+	team,
+	timestamp,
+	userA,
+} from "./fixtures.ts";
 
 const agent = (n: number, name: string): HostedStaffAgent => ({
 	...staff,
@@ -166,11 +187,9 @@ describe("which interfaces a company lists", () => {
 });
 
 describe("the shipped pages (C6a)", () => {
-	const people = (main: HTMLElement) =>
-		[...main.querySelectorAll(".interface-table tbody tr")].map((row) => row.querySelector("td")?.textContent);
 	const missing = (main: HTMLElement) => {
 		expect(main.textContent).toContain("This page isn't available here yet.");
-		expect(main.querySelector("a")?.getAttribute("href")).toBe(`#/c/${profileA.profileId}`);
+		expect(main.querySelector("a")?.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}`);
 		expect(main.querySelector(".interface-block")).toBeNull();
 	};
 
@@ -179,12 +198,10 @@ describe("the shipped pages (C6a)", () => {
 		const main = h("main");
 		document.body.append(main);
 		renderInterface(main, controller, "members");
-		expect(main.querySelector(".interface-title h1")?.textContent).toBe("Members");
-		// Without the folder, only the People view's members can be read: the board and the rules file wait for it, so
-		// there is one view and no tabs.
-		expect(main.querySelector("[role=tablist]")).toBeNull();
-		expect(main.querySelectorAll(".interface-block")).toHaveLength(1);
-		expect(people(main)).toEqual(["Ann", "Ben", "Cat"]);
+		// The Members page draws itself (views/members.ts, test/members.test.ts): no header, no tabs, no blocks.
+		expect(main.querySelector("section.members > h1.visually-hidden")?.textContent).toBe("Members");
+		expect(main.querySelector(".interface-title, [role=tablist]")).toBeNull();
+		expect(main.querySelector(".members-page")).not.toBeNull();
 		const page = main.firstElementChild;
 		renderInterface(main, controller, "members");
 		expect(main.firstElementChild).toBe(page);
@@ -195,7 +212,6 @@ describe("the shipped pages (C6a)", () => {
 		controller.store.set({ team: { ...current, members } });
 		renderInterface(main, controller, "members");
 		expect(main.firstElementChild).not.toBe(page);
-		expect(people(main)).toEqual(["Ann", "Bea", "Cat"]);
 		// Switched off, the page is gone at its own address too.
 		controller.store.set({ interfacePages: pages(false, false) });
 		renderInterface(main, controller, "members");
@@ -231,6 +247,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 			agentActions: {},
 		};
 		const draw = (next: Route = route) => renderRail(element, controller, { ...context, route: next });
@@ -244,7 +261,7 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 	const icons = (element: HTMLElement) =>
 		[...element.querySelectorAll<HTMLAnchorElement>(".rail-apps-drawer a.rail-app")].map((icon) => [
 			icon.querySelector(".rail-app-name")?.textContent,
-			icon.getAttribute("href"),
+			icon.getAttribute("data-href"),
 		]);
 	const menuItems = () =>
 		[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")].map((item) => [
@@ -344,6 +361,272 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 		expect(element.querySelector(".rail-app")).toBeNull();
 	});
 
+	it("shows the company's websites as one Sites entry while there are any, leading to the Sites page", () => {
+		const { element, draw, controller } = rail(home);
+		expect(element.querySelector(".rail-sites")).toBeNull();
+		controller.store.set({ siteCount: 2 });
+		draw();
+		const entry = element.querySelector<HTMLAnchorElement>(".rail-app.rail-sites")!;
+		expect(entry.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/sites`);
+		expect(entry.hasAttribute("title")).toBe(false);
+		expect(entry.querySelector(".rail-app-name")?.textContent).toBe("Sites");
+		draw({ name: "company", profileId: profileA.profileId, section: "sites" });
+		expect(entry.getAttribute("aria-current")).toBe("page");
+		expect(drawer(element).classList.contains("is-open")).toBe(true);
+		// It is ordered like every other entry: it carries its key, and an order the member kept puts it first.
+		expect(entry.dataset.appKey).toBe("sites");
+		expect(icons(element).map(([name]) => name)).toEqual(["Members", "Sites"]);
+		localStorage.setItem(`qorpera.web.rail-apps-order:${profileA.profileId}`, JSON.stringify(["sites"]));
+		const ordered = rail(home);
+		ordered.controller.store.set({ siteCount: 2 });
+		ordered.draw();
+		expect(icons(ordered.element).map(([name]) => name)).toEqual(["Sites", "Members"]);
+		controller.store.set({ siteCount: 0 });
+		draw();
+		expect(element.querySelector(".rail-sites")).toBeNull();
+	});
+
+	it("shows What's new while a project makes a website, with the changes ready as its badge", () => {
+		const { element, draw, controller } = rail(home);
+		const entry = () => element.querySelector<HTMLAnchorElement>(".rail-app.rail-whats-new");
+		expect(entry()).toBeNull();
+		controller.store.set({ siteCount: 1, whatsNew: { ready: 3 } });
+		draw();
+		expect(icons(element)).toEqual([
+			["Members", `#/c/${profileA.profileId}/i/members`],
+			["Sites", `#/c/${profileA.profileId}/sites`],
+			["What's new", `#/c/${profileA.profileId}/whats-new`],
+		]);
+		expect(entry()?.dataset.appKey).toBe("whats-new");
+		expect(entry()?.querySelector(".rail-count")?.textContent).toBe("3");
+		expect(entry()?.getAttribute("aria-label")).toBe("What's new, 3 waiting");
+		// Shut, the drawer's button says something waits.
+		expect(apps(element).classList.contains("has-waiting")).toBe(true);
+		expect(apps(element).getAttribute("aria-label")).toBe("Apps, 3 waiting");
+		draw({ name: "company", profileId: profileA.profileId, section: "whats-new" });
+		expect(drawer(element).classList.contains("is-open")).toBe(true);
+		expect(entry()?.getAttribute("aria-current")).toBe("page");
+		// Nothing ready (or quieted with Not yet): the entry stays, without a badge.
+		controller.store.set({ whatsNew: { ready: 0 } });
+		draw();
+		expect(entry()?.querySelector(".rail-count")).toBeNull();
+		expect(entry()?.hasAttribute("aria-label")).toBe(false);
+		controller.store.set({ whatsNew: undefined });
+		draw();
+		expect(entry()).toBeNull();
+	});
+
+	it("shows the four windows for What's new alone, and leaves out an agent's app of the same name while it shows", () => {
+		const { element, draw, controller } = rail(home);
+		controller.store.set({ interfacePages: pages(false, false) });
+		draw();
+		expect(apps(element).hidden).toBe(true);
+		const manifest = {
+			name: "What's new",
+			about: null,
+			emblem: "page" as const,
+			colour: null,
+			entry: "index.html",
+			owner: ada.id,
+			posted: true,
+			reads: [],
+			writes: [],
+			concept: false,
+			cover: null,
+			kit: null,
+		};
+		controller.store.set({
+			apps: [{ name: "whats-new", path: "apps/whats-new", manifest, problems: [], version: null }],
+		});
+		draw();
+		expect(icons(element)).toEqual([["What's new", `#/c/${profileA.profileId}/a/whats-new`]]);
+		controller.store.set({ whatsNew: { ready: 0 } });
+		draw();
+		expect(apps(element).hidden).toBe(false);
+		expect(icons(element)).toEqual([["What's new", `#/c/${profileA.profileId}/whats-new`]]);
+	});
+
+	it("hides a page from the member's own rail with a right-click, and shows it again from Hidden", async () => {
+		const { element, controller } = rail(home);
+		// A cloud that answers each member's own choice: Bank hidden, Members shown though the company's switch for it is
+		// off: the member's own choice decides. (Mailbox has no mail to draw here.)
+		const own = (hidden: readonly string[]): InterfacePagesState => ({
+			pages: (["mailbox", "members", "bank"] as const).map((page) => ({
+				page,
+				on: page !== "members",
+				hidden: hidden.includes(page),
+			})),
+			mayChange: false,
+			personal: true,
+		});
+		controller.store.set({ interfacePages: own(["bank"]) });
+		const hideInterfacePage = vi.fn(async (page: string, hidden: boolean) => {
+			const now = controller.store.get().interfacePages!;
+			controller.store.set({
+				interfacePages: {
+					...now,
+					pages: now.pages.map((entry) => (entry.page === page ? { ...entry, hidden } : entry)),
+				},
+			});
+		});
+		const context = {
+			profiles: [profileA],
+			user: userA,
+			route: home,
+			auth: new AuthController(fixture().cloud),
+			invitations: 0,
+			openSettings: () => {},
+			openFeedback: () => {},
+			openFriends: () => {},
+			agentActions: {},
+			hideInterfacePage,
+		};
+		cleanup.push(() => context.auth.dispose());
+		const redraw = () => renderRail(element, controller, context);
+		redraw();
+		const rightClick = (target: Element) => {
+			const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 });
+			target.dispatchEvent(event);
+			return event.defaultPrevented;
+		};
+		const hiddenPages = () =>
+			[...element.querySelectorAll<HTMLButtonElement>(".rail-hidden-list .rail-row-page")].map((row) => [
+				row.querySelector("strong")?.textContent,
+				row.querySelector("small")?.textContent,
+			]);
+		expect(icons(element).map(([name]) => name)).toEqual(["Members"]);
+		element.querySelector<HTMLButtonElement>(".rail-hidden-toggle")!.click();
+		expect(hiddenPages()).toEqual([["Bank", "Hidden for you"]]);
+		// Right-click on Members in the drawer: Hide from sidebar, for this member only (no owner needed).
+		expect(rightClick(element.querySelector(".rail-apps-drawer [data-interface-page='members']")!)).toBe(true);
+		expect(menuItems()).toEqual([["Hide from sidebar", null]]);
+		document.querySelector<HTMLElement>(".context-menu [role^=menuitem]")!.click();
+		expect(hideInterfacePage).toHaveBeenCalledExactlyOnceWith("members", true);
+		await settle();
+		redraw();
+		expect(icons(element)).toEqual([]);
+		expect(hiddenPages()).toEqual([
+			["Members", "Hidden for you"],
+			["Bank", "Hidden for you"],
+		]);
+		// A press on a hidden page offers to show it again.
+		element.querySelector<HTMLButtonElement>(".rail-hidden-list [data-interface-page='bank']")!.click();
+		expect(menuItems()).toEqual([["Show in sidebar", null]]);
+		document.querySelector<HTMLElement>(".context-menu [role^=menuitem]")!.click();
+		expect(hideInterfacePage).toHaveBeenLastCalledWith("bank", false);
+		await settle();
+		redraw();
+		expect(icons(element).map(([name]) => name)).toEqual(["Bank"]);
+		// A cloud from before each member's own choice: the company's switch decides, and no menu or hidden page.
+		controller.store.set({ interfacePages: pages(false, true) });
+		redraw();
+		expect(icons(element).map(([name]) => name)).toEqual(["Members"]);
+		expect(rightClick(element.querySelector(".rail-apps-drawer [data-interface-page='members']")!)).toBe(false);
+		expect(hiddenPages()).toEqual([]);
+	});
+
+	it("links an agent's posted app to its own page, opens the drawer for it and marks it open there", () => {
+		const { element, draw, controller } = rail(home);
+		const manifest = {
+			name: "Sales board",
+			about: "This week's sales",
+			emblem: "page" as const,
+			colour: null,
+			entry: "index.html",
+			owner: ada.id,
+			posted: true,
+			reads: [],
+			writes: [],
+			concept: false,
+			cover: null,
+			kit: null,
+		};
+		controller.store.set({
+			apps: [
+				{ name: "sales-board", path: "apps/sales-board", manifest, problems: [], version: null },
+				// Not posted: it stays off the drawer.
+				{
+					name: "draft",
+					path: "apps/draft",
+					manifest: { ...manifest, name: "Draft", posted: false },
+					problems: [],
+					version: null,
+				},
+			],
+		});
+		draw();
+		expect(icons(element)).toEqual([
+			["Members", `#/c/${profileA.profileId}/i/members`],
+			["Sales board", `#/c/${profileA.profileId}/a/sales-board`],
+		]);
+		// A link, as the pages' icons are: no button the chat answers beside itself.
+		expect(element.querySelector(".rail-apps-drawer [data-app-name], .rail-apps-drawer button.rail-app")).toBeNull();
+		const app = () => element.querySelector<HTMLAnchorElement>(`.rail-app[data-href$="/a/sales-board"]`)!;
+		expect(app().hasAttribute("title")).toBe(false);
+		expect(app().hasAttribute("aria-current")).toBe(false);
+		expect(drawer(element).classList.contains("is-open")).toBe(false);
+		draw({ name: "company", profileId: profileA.profileId, section: "app", id: "sales-board" });
+		expect(drawer(element).classList.contains("is-open")).toBe(true);
+		expect(app().getAttribute("aria-current")).toBe("page");
+		expect(app().classList.contains("active")).toBe(true);
+		draw(home);
+		expect(app().hasAttribute("aria-current")).toBe(false);
+	});
+
+	it("shows the company's concepts as one Concepts entry, posted or not, leading to the Concepts viewer", () => {
+		const { element, draw, controller } = rail(home);
+		const manifest = {
+			name: "Shop",
+			about: null,
+			emblem: "page" as const,
+			colour: null,
+			entry: "index.html",
+			owner: ada.id,
+			posted: true,
+			reads: [],
+			writes: [],
+			concept: true,
+			cover: null,
+			kit: null,
+		};
+		controller.store.set({
+			apps: [
+				{ name: "shop-a", path: "apps/shop-a", manifest, problems: [], version: null, changed: 2 },
+				{
+					name: "shop-b",
+					path: "apps/shop-b",
+					manifest: { ...manifest, name: "Shop B", posted: false },
+					problems: [],
+					version: null,
+					changed: 3,
+				},
+				{
+					name: "sales-board",
+					path: "apps/sales-board",
+					manifest: { ...manifest, name: "Sales board", concept: false },
+					problems: [],
+					version: null,
+				},
+			],
+		});
+		draw();
+		// Not one icon per concept: one entry for them all, after the posted apps.
+		expect(icons(element)).toEqual([
+			["Members", `#/c/${profileA.profileId}/i/members`],
+			["Sales board", `#/c/${profileA.profileId}/a/sales-board`],
+			["Concepts", `#/c/${profileA.profileId}/concepts`],
+		]);
+		const entry = () => element.querySelector<HTMLAnchorElement>(".rail-app.rail-concepts")!;
+		expect(entry().hasAttribute("title")).toBe(false);
+		expect(entry().hasAttribute("aria-current")).toBe(false);
+		draw({ name: "company", profileId: profileA.profileId, section: "concepts", id: "shop-a" });
+		expect(entry().getAttribute("aria-current")).toBe("page");
+		// No concept: no entry.
+		controller.store.set({ apps: [] });
+		draw(home);
+		expect(element.querySelector(".rail-concepts")).toBeNull();
+	});
+
 	it("folds the search out over the name and back on Esc or its close button, clearing it", () => {
 		const { element } = rail(home);
 		const toolbar = element.querySelector<HTMLElement>(".rail-toolbar")!;
@@ -420,26 +703,8 @@ describe("the rail's top row: the company's name and the apps drawer (Jonas, 5 N
 });
 
 describe("review round 1 (web)", () => {
-	it("draws Members again after another page took the area, and follows the company", () => {
-		const { controller } = company([], { members: 3, pages: pages(false, true) });
-		const main = h("main");
-		document.body.append(main);
-		renderInterface(main, controller, "members");
-		const members = main.firstElementChild;
-		main.replaceChildren(h("section", null, "a thread"));
-		renderInterface(main, controller, "members");
-		expect(main.firstElementChild).not.toBe(members);
-		expect(main.querySelector(".interface-title h1")?.textContent).toBe("Members");
-	});
-
-	it("shows rows in the block's order", () => {
-		const { controller } = company([
-			run(ada.id, 1, { updatedAt: "2026-10-02T09:00:00Z" }),
-			run(bo.id, 2, { updatedAt: "2026-10-02T10:00:00Z" }),
-		]);
-		const rows = interfaceRows(controller, "working") ?? [];
-		expect(rows.map(({ row }) => row.agent)).toEqual([ada.id, bo.id]);
-		// A list without an order keeps its source's order.
+	/** A page an agent built: one list of who is working. */
+	const work = () => {
 		const parsed = parseInterfaceFile(`format = "qorpera.interface/v0"
 
 [interface]
@@ -457,13 +722,36 @@ line = "{what}"
 figure = "agent"
 `);
 		if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
+		return parsed.file;
+	};
+
+	it("draws Members again after another page took the area, and follows the company", () => {
+		const { controller } = company([], { members: 3, pages: pages(false, true) });
 		const main = h("main");
-		renderInterfaceFile(main, controller, `order-${Math.random()}`, parsed.file);
+		document.body.append(main);
+		renderInterface(main, controller, "members");
+		const members = main.firstElementChild;
+		main.replaceChildren(h("section", null, "a thread"));
+		renderInterface(main, controller, "members");
+		expect(main.firstElementChild).not.toBe(members);
+		expect(main.querySelector("section.members > h1.visually-hidden")?.textContent).toBe("Members");
+	});
+
+	it("shows rows in the block's order", () => {
+		const { controller } = company([
+			run(ada.id, 1, { updatedAt: "2026-10-02T09:00:00Z" }),
+			run(bo.id, 2, { updatedAt: "2026-10-02T10:00:00Z" }),
+		]);
+		const rows = interfaceRows(controller, "working") ?? [];
+		expect(rows.map(({ row }) => row.agent)).toEqual([ada.id, bo.id]);
+		// A list without an order keeps its source's order.
+		const main = h("main");
+		renderInterfaceFile(main, controller, `order-${Math.random()}`, work());
 		expect([...main.querySelectorAll(".interface-block strong")].map((el) => el.textContent)).toEqual(["Ada", "Bo"]);
 	});
 
 	it("waits while the company loads and says when live updates are not connected", () => {
-		const { controller } = company([], { members: 3, pages: pages(false, true) });
+		const { controller } = company([run(ada.id, 1, {})], { members: 3, pages: pages(false, true) });
 		controller.store.set({ loading: true, staff: [] });
 		const main = h("main");
 		renderInterface(main, controller, "members");
@@ -471,9 +759,15 @@ figure = "agent"
 		expect(main.textContent).not.toContain("This page isn't available here yet.");
 		controller.store.set({ loading: false, staff: [cofounder, ada, bo, cy], realtime: "connecting" });
 		renderInterface(main, controller, "members");
+		// Members is pictures only: it has no header, so no live note either (as the Mailbox and the Bank page).
+		expect(main.querySelector(".members-page")).not.toBeNull();
+		expect(main.querySelector(".interface-live")).toBeNull();
+		// A page with a header says it there.
+		const name = `live-${Math.random()}`;
+		renderInterfaceFile(main, controller, name, work());
 		expect(main.querySelector(".interface-live")?.textContent).toBe("connecting");
 		controller.store.set({ realtime: "connected" });
-		renderInterface(main, controller, "members");
+		renderInterfaceFile(main, controller, name, work());
 		expect(main.querySelector(".interface-live")?.textContent).toBe("Live");
 	});
 
@@ -502,6 +796,7 @@ figure = "agent"
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 			agentActions: {},
 		});
 		// The search looks through the agents only; the pages have their own icons.
@@ -509,9 +804,8 @@ figure = "agent"
 		expect(element.querySelector(".rail-search input")?.getAttribute("placeholder")).toBe("Search agents");
 		expect(element.querySelector(".rail-search-toggle")?.getAttribute("aria-label")).toBe("Search agents");
 		expect(element.querySelector("[role=tablist], [role=tab]")).toBeNull();
-		expect(element.querySelector(".rail-app")?.getAttribute("title")).toBe(
-			"Members · Who owns, supervises and does what.",
-		);
+		// The icon's name is under it; no hover popup repeats it (Jonas, 9 Nov 2026).
+		expect(element.querySelector(".rail-app")?.hasAttribute("title")).toBe(false);
 	});
 });
 
@@ -686,11 +980,11 @@ text = "Hi"
 		const { main } = desk({ members: 2, pages: pages(false, true) });
 		const first = main.querySelector(".interface-item-row")!;
 		expect(titles(first as HTMLElement, ".interface-actions > *")).toEqual(["Answer", "Ask Bo", "See", "Board"]);
-		expect(first.querySelector("a.interface-button")?.getAttribute("href")).toBe(
+		expect(first.querySelector("a.interface-button")?.getAttribute("data-href")).toBe(
 			`#/c/${profileA.profileId}/staff/${bo.id}`,
 		);
 		const links = [...first.querySelectorAll<HTMLAnchorElement>("a.interface-button")].map((link) =>
-			link.getAttribute("href"),
+			link.getAttribute("data-href"),
 		);
 		expect(links).toEqual([
 			`#/c/${profileA.profileId}/staff/${bo.id}`,
@@ -875,7 +1169,7 @@ from = "mail"
 		const main = mount();
 		renderInterfaceFile(main, controller, `dead-${Math.random()}`, file);
 		expect(main.querySelector("button.interface-item")).toBeNull();
-		expect(main.querySelector("a.interface-item")?.getAttribute("href")).toBe(
+		expect(main.querySelector("a.interface-item")?.getAttribute("data-href")).toBe(
 			`#/c/${profileA.profileId}/staff/${cy.id}`,
 		);
 	});
@@ -901,7 +1195,7 @@ from = "waiting"
 		renderInterfaceFile(main, controller, `mail-from-${Math.random()}`, file);
 		expect(main.querySelector(".interface-mail")).toBeNull();
 		expect(main.querySelector("button.interface-item")).toBeNull();
-		expect(main.querySelector("a.interface-item")?.getAttribute("href")).toBe(
+		expect(main.querySelector("a.interface-item")?.getAttribute("data-href")).toBe(
 			`#/c/${profileA.profileId}/staff/${cy.id}`,
 		);
 	});
@@ -1210,5 +1504,340 @@ columns = ["title", "kind", "due"]
 		} finally {
 			setLanguagePreference("system");
 		}
+	});
+});
+
+describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
+	const manifest = (name: string, colour: "coral" | "gold" | "teal") => ({
+		name,
+		about: null,
+		emblem: "page" as const,
+		colour,
+		entry: "index.html",
+		owner: ada.id,
+		posted: true,
+		reads: [],
+		writes: [],
+		concept: false,
+		cover: null,
+		kit: null,
+	});
+	const own = { changes: 0, moved: [], sections: [], pinned: 0, hidden: 0, contacts: 0, pages: 0, apps: 0 };
+	function drawer() {
+		const { f, controller } = company([], { members: 3, pages: pages(false, true) });
+		controller.store.set({
+			sidebar: { sections: [], placements: {}, pinned: [], hidden: [], own },
+			apps: [
+				{ name: "brand", path: "apps/brand", manifest: manifest("Brand", "coral"), problems: [], version: null },
+				{ name: "plan", path: "apps/plan", manifest: manifest("Plan", "gold"), problems: [], version: null },
+				{ name: "trips", path: "apps/trips", manifest: manifest("Trips", "teal"), problems: [], version: null },
+			],
+			appGroups: parseAppGroups("- group market: Market\n  - app:brand Brand\n  - app:plan Plan\n"),
+			appLayout: { layout: EMPTY_APP_LAYOUT, updatedAt: null },
+		});
+		const set = vi
+			.spyOn(f.api, "setMemberAppLayout")
+			.mockImplementation(async (_profile, layout) => ({ layout, updatedAt: "2026-11-11T12:00:00Z" }));
+		vi.spyOn(f.api, "readCompanySidebar").mockResolvedValue({
+			sections: [],
+			placements: {},
+			pinned: [],
+			hidden: [],
+			own,
+		});
+		const element = h("aside", { class: "rail" });
+		document.body.append(h("div", { class: "frame" }, element));
+		const auth = new AuthController(f.cloud);
+		cleanup.push(() => auth.dispose());
+		const route: Route = { name: "company", profileId: profileA.profileId, section: "home" };
+		const draw = () =>
+			renderRail(element, controller, {
+				profiles: [profileA],
+				user: userA,
+				route,
+				auth,
+				invitations: 0,
+				openSettings: () => {},
+				openFeedback: () => {},
+				openFriends: () => {},
+				agentActions: {},
+			});
+		cleanup.push(controller.store.subscribe(draw));
+		draw();
+		element.querySelector<HTMLButtonElement>(".rail-apps")!.click();
+		return { element, controller, set, f };
+	}
+	const tiles = (element: HTMLElement) =>
+		[...element.querySelectorAll<HTMLElement>(".rail-apps-grid > [data-app-key]")].map(
+			(tile) =>
+				`${tile.querySelector(".rail-app-name")?.textContent}${tile.getAttribute("aria-expanded") === "true" ? "+" : ""}`,
+		);
+	const group = (element: HTMLElement) => element.querySelector<HTMLButtonElement>(".rail-app-group")!;
+
+	it("draws a group as one tile in its first app's colour, and opens it into the grid", () => {
+		localStorage.clear();
+		const { element } = drawer();
+		expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+		expect(group(element).style.getPropertyValue("--app-colour")).toBe(colourNameHex("coral"));
+		const trips = element.querySelector<HTMLElement>("[data-app-key='app:trips']")!;
+		expect(trips.style.getPropertyValue("--app-colour")).toBe(colourNameHex("teal"));
+		group(element).click();
+		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "Members", "Trips"]);
+		expect(element.querySelector("[data-app-key='app:brand']")?.getAttribute("data-in-group")).toBe("market");
+		expect(JSON.parse(localStorage.getItem(`qorpera.web.rail-app-groups-open:${profileA.profileId}`)!)).toEqual([
+			"market",
+		]);
+		group(element).click();
+		expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+		localStorage.clear();
+	});
+
+	it("stands What's new loose after the company's apps, orange, with its count (own code storage step 4)", async () => {
+		localStorage.clear();
+		const { element, controller } = drawer();
+		controller.store.set({ whatsNew: { ready: 2 } });
+		await settle();
+		expect(tiles(element)).toEqual(["Market", "Members", "Trips", "What's new"]);
+		const tile = element.querySelector<HTMLElement>("[data-app-key='whats-new']")!;
+		expect(tile.style.getPropertyValue("--app-colour")).toBe(colourNameHex("orange"));
+		expect(tile.querySelector(".rail-count")?.textContent).toBe("2");
+		localStorage.clear();
+	});
+
+	it("puts What's new in the group the company's file names, sums its count on the group, and leaves out an agent's app of its name", async () => {
+		localStorage.clear();
+		const { element, controller } = drawer();
+		const apps = controller.store.get().apps ?? [];
+		controller.store.set({
+			apps: [
+				...apps,
+				{
+					name: "whats-new",
+					path: "apps/whats-new",
+					manifest: manifest("Old notes", "teal"),
+					problems: [],
+					version: null,
+				},
+			],
+			appGroups: parseAppGroups(
+				"- group launch: Launch\n  - whats-new What's new\n  - app:whats-new The agent's old page\n  - app:brand Brand\n",
+			),
+			whatsNew: { ready: 3 },
+		});
+		await settle();
+		expect(tiles(element)).toEqual(["Launch", "Members", "Plan", "Trips"]);
+		// The group carries what waits inside it, and the colour of its first entry.
+		expect(group(element).querySelector(".rail-count")?.textContent).toBe("3");
+		expect(group(element).getAttribute("aria-label")).toBe("Group Launch, 3 waiting");
+		expect(group(element).style.getPropertyValue("--app-colour")).toBe(colourNameHex("orange"));
+		// Shut, the drawer's button says it too.
+		element.querySelector<HTMLButtonElement>(".rail-apps")!.click();
+		expect(element.querySelector(".rail-apps")?.getAttribute("aria-label")).toBe("Apps, 3 waiting");
+		element.querySelector<HTMLButtonElement>(".rail-apps")!.click();
+		group(element).click();
+		expect(tiles(element)).toEqual(["Launch+", "What's new", "Brand", "Members", "Plan", "Trips"]);
+		expect(element.querySelector("[data-app-key='whats-new']")?.getAttribute("data-in-group")).toBe("launch");
+		expect(element.querySelector("[data-app-key='app:whats-new']")).toBeNull();
+		// Without the platform's page, the agent's app is back, in the group the file names.
+		controller.store.set({ whatsNew: undefined });
+		await settle();
+		expect(tiles(element)).toEqual(["Launch+", "Old notes", "Brand", "Members", "Plan", "Trips"]);
+		localStorage.clear();
+	});
+
+	it("keeps a member's own place for What's new when the layout is read (no move is sent here)", async () => {
+		localStorage.clear();
+		const layout = parseMemberAppLayout({
+			schema: "qorpera.member-app-layout/v1",
+			places: { "whats-new": { group: "market", after: "app:plan", at: 1 } },
+			groups: {},
+		});
+		expect(layout.places).toEqual({ "whats-new": { group: "market", after: "app:plan", at: 1 } });
+		const { element, controller, set } = drawer();
+		controller.store.set({ appLayout: { layout, updatedAt: "2026-11-11T12:00:00Z" }, whatsNew: { ready: 1 } });
+		await settle();
+		expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+		expect(group(element).querySelector(".rail-count")?.textContent).toBe("1");
+		group(element).click();
+		expect(tiles(element)).toEqual(["Market+", "Brand", "Plan", "What's new", "Members", "Trips"]);
+		expect(set).not.toHaveBeenCalled();
+		localStorage.clear();
+	});
+
+	it("sends a member's move of What's new into a group as their own layout (the cloud's check takes whats-new since 729000)", async () => {
+		localStorage.clear();
+		const { element, controller, set } = drawer();
+		controller.store.set({ whatsNew: { ready: 1 } });
+		await settle();
+		const tile = element.querySelector<HTMLElement>("[data-app-key='whats-new']")!;
+		tile.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 9, clientY: 9 }));
+		const item = (selector: string, label: string) =>
+			[...document.querySelectorAll<HTMLElement>(`${selector} [role^=menuitem]`)].find(
+				(entry) => entry.textContent?.trim() === label,
+			)!;
+		item(".context-menu", "Move to").click();
+		item(".context-submenu", "Market").click();
+		await settle();
+		expect(set).toHaveBeenLastCalledWith(
+			profileA.profileId,
+			expect.objectContaining({
+				places: expect.objectContaining({ "whats-new": expect.objectContaining({ group: "market" }) }),
+			}),
+			null,
+		);
+		await settle();
+		expect(tiles(element)).toEqual(["Market", "Members", "Trips"]);
+		expect(group(element).querySelector(".rail-count")?.textContent).toBe("1");
+		localStorage.clear();
+	});
+
+	it("renames and takes apart a group in the member's own drawer, and moves an app into one", async () => {
+		localStorage.clear();
+		const { element, set } = drawer();
+		group(element).dispatchEvent(
+			new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 9, clientY: 9 }),
+		);
+		const labels = () =>
+			[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")].map((item) => item.textContent);
+		expect(labels()).toEqual(["Rename group", "Ungroup", "Reset sidebarYou have Company A PRIVATE's sidebar"]);
+		[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")]
+			.find((item) => item.textContent === "Ungroup")!
+			.click();
+		await settle();
+		expect(set).toHaveBeenLastCalledWith(
+			profileA.profileId,
+			expect.objectContaining({ groups: { market: { removed: true } } }),
+			null,
+		);
+		expect(tiles(element)).toEqual(["Brand", "Plan", "Members", "Trips"]);
+		const trips = element.querySelector<HTMLElement>("[data-app-key='app:trips']")!;
+		trips.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 9, clientY: 9 }));
+		expect(labels()[0]).toBe("Move to");
+	});
+	it("lets a move on its way land before a reset, so the reset is never undone by it (review F2 on #1678)", async () => {
+		localStorage.clear();
+		const { controller, set } = drawer();
+		const answer = deferred<{ layout: MemberAppLayout; updatedAt: string | null }>();
+		set.mockImplementationOnce(() => answer.promise);
+		const manage = vi
+			.spyOn(controller as unknown as { changeSidebar: (r: unknown) => Promise<boolean> }, "changeSidebar")
+			.mockResolvedValue(true);
+		const moving = controller.changeAppLayout({ ...EMPTY_APP_LAYOUT, groups: { market: { removed: true } } });
+		const resetting = controller.resetSidebar();
+		await settle();
+		expect(manage).not.toHaveBeenCalled();
+		answer.resolve({ layout: EMPTY_APP_LAYOUT, updatedAt: "2026-11-11T12:00:00Z" });
+		await Promise.all([moving, resetting]);
+		expect(manage).toHaveBeenCalledWith({ action: "reset" });
+	});
+	it("makes no move while a reset is on its way (review F3 on #1678, round 2)", async () => {
+		localStorage.clear();
+		const { controller, set, f } = drawer();
+		vi.spyOn(f.api, "readMemberAppLayout").mockResolvedValue({ layout: EMPTY_APP_LAYOUT, updatedAt: null });
+		const answer = deferred<boolean>();
+		vi.spyOn(
+			controller as unknown as { changeSidebar: (r: unknown) => Promise<boolean> },
+			"changeSidebar",
+		).mockReturnValue(answer.promise);
+		const resetting = controller.resetSidebar();
+		await settle();
+		expect(controller.resettingSidebar()).toBe(true);
+		expect(await controller.changeAppLayout({ ...EMPTY_APP_LAYOUT, groups: { market: { removed: true } } })).toBe(
+			false,
+		);
+		expect(set).not.toHaveBeenCalled();
+		answer.resolve(true);
+		await resetting;
+		expect(controller.resettingSidebar()).toBe(false);
+	});
+	it("takes the layout read after a reset over a slower read from before it (review F2 on #1678, round 3)", async () => {
+		localStorage.clear();
+		const { controller, set, f } = drawer();
+		const before = deferred<{ layout: MemberAppLayout; updatedAt: string | null }>();
+		const read = vi.spyOn(f.api, "readMemberAppLayout").mockReturnValueOnce(before.promise);
+		void controller.refreshAppLayout();
+		read.mockResolvedValueOnce({ layout: EMPTY_APP_LAYOUT, updatedAt: null });
+		vi.spyOn(
+			controller as unknown as { changeSidebar: (r: unknown) => Promise<boolean> },
+			"changeSidebar",
+		).mockResolvedValue(true);
+		await controller.resetSidebar();
+		expect(controller.resettingSidebar()).toBe(false);
+		before.resolve({
+			layout: { ...EMPTY_APP_LAYOUT, groups: { market: { removed: true } } },
+			updatedAt: "2026-11-11T09:00:00Z",
+		});
+		await settle();
+		expect(controller.store.get().appLayout).toEqual({ layout: EMPTY_APP_LAYOUT, updatedAt: null });
+		await controller.changeAppLayout({ ...EMPTY_APP_LAYOUT, groups: { market: { name: "Sales" } } });
+		expect(set).toHaveBeenLastCalledWith(profileA.profileId, expect.anything(), null);
+	});
+	it("keeps the drawer draggable after a reset on a cloud without each member's apps layout (review F2 on #1678, round 4)", async () => {
+		localStorage.clear();
+		const { controller, f } = drawer();
+		vi.spyOn(f.api, "readMemberAppLayout").mockRejectedValue(
+			new CloudRpcError("qorpera_member_app_layout", { message: "missing", code: "PGRST202" }, 404),
+		);
+		vi.spyOn(
+			controller as unknown as { changeSidebar: (r: unknown) => Promise<boolean> },
+			"changeSidebar",
+		).mockResolvedValue(true);
+		await controller.resetSidebar();
+		expect(controller.resettingSidebar()).toBe(false);
+		expect(controller.store.get().appLayoutUnavailable).toBe(true);
+	});
+	it("says a write another tab overtook in the member's words and reads the layout again (review F2 on #1678, round 6)", async () => {
+		localStorage.clear();
+		const { controller, set, f, element } = drawer();
+		const read = vi
+			.spyOn(f.api, "readMemberAppLayout")
+			.mockResolvedValue({ layout: EMPTY_APP_LAYOUT, updatedAt: "2026-11-11T12:30:00Z" });
+		set.mockRejectedValueOnce(
+			new CloudRpcError(
+				"qorpera_set_member_app_layout",
+				{ message: "Your apps changed in another tab", code: "QAL01" },
+				400,
+			),
+		);
+		expect(await controller.changeAppLayout({ ...EMPTY_APP_LAYOUT, groups: { market: { removed: true } } })).toBe(
+			false,
+		);
+		await settle();
+		expect(element.textContent).toContain("Your apps changed in another tab. Try again.");
+		expect(read).toHaveBeenCalled();
+		expect(controller.store.get().appLayout?.updatedAt).toBe("2026-11-11T12:30:00Z");
+		// Any other refusal says the general words.
+		set.mockRejectedValueOnce(new Error("offline"));
+		await controller.changeAppLayout({ ...EMPTY_APP_LAYOUT, groups: { market: { removed: true } } });
+		await settle();
+		expect(element.textContent).toContain("The apps could not be arranged. Try again.");
+	});
+	it("takes a suggested group name as it is, while a rename must change something (review F1 on #1678, round 9)", async () => {
+		const suggested = nameDialog({
+			title: "New group",
+			label: "Group name",
+			value: "Fjeldtur",
+			confirm: "Create",
+			maxLength: 40,
+			suggested: true,
+		});
+		const create = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+			(b) => b.textContent === "Create",
+		)!;
+		expect(create.disabled).toBe(false);
+		create.click();
+		expect(await suggested).toBe("Fjeldtur");
+		const rename = nameDialog({
+			title: "Rename group",
+			label: "Group name",
+			value: "Market",
+			confirm: "Rename",
+			maxLength: 40,
+		});
+		const save = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Rename")!;
+		expect(save.disabled).toBe(true);
+		const dialog = save.closest<HTMLElement>(".modal-backdrop, [role=dialog]") ?? document.body;
+		[...dialog.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Cancel")!.click();
+		expect(await rename).toBeUndefined();
 	});
 });

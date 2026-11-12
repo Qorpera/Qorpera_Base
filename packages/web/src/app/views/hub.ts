@@ -1,8 +1,13 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { CloudRpcError, describeError } from "../../cloud/client.ts";
-import { CompanyFoundingApi, type FoundingTableEntry } from "../../cloud/company-founding.ts";
+import {
+	CompanyFoundingApi,
+	FOUNDING_NAME_MAX_CHARACTERS,
+	type FoundingTableEntry,
+} from "../../cloud/company-founding.ts";
 import { UUID_PATTERN } from "../../cloud/parse.ts";
 import type { HostedIncomingProfileInvitation, HostedProfile, HostedProfileRole } from "../../cloud/types.ts";
+import { menuPoint, openContextMenu } from "../../ui/context-menu.ts";
 import { button, companyLogo, confirmDialog, h, icon, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
 import { companyCardsSkeleton } from "../../ui/skeleton.ts";
@@ -142,6 +147,31 @@ export class HubController {
 		await this.refresh();
 	}
 
+	/** Right-click on a company tile: a founder deletes the company, anyone else leaves it, as the
+	 * company's own settings do (views/team.ts). The cloud decides; a refusal shows on the hub. */
+	async removeCompany(profile: HostedProfile): Promise<void> {
+		if (this.#disposed) return;
+		const deleting = profile.role === "owner";
+		const confirmed = await confirmDialog(
+			deleting
+				? t("Delete {company}? Type the company name to confirm.", { company: profile.profileName })
+				: t("Leave {company}? You lose access until someone invites you again.", { company: profile.profileName }),
+			deleting ? t("Delete company") : t("Leave"),
+			true,
+			deleting ? profile.profileName : undefined,
+		);
+		if (!confirmed || this.#disposed) return;
+		this.store.set({ error: undefined });
+		try {
+			if (deleting) await this.#api.deleteProfile(profile.profileId);
+			else await this.#api.leaveProfile(profile.profileId);
+		} catch (error) {
+			if (!this.#disposed) this.store.set({ error: describeError(error) });
+			return;
+		}
+		await this.companyRemoved(profile.profileId);
+	}
+
 	async #load(): Promise<void> {
 		this.store.set({ loading: true, error: undefined });
 		const revision = this.#membershipRevision;
@@ -217,11 +247,19 @@ export class HubController {
 		}
 	}
 
-	/** The new-company box: the table opens with a name taken from the idea, which the founders can change there.
-	 * True once the table is open. */
-	startFromIdea(idea: string, intent: CreationIntent): Promise<boolean> {
+	/** The new-company box: the table opens with the name typed over the box, or else one taken from the idea; the
+	 * founders can change it at the table. True once the table is open. */
+	startFromIdea(idea: string, intent: CreationIntent, name = ""): Promise<boolean> {
 		const vision = idea.trim();
-		return this.createCompany(companyNameFromIdea(vision), { ...(vision ? { vision } : {}), intent });
+		// A pasted tab or new line becomes a space, as in a name taken from the idea: the cloud refuses control
+		// characters, and a refused name would stay as the pending creation.
+		const typed = name
+			.replace(/\p{Cc}/gu, " ")
+			.replace(/\s+/g, " ")
+			.trim()
+			.slice(0, FOUNDING_NAME_MAX_CHARACTERS)
+			.trim();
+		return this.createCompany(typed || companyNameFromIdea(vision), { ...(vision ? { vision } : {}), intent });
 	}
 
 	/** True once the table is open. */
@@ -291,9 +329,12 @@ export class HubController {
 			}
 			this.store.set({ creating: undefined, creationRetry: undefined });
 			void this.refresh();
-			if (creation.vision) this.onTableOpened?.(creation.vision);
+			// The box empties its fields for the next company, also after a name-only Invite friends.
+			this.onTableOpened?.(creation.vision ?? "");
+			// The arrow alone starts the company at once; its page shows the start, not a table (Jonas, 9 Nov 2026).
 			setFoundingIntent(table.profileId, {
 				...(creation.intent === "friends" ? { friends: true } : {}),
+				...(creation.intent === "start" ? { start: true } : {}),
 				...(pending ? { vision: pending } : {}),
 			});
 			if (location.hash === route) navigate({ name: "found", profileId: table.profileId });
@@ -461,6 +502,33 @@ function welcomeInvitations(hub: HubController): HTMLElement[] {
 	];
 }
 
+/** A company tile's right-click menu: Delete company for a founder, Leave company for anyone else.
+ * Shift with a mouse right-click keeps the browser's own menu (Open in new tab, Copy link). */
+function openCompanyMenu(hub: HubController, event: MouseEvent): void {
+	if (event.shiftKey && (event.clientX || event.clientY)) return;
+	const card = (event.target as Element).closest<HTMLElement>("[data-profile-id]");
+	const profile = hub.store.get().profiles.find((item) => item.profileId === card?.dataset.profileId);
+	if (!card || !profile) return;
+	event.preventDefault();
+	const deleting = profile.role === "owner";
+	const point = menuPoint(event, card);
+	openContextMenu({
+		label: profile.profileName,
+		x: point.x,
+		y: point.y,
+		opener: card,
+		findOpener: () => document.querySelector<HTMLElement>(`.company-card[data-profile-id="${profile.profileId}"]`),
+		items: [
+			{
+				label: deleting ? t("Delete company") : t("Leave company"),
+				icon: deleting ? "trash" : "signout",
+				danger: true,
+				select: () => void hub.removeCompany(profile),
+			},
+		],
+	});
+}
+
 export function renderHub(hub: HubController, container: HTMLElement, viewer?: Viewer): void {
 	const state = hub.store.get();
 	// Placeholders stand in only for the first read; a refresh keeps what the page shows.
@@ -475,7 +543,12 @@ export function renderHub(hub: HubController, container: HTMLElement, viewer?: V
 	const first = viewer?.name.trim().split(/\s+/)[0];
 	const tiles = [
 		...state.profiles.map((profile) =>
-			tile("a", { class: "company-card", href: `#/c/${profile.profileId}` }, profile.profileId, profile.profileName),
+			tile(
+				"a",
+				{ class: "company-card", href: `#/c/${profile.profileId}`, "data-profile-id": profile.profileId },
+				profile.profileId,
+				profile.profileName,
+			),
 		),
 		...state.tables.filter((table) => table.myState === "joined").map((table) => tableTile(hub, table)),
 		...state.tables.filter((table) => table.myState === "invited").map((table) => tableTile(hub, table)),
@@ -506,7 +579,15 @@ export function renderHub(hub: HubController, container: HTMLElement, viewer?: V
 					: null,
 				firstRead
 					? companyCardsSkeleton()
-					: h("nav", { class: "company-grid", "aria-label": t("Your companies") }, ...tiles),
+					: h(
+							"nav",
+							{
+								class: "company-grid",
+								"aria-label": t("Your companies"),
+								oncontextmenu: (event: MouseEvent) => openCompanyMenu(hub, event),
+							},
+							...tiles,
+						),
 			),
 		),
 	);

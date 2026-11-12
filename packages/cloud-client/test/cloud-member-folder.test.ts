@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
 	CLOUD_MEMBER_FOLDER_PAGE,
+	CLOUD_MEMBER_FOLDER_READ_MANY,
 	CloudMemberFolderAccessDenied,
 	CloudMemberFolderClient,
+	CloudMemberFolderFileCache,
 	CloudMemberFolderHints,
 	cloudMemberFolderHintTopic,
 	parseCloudMemberCompanyStateFolders,
@@ -360,11 +362,15 @@ describe("member folder answers", () => {
 	});
 });
 
-function client(responder: (url: URL, init: RequestInit) => Response) {
+function client(
+	responder: (url: URL, init: RequestInit) => Response | Promise<Response>,
+	files?: CloudMemberFolderFileCache,
+) {
 	const calls: Array<{ url: string; init: RequestInit }> = [];
 	return {
 		calls,
 		folder: new CloudMemberFolderClient({
+			...(files ? { files } : {}),
 			environmentId: env,
 			supabaseUrl: "https://cloud.test/",
 			objectGatewayUrl: "https://objects.test/",
@@ -438,6 +444,41 @@ describe("the member folder client", () => {
 		expect(new Request(calls[0]!.url, calls[0]!.init).cache).toBe("default");
 		expect(() => folder.list(null, null, 0, new AbortController().signal)).toThrow();
 		expect(() => folder.pathHistory("a", "not-a-version", 10, new AbortController().signal)).toThrow();
+	});
+
+	it("reads several paths in one call, each as its own read answers, and refuses an answer of the wrong length", async () => {
+		const read = (found: boolean) =>
+			found
+				? {
+						schema: "qorpera.folder-read/v1",
+						asOfSeq: 4,
+						found: true,
+						entry: { path: "apps/a/index.html", kind: "folder", version, seq: 3, updatedAt: at },
+					}
+				: { schema: "qorpera.folder-read/v1", asOfSeq: 4, found: false, entry: null };
+		const { folder, calls } = client(() =>
+			Response.json({ schema: "qorpera.folder-read-many/v1", reads: [read(true), read(false)] }),
+		);
+		const reads = await folder.readMany(["apps/a/index.html", "apps/a/gone.png"], new AbortController().signal);
+		expect(calls[0]!.url).toBe("https://cloud.test/rest/v1/rpc/qorpera_member_folder_read_many");
+		expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+			p_environment_id: env,
+			p_paths: ["apps/a/index.html", "apps/a/gone.png"],
+		});
+		expect(reads.map((one) => one.entry?.path ?? null)).toEqual(["apps/a/index.html", null]);
+		await expect(folder.readMany(["apps/a/index.html"], new AbortController().signal)).rejects.toThrow(
+			"Invalid company folder reads",
+		);
+		expect(() => folder.readMany([], new AbortController().signal)).toThrow("Invalid company folder reads");
+		expect(() =>
+			folder.readMany(
+				Array.from({ length: CLOUD_MEMBER_FOLDER_READ_MANY + 1 }, (_, index) => `f${index}`),
+				new AbortController().signal,
+			),
+		).toThrow("Invalid company folder reads");
+		// A database without the call answers 404: the caller reads each path alone.
+		const missing = client(() => new Response(null, { status: 404 }));
+		await expect(missing.folder.readMany(["a"], new AbortController().signal)).rejects.toMatchObject({ status: 404 });
 	});
 
 	it("reads a page of 200 links with the longest paths and targets, each character escaped at worst", async () => {
@@ -561,6 +602,354 @@ describe("the member folder client", () => {
 		const outage = client(() => new Response(null, { status: 503 })).folder.read("a", signal);
 		await expect(outage).rejects.toThrow("unavailable (503)");
 		await expect(outage).rejects.not.toBeInstanceOf(CloudMemberFolderAccessDenied);
+	});
+});
+
+describe("the member's file cache", () => {
+	const signal = new AbortController().signal;
+	const cached = { cached: true } as const;
+
+	it("answers a version read before with no round trip, a copy each time, across the member's clients", async () => {
+		const { store, file } = stored("Hello, cached folder.", [5, 16]);
+		const files = new CloudMemberFolderFileCache();
+		const first = client(objects(store), files);
+		const bytes = await first.folder.readFile(file, signal, undefined, cached);
+		expect(first.calls).toHaveLength(3);
+		bytes.fill(0);
+		const second = client(objects(store), files);
+		expect(new TextDecoder().decode(await second.folder.readFile(file, signal, undefined, cached))).toBe(
+			"Hello, cached folder.",
+		);
+		expect(second.calls).toHaveLength(0);
+		expect(files.bytes).toBe(file.bytes);
+		// Another version, and the same version under a limit it does not fit, are not answered from it.
+		const other = stored("Hello, other version.");
+		await second.folder.readFile(other.file, signal, undefined, cached).catch(() => undefined);
+		expect(second.calls).toHaveLength(1);
+		expect(() => second.folder.readFile(file, signal, file.bytes - 1, cached)).toThrow("limit");
+		files.clear();
+		await second.folder.readFile(file, signal, undefined, cached);
+		expect(second.calls).toHaveLength(4);
+		// A caller that did not just read the entry live (a reference kept from an earlier listing) reads uncached: the
+		// gateway decides again.
+		await second.folder.readFile(file, signal);
+		expect(second.calls).toHaveLength(7);
+	});
+
+	it("keeps nothing a read under way when it was cleared brings back", async () => {
+		const { store, file } = stored("Bytes read before a sign-out.");
+		const files = new CloudMemberFolderFileCache();
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const reader = client(async (url) => {
+			await gate;
+			return objects(store)(url);
+		}, files);
+		const reading = reader.folder.readFile(file, signal, undefined, cached);
+		files.clear();
+		release();
+		expect(new TextDecoder().decode(await reading)).toBe("Bytes read before a sign-out.");
+		expect(files.bytes).toBe(0);
+		await reader.folder.readFile(file, signal, undefined, cached);
+		expect(reader.calls).toHaveLength(4);
+		expect(files.bytes).toBe(file.bytes);
+
+		// A reader that waited for a read under way, cleared and then stopped, reads for itself and keeps nothing either.
+		const later = stored("Bytes a waiter read after a sign-out.");
+		const shared = new CloudMemberFolderFileCache();
+		const stop = new AbortController();
+		let open: () => void = () => {};
+		const opened = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		const slow = client(async (url, init) => {
+			await opened;
+			init.signal?.throwIfAborted();
+			return objects(later.store)(url);
+		}, shared);
+		const first = slow.folder.readFile(later.file, stop.signal, undefined, cached);
+		const waiter = slow.folder.readFile(later.file, signal, undefined, cached);
+		shared.clear();
+		stop.abort();
+		await expect(first).rejects.toThrow();
+		open();
+		expect(new TextDecoder().decode(await waiter)).toBe("Bytes a waiter read after a sign-out.");
+		expect(shared.bytes).toBe(0);
+		const before = slow.calls.length;
+		await slow.folder.readFile(later.file, signal, undefined, cached);
+		expect(slow.calls.length).toBe(before + 2);
+	});
+
+	it("shares a read under way, and a second reader reads for itself when the first stops", async () => {
+		const { store, file } = stored("Shared bytes.");
+		const files = new CloudMemberFolderFileCache();
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const slow = client(async (url) => {
+			await gate;
+			return objects(store)(url);
+		}, files);
+		const [a, b] = [
+			slow.folder.readFile(file, signal, undefined, cached),
+			slow.folder.readFile(file, signal, undefined, cached),
+		];
+		release();
+		expect(new TextDecoder().decode(await a)).toBe("Shared bytes.");
+		expect(new TextDecoder().decode(await b)).toBe("Shared bytes.");
+		expect(slow.calls).toHaveLength(2);
+
+		const later = stored("Bytes after a stop.");
+		const stop = new AbortController();
+		const reader = client((url, init) => {
+			init.signal?.throwIfAborted();
+			return objects(later.store)(url);
+		}, new CloudMemberFolderFileCache());
+		const stopped = reader.folder.readFile(later.file, stop.signal, undefined, cached);
+		const waiting = reader.folder.readFile(later.file, signal, undefined, cached);
+		stop.abort();
+		await expect(stopped).rejects.toThrow();
+		expect(new TextDecoder().decode(await waiting)).toBe("Bytes after a stop.");
+	});
+
+	it("keeps the most recently read up to its size, and never a file over a quarter of it", async () => {
+		const files = new CloudMemberFolderFileCache(40);
+		const a = stored("a".repeat(10));
+		const b = stored("b".repeat(10));
+		const c = stored("c".repeat(10));
+		const d = stored("d".repeat(10));
+		const big = stored("e".repeat(11));
+		const store = new Map([...a.store, ...b.store, ...c.store, ...d.store, ...big.store]);
+		const reader = client(objects(store), files);
+		for (const file of [a.file, b.file, c.file, d.file])
+			await reader.folder.readFile(file, signal, undefined, cached);
+		expect(files.bytes).toBe(40);
+		await reader.folder.readFile(a.file, signal, undefined, cached);
+		await reader.folder.readFile(big.file, signal, undefined, cached);
+		expect(files.bytes).toBe(40);
+		const e = stored("f".repeat(10));
+		for (const [key, value] of e.store) store.set(key, value);
+		await reader.folder.readFile(e.file, signal, undefined, cached);
+		const before = reader.calls.length;
+		// b was the least recently read: it went; a, read again, stayed.
+		await reader.folder.readFile(a.file, signal, undefined, cached);
+		expect(reader.calls.length).toBe(before);
+		await reader.folder.readFile(b.file, signal, undefined, cached);
+		expect(reader.calls.length).toBe(before + 2);
+		expect(() => new CloudMemberFolderFileCache(-1)).toThrow("cache size");
+	});
+});
+
+describe("a file read piece by piece", () => {
+	const MIB = 1024 * 1024;
+	const signal = new AbortController().signal;
+
+	/** A file cut into pieces of the given sizes, every 64 KiB of it its own bytes, with its manifest. `claimed` is
+	 * the hash its entry and manifest give it, the bytes' own unless a test says otherwise. */
+	function large(sizes: number[], claimed?: string) {
+		const bytes = new Uint8Array(sizes.reduce((total, size) => total + size, 0));
+		for (let at = 0; at < bytes.length; at += 65536) bytes.fill((at / 65536) % 251, at, at + 65536);
+		const store = new Map<string, Uint8Array>();
+		const chunks: { sha256: string; bytes: number }[] = [];
+		let offset = 0;
+		for (const size of sizes) {
+			const chunk = bytes.subarray(offset, offset + size);
+			store.set(sha(chunk), chunk);
+			chunks.push({ sha256: sha(chunk), bytes: size });
+			offset += size;
+		}
+		const fileSha256 = claimed ?? sha(bytes);
+		const manifest = new TextEncoder().encode(
+			JSON.stringify({
+				schema: "qorpera.cloud-file-manifest/v2",
+				fileSha256,
+				bytes: bytes.length,
+				mediaType: "application/zip",
+				executable: false,
+				chunks,
+			}),
+		);
+		store.set(sha(manifest), manifest);
+		const file = {
+			manifestSha256: sha(manifest),
+			fileSha256,
+			bytes: bytes.length,
+			mediaType: "application/zip",
+			executable: false,
+		};
+		return { store, file, bytes, chunks };
+	}
+
+	/** A client whose second and third tries follow at once, over a responder that may take its time. `calls` names
+	 * the object each request asked for. */
+	function piecewise(
+		responder: (hash: string, call: number) => Response | Promise<Response>,
+		options: { timeoutMs?: number } = {},
+	) {
+		const calls: string[] = [];
+		const folder = new CloudMemberFolderClient({
+			environmentId: env,
+			supabaseUrl: "https://cloud.test/",
+			objectGatewayUrl: "https://objects.test/",
+			publishableKey: "sb_publishable_fixture",
+			accessToken: async () => "member-token",
+			pieceRetryMs: 1,
+			...options,
+			fetch: async (input) => {
+				const hash = String(input).split("/").at(-1)!;
+				calls.push(hash);
+				return responder(hash, calls.length);
+			},
+		});
+		return { folder, calls };
+	}
+	const answer = (bytes: Uint8Array | undefined) =>
+		bytes
+			? new Response(Uint8Array.from(bytes), {
+					headers: { "x-qorpera-access-mode": "live-path-authority", "content-length": String(bytes.length) },
+				})
+			: new Response(null, { status: 403 });
+	/** Reads a file's pieces, noting each as it is handed out. */
+	function pieces(folder: CloudMemberFolderClient, file: Parameters<CloudMemberFolderClient["readFilePieces"]>[0]) {
+		const got: { index: number; count: number; piece: Uint8Array }[] = [];
+		const read = folder.readFilePieces(file, signal, (piece, index, count) => got.push({ piece, index, count }));
+		return { got, read };
+	}
+
+	it("reads a file over 8 MiB as its pieces, in order, each asked for once and checked", async () => {
+		const { store, file, chunks } = large([4 * MIB, 4 * MIB, MIB]);
+		const { folder, calls } = piecewise((hash) => answer(store.get(hash)));
+		const { got, read } = pieces(folder, file);
+		await read;
+		expect(got.map(({ index, count, piece }) => [index, count, piece.byteLength])).toEqual([
+			[0, 3, 4 * MIB],
+			[1, 3, 4 * MIB],
+			[2, 3, MIB],
+		]);
+		expect(sha(Buffer.concat(got.map(({ piece }) => piece)))).toBe(file.fileSha256);
+		expect(calls).toEqual([file.manifestSha256, ...chunks.map((chunk) => chunk.sha256)]);
+	});
+
+	it("asks again for a piece that fails its hash or is lost, and refuses a file whose piece stays bad", async () => {
+		const { store, file, chunks } = large([4 * MIB, 4 * MIB, MIB]);
+		const second = chunks[1]!.sha256;
+		const wrong = Uint8Array.from(store.get(second)!);
+		wrong[7] = 255;
+		// The manifest is lost once, and the second piece arrives damaged once: both are asked for again.
+		let damaged = 0;
+		const healing = piecewise((hash, call) => {
+			if (call === 1) return new Response(null, { status: 503 });
+			if (hash === second && damaged++ === 0) return answer(wrong);
+			return answer(store.get(hash));
+		});
+		const healed = pieces(healing.folder, file);
+		await healed.read;
+		expect(healing.calls).toEqual([
+			file.manifestSha256,
+			file.manifestSha256,
+			chunks[0]!.sha256,
+			second,
+			second,
+			chunks[2]!.sha256,
+		]);
+		expect(sha(Buffer.concat(healed.got.map(({ piece }) => piece)))).toBe(file.fileSha256);
+		// A piece that is bad three times ends the read: only the piece before it was handed out, and none after.
+		const bad = piecewise((hash) => answer(hash === second ? wrong : store.get(hash)));
+		const refused = pieces(bad.folder, file);
+		await expect(refused.read).rejects.toThrow("integrity");
+		expect(bad.calls).toEqual([file.manifestSha256, chunks[0]!.sha256, second, second, second]);
+		expect(refused.got.map(({ index }) => index)).toEqual([0]);
+	});
+
+	it("does not ask again where the member is refused, or once its caller has stopped", async () => {
+		const { store, file, chunks } = large([4 * MIB, 4 * MIB, MIB]);
+		const denied = piecewise((hash) => answer(hash === chunks[1]!.sha256 ? undefined : store.get(hash)));
+		const refused = pieces(denied.folder, file);
+		await expect(refused.read).rejects.toBeInstanceOf(CloudMemberFolderAccessDenied);
+		expect(denied.calls).toEqual([file.manifestSha256, chunks[0]!.sha256, chunks[1]!.sha256]);
+		const stop = new AbortController();
+		const stopped = piecewise((hash) => answer(store.get(hash)));
+		await expect(stopped.folder.readFilePieces(file, stop.signal, () => stop.abort())).rejects.toThrow();
+		expect(stopped.calls).toEqual([file.manifestSha256, chunks[0]!.sha256]);
+	});
+
+	it("gives the manifest and every piece the deadline to itself", async () => {
+		const { store, file, chunks } = large(Array<number>(9).fill(MIB));
+		const later = (ms: number, bytes: Uint8Array | undefined) =>
+			new Promise<Response>((resolve) => setTimeout(() => resolve(answer(bytes)), ms));
+		// Ten answers of 120 ms each pass a deadline of 400 ms one at a time; under one deadline they do not, even with
+		// readFile asking for four chunks at once (the manifest, then three rounds: 480 ms).
+		const slow = piecewise((hash) => later(120, store.get(hash)), { timeoutMs: 400 });
+		const each = pieces(slow.folder, file);
+		await each.read;
+		expect(each.got).toHaveLength(9);
+		await expect(slow.folder.readFile(file, signal)).rejects.toThrow("request deadline");
+		// A piece that never answers in time is asked for three times, then the read ends.
+		const stuck = piecewise((hash) => later(hash === chunks[1]!.sha256 ? 1000 : 0, store.get(hash)), {
+			timeoutMs: 200,
+		});
+		const late = pieces(stuck.folder, file);
+		await expect(late.read).rejects.toThrow("request deadline");
+		expect(stuck.calls.filter((hash) => hash === chunks[1]!.sha256)).toHaveLength(3);
+		expect(late.got.map(({ index }) => index)).toEqual([0]);
+	});
+
+	it("checks a file of at most 8 MiB whole before it hands out a piece, and a larger one by its pieces alone", async () => {
+		const small = stored("Hello, folder of chunks.", [3, 10, 11]);
+		const whole = pieces(piecewise((hash) => answer(small.store.get(hash))).folder, small.file);
+		await whole.read;
+		expect(whole.got.map(({ index, count }) => [index, count])).toEqual([
+			[0, 3],
+			[1, 3],
+			[2, 3],
+		]);
+		expect(new TextDecoder().decode(Buffer.concat(whole.got.map(({ piece }) => piece)))).toBe(
+			"Hello, folder of chunks.",
+		);
+		const empty = stored("");
+		const none = pieces(piecewise((hash) => answer(empty.store.get(hash))).folder, empty.file);
+		await none.read;
+		expect(none.got).toEqual([]);
+		// The manifest names real pieces of another text under this file's hash: each piece checks, the whole does not.
+		const other = new TextEncoder().encode("abcdeF");
+		const lying = stored("abcdef", [6], { chunks: [{ sha256: sha(other), bytes: 6 }] });
+		lying.store.set(sha(other), other);
+		const refused = pieces(piecewise((hash) => answer(lying.store.get(hash))).folder, lying.file);
+		await expect(refused.read).rejects.toThrow("do not match their entry");
+		expect(refused.got).toEqual([]);
+		// Over 8 MiB the entry's manifest alone says what the file is: no second copy is made to hash it whole.
+		const claimed = large([4 * MIB, 4 * MIB, MIB], "f".repeat(64));
+		const taken = pieces(piecewise((hash) => answer(claimed.store.get(hash))).folder, claimed.file);
+		await taken.read;
+		expect(taken.got).toHaveLength(3);
+	});
+
+	it("refuses a manifest that is not the entry's, a file past the folder's bounds and a pause that is no time", async () => {
+		const { store, file } = large([4 * MIB, 4 * MIB, MIB]);
+		const { folder, calls } = piecewise((hash) => answer(store.get(hash)));
+		await expect(folder.readFilePieces({ ...file, bytes: file.bytes + 1 }, signal, () => {})).rejects.toThrow(
+			"Invalid company folder manifest",
+		);
+		// What the manifest says is read once: asking again would not change it.
+		expect(calls).toEqual([file.manifestSha256]);
+		await expect(folder.readFilePieces({ ...file, bytes: 257 * MIB }, signal, () => {})).rejects.toThrow(
+			"exceeds this viewer's limit",
+		);
+		expect(calls).toHaveLength(1);
+		expect(
+			() =>
+				new CloudMemberFolderClient({
+					environmentId: env,
+					supabaseUrl: "https://cloud.test/",
+					objectGatewayUrl: "https://objects.test/",
+					publishableKey: "sb_publishable_fixture",
+					accessToken: async () => "member-token",
+					pieceRetryMs: -1,
+				}),
+		).toThrow("Invalid company folder deadline");
 	});
 });
 

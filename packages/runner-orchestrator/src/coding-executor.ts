@@ -46,6 +46,28 @@ export class CodingMachineUnavailable extends Error {
  * time, or its node is not set up for the machine. The turn's model never ran: the turn fails at once, under its lease,
  * with `summary` (what happened, in the member's and the agent's words, and the code), instead of leaving its lease to
  * lapse as if the executor had stopped. The message is the fixed code alone, which is all a log shows. */
+/** A landing that conflicts with the default branch of a repository kept in Qorpera: nothing landed, and the session
+ * merges the default branch itself (own code storage, slice 1). */
+export class CodingLandConflict extends Error {
+	readonly paths: readonly string[];
+	constructor(paths: readonly string[]) {
+		super("CODING_LAND_CONFLICT");
+		this.name = "CodingLandConflict";
+		this.paths = Object.freeze([...paths]);
+	}
+}
+/** A landing the code host refused by rule, for another reason than a conflict (file names main cannot hold, a file too
+ * large, a commit the session's branch does not hold, a repository's storage that is not as Qorpera left it): nothing
+ * landed, and handing the same work in again is refused the same way. `summary` says what to change, in the agent's
+ * words; the message is the code host's own code, for the log. */
+export class CodingLandRefused extends Error {
+	readonly summary: string;
+	constructor(code: string, summary: string, options?: ErrorOptions) {
+		super(code, options);
+		this.name = "CodingLandRefused";
+		this.summary = summary;
+	}
+}
 export class CodingWorkspaceFailed extends Error {
 	readonly summary: string;
 	constructor(code: string, summary: string, options?: ErrorOptions) {
@@ -53,9 +75,10 @@ export class CodingWorkspaceFailed extends Error {
 		this.summary = `${summary} [code=${code}]`;
 	}
 }
-/** The kernel refused a call on a busy row (SQLSTATE 55P03, lock_not_available)
- * and rolled its transaction back whole: the call wrote nothing. A control
- * rejects with this only for a complete PostgREST error with that SQLSTATE. */
+/** The kernel refused a call on a busy row (SQLSTATE 55P03, lock_not_available), or cancelled it because it ran out of
+ * the time a statement has (57014, query_canceled: the wait for a company's rows that another call holds can end
+ * either way), and rolled its transaction back whole: the call wrote nothing. A control rejects with this only for a
+ * complete PostgREST error with one of those SQLSTATEs. */
 export class CodingControlBusy extends Error {
 	constructor() {
 		super("CODING_CONTROL_BUSY");
@@ -136,6 +159,105 @@ const GIT_WAY_OUT =
 /** The reasons a publication held by a refused save fails its turn with: what to change, never the value or the path. */
 const SAVE_REFUSAL = `The save was refused: a file this session wrote in the company folder carries one of the session's secret values, in its contents or its name. It was not saved, and nothing was published. Remove the value and finish again. If a git commit carried it, take the value out of the files (and \`git add\` them) or the message, ${GIT_WAY_OUT}, then commit again.`;
 const SAVE_UNCHECKED = `The save was refused: a file this session wrote in the company folder could not be checked for the session's secret values. It was not saved, and nothing was published. If it is in a git repository's storage, ${GIT_WAY_OUT}, then commit and finish again. Otherwise remove the file or make it smaller, and finish again. If nothing needs changing, finish again: the check may have been busy.`;
+/** The kernel takes a turn's summary of at most this many UTF-8 bytes (qorpera_complete_coding_turn), and refuses a
+ * longer one: the report then never lands, and the turn's lease lapses. */
+const SUMMARY_BYTES = 4000;
+/** `text` cut to at most `bytes` UTF-8 bytes, whole characters only. */
+export function withinBytes(text: string, bytes: number): string {
+	if (Buffer.byteLength(text) <= bytes) return text;
+	let cut = "";
+	let used = 0;
+	for (const character of text) {
+		const size = Buffer.byteLength(character);
+		if (used + size > bytes) break;
+		cut += character;
+		used += size;
+	}
+	return cut;
+}
+/** The paths a refused landing names, quoted: at most 20 of them and at most 2000 bytes, so that what to do about
+ * them always fits the summary after them (a path may be 4 KiB, and its characters several bytes each); then how many
+ * more there are. Empty when there is none. */
+function namedPaths(paths: readonly string[]): string {
+	const shown: string[] = [];
+	let used = 0;
+	for (const path of paths.slice(0, 20)) {
+		const quoted = JSON.stringify(path);
+		const size = Buffer.byteLength(quoted) + 2;
+		if (used + size > 2000) break;
+		shown.push(quoted);
+		used += size;
+	}
+	const more = paths.length - shown.length;
+	if (!shown.length) return more ? `${more} path${more === 1 ? "" : "s"} too long to name here` : "";
+	return `${shown.join(", ")}${more ? ` and ${more} more` : ""}`;
+}
+/** A landing that conflicts with the default branch of a repository kept in Qorpera: what to do, and where. */
+export function landConflict(baseBranch: string, paths: readonly string[]): string {
+	const named = namedPaths(paths);
+	return `The change was not landed: it conflicts with what ${baseBranch} got since this session began${named ? `, in ${named}` : ""}. Nothing changed on ${baseBranch}. Run git merge ${baseBranch} on the session's branch, resolve the conflicts, run the checks, commit and finish again.`;
+}
+/** Whether a failure says the session's machine needs recovery before anything else runs on it, with or without a
+ * detail after the code (`CODING_HOST_VM_RECOVERY_REQUIRED:LXD_REFUSED_403`). */
+function recoveryRequired(error: unknown): boolean {
+	return error instanceof Error && /RECOVERY_REQUIRED(?::|$)/.test(error.message);
+}
+/** A workspace that could not be prepared for a reason the host does not name: the turn did not start, nothing changed,
+ * and the step's own code, when it is one, travels in the summary for the agent and the session's card. */
+export function prepareUnfinished(error: unknown): string {
+	const code =
+		error instanceof Error && /^[A-Z][A-Z0-9_]{2,80}(?::[A-Z0-9_]{1,80})?$/.test(error.message)
+			? error.message
+			: "CODING_PREPARE_UNFINISHED";
+	return `Preparing the session's workspace did not finish, so the coding turn did not start. Nothing was changed; a follow-up tries again. [code=${code}]`;
+}
+/** A turn whose start did not go through once its workspace was ready (10 Nov 2026: one turn in six ended as "the
+ * executor stopped responding" here): nothing ran and nothing changed. What the kernel answered is in the executor's
+ * log. */
+export const TURN_START_UNFINISHED =
+	"The coding turn could not start, so nothing ran and nothing was changed. The workspace is kept; a follow-up tries again. [code=CODING_TURN_START_UNFINISHED]";
+/** What to change after a landing the code host refused by rule (its code, and the paths it named), or whose refs it
+ * could not read, or undefined for a code this does not know. Never a plain "finish again" for work that would be
+ * refused the same way. */
+export function landRefusal(baseBranch: string, code: string, paths: readonly string[]): string | undefined {
+	const named = paths.length ? `: ${namedPaths(paths)}` : "";
+	const not = `The change was not landed, and nothing changed on ${baseBranch}`;
+	switch (code) {
+		case "CODE_HOST_FILE_TOO_LARGE":
+			return `${not}: it holds files larger than 256 MiB, which a repository kept in Qorpera does not take${named}. Take them out, commit and finish again.`;
+		case "CODE_HOST_NAMES_DIFFER_BY_CASE":
+			return `${not}: it holds names in one folder that differ only by upper and lower case${named}. Rename them so that each is its own name, commit and finish again.`;
+		case "CODE_HOST_NAMES_NOT_UTF8":
+		case "CODE_HOST_NAMES_NOT_NFC":
+			return `${not}: it holds file names that are not plain Unicode text (UTF-8, in its composed form NFC)${named}. Rename them, commit and finish again.`;
+		case "CODE_HOST_EXPORT_MOVED":
+		case "CODE_HOST_EXPORT_NO_BRANCH":
+			return `${not}: the commit handed in is not on this session's own branch. Commit the work on the branch the session's workspace has checked out, and finish with that commit.`;
+		case "CODE_HOST_REF_UNREADABLE":
+			// git could not read the repository's refs: once is a hiccup, twice is a file that is not git's any more.
+			return `${not}: the repository's own record of its branches could not be read. Finish again once; if that fails the same way, nothing can go into ${baseBranch} until Qorpera has repaired the repository, so say so in your report. The work is kept on the session's branch.`;
+		case "CODE_HOST_NOT_SEEDED":
+		case "CODE_HOST_AREA_FROM_GITHUB":
+		case "CODE_HOST_AREA_NO_BASE":
+		case "CODE_HOST_REF_IS_SYMBOLIC":
+		case "CODE_HOST_REF_NOT_A_COMMIT":
+		case "CODE_HOST_LINK":
+		case "CODE_HOST_UNEXPECTED_FILE":
+			return `${not}: the repository's own storage in the company folder is not as Qorpera left it, so nothing can go into ${baseBranch} until Qorpera has repaired it. Finishing again will not help. The work is kept on the session's branch; say so in your report.`;
+		case "CODE_HOST_RESTORE_IN_PROGRESS":
+			// Every job on the repository is refused while it is put back from its stored copy (own code storage, step 2b).
+			return `${not}: the repository is being restored from its copy. A follow-up in a few minutes works.`;
+		default:
+			return undefined;
+	}
+}
+/** A publication that failed for another reason than a refusal (the step's own code is in the executor's log). */
+export const PUBLICATION_UNFINISHED =
+	"Handing in the work did not finish, so it may not have reached the repository yet. The work is kept on the session's branch; finishing again hands it in. [code=CODING_PUBLICATION_UNFINISHED]";
+/** The turn's step while the work of a session on a repository kept in Qorpera lands: its checks run, then it goes
+ * into the default branch (own code storage, step 3). Set before the executor knows whether the repository has checks.
+ * The web shows the founder's card line for checks by these exact words. */
+export const CODING_LANDING_STEP = "Checking and saving the change";
 /** One housekeeping step on one machine, for the executor's log. */
 export interface CodingHousekeepingOutcome {
 	/** Null for archive: the quiet sessions of this executor's environments. */
@@ -189,9 +311,11 @@ export interface CodingSessionClaim {
 	followUp: string | null;
 }
 
-/** What the harness left behind at the end of its turn (qorpera_submit_coding_turn). */
+/** What the harness left behind at the end of its turn (qorpera_submit_coding_turn). `picture`: the screenshot the
+ * session committed to show its change, by its path in the repository (own code storage, step 2b). The sentence on
+ * what a customer will notice stays in the kernel: the executor never needs it. */
 export type CodingSubmission =
-	| { kind: "finish"; summary: string; headSha: string; operationKey: string }
+	| { kind: "finish"; summary: string; headSha: string; operationKey: string; picture?: string }
 	| { kind: "ask"; summary: string; question: string; options: string[]; operationKey: string };
 
 /** The turn as qorpera_describe_coding_turn reports it. */
@@ -221,6 +345,15 @@ export interface CodingExecutorPublication {
 	readonly pullRequest: CloudCodingPullRequest | null;
 	/** True only after a trusted comparison against the pinned original head. */
 	readonly noChange: boolean;
+	/** A repository kept in Qorpera (own code storage, slice 1): where the submitted commit landed on its default
+	 * branch. It has no pull request. `filesChanged`: how many paths differ between the default branch before and after
+	 * (0 when unchanged). `change`: the landing's number in the repository's change record, when the kernel gave it one. */
+	readonly landed?: {
+		readonly state: "fast-forward" | "merged" | "unchanged";
+		readonly mainSha: string;
+		readonly filesChanged: number;
+		readonly change: number | null;
+	};
 }
 export interface CodingExecutorHost {
 	/** Plan and wake the member's coding machine on genuine node capacity, attach
@@ -314,6 +447,11 @@ export function parseCodingSessionClaim(value: unknown): CodingSessionClaim {
 	};
 }
 
+/** A picture's path in the repository, as qorpera_submit_coding_turn takes it: plain names, no part that is `.` or
+ * `..`, a picture's ending, at most 300 bytes. */
+const PICTURE_PATH =
+	/^[A-Za-z0-9._-][A-Za-z0-9._ -]*(?:\/[A-Za-z0-9._-][A-Za-z0-9._ -]*)*\.(?:png|jpg|jpeg|webp|PNG|JPG|JPEG|WEBP)$/;
+
 export function parseCodingSubmission(value: unknown): CodingSubmission | null {
 	if (value === null || value === undefined) return null;
 	const item = record(value, "Invalid coding submission");
@@ -326,7 +464,21 @@ export function parseCodingSubmission(value: unknown): CodingSubmission | null {
 		throw new Error("Invalid coding submission");
 	if (item.kind === "finish") {
 		if (typeof item.headSha !== "string" || !SHA40.test(item.headSha)) throw new Error("Invalid coding submission");
-		return { kind: "finish", summary: item.summary, headSha: item.headSha, operationKey: item.operationKey };
+		// A picture that is not a path the kernel takes is dropped: the work is handed in without one.
+		const picture =
+			typeof item.picture === "string" &&
+			Buffer.byteLength(item.picture) <= 300 &&
+			PICTURE_PATH.test(item.picture) &&
+			!item.picture.split("/").some((part) => part === "." || part === "..")
+				? { picture: item.picture }
+				: {};
+		return {
+			kind: "finish",
+			summary: item.summary,
+			headSha: item.headSha,
+			operationKey: item.operationKey,
+			...picture,
+		};
 	}
 	if (item.kind === "ask") {
 		if (typeof item.question !== "string" || !item.question.trim()) throw new Error("Invalid coding submission");
@@ -404,7 +556,11 @@ function answerBefore<T>(call: () => Promise<T>, signal: AbortSignal): Promise<T
 	});
 }
 
-export type CodingTurnOutcome = "completed" | "blocked" | "failed" | "deferred" | "recovery-required";
+/** `released`: the kernel no longer holds the turn for this executor (its session was cancelled or archived, or its
+ * lease is another's): the kernel wrote what happened, and nothing is left for the executor to report. */
+export type CodingTurnOutcome = "completed" | "blocked" | "failed" | "deferred" | "released" | "recovery-required";
+/** Where a reported error happened. `watch`: a read of the running turn that stayed lost, which the turn outlives. */
+export type CodingReportStage = "turn" | "stop" | "defer" | "publish" | "watch";
 
 /** Claims coding session turns and runs each to its end, many at once: every
  * member's sessions share that member's machine, and the node's capacity is
@@ -419,7 +575,7 @@ export class CloudCodingExecutor {
 	readonly #host: CodingExecutorHost;
 	readonly #owner: string;
 	readonly #turnPollMs: number;
-	readonly #report: ((stage: "turn" | "stop" | "defer", error: unknown) => void) | undefined;
+	readonly #report: ((stage: CodingReportStage, error: unknown) => void) | undefined;
 	readonly #turns = new Set<Promise<CodingTurnOutcome>>();
 	constructor(options: {
 		control: CodingExecutorControl;
@@ -428,7 +584,7 @@ export class CloudCodingExecutor {
 		turnPollMs?: number;
 		/** Observability only: which stage failed and with what error, before
 		 * recovery. Never decides anything; the kernel receipts do. */
-		report?: (stage: "turn" | "stop" | "defer", error: unknown) => void;
+		report?: (stage: CodingReportStage, error: unknown) => void;
 	}) {
 		if (!/^[A-Za-z0-9_.:-]{1,120}$/.test(options.owner)) throw new Error("Invalid coding executor owner");
 		this.#control = options.control;
@@ -438,7 +594,7 @@ export class CloudCodingExecutor {
 		this.#report = options.report;
 	}
 	/** Observability must never change the outcome: a throwing reporter is ignored. */
-	#reported(stage: "turn" | "stop" | "defer", error: unknown): void {
+	#reported(stage: CodingReportStage, error: unknown): void {
 		try {
 			this.#report?.(stage, error);
 		} catch {
@@ -559,8 +715,16 @@ export class CloudCodingExecutor {
 						claimed.leaseUntil = until;
 						failures = 0;
 					}
-				} catch {
-					if (!heartbeatStop.signal.aborted) stop.abort(new Error("CODING_EXECUTOR_LEASE_LOST"));
+				} catch (error) {
+					// A refusal is the kernel's answer, and stays with the reason as its cause: the turn then ends as
+					// released. Renewals that ran out of time lost the lease without one.
+					if (!heartbeatStop.signal.aborted)
+						stop.abort(
+							new Error(
+								"CODING_EXECUTOR_LEASE_LOST",
+								error instanceof CodingControlRefused ? { cause: error } : undefined,
+							),
+						);
 				}
 			})();
 			// The turn as the kernel sees it, asked again while its answer is lost or late, within its own budget; the
@@ -581,31 +745,77 @@ export class CloudCodingExecutor {
 					return parseCodingTurnState(value, claimed);
 				}
 			};
+			// A call the kernel rolled back whole (CodingControlBusy: a busy row, or a statement out of time) wrote nothing:
+			// it is made again after a short pause, until `by`, the end of the lease the turn held at its first try unless
+			// the caller says. With `lost`, a call whose answer was lost or late is made again too, that many times: only
+			// for a call that may run twice.
+			const again = async (
+				method: (typeof CODING_EXECUTOR_RPCS)[number],
+				sent: Record<string, unknown>,
+				by = Date.parse(claimed.leaseUntil),
+				lost = 0,
+			): Promise<unknown> => {
+				for (let busy = 0, failures = 0; ; ) {
+					try {
+						return await call(method, sent);
+					} catch (error) {
+						if (active.aborted) throw error;
+						const pause =
+							error instanceof CodingControlBusy
+								? Math.min(2000, 250 * 2 ** busy++) * (0.5 + Math.random() / 2)
+								: failures < lost
+									? CODING_RETRY_PAUSES_MS[Math.min(failures++, 2)]
+									: undefined;
+						if (pause === undefined || Date.now() + pause >= by) throw error;
+						await setTimeout(pause, undefined, { signal: active });
+					}
+				}
+			};
+			// A note of where the turn is. Writing it twice changes nothing but a second line in the session's log.
 			const progress = (extra: Record<string, unknown>) =>
-				call("qorpera_record_coding_progress", { ...args, ...extra });
+				again("qorpera_record_coding_progress", { ...args, ...extra }, undefined, 2);
+			// The turn's report. Its answer lost or late (10 Nov 2026), the turn as the kernel describes it says whether
+			// the report went through: a lease the kernel no longer holds for this turn means it did (a completion gives
+			// the lease up), or that the session was cancelled meanwhile, and either way nothing is left to report; a
+			// turn still described is reported again, three times in all.
 			const complete = async (
 				outcome: "succeeded" | "blocked" | "failed",
 				summary: string,
 				extra: Record<string, unknown> = {},
 			) => {
 				active.throwIfAborted();
-				const view = record(
-					await call("qorpera_complete_coding_turn", {
-						...args,
-						p_outcome: outcome,
-						p_summary: summary.slice(0, 4000),
-						p_needs: null,
-						p_pull_request: null,
-						p_checks: null,
-						p_artifacts: null,
-						p_harness_session_ref: null,
-						p_files_changed: null,
-						p_options: null,
-						...extra,
-					}),
-					"Coding completion unconfirmed",
-				);
-				if (view.workerId !== claimed.workerId) throw new Error("Coding completion unconfirmed");
+				const report = {
+					...args,
+					p_outcome: outcome,
+					// By bytes, as the kernel counts them: a longer summary is refused, and the report would never land.
+					p_summary: withinBytes(summary, SUMMARY_BYTES),
+					p_needs: null,
+					p_pull_request: null,
+					p_checks: null,
+					p_artifacts: null,
+					p_harness_session_ref: null,
+					p_files_changed: null,
+					p_options: null,
+					...extra,
+				};
+				for (let attempt = 1; ; attempt++) {
+					let answer: unknown;
+					try {
+						answer = await again("qorpera_complete_coding_turn", report);
+					} catch (error) {
+						if (active.aborted || attempt === 3) throw error;
+						try {
+							await describe();
+						} catch (described) {
+							if (described instanceof CodingControlRefused && !active.aborted) return;
+							throw error;
+						}
+						continue;
+					}
+					const view = record(answer, "Coding completion unconfirmed");
+					if (view.workerId !== claimed.workerId) throw new Error("Coding completion unconfirmed");
+					return;
+				}
 			};
 			// The end of every turn: nothing more starts or publishes for it. The
 			// session stays attached with whatever its commands left running.
@@ -631,6 +841,22 @@ export class CloudCodingExecutor {
 					await complete("failed", error.summary);
 					return "failed";
 				}
+				if (!(error instanceof CodingMachineUnavailable) && !active.aborted && !recoveryRequired(error)) {
+					// Any other failure before the model ran (8 Nov 2026, Lærdom: the vault refused the session's
+					// environment) fails the turn now, saying so with its code, instead of leaving the lease to lapse as "the
+					// executor stopped responding". Only once what the turn attached came off: a machine that could not be
+					// unplugged, or one the host says needs recovery, still lapses (the recovery path).
+					this.#reported("turn", error);
+					end();
+					try {
+						await this.#host.detachSession(claimed, active);
+					} catch (detachError) {
+						this.#reported("stop", detachError);
+						return "recovery-required";
+					}
+					await complete("failed", prepareUnfinished(error));
+					return "failed";
+				}
 				if (!(error instanceof CodingMachineUnavailable) || active.aborted) throw error;
 				// Nothing ran yet: unplug whatever was attached, then wait in the queue.
 				try {
@@ -647,83 +873,158 @@ export class CloudCodingExecutor {
 				}
 				return "deferred";
 			}
-			await progress({
-				p_last_step: "Workspace ready",
-				p_vm_allocation_id: workspace.vmId,
-				p_base_sha: workspace.baseSha,
-				p_events: [
-					{
-						kind: "step",
-						actor: "executor",
-						body: { text: `Prepared the repository at ${workspace.baseSha.slice(0, 7)}` },
-					},
-				],
-			});
 			// 2. The model turn: admitted through the wake bus under the owner's sponsor.
 			// Wake admission never waits for its company's row, and every agent tool
 			// call holds that row for its whole transaction, so begin is refused as
 			// busy while one runs. A busy refusal wrote nothing: begin again after a
 			// short pause, until the lease this turn held at the first try ends.
+			// An admission that still fails (the kernel refused it, or its answer was lost or late) is read back first:
+			// a turn the kernel describes as running began, and goes on. One that did not begin fails now, saying so,
+			// while the turn holds its lease, instead of leaving the lease to lapse as "the executor stopped responding"
+			// (10 Nov 2026). The note before it is the same: without it the turn has no base to begin from.
 			const admission = { ...args, p_coding: { vmId: workspace.vmId, turnId: turn.turnId } };
 			const admitBy = Date.parse(claimed.leaseUntil);
 			let begun: Record<string, unknown> | undefined;
-			for (let attempt = 0; !begun; attempt++) {
-				try {
-					begun = record(await call("qorpera_begin_coding_turn", admission), "Coding turn admission unconfirmed");
-				} catch (error) {
-					const pause = Math.min(2000, 250 * 2 ** attempt) * (0.5 + Math.random() / 2);
-					if (!(error instanceof CodingControlBusy) || Date.now() + pause >= admitBy) throw error;
-					await setTimeout(pause, undefined, { signal: active });
+			let hours = false;
+			try {
+				await progress({
+					p_last_step: "Workspace ready",
+					p_vm_allocation_id: workspace.vmId,
+					p_base_sha: workspace.baseSha,
+					p_events: [
+						{
+							kind: "step",
+							actor: "executor",
+							body: { text: `Prepared the repository at ${workspace.baseSha.slice(0, 7)}` },
+						},
+					],
+				});
+				begun = record(
+					await again("qorpera_begin_coding_turn", admission, admitBy),
+					"Coding turn admission unconfirmed",
+				);
+				hours = begun.state === "refused" && begun.reason === "COMPUTER_HOURS_EXHAUSTED";
+				if (!hours && (begun.workerId !== claimed.workerId || begun.sequence !== claimed.sequence))
+					throw new Error("Coding turn admission unconfirmed");
+			} catch (error) {
+				if (active.aborted) throw error;
+				turn = await describe();
+				if (turn.phase !== "running") {
+					this.#reported("turn", error);
+					end();
+					await complete("failed", TURN_START_UNFINISHED);
+					return "failed";
 				}
 			}
-			if (begun.state === "refused" && begun.reason === "COMPUTER_HOURS_EXHAUSTED") {
+			if (hours) {
 				// The company ran out of computer hours after the machine step: nothing began. The session
 				// waits in the queue; an attached one stays with the keeper.
 				end();
 				try {
-					await call("qorpera_defer_coding_session", { ...args, p_reason: begun.reason });
+					await call("qorpera_defer_coding_session", { ...args, p_reason: begun?.reason });
 				} catch (deferError) {
 					this.#reported("defer", deferError);
 					return "recovery-required";
 				}
 				return "deferred";
 			}
-			if (begun.workerId !== claimed.workerId || begun.sequence !== claimed.sequence)
-				throw new Error("Coding turn admission unconfirmed");
 			// One describe at a time: the next poll's pause starts once the last describe, retries and all, settled.
-			for (;;) {
+			// The turn runs whether or not the executor can read it: a describe that stays lost past its budget is asked
+			// again at the next poll for as long as the lease is renewed, and said once (10 Nov 2026). A lease that can
+			// no longer be renewed ends the turn, as before; so does a refusal, which is the kernel's answer.
+			for (let unread = false; ; ) {
 				await setTimeout(this.#turnPollMs, undefined, { signal: active });
-				turn = await describe();
+				try {
+					turn = await describe();
+				} catch (error) {
+					if (active.aborted || error instanceof CodingControlRefused) throw error;
+					if (!unread) this.#reported("watch", error);
+					unread = true;
+					continue;
+				}
+				unread = false;
 				if (turnEnded(turn)) break;
 			}
 			// 3. What the harness left behind decides the outcome; prose never does.
 			const submission = turn.submission;
 			if (submission?.kind === "finish" && turn.jobStatus === "completed") {
-				await progress({ p_phase: "publishing", p_last_step: "Publishing the draft pull request" });
+				await progress({
+					p_phase: "publishing",
+					// A repository kept in Qorpera has no pull request: its work lands (own code storage), once its checks
+					// passed (step 3). The founder's card reads exactly these words (CODING_LANDING_STEP).
+					p_last_step:
+						claimed.repository.host === "qorpera" ? CODING_LANDING_STEP : "Publishing the draft pull request",
+				});
 				let publication: CodingExecutorPublication;
 				try {
 					publication = await this.#host.publish(claimed, submission, active);
 				} catch (error) {
-					if (!(error instanceof CodingPushRefused || error instanceof CodingSaveRefused) || active.aborted)
-						throw error;
-					// Nothing went out, and the same work would be refused again (but for a check the node was too busy for):
-					// the turn fails with what to change, and the session's next turn can finish again.
+					if (active.aborted) throw error;
 					end();
-					await complete(
-						"failed",
-						error instanceof CodingSaveRefused
-							? error.unchecked
-								? SAVE_UNCHECKED
-								: SAVE_REFUSAL
-							: pushRefusal(error),
-					);
+					if (error instanceof CodingLandConflict) {
+						// Nothing landed: the session merges the default branch itself and finishes again.
+						await complete("failed", landConflict(claimed.repository.baseBranch, error.paths));
+						return "failed";
+					}
+					if (error instanceof CodingLandRefused) {
+						// Nothing landed, and the same work would be refused again: the turn fails with what to change.
+						this.#reported("publish", error);
+						await complete("failed", error.summary);
+						return "failed";
+					}
+					if (error instanceof CodingPushRefused || error instanceof CodingSaveRefused) {
+						// Nothing went out, and the same work would be refused again (but for a check the node was too busy
+						// for): the turn fails with what to change, and the session's next turn can finish again.
+						await complete(
+							"failed",
+							error instanceof CodingSaveRefused
+								? error.unchecked
+									? SAVE_UNCHECKED
+									: SAVE_REFUSAL
+								: pushRefusal(error),
+						);
+						return "failed";
+					}
+					// Any other publication failure while the turn still holds its lease (8 Nov 2026, session 27038e92: a
+					// push GitHub had not shown yet) fails the turn now, saying so, instead of leaving the lease to lapse
+					// as "the executor stopped responding". The work stays on the session's branch, and every publication
+					// step checks what an earlier one did, so a later finish hands the same commit in again.
+					this.#reported("publish", error);
+					await complete("failed", PUBLICATION_UNFINISHED);
 					return "failed";
 				}
-				if (!publication.pullRequest && !publication.noChange) throw new Error("Coding publication unconfirmed");
+				if (!publication.pullRequest && !publication.noChange && !publication.landed)
+					throw new Error("Coding publication unconfirmed");
 				end();
+				const landed = publication.landed;
+				// How many files the landing changed on the default branch, for the session's card: only for a landing that
+				// moved it, and only a count the kernel takes.
+				const filesChanged =
+					landed &&
+					landed.state !== "unchanged" &&
+					Number.isSafeInteger(landed.filesChanged) &&
+					landed.filesChanged >= 0 &&
+					landed.filesChanged <= 2_147_483_647
+						? landed.filesChanged
+						: null;
 				await complete("succeeded", submission.summary, {
 					p_pull_request: publication.pullRequest,
 					p_harness_session_ref: claimed.harnessSessionRef,
+					// Where a repository kept in Qorpera got the commit: the session's record, and its agent's report.
+					...(landed
+						? {
+								p_artifacts: [
+									{
+										kind: "landed",
+										state: landed.state,
+										branch: claimed.repository.baseBranch,
+										headSha: submission.headSha,
+										mainSha: landed.mainSha,
+									},
+								],
+								p_files_changed: filesChanged,
+							}
+						: {}),
 				});
 				return "completed";
 			}
@@ -760,7 +1061,12 @@ export class CloudCodingExecutor {
 				/* recovery still required */
 				this.#reported("stop", stopError);
 			}
-			return "recovery-required";
+			// A refused describe or renewal is the kernel's answer: the session was cancelled or archived, or the lease
+			// is no longer this turn's, and the kernel wrote which.
+			return cause instanceof CodingControlRefused ||
+				(cause instanceof Error && cause.cause instanceof CodingControlRefused)
+				? "released"
+				: "recovery-required";
 		} finally {
 			heartbeatStop.abort();
 			clearTimeout(watchdog);

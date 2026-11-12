@@ -1,0 +1,395 @@
+#!/bin/bash
+# A desktop computer's screen, for work that needs one: testing a product the way a person uses it, driving an app's
+# interface. Installed as /usr/local/bin/desktop. Agents run it with machine_run (as root); `desktop help` says what
+# it does. Machines are headless unless asked: a desktop wants a machine of at least MIN_CPUS and MIN_MEMORY_KB
+# (machine_start with desktop true makes one), and a smaller machine refuses `desktop start`.
+set -euo pipefail
+export DISPLAY=:1
+UNIT=qorpera-machine-desktop.service
+# The unit's runtime folder: there while the desktop runs, gone when it stops. Root keeps the desktop's notes in it.
+RUN=/run/qorpera-desktop
+CHROME=/usr/lib/qorpera-chromium/chrome
+SELFTEST=/opt/qorpera-machine/desktop-selftest.html
+# Where files and folders opened on the desktop are put: the desktop user's own Desktop folder.
+DESK=/home/desktop/Desktop
+MIN_CPUS=2
+# A 4 GiB machine shows a little under 4 GiB of memory.
+MIN_MEMORY_KB=3500000
+usage() {
+	cat <<'EOF'
+desktop start [--lang TAG] [--tz ZONE] [--size WxH] [TARGET...]
+                              start the desktop (1600x1000, XFCE, Chromium) and open each TARGET on it (see open);
+                              does nothing to a desktop that runs. --lang da-DK and --tz Europe/Copenhagen set the
+                              browser's language and the programs' time zone (default en-US, UTC). It needs a
+                              machine of at least 2 processors and 4 GB (machine_start with desktop true).
+                              It stops by itself after an hour without a desktop command.
+desktop stop                  stop it and every program on it
+desktop status                running or stopped, and the open windows
+desktop shot FILE             save a PNG of the whole screen to FILE: a new file under /company each time, then
+                              company_read shows it to you; prints FILE, its size and pixels
+desktop open TARGET [--copy]  open TARGET on the desktop. A URL opens in Chromium. A file or folder (one of the
+                              company's under /company, or any other) is put on the desktop as a link and opened:
+                              a folder with an index.html, or an .html file, is served at http://127.0.0.1:<port>/
+                              and opened in Chromium; another file opens in Chromium; another folder opens in the
+                              file manager. The link shows the files where they are, so a change shows after a
+                              reload. --copy puts a copy on the desktop instead (for a program that writes beside
+                              its files; nothing it writes reaches /company). Nothing on the desktop is replaced:
+                              a name that is taken gets a number (site-2), and the answer says the name used.
+desktop run PROGRAM [ARG...]  start a program on the desktop as the desktop's user; it keeps running after this ends
+                              (programs on the desktop save in /home/desktop: copy what matters into /company as root)
+desktop click X Y [BUTTON]    click at X,Y: pixels from the top left of the screen, as in a shot; BUTTON left
+                              (default), middle or right
+desktop double X Y            double-click at X,Y
+desktop move X Y              move the pointer to X,Y
+desktop drag X1 Y1 X2 Y2      press at X1,Y1, move to X2,Y2 and release
+desktop type TEXT             type TEXT into the focused window (text with other than plain ASCII letters is
+                              pasted, which replaces the clipboard)
+desktop key KEY...            press keys, for example Return, ctrl+l, ctrl+shift+t, Escape, Tab
+desktop scroll up|down [N]    scroll N steps (default 3) where the pointer is
+desktop windows               list the open windows: id, desktop, title
+desktop size WxH              change the screen's size, for example 1280x800
+desktop selftest              check the desktop: 3D drawing, typing, a screenshot
+
+open, click, double, move, drag, type, key and scroll take --shot FILE as their last two words: the screen is saved
+to FILE a moment after the action, so one command acts and shows what came of it.
+EOF
+}
+fail() { echo "$1" >&2; exit "${2:-1}"; }
+# The unit is active and its display answers (a socket left by a killed display does not).
+running() { [[ $(systemctl is-active "$UNIT" 2>/dev/null || true) == active ]] && xdpyinfo >/dev/null 2>&1; }
+need() {
+	running || fail "the desktop is not running: desktop start"
+	# Every use puts off the idle stop (desktop-session).
+	touch "$RUN/last-use"
+}
+number() { [[ ${1:-} =~ ^[0-9]{1,5}$ ]] || fail "not a pixel position: ${1:-}" 2; }
+size() { xdpyinfo | awk '/dimensions:/ {print $2}'; }
+# A program on the desktop runs in a unit of its own in the machine's slice, as the desktop's user: it outlives the
+# command that started it and stops with the desktop. Requisite refuses its start unless the desktop is active, and
+# BindsTo stops it whenever the desktop stops, so no program outlives a stop however the two race. Its arguments
+# reach it as given: no $ expansion by systemd. It joins the desktop's session bus, and has its time zone and language.
+launch() {
+	local extra=()
+	[[ -s $RUN/tz ]] && extra+=(--setenv=TZ="$(<"$RUN/tz")")
+	[[ -s $RUN/lang ]] && extra+=(--setenv=LANGUAGE="$(<"$RUN/lang")")
+	systemd-run --quiet --collect --expand-environment=no --slice=qorpera-machine.slice --uid=desktop --gid=desktop \
+		-p WorkingDirectory=/home/desktop -p Requisite="$UNIT" -p BindsTo="$UNIT" -p After="$UNIT" \
+		--setenv=HOME=/home/desktop --setenv=DISPLAY=:1 --setenv=XDG_RUNTIME_DIR="$RUN" \
+		--setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=$RUN/bus" "${extra[@]}" -- "$@"
+}
+# Chromium on the desktop. --disable-infobars hides Chrome for Testing's "only for automated testing" bar (what
+# Playwright passes; it does nothing else). --enable-unsafe-swiftshader gives pages 3D drawing (WebGL) on a machine
+# without a graphics card: the drawing runs in software inside the browser's own sandbox, on a machine that holds no
+# credentials.
+browser() {
+	local flags=(--start-maximized --no-first-run --no-default-browser-check --password-store=basic --disable-infobars
+		--enable-unsafe-swiftshader)
+	[[ -s $RUN/lang ]] && flags+=(--lang="$(<"$RUN/lang")")
+	launch "$CHROME" "${flags[@]}" "$@"
+}
+# Serves a folder to the desktop's browser on the machine's loopback, as the desktop's user; one server per folder.
+serve() { # folder -> prints the port
+	local folder=$1 port note
+	for note in "$RUN"/serve-*; do
+		[[ -f $note && $(<"$note") == "$folder" ]] || continue
+		port=${note##*-}
+		if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/"; then echo "$port"; return; fi
+		rm -f -- "$note"
+	done
+	for port in $(seq 8600 8699); do
+		[[ -z $(ss -ltnH "sport = :$port") && ! -e $RUN/serve-$port ]] && break
+	done
+	[[ -z $(ss -ltnH "sport = :$port") ]] || fail "no free port to serve $folder"
+	printf %s "$folder" >"$RUN/serve-$port"
+	launch /usr/bin/python3 -m http.server "$port" --bind 127.0.0.1 --directory "$folder"
+	for _ in $(seq 1 50); do curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/" && break; sleep 0.1; done
+	echo "$port"
+}
+quote() { python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$1"; }
+# Opens one target: a URL, or a file or folder put on the desktop first (a link, or a copy).
+open_target() { # target copy(0|1)
+	local target=$1 copy=$2 path name shown place port taken
+	if [[ $target =~ ^[a-zA-Z][a-zA-Z0-9+.-]*: && ! -e $target ]]; then
+		browser "$target"
+		echo "opening $target"
+		return
+	fi
+	path=$(realpath -e -- "$target" 2>/dev/null) || fail "no such file or folder: $target"
+	[[ $path != / ]] || fail "open a file or a folder, not the whole disk" 2
+	name=$(basename -- "$path")
+	install -d -o desktop -g desktop -m 0755 "$DESK"
+	if [[ $path == "$DESK"/* ]]; then
+		# Already on the desktop (an earlier copy, say): opened where it is.
+		place=$path
+	else
+		# Nothing on the desktop is ever replaced. The same link is used again; a name that is taken (an earlier copy,
+		# which may have been changed since, or another folder of the same name) gets a number instead.
+		place=$DESK/$name
+		taken=1
+		while [[ -e $place || -L $place ]]; do
+			if (( ! copy )) && [[ -L $place && $(readlink -- "$place") == "$path" ]]; then break; fi
+			taken=$(( taken + 1 ))
+			if [[ -f $path && $name == ?*.* ]]; then place=$DESK/${name%.*}-$taken.${name##*.}; else place=$DESK/$name-$taken; fi
+		done
+		if [[ ! -e $place && ! -L $place ]]; then
+			if (( copy )); then
+				cp -a -- "$path" "$place"
+				chown -R desktop:desktop -- "$place"
+			else
+				ln -s -- "$path" "$place"
+				chown -h desktop:desktop -- "$place"
+			fi
+		fi
+		if (( copy )); then path=$place; fi
+	fi
+	# The name on the desktop may carry a number; the page's address is built from the file that is opened.
+	shown=$(basename -- "$place")
+	name=$(basename -- "$path")
+	runuser -u desktop -- test -r "$path" ||
+		fail "the desktop's user cannot read $path: open it with --copy"
+	if [[ -d $path && -f $path/index.html ]]; then
+		port=$(serve "$path")
+		browser "http://127.0.0.1:$port/"
+		echo "opening $path at http://127.0.0.1:$port/ (on the desktop as $shown)"
+	elif [[ -d $path ]]; then
+		launch /usr/bin/thunar "$path"
+		echo "opening the folder $path in the file manager (on the desktop as $shown)"
+	elif [[ ${path,,} == *.html || ${path,,} == *.htm ]]; then
+		port=$(serve "$(dirname -- "$path")")
+		browser "http://127.0.0.1:$port/$(quote "$name")"
+		echo "opening $path at http://127.0.0.1:$port/$(quote "$name") (on the desktop as $shown)"
+	else
+		browser "file://$(quote "$path")"
+		echo "opening $path in Chromium (on the desktop as $shown)"
+	fi
+}
+shot() { # file
+	local file=$1 folder
+	[[ $file == *.png ]] || fail "FILE must end in .png" 2
+	folder=$(realpath -m -- "$(dirname -- "$file")")
+	# Without the company folder mounted, /company is a plain folder on this machine: nothing would ever show the picture.
+	if [[ $folder == /company || $folder == /company/* ]] && ! mountpoint -q /company; then
+		fail "this machine has no company folder at /company, so company_read cannot show a picture saved there (machine_start says which machines get it)" 4
+	fi
+	mkdir -p -- "$folder"
+	scrot --overwrite --silent -- "$file"
+	echo "$file $(stat -c %s -- "$file") bytes $(file -b -- "$file" | sed -n 's/.*, \([0-9]* x [0-9]*\),.*/\1/p')"
+}
+resize() { # WxH
+	[[ $1 =~ ^([0-9]{3,4})x([0-9]{3,4})$ ]] && (( BASH_REMATCH[1] >= 320 && BASH_REMATCH[1] <= 3840 && BASH_REMATCH[2] >= 240 && BASH_REMATCH[2] <= 2160 )) ||
+		fail "a size is WxH, from 320x240 to 3840x2160" 2
+	# A size the display lists is a mode; any other is set as the screen's own size.
+	xrandr -s "$1" >/dev/null 2>&1 || xrandr --fb "$1" >/dev/null 2>&1 || true
+	[[ $(size) == "$1" ]] || fail "the screen stayed $(size)"
+}
+titles() { wmctrl -l 2>/dev/null | awk '{ $1=$2=$3=""; sub(/^ +/,""); print }'; }
+
+command=${1:-help}
+shift || true
+# open, click, double, move, drag, type, key and scroll: --shot FILE as the last two words.
+after=
+case $command in
+open | click | double | move | drag | type | key | scroll)
+	if (( $# >= 3 )) && [[ ${*: -2:1} == --shot ]]; then
+		after=${*: -1}
+		set -- "${@:1:$#-2}"
+	fi
+	;;
+esac
+# Starting, stopping and launching take turns, so a stop never meets a launch half done.
+case $command in
+start | stop | open | run)
+	exec 9>/run/qorpera-desktop.lock
+	flock 9
+	;;
+esac
+case $command in
+start)
+	lang= tz= wanted=
+	while [[ ${1:-} == --* ]]; do
+		case $1 in
+		--lang) lang=${2:?--lang TAG}; [[ $lang =~ ^[a-z]{2,3}(-[A-Z]{2})?$ ]] || fail "a language is like da-DK or en-US" 2 ;;
+		--tz) tz=${2:?--tz ZONE}; [[ $tz =~ ^[A-Za-z0-9_+/-]+$ && -f /usr/share/zoneinfo/$tz ]] || fail "no such time zone: $tz" 2 ;;
+		--size) wanted=${2:?--size WxH} ;;
+		*) fail "desktop start [--lang TAG] [--tz ZONE] [--size WxH] [TARGET...]" 2 ;;
+		esac
+		shift 2
+	done
+	if ! running; then
+		cpus=$(nproc)
+		memory=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+		if (( cpus < MIN_CPUS || memory < MIN_MEMORY_KB )); then
+			fail "this machine is too small for a desktop: it has $cpus processor(s) and $(( (memory + 524288) / 1048576 )) GB, and a desktop needs $MIN_CPUS and 4 GB. Start a desktop computer: machine_start with desktop true" 3
+		fi
+		systemctl reset-failed "$UNIT" 2>/dev/null || true
+		systemctl start "$UNIT"
+		for _ in $(seq 1 100); do running && break; sleep 0.1; done
+		running || { journalctl -u "$UNIT" -n 20 --no-pager >&2; fail "the desktop did not start"; }
+		# The session draws its panel and background a moment after the display is up; without a window manager
+		# nothing can be driven.
+		for _ in $(seq 1 100); do wmctrl -m >/dev/null 2>&1 && break; sleep 0.1; done
+		wmctrl -m >/dev/null 2>&1 || { systemctl stop "$UNIT"; fail "the desktop's session did not start"; }
+		# The panel and the background are drawn a second or two after that (2.3 to 2.7 s after the start, measured on
+		# 10 Nov 2026); until then the screen is black and a screenshot of it shows nothing. A screen of one colour is a
+		# PNG of about a thousandth of its pixels' bytes (4760 bytes at 1600x1000; the drawn desktop is 16 KB): wait,
+		# about 6 s at most, for more than that, so the first look at a started desktop shows it.
+		dims=$(size)
+		drawn=$RUN/drawn-$$.png
+		for _ in $(seq 1 35); do
+			scrot --overwrite --silent -- "$drawn" 2>/dev/null &&
+				(( $(stat -c %s -- "$drawn") > ${dims%x*} * ${dims#*x} * 3 / 1000 + 3000 )) && break
+			sleep 0.1
+		done
+		rm -f -- "$drawn"
+	fi
+	touch "$RUN/last-use"
+	if [[ -n $lang ]]; then printf %s "$lang" >"$RUN/lang"; fi
+	if [[ -n $tz ]]; then printf %s "$tz" >"$RUN/tz"; fi
+	if [[ -n $wanted ]]; then resize "$wanted"; fi
+	echo "desktop running on display :1 ($(size))"
+	for target in "$@"; do open_target "$target" 0; done
+	;;
+stop)
+	systemctl stop "$UNIT"
+	echo "desktop stopped"
+	;;
+status)
+	if running; then
+		echo "running ($(size)$([[ -s $RUN/lang ]] && echo ", language $(<"$RUN/lang")")$([[ -s $RUN/tz ]] && echo ", time zone $(<"$RUN/tz")"))"
+		wmctrl -l || true
+	else
+		echo "stopped"
+	fi
+	;;
+shot)
+	need
+	shot "${1:?desktop shot FILE}"
+	;;
+open)
+	need
+	copy=0
+	if [[ ${*: -1} == --copy ]]; then
+		copy=1
+		set -- "${@:1:$#-1}"
+	fi
+	(( $# == 1 )) || fail "desktop open TARGET [--copy]" 2
+	open_target "$1" "$copy"
+	;;
+run)
+	need
+	(( $# > 0 )) || fail "desktop run PROGRAM [ARG...]" 2
+	launch "$@"
+	echo "started $1"
+	;;
+click)
+	need
+	number "${1:-}"; number "${2:-}"
+	case ${3:-left} in left) button=1 ;; middle) button=2 ;; right) button=3 ;; *) fail "BUTTON is left, middle or right" 2 ;; esac
+	xdotool mousemove --sync "$1" "$2" click "$button"
+	;;
+double)
+	need
+	number "${1:-}"; number "${2:-}"
+	xdotool mousemove --sync "$1" "$2" click --repeat 2 --delay 80 1
+	;;
+move)
+	need
+	number "${1:-}"; number "${2:-}"
+	xdotool mousemove --sync "$1" "$2"
+	;;
+drag)
+	need
+	for value in "${1:-}" "${2:-}" "${3:-}" "${4:-}"; do number "$value"; done
+	xdotool mousemove --sync "$1" "$2" mousedown 1 sleep 0.1 mousemove --sync "$3" "$4" sleep 0.1 mouseup 1
+	;;
+type)
+	need
+	(( $# > 0 )) || fail "desktop type TEXT" 2
+	text="$*"
+	if [[ $text == *[![:ascii:]]* || $text == *[[:cntrl:]]* ]]; then
+		# xdotool types a letter outside the keyboard's layout through a spare key, where a capital such as Å comes
+		# out small and a fast run of them comes out wrong. Such text is pasted instead: put on both selections
+		# (shift+Insert pastes the clipboard in a browser and the primary selection in a terminal).
+		for selection in --clipboard --primary; do
+			printf %s "$text" | xsel --logfile /dev/null "$selection" --input
+		done
+		xdotool key --clearmodifiers shift+Insert
+		sleep 0.2
+	else
+		xdotool type --delay 12 -- "$text"
+	fi
+	;;
+key)
+	(( $# > 0 )) || fail "desktop key KEY..." 2
+	# xdotool runs any of its own commands that follows the keys, whatever its case (`key exec id` runs id as root): none
+	# is a key. The list is the installed xdotool's own, so a newer one's commands are refused too; without it (xdotool
+	# may want the display for its help), no keys.
+	commands=$(xdotool help 2>/dev/null | awk 'NR > 1 && NF == 1 { print tolower($1) }' || true)
+	[[ -n $commands ]] || { need; fail "cannot read xdotool's commands, so no key is pressed"; }
+	for name in "$@"; do
+		if grep -qxF -- "${name,,}" <<<"$commands"; then fail "not a key: $name (it is an xdotool command)" 2; fi
+	done
+	need
+	# xdotool skips a key name it does not know with a word on stderr, and exits 0: say so rather than that it pressed it.
+	skipped=$(xdotool key --delay 40 -- "$@" 2>&1 >/dev/null) || { [[ -z $skipped ]] || echo "$skipped" >&2; exit 1; }
+	if [[ $skipped == *"No such key name"* ]]; then
+		fail "no such key: $(sed -n "s/.*No such key name '\([^']*\)'.*/\1/p" <<<"$skipped" | head -n 1) (any other keys were pressed)" 2
+	fi
+	;;
+scroll)
+	need
+	case ${1:-} in up) button=4 ;; down) button=5 ;; *) fail "desktop scroll up|down [N]" 2 ;; esac
+	steps=${2:-3}
+	[[ $steps =~ ^[0-9]{1,3}$ ]] || fail "N is a number of steps" 2
+	xdotool click --repeat "$steps" --delay 30 "$button"
+	;;
+windows)
+	need
+	wmctrl -l
+	;;
+size)
+	need
+	resize "${1:?desktop size WxH}"
+	echo "the screen is $(size)"
+	;;
+selftest)
+	# The image build runs this, and anyone may on a machine: the desktop comes up, a page gets 3D drawing, text with
+	# Danish capitals arrives as typed, and a screenshot has the screen's size. It leaves the desktop as it found it.
+	was=0
+	if running; then was=1; fi
+	"$0" start >/dev/null
+	"$0" open "file://$SELFTEST" >/dev/null
+	for _ in $(seq 1 120); do titles | grep -qF 'SELFTEST[' && break; sleep 0.25; done
+	state=$(titles | grep -F 'SELFTEST[' | head -1)
+	[[ $state == *"webgl=yes"* ]] || fail "selftest: no 3D drawing (WebGL) in the desktop's browser: ${state:-the page did not open}"
+	"$0" click 400 400
+	ascii='The quick brown fox, 0123456789.'
+	"$0" type "$ascii"
+	sleep 0.6
+	[[ $(titles | grep -F 'SELFTEST[' | head -1) == *"typed=$ascii]"* ]] ||
+		fail "selftest: typed text arrived as: $(titles | grep -F 'SELFTEST[' | head -1)"
+	"$0" key ctrl+a BackSpace
+	danish='Århus Ærø Øster – ÆØÅ “x”'
+	"$0" type "$danish"
+	sleep 0.6
+	[[ $(titles | grep -F 'SELFTEST[' | head -1) == *"typed=$danish]"* ]] ||
+		fail "selftest: text with Danish capitals arrived as: $(titles | grep -F 'SELFTEST[' | head -1)"
+	picture=$(mktemp --suffix=.png)
+	"$0" shot "$picture" | grep -q " $(size | sed 's/x/ x /')$" || { rm -f -- "$picture"; fail "selftest: the screenshot is not the screen's size"; }
+	rm -f -- "$picture"
+	if (( ! was )); then "$0" stop >/dev/null; fi
+	echo "selftest ok: 3D drawing, typing, screenshot"
+	;;
+help | -h | --help)
+	usage
+	;;
+*)
+	usage >&2
+	exit 2
+	;;
+esac
+if [[ -n $after ]]; then
+	# The action's effect shows a moment later; a page that opens takes longer.
+	if [[ $command == open ]]; then sleep 3; else sleep 1; fi
+	shot "$after"
+fi

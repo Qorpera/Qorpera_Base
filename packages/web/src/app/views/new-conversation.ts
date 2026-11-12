@@ -2,6 +2,7 @@ import { prepareWebCompanyAgentCreation } from "../../cloud/company-agents.ts";
 import { WebCompanyFolderRejectedError } from "../../cloud/company-folder-writes.ts";
 import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure, figureElement, nativeColorOf } from "../../ui/avatar.ts";
+import { Dictation } from "../../ui/dictation.ts";
 import { button, h, icon, replace } from "../../ui/dom.ts";
 import { FigurePicker } from "../../ui/figure-picker.ts";
 import { matchesKey } from "../../ui/keys.ts";
@@ -98,11 +99,21 @@ export class NewConversationView {
 		},
 		icon("send"),
 	);
+	/** Speech to text: the microphone beside the send button. */
+	readonly #dictation = new Dictation(
+		this.#message,
+		(start, end, text) => {
+			this.#message.setRangeText(text, start, end, "end");
+			this.#message.dispatchEvent(new Event("input", { bubbles: true }));
+		},
+		this.#lifetime.signal,
+	);
 	readonly #status = h("p", { class: "attachment-status", role: "status" });
 	readonly #composer = h(
 		"footer",
 		{ class: "composer new-conversation-composer" },
-		h("div", { class: "composer-shell" }, this.#message, this.#send),
+		h("div", { class: "composer-shell" }, this.#message, this.#dictation.button, this.#send),
+		this.#dictation.status,
 		this.#status,
 	);
 	#sending = false;
@@ -453,6 +464,7 @@ export class NewConversationView {
 	#syncComposer(): void {
 		const canWrite = this.#company.store.get().team?.capabilities.write === true;
 		this.#message.disabled = this.#sending || !canWrite;
+		this.#dictation.disabled = this.#message.disabled;
 		this.#field.inert = this.#sending;
 		this.#send.disabled =
 			this.#sending ||
@@ -464,6 +476,7 @@ export class NewConversationView {
 	async #submit(): Promise<void> {
 		this.#render();
 		if (this.#send.disabled || !this.#actions.startConversation) return;
+		this.#dictation.cancel();
 		this.#sending = true;
 		this.#setListOpen(false);
 		this.#syncComposer();
@@ -498,6 +511,8 @@ export class NewConversationView {
 		}
 		this.#listOpen = false;
 		this.#editing = true;
+		// The composer leaves the screen: so does the listening, and nothing more is written into it.
+		this.#dictation.cancel();
 		const stage = h(
 			"div",
 			{ class: "new-agent-stage" },
@@ -512,16 +527,6 @@ export class NewConversationView {
 			autocomplete: "off",
 			oninput: () => {
 				this.#draft.displayName = name.value;
-			},
-		});
-		const role = h("input", {
-			value: this.#draft.role,
-			maxlength: "160",
-			required: true,
-			placeholder: t("For example, Research"),
-			"aria-label": t("Agent title"),
-			oninput: () => {
-				this.#draft.role = role.value;
 			},
 		});
 		const charter = h("textarea", {
@@ -544,7 +549,6 @@ export class NewConversationView {
 			stage,
 			picker.el,
 			h("label", null, t("Name"), name),
-			h("label", null, t("Title"), role),
 			h("label", null, t("Responsibilities"), charter),
 		);
 		const status = h(
@@ -597,8 +601,8 @@ export class NewConversationView {
 				(!this.#createdAgentId && !form.reportValidity())
 			)
 				return;
-			if (!name.value.trim() || !role.value.trim()) {
-				status.textContent = t("Enter a name and title.");
+			if (!name.value.trim()) {
+				status.textContent = t("Enter a name.");
 				return;
 			}
 			this.#pending = true;
@@ -610,7 +614,9 @@ export class NewConversationView {
 				this.#creation ??= prepareWebCompanyAgentCreation({
 					...this.#draft,
 					displayName: name.value.trim(),
-					role: role.value.trim(),
+					// No title of its own: agents show a name and responsibilities (Jonas, 10 November 2026). agent.md
+					// still wants a role, and the name is the closest true one.
+					role: name.value.trim(),
 					charter: charter.value.trim(),
 				});
 				this.#createdAgentId ??= await this.#actions.createAgent(

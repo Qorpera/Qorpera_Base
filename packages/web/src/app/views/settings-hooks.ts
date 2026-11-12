@@ -4,18 +4,19 @@ import { button, confirmDialog, fmtTime, h, icon, replace } from "../../ui/dom.t
 import { phrase, t } from "../../ui/preferences.ts";
 
 /**
- * Settings → Company connections → Webhooks and Mailboxes: the company's event
- * hooks (events plan §6). What arrives at one starts the company's routines
+ * The company's event hooks (events plan §6): its webhooks, under an agent's
+ * Routines, and its mailboxes, under the Mailbox page's Addresses. What arrives at one starts the company's routines
  * that wait for it. Every member sees each one's name, what it is for and
  * whether it is on; a mailbox's email address is public by nature. An owner or
  * admin also sees a webhook's address, the one thing its sender needs, and
  * adds, pauses, resumes or removes them; the kernel refuses anyone else.
- * Settings adds address-proven webhooks only: a signed one needs its sender's
+ * It adds address-proven webhooks only: a signed one needs its sender's
  * signing secret in the vault, and members never paste one.
  */
 
-type HooksClient = Pick<WebEventHooks, "list" | "createHook" | "createMailbox" | "setStatus">;
-type Kind = "webhook" | "mailbox";
+export type HooksClient = Pick<WebEventHooks, "list" | "createHook" | "createMailbox" | "setStatus">;
+export type HookKind = "webhook" | "mailbox";
+type Kind = HookKind;
 
 export interface HooksAccess {
 	/** Whether the signed-in member may add, pause or remove the company's hooks
@@ -31,7 +32,6 @@ interface KindText {
 	add: string;
 	name: string;
 	example: string;
-	purpose: string;
 	hint: string;
 	nameRule: string;
 	taken: string;
@@ -52,7 +52,6 @@ const KIND_TEXT: Record<Kind, KindText> = {
 		add: phrase("Add webhook"),
 		name: phrase("Webhook name"),
 		example: phrase("e.g. new-orders"),
-		purpose: phrase("What it is for, e.g. new orders from the shop"),
 		hint: phrase(
 			"Lowercase letters, digits and hyphens, starting with a letter. The company's agents read what it is for when something arrives.",
 		),
@@ -70,7 +69,6 @@ const KIND_TEXT: Record<Kind, KindText> = {
 		add: phrase("Add mailbox"),
 		name: phrase("Mailbox name"),
 		example: phrase("e.g. invoices"),
-		purpose: phrase("What it is for, e.g. invoices from suppliers"),
 		hint: phrase("The part before the @: lowercase letters, digits, dots, hyphens and underscores."),
 		nameRule: phrase(
 			"A mailbox name is lowercase letters, digits, dots, hyphens and underscores, and starts and ends with a letter or digit.",
@@ -121,6 +119,10 @@ export class HooksView {
 	readonly #client: HooksClient;
 	readonly #lifetime = new AbortController();
 	readonly #access: HooksAccess;
+	/** The lists drawn: webhooks, mailboxes or both. */
+	readonly #kinds: readonly Kind[];
+	/** Told after a hook was added, paused, resumed or removed. */
+	readonly #changed: () => void;
 	#drawnManage: boolean | undefined;
 	#hooks: EventHook[] | undefined;
 	#loading = true;
@@ -138,9 +140,15 @@ export class HooksView {
 	/** One more read, asked for while a read was out, and the focus it draws with. */
 	#again: { read: Promise<void>; focusKey: string | undefined } | undefined;
 
-	constructor(client: HooksClient, signal: AbortSignal, options: { access?: HooksAccess } = {}) {
+	constructor(
+		client: HooksClient,
+		signal: AbortSignal,
+		options: { access?: HooksAccess; kinds?: readonly HookKind[]; changed?: () => void } = {},
+	) {
 		this.#client = client;
 		this.#access = options.access ?? FULL_ACCESS;
+		this.#changed = options.changed ?? (() => {});
+		this.#kinds = options.kinds ?? ["webhook", "mailbox"];
 		if (signal.aborted) this.#lifetime.abort();
 		else signal.addEventListener("abort", () => this.dispose(), { once: true, signal: this.#lifetime.signal });
 		this.#draw();
@@ -224,6 +232,7 @@ export class HooksView {
 		this.#draw();
 		try {
 			await this.#client.setStatus(hook.id, status, this.#lifetime.signal);
+			if (!this.#lifetime.signal.aborted) this.#changed();
 		} catch (error) {
 			// A hook removed meanwhile (55000) leaves the list on the next read.
 			if (!this.#lifetime.signal.aborted && !(error instanceof CloudRpcError && error.code === "55000"))
@@ -247,7 +256,8 @@ export class HooksView {
 		const text = KIND_TEXT[kind];
 		const draft = this.#drafts[kind];
 		const name = draft.name.trim().toLowerCase();
-		const purpose = draft.purpose.trim();
+		// A mailbox's form asks for its name alone: the name says what it is for, and is the purpose the kernel wants.
+		const purpose = kind === "mailbox" ? name : draft.purpose.trim();
 		const nameProblem =
 			kind === "webhook" && name.startsWith("mail-")
 				? t("Names beginning with mail- belong to mailboxes.")
@@ -279,6 +289,7 @@ export class HooksView {
 			this.#outcome = { key: hook.id, tone: "ok", text: t(text.ready) };
 			// The new one shows at once, with its address to copy; the next read sorts it in.
 			this.#hooks = [...(this.#hooks ?? []).filter((item) => item.id !== hook.id), hook];
+			this.#changed();
 			const focus = hook.url ? `hook-copy:${hook.id}` : `hook-add:${kind}`;
 			this.#draw(focus);
 			await this.#refresh(focus);
@@ -383,7 +394,8 @@ export class HooksView {
 				"div",
 				{ class: "settings-copy" },
 				h("strong", null, title(hook)),
-				hook.purpose ? h("small", null, hook.purpose) : null,
+				// A mailbox added here has its name for a purpose (#add): the line is for one that says more.
+				hook.purpose && hook.purpose !== hook.email?.split("@")[0] ? h("small", null, hook.purpose) : null,
 				h("small", { class: "hook-state" }, this.#state(hook)),
 			),
 			h("div", { class: "connection-actions" }, ...actions),
@@ -409,18 +421,23 @@ export class HooksView {
 			},
 		});
 		name.dataset.focusKey = `hook-name:${kind}`;
-		const purpose = h("input", {
-			type: "text",
-			value: draft.purpose,
-			maxlength: "512",
-			autocomplete: "off",
-			placeholder: t(text.purpose),
-			"aria-label": t("What it is for"),
-			oninput: () => {
-				draft.purpose = purpose.value;
-			},
-		});
-		purpose.dataset.focusKey = `hook-purpose:${kind}`;
+		// Only a webhook says what it is for: a mailbox's name does.
+		let purpose: HTMLInputElement | null = null;
+		if (kind === "webhook") {
+			const field = h("input", {
+				type: "text",
+				value: draft.purpose,
+				maxlength: "512",
+				autocomplete: "off",
+				placeholder: t("What it is for, e.g. new orders from the shop"),
+				"aria-label": t("What it is for"),
+				oninput: () => {
+					draft.purpose = field.value;
+				},
+			});
+			field.dataset.focusKey = "hook-purpose:webhook";
+			purpose = field;
+		}
 		// A mailbox's domain is the company mail's, known once the company has one mailbox.
 		const domain = kind === "mailbox" ? this.#hooks?.find((hook) => hook.email)?.email?.split("@")[1] : undefined;
 		const add = h(
@@ -521,7 +538,7 @@ export class HooksView {
 			this.el,
 			error,
 			// Without a first read there is nothing to show but the way to try again.
-			this.#hooks || this.#loading ? [this.#section("webhook"), this.#section("mailbox")] : null,
+			this.#hooks || this.#loading ? this.#kinds.map((kind) => this.#section(kind)) : null,
 		);
 		if (key) {
 			const target = [...this.el.querySelectorAll<HTMLElement>("[data-focus-key]")].find(

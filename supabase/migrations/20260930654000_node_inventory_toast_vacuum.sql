@@ -1,0 +1,51 @@
+-- The space that hourly thinning frees in the node inventory receipts' TOAST table is made reusable within the hour.
+--
+-- Thinning (20260930615100) deletes node reports older than two days, hourly at minute 32. A deleted row's space is only
+-- reused after a VACUUM, and autovacuum decides that per table: 50 dead rows plus 20 % of the rows. The inventory column
+-- is large on a node with many computers (node 2: 19 inventory entries, 15.9 kB of JSON, 5.3 kB compressed on 7 November
+-- 23:00Z), so it lives in the TOAST table, three chunks a report, and that table holds 226 of the inventory receipts'
+-- 408 MB.
+--
+-- Measured in production on 7 November 2026, 23:55Z (pg_stat_all_tables): the first five thinning runs, 19:32Z to 23:32Z,
+-- each removed 6,781 reports in 0.27 to 0.32 s. The heap was vacuumed at 22:32Z once 27,179 rows were dead. The TOAST table
+-- had 15,902 dead chunks and no vacuum since 15:21Z (00:20Z: still 15,902): at 20 % of its 127,192 chunks it waits for
+-- 25,488 dead, or for 26,438 inserted (19,299 so far). Meanwhile every new report takes fresh pages, so the table grows
+-- while the freed space waits.
+-- In the steady state thinning removes about 560 of node 2's 720 reports an hour, about 1,700 chunks, and 2,160 are
+-- inserted. At 20 % of the about 160,000 chunks a week holds then, the insert count triggers a vacuum about every 15 hours,
+-- with up to about 25,000 dead chunks (about 50 MB) held back each time. One vacuum after each run keeps that under a few MB.
+--
+-- So: vacuum the TOAST table after 1,000 dead chunks, whatever its size. Each thinning run passes that (the catch-up runs
+-- of 7-8 November left 3,180 dead chunks a run on average over the first five, and 6,828 at 00:32Z on 8 November; a steady
+-- run about 1,700), and the seven-day retention's deletes count towards the next.
+--
+-- And always do the index pass (vacuum_index_cleanup = on). PostgreSQL 14 and later skip it when under 2 % of the table's
+-- pages hold dead items, and PostgreSQL 17 then leaves those pages out of the free space map: their space comes back only
+-- at the next vacuum that does the pass. A steady run touches about 450 to 500 of about 28,000 to 36,000 pages (1.3 to
+-- 1.8 %), under that line. Lab on a test machine, PostgreSQL 17.6, 20,000 TOAST pages, each run 560 of 720 reports spread
+-- over 360 pages (1.8 %): with the two thresholds alone the space came back every second run (the file took 280 extra pages
+-- once, and the free space map alternated); with the index pass forced it came back every run and the file did not grow;
+-- with the defaults it grew 280 pages every run.
+-- Cost: one vacuum an hour of about 1,000 pages (the pages filled since the last vacuum and the pages just thinned, mostly
+-- still in shared buffers) and one scan of the TOAST index, about 3 MB on 8 November. That index is keyed by chunk id,
+-- which grows with time, so the deleted chunks sit together on a few of its pages. The full page images were mostly written
+-- by the thinning's own deletes minutes before.
+--
+-- The heap is left at PostgreSQL's default on purpose, for now. Its primary key holds the random observation ids of the
+-- reports filed before 7 November 11:14Z (time-ordered ids since v211), and an index vacuum rewrites most pages of that key
+-- while it holds deleted random ids. Lab on a test machine, 130,000 reports: one index vacuum after an hour's thinning wrote
+-- 4.0 MB of WAL on random ids (0.15 MB on time-ordered ids), after a day's 7.1 MB. Vacuuming the heap after each run would
+-- add about 2 MB of WAL an hour per receipt table until those reports are gone (thinned by 9 November 11:14Z, deleted by the
+-- seven-day retention by 14 November 11:14Z).
+--
+-- TOAST options are stored on the TOAST table (pg_class.reloptions of pg_toast.pg_toast_<oid>); the table's own
+-- reloptions stay unset. ALTER TABLE ... SET (toast.autovacuum_*, toast.vacuum_index_cleanup) takes SHARE UPDATE EXCLUSIVE:
+-- the observers' inserts and the thinning carry on. A running autovacuum on the table gives way; the lock timeout stops the
+-- migration rather than queue behind anything else.
+--
+-- Undo: alter table public.qorpera_runtime_node_inventory_receipts reset (toast.autovacuum_vacuum_threshold,
+-- toast.autovacuum_vacuum_scale_factor, toast.vacuum_index_cleanup).
+set local lock_timeout = '3s';
+
+alter table public.qorpera_runtime_node_inventory_receipts
+	set (toast.autovacuum_vacuum_threshold = 1000, toast.autovacuum_vacuum_scale_factor = 0, toast.vacuum_index_cleanup = on);

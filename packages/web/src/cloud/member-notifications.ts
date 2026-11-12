@@ -12,6 +12,9 @@ export type MemberNotificationSubject =
 			/** The login's email, on a notice to the member whose own login it is (20260930575000); absent on older
 			 * notices and on a company account's. */
 			accountEmail?: string | null;
+			/** The run it names stopped there instead of waiting (it could not wait, or was stopped), so its work does
+			 * not go on by itself (20260930703000); absent while it waits or goes on, and from an older cloud. */
+			runStopped?: true;
 	  }
 	| {
 			schema: "qorpera.member-notification.machine-capacity/v1";
@@ -199,6 +202,7 @@ function notification(value: unknown, profileId: string): MemberNotification {
 			runId: uuid(s.runId),
 			connectionId: uuid(s.connectionId),
 			...(s.accountEmail === undefined ? {} : { accountEmail: email(s.accountEmail) }),
+			...(v.run_stopped === true ? { runStopped: true as const } : {}),
 		};
 	} else if (kind === "company_ceiling_tripped" && s.schema === "qorpera.member-notification.machine-capacity/v1") {
 		if (s.dimension !== "machines") throw invalid();

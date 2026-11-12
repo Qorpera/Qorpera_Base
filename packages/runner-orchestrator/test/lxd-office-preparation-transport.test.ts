@@ -18,6 +18,7 @@ import {
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { LxdUnixClient } from "../src/lxd-client.ts";
+import { withShortDeadline } from "./helpers/short-deadline.ts";
 
 const roots: string[] = [],
 	servers: Server[] = [];
@@ -338,9 +339,12 @@ for (const lane of [
 			const f = await fixture(() => {}),
 				content = Buffer.from("request"),
 				began = performance.now();
-			await expect(
-				f.client[lane.read]("offices", "guest", digest(content), content.length, signal()),
-			).rejects.toThrow(`LXD_OFFICE_${lane.error}_READBACK_UNCONFIRMED`);
+			const deadlines = await withShortDeadline(5000, () =>
+				expect(f.client[lane.read]("offices", "guest", digest(content), content.length, signal())).rejects.toThrow(
+					`LXD_OFFICE_${lane.error}_READBACK_UNCONFIRMED`,
+				),
+			);
+			expect(deadlines).toBeGreaterThan(0);
 			expect(performance.now() - began).toBeLessThan(7000);
 			expect(f.calls).toHaveLength(1);
 		}, 8000);

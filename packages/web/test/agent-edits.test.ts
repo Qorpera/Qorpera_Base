@@ -121,7 +121,7 @@ describe("agent edit reconciliation", () => {
 describe("a figure being saved", () => {
 	// The palette's real hex, as the roster's `qorpera-<colour>` names resolve to them.
 	const gold = "#fcb51b";
-	const coral = "#ff365e";
+	const coral = "#e22538";
 	const heartShade = "#ff2994";
 
 	function railSetup(update: NonNullable<WorkspaceActions["updateAgent"]>) {
@@ -148,6 +148,7 @@ describe("a figure being saved", () => {
 				route: { name: "company", profileId: profileA.profileId, section: "file" },
 				openSettings() {},
 				openFeedback() {},
+				openFriends() {},
 			});
 			return mount.mock.calls.map(([, figure, color]) => ({ figure, color }));
 		};

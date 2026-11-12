@@ -8,6 +8,7 @@ import { CompanyController } from "../src/app/company.ts";
 import { ConversationView } from "../src/app/views/conversation.ts";
 import type { WebExecutionConnections, WebNativeSubscription } from "../src/cloud/native-subscription.ts";
 import { AGENT_SEND_SCHEMA, projectTranscript, RUNNER_ENTRY_SCHEMA } from "../src/cloud/transcript.ts";
+import type { HostedStaffExecutionActivity, PausedRun } from "../src/cloud/types.ts";
 import { fmtTime } from "../src/ui/dom.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, team, timestamp, userA, userB } from "./fixtures.ts";
 
@@ -849,7 +850,7 @@ describe("conversation execution account", () => {
 		const reply = f.view.el.querySelector<HTMLElement>(".from-agent")!;
 		expect(reply.querySelector(".message-author")!.textContent).toBe("Agent reply · speaker unavailable");
 		expect(reply.getAttribute("aria-label")).toMatch(/^Agent reply · /);
-		expect(reply.title).toMatch(/^Agent reply · /);
+		expect(reply.dataset.sentAt).toBeTruthy();
 		expect(reply.getAttribute("aria-label")).not.toContain(session.title);
 		expect(reply.getAttribute("aria-label")).not.toContain(f.company.memberName(userA.id));
 		expect(reply.textContent).toContain("Room response");
@@ -1985,8 +1986,8 @@ describe("the composer's Login page", () => {
 });
 
 describe("a failed run at its login's usage limit", () => {
-	const LIMIT =
-		"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account.";
+	const STOPPED = "The model account paying for this work reached its usage limit, so the work stopped.";
+	const LIMIT = `${STOPPED} It does not move to another account.`;
 	it("says when the limit resets, from the member's own login that paid for the run", async () => {
 		const reset = new Date(Date.now() + 3 * 3_600_000).toISOString();
 		const later = new Date(Date.now() + 2 * 86_400_000).toISOString();
@@ -2023,10 +2024,13 @@ describe("a failed run at its login's usage limit", () => {
 			unsettledOperations: 0,
 		};
 		const reason = () => f.view.el.querySelector(".run-failure-reason")?.textContent;
-		// The first login paid (its sponsor binding): its full window's reset.
+		// The first login paid (its sponsor binding): its full window's reset. The second login can pay now, so the
+		// member may continue the work with it.
 		f.company.store.set({ activity: [run], recoveries: { [run.runId]: { ...recovery, sponsorBindingId: id(100) } } });
 		await settle();
-		expect(reason()).toBe(`${LIMIT} It can run again when the limit resets (${fmtTime(reset)}).`);
+		expect(reason()).toBe(
+			`${STOPPED} It can run again when the limit resets (${fmtTime(reset)}), or you can continue it now with another of your logins.`,
+		);
 		// The second login has no full window: no time is known.
 		f.company.store.set({ recoveries: { [run.runId]: { ...recovery, sponsorBindingId: id(101) } } });
 		await settle();
@@ -2073,5 +2077,388 @@ describe("a failed run at its login's usage limit", () => {
 		expect(reason()).toBe(
 			"ChatGPT refused or could not answer this run's request. The member whose login pays for it can check that login in Settings → AI subscriptions.",
 		);
+	});
+});
+
+describe("continuing a run that stopped at its login's usage limit", () => {
+	const STOPPED = "The model account paying for this work reached its usage limit, so the work stopped.";
+	const LATER = fmtTime("2099-01-01T00:00:00.000Z");
+	const NOTE = "Your last run stopped because a login reached its usage limit. Please continue that work.";
+	const run = {
+		runId: id(171),
+		staffAgentId: staff.id,
+		sourceKind: "wake" as const,
+		jobStatus: "failed" as const,
+		activity: "needs_attention" as const,
+		updatedAt: timestamp,
+	};
+	const recovery = {
+		runId: run.runId,
+		sourceKind: run.sourceKind,
+		jobStatus: run.jobStatus,
+		lastError:
+			"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED]; durable attempt output requires review",
+		usageLimit: true,
+		unsettledOperations: 0,
+		durableOutcome: true,
+		requestedByUserId: userA.id,
+		// The first login (connection id(90)) paid.
+		sponsorBindingId: id(100),
+	};
+	const reason = (view: ConversationView) => view.el.querySelector(".run-failure-reason")?.textContent;
+	const buttons = (view: ConversationView) =>
+		[...view.el.querySelectorAll(".run-failure button")].map((item) => item.textContent);
+	const continueButton = (view: ConversationView) =>
+		view.el.querySelector<HTMLButtonElement>('.run-failure [data-action="continue-run"]');
+
+	it("offers the member whose login paid their other login, and goes on there with one click", async () => {
+		// The founder's case (9 Nov 2026): the agent's work stopped on the first login, while the thread already pays
+		// with the second, which has room.
+		const f = setup(false, withUsage([0, 40]));
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: recovery } });
+		await settle();
+		expect(reason(f.view)).toBe(
+			`${STOPPED} It can run again when the limit resets (${LATER}), or you can continue it now with another of your logins.`,
+		);
+		expect(buttons(f.view)).toEqual(["Continue with Model account 1", "Dismiss"]);
+		expect(continueButton(f.view)?.dataset.connectionId).toBe(id(91));
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		continueButton(f.view)!.click();
+		await settle();
+		// The member's own message, on the login they chose: nothing else moved.
+		expect(f.sendMessage).toHaveBeenCalledExactlyOnceWith(session.sessionId, NOTE, expect.any(AbortSignal));
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+	});
+
+	it("moves the conversation to the chosen login by the cloud's choice, then asks the agent to go on", async () => {
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const choose = vi.fn(async (_session: string, connection: string) => connection);
+		const f = setup(false, withUsage([0, 40]), select, undefined, choose);
+		await settle();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: recovery } });
+		await settle();
+		expect(buttons(f.view)).toEqual(["Continue with Model account 1", "Dismiss"]);
+		expect(choose).not.toHaveBeenCalled();
+		select.mockResolvedValue(id(91));
+		continueButton(f.view)!.click();
+		await settle();
+		expect(choose).toHaveBeenCalledExactlyOnceWith(session.sessionId, id(91), expect.any(AbortSignal));
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+		expect(f.sendMessage).toHaveBeenCalledExactlyOnceWith(session.sessionId, NOTE, expect.any(AbortSignal));
+	});
+
+	it("never sends when the cloud keeps the conversation on another login", async () => {
+		// A turn of the member's waiting at the used-up login keeps it the conversation's (20260930580000).
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const choose = vi.fn(async (_session: string, connection: string) => connection);
+		const f = setup(false, withUsage([0, 40]), select, undefined, choose);
+		await settle();
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: recovery } });
+		await settle();
+		continueButton(f.view)!.click();
+		await settle();
+		expect(choose).toHaveBeenCalledOnce();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		expect(f.view.el.querySelector(".run-failure-note")?.textContent).toBe(
+			"The login could not be chosen. Try again.",
+		);
+	});
+
+	it("never sends on another login the account check chose after the pick", async () => {
+		// Another tab picks the used-up login again between the pick's read and the send's (review r1 of #1595).
+		const select = vi.fn(async (): Promise<string | undefined> => id(90));
+		const choose = vi.fn(async (_session: string, connection: string) => connection);
+		const f = setup(false, withUsage([0, 40]), select, undefined, choose);
+		await settle();
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: recovery } });
+		await settle();
+		const reads = select.mock.calls.length;
+		select.mockResolvedValueOnce(id(91));
+		continueButton(f.view)!.click();
+		await settle();
+		expect(choose).toHaveBeenCalledExactlyOnceWith(session.sessionId, id(91), expect.any(AbortSignal));
+		// The pick's read said the chosen login; the send's own read said the used-up one: nothing is sent.
+		expect(select.mock.calls.length).toBe(reads + 2);
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		expect(f.sponsor()?.connectionId).toBe(id(90));
+		expect(f.view.el.querySelector("textarea")!.value).toBe("");
+		expect(f.company.conversation(session.sessionId).get().draft ?? "").toBe("");
+		expect(f.view.el.querySelector(".run-failure-note")?.textContent).toBe(
+			"The login could not be chosen. Try again.",
+		);
+	});
+
+	it("keeps a message the member has started, and lets them send it on the chosen login", async () => {
+		const f = setup(false, withUsage([0, 40]));
+		await settle();
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: recovery } });
+		type(f.view, "My own words");
+		await settle();
+		continueButton(f.view)!.click();
+		await settle();
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		expect(f.view.el.querySelector("textarea")!.value).toBe("My own words");
+		expect(f.view.el.querySelector(".run-failure-note")?.textContent).toBe(
+			"Send your message to continue with Model account 1.",
+		);
+		expect(f.sponsor()?.connectionId).toBe(id(91));
+	});
+
+	it("offers nothing when no other login of the member's can pay, or the work is not theirs to move", async () => {
+		const f = setup(false, withUsage([0, 0]));
+		await settle();
+		f.company.store.set({ activity: [run], recoveries: { [run.runId]: recovery } });
+		await settle();
+		// None of their other logins can pay now: the work waits for the reset, as before.
+		expect(reason(f.view)).toBe(
+			`${STOPPED} It does not move to another account. It can run again when the limit resets (${LATER}).`,
+		);
+		expect(buttons(f.view)).toEqual(["Dismiss"]);
+		// Another member's login paid: no offer here, and the card names who can continue it.
+		f.listConnections.mockResolvedValue(withUsage([40, 40]));
+		refresh();
+		await settle();
+		f.company.store.set({
+			team: {
+				...team,
+				members: [
+					{
+						userId: userB.id,
+						email: "b@example.invalid",
+						displayName: "Anna",
+						role: "contributor",
+						joinedAt: timestamp,
+					},
+				],
+			},
+			recoveries: { [run.runId]: { ...recovery, sponsorBindingId: id(199), requestedByUserId: userB.id } },
+		});
+		await settle();
+		expect(reason(f.view)).toBe(
+			`${STOPPED} It can run again once the limit resets. Only Anna can continue it now with another of their logins.`,
+		);
+		expect(buttons(f.view)).toEqual(["Dismiss"]);
+		// Her ChatGPT plan paid: no other login continues a plan's work, so no one is named for it.
+		f.company.store.set({
+			recoveries: {
+				[run.runId]: {
+					...recovery,
+					sponsorBindingId: id(199),
+					requestedByUserId: userB.id,
+					paidByChatgptPlan: true,
+				},
+			},
+		});
+		await settle();
+		expect(reason(f.view)).toBe(
+			`${STOPPED} It does not move to another account. It can run again once the limit resets.`,
+		);
+		expect(buttons(f.view)).toEqual(["Dismiss"]);
+		// A ChatGPT plan's limit is told in OpenAI's words, with no other login offered.
+		f.company.store.set({ recoveries: { [run.runId]: { ...recovery, paidByChatgptPlan: true } } });
+		await settle();
+		expect(reason(f.view)).toBe(
+			"ChatGPT · Usage limit reached. Review your plan or this app's limit in ChatGPT settings.",
+		);
+		expect(continueButton(f.view)).toBeNull();
+		// Another failure is not a usage limit: nothing to continue with.
+		f.company.store.set({
+			recoveries: {
+				[run.runId]: {
+					...recovery,
+					usageLimit: false,
+					lastError:
+						"Native provider bridge request failed (422) [code=NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED]",
+				},
+			},
+		});
+		await settle();
+		expect(continueButton(f.view)).toBeNull();
+		// Their own login, but they may not write here.
+		f.company.store.set({
+			team: { ...team, role: "viewer", capabilities: { ...team.capabilities, write: false } },
+			recoveries: { [run.runId]: recovery },
+		});
+		await settle();
+		expect(continueButton(f.view)).toBeNull();
+		expect(reason(f.view)).toBe(
+			`${STOPPED} It does not move to another account. It can run again once the limit resets.`,
+		);
+	});
+});
+
+describe("a run waiting at its login's usage limit", () => {
+	const WAITS =
+		"The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets";
+	const until = "2099-01-01T00:00:00.000Z";
+	const paused = (sponsorBindingId: string, extra: Partial<PausedRun> = {}): HostedStaffExecutionActivity => ({
+		runId: id(172),
+		staffAgentId: staff.id,
+		sourceKind: "wake",
+		jobStatus: "queued",
+		activity: "waiting",
+		paused: {
+			until,
+			sponsorBindingId,
+			requestedByUserId: userA.id,
+			paidByChatgptPlan: false,
+			paidWhileAway: true,
+			movable: true,
+			...extra,
+		},
+		updatedAt: timestamp,
+	});
+	/** The member's logins as the list reads them, each allowed to work while they are away unless said otherwise. */
+	const away = (
+		observed: NativeExecutionConnections,
+		extra: Record<string, unknown>[] = [],
+	): NativeExecutionConnections => ({
+		...observed,
+		connections: observed.connections.map((connection, index) => ({
+			...connection,
+			allowAutonomous: true,
+			...extra[index],
+		})),
+	});
+	const title = (view: ConversationView) => view.el.querySelector(".run-failure-title")?.textContent;
+	const reason = (view: ConversationView) => view.el.querySelector(".run-failure-reason")?.textContent;
+	const buttons = (view: ConversationView) =>
+		[...view.el.querySelectorAll(".run-failure button")].map((item) => item.textContent);
+	const continueButton = (view: ConversationView) =>
+		view.el.querySelector<HTMLButtonElement>('.run-failure [data-action="continue-run"]');
+
+	it("offers the member whose login pays to move it, and moves the run itself with one click", async () => {
+		// The first login (connection id(90), binding id(100)) pays and is at its limit; the second has room.
+		const f = setup(false, away(withUsage([0, 40])));
+		await settle();
+		const move = vi.spyOn(f.api, "movePausedRun").mockResolvedValue(undefined);
+		f.company.store.set({ activity: [paused(id(100))] });
+		await settle();
+		expect(title(f.view)).toBe("Fixture agent is waiting to go on");
+		expect(reason(f.view)).toBe(
+			`${WAITS} (${fmtTime(until)}), or you can continue it now with another of your logins.`,
+		);
+		// Nothing to dismiss: the line goes when the run goes on.
+		expect(buttons(f.view)).toEqual(["Continue with Model account 1"]);
+		expect(f.company.agentState(staff.id)).toBe("idle");
+		continueButton(f.view)!.click();
+		await settle();
+		// The run itself moves and goes on there: no message is sent, so it never also comes back on the old login.
+		expect(move).toHaveBeenCalledExactlyOnceWith(id(172), id(91));
+		expect(f.sendMessage).not.toHaveBeenCalled();
+		expect(f.view.el.querySelector(".run-failure")).toBeNull();
+	});
+
+	it("says so when the move is refused, and keeps the line", async () => {
+		const f = setup(false, away(withUsage([0, 40])));
+		await settle();
+		vi.spyOn(f.api, "movePausedRun").mockRejectedValue(new Error("This login cannot pay for this work now"));
+		vi.mocked(f.api.listStaffActivity).mockResolvedValue([paused(id(100))]);
+		f.company.store.set({ activity: [paused(id(100))] });
+		await settle();
+		continueButton(f.view)!.click();
+		await settle();
+		expect(f.view.el.querySelector(".run-failure-note")?.textContent).toBe("The work could not be moved. Try again.");
+		expect(buttons(f.view)).toEqual(["Continue with Model account 1"]);
+	});
+
+	it("offers nothing to anyone else, nor for a ChatGPT plan, nor without another login that can pay", async () => {
+		const f = setup(false, away(withUsage([0, 0])));
+		await settle();
+		f.company.store.set({ activity: [paused(id(100))] });
+		await settle();
+		expect(reason(f.view)).toBe(`${WAITS} (${fmtTime(until)}).`);
+		expect(buttons(f.view)).toEqual([]);
+		// Another member's login pays: the line names who can move it.
+		f.listConnections.mockResolvedValue(away(withUsage([40, 40])));
+		refresh();
+		await settle();
+		f.company.store.set({
+			team: {
+				...team,
+				members: [
+					{
+						userId: userB.id,
+						email: "b@example.invalid",
+						displayName: "Anna",
+						role: "contributor",
+						joinedAt: timestamp,
+					},
+				],
+			},
+			activity: [paused(id(199), { requestedByUserId: userB.id })],
+		});
+		await settle();
+		expect(reason(f.view)).toBe(
+			`${WAITS} (${fmtTime(until)}). Only Anna can continue it now with another of their logins.`,
+		);
+		expect(continueButton(f.view)).toBeNull();
+		// A ChatGPT plan's work stays on it, the member's own or not.
+		f.company.store.set({ activity: [paused(id(100), { paidByChatgptPlan: true })] });
+		await settle();
+		expect(reason(f.view)).toBe(`${WAITS} (${fmtTime(until)}).`);
+		expect(continueButton(f.view)).toBeNull();
+		f.company.store.set({ activity: [paused(id(199), { requestedByUserId: userB.id, paidByChatgptPlan: true })] });
+		await settle();
+		expect(reason(f.view)).toBe(`${WAITS} (${fmtTime(until)}).`);
+		// Their own login, but they may not write here.
+		f.company.store.set({
+			team: { ...team, role: "viewer", capabilities: { ...team.capabilities, write: false } },
+			activity: [paused(id(100))],
+		});
+		await settle();
+		expect(continueButton(f.view)).toBeNull();
+	});
+
+	it("offers only logins the move can use, and none for work that cannot move", async () => {
+		const f = setup(false, away(withUsage([0, 40])));
+		await settle();
+		// A routine's run, or one that no longer resumes: the cloud never moves it.
+		f.company.store.set({ activity: [paused(id(100), { movable: false })] });
+		await settle();
+		expect(reason(f.view)).toBe(`${WAITS} (${fmtTime(until)}).`);
+		expect(continueButton(f.view)).toBeNull();
+		// A login that may not work while the member is away never takes over a login that may.
+		f.listConnections.mockResolvedValue(away(withUsage([0, 40]), [{}, { allowAutonomous: false }]));
+		refresh();
+		await settle();
+		f.company.store.set({ activity: [paused(id(100))] });
+		await settle();
+		expect(continueButton(f.view)).toBeNull();
+		f.company.store.set({ activity: [paused(id(100), { paidWhileAway: false })] });
+		await settle();
+		expect(buttons(f.view)).toEqual(["Continue with Model account 1"]);
+		// Never onto a ChatGPT plan.
+		f.listConnections.mockResolvedValue(away(withUsage([0, 40]), [{}, { loginKind: "chatgpt_plan" }]));
+		refresh();
+		await settle();
+		f.company.store.set({ activity: [paused(id(100), { paidWhileAway: false })] });
+		await settle();
+		expect(continueButton(f.view)).toBeNull();
+	});
+
+	it("shows above an earlier failure, and the failure again once the run goes on", async () => {
+		const f = setup(false, away(withUsage([0, 40])));
+		await settle();
+		const earlier: HostedStaffExecutionActivity = {
+			runId: id(173),
+			staffAgentId: staff.id,
+			sourceKind: "wake",
+			jobStatus: "failed",
+			activity: "needs_attention",
+			superseded: true,
+			updatedAt: timestamp,
+		};
+		f.company.store.set({ activity: [earlier, paused(id(100))] });
+		await settle();
+		expect(title(f.view)).toBe("Fixture agent is waiting to go on");
+		// The reset passed: the run is the agent's work again, and the earlier failure keeps its own line.
+		f.company.store.set({ activity: [earlier, paused(id(100), { until: "2000-01-01T00:00:00.000Z" })] });
+		await settle();
+		expect(title(f.view)).toBe("An earlier run of Fixture agent did not finish");
 	});
 });

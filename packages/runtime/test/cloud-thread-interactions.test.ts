@@ -1,6 +1,7 @@
 import { parseCloudAgentSendInput } from "@qorpera/runtime/cloud-agent-mouth";
 import { CloudToolArgumentRefusal } from "@qorpera/runtime/cloud-native-tool-boundary";
 import {
+	CLOUD_ASK_MEMBER_INSTRUCTIONS,
 	CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA,
 	CLOUD_ASK_MEMBER_SURFACES,
 	CLOUD_INTERACTION_PAYLOAD_SCHEMA,
@@ -32,6 +33,48 @@ describe("thread interaction requests", () => {
 		expect(() =>
 			parseCloudInteractionRequestData({ ...secret, payload: { ...secret.payload, value: "xoxb-secret" } }),
 		).toThrow(/Invalid interaction request/);
+	});
+
+	it("accepts a coding value's card with its repository, and refuses a repository anywhere else", () => {
+		const card = (payload: Record<string, unknown>) => ({
+			schema: "qorpera.interaction/v1",
+			surface: "secret",
+			title: "Token for private packages",
+			payload: {
+				name: "npm_token",
+				label: "NPM_TOKEN",
+				purpose: "Installs the private packages.",
+				connectorId: "environment",
+				...payload,
+			},
+		});
+		expect(parseCloudInteractionRequestData(card({ repository: "acme/web" })).payload).toMatchObject({
+			connectorId: "environment",
+			repository: "acme/web",
+		});
+		// Without a repository it is still a coding value: a member's own reaches their sessions in every repository.
+		expect(parseCloudInteractionRequestData(card({})).payload).not.toHaveProperty("repository");
+		for (const payload of [
+			// Only lower-case owner/name.
+			{ repository: "Acme/Web" },
+			{ repository: "acme" },
+			{ repository: "acme/web/extra" },
+			// A repository only beside the environment connector.
+			{ connectorId: "linear", repository: "acme/web" },
+			// A coding value's name as the capture takes it.
+			{ name: "npm-token" },
+			{ name: "git_token" },
+			{ name: "openai_api_key" },
+			// The names a coding machine sets itself, as the kernel lists them.
+			{ name: "path" },
+			{ name: "https_proxy" },
+			{ name: "node_extra_ca_certs" },
+			{ name: "home" },
+		])
+			expect(() => parseCloudInteractionRequestData(card(payload))).toThrow(/Invalid interaction request/);
+		const plain = card({ connectorId: undefined, repository: "acme/web" });
+		delete (plain.payload as Record<string, unknown>).connectorId;
+		expect(() => parseCloudInteractionRequestData(plain)).toThrow(/Invalid interaction request/);
 	});
 
 	it("keeps the same card id for a retried ask", () => {
@@ -123,7 +166,14 @@ const PAYLOADS = {
 	},
 	secret: {
 		minimal: { name: "api-key", label: "API key", purpose: "Filing issues." },
-		maximal: { name: "api-key", label: "API key", purpose: "Filing issues.", kind: "token", connectorId: "linear" },
+		maximal: {
+			name: "npm_token",
+			label: "NPM_TOKEN",
+			purpose: "Installs the private packages.",
+			kind: "token",
+			connectorId: "environment",
+			repository: "acme/web",
+		},
 	},
 	form: {
 		minimal: { domain: "app.example.com", fields: [{ id: "email", label: "Email", type: "email" }] },
@@ -356,6 +406,34 @@ describe("readable cards", () => {
 		])
 			refused(visual(bad), "an option's preview is the company file path of an image you made for it");
 		expect(JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA)).toContain("Options with pictures show as big boxes");
+	});
+
+	// Jonas, 11 Nov 2026: "I would like the agents to be better at indicating when they need the users input and it's
+	// really stopped at you." Every answer the work waits for goes on a card, open questions too (allowCustom), and the
+	// card says what is stopped; nothing optional does.
+	it("puts every answer the work waits for on a card that says what is stopped, and nothing optional", () => {
+		for (const rule of [
+			"Use question for every answer your work cannot go on without, never only in chat: the card shows members that work is stopped at them.",
+			"Options are the likely answers, never generic ones like Get started; for an open question add allowCustom, a field for their own answer.",
+			"Optional ideas, offers and news stay in chat.",
+			"The body is at most a few short lines or bullets: what is stopped until they answer (I've stopped the price list until you pick one), what is being chosen,",
+		])
+			expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).toContain(rule);
+		expect(CLOUD_ASK_MEMBER_INSTRUCTIONS).not.toContain("Open-ended questions belong in chat");
+		// The card's own schema says the same: an open question goes on the card with allowCustom, not to chat.
+		const schema = JSON.stringify(CLOUD_ASK_MEMBER_PAYLOAD_SCHEMA);
+		expect(schema).not.toContain("belong in ordinary chat");
+		expect(schema).not.toContain("not a reason to turn an open-ended question");
+		expect(schema).toContain("add allowCustom for an open one");
+		// The tool boundary takes a description of at most 4096 bytes.
+		expect(Buffer.byteLength(CLOUD_ASK_MEMBER_INSTRUCTIONS)).toBeLessThanOrEqual(4096);
+		// The card takes a typed answer beside its options.
+		const open = {
+			...card("I've stopped the shop's front page until you pick one."),
+			title: "What should the shop be called?",
+			payload: { options: [{ label: "Nordlys" }, { label: "Fjeld" }], allowCustom: true },
+		};
+		expect(parseCloudAskMemberInput(open).data.payload).toEqual(open.payload);
 	});
 
 	it("takes a short body of a few lines with a link", () => {

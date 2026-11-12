@@ -78,12 +78,76 @@ const MAX_ARGUMENT_BYTES = 64 * 1024;
 export const MAX_TOOL_ARGUMENT_BYTES = 960 * 1024;
 const MAX_CONTENT_BYTES = 32 * 1024;
 const MAX_SOURCE_BYTES = 1024 * 1024;
-/** A webhook signing secret as Stripe and Standard Webhooks write it (`whsec_` and base64), at least as long as what
- * replaces it, so a cut answer never grows. */
-const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/=]{10,}/g;
-const WEBHOOK_SECRET_REDACTED = "whsec_[REDACTED]";
-/** The pinned fence's bound on one tool result's PNG. */
+/** A webhook signing secret as Stripe and Standard Webhooks write it (`whsec_` and base64), also as text carries it
+ * encoded: URL-encoded (`%2B`, `%2F`, `%3D`, the prefix's `%5F`, as the company computer's guard reads it), and
+ * JSON-escaped, once or twice (`\/` as PHP writes it, `+` as .NET does, and the same inside a serialized JSON
+ * string, where its backslash is doubled). Each unit after the prefix is one character or one whole escape, and ten
+ * of them at least, so a match is never shorter than what replaces it (a cut text never grows), and it never ends in
+ * the middle of an escape: a cut JSON text stays valid JSON. Its characters are never a quote. SQL keeps the same rule
+ * for a context source's whole text before it is paged (`qorpera_redact_webhook_secrets`, 20260930657200). */
+const WEBHOOK_SECRET =
+	/whsec(?:_|%5[Ff]|\\{1,2}u005[Ff])(?:[A-Za-z0-9+/=]|%[0-9A-Fa-f]{2}|\\{1,2}(?:\/|u[0-9A-Fa-f]{4})){10,}/g;
+/**
+ * Each secret cut out, and what replaces it: a webhook signing secret, and the keys an agent takes into the vault as
+ * coding values (20260930695000), as their services write them, at least as long as the shortest whole key: npm's
+ * `npm_`, GitHub's `ghp_` and `github_pat_`, Stripe's `sk_`/`rk_` with `test_` or `live_`, and Resend's `re_` with 6 to
+ * 16 letters or digits, `_` and 16 more at least (its accepted shape, 20260930698200, in either case and wherever it
+ * starts, also after `%20` or a JSON escape; a snake_case name such as `re_render_component_tree` is not one). Each `_`
+ * may be URL-encoded or JSON-escaped, as a whsec_ secret's prefix may; the rest of a key is letters and digits, which
+ * neither encoding changes. A cut keeps the prefix, never shorter than the match, and a cut JSON text stays valid.
+ * SQL keeps the same rules (`qorpera_redact_webhook_secrets`, 20260930698100).
+ */
+const SECRET_CUTS: readonly (readonly [RegExp, string])[] = [
+	[WEBHOOK_SECRET, "whsec_[REDACTED]"],
+	[/npm(?:_|%5[Ff]|\\{1,2}u005[Ff])[A-Za-z0-9]{36,}/g, "npm_[REDACTED]"],
+	[/ghp(?:_|%5[Ff]|\\{1,2}u005[Ff])[A-Za-z0-9]{36,}/g, "ghp_[REDACTED]"],
+	[
+		/github(?:_|%5[Ff]|\\{1,2}u005[Ff])pat(?:_|%5[Ff]|\\{1,2}u005[Ff])(?:[A-Za-z0-9_]|%5[Ff]|\\{1,2}u005[Ff]){82,}/g,
+		"github_pat_[REDACTED]",
+	],
+	[/([sr]k)(?:_|%5[Ff]|\\{1,2}u005[Ff])(?:test|live)(?:_|%5[Ff]|\\{1,2}u005[Ff])[A-Za-z0-9]{24,}/g, "$1_[REDACTED]"],
+	[/re(?:_|%5[Ff]|\\{1,2}u005[Ff])[A-Za-z0-9]{6,16}(?:_|%5[Ff]|\\{1,2}u005[Ff])[A-Za-z0-9]{16,}/g, "re_[REDACTED]"],
+];
+/** Text with every webhook signing secret and coding value key cut out, as every text tool result has it (E3c-2,
+ * 20260930695000), and as everything else the host sends Codex has it: the context message, the developer
+ * instructions, every turn's input. */
+export function redactCloudWebhookSecrets(text: string): string {
+	let cut = text;
+	for (const [secret, replacement] of SECRET_CUTS) cut = cut.replace(secret, replacement);
+	return cut;
+}
+/** A JSON value with the same cut in each of its texts, its keys included. */
+export function redactCloudWebhookSecretsIn(value: JsonValue): JsonValue {
+	if (typeof value === "string") return redactCloudWebhookSecrets(value);
+	if (Array.isArray(value)) return value.map(redactCloudWebhookSecretsIn);
+	if (value && typeof value === "object")
+		return Object.fromEntries(
+			Object.entries(value).map(([key, item]) => [
+				redactCloudWebhookSecrets(key),
+				redactCloudWebhookSecretsIn(item),
+			]),
+		);
+	return value;
+}
+/** The pinned fence's bound on one tool result's PNG, and on its size in pixels. */
 const MAX_SHOWN_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_SHOWN_IMAGE_WIDTH = 1920;
+const MAX_SHOWN_IMAGE_HEIGHT = 1200;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+/** A PNG the pinned fence takes: its signature, then IHDR within 1..1920 x 1..1200. One it would refuse fails its own
+ * call here, never every later model request of the run. */
+function shownPng(png: Buffer): boolean {
+	if (
+		png.byteLength < 33 ||
+		!png.subarray(0, 8).equals(PNG_SIGNATURE) ||
+		png.readUInt32BE(8) !== 13 ||
+		png.toString("latin1", 12, 16) !== "IHDR"
+	)
+		return false;
+	const width = png.readUInt32BE(16);
+	const height = png.readUInt32BE(20);
+	return width >= 1 && width <= MAX_SHOWN_IMAGE_WIDTH && height >= 1 && height <= MAX_SHOWN_IMAGE_HEIGHT;
+}
 /** A result asks the run's desktop folder report (F3 4f-2b) for this long at most, and shows one this big at most. */
 const FOLDER_REPORT_WAIT_MS = 1000;
 const FOLDER_REPORT_BYTES = 4 * 1024;
@@ -1081,13 +1145,25 @@ export class CloudNativeToolBoundary {
 				response.contentItems.push({ type: "inputImage", imageUrl });
 			}
 			if (content.image) {
-				// Only a tool that shows images, after an answer citing the read it showed: the image is released with it.
+				// Only a tool that shows images, after an answer that names it: company_read's cites the read it showed, and a
+				// runtime tool's (machine_screen, 20260930708000) names the image's hash in its JSON. The image is released
+				// with that answer, and the context fence checks the same pairing on every later request.
 				const { png, sha256 } = content.image;
+				const named =
+					tool.source === "company_file"
+						? content.companyReadId !== undefined
+						: tool.source === "runtime" &&
+							content.kind === "json" &&
+							content.value !== null &&
+							typeof content.value === "object" &&
+							!Array.isArray(content.value) &&
+							content.value.imageSha256 === sha256;
 				if (
 					tool.images !== true ||
-					content.companyReadId === undefined ||
+					!named ||
 					!Buffer.isBuffer(png) ||
 					png.byteLength > MAX_SHOWN_IMAGE_BYTES ||
+					!shownPng(png) ||
 					createHash("sha256").update(png).digest("hex") !== sha256
 				)
 					throw new Error("Invalid shown image");
@@ -1191,7 +1267,7 @@ export class CloudNativeToolBoundary {
 			throw new Error("Invalid cloud tool content");
 		// A webhook signing secret that met the model's eyes anyway (a page, a file, a command's output) is cut out of
 		// the answer, and so out of its digest and the run's log: the vault holds hooks' secrets (E3c-2).
-		const text = raw.replace(WEBHOOK_SECRET, WEBHOOK_SECRET_REDACTED);
+		const text = redactCloudWebhookSecrets(raw);
 		const bytes = Buffer.from(text, "utf8");
 		let end = Math.min(bytes.length, MAX_CONTENT_BYTES);
 		while (end < bytes.length && end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
@@ -1292,7 +1368,7 @@ function cloudCompanyFolderReport(value: unknown): CloudCompanyFolderReport | un
 		(more !== undefined && more !== true)
 	)
 		return undefined;
-	const words = (text: string): string => text.replace(WEBHOOK_SECRET, WEBHOOK_SECRET_REDACTED);
+	const words = redactCloudWebhookSecrets;
 	const paths: { path: string; outcome: string; reason?: string }[] = [];
 	for (const entry of (notSaved ?? []) as unknown[]) {
 		if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;

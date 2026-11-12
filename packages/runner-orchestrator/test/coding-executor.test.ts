@@ -4,23 +4,33 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	CLEANUP_STOP_BUDGET_MS,
 	CloudCodingExecutor,
-	CODING_DESCRIBE_BUDGET_MS,
+	CODING_LANDING_STEP,
 	CODING_LEASE_MARGIN_MS,
 	CODING_RETRY_PAUSES_MS,
 	CodingControlBusy,
 	CodingControlRefused,
 	type CodingExecutorControl,
 	type CodingExecutorHost,
+	CodingLandConflict,
+	CodingLandRefused,
 	CodingMachineUnavailable,
 	type CodingPushCarrier,
 	CodingPushRefused,
+	type CodingReportStage,
 	CodingSaveRefused,
 	type CodingSessionClaim,
 	type CodingSubmission,
 	type CodingTurnState,
 	CodingWorkspaceFailed,
+	landConflict,
+	landRefusal,
+	PUBLICATION_UNFINISHED,
 	parseCodingSessionClaim,
+	parseCodingSubmission,
 	parseCodingTurnState,
+	prepareUnfinished,
+	TURN_START_UNFINISHED,
+	withinBytes,
 } from "../src/coding-executor.ts";
 import { CODING_VM_STOP_BUDGET_MS, codingHostId } from "../src/coding-executor-host.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
@@ -384,6 +394,384 @@ describe("the coding executor over a session turn", () => {
 		}
 	});
 
+	it("a commit landed in a repository kept in Qorpera completes the turn with where it landed, and no pull request", async () => {
+		const w = world();
+		vi.mocked(w.host.publish).mockResolvedValueOnce({
+			pullRequest: null,
+			noChange: false,
+			landed: { state: "merged", mainSha: "c".repeat(40), filesChanged: 3, change: 14 },
+		});
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		expect(completion).toMatchObject({
+			p_outcome: "succeeded",
+			p_summary: "Tests passed",
+			p_pull_request: null,
+			// The artifact is as it was: the change's number is the kernel's own to add to its line.
+			p_artifacts: [{ kind: "landed", state: "merged", branch: "main", headSha, mainSha: "c".repeat(40) }],
+			// How many files the landing changed on the default branch, for the session's card.
+			p_files_changed: 3,
+		});
+		expect(Object.keys((completion.p_artifacts as object[])[0] ?? {})).toEqual([
+			"kind",
+			"state",
+			"branch",
+			"headSha",
+			"mainSha",
+		]);
+	});
+
+	it("passes the files a landing changed with the completion, only for a landing that moved the default branch", async () => {
+		const completed = async (publication: Record<string, unknown>) => {
+			const w = world();
+			vi.mocked(w.host.publish).mockResolvedValueOnce(publication as never);
+			const finish = {
+				schema: "qorpera.coding-submission/v1",
+				workerId: w.world.claim.workerId,
+				sequence: 1,
+				kind: "finish",
+				state: "submitted",
+				summary: "Tests passed",
+				headSha,
+				operationKey: "done",
+			};
+			const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+			const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+			expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+			const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+			// The kernel's call has the parameter either way: a count, or null.
+			expect("p_files_changed" in completion).toBe(true);
+			return completion.p_files_changed;
+		};
+		const landed = (landing: Record<string, unknown>) => ({
+			pullRequest: null,
+			noChange: false,
+			landed: { mainSha: "c".repeat(40), change: null, ...landing },
+		});
+		expect(await completed(landed({ state: "fast-forward", filesChanged: 1 }))).toBe(1);
+		expect(await completed(landed({ state: "merged", filesChanged: 0 }))).toBe(0);
+		// Main held the commit already: this turn changed nothing there.
+		expect(await completed(landed({ state: "unchanged", filesChanged: 0 }))).toBeNull();
+		// A count the kernel would refuse is not sent, so the report always lands.
+		for (const filesChanged of [undefined, -1, 1.5, 2 ** 31, Number.NaN, "3"])
+			expect(await completed(landed({ state: "fast-forward", filesChanged }))).toBeNull();
+		// A pull request on GitHub says nothing of files.
+		expect(
+			await completed({
+				pullRequest: { url: "https://github.com/Qorpera/app/pull/12", number: 12, headSha },
+				noChange: false,
+			}),
+		).toBeNull();
+	});
+
+	it("keeps the picture a session named with its hand-in when it is a path the kernel takes, and hands it to the publication", async () => {
+		const submission = (extra: Record<string, unknown>) =>
+			parseCodingSubmission({
+				schema: "qorpera.coding-submission/v1",
+				kind: "finish",
+				state: "submitted",
+				summary: "Tests passed",
+				headSha,
+				operationKey: "done",
+				...extra,
+			});
+		const plain = { kind: "finish", summary: "Tests passed", headSha, operationKey: "done" };
+		expect(submission({})).toEqual(plain);
+		for (const picture of [
+			"docs/changes/free-returns.png",
+			"shot.PNG",
+			"docs/before and after.jpeg",
+			"a/b/c/d.webp",
+			".hidden/x-1_2.jpg",
+			`${"d/".repeat(147)}x.png`,
+		])
+			expect(submission({ picture, notice: "Each price now says so." })).toEqual({ ...plain, picture });
+		// What a customer will notice stays in the kernel; a picture that is no such path is dropped, and the work is
+		// handed in without one.
+		for (const picture of [
+			"/company/code/shop/shot.png",
+			"../shot.png",
+			"docs/../shot.png",
+			"docs/./shot.png",
+			"./shot.png",
+			"docs//shot.png",
+			"docs/shot.gif",
+			"docs/shot.png ",
+			" docs/shot.png",
+			"docs/sh\not.png",
+			"docs/shot.png\n",
+			"docs/s*.png",
+			"shot",
+			"",
+			`${"d/".repeat(148)}x.png`,
+			7,
+			null,
+			["docs/shot.png"],
+		]) {
+			const parsed = submission({ picture });
+			expect(parsed).toEqual(plain);
+			expect(parsed && "picture" in parsed).toBe(false);
+		}
+		// An ask has none.
+		expect(
+			parseCodingSubmission({
+				schema: "qorpera.coding-submission/v1",
+				kind: "ask",
+				state: "submitted",
+				summary: "Blocked",
+				question: "Which price?",
+				options: [],
+				operationKey: "ask",
+				picture: "docs/shot.png",
+			}),
+		).toEqual({ kind: "ask", summary: "Blocked", question: "Which price?", options: [], operationKey: "ask" });
+
+		// Through a turn: the host's publication gets the submission with its picture.
+		const w = world();
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+			notice: "Each price now says so.",
+			picture: "docs/changes/free-returns.png",
+		};
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+		expect(vi.mocked(w.host.publish).mock.calls[0]?.[1]).toEqual({
+			...plain,
+			picture: "docs/changes/free-returns.png",
+		});
+	});
+
+	it("a landing that conflicts fails the turn with the paths and the way out", async () => {
+		const w = world();
+		vi.mocked(w.host.publish).mockRejectedValueOnce(new CodingLandConflict(["index.html", "src/cart.js"]));
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		expect(completion.p_outcome).toBe("failed");
+		expect(completion.p_summary).toBe(
+			'The change was not landed: it conflicts with what main got since this session began, in "index.html", "src/cart.js". Nothing changed on main. Run git merge main on the session\'s branch, resolve the conflicts, run the checks, commit and finish again.',
+		);
+		expect(completion.p_artifacts).toBeNull();
+		expect(w.host.detachSession).not.toHaveBeenCalled();
+	});
+
+	it("a landing refused by rule fails the turn with what to change", async () => {
+		const w = world();
+		const summary = landRefusal("main", "CODE_HOST_FILE_TOO_LARGE", ["assets/film.mov"])!;
+		expect(summary).toBe(
+			'The change was not landed, and nothing changed on main: it holds files larger than 256 MiB, which a repository kept in Qorpera does not take: "assets/film.mov". Take them out, commit and finish again.',
+		);
+		// A storage that is not as Qorpera left it is never a "finish again"; a code this does not know has no words.
+		expect(landRefusal("main", "CODE_HOST_AREA_FROM_GITHUB", ["code/acme/web"])).toMatch(
+			/^The change was not landed, and nothing changed on main: the repository's own storage .+ Finishing again will not help\./,
+		);
+		expect(
+			landRefusal(
+				"main",
+				"CODE_HOST_NAMES_NOT_NFC",
+				Array.from({ length: 23 }, (_, i) => `n${i}`),
+			),
+		).toContain('"n19" and 3 more');
+		expect(landRefusal("main", "CODE_HOST_LAND_FAILED", [])).toBeUndefined();
+		// The kernel counts a summary's bytes (4000) and refuses a longer one, so the report would never land (review of
+		// the v228 release, F1). Names of many bytes are named only as far as they fit, and what to do always follows.
+		const accented = Array.from({ length: 20 }, (_, i) => `docs/${"e\u0301".repeat(80)}-${i}.md`);
+		for (const text of [
+			landRefusal("main", "CODE_HOST_NAMES_NOT_NFC", accented)!,
+			landConflict("main", accented),
+			landRefusal("main", "CODE_HOST_FILE_TOO_LARGE", ["\u{1F4E6}".repeat(900)])!,
+		]) {
+			expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4000);
+			expect(text).toMatch(/(commit and finish again\.|Take them out, commit and finish again\.)$/);
+		}
+		expect(landRefusal("main", "CODE_HOST_NAMES_NOT_NFC", accented)).toContain(
+			" more. Rename them, commit and finish again.",
+		);
+		expect(landRefusal("main", "CODE_HOST_FILE_TOO_LARGE", ["\u{1F4E6}".repeat(900)])).toContain(
+			": 1 path too long to name here. Take them out",
+		);
+		// Any summary is cut by bytes, whole characters only.
+		expect(withinBytes("abc", 4000)).toBe("abc");
+		expect(withinBytes("\u00e5".repeat(3000), 4000)).toBe("\u00e5".repeat(2000));
+		expect(withinBytes(`${"a".repeat(3999)}\u{1F4E6}`, 4000)).toBe("a".repeat(3999));
+		vi.mocked(w.host.publish).mockRejectedValueOnce(new CodingLandRefused("CODE_HOST_FILE_TOO_LARGE", summary));
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const report = vi.fn();
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		expect([completion.p_outcome, completion.p_summary, completion.p_artifacts]).toEqual(["failed", summary, null]);
+		expect(report).toHaveBeenCalledWith("publish", expect.objectContaining({ message: "CODE_HOST_FILE_TOO_LARGE" }));
+		expect(w.host.detachSession).not.toHaveBeenCalled();
+	});
+
+	it("says the change is being checked and saved while a repository kept in Qorpera lands, and only there", async () => {
+		const stepOf = async (host: "qorpera" | "github.com") => {
+			const w = world();
+			w.world.claim.repository = (
+				host === "qorpera" ? { host, owner: "acme", name: "shop", baseBranch: "main" } : repository
+			) as never;
+			vi.mocked(w.host.publish).mockResolvedValueOnce(
+				host === "qorpera"
+					? {
+							pullRequest: null,
+							noChange: false,
+							landed: { state: "fast-forward", mainSha: headSha, filesChanged: 1, change: 2 },
+						}
+					: {
+							pullRequest: { url: "https://github.com/Qorpera/app/pull/12", number: 12, headSha },
+							noChange: false,
+						},
+			);
+			const finish = {
+				schema: "qorpera.coding-submission/v1",
+				workerId: w.world.claim.workerId,
+				sequence: 1,
+				kind: "finish",
+				state: "submitted",
+				summary: "Tests passed",
+				headSha,
+				operationKey: "done",
+			};
+			const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+			const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+			expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+			const publishing = w.world.calls.filter(
+				(c) => c.method === "qorpera_record_coding_progress" && c.args.p_phase === "publishing",
+			);
+			expect(publishing).toHaveLength(1);
+			// Set before the landing starts: the checks run inside it.
+			const calls = vi.mocked(w.control.call).mock;
+			const set = calls.calls.findIndex(
+				(c) => c[0] === "qorpera_record_coding_progress" && c[1].p_phase === "publishing",
+			);
+			expect(calls.invocationCallOrder[set]).toBeLessThan(vi.mocked(w.host.publish).mock.invocationCallOrder[0]!);
+			return publishing[0]?.args.p_last_step;
+		};
+		// The founder's card draws its line for the checks by exactly these words (the web, part E).
+		expect(CODING_LANDING_STEP).toBe("Checking and saving the change");
+		expect(await stepOf("qorpera")).toBe("Checking and saving the change");
+		expect(await stepOf("github.com")).toBe("Publishing the draft pull request");
+	});
+
+	it.each([
+		[
+			"CODING_CHECKS_FAILED",
+			'Nothing went into main: the check "test" failed on this change. It ran `npm test` and ended with exit code 1 after 41 s. The end of its output:\n\n    1 failing\n\nIts whole output is in ~/.qorpera-checks/out/2-test.log on the session\'s machine. Fix the cause in the code, never by removing or weakening the check or its tests; run the checks yourself from a clean copy, commit and finish again. [code=CODING_CHECKS_FAILED]',
+		],
+		[
+			"CODING_CHECKS_REFUSED",
+			"Nothing went into main: the repository's checks file, .qorpera/checks.json, is gone in this change, and a repository that has checks keeps them. Fix the file, commit and finish again. [code=CODING_CHECKS_REFUSED]",
+		],
+		[
+			"CODING_CHECKS_DID_NOT_RUN",
+			"Nothing went into main: Qorpera could not run the repository's checks on this change (the session's machine stopped). This is not a fault in the code. The work is kept on the session's branch; finishing again runs the checks again. [code=CODING_CHECKS_DID_NOT_RUN]",
+		],
+		[
+			"CODING_CHECKS_MAIN_MOVED",
+			"Nothing went into main yet: main changed twice while this change's checks ran, so they never ran on what would go in. This is not a fault in the code. The work is kept on the session's branch; finishing again checks it once more. [code=CODING_CHECKS_MAIN_MOVED]",
+		],
+	])("fails the turn with the checks' own words, as they are, for %s", async (code, summary) => {
+		const w = world();
+		w.world.claim.repository = { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" } as never;
+		vi.mocked(w.host.publish).mockRejectedValueOnce(new CodingLandRefused(code, summary));
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const report = vi.fn();
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		// Nothing landed: no artifact, no files, and the words with their code for the kernel to keep.
+		expect([completion.p_outcome, completion.p_summary, completion.p_artifacts, completion.p_files_changed]).toEqual([
+			"failed",
+			summary,
+			null,
+			null,
+		]);
+		expect(report).toHaveBeenCalledWith("publish", expect.objectContaining({ message: code }));
+		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
+		expect(w.host.detachSession).not.toHaveBeenCalled();
+	});
+
+	it("a publication that fails for another reason fails the turn and says so, instead of letting the lease lapse", async () => {
+		const w = world();
+		const report = vi.fn();
+		vi.mocked(w.host.publish).mockRejectedValueOnce(new Error("CODING_GIT_RECONCILIATION_REQUIRED"));
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const control = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+		const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+		expect(completion.p_outcome).toBe("failed");
+		expect(completion.p_summary).toBe(PUBLICATION_UNFINISHED);
+		expect(completion.p_pull_request).toBeNull();
+		expect(report).toHaveBeenCalledWith(
+			"publish",
+			expect.objectContaining({ message: "CODING_GIT_RECONCILIATION_REQUIRED" }),
+		);
+		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
+		expect(w.host.detachSession).not.toHaveBeenCalled();
+	});
+
 	it("a question blocks the session with its choices and leaves it standing by", async () => {
 		const w = world();
 		const ask = {
@@ -430,15 +818,59 @@ describe("the coding executor over a session turn", () => {
 	});
 
 	it("a failed workspace preparation unplugs what the turn plugged and asks for recovery, never completion", async () => {
-		const w = world();
-		vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(new Error("CODING_HOST_VM_RECOVERY_REQUIRED"));
-		const executor = new CloudCodingExecutor({ control: w.control, host: w.host, owner: "exec-test", turnPollMs: 1 });
-		expect(await executor.runOnce(new AbortController().signal)).toBe("recovery-required");
-		// The host unplugs only a session this turn plugged and never attached.
-		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
-		expect(w.host.detachSession).toHaveBeenCalledTimes(1);
-		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
-		expect(w.world.calls.some((c) => c.method === "qorpera_begin_coding_turn")).toBe(false);
+		// With or without a detail after the code, as an LXD refusal gives it (coding-executor-host.ts).
+		for (const code of ["CODING_HOST_VM_RECOVERY_REQUIRED", "CODING_HOST_VM_RECOVERY_REQUIRED:LXD_REFUSED_403"]) {
+			const w = world();
+			vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(new Error(code));
+			const executor = new CloudCodingExecutor({
+				control: w.control,
+				host: w.host,
+				owner: "exec-test",
+				turnPollMs: 1,
+			});
+			expect(await executor.runOnce(new AbortController().signal)).toBe("recovery-required");
+			// The host unplugs only a session this turn plugged and never attached.
+			expect(w.host.endTurn).toHaveBeenCalledTimes(1);
+			expect(w.host.detachSession).toHaveBeenCalledTimes(1);
+			expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
+			expect(w.world.calls.some((c) => c.method === "qorpera_begin_coding_turn")).toBe(false);
+		}
+	});
+
+	it("a workspace that failed for another reason fails the turn at once with its code, once what it attached came off", async () => {
+		// 8 Nov 2026, Lærdom: the old vault refused the session's environment, and the lease lapsed twice as "the executor
+		// stopped responding". Now the turn says what stopped it; an error that is no code reads as the generic one.
+		for (const [failure, code] of [
+			[new Error("CODING_ENVIRONMENT_UNAVAILABLE"), "CODING_ENVIRONMENT_UNAVAILABLE"],
+			[new Error("socket hang up"), "CODING_PREPARE_UNFINISHED"],
+		] as [Error, string][]) {
+			const w = world();
+			vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(failure);
+			const report = vi.fn();
+			const executor = new CloudCodingExecutor({
+				control: w.control,
+				host: w.host,
+				owner: "exec-test",
+				turnPollMs: 1,
+				report,
+			});
+			expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
+			const completion = w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args;
+			expect(completion.p_outcome).toBe("failed");
+			expect(completion.p_summary).toBe(prepareUnfinished(failure));
+			expect(completion.p_summary).toBe(
+				`Preparing the session's workspace did not finish, so the coding turn did not start. Nothing was changed; a follow-up tries again. [code=${code}]`,
+			);
+			expect(w.world.calls.some((c) => c.method === "qorpera_begin_coding_turn")).toBe(false);
+			expect(w.host.detachSession).toHaveBeenCalledTimes(1);
+			const completed = vi
+				.mocked(w.control.call)
+				.mock.calls.findIndex((c) => c[0] === "qorpera_complete_coding_turn");
+			expect(vi.mocked(w.host.detachSession).mock.invocationCallOrder[0]).toBeLessThan(
+				vi.mocked(w.control.call).mock.invocationCallOrder[completed]!,
+			);
+			expect(report.mock.calls).toEqual([["turn", failure]]);
+		}
 	});
 
 	it("a workspace the host could not make for a reason it names fails the turn at once, with that reason, under its lease", async () => {
@@ -514,7 +946,8 @@ describe("the coding executor over a session turn", () => {
 		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 50, report });
 		const run = executor.runOnce(new AbortController().signal);
 		await vi.advanceTimersByTimeAsync(16000);
-		expect(await run).toBe("recovery-required");
+		// The kernel refused the renewal: the lease is gone by its word, and it wrote what happened.
+		expect(await run).toBe("released");
 		// The lease is gone: it is not asked again.
 		expect(heartbeats).toBe(1);
 		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
@@ -585,7 +1018,8 @@ describe("the coding executor over a session turn", () => {
 		expect(report).not.toHaveBeenCalled();
 	});
 
-	it("begins again only after a busy refusal", async () => {
+	it("begins again only after a busy refusal: any other failed admission that did not begin fails the turn and says so", async () => {
+		// 10 Nov 2026: one turn in six died here and was told as "the executor stopped responding".
 		const w = world();
 		const control: CodingExecutorControl = {
 			call: (method, args, signal) => {
@@ -598,11 +1032,173 @@ describe("the coding executor over a session turn", () => {
 		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
 		const run = executor.runOnce(new AbortController().signal);
 		await vi.advanceTimersByTimeAsync(5000);
-		expect(await run).toBe("recovery-required");
+		expect(await run).toBe("failed");
 		expect(w.world.calls.filter((c) => c.method === "qorpera_begin_coding_turn")).toHaveLength(1);
 		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
 			["turn", "CODING_CONTROL_UNCONFIRMED"],
 		]);
+		const completions = w.world.calls.filter((c) => c.method === "qorpera_complete_coding_turn");
+		expect(completions.map((c) => [c.args.p_outcome, c.args.p_summary])).toEqual([["failed", TURN_START_UNFINISHED]]);
+		// The session stays attached with its workspace, for the follow-up.
+		expect(w.host.endTurn).toHaveBeenCalledTimes(1);
+		expect(w.host.detachSession).not.toHaveBeenCalled();
+		expect(w.host.publish).not.toHaveBeenCalled();
+	});
+
+	it("an admission whose answer was lost goes on when the kernel describes the turn as running", async () => {
+		const w = world();
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const inner = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const control: CodingExecutorControl = {
+			call: async (method, args, signal) => {
+				const answer = await inner.call(method, args, signal);
+				// The kernel admitted the turn; its answer never arrived.
+				if (method === "qorpera_begin_coding_turn") throw new Error("CODING_CONTROL_UNCONFIRMED");
+				return answer;
+			},
+		};
+		const report = vi.fn();
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
+		expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+		expect(w.world.calls.filter((c) => c.method === "qorpera_begin_coding_turn")).toHaveLength(1);
+		expect(w.world.calls.filter((c) => c.method === "qorpera_complete_coding_turn")).toHaveLength(1);
+		expect(w.host.publish).toHaveBeenCalledTimes(1);
+		expect(report).not.toHaveBeenCalled();
+	});
+
+	it("the workspace note is written again after a busy row or a lost answer; one that never lands fails the turn in words", async () => {
+		const w = world();
+		const finish = {
+			schema: "qorpera.coding-submission/v1",
+			workerId: w.world.claim.workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		};
+		const inner = withHook(w.control, endTurnOnPoll(w.world, "completed", finish));
+		const failures: Error[] = [new CodingControlBusy(), new Error("CODING_CONTROL_UNCONFIRMED")];
+		const notes = (c: { method: string; args: Record<string, unknown> }) =>
+			c.method === "qorpera_record_coding_progress" && c.args.p_last_step === "Workspace ready";
+		const control: CodingExecutorControl = {
+			call: (method, args, signal) => {
+				const failure = notes({ method, args }) ? failures.shift() : undefined;
+				if (!failure) return inner.call(method, args, signal);
+				w.world.calls.push({ method, args });
+				return Promise.reject(failure);
+			},
+		};
+		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
+		const run = executor.runOnce(new AbortController().signal);
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(await run).toBe("completed");
+		expect(w.world.calls.filter(notes)).toHaveLength(3);
+
+		const lost = world();
+		const never: CodingExecutorControl = {
+			call: (method, args, signal) => {
+				if (!notes({ method, args })) return lost.control.call(method, args, signal);
+				lost.world.calls.push({ method, args });
+				return Promise.reject(new Error("CODING_CONTROL_UNCONFIRMED"));
+			},
+		};
+		const report = vi.fn();
+		const second = new CloudCodingExecutor({
+			control: never,
+			host: lost.host,
+			owner: "exec-test",
+			turnPollMs: 1,
+			report,
+		});
+		const failed = second.runOnce(new AbortController().signal);
+		await vi.advanceTimersByTimeAsync(20000);
+		expect(await failed).toBe("failed");
+		// The first try and two more.
+		expect(lost.world.calls.filter(notes)).toHaveLength(3);
+		expect(lost.world.calls.some((c) => c.method === "qorpera_begin_coding_turn")).toBe(false);
+		expect(lost.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args.p_summary).toBe(
+			TURN_START_UNFINISHED,
+		);
+		expect(report).toHaveBeenCalledTimes(1);
+	});
+
+	it("a report whose answer was lost is read back: a lease the kernel gave up means it went through, a turn still described is reported again", async () => {
+		const finish = (workerId: string) => ({
+			schema: "qorpera.coding-submission/v1",
+			workerId,
+			sequence: 1,
+			kind: "finish",
+			state: "submitted",
+			summary: "Tests passed",
+			headSha,
+			operationKey: "done",
+		});
+		// 1. The report went through; its answer never arrived. The kernel then refuses the describe: the lease is gone.
+		const w = world();
+		const inner = withHook(w.control, endTurnOnPoll(w.world, "completed", finish(w.world.claim.workerId)));
+		const through: CodingExecutorControl = {
+			call: async (method, args, signal) => {
+				if (method === "qorpera_describe_coding_turn" && w.world.phase === "completed")
+					throw new CodingControlRefused(null);
+				const answer = await inner.call(method, args, signal);
+				if (method === "qorpera_complete_coding_turn") throw new Error("CODING_CONTROL_UNCONFIRMED");
+				return answer;
+			},
+		};
+		const report = vi.fn();
+		const executor = new CloudCodingExecutor({
+			control: through,
+			host: w.host,
+			owner: "exec-test",
+			turnPollMs: 1,
+			report,
+		});
+		expect(await executor.runOnce(new AbortController().signal)).toBe("completed");
+		expect(w.world.calls.filter((c) => c.method === "qorpera_complete_coding_turn")).toHaveLength(1);
+		expect(report).not.toHaveBeenCalled();
+
+		// 2. The report never reached the kernel, twice: the turn is still described, and the third report lands.
+		const v = world();
+		const again = withHook(v.control, endTurnOnPoll(v.world, "completed", finish(v.world.claim.workerId)));
+		let lost = 2;
+		const twice: CodingExecutorControl = {
+			call: (method, args, signal) => {
+				if (method !== "qorpera_complete_coding_turn" || lost-- <= 0) return again.call(method, args, signal);
+				v.world.calls.push({ method, args });
+				return Promise.reject(new Error("CODING_CONTROL_UNCONFIRMED"));
+			},
+		};
+		const second = new CloudCodingExecutor({ control: twice, host: v.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await second.runOnce(new AbortController().signal)).toBe("completed");
+		const reports = v.world.calls.filter((c) => c.method === "qorpera_complete_coding_turn");
+		expect(reports).toHaveLength(3);
+		for (const sent of reports) expect(sent.args).toEqual(reports[0]!.args);
+		expect(v.host.publish).toHaveBeenCalledTimes(1);
+
+		// 3. A report that never lands leaves the lease to lapse, as before.
+		const u = world();
+		const none = withHook(u.control, endTurnOnPoll(u.world, "completed", finish(u.world.claim.workerId)));
+		const never: CodingExecutorControl = {
+			call: (method, args, signal) => {
+				if (method !== "qorpera_complete_coding_turn") return none.call(method, args, signal);
+				u.world.calls.push({ method, args });
+				return Promise.reject(new Error("CODING_CONTROL_UNCONFIRMED"));
+			},
+		};
+		const third = new CloudCodingExecutor({ control: never, host: u.host, owner: "exec-test", turnPollMs: 1 });
+		expect(await third.runOnce(new AbortController().signal)).toBe("recovery-required");
+		expect(u.world.calls.filter((c) => c.method === "qorpera_complete_coding_turn")).toHaveLength(3);
 	});
 
 	it("stops beginning again when the lease held at the first busy refusal ends, though heartbeats extend it", async () => {
@@ -622,7 +1218,8 @@ describe("the coding executor over a session turn", () => {
 		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
 		const run = executor.runOnce(new AbortController().signal);
 		await vi.advanceTimersByTimeAsync(70000);
-		expect(await run).toBe("recovery-required");
+		// The turn still holds its lease (heartbeats renewed it): it fails saying so, never silently.
+		expect(await run).toBe("failed");
 		expect(heartbeats).toBeGreaterThanOrEqual(3);
 		expect(begins.length).toBeGreaterThan(20);
 		expect(begins.at(-1)!).toBeLessThan(leaseUntil);
@@ -634,8 +1231,10 @@ describe("the coding executor over a session turn", () => {
 		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
 			["turn", "CODING_CONTROL_BUSY"],
 		]);
-		expect(w.host.detachSession).toHaveBeenCalledTimes(1);
-		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
+		expect(w.host.detachSession).not.toHaveBeenCalled();
+		expect(
+			w.world.calls.filter((c) => c.method === "qorpera_complete_coding_turn").map((c) => c.args.p_summary),
+		).toEqual([TURN_START_UNFINISHED]);
 	});
 
 	it("stops beginning again when the lease is lost", async () => {
@@ -657,7 +1256,8 @@ describe("the coding executor over a session turn", () => {
 		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1, report });
 		const run = executor.runOnce(new AbortController().signal);
 		await vi.advanceTimersByTimeAsync(20000);
-		expect(await run).toBe("recovery-required");
+		// The renewal was refused: the kernel took the turn.
+		expect(await run).toBe("released");
 		expect(lost).toBeGreaterThan(0);
 		expect(begins.every((at) => at <= lost)).toBe(true);
 		expect(report.mock.calls.map(([stage, error]) => [stage, (error as Error).message])).toEqual([
@@ -682,7 +1282,7 @@ describe("the coding executor over a session turn", () => {
 		const w = world();
 		vi.mocked(w.host.prepareWorkspace).mockRejectedValueOnce(new Error("CODING_HOST_GUEST_NOT_READY"));
 		vi.mocked(w.host.detachSession).mockRejectedValueOnce(new Error("CODING_HOST_VM_RECOVERY_REQUIRED"));
-		const report = vi.fn((_stage: "turn" | "stop" | "defer", _error: unknown) => {
+		const report = vi.fn((_stage: CodingReportStage, _error: unknown) => {
 			throw new Error("log sink down");
 		});
 		const executor = new CloudCodingExecutor({
@@ -750,9 +1350,12 @@ describe("the coding executor over a session turn", () => {
 					: w.control.call(method, args, signal),
 		};
 		const executor = new CloudCodingExecutor({ control, host: w.host, owner: "exec-test", turnPollMs: 1 });
-		expect(await executor.runOnce(new AbortController().signal)).toBe("recovery-required");
+		// Nothing began: the turn fails saying so, and does not wait in the queue.
+		expect(await executor.runOnce(new AbortController().signal)).toBe("failed");
 		expect(w.world.calls.map((c) => c.method)).not.toContain("qorpera_defer_coding_session");
-		expect(w.world.calls.map((c) => c.method)).not.toContain("qorpera_complete_coding_turn");
+		expect(w.world.calls.find((c) => c.method === "qorpera_complete_coding_turn")!.args.p_summary).toBe(
+			TURN_START_UNFINISHED,
+		);
 	});
 
 	it("a deferral after an hours refusal that fails is reported and left to recovery", async () => {
@@ -1074,7 +1677,8 @@ describe("the lease and the turn's reads through a slow database", () => {
 		);
 		const r = run(w, s.control);
 		await vi.advanceTimersByTimeAsync(30000);
-		expect(await r.outcome).toBe("recovery-required");
+		// A refusal is the kernel's answer: released, not a recovery.
+		expect(await r.outcome).toBe("released");
 		expect(r.reported()).toEqual([["turn", "CODING_EXECUTOR_LEASE_LOST"]]);
 		const renewals = s.at(HEARTBEAT);
 		expect(renewals).toHaveLength(2);
@@ -1182,31 +1786,39 @@ describe("the lease and the turn's reads through a slow database", () => {
 		);
 		const r = run(w, s.control);
 		await vi.advanceTimersByTimeAsync(10000);
-		expect(await r.outcome).toBe("recovery-required");
+		// The kernel's answer: the session was cancelled or archived, or the lease is another's. Not a recovery.
+		expect(await r.outcome).toBe("released");
 		expect(r.reported()).toEqual([["turn", "CODING_CONTROL_REFUSED"]]);
 		// The one before the workspace, and the refused one.
 		expect(s.at(DESCRIBE)).toHaveLength(2);
 		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
 	});
 
-	it("ends the turn when a describe stays lost past its budget", async () => {
+	it("a describe that stays lost past its budget is said once, and the turn goes on while its lease is renewed", async () => {
 		const w = world();
-		const s = slow(w, ({ method, pass }) =>
-			method === DESCRIBE && w.world.phase === "running" ? unconfirmed() : pass(),
+		// Lost for the first 50 s of the run; the harness's turn ends at the first describe that is answered after.
+		const started = Date.now();
+		const s = slow(
+			w,
+			({ method, pass }) =>
+				method === DESCRIBE && w.world.phase === "running" && Date.now() - started < 50000 ? unconfirmed() : pass(),
+			50000,
 		);
 		const r = run(w, s.control);
 		await vi.advanceTimersByTimeAsync(40000);
-		expect(await r.outcome).toBe("recovery-required");
-		expect(r.reported()).toEqual([["turn", "CODING_CONTROL_UNCONFIRMED"]]);
+		// One budget of retries ran out (2, 4, 8 and 8 s apart), and the next poll asked again.
+		expect(r.reported()).toEqual([["watch", "CODING_CONTROL_UNCONFIRMED"]]);
 		const [, first, ...rest] = s.at(DESCRIBE);
-		// 2, 4, 8 and 8 s apart; the next pause would end past the budget.
 		timeline(
-			rest.map((at) => at - first!),
-			[2000, 6000, 14000, 22000],
+			rest.slice(0, 5).map((at) => at - first!),
+			[2000, 6000, 14000, 22000, 23000],
 		);
-		expect(rest).toHaveLength(4);
-		near(s.ended()! - first!, 22000);
-		expect(s.ended()! - first!).toBeLessThan(CODING_DESCRIBE_BUDGET_MS);
+		expect(s.ended()).toBeUndefined();
+		expect(w.world.calls.some((c) => c.method === "qorpera_complete_coding_turn")).toBe(false);
+		await vi.advanceTimersByTimeAsync(40000);
+		expect(await r.outcome).toBe("blocked");
+		expect(r.reported()).toEqual([["watch", "CODING_CONTROL_UNCONFIRMED"]]);
+		expect(s.at(HEARTBEAT).length).toBeGreaterThanOrEqual(3);
 	});
 
 	it("a lost lease cancels a describe's retries at once", async () => {
@@ -1220,7 +1832,8 @@ describe("the lease and the turn's reads through a slow database", () => {
 		);
 		const r = run(w, s.control, 2000);
 		await vi.advanceTimersByTimeAsync(30000);
-		expect(await r.outcome).toBe("recovery-required");
+		// The renewal was refused: the kernel's answer, so the turn is released.
+		expect(await r.outcome).toBe("released");
 		expect(r.reported()).toEqual([["turn", "CODING_EXECUTOR_LEASE_LOST"]]);
 		near(s.ended(), 15000);
 		// The describe's pause from 8 s to 16 s was cut at the refusal; nothing was asked after it.

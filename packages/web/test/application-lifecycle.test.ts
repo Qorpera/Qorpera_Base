@@ -13,7 +13,10 @@ import { CloudRpcError } from "../src/cloud/client.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
 import type { AgentThreadHandle } from "../src/cloud/parse.ts";
-import type { HostedAccountEntitlement, HostedProfile } from "../src/cloud/types.ts";
+import type { HostedAccountEntitlement, HostedProfile, HostedStaffAgent } from "../src/cloud/types.ts";
+import conversationCss from "../src/styles/conversation.css?raw";
+import { markdown } from "../src/ui/markdown.ts";
+import { PAGE_READY } from "../src/ui/page-frame.ts";
 import {
 	deferred,
 	fixture,
@@ -33,6 +36,7 @@ import { folderFake } from "./folder-fake.ts";
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
+	stubDialogs();
 	vi.useFakeTimers();
 	vi.stubGlobal("crypto", webcrypto);
 	// The usage refresh behind each account check hashes with crypto.subtle,
@@ -75,17 +79,20 @@ function mounted(hash = "#/") {
 	dispose = mountApplication(root, f.cloud, f.api);
 	return { ...f, root };
 }
-/** Opens an agent's card from the rail with a right-click and picks one of its lines. */
-function fromAgentCard(root: HTMLElement, agentId: string, line: "Computer" | "Routines"): void {
-	// jsdom does not implement the native dialog methods the card opens and closes with.
+/** jsdom does not implement the native dialog methods the Friends window and agent cards open and closes with. */
+function stubDialogs(): void {
 	const dialog = HTMLDialogElement.prototype;
 	dialog.showModal ??= function (this: HTMLDialogElement) {
 		this.open = true;
 	};
-	dialog.show ??= dialog.showModal;
 	dialog.close ??= function (this: HTMLDialogElement) {
 		this.open = false;
 	};
+}
+/** Opens an agent's card from the rail with a right-click and picks one of its lines. */
+function fromAgentCard(root: HTMLElement, agentId: string, line: "Computer" | "Routines"): void {
+	stubDialogs();
+	HTMLDialogElement.prototype.show ??= HTMLDialogElement.prototype.showModal;
 	root
 		.querySelector(`.rail [data-agent-id="${agentId}"], .rail [data-cofounder-id="${agentId}"]`)!
 		.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
@@ -567,10 +574,10 @@ describe("account and route ownership", () => {
 		openFriends();
 		await draw();
 		expect(api.listFriends).toHaveBeenCalledTimes(1);
-		expect(root.querySelector("#settings-tab-friends")?.getAttribute("aria-selected")).toBe("true");
+		expect(root.querySelector(".friends-window")).not.toBeNull();
 		auth(userA);
 		await draw();
-		expect(root.querySelector(".settings-overlay")).toBeNull();
+		expect(root.querySelector(".friends-window")).toBeNull();
 		openFriends();
 		await draw();
 		expect(api.listFriends).toHaveBeenCalledTimes(2);
@@ -650,7 +657,7 @@ describe("account and route ownership", () => {
 	it.each(["#/friends", "#/invitations"])("sends the retired %s page to the company hub", async (hash) => {
 		const f = mounted(hash);
 		await draw();
-		expect(f.root.querySelector(".company-card[href]")?.textContent).toContain(profileA.profileName);
+		expect(f.root.querySelector(".company-card[data-href]")?.textContent).toContain(profileA.profileName);
 		expect(f.root.querySelector(".settings-overlay")).toBeNull();
 	});
 
@@ -769,7 +776,7 @@ describe("account and route ownership", () => {
 		await draw();
 		expect(f.root.querySelector(".topbar .account-trigger")).toBeNull();
 		f.root.querySelector<HTMLButtonElement>(".rail .account-trigger")!.click();
-		expect(f.root.querySelector('.account-popover a[href$="/team"]')).toBeNull();
+		expect(f.root.querySelector('.account-popover a[data-href$="/team"]')).toBeNull();
 		f.root.querySelector<HTMLButtonElement>('[data-account-action="settings"]')!.click();
 		f.root.querySelector<HTMLButtonElement>("#settings-tab-company")!.click();
 		await draw();
@@ -779,9 +786,10 @@ describe("account and route ownership", () => {
 		f.root.querySelector<HTMLButtonElement>('.account-popover [data-account-action="friends"]')!.click();
 		await draw();
 		expect(f.api.listFriends).toHaveBeenCalledTimes(2);
-		expect(f.root.querySelector("#settings-tab-friends")?.getAttribute("aria-selected")).toBe("true");
+		expect(f.root.querySelector(".friends-window")).not.toBeNull();
 		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
-		f.root.querySelector<HTMLButtonElement>(".settings-close")!.click();
+		f.root.querySelector<HTMLButtonElement>(".friends-window-close")!.click();
+		expect(f.root.querySelector(".friends-window")).toBeNull();
 		location.hash = "#/account";
 		await draw();
 		expect(f.root.querySelector(".topbar .account-trigger")?.textContent).toContain("Account A");
@@ -863,6 +871,7 @@ describe("account and route ownership", () => {
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 			route: { name: "company", profileId: profileA.profileId, section: "home" } as const,
 		};
 		renderRail(rail, controller, context);
@@ -1027,6 +1036,517 @@ describe("account and route ownership", () => {
 		expect(reads()).toBe(changed);
 	});
 
+	/** The company's folder with one posted app, `apps/sales-board/`, made by the fixture's agent. */
+	function withApp() {
+		const fake = folderFake({ seed: [] });
+		fake.put("apps/sales-board/app.toml", `name = "Sales board"\nowner = "${staff.id}"\nposted = true\n`);
+		fake.put("apps/sales-board/index.html", "<p>Sales this week</p>");
+		vi.spyOn(WebCompanyFiles.prototype, "folder").mockReturnValue(fake.folder as never);
+		vi.spyOn(WebCompanyFiles.prototype, "folderHints").mockReturnValue({ close: async () => {} } as never);
+		return fake;
+	}
+	const appPage = (root: HTMLElement) => root.querySelector<HTMLElement>("main > .side-panel.is-page");
+
+	it("opens an agent's app as a page of its own from a deep link, and says when the app is gone", async () => {
+		withApp();
+		const f = mounted(`#/c/${profileA.profileId}/a/sales-board`);
+		await draw();
+		await draw();
+		const page = appPage(f.root)!;
+		expect(page).not.toBeNull();
+		// The whole main area: no chat, and nothing beside one.
+		expect(f.root.querySelector(".thread, .thread-body.has-beside")).toBeNull();
+		// The app is the whole page (Jonas, 10 November 2026: no header): nothing of Qorpera's stands over it, and the
+		// page carries the app's name for assistive technology.
+		expect(page.getAttribute("aria-label")).toBe("Sales board");
+		expect(page.querySelector(".side-panel-header, .side-panel-button, .side-panel-way")).toBeNull();
+		// What Qorpera keeps there shows only when needed: the bar of a request above the page, the questions dock over it.
+		expect([...page.children].map((child) => child.className)).toEqual([
+			"app-ask",
+			"side-panel-body",
+			"question-dock",
+		]);
+		expect(page.querySelector<HTMLElement>(".app-ask")?.hidden).toBe(true);
+		expect(page.querySelector<HTMLElement>(".question-dock")?.hidden).toBe(true);
+		expect(page.querySelector(".side-panel-body iframe.side-panel-frame")?.getAttribute("sandbox")).toBe(
+			"allow-scripts",
+		);
+		// The rail's icon for it is a link to this page, marked as the open one.
+		const icon = f.root.querySelector<HTMLAnchorElement>(
+			`.rail a.rail-app[data-href="#/c/${profileA.profileId}/a/sales-board"]`,
+		);
+		expect(icon?.getAttribute("aria-current")).toBe("page");
+		// The company's redraws keep the page as it is.
+		await vi.advanceTimersByTimeAsync(2000);
+		await draw();
+		expect(appPage(f.root)).toBe(page);
+		location.hash = `#/c/${profileA.profileId}/a/gone`;
+		await draw();
+		await draw();
+		expect(page.isConnected).toBe(false);
+		const gone = appPage(f.root)!;
+		expect(gone.querySelector(".side-panel-status")?.textContent).toBe("This app isn't in the company anymore.");
+		// With no header, the line has its own ways on: back to the company (it was opened straight from a link), and
+		// Reload. There is no folder to show.
+		const ways = [...gone.querySelectorAll<HTMLElement>(".side-panel-way")];
+		expect(ways.map((way) => way.textContent)).toEqual(["Back to the company", "Reload"]);
+		expect(ways[0]?.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}`);
+	});
+
+	it("waits for the company's staff before a deep-linked app's page opens and answers its roster", async () => {
+		withApp();
+		const f = mounted(`#/c/${profileA.profileId}/a/sales-board`);
+		const staffRead = deferred<HostedStaffAgent[]>();
+		vi.mocked(f.api.listStaff).mockReturnValue(staffRead.promise);
+		await draw();
+		await draw();
+		// The membership and the folder are read; the staff are not yet: no page with a roster it can't answer.
+		expect(f.api.listStaff).toHaveBeenCalled();
+		expect(appPage(f.root)).toBeNull();
+		expect(f.root.querySelector("main > .page .skeleton-page")).not.toBeNull();
+		staffRead.resolve([staff]);
+		await draw();
+		await draw();
+		const page = appPage(f.root)!;
+		expect(page.getAttribute("aria-label")).toBe("Sales board");
+		expect(page.querySelector("iframe.side-panel-frame")).not.toBeNull();
+	});
+
+	it("opens an app's card in a chat as the app's page", async () => {
+		withApp();
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		await draw();
+		const prose = markdown("See [Sales board](app:sales-board).");
+		f.root.querySelector(".thread")!.append(prose);
+		const followed = new MouseEvent("click", { bubbles: true, cancelable: true });
+		prose.querySelector<HTMLButtonElement>("button.app-card")!.dispatchEvent(followed);
+		expect(followed.defaultPrevented).toBe(true);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/a/sales-board`);
+		await draw();
+		await draw();
+		// Not beside the chat: the chat is gone, and the app has the page.
+		expect(f.root.querySelector(".thread")).toBeNull();
+		const page = appPage(f.root)!;
+		expect(page.getAttribute("aria-label")).toBe("Sales board");
+		expect(page.querySelector(".side-panel-header")).toBeNull();
+	});
+
+	it("leads back to the conversation from a card whose app is gone", async () => {
+		withApp();
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		await draw();
+		const prose = markdown("See [Old board](app:old-board).");
+		f.root.querySelector(".thread")!.append(prose);
+		prose.querySelector<HTMLButtonElement>("button.app-card")!.click();
+		await draw();
+		await draw();
+		const page = appPage(f.root)!;
+		expect(page.querySelector(".side-panel-status")?.textContent).toBe("This app isn't in the company anymore.");
+		const back = page.querySelector<HTMLElement>("a.side-panel-way")!;
+		expect(back.textContent).toBe("Back to the conversation");
+		expect(back.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+	});
+
+	it("reads the open app again from its icon in the rail, which also lets it ask again", async () => {
+		// The app's page has no Reload of its own (no header), and a link to where one already is does nothing: a press
+		// on the open app's icon is the member's reload (review r1 of #1636).
+		const fake = withApp();
+		fake.put(
+			"apps/sales-board/app.toml",
+			`name = "Sales board"\nowner = "${staff.id}"\nposted = true\nwrites = ["table:orders"]\n`,
+		);
+		fake.put(
+			"QorperaOS/tables/orders/table.toml",
+			'format = "qorpera.table/v0"\n\n[table]\nid = "1d6e4a57-8b3c-4f21-9e6d-0a7c5b2f8e15"\nname = "Orders"\nrows = "file"\nkey = ["order"]\n\n[[column]]\nname = "order"\ntype = "text"\n\n[[column]]\nname = "status"\ntype = "text"\n\n[write]\nagents = "all"\nmembers = "all"\n',
+		);
+		fake.put("QorperaOS/tables/orders/rows.csv", "order,status\n1042,packed\n");
+		const f = mounted(`#/c/${profileA.profileId}/a/sales-board`);
+		await draw();
+		await draw();
+		const page = appPage(f.root)!;
+		/** Plays the frame's side up to the hand-over, as the frame document would: a way to send a call on its port. */
+		const played = async () => {
+			const frame = await vi.waitFor(() => {
+				const found = page.querySelector<HTMLIFrameElement>("iframe.side-panel-frame");
+				if (!found?.contentWindow || found.dataset.played) throw new Error("no new frame yet");
+				return found;
+			});
+			frame.dataset.played = "true";
+			const post = vi.spyOn(frame.contentWindow as Window, "postMessage").mockImplementation(() => {});
+			frame.dispatchEvent(new Event("load"));
+			const ready = new MessageEvent("message", { data: { type: PAGE_READY } });
+			Object.defineProperty(ready, "source", { value: frame.contentWindow });
+			window.dispatchEvent(ready);
+			const port = (post.mock.calls[0] as unknown as [unknown, string, MessagePort[]])[2][0] as MessagePort;
+			let calls = 0;
+			const call = (method: string, params: Record<string, unknown>) =>
+				new Promise<{ ok: boolean; error?: string }>((resolve) => {
+					const id = ++calls;
+					const answer = (event: MessageEvent) => {
+						if (event.data?.id !== id) return;
+						port.removeEventListener("message", answer);
+						resolve(event.data);
+					};
+					port.addEventListener("message", answer);
+					port.start();
+					port.postMessage({ type: "qorpera-app-call", id, method, params });
+				});
+			return { frame, call };
+		};
+		const ship = { table: "orders", key: "1042", cells: { status: "shipped" } };
+		const bar = () => page.querySelector<HTMLElement>(".app-ask") as HTMLElement;
+		const asked = () =>
+			vi.waitFor(() => {
+				if (bar().hidden) throw new Error("no request on the bar yet");
+			});
+		const first = await played();
+		// Three times Not now: the app asks no more.
+		for (let round = 0; round < 3; round++) {
+			const answer = first.call("setRow", ship);
+			await asked();
+			[...bar().querySelectorAll("button")].find((button) => button.textContent === "Not now")?.click();
+			expect(await answer).toMatchObject({ ok: false, error: "The member said not now" });
+		}
+		expect(await first.call("setRow", ship)).toMatchObject({
+			ok: false,
+			error: expect.stringContaining("three times"),
+		});
+		const icon = f.root.querySelector<HTMLAnchorElement>(
+			`.rail a.rail-app[data-href="#/c/${profileA.profileId}/a/sales-board"]`,
+		)!;
+		// A modified click on the icon stays the link's own (a new tab): nothing is read again.
+		const tab = vi.spyOn(window, "open").mockReturnValue(null);
+		icon.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }));
+		expect(tab).toHaveBeenCalledOnce();
+		await draw();
+		expect(page.querySelector("iframe.side-panel-frame")).toBe(first.frame);
+		// An ordinary press on the icon of the app that is open reads it again, in a new frame, and it may ask again.
+		icon.click();
+		const second = await played();
+		expect(second.frame).not.toBe(first.frame);
+		expect(appPage(f.root)).toBe(page);
+		void second.call("setRow", ship);
+		await asked();
+		expect(bar().textContent).toContain("This app wants to change a row in a company table");
+		expect(tab).toHaveBeenCalledOnce();
+	});
+
+	/** The company's folder with two concepts of its product, `shop-a` then `shop-b` (the newer), and the posted app. */
+	function withConcepts() {
+		const fake = withApp();
+		// The folder's change hints, to send by hand.
+		const hints: ((seq: number) => void)[] = [];
+		vi.mocked(WebCompanyFiles.prototype.folderHints).mockImplementation((onHint) => {
+			hints.push(onHint);
+			return { close: async () => {} } as never;
+		});
+		fake.put(
+			"apps/shop-a/app.toml",
+			`name = "Shop A"\nabout = "A calm shop"\nowner = "${staff.id}"\nconcept = true\n`,
+		);
+		fake.put("apps/shop-a/index.html", "<p>Shop A</p>");
+		fake.put("apps/shop-b/app.toml", 'name = "Shop B"\nconcept = true\nposted = true\n');
+		fake.put("apps/shop-b/index.html", "<p>Shop B</p>");
+		/** Tells the open company its folder changed, and lets the apps and the viewer read it. */
+		const changed = async () => {
+			for (const hint of hints) hint(fake.seq);
+			await vi.advanceTimersByTimeAsync(3000);
+			await draw();
+			await draw();
+		};
+		return Object.assign(fake, { changed });
+	}
+	/** Whose the open concept is and the password line: a strip of the side panel outside the list that folds. */
+	const conceptGuard = (root: HTMLElement) => {
+		const guard = root.querySelector<HTMLElement>(".concepts > .concepts-side > .concepts-guard");
+		expect(guard?.closest(".concepts-panel")).toBeNull();
+		expect(guard?.hidden).toBe(false);
+		return guard?.textContent;
+	};
+	const concepts = (root: HTMLElement) => root.querySelector<HTMLElement>("main > section.concepts");
+	const conceptItems = (root: HTMLElement) =>
+		[...root.querySelectorAll<HTMLAnchorElement>(".concepts-side a.concepts-item")].map((item) => [
+			item.querySelector(".concepts-item-title")?.textContent,
+			item.getAttribute("data-href"),
+			item.getAttribute("aria-current"),
+		]);
+	const conceptFrame = (root: HTMLElement) =>
+		root.querySelector<HTMLIFrameElement>(".concepts-stage > .side-panel.is-concept iframe.side-panel-frame");
+
+	it("opens the Concepts viewer full screen from a deep link, at the newest concept, with no chrome over it", async () => {
+		withConcepts();
+		const f = mounted(`#/c/${profileA.profileId}/concepts`);
+		await draw();
+		await draw();
+		const view = concepts(f.root)!;
+		expect(view).not.toBeNull();
+		// Full screen: no rail, no top bar, no chat.
+		expect(f.root.querySelector<HTMLElement>(".rail")?.hidden).toBe(true);
+		expect(f.root.querySelector(".frame")?.classList.contains("has-concepts")).toBe(true);
+		expect(f.root.querySelector(".thread")).toBeNull();
+		// The side panel: the way back to the company, the heading and one item per concept, the newest first and open.
+		const back = view.querySelector<HTMLAnchorElement>("a.concepts-back")!;
+		expect(back.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}`);
+		expect(back.textContent).toBe(profileA.profileName);
+		expect(back.getAttribute("aria-label")).toBe(`Back to ${profileA.profileName}`);
+		expect(view.querySelector(".concepts-heading")?.textContent).toBe("Concepts");
+		expect(conceptItems(f.root)).toEqual([
+			["Shop B", `#/c/${profileA.profileId}/concepts/shop-b`, "page"],
+			["Shop A", `#/c/${profileA.profileId}/concepts/shop-a`, null],
+		]);
+		const a = view.querySelector(`a.concepts-item[data-href$="/shop-a"]`)!;
+		expect(a.querySelector(".concepts-item-about")?.textContent).toBe("A calm shop");
+		expect(a.querySelector(".concepts-item-by")?.textContent).toBe("Made by Fixture agent");
+		expect(a.querySelector(".concepts-thumb svg.interface-emblem")).not.toBeNull();
+		// The concept's frame fills the stage, with no header bar over it; the panel says no password is asked for.
+		expect(conceptFrame(f.root)?.getAttribute("sandbox")).toBe("allow-scripts");
+		expect(view.querySelector(".concepts-stage .side-panel-header")).toBeNull();
+		expect(conceptGuard(f.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
+		expect(view.querySelector('.concepts-foot [aria-label="Reload"]')).not.toBeNull();
+		// The posted app that is no concept is not listed.
+		expect(view.querySelector(`a.concepts-item[data-href$="/sales-board"]`)).toBeNull();
+		// The company's redraws keep the viewer and its frame as they are.
+		const frame = conceptFrame(f.root);
+		await vi.advanceTimersByTimeAsync(2000);
+		await draw();
+		expect(concepts(f.root)).toBe(view);
+		expect(conceptFrame(f.root)).toBe(frame);
+		// Leaving the route brings the rail back.
+		location.hash = `#/c/${profileA.profileId}/chat/${session.sessionId}`;
+		await draw();
+		await draw();
+		expect(view.isConnected).toBe(false);
+		expect(f.root.querySelector<HTMLElement>(".rail")?.hidden).toBe(false);
+		expect(f.root.querySelector(".frame")?.classList.contains("has-concepts")).toBe(false);
+	});
+
+	it("opens the concept a deep link names and switches concepts in place from the side panel", async () => {
+		withConcepts();
+		const f = mounted(`#/c/${profileA.profileId}/concepts/shop-a`);
+		await draw();
+		await draw();
+		const view = concepts(f.root)!;
+		expect(conceptItems(f.root).map(([, , current]) => current)).toEqual([null, "page"]);
+		const first = conceptFrame(f.root)!;
+		expect(first.title).toBe("App: Shop A");
+		const item = view.querySelector<HTMLAnchorElement>(`a.concepts-item[data-href$="/shop-b"]`)!;
+		location.hash = item.getAttribute("data-href")!;
+		await draw();
+		await draw();
+		// The same viewer and side panel, the same item element; only the stage's frame is new.
+		expect(concepts(f.root)).toBe(view);
+		expect(view.querySelector(`a.concepts-item[data-href$="/shop-b"]`)).toBe(item);
+		expect(conceptItems(f.root).map(([, , current]) => current)).toEqual(["page", null]);
+		expect(first.isConnected).toBe(false);
+		expect(conceptFrame(f.root)?.title).toBe("App: Shop B");
+		// A concept that is gone says so, and offers the newest.
+		location.hash = `#/c/${profileA.profileId}/concepts/gone`;
+		await draw();
+		await draw();
+		expect(view.querySelector(".concepts-status p")?.textContent).toBe("This concept isn't in the company anymore.");
+		expect(view.querySelector(".concepts-status a")?.getAttribute("data-href")).toBe(
+			`#/c/${profileA.profileId}/concepts/shop-b`,
+		);
+	});
+
+	it("keeps the missing concept's offer on the concept that is newest now", async () => {
+		const fake = withConcepts();
+		const f = mounted(`#/c/${profileA.profileId}/concepts/gone`);
+		await draw();
+		await draw();
+		const view = concepts(f.root)!;
+		const offer = () => view.querySelector(".concepts-status a")?.getAttribute("data-href");
+		expect(offer()).toBe(`#/c/${profileA.profileId}/concepts/shop-b`);
+		// The newest one is taken away: the same words, but the offer moves to the one that is newest now.
+		fake.remove("apps/shop-b");
+		await fake.changed();
+		expect(view.querySelector(".concepts-status p")?.textContent).toBe("This concept isn't in the company anymore.");
+		expect(offer()).toBe(`#/c/${profileA.profileId}/concepts/shop-a`);
+		// The last one goes too: nothing is offered.
+		fake.remove("apps/shop-a");
+		await fake.changed();
+		expect(view.querySelector(".concepts-status p")?.textContent).toBe("This concept isn't in the company anymore.");
+		expect(view.querySelector(".concepts-status a")).toBeNull();
+	});
+
+	it("shows a cover made, replaced or read again after a failure, by its file's version", async () => {
+		const made: string[] = [];
+		const forgotten: string[] = [];
+		let failNext = false;
+		// jsdom has no object URLs: each picture gets a numbered one.
+		Object.defineProperty(URL, "createObjectURL", {
+			configurable: true,
+			value: () => {
+				if (failNext) {
+					failNext = false;
+					throw new Error("No picture");
+				}
+				made.push(`blob:cover-${made.length + 1}`);
+				return made.at(-1);
+			},
+		});
+		Object.defineProperty(URL, "revokeObjectURL", {
+			configurable: true,
+			value: (url: string) => forgotten.push(url),
+		});
+		try {
+			const fake = withConcepts();
+			fake.put("apps/shop-b/app.toml", 'name = "Shop B"\nconcept = true\ncover = "cover.webp"\n');
+			const f = mounted(`#/c/${profileA.profileId}/concepts`);
+			await draw();
+			await draw();
+			const thumb = () =>
+				f.root.querySelector<HTMLElement>(`a.concepts-item[data-href$="/shop-b"] .concepts-thumb`)!;
+			const shown = () => thumb().querySelector("img")?.getAttribute("src") ?? null;
+			// Named but not there yet: the emblem.
+			expect(shown()).toBeNull();
+			expect(thumb().querySelector("svg.interface-emblem")).not.toBeNull();
+			// Made, without a change to app.toml: it shows at the folder's next change.
+			fake.put("apps/shop-b/cover.webp", "first");
+			await fake.changed();
+			expect(shown()).toBe("blob:cover-1");
+			// Replaced: the new picture, and the old one let go.
+			fake.put("apps/shop-b/cover.webp", "second");
+			await fake.changed();
+			expect(shown()).toBe("blob:cover-2");
+			expect(forgotten).toEqual(["blob:cover-1"]);
+			// A change the folder has no news of reads nothing again.
+			await fake.changed();
+			expect(made).toHaveLength(2);
+			// A read that fails keeps what was shown, and is tried again at the next change.
+			fake.put("apps/shop-b/cover.webp", "third");
+			failNext = true;
+			await fake.changed();
+			expect(shown()).toBe("blob:cover-2");
+			await fake.changed();
+			expect(shown()).toBe("blob:cover-3");
+			// Taken away: the emblem again.
+			fake.remove("apps/shop-b/cover.webp");
+			await fake.changed();
+			expect(shown()).toBeNull();
+			expect(thumb().querySelector("svg.interface-emblem")).not.toBeNull();
+			expect(forgotten).toEqual(["blob:cover-1", "blob:cover-2", "blob:cover-3"]);
+		} finally {
+			Reflect.deleteProperty(URL, "createObjectURL");
+			Reflect.deleteProperty(URL, "revokeObjectURL");
+		}
+	});
+
+	it("folds the side panel to a strip and keeps that for the viewer", async () => {
+		localStorage.removeItem("qorpera.web.concepts-collapsed");
+		try {
+			withConcepts();
+			const f = mounted(`#/c/${profileA.profileId}/concepts`);
+			await draw();
+			await draw();
+			const view = concepts(f.root)!;
+			const fold = view.querySelector<HTMLButtonElement>("button.concepts-collapse")!;
+			expect(view.classList.contains("is-collapsed")).toBe(false);
+			expect(fold.getAttribute("aria-label")).toBe("Hide the concepts");
+			expect(fold.getAttribute("aria-expanded")).toBe("true");
+			fold.click();
+			expect(view.classList.contains("is-collapsed")).toBe(true);
+			expect(fold.getAttribute("aria-label")).toBe("Show the concepts");
+			expect(fold.getAttribute("aria-expanded")).toBe("false");
+			expect(localStorage.getItem("qorpera.web.concepts-collapsed")).toBe("1");
+			// The concept stays open while the panel folds, and whose it is and the password line stay in the strip.
+			expect(conceptFrame(f.root)?.title).toBe("App: Shop B");
+			expect(conceptGuard(f.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
+			// Opened again, it is folded still.
+			dispose?.();
+			dispose = undefined;
+			document.body.replaceChildren();
+			const again = mounted(`#/c/${profileA.profileId}/concepts`);
+			await draw();
+			await draw();
+			expect(concepts(again.root)?.classList.contains("is-collapsed")).toBe(true);
+			expect(conceptGuard(again.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
+			concepts(again.root)!.querySelector<HTMLButtonElement>("button.concepts-collapse")!.click();
+			expect(conceptGuard(again.root)).toBe("Made by an agent · Qorpera never asks for passwords here");
+			expect(localStorage.getItem("qorpera.web.concepts-collapsed")).toBe("0");
+		} finally {
+			localStorage.removeItem("qorpera.web.concepts-collapsed");
+		}
+	});
+
+	it("never styles away whose a concept is or the password line: open, folded or at phone width", () => {
+		const style = document.createElement("style");
+		style.textContent = conversationCss;
+		document.head.append(style);
+		try {
+			const rules = (list: CSSRuleList): { selector: string; rule: CSSStyleRule; media: string }[] =>
+				[...list].flatMap((rule) =>
+					rule instanceof CSSStyleRule
+						? [{ selector: rule.selectorText, rule, media: "" }]
+						: rule instanceof CSSMediaRule
+							? rules(rule.cssRules).map((entry) => ({ ...entry, media: rule.media.mediaText }))
+							: [],
+				);
+			// The strip and what holds it: the viewer and its side panel.
+			const holds = (selector: string) =>
+				selector.split(",").some((part) => /\.concepts-(guard|side)\b|\.concepts(?![\w-])\s*$/.test(part.trim()));
+			const all = rules(style.sheet!.cssRules);
+			const hiding = all.filter(
+				({ selector, rule }) =>
+					holds(selector) &&
+					!selector.includes("[hidden]") &&
+					(rule.style.display === "none" ||
+						rule.style.visibility === "hidden" ||
+						rule.style.opacity === "0" ||
+						rule.style.height === "0px" ||
+						rule.style.width === "0px"),
+			);
+			expect(hiding.map(({ selector, media }) => `${media} ${selector}`)).toEqual([]);
+			// It has a rule of its own in each of the three layouts.
+			const guard = all.filter(({ selector }) => selector.includes(".concepts-guard"));
+			expect(guard.some(({ selector, media }) => media === "" && selector === ".concepts-guard")).toBe(true);
+			expect(guard.some(({ selector, media }) => media === "" && selector.includes(".is-collapsed"))).toBe(true);
+			expect(guard.some(({ media }) => media.includes("max-width: 760px"))).toBe(true);
+		} finally {
+			style.remove();
+		}
+	});
+
+	it("shows one Concepts entry in the rail and opens a concept's app link in the Concepts viewer", async () => {
+		withConcepts();
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		await draw();
+		const entry = f.root.querySelector<HTMLAnchorElement>(".rail .rail-apps-drawer a.rail-concepts");
+		expect(entry?.getAttribute("data-href")).toBe(`#/c/${profileA.profileId}/concepts`);
+		expect(entry?.querySelector(".rail-app-name")?.textContent).toBe("Concepts");
+		// The concepts have no icon of their own; the posted app that is no concept keeps its own.
+		expect(f.root.querySelector(`.rail a.rail-app[data-href$="/a/shop-b"]`)).toBeNull();
+		expect(f.root.querySelector(`.rail a.rail-app[data-href$="/a/sales-board"]`)).not.toBeNull();
+		// A concept's card in a chat opens the Concepts viewer at it, which leads back to the conversation.
+		const prose = markdown("See [Shop A](app:shop-a).");
+		f.root.querySelector(".thread")!.append(prose);
+		const followed = new MouseEvent("click", { bubbles: true, cancelable: true });
+		prose.querySelector<HTMLButtonElement>("button.app-card")!.dispatchEvent(followed);
+		expect(followed.defaultPrevented).toBe(true);
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/concepts/shop-a`);
+		await draw();
+		await draw();
+		expect(conceptItems(f.root).map(([, , current]) => current)).toEqual([null, "page"]);
+		expect(concepts(f.root)?.querySelector("a.concepts-back")?.getAttribute("data-href")).toBe(
+			`#/c/${profileA.profileId}/chat/${session.sessionId}`,
+		);
+		// A concept's own app link opens the Concepts viewer at it; an app that is no concept keeps its page.
+		location.hash = `#/c/${profileA.profileId}/a/shop-b`;
+		await draw();
+		await draw();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/concepts/shop-b`);
+		expect(conceptFrame(f.root)?.title).toBe("App: Shop B");
+		location.hash = `#/c/${profileA.profileId}/a/sales-board`;
+		await draw();
+		await draw();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/a/sales-board`);
+		expect(appPage(f.root)?.getAttribute("aria-label")).toBe("Sales board");
+		expect(concepts(f.root)).toBeNull();
+	});
+
 	it("shows a membership read failure and retry in Storage when a Company File link cannot open", async () => {
 		const f = mounted(`#/c/${profileA.profileId}/file`);
 		vi.mocked(f.api.getTeam).mockRejectedValue(new Error("Membership unavailable"));
@@ -1076,6 +1596,7 @@ describe("account and route ownership", () => {
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 		};
 		renderRail(rail, a, { ...context, route: { name: "company", profileId: profileA.profileId, section: "file" } });
 		renderRail(rail, b, { ...context, route: { name: "company", profileId: profileB.profileId, section: "file" } });
@@ -1085,7 +1606,7 @@ describe("account and route ownership", () => {
 		search.dispatchEvent(new Event("input"));
 		expect(rail.querySelector(".account-trigger")?.textContent).toContain("Account A");
 		expect(rail.textContent).not.toContain("Company A PRIVATE");
-		expect(rail.querySelector('a[href$="/team"]')).toBeNull();
+		expect(rail.querySelector('a[data-href$="/team"]')).toBeNull();
 	});
 
 	it("retains creation idempotency across an ambiguous failure and controller restart", async () => {
@@ -1454,5 +1975,77 @@ describe("a ChatGPT plan's first-routine card in the app", () => {
 			{ timeout: 3000 },
 		);
 		expect(f.calls).not.toContain("member-folder-commit");
+	});
+});
+
+describe("the rail's line under an idle agent's name in the app", () => {
+	it("reads the agents' notes once the roster arrives, also when the team answers first", async () => {
+		const routine = {
+			routine_id: id(62),
+			client_routine_id: id(162),
+			version: 1,
+			status: "active",
+			staff_agent_id: staff.id,
+			title: "Morning brief",
+			prompt: "Brief me.",
+			triggers: [{ id: "agent", kind: "schedule", intervalMinutes: 60, replyPolicy: "silent" }],
+			effort: "medium",
+			sponsor_binding_id: id(87),
+			sponsor_version: 1,
+			logical_computer_id: null,
+			required_capability: "agent_turn",
+			job_type: "agent_turn",
+			publication_mode: "automatic",
+			review_policy_key: null,
+			reviewer_staff_ids: [],
+			created_at: userA.created_at,
+			updated_at: userA.created_at,
+			next_run_at: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+		};
+		const answer = async (method: string): Promise<unknown> => {
+			if (method === "qorpera_member_company_state_folders")
+				return {
+					schema: "qorpera.member-company-state-folders/v1",
+					agents: [{ staffAgentId: staff.id, file: "QorperaOS/agents/nora/agent.md" }],
+					groups: [],
+					routines: [],
+				};
+			if (method === "qorpera_member_folder_read")
+				return { schema: "qorpera.folder-read/v1", asOfSeq: 1, found: false };
+			if (method === "qorpera_list_cloud_routines") return [routine];
+			if (method === "qorpera_list_member_notifications") return [];
+			throw new Error(`Unexpected fixture RPC: ${method}`);
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request) =>
+				Response.json(await answer(new URL(String(input)).pathname.split("/").at(-1)!)),
+			),
+		);
+		history.replaceState(null, "", `/#/c/${profileA.profileId}`);
+		const f = fixture();
+		f.cloud.config.objectGatewayUrl = "https://objects.fixture.invalid";
+		vi.mocked(f.cloud.rpc).mockImplementation((method: string) => answer(method));
+		// The team answers at once; the roster later, so the notes first read with no agents.
+		const roster = deferred<HostedStaffAgent[]>();
+		vi.mocked(f.api.listStaff).mockReturnValue(roster.promise);
+		const root = document.createElement("div");
+		document.body.append(root);
+		dispose = mountApplication(root, f.cloud, f.api);
+		await vi.waitFor(
+			() =>
+				expect(vi.mocked(f.cloud.rpc).mock.calls.some(([method]) => method === "qorpera_list_cloud_routines")).toBe(
+					true,
+				),
+			{ timeout: 3000 },
+		);
+		roster.resolve([staff]);
+		await vi.waitFor(
+			() =>
+				expect(root.querySelector(`.rail [data-agent-id="${staff.id}"] small`)?.textContent).toMatch(
+					/^Next: Morning brief · /,
+				),
+			{ timeout: 3000 },
+		);
 	});
 });

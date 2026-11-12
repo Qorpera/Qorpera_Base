@@ -44,18 +44,20 @@ const MOTION_DATA = /status-2d-v1\/(?:working-frames|eye-clips|eye-tracks)\.mjs$
 const NOVNC = /member-web\/ui\/(?:screen-viewer|vendor\/novnc-rfb)\.js$/;
 const VENDOR = /node_modules\/(?:@supabase\/|marked\/)/;
 
-test("the first screen never downloads the figures' motion data or noVNC; main.js imports them on demand", async () => {
+test("the first screen never downloads the figures' motion data or noVNC; main.js imports the motion data on demand", async () => {
 	const { layout } = await built;
 	const first = [layout.script, ...layout.preload];
 	assert.deepEqual(inputsOf(layout, first).filter((path) => MOTION_DATA.test(path) || NOVNC.test(path)), []);
 	const lazy = inputsOf(layout, layout.lazy);
 	assert.equal(lazy.filter((path) => MOTION_DATA.test(path)).length, 3);
-	assert.equal(lazy.filter((path) => NOVNC.test(path)).length, 2);
+	// The computer window shows pictures of the screen (20260930712000): noVNC is in no chunk until the stream that
+	// uses it again (stage 2 of lanes/desktop-computers-20261110/LIVE-VIEW-PLAN.md) imports it on demand.
+	assert.equal(lazy.filter((path) => NOVNC.test(path)).length, 0);
 	const dynamic = layout.outputs[layout.script].imports.filter((item) => item.kind === "dynamic-import");
-	assert.equal(dynamic.length, 2);
+	assert.equal(dynamic.length, 1);
 	assert.deepEqual(
 		layout.lazy.filter((file) => /^build\/(?:figure-motion-data|screen-viewer)-[A-Z0-9]+\.js$/.test(file)).length,
-		2,
+		1,
 	);
 });
 
@@ -92,7 +94,9 @@ test("theme.js restores appearance before paint without the dictionary", async (
 	const { layout, text } = await built;
 	const inputs = inputsOf(layout, [layout.theme]);
 	assert.deepEqual(inputs.filter((path) => /src\/ui\/(?:danish\/|preferences\.ts$)/.test(path)), []);
-	assert.ok(text[layout.theme].length < 2048, `theme.js is ${text[layout.theme].length} bytes`);
+	// About 1.2 KB of appearance and 2 KB that picks index.html's first screen with the app's own router and keeps its
+	// shapes' breath (src/ui/boot.ts); about 1.4 KB on the wire, one packet either way.
+	assert.ok(text[layout.theme].length < 3584, `theme.js is ${text[layout.theme].length} bytes`);
 	const stored = { "qorpera.web.theme": "dark", "qorpera.web.composer-color": "green", "qorpera.web.ui-size": "small" };
 	const root = { dataset: {} };
 	const context = {
@@ -112,6 +116,32 @@ test("theme.js restores appearance before paint without the dictionary", async (
 		window: { matchMedia: () => ({ matches: true }), dispatchEvent() {} },
 	});
 	assert.deepEqual(device.dataset, { theme: "dark", composerColor: "blue", uiSize: "big" });
+	// It also names index.html's first screen (src/ui/boot.ts): a stored session at a company's address is its thread,
+	// with the member's rail width; nothing stored is the sign-in page.
+	const company = "0f8fad5b-d9cb-469f-a165-70867728950e";
+	const member = { dataset: {}, style: { setProperty(name, value) { this[name] = value; } } };
+	const listened = [];
+	runInNewContext(text[layout.theme], {
+		...context,
+		URL,
+		URLSearchParams,
+		location: { href: `https://app.example/#/c/${company}` },
+		localStorage: { getItem: (key) => ({ "qorpera-web-auth/v1": "{}", "qorpera.web.rail-width.v5": "400" })[key] ?? null },
+		document: { documentElement: member, querySelectorAll: () => [], addEventListener: (type) => listened.push(type) },
+	});
+	assert.equal(member.dataset.boot, "thread");
+	assert.equal(member.style["--boot-rail"], "400");
+	// Its shapes breathe on the document's clock (the app's own rule, src/ui/skeleton.ts).
+	assert.deepEqual(listened, ["animationstart"]);
+	const visitor = { dataset: {}, style: { setProperty() {} } };
+	runInNewContext(text[layout.theme], {
+		...context,
+		URL,
+		URLSearchParams,
+		location: { href: "https://app.example/" },
+		document: { documentElement: visitor, querySelectorAll: () => [], addEventListener() {} },
+	});
+	assert.equal(visitor.dataset.boot, "sign-in");
 });
 
 test("index.html points at the hashed files and preloads what main.js imports", async () => {
@@ -135,8 +165,10 @@ test("index.html points at the hashed files and preloads what main.js imports", 
 	// fetched by its content hash: /assets/ is cached for a day.
 	for (const file of VENDORED_SCRIPTS) assert.ok(html.includes(`<script src="./${file}?v=${versions[file]}"></script>`), file);
 	assert.ok(html.indexOf("avatar-appearance.js") < html.indexOf(layout.script));
+	// avatar-appearance.js reads the light field's global as it loads.
+	assert.ok(html.indexOf("light-field.js") < html.indexOf("avatar-appearance.js"));
 	assert.throws(() => rewriteIndex(template.replace('src="./main.js"', ""), layout, versions, api), /main\.js/);
-	assert.throws(() => rewriteIndex(template, layout, { ...versions, [VENDORED_SCRIPTS[1]]: undefined }, api), /avatar-appearance\.js/);
+	assert.throws(() => rewriteIndex(template, layout, { ...versions, [VENDORED_SCRIPTS[2]]: undefined }, api), /avatar-appearance\.js/);
 });
 
 test("the deployment manifest checksums every script and stylesheet the build made", async () => {

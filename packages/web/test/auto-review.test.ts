@@ -498,7 +498,7 @@ const tableRows = (el: HTMLElement) =>
 		[...row.cells].slice(0, 3).map((cell) => cell.textContent),
 	);
 
-describe("Settings → General → rules", () => {
+describe("Settings → Company → Agent rules", () => {
 	it("shows the company's rules locked to a member who does not manage them, and adds a rule of their own", async () => {
 		const client = rulesClient(false, [
 			rule(902, "member", "posting on LinkedIn"),
@@ -525,7 +525,8 @@ describe("Settings → General → rules", () => {
 			"Edit the rule: posting on LinkedIn",
 			"Remove the rule: posting on LinkedIn",
 		]);
-		expect(view.el.querySelector("h1, h2")).toBeNull();
+		expect(view.el.querySelector("h1")).toBeNull();
+		expect(view.el.querySelector("h2")?.textContent).toBe("Agent rules");
 		expect(view.el.textContent).toContain("Built-in safety checks always apply.");
 		expect(view.el.querySelector('select[aria-label="Applies to:"]')).toBeNull();
 		// Add rule waits for a rule to add.

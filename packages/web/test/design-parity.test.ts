@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { dayLabel } from "../src/app/agent-line.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import type { Route } from "../src/app/router.ts";
@@ -90,6 +91,7 @@ function mountRail(f: ReturnType<typeof companyFixture>, section: "home" | "file
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 		});
 	draw();
 	const layout = new RailLayout(frame, rail);
@@ -174,23 +176,23 @@ describe("shell presentation lifecycle", () => {
 		expect(view.el.querySelector('[role="listbox"]')!.getAttribute("aria-multiselectable")).toBe("true");
 		expect(f.cloud.rpc).not.toHaveBeenCalled();
 	});
-	it("caps the rail at two fifths of the window and keeps resizing usable when storage is blocked", () => {
+	it("caps the rail at 44% of the window and keeps resizing usable when storage is blocked", () => {
 		const aside = h("aside", { class: "rail" }),
 			frame = h("div", null, aside),
 			rail = new RailLayout(frame, aside);
 		frame.append(rail.el);
 		cleanup.push(() => rail.dispose());
-		const cap = String(Math.floor(window.innerWidth * 0.4));
+		const cap = String(Math.floor(window.innerWidth * 0.44));
 		const press = (key: string) => rail.el.dispatchEvent(new KeyboardEvent("keydown", { key }));
 		expect(rail.el.getAttribute("aria-valuemax")).toBe(cap);
-		// The default is the earlier 456px rail made a tenth narrower twice; the 1280px fixture window shows all of it.
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("369");
+		// The default is the earlier 369px rail made a tenth wider; the 1280px fixture window shows all of it.
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("406");
 		press("ArrowRight");
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("385");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("422");
 		press("End");
 		press("ArrowRight");
 		expect(rail.el.getAttribute("aria-valuenow")).toBe(cap);
-		expect(localStorage.getItem("qorpera.web.rail-width.v4")).toBe(cap);
+		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBe(cap);
 		// Only the rail and its edge carry the width, so a change restyles nothing else.
 		expect(aside.style.getPropertyValue("--rail-width")).toBe(`${cap}px`);
 		expect(rail.el.style.getPropertyValue("--rail-width")).toBe(`${cap}px`);
@@ -198,45 +200,45 @@ describe("shell presentation lifecycle", () => {
 		// A narrower window clamps what is shown; the preference survives until the member acts.
 		vi.stubGlobal("innerWidth", 800);
 		window.dispatchEvent(new Event("resize"));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("320");
-		expect(localStorage.getItem("qorpera.web.rail-width.v4")).toBe(cap);
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("352");
+		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBe(cap);
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe(cap);
 		vi.stubGlobal("innerWidth", 800);
 		window.dispatchEvent(new Event("resize"));
 		press("ArrowLeft");
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("304");
-		expect(localStorage.getItem("qorpera.web.rail-width.v4")).toBe("304");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("336");
+		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBe("336");
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("304");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("336");
 		// Where the cap is the minimum, a key press that moves nothing leaves the preference alone.
-		vi.stubGlobal("innerWidth", 600);
+		vi.stubGlobal("innerWidth", 500);
 		window.dispatchEvent(new Event("resize"));
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("240");
 		press("ArrowRight");
 		expect(rail.el.getAttribute("aria-valuenow")).toBe("240");
-		expect(localStorage.getItem("qorpera.web.rail-width.v4")).toBe("304");
+		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBe("336");
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("304");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("336");
 		// Going back to the default forgets the stored width, even where the window caps it.
 		vi.stubGlobal("innerWidth", 900);
 		window.dispatchEvent(new Event("resize"));
 		rail.el.dispatchEvent(new MouseEvent("dblclick"));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("360");
-		expect(localStorage.getItem("qorpera.web.rail-width.v4")).toBeNull();
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("396");
+		expect(localStorage.getItem("qorpera.web.rail-width.v5")).toBeNull();
 		vi.stubGlobal("innerWidth", 1280);
 		window.dispatchEvent(new Event("resize"));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("369");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("406");
 		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
 			throw new Error("Blocked");
 		});
 		rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" }));
 		expect(frame.classList.contains("rail-compact")).toBe(true);
 		rail.el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
-		expect(rail.el.getAttribute("aria-valuenow")).toBe("369");
+		expect(rail.el.getAttribute("aria-valuenow")).toBe("406");
 	});
 	it("starts every member once from the new default and keeps any width chosen since", () => {
 		const shown = () => {
@@ -248,8 +250,9 @@ describe("shell presentation lifecycle", () => {
 		localStorage.setItem("qorpera.web.rail-width", "400");
 		localStorage.setItem("qorpera.web.rail-width.v2", "456");
 		localStorage.setItem("qorpera.web.rail-width.v3", "410");
-		expect(shown()).toBe("369");
 		localStorage.setItem("qorpera.web.rail-width.v4", "304");
+		expect(shown()).toBe("406");
+		localStorage.setItem("qorpera.web.rail-width.v5", "304");
 		expect(shown()).toBe("304");
 	});
 	it("changes marked labels without translating company names or message text", () => {
@@ -347,19 +350,20 @@ describe("shell presentation lifecycle", () => {
 		);
 		cleanup.push(() => view.dispose());
 		document.body.append(view.el);
-		view.el.querySelector<HTMLButtonElement>("#settings-tab-company")!.click();
 		view.updateProfiles([profileA]);
-		expect(view.el.querySelector(".settings-file")?.textContent).toContain("Loading storage");
-		expect(view.el.querySelector("progress")).toBeNull();
+		view.el.querySelector<HTMLButtonElement>('.settings-mode[data-mode="storage"]')!.click();
+		const usage = () => view.el.querySelector(".settings-storage-usage");
+		expect(usage()?.textContent).toContain("Loading storage");
+		expect(usage()?.querySelector("progress")).toBeNull();
 		// The company is removed and another one takes its place.
 		view.updateProfiles([]);
 		view.updateProfiles([profileB]);
 		await settle();
-		expect(view.el.querySelector(".settings-file")?.textContent).toContain("40 B used");
+		expect(usage()?.textContent).toContain("40 B in total");
 		pending.resolve({ ...file, storageUsedBytes: 99 });
 		await settle();
-		expect(view.el.querySelector(".settings-file")?.textContent).not.toContain("99 B");
-		expect(view.el.querySelector(".settings-file")?.textContent).toContain("40 B used");
+		expect(usage()?.textContent).not.toContain("99 B");
+		expect(usage()?.textContent).toContain("40 B in total");
 	});
 	it("draws each agent state, with a red disc on an idle agent whose run did not finish", () => {
 		const mount = stubFigureMotion();
@@ -472,18 +476,32 @@ describe("shell presentation lifecycle", () => {
 		const disc = (status: Element | null) =>
 			!status ? "none" : status.classList.contains("alert-mark") ? "red" : "green";
 		for (const { agent, figure, line, disc: shown } of rows) {
-			const link = rail.querySelector(`a[href$="/staff/${agent.id}"]`)!;
+			const link = rail.querySelector(`a[data-href$="/staff/${agent.id}"]`)!;
 			const status = link.querySelector(".rail-row-status, .alert-mark");
 			expect(figures.get(agent.id), agent.displayName).toBe(figure);
-			expect(link.querySelector("small")?.textContent, agent.displayName).toBe(line);
+			// Agents show no title (Jonas, 10 Nov 2026). An idle one says what holds instead (Jonas, 11 Nov 2026): with
+			// nothing on its wall and no routine, when it was hired; a failed one, that its run did not finish.
+			const idle =
+				shown === "red"
+					? "Didn't finish"
+					: line === "Analyst"
+						? `Hired ${dayLabel(timestamp.slice(0, 10))}`
+						: undefined;
+			expect(link.querySelector("small")?.textContent, agent.displayName).toBe(idle ?? line);
 			expect(disc(status), agent.displayName).toBe(shown);
 			// The disc is only drawn. The link names the state in words, which the
 			// compact rail needs: it hides the text beside the figure.
 			if (status) expect(status.getAttribute("aria-hidden")).toBe("true");
-			const state = shown === "red" ? "A run did not finish" : line === "Analyst" ? undefined : line;
-			const words = [agent.displayName, "Analyst", state].filter(Boolean).join(" · ");
-			expect(link.getAttribute("aria-label"), agent.displayName).toBe(state ? words : null);
-			expect(link.getAttribute("title"), agent.displayName).toBe(words);
+			const state =
+				shown === "red"
+					? "A run did not finish"
+					: line === "Analyst"
+						? `Hired ${dayLabel(timestamp.slice(0, 10))}`
+						: line;
+			const words = [agent.displayName, state].filter(Boolean).join(" · ");
+			expect(link.getAttribute("aria-label"), agent.displayName).toBe(words);
+			// No hover popup: the row shows the name already (Jonas, 9 Nov 2026).
+			expect(link.hasAttribute("title"), agent.displayName).toBe(false);
 		}
 		// The Co-Founder's failed room delivery reads the same way on its card.
 		const card = rail.querySelector(".cofounder-home")!;
@@ -492,13 +510,13 @@ describe("shell presentation lifecycle", () => {
 		expect(card.querySelector("small")).toBeNull();
 		expect(card.textContent).toBe("Co-Founder");
 		expect(disc(card.querySelector(".cofounder-status, .alert-mark"))).toBe("red");
-		expect(card.getAttribute("aria-label")).toBe("Co-Founder · Co-founder · A run did not finish");
+		expect(card.getAttribute("aria-label")).toBe("Co-Founder · A run did not finish");
 	});
 	it("redraws the status disc as a run fails, is picked up again and is dismissed", () => {
 		stubFigureMotion();
 		const f = companyFixture();
 		const { rail, draw } = mountRail(f);
-		const disc = () => rail.querySelector(`a[href$="/staff/${staff.id}"] :is(.rail-row-status, .alert-mark)`);
+		const disc = () => rail.querySelector(`a[data-href$="/staff/${staff.id}"] :is(.rail-row-status, .alert-mark)`);
 		const failed = {
 			runId: id(70),
 			staffAgentId: staff.id,
@@ -521,13 +539,63 @@ describe("shell presentation lifecycle", () => {
 		draw();
 		expect(disc()).toBeNull();
 	});
+	it("says under an idle agent's name what its wall and routines say, and gives way to work", () => {
+		stubFigureMotion();
+		const f = companyFixture();
+		const { rail, draw } = mountRail(f);
+		const row = () => rail.querySelector<HTMLElement>(`a[data-href$="/staff/${staff.id}"]`)!;
+		const line = () => row().querySelector("small")?.textContent;
+		expect(line()).toBe(`Hired ${dayLabel(timestamp.slice(0, 10))}`);
+		const today = new Date().toISOString().slice(0, 10);
+		f.company.store.set({ agentNotes: { [staff.id]: { done: { text: "Made the new logo", day: today } } } });
+		draw();
+		expect(line()).toBe(`Made the new logo · ${dayLabel(today)}`);
+		expect(row().getAttribute("aria-label")).toBe(`${staff.displayName} · Made the new logo · ${dayLabel(today)}`);
+		f.company.store.set({
+			agentNotes: { [staff.id]: { waits: "Pick a shop name", done: { text: "Made the new logo", day: today } } },
+		});
+		draw();
+		expect(line()).toBe("Waits on you: Pick a shop name");
+		// Work has its own line, and the selected row keeps its colour.
+		f.company.store.set({
+			activity: [
+				{
+					runId: id(74),
+					staffAgentId: staff.id,
+					sourceKind: "wake",
+					jobStatus: "leased",
+					activity: "working",
+					updatedAt: timestamp,
+				},
+			],
+		});
+		draw();
+		expect(line()).toBe("Working");
+		f.company.store.set({
+			activity: [
+				{
+					runId: id(74),
+					staffAgentId: staff.id,
+					sourceKind: "wake",
+					jobStatus: "failed",
+					activity: "needs_attention",
+					updatedAt: timestamp,
+				},
+			],
+		});
+		draw();
+		expect(line()).toBe("Didn't finish");
+		expect(row().querySelector("small")?.classList.contains("is-failed")).toBe(true);
+	});
 	it.each(["agent", "cofounder"])("updates the %s state without disturbing a composing search", (kind) => {
 		stubFigureMotion();
 		const f = companyFixture();
 		if (kind === "cofounder") f.company.store.set({ staff: [{ ...staff, templateId: "co-founder" }] });
 		const { rail, draw } = mountRail(f);
 		const row = () =>
-			rail.querySelector<HTMLElement>(kind === "cofounder" ? ".cofounder-home" : `a[href$="/staff/${staff.id}"]`)!;
+			rail.querySelector<HTMLElement>(
+				kind === "cofounder" ? ".cofounder-home" : `a[data-href$="/staff/${staff.id}"]`,
+			)!;
 		const disc = () => row().querySelector(".rail-row-status, .cofounder-status, .alert-mark");
 		const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
 		rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
@@ -555,7 +623,7 @@ describe("shell presentation lifecycle", () => {
 		f.company.store.set({ activity: [] });
 		draw();
 		expect(disc()).toBeNull();
-		expect(row().hasAttribute("aria-label")).toBe(false);
+		expect(row().getAttribute("aria-label")).not.toContain("A run did not finish");
 		f.company.store.set({
 			activity: [failed],
 			recoveries: {
@@ -656,6 +724,186 @@ describe("received content presentation", () => {
 		expect(document.querySelector("dialog")).toBeNull();
 		expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:local-fixture");
 	});
+	it("shows a readable image in the thread without a click and reuses its bytes for the preview", async () => {
+		const sent: TranscriptMessage = {
+			...imageMessage,
+			pending: "queued",
+			attachments: [
+				{
+					kind: "image",
+					name: "Image attachment",
+					bytes: 2048,
+					mediaType: "image/png",
+					reference: { sha256: "a".repeat(64), bytes: 2048, mediaType: "image/png" },
+				},
+			],
+		};
+		const load = vi.fn(async () => new Blob(["png"], { type: "image/png" }));
+		const view = new ReceivedAttachments(sent, load);
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		const card = view.el.querySelector<HTMLButtonElement>(".received-file")!;
+		// While the message is on its way its bytes can't be read: a quiet box holds the place.
+		await settle();
+		expect(load).not.toHaveBeenCalled();
+		expect(card.classList.contains("awaits-thumbnail")).toBe(true);
+		view.follow({ ...sent, pending: undefined });
+		await settle();
+		expect(load).toHaveBeenCalledExactlyOnceWith(imageMessage.id, 0, expect.any(AbortSignal));
+		expect(card.classList.contains("has-thumbnail")).toBe(true);
+		expect(card.querySelector("img")?.getAttribute("src")).toBe("blob:local-fixture");
+		card.click();
+		await settle();
+		expect(document.querySelector("dialog img")?.getAttribute("src")).toBe("blob:local-fixture");
+		expect(load).toHaveBeenCalledOnce();
+	});
+	it("steps through the message's images in a frameless viewer with its arrows, the arrow keys and a swipe", async () => {
+		const image = (n: string) => ({
+			kind: "image" as const,
+			name: `Image ${n}`,
+			bytes: 2048,
+			mediaType: "image/png",
+			reference: { sha256: n.repeat(64), bytes: 2048, mediaType: "image/png" },
+		});
+		const urls = ["blob:one", "blob:two", "blob:three"];
+		vi.mocked(URL.createObjectURL).mockImplementation(() => urls.shift() ?? "blob:extra");
+		const load = vi.fn(async (_id: string, index: number) => new Blob([`png${index}`], { type: "image/png" }));
+		const view = new ReceivedAttachments(
+			{
+				...imageMessage,
+				attachmentCount: 4,
+				attachments: [
+					image("a"),
+					{ kind: "file", name: "plan.pdf", bytes: 42, mediaType: "application/pdf" },
+					image("b"),
+					image("c"),
+				],
+			},
+			load,
+		);
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		await settle();
+		const shown = () => document.querySelector<HTMLImageElement>(".image-viewer-dialog img")?.getAttribute("src");
+		const count = () => document.querySelector(".image-viewer-count")?.textContent;
+		const nav = (name: string) =>
+			document.querySelector<HTMLButtonElement>(`.image-viewer-dialog [aria-label="${name}"]`)!;
+		view.el.querySelectorAll<HTMLButtonElement>(".received-image")[1]!.click();
+		await settle();
+		// No title or size line around the picture: just it, the arrows and where it is in the message.
+		expect(document.querySelector(".image-viewer-dialog h2")).toBeNull();
+		expect(shown()).toBe("blob:two");
+		expect(count()).toBe("2 of 3");
+		nav("Next image").click();
+		await settle();
+		expect(shown()).toBe("blob:three");
+		expect(nav("Next image").disabled).toBe(true);
+		const dialog = document.querySelector<HTMLDialogElement>(".image-viewer-dialog")!;
+		dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+		dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+		await settle();
+		expect(shown()).toBe("blob:one");
+		expect(count()).toBe("1 of 3");
+		expect(nav("Previous image").disabled).toBe(true);
+		// A swipe to the left goes on to the next one.
+		const stage = document.querySelector<HTMLElement>(".image-viewer-stage")!;
+		const pointer = (type: string, x: number, timeStamp = 0) => {
+			const event = new MouseEvent(type, { clientX: x, clientY: 200, button: 0, bubbles: true });
+			Object.defineProperties(event, { pointerId: { value: 1 }, timeStamp: { value: timeStamp } });
+			stage.dispatchEvent(event);
+		};
+		pointer("pointerdown", 300, 0);
+		pointer("pointermove", 220, 60);
+		pointer("pointerup", 220, 100);
+		await settle();
+		expect(shown()).toBe("blob:two");
+		// The PDF stays out of the viewer, and every image was read once.
+		expect(load.mock.calls.map(([, index]) => index).sort()).toEqual([0, 2, 3]);
+	});
+	it("keeps the viewer's current image when one stepped away from fails late, and places a thumbnail read ahead", async () => {
+		const image = (n: string) => ({
+			kind: "image" as const,
+			name: `Image ${n}`,
+			bytes: 2048,
+			mediaType: "image/png",
+			reference: { sha256: n.repeat(64), bytes: 2048, mediaType: "image/png" },
+		});
+		// Cards load only as they come on screen.
+		const watched: Element[] = [];
+		let intersect: IntersectionObserverCallback = () => {};
+		vi.stubGlobal(
+			"IntersectionObserver",
+			class {
+				constructor(callback: IntersectionObserverCallback) {
+					intersect = callback;
+				}
+				observe(target: Element) {
+					watched.push(target);
+				}
+				unobserve() {}
+				disconnect() {}
+			},
+		);
+		const urls = ["blob:one", "blob:two", "blob:three"];
+		vi.mocked(URL.createObjectURL).mockImplementation(() => urls.shift() ?? "blob:extra");
+		const third = deferred<Blob>();
+		const load = vi.fn((_id: string, index: number) =>
+			index === 2 ? third.promise : Promise.resolve(new Blob([`png${index}`], { type: "image/png" })),
+		);
+		const view = new ReceivedAttachments(
+			{ ...imageMessage, attachmentCount: 3, attachments: [image("a"), image("b"), image("c")] },
+			load,
+		);
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		const cards = [...view.el.querySelectorAll<HTMLButtonElement>(".received-image")];
+		expect(watched).toEqual(cards);
+		expect(load).not.toHaveBeenCalled();
+		cards[0]!.click();
+		await settle();
+		const first = document.querySelector<HTMLImageElement>(".image-viewer-dialog img")!;
+		expect(first.getAttribute("src")).toBe("blob:one");
+		document.querySelector<HTMLButtonElement>('.image-viewer-dialog [aria-label="Next image"]')!.click();
+		await settle();
+		// The second's step read the third ahead; it is still on its way.
+		expect(load.mock.calls.map(([, index]) => index)).toEqual([0, 1, 2]);
+		first.dispatchEvent(new Event("error"));
+		expect(document.querySelector(".image-viewer-dialog img")?.getAttribute("src")).toBe("blob:two");
+		expect(document.querySelector(".image-viewer-note")).toBeNull();
+		// Closed before the third arrived, then its card comes on screen: it waits on that same read.
+		document.querySelector<HTMLButtonElement>(".image-viewer-dialog .surface-close")!.click();
+		intersect(
+			[{ target: cards[2]!, isIntersecting: true } as unknown as IntersectionObserverEntry],
+			{} as IntersectionObserver,
+		);
+		expect(cards[2]!.classList.contains("awaits-thumbnail")).toBe(true);
+		third.resolve(new Blob(["png2"], { type: "image/png" }));
+		await settle();
+		expect(cards[2]!.classList.contains("has-thumbnail")).toBe(true);
+		expect(cards[2]!.querySelector("img")?.getAttribute("src")).toBe("blob:three");
+		expect(load).toHaveBeenCalledTimes(3);
+	});
+	it("puts a thread image that fails back on its card with a retry", async () => {
+		const reference = { sha256: "b".repeat(64), bytes: 2048, mediaType: "image/png" };
+		const load = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Unavailable"))
+			.mockResolvedValue(new Blob(["png"], { type: "image/png" }));
+		const view = new ReceivedAttachments(
+			{ ...imageMessage, attachments: [{ ...imageMessage.attachments![0]!, reference }] },
+			load,
+		);
+		cleanup.push(() => view.dispose());
+		document.body.append(view.el);
+		await settle();
+		const card = view.el.querySelector<HTMLButtonElement>(".received-file")!;
+		expect(card.classList.contains("awaits-thumbnail")).toBe(false);
+		expect(card.textContent).toContain("retry");
+		card.click();
+		await settle();
+		expect(card.classList.contains("has-thumbnail")).toBe(true);
+		expect(load).toHaveBeenCalledTimes(2);
+	});
 	it("discards preview bytes that arrive after the conversation is disposed", async () => {
 		const pending = deferred<Blob>();
 		const view = new ReceivedAttachments(imageMessage, () => pending.promise);
@@ -740,7 +988,7 @@ it("keeps responsibility and project pages out of the rail even when they are re
 	};
 	f.company.store.set({ organization, organizationState: "ready" });
 	const { rail } = mountRail(f);
-	expect(rail.querySelector('a[href*="/responsibility/"], a[href*="/project/"]')).toBeNull();
+	expect(rail.querySelector('a[data-href*="/responsibility/"], a[data-href*="/project/"]')).toBeNull();
 	expect(rail.querySelector('.rail-cofounder .cofounder-home[aria-current="page"]')?.textContent).toContain(
 		staff.displayName,
 	);
@@ -751,7 +999,7 @@ it("keeps responsibility and project pages out of the rail even when they are re
 	expect(rail.querySelector(".account-menu-rail .account-chevron")).toBeNull();
 	// Search and the add button share the top row, search first.
 	expect(rail.querySelector('.rail-toolbar > .rail-search > input[type="search"]')).not.toBeNull();
-	expect(rail.querySelector('.rail-toolbar > .rail-search + .rail-add[href$="/new"]')).not.toBeNull();
+	expect(rail.querySelector('.rail-toolbar > .rail-search + .rail-add[data-href$="/new"]')).not.toBeNull();
 	// The search folds out of its button over the tabs.
 	rail.querySelector<HTMLButtonElement>(".rail-search-toggle")!.click();
 	const search = rail.querySelector<HTMLInputElement>('input[type="search"]')!;
@@ -770,8 +1018,8 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 	const toolbar = rail.querySelector(".rail-toolbar"),
 		list = rail.querySelector(".rail-scroll"),
 		search = rail.querySelector<HTMLInputElement>('input[type="search"]')!,
-		row = rail.querySelector<HTMLElement>(`a[href$="/staff/${staff.id}"]`)!,
-		otherRow = rail.querySelector<HTMLElement>(`a[href$="/staff/${other.id}"]`)!;
+		row = rail.querySelector<HTMLElement>(`a[data-href$="/staff/${staff.id}"]`)!,
+		otherRow = rail.querySelector<HTMLElement>(`a[data-href$="/staff/${other.id}"]`)!;
 	// An update that changes nothing the rail shows leaves its elements, and keyboard focus, alone.
 	row.focus();
 	const listChanges = new MutationObserver(() => {});
@@ -780,26 +1028,26 @@ it("keeps the rail's search field, rows and focus through redraws and pauses the
 	draw();
 	expect(listChanges.takeRecords()).toHaveLength(0);
 	listChanges.disconnect();
-	expect(rail.querySelector(`a[href$="/staff/${staff.id}"]`)).toBe(row);
+	expect(rail.querySelector(`a[data-href$="/staff/${staff.id}"]`)).toBe(row);
 	expect(document.activeElement).toBe(row);
 	// A change rebuilds only the row it touches, inside the same list, and focus moves to the rebuilt row.
-	f.company.store.set({ staff: [{ ...staff, role: "Lead designer" }, other] });
+	f.company.store.set({ staff: [{ ...staff, templateId: "lead-designer" }, other] });
 	draw();
-	const rebuilt = rail.querySelector<HTMLElement>(`a[href$="/staff/${staff.id}"]`)!;
+	const rebuilt = rail.querySelector<HTMLElement>(`a[data-href$="/staff/${staff.id}"]`)!;
 	expect(rebuilt).not.toBe(row);
-	expect(rail.querySelector(`a[href$="/staff/${other.id}"]`)).toBe(otherRow);
+	expect(rail.querySelector(`a[data-href$="/staff/${other.id}"]`)).toBe(otherRow);
 	expect(document.activeElement).toBe(rebuilt);
 	// When the focused row goes away, focus moves to the row now in its place, not to the page.
 	otherRow.focus();
 	f.company.store.set({
 		staff: [
-			{ ...staff, role: "Lead designer" },
+			{ ...staff, templateId: "lead-designer" },
 			{ ...other, employmentStatus: "archived" },
 		],
 	});
 	draw();
-	expect(rail.querySelector(`a[href$="/staff/${other.id}"]`)).toBeNull();
-	expect(document.activeElement).toBe(rail.querySelector(`a[href$="/chat/${session.sessionId}"]`));
+	expect(rail.querySelector(`a[data-href$="/staff/${other.id}"]`)).toBeNull();
+	expect(document.activeElement).toBe(rail.querySelector(`a[data-href$="/chat/${session.sessionId}"]`));
 	expect(rail.querySelector(".rail-toolbar")).toBe(toolbar);
 	expect(rail.querySelector(".rail-scroll")).toBe(list);
 	// Every keystroke filters, composed text included, and redraws never move the field.
@@ -866,7 +1114,7 @@ it("moves the current row in place, keeps notices and moved rows, and retries fi
 	const other = { ...staff, id: id(93), displayName: "Third agent" };
 	f.company.store.set({ staff: [staff, other], sessionsError: "Conversations are unavailable." });
 	const { rail, draw } = mountRail(f);
-	const at = (agent: typeof staff) => rail.querySelector<HTMLElement>(`a[href$="/staff/${agent.id}"]`)!;
+	const at = (agent: typeof staff) => rail.querySelector<HTMLElement>(`a[data-href$="/staff/${agent.id}"]`)!;
 	const row = at(staff),
 		otherRow = at(other),
 		alert = rail.querySelector(".rail-scroll > [role=alert]");
@@ -885,14 +1133,14 @@ it("moves the current row in place, keeps notices and moved rows, and retries fi
 	expect(otherRow.getAttribute("aria-current")).toBe("page");
 	expect(listChanges.takeRecords()).toHaveLength(0);
 	// A change to one row leaves the error notice where it is, so it is not announced again.
-	f.company.store.set({ staff: [{ ...staff, role: "Lead designer" }, other] });
+	f.company.store.set({ staff: [{ ...staff, templateId: "lead-designer" }, other] });
 	draw();
 	expect(rail.querySelector(".rail-scroll")!.firstElementChild).toBe(alert);
 	expect(listChanges.takeRecords().some((record) => record.target === rail.querySelector(".rail-scroll"))).toBe(false);
 	listChanges.disconnect();
 	// A row that moves keeps its element and keyboard focus.
 	otherRow.focus();
-	f.company.store.set({ staff: [other, { ...staff, role: "Lead designer" }] });
+	f.company.store.set({ staff: [other, { ...staff, templateId: "lead-designer" }] });
 	draw();
 	expect(at(other)).toBe(otherRow);
 	expect(otherRow.nextElementSibling).toBe(at(staff));

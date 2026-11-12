@@ -44,6 +44,8 @@ const methods = [
 	"qorpera_folder_view_commits",
 	// E3c-3: where a vault_capture's box goes, read by the office itself (migration 20260930344000); it writes nothing.
 	"qorpera_native_office_hook_capture",
+	// 20260930695000: where a vault_capture of a coding value's box goes, read by the office itself; it writes nothing.
+	"qorpera_native_office_coding_value_capture",
 	// F3 4d-4e: a run's take-in of a command's view reads, before its output reaches that run (migration 20260930491000).
 	"qorpera_folder_office_inherit_command_reads",
 ] as const;

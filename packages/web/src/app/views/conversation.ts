@@ -7,6 +7,7 @@ import {
 	interfaceChangeUndoable,
 } from "../../cloud/interface-changes.ts";
 import { type MessageErase, MessageEraseError } from "../../cloud/message-erases.ts";
+import { planLogin } from "../../cloud/native-subscription.ts";
 import { type MessageQuote, QUOTES_MAX } from "../../cloud/quotes.ts";
 import {
 	ACTION_REVIEW_SCHEMA,
@@ -17,7 +18,7 @@ import {
 } from "../../cloud/review-rules.ts";
 import { sessionAttachmentProblem } from "../../cloud/session-attachments.ts";
 import type { TranscriptCard, TranscriptItem, TranscriptMessage, TranscriptPeerLink } from "../../cloud/transcript.ts";
-import type { HostedSession, HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
+import type { HostedSession, HostedStaffAgent, JsonValue, PausedRun } from "../../cloud/types.ts";
 import { replyQuestion, splitReply } from "../../cloud/wall-reply.ts";
 import { AGENT_LOOK, activityCaption, syncCaption } from "../../ui/agent-activity.ts";
 import { AgentWallPoster } from "../../ui/agent-wall-poster.ts";
@@ -39,6 +40,7 @@ import {
 	needsConversationTimestamp,
 	parseConversationTimestamp,
 } from "../../ui/conversation-timestamps.ts";
+import { Dictation } from "../../ui/dictation.ts";
 import { confirmDialog, fmtTime, h, icon, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
 import { renderInteractionCard } from "../../ui/interaction-card.ts";
@@ -50,19 +52,22 @@ import {
 import { matchesKey } from "../../ui/keys.ts";
 import { markdownBubbles } from "../../ui/markdown.ts";
 import { findMentions, type MentionTarget, matchTargets, mentionParts, mentionQuery } from "../../ui/mentions.ts";
-import { foldFrom, playOnce } from "../../ui/motion.ts";
+import { easing, foldFrom, leave, playOnce, reducedMotion } from "../../ui/motion.ts";
 import { presentationDay, presentationLocale, presentationTimeZone, t, timeZoneOption } from "../../ui/preferences.ts";
 import { renderProposalCard } from "../../ui/proposal-card.ts";
 import { quietScroll } from "../../ui/quiet-scroll.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import {
+	classifyRunFailure,
 	manageUsageLink,
 	planUsageLimitReason,
 	runFailureCard,
 	runFailureInterrupted,
 	runFailureReason,
+	runWaitingReason,
 } from "../../ui/run-failure.ts";
 import { uiScale } from "../../ui/scale.ts";
+import { sentTimeHover } from "../../ui/sent-time-hover.ts";
 import { composerSkeleton, messagesSkeleton, threadIdentitySkeleton } from "../../ui/skeleton.ts";
 import { markSkillNames, SkillMentions } from "../../ui/skill-mentions.ts";
 import { type AgentState, answersInteraction, type CompanyController, type ConversationState } from "../company.ts";
@@ -173,7 +178,7 @@ function eraseFailure(error: unknown, what: EraseLine["what"]): string {
 }
 
 /** Elements that hold a handler of their own or what the member typed or opened. */
-const INTERACTIVE = "button, input, select, textarea, a[href], details, [contenteditable]";
+const INTERACTIVE = "button, input, select, textarea, a[href], a[data-href], details, [contenteditable]";
 
 /** An element without controls: nothing in it acts on what it showed when it was drawn. */
 function inert(element: Element): boolean {
@@ -236,11 +241,23 @@ function placeChildren(parent: Element, children: readonly Node[]): void {
 export { renderAuthorizationCard } from "../../ui/authorization-card.ts";
 
 /** What an agent's card can open in the agent's chat. */
-export type AgentPage = "computer" | "wall";
+export type AgentPage = "computer";
+
+/** The login a stopped run's "Continue with …" picked: its message is sent on that login only. */
+interface ContinueLogin {
+	runId: string;
+	connectionId: string;
+}
 
 /* One conversation over the canonical transcript. Rendering follows
  * DECISIONS.md "Transcript projection rules": member inputs and agent sends
  * only. Composer drafts remain local until a message adapter is supplied. */
+
+/** A peer chip's time for a screen reader, as its description: the time on a hover (ui/sent-time-hover.ts) is only drawn,
+ * and the chip's name says what it opens. */
+const peerTimeId = (linkId: string) => `peer-time-${linkId}`;
+const peerTime = (linkId: string, at: string) =>
+	h("span", { class: "visually-hidden", id: peerTimeId(linkId) }, fmtTime(at));
 
 export class ConversationView {
 	readonly el: HTMLElement;
@@ -270,10 +287,14 @@ export class ConversationView {
 	/** "/" in the composer: the conversation's skills, and their names in blue. */
 	readonly #skills: SkillMentions;
 	readonly #send: HTMLButtonElement;
+	/** Speech to text: the microphone beside the send button. */
+	readonly #dictation: Dictation;
 	#stopMode = false;
 	#cannotSend = true;
 	#submitting = false;
 	#working = false;
+	/** The agent's run waits at its login's usage limit (20260930703000): it shows no work, but it may be stopped. */
+	#waitingRun = false;
 	#agentState: AgentState = "idle";
 	#activityKey = "";
 	readonly #composerWrap: HTMLElement;
@@ -288,7 +309,9 @@ export class ConversationView {
 	#answerShown: string | undefined;
 	/** Enter pressed a moment before Send opens (the draft or the account check on its way): sent when it does, if the
 	 * message is still the same: its text, the question it answers and its files. */
-	#sendSoon: { text: string; answering?: string; files: readonly File[]; until: number } | undefined;
+	#sendSoon:
+		| { text: string; answering?: string; files: readonly File[]; until: number; login?: ContinueLogin }
+		| undefined;
 	/** The wall's item that question is, once Answer was pressed in this view. */
 	#answeringItem: string | undefined;
 	/** Other members' unsent messages above the composer, and who writes in this member's own. */
@@ -311,6 +334,10 @@ export class ConversationView {
 	readonly #more: HTMLButtonElement;
 	readonly #menu: HTMLElement;
 	readonly #menuMain: HTMLElement;
+	/** Whether the "+" menu is open. It stays on the page a moment longer while it leaves (#setMenu). */
+	#menuOpen = false;
+	/** The menu taking the height of the page it just turned to (#turnMenuPage). */
+	#menuResize: Animation | undefined;
 	readonly #models: ComposerModels;
 	/** Which of the member's logins pays here; only where the conversation's model account is shown. */
 	readonly #logins: ComposerLogins | undefined;
@@ -357,7 +384,7 @@ export class ConversationView {
 	#panel: ComputerPanel | undefined;
 	/** The transcript of this agent and a coworker, laid over the thread from a chip. */
 	#pair: PairTranscriptView | undefined;
-	/** What stands beside the thread: an interface app or a page (views/app-panel.ts). */
+	/** What stands beside the thread: a page of the Company File (views/app-panel.ts). */
 	#beside: { readonly el: HTMLElement; dispose(): void; focus(): void } | undefined;
 	/** The chip that opened the transcript; focus returns there when it closes. */
 	#pairOpener: HTMLElement | undefined;
@@ -374,14 +401,22 @@ export class ConversationView {
 	#refreshFade: () => void = () => {};
 	/** Re-pins the thread to its end when the message pane gets its size: the first
 	 * render happens before the view is in the page, and a pane that shrinks or
-	 * grows (window, computer panel, composer) must keep showing the latest message. */
+	 * grows (window, computer panel, composer), or messages that grow after they are
+	 * drawn, must keep showing the latest message. */
 	readonly #sizes: ResizeObserver | undefined;
+	/** What stands under the messages (notices, the wall, the coding pill, the composer), laid over the thread's foot
+	 * with no background of its own, so the messages scroll on behind it (Jonas, 9 Nov 2026). */
+	readonly #foot = h("div", { class: "thread-foot" });
 	readonly #unsubscribe: (() => void)[] = [];
 	#disposed = false;
 	#statusKey = "";
 	/** A failed run, shown as one line right above the composer, in the same band as the company notices. */
 	readonly #runNotification = h("div", { class: "thread-run-failure", hidden: true });
 	#runNotificationKey = "";
+	/** The login a stopped run's card is continuing its work with now ("Continue with …"). */
+	#continuing: { runId: string; connectionId: string } | undefined;
+	/** What the card says after its last pick: that it failed, or that the member's own message continues the work. */
+	#continueNote: { runId: string; text: string } | undefined;
 	/** An approval card's Always allow editor, by review id: kept across re-renders. */
 	readonly #reviewDrafts = new Map<string, ActionReviewDraft>();
 	/** The approval card to give focus after the thread redraws (it was just answered). */
@@ -526,7 +561,7 @@ export class ConversationView {
 			// The skills take the place of "···" and of the "@" names above the field; they never stand
 			// together. (Opening "···" moves focus off the field, which closes the skills.)
 			opened: () => {
-				if (!this.#menu.hidden) this.#setMenu(false, false);
+				if (this.#menuOpen) this.#setMenu(false, false);
 				this.#closeMention();
 			},
 			// Messages already written mark the names of skills once the list is known: through a
@@ -555,6 +590,15 @@ export class ConversationView {
 			},
 			icon("send"),
 		);
+		this.#dictation = new Dictation(
+			this.#composer,
+			(start, end, text) => {
+				this.#edits.declare(start, end);
+				this.#composer.setRangeText(text, start, end, "end");
+				this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
+			},
+			this.#lifetime.signal,
+		);
 		this.#attachments = new AttachmentTray(company.conversation(sessionId).get().attachments ?? [], (files) => {
 			const hadFiles = Boolean(company.conversation(sessionId).get().attachments?.length);
 			company.conversation(sessionId).set({ attachments: files });
@@ -576,9 +620,9 @@ export class ConversationView {
 				"aria-label": t("Chat settings and more"),
 				"aria-haspopup": "menu",
 				"aria-expanded": "false",
-				onclick: () => this.#setMenu(this.#menu.hidden),
+				onclick: () => this.#setMenu(!this.#menuOpen),
 			},
-			icon("more"),
+			icon("plus"),
 		);
 		this.#attach = h(
 			"button",
@@ -618,7 +662,15 @@ export class ConversationView {
 			{ class: "composer-menu-note", hidden: true },
 			t("Images are not supported in group chats. Use Company File."),
 		);
-		this.#menuMain = h("div", null, this.#attach, this.#attachNote, this.#models.button, this.#logins?.button);
+		this.#menuMain = h(
+			"div",
+			null,
+			this.#attach,
+			this.#attachNote,
+			h("div", { class: "composer-menu-separator", role: "separator" }),
+			this.#models.button,
+			this.#logins?.button,
+		);
 		this.#menu = h(
 			"div",
 			{
@@ -694,6 +746,7 @@ export class ConversationView {
 			this.#attachments.el,
 			this.#skills.field,
 			this.#more,
+			this.#dictation.button,
 			this.#send,
 			fileInput,
 			this.#menu,
@@ -728,6 +781,7 @@ export class ConversationView {
 			this.#composerShell,
 			this.#mentionNote,
 			this.#quoteNote,
+			this.#dictation.status,
 			this.#attachments.status,
 		);
 		this.#identity = h("button", {
@@ -763,6 +817,7 @@ export class ConversationView {
 		);
 		this.#earlier = h("div", { class: "thread-earlier" }, this.#earlierButton, this.#earlierNote);
 		this.#messages.append(this.#log);
+		sentTimeHover(this.#messages, this.#lifetime.signal);
 		this.#refreshFade = quietScroll(this.#messages);
 		this.#messages.addEventListener("scroll", () => {
 			const { scrollTop, scrollHeight, clientHeight } = this.#messages;
@@ -786,8 +841,15 @@ export class ConversationView {
 		});
 		this.#messages.addEventListener("contextmenu", (event) => this.#openMessageMenu(event));
 		if (typeof ResizeObserver !== "undefined") {
-			this.#sizes = new ResizeObserver(() => this.#pinToBottom());
+			this.#sizes = new ResizeObserver(() => {
+				// The messages keep room under their last line for the foot laid over them.
+				this.#conversationPane.style.setProperty("--thread-foot", `${this.#foot.offsetHeight}px`);
+				this.#pinToBottom();
+			});
 			this.#sizes.observe(this.#messages);
+			this.#sizes.observe(this.#foot);
+			// A message that grows after it is drawn (a sent image's picture arriving) keeps the latest one in view too.
+			this.#sizes.observe(this.#log);
 		} else queueMicrotask(() => this.#pinToBottom()); // The application mounts the view right after construction.
 		// A conversation opened comes in: the thread fades up in place (styles/motion.css).
 		playOnce(this.#messages, "is-entering");
@@ -797,11 +859,16 @@ export class ConversationView {
 			this.#header,
 			this.#messages,
 			this.#earlierStatus,
+			this.#foot,
+		);
+		this.#foot.append(
 			this.#status,
 			...(actions.notificationHost ? [actions.notificationHost] : []),
 			this.#runNotification,
-			this.#coding.el,
+			// The wall before the coding sessions: with both showing, the sessions' pill sits on the wall's own line,
+			// level with its button (conversation.css).
 			this.#wall.el,
+			this.#coding.el,
 			this.#composerWrap,
 		);
 		this.#body = h("div", { class: "thread-body" }, this.#conversationPane);
@@ -832,7 +899,7 @@ export class ConversationView {
 		document.addEventListener(
 			"click",
 			(event) => {
-				if (!this.#menu.hidden && !this.#composerShell.contains(event.target as Node)) this.#setMenu(false, false);
+				if (this.#menuOpen && !this.#composerShell.contains(event.target as Node)) this.#setMenu(false, false);
 			},
 			{ signal: this.#lifetime.signal },
 		);
@@ -949,17 +1016,42 @@ export class ConversationView {
 		return `${presentationLocale()} ${presentationTimeZone()} ${presentationDay(new Date())}`;
 	}
 
+	/** Opens the "+" menu on its main page, or closes it. Closing, the menu goes back into the "+" showing the
+	 * page it was on (styles/motion.css) and is out of reach at once; it is hidden when that has played. */
 	#setMenu(open: boolean, restoreFocus = true): void {
+		const wasOpen = this.#menuOpen;
+		this.#menuOpen = open;
+		this.#more.setAttribute("aria-expanded", String(open));
+		if (open) {
+			this.#resetMenu();
+			this.#menu.hidden = false;
+			this.#focusMenu();
+			return;
+		}
+		if (wasOpen)
+			leave(this.#menu, "is-leaving", () => {
+				// Opened again while it left: it stays.
+				if (this.#menuOpen) return;
+				this.#menu.hidden = true;
+				this.#resetMenu();
+			});
+		if (restoreFocus) this.#more.focus();
+	}
+
+	/** The menu back on its main page and within reach: leave() takes it out of reach but, since the menu is
+	 * kept for its next opening, cannot give it back. */
+	#resetMenu(): void {
 		this.#menuMain.hidden = false;
 		for (const submenu of [this.#models, this.#logins]) {
 			if (!submenu) continue;
 			submenu.el.hidden = true;
 			submenu.button.setAttribute("aria-expanded", "false");
 		}
-		this.#menu.hidden = !open;
-		this.#more.setAttribute("aria-expanded", String(open));
-		if (open) this.#focusMenu();
-		else if (restoreFocus) this.#more.focus();
+		this.#menuResize?.cancel();
+		this.#menu.classList.remove("is-leaving");
+		this.#menu.inert = false;
+		delete this.#menu.dataset.leaving;
+		this.#menu.style.removeProperty("pointer-events");
 	}
 
 	/** A group chat's menu may hold no live control; the menu itself then takes focus so Escape still closes it. */
@@ -973,9 +1065,12 @@ export class ConversationView {
 	 * during a read), so Escape and the arrows keep working. */
 	#setSubmenu(submenu: ComposerModels | ComposerLogins, open: boolean, restoreFocus = true): void {
 		if (open && (submenu.button.disabled || submenu.button.hidden)) return;
+		const turns = this.#menuOpen && submenu.el.hidden === open;
+		const height = this.#menu.offsetHeight;
 		this.#menuMain.hidden = open;
 		submenu.el.hidden = !open;
 		submenu.button.setAttribute("aria-expanded", String(open));
+		if (turns) this.#turnMenuPage(open ? submenu.el : this.#menuMain, height, open);
 		if (open) {
 			submenu.focus();
 			if (submenu === this.#models) void this.#models.refresh();
@@ -983,6 +1078,29 @@ export class ConversationView {
 			if (submenu.button.hidden || submenu.button.disabled) this.#focusMenu();
 			else submenu.button.focus();
 		}
+	}
+
+	/** The open menu turns to `page`: it comes in from the side it lies on (a page of its own from the right, the
+	 * main page from the left) while the menu goes from the `height` it had to the page's. */
+	#turnMenuPage(page: HTMLElement, height: number, forward: boolean): void {
+		playOnce(page, forward ? "is-page-arriving" : "is-page-returning");
+		this.#menuResize?.cancel();
+		if (reducedMotion() || typeof this.#menu.animate !== "function") return;
+		const to = this.#menu.offsetHeight;
+		if (!height || !to || Math.abs(to - height) < 2) return;
+		const resize = this.#menu.animate([{ height: `${height}px` }, { height: `${to}px` }], {
+			duration: 220,
+			easing: easing("--ease-out"),
+		});
+		this.#menuResize = resize;
+		// The taller page shows no scroll bar while the menu grows to it.
+		this.#menu.style.overflow = "clip";
+		const clear = () => {
+			if (this.#menuResize !== resize) return;
+			this.#menuResize = undefined;
+			this.#menu.style.removeProperty("overflow");
+		};
+		resize.finished.then(clear, clear);
 	}
 
 	#openDetails(): void {
@@ -1000,14 +1118,9 @@ export class ConversationView {
 			this.#details = undefined;
 			this.#identity.setAttribute("aria-expanded", "false");
 		};
-		const wall = this.#actions.agentWall;
 		this.#details = agent
 			? new AgentDetails(this.#company, agent, this.#actions, closed, this.#identity, this.#lifetime.signal, {
 					computer: () => this.show(agent.id, "computer"),
-					// From the member's private chat too: the wall is in the agent's company thread.
-					notes: wall?.show
-						? { open: () => wall.show?.(agent.id), read: (signal) => wall.read(agent.id, signal) }
-						: undefined,
 					conversationId: this.#sessionId,
 				})
 			: new GroupDetails(
@@ -1021,21 +1134,18 @@ export class ConversationView {
 				);
 	}
 
-	/** Opens this agent's computer, or shows its wall again, here, as its card asks. False while the thread is not
-	 * that agent's (for the wall: its company thread), or does not know its agent yet: the card's request then waits. */
+	/** Opens this agent's computer here, as its card asks. False while the thread is not that agent's, or does not know
+	 * its agent yet: the card's request then waits. */
 	show(agentId: string, page: AgentPage): boolean {
 		const state = this.#company.store.get();
 		const agent = this.#company.staffById(
 			state.sessions.find((session) => session.sessionId === this.#sessionId)?.staffAgentId,
 		);
 		if (this.#disposed || !agent || agent.id !== agentId) return false;
-		// The wall is in the agent's company thread only: from its private chat the app opens that thread.
-		if (page === "wall" && this.#wallAgent !== agentId) return false;
-		// The computer and the wall sit under the pages laid over the thread: they close for them.
+		// The computer sits under the pages laid over the thread: they close for it.
 		this.#closePair(false);
 		this.#closeCodingSession();
-		if (page === "wall") this.#wall.reveal(agentId);
-		else (this.#panel ?? this.#showPanel(agent))?.focus();
+		if (page === "computer") (this.#panel ?? this.#showPanel(agent))?.focus();
 		return true;
 	}
 
@@ -1045,7 +1155,7 @@ export class ConversationView {
 	}
 
 	/** Stands `panel` beside the thread, in place of what stood there: the thread stays as it is, and usable (Jonas,
-	 * 5 November 2026: an agent's app sits in the chat and pops out beside it). */
+	 * 5 November 2026). A Company File page linked in a message stands here; an agent's app opens on its own page. */
 	showBeside(panel: { readonly el: HTMLElement; dispose(): void; focus(): void }): void {
 		if (this.#disposed) {
 			panel.dispose();
@@ -1223,7 +1333,10 @@ export class ConversationView {
 			(element.contains(selection.anchorNode) || element.contains(selection.focusNode))
 				? selection.toString()
 				: "";
-		if (!keyboard && (target.closest("a[href], img, video, audio, .received-attachments") || (!touch && selected)))
+		if (
+			!keyboard &&
+			(target.closest("a[href], a[data-href], img, video, audio, .received-attachments") || (!touch && selected))
+		)
 			return;
 		event.preventDefault();
 		const { item, author, mine } = drawn;
@@ -1466,10 +1579,12 @@ export class ConversationView {
 		}
 	}
 
-	/** Take over the agent's computer for a card: open its screen here and give it the keyboard. */
+	/** Take over the agent's computer for a card: open its screen here and take the desktop over (20260930713000). Once
+	 * the window shows the picture it enters its large view, where the picture takes the member's mouse and keyboard. */
 	#takeOver(agent: HostedStaffAgent): void {
 		const panel = this.#panel ?? this.#showPanel(agent);
 		panel?.focus();
+		panel?.takeOver();
 	}
 
 	/** Show the agent's computer here: the one already open, or one started now. */
@@ -1487,7 +1602,12 @@ export class ConversationView {
 		// The run controller reports once while this view is still being built.
 		if (this.#disposed || !this.#send) return;
 		const empty = !this.#composer.value.trim() && !this.#attachments.count;
-		const stop = empty && this.#working && (this.#run?.stoppable === true || this.#run?.stopping === true);
+		// A run waiting at its login's usage limit is no work in progress, yet it holds the conversation until it goes on:
+		// the member may stop it as they stop a working run (20260930703000).
+		const stop =
+			empty &&
+			(this.#working || this.#waitingRun) &&
+			(this.#run?.stoppable === true || this.#run?.stopping === true);
 		if (stop !== this.#stopMode) {
 			this.#stopMode = stop;
 			replace(this.#send, stop ? h("span", { class: "composer-stop", "aria-hidden": "true" }) : icon("send"));
@@ -1784,7 +1904,8 @@ export class ConversationView {
 		return parts;
 	}
 
-	#submit(): void {
+	/** Sends the composer's message. `login`: a stopped run's "Continue with …" sends it only on that login. */
+	#submit(login?: ContinueLogin): void {
 		const text = this.#composer.value;
 		this.#sendSoon = undefined;
 		if (text.trim() && this.#send.disabled && !this.#submitting && this.#actions.sendMessage) {
@@ -1794,6 +1915,7 @@ export class ConversationView {
 				...(answering ? { answering } : {}),
 				files: [...(attachments ?? [])],
 				until: Date.now() + 2000,
+				...(login ? { login } : {}),
 			};
 			return;
 		}
@@ -1808,6 +1930,7 @@ export class ConversationView {
 		const files = [...(state.attachments ?? [])];
 		const retry = state.retrySend;
 		const answered = state.answering ? this.#answeringItem : undefined;
+		this.#dictation.cancel();
 		this.#submitting = true;
 		this.#syncSend();
 		void (async () => {
@@ -1830,6 +1953,16 @@ export class ConversationView {
 					files.some((file, index) => file !== currentFiles[index])
 				)
 					return;
+				// The account check chose another login meanwhile (another tab's pick, or the cloud's): "Continue with …"
+				// never sends on a login the member did not pick there. Its words leave the composer, and the card says so.
+				if (login && current.executionSponsor?.connectionId !== login.connectionId) {
+					this.#continueNote = { runId: login.runId, text: t("The login could not be chosen. Try again.") };
+					this.#edits.declare(0, this.#composer.value.length);
+					this.#composer.value = "";
+					this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
+					return;
+				}
+				// Read at once by the send, before anything else may run: the message goes on this login.
 				const sent = await this.#actions.sendMessage!(this.#sessionId, text, this.#lifetime.signal);
 				if (sent && !this.#disposed) {
 					if (answered) this.#wall.answerSent(answered);
@@ -1909,6 +2042,7 @@ export class ConversationView {
 		}
 		this.#agentState = room ? "idle" : this.#company.agentState(session?.staffAgentId);
 		this.#working = this.#agentState === "working" || this.#agentState === "writing";
+		this.#waitingRun = !room && this.#company.pausedRunFor(session?.staffAgentId) !== undefined;
 		this.#renderHeader(session, agent);
 		// The wall is the company's: the agent keeps it from its company runs, so a member's private chat with it has none.
 		this.#syncWall(
@@ -1950,12 +2084,13 @@ export class ConversationView {
 				soon.files.every((file, index) => file === files[index]) &&
 				Date.now() <= soon.until
 			)
-				queueMicrotask(() => this.#submit());
+				queueMicrotask(() => this.#submit(soon.login));
 		}
 		this.#attach.disabled = this.#composer.disabled || noImages;
 		this.#attachNote.hidden = !noImages;
 		this.#more.disabled = this.#composer.disabled;
-		if (this.#composer.disabled && !this.#menu.hidden) this.#setMenu(false, false);
+		this.#dictation.disabled = this.#composer.disabled;
+		if (this.#composer.disabled && this.#menuOpen) this.#setMenu(false, false);
 		this.#composerWrap.hidden = !canWrite;
 		if (conversation.answering !== this.#answerShown) {
 			this.#answerShown = conversation.answering;
@@ -2590,9 +2725,9 @@ export class ConversationView {
 									{
 										type: "button",
 										class: "peer-chip",
-										dataset: { pairSessionId: item.pairSessionId, linkIds: item.id },
-										title: `${label} · ${fmtTime(item.createdAt)}`,
+										dataset: { pairSessionId: item.pairSessionId, linkIds: item.id, sentAt: item.createdAt },
 										"aria-label": t("{label}. Open the conversation", { label }),
+										"aria-describedby": peerTimeId(item.id),
 										onclick: (event: MouseEvent) =>
 											this.#openPair(
 												item.pairSessionId,
@@ -2604,6 +2739,7 @@ export class ConversationView {
 									agentFigure(counterpart, name, { size: 16 }),
 									h("span", null, name),
 									after.trim() ? h("span", null, after.trim()) : null,
+									peerTime(item.id, item.createdAt),
 								),
 							);
 						},
@@ -2713,6 +2849,9 @@ export class ConversationView {
 					// What the card shows of an answer; the input it went out as is not shown.
 					answer && [answer.outcome, answer.answer, answer.answeredBy, answer.answeredAt, answer.pending],
 					answers,
+					// Whose a secret saved here is: a coding value's card says which repositories get it (a role change
+					// moves it).
+					item.request.surface === "secret" ? this.#company.secretSavedForCompany(item.request) : null,
 					item.answerFailed,
 					item.chainStopped,
 					item.request.expiresAt ? Date.parse(item.request.expiresAt) <= Date.now() : false,
@@ -2736,7 +2875,25 @@ export class ConversationView {
 								memberName: (userId) => this.#company.memberName(userId),
 								canAnswer: answers,
 								...(this.#actions.folderImage ? { image: this.#actions.folderImage } : {}),
-								answer: (outcome, answer) => this.#answerInteraction(item.id, outcome, answer),
+								answer: async (outcome, answer) => {
+									// The take-over card's I'm done gives the agent's desktop back first; the answer then wakes the agent, whose
+									// looks are let in again (20260930713000).
+									// It answers only once the database confirmed it has the desktop back (review r1 F4): otherwise the card
+									// stays open and says so, and I'm done asks again. It asks the company's ledger, not a window: a window
+									// closed meanwhile may still have a hand-back on its way (review r2 F4).
+									if (takeOver && outcome === "handed_back") {
+										const current = currentAgent();
+										if (current && !(await this.#panels.releaseAgent(current.id))) {
+											this.#company.conversation(this.#sessionId).set({
+												interactionError: t(
+													"The computer could not be given back yet. Press I'm done to try again. It goes back by itself within 5 minutes.",
+												),
+											});
+											throw new Error("The computer was not given back");
+										}
+									}
+									return this.#answerInteraction(item.id, outcome, answer);
+								},
 								...(email
 									? {
 											emailDraft: this.#company.emailDraftEditor(item.id),
@@ -2761,6 +2918,7 @@ export class ConversationView {
 									? {
 											provideSecret: (value: string) =>
 												this.#company.provideSecret(this.#sessionId, item.id, item.request, value),
+											savesForCompany: this.#company.secretSavedForCompany(item.request),
 										}
 									: {}),
 							},
@@ -3134,7 +3292,8 @@ export class ConversationView {
 		if (element.className !== className) element.className = className;
 		const label = `${author} · ${fmtTime(item.createdAt)}`;
 		if (element.getAttribute("aria-label") !== label) element.setAttribute("aria-label", label);
-		if (element.title !== label) element.title = label;
+		// Its time shows on a hover (ui/sent-time-hover.ts).
+		if (element.dataset.sentAt !== item.createdAt) element.dataset.sentAt = item.createdAt;
 		if (element.dataset.messageId !== item.id) element.dataset.messageId = item.id;
 		const shown = (item.kind === "agent" && room) || (item.kind === "member" && !mine);
 		const authorPart = !shown
@@ -3322,9 +3481,9 @@ export class ConversationView {
 				{
 					type: "button",
 					class: compact ? "peer-chip figure-only" : "peer-chip",
-					dataset: { pairSessionId: link.pairSessionId, linkIds: ids },
-					title: `${name} · ${fmtTime(link.createdAt)}`,
+					dataset: { pairSessionId: link.pairSessionId, linkIds: ids, sentAt: link.createdAt },
 					"aria-label": t("{label}. Open the conversation", { label: name }),
+					"aria-describedby": peerTimeId(link.id),
 					onclick: (event: MouseEvent) =>
 						this.#openPair(
 							link.pairSessionId,
@@ -3334,6 +3493,7 @@ export class ConversationView {
 				},
 				agentFigure(staff, name, { size: 16 }),
 				compact ? null : h("span", null, name),
+				peerTime(link.id, link.createdAt),
 			),
 		);
 		const words = (text: string) => (text.trim() ? h("span", { class: "peer-words" }, text.trim()) : null);
@@ -3488,10 +3648,14 @@ export class ConversationView {
 
 	#renderRunNotification(session: HostedSession | undefined): void {
 		const company = this.#company.store.get();
-		const failed =
-			this.#isRoom || company.accessLost || !company.team?.capabilities.read
-				? undefined
-				: this.#company.failedRunFor(session?.staffAgentId);
+		const readable = !this.#isRoom && !company.accessLost && company.team?.capabilities.read;
+		const failed = readable ? this.#company.failedRunFor(session?.staffAgentId) : undefined;
+		// A run waiting at its login's usage limit is the agent's newest work: it shows above an earlier failure.
+		const waiting = readable ? this.#company.pausedRunFor(session?.staffAgentId) : undefined;
+		if (waiting?.paused && (!failed || failed.earlier)) {
+			this.#renderWaitingRun(session, waiting.runId, waiting.paused);
+			return;
+		}
 		const runId = failed?.activity.runId;
 		const hidden = !runId || dismissedRunNotifications.get(this.#company)?.has(runId);
 		const proposalId = failed?.recovery?.proposalId;
@@ -3515,18 +3679,50 @@ export class ConversationView {
 			recovery?.usageLimit === true &&
 			recovery.paidByChatgptPlan === true &&
 			recovery.requestedByUserId === this.#company.userId.toLowerCase();
+		const payer = recovery ? this.#execution?.payer(recovery.sponsorBindingId) : undefined;
+		const usageLimit =
+			recovery !== undefined &&
+			!proposalId &&
+			!review &&
+			classifyRunFailure(recovery.lastError, recovery.jobStatus, recovery.usageLimit) === "usage_limit";
+		// The work never moves by itself: the member whose own login paid may continue it with another login of theirs
+		// that can pay now, by their own pick here (never off a ChatGPT plan). Their next message here runs on it.
+		const canWrite = company.team?.capabilities.write === true && !company.accessLost && session?.status === "open";
+		const logins =
+			usageLimit &&
+			payer?.own === true &&
+			recovery?.paidByChatgptPlan !== true &&
+			canWrite &&
+			this.#actions.sendMessage &&
+			runId
+				? (this.#execution?.continueLogins(recovery?.sponsorBindingId) ?? [])
+				: [];
+		// Anyone else reads who can: the member the run was started for, whose login pays for it.
+		const payerId = recovery?.requestedByUserId?.toLowerCase();
+		// Never for a ChatGPT plan: no other login continues its work (its member reads OpenAI's words).
+		const payerName =
+			usageLimit &&
+			payer?.own !== true &&
+			recovery?.paidByChatgptPlan !== true &&
+			payerId &&
+			payerId !== this.#company.userId.toLowerCase()
+				? company.team?.members.find((member) => member.userId.toLowerCase() === payerId)?.displayName
+				: undefined;
 		const reason = proposalId
 			? t("Its changes wait for your decision.")
 			: ownPlanLimit
 				? planUsageLimitReason()
 				: recovery
-					? runFailureReason(
-							recovery.lastError,
-							recovery.jobStatus,
-							recovery.usageLimit,
-							this.#execution?.payer(recovery.sponsorBindingId),
-						)
+					? runFailureReason(recovery.lastError, recovery.jobStatus, recovery.usageLimit, {
+							...payer,
+							...(logins.length ? { continuable: true } : {}),
+							...(payerName ? { payerName } : {}),
+						})
 					: undefined;
+		const continuing = this.#continuing?.runId === runId ? this.#continuing?.connectionId : undefined;
+		const continueNote = this.#continueNote?.runId === runId ? this.#continueNote?.text : undefined;
+		// Picks wait while the logins are read or a message is on its way.
+		const continueWaiting = logins.length > 0 && this.#execution?.locked === true;
 		const retryState = runId ? company.runRetries?.[runId] : undefined;
 		// Try again is for an interrupted run; a refused one says what the member must do first.
 		const canRetry =
@@ -3546,11 +3742,17 @@ export class ConversationView {
 			retryState,
 			canRetry,
 			ownPlanLimit,
+			logins,
+			continuing,
+			continueNote,
+			continueWaiting,
 		]);
 		if (key === this.#runNotificationKey) return;
 		this.#runNotificationKey = key;
 		const focused = this.#runNotification.contains(document.activeElement);
 		const focusedAction = focused ? (document.activeElement as HTMLElement).dataset.action : undefined;
+		// A "Continue with …" button keeps focus on its own login.
+		const focusedLogin = focused ? (document.activeElement as HTMLElement).dataset.connectionId : undefined;
 		const dismiss = () => {
 			if (!runId || this.#notificationSignal.aborted) return;
 			let dismissed = dismissedRunNotifications.get(this.#company);
@@ -3596,23 +3798,176 @@ export class ConversationView {
 						retryError: retryState?.error,
 						dismiss,
 						action,
+						...(logins.length || continueNote
+							? {
+									continueWith: {
+										logins,
+										choose: (connectionId: string) => {
+											if (runId) void this.#continueRun(runId, connectionId);
+										},
+										...(continuing ? { continuing } : {}),
+										...(continueWaiting ? { waiting: true } : {}),
+										...(continueNote ? { note: continueNote } : {}),
+									},
+								}
+							: {}),
 					}),
 		);
-		if (focused) {
-			if (!hidden)
-				(
-					(focusedAction
-						? this.#runNotification.querySelector<HTMLElement>(`[data-action="${focusedAction}"]`)
-						: null) ?? this.#runNotification.querySelector<HTMLElement>(".run-failure-primary, a, button")
-				)?.focus({ preventScroll: true });
-			else if (this.#conversationPane.inert || this.#panel?.el.classList.contains("is-entered"))
-				this.#panel?.focus();
-			else if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });
-			else if (!this.#identity.disabled) this.#identity.focus({ preventScroll: true });
-			else {
-				this.el.tabIndex = -1;
-				this.el.focus({ preventScroll: true });
-			}
+		if (focused) this.#refocusRunNotification(Boolean(hidden), focusedAction, focusedLogin);
+	}
+
+	/** Focus stays on the card's line after a redraw: on the same button (the same login's "Continue with …"), else its
+	 * first one; when the line went away, on what holds focus next. */
+	#refocusRunNotification(hidden: boolean, focusedAction: string | undefined, focusedLogin: string | undefined): void {
+		if (!hidden)
+			(
+				(focusedAction && focusedLogin
+					? this.#runNotification.querySelector<HTMLElement>(
+							`[data-action="${focusedAction}"][data-connection-id="${focusedLogin}"]`,
+						)
+					: null) ??
+				(focusedAction
+					? this.#runNotification.querySelector<HTMLElement>(`[data-action="${focusedAction}"]`)
+					: null) ??
+				this.#runNotification.querySelector<HTMLElement>(".run-failure-primary, a, button")
+			)?.focus({ preventScroll: true });
+		else if (this.#conversationPane.inert || this.#panel?.el.classList.contains("is-entered")) this.#panel?.focus();
+		else if (!this.#composer.disabled && !this.#composerWrap.hidden) this.#composer.focus({ preventScroll: true });
+		else if (!this.#identity.disabled) this.#identity.focus({ preventScroll: true });
+		else {
+			this.el.tabIndex = -1;
+			this.el.focus({ preventScroll: true });
 		}
+	}
+
+	/** The agent's run waiting at its login's usage limit (20260930703000): it goes on by itself at the reset, on the
+	 * same login. The member whose own login pays may move it now to another of theirs that can pay ("Continue with …"):
+	 * the run itself goes on there at once, from where it stopped, so it never also comes back on the old login. Anyone
+	 * else reads who can. Nothing to dismiss: the line goes when the run goes on. */
+	#renderWaitingRun(session: HostedSession | undefined, runId: string, paused: PausedRun): void {
+		const company = this.#company.store.get();
+		const agentName = this.#company.staffById(session?.staffAgentId ?? "")?.displayName ?? t("The agent");
+		const payer = this.#execution?.payer(paused.sponsorBindingId);
+		const canWrite = company.team?.capabilities.write === true && !company.accessLost && session?.status === "open";
+		// Only where the cloud can make the move (qorpera_move_paused_run): never a routine's run or one that no longer
+		// resumes, never onto or off a ChatGPT plan, and only onto a login that may work while its member is away when the
+		// paying one may.
+		const logins =
+			payer?.own === true && paused.movable && !paused.paidByChatgptPlan && canWrite
+				? (this.#execution?.continueLogins(
+						paused.sponsorBindingId,
+						(connection) =>
+							!planLogin(connection) && (!paused.paidWhileAway || connection.allowAutonomous === true),
+					) ?? [])
+				: [];
+		const payerId = paused.requestedByUserId?.toLowerCase();
+		const payerName =
+			payer?.own !== true && !paused.paidByChatgptPlan && payerId && payerId !== this.#company.userId.toLowerCase()
+				? company.team?.members.find((member) => member.userId.toLowerCase() === payerId)?.displayName
+				: undefined;
+		const title = t("{name} is waiting to go on", { name: agentName });
+		const reason = runWaitingReason(paused.until, {
+			...payer,
+			...(logins.length ? { continuable: true } : {}),
+			...(payerName ? { payerName } : {}),
+		});
+		const moving = this.#continuing?.runId === runId ? this.#continuing.connectionId : undefined;
+		const note = this.#continueNote?.runId === runId ? this.#continueNote.text : undefined;
+		const key = JSON.stringify(["waiting", runId, title, reason, logins, moving, note]);
+		if (key === this.#runNotificationKey) return;
+		this.#runNotificationKey = key;
+		const focused = this.#runNotification.contains(document.activeElement);
+		const focusedAction = focused ? (document.activeElement as HTMLElement).dataset.action : undefined;
+		const focusedLogin = focused ? (document.activeElement as HTMLElement).dataset.connectionId : undefined;
+		this.#runNotification.hidden = false;
+		replace(
+			this.#runNotification,
+			runFailureCard({
+				title,
+				reason,
+				...(logins.length || note
+					? {
+							continueWith: {
+								logins,
+								choose: (connectionId: string) => void this.#movePausedRun(runId, connectionId),
+								...(moving ? { continuing: moving } : {}),
+								...(note ? { note } : {}),
+							},
+						}
+					: {}),
+			}),
+		);
+		if (focused) this.#refocusRunNotification(false, focusedAction, focusedLogin);
+	}
+
+	/** "Continue with …" on a waiting run: the member's own move of it to that login, which the cloud checks is theirs and
+	 * can pay. The run goes on there at once; the line goes with the next read of the agents' activity. */
+	async #movePausedRun(runId: string, connectionId: string): Promise<void> {
+		if (this.#continuing || this.#disposed) return;
+		this.#continuing = { runId, connectionId };
+		this.#continueNote = undefined;
+		this.update();
+		try {
+			await this.#company.movePausedRun(runId, connectionId);
+		} catch {
+			if (!this.#disposed) this.#continueNote = { runId, text: t("The work could not be moved. Try again.") };
+		} finally {
+			this.#continuing = undefined;
+			if (!this.#disposed) this.update();
+		}
+	}
+
+	/** "Continue with …" on a run that stopped at its login's usage limit: the member's own pick of that login for this
+	 * conversation, as the Login page picks it, then their message asking the agent to go on, which runs on that login
+	 * (a member continues by sending a message, as in a coding session). A message the member has started here is never
+	 * replaced: it stays for them to send, and the card says so. Nothing moves without this click. */
+	async #continueRun(runId: string, connectionId: string): Promise<void> {
+		const execution = this.#execution;
+		const account = execution?.logins.find((login) => login.connectionId === connectionId)?.account;
+		if (
+			!execution ||
+			!account ||
+			this.#continuing ||
+			this.#submitting ||
+			this.#disposed ||
+			!this.#actions.sendMessage
+		)
+			return;
+		this.#continuing = { runId, connectionId };
+		this.#continueNote = undefined;
+		this.update();
+		let moved = false;
+		try {
+			moved = await execution.continueWith(connectionId);
+		} finally {
+			this.#continuing = undefined;
+		}
+		if (this.#disposed) return;
+		const conversation = this.#company.conversation(this.#sessionId).get();
+		const started =
+			Boolean(this.#composer.value.trim()) ||
+			Boolean(conversation.draft?.trim()) ||
+			Boolean(conversation.attachments?.length) ||
+			Boolean(conversation.answering) ||
+			conversation.sending ||
+			Boolean(conversation.retrySend);
+		if (!moved || started) {
+			this.#continueNote = {
+				runId,
+				text: moved
+					? t("Send your message to continue with {account}.", { account })
+					: t("The login could not be chosen. Try again."),
+			};
+			this.update();
+			if (moved && !this.#composer.disabled) this.#composer.focus({ preventScroll: true });
+			return;
+		}
+		this.#edits.declare(0, this.#composer.value.length);
+		this.#composer.value = t(
+			"Your last run stopped because a login reached its usage limit. Please continue that work.",
+		);
+		this.#composer.dispatchEvent(new Event("input", { bubbles: true }));
+		this.update();
+		this.#submit({ runId, connectionId });
 	}
 }

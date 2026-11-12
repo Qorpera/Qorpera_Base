@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { fmtTime } from "../src/ui/dom.ts";
-import { codingFailureReason, runFailureInterrupted, runFailureReason } from "../src/ui/run-failure.ts";
+import {
+	codingFailureReason,
+	runFailureInterrupted,
+	runFailureReason,
+	runWaitingReason,
+} from "../src/ui/run-failure.ts";
 
 // The runner's own failure when the cloud refuses a run's completion for good (runtime cloud-runner-worker.ts).
 const COMPLETION_REFUSED =
@@ -18,6 +23,7 @@ const LOGIN_UNAVAILABLE =
 const LOGIN_UNAVAILABLE_FOR_OTHERS =
 	/^The run could not load the login that pays for it\. The member whose login it is can check it in Settings → AI subscriptions\.$/;
 const QORPERA_REFUSED = /^The run started, but one of its steps was refused\. The problem is on Qorpera's side\.$/;
+const NO_REPLY = /^The agent finished without sending its answer\. The problem is on Qorpera's side\.$/;
 
 describe("why a run stopped, in the member's words", () => {
 	it.each([
@@ -91,6 +97,18 @@ describe("why a run stopped, in the member's words", () => {
 			"failed",
 			/one of its steps was refused/,
 		],
+		// The agent's turn ended without its final send (10 November 2026): it did not answer, nothing was refused. The
+		// runtime's own code, and the stage's code older runs carry; a member's stop stays a stop, and any other category
+		// at that stage reads as before.
+		[BRIDGE("AGENT_TURN_ENDED_WITHOUT_FINAL_SEND"), "failed", NO_REPLY],
+		[BRIDGE("NATIVE_PUBLIC_COMPLETION:UNKNOWN"), "failed", NO_REPLY],
+		[`${BRIDGE("NATIVE_PUBLIC_COMPLETION:UNKNOWN")}; durable attempt output requires review`, "failed", NO_REPLY],
+		[BRIDGE("NATIVE_PUBLIC_COMPLETION:UNKNOWN"), "cancelled", /stopped before it finished/],
+		[BRIDGE("AGENT_TURN_ENDED_WITHOUT_FINAL_SEND"), "cancelled", /stopped before it finished/],
+		[BRIDGE("NATIVE_PUBLIC_COMPLETION:CANCELLED"), "failed", /^Qorpera lost contact with this run\./],
+		[BRIDGE("NATIVE_PUBLIC_COMPLETION:TIMEOUT"), "failed", /steps got no answer in time/],
+		[BRIDGE("NATIVE_PUBLIC_COMPLETION"), "failed", QORPERA_REFUSED],
+		[BRIDGE("AGENT_TURN_ENDED_WITHOUT_FINAL_SEND_AGAIN"), "failed", QORPERA_REFUSED],
 		// The turn failed with the model provider's own error (3 November 2026: a ChatGPT workspace plan's login whose
 		// every Codex turn failed), told here to a member whose own login did not pay.
 		[BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED"), "failed", PROVIDER_REFUSED_FOR_OTHERS],
@@ -161,6 +179,8 @@ describe("why a run stopped, in the member's words", () => {
 		expect(reason).toMatch(expected);
 		// Plain words only: no status codes, no machinery names.
 		expect(reason).not.toMatch(/\d{3}|runner|provider|bridge|lease|dispatch/i);
+		// Try again appears only when the cloud allows it, so the words never ask for it.
+		expect(reason).not.toMatch(/try again/i);
 	});
 
 	it("takes the cloud's word on a usage limit, and never reads a rate limit as one", () => {
@@ -196,6 +216,52 @@ describe("why a run stopped, in the member's words", () => {
 		const refused = BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED");
 		expect(runFailureReason(refused, "failed", false, { own: true, resetsAt: reset })).toMatch(PROVIDER_REFUSED);
 		expect(runFailureReason(budget, "failed", false, { own: true, resetsAt: reset })).toMatch(QORPERA_REFUSED);
+	});
+
+	it("offers the member whose own login paid to continue with another of theirs, and tells anyone else who can", () => {
+		const budget = BRIDGE("NATIVE_CODEX_TURN_COMPLETION:BUDGET_EXHAUSTED");
+		const reset = new Date(Date.now() + 3 * 3_600_000).toISOString();
+		const stopped = "The model account paying for this work reached its usage limit, so the work stopped.";
+		// The card offers their other logins: the work waits for the reset, or goes on now by their pick.
+		expect(runFailureReason(budget, "failed", true, { own: true, resetsAt: reset, continuable: true })).toBe(
+			`${stopped} It can run again when the limit resets (${fmtTime(reset)}), or you can continue it now with another of your logins.`,
+		);
+		expect(runFailureReason(budget, "failed", true, { own: true, continuable: true })).toBe(
+			`${stopped} It can run again once the limit resets, or you can continue it now with another of your logins.`,
+		);
+		// No other login of theirs can pay now: the work waits, as before.
+		expect(runFailureReason(budget, "failed", true, { own: true, resetsAt: reset, continuable: false })).toBe(
+			`${stopped} It does not move to another account. It can run again when the limit resets (${fmtTime(reset)}).`,
+		);
+		// Anyone else reads who can continue it, never an offer of their own.
+		expect(runFailureReason(budget, "failed", true, { own: false, payerName: "Anna", continuable: true })).toBe(
+			`${stopped} It can run again once the limit resets. Only Anna can continue it now with another of their logins.`,
+		);
+		expect(runFailureReason(budget, "failed", true, { continuable: true })).toBe(
+			`${stopped} It does not move to another account. It can run again once the limit resets.`,
+		);
+		// Another failure never reads as continuable.
+		const refused = BRIDGE("NATIVE_CODEX_TURN_COMPLETION:PROVIDER_FAILED");
+		expect(runFailureReason(refused, "failed", false, { own: true, continuable: true })).toMatch(PROVIDER_REFUSED);
+		expect(runFailureReason(refused, "failed", false, { own: false, payerName: "Anna" })).toMatch(
+			PROVIDER_REFUSED_FOR_OTHERS,
+		);
+	});
+
+	it("says a waiting run goes on by itself at the reset, and who may continue it now (20260930703000)", () => {
+		const until = new Date(Date.now() + 30 * 3_600_000).toISOString();
+		const waits = `The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets (${fmtTime(until)})`;
+		expect(runWaitingReason(until, { own: true, continuable: true })).toBe(
+			`${waits}, or you can continue it now with another of your logins.`,
+		);
+		expect(runWaitingReason(until, { own: true })).toBe(`${waits}.`);
+		expect(runWaitingReason(until, { own: false, payerName: "Anna" })).toBe(
+			`${waits}. Only Anna can continue it now with another of their logins.`,
+		);
+		// The member's own login names no one; anyone else with no name reads the plain words.
+		expect(runWaitingReason(until, { own: true, payerName: "Anna" })).toBe(`${waits}.`);
+		expect(runWaitingReason(until)).toBe(`${waits}.`);
+		expect(runWaitingReason(until, { continuable: true })).toBe(`${waits}.`);
 	});
 
 	it("asks the member whose own login paid to check it, and tells anyone else who can", () => {
@@ -260,6 +326,11 @@ describe("whether a stopped run is worth trying again as it is", () => {
 		// A dropped connection is usually brief.
 		[BRIDGE("NATIVE_PROMPT_COMPOSITION:TRANSPORT_UNAVAILABLE"), "failed", true],
 		[BRIDGE("NATIVE_COMPANY_CONTEXT:UNKNOWN"), "failed", false],
+		// The agent finished without sending its answer: worth trying again as it is.
+		[BRIDGE("AGENT_TURN_ENDED_WITHOUT_FINAL_SEND"), "failed", true],
+		[BRIDGE("NATIVE_PUBLIC_COMPLETION:UNKNOWN"), "failed", true],
+		[BRIDGE("NATIVE_PUBLIC_COMPLETION:UNKNOWN"), "cancelled", true],
+		[BRIDGE("NATIVE_PUBLIC_COMPLETION"), "failed", false],
 		["something nobody has seen before", "failed", false],
 	] as const)("%s → %s", (error, status, expected) => {
 		expect(runFailureInterrupted(error, status)).toBe(expected);
@@ -422,6 +493,92 @@ describe("a coding session's failed turn, by its code (20260930560000)", () => {
 	it("tells the owner the outage is not their login's", () => {
 		expect(codingFailureReason(WORDS, { mine: true }, "provider_outage")).toBe(
 			"ChatGPT was overloaded or had a server error while the session worked. This is usually brief, and the login is fine. The workspace is kept; a follow-up continues it.",
+		);
+	});
+});
+
+describe("a change to code kept in Qorpera that did not go in for its checks (own code storage, step 3)", () => {
+	const NOT_PASSED = "Not saved yet: the change did not pass its tests, so the code is as it was.";
+	const NOT_TESTED = "Not saved yet: Qorpera could not test the change just now. Nothing was lost.";
+	// The executor's words as the cloud keeps them (runner-orchestrator code-checks.ts, with the round sentence the cloud
+	// adds): the check, its command and the end of its output, which may say anything, a code included.
+	const FAILED = [
+		'Nothing went into main: the check "test" failed on this change merged with main as it is now. It ran `npm test` and ended with exit code 124 after 600 s, at its time limit of 600 s. The end of its output:',
+		"",
+		"    Error: Provider credential is invalid; you have hit your usage limit. Request timed out.",
+		"    Native provider bridge request failed (422) [code=COMPUTER_HOURS_EXHAUSTED]",
+		"",
+		"Its whole output is in ~/.qorpera-checks/out/2-test.log on the session's machine. Checks that passed before it: install. Fix the cause in the code, never by removing or weakening the check or its tests; run the checks yourself from a clean copy, commit and finish again. The checks failed for this session 2 times in a row.",
+	].join("\n");
+	const REFUSED =
+		"Nothing went into main: the repository's checks file, .qorpera/checks.json, is gone in this change, and a repository that has checks keeps them. Fix the file, commit and finish again.";
+	const DID_NOT_RUN =
+		"Nothing went into main: Qorpera could not run the repository's checks on this change (the session's machine did not answer). This is not a fault in the code. The work is kept on the session's branch; finishing again runs the checks again.";
+	const MAIN_MOVED =
+		"Nothing went into main yet: main changed twice while this change's checks ran, so they never ran on what would go in. This is not a fault in the code. The work is kept on the session's branch; finishing again checks it once more.";
+	// Step 4: every check passed, but the site they built cannot go out (runner-orchestrator code-site.ts).
+	const SITE_REFUSED =
+		'Nothing went into main: every check passed, but the site in "dist" holds the value of STRIPE_KEY in assets/app.js. A key must never be built into the site. Fix it in the code or in the checks file\'s "site", and finish again.';
+	// The cloud's plain words for a failed run, whose code travels apart (20260930560000).
+	const STOPPED = "The coding turn stopped. The files the turn wrote stay in the session's workspace as it left them.";
+	// What a cloud without step 3's failure words makes of any code it has no case for.
+	const QORPERA_WORDS =
+		"The coding turn stopped because of a problem on Qorpera's side. The files the turn wrote stay in the session's workspace as it left them; a follow-up turn continues from them.";
+
+	it.each([
+		["CODING_CHECKS_FAILED", FAILED, NOT_PASSED],
+		["CODING_CHECKS_REFUSED", REFUSED, NOT_PASSED],
+		["CODING_CHECKS_DID_NOT_RUN", DID_NOT_RUN, NOT_TESTED],
+		["CODING_CHECKS_MAIN_MOVED", MAIN_MOVED, NOT_TESTED],
+		["CODING_CHECKS_SITE_REFUSED", SITE_REFUSED, NOT_PASSED],
+	] as const)("%s", (code, summary, expected) => {
+		// The failed event's code decides, for the owner and for anyone else, whatever the output says.
+		for (const said of [
+			codingFailureReason(summary, {}, code),
+			codingFailureReason(summary, { mine: true }, code),
+			codingFailureReason(summary, { mine: false }, code),
+			// A summary that still ends with its code, and no code beside it, reads the same, as the cloud reads it.
+			codingFailureReason(`${summary} [code=${code}]`),
+			codingFailureReason(`${summary}\n[code=${code}]\n`),
+			// A cloud whose failure words do not know the code yet: the code still decides.
+			codingFailureReason(QORPERA_WORDS, {}, code),
+		]) {
+			expect(said).toBe(expected);
+			// A founder never reads a check's name, its command or output, a branch, a commit, a pull request or "CI".
+			expect(said).not.toMatch(/\[|code=|check|npm|main\b|branch|commit|pull request|\bCI\b|git|\.json|\d/i);
+		}
+	});
+
+	it("leaves a usage limit first, as the cloud does", () => {
+		expect(codingFailureReason(FAILED, { usageLimit: true }, "CODING_CHECKS_FAILED")).toBe(
+			"The model account paying for this session reached its usage limit. The workspace is kept; a follow-up waits and goes on by itself once the limit resets.",
+		);
+	});
+
+	it("reads every other code as before, so a cloud that sends none of these works as it did", () => {
+		// Only a whole code decides.
+		for (const code of [
+			"CODING_CHECKS",
+			"CODING_CHECKS_FAILED_AGAIN",
+			"CODING_CHECKS_FAILED:UNKNOWN",
+			"CODING_CHECK_FAILED",
+		])
+			expect(codingFailureReason(STOPPED, {}, code)).toBe(
+				"Something on Qorpera's side refused one of the session's steps. The workspace is kept; a follow-up continues it.",
+			);
+		// Lower-case reasons name no code.
+		expect(codingFailureReason(STOPPED, {}, "coding_checks_failed")).toBe(
+			"The session stopped because of an internal error. The workspace is kept; a follow-up continues it.",
+		);
+		// A code in a summary decides only at its end: one inside the run's error reads as before.
+		expect(
+			codingFailureReason(
+				"The coding turn did not finish: Runner model socket request timed out [code=CODING_CHECKS_FAILED]; durable attempt output requires review",
+			),
+		).toBe("One of the session's steps got no answer in time. The workspace is kept; a follow-up continues it.");
+		// Without a code anywhere, the executor's words are never shown as they are.
+		expect(codingFailureReason(MAIN_MOVED)).toBe(
+			"The session stopped because of an internal error. The workspace is kept; a follow-up continues it.",
 		);
 	});
 });

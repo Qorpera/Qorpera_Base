@@ -86,6 +86,7 @@ describe("quiet scrollers", () => {
 			invitations: 0,
 			openSettings: () => {},
 			openFeedback: () => {},
+			openFriends: () => {},
 		});
 		expect(rail.querySelector(".rail-scroll.scroll-quiet")).not.toBeNull();
 	});

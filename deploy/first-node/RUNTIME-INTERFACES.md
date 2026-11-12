@@ -24,7 +24,8 @@ section 19 of `QORPERA-RUNTIME-CONTRACT.md`. Where this document and the contrac
 > **Interface apps, 2026-11-05.** Jonas: "the interfaces is where you see the company, not just talk to its
 > workers … we should let the agent build interface apps into the company file that are posted as an interface."
 > This overrides the scope reset for **agent-built apps only**: agents make small web pages in `apps/<name>/` of the
-> Company File, which members open beside the chat and, once posted, in the apps drawer. They run in the Company
+> Company File, which members open as a page of their own (8 November 2026, no longer beside the chat) and, once
+> posted, from the apps drawer. They run in the Company
 > File's locked frame, not on a Qorpera origin, and are not interface TOML files: the rules above for
 > `QorperaOS/interfaces/` and the platform's pages stand. See [RUNTIME-INTERFACE-APPS.md](RUNTIME-INTERFACE-APPS.md).
 >

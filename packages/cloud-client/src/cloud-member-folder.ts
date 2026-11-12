@@ -20,6 +20,10 @@ const CHUNK_BYTES = 4 * 1024 * 1024;
 const MAX_CHUNKS = 64;
 const MAX_FILE_BYTES = MAX_CHUNKS * CHUNK_BYTES;
 const MAX_MANIFEST_BYTES = 32 * 1024;
+/** `readFilePieces`: the tries its manifest and each piece get, and the size up to which the file is also checked
+ * whole against its hash. */
+const PIECE_TRIES = 3;
+const WHOLE_CHECK_BYTES = 8 * 1024 * 1024;
 /** The most entries or feed changes one call asks for. Each may hold a 4,096-byte path (its quotes escaped, twice the
  * bytes) and a link's 4,095-byte target (a control character escaped as `\u00XX`, six times the bytes): about 33 KB, so
  * a page of them fits `MAX_ANSWER_BYTES`. */
@@ -187,6 +191,16 @@ export function parseCloudMemberFolderRead(value: unknown): CloudMemberFolderRea
 	)
 		invalid("read");
 	return { asOfSeq: seq(read.asOfSeq, "read"), entry: read.found ? parseCloudMemberFolderEntry(read.entry) : null };
+}
+
+/** The most paths one `readMany` reads (an app's limit of files). */
+export const CLOUD_MEMBER_FOLDER_READ_MANY = 64;
+
+export function parseCloudMemberFolderReadMany(value: unknown, count: number): CloudMemberFolderRead[] {
+	const answer = closed(value, ["schema", "reads"], [], "reads");
+	if (answer.schema !== "qorpera.folder-read-many/v1" || !Array.isArray(answer.reads) || answer.reads.length !== count)
+		invalid("reads");
+	return answer.reads.map(parseCloudMemberFolderRead);
 }
 
 export interface CloudMemberFolderListPage {
@@ -474,6 +488,62 @@ function path(value: string): string {
 	return value;
 }
 
+/** The pieces a file's manifest names, in order, once the manifest is the entry's: the same file, size, type and
+ * mode, within the manifest's bounds, its pieces adding up to the file. */
+function manifestPieces(reference: CloudMemberFolderFile, bytes: Uint8Array): { sha256: string; bytes: number }[] {
+	let value: unknown;
+	try {
+		value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+	} catch {
+		invalid("manifest");
+	}
+	const manifest = closed(
+		value,
+		["schema", "fileSha256", "bytes", "mediaType", "executable", "chunks"],
+		[],
+		"manifest",
+	);
+	if (
+		manifest.schema !== "qorpera.cloud-file-manifest/v2" ||
+		manifest.fileSha256 !== reference.fileSha256 ||
+		manifest.bytes !== reference.bytes ||
+		manifest.mediaType !== reference.mediaType ||
+		manifest.executable !== reference.executable ||
+		!Array.isArray(manifest.chunks) ||
+		manifest.chunks.length > MAX_CHUNKS
+	)
+		invalid("manifest");
+	const pieces = (manifest.chunks as unknown[]).map((input) => {
+		const chunk = closed(input, ["sha256", "bytes"], [], "manifest");
+		if (
+			typeof chunk.sha256 !== "string" ||
+			!SHA.test(chunk.sha256) ||
+			!Number.isSafeInteger(chunk.bytes) ||
+			(chunk.bytes as number) < 1 ||
+			(chunk.bytes as number) > CHUNK_BYTES
+		)
+			invalid("manifest");
+		return { sha256: chunk.sha256, bytes: chunk.bytes as number };
+	});
+	if (pieces.reduce((total, piece) => total + piece.bytes, 0) !== reference.bytes) invalid("manifest");
+	return pieces;
+}
+
+/** Waits, unless the caller stops first. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const stop = () => {
+			clearTimeout(timer);
+			reject(signal.reason);
+		};
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", stop);
+			resolve();
+		}, ms);
+		signal.addEventListener("abort", stop, { once: true });
+	});
+}
+
 /** A member's client for one folder-v2 environment. */
 /** The live agents', group chats' and routines' files a member may read (P34a, P34r:
  * `qorpera_member_company_state_folders`). A folder is its file's parent. `routines` is null where the cloud does not
@@ -648,6 +718,99 @@ export function parseCloudMemberFolderCommit(
 /** A member's change set's operation key: what makes a retry of the same change set a replay, never a second change. */
 const OPERATION_KEY = /^[A-Za-z0-9._:-]{1,128}$/;
 
+/** Waits for `pending`, or rejects as soon as `signal` ends. */
+function untilAborted<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) return Promise.reject(signal.reason);
+	return new Promise<T>((resolve, reject) => {
+		const stop = () => reject(signal.reason);
+		signal.addEventListener("abort", stop, { once: true });
+		pending.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
+	});
+}
+
+/** Files' bytes already read and checked, by the version they are of: a version's bytes never change (its manifest
+ * names every chunk by its hash), so reading the same version again needs no round trip. It holds only bytes a reader
+ * was handed after a live read of the path or its folder: each use still asks the folder for the entry, so what the
+ * member may read is decided live every time; only the bytes are not fetched again. In memory only, up to `maxBytes`,
+ * the least recently read going first; a file larger than a quarter of that is never kept. A read under way is shared:
+ * a second reader of the same version waits for it, and reads by itself if the first stops or fails. Every reader is
+ * handed its own copy. A read under way when the cache is cleared keeps nothing. One cache serves one member: give
+ * each member their own. */
+export class CloudMemberFolderFileCache {
+	readonly #max: number;
+	readonly #held = new Map<string, Uint8Array>();
+	readonly #reading = new Map<string, Promise<Uint8Array>>();
+	#bytes = 0;
+	/** Counts `clear()`s: a read begun before one keeps nothing when it ends. */
+	#generation = 0;
+
+	constructor(maxBytes = 64 * 1024 * 1024) {
+		if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new CloudMemberFolderError("Invalid file cache size");
+		this.#max = maxBytes;
+	}
+
+	/** The bytes held now. */
+	get bytes(): number {
+		return this.#bytes;
+	}
+
+	clear(): void {
+		this.#generation++;
+		this.#held.clear();
+		this.#reading.clear();
+		this.#bytes = 0;
+	}
+
+	/** The bytes of the version `key` names: held, being read, or read now with `load`. */
+	async read(
+		key: string,
+		signal: AbortSignal,
+		load: (signal: AbortSignal) => Promise<Uint8Array>,
+	): Promise<Uint8Array> {
+		signal.throwIfAborted();
+		// As this reader asked: a read it waits for or makes itself after a clear() keeps nothing.
+		const generation = this.#generation;
+		const held = this.#held.get(key);
+		if (held) {
+			// The most recently read goes last, and so leaves last.
+			this.#held.delete(key);
+			this.#held.set(key, held);
+			return held.slice();
+		}
+		const pending = this.#reading.get(key);
+		if (pending)
+			try {
+				return (await untilAborted(pending, signal)).slice();
+			} catch (error) {
+				if (signal.aborted) throw error;
+				// The first reader stopped, or its read failed: this reader reads for itself.
+			}
+		const reading = load(signal);
+		this.#reading.set(key, reading);
+		try {
+			const bytes = await reading;
+			if (generation === this.#generation) this.#keep(key, bytes);
+			return bytes.slice();
+		} finally {
+			if (this.#reading.get(key) === reading) this.#reading.delete(key);
+		}
+	}
+
+	#keep(key: string, bytes: Uint8Array): void {
+		if (bytes.byteLength > this.#max / 4 || this.#held.has(key)) return;
+		this.#held.set(key, bytes);
+		this.#bytes += bytes.byteLength;
+		for (const [oldest, old] of this.#held) {
+			if (this.#bytes <= this.#max) break;
+			this.#held.delete(oldest);
+			this.#bytes -= old.byteLength;
+		}
+	}
+}
+
+/** At most this many of a file's chunks are asked for at once. */
+const CHUNKS_AT_ONCE = 4;
+
 export class CloudMemberFolderClient {
 	readonly #environmentId: string;
 	readonly #controlOrigin: string;
@@ -656,6 +819,8 @@ export class CloudMemberFolderClient {
 	readonly #accessToken: (signal: AbortSignal) => Promise<string>;
 	readonly #fetch: typeof fetch;
 	readonly #timeoutMs: number;
+	readonly #pieceRetryMs: number;
+	readonly #files: CloudMemberFolderFileCache | undefined;
 
 	constructor(options: {
 		environmentId: string;
@@ -665,6 +830,10 @@ export class CloudMemberFolderClient {
 		accessToken: (signal: AbortSignal) => Promise<string>;
 		fetch?: typeof fetch;
 		timeoutMs?: number;
+		/** `readFilePieces`: the pause before a piece is asked for a second time; twice it before the third. */
+		pieceRetryMs?: number;
+		/** `readFile`: bytes already read, kept across this member's clients of the same company. */
+		files?: CloudMemberFolderFileCache;
 	}) {
 		if (
 			!isUuid(options.environmentId) ||
@@ -680,13 +849,32 @@ export class CloudMemberFolderClient {
 		this.#accessToken = options.accessToken;
 		this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
 		this.#timeoutMs = options.timeoutMs ?? 30_000;
-		if (!Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs < 1 || this.#timeoutMs > 120_000)
+		this.#pieceRetryMs = options.pieceRetryMs ?? 1000;
+		this.#files = options.files;
+		if (
+			!Number.isSafeInteger(this.#timeoutMs) ||
+			this.#timeoutMs < 1 ||
+			this.#timeoutMs > 120_000 ||
+			!Number.isSafeInteger(this.#pieceRetryMs) ||
+			this.#pieceRetryMs < 0 ||
+			this.#pieceRetryMs > 60_000
+		)
 			throw new CloudMemberFolderError("Invalid company folder deadline");
 	}
 
 	read(pathValue: string, signal: AbortSignal): Promise<CloudMemberFolderRead> {
 		return this.#call("qorpera_member_folder_read", { p_path: path(pathValue) }, signal).then(
 			parseCloudMemberFolderRead,
+		);
+	}
+
+	/** Several paths' reads in one call, each what `read` answers for it, in the order asked (1 to
+	 * CLOUD_MEMBER_FOLDER_READ_MANY). A database without the call answers 404: read each path alone then. */
+	readMany(paths: readonly string[], signal: AbortSignal): Promise<CloudMemberFolderRead[]> {
+		if (paths.length < 1 || paths.length > CLOUD_MEMBER_FOLDER_READ_MANY)
+			throw new CloudMemberFolderError("Invalid company folder reads");
+		return this.#call("qorpera_member_folder_read_many", { p_paths: paths.map(path) }, signal).then((value) =>
+			parseCloudMemberFolderReadMany(value, paths.length),
 		);
 	}
 
@@ -810,58 +998,51 @@ export class CloudMemberFolderClient {
 		).then(parseCloudMemberFolderChanges);
 	}
 
-	/** A file's bytes: its manifest, then its chunks, each checked against its hash, and the whole against the file's. */
-	readFile(reference: CloudMemberFolderFile, signal: AbortSignal, maximumBytes = MAX_FILE_BYTES): Promise<Uint8Array> {
+	/** A file's bytes: its manifest, then its chunks (a few at once), each checked against its hash, and the whole against
+	 * the file's. With `cached`, and the client's file cache, a version read before is answered from it with no fetch:
+	 * only for a caller that read the entry live just now, as the member, so the read's authority is still the folder's
+	 * (a reference kept from an earlier listing reads uncached, and the gateway decides). */
+	readFile(
+		reference: CloudMemberFolderFile,
+		signal: AbortSignal,
+		maximumBytes = MAX_FILE_BYTES,
+		options?: { readonly cached?: boolean },
+	): Promise<Uint8Array> {
 		if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes > MAX_FILE_BYTES)
 			throw new CloudMemberFolderError("Invalid company folder read limit");
 		if (reference.bytes > maximumBytes)
 			throw new CloudMemberFolderError("Company folder file exceeds this viewer's limit");
+		const files = this.#files;
+		if (!files || options?.cached !== true) return this.#readFile(reference, signal);
+		const key = `${this.#environmentId}/${reference.manifestSha256}/${reference.fileSha256}/${reference.bytes}`;
+		return files.read(key, signal, (readSignal) => this.#readFile(reference, readSignal));
+	}
+
+	#readFile(reference: CloudMemberFolderFile, signal: AbortSignal): Promise<Uint8Array> {
 		return withCloudDeadline(
 			async (requestSignal) => {
-				const manifestBytes = await this.#object(reference.manifestSha256, MAX_MANIFEST_BYTES, requestSignal);
-				let manifestValue: unknown;
-				try {
-					manifestValue = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes));
-				} catch {
-					invalid("manifest");
-				}
-				const manifest = closed(
-					manifestValue,
-					["schema", "fileSha256", "bytes", "mediaType", "executable", "chunks"],
-					[],
-					"manifest",
+				const chunks = manifestPieces(
+					reference,
+					await this.#object(reference.manifestSha256, MAX_MANIFEST_BYTES, requestSignal),
 				);
-				if (
-					manifest.schema !== "qorpera.cloud-file-manifest/v2" ||
-					manifest.fileSha256 !== reference.fileSha256 ||
-					manifest.bytes !== reference.bytes ||
-					manifest.mediaType !== reference.mediaType ||
-					manifest.executable !== reference.executable ||
-					!Array.isArray(manifest.chunks) ||
-					manifest.chunks.length > MAX_CHUNKS
-				)
-					invalid("manifest");
-				const chunks = (manifest.chunks as unknown[]).map((input) => {
-					const chunk = closed(input, ["sha256", "bytes"], [], "manifest");
-					if (
-						typeof chunk.sha256 !== "string" ||
-						!SHA.test(chunk.sha256) ||
-						!Number.isSafeInteger(chunk.bytes) ||
-						(chunk.bytes as number) < 1 ||
-						(chunk.bytes as number) > CHUNK_BYTES
-					)
-						invalid("manifest");
-					return { sha256: chunk.sha256, bytes: chunk.bytes as number };
-				});
-				if (chunks.reduce((total, chunk) => total + chunk.bytes, 0) !== reference.bytes) invalid("manifest");
 				const bytes = new Uint8Array(reference.bytes);
+				const offsets: number[] = [];
 				let offset = 0;
 				for (const chunk of chunks) {
-					const part = await this.#object(chunk.sha256, chunk.bytes, requestSignal);
-					if (part.byteLength !== chunk.bytes) invalid("chunk");
-					bytes.set(part, offset);
-					offset += part.byteLength;
+					offsets.push(offset);
+					offset += chunk.bytes;
 				}
+				let next = 0;
+				const worker = async () => {
+					while (next < chunks.length) {
+						const index = next++;
+						const chunk = chunks[index]!;
+						const part = await this.#object(chunk.sha256, chunk.bytes, requestSignal);
+						if (part.byteLength !== chunk.bytes) invalid("chunk");
+						bytes.set(part, offsets[index]);
+					}
+				};
+				await Promise.all(Array.from({ length: Math.min(CHUNKS_AT_ONCE, chunks.length) }, worker));
 				// The chunks are the manifest's; the manifest's fileSha256 is only its writer's word.
 				if ((await cloudFileBytesSha256(bytes)) !== reference.fileSha256)
 					throw new CloudMemberFolderError("Company folder bytes do not match their entry");
@@ -871,6 +1052,67 @@ export class CloudMemberFolderClient {
 			this.#timeoutMs,
 			signal,
 		);
+	}
+
+	/** A file's bytes piece by piece, for a file too large to read under one deadline or to hold twice (a download):
+	 * its manifest, then each piece in order, each checked against the manifest's hash for it and handed to `onPiece`
+	 * with its place among them. The manifest and every piece have the client's deadline to themselves and three
+	 * tries: a lost or late answer, an outage and bytes that fail their hash are asked for again after a pause; a
+	 * refusal (401, 403) and the caller's own stop are not. A file of at most 8 MiB is checked whole against its
+	 * entry's hash before any piece is handed out, as `readFile` checks it. A larger one is not: its entry's manifest
+	 * fixes every byte, and a browser cannot hash it without a second copy. When this rejects, the pieces handed out
+	 * so far are no file. */
+	async readFilePieces(
+		reference: CloudMemberFolderFile,
+		signal: AbortSignal,
+		onPiece: (piece: Uint8Array, index: number, count: number) => void,
+	): Promise<void> {
+		if (!Number.isSafeInteger(reference.bytes) || reference.bytes < 0 || reference.bytes > MAX_FILE_BYTES)
+			throw new CloudMemberFolderError("Company folder file exceeds this viewer's limit");
+		signal.throwIfAborted();
+		const pieces = manifestPieces(
+			reference,
+			await this.#tried(
+				(requestSignal) => this.#object(reference.manifestSha256, MAX_MANIFEST_BYTES, requestSignal),
+				signal,
+			),
+		);
+		const whole = reference.bytes <= WHOLE_CHECK_BYTES;
+		const held: Uint8Array[] = [];
+		for (const [index, piece] of pieces.entries()) {
+			const part = await this.#tried(
+				(requestSignal) => this.#object(piece.sha256, piece.bytes, requestSignal),
+				signal,
+			);
+			if (part.byteLength !== piece.bytes) invalid("chunk");
+			if (whole) held.push(part);
+			else onPiece(part, index, pieces.length);
+		}
+		if (!whole) return;
+		const bytes = new Uint8Array(reference.bytes);
+		let offset = 0;
+		for (const part of held) {
+			bytes.set(part, offset);
+			offset += part.byteLength;
+		}
+		// The pieces are the manifest's; the manifest's fileSha256 is only its writer's word.
+		if ((await cloudFileBytesSha256(bytes)) !== reference.fileSha256)
+			throw new CloudMemberFolderError("Company folder bytes do not match their entry");
+		signal.throwIfAborted();
+		for (const [index, part] of held.entries()) onPiece(part, index, held.length);
+	}
+
+	/** One read under the client's deadline, tried up to three times. */
+	async #tried<T>(read: (signal: AbortSignal) => Promise<T>, signal: AbortSignal): Promise<T> {
+		for (let attempt = 1; ; attempt++) {
+			try {
+				return await withCloudDeadline(read, this.#timeoutMs, signal);
+			} catch (error) {
+				if (signal.aborted || error instanceof CloudMemberFolderAccessDenied || attempt === PIECE_TRIES)
+					throw error;
+				await pause(this.#pieceRetryMs * attempt, signal);
+			}
+		}
 	}
 
 	async #token(signal: AbortSignal): Promise<string> {

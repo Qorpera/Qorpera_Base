@@ -291,8 +291,34 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   `20260928249100`): the web makes them as the member's edits of
   `QorperaOS/agents/sections.md` through the member commit route, and writes the Unassigned
   order only where the sidebar says `unassignedOrder`.
+- Each member's own sidebar (`20260930727000`): the company's sidebar is its
+  sections file, kept by agents, and it is what a new member sees. Creating,
+  renaming and deleting sections and moving agents and group chats through the
+  RPC below change the caller's own sidebar only, for any member, viewers too,
+  on every company (the 55000 refusal above is gone; the web stops writing the
+  sections file). What a member touched is theirs; everything else keeps
+  following the company's. The read then gives every agent and open group chat
+  an explicit place, marks the caller's own sections `mine: true`, and adds
+  `own`: `changes` (a count), `moved` (agent and group chat ids the caller
+  placed), `sections` (`{change: added|renamed|removed, name, from?}`),
+  `pinned`, `hidden`, `contacts` and `pages` (counts). A client that reads `own`
+  knows the cloud keeps each member's own sidebar. `reset {}` takes away all of
+  the caller's changes in the company (sections, places, pins, hidden agents and
+  group chats, contact places, hidden pages); `undo_reset {}` puts the last
+  reset's rows back (P0002 when there is none). A contact place may name one of
+  the caller's own sections.
+- Each member's own apps drawer (`20260930728000`): the company's groups are its
+  file `apps/groups.md`, kept by agents. `qorpera_member_app_layout(p_profile_id)`
+  → `qorpera.member-app-layout-read/v1` `{layout, updatedAt}` and
+  `qorpera_set_member_app_layout(p_profile_id, p_layout, p_expected)` (whole
+  document, QAL01 when `p_expected` is not the last `updatedAt`, 22023 for a shape
+  the web never writes; an empty layout leaves no row). The layout is
+  `qorpera.member-app-layout/v1` `{places, groups}` (packages/web/src/cloud/app-groups.ts).
+  A place's key is `page:mailbox|members|bank`, `app:<name>`, `concepts`, `sites`,
+  `whats-new` (the What's new page, since `20260930729000`) or `group:<id>`.
+  Any member. Reset takes it away and Undo puts it back; `own.apps` counts it.
 - `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
-  shape after the change. Shared, owner/admin/contributor:
+  shape after the change. Before `20260930727000`, shared, owner/admin/contributor:
   `create_section {sectionId, name, staffAgentId?, unpin?}`,
   `rename_section {sectionId, name}`, `delete_section {sectionId}` (its agents
   go to the end of Unassigned), `move_agent {staffAgentId, sectionId|null,
@@ -395,8 +421,24 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   and, for an owner or admin, the company's, in their agent's own open thread
   (`sessionId`), which the caller may read. The web shows such an agent as
   "Needs you" while it has no work of its own. Members only (42501 otherwise).
+- `qorpera_list_member_waiting_work(p_profile_id)` →
+  `qorpera.member-waiting-work/v1` (20260930723000): what each agent's work
+  waits on the caller for, `agents` of `{staffAgentId, sessionId, count,
+  questions, approvals, latestAt, kind, what}`, newest first: the ask_member
+  cards (question, secret, takeover, draft) raised for the caller in the
+  agents' own threads and still open, as
+  `qorpera_list_member_open_questions` finds them (none for a viewer), and the
+  approval cards above. `kind` (the surface, or `approval`) and `what` (the
+  card's title or the approval's action title, one line of at most 120
+  characters, null when it has none) are the newest item's. The web shows such
+  an agent as stopped at the member and counts them in the tab's title.
+  Members only (42501 otherwise).
 
 ### Company memory (2) — C5, `20260930508000_memory_mode.sql`
+
+Not called by the web since 9 Nov 2026: the Memory section left Settings
+(Jonas: Shared context never went live). Every company runs on Agent notebooks;
+the RPCs stay for the runtime's gate.
 
 - `qorpera_company_memory_mode(p_profile_id)` → `qorpera.company-memory-mode/v1`:
   `mode` (the company's choice: `notebooks`, Agent notebooks, the default, or
@@ -790,14 +832,15 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   `subject` and `authentication-results` headers. Agents find received mail with the runtime tool `find_mail`; there
   is no client surface.
 - Sending (20260928309740_runtime_company_mail_sending, step M2b): agents send from a mailbox with the runtime
-  tool `send_mail`; there is no client surface yet. Sent email is queued in `qorpera_company_mail_outbox` (closed
+  tool `send_mail`; a member's own send is "Members send mail", below. Sent email is queued in `qorpera_company_mail_outbox` (closed
   to every API role) and sent by the `mail-outbox` Edge Function. Sending has its own switch in
   `qorpera_mail_settings` (`sending`, built off) and the company limits on recipients `company_hourly_recipients`
   (60) and `company_daily_recipients` (300). Received mail (`mail.received`) now also carries `autoSubmitted`,
   `precedence`, `listId` and `automated`; agents never answer automated mail.
 - Sender names (20260928319810_runtime_company_mail_sender_names): `qorpera_create_company_mailbox` also reserves
   (22023) any local part that reads as Qorpera (case, separators, accents, full width and look-alike letters or
-  digits folded), and no email goes out when the agent's or the company's name or the mailbox reads as Qorpera.
+  digits folded), and no email goes out when the agent's, the sending member's or the company's name or the mailbox
+  reads as Qorpera.
 - Attachments (20260928429984_runtime_company_mail_attachments, step M2c-1): agents attach company files to
   `send_mail`; there is no client surface. Saving a received email's attachment (the runtime tool `save_attachment`)
   served only snapshot-v1 companies: C-P4 removed the tool, and legacy sweep D4 (20260930333000) dropped its request.
@@ -823,6 +866,22 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   and each send of `qorpera_member_mail_waiting` may carry `snippet`, the start of the text the agent wants to send,
   and `cc`, its cc recipients as the agent gave them.
   Both are outside words to show as text only; a client must also work without them.
+- Members send mail (20260930716000_member_mail_send, step M2e; founder decision, 10 November 2026): a member who
+  may write in the company (owner, admin or contributor) calls
+  `qorpera_send_member_mail(p_environment_id, p_request)` with `{sendId, from, to, cc?, subject, text}` →
+  `{mailId, thread, status}`. `sendId` is a UUID the client makes for the send and keeps while it retries: the same
+  member's same id again answers with the email already queued (its `status` then `queued`, `sent`, `failed` or
+  `cancelled`) and sends nothing twice. `from` is one of the company's mailbox addresses, or its name alone; `to` is
+  1 to 10 plain addresses and `cc` up to 9, 10 together; `subject` is one line of 1 to 200 characters; `text` is 1
+  to 20,000 characters of plain text, sent as written. The email goes out from "<member> at <company>" with no AI
+  line, begins a thread of its own, and is every member's to read. Errors: 42501 for a non-member ("Company mail is
+  unavailable"), a viewer, a mailbox that is not the company's, the company's own mailboxes as recipients, or a
+  name that reads as Qorpera; 22023 for a request of another shape; 0A000 while the mailbox is paused or sending is
+  switched off; 54000 past the company's hourly or daily limit on recipients, with when the email can go. Show the
+  error's message. No reply to a received email and no attachments yet. In `qorpera_member_mail_thread` a sent
+  message a member sent themself carries `member` (`{userId, name?}`; the name is theirs in the company now, absent
+  once they have left) and no `staffAgent`; in `qorpera_member_mail_threads` a thread whose newest message is such
+  an email carries `sentBy`, the same shape.
 
 
 ### Digital Post (20260930529000_digital_post_sync)
@@ -939,6 +998,9 @@ by their keys, never with a lowercase literal.
   `path`, `kind` (`file`, `folder` or `symlink`), `version`, `seq`, `updatedAt` and, for a file, `manifestSha256`,
   `fileSha256`, `bytes`, `mediaType`, `executable`; for a link (`20260928549380_folder_links`), its `target`, the
   text it holds, never resolved. Nothing is below a link.
+- `qorpera_member_folder_read_many(environment, paths)` (`20260930722000`): `{schema: "qorpera.folder-read-many/v1",
+  reads}`, `reads[i]` what `qorpera_member_folder_read(environment, paths[i])` answers, for 1 to 64 paths, in one
+  snapshot; an invalid path refuses the whole call. A client that finds it missing reads each path alone.
 - `qorpera_member_folder_list(environment, parent, after, limit)`: `qorpera.folder-list/v1`, one folder's entries in
   folder-key order (`parent` null for the top), at most `limit` (1 to 1,000); `next` is the path to pass as `after`
   for the next page, null on the last.
@@ -982,7 +1044,7 @@ by their keys, never with a lowercase literal.
   `declined`). The member it waits for, owners and admins discard (42501 "Only the member it waits for, owners and
   admins discard a proposal"); an unknown or erased proposal is P0002 "Proposal is unavailable".
 
-### Pages (20260930509000_interface_pages, 20260930520000_interface_page_bank)
+### Pages (20260930509000_interface_pages, 20260930520000_interface_page_bank, 20260930697000_interface_pages_hidden_per_member)
 
 Folder-v2 companies only (Interfaces C6a; `QORPERA-REBUILD-SCOPE-AMENDMENT-2026-10-17.md` §4). A company shows at most
 three pages in its Interfaces tab, Mailbox, Members and Bank. Mailbox and Bank are on and Members off until an owner or admin switches one (20260930583000). A client draws
@@ -992,13 +1054,21 @@ data: the pages' tables, the areas' consents and offers, and who pays stay as th
 caller who is not a member of a folder-v2 company with that environment.
 
 - `qorpera_member_interface_pages(environment)`: `{schema: "qorpera.member-interface-pages/v1", pages, mayChange}`,
-  `pages` being `[{page, on}]` for `mailbox`, `members` then `bank`, and `mayChange` whether the caller is an owner or
-  admin. A client refuses a page name it doesn't know, so a web that knows `bank` goes live before or with
+  `pages` being `[{page, on, hidden}]` for `mailbox`, `members` then `bank`, and `mayChange` whether the caller is an
+  owner or admin. `hidden` (20260930697000) is whether the caller hid the page from their own rail: a client that reads
+  it shows a page unless the member hid it (Members once the company has a second member), whatever `on` says, and
+  offers Hide and Show; a client finds `hidden` on every page or treats the answer as one from before it, where `on`
+  decides. A client refuses a page name it doesn't know, so a web that knows `bank` goes live before or with
   20260930520000.
   Read it when the company opens, on focus, and after switching.
 - `qorpera_set_interface_page(environment, page, on)`: owners and admins only (42501 "Only the company's owners and
   admins can switch its pages"); another page name or a null is 22023, and a company being deleted 55000. Answers
-  the pages as they are then, in the same shape. Switching a page to what it is changes nothing.
+  the pages as they are then, in the same shape. Switching a page to what it is changes nothing. The web no longer
+  offers it (20260930697000).
+- `qorpera_set_interface_page_hidden(environment, page, hidden)` (20260930697000): any member hides a page from their
+  own rail or shows it again; nobody else's rail and none of the company's data change. A caller who is not a member is
+  42501, another page name or a null 22023, a company being deleted 55000. Answers the pages as they are then, in the
+  same shape. Hiding a hidden page, or showing a shown one, changes nothing.
 
 ### Offers of a claimed cell (20260928509110_interface_offers)
 
@@ -1101,6 +1171,314 @@ environment.
 >
 > Consent records stay. No call for the page set is listed here yet. This note records scope; it says nothing
 > about what is built.
+
+### Who each agent works for (20260930700000_agent_works_for)
+
+The Members page (Jonas, 9 Nov 2026). Each agent of a company except its Co-Founder works for one member, or for
+nobody: its row when one was saved, else the member who hired it while a member, else nobody (no known hirer). A member who leaves leaves their agents working for nobody, and every open ask that involves them is void.
+20260930701000 makes the work handed to an agent by another agent run on that member's own login: the login the
+first-choice order picks for new work of theirs, when it is theirs and not a ChatGPT plan login (otherwise, or with
+none, it stays the chain starter's). A member's own message is still paid
+by them, and a routine still by the member who saved it: moving an agent does not move its routines.
+Each call answers 42501 for a caller who is not a member of the company.
+
+- `qorpera_read_works_for(profile)`: `{schema: "qorpera.works-for/v1", may_ask, may_ask_for_others, agents, logins,
+  asks}`. `may_ask` is false for a viewer; `may_ask_for_others` is true for an owner or admin. `agents` is
+  `[{staff_agent_id, user_id (null: nobody), since (null: never moved)}]`. `logins` is one entry per member,
+  `{user_id, state, used_percent, resets_at}`: `state` is `ready`, `full` (every live login used up; `resets_at` the
+  first reset when known), `sign_in` (no live login, one needs a new sign-in) or `none`; `used_percent` is 0-100 of
+  the login with the most room, null when no fresh reading says. No email or account is shown. `asks` are the open
+  asks, `[{id, staff_agent_id, from_user_id, to_user_id, asked_by_user_id, asked_by_staff_agent_id,
+  answer_by_user_id, created_at, why}]`; `why` is the asker's short reason (null when none; 20260930702000), and an
+  ask the Co-Founder made has `asked_by_staff_agent_id` and no `asked_by_user_id`. Read it when the page opens, after each call below, and every 30 s while it is
+  open.
+- `qorpera_ask_works_for(profile, staff_agent, to_user)`: `{moved, ask_id}`. Asking for the member it already works
+  for, or taking (to = the caller) an agent that works for nobody, moves at once (`moved` true, no ask). Otherwise an
+  open ask answered by the side that did not ask: taking an agent asks the member it works for; offering one, by that
+  member or by an owner or admin, asks the member it would go to. A viewer cannot ask (42501) or receive (22023);
+  another member's agent can be offered only by them or an owner or admin (42501); one open ask per agent (55P03,
+  "Someone has already asked about that agent"); the Co-Founder or an archived agent is 22023.
+- `qorpera_answer_works_for(ask, yes)`: `{status, moved}`. The member asked says yes (`yes`, the agent moves) or no
+  (`no`); the member who asked may withdraw (`yes` false, `withdrawn`). A yes on an agent that meanwhile works for
+  someone else, or for a member who is now a viewer, is `void` and moves nothing. An ask already answered answers its
+  status. Anyone else is 42501.
+- The Co-Founder asks too (20260930702000, host calls, never a member's): `qorpera_cofounder_crew(binding)` reads the
+  members, the agents with whom they work for and the open asks; `qorpera_offer_agents_to_member(binding, {member,
+  agents, why})` asks one member (an id, email, full name or a first name only they have) to take 1 to 20 agents (ids or
+  names). The member answers on the Members page as above.
+
+### Member chats (20260930715000_member_messages)
+
+Members of a company message each other (Jonas, 10 Nov 2026): one chat per pair of members per company, shown as
+contacts in the rail. A chat is the company's (deleted with it, kept when an account goes), wakes no agent, takes no
+login and no computer hours, and is not stopped by a company's pause. Every member reads and writes their own chats,
+viewers too; nobody reads another pair's. Each call answers 42501 for a caller who is not a member of the company (or
+while it is being deleted), and for a `user` who is not another member of it.
+
+- `qorpera_list_member_chats(profile)`: `{schema: "qorpera.member-chats/v1", chats}`, one entry per other member in
+  the order they joined, with or without messages: `{userId, lastSeenAt, unread, readSeq, theirReadSeq, last}`.
+  `lastSeenAt` is when that member was last online (their last `qorpera_mark_online`, else their last sign-in; null
+  when neither). `unread` counts their messages after the caller's read mark that were not taken back, at most 100.
+  `readSeq` and `theirReadSeq` are the newest message each side has seen (0: none). `last` is the chat's newest
+  message with its words cut to 280 characters, or null. Read it when the company opens, on the `member-chats` hint
+  (§3) and on the slow poll.
+- `qorpera_read_member_chat(profile, user, before_seq default null, limit default 50)`: `{schema:
+  "qorpera.member-chat/v1", userId, messages, hasMore, readSeq, theirReadSeq}`: the newest `limit` messages (1 to
+  200), or those before `before_seq`, oldest first; `hasMore` says older ones exist. A message is `{id, seq,
+  authorUserId, createdAt, text}`, or `{..., deleted: true}` without `text` once its author took it back. A message
+  the caller wrote also carries `clientMessageId`, the id they sent it with (the list's `last` does not): a client
+  knows its own message by it when a read brings it before the send is answered, or after an answer was lost. `seq`
+  orders the messages of a chat; it is not dense. A chat's sends go one at a time, so its messages are committed in `seq`
+  order: none appears later in front of one already read. A message taken back keeps its `seq`, so a client shows the
+  change only by reading that message again: the web reads every message it shows again on each hint and poll.
+- `qorpera_send_member_message(profile, user, client_message_id, text)`: `{schema: "qorpera.member-message/v1",
+  userId, message}`. `text` is not blank and at most 16 KiB (else 22023). `client_message_id` is the client's own
+  uuid for the message: the same call again answers the same message and writes nothing; the id with other words or
+  for another member is refused (23505). No read mark moves: a member's own messages are never unread to them.
+- `qorpera_mark_member_chat_read(profile, user, seq)`: `{schema: "qorpera.member-chat-read/v1", userId, readSeq}`.
+  The caller has seen the chat up to `seq`: the mark moves to the chat's newest message at or before `seq`, never
+  back; `readSeq` is the mark as it stands. Call it when new messages of the open chat are in front of the member.
+- `qorpera_delete_member_message(profile, message)`: `{schema: "qorpera.member-message/v1", userId, message}`, the
+  message now `deleted`. Only its author, while a member; twice answers the same.
+
+### An agent's computer, watched (20260930712000_machine_member_screens)
+
+A member watches an agent's desktop computer in the computer window: a picture of its screen about once a second, with
+no take-over (that is 20260930713000). Every member who reads the company may watch, viewers too; owners, admins and
+contributors may wake a sleeping machine (`qorpera_member_manage_company_machine(profile, machine, 'start')`, as
+before). Each call answers 42501 for a caller who is not a member of the company, or while it is being deleted.
+
+- `qorpera_list_agent_machines(profile, staff_agent)`: `{schema: "qorpera.agent-machines/v1", profileId,
+  staffAgentId, canWake, machines}`. At most 20 of the company's machines that the agent started or whose screen it
+  drove last, not removed and not being deleted: running ones first, then the ones this agent drove most recently, then
+  the newest. A machine is `{machineId, name, purpose, state, lifetime, desktopCapable, startedByAgent, screenUsedAt,
+  screenAgentName, waitingFor}`: `state` as `qorpera_company_machine_state` (running, starting, waiting, stopping,
+  stopped); `desktopCapable` at 2 processors and 4 GiB; `screenUsedAt` and `screenAgentName` the last agent's drive of
+  its screen (null: never); `waitingFor` `hours` or `room` for a waiting machine, else null. No node, placement, boot or
+  command. 42501 for an agent that is not the company's. Read it when the window opens, on the `machines` hint (§3) and
+  every 15 s while the window is open without hints. Fields may be added; a client ignores the ones it does not know.
+- `qorpera_member_machine_screen_begin(profile, machine, watch)`: one look, begun as the member. Clients do not call it:
+  the look route (§4) does, with the member's own token. `watch` is `{"confirmed": boolean}`.
+
+### An agent's computer, taken over (20260930713000_machine_member_control)
+
+An owner, admin or contributor takes over an agent's desktop computer in the computer window and hands it back; a viewer
+watches only. While a member holds the desktop, the agent gets no picture of that machine and neither acts on it, starts
+a new command there nor saves a key off it (`DESKTOP_MEMBER_IN_CONTROL`); other members see who holds it, not the
+screen. The hold is a lease: 5 minutes from the member's last word (taking it, an action, the heartbeat), never more
+than 30 minutes from their last input (taking it, an action); it ends at once when they hand it back and by itself at
+its time (no job ends it: every check compares the time). Each call answers 42501 for a caller who may not, 22023 for a
+request of another shape.
+
+- `qorpera_list_agent_machines` also answers `canTakeOver` (owners, admins, contributors) and, per machine, `epoch`
+  (the caller's own hand-back epoch for it, 0 when never handed back) and `control`: null, or `{mine, name, until}`
+  while a member holds its desktop (`mine` when it is the caller; `name` the holder's; `until` when the lease runs out
+  unless renewed: read the list again then). The caller's own hold also says `epoch`, the epoch it was taken under,
+  `seat`, its seat, and `press`, the id of the take-over that seated it (never for another member's).
+- Hand-back epochs (review r5 of #1661): one counter per member and machine that only the database moves. A take-over
+  is sent at the epoch the page knows and accepted only at the current one; a hand-back at the current epoch moves it
+  on (always for VOID; for EXACT when nothing of the member's is left live, below), one at an older epoch changes
+  nothing. So once an answer named an epoch above e, nothing taken or sent at e or before holds the desktop or ever
+  will, whenever it arrives: a live lease of the member's is always under the current epoch, and no clock or list read
+  is involved.
+- Seats (release review r1 of #1667, F26 of #1661): the epoch orders take-overs against hand-backs, but two holds of one
+  member can live under one epoch (a lease that ran out and was taken again; another tab's take-over of the member's
+  own live lease). So the database gives every seating a seat, a number that only grows per machine: a take-over that
+  starts a lease, one after a lease ran out, and one that takes the member's own live lease over from another press
+  each get a new one. Everything a page does as holder names the seat beside the epoch (the heartbeat, every action),
+  and is taken only in that seat: a stale tab's heartbeat renews nothing and its input runs nowhere, and that tab
+  hears at its next heartbeat or action that it holds nothing. A page holds a seat only from the answer to its own
+  take-over, or, when that answer was lost, from a list that shows the hold seated by that very take-over's `press`.
+  A press id is for recognition only, never authority: no call but the list reads it. A page never has two
+  take-overs of a machine that may both be alive (F28 of #1661): before it sends a new one while an earlier one of its
+  own at that epoch has no answer (lost, timed out, cut off: none of these is an answer), it sends VOID at that epoch
+  and waits for its answer, and the new one goes at the epoch that answer names.
+- `qorpera_member_take_machine_desktop(profile, machine, epoch, press)`: `press` is a uuid the page mints for each
+  take-over request. `{schema: "qorpera.member-machine-desktop/v1", state: "ok", until, seat}`, or `state: "refused"`
+  with `reason` `DESKTOP_MACHINE_TOO_SMALL`, `MACHINE_NOT_RUNNING`, `MACHINE_NEEDS_COMPANY_VIEW`,
+  `DESKTOP_MEMBER_IN_CONTROL` (with `memberName`, the holder's) or `TAKE_CALLED_OFF` (not the current epoch; with
+  `epoch`, the current one). Taking it again at the same epoch takes the caller's own lease over: a new seat.
+- `qorpera_member_keep_machine_desktop(profile, machine, epoch, seat)`: the window's heartbeat, every 60 s while it
+  shows the member holding the desktop: `state: "ok"` with the new `until`, or `state: "ended"` (handed back, run out,
+  seated anew by another take-over of the member's, or another member's now). It renews only the lease taken under
+  that epoch in that seat.
+- `qorpera_member_hand_back_machine_desktop(profile, machine, reason, epoch, seat)`: `reason` `handed_back` (the
+  member's word, or their take-over card's I'm done) or `closed` (their window closed or they left the company's page).
+  Two forms, chosen by what the page knows (F27, F28 of #1661):
+  - EXACT, `seat` a number: the caller's lease taken under `epoch` in that seat ends, if it is the lease; the epoch
+    moves on when `epoch` is the current one and no live lease of the caller's is left. A page sends it only when every
+    take-over it sent for that machine at that epoch was answered: a tab that closes then never ends another tab's
+    hold. Its answer discharges that seat on the page (ended now, or gone already), and every lower one.
+  - VOID, `seat` null: at the current epoch the epoch moves on and the caller's lease taken under it ends, whichever
+    seat; at an older epoch nothing. A page sends it whenever a take-over of its own for that machine at that epoch has
+    no answer: moving the epoch is the only thing that voids that take-over whenever it arrives. It also ends another
+    tab's hold of the member's under that epoch: a tab that closes while a take-over of its own is unanswered, while
+    another tab of the same member holds the desktop under the same epoch, ends that tab's hold (it hears so at its
+    next heartbeat or action, and its window offers Take over again). This race is the one place a closing tab ends
+    another's; it keeps a take-over that outlives its window from seating anyone.
+  A lease of the caller's that ran out is closed as it ended when the epoch moves. Which form each release sends:
+  a close, a switch away, pagehide and leaving the page send VOID when uncertain, else EXACT by the seat the page's
+  own take-over got, else nothing (a hold only seen from another window is not theirs to end); Hand back and I'm done
+  send VOID when uncertain, else EXACT by the highest of that seat and the seat a list or an answer showed the member
+  holding (the lower one is gone: seats only grow). A VOID asked again until answered stays VOID: its answer is what
+  fences a copy of it still on its way. `{schema, state: "ok", handedBack, epoch, holding, seat}`: `handedBack`
+  whether it gave a live lease back; `epoch` the caller's current epoch afterwards (a take-over the member asks for
+  later is sent at it); `holding` whether the caller holds the machine now (another tab of theirs) and `seat` that
+  hold's seat (null when not): hand back again at `epoch` naming that seat to give it back too.
+- The take-over card's I'm done is answered after this (reviews r9 and r10 of #1661): I'm done answers once, after a
+  list read that counts (none of its machines below the epoch the page knows), the page owes nothing for the agent's
+  machines. What it owes at an epoch is discharged by learning from the database that the member's epoch is above it
+  (a hand-back's answer, a `TAKE_CALLED_OFF`, a list), or, seat by seat (F27, F28): a take-over with no answer by its
+  own answer (or a list showing the hold seated by it); the seat the page's own take-over got, or one shown it, by an
+  EXACT hand-back's answer for that seat or a higher one, or by a heartbeat or an action answered `ended` for it. No
+  refusal of another request, timeout or closed window discharges anything; a hold the read itself shows at the
+  current epoch is owed like any other.
+  A take-over the member starts from another tab after that read was taken is a new take-over, outside this answer;
+  the agent then hears `DESKTOP_MEMBER_IN_CONTROL`, as for any take-over without a card. No page can exclude what the
+  member does a moment later.
+- A page uses a hold (input, heartbeats) only after a Take over pressed on that page (review r14 of #1661): a hold of
+  the member's that the list shows from another window, or from before the page was loaded again, is shown, never
+  taken up, so after a reload the member presses Take over once to go on (a take-over at the current epoch takes
+  their own lease over, in a new seat), and without that the old lease ends by itself.
+- `qorpera_member_machine_desktop_act_begin(profile, machine, action, epoch, seat)`: one action, begun as the member.
+  Clients do not call it: the action route (§4) does, with the member's own token, the action as SQL keeps it (a text
+  by its length), `epoch` and `seat`, the hold the page captured the input under (release review r1 of #1667, F24 and
+  F26 of #1661). Under the machine's lock it is taken only from the member whose live lease was taken under exactly
+  that epoch and is exactly that seat; otherwise `DESKTOP_CONTROL_ENDED` (that hold has ended) and nothing is recorded,
+  counted or renewed, so input delayed across a hand-back and a new take-over, a lease that ran out and was taken
+  again, or another tab's take-over never runs under the new hold. An `epoch` or `seat` that is null or below 0 is
+  malformed (22023). The executor's read (`qorpera_member_machine_desktop_act_authority`) then serves the action only
+  while the lease row it was begun on stands and is still in the seat the begin recorded, so a hand-back, a new
+  take-over or another press's take-over between the begin and the read refuses it too.
+- The action route's body is `{"action": {...}, "epoch": n, "seat": s}`; the page sends the epoch and the seat of the
+  hold the key, click or text was captured under, never those at send time, and its queue and every answer belong to
+  that one hold: an answer for an older hold changes nothing of the current one (F25).
+- An agent's `save_coding_value` is fenced as a picture is (v233 release review r1, F29 of #1661): its read
+  (`qorpera_authorize_machine_coding_value`) answers `desktopGeneration`, the lease generation it saw, and the executor
+  asks `qorpera_machine_desktop_picture_check` (no looker) before the clipboard helper reads the clipboard and again
+  after it, before the box is answered: a take-over at any moment since the read drops the box whole (nothing stored,
+  nothing logged; the agent hears `DESKTOP_MEMBER_IN_CONTROL`). The helper takes the desktop as an action does, so a
+  member's action (a copy, a paste) and the clipboard read never interleave on one desktop. What cannot be undone: a
+  helper that had begun reading before a take-over may already have cleared the clipboard, the member's copy with it.
+- After a member has held a desktop, the platform clears its clipboard before an agent can read a key from it (F32 to
+  F35 of #1661): what a member copied stays on the clipboard after they hand back.
+  - The clear is owed from the hold on: `desktop_clipboard_generation` (the lease generation at the last confirmed
+    clear) differs from the lease generation, which moves at every seating and every hand-back. Only the platform's
+    confirmed clear lifts it; nothing the agent does (a look, a click, a copy) does.
+  - The clear: the machine's executor takes the desktop under the one-actor rule, asks the fence, clears both
+    selections with a fixed script of its own (each xsel must succeed, then each selection is read back by its byte
+    count alone; never the helper's `--clear-only`, which answers cleared whatever xsel did), and confirms it with
+    `qorpera_machine_desktop_clipboard_cleared(placement, generation)` (service_role), which records it only while that
+    generation stands and no member holds the desktop. A desktop that is not running counts as cleared: the image keeps
+    no clipboard past its desktop's session (no clipboard manager, no saved history; measured on image 91d433c0).
+  - First, at the agent's first screen call after the hold (a look or an action): `qorpera_authorize_machine_screen`
+    answers `clipboardClear`, and the host clears and records under that call's hold of the desktop, within 3 s,
+    before it looks or acts, so whatever the agent copies after is its own and its save reads it at the first call. If
+    the fence or the record says a member holds the desktop again, an action does not run (`DESKTOP_MEMBER_IN_CONTROL`);
+    any other failure fails nothing, and the clear stays owed.
+  - The backstop is `save_coding_value`: while the clear is owed, its read answers `{state: "clear", machineId,
+    placementId, bootId, executorOwner, providerId, receiptId, desktopGeneration}` and reads nothing; the executor
+    clears and records the same way, and the agent hears `CLIPBOARD_EMPTY` (true then: it copies the key on the site
+    and calls again); its next call reads as before. `DESKTOP_MEMBER_IN_CONTROL` stays for a member who holds the
+    desktop, or took it over across a read.
+- A member's action asks the fence for its seat again once the host holds the desktop
+  (`qorpera_member_machine_desktop_act_authority` answers the seat), so one authorized before a hand-back never runs
+  after it.
+- A stated limit: the computer is the agent's. While a member holds the desktop the agent starts nothing new on it and
+  reads nothing of its screen or clipboard through the platform's tools, but a program the agent started there before
+  the take-over keeps running and can see the screen and the clipboard.
+- One lock order with every machine path (F30 of #1661): a take-over, and a member's first look at a machine (which
+  writes their watch row, keyed by the company), take the folder fence and the company row KEY SHARE
+  (`qorpera_folder_machine_fence`, rank 0) before the machine's row, as the executor's custody and a member's wake do,
+  so a holder of the fence that then wants the machine (company deletion's finisher) is waited for, never met in a
+  circle.
+- The window sends the member's input in the order it was made (F31 of #1661): a click waiting for its second, typed
+  text and a wheel turn are each gathered a moment, and when input of another kind begins, what is gathered goes first.
+
+### A member turns an agent's desktop on (20260930714000_machine_member_start)
+
+An owner, admin or contributor turns the desktop (the screen) of an agent's running desktop computer on, whatever the
+agent does (Jonas, 11 Nov 2026): the window's Turn it on, and Wake it, which turns the screen on too once the machine
+runs. Starting is not taking over: it needs no hold and takes none, and the agent is told nothing (its next
+`machine_screen` or `desktop start` finds the desktop running).
+
+- `qorpera_member_machine_desktop_start_begin(profile, machine)` (authenticated; the start route calls it with the
+  member's own token): under the machine's lock, a running machine of the company big enough for a desktop
+  (`MACHINE_NOT_RUNNING`, `DESKTOP_MACHINE_TOO_SMALL`), then exactly what an agent's first screen use marks and refuses:
+  the disk rule (`MACHINE_NEEDS_COMPANY_VIEW` on a disk that had a view, for a member who does not read the folder's
+  root; a disk that never had one is marked unchecked for them), the machine's last use (at most every 30 s), and a
+  screen no agent drove yet stamped as the agent the machine was started by (a screen an agent drove keeps that agent's
+  stamp, so the machine stays in that agent's window). A member's hold of the desktop, the caller's or another's, does
+  not stop a start: a hold does not prove the desktop runs (a take-over never checks it, and the desktop stops itself
+  after an hour without a desktop command), and a start takes no hold and does nothing to a desktop that runs. A second
+  start of the machine within 5 s is `DESKTOP_START_TOO_SOON`. It records the start (id, member, machine, time) and answers `{schema:
+  "qorpera.member-machine-desktop-start/v1", state: "ok", startId}`; refusals are `{state: "refused", reason}`.
+- `qorpera_member_machine_desktop_start_authority(start, owner, provider)` (service_role): the executor's read, single
+  use, within 15 s of the begin, of a member still an owner, admin or contributor of a company not being deleted, the
+  machine still running and big enough, the disk rule read again (marking as the begin does); `served` only for the
+  placement's own executor.
+- The machine stays awake under a member: a member's look read moves the machine's last use (at
+  most every 30 s) while their word that they watch is at most 30 minutes old, and a hold's heartbeat moves it when it
+  renews the lease. Without them a task machine whose desktop a member only watched slept after its executor's
+  `sleep_after_seconds` (an hour by default), and a hold kept by heartbeats alone could too.
+
+### A member starts a computer for an agent that has none (20260930730000_member_agent_computer)
+
+An owner, admin or contributor starts a desktop computer for an agent from its computer window (Jonas, 12 Nov 2026),
+when the agent has no machine or none big enough for a screen. One press; never on opening the window (a computer
+costs hours). The agent is told nothing: the machine is its own (its machine list shows it, started by it) and it uses,
+stops and deletes it as one it started.
+
+- `qorpera_member_start_agent_computer(profile, agent)` (authenticated): owners, admins and contributors
+  (`qorpera_can_write_profile`, as a member's wake). An agent of the company on staff and not deleted, else
+  `AGENT_UNAVAILABLE` (an unknown agent is 42501). Under the company's machine lock: a machine of the agent's (started by
+  it, or whose screen it drove last) big enough for a desktop and not being deleted is answered as `{state:
+  "existing", machine}` and nothing is made (the client wakes it when it sleeps); at most one new computer per agent a
+  minute (`START_TOO_SOON`); else ONE machine as the agent's own `machine_start` with desktop true and its defaults makes
+  it (2 cpus, 4 GiB, 40 GiB of disk, lifetime task, the standard image), named after the agent with `-desktop` (a
+  number added when taken), its purpose naming the member, the agent as the one it is started by and the member as the
+  one who asked, no run. It goes through machine_start's admission: `MACHINE_TOO_LARGE` (no server could ever hold it)
+  and `MACHINES_UNAVAILABLE` (no node runs machines) refuse and keep nothing; otherwise it waits in line for room or
+  hours as any wanted machine (only the service role reserves room on a node, so a member's start waits for the node
+  executor's next pass, as a member's wake does). Answers `{schema: "qorpera.member-agent-computer/v1", state:
+  "started" | "existing", machine: {machineId, name, state}}`, or `{state: "refused", reason}`.
+- Such a machine has no starting run: `started_by_run_id` and `started_by_receipt_id` are null together. Its folder view
+  acts as its agent and member, company-wide, as a view whose starter's run has ended; a save through it checks the
+  read sets of every run with a command or an authorized `machine_screen` action on its disk, as a starter's is checked
+  (`qorpera_company_machine_screen_runs` records the action's run once per placement; a look records nothing). The disk
+  is the placement's: a machine keeps it while it sleeps and wakes on its node, and a new placement starts empty.
+- The computer window's list (`qorpera_list_agent_machines`) takes the agent's machines big enough for a desktop first
+  into its 20, and `existing` is the first of them in the list's own order: the window always lists the machine a start
+  answers. A busy record moves its last use only
+  while a command whose conversation the busy check-in asks runs on it: with no one to ask, it sleeps after its quiet
+  window without use, busy or not.
+
+#### Member contacts' places (20260930717000_member_contact_places)
+
+A contact is a rail row like an agent's (Jonas, 10 Nov 2026: "not sure I like the member contacts at the top,
+undraggable and un-hideable"): its member drags it into the pinned row, into a section or among what is in no section,
+and hides it. Where a contact stands is each member's own, as their pins and hidden agents are: nobody else's rail
+changes, nothing is written to the company's folder, and any member may place their contacts, viewers too.
+
+- The list (`qorpera_list_member_chats`) answers `placing: true` on a cloud that keeps places; a client offers no
+  drag, pin or hide without it. Each chat carries `hidden` (boolean) and, once its member placed it, `place`: `{zone,
+  sectionId?, after?, rank}`. `zone` is `members` (the Members group at the foot of the list, where a contact stands
+  until it is placed), `pinned`, `unassigned` or `section` (with `sectionId`, a section of the sidebar). `after` is
+  the agent or group chat the contact stands after in its zone (absent: first; never in `members`), and `rank` (0 to
+  9999) orders the contacts that stand after the same one (in `members`: all of them).
+- The company's own order of a zone (the sidebar's) can change under a kept place. A client draws a zone by weaving
+  its contacts into that order, each after its `after`; a contact whose `after` is not in the zone stands last, and
+  one whose section is gone, or whose rail has no sidebar, stands in the Members group. The kept place is not
+  rewritten for it. A contact never placed stands in the Members group after the placed ones, in the order the
+  members joined.
+- `qorpera_place_member_contacts(profile, contacts)`: `contacts` is a list of 1 to 100 entries `{userId, zone,
+  sectionId?, after?, rank, hidden}`, each one contact's whole place (it replaces the kept one). Answers the list as
+  `qorpera_list_member_chats` does. Refused whole with 22023, nothing written, when the list or an entry has another
+  shape, names the caller, someone who is not a member of the company or one contact twice, names a section the
+  company does not have, gives `sectionId` without zone `section` (or the other way round), or gives `after` in
+  `members`. `after` is not checked against the company's agents: it is the caller's own note. 42501 as the other
+  calls. A place goes with either member's membership and with the company.
+- A change of place sends no hint: another tab of the same member shows it on the slow poll.
 
 ### Chat images (20260928549140_chat_images)
 
@@ -1234,7 +1612,10 @@ Settings → Sites. Built switched off (`qorpera_site_settings.enabled`) until t
   files, bytes, publishedAt, publishedBy, createdAt, passwordChangedAt}]`, newest published first, for any member of
   the company (viewers too; 42501 for anyone else). `state` is `live`, or `publishing` while a site's first upload has
   not finished (its link does not work yet). `source` is the Company File path it was published from; `publishedBy`
-  is `{agentId, name}`, or null when that agent is gone. Never a password.
+  is `{agentId, name}`, or null when that agent is gone. Never a password. A repository's own site (20260930729000,
+  "What's new" below) is listed only once a member has put a version of it live, in the same row: `source` is
+  `code/<owner>/<name>` (tell a code site by that prefix; `publish_site` never publishes a folder under `code/`) and
+  `publishedBy` is null. Until then it waits in What's new, and it still counts toward the company's 10 sites.
 - `qorpera_company_site_password(site)`: `{schema: "qorpera.company-site-password/v1", siteId, password, changedAt}`,
   owners and admins only (42501 for anyone else, a site that is gone included).
 - `qorpera_set_company_site_password(site, password)`: owners and admins. `password` null makes a new random one;
@@ -1243,7 +1624,83 @@ Settings → Sites. Built switched off (`qorpera_site_settings.enabled`) until t
 - `qorpera_unpublish_company_site(site)`: owners and admins. Deletes the site, its files, password and sessions at
   once (the Company File keeps the source). `{schema: "qorpera.company-site-unpublish/v1", siteId, removed}`;
   `removed` false when it was already gone.
+  For a repository's site its kept versions and the way back go with it. The site is then off, not gone for good: the
+  newest change that left a site is due again at once, so the executor's next upload pass (within about a minute, no
+  new change needed) makes the site again under its name, with a new password and not live, and it waits in What's
+  new until a member puts it live.
 - The tables are closed to every API role; the agent's and the edge function's calls are service-only.
+
+### What's new: a repository's site, put live by a member (20260930729000_code_releases)
+
+A repository kept in Qorpera whose checks file has a `site` key: the checks of each change that goes in build its
+website, Qorpera keeps it as a version of the repository's own site (at `https://sites.qorpera.com/<slug>/`, behind
+its password, which is in Sites), and only an owner or admin puts a version live, or goes back to the one before, on
+the What's new page. Nothing goes live by itself.
+
+- `qorpera_list_code_releases(profile)`: `{schema: "qorpera.code-releases/v1", canRelease, sites: [{owner, name, site,
+  live, back, ready, waiting, problem, givenUp}]}` for any member of the company (viewers too; 42501 "Releases unavailable" for
+  anyone else). `canRelease` is true for owners and admins. One entry per repository that has a site or made one, at
+  most 10: every repository with a site first (a company has at most 10 sites), live ones before the rest, then those
+  that made a site and have none now, a `problem` first, the newest change first (by owner and name within each):
+  - `site`: `{slug, url, title}`, or null until the first version was kept.
+  - `live`: `{version, kind, since, by, from}` or null when nothing is live. `version` is the number members see;
+    `kind` is `release` (a member put it live) or `back` (a member went back to it, showing its number again, and
+    `from` is the version it took off); `by` is the member's user id.
+  - `back`: `{version}`, what Go back puts live, or null when no earlier version is kept.
+  - `ready`: what goes live with the next yes, or null: `{change, token, agent, changes: [{key, notice, picture, at,
+    wasLive}], quiet}`. `change` and `token` are what the yes names. `changes` are the ready changes that say what a
+    customer will notice, newest first (at most 20): `picture` a Company File path or null, `at` when it went in,
+    `wasLive` true for a change that was live before a Go back took it off; `key` is for the list only, never shown.
+    `quiet` counts the other ready changes ("behind the scenes"). `agent` is the staff agent to tell "Not yet", or null.
+  - `waiting`: changes that went in and are not ready yet.
+  - `problem`: why the site of the change due now could not be prepared: the code of its last failed upload, while
+    that change is the newest one that left a site and its version is not ready yet (`SITE_LIMIT`: the company has 10
+    sites, and the site is made once one of them goes; `SITE_NAME_TAKEN`: every name the site may take is taken, and
+    it is made once one is free). Otherwise null: as soon as that version is ready (also when an upload's last answer
+    was lost), when a newer change that leaves a site overtook it, after a member took the site offline, and while
+    Qorpera's operators have the repository's sites switched off (then nothing is prepared and nothing is said).
+  - `givenUp`: true while Qorpera has stopped trying: `problem` is set, its change failed five times, and nothing has
+    changed since that lets it try again. False otherwise, and always when `problem` is null. It turns false with a
+    newer change that leaves a site, an upload that finishes, a member taking the site offline, and, for `SITE_LIMIT`,
+    once the company has fewer than 10 sites, or for `SITE_NAME_TAKEN`, once one of the names is free. A `problem`
+    with `givenUp` false means Qorpera tries again.
+- `qorpera_put_code_release_live(profile, owner, name, shown)`: owners and admins (42501 otherwise). `shown` is exactly
+  what the page showed, `{live: <live.version, or null>, change: <ready.change>, token: <ready.token>}` (22023
+  otherwise); a repository the company does not keep is P0002 "No such repository". Answers
+  `{schema: "qorpera.code-release/v1", state: "live", version, url}`, or `{schema, state: "moved"}` when the page is
+  no longer what is live and ready (read it again; nothing changed). Changes ready after the page was drawn wait for
+  the next version. The site serves the new version from the visitor's next request.
+- `qorpera_code_release_back(profile, owner, name, shown)`: owners and admins. `shown` is exactly `{live:
+  <live.version>, to: <back.version>}`. Answers as above; the changes of the version it took off are ready again.
+- Both writes give up after 3 s of waiting for the repository (55P03; nothing changed).
+- The tables are closed to every API role; the executor's calls are not a member's.
+
+### Downloading the company's code (20260930720000_code_change_record)
+
+The repositories a company keeps in Qorpera (`code/<owner>/<name>/` in the company folder), and their code as one file
+a member downloads: the coding executor makes it under `code/<owner>/<name>/downloads/`, and the web reads it there
+with the member folder client. Storage → the repository's folder → "Download the code".
+
+- `qorpera_list_code_repositories(profile)`: `{schema: "qorpera.code-repositories/v1", canDownload, repositories:
+  [{owner, name, changes, downloads: [{requestId, file, state, path, bytes, madeAt, expiresAt}]}]}` for any member of
+  the company (viewers too; 42501 "Code unavailable" for anyone else). `canDownload` is true for owners and admins.
+  `changes` is how many changes the repository's record holds. `downloads` are the ones on their way (`state`
+  `queued` or `running`) and the made ones whose file is still there (`ready`, with `path` and `bytes`): a made
+  download is over after 7 days, as soon as the job of a newer download of the same `file` begins (it replaces the
+  file), and as soon as a restore of the repository from its copy begins to move its folder aside. It is over
+  before the file goes, whatever becomes of that job, so `ready` always has its file.
+- `qorpera_request_code_download(profile, owner, name, file)`: owners and admins (42501 otherwise). `file` is `files`
+  (main's files, a `.zip`) or `history` (main with its history, a git `.bundle`); anything else is 22023, a repository
+  the company does not keep is P0002 "No such repository". Answers `{schema: "qorpera.code-download/v1", requestId,
+  file, state, reason, path, bytes}`: `ready` with the made file when the code has not changed since; else the open
+  request of that file (`queued` or `running`); else `refused` with `reason` `too_many` (20 download requests of the
+  company in 24 hours) or `no_executor`; else a new request, `queued`.
+- `qorpera_code_download(profile, request)`: owners and admins; how that request stands, in the same shape. Besides
+  the states above: `failed` with `reason` `too_large` (over 200 MiB), `busy` (it was put off behind coding work until
+  it ended) or `failed` (anything else, a made file that is over included: its 7 days passed, a newer download
+  began to replace it, or a restore began to move the repository's folder; ask again). P0002 "No such download" for
+  a request that is not one of the company's downloads.
+- The tables are closed to every API role; the executor's, the agent's and the operator's calls are not a member's.
 
 ## 3. Realtime
 
@@ -1253,16 +1710,41 @@ presence and room drafts since migration `20260928469300_realtime_topic_equality
 a client joined to one topic reads, and where it may publish writes, only that
 topic's rows. A new private topic's policies must do the same.
 
+- `qorpera-live-{profileId}-{userId}` — a company's change hints for one member, pushed by the database
+  (migration `20260930653000_member_live_hints`, perf T3). Private broadcast channel, events `sessions`, `staff`,
+  `access`, `company-file`, `sidebar` (the tables `qorpera_shared_sessions`, `qorpera_profile_staff`,
+  `qorpera_profile_access_state`, `qorpera_company_files`, `qorpera_company_sidebar_revisions`), payload
+  `{"schema":"qorpera.live-hint/v1"}` and nothing else: never a row or its id. Ids lower-case,
+  as the database writes them. Since `20260930715000_member_messages` also `member-chats`, to the two members of a
+  member chat whose message or read mark changed (not the company's other members); a client that falls back to
+  `postgres_changes` gets no such hint and reads the member chats on its slow poll. Since
+  `20260930712000_machine_member_screens` also `machines`, to every member of the company, when one of its machines is
+  made, wanted on or off, removed or fails, another agent drives its screen (or one drives it again after 10 minutes),
+  or its placement is made, starts, gets a boot, retires or goes, and since `20260930713000_machine_member_control` when
+  a member takes its desktop over or hands it back (not on an action or a heartbeat, nor when a lease runs out: read the
+  list again at its `until`): read `qorpera_list_agent_machines` again. Who hears a change is decided per change, at commit: only the topics of the members
+  who may read the changed row under its table's read policy then, so a member who leaves hears nothing of the company
+  from that commit on but the change to their own access row (which they may read). A member may join only their own
+  topic, of a company they are a member of or have an access row in (RLS on `realtime.messages` via
+  `qorpera_live_hint_member`), checked at join and at each token refresh; nobody publishes but the database. One hint
+  per topic and event per transaction. A nudge only, as before: re-read through the RPCs, keep the slow poll for hints
+  missed while disconnected. It replaces the `postgres_changes` subscriptions below, which keep Realtime polling the
+  WAL while any client holds one: a client listens by push, and by `postgres_changes` only where its push join is
+  refused twice running (a database without the migration). The tables stay in the publication for clients from
+  before the push.
 - `qorpera-profile-{profileId}` — durable-lane invalidation hints for a profile
   (sub-channels seen in the shell: `sessions`, `staff`, `trail`,
   `company-tree`, `company-projection`, `workspace-inbox`). Hints only: the
-  client re-reads through RPCs; large bodies never travel on this channel.
+  client re-reads through RPCs; large bodies never travel on this channel. The web's
+  `postgres_changes` subscriptions on the four tables above (filter `profile_id=eq.{profileId}`) are its fallback
+  since the push; Realtime checks each subscriber's read policy per change for them.
 - `postgres_changes` on `qorpera_company_sidebar_revisions` (filter
   `profile_id=eq.{profileId}`, member-readable, one row per company) — the
   shared sidebar changed, by a member or an agent: one hint per change however
   many agents it renumbered; re-read with `qorpera_read_company_sidebar`. The
   section and placement tables themselves are not readable or published. The web
-  subscribes on its own channel, only after the read RPC answered, so a cloud
+  follows it only after the read RPC answered: by push, the `sidebar` event of the
+  member's live topic; by `postgres_changes`, on its own channel, so a cloud
   without the table never degrades the company channel. Pins and hidden agents
   are not published.
 - `qorpera-presence-{profileId}` — lossy presence (typing, who-is-viewing).
@@ -1333,6 +1815,40 @@ only after durable storage.
   404 for a missing conversation, message or erase; 423 in a paused company.
   Behind the member company gateway like the other member routes.
 - `/healthz`, `/livez`, `/readyz`
+- `GET /v1/member-machine-screens/<companyId>/<machineId>[/watching]` (20260930712000; not the object gateway's: the
+  node's mux sends it to the coding executor's member listener) — a member's look at an agent's desktop, with the
+  member's token and, when the member has a picture, `If-None-Match: "<etag>"`. `/watching` says the member still
+  watches (the window opened, a touch in it, or "Still watching?" answered), which keeps the desktop on 30 minutes from
+  then. 200 `image/png` with `etag`; 304 when it is the member's picture; 409 `{code}`: `MACHINE_NOT_RUNNING`,
+  `MACHINE_NEEDS_COMPANY_VIEW`, `SCREEN_TOO_SOON` (within 400 ms of the last look), `DESKTOP_NOT_RUNNING` (the screen
+  is off), `MACHINE_BOOT_CHANGED`, `MACHINE_IMAGE_WITHOUT_SCREEN`, `SCREEN_HIDDEN` (the machine holds a read of the
+  company folder this member may not read) or `SCREEN_HELD` (the folder has not released what the machine read: look
+  again); 401 for a token the database does not take; 403 for a machine that is not there for the member. Behind the
+  member company gateway like the other member routes. Since 20260930713000 also `DESKTOP_MEMBER_IN_CONTROL`: another
+  member holds the desktop (the list says who), or took it over while this look was on its way (its picture never
+  leaves: review r1 F1).
+- `POST /v1/member-machine-screens/<companyId>/<machineId>/act` (20260930713000; the same listener) — an action of the
+  member who holds the desktop, with their token, `content-type: application/json` and `{"action": {...}, "epoch": n,
+  "seat": s}` (at most 16 KiB; `epoch` and `seat` the hold the input was captured under, each a whole number from 0:
+  F24 and F26 of #1661): `{type: click, x, y, button?}`, `{type: double|move, x, y}`, `{type: drag, x, y, toX, toY}`, `{type: type,
+  text}` (1 to 500 characters, no control character but a line break or a tab), `{type: key, keys}` (1 to 16 names such
+  as Return or ctrl+l, none an xdotool command word), `{type: scroll, direction, steps?, x?, y?}`; positions are the
+  screen's pixels (the picture's own size). Never `open`. 200 `{schema: "qorpera.member-machine-act/v1", exitCode}`
+  (the action's exit; null when it was cut off); 400 for a body that is not one action; 409 `{code}`:
+  `MACHINE_NOT_RUNNING`, `MACHINE_NEEDS_COMPANY_VIEW`, `DESKTOP_MEMBER_IN_CONTROL`, `DESKTOP_CONTROL_ENDED` (the
+  hold the action names ended: handed back, run out, or seated anew by another take-over of the member's), `DESKTOP_BUSY` (another action runs on the desktop: an agent's that
+  began before the take-over), `DESKTOP_NOT_RUNNING` (the screen is off), `MACHINE_BOOT_CHANGED`,
+  `MACHINE_IMAGE_WITHOUT_SCREEN`, `SCREEN_ACTION_TAKEN`, or the screen helper's own refusals; 401 and 403 as a look.
+  The text goes to the machine and nowhere else: never to the database, a log or an answer. Nothing of the screen comes
+  back: the client looks again. Behind the member company gateway, which reads a body only for a signed-in member.
+- `POST /v1/member-machine-screens/<companyId>/<machineId>/start` (20260930714000; the same listener) — turns the
+  desktop on, with the member's token, `content-type: application/json` and the body `{}` (at most 1 KiB; any key is a
+  bad request: what to open there is for a later stage). 200 `{schema: "qorpera.member-machine-start/v1", outcome}`:
+  `started` (it was off and is drawn now) or `running` (it ran already); 409 `{code}`:
+  `MACHINE_NOT_RUNNING`, `MACHINE_NEEDS_COMPANY_VIEW`, `DESKTOP_MACHINE_TOO_SMALL`, `DESKTOP_START_TOO_SOON` (a start
+  of this machine within 5 s), `MACHINE_BOOT_CHANGED`, `MACHINE_IMAGE_WITHOUT_SCREEN` or `DESKTOP_DID_NOT_START`; 400,
+  401 and 403 as an action. Never refused because an agent runs or acts on the machine (it takes no hold); the client
+  looks again at once.
 
 `/v1/profile-objects/<profileId>/<sha256>` answers only the private `DELETE` folder GC and erasure use (with the
 gateway control token, never a member token); the gateway serves no raw object reads or uploads by hash, no read
@@ -1420,7 +1936,7 @@ renders only these surfaces and never agent-authored HTML:
 | `surface` | `payload` (closed object) | Member outcomes | `answer` |
 | --- | --- | --- | --- |
 | `question` | `options[1..6]{label,value?,description?,style?}`, `multiSelect?`, `allowCustom?`, `dismissOnMoveOn?` | `answered`, `declined` | `{values: string[]}` for answered, else `{}` |
-| `secret` | `name`, `label`, `purpose`, `kind?` (`token`/`password`/`text`), `connectorId?` (default `vault`; bundle v81) | `provided`, `declined` | send `{}`; the value goes to the cloud secret custody (`qorpera_begin_cloud_secret_capture` → POST to the broker's `/v1/captures/<ticket>`), and `provided` is accepted only when an active secret with that connector and name exists (owned by the company or by you); the kernel writes `{secretId, version}` into the answer |
+| `secret` | `name`, `label`, `purpose`, `kind?` (`token`/`password`/`text`), `connectorId?` (default `vault`; bundle v81), `repository?` (20260930693000: only with `connectorId: environment`, owner/name in lower case) | `provided`, `declined` | send `{}`; the value goes to the cloud secret custody (`qorpera_begin_cloud_secret_capture` → POST to the broker's `/v1/captures/<ticket>`), and `provided` is accepted only when an active secret with that connector and name exists (owned by the company or by you); the kernel writes `{secretId, version}` into the answer. A coding value (`connectorId: environment`, a name `qorpera_coding_environment_name_allowed` takes) is an environment variable coding sessions get: with `repository`, an owner or admin saves it for the company and gives it to that repository (`qorpera_grant_coding_environment_secret`); otherwise it is the member's own, which reaches their coding sessions in every repository |
 | `form` | `domain`, `reason?`, `submitAfterFill?`, `fields[1..8]{id,label,type,required?,placeholder?,options?,secret?,target?,vaultName?}` | `answered`, `declined` | `{values: {id: string|boolean}, fields: {id: filled|failed|skipped}}`; values for secret fields are refused |
 | `takeover` | `instruction`, `reason?`, `domain?`, `idpDomain?` | `handed_back`, `dismissed` | `{}` |
 | `draft` | `platform`, `connectorId`, `from`, `to[]`, `cc?[]`, `subject?`, `body`, `replyTo?`, `threadRef?` | `sent`, `discarded` | `{sentSummary?}` for sent |

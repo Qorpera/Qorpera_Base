@@ -337,6 +337,30 @@ describe("thread redraws keep unchanged messages", () => {
 		expect(settling.removed).toEqual([]);
 	});
 
+	it("draws a coding value's card again when a role change moves whose value it saves", async () => {
+		const coding = question({
+			request: {
+				surface: "secret",
+				title: "Token for private packages",
+				payload: {
+					name: "npm_token",
+					label: "NPM_TOKEN",
+					purpose: "Installs the private packages.",
+					connectorId: "environment",
+					repository: "acme/web",
+				},
+			},
+		});
+		const thread = setup([message(1), coding]);
+		expect(thread.card(id(600))?.textContent).toContain("Coding sessions in acme/web get it as NPM_TOKEN");
+		// The owner is made a contributor: a save is now their own, for every repository, and the open card says so.
+		thread.company.store.set({ team: { ...team, role: "contributor", members: members("Bob") } });
+		await settle();
+		expect(thread.card(id(600))?.textContent).toContain(
+			"Saved as your own in the company vault: your coding sessions in every repository get it as NPM_TOKEN.",
+		);
+	});
+
 	it("keeps received files and an open preview through new messages and its own changes", async () => {
 		const disposed = vi.spyOn(ReceivedAttachments.prototype, "dispose");
 		const withFile = message(2, {
@@ -350,11 +374,11 @@ describe("thread redraws keep unchanged messages", () => {
 		expect(files?.textContent).toContain("Photo.png");
 		thread.element(withFile.id)!.querySelector<HTMLButtonElement>(".received-file")!.click();
 		await settle();
-		expect(document.querySelector<HTMLDialogElement>(".file-preview-dialog")?.open).toBe(true);
+		expect(document.querySelector<HTMLDialogElement>(".image-viewer-dialog")?.open).toBe(true);
 		await thread.show([message(1), withFile, message(3)]);
 		await thread.show([message(1), { ...withFile, pending: "failed" }, message(3)]);
 		expect(thread.element(withFile.id)!.querySelector(".received-attachments")).toBe(files);
-		expect(document.querySelector<HTMLDialogElement>(".file-preview-dialog")?.open).toBe(true);
+		expect(document.querySelector<HTMLDialogElement>(".image-viewer-dialog")?.open).toBe(true);
 		expect(disposed).not.toHaveBeenCalled();
 		await thread.show([message(1), message(3)]);
 		expect(disposed).toHaveBeenCalledOnce();

@@ -17,10 +17,15 @@ export function needsConversationTimestamp(current: Date, previous?: Date): bool
 	);
 }
 
+/** The time of day alone ("10:04", "2:18 PM"), as the thread's own time lines write it. */
+export function conversationClockLabel(date: Date): string {
+	return date.toLocaleTimeString(presentationLocale(), { hour: "numeric", minute: "2-digit", ...timeZoneOption() });
+}
+
 export function conversationTimestampLabel(date: Date, now = new Date()): string {
 	const locale = presentationLocale();
 	const zone = timeZoneOption();
-	const time = date.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit", ...zone });
+	const time = conversationClockLabel(date);
 	const day = presentationDay(date, zone.timeZone),
 		today = presentationDay(now, zone.timeZone);
 	if (day === today) return t("Today {time}", { time });

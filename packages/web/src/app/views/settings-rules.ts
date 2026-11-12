@@ -35,7 +35,7 @@ function ruleInput(label: string, value = ""): HTMLInputElement {
 }
 
 /**
- * Settings → General → rules (auto-review, kernel bundle v130), laid out as
+ * Settings → Company → Agent rules (auto-review, kernel bundle v130), laid out as
  * Grok Bot's Auto-review rules: the form, then one table of every rule. Before
  * an agent acts outside the company (sends, buys, deletes, hires, sets up
  * routines), it checks these rules. A rule is one sentence, "When an agent
@@ -45,7 +45,7 @@ function ruleInput(label: string, value = ""): HTMLInputElement {
  * to (the kernel keeps a rule's scope).
  */
 export class RulesView {
-	readonly el = h("section", { class: "settings-group settings-rules", "aria-label": t("Rules") });
+	readonly el = h("section", { class: "settings-group settings-rules", "aria-label": t("Agent rules") });
 	readonly #client: WebReviewRules;
 	readonly #lifetime = new AbortController();
 	#rules: HostedReviewRule[] = [];
@@ -375,7 +375,11 @@ export class RulesView {
 		if (this.#lifetime.signal.aborted) return;
 		const focused = this.el.contains(document.activeElement) ? document.activeElement : null;
 		if (this.#missing) {
-			replace(this.el, notice("neutral", t("Rules are not available on this cloud yet.")));
+			replace(
+				this.el,
+				h("h2", null, t("Agent rules")),
+				notice("neutral", t("Rules are not available on this cloud yet.")),
+			);
 			return;
 		}
 		// A load can take away the rule being edited, or the right to edit it: the edit ends,
@@ -388,6 +392,7 @@ export class RulesView {
 		this.#syncAdd();
 		replace(
 			this.el,
+			h("h2", null, t("Agent rules")),
 			h(
 				"div",
 				{ class: "settings-rule-form" },

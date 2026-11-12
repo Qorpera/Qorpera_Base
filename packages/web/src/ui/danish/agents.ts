@@ -17,7 +17,6 @@ export const AGENTS: Record<string, string> = {
 	Reset: "Nulstil",
 	"Edit figure": "Rediger figur",
 	"An agent needs a name.": "En agent skal have et navn.",
-	"An agent needs a title.": "En agent skal have en titel.",
 	"An agent needs its responsibilities written down.": "En agent skal have sine ansvarsområder skrevet ned.",
 	Saved: "Gemt",
 	"Your changes could not be saved.": "Dine ændringer kunne ikke gemmes.",
@@ -198,6 +197,8 @@ export const AGENTS: Record<string, string> = {
 	"Waiting for computer hours": "Venter på computertimer",
 	"Answer sent · waiting for computer hours": "Svar sendt · venter på computertimer",
 	"Opening the pull request": "Åbner pull requesten",
+	"Saving the change": "Gemmer ændringen",
+	"Checking the change before saving it": "Tjekker ændringen, før den gemmes",
 	"Draft PR ready · session kept for follow-ups": "PR-kladde klar · sessionen gemmes til opfølgning",
 	"Finished · session kept for follow-ups": "Færdig · sessionen gemmes til opfølgning",
 	"Failed · workspace kept": "Mislykkedes · arbejdsområdet er gemt",
@@ -300,6 +301,11 @@ export const AGENTS: Record<string, string> = {
 		"Sessionen blev stoppet, før den var færdig. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 	"The session stopped because of an internal error. The workspace is kept; a follow-up continues it.":
 		"Sessionen stoppede på grund af en intern fejl. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
+	// A change that did not go in for its checks (own code storage, step 3).
+	"Not saved yet: the change did not pass its tests, so the code is as it was.":
+		"Ikke gemt endnu: ændringen bestod ikke sine tests, så koden er, som den var.",
+	"Not saved yet: Qorpera could not test the change just now. Nothing was lost.":
+		"Ikke gemt endnu: Qorpera kunne ikke teste ændringen lige nu. Intet gik tabt.",
 	"{count} file": "{count} fil",
 	"{count} files": "{count} filer",
 	"{count} artifact": "{count} artefakt",
@@ -324,4 +330,14 @@ export const AGENTS: Record<string, string> = {
 	"Back to the conversation": "Tilbage til samtalen",
 	"Back to {name}": "Tilbage til {name}",
 	"Loading group details": "Henter gruppedetaljer",
+	// The rail's line under an idle agent's name (app/agent-line.ts)
+	"Didn't finish": "Blev ikke færdig",
+	"Resting until {time}": "Hviler til {time}",
+	"Waits on you: {item}": "Venter på dig: {item}",
+	"Next: {title} · {time}": "Næste: {title} · {time}",
+	"Hired {day}": "Ansat {day}",
+	Hired: "Ansat",
+	today: "i dag",
+	yesterday: "i går",
+	"tomorrow {time}": "i morgen {time}",
 };

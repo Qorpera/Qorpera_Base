@@ -9,6 +9,12 @@ export const CONVERSATION: Record<string, string> = {
 
 	// The thread and the composer (app/views/conversation.ts)
 	"Attach files": "Vedhæft filer",
+	Dictate: "Indtal",
+	"Stop dictation": "Stop indtaling",
+	"Qorpera may not use the microphone. Allow it in the browser's settings for this site.":
+		"Qorpera må ikke bruge mikrofonen. Tillad den i browserens indstillinger for siden.",
+	"No microphone was found.": "Der blev ikke fundet nogen mikrofon.",
+	"Speech could not be turned into text. Try again.": "Talen kunne ikke laves om til tekst. Prøv igen.",
 	Skills: "Færdigheder",
 	"No skills yet. Agents save skills as they learn how the company works.":
 		"Ingen færdigheder endnu. Agenter gemmer færdigheder, efterhånden som de lærer, hvordan virksomheden arbejder.",
@@ -135,6 +141,9 @@ export const CONVERSATION: Record<string, string> = {
 	Working: "Arbejder",
 	Writing: "Skriver",
 	"Needs you": "Venter på dig",
+	// The rail when an agent's work waits on the member (app/views/shell.ts)
+	"Stopped: {what}": "Stoppet: {what}",
+	"Waiting for you: {what}": "Venter på dig: {what}",
 	"A run did not finish": "En kørsel blev ikke færdig",
 	"{name} is working": "{name} arbejder",
 	"{name} is writing": "{name} skriver",
@@ -180,6 +189,25 @@ export const CONVERSATION: Record<string, string> = {
 		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Det flyttes ikke til en anden konto. Det kan køre igen, når grænsen er nulstillet.",
 	"The model account paying for this work reached its usage limit, so the work stopped. It does not move to another account. It can run again when the limit resets ({time}).":
 		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Det flyttes ikke til en anden konto. Det kan køre igen, når grænsen nulstilles ({time}).",
+	"The model account paying for this work reached its usage limit, so the work stopped. It can run again when the limit resets ({time}), or you can continue it now with another of your logins.":
+		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Det kan køre igen, når grænsen nulstilles ({time}), eller du kan fortsætte det nu med et andet af dine logins.",
+	"The model account paying for this work reached its usage limit, so the work stopped. It can run again once the limit resets, or you can continue it now with another of your logins.":
+		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Det kan køre igen, når grænsen er nulstillet, eller du kan fortsætte det nu med et andet af dine logins.",
+	"The model account paying for this work reached its usage limit, so the work stopped. It can run again once the limit resets. Only {name} can continue it now with another of their logins.":
+		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse, så arbejdet er stoppet. Det kan køre igen, når grænsen er nulstillet. Kun {name} kan fortsætte det nu med et andet af sine logins.",
+	"Continue with {account}": "Fortsæt med {account}",
+	"{name} is waiting to go on": "{name} venter på at fortsætte",
+	"The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets ({time}), or you can continue it now with another of your logins.":
+		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse. Arbejdet venter og fortsætter af sig selv, når grænsen nulstilles ({time}), eller du kan fortsætte det nu med et andet af dine logins.",
+	"The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets ({time}). Only {name} can continue it now with another of their logins.":
+		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse. Arbejdet venter og fortsætter af sig selv, når grænsen nulstilles ({time}). Kun {name} kan fortsætte det nu med et andet af sine logins.",
+	"The model account paying for this work reached its usage limit. The work waits and goes on by itself when the limit resets ({time}).":
+		"Modelkontoen, der betaler for dette arbejde, har nået sin forbrugsgrænse. Arbejdet venter og fortsætter af sig selv, når grænsen nulstilles ({time}).",
+	"The work could not be moved. Try again.": "Arbejdet kunne ikke flyttes. Prøv igen.",
+	"Continuing…": "Fortsætter…",
+	"Send your message to continue with {account}.": "Send din besked for at fortsætte med {account}.",
+	"Your last run stopped because a login reached its usage limit. Please continue that work.":
+		"Din seneste kørsel stoppede, fordi et login nåede sin forbrugsgrænse. Fortsæt venligst det arbejde.",
 	"ChatGPT refused or could not answer this run's request. Check the login that pays for it in Settings → AI subscriptions, or choose another login for this conversation.":
 		"ChatGPT afviste eller kunne ikke besvare kørslens forespørgsel. Tjek det login, der betaler for den, under Indstillinger → AI-abonnementer, eller vælg et andet login til denne samtale.",
 	"The run lost its connection while it was working. This is usually brief.":
@@ -202,6 +230,8 @@ export const CONVERSATION: Record<string, string> = {
 	"The run took too long and was stopped.": "Kørslen tog for lang tid og blev stoppet.",
 	"The run started, but one of its steps was refused. The problem is on Qorpera's side.":
 		"Kørslen startede, men et af dens trin blev afvist. Fejlen ligger hos Qorpera.",
+	"The agent finished without sending its answer. The problem is on Qorpera's side.":
+		"Agenten blev færdig uden at sende sit svar. Fejlen ligger hos Qorpera.",
 	"The run was stopped before it finished.": "Kørslen blev stoppet, før den var færdig.",
 	"The run stopped because of an internal error.": "Kørslen stoppede på grund af en intern fejl.",
 	"The company is out of computer hours. New work starts again once hours are added.":
@@ -238,14 +268,15 @@ export const CONVERSATION: Record<string, string> = {
 	"Conversation between two agents": "Samtale mellem to agenter",
 	"Only the two agents write here": "Kun de to agenter skriver her",
 
-	// An app or a page beside the chat (app/views/app-panel.ts) and an app's card in a message (ui/markdown.ts)
+	// An app on its own page or a page beside the chat (app/views/app-panel.ts) and an app's card in a message
+	// (ui/markdown.ts)
 	"Beside the chat": "Ved siden af chatten",
 	"Show in Storage": "Vis i Lager",
 	"Made by {name}": "Lavet af {name}",
 	"Made by an agent": "Lavet af en agent",
 	"A page of the Company File": "En side i Virksomhedsfilen",
 	"Qorpera never asks for passwords here": "Qorpera beder aldrig om adgangskoder her",
-	"No app is called {name}.": "Ingen app hedder {name}.",
+	"This app isn't in the company anymore.": "Appen er ikke i virksomheden længere.",
 	"This app's app.toml has problems: {problems}": "Appens app.toml har fejl: {problems}",
 	"This can't be opened right now.": "Det kan ikke åbnes lige nu.",
 	"This page can't be shown here.": "Siden kan ikke vises her.",
@@ -253,9 +284,50 @@ export const CONVERSATION: Record<string, string> = {
 	"App: {name}": "App: {name}",
 	"This app reloaded itself. Press Reload to start it again.":
 		"Appen genindlæste sig selv. Tryk Genindlæs for at starte den igen.",
-	"Open {name} beside the chat": "Åbn {name} ved siden af chatten",
-	"App · opens beside the chat": "App · åbner ved siden af chatten",
+
+	// The agents' open questions on an app's page and in the Concepts viewer (app/views/question-dock.ts)
+	"Questions for you": "Spørgsmål til dig",
+	"{name} asks you": "{name} spørger dig",
+	"Sending to {name}…": "Sender til {name}…",
+	"Sent to {name}": "Sendt til {name}",
+	"Open the chat": "Åbn chatten",
+	"Previous question": "Forrige spørgsmål",
+	"Next question": "Næste spørgsmål",
+	"Hide the question": "Skjul spørgsmålet",
+	"{count} questions for you": "{count} spørgsmål til dig",
+	"Your answer could not be sent. Try again.": "Dit svar kunne ikke sendes. Prøv igen.",
+	"App · opens on its own page": "App · åbner på sin egen side",
+
+	// What an app asks the member to change, on the bar above its page (app/views/app-ask-bar.ts, app/app-actions.ts)
+	"This app wants to send your answer to {name}": "Appen vil sende dit svar til {name}",
+	"This app wants to add a row to a company table": "Appen vil tilføje en række i en af virksomhedens tabeller",
+	"This app wants to change a row in a company table": "Appen vil ændre en række i en af virksomhedens tabeller",
+	"Your answer": "Dit svar",
+	Table: "Tabel",
+	Row: "Række",
+	empty: "tom",
+	becomes: "bliver til",
+	"Send answer": "Send svar",
+	"Add row": "Tilføj række",
+	"Change row": "Ændr række",
+	"This app asked three times. It can ask again after you reload it.":
+		"Appen har spurgt tre gange. Den kan spørge igen, når du har genindlæst den.",
+	"That could not be saved. Try again.": "Det kunne ikke gemmes. Prøv igen.",
+	"The row could not be saved.": "Rækken kunne ikke gemmes.",
+	"That table is no longer in the company.": "Tabellen er ikke i virksomheden længere.",
+	"The row changed while you were deciding. Nothing was saved.":
+		"Rækken blev ændret, mens du tog stilling. Intet blev gemt.",
+	"You may not change this table. Nothing was saved.": "Du må ikke ændre denne tabel. Intet blev gemt.",
 	App: "App",
+
+	// The company's concepts of its product, full screen (app/views/concepts.ts), and their entry in the apps drawer
+	Concepts: "Koncepter",
+	"Show the concepts": "Vis koncepterne",
+	"Hide the concepts": "Skjul koncepterne",
+	"This concept isn't in the company anymore.": "Konceptet er ikke i virksomheden længere.",
+	"The company has no concepts yet.": "Virksomheden har ingen koncepter endnu.",
+	"Open the newest concept": "Åbn det nyeste koncept",
+
 	"1 message": "1 besked",
 	"{count}+ messages": "{count}+ beskeder",
 	and: "og",
@@ -302,6 +374,10 @@ export const CONVERSATION: Record<string, string> = {
 		"Dit login har nået sin forbrugsgrænse. Arbejdet fortsætter af sig selv, når grænsen nulstilles (om cirka {time}).",
 	"Your login {account} reached its usage limit. Work will go on by itself once it has room again; it is checked at least once a day.":
 		"Dit login {account} har nået sin forbrugsgrænse. Arbejdet fortsætter af sig selv, når der er plads igen; det tjekkes mindst én gang om dagen.",
+	"Your login {account} reached its usage limit, and the work it paid for stopped. It does not go on by itself.":
+		"Dit login {account} har nået sin forbrugsgrænse, og det arbejde, det betalte for, er stoppet. Det fortsætter ikke af sig selv.",
+	"Your login reached its usage limit, and the work it paid for stopped. It does not go on by itself.":
+		"Dit login har nået sin forbrugsgrænse, og det arbejde, det betalte for, er stoppet. Det fortsætter ikke af sig selv.",
 	"Your login reached its usage limit. Work will go on by itself once it has room again; it is checked at least once a day.":
 		"Dit login har nået sin forbrugsgrænse. Arbejdet fortsætter af sig selv, når der er plads igen; det tjekkes mindst én gang om dagen.",
 	"{count} min": "{count} min.",
@@ -358,6 +434,10 @@ export const CONVERSATION: Record<string, string> = {
 	"Preview is not available for this file.": "Forhåndsvisning er ikke tilgængelig for denne fil.",
 	"Preview failed · retry": "Forhåndsvisning mislykkedes · prøv igen",
 	"Open preview": "Åbn forhåndsvisning",
+	"Image viewer": "Billedvisning",
+	"Previous image": "Forrige billede",
+	"Next image": "Næste billede",
+	"{index} of {count}": "{index} af {count}",
 	"This image could not be displayed.": "Billedet kunne ikke vises.",
 	"The preview could not be loaded. Close and reopen it to retry.":
 		"Forhåndsvisningen kunne ikke hentes. Luk og åbn den igen for at prøve igen.",
@@ -406,10 +486,18 @@ export const CONVERSATION: Record<string, string> = {
 	Skip: "Spring over",
 	"Take over": "Overtag",
 	"I'm done": "Jeg er færdig",
+	"The computer could not be given back yet. Press I'm done to try again. It goes back by itself within 5 minutes.":
+		"Computeren kunne ikke gives tilbage endnu. Tryk på Jeg er færdig for at prøve igen. Den går tilbage af sig selv inden for 5 minutter.",
 	"Paste your {label}": "Indsæt {label}",
 	"Save securely": "Gem sikkert",
 	"Encrypted in the company vault. The agent never sees the value, only that it was saved.":
 		"Krypteret i virksomhedens boks. Agenten ser aldrig værdien, kun at den blev gemt.",
+	"Encrypted in the company vault. Coding sessions in {repository} get it as {variable}; it never shows in the chat.":
+		"Krypteret i virksomhedens boks. Kodesessioner i {repository} får den som {variable}; den vises aldrig i chatten.",
+	"Saved as your own in the company vault: your coding sessions in every repository get it as {variable}. It never shows in the chat.":
+		"Gemt som din egen i virksomhedens boks: dine kodesessioner i alle repositorier får den som {variable}. Den vises aldrig i chatten.",
+	"{variable} is saved, but it could not be given to {repository}: {error} Try again.":
+		"{variable} er gemt, men den kunne ikke gives til {repository}: {error} Prøv igen.",
 	"Saving a secret to the company vault is unavailable here. Do not paste it into chat.":
 		"Du kan ikke gemme en hemmelighed i virksomhedens boks her. Indsæt den ikke i chatten.",
 	"Website: {domain}": "Websted: {domain}",
@@ -504,7 +592,6 @@ export const CONVERSATION: Record<string, string> = {
 	// Saved changes that wait for review (ui/proposal-card.ts)
 	"Archive the agent “{name}”": "Arkivér agenten “{name}”",
 	"Make the agent “{name}” active again": "Gør agenten “{name}” aktiv igen",
-	"Hire “{name}” as {role}": "Ansæt “{name}” som {role}",
 	"Hire “{name}”": "Ansæt “{name}”",
 	"Start the group chat “{name}”": "Start gruppechatten “{name}”",
 	"Pause the routine “{name}”": "Sæt rutinen “{name}” på pause",
@@ -556,19 +643,23 @@ export const CONVERSATION: Record<string, string> = {
 	"{name}'s wall": "{name}s opslagstavle",
 	"{n} waits on you": "{n} venter på dig",
 	"{n} wait on you": "{n} venter på dig",
-	"{n} working": "{n} i gang",
-	"{n} done": "{n} gjort",
 	"Waits on you": "Venter på dig",
-	"Working on": "Arbejder på",
-	"{n} more done": "{n} mere gjort",
-	"Earlier: {n}": "Tidligere: {n}",
-	"Show fewer": "Vis færre",
 	// The agent's card brings the wall back (app/views/agent-details.ts).
-	"Latest notes": "Seneste noter",
-	"1 new": "1 ny",
-	"{n} new": "{n} nye",
-	"{n} just done": "{n} lige gjort",
 	// A card's long body (ui/interaction-card.ts).
 	"Show more": "Vis mere",
 	"Show less": "Vis mindre",
+	// A member's chat with another member (app/views/member-chat.ts, app/member-chats.ts) and its row in the rail.
+	"Unread: {count}": "Ulæste: {count}",
+	"This member is no longer in the company.": "Dette medlem er ikke længere i virksomheden.",
+	"Write the first message to {name}.": "Skriv den første besked til {name}.",
+	"Message deleted": "Besked slettet",
+	Seen: "Set",
+	"Delete message": "Slet besked",
+	"Delete this message? It is deleted for both of you.": "Slet denne besked? Den slettes for jer begge.",
+	"You can no longer write to this member.": "Du kan ikke længere skrive til dette medlem.",
+	"Not sent. Check your connection and try again.": "Ikke sendt. Tjek din forbindelse, og prøv igen.",
+	"This chat is not available.": "Denne chat er ikke tilgængelig.",
+	"Could not open this chat. Check your connection.": "Chatten kunne ikke åbnes. Tjek din forbindelse.",
+	"This message is too long to send. Send it in parts.": "Beskeden er for lang til at sende. Send den i dele.",
+	"Could not delete the message. Try again.": "Beskeden kunne ikke slettes. Prøv igen.",
 };

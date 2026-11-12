@@ -9,6 +9,7 @@ import {
 	parseCloudCodingPullRequest,
 	parseCloudCodingRepository,
 	parseCloudCodingWorker,
+	parseGitHubCodingRepository,
 } from "../src/cloud-coding.ts";
 
 const id = (n: number) => `12345678-1234-4234-8234-${String(n).padStart(12, "0")}`;
@@ -185,4 +186,38 @@ describe("coding worker public state", () => {
 			expect(() => parseCloudCodingPullRequest({ ...worker().pullRequest, ...change }, repository())).toThrow();
 		},
 	);
+});
+
+describe("a repository kept in Qorpera (own code storage, slice 1)", () => {
+	const kept = { host: "qorpera", owner: "company", name: "shop", baseBranch: "main" };
+	it("names a folder: lower case only, never ending with a dot", () => {
+		expect(parseCloudCodingRepository(kept)).toEqual(kept);
+		expect(Object.isFrozen(parseCloudCodingRepository(kept))).toBe(true);
+		expect(parseCloudCodingRepository({ ...kept, owner: "web-2", name: "shop_v2.app" }).name).toBe("shop_v2.app");
+		for (const bad of [
+			{ ...kept, owner: "Company" },
+			{ ...kept, name: "Shop" },
+			{ ...kept, name: "shop." },
+			{ ...kept, owner: "-company" },
+			{ ...kept, name: ".shop" },
+			{ ...kept, host: "gitlab.com" },
+			// One repository, one default branch (review 1544 r1 F2): never another branch of the same repository.
+			{ ...kept, baseBranch: "master" },
+			{ ...kept, baseBranch: "dev" },
+		])
+			expect(() => parseCloudCodingRepository(bad)).toThrow("INVALID_CODING_REPOSITORY");
+		// GitHub's own rules are unchanged: mixed case and a trailing dot.
+		expect(parseCloudCodingRepository({ ...repository(), name: "App." }).name).toBe("App.");
+	});
+	it("never reaches a GitHub step, and has no pull request", () => {
+		expect(() => parseGitHubCodingRepository(kept)).toThrow("INVALID_CODING_REPOSITORY");
+		expect(parseGitHubCodingRepository(repository())).toEqual(repository());
+		expect(() =>
+			parseCloudCodingPullRequest(
+				{ url: "https://github.com/company/shop/pull/1", number: 1, headSha: "a".repeat(40) },
+				parseCloudCodingRepository(kept),
+			),
+		).toThrow("INVALID_CODING_PULL_REQUEST");
+		expect(parseCloudCodingWorker({ ...worker(), repository: kept, pullRequest: null }).repository).toEqual(kept);
+	});
 });

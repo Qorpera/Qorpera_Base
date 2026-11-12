@@ -264,4 +264,70 @@ describe("durable office guest effects", () => {
 		await f.effects.finish(input, f.context.signal);
 		await expect(f.effects.hookCaptureTarget(input, f.context.signal)).rejects.toThrow("OFFICE_RESOURCE_EXPIRED");
 	});
+
+	it("reads a coding value's capture target itself, and takes only this call's service and value (20260930695000)", async () => {
+		const f = await fixture();
+		const input: CompanyComputerGuestEffectInput = {
+			...f.input,
+			operation: {
+				...f.operation,
+				tool: "computer_browser",
+				arguments: {
+					kind: "browser",
+					action: "vault_capture",
+					role: "button",
+					name: "Generate token",
+					codingValue: { service: "npm", variable: "npm_token", repository: "acme/web", purpose: "Packages." },
+				},
+			},
+		};
+		const target = {
+			schema: "qorpera.coding-value-capture-target/v1",
+			service: "npm",
+			site: "www.npmjs.com",
+			valuePattern: "^npm_[A-Za-z0-9]{36}$",
+			variable: "npm_token",
+			companyId: f.scope.companyId,
+			companyComputerId: f.lease.binding.companyComputerId,
+			computerGeneration: f.lease.binding.computerGeneration,
+			receiptId: input.receipt!.receiptId,
+			capturePublicKey: "k".repeat(43),
+		};
+		await expect(f.effects.codingValueCaptureTarget(input, f.context.signal)).rejects.toThrow(
+			"OFFICE_RESOURCE_EXPIRED",
+		);
+		await f.effects.begin(input, f.context.signal);
+		f.call.mockImplementation((async (method: string) =>
+			method === "qorpera_native_office_coding_value_capture" ? target : { state: "drained" }) as never);
+		await expect(f.effects.codingValueCaptureTarget(input, f.context.signal)).resolves.toEqual(target);
+		const [method, args] = f.call.mock.calls.at(-1)!;
+		expect(method).toBe("qorpera_native_office_coding_value_capture");
+		expect(args).toMatchObject({
+			p_envelope: cloudNativeToolOperationEnvelope(f.run.identity, input.operation),
+			p_receipt_id: input.receipt!.receiptId,
+		});
+		for (const wrong of [
+			{ ...target, service: "github" },
+			{ ...target, variable: "npm_auth_token" },
+			{ ...target, receiptId: randomUUID() },
+			{ ...target, companyComputerId: randomUUID() },
+			{ ...target, schema: "qorpera.event-hook-capture-target/v1" },
+			{ ...target, site: "https://www.npmjs.com" },
+			// A pattern the office would read otherwise than the database: refused before anything is clicked.
+			{ ...target, valuePattern: "^npm_\\w{36}$" },
+			{ ...target, hookId: randomUUID() },
+			(({ valuePattern: _, ...rest }) => rest)(target),
+		]) {
+			f.call.mockResolvedValueOnce(wrong as never);
+			await expect(
+				f.effects.codingValueCaptureTarget(input, f.context.signal),
+				JSON.stringify(wrong),
+			).rejects.toThrow();
+		}
+		// A hook's read never takes a coding value's call.
+		f.call.mockResolvedValueOnce(target as never);
+		await expect(f.effects.hookCaptureTarget(input, f.context.signal)).rejects.toThrow(
+			"OFFICE_HOOK_CAPTURE_UNCONFIRMED",
+		);
+	});
 });

@@ -102,6 +102,11 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			"_good_will.sql",
 			// The run's check around a tool call, in one call (7 November 2026).
 			"_native_run_check_one_call.sql",
+			// The Co-Founder deals agents out to members (20260930702000).
+			"_cofounder_offers_agents.sql",
+			// An agent's undo of a change in the company's code, how its request stands, and a change's description
+			// (20260930720000).
+			"_code_change_record.sql",
 		].flatMap((suffix) =>
 			rowsOf(
 				read(
@@ -134,7 +139,7 @@ it("lists exactly the calls the host makes inside a job, with the long budget fo
 			.filter(([, name, scope]) => scope !== "identity" && !removed.has(name))
 			.map(([, name]) => [name, long.has(name) ? "long" : "standard"]),
 	);
-	expect(rows).toHaveLength(125);
+	expect(rows).toHaveLength(130);
 	expect([...removed]).toEqual([
 		"qorpera_native_mail_attachment",
 		"qorpera_manage_agent_todo",
@@ -199,6 +204,7 @@ it("classifies every database call the host's clients can make: inside a job, be
 		"qorpera_folder_view_open",
 		"qorpera_native_binding_proven",
 		"qorpera_native_office_browser_grant",
+		"qorpera_native_office_coding_value_capture",
 		"qorpera_native_office_hook_capture",
 		"qorpera_office_screen_browser_grant",
 		"qorpera_record_runtime_screen_event",
