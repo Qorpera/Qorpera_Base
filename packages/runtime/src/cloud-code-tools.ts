@@ -444,6 +444,9 @@ function importStop(
 			return project === undefined
 				? "the file is larger than 256 MB, the most Qorpera brings in from a file"
 				: "it is larger than 1 GB, the most Qorpera brings in";
+		// The code host's own: the restore-shaped bundle would be over the store's 2 GB (part B's look).
+		case "CODE_HOST_BUNDLE_TOO_LARGE":
+			return "it is larger than 1 GB, the most Qorpera brings in";
 		case "IMPORT_SOURCE_REFUSED":
 			return project === undefined
 				? undefined

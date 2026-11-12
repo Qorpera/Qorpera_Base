@@ -1148,6 +1148,8 @@ describe("manage_code bring_in: one answer in plain words per way it can go", ()
 
 	it.each([
 		["IMPORT_TOO_LARGE", "it is larger than 1 GB, the most Qorpera brings in"],
+		// The code host's own refusal of a restore-shaped bundle over the store's 2 GB reads as too large too.
+		["CODE_HOST_BUNDLE_TOO_LARGE", "it is larger than 1 GB, the most Qorpera brings in"],
 		[
 			"IMPORT_SOURCE_REFUSED",
 			"GitHub did not let Qorpera read github.com/Acme/Shop: check the address, and that the company's GitHub connection can see it",
