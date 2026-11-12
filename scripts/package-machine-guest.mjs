@@ -42,7 +42,8 @@ const units = [
 // Playwright check. Since 12 Nov 2026 also every machine's memory at the edge: compressed memory at boot and the guard
 // that ends one program when it runs out (machine-memory, with the two units above), and the LXD agent's protection;
 // and the desktop's look, which the session writes at every start (desktop-look), the program root starts for a press
-// on the dock (desktop-dock-open, with the two dock units above) and the folder such a press asks in.
+// on the dock (desktop-dock-open, with the two dock units above) and the folder such a press asks in; and what
+// `desktop` does with files where the desktop's account can reach (desktop-files).
 const files = [
 	{ file: "desktop-session", installedPath: "/opt/qorpera-machine/desktop-session", mode: "0555" },
 	{ file: "desktop", installedPath: "/usr/local/bin/desktop", mode: "0555" },
@@ -64,6 +65,7 @@ const files = [
 	},
 	{ file: "desktop-look", installedPath: "/opt/qorpera-machine/desktop-look", mode: "0555" },
 	{ file: "desktop-dock-open", installedPath: "/opt/qorpera-machine/desktop-dock-open", mode: "0555" },
+	{ file: "desktop-files", installedPath: "/opt/qorpera-machine/desktop-files", mode: "0555" },
 	{
 		file: "qorpera-machine-desktop.tmpfiles",
 		installedPath: "/etc/tmpfiles.d/qorpera-machine-desktop.conf",

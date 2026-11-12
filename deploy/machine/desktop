@@ -9,15 +9,14 @@ UNIT=qorpera-machine-desktop.service
 # Root's notes about the desktop: its idle clock, the language and time zone it was started with, the folders it serves,
 # a screenshot on its way. The folder is root's (qorpera-machine-desktop.service makes it so, empty at every start):
 # the desktop's account may read it and can never put, replace or point anything in it, so whatever this command reads,
-# writes or touches there is root's own. (What `open` puts in the account's Desktop folder, `--copy` and `shot` still
-# work on paths with root's rights, as they always have: a change of its own makes them safe against a planted link.)
+# writes or touches there is root's own.
 RUN=/run/qorpera-desktop
 # The account's own runtime folder (its session bus, what its programs keep): only handed to its programs as a path.
 SESSION=$RUN/session
 CHROME=/usr/lib/qorpera-chromium/chrome
 SELFTEST=/opt/qorpera-machine/desktop-selftest.html
-# Where files and folders opened on the desktop are put: the desktop user's own Desktop folder.
-DESK=/home/desktop/Desktop
+# What is done with files where the desktop's account can reach (its Desktop folder, a copy for it, a saved picture).
+FILES=/opt/qorpera-machine/desktop-files
 MIN_CPUS=2
 # A 4 GiB machine shows a little under 4 GiB of memory.
 MIN_MEMORY_KB=3500000
@@ -118,74 +117,56 @@ serve() { # folder -> prints the port
 	echo "$port"
 }
 quote() { python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$1"; }
-# Opens one target: a URL, or a file or folder put on the desktop first (a link, or a copy).
+# Opens one target: a URL, or a file or folder put on the desktop first (a link, or a copy). Everything about the
+# file is found out and done by desktop-files (as the desktop's account, or by root inside folders it holds: its
+# header says how); this command looks at no path of the target itself. It goes by the three lines desktop-files
+# answers: what kind of thing is opened, its path, and its name on the desktop.
 open_target() { # target copy(0|1)
-	local target=$1 copy=$2 path name shown place port taken
-	if [[ $target =~ ^[a-zA-Z][a-zA-Z0-9+.-]*: && ! -e $target ]]; then
-		browser "$target"
-		echo "opening $target"
-		return
-	fi
-	path=$(realpath -e -- "$target" 2>/dev/null) || fail "no such file or folder: $target"
-	[[ $path != / ]] || fail "open a file or a folder, not the whole disk" 2
-	name=$(basename -- "$path")
-	install -d -o desktop -g desktop -m 0755 "$DESK"
-	if [[ $path == "$DESK"/* ]]; then
-		# Already on the desktop (an earlier copy, say): opened where it is.
-		place=$path
-	else
-		# Nothing on the desktop is ever replaced. The same link is used again; a name that is taken (an earlier copy,
-		# which may have been changed since, or another folder of the same name) gets a number instead.
-		place=$DESK/$name
-		taken=1
-		while [[ -e $place || -L $place ]]; do
-			if (( ! copy )) && [[ -L $place && $(readlink -- "$place") == "$path" ]]; then break; fi
-			taken=$(( taken + 1 ))
-			if [[ -f $path && $name == ?*.* ]]; then place=$DESK/${name%.*}-$taken.${name##*.}; else place=$DESK/$name-$taken; fi
-		done
-		if [[ ! -e $place && ! -L $place ]]; then
-			if (( copy )); then
-				cp -a -- "$path" "$place"
-				chown -R desktop:desktop -- "$place"
-			else
-				ln -s -- "$path" "$place"
-				chown -h desktop:desktop -- "$place"
-			fi
-		fi
-		if (( copy )); then path=$place; fi
-	fi
-	# The name on the desktop may carry a number; the page's address is built from the file that is opened.
-	shown=$(basename -- "$place")
-	name=$(basename -- "$path")
-	runuser -u desktop -- test -r "$path" ||
-		fail "the desktop's user cannot read $path: open it with --copy"
-	if [[ -d $path && -f $path/index.html ]]; then
+	local target=$1 copy=$2 words=(open) found kind path shown name port
+	if (( copy )); then words+=(--copy); fi
+	found=$("$FILES" "${words[@]}" -- "$target") || exit $?
+	{ IFS= read -r kind && IFS= read -r path && IFS= read -r shown; } <<<"$found" || fail "$target could not be opened"
+	case $kind in
+	url)
+		browser "$path"
+		echo "opening $path"
+		;;
+	site)
 		port=$(serve "$path")
 		browser "http://127.0.0.1:$port/"
 		echo "opening $path at http://127.0.0.1:$port/ (on the desktop as $shown)"
-	elif [[ -d $path ]]; then
+		;;
+	folder)
 		launch /usr/bin/thunar "$path"
 		echo "opening the folder $path in the file manager (on the desktop as $shown)"
-	elif [[ ${path,,} == *.html || ${path,,} == *.htm ]]; then
+		;;
+	page)
+		# The name on the desktop may carry a number; the page's address is built from the file that is opened.
+		name=$(basename -- "$path")
 		port=$(serve "$(dirname -- "$path")")
 		browser "http://127.0.0.1:$port/$(quote "$name")"
 		echo "opening $path at http://127.0.0.1:$port/$(quote "$name") (on the desktop as $shown)"
-	else
+		;;
+	file)
 		browser "file://$(quote "$path")"
 		echo "opening $path in Chromium (on the desktop as $shown)"
-	fi
+		;;
+	*) fail "$target could not be opened" ;;
+	esac
 }
+# Saves a picture of the screen. Root takes it into its own folder, and desktop-files puts it at FILE: as root where
+# the whole way to FILE is root's alone (/company, /root), else as the desktop's account. What is printed is read
+# from root's own picture, never from FILE.
 shot() { # file
-	local file=$1 folder
+	local file=$1 taken=$RUN/shot-$$.png status=0
 	[[ $file == *.png ]] || fail "FILE must end in .png" 2
-	folder=$(realpath -m -- "$(dirname -- "$file")")
-	# Without the company folder mounted, /company is a plain folder on this machine: nothing would ever show the picture.
-	if [[ $folder == /company || $folder == /company/* ]] && ! mountpoint -q /company; then
-		fail "this machine has no company folder at /company, so company_read cannot show a picture saved there (machine_start says which machines get it)" 4
+	scrot --overwrite --silent -- "$taken"
+	"$FILES" save "$taken" -- "$file" || status=$?
+	if (( status == 0 )); then
+		echo "$file $(stat -c %s -- "$taken") bytes $(file -b -- "$taken" | sed -n 's/.*, \([0-9]* x [0-9]*\),.*/\1/p')"
 	fi
-	mkdir -p -- "$folder"
-	scrot --overwrite --silent -- "$file"
-	echo "$file $(stat -c %s -- "$file") bytes $(file -b -- "$file" | sed -n 's/.*, \([0-9]* x [0-9]*\),.*/\1/p')"
+	rm -f -- "$taken"
+	return "$status"
 }
 resize() { # WxH
 	[[ $1 =~ ^([0-9]{3,4})x([0-9]{3,4})$ ]] && (( BASH_REMATCH[1] >= 320 && BASH_REMATCH[1] <= 3840 && BASH_REMATCH[2] >= 240 && BASH_REMATCH[2] <= 2160 )) ||
@@ -429,7 +410,8 @@ selftest)
 	sleep 0.6
 	[[ $(titles | grep -F 'SELFTEST[' | head -1) == *"typed=$danish]"* ]] ||
 		fail "selftest: text with Danish capitals arrived as: $(titles | grep -F 'SELFTEST[' | head -1)"
-	picture=$(mktemp --suffix=.png)
+	# The picture goes where the whole way is root's alone (its own folder for the desktop), as one into /company does.
+	picture=$RUN/selftest-$$.png
 	"$0" shot "$picture" | grep -q " $(size | sed 's/x/ x /')$" || { rm -f -- "$picture"; fail "selftest: the screenshot is not the screen's size"; }
 	rm -f -- "$picture"
 	if (( ! was )); then "$0" stop >/dev/null; fi
