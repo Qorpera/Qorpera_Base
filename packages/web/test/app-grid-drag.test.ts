@@ -434,11 +434,18 @@ describe("groups in the drawer (Jonas, 11 Nov 2026)", () => {
 			expect(merges).toEqual([["a", "c"]]);
 			expect(drops).toEqual([]);
 			expect(gridOrder(element)).toEqual(["a", "b", "c", "d", "e"]);
-			// Straight onto c's edge and let go at once: a takes c's place.
+			// Straight onto c's edge and let go at once: a takes c's place, and glides there from under the pointer (78 px
+			// right of its old place is 22 px left of its new one), never from its old offset (review F1 on #1705).
+			const glides: Keyframe[][] = [];
+			icon("a").animate = ((frames: Keyframe[]) => {
+				glides.push(frames);
+				return { addEventListener: () => {}, finish: () => {}, cancel: () => {} } as unknown as Animation;
+			}) as never;
 			pointer("pointerdown", 25, 30, icon("a"));
 			pointer("pointermove", 103, 30);
 			pointer("pointerup", 103, 30);
 			expect(drops.at(-1)).toEqual([["b", "c", "a", "d", "e"], "a"]);
+			expect(glides.at(-1)?.[0]).toEqual({ translate: "-22px 0px" });
 			// Past the last icon, on its row: last.
 			pointer("pointerdown", 25, 30, icon("b"));
 			pointer("pointermove", 90, 90);

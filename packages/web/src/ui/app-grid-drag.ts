@@ -381,6 +381,8 @@ export class AppGridDrag {
 				moveGliding(this.#grid, lifted.item, rest[target] ?? null, this.#moving);
 			else if (target < 0 && pastEnd(this.#grid, lifted.slots, x, y) && items.at(-1) !== lifted.item)
 				moveGliding(this.#grid, lifted.item, null, this.#moving);
+			// Its place changed as it was let go: it glides from under the pointer, not from its old offset (review F1).
+			this.#follow(lifted, x, y);
 		}
 		this.#settle(lifted.item);
 		const order = gridOrder(this.#grid);
