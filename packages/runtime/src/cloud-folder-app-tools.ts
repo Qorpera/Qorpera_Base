@@ -9,6 +9,8 @@
  *   Its answer carries `look`: what a quick read of the saved entry page found (`appLookNotes`), as advice.
  *   An app made from a kit (`manifest.kit`, §3a) gets the kit's own files from this call: for an explainer the engine
  *   and the page, beside the agent's `scenes.js`, whose quick read is the `look` (cloud-app-kit-explainer.ts).
+ *   An app's own icons (`icons/<id>.svg`, @qorpera/cloud-client/app-icons), which members pick for their drawer, are
+ *   read here as the web draws them, and an app keeps at most `APP_ICONS_MAX`.
  * - `post_app` sets `posted`, which shows the app in every member's apps drawer or takes it away: delegation, which the
  *   automatic review sees (cloud-action-review.ts). It rewrites that one line of `app.toml`, every other byte as written.
  * `company_write` and `company_edit` check an `app.toml` the same way and refuse a change of `posted`
@@ -17,6 +19,7 @@
 
 import { createHash } from "node:crypto";
 import { APP_GROUPS_PATH, isAppGroupId } from "@qorpera/cloud-client/app-groups";
+import { APP_ICONS_FOLDER, APP_ICONS_MAX, appIconIdOf, parseAppIcon } from "@qorpera/cloud-client/app-icons";
 import { AGENT_COLOURS, companyPathKey } from "@qorpera/cloud-client/company-state-shared";
 import {
 	APP_CLOSED_FOLDERS,
@@ -121,6 +124,21 @@ const SAVE_APP_WRITES =
  */
 const SAVE_APP_FILES =
 	"The files to write, by their path in the app's folder. Each page starts from Qorpera's base style, which sits in a layer under your own CSS, so any rule you write wins over it: the system font, the text in a centred column at most 800 px wide (set body's margin yourself to use the whole width), and plain headings, links, tables and code. Its colours are CSS variables, and you use them in place of fixed colours: --q-bg the page, --q-text the text, --q-muted quiet text, --q-line rules and borders, --q-surface cards and panels, --q-accent the company's colour for links, marks and key figures, --q-on-accent text on the accent, --q-accent-soft a tint of it, and --q-good, --q-warn and --q-bad for states; --q-font and --q-mono are the type and --q-radius the corner. They hold the company's colours once QorperaOS/brand/brand.toml gives them, which the agent that owns the brand writes with company_write: accent, background and text, each as \"#rrggbb\", at the top for a light page and again under [dark] for a dark one. Text must read on its background (4.5 to 1) and the accent must show on it (3 to 1), or Qorpera's own colour is used instead. A page is shown light unless its head says it works in both, with <meta name=\"color-scheme\" content=\"light dark\">: then it follows the member's light or dark, so give it no fixed colours at all. The company's logo and other pictures are still copied into the app's folder, because a page cannot read QorperaOS/. A concept gets no base style.";
+
+/**
+ * What save_app's schema says of `files` after the base style: an app's own icons (Jonas, 12 November 2026: "change the
+ * icons of the interfaces and have a generate icon button too for them to create a new custom one based on it's name or
+ * contents"). A member's Generate icon in the apps drawer asks the app's maker in the chat for 3; the format is the one
+ * `parseAppIcon` reads (@qorpera/cloud-client/app-icons), to which save_app holds each icon of a call. company_read
+ * shows an SVG as text, so the agent sees one only in a machine's screenshot. On the field for the same reason as
+ * `reads`.
+ */
+const SAVE_APP_ICONS = `An app's own icons are files ${APP_ICONS_FOLDER}/<id>.svg, the id one or two words for what it shows, such as compass or trail-sign: any member may pick one for the app under Icon and colour in its menu in the apps drawer. When a member asks you for new icons for an app, draw 3 clearly different ones from its name and what its page shows, and save them in one call with manifest null and only the icons in files: an ask for icons never changes manifest.emblem. Draw each as Qorpera's own emblems are drawn: <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"> holding one bold, solid shape filled black (#000), which takes the app's colour, with its details cut out in white (#fff): white shapes, or white lines of stroke-width 2.6 to 3.4 with stroke-linecap round. Use only path, circle, rect, ellipse, line, polyline and polygon, with fill and stroke black, white or none, and nothing else: no transform, style, class, text, group or gradient. Keep to a few large parts, so it still reads at 34 px. An app keeps at most ${APP_ICONS_MAX}: to draw more, give a new one the id of an old one it replaces. company_read shows an .svg as its text, not as a picture: when machine_run is offered, look at them in a browser on a machine, small and large, as you look at a page, and draw again one that does not read. Then tell the member in one line what you drew, and that they pick one under Icon and colour in the app's menu in the apps drawer.`;
+
+/** What save_app's schema says of `manifest.emblem`, which the description no longer lists (24 names since 12 November
+ * 2026 would put it past its 4096 bytes): the schema's enum lists them. */
+const SAVE_APP_EMBLEM =
+	"The app's own picture in the apps drawer, drawn in its colour; page when the app has none. Members may pick another for their own drawer, or one of the app's own icons (files says how to draw those).";
 
 /**
  * What save_app's schema says of `kit`: how to make an explainer, a short narrated video in place of a page
@@ -278,6 +296,32 @@ function parseManifest(value: JsonValue | undefined): ManifestInput | null {
 	};
 }
 
+/** Whether a path of an app's folder is in its icons folder, in any case: such a file must be an icon. */
+const inIcons = (relative: string): boolean => relative.toLowerCase().startsWith(`${APP_ICONS_FOLDER}/`);
+
+/**
+ * Refuses a save that would leave an app more than `APP_ICONS_MAX` icons: what members pick from stays a short row, and
+ * a new icon takes an old one's id (a change of that file) or an old one is deleted first; save_app removes nothing.
+ * `held` are the files the app's icons folder holds now, by lowercase path. A save that adds none leaves the app as
+ * it is, however many it holds.
+ */
+function refuseTooManyIcons(files: readonly AppFile[], held: ReadonlyMap<string, CloudCompanyFolderEntry>): void {
+	const added = files.filter((file) => inIcons(file.path) && !held.has(file.path.toLowerCase())).length;
+	if (added === 0 || held.size + added <= APP_ICONS_MAX) return;
+	const oldest = [...held.values()]
+		.sort((a, b) => a.seq - b.seq || a.updatedAt.localeCompare(b.updatedAt) || a.path.localeCompare(b.path))
+		.slice(0, 3)
+		.map((entry) => {
+			const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
+			return appIconIdOf(name) ?? name;
+		});
+	throw new CloudToolRefusal(
+		held.size === 0
+			? `APP_ICONS_FULL: an app keeps at most ${APP_ICONS_MAX} icons, and this save gives it ${added}; save at most ${APP_ICONS_MAX}`
+			: `APP_ICONS_FULL: an app keeps at most ${APP_ICONS_MAX} icons, and this save would leave it ${held.size + added}: give each new icon the id of an old one it replaces (the oldest: ${oldest.join(", ")}), or delete old ones with company_delete first`,
+	);
+}
+
 function parseFiles(value: JsonValue | undefined): AppFile[] {
 	if (!Array.isArray(value) || value.length > FILES_PER_CALL)
 		throw new CloudToolArgumentRefusal(`files must be a list of at most ${FILES_PER_CALL} {path, text}`);
@@ -291,6 +335,16 @@ function parseFiles(value: JsonValue | undefined): AppFile[] {
 			);
 		if (relative.toLowerCase() === APP_MANIFEST)
 			throw new CloudToolArgumentRefusal("app.toml is written from manifest, not as a file");
+		// The web draws an icon from icons/<id>.svg (appIconPath): any other file there would be no icon.
+		const icon = inIcons(relative);
+		const iconName = relative.slice(APP_ICONS_FOLDER.length + 1);
+		if (
+			icon &&
+			!(relative.startsWith(`${APP_ICONS_FOLDER}/`) && iconName.endsWith(".svg") && appIconIdOf(iconName) !== null)
+		)
+			throw new CloudToolArgumentRefusal(
+				`${relative}: an app's own icon is ${APP_ICONS_FOLDER}/<id>.svg, its id lowercase letters, digits and hyphens, such as ${APP_ICONS_FOLDER}/compass.svg or ${APP_ICONS_FOLDER}/trail-sign.svg`,
+			);
 		const kind = appFileKind(relative);
 		if (!APP_TEXT_KINDS.has(kind))
 			throw new CloudToolArgumentRefusal(
@@ -300,6 +354,10 @@ function parseFiles(value: JsonValue | undefined): AppFile[] {
 			throw new CloudToolArgumentRefusal(
 				`${relative}: text must be UTF-8 of at most ${APP_FILE_MAX_BYTES / 1024} KiB`,
 			);
+		if (icon) {
+			const drawn = parseAppIcon(file.text);
+			if (!drawn.ok) throw new CloudToolArgumentRefusal(`${relative}: ${drawn.problem}`);
+		}
 		const key = relative.toLowerCase();
 		if (seen.has(key)) throw new CloudToolArgumentRefusal(`${relative} is listed twice`);
 		seen.add(key);
@@ -449,9 +507,9 @@ function groupPlaced(grouped: Grouped, units: readonly CloudCompanyFolderUnitRes
 }
 
 /** What the model is told after a commit, by each unit's outcome. `notes` is what a quick read of what this call
- * wrote found (`lookNotes`). */
+ * wrote found (`lookNotes`). A call that wrote icons alone answers where the member picks one. */
 function savedText(
-	request: { name: string; operationKey: string },
+	request: { name: string; operationKey: string; files: readonly AppFile[] },
 	receiptId: string,
 	units: readonly CloudCompanyFolderUnitResult[],
 	created: boolean,
@@ -462,6 +520,7 @@ function savedText(
 	const state = saved === units.length ? "applied" : saved === 0 ? "not_applied" : "partly_applied";
 	const conflict = units.some((unit) => unit.outcome === "conflict");
 	const look = state === "applied" ? notes : [];
+	const drawn = request.files.length > 0 && request.files.every((file) => inIcons(file.path));
 	return cloudToolJsonText({
 		schema: "qorpera.app-save/v1",
 		state,
@@ -480,11 +539,13 @@ function savedText(
 		...(look.length > 0 ? { look } : {}),
 		...(grouped ? { group: grouped.group, groupPlaced: groupPlaced(grouped, units) } : {}),
 		next:
-			state === "applied"
-				? `Saved. ${look.length > 0 ? "First fix what look names, unless it does not fit this page. Then show" : "Show"} it to the member with a link in your message: [${request.name}](app:${request.name}). post_app shows it to every member in their apps.`
-				: conflict
-					? "Some files changed while this call saved them: read the app's files again, then call again with a new operationKey."
-					: "Some files were not saved (their reasons): fix them and call again with a new operationKey.",
+			state === "applied" && drawn
+				? "Saved. Tell the member in one line what you drew, and that they pick one under Icon and colour in the app's menu in the apps drawer."
+				: state === "applied"
+					? `Saved. ${look.length > 0 ? "First fix what look names, unless it does not fit this page. Then show" : "Show"} it to the member with a link in your message: [${request.name}](app:${request.name}). post_app shows it to every member in their apps.`
+					: conflict
+						? "Some files changed while this call saved them: read the app's files again, then call again with a new operationKey."
+						: "Some files were not saved (their reasons): fix them and call again with a new operationKey.",
 	});
 }
 
@@ -573,7 +634,7 @@ export function cloudAppTools(options: {
 		name: "save_app" satisfies CloudRuntimeToolOperation,
 		source: "company_file",
 		maxArgumentBytes: MAX_TOOL_ARGUMENT_BYTES,
-		description: `Make or change an interface app: a small web page in apps/<name>/ of the company folder that shows members a part of the company as it stands now (the state of an area, results, a prototype, a dashboard), opened as a page of its own. Give the app's name (its folder: lowercase, digits and hyphens), a manifest (title, and optionally about, emblem: ${INTERFACE_EMBLEMS.join(", ")}, colour: ${AGENT_COLOURS.join(", ")}, entry: the page that opens, default ${APP_DEFAULT_ENTRY}, reads: the live sources the page may read, of ${APP_READS.join(", ")}, writes: what it may ask a member to change, kit: explainer for a short narrated video) to make it or change its manifest, or null to keep it, and the files to write (at most ${FILES_PER_CALL} a call: .html, .css, .js, .json, .svg, .md, .csv, .txt, each at most ${APP_FILE_MAX_BYTES / 1024} KiB). Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) you write into the app's folder from a company machine may be up to ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each and ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all; pages and code up to ${APP_MAX_BYTES / 1024 / 1024} MiB in all. The app is one page: only the entry opens, so links to its other .html files do not work; put every view in the entry, as tabs or sections. The page gets its pictures and videos only where it names them when it opens (<img src>, <video src>, a poster, or url() in its styles): a script cannot load a picture or video later, so put every picture it may show in the page (hidden ones too) and switch them with styles or a script; a script reads text files with qorpera.read(path). The entry may use the app's other files by relative paths (<link rel="stylesheet" href="style.css">, <script src="app.js">, <img src="chart.svg">); the page has no network, so put everything it needs in the app. A new app needs a manifest and its entry. It applies at once. Then link it in your message as [Title](app:<name>). Set concept = true for a concept of the company's product, and cover = a picture of it, so it shows in the Concepts viewer. Keep operationKey for the same change, and use a new one for any other change.${SAVE_APP_DESIGN}`,
+		description: `Make or change an interface app: a small web page in apps/<name>/ of the company folder that shows members a part of the company as it stands now (the state of an area, results, a prototype, a dashboard), opened as a page of its own. Give the app's name (its folder: lowercase, digits and hyphens), a manifest (title, and optionally about, emblem: one of the ${INTERFACE_EMBLEMS.length} pictures its schema lists, colour: ${AGENT_COLOURS.join(", ")}, entry: the page that opens, default ${APP_DEFAULT_ENTRY}, reads: the live sources the page may read, of ${APP_READS.join(", ")}, writes: what it may ask a member to change, kit: explainer for a short narrated video) to make it or change its manifest, or null to keep it, and the files to write (at most ${FILES_PER_CALL} a call: .html, .css, .js, .json, .svg, .md, .csv, .txt, each at most ${APP_FILE_MAX_BYTES / 1024} KiB). Pictures (.png, .jpg, .webp, .gif) and videos (.mp4, .webm) you write into the app's folder from a company machine may be up to ${APP_VIDEO_FILE_MAX_BYTES / 1024 / 1024} MiB each and ${APP_VIDEOS_MAX_BYTES / 1024 / 1024} MiB in all; pages and code up to ${APP_MAX_BYTES / 1024 / 1024} MiB in all. The app is one page: only the entry opens, so links to its other .html files do not work; put every view in the entry, as tabs or sections. The page gets its pictures and videos only where it names them when it opens (<img src>, <video src>, a poster, or url() in its styles): a script cannot load a picture or video later, so put every picture it may show in the page (hidden ones too) and switch them with styles or a script; a script reads text files with qorpera.read(path). The entry may use the app's other files by relative paths (<link rel="stylesheet" href="style.css">, <script src="app.js">, <img src="chart.svg">); the page has no network, so put everything it needs in the app. A new app needs a manifest and its entry. It applies at once. Then link it in your message as [Title](app:<name>). Set concept = true for a concept of the company's product, and cover = a picture of it, so it shows in the Concepts viewer. Keep operationKey for the same change, and use a new one for any other change.${SAVE_APP_DESIGN}`,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -588,7 +649,11 @@ export function cloudAppTools(options: {
 					properties: {
 						title: { type: "string", maxLength: 60 },
 						about: { type: ["string", "null"], maxLength: 200 },
-						emblem: { type: ["string", "null"], enum: [...INTERFACE_EMBLEMS, null] },
+						emblem: {
+							type: ["string", "null"],
+							enum: [...INTERFACE_EMBLEMS, null],
+							description: SAVE_APP_EMBLEM,
+						},
 						colour: { type: ["string", "null"], enum: [...AGENT_COLOURS, null] },
 						entry: { type: ["string", "null"], maxLength: 1024 },
 						reads: {
@@ -611,7 +676,7 @@ export function cloudAppTools(options: {
 				files: {
 					type: "array",
 					maxItems: FILES_PER_CALL,
-					description: SAVE_APP_FILES,
+					description: `${SAVE_APP_FILES} ${SAVE_APP_ICONS}`,
 					items: {
 						type: "object",
 						additionalProperties: false,
@@ -719,6 +784,7 @@ export function cloudAppTools(options: {
 					throw new CloudToolRefusal(
 						`APP_ENTRY_MISSING: a new app needs its entry, ${manifest.entry}, among files`,
 					);
+				refuseTooManyIcons(files, new Map());
 				const total = files.reduce((sum, file) => sum + Buffer.byteLength(file.text), 0);
 				if (files.length + 1 > APP_MAX_FILES || total > APP_MAX_BYTES)
 					throw new CloudToolRefusal(
@@ -864,6 +930,7 @@ export function cloudAppTools(options: {
 					if (found?.kind !== "file" || found.file.fileSha256 !== sha256hex(file.text)) files = [...files, file];
 				}
 			}
+			refuseTooManyIcons(files, new Map([...byKey].filter(([path, item]) => item.kind === "file" && inIcons(path))));
 			const sizes = new Map<string, number>();
 			for (const item of listed.entries)
 				if (item.kind === "file" && APP_FILE_TYPES[appFileKind(item.path)])
