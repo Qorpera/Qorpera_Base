@@ -10,6 +10,7 @@ import { button, confirmDialog, fmtTime, h, icon, notice, replace } from "../../
 import { t } from "../../ui/preferences.ts";
 import type { CompanyController } from "../company.ts";
 import { forgetPictureUrl, pictureUrl } from "../folder-images.ts";
+import { siteEmblem } from "./settings-sites.ts";
 
 /**
  * The What's new page (`#/c/<id>/whats-new`, a platform page in the apps drawer; own code storage step 4): for each of
@@ -69,6 +70,14 @@ export function whatsNewEntry(company: CompanyController, releases: CodeReleases
 	for (const { ready: point } of releases.sites)
 		if (point && !silent.has(point.token)) ready += point.changes.length + point.quiet;
 	return { ready };
+}
+
+/** The version live of each project's site, by the site's name in its link: the Sites page names it on the site's
+ * row. */
+export function liveVersions(releases: CodeReleases): Readonly<Record<string, number>> {
+	return Object.fromEntries(
+		releases.sites.flatMap((item) => (item.site && item.live ? [[item.site.slug, item.live.version]] : [])),
+	);
 }
 
 const keyOf = (site: CodeReleaseSite) => `${site.owner}/${site.name}`;
@@ -442,39 +451,40 @@ export class WhatsNewView {
 			: t("Version {version} · since {time} · {name} said go", { version, time, name });
 	}
 
-	/** What is live: the Sites page's card, with the site's link, where its password is, and Go back. */
+	/** What is live, as a row of the Sites page (styles/sites.css): the Sites globe, the version and who said go, where
+	 * the password is, and the site's link and Go back as pill buttons. */
 	#live(site: CodeReleaseSite, can: boolean, busy: boolean): HTMLElement {
 		const live = site.live;
 		const shown = live && site.site ? site.site : undefined;
 		const key = keyOf(site);
 		let back: HTMLButtonElement | null = null;
 		if (live && site.back && can) {
-			back = button(
+			back = h(
+				"button",
+				{ type: "button", class: "site-button", disabled: busy, onclick: () => void this.#goBack(site) },
 				this.#working?.site === key && this.#working.action === "back"
 					? t("Working…")
 					: t("Go back to version {version}", { version: String(site.back.version) }),
-				() => void this.#goBack(site),
-				{ disabled: busy },
 			);
 			back.dataset.focusKey = `back:${key}`;
 		}
 		return h(
 			"div",
-			{ class: "connection-list whats-new-live" },
+			{ class: "whats-new-live" },
 			h(
 				"article",
-				{ class: "service-card hook-card" },
-				h("span", { class: "hook-icon" }, icon("globe")),
+				{ class: `site-row is-whats-new${live ? "" : " is-waiting"}` },
+				siteEmblem(),
 				h(
 					"div",
-					{ class: "settings-copy" },
-					h("strong", null, live ? t("Live now") : t("Not live yet")),
-					live ? h("small", { class: "hook-state" }, this.#liveLine(live)) : null,
+					{ class: "site-head" },
+					h("strong", { class: "site-name" }, live ? t("Live now") : t("Not live yet")),
+					live ? h("span", { class: "site-meta" }, this.#liveLine(live)) : null,
 					// The password is read where it is kept: only owners and admins can see it there.
 					shown && can
 						? h(
-								"small",
-								null,
+								"span",
+								{ class: "site-meta" },
 								h(
 									"a",
 									{ href: `#/c/${this.#company.profile.profileId}/sites` },
@@ -487,12 +497,13 @@ export class WhatsNewView {
 				shown || back
 					? h(
 							"div",
-							{ class: "connection-actions" },
+							{ class: "site-actions" },
 							shown
 								? h(
 										"a",
-										{ class: "btn", href: shown.url, target: "_blank", rel: "noopener noreferrer" },
+										{ class: "site-button", href: shown.url, target: "_blank", rel: "noopener noreferrer" },
 										t("Open the site"),
+										icon("external"),
 									)
 								: null,
 							back,

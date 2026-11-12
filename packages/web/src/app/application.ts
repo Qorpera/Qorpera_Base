@@ -23,7 +23,7 @@ import { createWebSessionRunControl } from "../cloud/session-run-control.ts";
 import { createWebSites } from "../cloud/sites.ts";
 import { loadSkillSuggestions, SkillLists } from "../cloud/skills.ts";
 import type { HostedProfile } from "../cloud/types.ts";
-import { nativeColorOf } from "../ui/avatar.ts";
+import { agentFigure, nativeColorOf } from "../ui/avatar.ts";
 import { watchBrowserBar } from "../ui/browser-bar.ts";
 import { companyLogos, setCompanyLogos } from "../ui/company-logos.ts";
 import { button, h, notice, replace } from "../ui/dom.ts";
@@ -88,7 +88,7 @@ import { SitesView } from "./views/settings-sites.ts";
 import { renderRail, renderTopbar, type ShellContext } from "./views/shell.ts";
 import { renderSignIn } from "./views/signin.ts";
 import { renderTeam, type TeamFeedback } from "./views/team.ts";
-import { WhatsNewView, whatsNewEntry } from "./views/whats-new.ts";
+import { liveVersions, WhatsNewView, whatsNewEntry } from "./views/whats-new.ts";
 import type { WorkspaceActions } from "./workspace-actions.ts";
 
 /* Entry point. One cloud client, one auth controller, one company controller
@@ -1498,11 +1498,15 @@ export function mountApplication(
 			const readReleases = () =>
 				void releases.list(controller.signal).then(
 					(read) => {
-						if (!controller.signal.aborted) controller.store.set({ whatsNew: whatsNewEntry(controller, read) });
+						if (!controller.signal.aborted)
+							controller.store.set({
+								whatsNew: whatsNewEntry(controller, read),
+								siteVersions: liveVersions(read),
+							});
 					},
 					(error: unknown) => {
 						if (!controller.signal.aborted && error instanceof CloudRpcError && (error.missing || error.denied))
-							controller.store.set({ whatsNew: undefined });
+							controller.store.set({ whatsNew: undefined, siteVersions: undefined });
 					},
 				);
 			readReleases();
@@ -2090,33 +2094,26 @@ export function mountApplication(
 							},
 						},
 						listed: (list) => controller.store.set({ siteCount: list.length }),
-					});
-					sitesPage = {
-						company: controller,
-						view,
-						el: h(
-							"section",
-							{ class: "page sites-page" },
-							h(
-								"header",
-								{ class: "sites-page-heading" },
-								interfaceEmblem("globe", 40),
-								h(
-									"div",
-									null,
-									h("h1", null, t("Sites")),
-									h(
-										"p",
-										null,
-										t(
-											"The company's websites. Each has its own link and password; share both with the people who should see it.",
-										),
-									),
-								),
+						// A site made from a project's code names the version What's new has live, and links there.
+						releases: {
+							href: `#/c/${controller.profile.profileId}/whats-new`,
+							version: (site) => controller.store.get().siteVersions?.[site.slug],
+						},
+						// No site yet: the Co-Founder stands on the page (its crown while the roster is still on its way).
+						mascot: () =>
+							agentFigure(
+								controller.staffById(controller.cofounderId()) ?? {
+									id: "",
+									displayName: "Co-Founder",
+									appearance: { color: "", shape: "" },
+									templateId: "co-founder",
+								},
+								"Co-Founder",
+								{ size: 96, className: "sites-mascot" },
 							),
-							view.el,
-						),
-					};
+					});
+					// The page draws its own title and line (views/settings-sites.ts).
+					sitesPage = { company: controller, view, el: h("section", { class: "page sites-page" }, view.el) };
 				}
 				sitesPage.view.update();
 				if (sitesPage.el.parentElement !== main) replace(main, sitesPage.el);
@@ -2132,7 +2129,11 @@ export function mountApplication(
 						controller.signal,
 						{
 							image: (path, signal) => (cardImage ? cardImage(path, signal) : Promise.resolve(null)),
-							listed: (read) => controller.store.set({ whatsNew: whatsNewEntry(controller, read) }),
+							listed: (read) =>
+								controller.store.set({
+									whatsNew: whatsNewEntry(controller, read),
+									siteVersions: liveVersions(read),
+								}),
 						},
 					);
 					whatsNewPage = {
