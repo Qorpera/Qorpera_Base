@@ -49,7 +49,10 @@ export const CODING_GUEST = /* @__PURE__ */ Object.freeze({
  * tool folders, least recently used first, while they hold more than `limitBytes`, and tmpfiles removes what was not
  * used for `age`. The executor points each tool at its folder in every session command's and every checks command's
  * environment (CODING_PACKAGE_CACHE_ENVIRONMENT), over a company value of the same name. Download caches only: no build
- * cache, and not Go, cargo or mise, whose caches hold configuration or programs. */
+ * cache, and not Go, cargo or mise, whose caches hold configuration or programs. Not yarn 1 either: it makes its cache's
+ * folders with its own umask applied (0755), so another session could read them but not add to them (EACCES in the
+ * image's proof, 12 Nov 2026). pnpm 10 reads `npm_config_store_dir`; pnpm 12 does not, and keeps its store in the
+ * user's home. */
 export const CODING_PACKAGE_CACHES = /* @__PURE__ */ Object.freeze({
 	root: "/var/cache/qorpera-packages",
 	group: "qorpera-coding",
@@ -59,7 +62,6 @@ export const CODING_PACKAGE_CACHES = /* @__PURE__ */ Object.freeze({
 	tools: /* @__PURE__ */ Object.freeze([
 		/* @__PURE__ */ Object.freeze({ folder: "npm", variable: "npm_config_cache" }),
 		/* @__PURE__ */ Object.freeze({ folder: "pnpm", variable: "npm_config_store_dir" }),
-		/* @__PURE__ */ Object.freeze({ folder: "yarn", variable: "YARN_CACHE_FOLDER" }),
 		/* @__PURE__ */ Object.freeze({ folder: "pip", variable: "PIP_CACHE_DIR" }),
 		/* @__PURE__ */ Object.freeze({ folder: "uv", variable: "UV_CACHE_DIR" }),
 		/* @__PURE__ */ Object.freeze({ folder: "ms-playwright", variable: "PLAYWRIGHT_BROWSERS_PATH" }),

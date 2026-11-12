@@ -5638,7 +5638,6 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		expect(CODING_PACKAGE_CACHE_ENVIRONMENT).toEqual({
 			npm_config_cache: "/var/cache/qorpera-packages/npm",
 			npm_config_store_dir: "/var/cache/qorpera-packages/pnpm",
-			YARN_CACHE_FOLDER: "/var/cache/qorpera-packages/yarn",
 			PIP_CACHE_DIR: "/var/cache/qorpera-packages/pip",
 			UV_CACHE_DIR: "/var/cache/qorpera-packages/uv",
 			PLAYWRIGHT_BROWSERS_PATH: "/var/cache/qorpera-packages/ms-playwright",

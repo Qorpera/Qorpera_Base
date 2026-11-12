@@ -932,7 +932,6 @@ describe("the machine's package caches (own code storage, step 6)", () => {
 			tools: [
 				{ folder: "npm", variable: "npm_config_cache" },
 				{ folder: "pnpm", variable: "npm_config_store_dir" },
-				{ folder: "yarn", variable: "YARN_CACHE_FOLDER" },
 				{ folder: "pip", variable: "PIP_CACHE_DIR" },
 				{ folder: "uv", variable: "UV_CACHE_DIR" },
 				{ folder: "ms-playwright", variable: "PLAYWRIGHT_BROWSERS_PATH" },
@@ -943,7 +942,7 @@ describe("the machine's package caches (own code storage, step 6)", () => {
 			[
 				"# The machine's package caches, which its coding sessions and Qorpera's checks share. Written by the coding guest",
 				"# agent at the first mount of each boot (CODING_PACKAGE_CACHES).",
-				...["", "/npm", "/pnpm", "/yarn", "/pip", "/uv", "/ms-playwright"].flatMap((folder) => [
+				...["", "/npm", "/pnpm", "/pip", "/uv", "/ms-playwright"].flatMap((folder) => [
 					`d /var/cache/qorpera-packages${folder} 2775 root qorpera-coding 30d`,
 					`a /var/cache/qorpera-packages${folder} - - - - ${acl}`,
 				]),
@@ -1038,22 +1037,21 @@ describe("the package caches' trim", () => {
 		await at("pip", past, ahead(2));
 		await at("pnpm", past, past);
 		await at("npm", past, past);
-		await planted(join(root, "yarn", "v6", "tiny"), 1024);
-		const yarn = join(root, "yarn", "v6", "tiny");
-		await utimes(yarn, ahead(3), ahead(3));
+		const browser = await planted(join(root, "ms-playwright", "ffmpeg-1013", "tiny"), 1024);
+		await utimes(browser, ahead(3), ahead(3));
 		expect(await trimCodingPackageCaches(root, 2.5 * MIB)).toEqual(["pnpm", "npm"]);
 		for (const folder of ["pnpm", "npm"]) {
 			expect((await lstat(join(root, folder))).isDirectory()).toBe(true);
 			expect(await readdir(join(root, folder))).toEqual([]);
 		}
 		for (const folder of ["uv", "pip"]) expect(await readdir(join(root, folder, "store"))).toEqual(["entry"]);
-		expect(await readdir(join(root, "yarn", "v6"))).toEqual(["tiny"]);
+		expect(await readdir(join(root, "ms-playwright", "ffmpeg-1013"))).toEqual(["tiny"]);
 		// At the limit, nothing goes; a byte under it, the least recently used that holds anything.
 		let total = 0;
 		for (const folder of await readdir(root)) total += await held(join(root, folder));
 		expect(await trimCodingPackageCaches(root, total)).toEqual([]);
 		expect(await trimCodingPackageCaches(root, total - 1)).toEqual(["uv"]);
-		expect(await trimCodingPackageCaches(root, 0)).toEqual(["pip", "yarn"]);
+		expect(await trimCodingPackageCaches(root, 0)).toEqual(["pip", "ms-playwright"]);
 	});
 
 	it("counts the blocks a folder holds: a file linked twice once, a sparse file as what it holds", async () => {

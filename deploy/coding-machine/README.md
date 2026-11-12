@@ -65,12 +65,14 @@ The image expects this per session; `test/prove-in-coding-machine.sh` does exact
    proof makes its machine with it).
 8. **The package caches** (own code storage, step 6). The guest agent's first mount of each boot, before the user,
    writes `/etc/tmpfiles.d/qorpera-packages.conf` and runs `systemd-tmpfiles --create` on it: `/var/cache/qorpera-packages`
-   and a folder each for npm, pnpm, yarn, pip, uv and Playwright's browsers, root's in `qorpera-coding`, 2775, with the
+   and a folder each for npm, pnpm, pip, uv and Playwright's browsers, root's in `qorpera-coding`, 2775, with the
    group's rwx as access and default ACL entries (tmpfiles sets them; the image has no `setfacl`), and tmpfiles' age of
    30 days, which the image's `systemd-tmpfiles-clean.timer` applies. Then, while the tool folders hold more than
    8 GiB, it empties the least recently used. The executor gives every session command and every command of a checks
-   run `npm_config_cache`, `npm_config_store_dir`, `YARN_CACHE_FOLDER`, `PIP_CACHE_DIR`, `UV_CACHE_DIR` and
-   `PLAYWRIGHT_BROWSERS_PATH`, so the machine's sessions and its checks share what they download.
+   run `npm_config_cache`, `npm_config_store_dir`, `PIP_CACHE_DIR`, `UV_CACHE_DIR` and `PLAYWRIGHT_BROWSERS_PATH`, so
+   the machine's sessions and its checks share what they download. Not yarn 1, which makes its cache's folders with
+   its own umask applied, so the next session cannot add to them; and pnpm 12 does not read `npm_config_store_dir`
+   (pnpm 10 does).
 
 ## Build it on a node
 

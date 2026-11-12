@@ -18,7 +18,7 @@
 #   repository's storage in the session's /company;
 # - the machine's package caches (own code storage, step 6): the guest agent itself (QORPERA_PROOF_GUEST, its source)
 #   makes them and two more sessions' users with its mount; the second user installs what the first did with npm, pnpm,
-#   yarn, pip, uv and Playwright, from the cache, and adds to it; the trim empties the least recently used tool folder;
+#   pip, uv and Playwright, from the cache, and adds to it; the trim empties the least recently used tool folder;
 #   tmpfiles' age removes what was not used.
 # Prints PASS lines (and TIME lines: each tool's first and second install), then ALL PASSED.
 set -euo pipefail
@@ -416,10 +416,11 @@ pass "the collect refuses a folder that is not there"
 # user. A stand-in folder program ends as the folder program ends when the node closed the view, so each mount answers
 # closed and no user manager starts (none is needed here). Each user's commands run as the guest agent starts one: a
 # unit in the session's slice, as its uid and gid, in its network namespace (the mount made it), with exactly the
-# environment the executor gives a command (the session's names and the six package caches, read from the source),
-# here also the test machine's proxy, and `env -i` where the agent has its relay. pnpm, yarn and Playwright are pinned
+# environment the executor gives a command (the session's names and the five package caches, read from the source),
+# here also the test machine's proxy, and `env -i` where the agent has its relay. pnpm and Playwright are pinned
 # versions root installs outside the caches; the lockfiles come from root's own throwaway caches, so the first user
-# starts cold.
+# starts cold. Each project is a few dozen packages: express and typescript for npm and pnpm, requests and rich for pip
+# and uv; Playwright's is the headless Chromium.
 PACKAGES=/var/cache/qorpera-packages
 CONF=/etc/tmpfiles.d/qorpera-packages.conf
 [[ ! -e $PACKAGES && ! -e $CONF && ! -e /opt/qorpera-folder ]] ||
@@ -464,7 +465,7 @@ MOUNTED=$(guest_mount "$FIRST_W" "$FIRST_UID") || fail "the guest agent's mount 
 node --input-type=module -e "import { codingPackageCachesTmpfiles } from '$AGENT'; process.stdout.write(codingPackageCachesTmpfiles('$PACKAGES'));" \
 	>"$GUEST/expected.conf"
 cmp -s "$CONF" "$GUEST/expected.conf" || fail "$CONF is not the agent's: $(cat "$CONF")"
-for folder in "$PACKAGES" "$PACKAGES"/{npm,pnpm,yarn,pip,uv,ms-playwright}; do
+for folder in "$PACKAGES" "$PACKAGES"/{npm,pnpm,pip,uv,ms-playwright}; do
 	[[ $(stat -c '%u %g %a' "$folder") == "0 $CODING_GID 2775" ]] || fail "$folder is $(stat -c '%u %g %a' "$folder")"
 	for kind in access default; do
 		ACL=$(acl "$folder" "$kind")
@@ -482,13 +483,13 @@ MOUNTED=$(guest_mount "$SECOND_W" "$SECOND_UID") || fail "the guest agent's moun
 [[ $(stat -c %i "$CONF") == "$CONF_INODE" ]] || fail "the second mount of the boot wrote $CONF again"
 systemctl reset-failed "qorpera-folder-$(compact "$FIRST_W").service" "qorpera-folder-$(compact "$SECOND_W").service" ||
 	true
-pass "the guest agent's first mount of the boot made $PACKAGES and its six tool folders (root, qorpera-coding, 2775, the group's rwx as access and default ACL) from its tmpfiles file, then the user; the second made neither again; systemd-tmpfiles-clean.timer is active"
+pass "the guest agent's first mount of the boot made $PACKAGES and its five tool folders (root, qorpera-coding, 2775, the group's rwx as access and default ACL) from its tmpfiles file, then the user; the second made neither again; systemd-tmpfiles-clean.timer is active"
 
 # One command of a session, as the guest agent starts it (above).
 NETNS=1
 mapfile -t CACHES < <(node --input-type=module -e \
 	"import { CODING_PACKAGE_CACHE_ENVIRONMENT as e } from '$GUEST/contracts/src/cloud-coding-guest.ts'; for (const [k, v] of Object.entries(e)) console.log(k + '=' + v);")
-[[ ${#CACHES[@]} == 6 && ${CACHES[0]} == "npm_config_cache=$PACKAGES/npm" ]] ||
+[[ ${#CACHES[@]} == 5 && ${CACHES[0]} == "npm_config_cache=$PACKAGES/npm" ]] ||
 	fail "the package caches' variables read as ${CACHES[*]}"
 RESOLV=()
 if [[ -e /run/systemd/resolve/resolv.conf ]]; then
@@ -529,30 +530,26 @@ pass "a file root made in the cache through sudo, another session wrote to and r
 KIT=/opt/qorpera-proof-kit
 LOCKS=$(mktemp -d -p /root)
 ROOT_ENV=(env HTTPS_PROXY="$PROXY" HTTP_PROXY="$PROXY" npm_config_https_proxy="$PROXY" npm_config_proxy="$PROXY")
-for spec in pnpm:pnpm@10.34.9 pnpm12:pnpm@12.18.0 yarn:yarn@1.22.22 playwright:playwright-core@1.65.0; do
+for spec in pnpm:pnpm@10.34.9 pnpm12:pnpm@12.18.0 playwright:playwright-core@1.65.0; do
 	"${ROOT_ENV[@]}" npm install --prefix "$KIT/${spec%%:*}" --cache "$LOCKS/.npm" --ignore-scripts --no-audit --no-fund \
 		--loglevel=error "${spec#*:}" >/dev/null || fail "root could not install ${spec#*:}"
 done
 PNPM=$KIT/pnpm/node_modules/.bin/pnpm
 PNPM12=$KIT/pnpm12/node_modules/.bin/pnpm
-YARN=$KIT/yarn/node_modules/.bin/yarn
 PLAYWRIGHT=$KIT/playwright/node_modules/.bin/playwright-core
-YARN_FLAGS="--ignore-scripts --non-interactive --https-proxy $PROXY --proxy $PROXY"
-for tool in npm pnpm pnpm12 yarn; do
+for tool in npm pnpm pnpm12; do
 	install -d "$LOCKS/$tool"
-	printf '{"name":"proof","version":"1.0.0","private":true,"dependencies":{"chalk":"4.1.2"}}\n' >"$LOCKS/$tool/package.json"
+	printf '{"name":"proof","version":"1.0.0","private":true,"dependencies":{"express":"4.21.2","typescript":"5.8.3"}}\n' \
+		>"$LOCKS/$tool/package.json"
 done
 (cd "$LOCKS/npm" && "${ROOT_ENV[@]}" npm install --package-lock-only --ignore-scripts --cache "$LOCKS/.npm" --no-audit \
 	--no-fund --loglevel=error >/dev/null) || fail "root could not lock the npm project"
 (cd "$LOCKS/pnpm" && "${ROOT_ENV[@]}" "$PNPM" install --lockfile-only --ignore-scripts --store-dir "$LOCKS/.pnpm" \
 	>/dev/null) || fail "root could not lock the pnpm project"
-# shellcheck disable=SC2086
-(cd "$LOCKS/yarn" && "${ROOT_ENV[@]}" "$YARN" install $YARN_FLAGS --cache-folder "$LOCKS/.yarn" >/dev/null &&
-	rm -rf node_modules) || fail "root could not lock the yarn project"
-[[ -s $LOCKS/npm/package-lock.json && -s $LOCKS/pnpm/pnpm-lock.yaml && -s $LOCKS/yarn/yarn.lock ]] ||
+[[ -s $LOCKS/npm/package-lock.json && -s $LOCKS/pnpm/pnpm-lock.yaml ]] ||
 	fail "a lockfile is missing: $(ls -A "$LOCKS"/*)"
 for uid in "$FIRST_UID" "$SECOND_UID"; do
-	for tool in npm pnpm pnpm12 yarn; do cp -r "$LOCKS/$tool" "/home/qorpera-$uid/proof-$tool"; done
+	for tool in npm pnpm pnpm12; do cp -r "$LOCKS/$tool" "/home/qorpera-$uid/proof-$tool"; done
 	install -d "/home/qorpera-$uid/proof-pip" "/home/qorpera-$uid/proof-uv"
 	chown -R "$uid:$uid" "/home/qorpera-$uid"/proof-*
 done
@@ -601,40 +598,29 @@ prove_pnpm() {
 		"cd ~/proof-pnpm && $PNPM add --ignore-scripts is-number@7.0.0" || return 1
 	NOTE="pnpm install --offline worked from the store alone"
 }
-prove_yarn() {
-	local install="cd ~/proof-yarn && $YARN install --frozen-lockfile $YARN_FLAGS"
-	first "yarn install" "$install" && kept yarn .cache/yarn || return 1
-	[[ -d $PACKAGES/yarn/v6 ]] || { echo "FAIL: yarn's cache is not $PACKAGES/yarn" >&2 && return 1; }
-	second "yarn install" "$install" && SECOND_TOOK=$TOOK || return 1
-	second "yarn install --offline" \
-		"cd ~/proof-yarn && rm -rf node_modules && $YARN install --frozen-lockfile --offline $YARN_FLAGS" || return 1
-	second "yarn add of is-number, which the first did not have" \
-		"cd ~/proof-yarn && $YARN add is-number@7.0.0 $YARN_FLAGS" || return 1
-	NOTE="yarn install --offline worked from the cache alone"
-}
 prove_pip() {
-	local install='cd ~/proof-pip && venv/bin/pip install six==1.17.0'
+	local install='cd ~/proof-pip && venv/bin/pip install requests==2.32.3 rich==14.0.0'
 	step "a venv as the first user" "$FIRST_UID" "$FIRST_W" 'cd ~/proof-pip && python3 -m venv venv' || return 1
 	first "pip install" "$install" && kept pip .cache/pip || return 1
 	step "a venv as the second user" "$SECOND_UID" "$SECOND_W" 'cd ~/proof-pip && python3 -m venv venv' || return 1
 	second "pip install" "$install" && SECOND_TOOK=$TOOK || return 1
-	if grep -q "Using cached six-1.17.0" <<<"$OUT"; then
+	if grep -q "Using cached requests-2.32.3" <<<"$OUT"; then
 		NOTE="the second user's pip took the first's download (Using cached)"
 	else
-		NOTE="the second user's pip downloaded six again"
+		NOTE="the second user's pip downloaded requests again"
 	fi
-	second "pip install of idna, which the first did not have" 'cd ~/proof-pip && venv/bin/pip install idna==3.20' ||
+	second "pip install of six, which the first did not have" 'cd ~/proof-pip && venv/bin/pip install six==1.17.0' ||
 		return 1
 }
 prove_uv() {
-	local install='cd ~/proof-uv && uv pip install six==1.17.0'
+	local install='cd ~/proof-uv && uv pip install requests==2.32.3 rich==14.0.0'
 	step "a venv as the first user" "$FIRST_UID" "$FIRST_W" 'cd ~/proof-uv && uv venv -q' || return 1
 	first "uv pip install" "$install" && kept uv .cache/uv || return 1
 	step "a venv as the second user" "$SECOND_UID" "$SECOND_W" 'cd ~/proof-uv && uv venv -q' || return 1
 	second "uv pip install" "$install" && SECOND_TOOK=$TOOK || return 1
 	second "uv pip install --offline" \
-		'cd ~/proof-uv && rm -rf .venv && uv venv -q && uv pip install --offline six==1.17.0' || return 1
-	second "uv pip install of idna, which the first did not have" 'cd ~/proof-uv && uv pip install idna==3.20' ||
+		'cd ~/proof-uv && rm -rf .venv && uv venv -q && uv pip install --offline requests==2.32.3 rich==14.0.0' || return 1
+	second "uv pip install of six, which the first did not have" 'cd ~/proof-uv && uv pip install six==1.17.0' ||
 		return 1
 	NOTE="uv pip install --offline worked from the cache alone"
 }
@@ -649,7 +635,7 @@ prove_playwright() {
 	NOTE="the second user's install found the first's browser"
 }
 TOOLS_FAILED=()
-for tool in npm pnpm yarn pip uv playwright; do
+for tool in npm pnpm pip uv playwright; do
 	NOTE=
 	FIRST_TOOK=
 	SECOND_TOOK=
@@ -660,22 +646,30 @@ for tool in npm pnpm yarn pip uv playwright; do
 		TOOLS_FAILED+=("$tool")
 	fi
 done
-# pnpm's newest major, for the report only: where its store goes with these variables.
+# pnpm's newest major, for the report only: where its store goes with these variables, and with pnpm_config_store_dir.
 if step "pnpm 12 install" "$FIRST_UID" "$FIRST_W" "cd ~/proof-pnpm12 && $PNPM12 install --ignore-scripts && $PNPM12 store path"; then
 	echo "INFO: pnpm 12.18.0 keeps its store at $(tail -n 1 <<<"$OUT")"
 else
 	echo "INFO: pnpm 12.18.0 did not install"
 fi
-for kind in access default; do
-	echo "INFO: a file the first user's npm wrote: $(find "$PACKAGES/npm/_cacache" -type f -print -quit | xargs stat -c '%u %g %a') $(acl "$(find "$PACKAGES/npm/_cacache" -type f -print -quit)" "$kind")"
-done
+P12="cd ~/proof-pnpm12 && rm -rf node_modules && export pnpm_config_store_dir=$PACKAGES/pnpm"
+if step "pnpm 12 with pnpm_config_store_dir" "$FIRST_UID" "$FIRST_W" "$P12 && $PNPM12 install --ignore-scripts && $PNPM12 store path" &&
+	P12_FIRST=$TOOK && P12_STORE=$(tail -n 1 <<<"$OUT") &&
+	step "pnpm 12 with pnpm_config_store_dir" "$SECOND_UID" "$SECOND_W" "$P12 && $PNPM12 install --ignore-scripts" &&
+	P12_SECOND=$TOOK &&
+	step "pnpm 12 add with pnpm_config_store_dir" "$SECOND_UID" "$SECOND_W" "$P12 && $PNPM12 add --ignore-scripts is-number@7.0.0"; then
+	echo "INFO: pnpm 12.18.0 with pnpm_config_store_dir: store $P12_STORE; the second user installed from it and added a package ($P12_FIRST s, then $P12_SECOND s)"
+else
+	echo "INFO: pnpm 12.18.0 with pnpm_config_store_dir did not pass the two users (above)"
+fi
+echo "INFO: a file the first user's npm wrote: $(find "$PACKAGES/npm/_cacache" -type f -print -quit | xargs stat -c '%u %g %a') $(acl "$(find "$PACKAGES/npm/_cacache" -type f -print -quit)" access)"
 
 # The tool folders' bytes on disk (each inode once), as the trim counts them.
 sizes() {
 	python3 -I - "$PACKAGES" <<'PY'
 import os, stat, sys
 seen = set()
-for folder in ("npm", "pnpm", "yarn", "pip", "uv", "ms-playwright"):
+for folder in ("npm", "pnpm", "pip", "uv", "ms-playwright"):
     total = 0
     for top, dirs, files in os.walk(os.path.join(sys.argv[1], folder)):
         for name in dirs + files:
@@ -688,21 +682,21 @@ for folder in ("npm", "pnpm", "yarn", "pip", "uv", "ms-playwright"):
     print(folder, total)
 PY
 }
-sizes | while read -r folder bytes; do echo "SIZE $folder $((bytes / 1048576)) MiB"; done
+sizes | while read -r folder bytes; do echo "SIZE $folder $((bytes / 1024)) KiB"; done
 # The trim, with a limit the folders pass by half of npm's bytes, once npm is the least recently used: every other
 # folder's files were read since (touch -a, which changes their change time too).
 sleep 2
-for folder in pnpm yarn pip uv ms-playwright; do find "$PACKAGES/$folder" -type f -exec touch -a {} +; done
+for folder in pnpm pip uv ms-playwright; do find "$PACKAGES/$folder" -type f -exec touch -a {} +; done
 declare -A BYTES
 while read -r folder bytes; do BYTES[$folder]=$bytes; done < <(sizes)
-LIMIT=$((${BYTES[pnpm]} + ${BYTES[yarn]} + ${BYTES[pip]} + ${BYTES[uv]} + ${BYTES[ms-playwright]} + ${BYTES[npm]} / 2))
-COUNTS=$(for folder in pnpm yarn pip uv ms-playwright; do find "$PACKAGES/$folder" | wc -l; done)
+LIMIT=$((${BYTES[pnpm]} + ${BYTES[pip]} + ${BYTES[uv]} + ${BYTES[ms-playwright]} + ${BYTES[npm]} / 2))
+COUNTS=$(for folder in pnpm pip uv ms-playwright; do find "$PACKAGES/$folder" | wc -l; done)
 TRIMMED=$(node --input-type=module -e \
 	"import { trimCodingPackageCaches } from '$AGENT'; console.log(JSON.stringify(await trimCodingPackageCaches('$PACKAGES', $LIMIT)));")
 [[ $TRIMMED == '["npm"]' ]] || fail "the trim to $LIMIT bytes emptied $TRIMMED"
 [[ -z $(ls -A "$PACKAGES/npm") && $(stat -c '%u %g %a' "$PACKAGES/npm") == "0 $CODING_GID 2775" &&
 	,$(acl "$PACKAGES/npm" default), == *,group:qorpera-coding:rwx,* ]] || fail "the trim did not leave npm empty and as it was"
-[[ $(for folder in pnpm yarn pip uv ms-playwright; do find "$PACKAGES/$folder" | wc -l; done) == "$COUNTS" ]] ||
+[[ $(for folder in pnpm pip uv ms-playwright; do find "$PACKAGES/$folder" | wc -l; done) == "$COUNTS" ]] ||
 	fail "the trim changed another folder"
 step "npm ci after the trim" "$SECOND_UID" "$SECOND_W" \
 	'cd ~/proof-npm && rm -rf node_modules && npm ci --ignore-scripts --no-audit --no-fund' || fail "npm ci failed after the trim"
@@ -721,7 +715,7 @@ printf new >"$AGE/cache/pip/new"
 systemd-tmpfiles --clean "$AGE/age.conf" || fail "systemd-tmpfiles --clean failed"
 [[ ! -e $AGE/cache/npm/_cacache/old && ! -e $AGE/cache/pip/old && -e $AGE/cache/pip/new ]] ||
 	fail "the age rule left $(find "$AGE/cache" -type f)"
-for folder in npm pnpm yarn pip uv ms-playwright; do
+for folder in npm pnpm pip uv ms-playwright; do
 	[[ -d $AGE/cache/$folder ]] || fail "the age rule removed the tool folder $folder"
 done
 pass "tmpfiles' age, on the agent's lines, removed the files not used for longer than it and kept the new one and every tool folder"
