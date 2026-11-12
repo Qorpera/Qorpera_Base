@@ -5,33 +5,35 @@
 #
 # A request is an empty file named browser, files or terminal in /run/qorpera-desktop-dock (root's folder, which only
 # the desktop's account may put names into: qorpera-machine-desktop.tmpfiles). It carries no data and nothing in it is
-# read: the name alone says which of three fixed programs is wanted. Each is started with the image's own `desktop`
-# command, exactly as an agent's `desktop open` and `desktop run` start it: as the account `desktop`, in a unit of its
-# own in the machine's slice, bound to the desktop, on its session bus, under the desktop's lock, with the browser's
-# own flags and profile (maximised). So the browser a member opens from the dock is the browser an agent's next
-# `desktop open` finds, and the memory guard treats it as any program on the desktop. A press also counts as use:
-# `desktop` puts off the idle stop.
+# read: the name alone says which of three fixed programs is wanted. Each is started by the image's own `desktop`
+# command (`desktop dock`), the way an agent's `desktop open URL` and `desktop run` start one: as the account
+# `desktop`, in a unit of its own in the machine's slice, bound to the desktop, on its session bus, under the
+# desktop's lock, with the browser's own flags and profile (maximised). So the browser a member opens from the dock is
+# the browser an agent's next `desktop open` finds, and the memory guard treats it as any program on the desktop. A
+# press also counts as use: `desktop` puts off the idle stop.
+#
+# The desktop's account can put anything into the request folder, under any name. So nothing here takes more from
+# that folder than which of the three names is in it (review r3 F1 of #1704):
+# - this program and the command it runs work in `/`, never in the folder, with an environment that is set here;
+# - the names are read without following or opening any, and a name is only ever removed;
+# - `desktop dock` starts its program with words that are all written in `desktop`: none is looked up as a file, and
+#   nothing is linked or copied anywhere.
+if [[ ${QORPERA_DOCK_ENVIRONMENT:-} != set ]]; then
+	exec /usr/bin/env -i QORPERA_DOCK_ENVIRONMENT=set PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+		HOME=/root LANG=C.UTF-8 /bin/bash "${BASH_SOURCE[0]}"
+fi
 set -uo pipefail
+cd / || exit 1
 ASK=/run/qorpera-desktop-dock
 DESKTOP=/usr/local/bin/desktop
-# The browser opens on its own new tab page.
-PAGE=chrome://newtab/
-cd -P -- "$ASK" 2>/dev/null || exit 0
-[[ $(pwd -P) == "$ASK" ]] || exit 0
-# Files and the terminal open in the company folder when this machine has it and the desktop's account may read it,
-# else in the account's home.
-folder=/home/desktop
-if mountpoint -q /company && runuser -u desktop -- test -r /company -a -x /company; then folder=/company; fi
+# Which of the three names are there, whatever they are (a file, a link, a pipe, a folder).
+asked=$(find "$ASK" -mindepth 1 -maxdepth 1 \( -name browser -o -name files -o -name terminal \) -printf "%f\n" 2>/dev/null)
 for app in browser files terminal; do
-	[[ -e $app || -L $app ]] || continue
+	[[ $'\n'$asked$'\n' == *$'\n'$app$'\n'* ]] || continue
 	# Removed before the program starts: a press made meanwhile asks again, and the path unit starts this once more.
-	rm -rf -- "./$app"
-	case $app in
-	browser) "$DESKTOP" open "$PAGE" ;;
-	files) "$DESKTOP" run /usr/bin/thunar "$folder" ;;
-	terminal) "$DESKTOP" run /usr/bin/xfce4-terminal --working-directory="$folder" ;;
-	esac >/dev/null || echo "the dock's $app did not start" >&2
+	rm -rf -- "$ASK/$app"
+	"$DESKTOP" dock "$app" >/dev/null || echo "the dock's $app did not start" >&2
 done
 # Any other name is no request.
-find . -mindepth 1 -maxdepth 1 ! -name browser ! -name files ! -name terminal -exec rm -rf -- {} +
+find "$ASK" -mindepth 1 -maxdepth 1 ! -name browser ! -name files ! -name terminal -exec rm -rf -- {} +
 exit 0

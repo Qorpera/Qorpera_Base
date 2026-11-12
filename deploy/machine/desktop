@@ -218,7 +218,7 @@ open | click | double | move | drag | type | key | scroll)
 esac
 # Starting, stopping and launching take turns, so a stop never meets a launch half done.
 case $command in
-start | stop | open | run)
+start | stop | open | run | dock)
 	exec 9>/run/qorpera-desktop.lock
 	flock 9
 	;;
@@ -303,6 +303,23 @@ run)
 	need
 	(( $# > 0 )) || fail "desktop run PROGRAM [ARG...]" 2
 	launch "$@"
+	echo "started $1"
+	;;
+dock)
+	# For a press on the dock only (desktop-dock-open runs it; it is no command for agents and not in the help). It
+	# starts one of three fixed programs the way `desktop open URL` and `desktop run` start one, and takes nothing from
+	# its caller but which of the three: every word the program gets is written here, no word is looked up as a file
+	# (the address goes to the browser as an address, whatever folder this runs in), and nothing is put on the
+	# desktop. Files and the terminal open in the company folder when this machine has it, else in the account's home.
+	need
+	folder=/home/desktop
+	if mountpoint -q /company; then folder=/company; fi
+	case ${1:-} in
+	browser) browser chrome://newtab/ ;;
+	files) launch /usr/bin/thunar "$folder" ;;
+	terminal) launch /usr/bin/xfce4-terminal --working-directory="$folder" ;;
+	*) fail "desktop dock browser|files|terminal" 2 ;;
+	esac
 	echo "started $1"
 	;;
 click)
