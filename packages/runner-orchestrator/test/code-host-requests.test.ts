@@ -1160,6 +1160,41 @@ describe("CodeHostRequests", () => {
 			}
 		});
 
+		it("takes a busy run whose finish is lost for the kernel's own wait of its look: one quiet line, counted busy", async () => {
+			const lost = (method: string) =>
+				method === "qorpera_code_request_finish" ? { schema: FINISH, state: "lost" } : undefined;
+			// The step that first names the look met a company that was not quiet: the kernel put the import back and gave
+			// its claim back, so the finish of the run's busy is lost (20260930736000).
+			const t = importing();
+			t.gate.outcome = BUSY;
+			t.kernel.answer = lost;
+			t.kernel.claims = [[IMPORT]];
+			await expect(t.whole()).resolves.toEqual({ ...NONE, busy: 1 });
+			expect(t.finishes()).toEqual([finishOf(R4, T4, BUSY)]);
+			expect(t.events.filter((event) => event.event === "code-import-waiting")).toEqual([
+				{ event: "code-import-waiting", requestId: R4 },
+			]);
+			expect(t.errors()).toEqual([]);
+			expect(t.finished()).toEqual([]);
+			// Anything else whose finish is lost is as before: an outcome that is not busy, and a busy this loop made of a
+			// job that gave way.
+			for (const [outcome, throws] of [
+				[{ schema: SCHEMA, state: "refused", code: "IMPORT_SOURCE_REFUSED" }, undefined],
+				[IMPORTED, undefined],
+				[BUSY, yielded()],
+			] as const) {
+				const other = importing();
+				other.gate.outcome = outcome;
+				other.gate.throws = throws;
+				other.kernel.answer = lost;
+				other.kernel.claims = [[IMPORT]];
+				await expect(other.whole(), JSON.stringify(outcome)).resolves.toEqual({ ...NONE, failed: 1 });
+				expect(other.errors()).toEqual(["finish:CODE_REQUEST_FINISH_LOST"]);
+				expect(other.events.filter((event) => event.event === "code-import-waiting")).toEqual([]);
+				expect(other.finished()).toEqual([expect.objectContaining({ requestId: R4, recorded: false })]);
+			}
+		});
+
 		it("ends an import item it cannot read as failed, as the other kinds, and runs nothing for it", async () => {
 			const { looked: _, ...lookless } = IMPORT;
 			for (const entry of [

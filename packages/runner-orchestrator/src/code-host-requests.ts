@@ -752,17 +752,22 @@ export class CodeHostRequests {
 	 * the request's lease itself and makes its own calls (the steps, the look, the record). An outcome not of the kernel's
 	 * shape is finished failed (`CODE_REQUEST_ANSWER_INVALID`). A run that throws once the executor is stopping, or whose
 	 * job gave way to a turn's, is put off (`busy`), as a restore's is; when stopping, the finish has the few seconds
-	 * `#finish` gives it, and a finish not heard leaves the request leased until its lease runs out. */
+	 * `#finish` gives it, and a finish not heard leaves the request leased until its lease runs out. A run that answered
+	 * `busy` because the step that first names its look met a company that was not quiet finds its finish `lost`: the
+	 * kernel put the import back in the queue there and gave its claim back (20260930736000). That is a wait, not a
+	 * failure: one quiet line (`code-import-waiting`) and it counts as busy. */
 	async #imported(
 		runner: NonNullable<CodeHostRequestsOptions["imports"]>,
 		request: CodeImportRequest,
 		signal: AbortSignal,
 	): Promise<Ended> {
 		let outcome: CodeRequestOutcome;
+		let answered = false;
 		try {
 			const ended: unknown = await runner.run(request, signal);
 			try {
 				outcome = codeImportOutcomeOf(ended);
+				answered = true;
 			} catch {
 				throw new Error("CODE_REQUEST_ANSWER_INVALID");
 			}
@@ -774,7 +779,12 @@ export class CodeHostRequests {
 				this.#report({ event: "code-request-error", step: "job", ...named(request), error });
 			}
 		}
-		return this.#said(request, outcome, await this.#finish(request, outcome, signal, 2));
+		const finished = await this.#finish(request, outcome, signal, 2);
+		if (answered && outcome.state === "busy" && finished === "lost") {
+			this.#report({ event: "code-import-waiting", requestId: request.requestId });
+			return "busy";
+		}
+		return this.#said(request, outcome, finished);
 	}
 
 	/** An import this executor did not ask for: it has no import runner, or one runs already. It is put back (`busy`)
