@@ -715,6 +715,77 @@ describe("code host: an import's look (own code storage, step 6, part B)", { tim
 		expect(later).toMatchObject({ refused: { code: "IMPORT_USES_LFS" } });
 	});
 
+	it("refuses main's tree with a name the company folder refuses where main will stand, and never touches the place", async () => {
+		const f = await fixture();
+		const before = await f.listing(f.companyRoot);
+		const looked = async (files: Record<string, string>, look = false) => {
+			const h = new History();
+			h.commit("refs/heads/master", { time: NOW_S - DAY, files: { "ok.txt": "ok\n", ...files } });
+			return looking(f, await bundled(f, await made(f, h)), { look });
+		};
+		const refusedFor = async (
+			files: Record<string, string>,
+			paths: (string | null)[],
+			code = "CODE_HOST_NAMES_FOLDER_REFUSES",
+		) => {
+			const { result, out } = await looked(files);
+			// The look alone, with its refusal: nothing else is made.
+			expect(result.state).toBe("looked");
+			expect(result.look).toMatchObject({ refused: { code, paths, more: 0 }, fits: false, why: code });
+			expect(out.length).toBe(0);
+			// Nothing was closed, made or written at the place, nor anywhere in the folder.
+			expect(await exists(f.code)).toBe(false);
+			expect(await f.listing(f.companyRoot)).toEqual(before);
+		};
+		// The review's case: git takes `bad.`, and so does `checkNames`; the folder refuses the trailing dot.
+		await refusedFor({ "bad.": "x\n" }, ["bad."]);
+		// A folder ending in a space, named once and not again for what is in it.
+		await refusedFor({ "x /f.txt": "x\n", "x /y/g.txt": "y\n" }, ["x "]);
+		// A part ending in a dot deep in the tree, a backslash, a control character (never shown).
+		await refusedFor({ "a/b/c./d.txt": "d\n", "a/b/e.txt": "e\n" }, ["a/b/c."]);
+		await refusedFor({ "a\\b.txt": "b\n" }, ["a\\b.txt"]);
+		await refusedFor({ "tab\there.txt": "t\n" }, [null]);
+		// An NFD name is `checkNames`'s own refusal, before the folder's rule.
+		await refusedFor({ "café.txt": "nfd\n" }, ["café.txt"], "CODE_HOST_NAMES_NOT_NFC");
+		// The folder program's bound on one name (255 bytes), and the folder's on the whole path where main stands:
+		// code/acme/shop/main/ is 20 bytes, so 4,076 bytes of path fit and 4,077 do not. Paths over 200 bytes show null.
+		const deep = Array.from({ length: 20 }, () => "p".repeat(200)).join("/");
+		await refusedFor({ [`${"n".repeat(252)}.txt`]: "n\n" }, [null]);
+		await refusedFor({ [`${deep}/${"q".repeat(57)}`]: "q\n" }, [null]);
+		const fits = await looked(
+			{
+				[`${"n".repeat(251)}.txt`]: "n\n",
+				[`${deep}/${"q".repeat(56)}`]: "q\n",
+				// What the folder takes under code/ alone: a device name, a colon, a percent sign.
+				"con.txt": "c\n",
+				"a:b.txt": "a\n",
+				"100%.txt": "p\n",
+			},
+			true,
+		);
+		expect(fits.result.look).toMatchObject({ refused: { code: null, paths: [] }, fits: true, why: null });
+
+		// A ref whose name has a part over 255 bytes (a header C2 builds may name one; `git bundle create` cannot): the
+		// strict fetch cannot write it on the code host's disk, and the look refuses the history before the place is
+		// touched. Words of damage for it are C1's to change (B.md).
+		const h = new History();
+		h.commit("refs/heads/master", { time: NOW_S - DAY, files: { "a.txt": "a\n" } });
+		const plain = await bundled(f, await made(f, h));
+		const end = plain.bytes.indexOf("\n\n") + 2;
+		const long = Buffer.concat([
+			Buffer.from(
+				`# v2 git bundle\n${plain.raw.mainSha} refs/heads/master\n${plain.raw.mainSha} refs/tags/${"t".repeat(300)}\n\n`,
+			),
+			plain.bytes.subarray(end),
+		]);
+		const longRaw = { ...plain.raw, sha256: digest(long), bytes: long.length, refs: 2 };
+		const refused = await looking(f, { bytes: long, raw: longRaw }).catch((error: unknown) => error);
+		expect(refused).toBeInstanceOf(CodeHostRefusal);
+		expect((refused as CodeHostRefusal).code).toMatch(/^IMPORT_HISTORY_DAMAGED/);
+		expect(await exists(f.code)).toBe(false);
+		expect(await readdir(f.scratchRoot)).toEqual([]);
+	});
+
 	it("refuses a history by git's own message id: old git objects as a warning, damage as damage, and none of git's words", async () => {
 		const f = await fixture();
 		/** A history whose one tree git's strict check refuses: its entries, around the id of a folder of one file. */
