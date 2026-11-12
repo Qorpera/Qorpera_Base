@@ -685,9 +685,14 @@ PLANT
 	# (the way is not of root alone) and the account cannot; also while the account keeps swapping the folder.
 	runuser -u desktop -- ln -s "$mine/folder" /tmp/qorpera-links/capture
 	runuser -u desktop -- ln -s "$secret" /tmp/qorpera-links/frame.png
-	if desktop shot /tmp/qorpera-links/capture/frame.png >/dev/null 2>&1 || desktop shot /tmp/qorpera-links/frame.png >/dev/null 2>&1; then
-		echo "a picture was saved through a link the desktop account planted" >&2; exit 1
+	if desktop shot /tmp/qorpera-links/capture/frame.png >/dev/null 2>&1; then
+		echo "a picture was saved through a folder link the desktop account planted" >&2; exit 1
 	fi
+	# (Where the name of the picture is the account own link, the account puts the picture in the place of the link:
+	# a picture is written beside its place and moved onto it. What the link named is not written.)
+	desktop shot /tmp/qorpera-links/frame.png >/dev/null 2>&1 || true
+	[[ ! -L /tmp/qorpera-links/frame.png ]] && untouched ||
+		{ echo "a picture was written through a link the desktop account planted, or the link stayed" >&2; exit 1; }
 	rm -f /tmp/qorpera-links/capture /tmp/qorpera-links/frame.png
 	swapping /tmp/qorpera-links "rm -rf capture; mkdir capture; rm -rf capture; ln -s $mine/folder capture"
 	for _ in $(seq 1 25); do desktop shot /tmp/qorpera-links/capture/frame.png >/dev/null 2>&1 || true; done
@@ -706,7 +711,9 @@ PLANT
 	python3 -I -c "import os, struct, sys; os.setxattr(sys.argv[1], \"system.posix_acl_access\", struct.pack(\"<I\", 2) + b\"\".join(struct.pack(\"<HHI\", *entry) for entry in ((1, 7, 0xFFFFFFFF), (2, 7, int(sys.argv[2])), (4, 5, 0xFFFFFFFF), (16, 5, 0xFFFFFFFF), (32, 5, 0xFFFFFFFF))))" /srv/qorpera-links/acl "$(id -u desktop)"
 	[[ $(stat -c "%U:%G %a" /srv/qorpera-links/acl) == "root:root 755" ]] || { echo "the folder with an ACL does not look like a folder of root alone" >&2; exit 1; }
 	runuser -u desktop -- ln -s "$secret" /srv/qorpera-links/group/planted.png
-	if desktop shot /srv/qorpera-links/group/planted.png >/dev/null 2>&1; then echo "a picture was saved through a link in a folder a group can write" >&2; exit 1; fi
+	desktop shot /srv/qorpera-links/group/planted.png >/dev/null 2>&1 || true
+	[[ ! -L /srv/qorpera-links/group/planted.png ]] && untouched ||
+		{ echo "a picture was written through a link in a folder a group can write, or the link stayed" >&2; exit 1; }
 	desktop shot /srv/qorpera-links/group/a.png >/dev/null && [[ $(stat -c %U /srv/qorpera-links/group/a.png) == desktop ]] ||
 		{ echo "root wrote a picture in a folder that a group can write" >&2; exit 1; }
 	refused=$(desktop shot /srv/qorpera-links/acl/a.png 2>&1 || true)
