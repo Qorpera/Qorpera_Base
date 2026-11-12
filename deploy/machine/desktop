@@ -66,17 +66,19 @@ EOF
 fail() { echo "$1" >&2; exit "${2:-1}"; }
 # The company's time zone as the machine names it (TIMEZONE), when that is a zone this image has; else nothing, and the
 # desktop is on UTC as a machine without the file. The word came from a browser. Only a plain file of root's own is
-# read, never a link or a pipe; it must be the word and at most a line end, 64 bytes of word at most (a longer or an
-# empty file is no zone); and the word has a zone name's shape (letters, digits, _, + and -, in at most three parts
-# with a / between: no dot, so no way out of the folder) BEFORE it is ever put after /usr/share/zoneinfo/. Bytes are
-# counted and letters are ASCII's, whatever language the caller has.
+# read, never a link or a pipe, and 65 bytes of it at most (a longer or an empty file is no zone). The file's BYTES
+# are exactly the word, or the word and one line end, and nothing else: the shell's read skips a NUL and stops at a
+# line end, so what it read is compared with the file byte for byte (a NUL anywhere, a carriage return, a second line,
+# a byte before the word: no zone). And the word has a zone name's shape (letters, digits, _, + and -, in at most three
+# parts with a / between, 64 bytes at most: no dot, so no way out of the folder) BEFORE it is ever put after
+# /usr/share/zoneinfo/. Bytes are counted and letters are ASCII's, whatever language the caller has.
 company_zone() {
 	local LC_ALL=C name= size plain='^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+){0,2}$'
 	[[ -f $TIMEZONE && ! -L $TIMEZONE && -O $TIMEZONE ]] || return 0
 	size=$(stat -c %s -- "$TIMEZONE" 2>/dev/null) || return 0
 	[[ $size =~ ^[0-9]{1,2}$ ]] && (( size >= 1 && size <= 65 )) || return 0
 	IFS= read -r -n 65 name <"$TIMEZONE" 2>/dev/null || true
-	(( ${#name} == size || ${#name} + 1 == size )) || return 0
+	printf '%s' "$name" | cmp -s -- "$TIMEZONE" - || printf '%s\n' "$name" | cmp -s -- "$TIMEZONE" - || return 0
 	[[ ${#name} -le 64 && $name =~ $plain && -f /usr/share/zoneinfo/$name ]] || return 0
 	printf %s "$name"
 }

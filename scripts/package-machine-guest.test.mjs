@@ -1323,8 +1323,21 @@ test("a desktop started without --tz takes the company's time zone from the mach
 	// Only a plain file of root's own is read, never a link or a pipe, and no more of it than a zone's name is long.
 	assert.ok(reader.includes("\n\t[[ -f $TIMEZONE && ! -L $TIMEZONE && -O $TIMEZONE ]] || return 0\n"));
 	assert.ok(reader.includes('\n\tIFS= read -r -n 65 name <"$TIMEZONE" 2>/dev/null || true\n'));
-	// The command reads the file in that one place, and names a zone's file in two: there and where --tz is checked.
-	assert.equal(code.match(/\$TIMEZONE/g).length, 5);
+	// The file's bytes are exactly the word, or the word and one line end (review r1 F1 of #1718). The shell's read
+	// skips a NUL and stops at a line end, so a file that only reads as a zone's name passed while the sizes were
+	// compared: `Europe/Copen\0hagen` with no line end is one byte more than the word read, as a line end is. What was
+	// read is compared with the file byte for byte, before the word is looked at.
+	assert.ok(
+		reader.includes(
+			`\n\tprintf '%s' "$name" | cmp -s -- "$TIMEZONE" - || printf '%s\\n' "$name" | cmp -s -- "$TIMEZONE" - || return 0\n\t[[ \${#name} -le 64 && `,
+		),
+		"the file is compared with the word byte for byte, before the word is looked at",
+	);
+	assert.doesNotMatch(reader, /== size|\+ 1/);
+	// The command reads the file in that one function, and names a zone's file in two places: there and where --tz is
+	// checked.
+	assert.equal(code.match(/\$TIMEZONE/g).length, 7);
+	assert.equal(reader.match(/\$TIMEZONE/g).length, 7);
 	assert.equal(code.match(/\/usr\/share\/zoneinfo\//g).length, 2);
 	// Only a start that starts the desktop takes it, and only when --tz named none: --tz wins, and a desktop that runs
 	// keeps the zone it has. The word then goes where --tz's goes: root's note, which the programs, the dock's clocks and
@@ -1390,6 +1403,35 @@ test("a desktop started without --tz takes the company's time zone from the mach
 			["a / at the end", "Europe/Copenhagen/\n"],
 			["four parts", "a/b/c/d\n"],
 			["a NUL in the word", "Europe/Copen\0hagen\n"],
+			// Review r1 F1 of #1718: one byte that the shell's read skips or stops at, where a line end could be. Each
+			// file below reads as a zone's name and is one byte longer than it, or as long.
+			["a NUL in the word and no line end", "Europe/Copen\0hagen"],
+			["a NUL before the word", "\0Europe/Copenhagen"],
+			["a NUL after the word", "Europe/Copenhagen\0"],
+			["a NUL in a short word", "U\0TC"],
+			["a NUL after a short word", "UTC\0"],
+			["a NUL and a line end", "UTC\0\n"],
+			["a line end and a NUL", "UTC\n\0"],
+			["two NULs", "UTC\0\0"],
+			["a NUL where a letter was", "Europe/Copen\0agen\n"],
+			["a carriage return and no line end", "Europe/Copenhagen\r"],
+			["a carriage return before the word", "\rEurope/Copenhagen\n"],
+			["a line end before the word", "\nEurope/Copenhagen"],
+			["a line end before and after the word", "\nEurope/Copenhagen\n"],
+			["a second line with no line end", "Europe/Copenhagen\nUTC"],
+			["a second line that is one letter", "Europe/Copenhagen\nA"],
+			["a tab after the word", "UTC\t"],
+			["a space after the word and no line end", "UTC "],
+			["a form feed after the word", "UTC\f"],
+			["a vertical tab after the word", "UTC\v"],
+			["a backslash at the end of the line", "UTC\\\n"],
+			["a backslash and a second line", "UT\\\nC\n"],
+			["a byte order mark before the word", Buffer.from([0xef, 0xbb, 0xbf, 0x55, 0x54, 0x43, 0x0a])],
+			["a byte order mark and no line end", Buffer.from([0xef, 0xbb, 0xbf, 0x55, 0x54, 0x43])],
+			["a UTF-16 word", Buffer.from("\ufeffUTC\n", "utf16le")],
+			["a byte that is no ASCII after the word", Buffer.from([0x55, 0x54, 0x43, 0xff])],
+			["a byte that is no ASCII in the word", Buffer.from([0x55, 0x54, 0x80, 0x43, 0x0a])],
+			["a delete byte after the word", Buffer.from([0x55, 0x54, 0x43, 0x7f])],
 			["a letter that is not ASCII's", "Europe/København\n"],
 			["a command", "$(id)\n"],
 			["a word and a command", "Europe/Copenhagen;id\n"],
@@ -1401,6 +1443,18 @@ test("a desktop started without --tz takes the company's time zone from the mach
 			await writeFile(file, bytes);
 			assert.equal(taken(), "", why);
 		}
+		// That the danger was real: the shell's own read, as the command has it, takes the finding's file for the word.
+		await writeFile(file, "Europe/Copen\0hagen");
+		const shell = spawnSync("bash", ["-c", 'IFS= read -r -n 65 name <"$1" || true; printf %s "$name"', "bash", file], {
+			encoding: "utf8",
+		});
+		assert.equal(shell.stdout, "Europe/Copenhagen", "the shell's read skips a NUL");
+		assert.equal(taken(), "");
+		// And the word alone, or with its one line end, is still taken after all of that.
+		await writeFile(file, "Europe/Copenhagen");
+		assert.equal(taken(), "Europe/Copenhagen");
+		await writeFile(file, "Europe/Copenhagen\n");
+		assert.equal(taken(), "Europe/Copenhagen");
 		await rm(file);
 		// A link is not followed, though it leads to a file that names a zone; nor is a link that leads nowhere read.
 		const real = join(temporary, "real");
