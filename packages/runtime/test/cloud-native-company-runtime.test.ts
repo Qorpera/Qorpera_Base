@@ -3235,6 +3235,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// says what is stopped, open questions too with allowCustom ("it's really stopped at you"), so they moved again.
 	// Its question schema says the same (an open one goes on the card with allowCustom, not to chat), so the catalog text
 	// moved once more.
+	// On 12 November 2026 manage_code took bring_in (existing code brought in, 20260930736000): its description, and its
+	// schema's from and look with change no longer required, so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3281,9 +3283,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"29ebd15b036a3e22ad5744e2b96fe936316595951522c385bfa0079b9ebe7e83",
+		"a7f8b967cc6490da3cb8691cb24b4584d870119c6cf00cc82020462e53c47895",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"0c8427ff56381b1e1fdb60d8221e88a75bbcc3b686bc2f5271941b8f562cd7f0",
+		"1d004bbab7f5169912400a86f02bde6825db74498b0f529b2e1876509839d332",
 	);
 });

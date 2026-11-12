@@ -98,6 +98,9 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_request_code_undo"
 	| "qorpera_folder_code_request"
 	| "qorpera_folder_describe_code_change"
+	// Existing code brought in as a repository kept in Qorpera (20260930736000): an agent's ask, and how it stands.
+	| "qorpera_folder_request_code_import"
+	| "qorpera_folder_code_import"
 	// An agent's page and table changes in its conversation, with Undo (I10).
 	| "qorpera_folder_note_interface_changes"
 	// Event wakes (W2): the company's hooks and one event's body.

@@ -269,6 +269,8 @@ describe("the coding composition of a native turn", () => {
 					"Every turn ends with coding_finish or coding_ask, never with a written answer alone: a turn that ends without one fails",
 					"A request to push, to merge, to open a pull request or to report its link means: commit and call coding_finish; the platform then hands the commit in as above and passes on what happened, so you do none of that yourself.",
 					"A repository kept in Qorpera may start empty, with one commit and no files: build the project in it from scratch.",
+					// Own code storage, step 6 (20260930736000): code brought in keeps its other branches, for reading only.
+					"A repository brought in from elsewhere keeps the branches it had there under refs/qorpera/imported/heads/: read them, never change them.",
 					"When something blocks you, still end the turn that way. On a GitHub repository: coding_finish with the commit you have and a summary that names the blocker, since it stays a draft.",
 					// 10 November 2026 (audit): a landing has no draft, so half-done work is never handed in there, and the
 					// values the session was given are its to use. Own code storage, step 3 (20260930721000): Qorpera runs the
