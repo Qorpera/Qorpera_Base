@@ -738,7 +738,10 @@ test("every machine has compressed memory from its boot on and a guard at the ed
 		'\tfor kernel in /lib/modules/*; do\n\t\tmodinfo -k "$(basename "$kernel")" zram >/dev/null ||\n',
 		'\t[[ -n ${swap_kb:-} ]] && (( memory_kb - swap_kb >= 0 && memory_kb - swap_kb <= 64 )) && [[ $swap_priority == 100 ]] ||\n',
 		'\tgrep -q "\\[zstd\\]" /sys/block/zram0/comp_algorithm ||',
-		"\tswapoff /dev/zram0\n\techo 1 >/sys/block/zram0/reset\n\trmmod zram\n",
+		// After the swapoff the reset and the unload are asked again while they are refused as busy (a build failed
+		// there once), and the last try's failure fails the build.
+		'\tpatient() {\n\t\tlocal try\n\t\tfor try in $(seq 1 50); do\n\t\t\t"$@" 2>/dev/null && return 0\n\t\t\tsleep 0.1\n\t\tdone\n\t\t"$@"\n\t}\n',
+		'\tswapoff /dev/zram0\n\tpatient bash -c "echo 1 >/sys/block/zram0/reset"\n\tpatient rmmod zram\n',
 		'\tmkdir -p /run/modprobe.d && echo "install zram /bin/false" >/run/modprobe.d/qorpera-image-check.conf\n',
 		'\t\t{ echo "the memory unit fails where compressed memory cannot be set up: a boot would show a failed unit" >&2; exit 1; }\n',
 		'\t\t{ echo "the journal does not say in one line that compressed memory is off" >&2; exit 1; }\n',
