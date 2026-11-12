@@ -80,7 +80,7 @@ for file in cloud-machine-guest.mjs cloud-machine-coding-value.mjs cloud-machine
 	qorpera-machine-memory-guard.service desktop-session desktop qorpera-chromium.apparmor \
 	desktop-selftest.html qorpera-chromium-policy.json chromium qorpera-machine-profile.sh playwright-check.cjs \
 	machine-memory lxd-agent-memory.conf qorpera-machine-desktop-dock.path qorpera-machine-desktop-dock.service \
-	desktop-look desktop-dock-open qorpera-machine-desktop.tmpfiles desktop-art.tar qorpera-folder manifest.json; do
+	desktop-look desktop-dock-open desktop-files qorpera-machine-desktop.tmpfiles desktop-art.tar qorpera-folder manifest.json; do
 	[[ -f $PACKAGE/$file ]] || { echo "package misses $file" >&2; exit 1; }
 done
 [[ $(sha256sum <"$PACKAGE/qorpera-folder" | cut -d' ' -f1) == "$EXPECTED_FOLDER_PROGRAM_SHA256" ]] ||
@@ -216,6 +216,7 @@ lx file push "$PACKAGE/machine-memory" "$BUILDER/opt/qorpera-machine/machine-mem
 lx file push "$PACKAGE/lxd-agent-memory.conf" "$BUILDER/etc/systemd/system/lxd-agent.service.d/qorpera-memory.conf" --uid 0 --gid 0 --mode 0644
 lx file push "$PACKAGE/desktop-look" "$BUILDER/opt/qorpera-machine/desktop-look" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/desktop-dock-open" "$BUILDER/opt/qorpera-machine/desktop-dock-open" --uid 0 --gid 0 --mode 0555
+lx file push "$PACKAGE/desktop-files" "$BUILDER/opt/qorpera-machine/desktop-files" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/qorpera-machine-desktop.tmpfiles" "$BUILDER/etc/tmpfiles.d/qorpera-machine-desktop.conf" --uid 0 --gid 0 --mode 0644
 # The desktop pictures, unpacked by the checks below.
 lx file push "$PACKAGE/desktop-art.tar" "$BUILDER/tmp/desktop-art.tar" --uid 0 --gid 0 --mode 0644
@@ -554,8 +555,7 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	# its own, and reads none of them from a place the account owns: the account, or a page or a program run as it, can
 	# make any name there a link to a file only root may read. A file only root can read stands in for such a file (the
 	# company folder view, with its pass): none of its bytes may reach a program of the account through a note or a
-	# request to the dock. (What desktop open puts in the account Desktop folder, --copy and desktop shot are not part
-	# of this: they work as they did before, and the change that makes them safe brings its own checks.)
+	# request to the dock. (What desktop open, --copy and desktop shot do with files comes after, below.)
 	secret=/root/qorpera-root-only-check
 	marker="qorpera-root-only-$(od -An -N12 -tx1 /dev/urandom | tr -d " \n")"
 	echo "$marker" >"$secret"
@@ -647,6 +647,179 @@ PLANT
 	runuser -u desktop -- rm /home/desktop/Desktop
 	rm -rf "$guarded" /tmp/qorpera-dock-planted
 	untouched || { echo "the file only root can read was changed" >&2; exit 1; }
+	# Root follows no link for the desktop account (review r2 of #1704). What desktop open, --copy and desktop shot do
+	# with files is done by desktop-files: as the account, or by root inside folders it holds, on a way of folders that
+	# root alone can change with no link on it. Root never looks at a path and then uses the path. The account plants
+	# here what the review planted, before the command and while it runs: no byte of the file only root can read may
+	# reach it, and nothing of root may be written to, gain a name or change hands.
+	files=/opt/qorpera-machine/desktop-files
+	mine=/root/qorpera-links
+	leaked() { grep -rqs -- "$marker" /home/desktop /run/qorpera-desktop/session /tmp/qorpera-links /srv/qorpera-links; }
+	roots_own() { [[ $(ls -A "$mine/folder") == keep && -z $(find "$mine" /etc/qorpera-machine ! -user root) ]] && untouched; }
+	swapping() { runuser -u desktop -- sh -c "cd $1 && while [ ! -e /tmp/qorpera-links/stop ]; do $2; done" 2>/dev/null & }
+	swapped() { runuser -u desktop -- touch /tmp/qorpera-links/stop; wait || true; rm -f /tmp/qorpera-links/stop; }
+	mkdir -p "$mine/folder" "$mine/tree/inner" /srv/qorpera-links/group /srv/qorpera-links/acl /tmp/site-links
+	install -d -o desktop -g desktop /tmp/qorpera-links
+	echo keep >"$mine/folder/keep"
+	echo qorpera-agent-chose-this >"$mine/agent.txt" && chmod 0600 "$mine/agent.txt"
+	echo inner >"$mine/tree/inner/b.txt" && ln -s "$secret" "$mine/tree/to-the-file" && chmod 0700 "$mine/tree/inner"
+	echo "<title>qorpera-links</title>" >/tmp/site-links/index.html
+	# Review r2 F1: a link of root, on a way of root alone, that leads into the home of the account, where the account
+	# points it on to the file; as the last name of the way and as a folder in the middle of it. It is copied by
+	# neither root nor the account, and opened by neither, also while the account keeps changing its end of the link.
+	runuser -u desktop -- ln -s "$secret" /home/desktop/input
+	runuser -u desktop -- mkdir /home/desktop/way
+	runuser -u desktop -- ln -s "$secret" /home/desktop/way/file.txt
+	ln -s /home/desktop/input "$mine/input" && ln -s /home/desktop/input /srv/qorpera-links/input && ln -s /home/desktop/way "$mine/way"
+	for target in "$mine/input" /srv/qorpera-links/input /home/desktop/input "$mine/way/file.txt" /home/desktop/way/file.txt; do
+		if desktop open "$target" --copy >/dev/null 2>&1 || desktop open "$target" >/dev/null 2>&1; then
+			echo "a link that leads to a file only root can read was opened for the desktop account ($target)" >&2; exit 1
+		fi
+	done
+	swapping /home/desktop "echo mine >input.new; mv -f input.new input; ln -sfn $secret input"
+	for _ in $(seq 1 25); do "$files" open --copy -- /srv/qorpera-links/input >/dev/null 2>&1 || true; done
+	swapped
+	if leaked; then echo "bytes of a file only root can read reached the desktop account through a link" >&2; exit 1; fi
+	# Review r2 F2: the place of a picture, planted by the account before root writes there: a folder on the way made
+	# a link to a folder of root, and the name of the picture made a link to the file. Root writes through neither
+	# (the way is not of root alone) and the account cannot; also while the account keeps swapping the folder.
+	runuser -u desktop -- ln -s "$mine/folder" /tmp/qorpera-links/capture
+	runuser -u desktop -- ln -s "$secret" /tmp/qorpera-links/frame.png
+	if desktop shot /tmp/qorpera-links/capture/frame.png >/dev/null 2>&1; then
+		echo "a picture was saved through a folder link the desktop account planted" >&2; exit 1
+	fi
+	# (Where the name of the picture is the account own link, the account puts the picture in the place of the link:
+	# a picture is written beside its place and moved onto it. What the link named is not written.)
+	desktop shot /tmp/qorpera-links/frame.png >/dev/null 2>&1 || true
+	[[ ! -L /tmp/qorpera-links/frame.png ]] && untouched ||
+		{ echo "a picture was written through a link the desktop account planted, or the link stayed" >&2; exit 1; }
+	rm -f /tmp/qorpera-links/capture /tmp/qorpera-links/frame.png
+	swapping /tmp/qorpera-links "rm -rf capture; mkdir capture; rm -rf capture; ln -s $mine/folder capture"
+	for _ in $(seq 1 25); do desktop shot /tmp/qorpera-links/capture/frame.png >/dev/null 2>&1 || true; done
+	swapped
+	rm -rf /tmp/qorpera-links/capture
+	roots_own || { echo "a picture was written into a folder of root, or over the file only root can read, through a planted link" >&2; exit 1; }
+	# Where the whole way is of root alone, root saves the picture and makes the folders for it; elsewhere the account
+	# saves it, as its own file. A folder of root that its group may write, or that an ACL opens to the account, is
+	# not of root alone: root writes nothing in it, whatever name the account has planted there.
+	desktop shot "$mine/pictures/new/a.png" | grep -q " 1600 x 1000$" &&
+		[[ $(stat -c "%U:%G %a" "$mine/pictures/new" "$mine/pictures/new/a.png" | tr "\n" " ") == "root:root 755 root:root 644 " ]] ||
+		{ echo "a picture on a way of root alone is not a 1600x1000 picture of root in a folder of root" >&2; exit 1; }
+	desktop shot /tmp/qorpera-links/own.png | grep -q " 1600 x 1000$" && [[ $(stat -c %U /tmp/qorpera-links/own.png) == desktop ]] ||
+		{ echo "a picture saved where the desktop account may write is not a 1600x1000 picture of the account" >&2; exit 1; }
+	chgrp desktop /srv/qorpera-links/group && chmod 0775 /srv/qorpera-links/group
+	python3 -I -c "import os, struct, sys; os.setxattr(sys.argv[1], \"system.posix_acl_access\", struct.pack(\"<I\", 2) + b\"\".join(struct.pack(\"<HHI\", *entry) for entry in ((1, 7, 0xFFFFFFFF), (2, 7, int(sys.argv[2])), (4, 5, 0xFFFFFFFF), (16, 5, 0xFFFFFFFF), (32, 5, 0xFFFFFFFF))))" /srv/qorpera-links/acl "$(id -u desktop)"
+	[[ $(stat -c "%U:%G %a" /srv/qorpera-links/acl) == "root:root 755" ]] || { echo "the folder with an ACL does not look like a folder of root alone" >&2; exit 1; }
+	runuser -u desktop -- ln -s "$secret" /srv/qorpera-links/group/planted.png
+	desktop shot /srv/qorpera-links/group/planted.png >/dev/null 2>&1 || true
+	[[ ! -L /srv/qorpera-links/group/planted.png ]] && untouched ||
+		{ echo "a picture was written through a link in a folder a group can write, or the link stayed" >&2; exit 1; }
+	desktop shot /srv/qorpera-links/group/a.png >/dev/null && [[ $(stat -c %U /srv/qorpera-links/group/a.png) == desktop ]] ||
+		{ echo "root wrote a picture in a folder that a group can write" >&2; exit 1; }
+	refused=$(desktop shot /srv/qorpera-links/acl/a.png 2>&1 || true)
+	[[ $refused == *"/srv/qorpera-links/acl has an ACL that lets others write"* && ! -e /srv/qorpera-links/acl/a.png ]] ||
+		{ echo "root wrote a picture in a folder that an ACL opens to another account: $refused" >&2; exit 1; }
+	roots_own || { echo "saving pictures changed something of root" >&2; exit 1; }
+	# Rows 9 and 10 of the list: the Desktop folder of the account. Made a link to a folder of root, nothing is put
+	# there: not a link, not a copy the account could read itself, not a copy root reads for it.
+	runuser -u desktop -- sh -c "rm -rf /home/desktop/Desktop && ln -s /etc/qorpera-machine /home/desktop/Desktop"
+	for words in "/tmp/site-links" "/tmp/site-links --copy" "$mine/agent.txt --copy"; do
+		if desktop open $words >/dev/null 2>&1; then echo "something was put on a desktop folder that is a link to a folder of root" >&2; exit 1; fi
+	done
+	[[ $(stat -c "%U:%G %a" /etc/qorpera-machine) == "root:root 755" && -z $(ls -A /etc/qorpera-machine) ]] ||
+		{ echo "a folder of root was changed through the desktop account link" >&2; exit 1; }
+	runuser -u desktop -- rm /home/desktop/Desktop
+	# And while the account keeps making the names root would use there links to a folder of root and to the file:
+	# root links, copies and hands over nothing in that folder itself, so nothing of root gains a name, an owner or a byte.
+	runuser -u desktop -- mkdir /home/desktop/Desktop
+	swapping /home/desktop/Desktop "for name in site-links site-links-2 site-links-3 agent.txt agent-2.txt tree tree-2; do ln -sfn $mine/folder \$name 2>/dev/null; rm -rf \$name; ln -sfn $secret \$name 2>/dev/null; rm -rf \$name; done"
+	for _ in $(seq 1 10); do
+		for words in "-- /tmp/site-links" "--copy -- /tmp/site-links" "--copy -- $mine/agent.txt" "--copy -- $mine/tree"; do
+			"$files" open $words >/dev/null 2>&1 || true
+		done
+	done
+	swapped
+	roots_own || { echo "a race in the desktop folder changed something of root" >&2; exit 1; }
+	if leaked; then echo "a race in the desktop folder gave the account bytes of a file only root can read" >&2; exit 1; fi
+	# What an agent itself names on a way of root alone is still copied, as the account own: a file only root can
+	# read, and a folder, in which a link stays a link (the account gets the name it points at, never what is there).
+	runuser -u desktop -- sh -c "cd /home/desktop/Desktop && find . -mindepth 1 -delete"
+	desktop open "$mine/agent.txt" --copy | grep -q "(on the desktop as agent.txt)$" && "$files" open --copy -- "$mine/tree" >/dev/null
+	[[ $(stat -c "%U:%G %F" /home/desktop/Desktop/agent.txt) == "desktop:desktop regular file" &&
+		$(cat /home/desktop/Desktop/agent.txt) == qorpera-agent-chose-this && $(cat /home/desktop/Desktop/tree/inner/b.txt) == inner &&
+		$(readlink /home/desktop/Desktop/tree/to-the-file) == "$secret" && -z $(find /home/desktop/Desktop ! -user desktop) ]] ||
+		{ echo "what an agent named on a way of root alone was not copied to the desktop as the account own" >&2; exit 1; }
+	# A folder in it that another than root can write makes the whole not of root alone: root reads none of it for the
+	# account, and the copy that had begun does not stay.
+	chmod 0777 "$mine/tree/inner"
+	if "$files" open --copy -- "$mine/tree" >/dev/null 2>&1; then echo "root read a folder that others can write, for the desktop account" >&2; exit 1; fi
+	chmod 0700 "$mine/tree/inner"
+	[[ ! -e /home/desktop/Desktop/tree-2 ]] || { echo "a copy that did not come whole stayed on the desktop" >&2; exit 1; }
+	# A copy that is cut off leaves nothing that is not whole (review r1 F1 of #1712): it is made under a name the
+	# desktop does not show and gets its name in one step. Here the account side is ended by another (as the memory
+	# guard would end it) once a part of a large folder is written: what is then on the desktop under the name is the
+	# whole folder or nothing, and nothing stays on its way, because root has the account take that away.
+	mkdir "$mine/large"
+	for part in a b c; do head -c 100000000 /dev/zero >"$mine/large/$part.bin"; done
+	"$files" open --copy -- "$mine/large" >/dev/null 2>&1 &
+	for _ in $(seq 1 500); do [[ -n $(find /home/desktop/Desktop -maxdepth 2 -path "*/.qorpera-desktop-copy.*/*.bin" 2>/dev/null) ]] && break; sleep 0.01; done
+	pkill -KILL -u desktop -f "desktop-files account take" || true
+	wait || true
+	[[ ! -e /home/desktop/Desktop/large ]] || diff -r "$mine/large" /home/desktop/Desktop/large >/dev/null ||
+		{ echo "a copy that was cut off left a part of itself on the desktop" >&2; exit 1; }
+	[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||
+		{ echo "a copy on its way stayed on the desktop: $(ls -A /home/desktop/Desktop | tr "\n" " ")" >&2; exit 1; }
+	# The same for a copy the account makes itself, with its cp (review r2 F1 of #1712). The cp is held, the account
+	# side is ended by another, and root has what was on its way taken away. The cp, let go again, must not be there
+	# to write after that: it is ended with its side and collected before anything is taken away.
+	mkdir /tmp/large-links && cp "$mine/large"/*.bin /tmp/large-links/
+	"$files" open --copy -- /tmp/large-links >/dev/null 2>&1 &
+	for _ in $(seq 1 500); do pkill -STOP -u desktop -x cp && break; sleep 0.01; done
+	# (Root holds its own stop signals back; a process of the account holds none back.)
+	blocked=$(awk "/^SigBlk:/ { print \$2 }" "/proc/$(pgrep -u desktop -x cp | head -1)/status" 2>/dev/null || true)
+	pkill -KILL -u desktop -f "desktop-files account copy" || true
+	wait || true
+	left=$(pgrep -u desktop -x cp || true)
+	pkill -CONT -u desktop -x cp || true
+	sleep 1
+	[[ -z $left ]] || { echo "the cp of a copy whose side was ended was still there when root had the copy taken away" >&2; exit 1; }
+	[[ -z $blocked || $blocked == 0000000000000000 ]] || { echo "the cp of the desktop account holds signals back: $blocked" >&2; exit 1; }
+	[[ ! -e /home/desktop/Desktop/large-links ]] || diff -r /tmp/large-links /home/desktop/Desktop/large-links >/dev/null ||
+		{ echo "a copy whose side was ended left a part of itself on the desktop" >&2; exit 1; }
+	[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||
+		{ echo "a copy on its way came back after it was taken away: $(ls -A /home/desktop/Desktop | tr "\n" " ")" >&2; exit 1; }
+	# Root asked to stop while such a copy is being made (review r4 F1 of #1712): its stop signals are held back
+	# from its start to its last statement, so nothing of it runs because of one. It ends the account side, collects
+	# it, has what was on its way taken away, and only then ends, by the signal. A second signal changes nothing.
+	runuser -u desktop -- rm -rf /home/desktop/Desktop/large-links
+	"$files" open --copy -- /tmp/large-links >/dev/null 2>&1 &
+	asked=$!
+	for _ in $(seq 1 500); do [[ -n $(find /home/desktop/Desktop -maxdepth 2 -path "*/.qorpera-desktop-copy.*/*.bin" 2>/dev/null) ]] && break; sleep 0.01; done
+	kill -TERM "$asked" && kill -HUP "$asked" || true
+	status=0
+	wait "$asked" || status=$?
+	[[ $status == 129 || $status == 143 || $status == 0 ]] || { echo "root asked to stop while copying ended with $status" >&2; exit 1; }
+	[[ -z $(pgrep -u desktop -f "desktop-files account" || true) && -z $(pgrep -u desktop -x cp || true) ]] ||
+		{ echo "root asked to stop while copying left a process of the desktop account" >&2; exit 1; }
+	[[ ! -e /home/desktop/Desktop/large-links ]] || diff -r /tmp/large-links /home/desktop/Desktop/large-links >/dev/null ||
+		{ echo "root asked to stop while copying left a part of the copy on the desktop" >&2; exit 1; }
+	[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||
+		{ echo "root asked to stop while copying left the copy on its way: $(ls -A /home/desktop/Desktop | tr "\n" " ")" >&2; exit 1; }
+	# A caller that ignores a signal (nohup) has it ignored by root too (review r5 F1 of #1712): held back, even an
+	# ignored signal would wait and be read as a stop. Under ten SIGHUP the copy runs to its end.
+	runuser -u desktop -- rm -rf /home/desktop/Desktop/large-links
+	(trap "" HUP; exec "$files" open --copy -- /tmp/large-links >/dev/null 2>&1) &
+	asked=$!
+	for _ in $(seq 1 500); do [[ -n $(find /home/desktop/Desktop -maxdepth 2 -path "*/.qorpera-desktop-copy.*/*.bin" 2>/dev/null) ]] && break; sleep 0.01; done
+	for _ in $(seq 1 10); do kill -HUP "$asked" 2>/dev/null || true; done
+	status=0
+	wait "$asked" || status=$?
+	[[ $status == 0 ]] && diff -r /tmp/large-links /home/desktop/Desktop/large-links >/dev/null ||
+		{ echo "a copy whose caller ignores SIGHUP did not run to its end under SIGHUP (exit $status)" >&2; exit 1; }
+	rm -rf "$mine/large" /tmp/large-links
+	roots_own || { echo "copying for the desktop changed something of root" >&2; exit 1; }
+	if leaked; then echo "bytes of a file only root can read are in the desktop account folders" >&2; exit 1; fi
+	rm -rf "$mine" /srv/qorpera-links /tmp/qorpera-links /tmp/site-links
 	desktop stop >/dev/null
 	gone || exit 1
 	[[ -d /run/qorpera-desktop && -z $(ls -A /run/qorpera-desktop) ]] || { echo "the notes of root outlived the desktop" >&2; exit 1; }

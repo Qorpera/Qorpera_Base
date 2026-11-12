@@ -211,6 +211,7 @@ test("the image has a desktop that only `desktop start` starts, with Chromium sa
 		},
 		{ file: "desktop-look", installedPath: "/opt/qorpera-machine/desktop-look", mode: "0555" },
 		{ file: "desktop-dock-open", installedPath: "/opt/qorpera-machine/desktop-dock-open", mode: "0555" },
+		{ file: "desktop-files", installedPath: "/opt/qorpera-machine/desktop-files", mode: "0555" },
 		{
 			file: "qorpera-machine-desktop.tmpfiles",
 			installedPath: "/etc/tmpfiles.d/qorpera-machine-desktop.conf",
@@ -500,12 +501,17 @@ test("a desktop is asked for: small machines refuse it, chosen files open on it,
 	assert.match(command, /\nMIN_MEMORY_KB=3500000\n/);
 	assert.match(command, /if \(\( cpus < MIN_CPUS \|\| memory < MIN_MEMORY_KB \)\); then\n\t\t\tfail "this machine is too small for a desktop: [^\n]*machine_start with desktop true" 3\n/);
 	// Files and folders are put on the desktop as links (the company's stay where they are) and opened; a folder with a
-	// page is served on the machine's loopback only.
-	assert.match(command, /ln -s -- "\$path" "\$place"\n/);
+	// page is served on the machine's loopback only. The desktop's own account does it (desktop-files, the test "root
+	// follows no link" below).
+	const files = read("deploy/machine/desktop-files");
+	assert.match(files, /\n\t\t\t\tos\.symlink\(path, place\)\n\t\t\t\tbreak\n/);
 	// Nothing on the desktop is ever replaced: the same link is used again, and a taken name gets a number (review r1 F1).
 	assert.doesNotMatch(command, /rm -rf -- "\$place"/);
-	assert.match(command, /if \(\( ! copy \)\) && \[\[ -L \$place && \$\(readlink -- "\$place"\) == "\$path" \]\]; then break; fi\n/);
-	assert.match(command, /if \[\[ ! -e \$place && ! -L \$place \]\]; then\n\t\t\tif \(\( copy \)\); then\n\t\t\t\tcp -a -- "\$path" "\$place"\n/);
+	assert.match(files, /\n\t\t\texcept FileExistsError:\n\t\t\t\tif os\.path\.islink\(place\) and os\.readlink\(place\) == path:\n\t\t\t\t\tbreak\n/);
+	assert.match(
+		files,
+		/\n\tfor candidate in names\(name, folder\):\n\t\tplace = os\.path\.join\(DESK, candidate\)\n\t\tif rename\(-100, os\.fsencode\(on_its_way\), -100, os\.fsencode\(place\), 1\) == 0:\n\t\t\treturn place\n\t\tif ctypes\.get_errno\(\) != errno\.EEXIST:\n\t\t\traise OSError\(/,
+	);
 	for (const line of [
 		'\tdesktop open /tmp/site --copy | grep "as site-2)" >/dev/null || { echo "a copy did not get a name of its own" >&2; exit 1; }\n',
 		"\techo edited >/home/desktop/Desktop/site-2/kept.txt\n",
@@ -521,7 +527,7 @@ test("a desktop is asked for: small machines refuse it, chosen files open on it,
 	assert.match(command, /if \[\[ \$text == \*\[!\[:ascii:\]\]\* \|\| \$text == \*\[\[:cntrl:\]\]\* \]\]; then\n/);
 	assert.match(command, /xdotool key --clearmodifiers shift\+Insert\n/);
 	// A picture nothing could show is refused.
-	assert.match(command, /&& ! mountpoint -q \/company; then\n\t\tfail "this machine has no company folder at \/company/);
+	assert.match(files, /and not os\.path\.ismount\("\/company"\):\n\t\traise Stop\(\n\t\t\t"this machine has no company folder at \/company, so company_read cannot show a picture saved there"\n[^\n]*\n\t\t\t4,\n/);
 	// A forgotten desktop stops itself; every desktop command puts that off.
 	const session = read("deploy/machine/desktop-session");
 	assert.match(session, /\nIDLE=\$\{QORPERA_DESKTOP_IDLE_SECONDS:-3600\}\n/);
@@ -1185,10 +1191,8 @@ test("root keeps its notes about the desktop where only root writes (review r1 F
 	// root may read (the company folder's view, with its pass) and ask the dock for a terminal: root's launch read the file
 	// and handed it to a program of the account as LANGUAGE. The same reads ran before #1704 for an agent's own
 	// `desktop open`, so the hole was in the live image too.
-	// Not part of this: what `desktop open` does in the account's Desktop folder, `--copy`, and `desktop shot`. They work
-	// on paths with root's rights exactly as before #1704 (the pins of the test "a desktop is asked for" above are the
-	// old ones); a check on a path followed by a use of the path cannot make them safe (review r2), so a change of its
-	// own does, with root holding the folders it works in.
+	// What `desktop open` does in the account's Desktop folder, `--copy`, and `desktop shot`: the test "root follows no
+	// link" below.
 	const unit = read("deploy/machine/qorpera-machine-desktop.service");
 	const command = read("deploy/machine/desktop");
 	const session = read("deploy/machine/desktop-session");
@@ -1221,7 +1225,7 @@ test("root keeps its notes about the desktop where only root writes (review r1 F
 	assert.match(code, /\nRUN=\/run\/qorpera-desktop\nSESSION=\$RUN\/session\n/);
 	assert.deepEqual(
 		[...new Set([...code.matchAll(/\$RUN\/([a-z-]+)/g)].map((match) => match[1]))].toSorted(),
-		["drawn-", "lang", "last-use", "serve-", "session", "tz"],
+		["drawn-", "lang", "last-use", "selftest-", "serve-", "session", "shot-", "tz"],
 	);
 	assert.deepEqual(
 		[...code.matchAll(/\$SESSION[^\n]*/g)].map((match) => match[0]),
@@ -1291,6 +1295,541 @@ test("root keeps its notes about the desktop where only root writes (review r1 F
 		'\trunuser -u desktop -- ln -s "$secret" /run/qorpera-desktop-dock/files\n',
 		'\t[[ -z $(ls -A /run/qorpera-desktop-dock) ]] && untouched || { echo "a dock request that was a link or a pipe was followed, or stayed" >&2; exit 1; }\n',
 		'\t[[ -d /run/qorpera-desktop && -z $(ls -A /run/qorpera-desktop) ]] || { echo "the notes of root outlived the desktop" >&2; exit 1; }\n',
+	])
+		assert.ok(imageScript.includes(line), line);
+});
+
+test("root follows no link for the desktop's account: open, --copy and shot (review r2 of #1704)", async (t) => {
+	// Review r2 of #1704: `desktop open`, `--copy` and `desktop shot` worked on paths with root's rights, and a look at a
+	// path before its use closed nothing (a link in the middle of a way root owns; a part of the way planted after the
+	// look; a folder of root's that a group or an ACL lets others write). The rule since: root never decides by looking
+	// at a path and then using the path. The work runs as the account, or root works inside folders it holds, on a way
+	// of folders that root alone can change with no link on it (deploy/machine/desktop-files; README, "Root and the
+	// desktop's account").
+	const command = read("deploy/machine/desktop");
+	const files = read("deploy/machine/desktop-files");
+	const code = command
+		.split("\n")
+		.filter((line) => !line.trimStart().startsWith("#"))
+		.join("\n");
+
+	// The command itself does nothing with a target's path: no look, no link, no copy, no folder, no owner. Its only
+	// file tests are on root's own notes and on the zone table, and its one look at a mount is the company folder's
+	// fixed place (for the dock's Files and terminal).
+	for (const gone of [/\brealpath\b/, /\breadlink\b/, /\bchown\b/, /\binstall\b/, /\bcp\b/, /\bln\b/, /\bmkdir\b/, /\brunuser\b/, /\bmktemp\b/, /\$DESK\b/])
+		assert.doesNotMatch(code, gone);
+	assert.deepEqual(code.match(/\bmountpoint\b[^\n;]*/g), ["mountpoint -q /company"]);
+	assert.deepEqual(
+		[...new Set([...code.matchAll(/(?:\[\[|&&|\|\|) !? ?-[efdLhrwxsSpbcOGN] (\S+)/g)].map((match) => match[1]))].toSorted(),
+		["$RUN/lang", "$RUN/serve-$port", "$RUN/tz", "$note", "/usr/share/zoneinfo/$tz"],
+	);
+	assert.match(code, /\nFILES=\/opt\/qorpera-machine\/desktop-files\n/);
+	assert.match(code, /\n\tfound=\$\("\$FILES" "\$\{words\[@\]\}" -- "\$target"\) \|\| exit \$\?\n\t\{ IFS= read -r kind && IFS= read -r path && IFS= read -r shown; \} <<<"\$found" \|\| fail /);
+	// A picture is taken into root's own folder, handed to desktop-files, and what is printed is read from root's own.
+	assert.match(
+		code,
+		/\n\tlocal file=\$1 taken=\$RUN\/shot-\$\$\.png status=0\n\t\[\[ \$file == \*\.png \]\] \|\| fail "FILE must end in \.png" 2\n\tscrot --overwrite --silent -- "\$taken"\n\t"\$FILES" save "\$taken" -- "\$file" \|\| status=\$\?\n\tif \(\( status == 0 \)\); then\n\t\techo "\$file \$\(stat -c %s -- "\$taken"\) bytes \$\(file -b -- "\$taken" \|/,
+	);
+	assert.match(code, /\n\tpicture=\$RUN\/selftest-\$\$\.png\n/);
+
+	// The program. Root's side opens every part of a way inside the one before, never through a link.
+	assert.match(files, /^#!\/usr\/bin\/python3 -I\n/);
+	assert.match(files, /\nFOLDER = os\.O_RDONLY \| os\.O_DIRECTORY \| os\.O_NOFOLLOW \| os\.O_CLOEXEC\n/);
+	assert.match(files, /\nHOLD = os\.O_PATH \| os\.O_NOFOLLOW \| os\.O_CLOEXEC\n/);
+	assert.match(files, /\nREAD = os\.O_RDONLY \| os\.O_NONBLOCK \| os\.O_NOCTTY \| os\.O_CLOEXEC\n/);
+	assert.match(files, /\nTOP = "\/"\nOWNER = 0\n/);
+	assert.equal(files.match(/\b(?:TOP|OWNER) = /g).length, 2, "nothing in the program moves where root's ways start or whose they are");
+	// Every open there is: a folder entered inside the one held, a name taken hold of inside a folder held, what a
+	// hold holds (through the kernel's own name for the descriptor), root's own picture, the picture's place inside
+	// the folder held, and the account's new file for a copy on its way on its own desktop.
+	assert.deepEqual(
+		[...files.matchAll(/os\.open\(([^\n]*)/g)].map((match) => match[1]),
+		[
+			"TOP, FOLDER)]",
+			"name, FOLDER, dir_fd=self.fd)",
+			"name, HOLD, dir_fd=way.fd)",
+			'f"/proc/self/fd/{hold}", READ)',
+			"name, HOLD, dir_fd=fd)",
+			'f"/proc/self/fd/{hold}", READ)',
+			'f"/proc/self/fd/{hold}", READ), "rb") as file:',
+			"name, HOLD, dir_fd=way.fd))",
+			"picture, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)",
+			"name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o644, dir_fd=way.fd)",
+			"on_its_way, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)",
+		],
+	);
+	// Root's side looks no name up twice and asks nothing of a path: what a thing is, the descriptor that holds it says
+	// (fstat). Its only words about paths are joining, tidying and the fixed mount point.
+	const roots = files.slice(files.indexOf("\n# Root's side: folders it holds.\n"), files.indexOf("\n# The account's side: its own rights, its own Desktop folder.\n"));
+	assert.ok(roots.length > 5000);
+	for (const gone of [/os\.l?stat\(/, /os\.access\(/, /os\.path\.(?:exists|lexists|isdir|isfile|islink|realpath|abspath)\(/, /shutil\.(?:copy|copy2|copyfile|copytree|rmtree|move)\(/, /os\.(?:rename|replace|unlink|remove|rmdir|symlink|link|chown|chmod|lchown|makedirs)\(/])
+		assert.doesNotMatch(roots, gone);
+	assert.deepEqual([...new Set([...roots.matchAll(/os\.path\.(\w+)\(/g)].map((match) => match[1]))].toSorted(), ["ismount", "join", "normpath"]);
+	assert.deepEqual(
+		[...roots.matchAll(/os\.(?:readlink|mkdir|listdir|getxattr|fchmod)\(([^\n]*)/g)].map((match) => match[1]),
+		['fd, "system.posix_acl_access")', "name, 0o755, dir_fd=self.fd)", "fd)):", '"", dir_fd=hold)', "taken, 0o644)"],
+	);
+	// The account's side: the account's user, group and other groups, no right kept or gained, a new environment, a
+	// session of its own, no descriptor but its three; and it refuses to run as root.
+	assert.match(
+		files,
+		/\n\treturn \["\/usr\/bin\/setpriv", f"--reuid=\{ACCOUNT\}", f"--regid=\{ACCOUNT\}", "--init-groups", "--inh-caps=-all", "--no-new-privs",\n\t\t"--reset-env", "--", "\/usr\/bin\/python3", "-I", SELF, "account", \*words\]/,
+	);
+	// Root's wait for it has an end (the account can stop its own process, and `desktop` holds the desktop's lock).
+	assert.match(files, /\nPATIENCE = \{"place": 30, "save": 30, "tidy": 30, "copy": 900, "take": 900\}\n/);
+	// What the account makes in steps lies under a name of its own until it is whole, and root has the account take it
+	// away when the work did not end well, whatever ended it (review r1 F1 of #1712). The taking away is not ended by
+	// a stop asked of root's side (review r4 F1).
+	assert.match(files, /\nSTAGE = "\.qorpera-desktop-copy\."\n/);
+	assert.match(
+		files,
+		/\n\tmark = secrets\.token_hex\(8\)\n\ttry:\n\t\tdone = as_account\(work, \*words, mark, feed=feed\)\n\texcept BaseException:\n\t\tas_account\("tidy", mark, \*beside, heed=False\)\n\t\traise\n\tif done\[0\] != 0:\n\t\tas_account\("tidy", mark, \*beside, heed=False\)\n\treturn done\n/,
+	);
+	assert.deepEqual(
+		[...files.matchAll(/(?:staged|as_account)\("(\w+)"/g)].map((match) => `${match[0].split("(")[0]} ${match[1]}`),
+		["as_account tidy", "as_account tidy", "staged take", "staged copy", "as_account place", "staged save"],
+	);
+
+	// A signal that asks root's side to stop runs no code of it, ever (reviews r3 and r4 of #1712 each found a window
+	// between a handler that raised and the bookkeeping around it; there is no handler any more). The three signals are
+	// held back from the first statement of root's side on; the kernel keeps one that arrives waiting, however many
+	// arrive. Root's side looks for one at three statements of `as_account` (before it starts the account's side, at
+	// every tick while it waits for it, after it has collected it) and stops for one at ONE statement, its last.
+	assert.match(files, /\nSTOPS = \(signal\.SIGTERM, signal\.SIGHUP, signal\.SIGINT\)\n/);
+	assert.match(files, /\nHEEDED = frozenset\(\)\nSTARTED_WITH = frozenset\(\)\n/);
+	assert.match(files, /\nTICK = 0\.05\n/);
+	// Which of the three it heeds is decided once, from what root's side was started with (review r5 F1 of #1712): a
+	// signal its caller ignores (`nohup desktop open ...`) or holds back itself is neither held back here nor read,
+	// and is at the end what it was at the start. Held back, even an ignored signal would wait and be read as a stop.
+	assert.match(
+		files,
+		/\ndef heed_stops\(\):\n\t"""[^\n]*"""\n\tglobal HEEDED, STARTED_WITH\n\tSTARTED_WITH = frozenset\(signal\.pthread_sigmask\(signal\.SIG_BLOCK, \(\)\)\)\n\tHEEDED = frozenset\(number for number in STOPS if signal\.getsignal\(number\) is not signal\.SIG_IGN and number not in STARTED_WITH\)\n\tsignal\.pthread_sigmask\(signal\.SIG_BLOCK, HEEDED\)\n/,
+	);
+	assert.equal(files.match(/\b(?:HEEDED|STARTED_WITH) = /g).length, 4, "decided in one place");
+	assert.match(files, /\n\tif os\.geteuid\(\) != 0:\n\t\traise Stop\("desktop-files runs as root, from `desktop`"\)\n\theed_stops\(\)\n\tmatch words:\n/);
+	assert.match(files, /\ndef stop_asked\(\):\n\t"""[^\n]*"""\n\treturn min\(signal\.sigpending\(\) & HEEDED, default=0\)\n/);
+	const lines = files.split("\n").filter((line) => !line.trimStart().startsWith("#"));
+	assert.deepEqual(
+		lines.filter((line) => /stop_asked\(\)|\bleave\(/.test(line) && !line.includes('"""')).map((line) => line.trim()),
+		["def stop_asked():", "def leave(number):", "if heed and stop_asked():", "if heed and stop_asked():", "if heed and stop_asked():", "if stop_asked():", "leave(stop_asked())"],
+	);
+	// No handler is installed and nothing waits for a signal: the only calls about signals are the deciding and
+	// holding back at the start, the look, the leaving (the heeded signal's own default again, then let through), and
+	// the giving of what root's side was started with to the account's processes. (The account's group is ended with
+	// SIGKILL, which nothing ignores or holds back: pinned below.)
+	assert.deepEqual(
+		lines.filter((line) => /\bsignal\.(?!SIG[A-Z_]+\b)\w+\(/.test(line)).map((line) => line.trim()),
+		[
+			"STARTED_WITH = frozenset(signal.pthread_sigmask(signal.SIG_BLOCK, ()))",
+			"HEEDED = frozenset(number for number in STOPS if signal.getsignal(number) is not signal.SIG_IGN and number not in STARTED_WITH)",
+			"signal.pthread_sigmask(signal.SIG_BLOCK, HEEDED)",
+			"return min(signal.sigpending() & HEEDED, default=0)",
+			"signal.signal(number, signal.SIG_DFL)",
+			"signal.pthread_sigmask(signal.SIG_UNBLOCK, {number})",
+			"preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, STARTED_WITH),",
+		],
+	);
+	for (const gone of [/\bimport threading\b/, /KeyboardInterrupt/, /UNDER_WAY|NOTED/, /set_wakeup_fd|sigwait|sigtimedwait|siginterrupt/, /sys\.exit\(128/]) assert.doesNotMatch(files, gone);
+	// It leaves BY the signal, as its last statement, whatever its work came to.
+	assert.match(
+		files,
+		/\n\tsys\.stdout\.flush\(\)\n\tsys\.stderr\.flush\(\)\n\tsignal\.signal\(number, signal\.SIG_DFL\)\n\tsignal\.pthread_sigmask\(signal\.SIG_UNBLOCK, \{number\}\)\n\tos\._exit\(128 \+ number\)\n/,
+	);
+	assert.ok(
+		files.endsWith(
+			'if __name__ == "__main__":\n\tcode = 0\n\ttry:\n\t\tmain(sys.argv[1:])\n\texcept Stop as stop:\n\t\tprint(stop, file=sys.stderr)\n\t\tcode = stop.code\n\texcept OSError as error:\n\t\tprint(f"desktop-files: {error}", file=sys.stderr)\n\t\tcode = 1\n\texcept Stopped:\n\t\tcode = 1\n\t# The one place where root\'s side stops for a signal: here, with its work done or given up and nothing left of it.\n\tif stop_asked():\n\t\tleave(stop_asked())\n\tsys.exit(code)\n',
+		),
+	);
+
+	// The whole of a piece of the account's work, pinned. Root's side is one thread and never waits blindly: it waits
+	// a tick at a time, on a descriptor that says the account's side has ended (before it is collected), and looks
+	// between ticks. However the side ends, all of its group that is left is ended, the side is collected, and what it
+	// left behind is collected too (root's side is its subreaper), before anything else (review r2 F1: its `cp`, when
+	// another ended the side itself, would else write after the cleanup). The group is only signalled before the
+	// side is collected, so its number is still its own.
+	const whole = files.slice(files.indexOf("\ndef as_account(*words, feed=None, heed=True):\n"), files.indexOf("\ndef end_group(process):\n"));
+	const steps = whole
+		.split("\n")
+		.filter((line) => line.trim() && !line.trimStart().startsWith("#"))
+		.join("\n");
+	assert.equal(
+		steps.slice(steps.indexOf("\tif heed and stop_asked():\n")),
+		[
+			"\tif heed and stop_asked():",
+			"\t\traise Stopped()",
+			"\tctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0)",
+			'\tout, err = os.memfd_create("answer"), os.memfd_create("complaint")',
+			"\treads, writes = os.pipe() if feed else (None, None)",
+			"\tprocess = ended = fed = failure = code = None",
+			"\timpatient = []",
+			"\tdeadline = time.monotonic() + PATIENCE[words[0]]",
+			"\tdef look():",
+			"\t\tif not impatient and time.monotonic() >= deadline:",
+			"\t\t\timpatient.append(True)",
+			"\t\t\tend_group(process)",
+			"\t\tif heed and stop_asked():",
+			"\t\t\tend_group(process)",
+			"\ttry:",
+			"\t\ttry:",
+			"\t\t\tprocess = subprocess.Popen(",
+			"\t\t\t\taccount_command(words),",
+			"\t\t\t\tstdin=reads if feed else subprocess.DEVNULL,",
+			"\t\t\t\tstdout=out,",
+			"\t\t\t\tstderr=err,",
+			"\t\t\t\tclose_fds=True,",
+			"\t\t\t\tstart_new_session=True,",
+			'\t\t\t\tcwd="/",',
+			"\t\t\t\tpreexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, STARTED_WITH),",
+			"\t\t\t)",
+			"\t\t\tended = os.pidfd_open(process.pid)",
+			"\t\t\tif feed:",
+			"\t\t\t\tos.close(reads)",
+			"\t\t\t\treads = None",
+			"\t\t\t\tos.set_blocking(writes, False)",
+			"\t\t\t\ttry:",
+			"\t\t\t\t\tfed = feed(Pipe(writes, ended, look))",
+			"\t\t\t\texcept BrokenPipeError:",
+			"\t\t\t\t\tpass",
+			"\t\t\t\texcept Exception as error:",
+			"\t\t\t\t\tfailure = error",
+			"\t\t\t\tos.close(writes)",
+			"\t\t\t\twrites = None",
+			"\t\t\twhile not select.select([ended], [], [], TICK)[0]:",
+			"\t\t\t\tlook()",
+			"\t\tfinally:",
+			"\t\t\tfor fd in (reads, writes, ended):",
+			"\t\t\t\tif fd is not None:",
+			"\t\t\t\t\tos.close(fd)",
+			"\t\t\tif process is not None:",
+			"\t\t\t\tend_group(process)",
+			"\t\t\t\tcode = process.wait()",
+			"\t\t\t\twhile True:",
+			"\t\t\t\t\ttry:",
+			"\t\t\t\t\t\tos.waitpid(-process.pid, 0)",
+			"\t\t\t\t\texcept ChildProcessError:",
+			"\t\t\t\t\t\tbreak",
+			"\t\tif heed and stop_asked():",
+			"\t\t\traise Stopped()",
+			"\t\tif failure:",
+			"\t\t\traise failure",
+			"\t\tif impatient:",
+			'\t\t\treturn 1, "", f"the desktop\'s user did not finish within {PATIENCE[words[0]]} seconds, and was stopped", fed',
+			"\t\tif code < 0:",
+			'\t\t\treturn 1, "", f"the desktop\'s user\'s side was ended before it finished (signal {-code})", fed',
+			"\t\tsaid = []",
+			"\t\tfor fd in (out, err):",
+			"\t\t\tos.lseek(fd, 0, os.SEEK_SET)",
+			'\t\t\tsaid.append(os.read(fd, 65536).decode("utf-8", "replace"))',
+			'\t\treturn code, said[0], "".join(c if c.isprintable() else " " for c in said[1][:1500]).strip(), fed',
+			"\tfinally:",
+			"\t\tos.close(out)",
+			"\t\tos.close(err)",
+		].join("\n"),
+	);
+	// Root's copy goes down a pipe it never waits on blindly either.
+	assert.match(
+		files,
+		/\n\tdef write\(self, data\):\n\t\tleft = memoryview\(data\)\n\t\twhile left:\n\t\t\tended, takes, _ = select\.select\(\[self\.ended\], \[self\.fd\], \[\], TICK\)\n\t\t\tif ended:\n\t\t\t\traise BrokenPipeError\(errno\.EPIPE, "the account's side has ended"\)\n\t\t\tif takes:\n\t\t\t\ttry:\n\t\t\t\t\tleft = left\[os\.write\(self\.fd, left\) :\]\n\t\t\t\texcept BlockingIOError:\n\t\t\t\t\tpass\n\t\t\tif time\.monotonic\(\) - self\.looked >= TICK:\n\t\t\t\tself\.looked = time\.monotonic\(\)\n\t\t\t\tself\.look\(\)\n\t\treturn len\(data\)\n/,
+	);
+	assert.match(files, /\ndef end_group\(process\):\n\t"""[^\n]*"""\n\ttry:\n\t\tos\.killpg\(process\.pid, signal\.SIGKILL\)\n\texcept ProcessLookupError:\n\t\tpass\n/);
+	assert.equal(files.match(/process\.wait\(\)/g).length, 1, "the account's side is collected in one place, after its group was ended");
+	assert.match(files, /\n\tif os\.geteuid\(\) != 0:\n\t\traise Stop\("desktop-files runs as root, from `desktop`"\)\n/);
+	for (const file of ["deploy/machine/desktop", "deploy/machine/desktop-dock-open"])
+		assert.equal(spawnSync("bash", ["-n", join(repositoryRoot, file)], { encoding: "utf8" }).status, 0, file);
+
+	// The program's own code, walked through its cases as one account (scripts/fixtures/machine-desktop-files.py says
+	// what that leaves to the image build).
+	if (process.platform !== "linux") return t.skip("the program is for a Linux machine (its ACLs, its descriptors)");
+	if (process.getuid() === 0) return t.skip("as root nothing is refused for want of a right: these cases need a plain account");
+	const base = await mkdtemp(join(tmpdir(), "qorpera-desktop-files-"));
+	let cases;
+	let said;
+	try {
+		const run = spawnSync(
+			"python3",
+			["-I", "-B", join(repositoryRoot, "scripts/fixtures/machine-desktop-files.py"), join(repositoryRoot, "deploy/machine/desktop-files"), base, "cases"],
+			{ encoding: "utf8" },
+		);
+		assert.equal(run.status, 0, run.stderr);
+		cases = JSON.parse(run.stdout);
+		said = run.stderr;
+	} finally {
+		spawnSync("chmod", ["-R", "u+rwx", base]);
+		await rm(base, { recursive: true, force: true });
+	}
+	// Root's side asked to stop, with its signals held back as its `main` holds them: one signal and a burst of ten
+	// (of the three kinds), a second into a copy, as the account's side is started, and as root's side ends what a
+	// side that is gone left (its `cp`, still to write); a second signal right after root's side ended the copy for
+	// the first, with the copy's staging there (review r4 F1 of #1712); and signals as the taking away is started.
+	// Each time root's side gives the work up, the taking away runs to its end, three seconds later the desk holds
+	// nothing, and only then does root's side end, BY the signal (the lowest that waits). The account's side and its
+	// child hold no signal back.
+	// Last: root's side started with SIGHUP ignored, as under nohup (review r5 F1 of #1712). It holds back and reads
+	// the other two only. A copy under a burst of ten SIGHUP runs to its end and nothing waits; a second copy in the
+	// same run is stopped by a SIGTERM as any is, after the cleanup. The account's side ignores SIGHUP too, as any
+	// program started under nohup does, and is ended all the same (the group's end is SIGKILL).
+	for (const [when, signalled, gaveUp, waits] of [
+		["copying", "SIGTERM", "stopped", [15]],
+		["copying:10", "SIGHUP", "stopped", [1, 2, 15]],
+		["spawn", "SIGTERM", "stopped", [15]],
+		["spawn:10", "SIGHUP", "stopped", [1, 2, 15]],
+		["end", "SIGTERM", "stopped", [15]],
+		["end:10", "SIGHUP", "stopped", [1, 2, 15]],
+		["twice", "SIGHUP", "stopped", [1, 15]],
+		["tidy", "SIGTERM", "the desktop's user could not put /everyone/large on the desktop", [15]],
+		["tidy:10", "SIGHUP", "the desktop's user could not put /everyone/large on the desktop", [1, 2, 15]],
+		["ignored", "SIGTERM", "stopped", [15]],
+	]) {
+		const second = await mkdtemp(join(tmpdir(), "qorpera-desktop-files-"));
+		try {
+			const words = ["-I", "-B", join(repositoryRoot, "scripts/fixtures/machine-desktop-files.py"), join(repositoryRoot, "deploy/machine/desktop-files"), second, `stopped:${when}`];
+			const ignored = when === "ignored";
+			const run = ignored
+				? spawnSync("sh", ["-c", 'trap "" HUP; exec python3 "$@"', "sh", ...words], { encoding: "utf8" })
+				: spawnSync("python3", words, { encoding: "utf8" });
+			assert.deepEqual([run.status, run.signal], [null, signalled], `${when}: ${run.stderr}`);
+			const { "its child": child, "under SIGHUP": underHangups, ...told } = JSON.parse(run.stdout);
+			const copied = { large: "folder 755", "large/a.bin": "file 644" };
+			assert.deepEqual(
+				told,
+				{
+					"gave up": gaveUp,
+					calls: ["copy", "tidy"],
+					desk: ignored ? copied : {},
+					waits,
+					"held back": ignored ? [2, 15] : [1, 2, 15],
+					"the account's side": { "held back": [], "ignores SIGHUP": ignored },
+				},
+				when,
+			);
+			assert.deepEqual(
+				underHangups,
+				ignored ? { answer: ["folder", `${second}/desk/large`, "large"], calls: ["copy"], waits: [], "on the desk": Object.keys(copied) } : undefined,
+				when,
+			);
+			// (The child's note is there when it was not ended before it could write it.)
+			if (child) assert.equal(child, "SigBlk:\t0000000000000000", when);
+			if (when === "copying") assert.equal(child, "SigBlk:\t0000000000000000");
+		} finally {
+			spawnSync("chmod", ["-R", "u+rwx", second]);
+			await rm(second, { recursive: true, force: true });
+		}
+	}
+	const { top, desk } = cases;
+	const answer = (result) => {
+		assert.ok("answer" in result, JSON.stringify(result));
+		return result.answer;
+	};
+
+	// The walk: part by part from the top, `..` back up the way it came, and a folder made inside the one held.
+	assert.deepEqual(answer(cases.walk.plain), ["/own/tree/inner", "b.txt"]);
+	assert.deepEqual(answer(cases.walk.folder), ["/own/tree", null]);
+	assert.deepEqual(answer(cases.walk.up), ["/own", "file.txt"]);
+	assert.deepEqual(answer(cases.walk.top), ["/", null]);
+	assert.equal(cases.walk.missing.missing, "/own/nope");
+	assert.deepEqual([answer(cases.walk.made), cases.walk["made mode"]], [["/own/made/deeper", "x.png"], "755"]);
+	assert.equal(cases.walk.relative.stop, "not a path: 'own/x'");
+	// Never through a link (review r2 F1: the link in the middle), and only through folders that root alone can change:
+	// its owner, the group's and everyone's right to write, and an ACL (review r2 F2).
+	assert.equal(cases.walk["link in the middle"].refused, "/own/hop is a link, or not a folder");
+	assert.equal(cases.walk.group.refused, "/own/group can be written by its group or by everyone");
+	assert.equal(cases.walk.everyone.refused, "/everyone can be written by its group or by everyone");
+	assert.equal(cases.walk["another owner"].refused, "/ belongs to another account than root");
+	assert.ok(!cases.acl.unsupported, `this file system keeps no ACL to test with: ${cases.acl.unsupported}`);
+	// An ACL that lets a named account write, cut down by its mask: the folder's rights read 755, and it is refused all
+	// the same. One that lets it read only is no hindrance.
+	assert.deepEqual([cases.acl.mode, cases.acl.write.refused], ["755", "/own/acl-write has an ACL that lets others write"]);
+	assert.deepEqual(answer(cases.acl.read), ["/own/acl-read", "x"]);
+	// What root reads is a file or a folder it opened itself: no link, nothing else.
+	assert.deepEqual(
+		Object.fromEntries(Object.entries(cases.source).map(([name, result]) => [name, result.answer ?? result.refused ?? result.missing])),
+		{
+			"file.txt": "file",
+			tree: "folder",
+			hop: "/own/hop is a link",
+			"hop-file": "/own/hop-file is a link",
+			"tree/pipe": "/own/tree/pipe is neither a file nor a folder",
+			nope: "/own/nope",
+		},
+	);
+
+	// What root sends: a link as a link, what is neither file, folder nor link left out, and `done` last.
+	assert.deepEqual(cases.archive.members, [
+		["copy", "folder"],
+		["copy/a.txt", "file"],
+		["copy/inner", "folder"],
+		["copy/inner/b.txt", "file"],
+		["copy/link", "link:../file.txt"],
+		["done", "file"],
+	]);
+	assert.equal(cases.archive["left out"], 1);
+	assert.match(said, /^1 of its entries are neither file, folder nor link: left out$/m);
+	// A folder in it that others can write stops root in the middle: the name the half copy held is free again (the
+	// account's own copy took it, pipe and all), and nothing of root's sending stayed.
+	assert.deepEqual(cases.archive["a folder others can write"], { answer: ["folder", `${desk}/tree`, "tree"], calls: ["take", "tidy", "copy"] });
+	assert.equal(cases.archive["on the desk"]["tree/pipe"], "other");
+	assert.deepEqual(
+		Object.keys(cases.archive["on the desk"]).filter((name) => !name.startsWith("tree")),
+		[],
+	);
+
+	// `desktop open --copy` on a way of root's alone: root reads, the account's side puts it on the desktop under a
+	// free name, with the rights it had; nothing is replaced.
+	assert.deepEqual(cases.copy.file, { answer: ["file", `${desk}/file.txt`, "file.txt"], calls: ["take"] });
+	assert.deepEqual(cases.copy["file again"], { answer: ["file", `${desk}/file-2.txt`, "file-2.txt"], calls: ["take"] });
+	assert.deepEqual(cases.copy.folder, { answer: ["folder", `${desk}/tree`, "tree"], calls: ["take"] });
+	assert.deepEqual(cases.copy.site, { answer: ["site", `${desk}/site`, "site"], calls: ["take"] });
+	assert.deepEqual(cases.copy.missing, { answer: null, calls: [] });
+	assert.deepEqual(cases.copy["whole disk"], { stop: "open a file or a folder, not the whole disk", code: 2, calls: [] });
+	assert.deepEqual(cases.copy.desk, {
+		"file.txt": "file 600",
+		"file-2.txt": "file 600",
+		site: "folder 755",
+		"site/index.html": "file 644",
+		tree: "folder 755",
+		"tree/a.txt": "file 644",
+		"tree/inner": "folder 750",
+		"tree/inner/b.txt": "file 640",
+		"tree/link": "link:../file.txt",
+	});
+	assert.equal(cases.copy["file text"], "a file of root\n");
+	// What is not on such a way is the account's own work, start to end: root opens none of it. The review's link (as
+	// the last name, and in the middle) leads to a file the account cannot read: nothing is copied.
+	assert.deepEqual(cases.account.copy, { answer: ["file", `${desk}/notes.txt`, "notes.txt"], calls: ["copy"] });
+	assert.deepEqual(cases.account["a link at the end"], {
+		stop: "the desktop's user cannot read /own/hop-file, and root does not read it for the desktop: /own/hop-file is a link. Root copies for the desktop only what lies on a way of folders that root alone can change, with no link on it (under /root, say).",
+		code: 1,
+		calls: ["copy", "tidy"],
+	});
+	assert.match(cases.account["a link in the middle"].stop, /^the desktop's user cannot read \/own\/hop\/hidden\.txt, and root does not read it for the desktop: \/own\/hop is a link, or not a folder\. /);
+	assert.deepEqual(cases.account["a link in the middle"].calls, ["copy", "tidy"]);
+	// A link on the desktop: a taken name gets a number, the same link is used again, and what the account cannot read
+	// gets no link.
+	assert.deepEqual(cases.account.place, { answer: ["site", `${top}/everyone/site`, "site-2"], calls: ["place"] });
+	assert.deepEqual(cases.account["place again"], cases.account.place);
+	assert.deepEqual(cases.account["place cannot read"], { stop: "the desktop's user cannot read /own/elsewhere/hidden.txt: open it with --copy", code: 1, calls: ["place"] });
+	for (const missing of ["place missing", "place missing where root alone writes", "address"]) assert.deepEqual(cases.account[missing], { answer: null, calls: ["place"] });
+	assert.equal(cases.account.desk["site-2"], `link:${top}/everyone/site`);
+	assert.deepEqual(
+		Object.keys(cases.account.desk).filter((name) => !(name in cases.copy.desk)).toSorted(),
+		["notes.txt", "site-2"],
+	);
+	// A copy that did not come whole is not kept, whatever rights its folders came with.
+	assert.deepEqual(cases.take["not whole"], [1, "half could not be copied to the desktop: it did not come whole", true]);
+	assert.deepEqual(cases.take["bad name"], [1, 1]);
+	// Nor is one that was cut off (review r1 F1 of #1712): at root's patience with a part of it written, with all of
+	// it written and no name yet, by the account's process being ended by another, by a file it could not read half
+	// way. Each time the account takes away what was on its way, the desk gains no name, hidden ones included, and
+	// the next copy gets the plain name, not a numbered one.
+	const stopped = "the desktop's user did not finish within 1 seconds, and was stopped";
+	assert.deepEqual(cases.cut["a copy root sends, partly written, at root's patience"], { stop: stopped, code: 1, calls: ["take", "tidy"], "new on the desk": [] });
+	assert.deepEqual(cases.cut["a copy the account makes, at root's patience"], { stop: stopped, code: 1, calls: ["copy", "tidy"], "new on the desk": [] });
+	assert.deepEqual(cases.cut["a copy the account makes, its process ended by another"], {
+		stop: "the desktop's user's side was ended before it finished (signal 9)",
+		code: 1,
+		calls: ["copy", "tidy"],
+		"new on the desk": [],
+	});
+	// The side gone while its `cp` is still to write (review r2 F1 of #1712): ended by another, ended by its own error,
+	// ended at root's patience. Three seconds later (the `cp` would have written after two) the desk has gained nothing.
+	assert.deepEqual(cases.cut["a copy whose side another ends while its cp is still to write"], {
+		stop: "the desktop's user's side was ended before it finished (signal 9)",
+		code: 1,
+		calls: ["copy", "tidy"],
+		"new on the desk": [],
+	});
+	assert.deepEqual(
+		[cases.cut["a copy whose side ends itself while its cp is still to write"].calls, cases.cut["a copy whose side ends itself while its cp is still to write"]["new on the desk"]],
+		[["copy", "tidy"], []],
+	);
+	assert.deepEqual(cases.cut["a copy at root's patience while its cp is still to write"], { stop: stopped, code: 1, calls: ["copy", "tidy"], "new on the desk": [] });
+	assert.match(cases.cut["a copy that fails half way"].stop, /^the desktop's user cannot read \/everyone\/half, and root does not read it for the desktop: \/everyone can be written by its group or by everyone\. /);
+	assert.deepEqual([cases.cut["a copy that fails half way"].calls, cases.cut["a copy that fails half way"]["new on the desk"]], [["copy", "tidy"], []]);
+	assert.deepEqual(cases.cut["a copy after those"], { answer: ["folder", `${desk}/large`, "large"], calls: ["copy"], "new on the desk": ["large", "large/a.bin"] });
+	// A link is made in one step: cut off after it, it is there whole, and the next press for it uses it again.
+	assert.deepEqual(cases.cut["a link, after it was made"], { stop: stopped, code: 1, calls: ["place"], "new on the desk": ["large-2"] });
+	assert.deepEqual(cases.cut["the link again"], { answer: ["folder", `${top}/everyone/large`, "large-2"], calls: ["place"], "new on the desk": [] });
+	// A picture the account saves is written beside its place and put there when whole: cut off before that, no
+	// picture appears, one that was there stays as it was, and nothing is left beside.
+	for (const picture of ["a picture, written and not yet in its place", "a picture over one that was there"]) {
+		assert.match(cases.cut[picture].stop, /^no picture saved at \/everyone\/[a-z/]+\.png: \/everyone can be written by its group or by everyone, so root does not write there, and the desktop's user could not either \(the desktop's user did not finish within 1 seconds, and was stopped\)\. /);
+		assert.deepEqual(cases.cut[picture].calls, ["save", "tidy"]);
+	}
+	assert.deepEqual(cases.cut.pictures, [[], "the picture that was there", []]);
+
+	// `desktop shot`: on a way of root's alone root writes inside the folder it holds, making the folders; never
+	// through a link; elsewhere the account's side saves, and root writes nothing.
+	assert.deepEqual(cases.save.own, { answer: null, calls: [] });
+	assert.deepEqual(cases.save["own again"], { answer: null, calls: [] });
+	assert.deepEqual(cases.save["a link"], { stop: "no picture saved at /own/link.png: /own/link.png is a link", code: 1, calls: [] });
+	assert.deepEqual(cases.save["a folder"], { stop: "no picture saved at /own/tree/: it is a folder", code: 1, calls: [] });
+	assert.equal(cases.save.company.code, 4);
+	assert.match(cases.save.company.stop, /^this machine has no company folder at \/company, /);
+	assert.deepEqual(cases.save.elsewhere, { answer: null, calls: ["save"] });
+	assert.deepEqual(cases.save["elsewhere, a link"], { answer: null, calls: ["save"] });
+	assert.deepEqual(cases.save.written, [true, "755", "a file of root\n", true]);
+
+	// An account's side that does not answer is ended, and the command with it.
+	assert.deepEqual(cases.patience, { stop: "the desktop's user did not finish within 1 seconds, and was stopped", code: 1, calls: [] });
+
+	// The account's answer is checked before root goes by it.
+	assert.deepEqual(answer(cases.answers.good), ["site", "/home/desktop/Desktop/a b", "a b"]);
+	for (const bad of ["kind", "relative", "a name with a slash", "more lines"]) assert.equal(cases.answers[bad].stop, "the desktop's user gave no answer that can be used", bad);
+	assert.equal(cases.answers["a control character"].stop, "target has a name with a character that cannot be shown: not opened");
+	assert.deepEqual([cases.answers.failed.stop, cases.answers["whole disk"].code], ["it said why", 2]);
+	// A name that is taken gets a number: before a file's ending, after a folder's name.
+	assert.deepEqual(cases.names, {
+		site: ["site", "site-2", "site-3"],
+		"notes.txt": ["notes.txt", "notes-2.txt", "notes-3.txt"],
+		".bashrc": [".bashrc", ".bashrc-2", ".bashrc-3"],
+		"a.tar.gz": ["a.tar.gz", "a.tar-2.gz", "a.tar-3.gz"],
+		"x.": ["x.", "x-2.", "x-3."],
+		"v1.2": ["v1.2", "v1.2-2", "v1.2-3"],
+	});
+
+	// The image build proves, with the two real accounts and a file only root can read, what one account cannot: the
+	// review's two cases, the races in the account's Desktop folder, and that what an agent names is still copied.
+	for (const line of [
+		"\tfiles=/opt/qorpera-machine/desktop-files\n",
+		'\tleaked() { grep -rqs -- "$marker" /home/desktop /run/qorpera-desktop/session /tmp/qorpera-links /srv/qorpera-links; }\n',
+		'\troots_own() { [[ $(ls -A "$mine/folder") == keep && -z $(find "$mine" /etc/qorpera-machine ! -user root) ]] && untouched; }\n',
+		'\tln -s /home/desktop/input "$mine/input" && ln -s /home/desktop/input /srv/qorpera-links/input && ln -s /home/desktop/way "$mine/way"\n',
+		'\tfor target in "$mine/input" /srv/qorpera-links/input /home/desktop/input "$mine/way/file.txt" /home/desktop/way/file.txt; do\n',
+		'\t\tif desktop open "$target" --copy >/dev/null 2>&1 || desktop open "$target" >/dev/null 2>&1; then\n',
+		'\tswapping /home/desktop "echo mine >input.new; mv -f input.new input; ln -sfn $secret input"\n',
+		'\tfor _ in $(seq 1 25); do "$files" open --copy -- /srv/qorpera-links/input >/dev/null 2>&1 || true; done\n',
+		'\trunuser -u desktop -- ln -s "$mine/folder" /tmp/qorpera-links/capture\n',
+		'\trunuser -u desktop -- ln -s "$secret" /tmp/qorpera-links/frame.png\n',
+		"\tif desktop shot /tmp/qorpera-links/capture/frame.png >/dev/null 2>&1; then\n",
+		"\tdesktop shot /tmp/qorpera-links/frame.png >/dev/null 2>&1 || true\n\t[[ ! -L /tmp/qorpera-links/frame.png ]] && untouched ||\n",
+		"\tdesktop shot /srv/qorpera-links/group/planted.png >/dev/null 2>&1 || true\n\t[[ ! -L /srv/qorpera-links/group/planted.png ]] && untouched ||\n",
+		'\tswapping /tmp/qorpera-links "rm -rf capture; mkdir capture; rm -rf capture; ln -s $mine/folder capture"\n',
+		"\tfor _ in $(seq 1 25); do desktop shot /tmp/qorpera-links/capture/frame.png >/dev/null 2>&1 || true; done\n",
+		'\tdesktop shot "$mine/pictures/new/a.png" | grep -q " 1600 x 1000$" &&\n',
+		"\tchgrp desktop /srv/qorpera-links/group && chmod 0775 /srv/qorpera-links/group\n",
+		'\t[[ $refused == *"/srv/qorpera-links/acl has an ACL that lets others write"* && ! -e /srv/qorpera-links/acl/a.png ]] ||\n',
+		'\trunuser -u desktop -- sh -c "rm -rf /home/desktop/Desktop && ln -s /etc/qorpera-machine /home/desktop/Desktop"\n',
+		'\tfor words in "/tmp/site-links" "/tmp/site-links --copy" "$mine/agent.txt --copy"; do\n',
+		'\tswapping /home/desktop/Desktop "for name in site-links site-links-2 site-links-3 agent.txt agent-2.txt tree tree-2; do ln -sfn $mine/folder \\$name 2>/dev/null; rm -rf \\$name; ln -sfn $secret \\$name 2>/dev/null; rm -rf \\$name; done"\n',
+		'\t\tfor words in "-- /tmp/site-links" "--copy -- /tmp/site-links" "--copy -- $mine/agent.txt" "--copy -- $mine/tree"; do\n',
+		'\tdesktop open "$mine/agent.txt" --copy | grep -q "(on the desktop as agent.txt)$" && "$files" open --copy -- "$mine/tree" >/dev/null\n',
+		'\t\t$(readlink /home/desktop/Desktop/tree/to-the-file) == "$secret" && -z $(find /home/desktop/Desktop ! -user desktop) ]] ||\n',
+		'\tif "$files" open --copy -- "$mine/tree" >/dev/null 2>&1; then echo "root read a folder that others can write, for the desktop account" >&2; exit 1; fi\n',
+		'\t"$files" open --copy -- "$mine/large" >/dev/null 2>&1 &\n',
+		'\tpkill -KILL -u desktop -f "desktop-files account take" || true\n',
+		'\t[[ ! -e /home/desktop/Desktop/large ]] || diff -r "$mine/large" /home/desktop/Desktop/large >/dev/null ||\n',
+		'\t[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||\n',
+		'\t"$files" open --copy -- /tmp/large-links >/dev/null 2>&1 &\n\tfor _ in $(seq 1 500); do pkill -STOP -u desktop -x cp && break; sleep 0.01; done\n',
+		'\tpkill -KILL -u desktop -f "desktop-files account copy" || true\n\twait || true\n\tleft=$(pgrep -u desktop -x cp || true)\n\tpkill -CONT -u desktop -x cp || true\n',
+		'\t[[ -z $left ]] || { echo "the cp of a copy whose side was ended was still there when root had the copy taken away" >&2; exit 1; }\n',
+		'\tblocked=$(awk "/^SigBlk:/ { print \\$2 }" "/proc/$(pgrep -u desktop -x cp | head -1)/status" 2>/dev/null || true)\n',
+		'\t[[ -z $blocked || $blocked == 0000000000000000 ]] || { echo "the cp of the desktop account holds signals back: $blocked" >&2; exit 1; }\n',
+		'\tkill -TERM "$asked" && kill -HUP "$asked" || true\n\tstatus=0\n\twait "$asked" || status=$?\n\t[[ $status == 129 || $status == 143 || $status == 0 ]] ||',
+		'\t[[ -z $(pgrep -u desktop -f "desktop-files account" || true) && -z $(pgrep -u desktop -x cp || true) ]] ||\n',
+		'\t(trap "" HUP; exec "$files" open --copy -- /tmp/large-links >/dev/null 2>&1) &\n',
+		'\tfor _ in $(seq 1 10); do kill -HUP "$asked" 2>/dev/null || true; done\n',
+		'\t[[ $status == 0 ]] && diff -r /tmp/large-links /home/desktop/Desktop/large-links >/dev/null ||\n',
+		'\tif leaked; then echo "bytes of a file only root can read are in the desktop account folders" >&2; exit 1; fi\n',
 	])
 		assert.ok(imageScript.includes(line), line);
 });
