@@ -1299,6 +1299,199 @@ test("root keeps its notes about the desktop where only root writes (review r1 F
 		assert.ok(imageScript.includes(line), line);
 });
 
+test("a desktop started without --tz takes the company's time zone from the machine's file", async () => {
+	// deploy/machine/README.md, "The desktop's look", Time (12 Nov 2026; Jonas, asked whether each company gets a time
+	// zone taken from the founder's browser so the clock is right: "Yes, from the browser"). The machine's executor
+	// writes the company's zone as one word into /etc/qorpera-machine/desktop-timezone (root's, 0644), as it writes the
+	// figure. The word came from a browser, through SQL and the executor, which each hold it to a zone name's shape; the
+	// command holds it to the same shape again, before the word is ever part of a path.
+	const command = read("deploy/machine/desktop");
+	const code = command
+		.split("\n")
+		.filter((line) => !line.trimStart().startsWith("#"))
+		.join("\n");
+	assert.match(code, /\nTIMEZONE=\/etc\/qorpera-machine\/desktop-timezone\n/);
+	const reader = code.match(/\ncompany_zone\(\) \{\n(?:\t[^\n]*\n)+\}\n/)?.[0];
+	assert.ok(reader, "company_zone");
+	// The shape: letters, digits, _, + and -, in at most three parts with a / between; no dot, so no way out of the
+	// folder of zones. It is checked, and the word's length, before the word follows /usr/share/zoneinfo/.
+	assert.ok(reader.includes("plain='^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+){0,2}$'\n"), "the shape of a zone's name");
+	assert.ok(
+		reader.includes("\n\t[[ ${#name} -le 64 && $name =~ $plain && -f /usr/share/zoneinfo/$name ]] || return 0\n"),
+		"the shape is checked before the word is part of a path",
+	);
+	// Only a plain file of root's own is read, never a link or a pipe, and no more of it than a zone's name is long.
+	assert.ok(reader.includes("\n\t[[ -f $TIMEZONE && ! -L $TIMEZONE && -O $TIMEZONE ]] || return 0\n"));
+	assert.ok(reader.includes('\n\tIFS= read -r -n 65 name <"$TIMEZONE" 2>/dev/null || true\n'));
+	// The file's bytes are exactly the word, or the word and one line end (review r1 F1 of #1718). The shell's read
+	// skips a NUL and stops at a line end, so a file that only reads as a zone's name passed while the sizes were
+	// compared: `Europe/Copen\0hagen` with no line end is one byte more than the word read, as a line end is. What was
+	// read is compared with the file byte for byte, before the word is looked at.
+	assert.ok(
+		reader.includes(
+			`\n\tprintf '%s' "$name" | cmp -s -- "$TIMEZONE" - || printf '%s\\n' "$name" | cmp -s -- "$TIMEZONE" - || return 0\n\t[[ \${#name} -le 64 && `,
+		),
+		"the file is compared with the word byte for byte, before the word is looked at",
+	);
+	assert.doesNotMatch(reader, /== size|\+ 1/);
+	// The command reads the file in that one function, and names a zone's file in two places: there and where --tz is
+	// checked.
+	assert.equal(code.match(/\$TIMEZONE/g).length, 7);
+	assert.equal(reader.match(/\$TIMEZONE/g).length, 7);
+	assert.equal(code.match(/\/usr\/share\/zoneinfo\//g).length, 2);
+	// Only a start that starts the desktop takes it, and only when --tz named none: --tz wins, and a desktop that runs
+	// keeps the zone it has. The word then goes where --tz's goes: root's note, which the programs, the dock's clocks and
+	// the backdrop's hour follow.
+	assert.equal(code.match(/company_zone/g).length, 2);
+	assert.ok(
+		code.includes('\n\t\trm -f -- "$drawn"\n\t\t[[ -n $tz ]] || tz=$(company_zone)\n\tfi\n\ttouch "$RUN/last-use"\n'),
+		"the start of a desktop takes the company's zone when --tz named none",
+	);
+	assert.ok(code.includes('\n\tif [[ -n $tz ]]; then printf %s "$tz" >"$RUN/tz"; fi\n'));
+	assert.ok(
+		code.includes(
+			'\t\t--tz) tz=${2:?--tz ZONE}; [[ $tz =~ ^[A-Za-z0-9_+/-]+$ && -f /usr/share/zoneinfo/$tz ]] || fail "no such time zone: $tz" 2 ;;\n',
+		),
+		"--tz is checked as before",
+	);
+	assert.match(command, /default en-US, and the company's\n +time zone when the machine names one, else UTC\)/);
+
+	// The reader itself, run on files in a folder of this test's: the zones are the machine's own, as on every machine.
+	for (const zone of ["UTC", "Europe/Copenhagen", "America/Argentina/Buenos_Aires", "Etc/GMT+2"])
+		assert.ok(existsSync(`/usr/share/zoneinfo/${zone}`), `this machine has the zone ${zone}`);
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-desktop-timezone-"));
+	try {
+		const file = join(temporary, "desktop-timezone");
+		/** What a start without --tz would take with the file as it is now, in a language whose letters are not ASCII's. */
+		const taken = () => {
+			const result = spawnSync("bash", ["-euo", "pipefail", "-c", `TIMEZONE=$1${reader}company_zone`, "bash", file], {
+				encoding: "utf8",
+				timeout: 10_000,
+				env: { ...process.env, LC_ALL: "C.UTF-8" },
+			});
+			assert.equal(result.status, 0, `${result.error ?? ""}${result.stderr}`);
+			assert.equal(result.stderr, "");
+			return result.stdout;
+		};
+		// No file: nothing, and the desktop is on UTC as before.
+		assert.equal(taken(), "");
+		// The word as the executor writes it (with a line end), and without one.
+		for (const zone of ["UTC", "Europe/Copenhagen", "America/Argentina/Buenos_Aires", "Etc/GMT+2"]) {
+			await writeFile(file, `${zone}\n`);
+			assert.equal(taken(), zone);
+			await writeFile(file, zone);
+			assert.equal(taken(), zone);
+		}
+		// A real file somewhere else, which a word that climbed out of the folder of zones would reach.
+		assert.ok(existsSync("/usr/share/zoneinfo/../../../etc/passwd"), "the way out exists");
+		for (const [why, bytes] of [
+			["an empty file", ""],
+			["a line end alone", "\n"],
+			["two line ends", "Europe/Copenhagen\n\n"],
+			["two words on two lines", "Europe/Copenhagen\nEurope/Paris\n"],
+			["two words on one line", "Europe/Copenhagen Europe/Paris\n"],
+			["a space before", " Europe/Copenhagen\n"],
+			["a space after", "Europe/Copenhagen \n"],
+			["a carriage return", "Europe/Copenhagen\r\n"],
+			["a zone this machine does not have", "Mars/Olympus_Mons\n"],
+			["a folder of zones", "Europe\n"],
+			["a way out of the folder", "../../../etc/passwd\n"],
+			["a way out and back in", "Europe/../Europe/Copenhagen\n"],
+			["a dot", "./Europe/Copenhagen\n"],
+			["a whole path", "/usr/share/zoneinfo/Europe/Copenhagen\n"],
+			["an empty part", "Europe//Copenhagen\n"],
+			["a / at the end", "Europe/Copenhagen/\n"],
+			["four parts", "a/b/c/d\n"],
+			["a NUL in the word", "Europe/Copen\0hagen\n"],
+			// Review r1 F1 of #1718: one byte that the shell's read skips or stops at, where a line end could be. Each
+			// file below reads as a zone's name and is one byte longer than it, or as long.
+			["a NUL in the word and no line end", "Europe/Copen\0hagen"],
+			["a NUL before the word", "\0Europe/Copenhagen"],
+			["a NUL after the word", "Europe/Copenhagen\0"],
+			["a NUL in a short word", "U\0TC"],
+			["a NUL after a short word", "UTC\0"],
+			["a NUL and a line end", "UTC\0\n"],
+			["a line end and a NUL", "UTC\n\0"],
+			["two NULs", "UTC\0\0"],
+			["a NUL where a letter was", "Europe/Copen\0agen\n"],
+			["a carriage return and no line end", "Europe/Copenhagen\r"],
+			["a carriage return before the word", "\rEurope/Copenhagen\n"],
+			["a line end before the word", "\nEurope/Copenhagen"],
+			["a line end before and after the word", "\nEurope/Copenhagen\n"],
+			["a second line with no line end", "Europe/Copenhagen\nUTC"],
+			["a second line that is one letter", "Europe/Copenhagen\nA"],
+			["a tab after the word", "UTC\t"],
+			["a space after the word and no line end", "UTC "],
+			["a form feed after the word", "UTC\f"],
+			["a vertical tab after the word", "UTC\v"],
+			["a backslash at the end of the line", "UTC\\\n"],
+			["a backslash and a second line", "UT\\\nC\n"],
+			["a byte order mark before the word", Buffer.from([0xef, 0xbb, 0xbf, 0x55, 0x54, 0x43, 0x0a])],
+			["a byte order mark and no line end", Buffer.from([0xef, 0xbb, 0xbf, 0x55, 0x54, 0x43])],
+			["a UTF-16 word", Buffer.from("\ufeffUTC\n", "utf16le")],
+			["a byte that is no ASCII after the word", Buffer.from([0x55, 0x54, 0x43, 0xff])],
+			["a byte that is no ASCII in the word", Buffer.from([0x55, 0x54, 0x80, 0x43, 0x0a])],
+			["a delete byte after the word", Buffer.from([0x55, 0x54, 0x43, 0x7f])],
+			["a letter that is not ASCII's", "Europe/København\n"],
+			["a command", "$(id)\n"],
+			["a word and a command", "Europe/Copenhagen;id\n"],
+			["a word of 65 letters", `${"A".repeat(65)}\n`],
+			["a word of 65 letters and no line end", "A".repeat(65)],
+			["a long file that begins with a zone", `Europe/Copenhagen\n${"x".repeat(4096)}`],
+			["a long file of one word", "A".repeat(100_000)],
+		]) {
+			await writeFile(file, bytes);
+			assert.equal(taken(), "", why);
+		}
+		// That the danger was real: the shell's own read, as the command has it, takes the finding's file for the word.
+		await writeFile(file, "Europe/Copen\0hagen");
+		const shell = spawnSync("bash", ["-c", 'IFS= read -r -n 65 name <"$1" || true; printf %s "$name"', "bash", file], {
+			encoding: "utf8",
+		});
+		assert.equal(shell.stdout, "Europe/Copenhagen", "the shell's read skips a NUL");
+		assert.equal(taken(), "");
+		// And the word alone, or with its one line end, is still taken after all of that.
+		await writeFile(file, "Europe/Copenhagen");
+		assert.equal(taken(), "Europe/Copenhagen");
+		await writeFile(file, "Europe/Copenhagen\n");
+		assert.equal(taken(), "Europe/Copenhagen");
+		await rm(file);
+		// A link is not followed, though it leads to a file that names a zone; nor is a link that leads nowhere read.
+		const real = join(temporary, "real");
+		await writeFile(real, "Europe/Copenhagen\n");
+		assert.equal(spawnSync("ln", ["-s", real, file]).status, 0);
+		assert.equal(taken(), "", "a link");
+		await rm(file);
+		assert.equal(spawnSync("ln", ["-s", join(temporary, "nowhere"), file]).status, 0);
+		assert.equal(taken(), "", "a link to nowhere");
+		await rm(file);
+		// A pipe is not opened (a read of it would wait for ever), and a folder is no word.
+		assert.equal(spawnSync("mkfifo", [file]).status, 0);
+		assert.equal(taken(), "", "a pipe");
+		await rm(file);
+		await mkdir(file);
+		assert.equal(taken(), "", "a folder");
+	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
+
+	// The image build proves it on the image, with XFCE's own answers: a start without --tz follows the file; a desktop
+	// that runs keeps its zone and the next start takes the new word; --tz wins; a link is not followed; and the image
+	// keeps no such file.
+	for (const line of [
+		'\t\t\tdesktop status | grep "^running (.*, time zone $1)\\$" >/dev/null || return 1\n',
+		'\t\telif desktop status | grep "^running (.*time zone" >/dev/null; then\n',
+		'\t\tbackdrop_is neutral "${1:-UTC}" && [[ $(look -c xfce4-panel -p /plugins/plugin-3/timezone) == "${1:-UTC}" &&\n',
+		"\techo Pacific/Auckland >/etc/qorpera-machine/desktop-timezone\n\tdesktop start >/dev/null\n\tzone_is Pacific/Auckland ||",
+		"\techo America/New_York >/etc/qorpera-machine/desktop-timezone\n\tdesktop start >/dev/null\n\tzone_is Pacific/Auckland ||",
+		"\tdesktop stop >/dev/null\n\tdesktop start >/dev/null\n\tzone_is America/New_York ||",
+		"\tdesktop stop >/dev/null\n\tdesktop start --tz Asia/Tokyo >/dev/null\n\tzone_is Asia/Tokyo ||",
+		"\tln -sfn /root/qorpera-zone-check /etc/qorpera-machine/desktop-timezone\n\tdesktop start >/dev/null\n\tzone_is ||",
+		"\trm /etc/qorpera-machine/desktop-timezone /root/qorpera-zone-check\n",
+	])
+		assert.ok(imageScript.includes(line), line);
+});
+
 test("root follows no link for the desktop's account: open, --copy and shot (review r2 of #1704)", async (t) => {
 	// Review r2 of #1704: `desktop open`, `--copy` and `desktop shot` worked on paths with root's rights, and a look at a
 	// path before its use closed nothing (a link in the middle of a way root owns; a part of the way planted after the
@@ -1314,14 +1507,15 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 		.join("\n");
 
 	// The command itself does nothing with a target's path: no look, no link, no copy, no folder, no owner. Its only
-	// file tests are on root's own notes and on the zone table, and its one look at a mount is the company folder's
-	// fixed place (for the dock's Files and terminal).
+	// file tests are on root's own notes, on root's own word about the company's time zone (a file in /etc/qorpera-machine,
+	// a folder of root alone: the test "a desktop started without --tz" above) and on the zone table, and its one look at
+	// a mount is the company folder's fixed place (for the dock's Files and terminal).
 	for (const gone of [/\brealpath\b/, /\breadlink\b/, /\bchown\b/, /\binstall\b/, /\bcp\b/, /\bln\b/, /\bmkdir\b/, /\brunuser\b/, /\bmktemp\b/, /\$DESK\b/])
 		assert.doesNotMatch(code, gone);
 	assert.deepEqual(code.match(/\bmountpoint\b[^\n;]*/g), ["mountpoint -q /company"]);
 	assert.deepEqual(
 		[...new Set([...code.matchAll(/(?:\[\[|&&|\|\|) !? ?-[efdLhrwxsSpbcOGN] (\S+)/g)].map((match) => match[1]))].toSorted(),
-		["$RUN/lang", "$RUN/serve-$port", "$RUN/tz", "$note", "/usr/share/zoneinfo/$tz"],
+		["$RUN/lang", "$RUN/serve-$port", "$RUN/tz", "$TIMEZONE", "$note", "/usr/share/zoneinfo/$name", "/usr/share/zoneinfo/$tz"],
 	);
 	assert.match(code, /\nFILES=\/opt\/qorpera-machine\/desktop-files\n/);
 	assert.match(code, /\n\tfound=\$\("\$FILES" "\$\{words\[@\]\}" -- "\$target"\) \|\| exit \$\?\n\t\{ IFS= read -r kind && IFS= read -r path && IFS= read -r shown; \} <<<"\$found" \|\| fail /);
