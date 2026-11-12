@@ -1769,6 +1769,7 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		expect(rows(".context-menu")).not.toContain("Colour");
 		expect(rows(".context-menu")).toContain("Icon and colour");
 		// The group's Colour: the palette row of an app's panel, no icons, Default checked first.
+		const marketTile = group(element);
 		menu("group:market");
 		item(".context-menu", "Colour").click();
 		expect(swatches()).toEqual(palette);
@@ -1784,6 +1785,8 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		expect(colourOf("group:market")).toBe(colourNameHex("blue"));
 		expect(colourOf("app:brand")).toBe(colourNameHex("blue"));
 		expect(colourOf("app:plan")).toBe(colourNameHex("blue"));
+		// The group's tile is the same one, recoloured in place (review r2 F1 on #1694).
+		expect(group(element)).toBe(marketTile);
 		// A loose app takes one in its Icon and colour panel; Default takes it away again, and with nothing left the
 		// document has no colours.
 		menu("app:trips");
