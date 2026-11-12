@@ -1,5 +1,5 @@
 -- @fixture 652_folder_core_run_effects.test.sql until "-- 2. The native send"
--- 20260930652000: one tool result may take up to 32 KiB. The run's context view takes an output's envelope and its
+-- 20260930733000: one tool result may take up to 32 KiB. The run's context view takes an output's envelope and its
 -- read's included text up to 32,768 bytes each (8,192 before), and refuses one byte more; a run log's step keeps a
 -- result envelope up to 32,768 bytes as stored and refuses one byte more, while args, text and paths keep 8 KiB.
 
@@ -70,6 +70,6 @@ begin
 
 	-- Both bodies name the migration.
 	perform pg_temp.check(strpos(pg_get_functiondef('public.qorpera_folder_record_context_view(uuid,jsonb,jsonb)'::regprocedure),
-		'20260930652000') > 0 and strpos(pg_get_functiondef('public.qorpera_memory_run_step_line(text)'::regprocedure),
-		'20260930652000') > 0, 'the bodies name their migration');
+		'20260930733000') > 0 and strpos(pg_get_functiondef('public.qorpera_memory_run_step_line(text)'::regprocedure),
+		'20260930733000') > 0, 'the bodies name their migration');
 end $$;

@@ -6353,15 +6353,15 @@ each step. It now leaves the envelope.
 
 ### 2026-11-08 amendment: one tool result holds up to 32 KiB
 
-> **Proposed, not approved.** Built in the performance sprint's round 2 (measure T2), as a draft PR. Jonas decides.
-> It goes live only with the release that carries the rebuilt Codex pin and its runtime bundle together, after its
-> migration. It amends the 2026-10-21 amendment's item 5 ("The result fence stays at 8 KiB") and the native boundary's
-> 8 KiB envelope bound. Nothing else changes: every check on a result stays, and each result stays one host-issued
-> envelope.
+> **Proposed, not approved.** Built in the performance sprint's round 2 (measure T2), as a draft PR, and brought up
+> to master on 12 November 2026 by the lane that removes the agents' keyholes. Jonas decides. It goes live only with
+> the release that carries the rebuilt Codex pin and its runtime bundle together, after its migration. It amends the
+> 2026-10-21 amendment's item 5 ("The result fence stays at 8 KiB") and the native boundary's 8 KiB envelope bound.
+> Nothing else changes: every check on a result stays, and each result stays one host-issued envelope.
 
 1. **The bound.** One tool result's envelope, escaping and provenance included, is at most 32 KiB (32,768 bytes), not
    8 KiB. The patched Codex's result fence refuses a larger one, the runtime fits every result to it, and the run's
-   context view and run log check it (migration `20260930652000`).
+   context view and run log check it (migration `20260930733000`).
    - `company_read` asks for up to 32 KiB a call and shows as much as fits one result: about 31 KiB of plain text,
      less where characters need escaping. It was about 7 KiB.
    - Every other tool that pages to one result (`machine_read`, `read_context`, `zoom`, `read_event`, skills, coding

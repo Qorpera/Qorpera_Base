@@ -31,7 +31,7 @@ export const CLOUD_TOOL_RESULT_SCHEMA = "qorpera.cloud-tool-result/v1";
 /** One tool result's envelope, as the patched Codex's result fence bounds it (`MAX_RESULT_BYTES`, 32 KiB since perf
  * sprint T2; it was 8 KiB). The runtime bundle pins that binary, so the two move together: a runtime past its binary
  * would have every larger result refused at the fence. The context view and the run log check the same bound
- * (20260930652000). It is about 8,200 of the 12,000 tokens Codex's history keeps of one tool output. */
+ * (20260930733000). It is about 8,200 of the 12,000 tokens Codex's history keeps of one tool output. */
 export const MAX_CLOUD_TOOL_RESULT_BYTES = 32 * 1024;
 /** Room a tool leaves in MAX_CLOUD_TOOL_RESULT_BYTES for the envelope around its answer, which it measures with one more
  * level of escaping: the envelope takes 591 bytes, and 722 with the longest call id. A page that would not fit is cut

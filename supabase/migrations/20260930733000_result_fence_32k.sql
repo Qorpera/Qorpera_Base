@@ -20,13 +20,13 @@ declare
 	v_definition text;
 	v_anchor record;
 begin
-	if strpos(pg_get_functiondef(v_view), '20260930652000') > 0 or strpos(pg_get_functiondef(v_step), '20260930652000') > 0 then
-		raise exception '20260930652000 is already applied'; end if;
+	if strpos(pg_get_functiondef(v_view), '20260930733000') > 0 or strpos(pg_get_functiondef(v_step), '20260930733000') > 0 then
+		raise exception '20260930733000 is already applied'; end if;
 	v_definition := pg_get_functiondef(v_view);
 	for v_anchor in select * from (values
 		(E'\t\t\tor coalesce(v_output ->> ''bytes'','''') !~ ''^[1-9][0-9]{0,3}$''\n'
 			|| E'\t\t\tor (v_output ->> ''bytes'')::integer > 8192 then\n',
-		 E'\t\t\t-- 20260930652000: one result is up to 32 KiB, as the patched Codex fences it.\n'
+		 E'\t\t\t-- 20260930733000: one result is up to 32 KiB, as the patched Codex fences it.\n'
 			|| E'\t\t\tor coalesce(v_output ->> ''bytes'','''') !~ ''^[1-9][0-9]{0,4}$''\n'
 			|| E'\t\t\tor (v_output ->> ''bytes'')::integer > 32768 then\n'),
 		(E'\t\t\t\tor coalesce(v_output ->> ''includedBytes'','''') !~ ''^(0|[1-9][0-9]{0,3})$''\n'
@@ -34,7 +34,7 @@ begin
 		 E'\t\t\t\tor coalesce(v_output ->> ''includedBytes'','''') !~ ''^(0|[1-9][0-9]{0,4})$''\n'
 			|| E'\t\t\t\tor (v_output ->> ''includedBytes'')::integer > 32768\n')) a(old, new) loop
 		if (length(v_definition) - length(replace(v_definition, v_anchor.old, ''))) / length(v_anchor.old) <> 1 then
-			raise exception '20260930652000 anchor differs in qorpera_folder_record_context_view: %', v_anchor.old; end if;
+			raise exception '20260930733000 anchor differs in qorpera_folder_record_context_view: %', v_anchor.old; end if;
 		v_definition := replace(v_definition, v_anchor.old, v_anchor.new);
 	end loop;
 	execute v_definition;
@@ -42,11 +42,11 @@ begin
 	for v_anchor in select * from (values
 		(E'\t\tif octet_length((v_json -> ''args'')::text) > 8192 or octet_length((v_json -> ''text'')::text) > 8192\n'
 			|| E'\t\t\tor octet_length((v_json -> ''result'')::text) > 8192 or octet_length((v_json -> ''reads'')::text) > 16384 then\n',
-		 E'\t\t-- 20260930652000: a step keeps its whole result envelope, up to one result''s 32 KiB.\n'
+		 E'\t\t-- 20260930733000: a step keeps its whole result envelope, up to one result''s 32 KiB.\n'
 			|| E'\t\tif octet_length((v_json -> ''args'')::text) > 8192 or octet_length((v_json -> ''text'')::text) > 8192\n'
 			|| E'\t\t\tor octet_length((v_json -> ''result'')::text) > 32768 or octet_length((v_json -> ''reads'')::text) > 16384 then\n')) a(old, new) loop
 		if (length(v_definition) - length(replace(v_definition, v_anchor.old, ''))) / length(v_anchor.old) <> 1 then
-			raise exception '20260930652000 anchor differs in qorpera_memory_run_step_line: %', v_anchor.old; end if;
+			raise exception '20260930733000 anchor differs in qorpera_memory_run_step_line: %', v_anchor.old; end if;
 		v_definition := replace(v_definition, v_anchor.old, v_anchor.new);
 	end loop;
 	execute v_definition;
