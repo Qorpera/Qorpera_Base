@@ -529,7 +529,21 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	[[ $(systemctl is-active qorpera-machine-desktop-dock.path) == active ]] && ! systemctl is-failed --quiet qorpera-machine-desktop-dock.service ||
 		{ echo "the dock unit did not survive a program opened and closed in a row" >&2; exit 1; }
 	desktop stop >/dev/null
-	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
+	# Nothing of the desktop account runs any more. With the dock programs open, something of the account was listed in
+	# the instant after the stop and was gone a few milliseconds later (once in a build, once in four runs of these
+	# checks on a machine; not seen again in 51 stops looked at one by one). So a process that has ended and only waits
+	# to be collected is not counted, what still runs gets two seconds to end, and what is left then is named.
+	gone() {
+		local left=
+		for _ in $(seq 1 20); do
+			left=$(ps -u desktop -o stat=,pid=,args= 2>/dev/null | grep -v "^Z" | cut -c1-120 || true)
+			[[ -z $left ]] && return 0
+			sleep 0.1
+		done
+		echo "programs of the desktop outlived it: $(tr "\n" "|" <<<"$left")" >&2
+		return 1
+	}
+	gone || exit 1
 	[[ -z $(ls -A /run/qorpera-desktop-dock) ]] || { echo "a press on the dock left its request behind" >&2; exit 1; }
 	# The look is the image, never the account: with everything the account held gone, the next start shows it whole.
 	rm -rf /home/desktop/.config
@@ -634,7 +648,7 @@ PLANT
 	rm -rf "$guarded" /tmp/qorpera-dock-planted
 	untouched || { echo "the file only root can read was changed" >&2; exit 1; }
 	desktop stop >/dev/null
-	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
+	gone || exit 1
 	[[ -d /run/qorpera-desktop && -z $(ls -A /run/qorpera-desktop) ]] || { echo "the notes of root outlived the desktop" >&2; exit 1; }
 	rm -f "$secret"
 	# save_coding_value (20260930705000): no clipboard manager keeps what is copied, and the clipboard helper seals a key
