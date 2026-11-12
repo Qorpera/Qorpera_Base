@@ -1548,14 +1548,15 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // work that waits on a member going on a card that says what is stopped, with the wall's waiting items mirroring the
 // open cards ("it's really stopped at you"; Jonas, 11 November 2026), and for What's new as Qorpera's own page, where
 // a member puts a repository's website live (own code storage step 4, 11 November 2026), and for the changes a restore
-// took out and when a change shows in What's new (own code storage step 6, 12 November 2026). A change to any is a
-// change to every run's bytes.
+// took out and when a change shows in What's new (own code storage step 6, 12 November 2026), and for code on GitHub or
+// in a file brought in with manage_code bring_in (step 6's import, 20260930736000). A change to any is a change to
+// every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "948e751ceaa3f6e02df33fdd15f3f3794810bf0743738a1d0ea00d4c3e84ea85",
+			instructions: "2a84534cc2153c95a8522404eea4861452b450c28fa5168792de8c26aadb6f20",
 			prompt: "87eaa2f504945457baf071474bd7bf712ef50dfc3e99267e0dc089a2d5cd5c44",
 		},
 	],
@@ -1571,7 +1572,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "948e751ceaa3f6e02df33fdd15f3f3794810bf0743738a1d0ea00d4c3e84ea85",
+			instructions: "2a84534cc2153c95a8522404eea4861452b450c28fa5168792de8c26aadb6f20",
 			prompt: "cae25d562292e7abd87158f86f29192c376cd4d484509a2a8135e14753940692",
 		},
 	],
@@ -1959,7 +1960,11 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"A coding session cannot push, merge, open a pull request or send messages itself: when a member asks for any of that, tell the session to commit and hand in with coding_finish, or to ask with coding_ask when it is blocked;",
 		// Own code storage, slice 1 (8 Nov 2026): the company's code is kept in Qorpera, and members hear outcomes only.
 		"The company's code lives in Qorpera: start a new repository there yourself (host qorpera), without asking anyone, and keep all new code there, also when the company has a GitHub connection.",
-		"Use GitHub only for code that already lives there, or when a member asks for GitHub by name: never create a GitHub repository or move code to GitHub otherwise, and never ask a member to connect GitHub, create a repository or give access for code you write.",
+		// Own code storage, step 6 (20260930736000): code on GitHub or in a file comes into Qorpera with bring_in, after a
+		// look, and a member is asked once when people other than the company's agents changed it lately.
+		"Code that lives on GitHub, or comes as a file, comes into Qorpera with manage_code, action bring_in; then work on it here like any other repository.",
+		"Call it with look true first, and when people other than the company's agents changed the code in the last 30 days, ask a member once before you bring it in.",
+		"Use GitHub only when a member asks for GitHub by name: never create a GitHub repository or move code to GitHub otherwise, and never ask a member to connect GitHub, create a repository or give access for code you write.",
 		"Pull requests, branches, commits, diffs and checks are your tools, never the members' words",
 		"never guess the answer, or start on one, in the message that asks",
 		'Never end with a promise such as "I\'ll do it"',
@@ -1971,6 +1976,7 @@ it("gives a staff run the rules for starting work, and a worker none of them", (
 		"Members use conversations to supervise the company and to get what they need quickly. Show the work simply: what is done, with links; what you decided, each with its reason in a line; and what you need from them.",
 	])
 		expect(staff).toContain(rule);
+	expect(staff).not.toContain("Use GitHub only for code that already lives there");
 	expect(cloudCompanyRuntimeInstructions(null, false)).toContain("# Starting work");
 	// The Co-Founder does what a founder asks first; the vision never holds it up.
 	const cofounder = cloudRuntimeHireBehavior("cofounder");
