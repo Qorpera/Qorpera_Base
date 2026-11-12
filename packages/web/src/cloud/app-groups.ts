@@ -14,7 +14,9 @@ import {
 	parseAppGroups as parseAppGroupsFile,
 	type AppGroupNode as SharedAppGroupNode,
 } from "@qorpera/cloud-client/app-groups";
+import { isAppIconId } from "@qorpera/cloud-client/app-icons";
 import { AGENT_COLOURS, type AgentColour } from "@qorpera/cloud-client/company-state-shared";
+import { INTERFACE_EMBLEMS } from "@qorpera/cloud-client/interfaces";
 import { parseRecord } from "@qorpera/contracts";
 
 export const APP_GROUPS_PATH = "apps/groups.md";
@@ -63,6 +65,16 @@ export interface MemberAppLayout {
 	 * an app's key or `group:<id>` and a palette colour. Absent when there are none, so a document without colours is
 	 * what a cloud before 20260930731000 takes. */
 	readonly colours?: Readonly<Record<string, AgentColour>>;
+	/** The member's own icons (20260930732000; Jonas, 12 Nov 2026: "change the icons of the interfaces"): an app's key
+	 * and a built-in emblem's name or `custom:<id>`, one of the app's own icons (`apps/<name>/icons/<id>.svg`). Absent
+	 * when there are none. */
+	readonly emblems?: Readonly<Record<string, string>>;
+}
+
+/** A member's icon choice: a built-in emblem's name, or `custom:<id>` for one of the app's own icons. */
+export function isAppEmblemChoice(value: string): boolean {
+	if (value.startsWith("custom:")) return isAppIconId(value.slice("custom:".length));
+	return (INTERFACE_EMBLEMS as readonly string[]).includes(value);
 }
 
 export const EMPTY_APP_LAYOUT: MemberAppLayout = { schema: APP_LAYOUT_SCHEMA, places: {}, groups: {} };
@@ -132,7 +144,16 @@ export function parseMemberAppLayout(value: unknown): MemberAppLayout {
 		const colour = AGENT_COLOURS.find((name) => name === value);
 		if (colour && (isAppDrawerKey(key) || (isGroupKey(key) && isAppGroupId(groupIdOf(key))))) colours[key] = colour;
 	}
-	return { schema: APP_LAYOUT_SCHEMA, places, groups, ...(Object.keys(colours).length ? { colours } : {}) };
+	const emblems: Record<string, string> = {};
+	for (const [key, value] of Object.entries(objectOrNothing(input.emblems) ?? {}))
+		if (typeof value === "string" && isAppDrawerKey(key) && isAppEmblemChoice(value)) emblems[key] = value;
+	return {
+		schema: APP_LAYOUT_SCHEMA,
+		places,
+		groups,
+		...(Object.keys(colours).length ? { colours } : {}),
+		...(Object.keys(emblems).length ? { emblems } : {}),
+	};
 }
 
 /** The member's document as the cloud answers it, with when it was last written (null: never, or emptied). */
@@ -153,7 +174,10 @@ export function parseMemberAppLayoutRead(value: unknown): MemberAppLayoutRead {
 /** How many changes the member's document holds, as Reset sidebar counts them. */
 export function appLayoutChanges(layout: MemberAppLayout): number {
 	return (
-		Object.keys(layout.places).length + Object.keys(layout.groups).length + Object.keys(layout.colours ?? {}).length
+		Object.keys(layout.places).length +
+		Object.keys(layout.groups).length +
+		Object.keys(layout.colours ?? {}).length +
+		Object.keys(layout.emblems ?? {}).length
 	);
 }
 
@@ -396,6 +420,14 @@ export function appColours(
 }
 
 /* ---- Changes to the member's document --------------------------------------------------------------------------- */
+
+/** Sets the member's icon for an app (a built-in emblem or `custom:<id>`); null takes it away, back to the app's own. */
+export function emblemApp(layout: MemberAppLayout, key: string, emblem: string | null): MemberAppLayout {
+	const { [key]: _old, ...rest } = layout.emblems ?? {};
+	const emblems = emblem ? { ...rest, [key]: emblem } : rest;
+	const { emblems: _all, ...plain } = layout;
+	return Object.keys(emblems).length ? { ...plain, emblems } : plain;
+}
 
 /** Sets the member's colour for an app or a group (`group:<id>`); null takes it away, back to the drawer's own. */
 export function colourApp(layout: MemberAppLayout, key: string, colour: AgentColour | null): MemberAppLayout {

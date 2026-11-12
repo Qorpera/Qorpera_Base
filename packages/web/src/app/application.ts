@@ -1437,6 +1437,8 @@ export function mountApplication(
 					if (companyApps !== apps) return;
 					controller.store.set({ apps: next });
 					decorateAppCards();
+					// The apps changed: the icons read for some of them may have too (an agent drew new ones).
+					controller.refreshAppIcons();
 				},
 				(groups) => {
 					if (companyApps !== apps) return;
@@ -1444,6 +1446,7 @@ export function mountApplication(
 				},
 			);
 			companyApps = apps;
+			controller.appIconReader = (app) => apps.icons(app);
 			// The rail's line under each agent's name: its wall and its next planned run, read with the member's own access
 			// and again on each change hint of the folder, as the thread's wall is.
 			const routines = createWebRoutines(cloud, controller.profile, files.signal, folderCurrent, () =>

@@ -76,7 +76,7 @@ import type { MentionTarget } from "../ui/mentions.ts";
 import { t } from "../ui/preferences.ts";
 import type { AgentNotesState } from "./agent-notes.ts";
 import type { MailState } from "./company-mail.ts";
-import type { CompanyApp } from "./interface-apps.ts";
+import type { CompanyApp, CompanyAppIcon } from "./interface-apps.ts";
 import type { InterfaceFolderState } from "./interface-folder.ts";
 import type { InterfaceOffersState } from "./interface-offers.ts";
 import type { InterfacePagesState } from "./interface-pages.ts";
@@ -274,6 +274,12 @@ export interface CompanyState {
 	appLayout?: MemberAppLayoutRead;
 	/** The cloud keeps no apps layout per member yet: the drawer draws the company's groups and changes none. */
 	appLayoutUnavailable?: boolean;
+	/** Each app's own icons (`apps/<name>/icons/`, app/interface-apps.ts), by the app's name, for the apps whose icons
+	 * were asked for: the member opened its Icon and colour panel, or picked one of them. Newest first. */
+	appIcons?: Readonly<Record<string, readonly CompanyAppIcon[]>>;
+	/** The apps whose agent was asked to draw new icons, by name: since when, and the icons it had then. The drawer shows
+	 * the app drawing until a new one is read, or for ten minutes. */
+	appIconsDrawing?: Readonly<Record<string, { readonly since: number; readonly known: readonly string[] }>>;
 	/** How many websites the company's agents published, as last read: the apps drawer shows Sites while there are any.
 	 * Unset until read, and on a cloud that can't say. */
 	siteCount?: number;
@@ -794,6 +800,7 @@ export class CompanyController {
 				retrySend: undefined,
 				executionSponsor: undefined,
 			}));
+		clearInterval(this.#iconWatch);
 		this.#realtime?.stop();
 		this.#sidebarRealtime?.stop();
 		void this.#presence?.stop().catch(() => {});
@@ -1282,6 +1289,101 @@ export class CompanyController {
 		const done = await reset;
 		if (done) void this.memberChats.refresh();
 		return done;
+	}
+
+	/** Reads an app's own icons; the application sets it to the apps' reader. */
+	appIconReader?: (app: string) => Promise<CompanyAppIcon[]>;
+	readonly #iconReads = new Map<string, Promise<void>>();
+	#iconWatch?: ReturnType<typeof setInterval>;
+
+	/** Reads an app's own icons into `appIcons`, one read at a time for each app. A read that fails keeps what was read
+	 * before. A new icon ends the app's drawing. */
+	loadAppIcons(app: string): Promise<void> {
+		const running = this.#iconReads.get(app);
+		if (running || this.#stopped || !this.appIconReader) return running ?? Promise.resolve();
+		const read = this.appIconReader(app)
+			.then((icons) => {
+				if (this.#stopped) return;
+				const state = this.store.get();
+				const drawing = state.appIconsDrawing?.[app];
+				const done = drawing && icons.some((icon) => !drawing.known.includes(icon.id));
+				this.store.set({
+					appIcons: { ...state.appIcons, [app]: icons },
+					...(done ? { appIconsDrawing: withoutKey(state.appIconsDrawing, app) } : {}),
+				});
+			})
+			.catch(() => undefined)
+			.finally(() => this.#iconReads.delete(app));
+		this.#iconReads.set(app, read);
+		return read;
+	}
+
+	/** Reads again the icons of every app whose icons were read: the apps' folder changed. */
+	refreshAppIcons(): void {
+		for (const app of Object.keys(this.store.get().appIcons ?? {})) void this.loadAppIcons(app);
+	}
+
+	/** Generate icon (Jonas, 12 Nov 2026): asks the agent who made the app, or the Co-Founder when none did or it left, to
+	 * draw three new icons, as a message in its thread the member can see and answer. The drawer shows the app drawing
+	 * until a new icon is read (every ten seconds), or for ten minutes. Says why when it could not ask. */
+	async requestAppIcons(app: CompanyApp): Promise<{ ok: true; agent: string } | { ok: false; reason: string }> {
+		if (this.#stopped || !app.manifest) return { ok: false, reason: t("This company is no longer open.") };
+		const state = this.store.get();
+		const owner = app.manifest.owner
+			? state.staff.find((agent) => agent.id === app.manifest?.owner && agent.employmentStatus === "active")
+			: undefined;
+		let sessionId: string | undefined;
+		let name: string;
+		try {
+			if (owner) {
+				sessionId = await this.openStaffConversation(owner);
+				name = owner.displayName;
+			} else {
+				const opened = await this.openCofounderConversation();
+				if (!opened.sessionId)
+					return { ok: false, reason: opened.reason ?? t("The Co-Founder could not be reached.") };
+				sessionId = opened.sessionId;
+				name = this.staffById(this.cofounderId() ?? "")?.displayName ?? t("The Co-Founder");
+			}
+		} catch (error) {
+			return { ok: false, reason: describeError(error) };
+		}
+		const text = t("Please draw 3 new icons for {name} (apps/{app}), from its name and what it shows.", {
+			name: app.manifest.name,
+			app: app.name,
+		});
+		if (!(await this.sendPrompt(sessionId, text)))
+			return {
+				ok: false,
+				reason: this.conversation(sessionId).get().sendError ?? t("The message could not be sent."),
+			};
+		const known = (this.store.get().appIcons?.[app.name] ?? []).map((icon) => icon.id);
+		this.store.set((now) => ({
+			appIconsDrawing: { ...now.appIconsDrawing, [app.name]: { since: Date.now(), known } },
+		}));
+		this.#watchIcons();
+		return { ok: true, agent: name };
+	}
+
+	/** While an app is drawing: its icons are read every ten seconds, and a drawing older than ten minutes ends. */
+	#watchIcons(): void {
+		if (this.#iconWatch) return;
+		this.#iconWatch = setInterval(() => {
+			const drawing = this.store.get().appIconsDrawing ?? {};
+			const names = Object.keys(drawing);
+			if (this.#stopped || !names.length) {
+				clearInterval(this.#iconWatch);
+				this.#iconWatch = undefined;
+				return;
+			}
+			const now = Date.now();
+			const stale = names.filter((name) => now - drawing[name]!.since > APP_ICONS_DRAWING_MS);
+			if (stale.length)
+				this.store.set((state) => ({
+					appIconsDrawing: stale.reduce((all, name) => withoutKey(all, name), state.appIconsDrawing),
+				}));
+			for (const name of names) if (!stale.includes(name)) void this.loadAppIcons(name);
+		}, APP_ICONS_WATCH_MS);
 	}
 
 	/** Whether a Reset sidebar (or its Undo) is on its way: the drawer waits for it to move anything. */
@@ -3149,4 +3251,13 @@ export class CompanyController {
 			this.#polling = false;
 		}
 	}
+}
+
+/** How long the drawer shows an app drawing new icons at most, and how often their folder is read meanwhile. */
+const APP_ICONS_DRAWING_MS = 10 * 60_000;
+const APP_ICONS_WATCH_MS = 10_000;
+
+function withoutKey<T>(record: Readonly<Record<string, T>> | undefined, key: string): Record<string, T> {
+	const { [key]: _gone, ...rest } = record ?? {};
+	return rest;
 }

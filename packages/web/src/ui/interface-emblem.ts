@@ -4,6 +4,7 @@
  * white. A file's `colour` no longer tints it. The shapes are fixed here; a file only
  * names one. */
 
+import type { AppIcon } from "@qorpera/cloud-client/app-icons";
 import type { InterfaceEmblem } from "@qorpera/cloud-client/interfaces";
 
 const NS = "http://www.w3.org/2000/svg";
@@ -175,6 +176,43 @@ let masks = 0;
  * emblem's two people on the page header). One mask is the same drawing as painting the parts in order, because no
  * emblem draws ink over a cut drawn before it. */
 export function interfaceEmblem(emblem: Emblem | null, size: number): SVGSVGElement {
+	return drawEmblem(
+		EMBLEMS[emblem ?? "page"].map(([tag, attrs]) => {
+			const { fill, stroke, ...shape } = attrs;
+			return {
+				tag,
+				attrs: shape,
+				fill: fill === "solid" ? "ink" : fill === "cut" ? "cut" : "none",
+				stroke: stroke === "solid-line" ? "ink" : stroke ? "cut" : "none",
+				width: stroke === "cut-thin" ? "2.6" : stroke === "cut-dot" ? "5.2" : "3.4",
+			};
+		}),
+		size,
+	);
+}
+
+/** An app's own icon (`@qorpera/cloud-client/app-icons`; 12 Nov 2026), drawn as an emblem is: its black parts in the
+ * ink, its white parts as holes through them. */
+export function appIconEmblem(icon: AppIcon, size: number): SVGSVGElement {
+	return drawEmblem(
+		icon.parts.map(({ tag, attrs, fill, stroke }) => {
+			const { "stroke-width": width, ...shape } = attrs;
+			return { tag, attrs: shape, fill, stroke, width: width ?? "3.4" };
+		}),
+		size,
+	);
+}
+
+interface DrawnPart {
+	readonly tag: string;
+	readonly attrs: Readonly<Record<string, string>>;
+	readonly fill: "ink" | "cut" | "none";
+	readonly stroke: "ink" | "cut" | "none";
+	/** The line's width, when it has one. */
+	readonly width: string;
+}
+
+function drawEmblem(parts: readonly DrawnPart[], size: number): SVGSVGElement {
 	const svg = document.createElementNS(NS, "svg");
 	svg.setAttribute("viewBox", "0 0 48 48");
 	svg.setAttribute("width", String(size));
@@ -193,26 +231,23 @@ export function interfaceEmblem(emblem: Emblem | null, size: number): SVGSVGElem
 	mask.append(whole);
 	const ink = document.createElementNS(NS, "g");
 	ink.setAttribute("mask", `url(#${id})`);
-	for (const [tag, attrs] of EMBLEMS[emblem ?? "page"]) {
-		const shape = Object.entries(attrs).filter(([name]) => name !== "fill" && name !== "stroke");
+	for (const { tag, attrs, fill, stroke, width } of parts) {
 		const make = () => {
 			const part = document.createElementNS(NS, tag);
-			for (const [name, value] of shape) part.setAttribute(name, value);
+			for (const [name, value] of Object.entries(attrs)) part.setAttribute(name, value);
 			return part;
 		};
-		const { fill, stroke } = attrs;
-		const inked = fill === "solid" || stroke === "solid-line";
-		if (inked) {
+		if (fill === "ink" || stroke === "ink") {
 			const part = make();
-			part.setAttribute("fill", fill === "solid" ? INK : "none");
-			if (fill === "solid") part.setAttribute("data-fill", "ink");
-			if (stroke === "solid-line") lineOf(part, stroke, INK, "ink");
+			part.setAttribute("fill", fill === "ink" ? INK : "none");
+			if (fill === "ink") part.setAttribute("data-fill", "ink");
+			if (stroke === "ink") lineOf(part, width, INK, "ink");
 			ink.append(part);
 		}
-		if (fill === "cut" || (stroke !== undefined && stroke !== "solid-line")) {
+		if (fill === "cut" || stroke === "cut") {
 			const hole = make();
 			hole.setAttribute("fill", fill === "cut" ? "#000" : "none");
-			if (stroke !== undefined && stroke !== "solid-line") lineOf(hole, stroke, "#000", "cut");
+			if (stroke === "cut") lineOf(hole, width, "#000", "cut");
 			mask.append(hole);
 		}
 	}
@@ -222,11 +257,11 @@ export function interfaceEmblem(emblem: Emblem | null, size: number): SVGSVGElem
 	return svg;
 }
 
-/** A part's line: its colour, width and round ends. */
-function lineOf(part: Element, stroke: string, colour: string, kind: "ink" | "cut") {
+/** A part's line: its colour and width, with round ends and joins unless the part says otherwise. */
+function lineOf(part: Element, width: string, colour: string, kind: "ink" | "cut") {
 	part.setAttribute("stroke", colour);
 	part.setAttribute("data-stroke", kind);
-	part.setAttribute("stroke-width", stroke === "cut-thin" ? "2.6" : stroke === "cut-dot" ? "5.2" : "3.4");
-	part.setAttribute("stroke-linecap", "round");
-	part.setAttribute("stroke-linejoin", "round");
+	part.setAttribute("stroke-width", width);
+	if (!part.hasAttribute("stroke-linecap")) part.setAttribute("stroke-linecap", "round");
+	if (!part.hasAttribute("stroke-linejoin")) part.setAttribute("stroke-linejoin", "round");
 }

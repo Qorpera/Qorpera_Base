@@ -7,6 +7,7 @@ import {
 	arrangeAppsFully,
 	colourApp,
 	EMPTY_APP_LAYOUT,
+	emblemApp,
 	flattenApps,
 	type MemberAppLayout,
 	makeAppGroup,
@@ -388,5 +389,32 @@ describe('colours (Jonas, 12 Nov 2026: "I would like for all the icons to share 
 		const apart = ungroupApps(coloured, arrangeApps(company, coloured, keys), "trips");
 		expect(apart.colours).toBeUndefined();
 		expect(apart.groups).toEqual({ trips: { removed: true } });
+	});
+});
+
+describe('icons (Jonas, 12 Nov 2026: "change the icons of the interfaces")', () => {
+	it("keeps a member's icon per app, a built-in name or one of the app's own, and nothing when the last goes", () => {
+		let mine = emblemApp(EMPTY_APP_LAYOUT, "app:planner", "map");
+		mine = emblemApp(mine, "page:mailbox", "custom:compass");
+		expect(mine.emblems).toEqual({ "app:planner": "map", "page:mailbox": "custom:compass" });
+		expect(appLayoutChanges(mine)).toBe(2);
+		expect(emblemApp(emblemApp(mine, "app:planner", null), "page:mailbox", null)).toEqual(EMPTY_APP_LAYOUT);
+		const read = parseMemberAppLayout({
+			schema: "qorpera.member-app-layout/v1",
+			places: {},
+			groups: {},
+			emblems: {
+				"app:a": "rocket",
+				"app:b": "unicorn",
+				"app:c": "custom:trail-sign",
+				"app:d": "custom:../x",
+				"group:g": "map",
+				"page:bank": 3,
+			},
+		});
+		expect(read.emblems).toEqual({ "app:a": "rocket", "app:c": "custom:trail-sign" });
+		expect(
+			parseMemberAppLayout({ schema: "qorpera.member-app-layout/v1", places: {}, groups: {} }),
+		).not.toHaveProperty("emblems");
 	});
 });
