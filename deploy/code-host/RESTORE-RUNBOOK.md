@@ -87,6 +87,7 @@ What a restore brings back, and what not:
    `ls <executor storage>/control/code-bundles/<company id>/<owner>/<name>/`.
    Each bundle is `<UTC time>-<main, 12 hex>.bundle` with its manifest `.json` beside it. A bundle's **name** is the
    file's name without `.bundle`. The newest is last.
+   Names that begin `import-` (code brought in from elsewhere, as it came, `qorpera.code-import-bundle/v1`) sort after every dated one and are never a restore's source: take the last dated name.
 3. See which sessions are open on it:
    ```sql
    select worker_id, phase, attached_machine_id from public.qorpera_coding_sessions
