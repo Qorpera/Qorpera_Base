@@ -119,7 +119,9 @@
 	.rail-apps-drawer.is-open .rail-app.is-entering, .rail-app.is-leaving { animation: none; }
 	.rail-app-stand::before, .rail-app.is-merge-target .rail-app-stand::before, .rail-app .interface-emblem,
 	.rail-app.is-lifted.is-merging .interface-emblem, .rail-app.is-lifted .rail-app-name { transition: none; }
-	.rail-app.is-merge-target .rail-app-stand::before, .rail-app.is-merge-target .rail-app-stand::after { animation: none; }
+	.rail-app.is-merge-target .rail-app-stand::before, .rail-app.is-merge-target:not(.rail-app-group) .rail-app-stand::after {
+		animation: none;
+	}
 }
 
 /* Every emblem is black or white against the theme (Jonas, 9 Nov 2026; ui/interface-emblem.ts): the text colour. Its
