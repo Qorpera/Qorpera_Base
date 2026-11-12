@@ -3237,7 +3237,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// Its question schema says the same (an open one goes on the card with allowCustom, not to chat), so the catalog text
 	// moved once more.
 	// On 12 November 2026 company_list takes depth and glob and shows up to 500 entries as short lines (keyholes S2), so
-	// they moved again.
+	// they moved again. The same day company_read takes paths, up to 8 files in one call (keyholes S3), so they moved
+	// again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3284,9 +3285,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"d13d2b59f44ee247b5a46ad04f6206420418eaad155593a6d80225199d9781bc",
+		"2d1598f32277da755d7602488e7af9548a98ddfdbf05756a350c79b70bf9d115",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"b157d7a7845659df54c3bea85312fd80e04469817090e002475084a3f88bd4f1",
+		"d1effcd19a301f89863913e17c1d3681ef3db783a91da60806094d7117745a45",
 	);
 });

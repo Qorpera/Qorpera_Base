@@ -280,6 +280,216 @@ it("refuses an image it does not show by name, before releasing anything", async
 	expect(f.releases).toHaveLength(0);
 });
 
+// Keyholes S3 (12 November 2026): several files in one call, so reading five small files is one model round, not five,
+// while Codex sends one call a model response.
+it("reads several files in one call, each whole when they fit, each released on its own, the first cited", async () => {
+	const files: Record<string, string> = {};
+	for (const name of ["a", "b", "c", "d", "e"]) files[`docs/${name}.md`] = `${name} `.repeat(1536);
+	const f = await fixture({ files });
+	const content = await f.call("company_read", { paths: Object.keys(files) });
+	expect(fitsOneResult(String(content.value))).toBe(true);
+	expect(parse(content).files).toEqual(
+		Object.entries(files).map(([path, text]) => ({
+			path,
+			kind: "file",
+			version: f.files.get(path)?.version,
+			offset: 0,
+			bytesRead: 3072,
+			totalBytes: 3072,
+			text,
+			nextOffset: null,
+		})),
+	);
+	// One release a file, in the answer's order, each under the hash of the whole answer; the answer cites the first.
+	expect(f.releases.map(released)).toEqual(Object.keys(files).map((path) => [path]));
+	expect(f.releases.map((release) => release.p_output_sha256)).toEqual(
+		Array.from({ length: 5 }, () => sha(String(content.value))),
+	);
+	expect(new Set(f.releases.map((release) => release.p_release_id)).size).toBe(5);
+	expect(content.companyReadId).toBe(f.releases[0]?.p_release_id);
+	expect(f.releases[0]?.p_reads).toEqual([
+		{
+			path: "docs/a.md",
+			version: f.files.get("docs/a.md")?.version,
+			authority: expect.any(Object),
+			fileSha256: f.files.get("docs/a.md")?.file.fileSha256,
+		},
+	]);
+});
+
+it("shares one result alike among files too large to show whole, each with its own nextOffset to read on from", async () => {
+	const small = "s".repeat(1000);
+	const large = (letter: string) => letter.repeat(40 * 1024);
+	const f = await fixture({
+		files: {
+			"a/x.md": large("x"),
+			"a/small.md": small,
+			"a/y.md": large("y"),
+			"a/tiny.md": "t",
+			"a/z.md": large("z"),
+		},
+	});
+	const content = await f.call("company_read", { paths: ["a/x.md", "a/small.md", "a/y.md", "a/tiny.md", "a/z.md"] });
+	expect(fitsOneResult(String(content.value))).toBe(true);
+	const [x, whole, y, tiny, z] = parse(content).files;
+	expect(whole).toMatchObject({ text: small, bytesRead: 1000, nextOffset: null });
+	expect(tiny).toMatchObject({ text: "t", bytesRead: 1, nextOffset: null });
+	// The large files share what is left alike, each cut where its own nextOffset says, and the result is filled.
+	for (const [cut, letter] of [
+		[x, "x"],
+		[y, "y"],
+		[z, "z"],
+	])
+		expect(cut).toMatchObject({
+			offset: 0,
+			bytesRead: x.bytesRead,
+			totalBytes: 40 * 1024,
+			text: letter.repeat(x.bytesRead),
+			nextOffset: x.bytesRead,
+		});
+	expect(x.bytesRead * 3 + 1001).toBeGreaterThan(29 * 1024);
+	expect(fitsOneResult(String((await f.call("company_read", { paths: ["a/x.md", "a/small.md"] })).value))).toBe(true);
+	// A cut file reads on alone from its nextOffset.
+	const on = parse(await f.call("company_read", { path: "a/y.md", offset: y.nextOffset }));
+	expect(on).toMatchObject({ path: "a/y.md", offset: y.bytesRead, text: "y".repeat(on.bytesRead) });
+	expect(on.bytesRead).toBeGreaterThan(0);
+});
+
+it("answers each path on its own, without failing the others: absent, a folder, a link, no text, an image named", async () => {
+	const f = await fixture({ files: { "docs/plan.md": "the plan" }, links: { "docs/latest": "plan.md" } });
+	f.seed("photos/pair.png", RED_BLUE, "image/png");
+	f.seed("photos/scan.tiff", Buffer.from("II*\0 a TIFF file", "latin1"), "image/tiff");
+	f.seed("bin/data", Buffer.from([0xff, 0xfe, 0x00]), "application/octet-stream");
+	const version = (path: string) => f.files.get(path)?.version;
+	const content = await f.call("company_read", {
+		paths: ["docs/gone.md", "docs", "docs/latest", "bin/data", "photos/pair.png", "photos/scan.tiff", "docs/plan.md"],
+	});
+	// One result shows one picture, after the answer that names it: among several, an image is named only.
+	expect(content.image).toBeUndefined();
+	expect(parse(content).files).toEqual([
+		{ path: "docs/gone.md", kind: "absent", version: null },
+		{ path: "docs", kind: "folder", version: expect.any(String) },
+		{
+			path: "docs/latest",
+			kind: "symlink",
+			version: f.links.get("docs/latest")?.version,
+			offset: 0,
+			bytesRead: 7,
+			totalBytes: 7,
+			target: "plan.md",
+			nextOffset: null,
+		},
+		{
+			path: "bin/data",
+			kind: "file",
+			version: version("bin/data"),
+			refused: "COMPANY_FILE_NOT_TEXT: this file is not UTF-8 text; open such files on the company's computer",
+		},
+		{
+			path: "photos/pair.png",
+			kind: "image",
+			version: version("photos/pair.png"),
+			mediaType: "image/png",
+			totalBytes: RED_BLUE.byteLength,
+			shown: false,
+			next: "Read it alone with company_read (path, offset 0) to see it.",
+		},
+		{
+			path: "photos/scan.tiff",
+			kind: "file",
+			version: version("photos/scan.tiff"),
+			refused:
+				"COMPANY_IMAGE_FORMAT_UNSUPPORTED: only PNG, JPEG, GIF and WebP images are shown here, and this one is TIFF; open it on the company's computer",
+		},
+		{
+			path: "docs/plan.md",
+			kind: "file",
+			version: version("docs/plan.md"),
+			offset: 0,
+			bytesRead: 8,
+			totalBytes: 8,
+			text: "the plan",
+			nextOffset: null,
+		},
+	]);
+	// Everything it names is released, each on its own; nothing is for the absent path.
+	expect(f.releases.map(released)).toEqual([
+		["docs"],
+		["docs/latest"],
+		["bin/data"],
+		["photos/pair.png"],
+		["photos/scan.tiff"],
+		["docs/plan.md"],
+	]);
+	// Read alone from its start, the image is shown, as before.
+	const alone = await f.call("company_read", { path: "photos/pair.png" });
+	expect(parse(alone)).toMatchObject({ kind: "image", imageSha256: alone.image?.sha256 });
+	// A path the folder could not read now is said so, and the others are read.
+	const read = vi.spyOn(f.folder, "read").mockRejectedValueOnce(new CloudCompanyFolderError("unavailable"));
+	expect(parse(await f.call("company_read", { paths: ["docs/plan.md", "docs/latest"] })).files).toEqual([
+		{ path: "docs/plan.md", refused: "COMPANY_FOLDER_UNAVAILABLE: it could not be read now; read it again" },
+		expect.objectContaining({ path: "docs/latest", target: "plan.md" }),
+	]);
+	// Stopped work, or a read the run may no longer show, shows nothing at all.
+	const before = f.releases.length;
+	read.mockRejectedValueOnce(new CloudCompanyFolderError("stopped"));
+	await refuses(
+		f.call("company_read", { paths: ["docs/plan.md", "docs/latest"] }),
+		CloudToolRefusal,
+		"COMPANY_WORK_STOPPED",
+	);
+	vi.spyOn(f.folder, "release").mockRejectedValueOnce(new CloudCompanyFolderError("read_revoked"));
+	await refuses(f.call("company_read", { paths: ["docs/plan.md", "docs/latest"] }), CloudToolRefusal, "READ_REVOKED");
+	expect(f.releases).toHaveLength(before);
+});
+
+it("takes path or paths, offset and limit only with path, and up to 8 files, each once", async () => {
+	const f = await fixture();
+	const tool = f.tool("company_read");
+	expect(tool.parseArguments({ path: "docs/a.md" })).toEqual({ path: "docs/a.md", offset: 0, limit: 32768 });
+	const eight = Array.from({ length: 8 }, (_, index) => `docs/${index}.md`);
+	expect(tool.parseArguments({ paths: eight })).toEqual({ paths: eight });
+	const refused: { [key: string]: JsonValue }[] = [
+		{},
+		{ path: "docs/a.md", paths: ["docs/b.md"] },
+		{ paths: [] },
+		{ paths: [...eight, "docs/8.md"] },
+		{ paths: ["docs/A.md", "docs/a.md"] },
+		{ paths: ["docs/a.md"], offset: 0 },
+		{ paths: ["docs/a.md"], limit: 4096 },
+		{ paths: "docs/a.md" },
+		{ paths: [""] },
+		{ paths: ["/docs/a.md"] },
+		{ paths: [5] },
+		{ path: "docs/a.md", recursive: true },
+	];
+	for (const value of refused) expect(() => tool.parseArguments(value)).toThrow(CloudToolArgumentRefusal);
+	expect(tool.inputSchema).not.toHaveProperty("required");
+});
+
+it("fits files whose text escapes six-fold, and refuses paths too long to name together before releasing anything", async () => {
+	const files: Record<string, string> = {};
+	for (let index = 0; index < 8; index++) files[`raw/${index}.txt`] = "\u0001".repeat(32 * 1024);
+	const f = await fixture({ files });
+	const content = await f.call("company_read", { paths: Object.keys(files) });
+	expect(fitsOneResult(String(content.value))).toBe(true);
+	const shown = parse(content).files as { bytesRead: number; nextOffset: number; text: string }[];
+	expect(new Set(shown.map((file) => file.bytesRead)).size).toBe(1);
+	expect(shown[0]?.bytesRead).toBeGreaterThan(0);
+	expect(shown.every((file) => file.nextOffset === file.bytesRead && file.text.length === file.bytesRead)).toBe(true);
+	expect(f.releases).toHaveLength(8);
+	// Eight paths of 4,096 bytes, each escaped six-fold, take more than one result between them.
+	const long: Record<string, string> = {};
+	for (let index = 0; index < 8; index++) long[`${index}/${"&".repeat(4094)}`] = "x";
+	const g = await fixture({ files: long });
+	await refuses(
+		g.call("company_read", { paths: Object.keys(long) }),
+		CloudToolRefusal,
+		"COMPANY_FILE_ANSWER_TOO_LONG: these paths are too long to read together",
+	);
+	expect(g.releases).toHaveLength(0);
+});
+
 it("reads a folder and an absent path: a folder is released, nothing is for an absent path", async () => {
 	const f = await fixture({ folders: ["docs"] });
 	const folder = await f.call("company_read", { path: "docs", offset: 0, limit: 4 });

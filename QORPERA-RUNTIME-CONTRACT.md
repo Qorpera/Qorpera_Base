@@ -6446,9 +6446,9 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
 ### 2026-11-12 amendment: more of the company folder in one call
 
 > **Built, not live.** Jonas, 12 November 2026, after the plan for removing the agents' keyholes
-> (lanes/keyholes-20261112/PLAN.md, slice S2): "Yes, build them". Runtime only: no migration and no Codex rebuild.
-> It goes live with a runtime bundle at or after the 2026-11-08 amendment's 32 KiB result (it works at 8 KiB too,
-> with fewer entries a call). It amends the 2026-10-21 amendment's item 5 for listings.
+> (lanes/keyholes-20261112/PLAN.md, slices S2 and S3): "Yes, build them". Runtime only: no migration and no Codex
+> rebuild. It goes live with a runtime bundle at or after the 2026-11-08 amendment's 32 KiB result (it works at 8 KiB
+> too, with less a call). It amends the 2026-10-21 amendment's item 5 for listings and reads.
 
 1. **A listing shows a tree.** `company_list` takes `depth` (1 to 8; default 1, or 8 with a glob) and `glob`
    (`company_search`'s syntax: `*` and `?` within a name, `**` across folders, a glob without `/` matches names
@@ -6464,8 +6464,24 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
      stopped at its bound names the last path it looked at, which it releases with the rest. Every entry shown, and
      the folder listed, is released under the hash of the answer, as before; what a depth or glob leaves out is not.
    - `asOfSeq` is the folder clock of the call's first page, as `company_move` takes it.
-2. **What the provider sees.** `company_list`'s description and input schema (`required` is `["path"]`, with
-   `depth`, `glob`, `after` and `limit` optional).
+2. **Several files in one read.** `company_read` takes `paths` (1 to 8 company paths, each once) instead of `path`;
+   `offset` and `limit` go with `path` only, and may be left out there (0, and one result's bound).
+   - Each file is read from its start into the one result. Every text is cut at the same number of characters, the
+     largest that fits: small files are whole and the larger ones share what is left alike. Each file says what a
+     read of it alone would: its version, `offset` 0, `bytesRead`, `totalBytes` and `nextOffset`, from which it is
+     read on with `path` and `offset`. A link's target is shown the same way.
+   - Each path is answered on its own: absent (also for a path the run may not read, as today), a folder, a file
+     that is not text or an image format not shown (`refused`, with today's words), or one the folder could not
+     read now. A company whose work is stopped, or a read the run may no longer show at its release, shows nothing.
+   - An image among several is named, never shown (`kind: "image"`, its media type and size, `shown: false`): one
+     result shows one picture, after the answer that names it. Read alone from offset 0, it is shown as before.
+   - Every file the answer names is its own release, in the answer's order, all under the hash of the whole answer,
+     and the answer cites the first, as `company_search` cites its first part: the context view cites one release an
+     output, and the run log keeps every release of the step. No SQL changes.
+   - Codex still sends one call a model response, so this is what lets one round read several files.
+3. **What the provider sees.** `company_list`'s description and input schema (`required` is `["path"]`, with
+   `depth`, `glob`, `after` and `limit` optional), and `company_read`'s description and input schema (`paths`
+   added; no property is required).
 
 ## 20. Enforcement matrix
 
