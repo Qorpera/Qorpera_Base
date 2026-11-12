@@ -805,6 +805,17 @@ PLANT
 		{ echo "root asked to stop while copying left a part of the copy on the desktop" >&2; exit 1; }
 	[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||
 		{ echo "root asked to stop while copying left the copy on its way: $(ls -A /home/desktop/Desktop | tr "\n" " ")" >&2; exit 1; }
+	# A caller that ignores a signal (nohup) has it ignored by root too (review r5 F1 of #1712): held back, even an
+	# ignored signal would wait and be read as a stop. Under ten SIGHUP the copy runs to its end.
+	runuser -u desktop -- rm -rf /home/desktop/Desktop/large-links
+	(trap "" HUP; exec "$files" open --copy -- /tmp/large-links >/dev/null 2>&1) &
+	asked=$!
+	for _ in $(seq 1 500); do [[ -n $(find /home/desktop/Desktop -maxdepth 2 -path "*/.qorpera-desktop-copy.*/*.bin" 2>/dev/null) ]] && break; sleep 0.01; done
+	for _ in $(seq 1 10); do kill -HUP "$asked" 2>/dev/null || true; done
+	status=0
+	wait "$asked" || status=$?
+	[[ $status == 0 ]] && diff -r /tmp/large-links /home/desktop/Desktop/large-links >/dev/null ||
+		{ echo "a copy whose caller ignores SIGHUP did not run to its end under SIGHUP (exit $status)" >&2; exit 1; }
 	rm -rf "$mine/large" /tmp/large-links
 	roots_own || { echo "copying for the desktop changed something of root" >&2; exit 1; }
 	if leaked; then echo "bytes of a file only root can read are in the desktop account folders" >&2; exit 1; fi

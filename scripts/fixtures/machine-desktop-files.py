@@ -14,7 +14,9 @@ reach what only root can) is proved by the image build.
                                                            write, as root's side ends what is left), twice (a first
                                                            signal a second into a copy with its staging there, a
                                                            second as root's side ends the copy for the first), tidy
-                                                           (as the taking away is started)
+                                                           (as the taking away is started), ignored (started with
+                                                           SIGHUP ignored, as under nohup: a copy under a burst of
+                                                           SIGHUP, then a copy that a SIGTERM stops)
 """
 
 import importlib.machinery
@@ -43,10 +45,12 @@ if sys.argv[3].startswith("account"):
 	# The account's side held up or ended where a case wants it: after its copy is made and before it has its name,
 	# after a link is made, after a picture is written and before it is in its place.
 	how = sys.argv[3].partition(":")[2]
-	# What the account's side finds held back of the signals (root's side holds its stop signals back; the account's
-	# processes must not).
+	# What the account's side is started with: which signals are held back for it (root's side holds its stop
+	# signals back; the account's processes must not), and whether it ignores SIGHUP (it does when root's side was
+	# started ignoring it, as any program started under nohup does).
 	with open(os.path.join(base, "account-mask"), "w") as note:
-		note.write(json.dumps(sorted(int(number) for number in signal.pthread_sigmask(signal.SIG_BLOCK, ()))))
+		held_back = sorted(int(number) for number in signal.pthread_sigmask(signal.SIG_BLOCK, ()))
+		note.write(json.dumps({"held back": held_back, "ignores SIGHUP": signal.getsignal(signal.SIGHUP) is signal.SIG_IGN}))
 	if how in ("copied-then-held", "copied-then-ended"):
 		run = subprocess.run
 
@@ -177,7 +181,7 @@ if sys.argv[3].startswith("stopped"):
 	make("/everyone/large")
 	write("/everyone/large/a.bin", "a" * 400000)
 	os.makedirs(desk)
-	signal.pthread_sigmask(signal.SIG_BLOCK, m.STOPS)
+	m.heed_stops()
 
 	def stop(only=(signal.SIGTERM, signal.SIGHUP, signal.SIGINT)):
 		# One signal (SIGTERM), or as many as asked for, of the three kinds in turn.
@@ -216,6 +220,26 @@ if sys.argv[3].startswith("stopped"):
 				stop((signal.SIGHUP,))
 
 		m.end_group = ending
+	went = None
+	if when == "ignored":
+		# Root's side was started with SIGHUP ignored (the test starts this so; `nohup` does). A first copy is made
+		# under a burst of ten SIGHUP sent as the account's side is started: it runs to its end. A second copy, in
+		# the same run, is then stopped by a SIGTERM (one, at its start) as any is.
+		how = ""
+		sends = [lambda: [os.kill(os.getpid(), signal.SIGHUP) for _ in range(10)], lambda: os.kill(os.getpid(), signal.SIGTERM)]
+
+		class Signalled(subprocess.Popen):
+			def __init__(self, *args, **more):
+				super().__init__(*args, **more)
+				if sends:
+					sends.pop(0)()
+
+		subprocess.Popen = Signalled
+		went = outcome(lambda: m.root_open("/everyone/large", True))
+		went["waits"] = sorted(int(number) for number in signal.sigpending())
+		went["on the desk"] = sorted(listing(desk))
+		how = "copying-then-held"
+		del calls[:]
 	try:
 		m.root_open("/everyone/large", True)
 		gave_up = "it went on"
@@ -226,7 +250,10 @@ if sys.argv[3].startswith("stopped"):
 	time.sleep(3)
 	masks = [open(os.path.join(base, name)).read().strip() if os.path.exists(os.path.join(base, name)) else None for name in ("account-mask", "child-mask")]
 	held_back = sorted(int(number) for number in signal.pthread_sigmask(signal.SIG_BLOCK, ()))
-	print(json.dumps({"gave up": gave_up, "calls": calls, "desk": listing(desk), "waits": sorted(int(number) for number in signal.sigpending()), "held back": held_back, "the account's side holds back": masks[0], "its child": masks[1]}))
+	told = {"gave up": gave_up, "calls": calls, "desk": listing(desk), "waits": sorted(int(number) for number in signal.sigpending()), "held back": held_back, "the account's side": json.loads(masks[0]), "its child": masks[1]}
+	if went:
+		told["under SIGHUP"] = went
+	print(json.dumps(told))
 	sys.stdout.flush()
 	# As the program's last statement does.
 	if m.stop_asked():

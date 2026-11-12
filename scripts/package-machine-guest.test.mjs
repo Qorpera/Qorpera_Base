@@ -1395,26 +1395,38 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 	// held back from the first statement of root's side on; the kernel keeps one that arrives waiting, however many
 	// arrive. Root's side looks for one at three statements of `as_account` (before it starts the account's side, at
 	// every tick while it waits for it, after it has collected it) and stops for one at ONE statement, its last.
-	assert.match(files, /\nSTOPS = frozenset\(\{signal\.SIGTERM, signal\.SIGHUP, signal\.SIGINT\}\)\n/);
+	assert.match(files, /\nSTOPS = \(signal\.SIGTERM, signal\.SIGHUP, signal\.SIGINT\)\n/);
+	assert.match(files, /\nHEEDED = frozenset\(\)\nSTARTED_WITH = frozenset\(\)\n/);
 	assert.match(files, /\nTICK = 0\.05\n/);
-	assert.match(files, /\n\tif os\.geteuid\(\) != 0:\n\t\traise Stop\("desktop-files runs as root, from `desktop`"\)\n\tsignal\.pthread_sigmask\(signal\.SIG_BLOCK, STOPS\)\n\tmatch words:\n/);
-	assert.match(files, /\ndef stop_asked\(\):\n\t"""[^\n]*"""\n\treturn min\(signal\.sigpending\(\) & STOPS, default=0\)\n/);
+	// Which of the three it heeds is decided once, from what root's side was started with (review r5 F1 of #1712): a
+	// signal its caller ignores (`nohup desktop open ...`) or holds back itself is neither held back here nor read,
+	// and is at the end what it was at the start. Held back, even an ignored signal would wait and be read as a stop.
+	assert.match(
+		files,
+		/\ndef heed_stops\(\):\n\t"""[^\n]*"""\n\tglobal HEEDED, STARTED_WITH\n\tSTARTED_WITH = frozenset\(signal\.pthread_sigmask\(signal\.SIG_BLOCK, \(\)\)\)\n\tHEEDED = frozenset\(number for number in STOPS if signal\.getsignal\(number\) is not signal\.SIG_IGN and number not in STARTED_WITH\)\n\tsignal\.pthread_sigmask\(signal\.SIG_BLOCK, HEEDED\)\n/,
+	);
+	assert.equal(files.match(/\b(?:HEEDED|STARTED_WITH) = /g).length, 4, "decided in one place");
+	assert.match(files, /\n\tif os\.geteuid\(\) != 0:\n\t\traise Stop\("desktop-files runs as root, from `desktop`"\)\n\theed_stops\(\)\n\tmatch words:\n/);
+	assert.match(files, /\ndef stop_asked\(\):\n\t"""[^\n]*"""\n\treturn min\(signal\.sigpending\(\) & HEEDED, default=0\)\n/);
 	const lines = files.split("\n").filter((line) => !line.trimStart().startsWith("#"));
 	assert.deepEqual(
 		lines.filter((line) => /stop_asked\(\)|\bleave\(/.test(line) && !line.includes('"""')).map((line) => line.trim()),
 		["def stop_asked():", "def leave(number):", "if heed and stop_asked():", "if heed and stop_asked():", "if heed and stop_asked():", "if stop_asked():", "leave(stop_asked())"],
 	);
-	// No handler is installed and nothing waits for a signal: the only calls about signals are the look, the leaving
-	// (the signal's own default again, then let through), the clearing for the account's processes, and the holding
-	// back. (The account's group is ended with SIGKILL, pinned below.)
+	// No handler is installed and nothing waits for a signal: the only calls about signals are the deciding and
+	// holding back at the start, the look, the leaving (the heeded signal's own default again, then let through), and
+	// the giving of what root's side was started with to the account's processes. (The account's group is ended with
+	// SIGKILL, which nothing ignores or holds back: pinned below.)
 	assert.deepEqual(
 		lines.filter((line) => /\bsignal\.(?!SIG[A-Z_]+\b)\w+\(/.test(line)).map((line) => line.trim()),
 		[
-			"return min(signal.sigpending() & STOPS, default=0)",
+			"STARTED_WITH = frozenset(signal.pthread_sigmask(signal.SIG_BLOCK, ()))",
+			"HEEDED = frozenset(number for number in STOPS if signal.getsignal(number) is not signal.SIG_IGN and number not in STARTED_WITH)",
+			"signal.pthread_sigmask(signal.SIG_BLOCK, HEEDED)",
+			"return min(signal.sigpending() & HEEDED, default=0)",
 			"signal.signal(number, signal.SIG_DFL)",
 			"signal.pthread_sigmask(signal.SIG_UNBLOCK, {number})",
-			"preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, ()),",
-			"signal.pthread_sigmask(signal.SIG_BLOCK, STOPS)",
+			"preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, STARTED_WITH),",
 		],
 	);
 	for (const gone of [/\bimport threading\b/, /KeyboardInterrupt/, /UNDER_WAY|NOTED/, /set_wakeup_fd|sigwait|sigtimedwait|siginterrupt/, /sys\.exit\(128/]) assert.doesNotMatch(files, gone);
@@ -1467,7 +1479,7 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 			"\t\t\t\tclose_fds=True,",
 			"\t\t\t\tstart_new_session=True,",
 			'\t\t\t\tcwd="/",',
-			"\t\t\t\tpreexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, ()),",
+			"\t\t\t\tpreexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, STARTED_WITH),",
 			"\t\t\t)",
 			"\t\t\tended = os.pidfd_open(process.pid)",
 			"\t\t\tif feed:",
@@ -1552,6 +1564,10 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 	// Each time root's side gives the work up, the taking away runs to its end, three seconds later the desk holds
 	// nothing, and only then does root's side end, BY the signal (the lowest that waits). The account's side and its
 	// child hold no signal back.
+	// Last: root's side started with SIGHUP ignored, as under nohup (review r5 F1 of #1712). It holds back and reads
+	// the other two only. A copy under a burst of ten SIGHUP runs to its end and nothing waits; a second copy in the
+	// same run is stopped by a SIGTERM as any is, after the cleanup. The account's side ignores SIGHUP too, as any
+	// program started under nohup does, and is ended all the same (the group's end is SIGKILL).
 	for (const [when, signalled, gaveUp, waits] of [
 		["copying", "SIGTERM", "stopped", [15]],
 		["copying:10", "SIGHUP", "stopped", [1, 2, 15]],
@@ -1562,19 +1578,33 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 		["twice", "SIGHUP", "stopped", [1, 15]],
 		["tidy", "SIGTERM", "the desktop's user could not put /everyone/large on the desktop", [15]],
 		["tidy:10", "SIGHUP", "the desktop's user could not put /everyone/large on the desktop", [1, 2, 15]],
+		["ignored", "SIGTERM", "stopped", [15]],
 	]) {
 		const second = await mkdtemp(join(tmpdir(), "qorpera-desktop-files-"));
 		try {
-			const run = spawnSync(
-				"python3",
-				["-I", "-B", join(repositoryRoot, "scripts/fixtures/machine-desktop-files.py"), join(repositoryRoot, "deploy/machine/desktop-files"), second, `stopped:${when}`],
-				{ encoding: "utf8" },
-			);
+			const words = ["-I", "-B", join(repositoryRoot, "scripts/fixtures/machine-desktop-files.py"), join(repositoryRoot, "deploy/machine/desktop-files"), second, `stopped:${when}`];
+			const ignored = when === "ignored";
+			const run = ignored
+				? spawnSync("sh", ["-c", 'trap "" HUP; exec python3 "$@"', "sh", ...words], { encoding: "utf8" })
+				: spawnSync("python3", words, { encoding: "utf8" });
 			assert.deepEqual([run.status, run.signal], [null, signalled], `${when}: ${run.stderr}`);
-			const { "its child": child, ...told } = JSON.parse(run.stdout);
+			const { "its child": child, "under SIGHUP": underHangups, ...told } = JSON.parse(run.stdout);
+			const copied = { large: "folder 755", "large/a.bin": "file 644" };
 			assert.deepEqual(
 				told,
-				{ "gave up": gaveUp, calls: ["copy", "tidy"], desk: {}, waits, "held back": [1, 2, 15], "the account's side holds back": "[]" },
+				{
+					"gave up": gaveUp,
+					calls: ["copy", "tidy"],
+					desk: ignored ? copied : {},
+					waits,
+					"held back": ignored ? [2, 15] : [1, 2, 15],
+					"the account's side": { "held back": [], "ignores SIGHUP": ignored },
+				},
+				when,
+			);
+			assert.deepEqual(
+				underHangups,
+				ignored ? { answer: ["folder", `${second}/desk/large`, "large"], calls: ["copy"], waits: [], "on the desk": Object.keys(copied) } : undefined,
 				when,
 			);
 			// (The child's note is there when it was not ended before it could write it.)
@@ -1796,6 +1826,9 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 		'\t[[ -z $blocked || $blocked == 0000000000000000 ]] || { echo "the cp of the desktop account holds signals back: $blocked" >&2; exit 1; }\n',
 		'\tkill -TERM "$asked" && kill -HUP "$asked" || true\n\tstatus=0\n\twait "$asked" || status=$?\n\t[[ $status == 129 || $status == 143 || $status == 0 ]] ||',
 		'\t[[ -z $(pgrep -u desktop -f "desktop-files account" || true) && -z $(pgrep -u desktop -x cp || true) ]] ||\n',
+		'\t(trap "" HUP; exec "$files" open --copy -- /tmp/large-links >/dev/null 2>&1) &\n',
+		'\tfor _ in $(seq 1 10); do kill -HUP "$asked" 2>/dev/null || true; done\n',
+		'\t[[ $status == 0 ]] && diff -r /tmp/large-links /home/desktop/Desktop/large-links >/dev/null ||\n',
 		'\tif leaked; then echo "bytes of a file only root can read are in the desktop account folders" >&2; exit 1; fi\n',
 	])
 		assert.ok(imageScript.includes(line), line);
