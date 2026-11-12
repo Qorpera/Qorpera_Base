@@ -1384,6 +1384,31 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 				'<svg><foreignObject><svg><p></p></foreignObject><style><img src="/back-in-svg.png"></style></svg>',
 				"/back-in-svg.png",
 			],
+			// Review round 5 of #1691, F2: an HTML element inside an integration point is the current node, so <![CDATA[
+			// there is a bogus comment to the first ">" (a self-closed <div/> is open too: HTML ignores its slash).
+			['<svg><foreignObject><div><![CDATA[ x > <img src="/real.png"> ]]></div></foreignObject></svg>', "/real.png"],
+			[
+				'<svg><foreignObject><div/><![CDATA[ x > <img src="/after-div.png"> ]]></foreignObject></svg>',
+				"/after-div.png",
+			],
+			// An end tag that pops past an HTML element the reader still holds open may be one a browser ignores (it would
+			// stay in HTML): CDATA after it is also read as markup after its first ">".
+			[
+				'<svg><foreignObject><div></foreignObject><![CDATA[ x > <img src="/after-doubt.png"> ]]></svg>',
+				"/after-doubt.png",
+			],
+			// A void element under an HTML element breaks nothing out: the <div> stays the current node.
+			[
+				'<svg><foreignObject><div><img src="a.png"><![CDATA[ x > <img src="/after-img.png"> ]]></div></foreignObject></svg>',
+				"/after-img.png",
+			],
+			// mglyph right above a MathML text point is MathML; under an HTML element the reader holds (which may have
+			// ended unseen) it is taken as MathML too, so its <style> is no text and the <img> loads: where it must guess,
+			// the reader counts.
+			[
+				'<math><mi><b><mglyph><style><img src="/mglyph-under-b.png"></style></mglyph></b></mi></math>',
+				"/mglyph-under-b.png",
+			],
 		])
 			await refusedWith({ "index.html": page(body as string) }, "SITE_LINKS_FROM_ROOT index.html 1\n");
 		// A sheet the page ends inside is still read: an HTML <style> and an SVG one.
@@ -1442,6 +1467,12 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 			// A string or a URL the file ends inside is still one.
 			['@import "/at-the-end.css', "/at-the-end.css"],
 			["a { background: url(/at-the-end.png", "/at-the-end.png"],
+			// Review round 5 of #1691, F1: a backslash the file ends on. In a string it is dropped, so the string is "/";
+			// elsewhere it is U+FFFD, so the URL token is "/x<U+FFFD>". Spaces before the end of a URL token are no part of it.
+			['@import "/\\', "/"],
+			['a { background: url("/fn\\', "/fn"],
+			["a { background: url(/x\\", "/x�"],
+			["a { background: url(  /spaces-at-the-end.png  ", "/spaces-at-the-end.png"],
 		])
 			await refusedWith({ "index.html": page("x"), "css/site.css": css }, "SITE_LINKS_FROM_ROOT css/site.css 1\n");
 		// A page of any case of its extension; the first link in C order of the files: a.css before index.html.
@@ -1492,6 +1523,14 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 			'<math><annotation-xml encoding="text/html"><mglyph><style><img src="/html-mglyph.png"></style></mglyph></annotation-xml></math>',
 			'<math><mi><svg><foreignObject><style><img src="/in-svg-in-math.png"></style></foreignObject></svg></mi></math>',
 			'<math><annotation-xml><svg><foreignObject><style><img src="/svg-in-annotation.png"></style></foreignObject></svg></annotation-xml></math>',
+			// Review round 5 of #1691: once an HTML element inside an integration point ends, or a void one never opens, the
+			// point is the current node again and CDATA there is text; an end tag from a nested SVG pops it to its element.
+			'<svg><foreignObject><p>a</p><br><![CDATA[ x > <img src="/cdata-at-the-point.png"> ]]></foreignObject></svg>',
+			'<svg><foreignObject><div><svg><g></div><style><img src="/after-inner-svg.png"></style></foreignObject></svg>',
+			// Read again, CDATA is markup only after its first ">" (before it, a bogus comment), and only until foreign
+			// content ends.
+			'<svg><foreignObject><div></foreignObject><![CDATA[ <img src="/in-the-bogus-comment.png"> ]]></svg>',
+			'<svg><foreignObject><div></foreignObject></svg><svg><![CDATA[ x > <img src="/after-foreign-content-ended.png"> ]]></svg>',
 			'<svg><foreignObject><![CDATA[ a > <img src="/in-cdata-at-point.png"> ]]></foreignObject></svg>',
 			// HTML's whitespace is ASCII's: a no-break space splits no ping or srcset, starts no refresh, and is no
 			// URL's blank; an http-equiv with a space is no refresh, nor a time not followed by ;, , or a space.
@@ -1538,10 +1577,15 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 			"notes.txt": '<a href="/x">',
 			// A text-only element that never ends: everything after it is text.
 			"plain.html": '<p>x</p><plaintext><img src="/in-plaintext.png"></plaintext><img src="/after.png">',
+			// Review round 5 of #1691: the file's end inside a comment, and a backslash at the end of a string (dropped) and
+			// of a URL (U+FFFD): no link from the root.
+			"c.css": "p { b: url(rel.png) } /* url(/in-a-comment-never-closed.png)",
+			"d.css": '@import "rel\\',
+			"e.css": "a { b: url(\\",
 			"img/x.svg": '<svg><image href="/i.png"/></svg>',
 		};
 		const run = await collectOf(files);
-		expect(run.output).toMatch(/^tree [0-9a-f]{40}\nfiles 7\n/);
+		expect(run.output).toMatch(/^tree [0-9a-f]{40}\nfiles 10\n/);
 	});
 
 	it("never prints a byte of a link, so a value in one stays unseen in any spelling (review round 3 of #1691)", async () => {
@@ -1617,9 +1661,19 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 			"b.html": "<math><mi><svg><g><p>".repeat(MiB / 4),
 		});
 		expect(foreign.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\n/);
+		// HTML inside an integration point: a million open elements an end tag pops at once, and CDATA read again as
+		// markup, in one long section and in half a million short ones.
+		const doubt = "<svg><foreignObject><div></foreignObject>";
+		const html = await collectOf({
+			"index.html": `<svg><foreignObject>${"<div>".repeat(MiB)}</svg>`,
+			"a.html": `${doubt}<![CDATA[>${"<img src=a>".repeat(MiB / 2)}]]>`,
+			"b.html": `${doubt}${"<![CDATA[>a]]>".repeat(MiB / 2)}`,
+		});
+		expect(html.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\n/);
 		console.log(
-			`links: 25 MiB of dense pages and styles ${Math.round(made.ms)} ms, odd shapes ${Math.round(slow.ms)} ms, style sheets of a token a byte ${Math.round(tokens.ms)} ms, scripts ${Math.round(scripts.ms)} ms, foreign content ${Math.round(foreign.ms)} ms`,
+			`links: 25 MiB of dense pages and styles ${Math.round(made.ms)} ms, odd shapes ${Math.round(slow.ms)} ms, style sheets of a token a byte ${Math.round(tokens.ms)} ms, scripts ${Math.round(scripts.ms)} ms, foreign content ${Math.round(foreign.ms)} ms, HTML in foreign content ${Math.round(html.ms)} ms`,
 		);
+		expect(html.ms).toBeLessThan(60_000);
 		expect(made.ms).toBeLessThan(60_000);
 		expect(slow.ms).toBeLessThan(60_000);
 		expect(tokens.ms).toBeLessThan(60_000);
