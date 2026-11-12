@@ -36,9 +36,10 @@
 --    ambiguous to PostgREST), at most one import a claim, and nothing else of a company whose import runs; an import's
 --    look waits for the company's quiet as a restore does (and while a GitHub session of that code is open,
 --    SESSIONS_OPEN), at the claim and at the step that first names look, and such a wait never uses up one of its five
---    claims; the lease (15 minutes); the step keeps raw and kept once written; qorpera_code_import_looked and
---    qorpera_code_import_record (the registry row, change 1, the GitHub grants of that code turned off); the finish's
---    shapes and rules.
+--    claims; once an import recorded its repository no number of claims ends it, only the executor's finish after the
+--    job that opens the place; the lease (15 minutes); the step keeps raw and kept once written;
+--    qorpera_code_import_looked and qorpera_code_import_record (the registry row, change 1, the GitHub grants of that
+--    code turned off); the finish's shapes and rules.
 -- 5. While an import is open at a place, no session starts there and no GitHub session of that code starts or opens
 --    again: "Code is being brought in at code/o/n; wait until it is in". Once it is in, no GitHub session of that code
 --    does: "This code was brought into Qorpera as code/o/n: work on it there (host qorpera)". The dispatch and follow-up
@@ -48,7 +49,8 @@
 -- 6. qorpera_authorize_code_import_fetch: the secret broker's fetch for an import, which the fetch authority asks when
 --    no coding session has the worker id it was given (the session path is unchanged).
 -- 7. qorpera_list_code_repositories: bringing (always there, [] when nothing runs), lastImport, and per repository
---    importedFrom, importedAt and earlierChanges, in the shapes the web reads (build6/E.md 1).
+--    importedFrom, importedAt and earlierChanges, in the shapes the web reads (build6/E.md 1). A repository whose
+--    import is still open (recorded, its place not open yet) is in bringing, not in repositories.
 -- Every changed body carries the marker 20260930736000.
 --
 -- Who may call: 2 as named; 3 the service role with a run's binding; 4 the service role only, as the coding executor
@@ -748,7 +750,8 @@ select pg_temp.code_import_patch('public.qorpera_code_request_outcome_valid(text
 				when 'import:looked' then p_outcome - array['schema','state','result'] = '{}'::jsonb$new$]);
 
 -- The claim: the kinds asked for; one import a claim; nothing else of a company whose import runs; an import's look
--- waits for quiet as a restore does; five claims of an import; an import's item. It replaces the three-argument form.
+-- waits for quiet as a restore does; five claims of an import until it records; an import's item. It replaces the
+-- three-argument form.
 select pg_temp.code_import_patch('public.qorpera_code_requests_claim(text,text,integer)'::regprocedure, array[
 	$old$public.qorpera_code_requests_claim(p_owner text, p_machine_id_sha256 text, p_limit integer)$old$,
 	$new$public.qorpera_code_requests_claim(p_owner text, p_machine_id_sha256 text, p_limit integer, p_kinds text[] DEFAULT ARRAY['undo'::text, 'download'::text, 'restore'::text])$new$,
@@ -787,21 +790,11 @@ select pg_temp.code_import_patch('public.qorpera_code_requests_claim(text,text,i
 		end if;
 		if v_request.kind = 'restore' and v_request.input ->> 'mode' = 'restore'$new$,
 	$old$		v_spent := v_request.attempts >= case when v_request.kind = 'download' then 5 else 3 end;$old$,
-	$new$		-- 20260930736000: an import has five claims, as a download; one that recorded its repository is in, and ends
-		-- done from what it recorded.
-		v_spent := v_request.attempts >= case when v_request.kind in ('download','import') then 5 else 3 end;
-		if v_spent and v_request.kind = 'import' and v_request.progress ? 'recorded' then
-			update public.qorpera_code_requests set state = 'done', lease_token = null, lease_owner = null,
-				lease_until = null, finished_at = v_now, updated_at = v_now,
-				outcome = jsonb_build_object('schema', 'qorpera.code-request-outcome/v1', 'state', 'done', 'result', 'imported',
-					'change', v_request.progress -> 'recorded' -> 'change',
-					'mainSha', v_request.progress -> 'recorded' -> 'mainSha',
-					'bundle', v_request.progress -> 'recorded' -> 'bundle',
-					'rawBundle', coalesce(v_request.progress -> 'raw' -> 'name', 'null'::jsonb),
-					'setAside', coalesce(v_request.progress -> 'setAside', 'null'::jsonb))
-			where id = v_request.id;
-			continue;
-		end if;$new$,
+	$new$		-- 20260930736000: an import has five claims, as a download, until it recorded its repository. From its record on
+		-- the place holds the import's mark until the job that opens it removes it, and the executor's finish after that
+		-- job is the import's only end: it is claimed again for as long as that takes (the review of #1710, F2).
+		v_spent := v_request.attempts >= case when v_request.kind in ('download','import') then 5 else 3 end
+			and not (v_request.kind = 'import' and coalesce(v_request.progress ? 'recorded', false));$new$,
 	$old$		else
 			v_item := v_item || jsonb_build_object('mode', v_request.input ->> 'mode', 'bundle', v_request.input -> 'bundle',$old$,
 	$new$		elsif v_request.kind = 'import' then
@@ -965,6 +958,16 @@ select pg_temp.code_import_patch('public.qorpera_list_code_repositories(uuid)'::
 				-- here), when, and how many earlier changes came with it.
 				'importedFrom', public.qorpera_code_import_member_from(repository.imported_from), 'importedAt', repository.imported_at,
 				'earlierChanges', repository.imported_from -> 'commits',$new$,
+	$old$			where repository.profile_id = p_profile_id), '[]'::jsonb),
+		-- 20260930735000: the places of the company's GitHub-host coding sessions$old$,
+	$new$			where repository.profile_id = p_profile_id
+				-- 20260930736000: a repository whose import is still open is not in yet (its place is closed until the
+				-- import's open job and finish): it shows in bringing.
+				and not exists (select 1 from public.qorpera_code_requests import
+					where import.environment_id = repository.environment_id and import.owner = repository.owner
+						and import.name = repository.name and import.kind = 'import' and import.state in ('queued','running'))),
+			'[]'::jsonb),
+		-- 20260930735000: the places of the company's GitHub-host coding sessions$new$,
 	$old$				limit 100) copy), '[]'::jsonb));$old$,
 	$new$				limit 100) copy), '[]'::jsonb),
 		-- 20260930736000: the code being brought in now (looks only are an agent's), oldest first, and the newest import of

@@ -17,7 +17,8 @@
 --   9. The finish: the shapes, once recorded, looked, a request that is gone.
 --  10. Afterwards: asked again, the list, the agent's read, undo's wall, a later restore, the other kinds' P0002.
 --  11. The dispatch and reopen rules, (a) to (c), in their words.
---  12. Five claims: DID_NOT_FINISH, and an import that recorded its repository ends brought in.
+--  12. Five claims: DID_NOT_FINISH; but an import that recorded its repository is claimed again past them until the
+--      executor's finish ends it (the review of #1710, F2), and meanwhile it is being brought in, not in.
 --  13. At the bounds: the list of a company with 200 sessions and 10 repositories, the claim with 50 queued requests.
 --  14. Races on three connections (committed, removed at the end): two members ask at once; a turn that opens meets an
 --      import that is asked for, both ways.
@@ -991,19 +992,54 @@ begin
 	q := pg_temp.req_row(v_id);
 	perform pg_temp.base_assert(q.state = 'failed' and q.outcome ->> 'code' = 'DID_NOT_FINISH' and q.progress ->> 'step' = 'fetch',
 		'did not finish: ' || to_jsonb(q)::text);
-	-- One that recorded its repository is in: past the claims it ends brought in, from what it recorded.
+	-- (Until the review of #1710, F2, an import that had recorded its repository ended done at the limit, from what it
+	-- recorded. But the record is made inside the job that opens the place, before the mark that closes it goes: an end
+	-- then left the place closed for good. Now only the executor's finish, after that job, ends it.)
+	-- Four claims cut short in the fetch; the fifth records, and its run is cut before the open job removed the mark.
 	v_id := (pg_temp.imp_ask('imp-five-rec', 'company', 'fiverec', pg_temp.imp_gh('Acme/Fiverec')) ->> 'requestId')::uuid;
+	for i in 1..4 loop
+		v_item := pg_temp.imp_claim(array['import']) -> 0;
+		perform pg_temp.req_step(v_id, (v_item ->> 'token')::uuid, '{"step":"fetch"}');
+		perform pg_temp.req_lapse(v_id);
+	end loop;
 	v_item := pg_temp.imp_claim(array['import']) -> 0;
 	perform pg_temp.req_step(v_id, (v_item ->> 'token')::uuid, jsonb_build_object('step', 'look', 'raw', pg_temp.imp_raw()));
 	perform pg_temp.imp_looked(v_id, (v_item ->> 'token')::uuid, pg_temp.imp_look());
 	perform pg_temp.req_step(v_id, (v_item ->> 'token')::uuid, jsonb_build_object('step', 'open', 'kept', pg_temp.imp_kept(),
 		'setAside', 'code/_set-aside/company/at-20261112T152000Z/fiverec'));
-	perform pg_temp.imp_record(v_id, (v_item ->> 'token')::uuid, pg_temp.imp_imported());
-	update public.qorpera_code_requests set attempts = 5, lease_until = clock_timestamp() - interval '1 second' where id = v_id;
-	perform pg_temp.base_assert(pg_temp.imp_claim(array['import']) = '[]'::jsonb, 'past the claims');
+	perform pg_temp.base_assert(pg_temp.imp_record(v_id, (v_item ->> 'token')::uuid, pg_temp.imp_imported()) ->> 'state' = 'recorded'
+		and (pg_temp.req_row(v_id)).attempts = 5, 'the fifth claim records');
+	perform pg_temp.req_lapse(v_id);
+	-- The sixth claim and the seventh hand it out again, with what it recorded: no DID_NOT_FINISH, nothing ends it.
+	for i in 6..7 loop
+		v_item := pg_temp.imp_claim(array['import']) -> 0;
+		q := pg_temp.req_row(v_id);
+		perform pg_temp.base_assert(v_item ->> 'requestId' = v_id::text and q.state = 'running' and q.attempts = i
+			and v_item -> 'progress' -> 'recorded' = q.progress -> 'recorded' and q.outcome is null,
+			'claim ' || i || ' of a recorded import: ' || coalesce(v_item::text, 'none'));
+		perform pg_temp.req_lapse(v_id);
+	end loop;
+	-- Meanwhile it is being brought in, not in: the list has it in bringing (at its open), not among the repositories
+	-- (so no download is offered, and no GitHub copy is named there), and no import of it that did not come in; asked
+	-- again, it is this request, which the agent reads as running.
+	perform pg_temp.base_assert(
+		not exists (select 1 from jsonb_array_elements(pg_temp.req_list() -> 'repositories') r where r ->> 'name' = 'fiverec')
+		and pg_temp.req_list() -> 'bringing' = jsonb_build_array(jsonb_build_object('owner', 'company', 'name', 'fiverec',
+			'from', '{"github":"Acme/Fiverec"}'::jsonb, 'step', 'open', 'waiting', null, 'startedAt', (pg_temp.req_row(v_id)).created_at))
+		and not exists (select 1 from jsonb_array_elements(pg_temp.req_list() -> 'githubCopies') c where c ->> 'name' = 'fiverec')
+		and coalesce(pg_temp.req_list() #>> '{lastImport,name}', '') <> 'fiverec', 'being brought in: ' || pg_temp.req_list()::text);
+	perform pg_temp.base_assert(pg_temp.imp_ask('imp-five-rec-again', 'company', 'fiverec', pg_temp.imp_gh('Acme/Fiverec'))
+			= pg_temp.imp_queued(v_id)
+		and pg_temp.imp_read(v_id) ->> 'state' = 'running' and pg_temp.imp_read(v_id) -> 'result' = 'null', 'asked again meanwhile');
+	-- The next claim's run opens the place, and its finish ends it: in, and among the repositories.
+	v_item := pg_temp.imp_claim(array['import']) -> 0;
+	perform pg_temp.base_assert(pg_temp.req_finish(v_id, (v_item ->> 'token')::uuid, pg_temp.imp_outcome(jsonb_build_object(
+		'setAside', 'code/_set-aside/company/at-20261112T152000Z/fiverec'))) = pg_temp.req_recorded(1), 'the finish');
 	q := pg_temp.req_row(v_id);
-	perform pg_temp.base_assert(q.state = 'done' and q.outcome = pg_temp.imp_outcome(jsonb_build_object('setAside',
-		'code/_set-aside/company/at-20261112T152000Z/fiverec')) and q.lease_token is null, 'in: ' || to_jsonb(q)::text);
+	perform pg_temp.base_assert(q.state = 'done' and q.attempts = 8 and q.outcome = pg_temp.imp_outcome(jsonb_build_object(
+			'setAside', 'code/_set-aside/company/at-20261112T152000Z/fiverec')) and q.lease_token is null
+		and exists (select 1 from jsonb_array_elements(pg_temp.req_list() -> 'repositories') r where r ->> 'name' = 'fiverec')
+		and pg_temp.req_list() -> 'bringing' = '[]'::jsonb, 'in: ' || to_jsonb(q)::text);
 	-- A place that holds a repository by the time of the record is not this import's: 55000, nothing written.
 	v_id := (pg_temp.imp_ask('imp-taken', 'company', 'taken', pg_temp.imp_gh('Acme/Taken')) ->> 'requestId')::uuid;
 	v_item := pg_temp.imp_claim(array['import']) -> 0;
