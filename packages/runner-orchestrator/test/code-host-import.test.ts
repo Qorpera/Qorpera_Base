@@ -862,6 +862,11 @@ describe("code host: an import's look (own code storage, step 6, part B)", { tim
 		const letters = (count: number) =>
 			randomBytes(count).toString("hex").toUpperCase().replace(/[0-9]/g, "Q").slice(0, count);
 		const lower = (count: number) => randomBytes(count).toString("hex").replace(/[0-9]/g, "k").slice(0, count);
+		// The key-like folder's name is a path, and paths do come out (main's tree is how the look checks names). Its
+		// letters are none a planted value has (theirs are A to F and Q), so no 12 bytes of a value can stand in it by
+		// chance: with the same letters, about 1 run in 600 drew a name that began as the AWS value does (`AKIA` and eight
+		// Q, run 20261112T214649-84564-068d609b), and the check below took main's tree, which names it, for a leak.
+		const unlike = (count: number) => [...randomBytes(count)].map((byte) => "GHJKLMNPRSTUVWXY"[byte % 16]).join("");
 		const planted = {
 			aws: `AKIA${letters(16)}`,
 			github: `ghp_${lower(36)}`,
@@ -874,7 +879,7 @@ describe("code host: an import's look (own code storage, step 6, part B)", { tim
 			anthropic: `sk-ant-api03-${lower(32)}`,
 			history: `ASIA${letters(16)}`,
 			newline: `rk_live_${lower(24)}`,
-			pathKey: `AKIA${letters(16)}`,
+			pathKey: `AKIA${unlike(16)}`,
 		};
 		const filler = (index: number) => `line ${index} of plain text\n`;
 		const first = h.commit("refs/heads/master", {
@@ -946,6 +951,10 @@ describe("code host: an import's look (own code storage, step 6, part B)", { tim
 		// No command of the look handed out a value of a file, nor any part of one of 12 bytes (the key-like folder's
 		// name is a path, and paths do come out).
 		const contents = values.filter((value) => value !== planted.pathKey);
+		// The fixture keeps it so: no 12 bytes of a value stand in the one path drawn at random, which does come out.
+		for (const value of contents)
+			for (let at = 0; at + 12 <= value.length; at += 1)
+				expect(`${planted.pathKey}/notes.txt`).not.toContain(value.slice(at, at + 12));
 		for (const { result: answered } of f.seen) {
 			const text = answered.stdout.toString("latin1");
 			for (const value of contents)
