@@ -25,6 +25,14 @@ export type MenuEntry =
 			select: () => void;
 	  }
 	| { kind: "submenu"; label: string; icon?: string; items: MenuEntry[] }
+	/** A row that opens a panel of its own beside it, as a submenu opens (the apps drawer's Icon and colour): `panel`
+	 * builds it, with `close` to close the whole menu, and `dispose` runs when it closes. */
+	| {
+			kind: "panel";
+			label: string;
+			icon?: string;
+			panel: (close: () => void) => { el: HTMLElement; dispose?: () => void };
+	  }
 	| { kind: "separator" }
 	/** A line of plain text: what the rows below are about, or what choosing one does. */
 	| { kind: "caption"; label: string };
@@ -98,7 +106,7 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 	active?.close();
 	const lifetime = new AbortController();
 	const opener = options.opener;
-	let submenu: { el: HTMLElement; trigger: HTMLElement } | undefined;
+	let submenu: { el: HTMLElement; trigger: HTMLElement; dispose?: () => void } | undefined;
 	let closed = false;
 	let closedBy: Event | undefined;
 
@@ -107,6 +115,7 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 		submenu.trigger.setAttribute("aria-expanded", "false");
 		submenu.trigger.classList.remove("is-open");
 		submenu.el.remove();
+		submenu.dispose?.();
 		if (focusTrigger) submenu.trigger.focus();
 		submenu = undefined;
 	};
@@ -128,37 +137,60 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 				continue;
 			}
 			const glyph = entry.icon ? icon(entry.icon) : h("span", { class: "icon", "aria-hidden": "true" });
-			if (entry.kind === "submenu") {
+			if (entry.kind === "submenu" || entry.kind === "panel") {
 				const trigger = h(
 					"button",
 					{
 						type: "button",
 						class: "context-menu-item",
 						role: "menuitem",
-						"aria-haspopup": "menu",
+						"aria-haspopup": entry.kind === "panel" ? "dialog" : "menu",
 						"aria-expanded": "false",
 					},
 					glyph,
 					h("span", { class: "context-menu-label" }, entry.label),
 					h("span", { class: "context-menu-chevron" }, icon("chevron")),
 				);
+				// A panel's first control takes focus as a submenu's first row does.
+				const first = (el: HTMLElement) =>
+					entry.kind === "panel"
+						? el.querySelector<HTMLElement>("button:not(:disabled)[tabindex='0'], button:not(:disabled)")
+						: menuItems(el)[0];
 				const open = (focusFirst: boolean) => {
 					if (submenu?.trigger === trigger) {
-						if (focusFirst) menuItems(submenu.el)[0]?.focus();
+						if (focusFirst) first(submenu.el)?.focus();
 						return;
 					}
 					closeSubmenu();
-					const child = build(entry.items, entry.label, true);
+					let dispose: (() => void) | undefined;
+					let child: HTMLElement;
+					if (entry.kind === "panel") {
+						const built = entry.panel(() => handle.close());
+						dispose = built.dispose;
+						child = h(
+							"div",
+							{ class: "context-menu context-submenu context-panel", role: "dialog", "aria-label": entry.label },
+							built.el,
+						);
+						child.addEventListener("keydown", (event) => {
+							if (matchesKey(event, "dismiss")) {
+								event.preventDefault();
+								event.stopPropagation();
+								closeSubmenu(true);
+							}
+						});
+						child.addEventListener("contextmenu", (event) => event.preventDefault());
+					} else child = build(entry.items, entry.label, true);
 					(options.container ?? document.body).append(child);
 					const row = trigger.getBoundingClientRect();
 					const parent = menu.getBoundingClientRect();
 					const scale = uiScale();
 					// The submenu's first row lines up with its trigger: its padding (6px) plus its border (1px).
 					place(child, parent.right - 2 * scale, row.top - 7 * scale, parent.left + 2 * scale);
-					submenu = { el: child, trigger };
+					submenu = { el: child, trigger, ...(dispose ? { dispose } : {}) };
 					trigger.setAttribute("aria-expanded", "true");
 					trigger.classList.add("is-open");
-					if (focusFirst) menuItems(child)[0]?.focus();
+					if (focusFirst) first(child)?.focus();
 				};
 				trigger.addEventListener("click", () => open(true));
 				trigger.addEventListener("pointerenter", () => open(false));

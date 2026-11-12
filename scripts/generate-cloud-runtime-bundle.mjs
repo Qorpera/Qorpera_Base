@@ -7,27 +7,22 @@ import { CLOUD_RUNTIME_MODEL_POLICY } from "../packages/runtime/src/cloud-runtim
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929023599_runtime_bundle_activation_v235.sql";
-const activationVersion = 235;
-const previousActivationVersion = 234;
-const previousActivationSha256 = "764aba7d2e7213296c5414dffcc8914c5167f5d7d4f59daf2ff7f54682814249";
-// This release's own migrations, which its activation requires before it registers the bundle (v235): one entry per
+const activation = "supabase/migrations/20260929023699_runtime_bundle_activation_v236.sql";
+const activationVersion = 236;
+const previousActivationVersion = 235;
+const previousActivationSha256 = "c9ae06f79fbd4c9b7acb1b4afcb6169f9622d6b788c9c7457fd5d65844c9e93f";
+// This release's own migrations, which its activation requires before it registers the bundle (v236): one entry per
 // migration, as [file name, why, SQL that is true once it is in place]. Each release states its own list here, beside its
-// version lines, when it sets them: v236 replaces these entries with the migrations v236 brings (or an empty list). v235's
-// entries are not repeated there: v236's activation already requires v235 active with its exact digest, which on a
+// version lines, when it sets them: v237 replaces these entries with the migrations v237 brings (or an empty list). v236's
+// entries are not repeated there: v237's activation already requires v236 active with its exact digest, which on a
 // database past 20260930534000 only this activation sets, after these guards. An entry sorting before the activation file
 // is checked on every database; one sorting after it only on a database past 20260930534000, since a fresh chain in file
 // order reaches it only after the activation (as with the guards in the activation's text below).
 const activationRequires = Object.freeze([
 	[
-		"20260930728000_member_app_layouts",
-		"a member's own apps layout; the runtime does not call it, but 20260930729000 patches its layout check and it rides first in this release's migrate",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_sidebar_own_summary(uuid,uuid)') and strpos(prosrc, '20260930728000') > 0)",
-	],
-	[
-		"20260930729000_code_releases",
-		"the coding executor's change reports v3 and its site calls; under this bundle a coding session writes a site into its checks file",
-		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_code_checks_switch(uuid,uuid)') and strpos(prosrc, '20260930729000') > 0)",
+		"20260930735000_code_restore_follow_ups",
+		"the coding executor's restore strand call and the repositories' list with githubCopies, which this bundle's words and the web describe",
+		"exists (select 1 from pg_proc where oid = to_regprocedure('public.qorpera_list_code_repositories(uuid)') and strpos(prosrc, '20260930735000') > 0)",
 	],
 ]);
 const activationRequiresSql = activationRequires
