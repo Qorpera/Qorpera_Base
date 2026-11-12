@@ -11,7 +11,7 @@ import {
 	isAppManifestPath,
 	parseAppManifest,
 } from "@qorpera/cloud-client/interface-apps";
-import { type JsonValue, UUID_PATTERN } from "@qorpera/contracts";
+import { folderKey, type JsonValue, UUID_PATTERN } from "@qorpera/contracts";
 import {
 	type CloudCompanyFolderClient,
 	type CloudCompanyFolderEntry,
@@ -59,6 +59,8 @@ import { fitsOneResult } from "./cloud-worker-tools.ts";
  *   result, so the model sees all of it, and everything it shows (the entry read, or the folder and each entry listed)
  *   is released with the run actor under the hash of exactly that text before the model sees it. The answer cites the
  *   release (`companyReadId`).
+ * - A listing goes down to `depth` levels and keeps the paths like `glob` (keyholes S2, 12 November 2026), one short
+ *   line an entry, so one call shows a small company's whole tree; what it leaves out comes with where to go on.
  * - A PNG, JPEG, GIF or WebP file read from its start is shown as one PNG made here (cloud-folder-images.ts), after an
  *   answer that names that PNG's hash and is released like any read; an image in another format is refused by name.
  * - A change is a one-unit change set, committed under the tool call's receipt, so it happens once and a replay of the
@@ -74,10 +76,21 @@ import { fitsOneResult } from "./cloud-worker-tools.ts";
  * result fence (MAX_CLOUD_TOOL_RESULT_BYTES, which the patched Codex pins at 32 KiB) is the real cap, so a window of
  * plain text shows up to about 31 KiB, less where characters need escaping, and the model reads on from nextOffset. A
  * write or an edit's file is at most 512 KiB of text (21 October 2026): the folder stores it in chunks, and the call's
- * arguments, escaped, may take up to MAX_TOOL_ARGUMENT_BYTES. A page lists at most 50 entries. */
+ * arguments, escaped, may take up to MAX_TOOL_ARGUMENT_BYTES. */
 const MAX_READ_BYTES = MAX_CLOUD_TOOL_RESULT_BYTES;
 const MAX_WRITE_BYTES = 512 * 1024;
-const MAX_LIST = 50;
+/** A listing (keyholes S2, 12 November 2026) shows at most this many entries a call, one short line each: about as
+ * many as fit one result when paths are about 50 bytes, as they are in companies today. Fewer when they do not fit. */
+const MAX_LIST = 500;
+/** How many levels below its folder a listing goes: the companies of 7 November 2026 had paths 7 deep at most. */
+const MAX_DEPTH = 8;
+/** What one listing call looks through at most, in the folder core's pages (the client's 200 a page), before it
+ * answers with where to go on: entries a depth or a glob leaves out count too, so a call over a large subtree stays
+ * short. It stops at whichever comes first. */
+const LIST_SCAN_ENTRIES = 5000;
+const LIST_SCAN_MS = 2000;
+/** A glob, as company_search's (MAX_QUERY there). */
+const MAX_GLOB = 256;
 /** A listing shows a link's target up to this many bytes; company_read shows all of it. */
 const LIST_TARGET_BYTES = 512;
 /** The model's operation key, as the legacy tools take it. */
@@ -102,6 +115,87 @@ export function args(value: JsonValue, tool: string, keys: readonly string[]): R
 	if (Object.keys(value).some((key) => !keys.includes(key)) || keys.some((key) => !Object.hasOwn(value, key)))
 		throw new CloudToolArgumentRefusal(`${tool} takes exactly ${keys.join(", ")}`);
 	return value as Record<string, JsonValue>;
+}
+
+/** A tool's arguments with `required` keys and any of `optional`, and nothing else. */
+function someArgs(
+	value: JsonValue,
+	tool: string,
+	required: readonly string[],
+	optional: readonly string[],
+): Record<string, JsonValue> {
+	const keys = [...required, ...optional];
+	if (value === null || typeof value !== "object" || Array.isArray(value))
+		throw new CloudToolArgumentRefusal(`${tool} takes an object with ${keys.join(", ")}`);
+	if (Object.keys(value).some((key) => !keys.includes(key)) || required.some((key) => !Object.hasOwn(value, key)))
+		throw new CloudToolArgumentRefusal(
+			`${tool} takes ${required.join(", ")}${optional.length ? `, and may take ${optional.join(", ")}` : ""}, and nothing else`,
+		);
+	return value as Record<string, JsonValue>;
+}
+
+/** A listing's glob: the syntax of company_search's (packages/object-gateway/src/folder-service/search.ts,
+ * compileGlob and globMatches), its '/'-separated parts each a name pattern (code points: `*` any run of them, `?` any
+ * one) or `**` (any number of folders), and without a '/' it is matched against a name alone. Matched on folder keys
+ * (case folded, as the folder compares names), so `*.md` finds README.MD. The same linear walks as the search's. */
+interface Glob {
+	readonly parts: readonly (readonly string[] | "**")[];
+	readonly nameOnly: boolean;
+}
+
+function compileGlob(glob: string): Glob {
+	const key = folderKey(glob);
+	return {
+		parts: key.split("/").map((part) => (part === "**" ? "**" : Array.from(part))),
+		nameOnly: !key.includes("/"),
+	};
+}
+
+/** One name against one pattern: the two-pointer walk with one place to go back to, at most name × pattern steps. */
+function nameMatches(pattern: readonly string[], name: readonly string[]): boolean {
+	let p = 0;
+	let n = 0;
+	let star = -1;
+	let mark = 0;
+	while (n < name.length) {
+		if (p < pattern.length && pattern[p] !== "*" && (pattern[p] === "?" || pattern[p] === name[n])) {
+			p++;
+			n++;
+		} else if (p < pattern.length && pattern[p] === "*") {
+			star = p++;
+			mark = n;
+		} else if (star >= 0) {
+			p = star + 1;
+			n = ++mark;
+		} else return false;
+	}
+	while (p < pattern.length && pattern[p] === "*") p++;
+	return p === pattern.length;
+}
+
+/** A path's key below the listed folder against a glob: the same walk over its names, `**` any run of them. */
+function globMatches(glob: Glob, key: string): boolean {
+	const names = key.split("/");
+	if (glob.nameOnly) return nameMatches(glob.parts[0] as readonly string[], Array.from(names[names.length - 1]!));
+	let p = 0;
+	let n = 0;
+	let star = -1;
+	let mark = 0;
+	while (n < names.length) {
+		const part = glob.parts[p];
+		if (part !== undefined && part !== "**" && nameMatches(part, Array.from(names[n]!))) {
+			p++;
+			n++;
+		} else if (part === "**") {
+			star = p++;
+			mark = n;
+		} else if (star >= 0) {
+			p = star + 1;
+			n = ++mark;
+		} else return false;
+	}
+	while (p < glob.parts.length && glob.parts[p] === "**") p++;
+	return p === glob.parts.length;
 }
 
 export function path(value: JsonValue | undefined, root: boolean): string {
@@ -628,33 +722,61 @@ export function cloudFolderFileTools(options: {
 		{
 			name: "company_list" satisfies CloudRuntimeToolOperation,
 			source: "company_file",
-			description: `List a folder of the company folder: the files, folders and links in it that you may read, with their versions, a file's size and a link's target (its first ${LIST_TARGET_BYTES} bytes, with targetCut when company_read shows more), at most ${MAX_LIST} a call. path is empty for the top; after is null for the first page, then the next value a page gave.`,
+			description: `List the company folder: what is in the folder at path (empty for the top) that you may read, down to depth levels (1 to ${MAX_DEPTH}; default 1, or ${MAX_DEPTH} with a glob), and only paths like glob when you give one (* and ? within a name, ** across folders, not case-sensitive; without a / it matches names alone: *.md, specs/**/*.csv). Up to limit entries a call (1 to ${MAX_LIST}, default ${MAX_LIST}), one a line: a file as its path, a tab and its size in bytes; a folder as its path and /; a link as its path, a tab and -> what it names (its first ${LIST_TARGET_BYTES} bytes; company_read shows all). When there is more, the answer says so and gives after to call again with. Use depth to see a folder's whole tree in one call. A file's version comes from company_read; a folder's move takes the listing's asOfSeq.`,
 			inputSchema: {
 				type: "object",
 				additionalProperties: false,
-				required: ["path", "after", "limit"],
+				required: ["path"],
 				properties: {
 					path: pathSchema,
+					depth: { type: "integer", minimum: 1, maximum: MAX_DEPTH },
+					glob: { type: "string", minLength: 1, maxLength: MAX_GLOB },
 					after: { type: ["string", "null"], maxLength: 4096 },
 					limit: { type: "integer", minimum: 1, maximum: MAX_LIST },
 				},
 			},
 			parseArguments(value) {
-				const input = args(value, "company_list", ["path", "after", "limit"]);
+				const input = someArgs(value, "company_list", ["path"], ["depth", "glob", "after", "limit"]);
 				let after: string | null = null;
-				if (input.after !== null) {
+				if (input.after !== undefined && input.after !== null) {
 					try {
 						after = parseCloudCompanyPath(input.after as string);
 					} catch {
-						throw new CloudToolArgumentRefusal(
-							"after must be null, or the next value a page of this listing gave",
-						);
+						throw new CloudToolArgumentRefusal("after must be null, or the after value a listing gave");
 					}
 				}
-				return { path: path(input.path, true), after, limit: integer(input.limit, "limit", 1, MAX_LIST) };
+				let glob: string | null = null;
+				if (input.glob !== undefined) {
+					if (
+						typeof input.glob !== "string" ||
+						input.glob.length === 0 ||
+						input.glob.length > MAX_GLOB ||
+						/[\u0000-\u001f\u007f]/.test(input.glob)
+					)
+						throw new CloudToolArgumentRefusal(`glob must be text of 1 to ${MAX_GLOB} characters, on one line`);
+					glob = input.glob;
+				}
+				return {
+					path: path(input.path, true),
+					depth:
+						input.depth === undefined
+							? glob === null
+								? 1
+								: MAX_DEPTH
+							: integer(input.depth, "depth", 1, MAX_DEPTH),
+					glob,
+					after,
+					limit: input.limit === undefined ? MAX_LIST : integer(input.limit, "limit", 1, MAX_LIST),
+				};
 			},
 			async execute(value, context) {
-				const input = value as { path: string; after: string | null; limit: number };
+				const input = value as {
+					path: string;
+					depth: number;
+					glob: string | null;
+					after: string | null;
+					limit: number;
+				};
 				let parent: CloudCompanyFolderEntry | null = null;
 				if (input.path !== "") {
 					parent = await read(input.path, "listed", context.signal);
@@ -663,7 +785,7 @@ export function cloudFolderFileTools(options: {
 							folder,
 							identity.runId,
 							context,
-							cloudToolJsonText({ path: input.path, kind: "absent", version: null, entries: [], next: null }),
+							`${input.path}: absent; nothing is there that you may read.`,
 							[],
 						);
 					if (parent.kind !== "folder")
@@ -671,49 +793,99 @@ export function cloudFolderFileTools(options: {
 							`COMPANY_FILE_NOT_A_FOLDER: that path is a ${parent.kind === "file" ? "file" : "link"}; read it with company_read`,
 						);
 				}
-				let page: Awaited<ReturnType<CloudCompanyFolderClient["list"]>>;
-				try {
-					page = await folder.list(
-						input.path,
-						{ ...(input.after === null ? {} : { after: input.after }), limit: input.limit },
-						context.signal,
-					);
-				} catch (error) {
-					return unavailable(error, "listed");
+				// The folder core's pages in key order: one level, or the whole subtree for a depth past 1, filtered here by
+				// depth and glob. One more entry than is shown proves there is more; a call that looked through its bound
+				// stops with the last entry it looked at.
+				const levels = input.path === "" ? 0 : input.path.split("/").length;
+				const glob = input.glob === null ? null : compileGlob(input.glob);
+				const matched: CloudCompanyFolderEntry[] = [];
+				let asOfSeq: number | undefined;
+				let after = input.after;
+				let looked = 0;
+				let last: CloudCompanyFolderEntry | undefined;
+				let ended = false;
+				const started = performance.now();
+				scan: for (;;) {
+					let page: Awaited<ReturnType<CloudCompanyFolderClient["list"]>>;
+					try {
+						page = await folder.list(
+							input.path,
+							{ ...(after === null ? {} : { after }), recursive: input.depth > 1 },
+							context.signal,
+						);
+					} catch (error) {
+						return unavailable(error, "listed");
+					}
+					// The folder clock of the call's first page: a change after it stops a folder's move, even one a later
+					// page shows (listAll's rule).
+					asOfSeq ??= page.asOfSeq;
+					for (const entry of page.entries) {
+						looked++;
+						last = entry;
+						const names = entry.path.split("/");
+						if (names.length - levels > input.depth) continue;
+						if (glob && !globMatches(glob, folderKey(names.slice(levels).join("/")))) continue;
+						matched.push(entry);
+						if (matched.length > input.limit) break scan;
+					}
+					if (page.next === null) {
+						ended = true;
+						break;
+					}
+					after = page.next;
+					if (looked >= LIST_SCAN_ENTRIES || performance.now() - started >= LIST_SCAN_MS) break;
 				}
-				// A link's target shows up to LIST_TARGET_BYTES; `first` cuts the first entry's further.
-				const listedTarget = (whole: string, shown = head(whole, LIST_TARGET_BYTES)) => shownTarget(whole, shown);
-				const render = (count: number, first?: string) =>
-					cloudToolJsonText({
-						path: input.path,
-						kind: "folder",
-						version: parent?.version ?? null,
-						// The folder clock the page was read at: a folder's move names it (company_move).
-						asOfSeq: page.asOfSeq,
-						entries: page.entries.slice(0, count).map((entry, index) => ({
-							path: entry.path,
-							kind: entry.kind,
-							version: entry.version,
-							bytes: entry.kind === "file" ? entry.file.bytes : null,
-							...(entry.kind === "symlink" ? listedTarget(entry.target, index === 0 ? first : undefined) : {}),
-						})),
-						next: count < page.entries.length ? (page.entries[count - 1]?.path ?? null) : page.next,
-					});
-				// Grown from one entry, so a wide page is never rendered whole; what is left out comes on the next page. A
-				// first link whose target, escaped at worst, still passes one tool result shows less of it: only a path makes
-				// a page too long to show.
-				let count = Math.min(page.entries.length, 1);
+				const shownTo = (whole: string, shown: string) =>
+					`-> ${JSON.stringify(shown)}${shown.length < whole.length ? " (cut; company_read shows all)" : ""}`;
+				const line = (entry: CloudCompanyFolderEntry, target?: string): string =>
+					entry.kind === "folder"
+						? `${entry.path}/`
+						: entry.kind === "file"
+							? `${entry.path}\t${entry.file.bytes}`
+							: `${entry.path}\t${shownTo(entry.target, target ?? head(entry.target, LIST_TARGET_BYTES))}`;
+				const header = `${input.path === "" ? "The top of the company folder" : `${input.path}/ (version ${parent?.version})`}, asOfSeq ${asOfSeq}, depth ${input.depth}${input.glob === null ? "" : `, glob ${JSON.stringify(input.glob)}`}:`;
+				// What is said after the lines shown: there is more after the last one shown, none, or perhaps more after the
+				// last entry looked at, which the answer then shows (and releases) too.
+				const ending = (count: number): string => {
+					const shown = count === 0 ? "No entries" : `${count} ${count === 1 ? "entry" : "entries"}`;
+					if (count < matched.length)
+						return `${shown} shown. More: call again with after ${JSON.stringify(matched[count - 1]?.path)}.`;
+					if (ended || !last) return `${shown}. Nothing more.`;
+					return `${shown} shown, ${looked} looked through. More may follow: call again with after ${JSON.stringify(last.path)}.`;
+				};
+				const render = (count: number, first?: string): string =>
+					[
+						header,
+						...matched.slice(0, count).map((entry, index) => line(entry, index === 0 ? first : undefined)),
+						"",
+						ending(count),
+					].join("\n");
+				// As many entries as fit one result (the longest start that fits, found by halving); at least one. A first
+				// link whose target, escaped at worst, still passes one result shows less of it: only a path makes an
+				// answer too long to show.
+				let count = Math.min(matched.length, input.limit, 1);
 				let output = render(count);
-				const first = page.entries[0];
+				const first = matched[0];
 				if (first?.kind === "symlink" && !fitsOneResult(output))
 					output = fitted(head(first.target, LIST_TARGET_BYTES), 0, (shown) => render(1, shown));
-				else {
-					while (count < page.entries.length && fitsOneResult(render(count + 1))) count++;
+				else if (count > 0) {
+					let high = Math.min(matched.length, input.limit);
+					while (count < high) {
+						const middle = Math.ceil((count + high) / 2);
+						if (fitsOneResult(render(middle))) count = middle;
+						else high = middle - 1;
+					}
 					output = render(count);
 				}
+				const shown = matched.slice(0, count);
+				const named =
+					count === matched.length && !ended && last && !shown.includes(last)
+						? [cloudCompanyFolderRelease(last)]
+						: [];
 				return released(folder, identity.runId, context, output, [
 					...(parent ? [cloudCompanyFolderRelease(parent)] : []),
-					...page.entries.slice(0, count).map(cloudCompanyFolderRelease),
+					...shown.map(cloudCompanyFolderRelease),
+					...named,
 				]);
 			},
 		},

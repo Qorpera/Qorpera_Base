@@ -6443,6 +6443,30 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
 3. **Every emblem in the drawer is drawn in its app's colour** (its manifest's `colour`; fixed colours for the
    built-in pages), no longer black only.
 
+### 2026-11-12 amendment: more of the company folder in one call
+
+> **Built, not live.** Jonas, 12 November 2026, after the plan for removing the agents' keyholes
+> (lanes/keyholes-20261112/PLAN.md, slice S2): "Yes, build them". Runtime only: no migration and no Codex rebuild.
+> It goes live with a runtime bundle at or after the 2026-11-08 amendment's 32 KiB result (it works at 8 KiB too,
+> with fewer entries a call). It amends the 2026-10-21 amendment's item 5 for listings.
+
+1. **A listing shows a tree.** `company_list` takes `depth` (1 to 8; default 1, or 8 with a glob) and `glob`
+   (`company_search`'s syntax: `*` and `?` within a name, `**` across folders, a glob without `/` matches names
+   alone; matched on folder keys, so case does not matter), and `after` and `limit` may be left out. A call without
+   them lists one level, as before.
+   - One call shows up to 500 entries (`limit`, default 500), as many as fit one result, one short line each: a
+     file's path and size in bytes, a folder's path and `/`, a link's path and the first 512 bytes of its target. A
+     listing no longer shows each entry's version; `company_read` does.
+   - Past depth 1 the runtime filters the folder core's subtree listing (`p_recursive`, which the native host's
+     entry point passes by its declared name, 20260928409985) by depth and glob. One call looks through at most
+     5,000 entries, or stops after about 2 s of pages, and then says where it got to.
+   - Nothing is left out silently: the answer says when there is more and gives `after` to go on with; a call that
+     stopped at its bound names the last path it looked at, which it releases with the rest. Every entry shown, and
+     the folder listed, is released under the hash of the answer, as before; what a depth or glob leaves out is not.
+   - `asOfSeq` is the folder clock of the call's first page, as `company_move` takes it.
+2. **What the provider sees.** `company_list`'s description and input schema (`required` is `["path"]`, with
+   `depth`, `glob`, `after` and `limit` optional).
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema

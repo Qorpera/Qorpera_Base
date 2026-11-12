@@ -1619,8 +1619,9 @@ it("gives a company run the folder core's file tools, and Interfaces' tools thro
 		inputSchema: { required: string[] };
 	}[];
 	const list = tools.find((tool) => tool.name === "company_list");
-	// The folder core pages a folder by its last path; no listing pins a snapshot.
-	expect(list?.inputSchema.required).toEqual(["path", "after", "limit"]);
+	// The folder core pages a folder by its last path; no listing pins a snapshot. Since keyholes S2 (12 November 2026)
+	// depth, glob, after and limit may be left out: one level, the first 500 entries.
+	expect(list?.inputSchema.required).toEqual(["path"]);
 	const files = ["company_read", "company_write", "company_mkdir", "company_delete", "table_read", "table_write"];
 	for (const name of files) expect(tools.some((tool) => tool.name === name)).toBe(true);
 	expect(tools.some((tool) => tool.name === "save_attachment")).toBe(false);
@@ -3235,6 +3236,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// says what is stopped, open questions too with allowCustom ("it's really stopped at you"), so they moved again.
 	// Its question schema says the same (an open one goes on the card with allowCustom, not to chat), so the catalog text
 	// moved once more.
+	// On 12 November 2026 company_list takes depth and glob and shows up to 500 entries as short lines (keyholes S2), so
+	// they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3281,9 +3284,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"29e3701248713209023adb13d1882a36e3ac54e1de288a47a8dee10a828b42d4",
+		"d13d2b59f44ee247b5a46ad04f6206420418eaad155593a6d80225199d9781bc",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"a8ceed55e6fe1ee1957badea119208917bf36d0b4a355a871bdf7c00051b47c2",
+		"b157d7a7845659df54c3bea85312fd80e04469817090e002475084a3f88bd4f1",
 	);
 });

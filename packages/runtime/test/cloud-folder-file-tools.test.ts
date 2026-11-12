@@ -36,6 +36,48 @@ async function fixture(
 
 const parse = (content: CloudToolContent) => JSON.parse(String(content.value));
 const sha = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+
+interface Listed {
+	path: string;
+	kind: "file" | "folder" | "symlink";
+	bytes?: number;
+	target?: string;
+	targetCut?: true;
+}
+/** A listing's answer (keyholes S2): its first line, one line an entry, a blank line and its last line. */
+function listing(content: CloudToolContent) {
+	const lines = String(content.value).split("\n");
+	const header = lines[0] as string;
+	const ending = lines.at(-1) as string;
+	expect(lines.at(-2)).toBe("");
+	const entries = lines.slice(1, -2).map((line): Listed => {
+		const tab = line.indexOf("\t");
+		if (tab < 0) {
+			expect(line.endsWith("/")).toBe(true);
+			return { path: line.slice(0, -1), kind: "folder" };
+		}
+		const path = line.slice(0, tab);
+		const rest = line.slice(tab + 1);
+		if (!rest.startsWith("-> ")) {
+			expect(rest).toMatch(/^\d+$/);
+			return { path, kind: "file", bytes: Number(rest) };
+		}
+		const cut = rest.endsWith(" (cut; company_read shows all)");
+		const target = JSON.parse(cut ? rest.slice(3, -" (cut; company_read shows all)".length) : rest.slice(3));
+		return { path, kind: "symlink", target, ...(cut ? { targetCut: true as const } : {}) };
+	});
+	const after = /after ("(?:[^"\\]|\\.)*")\.$/.exec(ending)?.[1];
+	return {
+		header,
+		entries,
+		ending,
+		asOfSeq: Number(/asOfSeq (\d+)/.exec(header)?.[1]),
+		after: after === undefined ? null : (JSON.parse(after) as string),
+	};
+}
+const paths = (entries: readonly Listed[]) => entries.map((entry) => entry.path);
+const released = (release: Record<string, unknown> | undefined) =>
+	(release?.p_reads as { path: string }[]).map((read) => read.path);
 async function refuses(
 	call: Promise<unknown>,
 	type: typeof CloudToolRefusal | typeof CloudToolArgumentRefusal,
@@ -137,7 +179,7 @@ it("shows the answer for the longest path the folder takes whole, every byte of 
 	expect(parse(read)).toMatchObject({ path: name, text: "x", nextOffset: null });
 	const listed = await f.call("company_list", { path: "d", after: null, limit: 5 });
 	expect(fitsOneResult(String(listed.value))).toBe(true);
-	expect(parse(listed).entries.map((entry: { path: string }) => entry.path)).toEqual([name]);
+	expect(listing(listed)).toMatchObject({ entries: [{ path: name, kind: "file", bytes: 1 }], after: null });
 	expect(f.releases).toHaveLength(2);
 });
 
@@ -249,36 +291,45 @@ it("reads a folder and an absent path: a folder is released, nothing is for an a
 	expect(f.releases).toHaveLength(1);
 });
 
-it("lists a folder page by page, releasing the folder and every entry shown", async () => {
+it("lists one level of a folder by default, page by page, releasing the folder and every entry shown", async () => {
 	const f = await fixture({
-		files: { "docs/a.md": "a", "docs/b.md": "bb", "docs/c.md": "ccc" },
+		files: { "docs/a.md": "a", "docs/b.md": "bb", "docs/c.md": "ccc", "docs/old/x.md": "x" },
 		folders: ["docs/old"],
 	});
+	const list = vi.spyOn(f.folder, "list");
+	// Today's call: one level, at most limit entries.
 	const first = await f.call("company_list", { path: "docs", after: null, limit: 2 });
-	const page = parse(first);
-	expect(page).toMatchObject({
-		path: "docs",
-		kind: "folder",
-		entries: [
-			{ path: "docs/a.md", kind: "file", bytes: 1 },
-			{ path: "docs/b.md", kind: "file", bytes: 2 },
-		],
-		next: "docs/b.md",
-	});
-	expect((f.releases[0]?.p_reads as { path: string }[]).map((read) => read.path)).toEqual([
-		"docs",
-		"docs/a.md",
-		"docs/b.md",
+	const page = listing(first);
+	expect(page.header).toBe(
+		`docs/ (version ${parse(await f.call("company_read", { path: "docs", offset: 0, limit: 4 })).version}), asOfSeq ${page.asOfSeq}, depth 1:`,
+	);
+	expect(page.entries).toEqual([
+		{ path: "docs/a.md", kind: "file", bytes: 1 },
+		{ path: "docs/b.md", kind: "file", bytes: 2 },
 	]);
+	expect(page.ending).toBe('2 entries shown. More: call again with after "docs/b.md".');
+	expect(released(f.releases[0])).toEqual(["docs", "docs/a.md", "docs/b.md"]);
 	expect(first.companyReadId).toBe(f.releases[0]?.p_release_id);
-	const second = parse(await f.call("company_list", { path: "docs", after: page.next, limit: 2 }));
-	expect(second.entries.map((entry: { path: string }) => entry.path)).toEqual(["docs/c.md", "docs/old"]);
-	expect(second.entries[1]).toMatchObject({ kind: "folder", bytes: null });
-	// The top of the folder has no entry of its own.
-	const top = parse(await f.call("company_list", { path: "", after: null, limit: 50 }));
-	expect(top.version).toBeNull();
-	expect(top.entries.map((entry: { path: string }) => entry.path)).toEqual(["QorperaOS", "docs"]);
-	expect((f.releases[2]?.p_reads as { path: string }[]).map((read) => read.path)).toEqual(["QorperaOS", "docs"]);
+	// One level is the folder core's listing of the folder's own entries.
+	expect(list.mock.calls.map(([parent, options]) => [parent, options.recursive])).toEqual([["docs", false]]);
+	const second = listing(await f.call("company_list", { path: "docs", after: page.after, limit: 2 }));
+	expect(second.entries).toEqual([
+		{ path: "docs/c.md", kind: "file", bytes: 3 },
+		{ path: "docs/old", kind: "folder" },
+	]);
+	expect(second.ending).toBe("2 entries. Nothing more.");
+	// Without after and limit, the first entries up to 500; the top of the folder has no entry of its own.
+	const top = listing(await f.call("company_list", { path: "" }));
+	expect(top.header).toBe(`The top of the company folder, asOfSeq ${top.asOfSeq}, depth 1:`);
+	expect(paths(top.entries)).toEqual(["QorperaOS", "docs"]);
+	expect(released(f.releases.at(-1))).toEqual(["QorperaOS", "docs"]);
+	expect(f.tool("company_list").parseArguments({ path: "docs" })).toEqual({
+		path: "docs",
+		depth: 1,
+		glob: null,
+		after: null,
+		limit: 500,
+	});
 });
 
 it("shows a wide page as the entries that fit one result, going on after the last shown", async () => {
@@ -286,23 +337,28 @@ it("shows a wide page as the entries that fit one result, going on after the las
 	for (let index = 0; index < 50; index++) files[`wide/${String(index).padStart(2, "0")}-${"x".repeat(800)}.md`] = "x";
 	const f = await fixture({ files });
 	const content = await f.call("company_list", { path: "wide", after: null, limit: 50 });
-	const page = parse(content);
+	const page = listing(content);
 	expect(fitsOneResult(String(content.value))).toBe(true);
 	expect(page.entries.length).toBeGreaterThan(0);
 	expect(page.entries.length).toBeLessThan(50);
-	expect(page.next).toBe(page.entries.at(-1).path);
+	expect(page.after).toBe(page.entries.at(-1)?.path);
 	expect(f.releases[0]?.p_reads).toHaveLength(page.entries.length + 1);
+	// The rest comes after it, each entry once.
+	const shown = [...paths(page.entries)];
+	let after = page.after;
+	while (after !== null) {
+		const next = listing(await f.call("company_list", { path: "wide", after, limit: 50 }));
+		shown.push(...paths(next.entries));
+		after = next.after;
+	}
+	expect(shown).toEqual(Object.keys(files).sort());
 });
 
 it("lists an absent path as absent and refuses to list a file", async () => {
 	const f = await fixture({ files: { "docs/a.md": "a" } });
-	expect(parse(await f.call("company_list", { path: "gone", after: null, limit: 5 }))).toEqual({
-		path: "gone",
-		kind: "absent",
-		version: null,
-		entries: [],
-		next: null,
-	});
+	expect(String((await f.call("company_list", { path: "gone", after: null, limit: 5 })).value)).toBe(
+		"gone: absent; nothing is there that you may read.",
+	);
 	await refuses(
 		f.call("company_list", { path: "docs/a.md", after: null, limit: 5 }),
 		CloudToolRefusal,
@@ -331,11 +387,12 @@ it("reads and lists a link as the target it holds, never following it, and lists
 	// A path through a link is absent: the core never resolves one (LK1).
 	const through = await f.call("company_read", { path: "docs/latest/plan.md", offset: 0, limit: 4 });
 	expect(parse(through)).toEqual({ path: "docs/latest/plan.md", kind: "absent", version: null });
-	const page = parse(await f.call("company_list", { path: "docs", after: null, limit: 5 }));
+	const page = listing(await f.call("company_list", { path: "docs", after: null, limit: 5 }));
 	expect(page.entries).toEqual([
-		{ path: "docs/latest", kind: "symlink", version, bytes: null, target: "plan.md" },
-		{ path: "docs/plan.md", kind: "file", version: f.files.get("docs/plan.md")?.version, bytes: 8 },
+		{ path: "docs/latest", kind: "symlink", target: "plan.md" },
+		{ path: "docs/plan.md", kind: "file", bytes: 8 },
 	]);
+	expect(released(f.releases[1])).toEqual(["docs", "docs/latest", "docs/plan.md"]);
 	await refuses(
 		f.call("company_list", { path: "docs/latest", after: null, limit: 5 }),
 		CloudToolRefusal,
@@ -392,44 +449,200 @@ it("reads a link's target in windows that each fit one result, however much its 
 
 it("cuts a listed link's target, and a first link's further when its path is long", async () => {
 	const long = "\u0001".repeat(4095);
-	// Its path, escaped and shown twice (the entry and next), leaves less than 512 bytes of the target room.
-	const wide = `docs/${"&".repeat(2350)}`;
+	// Its path, escaped and shown twice (the entry and where to go on), leaves less than 512 bytes of the target room.
+	const wide = `docs/${"&".repeat(2400)}`;
 	const f = await fixture({ files: { "docs/b.md": "b" }, links: { [wide]: long, "docs/a": long, "docs/c": "b.md" } });
 	const first = await f.call("company_list", { path: "docs", after: null, limit: 50 });
 	expect(fitsOneResult(String(first.value))).toBe(true);
-	const page = parse(first);
-	expect(page.entries).toEqual([
-		{
-			path: wide,
-			kind: "symlink",
-			version: f.links.get(wide)?.version,
-			bytes: null,
-			target: expect.any(String),
-			targetCut: true,
-		},
-	]);
-	expect(page.entries[0].target.length).toBeGreaterThan(0);
-	expect(page.entries[0].target.length).toBeLessThan(512);
-	expect(long.startsWith(page.entries[0].target)).toBe(true);
-	expect(page.next).toBe(wide);
-	const second = await f.call("company_list", { path: "docs", after: page.next, limit: 50 });
+	const page = listing(first);
+	expect(page.entries).toEqual([{ path: wide, kind: "symlink", target: expect.any(String), targetCut: true }]);
+	const target = page.entries[0]?.target as string;
+	expect(target.length).toBeGreaterThan(0);
+	expect(target.length).toBeLessThan(512);
+	expect(long.startsWith(target)).toBe(true);
+	expect(page.after).toBe(wide);
+	const second = await f.call("company_list", { path: "docs", after: page.after, limit: 50 });
 	expect(fitsOneResult(String(second.value))).toBe(true);
-	expect(parse(second)).toMatchObject({
+	expect(listing(second)).toMatchObject({
 		entries: [
-			{
-				path: "docs/a",
-				kind: "symlink",
-				version: f.links.get("docs/a")?.version,
-				bytes: null,
-				target: "\u0001".repeat(512),
-				targetCut: true,
-			},
+			{ path: "docs/a", kind: "symlink", target: "\u0001".repeat(512), targetCut: true },
 			{ path: "docs/b.md", kind: "file", bytes: 1 },
 			{ path: "docs/c", kind: "symlink", target: "b.md" },
 		],
-		next: null,
+		after: null,
 	});
-	expect(parse(second).entries[2]).not.toHaveProperty("targetCut");
+	expect(listing(second).entries[2]).not.toHaveProperty("targetCut");
+});
+
+// Keyholes S2 (12 November 2026): one call shows a small company's whole tree, so learning a folder's shape no longer
+// takes one model round per folder.
+it("lists a small company's whole tree in one call with depth, and only the levels asked for", async () => {
+	const files: Record<string, string> = {};
+	const areas = ["finance", "product", "research", "strategy"];
+	for (const area of areas)
+		for (const kind of ["drafts", "notes", "specs"])
+			for (let index = 0; index < 10; index++)
+				files[`${area}/${kind}/${String(index).padStart(2, "0")}.md`] = "x".repeat(index + 1);
+	// 120 files in 12 folders under 4 areas, and the platform's QorperaOS/agents/nora.
+	const f = await fixture({ files, folders: areas });
+	const list = vi.spyOn(f.folder, "list");
+	const tree = [
+		"QorperaOS",
+		"QorperaOS/agents",
+		"QorperaOS/agents/nora",
+		...areas.flatMap((area) => [
+			area,
+			...["drafts", "notes", "specs"].flatMap((kind) => [
+				`${area}/${kind}`,
+				...Array.from({ length: 10 }, (_, index) => `${area}/${kind}/${String(index).padStart(2, "0")}.md`),
+			]),
+		]),
+	];
+	const whole = await f.call("company_list", { path: "", depth: 8 });
+	const answer = listing(whole);
+	expect(fitsOneResult(String(whole.value))).toBe(true);
+	expect(paths(answer.entries)).toEqual(tree);
+	expect(answer.entries.find((entry) => entry.path === "product/specs/04.md")).toEqual({
+		path: "product/specs/04.md",
+		kind: "file",
+		bytes: 5,
+	});
+	expect(answer.ending).toBe("139 entries. Nothing more.");
+	// One page of the folder core's subtree listing, and one release of everything shown.
+	expect(list.mock.calls.map(([parent, options]) => [parent, options.recursive])).toEqual([["", true]]);
+	expect(f.releases).toHaveLength(1);
+	expect(released(f.releases[0])).toEqual(tree);
+	expect(whole.companyReadId).toBe(f.releases[0]?.p_release_id);
+	// Two levels: the areas and their folders, not what those hold; what a depth leaves out is not released.
+	const two = listing(await f.call("company_list", { path: "", depth: 2 }));
+	const shallow = tree.filter((path) => path.split("/").length <= 2);
+	expect(paths(two.entries)).toEqual(shallow);
+	expect(two.entries.every((entry) => entry.kind === "folder")).toBe(true);
+	expect(released(f.releases[1])).toEqual(shallow);
+	// Below a folder, depth counts from it; the folder is released with what it holds.
+	const product = listing(await f.call("company_list", { path: "product", depth: 2 }));
+	expect(product.header).toContain("asOfSeq");
+	expect(paths(product.entries)).toEqual(tree.filter((path) => path.startsWith("product/")));
+	expect(released(f.releases[2])).toEqual(["product", ...paths(product.entries)]);
+	// A limit shows the first entries and goes on after the last one shown, each entry once.
+	const pages: string[] = [];
+	let after: string | null = null;
+	let calls = 0;
+	do {
+		const page = listing(await f.call("company_list", { path: "", depth: 8, after, limit: 50 }));
+		pages.push(...paths(page.entries));
+		if (page.after !== null)
+			expect(page.ending).toBe(`50 entries shown. More: call again with after ${JSON.stringify(page.after)}.`);
+		after = page.after;
+		calls++;
+	} while (after !== null);
+	expect(pages).toEqual(tree);
+	expect(calls).toBe(3);
+});
+
+it("keeps only the paths like a glob, at any depth unless one is given, whatever their case", async () => {
+	const f = await fixture({
+		files: {
+			"docs/plan.md": "p",
+			"docs/README.MD": "r",
+			"docs/notes.txt": "n",
+			"docs/data/sales.csv": "1,2",
+			"docs/data/old/costs.csv": "3",
+		},
+	});
+	const md = listing(await f.call("company_list", { path: "docs", glob: "*.md" }));
+	expect(md.header).toContain('depth 8, glob "*.md"');
+	expect(md.entries).toEqual([
+		{ path: "docs/README.MD", kind: "file", bytes: 1 },
+		{ path: "docs/plan.md", kind: "file", bytes: 1 },
+	]);
+	expect(md.ending).toBe("2 entries. Nothing more.");
+	// Only what is shown is released, with the folder.
+	expect(released(f.releases[0])).toEqual(["docs", "docs/README.MD", "docs/plan.md"]);
+	// A glob with a / is matched against the path below the folder listed; ** is any number of folders.
+	const glob = async (value: { [key: string]: JsonValue }) =>
+		paths(listing(await f.call("company_list", { path: "docs", ...value })).entries);
+	expect(await glob({ glob: "data/*.csv" })).toEqual(["docs/data/sales.csv"]);
+	expect(await glob({ glob: "data/**/*.CSV" })).toEqual(["docs/data/old/costs.csv", "docs/data/sales.csv"]);
+	// A depth still bounds it, and a folder whose name matches is shown as a folder.
+	expect(await glob({ glob: "*.csv", depth: 2 })).toEqual(["docs/data/sales.csv"]);
+	expect(listing(await f.call("company_list", { path: "", glob: "da?a" })).entries).toEqual([
+		{ path: "docs/data", kind: "folder" },
+	]);
+	expect(listing(await f.call("company_list", { path: "docs", glob: "*.pdf" })).ending).toBe(
+		"No entries. Nothing more.",
+	);
+});
+
+it("stops at its bound with where it got to, which it shows and releases, when a glob leaves out what it looked at", async () => {
+	const files: Record<string, string> = { "deep/z.csv": "1" };
+	for (let index = 0; index < 5100; index++) files[`deep/a/b/${String(index).padStart(4, "0")}.md`] = "x";
+	const f = await fixture({ files, folders: ["deep", "deep/a"] });
+	const original = f.folder.list.bind(f.folder);
+	let clock = 0;
+	const now = vi.spyOn(performance, "now").mockImplementation(() => clock);
+	try {
+		const list = vi.spyOn(f.folder, "list");
+		// 5,000 entries looked at, in the folder core's pages of 200: deep/a, deep/a/b and 4,998 files.
+		const first = listing(await f.call("company_list", { path: "deep", glob: "*.csv" }));
+		expect(first.entries).toEqual([]);
+		expect(first.ending).toBe(
+			'No entries shown, 5000 looked through. More may follow: call again with after "deep/a/b/4997.md".',
+		);
+		expect(list).toHaveBeenCalledTimes(25);
+		// Where it got to is in the answer, so it is released with the folder; nothing else it looked at is.
+		expect(released(f.releases[0])).toEqual(["deep", "deep/a/b/4997.md"]);
+		const second = listing(await f.call("company_list", { path: "deep", glob: "*.csv", after: first.after }));
+		expect(second.entries).toEqual([{ path: "deep/z.csv", kind: "file", bytes: 1 }]);
+		expect(second.ending).toBe("1 entry. Nothing more.");
+		// A call that has worked 2 s answers after the page it is on.
+		list.mockImplementation(async (...value: Parameters<typeof original>) => {
+			clock += 2500;
+			return original(...value);
+		});
+		const slow = listing(await f.call("company_list", { path: "deep", glob: "*.csv" }));
+		expect(slow.ending).toBe(
+			'No entries shown, 200 looked through. More may follow: call again with after "deep/a/b/0197.md".',
+		);
+	} finally {
+		now.mockRestore();
+	}
+});
+
+it("takes depth, glob, after and limit within their bounds, and nothing else", async () => {
+	const f = await fixture();
+	const tool = f.tool("company_list");
+	const refused: { [key: string]: JsonValue }[] = [
+		{ path: "", depth: 0 },
+		{ path: "", depth: 9 },
+		{ path: "", depth: 1.5 },
+		{ path: "", depth: "2" },
+		{ path: "", glob: "" },
+		{ path: "", glob: "a\nb" },
+		{ path: "", glob: "x".repeat(257) },
+		{ path: "", glob: 5 },
+		{ path: "", limit: 0 },
+		{ path: "", limit: 501 },
+		{ path: "", after: "/docs" },
+		{ path: "", recursive: true },
+		{ depth: 2 },
+	];
+	for (const value of refused) expect(() => tool.parseArguments(value)).toThrow(CloudToolArgumentRefusal);
+	expect(tool.parseArguments({ path: "docs", glob: "*.md" })).toEqual({
+		path: "docs",
+		depth: 8,
+		glob: "*.md",
+		after: null,
+		limit: 500,
+	});
+	expect(tool.parseArguments({ path: "docs", depth: 2, glob: "*.md", after: "docs/a.md", limit: 10 })).toEqual({
+		path: "docs",
+		depth: 2,
+		glob: "*.md",
+		after: "docs/a.md",
+		limit: 10,
+	});
+	expect(tool.inputSchema).toMatchObject({ required: ["path"] });
 });
 
 it("names as much of a long link's target as fits when it refuses to write over the link", async () => {
@@ -1069,20 +1282,20 @@ it("moves a file or a folder with the review its call was approved under", async
 	// A folder moves as of the model's own listing of it, which its call carries, with everything in it, under its own
 	// call's approval.
 	const folder = parse(await f.call("company_read", { path: "work", offset: 0, limit: 4 })).version as string;
-	const listing = parse(await f.call("company_list", { path: "work", after: null, limit: 50 }));
-	expect(listing.asOfSeq).toEqual(expect.any(Number));
+	const listed = listing(await f.call("company_list", { path: "work", after: null, limit: 50 }));
+	expect(Number.isSafeInteger(listed.asOfSeq)).toBe(true);
 	const second = { ...f.context, callId: "move-call-2", actionReviewId: randomUUID() };
 	expect(
 		parse(
 			await f.call(
 				"company_move",
-				{ from: "work", to: "projects", operationKey: "move-2", expectedVersion: folder, asOfSeq: listing.asOfSeq },
+				{ from: "work", to: "projects", operationKey: "move-2", expectedVersion: folder, asOfSeq: listed.asOfSeq },
 				second,
 			),
 		),
 	).toMatchObject({ state: "applied" });
 	expect(f.commits[1]?.units).toEqual([
-		{ op: "move", from: "work", to: "projects", expectedVersion: folder, asOfSeq: listing.asOfSeq },
+		{ op: "move", from: "work", to: "projects", expectedVersion: folder, asOfSeq: listed.asOfSeq },
 	]);
 	expect(f.text("projects/a.md")).toBe("a");
 	// A target that is taken is refused by the core, and nothing moves.
@@ -1141,7 +1354,7 @@ it("moves a folder only as of the model's own listing, so a change in it since s
 	expect(f.commits).toHaveLength(0);
 	// The model listed the folder, then someone changed something in it: the folder's own version is the same, and the
 	// move as of the listing is the core's conflict. Nothing moves.
-	const listing = parse(await f.call("company_list", { path: "work", after: null, limit: 50 }));
+	const listed = listing(await f.call("company_list", { path: "work", after: null, limit: 50 }));
 	expect(
 		parse(
 			await f.call("company_write", {
@@ -1153,12 +1366,12 @@ it("moves a folder only as of the model's own listing, so a change in it since s
 		),
 	).toMatchObject({ state: "applied" });
 	expect(parse(await f.call("company_read", { path: "work", offset: 0, limit: 4 })).version).toBe(folder);
-	const stale = parse(await move("move-stale", listing.asOfSeq));
+	const stale = parse(await move("move-stale", listed.asOfSeq));
 	expect(stale).toMatchObject({ state: "not_applied", outcome: "conflict", reason: "unseen_change" });
 	expect(stale.next).toContain("something in the folder changed after your listing");
 	expect(f.files.has("work/b.md") && !f.folders.has("projects")).toBe(true);
 	// Listed again, it moves.
-	const again = parse(await f.call("company_list", { path: "work", after: null, limit: 50 }));
+	const again = listing(await f.call("company_list", { path: "work", after: null, limit: 50 }));
 	expect(parse(await move("move-listed", again.asOfSeq))).toMatchObject({ state: "applied" });
 	expect(f.text("projects/b.md")).toBe("b");
 });
