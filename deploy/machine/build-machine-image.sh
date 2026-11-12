@@ -293,9 +293,21 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 		{ echo "the memory unit run again changed something" >&2; exit 1; }
 	# A machine where it cannot be set up starts all the same: with the module hidden the unit ends well, there is no
 	# swap, and the journal says so in one line. With the module back, the unit run again sets it up.
+	# Right after a swapoff the device can still be held open for a moment (udev looks at a device that changed), and
+	# its reset and the unload of the module are then refused as busy: one image build failed here on 12 Nov 2026 and
+	# the same commit built on the next try. Each is asked again for up to 5 s while it is refused; the last try shows
+	# its answer and, if it fails, fails the build. (A boot never does this: the memory unit only sets the device up.)
+	patient() {
+		local try
+		for try in $(seq 1 50); do
+			"$@" 2>/dev/null && return 0
+			sleep 0.1
+		done
+		"$@"
+	}
 	swapoff /dev/zram0
-	echo 1 >/sys/block/zram0/reset
-	rmmod zram
+	patient bash -c "echo 1 >/sys/block/zram0/reset"
+	patient rmmod zram
 	mkdir -p /run/modprobe.d && echo "install zram /bin/false" >/run/modprobe.d/qorpera-image-check.conf
 	said=$(journalctl -b -t qorpera-machine-memory -o cat | grep -c "^compressed memory is OFF on this machine" || true)
 	systemctl restart qorpera-machine-memory.service ||
