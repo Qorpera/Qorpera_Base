@@ -73,9 +73,10 @@ import {
  *           the restore-shaped bundle made, proven as care proves one, and read out.
  *
  * Nothing here removes the file source: once the import is in, the agent that made the bundle removes it through its own
- * view, which has the folder's checks for a writer. A code host job's view has no removal that holds only while the file
- * is still the one read (a removal takes the version its name shows, and the view shows what another view publishes),
- * and a bundle left behind is a smaller harm than a file the import never read removed or written over.
+ * view, which has the folder's checks for a writer, and only if it is still that bundle. A code host job's view has no
+ * removal that holds only while the file is still the one read (a removal takes the version its name shows, and the
+ * view shows what another view publishes), and a bundle left behind is a smaller harm than a file the import never
+ * read removed or written over.
  *
  * What the code brought in holds never leaves the code host but as counts, sizes, ref names, paths and the scan's
  * offsets: no file's content, no key the scan matched, and no list of every object (those stay in files in the

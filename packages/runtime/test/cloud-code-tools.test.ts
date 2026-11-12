@@ -945,8 +945,8 @@ describe("manage_code bring_in: one answer in plain words per way it can go", ()
 		} finally {
 			f.run.close();
 		}
-		// From a file: no GitHub line, but the file to delete (Qorpera leaves it), by the company path the machine's own path
-		// is read as; and branch is sent as given.
+		// From a file: no GitHub line, but the bundle Qorpera read and leaves, to delete only while it is still that bundle,
+		// by the company path the machine's own path is read as; and branch is sent as given.
 		const file = await fixture((method) =>
 			method === IMPORT ? asked : imported({ look: look({ commits: 1, files: 1, defaultBranch: null }) }),
 		);
@@ -959,7 +959,7 @@ describe("manage_code bring_in: one answer in plain words per way it can go", ()
 					})
 				).text,
 			).toBe(
-				"Brought in as code/acme/shop: 1 earlier change on its main branch, 1 file; change 1 of its record. The file code/_incoming/shop/shop.bundle is no longer needed: delete it. Have a coding session add its checks file.",
+				"Brought in as code/acme/shop: 1 earlier change on its main branch, 1 file; change 1 of its record. Qorpera no longer needs the bundle it read from code/_incoming/shop/shop.bundle. Delete that file only if it is still the bundle you made for this; leave any other file there. Have a coding session add its checks file.",
 			);
 			expect(file.calls[0]?.args.p_request).toEqual({
 				operationKey: "bring-shop",
@@ -990,6 +990,59 @@ describe("manage_code bring_in: one answer in plain words per way it can go", ()
 			});
 		} finally {
 			bounds.run.close();
+		}
+	});
+
+	it("says of a file it brought in that it no longer needs the bundle it read, to delete only while the file is still that bundle, in every answer that says it is in", async () => {
+		const fileIn = { ...bringIn, from: { file: "code/_incoming/shop/shop.bundle" } };
+		const sentence =
+			"Qorpera no longer needs the bundle it read from code/_incoming/shop/shop.bundle. Delete that file only if it is still the bundle you made for this; leave any other file there.";
+		const unconditional = /delete it\b|delete (the|this) (file|bundle)[.:]/i;
+		// Brought in: the words with the path, and never a removal without its condition.
+		const f = await fixture((method) => (method === IMPORT ? asked : imported()));
+		let first = "";
+		try {
+			first = (await f.invoke(fileIn)).text;
+			expect(first).toContain(sentence);
+			expect(first).not.toMatch(unconditional);
+			// The same call again under the same operationKey (the kernel answers the same request to the same key): the same
+			// words.
+			expect((await f.invoke(fileIn)).text).toBe(first);
+			expect(f.calls.filter((call) => call.method === IMPORT)).toHaveLength(2);
+		} finally {
+			f.run.close();
+		}
+		// Asked in a later run: while the import is still open, nothing of the file; once it is in, the same words.
+		let done = false;
+		const later = await fixture(
+			(method) => (method === IMPORT ? asked : done ? imported() : imports({ state: "running", step: "open" })),
+			{ lookMs: 1, waitMs: 10 },
+		);
+		try {
+			const open = (await later.invoke(fileIn)).text;
+			expect(open).toMatch(/^It is being brought in \(putting it in place\)\./);
+			expect(open).not.toMatch(/delete|bundle/i);
+			done = true;
+			expect((await later.invoke(fileIn)).text).toBe(first);
+		} finally {
+			later.run.close();
+		}
+		// GitHub code: no word of a file. A file that was looked at, refused or failed: no word of deleting it (the agent may
+		// ask again with the same file).
+		for (const [from, ended] of [
+			[bringIn.from, imported()],
+			[fileIn.from, imports({ state: "done", step: "look", look: look(), result: "looked" })],
+			[fileIn.from, imports({ state: "refused", code: "IMPORT_FILE_NOT_WHOLE" })],
+			[fileIn.from, imports({ state: "failed", code: "IMPORT_RELAY_NOT_ROUTED" })],
+		] as const) {
+			const g = await fixture((method) => (method === IMPORT ? asked : ended));
+			try {
+				const text = (await g.invoke({ ...bringIn, from, look: ended.result === "looked" })).text;
+				expect(text).not.toMatch(/delete/i);
+				expect(text).not.toContain("_incoming");
+			} finally {
+				g.run.close();
+			}
 		}
 	});
 

@@ -777,7 +777,8 @@ describe("an import from end to end, with every part as merged", { timeout: 240_
 			[`refs/heads/main ${source.notesMain}`, `refs/qorpera/kept-here ${source.notesMain}`].sort(),
 		);
 		expect(await readFile(join(w.place("acme", "notes"), "main", "notes.md"), "utf8")).toBe("notes\n");
-		// The bundle stays where the agent put it, byte for byte: the agent removes it (its answer says so).
+		// The bundle stays where the agent put it, byte for byte: the agent removes it only if it is still that bundle (its
+		// answer says so).
 		expect(
 			createHash("sha256")
 				.update(await readFile(join(w.companyRoot, path)))

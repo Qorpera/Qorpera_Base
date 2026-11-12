@@ -557,11 +557,13 @@ function importEnded(request: CodeBringIn, ended: CloudCompanyCodeImport): strin
 			look === null
 				? `Brought in as ${folder}${record}.`
 				: `Brought in as ${folder}: ${count(look.commits, "earlier change", "earlier changes")} on ${look.defaultBranch ?? "its main branch"}, ${count(look.files, "file", "files")}${record}.`;
-		// Qorpera leaves a file source where it is: the agent that wrote it removes it, through its own view.
+		// Qorpera leaves a file source where it is, and the agent that wrote it removes it, through its own view. Only while
+		// it is still the bundle that was read: another file may stand at that path by now (put there while the import
+		// waited), and a removal takes whatever the path holds. The answer carries no SHA-256 of the file to compare.
 		const source =
 			"github" in request.from
 				? " The copy on GitHub stays as it was; Qorpera no longer works on it there."
-				: ` The file ${request.from.file} is no longer needed: delete it.`;
+				: ` Qorpera no longer needs the bundle it read from ${request.from.file}. Delete that file only if it is still the bundle you made for this; leave any other file there.`;
 		return `${facts}${source} Have a coding session add its checks file.${look !== null && look.secrets.found > 0 ? ` ${keyLike(look)}` : ""}`;
 	}
 	if (ended.state === "refused") {
