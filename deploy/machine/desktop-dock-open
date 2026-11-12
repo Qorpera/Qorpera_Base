@@ -1,0 +1,37 @@
+#!/bin/bash
+# A press on the desktop's dock asked for a program (deploy/machine/desktop-look press): the browser, the files or a
+# terminal. Installed as /opt/qorpera-machine/desktop-dock-open; root runs it, started by
+# qorpera-machine-desktop-dock.path whenever the request folder holds something.
+#
+# A request is an empty file named browser, files or terminal in /run/qorpera-desktop-dock (root's folder, which only
+# the desktop's account may put names into: qorpera-machine-desktop.tmpfiles). It carries no data and nothing in it is
+# read: the name alone says which of three fixed programs is wanted. Each is started with the image's own `desktop`
+# command, exactly as an agent's `desktop open` and `desktop run` start it: as the account `desktop`, in a unit of its
+# own in the machine's slice, bound to the desktop, on its session bus, under the desktop's lock, with the browser's
+# own flags and profile (maximised). So the browser a member opens from the dock is the browser an agent's next
+# `desktop open` finds, and the memory guard treats it as any program on the desktop. A press also counts as use:
+# `desktop` puts off the idle stop.
+set -uo pipefail
+ASK=/run/qorpera-desktop-dock
+DESKTOP=/usr/local/bin/desktop
+# The browser opens on its own new tab page.
+PAGE=chrome://newtab/
+cd -P -- "$ASK" 2>/dev/null || exit 0
+[[ $(pwd -P) == "$ASK" ]] || exit 0
+# Files and the terminal open in the company folder when this machine has it and the desktop's account may read it,
+# else in the account's home.
+folder=/home/desktop
+if mountpoint -q /company && runuser -u desktop -- test -r /company -a -x /company; then folder=/company; fi
+for app in browser files terminal; do
+	[[ -e $app || -L $app ]] || continue
+	# Removed before the program starts: a press made meanwhile asks again, and the path unit starts this once more.
+	rm -rf -- "./$app"
+	case $app in
+	browser) "$DESKTOP" open "$PAGE" ;;
+	files) "$DESKTOP" run /usr/bin/thunar "$folder" ;;
+	terminal) "$DESKTOP" run /usr/bin/xfce4-terminal --working-directory="$folder" ;;
+	esac >/dev/null || echo "the dock's $app did not start" >&2
+done
+# Any other name is no request.
+find . -mindepth 1 -maxdepth 1 ! -name browser ! -name files ! -name terminal -exec rm -rf -- {} +
+exit 0

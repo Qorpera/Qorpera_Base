@@ -1,0 +1,12 @@
+[Unit]
+Description=Qorpera machine desktop: a press on the dock asks for the browser, the files or a terminal
+# A press on a dock icon puts an empty file named for its program into the folder (deploy/machine/desktop-look press;
+# the folder is root's, and only the desktop's account may put names into it: qorpera-machine-desktop.tmpfiles). This
+# unit then starts the service, which starts the program the way `desktop open` and `desktop run` do, and starts it
+# again while the folder still holds a request. It watches from the boot on and costs nothing while nobody presses.
+
+[Path]
+DirectoryNotEmpty=/run/qorpera-desktop-dock
+
+[Install]
+WantedBy=multi-user.target

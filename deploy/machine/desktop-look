@@ -1,0 +1,568 @@
+#!/bin/bash
+# The look of a machine's desktop (12 Nov 2026): what the office desktops had (deploy/lxd-company-computer-guest,
+# "One flat dock is the whole desktop chrome"), on a machine's own desktop. One flat dark bar along the bottom edge
+# with exactly three tools (browser, files, terminal) under Qorpera's own icon drawings, the date at its left and the
+# time at its right; no top bar, no window list, no desktop icons; a backdrop with the figure of the machine's agent,
+# one frame for each hour of the day; windows set up for a screen that is only ever seen from afar (no compositor, one
+# workspace); and a calm dark terminal. Installed as /opt/qorpera-machine/desktop-look; it runs as the account
+# `desktop`, inside the desktop's unit.
+#
+#   desktop-look write        before XFCE starts (desktop-session, so at EVERY `desktop start`): writes the dock, its
+#                             launchers and look, the window manager's and the terminal's settings and the backdrop
+#                             into the account's configuration, from the pictures the image holds read-only
+#                             (/usr/share/qorpera-desktop). Written every time, so a desktop never drifts from the
+#                             image: whatever was changed or removed in the account is put back at the next start.
+#   desktop-look watch        beside the session: the mark under a dock icon whose program has a window, the backdrop's
+#                             frame for the hour, and a figure or a time zone that was set while the desktop runs.
+#   desktop-look press APP    a press on a dock icon (browser, files or terminal): brings back the window the program
+#                             already has, else asks for the program and shows its window when it comes.
+#
+# Which agent: the figure is one word in /etc/qorpera-machine/desktop-figure (planet, acorn, flame, rocket, crown,
+# heart, star, cloud, bolt, mushroom, moon or puzzle; root's file, read at every start and while the desktop runs).
+# A machine without it, or with a word the image has no backdrop for, shows the neutral Qorpera backdrop. The sets are
+# tone on tone in one hue: no colour is needed beside the figure.
+#
+# Nothing here can stop a desktop: desktop-session starts XFCE whatever this script came to, and the watcher is no
+# part of what keeps the desktop's unit alive.
+set -uo pipefail
+# The pictures, the figure's file and the folder a press asks in are these on every machine; only this script's own
+# test names stand-ins for them.
+ART=${QORPERA_DESKTOP_ART:-/usr/share/qorpera-desktop}
+FIGURE=${QORPERA_DESKTOP_FIGURE:-/etc/qorpera-machine/desktop-figure}
+# Where a press asks root for a program: an empty file named for it (qorpera-machine-desktop-dock.path).
+ASK=${QORPERA_DESKTOP_ASK:-/run/qorpera-desktop-dock}
+SELF=/opt/qorpera-machine/desktop-look
+CONFIG=${XDG_CONFIG_HOME:-${HOME:?}/.config}
+RUN=${XDG_RUNTIME_DIR:?the runtime folder of the desktop}
+TEMPLATES=$CONFIG/qorpera-dock
+# The ground of each hour's frame (every set has the same: backdrops-source, light(h)), painted on the bare screen
+# before XFCE draws anything, so a desktop is never black.
+GROUND=(0e0f11 0e0f11 0e0f11 0e0f11 0e0f11 0e0f11 42454e b5b7be f1f2f3 f1f2f3 f1f2f3 f1f2f3
+	f1f2f3 f1f2f3 f1f2f3 f1f2f3 f1f2f3 f1f2f3 f1f2f3 b5b7be 42454e 0e0f11 0e0f11 0e0f11)
+# A program's windows, by the class the window manager knows them by (instance or class). The image's browser is a
+# Chrome for Testing build, which does not call itself Chromium. (Unset first: a variable of that name handed in by
+# the environment could not become a table.)
+unset WINDOW_CLASS PANEL_PLUGIN
+declare -A WINDOW_CLASS=(
+	[browser]='[Cc]hrom(e|ium)'
+	[files]='"[Tt]hunar"'
+	[terminal]='"[Xx]fce4-terminal"'
+)
+# The dock's launchers, by the panel's plugin number.
+declare -A PANEL_PLUGIN=([terminal]=4 [files]=5 [browser]=6)
+
+# The backdrop set: the figure the machine names, when the image has its set, else the neutral one. A saved ghost is
+# drawn as the moon everywhere (cloud-client, RETIRED_STAFF_CHARACTERS).
+backdrop_set() {
+	local word= plain='^[a-z]+$'
+	if [[ -f $FIGURE && -r $FIGURE ]]; then read -r -n 32 word _ <"$FIGURE" || true; fi
+	[[ $word != ghost ]] || word=moon
+	if [[ $word =~ $plain && -f $ART/backdrops/$word/00.png ]]; then echo "$word"; else echo neutral; fi
+}
+# The time zone the desktop's programs were given (`desktop start --tz`, which keeps it in the desktop's runtime
+# folder once the desktop is up), else UTC.
+desktop_zone() {
+	local name= plain='^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$'
+	if [[ -s $RUN/tz ]]; then read -r -n 64 name _ <"$RUN/tz" || true; fi
+	if [[ $name =~ $plain && -f /usr/share/zoneinfo/$name ]]; then echo "$name"; else echo UTC; fi
+}
+# The hour of the day in a time zone, two digits (the shell's own clock: no program is started for it). Asked in a
+# subshell, so the zone set here stays here.
+hour_in() {
+	TZ=$1
+	export TZ
+	printf '%(%H)T' -1
+}
+# A colour's part (two hex digits) as the share of one that xfconf keeps.
+share() {
+	local millionths=$(( 16#$1 * 1000000 / 255 ))
+	printf '%d.%06d' $(( millionths / 1000000 )) $(( millionths % 1000000 ))
+}
+
+# One file of the look, whole or not at all: written beside its place and renamed into it.
+put() { # target, the content on stdin
+	local target=$1
+	cat >"$target.qorpera-new" && mv -fT -- "$target.qorpera-new" "$target"
+}
+# The panel follows its `items` setting at once: naming a launcher entry there shows that entry's icon. The panel
+# takes a copy of an entry named by its whole path and deletes only that copy at the next change, so the entries in
+# TEMPLATES survive every change (the office dock's way, proven on a real xfce4-panel on 20 September 2026).
+# What an icon shows is kept in the desktop's runtime folder (idle until told otherwise), so the watcher and a press
+# tell the panel only a change, never the state it already shows.
+show() { # app state
+	local entry="qorpera-$1-$2.desktop" shown=idle
+	[[ $2 != idle ]] || entry="qorpera-$1.desktop"
+	[[ -f $TEMPLATES/$entry ]] || return 0
+	if [[ -s $RUN/dock-$1.shows ]]; then read -r shown <"$RUN/dock-$1.shows" || true; fi
+	[[ $shown != "$2" ]] || return 0
+	xfconf-query -c xfce4-panel -p "/plugins/plugin-${PANEL_PLUGIN[$1]}/items" -n -a -t string -s "$TEMPLATES/$entry" >/dev/null 2>&1 || return 0
+	echo "$2" >"$RUN/dock-$1.shows"
+}
+# The window manager's client list: every window it manages, minimised ones too. The dock is the only window list.
+clients() { xprop -root _NET_CLIENT_LIST 2>/dev/null; }
+# Instance and class of every window of a client list, one window a line: `0x... "instance", "Class"`.
+classes() { # client list
+	local list=$1 id class
+	[[ $list == *"#"* ]] || return 0
+	list=${list#*#}
+	for id in ${list//,/ }; do
+		[[ $id =~ ^0x[0-9a-fA-F]+$ ]] || continue
+		class=$(xprop -id "$id" WM_CLASS 2>/dev/null) || continue
+		[[ $class != *=* ]] || echo "$id ${class#*=}"
+	done
+}
+# Brings back a program's newest window: mapping restores a minimised one, activating raises and focuses it.
+raise() { # app
+	local id class newest=
+	while read -r id class; do
+		[[ -n $class && $class =~ ${WINDOW_CLASS[$1]} ]] && newest=$id
+	done < <(classes "$(clients)")
+	[[ -n $newest ]] || return 1
+	xdotool windowmap "$newest" 2>/dev/null || true
+	xdotool windowactivate "$newest" 2>/dev/null
+}
+
+write() {
+	local figure zone hour ground monitor=VNC-0 candidate state app label comment entry
+	local bookmarks=$CONFIG/gtk-3.0/bookmarks company="file:///company Company folder"
+	figure=$(backdrop_set)
+	zone=$(desktop_zone)
+	hour=$(hour_in "$zone")
+	ground=${GROUND[10#$hour]}
+	# Never a black screen: the bare screen gets the ground of the hour's frame until XFCE has drawn the backdrop.
+	xsetroot -solid "#$ground" 2>/dev/null || true
+	# The backdrop is set by the screen's name, which the display tells.
+	while read -r candidate state _; do
+		if [[ $state == connected && $candidate =~ ^[A-Za-z0-9._-]+$ ]]; then monitor=$candidate; break; fi
+	done < <(xrandr --query 2>/dev/null)
+	# The dock's own folders start empty: the panel keeps its copies of launcher entries there.
+	rm -rf -- "$CONFIG/xfce4/panel" "$TEMPLATES"
+	mkdir -p "$CONFIG/xfce4/xfconf/xfce-perchannel-xml" "$CONFIG/xfce4/panel/launcher-4" "$CONFIG/xfce4/panel/launcher-5" \
+		"$CONFIG/xfce4/panel/launcher-6" "$CONFIG/xfce4/terminal" "$CONFIG/gtk-3.0" "$TEMPLATES" || return 1
+	# One flat dark bar along the bottom edge is the whole desktop chrome: full width, 80 px, 64 px icons, the three
+	# tools centred between two gaps that take the room, the date at the left and the time at the right.
+	put "$CONFIG/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml" <<'PANEL' || return 1
+<?xml version="1.0" encoding="UTF-8"?>
+
+<channel name="xfce4-panel" version="1.0">
+  <property name="configver" type="int" value="2"/>
+  <property name="panels" type="array">
+    <value type="int" value="1"/>
+    <property name="dark-mode" type="bool" value="true"/>
+    <property name="panel-1" type="empty">
+      <property name="position" type="string" value="p=10;x=0;y=0"/>
+      <property name="length" type="uint" value="100"/>
+      <property name="position-locked" type="bool" value="true"/>
+      <property name="enable-struts" type="bool" value="true"/>
+      <property name="autohide-behavior" type="uint" value="0"/>
+      <property name="size" type="uint" value="80"/>
+      <property name="icon-size" type="uint" value="64"/>
+      <property name="background-style" type="uint" value="1"/>
+      <property name="background-rgba" type="array">
+        <value type="double" value="0.062745"/>
+        <value type="double" value="0.070588"/>
+        <value type="double" value="0.094118"/>
+        <value type="double" value="1"/>
+      </property>
+      <property name="plugin-ids" type="array">
+        <value type="int" value="7"/>
+        <value type="int" value="1"/>
+        <value type="int" value="6"/>
+        <value type="int" value="5"/>
+        <value type="int" value="4"/>
+        <value type="int" value="2"/>
+        <value type="int" value="3"/>
+      </property>
+    </property>
+  </property>
+  <property name="plugins" type="empty">
+    <property name="plugin-1" type="string" value="separator">
+      <property name="expand" type="bool" value="true"/>
+      <property name="style" type="uint" value="0"/>
+    </property>
+    <property name="plugin-2" type="string" value="separator">
+      <property name="expand" type="bool" value="true"/>
+      <property name="style" type="uint" value="0"/>
+    </property>
+    <property name="plugin-3" type="string" value="clock">
+      <property name="mode" type="uint" value="2"/>
+      <property name="digital-layout" type="uint" value="3"/>
+      <property name="digital-time-format" type="string" value="%H:%M"/>
+      <property name="digital-time-font" type="string" value="Liberation Sans 13"/>
+      <property name="digital-format" type="string" value="%H:%M"/>
+      <property name="tooltip-format" type="string" value="%A %d %B %Y"/>
+      <property name="timezone" type="string" value="@ZONE@"/>
+    </property>
+    <property name="plugin-7" type="string" value="clock">
+      <property name="mode" type="uint" value="2"/>
+      <property name="digital-layout" type="uint" value="2"/>
+      <property name="digital-date-format" type="string" value="%a %d %b"/>
+      <property name="digital-date-font" type="string" value="Liberation Sans 13"/>
+      <property name="digital-format" type="string" value="%a %d %b"/>
+      <property name="tooltip-format" type="string" value="%A %d %B %Y"/>
+      <property name="timezone" type="string" value="@ZONE@"/>
+    </property>
+    <property name="plugin-4" type="string" value="launcher">
+      <property name="show-label" type="bool" value="false"/>
+      <property name="disable-tooltips" type="bool" value="false"/>
+      <property name="items" type="array">
+        <value type="string" value="qorpera-terminal.desktop"/>
+      </property>
+    </property>
+    <property name="plugin-5" type="string" value="launcher">
+      <property name="show-label" type="bool" value="false"/>
+      <property name="disable-tooltips" type="bool" value="false"/>
+      <property name="items" type="array">
+        <value type="string" value="qorpera-files.desktop"/>
+      </property>
+    </property>
+    <property name="plugin-6" type="string" value="launcher">
+      <property name="show-label" type="bool" value="false"/>
+      <property name="disable-tooltips" type="bool" value="false"/>
+      <property name="items" type="array">
+        <value type="string" value="qorpera-browser.desktop"/>
+      </property>
+    </property>
+  </property>
+</channel>
+PANEL
+	# The clocks follow the desktop's time zone; the plain machine is on UTC.
+	sed -i "s|@ZONE@|$zone|" "$CONFIG/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml" || return 1
+	# The launchers. Each state of an icon is an entry of its own (idle; running, with the white mark under the tile;
+	# for the browser also opening, its pulse's second frame, and did not open); the panel starts with a copy of the
+	# idle one in its own folder. The pictures are the office dock's drawings, read from the image.
+	for app in terminal files browser; do
+		case $app in
+		terminal) label=Terminal comment="A shell on this computer" ;;
+		files) label=Files comment="The files of this computer" ;;
+		browser) label=Browser comment="The browser of this computer" ;;
+		esac
+		for state in idle running launching launching-2 failed; do
+			[[ -f $ART/dock/$app-$state.png ]] || continue
+			entry="qorpera-$app-$state.desktop"
+			[[ $state != idle ]] || entry="qorpera-$app.desktop"
+			put "$TEMPLATES/$entry" <<DESKTOP || return 1
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=$label
+Comment=$comment
+Exec=$SELF press $app
+Icon=$ART/dock/$app-$state.png
+Terminal=false
+StartupNotify=false
+DESKTOP
+		done
+		[[ -f $TEMPLATES/qorpera-$app.desktop ]] || return 1
+		put "$CONFIG/xfce4/panel/launcher-${PANEL_PLUGIN[$app]}/qorpera-$app.desktop" <"$TEMPLATES/qorpera-$app.desktop" || return 1
+	done
+	# The panel draws with GTK 3, so its look is plain GTK CSS, every rule scoped to the panel: no button boxes, a soft
+	# hover and press highlight, the date dimmer than the time, and click feedback on the icon itself (pushed in while
+	# the button is held, one short jump when it is let go; nothing repeats). Nothing here needs a compositor.
+	put "$CONFIG/gtk-3.0/gtk.css" <<'CSS' || return 1
+@keyframes qorpera-dock-jump {
+	0% { -gtk-icon-transform: translateY(2px) scale(0.9); }
+	32% { -gtk-icon-transform: translateY(-8px) scale(1.02); }
+	58% { -gtk-icon-transform: translateY(0) scale(1); }
+	78% { -gtk-icon-transform: translateY(-3px) scale(1); }
+	100% { -gtk-icon-transform: translateY(0) scale(1); }
+}
+.xfce4-panel {
+	background-color: #101218;
+	background-image: none;
+	border: none;
+	box-shadow: none;
+	color: #e6e9ef;
+}
+.xfce4-panel button {
+	background-color: transparent;
+	background-image: none;
+	border: none;
+	box-shadow: none;
+	outline: none;
+	border-radius: 16px;
+	margin: 4px 3px;
+	padding: 0 5px;
+	transition: background-color 90ms ease-out;
+}
+.xfce4-panel button:hover { background-color: rgba(255, 255, 255, 0.10); }
+.xfce4-panel button:active,
+.xfce4-panel button:checked { background-color: rgba(255, 255, 255, 0.22); }
+/* The date at the left and the time at the right take the same width, so the
+   three icons between the two expanding gaps sit on the screen's centre line.
+   The time is the brighter of the two. */
+.xfce4-panel #clock-button label {
+	min-width: 120px;
+	color: #c9ced8;
+}
+.xfce4-panel #clock-7 #clock-button label { color: #a3abba; }
+.xfce4-panel #clock-3 #clock-button label { color: #eef0f4; }
+.xfce4-panel #clock-button:hover,
+.xfce4-panel #clock-button:active,
+.xfce4-panel #clock-button:checked { background-color: transparent; }
+.xfce4-panel button image {
+	margin: -4px 0;
+	-gtk-icon-transform: translateY(0) scale(1);
+	animation: qorpera-dock-jump 420ms ease-out 1;
+}
+.xfce4-panel button:active image {
+	-gtk-icon-transform: translateY(2px) scale(0.9);
+	animation: none;
+	transition: -gtk-icon-transform 60ms ease-out;
+}
+CSS
+	# The programs' own pictures (the file manager's arrows and folders, the terminal's menus) come from the icon set
+	# the image installs, Adwaita, with GTK's own plain theme and one still pointer of the same set. XFCE's settings
+	# daemon hands these to every program; its own defaults name a theme and an icon set the image does not have.
+	# The same in GTK's own file, for a session without that daemon.
+	put "$CONFIG/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml" <<'XSETTINGS' || return 1
+<?xml version="1.0" encoding="UTF-8"?>
+
+<channel name="xsettings" version="1.0">
+  <property name="Net" type="empty">
+    <property name="ThemeName" type="string" value="Adwaita"/>
+    <property name="IconThemeName" type="string" value="Adwaita"/>
+    <property name="EnableEventSounds" type="bool" value="false"/>
+    <property name="EnableInputFeedbackSounds" type="bool" value="false"/>
+  </property>
+  <property name="Gtk" type="empty">
+    <property name="CursorThemeName" type="string" value="Adwaita"/>
+    <property name="CursorThemeSize" type="int" value="24"/>
+  </property>
+</channel>
+XSETTINGS
+	put "$CONFIG/gtk-3.0/settings.ini" <<'SETTINGS' || return 1
+[Settings]
+gtk-theme-name=Adwaita
+gtk-icon-theme-name=Adwaita
+gtk-cursor-theme-name=Adwaita
+gtk-cursor-theme-size=24
+gtk-enable-animations=1
+gtk-enable-event-sounds=0
+gtk-enable-input-feedback-sounds=0
+SETTINGS
+	# The file manager's side pane names the company folder on a machine that has it. Only that one line is this
+	# script's: whatever else someone bookmarked stays.
+	if mountpoint -q /company; then
+		grep -qxF -- "$company" "$bookmarks" 2>/dev/null || echo "$company" >>"$bookmarks" || true
+	elif [[ -f $bookmarks ]]; then
+		sed -i '\|^file:///company |d' "$bookmarks" || true
+	fi
+	# The backdrop: the hour's frame of the set, filling the screen; no icons on it. `desktop-look watch` moves it on
+	# with the hours. The colour under it is the frame's own ground.
+	put "$CONFIG/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml" <<DESKTOP || return 1
+<?xml version="1.0" encoding="UTF-8"?>
+
+<channel name="xfce4-desktop" version="1.0">
+  <property name="backdrop" type="empty">
+    <property name="screen0" type="empty">
+      <property name="monitor$monitor" type="empty">
+        <property name="workspace0" type="empty">
+          <property name="last-image" type="string" value="$ART/backdrops/$figure/$hour.png"/>
+          <property name="image-style" type="int" value="5"/>
+          <property name="backdrop-cycle-enable" type="bool" value="false"/>
+          <property name="color-style" type="int" value="0"/>
+          <property name="rgba1" type="array">
+            <value type="double" value="$(share "${ground:0:2}")"/>
+            <value type="double" value="$(share "${ground:2:2}")"/>
+            <value type="double" value="$(share "${ground:4:2}")"/>
+            <value type="double" value="1"/>
+          </property>
+        </property>
+      </property>
+    </property>
+  </property>
+  <property name="desktop-icons" type="empty">
+    <property name="style" type="int" value="0"/>
+  </property>
+  <property name="desktop-menu" type="empty">
+    <property name="show" type="bool" value="true"/>
+  </property>
+</channel>
+DESKTOP
+	# A desktop that is only ever seen through pictures and VNC: no compositor (every window would be drawn twice), no
+	# shadows, previews or desktop zoom, one workspace so a scroll on the backdrop never lands on an empty one, an
+	# outline while resizing, new windows in the middle. Title bars: no "roll up" button, and the dock's font.
+	put "$CONFIG/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml" <<'WM' || return 1
+<?xml version="1.0" encoding="UTF-8"?>
+
+<channel name="xfwm4" version="1.0">
+  <property name="general" type="empty">
+    <property name="use_compositing" type="bool" value="false"/>
+    <property name="show_dock_shadow" type="bool" value="false"/>
+    <property name="show_frame_shadow" type="bool" value="false"/>
+    <property name="show_popup_shadow" type="bool" value="false"/>
+    <property name="cycle_preview" type="bool" value="false"/>
+    <property name="zoom_desktop" type="bool" value="false"/>
+    <property name="box_resize" type="bool" value="true"/>
+    <property name="workspace_count" type="int" value="1"/>
+    <property name="scroll_workspaces" type="bool" value="false"/>
+    <property name="placement_mode" type="string" value="center"/>
+    <property name="placement_ratio" type="int" value="100"/>
+    <property name="button_layout" type="string" value="O|HMC"/>
+    <property name="title_font" type="string" value="Liberation Sans Bold 10"/>
+  </property>
+</channel>
+WM
+	# The terminal: Bash with a prompt that shows the folder (a small rc file that reads the account's own ~/.bashrc
+	# first), DejaVu Sans Mono 11 on a calm dark palette, no menu bar or scrollbar, 110x30, and "Terminal" alone in its
+	# title bar (a machine's own name is a long number). Newer xfce4-terminal versions keep their settings in xfconf
+	# and read terminalrc only once: both are written.
+	put "$CONFIG/qorpera-bashrc" <<'BASHRC' || return 1
+[[ ! -r ~/.bashrc ]] || . ~/.bashrc
+PS1='\[\e[38;5;114m\]\w\[\e[0m\] \$ '
+BASHRC
+	put "$CONFIG/xfce4/xfconf/xfce-perchannel-xml/xfce4-terminal.xml" <<TERMINAL || return 1
+<?xml version="1.0" encoding="UTF-8"?>
+
+<channel name="xfce4-terminal" version="1.0">
+  <property name="title-initial" type="string" value="Terminal"/>
+  <property name="title-mode" type="string" value="TERMINAL_TITLE_HIDE"/>
+  <property name="misc-menubar-default" type="bool" value="false"/>
+  <property name="misc-default-geometry" type="string" value="110x30"/>
+  <property name="scrolling-bar" type="string" value="TERMINAL_SCROLLBAR_NONE"/>
+  <property name="font-use-system" type="bool" value="false"/>
+  <property name="font-name" type="string" value="DejaVu Sans Mono 11"/>
+  <property name="color-foreground" type="string" value="#e6e9ef"/>
+  <property name="color-background" type="string" value="#12141a"/>
+  <property name="color-cursor" type="string" value="#7ee787"/>
+  <property name="color-cursor-use-default" type="bool" value="false"/>
+  <property name="color-palette" type="string" value="#1b1f2a;#f47067;#7ee787;#f5a524;#5aa9ff;#c297ff;#56d4dd;#c9ced8;#565d6b;#ff938a;#a5f3ae;#ffd166;#8cc4ff;#d8b9ff;#8ae7ee;#ffffff"/>
+  <property name="run-custom-command" type="bool" value="true"/>
+  <property name="custom-command" type="string" value="/usr/bin/bash --rcfile &quot;$CONFIG/qorpera-bashrc&quot;"/>
+</channel>
+TERMINAL
+	put "$CONFIG/xfce4/terminal/terminalrc" <<TERMINAL || return 1
+[Configuration]
+TitleInitial=Terminal
+TitleMode=TERMINAL_TITLE_HIDE
+RunCustomCommand=TRUE
+CustomCommand=/usr/bin/bash --rcfile "$CONFIG/qorpera-bashrc"
+MiscMenubarDefault=FALSE
+MiscDefaultGeometry=110x30
+ScrollingBar=TERMINAL_SCROLLBAR_NONE
+FontUseSystem=FALSE
+FontName=DejaVu Sans Mono 11
+ColorForeground=#e6e9ef
+ColorBackground=#12141a
+ColorCursor=#7ee787
+ColorCursorUseDefault=FALSE
+ColorPalette=#1b1f2a;#f47067;#7ee787;#f5a524;#5aa9ff;#c297ff;#56d4dd;#c9ced8;#565d6b;#ff938a;#a5f3ae;#ffd166;#8cc4ff;#d8b9ff;#8ae7ee;#ffffff
+TERMINAL
+}
+
+# Beside the session, until the display ends. It waits on the window manager's client list and also looks every three
+# seconds (an announcement may be lost; the hour, the figure and the time zone change without one): one xprop call and
+# two small reads, and nothing more while nothing changed.
+watch() {
+	local list last=unread kinds= id class app state status zone now figure hour image backdrop
+	# What `write` made is what shows: idle icons, the hour's frame, the clocks' zone. Only a change is told to XFCE.
+	zone=$(desktop_zone)
+	backdrop=$ART/backdrops/$(backdrop_set)/$(hour_in "$zone").png
+	while :; do
+		if read -r -t 3 _; then
+			sleep 0.3
+			# A burst of window events costs one pass: drain what is already waiting.
+			while read -r -t 0 _ 2>/dev/null; do read -r _ || break; done
+		else
+			# A timeout (above 128) is the regular look; anything else is the end of the display.
+			status=$?
+			((status > 128)) || break
+		fi
+		# The marks: a program with a window, minimised or not, has the white mark under its icon.
+		list=$(clients) || list=
+		if [[ $list != "$last" ]]; then
+			last=$list
+			kinds=$(classes "$list")
+		fi
+		for app in browser files terminal; do
+			# A press that waits for the browser owns its icon meanwhile (its note names it; a press that is gone
+			# owns nothing).
+			if [[ $app == browser && -s $RUN/dock-browser.launching ]] &&
+				kill -0 "$(<"$RUN/dock-browser.launching")" 2>/dev/null; then
+				continue
+			fi
+			state=idle
+			while read -r id class; do
+				[[ -n $class && $class =~ ${WINDOW_CLASS[$app]} ]] && state=running
+			done <<<"$kinds"
+			show "$app" "$state"
+		done
+		# The backdrop: the set of the figure the machine names now, the frame of the hour in the desktop's time zone.
+		# The dock's clocks follow that zone too.
+		figure=$(backdrop_set)
+		now=$(desktop_zone)
+		if [[ $now != "$zone" ]]; then
+			zone=$now
+			for id in 3 7; do
+				xfconf-query -c xfce4-panel -p "/plugins/plugin-$id/timezone" -n -t string -s "$zone" >/dev/null 2>&1 || true
+			done
+		fi
+		hour=$(hour_in "$zone")
+		image=$ART/backdrops/$figure/$hour.png
+		if [[ $image != "$backdrop" && -f $image ]]; then
+			while read -r id; do
+				xfconf-query -c xfce4-desktop -p "$id" -s "$image" >/dev/null 2>&1 || true
+			done < <(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep '/last-image$')
+			backdrop=$image
+		fi
+	done < <(xprop -root -spy _NET_CLIENT_LIST 2>/dev/null)
+}
+
+# A press on a dock icon. Every icon first brings back the window its program already has on this screen. Only when
+# there is none is the program asked for: an empty file named for it in ASK, which root answers by starting it the way
+# `desktop open` and `desktop run` do, as a unit of its own (desktop-dock-open), so the browser a press opens is the
+# one an agent's `desktop open` finds, and the memory guard meets it as it meets any program on the desktop. It never
+# opens a dialog: the browser's icon shows an outlined mark and pulses for the first seconds, and a browser that did
+# not come turns it grey with an amber mark for a few seconds.
+press() { # app
+	local app=$1 attempt
+	raise "$app" && return 0
+	[[ $app != browser ]] || show browser launching
+	# One wait at a time for a program: impatient presses do not stack up.
+	exec 9>"$RUN/dock-$app.lock" || return 1
+	flock -n 9 || return 0
+	if [[ $app == browser ]]; then
+		echo "$$" >"$RUN/dock-browser.launching"
+		trap 'rm -f -- "$RUN/dock-browser.launching"' EXIT
+	fi
+	: >"$ASK/$app" || { echo "the dock cannot ask for the $app: $ASK is not there" >&2; return 1; }
+	# A cold start on a busy machine takes its time: 20 s.
+	for ((attempt = 0; attempt < 80; attempt++)); do
+		sleep 0.25
+		if raise "$app"; then
+			show "$app" running
+			return 0
+		fi
+		# Six beats in the first three seconds, then the still outlined mark. Never a continuous animation.
+		if [[ $app == browser ]] && ((attempt < 12)); then
+			if ((attempt % 2 == 0)); then show browser launching-2; else show browser launching; fi
+		fi
+	done
+	[[ $app == browser ]] || return 1
+	show browser failed
+	sleep 6
+	if raise browser; then show browser running; else show browser idle; fi
+	return 1
+}
+
+case ${1:-} in
+write)
+	write || { echo "the desktop's look could not be written whole" >&2; exit 1; }
+	;;
+watch)
+	watch
+	;;
+press)
+	case ${2:-} in
+	browser | files | terminal) ;;
+	*) echo "desktop-look press browser|files|terminal" >&2; exit 64 ;;
+	esac
+	[[ -n ${DISPLAY:-} && $# == 2 ]] || { echo "desktop-look press browser|files|terminal (on the desktop)" >&2; exit 64; }
+	press "$2"
+	;;
+*)
+	echo "desktop-look write|watch|press APP" >&2
+	exit 64
+	;;
+esac

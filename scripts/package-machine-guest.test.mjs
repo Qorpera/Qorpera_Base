@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { inflateSync } from "node:zlib";
 import { build } from "esbuild";
+import { BACKDROP_FILES, DOCK_ICONS, MACHINE_DESKTOP_PICTURES, NEUTRAL_BACKDROP, tarArchive } from "./machine-desktop-art.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(join(repositoryRoot, path), "utf8");
@@ -205,6 +207,13 @@ test("the image has a desktop that only `desktop start` starts, with Chromium sa
 		{
 			file: "lxd-agent-memory.conf",
 			installedPath: "/etc/systemd/system/lxd-agent.service.d/qorpera-memory.conf",
+			mode: "0644",
+		},
+		{ file: "desktop-look", installedPath: "/opt/qorpera-machine/desktop-look", mode: "0555" },
+		{ file: "desktop-dock-open", installedPath: "/opt/qorpera-machine/desktop-dock-open", mode: "0555" },
+		{
+			file: "qorpera-machine-desktop.tmpfiles",
+			installedPath: "/etc/tmpfiles.d/qorpera-machine-desktop.conf",
 			mode: "0644",
 		},
 	]);
@@ -778,5 +787,383 @@ test("every machine has compressed memory from its boot on and a guard at the ed
 		"scripts/prove-machine-memory.sh",
 		"scripts/machine-memory-proof/guest.sh",
 	])
+		assert.equal(spawnSync("bash", ["-n", join(repositoryRoot, file)], { encoding: "utf8" }).status, 0, file);
+});
+
+test("a machine's desktop has the office look: one dock, the agent's backdrop, written at every start", async () => {
+	// deploy/machine/README.md, "The desktop's look" (12 Nov 2026; Jonas on the first desktop computers: "what happened
+	// to the agent wallpapers? the docker has 4 settings icons instead of file explorer and terminal?").
+	const look = read("deploy/machine/desktop-look");
+	const session = read("deploy/machine/desktop-session");
+	const opener = read("deploy/machine/desktop-dock-open");
+	const packager = read("scripts/package-machine-guest.mjs");
+	const office = read("deploy/lxd-company-computer-guest/qorpera-screen-session");
+
+	// The pictures: a backdrop set for every figure an agent can have, under the figure's own name, from the office's
+	// files by the runtime's table; a saved ghost is drawn as the moon, as every client draws it.
+	const characters = read("packages/cloud-client/src/staff-characters.ts");
+	const pairs = (text) => Object.fromEntries([...text.matchAll(/(\w+): "(\w+)"/g)].map((match) => [match[1], match[2]]));
+	const figures = [...characters.match(/export const STAFF_CHARACTER_IDS = Object\.freeze\(\[([^\]]+)\]/)[1].matchAll(/"([a-z]+)"/g)].map(
+		(match) => match[1],
+	);
+	assert.equal(figures.length, 12);
+	assert.deepEqual(Object.keys(BACKDROP_FILES), figures);
+	const table = pairs(
+		read("packages/runtime/src/cloud-company-computer-wallpapers.ts").match(
+			/COMPANY_COMPUTER_WALLPAPER_BY_CHARACTER = Object\.freeze\(\{([^}]+)\}/,
+		)[1],
+	);
+	for (const figure of figures) assert.equal(BACKDROP_FILES[figure], table[figure], figure);
+	assert.deepEqual(pairs(characters.match(/RETIRED_STAFF_CHARACTERS = Object\.freeze\(\{([^}]+)\}/)[1]), { ghost: "moon" });
+	assert.match(look, /\n\t\[\[ \$word != ghost \]\] \|\| word=moon\n/);
+	// Every picture is there and is a PNG of its size: the nine dock icons, 24 frames a set, thirteen sets.
+	assert.equal(MACHINE_DESKTOP_PICTURES.length, 9 + 13 * 24);
+	assert.equal(new Set(MACHINE_DESKTOP_PICTURES.map((picture) => picture.name)).size, MACHINE_DESKTOP_PICTURES.length);
+	// The colour of a frame's first pixel, which is its ground: the frames are plain RGB, so the first row's first three
+	// bytes after its filter byte.
+	const ground = (bytes) => {
+		const data = [];
+		for (let at = 8; at < bytes.length; ) {
+			const length = bytes.readUInt32BE(at);
+			if (bytes.subarray(at + 4, at + 8).toString("latin1") === "IDAT") data.push(bytes.subarray(at + 8, at + 8 + length));
+			at += 12 + length;
+		}
+		return inflateSync(Buffer.concat(data)).subarray(1, 4).toString("hex");
+	};
+	// The ground the look paints on the bare screen for an hour is the ground of that hour's frame, in every set.
+	const grounds = words(look.match(/\nGROUND=\(([^)]+)\)\n/)[1]);
+	assert.equal(grounds.length, 24);
+	for (const { name, source } of MACHINE_DESKTOP_PICTURES) {
+		const bytes = readFileSync(join(repositoryRoot, source));
+		assert.equal(bytes.subarray(0, 8).toString("hex"), "89504e470d0a1a0a", source);
+		const size = [bytes.readUInt32BE(16), bytes.readUInt32BE(20)];
+		if (name.startsWith("dock/")) {
+			assert.deepEqual(size, [112, 112], source);
+			continue;
+		}
+		assert.deepEqual(size, [1920, 1200], source);
+		assert.equal(bytes[25], 2, `${source} is plain RGB`);
+		assert.equal(ground(bytes), grounds[Number(name.slice(-6, -4))], `the ground of ${name}`);
+	}
+
+	// The archive: plain ustar, root's files of mode 0644, the same bytes each time, and what tar unpacks is what went in.
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-machine-desktop-look-"));
+	try {
+		const entries = [
+			{ name: "dock/a.png", bytes: Buffer.from("first") },
+			{ name: "backdrops/star/00.png", bytes: Buffer.alloc(1300, 7) },
+			{ name: "backdrops/star/01.png", bytes: Buffer.alloc(0) },
+			{ name: "backdrops/neutral/23.png", bytes: Buffer.alloc(1024, 9) },
+		];
+		const archive = tarArchive(entries);
+		assert.deepEqual(tarArchive(entries), archive);
+		assert.equal(archive.length, 512 * (4 + 1 + 3 + 0 + 2) + 1024);
+		assert.throws(() => tarArchive([{ name: "x".repeat(100), bytes: Buffer.alloc(0) }]), /too long/);
+		await writeFile(join(temporary, "art.tar"), archive);
+		await mkdir(join(temporary, "out"));
+		const listed = spawnSync("tar", ["-tvf", join(temporary, "art.tar")], { encoding: "utf8" });
+		assert.equal(listed.status, 0, listed.stderr);
+		const lines = listed.stdout.trim().split("\n");
+		assert.equal(lines.length, entries.length);
+		for (const line of lines) assert.match(line, /^-rw-r--r-- +(root\/root|0\/0) /, line);
+		const unpacked = spawnSync("tar", ["-xf", join(temporary, "art.tar"), "-C", join(temporary, "out"), "--no-same-owner"], {
+			encoding: "utf8",
+		});
+		assert.equal(unpacked.status, 0, unpacked.stderr);
+		assert.equal(unpacked.stderr, "");
+		for (const { name, bytes } of entries) assert.deepEqual(readFileSync(join(temporary, "out", name)), bytes, name);
+
+		// The look, written as the session writes it, with stand-ins for the display's tools and for the image's pictures:
+		// one dock with three launchers whose pictures are there, the backdrop of the figure the machine names for the hour
+		// in the desktop's time zone, the ground of that hour on the bare screen, and the clocks on that zone.
+		const art = join(temporary, "art");
+		for (const set of ["neutral", "star", "moon"]) {
+			await mkdir(join(art, "backdrops", set), { recursive: true });
+			for (let hour = 0; hour < 24; hour++) await writeFile(join(art, "backdrops", set, `${String(hour).padStart(2, "0")}.png`), "");
+		}
+		await mkdir(join(art, "dock"));
+		for (const icon of DOCK_ICONS) await writeFile(join(art, "dock", `${icon}.png`), "png");
+		const tools = join(temporary, "tools");
+		await mkdir(tools);
+		const asked = join(temporary, "asked");
+		const tool = (name, body) => writeFile(join(tools, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+		await tool("xsetroot", 'echo "xsetroot $*" >>"$ASKED"');
+		await tool("xrandr", 'echo "Screen 0: minimum 32 x 32, current 1600 x 1000"; echo "VNC-0 connected primary 1600x1000+0+0 0mm x 0mm"');
+		const home = join(temporary, "home");
+		const run = join(temporary, "run");
+		const ask = join(temporary, "ask");
+		const figureFile = join(temporary, "desktop-figure");
+		for (const folder of [home, run, ask]) await mkdir(folder);
+		const env = {
+			...process.env,
+			PATH: `${tools}:${process.env.PATH}`,
+			HOME: home,
+			XDG_RUNTIME_DIR: run,
+			XDG_CONFIG_HOME: "",
+			DISPLAY: ":1",
+			ASKED: asked,
+			QORPERA_DESKTOP_ART: art,
+			QORPERA_DESKTOP_FIGURE: figureFile,
+			QORPERA_DESKTOP_ASK: ask,
+		};
+		const lookRun = (...args) => spawnSync("bash", [join(repositoryRoot, "deploy/machine/desktop-look"), ...args], { encoding: "utf8", env });
+		const config = join(home, ".config");
+		const channel = (name) => readFileSync(join(config, "xfce4/xfconf/xfce-perchannel-xml", `${name}.xml`), "utf8");
+		const hourIn = (zone) => new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hourCycle: "h23", timeZone: zone }).format(new Date());
+		const written = (figure, zone) => {
+			writeFileSync(asked, "");
+			const before = hourIn(zone);
+			const result = lookRun("write");
+			assert.equal(result.status, 0, result.stderr);
+			// The hour may turn while the look is written: either side of it is right.
+			const hours = new Set([before, hourIn(zone)]);
+			const frame = channel("xfce4-desktop").match(/<property name="last-image" type="string" value="([^"]+)"\/>/)[1];
+			assert.ok([...hours].some((hour) => frame === `${art}/backdrops/${figure}/${hour}.png`), `${frame} for ${figure} in ${zone}`);
+			assert.ok(
+				[...hours].some((hour) => readFileSync(asked, "utf8") === `xsetroot -solid #${grounds[Number(hour)]}\n`),
+				readFileSync(asked, "utf8"),
+			);
+			assert.equal(channel("xfce4-panel").match(/<property name="timezone" type="string" value="([^"]+)"\/>/g).length, 2);
+			assert.ok(channel("xfce4-panel").includes(`<property name="timezone" type="string" value="${zone}"/>`), zone);
+		};
+		// No figure named: the neutral backdrop, on UTC.
+		written("neutral", "UTC");
+		assert.match(channel("xfce4-desktop"), /<property name="monitorVNC-0" type="empty">/);
+		for (const [plugin, app] of [
+			[4, "terminal"],
+			[5, "files"],
+			[6, "browser"],
+		]) {
+			const entry = readFileSync(join(config, `xfce4/panel/launcher-${plugin}/qorpera-${app}.desktop`), "utf8");
+			assert.match(entry, new RegExp(`\\nExec=/opt/qorpera-machine/desktop-look press ${app}\\n`));
+			const icon = entry.match(/\nIcon=([^\n]+)\n/)[1];
+			assert.equal(icon, `${art}/dock/${app}-idle.png`);
+			assert.ok(existsSync(icon), icon);
+		}
+		assert.deepEqual(
+			spawnSync("ls", [join(config, "qorpera-dock")], { encoding: "utf8" }).stdout.trim().split("\n"),
+			[
+				"qorpera-browser-failed.desktop",
+				"qorpera-browser-launching-2.desktop",
+				"qorpera-browser-launching.desktop",
+				"qorpera-browser-running.desktop",
+				"qorpera-browser.desktop",
+				"qorpera-files-running.desktop",
+				"qorpera-files.desktop",
+				"qorpera-terminal-running.desktop",
+				"qorpera-terminal.desktop",
+			],
+		);
+		for (const file of ["gtk-3.0/gtk.css", "gtk-3.0/settings.ini", "qorpera-bashrc", "xfce4/terminal/terminalrc"])
+			assert.ok(readFileSync(join(config, file), "utf8").length > 0, file);
+		for (const name of ["xfwm4", "xfce4-terminal", "xsettings"]) assert.match(channel(name), new RegExp(`<channel name="${name}" version="1\\.0">`));
+		// The figure the machine names, a saved ghost as the moon, a word the image has no set for as the neutral one; and
+		// the zone `desktop start --tz` keeps in the desktop's runtime folder.
+		writeFileSync(figureFile, "star\n");
+		written("star", "UTC");
+		writeFileSync(figureFile, "ghost");
+		written("moon", "UTC");
+		writeFileSync(join(run, "tz"), "Pacific/Auckland");
+		written("moon", "Pacific/Auckland");
+		writeFileSync(figureFile, "../../etc\n");
+		written("neutral", "Pacific/Auckland");
+		writeFileSync(figureFile, "planet\n");
+		written("neutral", "Pacific/Auckland");
+		writeFileSync(join(run, "tz"), "No/Such_Zone");
+		written("neutral", "UTC");
+		// Written anew every time: what was changed or removed in the account is put back.
+		await rm(config, { recursive: true, force: true });
+		written("neutral", "UTC");
+		writeFileSync(join(config, "xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml"), "someone changed the dock");
+		written("neutral", "UTC");
+
+		// A press: the window the program already has is brought back and nothing is asked; with none, an empty file named
+		// for the program asks root for it, its window is shown when it comes, and its icon gets its mark.
+		await tool(
+			"xprop",
+			[
+				'case "$*" in',
+				'"-root _NET_CLIENT_LIST") if [ -n "$WINDOWS" ] || [ -e "$QORPERA_DESKTOP_ASK/$COMES" ]; then echo "_NET_CLIENT_LIST(WINDOW): window id # 0xa00003, 0x1200007"; else echo "_NET_CLIENT_LIST(WINDOW): window id # 0xa00003"; fi ;;',
+				'"-id 0xa00003 WM_CLASS") echo "WM_CLASS(STRING) = \\"xfce4-panel\\", \\"Xfce4-panel\\"" ;;',
+				'"-id 0x1200007 WM_CLASS") echo "WM_CLASS(STRING) = $WINDOW_IS" ;;',
+				"esac",
+			].join("\n"),
+		);
+		await tool("xdotool", 'echo "xdotool $*" >>"$ASKED"');
+		await tool("xfconf-query", 'echo "xfconf-query $*" >>"$ASKED"');
+		await tool("sleep", "exit 0");
+		const press = (app, more) => {
+			writeFileSync(asked, "");
+			const result = spawnSync("bash", [join(repositoryRoot, "deploy/machine/desktop-look"), "press", app], {
+				encoding: "utf8",
+				env: { ...env, WINDOWS: "", COMES: "", WINDOW_IS: "", ...more },
+			});
+			return { status: result.status, asked: readFileSync(asked, "utf8"), stderr: result.stderr };
+		};
+		// (A variable named like one of the script's own tables, handed in by the environment, changes nothing.)
+		const there = press("files", { WINDOWS: "yes", WINDOW_IS: '"thunar", "Thunar"', WINDOW_CLASS: "x", PANEL_PLUGIN: "y" });
+		assert.equal(there.status, 0, there.stderr);
+		assert.equal(there.asked, "xdotool windowmap 0x1200007\nxdotool windowactivate 0x1200007\n");
+		assert.deepEqual(spawnSync("ls", ["-A", ask], { encoding: "utf8" }).stdout, "");
+		const opened = press("terminal", { COMES: "terminal", WINDOW_IS: '"xfce4-terminal", "Xfce4-terminal"' });
+		assert.equal(opened.status, 0, opened.stderr);
+		assert.equal(spawnSync("ls", ["-A", ask], { encoding: "utf8" }).stdout, "terminal\n");
+		assert.equal(readFileSync(join(ask, "terminal")).length, 0);
+		assert.equal(
+			opened.asked,
+			`xdotool windowmap 0x1200007\nxdotool windowactivate 0x1200007\nxfconf-query -c xfce4-panel -p /plugins/plugin-4/items -n -a -t string -s ${config}/qorpera-dock/qorpera-terminal-running.desktop\n`,
+		);
+		assert.equal(readFileSync(join(run, "dock-terminal.shows"), "utf8"), "running\n");
+		// The browser's window is a Chrome for Testing one; its icon shows that it is being opened, then that it is open.
+		const browser = press("browser", { COMES: "browser", WINDOW_IS: '"chromium-browser", "Chromium-browser"' });
+		assert.equal(browser.status, 0, browser.stderr);
+		assert.deepEqual(browser.asked.trim().split("\n"), [
+			`xfconf-query -c xfce4-panel -p /plugins/plugin-6/items -n -a -t string -s ${config}/qorpera-dock/qorpera-browser-launching.desktop`,
+			"xdotool windowmap 0x1200007",
+			"xdotool windowactivate 0x1200007",
+			`xfconf-query -c xfce4-panel -p /plugins/plugin-6/items -n -a -t string -s ${config}/qorpera-dock/qorpera-browser-running.desktop`,
+		]);
+		assert.equal(existsSync(join(run, "dock-browser.launching")), false, "the press let go of the browser's icon");
+		// Only the three programs can be asked for.
+		for (const args of [[], ["press"], ["press", "editor"], ["press", "browser", "more"], ["start"]]) {
+			const refused = lookRun(...args);
+			assert.equal(refused.status, 64, args.join(" "));
+		}
+	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
+
+	// The package carries the pictures as one archive beside the look's files, and the dock's two units; the guest helper,
+	// whose sha-256 the executor pins, has nothing of it.
+	assert.match(packager, /\nimport \{ MACHINE_DESKTOP_PICTURES, tarArchive \} from "\.\/machine-desktop-art\.mjs";\n/);
+	assert.match(packager, /\n\tfile: "desktop-art\.tar",\n\tsource: [^\n]+\n\tinstalledPath: "\/usr\/share\/qorpera-desktop",\n/);
+	assert.ok(packager.indexOf('file: "cloud-machine-guest.mjs"') < packager.indexOf('file: "desktop-art.tar"'));
+	assert.doesNotMatch(read("packages/runtime/src/cloud-machine-guest.ts"), /desktop-look|desktop-dock|qorpera-desktop\b/);
+	const units = [...packager.match(/const units = \[([^\]]+)\]/)[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+	for (const unit of ["qorpera-machine-desktop-dock.path", "qorpera-machine-desktop-dock.service"]) assert.ok(units.includes(unit), unit);
+	const required = words(imageScript.match(/for file in ([^;]+); do\n\t\[\[ -f \$PACKAGE\/\$file \]\]/)[1]);
+	assert.ok(required.includes("desktop-art.tar"));
+
+	// The image: the pictures unpacked root-owned, each one checked by the build's own lists (every dock icon, every
+	// figure and the neutral set, every hour), the icon set the programs draw their own pictures from, the dock's unit on
+	// from every boot, and no layout or look kept in the account: the session writes it.
+	const apt = words(imageScript.match(/apt-get install -y --no-install-recommends((?:[^\n]*\\\n)*[^\n]*)/)[1]);
+	assert.ok(apt.includes("adwaita-icon-theme"));
+	assert.deepEqual(
+		words(imageScript.match(/\n\tfor icon in ([^;]+); do\n\t\t\[\[ \$\(file -b "\/usr\/share\/qorpera-desktop\/dock\/\$icon\.png"\)/)[1]).toSorted(),
+		[...DOCK_ICONS].toSorted(),
+	);
+	assert.deepEqual(words(imageScript.match(/\n\tfor figure in ([^;]+); do\n\t\tfor hour in \$\(seq -w 0 23\); do\n/)[1]), [
+		...figures,
+		NEUTRAL_BACKDROP,
+	]);
+	assert.ok(!imageScript.includes("/etc/xdg/xfce4/panel/default.xml"), "the stock panel layout is not the desktop's");
+	for (const line of [
+		'lx file push "$PACKAGE/desktop-art.tar" "$BUILDER/tmp/desktop-art.tar" --uid 0 --gid 0 --mode 0644\n',
+		"\tinstall -d -o root -g root -m 0755 /opt/qorpera-machine /opt/qorpera-folder /usr/share/qorpera-desktop\n",
+		"\tinstall -d -o root -g root -m 0755 /etc/qorpera-machine\n",
+		"\ttar -xf /tmp/desktop-art.tar -C /usr/share/qorpera-desktop --no-same-owner\n\trm /tmp/desktop-art.tar\n",
+		"\tsystemctl enable qorpera-machine-desktop-dock.path\n",
+		"\tsystemd-tmpfiles --create /etc/tmpfiles.d/qorpera-machine-desktop.conf\n",
+		'\t[[ $(find /usr/share/qorpera-desktop -type f | wc -l) == $(( 9 + 13 * 24 )) ]] ||\n',
+		"\t[[ -z $(find /usr/share/qorpera-desktop ! -user root -o ! -group root -o -perm /022) ]] ||\n",
+		'\t[[ $(stat -c "%U:%G %a %F" /run/qorpera-desktop-dock) == "root:desktop 730 directory" ]] ||\n',
+		'\tdock_whole || { echo "the dock is not one bar with the browser, the files and a terminal: ',
+		'\tbackdrop_is neutral || { echo "a machine that names no figure does not show the neutral backdrop: $(shown)" >&2; exit 1; }\n',
+		"\tfor figure in star:star ghost:moon nonsense:neutral; do\n",
+		"\tdesktop start --tz Pacific/Auckland >/dev/null\n",
+		"\tdesktop click 880 960\n",
+		"\tdesktop click 800 960\n",
+		"\tdesktop click 720 960\n",
+		'\t[[ $(scores "$browser") == "0 " ]] && tr "\\0" " " <"/proc/$browser/cmdline" | grep -q -- " --start-maximized .* chrome://newtab/ *$" ||\n',
+		'\t\t{ echo "a second press on the dock browser icon started a second browser" >&2; exit 1; }\n',
+		"\trm -rf /home/desktop/.config\n\tdesktop start >/dev/null\n\tdock_whole && backdrop_is neutral ||",
+		"\tfind /home/desktop -mindepth 1 -maxdepth 1 ! -name .bashrc ! -name .profile ! -name .bash_logout -exec rm -rf -- {} +\n",
+		'\t[[ $(ls -A /home/desktop | sort | tr "\\n" " ") == ".bash_logout .bashrc .profile " && -z $(ls -A /etc/qorpera-machine) ]] ||\n',
+		"\tsystemd-analyze verify /etc/systemd/system/qorpera-machine-desktop-dock.path /etc/systemd/system/qorpera-machine-desktop-dock.service\n",
+	])
+		assert.ok(imageScript.includes(line), line);
+
+	// The session: the look is written once the display answers (it tells the screen's name) and before XFCE starts,
+	// XFCE starts whatever came of it, and the watcher is none of the jobs whose end ends the desktop.
+	const at = (text) => {
+		const found = session.indexOf(text);
+		assert.ok(found > 0, text);
+		return found;
+	};
+	assert.ok(at('xdpyinfo >/dev/null 2>&1 || { echo "the display did not start"') < at("\n/opt/qorpera-machine/desktop-look write || echo "));
+	assert.ok(at("\n/opt/qorpera-machine/desktop-look write || echo ") < at("\texec startxfce4\n"));
+	assert.ok(at("\texec startxfce4\n") < at("\n(/opt/qorpera-machine/desktop-look watch >/dev/null 2>&1 &)\n"));
+	assert.ok(at("\n(/opt/qorpera-machine/desktop-look watch >/dev/null 2>&1 &)\n") < at("\nwait -n\n"));
+
+	// The look is the office dock's, carried over, not drawn anew: the same bar and the same look of it (the clocks'
+	// zone is the one line more), the same windows and terminal.
+	const between = (text, from, to) => text.slice(text.indexOf(from), text.indexOf(to, text.indexOf(from)));
+	const panel = between(look, '<channel name="xfce4-panel"', "\nPANEL\n");
+	assert.equal(
+		panel.replaceAll('      <property name="timezone" type="string" value="@ZONE@"/>\n', ""),
+		between(office, '<channel name="xfce4-panel"', "\nPANEL\n"),
+	);
+	assert.equal(between(look, "@keyframes qorpera-dock-jump", "\nCSS\n"), between(office, "@keyframes qorpera-dock-jump", "\nCSS\n"));
+	assert.equal(panel.match(/<property name="panel-\d+" type="empty">/g).length, 1);
+	assert.deepEqual(
+		[...panel.matchAll(/<property name="plugin-(\d)" type="string" value="(\w+)">/g)].map((match) => `${match[1]} ${match[2]}`).toSorted(),
+		["1 separator", "2 separator", "3 clock", "4 launcher", "5 launcher", "6 launcher", "7 clock"],
+	);
+	const officeXfce = read("deploy/lxd-company-computer-guest/qorpera-screen-xfce");
+	const carried = [
+		...officeXfce.matchAll(/\n\s*set_(?:cosmetic|xfce)_property (xfwm4|xfce4-terminal) \/(?:general\/)?([a-z_-]+) (bool|int|string) "?([^"\n]+)"?(?=\n)/g),
+	].filter(([, , path]) => !["run-custom-command", "custom-command", "color-palette"].includes(path));
+	assert.equal(carried.length, 22);
+	for (const [, channelName, path, type, value] of carried)
+		assert.ok(look.includes(`<property name="${path}" type="${type}" value="${value}"/>`), `${channelName} ${path}`);
+	const palette = office.match(/\nColorPalette=([#0-9a-f;]+)\n/)[1];
+	assert.ok(look.includes(`<property name="color-palette" type="string" value="${palette}"/>`));
+	assert.ok(look.includes(`\nColorPalette=${palette}\n`));
+	for (const line of [
+		'<property name="style" type="int" value="0"/>',
+		'<property name="image-style" type="int" value="5"/>',
+		'<property name="IconThemeName" type="string" value="Adwaita"/>',
+		'<property name="title-mode" type="string" value="TERMINAL_TITLE_HIDE"/>',
+	])
+		assert.ok(look.includes(line), line);
+	for (const line of [
+		"\nART=${QORPERA_DESKTOP_ART:-/usr/share/qorpera-desktop}\n",
+		"\nFIGURE=${QORPERA_DESKTOP_FIGURE:-/etc/qorpera-machine/desktop-figure}\n",
+		"\nASK=${QORPERA_DESKTOP_ASK:-/run/qorpera-desktop-dock}\n",
+		"\nSELF=/opt/qorpera-machine/desktop-look\n",
+	])
+		assert.ok(look.includes(line), line);
+
+	// A press reaches root only as a name in root's folder, and root starts one of three fixed programs with the image's
+	// own `desktop` command, in the company folder when the machine has it and the desktop's account may read it.
+	assert.match(opener, /\nASK=\/run\/qorpera-desktop-dock\nDESKTOP=\/usr\/local\/bin\/desktop\n/);
+	assert.match(opener, /\ncd -P -- "\$ASK" 2>\/dev\/null \|\| exit 0\n\[\[ \$\(pwd -P\) == "\$ASK" \]\] \|\| exit 0\n/);
+	assert.match(opener, /\nif mountpoint -q \/company && runuser -u desktop -- test -r \/company -a -x \/company; then folder=\/company; fi\n/);
+	assert.match(
+		opener,
+		/\n\tbrowser\) "\$DESKTOP" open "\$PAGE" ;;\n\tfiles\) "\$DESKTOP" run \/usr\/bin\/thunar "\$folder" ;;\n\tterminal\) "\$DESKTOP" run \/usr\/bin\/xfce4-terminal --working-directory="\$folder" ;;\n/,
+	);
+	assert.doesNotMatch(opener, /systemd-run|chrome --/);
+	const pathUnit = read("deploy/machine/qorpera-machine-desktop-dock.path");
+	assert.match(pathUnit, /\n\[Path\]\nDirectoryNotEmpty=\/run\/qorpera-desktop-dock\n/);
+	assert.match(pathUnit, /\n\[Install\]\nWantedBy=multi-user\.target\n$/);
+	const serviceUnit = read("deploy/machine/qorpera-machine-desktop-dock.service");
+	assert.doesNotMatch(serviceUnit, /^\[Install\]/m);
+	assert.match(serviceUnit, /\nType=oneshot\n/);
+	assert.match(serviceUnit, /\nSlice=qorpera-control\.slice\n/);
+	assert.match(serviceUnit, /\nExecStart=\/opt\/qorpera-machine\/desktop-dock-open\n/);
+	assert.match(read("deploy/machine/qorpera-machine-desktop.tmpfiles"), /\nd \/run\/qorpera-desktop-dock 0730 root desktop -\n$/);
+
+	// The first look at a started desktop shows it whole: `desktop start` waits for XFCE's desktop to have drawn the
+	// backdrop, which it draws last. And the memory proof's probe clicks an empty spot of the dock, not the top of the
+	// screen, where the browser's tabs now are.
+	const command = read("deploy/machine/desktop");
+	assert.match(
+		command,
+		/\n\t\t\t\[\[ \$\(xprop -root _XROOTPMAP_ID 2>\/dev\/null\) == \*"pixmap id # 0x"\* \]\] &&\n\t\t\t\tscrot --overwrite --silent -- "\$drawn" 2>\/dev\/null &&\n/,
+	);
+	assert.match(read("scripts/prove-machine-memory.sh"), / -- desktop click 400 960 <\/dev\/null >\/dev\/null 2>&1 \|\| status=\$\?\n/);
+	for (const file of ["deploy/machine/desktop-look", "deploy/machine/desktop-dock-open", "deploy/machine/backdrops-source/render.sh"])
 		assert.equal(spawnSync("bash", ["-n", join(repositoryRoot, file)], { encoding: "utf8" }).status, 0, file);
 });

@@ -163,9 +163,10 @@ guest() { # seconds, then the leg's words
 	[[ $status == 0 ]] || echo "CHECK FAIL the leg [$*] ran to its end (rc $status)"
 }
 seconds() { awk -v a="$1" -v b="$EPOCHREALTIME" 'BEGIN{printf "%.2f", b-a}'; }
-# Asked from this host, through LXD's agent as the executor asks: one `desktop click` a second on a spot of the panel
-# where a click does nothing, each timed; every tenth round also a look of the guest helper. A look's exit code is its
-# answer (`guest.sh look`): 0 only when the helper itself ended well and answered an observation.
+# Asked from this host, through LXD's agent as the executor asks: one `desktop click` a second on a spot of the dock
+# where a click does nothing (its empty left half: since the desktop's look there is no top bar, and the top of the
+# screen is the browser's tabs), each timed; every tenth round also a look of the guest helper. A look's exit code is
+# its answer (`guest.sh look`): 0 only when the helper itself ended well and answered an observation.
 # The probe ends only when it is told to (the stop file) and says so in its last line (`P-END`): a probe that ended
 # any other way, at any moment, saw only a part of the leg, and `probed` fails the proof on it.
 PROBE_PAUSE=${MEMORY_PROOF_PROBE_PAUSE:-1} # a second between two clicks; the script's own test asks faster
@@ -174,7 +175,7 @@ probe() {
 	while [[ -d $work && ! -e $work/stop ]]; do
 		started=$EPOCHREALTIME
 		status=0
-		timeout 30 lxc --project "$PROJECT" exec "$MACHINE" -- desktop click 800 12 </dev/null >/dev/null 2>&1 || status=$?
+		timeout 30 lxc --project "$PROJECT" exec "$MACHINE" -- desktop click 400 960 </dev/null >/dev/null 2>&1 || status=$?
 		echo "P $(date -u +%T) click_s=$(seconds "$started") rc=$status $(timeout 20 lxc --project "$PROJECT" exec "$MACHINE" -- \
 			awk '/^(MemAvailable|AnonPages|SwapFree):/ {printf "%s%d ", $1, $2 / 1024}' /proc/meminfo </dev/null 2>/dev/null || true)"
 		round=$(( round + 1 ))
