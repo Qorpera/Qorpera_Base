@@ -24,7 +24,6 @@ import {
 	codeImportBelow,
 	lookCodeImport,
 	readIncomingCodeBundle,
-	removeIncomingCodeFile,
 } from "../src/code-host-import.ts";
 import {
 	type CodeHostCommand,
@@ -44,12 +43,14 @@ import {
 import {
 	CODE_IMPORT_KEY_KINDS,
 	CODE_IMPORT_SCAN,
+	CODE_IMPORT_STEPS,
 	type CodeImportLook,
 	type CodeImportLooked,
 	type CodeImportRaw,
 	CodeImportStop,
 	codeImportBundleName,
 	codeImportLookOf,
+	codeImportProgressOf,
 	codeImportStopOf,
 	codeImportTime,
 } from "../src/code-import.ts";
@@ -491,12 +492,8 @@ describe("code host: an import's look (own code storage, step 6, part B)", { tim
 		await expect(looking(f, { bytes: two.bytes, raw: elsewhere })).rejects.toMatchObject({
 			code: "CODE_HOST_IMPORT_BUNDLE_DIFFERS",
 		});
-		// C3 takes the three jobs as one value.
-		expect(CODE_HOST_IMPORT_JOBS).toEqual({
-			read: readIncomingCodeBundle,
-			look: lookCodeImport,
-			remove: removeIncomingCodeFile,
-		});
+		// C3 takes the two jobs as one value: there is no job that removes a file source.
+		expect(CODE_HOST_IMPORT_JOBS).toEqual({ read: readIncomingCodeBundle, look: lookCodeImport });
 	});
 
 	it("applies the refs plan: main and the mark at the default branch, the newest 500 tags and 200 branches of 90 days", async () => {
@@ -865,6 +862,11 @@ describe("code host: an import's look (own code storage, step 6, part B)", { tim
 		const letters = (count: number) =>
 			randomBytes(count).toString("hex").toUpperCase().replace(/[0-9]/g, "Q").slice(0, count);
 		const lower = (count: number) => randomBytes(count).toString("hex").replace(/[0-9]/g, "k").slice(0, count);
+		// The key-like folder's name is a path, and paths do come out (main's tree is how the look checks names). Its
+		// letters are none a planted value has (theirs are A to F and Q), so no 12 bytes of a value can stand in it by
+		// chance: with the same letters, about 1 run in 600 drew a name that began as the AWS value does (`AKIA` and eight
+		// Q, run 20261112T214649-84564-068d609b), and the check below took main's tree, which names it, for a leak.
+		const unlike = (count: number) => [...randomBytes(count)].map((byte) => "GHJKLMNPRSTUVWXY"[byte % 16]).join("");
 		const planted = {
 			aws: `AKIA${letters(16)}`,
 			github: `ghp_${lower(36)}`,
@@ -877,7 +879,7 @@ describe("code host: an import's look (own code storage, step 6, part B)", { tim
 			anthropic: `sk-ant-api03-${lower(32)}`,
 			history: `ASIA${letters(16)}`,
 			newline: `rk_live_${lower(24)}`,
-			pathKey: `AKIA${letters(16)}`,
+			pathKey: `AKIA${unlike(16)}`,
 		};
 		const filler = (index: number) => `line ${index} of plain text\n`;
 		const first = h.commit("refs/heads/master", {
@@ -949,6 +951,10 @@ describe("code host: an import's look (own code storage, step 6, part B)", { tim
 		// No command of the look handed out a value of a file, nor any part of one of 12 bytes (the key-like folder's
 		// name is a path, and paths do come out).
 		const contents = values.filter((value) => value !== planted.pathKey);
+		// The fixture keeps it so: no 12 bytes of a value stand in the one path drawn at random, which does come out.
+		for (const value of contents)
+			for (let at = 0; at + 12 <= value.length; at += 1)
+				expect(`${planted.pathKey}/notes.txt`).not.toContain(value.slice(at, at + 12));
 		for (const { result: answered } of f.seen) {
 			const text = answered.stdout.toString("latin1");
 			for (const value of contents)
@@ -1091,227 +1097,191 @@ describe("code host: an import's look (own code storage, step 6, part B)", { tim
 	});
 });
 
-describe(
-	"code host: an import's file source, read and removed (own code storage, step 6, part B)",
-	{ timeout: 120_000 },
-	() => {
-		/** A bundle put where an agent puts one. */
-		async function placed(f: Fixture, bytes: Uint8Array, path = "code/_incoming/shop/shop.bundle") {
-			await mkdir(dirname(join(f.companyRoot, path)), { recursive: true });
-			await writeFile(join(f.companyRoot, path), bytes);
-			return path;
+describe("code host: an import's file source, read (own code storage, step 6, part B)", { timeout: 120_000 }, () => {
+	/** A bundle put where an agent puts one. */
+	async function placed(f: Fixture, bytes: Uint8Array, path = "code/_incoming/shop/shop.bundle") {
+		await mkdir(dirname(join(f.companyRoot, path)), { recursive: true });
+		await writeFile(join(f.companyRoot, path), bytes);
+		return path;
+	}
+	const read = (
+		f: Fixture,
+		path: string,
+		sha256: string,
+		more: Partial<{ branch: string | null; maximumBytes: number }> = {},
+	) => {
+		const out: Buffer[] = [];
+		return readIncomingCodeBundle(
+			f.job,
+			{
+				repository: kept,
+				path,
+				sha256,
+				branch: more.branch ?? null,
+				maximumBytes: more.maximumBytes ?? 1024 ** 3,
+			},
+			{
+				write: async (chunk, signal) => {
+					expect(signal).toBe(f.job.signal);
+					out.push(Buffer.from(chunk));
+				},
+			},
+		).then((answer) => ({ answer, out }));
+	};
+	const refused = async (promise: Promise<unknown>, code: string) => {
+		const error = await promise.catch((caught: unknown) => caught);
+		expect(codeImportStopOf(error)).toMatchObject({ end: "refused", code });
+		expect((error as Error).message).toBe(code);
+	};
+
+	it("reads a file source out whole, in 16 MiB pieces, with its default branch and refs", async () => {
+		const f = await fixture(),
+			{ h } = shop();
+		h.commit("refs/heads/master", { time: NOW_S - 1, files: { "data.bin": randomBytes(20 * 1024 ** 2) } });
+		const source = await made(f, h),
+			b = await bundled(f, source);
+		const path = await placed(f, b.bytes);
+		const before = await f.listing(f.companyRoot);
+		const { answer, out } = await read(f, path, digest(b.bytes));
+		expect(out.map((piece) => piece.length)).toEqual([16 * 1024 ** 2, b.bytes.length - 16 * 1024 ** 2]);
+		expect(Buffer.concat(out).equals(b.bytes)).toBe(true);
+		const heads = (await source.text(["for-each-ref", "--format=%(objectname) %(refname)"]))
+			.split("\n")
+			.map((line) => ({ name: line.slice(41), sha: line.slice(0, 40) }));
+		expect(answer).toEqual({
+			sha256: digest(b.bytes),
+			bytes: b.bytes.length,
+			defaultBranch: "master",
+			mainSha: await source.text(["rev-parse", "master"]),
+			refs: heads,
+			leftOut: 0,
+		});
+		expect(await f.listing(f.companyRoot)).toEqual(before);
+		expect(await readdir(f.scratchRoot)).toEqual([]);
+		// Not a job's values: refused before any command.
+		const commands = f.log.length;
+		const value = { repository: kept, path, sha256: digest(b.bytes), branch: null, maximumBytes: 1024 };
+		const sink = { write: async () => {} };
+		for (const bad of [
+			() => readIncomingCodeBundle(f.job, { ...value, repository: { ...kept, host: "github.com" } }, sink),
+			() => readIncomingCodeBundle(f.job, { ...value, path: "code/_incoming/../x.bundle" }, sink),
+			() => readIncomingCodeBundle(f.job, { ...value, path: "code/acme/shop/x.bundle" }, sink),
+			() => readIncomingCodeBundle(f.job, { ...value, sha256: "x" }, sink),
+			() => readIncomingCodeBundle(f.job, { ...value, branch: 1 as never }, sink),
+			() => readIncomingCodeBundle(f.job, { ...value, maximumBytes: 0 }, sink),
+			() => readIncomingCodeBundle(f.job, { ...value, maximumBytes: 2 * 1024 ** 3 + 1 }, sink),
+			() => readIncomingCodeBundle(f.job, { ...value, more: 1 } as never, sink),
+			() => readIncomingCodeBundle(f.job, value, {} as never),
+		])
+			await expect(bad()).rejects.toThrow("INVALID_CODE_HOST_JOB");
+		expect(f.log).toHaveLength(commands);
+	});
+
+	it("chooses the default branch: the one asked for, the only head, main, master, the one head at HEAD", async () => {
+		const f = await fixture();
+		const choose = async (heads: string[], head: string, branch: string | null = null, at = heads) => {
+			const h = new History();
+			const root = h.commit(`refs/heads/${heads[0]}`, { time: NOW_S - DAY, files: { "a.txt": "a\n" } });
+			const other = h.commit("refs/heads/_other", {
+				time: NOW_S - DAY + 1,
+				from: root,
+				files: { "b.txt": "b\n" },
+			});
+			for (const name of heads.slice(1)) h.reset(`refs/heads/${name}`, at.includes(name) ? other : root);
+			const source = await made(f, h, `refs/heads/${head}`);
+			await source.git(["update-ref", "-d", "refs/heads/_other"]);
+			const b = await bundled(f, source, heads[0]);
+			const path = await placed(f, b.bytes, `code/_incoming/${randomUUID()}/x.bundle`);
+			return read(f, path, digest(b.bytes), { branch });
+		};
+		expect((await choose(["trunk"], "trunk")).answer.defaultBranch).toBe("trunk");
+		expect((await choose(["dev", "main"], "dev")).answer.defaultBranch).toBe("main");
+		expect((await choose(["dev", "master"], "dev")).answer.defaultBranch).toBe("master");
+		expect((await choose(["dev", "main", "master"], "dev")).answer.defaultBranch).toBe("main");
+		expect((await choose(["dev", "main"], "dev", "dev")).answer.defaultBranch).toBe("dev");
+		// HEAD's commit is one head's alone (`b` is at another commit than `a`).
+		expect((await choose(["a", "b"], "b", null, ["b"])).answer.defaultBranch).toBe("b");
+		await refused(choose(["a", "b", "c"], "b", null, ["b", "c"]), "IMPORT_BRANCH_UNKNOWN");
+		await refused(choose(["dev", "main"], "dev", "gone"), "IMPORT_BRANCH_UNKNOWN");
+		await refused(
+			choose(["ghp_0123456789abcdefghijABCDEFGHIJ012345"], "ghp_0123456789abcdefghijABCDEFGHIJ012345"),
+			"IMPORT_BRANCH_NAME",
+		);
+	});
+
+	it("refuses a file that is not the one asked for, not whole, not a bundle or too large", async () => {
+		const f = await fixture(),
+			{ h, marks } = shop(),
+			source = await made(f, h),
+			b = await bundled(f, source);
+		const path = await placed(f, b.bytes);
+		// Another file than the request's, or none.
+		await refused(read(f, path, digest("another")), "IMPORT_FILE_CHANGED");
+		await refused(read(f, "code/_incoming/shop/gone.bundle", digest(b.bytes)), "IMPORT_FILE_CHANGED");
+		// A link in the file's place, or on the way to it.
+		await symlink(join(f.companyRoot, path), join(f.companyRoot, "code/_incoming/shop/link.bundle"));
+		await refused(read(f, "code/_incoming/shop/link.bundle", digest(b.bytes)), "IMPORT_FILE_CHANGED");
+		await symlink(join(f.companyRoot, "code/_incoming/shop"), join(f.companyRoot, "code/_incoming/linked"));
+		await refused(read(f, "code/_incoming/linked/shop.bundle", digest(b.bytes)), "IMPORT_FILE_CHANGED");
+		// Over the request's bound.
+		await refused(read(f, path, digest(b.bytes), { maximumBytes: b.bytes.length - 1 }), "IMPORT_TOO_LARGE");
+		expect((await read(f, path, digest(b.bytes), { maximumBytes: b.bytes.length })).answer.bytes).toBe(
+			b.bytes.length,
+		);
+		// One that needs commits it does not hold.
+		const thin = join(f.root, "thin.bundle");
+		await source.git(["bundle", "create", "--quiet", thin, "master", `^${source.sha(marks.c6)}`]);
+		const thinBytes = await readFile(thin);
+		await refused(
+			read(f, await placed(f, thinBytes, "code/_incoming/thin/a.bundle"), digest(thinBytes)),
+			"IMPORT_FILE_NOT_WHOLE",
+		);
+		// No bundle at all.
+		const zip = Buffer.from("PK\u0003\u0004 not a bundle\n\n");
+		await refused(read(f, await placed(f, zip, "code/_incoming/zip/a.bundle"), digest(zip)), "IMPORT_FILE_NOT_WHOLE");
+		// A bundle that leaves objects out by a filter (v3's `@filter`; git 2.53's `bundle create` makes none, so by hand).
+		const filteredBytes = Buffer.concat([
+			Buffer.from(
+				`# v3 git bundle\n@object-format=sha1\n@filter=blob:none\n${source.sha(marks.c7)} refs/heads/master\n\n`,
+			),
+			b.bytes.subarray(b.bytes.indexOf("\n\n") + 2),
+		]);
+		await refused(
+			read(f, await placed(f, filteredBytes, "code/_incoming/filter/a.bundle"), digest(filteredBytes)),
+			"IMPORT_FILE_NOT_WHOLE",
+		);
+		// A ref name git does not take, one named twice, one outside refs/.
+		const main = source.sha(marks.c7);
+		for (const [folder, lines] of [
+			["name", `${main} refs/heads/a..b\n`],
+			["twice", `${main} refs/heads/master\n${main} refs/heads/master\n`],
+			["outside", `${main} refs/heads/master\n${main} heads/x\n`],
+		]) {
+			const header = Buffer.from(`# v2 git bundle\n${lines}\n`);
+			await refused(
+				read(f, await placed(f, header, `code/_incoming/${folder}/a.bundle`), digest(header)),
+				"IMPORT_FILE_NOT_WHOLE",
+			);
 		}
-		const read = (
-			f: Fixture,
-			path: string,
-			sha256: string,
-			more: Partial<{ branch: string | null; maximumBytes: number }> = {},
-		) => {
-			const out: Buffer[] = [];
-			return readIncomingCodeBundle(
-				f.job,
-				{
-					repository: kept,
-					path,
-					sha256,
-					branch: more.branch ?? null,
-					maximumBytes: more.maximumBytes ?? 1024 ** 3,
-				},
-				{
-					write: async (chunk, signal) => {
-						expect(signal).toBe(f.job.signal);
-						out.push(Buffer.from(chunk));
-					},
-				},
-			).then((answer) => ({ answer, out }));
-		};
-		const refused = async (promise: Promise<unknown>, code: string) => {
-			const error = await promise.catch((caught: unknown) => caught);
-			expect(codeImportStopOf(error)).toMatchObject({ end: "refused", code });
-			expect((error as Error).message).toBe(code);
-		};
-
-		it("reads a file source out whole, in 16 MiB pieces, with its default branch and refs", async () => {
-			const f = await fixture(),
-				{ h } = shop();
-			h.commit("refs/heads/master", { time: NOW_S - 1, files: { "data.bin": randomBytes(20 * 1024 ** 2) } });
-			const source = await made(f, h),
-				b = await bundled(f, source);
-			const path = await placed(f, b.bytes);
-			const before = await f.listing(f.companyRoot);
-			const { answer, out } = await read(f, path, digest(b.bytes));
-			expect(out.map((piece) => piece.length)).toEqual([16 * 1024 ** 2, b.bytes.length - 16 * 1024 ** 2]);
-			expect(Buffer.concat(out).equals(b.bytes)).toBe(true);
-			const heads = (await source.text(["for-each-ref", "--format=%(objectname) %(refname)"]))
-				.split("\n")
-				.map((line) => ({ name: line.slice(41), sha: line.slice(0, 40) }));
-			expect(answer).toEqual({
-				sha256: digest(b.bytes),
-				bytes: b.bytes.length,
-				defaultBranch: "master",
-				mainSha: await source.text(["rev-parse", "master"]),
-				refs: heads,
-				leftOut: 0,
-			});
-			expect(await f.listing(f.companyRoot)).toEqual(before);
-			expect(await readdir(f.scratchRoot)).toEqual([]);
-			// Not a job's values: refused before any command.
-			const commands = f.log.length;
-			const value = { repository: kept, path, sha256: digest(b.bytes), branch: null, maximumBytes: 1024 };
-			const sink = { write: async () => {} };
-			for (const bad of [
-				() => readIncomingCodeBundle(f.job, { ...value, repository: { ...kept, host: "github.com" } }, sink),
-				() => readIncomingCodeBundle(f.job, { ...value, path: "code/_incoming/../x.bundle" }, sink),
-				() => readIncomingCodeBundle(f.job, { ...value, path: "code/acme/shop/x.bundle" }, sink),
-				() => readIncomingCodeBundle(f.job, { ...value, sha256: "x" }, sink),
-				() => readIncomingCodeBundle(f.job, { ...value, branch: 1 as never }, sink),
-				() => readIncomingCodeBundle(f.job, { ...value, maximumBytes: 0 }, sink),
-				() => readIncomingCodeBundle(f.job, { ...value, maximumBytes: 2 * 1024 ** 3 + 1 }, sink),
-				() => readIncomingCodeBundle(f.job, { ...value, more: 1 } as never, sink),
-				() => readIncomingCodeBundle(f.job, value, {} as never),
-			])
-				await expect(bad()).rejects.toThrow("INVALID_CODE_HOST_JOB");
-			expect(f.log).toHaveLength(commands);
-		});
-
-		it("chooses the default branch: the one asked for, the only head, main, master, the one head at HEAD", async () => {
-			const f = await fixture();
-			const choose = async (heads: string[], head: string, branch: string | null = null, at = heads) => {
-				const h = new History();
-				const root = h.commit(`refs/heads/${heads[0]}`, { time: NOW_S - DAY, files: { "a.txt": "a\n" } });
-				const other = h.commit("refs/heads/_other", {
-					time: NOW_S - DAY + 1,
-					from: root,
-					files: { "b.txt": "b\n" },
-				});
-				for (const name of heads.slice(1)) h.reset(`refs/heads/${name}`, at.includes(name) ? other : root);
-				const source = await made(f, h, `refs/heads/${head}`);
-				await source.git(["update-ref", "-d", "refs/heads/_other"]);
-				const b = await bundled(f, source, heads[0]);
-				const path = await placed(f, b.bytes, `code/_incoming/${randomUUID()}/x.bundle`);
-				return read(f, path, digest(b.bytes), { branch });
-			};
-			expect((await choose(["trunk"], "trunk")).answer.defaultBranch).toBe("trunk");
-			expect((await choose(["dev", "main"], "dev")).answer.defaultBranch).toBe("main");
-			expect((await choose(["dev", "master"], "dev")).answer.defaultBranch).toBe("master");
-			expect((await choose(["dev", "main", "master"], "dev")).answer.defaultBranch).toBe("main");
-			expect((await choose(["dev", "main"], "dev", "dev")).answer.defaultBranch).toBe("dev");
-			// HEAD's commit is one head's alone (`b` is at another commit than `a`).
-			expect((await choose(["a", "b"], "b", null, ["b"])).answer.defaultBranch).toBe("b");
-			await refused(choose(["a", "b", "c"], "b", null, ["b", "c"]), "IMPORT_BRANCH_UNKNOWN");
-			await refused(choose(["dev", "main"], "dev", "gone"), "IMPORT_BRANCH_UNKNOWN");
-			await refused(
-				choose(["ghp_0123456789abcdefghijABCDEFGHIJ012345"], "ghp_0123456789abcdefghijABCDEFGHIJ012345"),
-				"IMPORT_BRANCH_NAME",
-			);
-		});
-
-		it("refuses a file that is not the one asked for, not whole, not a bundle or too large", async () => {
-			const f = await fixture(),
-				{ h, marks } = shop(),
-				source = await made(f, h),
-				b = await bundled(f, source);
-			const path = await placed(f, b.bytes);
-			// Another file than the request's, or none.
-			await refused(read(f, path, digest("another")), "IMPORT_FILE_CHANGED");
-			await refused(read(f, "code/_incoming/shop/gone.bundle", digest(b.bytes)), "IMPORT_FILE_CHANGED");
-			// A link in the file's place, or on the way to it.
-			await symlink(join(f.companyRoot, path), join(f.companyRoot, "code/_incoming/shop/link.bundle"));
-			await refused(read(f, "code/_incoming/shop/link.bundle", digest(b.bytes)), "IMPORT_FILE_CHANGED");
-			await symlink(join(f.companyRoot, "code/_incoming/shop"), join(f.companyRoot, "code/_incoming/linked"));
-			await refused(read(f, "code/_incoming/linked/shop.bundle", digest(b.bytes)), "IMPORT_FILE_CHANGED");
-			// Over the request's bound.
-			await refused(read(f, path, digest(b.bytes), { maximumBytes: b.bytes.length - 1 }), "IMPORT_TOO_LARGE");
-			expect((await read(f, path, digest(b.bytes), { maximumBytes: b.bytes.length })).answer.bytes).toBe(
-				b.bytes.length,
-			);
-			// One that needs commits it does not hold.
-			const thin = join(f.root, "thin.bundle");
-			await source.git(["bundle", "create", "--quiet", thin, "master", `^${source.sha(marks.c6)}`]);
-			const thinBytes = await readFile(thin);
-			await refused(
-				read(f, await placed(f, thinBytes, "code/_incoming/thin/a.bundle"), digest(thinBytes)),
-				"IMPORT_FILE_NOT_WHOLE",
-			);
-			// No bundle at all.
-			const zip = Buffer.from("PK\u0003\u0004 not a bundle\n\n");
-			await refused(
-				read(f, await placed(f, zip, "code/_incoming/zip/a.bundle"), digest(zip)),
-				"IMPORT_FILE_NOT_WHOLE",
-			);
-			// A bundle that leaves objects out by a filter (v3's `@filter`; git 2.53's `bundle create` makes none, so by hand).
-			const filteredBytes = Buffer.concat([
-				Buffer.from(
-					`# v3 git bundle\n@object-format=sha1\n@filter=blob:none\n${source.sha(marks.c7)} refs/heads/master\n\n`,
-				),
-				b.bytes.subarray(b.bytes.indexOf("\n\n") + 2),
-			]);
-			await refused(
-				read(f, await placed(f, filteredBytes, "code/_incoming/filter/a.bundle"), digest(filteredBytes)),
-				"IMPORT_FILE_NOT_WHOLE",
-			);
-			// A ref name git does not take, one named twice, one outside refs/.
-			const main = source.sha(marks.c7);
-			for (const [folder, lines] of [
-				["name", `${main} refs/heads/a..b\n`],
-				["twice", `${main} refs/heads/master\n${main} refs/heads/master\n`],
-				["outside", `${main} refs/heads/master\n${main} heads/x\n`],
-			]) {
-				const header = Buffer.from(`# v2 git bundle\n${lines}\n`);
-				await refused(
-					read(f, await placed(f, header, `code/_incoming/${folder}/a.bundle`), digest(header)),
-					"IMPORT_FILE_NOT_WHOLE",
-				);
-			}
-			// More than a folder file can be, whatever the request's bound: refused before it is copied.
-			const huge = await placed(f, Buffer.alloc(0), "code/_incoming/huge/a.bundle");
-			await truncate(join(f.companyRoot, huge), 256 * 1024 ** 2 + 1);
-			await refused(read(f, huge, digest("")), "IMPORT_TOO_LARGE");
-			// A repository of SHA-256 object names.
-			const wide = join(f.root, "wide");
-			await f.git(["init", "--quiet", "--object-format=sha256", "--initial-branch=main", wide]);
-			await writeFile(join(wide, "a.txt"), "a\n");
-			await f.git(["-C", wide, "add", "a.txt"]);
-			await f.git(["-C", wide, "commit", "--quiet", "-m", "a"]);
-			await f.git(["-C", wide, "bundle", "create", "--quiet", join(f.root, "wide.bundle"), "--all"]);
-			const wideBytes = await readFile(join(f.root, "wide.bundle"));
-			await refused(
-				read(f, await placed(f, wideBytes, "code/_incoming/wide/a.bundle"), digest(wideBytes)),
-				"IMPORT_SHA256_REPOSITORY",
-			);
-			expect(await readdir(f.scratchRoot)).toEqual([]);
-		});
-
-		it("removes the file source, and its folder when nothing else is in it", async () => {
-			const f = await fixture();
-			const remove = (path: string) => removeIncomingCodeFile(f.job, { repository: kept, path });
-			const alone = await placed(f, Buffer.from("bundle"), "code/_incoming/alone/a.bundle");
-			expect(await remove(alone)).toEqual({ removed: true });
-			expect(await exists(join(f.companyRoot, "code/_incoming/alone"))).toBe(false);
-			expect(await exists(join(f.companyRoot, "code/_incoming"))).toBe(true);
-			// Run again after a stop: the file is gone.
-			expect(await remove(alone)).toEqual({ removed: false });
-			const shared = await placed(f, Buffer.from("bundle"), "code/_incoming/shared/a.bundle");
-			await writeFile(join(f.companyRoot, "code/_incoming/shared/notes.txt"), "the agent's\n");
-			expect(await remove(shared)).toEqual({ removed: true });
-			expect(await readdir(join(f.companyRoot, "code/_incoming/shared"))).toEqual(["notes.txt"]);
-			expect(await remove(shared)).toEqual({ removed: false });
-			expect(await readdir(join(f.companyRoot, "code/_incoming/shared"))).toEqual(["notes.txt"]);
-			await mkdir(join(f.companyRoot, "code/_incoming/dir/a.bundle"), { recursive: true });
-			await expect(remove("code/_incoming/dir/a.bundle")).rejects.toMatchObject({
-				code: "CODE_HOST_UNEXPECTED_FILE",
-				message: "CODE_HOST_UNEXPECTED_FILE",
-			});
-			await mkdir(join(f.root, "elsewhere"));
-			await writeFile(join(f.root, "elsewhere/a.bundle"), "theirs");
-			await symlink(join(f.root, "elsewhere"), join(f.companyRoot, "code/_incoming/link"));
-			await expect(remove("code/_incoming/link/a.bundle")).rejects.toMatchObject({ code: "CODE_HOST_LINK" });
-			expect(await readFile(join(f.root, "elsewhere/a.bundle"), "utf8")).toBe("theirs");
-			expect(await remove("code/_incoming/never/a.bundle")).toEqual({ removed: false });
-			await expect(remove("code/acme/shop/a.bundle")).rejects.toThrow("INVALID_CODE_HOST_JOB");
-		});
-	},
-);
+		// More than a folder file can be, whatever the request's bound: refused before it is copied.
+		const huge = await placed(f, Buffer.alloc(0), "code/_incoming/huge/a.bundle");
+		await truncate(join(f.companyRoot, huge), 256 * 1024 ** 2 + 1);
+		await refused(read(f, huge, digest("")), "IMPORT_TOO_LARGE");
+		// A repository of SHA-256 object names.
+		const wide = join(f.root, "wide");
+		await f.git(["init", "--quiet", "--object-format=sha256", "--initial-branch=main", wide]);
+		await writeFile(join(wide, "a.txt"), "a\n");
+		await f.git(["-C", wide, "add", "a.txt"]);
+		await f.git(["-C", wide, "commit", "--quiet", "-m", "a"]);
+		await f.git(["-C", wide, "bundle", "create", "--quiet", join(f.root, "wide.bundle"), "--all"]);
+		const wideBytes = await readFile(join(f.root, "wide.bundle"));
+		await refused(
+			read(f, await placed(f, wideBytes, "code/_incoming/wide/a.bundle"), digest(wideBytes)),
+			"IMPORT_SHA256_REPOSITORY",
+		);
+		expect(await readdir(f.scratchRoot)).toEqual([]);
+	});
+});
 
 describe("code host: the import's shell, as the image runs it", () => {
 	it("matches decimal numbers below a bound, and only those", () => {
@@ -1350,6 +1320,11 @@ describe("code host: the import's shell, as the image runs it", () => {
 	it("the code host image's proof runs C1's scan as it is", async () => {
 		const proof = await readFile(join(HERE, "../../../deploy/code-host/test/prove-in-code-host.sh"), "utf8");
 		expect(proof).toContain(`<<'SCAN'\n${CODE_IMPORT_SCAN}\nSCAN\n`);
+	});
+
+	it("the import's steps end at the open: no step of the import removes a file source", () => {
+		expect(CODE_IMPORT_STEPS).toEqual(["fetch", "read", "look", "close", "set-aside", "build", "open"]);
+		expect(() => codeImportProgressOf({ step: "tidy" })).toThrow("INVALID_CODE_IMPORT_PROGRESS");
 	});
 
 	it("a stop is the code alone", () => {

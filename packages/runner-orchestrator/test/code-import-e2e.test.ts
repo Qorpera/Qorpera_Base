@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, request, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -25,7 +25,7 @@ import { localShell } from "./helpers/code-host-shell.ts";
 
 // Step 6 from end to end, in the merged tree (the cross-check's second pass): an import claimed by part Q's request
 // loop and run by part C3's CodeImport, with the real parts in between (C2's fetch over protocol v2 and its bundle
-// store; B's read, look and tidy jobs and restore's own close, set-aside, build and open, with real git on a local disk
+// store; B's read and look jobs and restore's own close, set-aside, build and open, with real git on a local disk
 // as the code host). Only the outside world is stood in: GitHub is real `git upload-pack --stateless-rpc` behind a
 // loopback HTTP server, the broker's relay is that server behind the kernel's fetch authority, and the kernel is a small
 // in-memory one that keeps A2's rules (20260930736000) and refuses, as SQL would, any call not of A2's shapes.
@@ -747,7 +747,7 @@ describe("an import from end to end, with every part as merged", { timeout: 240_
 		quiet(w.events);
 	});
 
-	it("brings in a file source an agent made into a bundle, and tidies the file away", async () => {
+	it("brings in a file source an agent made into a bundle, and leaves the file where it is for the agent to remove", async () => {
 		const w = await world();
 		const path = "code/_incoming/drop/notes.bundle";
 		await mkdir(dirname(join(w.companyRoot, path)), { recursive: true });
@@ -777,11 +777,46 @@ describe("an import from end to end, with every part as merged", { timeout: 240_
 			[`refs/heads/main ${source.notesMain}`, `refs/qorpera/kept-here ${source.notesMain}`].sort(),
 		);
 		expect(await readFile(join(w.place("acme", "notes"), "main", "notes.md"), "utf8")).toBe("notes\n");
-		// The file and its folder, emptied, are gone.
-		expect(await exists(join(w.companyRoot, path))).toBe(false);
-		expect(await exists(join(w.companyRoot, "code/_incoming/drop"))).toBe(false);
+		// The bundle stays where the agent put it, byte for byte: the agent removes it only if it is still that bundle (its
+		// answer says so).
+		expect(
+			createHash("sha256")
+				.update(await readFile(join(w.companyRoot, path)))
+				.digest("hex"),
+		).toBe(sha256);
 		// Nothing went to GitHub.
 		expect(w.gh.seen).toEqual([]);
+		quiet(w.events);
+	});
+
+	it("keeps a file source an agent replaced while the import waited for quiet: the bundle read comes in, the new one stays", async () => {
+		const w = await world();
+		const path = "code/_incoming/swap/notes.bundle";
+		await mkdir(dirname(join(w.companyRoot, path)), { recursive: true });
+		await git(source.notes, "bundle", "create", join(w.companyRoot, path), "--all");
+		const sha256 = createHash("sha256")
+			.update(await readFile(join(w.companyRoot, path)))
+			.digest("hex");
+		const row = w.k.ask("acme", "swap", { file: path }, { fileSha256: sha256 });
+		w.k.quiet = false;
+		await w.pass();
+		expect(row).toMatchObject({ state: "queued", progress: { step: "read", waiting: "SESSIONS_BUSY" } });
+		// While the import waits, the agent puts another bundle at the same path.
+		const other = await scratch("code-import-e2e-swap-");
+		await git(other, "init", "--quiet", "--initial-branch=main");
+		await writeFile(join(other, "other.md"), "another project\n");
+		await git(other, "add", ".");
+		await git(other, "commit", "--quiet", "-m", "other");
+		await git(other, "bundle", "create", join(w.companyRoot, path), "--all");
+		const replaced = await readFile(join(w.companyRoot, path));
+		w.k.quiet = true;
+		await w.pass();
+		expect(w.k.raised).toEqual([]);
+		// The bundle read is the one brought in, and the new one is not removed: it and its folder stay as they are.
+		expect(row.outcome).toMatchObject({ state: "done", result: "imported", mainSha: source.notesMain });
+		expect(await readFile(join(w.place("acme", "swap"), "main", "notes.md"), "utf8")).toBe("notes\n");
+		expect((await readFile(join(w.companyRoot, path))).equals(replaced)).toBe(true);
+		expect(await readdir(dirname(join(w.companyRoot, path)))).toEqual(["notes.bundle"]);
 		quiet(w.events);
 	});
 

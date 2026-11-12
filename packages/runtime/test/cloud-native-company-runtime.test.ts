@@ -3241,8 +3241,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// 4096 bytes (its schema's enum lists them, with what an emblem is), and its schema says on files how to draw an app's
 	// own icons (icons/<id>.svg, which members pick for their drawer), so they moved again. Both on one tree, they were
 	// measured once more.
-	// The import's release (v238) put these with #1530 (v237: one tool result up to 32 KiB, which moved them on master) on one
-	// tree: measured once more.
+	// Master's v237 (#1530: one tool result holds up to 32 KiB) moved them too; with the import on one tree (the merge of
+	// master into runtime/own-code-small-fixes, 12 November 2026) they were measured once more.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",

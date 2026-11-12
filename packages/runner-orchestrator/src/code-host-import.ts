@@ -46,7 +46,6 @@ import {
 	type CodeImportRaw,
 	type CodeImportReadValue,
 	type CodeImportRefSeen,
-	type CodeImportRemoveValue,
 	type CodeImportSink,
 	codeImportAuthors,
 	codeImportBundleHeaderOf,
@@ -72,7 +71,12 @@ import {
  *   look    the first bundle proven (the import's one fsck), what it holds looked at (the facts and the key scan), and
  *           then, unless the look was all that was asked or it found what stops the import, the refs plan applied and
  *           the restore-shaped bundle made, proven as care proves one, and read out.
- *   remove  the file source taken away once the import is in (the run's `tidy`).
+ *
+ * Nothing here removes the file source: once the import is in, the agent that made the bundle removes it through its own
+ * view, which has the folder's checks for a writer, and only if it is still that bundle. A code host job's view has no
+ * removal that holds only while the file is still the one read (a removal takes the version its name shows, and the
+ * view shows what another view publishes), and a bundle left behind is a smaller harm than a file the import never
+ * read removed or written over.
  *
  * What the code brought in holds never leaves the code host but as counts, sizes, ref names, paths and the scan's
  * offsets: no file's content, no key the scan matched, and no list of every object (those stay in files in the
@@ -264,37 +268,6 @@ export async function readIncomingCodeBundle(
 		const mainSha = refs.find((ref) => ref.name === `refs/heads/${defaultBranch}`)?.sha as string;
 		await readOut(run, copy, measured, CODE_IMPORT_READ_PIECE_BYTES, (piece) => sink.write(piece, job.signal));
 		return { sha256: measured.sha256, bytes: measured.bytes, defaultBranch, mainSha, refs, leftOut: 0 };
-	});
-}
-
-/** Part C1's `CodeImportRemoveJob`, the run's `tidy`: the file source is removed once the import is in, and its folder
- * with it when that leaves the folder empty. Nothing else is: a folder that holds more than the bundle keeps the rest.
- * Answers whether the file was there. A link on the way, or something that is no file in the file's place, is refused
- * (`CODE_HOST_LINK`, `CODE_HOST_UNEXPECTED_FILE`), naming no path. */
-export async function removeIncomingCodeFile(
-	job: CodeHostJob,
-	value: CodeImportRemoveValue,
-): Promise<{ removed: boolean }> {
-	const input = closed(value, ["repository", "path"]);
-	const repository = keptRepositoryOf(input.repository),
-		{ path } = input;
-	if (typeof path !== "string" || !codeImportIncomingPathValid(path)) throw new Error("INVALID_CODE_HOST_JOB");
-	return withJob(job, repository, async (run) => {
-		const source = await incoming(run, path),
-			types = [...source.folders, source.type];
-		if (types.includes("link")) throw new CodeHostRefusal("CODE_HOST_LINK");
-		if (
-			!source.folders.every((type) => type === "directory" || type === "none") ||
-			!["file", "none"].includes(source.type as string)
-		)
-			throw new CodeHostRefusal("CODE_HOST_UNEXPECTED_FILE");
-		if (source.folders[2] !== "directory") return { removed: false };
-		const removed = await run.sh('[ -f "$1" ] || exit 3; rm -f -- "$1" || exit 1; exit 0', [source.file]);
-		if (removed.status !== 0 && removed.status !== 3)
-			throw new CodeHostJobFailure(FAILED, `the removal ended ${removed.status}`);
-		// The folder goes only when nothing else is in it.
-		await run.sh('rmdir -- "$1" 2>/dev/null; exit 0', [source.folder]);
-		return { removed: removed.status === 0 };
 	});
 }
 
@@ -969,5 +942,4 @@ export async function lookCodeImport(
 export const CODE_HOST_IMPORT_JOBS: CodeImportJobs = Object.freeze({
 	read: readIncomingCodeBundle,
 	look: lookCodeImport,
-	remove: removeIncomingCodeFile,
 });

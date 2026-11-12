@@ -631,7 +631,6 @@ async function world(
 	const b = {
 		looks: [] as { look: boolean; now: number }[],
 		reads: [] as CodeImportReadValue[],
-		removes: [] as string[],
 		/** The look job's answer: the look alone, or the restore-shaped bundle with it. */
 		look: async (
 			value: CodeImportLookValue,
@@ -646,7 +645,6 @@ async function world(
 			for await (const piece of pieces(s.raw, 512)) await sink.write(piece);
 			return s.fetched;
 		},
-		remove: async (_path: string) => ({ removed: true }),
 	};
 	const jobs: CodeImportJobs = {
 		read: async (_job, value, sink) => {
@@ -669,10 +667,6 @@ async function world(
 			});
 			expect(digest(await collect(source))).toBe(value.raw.sha256);
 			return await b.look(value, sink);
-		},
-		remove: async (_job, value) => {
-			b.removes.push(value.path);
-			return await b.remove(value.path);
 		},
 	};
 	/** Restore's own jobs, each call written down with what the run gave it. */
@@ -930,7 +924,6 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 			{ kind: "import", expectedBytes: CODE_IMPORT_MAXIMUM_BYTES, maximumBytes: CODE_IMPORT_MAXIMUM_BYTES },
 			{ expectedBytes: s.raw.length, maximumBytes: CODE_BUNDLE_MAXIMUM_BYTES },
 		]);
-		expect(x.b.removes).toEqual([]);
 		expect(x.errors()).toEqual([]);
 		// The log holds codes, counts and names the import checked: no byte of the source and no path from it.
 		const said = JSON.stringify(x.events);
@@ -965,7 +958,7 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 		await expectBuilt(x);
 	});
 
-	it("a file: read by the code host's job, which gives way to a turn's; tidy removes it once the place is open, and a file that stays does not fail the import", async () => {
+	it("a file: read by the code host's job, which gives way to a turn's; the run ends at the open and leaves the file where it is", async () => {
 		const x = await world({ input: "file", copy: true });
 		expect(await x.run()).toMatchObject({ state: "done", result: "imported", setAside: ASIDE });
 		expect(x.transports.made).toEqual([]);
@@ -992,23 +985,14 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 			"build: go",
 			"open: go",
 			"record: recorded",
-			"tidy: go",
 		]);
 		// The mark's read and the file's read give way; from the look on, no job does.
-		expect(x.hosts.yields).toEqual([true, true, false, false, false, false, false, false, false]);
-		expect(x.b.removes).toEqual([FILE]);
+		// Eight jobs, the open the last: no job comes after it for the file.
+		expect(x.hosts.yields).toEqual([true, true, false, false, false, false, false, false]);
 		expect(x.store.stored.get(`${COMPANY}/acme/app/${x.s.rawName}`)?.manifest).toMatchObject({
 			from: { file: FILE },
 		});
 		await expectBuilt(x);
-		// A file that could not be removed is left; the import is in.
-		const y = await world({ input: "file" });
-		y.b.remove = async () => {
-			throw new CodeHostJobFailure("CODE_HOST_REMOVE_FAILED", "rm: code/_incoming/drop/shop.bundle");
-		};
-		expect(await y.run()).toMatchObject({ state: "done", result: "imported" });
-		expect(y.errors()).toEqual(["CODE_HOST_REMOVE_FAILED"]);
-		expect(JSON.stringify(y.events)).not.toContain("shop.bundle");
 	});
 
 	it("a look alone: ends looked, with the look recorded and its bundle removed; nothing at the place is touched, and a claim that comes with the look does not look again", async () => {
@@ -1347,12 +1331,6 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 		expect(await lost.run()).toEqual({ schema: SCHEMA, state: "busy" });
 		expect(await exists(lost.f.mark)).toBe(true);
 		expect(lost.events.filter((event) => event.step === "recorded")).toEqual([]);
-		const after = await world({ input: "file" });
-		after.kernel.answer = (_method, args) =>
-			(args.p_progress as Record<string, unknown> | undefined)?.step === "tidy" ? "lost" : undefined;
-		expect(await after.run()).toEqual({ schema: SCHEMA, state: "busy" });
-		expect(after.kernel.records).toHaveLength(1);
-		expect(after.b.removes).toEqual([]);
 	});
 
 	it("renews the lease every five minutes with the step the kernel last took, and a lease found gone stops the run cold", async () => {
@@ -1680,14 +1658,13 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 		await expectBuilt(x);
 		expect(await listing(join(x.f.companyRoot, ASIDE))).toEqual(COPY);
 		expect(x.errors()).toEqual([]);
-		// A file source the same way: the same file's bytes at another path, with no read; the new path is tidied away.
+		// A file source the same way: the same file's bytes at another path, with no read.
 		const file = await halfDone({ input: "file" });
 		const y = await world({ f: file.f, store: file.store, input: "file" });
 		y.input.from = { file: "code/_incoming/again/shop.bundle" };
 		y.clock.now = NOW + 3_600_000;
 		expect(await y.run()).toMatchObject({ state: "done", result: "imported", rawBundle: y.s.rawName });
 		expect([y.b.reads.length, y.fetching.calls]).toEqual([0, 0]);
-		expect(y.b.removes).toEqual(["code/_incoming/again/shop.bundle"]);
 		await expectBuilt(y);
 	});
 
