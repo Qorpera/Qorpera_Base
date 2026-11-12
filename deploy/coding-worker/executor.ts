@@ -8,7 +8,7 @@ import { cloudCodingSessionLayout } from "../../packages/contracts/src/cloud-cod
 import { parseCloudCodingNasPolicy } from "../../packages/contracts/src/cloud-coding-storage.ts";
 import { CloudCodingExecutor } from "../../packages/runner-orchestrator/src/coding-executor.ts";
 import { type CodeHostEvent, type CodeHostPolicy, controlCodeHostDeletions, LxdCodeHosts, parseCodeHostPolicy } from "../../packages/runner-orchestrator/src/code-host.ts";
-import { CODE_BUNDLE_FOLDER, createCodeBundleStore } from "../../packages/runner-orchestrator/src/code-bundle-store.ts";
+import { CODE_BUNDLE_FOLDER, type CodeBundleStore, createCodeBundleStore } from "../../packages/runner-orchestrator/src/code-bundle-store.ts";
 import { CodeChangeRecords } from "../../packages/runner-orchestrator/src/code-change-records.ts";
 import { CodeHostCare } from "../../packages/runner-orchestrator/src/code-host-care.ts";
 import {
@@ -16,8 +16,12 @@ import {
 	undoCodeChange, writeCodeChangeRecords,
 } from "../../packages/runner-orchestrator/src/code-host-jobs.ts";
 import { CodeHostRepositories } from "../../packages/runner-orchestrator/src/code-host-repositories.ts";
-import { CodeHostRequests } from "../../packages/runner-orchestrator/src/code-host-requests.ts";
+import { CODE_HOST_IMPORT_JOBS } from "../../packages/runner-orchestrator/src/code-host-import.ts";
+import { CodeHostRequests, type CodeHostRequestsOptions } from "../../packages/runner-orchestrator/src/code-host-requests.ts";
 import { CodeRestore } from "../../packages/runner-orchestrator/src/code-host-restore.ts";
+import { CodeImportStop, type CodeImportTransports } from "../../packages/runner-orchestrator/src/code-import.ts";
+import { fetchGitHubImport } from "../../packages/runner-orchestrator/src/code-import-fetch.ts";
+import { CodeImport } from "../../packages/runner-orchestrator/src/code-import-run.ts";
 import { codeHostErrorCode, codingErrorDetail } from "../../packages/runner-orchestrator/src/coding-error-detail.ts";
 import { readCodeSiteTree } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
@@ -52,6 +56,7 @@ import { CodingCommandRouter, type CodingCommandPeer } from "./command-routing.t
 import { CodingExecutorHttpControl } from "./control.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
 import { BrokerRepositoryCredentials, REPOSITORY_TOKEN } from "./repository-credentials.ts";
+import { BrokerRepositoryFetch, publicGitHubTransport } from "./repository-fetch.ts";
 
 interface Config {
 	schema: "qorpera.coding-executor-service/v7";
@@ -289,6 +294,39 @@ export function logCodeRecord(event: Record<string, unknown>): void {
 	}
 }
 
+/** The import's two ways to GitHub (own code storage, step 6): the broker's fetch relay with the executor's own bearer,
+ * for the company's connection (the token never comes here), and github.com itself for a public project. Without a
+ * broker an import through the connection ends `failed IMPORT_RELAY_NOT_ROUTED`: only public projects and files come
+ * in. */
+export function codeImportTransports(broker: { origin: string; executorToken: string; executorOwner: string } | null): CodeImportTransports {
+	return broker ? new BrokerRepositoryFetch(broker)
+		: { connection: () => { throw new CodeImportStop("failed", "IMPORT_RELAY_NOT_ROUTED"); }, public: (repository) => publicGitHubTransport(repository) };
+}
+
+/** The requests no coding turn carries, as the executor runs them (own code storage, steps 2b and 6): an agent's undo,
+ * a member's download of the code, an operator's restore (a CodeRestore over care's check and bundle jobs and the bundle
+ * store; its own jobs are code-host-restore.ts's; the runbook is deploy/code-host/RESTORE-RUNBOOK.md), and existing
+ * code brought in from GitHub or a file (a CodeImport: the executor fetches the bytes itself, through `transports`, into
+ * the one bundle store; every git step runs in the company's code host). A restore and an import need the bundle store. */
+export function codeHostRequestsOf(parts: {
+	control: CodeHostRequestsOptions["control"]; hosts: Pick<CodeHostJobs, "run">; records: CodeHostRequestsOptions["records"];
+	bundles: CodeBundleStore | undefined; transports: CodeImportTransports; owner: string; machineIdSha256: string;
+}): CodeHostRequests {
+	const { control, hosts, records, bundles, transports, owner, machineIdSha256 } = parts;
+	return new CodeHostRequests({
+		control, hosts, records, owner, machineIdSha256,
+		jobs: { undo: undoCodeChange, archive: archiveCodeArea, removeDownloads: removeCodeDownloads },
+		...(bundles ? { restore: new CodeRestore({
+			control, hosts, bundles, check: checkCodeArea, bundle: bundleCodeArea, owner, machineIdSha256, report: logCodeRecord,
+		}) } : {}),
+		...(bundles ? { imports: new CodeImport({
+			control, hosts, bundles, imports: bundles, transports, fetch: fetchGitHubImport, jobs: CODE_HOST_IMPORT_JOBS, owner,
+			machineIdSha256, report: logCodeRecord,
+		}) } : {}),
+		report: logCodeRecord,
+	});
+}
+
 /** Independent Linux service: the identity host runs the model turn, this
  * service runs the repository VM, the command gateway and the Git broker. No
  * member client participates in this loop. */
@@ -330,8 +368,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 	// The change record of the repositories kept in Qorpera (own code storage, step 2b): each change's file under
 	// code/<owner>/<name>/changes/ and the list, written inside a landing's or an undo's own job, and otherwise by a
 	// pass of its own. And the requests no coding turn carries: an agent's undo, a member's download of the code, an
-	// operator's restore (a CodeRestore over care's check and bundle jobs and the bundle store; its own jobs are
-	// code-host-restore.ts's; the runbook is deploy/code-host/RESTORE-RUNBOOK.md).
+	// operator's restore, and an import of existing code (codeHostRequestsOf).
 	const codeRecords = codeHostJobs ? new CodeChangeRecords({
 		control, hosts: codeHostJobs, write: writeCodeChangeRecords, owner: config.owner,
 		machineIdSha256: createHash("sha256").update(machine).digest("hex"), report: logCodeRecord,
@@ -342,15 +379,11 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		control, hosts: codeHostJobs, read: readCodeSiteTree, owner: config.owner,
 		machineIdSha256: createHash("sha256").update(machine).digest("hex"), report: logCodeRecord,
 	}) : undefined;
-	const codeRequests = codeHostJobs && codeRecords ? new CodeHostRequests({
-		control, hosts: codeHostJobs, records: codeRecords, owner: config.owner,
-		machineIdSha256: createHash("sha256").update(machine).digest("hex"),
-		jobs: { undo: undoCodeChange, archive: archiveCodeArea, removeDownloads: removeCodeDownloads },
-		...(codeBundles ? { restore: new CodeRestore({
-			control, hosts: codeHostJobs, bundles: codeBundles, check: checkCodeArea, bundle: bundleCodeArea, owner: config.owner,
-			machineIdSha256: createHash("sha256").update(machine).digest("hex"), report: logCodeRecord,
-		}) } : {}),
-		report: logCodeRecord,
+	const codeRequests = codeHostJobs && codeRecords ? codeHostRequestsOf({
+		control, hosts: codeHostJobs, records: codeRecords, bundles: codeBundles,
+		transports: codeImportTransports(config.broker ? { origin: config.broker.origin,
+			executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner } : null),
+		owner: config.owner, machineIdSha256: createHash("sha256").update(machine).digest("hex"),
 	}) : undefined;
 	let folder: LxdCodingExecutorHostOptions["folder"];
 	if (config.folder) {
