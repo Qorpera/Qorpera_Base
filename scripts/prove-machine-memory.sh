@@ -164,9 +164,11 @@ guest() { # seconds, then the leg's words
 }
 seconds() { awk -v a="$1" -v b="$EPOCHREALTIME" 'BEGIN{printf "%.2f", b-a}'; }
 # Asked from this host, through LXD's agent as the executor asks, by two loops beside a leg, each a shell of its own:
-#   probe    one `desktop click` a second on a spot of the panel where a click does nothing, each timed, and nothing
-#            else. Only the click and the pause are in this loop, so a machine that stops answering always meets a
-#            click: the one in flight, or the next one a pause later. (Review round 4 of #1692: the memory numbers
+#   probe    one `desktop click` a second on a spot of the dock where a click does nothing (its empty left half:
+#            since the desktop's look there is no top bar, and the top of the screen is the browser's tabs), each
+#            timed, and nothing else. Only the click and the pause are in this loop, so a machine that stops
+#            answering always meets a click: the one in flight, or the next one a pause later. (Review round 4 of
+#            #1692: the memory numbers
 #            were read in this loop, after each click, for up to 20 s; a stall that fell into that reading was
 #            neither a slow click nor a look that was not answered.)
 #   beside   what a person wants beside the clicks: the machine's memory numbers every round and, every tenth round,
@@ -183,7 +185,7 @@ probe() {
 	while [[ -d $work && ! -e $work/stop ]]; do
 		started=$EPOCHREALTIME
 		status=0
-		timeout 30 lxc --project "$PROJECT" exec "$MACHINE" -- desktop click 800 12 </dev/null >/dev/null 2>&1 || status=$?
+		timeout 30 lxc --project "$PROJECT" exec "$MACHINE" -- desktop click 400 960 </dev/null >/dev/null 2>&1 || status=$?
 		echo "P $(date -u +%T) click_s=$(seconds "$started") rc=$status at=$started"
 		round=$(( round + 1 ))
 		sleep "$PROBE_PAUSE"
