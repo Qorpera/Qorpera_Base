@@ -3,8 +3,23 @@
  * append-only history, narrowing, generations and each level-0 line's message. These parsers
  * check the bytes and placement alone. Stored structured parses are deliberately only {kind}. */
 import { SHA256_HEX_PATTERN as HASH, POSTGRES_UUID_PATTERN as UUID } from "@qorpera/contracts";
+import { CLOUD_TOOL_RESULT_MAX_BYTES } from "./cloud-tool-result.ts";
 import type { CompanyStateProblem } from "./company-state-files.ts";
 import { companyPathKey } from "./company-state-shared.ts";
+
+/** A step line's fields, each measured as its JSON is stored (quotes, escapes and whitespace included), as
+ * qorpera_memory_run_step_line measures them (20260928549100, 20260930733000). The run log writes within them
+ * (cloud-run-log.ts takes them from here):
+ * - `result`: the envelope the model got, kept whole: up to one tool result (CLOUD_TOOL_RESULT_MAX_BYTES).
+ * - `args` and `text`: the log's copies of the call's arguments and the agent's words before it, cut to 8 KiB
+ *   (`args_bytes` and `args_hash` keep the whole arguments' size and keyed hash).
+ * - `paths`: the paths the step names, never cut; a step that names more is written narrow.
+ * - `reads`: the copy of the result's read references, cut short (`reads_cut`) past 16 KiB. */
+export const MEMORY_RUN_STEP_FIELD_BYTES = 8 * 1024;
+export const MEMORY_RUN_STEP_READS_BYTES = 16 * 1024;
+export const MEMORY_RUN_STEP_RESULT_BYTES = CLOUD_TOOL_RESULT_MAX_BYTES;
+/** A step line without its newline: 49 KiB with it, so a block of 64 KiB always holds a step. */
+export const MEMORY_RUN_STEP_LINE_BYTES = 49 * 1024 - 1;
 
 export type MemoryRunFileKind = "memory-run" | "memory-steps" | "memory-run-block";
 export interface MemoryRunFile {
@@ -225,8 +240,14 @@ function stepLine(text: string): bigint | null {
 	)
 		return null;
 	if (typeof row.args !== "string" || typeof row.text !== "string" || !Array.isArray(row.reads)) return null;
-	for (const key of ["args", "text", "result", "reads", "paths"])
-		if (encoder.encode(fields.get(key)!).length > (key === "reads" ? 16384 : 8192)) return null;
+	for (const [key, max] of [
+		["args", MEMORY_RUN_STEP_FIELD_BYTES],
+		["text", MEMORY_RUN_STEP_FIELD_BYTES],
+		["result", MEMORY_RUN_STEP_RESULT_BYTES],
+		["reads", MEMORY_RUN_STEP_READS_BYTES],
+		["paths", MEMORY_RUN_STEP_FIELD_BYTES],
+	] as const)
+		if (encoder.encode(fields.get(key)!).length > max) return null;
 	// The paths the step's arguments and result name, never cut (§4.5): up to 1,024 strings of up to 4,096 characters.
 	if (
 		!Array.isArray(row.paths) ||
@@ -324,7 +345,7 @@ export function parseMemoryRunFile(kind: MemoryRunFileKind, path: string, text: 
 	let previousLevel = -1;
 	let previousNumber = -1n;
 	for (const [index, line] of lines.entries()) {
-		if (encoder.encode(line).length > (kind === "memory-steps" ? 50175 : 2113))
+		if (encoder.encode(line).length > (kind === "memory-steps" ? MEMORY_RUN_STEP_LINE_BYTES : 2113))
 			return refuse("this line is longer than this kind permits", index + 1);
 		if (kind === "memory-steps") {
 			const j = stepLine(line);

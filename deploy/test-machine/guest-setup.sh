@@ -18,7 +18,7 @@ NODE22_TEST_IMAGE='docker.io/library/node:22-bookworm-slim'
 # api-front's image (the dbhome kit's docker-compose.dbhome-front.yml), for deploy/sites/envoy-front-sites.test.mjs
 # (--pull never; required on a machine whose versions file names it).
 ENVOY_TEST_IMAGE='docker.io/envoyproxy/envoy:v1.39.1@sha256:57e14a549d7bd43c8d3f6d03e8cfa653e037d4b38e133acd9b54f38c524401b4'
-CODEX_SHA256=1c08fd015e7fe80bd813cccd73bc4331a01796479df77e16ac202d33ba3b460c
+CODEX_SHA256=9c299f88252c1cc6cc57a4f17bfabb72e87529468e209a8d772b0278ce03f6b4
 NODE_VERSION=v24.21.0
 NODE_SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6  # node-v24.21.0-linux-x64.tar.xz, nodejs.org SHASUMS256
 

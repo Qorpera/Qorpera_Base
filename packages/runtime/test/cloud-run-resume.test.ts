@@ -11,6 +11,7 @@ import {
 	type CloudNativeToolBinding,
 	CloudNativeToolRun,
 } from "@qorpera/runtime/cloud-native-tool-authority";
+import { MAX_CLOUD_TOOL_RESULT_BYTES } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { type CloudRunLogFolder, CloudRunLogGone, type CloudRunLogPlace } from "@qorpera/runtime/cloud-run-log";
 import {
 	type CloudRunResumeRequest,
@@ -253,6 +254,23 @@ describe("dormant run resume opening", () => {
 			expect(steps).toEqual([1]);
 		},
 	);
+
+	it("resumes past a step whose result is a whole 32 KiB envelope, and refuses one a byte past it", async () => {
+		const shaped = (text: string) =>
+			JSON.stringify({ schema: "qorpera.cloud-tool-result/v1", status: "ok", content: { kind: "text", text } });
+		const envelope = (bytes: number) =>
+			JSON.parse(shaped("x".repeat(bytes - Buffer.byteLength(shaped(""))))) as unknown;
+		const f = fixture();
+		f.block(2, [row(2, envelope(MAX_CLOUD_TOOL_RESULT_BYTES)), row(3)]);
+		const result = (await f.open())!;
+		expect(result.firstStep).toBe(4);
+		expect(Buffer.byteLength(result.earlier[2]!.result!)).toBe(MAX_CLOUD_TOOL_RESULT_BYTES);
+		// The whole envelope is what the step's line is built from (§7.5).
+		expect(cloudRunStepText(result.earlier[2]!, true)).toContain(result.earlier[2]!.result!);
+		const over = fixture();
+		over.block(2, [row(2, envelope(MAX_CLOUD_TOOL_RESULT_BYTES + 1)), row(3)]);
+		await expect(over.open()).rejects.toThrow("resume_block_invalid");
+	});
 
 	it("returns null only for a positively identified original attempt", async () => {
 		const f = fixture();

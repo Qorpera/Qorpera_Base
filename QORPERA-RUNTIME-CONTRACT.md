@@ -6362,6 +6362,11 @@ each step. It now leaves the envelope.
 1. **The bound.** One tool result's envelope, escaping and provenance included, is at most 32 KiB (32,768 bytes), not
    8 KiB. The patched Codex's result fence refuses a larger one, the runtime fits every result to it, and the run's
    context view and run log check it (migration `20260930733000`).
+   - A run's work log keeps each step's result envelope whole, up to the same bound, in its database check and in
+     the shared parser the runtime runs on every log block it writes, reads back and resumes from
+     (`memory-run-files.ts`). Both take it from one constant, the one the runtime fits results to
+     (`CLOUD_TOOL_RESULT_MAX_BYTES`), so a reader cannot fall behind the bound a writer uses. A step's arguments,
+     text and paths keep 8 KiB each and its read references 16 KiB, and a step line stays at most 49 KiB.
    - `company_read` asks for up to 32 KiB a call and shows as much as fits one result: about 31 KiB of plain text,
      less where characters need escaping. It was about 7 KiB.
    - Every other tool that pages to one result (`machine_read`, `read_context`, `zoom`, `read_event`, skills, coding
@@ -6369,8 +6374,10 @@ each step. It now leaves the envelope.
    - Codex's history keeps each issued result whole: the governed session's fixed `tool_output_token_limit=65536`
      replaces the model's own truncation policy, whatever the model's metadata says. Unchanged here.
 2. **What the provider sees.** Larger tool outputs, in fewer requests per run. The `company_read` tool's schema
-   names the new maximum (`limit` up to 32,768) in its description. Nothing else: the same Codex version, request
-   kinds, headers, prewarm, model list calls, cache key and compaction.
+   names the new maximum (`limit` up to 32,768) in its description, and `read_event`'s description says how much
+   of a body one piece now shows (up to 16,000 characters of plain text, or about 23 KiB as base64; it said about
+   4,000 and about 3 KiB). Nothing else: the same Codex version, request kinds, headers, prewarm, model list calls,
+   cache key and compaction.
 3. **Why.** A model round has a floor of about 2.7 s that does not grow with the prompt, so each page a run reads
    costs a round. In the runs of 7 November, continuation pages were about 4 % of run time and replaying the same
    reads at 32 KiB removes about nine in ten of them; in the reading-heavy founding runs of 5–6 November it was
@@ -6379,6 +6386,11 @@ each step. It now leaves the envelope.
    Codex and raises the runtime's bound, with the images and hosts that carry that binary, together. A runtime ahead
    of its binary would have every larger result refused at the fence. Undo is the same pair rolled back; the migration
    stays.
+   - The run log's parser rides in that bundle: the runtime parses what it stages, reads and resumes itself, and a
+     run's log is read only by attempts of that run, which run on its own bundle. The folder service, the object
+     gateway, the vault and the coding executor carry the same parser but never take a run log's block (the
+     database writes a run's log only for the platform or that run), so they need no step of their own and take the
+     change with their next build. The web shows a log's files as text and parses none.
 
 ### 2026-11-10 amendment: members message each other
 
@@ -6442,6 +6454,29 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    the file. Reset sidebar takes it away with the rest; Undo puts it back.
 3. **Every emblem in the drawer is drawn in its app's colour** (its manifest's `colour`; fixed colours for the
    built-in pages), no longer black only.
+4. **Apps take their group's colour** (Jonas, 12 November 2026: "I would like for all the icons to share the same
+   color as their group" and "you should also be able to change their colors"; migration
+   `20260930731000_member_app_colours`, SQL test 1224). A group is drawn in its first app's colour, a group inside a
+   group in the group it stands in's, and everything in a group in the group's. A member gives a group or a loose app a
+   colour of their own (Colour in its menu, one of the agents' palette colours, or Default); it is in their own
+   arrangement (`colours`), so Reset sidebar takes it away too. The open page's emblem keeps its colour, on a soft wash
+   of it, no longer white on the selection colour. The company's file names no colours yet: what colour agents give a
+   group is a later change.
+5. **Icon and colour** (Jonas, 12 November 2026: "change the icons of the interfaces", then "still missing a selection
+   of colors from a pallette"; design page 6gSTTCcz3D8AjBpV3GmrH6; migration `20260930732000_member_app_emblems`, SQL
+   test 1225). An app's menu opens one panel: the palette row (for an app in a group, the group's colour), the app's
+   own icons, the 24 built-in ones and Generate icon. A group's Colour is the same palette row. A member's icon pick is
+   in their own arrangement (`emblems`: a built-in name or `custom:<id>`), so Reset sidebar takes it away too.
+6. **An app's own icons** (Jonas, 12 November 2026: "change the icons of the interfaces and have a generate icon
+   button too for them to create a new custom one based on it's name or contents"). The built-in emblems are 24. An
+   app may also hold icons of its own, `apps/<name>/icons/<id>.svg`, drawn as the emblems are: one shape on a 48 by 48
+   grid, black where the app's colour goes and white where it is cut out, in the fixed SVG subset of
+   `@qorpera/cloud-client/app-icons` (at most 8 KiB, at most 12 an app). A member's Generate icon asks the app's maker
+   (its manifest's `owner`, else the Co-Founder) in the chat for new ones; the agent draws 3 from the app's name and
+   what its page shows, saves them with `save_app` in one call of files alone, never changing `manifest.emblem`, and
+   tells the member that they pick one under Icon and colour. `save_app` refuses an icon it could not draw, any other
+   file under `icons/`, and a save that would leave more than 12: a new icon takes the id of an old one, or an old one
+   is deleted first. What a member picks is theirs and changes only their own drawer.
 
 ### 2026-11-12 amendment: folder search for every run, and wider
 

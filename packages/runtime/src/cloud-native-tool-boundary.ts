@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { CLOUD_TOOL_RESULT_MAX_BYTES } from "@qorpera/cloud-client/cloud-tool-result";
 import type { JsonValue } from "@qorpera/contracts";
 import type { CloudActionGateResult } from "./cloud-action-review.ts";
 import type { CompanyComputerScreenshotAsset } from "./cloud-company-computer-screenshots.ts";
@@ -30,9 +31,11 @@ import {
 export const CLOUD_TOOL_RESULT_SCHEMA = "qorpera.cloud-tool-result/v1";
 /** One tool result's envelope, as the patched Codex's result fence bounds it (`MAX_RESULT_BYTES`, 32 KiB since perf
  * sprint T2; it was 8 KiB). The runtime bundle pins that binary, so the two move together: a runtime past its binary
- * would have every larger result refused at the fence. The context view and the run log check the same bound
- * (20260930733000). It is about 8,200 of the 12,000 tokens Codex's history keeps of one tool output. */
-export const MAX_CLOUD_TOOL_RESULT_BYTES = 32 * 1024;
+ * would have every larger result refused at the fence. The constant is the cloud client's, so the run log's parser
+ * (memory-run-files.ts), which the folder client runs on every log block it stages, reads and resumes from, keeps the
+ * same bound; the context view and the run log's SQL check it too (20260930733000). It is about 8,200 tokens, which
+ * Codex's history keeps whole under the session's `tool_output_token_limit=65536`. */
+export const MAX_CLOUD_TOOL_RESULT_BYTES = CLOUD_TOOL_RESULT_MAX_BYTES;
 /** Room a tool leaves in MAX_CLOUD_TOOL_RESULT_BYTES for the envelope around its answer, which it measures with one more
  * level of escaping: the envelope takes 591 bytes, and 722 with the longest call id. A page that would not fit is cut
  * at its end, where its nextOffset sits, so a tool cuts it first. */

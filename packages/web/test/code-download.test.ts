@@ -86,10 +86,12 @@ describe("the member's code calls (cloud/code-downloads.ts)", () => {
 				{ owner: "qorpera", name: "shop" },
 				{ owner: "brooks", name: "core" },
 			],
+			githubCopies: [],
 		});
 		expect(parseCodeRepositories({ ...answer, canDownload: false, repositories: [] })).toEqual({
 			canDownload: false,
 			repositories: [],
+			githubCopies: [],
 		});
 		for (const bad of [
 			null,
@@ -100,6 +102,51 @@ describe("the member's code calls (cloud/code-downloads.ts)", () => {
 			{ ...answer, repositories: [{ owner: "", name: "shop" }] },
 		])
 			expect(() => parseCodeRepositories(bad)).toThrow(CloudShapeError);
+	});
+
+	it("reads the company's GitHub copies, and none when the key is missing or not as expected", () => {
+		const answer = {
+			schema: "qorpera.code-repositories/v1",
+			canDownload: true,
+			repositories: [{ owner: "qorpera", name: "shop", changes: 14, downloads: [] }],
+		};
+		const kept = { canDownload: true, repositories: [{ owner: "qorpera", name: "shop" }] };
+		const storefront = { owner: "qorpera", name: "saml-storefront", github: "Qorpera/saml-storefront" };
+		// The folder is the project's name in lower case; the project keeps GitHub's spelling. Keys not known are left.
+		expect(
+			parseCodeRepositories({
+				...answer,
+				githubCopies: [
+					{ ...storefront, since: at },
+					{ owner: "acme", name: "web.site_2", github: "ACME/Web.Site_2" },
+				],
+			}),
+		).toEqual({
+			...kept,
+			githubCopies: [storefront, { owner: "acme", name: "web.site_2", github: "ACME/Web.Site_2" }],
+		});
+		expect(parseCodeRepositories({ ...answer, githubCopies: [] })).toEqual({ ...kept, githubCopies: [] });
+		// A cloud from before the key, and a key that is not as this version reads it: the rest is read as before, and no
+		// copy is named, not even the ones that are well formed.
+		expect(parseCodeRepositories(answer)).toEqual({ ...kept, githubCopies: [] });
+		for (const githubCopies of [
+			null,
+			{},
+			"Qorpera/saml-storefront",
+			[null],
+			[[storefront.owner, storefront.name, storefront.github]],
+			[storefront, { owner: "qorpera", name: "storefront" }],
+			[{ ...storefront, github: null }],
+			[{ ...storefront, owner: null, github: "null/saml-storefront" }],
+			[{ ...storefront, github: "github.com/Qorpera/saml-storefront" }],
+			[{ ...storefront, github: "Qorpera/saml-storefront/main" }],
+			[{ ...storefront, github: "Qorpera/other-project" }],
+			[{ ...storefront, owner: "Qorpera" }],
+			[{ ...storefront, github: "-Qorpera/saml-storefront" }],
+			[{ ...storefront, github: "Qorpera/.saml-storefront", name: ".saml-storefront" }],
+			[{ ...storefront, github: `Qorpera/${"s".repeat(101)}`, name: "s".repeat(101) }],
+		])
+			expect(parseCodeRepositories({ ...answer, githubCopies })).toEqual({ ...kept, githubCopies: [] });
 	});
 
 	it("reads how a download stands: waiting, ready with its file, refused or failed with why", () => {
@@ -154,7 +201,7 @@ describe("the member's code calls (cloud/code-downloads.ts)", () => {
 		} as unknown as Cloud;
 		const signal = new AbortController().signal;
 		const calls = codeDownloadCalls(cloud, profileA.profileId);
-		expect(await calls.list(signal)).toEqual({ canDownload: true, repositories: [] });
+		expect(await calls.list(signal)).toEqual({ canDownload: true, repositories: [], githubCopies: [] });
 		expect(await calls.request("qorpera", "shop", "history", signal)).toEqual(queued);
 		expect(await calls.read(request, signal)).toEqual(queued);
 		expect(rpc.mock.calls).toEqual([
@@ -182,8 +229,9 @@ describe("the member's code calls (cloud/code-downloads.ts)", () => {
 	});
 });
 
-/** A company folder with one repository kept in Qorpera (code/qorpera/shop), a copy that is not (code/github/copy)
- * and a folder beside the code. A download's file is added to the repository's downloads folder as its pieces. */
+/** A company folder with one repository kept in Qorpera (code/qorpera/shop), copies that are not (code/github/copy,
+ * and a GitHub project's working copy at code/qorpera/saml-storefront) and a folder beside the code. A download's file
+ * is added to the repository's downloads folder as its pieces. */
 function folderFake() {
 	const folders = new Set([
 		"notes",
@@ -193,6 +241,8 @@ function folderFake() {
 		"code/qorpera/shop/main",
 		"code/qorpera/shop/main/src",
 		"code/qorpera/shop/changes",
+		"code/qorpera/saml-storefront",
+		"code/qorpera/saml-storefront/repo.git",
 		"code/github",
 		"code/github/copy",
 	]);
@@ -269,7 +319,9 @@ function folderFake() {
 	};
 }
 
-function callsFake(list: CodeRepositories = { canDownload: true, repositories: [{ owner: "qorpera", name: "shop" }] }) {
+function callsFake(
+	list: CodeRepositories = { canDownload: true, repositories: [{ owner: "qorpera", name: "shop" }], githubCopies: [] },
+) {
 	return {
 		list: vi.fn(async (_signal: AbortSignal): Promise<CodeRepositories> => list),
 		request: vi.fn(
@@ -439,7 +491,7 @@ describe("Download the code, on a repository's folder in Storage", () => {
 	it("is not offered to a member who may not download, or on a folder that is not the company's repository", async () => {
 		vi.useFakeTimers();
 		const viewer = await storage(
-			callsFake({ canDownload: false, repositories: [{ owner: "qorpera", name: "shop" }] }),
+			callsFake({ canDownload: false, repositories: [{ owner: "qorpera", name: "shop" }], githubCopies: [] }),
 		);
 		await viewer.go("code/qorpera/shop");
 		expect(viewer.button()?.hidden).toBe(true);
@@ -543,7 +595,9 @@ describe("Download the code, on a repository's folder in Storage", () => {
 		// One file for the browser, under the name the folder gives it: one Blob of the five pieces, in order.
 		expect(saved.map(({ name, blob }) => [name, blob.size])).toEqual([["shop-2026-11-10.zip", 20 * MIB]]);
 		expect(await bytesOf(saved[0]!.blob.slice(8 * MIB - 1, 8 * MIB + 1))).toEqual(Uint8Array.of(2, 3));
-		expect(visibleText(line())).toBe("Downloading shop-2026-11-10.zip.");
+		// Handed over, the file is ready: the page cannot know when the browser has saved it, so it says no more.
+		expect(visibleText(line())).toBe("shop-2026-11-10.zip is ready: your browser saves it in your downloads.");
+		expect(line().querySelector("button, .spinner-dot")).toBeNull();
 		expect(button()?.hasAttribute("aria-disabled")).toBe(false);
 	});
 
@@ -574,7 +628,7 @@ describe("Download the code, on a repository's folder in Storage", () => {
 		await settle();
 		expect(calls.read).toHaveBeenCalledTimes(3);
 		expect(saved.map(({ name, blob }) => [name, blob.size])).toEqual([["shop-2026-11-10.bundle", 4 * MIB]]);
-		expect(visibleText(line())).toBe("Downloading shop-2026-11-10.bundle.");
+		expect(visibleText(line())).toBe("shop-2026-11-10.bundle is ready: your browser saves it in your downloads.");
 	});
 
 	it("says each way it can end in plain words, and lets the member try again", async () => {
@@ -648,7 +702,7 @@ describe("Download the code, on a repository's folder in Storage", () => {
 		// And the same press works once the file is there.
 		await choose("The files");
 		expect(saved.map(({ name }) => name)).toEqual(["shop-2026-11-10.zip"]);
-		expect(visibleText(line())).toBe("Downloading shop-2026-11-10.zip.");
+		expect(visibleText(line())).toBe("shop-2026-11-10.zip is ready: your browser saves it in your downloads.");
 	});
 
 	it("gives up the wait after ten minutes, in words that say to come back", async () => {
@@ -745,6 +799,7 @@ describe("Download the code, on a repository's folder in Storage", () => {
 				{ owner: "qorpera", name: "shop" },
 				{ owner: "github", name: "copy" },
 			],
+			githubCopies: [],
 		});
 		calls.request.mockResolvedValueOnce(queued);
 		calls.read
@@ -829,6 +884,221 @@ describe("Download the code, on a repository's folder in Storage", () => {
 		await pick("Filerne");
 		await vi.advanceTimersByTimeAsync(2000);
 		await settle();
-		expect(visibleText(line())).toBe("Henter shop-2026-11-10.zip.");
+		expect(visibleText(line())).toBe("shop-2026-11-10.zip er klar: din browser gemmer den i dine overførsler.");
+	});
+
+	/** Every state the line can be in, as the member reads it, in each language. */
+	const STATES = {
+		en: {
+			waiting: "Getting the code ready…Cancel",
+			reading: "Downloading the code…20%Cancel",
+			handed: "shop-2026-11-10.zip is ready: your browser saves it in your downloads.",
+			late: "The code is not ready yet. Try again in a little while.",
+			tooLarge: "This code is too large to download here (over 200 MB). Write to Qorpera and we will send it.",
+			busy: "The agents are working on the code right now. Try again in a little while.",
+			tooMany: "The code has been downloaded many times today. Try again tomorrow.",
+			other: "The code could not be made ready just now. Try again.",
+			unread: "The code could not be downloaded just now. Try again.",
+		},
+		da: {
+			waiting: "Gør koden klar…Annuller",
+			reading: "Henter koden…20%Annuller",
+			handed: "shop-2026-11-10.zip er klar: din browser gemmer den i dine overførsler.",
+			late: "Koden er ikke klar endnu. Prøv igen om lidt.",
+			tooLarge: "Koden er for stor til at hente her (over 200 MB). Skriv til Qorpera, så sender vi den.",
+			busy: "Agenterne arbejder på koden lige nu. Prøv igen om lidt.",
+			tooMany: "Koden er hentet mange gange i dag. Prøv igen i morgen.",
+			other: "Koden kunne ikke gøres klar lige nu. Prøv igen.",
+			unread: "Koden kunne ikke hentes lige nu. Prøv igen.",
+		},
+	} as const;
+
+	for (const language of ["en", "da"] as const)
+		it(`says every state of a download in its own words (${language})`, async () => {
+			vi.useFakeTimers();
+			setLanguagePreference(language);
+			const words = STATES[language];
+			const calls = callsFake();
+			const { fake, go, button, line } = await storage(calls);
+			fake.made(zip, 20);
+			await go("code/qorpera/shop");
+			/** The menu's first choice, the files, whatever the language. */
+			const pick = async () => {
+				button()!.click();
+				document.querySelector<HTMLElement>(".context-menu [role=menuitem]")!.click();
+				await settle();
+			};
+			// Asked for and being made; then read from the folder, saying how far; then handed to the browser.
+			calls.request.mockResolvedValueOnce(queued);
+			calls.read.mockResolvedValueOnce(ready());
+			const pieces = fake.client.readFilePieces.getMockImplementation()!;
+			const read: string[] = [];
+			fake.client.readFilePieces.mockImplementationOnce(async (reference, signal, onPiece) =>
+				pieces(reference, signal, (piece, index, count) => {
+					onPiece(piece, index, count);
+					read.push(visibleText(line()));
+				}),
+			);
+			await pick();
+			expect(visibleText(line())).toBe(words.waiting);
+			await vi.advanceTimersByTimeAsync(2000);
+			await settle();
+			expect(read[0]).toBe(words.reading);
+			expect(visibleText(line())).toBe(words.handed);
+			expect(saved.map(({ name }) => name)).toEqual(["shop-2026-11-10.zip"]);
+			// Each way it ends without a file.
+			const ends: [CodeDownload, string][] = [
+				[{ state: "failed", file: "files", reason: "too_large" }, words.tooLarge],
+				[{ state: "failed", file: "files", reason: "busy" }, words.busy],
+				[{ state: "refused", file: "files", reason: "too_many" }, words.tooMany],
+				[{ state: "refused", file: "files", reason: "no_executor" }, words.other],
+				[{ state: "failed", file: "files", reason: "failed" }, words.other],
+				[{ state: "failed", file: "files", reason: "later_word" }, words.other],
+			];
+			for (const [end, said] of ends) {
+				calls.request.mockResolvedValueOnce(end);
+				await pick();
+				expect(visibleText(line())).toBe(said);
+			}
+			// The file could not be read from the folder.
+			fake.client.readFilePieces.mockRejectedValueOnce(new Error("offline"));
+			calls.request.mockResolvedValueOnce(ready());
+			await pick();
+			expect(visibleText(line())).toBe(words.unread);
+			// Still being made after ten minutes.
+			calls.request.mockResolvedValueOnce(queued);
+			calls.read.mockResolvedValue(running);
+			await pick();
+			await vi.advanceTimersByTimeAsync(10 * 60_000 + 2000);
+			await settle();
+			expect(visibleText(line())).toBe(words.late);
+			// Cancelled: nothing is said.
+			calls.request.mockResolvedValueOnce(queued);
+			await pick();
+			line().querySelector<HTMLButtonElement>("button")!.click();
+			await settle();
+			expect(visibleText(line())).toBe("");
+		});
+});
+
+describe("a GitHub project's working copy, named on its folder in Storage", () => {
+	const storefront = { owner: "qorpera", name: "saml-storefront", github: "Qorpera/saml-storefront" };
+	const withCopies = (canDownload = true, githubCopies = [storefront]): CodeRepositories => ({
+		canDownload,
+		repositories: [{ owner: "qorpera", name: "shop" }],
+		githubCopies,
+	});
+
+	it("says what the folder is in one quiet line under the top line, to every member, there and below it", async () => {
+		for (const canDownload of [true, false]) {
+			const calls = callsFake(withCopies(canDownload));
+			const { go, button, line, host } = await storage(calls);
+			await go("code/qorpera/saml-storefront");
+			expect(visibleText(line())).toBe("Copy of the GitHub project saml-storefront");
+			// The kept repository's own line, as it is: the status line under the top line, with no button in it, and
+			// no download to offer here.
+			expect(line().previousElementSibling?.classList.contains("storage-toolbar")).toBe(true);
+			expect(line().getAttribute("role")).toBe("status");
+			expect(line().querySelectorAll("*")).toHaveLength(1);
+			expect(host.querySelectorAll(".storage-code-line")).toHaveLength(1);
+			expect(button()?.hidden).toBe(true);
+			// A founder reads it: no path, branch, commit or repository.
+			expect(line().textContent).not.toMatch(/\/|branch|commit|repositor|git(?!hub)/i);
+			await go("code/qorpera/saml-storefront/repo.git");
+			expect(visibleText(line())).toBe("Copy of the GitHub project saml-storefront");
+			expect(calls.list).toHaveBeenCalledTimes(1);
+			// Nowhere else: not beside it, not on the code kept in Qorpera, not outside the code.
+			for (const path of ["code/qorpera", "code/qorpera/shop", "code/github/copy", "code", "notes"]) {
+				await go(path);
+				expect(visibleText(line()), path).toBe("");
+			}
+			expect(button()?.hidden).toBe(true);
+			for (const dispose of disposers.splice(0)) dispose();
+			document.body.replaceChildren();
+		}
+	});
+
+	it("names the project as GitHub spells it, and says it in Danish", async () => {
+		const spelled = { ...storefront, github: "Qorpera/SAML-Storefront" };
+		const english = await storage(callsFake(withCopies(true, [spelled])));
+		await english.go("code/qorpera/saml-storefront");
+		expect(visibleText(english.line())).toBe("Copy of the GitHub project SAML-Storefront");
+		setLanguagePreference("da");
+		const danish = await storage(callsFake(withCopies()));
+		await danish.go("code/qorpera/saml-storefront");
+		expect(visibleText(danish.line())).toBe("Kopi af GitHub-projektet saml-storefront");
+	});
+
+	it("leaves the code kept in Qorpera as it is, should the list name it both ways", async () => {
+		const calls = callsFake({
+			canDownload: true,
+			repositories: [{ owner: "qorpera", name: "shop" }],
+			githubCopies: [{ owner: "qorpera", name: "shop", github: "Qorpera/shop" }],
+		});
+		const { go, button, line } = await storage(calls);
+		await go("code/qorpera/shop");
+		expect(button()?.hidden).toBe(false);
+		expect(visibleText(line())).toBe("");
+	});
+
+	it("gives the line to a download's end while one is said, and has it back in the next folder", async () => {
+		vi.useFakeTimers();
+		const calls = callsFake(withCopies());
+		calls.request.mockResolvedValueOnce(queued);
+		calls.read.mockResolvedValueOnce({ state: "failed", file: "files", reason: "busy" });
+		const { go, line, choose } = await storage(calls);
+		await go("code/qorpera/shop");
+		await choose("The files");
+		await go("code/qorpera/saml-storefront");
+		expect(visibleText(line())).toBe("Getting the code ready…Cancel");
+		await vi.advanceTimersByTimeAsync(2000);
+		await settle();
+		expect(visibleText(line())).toBe("The agents are working on the code right now. Try again in a little while.");
+		await go("code/qorpera/saml-storefront/repo.git");
+		expect(visibleText(line())).toBe("Copy of the GitHub project saml-storefront");
+	});
+
+	it("leaves Storage exactly as it was when the list has no such key, or one it cannot read", async () => {
+		const answer = {
+			schema: "qorpera.code-repositories/v1",
+			canDownload: true,
+			repositories: [{ owner: "qorpera", name: "shop", changes: 3, downloads: [] }],
+		};
+		/** Storage, through the real calls and their parse, over a cloud that answers the list with `list`: what it draws
+		 * on the copy's folder and on the kept code's. */
+		const drawn = async (list: unknown) => {
+			const rpc = vi.fn(async (name: string): Promise<unknown> => {
+				if (name === "qorpera_list_code_repositories") return list;
+				throw new Error(`unexpected ${name}`);
+			});
+			const cloud = { rpc } as unknown as Cloud;
+			const { go, host, line, button } = await storage(codeDownloadCalls(cloud, profileA.profileId));
+			const seen: string[] = [];
+			for (const path of ["code/qorpera/saml-storefront", "code/qorpera/shop"]) {
+				await go(path);
+				seen.push(host.querySelector(".storage-documents")!.innerHTML);
+			}
+			const result = { seen, line: visibleText(line()), shown: button()?.hidden === false };
+			for (const dispose of disposers.splice(0)) dispose();
+			document.body.replaceChildren();
+			return result;
+		};
+		const before = await drawn(answer);
+		expect(before.line).toBe("");
+		expect(before.shown).toBe(true);
+		expect(before.seen[0]).not.toContain("GitHub");
+		for (const githubCopies of [
+			null,
+			"Qorpera/saml-storefront",
+			{ "qorpera/saml-storefront": "Qorpera/saml-storefront" },
+			[storefront, { owner: "qorpera", name: "storefront" }],
+			[{ ...storefront, github: "github.com/Qorpera/saml-storefront" }],
+			[{ ...storefront, owner: "Qorpera" }],
+		])
+			expect(await drawn({ ...answer, githubCopies }), JSON.stringify(githubCopies)).toEqual(before);
+		// And with the key as it comes, the copy's folder alone has its line.
+		const after = await drawn({ ...answer, githubCopies: [storefront] });
+		expect(after.seen[0]).not.toBe(before.seen[0]);
+		expect(after.seen[1]).toBe(before.seen[1]);
 	});
 });
