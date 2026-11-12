@@ -313,10 +313,14 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   `qorpera_set_member_app_layout(p_profile_id, p_layout, p_expected)` (whole
   document, QAL01 when `p_expected` is not the last `updatedAt`, 22023 for a shape
   the web never writes; an empty layout leaves no row). The layout is
-  `qorpera.member-app-layout/v1` `{places, groups}` (packages/web/src/cloud/app-groups.ts).
+  `qorpera.member-app-layout/v1` `{places, groups, colours?}` (packages/web/src/cloud/app-groups.ts).
   A place's key is `page:mailbox|members|bank`, `app:<name>`, `concepts`, `sites`,
   `whats-new` (the What's new page, since `20260930729000`) or `group:<id>`.
-  Any member. Reset takes it away and Undo puts it back; `own.apps` counts it.
+  `colours` (since `20260930731000`) maps such a key to one of the agents' palette
+  colours (`charcoal`, `brown`, `coral`, `orange`, `gold`, `green`, `teal`, `blue`,
+  `purple`, `pink`, `gray`), at most 300; a layout with colours alone is kept.
+  Any member. Reset takes it away and Undo puts it back; `own.apps` counts it,
+  each colour as one.
 - `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
   shape after the change. Before `20260930727000`, shared, owner/admin/contributor:
   `create_section {sectionId, name, staffAgentId?, unpin?}`,

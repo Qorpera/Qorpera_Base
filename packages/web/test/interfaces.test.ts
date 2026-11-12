@@ -1699,7 +1699,12 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		);
 		const labels = () =>
 			[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")].map((item) => item.textContent);
-		expect(labels()).toEqual(["Rename group", "Ungroup", "Reset sidebarYou have Company A PRIVATE's sidebar"]);
+		expect(labels()).toEqual([
+			"Rename group",
+			"Colour",
+			"Ungroup",
+			"Reset sidebarYou have Company A PRIVATE's sidebar",
+		]);
 		[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")]
 			.find((item) => item.textContent === "Ungroup")!
 			.click();
@@ -1713,6 +1718,82 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		const trips = element.querySelector<HTMLElement>("[data-app-key='app:trips']")!;
 		trips.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 9, clientY: 9 }));
 		expect(labels()[0]).toBe("Move to");
+	});
+	it("draws a group's apps in the group's colour, and a member colours a group and a loose app (Jonas, 12 Nov 2026)", async () => {
+		localStorage.clear();
+		const { element, controller, set } = drawer();
+		const colourOf = (key: string) =>
+			element.querySelector<HTMLElement>(`[data-app-key='${key}']`)!.style.getPropertyValue("--app-colour");
+		const menu = (key: string) =>
+			element
+				.querySelector<HTMLElement>(`[data-app-key='${key}']`)!
+				.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 9, clientY: 9 }));
+		const rows = (selector: string) =>
+			[...document.querySelectorAll<HTMLElement>(`${selector} [role^=menuitem]`)].map((row) =>
+				row.textContent?.trim(),
+			);
+		const item = (selector: string, label: string) =>
+			[...document.querySelectorAll<HTMLElement>(`${selector} [role^=menuitem]`)].find(
+				(entry) => entry.textContent?.trim() === label,
+			)!;
+		group(element).click();
+		// Plan is gold of its own; in Market it is the group's coral, Brand's, the group's first app.
+		expect(colourOf("group:market")).toBe(colourNameHex("coral"));
+		expect(colourOf("app:brand")).toBe(colourNameHex("coral"));
+		expect(colourOf("app:plan")).toBe(colourNameHex("coral"));
+		// An app in a group offers no colour of its own.
+		menu("app:plan");
+		expect(rows(".context-menu")).not.toContain("Colour");
+		// The group's Colour: Default checked first, then the palette by the figure picker's names.
+		menu("group:market");
+		item(".context-menu", "Colour").click();
+		expect(rows(".context-submenu")).toEqual([
+			"Default",
+			"Charcoal",
+			"Brown",
+			"Red",
+			"Orange",
+			"Gold",
+			"Green",
+			"Sky",
+			"Blue",
+			"Purple",
+			"Pink",
+			"Slate",
+		]);
+		expect(item(".context-submenu", "Default").getAttribute("aria-checked")).toBe("true");
+		item(".context-submenu", "Blue").click();
+		await settle();
+		expect(set).toHaveBeenLastCalledWith(
+			profileA.profileId,
+			expect.objectContaining({ colours: { "group:market": "blue" } }),
+			null,
+		);
+		expect(colourOf("group:market")).toBe(colourNameHex("blue"));
+		expect(colourOf("app:brand")).toBe(colourNameHex("blue"));
+		expect(colourOf("app:plan")).toBe(colourNameHex("blue"));
+		// The group's tile is the same one, recoloured in place: the focus the menu gave back stays on it.
+		expect(document.activeElement).toBe(group(element));
+		// A loose app takes one too; Default takes it away again, and with nothing left the document has no colours.
+		menu("app:trips");
+		item(".context-menu", "Colour").click();
+		item(".context-submenu", "Pink").click();
+		await settle();
+		expect(controller.store.get().appLayout?.layout.colours).toEqual({ "group:market": "blue", "app:trips": "pink" });
+		expect(colourOf("app:trips")).toBe(colourNameHex("pink"));
+		menu("app:trips");
+		item(".context-menu", "Colour").click();
+		expect(item(".context-submenu", "Pink").getAttribute("aria-checked")).toBe("true");
+		item(".context-submenu", "Default").click();
+		await settle();
+		expect(colourOf("app:trips")).toBe(colourNameHex("teal"));
+		menu("group:market");
+		item(".context-menu", "Colour").click();
+		item(".context-submenu", "Default").click();
+		await settle();
+		expect(set.mock.lastCall?.[1]).not.toHaveProperty("colours");
+		expect(colourOf("app:plan")).toBe(colourNameHex("coral"));
+		localStorage.clear();
 	});
 	it("lets a move on its way land before a reset, so the reset is never undone by it (review F2 on #1678)", async () => {
 		localStorage.clear();

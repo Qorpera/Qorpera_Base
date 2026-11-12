@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
 	type AppTreeNode,
+	appColours,
 	appLayoutChanges,
 	arrangeApps,
 	arrangeAppsFully,
+	colourApp,
 	EMPTY_APP_LAYOUT,
 	flattenApps,
 	type MemberAppLayout,
@@ -331,5 +333,60 @@ describe("the member's own arrangement", () => {
 		});
 		expect(read.places[long]).toEqual({ group: "-ops", after: null, first: true, at: 1 });
 		expect(read.groups["-ops"]).toEqual({ mine: { name: "Ops" } });
+	});
+});
+
+describe('colours (Jonas, 12 Nov 2026: "I would like for all the icons to share the same color as their group")', () => {
+	const company = parseAppGroups(
+		"- group trips: Trips\n  - app:planner Planner\n  - group routes: Routes\n    - app:lofoten Lofoten\n- app:finances Finances\n",
+	);
+	const OWN: Record<string, string> = { "app:planner": "teal", "app:lofoten": "green", "app:finances": "gold" };
+	const own = (key: string) => OWN[key];
+	const keys = ["app:planner", "app:lofoten", "app:finances"];
+
+	it("draws a group in its first app's colour, a group in a group and every app in it in the group's", () => {
+		const colours = appColours(arrangeApps(company, EMPTY_APP_LAYOUT, keys), EMPTY_APP_LAYOUT, own);
+		expect(Object.fromEntries(colours)).toEqual({
+			"group:trips": "teal",
+			"app:planner": "teal",
+			"group:routes": "teal",
+			"app:lofoten": "teal",
+			"app:finances": "gold",
+		});
+	});
+
+	it("takes the member's colours over the drawer's, a group's for everything in it, an app's only while loose", () => {
+		let mine = colourApp(EMPTY_APP_LAYOUT, "group:routes", "pink");
+		mine = colourApp(mine, "app:finances", "blue");
+		mine = colourApp(mine, "app:lofoten", "coral");
+		const colours = appColours(arrangeApps(company, mine, keys), mine, own);
+		expect(colours.get("group:trips")).toBe("teal");
+		expect(colours.get("group:routes")).toBe("pink");
+		expect(colours.get("app:lofoten")).toBe("pink");
+		expect(colours.get("app:finances")).toBe("blue");
+		// Lofoten loose: its own choice shows.
+		const loose = placeApp(mine, arrangeApps(company, mine, keys), "app:lofoten", null, "app:finances");
+		expect(appColours(arrangeApps(company, loose, keys), loose, own).get("app:lofoten")).toBe("coral");
+		expect(appLayoutChanges(mine)).toBe(3);
+	});
+
+	it("leaves no colours in the document when the last goes, reads only palette colours, and ungroups a group's colour away", () => {
+		const one = colourApp(EMPTY_APP_LAYOUT, "app:finances", "blue");
+		expect(colourApp(one, "app:finances", null)).toEqual(EMPTY_APP_LAYOUT);
+		expect(colourApp(one, "app:finances", null)).not.toHaveProperty("colours");
+		const read = parseMemberAppLayout({
+			schema: "qorpera.member-app-layout/v1",
+			places: {},
+			groups: {},
+			colours: { "app:a": "teal", "app:b": "red", "agent:x": "blue", "group:g": "gray", "page:mailbox": 3 },
+		});
+		expect(read.colours).toEqual({ "app:a": "teal", "group:g": "gray" });
+		expect(
+			parseMemberAppLayout({ schema: "qorpera.member-app-layout/v1", places: {}, groups: {} }),
+		).not.toHaveProperty("colours");
+		const coloured = colourApp(EMPTY_APP_LAYOUT, "group:trips", "purple");
+		const apart = ungroupApps(coloured, arrangeApps(company, coloured, keys), "trips");
+		expect(apart.colours).toBeUndefined();
+		expect(apart.groups).toEqual({ trips: { removed: true } });
 	});
 });

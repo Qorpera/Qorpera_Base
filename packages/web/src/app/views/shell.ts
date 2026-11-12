@@ -1,16 +1,20 @@
+import { AGENT_COLOURS, type AgentColour } from "@qorpera/cloud-client/company-state-shared";
 import type { AppManifest } from "@qorpera/cloud-client/interface-apps";
 import type { User } from "@supabase/supabase-js";
 import {
 	APP_GROUP_NAME_LIMIT,
 	type AppTile,
 	type AppTreeNode,
+	appColours,
 	appsIn,
 	arrangeAppsFully,
+	colourApp,
 	drawerKey,
 	EMPTY_APP_LAYOUT,
 	fileKey,
 	flattenApps,
 	groupIdOf,
+	groupKey,
 	groupsOf,
 	isGroupKey,
 	type MemberAppLayout,
@@ -36,7 +40,7 @@ import {
 import type { HostedProfile, HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
 import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
 import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
-import { agentColor, agentFigure, colourNameHex, figureFor } from "../../ui/avatar.ts";
+import { agentColor, agentFigure, colorName, colourNameHex, figureFor } from "../../ui/avatar.ts";
 import { type MenuEntry, menuPoint, openContextMenu, openMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
@@ -1950,7 +1954,9 @@ function drawInterfaces(
 	]);
 	parts.appRefused = refused;
 	const tiles = flattenApps(tree, parts.appGroupsOpen);
-	const colourOf = (key: string | undefined) => (key ? colourHex(colours.get(drawerKey(key))) : undefined);
+	// Apps in a group take the group's colour; the member's own colours over the drawer's (Jonas, 12 Nov 2026).
+	const resolved = appColours(tree, state.appLayout?.layout ?? EMPTY_APP_LAYOUT, (key) => colours.get(drawerKey(key)));
+	const colourOf = (key: string) => colourHex(resolved.get(key));
 	const groupRows = new Map<string, { shown: string; element: HTMLElement }>();
 	const drawn = tiles.map((tile) => {
 		let element: HTMLElement;
@@ -1958,10 +1964,14 @@ function drawInterfaces(
 			const group = tile.node;
 			const inside = appsIn(group);
 			const count = inside.reduce((sum, key) => sum + (counts.get(drawerKey(key)) ?? 0), 0);
-			const colour = colourOf(inside[0]);
-			const model = JSON.stringify([group.id, group.name, count, colour]);
+			const colour = colourOf(tile.key);
+			// Its colour is set in place, not by drawing it anew: a colour picked from its menu keeps the focus on it
+			// (review r2 F1 on #1694).
+			const model = JSON.stringify([group.id, group.name, count]);
 			const kept = parts.groupRows.get(group.id);
 			element = kept?.shown === model ? kept.element : groupIcon(group.name, count, colour);
+			if (colour) element.style.setProperty("--app-colour", colour);
+			else element.style.removeProperty("--app-colour");
 			groupRows.set(group.id, { shown: model, element });
 			element.dataset.appKey = tile.key;
 			element.classList.toggle("is-open", tile.open);
@@ -2854,9 +2864,15 @@ function openDrawerMenu(company: CompanyController, parts: RailParts, event: Mou
 	}
 	const key = fileKey(tile.dataset.appKey!);
 	const name = tile.querySelector(".rail-app-name")?.textContent ?? key;
+	// A group and a loose app take a colour of the member's own; an app in a group is drawn in the group's.
+	const loose = !parts.appTiles.find((entry) => entry.key === key)?.chain.length;
 	const items: MenuEntry[] = isGroupKey(key)
 		? groupMenu(company, parts, groupIdOf(key))
-		: [moveToMenu(company, parts, key), ...pageMenuItems(company, parts, tile)];
+		: [
+				moveToMenu(company, parts, key),
+				...(loose ? [colourMenu(company, parts, key)] : []),
+				...pageMenuItems(company, parts, tile),
+			];
 	if (!items.length) return;
 	event.preventDefault();
 	const point = menuPoint(event, tile);
@@ -2896,7 +2912,57 @@ function moveToMenu(company: CompanyController, parts: RailParts, key: string): 
 	};
 }
 
-/** A group's menu: Rename group and Ungroup, in the member's own drawer. */
+/** The palette's colours as the figure picker names them (avatar-appearance.js): coral is Red, teal Sky, gray Slate. */
+const COLOUR_LABELS: Readonly<Record<AgentColour, string>> = {
+	charcoal: "Charcoal",
+	brown: "Brown",
+	coral: "Red",
+	orange: "Orange",
+	gold: "Gold",
+	green: "Green",
+	teal: "Sky",
+	blue: "Blue",
+	purple: "Purple",
+	pink: "Pink",
+	gray: "Slate",
+};
+
+/** Colour: the member's own colour for a group (and so for everything in it) or a loose app (Jonas, 12 Nov 2026: "you
+ * should also be able to change their colors"), each with its swatch, the chosen one checked; Default takes the member's
+ * choice away. */
+function colourMenu(company: CompanyController, parts: RailParts, key: string): MenuEntry {
+	const chosen = company.store.get().appLayout?.layout.colours?.[key];
+	const choose = (colour: AgentColour | null) => () => {
+		const layout = ownAppLayout(company, parts);
+		if (layout && (layout.colours?.[key] ?? null) !== colour)
+			void company.changeAppLayout(colourApp(layout, key, colour));
+	};
+	const swatch = (colour: AgentColour | null) => {
+		const element = h("span", {
+			class: colour ? "colour-swatch" : "colour-swatch is-default",
+			"aria-hidden": "true",
+		});
+		if (colour) element.style.setProperty("--swatch", colourHex(colour) ?? "currentColor");
+		return element;
+	};
+	return {
+		kind: "submenu",
+		label: t("Colour"),
+		icon: "palette",
+		items: [
+			{ label: t("Default"), lead: swatch(null), checked: !chosen, select: choose(null) },
+			{ kind: "separator" },
+			...AGENT_COLOURS.map((colour) => ({
+				label: colorName(COLOUR_LABELS[colour]),
+				lead: swatch(colour),
+				checked: chosen === colour,
+				select: choose(colour),
+			})),
+		],
+	};
+}
+
+/** A group's menu: Rename group, Colour and Ungroup, in the member's own drawer. */
 function groupMenu(company: CompanyController, parts: RailParts, id: string): MenuEntry[] {
 	const group = groupsOf(parts.appTree).find((entry) => entry.group.id === id)?.group;
 	if (!group) return [];
@@ -2919,6 +2985,7 @@ function groupMenu(company: CompanyController, parts: RailParts, id: string): Me
 				if (name && layout) void company.changeAppLayout(renameAppGroup(layout, id, name, companyName));
 			},
 		},
+		colourMenu(company, parts, groupKey(id)),
 		{
 			label: t("Ungroup"),
 			icon: "grid",
