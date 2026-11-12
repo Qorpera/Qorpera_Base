@@ -38,9 +38,11 @@ import {
 	CODE_IMPORT_PKT_LINE_BYTES,
 	CODE_IMPORT_PROGRESS_BYTES,
 	CODE_IMPORT_READ_PIECE_BYTES,
+	CODE_IMPORT_REF_LAST_PART_BYTES,
 	CODE_IMPORT_REF_LINES,
 	CODE_IMPORT_REF_LIST_BYTES,
 	CODE_IMPORT_REF_NAME_BYTES,
+	CODE_IMPORT_REF_PART_BYTES,
 	CODE_IMPORT_REFUSALS,
 	CODE_IMPORT_REFUSED_CODE,
 	CODE_IMPORT_RELAY_REFUSALS,
@@ -94,6 +96,7 @@ import {
 	codeImportRecord,
 	codeImportRecordedAnswer,
 	codeImportRefList,
+	codeImportRefPartsFit,
 	codeImportRefsPlan,
 	codeImportRelayRefusals,
 	codeImportRequestOf,
@@ -164,6 +167,8 @@ describe("the limits and the codes", () => {
 			CODE_IMPORT_WANTS,
 			CODE_IMPORT_PKT_LINE_BYTES,
 			CODE_IMPORT_REF_NAME_BYTES,
+			CODE_IMPORT_REF_PART_BYTES,
+			CODE_IMPORT_REF_LAST_PART_BYTES,
 			CODE_IMPORT_BRANCH_BYTES,
 			CODE_IMPORT_FETCH_MS,
 			CODE_IMPORT_IDLE_MS,
@@ -202,6 +207,8 @@ describe("the limits and the codes", () => {
 			CODE_IMPORT_WANTS: 5_000,
 			CODE_IMPORT_PKT_LINE_BYTES: 65_520,
 			CODE_IMPORT_REF_NAME_BYTES: 1_000,
+			CODE_IMPORT_REF_PART_BYTES: 255,
+			CODE_IMPORT_REF_LAST_PART_BYTES: 250,
 			CODE_IMPORT_BRANCH_BYTES: 200,
 			CODE_IMPORT_FETCH_MS: 3_600_000,
 			CODE_IMPORT_IDLE_MS: 120_000,
@@ -351,9 +358,31 @@ describe("names", () => {
 		expect(codeImportHeaderRefValid("refs/tags/v1")).toBe(true);
 		for (const name of ["refs/remotes/origin/main", "refs/pull/1/head", "HEAD", "refs/heads/", "refs/heads/a b"])
 			expect(codeImportHeaderRefValid(name), name).toBe(false);
-		const name = (bytes: number) => `refs/heads/${"x".repeat(bytes - "refs/heads/".length)}`;
+		// 1,000 bytes in all, of parts of 200 bytes and less.
+		const name = (bytes: number) => `refs/heads/${`${"a".repeat(200)}/`.repeat(4)}${"x".repeat(bytes - 11 - 804)}`;
 		expect(codeImportHeaderRefValid(name(1000))).toBe(true);
 		expect(codeImportHeaderRefValid(name(1001))).toBe(false);
+		// What the code host's disk holds as a file and its `.lock` (in bytes, not characters): a folder part of 255, a
+		// last part of 250.
+		for (const [bytes, folder, last] of [
+			[250, true, true],
+			[251, true, false],
+			[255, true, false],
+			[256, false, false],
+		] as [number, boolean, boolean][]) {
+			const part = "t".repeat(bytes);
+			expect(codeImportRefPartsFit(`refs/heads/a/${part}/b`), `${bytes} folder`).toBe(folder);
+			expect(codeImportHeaderRefValid(`refs/heads/a/${part}/b`), `${bytes} folder`).toBe(folder);
+			expect(codeImportRefPartsFit(`refs/tags/${part}`), `${bytes} last`).toBe(last);
+			expect(codeImportHeaderRefValid(`refs/tags/${part}`), `${bytes} last`).toBe(last);
+		}
+		expect(codeImportHeaderRefValid(`refs/tags/${"\u00e6".repeat(125)}`)).toBe(true);
+		expect(codeImportHeaderRefValid(`refs/tags/${"\u00e6".repeat(126)}`)).toBe(false);
+		expect(codeImportHeaderRefValid(`refs/heads/${"\u00e6".repeat(127)}/x`)).toBe(true);
+		expect(codeImportHeaderRefValid(`refs/heads/${"\u00e6".repeat(128)}/x`)).toBe(false);
+		expect(() => codeImportBundleHeader([{ name: `refs/tags/${"t".repeat(256)}`, sha: A }])).toThrow(
+			"INVALID_CODE_IMPORT_BUNDLE_HEADER",
+		);
 		expect(codeImportBranchValid("x".repeat(200))).toBe(true);
 		expect(codeImportBranchValid("x".repeat(201))).toBe(false);
 		expect(codeImportBranchValid("\u00e6".repeat(100))).toBe(true);
@@ -839,6 +868,25 @@ describe("the wants", () => {
 		);
 		expect(names.refs).toEqual([{ name: "refs/heads/master", sha: A }]);
 		expect(names.leftOut).toBe(3);
+		// A tag and a branch with a part of 256 bytes, and a tag whose last part is 251, are left out and counted, and
+		// their objects never wanted; a folder part of 255 and a last part of 250 come.
+		const long = codeImportWants(
+			list([
+				["refs/heads/master", A],
+				[`refs/tags/${"t".repeat(256)}`, B],
+				[`refs/heads/${"b".repeat(256)}/x`, C],
+				[`refs/tags/${"u".repeat(251)}`, "f".repeat(40)],
+				[`refs/tags/${"t".repeat(250)}`, D],
+				[`refs/heads/${"b".repeat(255)}/x`, "e".repeat(40)],
+			]),
+		);
+		expect(long.refs.map((ref) => ref.name)).toEqual([
+			"refs/heads/master",
+			`refs/heads/${"b".repeat(255)}/x`,
+			`refs/tags/${"t".repeat(250)}`,
+		]);
+		expect(long.wants).toEqual([A, "e".repeat(40), D]);
+		expect(long.leftOut).toBe(4);
 		expect(() => codeImportWants(list(refs), { maximumWants: 0 })).toThrow("INVALID_CODE_IMPORT");
 		expect(() => codeImportWants(list(refs), { maximumWants: 5_001 })).toThrow("INVALID_CODE_IMPORT");
 	});
@@ -867,6 +915,10 @@ describe("the wants", () => {
 		expect(of(() => codeImportWants(list([[keyed, A]], { oid: A, target: keyed })))).toBe("IMPORT_BRANCH_NAME");
 		const long = `refs/heads/${"x".repeat(201)}`;
 		expect(of(() => codeImportWants(list([[long, A]], { oid: A, target: long })))).toBe("IMPORT_BRANCH_NAME");
+		// A default branch with a part of 256 bytes (over 200 bytes as well).
+		const part = `refs/heads/${"x".repeat(256)}`;
+		expect(of(() => codeImportWants(list([[part, A]], { oid: A, target: part })))).toBe("IMPORT_BRANCH_NAME");
+		expect(of(() => codeImportWants(list([[part, A]]), { branch: "x".repeat(256) }))).toBe("IMPORT_BRANCH_NAME");
 	});
 });
 
@@ -1293,8 +1345,10 @@ describe("the refs plan", () => {
 		expect(ab.refs.map((r) => r.name)).not.toContain("refs/tags/zzz");
 	});
 
-	it("leaves out names git, restore's own test or the folder refuse, and one name to the folder with an earlier one", () => {
-		const long = `refs/heads/${"l".repeat(4096 - "code/acme/shop/repo.git/refs/qorpera/imported/heads/".length + 1)}`;
+	it("leaves out names git, restore's own test, the disk or the folder refuse, and one name to the folder with an earlier one", () => {
+		// 4,097 bytes where the folder keeps it, of parts the disk can hold.
+		const long = `refs/heads/${`${"l".repeat(200)}/`.repeat(20)}${"l".repeat(25)}`;
+		expect(Buffer.byteLength(`code/acme/shop/repo.git/refs/qorpera/imported/heads/${long.slice(11)}`)).toBe(4097);
 		const made = plan([
 			ref("refs/heads/master", A),
 			ref("refs/heads/e\u0301", B),
@@ -1308,18 +1362,29 @@ describe("the refs plan", () => {
 			ref("refs/heads/Topic/part", C, nowSeconds - 2),
 			ref("refs/heads/Main", D),
 			ref("refs/tags/stra\u00dfe", B, nowSeconds - 3),
+			// A part the code host's disk cannot hold, in a tag or a branch (256, or a last part of 251); 255 and 250 it holds.
+			ref(`refs/tags/${"t".repeat(256)}`, C, nowSeconds - 4),
+			ref(`refs/heads/${"b".repeat(256)}/y`, C, nowSeconds - 4),
+			ref(`refs/heads/y/${"c".repeat(251)}`, C, nowSeconds - 4),
+			ref(`refs/tags/${"t".repeat(250)}`, D, nowSeconds - 5),
+			ref(`refs/heads/${"b".repeat(255)}/y`, D, nowSeconds - 5),
 		]);
 		expect(made.refs.map((r) => r.name)).toEqual(
 			[
 				"refs/heads/main",
 				"refs/qorpera/imported/heads/Main",
 				"refs/qorpera/imported/heads/topic",
+				`refs/qorpera/imported/heads/${"b".repeat(255)}/y`,
 				"refs/qorpera/kept-here",
 				"refs/tags/Fix",
 				"refs/tags/stra\u00dfe",
+				`refs/tags/${"t".repeat(250)}`,
 			].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))),
 		);
-		expect(made.leftOutBy).toEqual({ name: 5, clash: 2, notCommit: 0, older: 0, over: 0, other: 0 });
+		expect(made.leftOutBy).toEqual({ name: 8, clash: 2, notCommit: 0, older: 0, over: 0, other: 0 });
+		const lines = made.stdin.toString().split("\0");
+		expect(lines).toContain(`delete refs/tags/${"t".repeat(256)}`);
+		expect(lines.filter((line) => line.startsWith("create ") && /(t{256}|b{256}|c{251})/.test(line))).toEqual([]);
 	});
 
 	it("refuses a default branch that is none, or one it does not take, and input that is not a repository's refs", () => {
@@ -1337,6 +1402,7 @@ describe("the refs plan", () => {
 		);
 		expect(code(() => plan([ref(`refs/heads/${PLANTED.github}`, A)], PLANTED.github))).toBe("IMPORT_BRANCH_NAME");
 		expect(code(() => plan([ref("refs/heads/master", A)], "x".repeat(201)))).toBe("IMPORT_BRANCH_NAME");
+		expect(code(() => plan([ref(`refs/heads/${"x".repeat(256)}`, A)], "x".repeat(256)))).toBe("IMPORT_BRANCH_NAME");
 		for (const refs of [
 			[ref("HEAD", A), ref("refs/heads/master", A)],
 			[ref("refs/heads/master", A), ref("refs/heads/master", B)],
@@ -2285,6 +2351,19 @@ describe("with real git", { timeout: 120_000 }, () => {
 		const fsck = await run([GIT, `--git-dir=${repo}`, "fsck", "--full", "--no-progress"], { env: gitEnv(top) });
 		expect(fsck.code).toBe(0);
 		expect(codeImportHistoryCode(fetched.stderr, fsck.code === 0)).toBe("IMPORT_HISTORY_ZERO_PADDED_FILEMODE");
+	});
+
+	it("holds a ref exactly where codeImportRefPartsFit says the disk does: a folder part of 255 bytes, a last part of 250", async () => {
+		const top = await scratch();
+		const repo = join(top, "parts.git");
+		await gitIn(top, top, ["init", "--quiet", "--bare", repo]);
+		const tree = await gitIn(top, repo, [`--git-dir=${repo}`, "mktree"], Buffer.alloc(0));
+		const commit = await gitIn(top, repo, [`--git-dir=${repo}`, "commit-tree", tree, "-m", "one"]);
+		for (const bytes of [250, 251, 255, 256])
+			for (const name of [`refs/tags/${"t".repeat(bytes)}`, `refs/heads/${"d".repeat(bytes)}/x`]) {
+				const made = await run([GIT, `--git-dir=${repo}`, "update-ref", name, commit], { env: gitEnv(top) });
+				expect(made.code === 0, `${name.slice(0, 16)} ${bytes}`).toBe(codeImportRefPartsFit(name));
+			}
 	});
 
 	it("applies the refs plan in one update-ref session, a ref that is another's folder and a mark already there among them", async () => {
