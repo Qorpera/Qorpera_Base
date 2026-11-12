@@ -412,12 +412,23 @@ describe("the words of an import", () => {
 				expect(importWhy(code)).not.toMatch(/[A-Z]{2,}_|_[A-Z]|:/);
 				expect(importWhy(code), code).not.toMatch(gitWords);
 			}
+		// A file (an agent's bundle) has its own bound, 256 MB: the same code says so.
+		expect(importWhy("IMPORT_TOO_LARGE", true)).toBe(
+			"it is larger than 256 MB, the most Qorpera brings in from a file",
+		);
+		expect(importWhy("IMPORT_TOO_LARGE:PLACE_AS_BEFORE", true)).toBe(
+			"it is larger than 256 MB, the most Qorpera brings in from a file",
+		);
+		expect(importWhy("IMPORT_USES_LFS", true)).toBe(importWhy("IMPORT_USES_LFS"));
 		setLanguagePreference("da");
 		for (const [codes, , danish] of reasons)
 			for (const code of codes) {
 				expect(importWhy(code), code).toBe(danish);
 				expect(importWhy(code), code).not.toMatch(gitWords);
 			}
+		expect(importWhy("IMPORT_TOO_LARGE", true)).toBe(
+			"den er større end 256 MB, som er det meste, Qorpera henter ind fra en fil",
+		);
 	});
 
 	it("says where brought-in code came from, when, and what came with it", () => {
@@ -522,6 +533,14 @@ describe("the import's keys and its ask, as the web reads them (cloud/code-downl
 				lastImport: { owner: "acme", name: "old", reason: "IMPORT_TOO_LARGE", from: { github: "Acme/Old" } },
 			}).imports?.last,
 		).toEqual({ owner: "acme", name: "old", reason: "IMPORT_TOO_LARGE", github: "Acme/Old" });
+		// One from a file says so, by its file's name (A2 sends the bundle's name, never its path).
+		expect(
+			parseCodeRepositories({
+				...answer,
+				bringing: [],
+				lastImport: { owner: "acme", name: "old", reason: "IMPORT_TOO_LARGE", from: { file: "old.bundle" } },
+			}).imports?.last,
+		).toEqual({ owner: "acme", name: "old", reason: "IMPORT_TOO_LARGE", github: null, file: true });
 		expect(
 			parseCodeRepositories({
 				...answer,
@@ -830,6 +849,20 @@ describe("Bring code in, in Storage", () => {
 		expect(visibleText(spelled.line())).toBe(words.replace("shop", "Shop"));
 		for (const dispose of disposers.splice(0)) dispose();
 		document.body.replaceChildren();
+		// A file too large says the file's bound, a project too large GitHub's.
+		for (const [last, said] of [
+			[
+				{ ...lastShop("IMPORT_TOO_LARGE"), file: true as const },
+				"it is larger than 256 MB, the most Qorpera brings in from a file",
+			],
+			[lastShop("IMPORT_TOO_LARGE", "Acme/Shop"), "it is larger than 1 GB, the most Qorpera brings in"],
+		] as const) {
+			const large = await storage(callsFake(codeList({ last })));
+			await large.go("code");
+			expect(visibleText(large.line())).toBe(`${last.github ? "Shop" : "shop"} was not brought in: ${said}.`);
+			for (const dispose of disposers.splice(0)) dispose();
+			document.body.replaceChildren();
+		}
 		// Not to others; not once it is in after all; not while it is being brought in again.
 		for (const list of [
 			codeList({ canDownload: false, last: lastShop("IMPORT_USES_LFS") }),

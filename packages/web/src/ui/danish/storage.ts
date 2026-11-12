@@ -85,6 +85,8 @@ export const STORAGE: Record<string, string> = {
 	"{name} is brought in.": "{name} er hentet ind.",
 	"{name} was not brought in: {why}.": "{name} blev ikke hentet ind: {why}.",
 	"it is larger than 1 GB, the most Qorpera brings in": "den er større end 1 GB, som er det meste, Qorpera henter ind",
+	"it is larger than 256 MB, the most Qorpera brings in from a file":
+		"den er større end 256 MB, som er det meste, Qorpera henter ind fra en fil",
 	"GitHub did not let Qorpera read it; check the address, and that the company's GitHub connection can see it":
 		"GitHub lod ikke Qorpera læse den; tjek adressen, og at virksomhedens GitHub-forbindelse kan se den",
 	"GitHub says it has moved; use its new address": "GitHub siger, at den er flyttet; brug den nye adresse",

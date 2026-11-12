@@ -73,6 +73,8 @@ export interface CodeImportEnd {
 	readonly reason: string;
 	/** The project on GitHub (Owner/Name), when the list names where it came from; null otherwise. */
 	readonly github: string | null;
+	/** It came from a file (an agent's bundle), when the list says so: a file has its own bounds. */
+	readonly file?: true;
 }
 
 /** The answer to an owner's or admin's ask to bring code in. `queued`: it is on its way (or was already). `refused`:
@@ -182,10 +184,11 @@ function codeBringing(value: unknown): CodeBringing | null {
 function codeImportEnd(value: unknown): CodeImportEnd | null {
 	if (!value || typeof value !== "object") return null;
 	const { owner, name, reason, from } = value as Record<string, unknown>;
-	const source = from && typeof from === "object" ? (from as Record<string, unknown>).github : undefined;
-	const github = typeof source === "string" && GITHUB_PROJECT.test(source) ? source : null;
+	const named = from && typeof from === "object" ? (from as Record<string, unknown>) : {};
+	const github = typeof named.github === "string" && GITHUB_PROJECT.test(named.github) ? named.github : null;
+	const file = !github && typeof named.file === "string" && named.file !== "";
 	return typeof owner === "string" && owner && typeof name === "string" && name && typeof reason === "string"
-		? { owner, name, reason, github }
+		? { owner, name, reason, github, ...(file ? { file: true as const } : {}) }
 		: null;
 }
 

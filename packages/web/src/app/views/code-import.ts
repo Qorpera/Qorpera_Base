@@ -134,12 +134,15 @@ export function importStepWords(bringing: Pick<CodeBringing, "github" | "step" |
 }
 
 /** Why code was not brought in, from the outcome's code or the ask's refusal. One that this version does not know gets
- * the last plain line, never its code. */
-export function importWhy(reason: string): string {
+ * the last plain line, never its code. `file`: it came from a file (an agent's bundle), whose bound is 256 MB, not
+ * GitHub's 1 GB. */
+export function importWhy(reason: string, file = false): string {
 	const code = reason.split(":")[0] ?? "";
 	switch (code) {
 		case "IMPORT_TOO_LARGE":
-			return t("it is larger than 1 GB, the most Qorpera brings in");
+			return file
+				? t("it is larger than 256 MB, the most Qorpera brings in from a file")
+				: t("it is larger than 1 GB, the most Qorpera brings in");
 		case "IMPORT_SOURCE_REFUSED":
 			return t(
 				"GitHub did not let Qorpera read it; check the address, and that the company's GitHub connection can see it",
@@ -388,7 +391,7 @@ export class CodeImport {
 			line = {
 				text: t("{name} was not brought in: {why}.", {
 					name: last.github ? projectOf(last.github) : last.name,
-					why: importWhy(last.reason),
+					why: importWhy(last.reason, last.file === true),
 				}),
 			};
 		if (!line && copy) line = { text: t("Copy of the GitHub project {name}", { name: projectOf(copy.github) }) };
