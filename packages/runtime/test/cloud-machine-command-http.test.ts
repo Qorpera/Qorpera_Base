@@ -1864,7 +1864,7 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 		);
 		f.host.memberAct.mockClear();
 		expect(await f.router.memberAct(f.act, f.signal)).toEqual({ exitCode: 0 });
-		expect(f.host.memberAct.mock.calls[0]?.[0]).not.toHaveProperty("shared");
+		expect((f.host.memberAct.mock.calls[0] as unknown[] | undefined)?.[0]).not.toHaveProperty("shared");
 		// An executor that takes no member's shared request never begins one.
 		const plain = new MachineCommandRouter({
 			owner: "mx-a",
