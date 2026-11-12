@@ -258,7 +258,7 @@ test("the image has a desktop that only `desktop start` starts, with Chromium sa
 	assert.match(command, /systemd-run --quiet --collect --expand-environment=no /);
 	assert.match(command, /-p Requisite="\$UNIT" -p BindsTo="\$UNIT" -p After="\$UNIT"/);
 	assert.doesNotMatch(command, /PartOf=/);
-	assert.match(command, /start \| stop \| open \| run\)\n\texec 9>\/run\/qorpera-desktop\.lock\n\tflock 9\n/);
+	assert.match(command, /start \| stop \| open \| run \| dock\)\n\texec 9>\/run\/qorpera-desktop\.lock\n\tflock 9\n/);
 	for (const line of [
 		'\t[[ $(cat /tmp/desktop-run) == "literal \\$HOME" ]]',
 		'\tif desktop run sleep 600 2>/dev/null; then echo "a program started on a stopped desktop" >&2; exit 1; fi\n',
@@ -1148,14 +1148,10 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 		assert.ok(look.includes(line), line);
 
 	// A press reaches root only as a name in root's folder, and root starts one of three fixed programs with the image's
-	// own `desktop` command, in the company folder when the machine has it and the desktop's account may read it.
+	// own `desktop` command, in the company folder when the machine has it (the test "a press on the dock can steer
+	// nothing" below).
 	assert.match(opener, /\nASK=\/run\/qorpera-desktop-dock\nDESKTOP=\/usr\/local\/bin\/desktop\n/);
-	assert.match(opener, /\ncd -P -- "\$ASK" 2>\/dev\/null \|\| exit 0\n\[\[ \$\(pwd -P\) == "\$ASK" \]\] \|\| exit 0\n/);
-	assert.match(opener, /\nif mountpoint -q \/company && runuser -u desktop -- test -r \/company -a -x \/company; then folder=\/company; fi\n/);
-	assert.match(
-		opener,
-		/\n\tbrowser\) "\$DESKTOP" open "\$PAGE" ;;\n\tfiles\) "\$DESKTOP" run \/usr\/bin\/thunar "\$folder" ;;\n\tterminal\) "\$DESKTOP" run \/usr\/bin\/xfce4-terminal --working-directory="\$folder" ;;\n/,
-	);
+	assert.match(opener, /\n\t"\$DESKTOP" dock "\$app" >\/dev\/null \|\| echo "the dock's \$app did not start" >&2\n/);
 	assert.doesNotMatch(opener, /systemd-run|chrome --/);
 	const pathUnit = read("deploy/machine/qorpera-machine-desktop-dock.path");
 	assert.match(pathUnit, /\n\[Path\]\nDirectoryNotEmpty=\/run\/qorpera-desktop-dock\n/);
@@ -1295,6 +1291,92 @@ test("root keeps its notes about the desktop where only root writes (review r1 F
 		'\trunuser -u desktop -- ln -s "$secret" /run/qorpera-desktop-dock/files\n',
 		'\t[[ -z $(ls -A /run/qorpera-desktop-dock) ]] && untouched || { echo "a dock request that was a link or a pipe was followed, or stayed" >&2; exit 1; }\n',
 		'\t[[ -d /run/qorpera-desktop && -z $(ls -A /run/qorpera-desktop) ]] || { echo "the notes of root outlived the desktop" >&2; exit 1; }\n',
+	])
+		assert.ok(imageScript.includes(line), line);
+});
+
+test("a press on the dock can steer nothing but which of three programs starts (review r3 F1 of #1704)", () => {
+	// The finding: the broker ran `desktop open chrome://newtab/` from the request folder, which the desktop's account
+	// may put any name into. With a folder `chrome:/newtab` planted there, `desktop open` took the address for that
+	// folder and did its work for a file: with the account's Desktop folder made a link to a folder of root's (/etc),
+	// root put a link into that folder, under a name the account chose (measured on the candidate before the fix; the
+	// folder's owner stayed root's on this image). The fix is not a better look at the address: no launch of the dock
+	// passes through code that looks a word up as a file or works in the account's Desktop folder.
+	const opener = read("deploy/machine/desktop-dock-open");
+	const command = read("deploy/machine/desktop");
+	const unit = read("deploy/machine/qorpera-machine-desktop-dock.service");
+	const lines = (text) =>
+		text
+			.split("\n")
+			.filter((line) => !line.trimStart().startsWith("#"))
+			.join("\n");
+
+	// The broker never works in the request folder: the unit starts it in `/`, it goes there itself, and it sets its own
+	// environment before anything else (nothing of PATH, HOME, XDG or the locale is taken from its caller).
+	assert.match(unit, /\n\[Service\]\n(?:[^\n]*\n)*WorkingDirectory=\/\n(?:[^\n]*\n)*ExecStart=\/opt\/qorpera-machine\/desktop-dock-open\n/);
+	const broker = lines(opener);
+	assert.ok(
+		broker.startsWith(
+			'if [[ ${QORPERA_DOCK_ENVIRONMENT:-} != set ]]; then\n\texec /usr/bin/env -i QORPERA_DOCK_ENVIRONMENT=set PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \\\n\t\tHOME=/root LANG=C.UTF-8 /bin/bash "${BASH_SOURCE[0]}"\nfi\nset -uo pipefail\ncd / || exit 1\n',
+		),
+		broker.slice(0, 300),
+	);
+	assert.deepEqual(broker.match(/\bcd [^\n]*/g), ["cd / || exit 1"]);
+	// It takes from the folder only which of the three names are there (read without following or opening any), removes
+	// names, and hands `desktop dock` one of its own three words. It looks at nothing else and starts nothing else.
+	assert.match(broker, /\nasked=\$\(find "\$ASK" -mindepth 1 -maxdepth 1 \\\( -name browser -o -name files -o -name terminal \\\) -printf "%f\\n" 2>\/dev\/null\)\n/);
+	assert.match(
+		broker,
+		/\nfor app in browser files terminal; do\n\t\[\[ \$'\\n'\$asked\$'\\n' == \*\$'\\n'\$app\$'\\n'\* \]\] \|\| continue\n\trm -rf -- "\$ASK\/\$app"\n\t"\$DESKTOP" dock "\$app" >\/dev\/null \|\| echo "the dock's \$app did not start" >&2\ndone\n/,
+	);
+	assert.match(broker, /\nfind "\$ASK" -mindepth 1 -maxdepth 1 ! -name browser ! -name files ! -name terminal -exec rm -rf -- \{\} \+\nexit 0\n$/);
+	for (const gone of [/\$\(</, /\bcat\b/, /\bsource\b/, /\n\. /, /\[\[ -[a-zA-Z] /, /\brunuser\b/, /\bmountpoint\b/, /"\$DESKTOP" (?:open|run)\b/, /\bpwd\b/, /\/run\/qorpera-desktop\//])
+		assert.doesNotMatch(broker, gone);
+	assert.deepEqual([...new Set(broker.match(/"\$ASK[^"]*"/g))].toSorted(), ['"$ASK"', '"$ASK/$app"']);
+
+	// `desktop dock`: every word its program gets is written in it; nothing is taken from the caller but which of the
+	// three; it is under the desktop's lock like every launch, and it is no command of the help.
+	const code = lines(command);
+	assert.match(
+		code,
+		/\ndock\)\n\tneed\n\tfolder=\/home\/desktop\n\tif mountpoint -q \/company; then folder=\/company; fi\n\tcase \$\{1:-\} in\n\tbrowser\) browser chrome:\/\/newtab\/ ;;\n\tfiles\) launch \/usr\/bin\/thunar "\$folder" ;;\n\tterminal\) launch \/usr\/bin\/xfce4-terminal --working-directory="\$folder" ;;\n\t\*\) fail "desktop dock browser\|files\|terminal" 2 ;;\n\tesac\n\techo "started \$1"\n\t;;\n/,
+	);
+	assert.match(code, /\ncase \$command in\nstart \| stop \| open \| run \| dock\)\n\texec 9>\/run\/qorpera-desktop\.lock\n\tflock 9\n\t;;\nesac\n/);
+	const help = command.slice(command.indexOf("usage() {"), command.indexOf("\nEOF\n"));
+	assert.doesNotMatch(help, /desktop dock/);
+	// What that entry reaches looks at nothing the account can shape as a path: the desktop's unit and display, root's
+	// own notes, the mount point of the company folder. (`need`, `running`, `browser` and `launch` are pinned whole.)
+	assert.match(code, /\nrunning\(\) \{ \[\[ \$\(systemctl is-active "\$UNIT" 2>\/dev\/null \|\| true\) == active \]\] && xdpyinfo >\/dev\/null 2>&1; \}\nneed\(\) \{\n\trunning \|\| fail "the desktop is not running: desktop start"\n\ttouch "\$RUN\/last-use"\n\}\n/);
+	assert.match(
+		code,
+		/\nlaunch\(\) \{\n\tlocal extra=\(\)\n\t\[\[ -s \$RUN\/tz \]\] && extra\+=\(--setenv=TZ="\$\(<"\$RUN\/tz"\)"\)\n\t\[\[ -s \$RUN\/lang \]\] && extra\+=\(--setenv=LANGUAGE="\$\(<"\$RUN\/lang"\)"\)\n\tsystemd-run --quiet --collect --expand-environment=no --slice=qorpera-machine\.slice --uid=desktop --gid=desktop \\\n\t\t-p WorkingDirectory=\/home\/desktop -p Requisite="\$UNIT" -p BindsTo="\$UNIT" -p After="\$UNIT" \\\n\t\t--setenv=HOME=\/home\/desktop --setenv=DISPLAY=:1 --setenv=XDG_RUNTIME_DIR="\$SESSION" \\\n\t\t--setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=\$SESSION\/bus" "\$\{extra\[@\]\}" -- "\$@"\n\}\n/,
+	);
+	assert.match(
+		code,
+		/\nbrowser\(\) \{\n\tlocal flags=\(--start-maximized --no-first-run --no-default-browser-check --password-store=basic --disable-infobars\n\t\t--enable-unsafe-swiftshader\)\n\t\[\[ -s \$RUN\/lang \]\] && flags\+=\(--lang="\$\(<"\$RUN\/lang"\)"\)\n\tlaunch "\$CHROME" "\$\{flags\[@\]\}" "\$@"\n\}\n/,
+	);
+	for (const file of ["deploy/machine/desktop", "deploy/machine/desktop-dock-open"])
+		assert.equal(spawnSync("bash", ["-n", join(repositoryRoot, file)], { encoding: "utf8" }).status, 0, file);
+
+	// The image build presses each icon while the account keeps planting: the address as a folder and as a link to a
+	// folder it named, the shapes of the folders and programs root names, and programs named like the tools root runs,
+	// with its Desktop folder a link to a folder of root's. Each program starts, no planted program runs, and the
+	// folder of root's keeps its owner and rights and stays empty.
+	for (const line of [
+		"\tguarded=/etc/qorpera-dock-check\n",
+		'\tmkdir "$guarded" && chmod 0755 "$guarded"\n',
+		'\tcat >/tmp/qorpera-dock-planted/plant.sh <<"PLANT"\n',
+		"cd /run/qorpera-desktop-dock || exit 1\n",
+		"\tmkdir -p chrome: home/desktop company usr/bin usr/local/bin opt/qorpera-machine\n",
+		'\tif [ "$1" = link ]; then ln -sfn /home/desktop/planted/a-name-the-account-chose chrome:/newtab; else mkdir -p chrome:/newtab; fi\n',
+		"\tfor tool in desktop bash env find rm systemctl xdpyinfo flock touch mountpoint systemd-run usr/bin/thunar usr/bin/xfce4-terminal usr/local/bin/desktop; do\n",
+		'\trunuser -u desktop -- sh -c "rm -rf /home/desktop/Desktop && ln -s $guarded /home/desktop/Desktop"\n',
+		"\tfor shape in folder link; do\n\t\tfor app in browser files terminal; do\n",
+		'\t\t\trunuser -u desktop -- sh /tmp/qorpera-dock-planted/plant.sh "$shape" &\n',
+		'\t\t\trunuser -u desktop -- sh -c ": >/run/qorpera-desktop-dock/$app"\n',
+		'\t\t\t[[ $(stat -c "%U:%G %a" "$guarded") == "root:root 755" && -z $(ls -A "$guarded") ]] ||\n',
+		"\t\t\t[[ ! -e /tmp/qorpera-dock-planted/ran ]] ||\n",
+		'\t\t\t[[ $started == yes ]] || { echo "a press on the dock $app icon started nothing beside planted names ($shape)" >&2; exit 1; }\n',
 	])
 		assert.ok(imageScript.includes(line), line);
 });

@@ -583,6 +583,56 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	window " - Thunar$" || { echo "a dock request that was a link opened nothing" >&2; exit 1; }
 	for _ in $(seq 1 50); do [[ -z $(ls -A /run/qorpera-desktop-dock) ]] && break; sleep 0.1; done
 	[[ -z $(ls -A /run/qorpera-desktop-dock) ]] && untouched || { echo "a dock request that was a link or a pipe was followed, or stayed" >&2; exit 1; }
+	# A press on the dock starts one of three fixed programs and can steer nothing else (review r3 F1 of #1704). The
+	# account may put any name into the folder a press asks in. Until this was closed, a folder there shaped like the
+	# browser address (chrome:/newtab) made root take the address for that folder and put a link to it on the desktop:
+	# with the Desktop folder of the account made a link to a folder of root, root wrote a link into that folder, under
+	# a name the account chose. Now the broker and the command it runs work in /, look no word up as a file and put
+	# nothing on the desktop. The account keeps planting, while each icon is pressed: the address as a folder and as a
+	# link to a folder it named, the shapes of the folders and programs root names, and programs named like the tools
+	# root runs. Each press starts its program, none of the planted programs runs, and the folder of root is as it
+	# was: its owner, its rights, nothing in it.
+	guarded=/etc/qorpera-dock-check
+	mkdir "$guarded" && chmod 0755 "$guarded"
+	install -d -o desktop -g desktop /tmp/qorpera-dock-planted
+	cat >/tmp/qorpera-dock-planted/plant.sh <<"PLANT"
+cd /run/qorpera-desktop-dock || exit 1
+mkdir -p /home/desktop/planted/a-name-the-account-chose
+while [ ! -e /tmp/qorpera-dock-planted/stop ]; do
+	mkdir -p chrome: home/desktop company usr/bin usr/local/bin opt/qorpera-machine
+	if [ "$1" = link ]; then ln -sfn /home/desktop/planted/a-name-the-account-chose chrome:/newtab; else mkdir -p chrome:/newtab; fi
+	for tool in desktop bash env find rm systemctl xdpyinfo flock touch mountpoint systemd-run usr/bin/thunar usr/bin/xfce4-terminal usr/local/bin/desktop; do
+		[ -e "$tool" ] || { printf "#!/bin/sh\nid >>/tmp/qorpera-dock-planted/ran\n" >"$tool"; chmod 0755 "$tool"; }
+	done
+done 2>/dev/null
+PLANT
+	runuser -u desktop -- sh -c "rm -rf /home/desktop/Desktop && ln -s $guarded /home/desktop/Desktop"
+	declare -A shows=([browser]="Chrome for Testing" [files]=" - Thunar" [terminal]="Terminal")
+	for shape in folder link; do
+		for app in browser files terminal; do
+			# The program is closed first, so the press is what starts it.
+			for _ in $(seq 1 40); do desktop windows | grep -q -- "${shows[$app]}$" || break; wmctrl -c "${shows[$app]}"; sleep 0.25; done
+			runuser -u desktop -- sh /tmp/qorpera-dock-planted/plant.sh "$shape" &
+			sleep 0.3
+			runuser -u desktop -- sh -c ": >/run/qorpera-desktop-dock/$app"
+			started=yes
+			window "${shows[$app]}$" || started=no
+			sleep 0.5
+			runuser -u desktop -- touch /tmp/qorpera-dock-planted/stop
+			wait || true
+			rm -f /tmp/qorpera-dock-planted/stop
+			for _ in $(seq 1 50); do [[ -z $(ls -A /run/qorpera-desktop-dock) ]] && break; sleep 0.1; done
+			[[ $(stat -c "%U:%G %a" "$guarded") == "root:root 755" && -z $(ls -A "$guarded") ]] ||
+				{ echo "a press on the dock $app icon changed a folder of root through planted names ($shape): $(stat -c "%U:%G %a" "$guarded") $(ls -A "$guarded" | tr "\n" " ")" >&2; exit 1; }
+			[[ ! -e /tmp/qorpera-dock-planted/ran ]] ||
+				{ echo "a press on the dock $app icon ran a program the desktop account planted ($shape): $(head -1 /tmp/qorpera-dock-planted/ran)" >&2; exit 1; }
+			[[ $started == yes ]] || { echo "a press on the dock $app icon started nothing beside planted names ($shape)" >&2; exit 1; }
+			[[ -z $(ls -A /run/qorpera-desktop-dock) ]] || { echo "planted names stayed in the folder a press asks in" >&2; exit 1; }
+		done
+	done
+	runuser -u desktop -- rm /home/desktop/Desktop
+	rm -rf "$guarded" /tmp/qorpera-dock-planted
+	untouched || { echo "the file only root can read was changed" >&2; exit 1; }
 	desktop stop >/dev/null
 	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
 	[[ -d /run/qorpera-desktop && -z $(ls -A /run/qorpera-desktop) ]] || { echo "the notes of root outlived the desktop" >&2; exit 1; }
