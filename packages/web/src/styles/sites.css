@@ -170,8 +170,9 @@
 	.site-share { grid-template-columns: minmax(0, 23em) minmax(0, 15em); gap: 10px; }
 }
 
-/* What's new's buttons go under its line when they would squeeze it. */
-@container site-rows not (min-width: 40em) {
+/* What's new's buttons go under its line when they would squeeze it (Danish buttons beside it at a 1440 window with the
+ * sidebar open broke the version line into four). */
+@container site-rows not (min-width: 56em) {
 	.site-row.is-whats-new { grid-template-areas: "emblem head head" ". end end"; }
 	.site-row.is-whats-new > .site-actions { justify-content: flex-start; }
 }

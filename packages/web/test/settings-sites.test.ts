@@ -694,7 +694,7 @@ describe("Sites and What's new's live row at every width", () => {
 	it("puts the pills under the globe on a narrow page, and What's new's buttons under its line", () => {
 		const narrow = css.match(/@container site-rows not \(min-width: 36em\) \{([^@]*?)\n\}/)?.[1] ?? "";
 		expect(narrow).toContain('.site-row { grid-template-areas: "emblem head end" "body body body"; }');
-		const live = css.match(/@container site-rows not \(min-width: 40em\) \{([^@]*?)\n\}/)?.[1] ?? "";
+		const live = css.match(/@container site-rows not \(min-width: 56em\) \{([^@]*?)\n\}/)?.[1] ?? "";
 		expect(live).toContain('.site-row.is-whats-new { grid-template-areas: "emblem head head" ". end end"; }');
 	});
 
