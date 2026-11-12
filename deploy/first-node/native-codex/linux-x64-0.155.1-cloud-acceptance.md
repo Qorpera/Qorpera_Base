@@ -1,5 +1,7 @@
 # Codex 0.155.1 (patched): the first production run
 
+History (v237, 12 Nov 2026): this records the m896 build `1c08fd01…`; v237 pins #1530's rebuild `9c299f88…`, whose cloud acceptance is not recorded yet.
+
 Date: 2026-10-16. **A production run on the pinned patched Codex 0.155.1 completed with a real model.** This
 records the cloud acceptance of that one executable (P7 item P1-9).
 

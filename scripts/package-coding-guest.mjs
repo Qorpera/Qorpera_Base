@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { build } from "esbuild";
+import { CODING_GUEST_HELPER_MAX_BYTES } from "../packages/contracts/src/cloud-coding-command.ts";
 
 if (process.argv.length !== 4 || process.argv[2] !== "--out") {
 	throw new Error("Usage: package-coding-guest.mjs --out <new-directory>");
@@ -31,7 +32,9 @@ for (const [source, file] of sources) {
 		logLevel: "silent",
 	});
 	const bytes = await readFile(resolve(output, file));
-	if (bytes.length > 65536) throw new Error(`Coding guest artifact exceeds protected transport bound: ${file}`);
+	// The executor reads each helper from the machine within the same bound (CODING_GUEST_HELPER_MAX_BYTES).
+	if (bytes.length > CODING_GUEST_HELPER_MAX_BYTES)
+		throw new Error(`Coding guest artifact exceeds protected transport bound: ${file}`);
 	artifacts.push({ file, source, installedPath: `/opt/qorpera-coding/${file}`, owner: "root:root", mode: "0444",
 		sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.length });
 }

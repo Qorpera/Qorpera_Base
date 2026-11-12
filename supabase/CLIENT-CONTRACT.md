@@ -313,10 +313,17 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   `qorpera_set_member_app_layout(p_profile_id, p_layout, p_expected)` (whole
   document, QAL01 when `p_expected` is not the last `updatedAt`, 22023 for a shape
   the web never writes; an empty layout leaves no row). The layout is
-  `qorpera.member-app-layout/v1` `{places, groups}` (packages/web/src/cloud/app-groups.ts).
+  `qorpera.member-app-layout/v1` `{places, groups, colours?}` (packages/web/src/cloud/app-groups.ts).
   A place's key is `page:mailbox|members|bank`, `app:<name>`, `concepts`, `sites`,
   `whats-new` (the What's new page, since `20260930729000`) or `group:<id>`.
-  Any member. Reset takes it away and Undo puts it back; `own.apps` counts it.
+  `colours` (since `20260930731000`) maps such a key to one of the agents' palette
+  colours (`charcoal`, `brown`, `coral`, `orange`, `gold`, `green`, `teal`, `blue`,
+  `purple`, `pink`, `gray`), at most 300; a layout with colours alone is kept.
+  `emblems` (since `20260930732000`) maps an app's key (no group's) to the icon the
+  member picked: a built-in emblem's name or `custom:<id>`, one of the app's own
+  icons (`apps/<name>/icons/<id>.svg`, `@qorpera/cloud-client/app-icons`), at most 300.
+  Any member. Reset takes it away and Undo puts it back; `own.apps` counts it,
+  each colour and each icon as one.
 - `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
   shape after the change. Before `20260930727000`, shared, owner/admin/contributor:
   `create_section {sectionId, name, staffAgentId?, unpin?}`,
@@ -1688,7 +1695,12 @@ with the member folder client. Storage → the repository's folder → "Download
   `queued` or `running`) and the made ones whose file is still there (`ready`, with `path` and `bytes`): a made
   download is over after 7 days, as soon as the job of a newer download of the same `file` begins (it replaces the
   file), and as soon as a restore of the repository from its copy begins to move its folder aside. It is over
-  before the file goes, whatever becomes of that job, so `ready` always has its file.
+  before the file goes, whatever becomes of that job, so `ready` always has its file. Since
+  `20260930735000_code_restore_follow_ups` also `githubCopies: [{owner, name, github}]`: the folders under `code/`
+  that hold a copy of a GitHub project (made by the company's GitHub coding sessions, archived ones too) where no
+  repository is kept in Qorpera. `owner` and `name` are the folder's (`code/<owner>/<name>/`, lower case), `github`
+  the project as GitHub names it (`Owner/Name`, as its newest session there named it). At most 100, ordered by
+  folder. A client from before the key ignores it; a cloud from before it has no such key (read it as `[]`).
 - `qorpera_request_code_download(profile, owner, name, file)`: owners and admins (42501 otherwise). `file` is `files`
   (main's files, a `.zip`) or `history` (main with its history, a git `.bundle`); anything else is 22023, a repository
   the company does not keep is P0002 "No such repository". Answers `{schema: "qorpera.code-download/v1", requestId,

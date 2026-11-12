@@ -154,7 +154,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_list_cloud_routines(uuid)', true, true, 'member: self-scoped or pure helper; anon only through the platform default'),
 	('public.qorpera_list_cloud_secret_connections(uuid,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_list_code_releases(uuid)', false, true, 'member: auth.uid() + membership of a folder-v2 company; What''s new: each repository site''s live, ready and kept versions, never a password (20260930729000)'),
-	('public.qorpera_list_code_repositories(uuid)', false, true, 'member: auth.uid() + membership; the company''s repositories kept in Qorpera with their change counts and open downloads (20260930720000)'),
+	('public.qorpera_list_code_repositories(uuid)', false, true, 'member: auth.uid() + membership; the company''s repositories kept in Qorpera with their change counts and open downloads (20260930720000), and the places under code/ that hold a copy of a GitHub project, never a token or a commit (20260930735000)'),
 	('public.qorpera_list_coding_environment(uuid,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_list_coding_mcp_sign_ins(uuid,uuid)', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_list_coding_session_logins(uuid)', false, true, 'member: the coding session''s owner (qorpera_coding_session_owner_row); their own logins only (20260930551000)'),

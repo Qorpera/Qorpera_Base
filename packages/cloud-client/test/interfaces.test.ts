@@ -281,7 +281,7 @@ columns = ["a"]
 	it("checks needs, access, template and button verbs", () => {
 		const text = MINIMAL.replace(
 			'name = "Small"',
-			'name = "Small"\nneeds = ["mail", "weather"]\nemblem = "rocket"',
+			'name = "Small"\nneeds = ["mail", "weather"]\nemblem = "unicorn"',
 		).concat(`
 [access]
 members = []

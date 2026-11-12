@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { CODING_GUEST_HELPER_MAX_BYTES } from "@qorpera/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { type CodingGitTransferReceipt, LxdCodingGitTransfer } from "../src/coding-git-transfer.ts";
 import type { LxdInspectableClient } from "../src/lxd-client.ts";
@@ -45,7 +46,9 @@ function fixture() {
 			}
 		}),
 		readInstanceFile: vi.fn<LxdInspectableClient["readInstanceFile"]>(async (_project, _name, path, maximum) => {
-			if (maximum > 65536) throw new Error("actual LXD public read limit");
+			// As the LXD client allows: a coding guest helper within its own bound, any other file within 64 KiB.
+			if (maximum > (/^\/opt\/qorpera-coding\/[a-z-]+\.mjs$/.test(path) ? CODING_GUEST_HELPER_MAX_BYTES : 65536))
+				throw new Error("actual LXD public read limit");
 			return {
 				uid: 0,
 				gid: 0,

@@ -4,13 +4,17 @@ import {
 	APP_GROUP_NAME_LIMIT,
 	type AppTile,
 	type AppTreeNode,
+	appColours,
 	appsIn,
 	arrangeAppsFully,
+	colourApp,
 	drawerKey,
 	EMPTY_APP_LAYOUT,
+	emblemApp,
 	fileKey,
 	flattenApps,
 	groupIdOf,
+	groupKey,
 	groupsOf,
 	isGroupKey,
 	type MemberAppLayout,
@@ -36,11 +40,12 @@ import {
 import type { HostedProfile, HostedSession, HostedStaffAgent } from "../../cloud/types.ts";
 import { AGENT_LOOK, type AgentLook, stateLine } from "../../ui/agent-activity.ts";
 import { AppGridDrag, orderApps } from "../../ui/app-grid-drag.ts";
+import { appLookPanel } from "../../ui/app-look-picker.ts";
 import { agentColor, agentFigure, colourNameHex, figureFor } from "../../ui/avatar.ts";
 import { type MenuEntry, menuPoint, openContextMenu, openMenu } from "../../ui/context-menu.ts";
 import { badge, button, confirmDialog, h, icon, initials, notice, personAvatar, replace } from "../../ui/dom.ts";
 import { groupChatAvatar, isGroupChat } from "../../ui/group-chat.ts";
-import { interfaceEmblem } from "../../ui/interface-emblem.ts";
+import { appIconEmblem, type Emblem, interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { matchesKey } from "../../ui/keys.ts";
 import { easing, playOnce, reducedMotion } from "../../ui/motion.ts";
 import { nameDialog } from "../../ui/name-dialog.ts";
@@ -1855,17 +1860,37 @@ function drawInterfaces(
 	// What waits in each entry and the colour of its emblem, by its key in the drawer.
 	const counts = new Map<string, number>();
 	const colours = new Map<string, string | undefined>();
+	// The member's own icon for each entry (20260930732000), drawn in place of the entry's; part of each tile's model,
+	// so a change draws the tile anew. One of the app's own icons is read when picked and not read yet.
+	const own = company.store.get();
+	const emblemChoice = (key: string): { model: string; draw?: () => SVGSVGElement } => {
+		const chosen = own.appLayout?.layout.emblems?.[fileKey(key)];
+		if (!chosen) return { model: "" };
+		if (!chosen.startsWith("custom:")) return { model: chosen, draw: () => interfaceEmblem(chosen as Emblem, 34) };
+		const app = key.startsWith("app:") ? key.slice("app:".length) : undefined;
+		if (!app) return { model: "" };
+		if (!own.appIcons?.[app]) void company.loadAppIcons(app);
+		const drawn = own.appIcons?.[app]?.find((entry) => `custom:${entry.id}` === chosen);
+		return drawn ? { model: `${chosen}@${drawn.seq}`, draw: () => appIconEmblem(drawn.icon, 34) } : { model: "" };
+	};
+	const withEmblem = (element: HTMLElement, choice: { draw?: () => SVGSVGElement }) => {
+		if (choice.draw) element.querySelector(".rail-app-stand > svg.interface-emblem")?.replaceWith(choice.draw());
+		return element;
+	};
 	const elements = shown.map((entry) => {
 		const { name, file } = entry;
 		const count = interfaceBadge(company, file);
 		waiting += count;
 		counts.set(name, count);
 		colours.set(name, PAGE_COLOURS[name]);
-		const model = JSON.stringify([name, file.name, file.about, file.emblem, count]);
+		const choice = emblemChoice(name);
+		const model = JSON.stringify([name, file.name, file.about, file.emblem, count, choice.model]);
 		const kept = parts.interfaceRows.get(name);
-		const element = kept?.shown === model ? kept.element : appIcon(entry, `#/c/${profileId}/i/${name}`, count);
+		const element =
+			kept?.shown === model ? kept.element : withEmblem(appIcon(entry, `#/c/${profileId}/i/${name}`, count), choice);
 		rows.set(name, { shown: model, element });
 		element.dataset.appKey = name;
+		element.dataset.ownEmblem = name === "bank" ? "bank" : (file.emblem ?? "page");
 		element.classList.toggle("active", name === activeName);
 		if (name === activeName) element.setAttribute("aria-current", "page");
 		else element.removeAttribute("aria-current");
@@ -1878,11 +1903,18 @@ function drawInterfaces(
 		if (!manifest) continue;
 		const key = `app:${app.name}`;
 		colours.set(key, manifest.colour ?? undefined);
-		const model = JSON.stringify([app.name, manifest.name, manifest.about, manifest.emblem]);
+		const choice = emblemChoice(key);
+		const model = JSON.stringify([app.name, manifest.name, manifest.about, manifest.emblem, choice.model]);
 		const kept = parts.interfaceRows.get(key);
-		const element = kept?.shown === model ? kept.element : agentAppIcon(manifest, appHash(profileId, app.name));
+		const element =
+			kept?.shown === model
+				? kept.element
+				: withEmblem(agentAppIcon(manifest, appHash(profileId, app.name)), choice);
+		// Its agent was asked for new icons: the tile breathes until they come (company.ts, requestAppIcons).
+		element.classList.toggle("is-drawing", Boolean(own.appIconsDrawing?.[app.name]));
 		rows.set(key, { shown: model, element });
 		element.dataset.appKey = key;
+		element.dataset.ownEmblem = manifest.emblem;
 		element.classList.toggle("active", app.name === activeApp);
 		if (app.name === activeApp) element.setAttribute("aria-current", "page");
 		else element.removeAttribute("aria-current");
@@ -1892,11 +1924,13 @@ function drawInterfaces(
 	if (concepts > 0) {
 		const key = "concepts";
 		colours.set(key, "gold");
-		const model = JSON.stringify([key, t("Concepts"), concepts]);
+		const choice = emblemChoice(key);
+		const model = JSON.stringify([key, t("Concepts"), concepts, choice.model]);
 		const kept = parts.interfaceRows.get(key);
-		const element = kept?.shown === model ? kept.element : conceptsIcon(conceptsHash(profileId));
+		const element = kept?.shown === model ? kept.element : withEmblem(conceptsIcon(conceptsHash(profileId)), choice);
 		rows.set(key, { shown: model, element });
 		element.dataset.appKey = key;
+		element.dataset.ownEmblem = "board";
 		const open = route.name === "company" && route.section === "concepts";
 		element.classList.toggle("active", open);
 		if (open) element.setAttribute("aria-current", "page");
@@ -1907,12 +1941,14 @@ function drawInterfaces(
 	if (sites > 0) {
 		const key = "sites";
 		colours.set(key, "blue");
-		const model = JSON.stringify([key, t("Sites"), sites]);
+		const choice = emblemChoice(key);
+		const model = JSON.stringify([key, t("Sites"), sites, choice.model]);
 		const kept = parts.interfaceRows.get(key);
-		const element = kept?.shown === model ? kept.element : sitesIcon(`#/c/${profileId}/sites`);
+		const element = kept?.shown === model ? kept.element : withEmblem(sitesIcon(`#/c/${profileId}/sites`), choice);
 		rows.set(key, { shown: model, element });
 		// Its key, as every drawer entry has: the member's drag and Alt-arrow order it, and the order is kept.
 		element.dataset.appKey = key;
+		element.dataset.ownEmblem = "globe";
 		const open = route.name === "company" && route.section === "sites";
 		element.classList.toggle("active", open);
 		if (open) element.setAttribute("aria-current", "page");
@@ -1928,11 +1964,16 @@ function drawInterfaces(
 		// A group it stands in sums its count, as a page's; its spark is orange, beside the other platform pages' colours.
 		counts.set(key, whatsNew.ready);
 		colours.set(key, "orange");
-		const model = JSON.stringify([key, t("What's new"), whatsNew.ready]);
+		const choice = emblemChoice(key);
+		const model = JSON.stringify([key, t("What's new"), whatsNew.ready, choice.model]);
 		const kept = parts.interfaceRows.get(key);
-		const element = kept?.shown === model ? kept.element : whatsNewIcon(`#/c/${profileId}/whats-new`, whatsNew.ready);
+		const element =
+			kept?.shown === model
+				? kept.element
+				: withEmblem(whatsNewIcon(`#/c/${profileId}/whats-new`, whatsNew.ready), choice);
 		rows.set(key, { shown: model, element });
 		element.dataset.appKey = key;
+		element.dataset.ownEmblem = "spark";
 		const open = route.name === "company" && route.section === "whats-new";
 		element.classList.toggle("active", open);
 		if (open) element.setAttribute("aria-current", "page");
@@ -1950,7 +1991,9 @@ function drawInterfaces(
 	]);
 	parts.appRefused = refused;
 	const tiles = flattenApps(tree, parts.appGroupsOpen);
-	const colourOf = (key: string | undefined) => (key ? colourHex(colours.get(drawerKey(key))) : undefined);
+	// Apps in a group take the group's colour; the member's own colours over the drawer's (Jonas, 12 Nov 2026).
+	const resolved = appColours(tree, state.appLayout?.layout ?? EMPTY_APP_LAYOUT, (key) => colours.get(drawerKey(key)));
+	const colourOf = (key: string) => colourHex(resolved.get(key));
 	const groupRows = new Map<string, { shown: string; element: HTMLElement }>();
 	const drawn = tiles.map((tile) => {
 		let element: HTMLElement;
@@ -1958,10 +2001,14 @@ function drawInterfaces(
 			const group = tile.node;
 			const inside = appsIn(group);
 			const count = inside.reduce((sum, key) => sum + (counts.get(drawerKey(key)) ?? 0), 0);
-			const colour = colourOf(inside[0]);
-			const model = JSON.stringify([group.id, group.name, count, colour]);
+			const colour = colourOf(tile.key);
+			// Its colour is set in place, not by drawing it anew: a colour picked from its menu keeps the focus on it
+			// (review r2 F1 on #1694).
+			const model = JSON.stringify([group.id, group.name, count]);
 			const kept = parts.groupRows.get(group.id);
 			element = kept?.shown === model ? kept.element : groupIcon(group.name, count, colour);
+			if (colour) element.style.setProperty("--app-colour", colour);
+			else element.style.removeProperty("--app-colour");
 			groupRows.set(group.id, { shown: model, element });
 			element.dataset.appKey = tile.key;
 			element.classList.toggle("is-open", tile.open);
@@ -2854,9 +2901,11 @@ function openDrawerMenu(company: CompanyController, parts: RailParts, event: Mou
 	}
 	const key = fileKey(tile.dataset.appKey!);
 	const name = tile.querySelector(".rail-app-name")?.textContent ?? key;
+	// A group takes a colour of the member's own; an app its icon and colour in one panel (12 Nov 2026), where an app in a
+	// group sets the group's colour.
 	const items: MenuEntry[] = isGroupKey(key)
 		? groupMenu(company, parts, groupIdOf(key))
-		: [moveToMenu(company, parts, key), ...pageMenuItems(company, parts, tile)];
+		: [moveToMenu(company, parts, key), lookMenu(company, parts, key, name), ...pageMenuItems(company, parts, tile)];
 	if (!items.length) return;
 	event.preventDefault();
 	const point = menuPoint(event, tile);
@@ -2896,7 +2945,104 @@ function moveToMenu(company: CompanyController, parts: RailParts, key: string): 
 	};
 }
 
-/** A group's menu: Rename group and Ungroup, in the member's own drawer. */
+/** Colour for a group: the member's own colour for it and so for everything in it (Jonas, 12 Nov 2026), from the
+ * palette row the apps' Icon and colour panel has; Default takes the member's choice away. */
+function groupColourMenu(company: CompanyController, parts: RailParts, id: string, name: string): MenuEntry {
+	const key = groupKey(id);
+	return {
+		kind: "panel",
+		label: t("Colour"),
+		icon: "palette",
+		panel: () =>
+			appLookPanel(
+				() => ({
+					title: name,
+					ink:
+						parts.appsGrid
+							.querySelector<HTMLElement>(`[data-app-key="${key}"]`)
+							?.style.getPropertyValue("--app-colour") || undefined,
+					colour: {
+						chosen: company.store.get().appLayout?.layout.colours?.[key] ?? null,
+						choose: (colour) => {
+							const mine = ownAppLayout(company, parts);
+							if (mine && (mine.colours?.[key] ?? null) !== colour)
+								void company.changeAppLayout(colourApp(mine, key, colour));
+						},
+					},
+				}),
+				(redraw) => company.store.subscribe(redraw),
+			),
+	};
+}
+
+/** Icon and colour (12 Nov 2026; ui/app-look-picker.ts): the member's own colour (an app in a group: the group's) and
+ * icon for an entry of the drawer, and for an agent's app its own icons and Generate icon. Each choice is written to
+ * the member's own layout at once; the panel follows the store while it is open. */
+function lookMenu(company: CompanyController, parts: RailParts, key: string, name: string): MenuEntry {
+	const appName = key.startsWith("app:") ? key.slice("app:".length) : undefined;
+	const tileOf = () => parts.appsGrid.querySelector<HTMLElement>(`[data-app-key="${drawerKey(key)}"]`);
+	return {
+		kind: "panel",
+		label: t("Icon and colour"),
+		icon: "palette",
+		panel: () => {
+			if (appName) void company.loadAppIcons(appName);
+			return appLookPanel(
+				() => {
+					const state = company.store.get();
+					const layout = state.appLayout?.layout;
+					const groupId = parts.appTiles.find((entry) => entry.key === key)?.chain.at(-1);
+					const group = groupId
+						? groupsOf(parts.appTree).find((entry) => entry.group.id === groupId)?.group
+						: undefined;
+					const colourKey = group ? groupKey(group.id) : key;
+					const app = appName ? state.apps?.find((entry) => entry.name === appName) : undefined;
+					const owner = app?.manifest?.owner
+						? state.staff.find((agent) => agent.id === app.manifest?.owner && agent.employmentStatus === "active")
+						: undefined;
+					return {
+						title: name,
+						ink: tileOf()?.style.getPropertyValue("--app-colour") || undefined,
+						colour: {
+							chosen: layout?.colours?.[colourKey] ?? null,
+							...(group ? { group: group.name } : {}),
+							choose: (colour) => {
+								const mine = ownAppLayout(company, parts);
+								if (mine && (mine.colours?.[colourKey] ?? null) !== colour)
+									void company.changeAppLayout(colourApp(mine, colourKey, colour));
+							},
+						},
+						emblem: {
+							own: (tileOf()?.dataset.ownEmblem ?? "page") as Emblem,
+							chosen: layout?.emblems?.[key] ?? null,
+							choose: (choice) => {
+								const mine = ownAppLayout(company, parts);
+								if (mine && (mine.emblems?.[key] ?? null) !== choice)
+									void company.changeAppLayout(emblemApp(mine, key, choice));
+							},
+						},
+						...(app?.manifest
+							? {
+									made: {
+										icons: state.appIcons?.[app.name] ?? [],
+										drawing: Boolean(state.appIconsDrawing?.[app.name]),
+										agent: owner?.displayName ?? t("The Co-Founder"),
+										generate: async () => {
+											const asked = await company.requestAppIcons(app);
+											return asked.ok ? null : asked.reason;
+										},
+									},
+								}
+							: {}),
+					};
+				},
+				(redraw) => company.store.subscribe(redraw),
+			);
+		},
+	};
+}
+
+/** A group's menu: Rename group, Colour and Ungroup, in the member's own drawer. */
 function groupMenu(company: CompanyController, parts: RailParts, id: string): MenuEntry[] {
 	const group = groupsOf(parts.appTree).find((entry) => entry.group.id === id)?.group;
 	if (!group) return [];
@@ -2919,6 +3065,7 @@ function groupMenu(company: CompanyController, parts: RailParts, id: string): Me
 				if (name && layout) void company.changeAppLayout(renameAppGroup(layout, id, name, companyName));
 			},
 		},
+		groupColourMenu(company, parts, id, group.name),
 		{
 			label: t("Ungroup"),
 			icon: "grid",

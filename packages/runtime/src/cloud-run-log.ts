@@ -1,6 +1,11 @@
 /// <reference lib="es2024.string" />
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
+import {
+	MEMORY_RUN_STEP_FIELD_BYTES,
+	MEMORY_RUN_STEP_LINE_BYTES,
+	MEMORY_RUN_STEP_READS_BYTES,
+} from "@qorpera/cloud-client/memory-run-files";
 import { isUuid, type JsonValue, SHA256_HEX_PATTERN } from "@qorpera/contracts";
 import { cloudActionEffect } from "./cloud-action-review.ts";
 import type {
@@ -42,15 +47,18 @@ export const CLOUD_RUN_LOG_BLOCK_STEPS = 16;
 /** Core §5's bound on one structured file. */
 export const CLOUD_RUN_LOG_BLOCK_BYTES = 64 * 1024;
 /** The most a step record takes as stored, with its keys and newline. A pending step counts at this size, so filling
- * in its result never takes its block past CLOUD_RUN_LOG_BLOCK_BYTES. */
-export const CLOUD_RUN_LOG_STEP_BYTES = 49 * 1024;
-/** `args`, `text`, the result envelope and `paths`, each as stored (JSON escaping and quotes included). */
-export const CLOUD_RUN_LOG_FIELD_BYTES = 8 * 1024;
+ * in its result never takes its block past CLOUD_RUN_LOG_BLOCK_BYTES. The line's bounds are the shared parser's
+ * (memory-run-files.ts), which the folder client runs on every block this log stages, reads and resumes from. */
+export const CLOUD_RUN_LOG_STEP_BYTES = MEMORY_RUN_STEP_LINE_BYTES + 1;
+/** `args`, `text` and `paths`, each as stored (JSON escaping and quotes included). The result envelope is kept whole: one
+ * result's bound (MAX_CLOUD_TOOL_RESULT_BYTES, 32 KiB, the parser's MEMORY_RUN_STEP_RESULT_BYTES), which the step's
+ * other fields give way to within the step. */
+export const CLOUD_RUN_LOG_FIELD_BYTES = MEMORY_RUN_STEP_FIELD_BYTES;
 /** The most paths a step's line names. `paths` is never cut: a step that names more, or more than
  * CLOUD_RUN_LOG_FIELD_BYTES of them, is written narrow (§4.5). */
 export const CLOUD_RUN_LOG_PATHS = 1024;
 /** The copy of the result's read references, as stored. */
-export const CLOUD_RUN_LOG_READS_BYTES = 16 * 1024;
+export const CLOUD_RUN_LOG_READS_BYTES = MEMORY_RUN_STEP_READS_BYTES;
 /** STEP_COMMIT: a batch writes at most this many new steps, and waiting finished steps are committed at this count. */
 export const CLOUD_RUN_LOG_COMMIT_STEPS = 16;
 export const CLOUD_RUN_LOG_COMMIT_MS = 30_000;
