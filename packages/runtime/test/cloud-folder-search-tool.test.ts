@@ -359,6 +359,14 @@ describe("company_search", () => {
 		});
 		// A page cut short counts nothing: the next page searches those files again.
 		expect(text).toContain("Part of the answer");
+		// Lines a pattern passed over before the cut are still named: the next call goes on after the cut and would never
+		// name them (review r5 F1).
+		const skipped = folderSearchText({ hits, searched: 2, binary: 0, longLines: 1, reads: [], next: null }, seal);
+		expect(fitsOneResult(skipped)).toBe(true);
+		expect(skipped).toMatch(
+			/\n\nPart of the answer; 1 line over 1 MiB not searched by the pattern \(search them as text, or read them\)\. More: call again with cursor \S+$/,
+		);
+		expect(skipped.split("\n").filter((line) => line.startsWith("page.html:")).length).toBeLessThan(40);
 		// One hit too long for a result is still shown, cut, and the search goes on after it.
 		const long = folderSearchText(
 			{

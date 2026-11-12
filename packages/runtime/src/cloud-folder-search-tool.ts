@@ -666,14 +666,18 @@ export function folderSearchText(
 		const lines = joined(units.slice(0, shown).map((u, i) => (i === 0 && first !== undefined ? first : u)));
 		const cut = shown < units.length;
 		const next = cut ? units[shown]!.resume : page.next;
-		// An answer cut short counts nothing: the next call searches those files again.
+		// An answer cut short counts no files: the next call searches those after the cut again. Lines a pattern passed
+		// over are named either way: the next call goes on after the cut and would never name those before it (it may
+		// name again one after it).
+		const passed =
+			longLines > 0
+				? `; ${longLines} line${longLines === 1 ? "" : "s"} over 1 MiB not searched by the pattern (search them as text, or read them)`
+				: "";
 		const counts = cut
-			? "Part of the answer"
+			? `Part of the answer${passed}`
 			: `${page.searched} file${page.searched === 1 ? "" : "s"} searched` +
 				(page.binary > 0 ? `, ${page.binary} binary passed over` : "") +
-				(longLines > 0
-					? `; ${longLines} line${longLines === 1 ? "" : "s"} over 1 MiB not searched by the pattern (search them as text, or read them)`
-					: "");
+				passed;
 		const more = next ? `. More: call again with cursor ${token}` : ". Nothing more.";
 		return { text: `${lines.length === 0 ? "No matches here." : lines.join("\n")}\n\n${counts}${more}`, next };
 	};
