@@ -221,6 +221,45 @@ describe("a member's action through the executor's member listener (202609307130
 		expect(s.acted).toHaveBeenCalledTimes(2);
 	});
 
+	it("passes the lease generation a shared action was made under (20260930738000), and nothing else beside it", async () => {
+		const s = await service(
+			async () => ({ etag, png: picture }),
+			async () => ({ exitCode: 0 }),
+		);
+		const done = await post(s.url("/act"), { generation: 7, action: { type: "type", text: "hunter2" } });
+		expect(done.status).toBe(200);
+		expect(s.acted).toHaveBeenLastCalledWith(
+			{
+				companyId: s.companyId,
+				machineId: s.machineId,
+				token,
+				action: { type: "type", text: "hunter2" },
+				shared: true,
+				generation: 7,
+			},
+			expect.any(AbortSignal),
+		);
+		await post(s.url("/act"), { action: { type: "click", x: 1, y: 2 }, generation: 0 });
+		expect(s.acted).toHaveBeenLastCalledWith(
+			expect.objectContaining({ shared: true, generation: 0 }),
+			expect.any(AbortSignal),
+		);
+		// A generation is a safe whole number, 0 or more, and never beside a hold.
+		for (const generation of [-1, 1.5, 2 ** 53, "3", null, true])
+			expect(
+				(await post(s.url("/act"), { action: { type: "click", x: 1, y: 2 }, generation })).status,
+				String(generation),
+			).toBe(400);
+		for (const body of [
+			{ action: { type: "click", x: 1, y: 2 }, generation: 1, epoch: 1, seat: 1 },
+			{ action: { type: "click", x: 1, y: 2 }, generation: 1, seat: 1 },
+			{ action: { type: "click", x: 1, y: 2 }, generation: 1, shared: true },
+			{ generation: 1 },
+		])
+			expect((await post(s.url("/act"), body)).status, JSON.stringify(body)).toBe(400);
+		expect(s.acted).toHaveBeenCalledTimes(2);
+	});
+
 	it("refuses a body that is not one action of a member's as 400, by method and token first, and never tells the text", async () => {
 		const s = await service(
 			async () => ({ etag, png: picture }),
@@ -304,6 +343,9 @@ describe("a member's action through the executor's member listener (202609307130
 		};
 		next = new CloudMemberMachineActRefusal("DESKTOP_CONTROL_ENDED");
 		expect(await ask()).toEqual({ status: 409, body: JSON.stringify({ code: "DESKTOP_CONTROL_ENDED" }) });
+		// Someone held the desktop privately since a shared input was made (20260930738000).
+		next = new CloudMemberMachineActRefusal("DESKTOP_HELD_SINCE");
+		expect(await ask()).toEqual({ status: 409, body: JSON.stringify({ code: "DESKTOP_HELD_SINCE" }) });
 		next = new CloudMemberMachineScreenSignIn();
 		expect((await ask()).status).toBe(401);
 		next = new CloudMemberMachineScreenForbidden();
@@ -622,6 +664,30 @@ describe("a member's shared action begun as the member (deploy/coding-worker/mem
 		expect(String(init?.body)).not.toContain("hunter2");
 	});
 
+	it("calls the begin that takes a generation with the one the input was made under (20260930738000), 0 too", async () => {
+		for (const generation of [12, 0]) {
+			const actionId = randomUUID();
+			const c = control(200, { schema: "qorpera.member-machine-desktop-act/v1", state: "ok", actionId });
+			expect(await c.control.share(token, { ...share, generation }, signal)).toBe(actionId);
+			const [url, init] = c.fetcher.mock.calls[0]!;
+			expect(url).toBe("https://project.supabase.co/rest/v1/rpc/qorpera_member_machine_desktop_share_begin");
+			expect(JSON.parse(String(init?.body))).toEqual({
+				p_profile_id: share.companyId,
+				p_machine_id: share.machineId,
+				p_action: { type: "type", length: 11 },
+				p_generation: generation,
+			});
+		}
+		// Never a generation that is not a safe whole number, 0 or more.
+		const opened = control(200, {});
+		for (const generation of [-1, 1.5, 2 ** 53, Number.NaN])
+			await expect(
+				opened.control.share(token, { ...share, generation }, signal),
+				String(generation),
+			).rejects.toThrow("MEMBER_SHARE_BEGIN_INVALID");
+		expect(opened.fetcher).not.toHaveBeenCalled();
+	});
+
 	it("turns the shared begin's refusals into the member's, and fails closed on anything else", async () => {
 		for (const reason of [
 			"MACHINE_NOT_RUNNING",
@@ -629,6 +695,7 @@ describe("a member's shared action begun as the member (deploy/coding-worker/mem
 			"DESKTOP_MEMBER_IN_CONTROL",
 			"DESKTOP_MACHINE_TOO_SMALL",
 			"DESKTOP_ACTIONS_TOO_FAST",
+			"DESKTOP_HELD_SINCE",
 		]) {
 			const c = control(200, { schema: "qorpera.member-machine-desktop-act/v1", state: "refused", reason });
 			const error = await c.control.share(token, share, signal).catch((caught: unknown) => caught);

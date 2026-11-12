@@ -430,9 +430,10 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		// A member's action (20260930713000) is begun as the member too, recorded without its text.
 		memberActBegin: (token: string, act: { companyId: string; machineId: string; action: MachineScreenAction; epoch: number;
 			seat: number }, signal: AbortSignal) => memberControl.act(token, act, signal),
-		// A member's shared action (20260930734000), on the desktop they share with the agent: no hold of theirs.
-		memberShareBegin: (token: string, share: { companyId: string; machineId: string; action: MachineScreenAction },
-			signal: AbortSignal) => memberControl.share(token, share, signal),
+		// A member's shared action (20260930734000), on the desktop they share with the agent: no hold of theirs; under the
+		// lease generation its input was made under when the page sent one (20260930738000).
+		memberShareBegin: (token: string, share: { companyId: string; machineId: string; action: MachineScreenAction;
+			generation?: number }, signal: AbortSignal) => memberControl.share(token, share, signal),
 		// A member's start of the desktop (20260930714000) is begun as the member too.
 		memberStartBegin: (token: string, start: { companyId: string; machineId: string }, signal: AbortSignal) =>
 			memberControl.start(token, start, signal) } : {}),

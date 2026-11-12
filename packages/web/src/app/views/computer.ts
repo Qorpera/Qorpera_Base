@@ -169,6 +169,10 @@ interface SharedInput {
 	 * ledger's): a higher one seen later (a private hold of the member's taken and given back in any window, even one
 	 * the window never saw held) ends the sharing and its queue (review r4 F1 of #1701). */
 	readonly epoch: number;
+	/** The desktop's lease generation the list named when this sharing began (20260930738000; null from a database
+	 * before it): every action of it carries it as the one its input was made under, and SQL refuses it once someone held
+	 * the desktop privately since (DESKTOP_HELD_SINCE). Another one in the list ends the sharing (#sharingOf). */
+	readonly generation: number | null;
 	readonly queue: QueuedAction[];
 	readonly stop: AbortController;
 	sending: boolean;
@@ -310,6 +314,9 @@ export class ComputerPanel {
 	#listStale = true;
 	/** List reads begun so far, and the shared senders waiting for one begun after a moment (#freshList). */
 	#listReads = 0;
+	/** A shared action was refused DESKTOP_HELD_SINCE (20260930738000) when this many list reads had begun: no sharing
+	 * until one begun after it has answered, with the generation that stands now. */
+	#heldSince: number | undefined;
 	#listWaiters: { readonly after: number; readonly done: () => void }[] = [];
 	#chosen: string | undefined;
 	#machineId: string | undefined;
@@ -755,6 +762,8 @@ export class ComputerPanel {
 					this.#listed = await computer.agentMachines(this.agentId, signal);
 					this.#listedAt = Date.now();
 					this.#failures = 0;
+					// A read begun after a DESKTOP_HELD_SINCE names the generation that stands now: sharing may go on under it.
+					if (this.#heldSince !== undefined && read > this.#heldSince) this.#heldSince = undefined;
 					this.#heldPerList();
 					// Senders waiting for a read begun after they asked: this is one (it has been applied above).
 					const waiting = this.#listWaiters;
@@ -1170,6 +1179,7 @@ export class ComputerPanel {
 		const shared: SharedInput = {
 			machineId,
 			epoch: this.#epochOf(machineId),
+			generation: this.#generationOf(machineId),
 			queue: [],
 			stop: new AbortController(),
 			sending: false,
@@ -1249,6 +1259,7 @@ export class ComputerPanel {
 			!this.#ledger.mayHold(shown.machineId) &&
 			!this.#takingLive(shown.machineId) &&
 			this.#wantTakeOver === undefined &&
+			this.#heldSince === undefined &&
 			!this.#handBackFailed
 		);
 	}
@@ -1287,8 +1298,15 @@ export class ComputerPanel {
 			this.#shared === shared &&
 			this.#pick()?.machineId === shared.machineId &&
 			this.#epochOf(shared.machineId) <= shared.epoch &&
+			// 20260930738000: the lease generation it was made under still the list's (a private hold seen since ends it).
+			this.#generationOf(shared.machineId) === shared.generation &&
 			this.#sharing()
 		);
+	}
+
+	/** The desktop's lease generation as the list last named it (20260930738000); null before it, or unknown. */
+	#generationOf(machineId: string): number | null {
+		return this.#listed?.machines.find((machine) => machine.machineId === machineId)?.generation ?? null;
 	}
 
 	/** The member's hand-back epoch for a machine, the highest the window knows: the list's (as last read) or the
@@ -1367,7 +1385,11 @@ export class ComputerPanel {
 					answer = await computer.screens.act(
 						sender.machineId,
 						item.action,
-						hold ? { epoch: hold.epoch, seat: hold.seat } : null,
+						hold
+							? { epoch: hold.epoch, seat: hold.seat }
+							: shared?.generation !== null && shared?.generation !== undefined
+								? { generation: shared.generation }
+								: null,
 						sender.stop.signal,
 					);
 				} catch {
@@ -1401,7 +1423,13 @@ export class ComputerPanel {
 				}
 				// Any other refusal, or no answer: the queue goes, never tried again (review r3 of #1701).
 				const code = answer?.kind === "refused" ? answer.code : undefined;
-				if (code === "DESKTOP_CONTROL_ENDED" || code === "DESKTOP_MEMBER_IN_CONTROL") {
+				if (code === "DESKTOP_HELD_SINCE") {
+					// Someone held the desktop privately since this input was made, unseen by the window (20260930738000): it and
+					// what came after it go, said; sharing waits for a list read begun now, then goes on under its generation.
+					this.#heldSince = this.#listReads;
+					this.#listStale = true;
+					drop(t("Your last input did not go through. Try again."));
+				} else if (code === "DESKTOP_CONTROL_ENDED" || code === "DESKTOP_MEMBER_IN_CONTROL") {
 					// The hold ended under the action (handed back elsewhere, it ran out, or another tab took it over), or
 					// someone types privately now: the list says where it stands, and nothing is shared before a look shows the
 					// screen again.

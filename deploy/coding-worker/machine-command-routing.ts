@@ -75,10 +75,11 @@ interface MachineCommandRouterOptions {
 	 * when this executor takes no member's requests. */
 	memberActBegin?(token: string, act: { companyId: string; machineId: string; action: MachineScreenAction; epoch: number;
 		seat: number }, signal: AbortSignal): Promise<string>;
-	/** A member's shared action (20260930734000): begun as the member with no hold of theirs, recorded without its text
-	 * (member-control.ts); absent when this executor takes no member's requests. */
-	memberShareBegin?(token: string, share: { companyId: string; machineId: string; action: MachineScreenAction },
-		signal: AbortSignal): Promise<string>;
+	/** A member's shared action (20260930734000): begun as the member with no hold of theirs, recorded without its text,
+	 * under the lease generation its input was made under when the page sent one (20260930738000; member-control.ts);
+	 * absent when this executor takes no member's requests. */
+	memberShareBegin?(token: string, share: { companyId: string; machineId: string; action: MachineScreenAction;
+		generation?: number }, signal: AbortSignal): Promise<string>;
 	/** A member's action on this node's machine; absent when the executor carries no machines. */
 	memberActLocal?(authority: MemberMachineActAuthority, action: MachineScreenAction, signal: AbortSignal): Promise<CloudMemberMachineAct>;
 	/** A member's start of the desktop (20260930714000): begins it as the member (member-control.ts); absent when this
@@ -262,8 +263,11 @@ export class MachineCommandRouter {
 			// A shared action (20260930734000): no hold of the member's; SQL refuses it while anyone holds the desktop
 			// privately, and serves it only while no one took it since.
 			if (!this.#options.memberShareBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+			// The lease generation the input was made under goes to SQL, which refuses it once someone held the desktop
+			// privately since (20260930738000); a page before it sends none and is served as before.
 			const actionId = await this.#options.memberShareBegin(request.token, { companyId: request.companyId,
-				machineId: request.machineId, action: request.action }, signal);
+				machineId: request.machineId, action: request.action,
+				...(request.generation === undefined ? {} : { generation: request.generation }) }, signal);
 			return this.#memberActServe(actionId, request.action, signal, false);
 		}
 		if (!this.#options.memberActBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");

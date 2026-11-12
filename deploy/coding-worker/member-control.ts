@@ -27,13 +27,15 @@ const ACT_REFUSED = new Set([
 	"DESKTOP_CONTROL_ENDED",
 ]);
 /** What the begin of a shared action answers one it refuses (20260930734000): anyone's private hold of the desktop, a
- * machine with no desktop, and one member's actions too fast. */
+ * machine with no desktop, one member's actions too fast, and, for input made under a lease generation
+ * (20260930738000), a private hold since it was made. */
 const SHARE_REFUSED = new Set([
 	"MACHINE_NOT_RUNNING",
 	"MACHINE_NEEDS_COMPANY_VIEW",
 	"DESKTOP_MEMBER_IN_CONTROL",
 	"DESKTOP_MACHINE_TOO_SMALL",
 	"DESKTOP_ACTIONS_TOO_FAST",
+	"DESKTOP_HELD_SINCE",
 ]);
 /** What the begin of a start answers one it refuses (20260930714000). */
 const START_REFUSED = new Set([
@@ -142,21 +144,33 @@ export class MemberMachineScreenControl {
 		throw new Error("MEMBER_ACT_BEGIN_INVALID");
 	}
 	/** Begins one shared action as the member (qorpera_member_machine_desktop_share_begin, 20260930734000): on the desktop
-	 * they share with the agent, with no hold of theirs, recorded without any text (cloudMemberMachineActRecord). Its
-	 * single-use id, or the refusal the window acts on (anyone's private hold among them). Sign-in and forbidden as for a
-	 * look. */
+	 * they share with the agent, with no hold of theirs, recorded without any text (cloudMemberMachineActRecord). With the
+	 * lease generation the input was made under (20260930738000) it goes to the begin that takes it (`p_generation`), which
+	 * refuses it once someone held the desktop privately since (DESKTOP_HELD_SINCE); without one (a page before it) to the
+	 * begin that takes none, as before. Its single-use id, or the refusal the window acts on (anyone's private hold among
+	 * them). Sign-in and forbidden as for a look. */
 	async share(
 		token: string,
-		share: { companyId: string; machineId: string; action: MachineScreenAction },
+		share: { companyId: string; machineId: string; action: MachineScreenAction; generation?: number },
 		signal: AbortSignal,
 	): Promise<string> {
 		if (!TOKEN.test(token)) throw new CloudMemberMachineScreenSignIn();
-		if (!UUID.test(share.companyId) || !UUID.test(share.machineId) || share.action.type === "open")
+		if (
+			!UUID.test(share.companyId) ||
+			!UUID.test(share.machineId) ||
+			share.action.type === "open" ||
+			(share.generation !== undefined && (!Number.isSafeInteger(share.generation) || share.generation < 0))
+		)
 			throw new Error("MEMBER_SHARE_BEGIN_INVALID");
 		const answer = await this.#call(
 			token,
 			"qorpera_member_machine_desktop_share_begin",
-			{ p_profile_id: share.companyId, p_machine_id: share.machineId, p_action: cloudMemberMachineActRecord(share.action) },
+			{
+				p_profile_id: share.companyId,
+				p_machine_id: share.machineId,
+				p_action: cloudMemberMachineActRecord(share.action),
+				...(share.generation === undefined ? {} : { p_generation: share.generation }),
+			},
 			"MEMBER_SHARE_BEGIN",
 			signal,
 		);

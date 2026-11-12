@@ -48,6 +48,7 @@ function machine(n: number, change: Partial<MemberAgentMachine> = {}): MemberAge
 		control: null,
 		epoch: 0,
 		others: [],
+		generation: 0,
 		...change,
 	};
 }
@@ -144,10 +145,21 @@ function setup(
 		/** The lease generation per machine (F26): every seating, and every lease's end, moves it; 0 when absent. */
 		seats: new Map<string, number>(),
 		/** Actions are checked as the database checks them when they reach it, after their gate (F24, F26): run only for
-		 * the member's own hold taken under the epoch named, in the seat named; otherwise DESKTOP_CONTROL_ENDED. */
+		 * the member's own hold taken under the epoch named, in the seat named; otherwise DESKTOP_CONTROL_ENDED. A shared
+		 * one runs only while no one holds the desktop privately, and (20260930738000) only at the lease generation it
+		 * names, when it names one; otherwise DESKTOP_HELD_SINCE. */
 		actAsDatabase: false,
+		/** The list names each machine's lease generation (the seats below) to a member who may act (20260930738000); off,
+		 * it is a database before that migration. */
+		listGenerations: true,
 	};
 	const epochOf = (machineId: unknown) => state.epochs.get(String(machineId)) ?? 0;
+	/** A machine's row as the database lists it to the caller: their epoch, and the lease generation to one who may act. */
+	const listedRow = (row: MemberAgentMachine) => ({
+		...row,
+		epoch: epochOf(row.machineId),
+		generation: state.listGenerations && state.canTakeOver ? (state.seats.get(row.machineId) ?? 0) : undefined,
+	});
 	/** As the database: the next seat of a machine, moved now. */
 	const seatAnew = (machineId: unknown) => {
 		const next = (state.seats.get(String(machineId)) ?? 0) + 1;
@@ -162,6 +174,8 @@ function setup(
 		/** The epoch and the seat of the private hold it was captured under; null for a shared action (20260930734000). */
 		epoch: number | null;
 		seat: number | null;
+		/** The lease generation a shared action was made under (20260930738000); null when it names none. */
+		generation: number | null;
 		signal: AbortSignal | undefined;
 		/** Whether it ran, when the database checks it (actAsDatabase). */
 		ran?: boolean;
@@ -191,16 +205,20 @@ function setup(
 				action: Record<string, unknown>;
 				epoch?: number;
 				seat?: number;
+				generation?: number;
 			};
 			// The action, and the epoch and the seat of the hold it was captured under (F24, F26); a shared one alone
-			// (20260930734000).
+			// (20260930734000), or with the lease generation it was made under (20260930738000).
 			const shared = !("epoch" in body);
-			expect(Object.keys(body)).toEqual(shared ? ["action"] : ["action", "epoch", "seat"]);
+			expect(Object.keys(body)).toEqual(
+				shared ? ("generation" in body ? ["action", "generation"] : ["action"]) : ["action", "epoch", "seat"],
+			);
 			const sent: (typeof acts)[number] = {
 				url: url.slice(bridge.length),
 				action: body.action,
 				epoch: body.epoch ?? null,
 				seat: body.seat ?? null,
+				generation: body.generation ?? null,
 				signal: init?.signal ?? undefined,
 			};
 			acts.push(sent);
@@ -210,13 +228,24 @@ function setup(
 			if (state.actAsDatabase) {
 				// As the database, when the action reaches it: only under the hold it names.
 				const row = state.machines.find((one) => url.includes(`/${one.machineId}/act`));
-				// A shared action runs only while no one types privately (20260930734000).
+				// A shared action runs only while no one types privately (20260930734000), and only at the lease generation it
+				// names (20260930738000).
+				const moved =
+					shared &&
+					body.generation !== undefined &&
+					body.generation !== (state.seats.get(row?.machineId ?? "") ?? 0);
 				sent.ran = shared
-					? !row?.control
+					? !row?.control && !moved
 					: row?.control?.mine === true && row.control.epoch === body.epoch && row.control.seat === body.seat;
 				if (!sent.ran)
 					return Response.json(
-						{ code: shared ? "DESKTOP_MEMBER_IN_CONTROL" : "DESKTOP_CONTROL_ENDED" },
+						{
+							code: shared
+								? row?.control
+									? "DESKTOP_MEMBER_IN_CONTROL"
+									: "DESKTOP_HELD_SINCE"
+								: "DESKTOP_CONTROL_ENDED",
+						},
 						{ status: 409 },
 					);
 			}
@@ -268,7 +297,7 @@ function setup(
 			const snapshot = state.listSnapshotGate ?? state.listSnapshotGates.shift();
 			if (snapshot) {
 				state.listSnapshotGate = undefined;
-				const asked = state.machines.map((row) => ({ ...row, epoch: epochOf(row.machineId) }));
+				const asked = state.machines.map(listedRow);
 				await snapshot;
 				return Response.json({
 					schema: "qorpera.agent-machines/v1",
@@ -285,8 +314,8 @@ function setup(
 				staffAgentId: staff.id,
 				canWake: state.canWake,
 				canTakeOver: state.canTakeOver,
-				// As the database: the member's own epoch per machine.
-				machines: state.machines.map((row) => ({ ...row, epoch: epochOf(row.machineId) })),
+				// As the database: the member's own epoch per machine, and the lease generation (20260930738000).
+				machines: state.machines.map(listedRow),
 			});
 		}
 		if (method === "qorpera_member_manage_company_machine")
@@ -3662,6 +3691,114 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 					.toEqual([]);
 				p.dispose();
 			}
+	});
+
+	it("carries the lease generation the list named with every shared action, and none from a database before it (20260930738000)", async () => {
+		for (const [named, expected] of [
+			[true, 5],
+			[false, null],
+		] as const) {
+			const s = setup();
+			s.state.listGenerations = named;
+			s.state.seats.set(machine(1).machineId, 5);
+			const { p } = await shown(s);
+			press(canvas(p), 400, 250);
+			await flush();
+			press(canvas(p), 10, 10, { button: 2 });
+			key(canvas(p), "a");
+			await advance(TYPE_BATCH_MS);
+			await flush();
+			expect(
+				s.acts.map((act) => [act.action.type, act.generation, act.epoch]),
+				String(named),
+			).toEqual([
+				["click", expected, null],
+				["type", expected, null],
+			]);
+			p.dispose();
+		}
+	});
+
+	it("is refused by the server when a hold was taken and given back unseen: says so, reads again, and goes on under the new generation (20260930738000)", async () => {
+		const s = setup();
+		s.state.actAsDatabase = true;
+		const { p } = await shown(s);
+		press(canvas(p), 400, 250);
+		await flush();
+		const reads = () => calls(s, "qorpera_list_agent_machines").length;
+		// Another member took the desktop and gave it back (two seatings) with no hint and no read due: the window still
+		// knows generation 0.
+		s.state.seats.set(machine(1).machineId, 2);
+		const before = reads();
+		key(canvas(p), "a");
+		await advance(TYPE_BATCH_MS);
+		await flush();
+		expect(s.acts.map((act) => [act.action, act.generation, act.ran])).toEqual([
+			[{ type: "type", text: "a" }, 0, false],
+		]);
+		expect(note(p)).toBe(lost);
+		expect(reads()).toBeGreaterThan(before);
+		// The read named generation 2: what the member does now goes under it.
+		await advance(LOOK_EVERY_MS);
+		key(canvas(p), "b");
+		await advance(TYPE_BATCH_MS);
+		await flush();
+		expect(s.acts.map((act) => [act.action, act.generation, act.ran])).toEqual([
+			[{ type: "type", text: "a" }, 0, false],
+			[{ type: "type", text: "b" }, 2, true],
+		]);
+		expect(note(p)).toBe("");
+	});
+
+	it("takes no input between the server's refusal and the read that names the generation now (20260930738000)", async () => {
+		const s = setup();
+		s.state.actAsDatabase = true;
+		const { p } = await shown(s);
+		press(canvas(p), 400, 250);
+		await flush();
+		s.state.seats.set(machine(1).machineId, 2);
+		let open = () => {};
+		s.state.listGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		key(canvas(p), "a");
+		await advance(TYPE_BATCH_MS);
+		await flush();
+		expect(note(p)).toBe(lost);
+		// The read is on its way: the picture takes nothing.
+		expect(canvas(p).getAttribute("role")).toBe("img");
+		key(canvas(p), "x");
+		await advance(TYPE_BATCH_MS * 2);
+		expect(s.acts.map((act) => act.action)).toEqual([{ type: "type", text: "a" }]);
+		open();
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(canvas(p).getAttribute("role")).toBe("application");
+		key(canvas(p), "b");
+		await advance(TYPE_BATCH_MS);
+		await flush();
+		expect(s.acts.at(-1)).toMatchObject({ action: { type: "type", text: "b" }, generation: 2, ran: true });
+	});
+
+	it("ends shared input at once when the list names a higher generation, queued input with it, and goes on under the new one (20260930738000)", async () => {
+		const { s, p } = await shown();
+		press(canvas(p), 400, 250);
+		await flush();
+		const onOne = await waiting(s, p);
+		s.state.seats.set(machine(1).machineId, 2);
+		s.state.actAnswers.splice(0);
+		s.hint("machines");
+		await flush();
+		await advance(5000);
+		expect(onOne().map((act) => act.action.type)).toEqual(["click"]);
+		expect(note(p)).toBe(lost);
+		key(canvas(p), "b");
+		await advance(TYPE_BATCH_MS);
+		await flush();
+		expect(onOne().map((act) => [act.action, act.generation])).toEqual([
+			[{ type: "click", x: 20, y: 20, button: "right" }, 0],
+			[{ type: "type", text: "b" }, 2],
+		]);
 	});
 });
 

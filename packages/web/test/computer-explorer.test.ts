@@ -280,6 +280,7 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 					: null,
 				epoch: db.epoch(MEMBER, machineId),
 				others: [],
+				generation: null,
 			};
 		});
 	const effect = (one: Pending) => {

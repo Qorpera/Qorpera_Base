@@ -43,8 +43,8 @@ export type MachineDesktopAction =
 	  };
 /** Why an action did not run (the executor's 409 codes): as a look's, the member's hold ended (handed back or run out),
  * another action runs on the desktop (an agent's, or another member's), or the image's helper refused it; for a shared
- * action (20260930734000), someone holds the desktop privately (DESKTOP_MEMBER_IN_CONTROL) or the member's actions came
- * too fast. */
+ * action (20260930734000), someone holds the desktop privately (DESKTOP_MEMBER_IN_CONTROL), the member's actions came
+ * too fast, or someone held it privately since the input was made (DESKTOP_HELD_SINCE, 20260930738000). */
 export type MachineActRefusal =
 	| "MACHINE_NOT_RUNNING"
 	| "MACHINE_NEEDS_COMPANY_VIEW"
@@ -58,7 +58,8 @@ export type MachineActRefusal =
 	| "DESKTOP_MACHINE_TOO_SMALL"
 	| "DESKTOP_DID_NOT_START"
 	| "SCREEN_REQUEST_INVALID"
-	| "DESKTOP_ACTIONS_TOO_FAST";
+	| "DESKTOP_ACTIONS_TOO_FAST"
+	| "DESKTOP_HELD_SINCE";
 const ACT_REFUSALS: ReadonlySet<string> = new Set<MachineActRefusal>([
 	"MACHINE_NOT_RUNNING",
 	"MACHINE_NEEDS_COMPANY_VIEW",
@@ -73,6 +74,7 @@ const ACT_REFUSALS: ReadonlySet<string> = new Set<MachineActRefusal>([
 	"DESKTOP_DID_NOT_START",
 	"SCREEN_REQUEST_INVALID",
 	"DESKTOP_ACTIONS_TOO_FAST",
+	"DESKTOP_HELD_SINCE",
 ]);
 export type MachineActAnswer =
 	| { readonly kind: "done"; readonly exitCode: number | null }
@@ -129,13 +131,14 @@ export interface WebMachineScreens {
 		signal: AbortSignal,
 	): Promise<MachineScreenLook>;
 	/** One action on a desktop the member holds (20260930713000), with the hand-back epoch and the seat of the hold the
-	 * input was captured under (F24 and F26 of #1661: SQL runs it only under that hold), or, with no hold (null), on the
-	 * desktop the member shares with the agent (20260930734000: SQL runs it only while no one holds it privately). What
-	 * they typed goes in the body, to the machine alone. */
+	 * input was captured under (F24 and F26 of #1661: SQL runs it only under that hold), or, with no hold, on the desktop
+	 * the member shares with the agent (20260930734000: SQL runs it only while no one holds it privately): with the lease
+	 * generation the input was made under (`{generation}`, 20260930738000: refused once someone held it privately since),
+	 * or none (null, a database before it). What they typed goes in the body, to the machine alone. */
 	act(
 		machineId: string,
 		action: MachineDesktopAction,
-		hold: { epoch: number; seat: number } | null,
+		hold: { epoch: number; seat: number } | { generation: number } | null,
 		signal: AbortSignal,
 	): Promise<MachineActAnswer>;
 	/** Turns the machine's desktop on (20260930714000): owners, admins and contributors, whatever its agent does. The body
@@ -228,10 +231,12 @@ export function createWebMachineScreens(options: {
 				!UUID_PATTERN.test(options.companyId) ||
 				!UUID_PATTERN.test(machineId) ||
 				(hold !== null &&
-					(!Number.isSafeInteger(hold.epoch) ||
-						hold.epoch < 0 ||
-						!Number.isSafeInteger(hold.seat) ||
-						hold.seat < 0))
+					("generation" in hold
+						? !Number.isSafeInteger(hold.generation) || hold.generation < 0
+						: !Number.isSafeInteger(hold.epoch) ||
+							hold.epoch < 0 ||
+							!Number.isSafeInteger(hold.seat) ||
+							hold.seat < 0))
 			)
 				return Promise.reject(new MachineScreenError("Invalid machine action"));
 			return withCloudDeadline(
@@ -244,8 +249,14 @@ export function createWebMachineScreens(options: {
 					const response = await options.fetch(url, {
 						method: "POST",
 						headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-						// Shared (no hold): the action alone.
-						body: JSON.stringify(hold === null ? { action } : { action, epoch: hold.epoch, seat: hold.seat }),
+						// Shared (no hold): the action, with the lease generation it was made under when the list named one.
+						body: JSON.stringify(
+							hold === null
+								? { action }
+								: "generation" in hold
+									? { action, generation: hold.generation }
+									: { action, epoch: hold.epoch, seat: hold.seat },
+						),
 						signal: requestSignal,
 						redirect: "error",
 						cache: "no-store",

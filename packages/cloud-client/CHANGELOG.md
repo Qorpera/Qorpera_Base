@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `MemberAgentMachine.generation` (migration `20260930738000`): the desktop's lease generation, which moves at every seating of a member and every hand-back that ends a lease, named to owners, admins and contributors; null for a viewer and from a database before it; a value that is not a safe whole number from 0 fails the read.
 - `MemberAgentMachine.others` (migration `20260930734000`): the other members who acted on the desktop they share with the agent in the last minute, by name (empty when none, or from a database before shared control); a value that is not a list of names fails the read.
 - `CloudMemberCompanyComputerClient.startAgentComputer(staffAgentId, signal)` (migration `20260930730000`): a member starts a desktop computer for an agent that has none (`qorpera_member_start_agent_computer`), answering `{kind: "started" | "existing", machineId, name, state}` or `{kind: "refused", reason}` from the closed `MEMBER_AGENT_COMPUTER_REFUSALS` (`AGENT_UNAVAILABLE`, `START_TOO_SOON`, `MACHINE_TOO_LARGE`, `MACHINES_UNAVAILABLE`); anything else is no answer.
 - App groups: `isAppDrawerKey` takes `whats-new`, the bare key of Qorpera's What's new page in the apps drawer (own code storage, step 4; 11 Nov 2026); `app:whats-new` stays an agent's app.

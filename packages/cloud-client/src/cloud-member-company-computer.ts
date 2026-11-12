@@ -85,6 +85,10 @@ export interface MemberAgentMachine {
 	/** The other members who acted on the desktop they share with the agent in the last minute, by name
 	 * (20260930734000); never the caller. Empty when none (or from a database before shared control). */
 	others: string[];
+	/** The desktop's lease generation (20260930738000): a number that moves at every seating of a member and every
+	 * hand-back that ends a lease. Each shared action carries the one its input was made under, and SQL refuses it once
+	 * that moved. Null for a viewer, and from a database before it. */
+	generation: number | null;
 }
 export interface MemberAgentMachineControl {
 	mine: boolean;
@@ -407,7 +411,11 @@ export class CloudMemberCompanyComputerClient {
 				(row.epoch !== undefined && !epochOf(row.epoch)) ||
 				// The other members using the shared desktop (20260930734000); absent before shared control.
 				(row.others !== undefined &&
-					(!Array.isArray(row.others) || row.others.length > 50 || !row.others.every((name) => text(name, 256))))
+					(!Array.isArray(row.others) ||
+						row.others.length > 50 ||
+						!row.others.every((name) => text(name, 256)))) ||
+				// The desktop's lease generation (20260930738000); absent (or null) for a viewer and before it.
+				(row.generation !== undefined && row.generation !== null && !epochOf(row.generation))
 			)
 				throw new Error(invalid);
 			// Who holds the desktop (20260930713000); absent before the take-over migration.
@@ -448,6 +456,7 @@ export class CloudMemberCompanyComputerClient {
 				control,
 				epoch: epochOf(row.epoch) ? row.epoch : 0,
 				others: Array.isArray(row.others) ? [...(row.others as string[])] : [],
+				generation: epochOf(row.generation) ? row.generation : null,
 			};
 		});
 		if (new Set(machines.map((machine) => machine.machineId)).size !== machines.length) throw new Error(invalid);

@@ -308,6 +308,8 @@ export const CLOUD_MEMBER_MACHINE_ACT_REFUSALS = [
 	"SCREEN_ACTION_TAKEN",
 	// One member's shared actions on one machine came faster than 25 in 5 seconds (20260930734000).
 	"DESKTOP_ACTIONS_TOO_FAST",
+	// Someone held the desktop privately since the member's shared input was made (20260930738000).
+	"DESKTOP_HELD_SINCE",
 	...MACHINE_SCREEN_REFUSALS,
 ] as const;
 export type CloudMemberMachineActRefusalCode = (typeof CLOUD_MEMBER_MACHINE_ACT_REFUSALS)[number];

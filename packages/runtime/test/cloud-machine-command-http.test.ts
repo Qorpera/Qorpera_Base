@@ -1938,9 +1938,20 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 			"DESKTOP_MEMBER_IN_CONTROL",
 			"DESKTOP_ACTIONS_TOO_FAST",
 			"DESKTOP_MACHINE_TOO_SMALL",
+			"DESKTOP_HELD_SINCE",
 		] as const) {
 			f.memberShareBegin.mockRejectedValueOnce(new CloudMemberMachineActRefusal(code));
 			await expect(f.router.memberAct(shared, f.signal)).rejects.toMatchObject({ code });
+		}
+		// The lease generation the input was made under goes to the begin (20260930738000), 0 too; none without one.
+		for (const generation of [9, 0]) {
+			f.memberShareBegin.mockClear();
+			expect(await f.router.memberAct({ ...shared, generation }, f.signal)).toEqual({ exitCode: 0 });
+			expect(f.memberShareBegin).toHaveBeenCalledWith(
+				"eyJh.eyJz.c2ln",
+				{ companyId: f.companyId, machineId: f.machineId, action: typed, generation },
+				f.signal,
+			);
 		}
 		// A private action is begun under its hold as before, and its read names its member.
 		f.call.mockImplementation(
