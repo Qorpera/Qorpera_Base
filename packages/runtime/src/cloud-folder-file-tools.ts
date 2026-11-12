@@ -42,6 +42,7 @@ import {
 	type CloudToolContext,
 	CloudToolRefusal,
 	cloudToolJsonText,
+	MAX_CLOUD_TOOL_RESULT_BYTES,
 	MAX_TOOL_ARGUMENT_BYTES,
 } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
@@ -69,12 +70,12 @@ import { fitsOneResult } from "./cloud-worker-tools.ts";
  *   core takes the source path away.
  */
 
-/** A read asks for a window of at most 8 KiB, and is shown as much of it as fits one tool result: the result fence
- * (MAX_CLOUD_TOOL_RESULT_BYTES, which the patched Codex pins at 8 KiB) is the real cap, so a window of plain text
- * shows up to about 7 KiB, less where characters need escaping, and the model reads on from nextOffset. A write or an edit's file is at most 512 KiB of text
- * (21 October 2026): the folder stores it in chunks, and the call's arguments, escaped, may take up to
- * MAX_TOOL_ARGUMENT_BYTES. A page lists at most 50 entries. */
-const MAX_READ_BYTES = 8192;
+/** A read asks for a window of at most one result's bound, and is shown as much of it as fits one tool result: the
+ * result fence (MAX_CLOUD_TOOL_RESULT_BYTES, which the patched Codex pins at 32 KiB) is the real cap, so a window of
+ * plain text shows up to about 31 KiB, less where characters need escaping, and the model reads on from nextOffset. A
+ * write or an edit's file is at most 512 KiB of text (21 October 2026): the folder stores it in chunks, and the call's
+ * arguments, escaped, may take up to MAX_TOOL_ARGUMENT_BYTES. A page lists at most 50 entries. */
+const MAX_READ_BYTES = MAX_CLOUD_TOOL_RESULT_BYTES;
 const MAX_WRITE_BYTES = 512 * 1024;
 const MAX_LIST = 50;
 /** A listing shows a link's target up to this many bytes; company_read shows all of it. */
@@ -204,16 +205,26 @@ function head(text: string, bytes: number): string {
 }
 
 /** The answer `render` makes of `text`, or of its longest start (at least `least` code points) whose answer fits one
- * tool result: escaping can grow text up to seven times. */
+ * tool result: escaping can grow text up to seven times. A start whose answer is past even a tool JSON's own bound
+ * (`cloudToolJsonText`'s 64 KiB, which a whole 32 KiB window of line breaks or control characters passes) does not fit
+ * either; the answer for `least` is rendered outside that check, so a render that always fails still throws. */
 function fitted(text: string, least: number, render: (shown: string) => string): string {
-	const output = render(text);
-	if (fitsOneResult(output)) return output;
+	const answer = (shown: string): string | undefined => {
+		try {
+			const output = render(shown);
+			return fitsOneResult(output) ? output : undefined;
+		} catch {
+			return undefined;
+		}
+	};
+	const whole = answer(text);
+	if (whole !== undefined) return whole;
 	const points = Array.from(text);
 	let low = least;
 	let high = points.length;
 	while (low < high) {
 		const middle = Math.ceil((low + high) / 2);
-		if (fitsOneResult(render(points.slice(0, middle).join("")))) low = middle;
+		if (answer(points.slice(0, middle).join("")) !== undefined) low = middle;
 		else high = middle - 1;
 	}
 	return render(points.slice(0, low).join(""));

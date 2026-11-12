@@ -431,7 +431,7 @@ describe("agent skills", () => {
 				offset = page.body.nextOffset;
 				pages++;
 			}
-			expect(pages).toBeGreaterThan(5);
+			expect(pages).toBeGreaterThan(1);
 			expect(text).toBe(`${body}\n`);
 			const company = await f.call("read_skill", { name: "quarter-close", scope: "company" });
 			expect(company).toMatchObject({ scope: "company", body: { text: "Company.\n", nextOffset: null } });
@@ -486,18 +486,18 @@ describe("agent skills", () => {
 		const long = "Use this when ".concat("the ledger needs attention ".repeat(36)).trim();
 		const f = await fixture(
 			Object.fromEntries(
-				Array.from({ length: 12 }, (_, index) => [
+				Array.from({ length: 40 }, (_, index) => [
 					`QorperaOS/skills/ledger-${String(index).padStart(2, "0")}/SKILL.md`,
 					`---\nname: ledger-${index}\ndescription: ${long}\n---\n\nx\n`,
 				]),
 			),
 		);
 		try {
-			const first = await f.call("search_skills", { query: "ledger" });
+			const first = await f.call("search_skills", { query: "ledger", limit: 50 });
 			expect(first.skills.length).toBeGreaterThan(0);
-			expect(first.skills.length).toBeLessThan(12);
+			expect(first.skills.length).toBeLessThan(40);
 			expect(first.nextOffset).toBe(first.skills.length);
-			const next = await f.call("search_skills", { query: "ledger", offset: first.nextOffset });
+			const next = await f.call("search_skills", { query: "ledger", limit: 50, offset: first.nextOffset });
 			expect(next.skills[0].name).toBe(`ledger-${String(first.skills.length).padStart(2, "0")}`);
 		} finally {
 			f.run.close();
