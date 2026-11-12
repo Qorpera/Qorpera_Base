@@ -239,9 +239,15 @@ restores until you end it:
    ```
    A finish the executor sends for it later is `lost`, and no claim hands it out again.
 3. The place is still closed: `restoring.json` names that bundle, and turns on the repository fail with the restore's
-   words. Do as the `PLACE_CLOSED` row says: ask a restore at once, mode `restore`, with that bundle's name and `keep`.
-   Its close finds the mark for the same bundle and goes on from it (the mark's request id is not compared); it opens
-   the place and records a restore, change 2, at main as it was brought in.
+   words. Ask a restore as the `PLACE_CLOSED` row says: mode `restore`, with that bundle's name and `keep`. Its close
+   finds the mark for the same bundle and goes on from it (the mark's request id is not compared); it opens the
+   place and records a restore, change 2, at main as it was brought in.
+   **One thing is not as in that row: this restore waits for quiet sessions.** `held` passes on from a failed
+   restore to the next restore of the place, never from an import, so the restore you ask starts without it and
+   stays queued (`waiting`: `SESSIONS_BUSY`) while the company's sessions are working or one of this repository's
+   sessions is attached to a machine, with the place closed all the while. Before you ask, wait until their
+   machines sleep (ten quiet minutes) or archive those sessions, as "Before you start" says; then ask, and read
+   `progress` until it has `held: true`.
 4. If that restore fails at its open too, leave the place closed: nothing is lost (the source the import came from
    and both its bundles are kept). It needs a developer, as in "By hand".
 
