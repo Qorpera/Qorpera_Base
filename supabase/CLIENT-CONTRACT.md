@@ -319,8 +319,11 @@ The raw object reads and uploads by hash and the read lease went with legacy swe
   `colours` (since `20260930731000`) maps such a key to one of the agents' palette
   colours (`charcoal`, `brown`, `coral`, `orange`, `gold`, `green`, `teal`, `blue`,
   `purple`, `pink`, `gray`), at most 300; a layout with colours alone is kept.
+  `emblems` (since `20260930732000`) maps an app's key (no group's) to the icon the
+  member picked: a built-in emblem's name or `custom:<id>`, one of the app's own
+  icons (`apps/<name>/icons/<id>.svg`, `@qorpera/cloud-client/app-icons`), at most 300.
   Any member. Reset takes it away and Undo puts it back; `own.apps` counts it,
-  each colour as one.
+  each colour and each icon as one.
 - `qorpera_manage_company_sidebar(p_profile_id, p_request)` answers the same
   shape after the change. Before `20260930727000`, shared, owner/admin/contributor:
   `create_section {sectionId, name, staffAgentId?, unpin?}`,

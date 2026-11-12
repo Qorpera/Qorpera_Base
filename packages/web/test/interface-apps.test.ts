@@ -788,6 +788,21 @@ describe("following the company's apps from a hidden tab", () => {
 		vi.useRealTimers();
 	});
 
+	it("tells its readers after every read, unchanged apps too, so icons read beside them follow (review F5 on #1696)", async () => {
+		const f = following();
+		const read = vi.fn();
+		f.apps.onRead(read);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(read).toHaveBeenCalledTimes(1);
+		// The minute's clock, with no hint and nothing changed in the apps: the readers still hear of it.
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(read).toHaveBeenCalledTimes(2);
+		f.hint();
+		await vi.advanceTimersByTimeAsync(2_000);
+		expect(read).toHaveBeenCalledTimes(3);
+		f.apps.dispose();
+	});
+
 	it("reads on no clock while its hints work, reads on a hint, and reads what the clock skipped when it is back", async () => {
 		const f = following();
 		f.state(true);

@@ -6421,6 +6421,21 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    arrangement (`colours`), so Reset sidebar takes it away too. The open page's emblem keeps its colour, on a soft wash
    of it, no longer white on the selection colour. The company's file names no colours yet: what colour agents give a
    group is a later change.
+5. **Icon and colour** (Jonas, 12 November 2026: "change the icons of the interfaces", then "still missing a selection
+   of colors from a pallette"; design page 6gSTTCcz3D8AjBpV3GmrH6; migration `20260930732000_member_app_emblems`, SQL
+   test 1225). An app's menu opens one panel: the palette row (for an app in a group, the group's colour), the app's
+   own icons, the 24 built-in ones and Generate icon. A group's Colour is the same palette row. A member's icon pick is
+   in their own arrangement (`emblems`: a built-in name or `custom:<id>`), so Reset sidebar takes it away too.
+6. **An app's own icons** (Jonas, 12 November 2026: "change the icons of the interfaces and have a generate icon
+   button too for them to create a new custom one based on it's name or contents"). The built-in emblems are 24. An
+   app may also hold icons of its own, `apps/<name>/icons/<id>.svg`, drawn as the emblems are: one shape on a 48 by 48
+   grid, black where the app's colour goes and white where it is cut out, in the fixed SVG subset of
+   `@qorpera/cloud-client/app-icons` (at most 8 KiB, at most 12 an app). A member's Generate icon asks the app's maker
+   (its manifest's `owner`, else the Co-Founder) in the chat for new ones; the agent draws 3 from the app's name and
+   what its page shows, saves them with `save_app` in one call of files alone, never changing `manifest.emblem`, and
+   tells the member that they pick one under Icon and colour. `save_app` refuses an icon it could not draw, any other
+   file under `icons/`, and a save that would leave more than 12: a new icon takes the id of an old one, or an old one
+   is deleted first. What a member picks is theirs and changes only their own drawer.
 
 ## 20. Enforcement matrix
 
