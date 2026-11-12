@@ -58,6 +58,11 @@ export const CODE_IMPORT_WANTS = 5_000;
 export const CODE_IMPORT_PKT_LINE_BYTES = 65_520;
 /** A ref name in the first bundle's header. */
 export const CODE_IMPORT_REF_NAME_BYTES = 1_000;
+/** The parts of a ref's name (between slashes): a ref is a file of its name on the code host's disk, whose names are at
+ * most 255 bytes, and git makes it as `<name>.lock` first, so its last part is at most 250 (a longer part fails the
+ * look's fetch with "File name too long"; seen on node02, git 2.53). */
+export const CODE_IMPORT_REF_PART_BYTES = 255;
+export const CODE_IMPORT_REF_LAST_PART_BYTES = 250;
 /** The default branch's name (`qorpera_coding_repository_valid`'s bound): it goes into the look, the registry row's
  * `imported_from` and `changes/1.md`. */
 export const CODE_IMPORT_BRANCH_BYTES = 200;
@@ -284,13 +289,25 @@ export function codeImportGitRefValid(name: string): boolean {
 }
 
 /** A ref the first bundle names (5.2): under `refs/heads/` or `refs/tags/`, a name git takes (so no NUL, CR, LF or
- * space), UTF-8, at most 1,000 bytes. A fetch from a bundle that names one git refuses fails whole. */
+ * space), UTF-8, at most 1,000 bytes, parts the disk holds (`codeImportRefPartsFit`). A fetch from a bundle that names one
+ * git refuses, or one the code host's disk cannot hold, fails whole. */
 export function codeImportHeaderRefValid(name: string): boolean {
 	return (
 		typeof name === "string" &&
 		/^refs\/(?:heads|tags)\/./.test(name) &&
 		utf8(name) <= CODE_IMPORT_REF_NAME_BYTES &&
-		codeImportGitRefValid(name)
+		codeImportGitRefValid(name) &&
+		codeImportRefPartsFit(name)
+	);
+}
+
+/** Whether a ref's name is one the code host's disk can hold as a file and its lock: every folder part at most 255
+ * bytes, the last part at most 250. */
+export function codeImportRefPartsFit(name: string): boolean {
+	const parts = name.split("/");
+	return parts.every(
+		(part, index) =>
+			utf8(part) <= (index === parts.length - 1 ? CODE_IMPORT_REF_LAST_PART_BYTES : CODE_IMPORT_REF_PART_BYTES),
 	);
 }
 
@@ -1026,7 +1043,8 @@ export interface CodeImportRefSeen {
 
 /** Why refs were left out. */
 export interface CodeImportLeftOut {
-	/** A name git, restore's own test (`^refs/[^\s\0]+$`, JavaScript's `\s`) or the folder's path rule refuses. */
+	/** A name git, restore's own test (`^refs/[^\s\0]+$`, JavaScript's `\s`), the code host's disk (a folder part over
+	 * 255 bytes, a last part over 250) or the folder's path rule refuses. */
 	readonly name: number;
 	/** One name to the folder with a ref kept before it: a case clash, or a ref that is another's folder. */
 	readonly clash: number;
@@ -1063,8 +1081,9 @@ export interface CodeImportRefsPlan {
 /** From the proof repository's refs to what the imported repository keeps (5.3 step 5, X11): `refs/heads/main` and
  * `refs/qorpera/kept-here` at the default branch; tags whose target is a commit, newest first, at most 500; other heads
  * changed in the last 90 days, newest first, at most 200, as `refs/qorpera/imported/heads/<name>`; every other ref
- * deleted, and counted with its reason (`CodeImportLeftOut`). Each kept name must be one git, restore's own name test
- * and the folder (at `code/<owner>/<name>/repo.git/<ref>`, `codeImportFolderPathValid`) take, and not one name to the
+ * deleted, and counted with its reason (`CodeImportLeftOut`). Each kept name must be one git, restore's own name test,
+ * the code host's disk (`codeImportRefPartsFit`) and the folder (at `code/<owner>/<name>/repo.git/<ref>`,
+ * `codeImportFolderPathValid`) take, and not one name to the
  * folder with a ref kept before it, by prove's own rule (`restore:372-387`). Ties go by name. The default branch must be
  * a head and a commit (`IMPORT_BRANCH_UNKNOWN`) with a name the import takes (`IMPORT_BRANCH_NAME`). */
 export function codeImportRefsPlan(value: {
@@ -1104,7 +1123,10 @@ export function codeImportRefsPlan(value: {
 	if (!base || base.type !== "commit") throw refused("IMPORT_BRANCH_UNKNOWN");
 	const place = `code/${repository.owner}/${repository.name}/repo.git/`;
 	const named = (name: string) =>
-		codeImportGitRefValid(name) && /^refs\/[^\s\0]+$/.test(name) && codeImportFolderPathValid(`${place}${name}`);
+		codeImportGitRefValid(name) &&
+		/^refs\/[^\s\0]+$/.test(name) &&
+		codeImportRefPartsFit(name) &&
+		codeImportFolderPathValid(`${place}${name}`);
 	// Each ref becomes a file of its name in the folder, where names that differ only by case are one name, and no
 	// ref's own name may be another's folder.
 	const spelled = new Map<string, string>();
