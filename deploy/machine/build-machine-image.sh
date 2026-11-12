@@ -18,7 +18,10 @@
 # command (README, "The desktop"), and xsel with save_coding_value's clipboard
 # helper (20260930705000), which seals a key copied on the desktop for the vault
 # and clears the clipboard, and machine_screen's screen helper (20260930708000),
-# with which an agent acts on the desktop and sees it in one tool call. Since 10 Nov 2026 a desktop is something an agent
+# with which an agent acts on the desktop and sees it in one tool call. Since 12 Nov 2026 every machine also has
+# compressed memory from its boot on (zram as large as its memory) and a guard that ends one program when memory and
+# that reserve are both nearly gone (earlyoom, from apt), so a machine at the edge keeps answering (README, "Memory").
+# Since 10 Nov 2026 a desktop is something an agent
 # asks for (machine_start with desktop true; a smaller machine refuses `desktop
 # start`), `desktop start` opens chosen company files and folders on it, pages
 # get 3D drawing, and Playwright with its Chromium, ffmpeg and a `chromium` that
@@ -69,9 +72,10 @@ exec 3>&1 1>&2
 [[ $NODE_VERSION =~ ^2[4-9]\.[0-9]+\.[0-9]+$ ]] || { echo "invalid Node.js version" >&2; exit 1; }
 [[ $NODE_SHA256 =~ ^[0-9a-f]{64}$ ]] || { echo "invalid Node.js sha-256" >&2; exit 1; }
 for file in cloud-machine-guest.mjs cloud-machine-coding-value.mjs cloud-machine-screen.mjs qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer \
-	qorpera-machine-folder.service qorpera-machine-desktop.service desktop-session desktop qorpera-chromium.apparmor \
+	qorpera-machine-folder.service qorpera-machine-desktop.service qorpera-machine-memory.service \
+	qorpera-machine-memory-guard.service desktop-session desktop qorpera-chromium.apparmor \
 	desktop-selftest.html qorpera-chromium-policy.json chromium qorpera-machine-profile.sh playwright-check.cjs \
-	qorpera-folder manifest.json; do
+	machine-memory lxd-agent-memory.conf qorpera-folder manifest.json; do
 	[[ -f $PACKAGE/$file ]] || { echo "package misses $file" >&2; exit 1; }
 done
 [[ $(sha256sum <"$PACKAGE/qorpera-folder" | cut -d' ' -f1) == "$EXPECTED_FOLDER_PROGRAM_SHA256" ]] ||
@@ -122,7 +126,7 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 		build-essential python3 python3-venv python3-pip docker.io docker-compose-v2 docker-buildx \
 		ripgrep fd-find sqlite3 libreoffice-nogui fuse3 file ffmpeg \
 		tigervnc-standalone-server xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-terminal xfconf thunar dbus-x11 \
-		x11-utils x11-xserver-utils xdotool wmctrl scrot xsel apparmor \
+		x11-utils x11-xserver-utils xdotool wmctrl scrot xsel apparmor earlyoom \
 		libnss3 libnspr4 libasound2t64 libgbm1 libcups2t64 libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 \
 		libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libxext6 libx11-6 libxcb1 libpango-1.0-0 \
 		libcairo2 libdbus-1-3 libexpat1 libglib2.0-0t64 libdrm2 libudev1 fonts-dejavu-core fonts-liberation \
@@ -183,6 +187,12 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" NODE_SHA256="$NODE_SHA256
 	# name hands activation to systemd). That work counts like any other, so a quiet machine looked busy and never slept
 	# (C8 MA-5b). A masked unit refuses every start, the bus activation too.
 	systemctl mask fwupd-refresh.timer fwupd-refresh.service fwupd.service
+	# The guard runs earlyoom from a unit of its own, with limits worked out for the machine (machine-memory guard): the
+	# package unit, which apt started with its own, is off for good.
+	systemctl disable --now earlyoom.service
+	systemctl mask earlyoom.service
+	# Where the LXD agent gets its protection from (the package brings the file).
+	install -d -o root -g root -m 0755 /etc/systemd/system/lxd-agent.service.d
 '
 lx file push "$PACKAGE/cloud-machine-guest.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-guest.mjs" --uid 0 --gid 0 --mode 0444
 lx file push "$PACKAGE/cloud-machine-coding-value.mjs" "$BUILDER/opt/qorpera-machine/cloud-machine-coding-value.mjs" --uid 0 --gid 0 --mode 0444
@@ -196,15 +206,87 @@ lx file push "$PACKAGE/playwright-check.cjs" "$BUILDER/opt/qorpera-machine/playw
 lx file push "$PACKAGE/chromium" "$BUILDER/usr/local/bin/chromium" --uid 0 --gid 0 --mode 0555
 lx file push "$PACKAGE/qorpera-machine-profile.sh" "$BUILDER/etc/profile.d/qorpera-machine.sh" --uid 0 --gid 0 --mode 0644
 lx file push "$PACKAGE/qorpera-chromium-policy.json" "$BUILDER/etc/opt/chrome_for_testing/policies/managed/qorpera.json" --uid 0 --gid 0 --mode 0644
+lx file push "$PACKAGE/machine-memory" "$BUILDER/opt/qorpera-machine/machine-memory" --uid 0 --gid 0 --mode 0555
+lx file push "$PACKAGE/lxd-agent-memory.conf" "$BUILDER/etc/systemd/system/lxd-agent.service.d/qorpera-memory.conf" --uid 0 --gid 0 --mode 0644
 for unit in qorpera-machine.slice qorpera-machine-watchdog.service qorpera-machine-watchdog.timer qorpera-machine-folder.service \
-	qorpera-machine-desktop.service; do
+	qorpera-machine-desktop.service qorpera-machine-memory.service qorpera-machine-memory-guard.service; do
 	lx file push "$PACKAGE/$unit" "$BUILDER/etc/systemd/system/$unit" --uid 0 --gid 0 --mode 0644
 done
 lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGRAM_SHA256" \
 	PLAYWRIGHT_VERSION="$PLAYWRIGHT_VERSION" bash -euo pipefail -c '
 	systemctl daemon-reload
-	systemctl enable qorpera-machine-watchdog.timer
+	systemctl enable qorpera-machine-watchdog.timer qorpera-machine-memory.service qorpera-machine-memory-guard.service
 	# Checks the reviewed image must pass.
+	# Memory (12 Nov 2026). Every kernel this image holds has the zram module: a later kernel without it would leave
+	# every machine without compressed memory, with only a line in each journal to say so.
+	[[ -n $(ls /lib/modules) ]] || { echo "the image holds no kernel modules" >&2; exit 1; }
+	for kernel in /lib/modules/*; do
+		modinfo -k "$(basename "$kernel")" zram >/dev/null ||
+			{ echo "the kernel $(basename "$kernel") has no zram module: machines would run without compressed memory" >&2; exit 1; }
+	done
+	# The boot unit, run here as a boot runs it: the swap is zram as large as the memory, at priority 100, with zstd and
+	# the measured settings, and the unit run again changes nothing.
+	memory_swap() { awk "\$1 == \"/dev/zram0\" {print \$3, \$5}" /proc/swaps; }
+	systemctl start qorpera-machine-memory.service
+	read -r swap_kb swap_priority <<<"$(memory_swap)"
+	memory_kb=$(awk "/^MemTotal:/ {print \$2}" /proc/meminfo)
+	[[ -n ${swap_kb:-} ]] && (( memory_kb - swap_kb >= 0 && memory_kb - swap_kb <= 64 )) && [[ $swap_priority == 100 ]] ||
+		{ echo "compressed memory is not the size of the memory at priority 100: $(memory_swap) of $memory_kb" >&2; exit 1; }
+	grep -q "\[zstd\]" /sys/block/zram0/comp_algorithm || { echo "compressed memory does not use zstd" >&2; exit 1; }
+	[[ $(cat /proc/sys/vm/swappiness) == 150 && $(cat /proc/sys/vm/page-cluster) == 0 ]] ||
+		{ echo "vm.swappiness and vm.page-cluster are not the measured 150 and 0" >&2; exit 1; }
+	before="$(memory_swap) $(cat /sys/block/zram0/disksize /sys/block/zram0/comp_algorithm)"
+	systemctl restart qorpera-machine-memory.service
+	[[ "$(memory_swap) $(cat /sys/block/zram0/disksize /sys/block/zram0/comp_algorithm)" == "$before" ]] ||
+		{ echo "the memory unit run again changed something" >&2; exit 1; }
+	# A machine where it cannot be set up starts all the same: with the module hidden the unit ends well, there is no
+	# swap, and the journal says so in one line. With the module back, the unit run again sets it up.
+	# Right after a swapoff the device can still be held open for a moment (udev looks at a device that changed), and
+	# its reset and the unload of the module are then refused as busy: one image build failed here on 12 Nov 2026 and
+	# the same commit built on the next try. Each is asked again for up to 5 s while it is refused; the last try shows
+	# its answer and, if it fails, fails the build. (A boot never does this: the memory unit only sets the device up.)
+	patient() {
+		local try
+		for try in $(seq 1 50); do
+			"$@" 2>/dev/null && return 0
+			sleep 0.1
+		done
+		"$@"
+	}
+	swapoff /dev/zram0
+	patient bash -c "echo 1 >/sys/block/zram0/reset"
+	patient rmmod zram
+	mkdir -p /run/modprobe.d && echo "install zram /bin/false" >/run/modprobe.d/qorpera-image-check.conf
+	said=$(journalctl -b -t qorpera-machine-memory -o cat | grep -c "^compressed memory is OFF on this machine" || true)
+	systemctl restart qorpera-machine-memory.service ||
+		{ echo "the memory unit fails where compressed memory cannot be set up: a boot would show a failed unit" >&2; exit 1; }
+	[[ -z $(memory_swap) && $(systemctl is-active qorpera-machine-memory.service) == active ]] ||
+		{ echo "the memory unit did not end well without the zram module" >&2; exit 1; }
+	(( $(journalctl -b -t qorpera-machine-memory -o cat | grep -c "^compressed memory is OFF on this machine") == said + 1 )) ||
+		{ echo "the journal does not say in one line that compressed memory is off" >&2; exit 1; }
+	rm /run/modprobe.d/qorpera-image-check.conf
+	systemctl restart qorpera-machine-memory.service
+	[[ -n $(memory_swap) ]] || { echo "compressed memory did not come back with the module" >&2; exit 1; }
+	# The guard: earlyoom from our own unit, beside the commands slice, never ended itself; the package unit and
+	# systemd-oomd (which ends whole control groups) do not run; the LXD agent and the machine own services are protected.
+	systemctl start qorpera-machine-memory-guard.service
+	# Its script becomes earlyoom a moment after the unit counts as started.
+	for _ in $(seq 1 50); do
+		guard=$(systemctl show qorpera-machine-memory-guard.service -p MainPID --value)
+		[[ $(cat "/proc/$guard/comm" 2>/dev/null) == earlyoom ]] && break
+		sleep 0.1
+	done
+	[[ $(cat "/proc/$guard/comm") == earlyoom && $(cat "/proc/$guard/oom_score_adj") == -1000 ]] ||
+		{ echo "the memory guard does not run earlyoom, protected" >&2; exit 1; }
+	grep -q "/qorpera-control.slice/" "/proc/$guard/cgroup" || { echo "the memory guard is not in the control slice" >&2; exit 1; }
+	journalctl -b -t qorpera-machine-memory-guard -o cat | grep -q "sending SIGTERM when mem avail <= " ||
+		{ echo "the memory guard did not say its limits" >&2; exit 1; }
+	[[ $(readlink /etc/systemd/system/earlyoom.service) == /dev/null ]] || { echo "the package earlyoom unit is not masked" >&2; exit 1; }
+	if systemctl is-active --quiet earlyoom.service systemd-oomd.service; then echo "another memory guard runs" >&2; exit 1; fi
+	for unit in lxd-agent qorpera-machine-folder qorpera-machine-watchdog qorpera-machine-desktop; do
+		[[ $(systemctl show "$unit.service" -p OOMScoreAdjust --value) == -900 ]] ||
+			{ echo "$unit is not protected when memory runs out" >&2; exit 1; }
+	done
 	docker --version && docker compose version && docker buildx version
 	node --version | grep -q "^v2[4-9]\."
 	python3 --version && git --version && gcc --version | head -1
@@ -277,6 +359,22 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	desktop windows | grep -q qorpera-machine-desktop || { echo "chromium shows no window on the desktop" >&2; exit 1; }
 	desktop key ctrl+l && desktop type about:blank && desktop key Return
 	desktop click 800 500
+	# A click where the pointer already is never waits for a move that cannot come (15 s each before 12 Nov 2026): a
+	# second click, a double-click, a move and a drag on that one spot, together well inside 5 s.
+	pointer_started=$(date +%s%N)
+	desktop click 800 500
+	desktop double 800 500
+	desktop move 800 500
+	desktop drag 800 500 800 500
+	(( ($(date +%s%N) - pointer_started) / 1000000 < 5000 )) ||
+		{ echo "desktop actions on the spot the pointer is on took $(( ($(date +%s%N) - pointer_started) / 1000000 )) ms" >&2; exit 1; }
+	# When memory runs out the screen is not what is ended, and a browser tab goes first: the X server keeps the unit
+	# protection, the XFCE session the milder one its script gives it, the browser none, and Chromium marks its tabs.
+	scores() { for pid in "$@"; do cat "/proc/$pid/oom_score_adj"; done | sort -u | tr "\n" " "; }
+	[[ $(scores $(pgrep -u desktop -x Xvnc)) == "-900 " && $(scores $(pgrep -u desktop -x xfwm4)) == "-100 " ]] ||
+		{ echo "the desktop is not protected when memory runs out: Xvnc $(scores $(pgrep -u desktop -x Xvnc)), xfwm4 $(scores $(pgrep -u desktop -x xfwm4))" >&2; exit 1; }
+	[[ $(scores $(pgrep -u desktop -o -x chrome)) == "0 " && $(scores $(pgrep -u desktop -f -- "--type=renderer")) == "300 " ]] ||
+		{ echo "a browser tab would not be the first to go: the browser $(scores $(pgrep -u desktop -o -x chrome)), its tabs $(scores $(pgrep -u desktop -f -- "--type=renderer"))" >&2; exit 1; }
 	desktop shot /tmp/desktop.png | grep -q " 1600 x 1000$" || { echo "the screenshot is not 1600x1000" >&2; exit 1; }
 	# A program gets its arguments as given (no $ expansion by systemd), and none starts on a stopped desktop.
 	desktop run sh -c "v=literal; echo \"\${v} \\\$HOME\" > /tmp/desktop-run"
@@ -455,7 +553,7 @@ JS
 	find /home/desktop/.config/xfce4 -mindepth 1 -maxdepth 1 ! -name xfconf -exec rm -rf -- {} +
 	find /home/desktop/.config/xfce4/xfconf/xfce-perchannel-xml -mindepth 1 ! -name xfce4-panel.xml -exec rm -rf -- {} +
 	for unit in apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service \
-		fwupd-refresh.timer fwupd-refresh.service fwupd.service; do
+		fwupd-refresh.timer fwupd-refresh.service fwupd.service earlyoom.service; do
 		[[ $(readlink "/etc/systemd/system/$unit") == /dev/null ]]
 	done
 	# Nothing else refreshes firmware either, whatever fwupd names its units: no fwupd timer runs and no other fwupd unit
@@ -475,6 +573,7 @@ JS
 	systemd-analyze verify /etc/systemd/system/qorpera-machine-watchdog.service /etc/systemd/system/qorpera-machine.slice \
 		/etc/systemd/system/qorpera-machine-folder.service
 	systemd-analyze verify /etc/systemd/system/qorpera-machine-desktop.service
+	systemd-analyze verify /etc/systemd/system/qorpera-machine-memory.service /etc/systemd/system/qorpera-machine-memory-guard.service
 	# Nothing of this build stays: logs, keys, caches (the LibreOffice profile too), the machine id.
 	apt-get clean
 	rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.cache /root/.npm /root/.config/libreoffice
