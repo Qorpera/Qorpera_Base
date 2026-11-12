@@ -784,20 +784,24 @@ step "the first user's installs after every cleanup" "$FIRST_UID" "$FIRST_W" \
 	fail "an install after the cleanups failed: $OUT"
 pass "npm cache verify and clean, pnpm store prune, pip cache purge, uv cache prune and clean, run by the second user, left the first user's npm, pnpm, pip and uv projects running, and its installs then worked (they downloaded again)"
 # The agent's age of whole trees, its clock 31 days on: every tree goes whole (none was used since), the first user's uv
-# venv still runs (it links its own), and a browser that went says how to bring it back.
+# venv still runs (it links its own files: a uv archive is put in the cache for it first), and a browser that went says
+# how to bring it back.
+step "a uv archive for the first user's venv" "$FIRST_UID" "$FIRST_W" 'cd ~/proof-uv && uv pip install --reinstall six==1.17.0' ||
+	fail "uv did not install six again: $OUT"
+compgen -G "$PACKAGES/uv/archive-v*/*" >/dev/null || fail "uv's cache has no archive: $(ls -A "$PACKAGES/uv")"
 AGED=$(node --input-type=module -e \
 	"import { ageCodingPackageTrees } from '$AGENT'; console.log((await ageCodingPackageTrees('$PACKAGES', Date.now() + 31 * 86400000, 30 * 86400000)).join(' '));")
 echo "INFO: the trees aged out: $AGED"
-[[ " $AGED " == *" ms-playwright/$OLD_SHELL "* && " $AGED " == *" ms-playwright/chromium_headless_shell-1254 "* ]] ||
-	fail "the browsers were not aged out whole: $AGED"
+[[ " $AGED " == *" ms-playwright/$OLD_SHELL "* && " $AGED " == *" ms-playwright/chromium_headless_shell-1254 "* &&
+	" $AGED " == *" uv/archive-v"* ]] || fail "the browsers and uv's archive were not aged out whole: $AGED"
 [[ -z $(ls -A "$PACKAGES/ms-playwright" | grep -v '^\.links$' || true) ]] || fail "a browser stayed: $(ls -A "$PACKAGES/ms-playwright")"
-step "the first user's uv venv after the trees went" "$FIRST_UID" "$FIRST_W" 'cd ~/proof-uv && .venv/bin/python -c "import requests, rich"' ||
+step "the first user's uv venv after the trees went" "$FIRST_UID" "$FIRST_W" 'cd ~/proof-uv && .venv/bin/python -c "import requests, rich, six"' ||
 	fail "the uv venv broke when its archives went: $OUT"
 CODE=0
 GONE=$(cached "$FIRST_UID" "$FIRST_W" "$LAUNCH" 2>&1) || CODE=$?
 [[ $CODE != 0 && $GONE == *"Executable doesn't exist"* ]] || fail "a launch after the browsers aged out gave $CODE: $GONE"
 echo "INFO: after its browser aged out, a session's launch says: $GONE"
 step "the first user's browsers once more" "$FIRST_UID" "$FIRST_W" "$PW_INSTALL && $LAUNCH" || fail "the browser did not come back: $OUT"
-pass "the agent's age removed each tree whole (every browser, uv's archives and environments), the uv venv still runs, and a session whose browser went is told to install it, and then launches again"
+pass "the agent's age removed each tree whole ($AGED), the uv venv whose archive went still runs, and a session whose browser went is told to install it, and then launches again"
 ((${#TOOLS_FAILED[@]} == 0)) || fail "the two-user proof failed for: ${TOOLS_FAILED[*]} (above)"
 echo "ALL PASSED"
