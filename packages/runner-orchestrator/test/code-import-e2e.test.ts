@@ -881,4 +881,88 @@ describe("an import from end to end, with every part as merged", { timeout: 240_
 			kind: "import",
 		});
 	});
+	it("finishes a half-done import from its own snapshot when the same project is asked again after its head moved, with no fetch, and refuses another project there", async () => {
+		const w = await world();
+		// This project's own GitHub: a copy whose head can move.
+		const moving = join(home, `moving-${randomUUID()}.git`);
+		await git(home, "clone", "--quiet", "--bare", source.bare, moving);
+		const bare = source.bare;
+		source.bare = moving;
+		try {
+			const first = w.k.ask("acme", "moving", { github: "Acme/Shop" });
+			// The executor stops once the build is let go: the place is closed and emptied, nothing is built.
+			const stopping = new AbortController();
+			w.k.onStep = (row) => {
+				if (row.progress?.step === "build" && !stopping.signal.aborted)
+					stopping.abort(new Error("the executor stopped"));
+			};
+			await w.pass(w.executor(), stopping.signal);
+			w.k.onStep = () => {};
+			expect(w.k.raised).toEqual([]);
+			expect(first).toMatchObject({ state: "queued", attempts: 1 });
+			const mark = JSON.parse(await readFile(join(w.place("acme", "moving"), "restoring.json"), "utf8"));
+			expect(mark).toMatchObject({
+				step: "emptied",
+				bundle: (first.progress?.kept as Record<string, unknown>).name,
+			});
+			const stored = await w.store.names(target("acme", "moving"));
+			expect(stored).toEqual([
+				(first.progress?.kept as Record<string, unknown>).name,
+				(first.progress?.raw as Record<string, unknown>).name,
+			]);
+			const look = first.look;
+			// Its claims are spent: the next claim ends it, and the place stays half done.
+			first.attempts = 5;
+			const fetched = w.gh.seen.length;
+			// Another project there: refused before any fetch; the place and the store as they were.
+			const other = w.k.ask("acme", "moving", { github: "Acme/Other" });
+			await w.pass();
+			expect(w.k.raised).toEqual([]);
+			expect(first).toMatchObject({ state: "failed", outcome: { code: "DID_NOT_FINISH" } });
+			expect(other).toMatchObject({
+				state: "refused",
+				outcome: { state: "refused", code: "IMPORT_PLACE_HALF_DONE" },
+			});
+			expect(w.gh.seen).toHaveLength(fetched);
+			expect(await w.store.names(target("acme", "moving"))).toEqual(stored);
+			expect(JSON.parse(await readFile(join(w.place("acme", "moving"), "restoring.json"), "utf8"))).toEqual(mark);
+			// GitHub's head moves.
+			const work = join(home, `moving-work-${randomUUID()}`);
+			await git(home, "clone", "--quiet", moving, work);
+			await writeFile(join(work, "later.txt"), "later\n");
+			await git(work, "add", ".");
+			await git(work, "commit", "--quiet", "-m", "later");
+			await git(work, "push", "--quiet", "origin", "master");
+			expect(await git(moving, "rev-parse", "master")).not.toBe(source.master);
+			// The same project again: the snapshot is finished as it was, and what is recorded is of the code installed.
+			const again = w.k.ask("acme", "moving", { github: "Acme/Shop" });
+			await w.pass();
+			expect(w.k.raised).toEqual([]);
+			expect(again).toMatchObject({
+				state: "done",
+				outcome: {
+					result: "imported",
+					mainSha: source.master,
+					bundle: stored[0],
+					rawBundle: stored[1],
+				},
+			});
+			expect(w.gh.seen).toHaveLength(fetched);
+			expect(again.look).toEqual(look);
+			expect(w.k.registry.get("acme/moving")?.importedFrom).toMatchObject({
+				repository: "Acme/Shop",
+				branch: "master",
+				commit: source.master,
+				commits: 3,
+			});
+			expect(w.k.changes.at(-1)).toMatchObject({ place: "acme/moving", mainAfter: source.master, filesChanged: 3 });
+			expect(await w.refs("acme", "moving")).toContain(`refs/heads/main ${source.master}`);
+			expect(await exists(join(w.place("acme", "moving"), "main", "later.txt"))).toBe(false);
+			expect(await exists(join(w.place("acme", "moving"), "restoring.json"))).toBe(false);
+			expect(await w.store.names(target("acme", "moving"))).toEqual(stored);
+			quiet(w.events);
+		} finally {
+			source.bare = bare;
+		}
+	});
 });

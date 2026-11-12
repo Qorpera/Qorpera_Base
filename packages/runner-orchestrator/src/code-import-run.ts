@@ -8,7 +8,13 @@ import {
 	type CodeBundleWriter,
 	codeBundleName,
 } from "./code-bundle-store.ts";
-import { type CodeHostJob, CodeHostJobFailure, CodeHostRefusal, codeRefsSha256 } from "./code-host-jobs.ts";
+import {
+	CODE_AREA_IN_QORPERA_REF,
+	type CodeHostJob,
+	CodeHostJobFailure,
+	CodeHostRefusal,
+	codeRefsSha256,
+} from "./code-host-jobs.ts";
 import {
 	CODE_RESTORE_RPCS,
 	type CodeAreaClosed,
@@ -26,16 +32,20 @@ import {
 } from "./code-host-restore.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
 import {
+	CODE_IMPORT_BUNDLE_NAME,
 	CODE_IMPORT_FAILED_CODE,
 	CODE_IMPORT_FAILURES,
 	CODE_IMPORT_FILE_MAXIMUM_BYTES,
+	CODE_IMPORT_IMPORTED_HEADS,
 	CODE_IMPORT_REFUSED_CODE,
 	CODE_IMPORT_RENEW_MS,
 	CODE_IMPORT_RPCS,
+	type CodeImportBundleManifest,
 	type CodeImportBundleStore,
 	type CodeImportBundleWriter,
 	type CodeImportFetch,
 	type CodeImportFetched,
+	type CodeImportFrom,
 	type CodeImportInput,
 	type CodeImportJobs,
 	type CodeImportKept,
@@ -91,11 +101,16 @@ import { CodingControlBusy } from "./coding-executor.ts";
  * - After the set-aside job was let go, and after the record: only `busy` (or `done/imported` once it is all in). The
  *   next claim goes on from the mark; once the kernel has the record, a claim past the limit ends it done.
  *
- * Before a bundle is made, the place's mark is read: a mark of an earlier import that did not finish names a
- * restore-shaped bundle the place may be half built from. That bundle stays in the store, and the import goes on from it
- * as its own (the look then runs alone, for its facts). Every other bundle of the place's store folder is removed then:
- * a place with no registry row keeps none. After a done import the first bundle stays with the repository, and the
- * restore-shaped one is an ordinary bundle of the store.
+ * A place an earlier import closed and did not finish holds one half-done snapshot: its mark names the restore-shaped
+ * bundle the place may be half built from, which was made from one first bundle. A new import there (not a look alone)
+ * finishes exactly that snapshot or is refused (`IMPORT_PLACE_HALF_DONE`) before anything is fetched or touched: it
+ * goes on only when the store still has both bundles, they bind by their manifests (`codeImportSnapshotBinds`), and
+ * the first one came from the source this import names. Then no fetch and no read: the two bundles are its own `raw`
+ * and `kept`, its look is made alone on that first bundle at the restore-shaped one's time, and what it records is of
+ * the code it installs. A look alone touches nothing of the place and removes only its own bundle. Otherwise, before
+ * a bundle is made, every other bundle of the place's store folder is removed (a place with no registry row keeps none
+ * but a snapshot's). After a done import the first bundle stays with the repository, and the restore-shaped one is an
+ * ordinary bundle of the store.
  *
  * The lease is renewed every five minutes, by a step call that names the step the kernel last took. A lease found gone
  * (`lost`) stops the run at once. No outcome, progress, log line or error of the run carries a byte of the source, a
@@ -182,6 +197,9 @@ const OUTCOME = "qorpera.code-request-outcome/v1";
 const CALL_MS = 10_000;
 const FIXED = /^[A-Z][A-Z0-9_]{2,80}$/;
 const YIELDED = "CODE_HOST_JOB_YIELDED";
+/** A new import at a place an earlier one closed and did not finish, with other code or with a snapshot that can no
+ * longer be finished: an operator finishes or clears that place (part C1's list lacks it). */
+const HALF_DONE = "IMPORT_PLACE_HALF_DONE";
 /** Steps from which the set-aside job was let go, as a claim's progress names them. */
 const LET_GO: ReadonlySet<CodeImportStep> = new Set(["set-aside", "build", "open", "tidy"]);
 
@@ -260,6 +278,73 @@ function timeOf(name: string): number {
 	const time = Date.parse(`${y}-${mo}-${d}T${h}:${mi}:${s}Z`);
 	if (!Number.isFinite(time)) throw new Error("INVALID_CODE_IMPORT_PROGRESS");
 	return time;
+}
+
+/** Whether the restore-shaped bundle `kept` was made from the first bundle `raw`, by their manifests alone, so a first
+ * bundle of other code under any name is never taken for a half-done snapshot's: both of the request's environment;
+ * the same default branch's commit, which each name ends in; the restore-shaped one made no earlier than the first
+ * (their names' seconds); its manifest listing its every ref, whose fingerprint is its `refsSha256`; `refs/heads/main`
+ * and the mark `refs/qorpera/kept-here` at that commit; and every other ref one the first bundle's header had at the
+ * same object, a tag as itself and a branch under `refs/qorpera/imported/heads/` as `refs/heads/<name>` (the refs plan,
+ * C1). The first bundle's header must have its default branch at that commit. A ref its manifest does not list counts
+ * against it only when the manifest lists every ref (it lists 2,000). */
+export function codeImportSnapshotBinds(
+	raw: { name: string; manifest: CodeImportBundleManifest },
+	kept: { name: string; manifest: CodeBundleManifest },
+	environmentId: string,
+): boolean {
+	const first = raw.manifest,
+		made = kept.manifest;
+	if (
+		!CODE_IMPORT_BUNDLE_NAME.test(raw.name) ||
+		!CODE_BUNDLE_NAME.test(kept.name) ||
+		first.environmentId !== environmentId ||
+		made.environmentId !== environmentId ||
+		first.mainSha !== made.mainSha ||
+		!raw.name.endsWith(`-${first.mainSha.slice(0, 12)}`) ||
+		!kept.name.endsWith(`-${made.mainSha.slice(0, 12)}`) ||
+		timeOf(kept.name) < timeOf(raw.name.slice("import-".length)) ||
+		made.refsCount !== made.refs.length
+	)
+		return false;
+	try {
+		if (codeRefsSha256(made.refs) !== made.refsSha256) return false;
+	} catch {
+		return false;
+	}
+	const listed = new Map(first.refs.map((ref) => [ref.name, ref.sha])),
+		whole = first.refsCount === first.refs.length;
+	const had = (name: string, sha: string) => {
+		const found = listed.get(name);
+		return found === undefined ? !whole : found === sha;
+	};
+	if (!had(`refs/heads/${first.defaultBranch}`, first.mainSha)) return false;
+	let main = false,
+		mark = false;
+	for (const ref of made.refs) {
+		if (ref.name === "refs/heads/main" && ref.sha === made.mainSha) main = true;
+		else if (ref.name === CODE_AREA_IN_QORPERA_REF && ref.sha === made.mainSha) mark = true;
+		else if (ref.name.startsWith("refs/tags/")) {
+			if (!had(ref.name, ref.sha)) return false;
+		} else if (ref.name.startsWith(CODE_IMPORT_IMPORTED_HEADS)) {
+			if (!had(`refs/heads/${ref.name.slice(CODE_IMPORT_IMPORTED_HEADS.length)}`, ref.sha)) return false;
+		} else return false;
+	}
+	return main && mark;
+}
+
+/** Whether a snapshot's first bundle came from the source an import names: a GitHub project by its owner and name (of
+ * any case, as GitHub takes them), a file by its bytes (a file source's first bundle is the file), and the same branch
+ * asked for, or none. */
+function sameSource(input: CodeImportInput, from: CodeImportFrom, raw: CodeImportRaw): boolean {
+	if ((input.from.branch ?? null) !== (from.branch ?? null)) return false;
+	if ("github" in input.from)
+		return (
+			"github" in from &&
+			typeof from.github === "string" &&
+			from.github.toLowerCase() === input.from.github.toLowerCase()
+		);
+	return "file" in from && raw.sha256 === input.fileSha256;
 }
 
 export class CodeImport {
@@ -431,11 +516,24 @@ export class CodeImport {
 		if (run.confirmed === undefined) await this.#step(run, run.step, run.signal);
 		else this.#renew(run);
 		if (progress.raw === undefined) {
-			// The store folder of a place with no registry row keeps nothing but what a mark there names.
 			run.step = input.via === "file" ? "read" : "fetch";
-			await this.#markOf(run);
-			await this.#tidyStore(run);
-			progress.raw = input.via === "file" ? await this.#read(run) : await this.#fetched(run);
+			// A look alone touches nothing of the place: it takes its own bundle, and removes only that.
+			const mark = input.look ? null : await this.#markOf(run);
+			if (mark !== null) {
+				// A half-done snapshot at the place: finished as it is, from its own two bundles, or refused before any
+				// fetch, with nothing touched and nothing removed.
+				const snapshot = await this.#snapshot(run, mark);
+				if (!snapshot || !sameSource(input, snapshot.from, snapshot.raw))
+					throw new CodeImportStop("refused", HALF_DONE);
+				progress.raw = snapshot.raw;
+				progress.kept = snapshot.kept;
+				this.#report({ event: "code-import", step: "go-on", ...run.named });
+				await this.#tidyStore(run);
+			} else {
+				// The store folder of a place with no registry row and no mark keeps nothing else.
+				if (!input.look) await this.#tidyStore(run);
+				progress.raw = input.via === "file" ? await this.#read(run) : await this.#fetched(run);
+			}
 			delete progress.relayRefused;
 			await this.#step(run, run.step, run.signal);
 			this.#report({
@@ -589,19 +687,23 @@ export class CodeImport {
 		run.step = "look";
 		let look: CodeImportLook;
 		if (input.look) look = (await this.#look(run, true, Math.floor(this.#now() / 1000) * 1000)).look;
-		else if (progress.kept) look = (await this.#look(run, true, timeOf(progress.kept.name))).look;
-		else {
-			const goOn = await this.#goOn(run);
-			if (goOn) {
-				look = (await this.#look(run, true, timeOf(goOn.name))).look;
-				if (look.fits) progress.kept = goOn;
-			} else {
-				await this.#tidyStore(run);
-				const looked = await this.#look(run, false, Math.floor(this.#now() / 1000) * 1000);
-				look = looked.look;
-				if (looked.kept) progress.kept = looked.kept;
+		else if (progress.kept) {
+			// The restore-shaped bundle is in (this import's, or the snapshot's it goes on from): the look alone, on the first
+			// bundle it was made from, at its own time, and it must keep what that bundle holds.
+			const kept = progress.kept;
+			look = (await this.#look(run, true, timeOf(kept.name))).look;
+			await this.#keptLooks(run, kept, look);
+		} else {
+			// A mark this import did not see at its start names a snapshot it did not make.
+			if ((run.mark === undefined ? await this.#markOf(run) : run.mark) !== null)
+				throw new CodeImportStop("refused", HALF_DONE);
+			await this.#tidyStore(run);
+			const looked = await this.#look(run, false, Math.floor(this.#now() / 1000) * 1000);
+			look = looked.look;
+			if (looked.kept) {
+				progress.kept = looked.kept;
+				await this.#step(run, run.step, run.signal);
 			}
-			if (progress.kept) await this.#step(run, run.step, run.signal);
 		}
 		await this.#looked(run, look);
 		run.looked = look;
@@ -900,22 +1002,77 @@ export class CodeImport {
 		return run.mark;
 	}
 
-	/** The bundle a mark at the place names, when the store still has it: an earlier import closed the place for it
-	 * and did not finish, and the place may be half built from it. The import goes on from it as its own. */
-	async #goOn(run: ImportRun): Promise<CodeImportKept | null> {
-		const name = run.mark === undefined ? await this.#markOf(run) : run.mark;
-		if (!name || !CODE_BUNDLE_NAME.test(name)) return null;
-		const manifest: CodeBundleManifest | null = await this.#bundles.find(run.target, name, run.signal);
-		if (!manifest) return null;
-		this.#report({ event: "code-import", step: "go-on", ...run.named });
-		return {
-			name,
-			sha256: manifest.sha256,
-			bytes: manifest.bytes,
-			refsSha256: manifest.refsSha256,
-			mainSha: manifest.mainSha,
-			refs: manifest.refsCount,
-		};
+	/** The half-done snapshot a mark at the place names, when the store still has it whole: the restore-shaped bundle
+	 * the mark names and the newest first bundle it binds to (`codeImportSnapshotBinds`), with their own facts as the
+	 * progress keeps them, and where that first bundle came from. Null otherwise. */
+	async #snapshot(
+		run: ImportRun,
+		name: string,
+	): Promise<{ raw: CodeImportRaw; kept: CodeImportKept; from: CodeImportFrom } | null> {
+		if (!CODE_BUNDLE_NAME.test(name)) return null;
+		const made = await this.#bundles.find(run.target, name, run.signal);
+		if (!made) return null;
+		const firsts = (await this.#imports.names(run.target, run.signal))
+			.filter((each) => CODE_IMPORT_BUNDLE_NAME.test(each))
+			.sort()
+			.reverse();
+		for (const each of firsts) {
+			let first: CodeImportBundleManifest;
+			try {
+				// The manifest alone: the bundle's file is opened only when a piece is taken.
+				first = (await this.#imports.readImport(run.target, each, run.signal)).manifest;
+			} catch (error) {
+				if (run.signal.aborted || !["CODE_BUNDLE_MISSING", "CODE_BUNDLE_DIFFERS"].includes(codeOf(error)))
+					throw error;
+				continue;
+			}
+			if (
+				!codeImportSnapshotBinds(
+					{ name: each, manifest: first },
+					{ name, manifest: made },
+					run.request.environmentId,
+				)
+			)
+				continue;
+			return {
+				raw: {
+					name: each,
+					sha256: first.sha256,
+					bytes: first.bytes,
+					defaultBranch: first.defaultBranch,
+					mainSha: first.mainSha,
+					refs: first.refsCount,
+					leftOut: first.leftOut,
+				},
+				kept: {
+					name,
+					sha256: made.sha256,
+					bytes: made.bytes,
+					refsSha256: made.refsSha256,
+					mainSha: made.mainSha,
+					refs: made.refsCount,
+				},
+				from: first.from,
+			};
+		}
+		return null;
+	}
+
+	/** A look made alone for a restore-shaped bundle already in: it keeps as many tags and other branches as that bundle
+	 * holds (its manifest lists its every ref), or it is not the look of that code. Then a snapshot a mark at the place
+	 * names is refused half done, and this import's own bundle is no answer. */
+	async #keptLooks(run: ImportRun, kept: CodeImportKept, look: CodeImportLook): Promise<void> {
+		const made = await this.#bundles.find(run.target, kept.name, run.signal);
+		const refs = made && made.refsCount === made.refs.length ? made.refs : null;
+		if (
+			refs &&
+			look.tags.kept === refs.filter((ref) => ref.name.startsWith("refs/tags/")).length &&
+			look.branches.kept === refs.filter((ref) => ref.name.startsWith(CODE_IMPORT_IMPORTED_HEADS)).length
+		)
+			return;
+		const mark = run.mark === undefined ? await this.#markOf(run) : run.mark;
+		if (mark === kept.name) throw new CodeImportStop("refused", HALF_DONE);
+		throw new Error(made ? "IMPORT_LOOK_ANSWER_INVALID" : "CODE_BUNDLE_MISSING");
 	}
 
 	/** Every bundle of the place's store folder but this import's own and the one a mark at the place names (read in
@@ -934,20 +1091,28 @@ export class CodeImport {
 		}
 	}
 
-	/** This import's bundles, removed from the store as it ends refused or failed. Never the one a mark at the place
-	 * names: unless the place was just opened again, it is read first, and a place that cannot be read keeps it. */
+	/** This import's bundles, removed from the store as it ends refused or failed, or as a look alone ends. Never a
+	 * bundle of the snapshot a mark at the place names (the restore-shaped bundle and the first one it binds to: this
+	 * import's own `kept` and `raw` when it went on from it, or made it and closed the place): unless the place was just
+	 * opened again, the mark is read first, and a place or a store that cannot be read keeps them all. */
 	async #removeBundles(run: ImportRun, reopened: boolean): Promise<void> {
 		const { raw, kept } = run.progress;
-		let keep: string | null = null;
-		if (kept && !reopened)
+		if (!raw && !kept) return;
+		const keep = new Set<string>();
+		if (!reopened)
 			try {
-				keep = run.mark === undefined ? await this.#markOf(run) : run.mark;
+				const mark = run.mark === undefined ? await this.#markOf(run) : run.mark;
+				if (mark !== null) {
+					keep.add(mark);
+					const snapshot = await this.#snapshot(run, mark);
+					if (snapshot) keep.add(snapshot.raw.name);
+				}
 			} catch (error) {
 				this.#failed(run, "mark", error);
-				keep = kept.name;
+				return;
 			}
 		for (const name of [raw?.name, kept?.name])
-			if (name !== undefined && name !== keep)
+			if (name !== undefined && !keep.has(name))
 				try {
 					await this.#imports.remove(run.target, name, run.signal);
 				} catch (error) {

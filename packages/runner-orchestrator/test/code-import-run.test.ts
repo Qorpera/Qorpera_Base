@@ -10,28 +10,27 @@ import {
 	CODE_BUNDLE_NAME,
 	CODE_BUNDLE_SCHEMA,
 	type CodeBundleFacts,
+	type CodeBundleManifest,
+	type CodeBundleRef,
 	type CodeBundleTarget,
 	codeBundleName,
 } from "../src/code-bundle-store.ts";
 import {
-	addCodeWorktree,
-	bundleCodeArea,
 	type CodeHostCommand,
 	type CodeHostGcBlock,
 	type CodeHostJob,
 	CodeHostJobFailure,
 	CodeHostRefusal,
-	checkCodeArea,
 	codeRefsSha256,
-	landCodeBranch,
-	startCodeArea,
 } from "../src/code-host-jobs.ts";
 import type { CodeHostJobs } from "../src/code-host-views.ts";
 import {
 	CODE_IMPORT_FILE_MAXIMUM_BYTES,
+	CODE_IMPORT_IMPORTED_HEADS,
 	CODE_IMPORT_MAXIMUM_BYTES,
 	CODE_IMPORT_RENEW_MS,
 	type CodeImportBundleFacts,
+	type CodeImportBundleManifest,
 	type CodeImportFetch,
 	type CodeImportFetched,
 	type CodeImportFetchOptions,
@@ -54,6 +53,7 @@ import {
 	CODE_IMPORT_RUN_RPCS,
 	CodeImport,
 	type CodeImportRestoreJobs,
+	codeImportSnapshotBinds,
 } from "../src/code-import-run.ts";
 import { localShell } from "./helpers/code-host-shell.ts";
 
@@ -136,45 +136,59 @@ const listing = async (folder: string) =>
 				.sort()
 		: [];
 
-/** The code as the look makes it ready: a repository kept in Qorpera with a change landed, bundled as nightly care
- * bundles one (the restore-shaped bundle the look job hands out). Made once, with real git. */
+/** The code as the look makes it ready: the restore-shaped bundle the look job hands out, as the refs plan shapes it
+ * (main and the mark at the default branch `master`, a tag, a branch kept under `refs/qorpera/imported/heads/`), made
+ * once with real git; and the first bundle's facts, whose header had `master`, the tag and the branch. */
 const SOURCE = (async () => {
 	const f = await fixture();
-	const { baseSha } = await startCodeArea(f.job, { repository: place });
-	const workerId = randomUUID();
-	await addCodeWorktree(f.job, { repository: place, workerId, baseSha });
-	const tree = join(f.code, "worktrees", workerId);
-	await writeFile(join(tree, "index.html"), "<p>shop</p>\n");
-	await f.git(tree, "add", "--all");
-	await f.git(tree, "commit", "--quiet", "-m", "shop");
-	await landCodeBranch(f.job, { repository: place, workerId, headSha: await f.git(tree, "rev-parse", "HEAD") });
-	const checked = await checkCodeArea(f.job, { repository: place });
-	if (checked.state !== "present") throw new Error("the source is absent");
-	const taken: Buffer[] = [];
-	const made = await bundleCodeArea(
-		f.job,
-		{ repository: place, refsSha256: checked.refsSha256 },
-		{
-			write: async (chunk) => {
-				taken.push(Buffer.from(chunk));
-			},
-		},
+	const work = join(f.root, "shop"),
+		kept = join(f.root, "kept.git"),
+		file = join(f.root, "kept.bundle");
+	await mkdir(work);
+	await f.git(work, "init", "--quiet", "--initial-branch=master");
+	await writeFile(join(work, "index.html"), "<p>shop</p>\n");
+	await f.git(work, "add", "--all");
+	await f.git(work, "commit", "--quiet", "-m", "shop");
+	await f.git(work, "tag", "v1");
+	await f.git(work, "checkout", "--quiet", "-b", "dev");
+	await writeFile(join(work, "dev.txt"), "dev\n");
+	await f.git(work, "add", "--all");
+	await f.git(work, "commit", "--quiet", "-m", "dev");
+	await f.git(work, "checkout", "--quiet", "master");
+	const mainSha = await f.git(work, "rev-parse", "master"),
+		devSha = await f.git(work, "rev-parse", "dev");
+	await f.git(f.root, "init", "--quiet", "--bare", "--initial-branch=main", kept);
+	await f.git(
+		kept,
+		"--git-dir=.",
+		"fetch",
+		"--quiet",
+		work,
+		"+refs/heads/master:refs/heads/main",
+		"+refs/heads/master:refs/qorpera/kept-here",
+		"+refs/tags/v1:refs/tags/v1",
+		`+refs/heads/dev:${CODE_IMPORT_IMPORTED_HEADS}dev`,
 	);
-	const mainSha = checked.mainSha;
+	await f.git(kept, "--git-dir=.", "bundle", "create", "--quiet", file, "--all");
+	const bytes = await readFile(file);
+	const refs = (await f.git(kept, "--git-dir=.", "for-each-ref", "--format=%(refname) %(objectname)"))
+		.split("\n")
+		.map((line) => ({ name: line.split(" ")[0] as string, sha: line.split(" ")[1] as string }));
 	/** The first bundle: bytes the fetch hands the store, which only the look reads. */
 	const raw = Buffer.from(`# v2 git bundle\n${mainSha} refs/heads/master\n\n${"pack ".repeat(700)}`);
 	return {
-		kept: Buffer.concat(taken),
+		kept: bytes,
 		bundle: {
-			sha256: made.sha256,
-			bytes: made.bytes,
-			gitVersion: made.gitVersion,
-			refs: made.refs,
-			refsSha256: made.refsSha256,
+			sha256: digest(bytes),
+			bytes: bytes.length,
+			gitVersion: (await f.git(f.root, "version")).replace(/^git version /, ""),
+			refs,
+			refsSha256: codeRefsSha256(refs),
 			mainSha,
 		},
 		raw,
 		mainSha,
+		devSha,
 		rawName: codeImportBundleName(new Date(NOW).toISOString(), mainSha),
 		keptName: codeBundleName(new Date(Math.floor(NOW / 1000) * 1000).toISOString(), mainSha),
 		fetched: {
@@ -182,7 +196,11 @@ const SOURCE = (async () => {
 			bytes: raw.length,
 			defaultBranch: "master",
 			mainSha,
-			refs: [{ name: "refs/heads/master", sha: mainSha }],
+			refs: [
+				{ name: "refs/heads/master", sha: mainSha },
+				{ name: "refs/tags/v1", sha: mainSha },
+				{ name: "refs/heads/dev", sha: devSha },
+			],
 			leftOut: 0,
 		} as CodeImportFetched,
 	};
@@ -197,8 +215,8 @@ const lookFacts = (s: Source, more: Partial<CodeImportLookFacts> = {}): CodeImpo
 	firstAt: "2026-11-01T10:00:00Z",
 	lastAt: "2026-11-12T10:00:00Z",
 	authors30d: 1,
-	tags: { seen: 0, kept: 0 },
-	branches: { seen: 1, kept: 0 },
+	tags: { seen: 1, kept: 1 },
+	branches: { seen: 1, kept: 1 },
 	leftOut: 0,
 	files: 1,
 	entries: 1,
@@ -258,7 +276,8 @@ const INPUT: Record<"connection" | "public" | "file", (s: Source) => Input> = {
 interface Stored {
 	kind: "import" | "bundle";
 	bytes: Buffer;
-	manifest: Record<string, unknown>;
+	/** Null: a bundle whose manifest never came (a write that died), which `names` still lists. */
+	manifest: Record<string, unknown> | null;
 }
 
 /** The store as part C2 builds it, in memory: ordinary bundles and first bundles side by side, by name. */
@@ -358,7 +377,7 @@ function memoryStore(tick: (label: string) => void) {
 		async read(target: CodeBundleTarget, name: string, signal?: AbortSignal) {
 			signal?.throwIfAborted();
 			const entry = of(target, name, "bundle");
-			if (!entry) throw new Error("CODE_BUNDLE_MISSING");
+			if (!entry?.manifest) throw new Error("CODE_BUNDLE_MISSING");
 			return { manifest: entry.manifest, pieces: pieces(entry.bytes, 4096, signal) };
 		},
 		async find(target: CodeBundleTarget, name: string) {
@@ -367,7 +386,7 @@ function memoryStore(tick: (label: string) => void) {
 		async readImport(target: CodeBundleTarget, name: string, signal?: AbortSignal) {
 			signal?.throwIfAborted();
 			const entry = of(target, name, "import");
-			if (!entry) throw new Error("CODE_BUNDLE_MISSING");
+			if (!entry?.manifest) throw new Error("CODE_BUNDLE_MISSING");
 			return { manifest: entry.manifest, pieces: pieces(entry.bytes, 4096, signal) };
 		},
 		async names(target: CodeBundleTarget, signal?: AbortSignal) {
@@ -645,7 +664,7 @@ async function world(
 				bytes: s.raw.length,
 				defaultBranch: "master",
 				mainSha: s.mainSha,
-				refs: 1,
+				refs: 3,
 				leftOut: 0,
 			});
 			expect(digest(await collect(source))).toBe(value.raw.sha256);
@@ -763,6 +782,20 @@ async function expectBuilt(x: World) {
 	expect(await f.git(f.repo, "--git-dir=.", "rev-parse", "refs/heads/main")).toBe(s.mainSha);
 	expect(await readFile(join(f.code, "main", "index.html"), "utf8")).toBe("<p>shop</p>\n");
 }
+/** A place an earlier import closed, set its copy aside and built in part, and did not finish (its build's save did not
+ * come back, so the claims ran out): the mark names the restore-shaped bundle, which the store keeps with the first
+ * bundle it was made from. */
+async function halfDone(more: { input?: keyof typeof INPUT } = {}) {
+	const first = await world({ copy: true, ...more });
+	const build = first.restore.build;
+	first.restore.build = async (job, value, source, options) => {
+		const built = await build(job, value, source, options);
+		throw new CodeHostJobFailure("CODE_HOST_PUBLISH_FAILED", String(built.refs));
+	};
+	expect(await first.run()).toEqual({ schema: SCHEMA, state: "busy" });
+	expect(await exists(first.f.mark)).toBe(true);
+	return first;
+}
 /** What a run leaves that a later one could tell from another: the place, the set-aside copy, the store, the row. */
 async function endState(x: World) {
 	const { f } = x;
@@ -822,7 +855,7 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 			bytes: s.raw.length,
 			defaultBranch: "master",
 			mainSha: s.mainSha,
-			refs: 1,
+			refs: 3,
 			leftOut: 0,
 		};
 		const kept = {
@@ -988,6 +1021,7 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 		expect(await x.store.names(TARGET)).toEqual([]);
 		expect(x.store.writers.map((writer) => writer.kind)).toEqual(["import"]);
 		expect(await listing(x.f.companyRoot)).toEqual(before);
+		// Nothing of the place is touched: the mark is only read, as its bundle goes, so no snapshot's ever does.
 		expect(x.restore.calls).toEqual(["mark"]);
 		// Claimed again with the look (its finish was not heard): looked, and no second fetch or look.
 		expect(await x.run()).toEqual({ schema: SCHEMA, state: "done", result: "looked" });
@@ -1271,12 +1305,27 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 		expect(x.kernel.records[0]?.closed).toBe(true);
 		expect(await exists(x.f.mark)).toBe(true);
 		x.hosts.host = () => x.f.job;
+		// The claim that comes with the record and the mark still there finishes the open, records nothing, and is done
+		// only once the mark is gone (the kernel ends a recorded import by this finish alone).
+		let asked = x.kernel.asked.length;
+		const opened = x.restore.open;
+		let markAtDone: boolean | undefined;
+		x.restore.open = async (job, value, record) => {
+			const answer = await opened(job, value, record);
+			markAtDone = await exists(x.f.mark);
+			return answer;
+		};
 		expect(await x.run()).toMatchObject({ state: "done", result: "imported", bundle: x.s.keptName });
-		expect(x.kernel.asked.filter((asked) => asked.startsWith("record"))).toEqual(["record: recorded"]);
+		expect(markAtDone).toBe(false);
+		expect(x.kernel.asked.slice(asked)).toEqual(["open: go"]);
+		expect(x.kernel.asked.filter((each) => each.startsWith("record"))).toEqual(["record: recorded"]);
 		expect(await exists(x.f.mark)).toBe(false);
 		await expectBuilt(x);
-		// Claimed again once more (its finish was not heard): the place is open, and nothing is recorded again.
+		// Claimed again once more (its finish was not heard): the mark is gone, the open finds the place open, and the run
+		// is done with nothing recorded again.
+		asked = x.kernel.asked.length;
 		expect(await x.run()).toMatchObject({ state: "done", result: "imported" });
+		expect(x.kernel.asked.slice(asked)).toEqual(["open: go"]);
 		expect(x.kernel.records).toHaveLength(1);
 		// A record not heard is asked once more; not heard twice, the place stays closed and the run is put off.
 		const y = await world();
@@ -1560,15 +1609,8 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 		expect(z.kernel.row).not.toHaveProperty("relayRefused");
 	});
 
-	it("a mark at a place with no registry row: the bundle it names stays in the store, and a new import goes on from it as its own", async () => {
-		// An earlier import closed the place, set its copy aside and built it in part, and did not finish.
-		const first = await world({ copy: true });
-		const build = first.restore.build;
-		first.restore.build = async (job, value, source, options) => {
-			const built = await build(job, value, source, options);
-			throw new CodeHostJobFailure("CODE_HOST_PUBLISH_FAILED", String(built.refs));
-		};
-		expect(await first.run()).toEqual({ schema: SCHEMA, state: "busy" });
+	it("a half-done snapshot at a place: the same project, whose head moved since, is finished from the snapshot's own bundles with no fetch, and what is recorded is of the code installed", async () => {
+		const first = await halfDone();
 		expect(JSON.parse(await readFile(first.f.mark, "utf8"))).toMatchObject({
 			step: "emptied",
 			bundle: first.s.keptName,
@@ -1581,10 +1623,22 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 			manifest: {},
 		});
 		first.store.put("20261101T000000Z-bbbbbbbbbbbb", { kind: "bundle", bytes: Buffer.from("old"), manifest: {} });
-		// A new import of the same code, an hour later.
+		// And a first bundle whose write died before its manifest, newer than the snapshot's: passed over, then removed.
+		first.store.put(codeImportBundleName(new Date(NOW + 60_000).toISOString(), first.s.mainSha), {
+			kind: "import",
+			bytes: Buffer.from("half"),
+			manifest: null,
+		});
+		const writers = first.store.writers.length;
+		// A new request for the same project (spelled another way), an hour later, through the connection; GitHub's head
+		// has moved, so a fetch now would bring other code.
 		const x = await world({ f: first.f, store: first.store });
+		x.input.from = { github: "acme/SHOP" };
 		x.clock.now = NOW + 3_600_000;
-		const rawName = codeImportBundleName(new Date(x.clock.now).toISOString(), x.s.mainSha);
+		x.fetching.writes = async (_options, writer) => {
+			await writer.write(Buffer.from("moved"));
+			return { ...x.s.fetched, mainSha: "e".repeat(40) };
+		};
 		expect(await x.run()).toEqual({
 			schema: SCHEMA,
 			state: "done",
@@ -1592,53 +1646,420 @@ describe("CodeImport: one import request, from its claim to its outcome", () => 
 			change: 1,
 			mainSha: x.s.mainSha,
 			bundle: x.s.keptName,
-			rawBundle: rawName,
+			rawBundle: x.s.rawName,
 			setAside: ASIDE,
 		});
-		// The look ran alone, for its facts, at the bundle's time; the close found the mark of that bundle, and the place
-		// was not set aside again.
+		expect([x.fetching.calls, x.transports.made.length, x.b.reads.length]).toEqual([0, 0, 0]);
+		expect(x.store.writers).toHaveLength(writers);
+		// Both bundles taken with their own facts, saved before anything else; the look made alone of that first bundle,
+		// at the restore-shaped bundle's time: the same look the snapshot was made with.
+		expect(x.kernel.steps.slice(0, 2)).toEqual([
+			{ step: "fetch" },
+			{
+				step: "fetch",
+				raw: (first.kernel.row as Record<string, unknown>).raw,
+				kept: (first.kernel.row as Record<string, unknown>).kept,
+			},
+		]);
 		expect(x.b.looks).toEqual([{ look: true, now: Math.floor(NOW / 1000) * 1000 }]);
+		expect(x.kernel.look).toEqual(first.kernel.look);
+		expect(x.kernel.records[0]?.args.p_imported).toEqual({
+			schema: "qorpera.code-import-record/v1",
+			bundle: x.s.keptName,
+			mainSha: x.s.mainSha,
+			files: 1,
+		});
+		// The close found the snapshot's mark, emptied: nothing was set aside again.
 		expect(x.restore.calls).toEqual([
 			"mark",
 			"close fresh=false proven=true",
 			"build proven=true",
 			"open sessions=0",
 		]);
-		expect(x.kernel.steps.find((step) => step.kept)).toMatchObject({ kept: { name: x.s.keptName } });
-		expect(x.kernel.records[0]?.args.p_imported).toMatchObject({ bundle: x.s.keptName });
-		expect(await x.store.names(TARGET)).toEqual([x.s.keptName, rawName].sort());
-		expect(x.store.writers.slice(-1).map((writer) => writer.kind)).toEqual(["import"]);
+		expect(await x.store.names(TARGET)).toEqual([x.s.keptName, x.s.rawName].sort());
 		await expectBuilt(x);
 		expect(await listing(join(x.f.companyRoot, ASIDE))).toEqual(COPY);
-		// The same with a look that stops it: refused, the mark's bundle still there, the new import's bundle gone.
-		const second = await world({ copy: true });
-		second.restore.build = first.restore.build;
-		expect(await second.run()).toEqual({ schema: SCHEMA, state: "busy" });
-		const y = await world({ f: second.f, store: second.store });
+		expect(x.errors()).toEqual([]);
+		// A file source the same way: the same file's bytes at another path, with no read; the new path is tidied away.
+		const file = await halfDone({ input: "file" });
+		const y = await world({ f: file.f, store: file.store, input: "file" });
+		y.input.from = { file: "code/_incoming/again/shop.bundle" };
+		y.clock.now = NOW + 3_600_000;
+		expect(await y.run()).toMatchObject({ state: "done", result: "imported", rawBundle: y.s.rawName });
+		expect([y.b.reads.length, y.fetching.calls]).toEqual([0, 0]);
+		expect(y.b.removes).toEqual(["code/_incoming/again/shop.bundle"]);
+		await expectBuilt(y);
+	});
+
+	it("a half-done snapshot at a place: another source, another branch, or a snapshot whose bundles are gone or do not bind is refused before anything is fetched or touched", async () => {
+		const cases: { name: string; input?: keyof typeof INPUT; first?: keyof typeof INPUT; set: (x: World) => void }[] =
+			[
+				{
+					name: "another project",
+					set: (x) => {
+						x.input.from = { github: "Acme/Other" };
+					},
+				},
+				{
+					name: "the same project, another branch",
+					set: (x) => {
+						x.input.from = { github: "Acme/Shop", branch: "dev" };
+					},
+				},
+				{ name: "a file where GitHub was", input: "file", set: () => undefined },
+				{
+					name: "another file",
+					input: "file",
+					first: "file",
+					set: (x) => {
+						x.input.fileSha256 = "f".repeat(64);
+					},
+				},
+				{
+					name: "the first bundle gone",
+					set: (x) => {
+						x.store.stored.delete(`${COMPANY}/acme/app/${x.s.rawName}`);
+					},
+				},
+				{
+					name: "the restore-shaped bundle gone",
+					set: (x) => {
+						x.store.stored.delete(`${COMPANY}/acme/app/${x.s.keptName}`);
+					},
+				},
+				{
+					name: "a first bundle of other code under its name",
+					set: (x) => {
+						const stored = x.store.stored.get(`${COMPANY}/acme/app/${x.s.rawName}`) as Stored;
+						const refs = ((stored.manifest as Record<string, unknown>).refs as CodeBundleRef[]).map((ref) =>
+							ref.name === "refs/tags/v1" ? { ...ref, sha: x.s.devSha } : ref,
+						);
+						stored.manifest = { ...stored.manifest, refs };
+					},
+				},
+			];
+		for (const test of cases) {
+			const first = await halfDone({ input: test.first });
+			const x = await world({ f: first.f, store: first.store, input: test.input });
+			x.clock.now = NOW + 3_600_000;
+			test.set(x);
+			const before = { place: await listing(x.f.companyRoot), names: await x.store.names(TARGET) };
+			expect({ name: test.name, outcome: await x.run() }).toEqual({
+				name: test.name,
+				outcome: { schema: SCHEMA, state: "refused", code: "IMPORT_PLACE_HALF_DONE" },
+			});
+			expect({ name: test.name, place: await listing(x.f.companyRoot), names: await x.store.names(TARGET) }).toEqual(
+				{
+					name: test.name,
+					...before,
+				},
+			);
+			expect({
+				name: test.name,
+				fetched: x.fetching.calls,
+				read: x.b.reads.length,
+				looked: x.b.looks.length,
+				asked: x.kernel.asked,
+				restore: x.restore.calls,
+			}).toEqual({
+				name: test.name,
+				fetched: 0,
+				read: 0,
+				looked: 0,
+				asked: [`${test.input === "file" ? "read" : "fetch"}: go`],
+				restore: ["mark"],
+			});
+		}
+	});
+
+	it("a half-done snapshot at a place: a look alone there takes its own source and removes only its own bundle; a snapshot's look that does not keep what its bundle holds, or that stops it, or a failure before the close, leaves both its bundles", async () => {
+		const first = await halfDone();
+		const mark = await readFile(first.f.mark, "utf8");
+		const before = await listing(first.f.companyRoot);
+		const x = await world({ f: first.f, store: first.store, look: true });
+		x.clock.now = NOW + 3_600_000;
+		expect(await x.run()).toEqual({ schema: SCHEMA, state: "done", result: "looked" });
+		expect([x.fetching.calls, x.b.looks.length]).toEqual([1, 1]);
+		expect(x.restore.calls).toEqual(["mark"]);
+		expect(await x.store.names(TARGET)).toEqual([x.s.keptName, x.s.rawName].sort());
+		expect(await readFile(first.f.mark, "utf8")).toBe(mark);
+		expect(await listing(first.f.companyRoot)).toEqual(before);
+		// The snapshot's look made alone keeps another number of tags than its bundle holds: not the code there.
+		const y = await world({ f: first.f, store: first.store });
 		y.clock.now = NOW + 3_600_000;
 		y.b.look = async () => ({
 			state: "looked",
+			look: codeImportLook(lookFacts(y.s, { tags: { seen: 2, kept: 2 } })),
+		});
+		expect(await y.run()).toEqual({ schema: SCHEMA, state: "refused", code: "IMPORT_PLACE_HALF_DONE" });
+		expect(y.kernel.look).toBeNull();
+		expect(await y.store.names(TARGET)).toEqual([y.s.keptName, y.s.rawName].sort());
+		// Another number of other branches, the same.
+		const z = await world({ f: first.f, store: first.store });
+		z.b.look = async () => ({
+			state: "looked",
+			look: codeImportLook(lookFacts(z.s, { branches: { seen: 1, kept: 0 } })),
+		});
+		expect(await z.run()).toEqual({ schema: SCHEMA, state: "refused", code: "IMPORT_PLACE_HALF_DONE" });
+		expect(await z.store.names(TARGET)).toEqual([z.s.keptName, z.s.rawName].sort());
+		// A look that stops it: refused with its code; the snapshot and its mark stay.
+		const v = await world({ f: first.f, store: first.store });
+		v.b.look = async () => ({
+			state: "looked",
 			look: codeImportLook(
-				lookFacts(y.s, { why: "IMPORT_TOO_MANY_FILES", refused: { code: "IMPORT_TOO_MANY_FILES", paths: [] } }),
+				lookFacts(v.s, { why: "IMPORT_TOO_MANY_FILES", refused: { code: "IMPORT_TOO_MANY_FILES", paths: [] } }),
 			),
 		});
-		expect(await y.run()).toEqual({ schema: SCHEMA, state: "refused", code: "IMPORT_TOO_MANY_FILES" });
-		expect(await y.store.names(TARGET)).toEqual([y.s.keptName]);
-		expect(await exists(y.f.mark)).toBe(true);
-		expect(y.kernel.row).not.toHaveProperty("kept");
-		// And with a failure before the close of a bundle it went on from: the mark's bundle stays, the new one goes.
-		const third = await world({ copy: true });
-		third.restore.build = first.restore.build;
-		expect(await third.run()).toEqual({ schema: SCHEMA, state: "busy" });
-		const z = await world({ f: third.f, store: third.store });
-		z.clock.now = NOW + 3_600_000;
-		z.store.read = async () => {
+		expect(await v.run()).toEqual({ schema: SCHEMA, state: "refused", code: "IMPORT_TOO_MANY_FILES" });
+		expect(v.kernel.row).toMatchObject({ kept: { name: v.s.keptName }, raw: { name: v.s.rawName } });
+		expect(await v.store.names(TARGET)).toEqual([v.s.keptName, v.s.rawName].sort());
+		expect(await readFile(first.f.mark, "utf8")).toBe(mark);
+		// A failure before the close: both stay too.
+		const u = await world({ f: first.f, store: first.store });
+		const read = u.store.read;
+		u.store.read = async () => {
 			throw new Error("CODE_BUNDLE_STORE_BROKEN");
 		};
-		expect(await z.run()).toEqual({ schema: SCHEMA, state: "failed", code: "CODE_BUNDLE_STORE_BROKEN" });
-		expect(z.kernel.row).toMatchObject({ kept: { name: z.s.keptName } });
-		expect(await z.store.names(TARGET)).toEqual([z.s.keptName]);
-		expect(await exists(z.f.mark)).toBe(true);
+		expect(await u.run()).toEqual({ schema: SCHEMA, state: "failed", code: "CODE_BUNDLE_STORE_BROKEN" });
+		u.store.read = read;
+		expect(await u.store.names(TARGET)).toEqual([u.s.keptName, u.s.rawName].sort());
+		expect(await readFile(first.f.mark, "utf8")).toBe(mark);
+		// A mark that cannot be read as the bundles would be removed: they stay.
+		const t = await world({ f: first.f, store: first.store });
+		let marks = 0;
+		t.restore.mark = async () => {
+			marks += 1;
+			throw new CodeHostJobFailure("CODE_HOST_READ_FAILED", "head");
+		};
+		t.store.read = async () => {
+			throw new Error("CODE_BUNDLE_STORE_BROKEN");
+		};
+		// (The claim comes with the snapshot taken, so the mark is read only as the bundles would go.)
+		t.kernel.row = structuredClone(u.kernel.row);
+		t.kernel.look = structuredClone(u.kernel.look);
+		expect(await t.run()).toEqual({ schema: SCHEMA, state: "failed", code: "CODE_BUNDLE_STORE_BROKEN" });
+		t.store.read = read;
+		expect(marks).toBe(1);
+		expect(await t.store.names(TARGET)).toEqual([t.s.keptName, t.s.rawName].sort());
+		// A claim that comes with a first bundle and no restore-shaped one, at a place a mark closed since: refused.
+		const late = await world({ f: first.f, store: first.store });
+		late.kernel.row = { step: "fetch", raw: structuredClone((first.kernel.row as Record<string, unknown>).raw) };
+		expect(await late.run()).toEqual({ schema: SCHEMA, state: "refused", code: "IMPORT_PLACE_HALF_DONE" });
+		expect(late.b.looks).toEqual([]);
+		expect(await late.store.names(TARGET)).toEqual([late.s.keptName, late.s.rawName].sort());
+		expect(await readFile(first.f.mark, "utf8")).toBe(mark);
+		// An import of its own whose look made alone again does not keep what its own bundle holds (no mark at its place):
+		// no answer, and its bundles go.
+		const own = await world({ copy: true });
+		let unheard = true;
+		own.kernel.answer = (method) =>
+			method === "qorpera_code_import_looked" && unheard ? new Error("CODING_CONTROL_UNCONFIRMED") : undefined;
+		expect(await own.run()).toEqual({ schema: SCHEMA, state: "busy" });
+		unheard = false;
+		own.b.look = async () => ({
+			state: "looked",
+			look: codeImportLook(lookFacts(own.s, { tags: { seen: 2, kept: 2 } })),
+		});
+		expect(await own.run()).toEqual({ schema: SCHEMA, state: "failed", code: "IMPORT_LOOK_ANSWER_INVALID" });
+		expect(await own.store.names(TARGET)).toEqual([]);
+		// And the snapshot is still there to finish.
+		const done = await world({ f: first.f, store: first.store });
+		expect(await done.run()).toMatchObject({ state: "done", result: "imported", rawBundle: done.s.rawName });
+		await expectBuilt(done);
+	});
+
+	it("a half-done snapshot gone on from, cut after every single step and claimed again, ends the same as one not cut, with no fetch", async () => {
+		const whole = await halfDone();
+		const wx = await world({ f: whole.f, store: whole.store });
+		wx.clock.now = NOW + 3_600_000;
+		const done = await wx.run();
+		expect(done).toMatchObject({ state: "done", result: "imported", rawBundle: wx.s.rawName });
+		const end = await endState(wx),
+			trace = [...wx.w.trace];
+		expect(trace.length).toBeGreaterThan(8);
+		for (let cut = 1; cut <= trace.length; cut += 1) {
+			const first = await halfDone();
+			const x = await world({ f: first.f, store: first.store });
+			x.clock.now = NOW + 3_600_000;
+			x.w.cutAt = cut;
+			const outcomes = [await x.run()];
+			x.w.cutAt = undefined;
+			while ((outcomes.at(-1) as CodeImportOutcome).state === "busy" && outcomes.length < 6)
+				outcomes.push(await x.run());
+			expect({ cut, at: trace[cut - 1], outcome: outcomes.at(-1) }).toEqual({
+				cut,
+				at: trace[cut - 1],
+				outcome: done,
+			});
+			expect({ cut, end: await endState(x) }).toEqual({ cut, end });
+			expect({
+				cut,
+				records: x.kernel.records.length,
+				looks: x.kernel.looks.length,
+				fetched: x.fetching.calls,
+			}).toEqual({
+				cut,
+				records: 1,
+				looks: 1,
+				fetched: 0,
+			});
+			expect(x.b.looks.every((look) => look.look && look.now === Math.floor(NOW / 1000) * 1000)).toBe(true);
+		}
+	}, 170_000);
+
+	it("binds a restore-shaped bundle to the first bundle it was made from by their manifests alone, and nothing else", async () => {
+		const s = await SOURCE;
+		const repository = { host: "qorpera" as const, owner: "acme", name: "app" };
+		const first: CodeImportBundleManifest = {
+			schema: "qorpera.code-import-bundle/v1",
+			companyId: COMPANY,
+			environmentId: ENVIRONMENT,
+			repository,
+			createdAt: new Date(NOW).toISOString(),
+			from: { github: "Acme/Shop" },
+			defaultBranch: "master",
+			mainSha: s.mainSha,
+			refs: s.fetched.refs,
+			refsCount: s.fetched.refs.length,
+			leftOut: 0,
+			sha256: digest(s.raw),
+			bytes: s.raw.length,
+			executorOwner: OWNER,
+		};
+		const made: CodeBundleManifest = {
+			schema: CODE_BUNDLE_SCHEMA,
+			companyId: COMPANY,
+			environmentId: ENVIRONMENT,
+			repository: { ...repository, baseBranch: "main" },
+			createdAt: new Date(Math.floor(NOW / 1000) * 1000).toISOString(),
+			gitVersion: s.bundle.gitVersion,
+			mainSha: s.mainSha,
+			refsSha256: s.bundle.refsSha256,
+			refs: s.bundle.refs,
+			refsCount: s.bundle.refs.length,
+			sha256: s.bundle.sha256,
+			bytes: s.bundle.bytes,
+			verified: true,
+			executorOwner: OWNER,
+		};
+		const other = "e".repeat(40);
+		const binds = (
+			more: { first?: Partial<CodeImportBundleManifest>; made?: Partial<CodeBundleManifest> } = {},
+			names: { first?: string; made?: string; environment?: string } = {},
+		) =>
+			codeImportSnapshotBinds(
+				{ name: names.first ?? s.rawName, manifest: { ...first, ...more.first } },
+				{ name: names.made ?? s.keptName, manifest: { ...made, ...more.made } },
+				names.environment ?? ENVIRONMENT,
+			);
+		/** The restore-shaped bundle's refs with one changed, its fingerprint kept true to them. */
+		const keptRefs = (refs: CodeBundleRef[]) => ({ refs, refsCount: refs.length, refsSha256: codeRefsSha256(refs) });
+		const swap = (name: string, ref: CodeBundleRef | null) =>
+			keptRefs(s.bundle.refs.flatMap((each) => (each.name === name ? (ref ? [ref] : []) : [each])));
+		expect(binds()).toBe(true);
+		const environment = "44444444-4444-4444-8444-444444444444";
+		const cases: [string, boolean][] = [
+			["the first of another environment", binds({ first: { environmentId: environment } })],
+			["the restore-shaped of another environment", binds({ made: { environmentId: environment } })],
+			["another request's environment", binds({}, { environment })],
+			[
+				"a first bundle of another main, named and headed so",
+				binds(
+					{
+						first: {
+							mainSha: other,
+							refs: s.fetched.refs.map((ref) =>
+								ref.name === "refs/heads/master" ? { ...ref, sha: other } : ref,
+							),
+						},
+					},
+					{ first: codeImportBundleName(new Date(NOW).toISOString(), other) },
+				),
+			],
+			[
+				"a first bundle's name of another main",
+				binds({}, { first: codeImportBundleName(new Date(NOW).toISOString(), other) }),
+			],
+			[
+				"a restore-shaped name of another main",
+				binds({}, { made: codeBundleName(new Date(NOW).toISOString(), other) }),
+			],
+			[
+				"made before the first",
+				binds({}, { first: codeImportBundleName(new Date(NOW + 1000).toISOString(), s.mainSha) }),
+			],
+			[
+				"a restore-shaped manifest that lists part of its refs",
+				binds({ made: { refsCount: s.bundle.refs.length + 1 } }),
+			],
+			["a fingerprint not its refs'", binds({ made: { refsSha256: "f".repeat(64) } })],
+			["no main", binds({ made: swap("refs/heads/main", null) })],
+			[
+				"main at another commit",
+				binds({ made: swap("refs/heads/main", { name: "refs/heads/main", sha: s.devSha }) }),
+			],
+			["no mark", binds({ made: swap("refs/qorpera/kept-here", null) })],
+			[
+				"the mark at another commit",
+				binds({ made: swap("refs/qorpera/kept-here", { name: "refs/qorpera/kept-here", sha: s.devSha }) }),
+			],
+			["a tag at another object", binds({ made: swap("refs/tags/v1", { name: "refs/tags/v1", sha: s.devSha }) })],
+			[
+				"a tag the first did not have",
+				binds({ made: swap("refs/tags/v1", { name: "refs/tags/v2", sha: s.mainSha }) }),
+			],
+			[
+				"a branch at another object",
+				binds({
+					made: swap(`${CODE_IMPORT_IMPORTED_HEADS}dev`, {
+						name: `${CODE_IMPORT_IMPORTED_HEADS}dev`,
+						sha: s.mainSha,
+					}),
+				}),
+			],
+			[
+				"a branch the first did not have",
+				binds({
+					made: swap(`${CODE_IMPORT_IMPORTED_HEADS}dev`, {
+						name: `${CODE_IMPORT_IMPORTED_HEADS}other`,
+						sha: s.devSha,
+					}),
+				}),
+			],
+			[
+				"a ref the plan never makes",
+				binds({ made: swap(`${CODE_IMPORT_IMPORTED_HEADS}dev`, { name: "refs/heads/dev", sha: s.devSha }) }),
+			],
+			[
+				"the first's default branch at another commit",
+				binds({
+					first: {
+						refs: s.fetched.refs.map((ref) =>
+							ref.name === "refs/heads/master" ? { ...ref, sha: s.devSha } : ref,
+						),
+					},
+				}),
+			],
+		];
+		expect(cases.filter(([, bound]) => bound).map(([name]) => name)).toEqual([]);
+		// A first bundle whose manifest lists part of its refs: a ref it does not list is not held against it; one it
+		// lists at another object is.
+		const cutList = { refs: s.fetched.refs.filter((ref) => ref.name !== "refs/tags/v1"), refsCount: 2_400 };
+		expect(binds({ first: cutList })).toBe(true);
+		expect(
+			binds({
+				first: {
+					...cutList,
+					refs: s.fetched.refs
+						.filter((ref) => ref.name !== "refs/tags/v1")
+						.map((ref) => (ref.name === "refs/heads/dev" ? { ...ref, sha: s.mainSha } : ref)),
+				},
+			}),
+		).toBe(false);
+		// One that lists every ref it has, and not the tag: the tag was not the first bundle's.
+		expect(
+			binds({ first: { refs: s.fetched.refs.filter((ref) => ref.name !== "refs/tags/v1"), refsCount: 2 } }),
+		).toBe(false);
 	});
 
 	it("the executor stopping in the middle of the fetch: the writer is given up, nothing is committed, nothing more is asked", async () => {
