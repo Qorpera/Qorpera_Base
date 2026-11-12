@@ -37,6 +37,7 @@ const UNDONE = "e".repeat(40);
 const SCHEMA = "qorpera.code-request-outcome/v1";
 const FINISH = "qorpera.code-request-finish/v1";
 const STEP = "qorpera.code-request-step/v1";
+const STRAND = "qorpera.code-restore-strand/v1";
 const REPOSITORY: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "shop", baseBranch: "main" };
 const TARGET: CodeChangeTarget = { companyId: COMPANY, environmentId: ENVIRONMENT, owner: "qorpera", name: "shop" };
 const WHERE = { companyId: COMPANY, environmentId: ENVIRONMENT, owner: "qorpera", name: "shop" };
@@ -121,7 +122,9 @@ function setup(options: Partial<CodeHostRequestsOptions> = {}) {
 		async call(method: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
 			signal.throwIfAborted();
 			calls.push({ method, args: structuredClone(args) });
-			order.push(method.replace("qorpera_code_request", "").replace(/^s?_/, ""));
+			order.push(
+				method.replace("qorpera_code_request", "").replace("qorpera_code_restore_", "").replace(/^s?_/, ""),
+			);
 			const forced = await kernel.answer?.(method, args);
 			if (forced !== undefined) return forced;
 			if (method === "qorpera_code_requests_claim")
@@ -129,6 +132,9 @@ function setup(options: Partial<CodeHostRequestsOptions> = {}) {
 			if (method === "qorpera_code_request_step")
 				return { schema: STEP, state: "go", leaseUntil: "2026-11-10T12:35:00+00:00" };
 			if (method === "qorpera_code_request_finish") return { schema: FINISH, state: "recorded", change: 15 };
+			// Every session named was archived: none was at work.
+			if (method === "qorpera_code_restore_strand")
+				return { schema: STRAND, state: "done", archived: (args.p_stranded as unknown[]).length, active: 0 };
 			throw new Error(`not a request call: ${method}`);
 		},
 	};
@@ -227,6 +233,7 @@ describe("CodeHostRequests", () => {
 			"qorpera_code_request_step",
 			"qorpera_code_request_finish",
 			"qorpera_code_restore_record",
+			"qorpera_code_restore_strand",
 		]);
 	});
 
@@ -718,6 +725,267 @@ describe("CodeHostRequests", () => {
 			expect(odd.finishes()).toEqual([
 				finishOf(R3, T3, { schema: SCHEMA, state: "failed", code: "CODE_REQUEST_ANSWER_INVALID" }),
 			]);
+		});
+
+		describe("the sessions a restore stranded", () => {
+			const session = (at: number) => `cccccccc-0000-4000-8000-${String(at).padStart(12, "0")}`;
+			const S1 = session(1);
+			const S2 = session(2);
+			const restored = (stranded: unknown[]): CodeRequestOutcome =>
+				({
+					schema: SCHEMA,
+					state: "done",
+					result: "restored",
+					bundle: "20261109T021455Z-aaaaaaaaaaaa",
+					mainSha: MAIN,
+					previousMainSha: AFTER,
+					refsSha256: "9".repeat(64),
+					refs: 4,
+					stranded,
+					movedTo: "code/_set-aside/qorpera/at-20261110T120000Z/shop",
+				}) as CodeRequestOutcome;
+			const strandOf = (ids: string[]) => ({
+				method: "qorpera_code_restore_strand",
+				args: { ...WHO, p_request_id: R3, p_stranded: ids },
+			});
+			/** A restore that answers `outcome`, after it said so in `order`. */
+			function restoring(outcome: CodeRequestOutcome, options: Partial<CodeHostRequestsOptions> = {}) {
+				const t = setup({
+					restore: {
+						run: async () => {
+							t.order.push("restore");
+							return outcome;
+						},
+					},
+					...options,
+				});
+				t.kernel.claims = [[RESTORE]];
+				return t;
+			}
+			const strands = (t: ReturnType<typeof setup>) =>
+				t.calls.filter((call) => call.method === "qorpera_code_restore_strand");
+			const said = (t: ReturnType<typeof setup>) => t.events.filter((event) => event.step === "stranded");
+
+			it("archives them before the restore's finish, and once more after it the ones a session was at work in", async () => {
+				const outcome = restored([S1, S2]);
+				const t = restoring(outcome);
+				let asked = 0;
+				t.kernel.answer = (method) => {
+					if (method !== "qorpera_code_restore_strand") return undefined;
+					asked += 1;
+					// A turn began in one of them after the open: it is counted and left, and asked for again after the finish.
+					return { schema: STRAND, state: "done", archived: 1, active: asked === 1 ? 1 : 0 };
+				};
+				const lasting = new AbortController();
+				const watch = watchAbortSignalAny();
+				try {
+					await expect(t.requests.pass(lasting.signal)).resolves.toEqual(NONE);
+					await t.requests.settled();
+					await expect(t.requests.pass(lasting.signal)).resolves.toEqual({ ...NONE, done: 1 });
+					expect(watch.on(lasting.signal)).toBe(0);
+				} finally {
+					watch.restore();
+				}
+				expect(t.order).toEqual(["claim", "restore", "strand", "finish", "strand", "claim"]);
+				expect(strands(t)).toEqual([strandOf([S1, S2]), strandOf([S1, S2])]);
+				// The finish is the restore's own outcome, whatever the calls around it said.
+				expect(t.finishes()).toEqual([finishOf(R3, T3, outcome)]);
+				const where = {
+					requestId: R3,
+					kind: "restore",
+					companyId: COMPANY,
+					environmentId: ENVIRONMENT,
+					repository: "qorpera/shop",
+				};
+				expect(said(t)).toEqual([
+					{ event: "code-request", step: "stranded", ...where, at: "before", sessions: 2, archived: 1, active: 1 },
+					{ event: "code-request", step: "stranded", ...where, at: "after", sessions: 2, archived: 1, active: 0 },
+				]);
+				expect(t.finished().filter((event) => event.step === "finished")).toEqual([
+					expect.objectContaining({ result: "restored", recorded: true }),
+				]);
+				expect(t.errors()).toEqual([]);
+
+				// Every one archived before the finish: nothing is left to ask for after it.
+				const all = restoring(outcome);
+				await expect(all.whole()).resolves.toEqual({ ...NONE, done: 1 });
+				expect(all.order).toEqual(["claim", "restore", "strand", "finish", "claim"]);
+				expect(strands(all)).toEqual([strandOf([S1, S2])]);
+			});
+
+			it("names at most 200 a call, each session once, and asks again after the finish only for a call that left some", async () => {
+				const ids = Array.from({ length: 450 }, (_, at) => session(at + 1));
+				// The restore's list as the kernel's outcome might carry it: a session twice, and what is no session.
+				const t = restoring(restored([...ids, ids[0], "not-a-session", 7, null]));
+				let asked = 0;
+				t.kernel.answer = (method, args) => {
+					if (method !== "qorpera_code_restore_strand") return undefined;
+					asked += 1;
+					const named = (args.p_stranded as unknown[]).length;
+					// Before the finish: the second call is not heard, the third finds a session at work.
+					if (asked === 2) throw new Error("CODING_CONTROL_UNCONFIRMED");
+					return {
+						schema: STRAND,
+						state: "done",
+						archived: asked === 3 ? named - 1 : named,
+						active: asked === 3 ? 1 : 0,
+					};
+				};
+				await expect(t.whole()).resolves.toEqual({ ...NONE, done: 1 });
+				expect(t.order).toEqual([
+					"claim",
+					"restore",
+					"strand",
+					"strand",
+					"strand",
+					"finish",
+					"strand",
+					"strand",
+					"claim",
+				]);
+				expect(strands(t)).toEqual([
+					strandOf(ids.slice(0, 200)),
+					strandOf(ids.slice(200, 400)),
+					strandOf(ids.slice(400)),
+					// After it: what the two calls that left some named, in calls of at most 200 again.
+					strandOf(ids.slice(200, 400)),
+					strandOf(ids.slice(400)),
+				]);
+				expect(t.errors()).toEqual(["strand:CODING_CONTROL_UNCONFIRMED"]);
+				expect(t.events.find((event) => event.step === "strand")).toMatchObject({ at: "before", requestId: R3 });
+			});
+
+			it("never fails a restore, nor holds its finish up, for a call that failed, was lost, was not understood or never answered", async () => {
+				const outcome = restored([S1]);
+				const cases: [string, () => unknown, string[], number][] = [
+					[
+						"not heard",
+						() => {
+							throw new Error("CODING_CONTROL_UNCONFIRMED");
+						},
+						["strand:CODING_CONTROL_UNCONFIRMED", "strand:CODING_CONTROL_UNCONFIRMED"],
+						2,
+					],
+					[
+						"rows busy",
+						() => {
+							throw new CodingControlBusy();
+						},
+						["strand:CODING_CONTROL_BUSY", "strand:CODING_CONTROL_BUSY"],
+						2,
+					],
+					[
+						"no counts",
+						() => ({ schema: STRAND, state: "done" }),
+						["strand:CODE_RESTORE_STRAND_UNCONFIRMED", "strand:CODE_RESTORE_STRAND_UNCONFIRMED"],
+						2,
+					],
+					[
+						"no schema",
+						() => ({ state: "done", archived: 1, active: 0 }),
+						["strand:CODE_RESTORE_STRAND_UNCONFIRMED", "strand:CODE_RESTORE_STRAND_UNCONFIRMED"],
+						2,
+					],
+					[
+						"another state",
+						() => ({ schema: STRAND, state: "archived", archived: 1, active: 0 }),
+						["strand:CODE_RESTORE_STRAND_UNCONFIRMED", "strand:CODE_RESTORE_STRAND_UNCONFIRMED"],
+						2,
+					],
+					// Not this executor's, or a restore the kernel has not recorded: asking again would change nothing.
+					["lost", () => ({ schema: STRAND, state: "lost" }), ["strand:CODE_RESTORE_STRAND_LOST"], 1],
+					[
+						"never answers, nor heeds its signal",
+						() => new Promise(() => undefined),
+						["strand:TIMEOUT", "strand:TIMEOUT"],
+						2,
+					],
+				];
+				for (const [what, answer, errors, asked] of cases) {
+					const t = restoring(outcome, { strandMs: 30 });
+					t.kernel.answer = (method) => (method === "qorpera_code_restore_strand" ? answer() : undefined);
+					await expect(t.whole(), what).resolves.toEqual({ ...NONE, done: 1 });
+					expect(t.finishes(), what).toEqual([finishOf(R3, T3, outcome)]);
+					expect(strands(t), what).toHaveLength(asked);
+					expect(t.order.indexOf("finish"), what).toBe(3);
+					expect(
+						t.errors().map((error) => (error.includes("timeout") ? "strand:TIMEOUT" : error)),
+						what,
+					).toEqual(errors);
+					expect(said(t), what).toEqual([]);
+				}
+			});
+
+			it("asks nothing for any other outcome, nor for a restore that stranded no session", async () => {
+				for (const outcome of [
+					{
+						schema: SCHEMA,
+						state: "done",
+						result: "verified",
+						mainSha: MAIN,
+						refsSha256: "9".repeat(64),
+						refs: 4,
+					},
+					{ schema: SCHEMA, state: "done", result: "discarded" },
+					{ schema: SCHEMA, state: "busy" },
+					{ schema: SCHEMA, state: "failed", code: "CODE_HOST_RESTORE_BUNDLE_DIFFERS" },
+					{ schema: SCHEMA, state: "refused", code: "CODE_HOST_RESTORE_IN_PROGRESS" },
+					// Sessions named by an outcome that put nothing back are not a restore's.
+					{ schema: SCHEMA, state: "busy", stranded: [S1] },
+					{ schema: SCHEMA, state: "done", result: "discarded", stranded: [S1] },
+					restored([]),
+					restored(["not-a-session", 7]),
+					{ ...restored([S1]), stranded: undefined },
+				] as CodeRequestOutcome[]) {
+					const t = restoring(outcome);
+					await t.whole();
+					expect(strands(t), JSON.stringify(outcome)).toEqual([]);
+					expect(t.finishes()).toEqual([finishOf(R3, T3, outcome)]);
+				}
+				// An undo and a download never ask it.
+				const t = setup();
+				t.kernel.claims = [[UNDO, DOWNLOAD]];
+				await expect(t.whole()).resolves.toEqual({ ...NONE, done: 2 });
+				expect(strands(t)).toEqual([]);
+			});
+
+			it("asks nothing once the executor is stopping: the finish keeps its few seconds", async () => {
+				const outcome = restored([S1, S2]);
+				const stopped = new AbortController();
+				const t = setup({
+					restore: {
+						run: async () => {
+							stopped.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
+							return outcome;
+						},
+					},
+				});
+				t.kernel.claims = [[RESTORE]];
+				await t.requests.pass(stopped.signal);
+				await t.requests.settled();
+				expect(strands(t)).toEqual([]);
+				expect(t.finishes()).toEqual([finishOf(R3, T3, outcome)]);
+				expect(t.errors()).toEqual([]);
+				// Stopped during the call before the finish: none after it either.
+				const during = new AbortController();
+				const later = restoring(outcome);
+				later.kernel.answer = (method) => {
+					if (method !== "qorpera_code_restore_strand") return undefined;
+					during.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
+					return new Promise(() => undefined);
+				};
+				await later.requests.pass(during.signal);
+				await later.requests.settled();
+				expect(strands(later)).toHaveLength(1);
+				expect(later.finishes()).toEqual([finishOf(R3, T3, outcome)]);
+				expect(later.errors()).toEqual([]);
+			});
+
+			it("refuses a strand time that is not one", () => {
+				for (const strandMs of [0, -1, 1.5])
+					expect(() => setup({ strandMs })).toThrow("INVALID_CODE_HOST_REQUESTS");
+				expect(() => setup({ strandMs: 1 })).not.toThrow();
+			});
 		});
 	});
 
