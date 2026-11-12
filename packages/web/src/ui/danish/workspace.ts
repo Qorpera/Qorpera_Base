@@ -348,7 +348,9 @@ export const WORKSPACE: Record<string, string> = {
 	"Setting it up": "Sætter det op",
 	"{name} and {count} more": "{name} og {count} mere",
 	"{name} answers {address}": "{name} svarer på {address}",
-	"Nobody answers {address} now": "Ingen svarer på {address} nu",
+	"{name} answers {address} too": "{name} svarer også på {address}",
+	"{name} no longer answers {address}": "{name} svarer ikke længere på {address}",
+	"{first} and {second}": "{first} og {second}",
 	"Answer email to {address}": "Svar på e-mail til {address}",
 	"Read each email that arrives at {address} and handle it for the company. Answer the sender when the email needs an answer, as a reply to that email. Leave automatic email, and email that needs no answer, unanswered. When you can't settle something yourself, tell the member who should, and say what you need.":
 		"Læs hver e-mail, der kommer til {address}, og tag dig af den for virksomheden. Svar afsenderen, når e-mailen kræver et svar, som et svar på netop den e-mail. Lad automatiske e-mails, og e-mails der ikke kræver svar, være ubesvarede. Når du ikke selv kan klare noget, så sig det til det medlem, der skal tage sig af det, og sig, hvad du har brug for.",
@@ -357,8 +359,6 @@ export const WORKSPACE: Record<string, string> = {
 	"The address could not be given to the agent.": "Adressen kunne ikke gives til agenten.",
 	"{name}'s routine for this address did not start. {name}'s routines say why.":
 		"{name}s rutine for denne adresse startede ikke. {name}s rutiner siger hvorfor.",
-	"{name} was given this address at the same moment, and answers it.":
-		"{name} fik denne adresse i samme øjeblik og svarer på den.",
 	"Please write an email to {to} from {from}: {words}": "Skriv venligst en e-mail til {to} fra {from}: {words}",
 	"Please write an email to {to}: {words}": "Skriv venligst en e-mail til {to}: {words}",
 	"{name} is writing it": "{name} skriver den",

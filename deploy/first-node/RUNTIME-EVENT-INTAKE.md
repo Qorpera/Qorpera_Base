@@ -472,15 +472,15 @@ logged and settled with 200, since a retry would send the same message.
 in the Mailbox's Addresses (Jonas, 12 November 2026: giving an agent an email "should be more intuitive"), which
 writes that routine's file for the agent as the member's own save (`when: event`, the mailbox's hook,
 `only: [mail.received]`, reply `optional`, effort `low`), on the member's own model account that works while they
-are away. The order is the handover's: the agent's routine first (the one it had last is taken up again; a new one
-when that stays paused, since who pays for a routine is never switched there), read back as at work, and only then is
-the routine of whoever answered the mailbox before paused; if that cannot be done, the agent's routine is paused
-again, so the mailbox is as it was. Nothing serializes two members' picks for one mailbox in the cloud (a routine's
-save takes the hook's row only to share), so the page reads the routines once more after its own save: a routine at
-work that was not when it began is another member's pick, and the one the cloud saved last (`updatedAt`) is kept on
-both pages, the other paused, so one agent answers. The save's own rules check the hook and who pays, as for an
-agent's (a ChatGPT plan pays for no event routine). No SQL: the member's commit route and the routine rules already
-take such a file. The wake shows the message (cut to fit the wake), `read_event` reads it
+are away. A mailbox may have several agents, as several routines may listen to a hook: the page gives a mailbox to
+one agent or takes it from one, and no other agent's routine changes with it, so there is no handover in steps that
+could stop half way. Giving takes up the routine the agent had last, and writes a new one when that stays paused
+(who pays for a routine is never switched there); taking pauses the agent's routines on the mailbox. What the routine
+list holds after decides what the page says, whatever it heard back. When two members give one mailbox to the same
+agent at the same moment, each page keeps, of the routines begun then, the one the cloud saved last (`updatedAt`)
+and pauses the others, so the agent wakes once for an email. The save's own rules check the hook and who pays, as
+for an agent's (a ChatGPT plan pays for no event routine). No SQL: the member's commit route and the routine rules
+already take such a file. The wake shows the message (cut to fit the wake), `read_event` reads it
 whole, and `list_hooks` lists mailboxes with their addresses. Mail is outside content: the wake protocol
 says so and names the authentication results.
 
