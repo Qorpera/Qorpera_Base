@@ -18,18 +18,24 @@
 #             double-click, a move and drags on one spot, each under a second; a boot with the zram module hidden;
 #             and past the edge of its memory (heavy web apps, a 1.5 GB job run as a machine command, tabs until three
 #             were ended): `desktop click` asked from this host every second keeps being answered the whole time
-#             (the bar is at `probed` below), something was ended and named in the journal, and the desktop, the
-#             helper and the machine's own services are alive after. Then an agent's job that outgrows the machine (twice its memory): it is the
-#             one ended, the clicks still answer, and its command ends in a way an agent can read.
+#             (the bar is at `probed` below), and so does a look of the guest helper every tenth round; every phase
+#             of the browser's work ends well; something was ended and named in the journal, and only what may be
+#             (browser tabs first, Chromium's helper processes, the agent's job: never the browser itself); and the
+#             browser, the desktop, the helper and the machine's own services are alive after. Then an agent's job
+#             that outgrows the machine (twice its memory): it is the one ended, the clicks still answer, and its
+#             command ends in a way an agent can read.
 #   numbers   2 processors / 4 GiB, for a person: the mixed desktop leg with nothing else running and with every
-#             processor busy, then heavy apps, the 1.5 GB job and 24 tabs, stopping before the edge.
+#             processor busy, then heavy apps, the 1.5 GB job and 24 tabs, stopping before the edge. Its phases must
+#             end well too, and after it the journal says what was ended (nothing has to be), by the same checks.
 #   small     2 processors / 2 GiB with the desktop's size check lowered FOR THE TEST ONLY: heavy apps, a 600 MB job
-#             and tabs, stopping before the edge.
+#             and tabs, stopping before the edge; judged as numbers.
 #   small-past  only when named: that small machine past the edge, with the clicks asked and judged as in checks.
 #   edge      only when named: the checks part's past-the-edge leg alone, on a fresh 2 processors / 4 GiB machine (name
 #             it several times to run it several times).
 #
-# It ends with PROOF PASSED and exit 0 only if no check failed and every part it was asked for ran to its end.
+# It ends with PROOF PASSED and exit 0 only if no check failed, at least one check was made, and every part it was
+# asked for ran to its end. Nothing passes on an answer that never came: the in-machine half (guest.sh) decides each
+# check on what was really answered, and a leg, a look or a browser phase that did not end well is a failed check.
 set -euo pipefail
 
 IMAGE=${1:?image fingerprint}
@@ -45,7 +51,9 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 for part in "${PARTS[@]}"; do [[ $part =~ ^(checks|numbers|small|small-past|edge)$ ]] || fail "no such part: $part"; done
 [[ $PROJECT != default && $PROJECT != machines ]] || fail "the proof runs in the node's build space, not in $PROJECT"
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/machine-memory-proof
-for file in guest.sh pages.cjs job.cjs app.html video.html pointer.html; do [[ -f $here/$file ]] || fail "missing $here/$file"; done
+# The proof's pieces that go into the machine.
+PIECES=(guest.sh pages.cjs verdicts.cjs job.cjs app.html video.html pointer.html)
+for file in "${PIECES[@]}"; do [[ -f $here/$file ]] || fail "missing $here/$file"; done
 lx() { lxc --project "$PROJECT" "$@" </dev/null; }
 # Inside the machine, never for longer than two minutes: a machine that stopped answering must not hold the proof.
 inside() { timeout 120 lxc --project "$PROJECT" exec "$MACHINE" -- "$@" </dev/null; }
@@ -82,11 +90,12 @@ usable() { # waits until the boot is usable, as the executor judges it
 	return 1
 }
 settle() { # the boot's last jobs are done (or 60 s passed), the watchdog timer stopped, the proof's pieces in place
+	# Only a wait: what it answers (running, degraded, cut off) is not judged here. `no unit failed` is a check inside.
 	inside timeout 60 systemctl is-system-running --wait >/dev/null 2>&1 || true
 	inside systemctl stop qorpera-machine-watchdog.timer qorpera-machine-watchdog.service
 	inside mkdir -p /srv/memory-proof
 	local file
-	for file in guest.sh pages.cjs job.cjs app.html video.html pointer.html; do
+	for file in "${PIECES[@]}"; do
 		lx file push "$here/$file" "$MACHINE/srv/memory-proof/$file" --uid 0 --gid 0 --mode 0755
 	done
 }
@@ -121,7 +130,8 @@ guest() { # seconds, then the leg's words
 }
 seconds() { awk -v a="$1" -v b="$EPOCHREALTIME" 'BEGIN{printf "%.2f", b-a}'; }
 # Asked from this host, through LXD's agent as the executor asks: one `desktop click` a second on a spot of the panel
-# where a click does nothing, each timed; every tenth round also a look of the guest helper.
+# where a click does nothing, each timed; every tenth round also a look of the guest helper. A look's exit code is its
+# answer (`guest.sh look`): 0 only when the helper itself ended well and answered an observation.
 probe() {
 	local round=0 started status
 	while [[ -d $work && ! -e $work/stop ]]; do
@@ -152,17 +162,19 @@ probe() {
 # The slowest click fell at the same step in three of them: not at a tab's end, but half a minute later, when the leg
 # starts a new program and a heavy page at once and about 360 MiB go into the compressed reserve within 3 s.
 probed() { # what, the least number of clicks, seconds, then the leg's words
-	local what=$1 least=$2 clicks failed one two three allowed
+	local what=$1 least=$2 clicks failed one two three allowed looks unanswered
 	shift 2
 	rm -f "$work/stop"
 	probe >"$work/probe" &
 	guest "$@"
 	touch "$work/stop"
 	wait
-	# What the probe saw around every click that failed or took a second or more: the three rounds before and the one after.
+	# What the probe saw around every click that failed or took a second or more, and every look that was not answered:
+	# the three rounds before and the one after.
 	awk '{ line[NR] = $0 }
 		/ click_s=/ { split($3, a, "="); if (a[2] >= 1 || $4 != "rc=0") for (i = NR - 3; i <= NR + 1; i++) near[i] = 1 }
-		END { for (i = 1; i <= NR; i++) if (near[i]) print "near a slow or failed click: " line[i] }' "$work/probe"
+		/ look_s=/ { if ($4 != "rc=0") for (i = NR - 3; i <= NR + 1; i++) near[i] = 1 }
+		END { for (i = 1; i <= NR; i++) if (near[i]) print "near a slow or failed click, or a look not answered: " line[i] }' "$work/probe"
 	clicks=$(grep -c ' click_s=' "$work/probe" || true)
 	failed=$(grep ' click_s=' "$work/probe" | grep -vc ' rc=0 ' || true)
 	one=$(awk '/ click_s=/ {split($3, a, "="); if (a[2] >= 1) n++} END {print n + 0}' "$work/probe")
@@ -176,14 +188,20 @@ probed() { # what, the least number of clicks, seconds, then the leg's words
 	else
 		echo "CHECK FAIL $what the machine kept answering desktop clicks ($clicks clicks, at least $least wanted: $failed failed, $three took 3 s or more, $two took 2 s or more where $allowed may)"
 	fi
-	if grep ' look_s=' "$work/probe" | grep -qv ' rc=0$'; then
-		echo "CHECK FAIL $what the guest helper answered every look"
+	# Every look was answered, and there was one: no looks at all is not "every look answered".
+	looks=$(grep -c ' look_s=' "$work/probe" || true)
+	unanswered=$(grep ' look_s=' "$work/probe" | grep -vc ' rc=0$' || true)
+	if (( looks >= 1 && unanswered == 0 )); then
+		echo "CHECK ok   $what the guest helper answered every look with an observation ($looks looks)"
 	else
-		echo "CHECK ok   $what the guest helper answered every look ($(grep -c ' look_s=' "$work/probe" || true) looks)"
+		echo "CHECK FAIL $what the guest helper answered every look with an observation ($looks looks, at least one wanted: $unanswered not answered)"
 	fi
 }
 
 echo "PROOF-START $(date -u +%FT%TZ) image $IMAGE parts ${PARTS[*]} host load $(cut -d' ' -f1-3 /proc/loadavg)"
+# The parts run in a shell of their own that ends at the first step that fails outright (a machine that never became
+# usable, a file that could not be put in place): its status is kept and judged with the checks below.
+parts_status=0
 {
 	for part in "${PARTS[@]}"; do
 		echo "PART $part $(date -u +%T)"
@@ -214,11 +232,13 @@ echo "PROOF-START $(date -u +%FT%TZ) image $IMAGE parts ${PARTS[*]} host load $(
 			guest 300 mix nothing-else-running
 			guest 300 mix all-processors-busy busy
 			guest 1500 load 1500 stop 24
+			guest 180 after stop
 			gone
 			;;
 		small)
 			machine 2 2GiB
 			guest 1500 load 600 stop 24
+			guest 180 after stop
 			gone
 			;;
 		edge)
@@ -238,9 +258,9 @@ echo "PROOF-START $(date -u +%FT%TZ) image $IMAGE parts ${PARTS[*]} host load $(
 		esac
 		echo "PART-END $part $(date -u +%T)"
 	done
-} 2>&1 | tee "$work/out"
+} 2>&1 | tee "$work/out" || parts_status=$?
 ended=$(grep -c '^PART-END ' "$work/out" || true)
 failed=$(grep -c '^CHECK FAIL' "$work/out" || true)
 passed=$(grep -c '^CHECK ok' "$work/out" || true)
-echo "checks: $passed ok, $failed failed; parts ended: $ended of ${#PARTS[@]}; host load $(cut -d' ' -f1-3 /proc/loadavg)"
-if (( failed == 0 && ended == ${#PARTS[@]} )); then echo "PROOF PASSED"; else echo "PROOF FAILED"; exit 1; fi
+echo "checks: $passed ok, $failed failed; parts ended: $ended of ${#PARTS[@]}; the parts' own status: $parts_status; host load $(cut -d' ' -f1-3 /proc/loadavg)"
+if (( parts_status == 0 && failed == 0 && passed >= 1 && ended == ${#PARTS[@]} )); then echo "PROOF PASSED"; else echo "PROOF FAILED"; exit 1; fi

@@ -768,7 +768,7 @@ test("every machine has compressed memory from its boot on and a guard at the ed
 	// that answers, against the freeze before (no answer in 20 to 30 s), and a check that flaps is worth nothing.
 	assert.match(proof, /\n\tallowed=\$\(\( clicks \/ 100 \)\)\n\t\(\( allowed >= 1 \)\) \|\| allowed=1\n/);
 	assert.match(proof, /\n\tif \(\( clicks >= least && failed == 0 && three == 0 && two <= allowed \)\); then\n/);
-	for (const file of ["guest.sh", "pages.cjs", "job.cjs", "app.html", "video.html", "pointer.html"])
+	for (const file of ["guest.sh", "pages.cjs", "verdicts.cjs", "job.cjs", "app.html", "video.html", "pointer.html"])
 		assert.ok(existsSync(join(repositoryRoot, "scripts/machine-memory-proof", file)), file);
 	for (const file of [
 		"deploy/machine/machine-memory",
