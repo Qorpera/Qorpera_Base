@@ -28,6 +28,7 @@ import {
 } from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	ageCodingPackageTrees,
 	type CodingGuestAgentPorts,
 	codingPackageCachesTmpfiles,
 	runCodingGuestAgent,
@@ -935,13 +936,29 @@ describe("the machine's package caches (own code storage, step 6)", () => {
 			root: "/var/cache/qorpera-packages",
 			group: "qorpera-coding",
 			limitBytes: 8589934592,
-			age: "30d",
+			ageDays: 30,
 			tools: [
-				{ folder: "npm", variables: ["npm_config_cache"] },
-				{ folder: "pnpm", variables: ["npm_config_store_dir", "pnpm_config_store_dir"] },
-				{ folder: "pip", variables: ["PIP_CACHE_DIR"] },
-				{ folder: "uv", variables: ["UV_CACHE_DIR"] },
-				{ folder: "ms-playwright", variables: ["PLAYWRIGHT_BROWSERS_PATH"] },
+				{ folder: "npm", variables: ["npm_config_cache"], settings: {}, trees: ["_npx/*"] },
+				{
+					folder: "pnpm",
+					variables: ["npm_config_store_dir", "pnpm_config_store_dir"],
+					settings: {},
+					trees: ["v*/links/*"],
+				},
+				{ folder: "pip", variables: ["PIP_CACHE_DIR"], settings: {}, trees: [] },
+				{
+					folder: "uv",
+					variables: ["UV_CACHE_DIR"],
+					settings: {},
+					trees: ["archive-v*/*", "environments-v*/*", "builds-v*/*"],
+				},
+				// Playwright's own browser GC, run by one session, removes another's browsers (its install unreadable).
+				{
+					folder: "ms-playwright",
+					variables: ["PLAYWRIGHT_BROWSERS_PATH"],
+					settings: { PLAYWRIGHT_SKIP_BROWSER_GC: "1" },
+					trees: ["*"],
+				},
 			],
 		});
 		const acl = "group:qorpera-coding:rwx,default:group:qorpera-coding:rwx";
@@ -953,6 +970,13 @@ describe("the machine's package caches (own code storage, step 6)", () => {
 					`d /var/cache/qorpera-packages${folder} 2775 root qorpera-coding 30d`,
 					`a /var/cache/qorpera-packages${folder} - - - - ${acl}`,
 				]),
+				// The trees tmpfiles ages no file of: the agent ages each whole.
+				"x /var/cache/qorpera-packages/npm/_npx/*",
+				"x /var/cache/qorpera-packages/pnpm/v*/links/*",
+				"x /var/cache/qorpera-packages/uv/archive-v*/*",
+				"x /var/cache/qorpera-packages/uv/environments-v*/*",
+				"x /var/cache/qorpera-packages/uv/builds-v*/*",
+				"x /var/cache/qorpera-packages/ms-playwright/*",
 				"",
 			].join("\n"),
 		);
@@ -1041,6 +1065,18 @@ describe("the machine's package caches (own code storage, step 6)", () => {
 		}
 	});
 
+	it("have their trees not used for the age removed whole at the first mount of a boot, before the trim", async () => {
+		const m = await machine();
+		const browser = await planted(join(m.packages, "ms-playwright", "chromium_headless_shell-1243", "chrome"), 1024);
+		await planted(join(m.packages, "npm", "_cacache", "index-v5", "a"), 1024);
+		// The machine's clock 31 days on: nothing of the browser was used since.
+		m.state.skewMs = 31 * 86_400_000;
+		const request = { ...mountRequest(randomUUID()), schema: "qorpera.coding-guest-mount/v2" };
+		expect((await call(m, "mount", request)).line).toMatchObject({ mount: "mounted", packageCaches: true });
+		await gone(dirname(browser));
+		expect(await readdir(join(m.packages, "npm", "_cacache", "index-v5"))).toEqual(["a"]);
+	});
+
 	it("are trimmed at the first mount of a boot, the least recently used tool folder emptied first", async () => {
 		const m = await machine();
 		m.ports.packageCaches = { root: m.packages, config: m.tmpfiles, limitBytes: 1.5 * MIB };
@@ -1115,6 +1151,69 @@ describe("the package caches' trim", () => {
 		await truncate(join(root, "pip", "wheels", "sparse"), 1024 * MIB);
 		expect(await trimCodingPackageCaches(root, 1.5 * MIB)).toEqual([]);
 		expect(await readdir(join(root, "uv", "archive-v0"))).toEqual(["a"]);
+	});
+
+	it("removes a tool's tree whole when nothing in it was used for the age, and nothing else", async () => {
+		const root = await caches();
+		const day = 86_400_000;
+		const age = 30 * day;
+		const trees = [
+			"ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell",
+			"ms-playwright/ffmpeg-1011/ffmpeg-linux",
+			"npm/_npx/0123abcd/node_modules/tool/index.js",
+			"pnpm/v10/links/@/express/4.21.2/node_modules/express/index.js",
+			"uv/archive-v0/AbCd123/six.py",
+			"uv/environments-v2/tool-abc/lib/python3.14/site-packages/rich.py",
+			"uv/builds-v0/.tmpXyZ/setup.py",
+		];
+		const others = [
+			"npm/_cacache/content-v2/sha512/aa/bb",
+			"pnpm/v10/files/00/abc",
+			"pip/http-v2/a/b",
+			"uv/wheels-v5/pypi/six/six-1.17.0.http",
+		];
+		for (const path of [...trees, ...others]) await planted(join(root, path), 1024);
+		await mkdir(join(root, "ms-playwright", "__dirlock"));
+		// A browser one of whose files was read later than the age: kept whole, its old files too.
+		const read = await planted(join(root, "ms-playwright", "chromium_headless_shell-1254", "used"), 1024);
+		await planted(join(root, "ms-playwright", "chromium_headless_shell-1254", "never-read"), 1024);
+		const later = Date.now() + age + day;
+		await utimes(read, new Date(later), new Date(Date.now()));
+		// Now: nothing goes.
+		expect(await ageCodingPackageTrees(root, Date.now(), age)).toEqual([]);
+		// After the age: each tree that was not used since, whole; the rest left to tmpfiles' age of files.
+		expect((await ageCodingPackageTrees(root, later, age)).sort()).toEqual(
+			[
+				"ms-playwright/__dirlock",
+				"ms-playwright/chromium_headless_shell-1243",
+				"ms-playwright/ffmpeg-1011",
+				"npm/_npx/0123abcd",
+				"pnpm/v10/links/@",
+				"uv/archive-v0/AbCd123",
+				"uv/builds-v0/.tmpXyZ",
+				"uv/environments-v2/tool-abc",
+			].sort(),
+		);
+		expect((await readdir(join(root, "ms-playwright"))).sort()).toEqual(["chromium_headless_shell-1254"]);
+		expect((await readdir(join(root, "ms-playwright", "chromium_headless_shell-1254"))).sort()).toEqual([
+			"never-read",
+			"used",
+		]);
+		for (const path of others) expect((await lstat(join(root, path))).isFile()).toBe(true);
+		for (const folder of ["npm/_npx", "pnpm/v10/links", "uv/archive-v0", "uv/environments-v2"])
+			expect(await readdir(join(root, folder))).toEqual([]);
+	});
+
+	it("removes a link that stands for a tree, never what it points to", async () => {
+		const root = await caches();
+		const elsewhere = await planted(join(root, "elsewhere", "browser"), 1024);
+		await mkdir(join(root, "ms-playwright"));
+		await symlink(dirname(elsewhere), join(root, "ms-playwright", "chromium-link"));
+		expect(await ageCodingPackageTrees(root, Date.now() + 31 * 86_400_000, 30 * 86_400_000)).toEqual([
+			"ms-playwright/chromium-link",
+		]);
+		expect(await readdir(dirname(elsewhere))).toEqual(["browser"]);
+		expect(await ageCodingPackageTrees(join(root, "none"), Date.now(), 0)).toEqual([]);
 	});
 
 	it("neither counts nor empties a tool folder that is not a real folder, and takes a missing one as empty", async () => {

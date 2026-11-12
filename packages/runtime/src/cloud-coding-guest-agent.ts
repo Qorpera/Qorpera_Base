@@ -504,19 +504,73 @@ async function ensureSubids(at: Agent, name: string, uid: number): Promise<void>
  * and default ACL entries, so that what one session (or `sudo`) makes in them the next can add to, whatever its umask
  * (tmpfiles adds the base entries and the mask; no setfacl). The age is tmpfiles' own: systemd-tmpfiles-clean.timer
  * removes what was not read, written or changed for 30 days. Each tool folder is a line of its own, so it is only ever
- * emptied, never removed. */
+ * emptied, never removed. The tools' trees are left out of it (`x`, their contents too): a browser or an unpacked
+ * package missing a file it has not read for 30 days is broken, so the agent ages each whole (ageCodingPackageTrees). */
 export function codingPackageCachesTmpfiles(root: string): string {
-	const { group, age, tools } = CODING_PACKAGE_CACHES;
+	const { group, ageDays, tools } = CODING_PACKAGE_CACHES;
 	const acl = `group:${group}:rwx,default:group:${group}:rwx`;
 	return [
 		"# The machine's package caches, which its coding sessions and Qorpera's checks share. Written by the coding guest",
 		"# agent at the first mount of each boot (CODING_PACKAGE_CACHES).",
 		...[root, ...tools.map(({ folder }) => `${root}/${folder}`)].flatMap((path) => [
-			`d ${path} 2775 root ${group} ${age}`,
+			`d ${path} 2775 root ${group} ${ageDays}d`,
 			`a ${path} - - - - ${acl}`,
 		]),
+		...tools.flatMap(({ folder, trees }) => trees.map((tree) => `x ${root}/${folder}/${tree}`)),
 		"",
 	].join("\n");
+}
+/** Every path below `folder` that a tree pattern names (CodingPackageCacheTool.trees: names, `*` any part of one, `/`
+ * between them), each not followed through a link. */
+async function treesMatching(folder: string, pattern: string): Promise<string[]> {
+	let paths = [folder];
+	for (const part of pattern.split("/")) {
+		const name = new RegExp(
+			`^${part
+				.split("*")
+				.map((piece) => piece.replace(/[.+?^$|()[\]{}\\]/g, "\\$&"))
+				.join(".*")}$`,
+		);
+		const next: string[] = [];
+		for (const path of paths) {
+			if (!(await missing(() => lstat(path)))?.isDirectory()) continue;
+			for (const entry of (await missing(() => readdir(path))) ?? [])
+				if (name.test(entry)) next.push(join(path, entry));
+		}
+		paths = next;
+	}
+	return paths;
+}
+/** The last use of what is at or below `path`, never followed through a link: the newest read, write or change of a
+ * file, and of a folder its newest write or change (this walk's own listing moves a folder's read time); 0 when there
+ * is nothing. */
+async function lastUse(path: string): Promise<number> {
+	let usedMs = 0;
+	for (const paths = [path]; paths.length > 0; ) {
+		const at = paths.pop() as string;
+		const stat = await missing(() => lstat(at));
+		if (stat?.isFile()) usedMs = Math.max(usedMs, stat.atimeMs, stat.mtimeMs, stat.ctimeMs);
+		else if (stat?.isDirectory()) {
+			usedMs = Math.max(usedMs, stat.mtimeMs, stat.ctimeMs);
+			for (const name of (await missing(() => readdir(at))) ?? []) paths.push(join(at, name));
+		}
+	}
+	return usedMs;
+}
+/** The tools' trees under `root` (CodingPackageCacheTool.trees) that nothing in was read, written or changed for
+ * `ageMs` before `nowMs`, each removed whole: a browser, an npx package, a pnpm link tree, a uv archive or environment.
+ * Answers what went, below `root`. At boot, before any session's command: none of them runs. (The read time moves on
+ * the machine's file system, relatime: at the first read after a write, then at most once a day.) */
+export async function ageCodingPackageTrees(root: string, nowMs: number, ageMs: number): Promise<string[]> {
+	const removed: string[] = [];
+	for (const { folder, trees } of CODING_PACKAGE_CACHES.tools)
+		for (const tree of trees)
+			for (const path of await treesMatching(join(root, folder), tree)) {
+				if (nowMs - (await lastUse(path)) <= ageMs) continue;
+				await rm(path, { recursive: true, force: true });
+				removed.push(path.slice(root.length + 1));
+			}
+	return removed;
 }
 /** Whole tool folders of the machine's package caches under `root` emptied, the least recently used first, while
  * together they hold more than `limitBytes` on disk; answers the folders emptied, in that order (ties in the tools'
@@ -563,7 +617,7 @@ export async function trimCodingPackageCaches(root: string, limitBytes: number):
 }
 /** The machine's package caches, once a boot, at its first mount and before the session's user (the guest agent has no
  * boot of its own; every turn mounts before its commands run): the tmpfiles file written, its folders made or set right,
- * and the tool folders trimmed to the limit. Its record lives in memory, so a restarted machine does it again. Answers
+ * the tools' trees not used for the age removed whole, and the tool folders trimmed to the limit. Its record lives in memory, so a restarted machine does it again. Answers
  * whether they are ready. A step that fails leaves no record, and the mount goes on: the executor then gives the
  * session's commands no cache variables (they work as before the caches), and the next mount tries again. */
 async function ensurePackageCaches(at: Agent): Promise<boolean> {
@@ -574,6 +628,7 @@ async function ensurePackageCaches(at: Agent): Promise<boolean> {
 		await mkdir(dirname(config), { recursive: true, mode: 0o755 });
 		await writeText(config, codingPackageCachesTmpfiles(root), 0o644);
 		await at.system(TOOLS.systemdTmpfiles, ["--create", config]);
+		await ageCodingPackageTrees(root, at.nowMs(), CODING_PACKAGE_CACHES.ageDays * 86_400_000);
 		await trimCodingPackageCaches(root, limitBytes);
 		await writeText(ready, "", 0o600);
 		return true;

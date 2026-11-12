@@ -416,7 +416,7 @@ pass "the collect refuses a folder that is not there"
 # user. A stand-in folder program ends as the folder program ends when the node closed the view, so each mount answers
 # closed and no user manager starts (none is needed here). Each user's commands run as the guest agent starts one: a
 # unit in the session's slice, as its uid and gid, in its network namespace (the mount made it), with exactly the
-# environment the executor gives a command (the session's names and the six cache variables, read from the source),
+# environment the executor gives a command (the session's names and the seven cache variables, read from the source),
 # here also the test machine's proxy, and `env -i` where the agent has its relay. pnpm 10, pnpm 12 and Playwright are pinned
 # versions root installs outside the caches; the lockfiles come from root's own throwaway caches, so the first user
 # starts cold. Each project is a few dozen packages: express and typescript for npm and pnpm, requests and rich for pip
@@ -492,7 +492,7 @@ pass "the guest agent's first mount of the boot made $PACKAGES and its five tool
 NETNS=1
 mapfile -t CACHES < <(node --input-type=module -e \
 	"import { CODING_PACKAGE_CACHE_ENVIRONMENT as e } from '$GUEST/contracts/src/cloud-coding-guest.ts'; for (const [k, v] of Object.entries(e)) console.log(k + '=' + v);")
-[[ ${#CACHES[@]} == 6 && ${CACHES[0]} == "npm_config_cache=$PACKAGES/npm" ]] ||
+[[ ${#CACHES[@]} == 7 && ${CACHES[0]} == "npm_config_cache=$PACKAGES/npm" ]] ||
 	fail "the package caches' variables read as ${CACHES[*]}"
 RESOLV=()
 if [[ -e /run/systemd/resolve/resolv.conf ]]; then
@@ -665,6 +665,52 @@ for tool in npm pnpm pnpm12 pip uv playwright; do
 done
 echo "INFO: a file the first user's npm wrote: $(find "$PACKAGES/npm/_cacache" -type f -print -quit | xargs stat -c '%u %g %a') $(acl "$(find "$PACKAGES/npm/_cacache" -type f -print -quit)" access)"
 
+# Playwright's own browser GC, run by one session, against another's install in its 0700 home (review round 1 of
+# #1695, F1): each user's project holds its own Playwright version, and each installs its browsers into the shared
+# path. GC reads every install's browsers.json through the links in .links; the other user's is unreadable, so GC takes
+# it for gone and removes its browsers. First without PLAYWRIGHT_SKIP_BROWSER_GC, to see it bite; then as sessions run.
+OLD_PW=1.63.0
+OLD_SHELL=chromium_headless_shell-1243
+OLD_FFMPEG=ffmpeg-1011
+for uid in "$FIRST_UID" "$SECOND_UID"; do install -d -o "$uid" -g "$uid" "/home/qorpera-$uid/pw"; done
+step "Playwright $OLD_PW in the first user's own project" "$FIRST_UID" "$FIRST_W" \
+	"cd ~/pw && npm install --ignore-scripts --no-audit --no-fund playwright-core@$OLD_PW" || fail "the first user's Playwright did not install"
+step "Playwright 1.65.0 in the second user's own project" "$SECOND_UID" "$SECOND_W" \
+	"cd ~/pw && npm install --ignore-scripts --no-audit --no-fund playwright-core@1.65.0" || fail "the second user's Playwright did not install"
+[[ $(stat -c %a /home/qorpera-$FIRST_UID) == 700 ]] || fail "the first user's home is not 0700"
+PW_INSTALL='cd ~/pw && ./node_modules/.bin/playwright-core install chromium-headless-shell ffmpeg'
+LAUNCH='cd ~/pw && timeout 120 node -e '"'"'const { chromium } = require("playwright-core"); (async () => { const b = await chromium.launch(); const p = await b.newPage(); await p.setContent("<p>launched</p>"); console.log(await p.textContent("p")); await b.close(); })().catch((e) => { console.log(String(e.message).split("\n")[0]); process.exit(1); });'"'"
+step "Playwright $OLD_PW's browsers, with Playwright's GC on" "$FIRST_UID" "$FIRST_W" "env -u PLAYWRIGHT_SKIP_BROWSER_GC bash -c '$PW_INSTALL'" ||
+	fail "the first user's browsers did not install"
+[[ -d $PACKAGES/ms-playwright/$OLD_SHELL && -d $PACKAGES/ms-playwright/$OLD_FFMPEG ]] || fail "the first user's browsers are not in the shared path"
+step "Playwright 1.65.0's browsers, with Playwright's GC on" "$SECOND_UID" "$SECOND_W" "env -u PLAYWRIGHT_SKIP_BROWSER_GC bash -c '$PW_INSTALL'" ||
+	fail "the second user's browsers did not install"
+[[ ! -e $PACKAGES/ms-playwright/$OLD_SHELL && ! -e $PACKAGES/ms-playwright/$OLD_FFMPEG ]] ||
+	fail "Playwright's GC did not remove the first user's browsers (the case does not bite here): $(ls "$PACKAGES/ms-playwright")"
+CODE=0
+GONE=$(cached "$FIRST_UID" "$FIRST_W" "$LAUNCH" 2>&1) || CODE=$?
+[[ $CODE != 0 && $GONE == *"Executable doesn't exist"* ]] || fail "the first user's launch after the GC gave $CODE: $GONE"
+echo "INFO: with Playwright's GC on, the first user's launch: $GONE"
+pass "without PLAYWRIGHT_SKIP_BROWSER_GC, the second user's install (Playwright 1.65.0) removed the first user's $OLD_SHELL and $OLD_FFMPEG (Playwright $OLD_PW, its install in a 0700 home), and the first user's launch failed"
+# As sessions run: PLAYWRIGHT_SKIP_BROWSER_GC=1 with the other variables.
+step "Playwright $OLD_PW's browsers again" "$FIRST_UID" "$FIRST_W" "$PW_INSTALL" || fail "the first user's browsers did not install again"
+step "Playwright 1.65.0's browsers again" "$SECOND_UID" "$SECOND_W" "$PW_INSTALL" || fail "the second user's browsers did not install again"
+[[ -d $PACKAGES/ms-playwright/$OLD_SHELL && -d $PACKAGES/ms-playwright/$OLD_FFMPEG ]] ||
+	fail "with PLAYWRIGHT_SKIP_BROWSER_GC the first user's browsers went: $(ls "$PACKAGES/ms-playwright")"
+SHELL_EXE=$(find "$PACKAGES/ms-playwright/$OLD_SHELL" -type f -name chrome-headless-shell -print -quit)
+READ_BEFORE=$(stat -c %X "$SHELL_EXE")
+sleep 1.1
+step "the first user's launch" "$FIRST_UID" "$FIRST_W" "$LAUNCH" || fail "the first user's browser does not launch: $OUT"
+[[ $OUT == *launched* ]] || fail "the first user's launch gave: $OUT"
+READ_AFTER=$(stat -c %X "$SHELL_EXE")
+pass "with PLAYWRIGHT_SKIP_BROWSER_GC, both users' browsers ($OLD_SHELL and chromium_headless_shell-1254, $OLD_FFMPEG and ffmpeg-1013) stayed, and the first user's browser still launches"
+# Read times move on this file system, so a browser used yesterday is not aged out (relatime: at the first read after a
+# write, then at most once a day).
+ROOT_OPTIONS=$(findmnt -no OPTIONS /)
+[[ ,$ROOT_OPTIONS, == *,relatime,* && ,$ROOT_OPTIONS, != *,noatime,* ]] || fail "the root is mounted $ROOT_OPTIONS"
+((READ_AFTER > READ_BEFORE)) || fail "the launch did not move the browser's read time ($READ_BEFORE, $READ_AFTER)"
+pass "the root is mounted relatime ($ROOT_OPTIONS): the launch moved the browser's read time ($READ_BEFORE to $READ_AFTER)"
+
 # The tool folders' bytes on disk (each inode once), as the trim counts them.
 sizes() {
 	python3 -I - "$PACKAGES" <<'PY'
@@ -708,17 +754,50 @@ AGE=$(mktemp -d -p /root)
 sed -e "s#$PACKAGES#$AGE/cache#g" -e 's# 30d$# 2s#' "$CONF" >"$AGE/age.conf"
 grep -q "^d $AGE/cache/npm 2775 root qorpera-coding 2s$" "$AGE/age.conf" || fail "the scratch lines are $(cat "$AGE/age.conf")"
 systemd-tmpfiles --create "$AGE/age.conf" || fail "systemd-tmpfiles could not make the scratch folders"
-install -d "$AGE/cache/npm/_cacache"
+install -d "$AGE/cache/npm/_cacache" "$AGE/cache/npm/_npx/0123" "$AGE/cache/uv/archive-v0/AbC" \
+	"$AGE/cache/ms-playwright/chromium_headless_shell-1"
 printf old >"$AGE/cache/npm/_cacache/old"
 printf old >"$AGE/cache/pip/old"
+TREES=("$AGE/cache/npm/_npx/0123/old" "$AGE/cache/uv/archive-v0/AbC/old" "$AGE/cache/ms-playwright/chromium_headless_shell-1/old")
+for tree in "${TREES[@]}"; do printf old >"$tree"; done
 sleep 4
 printf new >"$AGE/cache/pip/new"
 systemd-tmpfiles --clean "$AGE/age.conf" || fail "systemd-tmpfiles --clean failed"
 [[ ! -e $AGE/cache/npm/_cacache/old && ! -e $AGE/cache/pip/old && -e $AGE/cache/pip/new ]] ||
 	fail "the age rule left $(find "$AGE/cache" -type f)"
+for tree in "${TREES[@]}"; do [[ -e $tree ]] || fail "the age rule removed $tree, in a tree"; done
 for folder in npm pnpm pip uv ms-playwright; do
 	[[ -d $AGE/cache/$folder ]] || fail "the age rule removed the tool folder $folder"
 done
-pass "tmpfiles' age, on the agent's lines, removed the files not used for longer than it and kept the new one and every tool folder"
+pass "tmpfiles' age, on the agent's lines, removed the files not used for longer than it and kept the new one, every tool folder and every file in a tree (an npx package, a uv archive, a browser)"
+# Each tool's own cleanup run by the second user, while the first user's projects stay: they still run (what they hold
+# is theirs: npm and pip copy into a project, pnpm and uv hard-link, so a link the cache loses keeps its file).
+RUNS='cd ~/proof-npm && node -e "require(\"express\")" && cd ~/proof-pnpm && node -e "require(\"express\")" &&
+	cd ~/proof-pip && venv/bin/python -c "import requests, rich" && cd ~/proof-uv && .venv/bin/python -c "import requests, rich"'
+for cleanup in "npm cache verify" "npm cache clean --force" "$PNPM store prune" "venv/bin/pip cache purge" "uv cache prune" "uv cache clean"; do
+	step "$cleanup, by the second user" "$SECOND_UID" "$SECOND_W" "cd ~/proof-pip && $cleanup" || fail "$cleanup failed"
+	step "the first user's projects after $cleanup" "$FIRST_UID" "$FIRST_W" "$RUNS" || fail "after $cleanup: $OUT"
+done
+step "the first user's installs after every cleanup" "$FIRST_UID" "$FIRST_W" \
+	'cd ~/proof-npm && npm ci --ignore-scripts --no-audit --no-fund && cd ~/proof-pnpm && '"$PNPM"' install --frozen-lockfile --ignore-scripts &&
+	cd ~/proof-pip && venv/bin/pip install requests==2.32.3 rich==14.0.0 && cd ~/proof-uv && uv pip install requests==2.32.3 rich==14.0.0' ||
+	fail "an install after the cleanups failed: $OUT"
+pass "npm cache verify and clean, pnpm store prune, pip cache purge, uv cache prune and clean, run by the second user, left the first user's npm, pnpm, pip and uv projects running, and its installs then worked (they downloaded again)"
+# The agent's age of whole trees, its clock 31 days on: every tree goes whole (none was used since), the first user's uv
+# venv still runs (it links its own), and a browser that went says how to bring it back.
+AGED=$(node --input-type=module -e \
+	"import { ageCodingPackageTrees } from '$AGENT'; console.log((await ageCodingPackageTrees('$PACKAGES', Date.now() + 31 * 86400000, 30 * 86400000)).join(' '));")
+echo "INFO: the trees aged out: $AGED"
+[[ " $AGED " == *" ms-playwright/$OLD_SHELL "* && " $AGED " == *" ms-playwright/chromium_headless_shell-1254 "* ]] ||
+	fail "the browsers were not aged out whole: $AGED"
+[[ -z $(ls -A "$PACKAGES/ms-playwright" | grep -v '^\.links$' || true) ]] || fail "a browser stayed: $(ls -A "$PACKAGES/ms-playwright")"
+step "the first user's uv venv after the trees went" "$FIRST_UID" "$FIRST_W" 'cd ~/proof-uv && .venv/bin/python -c "import requests, rich"' ||
+	fail "the uv venv broke when its archives went: $OUT"
+CODE=0
+GONE=$(cached "$FIRST_UID" "$FIRST_W" "$LAUNCH" 2>&1) || CODE=$?
+[[ $CODE != 0 && $GONE == *"Executable doesn't exist"* ]] || fail "a launch after the browsers aged out gave $CODE: $GONE"
+echo "INFO: after its browser aged out, a session's launch says: $GONE"
+step "the first user's browsers once more" "$FIRST_UID" "$FIRST_W" "$PW_INSTALL && $LAUNCH" || fail "the browser did not come back: $OUT"
+pass "the agent's age removed each tree whole (every browser, uv's archives and environments), the uv venv still runs, and a session whose browser went is told to install it, and then launches again"
 ((${#TOOLS_FAILED[@]} == 0)) || fail "the two-user proof failed for: ${TOOLS_FAILED[*]} (above)"
 echo "ALL PASSED"

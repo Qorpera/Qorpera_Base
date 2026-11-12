@@ -72,8 +72,11 @@ The image expects this per session; `test/prove-in-coding-machine.sh` does exact
    that was done (`packageCaches`); a failed step leaves the mount as it was before the caches. The executor gives
    every session command and every command of a checks run on a machine whose agent said so `npm_config_cache`,
    `npm_config_store_dir` (pnpm 10), `pnpm_config_store_dir` (pnpm 11 and later), `PIP_CACHE_DIR`, `UV_CACHE_DIR` and
-   `PLAYWRIGHT_BROWSERS_PATH`, so the machine's sessions and its checks share what they download; on any other
-   machine, none of them. Not yarn 1, which makes its cache's folders with its own umask applied, so the next session
+   `PLAYWRIGHT_BROWSERS_PATH` with `PLAYWRIGHT_SKIP_BROWSER_GC=1` (Playwright's own GC, run by one session, removes
+   the browsers of another whose install it cannot read in that session's 0700 home), so the machine's sessions and its
+   checks share what they download; on any other machine, none of them. The trees a tool runs or links from in place
+   (browsers, npx packages, uv's archives and environments) are `x` lines: tmpfiles takes no file out of one, and the
+   agent removes each whole at boot when nothing in it was used for 30 days. Not yarn 1, which makes its cache's folders with its own umask applied, so the next session
    cannot add to them.
 
 ## Build it on a node

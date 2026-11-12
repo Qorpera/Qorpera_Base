@@ -5654,6 +5654,8 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			PIP_CACHE_DIR: "/var/cache/qorpera-packages/pip",
 			UV_CACHE_DIR: "/var/cache/qorpera-packages/uv",
 			PLAYWRIGHT_BROWSERS_PATH: "/var/cache/qorpera-packages/ms-playwright",
+			// Playwright's own GC would remove another session's browsers, its install unreadable in that session's home.
+			PLAYWRIGHT_SKIP_BROWSER_GC: "1",
 		});
 		const company = Object.fromEntries(
 			Object.keys(CODING_PACKAGE_CACHE_ENVIRONMENT).map((name) => [name, `/company/value/of/${name}`]),

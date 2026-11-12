@@ -46,36 +46,80 @@ export const CODING_GUEST = /* @__PURE__ */ Object.freeze({
  * share. A machine serves one member, one agent and one repository, and every session user there is root through sudo,
  * so a cache its sessions share crosses no line that exists. The guest agent makes the folder and one per tool (root,
  * group `group`, 2775, the group's rwx as access and default ACL entries) at the first mount of each boot, empties whole
- * tool folders, least recently used first, while they hold more than `limitBytes`, and tmpfiles removes what was not
- * used for `age`. The executor points each tool at its folder in every session command's and every checks command's
+ * tool folders, least recently used first, while they hold more than `limitBytes`, and tmpfiles removes the files
+ * not read, written or changed for `ageDays`, but in a tool's `trees`, which the agent removes whole, at boot, when
+ * nothing in one was used for as long. The executor points each tool at its folder in every session command's and every checks command's
  * environment (CODING_PACKAGE_CACHE_ENVIRONMENT), over a company value of the same name. Download caches only: no build
  * cache, and not Go, cargo or mise, whose caches hold configuration or programs. Not yarn 1 either: it makes its cache's
  * folders with its own umask applied (0755), so another session could read them but not add to them (EACCES in the
  * image's proof, 12 Nov 2026). pnpm 10 reads `npm_config_store_dir`, pnpm 12 only `pnpm_config_store_dir`: both are
  * set. The executor sets them only for a machine whose agent said the caches are ready (`packageCaches` in the mount
- * answer), so a machine whose agent is older, or whose folder could not be made, works as before. */
+ * answer), so a machine whose agent is older, or whose folder could not be made, works as before.
+ *
+ * A tool's own cleanup, run by one session, cannot see what another session's projects (in their 0700 homes) still
+ * use. Playwright's is the one that deletes what is in use: its browser GC treats another user's unreadable install
+ * as gone and removes that user's browsers (seen on node01, 12 Nov 2026), so it is off
+ * (`PLAYWRIGHT_SKIP_BROWSER_GC=1`) and the agent's age of whole trees cleans instead. npm's, pnpm's, pip's and uv's
+ * own cleanups only cost a download again (`lanes/own-code-storage/build6/W.md`). */
 export const CODING_PACKAGE_CACHES = /* @__PURE__ */ Object.freeze({
 	root: "/var/cache/qorpera-packages",
 	group: "qorpera-coding",
 	limitBytes: 8 * 1024 ** 3,
-	/** tmpfiles' age field. */
-	age: "30d",
-	tools: /* @__PURE__ */ Object.freeze([
-		/* @__PURE__ */ Object.freeze({ folder: "npm", variables: ["npm_config_cache"] }),
-		// pnpm 10 reads npm's name for it; 11 and later only their own.
-		/* @__PURE__ */ Object.freeze({ folder: "pnpm", variables: ["npm_config_store_dir", "pnpm_config_store_dir"] }),
-		/* @__PURE__ */ Object.freeze({ folder: "pip", variables: ["PIP_CACHE_DIR"] }),
-		/* @__PURE__ */ Object.freeze({ folder: "uv", variables: ["UV_CACHE_DIR"] }),
-		/* @__PURE__ */ Object.freeze({ folder: "ms-playwright", variables: ["PLAYWRIGHT_BROWSERS_PATH"] }),
+	/** tmpfiles' age (`<ageDays>d`), and the age of a whole tree. */
+	ageDays: 30,
+	tools: /* @__PURE__ */ Object.freeze<readonly CodingPackageCacheTool[]>([
+		/* @__PURE__ */ Object.freeze({
+			folder: "npm",
+			variables: ["npm_config_cache"],
+			settings: {},
+			trees: ["_npx/*"],
+		}),
+		// pnpm 10 reads npm's name for it; 11 and later only their own. Its global virtual store (off by default) links
+		// projects into the store.
+		/* @__PURE__ */ Object.freeze({
+			folder: "pnpm",
+			variables: ["npm_config_store_dir", "pnpm_config_store_dir"],
+			settings: {},
+			trees: ["v*/links/*"],
+		}),
+		/* @__PURE__ */ Object.freeze({ folder: "pip", variables: ["PIP_CACHE_DIR"], settings: {}, trees: [] }),
+		// uv's unpacked wheels, which venvs link to and which a later install links from, and its own environments.
+		/* @__PURE__ */ Object.freeze({
+			folder: "uv",
+			variables: ["UV_CACHE_DIR"],
+			settings: {},
+			trees: ["archive-v*/*", "environments-v*/*", "builds-v*/*"],
+		}),
+		// Browsers run from here, each a tree.
+		/* @__PURE__ */ Object.freeze({
+			folder: "ms-playwright",
+			variables: ["PLAYWRIGHT_BROWSERS_PATH"],
+			settings: { PLAYWRIGHT_SKIP_BROWSER_GC: "1" },
+			trees: ["*"],
+		}),
 	]),
 });
-/** Each tool's variables and its folder, as every session command and every checks command of a machine whose caches
- * are ready gets them. */
+/** One tool of the machine's package caches. */
+export interface CodingPackageCacheTool {
+	/** Its folder under the root. */
+	readonly folder: string;
+	/** The variables that point the tool at its folder. */
+	readonly variables: readonly string[];
+	/** The rest of what it needs to share its folder: set beside the variables. */
+	readonly settings: Readonly<Record<string, string>>;
+	/** Patterns, below the folder (`*` any one name), of trees the tool runs or links from in place: one missing a part
+	 * is broken, not only smaller. tmpfiles ages none of their files; the agent removes one whole at boot when nothing
+	 * in it was read, written or changed for `ageDays`. */
+	readonly trees: readonly string[];
+}
+/** Each tool's variables and its folder, and its settings, as every session command and every checks command of a
+ * machine whose caches are ready gets them. */
 export const CODING_PACKAGE_CACHE_ENVIRONMENT: Readonly<Record<string, string>> = /* @__PURE__ */ Object.freeze(
 	Object.fromEntries(
-		CODING_PACKAGE_CACHES.tools.flatMap(({ folder, variables }) =>
-			variables.map((variable) => [variable, `${CODING_PACKAGE_CACHES.root}/${folder}`]),
-		),
+		CODING_PACKAGE_CACHES.tools.flatMap(({ folder, variables, settings }) => [
+			...variables.map((variable) => [variable, `${CODING_PACKAGE_CACHES.root}/${folder}`]),
+			...Object.entries(settings),
+		]),
 	),
 );
 
