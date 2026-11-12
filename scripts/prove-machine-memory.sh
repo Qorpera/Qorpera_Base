@@ -173,7 +173,8 @@ seconds() { awk -v a="$1" -v b="$EPOCHREALTIME" 'BEGIN{printf "%.2f", b-a}'; }
 #            a look of the guest helper. A look's exit code is its answer (`guest.sh look`): 0 only when the helper
 #            itself ended well and answered an observation. A reading that does not come is a line without numbers
 #            and holds up no click.
-# Both write one short line at a time to the end of one file. Each ends only when it is told to (the stop file) and
+# Both write one short line at a time to the end of one file, and every line says when what it asked started (`at=`)
+# and how long it took (`click_s=`, `read_s=`, `look_s=`). Each loop ends only when it is told to (the stop file) and
 # says so in a last line of its own (`P-END clicks`, `P-END beside`): a loop that ended any other way, at any moment,
 # saw only a part of the leg, and `probed` fails the proof on it.
 PROBE_PAUSE=${MEMORY_PROOF_PROBE_PAUSE:-1} # a second between two clicks; the script's own test asks faster
@@ -191,21 +192,62 @@ probe() {
 	echo "P-END clicks $(date -u +%T) rounds=$round"
 }
 beside() {
-	local round=0 started status
+	local round=0 started status numbers
 	while [[ -d $work && ! -e $work/stop ]]; do
-		echo "C $(date -u +%T) $(timeout 20 lxc --project "$PROJECT" exec "$MACHINE" -- \
-			awk '/^(MemAvailable|AnonPages|SwapFree):/ {printf "%s%d ", $1, $2 / 1024}' /proc/meminfo </dev/null 2>/dev/null || true)"
+		started=$EPOCHREALTIME
+		numbers=$(timeout 20 lxc --project "$PROJECT" exec "$MACHINE" -- \
+			awk '/^(MemAvailable|AnonPages|SwapFree):/ {printf "%s%d ", $1, $2 / 1024}' /proc/meminfo </dev/null 2>/dev/null) || true
+		echo "C $(date -u +%T) read_s=$(seconds "$started") at=$started $numbers"
 		round=$(( round + 1 ))
 		if (( round % 10 == 0 )); then
 			started=$EPOCHREALTIME
 			status=0
 			timeout 40 lxc --project "$PROJECT" exec "$MACHINE" -- bash /srv/memory-proof/guest.sh look </dev/null >/dev/null 2>&1 || status=$?
-			echo "P $(date -u +%T) look_s=$(seconds "$started") rc=$status"
+			echo "P $(date -u +%T) look_s=$(seconds "$started") at=$started rc=$status"
 		fi
 		sleep "$PROBE_PAUSE"
 	done
 	[[ -e $work/stop ]] || return 1
 	echo "P-END beside $(date -u +%T) rounds=$round"
+}
+
+# The longest time, from a leg's start to its end, in which a loop had nothing in flight. What lies between two of the
+# things it asked, BEFORE the first and AFTER the last, is time in which it asked nothing of the machine; a loop with
+# no line at all has one hole as long as the leg. (Review round 5 of #1692: only the time between two clicks was
+# looked at, so a clicks' loop that stood still over the leg's end, and then ended as told, left its last stretch
+# unasked and unseen.)
+longest_hole() { # the lines' pattern, the leg's start, the leg's end
+	awk -v pattern="$1" -v start="$2" -v finish="$3" '
+		# A stretch with nothing in flight, as far as it lies inside the leg.
+		function hole(from, to) {
+			if (from < start) from = start
+			if (to > finish) to = finish
+			if (to - from > worst) worst = to - from
+		}
+		BEGIN { start += 0; finish += 0 }
+		$0 ~ pattern {
+			at = took = 0
+			timed = 0
+			for (i = 1; i <= NF; i++) {
+				if ($i ~ /^at=/) at = substr($i, 4) + 0
+				else if (!timed && $i ~ /^[a-z]+_s=/) { split($i, part, "="); took = part[2] + 0; timed = 1 }
+			}
+			hole(seen ? ended : start, at)
+			ended = at + took
+			seen = 1
+		}
+		END {
+			hole(seen ? ended : start, finish)
+			printf "%.2f", worst + 0
+		}' "$work/probe"
+}
+# A loop left no hole: its longest time with nothing in flight is under the pause and a second more.
+no_hole() { # what, whose, the hole
+	if awk -v hole="$3" -v pause="$PROBE_PAUSE" 'BEGIN { exit !(hole < pause + 1) }'; then
+		echo "CHECK ok   $1 there was no hole in $2 from the leg's start to its end (the longest time with none in flight: $3 s; the pause is $PROBE_PAUSE s, and a second more is allowed)"
+	else
+		echo "CHECK FAIL $1 there was no hole in $2 from the leg's start to its end (the longest time with none in flight: $3 s; the pause is $PROBE_PAUSE s, and a second more is allowed)"
+	fi
 }
 
 # Starts the two loops, runs one leg under them, and judges the clicks. The machine keeps answering: no click failed, none
@@ -219,8 +261,8 @@ beside() {
 # The slowest click fell at the same step in three of them: not at a tab's end, but half a minute later, when the leg
 # starts a new program and a heavy page at once and about 360 MiB go into the compressed reserve within 3 s.
 probed() { # what, the least number of clicks, seconds, then the leg's words
-	local what=$1 least=$2 clicks failed one two three allowed looks unanswered hole
-	local probe_pid beside_pid probe_status=0 beside_status=0
+	local what=$1 least=$2 clicks failed one two three allowed looks unanswered hole beside_hole
+	local probe_pid beside_pid probe_status=0 beside_status=0 leg_started leg_ended
 	shift 2
 	rm -f "$work/stop"
 	: >"$work/probe"
@@ -228,7 +270,9 @@ probed() { # what, the least number of clicks, seconds, then the leg's words
 	probe_pid=$!
 	beside >>"$work/probe" &
 	beside_pid=$!
+	leg_started=$EPOCHREALTIME
 	guest "$@"
+	leg_ended=$EPOCHREALTIME
 	touch "$work/stop"
 	# Each loop's own end is asked, by its pid: a bare `wait` answers 0 whatever became of them (review round 3 of
 	# #1692: a probe ended half way through the leg left enough good clicks behind for the checks below to pass).
@@ -243,7 +287,7 @@ probed() { # what, the least number of clicks, seconds, then the leg's words
 	# the lines before and after it (the clicks' and the other loop's lines lie mixed, in the order they were written).
 	awk '{ line[NR] = $0 }
 		/ click_s=/ { split($3, a, "="); if (a[2] >= 1 || $4 != "rc=0") for (i = NR - 6; i <= NR + 3; i++) near[i] = 1 }
-		/ look_s=/ { if ($4 != "rc=0") for (i = NR - 6; i <= NR + 3; i++) near[i] = 1 }
+		/ look_s=/ { if ($NF != "rc=0") for (i = NR - 6; i <= NR + 3; i++) near[i] = 1 }
 		END { for (i = 1; i <= NR; i++) if (near[i]) print "near a slow or failed click, or a look not answered: " line[i] }' "$work/probe"
 	clicks=$(grep -c ' click_s=' "$work/probe" || true)
 	failed=$(grep ' click_s=' "$work/probe" | grep -vc ' rc=0 ' || true)
@@ -252,23 +296,19 @@ probed() { # what, the least number of clicks, seconds, then the leg's words
 	three=$(awk '/ click_s=/ {split($3, a, "="); if (a[2] >= 3) n++} END {print n + 0}' "$work/probe")
 	allowed=$(( clicks / 100 ))
 	(( allowed >= 1 )) || allowed=1
-	# The longest time with no click in flight: from the end of one click to the start of the next.
-	hole=$(awk '/ click_s=/ { split($3, s, "="); split($5, a, "="); if (seen && a[2] - ended > worst) worst = a[2] - ended; ended = a[2] + s[2]; seen = 1 }
-		END { printf "%.2f", worst + 0 }' "$work/probe")
-	echo "M $what clicks=$clicks failed=$failed at_or_over_1s=$one at_or_over_2s=$two at_or_over_3s=$three longest_without_a_click_s=$hole slowest_s=$(awk '/ click_s=/ {split($3, a, "="); if (a[2] > m) m = a[2]} END {print m + 0}' "$work/probe") slowest_look_s=$(awk '/ look_s=/ {split($3, a, "="); if (a[2] > m) m = a[2]} END {print m + 0}' "$work/probe") least_available_MB=$(sed -n 's/.*MemAvailable:\([0-9]*\).*/\1/p' "$work/probe" | sort -n | head -1)"
+	hole=$(longest_hole ' click_s=' "$leg_started" "$leg_ended")
+	beside_hole=$(longest_hole ' (read|look)_s=' "$leg_started" "$leg_ended")
+	echo "M $what clicks=$clicks failed=$failed at_or_over_1s=$one at_or_over_2s=$two at_or_over_3s=$three longest_without_a_click_s=$hole longest_without_a_reading_or_look_s=$beside_hole slowest_s=$(awk '/ click_s=/ {split($3, a, "="); if (a[2] > m) m = a[2]} END {print m + 0}' "$work/probe") slowest_look_s=$(awk '/ look_s=/ {split($3, a, "="); if (a[2] > m) m = a[2]} END {print m + 0}' "$work/probe") least_available_MB=$(sed -n 's/.*MemAvailable:\([0-9]*\).*/\1/p' "$work/probe" | sort -n | head -1)"
 	if (( clicks >= least && failed == 0 && three == 0 && two <= allowed )); then
 		echo "CHECK ok   $what the machine kept answering desktop clicks ($clicks clicks, one a second: none failed, none took 3 s or more, $two took 2 s or more)"
 	else
 		echo "CHECK FAIL $what the machine kept answering desktop clicks ($clicks clicks, at least $least wanted: $failed failed, $three took 3 s or more, $two took 2 s or more where $allowed may)"
 	fi
-	# No hole between two clicks: between the end of one and the start of the next there is the pause and nothing else.
-	# With the loops' own ends above, every moment of the leg lies inside a timed click or inside a pause no longer
-	# than this, so nothing the machine did went unasked (a clicks' loop that stood still is a hole too).
-	if awk -v hole="$hole" -v pause="$PROBE_PAUSE" 'BEGIN { exit !(hole < pause + 1) }'; then
-		echo "CHECK ok   $what there was no hole between two clicks (the longest time with no click in flight: $hole s; the pause is $PROBE_PAUSE s, and a second more is allowed)"
-	else
-		echo "CHECK FAIL $what there was no hole between two clicks (the longest time with no click in flight: $hole s; the pause is $PROBE_PAUSE s, and a second more is allowed)"
-	fi
+	# No hole, in either loop, from the leg's start to its end. With the loops' own ends above, every moment of the leg
+	# lies inside something that was asked and timed, or inside a pause no longer than the allowance: nothing the
+	# machine did went unasked. A loop that stood still (the host, a signal) is a hole, wherever in the leg it stood.
+	no_hole "$what" "the clicks" "$hole"
+	no_hole "$what" "the readings and looks beside them" "$beside_hole"
 	# Every look was answered, and there was one: no looks at all is not "every look answered".
 	looks=$(grep -c ' look_s=' "$work/probe" || true)
 	unanswered=$(grep ' look_s=' "$work/probe" | grep -vc ' rc=0$' || true)

@@ -17,8 +17,11 @@
 #   pause-probe-at  when there, "<n> <seconds>": after the n-th `desktop click` the clicks' loop is stopped (SIGSTOP)
 #                   while it pauses between two clicks, and let go on (SIGCONT) so many seconds later: no click is
 #                   slow, and none is asked meanwhile
+#   pause-beside-at  when there, "<n> <seconds>": the same for the loop beside the clicks, after its n-th look
+#   leg-ends-while-stopped  when there, "<seconds>": a `load` or `job` leg ends so long after a loop was stopped, so
+#                   the loop stands still over the leg's end
 #   calls, legs     what was asked: every call, and every leg of guest.sh with the size of the machine it ran on
-#   clicks, readings  one line a `desktop click` asked, one a reading of the memory numbers
+#   clicks, readings, looks  one line a `desktop click` asked, one a reading of the memory numbers, one a look
 set -u
 [[ ${1-} == --project ]] && shift 2
 verb=${1-}
@@ -39,6 +42,32 @@ fi
 missing() {
 	echo "stand-in lxc: there is no machine $1" >&2
 	exit 1
+}
+# Stops a loop of the proof's (a shell: the parent of the `timeout` that runs this script) while it pauses between two
+# of its calls, and lets it go on later, from a helper of its own. Between two calls the loop's only child is its
+# `sleep`. A loop stopped inside a call would count the time to that call instead, so a stop that came at another
+# moment is taken back and tried again at the next pause.
+stop_between_calls() { # the loop's pid, seconds
+	setsid bash -c '
+		loop=$1 long=$2 stopped=$3
+		while kill -0 "$loop" 2>/dev/null; do
+			if pgrep -P "$loop" -x sleep >/dev/null; then
+				kill -STOP "$loop"
+				[[ $(pgrep -P "$loop" | wc -l) == 1 ]] && pgrep -P "$loop" -x sleep >/dev/null && break
+				kill -CONT "$loop"
+			fi
+			sleep 0.02
+		done
+		: >"$stopped"
+		sleep "$long"
+		kill -CONT "$loop"
+	' stop "$1" "$2" "$STUB/loop-stopped" </dev/null >/dev/null 2>&1 &
+}
+# Who asked: `timeout` is this script's parent, and the loop that asked (a shell of the proof's) is timeout's.
+asker() {
+	local parent
+	read -r _ _ _ parent _ <"/proc/$PPID/stat"
+	echo "$parent"
 }
 # The machine stalls: whoever asks it before the stall is over waits for its end.
 stalled() {
@@ -89,7 +118,14 @@ exec) # NAME -- the command
 		stalled
 		echo "MemAvailable:1000 AnonPages:10 SwapFree:1000 "
 		;;
-	"bash /srv/memory-proof/guest.sh look") stalled ;;
+	"bash /srv/memory-proof/guest.sh look")
+		echo look >>"$STUB/looks"
+		stalled
+		if [[ -s $STUB/pause-beside-at ]]; then
+			read -r at long <"$STUB/pause-beside-at"
+			[[ $(wc -l <"$STUB/looks") -eq $at ]] && stop_between_calls "$(asker)" "$long"
+		fi
+		;;
 	"bash /srv/memory-proof/guest.sh "*)
 		leg=${asked#bash /srv/memory-proof/guest.sh }
 		echo "${gib}GiB $leg" >>"$STUB/legs"
@@ -98,6 +134,10 @@ exec) # NAME -- the command
 			wanted=$(( $(wc -l <"$STUB/clicks") + $(cat "$STUB/leg-clicks") ))
 			for _ in $(seq 1 1200); do
 				[[ -e $STUB/probe-ended || $(wc -l <"$STUB/clicks") -ge $wanted ]] && break
+				if [[ -s $STUB/leg-ends-while-stopped && -e $STUB/loop-stopped ]]; then
+					sleep "$(cat "$STUB/leg-ends-while-stopped")"
+					break
+				fi
 				sleep 0.05
 			done
 			sleep 0.2
@@ -107,32 +147,13 @@ exec) # NAME -- the command
 	"desktop click "*)
 		echo click >>"$STUB/clicks"
 		stalled
-		# Who asked: `timeout` is this script's parent, and the clicks' loop (a shell of the proof's) is timeout's.
-		read -r _ _ _ probe _ <"/proc/$PPID/stat"
 		if [[ -s $STUB/kill-probe-at && $(wc -l <"$STUB/clicks") -eq $(cat "$STUB/kill-probe-at") ]]; then
-			kill -KILL "$probe"
+			kill -KILL "$(asker)"
 			: >"$STUB/probe-ended"
 		fi
 		if [[ -s $STUB/pause-probe-at ]]; then
 			read -r at long <"$STUB/pause-probe-at"
-			if [[ $(wc -l <"$STUB/clicks") -eq $at ]]; then
-				# A helper of its own stops the loop while it pauses between two clicks: its `sleep` is there and no
-				# click (`timeout`) is. A loop stopped inside a click would count the time to that click instead, so
-				# a stop that came too late is taken back and tried again at the next pause.
-				setsid bash -c '
-					probe=$1 long=$2
-					while kill -0 "$probe" 2>/dev/null; do
-						if pgrep -P "$probe" -x sleep >/dev/null; then
-							kill -STOP "$probe"
-							pgrep -P "$probe" -x sleep >/dev/null && ! pgrep -P "$probe" -x timeout >/dev/null && break
-							kill -CONT "$probe"
-						fi
-						sleep 0.02
-					done
-					sleep "$long"
-					kill -CONT "$probe"
-				' pause "$probe" "$long" </dev/null >/dev/null 2>&1 &
-			fi
+			[[ $(wc -l <"$STUB/clicks") -eq $at ]] && stop_between_calls "$(asker)" "$long"
 		fi
 		;;
 	*) ;; # systemctl stop, is-system-running, mkdir
