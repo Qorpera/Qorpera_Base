@@ -1906,7 +1906,7 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 			"Please draw 3 new icons for Trips (apps/trips), from its name and what it shows.",
 		);
 		await settle();
-		expect(controller.store.get().appIconsDrawing?.trips?.known).toEqual(["old"]);
+		expect(controller.store.get().appIconsDrawing?.trips?.known).toEqual(["old@1"]);
 		expect(element.querySelector("[data-app-key='app:trips']")?.classList.contains("is-drawing")).toBe(true);
 		// The same icons again: still drawing. A new one: done.
 		await controller.loadAppIcons("trips");
@@ -1916,6 +1916,12 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		await settle();
 		expect(controller.store.get().appIconsDrawing?.trips).toBeUndefined();
 		expect(element.querySelector("[data-app-key='app:trips']")?.classList.contains("is-drawing")).toBe(false);
+		// At its 12 an agent draws over an old id: a new version of one ends the drawing too (review F6 on #1696).
+		expect((await controller.requestAppIcons(trips)).ok).toBe(true);
+		expect(controller.store.get().appIconsDrawing?.trips?.known).toEqual(["compass@4", "old@1"]);
+		icons = [{ id: "old", icon: drawn.icon, seq: 7 }, icons[0]!];
+		await controller.loadAppIcons("trips");
+		expect(controller.store.get().appIconsDrawing?.trips).toBeUndefined();
 		// With its agent gone, the Co-Founder is asked.
 		controller.store.set({ staff: [] });
 		const cofounder = vi
@@ -1925,6 +1931,94 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		expect(cofounder).toHaveBeenCalled();
 		expect(sent).toHaveBeenLastCalledWith("session-cf", expect.stringContaining("Please draw 3 new icons for Trips"));
 		controller.stop();
+		localStorage.clear();
+	});
+	it("asks only into an empty composer, with the thread's own account, through the real send (review F1, F2 on #1696)", async () => {
+		const f = fixture();
+		const written: string[] = [];
+		const controller = new CompanyController(f.api, profileA, userA.id, (async (
+			_session: string,
+			_input: string,
+			text: string,
+		) => {
+			written.push(text);
+			return { inputId: id(990) };
+		}) as never);
+		cleanup.push(() => controller.stop());
+		const thread = { ...session, sessionId: id(77) };
+		controller.store.set({
+			loading: false,
+			staff: [ada],
+			sessions: [thread],
+			team,
+			apps: [
+				{ name: "trips", path: "apps/trips", manifest: manifest("Trips", "teal"), problems: [], version: null },
+			],
+		});
+		vi.spyOn(controller, "openStaffConversation").mockResolvedValue(thread.sessionId);
+		const selectSessionAccount = vi.fn(async () => "conn-ada");
+		const listConnections = vi.fn(async () => ({ connections: [] }));
+		controller.appIconAccounts = { selectSessionAccount, listConnections } as never;
+		const choose = vi.spyOn(controller, "setExecutionSponsor").mockImplementation((sessionId) => {
+			controller
+				.conversation(sessionId, false)
+				.set({ executionSponsor: { sponsorBindingId: "binding-ada", sponsorVersion: 1 } } as never);
+		});
+		const trips = controller.store.get().apps![0]!;
+		// A draft the member is writing to Ada stays as it is, and nothing is sent.
+		controller.conversation(thread.sessionId, false).set({ draft: "Half a thought" });
+		const busy = await controller.requestAppIcons(trips);
+		expect(busy).toEqual({
+			ok: false,
+			reason: "You have a message started to Ada. Send or clear it, then press Generate icon again.",
+		});
+		expect(controller.conversation(thread.sessionId, false).get().draft).toBe("Half a thought");
+		expect(written).toEqual([]);
+		expect(choose).not.toHaveBeenCalled();
+		// With an empty composer the thread gets its own account before the real send, which then goes.
+		controller.conversation(thread.sessionId, false).set({ draft: "" });
+		expect(await controller.requestAppIcons(trips)).toEqual({ ok: true, agent: "Ada" });
+		expect(selectSessionAccount).toHaveBeenCalledWith(thread.sessionId, controller.signal);
+		expect(choose).toHaveBeenCalledWith(thread.sessionId, { connections: [] }, "conn-ada");
+		expect(written).toEqual(["Please draw 3 new icons for Trips (apps/trips), from its name and what it shows."]);
+		expect(controller.conversation(thread.sessionId, false).get().draft ?? "").toBe("");
+	});
+	it("gives every row of the panel a tab stop, and keeps a picked icon past the newest 12 (review F4, F7 on #1696)", async () => {
+		localStorage.clear();
+		const { element, controller } = drawer();
+		const drawn = parseAppIcon('<svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="20"/></svg>');
+		if (!drawn.ok) throw new Error(drawn.problem);
+		const icons: CompanyAppIcon[] = Array.from({ length: 14 }, (_, n) => ({
+			id: `icon-${n}`,
+			icon: drawn.icon,
+			seq: 100 - n,
+		}));
+		controller.appIconReader = async () => icons;
+		controller.store.set({
+			appLayout: {
+				layout: { ...EMPTY_APP_LAYOUT, emblems: { "app:trips": "custom:icon-13" } },
+				updatedAt: "2026-11-12T12:00:00Z",
+			},
+		});
+		await controller.loadAppIcons("trips");
+		element
+			.querySelector<HTMLElement>("[data-app-key='app:trips']")!
+			.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 9, clientY: 9 }));
+		[...document.querySelectorAll<HTMLElement>(".context-menu [role^=menuitem]")]
+			.find((row) => row.textContent?.trim() === "Icon and colour")!
+			.click();
+		await settle();
+		const [made, all] = [...document.querySelectorAll<HTMLElement>(".app-look-icons")];
+		// The newest 12 and the picked one, the 14th, which is still drawn on the tile.
+		expect([...made!.querySelectorAll(".app-look-icon")].map((b) => b.getAttribute("aria-label"))).toEqual([
+			...Array.from({ length: 12 }, (_, n) => `icon ${n}`),
+			"icon 13",
+		]);
+		expect(element.querySelector("[data-app-key='app:trips'] .rail-app-stand > svg g circle")).not.toBeNull();
+		// The picked one holds the made row's tab stop; the built-in row, with none of its own picked, its first.
+		expect(made!.querySelector<HTMLButtonElement>("[tabindex='0']")?.getAttribute("aria-label")).toBe("icon 13");
+		expect(all!.querySelector<HTMLButtonElement>("[tabindex='0']")?.getAttribute("aria-label")).toBe("Pulse");
+		expect(document.querySelectorAll(".app-look .color-grid [tabindex='0']")).toHaveLength(1);
 		localStorage.clear();
 	});
 	it("lets a move on its way land before a reset, so the reset is never undone by it (review F2 on #1678)", async () => {

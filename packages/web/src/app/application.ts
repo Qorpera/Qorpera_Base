@@ -1447,6 +1447,16 @@ export function mountApplication(
 			);
 			companyApps = apps;
 			controller.appIconReader = (app) => apps.icons(app);
+			// Generate icon's message takes the thread's own model account, as an answer from an app does.
+			controller.appIconAccounts = createWebNativeSubscription(
+				cloud,
+				controller.profile.profileId,
+				controller.userId,
+				controller.signal,
+				companyCurrent,
+			);
+			// An agent's icons-only save changes no app's manifest: every hint of the folder reads the icons read before.
+			apps.onChange(() => controller.refreshAppIcons());
 			// The rail's line under each agent's name: its wall and its next planned run, read with the member's own access
 			// and again on each change hint of the folder, as the thread's wall is.
 			const routines = createWebRoutines(cloud, controller.profile, files.signal, folderCurrent, () =>

@@ -53,6 +53,9 @@ describe("an app's own icon (12 Nov 2026)", () => {
 		expect(refused(svg('<script>alert(1)</script><circle cx="24" cy="24" r="9"/>'))).toContain("script");
 		expect(refused(svg('<circle cx="24" cy="24" r="9" onclick="x()"/>'))).toContain("may not have onclick");
 		expect(refused(svg('<circle cx="24" cy="24" r="9" style="fill:red"/>'))).toContain("may not have style");
+		// Names an object holds of its own are no attributes an icon may have, and never throw (review F3 on #1696).
+		for (const name of ["constructor", "tostring", "hasownproperty", "valueof"])
+			expect(refused(svg(`<circle cx="24" cy="24" r="9" ${name}="x"/>`))).toContain(`may not have ${name}`);
 		expect(refused(svg('<circle cx="24" cy="24" r="9" transform="scale(2)"/>'))).toContain("transform");
 		expect(refused(svg('<circle cx="24" cy="24" r="9" fill="red"/>'))).toContain("black");
 		expect(refused(svg('<circle cx="24" cy="24" r="9" fill="url(#g)"/>'))).toContain("black");

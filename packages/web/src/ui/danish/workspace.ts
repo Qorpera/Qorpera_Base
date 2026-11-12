@@ -702,6 +702,8 @@ export const WORKSPACE: Record<string, string> = {
 	"The Co-Founder could not be reached.": "Co-Founderen kunne ikke nås.",
 	"The Co-Founder": "Co-Founderen",
 	"The message could not be sent.": "Beskeden kunne ikke sendes.",
+	"You have a message started to {agent}. Send or clear it, then press Generate icon again.":
+		"Du har en besked i gang til {agent}. Send eller ryd den, og tryk så på Lav ikon igen.",
 	Pulse: "Puls",
 	Mail: "Post",
 	Coin: "Mønt",

@@ -142,7 +142,7 @@ export interface CompanyAppIcon {
 	readonly seq: number;
 }
 
-/** An app's own icons, newest first: each file of its `icons/` folder the shared reader can draw, at most 12; a file it
+/** An app's own icons, newest first: each file of its `icons/` folder the shared reader can draw, at most 48; a file it
  * cannot read or draw is left out. With `known` (the last read, by file and its version), files that did not change are
  * not read again. */
 export async function readAppIcons(
@@ -158,7 +158,9 @@ export async function readAppIcons(
 	const files = (await listAll(folder, path, signal, 4 * APP_ICONS_MAX))
 		.filter((entry) => entry.kind === "file" && appIconIdOf(entry.path.slice(entry.path.lastIndexOf("/") + 1)))
 		.sort((a, b) => b.seq - a.seq)
-		.slice(0, APP_ICONS_MAX);
+		// More than 12 can stand (two saves at once, a file written another way): every one is read, so a member's pick
+		// is still drawn; the panel shows the newest 12 and the picked one (review F4 on #1696).
+		.slice(0, 4 * APP_ICONS_MAX);
 	await Promise.all(
 		files.map(async (entry) => {
 			const key = `${entry.path}@${entry.seq}`;

@@ -62,17 +62,19 @@ export function appIconPath(app: string, id: string): string | null {
 
 const TAGS: ReadonlySet<string> = new Set(["path", "circle", "rect", "ellipse", "line", "polyline", "polygon"]);
 const NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
-const GEOMETRY: Readonly<Record<string, RegExp>> = {
-	d: /^[MmLlHhVvCcSsQqTtAaZz0-9.,\s+eE-]{1,4000}$/,
-	points: /^[0-9.,\s+eE-]{1,2000}$/,
-};
-for (const name of ["x", "y", "width", "height", "cx", "cy", "r", "rx", "ry", "x1", "y1", "x2", "y2"])
-	(GEOMETRY as Record<string, RegExp>)[name] = NUMBER;
-const LINE: Readonly<Record<string, ReadonlySet<string>>> = {
-	"stroke-linecap": new Set(["round", "butt", "square"]),
-	"stroke-linejoin": new Set(["round", "miter", "bevel"]),
-	"fill-rule": new Set(["nonzero", "evenodd"]),
-};
+// Maps, not objects: an attribute named like an object's own (constructor, toString) is no geometry (review F3).
+const GEOMETRY: ReadonlyMap<string, RegExp> = new Map([
+	["d", /^[MmLlHhVvCcSsQqTtAaZz0-9.,\s+eE-]{1,4000}$/],
+	["points", /^[0-9.,\s+eE-]{1,2000}$/],
+	...["x", "y", "width", "height", "cx", "cy", "r", "rx", "ry", "x1", "y1", "x2", "y2"].map(
+		(name): [string, RegExp] => [name, NUMBER],
+	),
+]);
+const LINE: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+	["stroke-linecap", new Set(["round", "butt", "square"])],
+	["stroke-linejoin", new Set(["round", "miter", "bevel"])],
+	["fill-rule", new Set(["nonzero", "evenodd"])],
+]);
 const INK = new Set(["#000", "#000000", "black"]);
 const CUT = new Set(["#fff", "#ffffff", "white"]);
 const ROOT = new Set(["xmlns", "viewbox", "width", "height"]);
@@ -155,16 +157,17 @@ export function parseAppIcon(text: string): AppIconRead {
 		for (const [name, value] of found) {
 			if (name === "fill") fill = paint(value, "ink");
 			else if (name === "stroke") stroke = paint(value, "none");
-			else if (GEOMETRY[name]) {
-				if (!GEOMETRY[name]!.test(value.trim())) return refuse(`${tag}'s ${name} is not a number or path`);
+			else if (GEOMETRY.has(name)) {
+				if (!GEOMETRY.get(name)!.test(value.trim())) return refuse(`${tag}'s ${name} is not a number or path`);
 				attrs[name] = value.trim();
 			} else if (name === "stroke-width") {
 				const width = Number(value);
 				if (!NUMBER.test(value.trim()) || width < 0.5 || width > 12)
 					return refuse("stroke-width is a number from 0.5 to 12");
 				attrs[name] = value.trim();
-			} else if (LINE[name]) {
-				if (!LINE[name]!.has(value.trim())) return refuse(`${name} is ${[...LINE[name]!].join(", ")}`);
+			} else if (LINE.has(name)) {
+				const allowed = LINE.get(name)!;
+				if (!allowed.has(value.trim())) return refuse(`${name} is ${[...allowed].join(", ")}`);
 				attrs[name] = value.trim();
 			} else return refuse(`a ${tag} may not have ${name}: only its shape, fill, stroke and line attributes`);
 		}

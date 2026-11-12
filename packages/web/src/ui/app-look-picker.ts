@@ -1,4 +1,4 @@
-import type { AppIcon } from "@qorpera/cloud-client/app-icons";
+import { APP_ICONS_MAX, type AppIcon } from "@qorpera/cloud-client/app-icons";
 import { AGENT_COLOURS, type AgentColour } from "@qorpera/cloud-client/company-state-shared";
 import { INTERFACE_EMBLEMS } from "@qorpera/cloud-client/interfaces";
 import { AGENT_COLOUR_HEX } from "../cloud/agent-colours.ts";
@@ -146,7 +146,7 @@ export function appLookPanel(
 									...(made.drawing
 										? [0, 1, 2].map(() => h("span", { class: "app-look-drawing", "aria-hidden": "true" }))
 										: []),
-									...made.icons.map(({ id, icon: drawn }) =>
+									...shownIcons(made.icons, emblem.chosen).map(({ id, icon: drawn }) =>
 										choice(
 											id.replace(/-/g, " "),
 											emblem.chosen === `custom:${id}`,
@@ -212,6 +212,11 @@ export function appLookPanel(
 		);
 		if (state.ink) el.style.setProperty("--app-colour", state.ink);
 		else el.style.removeProperty("--app-colour");
+		// Every row of choices can be reached by Tab: its chosen one, or its first (review F7 on #1696).
+		for (const group of el.querySelectorAll<HTMLElement>("[role=radiogroup]")) {
+			const buttons = [...group.querySelectorAll<HTMLButtonElement>("button")];
+			if (buttons.length && !buttons.some((button) => button.tabIndex === 0)) buttons[0]!.tabIndex = 0;
+		}
 		for (const swatch of el.querySelectorAll<HTMLElement>("[data-color]"))
 			swatch.style.setProperty("--choice-color", swatch.dataset.color ?? "");
 		if (focused)
@@ -239,6 +244,13 @@ export function appLookPanel(
 	draw();
 	const stop = subscribe(draw);
 	return { el, dispose: stop };
+}
+
+/** The app's own icons the panel shows: the newest 12, and the member's pick when it is older. */
+function shownIcons<T extends { readonly id: string }>(icons: readonly T[], chosen: string | null): T[] {
+	const newest = icons.slice(0, APP_ICONS_MAX);
+	const picked = icons.find((entry) => `custom:${entry.id}` === chosen);
+	return picked && !newest.includes(picked) ? [...newest, picked] : newest;
 }
 
 /** The built-in icons' names, said in the member's language. */
