@@ -20,13 +20,17 @@ FILES=/opt/qorpera-machine/desktop-files
 MIN_CPUS=2
 # A 4 GiB machine shows a little under 4 GiB of memory.
 MIN_MEMORY_KB=3500000
+# The company's time zone: one word in root's file, which the machine's executor writes (an IANA name such as
+# Europe/Copenhagen; a company has one, taken once from a member's browser). A start without --tz takes it.
+TIMEZONE=/etc/qorpera-machine/desktop-timezone
 usage() {
 	cat <<'EOF'
 desktop start [--lang TAG] [--tz ZONE] [--size WxH] [TARGET...]
                               start the desktop (1600x1000, XFCE, Chromium) and open each TARGET on it (see open);
                               does nothing to a desktop that runs. --lang da-DK and --tz Europe/Copenhagen set the
-                              browser's language and the programs' time zone (default en-US, UTC). It needs a
-                              machine of at least 2 processors and 4 GB (machine_start with desktop true).
+                              browser's language and the programs' time zone (default en-US, and the company's
+                              time zone when the machine names one, else UTC). It needs a machine of at least
+                              2 processors and 4 GB (machine_start with desktop true).
                               It stops by itself after an hour without a desktop command.
 desktop stop                  stop it and every program on it
 desktop status                running or stopped, and the open windows
@@ -60,6 +64,22 @@ to FILE a moment after the action, so one command acts and shows what came of it
 EOF
 }
 fail() { echo "$1" >&2; exit "${2:-1}"; }
+# The company's time zone as the machine names it (TIMEZONE), when that is a zone this image has; else nothing, and the
+# desktop is on UTC as a machine without the file. The word came from a browser. Only a plain file of root's own is
+# read, never a link or a pipe; it must be the word and at most a line end, 64 bytes of word at most (a longer or an
+# empty file is no zone); and the word has a zone name's shape (letters, digits, _, + and -, in at most three parts
+# with a / between: no dot, so no way out of the folder) BEFORE it is ever put after /usr/share/zoneinfo/. Bytes are
+# counted and letters are ASCII's, whatever language the caller has.
+company_zone() {
+	local LC_ALL=C name= size plain='^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+){0,2}$'
+	[[ -f $TIMEZONE && ! -L $TIMEZONE && -O $TIMEZONE ]] || return 0
+	size=$(stat -c %s -- "$TIMEZONE" 2>/dev/null) || return 0
+	[[ $size =~ ^[0-9]{1,2}$ ]] && (( size >= 1 && size <= 65 )) || return 0
+	IFS= read -r -n 65 name <"$TIMEZONE" 2>/dev/null || true
+	(( ${#name} == size || ${#name} + 1 == size )) || return 0
+	[[ ${#name} -le 64 && $name =~ $plain && -f /usr/share/zoneinfo/$name ]] || return 0
+	printf %s "$name"
+}
 # The unit is active and its display answers (a socket left by a killed display does not).
 running() { [[ $(systemctl is-active "$UNIT" 2>/dev/null || true) == active ]] && xdpyinfo >/dev/null 2>&1; }
 need() {
@@ -265,6 +285,9 @@ start)
 			sleep 0.1
 		done
 		rm -f -- "$drawn"
+		# Nobody named a zone for this desktop: the company's, when the machine names one. Only here, at the start of a
+		# desktop: one that runs keeps the zone it has, so a word that changes meanwhile is taken at the next start.
+		[[ -n $tz ]] || tz=$(company_zone)
 	fi
 	touch "$RUN/last-use"
 	if [[ -n $lang ]]; then printf %s "$lang" >"$RUN/lang"; fi

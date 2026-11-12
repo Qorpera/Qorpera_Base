@@ -537,6 +537,39 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	desktop start >/dev/null
 	dock_whole && backdrop_is neutral || { echo "the look did not come back in an emptied account" >&2; exit 1; }
 	desktop stop >/dev/null
+	# The company time zone (12 Nov 2026): one word in /etc/qorpera-machine/desktop-timezone, the file of root that the
+	# machine executor writes. A desktop started without --tz takes it: its note, the dock clocks and the backdrop hour
+	# follow it. A desktop that runs keeps the zone it has: a word that changes meanwhile is taken at the next start.
+	# --tz still wins. And a file that is a link leaves the desktop on UTC, as a machine without the file is.
+	zone_is() { # zone, or nothing for a desktop nobody gave a zone (UTC)
+		if [[ -n ${1:-} ]]; then
+			desktop status | grep "^running (.*, time zone $1)\$" >/dev/null || return 1
+		elif desktop status | grep "^running (.*time zone" >/dev/null; then
+			return 1
+		fi
+		backdrop_is neutral "${1:-UTC}" && [[ $(look -c xfce4-panel -p /plugins/plugin-3/timezone) == "${1:-UTC}" &&
+			$(look -c xfce4-panel -p /plugins/plugin-7/timezone) == "${1:-UTC}" ]]
+	}
+	echo Pacific/Auckland >/etc/qorpera-machine/desktop-timezone
+	desktop start >/dev/null
+	zone_is Pacific/Auckland || { echo "a desktop started without --tz did not take the company time zone: $(desktop status | tr "\n" " ") $(shown)" >&2; exit 1; }
+	echo America/New_York >/etc/qorpera-machine/desktop-timezone
+	desktop start >/dev/null
+	zone_is Pacific/Auckland || { echo "a desktop that runs changed its time zone at a start that started nothing: $(desktop status | tr "\n" " ")" >&2; exit 1; }
+	desktop stop >/dev/null
+	desktop start >/dev/null
+	zone_is America/New_York || { echo "the next start did not take the company time zone that had changed: $(desktop status | tr "\n" " ") $(shown)" >&2; exit 1; }
+	desktop stop >/dev/null
+	desktop start --tz Asia/Tokyo >/dev/null
+	zone_is Asia/Tokyo || { echo "--tz did not win over the company time zone: $(desktop status | tr "\n" " ") $(shown)" >&2; exit 1; }
+	desktop stop >/dev/null
+	echo Pacific/Auckland >/root/qorpera-zone-check
+	ln -sfn /root/qorpera-zone-check /etc/qorpera-machine/desktop-timezone
+	desktop start >/dev/null
+	zone_is || { echo "a company time zone file that is a link was followed: $(desktop status | tr "\n" " ") $(shown)" >&2; exit 1; }
+	desktop stop >/dev/null
+	rm /etc/qorpera-machine/desktop-timezone /root/qorpera-zone-check
+	[[ -z $(ls -A /etc/qorpera-machine) ]] || { echo "the check of the company time zone left its file" >&2; exit 1; }
 	# Root and the desktop account (review r1 F1 of #1704). Root keeps what it notes about the desktop in a folder of
 	# its own, and reads none of them from a place the account owns: the account, or a page or a program run as it, can
 	# make any name there a link to a file only root may read. A file only root can read stands in for such a file (the
