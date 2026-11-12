@@ -16,3 +16,8 @@ RuntimeDirectoryMode=0700
 ExecStart=/opt/qorpera-machine/desktop-session
 Restart=no
 TimeoutStopSec=10
+# When memory runs out, the screen is not what is ended: its X server and session bus keep this, and the session script
+# gives the XFCE session, and what is started from its menus, a milder -100 (deploy/machine/machine-memory). Programs
+# opened with `desktop open` and `desktop run` are units of their own and inherit nothing of it: a browser tab goes
+# first.
+OOMScoreAdjust=-900

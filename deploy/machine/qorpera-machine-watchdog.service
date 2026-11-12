@@ -13,3 +13,5 @@ Group=root
 Slice=qorpera-control.slice
 ExecStart=/usr/bin/node /opt/qorpera-machine/cloud-machine-guest.mjs watchdog
 TimeoutStartSec=15
+# When memory runs out, the watchdog is not what is ended (deploy/machine/machine-memory).
+OOMScoreAdjust=-900

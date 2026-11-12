@@ -44,3 +44,5 @@ MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 MemoryMax=512M
 MemorySwapMax=0
+# When memory runs out, the company folder is not what is ended (deploy/machine/machine-memory).
+OOMScoreAdjust=-900
