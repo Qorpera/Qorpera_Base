@@ -16,6 +16,7 @@ import {
 	type CloudNativeTool,
 	CloudNativeToolBoundary,
 	type CloudToolResult,
+	MAX_CLOUD_TOOL_RESULT_BYTES,
 } from "@qorpera/runtime/cloud-native-tool-boundary";
 import { nativeCodexFixtureCommand } from "./native-codex-fixture-command.ts";
 
@@ -144,7 +145,7 @@ export async function runOfficialCodexBoundaryProbe(
 				assert.equal(typeof item.output, "string");
 				const callId = item.call_id as string;
 				const output = item.output as string;
-				assert(Buffer.byteLength(output) <= 8192);
+				assert(Buffer.byteLength(output) <= MAX_CLOUD_TOOL_RESULT_BYTES);
 				const envelope = JSON.parse(output) as CloudToolResult;
 				assert.equal(envelope.schema, "qorpera.cloud-tool-result/v1");
 				assert.equal(envelope.trust, "untrusted_data");

@@ -3241,6 +3241,8 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// 4096 bytes (its schema's enum lists them, with what an emblem is), and its schema says on files how to draw an app's
 	// own icons (icons/<id>.svg, which members pick for their drawer), so they moved again. Both on one tree, they were
 	// measured once more.
+	// Master's v237 (#1530: one tool result holds up to 32 KiB) moved them too; with the import on one tree (the merge of
+	// master into runtime/own-code-small-fixes, 12 November 2026) they were measured once more.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3287,9 +3289,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"9ba4fe194bbdb97fc08afa9f02a2d899b9f908bd1c90ee3d92babddfc3d9c255",
+		"667dd72a922e18c50092cf822bd6f4937c2cd857c2e211560454faba34085932",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"440f0773f5b1d64025537c15f4e9a13f00e868b752b0c0545da7662aab345a5f",
+		"ceef1a8c48dc80a0dd576d7389ae2d2b789dc7ad9d0c1b9b2363aae0c6572339",
 	);
 });

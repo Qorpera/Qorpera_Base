@@ -49,7 +49,8 @@ cloud host mediates path operations against current cloud authority.
 - Fixed errors that do not echo adapter exceptions, credentials or parser
   details. A thrown adapter call is unconfirmed, not automatically retried.
 - 64 KiB argument, 1 MiB source and 128-call limits. Each complete serialized
-  result envelope, including escaping and provenance, is at most 8 KiB.
+  result envelope, including escaping and provenance, is at most 32 KiB (8 KiB
+  until perf sprint T2, 8 Nov 2026, with its Codex rebuild).
   Truncation preserves UTF-8 boundaries and records original size and hash.
 - Serialized dispatch, exact in-process call deduplication and authority
   rechecks before dispatch and result release, including cached replies.
