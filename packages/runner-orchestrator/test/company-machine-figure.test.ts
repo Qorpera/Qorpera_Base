@@ -14,7 +14,11 @@ const byId = (agentId: string) => {
 
 describe("the figure a machine's desktop shows (20260930737000)", () => {
 	it("is the saved figure, a retired one's replacement, else the template's, else one from the agent's id", () => {
-		const starter = (figure: unknown, templateId: unknown = null, staffAgentId = id(9)) => ({ staffAgentId, figure, templateId });
+		const starter = (figure: unknown, templateId: unknown = null, staffAgentId = id(9)) => ({
+			staffAgentId,
+			figure,
+			templateId,
+		});
 		for (const figure of STAFF_CHARACTER_IDS) expect(companyMachineDesktopFigure(starter(figure))).toBe(figure);
 		// A saved figure wins over the template.
 		expect(companyMachineDesktopFigure(starter("star", "co-founder"))).toBe("star");
@@ -57,7 +61,16 @@ describe("the figure a machine's desktop shows (20260930737000)", () => {
 	});
 
 	it("is always one of the twelve words the machine image has a backdrop for, never more", () => {
-		const hostile = ["../../etc/passwd", "star\nmoon", "star moon", "", " ", "STAR", "x".repeat(4096), { toString: () => "star" }];
+		const hostile = [
+			"../../etc/passwd",
+			"star\nmoon",
+			"star moon",
+			"",
+			" ",
+			"STAR",
+			"x".repeat(4096),
+			{ toString: () => "star" },
+		];
 		for (const figure of hostile)
 			for (const templateId of [null, "co-founder", ...hostile]) {
 				const word = companyMachineDesktopFigure({ staffAgentId: id(9), figure, templateId });
@@ -72,7 +85,9 @@ describe("the figure a machine's desktop shows (20260930737000)", () => {
 		const walk = /for \(const character of [a-zA-Z.]+\) seed = \(seed \* 31 \+ character\.charCodeAt\(0\)\) >>> 0;/;
 		const web = source("packages/web/src/ui/avatar.ts");
 		expect(web).toMatch(walk);
-		expect(web).toContain('const FIGURE_BY_TEMPLATE: Record<string, FigureId> = { "co-founder": "crown", ...STAFF_CHARACTER_BY_TEMPLATE };');
+		expect(web).toContain(
+			'const FIGURE_BY_TEMPLATE: Record<string, FigureId> = { "co-founder": "crown", ...STAFF_CHARACTER_BY_TEMPLATE };',
+		);
 		expect(web).toContain("export const FIGURE_IDS = STAFF_CHARACTER_IDS;");
 		expect(web).toContain("const saved = drawnStaffCharacter(agent.appearance?.creature);");
 		const office = source("packages/runtime/src/cloud-company-computer-desktop.ts");
@@ -90,7 +105,9 @@ describe("the figure a machine's desktop shows (20260930737000)", () => {
 		// The machine image's side (the desktop's look, #1704) names the same file, once it is in this tree.
 		const look = new URL("../../../deploy/machine/desktop-look", import.meta.url);
 		if (existsSync(look))
-			expect(readFileSync(look, "utf8")).toContain("FIGURE=${QORPERA_DESKTOP_FIGURE:-/etc/qorpera-machine/desktop-figure}");
+			expect(readFileSync(look, "utf8")).toMatch(
+				/\nFIGURE=\$\{QORPERA_DESKTOP_FIGURE:-\/etc\/qorpera-machine\/desktop-figure\}\n/,
+			);
 		const migration = source("supabase/migrations/20260930737000_machine_desktop_figure.sql");
 		expect(migration).toContain(
 			"'starter',(select jsonb_build_object('staffAgentId',staff.staff_agent_id,'figure',staff.appearance_creature,",

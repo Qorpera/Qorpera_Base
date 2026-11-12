@@ -5497,7 +5497,9 @@ describe("company machine host: the desktop's figure (20260930737000)", () => {
 	});
 	/** The writes of the figure's word, as the host asked them of LXD (without their signal). */
 	const written = (f: F) =>
-		(f.client.pushInstanceFile.mock.calls as unknown[][]).filter((call) => call[2] === FIGURE).map((call) => call.slice(0, 5));
+		(f.client.pushInstanceFile.mock.calls as unknown[][])
+			.filter((call) => call[2] === FIGURE)
+			.map((call) => call.slice(0, 5));
 	const quiet = { at: 10_000, cpuUsec: 0, ioBytes: 0, ended: [] };
 	const name = lxdCompanyMachinePlan(binding()).request.name;
 

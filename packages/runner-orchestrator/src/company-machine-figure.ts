@@ -4,13 +4,13 @@ import {
 	STAFF_CHARACTER_IDS,
 	type StaffCharacterId,
 } from "@qorpera/cloud-client/staff-characters";
+import { isUuid } from "@qorpera/contracts";
 
 /** Where a machine names the figure of the agent it was started by: one word, root's file, which the machine's desktop
  * reads at every `desktop start` and while it runs (deploy/machine/desktop-look). A machine without it, or with a word
  * its image has no backdrop for, shows the neutral backdrop. */
 export const COMPANY_MACHINE_DESKTOP_FIGURE = "/etc/qorpera-machine/desktop-figure";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** The founding agent's template is not a hireable one; every client draws it as the crown. */
 const BY_TEMPLATE: Readonly<Record<string, StaffCharacterId>> = Object.freeze({
 	"co-founder": "crown",
@@ -29,7 +29,7 @@ const BY_TEMPLATE: Readonly<Record<string, StaffCharacterId>> = Object.freeze({
 export function companyMachineDesktopFigure(starter: unknown): StaffCharacterId | undefined {
 	if (!starter || typeof starter !== "object" || Array.isArray(starter)) return undefined;
 	const { staffAgentId, figure, templateId } = starter as Record<string, unknown>;
-	if (typeof staffAgentId !== "string" || !UUID.test(staffAgentId)) return undefined;
+	if (!isUuid(staffAgentId)) return undefined;
 	const saved = drawnStaffCharacter(figure);
 	if (saved) return saved;
 	if (typeof templateId === "string" && Object.hasOwn(BY_TEMPLATE, templateId)) return BY_TEMPLATE[templateId];
