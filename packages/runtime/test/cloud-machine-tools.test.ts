@@ -1153,7 +1153,12 @@ describe("machine tools", () => {
 					})
 				).success,
 			).toBe(true);
-			const sent = f.execute.mock.calls[0][0].operation.arguments;
+			const sent = f.execute.mock.calls[0][0].operation.arguments as {
+				cpus: number;
+				memoryGiB: number;
+				diskGiB: number;
+				lifetime: string;
+			};
 			// The member's start keeps its size in three constants of its own; this pins them to the runtime's, so the two
 			// never drift apart.
 			const migration = readFileSync(
