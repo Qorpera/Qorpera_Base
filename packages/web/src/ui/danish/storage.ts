@@ -57,4 +57,6 @@ export const STORAGE: Record<string, string> = {
 		"Koden er hentet mange gange i dag. Prøv igen i morgen.",
 	"The code could not be made ready just now. Try again.": "Koden kunne ikke gøres klar lige nu. Prøv igen.",
 	"The code could not be downloaded just now. Try again.": "Koden kunne ikke hentes lige nu. Prøv igen.",
+	// The same line on the folder of a GitHub project's working copy (app/views/code-download.ts).
+	"Copy of the GitHub project {name}": "Kopi af GitHub-projektet {name}",
 };

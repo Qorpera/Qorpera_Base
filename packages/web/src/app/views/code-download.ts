@@ -15,7 +15,9 @@ import { uiScale } from "../../ui/scale.ts";
  * (code/<owner>/<name> and below), an owner or admin gets a button in the folder's top line. Its menu offers the files
  * as they are now, or the files with their full history for a developer. The code host then makes one file of it in
  * the company folder; the web waits for it, reads it piece by piece and hands it to the browser. One line under the
- * top line says what is happening and how it ended. The member's words never name git's own. */
+ * top line says what is happening and how it ended: once the file is handed over, that it is ready and the browser
+ * saves it (the page cannot know when the browser has). On the folder of a GitHub copy the same line says what the
+ * folder is, for every member. The member's words never name git's own. */
 
 type Folder = Pick<CloudMemberFolderClient, "read" | "readFilePieces">;
 
@@ -197,7 +199,24 @@ export class CodeDownload {
 		// Not `disabled`: the button keeps the focus the menu handed back to it while the download runs.
 		if (this.#job) this.button.setAttribute("aria-disabled", "true");
 		else this.button.removeAttribute("aria-disabled");
-		if (!this.#job) replace(this.line, this.#ended ? h("span", null, this.#ended.text) : null);
+		if (this.#job) return;
+		// A folder that holds a GitHub project's working copy says so, unless the line has a download's end to say.
+		const copy =
+			key !== null && !this.#list?.repositories.some((repository) => keyOf(repository) === key)
+				? this.#list?.githubCopies.find((each) => keyOf(each) === key)
+				: undefined;
+		replace(
+			this.line,
+			this.#ended
+				? h("span", null, this.#ended.text)
+				: copy
+					? h(
+							"span",
+							null,
+							t("Copy of the GitHub project {name}", { name: copy.github.slice(copy.github.indexOf("/") + 1) }),
+						)
+					: null,
+		);
 	}
 
 	/** The line while a download runs: what is being done, and Cancel. Answers how to say how far a large file is,
@@ -309,6 +328,6 @@ export class CodeDownload {
 			if (signal.aborted) throw error;
 			return t("The code could not be downloaded just now. Try again.");
 		}
-		return t("Downloading {name}.", { name });
+		return t("{name} is ready: your browser saves it in your downloads.", { name });
 	}
 }
