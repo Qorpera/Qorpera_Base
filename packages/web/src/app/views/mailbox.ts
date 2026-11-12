@@ -6,6 +6,7 @@ import type { EventHook } from "../../cloud/event-hooks.ts";
 import type {
 	MailAccount,
 	MailAddress,
+	MailAgent,
 	MailMember,
 	MailMessage,
 	MailMessageRef,
@@ -200,6 +201,25 @@ interface ManageViews {
 const manageViews = new WeakMap<MailboxUi, ManageViews>();
 /** A page's addresses being given to agents, one after another: the last of them. */
 const answerings = new WeakMap<MailboxUi, Promise<void>>();
+/** Who answers an address as the routines said when it was last given or taken on a page, by address, where the
+ * addresses could not be read after it: the agents, and the addresses as they were read last (`read`). The line goes
+ * by the agents while the addresses are still those, and by the addresses' own word once they are read again. */
+const answeredBy = new WeakMap<
+	MailboxUi,
+	Map<string, { readonly agents: readonly string[]; readonly read: readonly MailAddress[] | undefined }>
+>();
+
+/** The agents who answer an address: as the mail's addresses say, or as the routines said when it was given or taken
+ * here and the addresses could not be read since (`answeredBy`), so its line never goes back to what was. */
+function handlersOf(page: Page, address: string): readonly MailAgent[] {
+	const read = page.company.store.get().mail?.addresses;
+	const listed = read?.find((item) => item.address === address)?.handledBy ?? [];
+	const kept = answeredBy.get(page.ui)?.get(address);
+	if (!kept || kept.read !== read) return listed;
+	return kept.agents.map(
+		(staffAgentId) => listed.find((each) => each.staffAgentId === staffAgentId) ?? { staffAgentId },
+	);
+}
 /** The chip of a page whose menu is open (the Write window's `writer` or `from`, an answer's `reply-writer`): a redraw
  * under the menu draws it open. */
 const chipMenus = new WeakMap<MailboxUi, string>();
@@ -419,6 +439,9 @@ export function renderMailbox(
 		new Date().toDateString(),
 		name,
 		{ ...ui, toast: ui.toast?.id ?? null },
+		// The addresses whose lines still go by what the routines said (`answeredBy`): a new read of the addresses
+		// draws them from it, also when it reads the same as the last one.
+		[...(answeredBy.get(ui) ?? [])].map(([address, kept]) => [address, kept.agents, kept.read === mail?.addresses]),
 		state.team?.capabilities.write === true,
 		state.team?.capabilities.authorize === true,
 		state.team?.members.map((member) => [member.userId, member.displayName]) ?? null,
@@ -782,6 +805,7 @@ function manageOf(page: Page): ManageViews | null {
 	const state = company.store.get();
 	const shown = JSON.stringify([
 		state.mail?.addresses ?? null,
+		(state.mail?.addresses ?? []).map((address) => handlersOf(page, address.address)),
 		ui.answering,
 		ui.answerErrors,
 		ui.addAgent,
@@ -1911,7 +1935,7 @@ function answerer(page: Page, calls: MailboxManage, hook: EventHook): HTMLElemen
 	if (!email) return null;
 	// A mailbox just made is in the list before the mail is read again: nobody answers it yet.
 	const address = company.store.get().mail?.addresses.find((item) => item.address === email);
-	const handlers = address?.handledBy ?? [];
+	const handlers = handlersOf(page, email);
 	const nameOf = (agentId: string) =>
 		agentName(page, agentId, handlers.find((each) => each.staffAgentId === agentId)?.name);
 	const week = address
@@ -2161,27 +2185,55 @@ async function giveAddress(
 		failure = error;
 	}
 	// What the cloud holds now decides, whatever was heard back.
-	let reached = false;
+	let held: { readonly answers: boolean; readonly twice: boolean } | null = null;
+	let unread: unknown;
 	try {
-		const now = (await own()).filter(atWork);
-		reached = on ? now.length > 0 : now.length === 0;
-		// The routines begun for this agent just now, here and by another member: the one saved last stays.
-		const begun = now.filter((routine) => !wasAtWork.has(routine.routineId)).sort(newestFirst);
-		if (on && began) for (const older of begun.slice(1)) await stop(older).catch(() => {});
+		let now = (await own()).filter(atWork);
+		// The routines begun for this agent just now, here and by another member: the one saved last stays. A stop that
+		// fails is tried once more, and the routines are read again: what is still at work then is said, not passed over.
+		const older =
+			on && began
+				? now
+						.filter((routine) => !wasAtWork.has(routine.routineId))
+						.sort(newestFirst)
+						.slice(1)
+				: [];
+		if (older.length) {
+			for (const routine of older)
+				await stop(routine)
+					.catch(() => stop(routine))
+					.catch(() => {});
+			now = (await own()).filter(atWork);
+		}
+		held = {
+			answers: now.length > 0,
+			twice: older.some((routine) => now.some((each) => each.routineId === routine.routineId)),
+		};
 	} catch (error) {
-		failure ??= error;
+		unread = error;
 	}
-	await CompanyMail.of(company)?.reread();
+	// The addresses are read afresh, so the line says who answers it now. Where they can't be read, the line goes by
+	// what the routines just said until they can: it never goes back to what was before the change.
+	const fresh = (await CompanyMail.of(company)?.addressesAfresh()) === true;
+	const kept = answeredBy.get(ui) ?? new Map();
+	answeredBy.set(ui, kept);
+	if (fresh) kept.delete(target.address);
+	else if (held) {
+		const agents = handlersOf(page, target.address)
+			.map((each) => each.staffAgentId)
+			.filter((each) => each !== agentId);
+		if (held.answers) agents.push(agentId);
+		kept.set(target.address, { agents, read: company.store.get().mail?.addresses });
+	}
+	const listed = handlersOf(page, target.address);
 	ui.answering = null;
-	if (reached) {
-		const others = (company.store.get().mail?.addresses ?? [])
-			.find((item) => item.address === target.address)
-			?.handledBy.some((each) => each.staffAgentId !== agentId);
+	const reached = held !== null && held.answers === on;
+	if (held && reached && !held.twice) {
 		say(
 			page,
 			!on
 				? t("{name} no longer answers {address}", { name, address: target.address })
-				: others
+				: listed.some((each) => each.staffAgentId !== agentId)
 					? t("{name} answers {address} too", { name, address: target.address })
 					: t("{name} answers {address}", { name, address: target.address }),
 			on ? agentId : null,
@@ -2192,14 +2244,20 @@ async function giveAddress(
 	// A refusal saved nothing; the file's or the mailbox's problems say why, in English.
 	ui.answerErrors = {
 		...ui.answerErrors,
-		[target.address]:
-			failure instanceof WebCompanyFolderRejectedError
-				? withProblems(t("The address could not be given to the agent."), failure.problems)
-				: failure !== undefined
-					? describeError(failure)
-					: on
-						? t("{name}'s routine for this address did not start. {name}'s routines say why.", { name })
-						: t("It could not be changed. Try again."),
+		[target.address]: !held
+			? describeError(unread)
+			: held.twice
+				? t(
+						"{name} has more than one routine for this address at work, and wakes more than once for an email. Take {name} off the address and give it to {name} again.",
+						{ name },
+					)
+				: failure instanceof WebCompanyFolderRejectedError
+					? withProblems(t("The address could not be given to the agent."), failure.problems)
+					: failure !== undefined
+						? describeError(failure)
+						: on
+							? t("{name}'s routine for this address did not start. {name}'s routines say why.", { name })
+							: t("It could not be changed. Try again."),
 	};
 	page.redraw(focus);
 }

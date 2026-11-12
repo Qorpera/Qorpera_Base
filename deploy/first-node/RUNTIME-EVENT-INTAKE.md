@@ -478,7 +478,8 @@ could stop half way. Giving takes up the routine the agent had last, and writes 
 (who pays for a routine is never switched there); taking pauses the agent's routines on the mailbox. What the routine
 list holds after decides what the page says, whatever it heard back. When two members give one mailbox to the same
 agent at the same moment, each page keeps, of the routines begun then, the one the cloud saved last (`updatedAt`)
-and pauses the others, so the agent wakes once for an email. The save's own rules check the hook and who pays, as
+and pauses the others, so the agent wakes once for an email; a pause that fails is tried once more and the routines
+are read again, and the page says so when the agent still has two at work. The save's own rules check the hook and who pays, as
 for an agent's (a ChatGPT plan pays for no event routine). No SQL: the member's commit route and the routine rules
 already take such a file. The wake shows the message (cut to fit the wake), `read_event` reads it
 whole, and `list_hooks` lists mailboxes with their addresses. Mail is outside content: the wake protocol

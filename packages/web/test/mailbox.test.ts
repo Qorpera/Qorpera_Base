@@ -2,7 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyMail } from "../src/app/company-mail.ts";
 import { type MailboxManage, renderMailbox } from "../src/app/views/mailbox.ts";
@@ -1105,13 +1105,118 @@ describe("Sent, Addresses and Write", () => {
 		routines.cloud.saved = (made) => {
 			routines.listening.push(theirs(991, new Date(Date.parse(made.updatedAt) - 500).toISOString()));
 		};
+		// The stop of theirs commits, but its answer is lost: it is tried once more, and the routines are read again.
+		const setEnabled = vi.mocked(manage.routines!.setEnabled);
+		const change = setEnabled.getMockImplementation()!;
+		setEnabled.mockImplementationOnce(change).mockImplementationOnce(async (...args) => {
+			await change(...args);
+			throw new Error("Failed to fetch");
+		});
 		press("Ada");
 		await vi.waitFor(() => expect(toast()).toBe("Ada answers hello@acme.example"));
 		expect(stops()).toEqual([
 			[id(990), true],
 			[id(991), false],
+			[id(991), false],
 		]);
 		expect(atWork()).toEqual([id(702)]);
+		expect(main.querySelector(".hook-card .mailbox-error")).toBeNull();
+		// Review of #1719, round 3: a stop of the other member's routine that fails was passed over. Off and on once
+		// more; this time theirs can't be stopped, on either try. Ada has two routines at work: the line says so, and
+		// what puts it right.
+		press("Ada");
+		await vi.waitFor(() => expect(atWork()).toEqual([]));
+		setEnabled.mockClear();
+		routines.cloud.stuck.add(id(702)).add(id(991));
+		routines.cloud.saved = (made) => {
+			routines.listening.push(theirs(992, new Date(Date.parse(made.updatedAt) - 500).toISOString()));
+		};
+		setEnabled
+			.mockImplementationOnce(change)
+			.mockRejectedValueOnce(new Error("Failed to fetch"))
+			.mockRejectedValueOnce(new Error("Failed to fetch"));
+		press("Ada");
+		await vi.waitFor(() =>
+			expect(main.querySelector(".hook-card .mailbox-error")?.textContent).toBe(
+				"Ada has more than one routine for this address at work, and wakes more than once for an email. Take Ada off the address and give it to Ada again.",
+			),
+		);
+		expect(stops()).toEqual([
+			[id(702), true],
+			[id(992), false],
+			[id(992), false],
+		]);
+		expect(atWork()).toEqual([id(704), id(992)]);
+		expect(chip().querySelector(".mailbox-writer-name")?.textContent).toBe("Ada");
+		// Off stops them both, and on again takes up one.
+		press("Ada");
+		await vi.waitFor(() => expect(atWork()).toEqual([]));
+		expect(main.querySelector(".hook-card .mailbox-error")).toBeNull();
+		routines.cloud.stuck.clear();
+		press("Ada");
+		await vi.waitFor(() => expect(atWork()).toHaveLength(1));
+	});
+
+	// Review of #1719, round 3: after a change the line showed what the addresses said before it, when they could not
+	// be read again or an older read answered late.
+	it("goes by what the routines said while the addresses can't be read, and lets no older read undo a change", async () => {
+		const { main, f, fake, manage } = await mailbox(() => {});
+		// The addresses' read: down, or the next one held back and answering with what it read when it began.
+		const rpc = f.cloud.rpc as unknown as Mock;
+		const read = rpc.getMockImplementation()!;
+		let down = false;
+		let hold: Promise<void> | null = null;
+		rpc.mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+			if (fn === "qorpera_member_mail_addresses" && down) throw new Error("Failed to fetch");
+			if (fn === "qorpera_member_mail_addresses" && hold) {
+				const [wait, before] = [hold, fake.addresses];
+				hold = null;
+				await wait;
+				return before;
+			}
+			return read(fn, args);
+		});
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-tabs")).not.toBeNull());
+		tab(main, "Addresses");
+		await vi.waitFor(() => expect(main.querySelector(".hook-card")).not.toBeNull());
+		const chip = () => main.querySelector<HTMLButtonElement>(".hook-card .mailbox-answerer")!;
+		const named = () => chip().querySelector(".mailbox-writer-name")?.textContent;
+		const toast = () => main.querySelector(".mailbox-toast")?.textContent;
+		const press = (name: string) => {
+			chip().click();
+			menuRow(name).click();
+		};
+		expect(named()).toBe("Ada");
+		// The addresses can't be read after Ada is taken off: the line goes by the routines, and her tick is off.
+		down = true;
+		press("Ada");
+		await vi.waitFor(() => expect(toast()).toBe("Ada no longer answers hello@acme.example"));
+		expect(named()).toBe("Choose who answers");
+		chip().click();
+		expect(menuRow("Ada").getAttribute("aria-checked")).toBe("false");
+		// So a press on her gives the address back, and does not take it from her again.
+		menuRow("Ada").click();
+		await vi.waitFor(() => expect(toast()).toBe("Ada answers hello@acme.example"));
+		expect(vi.mocked(manage.routines!.setEnabled).mock.calls.map((call) => call[2])).toEqual([false, true]);
+		expect(named()).toBe("Ada");
+		// The addresses are read again with the next change, and the line is theirs once more.
+		down = false;
+		press("Bo");
+		await vi.waitFor(() => expect(toast()).toBe("Bo answers hello@acme.example too"));
+		expect(named()).toBe("Ada and Bo");
+		// A read begun before a change answers after it, with what it read then: it is let go.
+		let release = () => {};
+		hold = new Promise((resolve) => {
+			release = resolve;
+		});
+		window.dispatchEvent(new Event("focus"));
+		await vi.waitFor(() => expect(hold).toBeNull());
+		press("Bo");
+		await vi.waitFor(() => expect(toast()).toBe("Bo no longer answers hello@acme.example"));
+		expect(named()).toBe("Ada");
+		release();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(named()).toBe("Ada");
 	});
 
 	it("builds the address cards again for a company opened again, and in a new time zone or language", async () => {

@@ -199,6 +199,9 @@ export class CompanyMail {
 	#companyTimer: ReturnType<typeof setInterval> | undefined;
 	#pageTimer: ReturnType<typeof setInterval> | undefined;
 	#reading = new Set<string>();
+	/** The address reads begun, and the one the addresses shown are from. */
+	#addressReads = 0;
+	#addressesFrom = 0;
 	#watched: {
 		lists: Map<string, MailListRequest>;
 		threads: Set<string>;
@@ -258,6 +261,13 @@ export class CompanyMail {
 		return this.#closed ? Promise.resolve() : this.#refreshCompany();
 	}
 
+	/** Reads the addresses with a read begun now, and says whether it was read: after a change to who answers an
+	 * address (the Mailbox's Addresses), where a read already on its way may be from before the change. A read that
+	 * fails keeps the addresses as they were read last. */
+	addressesAfresh(): Promise<boolean> {
+		return this.#closed ? Promise.resolve(false) : this.#readAddresses();
+	}
+
 	dispose(): void {
 		this.#disposed = true;
 		clearInterval(this.#companyTimer);
@@ -284,17 +294,30 @@ export class CompanyMail {
 		}
 	}
 
+	/** Reads the addresses, and says whether they were read. Reads may answer out of turn: one begun before another
+	 * whose answer is already in says nothing newer, and is let go. */
+	async #readAddresses(): Promise<boolean> {
+		const read = ++this.#addressReads;
+		const take = (addresses: MailAddress[]) => {
+			if (read < this.#addressesFrom) return;
+			this.#addressesFrom = read;
+			this.#set((state) => ({ ...state, addresses }));
+		};
+		try {
+			take(await readMailAddresses(this.#cloud, this.#environmentId));
+			return true;
+		} catch (error) {
+			// A cloud without the member mail read has no mail to show; another failure keeps what was read.
+			if (!(error instanceof CloudRpcError && (error.missing || error.denied))) return false;
+			take([]);
+			return true;
+		}
+	}
+
 	async #refreshCompany(): Promise<void> {
 		await Promise.all([
 			this.#once("addresses", async () => {
-				try {
-					const addresses = await readMailAddresses(this.#cloud, this.#environmentId);
-					this.#set((state) => ({ ...state, addresses }));
-				} catch (error) {
-					// A cloud without the member mail read has no mail to show; another failure keeps what was read.
-					if (error instanceof CloudRpcError && (error.missing || error.denied))
-						this.#set((state) => ({ ...state, addresses: [] }));
-				}
+				await this.#readAddresses();
 			}),
 			this.#once("waiting", async () => {
 				try {
