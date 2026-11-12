@@ -162,6 +162,12 @@ export class MountGrants {
 	 * both write, publishing after a quiet period and at each boundary the executor asks for. A test machine's is served
 	 * to its own instance alone (named after the view's machine, which is the machine's placement, in a test machine
 	 * project), and writes as a coding session's does, its last boundary final. */
+	/** The calling machine is one of this node's run box hosts (its execution host): a core view it presents is a
+	 * run's own view, and so is counted against the search's bound on paths (service.ts SEARCH_PATHS). */
+	runBoxHost(bridge: BridgeInfo): boolean {
+		return this.#runBoxHosts.some((host) => isMachine(bridge, host));
+	}
+
 	coreAccess(identity: ViewIdentity): CoreAccess | undefined {
 		if (identity.kind === "run_box")
 			return { write: false, admits: (bridge) => this.#runBoxHosts.some((host) => isMachine(bridge, host)) };

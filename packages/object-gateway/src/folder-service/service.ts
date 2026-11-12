@@ -64,9 +64,12 @@ import {
 	type ReadsAnswer,
 	type ReadsRequest,
 	type RenameRequest,
+	SEARCH_VERSION,
 	type SearchRequest,
+	type SearchSupport,
 	type WireEntry,
 } from "./protocol.ts";
+import { linearRegexAvailable, SearchPatternError } from "./regex.ts";
 import { type SearchAnswer, searchView } from "./search.ts";
 import { CARRIES, SecretRefusal, type SecretSet, UNCHECKED } from "./secret-scan.ts";
 import { type FolderStaging, mediaTypeOf, type Upload } from "./staging.ts";
@@ -115,6 +118,10 @@ export interface FolderServiceOptions {
 	 * stopped without a clean stop, leaves no note, and then this is empty), so it is lost until the executor says it
 	 * restarted (`restarted`). Without it (tests), no machine is lost at the start. */
 	readonly vouched?: readonly string[];
+	/** Search pages at once, and paths the run views' trees may hold in all (SEARCH_RUNNING, SEARCH_PATHS; tests make
+	 * them small). */
+	readonly searchRunning?: number;
+	readonly searchPaths?: number;
 }
 
 /** More changed paths than this in one push, or a message too large for one frame: the machine is told to drop
@@ -164,6 +171,18 @@ const SERVED_RELEASED_KEPT = 100_000;
  * reads on through every round has its boundary answered as having no answer yet. */
 const MACHINE_RELEASE_ROUNDS = 8;
 const STOPPING = "The folder service is stopping; try again";
+/** Search pages (keyholes S4, search for every run): at most this many run at once on the node's one event loop, each
+ * giving it a turn every 10 ms, so every other machine's request waits at most about 40 ms between them; at most
+ * SEARCH_WAITING more wait their turn, each for at most SEARCH_WAIT_MS, in the order they came. */
+export const SEARCH_RUNNING = 4;
+const SEARCH_WAITING = 32;
+const SEARCH_WAIT_MS = 20_000;
+/** Paths the trees of the node's run views (each searching run's) may hold in all: about 670 bytes a path, so about
+ * 1 GiB of the unit's 3 GiB, beside the object cache (1 GiB by default). A run view that would go past it is refused
+ * (UNAVAILABLE, `SEARCH_FULL`), and its tree let go; the run is told the folder search is full now. */
+export const SEARCH_PATHS = 1_500_000;
+const SEARCH_BUSY = "SEARCH_BUSY: the node's folder search is busy; try again shortly";
+const SEARCH_FULL = "SEARCH_FULL: the node's folder search holds as many folders as it may now; try again later";
 
 /** One changed path's outcome at a boundary (RUNTIME-FOLDER-WRITES.md, "Outcomes and the report"). */
 export interface ReportEntry {
@@ -613,6 +632,8 @@ export interface ViewHandle {
 	read(request: ReadRequest): Promise<Buffer>;
 	/** One page of a search over the view (F3 `company_search`). */
 	search(request: SearchRequest): Promise<SearchAnswer>;
+	/** A run's own view (a run box): which search the service speaks (keyholes S4), said in the hello's answer. */
+	readonly searchSupport?: SearchSupport;
 	subscribe(sink: FeedSink): void;
 	release(): void;
 	// Writes (RUNTIME-FOLDER-WRITES.md, "Protocol v2").
@@ -710,6 +731,11 @@ export class FolderService {
 	/** Each file's staging and checks a boundary or a close started and that have not ended (`#stageAll`): for which
 	 * version, at which path, under which values, and when they end. Another boundary joins them, and starts none again. */
 	readonly #running = new WeakMap<PendingFile, Running>();
+	readonly #searchRunning: number;
+	readonly #searchPaths: number;
+	/** Search pages running now, and the turns of those waiting (SEARCH_RUNNING). */
+	#searching = 0;
+	readonly #searchQueue: (() => void)[] = [];
 
 	constructor(options: FolderServiceOptions) {
 		this.#core = options.core;
@@ -724,6 +750,8 @@ export class FolderService {
 		this.#log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
 		this.#vouching = options.vouched !== undefined;
 		this.#vouched = new Set(options.vouched);
+		this.#searchRunning = options.searchRunning ?? SEARCH_RUNNING;
+		this.#searchPaths = options.searchPaths ?? SEARCH_PATHS;
 	}
 
 	start(): void {
@@ -1156,13 +1184,22 @@ export class FolderService {
 			}
 			void this.#publishLogged(view);
 		};
+		// A run's own view first listed now (keyholes S4): it is listed only while the node's run views hold fewer paths
+		// than they may, and kept only if it fits beside them.
+		const fresh = view.tree === undefined && grant.lease !== undefined && this.#grants.runBoxHost(bridge);
 		try {
+			if (fresh && this.#searchHeld(view) >= this.#searchPaths)
+				throw new ProtocolError(ErrorCode.unavailable, SEARCH_FULL);
 			view.loading ??= this.#firstLoad(view);
 			await view.loading;
 			if (view.closed && !view.finalOut) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
 			// A core view is served only to the machines its kind and machine name: a desktop to its own company machine.
 			if (view.core && !view.access?.admits(bridge))
 				throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
+			if (fresh && this.#searchHeld(view) + (view.tree?.size ?? 0) > this.#searchPaths) {
+				this.#log(`folder-service: ${view.key}: refused: run views would hold over ${this.#searchPaths} paths`);
+				throw new ProtocolError(ErrorCode.unavailable, SEARCH_FULL);
+			}
 			view.admitted = true;
 			if (view.core && hello.protocol >= 3) view.persistentHandles = true;
 			if (hello.previous) await this.#transfer(view, hello, bridge);
@@ -1186,6 +1223,9 @@ export class FolderService {
 			list: async (path, after) => this.#list(view, path, after, links),
 			read: async (request) => this.#read(view, request, links),
 			search: async (request) => this.#search(view, request, links),
+			...(view.identity?.kind === "run_box"
+				? { searchSupport: { version: SEARCH_VERSION, regex: linearRegexAvailable() } }
+				: {}),
 			subscribe: (sink) => {
 				if (released || view.closed || view.moving)
 					return sink.closed(ErrorCode.viewClosed, view.closed ?? "Released");
@@ -2071,6 +2111,56 @@ export class FolderService {
 		// A run's own view only (a core view): an operator mount's machine never searches through this service. A core
 		// view the core closed answers VIEW_CLOSED (from the tree), so its run opens another.
 		if (!view.core) throw new ProtocolError(ErrorCode.badRequest, "Search is for a run's own view");
+		this.#tree(view);
+		const done = await this.#searchTurn();
+		try {
+			return await this.#searchPage(view, request, links);
+		} finally {
+			done();
+		}
+	}
+
+	/** A turn to run a search page (SEARCH_RUNNING): at once while fewer run, else after those waiting before it. Its
+	 * end hands the turn to the next waiting page. */
+	async #searchTurn(): Promise<() => void> {
+		let ended = false;
+		const done = (): void => {
+			if (ended) return;
+			ended = true;
+			const next = this.#searchQueue.shift();
+			if (next) next();
+			else this.#searching--;
+		};
+		if (this.#searching < this.#searchRunning) {
+			this.#searching++;
+			return done;
+		}
+		if (this.#searchQueue.length >= SEARCH_WAITING) throw new ProtocolError(ErrorCode.unavailable, SEARCH_BUSY);
+		await new Promise<void>((resolve, reject) => {
+			const turn = (): void => {
+				clearTimeout(timer);
+				resolve();
+			};
+			const timer = setTimeout(() => {
+				const at = this.#searchQueue.indexOf(turn);
+				if (at >= 0) this.#searchQueue.splice(at, 1);
+				reject(new ProtocolError(ErrorCode.unavailable, SEARCH_BUSY));
+			}, SEARCH_WAIT_MS);
+			this.#searchQueue.push(turn);
+		});
+		return done;
+	}
+
+	/** Paths the trees of the node's run views hold, `view`'s own left out (SEARCH_PATHS). */
+	#searchHeld(view: View): number {
+		let held = 0;
+		for (const other of this.#views.values())
+			if (other !== view && other.identity?.kind === "run_box" && other.tree && !other.closed)
+				held += other.tree.size;
+		return held;
+	}
+
+	async #searchPage(view: View, request: SearchRequest, links: boolean): Promise<SearchAnswer> {
 		const tree = this.#tree(view);
 		const start = tree.get(request.path);
 		if (!start || (!links && start.kind === "symlink")) throw new ProtocolError(ErrorCode.notFound, "No such path");
@@ -2097,6 +2187,8 @@ export class FolderService {
 			return answer;
 		} catch (error) {
 			if (error instanceof ProtocolError) throw error;
+			// A pattern this search does not run: the run is told what to change (regex.ts).
+			if (error instanceof SearchPatternError) throw new ProtocolError(ErrorCode.badRequest, error.message);
 			if (error instanceof CoreRefusal) throw new ProtocolError(ErrorCode.denied, "The core refused the read");
 			if (!(error instanceof ObjectUnavailableError))
 				this.#log(`folder-service: ${view.key}: search failed: ${(error as Error).message}`);

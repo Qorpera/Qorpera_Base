@@ -6443,6 +6443,40 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
 3. **Every emblem in the drawer is drawn in its app's colour** (its manifest's `colour`; fixed colours for the
    built-in pages), no longer black only.
 
+### 2026-11-12 amendment: folder search for every run, and wider
+
+> **Proposed, not approved.** The keyholes lane, slice S4 (12 November 2026): Jonas said "Yes, build them" to the
+> plan's slices S1 to S4; its decision 6 (search on for every company, at about 1 GiB per node per 16 large searching
+> runs) is his. It amends the 2026-10-21 amendment's item 6 ("off until the coordinator switches it on … so no chat
+> run had it") and goes live only with the release below. Nothing else changes: read rights per path, the release of
+> every read before the model sees an answer, and the review class `read` stay as they are.
+
+1. **Every run on a shared execution host has `company_search`.** The host's folder search is on unless an operator
+   sets `QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=off`. A run the fresh-VM overflow path takes has no relay to the node's
+   folder service, so its catalog has no `company_search` (never a failed run); giving it one is a slice of its own
+   (runner image, LXD provider and the folder service's admission).
+2. **What it finds.** Literal text, or with `regex` a regular expression of RE2's kind (no back-references, no
+   lookaround, counts up to 16), run in linear time on the node's shared event loop by V8's linear-time engine;
+   `context` shows up to 5 lines before and after each hit, `files_only` lists each matching file once with its
+   number of matching lines, and a `glob` without a `query` lists every path it matches. `names_only` is as before.
+3. **One call answers more.** A call asks the node for pages until about 20 KiB shows, the search ends, six pages were
+   asked or about 10 s passed; a page holds about 26 KiB of hits as shown. The answer is fitted to one tool result
+   (32 KiB, the 2026-11-08 amendment) and gives a cursor when there is more. Nothing is left out silently: an answer
+   shown in part goes on from the first hit it left out, and a regular expression's match of over 64 KiB across two
+   parts of a line over 1 MiB is not found, which the answer says, with how many such lines.
+4. **Cost and bounds.** There is no index: each page reads the files' text through the node's object cache, and each
+   searching run holds its view's tree, about 670 bytes a path. A node's run views hold at most 1,500,000 paths in all
+   (about 1 GiB of the folder service's 3 GiB), at most 4 pages run at once on the node and at most 32 wait, each up to
+   20 s; past either the run is told the folder search is full or busy now. One tree per company per node, shared by
+   its runs, is a later step.
+5. **What the provider sees.** `company_search`'s description and input schema change: `regex`, `context` and
+   `files_only` are new, and `query` is no longer required. Nothing else.
+6. **Rolling.** The folder service on each node first (with the unit's new flag, and only while no company machine
+   runs on the node), then the runtime bundle, then each node's shared execution service after one hello through a
+   slot's relay reaches that node's folder service. Either order of runtime and service works: the node says in its
+   hello which search it speaks, an old runtime asks what it always asked, and a new runtime asks an old node only
+   what it takes and says so for the rest.
+
 ## 20. Enforcement matrix
 
 > **Note, 2026-09-27.** Rows naming responsibility objects, ceilings, a schema

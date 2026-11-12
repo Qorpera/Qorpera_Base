@@ -362,17 +362,42 @@ service, so the execution host stays small:
 - **`S` / `s` frames.** `{query, path, glob, namesOnly, caseSensitive, after}` answers `{hits: [{path, kind, line,
   text, version, offset}], searched, binary, unreadable, reads: [{path, kind, version, authority?}], next}`. Only a
   run's own view (a core view) searches; an operator mount's machine gets `BAD_REQUEST`.
-  - **What it finds.** Literal text in the lines of text files (a NUL in a file's first 8 KiB makes it binary: passed
-    over and counted), or with `namesOnly` in the names of files and folders. A hit names its version and the byte its
-    line starts at (0 for a name), so a run that shows a page in part goes on from the first hit it left out. A line
-    longer than 1 MiB is searched as it comes, a stretch at a time, keeping the query's length of each stretch's end,
-    so a match across two stretches is found; it keeps one line number and gives one hit.
+  - **Search version 2 (keyholes S4, 12 Nov 2026).** The hello's answer to a run's own view says `search: {version: 2,
+    regex}` (`regex`: the service runs V8's linear-time engine, below). A request with `version: 2` takes `{version,
+    query, regex, path, glob, namesOnly, filesOnly, caseSensitive, context, after}`: `query` null (with `namesOnly`) is a
+    find of the names the glob keeps; `filesOnly` answers each file with a match once, with how many of its lines match
+    (`files: [{path, version, count, partial?}]`); `context` (0 to 5, text searches only) gives each hit `before` and
+    `after`, the lines around it, and `from`, the byte the first line before starts at. Its answer also says `files`
+    and `longLines`. A request without `version` is version 1, answered as before, so a runtime from before keeps
+    working against this service; a runtime asks for version 2 only of a service whose hello said it.
+  - **What it finds.** Literal text (version 2: or a regular expression) in the lines of text files (a NUL in a file's
+    first 8 KiB makes it binary: passed over and counted), or with `namesOnly` in the names of files and folders. A hit
+    names its version and the byte its line starts at (0 for a name; with context, `from`), so a run that shows a page in
+    part goes on from the first hit it left out. A line longer than 1 MiB is searched as it comes, a stretch at a time,
+    keeping the query's length of each stretch's end, so a match across two stretches is found; it keeps one line
+    number and gives one hit. A regular expression keeps 64 KiB of each stretch's end instead, so a match of up to
+    64 KiB across two stretches is found; the page counts such lines (`longLines`) and the run says so.
+  - **Context lines.** A hit's `before` are the lines just before it that no earlier hit showed, `after` those just
+    after it up to the next hit, each its first 200 characters: no line is shown twice. A page that ends at a hit, or
+    out of time, goes on from the first of the lines a next hit would show before it (`from`), and a page out of time
+    stops only once that moves the search on, so pages show the same lines around each hit as one long page would.
+  - **Regular expressions.** RE2's kind, every step linear, run by V8's linear-time engine (the `l` flag), which the
+    unit turns on with `--enable-experimental-regexp-engine` (without it the hello says `regex: false` and a pattern
+    is refused). That engine refuses what it cannot run in linear time (a count above 16, counts inside counts) and
+    has no case folding, so `regex.ts` reads each pattern first: it refuses back-references, lookaround, inline flags,
+    `\p` classes, POSIX classes and unknown escapes, with a coded message that says what to change (`REGEX_…: …`,
+    as `BAD_REQUEST`), and for a search that is not case-sensitive it lowercases the pattern's letters and adds each
+    class range's lowercase forms (up to 4,096 characters of ranges a pattern), and the text is lowercased as for a
+    literal search. A pattern's piece is 256 KiB (the engine runs one in one step, about 20 ms a MiB under
+    `--jitless`, measured 48 MB/s on node 24); `^` and `$` match at each line's ends.
   - **Globs.** `glob` keeps to matching paths: `*` and `?` within a name, a whole `**` part for any number of folders
     (a `**` inside a name is a `*`; a trailing `**` also matches the folder itself, so `docs/**` keeps `docs`); a glob
     without '/' is matched against the name. Matching walks the name and the
     pattern with one place to go back to: at most their lengths multiplied, never exponential, whatever the glob.
   - **One page per call.** It walks the view in the order a machine lists it, straight from the cursor (never past
-    what came before it), and answers when its hits fill about 6 KiB, when it has drawn on 4,000 paths or 1 MiB of them
+    what came before it), and answers when its hits fill about 6 KiB (version 2: when what they show, each line's
+    path, number and text, context lines and files' counts too, would pass 26 KiB, about one 32 KiB tool result less
+    its envelope), when it has drawn on 4,000 paths or 1 MiB of them
     (so a page always fits one frame, however long its paths), or after about 2 s of work. It ends only once it has
     moved the search on (at least one entry, and inside a file only between lines), so no page repeats the last; a
     page that reaches a very long line finishes that line first, so it can run past 2 s by the time the line takes.
@@ -392,20 +417,49 @@ service, so the execution host stays small:
   reading them again: the page that gave the cursor drew on them. The run releases a page's reads with the run actor
   under the hash of the text it shows (`qorpera_folder_record_release`, P8), before the model sees it.
 - **Memory.** A searching run holds its view's tree, about 670 bytes a path: 16 runs at once of a 100,000-path
-  company take about 1 GiB of the service's memory beside its object cache.
+  company take about 1 GiB of the service's memory beside its object cache. There is no index: each page reads the
+  files' text through the object cache (1 GiB by default, `cacheMiB`), and a tree is per run, not per company.
+- **Bounds for search in every run (keyholes S4).** The unit's `MemoryMax` is 3 GiB.
+  - The trees of the node's run views hold at most 1,500,000 paths in all (`SEARCH_PATHS`, about 1 GiB). A run view
+    is not listed while they hold that many, and one whose tree would take them past it is let go after its listing;
+    either hello is answered `UNAVAILABLE` with `SEARCH_FULL: …`, and the run tells the model the folder search is full
+    now. Other views (desktops, coding machines) are not counted.
+  - At most 4 pages run at once on the node (`SEARCH_RUNNING`); each gives the event loop a turn every 10 ms, so a
+    machine's request waits at most about 40 ms behind search work. At most 32 more wait their turn, in order, each for
+    at most 20 s; past either, `UNAVAILABLE` with `SEARCH_BUSY: …`. A page reads ahead at most 8 files' first pieces
+    (into the object cache, which bounds them).
+  - Later step, not built: one tree per company per node, shared by its runs and filtered by each run's receipts, so
+    memory grows with companies, not runs.
 - **The relay.** A native host is a Node program and has no vsock, so the execution host carries its connection.
   - `qorpera-folder-relay@N.socket` (`/run/qorpera-folder-relay/N.sock`, the slot's native host account only, 0600)
     runs `qorpera-folder relay`. It copies bytes both ways to the node's bridge (vsock 2:5250), reads none of them, and
     goes on past an accept that fails for the moment. A listening socket that can never accept again (EBADF, EINVAL,
     ENOTSOCK, EOPNOTSUPP) ends it with a failure, and systemd starts it again.
   - The relay runs as a dynamic user with no capabilities, private devices and IPC, and only `AF_UNIX` and `AF_VSOCK`.
-  - While `QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=on`, the shared execution service asks for the slot's relay socket
-    before its native host and names it in the host's environment (`QORPERA_FOLDER_SEARCH_SOCKET`). The host connects
-    at its first search. A relay that does not start costs that run its search, never the run.
+  - Unless `QORPERA_SHARED_EXECUTION_FOLDER_SEARCH=off` (on by default since keyholes S4; it was off unless `on`), the
+    shared execution service asks for the slot's relay socket before its native host and names it in the host's
+    environment (`QORPERA_FOLDER_SEARCH_SOCKET`). The host connects at its first search. A relay that does not start
+    costs that run its search, never the run.
   - **Switching it off:** set the variable `off` and restart the service, end the warm slots, then
     `systemctl stop 'qorpera-folder-relay@*.socket' 'qorpera-folder-relay@*.service'`.
-  - **Before switch-on (rollout):** one hello through `/run/qorpera-folder-relay/0.sock`, as the slot's host account,
-    must reach the node's folder service (socket activation, the dynamic user and the vsock connect on the real host).
+  - **Before switch-on (rollout), on each node:** one hello through `/run/qorpera-folder-relay/0.sock`, as the slot's
+    host account, must reach the node's folder service (socket activation, the dynamic user and the vsock connect on
+    the real host), and the node's `runBoxHosts` must name its own execution host: otherwise every run there gets
+    `COMPANY_FOLDER_UNAVAILABLE` from search (never a failed run).
+  - **Where runs have no route to search.** Only the shared execution hosts' slots have a relay. A run that the
+    fresh-VM overflow path takes (`RUNTIME-IDENTICAL-NODES.md`, dispatch role `overflow`: a fast host refused it, none
+    may take it, or it waited 10 s) runs its native host in a fresh LXD VM, whose image has no folder program and no
+    relay unit, whose `native-provider.env` names no socket, and which no node's folder service admits (`runBoxHosts`
+    names the execution hosts only). Such a run is offered no `company_search` (the tool is not in its catalog). Giving
+    it one needs the folder program and relay socket in the runner guest image (an image rebuild), the LXD provider to
+    start it and name it, and the folder service to admit a run view from that VM by its project and name pattern (a
+    new admission rule, with its own review): a slice of its own.
+  - **Releasing search version 2.** The folder service on each node first, while no company machine runs on the node
+    (a restart of the service ends its machines' mounts: wait or pause them as on 11 Nov), with the unit's new flag;
+    then the runtime bundle (its `company_search` asks version 2 of a node that says it, version 1 of one that does
+    not); then each node's shared execution service, after the hello check above (its new default turns search on
+    unless the host's environment says `off`). Any order works for what is live: an old runtime asks version 1 of a
+    new service, and a new runtime asks only version 1's parts of an old one, saying so for the rest.
 - The `company_search` tool itself is the runtime's (its own PR).
 
 ## Step 4a: company machines' desktops
