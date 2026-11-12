@@ -25,6 +25,7 @@
 #             processor busy, then heavy apps, the 1.5 GB job and 24 tabs, stopping before the edge.
 #   small     2 processors / 2 GiB with the desktop's size check lowered FOR THE TEST ONLY: heavy apps, a 600 MB job
 #             and tabs, stopping before the edge.
+#   small-past  only when named: that small machine past the edge, with the clicks asked and judged as in checks.
 #
 # It ends with PROOF PASSED and exit 0 only if no check failed and every part it was asked for ran to its end.
 set -euo pipefail
@@ -39,7 +40,7 @@ PARTS=("$@")
 fail() { echo "FAIL: $*" >&2; exit 1; }
 [[ $(id -u) == 0 ]] || fail "run as root"
 [[ $IMAGE =~ ^[0-9a-f]{64}$ ]] || fail "an image is named by its whole fingerprint"
-for part in "${PARTS[@]}"; do [[ $part == checks || $part == numbers || $part == small ]] || fail "no such part: $part"; done
+for part in "${PARTS[@]}"; do [[ $part =~ ^(checks|numbers|small|small-past)$ ]] || fail "no such part: $part"; done
 [[ $PROJECT != default && $PROJECT != machines ]] || fail "the proof runs in the node's build space, not in $PROJECT"
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/machine-memory-proof
 for file in guest.sh pages.cjs job.cjs app.html video.html pointer.html; do [[ -f $here/$file ]] || fail "missing $here/$file"; done
@@ -200,6 +201,13 @@ echo "PROOF-START $(date -u +%FT%TZ) image $IMAGE parts ${PARTS[*]} host load $(
 		small)
 			machine 2 2GiB
 			guest 1500 load 600 stop 24
+			gone
+			;;
+		small-past)
+			machine 2 2GiB
+			guest 180 browser
+			probed "past the edge of the small machine" 60 1500 load 600 past 72
+			guest 180 after
 			gone
 			;;
 		esac
