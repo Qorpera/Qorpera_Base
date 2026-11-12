@@ -1455,8 +1455,9 @@ export function mountApplication(
 				controller.signal,
 				companyCurrent,
 			);
-			// An agent's icons-only save changes no app's manifest: every hint of the folder reads the icons read before.
-			apps.onChange(() => controller.refreshAppIcons());
+			// An agent's icons-only save changes no app's manifest: every read of the apps (a hint, the minute's clock, the tab
+			// coming back) reads the icons read before (review F5 on #1696).
+			apps.onRead(() => controller.refreshAppIcons());
 			// The rail's line under each agent's name: its wall and its next planned run, read with the member's own access
 			// and again on each change hint of the folder, as the thread's wall is.
 			const routines = createWebRoutines(cloud, controller.profile, files.signal, folderCurrent, () =>

@@ -940,6 +940,7 @@ export class CompanyApps {
 	#shownGroups: string | undefined;
 	readonly #stop = new AbortController();
 	readonly #listeners = new Set<() => void>();
+	readonly #readers = new Set<() => void>();
 	#hints?: { close(): Promise<void> };
 	#poll?: ReturnType<typeof setInterval>;
 	#timer?: ReturnType<typeof setTimeout>;
@@ -1010,6 +1011,7 @@ export class CompanyApps {
 		clearTimeout(this.#warming);
 		void this.#hints?.close().catch(() => undefined);
 		this.#listeners.clear();
+		this.#readers.clear();
 	}
 
 	/** The apps as last read. */
@@ -1024,6 +1026,12 @@ export class CompanyApps {
 		const { icons, byFile } = await readAppIcons(this.#source.folder(), app, this.#stop.signal, this.#icons.get(app));
 		this.#icons.set(app, byFile);
 		return icons;
+	}
+
+	/** Called after each read of the apps that worked, changed or not. */
+	onRead(listener: () => void): () => void {
+		this.#readers.add(listener);
+		return () => this.#readers.delete(listener);
 	}
 
 	onChange(listener: () => void): () => void {
@@ -1055,6 +1063,9 @@ export class CompanyApps {
 				this.#publish(apps);
 				this.#warm();
 			}
+			// After every read that worked, whatever woke it (a hint, the minute's clock, the tab coming back): what reads
+			// beside the apps (their icons) reads again too, as a change of those changes no manifest.
+			if (!this.#stop.signal.aborted) for (const reader of [...this.#readers]) reader();
 		} catch {
 			/* What was read before stands. */
 		}

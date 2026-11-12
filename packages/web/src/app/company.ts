@@ -1369,6 +1369,8 @@ export class CompanyController {
 				Boolean((room?.draft(this.#userId)?.body ?? "").trim()) ||
 				Boolean((now.draft ?? "").trim()) ||
 				Boolean(now.attachments?.length) ||
+				// An answer the member chose to a question of the agent's: the send would prefix it (review F1 on #1696, r2).
+				now.answering !== undefined ||
 				Boolean(now.sending) ||
 				Boolean(now.retrySend)
 			);

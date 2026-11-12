@@ -1975,8 +1975,13 @@ describe("groups of apps in the drawer (Jonas, 11 Nov 2026)", () => {
 		expect(controller.conversation(thread.sessionId, false).get().draft).toBe("Half a thought");
 		expect(written).toEqual([]);
 		expect(choose).not.toHaveBeenCalled();
+		// An answer chosen to one of Ada's questions, nothing typed: it stays chosen, and nothing is sent (review r2 F1).
+		controller.conversation(thread.sessionId, false).set({ draft: "", answering: "Which trip first?" });
+		expect((await controller.requestAppIcons(trips)).ok).toBe(false);
+		expect(controller.conversation(thread.sessionId, false).get().answering).toBe("Which trip first?");
+		expect(written).toEqual([]);
 		// With an empty composer the thread gets its own account before the real send, which then goes.
-		controller.conversation(thread.sessionId, false).set({ draft: "" });
+		controller.conversation(thread.sessionId, false).set({ draft: "", answering: undefined });
 		expect(await controller.requestAppIcons(trips)).toEqual({ ok: true, agent: "Ada" });
 		expect(selectSessionAccount).toHaveBeenCalledWith(thread.sessionId, controller.signal);
 		expect(choose).toHaveBeenCalledWith(thread.sessionId, { connections: [] }, "conn-ada");
