@@ -138,16 +138,16 @@ Result on node 2's test machine (15 Oct 2026, run `20261015T222308-36186-3333861
   converted a document to PDF; sqlite3, zip, unzip, ripgrep, fd and jq worked;
 - the test machine's modules, sysctls, nft rules, links and LXD state were the same before and after.
 
-The package caches (own code storage, step 6; run `20261112T125121-45531-d64f3dd4`, 19 min with the build, ALL
-PASSED): the guest agent, run from its source, made `/var/cache/qorpera-packages` and its five folders (root,
-`qorpera-coding`, 2775, the group's rwx as access and default ACL) from its tmpfiles file at its first mount, then the
-user, and nothing again at the second mount; `systemd-tmpfiles-clean.timer` is active; a command unit started as the
-agent starts one carries the group (`id -G`); a file root made there through `sudo`, another session wrote to. A
-second session user then installed from the first's cache, with no permission error, and added a package the first did
-not have (first install, then second, in seconds): npm 1.1 then 0.6 (`npm ci --offline` from the cache alone), pnpm 10
-2.4 then 0.5 (`--offline` from the store alone), pip 2.2 then 1.5 ("Using cached"), uv 0.5 then 0.0 (`--offline`),
-Playwright's headless Chromium 19.7 then 0.2. The trim emptied only the least recently used folder over a small
-limit, which stayed as it was; tmpfiles' age, on the agent's lines with 2 s, removed what was not used and kept every
-tool folder. yarn 1 is not shared: the second session could not add to its cache (run
-`20261112T122814-37891-1c036e2c`). pnpm 12 does not read `npm_config_store_dir`; with `pnpm_config_store_dir` it
-shared its store between the two users.
+The package caches (own code storage, step 6; run `20261112T132317-59599-812bb37f`, 20 min with the build, ALL
+PASSED): the guest agent, run from its source and asked its mount in v2, made `/var/cache/qorpera-packages` and its five
+folders (root, `qorpera-coding`, 2775, the group's rwx as access and default ACL) from its tmpfiles file at its first
+mount, then the user, and said so (`packageCaches: true`); nothing again at the second mount; asked in v1 it answered
+exactly the four keys an executor from before reads; `systemd-tmpfiles-clean.timer` is active; a command unit started
+as the agent starts one carries the group (`id -G`); a file root made there through `sudo`, another session wrote to.
+A second session user then installed from the first's cache, with no permission error, and added a package the first
+did not have (first install, then second, in seconds): npm 1.1 then 0.6 (`npm ci --offline` from the cache alone),
+pnpm 10 2.2 then 0.6 and pnpm 12 3.3 then 0.7 (each `--offline` from the store alone), pip 2.0 then 1.4 ("Using
+cached"), uv 0.4 then 0.0 (`--offline`), Playwright's headless Chromium 17.3 then 0.2. The trim emptied only the least
+recently used folder over a small limit, which stayed as it was; tmpfiles' age, on the agent's lines with 2 s, removed
+what was not used and kept every tool folder. yarn 1 is not shared: the second session could not add to its cache (run
+`20261112T122814-37891-1c036e2c`).
