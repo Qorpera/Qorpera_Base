@@ -611,7 +611,7 @@ PLANT
 	for shape in folder link; do
 		for app in browser files terminal; do
 			# The program is closed first, so the press is what starts it.
-			for _ in $(seq 1 40); do desktop windows | grep -q -- "${shows[$app]}$" || break; wmctrl -c "${shows[$app]}"; sleep 0.25; done
+			for _ in $(seq 1 40); do desktop windows | grep -q -- "${shows[$app]}$" || break; DISPLAY=:1 wmctrl -c "${shows[$app]}"; sleep 0.25; done
 			runuser -u desktop -- sh /tmp/qorpera-dock-planted/plant.sh "$shape" &
 			sleep 0.3
 			runuser -u desktop -- sh -c ": >/run/qorpera-desktop-dock/$app"
