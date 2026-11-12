@@ -105,6 +105,8 @@ export const STORAGE: Record<string, string> = {
 	"Qorpera could not tell which version of it is the main one":
 		"Qorpera kunne ikke se, hvilken version af den der er hovedversionen",
 	"the file was not complete": "filen var ikke komplet",
+	"an earlier bring-in stopped half way at this place; bring the same project in again to finish it":
+		"en tidligere hentning stoppede halvvejs på denne plads; hent det samme projekt ind igen for at gøre den færdig",
 	"a project with that name is already kept here": "et projekt med det navn ligger her allerede",
 	"other code is being brought in right now; try again when it is done":
 		"der hentes allerede anden kode ind; prøv igen, når det er færdigt",

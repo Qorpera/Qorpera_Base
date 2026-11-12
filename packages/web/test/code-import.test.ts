@@ -359,6 +359,12 @@ describe("the words of an import", () => {
 			"Qorpera kunne ikke se, hvilken version af den der er hovedversionen",
 		],
 		[["IMPORT_FILE_NOT_WHOLE"], "the file was not complete", "filen var ikke komplet"],
+		// An earlier import's half-done snapshot at the place (part C3).
+		[
+			["IMPORT_PLACE_HALF_DONE"],
+			"an earlier bring-in stopped half way at this place; bring the same project in again to finish it",
+			"en tidligere hentning stoppede halvvejs på denne plads; hent det samme projekt ind igen for at gøre den færdig",
+		],
 		[
 			[
 				"IMPORT_TOO_MANY_ENTRIES",
@@ -366,6 +372,8 @@ describe("the words of an import", () => {
 				"IMPORT_TOO_MANY_REFS",
 				"IMPORT_NAMES_REFUSED",
 				"CODE_HOST_NAMES_NOT_NFC",
+				// A path the company folder refuses where main will stand (part B).
+				"CODE_HOST_NAMES_FOLDER_REFUSES",
 				"IMPORT_BRANCH_NAME",
 			],
 			"it has more files, or names, than Qorpera can keep",

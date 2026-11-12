@@ -182,6 +182,9 @@ export function importWhy(reason: string, file = false): string {
 			return t("Qorpera could not tell which version of it is the main one");
 		case "IMPORT_FILE_NOT_WHOLE":
 			return t("the file was not complete");
+		// An earlier import's half-done snapshot at the place (part C3): only the same project finishes it.
+		case "IMPORT_PLACE_HALF_DONE":
+			return t("an earlier bring-in stopped half way at this place; bring the same project in again to finish it");
 	}
 	// git's check: an error is damage (IMPORT_HISTORY_DAMAGED, alone or with git's message id after it), and a warning
 	// is named by its own message id (codeImportHistoryCode in the runner orchestrator's code-import.ts).
