@@ -608,5 +608,6 @@
       "sourceCommit": "#1172 merged locally with e097244e6",
       "result": "The native suite with D1-D4: 34 of 34, and the composition entrypoint"
     }
-  ]
+  ],
+  "history": "v236 (12 Nov 2026): this proof is of the m896 build 1c08fd015e7fe80bd813cccd73bc4331a01796479df77e16ac202d33ba3b460c; the pinned executable is now #1530's rebuild 9c299f88252c1cc6cc57a4f17bfabb72e87529468e209a8d772b0278ce03f6b4, whose real-binary runs on the node02 test VM are recorded in PR #1530 (run 20261112T141023-89105-191dc3bc)."
 }

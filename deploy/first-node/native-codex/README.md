@@ -273,6 +273,11 @@ harness was not run. The proof records the executed source hashes and actual
 Linux guest package manifest. These are scripted loopback checks in a dedicated
 Linux VM, with no real-model or production acceptance.
 
+History (v236, 12 Nov 2026): the paragraph below and its proof record describe the m896 build `1c08fd01…`; the pinned
+executable is now #1530's rebuild `9c299f88…` (the same source, lock and toolchain, the 32 KiB result patch), whose
+real-binary runs on the node02 test VM are recorded in PR #1530 (run `20261112T141023-89105-191dc3bc`: eight native files,
+312 passed, none skipped).
+
 The current [0.155.1 Linux proof](linux-x64-0.155.1-native-proof.json) records
 the pinned 318,891,312-byte release executable, SHA-256
 `1c08fd015e7fe80bd813cccd73bc4331a01796479df77e16ac202d33ba3b460c`, run on the
