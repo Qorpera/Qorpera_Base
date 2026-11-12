@@ -25,7 +25,14 @@ export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
 dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --nofork --nopidfile &
 for _ in $(seq 1 50); do [[ -S $XDG_RUNTIME_DIR/bus ]] && break; sleep 0.1; done
 [[ -S $XDG_RUNTIME_DIR/bus ]] || { echo "the session bus did not start" >&2; exit 1; }
-startxfce4 &
+# The XFCE session is started with a milder protection than the X server and the session bus keep from the unit (-900,
+# qorpera-machine-desktop.service): its window manager and panel are still never ended before a real program, and a big
+# program someone starts from its menus, which inherits this, can still be the one that is ended when memory runs out.
+# Raising it needs no privilege; where it cannot be written the session starts all the same.
+(
+	printf %s -100 2>/dev/null >/proc/self/oom_score_adj || true
+	exec startxfce4
+) &
 # Every desktop command touches LAST (deploy/machine/desktop, need).
 (
 	while sleep 30; do

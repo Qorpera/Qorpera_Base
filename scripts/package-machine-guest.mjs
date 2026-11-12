@@ -15,6 +15,9 @@ import { RECORD, readFolderProgramRecord } from "./folder-program-artifact.mjs";
 // manifest's first artifact, whose sha-256 the executor pins) stays as it was.
 // Since 20260930708000 it also carries machine_screen's screen helper, built the
 // same way and for the same reason.
+// Since 12 Nov 2026 it also carries every machine's compressed memory and edge
+// guard (machine-memory, its two units, the LXD agent's drop-in): files only,
+// so the guest helper stays as it was.
 const USAGE = "Usage: package-machine-guest.mjs --out <new-directory> --folder-program <built qorpera-folder>";
 const args = process.argv.slice(2);
 if (args.length !== 4 || args[0] !== "--out" || args[2] !== "--folder-program") throw new Error(USAGE);
@@ -25,11 +28,14 @@ const units = [
 	"qorpera-machine-watchdog.timer",
 	"qorpera-machine-folder.service",
 	"qorpera-machine-desktop.service",
+	"qorpera-machine-memory.service",
+	"qorpera-machine-memory-guard.service",
 ];
 // The desktop (9 Nov 2026): its session, the agents' `desktop` command and Chromium's AppArmor profile. Since 10 Nov
 // 2026 also the page `desktop selftest` opens, the browser's managed policy (no translate offer, no sign-in), a
 // `chromium` that runs from root's shell, the login shells' paths to the installed Playwright, and the build's
-// Playwright check.
+// Playwright check. Since 12 Nov 2026 also every machine's memory at the edge: compressed memory at boot and the guard
+// that ends one program when it runs out (machine-memory, with the two units above), and the LXD agent's protection.
 const files = [
 	{ file: "desktop-session", installedPath: "/opt/qorpera-machine/desktop-session", mode: "0555" },
 	{ file: "desktop", installedPath: "/usr/local/bin/desktop", mode: "0555" },
@@ -41,6 +47,12 @@ const files = [
 	{
 		file: "qorpera-chromium-policy.json",
 		installedPath: "/etc/opt/chrome_for_testing/policies/managed/qorpera.json",
+		mode: "0644",
+	},
+	{ file: "machine-memory", installedPath: "/opt/qorpera-machine/machine-memory", mode: "0555" },
+	{
+		file: "lxd-agent-memory.conf",
+		installedPath: "/etc/systemd/system/lxd-agent.service.d/qorpera-memory.conf",
 		mode: "0644",
 	},
 ];
