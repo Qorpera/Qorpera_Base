@@ -1688,7 +1688,12 @@ with the member folder client. Storage → the repository's folder → "Download
   `queued` or `running`) and the made ones whose file is still there (`ready`, with `path` and `bytes`): a made
   download is over after 7 days, as soon as the job of a newer download of the same `file` begins (it replaces the
   file), and as soon as a restore of the repository from its copy begins to move its folder aside. It is over
-  before the file goes, whatever becomes of that job, so `ready` always has its file.
+  before the file goes, whatever becomes of that job, so `ready` always has its file. Since
+  `20260930735000_code_restore_follow_ups` also `githubCopies: [{owner, name, github}]`: the folders under `code/`
+  that hold a copy of a GitHub project (made by the company's GitHub coding sessions, archived ones too) where no
+  repository is kept in Qorpera. `owner` and `name` are the folder's (`code/<owner>/<name>/`, lower case), `github`
+  the project as GitHub names it (`Owner/Name`, as its newest session there named it). At most 100, ordered by
+  folder. A client from before the key ignores it; a cloud from before it has no such key (read it as `[]`).
 - `qorpera_request_code_download(profile, owner, name, file)`: owners and admins (42501 otherwise). `file` is `files`
   (main's files, a `.zip`) or `history` (main with its history, a git `.bundle`); anything else is 22023, a repository
   the company does not keep is P0002 "No such repository". Answers `{schema: "qorpera.code-download/v1", requestId,
