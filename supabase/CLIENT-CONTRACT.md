@@ -1703,6 +1703,8 @@ with the member folder client. Storage → the repository's folder → "Download
   `IMPORT_USES_LFS`; a suffix after `:` may follow). Each repository gains `importedFrom`
   (`{kind: "github", repository: "Owner/Name"}`, `{kind: "file", name}`, or null for code begun in Qorpera),
   `importedAt` and `earlierChanges` (how many earlier changes came with it, or null). No commit, path or byte count.
+  A repository whose import has not ended yet (recorded, but its folder not open yet) is in `bringing` (at step
+  `open`), not in `repositories`, until its import's end puts it there.
 - `qorpera_request_code_download(profile, owner, name, file)`: owners and admins (42501 otherwise). `file` is `files`
   (main's files, a `.zip`) or `history` (main with its history, a git `.bundle`); anything else is 22023, a repository
   the company does not keep is P0002 "No such repository". Answers `{schema: "qorpera.code-download/v1", requestId,
