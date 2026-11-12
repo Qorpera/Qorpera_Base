@@ -259,7 +259,7 @@ test("the image has a desktop that only `desktop start` starts, with Chromium sa
 	assert.match(command, /systemd-run --quiet --collect --expand-environment=no /);
 	assert.match(command, /-p Requisite="\$UNIT" -p BindsTo="\$UNIT" -p After="\$UNIT"/);
 	assert.doesNotMatch(command, /PartOf=/);
-	assert.match(command, /start \| stop \| open \| run\)\n\texec 9>\/run\/qorpera-desktop\.lock\n\tflock 9\n/);
+	assert.match(command, /start \| stop \| open \| run \| dock\)\n\texec 9>\/run\/qorpera-desktop\.lock\n\tflock 9\n/);
 	for (const line of [
 		'\t[[ $(cat /tmp/desktop-run) == "literal \\$HOME" ]]',
 		'\tif desktop run sleep 600 2>/dev/null; then echo "a program started on a stopped desktop" >&2; exit 1; fi\n',
@@ -508,7 +508,10 @@ test("a desktop is asked for: small machines refuse it, chosen files open on it,
 	// Nothing on the desktop is ever replaced: the same link is used again, and a taken name gets a number (review r1 F1).
 	assert.doesNotMatch(command, /rm -rf -- "\$place"/);
 	assert.match(files, /\n\t\t\texcept FileExistsError:\n\t\t\t\tif os\.path\.islink\(place\) and os\.readlink\(place\) == path:\n\t\t\t\t\tbreak\n/);
-	assert.match(files, /\n\t\t\tif folder:\n\t\t\t\tos\.mkdir\(place, 0o700\)\n\t\t\telse:\n\t\t\t\tos\.close\(os\.open\(place, os\.O_WRONLY \| os\.O_CREAT \| os\.O_EXCL \| os\.O_CLOEXEC, 0o600\)\)\n\t\t\treturn place\n\t\texcept FileExistsError:\n\t\t\tcontinue\n/);
+	assert.match(
+		files,
+		/\n\tfor candidate in names\(name, folder\):\n\t\tplace = os\.path\.join\(DESK, candidate\)\n\t\tif rename\(-100, os\.fsencode\(on_its_way\), -100, os\.fsencode\(place\), 1\) == 0:\n\t\t\treturn place\n\t\tif ctypes\.get_errno\(\) != errno\.EEXIST:\n\t\t\traise OSError\(/,
+	);
 	for (const line of [
 		'\tdesktop open /tmp/site --copy | grep "as site-2)" >/dev/null || { echo "a copy did not get a name of its own" >&2; exit 1; }\n',
 		"\techo edited >/home/desktop/Desktop/site-2/kept.txt\n",
@@ -1151,14 +1154,10 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 		assert.ok(look.includes(line), line);
 
 	// A press reaches root only as a name in root's folder, and root starts one of three fixed programs with the image's
-	// own `desktop` command, in the company folder when the machine has it and the desktop's account may read it.
+	// own `desktop` command, in the company folder when the machine has it (the test "a press on the dock can steer
+	// nothing" below).
 	assert.match(opener, /\nASK=\/run\/qorpera-desktop-dock\nDESKTOP=\/usr\/local\/bin\/desktop\n/);
-	assert.match(opener, /\ncd -P -- "\$ASK" 2>\/dev\/null \|\| exit 0\n\[\[ \$\(pwd -P\) == "\$ASK" \]\] \|\| exit 0\n/);
-	assert.match(opener, /\nif mountpoint -q \/company && runuser -u desktop -- test -r \/company -a -x \/company; then folder=\/company; fi\n/);
-	assert.match(
-		opener,
-		/\n\tbrowser\) "\$DESKTOP" open "\$PAGE" ;;\n\tfiles\) "\$DESKTOP" run \/usr\/bin\/thunar "\$folder" ;;\n\tterminal\) "\$DESKTOP" run \/usr\/bin\/xfce4-terminal --working-directory="\$folder" ;;\n/,
-	);
+	assert.match(opener, /\n\t"\$DESKTOP" dock "\$app" >\/dev\/null \|\| echo "the dock's \$app did not start" >&2\n/);
 	assert.doesNotMatch(opener, /systemd-run|chrome --/);
 	const pathUnit = read("deploy/machine/qorpera-machine-desktop-dock.path");
 	assert.match(pathUnit, /\n\[Path\]\nDirectoryNotEmpty=\/run\/qorpera-desktop-dock\n/);
@@ -1455,9 +1454,11 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 
 	// The command itself does nothing with a target's path: no look, no link, no copy, no folder, no owner. Its only
 	// file tests are on root's own notes, on root's own word about the company's time zone (a file in /etc/qorpera-machine,
-	// a folder of root alone: the test "a desktop started without --tz" above) and on the zone table.
-	for (const gone of [/\brealpath\b/, /\breadlink\b/, /\bchown\b/, /\binstall\b/, /\bcp\b/, /\bln\b/, /\bmkdir\b/, /\bmountpoint\b/, /\brunuser\b/, /\bmktemp\b/, /\$DESK\b/])
+	// a folder of root alone: the test "a desktop started without --tz" above) and on the zone table, and its one look at
+	// a mount is the company folder's fixed place (for the dock's Files and terminal).
+	for (const gone of [/\brealpath\b/, /\breadlink\b/, /\bchown\b/, /\binstall\b/, /\bcp\b/, /\bln\b/, /\bmkdir\b/, /\brunuser\b/, /\bmktemp\b/, /\$DESK\b/])
 		assert.doesNotMatch(code, gone);
+	assert.deepEqual(code.match(/\bmountpoint\b[^\n;]*/g), ["mountpoint -q /company"]);
 	assert.deepEqual(
 		[...new Set([...code.matchAll(/(?:\[\[|&&|\|\|) !? ?-[efdLhrwxsSpbcOGN] (\S+)/g)].map((match) => match[1]))].toSorted(),
 		["$RUN/lang", "$RUN/serve-$port", "$RUN/tz", "$TIMEZONE", "$note", "/usr/share/zoneinfo/$name", "/usr/share/zoneinfo/$tz"],
@@ -1480,7 +1481,7 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 	assert.equal(files.match(/\b(?:TOP|OWNER) = /g).length, 2, "nothing in the program moves where root's ways start or whose they are");
 	// Every open there is: a folder entered inside the one held, a name taken hold of inside a folder held, what a
 	// hold holds (through the kernel's own name for the descriptor), root's own picture, the picture's place inside
-	// the folder held, and the account's claim of a free name on its own desktop.
+	// the folder held, and the account's new file for a copy on its way on its own desktop.
 	assert.deepEqual(
 		[...files.matchAll(/os\.open\(([^\n]*)/g)].map((match) => match[1]),
 		[
@@ -1494,7 +1495,7 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 			"name, HOLD, dir_fd=way.fd))",
 			"picture, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)",
 			"name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o644, dir_fd=way.fd)",
-			"place, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600))",
+			"on_its_way, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)",
 		],
 	);
 	// Root's side looks no name up twice and asks nothing of a path: what a thing is, the descriptor that holds it says
@@ -1519,7 +1520,19 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 		/\n\t\t\taccount_command\(words\),\n\t\t\tstdin=subprocess\.PIPE if feed else subprocess\.DEVNULL,\n\t\t\tstdout=out,\n\t\t\tstderr=err,\n\t\t\tclose_fds=True,\n\t\t\tstart_new_session=True,\n\t\t\tcwd="\/",\n\t\t\)\n/,
 	);
 	// Root's wait for it has an end (the account can stop its own process, and `desktop` holds the desktop's lock).
-	assert.match(files, /\nPATIENCE = \{"place": 30, "save": 30, "copy": 900, "take": 900\}\n/);
+	assert.match(files, /\nPATIENCE = \{"place": 30, "save": 30, "tidy": 30, "copy": 900, "take": 900\}\n/);
+	// What the account makes in steps lies under a name of its own until it is whole, and root has the account take it
+	// away when the work did not end well, whatever ended it (review r1 F1 of #1712).
+	assert.match(files, /\nSTAGE = "\.qorpera-desktop-copy\."\n/);
+	assert.match(
+		files,
+		/\n\tmark = secrets\.token_hex\(8\)\n\ttry:\n\t\tdone = as_account\(work, \*words, mark, feed=feed\)\n\texcept BaseException:\n\t\tas_account\("tidy", mark, \*beside\)\n\t\traise\n\tif done\[0\] != 0:\n\t\tas_account\("tidy", mark, \*beside\)\n\treturn done\n/,
+	);
+	assert.deepEqual(
+		[...files.matchAll(/(?:staged|as_account)\("(\w+)"/g)].map((match) => `${match[0].split("(")[0]} ${match[1]}`),
+		["as_account tidy", "as_account tidy", "staged take", "staged copy", "as_account place", "staged save"],
+	);
+	assert.match(files, /\n\t\tif code < 0:\n\t\t\treturn 1, "", f"the desktop's user's side was ended before it finished \(signal \{-code\}\)", fed\n/);
 	assert.match(files, /\n\t\t\t\tos\.killpg\(process\.pid, signal\.SIGKILL\)\n/);
 	assert.match(files, /\n\t\tpatience = threading\.Timer\(PATIENCE\[words\[0\]\], end\)\n\t\tpatience\.start\(\)\n/);
 	assert.match(files, /\n\t\tif os\.getuid\(\) == 0 or os\.geteuid\(\) == 0:\n\t\t\traise Stop\("the account's side of desktop-files runs as the desktop's user only"\)\n\t\tos\.closerange\(3, 4096\)\n/);
@@ -1598,7 +1611,7 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 	assert.match(said, /^1 of its entries are neither file, folder nor link: left out$/m);
 	// A folder in it that others can write stops root in the middle: the name the half copy held is free again (the
 	// account's own copy took it, pipe and all), and nothing of root's sending stayed.
-	assert.deepEqual(cases.archive["a folder others can write"], { answer: ["folder", `${desk}/tree`, "tree"], calls: ["take", "copy"] });
+	assert.deepEqual(cases.archive["a folder others can write"], { answer: ["folder", `${desk}/tree`, "tree"], calls: ["take", "tidy", "copy"] });
 	assert.equal(cases.archive["on the desk"]["tree/pipe"], "other");
 	assert.deepEqual(
 		Object.keys(cases.archive["on the desk"]).filter((name) => !name.startsWith("tree")),
@@ -1631,10 +1644,10 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 	assert.deepEqual(cases.account["a link at the end"], {
 		stop: "the desktop's user cannot read /own/hop-file, and root does not read it for the desktop: /own/hop-file is a link. Root copies for the desktop only what lies on a way of folders that root alone can change, with no link on it (under /root, say).",
 		code: 1,
-		calls: ["copy"],
+		calls: ["copy", "tidy"],
 	});
 	assert.match(cases.account["a link in the middle"].stop, /^the desktop's user cannot read \/own\/hop\/hidden\.txt, and root does not read it for the desktop: \/own\/hop is a link, or not a folder\. /);
-	assert.deepEqual(cases.account["a link in the middle"].calls, ["copy"]);
+	assert.deepEqual(cases.account["a link in the middle"].calls, ["copy", "tidy"]);
 	// A link on the desktop: a taken name gets a number, the same link is used again, and what the account cannot read
 	// gets no link.
 	assert.deepEqual(cases.account.place, { answer: ["site", `${top}/everyone/site`, "site-2"], calls: ["place"] });
@@ -1649,6 +1662,32 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 	// A copy that did not come whole is not kept, whatever rights its folders came with.
 	assert.deepEqual(cases.take["not whole"], [1, "half could not be copied to the desktop: it did not come whole", true]);
 	assert.deepEqual(cases.take["bad name"], [1, 1]);
+	// Nor is one that was cut off (review r1 F1 of #1712): at root's patience with a part of it written, with all of
+	// it written and no name yet, by the account's process being ended by another, by a file it could not read half
+	// way. Each time the account takes away what was on its way, the desk gains no name, hidden ones included, and
+	// the next copy gets the plain name, not a numbered one.
+	const stopped = "the desktop's user did not finish within 1 seconds, and was stopped";
+	assert.deepEqual(cases.cut["a copy root sends, partly written, at root's patience"], { stop: stopped, code: 1, calls: ["take", "tidy"], "new on the desk": [] });
+	assert.deepEqual(cases.cut["a copy the account makes, at root's patience"], { stop: stopped, code: 1, calls: ["copy", "tidy"], "new on the desk": [] });
+	assert.deepEqual(cases.cut["a copy the account makes, its process ended by another"], {
+		stop: "the desktop's user's side was ended before it finished (signal 9)",
+		code: 1,
+		calls: ["copy", "tidy"],
+		"new on the desk": [],
+	});
+	assert.match(cases.cut["a copy that fails half way"].stop, /^the desktop's user cannot read \/everyone\/half, and root does not read it for the desktop: \/everyone can be written by its group or by everyone\. /);
+	assert.deepEqual([cases.cut["a copy that fails half way"].calls, cases.cut["a copy that fails half way"]["new on the desk"]], [["copy", "tidy"], []]);
+	assert.deepEqual(cases.cut["a copy after those"], { answer: ["folder", `${desk}/large`, "large"], calls: ["copy"], "new on the desk": ["large", "large/a.bin"] });
+	// A link is made in one step: cut off after it, it is there whole, and the next press for it uses it again.
+	assert.deepEqual(cases.cut["a link, after it was made"], { stop: stopped, code: 1, calls: ["place"], "new on the desk": ["large-2"] });
+	assert.deepEqual(cases.cut["the link again"], { answer: ["folder", `${top}/everyone/large`, "large-2"], calls: ["place"], "new on the desk": [] });
+	// A picture the account saves is written beside its place and put there when whole: cut off before that, no
+	// picture appears, one that was there stays as it was, and nothing is left beside.
+	for (const picture of ["a picture, written and not yet in its place", "a picture over one that was there"]) {
+		assert.match(cases.cut[picture].stop, /^no picture saved at \/everyone\/[a-z/]+\.png: \/everyone can be written by its group or by everyone, so root does not write there, and the desktop's user could not either \(the desktop's user did not finish within 1 seconds, and was stopped\)\. /);
+		assert.deepEqual(cases.cut[picture].calls, ["save", "tidy"]);
+	}
+	assert.deepEqual(cases.cut.pictures, [[], "the picture that was there", []]);
 
 	// `desktop shot`: on a way of root's alone root writes inside the folder it holds, making the folders; never
 	// through a link; elsewhere the account's side saves, and root writes nothing.
@@ -1693,7 +1732,9 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 		'\tfor _ in $(seq 1 25); do "$files" open --copy -- /srv/qorpera-links/input >/dev/null 2>&1 || true; done\n',
 		'\trunuser -u desktop -- ln -s "$mine/folder" /tmp/qorpera-links/capture\n',
 		'\trunuser -u desktop -- ln -s "$secret" /tmp/qorpera-links/frame.png\n',
-		"\tif desktop shot /tmp/qorpera-links/capture/frame.png >/dev/null 2>&1 || desktop shot /tmp/qorpera-links/frame.png >/dev/null 2>&1; then\n",
+		"\tif desktop shot /tmp/qorpera-links/capture/frame.png >/dev/null 2>&1; then\n",
+		"\tdesktop shot /tmp/qorpera-links/frame.png >/dev/null 2>&1 || true\n\t[[ ! -L /tmp/qorpera-links/frame.png ]] && untouched ||\n",
+		"\tdesktop shot /srv/qorpera-links/group/planted.png >/dev/null 2>&1 || true\n\t[[ ! -L /srv/qorpera-links/group/planted.png ]] && untouched ||\n",
 		'\tswapping /tmp/qorpera-links "rm -rf capture; mkdir capture; rm -rf capture; ln -s $mine/folder capture"\n',
 		"\tfor _ in $(seq 1 25); do desktop shot /tmp/qorpera-links/capture/frame.png >/dev/null 2>&1 || true; done\n",
 		'\tdesktop shot "$mine/pictures/new/a.png" | grep -q " 1600 x 1000$" &&\n',
@@ -1706,7 +1747,97 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 		'\tdesktop open "$mine/agent.txt" --copy | grep -q "(on the desktop as agent.txt)$" && "$files" open --copy -- "$mine/tree" >/dev/null\n',
 		'\t\t$(readlink /home/desktop/Desktop/tree/to-the-file) == "$secret" && -z $(find /home/desktop/Desktop ! -user desktop) ]] ||\n',
 		'\tif "$files" open --copy -- "$mine/tree" >/dev/null 2>&1; then echo "root read a folder that others can write, for the desktop account" >&2; exit 1; fi\n',
+		'\t"$files" open --copy -- "$mine/large" >/dev/null 2>&1 &\n',
+		'\tpkill -KILL -u desktop -f "desktop-files account take" || true\n',
+		'\t[[ ! -e /home/desktop/Desktop/large ]] || diff -r "$mine/large" /home/desktop/Desktop/large >/dev/null ||\n',
+		'\t[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||\n',
 		'\tif leaked; then echo "bytes of a file only root can read are in the desktop account folders" >&2; exit 1; fi\n',
+	])
+		assert.ok(imageScript.includes(line), line);
+});
+
+test("a press on the dock can steer nothing but which of three programs starts (review r3 F1 of #1704)", () => {
+	// The finding: the broker ran `desktop open chrome://newtab/` from the request folder, which the desktop's account
+	// may put any name into. With a folder `chrome:/newtab` planted there, `desktop open` took the address for that
+	// folder and did its work for a file: with the account's Desktop folder made a link to a folder of root's (/etc),
+	// root put a link into that folder, under a name the account chose (measured on the candidate before the fix; the
+	// folder's owner stayed root's on this image). The fix is not a better look at the address: no launch of the dock
+	// passes through code that looks a word up as a file or works in the account's Desktop folder.
+	const opener = read("deploy/machine/desktop-dock-open");
+	const command = read("deploy/machine/desktop");
+	const unit = read("deploy/machine/qorpera-machine-desktop-dock.service");
+	const lines = (text) =>
+		text
+			.split("\n")
+			.filter((line) => !line.trimStart().startsWith("#"))
+			.join("\n");
+
+	// The broker never works in the request folder: the unit starts it in `/`, it goes there itself, and it sets its own
+	// environment before anything else (nothing of PATH, HOME, XDG or the locale is taken from its caller).
+	assert.match(unit, /\n\[Service\]\n(?:[^\n]*\n)*WorkingDirectory=\/\n(?:[^\n]*\n)*ExecStart=\/opt\/qorpera-machine\/desktop-dock-open\n/);
+	const broker = lines(opener);
+	assert.ok(
+		broker.startsWith(
+			'if [[ ${QORPERA_DOCK_ENVIRONMENT:-} != set ]]; then\n\texec /usr/bin/env -i QORPERA_DOCK_ENVIRONMENT=set PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \\\n\t\tHOME=/root LANG=C.UTF-8 /bin/bash "${BASH_SOURCE[0]}"\nfi\nset -uo pipefail\ncd / || exit 1\n',
+		),
+		broker.slice(0, 300),
+	);
+	assert.deepEqual(broker.match(/\bcd [^\n]*/g), ["cd / || exit 1"]);
+	// It takes from the folder only which of the three names are there (read without following or opening any), removes
+	// names, and hands `desktop dock` one of its own three words. It looks at nothing else and starts nothing else.
+	assert.match(broker, /\nasked=\$\(find "\$ASK" -mindepth 1 -maxdepth 1 \\\( -name browser -o -name files -o -name terminal \\\) -printf "%f\\n" 2>\/dev\/null\)\n/);
+	assert.match(
+		broker,
+		/\nfor app in browser files terminal; do\n\t\[\[ \$'\\n'\$asked\$'\\n' == \*\$'\\n'\$app\$'\\n'\* \]\] \|\| continue\n\trm -rf -- "\$ASK\/\$app"\n\t"\$DESKTOP" dock "\$app" >\/dev\/null \|\| echo "the dock's \$app did not start" >&2\ndone\n/,
+	);
+	assert.match(broker, /\nfind "\$ASK" -mindepth 1 -maxdepth 1 ! -name browser ! -name files ! -name terminal -exec rm -rf -- \{\} \+\nexit 0\n$/);
+	for (const gone of [/\$\(</, /\bcat\b/, /\bsource\b/, /\n\. /, /\[\[ -[a-zA-Z] /, /\brunuser\b/, /\bmountpoint\b/, /"\$DESKTOP" (?:open|run)\b/, /\bpwd\b/, /\/run\/qorpera-desktop\//])
+		assert.doesNotMatch(broker, gone);
+	assert.deepEqual([...new Set(broker.match(/"\$ASK[^"]*"/g))].toSorted(), ['"$ASK"', '"$ASK/$app"']);
+
+	// `desktop dock`: every word its program gets is written in it; nothing is taken from the caller but which of the
+	// three; it is under the desktop's lock like every launch, and it is no command of the help.
+	const code = lines(command);
+	assert.match(
+		code,
+		/\ndock\)\n\tneed\n\tfolder=\/home\/desktop\n\tif mountpoint -q \/company; then folder=\/company; fi\n\tcase \$\{1:-\} in\n\tbrowser\) browser chrome:\/\/newtab\/ ;;\n\tfiles\) launch \/usr\/bin\/thunar "\$folder" ;;\n\tterminal\) launch \/usr\/bin\/xfce4-terminal --working-directory="\$folder" ;;\n\t\*\) fail "desktop dock browser\|files\|terminal" 2 ;;\n\tesac\n\techo "started \$1"\n\t;;\n/,
+	);
+	assert.match(code, /\ncase \$command in\nstart \| stop \| open \| run \| dock\)\n\texec 9>\/run\/qorpera-desktop\.lock\n\tflock 9\n\t;;\nesac\n/);
+	const help = command.slice(command.indexOf("usage() {"), command.indexOf("\nEOF\n"));
+	assert.doesNotMatch(help, /desktop dock/);
+	// What that entry reaches looks at nothing the account can shape as a path: the desktop's unit and display, root's
+	// own notes, the mount point of the company folder. (`need`, `running`, `browser` and `launch` are pinned whole.)
+	assert.match(code, /\nrunning\(\) \{ \[\[ \$\(systemctl is-active "\$UNIT" 2>\/dev\/null \|\| true\) == active \]\] && xdpyinfo >\/dev\/null 2>&1; \}\nneed\(\) \{\n\trunning \|\| fail "the desktop is not running: desktop start"\n\ttouch "\$RUN\/last-use"\n\}\n/);
+	assert.match(
+		code,
+		/\nlaunch\(\) \{\n\tlocal extra=\(\)\n\t\[\[ -s \$RUN\/tz \]\] && extra\+=\(--setenv=TZ="\$\(<"\$RUN\/tz"\)"\)\n\t\[\[ -s \$RUN\/lang \]\] && extra\+=\(--setenv=LANGUAGE="\$\(<"\$RUN\/lang"\)"\)\n\tsystemd-run --quiet --collect --expand-environment=no --slice=qorpera-machine\.slice --uid=desktop --gid=desktop \\\n\t\t-p WorkingDirectory=\/home\/desktop -p Requisite="\$UNIT" -p BindsTo="\$UNIT" -p After="\$UNIT" \\\n\t\t--setenv=HOME=\/home\/desktop --setenv=DISPLAY=:1 --setenv=XDG_RUNTIME_DIR="\$SESSION" \\\n\t\t--setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=\$SESSION\/bus" "\$\{extra\[@\]\}" -- "\$@"\n\}\n/,
+	);
+	assert.match(
+		code,
+		/\nbrowser\(\) \{\n\tlocal flags=\(--start-maximized --no-first-run --no-default-browser-check --password-store=basic --disable-infobars\n\t\t--enable-unsafe-swiftshader\)\n\t\[\[ -s \$RUN\/lang \]\] && flags\+=\(--lang="\$\(<"\$RUN\/lang"\)"\)\n\tlaunch "\$CHROME" "\$\{flags\[@\]\}" "\$@"\n\}\n/,
+	);
+	for (const file of ["deploy/machine/desktop", "deploy/machine/desktop-dock-open"])
+		assert.equal(spawnSync("bash", ["-n", join(repositoryRoot, file)], { encoding: "utf8" }).status, 0, file);
+
+	// The image build presses each icon while the account keeps planting: the address as a folder and as a link to a
+	// folder it named, the shapes of the folders and programs root names, and programs named like the tools root runs,
+	// with its Desktop folder a link to a folder of root's. Each program starts, no planted program runs, and the
+	// folder of root's keeps its owner and rights and stays empty.
+	for (const line of [
+		"\tguarded=/etc/qorpera-dock-check\n",
+		'\tmkdir "$guarded" && chmod 0755 "$guarded"\n',
+		'\tcat >/tmp/qorpera-dock-planted/plant.sh <<"PLANT"\n',
+		"cd /run/qorpera-desktop-dock || exit 1\n",
+		"\tmkdir -p chrome: home/desktop company usr/bin usr/local/bin opt/qorpera-machine\n",
+		'\tif [ "$1" = link ]; then ln -sfn /home/desktop/planted/a-name-the-account-chose chrome:/newtab; else mkdir -p chrome:/newtab; fi\n',
+		"\tfor tool in desktop bash env find rm systemctl xdpyinfo flock touch mountpoint systemd-run usr/bin/thunar usr/bin/xfce4-terminal usr/local/bin/desktop; do\n",
+		'\trunuser -u desktop -- sh -c "rm -rf /home/desktop/Desktop && ln -s $guarded /home/desktop/Desktop"\n',
+		"\tfor shape in folder link; do\n\t\tfor app in browser files terminal; do\n",
+		'\t\t\trunuser -u desktop -- sh /tmp/qorpera-dock-planted/plant.sh "$shape" &\n',
+		'\t\t\trunuser -u desktop -- sh -c ": >/run/qorpera-desktop-dock/$app"\n',
+		'\t\t\t[[ $(stat -c "%U:%G %a" "$guarded") == "root:root 755" && -z $(ls -A "$guarded") ]] ||\n',
+		"\t\t\t[[ ! -e /tmp/qorpera-dock-planted/ran ]] ||\n",
+		'\t\t\t[[ $started == yes ]] || { echo "a press on the dock $app icon started nothing beside planted names ($shape)" >&2; exit 1; }\n',
 	])
 		assert.ok(imageScript.includes(line), line);
 });

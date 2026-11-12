@@ -10,7 +10,9 @@ All work here is done in one of two ways, and none in a third:
 
 - AS THE ACCOUNT. The work runs in a process of the account's own (setpriv: its user, its group, its other groups;
   no descriptor of root's; a session of its own). Whatever a planted link leads to, that process reaches only what
-  the account could reach anyway. Everything in the account's Desktop folder is done this way.
+  the account could reach anyway. Everything in the account's Desktop folder is done this way. What it makes in
+  steps (a copy, a picture) lies under a name the desktop does not show until it is whole, and gets its name in one
+  step; what did not end well, root has the account take away again.
 - AS ROOT, THROUGH FOLDERS ROOT HOLDS. Root opens the way part by part from `/`, each part inside the descriptor of
   the one before and never through a link (O_NOFOLLOW), and goes on only through folders that root alone can change:
   owned by root, not writable by a group or by everyone, with no ACL that lets another write. What root then reads
@@ -22,9 +24,11 @@ A way that is not root's alone is never worked on with root's rights: the work i
 is refused with the part that stopped it.
 """
 
+import ctypes
 import errno
 import os
 import re
+import secrets
 import shutil
 import signal
 import stat
@@ -52,7 +56,11 @@ WHOLE_DISK, NO_SUCH, CANNOT_READ = 2, 3, 13
 KINDS = ("site", "folder", "page", "file")
 # How long root waits for the account's side, in seconds: the account can stop its own process, and `desktop` holds
 # the desktop's lock meanwhile. A link or a picture is a moment's work; a copy may be a large folder.
-PATIENCE = {"place": 30, "save": 30, "copy": 900, "take": 900}
+PATIENCE = {"place": 30, "save": 30, "tidy": 30, "copy": 900, "take": 900}
+# What is not whole yet has a name of its own, which the desktop does not show: a copy on its way is
+# Desktop/.qorpera-desktop-copy.<mark>, a picture on its way .<name>.<mark>.part beside its place. Root picks the mark
+# (16 hex digits) for each piece of work, so it can have exactly that taken away again.
+STAGE = ".qorpera-desktop-copy."
 URL = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
 
 
@@ -345,6 +353,8 @@ def as_account(*words, feed=None):
 			raise failure
 		if ended:
 			return 1, "", f"the desktop's user did not finish within {PATIENCE[words[0]]} seconds, and was stopped", fed
+		if code < 0:
+			return 1, "", f"the desktop's user's side was ended before it finished (signal {-code})", fed
 		said = []
 		for fd in (out, err):
 			os.lseek(fd, 0, os.SEEK_SET)
@@ -354,6 +364,21 @@ def as_account(*words, feed=None):
 	finally:
 		os.close(out)
 		os.close(err)
+
+
+def staged(work, *words, feed=None, beside=()):
+	"""Has the account do a piece of work that makes something in steps (a copy, a picture). What is not whole yet
+	lies under a name made from a mark picked here. When the work does not end well, the account is asked to take
+	that away again: also when its process was ended, by root's patience or by anything else, and could not."""
+	mark = secrets.token_hex(8)
+	try:
+		done = as_account(work, *words, mark, feed=feed)
+	except BaseException:
+		as_account("tidy", mark, *beside)
+		raise
+	if done[0] != 0:
+		as_account("tidy", mark, *beside)
+	return done
 
 
 def answer_of(code, printed, complaint, target):
@@ -386,7 +411,7 @@ def root_copy(given, target):
 			shown = way.shown(name)
 		try:
 			kind = "folder" if stat.S_ISDIR(status.st_mode) else "file"
-			code, printed, complaint, left_out = as_account("take", name, kind, feed=lambda pipe: send(fd, status, shown, pipe))
+			code, printed, complaint, left_out = staged("take", name, kind, feed=lambda pipe: send(fd, status, shown, pipe))
 		finally:
 			os.close(fd)
 	if left_out:
@@ -425,7 +450,7 @@ def root_open(target, copy):
 		except NotRootsAlone as stopped:
 			refusal = stopped
 	# A link on the desktop, or a copy of what is not on a way of root's alone: the account's own work, start to end.
-	code, printed, complaint, _ = as_account("copy" if copy else "place", given)
+	code, printed, complaint, _ = staged("copy", given) if copy else as_account("place", given)
 	if code == NO_SUCH:
 		return None
 	if code == CANNOT_READ:
@@ -464,7 +489,7 @@ def root_save(picture, file):
 			# Not a way of root's alone: the account saves it, with its own rights, or nobody does. It reads the picture
 			# where root took it (root's folder, which the account may read).
 			os.fchmod(taken, 0o644)
-			code, _, complaint, _ = as_account("save", picture, given)
+			code, _, complaint, _ = staged("save", picture, given, beside=(given,))
 			if code != 0:
 				raise Stop(
 					f"no picture saved at {file}: {refusal}, so root does not write there, and the desktop's user could not"
@@ -525,23 +550,34 @@ def found(target):
 	return path
 
 
-def claim(name, folder):
-	"""Takes a free name on the desktop by making it (a folder, or an empty file): nothing there is ever replaced."""
-	os.makedirs(DESK, mode=0o755, exist_ok=True)
+def stage(mark):
+	"""The name a copy has in the Desktop folder until it is whole (the same disk, so giving it its name is one step)."""
+	if not re.fullmatch("[0-9a-f]{16}", mark):
+		sys.exit("not a mark for what is on its way")
+	return os.path.join(DESK, STAGE + mark)
+
+
+def part(file, mark):
+	"""The name a picture has beside its place until it is whole."""
+	if not re.fullmatch("[0-9a-f]{16}", mark):
+		sys.exit("not a mark for what is on its way")
+	return os.path.join(os.path.dirname(file), f".{os.path.basename(file)}.{mark}.part")
+
+
+def put(on_its_way, name, folder):
+	"""Gives a copy that is whole a free name on the desktop, in one step and only where no name is (renameat2 with
+	RENAME_NOREPLACE): the name appears with all that is in it or not at all, and nothing there is ever replaced."""
+	rename = ctypes.CDLL(None, use_errno=True).renameat2
 	for candidate in names(name, folder):
 		place = os.path.join(DESK, candidate)
-		try:
-			if folder:
-				os.mkdir(place, 0o700)
-			else:
-				os.close(os.open(place, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600))
+		if rename(-100, os.fsencode(on_its_way), -100, os.fsencode(place), 1) == 0:
 			return place
-		except FileExistsError:
-			continue
+		if ctypes.get_errno() != errno.EEXIST:
+			raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()), place)
 
 
 def drop(place):
-	"""Takes back a name claimed here whose copy did not come (whatever rights its folders came with)."""
+	"""Takes away what is not whole (whatever rights its folders came with)."""
 	if os.path.isdir(place) and not os.path.islink(place):
 		try:
 			os.chmod(place, 0o700)
@@ -578,8 +614,9 @@ def account_place(target):
 	answer(path, place)
 
 
-def account_copy(target):
-	"""A copy on the desktop, made by the account of what it can read itself."""
+def account_copy(target, mark):
+	"""A copy on the desktop, made by the account of what it can read itself: made under its staging name, and given
+	its name when it is whole."""
 	path = found(target)
 	if not os.access(path, os.R_OK):
 		sys.exit(CANNOT_READ)
@@ -587,21 +624,29 @@ def account_copy(target):
 		# Already on the desktop (an earlier copy, say): opened where it is.
 		answer(path, path)
 		return
-	place = claim(os.path.basename(path), not os.path.isfile(path))
-	copied = subprocess.run(["/usr/bin/cp", "-a", "-T", "--", path, place], stdin=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, check=False)  # fmt: skip
+	on_its_way = stage(mark)
+	os.makedirs(DESK, mode=0o755, exist_ok=True)
+	copied = subprocess.run(["/usr/bin/cp", "-a", "-T", "--", path, on_its_way], stdin=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, check=False)  # fmt: skip
 	if copied.returncode != 0:
-		drop(place)
+		drop(on_its_way)
 		if "Permission denied" in copied.stderr:
 			sys.exit(CANNOT_READ)
 		sys.exit(f"{path} could not be copied to the desktop: {copied.stderr.strip()[:500]}")
+	try:
+		place = put(on_its_way, os.path.basename(path), not os.path.isfile(path))
+	except OSError:
+		drop(on_its_way)
+		raise
 	answer(place, place)
 
 
-def account_take(name, kind):
-	"""A copy on the desktop of what root sends: an archive on stdin, kept only when it came whole."""
+def account_take(name, kind, mark):
+	"""A copy on the desktop of what root sends: an archive on stdin, unpacked under its staging name and given its
+	name only when it came whole."""
 	if "/" in name or name in ("", ".", "..") or kind not in ("file", "folder"):
 		sys.exit("not a name for the desktop")
-	place = claim(name, kind == "folder")
+	on_its_way = stage(mark)
+	os.makedirs(DESK, mode=0o755, exist_ok=True)
 	whole = False
 
 	def inside(tar):
@@ -618,30 +663,49 @@ def account_take(name, kind):
 	try:
 		with tarfile.open(fileobj=sys.stdin.buffer, mode="r|") as tar:
 			if kind == "folder":
-				tar.extractall(place, members=inside(tar), filter="tar")
+				os.mkdir(on_its_way, 0o700)
+				tar.extractall(on_its_way, members=inside(tar), filter="tar")
 			else:
 				for member in inside(tar):
 					if not member.isreg():
 						raise tarfile.TarError("not a file")
-					with tar.extractfile(member) as from_, open(place, "wb") as to:
+					new = os.open(on_its_way, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+					with tar.extractfile(member) as from_, os.fdopen(new, "wb") as to:
 						shutil.copyfileobj(from_, to)
-					os.chmod(place, member.mode & 0o755)
-					os.utime(place, (member.mtime, member.mtime))
+					os.chmod(on_its_way, member.mode & 0o755)
+					os.utime(on_its_way, (member.mtime, member.mtime))
 		if not whole:
 			raise tarfile.TarError("it did not come whole")
+		place = put(on_its_way, name, kind == "folder")
 	except (tarfile.TarError, OSError) as error:
-		drop(place)
+		drop(on_its_way)
 		sys.exit(f"{name} could not be copied to the desktop: {error}")
 	answer(place, place)
 
 
-def account_save(picture, file):
-	"""A picture root took, saved by the account where the account may write."""
+def account_save(picture, file, mark):
+	"""A picture root took, saved by the account where the account may write: written beside its place, and put in
+	its place when it is whole."""
+	on_its_way = part(file, mark)
 	try:
 		os.makedirs(os.path.dirname(file), exist_ok=True)
-		shutil.copyfile(picture, file)
+		try:
+			shutil.copyfile(picture, on_its_way)
+		except PermissionError:
+			# The account may write the picture's own file but make no name beside it: written where it is.
+			shutil.copyfile(picture, file)
+			return
+		os.replace(on_its_way, file)
 	except OSError as error:
+		drop(on_its_way)
 		sys.exit(str(error))
+
+
+def account_tidy(mark, file=None):
+	"""Takes away what a piece of work that did not end well left under its staging names."""
+	drop(stage(mark))
+	if file is not None:
+		drop(part(file, mark))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -657,14 +721,18 @@ def main(words):
 			match words[1:]:
 				case ["place", target]:
 					account_place(target)
-				case ["copy", target]:
-					account_copy(target)
-				case ["take", name, kind]:
-					account_take(name, kind)
-				case ["save", picture, file]:
-					account_save(picture, file)
+				case ["copy", target, mark]:
+					account_copy(target, mark)
+				case ["take", name, kind, mark]:
+					account_take(name, kind, mark)
+				case ["save", picture, file, mark]:
+					account_save(picture, file, mark)
+				case ["tidy", mark]:
+					account_tidy(mark)
+				case ["tidy", mark, file]:
+					account_tidy(mark, file)
 				case _:
-					raise Stop("desktop-files account place|copy|take|save ...", 2)
+					raise Stop("desktop-files account place|copy|take|save|tidy ...", 2)
 		except OSError as error:
 			# Its own rights did not reach (its Desktop folder made a link to a folder of root's, say).
 			sys.exit(f"the desktop's user could not do it: {error}")

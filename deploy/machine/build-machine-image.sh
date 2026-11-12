@@ -530,7 +530,21 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	[[ $(systemctl is-active qorpera-machine-desktop-dock.path) == active ]] && ! systemctl is-failed --quiet qorpera-machine-desktop-dock.service ||
 		{ echo "the dock unit did not survive a program opened and closed in a row" >&2; exit 1; }
 	desktop stop >/dev/null
-	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
+	# Nothing of the desktop account runs any more. With the dock programs open, something of the account was listed in
+	# the instant after the stop and was gone a few milliseconds later (once in a build, once in four runs of these
+	# checks on a machine; not seen again in 51 stops looked at one by one). So a process that has ended and only waits
+	# to be collected is not counted, what still runs gets two seconds to end, and what is left then is named.
+	gone() {
+		local left=
+		for _ in $(seq 1 20); do
+			left=$(ps -u desktop -o stat=,pid=,args= 2>/dev/null | grep -v "^Z" | cut -c1-120 || true)
+			[[ -z $left ]] && return 0
+			sleep 0.1
+		done
+		echo "programs of the desktop outlived it: $(tr "\n" "|" <<<"$left")" >&2
+		return 1
+	}
+	gone || exit 1
 	[[ -z $(ls -A /run/qorpera-desktop-dock) ]] || { echo "a press on the dock left its request behind" >&2; exit 1; }
 	# The look is the image, never the account: with everything the account held gone, the next start shows it whole.
 	rm -rf /home/desktop/.config
@@ -616,6 +630,56 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	window " - Thunar$" || { echo "a dock request that was a link opened nothing" >&2; exit 1; }
 	for _ in $(seq 1 50); do [[ -z $(ls -A /run/qorpera-desktop-dock) ]] && break; sleep 0.1; done
 	[[ -z $(ls -A /run/qorpera-desktop-dock) ]] && untouched || { echo "a dock request that was a link or a pipe was followed, or stayed" >&2; exit 1; }
+	# A press on the dock starts one of three fixed programs and can steer nothing else (review r3 F1 of #1704). The
+	# account may put any name into the folder a press asks in. Until this was closed, a folder there shaped like the
+	# browser address (chrome:/newtab) made root take the address for that folder and put a link to it on the desktop:
+	# with the Desktop folder of the account made a link to a folder of root, root wrote a link into that folder, under
+	# a name the account chose. Now the broker and the command it runs work in /, look no word up as a file and put
+	# nothing on the desktop. The account keeps planting, while each icon is pressed: the address as a folder and as a
+	# link to a folder it named, the shapes of the folders and programs root names, and programs named like the tools
+	# root runs. Each press starts its program, none of the planted programs runs, and the folder of root is as it
+	# was: its owner, its rights, nothing in it.
+	guarded=/etc/qorpera-dock-check
+	mkdir "$guarded" && chmod 0755 "$guarded"
+	install -d -o desktop -g desktop /tmp/qorpera-dock-planted
+	cat >/tmp/qorpera-dock-planted/plant.sh <<"PLANT"
+cd /run/qorpera-desktop-dock || exit 1
+mkdir -p /home/desktop/planted/a-name-the-account-chose
+while [ ! -e /tmp/qorpera-dock-planted/stop ]; do
+	mkdir -p chrome: home/desktop company usr/bin usr/local/bin opt/qorpera-machine
+	if [ "$1" = link ]; then ln -sfn /home/desktop/planted/a-name-the-account-chose chrome:/newtab; else mkdir -p chrome:/newtab; fi
+	for tool in desktop bash env find rm systemctl xdpyinfo flock touch mountpoint systemd-run usr/bin/thunar usr/bin/xfce4-terminal usr/local/bin/desktop; do
+		[ -e "$tool" ] || { printf "#!/bin/sh\nid >>/tmp/qorpera-dock-planted/ran\n" >"$tool"; chmod 0755 "$tool"; }
+	done
+done 2>/dev/null
+PLANT
+	runuser -u desktop -- sh -c "rm -rf /home/desktop/Desktop && ln -s $guarded /home/desktop/Desktop"
+	declare -A shows=([browser]="Chrome for Testing" [files]=" - Thunar" [terminal]="Terminal")
+	for shape in folder link; do
+		for app in browser files terminal; do
+			# The program is closed first, so the press is what starts it.
+			for _ in $(seq 1 40); do desktop windows | grep -q -- "${shows[$app]}$" || break; DISPLAY=:1 wmctrl -c "${shows[$app]}"; sleep 0.25; done
+			runuser -u desktop -- sh /tmp/qorpera-dock-planted/plant.sh "$shape" &
+			sleep 0.3
+			runuser -u desktop -- sh -c ": >/run/qorpera-desktop-dock/$app"
+			started=yes
+			window "${shows[$app]}$" || started=no
+			sleep 0.5
+			runuser -u desktop -- touch /tmp/qorpera-dock-planted/stop
+			wait || true
+			rm -f /tmp/qorpera-dock-planted/stop
+			for _ in $(seq 1 50); do [[ -z $(ls -A /run/qorpera-desktop-dock) ]] && break; sleep 0.1; done
+			[[ $(stat -c "%U:%G %a" "$guarded") == "root:root 755" && -z $(ls -A "$guarded") ]] ||
+				{ echo "a press on the dock $app icon changed a folder of root through planted names ($shape): $(stat -c "%U:%G %a" "$guarded") $(ls -A "$guarded" | tr "\n" " ")" >&2; exit 1; }
+			[[ ! -e /tmp/qorpera-dock-planted/ran ]] ||
+				{ echo "a press on the dock $app icon ran a program the desktop account planted ($shape): $(head -1 /tmp/qorpera-dock-planted/ran)" >&2; exit 1; }
+			[[ $started == yes ]] || { echo "a press on the dock $app icon started nothing beside planted names ($shape)" >&2; exit 1; }
+			[[ -z $(ls -A /run/qorpera-desktop-dock) ]] || { echo "planted names stayed in the folder a press asks in" >&2; exit 1; }
+		done
+	done
+	runuser -u desktop -- rm /home/desktop/Desktop
+	rm -rf "$guarded" /tmp/qorpera-dock-planted
+	untouched || { echo "the file only root can read was changed" >&2; exit 1; }
 	# Root follows no link for the desktop account (review r2 of #1704). What desktop open, --copy and desktop shot do
 	# with files is done by desktop-files: as the account, or by root inside folders it holds, on a way of folders that
 	# root alone can change with no link on it. Root never looks at a path and then uses the path. The account plants
@@ -654,9 +718,14 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	# (the way is not of root alone) and the account cannot; also while the account keeps swapping the folder.
 	runuser -u desktop -- ln -s "$mine/folder" /tmp/qorpera-links/capture
 	runuser -u desktop -- ln -s "$secret" /tmp/qorpera-links/frame.png
-	if desktop shot /tmp/qorpera-links/capture/frame.png >/dev/null 2>&1 || desktop shot /tmp/qorpera-links/frame.png >/dev/null 2>&1; then
-		echo "a picture was saved through a link the desktop account planted" >&2; exit 1
+	if desktop shot /tmp/qorpera-links/capture/frame.png >/dev/null 2>&1; then
+		echo "a picture was saved through a folder link the desktop account planted" >&2; exit 1
 	fi
+	# (Where the name of the picture is the account own link, the account puts the picture in the place of the link:
+	# a picture is written beside its place and moved onto it. What the link named is not written.)
+	desktop shot /tmp/qorpera-links/frame.png >/dev/null 2>&1 || true
+	[[ ! -L /tmp/qorpera-links/frame.png ]] && untouched ||
+		{ echo "a picture was written through a link the desktop account planted, or the link stayed" >&2; exit 1; }
 	rm -f /tmp/qorpera-links/capture /tmp/qorpera-links/frame.png
 	swapping /tmp/qorpera-links "rm -rf capture; mkdir capture; rm -rf capture; ln -s $mine/folder capture"
 	for _ in $(seq 1 25); do desktop shot /tmp/qorpera-links/capture/frame.png >/dev/null 2>&1 || true; done
@@ -675,7 +744,9 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	python3 -I -c "import os, struct, sys; os.setxattr(sys.argv[1], \"system.posix_acl_access\", struct.pack(\"<I\", 2) + b\"\".join(struct.pack(\"<HHI\", *entry) for entry in ((1, 7, 0xFFFFFFFF), (2, 7, int(sys.argv[2])), (4, 5, 0xFFFFFFFF), (16, 5, 0xFFFFFFFF), (32, 5, 0xFFFFFFFF))))" /srv/qorpera-links/acl "$(id -u desktop)"
 	[[ $(stat -c "%U:%G %a" /srv/qorpera-links/acl) == "root:root 755" ]] || { echo "the folder with an ACL does not look like a folder of root alone" >&2; exit 1; }
 	runuser -u desktop -- ln -s "$secret" /srv/qorpera-links/group/planted.png
-	if desktop shot /srv/qorpera-links/group/planted.png >/dev/null 2>&1; then echo "a picture was saved through a link in a folder a group can write" >&2; exit 1; fi
+	desktop shot /srv/qorpera-links/group/planted.png >/dev/null 2>&1 || true
+	[[ ! -L /srv/qorpera-links/group/planted.png ]] && untouched ||
+		{ echo "a picture was written through a link in a folder a group can write, or the link stayed" >&2; exit 1; }
 	desktop shot /srv/qorpera-links/group/a.png >/dev/null && [[ $(stat -c %U /srv/qorpera-links/group/a.png) == desktop ]] ||
 		{ echo "root wrote a picture in a folder that a group can write" >&2; exit 1; }
 	refused=$(desktop shot /srv/qorpera-links/acl/a.png 2>&1 || true)
@@ -717,11 +788,26 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	if "$files" open --copy -- "$mine/tree" >/dev/null 2>&1; then echo "root read a folder that others can write, for the desktop account" >&2; exit 1; fi
 	chmod 0700 "$mine/tree/inner"
 	[[ ! -e /home/desktop/Desktop/tree-2 ]] || { echo "a copy that did not come whole stayed on the desktop" >&2; exit 1; }
+	# A copy that is cut off leaves nothing that is not whole (review r1 F1 of #1712): it is made under a name the
+	# desktop does not show and gets its name in one step. Here the account side is ended by another (as the memory
+	# guard would end it) once a part of a large folder is written: what is then on the desktop under the name is the
+	# whole folder or nothing, and nothing stays on its way, because root has the account take that away.
+	mkdir "$mine/large"
+	for part in a b c; do head -c 100000000 /dev/zero >"$mine/large/$part.bin"; done
+	"$files" open --copy -- "$mine/large" >/dev/null 2>&1 &
+	for _ in $(seq 1 500); do [[ -n $(find /home/desktop/Desktop -maxdepth 2 -path "*/.qorpera-desktop-copy.*/*.bin" 2>/dev/null) ]] && break; sleep 0.01; done
+	pkill -KILL -u desktop -f "desktop-files account take" || true
+	wait || true
+	[[ ! -e /home/desktop/Desktop/large ]] || diff -r "$mine/large" /home/desktop/Desktop/large >/dev/null ||
+		{ echo "a copy that was cut off left a part of itself on the desktop" >&2; exit 1; }
+	[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||
+		{ echo "a copy on its way stayed on the desktop: $(ls -A /home/desktop/Desktop | tr "\n" " ")" >&2; exit 1; }
+	rm -rf "$mine/large"
 	roots_own || { echo "copying for the desktop changed something of root" >&2; exit 1; }
 	if leaked; then echo "bytes of a file only root can read are in the desktop account folders" >&2; exit 1; fi
 	rm -rf "$mine" /srv/qorpera-links /tmp/qorpera-links /tmp/site-links
 	desktop stop >/dev/null
-	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
+	gone || exit 1
 	[[ -d /run/qorpera-desktop && -z $(ls -A /run/qorpera-desktop) ]] || { echo "the notes of root outlived the desktop" >&2; exit 1; }
 	rm -f "$secret"
 	# save_coding_value (20260930705000): no clipboard manager keeps what is copied, and the clipboard helper seals a key

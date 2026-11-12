@@ -7,8 +7,9 @@ setpriv, on the real path of what root's side names under its `/`. Everything el
 walk, the archive, the pipe, the checks of the answer. What needs a second account (that the account's side cannot
 reach what only root can) is proved by the image build.
 
-  machine-desktop-files.py HELPER BASE cases          prints the cases' results as JSON
-  machine-desktop-files.py HELPER BASE account ...    the account's side, as the program starts it
+  machine-desktop-files.py HELPER BASE cases               prints the cases' results as JSON
+  machine-desktop-files.py HELPER BASE account ...         the account's side, as the program starts it
+  machine-desktop-files.py HELPER BASE account:HOW ...     the same, held up or ended at one point (the cases say where)
 """
 
 import importlib.machinery
@@ -16,11 +17,13 @@ import importlib.util
 import io
 import json
 import os
+import signal
 import stat
 import struct
 import subprocess
 import sys
 import tarfile
+import time
 
 sys.dont_write_bytecode = True
 helper, base = sys.argv[1], sys.argv[2]
@@ -30,7 +33,28 @@ loader.exec_module(m)
 top, desk = os.path.join(base, "top"), os.path.join(base, "desk")
 m.TOP, m.OWNER, m.DESK = top, os.geteuid(), desk
 
-if sys.argv[3] == "account":
+if sys.argv[3].startswith("account"):
+	# The account's side held up or ended where a case wants it: after its copy is made and before it has its name,
+	# after a link is made, after a picture is written and before it is in its place.
+	how = sys.argv[3].partition(":")[2]
+	if how in ("copied-then-held", "copied-then-ended"):
+		run = subprocess.run
+
+		def held(*args, **more):
+			result = run(*args, **more)
+			if how == "copied-then-ended":
+				os.kill(os.getpid(), signal.SIGKILL)
+			time.sleep(30)
+			return result
+
+		m.subprocess.run = held
+	if how == "linked-then-held":
+		symlink = os.symlink
+		m.os.symlink = lambda *args: (symlink(*args), time.sleep(30))
+	if how == "written-then-held":
+		copyfile = m.shutil.copyfile
+		m.shutil.copyfile = lambda *args: (copyfile(*args), time.sleep(30))
+	sys.argv[3] = "account"
 	try:
 		m.main(sys.argv[3:])
 	except m.Stop as stop:
@@ -45,14 +69,19 @@ def real(path):
 	return path if path.startswith(base) else top + path
 
 
+how = ""
+
+
 def account_command(words):
 	calls.append(words[0])
 	words = list(words)
 	if words[0] in ("copy", "place"):
 		words[1] = real(words[1])
-	if words[0] == "save":
+	if words[0] == "save" or (words[0] == "tidy" and len(words) == 3):
 		words[2] = real(words[2])
-	return [sys.executable, "-I", "-B", os.path.abspath(__file__), helper, base, "account", *words]
+	# What takes away is never held up: only the piece of work a case names.
+	side = "account" if words[0] == "tidy" or not how else f"account:{how}"
+	return [sys.executable, "-I", "-B", os.path.abspath(__file__), helper, base, side, *words]
 
 
 m.account_command = account_command
@@ -114,7 +143,7 @@ def listing(folder):
 
 
 def take(name, kind, archive):
-	return subprocess.run(account_command(["take", name, kind]), input=archive, capture_output=True, check=False)
+	return subprocess.run(account_command(["take", name, kind, "0123456789abcdef"]), input=archive, capture_output=True, check=False)
 
 
 results = {}
@@ -264,10 +293,72 @@ results["save"]["written"] = [
 ]
 
 # An account's side that does not answer (the account can stop its own process) is ended when root's patience is.
-m.PATIENCE = dict(m.PATIENCE, place=1)
+patience = m.PATIENCE
+m.PATIENCE = dict(patience, place=1, copy=1, take=1, save=1)
 m.account_command = lambda words: ["/bin/sleep", "20"]
 results["patience"] = outcome(lambda: m.root_open("/everyone/site", False))
 m.account_command = account_command
+
+# What is cut off leaves nothing that is not whole (review r1 F1 of #1712). Each case: what root answered, which of
+# the account's works it started, and what the desk then holds beyond what it held (hidden names too).
+make("/own/large")
+for name in ("a", "b", "c", "d"):
+	write(f"/own/large/{name}.bin", name * 400000)
+make("/everyone/large")
+write("/everyone/large/a.bin", "a" * 400000)
+make("/everyone/half")
+write("/everyone/half/a.bin", "a" * 400000)
+write("/everyone/half/b.bin", "what the account cannot read", 0o000)
+
+
+def cut(work):
+	before = listing(desk)
+	result = outcome(work)
+	result["new on the desk"] = sorted(set(listing(desk)) - set(before))
+	return result
+
+
+class Slow:
+	"""The pipe to the account's side, held up for three seconds once a part of the archive is through."""
+
+	def __init__(self, pipe):
+		self.pipe, self.through, self.held = pipe, 0, False
+
+	def write(self, data):
+		self.pipe.write(data)
+		self.through += len(data)
+		if self.through > 500000 and not self.held:
+			self.pipe.flush()
+			self.held = True
+			time.sleep(3)
+		return len(data)
+
+	def flush(self):
+		self.pipe.flush()
+
+
+send = m.send
+m.send = lambda fd, status, shown, out: send(fd, status, shown, Slow(out))
+results["cut"] = {"a copy root sends, partly written, at root's patience": cut(lambda: m.root_open("/own/large", True))}
+m.send = send
+how = "copied-then-held"
+results["cut"]["a copy the account makes, at root's patience"] = cut(lambda: m.root_open("/everyone/large", True))
+how = "copied-then-ended"
+results["cut"]["a copy the account makes, its process ended by another"] = cut(lambda: m.root_open("/everyone/large", True))
+how = ""
+results["cut"]["a copy that fails half way"] = cut(lambda: m.root_open("/everyone/half", True))
+results["cut"]["a copy after those"] = cut(lambda: m.root_open("/everyone/large", True))
+how = "linked-then-held"
+results["cut"]["a link, after it was made"] = cut(lambda: m.root_open("/everyone/large", False))
+how = ""
+results["cut"]["the link again"] = cut(lambda: m.root_open("/everyone/large", False))
+write("/everyone/kept.png", "the picture that was there")
+how = "written-then-held"
+results["cut"]["a picture, written and not yet in its place"] = outcome(lambda: m.root_save(picture, "/everyone/cut/new.png"))
+results["cut"]["a picture over one that was there"] = outcome(lambda: m.root_save(picture, "/everyone/kept.png"))
+how = ""
+results["cut"]["pictures"] = [sorted(os.listdir(top + "/everyone/cut")), read(top + "/everyone/kept.png"), sorted(name for name in os.listdir(top + "/everyone") if name.endswith(".part"))]
+m.PATIENCE = patience
 
 # The account's answer is checked before root goes by it.
 results["answers"] = {
