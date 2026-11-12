@@ -780,6 +780,34 @@ describe("an import from end to end, with every part as merged", { timeout: 240_
 		quiet(w.events);
 	});
 
+	it("refuses in the look a file name git takes and the company folder does not, and never closes the place", async () => {
+		const w = await world();
+		const work = await scratch("code-import-e2e-bad-");
+		await git(work, "init", "--quiet", "--initial-branch=main");
+		await writeFile(join(work, "bad."), "a trailing dot\n");
+		await git(work, "add", ".");
+		await git(work, "commit", "--quiet", "-m", "bad");
+		const path = "code/_incoming/bad/bad.bundle";
+		await mkdir(dirname(join(w.companyRoot, path)), { recursive: true });
+		await git(work, "bundle", "create", join(w.companyRoot, path), "--all");
+		const sha256 = createHash("sha256")
+			.update(await readFile(join(w.companyRoot, path)))
+			.digest("hex");
+		const row = w.k.ask("acme", "bad", { file: path }, { fileSha256: sha256 });
+		await w.pass();
+		expect(w.k.raised).toEqual([]);
+		expect(row.outcome).toEqual({
+			schema: "qorpera.code-request-outcome/v1",
+			state: "refused",
+			code: "CODE_HOST_NAMES_FOLDER_REFUSES",
+		});
+		// No close ran: the place was never made, so it holds no restore's mark; and no repository is registered.
+		expect(await exists(w.place("acme", "bad"))).toBe(false);
+		expect(w.k.registry.has("acme/bad")).toBe(false);
+		expect(w.k.changes).toEqual([]);
+		quiet(w.events);
+	});
+
 	it("fetches through the connection only in the fetch's window, and a run cut after the fetch goes on without fetching again", async () => {
 		const w = await world();
 		const row = w.k.ask("acme", "web", { github: "Acme/Shop" }, { via: "connection" });
