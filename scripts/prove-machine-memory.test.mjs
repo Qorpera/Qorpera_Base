@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -11,7 +11,8 @@ import verdicts from "./machine-memory-proof/verdicts.cjs";
 // The memory proof (scripts/prove-machine-memory.sh and scripts/machine-memory-proof/) passes on nothing that was not
 // really answered. Review round 1 of #1692 found two ways it did: a look of the guest helper that timed out or
 // answered nothing counted as answered (F1), and a browser phase that failed, or the whole browser being ended, only
-// printed a number (F2).
+// printed a number (F2). Round 2 found a third: the parts ran where bash's errexit does not reach, so a machine that
+// could not be deleted, made or started was stepped over and the next part's checks ran on the machine left behind.
 const { tabsVerdict, whatEnded } = verdicts;
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(join(repositoryRoot, path), "utf8");
@@ -325,4 +326,116 @@ test("an ended tab is no failure, a browser that is gone always is, and the tabs
 	assert.equal(tabsVerdict({ past: false, stop: "room", ended: 0, failures: [] }), undefined);
 	assert.equal(tabsVerdict({ past: false, stop: "room", ended: 1, failures: [] }), undefined);
 	assert.match(tabsVerdict({ past: false, stop: "failing", ended: 0, failures: [] }), /^it stopped at "failing"$/);
+});
+
+// Review round 2 of #1692 (F1). The proof's host half, run whole against a stand-in for lxc
+// (machine-memory-proof/stand-in-lxc.sh): no LXD, no machine. Every leg of the stand-in answers one passing check and
+// notes the size of the machine it ran on, so what these cases judge is the host's own steps.
+test("a part ends, and the proof fails, when its machine could not be deleted, made, started or restarted (review r2 F1)", { skip: needsLinux }, async () => {
+	const temporary = await mkdtemp(join(tmpdir(), "memory-proof-host-"));
+	try {
+		const bin = join(temporary, "bin");
+		await mkdir(bin);
+		await writeFile(join(bin, "lxc"), read("scripts/machine-memory-proof/stand-in-lxc.sh"), { mode: 0o755 });
+		// The proof wants root; the stand-in needs none.
+		await writeFile(join(bin, "id"), "#!/bin/sh\necho 0\n", { mode: 0o755 });
+		let number = 0;
+		/** One run of the proof: the parts, the stand-in's calls that fail ("verb n"), what a machine says it has. */
+		const prove = async (parts, { fails = [], saysKb } = {}) => {
+			number += 1;
+			const state = join(temporary, `state-${number}`);
+			await mkdir(join(state, "machines"), { recursive: true });
+			await writeFile(join(state, "fails"), fails.map((line) => `${line}\n`).join(""));
+			if (saysKb) await writeFile(join(state, "says-kb"), `${saysKb}\n`);
+			const result = spawnSync(
+				"bash",
+				[join(repositoryRoot, "scripts/prove-machine-memory.sh"), "0".repeat(64), "qorpera-build", "qorpera0", "qorpera-vm", ...parts],
+				{ encoding: "utf8", timeout: 120_000, env: { PATH: `${bin}:${process.env.PATH}`, STUB: state } },
+			);
+			let legs = "";
+			try {
+				legs = readFileSync(join(state, "legs"), "utf8");
+			} catch {}
+			return { status: result.status, out: result.stdout + result.stderr, legs, left: readdirSync(join(state, "machines")) };
+		};
+		/** The proof failed, said so, never said it passed, and left no machine. */
+		const failed = (run, why) => {
+			assert.equal(run.status, 1, run.out);
+			assert.match(run.out, why);
+			assert.doesNotMatch(run.out, /PROOF PASSED/);
+			assert.deepEqual(run.left, [], run.out);
+		};
+
+		// Healthy: each part on a machine of its own size, and the proof passes.
+		const healthy = await prove(["numbers", "small"]);
+		assert.equal(healthy.status, 0, healthy.out);
+		assert.match(healthy.out, /\nchecks: 8 ok, 0 failed; parts ended: 2 of 2; the parts' own status: 0; [^\n]+\nPROOF PASSED\n/);
+		assert.equal(healthy.out.match(/\nCHECK ok {3}the part's machine is the one it asked for: 2 processors, [24]GiB /g).length, 2);
+		assert.equal(
+			healthy.legs,
+			"4GiB mix nothing-else-running\n4GiB mix all-processors-busy busy\n4GiB load 1500 stop 24\n4GiB after stop\n2GiB load 600 stop 24\n2GiB after stop\n",
+		);
+		assert.deepEqual(healthy.left, []);
+
+		// The reviewer's case: the delete after `numbers` fails, so making and starting the machine of `small` fail too,
+		// while the machine left behind (4 GiB) still answers. Not one leg of `small` may run, and the proof fails.
+		const leftBehind = await prove(["numbers", "small"], { fails: ["delete 1", "init 2", "start 2"] });
+		failed(leftBehind, /\nFAIL: the machine \S+ could not be deleted\n(?:[^]*\n)?checks: 5 ok, 0 failed; parts ended: 0 of 2; the parts' own status: 1; [^\n]+\nPROOF FAILED\n/);
+		assert.equal(leftBehind.legs, "4GiB mix nothing-else-running\n4GiB mix all-processors-busy busy\n4GiB load 1500 stop 24\n4GiB after stop\n");
+
+		// Each step alone: making, starting, a file put in place, the list of the build space after a delete.
+		for (const [fails, why] of [
+			[["init 2"], /\nFAIL: the machine could not be made\n/],
+			[["start 2"], /\nFAIL: the machine could not be started\n/],
+			[["file-push 8"], /\nFAIL: guest\.sh could not be put into the machine\n/],
+			[["list 3"], /\nFAIL: the build space qorpera-build could not be listed\n/],
+		]) {
+			const run = await prove(["numbers", "small"], { fails });
+			failed(run, why);
+			assert.match(run.out, /\nchecks: \d+ ok, 0 failed; parts ended: [01] of 2; the parts' own status: 1; [^\n]+\nPROOF FAILED\n/);
+			assert.doesNotMatch(run.legs, /load 600/, fails[0]);
+		}
+
+		// A restart that fails ends the part before the legs that need the new boot.
+		const restart = await prove(["checks"], { fails: ["restart 1"] });
+		failed(restart, /\nFAIL: the machine could not be restarted\n[^]*\nPROOF FAILED\n/);
+		assert.equal(restart.legs, "4GiB boot\n4GiB quiet\n4GiB pointer\n4GiB hide\n");
+
+		// A machine that is not the size the part asked for (here: one of 4 GiB under the 2 GiB part) is a failed check,
+		// and no leg runs on it.
+		const wrongSize = await prove(["small"], { saysKb: 3925216 });
+		failed(wrongSize, /\nCHECK FAIL the part's machine is the one it asked for: 2 processors, 2GiB \(it has \[2\] processors, \[3925216\] kB\)\n/);
+		assert.match(wrongSize.out, /\nchecks: 0 ok, 1 failed; parts ended: 0 of 1; the parts' own status: 1; /);
+		assert.equal(wrongSize.legs, "");
+
+		// A build space whose list cannot be read is not an empty one: the proof does not start.
+		const unread = await prove(["small"], { fails: ["list 1"] });
+		assert.equal(unread.status, 1, unread.out);
+		assert.match(unread.out, /^FAIL: the build space qorpera-build could not be listed\n/m);
+		assert.doesNotMatch(unread.out, /PROOF-START|PROOF PASSED/);
+	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
+});
+
+test("the proof's parts run where errexit is really on, and every step on the machine itself ends the part when it fails", () => {
+	const proof = read("scripts/prove-machine-memory.sh");
+	// Not on the left of `||` (bash ignores errexit there, in the functions called there too), and the parts' own
+	// status is read from the pipeline.
+	assert.doesNotMatch(code(proof), /\|\| parts_status=/);
+	assert.match(proof, /\nset \+e\n\(\n\tset -e\n\tparts\n\) 2>&1 \| tee "\$work\/out"\nparts_status=\$\{PIPESTATUS\[0\]\}\nset -e\n/);
+	// Whatever errexit does: making, starting, restarting, deleting and filling the machine each say `|| fail`, and
+	// the build space's list is never read as empty when it could not be read.
+	for (const step of [
+		/\n\t\tfail "the machine could not be made"\n/,
+		/\n\tlx start "\$MACHINE" \|\| fail "the machine could not be started"\n/,
+		/\n\tlx restart "\$MACHINE" \|\| fail "the machine could not be restarted"\n/,
+		/\n\tlx delete --force "\$MACHINE" >\/dev\/null \|\| fail "the machine \$MACHINE could not be deleted"\n/,
+		/\n\t\tlx file push [^\n]+ \|\| fail "\$file could not be put into the machine"\n/,
+		/\nnames\(\) \{ lx list -f csv -c n \|\| fail "the build space \$PROJECT could not be listed"; \}\n/,
+	])
+		assert.match(proof, step);
+	assert.equal(proof.match(/\n\t?held=\$\(names\) \|\| exit 1\n/g).length, 3);
+	assert.doesNotMatch(code(proof), /\$\(lx list -f csv -c n\) \]\]/);
+	assert.equal(spawnSync("bash", ["-n", join(repositoryRoot, "scripts/machine-memory-proof/stand-in-lxc.sh")], { encoding: "utf8" }).status, 0);
 });

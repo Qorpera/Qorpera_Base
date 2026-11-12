@@ -57,8 +57,12 @@ for file in "${PIECES[@]}"; do [[ -f $here/$file ]] || fail "missing $here/$file
 lx() { lxc --project "$PROJECT" "$@" </dev/null; }
 # Inside the machine, never for longer than two minutes: a machine that stopped answering must not hold the proof.
 inside() { timeout 120 lxc --project "$PROJECT" exec "$MACHINE" -- "$@" </dev/null; }
+# The names in the build space, one a line. A list that could not be read is no empty build space: whoever asks ends
+# with it (`|| exit 1` where it is asked, so that holds wherever errexit does not reach).
+names() { lx list -f csv -c n || fail "the build space $PROJECT could not be listed"; }
 lx image info "$IMAGE" >/dev/null 2>&1 || fail "the project $PROJECT does not see the image $IMAGE"
-[[ -z $(lx list -f csv -c n) ]] || fail "the build space $PROJECT is in use: prove when it is empty"
+held=$(names) || exit 1
+[[ -z $held ]] || fail "the build space $PROJECT is in use: prove when it is empty"
 
 MACHINE="qorpera-machine-build-memory-proof-$$"
 work=$(mktemp -d /tmp/qorpera-machine-memory-proof.XXXXXXXX)
@@ -68,12 +72,19 @@ cleanup() {
 	set +e
 	touch "$work/stop"
 	wait 2>/dev/null
+	# Gone means: a list that could be read no longer names it.
+	local left=unknown listed
 	for _ in 1 2 3; do
 		lx delete --force "$MACHINE" >/dev/null 2>&1
-		[[ -z $(lx list -f csv -c n | grep -x "$MACHINE") ]] && break
+		if listed=$(lx list -f csv -c n 2>/dev/null); then
+			if grep -qx -- "$MACHINE" <<<"$listed"; then left=yes; else left=no; fi
+		else
+			left=unknown
+		fi
+		[[ $left == no ]] && break
 		sleep 3
 	done
-	[[ -z $(lx list -f csv -c n | grep -x "$MACHINE") ]] || { echo "the machine $MACHINE is still there: delete it by hand" >&2; status=1; }
+	[[ $left == no ]] || { echo "the machine $MACHINE may still be there (seen: $left): look, and delete it by hand" >&2; status=1; }
 	rm -rf -- "$work"
 	echo "cleanup done (status $status); the build space now holds: [$(lx list -f csv -c n | tr '\n' ' ')]"
 	exit "$status"
@@ -92,34 +103,57 @@ usable() { # waits until the boot is usable, as the executor judges it
 settle() { # the boot's last jobs are done (or 60 s passed), the watchdog timer stopped, the proof's pieces in place
 	# Only a wait: what it answers (running, degraded, cut off) is not judged here. `no unit failed` is a check inside.
 	inside timeout 60 systemctl is-system-running --wait >/dev/null 2>&1 || true
-	inside systemctl stop qorpera-machine-watchdog.timer qorpera-machine-watchdog.service
-	inside mkdir -p /srv/memory-proof
+	inside systemctl stop qorpera-machine-watchdog.timer qorpera-machine-watchdog.service || fail "the machine's watchdog could not be stopped"
+	inside mkdir -p /srv/memory-proof || fail "the proof's folder could not be made in the machine"
 	local file
 	for file in "${PIECES[@]}"; do
-		lx file push "$here/$file" "$MACHINE/srv/memory-proof/$file" --uid 0 --gid 0 --mode 0755
+		lx file push "$here/$file" "$MACHINE/srv/memory-proof/$file" --uid 0 --gid 0 --mode 0755 || fail "$file could not be put into the machine"
 	done
 }
-machine() { # cpus memory
-	local started
+# Every step that makes, starts, restarts or deletes the machine, or puts a file into it, ends the part when it fails
+# (`|| fail`): a part must never go on with a machine it did not make. Review round 2 of #1692: with those steps
+# unjudged, a delete that failed after one part let the next part's checks run on the machine left behind.
+machine() { # cpus memory (whole GiB): a NEW machine of that size, running, with the proof's pieces in it
+	local started held cpus kb asked
 	started=$(date +%s)
+	held=$(names) || exit 1
+	[[ -z $held ]] || fail "the build space holds [$(tr '\n' ' ' <<<"$held")] where a part's new machine is to be made"
 	lx init "$IMAGE" "$MACHINE" --vm --no-profiles --storage "$POOL" -d root,size=10GiB -n "$NETWORK" \
 		-d eth0,security.mac_filtering=true -d eth0,security.ipv4_filtering=true -d eth0,security.ipv6_filtering=true \
 		-d eth0,security.port_isolation=true -c limits.cpu="$1" -c limits.memory="$2" -c boot.mode=uefi-secureboot \
-		-c boot.autostart=false -c user.qorpera.image_builder=true -c user.qorpera.purpose=machine-image
-	lx start "$MACHINE"
+		-c boot.autostart=false -c user.qorpera.image_builder=true -c user.qorpera.purpose=machine-image ||
+		fail "the machine could not be made"
+	lx start "$MACHINE" || fail "the machine could not be started"
 	usable || fail "the machine did not become usable"
 	echo "M machine cpus=$1 memory=$2 usable_s=$(( $(date +%s) - started ))"
+	# It is the machine this part asked for: its processors, and its memory as the machine itself counts it (a little
+	# under what it was given, never over, never the size of another part's machine).
+	[[ $2 =~ ^[1-9][0-9]*GiB$ ]] || fail "a machine's memory is asked in whole GiB, not as $2"
+	asked=$(( ${2%GiB} * 1048576 ))
+	cpus=$(inside nproc) || fail "the machine did not say how many processors it has"
+	kb=$(inside awk '/^MemTotal:/ {print $2}' /proc/meminfo) || fail "the machine did not say how much memory it has"
+	if [[ $cpus == "$1" && $kb =~ ^[1-9][0-9]*$ ]] && (( kb <= asked && kb * 100 >= asked * 85 )); then
+		echo "CHECK ok   the part's machine is the one it asked for: $1 processors, $2 (it has $cpus, $(( kb / 1024 )) MiB)"
+	else
+		echo "CHECK FAIL the part's machine is the one it asked for: $1 processors, $2 (it has [$cpus] processors, [$kb] kB)"
+		fail "the part's machine is not the one it asked for"
+	fi
 	settle
 }
 restart() {
 	local started
 	started=$(date +%s)
-	lx restart "$MACHINE"
+	lx restart "$MACHINE" || fail "the machine could not be restarted"
 	usable || fail "the machine did not become usable after a restart"
 	echo "M restart usable_s=$(( $(date +%s) - started ))"
 	settle
 }
-gone() { lx delete --force "$MACHINE" >/dev/null; }
+gone() { # deleted, and seen to be gone: the next part makes its own
+	local held
+	lx delete --force "$MACHINE" >/dev/null || fail "the machine $MACHINE could not be deleted"
+	held=$(names) || exit 1
+	[[ -z $held ]] || fail "the build space still holds [$(tr '\n' ' ' <<<"$held")] after the part's machine was deleted"
+}
 guest() { # seconds, then the leg's words
 	local seconds=$1 status=0
 	shift
@@ -199,10 +233,8 @@ probed() { # what, the least number of clicks, seconds, then the leg's words
 }
 
 echo "PROOF-START $(date -u +%FT%TZ) image $IMAGE parts ${PARTS[*]} host load $(cut -d' ' -f1-3 /proc/loadavg)"
-# The parts run in a shell of their own that ends at the first step that fails outright (a machine that never became
-# usable, a file that could not be put in place): its status is kept and judged with the checks below.
-parts_status=0
-{
+parts() {
+	local part
 	for part in "${PARTS[@]}"; do
 		echo "PART $part $(date -u +%T)"
 		case $part in
@@ -258,7 +290,23 @@ parts_status=0
 		esac
 		echo "PART-END $part $(date -u +%T)"
 	done
-} 2>&1 | tee "$work/out" || parts_status=$?
+}
+# The parts run in a shell of their own that ends at the first step that fails outright (a machine that could not be
+# made, started, restarted or deleted, one that never became usable, a file that could not be put in place): its
+# status is kept and judged with the checks below.
+#
+# errexit must really be on in that shell. Bash switches it off inside everything on the left of `||` and inside an
+# `if`'s question, in the functions called there too, so the parts are NOT run as `{ … } | tee … || status=$?`
+# (review round 2 of #1692: in that shape a failed step was stepped over and the part went on). Here errexit is put
+# aside in this shell for the one line, set anew in the parts' shell, and the parts' own status is read from the
+# pipeline.
+set +e
+(
+	set -e
+	parts
+) 2>&1 | tee "$work/out"
+parts_status=${PIPESTATUS[0]}
+set -e
 ended=$(grep -c '^PART-END ' "$work/out" || true)
 failed=$(grep -c '^CHECK FAIL' "$work/out" || true)
 passed=$(grep -c '^CHECK ok' "$work/out" || true)
