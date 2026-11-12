@@ -54,11 +54,18 @@ const KEYS = {
 	describe: ["action", "operationKey", "owner", "name", "change", "notice", "picture"],
 	bring_in: ["action", "operationKey", "owner", "name", "from", "look"],
 } as const;
-/** A git bundle an agent wrote for bring_in, as a company path, and the most bytes of its path. */
-const INCOMING = /^code\/_incoming\/[^/]+\/[^/]+\.bundle$/;
+/** A git bundle an agent wrote for bring_in, as a company path, and the most bytes of its path: exactly the path
+ * `qorpera_code_import_from_valid` takes (20260930736000, as the executor's `codeImportIncomingPathValid`), so a path
+ * SQL would refuse is refused here in words. The folder is not git's own `repo.git`, and no part holds `..`. */
+const INCOMING =
+	/^code\/_incoming\/([A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9_-])?)\/[A-Za-z0-9][A-Za-z0-9._-]{0,92}\.bundle$/;
 const INCOMING_BYTES = 1024;
 /** The most bytes of a branch to bring in: the record keeps at most 200 (20260930736000). */
 const BRANCH_BYTES = 200;
+/** A branch to bring in as SQL takes it (a session's base branch, `qorpera_coding_repository_valid`): letters, digits,
+ * `.`, `_`, `-` and `/`, starting with a letter or a digit; no `..`; no part empty, starting or ending with `.`, or
+ * ending in `.lock`. */
+const BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 /** How often an undo's request is looked at, and for how long: the executor claims requests every 5 s, and an undo's job
  * is a handful of git commands. */
 const UNDO_LOOK_MS = 2000;
@@ -141,9 +148,16 @@ function incoming(value: unknown): string {
 	} catch {
 		path = undefined;
 	}
-	if (path === undefined || Buffer.byteLength(path) > INCOMING_BYTES || !INCOMING.test(path))
+	const folder = path === undefined ? undefined : INCOMING.exec(path)?.[1];
+	if (
+		path === undefined ||
+		Buffer.byteLength(path) > INCOMING_BYTES ||
+		folder === undefined ||
+		path.includes("..") ||
+		folder.toLowerCase() === "repo.git"
+	)
 		throw new CloudToolArgumentRefusal(
-			"from.file is the company path of a git bundle, code/_incoming/<folder>/<name>.bundle, of at most 1024 bytes",
+			"from.file is the company path of a git bundle, code/_incoming/<folder>/<name>.bundle, of at most 1024 bytes: the folder and the name of letters, digits, ., _ and -, each starting with a letter or a digit",
 		);
 	return path;
 }
@@ -152,15 +166,15 @@ function incoming(value: unknown): string {
 function branch(value: unknown): string {
 	const name = typeof value === "string" ? value.trim().replace(/^refs\/heads\//, "") : "";
 	if (
-		!name ||
 		Buffer.byteLength(name) > BRANCH_BYTES ||
-		Buffer.from(name).toString("utf8") !== name ||
-		/[\u0000- \u007f~^:?*[\\]/.test(name) ||
-		name.startsWith("-") ||
-		name.includes("..")
+		!BRANCH.test(name) ||
+		name.includes("..") ||
+		name
+			.split("/")
+			.some((part) => part === "" || part.startsWith(".") || part.endsWith(".") || part.endsWith(".lock"))
 	)
 		throw new CloudToolArgumentRefusal(
-			"from.branch is the name of the file's branch to bring in, of at most 200 bytes",
+			"from.branch is the name of the file's branch to bring in, of at most 200 bytes: letters, digits, ., _, - and /",
 		);
 	return name;
 }

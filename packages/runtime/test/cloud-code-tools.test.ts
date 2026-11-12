@@ -304,8 +304,43 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 					"code/_incoming/../shop/shop.bundle",
 					`code/_incoming/shop/${"x".repeat(1010)}.bundle`,
 					"",
+					// What qorpera_code_import_from_valid refuses (20260930736000): the folder and the name of letters,
+					// digits, ., _ and -, each from a letter or a digit, the folder 1 to 100 not ending in a dot and not
+					// git's own repo.git, the name 1 to 93 before .bundle, no "..".
+					"code/_incoming/my shop/shop.bundle",
+					"code/_incoming/shop/my shop.bundle",
+					"code/_incoming/shöp/shop.bundle",
+					"code/_incoming/shop/shöp.bundle",
+					"code/_incoming/.shop/shop.bundle",
+					"code/_incoming/shop/_shop.bundle",
+					"code/_incoming/shop./shop.bundle",
+					"code/_incoming/repo.git/shop.bundle",
+					"code/_incoming/Repo.GIT/shop.bundle",
+					"code/_incoming/shop/a..b.bundle",
+					"code/_incoming/sh@p/shop.bundle",
+					`code/_incoming/${"a".repeat(101)}/shop.bundle`,
+					`code/_incoming/shop/${"b".repeat(94)}.bundle`,
 				].map((file) => [{ ...bringIn, from: { file } }, "from.file is the company path of a git bundle"] as const),
-				...["", "two words", "-main", "a..b", "x".repeat(201), "a\nb", 7].map(
+				...[
+					"",
+					"two words",
+					"-main",
+					"a..b",
+					"x".repeat(201),
+					"a\nb",
+					7,
+					// What a session's base branch may not be (qorpera_coding_repository_valid), which SQL refuses too.
+					"über",
+					"feature@2",
+					"_main",
+					".main",
+					"a/.b",
+					"a/",
+					"a//b",
+					"main.lock",
+					"a/b.",
+					"a#b",
+				].map(
 					(branch) =>
 						[
 							{ ...bringIn, from: { file: "code/_incoming/shop/shop.bundle", branch } },
@@ -934,6 +969,26 @@ describe("manage_code bring_in: one answer in plain words per way it can go", ()
 			});
 		} finally {
 			file.run.close();
+		}
+		// At SQL's bounds (qorpera_code_import_from_valid): a folder of 100 and a name of 93 before .bundle, and a branch
+		// of 200 with a slash, are sent as they are.
+		const bounds = await fixture((method) =>
+			method === IMPORT ? asked : imported({ look: look({ commits: 1, files: 1, defaultBranch: null }) }),
+		);
+		const folder = `S${"h.o_p-".repeat(16)}x9_`;
+		const name = `${"b".repeat(92)}9`;
+		const release = `release/${"r".repeat(191)}9`;
+		try {
+			await bounds.invoke({
+				...bringIn,
+				from: { file: `code/_incoming/${folder}/${name}.bundle`, branch: release },
+			});
+			expect([folder.length, name.length, release.length]).toEqual([100, 93, 200]);
+			expect(bounds.calls[0]?.args.p_request).toMatchObject({
+				from: { file: `code/_incoming/${folder}/${name}.bundle`, branch: release },
+			});
+		} finally {
+			bounds.run.close();
 		}
 	});
 
