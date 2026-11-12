@@ -44,7 +44,8 @@ export const CLOUD_RUN_LOG_BLOCK_BYTES = 64 * 1024;
 /** The most a step record takes as stored, with its keys and newline. A pending step counts at this size, so filling
  * in its result never takes its block past CLOUD_RUN_LOG_BLOCK_BYTES. */
 export const CLOUD_RUN_LOG_STEP_BYTES = 49 * 1024;
-/** `args`, `text`, the result envelope and `paths`, each as stored (JSON escaping and quotes included). */
+/** `args`, `text` and `paths`, each as stored (JSON escaping and quotes included). The result envelope is kept whole: one
+ * result's bound (MAX_CLOUD_TOOL_RESULT_BYTES, 32 KiB), which the step's other fields give way to within the step. */
 export const CLOUD_RUN_LOG_FIELD_BYTES = 8 * 1024;
 /** The most paths a step's line names. `paths` is never cut: a step that names more, or more than
  * CLOUD_RUN_LOG_FIELD_BYTES of them, is written narrow (§4.5). */
