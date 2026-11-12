@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { bytes, shown } from "./code-words.ts";
+import { bytes, oneLine, shown } from "./code-words.ts";
 
 /** A repository's website (own code storage, step 4, part C1; STEP4-RELEASES-PLAN.md 5 and 8.1, as STEP4-BUILD.md
  * section 2 replaced them). A repository says in its checks file which folder its checks leave the built site in
@@ -247,14 +247,17 @@ export const CODE_CHECKS_NEWER_RUN: readonly string[] = [
  *    it, never its site, which is served at `https://sites.qorpera.com/<slug>/~s<visitor>/`): each `.html` and `.htm`
  *    file, read with Python's own HTML parser (tags and attributes of any case, values quoted or bare, character
  *    references decoded; comments, and the text of `script`, `style` and every other element, are no attributes), for
- *    `href`, `src`, `poster`, `action`, `formaction`, `xlink:href`, `data` on `object`, each URL of a `srcset` or an
- *    `imagesrcset`, the URL of a `<meta http-equiv="refresh">`, and the CSS of a `style` element or attribute; each
- *    `.css` file for `url(...)` and `@import`, outside comments and strings. A value that starts with one `/` once a
- *    browser has read it (the spaces and controls at its ends and every tab and line break dropped, a backslash taken
- *    as a slash) refuses the site: `SITE_LINKS_FROM_ROOT <file> <link>`, the first in C order of files and in each
- *    file's own order. `//host`, a scheme, `#`, `?` and an empty value are no such link. Scripts are not read. A file or
- *    link that holds a secret value is never named (step 4's rule): `SITE_HOLDS_SECRET <NAME>` alone. Each file is read
- *    once more as text, at most 25 MiB in all.
+ *    `href`, `src`, `poster`, `action`, `formaction`, `xlink:href`, `background`, `data` on `object`, each URL of a
+ *    `srcset`, an `imagesrcset` or a `ping`, the URL of a `<meta http-equiv="refresh">`, and the CSS of a `style`
+ *    element or attribute; each `.css` file as CSS. CSS is read token by token as a browser does: comments anywhere
+ *    between tokens (`@import`, a comment, then its string), a URL of `url(...)` (quoted, or a bare one, which is no URL at all
+ *    when a space, a quote or a parenthesis stands inside it, a comment's included: CSS drops such a declaration), the
+ *    string after `@import`, and each string directly inside `image-set(...)`, its escapes decoded; any other string is
+ *    no link. A value that starts with one `/` once a browser has read it (the spaces and controls at its ends and every
+ *    tab and line break dropped, a backslash taken as a slash) refuses the site: `SITE_LINKS_FROM_ROOT <file> <link>`,
+ *    the first in C order of files and in each file's own order. `//host`, a scheme, `#`, `?` and an empty value are no
+ *    such link. Scripts and SVG files are not read. A file or link that holds a secret value is never named (step 4's
+ *    rule): `SITE_HOLDS_SECRET <NAME>` alone. Each file is read once more as text, at most 25 MiB in all.
  * 5. Git, with an environment of its own (no variable, configuration or attribute of the session's or of the copy's,
  *    which the repository's own code writes): a new scratch repository `$d/site.git`; the files' exact bytes
  *    (`hash-object --no-filters`, which reads them again), and one tree, all of mode 100644, of the ids of the bytes
@@ -267,8 +270,10 @@ export const CODE_CHECKS_NEWER_RUN: readonly string[] = [
  *    more that it was about to; no file at an object's name is ever partial.
  * 7. Three lines: `tree <id>`, `files <n>`, `bytes <n>`.
  * A problem prints one line `<CODE>[ <detail>]` and exits 3, the detail's bytes outside printable ASCII and its
- * backslashes written `\xHH` (lowercase), cut at a whole byte's spelling within 1,000 bytes. Anything that is not the
- * code's fault exits otherwise: 2 for a run folder or a recipe that is not as the host made it, 4 for a file that
+ * backslashes written `\xHH` (lowercase), at most 1,000 bytes. A detail is printed whole or not at all (review of
+ * #1691, F1: a cut one can carry the start of a value that neither the transport's mask nor the host's knows whole):
+ * a link that does not fit leaves `SITE_LINKS_FROM_ROOT <file>`, a path that does not fit leaves the code alone (or
+ * `SITE_HOLDS_SECRET <NAME>`). Anything that is not the code's fault exits otherwise: 2 for a run folder or a recipe that is not as the host made it, 4 for a file that
  * changed while it was taken or a git command that failed, 1 for anything else Python could not do. */
 const COLLECT_PY = String.raw`import hashlib,html.parser,os,re,shutil,stat,subprocess,sys
 E=os.environb
@@ -278,24 +283,22 @@ def say(code,detail=b""):
 	os.write(1,code+(b" "+detail if detail else b"")+b"\n")
 	sys.exit(3)
 def esc(p):
-	out=b""
-	for c in p:
-		piece=bytes([c]) if 32<=c<127 and c!=92 else b"\\x%02x"%c
-		if len(out)+len(piece)>1000:
-			break
-		out+=piece
-	return out
+	return b"".join(bytes([c]) if 32<=c<127 and c!=92 else b"\\x%02x"%c for c in p)
 NAME=re.compile(rb"[A-Za-z_][A-Za-z0-9_]{0,127}")
 SECRETS=[]
 for name in E.get(b"QORPERA_SITE_SECRET_NAMES",b"").split():
 	value=E.get(name) if NAME.fullmatch(name) else None
 	if value is not None and len(value)>=8:
 		SECRETS.append((name,value))
-def named(code,p,variable=b""):
-	held=[name for name,value in SECRETS if value in p]
+def named(code,p,variable=b"",link=None):
+	held=[name for name,value in SECRETS if value in (p if link is None else p+b" "+link)]
 	if held:
 		say(b"SITE_HOLDS_SECRET",variable or held[0])
-	say(code,(variable+b" " if variable else b"")+esc(p))
+	head=variable+b" " if variable else b""
+	for detail in ([esc(p)+b" "+esc(link)] if link is not None else [])+[esc(p)]:
+		if len(head+detail)<=1000:
+			say(code,head+detail)
+	say(code,variable)
 top=d+b"/src"
 if not stat.S_ISDIR(os.lstat(top).st_mode):
 	sys.exit(2)
@@ -369,14 +372,42 @@ def rooted(u):
 	t=t[:2].replace("\\","/")+t[2:]
 	if t[:1]=="/" and t[1:2]!="/":
 		raise Rooted(u)
-CSS=re.compile(r"""/\*.*?(?:\*/|\Z)|(?<![\w-])url\(\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^)\s]*)|@import\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|"(?:\\.|[^"\\\n])*"?|'(?:\\.|[^'\\\n])*'?""",re.I|re.S)
+CSS=re.compile(r"""(?P<c>/\*.*?(?:\*/|\Z))|(?<![\w-])(?P<uf>url\()(?=\s*["'])|(?<![\w-])url\(\s*(?P<u>[^)]*)\)?|(?<![\w-])(?P<set>(?:-webkit-)?image-set\()|(?P<at>@[\w-]+)|(?P<p>[()])|(?P<s>"(?:\\.|[^"\\\n])*"?|'(?:\\.|[^'\\\n])*'?)""",re.I|re.S)
+ESCAPE=re.compile(r"\\(?:([0-9a-fA-F]{1,6})[ \t\n\r\f]?|(\n)|(.))",re.S)
+def unescaped(text):
+	def one(m):
+		if m[1]:
+			n=int(m[1],16)
+			return chr(n) if 0<n<=0x10FFFF and not 0xD800<=n<=0xDFFF else "\ufffd"
+		return "" if m[2] else m[3]
+	return ESCAPE.sub(one,text)
 def css(text):
+	stack=[]
+	importing=False
+	last=0
 	for m in CSS.finditer(text):
-		u=m.group(1) or m.group(2)
-		if u:
-			if u[0] in "'\"":
-				u=u[1:-1] if len(u)>1 and u[-1]==u[0] else u[1:]
-			rooted(u)
+		if importing and text[last:m.start()].strip():
+			importing=False
+		last=m.end()
+		kind=m.lastgroup
+		if kind=="c":
+			continue
+		if kind=="u":
+			u=m["u"].strip()
+			if not re.search(r"[\s'\"(]",ESCAPE.sub("",u)):
+				rooted(unescaped(u))
+		elif kind=="s":
+			if importing or (stack and stack[-1]!="("):
+				q=m["s"]
+				rooted(unescaped(q[1:-1] if len(q)>1 and q[-1]==q[0] else q[1:]))
+		elif kind in ("uf","set"):
+			stack.append(kind)
+		elif kind=="p":
+			if m["p"]=="(":
+				stack.append("(")
+			elif stack:
+				stack.pop()
+		importing=kind=="at" and m["at"].lower()=="@import"
 def srcset(v):
 	at=0
 	while at<len(v):
@@ -402,7 +433,7 @@ def srcset(v):
 		if u:
 			rooted(u)
 REFRESH=re.compile(r"\s*[0-9.]+\s*[;,]?\s*(?:url\s*=\s*)?(.*)",re.I|re.S)
-LEADS=("href","src","poster","action","formaction","xlink:href")
+LEADS=("href","src","poster","action","formaction","xlink:href","background")
 class Page(html.parser.HTMLParser):
 	def __init__(self):
 		super().__init__(convert_charrefs=True)
@@ -416,6 +447,9 @@ class Page(html.parser.HTMLParser):
 				rooted(value)
 			elif name in ("srcset","imagesrcset"):
 				srcset(value)
+			elif name=="ping":
+				for u in value.split():
+					rooted(u)
 			elif name=="style":
 				css(value)
 			elif name=="content" and tag=="meta" and any(n=="http-equiv" and (v or "").strip().lower()=="refresh" for n,v in attrs):
@@ -440,7 +474,7 @@ for p,content in files:
 		elif kind==b"css":
 			css(content.decode("utf-8","surrogateescape"))
 	except Rooted as found:
-		named(b"SITE_LINKS_FROM_ROOT",p+b" "+found.args[0].encode("utf-8","surrogateescape"))
+		named(b"SITE_LINKS_FROM_ROOT",p,link=found.args[0].encode("utf-8","surrogateescape"))
 scratch=d+b"/site.git"
 if os.path.islink(scratch) or os.path.isfile(scratch):
 	os.unlink(scratch)
@@ -597,12 +631,20 @@ export function codeSiteCollectAnswer(
 		detail = refused[2];
 	if (WITHOUT_DETAIL.includes(code))
 		return detail === undefined ? { problem: { code, path: null, variable: null } } : null;
-	if (detail === undefined || detail.length > 1000 || !DETAIL.test(detail)) return null;
+	// A detail that would not fit whole is left out (review of #1691, F1): the code alone.
+	if (detail === undefined) {
+		if (code === "SITE_FILE_TOO_LARGE" || code === "SITE_FILE_NAME")
+			return { problem: { code, path: null, variable: null } };
+		return code === "SITE_LINKS_FROM_ROOT" ? { problem: { code, path: null, variable: null, link: null } } : null;
+	}
+	if (detail.length > 1000 || !DETAIL.test(detail)) return null;
 	if (code === "SITE_FILE_TOO_LARGE" || code === "SITE_FILE_NAME")
 		return { problem: { code, path: unescaped(detail), variable: null } };
-	// The file, a path of the site (no space in it), then the link as the file writes it.
+	// The file, a path of the site (no space in it), then the link as the file writes it, or the file alone when the link
+	// would not fit whole.
 	if (code === "SITE_LINKS_FROM_ROOT") {
 		const space = detail.indexOf(" ");
+		if (space < 0) return { problem: { code, path: unescaped(detail), variable: null, link: null } };
 		return space > 0 && space < detail.length - 1
 			? {
 					problem: {
@@ -664,10 +706,24 @@ export function codeSiteReported(collected: CodeSiteCollected | null): Record<st
 
 /** `CODING_CHECKS_SITE_REFUSED`: every check passed, but the site the code left in `folder` cannot go, so nothing went
  * into main (STEP4-RELEASES-PLAN.md 10.3, with STEP4-BUILD.md's eighth code and the links from the root, the ninth,
- * added once the first live site showed them). Within 3,500 bytes, as every word of a failed turn: the folder, a path
- * and a link are shown on one line and cut. Pure. */
+ * added once the first live site showed them). Within 3,500 bytes, as every word of a failed turn. A path and a link are
+ * shown on one line and whole, never cut (review of #1691, F1: a cut one can carry the start of a secret value that no
+ * mask knows whole): when the words would pass 3,500 bytes, the link is left out, then the path too. Pure. */
 export function codeSiteRefusedSummary(problem: CodeSiteProblem, folder: string): string {
-	const path = shown(problem.path ?? "", 300);
+	const words = refusedWords(problem, folder);
+	if (bytes(words) <= MAX_SUMMARY_BYTES) return words;
+	const link = problem.link === undefined ? {} : { link: null };
+	const withoutLink = refusedWords({ ...problem, ...link }, folder);
+	return bytes(withoutLink) <= MAX_SUMMARY_BYTES
+		? withoutLink
+		: refusedWords({ ...problem, ...link, path: null }, folder);
+}
+
+/** The most bytes the executor's words of a failed turn take (code-checks.ts keeps the same bound). */
+const MAX_SUMMARY_BYTES = 3500;
+
+function refusedWords(problem: CodeSiteProblem, folder: string): string {
+	const path = oneLine(problem.path ?? "");
 	let what: string;
 	switch (problem.code) {
 		case "SITE_FOLDER_MISSING":
@@ -708,7 +764,7 @@ export function codeSiteRefusedSummary(problem: CodeSiteProblem, folder: string)
 					? ""
 					: problem.link === null || problem.link === undefined
 						? ` in ${path}`
-						: `: ${path} links to ${shown(problem.link, 300)}`;
+						: `: ${path} links to ${oneLine(problem.link)}`;
 			what =
 				`has a link that starts with /${where}. A site is served under an address of its own, never at the top of ` +
 				"a domain: link its files with relative links (src/app.js, ../img/logo.png), in its scripts too, which " +

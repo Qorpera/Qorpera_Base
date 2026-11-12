@@ -7373,6 +7373,24 @@ describe("a run of a repository's checks in the session's machine (own code stor
 					outcome: refused({ code: "SITE_HOLDS_SECRET", path: null, variable: "LINK_KEY" }),
 				},
 				{
+					// Review of #1691, F1: a link of "/", 120 two-byte characters and an older value of 32 bytes. Cut at the
+					// answer's 1,000 bytes it would carry the value's first 28 bytes, which neither mask knows whole: the
+					// collect names the file without its link.
+					case: "an older value of the machine's at the end of a link too long to name whole",
+					secrets: { OTHER_KEY: "unrelated-value-1" },
+					older: ["OLDsecret-0123456789abcdefghijKL"],
+					files: { "index.html": `<a href="/${"é".repeat(120)}OLDsecret-0123456789abcdefghijKL">x</a>` },
+					outcome: refused({ code: "SITE_LINKS_FROM_ROOT", path: "index.html", variable: null, link: null }),
+				},
+				{
+					// The same for a name a site cannot serve: cut, it would carry the value's first 15 bytes.
+					case: "an older value of the machine's at the end of a name too long to name whole",
+					secrets: { OTHER_KEY: "unrelated-value-1" },
+					older: ["OLDname-0123456789abcdefghijKLMN"],
+					files: { [`${"é".repeat(100)}/${"é".repeat(23)}OLDname-0123456789abcdefghijKLMN.js`]: "x" },
+					outcome: refused({ code: "SITE_FILE_NAME", path: null, variable: null }),
+				},
+				{
 					case: "a value spelled only by escapes the collect never writes (an answer not the collect's)",
 					secrets: { API_KEY: "API-TOKEN-5678" },
 					older: [],
@@ -7424,8 +7442,10 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				// (the report's site, the completion's code) and every log line.
 				const words = run.state === "site_refused" ? codeSiteRefusedSummary(run.problem, RECIPE.folder) : "";
 				const carried = [words, ...strings(run), ...strings(f.logged)];
+				// No value, and no 8 bytes of one (review of #1691, F1: a cut detail carried a value's start).
 				for (const value of [...Object.values(secrets), ...older])
-					for (const text of carried) expect(text, value).not.toContain(value);
+					for (let at = 0; at + 8 <= value.length; at++)
+						for (const text of carried) expect(text, value).not.toContain(value.slice(at, at + 8));
 			});
 		});
 
