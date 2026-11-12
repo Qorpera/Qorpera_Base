@@ -134,6 +134,21 @@ export interface MemberAgentMachines {
 	/** At most 20: running ones first, then the ones the agent drove most recently, then the newest. */
 	machines: MemberAgentMachine[];
 }
+/** Why a member's start of a computer for an agent made none (migration 20260930730000): the agent is off staff or
+ * deleted, one was made for it less than a minute ago, no server could ever hold a desktop computer, or no node runs
+ * machines yet. Out of computer hours or no room now are no refusal: the computer is made and waits, as any. */
+export const MEMBER_AGENT_COMPUTER_REFUSALS = [
+	"AGENT_UNAVAILABLE",
+	"START_TOO_SOON",
+	"MACHINE_TOO_LARGE",
+	"MACHINES_UNAVAILABLE",
+] as const;
+export type MemberAgentComputerRefusal = (typeof MEMBER_AGENT_COMPUTER_REFUSALS)[number];
+/** A member's start of a computer for an agent: the computer made now, or the agent's own one big enough for a desktop
+ * (made nothing new), or why none was made. */
+export type MemberAgentComputerStart =
+	| { kind: "started" | "existing"; machineId: string; name: string; state: string }
+	| { kind: "refused"; reason: MemberAgentComputerRefusal };
 /** A hand-back's answer (review r5 of #1661, F26): whether it gave a live lease of the caller's back, the caller's
  * current epoch for the machine, and whether the caller holds the machine now (another tab of theirs, at that epoch)
  * and, if so, that hold's seat. Once an epoch above e came, nothing taken or sent at e or earlier holds the desktop or
@@ -551,6 +566,43 @@ export class CloudMemberCompanyComputerClient {
 			"Invalid machine wake",
 		);
 		if (value.machineId !== machineId) throw new Error("Invalid machine wake");
+	}
+	/** Starts a desktop computer for an agent that has none (qorpera_member_start_agent_computer, migration 20260930730000):
+	 * one machine as the agent's own machine_start with desktop true and its defaults makes it, or the agent's existing one.
+	 * Owners, admins and contributors only; the database refuses anyone else. */
+	async startAgentComputer(staffAgentId: string, signal: AbortSignal): Promise<MemberAgentComputerStart> {
+		if (!COMPANY_COMPUTER_UUID.test(staffAgentId)) throw new Error("Invalid agent");
+		const value = field(
+			(
+				await this.#rpc(
+					"qorpera_member_start_agent_computer",
+					{ p_profile_id: this.#options.companyId, p_staff_agent_id: staffAgentId },
+					signal,
+				)
+			).data,
+			"Invalid computer start",
+		);
+		if (value.schema !== "qorpera.member-agent-computer/v1") throw new Error("Invalid computer start");
+		if (value.state === "refused") {
+			record(value, "reason,schema,state");
+			if (!(MEMBER_AGENT_COMPUTER_REFUSALS as readonly unknown[]).includes(value.reason))
+				throw new Error("Invalid computer start");
+			return { kind: "refused", reason: value.reason as MemberAgentComputerRefusal };
+		}
+		record(value, "machine,schema,state");
+		const machine = field(value.machine, "Invalid computer start");
+		record(machine, "machineId,name,state");
+		if (
+			(value.state !== "started" && value.state !== "existing") ||
+			typeof machine.machineId !== "string" ||
+			!COMPANY_COMPUTER_UUID.test(machine.machineId) ||
+			typeof machine.name !== "string" ||
+			!/^[a-z0-9][a-z0-9-]{0,39}$/.test(machine.name) ||
+			typeof machine.state !== "string" ||
+			!/^[a-z]{1,20}$/.test(machine.state)
+		)
+			throw new Error("Invalid computer start");
+		return { kind: value.state, machineId: machine.machineId, name: machine.name, state: machine.state };
 	}
 	start(scope: CompanyComputerScope): CloudCompanyComputerStart {
 		return new CloudCompanyComputerStart(this.#scope(scope), (method, args, signal) =>
