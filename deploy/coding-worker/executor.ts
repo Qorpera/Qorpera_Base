@@ -16,8 +16,12 @@ import {
 	undoCodeChange, writeCodeChangeRecords,
 } from "../../packages/runner-orchestrator/src/code-host-jobs.ts";
 import { CodeHostRepositories } from "../../packages/runner-orchestrator/src/code-host-repositories.ts";
+import { CODE_HOST_IMPORT_JOBS } from "../../packages/runner-orchestrator/src/code-host-import.ts";
 import { CodeHostRequests } from "../../packages/runner-orchestrator/src/code-host-requests.ts";
 import { CodeRestore } from "../../packages/runner-orchestrator/src/code-host-restore.ts";
+import { CodeImportStop } from "../../packages/runner-orchestrator/src/code-import.ts";
+import { fetchGitHubImport } from "../../packages/runner-orchestrator/src/code-import-fetch.ts";
+import { CodeImport } from "../../packages/runner-orchestrator/src/code-import-run.ts";
 import { codeHostErrorCode, codingErrorDetail } from "../../packages/runner-orchestrator/src/coding-error-detail.ts";
 import { readCodeSiteTree } from "../../packages/runner-orchestrator/src/code-host-sites.ts";
 import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orchestrator/src/code-host-views.ts";
@@ -52,6 +56,7 @@ import { CodingCommandRouter, type CodingCommandPeer } from "./command-routing.t
 import { CodingExecutorHttpControl } from "./control.ts";
 import { readCodingServiceCredential } from "./credentials.ts";
 import { BrokerRepositoryCredentials, REPOSITORY_TOKEN } from "./repository-credentials.ts";
+import { BrokerRepositoryFetch, publicGitHubTransport } from "./repository-fetch.ts";
 
 interface Config {
 	schema: "qorpera.coding-executor-service/v7";
@@ -348,6 +353,18 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		jobs: { undo: undoCodeChange, archive: archiveCodeArea, removeDownloads: removeCodeDownloads },
 		...(codeBundles ? { restore: new CodeRestore({
 			control, hosts: codeHostJobs, bundles: codeBundles, check: checkCodeArea, bundle: bundleCodeArea, owner: config.owner,
+			machineIdSha256: createHash("sha256").update(machine).digest("hex"), report: logCodeRecord,
+		}) } : {}),
+		// Existing code brought in from GitHub or a file (own code storage, step 6): the executor fetches the bytes
+		// itself, through the broker's fetch relay when the company's connection is used (the token never comes here)
+		// or straight from github.com for a public project, into the one bundle store; every git step runs in the
+		// company's code host. Without a broker only public projects and files come in.
+		...(codeBundles ? { imports: new CodeImport({
+			control, hosts: codeHostJobs, bundles: codeBundles, imports: codeBundles,
+			transports: config.broker ? new BrokerRepositoryFetch({ origin: config.broker.origin,
+				executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner })
+				: { connection: () => { throw new CodeImportStop("failed", "IMPORT_RELAY_NOT_ROUTED"); }, public: (repository) => publicGitHubTransport(repository) },
+			fetch: fetchGitHubImport, jobs: CODE_HOST_IMPORT_JOBS, owner: config.owner,
 			machineIdSha256: createHash("sha256").update(machine).digest("hex"), report: logCodeRecord,
 		}) } : {}),
 		report: logCodeRecord,
