@@ -1,4 +1,9 @@
-import type { MemberAgentMachine, MemberAgentMachines } from "@qorpera/cloud-client/cloud-member-company-computer";
+import type {
+	MemberAgentComputerRefusal,
+	MemberAgentComputerStart,
+	MemberAgentMachine,
+	MemberAgentMachines,
+} from "@qorpera/cloud-client/cloud-member-company-computer";
 import type { WebCompanyComputer } from "../../cloud/computer.ts";
 import type {
 	MachineActAnswer,
@@ -83,7 +88,10 @@ type Shown =
 	// The member turns the screen on (20260930714000): on its way, refused as too small, or failed.
 	| "turning"
 	| "small"
-	| "startFailed";
+	| "startFailed"
+	// The member starts a computer for an agent that has none (20260930730000): on its way, or made none.
+	| "making"
+	| "noStart";
 
 /** One hold of a desktop on the page (release review r1 of #1667, F25 of #1661): its machine, the hand-back epoch it was
  * taken under and its seat (every heartbeat and every action captured under it goes with both, and SQL runs it only
@@ -210,6 +218,10 @@ export class ComputerPanel {
 	/** A start that ended the wish (too small, or failed): what the window says of that machine's screen that is off
 	 * until it shows a picture, sleeps, or the member presses again or chooses another machine. */
 	#startEnded: { readonly machineId: string; readonly shown: "small" | "startFailed" } | undefined;
+	/** Start one (20260930730000): a computer for the agent on its way, or why none was made (said until the member presses
+	 * again or the agent has a computer with a screen). */
+	#making = false;
+	#startRefused: MemberAgentComputerRefusal | "failed" | undefined;
 	// The member's attention: their last touch on the page, whether they still watch, and when they last said so.
 	#lastTouch = Date.now();
 	#paused = false;
@@ -580,6 +592,8 @@ export class ComputerPanel {
 				}
 			}
 			const machine = this.#pick();
+			// The agent has a computer with a screen now: why none was made is told no more.
+			if (machine) this.#startRefused = undefined;
 			if (machine?.machineId !== this.#machineId) {
 				// The wish that a desktop be on is for the machine it was made for alone (20260930714000).
 				if (this.#wantOn && this.#wantOn.machineId !== machine?.machineId) this.#wantOn = undefined;
@@ -1089,7 +1103,15 @@ export class ComputerPanel {
 			return;
 		}
 		if (!machine) {
-			this.#show(this.#listed.machines.length ? "headless" : "none");
+			this.#show(
+				this.#making
+					? "making"
+					: this.#startRefused
+						? "noStart"
+						: this.#listed.machines.length
+							? "headless"
+							: "none",
+			);
 			return;
 		}
 		// Wake it was pressed: the machine is on its way up, and its screen comes on with it.
@@ -1114,81 +1136,101 @@ export class ComputerPanel {
 				: shown === "unavailable"
 					? [t("Computer access is not available yet."), null, null]
 					: shown === "none"
-						? [
-								t("{name} is not using a computer right now.", name),
-								t("{name} gets one when a task needs a screen.", name),
-								null,
-							]
+						? this.#listed?.canWake
+							? [t("{name} has no computer yet.", name), null, t("Start one")]
+							: [
+									t("{name} is not using a computer right now.", name),
+									`${t("{name} gets one when a task needs a screen.", name)} ${t("Someone with edit access can start one.")}`,
+									null,
+								]
 						: shown === "headless"
-							? [t("{name} is working on a machine without a screen.", name), null, null]
-							: shown === "asleep"
-								? this.#listed?.canWake
-									? [t("The computer is asleep."), null, this.#waking ? null : t("Wake it")]
-									: [t("The computer is asleep."), t("Someone with edit access can wake it."), null]
-								: shown === "starting"
-									? [
-											t("The computer is starting…"),
-											waitingFor === "hours"
-												? t("Out of computer hours. The machine starts by itself once hours are added.")
-												: waitingFor === "room"
-													? t("Waiting for room on our servers. It starts as soon as there is room.")
-													: null,
-											null,
-										]
-									: shown === "off"
+							? this.#listed?.canWake
+								? [t("{name} is working on a machine without a screen.", name), null, t("Start one")]
+								: [
+										t("{name} is working on a machine without a screen.", name),
+										t("Someone with edit access can start one."),
+										null,
+									]
+							: shown === "making"
+								? [t("The computer is starting…"), null, null]
+								: shown === "noStart"
+									? this.#startRefusedWords()
+									: shown === "asleep"
 										? this.#listed?.canWake
-											? [t("The computer is on, but its screen is off."), null, t("Turn it on")]
-											: [
-													t("The computer is on, but its screen is off."),
-													t("Someone with edit access can turn it on."),
+											? [t("The computer is asleep."), null, this.#waking ? null : t("Wake it")]
+											: [t("The computer is asleep."), t("Someone with edit access can wake it."), null]
+										: shown === "starting"
+											? [
+													t("The computer is starting…"),
+													waitingFor === "hours"
+														? t(
+																"Out of computer hours. The machine starts by itself once hours are added.",
+															)
+														: waitingFor === "room"
+															? t("Waiting for room on our servers. It starts as soon as there is room.")
+															: null,
 													null,
 												]
-										: shown === "turning"
-											? [t("The screen is turning on…"), null, null]
-											: shown === "small"
-												? [t("This computer is too small for a screen."), null, null]
-												: shown === "startFailed"
-													? [t("The screen could not be turned on. Try again."), null, t("Try again")]
-													: shown === "hidden"
-														? [
-																t("The screen is hidden because it may show files you can't open."),
-																null,
-																null,
-															]
-														: shown === "updating"
-															? [t("Updating…"), null, null]
-															: shown === "image"
+											: shown === "off"
+												? this.#listed?.canWake
+													? [t("The computer is on, but its screen is off."), null, t("Turn it on")]
+													: [
+															t("The computer is on, but its screen is off."),
+															t("Someone with edit access can turn it on."),
+															null,
+														]
+												: shown === "turning"
+													? [t("The screen is turning on…"), null, null]
+													: shown === "small"
+														? [t("This computer is too small for a screen."), null, null]
+														: shown === "startFailed"
+															? [
+																	t("The screen could not be turned on. Try again."),
+																	null,
+																	t("Try again"),
+																]
+															: shown === "hidden"
 																? [
 																		t(
-																			"This computer cannot show its screen yet. It can after it has slept.",
+																			"The screen is hidden because it may show files you can't open.",
 																		),
 																		null,
 																		null,
 																	]
-																: shown === "error"
-																	? [
-																			t("The computer could not be reached. Try again."),
-																			null,
-																			t("Try again"),
-																		]
-																	: shown === "controlled"
+																: shown === "updating"
+																	? [t("Updating…"), null, null]
+																	: shown === "image"
 																		? [
-																				member
-																					? t(
-																							"{member} is using the computer. The screen is hidden meanwhile.",
-																							{ member },
-																						)
-																					: t(
-																							"Someone is using the computer. The screen is hidden meanwhile.",
-																						),
+																				t(
+																					"This computer cannot show its screen yet. It can after it has slept.",
+																				),
 																				null,
 																				null,
 																			]
-																		: [
-																				t("Paused to save power. Still watching?"),
-																				null,
-																				t("Keep watching"),
-																			];
+																		: shown === "error"
+																			? [
+																					t("The computer could not be reached. Try again."),
+																					null,
+																					t("Try again"),
+																				]
+																			: shown === "controlled"
+																				? [
+																						member
+																							? t(
+																									"{member} is using the computer. The screen is hidden meanwhile.",
+																									{ member },
+																								)
+																							: t(
+																									"Someone is using the computer. The screen is hidden meanwhile.",
+																								),
+																						null,
+																						null,
+																					]
+																				: [
+																						t("Paused to save power. Still watching?"),
+																						null,
+																						t("Keep watching"),
+																					];
 		this.#loading.dataset.state = shown;
 		// The state text shows only while there is no picture over it (a screen reader would read it under one).
 		this.#loading.hidden = this.#view?.shown === true;
@@ -1197,6 +1239,7 @@ export class ComputerPanel {
 			shown === "starting" ||
 			shown === "updating" ||
 			shown === "turning" ||
+			shown === "making" ||
 			this.#waking
 		);
 		if (this.#status.textContent !== status) this.#status.textContent = status;
@@ -1225,6 +1268,13 @@ export class ComputerPanel {
 			this.#startEnded = undefined;
 			this.#startAnswered = undefined;
 			if (!this.#turningOn) void this.#turnOn(computer, this.#machineId, signal);
+		} else if (
+			(state === "none" || state === "headless" || state === "noStart") &&
+			this.#listed?.canWake &&
+			!this.#making
+		) {
+			await this.#startComputer(computer, signal);
+			if (signal.aborted) return;
 		} else if (state === "asleep" && this.#machineId && !this.#waking) {
 			const machineId = this.#machineId;
 			// One press: the machine wakes, and its screen comes on when it runs (20260930714000).
@@ -1245,6 +1295,70 @@ export class ComputerPanel {
 		}
 		if (document.activeElement === this.#action) this.focus();
 		this.#poke();
+	}
+
+	/** Start one (20260930730000): one desktop computer for the agent, made as its own machine_start with desktop true and
+	 * its defaults makes it, or the agent's own one big enough for a desktop. Then the press carries the wish through to a
+	 * picture, as Wake it's does: once the list shows the computer running, the window turns its screen on (20260930714000).
+	 * The wish is this page's, for that computer: it ends at its picture, a refusal, a close, a switch, or WANT_ON_MS. Never
+	 * on open: a computer costs hours, so it takes a press. */
+	async #startComputer(computer: WebCompanyComputer, signal: AbortSignal): Promise<void> {
+		const chosen = this.#chosen;
+		this.#making = true;
+		this.#startRefused = undefined;
+		this.#show("making");
+		let answer: MemberAgentComputerStart | undefined;
+		try {
+			answer = await computer.startAgentComputer(this.agentId, signal);
+		} catch {
+			answer = undefined;
+		} finally {
+			this.#making = false;
+		}
+		if (signal.aborted) return;
+		this.#listStale = true;
+		if (answer === undefined || answer.kind === "refused") {
+			this.#startRefused = answer?.reason ?? "failed";
+			if (!this.#pick()) this.#show("noStart");
+			return;
+		}
+		// The member chose a machine meanwhile: the wish was theirs to drop (the computer is made all the same).
+		if (this.#chosen !== chosen) return;
+		this.#chosen = answer.machineId;
+		this.#wantOn = { machineId: answer.machineId, until: Date.now() + WANT_ON_MS };
+		this.#startEnded = undefined;
+		this.#startAnswered = undefined;
+		// The agent's own computer, asleep: woken, as Wake it does.
+		if (answer.state === "stopped" || answer.state === "stopping") {
+			try {
+				await computer.wakeMachine(answer.machineId, signal);
+			} catch {
+				// The list says where it stands now.
+			}
+			if (signal.aborted) return;
+		}
+		if (!this.#pick()) this.#show("starting");
+	}
+
+	/** What the window says when Start one made no computer: in plain words, with Try again where trying again can help. */
+	#startRefusedWords(): [string, string | null, string | null] {
+		const name = { name: this.#name };
+		switch (this.#startRefused) {
+			case "MACHINES_UNAVAILABLE":
+				return [t("No server can run a computer right now. Try again later."), null, t("Try again")];
+			case "MACHINE_TOO_LARGE":
+				return [t("No server is large enough for a computer with a screen."), null, null];
+			case "START_TOO_SOON":
+				return [
+					t("A computer was started for {name} a moment ago. Try again in a minute.", name),
+					null,
+					t("Try again"),
+				];
+			case "AGENT_UNAVAILABLE":
+				return [t("{name} is no longer on the team, so it gets no computer.", name), null, null];
+			default:
+				return [t("The computer could not be started. Try again."), null, t("Try again")];
+		}
 	}
 
 	/** Whether the member's wish that this machine's desktop be on stands (it ends after WANT_ON_MS). */

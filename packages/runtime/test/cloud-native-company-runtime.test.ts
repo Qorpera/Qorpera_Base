@@ -2554,6 +2554,9 @@ it("gives manage_todo, organize_sidebar, hire_agent, create_group_chat and manag
 	const sidebar = tools.find((tool) => tool.name === "organize_sidebar")?.description ?? "";
 	expect(sidebar).toContain("the sections live in the file QorperaOS/agents/sections.md");
 	expect(sidebar).not.toContain("by its id or name");
+	// The 2026-11-11 amendment (each member's own sidebar), item 4: the change is the company's, not every member's at once.
+	expect(sidebar).toContain("every member sees your change, except where a member placed things themself");
+	expect(sidebar).not.toContain("everyone sees the change at once");
 	const hire = tools.find((tool) => tool.name === "hire_agent")?.description ?? "";
 	expect(hire).toContain("saved as the agent's own folder");
 	expect(hire).not.toContain("under organization/agents");
@@ -3278,9 +3281,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"303a5e4bfd31e30cb2885a50ffee41abff8e84e7ca039e4bee5df70e78d2e3dd",
+		"29ebd15b036a3e22ad5744e2b96fe936316595951522c385bfa0079b9ebe7e83",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"bd41940cc4e14181c8c6469f5a9938674a62aa762b095349d4b0726ad2fcb473",
+		"0c8427ff56381b1e1fdb60d8221e88a75bbcc3b686bc2f5271941b8f562cd7f0",
 	);
 });

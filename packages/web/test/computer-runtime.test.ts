@@ -108,6 +108,15 @@ function setup(
 		listFails: 0,
 		/** Hand-backs that fail (503) before one goes through, and a gate each waits on (review r1 F4). */
 		handBackFails: 0,
+		/** What a member's start of a computer for the agent answers, in turn (then a new machine 9), and a gate it waits on
+		 * (20260930730000). A computer started joins the agent's list as the database's next read shows it. */
+		computerAnswers: [] as (
+			| { started: MemberAgentMachine }
+			| { existing: MemberAgentMachine }
+			| { refused: string }
+			| { status: number }
+		)[],
+		computerGate: undefined as Promise<void> | undefined,
 		handBackGate: undefined as Promise<void> | undefined,
 		/** Gates the next hand-backs wait on, one each, in turn (review r3 F7). */
 		handBackGates: [] as Promise<void>[],
@@ -269,6 +278,20 @@ function setup(
 		}
 		if (method === "qorpera_member_manage_company_machine")
 			return Response.json({ machineId: body.p_machine_id, state: "waiting" });
+		if (method === "qorpera_member_start_agent_computer") {
+			if (state.computerGate) await state.computerGate;
+			const answer = state.computerAnswers.shift() ?? { started: machine(9, { state: "waiting" }) };
+			const schema = "qorpera.member-agent-computer/v1";
+			if ("status" in answer) return new Response("{}", { status: answer.status });
+			if ("refused" in answer) return Response.json({ schema, state: "refused", reason: answer.refused });
+			const made = "started" in answer ? answer.started : answer.existing;
+			if ("started" in answer) state.machines = [...state.machines, made];
+			return Response.json({
+				schema,
+				state: "started" in answer ? "started" : "existing",
+				machine: { machineId: made.machineId, name: made.name, state: made.state },
+			});
+		}
 		if (method === "qorpera_member_take_machine_desktop") {
 			if (state.takeGate) await state.takeGate;
 			const epoch = Number(body.p_epoch);
@@ -605,8 +628,10 @@ describe("an agent's computer window", () => {
 		const none = setup({ machines: [] });
 		const p = panel(none);
 		await flush();
-		expect(status(p)).toBe(`${staff.displayName} is not using a computer right now.`);
-		expect(detail(p)).toBe(`${staff.displayName} gets one when a task needs a screen.`);
+		// A member who may start one is offered it (20260930730000); the viewer's words are in that test.
+		expect(status(p)).toBe(`${staff.displayName} has no computer yet.`);
+		expect(detail(p)).toBeNull();
+		expect(action(p)?.textContent).toBe("Start one");
 		expect(none.looks).toEqual([]);
 		expect(screen(p)?.hidden).toBe(true);
 		// One window at a time here: both would read through the one stubbed fetch.
@@ -616,6 +641,7 @@ describe("an agent's computer window", () => {
 		await flush();
 		expect(status(q)).toBe(`${staff.displayName} is working on a machine without a screen.`);
 		expect(detail(q)).toBeNull();
+		expect(action(q)?.textContent).toBe("Start one");
 		expect(headless.looks).toEqual([]);
 		// The list is read again every 15 s while the window is shown: a desktop that comes is shown.
 		headless.state.machines = [machine(1, { desktopCapable: false }), machine(2)];
@@ -1293,6 +1319,180 @@ describe("an agent's computer window", () => {
 		cleanup.push(() => p.dispose());
 		p.attach(document.body, () => {});
 		expect(status(p)).toBe("Computer access is not available yet.");
+	});
+});
+
+describe("a member's start of a computer for an agent that has none (20260930730000)", () => {
+	const starts = (s: Setup) => calls(s, "qorpera_member_start_agent_computer");
+
+	it("offers Start one where the agent has no computer or only machines without a screen, tells a viewer who may, and starts nothing on open", async () => {
+		const none = setup({ machines: [] });
+		const p = panel(none);
+		await flush();
+		await advance(MACHINES_EVERY_MS * 2);
+		expect(status(p)).toBe(`${staff.displayName} has no computer yet.`);
+		expect(action(p)?.textContent).toBe("Start one");
+		// A computer costs hours: opening the window, and every list read after, starts none.
+		expect(starts(none)).toEqual([]);
+		p.dispose();
+		const viewer = setup({ machines: [], canWake: false });
+		const q = panel(viewer);
+		await flush();
+		expect(status(q)).toBe(`${staff.displayName} is not using a computer right now.`);
+		expect(detail(q)).toBe(
+			`${staff.displayName} gets one when a task needs a screen. Someone with edit access can start one.`,
+		);
+		expect(action(q)).toBeNull();
+		q.dispose();
+		const headless = setup({ machines: [machine(1, { desktopCapable: false })], canWake: false });
+		const r = panel(headless);
+		await flush();
+		expect(status(r)).toBe(`${staff.displayName} is working on a machine without a screen.`);
+		expect(detail(r)).toBe("Someone with edit access can start one.");
+		expect(action(r)).toBeNull();
+		expect(starts(headless)).toEqual([]);
+	});
+
+	it("makes the computer with one press and carries it through to a live picture", async () => {
+		const s = setup({ machines: [machine(1, { desktopCapable: false })] });
+		const p = panel(s);
+		await flush();
+		let open = () => {};
+		s.state.computerGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		action(p)!.click();
+		await flush();
+		// On its way: said, and no second press.
+		expect(status(p)).toBe("The computer is starting…");
+		expect(action(p)).toBeNull();
+		expect(starts(s)).toHaveLength(1);
+		expect(starts(s)[0]?.body).toEqual({ p_profile_id: profileA.profileId, p_staff_agent_id: staff.id });
+		// Made: it waits in line for room, as any wanted machine, and the window says so.
+		s.state.computerAnswers.push({ started: machine(9, { state: "waiting", waitingFor: "room" }) });
+		s.state.computerGate = undefined;
+		open();
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(status(p)).toBe("The computer is starting…");
+		expect(detail(p)).toBe("Waiting for room on our servers. It starts as soon as there is room.");
+		// It runs, its screen off: the window turns the screen on by itself, and the picture comes. No second press.
+		s.state.machines = [machine(1, { desktopCapable: false }), machine(9)];
+		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" }, { picture: 1 });
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		await advance(LOOK_EVERY_MS);
+		expect(s.starts).toHaveLength(1);
+		expect(s.starts).toEqual([`/v1/member-machine-screens/${profileA.profileId}/${machine(9).machineId}/start`]);
+		await advance(LOOK_EVERY_MS);
+		expect(mark(p)).toBe("Live");
+		expect(starts(s)).toHaveLength(1);
+	});
+
+	it("wakes the agent's own computer when the database answers it, and turns its screen on", async () => {
+		const s = setup({ machines: [] });
+		const p = panel(s);
+		await flush();
+		s.state.computerAnswers.push({ existing: machine(3, { state: "stopped" }) });
+		s.state.machines = [machine(3, { state: "stopped" })];
+		action(p)!.click();
+		await flush();
+		expect(calls(s, "qorpera_member_manage_company_machine").map((call) => call.body)).toEqual([
+			{ p_profile_id: profileA.profileId, p_machine_id: machine(3).machineId, p_action: "start" },
+		]);
+		s.state.machines = [machine(3)];
+		s.state.answers.push({ code: "DESKTOP_NOT_RUNNING" }, { picture: 2 });
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		await advance(LOOK_EVERY_MS);
+		await advance(LOOK_EVERY_MS);
+		expect(s.starts).toHaveLength(1);
+		expect(mark(p)).toBe("Live");
+	});
+
+	it("says why no computer was made in plain words, with Try again where trying again can help", async () => {
+		const cases: [{ refused: string } | { status: number }, string, string | null][] = [
+			[{ refused: "MACHINES_UNAVAILABLE" }, "No server can run a computer right now. Try again later.", "Try again"],
+			[{ refused: "MACHINE_TOO_LARGE" }, "No server is large enough for a computer with a screen.", null],
+			[
+				{ refused: "START_TOO_SOON" },
+				`A computer was started for ${staff.displayName} a moment ago. Try again in a minute.`,
+				"Try again",
+			],
+			[
+				{ refused: "AGENT_UNAVAILABLE" },
+				`${staff.displayName} is no longer on the team, so it gets no computer.`,
+				null,
+			],
+			[{ status: 503 }, "The computer could not be started. Try again.", "Try again"],
+		];
+		for (const [answer, words, button] of cases) {
+			const s = setup({ machines: [] });
+			const p = panel(s);
+			await flush();
+			s.state.computerAnswers.push(answer);
+			action(p)!.click();
+			await flush();
+			expect(status(p)).toBe(words);
+			expect(action(p)?.textContent ?? null).toBe(button);
+			// Said until the member presses again: list reads do not take it away, and nothing is made by itself.
+			await advance(MACHINES_EVERY_MS * 2);
+			expect(status(p)).toBe(words);
+			expect(starts(s)).toHaveLength(1);
+			if (button) {
+				// Try again asks again; this time it is made.
+				action(p)!.click();
+				await flush();
+				expect(starts(s)).toHaveLength(2);
+				await advance(LOOK_EVERY_MS);
+				expect(status(p)).toBe("The computer is starting…");
+			}
+			p.dispose();
+		}
+		// Out of computer hours is no refusal: the computer is made and waits, and the window says so.
+		const s = setup({ machines: [] });
+		const p = panel(s);
+		await flush();
+		s.state.computerAnswers.push({ started: machine(9, { state: "waiting", waitingFor: "hours" }) });
+		action(p)!.click();
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(status(p)).toBe("The computer is starting…");
+		expect(detail(p)).toBe("Out of computer hours. The machine starts by itself once hours are added.");
+	});
+
+	it("ends the wish at a close, or after its time, and never turns a screen on after", async () => {
+		// Closed while the computer is made: nothing more.
+		const s = setup({ machines: [] });
+		const p = panel(s);
+		await flush();
+		let open = () => {};
+		s.state.computerGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		action(p)!.click();
+		await flush();
+		p.dispose();
+		s.state.computerGate = undefined;
+		open();
+		await flush();
+		await advance(LOOK_EVERY_MS * 4);
+		expect(s.starts).toEqual([]);
+		// The wish's time runs out while it waits for room: once it runs, its screen is off and Turn it on is offered.
+		const t = setup({ machines: [] });
+		const q = panel(t);
+		await flush();
+		t.state.computerAnswers.push({ started: machine(9, { state: "waiting", waitingFor: "room" }) });
+		action(q)!.click();
+		await flush();
+		await advance(WANT_ON_MS);
+		t.state.machines = [machine(9)];
+		t.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+		t.hint("machines");
+		await advance(LOOK_EVERY_MS * 3);
+		expect(t.starts).toEqual([]);
+		expect(status(q)).toBe("The computer is on, but its screen is off.");
+		expect(action(q)?.textContent).toBe("Turn it on");
 	});
 });
 
