@@ -6362,6 +6362,11 @@ each step. It now leaves the envelope.
 1. **The bound.** One tool result's envelope, escaping and provenance included, is at most 32 KiB (32,768 bytes), not
    8 KiB. The patched Codex's result fence refuses a larger one, the runtime fits every result to it, and the run's
    context view and run log check it (migration `20260930733000`).
+   - A run's work log keeps each step's result envelope whole, up to the same bound, in its database check and in
+     the shared parser the runtime runs on every log block it writes, reads back and resumes from
+     (`memory-run-files.ts`). Both take it from one constant, the one the runtime fits results to
+     (`CLOUD_TOOL_RESULT_MAX_BYTES`), so a reader cannot fall behind the bound a writer uses. A step's arguments,
+     text and paths keep 8 KiB each and its read references 16 KiB, and a step line stays at most 49 KiB.
    - `company_read` asks for up to 32 KiB a call and shows as much as fits one result: about 31 KiB of plain text,
      less where characters need escaping. It was about 7 KiB.
    - Every other tool that pages to one result (`machine_read`, `read_context`, `zoom`, `read_event`, skills, coding
@@ -6369,8 +6374,10 @@ each step. It now leaves the envelope.
    - Codex's history keeps each issued result whole: the governed session's fixed `tool_output_token_limit=65536`
      replaces the model's own truncation policy, whatever the model's metadata says. Unchanged here.
 2. **What the provider sees.** Larger tool outputs, in fewer requests per run. The `company_read` tool's schema
-   names the new maximum (`limit` up to 32,768) in its description. Nothing else: the same Codex version, request
-   kinds, headers, prewarm, model list calls, cache key and compaction.
+   names the new maximum (`limit` up to 32,768) in its description, and `read_event`'s description says how much
+   of a body one piece now shows (up to 16,000 characters of plain text, or about 23 KiB as base64; it said about
+   4,000 and about 3 KiB). Nothing else: the same Codex version, request kinds, headers, prewarm, model list calls,
+   cache key and compaction.
 3. **Why.** A model round has a floor of about 2.7 s that does not grow with the prompt, so each page a run reads
    costs a round. In the runs of 7 November, continuation pages were about 4 % of run time and replaying the same
    reads at 32 KiB removes about nine in ten of them; in the reading-heavy founding runs of 5–6 November it was
@@ -6379,6 +6386,11 @@ each step. It now leaves the envelope.
    Codex and raises the runtime's bound, with the images and hosts that carry that binary, together. A runtime ahead
    of its binary would have every larger result refused at the fence. Undo is the same pair rolled back; the migration
    stays.
+   - The run log's parser rides in that bundle: the runtime parses what it stages, reads and resumes itself, and a
+     run's log is read only by attempts of that run, which run on its own bundle. The folder service, the object
+     gateway, the vault and the coding executor carry the same parser but never take a run log's block (the
+     database writes a run's log only for the platform or that run), so they need no step of their own and take the
+     change with their next build. The web shows a log's files as text and parses none.
 
 ### 2026-11-10 amendment: members message each other
 
