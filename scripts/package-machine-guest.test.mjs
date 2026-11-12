@@ -555,8 +555,9 @@ test("a desktop action on the spot the pointer is on never waits for a move that
 			"xdotool",
 			[
 				'case "$1" in',
-				'getmouselocation) [ -n "$POINTER" ] || exit 1; echo "x:${POINTER% *} y:${POINTER#* } screen:0 window:77" ;;',
-				'getdisplaygeometry) echo "1600 1000" ;;',
+				// One call for both, as the command asks: the pointer's line, then the screen's.
+				'getmouselocation) [ -n "$POINTER" ] || exit 1; echo "x:${POINTER% *} y:${POINTER#* } screen:0 window:77"',
+				'\t[ "$2" != getdisplaygeometry ] || echo "1600 1000" ;;',
 				'*) echo "$*" >>"$ASKED" ;;',
 				"esac",
 			].join("\n"),
@@ -616,7 +617,10 @@ test("a desktop action on the spot the pointer is on never waits for a move that
 	// No other wait for a move in the command, and the image build times the actions on one spot.
 	const command = read("deploy/machine/desktop");
 	assert.equal(command.split("\n").filter((line) => line.includes("--sync") && !line.startsWith("#")).length, 1);
-	assert.match(command, /then move=\(mousemove "\$2" "\$3"\); else move=\(mousemove --sync "\$2" "\$3"\); fi\n/);
+	assert.match(command, /then move=\(mousemove "\$3" "\$4"\); else move=\(mousemove --sync "\$3" "\$4"\); fi\n/);
+	// One xdotool call tells where the pointer is and how large the screen is: every call is a program started.
+	assert.match(command, /< <\(xdotool getmouselocation getdisplaygeometry 2>\/dev\/null\) \|\| true\n/);
+	assert.equal(command.match(/getmouselocation|getdisplaygeometry/g).length, 2);
 	for (const line of [
 		"\tdesktop click 800 500\n\tdesktop double 800 500\n\tdesktop move 800 500\n\tdesktop drag 800 500 800 500\n",
 		"\t(( ($(date +%s%N) - pointer_started) / 1000000 < 5000 )) ||\n",
@@ -685,12 +689,29 @@ test("every machine has compressed memory from its boot on and a guard at the ed
 		assert.ok(guard.includes(`\n${line}\n`), line);
 	// Late enough that compressed memory is used first (both limits must hold), ended at once (each pair is one number:
 	// SIGKILL), by the kernel's own score (no --sort-by-rss, no process group, root's processes too).
-	assert.match(code, /\nguard_limits\(\) \{\n\tif on; then echo "-m 17,17 -s 10,10"; else echo "-m 8,8"; fi\n\}\n/);
 	assert.match(code, /\n\texec \/usr\/bin\/earlyoom -r 0 \$\(guard_limits\)\n/);
 	assert.doesNotMatch(code, /--sort-by-rss|--ignore-root-user|--prefer|--avoid| -g /);
+	// The limit aims at an amount still available (about 300 MiB, 8 % of the memory on a large machine), turned into
+	// earlyoom's share with what programs hold in memory at the edge: the measured machines keep their measured limits.
+	const limits = (kib, reserve) => {
+		const run = spawnSync("bash", [join(repositoryRoot, "deploy/machine/machine-memory"), "limits", String(kib), reserve], {
+			encoding: "utf8",
+		});
+		assert.equal(run.status, 0, run.stderr);
+		return run.stdout.trim();
+	};
+	assert.equal(limits(3925220, "on"), "-m 17,17 -s 10,10", "4 GiB, as measured past the edge");
+	assert.equal(limits(1930216, "on"), "-m 29,29 -s 10,10", "2 GiB, as measured past the edge");
+	assert.equal(limits(8047616, "on"), "-m 17,17 -s 10,10");
+	assert.equal(limits(67108864, "on"), "-m 17,17 -s 10,10");
+	assert.equal(limits(973000, "on"), "-m 45,45 -s 10,10");
+	// Never over half, however small the machine; and a machine without the reserve is judged on memory alone, later.
+	assert.equal(limits(500000, "on"), "-m 50,50 -s 10,10");
+	assert.equal(limits(3925220, "off"), "-m 9,9");
+	assert.equal(limits(1930216, "off"), "-m 16,16");
 	const none = spawnSync("bash", [join(repositoryRoot, "deploy/machine/machine-memory")], { encoding: "utf8" });
 	assert.equal(none.status, 2);
-	assert.match(none.stderr, /^machine-memory swap\|guard\|status\n$/);
+	assert.match(none.stderr, /^machine-memory swap\|guard\|status\|limits \[KiB\] \[on\|off\]\n$/);
 
 	// Who is never the one ended, by the guard or by the kernel's own killer.
 	for (const unit of ["qorpera-machine-desktop.service", "qorpera-machine-folder.service", "qorpera-machine-watchdog.service"])

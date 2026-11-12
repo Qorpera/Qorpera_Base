@@ -159,6 +159,8 @@ pointer)
 	M "desktop_start rc=$? s=$(dt "$t") [$(head -1 "$STATE/start.out")]"
 	"$D" open "file://$HERE/pointer.html" >/dev/null
 	for _ in $(seq 1 120); do titles | grep -qF 'POINTER[down' && break; sleep 0.25; done
+	# The window is drawn and has the keyboard and pointer a moment after its title shows.
+	sleep 1.5
 	state() { sleep 0.4; titles | grep -F 'POINTER[' | head -1 | sed 's/.*\(POINTER\[[^]]*\]\).*/\1/'; }
 	# Every action below is on the spot the pointer is already on, where a move was waited for 15 s before.
 	run() { # label, limit, then the desktop words: timed, checked against the limit
@@ -236,7 +238,8 @@ mix)
 	fi
 	cd "$HERE" && timeout 150 node pages.cjs mix "$label"
 	clicks "$label"
-	if (( ${#H[@]} )); then kill "${H[@]}" 2>/dev/null; wait "${H[@]}" 2>/dev/null; fi
+	# Their end by this signal is not the leg's: it ran to its end.
+	if (( ${#H[@]} )); then kill "${H[@]}" 2>/dev/null; wait "${H[@]}" 2>/dev/null || true; fi
 	;;
 load)
 	job=${2:?job MB} edge=${3:?stop or past} tabs=${4:?tabs}

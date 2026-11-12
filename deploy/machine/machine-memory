@@ -10,6 +10,7 @@
 #                          and its compressed reserve are both nearly gone, one program is ended (earlyoom), so the
 #                          machine keeps answering instead of freezing.
 #   machine-memory status  what is on, for a person or a check
+#   machine-memory limits [KiB] [on|off]   the guard's limits for a machine of that memory, with the reserve or without
 #
 # Measured on node 2, 12 Nov 2026 (2 processors, 4 GiB, a desktop with heavy web apps and a 1.5 GB job): without
 # compressed memory the machine froze at 7 to 14 tabs and nothing was ended in time; with it, it carried 24 tabs at
@@ -67,24 +68,37 @@ swap() {
 #
 # Its limits, in earlyoom's own measure: the memory still available as a share of what programs can use right now
 # (available + what they hold in memory; not of the machine's memory), and the free share of the compressed reserve.
-# A process is ended when 17 % or less is available AND a tenth or less of the reserve is free: late enough that
-# compressed memory is really used first. Measured on 12 Nov 2026 (2 processors, 4 GiB, heavy web apps, a 1.5 GB job
-# and tabs until three were ended): with 17 % the first tab was ended with about 300 MB available and the reserve
-# full, pages kept loading in about a second and `desktop click` answered in 0.9 s at worst; with 6.7 % (114 MB
-# available) pages took 6 to 36 s before the first end and a click up to 2.7 s. At the edge it ends a few tabs one
-# after the other (up to 4 in the measurements), until a tenth of the reserve is free again.
+# A process is ended when that share is at or under its limit AND a tenth or less of the reserve is free: late enough
+# that compressed memory is really used first.
 #
-# It ends a process at once (SIGKILL: both limits of each pair are the same), as the kernel's own killer does, and
-# frees its memory itself before it looks again. A program ended this way was killed (137 where a shell says so).
+# What is aimed at is an amount: about 300 MiB still available (8 % of the memory on a machine over 3.7 GiB). A
+# desktop needs about that much for the files it runs from, whatever its size: measured on 12 Nov 2026 (2 processors,
+# heavy web apps, a job and tabs until three were ended), a 4 GiB machine whose first tab was ended at 300 MiB
+# available kept loading pages in about a second and answered `desktop click` in 0.9 s at worst, and one ended at
+# 114 MiB took 6 to 36 s a page first and 2.7 s a click; a 2 GiB machine ended at 130 MiB took 4 to 25 s a page first.
+# The amount becomes earlyoom's share with what programs hold in memory at the edge: measured at 0.34 to 0.41 of
+# the machine's memory with the reserve in use (0.38 here), about 0.8 without it. So: 17 % on 4 GiB and more, 29 %
+# on 2 GiB, 9 % and 16 % on machines without the reserve; never over half.
 #
-# A machine without the reserve (the boot's line said why) is judged on its memory alone, and later: there programs
-# hold about twice as much in memory, and 8 % is about the same 300 MB on 4 GiB.
+# At the edge it ends a few tabs one after the other (up to 4 in the measurements), until a tenth of the reserve is
+# free again. It ends a process at once (SIGKILL: both limits of each pair are the same), as the kernel's own killer
+# does, and frees its memory itself before it looks again. A program ended this way was killed (137 where a shell
+# says so).
 #
 # What it cannot see: memory that does not compress fills the reserve without freeing anything, and the share above
 # stays high to the end. The kernel's own killer then ends the program (measured: a job of twice the memory, all
 # random, was ended by the kernel after about 10 s, in which two clicks took 3.5 s).
-guard_limits() {
-	if on; then echo "-m 17,17 -s 10,10"; else echo "-m 8,8"; fi
+guard_limits() { # [the machine's memory in KiB, for a check: this machine's otherwise] [on|off: the reserve]
+	local total=${1:-$(memory_kb)} reserve=${2:-} aim held share
+	[[ $total =~ ^[1-9][0-9]*$ ]] || total=4194304
+	[[ -n $reserve ]] || { if on; then reserve=on; else reserve=off; fi; }
+	total=$(( total / 1024 ))
+	aim=$(( total * 8 / 100 ))
+	(( aim >= 300 )) || aim=300
+	if [[ $reserve == on ]]; then held=$(( total * 38 / 100 )); else held=$(( total * 80 / 100 )); fi
+	share=$(( 100 * aim / (aim + held) ))
+	(( share <= 50 )) || share=50
+	if [[ $reserve == on ]]; then echo "-m $share,$share -s 10,10"; else echo "-m $share,$share"; fi
 }
 guard() {
 	# No report but when it acts: its lines then name the process, its size and the memory left.
@@ -105,8 +119,9 @@ case ${1:-} in
 swap) swap ;;
 guard) guard ;;
 status) status ;;
+limits) guard_limits "${2:-}" "${3:-}" ;;
 *)
-	echo "machine-memory swap|guard|status" >&2
+	echo "machine-memory swap|guard|status|limits [KiB] [on|off]" >&2
 	exit 2
 	;;
 esac
