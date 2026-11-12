@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
 	CODING_GUEST,
+	CODING_GUEST_MOUNT_V2,
 	CODING_GUEST_VERBS,
 	CODING_PACKAGE_CACHES,
 	type CodingGuestCancelRequest,
@@ -562,20 +563,23 @@ export async function trimCodingPackageCaches(root: string, limitBytes: number):
 }
 /** The machine's package caches, once a boot, at its first mount and before the session's user (the guest agent has no
  * boot of its own; every turn mounts before its commands run): the tmpfiles file written, its folders made or set right,
- * and the tool folders trimmed to the limit. Its record lives in memory, so a restarted machine does it again. */
-async function ensurePackageCaches(at: Agent): Promise<void> {
+ * and the tool folders trimmed to the limit. Its record lives in memory, so a restarted machine does it again. Answers
+ * whether they are ready. A step that fails leaves no record, and the mount goes on: the executor then gives the
+ * session's commands no cache variables (they work as before the caches), and the next mount tries again. */
+async function ensurePackageCaches(at: Agent): Promise<boolean> {
 	const ready = join(at.runtimeRoot, "packages.ready");
-	if (await exists(ready)) return;
+	if (await exists(ready)) return true;
 	const { root, config, limitBytes } = at.packageCaches;
-	await mkdir(dirname(config), { recursive: true, mode: 0o755 });
-	await writeText(config, codingPackageCachesTmpfiles(root), 0o644);
 	try {
+		await mkdir(dirname(config), { recursive: true, mode: 0o755 });
+		await writeText(config, codingPackageCachesTmpfiles(root), 0o644);
 		await at.system(TOOLS.systemdTmpfiles, ["--create", config]);
+		await trimCodingPackageCaches(root, limitBytes);
+		await writeText(ready, "", 0o600);
+		return true;
 	} catch {
-		throw new Error("CODING_GUEST_PACKAGE_CACHES_UNCONFIRMED");
+		return false;
 	}
-	await trimCodingPackageCaches(root, limitBytes);
-	await writeText(ready, "", 0o600);
 }
 
 /** The machine's NAT for the sessions' namespaces, which may reach out but not each other. Replaced whole. */
@@ -837,7 +841,7 @@ async function readSessionUser(session: Places): Promise<{ uid: number; gid: num
 }
 
 /** `mount`: the machine's package caches once a boot, the session's user, network and view; then its user manager once
- * the folder is up. */
+ * the folder is up. Asked in v2, the answer also says whether the caches are ready. */
 export async function mountCodingGuestSession(
 	request: CodingGuestMountRequest,
 	ports: CodingGuestAgentPorts = {},
@@ -851,8 +855,9 @@ export async function mountCodingGuestSession(
 		const held = await readSessionUser(session);
 		if (held && (held.uid !== request.uid || held.gid !== request.gid))
 			throw new Error("CODING_GUEST_SESSION_USER_CHANGED");
+		let caches = false;
 		const name = await locked(at, machineLock(at), "CODING_GUEST_MACHINE_BUSY", async () => {
-			await ensurePackageCaches(at);
+			caches = await ensurePackageCaches(at);
 			return ensureUser(at, request.uid, request.gid);
 		});
 		await mkdir(session.session, { recursive: true, mode: 0o755 });
@@ -860,13 +865,15 @@ export async function mountCodingGuestSession(
 		await ensureNetwork(at, session);
 		const shown = await showView(at, session, request.view, request.uid, request.gid);
 		if (shown.mount === "mounted") await ensureUserManager(at, session, request.uid, name, shown.restarted);
-		return shown.mount;
+		return { mount: shown.mount, caches };
 	});
+	// Said only when asked (v2): an executor from before reads exactly the v1 answer.
 	return Object.freeze({
 		schema: "qorpera.coding-guest-mounted/v1",
 		workerId: request.workerId,
 		viewId: request.view.viewId,
-		mount,
+		mount: mount.mount,
+		...(request.schema === CODING_GUEST_MOUNT_V2 ? { packageCaches: mount.caches } : {}),
 	});
 }
 

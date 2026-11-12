@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
 	appendFile,
+	chmod,
 	link,
 	lstat,
 	mkdir,
@@ -18,7 +19,13 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
-import { CODING_GUEST, CODING_PACKAGE_CACHES, SHA256_HEX_PATTERN } from "@qorpera/contracts";
+import {
+	CODING_GUEST,
+	CODING_PACKAGE_CACHES,
+	parseCodingGuestAnswer,
+	parseCodingGuestRequest,
+	SHA256_HEX_PATTERN,
+} from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	type CodingGuestAgentPorts,
@@ -930,11 +937,11 @@ describe("the machine's package caches (own code storage, step 6)", () => {
 			limitBytes: 8589934592,
 			age: "30d",
 			tools: [
-				{ folder: "npm", variable: "npm_config_cache" },
-				{ folder: "pnpm", variable: "npm_config_store_dir" },
-				{ folder: "pip", variable: "PIP_CACHE_DIR" },
-				{ folder: "uv", variable: "UV_CACHE_DIR" },
-				{ folder: "ms-playwright", variable: "PLAYWRIGHT_BROWSERS_PATH" },
+				{ folder: "npm", variables: ["npm_config_cache"] },
+				{ folder: "pnpm", variables: ["npm_config_store_dir", "pnpm_config_store_dir"] },
+				{ folder: "pip", variables: ["PIP_CACHE_DIR"] },
+				{ folder: "uv", variables: ["UV_CACHE_DIR"] },
+				{ folder: "ms-playwright", variables: ["PLAYWRIGHT_BROWSERS_PATH"] },
 			],
 		});
 		const acl = "group:qorpera-coding:rwx,default:group:qorpera-coding:rwx";
@@ -973,20 +980,61 @@ describe("the machine's package caches (own code storage, step 6)", () => {
 		expect(m.calls[0]).toEqual(["systemd-tmpfiles", "--create", m.tmpfiles]);
 	});
 
-	it("refuses the mount, making no user, while tmpfiles fails, and makes them at the next mount", async () => {
+	it("says in a v2 answer whether they are ready, and answers a v1 request exactly as an agent from before", async () => {
+		const m = await machine();
+		const workerId = randomUUID();
+		const v2 = await call(m, "mount", { ...mountRequest(workerId), schema: "qorpera.coding-guest-mount/v2" });
+		expect(v2.line).toEqual({
+			schema: "qorpera.coding-guest-mounted/v1",
+			workerId,
+			viewId: "view-1",
+			mount: "mounted",
+			packageCaches: true,
+		});
+		// An executor from before asks in v1 and reads exactly the four keys it knows (its parse is closed).
+		const v1 = await call(m, "mount", mountRequest(workerId));
+		expect(Object.keys(v1.line).sort()).toEqual(["mount", "schema", "viewId", "workerId"]);
+		expect(
+			parseCodingGuestAnswer("mount", parseCodingGuestRequest("mount", mountRequest(workerId)), v1.line),
+		).toEqual(v1.line);
+	});
+
+	it("say no while tmpfiles fails, and the mount still shows the view; the next mount makes them", async () => {
 		const m = await machine();
 		m.state.tmpfiles = "fail";
 		const workerId = randomUUID();
-		expect((await call(m, "mount", mountRequest(workerId))).line).toEqual(
-			refusal("CODING_GUEST_PACKAGE_CACHES_UNCONFIRMED"),
-		);
-		expect(m.calls).toEqual([["systemd-tmpfiles", "--create", m.tmpfiles]]);
+		const request = { ...mountRequest(workerId), schema: "qorpera.coding-guest-mount/v2" };
+		expect((await call(m, "mount", request)).line).toMatchObject({ mount: "mounted", packageCaches: false });
+		expect(m.calls[0]).toEqual(["systemd-tmpfiles", "--create", m.tmpfiles]);
+		expect(m.calls).toContainEqual(expect.arrayContaining(["useradd"]));
 		await gone(join(m.runRoot, "packages.ready"));
 		m.state.tmpfiles = "make";
 		m.calls.length = 0;
-		expect((await call(m, "mount", mountRequest(workerId))).line.mount).toBe("mounted");
+		expect((await call(m, "mount", request)).line).toMatchObject({ mount: "mounted", packageCaches: true });
 		expect(m.calls[0]).toEqual(["systemd-tmpfiles", "--create", m.tmpfiles]);
 		expect((await lstat(join(m.runRoot, "packages.ready"))).isFile()).toBe(true);
+	});
+
+	it("say no when their file or their trim fails, keeping no record of the boot", async () => {
+		// The tmpfiles file's folder is a file.
+		const m = await machine();
+		await writeFile(dirname(m.tmpfiles), "");
+		const request = { ...mountRequest(randomUUID()), schema: "qorpera.coding-guest-mount/v2" };
+		expect((await call(m, "mount", request)).line).toMatchObject({ mount: "mounted", packageCaches: false });
+		expect(m.calls.some(([tool]) => tool === "systemd-tmpfiles")).toBe(false);
+		await gone(join(m.runRoot, "packages.ready"));
+		// A folder in a tool folder that its walk cannot read (this test's user is not root).
+		const t = await machine();
+		const locked = join(t.packages, "npm", "locked");
+		await mkdir(locked, { recursive: true });
+		await chmod(locked, 0);
+		try {
+			const asked = { ...mountRequest(randomUUID()), schema: "qorpera.coding-guest-mount/v2" };
+			expect((await call(t, "mount", asked)).line).toMatchObject({ mount: "mounted", packageCaches: false });
+			await gone(join(t.runRoot, "packages.ready"));
+		} finally {
+			await chmod(locked, 0o700);
+		}
 	});
 
 	it("are trimmed at the first mount of a boot, the least recently used tool folder emptied first", async () => {

@@ -51,8 +51,9 @@ export const CODING_GUEST = /* @__PURE__ */ Object.freeze({
  * environment (CODING_PACKAGE_CACHE_ENVIRONMENT), over a company value of the same name. Download caches only: no build
  * cache, and not Go, cargo or mise, whose caches hold configuration or programs. Not yarn 1 either: it makes its cache's
  * folders with its own umask applied (0755), so another session could read them but not add to them (EACCES in the
- * image's proof, 12 Nov 2026). pnpm 10 reads `npm_config_store_dir`; pnpm 12 does not, and keeps its store in the
- * user's home. */
+ * image's proof, 12 Nov 2026). pnpm 10 reads `npm_config_store_dir`, pnpm 12 only `pnpm_config_store_dir`: both are
+ * set. The executor sets them only for a machine whose agent said the caches are ready (`packageCaches` in the mount
+ * answer), so a machine whose agent is older, or whose folder could not be made, works as before. */
 export const CODING_PACKAGE_CACHES = /* @__PURE__ */ Object.freeze({
 	root: "/var/cache/qorpera-packages",
 	group: "qorpera-coding",
@@ -60,17 +61,21 @@ export const CODING_PACKAGE_CACHES = /* @__PURE__ */ Object.freeze({
 	/** tmpfiles' age field. */
 	age: "30d",
 	tools: /* @__PURE__ */ Object.freeze([
-		/* @__PURE__ */ Object.freeze({ folder: "npm", variable: "npm_config_cache" }),
-		/* @__PURE__ */ Object.freeze({ folder: "pnpm", variable: "npm_config_store_dir" }),
-		/* @__PURE__ */ Object.freeze({ folder: "pip", variable: "PIP_CACHE_DIR" }),
-		/* @__PURE__ */ Object.freeze({ folder: "uv", variable: "UV_CACHE_DIR" }),
-		/* @__PURE__ */ Object.freeze({ folder: "ms-playwright", variable: "PLAYWRIGHT_BROWSERS_PATH" }),
+		/* @__PURE__ */ Object.freeze({ folder: "npm", variables: ["npm_config_cache"] }),
+		// pnpm 10 reads npm's name for it; 11 and later only their own.
+		/* @__PURE__ */ Object.freeze({ folder: "pnpm", variables: ["npm_config_store_dir", "pnpm_config_store_dir"] }),
+		/* @__PURE__ */ Object.freeze({ folder: "pip", variables: ["PIP_CACHE_DIR"] }),
+		/* @__PURE__ */ Object.freeze({ folder: "uv", variables: ["UV_CACHE_DIR"] }),
+		/* @__PURE__ */ Object.freeze({ folder: "ms-playwright", variables: ["PLAYWRIGHT_BROWSERS_PATH"] }),
 	]),
 });
-/** Each tool's variable and its folder, as every session command and every checks command gets them. */
+/** Each tool's variables and its folder, as every session command and every checks command of a machine whose caches
+ * are ready gets them. */
 export const CODING_PACKAGE_CACHE_ENVIRONMENT: Readonly<Record<string, string>> = /* @__PURE__ */ Object.freeze(
 	Object.fromEntries(
-		CODING_PACKAGE_CACHES.tools.map(({ folder, variable }) => [variable, `${CODING_PACKAGE_CACHES.root}/${folder}`]),
+		CODING_PACKAGE_CACHES.tools.flatMap(({ folder, variables }) =>
+			variables.map((variable) => [variable, `${CODING_PACKAGE_CACHES.root}/${folder}`]),
+		),
 	),
 );
 
@@ -91,9 +96,12 @@ export interface CodingGuestView {
 	readonly viewId: string;
 	readonly pass: string;
 }
-/** Shows the session's newest view at /run/qorpera-folder/mounts/<worker32>, owned by the session's uid. */
+/** Shows the session's newest view at /run/qorpera-folder/mounts/<worker32>, owned by the session's uid. `v2` (own code
+ * storage, step 6) asks the same and also that the answer say whether the machine's package caches are ready
+ * (`packageCaches`): an agent from before refuses it as an invalid request, having done nothing, and is asked again in
+ * `v1`; an agent asked in `v1` answers exactly as before, so an executor from before reads it. */
 export interface CodingGuestMountRequest {
-	readonly schema: "qorpera.coding-guest-mount/v1";
+	readonly schema: "qorpera.coding-guest-mount/v1" | "qorpera.coding-guest-mount/v2";
 	readonly workerId: string;
 	readonly uid: number;
 	readonly gid: number;
@@ -164,6 +172,9 @@ export interface CodingGuestMountAnswer {
 	readonly viewId: string;
 	/** mounted: the program's mount is up; closed: the node closed or refused the view; unanswered: not yet. */
 	readonly mount: "mounted" | "closed" | "unanswered";
+	/** Only in the answer to a `v2` request: whether the machine's package caches (CODING_PACKAGE_CACHES) are made this
+	 * boot. Read as false when absent. */
+	readonly packageCaches?: boolean;
 }
 /** `run` and `cancel`. */
 export interface CodingGuestCommandAnswer extends CodingGuestCommand {
@@ -275,6 +286,8 @@ const REQUEST_KEYS: Record<CodingGuestVerb, string> = {
 	"stop-session": "schema,workerId",
 	status: "schema,workerId",
 };
+/** The mount request that asks for the package caches' word (CodingGuestMountRequest). */
+export const CODING_GUEST_MOUNT_V2 = "qorpera.coding-guest-mount/v2";
 const REQUEST_SCHEMAS: Record<CodingGuestVerb, string> = {
 	mount: "qorpera.coding-guest-mount/v1",
 	run: "qorpera.coding-guest-run/v1",
@@ -303,7 +316,8 @@ export function parseCodingGuestRequest<V extends CodingGuestVerb>(verb: V, valu
 	const error = "Invalid coding guest request";
 	if (!CODING_GUEST_VERBS.includes(verb)) throw new Error(error);
 	const input = object(value, REQUEST_KEYS[verb], error);
-	if (input.schema !== REQUEST_SCHEMAS[verb]) throw new Error(error);
+	if (input.schema !== REQUEST_SCHEMAS[verb] && !(verb === "mount" && input.schema === CODING_GUEST_MOUNT_V2))
+		throw new Error(error);
 	id(input.workerId, error);
 	if ("commandId" in input) id(input.commandId, error);
 	if (verb === "mount" || verb === "run") {
@@ -387,12 +401,19 @@ export function parseCodingGuestAnswer<V extends CodingGuestVerb>(
 	const workerId = request.workerId;
 	if ((value as Record<string, unknown>).workerId !== workerId) throw new Error(error);
 	if (verb === "mount") {
-		const input = object(value, "mount,schema,viewId,workerId", error);
+		// A v1 answer is exactly the four keys, as before; a v2 request's may also say whether the caches are ready.
+		const word = (request as CodingGuestMountRequest).schema === CODING_GUEST_MOUNT_V2 && "packageCaches" in value;
+		const input = object(
+			value,
+			word ? "mount,packageCaches,schema,viewId,workerId" : "mount,schema,viewId,workerId",
+			error,
+		);
 		if (
 			input.schema !== "qorpera.coding-guest-mounted/v1" ||
 			input.viewId !== (request as CodingGuestMountRequest).view.viewId ||
 			typeof input.mount !== "string" ||
-			!["mounted", "closed", "unanswered"].includes(input.mount)
+			!["mounted", "closed", "unanswered"].includes(input.mount) ||
+			(word && typeof input.packageCaches !== "boolean")
 		)
 			throw new Error(error);
 		return Object.freeze({ ...input }) as never;

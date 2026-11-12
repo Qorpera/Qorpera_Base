@@ -416,8 +416,8 @@ pass "the collect refuses a folder that is not there"
 # user. A stand-in folder program ends as the folder program ends when the node closed the view, so each mount answers
 # closed and no user manager starts (none is needed here). Each user's commands run as the guest agent starts one: a
 # unit in the session's slice, as its uid and gid, in its network namespace (the mount made it), with exactly the
-# environment the executor gives a command (the session's names and the five package caches, read from the source),
-# here also the test machine's proxy, and `env -i` where the agent has its relay. pnpm and Playwright are pinned
+# environment the executor gives a command (the session's names and the six cache variables, read from the source),
+# here also the test machine's proxy, and `env -i` where the agent has its relay. pnpm 10, pnpm 12 and Playwright are pinned
 # versions root installs outside the caches; the lockfiles come from root's own throwaway caches, so the first user
 # starts cold. Each project is a few dozen packages: express and typescript for npm and pnpm, requests and rich for pip
 # and uv; Playwright's is the headless Chromium.
@@ -438,8 +438,8 @@ FIRST_W=$(cat /proc/sys/kernel/random/uuid)
 SECOND_W=$(cat /proc/sys/kernel/random/uuid)
 compact() { printf %s "${1//-/}"; }
 guest_mount() {
-	printf '{"schema":"qorpera.coding-guest-mount/v1","workerId":"%s","uid":%d,"gid":%d,"view":{"environmentId":"proof","viewId":"proof-%d","pass":"proof-pass"}}' \
-		"$1" "$2" "$2" "$2" | node "$AGENT" mount
+	printf '{"schema":"qorpera.coding-guest-mount/%s","workerId":"%s","uid":%d,"gid":%d,"view":{"environmentId":"proof","viewId":"proof-%d","pass":"proof-pass"}}' \
+		"${3:-v2}" "$1" "$2" "$2" "$2" | node "$AGENT" mount
 }
 # A folder's access or default ACL as getfacl writes its entries (the image has no getfacl): read from its xattr.
 acl() {
@@ -460,7 +460,7 @@ print(",".join(entries))
 PY
 }
 MOUNTED=$(guest_mount "$FIRST_W" "$FIRST_UID") || fail "the guest agent's mount for $FIRST_UID did not answer"
-[[ $MOUNTED == *'"mount":"closed"'* ]] || fail "the guest agent's mount for $FIRST_UID answered $MOUNTED"
+[[ $MOUNTED == *'"mount":"closed","packageCaches":true}' ]] || fail "the guest agent's mount for $FIRST_UID answered $MOUNTED"
 [[ $(stat -c '%u %g %a' "$CONF") == "0 0 644" ]] || fail "$CONF is $(stat -c '%u %g %a' "$CONF")"
 node --input-type=module -e "import { codingPackageCachesTmpfiles } from '$AGENT'; process.stdout.write(codingPackageCachesTmpfiles('$PACKAGES'));" \
 	>"$GUEST/expected.conf"
@@ -479,17 +479,20 @@ echo "the tool folders' access ACL: $(acl "$PACKAGES/npm" access); default: $(ac
 	fail "systemd-tmpfiles-clean.timer is $(systemctl is-active systemd-tmpfiles-clean.timer)"
 CONF_INODE=$(stat -c %i "$CONF")
 MOUNTED=$(guest_mount "$SECOND_W" "$SECOND_UID") || fail "the guest agent's mount for $SECOND_UID did not answer"
-[[ $MOUNTED == *'"mount":"closed"'* ]] || fail "the guest agent's mount for $SECOND_UID answered $MOUNTED"
+[[ $MOUNTED == *'"mount":"closed","packageCaches":true}' ]] || fail "the guest agent's mount for $SECOND_UID answered $MOUNTED"
 [[ $(stat -c %i "$CONF") == "$CONF_INODE" ]] || fail "the second mount of the boot wrote $CONF again"
+# Asked in v1, as an executor from before asks, the agent answers exactly the four keys that executor's closed parse reads.
+MOUNTED=$(guest_mount "$SECOND_W" "$SECOND_UID" v1) || fail "the guest agent's v1 mount did not answer"
+[[ $(jq -cS 'keys' <<<"$MOUNTED") == '["mount","schema","viewId","workerId"]' ]] || fail "the v1 answer is $MOUNTED"
 systemctl reset-failed "qorpera-folder-$(compact "$FIRST_W").service" "qorpera-folder-$(compact "$SECOND_W").service" ||
 	true
-pass "the guest agent's first mount of the boot made $PACKAGES and its five tool folders (root, qorpera-coding, 2775, the group's rwx as access and default ACL) from its tmpfiles file, then the user; the second made neither again; systemd-tmpfiles-clean.timer is active"
+pass "the guest agent's first mount of the boot made $PACKAGES and its five tool folders (root, qorpera-coding, 2775, the group's rwx as access and default ACL) from its tmpfiles file, then the user, and said so in its v2 answer; the second made neither again; a v1 answer is exactly an executor from before's four keys; systemd-tmpfiles-clean.timer is active"
 
 # One command of a session, as the guest agent starts it (above).
 NETNS=1
 mapfile -t CACHES < <(node --input-type=module -e \
 	"import { CODING_PACKAGE_CACHE_ENVIRONMENT as e } from '$GUEST/contracts/src/cloud-coding-guest.ts'; for (const [k, v] of Object.entries(e)) console.log(k + '=' + v);")
-[[ ${#CACHES[@]} == 5 && ${CACHES[0]} == "npm_config_cache=$PACKAGES/npm" ]] ||
+[[ ${#CACHES[@]} == 6 && ${CACHES[0]} == "npm_config_cache=$PACKAGES/npm" ]] ||
 	fail "the package caches' variables read as ${CACHES[*]}"
 RESOLV=()
 if [[ -e /run/systemd/resolve/resolv.conf ]]; then
@@ -546,7 +549,9 @@ done
 	--no-fund --loglevel=error >/dev/null) || fail "root could not lock the npm project"
 (cd "$LOCKS/pnpm" && "${ROOT_ENV[@]}" "$PNPM" install --lockfile-only --ignore-scripts --store-dir "$LOCKS/.pnpm" \
 	>/dev/null) || fail "root could not lock the pnpm project"
-[[ -s $LOCKS/npm/package-lock.json && -s $LOCKS/pnpm/pnpm-lock.yaml ]] ||
+(cd "$LOCKS/pnpm12" && "${ROOT_ENV[@]}" "$PNPM12" install --lockfile-only --ignore-scripts --store-dir "$LOCKS/.pnpm12" \
+	>/dev/null) || fail "root could not lock the pnpm 12 project"
+[[ -s $LOCKS/npm/package-lock.json && -s $LOCKS/pnpm/pnpm-lock.yaml && -s $LOCKS/pnpm12/pnpm-lock.yaml ]] ||
 	fail "a lockfile is missing: $(ls -A "$LOCKS"/*)"
 for uid in "$FIRST_UID" "$SECOND_UID"; do
 	for tool in npm pnpm pnpm12; do cp -r "$LOCKS/$tool" "/home/qorpera-$uid/proof-$tool"; done
@@ -598,6 +603,18 @@ prove_pnpm() {
 		"cd ~/proof-pnpm && $PNPM add --ignore-scripts is-number@7.0.0" || return 1
 	NOTE="pnpm install --offline worked from the store alone"
 }
+# pnpm 12 reads only its own name for the store (pnpm_config_store_dir), and its store is v11.
+prove_pnpm12() {
+	local install="cd ~/proof-pnpm12 && $PNPM12 install --frozen-lockfile --ignore-scripts"
+	first "pnpm 12 install" "$install" && kept pnpm .local/share/pnpm/store || return 1
+	[[ -d $PACKAGES/pnpm/v11 ]] || { echo "FAIL: pnpm 12's store is not $PACKAGES/pnpm: $(ls -A "$PACKAGES/pnpm")" >&2 && return 1; }
+	second "pnpm 12 install" "$install" && SECOND_TOOK=$TOOK || return 1
+	second "pnpm 12 install --offline" \
+		"cd ~/proof-pnpm12 && rm -rf node_modules && $PNPM12 install --frozen-lockfile --offline --ignore-scripts" || return 1
+	second "pnpm 12 add of is-number, which the first did not have" \
+		"cd ~/proof-pnpm12 && $PNPM12 add --ignore-scripts is-number@7.0.0" || return 1
+	NOTE="pnpm 12 install --offline worked from the store alone"
+}
 prove_pip() {
 	local install='cd ~/proof-pip && venv/bin/pip install requests==2.32.3 rich==14.0.0'
 	step "a venv as the first user" "$FIRST_UID" "$FIRST_W" 'cd ~/proof-pip && python3 -m venv venv' || return 1
@@ -635,7 +652,7 @@ prove_playwright() {
 	NOTE="the second user's install found the first's browser"
 }
 TOOLS_FAILED=()
-for tool in npm pnpm pip uv playwright; do
+for tool in npm pnpm pnpm12 pip uv playwright; do
 	NOTE=
 	FIRST_TOOK=
 	SECOND_TOOK=
@@ -646,22 +663,6 @@ for tool in npm pnpm pip uv playwright; do
 		TOOLS_FAILED+=("$tool")
 	fi
 done
-# pnpm's newest major, for the report only: where its store goes with these variables, and with pnpm_config_store_dir.
-if step "pnpm 12 install" "$FIRST_UID" "$FIRST_W" "cd ~/proof-pnpm12 && $PNPM12 install --ignore-scripts && $PNPM12 store path"; then
-	echo "INFO: pnpm 12.18.0 keeps its store at $(tail -n 1 <<<"$OUT")"
-else
-	echo "INFO: pnpm 12.18.0 did not install"
-fi
-P12="cd ~/proof-pnpm12 && rm -rf node_modules && export pnpm_config_store_dir=$PACKAGES/pnpm"
-if step "pnpm 12 with pnpm_config_store_dir" "$FIRST_UID" "$FIRST_W" "$P12 && $PNPM12 install --ignore-scripts && $PNPM12 store path" &&
-	P12_FIRST=$TOOK && P12_STORE=$(tail -n 1 <<<"$OUT") &&
-	step "pnpm 12 with pnpm_config_store_dir" "$SECOND_UID" "$SECOND_W" "$P12 && $PNPM12 install --ignore-scripts" &&
-	P12_SECOND=$TOOK &&
-	step "pnpm 12 add with pnpm_config_store_dir" "$SECOND_UID" "$SECOND_W" "$P12 && $PNPM12 add --ignore-scripts is-number@7.0.0"; then
-	echo "INFO: pnpm 12.18.0 with pnpm_config_store_dir: store $P12_STORE; the second user installed from it and added a package ($P12_FIRST s, then $P12_SECOND s)"
-else
-	echo "INFO: pnpm 12.18.0 with pnpm_config_store_dir did not pass the two users (above)"
-fi
 echo "INFO: a file the first user's npm wrote: $(find "$PACKAGES/npm/_cacache" -type f -print -quit | xargs stat -c '%u %g %a') $(acl "$(find "$PACKAGES/npm/_cacache" -type f -print -quit)" access)"
 
 # The tool folders' bytes on disk (each inode once), as the trim counts them.

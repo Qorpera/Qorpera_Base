@@ -282,8 +282,9 @@ interface Prepared extends Attached {
 	bootId: string;
 	guestConfigSha256: string;
 	baseSha: string;
-	/** On the folder model: the session's user, and where its commands start. */
-	folder?: { uid: number; cwd: string };
+	/** On the folder model: the session's user, where its commands start, and whether its machine's agent said the
+	 * machine's package caches are ready at this turn's mount (own code storage, step 6). */
+	folder?: { uid: number; cwd: string; packageCaches: boolean };
 }
 /** A run of the checks that takes the site its checks left (own code storage, step 4): the recipe, the commit, the run's
  * folder, the environment every command of the run gets, the repository's storage, the host's authority, the run's
@@ -595,10 +596,12 @@ const CODE_SITE_DROP_MS = 60_000;
 /** What the wall budget of a run that takes a site gives it beyond its checks': the collect's 120 s, and 120 s for the
  * boundary and the drop. */
 const CODE_SITE_BUDGET_MS = 240_000;
-/** The names every command of a session gets after its secrets: the folder command transport's own
- * (coding-folder-command-transport.ts, `sessionEnvironment`) and the machine's package caches, which the host gives every
- * session command and every command of a checks run (CODING_PACKAGE_CACHE_ENVIRONMENT; own code storage, step 6). A
- * secret of one of these names never reaches a command with its own value, so the collect is not given it to look for. */
+/** The names the folder command transport sets in every command's environment after its secrets
+ * (coding-folder-command-transport.ts, `sessionEnvironment`): a secret of one of these names never reaches a command
+ * with its own value, so the collect is not given it to look for. The machine's package caches are not among them: a
+ * run gets them only on a machine whose agent made them (packageCacheEnvironment), and then they are in the run's own
+ * environment, whose names the collect leaves out too; on any other machine a company value of such a name reaches the
+ * command, and the collect looks for it. */
 const CODING_FOLDER_SESSION_NAMES: ReadonlySet<string> = new Set([
 	"HOME",
 	"USER",
@@ -610,8 +613,13 @@ const CODING_FOLDER_SESSION_NAMES: ReadonlySet<string> = new Set([
 	"XDG_RUNTIME_DIR",
 	"DBUS_SESSION_BUS_ADDRESS",
 	"DOCKER_HOST",
-	...Object.keys(CODING_PACKAGE_CACHE_ENVIRONMENT),
 ]);
+/** The machine's package caches for a session's commands (CODING_PACKAGE_CACHE_ENVIRONMENT; own code storage, step 6),
+ * only when its machine's agent said at this turn's mount that it made them: an agent from before, or one that could
+ * not make them, leaves every command as it was before the caches. They win over a company value of the same name. */
+function packageCacheEnvironment(ready: Prepared): Readonly<Record<string, string>> {
+	return ready.folder?.packageCaches ? CODING_PACKAGE_CACHE_ENVIRONMENT : {};
+}
 /** A refusal of a check's run authority: the turn's, the machine's or its disk's. */
 class CodingChecksUnauthorized extends Error {
 	constructor(cause: unknown) {
@@ -1571,12 +1579,20 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			this.#repositorySession(claim, machine, storage, started.uid, baseSha, root),
 			signal,
 		);
+		let packageCaches = false;
 		const attach = async ({ bootId, uid }: { bootId: string; uid: number }) => {
 			// A machine SQL holds marked for a new disk gets it before a view opens on it, or one held since an earlier turn
 			// is kept: that view would stay mounted until its next renewal.
 			if (await this.#newDiskDue(machine, signal)) throw new CodingFolderRestartRequired("READS_UNREADABLE");
 			const guest = { bootId, guestConfigSha256: this.#folderSessionSha(claim.workerId, machine.machineId, bootId) };
-			await this.#attachSession(claim, machine, storage, { ...guest, folder: { uid } }, scope, signal);
+			packageCaches = await this.#attachSession(
+				claim,
+				machine,
+				storage,
+				{ ...guest, folder: { uid } },
+				scope,
+				signal,
+			);
 			return guest;
 		};
 		let guest: { bootId: string; guestConfigSha256: string };
@@ -1600,7 +1616,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			scope,
 			...guest,
 			baseSha,
-			folder: { uid: started.uid, cwd },
+			folder: { uid: started.uid, cwd, packageCaches },
 		};
 		this.#prepared.set(claim.workerId, ready);
 		return { vmId: machine.machineId, baseSha };
@@ -1902,8 +1918,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 	 * its environment and secrets, its output masked and kept in its custody only once the machine's reads are released.
 	 * Its authority is the host's own part of a command's (the turn still prepared, a fresh run authority, no machine
 	 * marked for a new disk), never the model's: the turn has handed in, and the model's commands are refused. Each
-	 * command gets `CI=true`, `QORPERA_CHECKS=1` and the machine's package caches, as every session command does
-	 * (CODING_PACKAGE_CACHE_ENVIRONMENT; own code storage, step 6). The copy holds exactly the candidate's tracked files
+	 * command gets `CI=true`, `QORPERA_CHECKS=1` and the machine's package caches when its agent made them, as every
+	 * session command does (packageCacheEnvironment; own code storage, step 6). The copy holds exactly the candidate's tracked files
 	 * and installs run fresh in it. Packages may come from this machine's cache; npm checks each against the lockfile's
 	 * integrity, other tools check less. No build output is carried. The run works in a folder of its own,
 	 * `~/.qorpera-checks/<its turn's sequence>-<its attempt>` (codeChecksRunName), and its copy removes the earlier runs'
@@ -1978,10 +1994,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			commandId = (index: number | "site" | "drop") =>
 				codingHostId("checks", `${claim.workerId}:${claim.sequence}:${input.attempt}:${index}`);
 		// Every command of the run, the copy's, each check's and the site's, knows its run by the root and its name, and
-		// finds the machine's package caches where the session's own commands do.
+		// finds the machine's package caches where the session's own commands do (when its agent made them).
 		const base = {
 			...codingFolderGitEnvironment(claim.workerId),
-			...CODING_PACKAGE_CACHE_ENVIRONMENT,
+			...packageCacheEnvironment(ready),
 			CI: "true",
 			QORPERA_CHECKS: "1",
 			QORPERA_CHECKS_ROOT: root,
@@ -2664,7 +2680,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		}
 	}
 	/** One guest lease step of the session, so the keeper never renews it
-	 * between this attach and its first renewal. */
+	 * between this attach and its first renewal. Resolves with whether, on the folder model, the machine's agent said its
+	 * package caches are ready at the mount (#attachSessionNow). */
 	#attachSession(
 		claim: CodingSessionClaim,
 		machine: Readonly<LxdCodingMachineBinding>,
@@ -2672,7 +2689,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		guest: AttachedGuest,
 		scope: CloudCodingCommandScope,
 		signal: AbortSignal,
-	): Promise<void> {
+	): Promise<boolean> {
 		return this.#leaseTask(claim.workerId, () =>
 			this.#attachSessionNow(claim, machine, storage, guest, scope, signal),
 		);
@@ -2685,7 +2702,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		scope: CloudCodingCommandScope,
 		signal: AbortSignal,
 		fresh = false,
-	): Promise<void> {
+	): Promise<boolean> {
 		const folder = this.#options.folder;
 		let generation: string | null;
 		if (folder) {
@@ -2783,7 +2800,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				signal,
 			);
 			await folder.control.secrets(machine.machineId, signal);
-			const { viewId, replaced } = await this.#exclusive(machine.machineId, signal, () =>
+			const { viewId, replaced, packageCaches } = await this.#exclusive(machine.machineId, signal, () =>
 				folder.views.attach(
 					session,
 					Date.now() + (started + Number(attached.validForMs) - performance.now()),
@@ -2796,7 +2813,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				viewId,
 				...(replaced && { replaced }),
 			});
-			return;
+			// What the agent said of the machine's package caches at this mount: the turn's commands get them only then.
+			return packageCaches;
 		}
 		try {
 			await this.#refreshGuestLease(attachment, started + Number(attached.validForMs), signal);
@@ -2808,6 +2826,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			if (now?.tokenSha256 !== generation || now.expiresInMs > 0) throw error;
 			await this.#attachSessionNow(claim, machine, storage, guest, scope, signal, true);
 		}
+		return false;
 	}
 	/** A turn as SQL names it in an attachment: its sequence, its turn id and whether it may start commands. */
 	#attachedTurn(value: unknown): Attachment["turn"] {
@@ -3965,11 +3984,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			await authorize(action, checkedScope, commandId, inputSha256, checked);
 		};
 		// The session's own user runs each command at its worktree, with Git's settings for the company folder and the
-		// machine's package caches.
+		// machine's package caches when its agent made them.
 		if (folder && ready.folder)
 			return this.#folderTransport(folder, ready, {
 				cwd: ready.folder.cwd,
-				environment: { ...codingFolderGitEnvironment(ready.claim.workerId), ...CODING_PACKAGE_CACHE_ENVIRONMENT },
+				environment: { ...codingFolderGitEnvironment(ready.claim.workerId), ...packageCacheEnvironment(ready) },
 				authorize: checkedAuthorize,
 			});
 		return new LxdCodingCommandTransport({

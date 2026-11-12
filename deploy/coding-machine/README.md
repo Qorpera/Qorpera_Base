@@ -68,11 +68,13 @@ The image expects this per session; `test/prove-in-coding-machine.sh` does exact
    and a folder each for npm, pnpm, pip, uv and Playwright's browsers, root's in `qorpera-coding`, 2775, with the
    group's rwx as access and default ACL entries (tmpfiles sets them; the image has no `setfacl`), and tmpfiles' age of
    30 days, which the image's `systemd-tmpfiles-clean.timer` applies. Then, while the tool folders hold more than
-   8 GiB, it empties the least recently used. The executor gives every session command and every command of a checks
-   run `npm_config_cache`, `npm_config_store_dir`, `PIP_CACHE_DIR`, `UV_CACHE_DIR` and `PLAYWRIGHT_BROWSERS_PATH`, so
-   the machine's sessions and its checks share what they download. Not yarn 1, which makes its cache's folders with
-   its own umask applied, so the next session cannot add to them; and pnpm 12 does not read `npm_config_store_dir`
-   (pnpm 10 does).
+   8 GiB, it empties the least recently used. Asked in `qorpera.coding-guest-mount/v2`, its answer says whether all of
+   that was done (`packageCaches`); a failed step leaves the mount as it was before the caches. The executor gives
+   every session command and every command of a checks run on a machine whose agent said so `npm_config_cache`,
+   `npm_config_store_dir` (pnpm 10), `pnpm_config_store_dir` (pnpm 11 and later), `PIP_CACHE_DIR`, `UV_CACHE_DIR` and
+   `PLAYWRIGHT_BROWSERS_PATH`, so the machine's sessions and its checks share what they download; on any other
+   machine, none of them. Not yarn 1, which makes its cache's folders with its own umask applied, so the next session
+   cannot add to them.
 
 ## Build it on a node
 

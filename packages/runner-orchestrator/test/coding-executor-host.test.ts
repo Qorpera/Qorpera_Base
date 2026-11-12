@@ -2754,11 +2754,14 @@ async function folderFixture(repositories = true) {
 	mocked.guestStop.mockResolvedValue({});
 	/** The view each session holds, as its record names it: from its attach until its end. */
 	const held = new Map<string, CodingFolderViewHeld>();
+	/** What the machine's agent says of its package caches at the mount: a new agent that made them, unless a test says
+	 * otherwise (an agent from before, or one that could not make them, says false). */
+	const agent = { packageCaches: true };
 	const views = {
 		attach: vi.fn<CodingFolderViews["attach"]>(async (session) => {
 			const { machineId } = session.machine;
 			held.set(session.workerId, { machineId, bootId: session.bootId, attachmentToken: session.attachmentToken });
-			return { viewId };
+			return { viewId, packageCaches: agent.packageCaches };
 		}),
 		held: vi.fn<CodingFolderViews["held"]>(async (workerId) => held.get(workerId)),
 		end: vi.fn<CodingFolderViews["end"]>(async (workerId) => {
@@ -2813,6 +2816,7 @@ async function folderFixture(repositories = true) {
 		viewId,
 		cwd,
 		status,
+		agent,
 	};
 }
 
@@ -5394,9 +5398,17 @@ describe("a run of a repository's checks in the session's machine (own code stor
 	 * folder command transport over a fake guest agent; the vault gives `secrets`. `ending` says how each command the
 	 * guest is asked to run ends (by default it succeeds, printing nothing). */
 	async function checksFixture(
-		options: { secrets?: Record<string, string>; budgetMs?: number; stopMs?: number; boundaryMs?: number } = {},
+		options: {
+			secrets?: Record<string, string>;
+			budgetMs?: number;
+			stopMs?: number;
+			boundaryMs?: number;
+			/** What the machine's agent says of its package caches at the mount (true: a new agent that made them). */
+			packageCaches?: boolean;
+		} = {},
 	) {
 		const f = await folderFixture();
+		f.agent.packageCaches = options.packageCaches ?? true;
 		f.claim.repository = { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" };
 		Object.assign(f.repositories, {
 			start: vi.fn<NonNullable<CodingFolderRepositories["start"]>>(async () => ({ baseSha: f.baseSha })),
@@ -5633,11 +5645,12 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		await expect(ask()).rejects.toBe(refusal);
 	});
 
-	it("gives a session command the machine's package caches over the company's values of their names, as every command of its runs (own code storage, step 6)", async () => {
+	it("gives a session command the machine's package caches over the company's values of their names, as every command of its runs, once its agent said they are ready (own code storage, step 6)", async () => {
 		// Each tool's download cache in the machine's shared folder (the guest agent makes it).
 		expect(CODING_PACKAGE_CACHE_ENVIRONMENT).toEqual({
 			npm_config_cache: "/var/cache/qorpera-packages/npm",
 			npm_config_store_dir: "/var/cache/qorpera-packages/pnpm",
+			pnpm_config_store_dir: "/var/cache/qorpera-packages/pnpm",
 			PIP_CACHE_DIR: "/var/cache/qorpera-packages/pip",
 			UV_CACHE_DIR: "/var/cache/qorpera-packages/uv",
 			PLAYWRIGHT_BROWSERS_PATH: "/var/cache/qorpera-packages/ms-playwright",
@@ -6772,6 +6785,36 @@ describe("a run of a repository's checks in the session's machine (own code stor
 					.join(" "),
 			);
 			expect(again.environment.QORPERA_SITE_SECRET_NAMES).toBe("API_KEY STRIPE_SECRET");
+		});
+
+		it("gives no command of a machine whose agent did not make the package caches (from before them, or they failed) any of their variables: a company value of such a name reaches them as before, and the collect looks for it (own code storage, step 6)", async () => {
+			const company = Object.fromEntries(
+				Object.keys(CODING_PACKAGE_CACHE_ENVIRONMENT).map((name) => [name, `/company/value/of/${name}`]),
+			);
+			const f = await siteFixture({
+				secrets: { ...company, API_KEY: "value-of-the-api-key-1" },
+				packageCaches: false,
+			});
+			// A session command first, through the transport its model's commands take.
+			const transport = await f.host.commandTransport(
+				f.scope(),
+				vi.fn(async () => undefined),
+				f.signal,
+			);
+			const input = { commandId: randomUUID(), inputSha256: "a".repeat(64), command: "npm ci", timeoutMs: null };
+			expect(await transport.start(f.scope(), input, f.signal)).toMatchObject({ state: "succeeded" });
+			expect(await f.site()).toMatchObject({ state: "passed", site: MADE });
+			const [session, ...run] = f.ran();
+			expect(session?.environment).toMatchObject({ ...codingFolderGitEnvironment(f.claim.workerId), ...company });
+			expect(run.map(kindOf)).toEqual(["copy", "check", "check", "check", "collect"]);
+			for (const ran of [session, ...run]) {
+				expect(ran?.environment).toMatchObject(company);
+				for (const [name, value] of Object.entries(CODING_PACKAGE_CACHE_ENVIRONMENT))
+					expect(ran?.environment[name]).not.toBe(value);
+			}
+			expect(f.command("collect").environment.QORPERA_SITE_SECRET_NAMES).toBe(
+				["API_KEY", ...Object.keys(company)].sort().join(" "),
+			);
 		});
 
 		it("gives the collect and the drop the machine's package caches over the company's values of their names (own code storage, step 6)", async () => {
