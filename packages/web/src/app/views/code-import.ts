@@ -157,12 +157,24 @@ export function importWhy(reason: string): string {
 			return t("other code is being brought in right now; try again when it is done");
 		case "sessions_open":
 			return t("agents are still working on it on GitHub; try again when they are done");
+		// The executor's refusals that trying again cannot help (part C1's CODE_IMPORT_REFUSALS, and the code host's own
+		// refusal of a file over 256 MB). A member may not know git: none of these says it.
+		case "IMPORT_SOURCE_EMPTY":
+			return t("there is nothing in it yet");
+		case "IMPORT_SHA256_REPOSITORY":
+			return t("it is stored in a new format Qorpera can't bring in yet");
+		case "CODE_HOST_FILE_TOO_LARGE":
+			return t("it has a file larger than Qorpera can keep");
+		case "IMPORT_BRANCH_UNKNOWN":
+			return t("Qorpera could not tell which version of it is the main one");
+		case "IMPORT_FILE_NOT_WHOLE":
+			return t("the file was not complete");
 	}
 	// git's check: an error is damage (IMPORT_HISTORY_DAMAGED, alone or with git's message id after it), and a warning
 	// is named by its own message id (codeImportHistoryCode in the runner orchestrator's code-import.ts).
 	if (code === "IMPORT_HISTORY_DAMAGED" || code.startsWith("IMPORT_HISTORY_DAMAGED_"))
 		return t("its history has damage Qorpera can't take in");
-	if (code.startsWith("IMPORT_HISTORY_")) return t("its history has old git objects Qorpera can't take in yet");
+	if (code.startsWith("IMPORT_HISTORY_")) return t("its history is stored in an old way Qorpera can't take in yet");
 	if (/^(?:IMPORT_TOO_MANY_|IMPORT_NAMES?_|CODE_HOST_NAMES_)/.test(code) || code === "IMPORT_BRANCH_NAME")
 		return t("it has more files, or names, than Qorpera can keep");
 	return t("it could not be brought in just now; try again");

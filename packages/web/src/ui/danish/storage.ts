@@ -93,9 +93,16 @@ export const STORAGE: Record<string, string> = {
 	"it is made of other projects, and Qorpera can't bring those in yet":
 		"den består af andre projekter, og dem kan Qorpera ikke hente ind endnu",
 	"its history has damage Qorpera can't take in": "dens historik har skader, som Qorpera ikke kan tage ind",
-	"its history has old git objects Qorpera can't take in yet":
-		"dens historik har gamle git-objekter, som Qorpera ikke kan tage ind endnu",
+	"its history is stored in an old way Qorpera can't take in yet":
+		"dens historik er gemt på en gammel måde, som Qorpera ikke kan tage ind endnu",
 	"it has more files, or names, than Qorpera can keep": "den har flere filer eller navne, end Qorpera kan gemme",
+	"there is nothing in it yet": "der er ikke noget i den endnu",
+	"it is stored in a new format Qorpera can't bring in yet":
+		"den er gemt i et nyt format, som Qorpera ikke kan hente ind endnu",
+	"it has a file larger than Qorpera can keep": "den har en fil, der er større, end Qorpera kan gemme",
+	"Qorpera could not tell which version of it is the main one":
+		"Qorpera kunne ikke se, hvilken version af den der er hovedversionen",
+	"the file was not complete": "filen var ikke komplet",
 	"a project with that name is already kept here": "et projekt med det navn ligger her allerede",
 	"other code is being brought in right now; try again when it is done":
 		"der hentes allerede anden kode ind; prøv igen, når det er færdigt",

@@ -338,9 +338,27 @@ describe("the words of an import", () => {
 		],
 		[
 			["IMPORT_HISTORY_ZERO_PADDED_FILEMODE", "IMPORT_HISTORY_MISSINGTAGGERENTRY"],
-			"its history has old git objects Qorpera can't take in yet",
-			"dens historik har gamle git-objekter, som Qorpera ikke kan tage ind endnu",
+			"its history is stored in an old way Qorpera can't take in yet",
+			"dens historik er gemt på en gammel måde, som Qorpera ikke kan tage ind endnu",
 		],
+		// The executor's refusals that trying again cannot help.
+		[["IMPORT_SOURCE_EMPTY"], "there is nothing in it yet", "der er ikke noget i den endnu"],
+		[
+			["IMPORT_SHA256_REPOSITORY"],
+			"it is stored in a new format Qorpera can't bring in yet",
+			"den er gemt i et nyt format, som Qorpera ikke kan hente ind endnu",
+		],
+		[
+			["CODE_HOST_FILE_TOO_LARGE"],
+			"it has a file larger than Qorpera can keep",
+			"den har en fil, der er større, end Qorpera kan gemme",
+		],
+		[
+			["IMPORT_BRANCH_UNKNOWN"],
+			"Qorpera could not tell which version of it is the main one",
+			"Qorpera kunne ikke se, hvilken version af den der er hovedversionen",
+		],
+		[["IMPORT_FILE_NOT_WHOLE"], "the file was not complete", "filen var ikke komplet"],
 		[
 			[
 				"IMPORT_TOO_MANY_ENTRIES",
@@ -374,7 +392,6 @@ describe("the words of an import", () => {
 				"no_executor",
 				"deleting",
 				"IMPORT_SOURCE_ERROR",
-				"IMPORT_SOURCE_EMPTY",
 				"IMPORT_NO_SPACE",
 				"CODE_HOST_RESTORE_FAILED:PLACE_AS_BEFORE",
 				"DID_NOT_FINISH",
@@ -387,13 +404,20 @@ describe("the words of an import", () => {
 	];
 
 	it("says why it was not brought in, for every reason, and never shows a code", () => {
+		// A member may not know git: no reason names it, nor a branch, a commit, a repository or a bundle.
+		const gitWords = /\bgit\b|git-|branch|commit|repositor|bundle|\bgren/i;
 		for (const [codes, english] of reasons)
 			for (const code of codes) {
 				expect(importWhy(code), code).toBe(english);
 				expect(importWhy(code)).not.toMatch(/[A-Z]{2,}_|_[A-Z]|:/);
+				expect(importWhy(code), code).not.toMatch(gitWords);
 			}
 		setLanguagePreference("da");
-		for (const [codes, , danish] of reasons) for (const code of codes) expect(importWhy(code), code).toBe(danish);
+		for (const [codes, , danish] of reasons)
+			for (const code of codes) {
+				expect(importWhy(code), code).toBe(danish);
+				expect(importWhy(code), code).not.toMatch(gitWords);
+			}
 	});
 
 	it("says where brought-in code came from, when, and what came with it", () => {
@@ -829,7 +853,7 @@ describe("Bring code in, in Storage", () => {
 		calls.list.mockResolvedValue(codeList({ last: lastShop("IMPORT_HISTORY_BAD_TIMEZONE") }));
 		await vi.advanceTimersByTimeAsync(5000);
 		expect(visibleText(line())).toBe(
-			"Shop was not brought in: its history has old git objects Qorpera can't take in yet",
+			"Shop was not brought in: its history is stored in an old way Qorpera can't take in yet",
 		);
 	});
 
