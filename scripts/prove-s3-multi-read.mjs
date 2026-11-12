@@ -22,8 +22,9 @@ import {
 // - Each file's read is recorded: one release a file, in the answer's order, all under the hash of the answer; the
 //   context view cites the first; the run's work log keeps every release, a reads copy for each file and the paths the
 //   call named, every block parsed by the shared parser.
-// - The bytes of the files are read at most two at a time, so the call never fills the object gateway's two NAS lanes
-//   by itself (the stand-in answers 503 when both are busy, as the gateway does for a file just written).
+// - The bytes of the files are read one file at a time, so the call never contends with itself at the object gateway,
+//   which serves two operations at a time and one on any one object (the stand-in answers 503 otherwise, as the gateway
+//   does for a file just written), also for two files of the same content, which share their objects.
 // Prints one PASS line per check and exits 1 on the first failure; without the binary it prints NOT RUN and exits 0.
 
 const SMALL = Array.from({ length: 5 }, (_, n) => ({
@@ -38,9 +39,10 @@ const LARGE = {
 	path: "docs/large.md",
 	text: Array.from({ length: 1800 }, (_, n) => `line ${String(n).padStart(5, "0")} of the large file, in words.\n`).join(""),
 };
+/** Two files of the same content: they share their objects, which the gateway serves one operation at a time. */
 const OPEN = [
-	{ path: "open/a.md", text: "Open file a.\n" },
-	{ path: "open/b.md", text: "Open file b.\n" },
+	{ path: "open/a.md", text: "An open file, copied.\n" },
+	{ path: "open/b.md", text: "An open file, copied.\n" },
 ];
 const SECRET = { path: "locked/secret.md", text: "A secret the run may not read.\n" };
 const MISSING = "nope/missing.md";
@@ -238,12 +240,12 @@ await finish(
 				`the run's log keeps all 3 steps (${log.blocks.length} blocks, each parsed by the shared parser): step 0 with its whole ${many.bytes}-byte envelope, its 7 releases, a reads copy naming each file and version, and the 7 paths it named; step 1 likewise; step 2 (it named ${SECRET.path}) narrow, keeping its 2 releases and no path`,
 			);
 
-			// 6. The bytes took turns: never more than two gets at once, none answered busy.
+			// 6. The bytes took turns: one get at a time, none answered busy, the two copies' shared objects included.
 			assert(state.lane.gets >= 2 * (FIRST.length + 1 + OPEN.length), `${state.lane.gets} gets`);
-			assert.equal(state.lane.busy, 0, "no get found both lanes busy");
-			assert(state.lane.most <= 2, `${state.lane.most} gets at once`);
+			assert.equal(state.lane.busy, 0, "no get found the lanes busy or its object in flight");
+			assert.equal(state.lane.most, 1, `${state.lane.most} gets at once`);
 			pass(
-				`the files' bytes took turns: ${state.lane.gets} gets of manifests and chunks, at most ${state.lane.most} at once, none answered busy by the stand-in's two NAS lanes`,
+				`the files' bytes took turns: ${state.lane.gets} gets of manifests and chunks, one at a time, none answered busy by the stand-in's two NAS lanes (one get an object), ${OPEN.map((file) => file.path).join(" and ")} sharing their objects included`,
 			);
 			process.stdout.write(`Outputs: ${outputs.map((a) => `${a.callId} ${a.bytes} B`).join(", ")}\n`);
 		},

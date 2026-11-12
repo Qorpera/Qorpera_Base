@@ -382,25 +382,33 @@ it("shares one result alike among files too large to show whole, each with its o
 	expect(on.bytesRead).toBeGreaterThan(0);
 });
 
-it("reads the entries of several files side by side, and their bytes at most two at a time", async () => {
-	// The object gateway serves bytes from two NAS lanes and answers 503 when both are busy and the object has no Storage
-	// copy yet: a read of eight files must not fill them by itself (proof sweep of #1700).
+it("reads the entries of several files side by side, and their bytes one file at a time", async () => {
+	// The object gateway serves bytes from two NAS lanes, one operation at a time on any one object, and answers 503 for
+	// an object with no Storage copy yet when it cannot take it now: a read of eight files must not turn its own byte
+	// reads away, also when two files hold the same content and so share objects (proof sweep of #1700, review r4 F1).
 	const files: Record<string, string> = {};
-	for (let n = 0; n < 8; n++) files[`docs/f${n}.md`] = `file ${n} `.repeat(100);
+	for (let n = 0; n < 6; n++) files[`docs/f${n}.md`] = `file ${n} `.repeat(100);
+	files["docs/copy-1.md"] = "the same words in two files ".repeat(40);
+	files["docs/copy-2.md"] = "the same words in two files ".repeat(40);
 	let ranges = 0;
 	let mostRanges = 0;
+	const reading = new Set<string>();
 	const f = await fixture(
 		{ files },
 		{
 			bytes: (inner) => ({
 				...inner,
 				range: async (file: CloudCompanyFolderFile, offset: number, length: number, signal: AbortSignal) => {
+					// As the gateway: a second read of an object in flight is turned away.
+					if (reading.has(file.fileSha256)) throw new CloudRuntimeDiagnosticError("transport_unavailable");
+					reading.add(file.fileSha256);
 					mostRanges = Math.max(mostRanges, ++ranges);
 					try {
 						await new Promise((done) => setTimeout(done, 5));
 						return await inner.range(file, offset, length, signal);
 					} finally {
 						ranges--;
+						reading.delete(file.fileSha256);
 					}
 				},
 			}),
@@ -422,7 +430,19 @@ it("reads the entries of several files side by side, and their bytes at most two
 		Object.entries(files),
 	);
 	expect(mostReads).toBe(8);
-	expect(mostRanges).toBe(2);
+	expect(mostRanges).toBe(1);
+	// A byte read that fails is that path's answer, and the next file's bytes are still read.
+	const range = vi.spyOn(f.folder, "readRange").mockImplementation(async (entry, offset, length, signal) => {
+		if (entry.path === "docs/f0.md") throw new CloudRuntimeDiagnosticError("timeout");
+		return CloudCompanyFolderClient.prototype.readRange.call(f.folder, entry, offset, length, signal);
+	});
+	const again = parse(await f.call("company_read", { paths: ["docs/f0.md", "docs/f1.md"] })).files;
+	expect(again[0]).toEqual({
+		path: "docs/f0.md",
+		refused: "COMPANY_FOLDER_UNAVAILABLE: it could not be read now; read it again",
+	});
+	expect(again[1]).toMatchObject({ path: "docs/f1.md", text: files["docs/f1.md"] });
+	range.mockRestore();
 });
 
 it("answers each path on its own, without failing the others: absent, a folder, a link, no text, an image named", async () => {

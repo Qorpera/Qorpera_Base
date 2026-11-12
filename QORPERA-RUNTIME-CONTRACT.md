@@ -6515,9 +6515,10 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    - Every file the answer names is its own release, in the answer's order, all under the hash of the whole answer,
      and the answer cites the first, as `company_search` cites its first part: the context view cites one release an
      output, and the run log keeps every release of the step. No SQL changes.
-   - The paths' entries are read side by side, and their bytes at most two at a time: the object gateway serves
-     bytes from two NAS lanes and answers 503 when both are busy and a file has no Storage copy yet, so one call
-     never fills them by itself.
+   - The paths' entries are read side by side, and their bytes one file at a time: the object gateway serves bytes
+     from two NAS lanes, one operation at a time on any one object, and answers 503 for a file with no Storage copy
+     yet (one just written) when it cannot take it now. Files of the same content share objects, so one call never
+     contends with itself there.
    - Codex still sends one call a model response, so this is what lets one round read several files.
 3. **What the provider sees.** `company_list`'s description and input schema (`required` is `["path"]`, with
    `depth`, `glob`, `after` and `limit` optional), and `company_read`'s description and input schema (`paths`
