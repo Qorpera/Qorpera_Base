@@ -141,16 +141,22 @@ Result on node 2's test machine (15 Oct 2026, run `20261015T222308-36186-3333861
   converted a document to PDF; sqlite3, zip, unzip, ripgrep, fd and jq worked;
 - the test machine's modules, sysctls, nft rules, links and LXD state were the same before and after.
 
-The package caches (own code storage, step 6; run `20261112T132317-59599-812bb37f`, 20 min with the build, ALL
+The package caches (own code storage, step 6; run `20261112T142706-3090-47a9c096`, 24 min with the build, ALL
 PASSED): the guest agent, run from its source and asked its mount in v2, made `/var/cache/qorpera-packages` and its five
 folders (root, `qorpera-coding`, 2775, the group's rwx as access and default ACL) from its tmpfiles file at its first
 mount, then the user, and said so (`packageCaches: true`); nothing again at the second mount; asked in v1 it answered
 exactly the four keys an executor from before reads; `systemd-tmpfiles-clean.timer` is active; a command unit started
 as the agent starts one carries the group (`id -G`); a file root made there through `sudo`, another session wrote to.
 A second session user then installed from the first's cache, with no permission error, and added a package the first
-did not have (first install, then second, in seconds): npm 1.1 then 0.6 (`npm ci --offline` from the cache alone),
-pnpm 10 2.2 then 0.6 and pnpm 12 3.3 then 0.7 (each `--offline` from the store alone), pip 2.0 then 1.4 ("Using
-cached"), uv 0.4 then 0.0 (`--offline`), Playwright's headless Chromium 17.3 then 0.2. The trim emptied only the least
-recently used folder over a small limit, which stayed as it was; tmpfiles' age, on the agent's lines with 2 s, removed
-what was not used and kept every tool folder. yarn 1 is not shared: the second session could not add to its cache (run
-`20261112T122814-37891-1c036e2c`).
+did not have (first install, then second, in seconds): npm 1.3 then 0.7 (`npm ci --offline` from the cache alone),
+pnpm 10 2.2 then 0.6 and pnpm 12 4.6 then 1.0 (each `--offline` from the store alone), pip 2.8 then 1.6 ("Using
+cached"), uv 0.5 then 0.1 (`--offline`), Playwright's headless Chromium 34.0 then 0.4. Two users with their own
+Playwright projects (1.63.0 and 1.65.0) in their 0700 homes: with Playwright's GC on, the second user's install removed
+the first user's browser and FFmpeg (its launch: "Executable doesn't exist"); with `PLAYWRIGHT_SKIP_BROWSER_GC=1` both
+stayed and the first user's browser launched; the root is `relatime` and the launch moved the browser's read time.
+npm cache verify and clean, pnpm store prune, pip cache purge, uv cache prune and clean, run by the second user, left the
+first user's projects running. The trim emptied only the least recently used folder over a small limit; tmpfiles' age,
+on the agent's lines with 2 s, removed what was not used and kept every tool folder and every file in a tree; the
+agent's age of whole trees removed each browser and a uv archive whole, the venv that linked from it still ran, and a
+launch after said how to bring the browser back. yarn 1 is not shared: the second session could not add to its cache
+(run `20261112T122814-37891-1c036e2c`).
