@@ -10,6 +10,7 @@ import {
 	type CloudCodingRepository,
 	type CloudCodingStorageBinding,
 	CODING_GUEST,
+	CODING_GUEST_HELPER_MAX_BYTES,
 	CODING_PACKAGE_CACHE_ENVIRONMENT,
 	cloudCodingSessionLayout,
 	type IdleRuleSample,
@@ -1210,7 +1211,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				machine.project,
 				name,
 				`/opt/qorpera-coding/${file}`,
-				65536,
+				CODING_GUEST_HELPER_MAX_BYTES,
 				signal,
 			);
 			if (content.uid !== 0 || content.gid !== 0 || content.mode !== 0o444 || digest(content.content) !== hash)
@@ -2864,7 +2865,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			machine.project,
 			lxdCodingMachineName(machine.machineId),
 			"/opt/qorpera-coding/cloud-coding-watchdog.mjs",
-			65536,
+			CODING_GUEST_HELPER_MAX_BYTES,
 			signal,
 		);
 		if (
@@ -3807,7 +3808,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				machine.project,
 				name,
 				"/opt/qorpera-coding/cloud-coding-storage-guest.mjs",
-				65536,
+				CODING_GUEST_HELPER_MAX_BYTES,
 				signal,
 			);
 			if (

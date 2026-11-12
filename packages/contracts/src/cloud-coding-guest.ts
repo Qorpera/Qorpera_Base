@@ -64,7 +64,8 @@ export const CODING_GUEST = /* @__PURE__ */ Object.freeze({
 export const CODING_PACKAGE_CACHES = /* @__PURE__ */ Object.freeze({
 	root: "/var/cache/qorpera-packages",
 	group: "qorpera-coding",
-	limitBytes: 8 * 1024 ** 3,
+	/** 8 GiB, written out: `**` would keep this object in every bundle of contracts, used or not. */
+	limitBytes: 8_589_934_592,
 	/** tmpfiles' age (`<ageDays>d`), and the age of a whole tree. */
 	ageDays: 30,
 	tools: /* @__PURE__ */ Object.freeze<readonly CodingPackageCacheTool[]>([
@@ -113,10 +114,11 @@ export interface CodingPackageCacheTool {
 	readonly trees: readonly string[];
 }
 /** Each tool's variables and its folder, and its settings, as every session command and every checks command of a
- * machine whose caches are ready gets them. */
+ * machine whose caches are ready gets them. Every call is marked pure, so a program that does not use it (the coding
+ * guest's four helpers, which must stay within CODING_GUEST_HELPER_MAX_BYTES) bundles none of it. */
 export const CODING_PACKAGE_CACHE_ENVIRONMENT: Readonly<Record<string, string>> = /* @__PURE__ */ Object.freeze(
-	Object.fromEntries(
-		CODING_PACKAGE_CACHES.tools.flatMap(({ folder, variables, settings }) => [
+	/* @__PURE__ */ Object.fromEntries(
+		/* @__PURE__ */ CODING_PACKAGE_CACHES.tools.flatMap(({ folder, variables, settings }) => [
 			...variables.map((variable) => [variable, `${CODING_PACKAGE_CACHES.root}/${folder}`]),
 			...Object.entries(settings),
 		]),
