@@ -117,7 +117,8 @@
 @media (prefers-reduced-motion: reduce) {
 	.rail-apps-drawer, .rail-app, .rail-apps .icon rect, .rail-apps-dot, .group-emblem rect { transition: none; }
 	.rail-apps-drawer.is-open .rail-app.is-entering, .rail-app.is-leaving { animation: none; }
-	.rail-app-stand::before, .rail-app.is-lifted.is-merging .interface-emblem { transition: none; }
+	.rail-app-stand::before, .rail-app.is-merge-target .rail-app-stand::before, .rail-app .interface-emblem,
+	.rail-app.is-lifted.is-merging .interface-emblem, .rail-app.is-lifted .rail-app-name { transition: none; }
 	.rail-app.is-merge-target .rail-app-stand::before, .rail-app.is-merge-target .rail-app-stand::after { animation: none; }
 }
 
