@@ -6736,23 +6736,31 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		});
 
 		it.each([
-			["SITE_FOLDER_MISSING", "SITE_FOLDER_MISSING\n", null, null],
-			["SITE_NO_INDEX", "SITE_NO_INDEX\n", null, null],
-			["SITE_TOO_MANY_FILES", "SITE_TOO_MANY_FILES\n", null, null],
-			["SITE_TOO_MANY_FOLDERS", "SITE_TOO_MANY_FOLDERS\n", null, null],
-			["SITE_TOO_LARGE", "SITE_TOO_LARGE\n", null, null],
-			["SITE_FILE_TOO_LARGE", "SITE_FILE_TOO_LARGE video/intro.mp4\n", "video/intro.mp4", null],
-			["SITE_FILE_NAME", "SITE_FILE_NAME img/caf\\xc3\\xa9 1.png\n", "img/café 1.png", null],
-			["SITE_HOLDS_SECRET", "SITE_HOLDS_SECRET API_KEY assets/app.js\n", "assets/app.js", "API_KEY"],
+			["SITE_FOLDER_MISSING", "SITE_FOLDER_MISSING\n", null, null, undefined],
+			["SITE_NO_INDEX", "SITE_NO_INDEX\n", null, null, undefined],
+			["SITE_TOO_MANY_FILES", "SITE_TOO_MANY_FILES\n", null, null, undefined],
+			["SITE_TOO_MANY_FOLDERS", "SITE_TOO_MANY_FOLDERS\n", null, null, undefined],
+			["SITE_TOO_LARGE", "SITE_TOO_LARGE\n", null, null, undefined],
+			["SITE_FILE_TOO_LARGE", "SITE_FILE_TOO_LARGE video/intro.mp4\n", "video/intro.mp4", null, undefined],
+			["SITE_FILE_NAME", "SITE_FILE_NAME img/caf\\xc3\\xa9 1.png\n", "img/café 1.png", null, undefined],
+			["SITE_HOLDS_SECRET", "SITE_HOLDS_SECRET API_KEY assets/app.js\n", "assets/app.js", "API_KEY", undefined],
+			// A page that loads its style from the top of the domain (the first live site, 11 November 2026).
+			[
+				"SITE_LINKS_FROM_ROOT",
+				"SITE_LINKS_FROM_ROOT index.html /src/style.css\n",
+				"index.html",
+				null,
+				"/src/style.css",
+			],
 		] as const)(
 			"refuses a site the code made wrong (%s): the drop after it, and no boundary of its own",
-			async (code, printed, path, variable) => {
+			async (code, printed, path, variable, link) => {
 				const f = await siteFixture({ collect: { code: 3, printed } });
 				expect(await f.site()).toEqual({
 					state: "site_refused",
 					ms: expect.any(Number),
 					checks: PASSED,
-					problem: { code, path, variable },
+					problem: { code, path, variable, ...(link === undefined ? {} : { link }) },
 				});
 				expect(f.kinds()).toEqual(["copy", "check", "check", "check", "collect", "drop"]);
 				expect(f.steps()).toEqual(["started:collect", "ended:collect", ...DROPPED]);
@@ -7340,6 +7348,29 @@ describe("a run of a repository's checks in the session's machine (own code stor
 					older: ["vieux-clé-8899"],
 					files: { "img/vieux-clé-8899.png": "x" },
 					outcome: refused({ code: "SITE_FILE_NAME", path: "img/***.png", variable: null }),
+				},
+				{
+					// A link from the root holds an older value: the collect names the file and the link, the transport's mask
+					// misses the value in its \xHH spelling, and the host's mask takes it out of the decoded link.
+					case: "an older value of the machine's with a backslash, in a link from the root",
+					secrets: { OTHER_KEY: "unrelated-value-1" },
+					older: ["old\\link-value-77"],
+					files: { "index.html": '<a href="/old\\link-value-77/x.html">x</a>' },
+					outcome: refused({
+						code: "SITE_LINKS_FROM_ROOT",
+						path: "index.html",
+						variable: null,
+						link: "/***/x.html",
+					}),
+				},
+				{
+					// Spelled by character references, the session's value is in the link the parser reads and not in the
+					// file's bytes: only its variable is named.
+					case: "a value of the session's spelled by character references, in a link from the root",
+					secrets: { LINK_KEY: "link-secret-4242" },
+					older: [],
+					files: { "index.html": '<a href="/k/&#108;ink-secret-4242">x</a>' },
+					outcome: refused({ code: "SITE_HOLDS_SECRET", path: null, variable: "LINK_KEY" }),
 				},
 				{
 					case: "a value spelled only by escapes the collect never writes (an answer not the collect's)",

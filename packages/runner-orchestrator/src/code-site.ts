@@ -69,15 +69,18 @@ export type CodeSiteProblemCode =
 	| "SITE_FILE_TOO_LARGE"
 	| "SITE_TOO_LARGE"
 	| "SITE_FILE_NAME"
-	| "SITE_HOLDS_SECRET";
+	| "SITE_HOLDS_SECRET"
+	| "SITE_LINKS_FROM_ROOT";
 
-/** What the code made wrong in its site: the file it is about (`SITE_FILE_TOO_LARGE`, `SITE_FILE_NAME`, and
- * `SITE_HOLDS_SECRET` as the collect found it; null when its path holds a secret value), and the secret variable whose
- * value a file or its path holds. A secret found only by the folder's save check names neither. */
+/** What the code made wrong in its site: the file it is about (`SITE_FILE_TOO_LARGE`, `SITE_FILE_NAME`,
+ * `SITE_LINKS_FROM_ROOT`, and `SITE_HOLDS_SECRET` as the collect found it; null when its path holds a secret value), the
+ * secret variable whose value a file or its path holds, and for `SITE_LINKS_FROM_ROOT` the link as the file writes it
+ * (null when it could not be shown). A secret found only by the folder's save check names neither. */
 export interface CodeSiteProblem {
 	readonly code: CodeSiteProblemCode;
 	readonly path: string | null;
 	readonly variable: string | null;
+	readonly link?: string | null;
 }
 
 /** What became of a run's site: made (its tree written into the repository's storage and saved, with the recipe it was
@@ -240,6 +243,18 @@ export const CODE_CHECKS_NEWER_RUN: readonly string[] = [
  *    review, F1: the transport masks the answer while its paths are still written `\xHH`, so a value with a backslash
  *    or a byte outside printable ASCII passed the mask and came back whole once read). The answer is then
  *    `SITE_HOLDS_SECRET <NAME>` alone, whatever rule the path met first.
+ * 4a. The links from the root (the first live site, 11 Nov: a page that loads `/src/app.js` asks the domain's top for
+ *    it, never its site, which is served at `https://sites.qorpera.com/<slug>/~s<visitor>/`): each `.html` and `.htm`
+ *    file, read with Python's own HTML parser (tags and attributes of any case, values quoted or bare, character
+ *    references decoded; comments, and the text of `script`, `style` and every other element, are no attributes), for
+ *    `href`, `src`, `poster`, `action`, `formaction`, `xlink:href`, `data` on `object`, each URL of a `srcset` or an
+ *    `imagesrcset`, the URL of a `<meta http-equiv="refresh">`, and the CSS of a `style` element or attribute; each
+ *    `.css` file for `url(...)` and `@import`, outside comments and strings. A value that starts with one `/` once a
+ *    browser has read it (the spaces and controls at its ends and every tab and line break dropped, a backslash taken
+ *    as a slash) refuses the site: `SITE_LINKS_FROM_ROOT <file> <link>`, the first in C order of files and in each
+ *    file's own order. `//host`, a scheme, `#`, `?` and an empty value are no such link. Scripts are not read. A file or
+ *    link that holds a secret value is never named (step 4's rule): `SITE_HOLDS_SECRET <NAME>` alone. Each file is read
+ *    once more as text, at most 25 MiB in all.
  * 5. Git, with an environment of its own (no variable, configuration or attribute of the session's or of the copy's,
  *    which the repository's own code writes): a new scratch repository `$d/site.git`; the files' exact bytes
  *    (`hash-object --no-filters`, which reads them again), and one tree, all of mode 100644, of the ids of the bytes
@@ -252,10 +267,10 @@ export const CODE_CHECKS_NEWER_RUN: readonly string[] = [
  *    more that it was about to; no file at an object's name is ever partial.
  * 7. Three lines: `tree <id>`, `files <n>`, `bytes <n>`.
  * A problem prints one line `<CODE>[ <detail>]` and exits 3, the detail's bytes outside printable ASCII and its
- * backslashes written `\xHH` (lowercase), cut at a whole byte's spelling within 1,000 bytes. Anything that is not the code's fault exits otherwise: 2 for a run
- * folder or a recipe that is not as the host made it, 4 for a file that changed while it was taken or a git command
- * that failed, 1 for anything else Python could not do. */
-const COLLECT_PY = String.raw`import hashlib,os,re,shutil,stat,subprocess,sys
+ * backslashes written `\xHH` (lowercase), cut at a whole byte's spelling within 1,000 bytes. Anything that is not the
+ * code's fault exits otherwise: 2 for a run folder or a recipe that is not as the host made it, 4 for a file that
+ * changed while it was taken or a git command that failed, 1 for anything else Python could not do. */
+const COLLECT_PY = String.raw`import hashlib,html.parser,os,re,shutil,stat,subprocess,sys
 E=os.environb
 d=E[b"QORPERA_CHECKS_ROOT"]+b"/"+E[b"QORPERA_CHECKS_NAME"]
 w=os.open(d+b"/site.wrote",os.O_WRONLY|os.O_CREAT|os.O_TRUNC|os.O_APPEND,0o644)
@@ -346,6 +361,86 @@ for name,value in SECRETS:
 	for p,content in files:
 		if value in content or value in p:
 			named(b"SITE_HOLDS_SECRET",p,name)
+class Rooted(Exception):
+	pass
+BLANK="".join(map(chr,range(33)))
+def rooted(u):
+	t=u.strip(BLANK).replace("\t","").replace("\n","").replace("\r","")
+	t=t[:2].replace("\\","/")+t[2:]
+	if t[:1]=="/" and t[1:2]!="/":
+		raise Rooted(u)
+CSS=re.compile(r"""/\*.*?(?:\*/|\Z)|(?<![\w-])url\(\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^)\s]*)|@import\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|"(?:\\.|[^"\\\n])*"?|'(?:\\.|[^'\\\n])*'?""",re.I|re.S)
+def css(text):
+	for m in CSS.finditer(text):
+		u=m.group(1) or m.group(2)
+		if u:
+			if u[0] in "'\"":
+				u=u[1:-1] if len(u)>1 and u[-1]==u[0] else u[1:]
+			rooted(u)
+def srcset(v):
+	at=0
+	while at<len(v):
+		while at<len(v) and (v[at].isspace() or v[at]==","):
+			at+=1
+		start=at
+		while at<len(v) and not v[at].isspace():
+			at+=1
+		u=v[start:at]
+		if u.endswith(","):
+			u=u.rstrip(",")
+		else:
+			depth=0
+			while at<len(v):
+				c=v[at]
+				at+=1
+				if c=="(":
+					depth+=1
+				elif c==")" and depth:
+					depth-=1
+				elif c=="," and not depth:
+					break
+		if u:
+			rooted(u)
+REFRESH=re.compile(r"\s*[0-9.]+\s*[;,]?\s*(?:url\s*=\s*)?(.*)",re.I|re.S)
+LEADS=("href","src","poster","action","formaction","xlink:href")
+class Page(html.parser.HTMLParser):
+	def __init__(self):
+		super().__init__(convert_charrefs=True)
+		self.style=False
+	def handle_starttag(self,tag,attrs):
+		self.style=tag=="style"
+		for name,value in attrs:
+			if value is None:
+				continue
+			if name in LEADS or (name=="data" and tag=="object"):
+				rooted(value)
+			elif name in ("srcset","imagesrcset"):
+				srcset(value)
+			elif name=="style":
+				css(value)
+			elif name=="content" and tag=="meta" and any(n=="http-equiv" and (v or "").strip().lower()=="refresh" for n,v in attrs):
+				m=REFRESH.match(value)
+				u=m.group(1).strip() if m else ""
+				if u[:1] in ("'",'"'):
+					u=u[1:].split(u[0],1)[0]
+				rooted(u)
+	def handle_endtag(self,tag):
+		if tag=="style":
+			self.style=False
+	def handle_data(self,data):
+		if self.style:
+			css(data)
+for p,content in files:
+	kind=p.rsplit(b".",1)[-1].lower()
+	try:
+		if kind in (b"html",b"htm"):
+			page=Page()
+			page.feed(content.decode("utf-8","surrogateescape"))
+			page.close()
+		elif kind==b"css":
+			css(content.decode("utf-8","surrogateescape"))
+	except Rooted as found:
+		named(b"SITE_LINKS_FROM_ROOT",p+b" "+found.args[0].encode("utf-8","surrogateescape"))
 scratch=d+b"/site.git"
 if os.path.islink(scratch) or os.path.isfile(scratch):
 	os.unlink(scratch)
@@ -478,7 +573,7 @@ function unescaped(detail: string): string {
 
 /** The collect's ending, from its exit code and its whole output (stdout and stderr as one, masked): `made` for exit 0
  * and exactly its three lines (a tree's id, 1 to 500 files, at most 25 MiB); a problem for exit 3 and exactly one line
- * of one of the eight codes with the detail its code has, spelled as the collect spells one (`SITE_HOLDS_SECRET` with
+ * of one of the nine codes with the detail its code has, spelled as the collect spells one (`SITE_HOLDS_SECRET` with
  * its variable alone, or the variable and a path); null for anything else, which is not the command's own ending (91
  * included). A path it gives was masked before it was decoded: the host masks it again before it shows it anywhere.
  * Pure. */
@@ -505,6 +600,20 @@ export function codeSiteCollectAnswer(
 	if (detail === undefined || detail.length > 1000 || !DETAIL.test(detail)) return null;
 	if (code === "SITE_FILE_TOO_LARGE" || code === "SITE_FILE_NAME")
 		return { problem: { code, path: unescaped(detail), variable: null } };
+	// The file, a path of the site (no space in it), then the link as the file writes it.
+	if (code === "SITE_LINKS_FROM_ROOT") {
+		const space = detail.indexOf(" ");
+		return space > 0 && space < detail.length - 1
+			? {
+					problem: {
+						code,
+						path: unescaped(detail.slice(0, space)),
+						variable: null,
+						link: unescaped(detail.slice(space + 1)),
+					},
+				}
+			: null;
+	}
 	if (code !== "SITE_HOLDS_SECRET") return null;
 	// The variable alone: the value is in a path the collect does not name.
 	if (!detail.includes(" ")) return VARIABLE.test(detail) ? { problem: { code, path: null, variable: detail } } : null;
@@ -554,8 +663,9 @@ export function codeSiteReported(collected: CodeSiteCollected | null): Record<st
 }
 
 /** `CODING_CHECKS_SITE_REFUSED`: every check passed, but the site the code left in `folder` cannot go, so nothing went
- * into main (STEP4-RELEASES-PLAN.md 10.3, with STEP4-BUILD.md's eighth code). Within 3,500 bytes, as every word of a
- * failed turn: the folder and a path are shown on one line and cut. Pure. */
+ * into main (STEP4-RELEASES-PLAN.md 10.3, with STEP4-BUILD.md's eighth code and the links from the root, the ninth,
+ * added once the first live site showed them). Within 3,500 bytes, as every word of a failed turn: the folder, a path
+ * and a link are shown on one line and cut. Pure. */
 export function codeSiteRefusedSummary(problem: CodeSiteProblem, folder: string): string {
 	const path = shown(problem.path ?? "", 300);
 	let what: string;
@@ -592,6 +702,19 @@ export function codeSiteRefusedSummary(problem: CodeSiteProblem, folder: string)
 						? `holds the value of ${shown(problem.variable, 128)} in one of its files or file names`
 						: `holds the value of ${shown(problem.variable, 128)} in ${path}`;
 			break;
+		case "SITE_LINKS_FROM_ROOT": {
+			const where =
+				problem.path === null
+					? ""
+					: problem.link === null || problem.link === undefined
+						? ` in ${path}`
+						: `: ${path} links to ${shown(problem.link, 300)}`;
+			what =
+				`has a link that starts with /${where}. A site is served under an address of its own, never at the top of ` +
+				"a domain: link its files with relative links (src/app.js, ../img/logo.png), in its scripts too, which " +
+				'Qorpera does not read; for a bundler, set its base path, such as Vite\'s base: "./"';
+			break;
+		}
 	}
 	const key = problem.code === "SITE_HOLDS_SECRET" ? " A key must never be built into the site." : "";
 	return `Nothing went into main: every check passed, but the site in "${shown(folder, 300)}" ${what}.${key} Fix it in the code or in the checks file's "site", and finish again. [code=CODING_CHECKS_SITE_REFUSED]`;

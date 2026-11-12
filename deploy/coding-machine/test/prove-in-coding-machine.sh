@@ -391,6 +391,13 @@ SESSION_CWD=$CHECKS/0000000003-0001/src as_session bash -c 'printf "key proof-se
 collect 0000000003-0001 QORPERA_SITE_SECRET_NAMES=PROOF_SECRET PROOF_SECRET=proof-secret-value-0123
 [[ $CODE == 3 && $OUT == "SITE_HOLDS_SECRET PROOF_SECRET index.html" ]] || fail "a secret in the site gave $CODE: $OUT"
 pass "the collect refuses a site that holds a secret value, by its variable and file"
+# A page that loads its style from the top of the domain, as the first live site did (11 Nov): a site is served under
+# an address of its own, so that link never reaches it.
+SESSION_CWD=$CHECKS/0000000003-0001/src as_session bash -c \
+	'printf "<link rel=\"stylesheet\" href=\"/css/app.css\">\n" >dist/index.html'
+collect 0000000003-0001
+[[ $CODE == 3 && $OUT == "SITE_LINKS_FROM_ROOT index.html /css/app.css" ]] || fail "a link from the root gave $CODE: $OUT"
+pass "the collect refuses a site whose page links from the top of the domain, by its file and link"
 as_session rm -r "$CHECKS/0000000003-0001/src/dist"
 collect 0000000003-0001
 [[ $CODE == 3 && $OUT == SITE_FOLDER_MISSING ]] || fail "a missing folder gave $CODE: $OUT"
