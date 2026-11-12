@@ -386,7 +386,7 @@ export class CodeImport {
 			!imports?.bringing.some((each) => keyOf(each) === keyOf(last))
 		)
 			line = {
-				text: t("{name} was not brought in: {why}", {
+				text: t("{name} was not brought in: {why}.", {
 					name: last.github ? projectOf(last.github) : last.name,
 					why: importWhy(last.reason),
 				}),
@@ -450,7 +450,7 @@ export class CodeImport {
 				};
 			case "refused":
 				return manage
-					? { text: t("{name} was not brought in: {why}", { name, why: importWhy(followed.why) }) }
+					? { text: t("{name} was not brought in: {why}.", { name, why: importWhy(followed.why) }) }
 					: null;
 			case "in":
 				// In its own folder the done line says it.
@@ -541,7 +541,7 @@ export class CodeImport {
 			busy = false;
 			for (const control of [input, go, cancel]) if (control) control.disabled = false;
 			go.textContent = confirm;
-			problem.textContent = t("{name} was not brought in: {why}", { name: asked.label, why: importWhy(refused) });
+			problem.textContent = t("{name} was not brought in: {why}.", { name: asked.label, why: importWhy(refused) });
 			(input ?? go).focus();
 		};
 		const form = h(

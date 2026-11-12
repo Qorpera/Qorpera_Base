@@ -789,7 +789,7 @@ describe("Bring code in, in Storage", () => {
 		button().click();
 		await send("github.com/Acme/Shop");
 		expect(visibleText(question()!.querySelector("[role=alert]"))).toBe(
-			"Shop was not brought in: agents are still working on it on GitHub; try again when they are done",
+			"Shop was not brought in: agents are still working on it on GitHub; try again when they are done.",
 		);
 		expect(field()?.value).toBe("github.com/Acme/Shop");
 		expect(field()?.disabled).toBe(false);
@@ -799,7 +799,7 @@ describe("Bring code in, in Storage", () => {
 		expect(question()).toBeNull();
 		expect(document.activeElement).toBe(button());
 		expect(visibleText(line())).toBe(
-			"Shop was not brought in: agents are still working on it on GitHub; try again when they are done",
+			"Shop was not brought in: agents are still working on it on GitHub; try again when they are done.",
 		);
 		// A refusal the database gave before it wrote says so too, in its plain line.
 		calls.bringIn.mockRejectedValueOnce(
@@ -808,7 +808,7 @@ describe("Bring code in, in Storage", () => {
 		button().click();
 		await send("Acme/Shop");
 		expect(visibleText(question()!.querySelector("[role=alert]"))).toBe(
-			"Shop was not brought in: it could not be brought in just now; try again",
+			"Shop was not brought in: it could not be brought in just now; try again.",
 		);
 	});
 
@@ -816,7 +816,7 @@ describe("Bring code in, in Storage", () => {
 		const calls = callsFake(codeList({ last: lastShop("IMPORT_USES_LFS") }));
 		const { go, line } = await storage(calls);
 		const words =
-			"shop was not brought in: it keeps large files outside the code, and Qorpera can't bring those in yet";
+			"shop was not brought in: it keeps large files outside the code, and Qorpera can't bring those in yet.";
 		for (const path of ["code", "code/qorpera", "code/acme/shop"]) {
 			await go(path);
 			expect(visibleText(line()), path).toBe(words);
@@ -853,7 +853,7 @@ describe("Bring code in, in Storage", () => {
 		calls.list.mockResolvedValue(codeList({ last: lastShop("IMPORT_HISTORY_BAD_TIMEZONE") }));
 		await vi.advanceTimersByTimeAsync(5000);
 		expect(visibleText(line())).toBe(
-			"Shop was not brought in: its history is stored in an old way Qorpera can't take in yet",
+			"Shop was not brought in: its history is stored in an old way Qorpera can't take in yet.",
 		);
 	});
 
@@ -932,7 +932,7 @@ describe("Bring code in, in Storage", () => {
 		button().click();
 		await send("Acme/Shop");
 		expect(visibleText(question()!.querySelector("[role=alert]"))).toBe(
-			"Shop was not brought in: it could not be brought in just now; try again",
+			"Shop was not brought in: it could not be brought in just now; try again.",
 		);
 		expect(button().hidden).toBe(true);
 	});

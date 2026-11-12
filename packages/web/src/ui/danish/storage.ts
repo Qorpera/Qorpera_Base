@@ -83,7 +83,7 @@ export const STORAGE: Record<string, string> = {
 	"{count} earlier changes came with it.": "{count} tidligere ændringer kom med.",
 	"The copy on GitHub stays as it is.": "Kopien på GitHub forbliver, som den er.",
 	"{name} is brought in.": "{name} er hentet ind.",
-	"{name} was not brought in: {why}": "{name} blev ikke hentet ind: {why}",
+	"{name} was not brought in: {why}.": "{name} blev ikke hentet ind: {why}.",
 	"it is larger than 1 GB, the most Qorpera brings in": "den er større end 1 GB, som er det meste, Qorpera henter ind",
 	"GitHub did not let Qorpera read it; check the address, and that the company's GitHub connection can see it":
 		"GitHub lod ikke Qorpera læse den; tjek adressen, og at virksomhedens GitHub-forbindelse kan se den",
