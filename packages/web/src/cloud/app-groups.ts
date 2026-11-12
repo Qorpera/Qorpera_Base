@@ -14,6 +14,9 @@ import {
 	parseAppGroups as parseAppGroupsFile,
 	type AppGroupNode as SharedAppGroupNode,
 } from "@qorpera/cloud-client/app-groups";
+import { isAppIconId } from "@qorpera/cloud-client/app-icons";
+import { AGENT_COLOURS, type AgentColour } from "@qorpera/cloud-client/company-state-shared";
+import { INTERFACE_EMBLEMS } from "@qorpera/cloud-client/interfaces";
 import { parseRecord } from "@qorpera/contracts";
 
 export const APP_GROUPS_PATH = "apps/groups.md";
@@ -58,6 +61,20 @@ export interface MemberAppLayout {
 	/** Where the member put apps and groups, each with when (`at`). */
 	readonly places: Readonly<Record<string, AppPlace>>;
 	readonly groups: Readonly<Record<string, AppGroupChange>>;
+	/** The member's own colours (20260930731000; Jonas, 12 Nov 2026: "you should also be able to change their colors"):
+	 * an app's key or `group:<id>` and a palette colour. Absent when there are none, so a document without colours is
+	 * what a cloud before 20260930731000 takes. */
+	readonly colours?: Readonly<Record<string, AgentColour>>;
+	/** The member's own icons (20260930732000; Jonas, 12 Nov 2026: "change the icons of the interfaces"): an app's key
+	 * and a built-in emblem's name or `custom:<id>`, one of the app's own icons (`apps/<name>/icons/<id>.svg`). Absent
+	 * when there are none. */
+	readonly emblems?: Readonly<Record<string, string>>;
+}
+
+/** A member's icon choice: a built-in emblem's name, or `custom:<id>` for one of the app's own icons. */
+export function isAppEmblemChoice(value: string): boolean {
+	if (value.startsWith("custom:")) return isAppIconId(value.slice("custom:".length));
+	return (INTERFACE_EMBLEMS as readonly string[]).includes(value);
 }
 
 export const EMPTY_APP_LAYOUT: MemberAppLayout = { schema: APP_LAYOUT_SCHEMA, places: {}, groups: {} };
@@ -122,7 +139,21 @@ export function parseMemberAppLayout(value: unknown): MemberAppLayout {
 		};
 		if (Object.keys(entry).length) groups[id] = entry;
 	}
-	return { schema: APP_LAYOUT_SCHEMA, places, groups };
+	const colours: Record<string, AgentColour> = {};
+	for (const [key, value] of Object.entries(objectOrNothing(input.colours) ?? {})) {
+		const colour = AGENT_COLOURS.find((name) => name === value);
+		if (colour && (isAppDrawerKey(key) || (isGroupKey(key) && isAppGroupId(groupIdOf(key))))) colours[key] = colour;
+	}
+	const emblems: Record<string, string> = {};
+	for (const [key, value] of Object.entries(objectOrNothing(input.emblems) ?? {}))
+		if (typeof value === "string" && isAppDrawerKey(key) && isAppEmblemChoice(value)) emblems[key] = value;
+	return {
+		schema: APP_LAYOUT_SCHEMA,
+		places,
+		groups,
+		...(Object.keys(colours).length ? { colours } : {}),
+		...(Object.keys(emblems).length ? { emblems } : {}),
+	};
 }
 
 /** The member's document as the cloud answers it, with when it was last written (null: never, or emptied). */
@@ -142,7 +173,12 @@ export function parseMemberAppLayoutRead(value: unknown): MemberAppLayoutRead {
 
 /** How many changes the member's document holds, as Reset sidebar counts them. */
 export function appLayoutChanges(layout: MemberAppLayout): number {
-	return Object.keys(layout.places).length + Object.keys(layout.groups).length;
+	return (
+		Object.keys(layout.places).length +
+		Object.keys(layout.groups).length +
+		Object.keys(layout.colours ?? {}).length +
+		Object.keys(layout.emblems ?? {}).length
+	);
 }
 
 function clone(nodes: readonly AppTreeNode[], present: ReadonlySet<string>, seen: Set<string>): AppTreeNode[] {
@@ -356,7 +392,50 @@ export function appsIn(node: AppTreeNode): string[] {
 	return node.kind === "item" ? [node.key] : node.items.flatMap(appsIn);
 }
 
+/** Each app's and group's colour in the drawer (Jonas, 12 Nov 2026: "I would like for all the icons to share the same
+ * color as their group"), by key (`group:<id>` for a group): a group's is the member's choice, else the group it stands
+ * in's, else its first app's own; everything in a group is drawn in the group's; a loose app's is the member's choice,
+ * else its own (`own`: the manifest's, or a page's). */
+export function appColours(
+	tree: readonly AppTreeNode[],
+	layout: MemberAppLayout,
+	own: (key: string) => string | undefined,
+): Map<string, string | undefined> {
+	const chosen = layout.colours ?? {};
+	const colours = new Map<string, string | undefined>();
+	const walk = (nodes: readonly AppTreeNode[], group: { colour: string | undefined } | undefined) => {
+		for (const node of nodes) {
+			if (node.kind === "item") {
+				colours.set(node.key, group ? group.colour : (chosen[node.key] ?? own(node.key)));
+				continue;
+			}
+			const first = appsIn(node)[0];
+			const colour = chosen[groupKey(node.id)] ?? (group ? group.colour : first ? own(first) : undefined);
+			colours.set(groupKey(node.id), colour);
+			walk(node.items, { colour });
+		}
+	};
+	walk(tree, undefined);
+	return colours;
+}
+
 /* ---- Changes to the member's document --------------------------------------------------------------------------- */
+
+/** Sets the member's icon for an app (a built-in emblem or `custom:<id>`); null takes it away, back to the app's own. */
+export function emblemApp(layout: MemberAppLayout, key: string, emblem: string | null): MemberAppLayout {
+	const { [key]: _old, ...rest } = layout.emblems ?? {};
+	const emblems = emblem ? { ...rest, [key]: emblem } : rest;
+	const { emblems: _all, ...plain } = layout;
+	return Object.keys(emblems).length ? { ...plain, emblems } : plain;
+}
+
+/** Sets the member's colour for an app or a group (`group:<id>`); null takes it away, back to the drawer's own. */
+export function colourApp(layout: MemberAppLayout, key: string, colour: AgentColour | null): MemberAppLayout {
+	const { [key]: _old, ...rest } = layout.colours ?? {};
+	const colours = colour ? { ...rest, [key]: colour } : rest;
+	const { colours: _all, ...plain } = layout;
+	return Object.keys(colours).length ? { ...plain, colours } : plain;
+}
 
 /** The member's document without the places an arrangement refused. */
 export function withoutRefused(layout: MemberAppLayout, refused: ReadonlySet<string>): MemberAppLayout {
@@ -471,7 +550,8 @@ export function ungroupApps(layout: MemberAppLayout, tree: AppTreeNode[], id: st
 	// What stood right after the group now stands after its last app.
 	next = rebaseAfter(next, where.parent, container, groupKey(id), after);
 	const { [id]: change, ...others } = next.groups;
-	next = withPlace({ ...next, groups: others }, groupKey(id), undefined);
+	// Its colour goes with it: its apps take their own again.
+	next = withPlace(colourApp({ ...next, groups: others }, groupKey(id), null), groupKey(id), undefined);
 	return change?.mine ? next : { ...next, groups: { ...next.groups, [id]: { removed: true } } };
 }
 

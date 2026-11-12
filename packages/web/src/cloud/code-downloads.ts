@@ -6,7 +6,8 @@ import { array, boundedInteger, CloudShapeError, nonEmptyString, oneOf, record, 
  * storage step 2b): which repositories the company has, and, for an owner or admin, a download of one. The code host
  * makes the download as a file in the company folder, under code/<owner>/<name>/downloads/: `files` is the code as it
  * is now in one .zip, `history` the same with its whole history, for a developer. The web then reads that file from
- * the folder, piece by piece (app/views/code-download.ts). */
+ * the folder, piece by piece (app/views/code-download.ts). The list also names the company's GitHub copies (migration
+ * 20260930735000): folders under code/ that hold a project's working copy from GitHub, not code kept in Qorpera. */
 
 export const CODE_DOWNLOAD_KINDS = ["files", "history"] as const;
 export type CodeDownloadKind = (typeof CODE_DOWNLOAD_KINDS)[number];
@@ -16,10 +17,23 @@ const MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024;
 /** One call's deadline. Each is a few index reads; the web asks again every two seconds while it waits. */
 const CALL_MS = 15_000;
 
+/** GitHub's own rule for a project, as its owner and name (qorpera_coding_repository_valid, host github.com). */
+const GITHUB_PROJECT = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/;
+
 export interface CodeRepositories {
 	/** The caller may ask for a download: owners and admins. */
 	readonly canDownload: boolean;
 	readonly repositories: readonly { readonly owner: string; readonly name: string }[];
+	/** None on a cloud from before the key, and when the key is not as this version reads it. */
+	readonly githubCopies: readonly CodeGitHubCopy[];
+}
+
+/** A folder code/<owner>/<name> that holds the working copy of a project on GitHub. */
+export interface CodeGitHubCopy {
+	readonly owner: string;
+	readonly name: string;
+	/** The project as GitHub spells it, Owner/Name; in lower case it is the folder's owner/name. */
+	readonly github: string;
 }
 
 /** How a download stands. `refused`: none was started (`too_many`: the company's 20 a day are used; `no_executor`:
@@ -74,7 +88,22 @@ export function parseCodeRepositories(value: unknown): CodeRepositories {
 				name: nonEmptyString(item.name, "code repository name", 256),
 			};
 		}),
+		githubCopies: githubCopies(input.githubCopies),
 	};
+}
+
+/** The GitHub copies, or none when the key is missing or anything in it is not as expected: the web goes live before
+ * the SQL that adds the key, and Storage then stays as it was. */
+function githubCopies(value: unknown): CodeGitHubCopy[] {
+	const copies = Array.isArray(value) ? value.map(githubCopy) : [];
+	return copies.every((copy): copy is CodeGitHubCopy => copy !== null) ? copies : [];
+}
+
+function githubCopy(value: unknown): CodeGitHubCopy | null {
+	if (!value || typeof value !== "object") return null;
+	const { owner, name, github } = value as Record<string, unknown>;
+	if (typeof owner !== "string" || typeof name !== "string" || typeof github !== "string") return null;
+	return GITHUB_PROJECT.test(github) && github.toLowerCase() === `${owner}/${name}` ? { owner, name, github } : null;
 }
 
 export function parseCodeDownload(value: unknown): CodeDownload {

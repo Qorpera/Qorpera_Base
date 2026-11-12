@@ -40,7 +40,8 @@ import { CodingControlBusy, withinBytes } from "./coding-executor.ts";
  *   restore    part R's `CodeRestore` runs its steps; without one the request is finished failed (`NOT_BUILT`). A
  *              restore that put the repository back was recorded by the job that opened its place
  *              (`qorpera_code_restore_record`), as an undo's row is written inside its job: the finish here, after
- *              that job has saved, only ends the request.
+ *              that job has saved, only ends the request. The sessions whose work it took away are archived around
+ *              that finish (`qorpera_code_restore_strand`), and nothing of that changes how the restore ended.
  *
  * A download and a restore may take minutes: they run on beside the passes, so that an undo never waits behind one.
  * What they came to is counted in the pass after they ended, and `settled` waits for them. */
@@ -52,7 +53,12 @@ export const CODE_REQUEST_RPCS = [
 	// A restore's own: `CodeRestore` makes it (`CODE_RESTORE_RPCS`). It is named here because this list is the one the
 	// executor's control allows the requests.
 	"qorpera_code_restore_record",
+	// The sessions a restore stranded, archived around its finish (`#strand`).
+	"qorpera_code_restore_strand",
 ] as const;
+
+/** How many stranded sessions one `qorpera_code_restore_strand` names at most. */
+export const CODE_RESTORE_STRAND_IDS = 200;
 
 /** The code host jobs the requests run: `code-host-jobs.ts`'s functions, given by the caller. */
 export interface CodeRequestJobs {
@@ -155,12 +161,16 @@ export interface CodeHostRequestsOptions {
 	/** How long the finish and the record's files may hold an undo's job, which holds its company's line. Default
 	 * 10 s. */
 	recordMs?: number;
+	/** How long each call that archives a restore's stranded sessions may take, before the restore's finish and after
+	 * it. Default 5 s. */
+	strandMs?: number;
 }
 
 type Ended = "done" | "refused" | "failed" | "busy";
 type Counts = Record<Ended, number>;
 
 const SCHEMA = "qorpera.code-request-outcome/v1";
+const STRAND = "qorpera.code-restore-strand/v1";
 const CALL_MS = 10_000;
 const SHA = /^[0-9a-f]{40}$/;
 const YIELDED = "CODE_HOST_JOB_YIELDED";
@@ -277,6 +287,7 @@ export class CodeHostRequests {
 	readonly #report: (event: Record<string, unknown>) => void;
 	readonly #limit: number;
 	readonly #recordMs: number;
+	readonly #strandMs: number;
 	/** The downloads and restores that run on beside the passes. */
 	readonly #beside = new Set<Promise<void>>();
 	/** What those that ended since the last pass came to. */
@@ -284,7 +295,8 @@ export class CodeHostRequests {
 
 	constructor(options: CodeHostRequestsOptions) {
 		const limit = options.limit ?? 10,
-			recordMs = options.recordMs ?? 10_000;
+			recordMs = options.recordMs ?? 10_000,
+			strandMs = options.strandMs ?? CALL_MS / 2;
 		if (
 			typeof options.owner !== "string" ||
 			!options.owner ||
@@ -292,7 +304,8 @@ export class CodeHostRequests {
 			!SHA256_HEX_PATTERN.test(options.machineIdSha256) ||
 			!whole(limit, 1) ||
 			limit > 20 ||
-			!whole(recordMs, 1)
+			!whole(recordMs, 1) ||
+			!whole(strandMs, 1)
 		)
 			throw new Error("INVALID_CODE_HOST_REQUESTS");
 		this.#control = options.control;
@@ -313,6 +326,7 @@ export class CodeHostRequests {
 		};
 		this.#limit = limit;
 		this.#recordMs = recordMs;
+		this.#strandMs = strandMs;
 	}
 
 	/** One pass: the requests this executor may do now. Each undo is run to its finish before the pass ends; a download
@@ -590,7 +604,8 @@ export class CodeHostRequests {
 		return this.#said(request, outcome, await this.#finish(request, outcome, signal, 2));
 	}
 
-	/** A restore: part R's steps, and their outcome finished. */
+	/** A restore: part R's steps, and their outcome finished. A restore that put the repository back and names sessions
+	 * it stranded has them archived before the finish and, for what that left, once more after it (`#strand`). */
 	async #restoring(request: CodeRestoreRequest, signal: AbortSignal): Promise<Ended> {
 		let outcome: CodeRequestOutcome;
 		const restore = this.#restore;
@@ -609,7 +624,84 @@ export class CodeHostRequests {
 					this.#report({ event: "code-request-error", step: "job", ...named(request), error });
 				}
 			}
-		return this.#said(request, outcome, await this.#finish(request, outcome, signal, 2));
+		const stranded = strandedOf(outcome);
+		const left = stranded.length ? await this.#strand(request, stranded, "before", signal) : [];
+		const ended = this.#said(request, outcome, await this.#finish(request, outcome, signal, 2));
+		if (left.length) await this.#strand(request, left, "after", signal);
+		return ended;
+	}
+
+	/** The sessions a restore stranded, archived (`qorpera_code_restore_strand`, at most 200 a call): the repository's
+	 * sessions whose branch and base commit the restored repository does not hold, whose next turn could not start.
+	 * The kernel archives those whose worker is not active and counts the others, and leaves a request whose restore it
+	 * has not recorded alone (`lost`). Asked before the finish, so that the sessions are archived as soon as can be; and
+	 * once more after it for what that left: the ids of a call that was not heard, or that found a session at work (its
+	 * turn began after the open, and may have ended by now). What the second call leaves is left: such a session's next
+	 * turn fails at its start. Each call is tried once and given `strandMs` (5 s) at most, also when the control does not
+	 * heed its signal, and none is made once the executor is stopping: so nothing of it holds the finish up, and how the
+	 * restore ended never depends on it. (A restore whose finish the kernel did not take is claimed again, and its next
+	 * run names the sessions still stranded.) Answers the ids to ask again. */
+	async #strand(
+		request: CodeRestoreRequest,
+		ids: readonly string[],
+		at: "before" | "after",
+		signal: AbortSignal,
+	): Promise<string[]> {
+		const again: string[] = [];
+		for (let first = 0; first < ids.length; first += CODE_RESTORE_STRAND_IDS) {
+			const part = ids.slice(first, first + CODE_RESTORE_STRAND_IDS);
+			const bounded = AbortSignal.any([signal, AbortSignal.timeout(this.#strandMs)]);
+			try {
+				const answer = await answeredBefore(
+					() =>
+						this.#call(
+							CODE_REQUEST_RPCS[4],
+							{
+								p_owner: this.#owner,
+								p_machine_id_sha256: this.#machineIdSha256,
+								p_request_id: request.requestId,
+								p_stranded: part,
+							},
+							bounded,
+						),
+					bounded,
+				);
+				if (isRecord(answer) && answer.schema === STRAND) {
+					if (answer.state === "lost") {
+						// Not this executor's, or no restore the kernel recorded: asking again would change nothing.
+						this.#report({
+							event: "code-request-error",
+							step: "strand",
+							...named(request),
+							at,
+							error: new Error("CODE_RESTORE_STRAND_LOST"),
+						});
+						continue;
+					}
+					if (answer.state === "done" && whole(answer.archived) && whole(answer.active)) {
+						this.#report({
+							event: "code-request",
+							step: "stranded",
+							...named(request),
+							at,
+							sessions: part.length,
+							archived: answer.archived,
+							active: answer.active,
+						});
+						if (answer.active > 0) again.push(...part);
+						continue;
+					}
+				}
+				throw new Error("CODE_RESTORE_STRAND_UNCONFIRMED");
+			} catch (error) {
+				// The executor is stopping: this call was cut off, or never made (`answeredBefore` makes none under a signal
+				// that has ended), and none follows it.
+				if (signal.aborted) return [];
+				this.#report({ event: "code-request-error", step: "strand", ...named(request), at, error });
+				again.push(...part);
+			}
+		}
+		return again;
 	}
 
 	/** Renews the request's lease and asks whether it is still this executor's to do. */
@@ -698,6 +790,11 @@ export class CodeHostRequests {
 	}
 }
 
+/** The sessions a restore that put the repository back says it stranded, each once; none for any other outcome. */
+function strandedOf(outcome: CodeRequestOutcome): string[] {
+	if (outcome.state !== "done" || outcome.result !== "restored" || !Array.isArray(outcome.stranded)) return [];
+	return [...new Set(outcome.stranded.filter((id) => isUuid(id)))];
+}
 function repositoryOf(request: Claimed): CloudCodingRepository {
 	return parseCloudCodingRepository({ host: "qorpera", owner: request.owner, name: request.name, baseBranch: "main" });
 }

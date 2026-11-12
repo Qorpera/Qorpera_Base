@@ -60,6 +60,21 @@ export const INTERFACE_EMBLEMS = Object.freeze([
 	"hire",
 	"chart",
 	"page",
+	// 12 November 2026 (design page 6gSTTCcz3D8AjBpV3GmrH6): 14 more, so a member's picker has 24 to choose from.
+	"map",
+	"mountain",
+	"tent",
+	"pin",
+	"cart",
+	"box",
+	"truck",
+	"chat",
+	"star",
+	"heart",
+	"book",
+	"camera",
+	"code",
+	"rocket",
 ] as const);
 export const INTERFACE_WIDTHS = Object.freeze(["full", "half", "third", "two-thirds"] as const);
 

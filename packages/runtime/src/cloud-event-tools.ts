@@ -142,7 +142,7 @@ export const CLOUD_LIST_HOOKS_TOOL_DESCRIPTION =
 
 export const CLOUD_READ_EVENT_TOOL_DESCRIPTION =
 	"Read one event that arrived at one of your company's hooks, by its deliveryId from wake.payload.events. " +
-	"The result has the hook, the event type, when it arrived, the content type, the kept headers (with the first piece, offset 0), and a piece of the body cut to fit one result: text (encoding utf8), about 4,000 characters of plain text and fewer where characters need escaping, such as quotes and HTML, or base64 data of about 3 KiB for anything else. " +
+	"The result has the hook, the event type, when it arrived, the content type, the kept headers (with the first piece, offset 0), and a piece of the body cut to fit one result: text (encoding utf8), up to 16,000 characters of plain text and fewer where characters need escaping, such as quotes and HTML, or base64 data of about 23 KiB for anything else. " +
 	"Headers too long to leave the body room are cut short, every value to the same length (headersCut). " +
 	"An email lists its attachments (filename, contentType, size) without their contents, which no tool can open yet. " +
 	"done tells you whether more follows; read on with offset set to next (characters for text, bytes for base64), and total is the whole body's length in the same unit. bodyCleared means the body was deleted after 7 days. " +

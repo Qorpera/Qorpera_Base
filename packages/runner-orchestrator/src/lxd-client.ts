@@ -3,6 +3,7 @@ import { request as httpRequest } from "node:http";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
+	CODING_GUEST_HELPER_MAX_BYTES,
 	COMPANY_COMPUTER_BOOT_CONFIGURATION_MAX_BYTES,
 	COMPANY_COMPUTER_BOOT_SERVICE_RESTART_MAX_BYTES,
 	COMPANY_COMPUTER_BOOT_SERVICE_START_MAX_BYTES,
@@ -27,6 +28,9 @@ import { NodeWebSocket } from "./node-websocket.ts";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_INSTANCE_FILE_BYTES = 256 * 1024;
+/** A coding guest helper, which the executor reads whole to compare it with its pin: within
+ * CODING_GUEST_HELPER_MAX_BYTES, the only file read past 64 KiB. */
+const CODING_GUEST_HELPER_PATH = /^\/opt\/qorpera-coding\/[a-z][a-z-]{0,62}\.mjs$/;
 /** The folder program is about 1.5 MiB. */
 const MAX_INSTANCE_PROGRAM_BYTES = 16 * 1024 * 1024;
 /** One file directly in the guest agent's or the folder program's folder (LxdInstanceProgramClient). */
@@ -2924,7 +2928,11 @@ export class LxdUnixClient
 		maximumBytes: number,
 		signal?: AbortSignal,
 	): Promise<LxdInstanceFile> {
-		if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 65536)
+		if (
+			!Number.isSafeInteger(maximumBytes) ||
+			maximumBytes < 1 ||
+			maximumBytes > (CODING_GUEST_HELPER_PATH.test(path) ? CODING_GUEST_HELPER_MAX_BYTES : 65536)
+		)
 			throw new Error("LXD_INSTANCE_FILE_UNCONFIRMED");
 		const file = await this.#readInstanceFile(project, name, path, maximumBytes, signal);
 		// LXD 6.9 serves procfs using its zero stat size. Preserve the real file

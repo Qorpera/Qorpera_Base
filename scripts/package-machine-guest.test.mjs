@@ -1569,41 +1569,164 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 		files,
 		/\n\treturn \["\/usr\/bin\/setpriv", f"--reuid=\{ACCOUNT\}", f"--regid=\{ACCOUNT\}", "--init-groups", "--inh-caps=-all", "--no-new-privs",\n\t\t"--reset-env", "--", "\/usr\/bin\/python3", "-I", SELF, "account", \*words\]/,
 	);
-	assert.match(
-		files,
-		/\n\t\t\taccount_command\(words\),\n\t\t\tstdin=subprocess\.PIPE if feed else subprocess\.DEVNULL,\n\t\t\tstdout=out,\n\t\t\tstderr=err,\n\t\t\tclose_fds=True,\n\t\t\tstart_new_session=True,\n\t\t\tcwd="\/",\n\t\t\)\n/,
-	);
 	// Root's wait for it has an end (the account can stop its own process, and `desktop` holds the desktop's lock).
 	assert.match(files, /\nPATIENCE = \{"place": 30, "save": 30, "tidy": 30, "copy": 900, "take": 900\}\n/);
 	// What the account makes in steps lies under a name of its own until it is whole, and root has the account take it
-	// away when the work did not end well, whatever ended it (review r1 F1 of #1712).
+	// away when the work did not end well, whatever ended it (review r1 F1 of #1712). The taking away is not ended by
+	// a stop asked of root's side (review r4 F1).
 	assert.match(files, /\nSTAGE = "\.qorpera-desktop-copy\."\n/);
 	assert.match(
 		files,
-		/\n\tmark = secrets\.token_hex\(8\)\n\ttry:\n\t\tdone = as_account\(work, \*words, mark, feed=feed\)\n\texcept BaseException:\n\t\tas_account\("tidy", mark, \*beside\)\n\t\traise\n\tif done\[0\] != 0:\n\t\tas_account\("tidy", mark, \*beside\)\n\treturn done\n/,
+		/\n\tmark = secrets\.token_hex\(8\)\n\ttry:\n\t\tdone = as_account\(work, \*words, mark, feed=feed\)\n\texcept BaseException:\n\t\tas_account\("tidy", mark, \*beside, heed=False\)\n\t\traise\n\tif done\[0\] != 0:\n\t\tas_account\("tidy", mark, \*beside, heed=False\)\n\treturn done\n/,
 	);
 	assert.deepEqual(
 		[...files.matchAll(/(?:staged|as_account)\("(\w+)"/g)].map((match) => `${match[0].split("(")[0]} ${match[1]}`),
 		["as_account tidy", "as_account tidy", "staged take", "staged copy", "as_account place", "staged save"],
 	);
-	assert.match(files, /\n\t\tif code < 0:\n\t\t\treturn 1, "", f"the desktop's user's side was ended before it finished \(signal \{-code\}\)", fed\n/);
-	assert.match(files, /\n\t\t\t\tos\.killpg\(process\.pid, signal\.SIGKILL\)\n/);
-	assert.match(files, /\n\t\tpatience = threading\.Timer\(PATIENCE\[words\[0\]\], out_of_patience\)\n\t\tpatience\.start\(\)\n/);
-	// However the account's side ends, all of its group that is left is ended and collected before root goes on
-	// (review r2 F1 of #1712: its `cp`, when another ended the side itself, would else write after the cleanup). The
-	// side's end is waited for without collecting it, so its number is still its group's when the group is signalled;
-	// what it leaves behind is this process's to collect (a subreaper), not init's.
-	assert.match(files, /\n\tctypes\.CDLL\(None, use_errno=True\)\.prctl\(36, 1, 0, 0, 0\)\n/);
+
+	// A signal that asks root's side to stop runs no code of it, ever (reviews r3 and r4 of #1712 each found a window
+	// between a handler that raised and the bookkeeping around it; there is no handler any more). The three signals are
+	// held back from the first statement of root's side on; the kernel keeps one that arrives waiting, however many
+	// arrive. Root's side looks for one at three statements of `as_account` (before it starts the account's side, at
+	// every tick while it waits for it, after it has collected it) and stops for one at ONE statement, its last.
+	assert.match(files, /\nSTOPS = \(signal\.SIGTERM, signal\.SIGHUP, signal\.SIGINT\)\n/);
+	assert.match(files, /\nHEEDED = frozenset\(\)\nSTARTED_WITH = frozenset\(\)\n/);
+	assert.match(files, /\nTICK = 0\.05\n/);
+	// Which of the three it heeds is decided once, from what root's side was started with (review r5 F1 of #1712): a
+	// signal its caller ignores (`nohup desktop open ...`) or holds back itself is neither held back here nor read,
+	// and is at the end what it was at the start. Held back, even an ignored signal would wait and be read as a stop.
 	assert.match(
 		files,
-		/\n\t\t\tos\.waitid\(os\.P_PID, process\.pid, os\.WEXITED \| os\.WNOWAIT\)\n\t\tfinally:\n\t\t\twith turn:\n\t\t\t\tover\.append\(True\)\n\t\t\t\tpatience\.cancel\(\)\n\t\t\t\tend_group\(\)\n\t\t\t\tcode = process\.wait\(\)\n\t\t\t\twhile True:\n\t\t\t\t\ttry:\n\t\t\t\t\t\tos\.waitpid\(-process\.pid, 0\)\n\t\t\t\t\texcept ChildProcessError:\n\t\t\t\t\t\tbreak\n\t\tif failure:\n\t\t\traise failure\n/,
+		/\ndef heed_stops\(\):\n\t"""[^\n]*"""\n\tglobal HEEDED, STARTED_WITH\n\tSTARTED_WITH = frozenset\(signal\.pthread_sigmask\(signal\.SIG_BLOCK, \(\)\)\)\n\tHEEDED = frozenset\(number for number in STOPS if signal\.getsignal\(number\) is not signal\.SIG_IGN and number not in STARTED_WITH\)\n\tsignal\.pthread_sigmask\(signal\.SIG_BLOCK, HEEDED\)\n/,
 	);
-	assert.match(files, /\n\t\tdef out_of_patience\(\):\n\t\t\twith turn:\n\t\t\t\tif not over:\n\t\t\t\t\tended\.append\(True\)\n\t\t\t\t\tend_group\(\)\n/);
+	assert.equal(files.match(/\b(?:HEEDED|STARTED_WITH) = /g).length, 4, "decided in one place");
+	assert.match(files, /\n\tif os\.geteuid\(\) != 0:\n\t\traise Stop\("desktop-files runs as root, from `desktop`"\)\n\theed_stops\(\)\n\tmatch words:\n/);
+	assert.match(files, /\ndef stop_asked\(\):\n\t"""[^\n]*"""\n\treturn min\(signal\.sigpending\(\) & HEEDED, default=0\)\n/);
+	const lines = files.split("\n").filter((line) => !line.trimStart().startsWith("#"));
+	assert.deepEqual(
+		lines.filter((line) => /stop_asked\(\)|\bleave\(/.test(line) && !line.includes('"""')).map((line) => line.trim()),
+		["def stop_asked():", "def leave(number):", "if heed and stop_asked():", "if heed and stop_asked():", "if heed and stop_asked():", "if stop_asked():", "leave(stop_asked())"],
+	);
+	// No handler is installed and nothing waits for a signal: the only calls about signals are the deciding and
+	// holding back at the start, the look, the leaving (the heeded signal's own default again, then let through), and
+	// the giving of what root's side was started with to the account's processes. (The account's group is ended with
+	// SIGKILL, which nothing ignores or holds back: pinned below.)
+	assert.deepEqual(
+		lines.filter((line) => /\bsignal\.(?!SIG[A-Z_]+\b)\w+\(/.test(line)).map((line) => line.trim()),
+		[
+			"STARTED_WITH = frozenset(signal.pthread_sigmask(signal.SIG_BLOCK, ()))",
+			"HEEDED = frozenset(number for number in STOPS if signal.getsignal(number) is not signal.SIG_IGN and number not in STARTED_WITH)",
+			"signal.pthread_sigmask(signal.SIG_BLOCK, HEEDED)",
+			"return min(signal.sigpending() & HEEDED, default=0)",
+			"signal.signal(number, signal.SIG_DFL)",
+			"signal.pthread_sigmask(signal.SIG_UNBLOCK, {number})",
+			"preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, STARTED_WITH),",
+		],
+	);
+	for (const gone of [/\bimport threading\b/, /KeyboardInterrupt/, /UNDER_WAY|NOTED/, /set_wakeup_fd|sigwait|sigtimedwait|siginterrupt/, /sys\.exit\(128/]) assert.doesNotMatch(files, gone);
+	// It leaves BY the signal, as its last statement, whatever its work came to.
+	assert.match(
+		files,
+		/\n\tsys\.stdout\.flush\(\)\n\tsys\.stderr\.flush\(\)\n\tsignal\.signal\(number, signal\.SIG_DFL\)\n\tsignal\.pthread_sigmask\(signal\.SIG_UNBLOCK, \{number\}\)\n\tos\._exit\(128 \+ number\)\n/,
+	);
+	assert.ok(
+		files.endsWith(
+			'if __name__ == "__main__":\n\tcode = 0\n\ttry:\n\t\tmain(sys.argv[1:])\n\texcept Stop as stop:\n\t\tprint(stop, file=sys.stderr)\n\t\tcode = stop.code\n\texcept OSError as error:\n\t\tprint(f"desktop-files: {error}", file=sys.stderr)\n\t\tcode = 1\n\texcept Stopped:\n\t\tcode = 1\n\t# The one place where root\'s side stops for a signal: here, with its work done or given up and nothing left of it.\n\tif stop_asked():\n\t\tleave(stop_asked())\n\tsys.exit(code)\n',
+		),
+	);
+
+	// The whole of a piece of the account's work, pinned. Root's side is one thread and never waits blindly: it waits
+	// a tick at a time, on a descriptor that says the account's side has ended (before it is collected), and looks
+	// between ticks. However the side ends, all of its group that is left is ended, the side is collected, and what it
+	// left behind is collected too (root's side is its subreaper), before anything else (review r2 F1: its `cp`, when
+	// another ended the side itself, would else write after the cleanup). The group is only signalled before the
+	// side is collected, so its number is still its own.
+	const whole = files.slice(files.indexOf("\ndef as_account(*words, feed=None, heed=True):\n"), files.indexOf("\ndef end_group(process):\n"));
+	const steps = whole
+		.split("\n")
+		.filter((line) => line.trim() && !line.trimStart().startsWith("#"))
+		.join("\n");
+	assert.equal(
+		steps.slice(steps.indexOf("\tif heed and stop_asked():\n")),
+		[
+			"\tif heed and stop_asked():",
+			"\t\traise Stopped()",
+			"\tctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0)",
+			'\tout, err = os.memfd_create("answer"), os.memfd_create("complaint")',
+			"\treads, writes = os.pipe() if feed else (None, None)",
+			"\tprocess = ended = fed = failure = code = None",
+			"\timpatient = []",
+			"\tdeadline = time.monotonic() + PATIENCE[words[0]]",
+			"\tdef look():",
+			"\t\tif not impatient and time.monotonic() >= deadline:",
+			"\t\t\timpatient.append(True)",
+			"\t\t\tend_group(process)",
+			"\t\tif heed and stop_asked():",
+			"\t\t\tend_group(process)",
+			"\ttry:",
+			"\t\ttry:",
+			"\t\t\tprocess = subprocess.Popen(",
+			"\t\t\t\taccount_command(words),",
+			"\t\t\t\tstdin=reads if feed else subprocess.DEVNULL,",
+			"\t\t\t\tstdout=out,",
+			"\t\t\t\tstderr=err,",
+			"\t\t\t\tclose_fds=True,",
+			"\t\t\t\tstart_new_session=True,",
+			'\t\t\t\tcwd="/",',
+			"\t\t\t\tpreexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, STARTED_WITH),",
+			"\t\t\t)",
+			"\t\t\tended = os.pidfd_open(process.pid)",
+			"\t\t\tif feed:",
+			"\t\t\t\tos.close(reads)",
+			"\t\t\t\treads = None",
+			"\t\t\t\tos.set_blocking(writes, False)",
+			"\t\t\t\ttry:",
+			"\t\t\t\t\tfed = feed(Pipe(writes, ended, look))",
+			"\t\t\t\texcept BrokenPipeError:",
+			"\t\t\t\t\tpass",
+			"\t\t\t\texcept Exception as error:",
+			"\t\t\t\t\tfailure = error",
+			"\t\t\t\tos.close(writes)",
+			"\t\t\t\twrites = None",
+			"\t\t\twhile not select.select([ended], [], [], TICK)[0]:",
+			"\t\t\t\tlook()",
+			"\t\tfinally:",
+			"\t\t\tfor fd in (reads, writes, ended):",
+			"\t\t\t\tif fd is not None:",
+			"\t\t\t\t\tos.close(fd)",
+			"\t\t\tif process is not None:",
+			"\t\t\t\tend_group(process)",
+			"\t\t\t\tcode = process.wait()",
+			"\t\t\t\twhile True:",
+			"\t\t\t\t\ttry:",
+			"\t\t\t\t\t\tos.waitpid(-process.pid, 0)",
+			"\t\t\t\t\texcept ChildProcessError:",
+			"\t\t\t\t\t\tbreak",
+			"\t\tif heed and stop_asked():",
+			"\t\t\traise Stopped()",
+			"\t\tif failure:",
+			"\t\t\traise failure",
+			"\t\tif impatient:",
+			'\t\t\treturn 1, "", f"the desktop\'s user did not finish within {PATIENCE[words[0]]} seconds, and was stopped", fed',
+			"\t\tif code < 0:",
+			'\t\t\treturn 1, "", f"the desktop\'s user\'s side was ended before it finished (signal {-code})", fed',
+			"\t\tsaid = []",
+			"\t\tfor fd in (out, err):",
+			"\t\t\tos.lseek(fd, 0, os.SEEK_SET)",
+			'\t\t\tsaid.append(os.read(fd, 65536).decode("utf-8", "replace"))',
+			'\t\treturn code, said[0], "".join(c if c.isprintable() else " " for c in said[1][:1500]).strip(), fed',
+			"\tfinally:",
+			"\t\tos.close(out)",
+			"\t\tos.close(err)",
+		].join("\n"),
+	);
+	// Root's copy goes down a pipe it never waits on blindly either.
+	assert.match(
+		files,
+		/\n\tdef write\(self, data\):\n\t\tleft = memoryview\(data\)\n\t\twhile left:\n\t\t\tended, takes, _ = select\.select\(\[self\.ended\], \[self\.fd\], \[\], TICK\)\n\t\t\tif ended:\n\t\t\t\traise BrokenPipeError\(errno\.EPIPE, "the account's side has ended"\)\n\t\t\tif takes:\n\t\t\t\ttry:\n\t\t\t\t\tleft = left\[os\.write\(self\.fd, left\) :\]\n\t\t\t\texcept BlockingIOError:\n\t\t\t\t\tpass\n\t\t\tif time\.monotonic\(\) - self\.looked >= TICK:\n\t\t\t\tself\.looked = time\.monotonic\(\)\n\t\t\t\tself\.look\(\)\n\t\treturn len\(data\)\n/,
+	);
+	assert.match(files, /\ndef end_group\(process\):\n\t"""[^\n]*"""\n\ttry:\n\t\tos\.killpg\(process\.pid, signal\.SIGKILL\)\n\texcept ProcessLookupError:\n\t\tpass\n/);
 	assert.equal(files.match(/process\.wait\(\)/g).length, 1, "the account's side is collected in one place, after its group was ended");
-	// A signal that asks root's side to stop ends it as an error does, so the same happens then.
-	assert.match(files, /\n\tfor number in \(signal\.SIGTERM, signal\.SIGHUP\):\n\t\tsignal\.signal\(number, lambda number, _: sys\.exit\(128 \+ number\)\)\n/);
-	assert.match(files, /\n\tif os\.geteuid\(\) != 0:\n\t\traise Stop\("desktop-files runs as root, from `desktop`"\)\n\tstoppable\(\)\n/);
-	assert.match(files, /\n\t\tif os\.getuid\(\) == 0 or os\.geteuid\(\) == 0:\n\t\t\traise Stop\("the account's side of desktop-files runs as the desktop's user only"\)\n\t\tos\.closerange\(3, 4096\)\n/);
 	assert.match(files, /\n\tif os\.geteuid\(\) != 0:\n\t\traise Stop\("desktop-files runs as root, from `desktop`"\)\n/);
 	for (const file of ["deploy/machine/desktop", "deploy/machine/desktop-dock-open"])
 		assert.equal(spawnSync("bash", ["-n", join(repositoryRoot, file)], { encoding: "utf8" }).status, 0, file);
@@ -1628,20 +1751,63 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 		spawnSync("chmod", ["-R", "u+rwx", base]);
 		await rm(base, { recursive: true, force: true });
 	}
-	// Root's own side asked to stop (SIGTERM) while the account's side and its `cp`, still to write, are there: it ends
-	// with 143 after both are ended, collected and what was on its way is taken away; nothing appears afterwards.
-	const second = await mkdtemp(join(tmpdir(), "qorpera-desktop-files-"));
-	try {
-		const run = spawnSync(
-			"python3",
-			["-I", "-B", join(repositoryRoot, "scripts/fixtures/machine-desktop-files.py"), join(repositoryRoot, "deploy/machine/desktop-files"), second, "stopped"],
-			{ encoding: "utf8" },
-		);
-		assert.equal(run.status, 0, run.stderr);
-		assert.deepEqual(JSON.parse(run.stdout), { ended: 143, calls: ["copy", "tidy"], desk: {} });
-	} finally {
-		spawnSync("chmod", ["-R", "u+rwx", second]);
-		await rm(second, { recursive: true, force: true });
+	// Root's side asked to stop, with its signals held back as its `main` holds them: one signal and a burst of ten
+	// (of the three kinds), a second into a copy, as the account's side is started, and as root's side ends what a
+	// side that is gone left (its `cp`, still to write); a second signal right after root's side ended the copy for
+	// the first, with the copy's staging there (review r4 F1 of #1712); and signals as the taking away is started.
+	// Each time root's side gives the work up, the taking away runs to its end, three seconds later the desk holds
+	// nothing, and only then does root's side end, BY the signal (the lowest that waits). The account's side and its
+	// child hold no signal back.
+	// Last: root's side started with SIGHUP ignored, as under nohup (review r5 F1 of #1712). It holds back and reads
+	// the other two only. A copy under a burst of ten SIGHUP runs to its end and nothing waits; a second copy in the
+	// same run is stopped by a SIGTERM as any is, after the cleanup. The account's side ignores SIGHUP too, as any
+	// program started under nohup does, and is ended all the same (the group's end is SIGKILL).
+	for (const [when, signalled, gaveUp, waits] of [
+		["copying", "SIGTERM", "stopped", [15]],
+		["copying:10", "SIGHUP", "stopped", [1, 2, 15]],
+		["spawn", "SIGTERM", "stopped", [15]],
+		["spawn:10", "SIGHUP", "stopped", [1, 2, 15]],
+		["end", "SIGTERM", "stopped", [15]],
+		["end:10", "SIGHUP", "stopped", [1, 2, 15]],
+		["twice", "SIGHUP", "stopped", [1, 15]],
+		["tidy", "SIGTERM", "the desktop's user could not put /everyone/large on the desktop", [15]],
+		["tidy:10", "SIGHUP", "the desktop's user could not put /everyone/large on the desktop", [1, 2, 15]],
+		["ignored", "SIGTERM", "stopped", [15]],
+	]) {
+		const second = await mkdtemp(join(tmpdir(), "qorpera-desktop-files-"));
+		try {
+			const words = ["-I", "-B", join(repositoryRoot, "scripts/fixtures/machine-desktop-files.py"), join(repositoryRoot, "deploy/machine/desktop-files"), second, `stopped:${when}`];
+			const ignored = when === "ignored";
+			const run = ignored
+				? spawnSync("sh", ["-c", 'trap "" HUP; exec python3 "$@"', "sh", ...words], { encoding: "utf8" })
+				: spawnSync("python3", words, { encoding: "utf8" });
+			assert.deepEqual([run.status, run.signal], [null, signalled], `${when}: ${run.stderr}`);
+			const { "its child": child, "under SIGHUP": underHangups, ...told } = JSON.parse(run.stdout);
+			const copied = { large: "folder 755", "large/a.bin": "file 644" };
+			assert.deepEqual(
+				told,
+				{
+					"gave up": gaveUp,
+					calls: ["copy", "tidy"],
+					desk: ignored ? copied : {},
+					waits,
+					"held back": ignored ? [2, 15] : [1, 2, 15],
+					"the account's side": { "held back": [], "ignores SIGHUP": ignored },
+				},
+				when,
+			);
+			assert.deepEqual(
+				underHangups,
+				ignored ? { answer: ["folder", `${second}/desk/large`, "large"], calls: ["copy"], waits: [], "on the desk": Object.keys(copied) } : undefined,
+				when,
+			);
+			// (The child's note is there when it was not ended before it could write it.)
+			if (child) assert.equal(child, "SigBlk:\t0000000000000000", when);
+			if (when === "copying") assert.equal(child, "SigBlk:\t0000000000000000");
+		} finally {
+			spawnSync("chmod", ["-R", "u+rwx", second]);
+			await rm(second, { recursive: true, force: true });
+		}
 	}
 	const { top, desk } = cases;
 	const answer = (result) => {
@@ -1847,8 +2013,16 @@ test("root follows no link for the desktop's account: open, --copy and shot (rev
 		'\tpkill -KILL -u desktop -f "desktop-files account take" || true\n',
 		'\t[[ ! -e /home/desktop/Desktop/large ]] || diff -r "$mine/large" /home/desktop/Desktop/large >/dev/null ||\n',
 		'\t[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||\n',
-		'\t"$files" open --copy -- /tmp/large-links >/dev/null 2>&1 &\n\tfor _ in $(seq 1 500); do pkill -STOP -u desktop -x cp && break; sleep 0.01; done\n\tpkill -KILL -u desktop -f "desktop-files account copy" || true\n\twait || true\n\tleft=$(pgrep -u desktop -x cp || true)\n\tpkill -CONT -u desktop -x cp || true\n',
+		'\t"$files" open --copy -- /tmp/large-links >/dev/null 2>&1 &\n\tfor _ in $(seq 1 500); do pkill -STOP -u desktop -x cp && break; sleep 0.01; done\n',
+		'\tpkill -KILL -u desktop -f "desktop-files account copy" || true\n\twait || true\n\tleft=$(pgrep -u desktop -x cp || true)\n\tpkill -CONT -u desktop -x cp || true\n',
 		'\t[[ -z $left ]] || { echo "the cp of a copy whose side was ended was still there when root had the copy taken away" >&2; exit 1; }\n',
+		'\tblocked=$(awk "/^SigBlk:/ { print \\$2 }" "/proc/$(pgrep -u desktop -x cp | head -1)/status" 2>/dev/null || true)\n',
+		'\t[[ -z $blocked || $blocked == 0000000000000000 ]] || { echo "the cp of the desktop account holds signals back: $blocked" >&2; exit 1; }\n',
+		'\tkill -TERM "$asked" && kill -HUP "$asked" || true\n\tstatus=0\n\twait "$asked" || status=$?\n\t[[ $status == 129 || $status == 143 || $status == 0 ]] ||',
+		'\t[[ -z $(pgrep -u desktop -f "desktop-files account" || true) && -z $(pgrep -u desktop -x cp || true) ]] ||\n',
+		'\t(trap "" HUP; exec "$files" open --copy -- /tmp/large-links >/dev/null 2>&1) &\n',
+		'\tfor _ in $(seq 1 10); do kill -HUP "$asked" 2>/dev/null || true; done\n',
+		'\t[[ $status == 0 ]] && diff -r /tmp/large-links /home/desktop/Desktop/large-links >/dev/null ||\n',
 		'\tif leaked; then echo "bytes of a file only root can read are in the desktop account folders" >&2; exit 1; fi\n',
 	])
 		assert.ok(imageScript.includes(line), line);

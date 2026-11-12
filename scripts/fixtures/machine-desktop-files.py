@@ -8,9 +8,15 @@ walk, the archive, the pipe, the checks of the answer. What needs a second accou
 reach what only root can) is proved by the image build.
 
   machine-desktop-files.py HELPER BASE cases               prints the cases' results as JSON
-  machine-desktop-files.py HELPER BASE stopped             root's side asked to stop (SIGTERM) while a copy is being made
-  machine-desktop-files.py HELPER BASE account ...         the account's side, as the program starts it
-  machine-desktop-files.py HELPER BASE account:HOW ...     the same, held up or ended at one point (the cases say where)
+  machine-desktop-files.py HELPER BASE stopped:WHEN[:N]    root's side asked to stop, by N signals (default one), WHEN:
+                                                           copying (a second into a copy), spawn (as the account's
+                                                           side is started), end (the side gone, its cp still to
+                                                           write, as root's side ends what is left), twice (a first
+                                                           signal a second into a copy with its staging there, a
+                                                           second as root's side ends the copy for the first), tidy
+                                                           (as the taking away is started), ignored (started with
+                                                           SIGHUP ignored, as under nohup: a copy under a burst of
+                                                           SIGHUP, then a copy that a SIGTERM stops)
 """
 
 import importlib.machinery
@@ -39,6 +45,12 @@ if sys.argv[3].startswith("account"):
 	# The account's side held up or ended where a case wants it: after its copy is made and before it has its name,
 	# after a link is made, after a picture is written and before it is in its place.
 	how = sys.argv[3].partition(":")[2]
+	# What the account's side is started with: which signals are held back for it (root's side holds its stop
+	# signals back; the account's processes must not), and whether it ignores SIGHUP (it does when root's side was
+	# started ignoring it, as any program started under nohup does).
+	with open(os.path.join(base, "account-mask"), "w") as note:
+		held_back = sorted(int(number) for number in signal.pthread_sigmask(signal.SIG_BLOCK, ()))
+		note.write(json.dumps({"held back": held_back, "ignores SIGHUP": signal.getsignal(signal.SIGHUP) is signal.SIG_IGN}))
 	if how in ("copied-then-held", "copied-then-ended"):
 		run = subprocess.run
 
@@ -55,7 +67,7 @@ if sys.argv[3].startswith("account"):
 		# itself with an error, or is held up: a child that would write after everything was taken away.
 
 		def left_copying(command, **_):
-			subprocess.Popen(["/bin/sh", "-c", 'sleep 2; exec "$@"', "sh", *command], stdin=subprocess.DEVNULL)
+			subprocess.Popen(["/bin/sh", "-c", 'grep SigBlk /proc/self/status >"$0"; sleep 2; exec "$@"', os.path.join(base, "child-mask"), *command], stdin=subprocess.DEVNULL)
 			if how == "copying-then-ended":
 				os.kill(os.getpid(), signal.SIGKILL)
 			if how == "copying-then-failed":
@@ -157,24 +169,95 @@ def listing(folder):
 	return found
 
 
-if sys.argv[3] == "stopped":
-	# Root's side is asked to stop while the account's side and its `cp` (still to begin) are there: both are ended
-	# and collected, and what was on its way is taken away, before root's side ends.
+if sys.argv[3].startswith("stopped"):
+	# Root's side is asked to stop while the account's side or its `cp` (still to write: it waits two seconds first)
+	# is there, or while what was on its way is being taken away. Root's side holds the signals back as its `main`
+	# does and looks for them where it waits. Whenever they come and however many, the account's side and all it
+	# started are ended and collected, the taking away runs to its end, and only then does root's side end, by the
+	# signal; three seconds after the work was given up nothing has appeared.
+	_, when, count = (sys.argv[3] + "::").split(":")[:3]
 	make("")
 	make("/everyone", 0o1777)
 	make("/everyone/large")
 	write("/everyone/large/a.bin", "a" * 400000)
 	os.makedirs(desk)
+	m.heed_stops()
+
+	def stop(only=(signal.SIGTERM, signal.SIGHUP, signal.SIGINT)):
+		# One signal (SIGTERM), or as many as asked for, of the three kinds in turn.
+		for number in range(int(count or 1)):
+			os.kill(os.getpid(), only[number % len(only)])
+
 	how = "copying-then-held"
-	m.stoppable()
-	threading.Timer(1, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+	if when in ("copying", "twice"):
+		# A second into the copy: sent by a process of its own, so that root's side stays one thread.
+		how = "copied-then-held" if when == "twice" else how
+		kinds = " ".join(("TERM", "HUP", "INT")[number % 3] for number in range(int(count or 1)))
+		subprocess.Popen(["/bin/sh", "-c", f"sleep 1; for kind in {kinds}; do kill -$kind {os.getpid()}; done"])
+	if when in ("spawn", "tidy"):
+		how = "copying-then-failed" if when == "tidy" else how
+		spawned = []
+
+		class Started(subprocess.Popen):
+			def __init__(self, *args, **more):
+				super().__init__(*args, **more)
+				spawned.append(True)
+				if len(spawned) == (2 if when == "tidy" else 1):
+					stop()
+
+		subprocess.Popen = Started
+	if when in ("end", "twice"):
+		how = "copying-then-failed" if when == "end" else how
+		end_group, ends = m.end_group, []
+
+		def ending(process):
+			# end: as root's side ends what the side left. twice: right after it ended the copy for the first signal.
+			ends.append(True)
+			if when == "end" and len(ends) == 1:
+				stop()
+			end_group(process)
+			if when == "twice" and len(ends) == 1:
+				stop((signal.SIGHUP,))
+
+		m.end_group = ending
+	went = None
+	if when == "ignored":
+		# Root's side was started with SIGHUP ignored (the test starts this so; `nohup` does). A first copy is made
+		# under a burst of ten SIGHUP sent as the account's side is started: it runs to its end. A second copy, in
+		# the same run, is then stopped by a SIGTERM (one, at its start) as any is.
+		how = ""
+		sends = [lambda: [os.kill(os.getpid(), signal.SIGHUP) for _ in range(10)], lambda: os.kill(os.getpid(), signal.SIGTERM)]
+
+		class Signalled(subprocess.Popen):
+			def __init__(self, *args, **more):
+				super().__init__(*args, **more)
+				if sends:
+					sends.pop(0)()
+
+		subprocess.Popen = Signalled
+		went = outcome(lambda: m.root_open("/everyone/large", True))
+		went["waits"] = sorted(int(number) for number in signal.sigpending())
+		went["on the desk"] = sorted(listing(desk))
+		how = "copying-then-held"
+		del calls[:]
 	try:
 		m.root_open("/everyone/large", True)
-		ended = "it went on"
-	except SystemExit as stop:
-		ended = stop.code
+		gave_up = "it went on"
+	except m.Stopped:
+		gave_up = "stopped"
+	except m.Stop as error:
+		gave_up = str(error)
 	time.sleep(3)
-	print(json.dumps({"ended": ended, "calls": calls, "desk": listing(desk)}))
+	masks = [open(os.path.join(base, name)).read().strip() if os.path.exists(os.path.join(base, name)) else None for name in ("account-mask", "child-mask")]
+	held_back = sorted(int(number) for number in signal.pthread_sigmask(signal.SIG_BLOCK, ()))
+	told = {"gave up": gave_up, "calls": calls, "desk": listing(desk), "waits": sorted(int(number) for number in signal.sigpending()), "held back": held_back, "the account's side": json.loads(masks[0]), "its child": masks[1]}
+	if went:
+		told["under SIGHUP"] = went
+	print(json.dumps(told))
+	sys.stdout.flush()
+	# As the program's last statement does.
+	if m.stop_asked():
+		m.leave(m.stop_asked())
 	sys.exit(0)
 
 

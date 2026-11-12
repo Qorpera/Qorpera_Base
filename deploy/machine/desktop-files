@@ -29,6 +29,7 @@ import errno
 import os
 import re
 import secrets
+import select
 import shutil
 import signal
 import stat
@@ -36,7 +37,7 @@ import struct
 import subprocess
 import sys
 import tarfile
-import threading
+import time
 
 ACCOUNT = "desktop"
 DESK = "/home/desktop/Desktop"
@@ -307,73 +308,162 @@ def account_command(words):
 		"--reset-env", "--", "/usr/bin/python3", "-I", SELF, "account", *words]  # fmt: skip
 
 
-def as_account(*words, feed=None):
+# The signals that ask root's side to stop. Those it heeds are held back (blocked) from the start of root's side to
+# its last statement, the taking away of what was on its way included: the kernel keeps one that arrives waiting,
+# however many arrive, and no code of this program ever runs because of one. Root's side looks for one that waits at
+# the points it chooses (stop_asked), and leaves for it in one place, at its end (leave). A SIGKILL cannot be held
+# back: what is on its way then stays under its hidden name.
+STOPS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+# Decided once, at the start of root's side (heed_stops), from what it was started with. HEEDED: the stop signals it
+# heeds at all. One that its caller ignores (`nohup desktop open ...`), or holds back itself, is not root's side's to
+# heed: it is neither held back here nor read, and is at the end what it was at the start. (Held back, even an
+# ignored signal would wait and be read as a stop: review r5 F1 of #1712.) STARTED_WITH: the signals that were held
+# back for root's side already, which is what the account's processes are started with again.
+HEEDED = frozenset()
+STARTED_WITH = frozenset()
+# How often root's side looks while it waits for the account's side, in seconds.
+TICK = 0.05
+
+
+class Stopped(Exception):
+	"""Root's side gives up its work because it was asked to stop: raised where it looked, with nothing of the account's
+	side left that it had started. It leaves at its end, not here."""
+
+
+def heed_stops():
+	"""Decides which stop signals root's side heeds, from what it was started with, and holds those back."""
+	global HEEDED, STARTED_WITH
+	STARTED_WITH = frozenset(signal.pthread_sigmask(signal.SIG_BLOCK, ()))
+	HEEDED = frozenset(number for number in STOPS if signal.getsignal(number) is not signal.SIG_IGN and number not in STARTED_WITH)
+	signal.pthread_sigmask(signal.SIG_BLOCK, HEEDED)
+
+
+def stop_asked():
+	"""The number of a signal that root's side heeds, asks it to stop and waits; or 0."""
+	return min(signal.sigpending() & HEEDED, default=0)
+
+
+def leave(number):
+	"""Root's side ends for the signal that asked it to stop: its last statement, after all it started is ended,
+	collected and taken away. It ends BY that signal (given its own default again and let through), so whoever waits
+	for it sees a command ended by the signal, which is what a shell goes by to stop its script on an interrupt.
+	Should the signal not end it, it leaves with the code a shell gives such an end."""
+	sys.stdout.flush()
+	sys.stderr.flush()
+	signal.signal(number, signal.SIG_DFL)
+	signal.pthread_sigmask(signal.SIG_UNBLOCK, {number})
+	os._exit(128 + number)
+
+
+class Pipe:
+	"""The pipe root's copy goes down to the account's side, written without ever waiting blindly: root's side waits
+	a tick at a time for it to take more, and looks every tick (as_account's `look`); when the account's side has
+	ended, the copy ends."""
+
+	def __init__(self, fd, ended, look):
+		self.fd, self.ended, self.look, self.looked = fd, ended, look, time.monotonic()
+
+	def write(self, data):
+		left = memoryview(data)
+		while left:
+			ended, takes, _ = select.select([self.ended], [self.fd], [], TICK)
+			if ended:
+				raise BrokenPipeError(errno.EPIPE, "the account's side has ended")
+			if takes:
+				try:
+					left = left[os.write(self.fd, left) :]
+				except BlockingIOError:
+					pass
+			if time.monotonic() - self.looked >= TICK:
+				self.looked = time.monotonic()
+				self.look()
+		return len(data)
+
+	def flush(self):
+		pass
+
+
+def as_account(*words, feed=None, heed=True):
 	"""Runs this program's account side as the account (account_command), in a session of its own, with `/` as its
-	folder and no descriptor but its three: nothing to read (or the pipe `feed` writes to), and two files in memory
-	for what it says. It is given PATIENCE seconds. However it ends (by itself, at root's patience, by another's
-	signal, by this program being stopped), everything it started that is still there is ended and collected before
-	this goes on: nothing of it can write any more. Answers its exit code, what it printed, what it complained of,
-	and what `feed` answered."""
+	folder, none of the signals held back that root's side holds back for itself, and no descriptor but its three:
+	nothing to read (or the pipe `feed` writes to), and two files in memory for what it says. It is given PATIENCE
+	seconds. Root's side never waits for it blindly: every
+	TICK it looks whether its patience is over and, with `heed`, whether root's side was asked to stop (the taking
+	away is run without `heed`: a stop does not end it). Either ends the account's side. However that side ends,
+	everything it started that is still there is ended and collected before this goes on: nothing of it can write any
+	more. Answers its exit code, what it printed, what it complained of, and what `feed` answered; with `heed`, gives
+	up (Stopped) when root's side was asked to stop."""
+	if heed and stop_asked():
+		raise Stopped()
 	# What the account's side leaves behind when it ends before its own child (the copying `cp`) becomes this
 	# process's to collect, not init's (PR_SET_CHILD_SUBREAPER).
 	ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0)
 	out, err = os.memfd_create("answer"), os.memfd_create("complaint")
+	reads, writes = os.pipe() if feed else (None, None)
+	process = ended = fed = failure = code = None
+	impatient = []
+	deadline = time.monotonic() + PATIENCE[words[0]]
+
+	def look():
+		# The two reasons to end the account's side before it ends by itself. Its number is its group's (a session
+		# of its own), and still its own here: it is collected only below, after the last look.
+		if not impatient and time.monotonic() >= deadline:
+			impatient.append(True)
+			end_group(process)
+		if heed and stop_asked():
+			end_group(process)
+
 	try:
-		process = subprocess.Popen(
-			account_command(words),
-			stdin=subprocess.PIPE if feed else subprocess.DEVNULL,
-			stdout=out,
-			stderr=err,
-			close_fds=True,
-			start_new_session=True,
-			cwd="/",
-		)
-		# Its number is its group's (a session of its own). The group is only ever signalled while that number is
-		# surely still its own: before the account's side is collected, under this lock.
-		turn, over, ended = threading.Lock(), [], []
-
-		def end_group():
-			try:
-				os.killpg(process.pid, signal.SIGKILL)
-			except ProcessLookupError:
-				pass
-
-		def out_of_patience():
-			with turn:
-				if not over:
-					ended.append(True)
-					end_group()
-
-		patience = threading.Timer(PATIENCE[words[0]], out_of_patience)
-		patience.start()
-		fed = failure = None
 		try:
+			process = subprocess.Popen(
+				account_command(words),
+				stdin=reads if feed else subprocess.DEVNULL,
+				stdout=out,
+				stderr=err,
+				close_fds=True,
+				start_new_session=True,
+				cwd="/",
+				# What root's side holds back for itself is not held back for the account's processes: they are
+				# started with what root's side was started with. (A signal its caller ignores is ignored by them
+				# too, as by any program started under it; they are ended with SIGKILL, which nothing ignores.)
+				preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, STARTED_WITH),
+			)
+			# Readable when the account's side has ended, before it is collected.
+			ended = os.pidfd_open(process.pid)
 			if feed:
+				os.close(reads)
+				reads = None
+				os.set_blocking(writes, False)
 				try:
-					with process.stdin as pipe:
-						fed = feed(pipe)
+					fed = feed(Pipe(writes, ended, look))
 				except BrokenPipeError:
 					# The other side ended first; its exit code and its complaint say why.
 					pass
 				except Exception as error:
-					# The pipe is closed by now: the other side sees a copy that did not come whole, and keeps nothing.
+					# The pipe is closed below: the other side sees a copy that did not come whole, and keeps nothing.
 					failure = error
-			# Its end is waited for without collecting it yet.
-			os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+				os.close(writes)
+				writes = None
+			while not select.select([ended], [], [], TICK)[0]:
+				look()
 		finally:
-			with turn:
-				over.append(True)
-				patience.cancel()
-				end_group()
+			for fd in (reads, writes, ended):
+				if fd is not None:
+					os.close(fd)
+			if process is not None:
+				end_group(process)
 				code = process.wait()
 				while True:
 					try:
 						os.waitpid(-process.pid, 0)
 					except ChildProcessError:
 						break
+		# Nothing of the account's side is left.
+		if heed and stop_asked():
+			raise Stopped()
 		if failure:
 			raise failure
-		if ended:
+		if impatient:
 			return 1, "", f"the desktop's user did not finish within {PATIENCE[words[0]]} seconds, and was stopped", fed
 		if code < 0:
 			return 1, "", f"the desktop's user's side was ended before it finished (signal {-code})", fed
@@ -388,28 +478,29 @@ def as_account(*words, feed=None):
 		os.close(err)
 
 
+def end_group(process):
+	"""Ends the account's side and all it started (its process group). Only ever called before the side is collected."""
+	try:
+		os.killpg(process.pid, signal.SIGKILL)
+	except ProcessLookupError:
+		pass
+
+
 def staged(work, *words, feed=None, beside=()):
 	"""Has the account do a piece of work that makes something in steps (a copy, a picture). What is not whole yet
 	lies under a name made from a mark picked here. When the work does not end well, the account is asked to take
-	that away again: also when its process was ended, by root's patience or by anything else, and could not. By then
-	nothing of the first try is left that could write (as_account ends and collects it), so what is taken away
-	stays away."""
+	that away again: also when its process was ended, by root's patience, by anything else, or because root's side
+	was asked to stop. By then nothing of the first try is left that could write (as_account ends and collects it),
+	and the taking away runs to its end whatever is asked of root's side meanwhile, so what is taken away stays away."""
 	mark = secrets.token_hex(8)
 	try:
 		done = as_account(work, *words, mark, feed=feed)
 	except BaseException:
-		as_account("tidy", mark, *beside)
+		as_account("tidy", mark, *beside, heed=False)
 		raise
 	if done[0] != 0:
-		as_account("tidy", mark, *beside)
+		as_account("tidy", mark, *beside, heed=False)
 	return done
-
-
-def stoppable():
-	"""A signal that asks this program to stop ends it the way an error does, so that what the account's side had
-	started is ended, collected and taken away first."""
-	for number in (signal.SIGTERM, signal.SIGHUP):
-		signal.signal(number, lambda number, _: sys.exit(128 + number))
 
 
 def answer_of(code, printed, complaint, target):
@@ -770,7 +861,7 @@ def main(words):
 		return
 	if os.geteuid() != 0:
 		raise Stop("desktop-files runs as root, from `desktop`")
-	stoppable()
+	heed_stops()
 	match words:
 		case ["open", "--", target] | ["open", "--copy", "--", target]:
 			opened = root_open(target, words[1] == "--copy")
@@ -788,13 +879,18 @@ def main(words):
 
 
 if __name__ == "__main__":
+	code = 0
 	try:
 		main(sys.argv[1:])
 	except Stop as stop:
 		print(stop, file=sys.stderr)
-		sys.exit(stop.code)
+		code = stop.code
 	except OSError as error:
 		print(f"desktop-files: {error}", file=sys.stderr)
-		sys.exit(1)
-	except KeyboardInterrupt:
-		sys.exit(130)
+		code = 1
+	except Stopped:
+		code = 1
+	# The one place where root's side stops for a signal: here, with its work done or given up and nothing left of it.
+	if stop_asked():
+		leave(stop_asked())
+	sys.exit(code)

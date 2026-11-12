@@ -57,7 +57,7 @@ describe("interface apps", () => {
 
 	it("names every problem with its line", () => {
 		const parse = parseAppManifest(
-			'name = ""\nemblem = "rocket"\nentry = "../x.html"\nposted = "yes"\nreads = ["mail"]\nextra = 1\n',
+			'name = ""\nemblem = "unicorn"\nentry = "../x.html"\nposted = "yes"\nreads = ["mail"]\nextra = 1\n',
 		);
 		expect(parse.ok).toBe(false);
 		if (parse.ok) return;
