@@ -949,7 +949,9 @@ export type CodeImportAnswer =
  * through the company's secret broker (the relay's `/v1/coding-repository-fetch/refs` and `/upload-pack`, the
  * request's id, lease and executor in its headers; the token never reaches the executor), or straight to
  * `https://github.com/<Owner>/<Name>.git` for a public project. Redirects are refused, never followed. A rejection, and
- * a body whose reading rejects, is a cut transfer (`busy`), unless the import's signal ended. */
+ * a body whose reading rejects, is a cut transfer (`busy`), unless the import's signal ended, or unless it rejects with
+ * a `CodeImportStop`, which the fetch takes at its word (the public transport's `IMPORT_SOURCE_PROTOCOL` for an answer
+ * with a content encoding). */
 export interface CodeImportTransport {
 	/** GET `info/refs?service=git-upload-pack`, `Git-Protocol: version=2`. */
 	refs(signal: AbortSignal): Promise<CodeImportAnswer>;
@@ -2151,7 +2153,8 @@ export interface CodeImportBundleManifest {
 	readonly from: CodeImportFrom;
 	readonly defaultBranch: string;
 	readonly mainSha: string;
-	/** The first 2,000 refs by name, of `refsCount`. */
+	/** The first 2,000 refs in the order they were given (the fetch's header: the default branch first), of
+	 * `refsCount`. */
 	readonly refs: readonly CodeBundleRef[];
 	readonly refsCount: number;
 	readonly leftOut: number;
@@ -2180,9 +2183,12 @@ export interface CodeImportBundleStore {
 		name: string,
 		signal?: AbortSignal,
 	): Promise<{ manifest: CodeImportBundleManifest; pieces: AsyncIterable<Uint8Array> }>;
-	/** Every stored bundle of the repository, of both kinds, by name. */
+	/** Every name of either kind in the repository's store folder that has a `.bundle` or a `.json` there, whole or not
+	 * (a half-written leftover too, so a place's folder can be cleared), sorted: the dated names first, then the
+	 * `import-*` ones. `readImport` and the store's `find` say whether one is whole. */
 	names(target: CodeBundleTarget, signal?: AbortSignal): Promise<string[]>;
-	/** Removes one stored bundle of either kind; false when it was not there. */
+	/** Removes one name of either kind, its manifest first, then its bundle; true when either file was there, false when
+	 * neither was. */
 	remove(target: CodeBundleTarget, name: string, signal?: AbortSignal): Promise<boolean>;
 }
 
