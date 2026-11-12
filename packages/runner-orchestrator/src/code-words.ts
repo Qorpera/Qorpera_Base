@@ -19,12 +19,19 @@ export const halfCharacter = (code: number): boolean => code >= 0xd800 && code <
 /** Text from a file or a command as part of one line of the words: every character a line may not show is U+FFFD, and
  * at most `max` bytes, cut at a whole character with an ellipsis. */
 export function shown(text: string, max: number): string {
+	const line = oneLine(text);
+	return bytes(line) <= max ? line : `${cut(line, max - bytes("…"))}…`;
+}
+
+/** Text as one line of the words, whole: every character a line may not show is U+FFFD. For what must never be shown
+ * cut, such as a path or a link that may hold part of a secret value: its caller leaves it out instead. */
+export function oneLine(text: string): string {
 	let line = "";
 	for (const character of text) {
 		const point = character.codePointAt(0) as number;
 		line += halfCharacter(point) || unseen(point) ? "�" : character;
 	}
-	return bytes(line) <= max ? line : `${cut(line, max - bytes("…"))}…`;
+	return line;
 }
 
 /** `text` cut to at most `max` bytes of UTF-8, at a whole character, with no mark. */

@@ -1,4 +1,12 @@
 import {
+	APP_ICON_MAX_BYTES,
+	APP_ICONS_FOLDER,
+	APP_ICONS_MAX,
+	type AppIcon,
+	appIconIdOf,
+	parseAppIcon,
+} from "@qorpera/cloud-client/app-icons";
+import {
 	CLOUD_MEMBER_FOLDER_READ_MANY,
 	type CloudMemberFolderClient,
 	type CloudMemberFolderEntry,
@@ -124,6 +132,50 @@ async function readText(folder: Folder, entry: CloudMemberFolderEntry, signal: A
 	} catch {
 		return null;
 	}
+}
+
+/** One of an app's own icons (`apps/<name>/icons/<id>.svg`), drawn by its agent on a member's ask. */
+export interface CompanyAppIcon {
+	readonly id: string;
+	readonly icon: AppIcon;
+	/** When it was saved, as the folder counts: the newest first. */
+	readonly seq: number;
+}
+
+/** An app's own icons, newest first: each file of its `icons/` folder the shared reader can draw, at most 48; a file it
+ * cannot read or draw is left out. With `known` (the last read, by file and its version), files that did not change are
+ * not read again. */
+export async function readAppIcons(
+	folder: Folder,
+	app: string,
+	signal: AbortSignal,
+	known: ReadonlyMap<string, CompanyAppIcon> = new Map(),
+): Promise<{ icons: CompanyAppIcon[]; byFile: Map<string, CompanyAppIcon> }> {
+	const path = `${APPS_FOLDER}/${app}/${APP_ICONS_FOLDER}`;
+	const top = isInterfaceName(app) ? (await folder.read(path, signal)).entry : null;
+	const byFile = new Map<string, CompanyAppIcon>();
+	if (top?.kind !== "folder") return { icons: [], byFile };
+	const files = (await listAll(folder, path, signal, 4 * APP_ICONS_MAX))
+		.filter((entry) => entry.kind === "file" && appIconIdOf(entry.path.slice(entry.path.lastIndexOf("/") + 1)))
+		.sort((a, b) => b.seq - a.seq)
+		// More than 12 can stand (two saves at once, a file written another way): every one is read, so a member's pick
+		// is still drawn; the panel shows the newest 12 and the picked one (review F4 on #1696).
+		.slice(0, 4 * APP_ICONS_MAX);
+	await Promise.all(
+		files.map(async (entry) => {
+			const key = `${entry.path}@${entry.seq}`;
+			const kept = known.get(key);
+			if (kept) {
+				byFile.set(key, kept);
+				return;
+			}
+			const text = await readText(folder, entry, signal, APP_ICON_MAX_BYTES);
+			const read = text === null ? null : parseAppIcon(text);
+			const id = appIconIdOf(entry.path.slice(entry.path.lastIndexOf("/") + 1));
+			if (read?.ok && id) byFile.set(key, { id, icon: read.icon, seq: entry.seq });
+		}),
+	);
+	return { icons: [...byFile.values()].sort((a, b) => b.seq - a.seq), byFile };
 }
 
 /** The company's groups of apps, from `apps/groups.md` (cloud/app-groups.ts); undefined when it has none. */
@@ -888,6 +940,7 @@ export class CompanyApps {
 	#shownGroups: string | undefined;
 	readonly #stop = new AbortController();
 	readonly #listeners = new Set<() => void>();
+	readonly #readers = new Set<() => void>();
 	#hints?: { close(): Promise<void> };
 	#poll?: ReturnType<typeof setInterval>;
 	#timer?: ReturnType<typeof setTimeout>;
@@ -958,11 +1011,27 @@ export class CompanyApps {
 		clearTimeout(this.#warming);
 		void this.#hints?.close().catch(() => undefined);
 		this.#listeners.clear();
+		this.#readers.clear();
 	}
 
 	/** The apps as last read. */
 	get apps(): readonly CompanyApp[] {
 		return this.#last;
+	}
+
+	readonly #icons = new Map<string, ReadonlyMap<string, CompanyAppIcon>>();
+
+	/** An app's own icons, newest first, read now; files that did not change since its last read are not read again. */
+	async icons(app: string): Promise<CompanyAppIcon[]> {
+		const { icons, byFile } = await readAppIcons(this.#source.folder(), app, this.#stop.signal, this.#icons.get(app));
+		this.#icons.set(app, byFile);
+		return icons;
+	}
+
+	/** Called after each read of the apps that worked, changed or not. */
+	onRead(listener: () => void): () => void {
+		this.#readers.add(listener);
+		return () => this.#readers.delete(listener);
 	}
 
 	onChange(listener: () => void): () => void {
@@ -994,6 +1063,9 @@ export class CompanyApps {
 				this.#publish(apps);
 				this.#warm();
 			}
+			// After every read that worked, whatever woke it (a hint, the minute's clock, the tab coming back): what reads
+			// beside the apps (their icons) reads again too, as a change of those changes no manifest.
+			if (!this.#stop.signal.aborted) for (const reader of [...this.#readers]) reader();
 		} catch {
 			/* What was read before stands. */
 		}

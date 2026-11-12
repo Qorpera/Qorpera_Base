@@ -1,0 +1,21 @@
+[Unit]
+Description=Qorpera machine desktop: start the program a press on the dock asked for
+# Started only by qorpera-machine-desktop-dock.path (no [Install]). It starts nothing in its own control group: each
+# program becomes a unit of its own in the machine's slice (`desktop dock`), so this service ends at
+# once and what it started runs on. No start limit: every press that finds no window starts it once, and a member
+# who opens and closes a program a few times in a row must not switch the dock off (systemd would refuse the sixth
+# start within ten seconds, and the path unit would fail with it).
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+Slice=qorpera-control.slice
+# Never in the request folder, where the desktop's account may put any name (review r3 F1 of #1704): the program
+# works in `/` and sets its own environment.
+WorkingDirectory=/
+ExecStart=/opt/qorpera-machine/desktop-dock-open
+# `desktop` waits for the desktop's lock, which a command of an agent may hold for a moment.
+TimeoutStartSec=30
+SyslogIdentifier=qorpera-machine-desktop-dock

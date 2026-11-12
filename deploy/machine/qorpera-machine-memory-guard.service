@@ -1,0 +1,44 @@
+[Unit]
+Description=Ends one program when this machine's memory and its compressed reserve are both nearly gone
+# Without it a machine at the edge of its memory froze and nothing was ended in time (12 Nov 2026). earlyoom ends the
+# one process with the highest oom_score: a browser tab first, then the biggest other program. systemd-oomd ends whole
+# control groups (a whole command, the whole browser or the desktop with everything on it), so it is not used.
+After=qorpera-machine-memory.service
+# Its limits depend on whether the compressed reserve is on: it starts again whenever that unit is run again.
+PartOf=qorpera-machine-memory.service
+ConditionPathExists=/usr/bin/earlyoom
+
+[Service]
+Type=exec
+ExecStart=/opt/qorpera-machine/machine-memory guard
+# Beside the commands' slice, like the watchdog and the folder program: its own work (a look at the memory up to ten
+# times a second) never counts as the machine being busy, and stopping the commands never stops it.
+Slice=qorpera-control.slice
+Restart=always
+RestartSec=2s
+# The guard is the last to go, answers at once on a busy machine, and stays small.
+OOMScoreAdjust=-1000
+Nice=-20
+MemoryMax=64M
+TasksMax=16
+SyslogIdentifier=qorpera-machine-memory-guard
+# It reads /proc and sends signals: nothing else.
+CapabilityBoundingSet=CAP_KILL CAP_IPC_LOCK CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
