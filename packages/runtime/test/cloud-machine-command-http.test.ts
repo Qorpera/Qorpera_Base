@@ -26,6 +26,7 @@ import type {
 	CompanyMachineMemberStartOutcome,
 } from "../../runner-orchestrator/src/company-machine-host.ts";
 import { HttpCloudCodingCommandService } from "../src/cloud-coding-command-http.ts";
+import { CloudCommandPages } from "../src/cloud-command-pages.ts";
 import {
 	CLOUD_MACHINE_TOOL_VERSION,
 	type CloudMachineCodingValueHttpRequest,
@@ -158,6 +159,34 @@ describe("machine command gateway", () => {
 		expect(await gateway.start({ machineId }, input, new AbortController().signal)).toEqual(
 			receiptFor(machineId, commandId, inputSha256),
 		);
+	});
+
+	it("asks for no more of a page than the executor said it takes, the legacy 16,384 until it says (keyholes S1)", async () => {
+		const { binding } = nativeToolAuthorityFixture();
+		const machineId = randomUUID(),
+			commandId = randomUUID(),
+			inputSha256 = "a".repeat(64);
+		const execute = vi.fn(async (_request: CloudMachineCommandHttpRequest) =>
+			receiptFor(machineId, commandId, inputSha256),
+		);
+		const { token, url, holderOf } = await service(async () => ({ inputSha256 }), execute);
+		const pages = new CloudCommandPages();
+		const gateway = createHttpCloudMachineCommandGateway({
+			url,
+			token,
+			binding,
+			holder: () => holderOf(binding),
+			allowLoopback: true,
+			pages,
+		});
+		const signal = new AbortController().signal;
+		await gateway.read({ machineId }, { commandId, offset: 0, limit: 31968 }, signal);
+		await gateway.read({ machineId }, { commandId, offset: 0, limit: 31968 }, signal);
+		expect(execute.mock.calls.map(([request]) => (request.action === "read" ? request.input.limit : null))).toEqual([
+			16384, 31968,
+		]);
+		// An executor's own gateway to a peer learns the same way (MachineCommandRouter keeps one memory for its peers).
+		expect(pages.of(url)).toBe(65536);
 	});
 
 	it("tells the agent a machine is not running by its code, and hides every other failure", async () => {

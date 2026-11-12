@@ -6380,6 +6380,38 @@ each step. It now leaves the envelope.
    of its binary would have every larger result refused at the fence. Undo is the same pair rolled back; the migration
    stays.
 
+### 2026-11-12 amendment: a command's output fills one result
+
+> **Built, not live.** Jonas, 12 November 2026, after the plan for removing the agents' keyholes
+> (lanes/keyholes-20261112/PLAN.md, slice S1): "Yes, build them". No migration and no Codex rebuild. It goes live with
+> the coding executor on each node first, then a runtime bundle at or after the 2026-11-08 amendment's 32 KiB result;
+> a company machine's guest takes larger pages from the machine image built after it. It amends the 2026-11-08
+> amendment's item 1 for `machine_read` and coding commands ("within its own limit").
+
+1. **One read, one result.** `machine_read` and `coding_read_command` ask for one result's room when the agent names no
+   `limit` (31,968 bytes; `limit` 4 to 32,768 asks for less; it was 4,096 by default and 16,384 at most), and cut the
+   page that comes back to what fits one result, once, at an exact cursor: the start of the page for a read from an
+   offset, its end for a tail. Plain output shows up to about 31 KiB a call, less where characters need escaping. A
+   page is asked again only when its cut's cursor cannot be told from the page (U+FFFD, which also stands for a byte
+   that is not UTF-8, on both sides of the cut), for exactly the bytes that fit. The answer says where the output goes
+   on (`log.nextOffset`, or `log.offset` for a tail), as before; nothing is left out without its cursor.
+2. **A short command in one call.** `machine_run` reads its command once, at once, when its start shows less than a
+   read can (on a machine with the company folder a start holds its output back; a command that already ended may
+   have printed more than the start's first page); `coding_run_command` does when its command already ended with more
+   output than its start shows. Nothing waits for the command, and the start's receipt is unchanged: the read's page
+   is the answer in its place, and a refused or failed read leaves the start's own answer.
+3. **Asked only for what each side takes.** A page holds up to 65,536 bytes of output on the wire
+   (`CLOUD_CODING_COMMAND_PAGE_BYTES`; it was 16,384), and a guest's page also stays within 60,000 bytes as JSON
+   writes it. An executor or guest from before refuses a larger read, so each caller asks only for what the other side
+   said it takes, and 16,384 when it said nothing:
+   - the executor's command service answers every call with `x-qorpera-command-page-bytes` (65,536); the runtime's
+     gateways, and an executor's gateways to its peers, learn it per executor from each answer;
+   - a company machine's guest helper says `pageBytes` in its answer to the boot's claim (`prepare`), which the
+     executor keeps per placement; the coding image's helper (the NAS model) is asked for 16,384.
+   - A smaller page than asked answers a read as well, so old and new parts work in any order.
+4. **What the provider sees.** The descriptions of `machine_run`, `machine_read`, `coding_run_command` and
+   `coding_read_command`, and the two read tools' `limit` maximum (32,768). Nothing else.
+
 ### 2026-11-10 amendment: members message each other
 
 > **Asked for by Jonas, 10 November 2026** ("for multiplayer companies, I should also have a contact for the members I

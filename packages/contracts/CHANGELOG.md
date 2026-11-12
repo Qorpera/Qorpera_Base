@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- A page of a command's log holds up to 65,536 bytes of output (`CLOUD_CODING_COMMAND_PAGE_BYTES`; keyholes S1, 12 Nov 2026): `parseCloudCodingCommandRead` takes a `limit` of 4 to 65,536 (default still 4,096) and `parseCloudCodingCommandReceipt` an `output` of up to 65,536 bytes; both were 16,384 (`CLOUD_CODING_COMMAND_LEGACY_PAGE_BYTES`, what an executor or guest that does not say what it takes still gets asked for). An executor or guest from before refuses a larger read, so a caller asks each only for what it said.
 - `CloudCodingRepository.host` is `"github.com" | "qorpera"` (`CLOUD_CODING_REPOSITORY_HOSTS`; own code storage, slice 1). A repository kept in Qorpera has a lower-case owner (`^[a-z0-9]([a-z0-9-]{0,37}[a-z0-9])?$`) and name (`^[a-z0-9_]([a-z0-9_.-]{0,98}[a-z0-9_-])?$`), which name its folder, and its default branch is always `main` (`CLOUD_CODING_QORPERA_BASE_BRANCH`), so a repository has one identity and one `main/`; GitHub's rules are unchanged. `parseGitHubCodingRepository` refuses any other host, for every step that reaches GitHub; `parseCloudCodingPullRequest` refuses a repository kept in Qorpera; `cloudCodingRepositoryInQorpera` says which it is.
 
 ### Breaking Changes

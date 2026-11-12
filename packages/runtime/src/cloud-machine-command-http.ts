@@ -11,6 +11,7 @@ import {
 	parseCloudCodingCommandRead,
 	parseCloudMachineCommandReceipt,
 } from "@qorpera/contracts";
+import { CloudCommandPages } from "./cloud-command-pages.ts";
 import { MACHINE_CODING_VALUE_REFUSALS } from "./cloud-machine-coding-value.ts";
 import {
 	MACHINE_SCREEN_MAX_PNG_BYTES,
@@ -734,6 +735,9 @@ export function createHttpCloudMachineCommandGateway(options: {
 	/** G2-6b: the run's holder credential, read per request (NativeHostDispatch.holderHeader). Null only for an
 	 * executor forwarding to its peer, which holds no run's lease. */
 	holder: (() => string) | null;
+	/** What the executors said they take for a page (keyholes S1): one per process, shared by its gateways (an
+	 * executor's to its peers too). A gateway without it learns only from its own answers. */
+	pages?: CloudCommandPages;
 	allowLoopback?: boolean;
 	fetch?: typeof fetch;
 }): CloudMachineCommandGateway {
@@ -741,6 +745,7 @@ export function createHttpCloudMachineCommandGateway(options: {
 	if (!validToken(options.token)) throw new Error(ERROR);
 	const binding = parseCloudNativeToolBinding(options.binding);
 	const transport = options.fetch ?? fetch;
+	const pages = options.pages ?? new CloudCommandPages();
 	const request = async (
 		action: "start" | "read" | "cancel",
 		scope: CloudMachineCommandScope,
@@ -748,8 +753,11 @@ export function createHttpCloudMachineCommandGateway(options: {
 		signal: AbortSignal,
 	): Promise<CloudMachineCommandReceipt> => {
 		try {
+			// A read asks the executor for no more than it said it takes; a smaller page answers it as well.
+			const read = action === "read" ? parseCloudCodingCommandRead(input) : undefined;
+			const asked = read ? { ...read, limit: Math.min(read.limit ?? 4096, pages.of(base)) } : input;
 			const admitted = parseCloudMachineCommandHttpRequest(
-				{ schema: "qorpera.machine-command-http/v1", binding, scope, action, input },
+				{ schema: "qorpera.machine-command-http/v1", binding, scope, action, input: asked },
 				action,
 			);
 			const body = JSON.stringify(admitted);
@@ -769,6 +777,7 @@ export function createHttpCloudMachineCommandGateway(options: {
 					}).catch(() => {
 						throw new CloudMachineCommandUnanswered();
 					});
+					pages.heard(base, response.headers);
 					if (response.status >= 500) {
 						void response.body?.cancel().catch(() => undefined);
 						throw new CloudMachineCommandUnanswered();

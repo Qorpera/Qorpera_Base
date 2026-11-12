@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { isDeepStrictEqual } from "node:util";
 import { readBoundedCloudResponse, withCloudDeadline } from "@qorpera/cloud-client/cloud-request";
 import {
+	CLOUD_CODING_COMMAND_PAGE_BYTES,
 	type CloudCodingCommandRead,
 	type CloudCodingCommandReceipt,
 	type CloudCodingCommandScope,
@@ -10,6 +11,7 @@ import {
 	parseCloudCodingCommandReceipt,
 } from "@qorpera/contracts";
 import type { CloudCodingCommandGateway } from "./cloud-coding-command-tools.ts";
+import { CLOUD_COMMAND_PAGE_HEADER, CloudCommandPages } from "./cloud-command-pages.ts";
 import {
 	CLOUD_MACHINE_SCREEN_RESPONSE_LIMIT,
 	CLOUD_MACHINE_WAKE_SCHEMA,
@@ -166,6 +168,9 @@ export function createHttpCloudCodingCommandGateway(options: {
 	 * executor forwarding to its peer, which holds no run's lease. */
 	holder: (() => string) | null;
 	authorize: CloudCodingCommandGateway["authorize"];
+	/** What the executors said they take for a page (keyholes S1): one per process, shared by its gateways. A gateway
+	 * without it learns only from its own answers. */
+	pages?: CloudCommandPages;
 	allowLoopback?: boolean;
 	fetch?: typeof fetch;
 }): CloudCodingCommandGateway {
@@ -175,6 +180,7 @@ export function createHttpCloudCodingCommandGateway(options: {
 	const binding = parseCloudNativeToolBinding(options.binding);
 	const holder = options.holder;
 	const transport = options.fetch ?? fetch;
+	const pages = options.pages ?? new CloudCommandPages();
 	const request = async (
 		action: "start" | "read" | "cancel",
 		admittedScope: CloudCodingCommandScope,
@@ -182,8 +188,11 @@ export function createHttpCloudCodingCommandGateway(options: {
 		signal: AbortSignal,
 	): Promise<unknown> => {
 		try {
+			// A read asks the executor for no more than it said it takes; a smaller page answers it as well.
+			const read = action === "read" ? parseCloudCodingCommandRead(input) : undefined;
+			const asked = read ? { ...read, limit: Math.min(read.limit ?? 4096, pages.of(origin)) } : input;
 			const admitted = parseRequest(
-				{ schema: "qorpera.coding-command-http/v1", binding, scope: admittedScope, action, input },
+				{ schema: "qorpera.coding-command-http/v1", binding, scope: admittedScope, action, input: asked },
 				action,
 			);
 			const body = JSON.stringify(admitted);
@@ -201,6 +210,7 @@ export function createHttpCloudCodingCommandGateway(options: {
 						},
 						body,
 					});
+					pages.heard(origin, response.headers);
 					if (!response.ok || response.status !== 200) {
 						void response.body?.cancel().catch(() => undefined);
 						throw new Error(ERROR);
@@ -294,7 +304,8 @@ async function readRequest(request: IncomingMessage, signal: AbortSignal): Promi
 		signal.removeEventListener("abort", abort);
 	}
 }
-/** One JSON answer, within its bound: a receipt's (128 KiB), or a screen's with its picture (machine_screen). */
+/** One JSON answer, within its bound: a receipt's (128 KiB), or a screen's with its picture (machine_screen). Each says
+ * what a page of a command's log may ask this executor for (keyholes S1). */
 function replyJson(reply: ServerResponse, status: number, value: unknown, limit = RESULT_LIMIT): void {
 	const body = JSON.stringify(value);
 	if (Buffer.byteLength(body) > limit) throw new Error(ERROR);
@@ -303,6 +314,7 @@ function replyJson(reply: ServerResponse, status: number, value: unknown, limit 
 		"content-length": Buffer.byteLength(body),
 		"cache-control": "no-store",
 		"x-content-type-options": "nosniff",
+		[CLOUD_COMMAND_PAGE_HEADER]: String(CLOUD_CODING_COMMAND_PAGE_BYTES),
 	});
 	reply.end(body);
 }

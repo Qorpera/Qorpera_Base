@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { parseCloudCodingCommandReceipt } from "../src/cloud-coding-command.ts";
+import {
+	CLOUD_CODING_COMMAND_LEGACY_PAGE_BYTES,
+	CLOUD_CODING_COMMAND_PAGE_BYTES,
+	parseCloudCodingCommandRead,
+	parseCloudCodingCommandReceipt,
+} from "../src/cloud-coding-command.ts";
 import {
 	CLOUD_MACHINE_FOLDER_LIMITS,
 	type CloudMachineCommandFolder,
@@ -72,6 +77,39 @@ describe("coding command receipt", () => {
 		expect(() => parseCloudCodingCommandReceipt({ ...receipt, log: { ...receipt.log, droppedBytes: 1 } })).toThrow(
 			"Invalid coding command log",
 		);
+	});
+});
+
+describe("a page of a command's log (keyholes S1)", () => {
+	const commandId = receipt.commandId;
+	// The parsers write the bound as a number (the coding command guest's program has few bytes to spare): these pin it to
+	// the constant.
+	it("asks for 4 to 65,536 bytes, 4,096 when it names none", () => {
+		expect(CLOUD_CODING_COMMAND_PAGE_BYTES).toBe(65536);
+		expect(CLOUD_CODING_COMMAND_LEGACY_PAGE_BYTES).toBe(16384);
+		expect(parseCloudCodingCommandRead({ commandId })).toEqual({ commandId, offset: 0, limit: 4096 });
+		for (const limit of [4, 16384, 16385, CLOUD_CODING_COMMAND_PAGE_BYTES])
+			expect(parseCloudCodingCommandRead({ commandId, tail: true, limit })).toEqual({
+				commandId,
+				tail: true,
+				limit,
+			});
+		for (const limit of [3, CLOUD_CODING_COMMAND_PAGE_BYTES + 1, 1.5, "100"])
+			expect(() => parseCloudCodingCommandRead({ commandId, limit })).toThrow("Invalid coding log read");
+	});
+	it("holds up to 65,536 bytes of output", () => {
+		const page = (output: string) => ({
+			...receipt,
+			state: "succeeded",
+			exitCode: 0,
+			output,
+			truncated: false,
+			log: { ...receipt.log, nextOffset: Buffer.byteLength(output), totalBytes: Buffer.byteLength(output) },
+		});
+		const most = CLOUD_CODING_COMMAND_PAGE_BYTES;
+		expect(parseCloudCodingCommandReceipt(page("x".repeat(most))).output).toHaveLength(most);
+		expect(() => parseCloudCodingCommandReceipt(page("x".repeat(most + 1)))).toThrow("Invalid coding command result");
+		expect(() => parseCloudCodingCommandReceipt(page("é".repeat(32769)))).toThrow("Invalid coding command result");
 	});
 });
 

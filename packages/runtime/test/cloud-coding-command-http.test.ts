@@ -10,6 +10,7 @@ import {
 	HttpCloudCodingCommandService,
 	parseCloudCodingCommandUrl,
 } from "../src/cloud-coding-command-http.ts";
+import { CLOUD_COMMAND_PAGE_HEADER, CloudCommandPages } from "../src/cloud-command-pages.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -127,6 +128,67 @@ describe("isolated coding command HTTP gateway", () => {
 		expect(f.execute.mock.calls.map((call) => call[0])).toEqual([
 			{ ...f.request, action: "read", input: { commandId: f.input.commandId, offset: 0, limit: 4096 } },
 			{ ...f.request, action: "cancel", input: { commandId: f.input.commandId } },
+		]);
+	});
+	it("says on every answer what a page may ask for, and a read asks for no more than the executor said (keyholes S1)", async () => {
+		const f = await fixture();
+		expect((await raw(f, f.request)).headers.get(CLOUD_COMMAND_PAGE_HEADER)).toBe("65536");
+		const refused = await raw(f, f.request, "start", randomBytes(32).toString("base64url"));
+		expect(refused.status).toBe(403);
+		expect(refused.headers.get(CLOUD_COMMAND_PAGE_HEADER)).toBe("65536");
+		const pages = new CloudCommandPages();
+		const client = createHttpCloudCodingCommandGateway({
+			url: f.url,
+			token: f.token,
+			binding: f.binding,
+			holder: () => f.holder,
+			authorize: async () => undefined,
+			allowLoopback: true,
+			pages,
+		});
+		const signal = new AbortController().signal;
+		const commandId = f.input.commandId;
+		f.execute.mockClear();
+		// Before the executor said anything, a read asks for the legacy 16,384 at most; once it said, for what it said.
+		await client.read(f.scope, { commandId, limit: 40000 }, signal);
+		await client.read(f.scope, { commandId, tail: true, limit: 40000 }, signal);
+		await client.read(f.scope, { commandId, limit: 100 }, signal);
+		expect(f.execute.mock.calls.map(([request]) => request.input)).toEqual([
+			{ commandId, offset: 0, limit: 16384 },
+			{ commandId, tail: true, limit: 40000 },
+			{ commandId, offset: 0, limit: 100 },
+		]);
+		expect(pages.of(f.url)).toBe(65536);
+	});
+	it("asks an executor that does not say what it takes for the legacy page at most, however often it answers", async () => {
+		const f = await fixture();
+		const bodies: { input: unknown }[] = [];
+		// An executor from before keyholes S1: it answers without the header.
+		const old = createServer(async (request, reply) => {
+			const chunks: Buffer[] = [];
+			for await (const chunk of request) chunks.push(chunk as Buffer);
+			bodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+			reply.writeHead(200, { "content-type": "application/json" });
+			reply.end(JSON.stringify(f.receipt));
+		});
+		await new Promise<void>((resolve) => old.listen(0, "127.0.0.1", resolve));
+		cleanups.push(() => new Promise((resolve) => old.close(() => resolve())));
+		const address = old.address();
+		if (!address || typeof address === "string") throw new Error("no address");
+		const client = createHttpCloudCodingCommandGateway({
+			url: `http://127.0.0.1:${address.port}`,
+			token: f.token,
+			binding: f.binding,
+			holder: () => f.holder,
+			authorize: async () => undefined,
+			allowLoopback: true,
+			pages: new CloudCommandPages(),
+		});
+		for (let i = 0; i < 2; i++)
+			await client.read(f.scope, { commandId: f.input.commandId, limit: 32768 }, new AbortController().signal);
+		expect(bodies.map((body) => body.input)).toEqual([
+			{ commandId: f.input.commandId, offset: 0, limit: 16384 },
+			{ commandId: f.input.commandId, offset: 0, limit: 16384 },
 		]);
 	});
 	it("transports bounded tail requests and rejects ambiguous page cursors before authority", async () => {
