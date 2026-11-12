@@ -33,7 +33,7 @@
 }
 .sites-empty > .figure { margin-bottom: 12px; }
 .sites-empty h2 { margin: 0; font-size: 19px; font-weight: 650; }
-.sites-empty p { margin: 0; max-width: 340px; color: var(--text-muted); font-size: 15px; line-height: 1.5; }
+.sites-empty p { margin: 0; max-width: 340px; color: var(--text-muted); font-size: 15px; line-height: 1.5; text-wrap: balance; }
 
 /* ---- a site's row (both pages) -------------------------------------------------- */
 .site-row {
