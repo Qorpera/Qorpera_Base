@@ -534,6 +534,7 @@ export const WORKSPACE: Record<string, string> = {
 	"Waiting for {name} to finish a step…": "Venter på, at {name} gør et trin færdigt…",
 	"The computer was busy, so your last input did not go through. Try again.":
 		"Computeren var optaget, så dit sidste input gik ikke igennem. Prøv igen.",
+	"Your last input did not go through. Try again.": "Dit sidste input gik ikke igennem. Prøv igen.",
 	"Private typing could not start. Try again.": "Privat skrivning kunne ikke starte. Prøv igen.",
 	"You are typing privately in another window.": "Du skriver privat i et andet vindue.",
 	"Ending private typing…": "Afslutter privat skrivning…",

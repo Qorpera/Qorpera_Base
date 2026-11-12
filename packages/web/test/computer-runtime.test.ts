@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	ComputerPanel,
 	ComputerPanels,
+	INPUT_MAX_AGE_MS,
 	KEEP_EVERY_MS,
 	LOOK_EVERY_MS,
 	MACHINES_EVERY_MS,
@@ -2883,6 +2884,285 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 			).toEqual([]);
 			p.dispose();
 		}
+	});
+
+	/** The member's own private typing in another window of theirs (review r3 F1 of #1701): its hold as the list shows it. */
+	const elsewhere = () => ({
+		mine: true,
+		name: "Owner",
+		until: new Date(Date.now() + 120_000).toISOString(),
+		epoch: 0,
+		seat: 7,
+		press: id(97),
+	});
+
+	it("ends shared input for good when the member types privately in another window: nothing queued goes, while it lasts or after it ends (review r3 F1 of #1701)", async () => {
+		const { s, p } = await shown();
+		press(canvas(p), 400, 250);
+		await flush();
+		const onOne = await waiting(s, p);
+		// The member takes the computer over in another window: the list shows their hold, not this page's.
+		s.state.machines = [machine(1, { control: elsewhere() })];
+		s.hint("machines");
+		await flush();
+		expect(words(p)).toBe("You are typing privately in another window.");
+		expect(canvas(p).getAttribute("role")).toBe("img");
+		await advance(5000);
+		expect(onOne().map((act) => act.action.type)).toEqual(["click"]);
+		// They are done there: the computer is shared again, and only what the member does now goes, alone.
+		s.state.actAnswers.splice(0);
+		s.state.machines = [machine(1)];
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		expect(canvas(p).getAttribute("role")).toBe("application");
+		key(canvas(p), "b");
+		await advance(TYPE_BATCH_MS);
+		await advance(5000);
+		expect(onOne().map((act) => [act.action, act.seat])).toEqual([
+			[{ type: "click", x: 20, y: 20, button: "right" }, null],
+			[{ type: "type", text: "b" }, null],
+		]);
+		expect(p.holding).toBe(false);
+	});
+
+	it("drops a waiting queue at once, and never sends it, whenever the predicate turns false (review r3 of #1701)", async () => {
+		const until = () => new Date(Date.now() + 120_000).toISOString();
+		const cases: [string, (s: Setup) => void, (s: Setup) => void][] = [
+			[
+				"another member types privately",
+				(s) => {
+					s.state.machines = [
+						machine(1, {
+							control: { mine: false, name: "Ada", until: until(), epoch: null, seat: null, press: null },
+						}),
+					];
+					s.state.fallback = { code: "DESKTOP_MEMBER_IN_CONTROL" };
+					s.hint("machines");
+				},
+				(s) => {
+					s.state.machines = [machine(1)];
+					s.state.fallback = { picture: 4 };
+					s.hint("machines");
+				},
+			],
+			[
+				"the member types privately in another window",
+				(s) => {
+					s.state.machines = [machine(1, { control: elsewhere() })];
+					s.hint("machines");
+				},
+				(s) => {
+					s.state.machines = [machine(1)];
+					s.hint("machines");
+				},
+			],
+			[
+				"the machine goes to sleep",
+				(s) => {
+					s.state.machines = [machine(1, { state: "stopped" })];
+					s.hint("machines");
+				},
+				(s) => {
+					s.state.machines = [machine(1)];
+					s.state.fallback = { picture: 4 };
+					s.hint("machines");
+				},
+			],
+			[
+				"the screen goes off",
+				(s) => {
+					s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
+					s.hint("machines");
+				},
+				(s) => {
+					s.state.fallback = { picture: 4 };
+					s.hint("machines");
+				},
+			],
+			[
+				"a look says the machine restarted, the picture kept (MACHINE_BOOT_CHANGED)",
+				(s) => {
+					s.state.fallback = { code: "MACHINE_BOOT_CHANGED" };
+					s.hint("machines");
+				},
+				(s) => {
+					s.state.fallback = { picture: 4 };
+					s.hint("machines");
+				},
+			],
+			[
+				"a look is held by the company folder, the picture kept (SCREEN_HELD)",
+				(s) => {
+					s.state.fallback = { code: "SCREEN_HELD" };
+					s.hint("machines");
+				},
+				(s) => {
+					s.state.fallback = "unchanged";
+					s.hint("machines");
+				},
+			],
+			[
+				"the machine leaves the agent's list",
+				(s) => {
+					s.state.machines = [];
+					s.hint("machines");
+				},
+				(s) => {
+					s.state.machines = [machine(1)];
+					s.state.fallback = { picture: 4 };
+					s.hint("machines");
+				},
+			],
+			[
+				"the member becomes a viewer",
+				(s) => {
+					s.state.canTakeOver = false;
+					s.hint("machines");
+				},
+				(s) => {
+					s.state.canTakeOver = true;
+					s.hint("machines");
+				},
+			],
+			[
+				"an action is refused, not busy (SCREEN_ACTION_TAKEN)",
+				(s) => {
+					s.state.actAnswers.splice(0, s.state.actAnswers.length, { code: "SCREEN_ACTION_TAKEN" });
+				},
+				() => {},
+			],
+			[
+				"an action is refused: the machine restarted (MACHINE_BOOT_CHANGED)",
+				(s) => {
+					s.state.actAnswers.splice(0, s.state.actAnswers.length, { code: "MACHINE_BOOT_CHANGED" });
+				},
+				(s) => {
+					s.state.fallback = { picture: 4 };
+					s.hint("machines");
+				},
+			],
+			[
+				"an action gets no answer",
+				(s) => {
+					s.state.actAnswers.splice(0, s.state.actAnswers.length, { code: "NOT_A_CODE" });
+				},
+				() => {},
+			],
+		];
+		for (const [what, turnFalse, turnTrue] of cases) {
+			const { s, p } = await shown();
+			press(canvas(p), 400, 250);
+			await flush();
+			const onOne = await waiting(s, p);
+			turnFalse(s);
+			await advance(5000);
+			// The click is not tried again after it, and the text behind it never goes, shared or private.
+			const sentBefore = onOne().length;
+			expect(
+				onOne().filter((act) => act.action.type !== "click"),
+				what,
+			).toEqual([]);
+			// Past the 15 s the window waits on a busy desktop, and past the age bound.
+			await advance(INPUT_MAX_AGE_MS + 5000);
+			expect(onOne().length, what).toBe(sentBefore);
+			// The predicate holds again: a new sharing, and only what the member does now goes, alone.
+			s.state.actAnswers.splice(0);
+			turnTrue(s);
+			await advance(LOOK_EVERY_MS * 2);
+			await advance(SCREEN_OFF_EVERY_MS);
+			if (!entered(p)) {
+				press(canvas(p), 400, 250);
+				await advance(DOUBLE_CLICK_MS);
+			}
+			expect(canvas(p).getAttribute("role"), what).toBe("application");
+			key(canvas(p), "b");
+			await advance(TYPE_BATCH_MS);
+			await flush();
+			expect(
+				onOne()
+					.filter((act) => act.action.type === "type")
+					.map((act) => [act.action, act.seat]),
+				what,
+			).toEqual([[{ type: "type", text: "b" }, null]]);
+			p.dispose();
+		}
+	});
+
+	it("says so when a refusal that is not busy dropped the input, and takes the next input at once", async () => {
+		const { s, p } = await shown();
+		press(canvas(p), 400, 250);
+		await flush();
+		s.state.actAnswers.push({ code: "SCREEN_REQUEST_INVALID" });
+		press(canvas(p), 10, 10, { button: 2 });
+		await flush();
+		expect(controls(p)?.textContent).toContain("Your last input did not go through. Try again.");
+		expect(s.acts.map((act) => act.action.type)).toEqual(["click"]);
+		key(canvas(p), "b");
+		await advance(TYPE_BATCH_MS);
+		await flush();
+		expect(s.acts.map((act) => act.action)).toEqual([
+			{ type: "click", x: 20, y: 20, button: "right" },
+			{ type: "type", text: "b" },
+		]);
+		expect(controls(p)?.textContent ?? "").not.toContain("did not go through");
+	});
+
+	it("sends no input older than 20 s, whatever kept it: shared or private, and says so (review r3 of #1701)", async () => {
+		for (const mode of ["shared", "private"] as const) {
+			const { s, p } = await shown();
+			press(canvas(p), 400, 250);
+			await flush();
+			if (mode === "private") {
+				controlButton(p)!.click();
+				await flush();
+				expect(p.holding, mode).toBe(true);
+			}
+			// A click whose answer is slow (the act's own deadline is 35 s), and a text typed behind it.
+			let open = () => {};
+			s.state.actAnswers.push({
+				hold: new Promise<void>((resolve) => {
+					open = resolve;
+				}),
+				exitCode: 0,
+			});
+			press(canvas(p), 10, 10, { button: 2 });
+			await flush();
+			key(canvas(p), "a");
+			await advance(TYPE_BATCH_MS);
+			await advance(INPUT_MAX_AGE_MS + 1000);
+			open();
+			await flush();
+			expect(
+				s.acts.filter((act) => act.url.includes("/act")).map((act) => act.action.type),
+				mode,
+			).toEqual(["click"]);
+			expect(controls(p)?.textContent, mode).toContain("Your last input did not go through. Try again.");
+			// Input made now goes.
+			key(canvas(p), "b");
+			await advance(TYPE_BATCH_MS);
+			await flush();
+			expect(s.acts.at(-1)?.action, mode).toEqual({ type: "type", text: "b" });
+			p.dispose();
+		}
+		// Under the bound, what waited goes, in order.
+		const { s, p } = await shown();
+		press(canvas(p), 400, 250);
+		await flush();
+		let open = () => {};
+		s.state.actAnswers.push({
+			hold: new Promise<void>((resolve) => {
+				open = resolve;
+			}),
+			exitCode: 0,
+		});
+		press(canvas(p), 10, 10, { button: 2 });
+		await flush();
+		key(canvas(p), "a");
+		await advance(TYPE_BATCH_MS);
+		await advance(INPUT_MAX_AGE_MS - 2000);
+		open();
+		await flush();
+		expect(s.acts.map((act) => act.action.type)).toEqual(["click", "type"]);
 	});
 });
 

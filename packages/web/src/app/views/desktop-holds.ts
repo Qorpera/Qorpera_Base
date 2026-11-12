@@ -195,6 +195,14 @@ export class DesktopHoldLedger {
 			: undefined;
 	}
 
+	/** Whether the page knows of any private hold of this machine's, in any form (shared input is never sent then:
+	 * 20260930734000, review r3 of #1701): a take-over waiting, on its way, held or maybe held, anything owed of it, or a
+	 * hand-back not answered. */
+	mayHold(machineId: string): boolean {
+		const hold = this.#holds.get(machineId);
+		return hold !== undefined && (hold.state !== undefined || this.#busy(hold));
+	}
+
 	/** Where the releases stand: a press records it, and passes it to take(). */
 	stamp(): number {
 		return this.#releases;
