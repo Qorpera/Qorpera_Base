@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { CLOUD_MACHINE_FOLDER_LIMITS, cloudMachineFolderBytes } from "@qorpera/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CloudActionReviewControl, CloudActionReviewGate } from "../src/cloud-action-review.ts";
@@ -1133,6 +1134,47 @@ describe("machine tools", () => {
 			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop start <company files, folders or URLs>");
 			// Programs start on the desktop with desktop run; the screen itself is machine_screen's.
 			expect(CLOUD_MACHINE_START_DESCRIPTION).toContain("desktop run <program> starts a program on it");
+		} finally {
+			f.boundary.close();
+		}
+	});
+
+	it("sizes a member's start of a computer for an agent as machine_start with desktop true and its defaults (20260930730000)", async () => {
+		const f = fixture();
+		try {
+			// What the agent's own start sends for desktop true and nothing else.
+			expect(
+				(
+					await f.boundary.invoke("m1", "qorpera", "machine_start", {
+						operationKey: "m1",
+						name: "agent-desktop",
+						purpose: "A desktop computer",
+						desktop: true,
+					})
+				).success,
+			).toBe(true);
+			const sent = f.execute.mock.calls[0][0].operation.arguments as {
+				cpus: number;
+				memoryGiB: number;
+				diskGiB: number;
+				lifetime: string;
+			};
+			// The member's start keeps its size in three constants of its own; this pins them to the runtime's, so the two
+			// never drift apart.
+			const migration = readFileSync(
+				new URL("../../../supabase/migrations/20260930730000_member_agent_computer.sql", import.meta.url),
+				"utf8",
+			);
+			const constant = (name: string) =>
+				Number(new RegExp(`${name} constant (?:integer|bigint) := (\\d+);`).exec(migration)?.[1]);
+			expect({
+				cpus: constant("c_cpus"),
+				memoryGiB: constant("c_memory_gib"),
+				diskGiB: constant("c_disk_gib"),
+			}).toEqual({ cpus: sent.cpus, memoryGiB: sent.memoryGiB, diskGiB: sent.diskGiB });
+			expect({ cpus: sent.cpus, memoryGiB: sent.memoryGiB }).toEqual(CLOUD_MACHINE_DESKTOP_LEAST);
+			expect(sent.lifetime).toBe("task");
+			expect(migration).toContain("c_cpus, c_memory_gib * 1073741824, c_disk_gib * 1073741824, 'standard', 'task',");
 		} finally {
 			f.boundary.close();
 		}

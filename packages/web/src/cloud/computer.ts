@@ -1,6 +1,7 @@
 import type { CompanyComputerScope } from "@qorpera/cloud-client/cloud-company-computer-contract";
 import {
 	CloudMemberCompanyComputerClient,
+	type MemberAgentComputerStart,
 	type MemberAgentMachines,
 	type MemberDesktopHandBack,
 	type MemberDesktopHold,
@@ -81,6 +82,10 @@ export class WebCompanyComputer {
 	/** Wakes a sleeping machine (owners, admins and contributors). */
 	wakeMachine(machineId: string, signal: AbortSignal): Promise<void> {
 		return this.client.wakeMachine(machineId, signal);
+	}
+	/** Starts a desktop computer for an agent that has none, or answers its own one (owners, admins and contributors). */
+	startAgentComputer(staffAgentId: string, signal: AbortSignal): Promise<MemberAgentComputerStart> {
+		return this.client.startAgentComputer(staffAgentId, signal);
 	}
 	/** Takes a desktop over, or takes this member's own hold over again (migration 20260930713000), at this member's
 	 * hand-back `epoch` for the machine as the page knows it: accepted only at the current one. `press` is the id this

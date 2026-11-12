@@ -478,6 +478,18 @@ export const WORKSPACE: Record<string, string> = {
 	"{name} is not using a computer right now.": "{name} bruger ikke en computer lige nu.",
 	"{name} gets one when a task needs a screen.": "{name} får en, når en opgave kræver en skærm.",
 	"{name} is working on a machine without a screen.": "{name} arbejder på en maskine uden skærm.",
+	// A member starts a computer for an agent that has none (20260930730000).
+	"{name} has no computer yet.": "{name} har ingen computer endnu.",
+	"Start one": "Start en",
+	"Someone with edit access can start one.": "En med redigeringsadgang kan starte en.",
+	"No server can run a computer right now. Try again later.":
+		"Ingen server kan køre en computer lige nu. Prøv igen senere.",
+	"No server is large enough for a computer with a screen.": "Ingen server er stor nok til en computer med skærm.",
+	"A computer was started for {name} a moment ago. Try again in a minute.":
+		"Der blev startet en computer til {name} for et øjeblik siden. Prøv igen om et minut.",
+	"{name} is no longer on the team, so it gets no computer.":
+		"{name} er ikke længere med på holdet og får ingen computer.",
+	"The computer could not be started. Try again.": "Computeren kunne ikke startes. Prøv igen.",
 	"The computer is asleep.": "Computeren sover.",
 	"Wake it": "Væk den",
 	"Someone with edit access can wake it.": "En med redigeringsadgang kan vække den.",

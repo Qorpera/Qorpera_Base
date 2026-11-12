@@ -247,6 +247,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_member_pictures(uuid[])', false, true, 'member: auth.uid() + membership/ownership'),
 	('public.qorpera_member_take_machine_desktop(uuid,uuid,bigint,uuid)', false, true, 'member: auth.uid() + qorpera_can_write_profile (owners, admins, contributors); a lease of a running desktop no other member holds, only at the caller''s own current hand-back epoch; answers the hold''s seat (20260930713000)'),
 	('public.qorpera_member_role(uuid)', true, true, 'member: auth.uid() + membership/ownership; anon only through the platform default'),
+	('public.qorpera_member_start_agent_computer(uuid,uuid)', false, true, 'member: auth.uid() + qorpera_can_write_profile (owners, admins, contributors); one desktop computer for an active, set-up agent of the company, made as machine_start with desktop true and its defaults makes it and admitted the same way, or the agent''s existing one; one new per agent a minute (20260930730000)'),
 	('public.qorpera_move_paused_run(uuid,uuid)', false, true, 'member: auth.uid() + qorpera_can_write_profile; only the member whose own login pays for the waiting run, to another of their own logins with room (20260930703000)'),
 	('public.qorpera_my_good_will()', false, true, 'member: self-scoped, the caller''s own companies (20260930566000)'),
 	('public.qorpera_native_host_call(uuid,text,text,jsonb)', true, false, 'native host (G2): the runner job''s lease token is checked first, with no lock; only listed calls in that run''s scope'),

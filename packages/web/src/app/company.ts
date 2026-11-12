@@ -281,6 +281,9 @@ export interface CompanyState {
 	 * changes are ready to go live that this member did not answer Not yet to. The apps drawer shows What's new while it
 	 * is set. Unset until read, and on a cloud without it. */
 	whatsNew?: { readonly ready: number };
+	/** The version What's new has live of each site made from a project's code, by the site's name in its link: the
+	 * Sites page names it on the site's row. Read with What's new. */
+	siteVersions?: Readonly<Record<string, number>>;
 	/** What the rail says of each agent between runs: its wall's waiting and newest done item, its next planned run
 	 * (app/agent-notes.ts). Unset until the first read lands; an agent with nothing has no entry. */
 	agentNotes?: AgentNotesState;
