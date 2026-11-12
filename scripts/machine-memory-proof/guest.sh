@@ -360,8 +360,16 @@ mix)
 	fi
 	phase 200 mix "$label"
 	clicks "$label"
-	# Their end by this signal is not the leg's: it ran to its end.
-	if (( ${#H[@]} )); then kill "${H[@]}" 2>/dev/null; wait "${H[@]}" 2>/dev/null || true; fi
+	if (( ${#H[@]} )); then
+		# The numbers are "with every processor busy" only if the jobs ran to here: one that ended on the way (its own
+		# time limit, the guard) left a processor free for a part of the leg.
+		alive=0
+		for pid in "${H[@]}"; do kill -0 "$pid" 2>/dev/null && alive=$(( alive + 1 )); done
+		check "every processor was kept busy to the leg's end ($alive of ${#H[@]} jobs still ran)" test "$alive" = "${#H[@]}"
+		# Their end by this signal is not the leg's: it ran to its end.
+		kill "${H[@]}" 2>/dev/null
+		wait "${H[@]}" 2>/dev/null || true
+	fi
 	;;
 load)
 	job=${2:?job MB} edge=${3:?stop or past} tabs=${4:?tabs}
@@ -433,9 +441,10 @@ after)
 	guard_read=0 kernel_read=0
 	journalctl -b -t qorpera-machine-memory-guard -o short-iso >"$guard_log.raw" 2>/dev/null || guard_read=$?
 	journalctl -b -k -o cat >"$kernel_log" 2>/dev/null || kernel_read=$?
+	# The guard's lines with only their time before them: every line that was read is there to be judged.
+	sed -E 's/^[0-9-]+T([0-9:]+)[^ ]* [^ ]+ [^ ]+: /\1 /' "$guard_log.raw" >"$guard_log" || guard_read=1
 	check "this boot's journal can be read: the guard's lines and the kernel's" \
-		test "$guard_read" = 0 -a "$kernel_read" = 0 -a -s "$guard_log.raw" -a -s "$kernel_log"
-	sed -E 's/^[0-9-]+T([0-9:]+)[^ ]* [^ ]+ [^ ]+: /\1 /' "$guard_log.raw" >"$guard_log"
+		test "$guard_read" = 0 -a "$kernel_read" = 0 -a -s "$guard_log.raw" -a -s "$kernel_log" -a "$(wc -l <"$guard_log")" = "$(wc -l <"$guard_log.raw")"
 	grep -E '^[0-9:]+ (sending SIG[A-Z]* to process|process [0-9]+ exited|kill failed|mem avail)' "$guard_log" | cut -c1-200 | sed 's/^/J guard: /'
 	grep -E 'Out of memory|oom-kill|Killed process' "$kernel_log" | sed 's/^/J kernel: /'
 	# What the guard ended, from the command line in each of its lines (`kinds`): a browser tab, one of Chromium's own

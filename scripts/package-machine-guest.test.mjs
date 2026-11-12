@@ -755,14 +755,14 @@ test("every machine has compressed memory from its boot on and a guard at the ed
 	// The proof makes its own throwaway machine in a build space that holds nothing else, never uses another, and
 	// deletes it by its exact name on every exit path; its pieces are whole.
 	const proof = read("scripts/prove-machine-memory.sh");
-	assert.match(proof, /\n\[\[ -z \$\(lx list -f csv -c n\) \]\] \|\| fail "the build space \$PROJECT is in use: prove when it is empty"\n/);
+	assert.match(proof, /\nheld=\$\(names\) \|\| exit 1\n\[\[ -z \$held \]\] \|\| fail "the build space \$PROJECT is in use: prove when it is empty"\n/);
 	assert.match(proof, /\n\[\[ \$PROJECT != default && \$PROJECT != machines \]\] \|\| fail /);
 	assert.match(proof, /\nMACHINE="qorpera-machine-build-memory-proof-\$\$"\n/);
 	assert.match(proof, /\ntrap cleanup EXIT\n/);
 	assert.match(proof, /\n\t\tlx delete --force "\$MACHINE" >\/dev\/null 2>&1\n/);
 	assert.equal([...proof.matchAll(/\blx(?:c --project "\$PROJECT")? (?:delete|stop|restart)\b[^\n]*/g)].every(([line]) => line.includes('"$MACHINE"')), true);
 	assert.doesNotMatch(proof, /lxc (?!--project "\$PROJECT" )/);
-	assert.match(proof, /-c user\.qorpera\.image_builder=true -c user\.qorpera\.purpose=machine-image\n/);
+	assert.match(proof, /-c user\.qorpera\.image_builder=true -c user\.qorpera\.purpose=machine-image \|\|\n\t\tfail "the machine could not be made"\n/);
 	// Past the edge the machine keeps answering: no click fails, none takes 3 s or more, and at most 1 in 100 takes 2 s
 	// or more (one, under 200 clicks). The lead's bar, set on the measured runs: one click of 2.02 s in 104 is a machine
 	// that answers, against the freeze before (no answer in 20 to 30 s), and a check that flaps is worth nothing.

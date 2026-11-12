@@ -8,7 +8,11 @@
 #   fails           lines "<verb> <n>": the n-th call of that verb fails and changes nothing (verbs: list, init, start,
 #                   restart, delete, exec, image-info, file-push)
 #   says-kb         when there, what every machine answers as its MemTotal, whatever it was made with
+#   leg-clicks      when there, a `load` or `job` leg lasts until the probe asked that many `desktop click`s more (or
+#                   until the probe was ended, see below); without it a leg ends at once
+#   kill-probe-at   when there, the n-th `desktop click` ends the probe that asked it (SIGKILL), half way through a leg
 #   calls, legs     what was asked: every call, and every leg of guest.sh with the size of the machine it ran on
+#   clicks          one line a `desktop click` asked
 set -u
 [[ ${1-} == --project ]] && shift 2
 verb=${1-}
@@ -18,6 +22,7 @@ if [[ $verb == image || $verb == file ]]; then
 	shift
 fi
 mkdir -p "$STUB/machines"
+touch "$STUB/clicks"
 count=$(( $(cat "$STUB/count.$verb" 2>/dev/null || echo 0) + 1 ))
 echo "$count" >"$STUB/count.$verb"
 echo "$verb $*" >>"$STUB/calls"
@@ -62,9 +67,27 @@ exec) # NAME -- the command
 	"bash /srv/memory-proof/guest.sh "*)
 		leg=${asked#bash /srv/memory-proof/guest.sh }
 		echo "${gib}GiB $leg" >>"$STUB/legs"
+		if [[ ($leg == load\ * || $leg == job*) && -s $STUB/leg-clicks ]]; then
+			# The leg takes its time: until the probe beside it asked so many clicks more, or was ended.
+			wanted=$(( $(wc -l <"$STUB/clicks") + $(cat "$STUB/leg-clicks") ))
+			for _ in $(seq 1 1200); do
+				[[ -e $STUB/probe-ended || $(wc -l <"$STUB/clicks") -ge $wanted ]] && break
+				sleep 0.05
+			done
+			sleep 0.2
+		fi
 		echo "CHECK ok   a stand-in leg [$leg] on a machine of $gib GiB"
 		;;
-	*) ;; # systemctl stop, is-system-running, mkdir, desktop click
+	"desktop click "*)
+		echo click >>"$STUB/clicks"
+		if [[ -s $STUB/kill-probe-at && $(wc -l <"$STUB/clicks") -eq $(cat "$STUB/kill-probe-at") ]]; then
+			# Who asked: `timeout` is this script's parent, and the probe (a shell of the proof's) is timeout's.
+			read -r _ _ _ probe _ <"/proc/$PPID/stat"
+			kill -KILL "$probe"
+			: >"$STUB/probe-ended"
+		fi
+		;;
+	*) ;; # systemctl stop, is-system-running, mkdir
 	esac
 	;;
 *)

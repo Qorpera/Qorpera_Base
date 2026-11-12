@@ -166,6 +166,9 @@ seconds() { awk -v a="$1" -v b="$EPOCHREALTIME" 'BEGIN{printf "%.2f", b-a}'; }
 # Asked from this host, through LXD's agent as the executor asks: one `desktop click` a second on a spot of the panel
 # where a click does nothing, each timed; every tenth round also a look of the guest helper. A look's exit code is its
 # answer (`guest.sh look`): 0 only when the helper itself ended well and answered an observation.
+# The probe ends only when it is told to (the stop file) and says so in its last line (`P-END`): a probe that ended
+# any other way, at any moment, saw only a part of the leg, and `probed` fails the proof on it.
+PROBE_PAUSE=${MEMORY_PROOF_PROBE_PAUSE:-1} # a second between two clicks; the script's own test asks faster
 probe() {
 	local round=0 started status
 	while [[ -d $work && ! -e $work/stop ]]; do
@@ -181,8 +184,10 @@ probe() {
 			timeout 40 lxc --project "$PROJECT" exec "$MACHINE" -- bash /srv/memory-proof/guest.sh look </dev/null >/dev/null 2>&1 || status=$?
 			echo "P $(date -u +%T) look_s=$(seconds "$started") rc=$status"
 		fi
-		sleep 1
+		sleep "$PROBE_PAUSE"
 	done
+	[[ -e $work/stop ]] || return 1
+	echo "P-END $(date -u +%T) rounds=$round"
 }
 
 # Starts the probe, runs one leg under it, and judges the clicks. The machine keeps answering: no click failed, none
@@ -196,13 +201,21 @@ probe() {
 # The slowest click fell at the same step in three of them: not at a tab's end, but half a minute later, when the leg
 # starts a new program and a heavy page at once and about 360 MiB go into the compressed reserve within 3 s.
 probed() { # what, the least number of clicks, seconds, then the leg's words
-	local what=$1 least=$2 clicks failed one two three allowed looks unanswered
+	local what=$1 least=$2 clicks failed one two three allowed looks unanswered probe_pid probe_status=0
 	shift 2
 	rm -f "$work/stop"
 	probe >"$work/probe" &
+	probe_pid=$!
 	guest "$@"
 	touch "$work/stop"
-	wait
+	# The probe's own end is asked, by its pid: a bare `wait` answers 0 whatever became of it (review round 3 of
+	# #1692: a probe ended half way through the leg left enough good clicks behind for the checks below to pass).
+	wait "$probe_pid" || probe_status=$?
+	if (( probe_status == 0 )) && [[ $(tail -n 1 "$work/probe") == "P-END "* ]]; then
+		echo "CHECK ok   $what the probe asked from the leg's start to its end ($(tail -n 1 "$work/probe" | cut -d' ' -f3))"
+	else
+		echo "CHECK FAIL $what the probe asked from the leg's start to its end (it ended with $probe_status; its last line: [$(tail -n 1 "$work/probe")])"
+	fi
 	# What the probe saw around every click that failed or took a second or more, and every look that was not answered:
 	# the three rounds before and the one after.
 	awk '{ line[NR] = $0 }

@@ -192,7 +192,7 @@ test("every browser phase of the proof runs through that check, and after the ed
 	// process, noted before the edge by its pid and its start, is alive, with its debugging port answering.
 	const after = script.slice(script.indexOf("\nafter)\n"), script.indexOf("\nphase)\n"));
 	for (const check of [
-		'\tcheck "this boot\'s journal can be read: the guard\'s lines and the kernel\'s" \\\n\t\ttest "$guard_read" = 0 -a "$kernel_read" = 0 -a -s "$guard_log.raw" -a -s "$kernel_log"\n',
+		'\tcheck "this boot\'s journal can be read: the guard\'s lines and the kernel\'s" \\\n\t\ttest "$guard_read" = 0 -a "$kernel_read" = 0 -a -s "$guard_log.raw" -a -s "$kernel_log" -a "$(wc -l <"$guard_log")" = "$(wc -l <"$guard_log.raw")"\n',
 		'\t\ttest "$(( tabs + helpers + jobs + browsers + others ))" = "$ended" -a "$browsers" = 0 -a "$others" = 0\n',
 		'\tcheck "the browser itself was not ended (tabs may be, the browser may not): its main process ${main:-unknown}, noted before the edge, is alive" \\\n\t\ttest -n "$main" -a -n "$main_started" -a "$(started_at "${main:-0}")" = "$main_started"\n',
 		'\tcheck "the browser\'s debugging port answers" port_answers\n',
@@ -341,16 +341,19 @@ test("a part ends, and the proof fails, when its machine could not be deleted, m
 		await writeFile(join(bin, "id"), "#!/bin/sh\necho 0\n", { mode: 0o755 });
 		let number = 0;
 		/** One run of the proof: the parts, the stand-in's calls that fail ("verb n"), what a machine says it has. */
-		const prove = async (parts, { fails = [], saysKb } = {}) => {
+		const prove = async (parts, { fails = [], saysKb, legClicks, killProbeAt } = {}) => {
 			number += 1;
 			const state = join(temporary, `state-${number}`);
 			await mkdir(join(state, "machines"), { recursive: true });
 			await writeFile(join(state, "fails"), fails.map((line) => `${line}\n`).join(""));
 			if (saysKb) await writeFile(join(state, "says-kb"), `${saysKb}\n`);
+			if (legClicks) await writeFile(join(state, "leg-clicks"), `${legClicks}\n`);
+			if (killProbeAt) await writeFile(join(state, "kill-probe-at"), `${killProbeAt}\n`);
 			const result = spawnSync(
 				"bash",
 				[join(repositoryRoot, "scripts/prove-machine-memory.sh"), "0".repeat(64), "qorpera-build", "qorpera0", "qorpera-vm", ...parts],
-				{ encoding: "utf8", timeout: 120_000, env: { PATH: `${bin}:${process.env.PATH}`, STUB: state } },
+				// The probe asks without its second's pause, so a probed leg takes seconds here, not minutes.
+				{ encoding: "utf8", timeout: 120_000, env: { PATH: `${bin}:${process.env.PATH}`, STUB: state, MEMORY_PROOF_PROBE_PAUSE: "0.01" } },
 			);
 			let legs = "";
 			try {
@@ -408,6 +411,24 @@ test("a part ends, and the proof fails, when its machine could not be deleted, m
 		assert.match(wrongSize.out, /\nchecks: 0 ok, 1 failed; parts ended: 0 of 1; the parts' own status: 1; /);
 		assert.equal(wrongSize.legs, "");
 
+		// Review round 3 of #1692 (F1): a probed leg. Healthy: the probe asks clicks and looks beside the leg from its
+		// start to its end, and the proof passes on the three checks of the probe and the legs' own.
+		const probedLeg = await prove(["edge"], { legClicks: 70 });
+		assert.equal(probedLeg.status, 0, probedLeg.out);
+		assert.match(probedLeg.out, /\nM past the edge clicks=(?:[7-9]\d|\d{3,}) failed=0 /);
+		assert.match(probedLeg.out, /\nCHECK ok {3}past the edge the machine kept answering desktop clicks \(/);
+		assert.match(probedLeg.out, /\nCHECK ok {3}past the edge the probe asked from the leg's start to its end \(rounds=\d+\)\n/);
+		assert.match(probedLeg.out, /\nCHECK ok {3}past the edge the guest helper answered every look with an observation \(\d+ looks\)\n/);
+		assert.match(probedLeg.out, /\nchecks: 7 ok, 0 failed; parts ended: 1 of 1; the parts' own status: 0; [^\n]+\nPROOF PASSED\n/);
+		// The probe is ended half way through the leg, after more good clicks than the bar wants (60) and several
+		// answered looks. What it left behind passes both of its old checks; the proof fails on the probe's own end.
+		const probeEnded = await prove(["edge"], { legClicks: 90, killProbeAt: 75 });
+		failed(probeEnded, /\nCHECK FAIL past the edge the probe asked from the leg's start to its end \(it ended with 137; its last line: \[P [^\n]*\]\)\n/);
+		assert.match(probeEnded.out, /\nM past the edge clicks=7[0-4] failed=0 /);
+		assert.match(probeEnded.out, /\nCHECK ok {3}past the edge the machine kept answering desktop clicks \(/);
+		assert.match(probeEnded.out, /\nCHECK ok {3}past the edge the guest helper answered every look with an observation \(/);
+		assert.match(probeEnded.out, /\nchecks: 6 ok, 1 failed; parts ended: 1 of 1; the parts' own status: 0; [^\n]+\nPROOF FAILED\n/);
+
 		// A build space whose list cannot be read is not an empty one: the proof does not start.
 		const unread = await prove(["small"], { fails: ["list 1"] });
 		assert.equal(unread.status, 1, unread.out);
@@ -436,6 +457,14 @@ test("the proof's parts run where errexit is really on, and every step on the ma
 	])
 		assert.match(proof, step);
 	assert.equal(proof.match(/\n\t?held=\$\(names\) \|\| exit 1\n/g).length, 3);
+	// The probe beside a leg: its own end is asked by its pid (a bare `wait` answers 0 whatever became of it), and it
+	// says when it ended because it was told to.
+	assert.doesNotMatch(code(proof), /\n\twait\n/);
+	assert.match(proof, /\n\tprobe >"\$work\/probe" &\n\tprobe_pid=\$!\n\tguest "\$@"\n\ttouch "\$work\/stop"\n(?:\t#[^\n]*\n)+\twait "\$probe_pid" \|\| probe_status=\$\?\n\tif \(\( probe_status == 0 \)\) && \[\[ \$\(tail -n 1 "\$work\/probe"\) == "P-END "\* \]\]; then\n/);
+	assert.match(proof, /\n\t\[\[ -e \$work\/stop \]\] \|\| return 1\n\techo "P-END [^\n]+\n\}\n/);
+	// In the machine, the leg "with every processor busy" checks that its busy jobs ran to its end.
+	const inMachine = read("scripts/machine-memory-proof/guest.sh");
+	assert.match(inMachine, /\n\t\tfor pid in "\$\{H\[@\]\}"; do kill -0 "\$pid" 2>\/dev\/null && alive=\$\(\( alive \+ 1 \)\); done\n\t\tcheck "every processor was kept busy to the leg's end [^\n]+" test "\$alive" = "\$\{#H\[@\]\}"\n/);
 	assert.doesNotMatch(code(proof), /\$\(lx list -f csv -c n\) \]\]/);
 	assert.equal(spawnSync("bash", ["-n", join(repositoryRoot, "scripts/machine-memory-proof/stand-in-lxc.sh")], { encoding: "utf8" }).status, 0);
 });
