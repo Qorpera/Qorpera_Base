@@ -501,18 +501,11 @@ test("a desktop is asked for: small machines refuse it, chosen files open on it,
 	assert.match(command, /if \(\( cpus < MIN_CPUS \|\| memory < MIN_MEMORY_KB \)\); then\n\t\t\tfail "this machine is too small for a desktop: [^\n]*machine_start with desktop true" 3\n/);
 	// Files and folders are put on the desktop as links (the company's stay where they are) and opened; a folder with a
 	// page is served on the machine's loopback only.
-	// Since review r1 F1 of #1704 everything in the desktop's folder is done as the desktop's account.
-	assert.match(command, /as_desktop ln -sT -- "\$path" "\$place" \|\| fail /);
+	assert.match(command, /ln -s -- "\$path" "\$place"\n/);
 	// Nothing on the desktop is ever replaced: the same link is used again, and a taken name gets a number (review r1 F1).
 	assert.doesNotMatch(command, /rm -rf -- "\$place"/);
-	assert.match(
-		command,
-		/if \(\( ! copy \)\) && \[\[ \$\(as_desktop readlink -- "\$place" 2>\/dev\/null\) == "\$path" \]\]; then break; fi\n/,
-	);
-	assert.match(
-		command,
-		/if ! as_desktop test -e "\$place" -o -L "\$place"; then\n\t\t\tif \(\( copy && theirs \)\); then\n\t\t\t\tas_desktop cp -a -- "\$path" "\$place" \|\| fail /,
-	);
+	assert.match(command, /if \(\( ! copy \)\) && \[\[ -L \$place && \$\(readlink -- "\$place"\) == "\$path" \]\]; then break; fi\n/);
+	assert.match(command, /if \[\[ ! -e \$place && ! -L \$place \]\]; then\n\t\t\tif \(\( copy \)\); then\n\t\t\t\tcp -a -- "\$path" "\$place"\n/);
 	for (const line of [
 		'\tdesktop open /tmp/site --copy | grep "as site-2)" >/dev/null || { echo "a copy did not get a name of its own" >&2; exit 1; }\n',
 		"\techo edited >/home/desktop/Desktop/site-2/kept.txt\n",
@@ -1190,12 +1183,16 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 		assert.equal(spawnSync("bash", ["-n", join(repositoryRoot, file)], { encoding: "utf8" }).status, 0, file);
 });
 
-test("root does nothing with its own rights where the desktop's account owns (review r1 F1 of #1704)", async () => {
+test("root keeps its notes about the desktop where only root writes (review r1 F1 of #1704)", async () => {
 	// The finding: root's `desktop` kept its notes (the language, the time zone, the idle clock, the folders it serves) in
 	// the desktop account's own runtime folder and read them there. The account could make `lang` a link to a file only
 	// root may read (the company folder's view, with its pass) and ask the dock for a terminal: root's launch read the file
 	// and handed it to a program of the account as LANGUAGE. The same reads ran before #1704 for an agent's own
 	// `desktop open`, so the hole was in the live image too.
+	// Not part of this: what `desktop open` does in the account's Desktop folder, `--copy`, and `desktop shot`. They work
+	// on paths with root's rights exactly as before #1704 (the pins of the test "a desktop is asked for" above are the
+	// old ones); a check on a path followed by a use of the path cannot make them safe (review r2), so a change of its
+	// own does, with root holding the folders it works in.
 	const unit = read("deploy/machine/qorpera-machine-desktop.service");
 	const command = read("deploy/machine/desktop");
 	const session = read("deploy/machine/desktop-session");
@@ -1219,8 +1216,8 @@ test("root does nothing with its own rights where the desktop's account owns (re
 	assert.match(read("packages/runtime/src/cloud-machine-screen.ts"), /\nconst LAST_USE = "\/run\/qorpera-desktop\/last-use";\n/);
 	assert.match(read("packages/runner-orchestrator/src/company-machine-host.ts"), /"touch -c \/run\/qorpera-desktop\/last-use",/);
 
-	// The command: its notes are in root's folder, each one a name it writes itself; the account's folder is only ever
-	// handed to the account's programs as a path, never read; and in what the account owns, things are done as the account.
+	// The command: its notes are in root's folder, each one a name it writes itself; the account's runtime folder is only
+	// ever handed to the account's programs as a path, never read.
 	const code = command
 		.split("\n")
 		.filter((line) => !line.trimStart().startsWith("#"))
@@ -1234,17 +1231,6 @@ test("root does nothing with its own rights where the desktop's account owns (re
 		[...code.matchAll(/\$SESSION[^\n]*/g)].map((match) => match[0]),
 		['$SESSION" \\', '$SESSION/bus" "${extra[@]}" -- "$@"'],
 	);
-	assert.match(code, /\nas_desktop\(\) \{ runuser -u desktop -- "\$@"; \}\n/);
-	for (const gone of [/install -d -o desktop/, /chown -h desktop/, /chown -R desktop:desktop -- "\$place"/, /\n\t+(?:cp|ln|mv|mkdir|touch|rm)\b[^\n]*"\$(?:DESK|place)"/])
-		assert.doesNotMatch(code, gone);
-	// The one read with root's rights that reaches the desktop: a copy an agent asks for of a file the account may not
-	// read, of a target that leads through nothing the account owns, made the account's where only root can enter and
-	// moved onto the desktop by the account.
-	assert.match(code, /\n\tif through_desktop "\$target" \|\| through_desktop "\$path"; then\n\t\ttheirs=1\n\t\tpath=\$\(as_desktop realpath -e -- "\$target" 2>\/dev\/null\) \|\| fail /);
-	assert.match(
-		code,
-		/\n\t\t\t\tstage=\$\(mktemp -d \/home\/\.qorpera-desktop-copy\.XXXXXXXX\)\n\t\t\t\tif cp -a -- "\$path" "\$stage\/copy" && chown -R desktop:desktop -- "\$stage\/copy" && chown desktop:desktop -- "\$stage"; then\n\t\t\t\t\tas_desktop mv -nT -- "\$stage\/copy" "\$place" \|\| true\n\t\t\t\t\trm -rf -- "\$stage"\n/,
-	);
 	// The session reads the idle clock where root keeps it, and the look reads the time zone there; neither writes it.
 	assert.match(session, /\nLAST=\/run\/qorpera-desktop\/last-use\n/);
 	assert.doesNotMatch(session, /touch "\$LAST"|XDG_RUNTIME_DIR\/last-use/);
@@ -1256,64 +1242,18 @@ test("root does nothing with its own rights where the desktop's account owns (re
 	const temporary = await mkdtemp(join(tmpdir(), "qorpera-desktop-boundary-"));
 	try {
 		const tools = join(temporary, "tools");
-		const asked = join(temporary, "asked");
-		const theirs = join(temporary, "theirs");
-		const roots = join(temporary, "roots");
-		for (const folder of [tools, theirs, roots]) await mkdir(folder);
+		await mkdir(tools);
 		const tool = (name, body) => writeFile(join(tools, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
-		// Stand-ins: the desktop runs; `stat -c %U` says the desktop's account owns everything under THEIRS and the one
-		// name PLANTED, and root the rest (a part that is not there fails, as the real one); runuser notes that it was
-		// asked and runs the command marked as the account's; scrot notes whose it is and writes its file.
+		// Stand-ins: the desktop runs, and its display says the size it is told to say.
 		await tool("systemctl", "echo active");
 		await tool("xdpyinfo", 'echo "  dimensions:    $DIMENSIONS pixels (423x264 millimeters)"');
 		await tool("touch", "exit 0");
 		await tool("wmctrl", "exit 0");
-		await tool(
-			"stat",
-			[
-				'if [ "$1" = -c ] && [ "$2" = %U ]; then',
-				'\t[ -e "$4" ] || [ -L "$4" ] || exit 1',
-				'\tcase "$4" in "$THEIRS" | "$THEIRS"/* | "$PLANTED") echo desktop ;; *) echo root ;; esac',
-				"\texit 0",
-				"fi",
-				'exec /usr/bin/stat "$@"',
-			].join("\n"),
-		);
-		await tool("runuser", ['echo "runuser $*" >>"$ASKED"', 'while [ "$1" != -- ]; do shift; done', "shift", 'AS=desktop exec "$@"'].join("\n"));
-		await tool("scrot", ['for word in "$@"; do file=$word; done', 'echo "scrot as ${AS:-root} $file" >>"$ASKED"', 'printf png >"$file"'].join("\n"));
-		const desktop = (more, ...args) => {
-			writeFileSync(asked, "");
-			const result = spawnSync("bash", [join(repositoryRoot, "deploy/machine/desktop"), ...args], {
+		const desktop = (more, ...args) =>
+			spawnSync("bash", [join(repositoryRoot, "deploy/machine/desktop"), ...args], {
 				encoding: "utf8",
-				env: { ...process.env, PATH: `${tools}:${process.env.PATH}`, ASKED: asked, THEIRS: theirs, PLANTED: "", DIMENSIONS: "1600x1000", ...more },
+				env: { ...process.env, PATH: `${tools}:${process.env.PATH}`, DIMENSIONS: "1600x1000", ...more },
 			});
-			return { status: result.status, stdout: result.stdout, stderr: result.stderr, asked: readFileSync(asked, "utf8").trim().split("\n") };
-		};
-		// A picture where root alone owns the way: taken and saved by root, as ever.
-		const rootShot = desktop({}, "shot", join(roots, "a.png"));
-		assert.equal(rootShot.status, 0, rootShot.stderr);
-		assert.deepEqual(rootShot.asked, [`scrot as root ${join(roots, "a.png")}`]);
-		// A picture in a folder the account owns, a new folder under it, or under a name that is the account's own link in
-		// a folder of root: the folder is made, the picture taken and its size read as the account; root's scrot never runs.
-		for (const [file, more] of [
-			[join(theirs, "a.png"), {}],
-			[join(theirs, "new", "deeper", "b.png"), {}],
-			[join(roots, "planted.png"), { PLANTED: join(roots, "planted.png") }],
-		]) {
-			if (file.startsWith(roots)) writeFileSync(file, "the account made this name");
-			const shot = desktop(more, "shot", file);
-			assert.equal(shot.status, 0, `${file}: ${shot.stderr}`);
-			assert.ok(shot.asked.includes(`scrot as desktop ${file}`), `${file}: ${shot.asked.join(" | ")}`);
-			assert.ok(!shot.asked.some((line) => line.startsWith("scrot as root")), file);
-			assert.ok(shot.asked.includes(`runuser -u desktop -- scrot --overwrite --silent -- ${file}`), file);
-			assert.ok(shot.asked.some((line) => line.startsWith("runuser -u desktop -- mkdir -p -- ")), file);
-		}
-		// A way that is root's own link into what the account owns counts by where it leads.
-		spawnSync("ln", ["-s", theirs, join(roots, "way")]);
-		const led = desktop({}, "shot", join(roots, "way", "c.png"));
-		assert.equal(led.status, 0, led.stderr);
-		assert.ok(led.asked.includes(`scrot as desktop ${join(roots, "way", "c.png")}`), led.asked.join(" | "));
-		assert.ok(!led.asked.some((line) => line.startsWith("scrot as root")));
 
 		// What the display says of its size is only ever digits. The display is the account's program; a name in an
 		// arithmetic expression runs what its index says (bash), so an unchecked size could run a command as root.
@@ -1338,8 +1278,9 @@ test("root does nothing with its own rights where the desktop's account owns (re
 	}
 
 	// The image build proves the boundary with the two real accounts and a file only root can read: the account can put
-	// nothing among root's notes; what it plants in its own folders is never read; a program root starts, for an agent
-	// or for a press on the dock, is handed nothing of the file; no link of the account is followed with root's rights.
+	// nothing among root's notes; what it plants in its own folders under the notes' names is never read; a program root
+	// starts, for an agent or for a press on the dock, is handed nothing of the file; a request to the dock that is a
+	// link is removed, never opened.
 	for (const line of [
 		"\tsecret=/root/qorpera-root-only-check\n",
 		'\tchmod 0600 "$secret"\n',
@@ -1352,12 +1293,7 @@ test("root does nothing with its own rights where the desktop's account owns (re
 		'\t\tif gets "$pid" | grep -q "$marker"; then echo "a program of the desktop account ($program) was handed a file only root can read" >&2; exit 1; fi\n',
 		'\t\t[[ $(gets "$pid" | grep -c -x -e "TZ=Europe/Copenhagen" -e "LANGUAGE=da-DK") == 2 ]] ||\n',
 		'\trunuser -u desktop -- ln -s "$secret" /run/qorpera-desktop-dock/files\n',
-		'\trunuser -u desktop -- sh -c "rm -rf /home/desktop/Desktop && ln -s /etc/qorpera-machine /home/desktop/Desktop"\n',
-		'\tif desktop open /home/desktop/planted.txt >/dev/null 2>&1 || desktop open /home/desktop/planted.txt --copy >/dev/null 2>&1; then\n',
-		'\tif grep -rqs -- "$marker" /home/desktop /run/qorpera-desktop/session; then echo "bytes of a file only root can read are in the desktop account folders" >&2; exit 1; fi\n',
-		"\tdesktop open /root/qorpera-agent-file.txt --copy >/dev/null\n",
-		"\tdesktop shot /home/desktop/planted.png >/dev/null 2>&1 || true\n",
-		'\tuntouched || { echo "a picture was written through a link of the desktop account, with the rights of root" >&2; exit 1; }\n',
+		'\t[[ -z $(ls -A /run/qorpera-desktop-dock) ]] && untouched || { echo "a dock request that was a link or a pipe was followed, or stayed" >&2; exit 1; }\n',
 		'\t[[ -d /run/qorpera-desktop && -z $(ls -A /run/qorpera-desktop) ]] || { echo "the notes of root outlived the desktop" >&2; exit 1; }\n',
 	])
 		assert.ok(imageScript.includes(line), line);

@@ -9,7 +9,8 @@ UNIT=qorpera-machine-desktop.service
 # Root's notes about the desktop: its idle clock, the language and time zone it was started with, the folders it serves,
 # a screenshot on its way. The folder is root's (qorpera-machine-desktop.service makes it so, empty at every start):
 # the desktop's account may read it and can never put, replace or point anything in it, so whatever this command reads,
-# writes or touches there is root's own. Nothing here is ever read from, or written to, a place that account owns.
+# writes or touches there is root's own. (What `open` puts in the account's Desktop folder, `--copy` and `shot` still
+# work on paths with root's rights, as they always have: a change of its own makes them safe against a planted link.)
 RUN=/run/qorpera-desktop
 # The account's own runtime folder (its session bus, what its programs keep): only handed to its programs as a path.
 SESSION=$RUN/session
@@ -60,26 +61,6 @@ to FILE a moment after the action, so one command acts and shows what came of it
 EOF
 }
 fail() { echo "$1" >&2; exit "${2:-1}"; }
-# What the desktop's account owns is its own to read and to change: there root does nothing with its own rights (the
-# account could have made a name there a link to anything). What is done there is done as the account.
-as_desktop() { runuser -u desktop -- "$@"; }
-# Whether a path leads through anything the desktop's account owns (a folder it can put names in, a link it made):
-# such a path means what the account wants it to mean. Each part of the path as it was given is looked at, not
-# followed; what is not there yet ends the look.
-through_desktop() { # path
-	local rest=$1 part= name owner
-	[[ $rest == /* ]] || rest=$PWD/$rest
-	while [[ -n $rest ]]; do
-		rest=${rest#/}
-		name=${rest%%/*}
-		rest=${rest:${#name}}
-		[[ -n $name && $name != . ]] || continue
-		part+=/$name
-		owner=$(stat -c %U -- "$part" 2>/dev/null) || return 1
-		[[ $owner != desktop ]] || return 0
-	done
-	return 1
-}
 # The unit is active and its display answers (a socket left by a killed display does not).
 running() { [[ $(systemctl is-active "$UNIT" 2>/dev/null || true) == active ]] && xdpyinfo >/dev/null 2>&1; }
 need() {
@@ -137,12 +118,9 @@ serve() { # folder -> prints the port
 	echo "$port"
 }
 quote() { python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$1"; }
-# Opens one target: a URL, or a file or folder put on the desktop first (a link, or a copy). The desktop's folder is
-# the account's own, so everything in it is looked at, linked and placed as the account; root's own rights are used
-# for one thing only, to read a file the account may not read when --copy asks for it, and only for a target that
-# leads through nothing the account owns.
+# Opens one target: a URL, or a file or folder put on the desktop first (a link, or a copy).
 open_target() { # target copy(0|1)
-	local target=$1 copy=$2 path name shown place port taken theirs=0 stage
+	local target=$1 copy=$2 path name shown place port taken
 	if [[ $target =~ ^[a-zA-Z][a-zA-Z0-9+.-]*: && ! -e $target ]]; then
 		browser "$target"
 		echo "opening $target"
@@ -150,17 +128,8 @@ open_target() { # target copy(0|1)
 	fi
 	path=$(realpath -e -- "$target" 2>/dev/null) || fail "no such file or folder: $target"
 	[[ $path != / ]] || fail "open a file or a folder, not the whole disk" 2
-	# A target that leads through what the account owns (its home, a link it made) is the account's to name: it is
-	# found again, and from here on read, as the account, so a link planted there to a file of root's opens nothing.
-	if through_desktop "$target" || through_desktop "$path"; then
-		theirs=1
-		path=$(as_desktop realpath -e -- "$target" 2>/dev/null) || fail "no such file or folder: $target"
-		[[ $path != / ]] || fail "open a file or a folder, not the whole disk" 2
-	fi
-	# What the target is, as whoever reads it sees it.
-	is() { if (( theirs )); then as_desktop test "$@"; else test "$@"; fi; }
 	name=$(basename -- "$path")
-	as_desktop mkdir -p -- "$DESK" || fail "the desktop's folder $DESK cannot be used"
+	install -d -o desktop -g desktop -m 0755 "$DESK"
 	if [[ $path == "$DESK"/* ]]; then
 		# Already on the desktop (an earlier copy, say): opened where it is.
 		place=$path
@@ -169,41 +138,32 @@ open_target() { # target copy(0|1)
 		# which may have been changed since, or another folder of the same name) gets a number instead.
 		place=$DESK/$name
 		taken=1
-		while as_desktop test -e "$place" -o -L "$place"; do
-			if (( ! copy )) && [[ $(as_desktop readlink -- "$place" 2>/dev/null) == "$path" ]]; then break; fi
+		while [[ -e $place || -L $place ]]; do
+			if (( ! copy )) && [[ -L $place && $(readlink -- "$place") == "$path" ]]; then break; fi
 			taken=$(( taken + 1 ))
-			if is -f "$path" && [[ $name == ?*.* ]]; then place=$DESK/${name%.*}-$taken.${name##*.}; else place=$DESK/$name-$taken; fi
+			if [[ -f $path && $name == ?*.* ]]; then place=$DESK/${name%.*}-$taken.${name##*.}; else place=$DESK/$name-$taken; fi
 		done
-		if ! as_desktop test -e "$place" -o -L "$place"; then
-			if (( copy && theirs )); then
-				as_desktop cp -a -- "$path" "$place" || fail "the desktop's user cannot read $path"
-			elif (( copy )); then
-				# Root reads what the account may not, into a folder only root can enter; the copy is made the account's
-				# there, and the account itself moves it onto its desktop. Root writes nothing into the account's folder.
-				stage=$(mktemp -d /home/.qorpera-desktop-copy.XXXXXXXX)
-				if cp -a -- "$path" "$stage/copy" && chown -R desktop:desktop -- "$stage/copy" && chown desktop:desktop -- "$stage"; then
-					as_desktop mv -nT -- "$stage/copy" "$place" || true
-					rm -rf -- "$stage"
-				else
-					rm -rf -- "$stage"
-					fail "$path could not be copied for the desktop"
-				fi
+		if [[ ! -e $place && ! -L $place ]]; then
+			if (( copy )); then
+				cp -a -- "$path" "$place"
+				chown -R desktop:desktop -- "$place"
 			else
-				as_desktop ln -sT -- "$path" "$place" || fail "the desktop's folder $DESK cannot be used"
+				ln -s -- "$path" "$place"
+				chown -h desktop:desktop -- "$place"
 			fi
 		fi
-		if (( copy )); then path=$place theirs=1; fi
+		if (( copy )); then path=$place; fi
 	fi
 	# The name on the desktop may carry a number; the page's address is built from the file that is opened.
 	shown=$(basename -- "$place")
 	name=$(basename -- "$path")
-	as_desktop test -r "$path" ||
+	runuser -u desktop -- test -r "$path" ||
 		fail "the desktop's user cannot read $path: open it with --copy"
-	if is -d "$path" && is -f "$path/index.html"; then
+	if [[ -d $path && -f $path/index.html ]]; then
 		port=$(serve "$path")
 		browser "http://127.0.0.1:$port/"
 		echo "opening $path at http://127.0.0.1:$port/ (on the desktop as $shown)"
-	elif is -d "$path"; then
+	elif [[ -d $path ]]; then
 		launch /usr/bin/thunar "$path"
 		echo "opening the folder $path in the file manager (on the desktop as $shown)"
 	elif [[ ${path,,} == *.html || ${path,,} == *.htm ]]; then
@@ -222,14 +182,6 @@ shot() { # file
 	# Without the company folder mounted, /company is a plain folder on this machine: nothing would ever show the picture.
 	if [[ $folder == /company || $folder == /company/* ]] && ! mountpoint -q /company; then
 		fail "this machine has no company folder at /company, so company_read cannot show a picture saved there (machine_start says which machines get it)" 4
-	fi
-	if through_desktop "$file" || through_desktop "$folder"; then
-		# A place the desktop's account owns: the picture is taken and saved as the account (the display is its own), so
-		# a name there that is a link to a file of root's is never written through with root's rights.
-		as_desktop mkdir -p -- "$folder" && as_desktop scrot --overwrite --silent -- "$file" ||
-			fail "the desktop's user cannot save a picture at $file"
-		echo "$file $(as_desktop stat -c %s -- "$file") bytes $(as_desktop file -b -- "$file" | sed -n 's/.*, \([0-9]* x [0-9]*\),.*/\1/p')"
-		return
 	fi
 	mkdir -p -- "$folder"
 	scrot --overwrite --silent -- "$file"
