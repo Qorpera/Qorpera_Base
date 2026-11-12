@@ -1185,6 +1185,16 @@ describe("manage_code bring_in: one answer in plain words per way it can go", ()
 			"CODE_HOST_FILE_TOO_LARGE",
 			'it has a file larger than a repository kept in Qorpera can take (256 MB), in "src/A.ts", "src/a.ts" and 3 more',
 		],
+		// A path of main the company folder refuses where main will stand (part B): the names' words, with its paths.
+		[
+			"CODE_HOST_NAMES_FOLDER_REFUSES",
+			'it has more files, or file names, than a repository kept in Qorpera can take, in "src/A.ts", "src/a.ts" and 3 more',
+		],
+		// An earlier import's half-done snapshot at the place (part C3).
+		[
+			"IMPORT_PLACE_HALF_DONE",
+			"an earlier bring-in stopped half way at code/acme/shop: bring the same code in again, with a new operationKey, to finish it; other code cannot go there until then. If the same code is refused too, tell a member that Qorpera must clear that place first",
+		],
 	])("says nothing was brought in when the executor refused it (%s), with why and no code", async (code, why) => {
 		const f = await fixture((method) =>
 			method === IMPORT

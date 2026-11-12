@@ -473,6 +473,9 @@ function importStop(
 			return "the file is not a whole git bundle: make it again with git bundle create <file> --all";
 		case "IMPORT_FILE_CHANGED":
 			return "the file changed after you asked: call again with a new operationKey";
+		// The place holds an earlier import's half-done snapshot (part C3): only that code finishes it.
+		case "IMPORT_PLACE_HALF_DONE":
+			return `an earlier bring-in stopped half way at code/${request.owner}/${request.name}: bring the same code in again, with a new operationKey, to finish it; other code cannot go there until then. If the same code is refused too, tell a member that Qorpera must clear that place first`;
 	}
 	// git's check: an error is damage (IMPORT_HISTORY_DAMAGED, with its message id or not), a warning names its id.
 	if (code === "IMPORT_HISTORY_DAMAGED" || code.startsWith("IMPORT_HISTORY_DAMAGED_"))
