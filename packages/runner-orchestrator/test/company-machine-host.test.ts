@@ -110,6 +110,7 @@ async function fixture(
 		screenClearTimeoutMs?: number;
 		memberLookTimeoutMs?: number;
 		memberTypeTimeoutMs?: number;
+		desktopFigureTimeoutMs?: number;
 		now?: () => number;
 	} = {},
 ) {
@@ -5484,4 +5485,127 @@ describe("a member's start of a desktop (20260930714000)", () => {
 			expect(run()).toBe(1);
 		},
 	);
+});
+
+describe("company machine host: the desktop's figure (20260930737000)", () => {
+	const FIGURE = "/etc/qorpera-machine/desktop-figure";
+	type F = Awaited<ReturnType<typeof fixture>>;
+	const starter = (figure: string | null, templateId: string | null = null, staffAgentId = id(9)) => ({
+		staffAgentId,
+		figure,
+		templateId,
+	});
+	/** The writes of the figure's word, as the host asked them of LXD (without their signal). */
+	const written = (f: F) =>
+		(f.client.pushInstanceFile.mock.calls as unknown[][]).filter((call) => call[2] === FIGURE).map((call) => call.slice(0, 5));
+	const quiet = { at: 10_000, cpuUsec: 0, ioBytes: 0, ended: [] };
+	const name = lxdCompanyMachinePlan(binding()).request.name;
+
+	it("writes the starter's figure into a new boot before SQL is told it runs: one word, root's, for all to read", async () => {
+		const f = await fixture();
+		f.entry.starter = starter("star");
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		expect(written(f)).toEqual([["machines", name, FIGURE, "star\n", 0o644]]);
+		expect(f.order.indexOf("push")).toBeGreaterThan(-1);
+		expect(f.order.indexOf("push")).toBeLessThan(f.order.indexOf("sql:qorpera_mark_company_machine_running"));
+		// The same boot and the same figure: nothing more is written, pass after pass.
+		f.running();
+		f.observe(quiet);
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+		await f.host.pass(f.signal);
+		expect(written(f)).toHaveLength(1);
+	});
+
+	it("draws the figure as every client does, and writes nothing for a machine SQL names no starter of", async () => {
+		for (const [listed, word] of [
+			[starter("ghost"), "moon"],
+			[starter(null, "co-founder"), "crown"],
+			[starter("dragon", "co-founder"), "crown"],
+			[starter("bolt", "co-founder"), "bolt"],
+		] as const) {
+			const f = await fixture();
+			f.entry.starter = listed;
+			await f.host.pass(f.signal);
+			expect(written(f)).toEqual([["machines", name, FIGURE, `${word}\n`, 0o644]]);
+		}
+		// An SQL from before the migration, an agent whose row is gone, an answer that is no starter's: no word, and the
+		// machine starts as ever.
+		for (const listed of [undefined, null, {}, { staffAgentId: "ada", figure: "star" }, "star"]) {
+			const f = await fixture();
+			if (listed !== undefined) f.entry.starter = listed;
+			expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+			expect(written(f)).toEqual([]);
+			expect(f.methods()).toContain("qorpera_mark_company_machine_running");
+		}
+	});
+
+	it("writes it again when the figure changes while the machine runs, and once after the executor restarted", async () => {
+		const f = await fixture();
+		f.entry.starter = starter("star");
+		await f.host.pass(f.signal);
+		f.running();
+		f.observe(quiet);
+		// A member gave the agent another figure: the next pass writes the new word, once.
+		f.entry.starter = starter("bolt");
+		await f.host.pass(f.signal);
+		await f.host.pass(f.signal);
+		expect(written(f).map((call) => call[3])).toEqual(["star\n", "bolt\n"]);
+		// A new process knows nothing of what the one before wrote: it writes the word once, then leaves it.
+		f.restart();
+		await f.host.pass(f.signal);
+		await f.host.pass(f.signal);
+		expect(written(f).map((call) => call[3])).toEqual(["star\n", "bolt\n", "bolt\n"]);
+		// The machine's next boot gets it again (its disk may be a new one).
+		f.reboot();
+		await f.host.pass(f.signal);
+		expect(written(f).map((call) => call[3])).toEqual(["star\n", "bolt\n", "bolt\n", "bolt\n"]);
+	});
+
+	it("never fails or holds a start on a write that fails: the machine runs, and the write is tried three times a boot", async () => {
+		const f = await fixture();
+		f.entry.starter = starter("star");
+		// An image from before the desktop's look has no folder for the word: LXD refuses every write of it.
+		const push = f.client.pushInstanceFile.getMockImplementation();
+		f.client.pushInstanceFile.mockImplementation(async (...args: unknown[]) => {
+			if (args[2] === FIGURE) throw new Error("LXD instance file unavailable");
+			return push?.(...(args as []));
+		});
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		expect(f.methods()).toContain("qorpera_mark_company_machine_running");
+		// No fault is recorded on the machine (a step that went well records none).
+		expect(failures(f)).toEqual([]);
+		f.running();
+		f.observe(quiet);
+		for (let pass = 0; pass < 5; pass++)
+			expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "commands", state: "done" }]);
+		expect(written(f)).toHaveLength(3);
+		expect(failures(f)).toEqual([]);
+		// Another figure, or another boot, is tried anew.
+		f.entry.starter = starter("moon");
+		for (let pass = 0; pass < 5; pass++) await f.host.pass(f.signal);
+		expect(written(f).map((call) => call[3])).toEqual(["star\n", "star\n", "star\n", "moon\n", "moon\n", "moon\n"]);
+	});
+
+	it("cuts off a write that does not answer after its time, and tells SQL the boot runs all the same", async () => {
+		const f = await fixture({ desktopFigureTimeoutMs: 40 });
+		f.entry.starter = starter("star");
+		const push = f.client.pushInstanceFile.getMockImplementation();
+		const cut: unknown[] = [];
+		f.client.pushInstanceFile.mockImplementation(async (...args: unknown[]) => {
+			if (args[2] !== FIGURE) return push?.(...(args as []));
+			const signal = args[5] as AbortSignal;
+			await new Promise((_resolve, reject) => {
+				signal.addEventListener("abort", () => {
+					cut.push(signal.reason);
+					reject(signal.reason);
+				});
+			});
+		});
+		const started = Date.now();
+		expect(await f.host.pass(f.signal)).toEqual([{ placementId: id(6), step: "start", state: "done" }]);
+		expect(Date.now() - started).toBeLessThan(1500);
+		expect(cut).toHaveLength(1);
+		expect(f.methods()).toContain("qorpera_mark_company_machine_running");
+		expect(failures(f)).toEqual([]);
+	});
 });
