@@ -1217,6 +1217,25 @@ describe("Sent, Addresses and Write", () => {
 		release();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(named()).toBe("Ada");
+		// Review of #1719, round 4: both at once. A read begun before Ada is taken off answers after it, and the read
+		// after the change fails: the older read is still let go, and the line goes by the routines.
+		hold = new Promise((resolve) => {
+			release = resolve;
+		});
+		window.dispatchEvent(new Event("focus"));
+		await vi.waitFor(() => expect(hold).toBeNull());
+		down = true;
+		press("Ada");
+		await vi.waitFor(() => expect(toast()).toBe("Ada no longer answers hello@acme.example"));
+		release();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(named()).toBe("Choose who answers");
+		chip().click();
+		expect(menuRow("Ada").getAttribute("aria-checked")).toBe("false");
+		menuRow("Ada").click();
+		await vi.waitFor(() => expect(toast()).toBe("Ada answers hello@acme.example"));
+		expect(vi.mocked(manage.routines!.setEnabled).mock.calls.at(-1)?.[2]).toBe(true);
+		expect(named()).toBe("Ada");
 	});
 
 	it("builds the address cards again for a company opened again, and in a new time zone or language", async () => {

@@ -199,9 +199,9 @@ export class CompanyMail {
 	#companyTimer: ReturnType<typeof setInterval> | undefined;
 	#pageTimer: ReturnType<typeof setInterval> | undefined;
 	#reading = new Set<string>();
-	/** The address reads begun, and the one the addresses shown are from. */
+	/** The address reads begun, and the first of them whose answer still counts: one begun before it is let go. */
 	#addressReads = 0;
-	#addressesFrom = 0;
+	#addressesSince = 0;
 	#watched: {
 		lists: Map<string, MailListRequest>;
 		threads: Set<string>;
@@ -262,10 +262,10 @@ export class CompanyMail {
 	}
 
 	/** Reads the addresses with a read begun now, and says whether it was read: after a change to who answers an
-	 * address (the Mailbox's Addresses), where a read already on its way may be from before the change. A read that
-	 * fails keeps the addresses as they were read last. */
+	 * address (the Mailbox's Addresses). A read already on its way is from before the change: its answer is let go,
+	 * whether this read is read or not. A read that fails keeps the addresses as they were read last. */
 	addressesAfresh(): Promise<boolean> {
-		return this.#closed ? Promise.resolve(false) : this.#readAddresses();
+		return this.#closed ? Promise.resolve(false) : this.#readAddresses(true);
 	}
 
 	dispose(): void {
@@ -295,12 +295,14 @@ export class CompanyMail {
 	}
 
 	/** Reads the addresses, and says whether they were read. Reads may answer out of turn: one begun before another
-	 * whose answer is already in says nothing newer, and is let go. */
-	async #readAddresses(): Promise<boolean> {
+	 * whose answer is already in says nothing newer, and is let go. So is one begun before a read asked for after a
+	 * change (`afterChange`), from the moment that read begins: what it says is from before the change. */
+	async #readAddresses(afterChange = false): Promise<boolean> {
 		const read = ++this.#addressReads;
+		if (afterChange) this.#addressesSince = read;
 		const take = (addresses: MailAddress[]) => {
-			if (read < this.#addressesFrom) return;
-			this.#addressesFrom = read;
+			if (read < this.#addressesSince) return;
+			this.#addressesSince = read;
 			this.#set((state) => ({ ...state, addresses }));
 		};
 		try {
