@@ -1075,6 +1075,12 @@ describe("the machine's package caches (own code storage, step 6)", () => {
 		expect((await call(m, "mount", request)).line).toMatchObject({ mount: "mounted", packageCaches: true });
 		await gone(dirname(browser));
 		expect(await readdir(join(m.packages, "npm", "_cacache", "index-v5"))).toEqual(["a"]);
+		// 29 days on, the age (30 days) has not passed.
+		const young = await machine();
+		const kept = await planted(join(young.packages, "ms-playwright", "chromium_headless_shell-1243", "chrome"), 1024);
+		young.state.skewMs = 29 * 86_400_000;
+		expect((await call(young, "mount", request)).line).toMatchObject({ mount: "mounted", packageCaches: true });
+		expect((await lstat(kept)).isFile()).toBe(true);
 	});
 
 	it("are trimmed at the first mount of a boot, the least recently used tool folder emptied first", async () => {
@@ -1181,6 +1187,9 @@ describe("the package caches' trim", () => {
 		await utimes(read, new Date(later), new Date(Date.now()));
 		// Now: nothing goes.
 		expect(await ageCodingPackageTrees(root, Date.now(), age)).toEqual([]);
+		// A folder's read time is not a use: listing it moves it (on a strictatime mount at every listing, so set here,
+		// after the walk above).
+		await utimes(join(root, "npm", "_npx", "0123abcd"), new Date(later), new Date(Date.now()));
 		// After the age: each tree that was not used since, whole; the rest left to tmpfiles' age of files.
 		expect((await ageCodingPackageTrees(root, later, age)).sort()).toEqual(
 			[
@@ -1204,15 +1213,19 @@ describe("the package caches' trim", () => {
 			expect(await readdir(join(root, folder))).toEqual([]);
 	});
 
-	it("removes a link that stands for a tree, never what it points to", async () => {
+	it("removes a link that stands for a tree, never what it points to, and never walks through a link to trees", async () => {
 		const root = await caches();
 		const elsewhere = await planted(join(root, "elsewhere", "browser"), 1024);
 		await mkdir(join(root, "ms-playwright"));
 		await symlink(dirname(elsewhere), join(root, "ms-playwright", "chromium-link"));
+		const outside = await planted(join(root, "outside", "AbCd", "six.py"), 1024);
+		await mkdir(join(root, "uv"));
+		await symlink(dirname(dirname(outside)), join(root, "uv", "archive-v0"));
 		expect(await ageCodingPackageTrees(root, Date.now() + 31 * 86_400_000, 30 * 86_400_000)).toEqual([
 			"ms-playwright/chromium-link",
 		]);
 		expect(await readdir(dirname(elsewhere))).toEqual(["browser"]);
+		expect(await readdir(dirname(outside))).toEqual(["six.py"]);
 		expect(await ageCodingPackageTrees(join(root, "none"), Date.now(), 0)).toEqual([]);
 	});
 
