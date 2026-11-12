@@ -330,6 +330,8 @@ function kernel() {
 		authorized: [] as boolean[],
 		/** Told of every step the kernel let go, with the progress it now keeps. */
 		onStep: (_row: Row) => {},
+		/** Told once a record is in. */
+		onRecord: (_row: Row) => {},
 		ask(
 			owner: string,
 			name: string,
@@ -415,7 +417,9 @@ function kernel() {
 							row.progress = { ...row.progress, waiting: "SESSIONS_BUSY" };
 							continue;
 						}
-						if (row.attempts >= 5) {
+						// Five claims, until it records: from its record on only the executor's finish after the open ends
+						// it (A2 after the review of #1710, F2).
+						if (row.attempts >= 5 && !(row.progress && "recorded" in row.progress)) {
 							row.state = "failed";
 							row.outcome = {
 								schema: "qorpera.code-request-outcome/v1",
@@ -534,6 +538,7 @@ function kernel() {
 					filesChanged: files,
 				});
 				row.progress = { ...row.progress, recorded: { change: 1, bundle, mainSha } };
+				k.onRecord(row);
 				return { schema: "qorpera.code-import-recorded/v1", state: "recorded", change: 1 };
 			}
 			// The finish.
@@ -909,6 +914,32 @@ describe("an import from end to end, with every part as merged", { timeout: 240_
 			kind: "import",
 		});
 	});
+	it("claims a recorded import again past its five claims until its open ends it, and records it once", async () => {
+		const w = await world();
+		const row = w.k.ask("acme", "late", { github: "Acme/Shop" });
+		// The executor stops right after the kernel has the record, inside the open: the mark stays.
+		const stopping = new AbortController();
+		w.k.onRecord = () => stopping.abort(new Error("the executor stopped"));
+		await w.pass(w.executor(), stopping.signal);
+		w.k.onRecord = () => {};
+		expect(w.k.raised).toEqual([]);
+		expect(row).toMatchObject({ state: "queued", attempts: 1, progress: { recorded: { change: 1 } } });
+		expect(await exists(join(w.place("acme", "late"), "restoring.json"))).toBe(true);
+		// Its claims are spent, and it is recorded: claimed again, it opens the place and ends done, with no second record.
+		row.attempts = 5;
+		await w.pass();
+		expect(w.k.raised).toEqual([]);
+		expect(row).toMatchObject({
+			state: "done",
+			attempts: 6,
+			outcome: { state: "done", result: "imported", mainSha: source.master },
+		});
+		expect(await exists(join(w.place("acme", "late"), "restoring.json"))).toBe(false);
+		expect(await w.refs("acme", "late")).toContain(`refs/heads/main ${source.master}`);
+		expect(w.k.changes.filter((change) => change.place === "acme/late")).toHaveLength(1);
+		quiet(w.events);
+	});
+
 	it("finishes a half-done import from its own snapshot when the same project is asked again after its head moved, with no fetch, and refuses another project there", async () => {
 		const w = await world();
 		// This project's own GitHub: a copy whose head can move.
