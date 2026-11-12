@@ -88,8 +88,7 @@ import { CodingControlBusy } from "./coding-executor.ts";
  *   close …       restore's own jobs (`code-host-restore.ts`) on the restore-shaped bundle, proven by the look
  *                 (`proven: true`): close (`fresh: false`), set aside until a job sees the place emptied, build, and
  *                 open, whose record (`qorpera_code_import_record`, the registry row and change 1) is made inside its
- *                 job, before the mark goes. Then `tidy` removes a file source while it is still the file read
- *                 (and its folder when that leaves it empty).
+ *                 job, before the mark goes. A file source is left where it is: the agent that made it removes it.
  *
  * How it ends, by where it got (the design's 5.3, as the lead's second check corrected it):
  * - The kernel took the request back (`busy` at the look, `lost` at any call) or was not heard, a job gave way, the
@@ -203,7 +202,7 @@ const YIELDED = "CODE_HOST_JOB_YIELDED";
  * longer be finished: an operator finishes or clears that place (one of part C1's refusals). */
 const HALF_DONE: CodeImportRefusal = "IMPORT_PLACE_HALF_DONE";
 /** Steps from which the set-aside job was let go, as a claim's progress names them. */
-const LET_GO: ReadonlySet<CodeImportStep> = new Set(["set-aside", "build", "open", "tidy"]);
+const LET_GO: ReadonlySet<CodeImportStep> = new Set(["set-aside", "build", "open"]);
 
 /** The kernel took the request back (`busy`, `lost`), or a call of it was not heard (`unheard`): nothing more is done
  * for the request in this run. */
@@ -377,7 +376,7 @@ export class CodeImport {
 			typeof options.fetch !== "function" ||
 			typeof options.transports?.connection !== "function" ||
 			typeof options.transports?.public !== "function" ||
-			!["read", "look", "remove"].every(
+			!["read", "look"].every(
 				(name) => typeof (options.jobs as unknown as Record<string, unknown>)?.[name] === "function",
 			) ||
 			!["mark", "close", "setAside", "build", "open", "reopen"].every(
@@ -651,31 +650,8 @@ export class CodeImport {
 			false,
 		);
 		this.#report({ event: "code-import", step: "opened", ...run.named, state: opened.state });
-		if (input.via === "file" && "file" in input.from && input.fileSha256 !== null) {
-			// The file is in the repository now, and goes only while it is still the file the read job read (its
-			// `fileSha256`): another file an agent put there meanwhile stays. A file that could not be removed is left: the
-			// import is in.
-			run.step = "tidy";
-			const path = input.from.file,
-				sha256 = input.fileSha256;
-			try {
-				const tidied = await this.#job(
-					run,
-					(job) => this.#jobs.remove(job, { repository: run.repository, path, sha256 }),
-					false,
-				);
-				this.#report({
-					event: "code-import",
-					step: "tidied",
-					...run.named,
-					removed: tidied?.removed === true,
-					...(tidied?.removed === false ? { kept: tidied.code } : {}),
-				});
-			} catch (error) {
-				if (error instanceof ImportStopped) throw error;
-				this.#report({ event: "code-import-error", step: "tidy", ...run.named, code: codeOf(error) });
-			}
-		}
+		// A file source stays where it is: the agent that made it removes it (the tool's answer says so), through its own
+		// view, whose writes the folder checks; no job of a code host can remove it only while it is the file read.
 		const raw = progress.raw as CodeImportRaw;
 		return codeImportOutcomeOf({
 			schema: OUTCOME,

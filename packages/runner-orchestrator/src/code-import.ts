@@ -1730,8 +1730,10 @@ export function codeImportInputOf(value: unknown): CodeImportInput {
 }
 
 /** The steps of an import, in order, as the progress names the one under way. The first step that names `look` is the
- * one the kernel answers `busy` while the company is not quiet. */
-export const CODE_IMPORT_STEPS = ["fetch", "read", "look", "close", "set-aside", "build", "open", "tidy"] as const;
+ * one the kernel answers `busy` while the company is not quiet. There is no `tidy` after `open` any more: the import
+ * leaves a file source where it is (the agent that made it removes it), and the kernel's step check names only `fetch`
+ * and `look` (migration 20260930736000), so no list there has to agree with this one. */
+export const CODE_IMPORT_STEPS = ["fetch", "read", "look", "close", "set-aside", "build", "open"] as const;
 export type CodeImportStep = (typeof CODE_IMPORT_STEPS)[number];
 
 /** The first bundle, as stored: its name, bytes and their SHA-256, the default branch and its commit, how many refs its
@@ -2248,23 +2250,8 @@ export type CodeImportLookJob = (
 	options?: { fsckMs?: number; scanSeconds?: number; chunkBytes?: number },
 ) => Promise<CodeImportLooked>;
 
-/** Part B's `removeIncomingCodeFile` (the run's `tidy`): the file source removed only while it is still the file the
- * import read (`sha256`, the request's `fileSha256`, which the read job checked), and its folder when that leaves it
- * empty. Another file at the path, none, or no plain file there is kept (`removed: false`, with the code the run logs,
- * `IMPORT_FILE_CHANGED`). */
-export interface CodeImportRemoveValue {
-	readonly repository: CloudCodingRepository;
-	readonly path: string;
-	readonly sha256: string;
-}
-export type CodeImportRemoved =
-	| { readonly removed: true; readonly code: null }
-	| { readonly removed: false; readonly code: "IMPORT_FILE_CHANGED" };
-export type CodeImportRemoveJob = (job: CodeHostJob, value: CodeImportRemoveValue) => Promise<CodeImportRemoved>;
-
 /** The code host jobs the run takes from part B, beside restore's own. */
 export interface CodeImportJobs {
 	readonly read: CodeImportReadJob;
 	readonly look: CodeImportLookJob;
-	readonly remove: CodeImportRemoveJob;
 }

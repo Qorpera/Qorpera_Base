@@ -557,7 +557,12 @@ function importEnded(request: CodeBringIn, ended: CloudCompanyCodeImport): strin
 			look === null
 				? `Brought in as ${folder}${record}.`
 				: `Brought in as ${folder}: ${count(look.commits, "earlier change", "earlier changes")} on ${look.defaultBranch ?? "its main branch"}, ${count(look.files, "file", "files")}${record}.`;
-		return `${facts}${"github" in request.from ? " The copy on GitHub stays as it was; Qorpera no longer works on it there." : ""} Have a coding session add its checks file.${look !== null && look.secrets.found > 0 ? ` ${keyLike(look)}` : ""}`;
+		// Qorpera leaves a file source where it is: the agent that wrote it removes it, through its own view.
+		const source =
+			"github" in request.from
+				? " The copy on GitHub stays as it was; Qorpera no longer works on it there."
+				: ` The file ${request.from.file} is no longer needed: delete it.`;
+		return `${facts}${source} Have a coding session add its checks file.${look !== null && look.secrets.found > 0 ? ` ${keyLike(look)}` : ""}`;
 	}
 	if (ended.state === "refused") {
 		const stop = ended.code === null ? undefined : importStop(ended.code, request, look?.refused);

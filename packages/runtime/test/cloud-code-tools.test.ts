@@ -909,7 +909,7 @@ describe("manage_code describe", () => {
 // existing code in, looks first, and reads how it went in plain words.
 describe("manage_code bring_in: one answer in plain words per way it can go", () => {
 	const imported = (over: Record<string, unknown> = {}) =>
-		imports({ state: "done", step: "tidy", look: look(), result: "imported", change: 1, ...over });
+		imports({ state: "done", step: "open", look: look(), result: "imported", change: 1, ...over });
 
 	it("asks with exactly the request's keys, then says the code is in, where, and what came with it", async () => {
 		const f = await fixture((method, _args, count) =>
@@ -945,7 +945,8 @@ describe("manage_code bring_in: one answer in plain words per way it can go", ()
 		} finally {
 			f.run.close();
 		}
-		// From a file: no GitHub line; the machine's own path is read as the company path, and branch is sent as given.
+		// From a file: no GitHub line, but the file to delete (Qorpera leaves it), by the company path the machine's own path
+		// is read as; and branch is sent as given.
 		const file = await fixture((method) =>
 			method === IMPORT ? asked : imported({ look: look({ commits: 1, files: 1, defaultBranch: null }) }),
 		);
@@ -958,7 +959,7 @@ describe("manage_code bring_in: one answer in plain words per way it can go", ()
 					})
 				).text,
 			).toBe(
-				"Brought in as code/acme/shop: 1 earlier change on its main branch, 1 file; change 1 of its record. Have a coding session add its checks file.",
+				"Brought in as code/acme/shop: 1 earlier change on its main branch, 1 file; change 1 of its record. The file code/_incoming/shop/shop.bundle is no longer needed: delete it. Have a coding session add its checks file.",
 			);
 			expect(file.calls[0]?.args.p_request).toEqual({
 				operationKey: "bring-shop",
@@ -1001,6 +1002,11 @@ describe("manage_code bring_in: one answer in plain words per way it can go", ()
 				"12 MB, 340 changes from 2024-03-01 to 2026-11-10, 2 people other than the company's agents changed it in the last 30 days, 210 files; it fits. It found no strings that look like keys. To bring it in, call bring_in with look false and a new operationKey.",
 			);
 			expect(f.calls[0]?.args.p_request).toMatchObject({ look: true });
+			// A look at a file says nothing of deleting it: the agent brings it in next, from the same file.
+			const file = (await f.invoke({ ...bringIn, look: true, from: { file: "code/_incoming/shop/shop.bundle" } }))
+				.text;
+			expect(file).toMatch(/^12 MB, /);
+			expect(file).not.toContain("delete");
 		} finally {
 			f.run.close();
 		}

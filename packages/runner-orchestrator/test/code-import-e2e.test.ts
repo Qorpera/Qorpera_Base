@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, request, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -25,7 +25,7 @@ import { localShell } from "./helpers/code-host-shell.ts";
 
 // Step 6 from end to end, in the merged tree (the cross-check's second pass): an import claimed by part Q's request
 // loop and run by part C3's CodeImport, with the real parts in between (C2's fetch over protocol v2 and its bundle
-// store; B's read, look and tidy jobs and restore's own close, set-aside, build and open, with real git on a local disk
+// store; B's read and look jobs and restore's own close, set-aside, build and open, with real git on a local disk
 // as the code host). Only the outside world is stood in: GitHub is real `git upload-pack --stateless-rpc` behind a
 // loopback HTTP server, the broker's relay is that server behind the kernel's fetch authority, and the kernel is a small
 // in-memory one that keeps A2's rules (20260930736000) and refuses, as SQL would, any call not of A2's shapes.
@@ -747,7 +747,7 @@ describe("an import from end to end, with every part as merged", { timeout: 240_
 		quiet(w.events);
 	});
 
-	it("brings in a file source an agent made into a bundle, and tidies the file away", async () => {
+	it("brings in a file source an agent made into a bundle, and leaves the file where it is for the agent to remove", async () => {
 		const w = await world();
 		const path = "code/_incoming/drop/notes.bundle";
 		await mkdir(dirname(join(w.companyRoot, path)), { recursive: true });
@@ -777,9 +777,12 @@ describe("an import from end to end, with every part as merged", { timeout: 240_
 			[`refs/heads/main ${source.notesMain}`, `refs/qorpera/kept-here ${source.notesMain}`].sort(),
 		);
 		expect(await readFile(join(w.place("acme", "notes"), "main", "notes.md"), "utf8")).toBe("notes\n");
-		// The file and its folder, emptied, are gone.
-		expect(await exists(join(w.companyRoot, path))).toBe(false);
-		expect(await exists(join(w.companyRoot, "code/_incoming/drop"))).toBe(false);
+		// The bundle stays where the agent put it, byte for byte: the agent removes it (its answer says so).
+		expect(
+			createHash("sha256")
+				.update(await readFile(join(w.companyRoot, path)))
+				.digest("hex"),
+		).toBe(sha256);
 		// Nothing went to GitHub.
 		expect(w.gh.seen).toEqual([]);
 		quiet(w.events);
@@ -812,9 +815,7 @@ describe("an import from end to end, with every part as merged", { timeout: 240_
 		expect(row.outcome).toMatchObject({ state: "done", result: "imported", mainSha: source.notesMain });
 		expect(await readFile(join(w.place("acme", "swap"), "main", "notes.md"), "utf8")).toBe("notes\n");
 		expect((await readFile(join(w.companyRoot, path))).equals(replaced)).toBe(true);
-		expect(w.events.filter((event) => event.step === "tidied")).toEqual([
-			expect.objectContaining({ removed: false, kept: "IMPORT_FILE_CHANGED" }),
-		]);
+		expect(await readdir(dirname(join(w.companyRoot, path)))).toEqual(["notes.bundle"]);
 		quiet(w.events);
 	});
 
