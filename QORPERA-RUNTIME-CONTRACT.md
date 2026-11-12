@@ -6413,6 +6413,14 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
    the file. Reset sidebar takes it away with the rest; Undo puts it back.
 3. **Every emblem in the drawer is drawn in its app's colour** (its manifest's `colour`; fixed colours for the
    built-in pages), no longer black only.
+4. **Apps take their group's colour** (Jonas, 12 November 2026: "I would like for all the icons to share the same
+   color as their group" and "you should also be able to change their colors"; migration
+   `20260930731000_member_app_colours`, SQL test 1224). A group is drawn in its first app's colour, a group inside a
+   group in the group it stands in's, and everything in a group in the group's. A member gives a group or a loose app a
+   colour of their own (Colour in its menu, one of the agents' palette colours, or Default); it is in their own
+   arrangement (`colours`), so Reset sidebar takes it away too. The open page's emblem keeps its colour, on a soft wash
+   of it, no longer white on the selection colour. The company's file names no colours yet: what colour agents give a
+   group is a later change.
 
 ## 20. Enforcement matrix
 
