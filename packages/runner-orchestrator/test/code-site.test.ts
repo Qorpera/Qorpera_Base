@@ -238,13 +238,25 @@ describe("the collect's and the drop's answers", () => {
 		expect(refused("SITE_HOLDS_SECRET STRIPE_KEY\n")).toEqual({
 			problem: { code: "SITE_HOLDS_SECRET", path: null, variable: "STRIPE_KEY" },
 		});
+		// Links from the root: the file (a path of the site, no space in it) and how many it has, never a link (review
+		// round 3 of #1691).
+		expect(refused("SITE_LINKS_FROM_ROOT index.html 3\n")).toEqual({
+			problem: { code: "SITE_LINKS_FROM_ROOT", path: "index.html", variable: null, links: 3 },
+		});
+		expect(refused("SITE_LINKS_FROM_ROOT css/a.css 1\n")).toEqual({
+			problem: { code: "SITE_LINKS_FROM_ROOT", path: "css/a.css", variable: null, links: 1 },
+		});
+		// A detail that would not fit whole is left out (review of #1691, F1): the code alone.
+		expect(refused("SITE_FILE_NAME\n")).toEqual({ problem: problem("SITE_FILE_NAME") });
+		expect(refused("SITE_FILE_TOO_LARGE\n")).toEqual({ problem: problem("SITE_FILE_TOO_LARGE") });
+		expect(refused("SITE_LINKS_FROM_ROOT\n")).toEqual({
+			problem: { code: "SITE_LINKS_FROM_ROOT", path: null, variable: null, links: null },
+		});
 		// A detail of 1,000 bytes, the most the collect writes.
 		expect(refused(`SITE_FILE_NAME ${"\\xc3\\xa9".repeat(125)}\n`)).toEqual({
 			problem: problem("SITE_FILE_NAME", "\u00e9".repeat(125)),
 		});
 		for (const line of [
-			"SITE_FILE_NAME\n",
-			"SITE_FILE_TOO_LARGE\n",
 			"SITE_HOLDS_SECRET\n",
 			"SITE_HOLDS_SECRET 1KEY\n",
 			"SITE_HOLDS_SECRET STRIPE_KEY \n",
@@ -262,6 +274,15 @@ describe("the collect's and the drop's answers", () => {
 			`SITE_FILE_NAME ${"\\xc3\\xa9".repeat(125)}a\n`,
 			"SITE_HOLDS_SECRET 1KEY js/app.js\n",
 			"SITE_HOLDS_SECRET KEY-1 js/app.js\n",
+			"SITE_LINKS_FROM_ROOT index.html\n",
+			"SITE_LINKS_FROM_ROOT index.html /src/style.css\n",
+			"SITE_LINKS_FROM_ROOT index.html 1 /src/style.css\n",
+			"SITE_LINKS_FROM_ROOT index.html 0\n",
+			"SITE_LINKS_FROM_ROOT index.html 03\n",
+			"SITE_LINKS_FROM_ROOT index.html 1234567890\n",
+			"SITE_LINKS_FROM_ROOT index.html 3 \n",
+			"SITE_LINKS_FROM_ROOT  3\n",
+			"SITE_LINKS_FROM_ROOT 3\n",
 			"SITE_UNHEARD_OF\n",
 			"SITE_NO_INDEX",
 			"SITE_NO_INDEX\nSITE_NO_INDEX\n",
@@ -372,22 +393,49 @@ describe("the words of a refused site", () => {
 			`${head}holds the value of STRIPE_KEY in one of its files or file names.${key}${foot}`,
 		);
 		expect(said(problem("SITE_FILE_TOO_LARGE"))).toBe(`${head}has a file over 10 MB.${foot}`);
+		// Links from the root: the file and how many, never a link; one; no file to be shown.
+		const relative =
+			'. A site is served under an address of its own, never at the top of a domain: link its files with relative links (src/app.js, ../img/logo.png), in its scripts too, which Qorpera does not read, or set your bundler\'s base path (Vite: base: "./").';
+		expect(said({ code: "SITE_LINKS_FROM_ROOT", path: "index.html", variable: null, links: 3 })).toBe(
+			`${head}has links that start with / in index.html (3 of them)${relative}${foot}`,
+		);
+		expect(said({ code: "SITE_LINKS_FROM_ROOT", path: "css/a.css", variable: null, links: 1 })).toBe(
+			`${head}has a link that starts with / in css/a.css${relative}${foot}`,
+		);
+		expect(said({ code: "SITE_LINKS_FROM_ROOT", path: null, variable: null, links: null })).toBe(
+			`${head}has a link that starts with /${relative}${foot}`,
+		);
 		expect(said(problem("SITE_FILE_NAME"))).toBe(
 			`${head}has a file whose name a site cannot serve (only letters, digits, dots, hyphens and underscores, each part starting with a letter, a digit or an underscore and at most 200 bytes, at most 16 parts and 512 bytes in all).${foot}`,
 		);
 	});
 
-	it("shows a hostile name on one line, cut, and stays within 3,500 bytes", () => {
-		const words = codeSiteRefusedSummary(problem("SITE_FILE_NAME", `a\nb‮${"x".repeat(5000)}.html`), "web/‮dist");
-		expect(words).toContain('the site in "web/�dist" has a file whose name a site cannot serve: a�b�xx');
-		expect(words).toContain("x… (only letters");
-		expect(words.split("\n")).toHaveLength(1);
+	it("shows a hostile name on one line and whole, and leaves it out rather than cut it past 3,500 bytes", () => {
+		const fits = codeSiteRefusedSummary(problem("SITE_FILE_NAME", `a\nb‮${"x".repeat(900)}.html`), "web/‮dist");
+		expect(fits).toContain(
+			`the site in "web/�dist" has a file whose name a site cannot serve: a�b�${"x".repeat(900)}.html (only letters`,
+		);
+		expect(fits.split("\n")).toHaveLength(1);
+		// Review of #1691, F1: a path is never cut, since a cut one can carry the start of a secret value no mask knows
+		// whole. Past the words' 3,500 bytes it is left out.
+		const name = codeSiteRefusedSummary(problem("SITE_FILE_NAME", `a${"x".repeat(5000)}.html`), "dist");
+		expect(name).toContain('the site in "dist" has a file whose name a site cannot serve (only letters');
+		expect(name).not.toContain("xxxxxxxx");
 		const largest = codeSiteRefusedSummary(
 			{ code: "SITE_HOLDS_SECRET", path: "é".repeat(5000), variable: "A".repeat(128) },
 			"é".repeat(150),
 		);
 		expect(bytes(largest)).toBeLessThanOrEqual(3500);
+		expect(largest).toContain(`holds the value of ${"A".repeat(128)} in one of its files or file names.`);
 		expect(largest.endsWith("[code=CODING_CHECKS_SITE_REFUSED]")).toBe(true);
+		const links = (path: string) =>
+			codeSiteRefusedSummary({ code: "SITE_LINKS_FROM_ROOT", path, variable: null, links: 2 }, "é".repeat(150));
+		const long = links("p".repeat(3000));
+		expect(bytes(long)).toBeLessThanOrEqual(3500);
+		expect(long).toContain("has a link that starts with /. A site is served");
+		expect(long).not.toContain("pppppppp");
+		const whole = links(`a/${"b".repeat(500)}.html`);
+		expect(whole).toContain(`has links that start with / in a/${"b".repeat(500)}.html (2 of them). A site`);
 	});
 });
 
@@ -1226,18 +1274,410 @@ describe("the collect's rules on the machine, as the tree's", { timeout: 180_000
 		}
 	});
 
-	it("cuts a long name's spelling at a whole byte's, so the answer still reads", async () => {
-		// Five parts of 100 two-byte characters: 4,000 bytes spelled, cut within 1,000 at a whole \xHH.
+	it("leaves out a name whose spelling would not fit whole, never cuts it (review of #1691, F1)", async () => {
+		// Five parts of 100 two-byte characters: 4,000 bytes spelled. A cut at 1,000 would carry the name's start, and a
+		// value only the host's mask knows could begin there: the answer is the code alone.
 		const path = `a${"/".concat("\u00e9".repeat(100)).repeat(5)}.js`;
 		const { run, answer } = await judged({ ...index, [path]: "x" });
-		expect(run.code).toBe(3);
-		const detail = run.output.slice("SITE_FILE_NAME ".length, -1);
-		// "a/", the first part's 100 characters, "/", then 24 whole characters and the first byte of the next: 999 bytes,
-		// the next byte's spelling would pass 1,000. A half character reads as U+FFFD.
-		expect(detail.length).toBe(999);
-		expect(detail).toMatch(/^a\/(\\xc3\\xa9){100}\/(\\xc3\\xa9){24}\\xc3$/);
-		expect(answer).toEqual({
-			problem: problem("SITE_FILE_NAME", `a/${"\u00e9".repeat(100)}/${"\u00e9".repeat(24)}\ufffd`),
+		expect(run).toEqual({ code: 3, signal: null, output: "SITE_FILE_NAME\n" });
+		expect(answer).toEqual({ problem: problem("SITE_FILE_NAME") });
+		// One of 1,000 bytes spelled is named whole; one byte more and it is left out.
+		const name = `${"\u00e9".repeat(124)}.js`;
+		expect((await judged({ ...index, [`abcd/${name}`]: "x" })).run.output).toBe(
+			`SITE_FILE_NAME abcd/${"\\xc3\\xa9".repeat(124)}.js\n`,
+		);
+		expect((await judged({ ...index, [`abcde/${name}`]: "x" })).run.output).toBe("SITE_FILE_NAME\n");
+	});
+});
+
+// The first live site (Wristband, 11 November 2026) loaded /src/style.css and /src/app.js from the top of the sites'
+// domain, where no site is served: its page showed with no design and no script. -----------------------------------------
+describe("the links from the root, on the machine", { timeout: 180_000 }, () => {
+	let shared: Promise<Machine> | undefined;
+	let sequence = 300;
+	/** The collect over a site of `files` in a run of its own, with `environment`. */
+	const collectOf = async (files: Record<string, Content>, environment: Record<string, string> = {}) => {
+		shared ??= machine();
+		const m = await shared;
+		const name = runName(sequence++);
+		await m.site(name, files);
+		const started = performance.now();
+		const run = await m.collected(name, environment);
+		return { ...run, ms: performance.now() - started, m, name };
+	};
+	const refusedWith = async (files: Record<string, Content>, line: string) =>
+		expect(await collectOf(files), line).toMatchObject({ code: 3, signal: null, output: line });
+	const page = (body: string) => `<!doctype html><html><head><title>t</title></head><body>${body}</body></html>`;
+
+	it("refuses a page that links from the root in any attribute that loads or leads somewhere, naming its file", async () => {
+		// Each with the link it holds (review round 3 of #1691: the answer names the file and how many, never a link).
+		for (const [body] of [
+			['<link rel="stylesheet" href="/src/style.css">', "/src/style.css"],
+			['<script type="module" src="/src/app.js"></script>', "/src/app.js"],
+			['<img src="a.png" srcset="small.png 1x, /big.png 2x">', "/big.png"],
+			['<picture><source srcset="/a.webp" type="image/webp"></picture>', "/a.webp"],
+			['<link rel="preload" as="image" imagesrcset="a.png 1x, /b.png 2x">', "/b.png"],
+			['<video poster="/poster.jpg" src="v.mp4"></video>', "/poster.jpg"],
+			['<form action="/send"><button formaction="b">x</button></form>', "/send"],
+			['<form><button formaction="/other">x</button></form>', "/other"],
+			['<object data="/o.svg"></object>', "/o.svg"],
+			['<svg><use xlink:href="/sprite.svg#i"></use></svg>', "/sprite.svg#i"],
+			['<a href="/">Home</a>', "/"],
+			['<base href="/app/">', "/app/"],
+			["<A HREF=/about.html>About</A>", "/about.html"],
+			["<iframe SRC = '/frame.html'></iframe>", "/frame.html"],
+			['<a href="&#47;x.html">x</a>', "/x.html"],
+			['<a href="  /spaced.html ">x</a>', "  /spaced.html "],
+			['<a href="\\x.html">x</a>', "\\x5cx.html"],
+			['<meta http-equiv="Refresh" content="0; URL=\'/next.html\'">', "/next.html"],
+			['<meta http-equiv="refresh" content="5;url=/later.html">', "/later.html"],
+			['<div style="background: url(/bg.png) no-repeat">x</div>', "/bg.png"],
+			["<style>body { background: URL( '/bg2.png' ) }</style>", "/bg2.png"],
+			['<style>@import "/base.css";</style>', "/base.css"],
+			// Review of #1691: the spellings looked for once more.
+			['<a ping="https://t.example/p /ping">x</a>', "/ping"],
+			['<table background="/t.gif"><tr><td>x</td></tr></table>', "/t.gif"],
+			['<svg><image href="/i.png"></image></svg>', "/i.png"],
+			['<a href="&sol;x">x</a>', "/x"],
+			['<a href="&Tab;/tab">x</a>', "\\x09/tab"],
+			['<a href="/&NewLine;nl">x</a>', "/\\x0anl"],
+			['<style>a { background: image-set("/set.png" 1x) }</style>', "/set.png"],
+			// Review round 4 of #1691: what a browser loads where Python 3.14's parser reads otherwise.
+			// An empty comment ends at once, also when a later "-->" stands in the page.
+			['<!--><img src="/after-empty-comment.png"><!-- later -->', "/after-empty-comment.png"],
+			['<!---><img src="/after-empty-comment-2.png"><!-- later -->', "/after-empty-comment-2.png"],
+			['<p><![CDATA[ x > <img src="/after-bogus-comment.png"> ]]>', "/after-bogus-comment.png"],
+			['<script><!-- <script> </script> --></script><img src="/after-script.png">', "/after-script.png"],
+			['<svg><title><a href="/svg-title-link">t</a></title></svg>', "/svg-title-link"],
+			['<svg><style><img src="/breaks-out.png"></style></svg>', "/breaks-out.png"],
+			['<template><img src="/in-template.png"></template>', "/in-template.png"],
+			['<noscript><img src="/in-noscript.png"></noscript>', "/in-noscript.png"],
+			['<a href="/first" href="second">x</a>', "/first"],
+			['<img src="/nul\u0000in-value.png">', "/nul\ufffdin-value.png"],
+			['<a href="&#47x">x</a>', "/x"],
+			// Foreign content as the tree builder keeps it: an SVG <style>'s own text is its sheet (CDATA and character
+			// references included, comments and child elements between its pieces), and a text-only element's name in
+			// SVG or MathML opens no text, so an <img> there breaks out and loads.
+			["<svg><style><![CDATA[ a { fill: url(/in-cdata.svg#g) } ]]></style></svg>", "/in-cdata.svg#g"],
+			["<svg><style>a { background: url(<![CDATA[/split.png]]>) }</style></svg>", "/split.png"],
+			["<svg><style>a { background: url(/sp<!-- c -->lit.png) }</style></svg>", "/split.png"],
+			["<svg><style>a { background: url(&#47;ref.png) }</style></svg>", "/ref.png"],
+			["<svg><style><a></a>b { background: url(/after-child.png) }</style></svg>", "/after-child.png"],
+			["<style>a { b: url(/first-sheet.png) }</style><style>b { }</style>", "/first-sheet.png"],
+			['<svg><svg/><style><img src="/still-in-svg.png"></style></svg>', "/still-in-svg.png"],
+			['<svg><title/><style><img src="/after-closed-title.png"></style></svg>', "/after-closed-title.png"],
+			['<math><title><style><img src="/math-title.png"></style></title></math>', "/math-title.png"],
+			['<svg><math><mi><style><img src="/svg-math-mi.png"></style></mi></math></svg>', "/svg-math-mi.png"],
+			[
+				'<math><annotation-xml><style><img src="/annotation.png"></style></annotation-xml></math>',
+				"/annotation.png",
+			],
+			['<math><mi><mglyph><style><img src="/mglyph.png"></style></mglyph></mi></math>', "/mglyph.png"],
+			['<svg><font><style><img src="/plain-font.png"></style></font></svg>', "/plain-font.png"],
+			['<svg><g><foreignObject></g><style><img src="/after-walk.png"></style></svg>', "/after-walk.png"],
+			[
+				'<svg><foreignObject><svg><g></g><style><img src="/inner-svg.png"></style></svg></foreignObject></svg>',
+				"/inner-svg.png",
+			],
+			// A breakout stops at the integration point, so its end tag still finds it, and the SVG around is foreign again.
+			[
+				'<svg><foreignObject><svg><p></p></foreignObject><style><img src="/back-in-svg.png"></style></svg>',
+				"/back-in-svg.png",
+			],
+			// Review round 5 of #1691, F2: an HTML element inside an integration point is the current node, so <![CDATA[
+			// there is a bogus comment to the first ">" (a self-closed <div/> is open too: HTML ignores its slash).
+			['<svg><foreignObject><div><![CDATA[ x > <img src="/real.png"> ]]></div></foreignObject></svg>', "/real.png"],
+			[
+				'<svg><foreignObject><div/><![CDATA[ x > <img src="/after-div.png"> ]]></foreignObject></svg>',
+				"/after-div.png",
+			],
+			// An end tag that pops past an HTML element the reader still holds open may be one a browser ignores (it would
+			// stay in HTML): CDATA after it is also read as markup after its first ">".
+			[
+				'<svg><foreignObject><div></foreignObject><![CDATA[ x > <img src="/after-doubt.png"> ]]></svg>',
+				"/after-doubt.png",
+			],
+			// A void element under an HTML element breaks nothing out: the <div> stays the current node.
+			[
+				'<svg><foreignObject><div><img src="a.png"><![CDATA[ x > <img src="/after-img.png"> ]]></div></foreignObject></svg>',
+				"/after-img.png",
+			],
+			// mglyph right above a MathML text point is MathML; under an HTML element the reader holds (which may have
+			// ended unseen) it is taken as MathML too, so its <style> is no text and the <img> loads: where it must guess,
+			// the reader counts.
+			[
+				'<math><mi><b><mglyph><style><img src="/mglyph-under-b.png"></style></mglyph></b></mi></math>',
+				"/mglyph-under-b.png",
+			],
+		])
+			await refusedWith({ "index.html": page(body as string) }, "SITE_LINKS_FROM_ROOT index.html 1\n");
+		// A sheet the page ends inside is still read: an HTML <style> and an SVG one.
+		for (const content of ["<style>a { b: url(/never-closed.png) }", "<svg><style>a { b: url(/never-closed.png) }"])
+			await refusedWith({ "index.html": content }, "SITE_LINKS_FROM_ROOT index.html 1\n");
+	});
+
+	it("never names a link: its file and how many it has (review round 3 of #1691)", async () => {
+		// The review of round 1's case, a long link ending in 32 bytes of ASCII, and three links in one page.
+		await refusedWith(
+			{ "index.html": page(`<a href="/${"é".repeat(120)}OLDsecret-0123456789abcdefghijKL">x</a>`) },
+			"SITE_LINKS_FROM_ROOT index.html 1\n",
+		);
+		await refusedWith(
+			{ "index.html": page('<link href="/a.css"><a href="b.html">b</a><img src="/c.png"><a href="/">home</a>') },
+			"SITE_LINKS_FROM_ROOT index.html 3\n",
+		);
+		await refusedWith(
+			{ "index.html": page("x"), "a.css": "a { background: url(/a.png) } @import '/b.css'; b { c: url(c.png) }" },
+			"SITE_LINKS_FROM_ROOT a.css 2\n",
+		);
+	});
+
+	it("refuses a style sheet that links from the root, in url() or @import", async () => {
+		for (const [css] of [
+			['@import "/base.css";', "/base.css"],
+			["@import '/print.css' print;", "/print.css"],
+			["@import url(/u.css);", "/u.css"],
+			['@font-face { src: url("/f.woff2") format("woff2"); }', "/f.woff2"],
+			["a { background: URL(  /x.png  ) }", "/x.png"],
+			// Review of #1691, F2: comments wherever CSS allows them, any case, image-set's strings, escapes.
+			['@import /* shared styles */ "/base.css";', "/base.css"],
+			["@import/**/url(/x.css);", "/x.css"],
+			["@IMPORT /* a */\n/* b */ '/u2.css';", "/u2.css"],
+			['a { background-image: image-set("/a.png" 1x, "b.png" 2x) }', "/a.png"],
+			['a { background-image: -webkit-image-set("/w.png" 1x, url(w2.png) 2x) }', "/w.png"],
+			["a { background-image: IMAGE-SET('b.png' 1x, '/c.png' 2x) }", "/c.png"],
+			["a { background: url(\\2f esc.png) }", "/esc.png"],
+			['a { background: url("\\2f q.png") }', "/q.png"],
+			["a { background: url(/*x*/) }", "/*x*/"],
+			['@font-face { font-family: A; src: local("A"), url(/font.woff) }', "/font.woff"],
+			// Review round 3 of #1691, F2: escapes as CSS Syntax decodes them, in names, strings and URLs.
+			['@im\\70ort "/base.css";', "/base.css"],
+			["a { background:u\\72l(/image.png) }", "/image.png"],
+			["a { background: \\75 rl(/x.png) }", "/x.png"],
+			["a { background: U\\52L(/y.png) }", "/y.png"],
+			['a { background: image-\\73 et("/z.png" 1x) }', "/z.png"],
+			['a { mask-image: src("/s.png") }', "/s.png"],
+			["a { background: url(\\/x.png) }", "/x.png"],
+			['@\\69MPORT "\\2f q.css";', "/q.css"],
+			["a { background: url(/a\\ b.png) }", "/a b.png"],
+			["a { background: url(/prefix-secret-1234\\)tail-5678) }", "/prefix-secret-1234)tail-5678"],
+			// Review round 4 of #1691: CSS's input normalized first (CR LF, CR and FF to LF, NUL to U+FFFD).
+			['a { background: url("\\\r\n/continued.png") }', "/continued.png"],
+			["a { background: url(/a\u0000b.png) }", "/a\ufffdb.png"],
+			// A string or a URL the file ends inside is still one.
+			['@import "/at-the-end.css', "/at-the-end.css"],
+			["a { background: url(/at-the-end.png", "/at-the-end.png"],
+			// Review round 5 of #1691, F1: a backslash the file ends on. In a string it is dropped, so the string is "/";
+			// elsewhere it is U+FFFD, so the URL token is "/x<U+FFFD>". Spaces before the end of a URL token are no part of it.
+			['@import "/\\', "/"],
+			['a { background: url("/fn\\', "/fn"],
+			["a { background: url(/x\\", "/x�"],
+			["a { background: url(  /spaces-at-the-end.png  ", "/spaces-at-the-end.png"],
+		])
+			await refusedWith({ "index.html": page("x"), "css/site.css": css }, "SITE_LINKS_FROM_ROOT css/site.css 1\n");
+		// A page of any case of its extension; the first link in C order of the files: a.css before index.html.
+		await refusedWith(
+			{ "index.html": page("x"), "Page.HTM": page('<a href="/x">x</a>') },
+			"SITE_LINKS_FROM_ROOT Page.HTM 1\n",
+		);
+		await refusedWith(
+			{ "index.html": page('<link href="/i.css">'), "a.css": "b { background: url(/a.png) }" },
+			"SITE_LINKS_FROM_ROOT a.css 1\n",
+		);
+	});
+
+	it("takes every link that is not from the root, and what is no link at all", async () => {
+		const body = [
+			'<script src="//cdn.example/x.js"></script>',
+			'<a href="https://example.com/x">x</a><a href="HTTP://EXAMPLE.COM/">x</a>',
+			'<a href="mailto:a@example.com">m</a><a href="tel:+4512345678">t</a><a href="javascript:void(0)">j</a>',
+			'<a href="#top">top</a><a href="?q=/x">q</a><a href="">e</a><a href=" ">s</a><a href>bare</a>',
+			'<img src="data:image/png;base64,AAAA"><img srcset="data:image/jpeg;base64,/9j/4AAQSkZJRg 1x, b.png 2x">',
+			'<img srcset="a.png 1x,b.png 2x"><img src="src/app.png"><img src="../img/logo.png">',
+			'<a href="/\\evil.example/x">x</a><a href="/&#10;/cdn.example/x">x</a>',
+			'<p>a url(/not-css.png) in words, and @import "/not-css.css"</p>',
+			'<meta http-equiv="refresh" content="/no-time"><meta name="description" content="2; url=/not-a-refresh">',
+			// Review round 4 of #1691: text, not elements, as a browser reads them.
+			'<textarea><img src="/in-textarea.png"></textarea><title><img src="/in-title.png"></title>',
+			'<xmp><img src="/in-xmp.png"></xmp><iframe><img src="/in-iframe.png"></iframe>',
+			'<noembed><img src="/in-noembed.png"></noembed><noframes><img src="/in-noframes.png"></noframes>',
+			'<iframe/><img src="/after-closed-iframe.png"></iframe><script/><img src="/after-closed-script.png"></script>',
+			'<script><!-- <script> </script> <img src="/in-double-escaped.png"> --></script>',
+			'<a href="second" href="/first">x</a><img\u0000src="/nul-in-tag.png">',
+			'<svg><![CDATA[ <image href="/in-cdata.png"/> ]]></svg><p><![CDATA[ <img src="/in-bogus.png"> ]]>',
+			'<svg><style>a { fill: red }</style><title>t</title></svg><style>/* <img src="/in-style.png"> */</style>',
+			// In SVG a <p> breaks back out to HTML, and a foreignObject holds HTML: their text-only elements are text again.
+			'<svg><p></p><style><img src="/after-breakout.png"></style></svg>',
+			'<svg><foreignObject><textarea><img src="/in-foreign-object.png"></textarea></foreignObject></svg>',
+			// One dash before ">" leaves a script's escaped text escaped, so its "<script>" still opens the double escape.
+			'<script><!-- -> <script> </script> <img src="/in-script-after-one-dash.png"> --> </script>',
+			// A self-closed SVG <style> holds no text; a MathML <style> is no sheet; an SVG <style>'s child elements'
+			// text is not its sheet.
+			"<svg><style/>url(/not-css.png)</svg><math><style>a { b: url(/math-style.png) }</style></math>",
+			"<svg><style>a { } <a>b { c: url(/in-child.png) }</a></style></svg>",
+			// Out to HTML: a <font> with color, face or size, an end tag </p> or </br>, an annotation-xml that holds HTML
+			// (and mglyph there is HTML too), an SVG inside MathML's <mi>; and CDATA at an integration point is text.
+			'<svg><font color="red"><style><img src="/after-font.png"></style></font></svg>',
+			'<svg></p><style><img src="/after-end-p.png"></style></svg><svg></br><style><img src="/after-end-br.png"></style></svg>',
+			'<math><annotation-xml encoding="TEXT/HTML"><style><img src="/annotation-html.png"></style></annotation-xml></math>',
+			'<math><annotation-xml encoding="text/html"><mglyph><style><img src="/html-mglyph.png"></style></mglyph></annotation-xml></math>',
+			'<math><mi><svg><foreignObject><style><img src="/in-svg-in-math.png"></style></foreignObject></svg></mi></math>',
+			'<math><annotation-xml><svg><foreignObject><style><img src="/svg-in-annotation.png"></style></foreignObject></svg></annotation-xml></math>',
+			// Review round 5 of #1691: once an HTML element inside an integration point ends, or a void one never opens, the
+			// point is the current node again and CDATA there is text; an end tag from a nested SVG pops it to its element.
+			'<svg><foreignObject><p>a</p><br><![CDATA[ x > <img src="/cdata-at-the-point.png"> ]]></foreignObject></svg>',
+			'<svg><foreignObject><div><svg><g></div><style><img src="/after-inner-svg.png"></style></foreignObject></svg>',
+			// Read again, CDATA is markup only after its first ">" (before it, a bogus comment), and only until foreign
+			// content ends.
+			'<svg><foreignObject><div></foreignObject><![CDATA[ <img src="/in-the-bogus-comment.png"> ]]></svg>',
+			'<svg><foreignObject><div></foreignObject></svg><svg><![CDATA[ x > <img src="/after-foreign-content-ended.png"> ]]></svg>',
+			'<svg><foreignObject><![CDATA[ a > <img src="/in-cdata-at-point.png"> ]]></foreignObject></svg>',
+			// HTML's whitespace is ASCII's: a no-break space splits no ping or srcset, starts no refresh, and is no
+			// URL's blank; an http-equiv with a space is no refresh, nor a time not followed by ;, , or a space.
+			'<a ping="https://t.example/p /not-split">p</a><img srcset=" /nbsp.png 1x">',
+			'<meta http-equiv="refresh" content=" 0; url=/nbsp-time"><meta http-equiv="refresh" content="0; url= /nbsp-url">',
+			'<meta http-equiv=" refresh" content="0; url=/spaced-equiv"><meta http-equiv="refresh" content="0/next">',
+
+			'<meta http-equiv="refresh" content="30"><meta name="description" content="/not-a-link">',
+			'<div data="/not-object" title="/x" data-href="/x" class="/x">x</div><object data="o.svg"></object>',
+			'<!-- <link rel="stylesheet" href="/commented.css"> --><!--[if IE]><script src="/ie.js"></script><![endif]-->',
+			"<script>var s = '<img src=\"/in-script.png\">'; fetch('/api/x');</script>",
+			'<pre>&lt;a href="/in-pre"&gt;</pre><p>text with href="/x" in it</p>',
+			'<style>/* url(/in-comment.png) */ a::after { content: "url(/in-string.png)"; } b { background: url(c.png) }</style>',
+			'<div style="background: url(rel.png)">x</div>',
+		].join("\n");
+		const files = {
+			"index.html": page(`${body}<form><button>send</button></form><a ping="https://t.example/p">p</a>`),
+			"a.css": '/* @import "/c.css"; */ b { background: url("img/b.png"), url(data:image/png;base64,/9j/x) }',
+			// A comment inside url() makes no URL at all: CSS drops the declaration, and so the collect takes no link there.
+			// Strings elsewhere are no links.
+			"b.css": [
+				"a { background: url( /* c */ /x.png ) }",
+				'b { background: url( /* c */ "/y.png") }',
+				'c { background: image-set("rel.png" type("image/png")) }',
+				'd { content: "/x"; font-family: "/odd" }',
+				'f { font-family: var(--x, "/fallback") }',
+				"@import url(rel.css) layer(base) supports(display: grid);",
+				'@media print { e { content: "/p" } }',
+				'@import foo "/not-an-import.css";',
+				// No url token: a hash, another function's name, a space inside a bare URL, a comment, a string.
+				"g { background: #url(/x) } h { background: myurl(/x) } i { background: url(/a b.png) }",
+				'/* u\\72l(/in-comment.png) */ j { content: "u\\72l(/in-string.png)" }',
+				// A bad URL runs to its own ")", an escaped one inside it is no end; a control inside a URL makes it bad.
+				"k { b: url(x y\\) url(/z.png) } l { b: url(/a\u0001b.png) }",
+				// Escapes decoded before a URL is judged: "//" to another host, and a scheme.
+				'@import "\\2f\\2f cdn.example/x.css"; m { b: image-set("\\68ttps://x.example/a.png" 1x) }',
+				// Review round 4 of #1691: a string a line break ends is a bad string (no import), CR and FF are line
+				// breaks, a URL of only spaces is empty, a continued string is one string.
+				'@import "/bad-string.css\n;',
+				'@import "/form-feed.css\f"; @import "/carriage-return.css\r";',
+				'n { b: url(   ) } o { content: "\\\r\n/continued-text" }',
+			].join("\n"),
+			"app.js": "fetch('/api/items'); const u = '/src/x.js';",
+			"notes.txt": '<a href="/x">',
+			// A text-only element that never ends: everything after it is text.
+			"plain.html": '<p>x</p><plaintext><img src="/in-plaintext.png"></plaintext><img src="/after.png">',
+			// Review round 5 of #1691: the file's end inside a comment, and a backslash at the end of a string (dropped) and
+			// of a URL (U+FFFD): no link from the root.
+			"c.css": "p { b: url(rel.png) } /* url(/in-a-comment-never-closed.png)",
+			"d.css": '@import "rel\\',
+			"e.css": "a { b: url(\\",
+			"img/x.svg": '<svg><image href="/i.png"/></svg>',
+		};
+		const run = await collectOf(files);
+		expect(run.output).toMatch(/^tree [0-9a-f]{40}\nfiles 10\n/);
+	});
+
+	it("never prints a byte of a link, so a value in one stays unseen in any spelling (review round 3 of #1691)", async () => {
+		const environment = {
+			QORPERA_SITE_SECRET_NAMES: "LINK_KEY ESCAPED_KEY",
+			LINK_KEY: "link-secret-4242",
+			ESCAPED_KEY: "prefix-secret-1234)tail-5678",
+		};
+		// Written plainly the file's bytes hold it, and the scan of the bytes names the file as before.
+		const plain = await collectOf({ "index.html": page('<a href="/k/link-secret-4242">x</a>') }, environment);
+		expect(plain.output).toBe("SITE_HOLDS_SECRET LINK_KEY index.html\n");
+		// By character references, or by a CSS escape (the review's case: the URL token takes the escaped parenthesis,
+		// and the bytes never hold the value): a link from the root, with no byte of it printed.
+		const spelled = await collectOf({ "index.html": page('<a href="/k/&#108;ink-secret-4242">x</a>') }, environment);
+		expect(spelled).toMatchObject({ code: 3, output: "SITE_LINKS_FROM_ROOT index.html 1\n" });
+		const escaped = await collectOf(
+			{ "index.html": page("x"), "a.css": "a{background:url(/prefix-secret-1234\\)tail-5678)}" },
+			environment,
+		);
+		expect(escaped).toMatchObject({ code: 3, output: "SITE_LINKS_FROM_ROOT a.css 1\n" });
+		for (const run of [plain, spelled, escaped]) {
+			const err = await readFile(join(run.m.root, run.name, "site.err"), "utf8");
+			for (const value of [environment.LINK_KEY, environment.ESCAPED_KEY])
+				for (let at = 0; at + 8 <= value.length; at++)
+					for (const text of [run.output, err]) expect(text).not.toContain(value.slice(at, at + 8));
+			expect(await run.m.wrote(run.name)).toEqual([]);
+		}
+	});
+
+	it("reads 25 MiB of pages and styles within the collect's time", async () => {
+		const unit =
+			'<li><a href="p/x.html" class="c"><img src="i/a.png" srcset="i/a.png 1x, i/b.png 2x" alt="x"></a></li>\n';
+		const fill = (bytes: number, text: string) => text.repeat(Math.floor(bytes / text.length));
+		const dense = {
+			"index.html": page(fill(10 * MiB - 200, unit)),
+			"b.html": fill(10 * MiB, unit),
+			"c.css": fill(5 * MiB - 10_000, "a { background: url(i/a.png) } /* c */ b { content: 'x' }\n"),
+		};
+		const made = await collectOf(dense);
+		expect(made.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\n/);
+		// Shapes the parser must not take long over: a comment never closed, a tag never closed, a value never closed,
+		// a page of angle brackets; and a style sheet of unclosed strings and comments.
+		const odd = {
+			"index.html": `<p>x</p><!--${"a<b>".repeat(MiB)}`,
+			"a.html": `<a href="x" title="${"&amp;<".repeat(MiB / 2)}`,
+			"b.html": "<".repeat(5 * MiB),
+			"c.html": `<div ${"a=b ".repeat(MiB)}`,
+			"d.css": `"${"x/*".repeat(MiB)}`,
+			"e.css": `/*${"url(".repeat(MiB)}`,
+		};
+		const slow = await collectOf(odd);
+		expect(slow.output).toMatch(/^tree [0-9a-f]{40}\nfiles 6\n/);
+		// Style sheets of as many tokens as bytes: the tokenizer stays linear.
+		const tokens = await collectOf({
+			"index.html": "<p>x</p>",
+			"t.css": "a/".repeat(5 * MiB),
+			"u.css": "(".repeat(5 * MiB),
+			"v.css": '"x" '.repeat((9 * MiB) / 4),
 		});
+		expect(tokens.output).toMatch(/^tree [0-9a-f]{40}\nfiles 4\n/);
+		// Scripts the escaped states must not take long over: dashes, angle brackets, nested script openings.
+		const scripts = await collectOf({
+			"index.html": `<script>${"-".repeat(8 * MiB)}</script>`,
+			"a.html": `<script><!--${"<s".repeat(4 * MiB)}`,
+			"b.html": `<script><!--${"<script>-".repeat(MiB / 2)}`,
+		});
+		expect(scripts.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\n/);
+		// Foreign content: a million open SVG elements and as many end tags that match none, a quarter million SVG
+		// sheets, and breakouts that leave a MathML element open each time.
+		const foreign = await collectOf({
+			"index.html": `<svg>${"<g>".repeat(MiB)}${"</x>".repeat(MiB)}`,
+			"a.html": "<svg><style>a</style>".repeat(MiB / 4),
+			"b.html": "<math><mi><svg><g><p>".repeat(MiB / 4),
+		});
+		expect(foreign.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\n/);
+		// HTML inside an integration point: a million open elements an end tag pops at once, and CDATA read again as
+		// markup, in one long section and in half a million short ones.
+		const doubt = "<svg><foreignObject><div></foreignObject>";
+		const html = await collectOf({
+			"index.html": `<svg><foreignObject>${"<div>".repeat(MiB)}</svg>`,
+			"a.html": `${doubt}<![CDATA[>${"<img src=a>".repeat(MiB / 2)}]]>`,
+			"b.html": `${doubt}${"<![CDATA[>a]]>".repeat(MiB / 2)}`,
+		});
+		expect(html.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\n/);
+		console.log(
+			`links: 25 MiB of dense pages and styles ${Math.round(made.ms)} ms, odd shapes ${Math.round(slow.ms)} ms, style sheets of a token a byte ${Math.round(tokens.ms)} ms, scripts ${Math.round(scripts.ms)} ms, foreign content ${Math.round(foreign.ms)} ms, HTML in foreign content ${Math.round(html.ms)} ms`,
+		);
+		expect(html.ms).toBeLessThan(60_000);
+		expect(made.ms).toBeLessThan(60_000);
+		expect(slow.ms).toBeLessThan(60_000);
+		expect(tokens.ms).toBeLessThan(60_000);
+		expect(scripts.ms).toBeLessThan(60_000);
+		expect(foreign.ms).toBeLessThan(60_000);
 	});
 });

@@ -1547,7 +1547,8 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // the wall's now line and what a wall line says (the sidebar's line under each name; Jonas, 11 November 2026), for
 // work that waits on a member going on a card that says what is stopped, with the wall's waiting items mirroring the
 // open cards ("it's really stopped at you"; Jonas, 11 November 2026), and for What's new as Qorpera's own page, where
-// a member puts a repository's website live (own code storage step 4, 11 November 2026), and for overlay v15 (the
+// a member puts a repository's website live (own code storage step 4, 11 November 2026), for the changes a restore
+// took out and when a change shows in What's new (own code storage step 6, 12 November 2026), and for overlay v15 (the
 // Co-Founder's tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November
 // 2026). A change to any is a change to every run's bytes.
 it.each([
@@ -1555,7 +1556,7 @@ it.each([
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "71fb89f7d9e77effba809a3f4d8353e62a29ca931f1b7de870086b21902d2427",
+			instructions: "030d6b423479ddf035cb23b4039645614af4d2e82ca6e9675c285475e2beb44e",
 			prompt: "9ce97c9d2eaf88abefdda00bb7b9bb06bf3e946428d917e0a95bbe29b6ec6903",
 		},
 	],
@@ -1563,7 +1564,7 @@ it.each([
 		"a worker run",
 		"worker",
 		{
-			instructions: "89a32c4542cee4de342ccce7f2a35f38dac5684df32d6cebbb4939bdfe9a5b96",
+			instructions: "7a4324870a2dca042a478c6abad6a1bbbcb56277686a8ba40b1188591bbdc02e",
 			prompt: "de59a35b6dee5f88548a53006c57d72cbb811ace25785453fee81703bd777797",
 		},
 	],
@@ -1571,7 +1572,7 @@ it.each([
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "71fb89f7d9e77effba809a3f4d8353e62a29ca931f1b7de870086b21902d2427",
+			instructions: "030d6b423479ddf035cb23b4039645614af4d2e82ca6e9675c285475e2beb44e",
 			prompt: "e0d2ff6f20f48ef28a8ac69ea1d559affe69a81bb89b3eebfac52cbb31514b25",
 		},
 	],
@@ -1600,6 +1601,8 @@ it("tells every agent where a change's record is, what its checks mean, and to u
 		"Check what checks cannot yourself: open what a change built on a machine (its files are at code/<owner>/<name>/main/).",
 		"When it is wrong, take it out at once with manage_code, action undo; Qorpera does not check an undo, so check main again, and then send the session a follow-up that fixes it.",
 		"When its record lacks what a customer will notice, or a picture of it, add them with manage_code, action describe.",
+		// Own code storage, step 6: after an operator's restore, changes/index.md names the changes it took out for 30 days.
+		"When changes/index.md says the repository was put back to an earlier copy, the changes it names are gone: make them again if they are still wanted.",
 		// Own code storage, step 4: a repository's website, kept for What's new, and the way back when it is broken.
 		'When a repository is a website, its checks file also says where its checks leave the built site, "site": {"folder": "dist"}: Qorpera keeps the site of every change that passes for What\'s new, and changes/index.md says which version is live.',
 		"An undo goes live only with the next change that passes.",
@@ -1626,6 +1629,7 @@ it("tells every agent where a change's record is, what its checks mean, and to u
 	expect(worker).not.toContain("manage_code");
 	expect(worker).not.toContain(".qorpera/checks.json");
 	expect(worker).not.toContain('"site": {"folder": "dist"}');
+	expect(worker).not.toContain("put back to an earlier copy");
 });
 
 // Jonas, 5 November 2026: members "gave up immediately because of the exhausting amount of reading material". A
@@ -1816,7 +1820,9 @@ it("holds changes until a member says yes, and puts a repository's website live 
 		"Before changes go live, show them and wait for a member's yes.",
 		// What "live" means, so the rule holds back a release and nothing else.
 		"A change goes live when people outside the team meet it: an update to a site that is already published, a new version of the product customers use, a new price, or a mail or post that goes out to many. Until then it is only ready.",
-		"A website made from a repository kept in Qorpera goes live only through Qorpera: each change whose checks pass shows on Qorpera's What's new page with its notice and picture, and a member puts it live there;",
+		// Step 4's live proof (11 November 2026): an agent read "nothing ready" seconds after a change went in, and spent a
+		// turn on it.
+		"A website made from a repository kept in Qorpera goes live only through Qorpera: each change whose checks pass shows on Qorpera's What's new page within a minute after it goes in, with its notice and picture, and a member puts it live there;",
 		"never publish it yourself or ask about it in a question card, and tell the member in one line that it waits in What's new.",
 		"For anything else that goes live, ask with one question card that shows what changes, with the options Put it live and Not yet: on yes, put it live in that run; on not yet, ask what to change.",
 		"Only a fix for something that is broken for customers right now goes live at once, and you tell the members the same day what you changed; a repository's website still waits for a member, who can press Go back in What's new.",
