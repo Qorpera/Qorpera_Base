@@ -376,7 +376,7 @@ def rooted(u):
 	return t[:1]=="/" and t[1:2]!="/"
 CSS_ESC=r"\\(?:[0-9a-fA-F]{1,6}(?:\r\n|[ \t\n\r\f])?|[^\n\r\f0-9a-fA-F])"
 CSS_NAME=r"(?:[\w\-\u0080-\U0010ffff]|"+CSS_ESC+r")+"
-CSS=re.compile(r"(?P<c>/\*.*?(?:\*/|\Z))|\"(?P<dq>(?:[^\"\\\n]|\\[\s\S])*)\"?|'(?P<sq>(?:[^'\\\n]|\\[\s\S])*)'?|@(?P<at>"+CSS_NAME+r")|#"+CSS_NAME+r"|(?P<n>"+CSS_NAME+r")(?P<f>\()?|(?P<o>\()|(?P<x>\))|(?P<d>[^\"'@#/()\\\w\-\u0080-\U0010ffff]+)|[\s\S]",re.S)
+CSS=re.compile(r"(?P<c>/\*.*?(?:\*/|\Z))|\"(?P<dq>(?:[^\"\\\n]|\\[\s\S]|\\\Z)*)(?P<dqe>\"|\Z)?|'(?P<sq>(?:[^'\\\n]|\\[\s\S]|\\\Z)*)(?P<sqe>'|\Z)?|@(?P<at>"+CSS_NAME+r")|#"+CSS_NAME+r"|(?P<n>"+CSS_NAME+r")(?P<f>\()?|(?P<o>\()|(?P<x>\))|(?P<d>[^\"'@#/()\\\w\-\u0080-\U0010ffff]+)|[\s\S]",re.S)
 WS=re.compile(r"[ \t\n\r\f]*")
 URL=re.compile(r"[ \t\n\r\f]*((?:[^)\"'(\\ \t\n\r\f\x00-\x08\x0b\x0e-\x1f\x7f]|"+CSS_ESC+r")*)[ \t\n\r\f]*")
 BAD=re.compile(r"(?:\\[^\n\r\f]|[^)])*\)?",re.S)
@@ -388,7 +388,9 @@ def unesc(text):
 			return chr(c) if 0<c<=0x10FFFF and not 0xD800<=c<=0xDFFF else "\ufffd"
 		return "" if m[2] else m[3]
 	return UNESC.sub(one,text)
+SURROGATE=re.compile("[\ud800-\udfff]")
 def css(text):
+	text=SURROGATE.sub("\ufffd",text.replace("\r\n","\n").replace("\r","\n").replace("\f","\n").replace("\0","\ufffd"))
 	count=0
 	stack=[]
 	importing=False
@@ -399,9 +401,9 @@ def css(text):
 		kind=m.lastgroup
 		if kind=="c" or (kind=="d" and not m[0].strip(" \t\n\r\f")):
 			continue
-		if kind in ("dq","sq"):
+		if kind in ("dqe","sqe"):
 			if importing or (stack and stack[-1]!="("):
-				count+=rooted(unesc(m[kind]))
+				count+=rooted(unesc(m[kind[:2]]))
 		elif kind=="f":
 			name=unesc(m["n"]).lower()
 			ahead=WS.match(text,pos).end()
@@ -421,14 +423,16 @@ def css(text):
 			stack.pop()
 		importing=kind=="at" and unesc(m["at"]).lower()=="import"
 	return count
+WSP="\t\n\f\r "
+LOWER=str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")
 def srcset(v):
 	count=0
 	at=0
 	while at<len(v):
-		while at<len(v) and (v[at].isspace() or v[at]==","):
+		while at<len(v) and v[at] in WSP+",":
 			at+=1
 		start=at
-		while at<len(v) and not v[at].isspace():
+		while at<len(v) and v[at] not in WSP:
 			at+=1
 		u=v[start:at]
 		if u.endswith(","):
@@ -446,16 +450,118 @@ def srcset(v):
 					break
 		count+=rooted(u)
 	return count
-REFRESH=re.compile(r"\s*[0-9.]+\s*[;,]?\s*(?:url\s*=\s*)?(.*)",re.I|re.S)
+REFRESH=re.compile(r"[\t\n\f\r ]*[0-9.]+(?=[;,\t\n\f\r ]|\Z)[\t\n\f\r ]*[;,]?[\t\n\f\r ]*(?:url[\t\n\f\r ]*=[\t\n\f\r ]*)?(.*)",re.I|re.S)
 LEADS=("href","src","poster","action","formaction","xlink:href","background")
+RAW=("script","style","xmp","iframe","noembed","noframes","plaintext","textarea","title")
+BREAKOUT=set("b big blockquote body br center code dd div dl dt em embed h1 h2 h3 h4 h5 h6 head hr i img li listing menu meta nobr ol p pre ruby s small span strong strike sub sup table tt u ul var".split())
+SCRIPT_NEXT=re.compile(r"-+|[<>]")
+DELIMS=("\t","\n","\f","\r"," ","/",">")
+def script_end(raw,i):
+	state=0
+	dashes=0
+	while True:
+		m=SCRIPT_NEXT.search(raw,i)
+		if not m:
+			return -1
+		if m.start()>i:
+			dashes=0
+		i=m.start()
+		if raw[i]=="-":
+			dashes+=m.end()-i
+			i=m.end()
+		elif raw[i]==">":
+			if dashes>=2:
+				state=0
+			dashes=0
+			i+=1
+		elif state==0 and raw.startswith("<!--",i):
+			state=1
+			dashes=2
+			i+=4
+		elif raw[i+1:i+2]=="/" and raw[i+2:i+8].lower()=="script" and raw[i+8:i+9] in DELIMS:
+			if state<2:
+				return i
+			state=1
+			dashes=0
+			i+=8
+		elif state==1 and raw[i+1:i+7].lower()=="script" and raw[i+7:i+8] in DELIMS:
+			state=2
+			dashes=0
+			i+=7
+		else:
+			dashes=0
+			i+=1
+class At(int):
+	def start(self):
+		return int(self)
+class ScriptEnd:
+	def search(self,raw,pos):
+		i=script_end(raw,pos)
+		return None if i<0 else At(i)
+def point(ns,tag,first):
+	if ns=="svg":
+		return tag in ("foreignobject","desc","title")
+	if tag=="annotation-xml":
+		return (first.get("encoding") or "").translate(LOWER) in ("text/html","application/xhtml+xml")
+	return tag in ("mi","mo","mn","ms","mtext")
 class Page(html.parser.HTMLParser):
 	def __init__(self):
 		super().__init__(convert_charrefs=True)
-		self.style=False
 		self.links=0
-	def handle_starttag(self,tag,attrs):
-		self.style=tag=="style"
+		self.open=[]
+		self.marks=[]
+		self.names={}
+		self.sheet=None
+		self.opened_foreign=False
+		self._support_cdata=False
+	def node(self):
+		if not self.open:
+			return ("","",True,None)
+		m=self.marks[-1]
+		if m[0]==len(self.open)-1:
+			return (self.open[-1],m[1],m[2],m[3])
+		return (self.open[-1],m[1],False,None)
+	def foreign(self):
+		return not self.node()[2]
+	def pop(self):
+		self.names[self.open.pop()]-=1
+		if self.marks[-1][0]==len(self.open):
+			sheet=self.marks.pop()[3]
+			if sheet is not None:
+				self.links+=css("".join(sheet))
+	def breakout(self):
+		while self.foreign():
+			self.pop()
+	def set_cdata_mode(self,elem,**given):
+		if self.opened_foreign:
+			return
+		try:
+			super().set_cdata_mode(elem,**given)
+		except TypeError:
+			super().set_cdata_mode(elem)
+		if self.cdata_elem=="script":
+			self.interesting=ScriptEnd()
+	def parse_comment(self,i,report=True):
+		for close in (">","->"):
+			if self.rawdata.startswith(close,i+4):
+				return i+4+len(close)
+		return super().parse_comment(i,report)
+	def unknown_decl(self,data):
+		if data.startswith("CDATA["):
+			self.handle_data(data[6:])
+	def handle_starttag(self,tag,attrs,closed=False):
+		first={}
 		for name,value in attrs:
+			first.setdefault(name,value)
+		if self.foreign() and (tag in BREAKOUT or (tag=="font" and ("color" in first or "face" in first or "size" in first))):
+			self.breakout()
+		cur,ns,pt,_=self.node()
+		if pt and not (ns=="math" and cur!="annotation-xml" and tag in ("mglyph","malignmark")):
+			ns=tag if tag in ("svg","math") else ""
+		elif tag=="svg" and cur=="annotation-xml":
+			ns="svg"
+		self.opened_foreign=bool(ns)
+		for name,value in first.items():
 			if value is None:
 				continue
 			if name in LEADS or (name=="data" and tag=="object"):
@@ -463,21 +569,58 @@ class Page(html.parser.HTMLParser):
 			elif name in ("srcset","imagesrcset"):
 				self.links+=srcset(value)
 			elif name=="ping":
-				self.links+=sum(rooted(u) for u in value.split())
+				self.links+=sum(rooted(u) for u in re.split("[\t\n\f\r ]",value))
 			elif name=="style":
 				self.links+=css(value)
-			elif name=="content" and tag=="meta" and any(n=="http-equiv" and (v or "").strip().lower()=="refresh" for n,v in attrs):
+			elif name=="content" and tag=="meta" and (first.get("http-equiv") or "").translate(LOWER)=="refresh":
 				m=REFRESH.match(value)
-				u=m.group(1).strip() if m else ""
+				u=m.group(1) if m else ""
 				if u[:1] in ("'",'"'):
 					u=u[1:].split(u[0],1)[0]
 				self.links+=rooted(u)
+		if ns:
+			if not closed:
+				pt=point(ns,tag,first)
+				sheet=[] if ns=="svg" and tag=="style" else None
+				if pt or sheet is not None or not self.marks or self.marks[-1][1]!=ns:
+					self.marks.append((len(self.open),ns,pt,sheet))
+				tag=sys.intern(tag)
+				self.open.append(tag)
+				self.names[tag]=self.names.get(tag,0)+1
+		elif tag in RAW:
+			self.set_cdata_mode(tag,escapable=tag in ("textarea","title"))
+			if tag=="style":
+				self.sheet=[]
+		self._support_cdata=bool(self.open)
+	def handle_startendtag(self,tag,attrs):
+		self.handle_starttag(tag,attrs,True)
 	def handle_endtag(self,tag):
-		if tag=="style":
-			self.style=False
+		if self.cdata_elem:
+			if self.sheet is not None:
+				self.links+=css("".join(self.sheet))
+				self.sheet=None
+		elif tag in ("br","p"):
+			self.breakout()
+		elif self.names.get(tag):
+			while self.open[-1]!=tag:
+				self.pop()
+			self.pop()
+		self._support_cdata=bool(self.open)
 	def handle_data(self,data):
-		if self.style:
-			self.links+=css(data)
+		if self.cdata_elem:
+			if self.sheet is not None:
+				self.sheet.append(data)
+		elif self.open:
+			sheet=self.node()[3]
+			if sheet is not None:
+				sheet.append(data)
+	def close(self):
+		super().close()
+		while self.open:
+			self.pop()
+		if self.sheet is not None:
+			self.links+=css("".join(self.sheet))
+			self.sheet=None
 for p,content in files:
 	kind=p.rsplit(b".",1)[-1].lower()
 	links=0

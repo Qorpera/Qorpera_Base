@@ -1342,8 +1342,53 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 			['<a href="&Tab;/tab">x</a>', "\\x09/tab"],
 			['<a href="/&NewLine;nl">x</a>', "/\\x0anl"],
 			['<style>a { background: image-set("/set.png" 1x) }</style>', "/set.png"],
+			// Review round 4 of #1691: what a browser loads where Python 3.14's parser reads otherwise.
+			// An empty comment ends at once, also when a later "-->" stands in the page.
+			['<!--><img src="/after-empty-comment.png"><!-- later -->', "/after-empty-comment.png"],
+			['<!---><img src="/after-empty-comment-2.png"><!-- later -->', "/after-empty-comment-2.png"],
+			['<p><![CDATA[ x > <img src="/after-bogus-comment.png"> ]]>', "/after-bogus-comment.png"],
+			['<script><!-- <script> </script> --></script><img src="/after-script.png">', "/after-script.png"],
+			['<svg><title><a href="/svg-title-link">t</a></title></svg>', "/svg-title-link"],
+			['<svg><style><img src="/breaks-out.png"></style></svg>', "/breaks-out.png"],
+			['<template><img src="/in-template.png"></template>', "/in-template.png"],
+			['<noscript><img src="/in-noscript.png"></noscript>', "/in-noscript.png"],
+			['<a href="/first" href="second">x</a>', "/first"],
+			['<img src="/nul\u0000in-value.png">', "/nul\ufffdin-value.png"],
+			['<a href="&#47x">x</a>', "/x"],
+			// Foreign content as the tree builder keeps it: an SVG <style>'s own text is its sheet (CDATA and character
+			// references included, comments and child elements between its pieces), and a text-only element's name in
+			// SVG or MathML opens no text, so an <img> there breaks out and loads.
+			["<svg><style><![CDATA[ a { fill: url(/in-cdata.svg#g) } ]]></style></svg>", "/in-cdata.svg#g"],
+			["<svg><style>a { background: url(<![CDATA[/split.png]]>) }</style></svg>", "/split.png"],
+			["<svg><style>a { background: url(/sp<!-- c -->lit.png) }</style></svg>", "/split.png"],
+			["<svg><style>a { background: url(&#47;ref.png) }</style></svg>", "/ref.png"],
+			["<svg><style><a></a>b { background: url(/after-child.png) }</style></svg>", "/after-child.png"],
+			["<style>a { b: url(/first-sheet.png) }</style><style>b { }</style>", "/first-sheet.png"],
+			['<svg><svg/><style><img src="/still-in-svg.png"></style></svg>', "/still-in-svg.png"],
+			['<svg><title/><style><img src="/after-closed-title.png"></style></svg>', "/after-closed-title.png"],
+			['<math><title><style><img src="/math-title.png"></style></title></math>', "/math-title.png"],
+			['<svg><math><mi><style><img src="/svg-math-mi.png"></style></mi></math></svg>', "/svg-math-mi.png"],
+			[
+				'<math><annotation-xml><style><img src="/annotation.png"></style></annotation-xml></math>',
+				"/annotation.png",
+			],
+			['<math><mi><mglyph><style><img src="/mglyph.png"></style></mglyph></mi></math>', "/mglyph.png"],
+			['<svg><font><style><img src="/plain-font.png"></style></font></svg>', "/plain-font.png"],
+			['<svg><g><foreignObject></g><style><img src="/after-walk.png"></style></svg>', "/after-walk.png"],
+			[
+				'<svg><foreignObject><svg><g></g><style><img src="/inner-svg.png"></style></svg></foreignObject></svg>',
+				"/inner-svg.png",
+			],
+			// A breakout stops at the integration point, so its end tag still finds it, and the SVG around is foreign again.
+			[
+				'<svg><foreignObject><svg><p></p></foreignObject><style><img src="/back-in-svg.png"></style></svg>',
+				"/back-in-svg.png",
+			],
 		])
 			await refusedWith({ "index.html": page(body as string) }, "SITE_LINKS_FROM_ROOT index.html 1\n");
+		// A sheet the page ends inside is still read: an HTML <style> and an SVG one.
+		for (const content of ["<style>a { b: url(/never-closed.png) }", "<svg><style>a { b: url(/never-closed.png) }"])
+			await refusedWith({ "index.html": content }, "SITE_LINKS_FROM_ROOT index.html 1\n");
 	});
 
 	it("never names a link: its file and how many it has (review round 3 of #1691)", async () => {
@@ -1391,6 +1436,12 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 			['@\\69MPORT "\\2f q.css";', "/q.css"],
 			["a { background: url(/a\\ b.png) }", "/a b.png"],
 			["a { background: url(/prefix-secret-1234\\)tail-5678) }", "/prefix-secret-1234)tail-5678"],
+			// Review round 4 of #1691: CSS's input normalized first (CR LF, CR and FF to LF, NUL to U+FFFD).
+			['a { background: url("\\\r\n/continued.png") }', "/continued.png"],
+			["a { background: url(/a\u0000b.png) }", "/a\ufffdb.png"],
+			// A string or a URL the file ends inside is still one.
+			['@import "/at-the-end.css', "/at-the-end.css"],
+			["a { background: url(/at-the-end.png", "/at-the-end.png"],
 		])
 			await refusedWith({ "index.html": page("x"), "css/site.css": css }, "SITE_LINKS_FROM_ROOT css/site.css 1\n");
 		// A page of any case of its extension; the first link in C order of the files: a.css before index.html.
@@ -1415,6 +1466,39 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 			'<a href="/\\evil.example/x">x</a><a href="/&#10;/cdn.example/x">x</a>',
 			'<p>a url(/not-css.png) in words, and @import "/not-css.css"</p>',
 			'<meta http-equiv="refresh" content="/no-time"><meta name="description" content="2; url=/not-a-refresh">',
+			// Review round 4 of #1691: text, not elements, as a browser reads them.
+			'<textarea><img src="/in-textarea.png"></textarea><title><img src="/in-title.png"></title>',
+			'<xmp><img src="/in-xmp.png"></xmp><iframe><img src="/in-iframe.png"></iframe>',
+			'<noembed><img src="/in-noembed.png"></noembed><noframes><img src="/in-noframes.png"></noframes>',
+			'<iframe/><img src="/after-closed-iframe.png"></iframe><script/><img src="/after-closed-script.png"></script>',
+			'<script><!-- <script> </script> <img src="/in-double-escaped.png"> --></script>',
+			'<a href="second" href="/first">x</a><img\u0000src="/nul-in-tag.png">',
+			'<svg><![CDATA[ <image href="/in-cdata.png"/> ]]></svg><p><![CDATA[ <img src="/in-bogus.png"> ]]>',
+			'<svg><style>a { fill: red }</style><title>t</title></svg><style>/* <img src="/in-style.png"> */</style>',
+			// In SVG a <p> breaks back out to HTML, and a foreignObject holds HTML: their text-only elements are text again.
+			'<svg><p></p><style><img src="/after-breakout.png"></style></svg>',
+			'<svg><foreignObject><textarea><img src="/in-foreign-object.png"></textarea></foreignObject></svg>',
+			// One dash before ">" leaves a script's escaped text escaped, so its "<script>" still opens the double escape.
+			'<script><!-- -> <script> </script> <img src="/in-script-after-one-dash.png"> --> </script>',
+			// A self-closed SVG <style> holds no text; a MathML <style> is no sheet; an SVG <style>'s child elements'
+			// text is not its sheet.
+			"<svg><style/>url(/not-css.png)</svg><math><style>a { b: url(/math-style.png) }</style></math>",
+			"<svg><style>a { } <a>b { c: url(/in-child.png) }</a></style></svg>",
+			// Out to HTML: a <font> with color, face or size, an end tag </p> or </br>, an annotation-xml that holds HTML
+			// (and mglyph there is HTML too), an SVG inside MathML's <mi>; and CDATA at an integration point is text.
+			'<svg><font color="red"><style><img src="/after-font.png"></style></font></svg>',
+			'<svg></p><style><img src="/after-end-p.png"></style></svg><svg></br><style><img src="/after-end-br.png"></style></svg>',
+			'<math><annotation-xml encoding="TEXT/HTML"><style><img src="/annotation-html.png"></style></annotation-xml></math>',
+			'<math><annotation-xml encoding="text/html"><mglyph><style><img src="/html-mglyph.png"></style></mglyph></annotation-xml></math>',
+			'<math><mi><svg><foreignObject><style><img src="/in-svg-in-math.png"></style></foreignObject></svg></mi></math>',
+			'<math><annotation-xml><svg><foreignObject><style><img src="/svg-in-annotation.png"></style></foreignObject></svg></annotation-xml></math>',
+			'<svg><foreignObject><![CDATA[ a > <img src="/in-cdata-at-point.png"> ]]></foreignObject></svg>',
+			// HTML's whitespace is ASCII's: a no-break space splits no ping or srcset, starts no refresh, and is no
+			// URL's blank; an http-equiv with a space is no refresh, nor a time not followed by ;, , or a space.
+			'<a ping="https://t.example/p /not-split">p</a><img srcset=" /nbsp.png 1x">',
+			'<meta http-equiv="refresh" content=" 0; url=/nbsp-time"><meta http-equiv="refresh" content="0; url= /nbsp-url">',
+			'<meta http-equiv=" refresh" content="0; url=/spaced-equiv"><meta http-equiv="refresh" content="0/next">',
+
 			'<meta http-equiv="refresh" content="30"><meta name="description" content="/not-a-link">',
 			'<div data="/not-object" title="/x" data-href="/x" class="/x">x</div><object data="o.svg"></object>',
 			'<!-- <link rel="stylesheet" href="/commented.css"> --><!--[if IE]><script src="/ie.js"></script><![endif]-->',
@@ -1444,13 +1528,20 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 				"k { b: url(x y\\) url(/z.png) } l { b: url(/a\u0001b.png) }",
 				// Escapes decoded before a URL is judged: "//" to another host, and a scheme.
 				'@import "\\2f\\2f cdn.example/x.css"; m { b: image-set("\\68ttps://x.example/a.png" 1x) }',
+				// Review round 4 of #1691: a string a line break ends is a bad string (no import), CR and FF are line
+				// breaks, a URL of only spaces is empty, a continued string is one string.
+				'@import "/bad-string.css\n;',
+				'@import "/form-feed.css\f"; @import "/carriage-return.css\r";',
+				'n { b: url(   ) } o { content: "\\\r\n/continued-text" }',
 			].join("\n"),
 			"app.js": "fetch('/api/items'); const u = '/src/x.js';",
 			"notes.txt": '<a href="/x">',
+			// A text-only element that never ends: everything after it is text.
+			"plain.html": '<p>x</p><plaintext><img src="/in-plaintext.png"></plaintext><img src="/after.png">',
 			"img/x.svg": '<svg><image href="/i.png"/></svg>',
 		};
 		const run = await collectOf(files);
-		expect(run.output).toMatch(/^tree [0-9a-f]{40}\nfiles 6\n/);
+		expect(run.output).toMatch(/^tree [0-9a-f]{40}\nfiles 7\n/);
 	});
 
 	it("never prints a byte of a link, so a value in one stays unseen in any spelling (review round 3 of #1691)", async () => {
@@ -1511,11 +1602,28 @@ describe("the links from the root, on the machine", { timeout: 180_000 }, () => 
 			"v.css": '"x" '.repeat((9 * MiB) / 4),
 		});
 		expect(tokens.output).toMatch(/^tree [0-9a-f]{40}\nfiles 4\n/);
+		// Scripts the escaped states must not take long over: dashes, angle brackets, nested script openings.
+		const scripts = await collectOf({
+			"index.html": `<script>${"-".repeat(8 * MiB)}</script>`,
+			"a.html": `<script><!--${"<s".repeat(4 * MiB)}`,
+			"b.html": `<script><!--${"<script>-".repeat(MiB / 2)}`,
+		});
+		expect(scripts.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\n/);
+		// Foreign content: a million open SVG elements and as many end tags that match none, a quarter million SVG
+		// sheets, and breakouts that leave a MathML element open each time.
+		const foreign = await collectOf({
+			"index.html": `<svg>${"<g>".repeat(MiB)}${"</x>".repeat(MiB)}`,
+			"a.html": "<svg><style>a</style>".repeat(MiB / 4),
+			"b.html": "<math><mi><svg><g><p>".repeat(MiB / 4),
+		});
+		expect(foreign.output).toMatch(/^tree [0-9a-f]{40}\nfiles 3\n/);
 		console.log(
-			`links: 25 MiB of dense pages and styles ${Math.round(made.ms)} ms, odd shapes ${Math.round(slow.ms)} ms, style sheets of a token a byte ${Math.round(tokens.ms)} ms`,
+			`links: 25 MiB of dense pages and styles ${Math.round(made.ms)} ms, odd shapes ${Math.round(slow.ms)} ms, style sheets of a token a byte ${Math.round(tokens.ms)} ms, scripts ${Math.round(scripts.ms)} ms, foreign content ${Math.round(foreign.ms)} ms`,
 		);
 		expect(made.ms).toBeLessThan(60_000);
 		expect(slow.ms).toBeLessThan(60_000);
 		expect(tokens.ms).toBeLessThan(60_000);
+		expect(scripts.ms).toBeLessThan(60_000);
+		expect(foreign.ms).toBeLessThan(60_000);
 	});
 });
