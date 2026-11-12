@@ -417,28 +417,27 @@ export const SETTINGS: Record<string, string> = {
 
 	// Sites: the websites the company's agents published (app/views/settings-sites.ts)
 	Sites: "Hjemmesider",
-	"The company's websites. Each has its own link and password; share both with the people who should see it.":
-		"Virksomhedens hjemmesider. Hver har sit eget link og sin egen adgangskode; del begge med dem, der skal se den.",
+	"Share a site with its link and password.": "Del en hjemmeside med dens link og adgangskode.",
 	"Only founders and admins can see passwords or take sites offline.":
 		"Kun stiftere og administratorer kan se adgangskoder eller tage hjemmesider offline.",
-	"No sites yet. When an agent publishes a website for the company, it shows here with its link and password.":
-		"Ingen hjemmesider endnu. Når en agent udgiver en hjemmeside for virksomheden, vises den her med sit link og sin adgangskode.",
+	"No sites yet": "Ingen hjemmesider endnu",
+	"Ask an agent for a website and it shows up here.": "Bed en agent om en hjemmeside, så dukker den op her.",
 	"The company's sites could not be read.": "Virksomhedens hjemmesider kunne ikke hentes.",
 	"Publishing…": "Udgiver…",
 	"Published {time} by {agent}": "Udgivet {time} af {agent}",
 	"Published {time}": "Udgivet {time}",
-	"1 file": "1 fil",
-	"From {source}": "Fra {source}",
+	"Copy the link": "Kopiér linket",
+	"The link": "Linket",
 	"The link is copied.": "Linket er kopieret.",
-	"The link could not be copied. Select it and copy it.": "Linket kunne ikke kopieres. Markér det, og kopiér det.",
 	"Show password": "Vis adgangskode",
-	Hide: "Skjul",
+	"Hide password": "Skjul adgangskode",
+	"Copy the password": "Kopiér adgangskoden",
+	"The password": "Adgangskoden",
 	"The password is copied.": "Adgangskoden er kopieret.",
-	"The password could not be copied. Select it and copy it.":
-		"Adgangskoden kunne ikke kopieres. Markér den, og kopiér den.",
-	"Share the link and this password only with the people who should see the site. A visitor's own link opens the site for 7 days; a new password ends every visit.":
-		"Del kun linket og denne adgangskode med dem, der skal se hjemmesiden. En besøgendes eget link åbner hjemmesiden i 7 dage; en ny adgangskode afslutter alle besøg.",
+	"Press ⌘C to copy.": "Tryk ⌘C for at kopiere.",
+	"Press Ctrl+C to copy.": "Tryk Ctrl+C for at kopiere.",
 	"The password could not be read. Try again.": "Adgangskoden kunne ikke hentes. Prøv igen.",
+	"More options for {name}": "Flere muligheder for {name}",
 	"Change password": "Skift adgangskode",
 	"Type a new password, 10 to 128 characters": "Skriv en ny adgangskode på 10 til 128 tegn",
 	"New password for {name}": "Ny adgangskode til {name}",
@@ -447,22 +446,20 @@ export const SETTINGS: Record<string, string> = {
 	"Every visitor enters the new password; the old one stops working at once.":
 		"Alle besøgende skal skrive den nye adgangskode; den gamle holder op med at virke med det samme.",
 	"A site password is 10 to 128 characters.": "En adgangskode til en hjemmeside er på 10 til 128 tegn.",
-	"The password is changed. Every visitor enters the new one.":
-		"Adgangskoden er skiftet. Alle besøgende skal skrive den nye.",
+	"The password is changed.": "Adgangskoden er skiftet.",
 	"The password could not be changed. Try again.": "Adgangskoden kunne ikke skiftes. Prøv igen.",
-	Unpublish: "Tag offline",
+	"Take offline": "Tag offline",
 	"Take {name} offline? Its link stops working and its password is deleted. The files stay in the Company File.":
 		"Tag {name} offline? Linket holder op med at virke, og adgangskoden slettes. Filerne bliver i Virksomhedsfilen.",
+	"{name} is offline.": "{name} er offline.",
 	"The site could not be taken offline. Try again.": "Hjemmesiden kunne ikke tages offline. Prøv igen.",
 	// An app link: one port of a company machine at a site's link (v195)
-	"App on machine {name}, port {port}": "App på maskinen {name}, port {port}",
-	"App on port {port} of a machine that was deleted": "App på port {port} på en maskine, der er slettet",
 	"Take {name} offline? Its link stops working and its password is deleted. The app keeps running on its machine.":
 		"Tag {name} offline? Linket holder op med at virke, og adgangskoden slettes. Appen bliver ved med at køre på sin maskine.",
-	// A project's site made from its code kept in Qorpera: it goes live from What's new (own code storage step 4)
-	"Goes live from What's new": "Sættes live under Nyheder",
-	"Take {name} offline? Its earlier versions go with it. Qorpera prepares the newest version again, with a new password, and it waits in What's new until you put it live.":
-		"Tag {name} offline? Dens tidligere versioner forsvinder med den. Qorpera gør den nyeste version klar igen med en ny adgangskode, og den venter under Nyheder, til du sætter den live.",
+	// A project's site made from its code kept in Qorpera: its version goes live from What's new (own code storage step 4)
+	"Version {version}": "Version {version}",
+	"Take {name} offline? Its earlier versions go with it. The newest one waits in What's new, with a new password, until you put it live.":
+		"Tag {name} offline? Dens tidligere versioner forsvinder med den. Den nyeste venter under Nyheder med en ny adgangskode, til du sætter den live.",
 
 	// What's new: the changes to the company's sites made from its code, ready to go live (app/views/whats-new.ts)
 	"What's new": "Nyheder",

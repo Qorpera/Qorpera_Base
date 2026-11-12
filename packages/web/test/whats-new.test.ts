@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
-import { WhatsNewView, whatsNewEntry } from "../src/app/views/whats-new.ts";
+import { liveVersions, WhatsNewView, whatsNewEntry } from "../src/app/views/whats-new.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import {
 	type CodeReleaseAnswer,
@@ -253,7 +253,7 @@ describe("What's new: the page", () => {
 		expect(site.querySelector("h2")?.textContent).toBe("Wristband shop");
 		const live = site.querySelector(".whats-new-live")!;
 		expect(live.querySelector("strong")?.textContent).toBe("Live now");
-		expect(live.querySelector(".hook-state")?.textContent).toMatch(/^Version 3 · since .+ · Ann said go$/);
+		expect(live.querySelector(".site-meta")?.textContent).toMatch(/^Version 3 · since .+ · Ann said go$/);
 		const open = [...live.querySelectorAll<HTMLAnchorElement>("a")].find(
 			(link) => link.textContent === "Open the site",
 		)!;
@@ -291,6 +291,44 @@ describe("What's new: the page", () => {
 		expect(block(view).querySelector(".whats-new-change")).toBe(first);
 	});
 
+	it("draws what is live as a row of the Sites page: the globe, a quiet line, pill buttons", async () => {
+		const { view } = await page([releasesOf([shop()])]);
+		const row = block(view).querySelector(".whats-new-live > .site-row.is-whats-new")!;
+		expect(row.querySelector("svg.site-emblem")).not.toBeNull();
+		expect(row.querySelector(".site-name")?.textContent).toBe("Live now");
+		expect([...row.querySelectorAll(".site-meta")].map((line) => line.textContent)).toEqual([
+			expect.stringMatching(/^Version 3 · since .+ · Ann said go$/),
+			"The password is in Sites.",
+		]);
+		// Open the site and Go back, as the Sites page's quiet pills; no grey card around them.
+		const actions = row.querySelector(".site-actions")!;
+		expect([...actions.children].map((item) => [item.tagName, item.className, item.textContent])).toEqual([
+			["A", "site-button", "Open the site"],
+			["BUTTON", "site-button", "Go back to version 2"],
+		]);
+		expect(block(view).querySelector(".service-card, .hook-card, .connection-list")).toBeNull();
+		// Before the first version, the globe is grey.
+		const first = await page([releasesOf([shop({ site: null, live: null, back: null })])]);
+		expect(block(first.view).querySelector(".site-row.is-whats-new.is-waiting .site-emblem")).not.toBeNull();
+	});
+
+	it("tells the Sites page the version each site made from code has live", () => {
+		expect(
+			liveVersions(
+				releasesOf([
+					shop(),
+					shop({ name: "gift", site: { slug: "gift", url: "https://sites.qorpera.com/gift/", title: null } }),
+					shop({ name: "new", site: null, live: null }),
+					shop({
+						name: "waiting",
+						site: { slug: "waiting", url: "https://sites.qorpera.com/waiting/", title: null },
+						live: null,
+					}),
+				]),
+			),
+		).toEqual({ "wristband-shop": 3, gift: 3 });
+	});
+
 	it("says nothing new is ready, and still offers Go back", async () => {
 		const { view } = await page([releasesOf([shop({ ready: null, waiting: 1 })])]);
 		const site = block(view);
@@ -310,7 +348,7 @@ describe("What's new: the page", () => {
 		expect(site.querySelector(".whats-new-live strong")?.textContent).toBe("Not live yet");
 		expect(site.querySelector(".whats-new-live a")).toBeNull();
 		// Nothing to open or go back to: no empty row of buttons.
-		expect(site.querySelector(".whats-new-live .connection-actions")).toBeNull();
+		expect(site.querySelector(".whats-new-live .site-actions")).toBeNull();
 		expect(site.querySelector("h3")?.textContent).toBe("4 changes are ready");
 		expect(site.querySelector(".whats-new-behind")).toBeNull();
 		expect(labels(site)).toEqual(["Put the first version live", "Not yet"]);
@@ -381,7 +419,7 @@ describe("What's new: the page", () => {
 		const site = block(view);
 		expect(site.querySelector(".whats-new-live + .service-outcome")?.textContent).toBe("Version 4 is live.");
 		expect(client.list).toHaveBeenCalledTimes(2);
-		expect(site.querySelector(".hook-state")?.textContent).toMatch(/^Version 4 · since .+ · Ann said go$/);
+		expect(site.querySelector(".site-meta")?.textContent).toMatch(/^Version 4 · since .+ · Ann said go$/);
 		expect(text(site)).toContain("Nothing new is ready.");
 		expect(listed).toHaveBeenLastCalledWith(releasesOf([after]));
 	});
@@ -732,7 +770,7 @@ describe("What's new: the page", () => {
 		const site = block(view);
 		expect(site.querySelector(".whats-new-live + .service-outcome")?.textContent).toBe("Version 2 is live.");
 		// Gone back: who put the older version up again, and the changes it took off are ready again, marked.
-		expect(site.querySelector(".hook-state")?.textContent).toMatch(/^Version 2 · since .+ · Ann went back$/);
+		expect(site.querySelector(".site-meta")?.textContent).toMatch(/^Version 2 · since .+ · Ann went back$/);
 		expect(labels(site.querySelector(".whats-new-live")!)).toEqual([]);
 		expect(
 			[...site.querySelectorAll(".whats-new-change")].map(
@@ -779,7 +817,7 @@ describe("What's new: the page", () => {
 		const { view } = await page([
 			releasesOf([shop({ live: { version: 3, kind: "release", since: timestamp, by: id(99) } })]),
 		]);
-		expect(block(view).querySelector(".hook-state")?.textContent).toMatch(/^Version 3 · since [^·]+$/);
+		expect(block(view).querySelector(".site-meta")?.textContent).toMatch(/^Version 3 · since [^·]+$/);
 	});
 
 	it("says when the page could not be read, and reads it again on Try again", async () => {
@@ -803,7 +841,7 @@ describe("What's new: the page", () => {
 		const { view } = await page([releasesOf([shop()])]);
 		const site = block(view);
 		expect(site.querySelector(".whats-new-live strong")?.textContent).toBe("Live nu");
-		expect(site.querySelector(".hook-state")?.textContent).toMatch(/^Version 3 · siden .+ · Ann sagde ja$/);
+		expect(site.querySelector(".site-meta")?.textContent).toMatch(/^Version 3 · siden .+ · Ann sagde ja$/);
 		expect(site.querySelector("h3")?.textContent).toBe("6 ændringer er klar");
 		expect(site.querySelector(".whats-new-behind")?.textContent).toBe("og 2 ændringer bag kulisserne");
 		expect(labels(site)).toEqual(["Gå tilbage til version 2", "Sæt live", "Ikke endnu"]);
