@@ -6,7 +6,8 @@ import { array, boundedInteger, CloudShapeError, nonEmptyString, oneOf, record, 
  * with the member's own authority: the addresses, a page of threads, one thread, the sends that wait for a person, and
  * "I have read this thread". The answers are empty while the company's mail is off; a non-member gets 42501 and a
  * thread that is not the company's 22023. A sixth sends: a member's own email from one of the company's addresses, with
- * no agent (migration 20260930716000_member_mail_send, "Members send mail").
+ * no agent (migration 20260930716000_member_mail_send, "Members send mail"), as a new email or as an answer in a
+ * thread (20260930740000_member_mail_reply).
  *
  * Identities are checked; what is only shown is read leniently. A waiting send's recipients, subject and text are the
  * agent's own send arguments as it gave them, so they are read for what they hold and nothing else. */
@@ -134,8 +135,16 @@ export type MailMessage =
 			readonly member?: MailMember;
 	  });
 
-/** A member's own email: a new plain-text email from one of the company's addresses. `sendId` names this send, so the
- * same request sent again (a retry after a lost answer) queues nothing new. */
+/** A message of a thread, as the thread names it: a received one by its delivery, a sent one by its mail id. */
+export interface MailMessageRef {
+	readonly kind: MailDirection;
+	readonly id: string;
+}
+
+/** A member's own email: a plain-text email from one of the company's addresses. `sendId` names this send, so the
+ * same request sent again (a retry after a lost answer) queues nothing new. With `replyTo` it answers that message:
+ * it joins the message's thread and carries its ids, so the other side's mail program threads it too. Without, it is
+ * a new email in a thread of its own. */
 export interface MailMemberSend {
 	readonly sendId: string;
 	readonly from: string;
@@ -143,6 +152,7 @@ export interface MailMemberSend {
 	readonly cc?: readonly string[];
 	readonly subject: string;
 	readonly text: string;
+	readonly replyTo?: MailMessageRef;
 }
 
 export interface MailMemberSent {
@@ -480,7 +490,8 @@ export async function markMailThreadRead(cloud: Cloud, environmentId: string, th
 
 /** Sends the member's own email from one of the company's addresses, as themself: it is queued, and the platform's
  * sender sends it. 42501 for a member who may not write in the company, an address that is not the company's, a
- * recipient that is one of its own mailboxes or a name that reads as Qorpera; 22023 for a request that is not one;
+ * recipient that is one of its own mailboxes, a name that reads as Qorpera or an answer to a message that is not the
+ * company's to answer; 22023 for a request that is not one;
  * 0A000 while sending is off or the mailbox is paused; 54000 at the company's limits. */
 export async function sendMemberMail(
 	cloud: Cloud,
@@ -497,6 +508,7 @@ export async function sendMemberMail(
 				...(request.cc?.length ? { cc: request.cc } : {}),
 				subject: request.subject,
 				text: request.text,
+				...(request.replyTo ? { replyTo: { kind: request.replyTo.kind, id: request.replyTo.id } } : {}),
 			},
 		}),
 		"mail send",

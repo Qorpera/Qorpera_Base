@@ -49,6 +49,7 @@ review (`20260928429982_runtime_company_mail_find_and_tags`), and so are attachm
 | I5a | Members read mail (the Interfaces Mailbox): threads, mailboxes, waiting sends | `20260928439980` |
 | I5a+ | A waiting send names its card's conversation (`sessionId`) for a member who may answer it | `20260930002660` |
 | M2e | Members send mail: a member's own email from a mailbox, with no agent (founder decision, 10 November) | `20260930716000` |
+| M2e+ | A member's email answers a message and joins its thread (`replyTo`; founder, 12 November) | `20260930740000` |
 
 Each step is a release-train feature PR: no bundle, manifest or activation files, an independent
 exact-head review, and a hand-off to the coordinator.
@@ -620,7 +621,7 @@ Interfaces session on 2 October for the Mailbox, `RUNTIME-INTERFACES.md` §4, so
     `delivered-to`, the sender's authentication, `automated`, its attachments' descriptions and its account mark. The
     delivery's headers are unchanged.
   - An agent's reply joins the received email's thread. An email an agent starts begins one (`mail:<id>`), and so
-    does an email a member sends (M2e).
+    does an email a member sends (M2e), unless it answers a message: then it is in that message's thread (M2e+).
     `mail-outbox` reads back the provider's Message-ID of what it sent (Resend's sent-email API, best effort; those
     never asked first, the newest first, each asked again after five minutes for a day), so an answer to that email
     arriving at the same mailbox joins its thread.
@@ -679,7 +680,7 @@ member send an email with no agent"). Until then company email left only through
   theirs in the company, cleaned as an agent's is; a name that is an address goes out as "A member", so it never
   reads as the sender's address. The text is the member's as written: no AI line, since no agent wrote it. It is a
   new email, so it carries no `Auto-Submitted`, and it passes no automatic review: it is the member's own act. No
-  reply to a received email and no attachments yet.
+  attachments yet. It may answer a message ("A member answers in a thread", below).
 - **The same send again.** `sendId` is the client's own id for the send (a UUID). The same member's same id again
   answers with the email it already queued, whatever has changed since, so a request repeated after a lost answer
   sends nothing twice. The answer is `{mailId, thread, status}`.
@@ -693,6 +694,30 @@ member send an email with no agent"). Until then company email left only through
   wakes the mailbox's routines as any received email does. Agents read received mail only, as before: no agent
   tool reads sent mail, an agent's or a member's.
 - A paused company's agents send nothing; its members still send, since the pause stops agents' work.
+
+**A member answers in a thread (M2e+)** (migration `20260930740000_member_mail_reply`; Jonas, 12 November 2026: the
+Mailbox gets Reply, Reply all and Forward "as in the real gmail/outlook app, not the chatcomposer to tell other agents
+what to reply").
+- **The call.** The request of `qorpera_send_member_mail` takes `replyTo`, `{kind, id}`: the message the email
+  answers, as `qorpera_member_mail_thread` names it. `received` with a received email's `deliveryId`, or `sent` with a
+  sent email's `mailId` (a follow-up to an email of the company's own, an agent's or a member's). Any other shape is
+  22023. The message must be this company's and environment's, and no account mail (42501, "The email this answers is
+  not one the company can answer"). Everything else is M2e's: who may send, the mailbox (`from` is any live mailbox of
+  the company; the Mailbox gives the thread's own), the recipients (the caller's own choice: the Mailbox fills in the
+  sender for Reply and everyone else for Reply all), the sending switch and the company's limits.
+- **The thread.** The email joins the answered message's thread, so every member reads it there, and the thread
+  counts as handled. It carries `In-Reply-To` (the answered message's Message-ID) and `References` (the ids of that
+  message's own References, each once, then its id; the first and the newest that fit one header line of 980
+  characters, as an agent's reply), so the other side's mail program threads it too and the answer to it joins the
+  same thread. A received email's earlier ids are read from its stored message while that is kept (seven days); after
+  that the reply names the answered email alone. A message with no usable id (a sent email whose Message-ID is not
+  read back yet, a received one without one) is answered in its thread without those headers.
+- **The member's own act.** No AI line and no automatic review, as any email of a member's. Unlike an agent's reply
+  it also answers an email the mail door marked `automated` (a person replying starts no mail loop), and it never
+  carries `Auto-Submitted`: `in_reply_to_delivery_id`, which marks an agent's automatic reply for the sender, stays
+  empty on a member's email, and `qorpera_claim_company_mail` is unchanged.
+- **Forward** is the Mailbox's own: a new email (no `replyTo`) whose text holds the forwarded message under the
+  member's words.
 
 **Next (M2c-2).** Threads and sent mail as files in the folder (`mail/<address>/`, sent mail beside the received;
 Jonas, 2 October, Interfaces decision 3), once the folder's platform writer lands. A connected Gmail read once a
@@ -758,6 +783,15 @@ is unchanged). It relaxes the outbox's run, call and agent columns (an email is 
 The web client that sends follows it; an older client simply has no Send. Acceptance: a member opens Write in the
 Mailbox, keeps "You" as the writer, sends to an outside address, and the email arrives from "<member> at <company>"
 with no AI line; it shows in Sent and in its thread as theirs, and the answer to it joins that thread.
+
+## Deploy (M2e+)
+
+A migration alone: no runtime change, no bundle, no edge function. It adds `qorpera_mail_reply_references` and patches
+`qorpera_send_member_mail` by exact text; the outbox's claim and `qorpera_send_agent_mail` are untouched. The web
+client that answers in a thread follows it (an older cloud refuses `replyTo` with 22023, so the web waits for the
+migration). Acceptance: a member opens a received email in the Mailbox, presses Reply, writes and sends; the email
+stands in the thread as theirs, arrives at the sender threaded under the email it answers, with no AI line, and the
+sender's answer to it joins the same thread.
 
 ## Deploy (M2a)
 
