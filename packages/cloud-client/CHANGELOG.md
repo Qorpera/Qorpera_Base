@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `app-groups.ts`: a group's `colour` (one of `AGENT_COLOURS`), read from and written to one note line of `apps/groups.md`, `<!-- group colours: <id>=<colour>, … -->`, after the list and the retired ids; a colour for no group or not in the palette is left out. A reader from before it keeps the line as a note, so every group still reads. `resolveAppGroups` carries it. `app-icons.ts` (12 Nov 2026): an app's own icon format and its reader `parseAppIcon`; `INTERFACE_EMBLEMS` has 24.
 - `CloudMemberCompanyComputerClient.startAgentComputer(staffAgentId, signal)` (migration `20260930730000`): a member starts a desktop computer for an agent that has none (`qorpera_member_start_agent_computer`), answering `{kind: "started" | "existing", machineId, name, state}` or `{kind: "refused", reason}` from the closed `MEMBER_AGENT_COMPUTER_REFUSALS` (`AGENT_UNAVAILABLE`, `START_TOO_SOON`, `MACHINE_TOO_LARGE`, `MACHINES_UNAVAILABLE`); anything else is no answer.
 - App groups: `isAppDrawerKey` takes `whats-new`, the bare key of Qorpera's What's new page in the apps drawer (own code storage, step 4; 11 Nov 2026); `app:whats-new` stays an agent's app.
 - Agent wall: a `## Now` part on top, one line with no detail (`Wall.now`, `WALL_NOW_MAX_CHARS` = 60 for what `update_wall` writes): where the agent's work stands, for the line under its name in the sidebar. A wall written before it has none and reads as before; a second line or a detail under it is a problem.
