@@ -296,7 +296,9 @@ job)
 	;;
 after)
 	# What was ended, by the guard and by the kernel, as the journal names it.
-	journalctl -b -t qorpera-machine-memory-guard -o cat | grep -E '^(sending SIG[A-Z]* to process|process [0-9]+ exited|kill failed|mem avail)' | cut -c1-200 | sed 's/^/J guard: /'
+	# With the time of each line (the machine's clock is UTC, as the probe's).
+	journalctl -b -t qorpera-machine-memory-guard -o short-iso | sed -E 's/^[0-9-]+T([0-9:]+)[^ ]* [^ ]+ [^ ]+: /\1 /' |
+		grep -E '^[0-9:]+ (sending SIG[A-Z]* to process|process [0-9]+ exited|kill failed|mem avail)' | cut -c1-200 | sed 's/^/J guard: /'
 	journalctl -b -k -o cat | grep -E 'Out of memory|oom-kill|Killed process' | sed 's/^/J kernel: /'
 	ended=$(journalctl -b -t qorpera-machine-memory-guard -o cat | grep -c '^sending SIG[A-Z]* to process')
 	kernel=$(journalctl -b -k -o cat | grep -c 'Killed process')

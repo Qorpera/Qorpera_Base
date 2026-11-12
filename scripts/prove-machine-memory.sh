@@ -17,15 +17,17 @@
 #             again; the guard and who is protected; the idle rule's measure on the quiet machine; two clicks, a
 #             double-click, a move and drags on one spot, each under a second; a boot with the zram module hidden;
 #             and past the edge of its memory (heavy web apps, a 1.5 GB job run as a machine command, tabs until three
-#             were ended): `desktop click` asked from this host every second answers within 2 s the whole time,
-#             something was ended and named in the journal, and the desktop, the helper and the machine's own
-#             services are alive after. Then an agent's job that outgrows the machine (twice its memory): it is the
+#             were ended): `desktop click` asked from this host every second keeps being answered the whole time
+#             (the bar is at `probed` below), something was ended and named in the journal, and the desktop, the
+#             helper and the machine's own services are alive after. Then an agent's job that outgrows the machine (twice its memory): it is the
 #             one ended, the clicks still answer, and its command ends in a way an agent can read.
 #   numbers   2 processors / 4 GiB, for a person: the mixed desktop leg with nothing else running and with every
 #             processor busy, then heavy apps, the 1.5 GB job and 24 tabs, stopping before the edge.
 #   small     2 processors / 2 GiB with the desktop's size check lowered FOR THE TEST ONLY: heavy apps, a 600 MB job
 #             and tabs, stopping before the edge.
 #   small-past  only when named: that small machine past the edge, with the clicks asked and judged as in checks.
+#   edge      only when named: the checks part's past-the-edge leg alone, on a fresh 2 processors / 4 GiB machine (name
+#             it several times to run it several times).
 #
 # It ends with PROOF PASSED and exit 0 only if no check failed and every part it was asked for ran to its end.
 set -euo pipefail
@@ -40,7 +42,7 @@ PARTS=("$@")
 fail() { echo "FAIL: $*" >&2; exit 1; }
 [[ $(id -u) == 0 ]] || fail "run as root"
 [[ $IMAGE =~ ^[0-9a-f]{64}$ ]] || fail "an image is named by its whole fingerprint"
-for part in "${PARTS[@]}"; do [[ $part =~ ^(checks|numbers|small|small-past)$ ]] || fail "no such part: $part"; done
+for part in "${PARTS[@]}"; do [[ $part =~ ^(checks|numbers|small|small-past|edge)$ ]] || fail "no such part: $part"; done
 [[ $PROJECT != default && $PROJECT != machines ]] || fail "the proof runs in the node's build space, not in $PROJECT"
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/machine-memory-proof
 for file in guest.sh pages.cjs job.cjs app.html video.html pointer.html; do [[ -f $here/$file ]] || fail "missing $here/$file"; done
@@ -139,24 +141,40 @@ probe() {
 	done
 }
 
-# Starts the probe, runs one leg under it, and judges the clicks: every one answered, each within 2 s.
+# Starts the probe, runs one leg under it, and judges the clicks. The machine keeps answering: no click failed, none
+# took 3 s or more, and at most 1 in 100 took 2 s or more (one, when there are fewer than 200).
+#
+# The lead set this bar on the measured runs (12 Nov 2026). The aim is that the machine keeps answering, where it froze
+# before (no answer in 20 to 30 s, the executor's call lost). The first bar, every click under 2 s, flapped on one
+# click of 2.02 s, and a check that flaps is worth nothing. The four runs of the past-the-edge leg on one candidate
+# image (2 processors, 4 GiB), as clicks, failed, 1 s or more, 2 s or more, the slowest:
+#   104, 0, 1, 1, 2.02 s        101, 0, 1, 0, 1.28 s        100, 0, 0, 0, 0.64 s        99, 0, 1, 0, 1.63 s
+# The slowest click fell at the same step in three of them: not at a tab's end, but half a minute later, when the leg
+# starts a new program and a heavy page at once and about 360 MiB go into the compressed reserve within 3 s.
 probed() { # what, the least number of clicks, seconds, then the leg's words
-	local what=$1 least=$2 clicks failed slow
+	local what=$1 least=$2 clicks failed one two three allowed
 	shift 2
 	rm -f "$work/stop"
 	probe >"$work/probe" &
 	guest "$@"
 	touch "$work/stop"
 	wait
-	grep -E ' rc=[^0]| click_s=([2-9]|[1-9][0-9])\.' "$work/probe" | sed 's/^/slow or failed: /' || true
+	# What the probe saw around every click that failed or took a second or more: the three rounds before and the one after.
+	awk '{ line[NR] = $0 }
+		/ click_s=/ { split($3, a, "="); if (a[2] >= 1 || $4 != "rc=0") for (i = NR - 3; i <= NR + 1; i++) near[i] = 1 }
+		END { for (i = 1; i <= NR; i++) if (near[i]) print "near a slow or failed click: " line[i] }' "$work/probe"
 	clicks=$(grep -c ' click_s=' "$work/probe" || true)
 	failed=$(grep ' click_s=' "$work/probe" | grep -vc ' rc=0 ' || true)
-	slow=$(awk '/ click_s=/ {split($3, a, "="); if (a[2] >= 2) n++} END {print n + 0}' "$work/probe")
-	echo "M $what clicks=$clicks failed=$failed at_or_over_2s=$slow over_1s=$(awk '/ click_s=/ {split($3, a, "="); if (a[2] > 1) n++} END {print n + 0}' "$work/probe") slowest_s=$(awk '/ click_s=/ {split($3, a, "="); if (a[2] > m) m = a[2]} END {print m + 0}' "$work/probe") slowest_look_s=$(awk '/ look_s=/ {split($3, a, "="); if (a[2] > m) m = a[2]} END {print m + 0}' "$work/probe") least_available_MB=$(sed -n 's/.*MemAvailable:\([0-9]*\).*/\1/p' "$work/probe" | sort -n | head -1)"
-	if (( clicks >= least && failed == 0 && slow == 0 )); then
-		echo "CHECK ok   $what the machine answered every desktop click within 2 s ($clicks clicks, one a second)"
+	one=$(awk '/ click_s=/ {split($3, a, "="); if (a[2] >= 1) n++} END {print n + 0}' "$work/probe")
+	two=$(awk '/ click_s=/ {split($3, a, "="); if (a[2] >= 2) n++} END {print n + 0}' "$work/probe")
+	three=$(awk '/ click_s=/ {split($3, a, "="); if (a[2] >= 3) n++} END {print n + 0}' "$work/probe")
+	allowed=$(( clicks / 100 ))
+	(( allowed >= 1 )) || allowed=1
+	echo "M $what clicks=$clicks failed=$failed at_or_over_1s=$one at_or_over_2s=$two at_or_over_3s=$three slowest_s=$(awk '/ click_s=/ {split($3, a, "="); if (a[2] > m) m = a[2]} END {print m + 0}' "$work/probe") slowest_look_s=$(awk '/ look_s=/ {split($3, a, "="); if (a[2] > m) m = a[2]} END {print m + 0}' "$work/probe") least_available_MB=$(sed -n 's/.*MemAvailable:\([0-9]*\).*/\1/p' "$work/probe" | sort -n | head -1)"
+	if (( clicks >= least && failed == 0 && three == 0 && two <= allowed )); then
+		echo "CHECK ok   $what the machine kept answering desktop clicks ($clicks clicks, one a second: none failed, none took 3 s or more, $two took 2 s or more)"
 	else
-		echo "CHECK FAIL $what the machine answered every desktop click within 2 s ($clicks clicks, $failed failed, $slow took 2 s or more)"
+		echo "CHECK FAIL $what the machine kept answering desktop clicks ($clicks clicks, at least $least wanted: $failed failed, $three took 3 s or more, $two took 2 s or more where $allowed may)"
 	fi
 	if grep ' look_s=' "$work/probe" | grep -qv ' rc=0$'; then
 		echo "CHECK FAIL $what the guest helper answered every look"
@@ -201,6 +219,13 @@ echo "PROOF-START $(date -u +%FT%TZ) image $IMAGE parts ${PARTS[*]} host load $(
 		small)
 			machine 2 2GiB
 			guest 1500 load 600 stop 24
+			gone
+			;;
+		edge)
+			machine 2 4GiB
+			guest 180 browser
+			probed "past the edge" 60 1500 load 1500 past 72
+			guest 180 after
 			gone
 			;;
 		small-past)

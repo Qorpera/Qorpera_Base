@@ -763,6 +763,11 @@ test("every machine has compressed memory from its boot on and a guard at the ed
 	assert.equal([...proof.matchAll(/\blx(?:c --project "\$PROJECT")? (?:delete|stop|restart)\b[^\n]*/g)].every(([line]) => line.includes('"$MACHINE"')), true);
 	assert.doesNotMatch(proof, /lxc (?!--project "\$PROJECT" )/);
 	assert.match(proof, /-c user\.qorpera\.image_builder=true -c user\.qorpera\.purpose=machine-image\n/);
+	// Past the edge the machine keeps answering: no click fails, none takes 3 s or more, and at most 1 in 100 takes 2 s
+	// or more (one, under 200 clicks). The lead's bar, set on the measured runs: one click of 2.02 s in 104 is a machine
+	// that answers, against the freeze before (no answer in 20 to 30 s), and a check that flaps is worth nothing.
+	assert.match(proof, /\n\tallowed=\$\(\( clicks \/ 100 \)\)\n\t\(\( allowed >= 1 \)\) \|\| allowed=1\n/);
+	assert.match(proof, /\n\tif \(\( clicks >= least && failed == 0 && three == 0 && two <= allowed \)\); then\n/);
 	for (const file of ["guest.sh", "pages.cjs", "job.cjs", "app.html", "video.html", "pointer.html"])
 		assert.ok(existsSync(join(repositoryRoot, "scripts/machine-memory-proof", file)), file);
 	for (const file of [

@@ -9,7 +9,8 @@
 const { chromium } = require("playwright");
 const fs = require("node:fs");
 
-const M = (o) => console.log(`M ${JSON.stringify(o)}`);
+// Each measure with its time (UTC), so it can be laid beside the probe's clicks and the guard's journal lines.
+const M = (o) => console.log(`M ${JSON.stringify({ ...o, at: new Date().toISOString().slice(11, 19) })}`);
 const meminfo = () => {
 	const text = fs.readFileSync("/proc/meminfo", "utf8");
 	const mb = (key) => Math.round(Number(text.match(new RegExp(`${key}:\\s+(\\d+)`))[1]) / 1024);
