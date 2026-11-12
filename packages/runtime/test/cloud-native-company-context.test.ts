@@ -1547,31 +1547,32 @@ function stableFolderRun(kind: "conversation" | "worker" | "private") {
 // the wall's now line and what a wall line says (the sidebar's line under each name; Jonas, 11 November 2026), for
 // work that waits on a member going on a card that says what is stopped, with the wall's waiting items mirroring the
 // open cards ("it's really stopped at you"; Jonas, 11 November 2026), and for What's new as Qorpera's own page, where
-// a member puts a repository's website live (own code storage step 4, 11 November 2026). A change to any is a change
-// to every run's bytes.
+// a member puts a repository's website live (own code storage step 4, 11 November 2026), and for overlay v15 (the
+// Co-Founder's tidy pass takes a top-level group of the apps drawer without a colour as a sign; Jonas, 12 November
+// 2026). A change to any is a change to every run's bytes.
 it.each([
 	[
 		"an ordinary company conversation",
 		"conversation",
 		{
-			instructions: "3de5a33b3eb1d057a12541173eabf2008b2b0fb4d6fb8ffb080ce7be73299f2a",
-			prompt: "87eaa2f504945457baf071474bd7bf712ef50dfc3e99267e0dc089a2d5cd5c44",
+			instructions: "71fb89f7d9e77effba809a3f4d8353e62a29ca931f1b7de870086b21902d2427",
+			prompt: "9ce97c9d2eaf88abefdda00bb7b9bb06bf3e946428d917e0a95bbe29b6ec6903",
 		},
 	],
 	[
 		"a worker run",
 		"worker",
 		{
-			instructions: "f1619d401312264282ef667f8ba3f41be9f70486e123cc4684c5a3f0243a66c7",
-			prompt: "e9968a08aa5c4b04ee610f7f03014928730e88e9632df941d4d7912331534503",
+			instructions: "89a32c4542cee4de342ccce7f2a35f38dac5684df32d6cebbb4939bdfe9a5b96",
+			prompt: "de59a35b6dee5f88548a53006c57d72cbb811ace25785453fee81703bd777797",
 		},
 	],
 	[
 		"a member's private conversation",
 		"private",
 		{
-			instructions: "3de5a33b3eb1d057a12541173eabf2008b2b0fb4d6fb8ffb080ce7be73299f2a",
-			prompt: "cae25d562292e7abd87158f86f29192c376cd4d484509a2a8135e14753940692",
+			instructions: "71fb89f7d9e77effba809a3f4d8353e62a29ca931f1b7de870086b21902d2427",
+			prompt: "e0d2ff6f20f48ef28a8ac69ea1d559affe69a81bb89b3eebfac52cbb31514b25",
 		},
 	],
 ] as const)("gives %s on the company folder the same instructions and prompt, byte for byte", (_run, kind, pinned) => {
