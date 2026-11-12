@@ -110,7 +110,7 @@ interface SearchHit {
 }
 
 /** A file a files-only search counted: its matching lines, from where its page began in it; `partial` when the
- * count goes on in the next page. */
+ * count goes on in the next page. A page that began inside the file ends its count, 0 when nothing more matched. */
 interface SearchFile {
 	readonly path: string;
 	readonly version: string;
@@ -123,7 +123,7 @@ interface SearchPage {
 	readonly files?: readonly SearchFile[];
 	readonly searched: number;
 	readonly binary: number;
-	/** Lines over 1 MiB a regular expression searched in parts. */
+	/** Lines over 1 MiB a regular expression did not search. */
 	readonly longLines?: number;
 	readonly reads: readonly CloudCompanyFolderRelease[];
 	readonly next: SearchCursor | null;
@@ -327,9 +327,13 @@ export class CloudFolderSearch {
 	#closed = false;
 	/** Calls go one at a time: the node answers a connection's requests in turn, and one view serves the run. */
 	#turn: Promise<unknown> = Promise.resolve();
-	/** Where each answer said to go on, and the search it belongs to, kept here: the model holds only an opaque token,
-	 * so it never reads (or forges) a path the answer did not show. Kept for the run. */
-	readonly #cursors = new Map<string, { readonly cursor: SearchCursor; readonly search: string }>();
+	/** Where each answer said to go on, the search it belongs to, and a file count it showed as going on, kept here:
+	 * the model holds only an opaque token, so it never reads (or forges) a path the answer did not show. Kept for the
+	 * run. */
+	readonly #cursors = new Map<
+		string,
+		{ readonly cursor: SearchCursor; readonly search: string; readonly carried?: SearchFile }
+	>();
 
 	constructor(options: {
 		socketPath: string;
@@ -412,18 +416,22 @@ export class CloudFolderSearch {
 		return this.#link;
 	}
 
-	/** A token for where an answer of `search` said to go on. */
-	seal(cursor: SearchCursor, search: string): string {
+	/** A token for where an answer of `search` said to go on, with the count it showed as going on there. */
+	seal(cursor: SearchCursor, search: string, carried?: SearchFile): string {
 		const token = randomBytes(12).toString("base64url");
-		this.#cursors.set(token, { cursor, search });
+		this.#cursors.set(token, { cursor, search, ...(carried ? { carried } : {}) });
 		return token;
 	}
 
 	/** Where a token said to go on, if this run gave it for this same search. */
-	open(token: string, search: string): SearchCursor | "other" | undefined {
+	open(
+		token: string,
+		search: string,
+	): { readonly cursor: SearchCursor; readonly carried?: SearchFile } | "other" | undefined {
 		const sealed = this.#cursors.get(token);
 		if (!sealed) return undefined;
-		return sealed.search === search ? sealed.cursor : "other";
+		if (sealed.search !== search) return "other";
+		return sealed.carried ? { cursor: sealed.cursor, carried: sealed.carried } : { cursor: sealed.cursor };
 	}
 
 	close(): void {
@@ -496,7 +504,9 @@ function parsePage(body: Record<string, unknown>, v2: boolean): SearchPage {
 	});
 	const files = (v2 && Array.isArray(body.files) ? (body.files as unknown[]) : []).map((item): SearchFile => {
 		const f = item as Record<string, unknown>;
-		if (!f || typeof f !== "object" || (f.partial !== undefined && f.partial !== true) || count(f.count) === 0) bad();
+		// A count goes on only from a match; a count of 0 ends one a page before it gave.
+		if (!f || typeof f !== "object" || (f.partial !== undefined && (f.partial !== true || count(f.count) === 0)))
+			bad();
 		const file = { path: text(f.path, 4096), version: text(f.version, 64), count: count(f.count) };
 		return f.partial === true ? { ...file, partial: true } : file;
 	});
@@ -618,7 +628,21 @@ function joined(units: readonly Unit[]): string[] {
 }
 
 function unitsOf(page: SearchPage): Unit[] {
-	return [...page.hits.map((h) => hitUnit(h)), ...(page.files ?? []).map(fileUnit)];
+	// A count of 0 that closed nothing shown says nothing.
+	return [...page.hits.map((h) => hitUnit(h)), ...(page.files ?? []).filter((f) => f.count > 0).map(fileUnit)];
+}
+
+/** An answer that goes on inside the file a count was carried into (the cursor's): the count it showed before is the
+ * start of this one, which then shows the file's whole count, or that it still goes on. A file whose version changed
+ * since is counted from its start, so the count carried no longer holds. */
+function withCarried(page: SearchPage, carried: SearchFile | undefined): SearchPage {
+	if (!carried) return page;
+	const first = page.files?.[0];
+	const same = (f: { path: string; version: string } | null | undefined) =>
+		f?.path === carried.path && f.version === carried.version;
+	if (same(first) || (page.files?.length === 0 && same(page.next)))
+		return mergePages({ hits: [], files: [carried], searched: 0, binary: 0, reads: [], next: null }, page);
+	return page;
 }
 
 /** The bytes an answer's lines take as shown, before its fitting: what a call measures to ask for another page. */
@@ -628,8 +652,12 @@ function shownBytes(page: SearchPage): number {
 
 /** The text the model is shown of one answer, fitted to one tool result: hits (or files) that do not fit go to the
  * next call, and the first is always shown (without its context lines, its line cut, and at worst its path, if that
- * is what fits). `seal` turns where to go on into the token the model passes back. */
-export function folderSearchText(page: SearchPage, seal: (cursor: SearchCursor) => string): string {
+ * is what fits). `seal` turns where to go on into the token the model passes back, with the file count the answer
+ * shows as going on there. */
+export function folderSearchText(
+	page: SearchPage,
+	seal: (cursor: SearchCursor, carried?: SearchFile) => string,
+): string {
 	const units = unitsOf(page);
 	const longLines = page.longLines ?? 0;
 	// Laid out with a stand-in token of a real token's length (16 characters, nothing to escape), and sealed once.
@@ -643,14 +671,18 @@ export function folderSearchText(page: SearchPage, seal: (cursor: SearchCursor) 
 			: `${page.searched} file${page.searched === 1 ? "" : "s"} searched` +
 				(page.binary > 0 ? `, ${page.binary} binary passed over` : "") +
 				(longLines > 0
-					? `; ${longLines} line${longLines === 1 ? "" : "s"} over 1 MiB searched in parts (a match over 64 KiB across two parts is not found)`
+					? `; ${longLines} line${longLines === 1 ? "" : "s"} over 1 MiB not searched by the pattern (search them as text, or read them)`
 					: "");
 		const more = next ? `. More: call again with cursor ${token}` : ". Nothing more.";
 		return { text: `${lines.length === 0 ? "No matches here." : lines.join("\n")}\n\n${counts}${more}`, next };
 	};
+	const last = page.files?.at(-1);
 	const sealed = (shown: number, first?: Unit): string => {
 		const { text, next } = lay(shown, first);
-		return next ? lay(shown, first, seal(next)).text : text;
+		if (!next) return text;
+		// A count shown as going on goes on with the cursor, when the answer showed it (nothing after it was cut).
+		const carried = shown === units.length && last?.partial ? last : undefined;
+		return lay(shown, first, seal(next, carried)).text;
 	};
 	let shown = units.length;
 	while (shown > 1 && !fitsOneResult(lay(shown).text)) shown--;
@@ -840,12 +872,12 @@ export function cloudFolderSearchTool(options: {
 				input.names_only,
 				input.case_sensitive,
 			]);
-			const after = input.cursor === null ? null : search.open(input.cursor, asked);
-			if (after === undefined)
+			const opened = input.cursor === null ? null : search.open(input.cursor, asked);
+			if (opened === undefined)
 				throw new CloudToolRefusal(
 					"CURSOR_UNKNOWN: that cursor is not one this run's search gave (cursors last for the run); search again",
 				);
-			if (after === "other")
+			if (opened === "other")
 				throw new CloudToolRefusal(
 					"CURSOR_OTHER_SEARCH: that cursor belongs to another search; repeat that search's query, path, glob and flags with it, or search without a cursor",
 				);
@@ -861,10 +893,11 @@ export function cloudFolderSearchTool(options: {
 						filesOnly: input.files_only,
 						caseSensitive: input.case_sensitive,
 						context: input.context,
-						after,
+						after: opened?.cursor ?? null,
 					},
 					context.signal,
 				);
+				page = withCarried(page, opened?.carried);
 			} catch (error) {
 				if (!(error instanceof FolderLinkError) && !(error instanceof CloudCompanyFolderError)) throw error;
 				const code = error instanceof FolderLinkError ? error.code : "";
@@ -882,7 +915,7 @@ export function cloudFolderSearchTool(options: {
 					"COMPANY_FOLDER_UNAVAILABLE: the folder could not be searched now; try again, or read with company_read",
 				);
 			}
-			const text = folderSearchText(page, (cursor) => search.seal(cursor, asked));
+			const text = folderSearchText(page, (cursor, carried) => search.seal(cursor, asked, carried));
 			// Released before the model sees the answer, under the hash of exactly this text; cited by its first release.
 			let companyReadId: string | undefined;
 			const outputSha256 = createHash("sha256").update(text, "utf8").digest("hex");

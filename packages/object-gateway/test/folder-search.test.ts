@@ -694,11 +694,55 @@ describe("folder search, version 2 (keyholes S4)", () => {
 		},
 	);
 
-	it.runIf(linearRegexAvailable())("counts the long lines a regular expression searched in parts", async () => {
-		const { source } = stage({ "a.txt": `first\n${"x".repeat(100)}plan${"x".repeat(100)}\nplan three\n` });
-		const page = await searchView({ ...source, longestLine: 40 }, request2("pl.n", { regex: true }));
-		expect(page.hits.map((h) => h.line)).toEqual([2, 3]);
-		expect(page.longLines).toBe(1);
+	it.runIf(linearRegexAvailable())(
+		"searches whole lines only with a pattern: a line too long is read past, unsearched, and counted",
+		async () => {
+			// Its anchors and word boundaries are never judged at a stretch's end: END$ in a line that goes on is no hit.
+			const long = `${"x".repeat(100)}plan END${"x".repeat(100)}ENDsuffix`;
+			const { source } = stage({ "a.txt": `first\n${long}\nplan three END\ntail` });
+			for (const pattern of ["pl.n", "END$", "\\bEND\\b"]) {
+				const page = await searchView({ ...source, longestLine: 40 }, request2(pattern, { regex: true }));
+				expect(
+					page.hits.map((h) => h.line),
+					pattern,
+				).toEqual([3]);
+				expect(page.longLines).toBe(1);
+			}
+			// Its lines around a hit are kept as any line's: the long one shows its start.
+			const around = await searchView(
+				{ ...source, longestLine: 40 },
+				request2("three", { regex: true, context: 1 }),
+			);
+			expect(around.hits[0]).toMatchObject({
+				line: 3,
+				before: [expect.stringMatching(/^x{40,}$/)],
+				after: ["tail"],
+			});
+			// Text is still searched in stretches, as before.
+			const literal = await searchView({ ...source, longestLine: 40 }, request2("plan"));
+			expect(literal.hits.map((h) => h.line)).toEqual([2, 3]);
+			expect(literal.longLines).toBe(0);
+		},
+	);
+
+	it.runIf(linearRegexAvailable())("matches a pattern on empty lines too, and counts them", async () => {
+		const { source } = stage({ "a.txt": "a\n\nb\n\n\nc" });
+		expect((await searchView(source, request2("^$", { regex: true }))).hits.map((h) => h.line)).toEqual([2, 4, 5]);
+		expect((await searchView(source, request2("^$", { regex: true, filesOnly: true }))).files).toEqual([
+			{ path: "a.txt", version: v(1), count: 3 },
+		]);
+	});
+
+	it("ends the count of a file a page began inside, with 0 when nothing more matched there", async () => {
+		const { source } = stage({ "a.md": `plan\nplan\n${"x\n".repeat(40)}`, "b.md": "plan\n" });
+		const timed = await pages({ ...source, now: ticking() }, request2("plan", { filesOnly: true }));
+		const a = timed.flatMap((p) => p.files ?? []).filter((f) => f.path === "a.md");
+		expect(a[0]).toMatchObject({ count: 2, partial: true });
+		expect(a.at(-1)).toEqual({ path: "a.md", version: v(1), count: 0 });
+		expect(counted(timed)).toEqual([
+			{ path: "a.md", count: 2 },
+			{ path: "b.md", count: 1 },
+		]);
 	});
 
 	it.runIf(linearRegexAvailable())("matches as a case-folding regular expression does", () => {

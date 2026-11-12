@@ -1184,22 +1184,27 @@ export class FolderService {
 			}
 			void this.#publishLogged(view);
 		};
-		// A run's own view first listed now (keyholes S4): it is listed only while the node's run views hold fewer paths
-		// than they may, and kept only if it fits beside them.
+		// A run's own view not listed yet (keyholes S4): it is listed only while the node's run views hold fewer paths than
+		// they may (and kept only if it fits beside them, below).
 		const fresh = view.tree === undefined && grant.lease !== undefined && this.#grants.runBoxHost(bridge);
 		try {
 			if (fresh && this.#searchHeld(view) >= this.#searchPaths)
 				throw new ProtocolError(ErrorCode.unavailable, SEARCH_FULL);
 			view.loading ??= this.#firstLoad(view);
 			await view.loading;
-			if (view.closed && !view.finalOut) throw new ProtocolError(ErrorCode.viewClosed, view.closed);
+			// A run's view closed for the node's bound (another connection's hello, or its growth) is full, not ended.
+			if (view.closed && !view.finalOut)
+				throw new ProtocolError(
+					view.closed === SEARCH_FULL ? ErrorCode.unavailable : ErrorCode.viewClosed,
+					view.closed,
+				);
 			// A core view is served only to the machines its kind and machine name: a desktop to its own company machine.
 			if (view.core && !view.access?.admits(bridge))
 				throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
-			if (fresh && this.#searchHeld(view) + (view.tree?.size ?? 0) > this.#searchPaths) {
-				this.#log(`folder-service: ${view.key}: refused: run views would hold over ${this.#searchPaths} paths`);
-				throw new ProtocolError(ErrorCode.unavailable, SEARCH_FULL);
-			}
+			// Any connection to a run's view, the one that listed it or one that joined while it was listed, is served only
+			// while the view fits beside the node's other run views; one that does not is closed (`#searchBound`).
+			this.#searchBound(view);
+			if (view.closed === SEARCH_FULL) throw new ProtocolError(ErrorCode.unavailable, SEARCH_FULL);
 			view.admitted = true;
 			if (view.core && hello.protocol >= 3) view.persistentHandles = true;
 			if (hello.previous) await this.#transfer(view, hello, bridge);
@@ -1889,6 +1894,7 @@ export class FolderService {
 			view.pending?.liveChanged(changed);
 			this.#gitSettle(view);
 			if (!told) this.#push(view, this.#shown(view, changed, own));
+			this.#searchBound(view);
 		}
 	}
 
@@ -1946,6 +1952,7 @@ export class FolderService {
 		this.#gitSettle(view);
 		this.#log(`folder-service: ${view.key} listed again (${why}): ${tree.size} paths, ${changed.length} changed`);
 		this.#push(view, changed);
+		this.#searchBound(view);
 	}
 
 	/** The view's own folders among `paths` (those it made or moved, still pending), each with the version it shows. */
@@ -2149,6 +2156,16 @@ export class FolderService {
 			this.#searchQueue.push(turn);
 		});
 		return done;
+	}
+
+	/** A run's view whose tree takes the node's run views past the paths they may hold (at its listing, a listing
+	 * again, or its feed's changes) is closed: its tree goes at once. Its run is answered VIEW_CLOSED at its next
+	 * request, opens another, and is refused that one (`SEARCH_FULL`) while the node is full (SEARCH_PATHS). */
+	#searchBound(view: View): void {
+		if (view.identity?.kind !== "run_box" || !view.tree || view.closed) return;
+		if (this.#searchHeld(view) + view.tree.size <= this.#searchPaths) return;
+		this.#log(`folder-service: ${view.key}: closed: run views would hold over ${this.#searchPaths} paths`);
+		this.#close(view, SEARCH_FULL);
 	}
 
 	/** Paths the trees of the node's run views hold, `view`'s own left out (SEARCH_PATHS). */

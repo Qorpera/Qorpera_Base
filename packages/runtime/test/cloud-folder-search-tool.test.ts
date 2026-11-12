@@ -687,4 +687,57 @@ describe("company_search", () => {
 		);
 		expect(n.searches.at(-1)!.after).toEqual(next);
 	});
+
+	it("closes a count a page carried when the file ends with nothing more, and carries it across calls", async () => {
+		const V2 = { version: 2, regex: true };
+		const mid = (offset: number) => ({ path: "big.md", version: VERSION, offset, line: 9 });
+		// Within one call: a count of 0 at the file's end closes the count the first page left going on.
+		const within = await node(
+			(search) =>
+				search.after === null
+					? found({ files: [{ path: "big.md", version: VERSION, count: 2, partial: true }], next: mid(900) })
+					: found({ files: [{ path: "big.md", version: VERSION, count: 0 }], searched: 1 }),
+			V2,
+		);
+		const w = tool(within.path, folder().client);
+		expect((await w.execute(w.parseArguments({ query: "plan", files_only: true }), context())).value).toBe(
+			"big.md: 2\n\n1 file searched. Nothing more.",
+		);
+		// Across calls: a call that ends inside the file shows its count as going on, and the next call shows the whole.
+		let t = 0;
+		const clock = () => {
+			t += 20_000;
+			return t;
+		};
+		const across = await node(
+			(search) =>
+				search.after === null
+					? found({ files: [{ path: "big.md", version: VERSION, count: 40, partial: true }], next: mid(900) })
+					: found({ files: [{ path: "big.md", version: VERSION, count: 2 }], searched: 1 }),
+			V2,
+		);
+		const f = folder();
+		const search = new CloudFolderSearch({
+			socketPath: across.path,
+			folder: f.client,
+			environmentId: ENV,
+			now: clock,
+		});
+		const a = cloudFolderSearchTool({ search, folder: f.client, runId: RUN });
+		const first = (await a.execute(a.parseArguments({ query: "plan", files_only: true }), context())).value as string;
+		expect(first).toMatch(
+			/^big\.md: 40 so far \(the count goes on with the cursor\)\n\n0 files searched\. More: call again with cursor /,
+		);
+		expect(across.searches).toHaveLength(1);
+		const cursor = /cursor (\S+)$/.exec(first)![1]!;
+		expect(
+			(await a.execute(a.parseArguments({ query: "plan", files_only: true, cursor }), context("call-2"))).value,
+		).toBe("big.md: 42\n\n1 file searched. Nothing more.");
+		// A line a pattern could not search is named, not left out silently.
+		const longs = await node(() => found({ hits: [hit("a.md", 3, "plan")], searched: 1, longLines: 2 }), V2);
+		const l = tool(longs.path, folder().client);
+		expect((await l.execute(l.parseArguments({ query: "pl.n", regex: true }), context())).value).toBe(
+			"a.md:3: plan\n\n1 file searched; 2 lines over 1 MiB not searched by the pattern (search them as text, or read them). Nothing more.",
+		);
+	});
 });

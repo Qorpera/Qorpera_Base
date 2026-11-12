@@ -6462,12 +6462,14 @@ to products and work." Migration `20260930728000_member_app_layouts`, SQL test 1
 3. **One call answers more.** A call asks the node for pages until about 20 KiB shows, the search ends, six pages were
    asked or about 10 s passed; a page holds about 26 KiB of hits as shown. The answer is fitted to one tool result
    (32 KiB, the 2026-11-08 amendment) and gives a cursor when there is more. Nothing is left out silently: an answer
-   shown in part goes on from the first hit it left out, and a regular expression's match of over 64 KiB across two
-   parts of a line over 1 MiB is not found, which the answer says, with how many such lines.
+   shown in part goes on from the first hit it left out, a count of a file the answer ended inside says it goes on,
+   and a regular expression, which sees whole lines only, does not search a line over 1 MiB: the answer says how many
+   such lines it left, to search as text or read.
 4. **Cost and bounds.** There is no index: each page reads the files' text through the node's object cache, and each
    searching run holds its view's tree, about 670 bytes a path. A node's run views hold at most 1,500,000 paths in all
-   (about 1 GiB of the folder service's 3 GiB), at most 4 pages run at once on the node and at most 32 wait, each up to
-   20 s; past either the run is told the folder search is full or busy now. One tree per company per node, shared by
+   (about 1 GiB of the folder service's 3 GiB): a view that would take them past it, at its listing or as it grows,
+   is closed, and its run is refused another while the node is full. At most 4 pages run at once on the node and at
+   most 32 wait, each up to 20 s; past either the run is told the folder search is full or busy now. One tree per company per node, shared by
    its runs, is a later step.
 5. **What the provider sees.** `company_search`'s description and input schema change: `regex`, `context` and
    `files_only` are new, and `query` is no longer required. Nothing else.

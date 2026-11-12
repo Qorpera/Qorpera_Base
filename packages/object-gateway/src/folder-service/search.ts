@@ -48,11 +48,10 @@ const BINARY_PROBE = 8 * 1024;
  * keeping the query's length of its end so a match across two stretches is found; its number stays one line. */
 const PIECE_BYTES = 4 * 1024 * 1024;
 const LONGEST_LINE = 1024 * 1024;
-/** A regular expression reads smaller pieces: V8's linear engine runs a piece in one step, about 20 ms a MiB. */
+/** A regular expression reads smaller pieces: V8's linear engine runs a piece in one step, about 20 ms a MiB. It sees
+ * whole lines only, so it never judges `$`, `^` or `\b` at a stretch's end: a line longer than LONGEST_LINE is not
+ * searched by it, and the page counts such lines (`longLines`), so the run says so. */
 const REGEX_PIECE_BYTES = 256 * 1024;
-/** A regular expression's match across two stretches of a long line is found when it is at most this long; longer
- * ones are not, and the page counts such lines (`longLines`), so the run says so. */
-export const REGEX_OVERLAP = 64 * 1024;
 /** Files whose first piece is asked for ahead of the one being searched. */
 const AHEAD = 8;
 
@@ -78,7 +77,8 @@ export interface SearchHit {
 }
 
 /** Version 2 with `filesOnly`: a file with a match, and how many of its lines match, from where this page began in it;
- * `partial`: the page ended inside the file, and the next page counts on from there. */
+ * `partial`: the page ended inside the file, and the next page counts on from there. A page that began inside a file
+ * gives it an entry at its end even with no match there (count 0), so the run can close the count it carried. */
 export interface SearchFile {
 	readonly path: string;
 	readonly version: string;
@@ -103,7 +103,7 @@ export interface SearchAnswer {
 	readonly binary: number;
 	/** Files passed over because their bytes are missing from the storage server or fail their check (logged). */
 	readonly unreadable: number;
-	/** Version 2 only: lines over LONGEST_LINE a regular expression searched in stretches (see REGEX_OVERLAP). */
+	/** Version 2 only: lines over LONGEST_LINE a regular expression did not search (REGEX_PIECE_BYTES). */
 	readonly longLines?: number;
 	readonly reads: readonly SearchRead[];
 	readonly next: SearchCursor | null;
@@ -265,9 +265,9 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 		const folded = fold(query);
 		find = (text) => text.indexOf(folded);
 	}
-	/** Bytes of a long line's end kept for a match across two stretches: the query's longest UTF-8 form, or for a
-	 * regular expression REGEX_OVERLAP. */
-	const overlap = regex ? REGEX_OVERLAP : Buffer.byteLength(query ?? "") * 3 + 4;
+	/** Bytes of a long line's end kept for a match across two stretches: the query's longest UTF-8 form (a regular
+	 * expression searches no long line). */
+	const overlap = Buffer.byteLength(query ?? "") * 3 + 4;
 	const budget = v2 ? SHOWN_BYTES : HITS_BYTES;
 	const matchesGlob = (entry: TreeEntry): boolean => {
 		if (!glob) return true;
@@ -394,11 +394,15 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 		 * at in it, when the file is the page's first entry. A page out of time goes on reading until it may stop there
 		 * with the lines before the next hit kept (`here`). */
 		const floor = examined === 1 ? offset : -1;
+		/** Files only: the page began inside this file, so its count goes on one a page before it gave. */
+		const continued = resume !== undefined && (resume.offset > 0 || resume.line > 0);
 		/** The line in hand: its bytes not yet searched (all of it, or for a long line the stretch's end kept for a
 		 * match across stretches), and whether it is long (searched in stretches) or already has its hit. */
 		let carry: Buffer = Buffer.alloc(0);
 		let long = false;
 		let lineHit = false;
+		/** The line in hand is too long for a regular expression: read to its end, not searched. */
+		let unsearched = false;
 		/** A long line's start, as a context line shows it. */
 		let head = "";
 		let started = false;
@@ -436,7 +440,8 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 		};
 		/** Searches a stretch of the line in hand; false when the answer is full (the page ends at this line). */
 		const stretch = (bytes: Buffer): boolean => {
-			if (lineHit || bytes.byteLength === 0) return true;
+			// An empty line holds no text, but a pattern may match it (`^$`).
+			if (lineHit || unsearched || (bytes.byteLength === 0 && !regex)) return true;
 			const textLine = bytes.toString("utf8");
 			const found = find(fold(textLine));
 			if (found < 0) return true;
@@ -524,6 +529,7 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 					lineStart = base + stop + 1;
 					long = false;
 					lineHit = false;
+					unsearched = false;
 					start = stop + 1;
 					// Many lines with a match in one stretch (a count, or context) take their turns too.
 					if (performance.now() - turnAt >= TURN_MS) await turn();
@@ -547,11 +553,17 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 					if (regex) longLines++;
 					if (context > 0) head = contextText(rest.subarray(0, whole));
 				}
-				if (!stretch(rest.subarray(0, whole))) return cut(here());
 				long = true;
-				let keep = Math.max(0, whole - overlap);
-				while (keep < whole && (rest[keep]! & 0xc0) === 0x80) keep++;
-				carry = rest.subarray(keep);
+				if (regex) {
+					// A pattern sees whole lines only: this one is read to its end, unsearched, and counted.
+					unsearched = true;
+					carry = Buffer.alloc(0);
+				} else {
+					if (!stretch(rest.subarray(0, whole))) return cut(here());
+					let keep = Math.max(0, whole - overlap);
+					while (keep < whole && (rest[keep]! & 0xc0) === 0x80) keep++;
+					carry = rest.subarray(keep);
+				}
 			} else carry = rest;
 			offset = end;
 			await turn();
@@ -560,7 +572,7 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 			if (!long && cutAt > 0 && wanted === 0 && (ring[0]?.start ?? lineStart) > floor && source.now() >= deadline)
 				return cut(here());
 		}
-		if (count > 0) {
+		if (count > 0 || (filesOnly && continued && !skipped)) {
 			files.push({ path: entry.path, version: entry.version, count });
 			hitBytes += shownLine(entry.path, count, "");
 		}

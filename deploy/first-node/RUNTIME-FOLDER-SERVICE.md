@@ -366,7 +366,9 @@ service, so the execution host stays small:
     regex}` (`regex`: the service runs V8's linear-time engine, below). A request with `version: 2` takes `{version,
     query, regex, path, glob, namesOnly, filesOnly, caseSensitive, context, after}`: `query` null (with `namesOnly`) is a
     find of the names the glob keeps; `filesOnly` answers each file with a match once, with how many of its lines match
-    (`files: [{path, version, count, partial?}]`); `context` (0 to 5, text searches only) gives each hit `before` and
+    (`files: [{path, version, count, partial?}]`; a page that began inside a file gives it an entry at its end, count 0
+    when nothing more matched, so the run can close a count it carried); `context` (0 to 5, text searches only) gives
+    each hit `before` and
     `after`, the lines around it, and `from`, the byte the first line before starts at. Its answer also says `files`
     and `longLines`. A request without `version` is version 1, answered as before, so a runtime from before keeps
     working against this service; a runtime asks for version 2 only of a service whose hello said it.
@@ -375,8 +377,9 @@ service, so the execution host stays small:
     names its version and the byte its line starts at (0 for a name; with context, `from`), so a run that shows a page in
     part goes on from the first hit it left out. A line longer than 1 MiB is searched as it comes, a stretch at a time,
     keeping the query's length of each stretch's end, so a match across two stretches is found; it keeps one line
-    number and gives one hit. A regular expression keeps 64 KiB of each stretch's end instead, so a match of up to
-    64 KiB across two stretches is found; the page counts such lines (`longLines`) and the run says so.
+    number and gives one hit. A regular expression sees whole lines only, so it never judges `$`, `^` or `\b` at a
+    stretch's end: a line over 1 MiB is read past, unsearched by it, and the page counts such lines (`longLines`),
+    which the run names (search them as text, or read them). An empty line is a line a pattern may match (`^$`).
   - **Context lines.** A hit's `before` are the lines just before it that no earlier hit showed, `after` those just
     after it up to the next hit, each its first 200 characters: no line is shown twice. A page that ends at a hit, or
     out of time, goes on from the first of the lines a next hit would show before it (`from`), and a page out of time
@@ -421,9 +424,12 @@ service, so the execution host stays small:
   files' text through the object cache (1 GiB by default, `cacheMiB`), and a tree is per run, not per company.
 - **Bounds for search in every run (keyholes S4).** The unit's `MemoryMax` is 3 GiB.
   - The trees of the node's run views hold at most 1,500,000 paths in all (`SEARCH_PATHS`, about 1 GiB). A run view
-    is not listed while they hold that many, and one whose tree would take them past it is let go after its listing;
-    either hello is answered `UNAVAILABLE` with `SEARCH_FULL: …`, and the run tells the model the folder search is full
-    now. Other views (desktops, coding machines) are not counted.
+    is not listed while they hold that many. One whose tree takes them past it is closed (its tree goes at once):
+    after its listing, before any connection to it is served (the one that listed it and any that joined meanwhile),
+    and when its feed or a listing again grows it. A hello to such a view is answered `UNAVAILABLE` with
+    `SEARCH_FULL: …`; a request on a view closed so, `VIEW_CLOSED` with the same words, so the run opens another, which
+    is refused while the node is full. The run tells the model the folder search is full now. Other views (desktops,
+    coding machines) are not counted.
   - At most 4 pages run at once on the node (`SEARCH_RUNNING`); each gives the event loop a turn every 10 ms, so a
     machine's request waits at most about 40 ms behind search work. At most 32 more wait their turn, in order, each for
     at most 20 s; past either, `UNAVAILABLE` with `SEARCH_BUSY: …`. A page reads ahead at most 8 files' first pieces

@@ -1178,6 +1178,39 @@ describe("run box views", () => {
 		expect((await served.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
 	});
 
+	it("closes a run view whose tree grows past the paths the node's run views may hold, and serves no hello of one too large", async () => {
+		const { core, service, path, root } = await box(undefined, { searchPaths: 2 });
+		const io = await Client.open(path);
+		expect((await io.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
+		// Its feed brings a third path: the view goes, and its run is told so at its next request.
+		core.write(await storeFile(root, "docs/more.md", "more", 2));
+		await service.poll();
+		await service.settled();
+		io.send(Kind.search, {
+			query: "plan",
+			path: "",
+			glob: null,
+			namesOnly: false,
+			caseSensitive: false,
+			after: null,
+		});
+		expect((await io.json()).body).toMatchObject({
+			code: "VIEW_CLOSED",
+			message: expect.stringMatching(/^SEARCH_FULL: /),
+		});
+		// Two hellos at once on a view too large for the node: neither is served, the one that joined while it was
+		// listed included.
+		const small = await box(undefined, { searchPaths: 1 });
+		const first = await Client.open(small.path);
+		const second = await Client.open(small.path);
+		const answers = await Promise.all([
+			first.hello("io", BOX_PASS, EXEC, VIEW),
+			second.hello("io", BOX_PASS, EXEC, VIEW),
+		]);
+		for (const answer of answers)
+			expect(answer.body).toMatchObject({ code: "UNAVAILABLE", message: expect.stringMatching(/^SEARCH_FULL: /) });
+	});
+
 	it("answers a search on a view the core ended VIEW_CLOSED, so the run opens another", async () => {
 		const { core, service, path } = await box();
 		const io = await Client.open(path);
