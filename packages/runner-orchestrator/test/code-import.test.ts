@@ -249,6 +249,8 @@ describe("the limits and the codes", () => {
 		expect(CODE_IMPORT_REFUSED_CODE.test("IMPORT_X:PLACE_AS_BEFORE")).toBe(false);
 		expect(CODE_IMPORT_REFUSED_CODE.test(`IMPORT_${"A".repeat(101)}`)).toBe(false);
 		expect(CODE_IMPORT_REFUSED_CODE.test("CODE_HOST_NAMES_NOT_NFC")).toBe(true);
+		// The run's refusal of a place an earlier import left half done (part C3) is one of these, with words in D and E.
+		expect(CODE_IMPORT_REFUSALS).toContain("IMPORT_PLACE_HALF_DONE");
 		expect(CODE_IMPORT_FAILED_CODE.test("IMPORT_FETCH_TIMEOUT:PLACE_AS_BEFORE")).toBe(true);
 		expect(CODE_IMPORT_RPCS).toEqual(["qorpera_code_import_looked", "qorpera_code_import_record"]);
 	});

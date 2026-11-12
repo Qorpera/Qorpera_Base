@@ -52,6 +52,7 @@ import {
 	type CodeImportLook,
 	type CodeImportOutcome,
 	type CodeImportRaw,
+	type CodeImportRefusal,
 	type CodeImportRequest,
 	type CodeImportStep,
 	CodeImportStop,
@@ -198,8 +199,8 @@ const CALL_MS = 10_000;
 const FIXED = /^[A-Z][A-Z0-9_]{2,80}$/;
 const YIELDED = "CODE_HOST_JOB_YIELDED";
 /** A new import at a place an earlier one closed and did not finish, with other code or with a snapshot that can no
- * longer be finished: an operator finishes or clears that place (part C1's list lacks it). */
-const HALF_DONE = "IMPORT_PLACE_HALF_DONE";
+ * longer be finished: an operator finishes or clears that place (one of part C1's refusals). */
+const HALF_DONE: CodeImportRefusal = "IMPORT_PLACE_HALF_DONE";
 /** Steps from which the set-aside job was let go, as a claim's progress names them. */
 const LET_GO: ReadonlySet<CodeImportStep> = new Set(["set-aside", "build", "open", "tidy"]);
 

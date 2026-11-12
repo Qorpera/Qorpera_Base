@@ -143,6 +143,9 @@ export const CODE_IMPORT_REFUSALS = [
 	"IMPORT_USES_SUBMODULES",
 	/** Main's tree has more than 9,000 entries. */
 	"IMPORT_TOO_MANY_FILES",
+	/** The place holds an earlier import's half-done snapshot (its mark), and this import is not the same code or the
+	 * snapshot can no longer be finished (part C3): an operator finishes or clears that place. */
+	"IMPORT_PLACE_HALF_DONE",
 ] as const;
 export type CodeImportRefusal = (typeof CODE_IMPORT_REFUSALS)[number];
 
