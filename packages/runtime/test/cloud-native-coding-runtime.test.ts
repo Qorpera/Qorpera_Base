@@ -282,7 +282,8 @@ describe("the coding composition of a native turn", () => {
 					// change's site for What's new, within a site's limits and with none of the session's secret values.
 					'When the project is a website, add "site": {"folder": "dist"} to the checks file, with the folder your build writes:',
 					"once every check passed, Qorpera takes the web files in that folder (index.html at its top, at most 500 files and 25 MB in at most 100 folders, none hidden) as the site of this change, and nothing goes in when they are missing or hold one of this session's secret values.",
-					'It may also give "name", the site\'s address (3 to 48 lower-case letters, digits and hyphens), used once, when the site is first made.',
+					// Step 4's live proof (11 November 2026): What's new showed the site's address; a site's title is its name there.
+					'It may also give "name", the site\'s address (3 to 48 lower-case letters, digits and hyphens), used once, when the site is first made, and "title", the name members see for the site (1 to 120 characters on one line, no space at either end).',
 					// The first live site (Wristband, 11 November 2026) loaded /src/style.css from the top of the sites' domain: a site
 					// links its files relatively, and the collect refuses pages and styles that link from the top.
 					'The site is served under an address of its own, never at the top of a domain: its pages, styles and scripts link its files with relative links (src/app.js, ../img/logo.png), never with links that start with /; a bundler needs its base path set, such as Vite\'s base: "./".',
