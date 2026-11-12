@@ -775,16 +775,36 @@ PLANT
 	mkdir /tmp/large-links && cp "$mine/large"/*.bin /tmp/large-links/
 	"$files" open --copy -- /tmp/large-links >/dev/null 2>&1 &
 	for _ in $(seq 1 500); do pkill -STOP -u desktop -x cp && break; sleep 0.01; done
+	# (Root holds its own stop signals back; a process of the account holds none back.)
+	blocked=$(awk "/^SigBlk:/ { print \$2 }" "/proc/$(pgrep -u desktop -x cp | head -1)/status" 2>/dev/null || true)
 	pkill -KILL -u desktop -f "desktop-files account copy" || true
 	wait || true
 	left=$(pgrep -u desktop -x cp || true)
 	pkill -CONT -u desktop -x cp || true
 	sleep 1
 	[[ -z $left ]] || { echo "the cp of a copy whose side was ended was still there when root had the copy taken away" >&2; exit 1; }
+	[[ -z $blocked || $blocked == 0000000000000000 ]] || { echo "the cp of the desktop account holds signals back: $blocked" >&2; exit 1; }
 	[[ ! -e /home/desktop/Desktop/large-links ]] || diff -r /tmp/large-links /home/desktop/Desktop/large-links >/dev/null ||
 		{ echo "a copy whose side was ended left a part of itself on the desktop" >&2; exit 1; }
 	[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||
 		{ echo "a copy on its way came back after it was taken away: $(ls -A /home/desktop/Desktop | tr "\n" " ")" >&2; exit 1; }
+	# Root asked to stop while such a copy is being made (review r4 F1 of #1712): its stop signals are held back
+	# from its start to its last statement, so nothing of it runs because of one. It ends the account side, collects
+	# it, has what was on its way taken away, and only then ends, by the signal. A second signal changes nothing.
+	runuser -u desktop -- rm -rf /home/desktop/Desktop/large-links
+	"$files" open --copy -- /tmp/large-links >/dev/null 2>&1 &
+	asked=$!
+	for _ in $(seq 1 500); do [[ -n $(find /home/desktop/Desktop -maxdepth 2 -path "*/.qorpera-desktop-copy.*/*.bin" 2>/dev/null) ]] && break; sleep 0.01; done
+	kill -TERM "$asked" && kill -HUP "$asked" || true
+	status=0
+	wait "$asked" || status=$?
+	[[ $status == 129 || $status == 143 || $status == 0 ]] || { echo "root asked to stop while copying ended with $status" >&2; exit 1; }
+	[[ -z $(pgrep -u desktop -f "desktop-files account" || true) && -z $(pgrep -u desktop -x cp || true) ]] ||
+		{ echo "root asked to stop while copying left a process of the desktop account" >&2; exit 1; }
+	[[ ! -e /home/desktop/Desktop/large-links ]] || diff -r /tmp/large-links /home/desktop/Desktop/large-links >/dev/null ||
+		{ echo "root asked to stop while copying left a part of the copy on the desktop" >&2; exit 1; }
+	[[ -z $(find /home/desktop/Desktop -maxdepth 1 -name ".qorpera-desktop-copy.*") ]] ||
+		{ echo "root asked to stop while copying left the copy on its way: $(ls -A /home/desktop/Desktop | tr "\n" " ")" >&2; exit 1; }
 	rm -rf "$mine/large" /tmp/large-links
 	roots_own || { echo "copying for the desktop changed something of root" >&2; exit 1; }
 	if leaked; then echo "bytes of a file only root can read are in the desktop account folders" >&2; exit 1; fi
