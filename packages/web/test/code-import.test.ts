@@ -306,7 +306,7 @@ describe("the words of an import", () => {
 
 	const reasons: [string[], string, string][] = [
 		[
-			["IMPORT_TOO_LARGE", "IMPORT_TOO_LARGE:PLACE_AS_BEFORE"],
+			["IMPORT_TOO_LARGE", "IMPORT_TOO_LARGE:PLACE_AS_BEFORE", "CODE_HOST_BUNDLE_TOO_LARGE"],
 			"it is larger than 1 GB, the most Qorpera brings in",
 			"den er større end 1 GB, som er det meste, Qorpera henter ind",
 		],

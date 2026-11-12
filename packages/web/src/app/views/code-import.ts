@@ -143,6 +143,9 @@ export function importWhy(reason: string, file = false): string {
 			return file
 				? t("it is larger than 256 MB, the most Qorpera brings in from a file")
 				: t("it is larger than 1 GB, the most Qorpera brings in");
+		// The code host's own: the copy of it Qorpera keeps would be over the store's 2 GB (part B's look).
+		case "CODE_HOST_BUNDLE_TOO_LARGE":
+			return t("it is larger than 1 GB, the most Qorpera brings in");
 		case "IMPORT_SOURCE_REFUSED":
 			return t(
 				"GitHub did not let Qorpera read it; check the address, and that the company's GitHub connection can see it",
