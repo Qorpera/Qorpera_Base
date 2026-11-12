@@ -19,6 +19,13 @@ import {
 	type undoCodeChange,
 } from "./code-host-jobs.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
+import {
+	CODE_IMPORT_RPCS,
+	type CodeImportOutcome,
+	type CodeImportRequest,
+	codeImportOutcomeOf,
+	codeImportRequestOf,
+} from "./code-import.ts";
 import { CodingControlBusy, withinBytes } from "./coding-executor.ts";
 
 /** The work on a repository kept in Qorpera that no coding turn carries (own code storage, step 2b): the coding
@@ -42,9 +49,14 @@ import { CodingControlBusy, withinBytes } from "./coding-executor.ts";
  *              (`qorpera_code_restore_record`), as an undo's row is written inside its job: the finish here, after
  *              that job has saved, only ends the request. The sessions whose work it took away are archived around
  *              that finish (`qorpera_code_restore_strand`), and nothing of that changes how the restore ended.
+ *   import     existing code brought in (step 6): part C3's `CodeImport` runs its steps (`options.imports`), and
+ *              its outcome is finished when the run ends. One at a time: while one runs, a claim does not ask for
+ *              another (`p_kinds`), and without `options.imports` it never asks for one. An import the claim did not
+ *              ask for is put back (`busy`) at once.
  *
- * A download and a restore may take minutes: they run on beside the passes, so that an undo never waits behind one.
- * What they came to is counted in the pass after they ended, and `settled` waits for them. */
+ * A download, a restore and an import may take minutes (an import up to about an hour): they run on beside the
+ * passes, so that an undo never waits behind one, nor does a pass. What they came to is counted in the pass after they
+ * ended, and `settled` waits for them. */
 
 export const CODE_REQUEST_RPCS = [
 	"qorpera_code_requests_claim",
@@ -55,7 +67,13 @@ export const CODE_REQUEST_RPCS = [
 	"qorpera_code_restore_record",
 	// The sessions a restore stranded, archived around its finish (`#strand`).
 	"qorpera_code_restore_strand",
+	// An import's own: `CodeImport` makes them (the look, and the record inside the job that opens the place).
+	...CODE_IMPORT_RPCS,
 ] as const;
+
+/** The kinds a claim asks for (`p_kinds` of `qorpera_code_requests_claim`); `import` with them only while this executor
+ * can take one. */
+const KINDS = ["undo", "download", "restore"] as const;
 
 /** How many stranded sessions one `qorpera_code_restore_strand` names at most. */
 export const CODE_RESTORE_STRAND_IDS = 200;
@@ -108,10 +126,13 @@ export interface CodeRestoreRequest extends Claimed {
 	/** The repository's sessions that are not archived. */
 	sessions: { workerId: string; baseSha: string }[];
 }
-export type CodeRequest = CodeUndoRequest | CodeDownloadRequest | CodeRestoreRequest;
+/** An import is the kernel's item as part C1 reads it (`codeImportRequestOf`), whole. */
+export type CodeRequest = CodeUndoRequest | CodeDownloadRequest | CodeRestoreRequest | CodeImportRequest;
 
-/** What `qorpera_code_request_finish` records of one request (`qorpera.code-request-outcome/v1`), by kind. */
-export type CodeRequestOutcome = { schema: "qorpera.code-request-outcome/v1" } & (
+/** What `qorpera_code_request_finish` records of one request (`qorpera.code-request-outcome/v1`), by kind; an import's
+ * is part C1's. */
+export type CodeRequestOutcome = CodeImportOutcome | CodeOtherOutcome;
+type CodeOtherOutcome = { schema: "qorpera.code-request-outcome/v1" } & (
 	| {
 			state: "done";
 			result: "undone";
@@ -151,6 +172,9 @@ export interface CodeHostRequestsOptions {
 	records: Pick<CodeChangeRecords, "inJob">;
 	/** Part R's `CodeRestore`. Without it a restore request is finished failed (`NOT_BUILT`). */
 	restore?: { run(request: CodeRestoreRequest, signal: AbortSignal): Promise<CodeRequestOutcome> };
+	/** Part C3's `CodeImport`, which runs one import's steps and answers its outcome. Without it no claim asks for an
+	 * import. */
+	imports?: { run(request: CodeImportRequest, signal: AbortSignal): Promise<CodeImportOutcome> };
 	owner: string;
 	machineIdSha256: string;
 	/** The log lines `code-request` and `code-request-error` (whose `error` is the error itself, for the log to
@@ -212,6 +236,8 @@ function requestOf(value: unknown): CodeRequest {
 		owner: repository.owner,
 		name: repository.name,
 	};
+	// An import's item is part C1's to read, closed: its input, progress and look as well.
+	if (entry.kind === "import") return codeImportRequestOf(value);
 	if (entry.kind === "undo") {
 		const change = isRecord(entry.change) ? entry.change : {};
 		if (
@@ -282,14 +308,17 @@ export class CodeHostRequests {
 	readonly #jobs: CodeRequestJobs;
 	readonly #records: Pick<CodeChangeRecords, "inJob">;
 	readonly #restore: CodeHostRequestsOptions["restore"];
+	readonly #imports: CodeHostRequestsOptions["imports"];
 	readonly #owner: string;
 	readonly #machineIdSha256: string;
 	readonly #report: (event: Record<string, unknown>) => void;
 	readonly #limit: number;
 	readonly #recordMs: number;
 	readonly #strandMs: number;
-	/** The downloads and restores that run on beside the passes. */
+	/** The downloads, restores and imports that run on beside the passes. */
 	readonly #beside = new Set<Promise<void>>();
+	/** The import that runs, to its finish: while it does, no claim asks for another. */
+	#importing: Promise<void> | undefined;
 	/** What those that ended since the last pass came to. */
 	#ended: Counts = zero();
 
@@ -313,6 +342,7 @@ export class CodeHostRequests {
 		this.#jobs = options.jobs;
 		this.#records = options.records;
 		this.#restore = options.restore;
+		this.#imports = options.imports;
 		this.#owner = options.owner;
 		this.#machineIdSha256 = options.machineIdSha256;
 		const report = options.report;
@@ -329,11 +359,12 @@ export class CodeHostRequests {
 		this.#strandMs = strandMs;
 	}
 
-	/** One pass: the requests this executor may do now. Each undo is run to its finish before the pass ends; a download
-	 * or a restore is started and runs on beside the passes. It never throws for one request, nor for a kernel that does
-	 * not answer: those are reported (`code-request-error`). The counts are of the requests that ended since the last
-	 * pass began to count, by how they ended: this pass's undos, and the downloads and restores that finished meanwhile.
-	 * A request whose finish the kernel did not take counts as failed; its lease ends, and it is claimed again. */
+	/** One pass: the requests this executor may do now. Each undo is run to its finish before the pass ends; a download,
+	 * a restore or an import is started and runs on beside the passes, and nothing of the pass waits for it. It never
+	 * throws for one request, nor for a kernel that does not answer: those are reported (`code-request-error`). The
+	 * counts are of the requests that ended since the last pass began to count, by how they ended: this pass's undos, and
+	 * the downloads, restores and imports that finished meanwhile. A request whose finish the kernel did not take counts
+	 * as failed; its lease ends, and it is claimed again. */
 	async pass(signal: AbortSignal): Promise<Counts> {
 		const counts = this.#ended;
 		this.#ended = zero();
@@ -354,23 +385,32 @@ export class CodeHostRequests {
 		return counts;
 	}
 
-	/** Every download and restore that runs beside the passes has ended (after a stop, each ends as busy). */
+	/** Every download, restore and import that runs beside the passes has ended (after a stop, each ends as busy). */
 	async settled(): Promise<void> {
 		while (this.#beside.size) await Promise.allSettled([...this.#beside]);
 	}
 
-	/** A download or a restore, on beside the passes, under a signal of its own that ends with the executor's. */
-	#start(request: CodeDownloadRequest | CodeRestoreRequest, signal: AbortSignal): void {
+	/** A download, a restore or an import, on beside the passes, under a signal of its own that ends with the
+	 * executor's. An import runs only when this executor has an import runner and runs no other: otherwise it was not
+	 * asked for, and it is put back at once. */
+	#start(request: CodeDownloadRequest | CodeRestoreRequest | CodeImportRequest, signal: AbortSignal): void {
+		const runner = request.kind === "import" && this.#importing === undefined ? this.#imports : undefined;
 		const work: Promise<void> = withAbortScope(signal, (scoped) =>
-			this.#guarded(request, () =>
-				request.kind === "download" ? this.#download(request, scoped) : this.#restoring(request, scoped),
-			),
+			this.#guarded(request, () => {
+				if (request.kind === "download") return this.#download(request, scoped);
+				if (request.kind === "restore") return this.#restoring(request, scoped);
+				return runner ? this.#imported(runner, request, scoped) : this.#putBack(request, scoped);
+			}),
 		)
 			.then((ended) => {
 				this.#ended[ended] += 1;
 			})
-			.finally(() => this.#beside.delete(work));
+			.finally(() => {
+				this.#beside.delete(work);
+				if (this.#importing === work) this.#importing = undefined;
+			});
 		this.#beside.add(work);
+		if (runner) this.#importing = work;
 	}
 
 	/** One request to its end, whatever it throws. */
@@ -383,10 +423,14 @@ export class CodeHostRequests {
 		}
 	}
 
+	/** The claim, by its named arguments: the kinds this executor takes now, `import` among them only while it has an
+	 * import runner and none runs (the kernel hands out one import a claim at most, and nothing else of that company
+	 * while its import runs). */
 	async #claim(signal: AbortSignal): Promise<CodeRequest[]> {
+		const kinds = this.#imports !== undefined && this.#importing === undefined ? [...KINDS, "import"] : [...KINDS];
 		const answer = await this.#call(
 			CODE_REQUEST_RPCS[0],
-			{ p_owner: this.#owner, p_machine_id_sha256: this.#machineIdSha256, p_limit: this.#limit },
+			{ p_owner: this.#owner, p_machine_id_sha256: this.#machineIdSha256, p_limit: this.#limit, p_kinds: kinds },
 			signal,
 		);
 		if (!isRecord(answer) || answer.schema !== "qorpera.code-requests/v1" || !Array.isArray(answer.requests))
@@ -702,6 +746,48 @@ export class CodeHostRequests {
 			}
 		}
 		return again;
+	}
+
+	/** An import: part C3's steps, beside the passes, and their outcome finished once the run has ended. The run keeps
+	 * the request's lease itself and makes its own calls (the steps, the look, the record). An outcome not of the kernel's
+	 * shape is finished failed (`CODE_REQUEST_ANSWER_INVALID`). A run that throws once the executor is stopping, or whose
+	 * job gave way to a turn's, is put off (`busy`), as a restore's is; when stopping, the finish has the few seconds
+	 * `#finish` gives it, and a finish not heard leaves the request leased until its lease runs out. */
+	async #imported(
+		runner: NonNullable<CodeHostRequestsOptions["imports"]>,
+		request: CodeImportRequest,
+		signal: AbortSignal,
+	): Promise<Ended> {
+		let outcome: CodeRequestOutcome;
+		try {
+			const ended: unknown = await runner.run(request, signal);
+			try {
+				outcome = codeImportOutcomeOf(ended);
+			} catch {
+				throw new Error("CODE_REQUEST_ANSWER_INVALID");
+			}
+		} catch (error) {
+			if (signal.aborted || (error instanceof CodeHostJobFailure && error.code === YIELDED))
+				outcome = { schema: SCHEMA, state: "busy" };
+			else {
+				outcome = { schema: SCHEMA, state: "failed", code: codeChangeErrorCode(error) };
+				this.#report({ event: "code-request-error", step: "job", ...named(request), error });
+			}
+		}
+		return this.#said(request, outcome, await this.#finish(request, outcome, signal, 2));
+	}
+
+	/** An import this executor did not ask for: it has no import runner, or one runs already. It is put back (`busy`)
+	 * for a claim that asks for it. */
+	async #putBack(request: CodeImportRequest, signal: AbortSignal): Promise<Ended> {
+		this.#report({
+			event: "code-request-error",
+			step: "claim",
+			...named(request),
+			error: new Error("CODE_IMPORT_NOT_ASKED"),
+		});
+		const outcome: CodeRequestOutcome = { schema: SCHEMA, state: "busy" };
+		return this.#said(request, outcome, await this.#finish(request, outcome, signal, 2));
 	}
 
 	/** Renews the request's lease and asks whether it is still this executor's to do. */
