@@ -440,7 +440,10 @@ function importStop(
 	const project = "github" in request.from ? `github.com/${request.from.github}` : undefined;
 	switch (code) {
 		case "IMPORT_TOO_LARGE":
-			return "it is larger than 1 GB, the most Qorpera brings in";
+			// A file's bound is the folder's 256 MB (part B refuses a larger one before it copies it), GitHub's 1 GB.
+			return project === undefined
+				? "the file is larger than 256 MB, the most Qorpera brings in from a file"
+				: "it is larger than 1 GB, the most Qorpera brings in";
 		case "IMPORT_SOURCE_REFUSED":
 			return project === undefined
 				? undefined

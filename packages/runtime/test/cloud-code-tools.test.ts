@@ -1219,6 +1219,8 @@ describe("manage_code bring_in: one answer in plain words per way it can go", ()
 			"the file is not a whole git bundle: make it again with git bundle create <file> --all",
 		],
 		["IMPORT_FILE_CHANGED", "the file changed after you asked: call again with a new operationKey"],
+		// A file's bound is 256 MB, not GitHub's 1 GB (part B refuses a larger file before it copies it).
+		["IMPORT_TOO_LARGE", "the file is larger than 256 MB, the most Qorpera brings in from a file"],
 	])("says why a file was not brought in (%s)", async (code, why) => {
 		const f = await fixture((method) => (method === IMPORT ? asked : imports({ state: "refused", code })));
 		try {
