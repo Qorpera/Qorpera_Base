@@ -205,16 +205,26 @@ function head(text: string, bytes: number): string {
 }
 
 /** The answer `render` makes of `text`, or of its longest start (at least `least` code points) whose answer fits one
- * tool result: escaping can grow text up to seven times. */
+ * tool result: escaping can grow text up to seven times. A start whose answer is past even a tool JSON's own bound
+ * (`cloudToolJsonText`'s 64 KiB, which a whole 32 KiB window of line breaks or control characters passes) does not fit
+ * either; the answer for `least` is rendered outside that check, so a render that always fails still throws. */
 function fitted(text: string, least: number, render: (shown: string) => string): string {
-	const output = render(text);
-	if (fitsOneResult(output)) return output;
+	const answer = (shown: string): string | undefined => {
+		try {
+			const output = render(shown);
+			return fitsOneResult(output) ? output : undefined;
+		} catch {
+			return undefined;
+		}
+	};
+	const whole = answer(text);
+	if (whole !== undefined) return whole;
 	const points = Array.from(text);
 	let low = least;
 	let high = points.length;
 	while (low < high) {
 		const middle = Math.ceil((low + high) / 2);
-		if (fitsOneResult(render(points.slice(0, middle).join("")))) low = middle;
+		if (answer(points.slice(0, middle).join("")) !== undefined) low = middle;
 		else high = middle - 1;
 	}
 	return render(points.slice(0, low).join(""));
