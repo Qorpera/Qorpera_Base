@@ -394,8 +394,12 @@ describe("groups in the drawer (Jonas, 11 Nov 2026)", () => {
 			expect(gridOrder(element)).toEqual(["a", "b", "c", "d"]);
 			vi.advanceTimersByTime(200);
 			expect(icon("b").classList.contains("is-merge-target")).toBe(true);
+			// The dragged icon is marked as going in, so the drawer draws a group forming.
+			expect(icon("a").classList.contains("is-merging")).toBe(true);
 			pointer("pointerup", 75, 30);
 			expect(merges).toEqual([["a", "b"]]);
+			expect(icon("a").classList.contains("is-merging")).toBe(false);
+			expect(icon("b").classList.contains("is-merge-target")).toBe(false);
 			expect(drops).toEqual([]);
 			expect(gridOrder(element)).toEqual(["a", "b", "c", "d"]);
 			// Lift a again and rest on c's edge: after a moment they swap, and the drop names a.
@@ -405,6 +409,7 @@ describe("groups in the drawer (Jonas, 11 Nov 2026)", () => {
 			expect(gridOrder(element)).toEqual(["a", "b", "c", "d"]);
 			vi.advanceTimersByTime(150);
 			expect(gridOrder(element)).toEqual(["b", "c", "a", "d"]);
+			expect(icon("a").classList.contains("is-merging")).toBe(false);
 			// The pointer rested: the icon stays under it in its new place (review F5 on #1678).
 			expect(icon("a").style.translate).toBe("-22px 0px");
 			pointer("pointerup", 103, 30);

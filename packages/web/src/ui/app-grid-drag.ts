@@ -217,10 +217,13 @@ export class AppGridDrag {
 		drag.swapping = undefined;
 	}
 
+	/** Marks the icon the dragged one would go into, and the dragged one as going in: the drawer draws a group forming
+	 * (Jonas, 12 Nov 2026: "make an animation too when hovering a group creation"). */
 	#mark(key: string, on: boolean): void {
 		itemsIn(this.#grid)
 			.find((item) => keyOf(item) === key)
 			?.classList.toggle("is-merge-target", on);
+		this.#drag?.lifted?.item.classList.toggle("is-merging", on);
 	}
 
 	#press(event: PointerEvent): void {
@@ -395,7 +398,7 @@ export class AppGridDrag {
 		this.#grid.classList.remove("is-sorting");
 		const left = item.style.translate;
 		item.style.translate = "";
-		item.classList.remove("is-lifted");
+		item.classList.remove("is-lifted", "is-merging");
 		if (!left || reducedMotion() || typeof item.animate !== "function") return;
 		track(
 			this.#moving,
