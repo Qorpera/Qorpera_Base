@@ -6,8 +6,14 @@
 set -euo pipefail
 export DISPLAY=:1
 UNIT=qorpera-machine-desktop.service
-# The unit's runtime folder: there while the desktop runs, gone when it stops. Root keeps the desktop's notes in it.
+# Root's notes about the desktop: its idle clock, the language and time zone it was started with, the folders it serves,
+# a screenshot on its way. The folder is root's (qorpera-machine-desktop.service makes it so, empty at every start):
+# the desktop's account may read it and can never put, replace or point anything in it, so whatever this command reads,
+# writes or touches there is root's own. (What `open` puts in the account's Desktop folder, `--copy` and `shot` still
+# work on paths with root's rights, as they always have: a change of its own makes them safe against a planted link.)
 RUN=/run/qorpera-desktop
+# The account's own runtime folder (its session bus, what its programs keep): only handed to its programs as a path.
+SESSION=$RUN/session
 CHROME=/usr/lib/qorpera-chromium/chrome
 SELFTEST=/opt/qorpera-machine/desktop-selftest.html
 # Where files and folders opened on the desktop are put: the desktop user's own Desktop folder.
@@ -63,7 +69,13 @@ need() {
 	touch "$RUN/last-use"
 }
 number() { [[ ${1:-} =~ ^[0-9]{1,5}$ ]] || fail "not a pixel position: ${1:-}" 2; }
-size() { xdpyinfo | awk '/dimensions:/ {print $2}'; }
+# The screen's size as the display says it, WxH, or nothing. The display is a program of the desktop's account: what
+# it says is only ever taken as digits (it goes into this shell's arithmetic, which would run what a name in it says).
+size() {
+	local dims
+	dims=$(xdpyinfo 2>/dev/null | awk '/dimensions:/ {print $2; exit}') || true
+	if [[ $dims =~ ^[0-9]{1,5}x[0-9]{1,5}$ ]]; then echo "$dims"; fi
+}
 # A program on the desktop runs in a unit of its own in the machine's slice, as the desktop's user: it outlives the
 # command that started it and stops with the desktop. Requisite refuses its start unless the desktop is active, and
 # BindsTo stops it whenever the desktop stops, so no program outlives a stop however the two race. Its arguments
@@ -74,8 +86,8 @@ launch() {
 	[[ -s $RUN/lang ]] && extra+=(--setenv=LANGUAGE="$(<"$RUN/lang")")
 	systemd-run --quiet --collect --expand-environment=no --slice=qorpera-machine.slice --uid=desktop --gid=desktop \
 		-p WorkingDirectory=/home/desktop -p Requisite="$UNIT" -p BindsTo="$UNIT" -p After="$UNIT" \
-		--setenv=HOME=/home/desktop --setenv=DISPLAY=:1 --setenv=XDG_RUNTIME_DIR="$RUN" \
-		--setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=$RUN/bus" "${extra[@]}" -- "$@"
+		--setenv=HOME=/home/desktop --setenv=DISPLAY=:1 --setenv=XDG_RUNTIME_DIR="$SESSION" \
+		--setenv=DBUS_SESSION_BUS_ADDRESS="unix:path=$SESSION/bus" "${extra[@]}" -- "$@"
 }
 # Chromium on the desktop. --disable-infobars hides Chrome for Testing's "only for automated testing" bar (what
 # Playwright passes; it does nothing else). --enable-unsafe-swiftshader gives pages 3D drawing (WebGL) on a machine
@@ -225,7 +237,7 @@ open | click | double | move | drag | type | key | scroll)
 esac
 # Starting, stopping and launching take turns, so a stop never meets a launch half done.
 case $command in
-start | stop | open | run)
+start | stop | open | run | dock)
 	exec 9>/run/qorpera-desktop.lock
 	flock 9
 	;;
@@ -256,14 +268,18 @@ start)
 		# nothing can be driven.
 		for _ in $(seq 1 100); do wmctrl -m >/dev/null 2>&1 && break; sleep 0.1; done
 		wmctrl -m >/dev/null 2>&1 || { systemctl stop "$UNIT"; fail "the desktop's session did not start"; }
-		# The panel and the background are drawn a second or two after that (2.3 to 2.7 s after the start, measured on
-		# 10 Nov 2026); until then the screen is black and a screenshot of it shows nothing. A screen of one colour is a
-		# PNG of about a thousandth of its pixels' bytes (4760 bytes at 1600x1000; the drawn desktop is 16 KB): wait,
-		# about 6 s at most, for more than that, so the first look at a started desktop shows it.
+		# The dock and the backdrop are drawn a second or two after that (1.2 to 1.7 s after the start, measured on
+		# 12 Nov 2026; the backdrop last); until then the screen is one colour and a screenshot of it shows nothing. XFCE's
+		# desktop names its picture on the root window (_XROOTPMAP_ID) the moment it has drawn it, and a screen of one
+		# colour is a PNG of about a thousandth of its pixels' bytes (4760 bytes at 1600x1000 when black, 7101 in another
+		# colour; the drawn desktop is 15 KB or more): wait, about 6 s at most, for both, so the first look at a started
+		# desktop shows it whole, never a bare ground or a dock without its backdrop.
 		dims=$(size)
+		[[ -n $dims ]] || dims=1600x1000
 		drawn=$RUN/drawn-$$.png
 		for _ in $(seq 1 35); do
-			scrot --overwrite --silent -- "$drawn" 2>/dev/null &&
+			[[ $(xprop -root _XROOTPMAP_ID 2>/dev/null) == *"pixmap id # 0x"* ]] &&
+				scrot --overwrite --silent -- "$drawn" 2>/dev/null &&
 				(( $(stat -c %s -- "$drawn") > ${dims%x*} * ${dims#*x} * 3 / 1000 + 3000 )) && break
 			sleep 0.1
 		done
@@ -306,6 +322,23 @@ run)
 	need
 	(( $# > 0 )) || fail "desktop run PROGRAM [ARG...]" 2
 	launch "$@"
+	echo "started $1"
+	;;
+dock)
+	# For a press on the dock only (desktop-dock-open runs it; it is no command for agents and not in the help). It
+	# starts one of three fixed programs the way `desktop open URL` and `desktop run` start one, and takes nothing from
+	# its caller but which of the three: every word the program gets is written here, no word is looked up as a file
+	# (the address goes to the browser as an address, whatever folder this runs in), and nothing is put on the
+	# desktop. Files and the terminal open in the company folder when this machine has it, else in the account's home.
+	need
+	folder=/home/desktop
+	if mountpoint -q /company; then folder=/company; fi
+	case ${1:-} in
+	browser) browser chrome://newtab/ ;;
+	files) launch /usr/bin/thunar "$folder" ;;
+	terminal) launch /usr/bin/xfce4-terminal --working-directory="$folder" ;;
+	*) fail "desktop dock browser|files|terminal" 2 ;;
+	esac
 	echo "started $1"
 	;;
 click)
