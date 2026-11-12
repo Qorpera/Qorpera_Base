@@ -26,6 +26,12 @@ import {
 	codeBundleName,
 	createCodeBundleStore,
 } from "../src/code-bundle-store.ts";
+import {
+	CODE_IMPORT_BUNDLE_SCHEMA,
+	type CodeImportBundleFacts,
+	type CodeImportBundleStore,
+	codeImportBundleName,
+} from "../src/code-import.ts";
 
 const COMPANY = "11111111-1111-4111-8111-111111111111";
 const OTHER = "22222222-2222-4222-8222-222222222222";
@@ -754,5 +760,377 @@ describe("createCodeBundleStore", () => {
 			await expect(store.find(TARGET, name)).rejects.toThrow("INVALID_CODE_BUNDLE");
 			await expect(store.verify(TARGET, name)).rejects.toThrow("INVALID_CODE_BUNDLE");
 		}
+	});
+});
+
+// Step 6, part C2: the first bundle of code brought in, beside the ordinary bundles.
+
+const TAG = "b".repeat(40);
+
+function importFacts(bytes: Uint8Array, createdAt: string, extra: Partial<CodeImportBundleFacts> = {}) {
+	return {
+		environmentId: ENVIRONMENT,
+		createdAt,
+		from: { github: "Acme/App" },
+		defaultBranch: "main",
+		mainSha: MAIN,
+		refs: [
+			{ name: "refs/heads/main", sha: MAIN },
+			{ name: "refs/tags/v1", sha: TAG },
+		],
+		leftOut: 2,
+		sha256: digest(bytes),
+		bytes: bytes.length,
+		executorOwner: "coding-node-1",
+		...extra,
+	} as CodeImportBundleFacts;
+}
+
+/** One first bundle through an import writer, in two pieces. */
+async function putImport(store: CodeBundleStore, target: CodeBundleTarget, text: string, createdAt: string) {
+	const bytes = Buffer.from(text);
+	const writer = await store.begin(target, { kind: "import", maximumBytes: 1024 ** 2 });
+	await writer.write(bytes.subarray(0, 3));
+	await writer.write(bytes.subarray(3));
+	const name = codeImportBundleName(createdAt, MAIN);
+	return { name, bytes, manifest: await writer.commit(name, importFacts(bytes, createdAt)) };
+}
+
+const files = (folder: string) => readdirSync(folder).sort();
+const both = (name: string) => [`${name}.bundle`, `${name}.json`];
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+describe("the store's import writer", () => {
+	it("stores a first bundle under its own name and manifest, never one marked verified", async () => {
+		const { store, folder } = setup();
+		// What the run needs of the store, the store has.
+		const imports: CodeImportBundleStore = store;
+		const bytes = Buffer.from("# v2 git bundle\nthe refs and the pack, as the source sent them");
+		const writer = await imports.begin(TARGET, { kind: "import", maximumBytes: 1024 });
+		await writer.write(bytes.subarray(0, 5));
+		await writer.write(bytes.subarray(5));
+		const name = codeImportBundleName(at(0), MAIN);
+		expect(name).toBe("import-20261111T020000Z-aaaaaaaaaaaa");
+		const manifest = await writer.commit(name, importFacts(bytes, at(0)));
+		expect(manifest).toEqual({
+			schema: CODE_IMPORT_BUNDLE_SCHEMA,
+			companyId: COMPANY,
+			environmentId: ENVIRONMENT,
+			repository: { host: "qorpera", owner: "acme", name: "app" },
+			createdAt: at(0),
+			from: { github: "Acme/App" },
+			defaultBranch: "main",
+			mainSha: MAIN,
+			refs: [
+				{ name: "refs/heads/main", sha: MAIN },
+				{ name: "refs/tags/v1", sha: TAG },
+			],
+			refsCount: 2,
+			leftOut: 2,
+			sha256: digest(bytes),
+			bytes: bytes.length,
+			executorOwner: "coding-node-1",
+		});
+		expect(manifest).not.toHaveProperty("verified");
+		expect(files(folder)).toEqual(both(name));
+		expect(readFileSync(join(folder, `${name}.bundle`))).toEqual(bytes);
+		expect(JSON.parse(readFileSync(join(folder, `${name}.json`), "utf8"))).toEqual(manifest);
+		for (const file of both(name)) expect(mode(join(folder, file))).toBe(0o600);
+
+		// A file source, and a header of more than 2,000 refs: the first 2,000 as they came, and their count.
+		const refs = [
+			{ name: "refs/heads/trunk", sha: MAIN },
+			...Array.from({ length: 2_100 }, (_, n) => ({ name: `refs/tags/t${n}`, sha: TAG })),
+		];
+		const file = await store.begin(TARGET, { kind: "import" });
+		await file.write(bytes);
+		const fromFile = await file.commit(
+			codeImportBundleName(at(1), MAIN),
+			importFacts(bytes, at(1), {
+				from: { file: "code/_incoming/drop/shop.bundle", branch: "trunk" },
+				defaultBranch: "trunk",
+				refs,
+			}),
+		);
+		expect(fromFile.from).toEqual({ file: "code/_incoming/drop/shop.bundle", branch: "trunk" });
+		expect(fromFile.refs).toEqual(refs.slice(0, 2_000));
+		expect(fromFile.refsCount).toBe(2_101);
+
+		// No more than its maximum; a writer a piece failed takes nothing more.
+		const small = await store.begin(TARGET, { kind: "import", maximumBytes: 4 });
+		await small.write(Buffer.from("1234"));
+		await expect(small.write(Buffer.from("5"))).rejects.toThrow("CODE_BUNDLE_TOO_LARGE");
+		await expect(small.write(Buffer.from("6"))).rejects.toThrow("CODE_BUNDLE_WRITER_CLOSED");
+		await small.abort();
+
+		// Facts that are not an import's store nothing, and the writer's file goes.
+		const other = "c".repeat(40);
+		const wrong: [string, Partial<CodeImportBundleFacts>][] = [
+			[codeBundleName(at(2), MAIN), {}],
+			[codeImportBundleName(at(3), MAIN), {}],
+			[codeImportBundleName(at(2), other), {}],
+			[codeImportBundleName(at(2), MAIN), { refs: [{ name: "refs/tags/v1", sha: TAG }] }],
+			[codeImportBundleName(at(2), MAIN), { refs: [{ name: "refs/heads/main", sha: other }] }],
+			[codeImportBundleName(at(2), MAIN), { refs: [{ name: "refs/heads/main", sha: "a".repeat(39) }] }],
+			[
+				codeImportBundleName(at(2), MAIN),
+				{ from: { github: "Acme/App", file: "code/_incoming/a/b.bundle" } as never },
+			],
+			[codeImportBundleName(at(2), MAIN), { from: { github: "Acme/App/x" } }],
+			[codeImportBundleName(at(2), MAIN), { from: { file: "code/acme/app/x.bundle" } }],
+			[codeImportBundleName(at(2), MAIN), { from: { github: "Acme/App", branch: "a..b" } }],
+			[codeImportBundleName(at(2), MAIN), { from: { github: "Acme/App", more: 1 } as never }],
+			[codeImportBundleName(at(2), MAIN), { defaultBranch: "a..b", refs: [{ name: "refs/heads/a..b", sha: MAIN }] }],
+			[codeImportBundleName(at(2), MAIN), { leftOut: -1 }],
+			[codeImportBundleName(at(2), MAIN), { leftOut: 1.5 }],
+			[codeImportBundleName(at(2), MAIN), { environmentId: "environment" }],
+			[codeImportBundleName(at(2), MAIN), { executorOwner: "x".repeat(201) }],
+			[codeImportBundleName(at(2), MAIN), { sha256: "d".repeat(63) }],
+		];
+		for (const [label, extra] of wrong) {
+			const failing = await store.begin(TARGET, { kind: "import" });
+			await failing.write(bytes);
+			await expect(failing.commit(label, importFacts(bytes, at(2), extra)), label).rejects.toThrow(
+				"INVALID_CODE_BUNDLE",
+			);
+		}
+		for (const extra of [{ sha256: digest(Buffer.from("other bytes")) }, { bytes: bytes.length + 1 }]) {
+			const failing = await store.begin(TARGET, { kind: "import" });
+			await failing.write(bytes);
+			await expect(
+				failing.commit(codeImportBundleName(at(2), MAIN), importFacts(bytes, at(2), extra)),
+			).rejects.toThrow("CODE_BUNDLE_DIFFERS");
+		}
+		expect(files(folder)).toEqual([...both(name), ...both(codeImportBundleName(at(1), MAIN))].sort());
+
+		// Never over a stored one.
+		const again = await store.begin(TARGET, { kind: "import" });
+		await again.write(bytes);
+		await expect(again.commit(name, importFacts(bytes, at(0)))).rejects.toThrow("CODE_BUNDLE_EXISTS");
+		expect(readFileSync(join(folder, `${name}.json`), "utf8")).toBe(`${JSON.stringify(manifest)}\n`);
+	});
+
+	it("is never seen by find, verify, read or prune, and its commit lets no prune go on", async () => {
+		const { store, folder } = setup();
+		const imported = await putImport(store, TARGET, "every ref the source had", at(0));
+		await expect(store.prune(TARGET, 1)).rejects.toThrow("CODE_BUNDLE_PRUNE_NOT_NOW");
+		await expect(store.find(TARGET, imported.name)).rejects.toThrow("INVALID_CODE_BUNDLE");
+		await expect(store.verify(TARGET, imported.name)).rejects.toThrow("INVALID_CODE_BUNDLE");
+		await expect(store.read(TARGET, imported.name)).rejects.toThrow("INVALID_CODE_BUNDLE");
+		// Under a dated name, an import's files are no ordinary bundle either.
+		const dated = codeBundleName(at(5), MAIN);
+		for (const suffix of [".bundle", ".json"])
+			writeFileSync(join(folder, `${dated}${suffix}`), readFileSync(join(folder, `${imported.name}${suffix}`)), {
+				mode: 0o600,
+			});
+		await expect(store.find(TARGET, dated)).resolves.toBeNull();
+		await expect(store.verify(TARGET, dated)).resolves.toBeNull();
+		await expect(store.read(TARGET, dated)).rejects.toThrow("CODE_BUNDLE_MISSING");
+		rmSync(join(folder, `${dated}.bundle`));
+		rmSync(join(folder, `${dated}.json`));
+
+		// Ordinary bundles pruned to the newest: the import's stays, readable.
+		const first = await put(store, TARGET, "bundle 1", at(1));
+		const second = await put(store, TARGET, "bundle 2", at(2));
+		await expect(store.prune(TARGET, 1)).resolves.toEqual([first.name]);
+		expect(files(folder)).toEqual([...both(second.name), ...both(imported.name)].sort());
+		await expect(store.verify(TARGET, second.name)).resolves.toEqual(second.manifest);
+		// And an import's commit after a prune lets no prune go on.
+		await putImport(store, TARGET, "a second first bundle", at(3));
+		await expect(store.prune(TARGET, 1)).rejects.toThrow("CODE_BUNDLE_PRUNE_NOT_NOW");
+		const read = await store.readImport(TARGET, imported.name);
+		expect(read.manifest).toEqual(imported.manifest);
+
+		// readImport reads only an import's: an ordinary name is none, and an ordinary manifest under an import's name
+		// is no stored first bundle.
+		await expect(store.readImport(TARGET, second.name)).rejects.toThrow("INVALID_CODE_BUNDLE");
+		const posing = codeImportBundleName(at(6), MAIN);
+		for (const suffix of [".bundle", ".json"])
+			writeFileSync(join(folder, `${posing}${suffix}`), readFileSync(join(folder, `${second.name}${suffix}`)), {
+				mode: 0o600,
+			});
+		await expect(store.readImport(TARGET, posing)).rejects.toThrow("CODE_BUNDLE_MISSING");
+	});
+
+	it("hands a first bundle out in pieces of 1 MiB, exactly its bytes", async () => {
+		const { store, folder } = setup();
+		const bytes = randomBytes(2.5 * 1024 ** 2);
+		const writer = await store.begin(TARGET, { kind: "import", maximumBytes: 3 * 1024 ** 2 });
+		for (let at = 0; at < bytes.length; at += 1024 ** 2) await writer.write(bytes.subarray(at, at + 1024 ** 2));
+		const name = codeImportBundleName(at(0), MAIN);
+		const manifest = await writer.commit(name, importFacts(bytes, at(0)));
+		const read = await store.readImport(TARGET, name);
+		expect(read.manifest).toEqual(manifest);
+		const pieces: Buffer[] = [];
+		for await (const piece of read.pieces) pieces.push(Buffer.from(piece));
+		expect(pieces.map((piece) => piece.length)).toEqual([1024 ** 2, 1024 ** 2, 0.5 * 1024 ** 2]);
+		expect(Buffer.concat(pieces).equals(bytes)).toBe(true);
+		// Each pass reads the file again.
+		const again: Buffer[] = [];
+		for await (const piece of read.pieces) again.push(Buffer.from(piece));
+		expect(digest(Buffer.concat(again))).toBe(manifest.sha256);
+
+		await expect(store.readImport(TARGET, codeImportBundleName(at(1), MAIN))).rejects.toThrow("CODE_BUNDLE_MISSING");
+		await expect(store.readImport({ ...TARGET, name: "site" }, name)).rejects.toThrow("CODE_BUNDLE_MISSING");
+		for (const bad of ["", "import-x", `${name}.bundle`, "import-20261111T020000Z-AAAAAAAAAAAA"])
+			await expect(store.readImport(TARGET, bad)).rejects.toThrow("INVALID_CODE_BUNDLE");
+		// A manifest marked verified is no first bundle's; a file cut short is none either.
+		const json = join(folder, `${name}.json`);
+		writeFileSync(json, JSON.stringify({ ...manifest, verified: true }));
+		await expect(store.readImport(TARGET, name)).rejects.toThrow("CODE_BUNDLE_MISSING");
+		writeFileSync(json, JSON.stringify(manifest));
+		await expect(store.readImport(TARGET, name)).resolves.toMatchObject({ manifest });
+		truncateSync(join(folder, `${name}.bundle`), bytes.length - 1);
+		await expect(store.readImport(TARGET, name)).rejects.toThrow("CODE_BUNDLE_MISSING");
+	});
+
+	it("lists every name of both kinds in a repository's folder, whole or not, and removes one, its manifest first", async () => {
+		const { store, folder } = setup();
+		await expect(store.names(TARGET)).resolves.toEqual([]);
+		const ordinary = await put(store, TARGET, "bundle", at(0));
+		const imported = await putImport(store, TARGET, "first bundle", at(1));
+		const open = await store.begin(TARGET, { kind: "import" });
+		const half = codeBundleName(at(2), MAIN);
+		writeFileSync(join(folder, `${half}.bundle`), "a bundle whose manifest never came", { mode: 0o600 });
+		const lone = codeImportBundleName(at(3), MAIN);
+		writeFileSync(join(folder, `${lone}.json`), "{}", { mode: 0o600 });
+		writeFileSync(join(folder, "README"), "an operator's note", { mode: 0o600 });
+		writeFileSync(join(folder, `${codeBundleName(at(4), MAIN)}.txt`), "not a bundle's", { mode: 0o600 });
+		await expect(store.names(TARGET)).resolves.toEqual([ordinary.name, half, imported.name, lone]);
+		await expect(store.names({ ...TARGET, name: "site" })).resolves.toEqual([]);
+
+		await expect(store.remove(TARGET, imported.name)).resolves.toBe(true);
+		await expect(store.remove(TARGET, imported.name)).resolves.toBe(false);
+		await expect(store.remove(TARGET, half)).resolves.toBe(true);
+		await expect(store.remove(TARGET, lone)).resolves.toBe(true);
+		await expect(store.remove({ ...TARGET, name: "site" }, ordinary.name)).resolves.toBe(false);
+		await expect(store.names(TARGET)).resolves.toEqual([ordinary.name]);
+		// The bundle a prune would keep for is gone: no prune goes on on its strength.
+		await expect(store.remove(TARGET, ordinary.name)).resolves.toBe(true);
+		await expect(store.prune(TARGET, 1)).rejects.toThrow("CODE_BUNDLE_PRUNE_NOT_NOW");
+		expect(files(folder).filter((name) => !/^\.write-/.test(name))).toEqual(
+			["README", `${codeBundleName(at(4), MAIN)}.txt`].sort(),
+		);
+		await open.abort();
+		for (const bad of ["", "x", "../x", "import-x", `${ordinary.name}.json`, "20261111T020000Z-AAAAAAAAAAAA"])
+			await expect(store.remove(TARGET, bad)).rejects.toThrow("INVALID_CODE_BUNDLE");
+		await expect(store.names({ ...TARGET, owner: "Acme" })).rejects.toThrow("INVALID_CODE_BUNDLE");
+	});
+
+	it("sweeps what a dead import left at the repository's next begin, and nothing of a live one", async () => {
+		const { store, folder } = setup();
+		const imported = await putImport(store, TARGET, "stored", at(0));
+		const live = await store.begin(TARGET, { kind: "import" });
+		await live.write(Buffer.from("half a fet"));
+		const liveFile = files(folder).find((name) => /^\.write-/.test(name)) as string;
+		// A process that died while it fetched, and one that died between a first bundle's name and its manifest's.
+		const dead = join(folder, `.write-${randomUUID()}`);
+		writeFileSync(dead, "half a first bundle", { mode: 0o600 });
+		const orphan = `${codeImportBundleName(at(1), MAIN)}.bundle`;
+		writeFileSync(join(folder, orphan), "a first bundle without its manifest", { mode: 0o600 });
+		await (await store.begin(TARGET)).abort();
+		expect(files(folder)).toEqual([liveFile, ...both(imported.name)].sort());
+		await live.abort();
+		expect(files(folder)).toEqual(both(imported.name));
+		await expect(store.readImport(TARGET, imported.name)).resolves.toMatchObject({ manifest: imported.manifest });
+	});
+
+	it("writes its pieces in a line of its own: a commit that holds the store's line does not stall them", async () => {
+		let hold: Promise<void> | undefined;
+		let release: () => void = () => undefined;
+		let checks = 0;
+		const { store } = setup({
+			assert: async () => {
+				checks += 1;
+				// Only the one check that holds the line: what waits behind it waits for the line alone.
+				const held = hold;
+				hold = undefined;
+				if (held) await held;
+			},
+		});
+		const imported = await store.begin(TARGET, { kind: "import" });
+		const ordinary = await store.begin({ ...TARGET, companyId: OTHER });
+		const beside = await store.begin({ ...TARGET, name: "site" });
+		const bytes = Buffer.from("another company's nightly bundle");
+		await ordinary.write(bytes);
+		hold = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const seen = checks;
+		const committing = ordinary.commit(codeBundleName(at(0), MAIN), facts(bytes, at(0)));
+		await vi.waitFor(() => expect(checks).toBe(seen + 1));
+		// The store's line is held: the import's pieces go on in theirs.
+		const pieces = [Buffer.alloc(1024, 1), Buffer.alloc(1024, 2), Buffer.alloc(1024, 3)];
+		for (const piece of pieces) await imported.write(piece);
+		// An ordinary writer's piece, and the import's own commit, wait in the store's line.
+		let wrote = false,
+			stored = false;
+		const writing = beside.write(Buffer.from("x")).then(() => {
+			wrote = true;
+		});
+		const whole = Buffer.concat(pieces);
+		const name = codeImportBundleName(at(1), MAIN);
+		const committed = imported.commit(name, importFacts(whole, at(1))).then((manifest) => {
+			stored = true;
+			return manifest;
+		});
+		await sleep(300);
+		expect([wrote, stored]).toEqual([false, false]);
+		hold = undefined;
+		release();
+		await committing;
+		await writing;
+		await expect(committed).resolves.toMatchObject({ sha256: digest(whole), bytes: whole.length });
+		await beside.abort();
+		const read = await store.readImport(TARGET, name);
+		const back: Buffer[] = [];
+		for await (const piece of read.pieces) back.push(Buffer.from(piece));
+		expect(Buffer.concat(back).equals(whole)).toBe(true);
+	});
+
+	it("aborts in the store's line, after its own pieces, with its file gone however long the wait", async () => {
+		const stalls: (() => void)[] = [];
+		let stalling = false;
+		const { store, folder } = setup({
+			stepMs: 500,
+			assert: () =>
+				new Promise<void>((resolve) => {
+					if (stalling) stalls.push(resolve);
+					else resolve();
+				}),
+		});
+		const imported = await store.begin(TARGET, { kind: "import" });
+		await imported.write(Buffer.from("some of a pack"));
+		// Another use holds the store's line past a step: the abort's caller is told so, and the file still goes.
+		stalling = true;
+		const behind = expect(store.companies()).rejects.toThrow("CODE_BUNDLE_STORE_TIMEOUT");
+		await vi.waitFor(() => expect(stalls).toHaveLength(1));
+		stalling = false;
+		await expect(imported.abort()).rejects.toThrow("CODE_BUNDLE_STORE_TIMEOUT");
+		await behind;
+		expect(files(folder).filter((name) => /^\.write-/.test(name))).toHaveLength(1);
+		stalls[0]?.();
+		await vi.waitFor(() => expect(files(folder)).toEqual([]));
+		await expect(imported.write(Buffer.from("more"))).rejects.toThrow("CODE_BUNDLE_WRITER_CLOSED");
+	});
+
+	it("refuses options that are no import's", async () => {
+		const { store, folder } = setup();
+		for (const options of [
+			{ kind: "other" },
+			{ kind: "import", maximumBytes: 2 * 1024 ** 3 + 1 },
+			{ kind: "import", maximumBytes: 0 },
+			{ kind: "import", maximumBytes: 1.5 },
+			{ kind: "import", expectedBytes: -1 },
+		])
+			await expect(store.begin(TARGET, options as { kind: "import" })).rejects.toThrow("INVALID_CODE_BUNDLE");
+		expect(existsSync(folder)).toBe(false);
+		// The store's own cap is the most an operator may set.
+		await (await store.begin(TARGET, { kind: "import", maximumBytes: 2 * 1024 ** 3 })).abort();
+		for (const name of [codeBundleName(at(0), MAIN), "x"])
+			await expect(store.readImport(TARGET, name)).rejects.toThrow("INVALID_CODE_BUNDLE");
+		await expect(store.readImport({ ...TARGET, owner: ".." }, codeImportBundleName(at(0), MAIN))).rejects.toThrow(
+			"INVALID_CODE_BUNDLE",
+		);
 	});
 });
