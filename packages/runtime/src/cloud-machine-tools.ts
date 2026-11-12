@@ -1246,7 +1246,7 @@ export function cloudMachineTools(options: {
 			value.heldBack = `${answer.heldBack}; the picture and the titles stay on the machine: look again`;
 		// 20260930734000: members share the screen with the agent; one of them used it since the agent was last told.
 		if (answer.memberTouched !== undefined)
-			value.memberTouched = `${answer.memberTouched.name.slice(0, 80)} used this screen ${answer.memberTouched.secondsAgo} seconds ago (members can use it with you): what you saw before may have changed, so ${image ? "go by this picture" : "look again"} before you act`;
+			value.memberTouched = `${[...answer.memberTouched.name].slice(0, 80).join("")} used this screen ${answer.memberTouched.secondsAgo} seconds ago (members can use it with you): what you saw before may have changed, so ${image ? "go by this picture" : "look again"} before you act`;
 		value.activeWindow = header.activeWindow;
 		const windows = [...header.windows];
 		let more = header.moreWindows;

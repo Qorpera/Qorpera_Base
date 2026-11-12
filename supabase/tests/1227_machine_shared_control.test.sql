@@ -17,9 +17,12 @@
 --    unavailable when its member was made a viewer;
 -- 5. at most 25 of one member's shared actions on one machine in 5 seconds; another member's are their own;
 -- 6. shared rows older than 30 days go at the machine's next shared begin; the private ones stay;
--- 7. the agent: its look, its action and a command go on while members share the desktop; its next screen read after a
---    member's shared action says once who and how long ago (memberTouched), never what was done;
--- 8. the window's list names the other members who acted in the last 60 seconds (`others`), never the caller;
+-- 7. the agent: its look, its action and a command go on while members share the desktop; its screen reads after a
+--    member's shared action say who, how long ago and when (memberTouched; never what was done; "A member" for one who
+--    left the company) until the executor's word that an answer carrying it is ready (review r1 F4 of #1701), which
+--    moves forward only, never past the newest action, and is the service role's alone;
+-- 8. the window's list names the other members of the company who acted in the last 60 seconds (`others`), never the
+--    caller, never one who left the company since (review r1 F3 of #1701);
 -- 9. the grants, the check of a shared row and the markers.
 
 -- Alice's run acknowledges first, as a member's wake requires before any work (924).
@@ -182,6 +185,10 @@ $$;
 create function pg_temp.sc_look() returns text language sql as $$
 	select pg_temp.sc_service(format('select public.qorpera_authorize_machine_screen(%L::jsonb, %L::jsonb, null, null)',
 		current_setting('qorpera_test.base_binding'), jsonb_build_object('machineId', pg_temp.sc_id('a1'))))
+$$;
+-- The executor's word that an answer to the agent carries the shared actions up to `at` (review r1 F4 of #1701).
+create function pg_temp.sc_told(p_at timestamptz) returns text language sql as $$
+	select pg_temp.sc_service(format('select public.qorpera_machine_desktop_shared_told(%L, %L)', pg_temp.sc_id('a1'), p_at))
 $$;
 -- One machine tool call's operation envelope as the machine tools write it, of `tool` with its arguments, on m-1227.
 create function pg_temp.sc_envelope(p_tool text, p_key text, p_args jsonb) returns text
@@ -459,40 +466,77 @@ begin
 		'6: the old shared rows went, the private one stayed');
 end $$;
 
--- 7. The agent goes on while members share; it is told once who touched the screen -------------------------------------------
+-- 7. The agent goes on while members share; it is told who touched the screen until an answer that says so is ready ----
 do $$
-declare v text;
+declare v text; v_at timestamptz; v_touched jsonb;
 begin
-	-- A member acted (the owner, in 6): the agent's next read says who and how long ago, once.
-	perform pg_temp.sc_shift('a1', 'desktop_shared_at = clock_timestamp() - interval ''12 seconds''');
+	-- A member acted (the owner, in 6): the agent's next read says who, how long ago and when (the executor's word).
+	perform pg_temp.sc_shift('a1', 'desktop_shared_at = clock_timestamp() - interval ''12 seconds'', desktop_shared_told_at = null');
 	v := pg_temp.sc_look();
+	v_touched := pg_temp.sc_answer(v) -> 'memberTouched';
+	v_at := (v_touched ->> 'at')::timestamptz;
 	perform pg_temp.base_assert(pg_temp.sc_answer(v) ->> 'state' = 'authorized'
-			and pg_temp.sc_answer(v) -> 'memberTouched' = jsonb_build_object('name', pg_temp.sc_name('owner'),
-				'secondsAgo', (pg_temp.sc_answer(v) #>> '{memberTouched,secondsAgo}')::integer)
-			and (pg_temp.sc_answer(v) #>> '{memberTouched,secondsAgo}')::integer between 12 and 30
-			and (pg_temp.sc_machine('a1')).desktop_shared_told_at > (pg_temp.sc_machine('a1')).desktop_shared_at,
-		'7: the agent is told who and how long ago: ' || v);
-	v := pg_temp.sc_look();
-	perform pg_temp.base_assert(pg_temp.sc_answer(v) ->> 'state' = 'authorized' and not pg_temp.sc_answer(v) ? 'memberTouched',
-		'7: once: ' || v);
-	-- Another member's shared action: the agent's action goes on, and its answer tells it again.
+			and v_touched - array['name', 'secondsAgo', 'at'] = '{}'::jsonb
+			and v_touched ->> 'name' = pg_temp.sc_name('owner')
+			and (v_touched ->> 'secondsAgo')::integer between 12 and 30
+			and v_at = (pg_temp.sc_machine('a1')).desktop_shared_at,
+		'7: the agent is told who, how long ago and when: ' || v);
+	-- The read marks nothing (review r1 F4 of #1701): a call refused after it (the desktop busy) tells it at the next.
+	perform pg_temp.base_assert((pg_temp.sc_machine('a1')).desktop_shared_told_at is null
+			and pg_temp.sc_answer(pg_temp.sc_look()) -> 'memberTouched' ->> 'at' = v_touched ->> 'at',
+		'7: not told until the executor says an answer carries it');
+	-- The executor's word: told up to that action; then nothing new. A word for a time after the newest action, or an
+	-- older one, moves nothing.
+	perform pg_temp.base_assert(pg_temp.sc_told(v_at + interval '1 second') = 'ok:{"state": "ok", "schema": "qorpera.machine-desktop-shared-told/v1"}'
+			and (pg_temp.sc_machine('a1')).desktop_shared_told_at is null,
+		'7: never past the newest action');
+	perform pg_temp.sc_told(v_at);
+	perform pg_temp.base_assert((pg_temp.sc_machine('a1')).desktop_shared_told_at = v_at
+			and not pg_temp.sc_answer(pg_temp.sc_look()) ? 'memberTouched',
+		'7: told: nothing new after');
+	perform pg_temp.sc_told(v_at - interval '1 second');
+	perform pg_temp.base_assert((pg_temp.sc_machine('a1')).desktop_shared_told_at = v_at, '7: never back');
+	-- Another member's shared action: the agent's action goes on and its answer tells it; the read before the word and a
+	-- newer action after the word are both told.
 	perform pg_temp.sc_share_id('contributor', '{"type": "type", "length": 4}');
 	v := pg_temp.sc_agent_act('701');
 	perform pg_temp.base_assert(pg_temp.sc_answer(v) ->> 'state' = 'authorized'
 			and pg_temp.sc_answer(v) #>> '{memberTouched,name}' = pg_temp.sc_name('contributor')
 			and pg_temp.sc_answer(v) -> 'action' = '{"type": "click", "x": 812, "y": 443}'::jsonb,
 		'7: the agent''s action goes on, and it is told again: ' || v);
-	-- A command goes on beside the members.
+	v_at := (pg_temp.sc_answer(v) #>> '{memberTouched,at}')::timestamptz;
 	perform pg_temp.sc_share_id('admin');
+	perform pg_temp.sc_told(v_at);
+	-- A command goes on beside the members.
 	v := pg_temp.sc_command('702');
 	perform pg_temp.base_assert(pg_temp.sc_answer(v) ->> 'state' = 'authorized', '7: a command starts beside the members: ' || v);
-	-- The look after: told of the admin's, then nothing new.
-	perform pg_temp.base_assert(pg_temp.sc_answer(pg_temp.sc_look()) #>> '{memberTouched,name}' = pg_temp.sc_name('admin')
-			and not pg_temp.sc_answer(pg_temp.sc_look()) ? 'memberTouched',
-		'7: told of the admin''s, then nothing new');
+	-- The admin's action came after the word for the contributor's: told of it.
+	v := pg_temp.sc_look();
+	perform pg_temp.base_assert(pg_temp.sc_answer(v) #>> '{memberTouched,name}' = pg_temp.sc_name('admin'),
+		'7: an action after the word is told: ' || v);
+	perform pg_temp.sc_told((pg_temp.sc_answer(v) #>> '{memberTouched,at}')::timestamptz);
+	perform pg_temp.base_assert(not pg_temp.sc_answer(pg_temp.sc_look()) ? 'memberTouched', '7: then nothing new');
+	-- A member who left the company since their action (review r1 F3 of #1701): named "A member" (undone after).
+	begin
+		perform pg_temp.sc_share_id('contributor');
+		set local session_replication_role = replica;
+		delete from public.qorpera_profile_members
+		where profile_id = '92400000-0000-4000-8000-000000000010' and user_id = pg_temp.sc_user('contributor');
+		set local session_replication_role = origin;
+		perform pg_temp.base_assert(pg_temp.sc_answer(pg_temp.sc_look()) #>> '{memberTouched,name}' = 'A member',
+			'7: a member who left is "A member"');
+		raise exception 'Undo' using errcode = 'QTF80';
+	exception when sqlstate 'QTF80' then null;
+	end;
+	-- The word: the service role alone, a whole request.
+	perform pg_temp.base_assert(pg_temp.sc_service(format('select public.qorpera_machine_desktop_shared_told(%L, null)', pg_temp.sc_id('a1')))
+			= '22023:Machine desktop request is malformed'
+		and pg_temp.sc_as(pg_temp.sc_user('owner'), format('select public.qorpera_machine_desktop_shared_told(%L, %L)', pg_temp.sc_id('a1'),
+			clock_timestamp())) = '42501:permission denied for function qorpera_machine_desktop_shared_told',
+		'7: the word is the executor''s alone');
 end $$;
 
--- 8. The window's list names the others who acted in the last 60 seconds -----------------------------------------------------
+-- 8. The window's list names the others of the company who acted in the last 60 seconds ------------------------------------
 do $$
 declare v jsonb;
 begin
@@ -508,6 +552,20 @@ begin
 	perform pg_temp.base_assert(v -> 'others' = jsonb_build_array(pg_temp.sc_name('admin')), '8: never the caller: ' || coalesce(v::text, 'none'));
 	v := pg_temp.sc_listed('viewer');
 	perform pg_temp.base_assert(jsonb_array_length(v -> 'others') = 2, '8: a viewer sees who uses it: ' || coalesce(v::text, 'none'));
+	-- One who left the company since (review r1 F3 of #1701): not named, never a null (undone after); none left: no key.
+	begin
+		set local session_replication_role = replica;
+		delete from public.qorpera_profile_members
+		where profile_id = '92400000-0000-4000-8000-000000000010' and user_id = pg_temp.sc_user('contributor');
+		set local session_replication_role = origin;
+		v := pg_temp.sc_listed('owner');
+		perform pg_temp.base_assert(v -> 'others' = jsonb_build_array(pg_temp.sc_name('admin')),
+			'8: a member who left is not named: ' || coalesce(v::text, 'none'));
+		v := pg_temp.sc_listed('admin');
+		perform pg_temp.base_assert(v is not null and not v ? 'others', '8: only one who left: no one named: ' || coalesce(v::text, 'none'));
+		raise exception 'Undo' using errcode = 'QTF80';
+	exception when sqlstate 'QTF80' then null;
+	end;
 	perform pg_temp.sc_age(interval '61 seconds');
 	v := pg_temp.sc_listed('owner');
 	perform pg_temp.base_assert(v is not null and not v ? 'others', '8: after 60 seconds, no one: ' || coalesce(v::text, 'none'));
@@ -521,6 +579,11 @@ begin
 		and not has_function_privilege('service_role', 'public.qorpera_member_machine_desktop_share_begin(uuid,uuid,jsonb)', 'execute')
 		and not has_function_privilege('qorpera_secret_broker', 'public.qorpera_member_machine_desktop_share_begin(uuid,uuid,jsonb)', 'execute'),
 		'9: members call it, no one else');
+	perform pg_temp.base_assert(has_function_privilege('service_role', 'public.qorpera_machine_desktop_shared_told(uuid,timestamptz)', 'execute')
+		and not has_function_privilege('authenticated', 'public.qorpera_machine_desktop_shared_told(uuid,timestamptz)', 'execute')
+		and not has_function_privilege('anon', 'public.qorpera_machine_desktop_shared_told(uuid,timestamptz)', 'execute')
+		and not has_function_privilege('qorpera_secret_broker', 'public.qorpera_machine_desktop_shared_told(uuid,timestamptz)', 'execute'),
+		'9: the executor alone says the agent was told');
 	perform pg_temp.base_assert(not has_table_privilege('authenticated', 'public.qorpera_company_machine_desktop_actions', 'select')
 		and not has_table_privilege('service_role', 'public.qorpera_company_machine_desktop_actions', 'select'),
 		'9: the actions stay closed');
@@ -549,6 +612,7 @@ begin
 			'public.qorpera_member_machine_desktop_share_begin(uuid,uuid,jsonb)',
 			'public.qorpera_member_machine_desktop_act_authority(uuid,text,text)',
 			'public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)',
-			'public.qorpera_list_agent_machines(uuid,uuid)']) f(sig)
+			'public.qorpera_list_agent_machines(uuid,uuid)',
+			'public.qorpera_machine_desktop_shared_told(uuid,timestamptz)']) f(sig)
 		where strpos(pg_get_functiondef(f.sig::regprocedure), '20260930734000') = 0), '9: the markers');
 end $$;

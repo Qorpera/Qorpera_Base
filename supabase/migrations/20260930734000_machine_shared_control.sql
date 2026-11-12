@@ -21,11 +21,17 @@
 --   desktop with no member (as for an agent's action: no live hold by anyone), so a private hold that began meanwhile
 --   stops it before it runs. A private action is read exactly as before, and its answer is unchanged.
 -- * qorpera_authorize_machine_screen, the agent's read: when a member acted on the shared desktop since an agent was last
---   told, its answer says once who and how long ago (memberTouched: the member's name and the seconds; never what was
---   done or typed), and the machine records that it was told (desktop_shared_told_at). The runtime shows it to the agent
---   in one line, so it looks again before it acts on an older picture.
--- * qorpera_list_agent_machines, the computer window's list: each machine on which other members acted in shared mode in
---   the last 60 seconds names them (`others`), so the window says who else is using it.
+--   told, its answer says who and how long ago (memberTouched: the member's name, or "A member" for one no longer in the
+--   company, the seconds, and the time of that action; never what was done or typed). The read marks nothing (review r1
+--   F4 of #1701): the executor marks it told once an answer that carries it is ready for the agent
+--   (qorpera_machine_desktop_shared_told, with that time), so a call that is refused or fails after the read (the desktop
+--   busy, a restarted machine, an executor that did not answer) leaves it for the agent's next call. The runtime shows it
+--   to the agent in one line, so it looks again before it acts on an older picture.
+-- * qorpera_machine_desktop_shared_told(machine, at), for the service role: the agent was told of the shared actions up
+--   to `at` (desktop_shared_told_at moves forward to it, never back, never past the newest action).
+-- * qorpera_list_agent_machines, the computer window's list: each machine on which other members of the company acted in
+--   shared mode in the last 60 seconds names them (`others`), so the window says who else is using it; one who has left
+--   the company since is not named (review r1 F3 of #1701).
 -- * Not changed: taking over, keeping, handing back, the picture fence, the clipboard clear and every seat, generation and
 --   epoch fence of 20260930713000; the private begin; a member's look and start.
 -- Every new or patched body names this migration (20260930734000), for the deploy guards.
@@ -64,7 +70,7 @@ end $$;
 -- 1. Who last acted on the shared desktop, and the shared actions ----------------------------------------------------------
 
 alter table public.qorpera_company_machines
-	-- The member whose shared action came last, and when; and when an agent's screen read last told it (memberTouched).
+	-- The member whose shared action came last, and when; and up to when an agent was told of them (memberTouched).
 	add column desktop_shared_user_id uuid,
 	add column desktop_shared_at timestamptz,
 	add column desktop_shared_told_at timestamptz;
@@ -182,7 +188,7 @@ do $$ begin execute pg_temp.machine_shared_control_patched(
 		-- 20260930734000: a shared action says so (the host's fence then names no member); a private one's answer is as before.
 		|| case when v_act.shared then jsonb_build_object('shared', true) else '{}'::jsonb end;$new$]); end $$;
 
--- 4. The agent is told, once, that a member touched the shared screen --------------------------------------------------------
+-- 4. The agent is told that a member touched the shared screen, until an answer that says so is ready ---------------------
 
 do $$ begin execute pg_temp.machine_shared_control_patched(
 	'public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)'::regprocedure,
@@ -196,13 +202,15 @@ $new$,
 $old$,
 	$new$		values (v_placement.id, v_run.id, clock_timestamp()) on conflict do nothing;
 	end if;
-	-- 20260930734000: a member acted on the shared desktop since an agent was last told: this answer says once who and how
-	-- long ago (never what), so the agent looks again before it acts on an older picture.
+	-- 20260930734000: a member acted on the shared desktop since an agent was last told: this answer says who and how
+	-- long ago (never what), so the agent looks again before it acts on an older picture. The read marks nothing (review r1
+	-- F4 of #1701): the executor marks it told with `at` once an answer that carries it is ready
+	-- (qorpera_machine_desktop_shared_told), so a call refused or failed after this read tells it at the next.
 	if v_machine.desktop_shared_at > coalesce(v_machine.desktop_shared_told_at, '-infinity'::timestamptz) then
-		v_touched := jsonb_build_object('name', coalesce(public.qorpera_review_member_name(v_machine.profile_id,
-				v_machine.desktop_shared_user_id), 'A member'),
-			'secondsAgo', greatest(0, floor(extract(epoch from clock_timestamp() - v_machine.desktop_shared_at)))::integer);
-		update public.qorpera_company_machines set desktop_shared_told_at = clock_timestamp() where id = v_machine.id;
+		v_touched := jsonb_build_object('name', coalesce(nullif(btrim(public.qorpera_review_member_name(v_machine.profile_id,
+				v_machine.desktop_shared_user_id)), ''), 'A member'),
+			'secondsAgo', greatest(0, floor(extract(epoch from clock_timestamp() - v_machine.desktop_shared_at)))::integer,
+			'at', v_machine.desktop_shared_at);
 	end if;
 $new$,
 	$old$		'clipboardClear', v_machine.desktop_clipboard_generation is distinct from v_machine.desktop_member_generation);$old$,
@@ -215,15 +223,40 @@ do $$ begin execute pg_temp.machine_shared_control_patched(
 	'public.qorpera_list_agent_machines(uuid,uuid)'::regprocedure,
 	array[$old$						case when public.qorpera_company_at_zero(p_profile_id, clock_timestamp()) then 'hours' else 'room' end end)$old$,
 	$new$						case when public.qorpera_company_at_zero(p_profile_id, clock_timestamp()) then 'hours' else 'room' end end)
-					-- 20260930734000: the other members who acted on the shared desktop in the last 60 seconds, by name.
-					|| coalesce((select jsonb_build_object('others', jsonb_agg(public.qorpera_review_member_name(p_profile_id,
-							recent.user_id) order by recent.user_id))
-						from (select distinct act.user_id from public.qorpera_company_machine_desktop_actions as act
-							where act.machine_id = listed.id and act.shared and act.begun_at > clock_timestamp() - interval '60 seconds'
-								and act.user_id is distinct from auth.uid()) as recent
+					-- 20260930734000: the other members who acted on the shared desktop in the last 60 seconds, by name; one who has
+					-- left the company since is not named (review r1 F3 of #1701).
+					|| coalesce((select jsonb_build_object('others', jsonb_agg(named.name order by named.user_id))
+						from (select recent.user_id, nullif(btrim(public.qorpera_review_member_name(p_profile_id, recent.user_id)), '')
+								as name
+							from (select distinct act.user_id from public.qorpera_company_machine_desktop_actions as act
+								where act.machine_id = listed.id and act.shared and act.begun_at > clock_timestamp() - interval '60 seconds'
+									and act.user_id is distinct from auth.uid()) as recent) as named
+						where named.name is not null
 						having count(*) > 0), '{}'::jsonb)$new$]); end $$;
 
--- 6. The deploy guard: every new or patched body carries the marker, and the patched ones keep theirs ------------------------
+-- 6. The agent was told: marked by the executor once an answer that carries memberTouched is ready ----------------------------
+
+-- The executor's word (service role) that an answer to an agent's screen call carries the shared actions up to `at` (the
+-- memberTouched SQL's read gave it): the machine's desktop_shared_told_at moves forward to `at`, never back, and never
+-- past the newest shared action (a later one is told at the next call). Until then every screen read says it again
+-- (review r1 F4 of #1701: a call refused or failed after the read never loses it).
+create function public.qorpera_machine_desktop_shared_told(p_machine_id uuid, p_at timestamptz)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+begin
+	-- 20260930734000
+	if auth.role() is distinct from 'service_role' or p_machine_id is null or p_at is null then
+		raise exception 'Machine desktop request is malformed' using errcode = '22023'; end if;
+	update public.qorpera_company_machines set desktop_shared_told_at = p_at
+	where id = p_machine_id and removed_at is null and p_at <= desktop_shared_at
+		and coalesce(desktop_shared_told_at, '-infinity'::timestamptz) < p_at;
+	return jsonb_build_object('schema', 'qorpera.machine-desktop-shared-told/v1', 'state', 'ok');
+end
+$$;
+revoke all on function public.qorpera_machine_desktop_shared_told(uuid, timestamptz)
+	from public, anon, authenticated, qorpera_secret_broker;
+grant execute on function public.qorpera_machine_desktop_shared_told(uuid, timestamptz) to service_role;
+
+-- 7. The deploy guard: every new or patched body carries the marker, and the patched ones keep theirs ------------------------
 
 do $guard$
 declare v_function regprocedure;
@@ -232,7 +265,8 @@ begin
 		'public.qorpera_member_machine_desktop_share_begin(uuid,uuid,jsonb)',
 		'public.qorpera_member_machine_desktop_act_authority(uuid,text,text)',
 		'public.qorpera_authorize_machine_screen(jsonb,jsonb,uuid,text)',
-		'public.qorpera_list_agent_machines(uuid,uuid)'
+		'public.qorpera_list_agent_machines(uuid,uuid)',
+		'public.qorpera_machine_desktop_shared_told(uuid,timestamptz)'
 	]::regprocedure[] loop
 		if strpos((select prosrc from pg_proc where oid = v_function), '20260930734000') = 0 then
 			raise exception '20260930734000 marker is missing in %', v_function; end if;

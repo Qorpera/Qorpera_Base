@@ -1322,36 +1322,75 @@ describe("a machine's screen", () => {
 		expect(sent).toHaveLength(1);
 	});
 
-	it("tells the agent once that a member touched the shared screen: who and when, from SQL's read (20260930734000)", async () => {
+	it("tells the agent who touched the shared screen until an answer that says so is ready: a busy call leaves it for the next (20260930734000, review r1 F4 of #1701)", async () => {
 		const f = fixture();
-		const touched = { name: "Dora Danske", secondsAgo: 12 };
-		f.call.mockResolvedValueOnce({ ...f.answer, memberTouched: touched });
-		expect(await f.router.screen(f.request, f.signal)).toEqual({
+		const at = "2026-11-12T15:16:59.123456+00:00";
+		const touched = { name: "Dora Danske", secondsAgo: 12, at };
+		const lookAnswer = { ...f.answer, receiptId: null, action: null, settleMs: null, look: null };
+		// As SQL: every read says it until the executor's word for that action's time; a word may fail.
+		let told: unknown = null;
+		let wordFails = false;
+		f.call.mockImplementation(async (method: string, args: Record<string, unknown>) => {
+			if (method === "qorpera_machine_desktop_shared_told") {
+				if (wordFails) throw new Error("SQL unavailable");
+				told = args.p_at;
+				return { schema: "qorpera.machine-desktop-shared-told/v1", state: "ok" };
+			}
+			const read = args.p_receipt_id === null ? lookAnswer : f.answer;
+			return (told === at ? read : { ...read, memberTouched: touched }) as unknown;
+		});
+		const words = () => f.call.mock.calls.filter(([method]) => method === "qorpera_machine_desktop_shared_told");
+		// The desktop is busy with another step: refused, and SQL hears nothing.
+		f.host.screen.mockResolvedValueOnce({ refused: "DESKTOP_BUSY" });
+		await expect(f.router.screen(f.request, f.signal)).rejects.toMatchObject({ code: "DESKTOP_BUSY" });
+		expect(words()).toEqual([]);
+		// The next call is answered and says it: who and how long ago (never the time, never what); then SQL hears it.
+		expect(await f.router.screen(f.look, f.signal)).toEqual({
 			schema: "qorpera.machine-screen-answer/v1",
-			commandId: f.request.input.commandId,
+			commandId: null,
 			header: header(picture.length),
 			png: picture.toString("base64"),
-			memberTouched: touched,
+			memberTouched: { name: "Dora Danske", secondsAgo: 12 },
 		});
-		// The next read is not told again, and its answer says nothing.
+		expect(words()).toEqual([
+			["qorpera_machine_desktop_shared_told", { p_machine_id: f.answer.machineId, p_at: at }, f.signal],
+		]);
 		expect(await f.router.screen(f.look, f.signal)).not.toHaveProperty("memberTouched");
+		// A word SQL did not take fails nothing: the answer goes, and the next read says it again (twice, never lost).
+		told = null;
+		wordFails = true;
+		expect(await f.router.screen(f.look, f.signal)).toMatchObject({ memberTouched: { name: "Dora Danske" } });
+		wordFails = false;
+		expect(await f.router.screen(f.look, f.signal)).toMatchObject({ memberTouched: { name: "Dora Danske" } });
+		expect(await f.router.screen(f.look, f.signal)).not.toHaveProperty("memberTouched");
+		// SQL's member names are 1 to 256 characters (code points, not UTF-16 units; review r1 F2 of #1701).
+		const longest = "😀".repeat(256);
+		f.call.mockResolvedValueOnce({ ...f.answer, memberTouched: { ...touched, name: longest } });
+		expect(await authorizeMachineScreen({ call: f.call }, f.request, f.signal)).toMatchObject({
+			memberTouched: { name: longest, secondsAgo: 12, at },
+		});
 		// SQL's word of any other shape is no authority.
 		for (const other of [
-			{ name: "", secondsAgo: 1 },
-			{ name: "Dora", secondsAgo: -1 },
-			{ name: "Dora", secondsAgo: 1.5 },
-			{ name: "Dora" },
-			{ name: "Dora", secondsAgo: 1, typed: "hunter2" },
+			{ ...touched, name: "" },
+			{ ...touched, name: "   " },
+			{ ...touched, name: "😀".repeat(257) },
+			{ ...touched, secondsAgo: -1 },
+			{ ...touched, secondsAgo: 1.5 },
+			{ name: "Dora", secondsAgo: 1 },
+			{ ...touched, at: "yesterday" },
+			{ ...touched, at: 1731424619 },
+			{ ...touched, typed: "hunter2" },
 			"Dora",
 			null,
 		]) {
 			f.call.mockResolvedValueOnce({ ...f.answer, memberTouched: other });
 			await expect(
 				authorizeMachineScreen({ call: f.call }, f.request, f.signal),
-				JSON.stringify(other),
+				JSON.stringify(other).slice(0, 80),
 			).rejects.toThrow("MACHINE_SCREEN_AUTHORITY_INVALID");
 		}
-		// Forwarded, the peer's own read is not told: the answer carries the forwarding read's, unless the peer's is newer.
+		// Forwarded: the peer's answer says it (its own read did), or, from a peer before, the forwarding read's is put in;
+		// either way this executor tells SQL too.
 		const peerAnswer = (memberTouched?: { name: string; secondsAgo: number }) =>
 			new Response(
 				JSON.stringify({
@@ -1363,7 +1402,7 @@ describe("a machine's screen", () => {
 				}),
 				{ status: 200 },
 			);
-		let peerTold: { name: string; secondsAgo: number } | undefined;
+		let peerSays: { name: string; secondsAgo: number } | undefined = { name: "Bob", secondsAgo: 0 };
 		const forwarding = new MachineCommandRouter({
 			owner: "mx-c",
 			providerId: "machine-node",
@@ -1372,14 +1411,19 @@ describe("a machine's screen", () => {
 			],
 			control: closed({ call: f.call }),
 			credential: async () => randomBytes(32).toString("base64url"),
-			fetch: (async () => peerAnswer(peerTold)) as typeof fetch,
+			fetch: (async () => peerAnswer(peerSays)) as typeof fetch,
 		});
-		f.call.mockResolvedValueOnce({ ...f.answer, memberTouched: touched });
-		expect(await forwarding.screen(f.request, f.signal)).toMatchObject({ memberTouched: touched });
-		peerTold = { name: "Bob", secondsAgo: 0 };
-		f.call.mockResolvedValueOnce({ ...f.answer, memberTouched: touched });
-		expect(await forwarding.screen(f.request, f.signal)).toMatchObject({ memberTouched: peerTold });
-		peerTold = undefined;
+		told = null;
+		const before = words().length;
+		expect(await forwarding.screen(f.request, f.signal)).toMatchObject({
+			memberTouched: { name: "Bob", secondsAgo: 0 },
+		});
+		expect(words()).toHaveLength(before + 1);
+		told = null;
+		peerSays = undefined;
+		expect(await forwarding.screen(f.request, f.signal)).toMatchObject({
+			memberTouched: { name: "Dora Danske", secondsAgo: 12 },
+		});
 		expect(await forwarding.screen(f.request, f.signal)).not.toHaveProperty("memberTouched");
 	});
 
@@ -1450,10 +1494,13 @@ describe("a machine's screen", () => {
 		// A member touched the shared screen (20260930734000): who and when, exactly.
 		const touched = { ...good, memberTouched: { name: "Dora", secondsAgo: 3 } };
 		expect(parseCloudMachineScreenAnswer(f.request, touched)).toEqual(touched);
+		const longest = { ...good, memberTouched: { name: "😀".repeat(256), secondsAgo: 3 } };
+		expect(parseCloudMachineScreenAnswer(f.request, longest)).toEqual(longest);
 		for (const memberTouched of [
 			{ name: "Dora", secondsAgo: 3, text: "hunter2" },
 			{ name: " ", secondsAgo: 3 },
-			{ name: "D".repeat(201), secondsAgo: 3 },
+			// SQL's names are up to 256 characters (code points: review r1 F2 of #1701).
+			{ name: "😀".repeat(257), secondsAgo: 3 },
 			{ name: "Dora", secondsAgo: "3" },
 			{ name: "Dora", secondsAgo: -3 },
 			[],

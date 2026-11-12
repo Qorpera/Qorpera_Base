@@ -413,6 +413,8 @@ export class ComputerPanel {
 				if (!expanded && this.#introShown) this.#introduce = false;
 				// Input follows the view: the picture takes it only while entered.
 				this.#syncControls();
+				// Shared input typed in the large view goes no further once it is left (review r1 F1 of #1701).
+				if (!expanded) this.#endShared();
 			},
 			...(options.decode ? { decode: options.decode } : {}),
 		});
@@ -524,6 +526,8 @@ export class ComputerPanel {
 	 * running desktop, or as soon as it does. */
 	takeOver(): void {
 		if (this.#stop.signal.aborted || !this.#computer) return;
+		// Shared input on its way goes no further: what comes next is private (review r1 F1 of #1701).
+		this.#endShared();
 		this.#wantTakeOver = this.#ledger.stamp();
 		this.#handBackFailed = false;
 		this.#touched();
@@ -1073,6 +1077,7 @@ export class ComputerPanel {
 		const shown = this.#pick();
 		return (
 			this.#listed?.canTakeOver === true &&
+			this.#view?.entered === true &&
 			shown !== undefined &&
 			shown.machineId === this.#machineId &&
 			shown.state === "running" &&
@@ -1096,8 +1101,12 @@ export class ComputerPanel {
 		if (sender.sending || !computer) return;
 		sender.sending = true;
 		const hold = "seat" in sender ? sender : undefined;
+		// Shared input goes only while it is still shared, on the computer chosen now (review r1 F1 of #1701: a switch, a
+		// close, the large view left or private typing begun ends it at once, before any send or retry).
 		const current = () =>
-			(hold ? this.#hold === hold : this.#shared === sender) &&
+			(hold
+				? this.#hold === hold
+				: this.#shared === sender && this.#pick()?.machineId === sender.machineId && this.#sharing()) &&
 			!sender.stop.signal.aborted &&
 			!this.#stop.signal.aborted;
 		try {
@@ -1674,6 +1683,11 @@ export class ComputerPanel {
 							if (machine.machineId !== before) {
 								this.#wantTakeOver = undefined;
 								if (this.#wantOn?.machineId !== machine.machineId) this.#wantOn = undefined;
+								// Shared input of the last computer goes no further, even while the loop waits on a request
+								// (review r1 F1 of #1701).
+								this.#endShared();
+								this.#lostShown = false;
+								this.#controlNote.textContent = "";
 							}
 							this.#ledger.releaseOthers(this.agentId, machine.machineId);
 							this.#quicken();

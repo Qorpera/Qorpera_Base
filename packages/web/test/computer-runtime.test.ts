@@ -2697,6 +2697,79 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 		await advance(LOOK_EVERY_MS);
 		expect(mark(p)).toBe("Live");
 	});
+
+	/** Shared input that waits on a desktop busy with the agent's step: a right click sent and refused DESKTOP_BUSY, and a
+	 * typed text behind it. Its acts on machine 1. */
+	async function waiting(s: Setup, p: ComputerPanel) {
+		s.state.actAnswers.push(...Array.from({ length: 40 }, () => ({ code: "DESKTOP_BUSY" })));
+		press(canvas(p), 10, 10, { button: 2 });
+		await flush();
+		key(canvas(p), "a");
+		await advance(TYPE_BATCH_MS);
+		const onOne = () => s.acts.filter((act) => act.url.includes(`/${machine(1).machineId}/act`));
+		expect(onOne().map((act) => act.action.type)).toEqual(["click"]);
+		return onOne;
+	}
+
+	it("cancels shared input at once when the member switches computers, also while a look is on its way (review r1 F1 of #1701)", async () => {
+		const s = setup({ machines: [machine(1), machine(2)] });
+		const { p } = await shown(s);
+		press(canvas(p), 400, 250);
+		await flush();
+		expect(entered(p)).toBe(true);
+		const onOne = await waiting(s, p);
+		// The next look stalls: the window's loop waits on it, and cannot see the switch.
+		let open = () => {};
+		s.state.lookGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		const looked = s.looks.length;
+		await advance(LOOK_EVERY_MS);
+		expect(s.looks.length).toBe(looked + 1);
+		s.state.answers.push({ picture: 2 }, { picture: 3 });
+		p.el.querySelector<HTMLButtonElement>(".computer-switcher:not([hidden])")!.click();
+		[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][1]!.click();
+		// No retry and nothing queued goes to the first computer, while the look waits and after.
+		await advance(5000);
+		expect(onOne().map((act) => act.action.type)).toEqual(["click"]);
+		open();
+		await flush();
+		await advance(LOOK_EVERY_MS * 3);
+		expect(onOne().map((act) => act.action.type)).toEqual(["click"]);
+		expect(s.acts.filter((act) => act.action.type === "type")).toEqual([]);
+		expect(controls(p)?.textContent ?? "").not.toContain("Waiting for");
+	});
+
+	it("cancels shared input at once when the large view is left, private typing begins, or the window closes (review r1 F1 of #1701)", async () => {
+		for (const end of ["back", "private", "close"] as const) {
+			const s = setup();
+			const { p } = await shown(s);
+			press(canvas(p), 400, 250);
+			await flush();
+			const onOne = await waiting(s, p);
+			if (end === "back") p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!.click();
+			else if (end === "private") {
+				let open = () => {};
+				s.state.takeGate = new Promise<void>((resolve) => {
+					open = resolve;
+				});
+				controlButton(p)!.click();
+				await advance(3000);
+				open();
+			} else p.dispose();
+			await advance(5000);
+			// The shared click is not tried again, and the text typed for it never goes, shared or private.
+			expect(
+				onOne().map((act) => [act.action.type, act.seat]),
+				end,
+			).toEqual([["click", null]]);
+			expect(
+				s.acts.filter((act) => act.action.type === "type"),
+				end,
+			).toEqual([]);
+			p.dispose();
+		}
+	});
 });
 
 describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {

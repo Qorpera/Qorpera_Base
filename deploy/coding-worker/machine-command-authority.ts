@@ -186,9 +186,10 @@ export interface MachineScreenAuthority {
 	/** A member held the desktop since its clipboard was last confirmed clear (F35 of #1661): the host clears it under this
 	 * call's hold of the desktop and records it before it looks or acts. */
 	clipboardClear: boolean;
-	/** A member acted on the shared desktop since an agent was last told (20260930734000): who, and how many seconds ago;
-	 * never what. SQL says it once; the answer carries it to the agent. */
-	memberTouched?: { name: string; secondsAgo: number };
+	/** A member acted on the shared desktop since an agent was last told (20260930734000): who, how many seconds ago, and
+	 * when that action was (`at`, SQL's own timestamp); never what. SQL says it at every read until the executor's word
+	 * that an answer carrying it is ready (qorpera_machine_desktop_shared_told with `at`; review r1 F4 of #1701). */
+	memberTouched?: { name: string; secondsAgo: number; at: string };
 }
 
 /** The calling run's live tool authority, for an action its own executing machine_screen receipt of exactly this
@@ -238,17 +239,21 @@ export async function authorizeMachineScreen(
 		providerId: result.providerId, runId: result.runId, receiptId: request.input.commandId, action,
 		settleMs: request.input.settleMs, look: request.input.look, desktopGeneration: result.desktopGeneration as number,
 		clipboardClear: result.clipboardClear,
-		...(result.memberTouched !== undefined ? { memberTouched: { ...(result.memberTouched as { name: string; secondsAgo: number }) } } : {}) };
+		...(result.memberTouched !== undefined ? { memberTouched: { ...(result.memberTouched as { name: string; secondsAgo: number; at: string }) } } : {}) };
 }
 
-/** SQL's memberTouched (20260930734000): exactly a member's name (as the review card names them) and the whole seconds
- * since their shared action. */
-function memberTouched(value: unknown): value is { name: string; secondsAgo: number } {
-	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== "name,secondsAgo")
+/** A member's name as SQL keeps it: 1 to 256 characters (char_length, code points: never UTF-16 units; review r1 F2 of
+ * #1701), not blank. */
+export const MEMBER_NAME_CHARACTERS = 256;
+/** SQL's memberTouched (20260930734000): exactly a member's name (as the review card names them, or "A member"), the
+ * whole seconds since their shared action, and its time (an ISO timestamp SQL gave). */
+function memberTouched(value: unknown): value is { name: string; secondsAgo: number; at: string } {
+	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== "at,name,secondsAgo")
 		return false;
-	const { name, secondsAgo } = value as Record<string, unknown>;
-	return typeof name === "string" && name.trim().length > 0 && name.length <= 200 &&
-		typeof secondsAgo === "number" && Number.isSafeInteger(secondsAgo) && secondsAgo >= 0;
+	const { name, secondsAgo, at } = value as Record<string, unknown>;
+	return typeof name === "string" && name.trim().length > 0 && [...name].length <= MEMBER_NAME_CHARACTERS &&
+		typeof secondsAgo === "number" && Number.isSafeInteger(secondsAgo) && secondsAgo >= 0 &&
+		typeof at === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{1,6})?(Z|[+-]\d\d:\d\d)$/.test(at) && Number.isFinite(Date.parse(at));
 }
 
 /** What SQL says about one member's look at a desktop (20260930712000): where the machine runs, the member, whether the

@@ -675,7 +675,8 @@ export function parseCloudMachineScreenAnswer(
 		if (
 			typeof name !== "string" ||
 			!name.trim() ||
-			name.length > 200 ||
+			// SQL's member names: up to 256 characters (code points, never UTF-16 units; review r1 F2 of #1701).
+			[...name].length > 256 ||
 			typeof secondsAgo !== "number" ||
 			!Number.isSafeInteger(secondsAgo) ||
 			secondsAgo < 0

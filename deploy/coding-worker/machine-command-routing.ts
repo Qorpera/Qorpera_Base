@@ -176,12 +176,16 @@ export class MachineCommandRouter {
 	}
 	/** machine_screen (20260930708000): SQL names the machine's executor, as for a command. This node runs the helper; another
 	 * node's executor is sent the request once (it reads SQL again and only runs it locally): an action is never sent twice.
-	 * Its refusal reaches the agent as the same refusal (a 409 with its code). */
+	 * Its refusal reaches the agent as the same refusal (a 409 with its code). A member's touch of the shared screen
+	 * (20260930734000) rides the answer, and only once that answer is ready does this executor tell SQL the agent was told
+	 * (review r1 F4 of #1701): a refusal or a failure leaves it for the agent's next call. */
 	async screen(request: CloudMachineScreenHttpRequest, signal: AbortSignal, localOnly = false): Promise<CloudMachineScreenAnswer> {
 		const authority = await authorizeMachineScreen(this.#options.control, request, signal);
 		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {
 			if (!this.#options.screenLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
-			return this.#options.screenLocal(authority, signal);
+			const answer = await this.#options.screenLocal(authority, signal);
+			await this.#told(authority, signal);
+			return answer;
 		}
 		if (localOnly) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
 		const peer = this.#options.peers.find((entry) => entry.owner === authority.executorOwner && entry.providerId === authority.providerId);
@@ -192,11 +196,24 @@ export class MachineCommandRouter {
 		});
 		if (!gateway.screen) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
 		const answer = await gateway.screen(request.scope, request.input, signal);
-		// SQL told this read that a member touched the shared screen (20260930734000), once: the peer's own read is not told
-		// it again, so the answer carries this one unless the peer's has a newer one.
-		return authority.memberTouched && answer.memberTouched === undefined
-			? { ...answer, memberTouched: authority.memberTouched }
+		// The peer's own read says it too (and the peer tells SQL); an answer without it (a peer from before) carries this
+		// read's.
+		const told = authority.memberTouched && answer.memberTouched === undefined
+			? { ...answer, memberTouched: { name: authority.memberTouched.name, secondsAgo: authority.memberTouched.secondsAgo } }
 			: answer;
+		await this.#told(authority, signal);
+		return told;
+	}
+	/** The agent's answer carries the member's touch SQL's read gave (20260930734000): SQL hears it was told, up to that
+	 * action's time. Best effort: when SQL does not hear it, its next read says it again (said twice, never lost). */
+	async #told(authority: MachineScreenAuthority, signal: AbortSignal): Promise<void> {
+		if (!authority.memberTouched) return;
+		try {
+			await this.#options.control.call("qorpera_machine_desktop_shared_told",
+				{ p_machine_id: authority.machineId, p_at: authority.memberTouched.at }, signal);
+		} catch {
+			// Not marked: the agent's next call says it again.
+		}
 	}
 	/** A member's look at a desktop (20260930712000), as this executor's member listener took it: begun as the member (the
 	 * database checks their token and answers a single-use id), then read again as the executor, and looked at on this
@@ -359,8 +376,10 @@ export function localMachineScreen(host: {
 		}
 		return { schema: CLOUD_MACHINE_SCREEN_SCHEMA, commandId: authority.receiptId, header: parseMachineScreenHeader(outcome.header),
 			png: outcome.png ? outcome.png.toString("base64") : null, ...(outcome.heldBack !== undefined ? { heldBack: outcome.heldBack } : {}),
-			// A member touched the shared screen since an agent was last told (20260930734000): who and when, never what.
-			...(authority.memberTouched ? { memberTouched: { ...authority.memberTouched } } : {}) };
+			// A member touched the shared screen since an agent was last told (20260930734000): who and how long ago, never what.
+			...(authority.memberTouched
+				? { memberTouched: { name: authority.memberTouched.name, secondsAgo: authority.memberTouched.secondsAgo } }
+				: {}) };
 	};
 }
 
