@@ -2,9 +2,9 @@
 # The code host image, checked from inside a code host made from it (5e), as root. test/prove-code-host.ts makes that
 # code host as the coding executor does (code-host.ts) on a test machine and pushes this in; never run it anywhere
 # else. It checks that the code host has no network and no /dev/lxd, boots to running without cloud-init, grew its
-# root to the disk, has the pinned git (with the work 5e's jobs do with it), the recorded folder program with FUSE and
-# vsock under it, the places the jobs use and the commands they run, the policy's processors, and none of what the
-# build removed. Prints PASS lines, then ALL PASSED.
+# root to the disk, has the pinned git (with the work 5e's jobs and an import's do with it, and the import's key scan
+# over planted values), the recorded folder program with FUSE and vsock under it, the places the jobs use and the
+# commands they run, the policy's processors, and none of what the build removed. Prints PASS lines, then ALL PASSED.
 set -euo pipefail
 
 GIT_VERSION=${QORPERA_PROOF_GIT:?the pinned git version}
@@ -207,6 +207,158 @@ pass "git $GIT_VERSION does nightly care's work: packed refs, a gc that deletes 
 pass "git $GIT_VERSION does the change record's work: a change's paths, an undo's merge and its conflict, the zip of main, the bundle a clone checks out"
 pass "git $GIT_VERSION does a restore's work: a bundle of every ref proven and repacked the same twice, a repository made again from its pack, its refs and main"
 
+# What an import's jobs do in the code host (code-host-import.ts). The look's sweep of dead scratch; a history the
+# strict fetch refuses by git's message id, that a fetch without the check and an fsck that is not strict take (old
+# objects git only warns about); the refs plan as one update-ref session of two transactions (deletes, then creates);
+# the formats the facts are read in; the lists of the key scan kept in files, picked by line and by name; and C1's
+# key scan itself (code-import.ts's CODE_IMPORT_SCAN, word for word: runner-orchestrator's code-host-import test pins
+# the text below) over planted values. Only offsets and kinds come out of it, never a value, each offset is the
+# value's place in git's batch output, and git's end, a stop after its time and the output's bound are told apart.
+SCAN_SCRIPT=$(
+	cat <<'SCAN'
+status=$1 list=$2 seconds=$3
+shift 3
+export LC_ALL=C
+{ timeout -k 10 "$seconds" "$@" <"$list"; echo "git $?" >>"$status"; } |
+	{ grep -a -b -o -E -e '(\b(AKIA|ASIA)[0-9A-Z]{16}\b)|(\b(gh[pousr]_[0-9A-Za-z]{36,}|github_pat_[0-9A-Za-z]{22}_[0-9A-Za-z]{59}))|(\b[rs]k_live_[0-9A-Za-z]{24,})|(\bxox[abeoprs]-[0-9A-Za-z-]{10,}|\bxapp-[0-9]-[0-9A-Za-z-]{10,}|hooks\.slack\.com/services/T[0-9A-Z]{8,12}/B[0-9A-Z]{8,12}/[0-9A-Za-z]{24})|(\bAIza[0-9A-Za-z_-]{35})|(-----BEGIN ([A-Z0-9]+ )*PRIVATE KEY( BLOCK)?-----)|(\bre_[0-9A-Za-z]{8,12}_[0-9A-Za-z]{20,40}\b)|(\bsk-(proj|svcacct|admin)-[0-9A-Za-z_-]{20,}|\bsk-[0-9A-Za-z]{20}T3BlbkFJ[0-9A-Za-z]{20}\b)|(\bsk-ant-[0-9A-Za-z_-]{20,})'; echo "grep $?" >>"$status"; } |
+	{ sed -n -E -e 's#^([0-9]+):(\b(AKIA|ASIA)[0-9A-Z]{16}\b)$#\1 aws#p' -e 's#^([0-9]+):(\b(gh[pousr]_[0-9A-Za-z]{36,}|github_pat_[0-9A-Za-z]{22}_[0-9A-Za-z]{59}))$#\1 github#p' -e 's#^([0-9]+):(\b[rs]k_live_[0-9A-Za-z]{24,})$#\1 stripe#p' -e 's#^([0-9]+):(\bxox[abeoprs]-[0-9A-Za-z-]{10,}|\bxapp-[0-9]-[0-9A-Za-z-]{10,}|hooks\.slack\.com/services/T[0-9A-Z]{8,12}/B[0-9A-Z]{8,12}/[0-9A-Za-z]{24})$#\1 slack#p' -e 's#^([0-9]+):(\bAIza[0-9A-Za-z_-]{35})$#\1 google#p' -e 's#^([0-9]+):(-----BEGIN ([A-Z0-9]+ )*PRIVATE KEY( BLOCK)?-----)$#\1 private-key#p' -e 's#^([0-9]+):(\bre_[0-9A-Za-z]{8,12}_[0-9A-Za-z]{20,40}\b)$#\1 resend#p' -e 's#^([0-9]+):(\bsk-(proj|svcacct|admin)-[0-9A-Za-z_-]{20,}|\bsk-[0-9A-Za-z]{20}T3BlbkFJ[0-9A-Za-z]{20}\b)$#\1 openai#p' -e 's#^([0-9]+):(\bsk-ant-[0-9A-Za-z_-]{20,})$#\1 anthropic#p'; echo "sed $?" >>"$status"; } |
+	head -c 65536
+SCAN
+)
+(
+	export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HOME=/nonexistent LC_ALL=C
+	export GIT_AUTHOR_NAME=q GIT_AUTHOR_EMAIL=q@q GIT_COMMITTER_NAME=q GIT_COMMITTER_EMAIL=q@q
+	T=$(mktemp -d -p /var/lib/qorpera-code-host)
+	# The sweep: every other entry of the scratch root goes, the job's own stays.
+	mkdir -p "$T/root/keep" "$T/root/dead/proof.git/objects"
+	: >"$T/root/file"
+	find "$T/root" -mindepth 1 -maxdepth 1 ! -name keep -exec rm -rf -- {} +
+	[[ $(ls -A "$T/root") == keep ]]
+	[[ $(stat -c %s -- "$T/root/keep") =~ ^[0-9]+$ ]]
+	# A zero-padded file mode: the strict fetch refuses it naming zeroPaddedFilemode; without the check it comes in, and
+	# fsck only warns.
+	Z="$T/z.git"
+	git init -q --bare "$Z"
+	BLOB=$(printf 'x\n' | git --git-dir="$Z" hash-object -w --stdin)
+	SUB=$(printf '100644 blob %s\tf\n' "$BLOB" | git --git-dir="$Z" mktree)
+	BIN=$(sed -e 's/../\\x&/g' <<<"$SUB")
+	TREE=$({ printf '040000 d\0'; printf '%b' "$BIN"; } | git --git-dir="$Z" hash-object -t tree --literally -w --stdin)
+	OLD=$(git --git-dir="$Z" commit-tree "$TREE" -m old)
+	git --git-dir="$Z" update-ref refs/heads/master "$OLD"
+	git --git-dir="$Z" bundle create --quiet "$T/z.bundle" --all
+	git init --quiet --bare --template= --ref-format=files "$T/zp.git"
+	STATUS=0
+	SAID=$(git --no-replace-objects --git-dir="$T/zp.git" -c transfer.fsckObjects=true -c fetch.fsckObjects=true fetch --quiet \
+		--no-tags --no-recurse-submodules --no-write-fetch-head "$T/z.bundle" "+refs/*:refs/*" 2>&1) || STATUS=$?
+	[[ $STATUS != 0 && $SAID == *": zeroPaddedFilemode: "* ]]
+	git init --quiet --bare --template= --ref-format=files "$T/zl.git"
+	git --no-replace-objects --git-dir="$T/zl.git" -c transfer.fsckObjects=false -c fetch.fsckObjects=false fetch --quiet \
+		--no-tags --no-recurse-submodules --no-write-fetch-head "$T/z.bundle" "+refs/*:refs/*"
+	timeout -k 10 60 git --no-replace-objects --git-dir="$T/zl.git" fsck --full --no-dangling --no-progress >/dev/null 2>&1
+	# The refs plan's session: a branch main/x deleted, then main and the mark made, each with its old value.
+	W="$T/w"
+	git init -q -b master "$W"
+	mkdir -p "$W/old"
+	echo "token=ASIAZXCVBNMLKJHGFDSA" >"$W/old/leak.txt"
+	git -C "$W" add -A
+	GIT_COMMITTER_DATE="@1700000000 +0000" git -C "$W" commit -q -m one
+	ONE=$(git -C "$W" rev-parse HEAD)
+	git -C "$W" rm -q old/leak.txt
+	mkdir -p "$W/config" "$W/src" "$W/pay" "$W/chat" "$W/maps" "$W/keys" "$W/mail" "$W/ai"
+	AWS=AKIAQWERTYUIOPASDFGH
+	GH=ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ
+	STRIPE=sk_live_abcdefghijklmnopqrstuvwx
+	SLACK=xoxb-abcdefghijklmnop
+	GOOGLE=AIzaabcdefghijklmnopqrstuvwxyzABCDEFGHI
+	PK="-----BEGIN OPENSSH PRIVATE KEY-----"
+	RESEND=re_abcdefghij_abcdefghijklmnopqrstuvwx
+	OPENAI=sk-proj-abcdefghijklmnopqrstuvwxyz
+	ANTHROPIC=sk-ant-api03-abcdefghijklmnopqrstuvwxyz
+	echo "key = $AWS" >"$W/config/aws.txt"
+	echo "const t = \"$GH\";" >"$W/src/github.ts"
+	echo "$STRIPE" >"$W/pay/stripe.js"
+	echo "$SLACK" >"$W/chat/slack.txt"
+	printf 'k="%s"' "$GOOGLE" >"$W/maps/google.js"
+	printf '%s\nb3BlbnNzaA\n' "$PK" >"$W/keys/id"
+	echo "'$RESEND';" >"$W/mail/resend.ts"
+	echo "$OPENAI" >"$W/ai/openai.py"
+	echo "$ANTHROPIC" >"$W/ai/anthropic.py"
+	printf 'x\nversion https://git-lfs.github.com/spec/v1\n' >"$W/lfs.md"
+	git -C "$W" add -A
+	GIT_COMMITTER_DATE="@1700000600 +0000" git -C "$W" commit -q -m two
+	TWO=$(git -C "$W" rev-parse HEAD)
+	git -C "$W" tag -a -m "a tag" v1 "$ONE"
+	G="$W/.git"
+	git --git-dir="$G" update-ref refs/heads/main/x "$ONE"
+	printf 'start\0delete refs/heads/main/x\0%s\0prepare\0commit\0start\0create refs/heads/main\0%s\0create refs/qorpera/kept-here\0%s\0prepare\0commit\0' \
+		"$ONE" "$TWO" "$TWO" | git --no-replace-objects --git-dir="$G" update-ref --no-deref -z --stdin >/dev/null
+	git --git-dir="$G" symbolic-ref HEAD refs/heads/main
+	[[ $(git --git-dir="$G" for-each-ref --format="%(refname) %(objectname)" | tr "\n" " ") == "refs/heads/main $TWO refs/heads/master $TWO refs/qorpera/kept-here $TWO refs/tags/v1 $(git --git-dir="$G" rev-parse v1) " ]]
+	# The plan's input: name, object, type, the tag's target's type, the creator's date, NUL between.
+	[[ $(git --git-dir="$G" for-each-ref --format="%(refname)%00%(objectname)%00%(objecttype)%00%(*objecttype)%00%(creatordate:unix)" refs/tags/v1 | tr "\0" " ") =~ ^refs/tags/v1\ [0-9a-f]{40}\ tag\ commit\ [0-9]+$ ]]
+	[[ $(git --git-dir="$G" for-each-ref --format="%(objecttype)%00%(*objecttype)%00%(creatordate:unix)" refs/heads/main | tr "\0" " ") == "commit  1700000600" ]]
+	# The facts: commits, the oldest root's and the last commit's times, who changed it lately (no mailmap).
+	[[ $(git --no-replace-objects --git-dir="$G" rev-list --count "$TWO") == 2 ]]
+	[[ $(git --no-replace-objects --git-dir="$G" log --no-use-mailmap --max-parents=0 --format=%ct "$TWO") == 1700000000 ]]
+	[[ $(git --no-replace-objects --git-dir="$G" log --no-use-mailmap -1 --format=%ct "$TWO") == 1700000600 ]]
+	[[ $(git --no-replace-objects --git-dir="$G" log --no-use-mailmap --max-age=1700000300 --format=%ct%x00%ae "$TWO" | tr "\0" " ") == "1700000600 q@q" ]]
+	# The scan's lists, in files: every object the kept refs reach (NUL between records, each path whole in a record of
+	# its own), their types and sizes, the blobs under 1 MiB.
+	printf '%s\n' "$TWO" "$(git --git-dir="$G" rev-parse v1)" |
+		git --no-replace-objects --git-dir="$G" rev-list --objects -z --stdin >"$T/objects"
+	grep -z -v -e '^path=' -- "$T/objects" >"$T/ids.z"
+	tr '\0' '\n' <"$T/ids.z" >"$T/ids"
+	git --no-replace-objects --git-dir="$G" cat-file --batch-check='%(objectname) %(objecttype) %(objectsize)' <"$T/ids" >"$T/checked"
+	grep -E -e '^[0-9a-f]{40} blob (0|[1-9][0-9]{0,5}|10[0-3][0-9]{4}|104[0-7][0-9]{3}|1048[0-4][0-9]{2}|10485[0-6][0-9]{1}|104857[0-5])$' -- "$T/checked" >"$T/small"
+	sed -e 's/ .*//' -- "$T/small" >"$T/list"
+	sed -e 's/.* //' -- "$T/small" >"$T/sizes"
+	[[ $(grep -c -E -e '^[0-9a-f]{40} blob ' -- "$T/checked") == 11 && $(wc -l <"$T/small") =~ ^\ *11$ ]]
+	[[ $(head -n 3 -- "$T/sizes" | wc -l) =~ ^\ *3$ ]]
+	# A blob by its line, and its first path by its name.
+	LINE=$(grep -n -e '' -- "$T/list" | sed -e 's/^/:/' | grep -F -f <(printf ':4:\n'))
+	[[ $LINE =~ ^:4:[0-9a-f]{40}$ ]]
+	LEAK=$(git --git-dir="$G" rev-parse "$ONE:old/leak.txt")
+	[[ $(grep -z -x -F --no-group-separator -A 1 -f <(printf '%s\n' "$LEAK") -- "$T/objects" | tr '\0' ' ') == "$LEAK path=old/leak.txt " ]]
+	# A path with a line feed comes whole, where the plain listing cuts it.
+	NLTREE=$(printf '100644 blob %s\ta\nb.txt\0' "$BLOB" | git --git-dir="$Z" mktree -z)
+	NL=$(git --git-dir="$Z" commit-tree "$NLTREE" -m nl)
+	echo "$NL" | git --no-replace-objects --git-dir="$Z" rev-list --objects -z --stdin >"$T/nl.objects"
+	[[ $(grep -z -x -F --no-group-separator -A 1 -f <(printf '%s\n' "$BLOB") -- "$T/nl.objects" | tr '\0\n' '|~') == "$BLOB|path=a~b.txt|" ]]
+	# The LFS check: where the version line starts, and the line, nothing more.
+	LFS=$(git --git-dir="$G" rev-parse "$TWO:lfs.md")
+	[[ $(echo "$LFS" | git --no-replace-objects --git-dir="$G" cat-file --batch | grep -a -b -o -F -e 'version https://git-lfs.github.com/spec/') == "$((47 + 2 + 2)):version https://git-lfs.github.com/spec/" ]]
+	# The scan: an offset and a kind a line, every kind found, each offset where its value stands in git's batch output.
+	git --no-replace-objects --git-dir="$G" cat-file --batch <"$T/list" >"$T/batch"
+	/bin/sh -c "$SCAN_SCRIPT" sh "$T/status" "$T/list" 600 git --no-replace-objects --git-dir="$G" cat-file --batch >"$T/out"
+	[[ $(sort "$T/status" | tr "\n" " ") == "git 0 grep 0 sed 0 " ]]
+	if grep -q -v -E '^[0-9]+ (aws|github|stripe|slack|google|private-key|resend|openai|anthropic)$' "$T/out"; then exit 1; fi
+	for pair in "aws $AWS" "aws ASIAZXCVBNMLKJHGFDSA" "github $GH" "stripe $STRIPE" "slack $SLACK" "google $GOOGLE" \
+		"private-key $PK" "resend $RESEND" "openai $OPENAI" "anthropic $ANTHROPIC"; do
+		KIND=${pair%% *} VALUE=${pair#* }
+		FOUND=0
+		while read -r OFFSET K; do
+			[[ $K == "$KIND" && $(tail -c "+$((OFFSET + 1))" "$T/batch" | head -c "${#VALUE}") == "$VALUE" ]] && FOUND=1
+		done <"$T/out"
+		[[ $FOUND == 1 ]]
+		# No value, and no part of one, is in what the scan said.
+		for ((at = 0; at + 8 <= ${#VALUE}; at++)); do
+			if grep -q -F -e "${VALUE:at:8}" "$T/out"; then exit 1; fi
+		done
+	done
+	[[ $(wc -l <"$T/out") =~ ^\ *10$ ]]
+	# A scan that does not end is stopped after its time, and says so.
+	/bin/sh -c "$SCAN_SCRIPT" sh "$T/status2" "$T/list" 1 sleep 30 >"$T/out2"
+	[[ $(sort "$T/status2" | tr "\n" " ") == "git 124 grep 1 sed 0 " && ! -s $T/out2 ]]
+	# Past 64 KiB of offsets the output is cut at its bound.
+	for i in $(seq 1 20000); do printf 'AKIA%016d\n' "$i"; done >"$T/many.txt"
+	git --git-dir="$G" hash-object -w -- "$T/many.txt" >"$T/list3"
+	/bin/sh -c "$SCAN_SCRIPT" sh "$T/status3" "$T/list3" 600 git --no-replace-objects --git-dir="$G" cat-file --batch >"$T/out3"
+	[[ $(wc -c <"$T/out3") =~ ^\ *65536$ && $(head -n 1 "$T/out3") =~ ^[0-9]+\ aws$ ]]
+	rm -rf "$T"
+)
+pass "an import's jobs: the sweep, the strict check's message id and what it only warns of, the refs plan's two transactions, the facts' formats, the scan's lists"
+pass "C1's key scan in this image: offsets and kinds alone, each offset its value's place, every kind found, a stop after its time, the 64 KiB bound"
+
 # --- The folder program, FUSE and vsock -------------------------------------------------------------------------------
 [[ $(sha256sum "$FOLDER" | cut -d" " -f1) == "$FOLDER_SHA256" ]] || fail "the folder program differs"
 [[ $(stat -c "%a %u %g" "$FOLDER") == "555 0 0" ]] || fail "the folder program is not root's 0555"
@@ -254,6 +406,8 @@ done
 PATH=/usr/local/bin:/usr/bin:/bin command -v stat >/dev/null || fail "no stat in /usr/local/bin:/usr/bin:/bin"
 [[ $(stat -f -c "%a %S" -- /var/lib/qorpera-code-host) =~ ^[0-9]+\ [0-9]+$ ]] || fail "stat -f does not give the free blocks and their size"
 mv --no-copy --version >/dev/null 2>&1 || fail "mv does not know --no-copy"
+# An import's jobs (code-host-import.ts) run sed as well, with the same PATH.
+PATH=/usr/local/bin:/usr/bin:/bin command -v sed >/dev/null || fail "no sed in /usr/local/bin:/usr/bin:/bin"
 D=$(mktemp -d -p /var/lib/qorpera-code-host)
 mkdir -p "$D/from/repo.git/refs" "$D/to"
 mv --no-copy -T -- "$D/from/repo.git" "$D/to/repo.git" || fail "mv --no-copy -T does not rename a folder"
