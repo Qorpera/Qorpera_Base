@@ -121,6 +121,9 @@ interface MailMessageBase {
 export type MailMessage =
 	| (MailMessageBase & {
 			readonly kind: "received";
+			/** Where the email asks its answers to go (its Reply-To header), when it names somewhere and its stored
+			 * message is still kept. None before migration 20260930740000. */
+			readonly replyTo: readonly string[];
 			readonly textTruncated: boolean;
 			readonly automated: boolean;
 			readonly handledBy?: MailAgent;
@@ -362,6 +365,7 @@ function parseMessage(value: unknown): MailMessage {
 			kind,
 			id: nonEmptyString(item.deliveryId, "mail message id", 128),
 			...base,
+			replyTo: found ? [] : recipients(item.replyTo),
 			textTruncated: !found && flag(item.textTruncated, "mail text truncated"),
 			automated: flag(item.automated, "mail automated"),
 			at: timestamp(item.receivedAt, "mail message time"),

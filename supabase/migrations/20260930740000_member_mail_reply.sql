@@ -15,6 +15,13 @@
 --   stays empty on a member's email, so qorpera_claim_company_mail is not touched.
 -- - Everything else is 20260930716000's: who may send, the mailbox, the recipients, the sending switch and the
 --   company's limits. `from` is any live mailbox of the company; the web gives the thread's own.
+-- - The answer to such a reply comes back to the same thread. A received email joined the thread of an email the
+--   company sent only when that email's id was the first it referenced; now it joins the thread of the message it
+--   answers, or of the first it references, when the company knows that message: one it sent from this mailbox or
+--   one it received in it. So a member's reply that names only the email it answers (that email's own References are
+--   gone with its text after seven days) still gets its answer in the thread.
+-- - qorpera_member_mail_thread gives a received message's `replyTo`: the addresses its Reply-To header asks answers
+--   to go to, read from the stored message while its text is kept, so Reply goes there and not to a no-reply sender.
 -- Exact-text patches; each inserted text names this migration (20260930740000), for deploy guards.
 -- qorpera_send_agent_mail and the outbox's claim are not touched.
 
@@ -157,4 +164,53 @@ $old$,
 	values (v_mail_id, v_thread, v_profile_id, p_environment_id, v_mailbox.id, v_user_id, v_send_id,
 		v_member || ' at ' || v_company, v_to, v_cc, btrim(p_request ->> 'subject'),
 		rtrim(p_request ->> 'text', E' \t\r\n'), v_in_reply_to, v_references)
+$new$);
+
+-- ---------------------------------------------------------------------------
+-- The answer to a reply comes back to its thread
+-- ---------------------------------------------------------------------------
+-- A received message's id is looked up by mailbox when a later email answers or references it.
+create index qorpera_mail_received_message_id on public.qorpera_mail_received (mailbox_id, message_id)
+	where message_id is not null;
+
+select pg_temp.member_reply_patch('public.qorpera_mail_received_note(uuid,public.qorpera_company_mailboxes,timestamptz,jsonb,text,text,text)'::regprocedure,
+	$old$	v_root text := public.qorpera_mail_thread_root(p_message);
+$old$,
+	$new$	v_root text := public.qorpera_mail_thread_root(p_message);
+	-- 20260930740000: the message it answers, by that message's id.
+	v_answers text := case when jsonb_typeof(p_message -> 'inReplyTo') = 'string'
+		then public.qorpera_mail_message_id(p_message ->> 'inReplyTo') end;
+$new$);
+select pg_temp.member_reply_patch('public.qorpera_mail_received_note(uuid,public.qorpera_company_mailboxes,timestamptz,jsonb,text,text,text)'::regprocedure,
+	$old$	v_thread := coalesce(
+		(select mail.thread from public.qorpera_company_mail_outbox as mail
+			where mail.mailbox_id = p_mailbox.id and mail.message_id = v_root limit 1),
+		public.qorpera_mail_thread_id(p_mailbox.id, coalesce(v_root, 'delivery:' || p_delivery_id)));$old$,
+	$new$	-- 20260930740000: also of a message this mailbox received, and of the message it answers before the first it
+	-- references: a member's reply names the email it answers, and the answer to that reply names that email first.
+	v_thread := coalesce(
+		(select known.thread from (
+				select mail.thread, mail.message_id, mail.created_at as at
+				from public.qorpera_company_mail_outbox as mail
+				where mail.mailbox_id = p_mailbox.id and mail.message_id in (v_answers, v_root)
+				union all
+				select received.thread_id, received.message_id, received.received_at
+				from public.qorpera_mail_received as received
+				where received.mailbox_id = p_mailbox.id and received.message_id in (v_answers, v_root)) as known
+			order by (known.message_id is not distinct from v_answers) desc, known.at desc limit 1),
+		public.qorpera_mail_thread_id(p_mailbox.id, coalesce(v_root, 'delivery:' || p_delivery_id)));$new$);
+
+-- ---------------------------------------------------------------------------
+-- Where an email asks its answers to go
+-- ---------------------------------------------------------------------------
+select pg_temp.member_reply_patch('public.qorpera_member_mail_thread(uuid,text,jsonb)'::regprocedure,
+	$old$				'cc', case when mark.value is null then received.recipients_cc end,
+$old$,
+	$new$				'cc', case when mark.value is null then received.recipients_cc end,
+				-- 20260930740000: the addresses its Reply-To header names, while its stored message is kept.
+				'replyTo', case when mark.value is null and jsonb_typeof(body.message -> 'replyTo') = 'array'
+					then (select jsonb_agg(item.value order by item.n)
+						from jsonb_array_elements(body.message -> 'replyTo') with ordinality as item(value, n)
+						where item.n <= 10 and jsonb_typeof(item.value) = 'string'
+							and char_length(item.value #>> '{}') between 3 and 320) end,
 $new$);

@@ -712,6 +712,16 @@ what to reply").
   same thread. A received email's earlier ids are read from its stored message while that is kept (seven days); after
   that the reply names the answered email alone. A message with no usable id (a sent email whose Message-ID is not
   read back yet, a received one without one) is answered in its thread without those headers.
+- **The answer comes back to the thread.** A received email finds its thread through a message its mailbox knows
+  (`qorpera_mail_received_note`): the message it answers (`In-Reply-To`), else the first it references, looked up
+  among the emails sent from that mailbox (by the Message-ID read back) and, from this migration, among the emails
+  received in it (`qorpera_mail_received.message_id`, indexed by mailbox). Before, only the first reference was
+  looked up, and only among sent email, so the answer to a reply that named a received email alone began a thread of
+  its own. An email that answers nothing its mailbox knows is in the thread of its first reference, as before.
+- **Reply-To.** `qorpera_member_mail_thread` gives a received message's `replyTo`: the addresses its Reply-To header
+  names (at most 10), read from the stored message while that is kept, never for account mail. The Mailbox's Reply
+  goes there, and to the sender when the email names nowhere else, so an email from an address nobody reads is not
+  answered to it.
 - **The member's own act.** No AI line and no automatic review, as any email of a member's. Unlike an agent's reply
   it also answers an email the mail door marked `automated` (a person replying starts no mail loop), and it never
   carries `Auto-Submitted`: `in_reply_to_delivery_id`, which marks an agent's automatic reply for the sender, stays
@@ -786,8 +796,10 @@ with no AI line; it shows in Sent and in its thread as theirs, and the answer to
 
 ## Deploy (M2e+)
 
-A migration alone: no runtime change, no bundle, no edge function. It adds `qorpera_mail_reply_references` and patches
-`qorpera_send_member_mail` by exact text; the outbox's claim and `qorpera_send_agent_mail` are untouched. The web
+A migration alone: no runtime change, no bundle, no edge function. It adds `qorpera_mail_reply_references` and an
+index on received Message-IDs, and patches `qorpera_send_member_mail`, `qorpera_mail_received_note` (which thread a
+received email joins) and `qorpera_member_mail_thread` (`replyTo`) by exact text; the outbox's claim, the mail door's
+own function and `qorpera_send_agent_mail` are untouched. The web
 client that answers in a thread follows it (an older cloud refuses `replyTo` with 22023, so the web waits for the
 migration). Acceptance: a member opens a received email in the Mailbox, presses Reply, writes and sends; the email
 stands in the thread as theirs, arrives at the sender threaded under the email it answers, with no AI line, and the

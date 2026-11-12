@@ -507,6 +507,81 @@ describe("answering in a thread", () => {
 		expect(calls(fake, "qorpera_send_member_mail")[1]?.p_request).not.toHaveProperty("cc");
 	});
 
+	// Review of #1716, round 1: an email from an address nobody reads got its answer there.
+	it("answers where the email asks its answers to go, in both modes, and its sender when it asks nowhere else", async () => {
+		const { main } = await mailbox((mail) => {
+			mail.threads = [summary(1), summary(2)];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				messages: [
+					received(1, {
+						fromAddress: "no-reply@vendor.example",
+						// A name beside the address, the company's own address, and the same address again.
+						replyTo: ["Support <support@vendor.example>", "hello@acme.example", "SUPPORT@vendor.example"],
+						to: [ADDRESS.address, "bo@outside.example", "support@vendor.example"],
+						cc: ["no-reply@vendor.example"],
+					}),
+				],
+				more: false,
+				waiting: [],
+			};
+		});
+		await openFirst(main);
+		button(main, "Reply")!.click();
+		expect(texts(reply(main), ".mailbox-chip-text")).toEqual(["support@vendor.example"]);
+		button(reply(main), "Discard")!.click();
+		// To all: where it asks first, then everyone else it went to; its sender has only the copy it had.
+		button(main, "Reply all")!.click();
+		const rows = [...reply(main).querySelectorAll<HTMLElement>(".mailbox-write-to")];
+		expect(texts(rows[0]!, ".mailbox-chip-text")).toEqual(["support@vendor.example", "bo@outside.example"]);
+		expect(texts(rows[1]!, ".mailbox-chip-text")).toEqual(["no-reply@vendor.example"]);
+		// An email that asks for nowhere else is answered to its sender.
+		button(main, "Back to Inbox")!.click();
+		lines(main)[1]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(button(main, "Reply")).toBeDefined());
+		button(main, "Reply")!.click();
+		expect(texts(reply(main), ".mailbox-chip-text")).toEqual(["sender2@outside.example"]);
+	});
+
+	// Review of #1716, round 1: with the thread's mailbox paused, the answer left from another one, and a retry after a
+	// lost answer was a new email.
+	it("sends an answer from its thread's address, whatever happens to that address meanwhile", async () => {
+		const orders = { ...ADDRESS, address: "orders@acme.example", handledBy: [], routines: [] };
+		const { main, fake, controller } = await mailbox((mail) => {
+			// The thread's own mailbox is paused from the start, and another one is in use.
+			mail.addresses = [orders, { ...ADDRESS, status: "paused" }];
+			mail.threads = [summary(1)];
+		});
+		await openFirst(main);
+		button(main, "Reply")!.click();
+		expect(reply(main).querySelector(".mailbox-from-address")?.textContent).toBe("from hello@acme.example");
+		type(reply(main).querySelector("textarea")!, "Yes.");
+		// The cloud refuses a paused mailbox, and says so: no other address stands in.
+		fake.sendError = { message: "The mailbox is paused; resume it to send from it", code: "0A000" };
+		reply(main).requestSubmit();
+		await vi.waitFor(() =>
+			expect(reply(main).querySelector(".mailbox-write-error")?.textContent).toBe(
+				"The mailbox is paused; resume it to send from it",
+			),
+		);
+		// It is resumed, and then removed from what the page knows: the answer is still the same email, from the same
+		// address, under the same send id.
+		const mail = controller.store.get().mail!;
+		controller.store.set({
+			mail: { ...mail, addresses: mail.addresses.filter((each) => each.address === orders.address) },
+		});
+		expect(reply(main).querySelector(".mailbox-from-address")?.textContent).toBe("from hello@acme.example");
+		fake.sendError = undefined;
+		reply(main).requestSubmit();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-reply")).toBeNull());
+		const requests = calls(fake, "qorpera_send_member_mail").map(
+			(call) => call.p_request as { sendId: string; from: string },
+		);
+		expect(requests.map((request) => request.from)).toEqual(["hello@acme.example", "hello@acme.example"]);
+		expect(requests[1]?.sendId).toBe(requests[0]?.sendId);
+	});
+
 	it("forwards a message as a new email of the member's own, its text under their words", async () => {
 		const { main, fake } = await mailbox((mail) => {
 			mail.threads = [summary(1)];
