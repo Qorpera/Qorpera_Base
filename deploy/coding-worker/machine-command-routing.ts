@@ -75,6 +75,10 @@ interface MachineCommandRouterOptions {
 	 * when this executor takes no member's requests. */
 	memberActBegin?(token: string, act: { companyId: string; machineId: string; action: MachineScreenAction; epoch: number;
 		seat: number }, signal: AbortSignal): Promise<string>;
+	/** A member's shared action (20260930734000): begun as the member with no hold of theirs, recorded without its text
+	 * (member-control.ts); absent when this executor takes no member's requests. */
+	memberShareBegin?(token: string, share: { companyId: string; machineId: string; action: MachineScreenAction },
+		signal: AbortSignal): Promise<string>;
 	/** A member's action on this node's machine; absent when the executor carries no machines. */
 	memberActLocal?(authority: MemberMachineActAuthority, action: MachineScreenAction, signal: AbortSignal): Promise<CloudMemberMachineAct>;
 	/** A member's start of the desktop (20260930714000): begins it as the member (member-control.ts); absent when this
@@ -187,7 +191,12 @@ export class MachineCommandRouter {
 			holder: null, fetch: this.#options.fetch,
 		});
 		if (!gateway.screen) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
-		return gateway.screen(request.scope, request.input, signal);
+		const answer = await gateway.screen(request.scope, request.input, signal);
+		// SQL told this read that a member touched the shared screen (20260930734000), once: the peer's own read is not told
+		// it again, so the answer carries this one unless the peer's has a newer one.
+		return authority.memberTouched && answer.memberTouched === undefined
+			? { ...answer, memberTouched: authority.memberTouched }
+			: answer;
 	}
 	/** A member's look at a desktop (20260930712000), as this executor's member listener took it: begun as the member (the
 	 * database checks their token and answers a single-use id), then read again as the executor, and looked at on this
@@ -217,11 +226,20 @@ export class MachineCommandRouter {
 		return createHttpMemberMachineScreenPeer({ url: peer.origin, token: await this.#options.credential(peer.tokenCredential),
 			fetch: this.#options.fetch }).memberScreen({ useId, etag }, signal);
 	}
-	/** A member's action on a desktop they hold (20260930713000), as this executor's member listener took it: begun as the
-	 * member (the database checks their token and their hold, records the action without its text and answers a
-	 * single-use id), then read again as the executor, and run on this node or sent once to the machine's node. What the
-	 * member typed goes only to the machine. */
+	/** A member's action on a desktop they hold (20260930713000), or on the desktop they share with the agent
+	 * (20260930734000), as this executor's member listener took it: begun as the member (the database checks their token
+	 * and their hold, or that no one holds it, records the action without its text and answers a single-use id), then
+	 * read again as the executor, and run on this node or sent once to the machine's node. What the member typed goes only
+	 * to the machine. */
 	async memberAct(request: CloudMemberMachineActRequest, signal: AbortSignal): Promise<CloudMemberMachineAct> {
+		if (request.shared === true) {
+			// A shared action (20260930734000): no hold of the member's; SQL refuses it while anyone holds the desktop
+			// privately, and serves it only while no one took it since.
+			if (!this.#options.memberShareBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+			const actionId = await this.#options.memberShareBegin(request.token, { companyId: request.companyId,
+				machineId: request.machineId, action: request.action }, signal);
+			return this.#memberActServe(actionId, request.action, signal, false);
+		}
 		if (!this.#options.memberActBegin) throw new Error("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
 		// The epoch and the seat of the hold the page captured it under go to SQL, which runs it only under that hold (F24,
 		// F26).
@@ -340,7 +358,9 @@ export function localMachineScreen(host: {
 			throw new Error("MACHINE_SCREEN_FAILED");
 		}
 		return { schema: CLOUD_MACHINE_SCREEN_SCHEMA, commandId: authority.receiptId, header: parseMachineScreenHeader(outcome.header),
-			png: outcome.png ? outcome.png.toString("base64") : null, ...(outcome.heldBack !== undefined ? { heldBack: outcome.heldBack } : {}) };
+			png: outcome.png ? outcome.png.toString("base64") : null, ...(outcome.heldBack !== undefined ? { heldBack: outcome.heldBack } : {}),
+			// A member touched the shared screen since an agent was last told (20260930734000): who and when, never what.
+			...(authority.memberTouched ? { memberTouched: { ...authority.memberTouched } } : {}) };
 	};
 }
 
@@ -368,7 +388,9 @@ export function localMemberMachineAct(host: {
 }): (authority: MemberMachineActAuthority, action: MachineScreenAction, signal: AbortSignal) => Promise<CloudMemberMachineAct> {
 	return async (authority, action, signal) => {
 		const outcome = await host.memberAct({ placementId: authority.placementId, bootId: authority.bootId,
-			actionId: authority.actionId, action: { ...action }, seat: authority.seat, userId: authority.userId }, signal);
+			actionId: authority.actionId, action: { ...action }, seat: authority.seat, userId: authority.userId,
+			// A shared action (20260930734000): the host's fence names no member, so any private hold since stops it.
+			...(authority.shared ? { shared: true } : {}) }, signal);
 		if ("refused" in outcome) {
 			if (isCloudMemberMachineActRefusal(outcome.refused)) throw new CloudMemberMachineActRefusal(outcome.refused);
 			throw new Error("MEMBER_MACHINE_ACT_FAILED");

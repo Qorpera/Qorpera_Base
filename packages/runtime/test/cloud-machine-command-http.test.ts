@@ -1322,6 +1322,67 @@ describe("a machine's screen", () => {
 		expect(sent).toHaveLength(1);
 	});
 
+	it("tells the agent once that a member touched the shared screen: who and when, from SQL's read (20260930734000)", async () => {
+		const f = fixture();
+		const touched = { name: "Dora Danske", secondsAgo: 12 };
+		f.call.mockResolvedValueOnce({ ...f.answer, memberTouched: touched });
+		expect(await f.router.screen(f.request, f.signal)).toEqual({
+			schema: "qorpera.machine-screen-answer/v1",
+			commandId: f.request.input.commandId,
+			header: header(picture.length),
+			png: picture.toString("base64"),
+			memberTouched: touched,
+		});
+		// The next read is not told again, and its answer says nothing.
+		expect(await f.router.screen(f.look, f.signal)).not.toHaveProperty("memberTouched");
+		// SQL's word of any other shape is no authority.
+		for (const other of [
+			{ name: "", secondsAgo: 1 },
+			{ name: "Dora", secondsAgo: -1 },
+			{ name: "Dora", secondsAgo: 1.5 },
+			{ name: "Dora" },
+			{ name: "Dora", secondsAgo: 1, typed: "hunter2" },
+			"Dora",
+			null,
+		]) {
+			f.call.mockResolvedValueOnce({ ...f.answer, memberTouched: other });
+			await expect(
+				authorizeMachineScreen({ call: f.call }, f.request, f.signal),
+				JSON.stringify(other),
+			).rejects.toThrow("MACHINE_SCREEN_AUTHORITY_INVALID");
+		}
+		// Forwarded, the peer's own read is not told: the answer carries the forwarding read's, unless the peer's is newer.
+		const peerAnswer = (memberTouched?: { name: string; secondsAgo: number }) =>
+			new Response(
+				JSON.stringify({
+					schema: "qorpera.machine-screen-answer/v1",
+					commandId: f.request.input.commandId,
+					header: header(picture.length),
+					png: picture.toString("base64"),
+					...(memberTouched ? { memberTouched } : {}),
+				}),
+				{ status: 200 },
+			);
+		let peerTold: { name: string; secondsAgo: number } | undefined;
+		const forwarding = new MachineCommandRouter({
+			owner: "mx-c",
+			providerId: "machine-node",
+			peers: [
+				{ owner: "mx-a", providerId: "machine-node", origin: "https://node-a.example", tokenCredential: "peer-a" },
+			],
+			control: closed({ call: f.call }),
+			credential: async () => randomBytes(32).toString("base64url"),
+			fetch: (async () => peerAnswer(peerTold)) as typeof fetch,
+		});
+		f.call.mockResolvedValueOnce({ ...f.answer, memberTouched: touched });
+		expect(await forwarding.screen(f.request, f.signal)).toMatchObject({ memberTouched: touched });
+		peerTold = { name: "Bob", secondsAgo: 0 };
+		f.call.mockResolvedValueOnce({ ...f.answer, memberTouched: touched });
+		expect(await forwarding.screen(f.request, f.signal)).toMatchObject({ memberTouched: peerTold });
+		peerTold = undefined;
+		expect(await forwarding.screen(f.request, f.signal)).not.toHaveProperty("memberTouched");
+	});
+
 	it("sends a request once and gives up on no answer, never sending it again", async () => {
 		const f = fixture();
 		const sent: string[] = [];
@@ -1386,6 +1447,22 @@ describe("a machine's screen", () => {
 				heldBack: "held",
 			}),
 		).toMatchObject({ png: null, heldBack: "held" });
+		// A member touched the shared screen (20260930734000): who and when, exactly.
+		const touched = { ...good, memberTouched: { name: "Dora", secondsAgo: 3 } };
+		expect(parseCloudMachineScreenAnswer(f.request, touched)).toEqual(touched);
+		for (const memberTouched of [
+			{ name: "Dora", secondsAgo: 3, text: "hunter2" },
+			{ name: " ", secondsAgo: 3 },
+			{ name: "D".repeat(201), secondsAgo: 3 },
+			{ name: "Dora", secondsAgo: "3" },
+			{ name: "Dora", secondsAgo: -3 },
+			[],
+			null,
+		])
+			expect(
+				() => parseCloudMachineScreenAnswer(f.request, { ...good, memberTouched }),
+				JSON.stringify(memberTouched),
+			).toThrow("Machine command gateway unavailable");
 	});
 });
 
@@ -1688,6 +1765,7 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 			memberAct: vi.fn(async (): Promise<CompanyMachineMemberActOutcome> => ({ done: { exitCode: 0 } })),
 		};
 		const memberActBegin = vi.fn(async () => ids.actionId);
+		const memberShareBegin = vi.fn(async () => ids.actionId);
 		const sent: { url: string; body: unknown }[] = [];
 		const router = new MachineCommandRouter({
 			owner,
@@ -1699,6 +1777,7 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 			control: closed({ call }),
 			credential: async () => randomBytes(32).toString("base64url"),
 			memberActBegin,
+			memberShareBegin,
 			memberActLocal: localMemberMachineAct(host),
 			fetch: (async (input: string | URL | Request, init?: RequestInit) => {
 				sent.push({ url: String(input), body: JSON.parse(String(init?.body)) });
@@ -1713,8 +1792,120 @@ describe("a member's action on a desktop they hold (20260930713000)", () => {
 			epoch: 4,
 			seat: 9,
 		};
-		return { ...ids, answer, call, host, memberActBegin, router, act, sent, signal: new AbortController().signal };
+		return {
+			...ids,
+			answer,
+			call,
+			host,
+			memberActBegin,
+			memberShareBegin,
+			router,
+			act,
+			sent,
+			signal: new AbortController().signal,
+		};
 	}
+
+	it("begins a shared action as the member with no hold, and runs it with the fence naming no member (20260930734000)", async () => {
+		const f = fixture();
+		// SQL's read of a shared action: its seat the lease generation it was begun at (0 on a desktop no one held).
+		f.call.mockImplementation(
+			async (_method: string, args: Record<string, unknown>) =>
+				({ ...f.answer(args.p_owner as string), seat: 0, shared: true }) as unknown,
+		);
+		const shared = {
+			companyId: f.companyId,
+			machineId: f.machineId,
+			token: "eyJh.eyJz.c2ln",
+			action: typed,
+			shared: true,
+		} as const;
+		expect(await f.router.memberAct(shared, f.signal)).toEqual({ exitCode: 0 });
+		expect(f.memberShareBegin).toHaveBeenCalledWith(
+			"eyJh.eyJz.c2ln",
+			{ companyId: f.companyId, machineId: f.machineId, action: typed },
+			f.signal,
+		);
+		expect(f.memberActBegin).not.toHaveBeenCalled();
+		expect(f.host.memberAct).toHaveBeenCalledWith(
+			{
+				placementId: f.placementId,
+				bootId: f.bootId,
+				actionId: f.actionId,
+				action: typed,
+				seat: 0,
+				userId: f.userId,
+				shared: true,
+			},
+			f.signal,
+		);
+		expect(JSON.stringify(f.call.mock.calls)).not.toContain("hunter2");
+		// A private hold that began since: the member's refusal, by SQL's read or the host's fence.
+		f.call.mockResolvedValueOnce({
+			schema: "qorpera.member-machine-desktop-act-authority/v1",
+			state: "refused",
+			reason: "DESKTOP_MEMBER_IN_CONTROL",
+		});
+		await expect(f.router.memberAct(shared, f.signal)).rejects.toMatchObject({ code: "DESKTOP_MEMBER_IN_CONTROL" });
+		f.host.memberAct.mockResolvedValueOnce({ refused: "DESKTOP_MEMBER_IN_CONTROL" });
+		await expect(f.router.memberAct(shared, f.signal)).rejects.toMatchObject({ code: "DESKTOP_MEMBER_IN_CONTROL" });
+		// The shared begin's own refusals, as it gave them.
+		for (const code of [
+			"DESKTOP_MEMBER_IN_CONTROL",
+			"DESKTOP_ACTIONS_TOO_FAST",
+			"DESKTOP_MACHINE_TOO_SMALL",
+		] as const) {
+			f.memberShareBegin.mockRejectedValueOnce(new CloudMemberMachineActRefusal(code));
+			await expect(f.router.memberAct(shared, f.signal)).rejects.toMatchObject({ code });
+		}
+		// A private action is begun under its hold as before, and its read names its member.
+		f.call.mockImplementation(
+			async (_method: string, args: Record<string, unknown>) => f.answer(args.p_owner as string) as unknown,
+		);
+		f.host.memberAct.mockClear();
+		expect(await f.router.memberAct(f.act, f.signal)).toEqual({ exitCode: 0 });
+		expect(f.host.memberAct.mock.calls[0]?.[0]).not.toHaveProperty("shared");
+		// An executor that takes no member's shared request never begins one.
+		const plain = new MachineCommandRouter({
+			owner: "mx-a",
+			providerId: "machine-node",
+			peers: [],
+			control: closed({ call: f.call }),
+			credential: async () => "",
+			memberActBegin: f.memberActBegin,
+		});
+		await expect(plain.memberAct(shared, f.signal)).rejects.toThrow("MACHINE_COMMAND_ROUTE_UNAVAILABLE");
+	});
+
+	it("reads a shared action only as SQL says it: `shared` exactly true, a seat of 0 or more", async () => {
+		const f = fixture();
+		const request = { actionId: f.actionId, action: typed, owner: "mx-a", providerId: "machine-node" };
+		f.call.mockResolvedValueOnce({ ...f.answer("mx-a"), seat: 0, shared: true });
+		expect(await authorizeMemberMachineAct({ call: f.call }, request, f.signal)).toMatchObject({
+			served: true,
+			shared: true,
+			seat: 0,
+		});
+		// A private one is not shared.
+		expect(await authorizeMemberMachineAct({ call: f.call }, request, f.signal)).toMatchObject({
+			shared: false,
+			seat: 9,
+		});
+		for (const other of [
+			{ shared: false },
+			{ shared: "true" },
+			{ shared: null },
+			{ shared: true, seat: -1 },
+			{ shared: true, seat: 1.5 },
+			{ shared: true, held: true },
+		]) {
+			f.call.mockResolvedValueOnce({ ...f.answer("mx-a"), ...other });
+			await expect(
+				authorizeMemberMachineAct({ call: f.call }, request, f.signal),
+				JSON.stringify(other),
+			).rejects.toThrow("MEMBER_ACT_AUTHORITY_INVALID");
+		}
+	});
 
 	it("begins the action as the member, reads it as the machine's own executor and runs it on this node", async () => {
 		const f = fixture();

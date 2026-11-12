@@ -124,13 +124,20 @@ export type CloudMachineScreenHttpRequest = Readonly<{
 }>;
 export const CLOUD_MACHINE_SCREEN_SCHEMA = "qorpera.machine-screen-answer/v1";
 /** The helper's header and the screen's PNG (base64; null: none, or held back), or why the company folder held the
- * picture and the windows' titles back (`heldBack`; what the action did is still told). */
+ * picture and the windows' titles back (`heldBack`; what the action did is still told), and who touched the screen
+ * since an agent was last told (`memberTouched`, 20260930734000: a member's name and the seconds; never what). */
 export interface CloudMachineScreenAnswer {
 	readonly schema: typeof CLOUD_MACHINE_SCREEN_SCHEMA;
 	readonly commandId: string | null;
 	readonly header: MachineScreenHeader;
 	readonly png: string | null;
 	readonly heldBack?: string;
+	readonly memberTouched?: CloudMachineScreenMemberTouched;
+}
+/** A member acted on the desktop the agent shares with members (20260930734000): who, and how many seconds ago. */
+export interface CloudMachineScreenMemberTouched {
+	readonly name: string;
+	readonly secondsAgo: number;
 }
 /** Why a machine showed nothing, sent back as 409 with its code: a machine that is not running, a disk that has had a
  * company folder view the caller may not see (review r1 F1), one whose image has no screen helper yet, one that
@@ -299,6 +306,8 @@ export const CLOUD_MEMBER_MACHINE_ACT_REFUSALS = [
 	"MACHINE_BOOT_CHANGED",
 	"MACHINE_IMAGE_WITHOUT_SCREEN",
 	"SCREEN_ACTION_TAKEN",
+	// One member's shared actions on one machine came faster than 25 in 5 seconds (20260930734000).
+	"DESKTOP_ACTIONS_TOO_FAST",
 	...MACHINE_SCREEN_REFUSALS,
 ] as const;
 export type CloudMemberMachineActRefusalCode = (typeof CLOUD_MEMBER_MACHINE_ACT_REFUSALS)[number];
@@ -643,7 +652,37 @@ export function parseCloudMachineScreenAnswer(
 ): CloudMachineScreenAnswer {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(ERROR);
 	const held = "heldBack" in value;
-	const answer = record(value, ["schema", "commandId", "header", "png", ...(held ? ["heldBack"] : [])]);
+	const touched = "memberTouched" in value;
+	const answer = record(value, [
+		"schema",
+		"commandId",
+		"header",
+		"png",
+		...(held ? ["heldBack"] : []),
+		...(touched ? ["memberTouched"] : []),
+	]);
+	let memberTouched: CloudMachineScreenMemberTouched | undefined;
+	if (touched) {
+		const told = answer.memberTouched;
+		if (
+			!told ||
+			typeof told !== "object" ||
+			Array.isArray(told) ||
+			Object.keys(told).sort().join() !== "name,secondsAgo"
+		)
+			throw new Error(ERROR);
+		const { name, secondsAgo } = told as Record<string, unknown>;
+		if (
+			typeof name !== "string" ||
+			!name.trim() ||
+			name.length > 200 ||
+			typeof secondsAgo !== "number" ||
+			!Number.isSafeInteger(secondsAgo) ||
+			secondsAgo < 0
+		)
+			throw new Error(ERROR);
+		memberTouched = Object.freeze({ name, secondsAgo });
+	}
 	let header: MachineScreenHeader;
 	try {
 		header = parseMachineScreenHeader(answer.header);
@@ -674,6 +713,7 @@ export function parseCloudMachineScreenAnswer(
 		header,
 		png: answer.png as string | null,
 		...(held ? { heldBack: answer.heldBack as string } : {}),
+		...(memberTouched ? { memberTouched } : {}),
 	});
 }
 function validToken(value: string): boolean {

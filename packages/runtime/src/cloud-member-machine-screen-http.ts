@@ -24,7 +24,8 @@ import type { MachineScreenAction } from "./cloud-machine-screen.ts";
 //   POST /v1/member-machine-screens/<companyId>/<machineId>/act   {"action": {...}, "epoch": n, "seat": s}
 // (application/json, at most 16 KiB): one of machine_screen's actions, never `open`, and the hand-back epoch and the
 // seat of the hold the member's page captured it under (each a safe whole number, 0 or more; F24 and F26 of #1661: SQL
-// runs it only under that hold).
+// runs it only under that hold). A member who shares the desktop with the agent (20260930734000) sends the action
+// alone, `{"action": {...}}`: SQL runs it only while no one holds the desktop privately.
 // The answer is the action's exit
 // (200, {"schema": "qorpera.member-machine-act/v1", "exitCode"}) or why it did not run (409 with a fixed code); a body
 // that is not one is 400. What the member typed is in that body: it is passed to the machine and nowhere else, never
@@ -59,18 +60,24 @@ export interface CloudMemberMachineScreenLook {
 	/** The etag of the picture the member has, or null. */
 	readonly etag: string | null;
 }
-/** One action, as the listener read it from the member's request. */
-export interface CloudMemberMachineActRequest {
+/** One action, as the listener read it from the member's request: under the member's private hold (its epoch and seat),
+ * or shared (20260930734000: no hold; SQL refuses it while anyone holds the desktop privately). */
+export type CloudMemberMachineActRequest = {
 	readonly companyId: string;
 	readonly machineId: string;
 	/** The member's bearer token, passed on to the database and nowhere else. */
 	readonly token: string;
 	readonly action: MachineScreenAction;
-	/** The hand-back epoch of the hold the member's page captured the action under (F24). */
-	readonly epoch: number;
-	/** The seat of that hold (F26): which seating of the member under that epoch. */
-	readonly seat: number;
-}
+} & (
+	| {
+			/** The hand-back epoch of the hold the member's page captured the action under (F24). */
+			readonly epoch: number;
+			/** The seat of that hold (F26): which seating of the member under that epoch. */
+			readonly seat: number;
+			readonly shared?: undefined;
+	  }
+	| { readonly shared: true; readonly epoch?: undefined; readonly seat?: undefined }
+);
 /** One start of the desktop, as the listener read it from the member's request. */
 export interface CloudMemberMachineStartRequest {
 	readonly companyId: string;
@@ -103,13 +110,18 @@ export interface CloudMemberMachineScreenServiceOptions {
 	failed?(code: string): void;
 }
 
-/** The member's action: a JSON body of at most ACT_BODY_BYTES, `{"action": {...}, "epoch": n, "seat": s}` and nothing
- * else, the action one of machine_screen's but `open` and the epoch and the seat safe whole numbers, 0 or more (never
- * guessed: anything else is undefined, a bad request). Nothing of the body is kept or told. */
+/** The member's action: a JSON body of at most ACT_BODY_BYTES, `{"action": {...}, "epoch": n, "seat": s}` (under the
+ * member's private hold) or `{"action": {...}}` (shared, 20260930734000) and nothing else, the action one of
+ * machine_screen's but `open` and the epoch and the seat safe whole numbers, 0 or more (never guessed: one without the
+ * other, or anything else, is undefined, a bad request). Nothing of the body is kept or told. */
 async function readAction(
 	request: IncomingMessage,
 	signal: AbortSignal,
-): Promise<{ action: MachineScreenAction; epoch: number; seat: number } | undefined> {
+): Promise<
+	| { action: MachineScreenAction; epoch: number; seat: number }
+	| { action: MachineScreenAction; shared: true }
+	| undefined
+> {
 	if (request.headers["content-type"] !== "application/json") return undefined;
 	const chunks: Buffer[] = [];
 	let bytes = 0;
@@ -121,13 +133,14 @@ async function readAction(
 	}
 	try {
 		const body = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(Buffer.concat(chunks))) as unknown;
-		if (
-			!body ||
-			typeof body !== "object" ||
-			Array.isArray(body) ||
-			Object.keys(body).sort().join() !== "action,epoch,seat"
-		)
-			return undefined;
+		if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
+		const keys = Object.keys(body).sort().join();
+		// Shared (20260930734000): the action alone.
+		if (keys === "action") {
+			const parsed = parseCloudMemberMachineAction((body as { action: unknown }).action);
+			return parsed === undefined ? undefined : { action: parsed, shared: true };
+		}
+		if (keys !== "action,epoch,seat") return undefined;
 		const { action, epoch, seat } = body as { action: unknown; epoch: unknown; seat: unknown };
 		const whole = (value: unknown): value is number =>
 			typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -267,15 +280,11 @@ export class HttpCloudMemberMachineScreenService {
 					replyJson(reply, 400, { error: "member_action_invalid" });
 					return;
 				}
+				const where = { companyId: route[1] as string, machineId: route[2] as string, token: bearer[1] as string };
 				const done = await this.#options.act(
-					{
-						companyId: route[1] as string,
-						machineId: route[2] as string,
-						token: bearer[1] as string,
-						action: asked.action,
-						epoch: asked.epoch,
-						seat: asked.seat,
-					},
+					"shared" in asked
+						? { ...where, action: asked.action, shared: true }
+						: { ...where, action: asked.action, epoch: asked.epoch, seat: asked.seat },
 					controller.signal,
 				);
 				controller.signal.throwIfAborted();
