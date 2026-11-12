@@ -502,6 +502,17 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	sleep 1.5
 	[[ $(pgrep -u desktop -o -x chrome) == "$browser" && $(desktop windows | grep -c "Chrome for Testing$") == 1 ]] ||
 		{ echo "a second press on the dock browser icon started a second browser" >&2; exit 1; }
+	# Opened and closed many times in a row, the dock still answers: no start limit of systemd switches it off (the
+	# sixth start of a service within ten seconds is refused unless its unit says otherwise).
+	DISPLAY=:1 wmctrl -c " Terminal"
+	for round in 1 2 3 4 5 6 7 8; do
+		for _ in $(seq 1 50); do desktop windows | grep -q " Terminal$" || break; sleep 0.1; done
+		desktop click 880 960
+		window " Terminal$" || { echo "the dock stopped answering at press $round of a program opened and closed in a row" >&2; exit 1; }
+		DISPLAY=:1 wmctrl -c " Terminal"
+	done
+	[[ $(systemctl is-active qorpera-machine-desktop-dock.path) == active ]] && ! systemctl is-failed --quiet qorpera-machine-desktop-dock.service ||
+		{ echo "the dock unit did not survive a program opened and closed in a row" >&2; exit 1; }
 	desktop stop >/dev/null
 	[[ -z $(pgrep -u desktop || true) ]] || { echo "programs of the desktop outlived it" >&2; exit 1; }
 	[[ -z $(ls -A /run/qorpera-desktop-dock) ]] || { echo "a press on the dock left its request behind" >&2; exit 1; }

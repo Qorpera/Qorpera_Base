@@ -1077,6 +1077,8 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 		"\tdesktop click 720 960\n",
 		'\t[[ $(scores "$browser") == "0 " ]] && tr "\\0" " " <"/proc/$browser/cmdline" | grep -q -- " --start-maximized .* chrome://newtab/ *$" ||\n',
 		'\t\t{ echo "a second press on the dock browser icon started a second browser" >&2; exit 1; }\n',
+		"\tfor round in 1 2 3 4 5 6 7 8; do\n",
+		'\t\t{ echo "the dock unit did not survive a program opened and closed in a row" >&2; exit 1; }\n',
 		"\trm -rf /home/desktop/.config\n\tdesktop start >/dev/null\n\tdock_whole && backdrop_is neutral ||",
 		"\tfind /home/desktop -mindepth 1 -maxdepth 1 ! -name .bashrc ! -name .profile ! -name .bash_logout -exec rm -rf -- {} +\n",
 		'\t[[ $(ls -A /home/desktop | sort | tr "\\n" " ") == ".bash_logout .bashrc .profile " && -z $(ls -A /etc/qorpera-machine) ]] ||\n',
@@ -1147,10 +1149,13 @@ test("a machine's desktop has the office look: one dock, the agent's backdrop, w
 	assert.doesNotMatch(opener, /systemd-run|chrome --/);
 	const pathUnit = read("deploy/machine/qorpera-machine-desktop-dock.path");
 	assert.match(pathUnit, /\n\[Path\]\nDirectoryNotEmpty=\/run\/qorpera-desktop-dock\n/);
+	// Presses are a person's: neither unit has a limit that, once hit, would leave the dock dead until the next boot.
+	assert.match(pathUnit, /\nTriggerLimitIntervalSec=0\n/);
 	assert.match(pathUnit, /\n\[Install\]\nWantedBy=multi-user\.target\n$/);
 	const serviceUnit = read("deploy/machine/qorpera-machine-desktop-dock.service");
 	assert.doesNotMatch(serviceUnit, /^\[Install\]/m);
 	assert.match(serviceUnit, /\nType=oneshot\n/);
+	assert.match(serviceUnit.slice(0, serviceUnit.indexOf("\n[Service]\n")), /\nStartLimitIntervalSec=0\n/);
 	assert.match(serviceUnit, /\nSlice=qorpera-control\.slice\n/);
 	assert.match(serviceUnit, /\nExecStart=\/opt\/qorpera-machine\/desktop-dock-open\n/);
 	assert.match(read("deploy/machine/qorpera-machine-desktop.tmpfiles"), /\nd \/run\/qorpera-desktop-dock 0730 root desktop -\n$/);

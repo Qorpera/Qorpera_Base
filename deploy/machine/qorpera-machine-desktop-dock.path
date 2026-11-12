@@ -7,6 +7,9 @@ Description=Qorpera machine desktop: a press on the dock asks for the browser, t
 
 [Path]
 DirectoryNotEmpty=/run/qorpera-desktop-dock
+# No limit on how often it may start the service: presses are a person's, and a limit that was hit would leave the
+# dock dead until the next boot.
+TriggerLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target
