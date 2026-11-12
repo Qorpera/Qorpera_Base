@@ -18,6 +18,7 @@ import {
 	localMemberMachineScreen,
 	localMemberMachineStart,
 	MachineCommandRouter,
+	MEMBER_TOUCHED_TOLD_MS,
 	machineCommandRoutes,
 } from "../../../deploy/coding-worker/machine-command-routing.ts";
 import type {
@@ -1352,9 +1353,15 @@ describe("a machine's screen", () => {
 			png: picture.toString("base64"),
 			memberTouched: { name: "Dora Danske", secondsAgo: 12 },
 		});
+		// Beside the answer, with a bound of its own (review r2 F2 of #1701).
 		expect(words()).toEqual([
-			["qorpera_machine_desktop_shared_told", { p_machine_id: f.answer.machineId, p_at: at }, f.signal],
+			[
+				"qorpera_machine_desktop_shared_told",
+				{ p_machine_id: f.answer.machineId, p_at: at },
+				expect.any(AbortSignal),
+			],
 		]);
+		expect((words()[0] as unknown[])[2]).not.toBe(f.signal);
 		expect(await f.router.screen(f.look, f.signal)).not.toHaveProperty("memberTouched");
 		// A word SQL did not take fails nothing: the answer goes, and the next read says it again (twice, never lost).
 		told = null;
@@ -1426,6 +1433,36 @@ describe("a machine's screen", () => {
 		});
 		expect(await forwarding.screen(f.request, f.signal)).not.toHaveProperty("memberTouched");
 	});
+
+	it("answers the agent at once while SQL's word that it was told stalls; the word has a bound of its own (review r2 F2 of #1701)", async () => {
+		const f = fixture();
+		const at = "2026-11-12T15:16:59.123456+00:00";
+		const lookAnswer = { ...f.answer, receiptId: null, action: null, settleMs: null, look: null };
+		f.call.mockImplementation(async (method: string, args: Record<string, unknown>) => {
+			// The word never answers.
+			if (method === "qorpera_machine_desktop_shared_told") return new Promise<never>(() => {});
+			const read = args.p_receipt_id === null ? lookAnswer : f.answer;
+			return { ...read, memberTouched: { name: "Dora Danske", secondsAgo: 2, at } } as unknown;
+		});
+		const began = Date.now();
+		// The look, and an action, are answered with the picture and the line at once.
+		for (const request of [f.look, f.request])
+			expect(await f.router.screen(request, f.signal)).toMatchObject({
+				png: picture.toString("base64"),
+				memberTouched: { name: "Dora Danske", secondsAgo: 2 },
+			});
+		expect(Date.now() - began).toBeLessThan(1000);
+		const word = f.call.mock.calls.find(
+			([method]) => method === "qorpera_machine_desktop_shared_told",
+		) as unknown as [string, Record<string, unknown>, AbortSignal];
+		expect(word[1]).toEqual({ p_machine_id: f.answer.machineId, p_at: at });
+		// Not the caller's signal: the word is bounded alone, and gives up within its bound.
+		expect(word[2]).not.toBe(f.signal);
+		expect(word[2].aborted).toBe(false);
+		await new Promise((resolve) => word[2].addEventListener("abort", resolve, { once: true }));
+		expect(Date.now() - began).toBeLessThan(MEMBER_TOUCHED_TOLD_MS + 1000);
+		expect(f.signal.aborted).toBe(false);
+	}, 15_000);
 
 	it("sends a request once and gives up on no answer, never sending it again", async () => {
 		const f = fixture();

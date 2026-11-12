@@ -89,6 +89,10 @@ interface MachineCommandRouterOptions {
 	fetch?: typeof fetch;
 }
 
+/** How long the executor's word that the agent was told of a member's touch may take (20260930734000): it goes beside
+ * the agent's answer and never holds it (review r2 F2 of #1701). */
+export const MEMBER_TOUCHED_TOLD_MS = 3000;
+
 /** True as soon as one is true, false once all said no. */
 function anyTold(asked: readonly Promise<boolean>[]): Promise<boolean> {
 	return new Promise((settle) => {
@@ -184,7 +188,7 @@ export class MachineCommandRouter {
 		if (authority.executorOwner === this.#options.owner && authority.providerId === this.#options.providerId) {
 			if (!this.#options.screenLocal) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
 			const answer = await this.#options.screenLocal(authority, signal);
-			await this.#told(authority, signal);
+			this.#told(authority);
 			return answer;
 		}
 		if (localOnly) throw new Error("MACHINE_COMMAND_WRONG_EXECUTOR");
@@ -201,16 +205,21 @@ export class MachineCommandRouter {
 		const told = authority.memberTouched && answer.memberTouched === undefined
 			? { ...answer, memberTouched: { name: authority.memberTouched.name, secondsAgo: authority.memberTouched.secondsAgo } }
 			: answer;
-		await this.#told(authority, signal);
+		this.#told(authority);
 		return told;
 	}
 	/** The agent's answer carries the member's touch SQL's read gave (20260930734000): SQL hears it was told, up to that
-	 * action's time. Best effort: when SQL does not hear it, its next read says it again (said twice, never lost). */
-	async #told(authority: MachineScreenAuthority, signal: AbortSignal): Promise<void> {
-		if (!authority.memberTouched) return;
+	 * action's time. Beside the answer, never before it (review r2 F2 of #1701): the answer goes at once, and the word has
+	 * MEMBER_TOUCHED_TOLD_MS of its own. When SQL does not hear it (it failed, or took longer), its next read says it
+	 * again: said twice, never lost, and never a picture lost to it. */
+	#told(authority: MachineScreenAuthority): void {
+		const touched = authority.memberTouched;
+		if (!touched) return;
 		try {
-			await this.#options.control.call("qorpera_machine_desktop_shared_told",
-				{ p_machine_id: authority.machineId, p_at: authority.memberTouched.at }, signal);
+			void this.#options.control
+				.call("qorpera_machine_desktop_shared_told", { p_machine_id: authority.machineId, p_at: touched.at },
+					AbortSignal.timeout(MEMBER_TOUCHED_TOLD_MS))
+				.catch(() => undefined);
 		} catch {
 			// Not marked: the agent's next call says it again.
 		}

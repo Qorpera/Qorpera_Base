@@ -2740,6 +2740,120 @@ describe("a member shares the agent's computer (20260930734000)", () => {
 		expect(controls(p)?.textContent ?? "").not.toContain("Waiting for");
 	});
 
+	/** Two computers, the first's picture up in the large view (1600 x 1000 in 800 x 500), shared. */
+	async function twoComputers() {
+		const s = setup({ machines: [machine(1), machine(2)] });
+		const { p } = await shown(s);
+		press(canvas(p), 400, 250);
+		await flush();
+		expect(entered(p)).toBe(true);
+		const on = (n: number) => s.acts.filter((act) => act.url.includes(`/${machine(n).machineId}/act`));
+		/** The member chooses the second computer; its picture comes at once (before any batch of the first's runs out). */
+		const switchToSecond = async () => {
+			s.state.answers.push({ picture: 2 }, { picture: 3 });
+			p.el.querySelector<HTMLButtonElement>(".computer-switcher:not([hidden])")!.click();
+			[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][1]!.click();
+			await flush();
+			expect(s.looks.at(-1)?.url).toContain(machine(2).machineId);
+		};
+		return { s, p, on, switchToSecond };
+	}
+
+	it("sends nothing the picture still gathered for one computer to another: a text, a click, a wheel turn, a press (review r2 F1 of #1701)", async () => {
+		const cases: [string, (p: ComputerPanel) => void][] = [
+			[
+				"a text not sent yet",
+				(p) => {
+					for (const value of ["a", "b", "c"]) key(canvas(p), value);
+				},
+			],
+			["a click waiting for its second", (p) => press(canvas(p), 100, 100)],
+			[
+				"a wheel turn",
+				(p) =>
+					canvas(p).dispatchEvent(
+						new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: 100, clientY: 100, deltaY: 120 }),
+					),
+			],
+			["a press on its way", (p) => canvas(p).dispatchEvent(pointer("pointerdown", 100, 100))],
+		];
+		for (const [what, gather] of cases) {
+			const { p, on, switchToSecond } = await twoComputers();
+			gather(p);
+			await switchToSecond();
+			// The second computer's picture is up, and the picture takes input for it now.
+			expect(canvas(p).getAttribute("role"), what).toBe("application");
+			// A press begun on the first ends on the second: no drag, no click.
+			canvas(p).dispatchEvent(pointer("pointermove", 300, 200));
+			canvas(p).dispatchEvent(pointer("pointerup", 300, 200));
+			await advance(DOUBLE_CLICK_MS + TYPE_BATCH_MS + 200);
+			expect(on(1), what).toEqual([]);
+			expect(on(2), what).toEqual([]);
+			// What the member does on the second goes to it, shared.
+			key(canvas(p), "Enter");
+			await flush();
+			expect(
+				on(2).map((act) => [act.action, act.seat]),
+				what,
+			).toEqual([[{ type: "key", keys: ["Return"] }, null]]);
+			p.dispose();
+		}
+	});
+
+	it("takes no key for either computer between a switch and the next picture, a held key's repeats too (review r2 F1 of #1701)", async () => {
+		const { s, p, on } = await twoComputers();
+		let open = () => {};
+		s.state.lookGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		s.state.answers.push({ picture: 2 }, { picture: 3 });
+		p.el.querySelector<HTMLButtonElement>(".computer-switcher:not([hidden])")!.click();
+		[...openMenu()!.el.querySelectorAll<HTMLElement>("[role^=menuitem]")][1]!.click();
+		await flush();
+		for (let n = 0; n < 3; n++) key(canvas(p), "ArrowDown", { repeat: true });
+		key(canvas(p), "x");
+		await advance(TYPE_BATCH_MS * 2);
+		expect(s.acts).toEqual([]);
+		open();
+		await advance(LOOK_EVERY_MS * 3);
+		expect(on(1)).toEqual([]);
+		key(canvas(p), "ArrowDown", { repeat: true });
+		await flush();
+		expect(on(2).map((act) => act.action)).toEqual([{ type: "key", keys: ["Down"] }]);
+	});
+
+	it("sends nothing gathered for sharing as private, nor gathered under a private hold as shared, nor after Back or a close (review r2 F1 of #1701)", async () => {
+		const types = (s: Setup) => s.acts.filter((act) => act.action.type === "type");
+		// Shared, then Type privately before the text went: it goes nowhere.
+		{
+			const { s, p } = await twoComputers();
+			key(canvas(p), "a");
+			controlButton(p)!.click();
+			await flush();
+			expect(p.holding).toBe(true);
+			await advance(TYPE_BATCH_MS * 2);
+			expect(types(s)).toEqual([]);
+			// Under the hold, then Done before the text went: it goes nowhere, private or shared.
+			key(canvas(p), "p");
+			pressControl(p);
+			await flush();
+			expect(p.holding).toBe(false);
+			await advance(TYPE_BATCH_MS * 2 + LOOK_EVERY_MS);
+			expect(types(s)).toEqual([]);
+			p.dispose();
+		}
+		// Back, or a close, before the text went: it goes nowhere.
+		for (const end of ["back", "close"] as const) {
+			const { s, p } = await twoComputers();
+			key(canvas(p), "a");
+			if (end === "back") p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!.click();
+			else p.dispose();
+			await advance(TYPE_BATCH_MS * 2);
+			expect(types(s), end).toEqual([]);
+			p.dispose();
+		}
+	});
+
 	it("cancels shared input at once when the large view is left, private typing begins, or the window closes (review r1 F1 of #1701)", async () => {
 		for (const end of ["back", "private", "close"] as const) {
 			const s = setup();

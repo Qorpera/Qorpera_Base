@@ -17,7 +17,12 @@ import { attachComputerDrag } from "../../ui/computer-drag.ts";
 import { openContextMenu } from "../../ui/context-menu.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { matchesKey } from "../../ui/keys.ts";
-import { type MachineScreenPicture, MachineScreenView, TEXT_MAX } from "../../ui/machine-screen-view.ts";
+import {
+	type MachineScreenInput,
+	type MachineScreenPicture,
+	MachineScreenView,
+	TEXT_MAX,
+} from "../../ui/machine-screen-view.ts";
 import { leave, zoomFrom } from "../../ui/motion.ts";
 import { t } from "../../ui/preferences.ts";
 import { DesktopHoldLedger, type DesktopRelease, type DesktopTake } from "./desktop-holds.ts";
@@ -105,6 +110,9 @@ interface PageHold {
 	readonly queue: MachineDesktopAction[];
 	readonly stop: AbortController;
 	sending: boolean;
+	/** Where the picture gives the input it gathers under this hold: to this hold alone, while it is the page's (review r2
+	 * F1 of #1701: what the picture still gathers when the hold ends goes nowhere, never out shared). */
+	readonly input: MachineScreenInput;
 }
 
 /** The member's input on the desktop they share with the agent (20260930734000): its machine, the input not answered yet,
@@ -116,6 +124,10 @@ interface SharedInput {
 	readonly queue: MachineDesktopAction[];
 	readonly stop: AbortController;
 	sending: boolean;
+	/** Where the picture gives the input it gathers while this computer is shared: to this computer alone, while this
+	 * sharing lasts (review r2 F1 of #1701: what the picture still gathers when the member switches, leaves, starts
+	 * typing privately or closes goes nowhere, never to another computer and never out as private). */
+	readonly input: MachineScreenInput;
 }
 
 /** Whether this browser was told once that a member and the agent share a computer (20260930734000). */
@@ -294,14 +306,11 @@ export class ComputerPanel {
 	readonly #ledger: DesktopHoldLedger;
 	#releaseShown: DesktopRelease | undefined;
 	#keepTimer: ReturnType<typeof setTimeout> | undefined;
-	/** Where the picture sends the member's input while they type privately: one, so the picture keeps what it gathers;
-	 * dropped once the hold is gone (what was typed under it never goes out shared). */
-	readonly #privateInput = { act: (action: MachineDesktopAction) => this.#enqueue(action) };
-	/** Where the picture sends the member's input on the desktop they share with the agent (20260930734000); dropped once
-	 * it is not shared any more. Another object than the private one, so the picture sends what it gathered to the input
-	 * it gathered it for whenever the mode changes. */
-	readonly #sharedInput = { act: (action: MachineDesktopAction) => this.#share(action) };
-	/** The member's shared input on its way (20260930734000). */
+	/** The member's sharing of the computer shown (20260930734000): its input on its way, and the picture's input for it
+	 * (each hold has its own too, PageHold.input). A new one each time sharing begins; gone when it ends. The picture is
+	 * given another input object at every change of computer or of mode, so it hands what it gathered (a text not sent
+	 * yet, a click waiting for its second, a wheel turn, a press) to the input it gathered it for, which takes it only
+	 * while that is still the window's (review r2 F1 of #1701). */
 	#shared: SharedInput | undefined;
 	/** The first time this browser shares a computer, the large view says so in one quiet line, until it goes back. */
 	#introduce = !sharedSeen();
@@ -533,6 +542,8 @@ export class ComputerPanel {
 		this.#touched();
 		this.#poke();
 		this.#startTake();
+		// The picture hands what it gathered for sharing to that sharing, now gone (review r2 F1 of #1701).
+		this.#syncControls();
 	}
 
 	/** Starts a take-over of the machine chosen now, at the click (review r4 F8), as its own attempt (review r12 F19): it
@@ -942,14 +953,16 @@ export class ComputerPanel {
 		this.#hold?.stop.abort();
 		// Typing privately: no shared input of this page's goes after it (SQL would refuse it anyway).
 		this.#endShared();
-		this.#hold = {
+		const hold: PageHold = {
 			machineId,
 			epoch: held.epoch,
 			seat: held.seat,
 			queue: [],
 			stop: new AbortController(),
 			sending: false,
+			input: { act: (action) => this.#enqueue(hold, action) },
 		};
+		this.#hold = hold;
 		this.#scheduleKeep(KEEP_EVERY_MS);
 		// Out of a thread (a take-over answered after the member left it) nothing is entered (review r1 F1 of #1685).
 		this.#enterOnHold = this.el.parentElement !== null;
@@ -1021,27 +1034,48 @@ export class ComputerPanel {
 		this.#scheduleKeep(until === undefined ? KEEP_EVERY_MS / 4 : KEEP_EVERY_MS);
 	}
 
-	/** One of the member's actions, captured under the window's hold, after those of it on their way. */
-	#enqueue(action: MachineDesktopAction): void {
-		const hold = this.#hold;
-		if (!hold) return;
+	/** One of the member's actions, captured under `hold`, after those of it on their way: only while that hold is the
+	 * window's, of the computer chosen now (review r2 F1 of #1701). */
+	#enqueue(hold: PageHold, action: MachineDesktopAction): void {
+		if (
+			this.#hold !== hold ||
+			hold.stop.signal.aborted ||
+			!this.#current(hold) ||
+			this.#pick()?.machineId !== hold.machineId
+		)
+			return;
 		this.#queue(hold, action);
 		void this.#drain(hold);
 	}
 
 	/** One of the member's actions on the desktop they share with the agent (20260930734000), after those on their way:
-	 * only while it is shared (the input of a mode gone is dropped, never sent in another). */
-	#share(action: MachineDesktopAction): void {
-		const machineId = this.#machineId;
-		if (!machineId || !this.#sharing()) return;
-		let shared = this.#shared;
-		if (shared?.machineId !== machineId) {
-			this.#endShared();
-			shared = { machineId, queue: [], stop: new AbortController(), sending: false };
-			this.#shared = shared;
-		}
+	 * only while that sharing is the window's, of the computer chosen now (the input of a computer or a mode gone is
+	 * dropped, never sent to another or in another: review r2 F1 of #1701). */
+	#share(shared: SharedInput, action: MachineDesktopAction): void {
+		if (
+			this.#shared !== shared ||
+			shared.stop.signal.aborted ||
+			this.#pick()?.machineId !== shared.machineId ||
+			!this.#sharing()
+		)
+			return;
 		this.#queue(shared, action);
 		void this.#drain(shared);
+	}
+
+	/** The sharing of `machineId`, begun now unless it is on (its picture input is new then). */
+	#sharedFor(machineId: string): SharedInput {
+		if (this.#shared?.machineId === machineId && !this.#shared.stop.signal.aborted) return this.#shared;
+		this.#endShared();
+		const shared: SharedInput = {
+			machineId,
+			queue: [],
+			stop: new AbortController(),
+			sending: false,
+			input: { act: (action) => this.#share(shared, action) },
+		};
+		this.#shared = shared;
+		return shared;
 	}
 
 	/** The action joins its queue; texts typed one after another, not sent yet, go as one. A new input ends the word that
@@ -1105,7 +1139,7 @@ export class ComputerPanel {
 		// close, the large view left or private typing begun ends it at once, before any send or retry).
 		const current = () =>
 			(hold
-				? this.#hold === hold
+				? this.#hold === hold && this.#pick()?.machineId === hold.machineId
 				: this.#shared === sender && this.#pick()?.machineId === sender.machineId && this.#sharing()) &&
 			!sender.stop.signal.aborted &&
 			!this.#stop.signal.aborted;
@@ -1250,8 +1284,17 @@ export class ComputerPanel {
 			: "";
 		if (this.#controlButton.title !== tip) this.#controlButton.title = tip;
 		for (const each of [this.#controlButton, this.#loadingHandBack]) each.disabled = disabled;
+		// Each hold and each sharing has an input of its own: at every change the picture hands what it gathered to the input
+		// it gathered it for (review r2 F1 of #1701).
+		const hold = holding ? this.#hold : undefined;
 		this.#view?.capture(
-			picture && entered ? (holding ? this.#privateInput : sharing ? this.#sharedInput : null) : null,
+			picture && entered
+				? hold
+					? hold.input
+					: sharing && this.#machineId
+						? this.#sharedFor(this.#machineId).input
+						: null
+				: null,
 		);
 		if (entering) this.#view?.focusScreen();
 	}
@@ -1688,6 +1731,8 @@ export class ComputerPanel {
 								this.#endShared();
 								this.#lostShown = false;
 								this.#controlNote.textContent = "";
+								// The picture takes nothing more for the last computer, at once (review r2 F1 of #1701).
+								this.#syncControls();
 							}
 							this.#ledger.releaseOthers(this.agentId, machine.machineId);
 							this.#quicken();
