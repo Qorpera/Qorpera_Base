@@ -4140,11 +4140,12 @@ async function exploreStarts(seed: number): Promise<{ log: string[]; broken?: st
 }
 
 describe("a member's start of a desktop, explored (20260930714000)", () => {
+	// 80 seeds take about 5 s on the loaded test machine (12 Nov 2026, master and this branch alike), at vitest's default.
 	it("sends a start only after a press on the page for that machine, until its picture, a switch away or 3 minutes, one at a time", async () => {
 		for (let seed = 1; seed <= 80; seed++) {
 			const { log, broken } = await exploreStarts(seed);
 			if (broken) throw new Error(`seed ${seed}: ${broken}\n${log.join("\n")}`);
 			for (const close of cleanup.splice(0)) close();
 		}
-	});
+	}, 30_000);
 });

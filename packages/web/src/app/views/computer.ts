@@ -1236,9 +1236,10 @@ export class ComputerPanel {
 		this.#controlButton.classList.toggle("is-secondary", open);
 		this.#label(this.#controlButton, label, lock);
 		this.#label(this.#loadingHandBack, label, false);
-		this.#controlButton.title = lock
+		const tip = lock
 			? t("For passwords: {name} gets no pictures of the screen until you're done.", { name: this.#name })
 			: "";
+		if (this.#controlButton.title !== tip) this.#controlButton.title = tip;
 		for (const each of [this.#controlButton, this.#loadingHandBack]) each.disabled = disabled;
 		this.#view?.capture(
 			picture && entered ? (holding ? this.#privateInput : sharing ? this.#sharedInput : null) : null,
