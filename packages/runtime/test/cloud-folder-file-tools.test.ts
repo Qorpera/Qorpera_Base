@@ -382,6 +382,49 @@ it("shares one result alike among files too large to show whole, each with its o
 	expect(on.bytesRead).toBeGreaterThan(0);
 });
 
+it("reads the entries of several files side by side, and their bytes at most two at a time", async () => {
+	// The object gateway serves bytes from two NAS lanes and answers 503 when both are busy and the object has no Storage
+	// copy yet: a read of eight files must not fill them by itself (proof sweep of #1700).
+	const files: Record<string, string> = {};
+	for (let n = 0; n < 8; n++) files[`docs/f${n}.md`] = `file ${n} `.repeat(100);
+	let ranges = 0;
+	let mostRanges = 0;
+	const f = await fixture(
+		{ files },
+		{
+			bytes: (inner) => ({
+				...inner,
+				range: async (file: CloudCompanyFolderFile, offset: number, length: number, signal: AbortSignal) => {
+					mostRanges = Math.max(mostRanges, ++ranges);
+					try {
+						await new Promise((done) => setTimeout(done, 5));
+						return await inner.range(file, offset, length, signal);
+					} finally {
+						ranges--;
+					}
+				},
+			}),
+		},
+	);
+	let reads = 0;
+	let mostReads = 0;
+	vi.spyOn(f.folder, "read").mockImplementation(async (path, signal) => {
+		mostReads = Math.max(mostReads, ++reads);
+		try {
+			await new Promise((done) => setTimeout(done, 5));
+			return await CloudCompanyFolderClient.prototype.read.call(f.folder, path, signal);
+		} finally {
+			reads--;
+		}
+	});
+	const content = await f.call("company_read", { paths: Object.keys(files) });
+	expect(parse(content).files.map((file: { path: string; text: string }) => [file.path, file.text])).toEqual(
+		Object.entries(files),
+	);
+	expect(mostReads).toBe(8);
+	expect(mostRanges).toBe(2);
+});
+
 it("answers each path on its own, without failing the others: absent, a folder, a link, no text, an image named", async () => {
 	const f = await fixture({ files: { "docs/plan.md": "the plan" }, links: { "docs/latest": "plan.md" } });
 	f.seed("photos/pair.png", RED_BLUE, "image/png");

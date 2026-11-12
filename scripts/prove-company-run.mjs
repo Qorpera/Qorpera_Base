@@ -19,7 +19,8 @@ import { hostedDatabase } from "./test-hosted-db-cluster.mjs";
 //
 // Stand-ins, as in #1530's proof: PostgREST (a function call is one psql call as the service role, its arguments typed as
 // the function declares them), the object gateway's folder object route (bytes kept in memory; each object confirmed with
-// the folder core as the gateway does), and the model provider (a scripted loopback Responses server; no model is
+// the folder core as the gateway does; a get holds one of its two NAS lanes for a moment, and finds them busy as it
+// does), and the model provider (a scripted loopback Responses server; no model is
 // called). Not covered: the native provider service process, isolation, auto-review, the company runtime's prompt
 // composition, a real node, a real model.
 
@@ -186,8 +187,11 @@ function postgrestFetch(db) {
 }
 
 /** The object gateway's folder object route, for the runtime's HttpCloudCompanyFolderBytes: a put stores the object and
- * confirms it with the folder core under the run's upload intent, as the gateway does; a get answers the bytes. */
-function gatewayFetch(db, objects) {
+ * confirms it with the folder core under the run's upload intent, as the gateway does; a get answers the bytes. A get
+ * takes one of the gateway's two NAS lanes for `lane.ms` (object-store.ts: at most two operations in flight), and with
+ * both busy it answers 503, as the gateway does for an object with no Storage copy yet (one just written); `lane`
+ * counts the gets, the most in flight at once, and those answered busy. */
+function gatewayFetch(db, objects, lane) {
 	return async (input, init = {}) => {
 		const url = new URL(String(input));
 		const route = /^\/v1\/folder-objects\/([0-9a-f-]{36})\/([0-9a-f]{64})$/.exec(url.pathname);
@@ -219,8 +223,19 @@ function gatewayFetch(db, objects) {
 				{ status: existed ? 200 : 201 },
 			);
 		}
-		const bytes = objects.get(hash);
-		return bytes ? new Response(bytes, { status: 200 }) : new Response("{}", { status: 404 });
+		lane.gets++;
+		if (lane.inFlight >= 2) {
+			lane.busy++;
+			return new Response("{}", { status: 503 });
+		}
+		lane.most = Math.max(lane.most, ++lane.inFlight);
+		try {
+			await new Promise((done) => setTimeout(done, lane.ms));
+			const bytes = objects.get(hash);
+			return bytes ? new Response(bytes, { status: 200 }) : new Response("{}", { status: 404 });
+		} finally {
+			lane.inFlight--;
+		}
 	};
 }
 
@@ -375,7 +390,7 @@ async function attempt(code, context) {
 				holder: () => "stand-in-holder",
 				identity,
 				control: paths,
-				fetch: gatewayFetch(db, objects),
+				fetch: gatewayFetch(db, objects, context.lane),
 			});
 			folder = new code.CloudCompanyFolderClient({ binding, identity, control: paths, bytes });
 			const gateway = new code.CloudCompanyPathGateway({ binding, identity, control: paths });
@@ -466,7 +481,7 @@ export async function proveCompanyRun({ name, prompt, setup, objects, calls, che
 	const started = Date.now();
 	const traced = [];
 	const trace = (what) => traced.push(`${String(Date.now() - started).padStart(6)} ms ${what}`);
-	const state = { agent: [], calls: [], compactor: [], failure: null, trace };
+	const state = { agent: [], calls: [], compactor: [], failure: null, trace, lane: { ms: 15, gets: 0, inFlight: 0, most: 0, busy: 0 } };
 	const server = provider(state, calls);
 	const db = new Database((sql) => database.cluster.psql(name, sql, ["-qAt"]));
 	try {
@@ -507,6 +522,7 @@ export async function proveCompanyRun({ name, prompt, setup, objects, calls, che
 			root: scratch,
 			nativeBinarySha256: made.nativeBinarySha256,
 			prompt,
+			lane: state.lane,
 		});
 		if (state.failure) throw state.failure;
 		assert.equal(state.agent.length, calls.length + 1, "the model made every call, then answered");

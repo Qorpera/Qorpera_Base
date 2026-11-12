@@ -105,6 +105,11 @@ const MAX_PATHS = 8;
 /** What a read of several files renders at most before it is fitted: each window (one result's bound) escaped at
  * worst, six bytes a byte, with its path and fields. */
 const MANY_JSON_BYTES = MAX_PATHS * (MAX_READ_BYTES * 6 + 32 * 1024);
+/** A read of several files reads their entries side by side, and their bytes at most this many at a time: the object
+ * gateway serves bytes from its NAS lanes, two operations at a time (object-store.ts), answers 503 when they are busy
+ * and the object has no Storage copy yet (just written), and the byte client asks twice more. So the call never fills
+ * the lanes by itself. */
+const MANY_BYTE_READS = 2;
 /** A listing shows a link's target up to this many bytes; company_read shows all of it. */
 const LIST_TARGET_BYTES = 512;
 /** The model's operation key, as the legacy tools take it. */
@@ -611,7 +616,11 @@ export function cloudFolderFileTools(options: {
 		readonly text?: { readonly field: "text" | "target"; readonly points: readonly string[]; readonly total: number };
 		readonly release?: CloudCompanyFolderRelease;
 	};
-	const readPart = async (path: string, signal: AbortSignal): Promise<ManyPart> => {
+	const readPart = async (
+		path: string,
+		signal: AbortSignal,
+		bytesTurn: <T>(read: () => Promise<T>) => Promise<T>,
+	): Promise<ManyPart> => {
 		// The folder's own failures other than a stop, and a read or byte range whose request timed out or lost its
 		// connection (this call not cancelled), are this path's; a stop, a cancel, an answer that fails its checks and
 		// any other defect fail the call, as for a read of one path.
@@ -645,7 +654,7 @@ export function cloudFolderFileTools(options: {
 		const total = entry.file.bytes;
 		let bytes: Uint8Array;
 		try {
-			bytes = await folder.readRange(entry, 0, Math.max(MAX_READ_BYTES, IMAGE_HEAD_BYTES), signal);
+			bytes = await bytesTurn(() => folder.readRange(entry, 0, Math.max(MAX_READ_BYTES, IMAGE_HEAD_BYTES), signal));
 		} catch (error) {
 			return failed(error);
 		}
@@ -701,7 +710,20 @@ export function cloudFolderFileTools(options: {
 	 * characters, the largest that fits (so small files are whole and the rest share what is left alike), each with
 	 * its own version, size shown and nextOffset. Each file shown is its own release. */
 	const readMany = async (paths: readonly string[], context: CloudToolContext): Promise<CloudToolContent> => {
-		const parts = await Promise.all(paths.map((path) => readPart(path, context.signal)));
+		// The entries are read side by side; their bytes take turns, at most MANY_BYTE_READS at a time.
+		let reading = 0;
+		const waiting: (() => void)[] = [];
+		const bytesTurn = async <T>(read: () => Promise<T>): Promise<T> => {
+			while (reading >= MANY_BYTE_READS) await new Promise<void>((turn) => waiting.push(turn));
+			reading++;
+			try {
+				return await read();
+			} finally {
+				reading--;
+				waiting.shift()?.();
+			}
+		};
+		const parts = await Promise.all(paths.map((path) => readPart(path, context.signal, bytesTurn)));
 		const render = (cap: number): string =>
 			cloudToolJsonText(
 				{
