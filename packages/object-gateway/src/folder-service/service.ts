@@ -1894,6 +1894,8 @@ export class FolderService {
 				}
 				for (const event of page.events) {
 					if (event.kind === "authority") {
+						// What the page changed before it counts first: a listing again holds a second tree.
+						if (this.#searchOver(view)) return;
 						await this.#reload(view, "access changed", changed);
 						told = true;
 						return;
@@ -1913,6 +1915,8 @@ export class FolderService {
 			view.pending?.liveChanged(changed);
 			this.#gitSettle(view);
 			if (!told) this.#push(view, this.#shown(view, changed, own));
+			// However the advance ended (a listing again that failed included), a run's view it grew past the bound goes.
+			this.#searchOver(view);
 		}
 	}
 

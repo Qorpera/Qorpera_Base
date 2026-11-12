@@ -741,6 +741,10 @@ describe("folder search, version 2 (keyholes S4)", () => {
 					`${JSON.stringify(prefix)} in pieces of ${pieceBytes}`,
 				).toEqual([2 + at]);
 				expect(page.longLines).toBe(2);
+				// So are they when the pattern matches nothing anywhere.
+				const none = await searchView({ ...source, pieceBytes, longestLine: 40 }, request2("^q$", { regex: true }));
+				expect(none.hits).toEqual([]);
+				expect(none.longLines, `${JSON.stringify(prefix)} in pieces of ${pieceBytes}, no match`).toBe(2);
 			}
 	});
 

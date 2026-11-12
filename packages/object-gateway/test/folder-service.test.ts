@@ -1204,6 +1204,32 @@ describe("run box views", () => {
 		});
 	});
 
+	it("closes a run view a feed page grew past the bound before an access change, though the listing again fails", async () => {
+		const { core, service, path, root } = await box(undefined, { searchPaths: 2 });
+		const io = await Client.open(path);
+		expect((await io.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
+		// One page: a new path (three in all), then an access change; the listing again would fail at its first page.
+		core.write(await storeFile(root, "docs/more.md", "more", 2));
+		core.authority(() => false);
+		const failing = Promise.reject(new Error("The core did not answer"));
+		failing.catch(() => undefined);
+		core.listGate = failing;
+		await service.poll();
+		await service.settled();
+		io.send(Kind.search, {
+			query: "plan",
+			path: "",
+			glob: null,
+			namesOnly: false,
+			caseSensitive: false,
+			after: null,
+		});
+		expect((await io.json()).body).toMatchObject({
+			code: "VIEW_CLOSED",
+			message: expect.stringMatching(/^SEARCH_FULL: /),
+		});
+	});
+
 	it("counts a run view's trees while they are listed: distinct views at once, a listing again, and hellos that join", async () => {
 		const VIEW2 = "3a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4e";
 		const PASS2 = "boxpass_9876543210-abcdefghijklmnopqrstuvwx";

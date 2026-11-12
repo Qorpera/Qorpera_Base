@@ -509,10 +509,12 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 			// Most stretches hold no match: those only count their lines (and keep their last lines as context).
 			const whole = bytes.subarray(0, cutAt);
 			if (cutAt > 0 && !lineHit && !long && wanted === 0 && find(fold(whole.toString("utf8"))) < 0) {
-				let newline = whole.indexOf(0x0a);
-				while (newline >= 0) {
+				// A pattern's line too long to search is counted here too, though nothing in it matched.
+				let from = 0;
+				for (let newline = whole.indexOf(0x0a); newline >= 0; newline = whole.indexOf(0x0a, from)) {
+					if (regex && newline - from > longestLine) longLines++;
 					line++;
-					newline = whole.indexOf(0x0a, newline + 1);
+					from = newline + 1;
 				}
 				if (context > 0) {
 					const tail: ContextLine[] = [];
