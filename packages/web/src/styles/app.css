@@ -508,6 +508,17 @@ label > input, label > select { font-weight: 400; }
 .sites-page-heading > svg { flex: none; }
 .sites-page-heading h1 { margin: 0; }
 .sites-page-heading p { margin: 4px 0 0; color: var(--text-muted); }
+/* The cards of the Sites page and of What's new stand in the page's main area, whose width follows the window and the
+ * sidebar, not the window's breakpoints: each list is its cards' container. The text keeps at least 10em beside the
+ * buttons, and a card too narrow for its text and its buttons side by side puts the buttons under the text (12 Nov
+ * 2026: at a 1024 px window with the sidebar open a site's text column was 0 px wide, its buttons took the row). 46em
+ * holds the text's 10em beside the Danish buttons of a site (Vis adgangskode, Skift adgangskode, Tag offline). */
+:is(.sites, .whats-new) .connection-list { container: page-cards / inline-size; }
+:is(.sites, .whats-new) .service-card { grid-template-columns: 42px minmax(min(10em, 100%), 1fr) auto; }
+@container page-cards (max-width: 46em) {
+	:is(.sites, .whats-new) .service-card { grid-template-columns: 42px minmax(0, 1fr); }
+	:is(.sites, .whats-new) .service-card > .connection-actions { grid-column: 2; justify-content: start; }
+}
 /* What's new (#/c/<id>/whats-new), headed as the Sites page is: per project, what is live (the Sites page's card), the
  * changes ready to go live as a picture with one line each (the look of a question's visual choices), and the buttons. */
 .whats-new-site { margin: 0 0 40px; }
