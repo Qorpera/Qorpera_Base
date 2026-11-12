@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -199,6 +199,12 @@ test("the image has a desktop that only `desktop start` starts, with Chromium sa
 		{
 			file: "qorpera-chromium-policy.json",
 			installedPath: "/etc/opt/chrome_for_testing/policies/managed/qorpera.json",
+			mode: "0644",
+		},
+		{ file: "machine-memory", installedPath: "/opt/qorpera-machine/machine-memory", mode: "0555" },
+		{
+			file: "lxd-agent-memory.conf",
+			installedPath: "/etc/systemd/system/lxd-agent.service.d/qorpera-memory.conf",
 			mode: "0644",
 		},
 	]);
@@ -532,4 +538,219 @@ test("a desktop is asked for: small machines refuse it, chosen files open on it,
 		assert.ok(imageScript.includes(line), line);
 	// The selftest reads 3D drawing and the typed text from the page's title.
 	assert.match(read("deploy/machine/desktop-selftest.html"), /"SELFTEST\[webgl=" \+ \(context \? "yes" : "no"\) \+ "\|typed=" \+ typed\.value \+ "\]"/);
+});
+
+test("a desktop action on the spot the pointer is on never waits for a move that cannot come", async () => {
+	// 12 Nov 2026: `xdotool mousemove --sync` waits until the pointer has moved, and for 15 s when it is already there
+	// (measured: a second `desktop click 640 400` took 15.2 s). Stand-ins for the desktop's tools: the unit is active,
+	// the display answers, and xdotool says where the pointer is and writes down what it is asked to do.
+	const temporary = await mkdtemp(join(tmpdir(), "qorpera-desktop-pointer-"));
+	try {
+		const asked = join(temporary, "asked");
+		const tool = (name, body) => writeFile(join(temporary, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+		await tool("systemctl", "echo active");
+		await tool("xdpyinfo", "exit 0");
+		await tool("touch", "exit 0");
+		await tool(
+			"xdotool",
+			[
+				'case "$1" in',
+				'getmouselocation) [ -n "$POINTER" ] || exit 1; echo "x:${POINTER% *} y:${POINTER#* } screen:0 window:77" ;;',
+				'getdisplaygeometry) echo "1600 1000" ;;',
+				'*) echo "$*" >>"$ASKED" ;;',
+				"esac",
+			].join("\n"),
+		);
+		const desktop = (pointer, ...args) => {
+			const run = spawnSync("bash", [join(repositoryRoot, "deploy/machine/desktop"), ...args], {
+				encoding: "utf8",
+				env: { ...process.env, PATH: `${temporary}:${process.env.PATH}`, POINTER: pointer, ASKED: asked },
+			});
+			assert.equal(run.status, 0, `${args.join(" ")}: ${run.stderr}`);
+			const words = readFileSync(asked, "utf8").trim();
+			writeFileSync(asked, "");
+			return words;
+		};
+		writeFileSync(asked, "");
+		// The pointer is elsewhere: the move is waited for, as before.
+		assert.equal(desktop("100 100", "click", "640", "400"), "mousemove --sync 640 400 click 1");
+		assert.equal(desktop("100 100", "double", "640", "400"), "mousemove --sync 640 400 click --repeat 2 --delay 80 1");
+		assert.equal(desktop("100 100", "move", "640", "400"), "mousemove --sync 640 400");
+		assert.equal(
+			desktop("100 100", "drag", "640", "400", "900", "600"),
+			"mousemove --sync 640 400 mousedown 1 sleep 0.1 mousemove --sync 900 600 sleep 0.1 mouseup 1",
+		);
+		// The pointer is there already: the move is still sent (the click lands on X Y whatever moved the pointer since),
+		// but never waited for.
+		assert.equal(desktop("640 400", "click", "640", "400", "right"), "mousemove 640 400 click 3");
+		assert.equal(desktop("640 400", "double", "640", "400"), "mousemove 640 400 click --repeat 2 --delay 80 1");
+		assert.equal(desktop("640 400", "move", "640", "400"), "mousemove 640 400");
+		// A drag, both ends: one that starts where the pointer is, and one that ends where it starts.
+		assert.equal(
+			desktop("640 400", "drag", "640", "400", "900", "600"),
+			"mousemove 640 400 mousedown 1 sleep 0.1 mousemove --sync 900 600 sleep 0.1 mouseup 1",
+		);
+		assert.equal(
+			desktop("100 100", "drag", "640", "400", "640", "400"),
+			"mousemove --sync 640 400 mousedown 1 sleep 0.1 mousemove 640 400 sleep 0.1 mouseup 1",
+		);
+		assert.equal(
+			desktop("640 400", "drag", "640", "400", "640", "400"),
+			"mousemove 640 400 mousedown 1 sleep 0.1 mousemove 640 400 sleep 0.1 mouseup 1",
+		);
+		// A position past the screen's edge ends at the edge, where the pointer may already be; and a number written with
+		// leading zeros is the same spot.
+		assert.equal(desktop("1599 999", "move", "5000", "5000"), "mousemove 5000 5000");
+		assert.equal(desktop("1599 400", "click", "1600", "400"), "mousemove 1600 400 click 1");
+		assert.equal(desktop("1598 999", "move", "5000", "5000"), "mousemove --sync 5000 5000");
+		assert.equal(desktop("640 400", "click", "0640", "0400"), "mousemove 0640 0400 click 1");
+		assert.equal(
+			desktop("100 100", "drag", "1700", "1200", "5000", "5000"),
+			"mousemove --sync 1700 1200 mousedown 1 sleep 0.1 mousemove 5000 5000 sleep 0.1 mouseup 1",
+		);
+		// Where the pointer is cannot be read: the move is waited for, as it always was.
+		assert.equal(desktop("", "click", "640", "400"), "mousemove --sync 640 400 click 1");
+	} finally {
+		await rm(temporary, { recursive: true, force: true });
+	}
+	// No other wait for a move in the command, and the image build times the actions on one spot.
+	const command = read("deploy/machine/desktop");
+	assert.equal(command.split("\n").filter((line) => line.includes("--sync") && !line.startsWith("#")).length, 1);
+	assert.match(command, /then move=\(mousemove "\$2" "\$3"\); else move=\(mousemove --sync "\$2" "\$3"\); fi\n/);
+	for (const line of [
+		"\tdesktop click 800 500\n\tdesktop double 800 500\n\tdesktop move 800 500\n\tdesktop drag 800 500 800 500\n",
+		"\t(( ($(date +%s%N) - pointer_started) / 1000000 < 5000 )) ||\n",
+	])
+		assert.ok(imageScript.includes(line), line);
+});
+
+test("every machine has compressed memory from its boot on and a guard at the edge of its memory", () => {
+	// deploy/machine/README.md, "Memory" (12 Nov 2026): without them a 4 GiB desktop froze past 7 tabs and nothing was
+	// ended in time; with compressed memory it carried 24.
+	const packager = read("scripts/package-machine-guest.mjs");
+	const units = [...packager.match(/const units = \[([^\]]+)\]/)[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+	for (const unit of ["qorpera-machine-memory.service", "qorpera-machine-memory-guard.service"]) assert.ok(units.includes(unit), unit);
+	// Files only: the guest helper, whose sha-256 the executor pins, is not part of it.
+	assert.doesNotMatch(read("packages/runtime/src/cloud-machine-guest.ts"), /zram|earlyoom|machine-memory/);
+
+	// Compressed memory: at every boot, before basic.target (the executor counts a boot as usable after it), and never
+	// in a boot's way: no default dependencies to fail on, only wanted, ended after 20 s at the latest.
+	const swap = read("deploy/machine/qorpera-machine-memory.service");
+	for (const line of [
+		"DefaultDependencies=no",
+		"Before=basic.target shutdown.target",
+		"Type=oneshot",
+		"RemainAfterExit=yes",
+		"ExecStart=/opt/qorpera-machine/machine-memory swap",
+		"TimeoutStartSec=20",
+		"WantedBy=basic.target",
+	])
+		assert.ok(swap.includes(`\n${line}\n`), line);
+	assert.doesNotMatch(swap, /^(Requires|RequiredBy|Requisite|BindsTo|OnFailure)=/m);
+	const script = read("deploy/machine/machine-memory");
+	const code = script
+		.split("\n")
+		.filter((line) => !line.trimStart().startsWith("#"))
+		.join("\n");
+	// Through sysfs as measured: zstd, as large as the memory, priority 100, the measured settings; the device is
+	// waited for (zramctl --find right after modprobe failed once), never with udevadm settle, which a boot waits on.
+	assert.match(code, /\nSWAPPINESS=150\nPAGE_CLUSTER=0\n/);
+	assert.match(code, /\n\t\tmodprobe zram \|\| exit 1\n/);
+	assert.match(code, /for _ in \$\(seq 1 60\); do \[\[ -b \$DEVICE && -e \$BLOCK\/disksize \]\] && break; sleep 0\.05; done\n/);
+	assert.match(code, /echo zstd >"\$BLOCK\/comp_algorithm" \|\| true\n\t\t\techo "\$\{total\}K" >"\$BLOCK\/disksize" \|\| exit 1\n\t\t\tmkswap "\$DEVICE" >\/dev\/null \|\| exit 1\n/);
+	assert.match(code, /\n\t\tswapon -p 100 "\$DEVICE" \|\| exit 1\n/);
+	assert.match(code, /sysctl -q -w vm\.swappiness="\$SWAPPINESS" vm\.page-cluster="\$PAGE_CLUSTER"/);
+	assert.doesNotMatch(code, /zramctl|udevadm|mem_limit/);
+	// It always ends well, with one line either way; run again on a machine that has it, it only says so.
+	const body = code.slice(code.indexOf("\nswap() {"), code.indexOf("\nguard_limits() {"));
+	assert.match(body, /\tif on; then\n\t\ttune \|\| true\n\t\techo "compressed memory is already on [^\n]+\n\t\treturn 0\n\tfi\n/);
+	assert.match(body, /echo "compressed memory is OFF on this machine, which runs without it as machines did before: /);
+	assert.match(body, /\n\tfi\n\treturn 0\n\}\n/);
+	assert.doesNotMatch(body, /\n\t(exit|return) [1-9]/);
+	assert.doesNotMatch(code, /^set -[a-z]*e/m);
+
+	// The guard: earlyoom from our own unit, beside the commands' slice, the last to be ended, started again with the
+	// swap unit (its limits depend on whether the reserve is on).
+	const guard = read("deploy/machine/qorpera-machine-memory-guard.service");
+	for (const line of [
+		"After=qorpera-machine-memory.service",
+		"PartOf=qorpera-machine-memory.service",
+		"ConditionPathExists=/usr/bin/earlyoom",
+		"ExecStart=/opt/qorpera-machine/machine-memory guard",
+		"Slice=qorpera-control.slice",
+		"Restart=always",
+		"OOMScoreAdjust=-1000",
+		"WantedBy=multi-user.target",
+	])
+		assert.ok(guard.includes(`\n${line}\n`), line);
+	// Late enough that compressed memory is used first (both limits must hold), ended at once (each pair is one number:
+	// SIGKILL), by the kernel's own score (no --sort-by-rss, no process group, root's processes too).
+	assert.match(code, /\nguard_limits\(\) \{\n\tif on; then echo "-m 17,17 -s 10,10"; else echo "-m 8,8"; fi\n\}\n/);
+	assert.match(code, /\n\texec \/usr\/bin\/earlyoom -r 0 \$\(guard_limits\)\n/);
+	assert.doesNotMatch(code, /--sort-by-rss|--ignore-root-user|--prefer|--avoid| -g /);
+	const none = spawnSync("bash", [join(repositoryRoot, "deploy/machine/machine-memory")], { encoding: "utf8" });
+	assert.equal(none.status, 2);
+	assert.match(none.stderr, /^machine-memory swap\|guard\|status\n$/);
+
+	// Who is never the one ended, by the guard or by the kernel's own killer.
+	for (const unit of ["qorpera-machine-desktop.service", "qorpera-machine-folder.service", "qorpera-machine-watchdog.service"])
+		assert.match(read(`deploy/machine/${unit}`), /\nOOMScoreAdjust=-900\n/, unit);
+	assert.match(read("deploy/machine/lxd-agent-memory.conf"), /\n\[Service\]\nOOMScoreAdjust=-900\n$/);
+	// The XFCE session, and what is started from its menus, gets a milder protection than the X server keeps.
+	assert.match(
+		read("deploy/machine/desktop-session"),
+		/\n\(\n\tprintf %s -100 2>\/dev\/null >\/proc\/self\/oom_score_adj \|\| true\n\texec startxfce4\n\) &\n/,
+	);
+	// Programs an agent starts are units of their own, with nothing of that.
+	assert.doesNotMatch(read("deploy/machine/desktop"), /OOMScoreAdjust/);
+	assert.doesNotMatch(read("deploy/machine/qorpera-machine.slice"), /OOMScoreAdjust|ManagedOOM/);
+
+	// The image: earlyoom from apt with its own unit off for good, and the build refuses a kernel without zram, a unit
+	// that fails where it cannot be set up, a guard that is not earlyoom in the control slice, and a desktop whose
+	// screen is not protected or whose tabs would not go first.
+	const apt = words(imageScript.match(/apt-get install -y --no-install-recommends((?:[^\n]*\\\n)*[^\n]*)/)[1]);
+	assert.ok(apt.includes("earlyoom"));
+	for (const line of [
+		"\tsystemctl disable --now earlyoom.service\n\tsystemctl mask earlyoom.service\n",
+		"\tinstall -d -o root -g root -m 0755 /etc/systemd/system/lxd-agent.service.d\n",
+		"\tsystemctl enable qorpera-machine-watchdog.timer qorpera-machine-memory.service qorpera-machine-memory-guard.service\n",
+		'\tfor kernel in /lib/modules/*; do\n\t\tmodinfo -k "$(basename "$kernel")" zram >/dev/null ||\n',
+		'\t[[ -n ${swap_kb:-} ]] && (( memory_kb - swap_kb >= 0 && memory_kb - swap_kb <= 64 )) && [[ $swap_priority == 100 ]] ||\n',
+		'\tgrep -q "\\[zstd\\]" /sys/block/zram0/comp_algorithm ||',
+		"\tswapoff /dev/zram0\n\techo 1 >/sys/block/zram0/reset\n\trmmod zram\n",
+		'\tmkdir -p /run/modprobe.d && echo "install zram /bin/false" >/run/modprobe.d/qorpera-image-check.conf\n',
+		'\t\t{ echo "the memory unit fails where compressed memory cannot be set up: a boot would show a failed unit" >&2; exit 1; }\n',
+		'\t\t{ echo "the journal does not say in one line that compressed memory is off" >&2; exit 1; }\n',
+		'\t[[ $(cat "/proc/$guard/comm") == earlyoom && $(cat "/proc/$guard/oom_score_adj") == -1000 ]] ||\n',
+		'\tgrep -q "/qorpera-control.slice/" "/proc/$guard/cgroup" ||',
+		'\tif systemctl is-active --quiet earlyoom.service systemd-oomd.service; then echo "another memory guard runs" >&2; exit 1; fi\n',
+		"\tfor unit in lxd-agent qorpera-machine-folder qorpera-machine-watchdog qorpera-machine-desktop; do\n",
+		'\t[[ $(scores $(pgrep -u desktop -x Xvnc)) == "-900 " && $(scores $(pgrep -u desktop -x xfwm4)) == "-100 " ]] ||\n',
+		'\t[[ $(scores $(pgrep -u desktop -o -x chrome)) == "0 " && $(scores $(pgrep -u desktop -f -- "--type=renderer")) == "300 " ]] ||\n',
+		"\tsystemd-analyze verify /etc/systemd/system/qorpera-machine-memory.service /etc/systemd/system/qorpera-machine-memory-guard.service\n",
+	])
+		assert.ok(imageScript.includes(line), line);
+
+	// The proof makes its own throwaway machine in a build space that holds nothing else, never uses another, and
+	// deletes it by its exact name on every exit path; its pieces are whole.
+	const proof = read("scripts/prove-machine-memory.sh");
+	assert.match(proof, /\n\[\[ -z \$\(lx list -f csv -c n\) \]\] \|\| fail "the build space \$PROJECT is in use: prove when it is empty"\n/);
+	assert.match(proof, /\n\[\[ \$PROJECT != default && \$PROJECT != machines \]\] \|\| fail /);
+	assert.match(proof, /\nMACHINE="qorpera-machine-build-memory-proof-\$\$"\n/);
+	assert.match(proof, /\ntrap cleanup EXIT\n/);
+	assert.match(proof, /\n\t\tlx delete --force "\$MACHINE" >\/dev\/null 2>&1\n/);
+	assert.equal([...proof.matchAll(/\blx(?:c --project "\$PROJECT")? (?:delete|stop|restart)\b[^\n]*/g)].every(([line]) => line.includes('"$MACHINE"')), true);
+	assert.doesNotMatch(proof, /lxc (?!--project "\$PROJECT" )/);
+	assert.match(proof, /-c user\.qorpera\.image_builder=true -c user\.qorpera\.purpose=machine-image\n/);
+	for (const file of ["guest.sh", "pages.cjs", "job.cjs", "app.html", "video.html", "pointer.html"])
+		assert.ok(existsSync(join(repositoryRoot, "scripts/machine-memory-proof", file)), file);
+	for (const file of [
+		"deploy/machine/machine-memory",
+		"deploy/machine/desktop",
+		"deploy/machine/desktop-session",
+		"deploy/machine/build-machine-image.sh",
+		"scripts/prove-machine-memory.sh",
+		"scripts/machine-memory-proof/guest.sh",
+	])
+		assert.equal(spawnSync("bash", ["-n", join(repositoryRoot, file)], { encoding: "utf8" }).status, 0, file);
 });

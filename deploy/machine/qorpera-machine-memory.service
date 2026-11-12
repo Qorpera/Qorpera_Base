@@ -1,0 +1,20 @@
+[Unit]
+Description=Compressed memory for this machine (zram swap as large as its memory)
+# On every machine, at every boot, before anything of an agent runs: the executor counts a boot as usable once
+# basic.target is active, and this comes before it. It never fails a boot: the script always ends well (a machine
+# where compressed memory cannot be set up runs without it and says so in one line), basic.target only wants it, and
+# a script that hung would be ended after 20 s with the boot going on.
+DefaultDependencies=no
+After=systemd-modules-load.service systemd-udevd.service systemd-sysctl.service local-fs.target
+Before=basic.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/qorpera-machine/machine-memory swap
+TimeoutStartSec=20
+SyslogIdentifier=qorpera-machine-memory
+
+[Install]
+WantedBy=basic.target

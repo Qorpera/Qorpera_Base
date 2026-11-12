@@ -183,6 +183,26 @@ resize() { # WxH
 	[[ $(size) == "$1" ]] || fail "the screen stayed $(size)"
 }
 titles() { wmctrl -l 2>/dev/null | awk '{ $1=$2=$3=""; sub(/^ +/,""); print }'; }
+# Where the pointer is, as "X Y"; nothing when xdotool cannot say.
+pointer() { xdotool getmouselocation 2>/dev/null | sed -n 's/^x:\([0-9]*\) y:\([0-9]*\) .*/\1 \2/p'; }
+# Where a move to X Y ends, as "X Y": at the screen's edge for a position past it.
+lands() { # X Y
+	local x=$(( 10#$1 )) y=$(( 10#$2 )) width height
+	read -r width height < <(xdotool getdisplaygeometry 2>/dev/null) || true
+	if [[ ${width:-} =~ ^[1-9][0-9]*$ && ${height:-} =~ ^[1-9][0-9]*$ ]]; then
+		(( x < width )) || x=$(( width - 1 ))
+		(( y < height )) || y=$(( height - 1 ))
+	fi
+	echo "$x $y"
+}
+# xdotool's words for moving the pointer to X Y from where it is ("X Y"; nothing when that is not known), put in
+# `move`. `mousemove --sync` waits until the pointer has moved, and for 15 s when it is already there: a second click
+# on one button, a drag that ends where it starts (measured 12 Nov 2026: 15.2 s, also at the screen's edge for a
+# position past it). So the move is waited for only when the pointer will move. It is sent all the same when it will
+# not, so the click lands on X Y whatever moved the pointer since it was read.
+move_to() { # from X Y
+	if [[ $1 == "$(lands "$2" "$3")" ]]; then move=(mousemove "$2" "$3"); else move=(mousemove --sync "$2" "$3"); fi
+}
 
 command=${1:-help}
 shift || true
@@ -285,22 +305,30 @@ click)
 	need
 	number "${1:-}"; number "${2:-}"
 	case ${3:-left} in left) button=1 ;; middle) button=2 ;; right) button=3 ;; *) fail "BUTTON is left, middle or right" 2 ;; esac
-	xdotool mousemove --sync "$1" "$2" click "$button"
+	move_to "$(pointer)" "$1" "$2"
+	xdotool "${move[@]}" click "$button"
 	;;
 double)
 	need
 	number "${1:-}"; number "${2:-}"
-	xdotool mousemove --sync "$1" "$2" click --repeat 2 --delay 80 1
+	move_to "$(pointer)" "$1" "$2"
+	xdotool "${move[@]}" click --repeat 2 --delay 80 1
 	;;
 move)
 	need
 	number "${1:-}"; number "${2:-}"
-	xdotool mousemove --sync "$1" "$2"
+	move_to "$(pointer)" "$1" "$2"
+	xdotool "${move[@]}"
 	;;
 drag)
 	need
 	for value in "${1:-}" "${2:-}" "${3:-}" "${4:-}"; do number "$value"; done
-	xdotool mousemove --sync "$1" "$2" mousedown 1 sleep 0.1 mousemove --sync "$3" "$4" sleep 0.1 mouseup 1
+	# Both ends: a drag that starts where the pointer is, and one that ends where it starts (the pointer is where the
+	# first move ends by then).
+	move_to "$(pointer)" "$1" "$2"
+	start=("${move[@]}")
+	move_to "$(lands "$1" "$2")" "$3" "$4"
+	xdotool "${start[@]}" mousedown 1 sleep 0.1 "${move[@]}" sleep 0.1 mouseup 1
 	;;
 type)
 	need

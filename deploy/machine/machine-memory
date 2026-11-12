@@ -1,0 +1,108 @@
+#!/bin/bash
+# A machine's memory at the edge (12 Nov 2026). Installed as /opt/qorpera-machine/machine-memory, on every machine.
+#
+#   machine-memory swap    at every boot (qorpera-machine-memory.service): compressed memory. What programs hold but do
+#                          not use right now is kept compressed inside the machine's own memory (zram, zstd, as large as
+#                          the machine's memory, swap priority 100), so a machine carries far more before it is full.
+#                          It never fails: a machine where it cannot be set up runs without it, as machines did before,
+#                          and says so in one line. Run again it changes nothing.
+#   machine-memory guard   while the machine runs (qorpera-machine-memory-guard.service): the edge guard. When memory
+#                          and its compressed reserve are both nearly gone, one program is ended (earlyoom), so the
+#                          machine keeps answering instead of freezing.
+#   machine-memory status  what is on, for a person or a check
+#
+# Measured on node 2, 12 Nov 2026 (2 processors, 4 GiB, a desktop with heavy web apps and a 1.5 GB job): without
+# compressed memory the machine froze at 7 to 14 tabs and nothing was ended in time; with it, it carried 24 tabs at
+# 39-59 frames a second (2768 MB kept in 1080 MB). deploy/machine/README.md, "Memory".
+set -u
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+DEVICE=/dev/zram0
+BLOCK=/sys/block/zram0
+# The measured values: the kernel prefers compressing idle program memory to dropping files it will read again, and
+# reads compressed pages back one at a time (they are in memory, not on a disk that reads ahead).
+SWAPPINESS=150
+PAGE_CLUSTER=0
+
+memory_kb() { awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null; }
+on() { grep -q "^$DEVICE " /proc/swaps 2>/dev/null; }
+tune() { sysctl -q -w vm.swappiness="$SWAPPINESS" vm.page-cluster="$PAGE_CLUSTER"; }
+algorithm() { sed -n 's/.*\[\([^]]*\)\].*/\1/p' "$BLOCK/comp_algorithm" 2>/dev/null; }
+
+swap() {
+	local total error
+	total=$(memory_kb)
+	if on; then
+		tune || true
+		echo "compressed memory is already on ($(algorithm), $(( $(cat "$BLOCK/disksize") / 1048576 )) MB)"
+		return 0
+	fi
+	error=$( {
+		[[ $total =~ ^[1-9][0-9]*$ ]] || { echo "cannot read the size of the machine's memory"; exit 1; }
+		modprobe zram || exit 1
+		# The device comes a moment after the module (zramctl --find right after modprobe failed once, 12 Nov 2026):
+		# waited for, 3 s at most. Not with udevadm settle, which early in a boot waits for every other device too.
+		for _ in $(seq 1 60); do [[ -b $DEVICE && -e $BLOCK/disksize ]] && break; sleep 0.05; done
+		[[ -b $DEVICE ]] || { echo "no $DEVICE after loading the module"; exit 1; }
+		if [[ $(cat "$BLOCK/disksize") == 0 ]]; then
+			# zstd where the kernel has it; otherwise the kernel's own choice, said below.
+			echo zstd >"$BLOCK/comp_algorithm" || true
+			echo "${total}K" >"$BLOCK/disksize" || exit 1
+			mkswap "$DEVICE" >/dev/null || exit 1
+		fi
+		# A device that already has a size is only switched on: it is never made again over what it may hold.
+		swapon -p 100 "$DEVICE" || exit 1
+	} 2>&1 )
+	if on && tune; then
+		echo "compressed memory is on: $(algorithm), $(( $(cat "$BLOCK/disksize") / 1048576 )) MB, swappiness $SWAPPINESS"
+	else
+		echo "compressed memory is OFF on this machine, which runs without it as machines did before: $(tr '\n' ' ' <<<"${error:-the swap did not come on}" | cut -c1-300)"
+	fi
+	return 0
+}
+
+# The guard: earlyoom ends the one process the kernel itself would end, the one with the highest oom_score. That is a
+# browser tab first (Chromium marks its tab processes 300, its helper processes 200), then the biggest other program
+# (an agent's own job too), and never one the units protect (OOMScoreAdjust: the screen, the LXD agent and what the
+# executor runs through it, the folder program, the watchdog, this guard).
+#
+# Its limits, in earlyoom's own measure: the memory still available as a share of what programs can use right now
+# (available + what they hold in memory; not of the machine's memory), and the free share of the compressed reserve.
+# A process is ended when 17 % or less is available AND a tenth or less of the reserve is free: late enough that
+# compressed memory is really used first. Measured on 12 Nov 2026 (2 processors, 4 GiB, heavy web apps, a 1.5 GB job
+# and tabs until three were ended): with 17 % the first tab was ended with about 300 MB available and the reserve
+# full, pages kept loading in about a second and `desktop click` answered in 0.9 s at worst; with 6.7 % (114 MB
+# available) pages took 6 to 36 s before the first end and a click up to 2.7 s.
+#
+# It ends a process at once (SIGKILL: both limits of each pair are the same): earlyoom then frees the process's
+# memory itself before it looks again, so one end is one process, where a process asked to end (SIGTERM) was still
+# giving its memory back when the next was picked. An agent's command ended this way ends as killed (exit 137).
+#
+# A machine without the reserve (the line above said why) is judged on its memory alone, and later: there programs
+# hold about twice as much in memory, and 8 % is about the same 300 MB on 4 GiB.
+guard_limits() {
+	if on; then echo "-m 17,17 -s 10,10"; else echo "-m 8,8"; fi
+}
+guard() {
+	# No report but when it acts: its lines then name the process, its size and the memory left.
+	# shellcheck disable=SC2046
+	exec /usr/bin/earlyoom -r 0 $(guard_limits)
+}
+
+status() {
+	if on; then
+		echo "compressed memory: on ($(algorithm), $(( $(cat "$BLOCK/disksize") / 1048576 )) MB, swappiness $(cat /proc/sys/vm/swappiness), page-cluster $(cat /proc/sys/vm/page-cluster))"
+	else
+		echo "compressed memory: off"
+	fi
+	echo "guard: $(systemctl is-active qorpera-machine-memory-guard.service 2>/dev/null || true) (earlyoom $(guard_limits))"
+}
+
+case ${1:-} in
+swap) swap ;;
+guard) guard ;;
+status) status ;;
+*)
+	echo "machine-memory swap|guard|status" >&2
+	exit 2
+	;;
+esac
