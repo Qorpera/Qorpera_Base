@@ -2290,14 +2290,6 @@ function ownFace(page: Page): HTMLElement {
 	return personAvatar(me || t("You"), company.userId);
 }
 
-/** The company's addresses a member's own email may go from: those in use; a paused one stands in only when none is,
- * and the cloud then says why the email cannot go. */
-function ownAddresses(page: Page): readonly MailAddress[] {
-	const addresses = page.company.store.get().mail?.addresses ?? [];
-	const inUse = addresses.filter((address) => address.status === "active");
-	return inUse.length ? inUse : addresses;
-}
-
 /** Gives a chip its menu, opened under it and named by the chip's focus key. */
 function menuOn(page: Page, chip: HTMLElement, name: string, label: string, items: () => MenuEntry[]): void {
 	const { ui } = page;
@@ -2499,7 +2491,10 @@ function writePanel(page: Page): HTMLElement {
 	// A new email is nobody's: the member writes and sends it themself until they give it to an agent.
 	const chosen = agentsAtWork(page).find((agent) => agent.id === draft.writer);
 	const addresses = company.store.get().mail?.addresses ?? [];
-	const own = ownAddresses(page);
+	// The member's own email goes from an address in use; a paused one stands in only when none is, and the cloud then
+	// says why the email cannot go.
+	const inUse = addresses.filter((address) => address.status === "active");
+	const own = inUse.length ? inUse : addresses;
 	// An agent's email goes from the address its writer answers, else from the company's first; the member's own from the
 	// one they picked, else from the first.
 	const from = (
@@ -2721,15 +2716,17 @@ function outsiders(page: Page, listed: readonly string[], known: readonly string
 	return found;
 }
 
-/** Who an answer to `message` goes to. A reply to a received email goes to who sent it; a reply to an email the company
- * sent follows it up, to who that went to. To all, everyone else the message went to has it too, as it had them: in To
- * or as a copy. */
+/** Who an answer to `message` goes to. A reply to a received email goes to where the email asks its answers to go (its
+ * Reply-To), else to who sent it; a reply to an email the company sent follows it up, to who that went to. To all,
+ * everyone else the message went to has it too, as it had them: in To or as a copy. */
 function answerRecipients(page: Page, message: MailMessage, all: boolean): { to: string[]; cc: string[] } {
 	if (message.kind === "sent") {
 		const to = outsiders(page, message.to);
 		return { to, cc: all ? outsiders(page, message.cc, to) : [] };
 	}
-	const sender = outsiders(page, message.fromAddress ? [message.fromAddress] : []);
+	// An email from an address nobody reads ("no-reply@") names where its answers go: they go there, not to its sender.
+	const asked = outsiders(page, message.replyTo);
+	const sender = asked.length ? asked : outsiders(page, message.fromAddress ? [message.fromAddress] : []);
 	if (!all) return { to: sender, cc: [] };
 	const to = [...sender, ...outsiders(page, message.to, sender)];
 	return { to, cc: outsiders(page, message.cc, to) };
@@ -2798,6 +2795,8 @@ function replyArea(
 							...newDraft(),
 							kind,
 							message: { kind: newest.kind, id: newest.id },
+							// It goes from the thread's own address, kept with the answer (`replyBox`).
+							from: summary.address,
 							to: { chips: [...to], typed: "" },
 							cc: { chips: [...cc], typed: "" },
 							subject: answerSubject(newest.subject ?? summary.subject, forward),
@@ -2824,16 +2823,17 @@ function replyArea(
 
 /** An answer being written at the foot of its thread, as a mail app's reply box: who it goes to as chips, its text,
  * Send and, at the foot's end, the bin that lets it go. Send sends it as the member's own email from the thread's
- * address, in the thread (a forward as a new email). The Writer chip gives a reply to an agent instead: the member's
- * words go to that agent as their own message, with the email's subject and sender as quotes, and the agent answers
- * whoever it finds right. */
+ * address, in the thread (a forward as a new email). That address is the answer's from the moment it is opened: no
+ * other address stands in when it is paused or gone meanwhile (the cloud then says so), so the answer never leaves
+ * from somewhere the member did not see, and sent again as it stands it is the same email. The Writer chip gives a
+ * reply to an agent instead: the member's words go to that agent as their own message, with the email's subject and
+ * sender as quotes, and the agent answers whoever it finds right. */
 function replyBox(page: Page, thread: string, summary: MailThreadSummary, reply: Reply): HTMLElement {
 	const { ui } = page;
 	const forward = reply.kind === "forward";
 	// A forward is the member's own email: an agent answers an email, and sends none on.
 	const chosen = forward ? undefined : agentsAtWork(page).find((agent) => agent.id === reply.writer);
-	const own = ownAddresses(page);
-	const from = (own.find((address) => address.address === summary.address) ?? own[0])?.address;
+	const from = reply.from ?? summary.address;
 	const [label, glyph] =
 		reply.kind === "all"
 			? [t("Reply all"), "reply_all"]

@@ -5,7 +5,9 @@
 -- References built from the answered message's ids, so the other side's mail program threads it too; the outside
 -- answer to it joins the same thread. It is the member's own act: it answers automatic email, carries no
 -- Auto-Submitted and no AI line. A message with no usable id is answered in its thread without thread headers. A
--- reply to what is not this company's, to account mail, of another shape, or by a viewer is refused.
+-- reply to what is not this company's, to account mail, of another shape, or by a viewer is refused. A received
+-- email joins the thread of a message its mailbox knows, sent or received, that it answers or references first; and
+-- the thread read gives a received message's Reply-To addresses while its stored message is kept.
 
 select pg_temp.base_claims('service_role');
 -- A member's request: send n, from the support mailbox to the customer.
@@ -226,6 +228,64 @@ select pg_temp.base_assert((select mail.thread = (pg_temp.mr_mail(1)).thread
 				where box.local_part = 'orders' and box.removed_at is null)
 		from pg_temp.mr_mail(7) as mail),
 	'A reply from another mailbox of the company is in the answered email''s thread');
+
+-- The customer answers that reply. The answer names the cleared email first, an id no sent email has: it joins the
+-- thread through the received email the company knows by that id.
+select pg_temp.base_claims('service_role');
+select pg_temp.mr_receive(5, 'support@mail.example.test', jsonb_build_object('messageId', '<q-3@example.org>',
+	'references', '<q-2@example.org> <mr-6@mail.example.test>', 'inReplyTo', '<mr-6@mail.example.test>'));
+select pg_temp.base_assert((pg_temp.mr_received('<q-3@example.org>')).thread_id = (pg_temp.mr_mail(1)).thread,
+	'The answer to a reply that names only a received email joins that email''s thread');
+-- An answer whose first reference the company does not know joins the thread of the email it answers.
+select pg_temp.mr_receive(6, 'support@mail.example.test', jsonb_build_object('messageId', '<q-4@example.org>',
+	'references', '<elsewhere@example.net> <mr-1@mail.example.test>', 'inReplyTo', '<mr-1@mail.example.test>'));
+select pg_temp.base_assert((pg_temp.mr_received('<q-4@example.org>')).thread_id = (pg_temp.mr_mail(1)).thread,
+	'An answer to a sent email joins its thread, whatever it references first');
+-- An email that answers nothing the company knows is in the thread of the first id it references, as before; and
+-- another company's mailbox knows none of this company's messages.
+select pg_temp.mr_receive(7, 'support@mail.example.test', jsonb_build_object('messageId', '<new-1@example.org>',
+	'references', '<unknown@example.net>', 'inReplyTo', '<unknown@example.net>'));
+select pg_temp.mr_receive(91, 'theirs@mail.example.test', jsonb_build_object('messageId', '<theirs-2@example.org>',
+	'references', '<q-2@example.org>', 'inReplyTo', '<mr-1@mail.example.test>'));
+select pg_temp.base_assert((pg_temp.mr_received('<new-1@example.org>')).thread_id = public.qorpera_mail_thread_id(
+			(pg_temp.mr_received('<new-1@example.org>')).mailbox_id, '<unknown@example.net>')
+		and (pg_temp.mr_received('<theirs-2@example.org>')).thread_id = public.qorpera_mail_thread_id(
+			(pg_temp.mr_received('<theirs-2@example.org>')).mailbox_id, '<q-2@example.org>')
+		and (pg_temp.mr_received('<theirs-2@example.org>')).thread_id <> (pg_temp.mr_mail(1)).thread,
+	'An email that answers nothing its mailbox knows is in the thread of its first reference');
+
+-- 3b. Where an email asks its answers to go ----------------------------------------------------------------------------
+
+-- A received message carries the addresses of its Reply-To while its stored message is kept; never for account mail.
+select pg_temp.mr_receive(8, 'support@mail.example.test', jsonb_build_object('messageId', '<vendor-1@example.org>',
+	'from', 'Vendor <no-reply@vendor.example>',
+	'replyTo', jsonb_build_array('support@vendor.example', 7, repeat('x', 400), 'billing@vendor.example')));
+select pg_temp.mr_receive(9, 'support@mail.example.test', '{"messageId":"<vendor-2@example.org>","replyTo":[]}');
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000003');
+select pg_temp.base_assert(
+	pg_temp.mr_messages((pg_temp.mr_received('<vendor-1@example.org>')).thread_id) #> '{0,replyTo}'
+			= '["support@vendor.example","billing@vendor.example"]'
+		and pg_temp.mr_messages((pg_temp.mr_received('<vendor-1@example.org>')).thread_id) #>> '{0,fromAddress}'
+			= 'no-reply@vendor.example'
+		and not pg_temp.mr_messages((pg_temp.mr_received('<vendor-2@example.org>')).thread_id) -> 0 ? 'replyTo'
+		and not pg_temp.mr_messages((pg_temp.mr_received('<q-1@example.org>')).thread_id) -> 0 ? 'replyTo',
+	'A received message says where its answers are asked to go, and nothing when it asks for nowhere else');
+select pg_temp.base_claims('service_role');
+update public.qorpera_mail_received set account = '{"unknown":true}'
+where delivery_id = (pg_temp.mr_received('<vendor-1@example.org>')).delivery_id;
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000003');
+select pg_temp.base_assert(
+	not pg_temp.mr_messages((pg_temp.mr_received('<vendor-1@example.org>')).thread_id) -> 0 ? 'replyTo',
+	'Account mail shows no Reply-To');
+select pg_temp.base_claims('service_role');
+update public.qorpera_mail_received set account = null
+where delivery_id = (pg_temp.mr_received('<vendor-1@example.org>')).delivery_id;
+update public.qorpera_event_deliveries set body = null
+where id = (pg_temp.mr_received('<vendor-1@example.org>')).delivery_id;
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000003');
+select pg_temp.base_assert(
+	not pg_temp.mr_messages((pg_temp.mr_received('<vendor-1@example.org>')).thread_id) -> 0 ? 'replyTo',
+	'A message whose text is cleared shows no Reply-To');
 
 -- 4. References on one header line -------------------------------------------------------------------------------------
 
