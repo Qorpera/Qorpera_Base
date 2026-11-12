@@ -3,6 +3,7 @@ import type {
 	CodeBringing,
 	CodeDownloadCalls,
 	CodeImportAnswer,
+	CodeImportEnd,
 	CodeImported,
 	CodeRepositories,
 } from "../../cloud/code-downloads.ts";
@@ -59,8 +60,14 @@ export interface CodeImportTarget {
 }
 
 /** An import this page follows: one it asked for, or one the list showed being brought in. */
-interface Followed extends Omit<CodeImportTarget, "github"> {
+interface Followed extends Omit<CodeImportTarget, "github" | "label"> {
 	readonly github: string | null;
+	/** Its name as the list names it once a read shows it (the line after a reload says the same), else as asked. */
+	label: string;
+	/** It comes from a file (an agent's bundle), which has bounds of its own. */
+	file: boolean;
+	/** How the list's last failed import of this place stood when it was asked: one that differs since is its own. */
+	readonly lastBefore: string | null;
 	/** `sending`: the ask is out. `started`: on its way (the list showed it, or the answer said so). `unknown`: the
 	 * answer never came, and no read since says how it stands. `unsure`: a read since shows nothing of it. `unreachable`:
 	 * the reads since failed too. `in`: brought in. `refused`: not brought in. */
@@ -225,6 +232,10 @@ function whereOf(dir: string): Where | null {
 
 const keyOf = (thing: { readonly owner: string; readonly name: string }) => `${thing.owner}/${thing.name}`;
 
+/** A failed import as the list says it, to tell one that ended since from one that was there before. */
+const endKey = (end: CodeImportEnd | null | undefined) =>
+	end ? JSON.stringify([end.reason, end.github, end.file === true]) : null;
+
 /** What the line says, and the one small button beside it some states have. */
 interface Line {
 	readonly text: string;
@@ -323,26 +334,40 @@ export class CodeImport {
 		const list = code.list;
 		const imports = list?.imports;
 		if (!list || !imports) return;
+		// Not brought in, and since brought in or being brought in again (by an agent, another member): the line after a
+		// reload no longer says it was not, nor does this one.
+		const ended = this.#followed;
+		if (
+			ended?.state === "refused" &&
+			(imports.bringing.some((each) => keyOf(each) === keyOf(ended)) ||
+				list.repositories.some((each) => keyOf(each) === keyOf(ended)))
+		)
+			this.#followed = null;
 		const followed = this.#followed;
 		if (followed && followed.state !== "sending" && followed.state !== "in" && followed.state !== "refused") {
 			const key = keyOf(followed);
-			const bringing = imports.bringing.some((each) => keyOf(each) === key);
+			const bringing = imports.bringing.find((each) => keyOf(each) === key);
 			const kept = list.repositories.some((each) => keyOf(each) === key);
 			const told = followed.state === "started" || code.readNumber > followed.after;
+			const last = imports.last && keyOf(imports.last) === key ? imports.last : null;
 			if (!told) {
 				// A read from before the answer went missing says nothing of it.
 			} else if (bringing) {
 				followed.state = "started";
 				followed.seen = true;
+				// Named as the list names it, as a reload of the page would.
+				followed.label = bringing.github ? projectOf(bringing.github) : bringing.name;
+				followed.file = bringing.github === null;
 			} else if (kept) followed.state = "in";
-			else if (followed.state === "started" && followed.seen) {
-				// It ended, and is not in: the last that was not brought in is this one, if it is here at all.
-				const last = imports.last;
-				if (last && keyOf(last) === key) {
-					followed.state = "refused";
-					followed.why = last.reason;
-				} else this.#followed = null;
-			} else if (followed.state === "started") {
+			else if (last && (followed.seen || endKey(last) !== followed.lastBefore)) {
+				// It ended, and is not in: the last that was not brought in is this one (one it saw being brought in, or one
+				// that ended since it was asked). It says what the line after a reload says: the list's name, source and why.
+				followed.state = "refused";
+				followed.why = last.reason;
+				followed.label = last.github ? projectOf(last.github) : last.name;
+				followed.file = last.file === true || followed.file;
+			} else if (followed.state === "started" && followed.seen) this.#followed = null;
+			else if (followed.state === "started") {
 				if (Date.now() - followed.at >= FOLLOW_MS) this.#followed = null;
 			} else followed.state = "unsure";
 		}
@@ -353,6 +378,8 @@ export class CodeImport {
 				name: next.name,
 				github: next.github,
 				label: next.github ? projectOf(next.github) : next.name,
+				file: next.github === null,
+				lastBefore: endKey(imports.last && keyOf(imports.last) === keyOf(next) ? imports.last : null),
 				state: "started",
 				why: "",
 				seen: true,
@@ -456,7 +483,7 @@ export class CodeImport {
 				};
 			case "refused":
 				return manage
-					? { text: t("{name} was not brought in: {why}.", { name, why: importWhy(followed.why) }) }
+					? { text: t("{name} was not brought in: {why}.", { name, why: importWhy(followed.why, followed.file) }) }
 					: null;
 			case "in":
 				// In its own folder the done line says it.
@@ -600,8 +627,11 @@ export class CodeImport {
 		const signal = this.#host.signal;
 		this.#calls ??= this.#host.calls();
 		const calls = this.#calls;
+		const before = this.#host.code.list?.imports?.last;
 		const followed: Followed = {
 			...target,
+			file: false,
+			lastBefore: endKey(before && keyOf(before) === keyOf(target) ? before : null),
 			state: "sending",
 			why: "",
 			seen: false,

@@ -883,11 +883,126 @@ describe("Bring code in, in Storage", () => {
 		const { go, line } = await storage(calls);
 		await go("code");
 		expect(visibleText(line())).toBe("Bringing in Shop: Checking it…");
-		calls.list.mockResolvedValue(codeList({ last: lastShop("IMPORT_HISTORY_BAD_TIMEZONE") }));
+		calls.list.mockResolvedValue(codeList({ last: lastShop("IMPORT_HISTORY_BAD_TIMEZONE", "Acme/Shop") }));
 		await vi.advanceTimersByTimeAsync(5000);
 		expect(visibleText(line())).toBe(
 			"Shop was not brought in: its history is stored in an old way Qorpera can't take in yet.",
 		);
+	});
+
+	/** What the code's folder says of a failed import once the page is opened again with `list`. */
+	const reloaded = async (list: CodeRepositories) => {
+		for (const dispose of disposers.splice(0)) dispose();
+		document.body.replaceChildren();
+		const again = await storage(callsFake(list));
+		await again.go("code");
+		return visibleText(again.line());
+	};
+
+	it("says a watched import's failure as the page says it after a reload: a file's own bound, GitHub's 1 GB", async () => {
+		vi.useFakeTimers();
+		const fileShop: CodeBringing = { owner: "acme", name: "shop", github: null, step: "read", waiting: false };
+		const watched: [CodeBringing, CodeImportEnd, string][] = [
+			[
+				fileShop,
+				{ ...lastShop("IMPORT_TOO_LARGE"), file: true },
+				"shop was not brought in: it is larger than 256 MB, the most Qorpera brings in from a file.",
+			],
+			[
+				bringingShop("fetch"),
+				lastShop("IMPORT_TOO_LARGE", "Acme/Shop"),
+				"Shop was not brought in: it is larger than 1 GB, the most Qorpera brings in.",
+			],
+		];
+		for (const [bringing, last, words] of watched) {
+			const calls = callsFake(codeList({ bringing: [bringing] }));
+			const { go, line } = await storage(calls);
+			await go("code");
+			expect(visibleText(line())).toContain("Bringing in");
+			const failed = codeList({ last });
+			calls.list.mockResolvedValue(failed);
+			await vi.advanceTimersByTimeAsync(5000);
+			expect(visibleText(line())).toBe(words);
+			expect(await reloaded(failed)).toBe(words);
+			for (const dispose of disposers.splice(0)) dispose();
+			document.body.replaceChildren();
+		}
+	});
+
+	it("names an import it asked for as the list names it, as the page does after a reload", async () => {
+		vi.useFakeTimers();
+		const calls = callsFake();
+		const { go, button, line, send } = await storage(calls);
+		await go("code");
+		// Asked again in another spelling: the import that is open answers, under the spelling it was asked with first.
+		button().click();
+		await send("github.com/acme/shop");
+		expect(calls.bringIn).toHaveBeenCalledWith("acme", "shop", "acme/shop", expect.any(AbortSignal));
+		calls.list.mockResolvedValue(codeList({ bringing: [bringingShop("look")] }));
+		await vi.advanceTimersByTimeAsync(5000);
+		expect(visibleText(line())).toBe("Bringing in Shop: Checking it…");
+		const failed = codeList({ last: lastShop("IMPORT_USES_LFS", "Acme/Shop") });
+		calls.list.mockResolvedValue(failed);
+		await vi.advanceTimersByTimeAsync(5000);
+		const words =
+			"Shop was not brought in: it keeps large files outside the code, and Qorpera can't bring those in yet.";
+		expect(visibleText(line())).toBe(words);
+		expect(await reloaded(failed)).toBe(words);
+	});
+
+	it("says an ask whose answer was lost was not brought in only when a failure ended since, as a reload says", async () => {
+		vi.useFakeTimers();
+		// No failure before the ask; the read after the lost answer shows one: it is this ask's.
+		const calls = callsFake();
+		const first = await storage(calls);
+		await first.go("code");
+		calls.bringIn.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+		const failed = codeList({ last: lastShop("IMPORT_SOURCE_REFUSED", "Acme/Shop") });
+		calls.list.mockResolvedValue(failed);
+		first.button().click();
+		await first.send("Acme/Shop");
+		await settle();
+		const words =
+			"Shop was not brought in: GitHub did not let Qorpera read it; check the address, and that the company's GitHub connection can see it.";
+		expect(visibleText(first.line())).toBe(words);
+		expect(await reloaded(failed)).toBe(words);
+		for (const dispose of disposers.splice(0)) dispose();
+		document.body.replaceChildren();
+		// The same failure was there before the ask: it says nothing of this one.
+		const older = callsFake(failed);
+		const second = await storage(older);
+		await second.go("code");
+		expect(visibleText(second.line())).toBe(words);
+		older.bringIn.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+		second.button().click();
+		await second.send("Acme/Shop");
+		await settle();
+		expect(visibleText(second.line())).toBe("Shop may not have started.Try again");
+	});
+
+	it("no longer says it was not brought in once it is in after all, or being brought in again", async () => {
+		vi.useFakeTimers();
+		for (const after of [
+			codeList({ repositories: [keptShop], last: lastShop("IMPORT_USES_LFS", "Acme/Shop") }),
+			codeList({ bringing: [bringingShop("fetch")], last: lastShop("IMPORT_USES_LFS", "Acme/Shop") }),
+		]) {
+			const calls = callsFake(codeList({ bringing: [bringingShop("look")] }));
+			const { go, line } = await storage(calls);
+			await go("code");
+			calls.list.mockResolvedValue(codeList({ last: lastShop("IMPORT_USES_LFS", "Acme/Shop") }));
+			await vi.advanceTimersByTimeAsync(5000);
+			expect(visibleText(line())).toContain("was not brought in");
+			calls.list.mockResolvedValue(after);
+			// The code's folders read the list again on the way in once a minute has gone.
+			await go("code/qorpera");
+			await vi.advanceTimersByTimeAsync(61_000);
+			await go("code");
+			const now = visibleText(line());
+			expect(now).not.toContain("was not brought in");
+			expect(await reloaded(after)).toBe(now);
+			for (const dispose of disposers.splice(0)) dispose();
+			document.body.replaceChildren();
+		}
 	});
 
 	it("claims no outcome when the answer to the ask is lost: it reads the list until it shows one", async () => {
