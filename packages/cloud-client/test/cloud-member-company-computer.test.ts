@@ -200,7 +200,7 @@ describe("member Company Computer transport", () => {
 			},
 		]);
 		const { addedLater: _ignored, ...listed } = machine;
-		const known = { ...listed, control: null, epoch: 0 };
+		const known = { ...listed, control: null, epoch: 0, others: [] };
 		expect(await f.client.agentMachines(id(5), signal)).toEqual({
 			canWake: false,
 			canTakeOver: true,
@@ -252,6 +252,11 @@ describe("member Company Computer transport", () => {
 			[[{ ...machine, control: { mine: true, name: "Ada", until: "2026-11-10T19:00:00Z", press: "tab-1" } }], {}],
 			[[{ ...machine, epoch: 1.5 }], {}],
 			[[{ ...machine, epoch: -1 }], {}],
+			// The other members using the shared desktop (20260930734000): names, at most 50.
+			[[{ ...machine, others: "Ada" }], {}],
+			[[{ ...machine, others: [""] }], {}],
+			[[{ ...machine, others: [7] }], {}],
+			[[{ ...machine, others: Array.from({ length: 51 }, () => "Ada") }], {}],
 		] as const) {
 			reply([...machines], extra);
 			await expect(f.client.agentMachines(id(5), signal), JSON.stringify(extra)).rejects.toThrow();
@@ -300,8 +305,8 @@ describe("member Company Computer transport", () => {
 			canWake: true,
 			canTakeOver: false,
 			machines: [
-				{ ...machine, control: { ...control, epoch: null, seat: null, press: null }, epoch: 0 },
-				{ ...machine, machineId: id(21), control: own, epoch: 4 },
+				{ ...machine, control: { ...control, epoch: null, seat: null, press: null }, epoch: 0, others: [] },
+				{ ...machine, machineId: id(21), control: own, epoch: 4, others: [] },
 			],
 		});
 		f.fetch.mockResolvedValueOnce(
@@ -316,8 +321,20 @@ describe("member Company Computer transport", () => {
 		expect(await f.client.agentMachines(id(5), signal)).toEqual({
 			canWake: true,
 			canTakeOver: false,
-			machines: [{ ...machine, control: null, epoch: 0 }],
+			machines: [{ ...machine, control: null, epoch: 0, others: [] }],
 		});
+		// Who else uses the shared desktop (20260930734000), by name.
+		f.fetch.mockResolvedValueOnce(
+			Response.json({
+				schema: "qorpera.agent-machines/v1",
+				profileId: id(1),
+				staffAgentId: id(5),
+				canWake: true,
+				canTakeOver: true,
+				machines: [{ ...machine, others: ["Ada Lovelace", "Bo"] }],
+			}),
+		);
+		expect((await f.client.agentMachines(id(5), signal)).machines[0]?.others).toEqual(["Ada Lovelace", "Bo"]);
 	});
 	it("takes a desktop over, keeps it and hands it back as the member (20260930713000)", async () => {
 		const f = fixture(),

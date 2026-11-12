@@ -187,6 +187,7 @@ export class Database {
 							}
 						: null,
 					epoch: this.epoch(member, machine),
+					others: [],
 				};
 			}),
 		};

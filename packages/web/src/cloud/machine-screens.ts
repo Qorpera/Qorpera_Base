@@ -42,7 +42,9 @@ export type MachineDesktopAction =
 			readonly y: number;
 	  };
 /** Why an action did not run (the executor's 409 codes): as a look's, the member's hold ended (handed back or run out),
- * another action runs on the desktop (an agent's that began before the take-over), or the image's helper refused it. */
+ * another action runs on the desktop (an agent's, or another member's), or the image's helper refused it; for a shared
+ * action (20260930734000), someone holds the desktop privately (DESKTOP_MEMBER_IN_CONTROL) or the member's actions came
+ * too fast. */
 export type MachineActRefusal =
 	| "MACHINE_NOT_RUNNING"
 	| "MACHINE_NEEDS_COMPANY_VIEW"
@@ -55,7 +57,8 @@ export type MachineActRefusal =
 	| "SCREEN_ACTION_TAKEN"
 	| "DESKTOP_MACHINE_TOO_SMALL"
 	| "DESKTOP_DID_NOT_START"
-	| "SCREEN_REQUEST_INVALID";
+	| "SCREEN_REQUEST_INVALID"
+	| "DESKTOP_ACTIONS_TOO_FAST";
 const ACT_REFUSALS: ReadonlySet<string> = new Set<MachineActRefusal>([
 	"MACHINE_NOT_RUNNING",
 	"MACHINE_NEEDS_COMPANY_VIEW",
@@ -69,6 +72,7 @@ const ACT_REFUSALS: ReadonlySet<string> = new Set<MachineActRefusal>([
 	"DESKTOP_MACHINE_TOO_SMALL",
 	"DESKTOP_DID_NOT_START",
 	"SCREEN_REQUEST_INVALID",
+	"DESKTOP_ACTIONS_TOO_FAST",
 ]);
 export type MachineActAnswer =
 	| { readonly kind: "done"; readonly exitCode: number | null }
@@ -125,12 +129,13 @@ export interface WebMachineScreens {
 		signal: AbortSignal,
 	): Promise<MachineScreenLook>;
 	/** One action on a desktop the member holds (20260930713000), with the hand-back epoch and the seat of the hold the
-	 * input was captured under (F24 and F26 of #1661: SQL runs it only under that hold). What they typed goes in the
-	 * body, to the machine alone. */
+	 * input was captured under (F24 and F26 of #1661: SQL runs it only under that hold), or, with no hold (null), on the
+	 * desktop the member shares with the agent (20260930734000: SQL runs it only while no one holds it privately). What
+	 * they typed goes in the body, to the machine alone. */
 	act(
 		machineId: string,
 		action: MachineDesktopAction,
-		hold: { epoch: number; seat: number },
+		hold: { epoch: number; seat: number } | null,
 		signal: AbortSignal,
 	): Promise<MachineActAnswer>;
 	/** Turns the machine's desktop on (20260930714000): owners, admins and contributors, whatever its agent does. The body
@@ -218,14 +223,15 @@ export function createWebMachineScreens(options: {
 				signal,
 			);
 		},
-		act: (machineId, action, { epoch, seat }, signal) => {
+		act: (machineId, action, hold, signal) => {
 			if (
 				!UUID_PATTERN.test(options.companyId) ||
 				!UUID_PATTERN.test(machineId) ||
-				!Number.isSafeInteger(epoch) ||
-				epoch < 0 ||
-				!Number.isSafeInteger(seat) ||
-				seat < 0
+				(hold !== null &&
+					(!Number.isSafeInteger(hold.epoch) ||
+						hold.epoch < 0 ||
+						!Number.isSafeInteger(hold.seat) ||
+						hold.seat < 0))
 			)
 				return Promise.reject(new MachineScreenError("Invalid machine action"));
 			return withCloudDeadline(
@@ -238,7 +244,8 @@ export function createWebMachineScreens(options: {
 					const response = await options.fetch(url, {
 						method: "POST",
 						headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-						body: JSON.stringify({ action, epoch, seat }),
+						// Shared (no hold): the action alone.
+						body: JSON.stringify(hold === null ? { action } : { action, epoch: hold.epoch, seat: hold.seat }),
 						signal: requestSignal,
 						redirect: "error",
 						cache: "no-store",

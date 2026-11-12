@@ -41,7 +41,7 @@ import { Database, type HoldName, random, seating } from "./take-over-model.ts";
  * (I6, review r14) a heartbeat or input for a machine leaves the page only after a press on this page for it that no
  * release followed: nothing is ever taken up from a list; and a note ("could not be taken over") never follows a
  * press that a release followed (F22's counterpart of I4); a Hand back pressed on a hold shown from another window
- * comes to a hand-back of that machine or to "could not be given back yet", never to nothing (review r15).
+ * comes to a hand-back of that machine or to "could not be ended yet", never to nothing (review r15).
  * (I2 is the ledger's, checked by desktop-holds-explorer.test.ts; I6 is what it means for the window.) A failure prints
  * the seed, its shape and its steps. */
 
@@ -279,6 +279,7 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 						}
 					: null,
 				epoch: db.epoch(MEMBER, machineId),
+				others: [],
 			};
 		});
 	const effect = (one: Pending) => {
@@ -562,7 +563,10 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 		const value = p?.el.querySelector<HTMLElement>(".machine-screen-control");
 		return value?.hidden ? null : value;
 	};
-	const button = () => control()?.querySelector<HTMLButtonElement>(".machine-screen-control-button") ?? null;
+	const button = () => {
+		const value = control()?.querySelector<HTMLButtonElement>(".machine-screen-control-button");
+		return value && !value.hidden ? value : null;
+	};
 	const noted = () => p?.el.querySelector(".machine-screen-control-note")?.textContent ?? "";
 	/** The machine the window shows: the one chosen in its switcher, else its first (as #pick does), once its list came
 	 * (the switcher shows then); its own label may lag while the window's loop waits on a request. */
@@ -598,7 +602,7 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 			if (
 				!one.met &&
 				(backs.some((back) => back.step >= one.step && (one.machine ?? back.machine) === back.machine) ||
-					(control()?.textContent ?? "").includes("could not be given back"))
+					(control()?.textContent ?? "").includes("could not be ended"))
 			)
 				one.met = true;
 		// F22's counterpart (review r14): the note says nothing of a press that a release followed.
@@ -649,7 +653,7 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 				p?.holding ||
 				noted() !== "" ||
 				refusedFor.some((one) => one.step >= since) ||
-				p?.el.textContent?.includes("is using the computer")
+				p?.el.textContent?.includes("is typing privately")
 			)
 				press.outcome = true;
 		}
@@ -716,9 +720,15 @@ async function explore(seed: number, steps: number, typing = false): Promise<{ l
 					weight: 4,
 					name: `the window's button (${button()?.textContent ?? "none"})`,
 					run: () => {
+						// Type privately is in the large view alone (20260930734000): a click on the preview's picture opens it.
+						const view = p?.el.querySelector<HTMLElement>(".machine-screen");
+						if (!button() && view && !view.hidden && !view.classList.contains("screen-viewer-entered")) {
+							view.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerId: 1 }));
+							view.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0, pointerId: 1 }));
+						}
 						const value = button();
 						if (!value || value.disabled) return false;
-						if (value.textContent === "Take over") pressed();
+						if (value.textContent === "Type privately") pressed();
 						else release(machines);
 						value.click();
 						return true;

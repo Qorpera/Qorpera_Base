@@ -44,6 +44,7 @@ function machine(n: number, change: Partial<MemberAgentMachine> = {}): MemberAge
 		waitingFor: null,
 		control: null,
 		epoch: 0,
+		others: [],
 		...change,
 	};
 }
@@ -155,8 +156,9 @@ function setup(
 	const acts: {
 		url: string;
 		action: Record<string, unknown>;
-		epoch: number;
-		seat: number;
+		/** The epoch and the seat of the private hold it was captured under; null for a shared action (20260930734000). */
+		epoch: number | null;
+		seat: number | null;
 		signal: AbortSignal | undefined;
 		/** Whether it ran, when the database checks it (actAsDatabase). */
 		ran?: boolean;
@@ -184,16 +186,18 @@ function setup(
 			expect(headers.get("content-type")).toBe("application/json");
 			const body = JSON.parse(String(init?.body)) as {
 				action: Record<string, unknown>;
-				epoch: number;
-				seat: number;
+				epoch?: number;
+				seat?: number;
 			};
-			// The action, and the epoch and the seat of the hold it was captured under (F24, F26).
-			expect(Object.keys(body)).toEqual(["action", "epoch", "seat"]);
+			// The action, and the epoch and the seat of the hold it was captured under (F24, F26); a shared one alone
+			// (20260930734000).
+			const shared = !("epoch" in body);
+			expect(Object.keys(body)).toEqual(shared ? ["action"] : ["action", "epoch", "seat"]);
 			const sent: (typeof acts)[number] = {
 				url: url.slice(bridge.length),
 				action: body.action,
-				epoch: body.epoch,
-				seat: body.seat,
+				epoch: body.epoch ?? null,
+				seat: body.seat ?? null,
 				signal: init?.signal ?? undefined,
 			};
 			acts.push(sent);
@@ -203,9 +207,15 @@ function setup(
 			if (state.actAsDatabase) {
 				// As the database, when the action reaches it: only under the hold it names.
 				const row = state.machines.find((one) => url.includes(`/${one.machineId}/act`));
-				sent.ran =
-					row?.control?.mine === true && row.control.epoch === body.epoch && row.control.seat === body.seat;
-				if (!sent.ran) return Response.json({ code: "DESKTOP_CONTROL_ENDED" }, { status: 409 });
+				// A shared action runs only while no one types privately (20260930734000).
+				sent.ran = shared
+					? !row?.control
+					: row?.control?.mine === true && row.control.epoch === body.epoch && row.control.seat === body.seat;
+				if (!sent.ran)
+					return Response.json(
+						{ code: shared ? "DESKTOP_MEMBER_IN_CONTROL" : "DESKTOP_CONTROL_ENDED" },
+						{ status: 409 },
+					);
 			}
 			return Response.json({ schema: "qorpera.member-machine-act/v1", exitCode: answer.exitCode });
 		}
@@ -473,7 +483,15 @@ function controls(p: ComputerPanel) {
 	return value?.hidden ? null : value;
 }
 function controlButton(p: ComputerPanel) {
-	return controls(p)?.querySelector<HTMLButtonElement>(".machine-screen-control-button") ?? null;
+	const button = controls(p)?.querySelector<HTMLButtonElement>(".machine-screen-control-button");
+	return button && !button.hidden ? button : null;
+}
+/** The member presses the window's control. Type privately is in the large view alone (20260930734000): a member in the
+ * preview opens it first with a click on the picture; Done and Try again are in both. */
+function pressControl(p: ComputerPanel) {
+	const view = p.el.querySelector<HTMLElement>(".machine-screen");
+	if (!controlButton(p) && view && !view.hidden) press(view, 10, 10);
+	controlButton(p)!.click();
 }
 function handBackButton(p: ComputerPanel) {
 	return controls(p)?.querySelector<HTMLButtonElement>(".machine-screen-control-hand-back") ?? null;
@@ -503,7 +521,7 @@ async function holding(s: Setup = setup()) {
 	vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
 	canvas(p).width = 1600;
 	canvas(p).height = 1000;
-	controlButton(p)!.click();
+	pressControl(p);
 	await flush();
 	return { s, p };
 }
@@ -560,8 +578,8 @@ describe("an agent's computer window", () => {
 		});
 		expect(s.decode).toHaveBeenCalledOnce();
 		expect(mark(p)).toBe("Live");
-		// An owner may take it over (20260930713000); the picture takes no input until they do.
-		expect(controlButton(p)?.textContent).toBe("Take over");
+		// The preview is watched only (20260930734000): no control on it, and the picture takes no input there.
+		expect(controls(p)).toBeNull();
 		expect(canvas(p).hasAttribute("tabindex")).toBe(false);
 		expect(canvas(p).getAttribute("role")).toBe("img");
 	});
@@ -773,14 +791,14 @@ describe("an agent's computer window", () => {
 			const button = p.el.querySelector<HTMLButtonElement>(".computer-loading .computer-loading-hand-back");
 			return button?.hidden ? null : button;
 		};
-		expect(controlButton(p)?.textContent).toBe("Hand back");
+		expect(controlButton(p)?.textContent).toBe("Done");
 		expect(handBack()).toBeNull();
 		// The desktop the member holds is off (it stopped itself, or never ran: a take-over does not check it).
 		s.state.fallback = { code: "DESKTOP_NOT_RUNNING" };
 		await advance(LOOK_EVERY_MS * 3);
 		expect(status(p)).toBe("The computer is on, but its screen is off.");
 		expect(action(p)?.textContent).toBe("Turn it on");
-		expect(handBack()?.textContent).toBe("Hand back");
+		expect(handBack()?.textContent).toBe("Done");
 		// Turn it on goes through for the holder: the start runs, and the picture comes.
 		s.state.fallback = { picture: 3 };
 		action(p)!.click();
@@ -789,13 +807,13 @@ describe("an agent's computer window", () => {
 		expect(s.starts).toHaveLength(1);
 		expect(mark(p)).toBe("Live");
 		expect(handBack()).toBeNull();
-		expect(controlButton(p)?.textContent).toBe("Hand back");
+		expect(controlButton(p)?.textContent).toBe("Done");
 		// Any other state without a picture under the page's own hold: Hand back alone.
 		s.state.fallback = { code: "SCREEN_HIDDEN" };
 		await advance(LOOK_EVERY_MS * 3);
 		expect(status(p)).toBe("The screen is hidden because it may show files you can't open.");
 		expect(action(p)).toBeNull();
-		expect(handBack()?.textContent).toBe("Hand back");
+		expect(handBack()?.textContent).toBe("Done");
 		handBack()!.click();
 		await flush();
 		expect(calls(s, "qorpera_member_hand_back_machine_desktop")).toHaveLength(1);
@@ -820,9 +838,9 @@ describe("an agent's computer window", () => {
 		expect(status(p)).toBe("The computer is on, but its screen is off.");
 		expect(controls(p)).toBeNull();
 		expect(standInWords()).toBe(
-			`You are using the computer. ${staff.displayName} gets no pictures of the screen while you use it.`,
+			`Typing privately. ${staff.displayName} gets no pictures of the screen until you're done.`,
 		);
-		expect(standIn()?.textContent).toBe("Hand back");
+		expect(standIn()?.textContent).toBe("Done");
 		// Hand back is slow, then answered 503: the window says so where the picture would be, as the controls would.
 		let open = () => {};
 		s.state.handBackGate = new Promise<void>((resolve) => {
@@ -831,14 +849,14 @@ describe("an agent's computer window", () => {
 		s.state.handBackFails = 1;
 		standIn()!.click();
 		await flush();
-		expect(standInWords()).toBe("Giving the computer back…");
-		expect(standIn()?.textContent).toBe("Hand back");
+		expect(standInWords()).toBe("Ending private typing…");
+		expect(standIn()?.textContent).toBe("Done");
 		expect(standIn()?.disabled).toBe(true);
 		s.state.handBackGate = undefined;
 		open();
 		await flush();
 		expect(backs()).toBe(1);
-		expect(standInWords()).toBe("The computer could not be given back yet. It goes back by itself within 5 minutes.");
+		expect(standInWords()).toBe("Private typing could not be ended yet. It ends by itself within 5 minutes.");
 		expect(standIn()?.textContent).toBe("Try again");
 		expect(standIn()?.disabled).toBe(false);
 		expect(status(p)).toBe("The computer is on, but its screen is off.");
@@ -1603,7 +1621,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		p.el.querySelector(".machine-screen")?.classList.contains("screen-viewer-entered");
 	const words = (p: ComputerPanel) => controls(p)?.querySelector(".machine-screen-control-text")?.textContent;
 
-	it("takes input only in the large view: Take over in the preview enters the frame in the thread, never full screen (v234)", async () => {
+	it("takes input only in the large view: a click on the preview's picture enters the frame in the thread, never full screen, and Type privately there holds it (v234, 20260930734000)", async () => {
 		const full = vi.fn(async () => {});
 		Object.defineProperty(HTMLElement.prototype, "requestFullscreen", { configurable: true, value: full });
 		cleanup.push(() => {
@@ -1614,10 +1632,11 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		const p = panel(s);
 		await flush();
 		vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
-		// The preview, before the take-over: a picture to watch, no input.
+		// The preview, before the take-over: a picture to watch, no input, no control.
 		expect(entered(p)).toBe(false);
 		expect(canvas(p).getAttribute("role")).toBe("img");
-		controlButton(p)!.click();
+		expect(controls(p)).toBeNull();
+		pressControl(p);
 		await flush();
 		// Held: the window entered the frame in the thread by itself, asked for no full screen, and the picture has the keys.
 		expect(p.holding).toBe(true);
@@ -1626,9 +1645,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		expect(full).not.toHaveBeenCalled();
 		expect(canvas(p).getAttribute("role")).toBe("application");
 		expect(document.activeElement).toBe(canvas(p));
-		expect(words(p)).toBe(
-			`You are using the computer. ${staff.displayName} gets no pictures of the screen while you use it.`,
-		);
+		expect(words(p)).toBe(`Typing privately. ${staff.displayName} gets no pictures of the screen until you're done.`);
 		press(canvas(p), 400, 250);
 		await advance(DOUBLE_CLICK_MS);
 		expect(s.acts.map((act) => act.action)).toEqual([{ type: "click", x: 800, y: 500 }]);
@@ -1637,7 +1654,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		expect(s.acts.at(-1)?.action).toEqual({ type: "key", keys: ["Return"] });
 	});
 
-	it("watches only in the preview while the page holds the desktop: no press or key reaches the computer, and the words say to choose Enter (v234)", async () => {
+	it("watches only in the preview while the page holds the desktop: no key reaches the computer, a click on the picture opens the large view, and the words say to choose Enter (v234, 20260930734000)", async () => {
 		const { s, p } = await holding();
 		expect(entered(p)).toBe(true);
 		// Back to the thread: the preview, still held.
@@ -1647,10 +1664,9 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		expect(p.holding).toBe(true);
 		expect(canvas(p).getAttribute("role")).toBe("img");
 		expect(canvas(p).hasAttribute("tabindex")).toBe(false);
-		expect(words(p)).toBe("You are using the computer. Choose Enter to click and type.");
-		expect(controlButton(p)?.textContent).toBe("Hand back");
-		// A press on the picture, a key on it and a key on the window: nothing goes to the computer.
-		press(canvas(p), 400, 250);
+		expect(words(p)).toBe("Typing privately. Choose Enter to click and type.");
+		expect(controlButton(p)?.textContent).toBe("Done");
+		// A key on the picture and a key on the window: nothing goes to the computer.
 		key(canvas(p), "a");
 		key(p.el, "Enter");
 		await advance(DOUBLE_CLICK_MS + TYPE_BATCH_MS);
@@ -1659,22 +1675,26 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		s.state.answers.push({ picture: 2 });
 		await advance(LOOK_EVERY_MS);
 		expect(entered(p)).toBe(false);
-		// Enter: the large view, and the picture takes input again.
-		p.el.querySelector<HTMLButtonElement>(".screen-viewer-enter")!.click();
-		await flush();
+		// A click on the picture: the large view (20260930734000), nothing of the click sent, and the picture takes input
+		// again.
+		press(canvas(p), 400, 250);
+		await advance(DOUBLE_CLICK_MS);
+		expect(s.acts).toEqual([]);
 		expect(entered(p)).toBe(true);
 		expect(canvas(p).getAttribute("role")).toBe("application");
-		expect(words(p)).toBe(
-			`You are using the computer. ${staff.displayName} gets no pictures of the screen while you use it.`,
-		);
+		expect(words(p)).toBe(`Typing privately. ${staff.displayName} gets no pictures of the screen until you're done.`);
 		press(canvas(p), 400, 250);
 		await advance(DOUBLE_CLICK_MS);
 		expect(s.acts.map((act) => act.action)).toEqual([{ type: "click", x: 800, y: 500 }]);
-		// Hand back from the large view: the hold ends, and the picture takes nothing more.
-		controlButton(p)!.click();
+		// Done from the large view: the private hold ends, and the computer is shared again (20260930734000): the picture
+		// takes input with no hold.
+		pressControl(p);
 		await flush();
 		expect(p.holding).toBe(false);
-		expect(canvas(p).getAttribute("role")).toBe("img");
+		expect(canvas(p).getAttribute("role")).toBe("application");
+		press(canvas(p), 400, 250);
+		await advance(DOUBLE_CLICK_MS);
+		expect(s.acts.at(-1)).toMatchObject({ action: { type: "click", x: 800, y: 500 }, epoch: null, seat: null });
 	});
 
 	/** A thread for the window: its conversation's header stays reachable, a message and the composer are covered while
@@ -1708,7 +1728,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		s.state.takeGate = new Promise<void>((resolve) => {
 			open = resolve;
 		});
-		controlButton(p)!.click();
+		pressControl(p);
 		await flush();
 		expect(p.holding).toBe(false);
 		p.detach();
@@ -1726,7 +1746,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		expect(place.message.inert).not.toBe(true);
 		expect(place.composer.inert).not.toBe(true);
 		expect(canvas(p).getAttribute("role")).toBe("img");
-		expect(words(p)).toBe("You are using the computer. Choose Enter to click and type.");
+		expect(words(p)).toBe("Typing privately. Choose Enter to click and type.");
 	});
 
 	it("cancels an entry still pending when the window leaves its thread (review r1 F1 of #1685)", async () => {
@@ -1750,7 +1770,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		expect(mark(p)).toBe("Live");
 		expect(entered(p)).toBe(false);
 		expect(place.message.inert).not.toBe(true);
-		expect(words(p)).toBe("You are using the computer. Choose Enter to click and type.");
+		expect(words(p)).toBe("Typing privately. Choose Enter to click and type.");
 	});
 
 	it("covers the thread when a window comes back to it entered, whoever entered it (review r1 F1 of #1685)", async () => {
@@ -1828,10 +1848,10 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		expect(p.holding).toBe(true);
 		// The words never say the agent cannot see: it gets no pictures (the agent is root on that machine).
 		expect(controls(p)?.textContent).toContain(
-			`You are using the computer. ${staff.displayName} gets no pictures of the screen while you use it.`,
+			`Typing privately. ${staff.displayName} gets no pictures of the screen until you're done.`,
 		);
 		expect(controls(p)?.textContent).not.toMatch(/cannot see/);
-		expect(controlButton(p)?.textContent).toBe("Hand back");
+		expect(controlButton(p)?.textContent).toBe("Done");
 		// The picture takes the keyboard.
 		expect(canvas(p).getAttribute("tabindex")).toBe("0");
 		expect(canvas(p).getAttribute("role")).toBe("application");
@@ -1850,7 +1870,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		await advance(KEEP_EVERY_MS);
 		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(2);
 		// Hand back: the database has it back, the picture takes no input, Take over again.
-		controlButton(p)!.click();
+		pressControl(p);
 		await flush();
 		// Every take-over was answered, so Hand back is EXACT (F27, F28): by the seat the list shows the member holding,
 		// here this page's own.
@@ -1864,8 +1884,9 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 			},
 		]);
 		expect(p.holding).toBe(false);
-		expect(controlButton(p)?.textContent).toBe("Take over");
-		expect(canvas(p).hasAttribute("tabindex")).toBe(false);
+		expect(controlButton(p)?.textContent).toBe("Type privately");
+		// Shared again (20260930734000): the picture keeps the keyboard, with no hold and no heartbeat.
+		expect(canvas(p).getAttribute("tabindex")).toBe("0");
 		await advance(KEEP_EVERY_MS * 2);
 		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(2);
 	});
@@ -2010,7 +2031,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		cleanup.push(() => p.dispose());
 		p.attach(document.body, close);
 		await flush();
-		controlButton(p)!.click();
+		pressControl(p);
 		await flush();
 		const target = canvas(p);
 		for (const value of ["H", "e", "j", " ", "Å", "s", "e"]) key(target, value);
@@ -2100,17 +2121,21 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		await advance(1000);
 		await advance(1000);
 		expect(s.acts).toHaveLength(3);
-		expect(controls(p)?.textContent).not.toContain("Waiting for");
-		// Busy past 15 s: the action is dropped, and the next goes.
+		expect(controls(p)?.textContent ?? "").not.toContain("Waiting for");
+		// Busy past 15 s: the action is dropped, the window says so (20260930734000: never silently), and the next goes.
 		s.state.actAnswers.push(...Array.from({ length: 20 }, () => ({ code: "DESKTOP_BUSY" })));
 		press(canvas(p), 20, 20, { button: 2 });
 		await advance(16_000);
-		expect(controls(p)?.textContent).not.toContain("Waiting for");
+		expect(controls(p)?.textContent ?? "").not.toContain("Waiting for");
+		expect(controls(p)?.textContent).toContain(
+			"The computer was busy, so your last input did not go through. Try again.",
+		);
 		s.state.actAnswers.splice(0);
 		const before = s.acts.length;
 		press(canvas(p), 30, 30, { button: 2 });
 		await flush();
 		expect(s.acts.slice(before).map((act) => act.action)).toEqual([{ type: "click", x: 60, y: 60, button: "right" }]);
+		expect(controls(p)?.textContent ?? "").not.toContain("did not go through");
 	});
 
 	it("lets go when the hold ended under it: an action told so, or the heartbeat told so", async () => {
@@ -2121,7 +2146,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		press(canvas(p), 10, 10, { button: 2 });
 		await flush();
 		expect(p.holding).toBe(false);
-		expect(controlButton(p)?.textContent).toBe("Take over");
+		expect(controlButton(p)?.textContent).toBe("Type privately");
 		// One window at a time: each setup stubs the one fetch.
 		p.dispose();
 		const second = await holding();
@@ -2133,7 +2158,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		await advance(100);
 		expect(calls(second.s, "qorpera_member_keep_machine_desktop")).toHaveLength(1);
 		expect(second.p.holding).toBe(false);
-		expect(controlButton(second.p)?.textContent).toBe("Take over");
+		expect(controlButton(second.p)?.textContent).toBe("Type privately");
 	});
 
 	it("shows who holds the desktop to another member, not the screen, until they give it back or their time runs out", async () => {
@@ -2143,7 +2168,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		});
 		const p = panel(s);
 		await flush();
-		expect(status(p)).toBe("Ada is using the computer. The screen is hidden meanwhile.");
+		expect(status(p)).toBe("Ada is typing privately. The screen is hidden until they're done.");
 		expect(screen(p)?.hidden).toBe(true);
 		expect(controls(p)).toBeNull();
 		expect(s.looks).toEqual([]);
@@ -2160,7 +2185,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		s.state.answers.push({ code: "DESKTOP_MEMBER_IN_CONTROL" });
 		await advance(LOOK_EVERY_MS);
 		await flush();
-		expect(status(p)).toBe("Ada is using the computer. The screen is hidden meanwhile.");
+		expect(status(p)).toBe("Ada is typing privately. The screen is hidden until they're done.");
 		// Her time runs out with no hint: the list is read again at its end.
 		const listed = lists(s);
 		s.state.machines = [machine(1)];
@@ -2196,11 +2221,11 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		s.state.machines = [
 			machine(1, { control: { mine: false, name: "Ada", until, epoch: null, seat: null, press: null } }),
 		];
-		controlButton(p)!.click();
+		pressControl(p);
 		await flush();
 		await flush();
 		expect(p.holding).toBe(false);
-		expect(status(p)).toBe("Ada is using the computer. The screen is hidden meanwhile.");
+		expect(status(p)).toBe("Ada is typing privately. The screen is hidden until they're done.");
 	});
 
 	it("takes over from the agent's card once the window has the desktop, and hands back when the window closes", async () => {
@@ -2231,8 +2256,8 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		await flush();
 		// Shown as the member's own, from another window: the picture, Take over and Hand back; no input, no heartbeat.
 		expect(p.holding).toBe(false);
-		expect(controls(p)?.textContent).toContain("You are using this computer in another window.");
-		expect(controlButton(p)?.textContent).toBe("Take over");
+		expect(controls(p)?.textContent).toContain("You are typing privately in another window.");
+		expect(controlButton(p)?.textContent).toBe("Type privately");
 		expect(handBackButton(p)?.hidden).toBe(false);
 		expect(canvas(p).hasAttribute("tabindex")).toBe(false);
 		key(canvas(p), "Enter");
@@ -2240,11 +2265,11 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		expect(s.acts).toEqual([]);
 		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
 		// Take over: sent at that epoch (the database renews the member's own lease for this page), held and renewed here.
-		controlButton(p)!.click();
+		pressControl(p);
 		await flush();
 		expect(calls(s, "qorpera_member_take_machine_desktop").map((call) => call.body.p_epoch)).toEqual([3]);
 		expect(p.holding).toBe(true);
-		expect(controlButton(p)?.textContent).toBe("Hand back");
+		expect(controlButton(p)?.textContent).toBe("Done");
 		expect(handBackButton(p)?.hidden).toBe(true);
 		await advance(KEEP_EVERY_MS);
 		expect(calls(s, "qorpera_member_keep_machine_desktop").map((call) => call.body.p_epoch)).toEqual([3]);
@@ -2298,7 +2323,7 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		s.state.answers.push({ picture: 1 });
 		const p = panel(s);
 		await flush();
-		expect(controls(p)?.textContent).toContain("You are using this computer in another window.");
+		expect(controls(p)?.textContent).toContain("You are typing privately in another window.");
 		// Hand back, with the list reads after it failing: the hand-back at the shown epoch goes at once and is answered.
 		s.state.listFails = 2;
 		handBackButton(p)!.click();
@@ -2306,15 +2331,18 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		expect(calls(s, "qorpera_member_hand_back_machine_desktop").map((call) => call.body.p_epoch)).toEqual([3]);
 		expect(s.state.machines[0]?.control).toBeNull();
 		// The confirming read failed: the window says the computer could not be given back yet, with Try again.
-		expect(controls(p)?.textContent).toContain("The computer could not be given back yet.");
+		expect(controls(p)?.textContent).toContain("Private typing could not be ended yet.");
 		expect(controlButton(p)?.textContent).toBe("Try again");
 		expect(p.holding).toBe(false);
 		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
 		// Try again: the list reads, nothing of the member's is held: done, and the words go.
-		controlButton(p)!.click();
+		pressControl(p);
 		await flush();
-		expect(controls(p)?.textContent ?? "").not.toContain("could not be given back");
-		expect(controlButton(p)?.textContent).toBe("Take over");
+		expect(controls(p)?.textContent ?? "").not.toContain("could not be ended");
+		// Back to a shared computer, in the preview, once a list read shows it: watched only, no control on it
+		// (20260930734000).
+		await advance(MACHINES_EVERY_MS);
+		expect(controls(p)).toBeNull();
 		expect(calls(s, "qorpera_member_take_machine_desktop")).toHaveLength(0);
 	});
 
@@ -2338,14 +2366,14 @@ describe("a member's take-over of the desktop (20260930713000)", () => {
 		await flush();
 		await advance(LOOK_EVERY_MS);
 		expect(p.holding).toBe(false);
-		expect(controls(p)?.textContent).toContain("You are using this computer in another window.");
+		expect(controls(p)?.textContent).toContain("You are typing privately in another window.");
 		key(canvas(p), "Enter");
 		await advance(KEEP_EVERY_MS * 2);
 		expect(s.acts).toEqual([]);
 		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
 		expect(calls(s, "qorpera_member_take_machine_desktop")).toHaveLength(0);
 		// A press takes it over (the member's own lease, renewed for this page), and then it is used and renewed.
-		controlButton(p)!.click();
+		pressControl(p);
 		await flush();
 		expect(calls(s, "qorpera_member_take_machine_desktop").map((call) => call.body.p_epoch)).toEqual([0]);
 		expect(p.holding).toBe(true);
@@ -2443,6 +2471,232 @@ describe("a member's action through the member bridge (20260930713000)", () => {
 				),
 			).rejects.toThrow();
 	});
+	it("posts a shared action alone, with no hold, and takes the shared begin's refusals (20260930734000)", async () => {
+		const t = transport(() => Response.json({ schema: "qorpera.member-machine-act/v1", exitCode: 0 }));
+		expect(await t.screens.act(machine(1).machineId, { type: "type", text: "Åse" }, null, signal)).toEqual({
+			kind: "done",
+			exitCode: 0,
+		});
+		expect(JSON.parse(String(t.fetch.mock.calls[0]![1]?.body))).toEqual({ action: { type: "type", text: "Åse" } });
+		for (const code of ["DESKTOP_MEMBER_IN_CONTROL", "DESKTOP_ACTIONS_TOO_FAST", "DESKTOP_MACHINE_TOO_SMALL"])
+			expect(
+				await transport(() => Response.json({ code }, { status: 409 })).screens.act(
+					machine(1).machineId,
+					{ type: "key", keys: ["Return"] },
+					null,
+					signal,
+				),
+			).toEqual({ kind: "refused", code });
+	});
+});
+
+describe("a member shares the agent's computer (20260930734000)", () => {
+	const entered = (p: ComputerPanel) =>
+		p.el.querySelector(".machine-screen")?.classList.contains("screen-viewer-entered");
+	const words = (p: ComputerPanel) => controls(p)?.querySelector(".machine-screen-control-text")?.textContent ?? "";
+	const who = (p: ComputerPanel) => controls(p)?.querySelector(".machine-screen-control-who")?.textContent ?? "";
+	/** A window showing machine 1's picture (1600 x 1000 in an 800 x 500 box), in the preview. */
+	async function shown(s: Setup = setup()) {
+		s.state.answers.push({ picture: 1 });
+		const p = panel(s);
+		await flush();
+		vi.spyOn(canvas(p), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 800, 500));
+		canvas(p).width = 1600;
+		canvas(p).height = 1000;
+		return { s, p };
+	}
+
+	it("opens the large view with a click on the preview's picture, and takes the member's input there at once, with no hold", async () => {
+		const full = vi.fn(async () => {});
+		Object.defineProperty(HTMLElement.prototype, "requestFullscreen", { configurable: true, value: full });
+		cleanup.push(() => {
+			delete (HTMLElement.prototype as { requestFullscreen?: unknown }).requestFullscreen;
+		});
+		const { s, p } = await shown();
+		// The preview: watched only, no Take over on it, no input.
+		expect(controls(p)).toBeNull();
+		key(canvas(p), "a");
+		await advance(TYPE_BATCH_MS);
+		expect(s.acts).toEqual([]);
+		// A press that moves drags the window: it opens nothing.
+		press(canvas(p), 100, 100, {}, [140, 130]);
+		await flush();
+		expect(entered(p)).toBe(false);
+		// A click on the picture: the large view in the thread (never full screen), and nothing of the click is sent.
+		press(canvas(p), 400, 250);
+		await advance(DOUBLE_CLICK_MS);
+		expect(entered(p)).toBe(true);
+		expect(full).not.toHaveBeenCalled();
+		expect(s.acts).toEqual([]);
+		expect(canvas(p).getAttribute("role")).toBe("application");
+		// The member acts at once: clicks, keys and text go with no hold, and no take-over is asked.
+		press(canvas(p), 400, 250);
+		await advance(DOUBLE_CLICK_MS);
+		for (const value of ["H", "e", "j"]) key(canvas(p), value);
+		await advance(TYPE_BATCH_MS);
+		key(canvas(p), "Enter");
+		await flush();
+		expect(s.acts.map((act) => [act.action, act.epoch, act.seat])).toEqual([
+			[{ type: "click", x: 800, y: 500 }, null, null],
+			[{ type: "type", text: "Hej" }, null, null],
+			[{ type: "key", keys: ["Return"] }, null, null],
+		]);
+		expect(calls(s, "qorpera_member_take_machine_desktop")).toEqual([]);
+		expect(calls(s, "qorpera_member_keep_machine_desktop")).toEqual([]);
+		// Back to the thread: watched only again.
+		p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!.click();
+		await flush();
+		key(canvas(p), "x");
+		await advance(TYPE_BATCH_MS);
+		expect(s.acts).toHaveLength(3);
+		expect(canvas(p).getAttribute("role")).toBe("img");
+	});
+
+	it("says once, the first time, that the member and the agent share the computer, and offers Type privately with a lock", async () => {
+		const { p } = await shown();
+		press(canvas(p), 400, 250);
+		await flush();
+		expect(words(p)).toBe(`You and ${staff.displayName} share this computer: you can both click and type.`);
+		const lock = controlButton(p)!;
+		expect(lock.textContent).toBe("Type privately");
+		expect(lock.querySelector("svg.icon")).not.toBeNull();
+		expect(lock.classList.contains("is-secondary")).toBe(true);
+		expect(lock.title).toBe(`For passwords: ${staff.displayName} gets no pictures of the screen until you're done.`);
+		// It stays while the large view is open, and goes for good once it is left.
+		await advance(LOOK_EVERY_MS * 2);
+		expect(words(p)).toContain("share this computer");
+		p.el.querySelector<HTMLButtonElement>(".screen-viewer-back")!.click();
+		await flush();
+		press(canvas(p), 400, 250);
+		await flush();
+		expect(entered(p)).toBe(true);
+		expect(words(p)).toBe("");
+		expect(controlButton(p)?.textContent).toBe("Type privately");
+		// Another window in this browser says it no more either.
+		p.dispose();
+		const again = await shown();
+		press(canvas(again.p), 400, 250);
+		await flush();
+		expect(entered(again.p)).toBe(true);
+		expect(words(again.p)).toBe("");
+	});
+
+	it("names who else used the computer in the last minute, in the preview too; a viewer watches and is told so", async () => {
+		const s = setup({ machines: [machine(1, { others: ["Ada"] })] });
+		const { p } = await shown(s);
+		expect(controls(p)).not.toBeNull();
+		expect(who(p)).toBe("Ada is using it too.");
+		expect(controlButton(p)).toBeNull();
+		s.state.machines = [machine(1, { others: ["Ada", "Bo", "Cy"] })];
+		s.hint("machines");
+		await flush();
+		expect(who(p)).toBe("Ada, Bo and Cy are using it too.");
+		s.state.machines = [machine(1)];
+		s.hint("machines");
+		await flush();
+		expect(controls(p)).toBeNull();
+		p.dispose();
+		// A viewer: the picture, who else, and in the large view that they watch; no input, no lock.
+		const viewer = setup({ role: "viewer", canTakeOver: false, machines: [machine(1, { others: ["Ada"] })] });
+		const { p: watching } = await shown(viewer);
+		press(canvas(watching), 400, 250);
+		await flush();
+		expect(entered(watching)).toBe(true);
+		expect(words(watching)).toBe("You can watch. Someone with edit access can use the computer.");
+		expect(who(watching)).toBe("Ada is using it too.");
+		expect(controlButton(watching)).toBeNull();
+		expect(canvas(watching).getAttribute("role")).toBe("img");
+		press(canvas(watching), 400, 250);
+		key(canvas(watching), "a");
+		await advance(DOUBLE_CLICK_MS + TYPE_BATCH_MS);
+		expect(viewer.acts).toEqual([]);
+	});
+
+	it("types privately with the lock: the hold, the words, Done, and shared input again after it; what was typed under it never goes out shared", async () => {
+		const { s, p } = await shown();
+		press(canvas(p), 400, 250);
+		await flush();
+		// A shared click first.
+		press(canvas(p), 100, 100);
+		await advance(DOUBLE_CLICK_MS);
+		expect(s.acts.map((act) => act.seat)).toEqual([null]);
+		// Type privately: no input goes while it is on its way; then the private hold takes it.
+		let open = () => {};
+		s.state.takeGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		controlButton(p)!.click();
+		await flush();
+		expect(controlButton(p)?.disabled).toBe(true);
+		expect(canvas(p).getAttribute("role")).toBe("img");
+		key(canvas(p), "z");
+		await advance(TYPE_BATCH_MS);
+		expect(s.acts).toHaveLength(1);
+		open();
+		await flush();
+		expect(p.holding).toBe(true);
+		expect(words(p)).toBe(`Typing privately. ${staff.displayName} gets no pictures of the screen until you're done.`);
+		expect(words(p)).not.toMatch(/can't see|cannot see/);
+		expect(controlButton(p)?.textContent).toBe("Done");
+		expect(controlButton(p)?.classList.contains("is-secondary")).toBe(false);
+		// The password, under the hold: with its epoch and seat. Done comes before its batch goes: it goes nowhere.
+		for (const value of ["p", "w"]) key(canvas(p), value);
+		await advance(TYPE_BATCH_MS);
+		expect(s.acts.at(-1)).toMatchObject({ action: { type: "type", text: "pw" }, epoch: 0, seat: 1 });
+		key(canvas(p), "d");
+		pressControl(p);
+		await advance(TYPE_BATCH_MS);
+		await flush();
+		expect(p.holding).toBe(false);
+		expect(s.acts.filter((act) => act.action.type === "type").map((act) => act.action.text)).toEqual(["pw"]);
+		// Shared again: the lock is offered, and input goes with no hold.
+		expect(controlButton(p)?.textContent).toBe("Type privately");
+		press(canvas(p), 100, 100);
+		await advance(DOUBLE_CLICK_MS);
+		expect(s.acts.at(-1)).toMatchObject({ action: { type: "click", x: 200, y: 200 }, epoch: null, seat: null });
+	});
+
+	it("waits for a busy desktop, says when input did not go through, and stops when someone types privately", async () => {
+		const { s, p } = await shown();
+		press(canvas(p), 400, 250);
+		await flush();
+		// The agent's step holds the desktop: the member's click waits for it, then goes.
+		s.state.actAnswers.push({ code: "DESKTOP_BUSY" }, { code: "DESKTOP_ACTIONS_TOO_FAST" });
+		press(canvas(p), 10, 10, { button: 2 });
+		await flush();
+		expect(controls(p)?.textContent).toContain(`Waiting for ${staff.displayName} to finish a step…`);
+		await advance(1000);
+		await advance(1000);
+		expect(s.acts).toHaveLength(3);
+		expect(controls(p)?.textContent ?? "").not.toContain("Waiting for");
+		// Busy past 15 s: dropped, and said.
+		s.state.actAnswers.push(...Array.from({ length: 20 }, () => ({ code: "DESKTOP_BUSY" })));
+		press(canvas(p), 20, 20, { button: 2 });
+		await advance(16_000);
+		expect(controls(p)?.textContent).toContain(
+			"The computer was busy, so your last input did not go through. Try again.",
+		);
+		s.state.actAnswers.splice(0);
+		// Ada types privately: the shared action is refused, the list says who, and the screen is hidden.
+		const until = new Date(Date.now() + 120_000).toISOString();
+		s.state.machines = [
+			machine(1, { control: { mine: false, name: "Ada", until, epoch: null, seat: null, press: null } }),
+		];
+		s.state.actAsDatabase = true;
+		s.state.fallback = { code: "DESKTOP_MEMBER_IN_CONTROL" };
+		press(canvas(p), 30, 30, { button: 2 });
+		await flush();
+		await advance(LOOK_EVERY_MS);
+		expect(s.acts.at(-1)?.ran).toBe(false);
+		expect(status(p)).toBe("Ada is typing privately. The screen is hidden until they're done.");
+		expect(screen(p)?.hidden).toBe(true);
+		// She is done: the computer is shared again.
+		s.state.machines = [machine(1)];
+		s.state.fallback = { picture: 4 };
+		s.hint("machines");
+		await advance(LOOK_EVERY_MS);
+		expect(mark(p)).toBe("Live");
+	});
 });
 
 describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
@@ -2461,7 +2715,7 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 		s.state.handBackFails = 1;
 		expect(await p.handBack()).toBe(false);
 		expect(p.holding).toBe(false);
-		expect(words(p)).toBe("The computer could not be given back yet. It goes back by itself within 5 minutes.");
+		expect(words(p)).toBe("Private typing could not be ended yet. It ends by itself within 5 minutes.");
 		expect(controlButton(p)?.textContent).toBe("Try again");
 		// The picture takes no input meanwhile.
 		expect(canvas(p).hasAttribute("tabindex")).toBe(false);
@@ -2475,7 +2729,7 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 		await advance(2000);
 		expect(calls(s, "qorpera_member_hand_back_machine_desktop").length).toBe(asked + 1);
 		expect(backEpochs(s)).toEqual([0, 0]);
-		expect(controlButton(p)?.textContent).toBe("Take over");
+		expect(controlButton(p)?.textContent).toBe("Type privately");
 		await advance(KEEP_EVERY_MS * 2);
 		expect(calls(s, "qorpera_member_keep_machine_desktop")).toHaveLength(0);
 		expect(p.holding).toBe(false);
@@ -2492,14 +2746,14 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 		await advance(1);
 		expect(count()).toBe(2);
 		// The second failed: Try again asks at once, and this time it goes through.
-		controlButton(p)!.click();
+		pressControl(p);
 		await flush();
 		expect(count()).toBe(3);
-		expect(words(p)).toBe("The computer could not be given back yet. It goes back by itself within 5 minutes.");
-		controlButton(p)!.click();
+		expect(words(p)).toBe("Private typing could not be ended yet. It ends by itself within 5 minutes.");
+		pressControl(p);
 		await flush();
 		expect(count()).toBe(4);
-		expect(controlButton(p)?.textContent).toBe("Take over");
+		expect(controlButton(p)?.textContent).toBe("Type privately");
 		await advance(30_000);
 		expect(count()).toBe(4);
 	});
@@ -2514,12 +2768,12 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 		});
 		await flush();
 		expect(done).toBeUndefined();
-		expect(words(p)).toBe("Giving the computer back…");
+		expect(words(p)).toBe("Ending private typing…");
 		expect(controlButton(p)?.disabled).toBe(true);
 		slow.open();
 		await back;
 		expect(done).toBe(true);
-		expect(controlButton(p)?.textContent).toBe("Take over");
+		expect(controlButton(p)?.textContent).toBe("Type privately");
 	});
 
 	it("calls off a take-over still on its way: the hand-back names it at once, and the take-over is refused when it arrives", async () => {
@@ -2529,7 +2783,7 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 		await flush();
 		const late = gate();
 		s.state.takeGate = late.closed;
-		controlButton(p)!.click();
+		pressControl(p);
 		await flush();
 		expect(takeEpochs(s)).toEqual([0]);
 		// I'm done while the take-over is on its way: VOID at its epoch goes at once (F27), and its answer is the
@@ -2562,7 +2816,7 @@ describe("a member's hand-back of the desktop (review r1 F4, F5, F6)", () => {
 		await flush();
 		const late = gate();
 		s.state.takeGate = late.closed;
-		controlButton(p)!.click();
+		pressControl(p);
 		await flush();
 		p.dispose();
 		late.open();
@@ -2621,7 +2875,7 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		return { s, panels, p };
 	}
 	async function takeOver(p: ComputerPanel) {
-		controlButton(p)!.click();
+		pressControl(p);
 		await flush();
 	}
 	const handBacks = (s: Setup) => calls(s, "qorpera_member_hand_back_machine_desktop");
@@ -2689,7 +2943,7 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		await takeOver(p);
 		expect(takeEpochs(s)).toEqual([0]);
 		expect(p.holding).toBe(false);
-		expect(controls(p)?.textContent).toContain("The computer could not be taken over. Try again.");
+		expect(controls(p)?.textContent).toContain("Private typing could not start. Try again.");
 		// I'm done: the machine may be held, so the hand-back at its epoch goes, and the card waits for its answer.
 		const slow = gate();
 		s.state.handBackGate = slow.closed;
@@ -2831,7 +3085,7 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		// again: the loop never saw the second.
 		pick(1);
 		s.state.takeLost = "committed";
-		controlButton(p)!.click();
+		pressControl(p);
 		await flush();
 		expect(calls(s, "qorpera_member_take_machine_desktop").map((call) => call.body.p_machine_id)).toEqual([
 			machine(2).machineId,
@@ -3084,7 +3338,7 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		await flush();
 		expect(s.acts.map((act) => [act.seat, act.ran])).toEqual([[1, false]]);
 		// The window shows the other tab's hold as the member's in another window: no input, no heartbeat.
-		expect(controls(p)?.textContent).toContain("You are using this computer in another window.");
+		expect(controls(p)?.textContent).toContain("You are typing privately in another window.");
 		key(canvas(p), "End");
 		await advance(KEEP_EVERY_MS * 2);
 		expect(s.acts).toHaveLength(1);
@@ -3204,7 +3458,7 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		s.state.seats.set(machine(1).machineId, 2);
 		await advance(KEEP_EVERY_MS);
 		expect(p.holding).toBe(false);
-		expect(controls(p)?.textContent).toContain("You are using this computer in another window.");
+		expect(controls(p)?.textContent).toContain("You are typing privately in another window.");
 		// Hand back on that hold: by seat 2, so it ends and the epoch moves on.
 		handBackButton(p)!.click();
 		await flush();
@@ -3236,7 +3490,7 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		// Nothing was sent and nothing is said of that take-over.
 		expect(takeEpochs(s)).toEqual([0]);
 		expect(p.holding).toBe(false);
-		expect(controls(p)?.textContent ?? "").not.toContain("could not be taken over");
+		expect(controls(p)?.textContent ?? "").not.toContain("could not start");
 	});
 
 	it("takes nothing over after pagehide for a press made before it, when the same window goes on: no take-over, no heartbeat, Take over offered (r13 F20)", async () => {
@@ -3265,7 +3519,7 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		expect(p.holding).toBe(false);
 		expect(keeps(s)).toHaveLength(0);
 		expect(s.state.machines[0]?.control).toBeNull();
-		expect(controlButton(p)?.textContent).toBe("Take over");
+		expect(controlButton(p)?.textContent).toBe("Type privately");
 		expect(controlButton(p)?.disabled).toBe(false);
 		// Only a new press takes it over, at the epoch the hand-back answered.
 		await takeOver(p);
@@ -3547,7 +3801,7 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 
 	it("tells the member when another tab's hand-back overtook their take-over, reads the list again, and sends the next press at the new epoch (r11 F18)", async () => {
 		const { s, p } = await company();
-		expect(controls(p)?.textContent).not.toContain("could not be taken over");
+		expect(controls(p)?.textContent ?? "").not.toContain("could not start");
 		// Take over, sent at 0; before it reaches the database another tab gives the desktop back (epoch 0 to 1).
 		const late = gate();
 		s.state.takeGate = late.closed;
@@ -3561,7 +3815,7 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		await flush();
 		// Refused (TAKE_CALLED_OFF, epoch 1): the member is told, and the list is read again.
 		expect(p.holding).toBe(false);
-		expect(controls(p)?.textContent).toContain("The computer could not be taken over. Try again.");
+		expect(controls(p)?.textContent).toContain("Private typing could not start. Try again.");
 		expect(lists(s)).toBeGreaterThan(read);
 		// No take-over on its own; the member's next press goes out at the epoch the refusal named, and holds.
 		expect(takeEpochs(s)).toEqual([0]);
@@ -3601,7 +3855,7 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		late.open();
 		await flush();
 		expect(p.holding).toBe(true);
-		expect(controls(p)?.textContent).not.toContain("could not be taken over");
+		expect(controls(p)?.textContent ?? "").not.toContain("could not start");
 		await advance(KEEP_EVERY_MS);
 		expect(keeps(s).map((call) => call.body.p_machine_id)).toContain(machine(2).machineId);
 		expect(s.state.machines[0]?.control).toBeNull();
@@ -3637,7 +3891,7 @@ describe("the company's ledger of the desktops a member may hold, by hand-back e
 		late.open();
 		await flush();
 		expect(again.holding).toBe(true);
-		expect(controls(again)?.textContent).not.toContain("could not be taken over");
+		expect(controls(again)?.textContent ?? "").not.toContain("could not start");
 	});
 
 	it("lets a list with a lower epoch than the page knows end and take up nothing (r8 F15)", async () => {

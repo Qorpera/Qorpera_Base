@@ -82,6 +82,9 @@ export interface MemberAgentMachine {
 	/** The caller's own hand-back epoch for the machine (review r5 of #1661): a take-over is accepted only at it, and only
 	 * the database moves it (0 when never handed back, or from a database before it). */
 	epoch: number;
+	/** The other members who acted on the desktop they share with the agent in the last minute, by name
+	 * (20260930734000); never the caller. Empty when none (or from a database before shared control). */
+	others: string[];
 }
 export interface MemberAgentMachineControl {
 	mine: boolean;
@@ -401,7 +404,10 @@ export class CloudMemberCompanyComputerClient {
 				(row.screenUsedAt !== null && !text(row.screenUsedAt, 64)) ||
 				(row.screenAgentName !== null && !text(row.screenAgentName, 160)) ||
 				(row.waitingFor !== null && row.waitingFor !== "hours" && row.waitingFor !== "room") ||
-				(row.epoch !== undefined && !epochOf(row.epoch))
+				(row.epoch !== undefined && !epochOf(row.epoch)) ||
+				// The other members using the shared desktop (20260930734000); absent before shared control.
+				(row.others !== undefined &&
+					(!Array.isArray(row.others) || row.others.length > 50 || !row.others.every((name) => text(name, 256))))
 			)
 				throw new Error(invalid);
 			// Who holds the desktop (20260930713000); absent before the take-over migration.
@@ -441,6 +447,7 @@ export class CloudMemberCompanyComputerClient {
 				waitingFor: row.waitingFor as "hours" | "room" | null,
 				control,
 				epoch: epochOf(row.epoch) ? row.epoch : 0,
+				others: Array.isArray(row.others) ? [...(row.others as string[])] : [],
 			};
 		});
 		if (new Set(machines.map((machine) => machine.machineId)).size !== machines.length) throw new Error(invalid);
