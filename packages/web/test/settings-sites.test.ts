@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type SitesAccess, SitesView } from "../src/app/views/settings-sites.ts";
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
@@ -467,6 +469,32 @@ describe("Settings → Sites", () => {
 		expect(client.list).toHaveBeenCalledTimes(2);
 		expect(view!.el.querySelector('[role="alert"]')).toBeNull();
 		expect(ids()).toEqual([shop.id]);
+	});
+});
+
+describe("a site's card at every width", () => {
+	// jsdom lays nothing out, so the stylesheet's rules are what is pinned here; measured in headless Chrome at 390, 768,
+	// 1024 and 1440 px, the sidebar open and compact, in English and Danish (lanes/own-code-storage/build4/S.md).
+	const app = readFileSync(resolve("src/styles/app.css"), "utf8");
+
+	it("follows the card's own width: the list is the cards' container, not the window", () => {
+		expect(app).toContain(":is(.sites, .whats-new) .connection-list { container: page-cards / inline-size; }");
+	});
+
+	it("keeps the text at least 10em wide beside the buttons, never 0", () => {
+		// The shared card's column is minmax(0, 1fr) beside an auto column the buttons fill first: at a 1024 px window
+		// with the sidebar open the text column got 0 px.
+		expect(app).toContain(
+			":is(.sites, .whats-new) .service-card { grid-template-columns: 42px minmax(min(10em, 100%), 1fr) auto; }",
+		);
+	});
+
+	it("puts the buttons under the text when the card cannot hold both side by side", () => {
+		const narrow = app.match(/@container page-cards \(max-width: 46em\) \{([^@]*?)\n\}/)?.[1] ?? "";
+		expect(narrow).toContain(":is(.sites, .whats-new) .service-card { grid-template-columns: 42px minmax(0, 1fr); }");
+		expect(narrow).toContain(
+			":is(.sites, .whats-new) .service-card > .connection-actions { grid-column: 2; justify-content: start; }",
+		);
 	});
 });
 
