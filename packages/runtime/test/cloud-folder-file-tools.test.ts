@@ -153,6 +153,24 @@ it("cuts a window whose answer would not fit one result, so the model sees all i
 	expect(f.releases[0]?.p_output_sha256).toBe(sha(String(content.value)));
 });
 
+it("cuts a full window of line breaks or control characters, whose whole answer is past a tool's JSON bound", async () => {
+	// A line break takes two bytes as JSON and a control character six: a whole 32 KiB window of either is an answer
+	// past the 64 KiB a tool's JSON may take, so only a start of it is shown, and the model reads on from nextOffset.
+	for (const code of [10, 1]) {
+		const unit = String.fromCharCode(code);
+		const f = await fixture({ files: { "breaks.txt": unit.repeat(32768) } });
+		const content = await f.call("company_read", { path: "breaks.txt", offset: 0, limit: 32768 });
+		const answer = parse(content);
+		expect(fitsOneResult(String(content.value))).toBe(true);
+		expect(answer.bytesRead).toBeGreaterThan(4000);
+		expect(answer.bytesRead).toBeLessThan(32768);
+		expect(answer.text).toBe(unit.repeat(answer.bytesRead));
+		expect(answer.nextOffset).toBe(answer.bytesRead);
+		expect(f.releases).toHaveLength(1);
+		expect(f.releases[0]?.p_output_sha256).toBe(sha(String(content.value)));
+	}
+});
+
 /** A 2×1 PNG: a red pixel, then a blue one. */
 const RED_BLUE = pngFile(pngHeader(2, 1, 8, 2), pngRows([[255, 0, 0, 0, 0, 255]]));
 
