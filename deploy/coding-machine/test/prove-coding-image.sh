@@ -16,7 +16,8 @@
 # the 15 seconds before, and LXD projects that come and go (this run's own are checked gone). Both projects and
 # everything in them are removed at the end, also on failure. Prints PASS lines (the inner proof's among them), then
 # ALL PASSED. The proof inside also runs the executor's commands for a repository's checks and site, as the test
-# machine's Node prints them from the source (test/code-checks-scripts.mjs).
+# machine's Node prints them from the source (test/code-checks-scripts.mjs), and the guest agent itself from its source
+# for the machine's package caches.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -136,13 +137,23 @@ set +e
 	lx file push "$HERE/test/prove-in-coding-machine.sh" "$VM/root/prove-in-coding-machine.sh" >/dev/null
 	node "$HERE/test/code-checks-scripts.mjs" "$WORK/code-checks" </dev/null
 	lx file push -r "$WORK/code-checks" "$VM/root/" >/dev/null
-	timeout 1800 lxc --project "$CODING" exec "$VM" -- env QORPERA_PROOF_GIT="$(jq -r .git "$WORK/image-build.json")" \
+	# The guest agent's source, which the machine's Node runs with its types stripped: the agent, the two files it
+	# imports, and contracts (the proof links it in as @qorpera/contracts).
+	SRC=$(cd "$HERE/../../packages" && pwd)
+	install -d "$WORK/guest/contracts/src" "$WORK/guest/runtime/src"
+	cp "$SRC"/contracts/src/*.ts "$WORK/guest/contracts/src/"
+	cp "$SRC"/runtime/src/{cloud-coding-guest-agent,cloud-coding-error-code,cloud-folder-cache-dir}.ts "$WORK/guest/runtime/src/"
+	printf '{"name":"@qorpera/contracts","type":"module","exports":"./src/index.ts"}\n' >"$WORK/guest/contracts/package.json"
+	printf '{"type":"module"}\n' >"$WORK/guest/runtime/package.json"
+	lx file push -r "$WORK/guest" "$VM/root/" >/dev/null
+	timeout 3600 lxc --project "$CODING" exec "$VM" -- env QORPERA_PROOF_GIT="$(jq -r .git "$WORK/image-build.json")" \
 		QORPERA_PROOF_NODE="$(jq -r .node "$WORK/image-build.json")" \
 		QORPERA_PROOF_CHROMIUM="$(jq -r .chromium "$WORK/image-build.json")" \
 		QORPERA_PROOF_TYPESCRIPT="$(jq -r .typescript "$WORK/image-build.json")" \
 		QORPERA_PROOF_TSX="$(jq -r .tsx "$WORK/image-build.json")" QORPERA_PROOF_UV="$(jq -r .uv "$WORK/image-build.json")" \
 		QORPERA_PROOF_MISE="$(jq -r .mise "$WORK/image-build.json")" QORPERA_PROOF_PROXY="$PROXY" \
-		QORPERA_PROOF_SCRIPTS=/root/code-checks bash /root/prove-in-coding-machine.sh </dev/null | tee "$WORK/inner.out"
+		QORPERA_PROOF_SCRIPTS=/root/code-checks QORPERA_PROOF_GUEST=/root/guest bash /root/prove-in-coding-machine.sh \
+		</dev/null | tee "$WORK/inner.out"
 	grep -qx "ALL PASSED" "$WORK/inner.out" || fail "the proof inside the machine did not finish"
 
 	snapshot during

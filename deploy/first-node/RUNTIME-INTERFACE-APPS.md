@@ -42,7 +42,7 @@ write, with the tools they already have, and need no migration.
 | --- | --- | --- | --- |
 | `name` | text, 1–60 chars | required | the title on the card, the panel and the drawer |
 | `about` | text, ≤ 200 chars | none | one plain line under the title |
-| `emblem` | one of the interface emblems | `board` | the drawer icon |
+| `emblem` | one of the 24 interface emblems | `page` | the drawer icon; a member may pick another, or one of the app's own icons, for their own drawer |
 | `colour` | one of the agent colours | none | the emblem's colour |
 | `entry` | relative path to an `.html` file | `index.html` | the page that opens |
 | `owner` | agent handle | the creating agent | who made it; the app's header names it |
@@ -61,6 +61,15 @@ so and links the file).
 notes) but are never loaded into the page.
 **Videos** (Jonas, 7 November 2026: demo videos of design ideas): `.mp4 .webm`, each at most 12 MiB and 48 MiB in all, on
 top of the limits above. An agent writes them from a machine or moves them in; no text tool writes one.
+**Icons** (Jonas, 12 November 2026: "change the icons of the interfaces and have a generate icon button too for them to
+create a new custom one based on it's name or contents"): an app's own icons are `icons/<id>.svg` in its folder, an id
+of lowercase letters, digits and hyphens (`compass`, `trail-sign`), at most 12 an app. Each is drawn as the built-in
+emblems are, one shape on a 48 by 48 grid, black where the app's colour goes and white where it is cut out, in the
+fixed SVG subset that `parseAppIcon` (`@qorpera/cloud-client/app-icons`) reads: only `path`, `circle`, `rect`,
+`ellipse`, `line`, `polyline` and `polygon`, fill and stroke black, white or none, no transform, style, text or group,
+at most 8 KiB. The web and `save_app` read a file alike, so what the web could not draw is never saved. A member picks
+one, or another emblem, under Icon and colour in the app's menu in the drawer; Generate icon there asks the app's maker
+(its `owner`, else the Co-Founder) in the chat to draw 3 more.
 
 **How a page is put together.** The frame has no origin and no network, so the host (the web app, with the member's
 own read authority) reads the entry and the files it names and hands the frame one self-contained page:
@@ -137,6 +146,12 @@ its look already reads well at 1280 and at 390 px, and a company's apps look lik
   variables and the company's colours (§2) on `files`, all in the tool's schema, because a tool's own description
   holds 4096 bytes. `writes` is checked as `reads` is, by `save_app` and by `company_write` / `company_edit` of an
   `app.toml`; a manifest given without it keeps what the app has. `kit` makes the app from a kit (§3a).
+  A file under `icons/` must be `icons/<id>.svg` and read as an icon (§2 "Icons"), or the call is refused naming the
+  file and what to change; a save that adds icons past 12 is refused (`APP_ICONS_FULL`, naming the oldest: a new icon
+  takes an old one's id, or `company_delete` removes one first). How to draw them, and that an ask for icons is one
+  call of files alone that never changes `manifest.emblem`, is said on `files`; a save of icons alone answers where the
+  member picks one. The emblems are listed on `manifest.emblem` only: 24 names would put the description past 4096
+  bytes.
 - `post_app {name, operationKey, posted}` rewrites `posted` in `app.toml`, every other byte as written.
 - `company_write` / `company_edit` of an `apps/<name>/app.toml` check the manifest the same way and refuse a change of
   `posted` (pointing to `post_app`) or of `owner`. An app's files are its owner's: another agent changes them with
@@ -591,6 +606,9 @@ security review of its own:
    (`packages/runtime/kits/explainer/engine.js`), the page and the clips' list (`cloud-app-kit-explainer.ts`), and
    `save_app` writing both with how to make a video on the schema field. No migration, no node change and no change
    to the web's own code: an explainer is put together as any app. Next: the tool that records the clips.
+8. An app's own icons (§2 "Icons", 12 November 2026): the format and the 24 emblems (`cloud-client/app-icons.ts`,
+   `interfaces.ts`), `save_app`'s checks and how to draw them on `files`, and the web's Icon and colour and Generate
+   icon in the drawer.
 
 Follow-ups: the password line on an app's own page without a header (§6 H2: shown above the page only while the page
 has a password field on screen, reported by the frame document); a member marks a human task done from an app (the asking agent's wake is built, but the object gateway

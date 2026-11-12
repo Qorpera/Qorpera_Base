@@ -3235,6 +3235,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 	// says what is stopped, open questions too with allowCustom ("it's really stopped at you"), so they moved again.
 	// Its question schema says the same (an open one goes on the card with allowCustom, not to chat), so the catalog text
 	// moved once more.
+	// On 12 November 2026 save_app's description no longer lists the emblems, which are 24 now and would put it past
+	// 4096 bytes (its schema's enum lists them, with what an emblem is), and its schema says on files how to draw an app's
+	// own icons (icons/<id>.svg, which members pick for their drawer), so they moved again.
 	expect(tools.map((tool) => tool.name)).toEqual([
 		"company_read",
 		"company_list",
@@ -3281,9 +3284,9 @@ it("pins a company run's tool catalog byte for byte", async () => {
 		"ask_member",
 	]);
 	expect(sha(JSON.stringify(tools.map((tool) => [tool.name, tool.description])))).toBe(
-		"29e3701248713209023adb13d1882a36e3ac54e1de288a47a8dee10a828b42d4",
+		"51a28d3f0c5169cace2436016a41e33b5b06585d4e12630173182ace2f7d8769",
 	);
 	expect(sha(String(start?.p_tool_catalog_text))).toBe(
-		"a8ceed55e6fe1ee1957badea119208917bf36d0b4a355a871bdf7c00051b47c2",
+		"b35d34b8304c4395ce656c75d1277482321482a034a529a0fcacc3e8df760eaf",
 	);
 });

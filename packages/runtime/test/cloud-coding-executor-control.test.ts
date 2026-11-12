@@ -67,7 +67,8 @@ describe("dedicated coding executor control", () => {
 			);
 		}
 		// The change record of the repositories kept in Qorpera (own code storage, step 2b): a landing's report, the
-		// record's files, the requests (undo, download, restore), and a restore's record.
+		// record's files, the requests (undo, download, restore), a restore's record, and the sessions a restore stranded
+		// (step 6's follow-ups).
 		for (const method of [
 			"qorpera_record_code_change",
 			"qorpera_code_change_files_due",
@@ -77,6 +78,7 @@ describe("dedicated coding executor control", () => {
 			"qorpera_code_request_step",
 			"qorpera_code_request_finish",
 			"qorpera_code_restore_record",
+			"qorpera_code_restore_strand",
 		]) {
 			await control.call(method, {}, new AbortController().signal);
 			expect(fetcher).toHaveBeenLastCalledWith(

@@ -3,6 +3,7 @@ import {
 	CLOUD_CODING_COMMAND_LEGACY_PAGE_BYTES,
 	type CloudCodingCommandRead,
 	type CloudCodingCommandScope,
+	CODING_GUEST_HELPER_MAX_BYTES,
 	cloudCodingSessionLayout,
 	parseCloudCodingCommandRead,
 	parseCloudCodingCommandReceipt,
@@ -71,7 +72,7 @@ export async function inspectCodingSessionGuest(
 	)
 		throw new Error("CODING_MACHINE_BOOT_CHANGED");
 	for (const [path, digest, maximumBytes] of [
-		[helper, options.helperSha256, 65536],
+		[helper, options.helperSha256, CODING_GUEST_HELPER_MAX_BYTES],
 		[`${cloudCodingSessionLayout(options.workerId).configurationRoot}/guest.json`, options.guestConfigSha256, 8192],
 	] as const) {
 		const file = await options.client.readInstanceFile(machine.project, name, path, maximumBytes, signal);

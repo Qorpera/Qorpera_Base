@@ -335,7 +335,8 @@ of 47 to 50 KB on Live Test, [M0 report](RUNTIME-AGENT-MEMORY-TREE-M0.md)):
 
 **The result fence.**
 - Before every provider request, the patched Codex sends each tool output to the host, which wraps it in an envelope
-  of at most 8 KiB (`rt/cloud-native-result-fence.ts`, `rt/cloud-native-tool-boundary.ts:745-805`).
+  of at most 32 KiB (8 KiB until perf sprint T2, #1530; `rt/cloud-native-result-fence.ts`,
+  `rt/cloud-native-tool-boundary.ts:745-805`).
 - The host records a context view with digests and read references only, never text (`rt/cloud-company-path-gateway.ts:531-580`,
   table `qorpera_native_context_views`).
 - The callback sits at Codex's common request builder, for HTTP, WebSocket and compaction requests. Only result bodies
@@ -636,9 +637,11 @@ cannot be built again; a platform restore of `runs/` is W1's to add if it is wan
 The keys are fixed: a plain step has exactly these, with `reads_cut` (below) only when it applies. A pending step has
 them too, with `result` null and `reads` and `releases` empty.
 
-- `result` is the envelope exactly as the fence issued it, at most 8 KiB (§1). So the log holds what the model saw,
-  never a larger raw result. The envelope is JSON (`rt/cloud-native-tool-boundary.ts:788`), so it is stored as a JSON
-  value, not as an escaped string, and takes no more room in the file than it did in the request.
+- `result` is the envelope exactly as the fence issued it, at most one tool result: 32 KiB (§1; 8 KiB until #1530,
+  whose migration 20260930733000 and the shared parser `memory-run-files.ts` take the step's `result` to it). So the
+  log holds what the model saw, never a larger raw result. The envelope is JSON (`rt/cloud-native-tool-boundary.ts:788`),
+  so it is stored as a JSON value, not as an escaped string, and takes no more room in the file than it did in the
+  request.
 - `args` is fitted to 8 KiB as stored, JSON escaping included, with its byte count and hash.
 - `reads` are the read references the fence recorded for this result in the context view (§1), a copy for whoever
   reads the log. They are kept up to 16 KiB as stored. If the fence recorded more, the step also has
@@ -650,7 +653,7 @@ them too, with `result` null and `reads` and `releases` empty.
   (`RUNTIME-COMPANY-FOLDER-ERASURE.md` §1). A file's erasure goes by them (§10.1). The list is empty for a result
   that read nothing.
 - `text` is the agent's own text before the call, fitted to 8 KiB as stored like `args`. Reasoning items are never
-  stored (§6.3). So a rendered step is at most about 24 KiB.
+  stored (§6.3). So a rendered step is at most about 48 KiB.
 - **`paths` are the paths the step named in its arguments and in its receipt** (the result), not its reads. A
   search can read up to 10,000 paths, so listing them would pass the cap below and make the rest of the run narrow.
   Reads are covered elsewhere: `reads` and the read records of `releases` above, and the runtime still gives
@@ -1997,7 +2000,7 @@ after 6 October (Jonas, 6 October); each PR lists its own under "Deferred (needs
 - **A background summarizer drain.** It would need a member's login outside a run, and a ChatGPT plan never pays for
   work no member started (§7.1). It can be revisited when a company account can pay.
 - **The newest messages in full.** OptChat found that one large message forces old lines to merge for good, and
-  breaks the budget. Steps are bounded the same way: a raw step's result is at most the fence's 8 KiB envelope,
+  breaks the budget. Steps are bounded the same way: a raw step's result is at most the fence's 32 KiB envelope,
   and its arguments and text are fitted to 8 KiB each (§4.5).
 - **OptChat's compactor context: the folded chat before the node.** It resolves more references, but each line could
   then carry a fact from any earlier message. Erasing one early message would mean rebuilding every line after it,
@@ -2132,10 +2135,10 @@ the rules for folders shared with only some agents (§4.5, §8, §9). It changes
 - **Latency.** Each zoom is one more tool round. Closing compaction holds the slot up to CLOSE after the reply, and the
   run lease must allow that time. A fold inside a run may wait for lines (§5.7).
 - **Storage.** Block rewrites cost a few KB per message, kept for 7 days (§10, GC). Run logs cost at most 49 KiB
-  per step (its text, its call and its 8 KiB envelope, its read references and the paths it names), so a 500-step
+  per step (its text, its call and its 32 KiB envelope, its read references and the paths it names), so a 500-step
   run stores at most about 24 MB, and usually far less, kept like the conversation. Their index keeps no step text.
 - **Shell output without a read reference.** A step that printed a file through a shell, with no read reference, is
   not found by a file's erasure. That is the same as P18 decides for receipts and transcripts today (§10.1). The
   tree's own erases go by path only: a step that printed a tree or log block without naming its path keeps that
   text until an owner or admin erases the step.
-- **The fence's 8 KiB envelope** bounds zoom pages. A long message takes several calls to read in full.
+- **The fence's 32 KiB envelope** bounds zoom pages. A long message takes several calls to read in full.

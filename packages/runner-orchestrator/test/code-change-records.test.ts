@@ -1076,6 +1076,161 @@ describe("codeChangeIndexText: what is live and what is ready (step 4)", () => {
 	});
 });
 
+describe("codeChangeIndexText: the changes a restore took out of main (step 6)", () => {
+	const SHOP = { owner: "qorpera", name: "shop" };
+	const HEADING = "# Changes in qorpera/shop";
+	const RESTORED_AT = "2026-11-10T09:30:00.123456+00:00";
+	const DAY = 86_400_000;
+	/** Two days after the restore. */
+	const NOW = Date.parse(RESTORED_AT) + 2 * DAY;
+	const line = (n: number, extra: Partial<CodeChangeLine> = {}): CodeChangeLine => ({
+		n,
+		createdAt: "2026-11-09T12:00:00+00:00",
+		state: "landed",
+		kind: "landing",
+		line: `Change ${n}`,
+		...extra,
+	});
+	const restore = (n: number, extra: Partial<CodeChangeLine> = {}) =>
+		line(n, {
+			kind: "restore",
+			createdAt: RESTORED_AT,
+			line: "Restored from the copy of 2026-11-09 02:14 UTC",
+			...extra,
+		});
+	/** The plan's case: change 18 put main back to before change 14; 17 was refused and never in main. */
+	const LINES = [
+		line(12),
+		line(13),
+		line(14, { state: "lost" }),
+		line(15, { state: "lost", kind: "undo", line: "Undo change 13: A banner" }),
+		line(16, { state: "lost", kind: "found" }),
+		line(17, { state: "refused" }),
+		restore(18),
+		line(19, { createdAt: "2026-11-11T08:00:00+00:00" }),
+	];
+	const LIST = [
+		"- 19 · 2026-11-11 · in main · Change 19",
+		"- 18 · 2026-11-10 · in main · Restored from the copy of 2026-11-09 02:14 UTC",
+		"- 17 · 2026-11-09 · not in main (refused) · Change 17",
+		"- 16 · 2026-11-09 · lost in a restore · Change 16",
+		"- 15 · 2026-11-09 · lost in a restore · Undo change 13: A banner",
+		"- 14 · 2026-11-09 · lost in a restore · Change 14",
+		"- 13 · 2026-11-09 · in main · Change 13",
+		"- 12 · 2026-11-09 · in main · Change 12",
+	];
+	const PUT_BACK = "Put back to an earlier copy on 2026-11-10: changes 14 to 16 are no longer in main.";
+	const opening = (lines: CodeChangeLine[], now = NOW) => codeChangeIndexText(SHOP, lines, {}, now).split("\n")[2];
+
+	it("opens the list with one line for the restore, byte for byte, above what is live and what is ready", () => {
+		expect(codeChangeIndexText(SHOP, LINES, {}, NOW)).toBe(text(HEADING, "", PUT_BACK, "", ...LIST));
+		const live = {
+			version: 3,
+			kind: "release",
+			change: 13,
+			since: "2026-11-09T14:10:05+00:00",
+			by: "Jonas Hansen",
+			url: "https://sites.qorpera.com/shop/",
+		};
+		expect(codeChangeIndexText(SHOP, LINES, { live, ready: null }, NOW)).toBe(
+			text(
+				HEADING,
+				"",
+				PUT_BACK,
+				"",
+				"Live: version 3, made at change 13, since 2026-11-09 14:10 UTC; Jonas Hansen said go. https://sites.qorpera.com/shop/",
+				"Ready in What's new: nothing.",
+				"",
+				...LIST,
+			),
+		);
+		// The rest of the file is what it is without the line, to the byte.
+		const late = Date.parse(RESTORED_AT) + 30 * DAY;
+		expect(codeChangeIndexText(SHOP, LINES, {}, NOW).replace(`${PUT_BACK}\n\n`, "")).toBe(
+			codeChangeIndexText(SHOP, LINES, {}, late),
+		);
+		expect(codeChangeIndexText(SHOP, LINES, {}, late)).toBe(text(HEADING, "", ...LIST));
+	});
+
+	it("names the changes in the list's own words: one, two, runs of three or more, and those an earlier restore took out", () => {
+		expect(opening([line(15), line(16, { state: "lost" }), restore(17)])).toBe(
+			"Put back to an earlier copy on 2026-11-10: change 16 is no longer in main.",
+		);
+		expect(opening([line(14), line(15, { state: "lost" }), line(16, { state: "lost" }), restore(17)])).toBe(
+			"Put back to an earlier copy on 2026-11-10: changes 15 and 16 are no longer in main.",
+		);
+		// Two restores: the newest gives the day, and every change still lost is named, also one the first took out
+		// (it is not in main either way). Neither restore's own row is named, though the second took the first out.
+		const lines = [
+			line(4, { state: "lost" }),
+			line(5, { state: "lost" }),
+			line(6, { state: "reverted" }),
+			restore(7, { state: "lost", createdAt: "2026-10-01T10:00:00+00:00" }),
+			line(8, { state: "conflict" }),
+			line(9),
+			line(10, { state: "lost" }),
+			line(11, { state: "lost" }),
+			line(12, { state: "lost" }),
+			restore(13),
+		];
+		expect(opening(lines)).toBe(
+			"Put back to an earlier copy on 2026-11-10: changes 4, 5 and 10 to 12 are no longer in main.",
+		);
+		// Whatever order the kernel sends them in.
+		expect(opening([...lines].reverse())).toBe(opening(lines));
+	});
+
+	it("says it for 30 days after the restore and not after, and not without a restore it can date or a change it took", () => {
+		const at = Date.parse(RESTORED_AT);
+		expect(opening(LINES, at)).toBe(PUT_BACK);
+		expect(opening(LINES, at + 30 * DAY - 1)).toBe(PUT_BACK);
+		expect(opening(LINES, at + 30 * DAY)).toBe("- 19 · 2026-11-11 · in main · Change 19");
+		expect(opening(LINES, at + 400 * DAY)).toBe("- 19 · 2026-11-11 · in main · Change 19");
+		// A clock behind the restore's time is not past it.
+		expect(opening(LINES, at - DAY)).toBe(PUT_BACK);
+		// Made by the clock when no time is given: a restore of January is long past.
+		const january = LINES.map((entry) =>
+			entry.kind === "restore" ? { ...entry, createdAt: "2026-01-10T09:30:00+00:00" } : entry,
+		);
+		expect(codeChangeIndexText(SHOP, january).split("\n")[2]).toBe("- 19 · 2026-11-11 · in main · Change 19");
+		// A restore's time that cannot be read, no restore, no change lost, and a restore past the hundred lines.
+		expect(opening(LINES.map((entry) => (entry.kind === "restore" ? { ...entry, createdAt: "never" } : entry)))).toBe(
+			"- 19 · 2026-11-11 · in main · Change 19",
+		);
+		expect(opening(LINES.filter((entry) => entry.kind !== "restore"))).toBe(
+			"- 19 · 2026-11-11 · in main · Change 19",
+		);
+		expect(opening([line(12), restore(13)])).toBe(
+			"- 13 · 2026-11-10 · in main · Restored from the copy of 2026-11-09 02:14 UTC",
+		);
+		const long = [line(1, { state: "lost" }), restore(2), ...Array.from({ length: 100 }, (_, k) => line(k + 3))];
+		expect(opening(long)).toBe("- 102 · 2026-11-09 · in main · Change 102");
+	});
+
+	it("keeps to one short line: ten numbers or runs at most, then how many more", () => {
+		// Every other change lost: no runs.
+		const every = Array.from({ length: 50 }, (_, k) => line(k + 1, { state: k % 2 ? "landed" : "lost" }));
+		expect(opening([...every, restore(51)])).toBe(
+			"Put back to an earlier copy on 2026-11-10: changes 1, 3, 5, 7, 9, 11, 13, 15, 17, 19 and 15 more are no longer in main.",
+		);
+		// A run past the tenth counts every change in it.
+		const runs = [
+			...Array.from({ length: 20 }, (_, k) => line(k + 1, { state: k % 2 ? "landed" : "lost" })),
+			...Array.from({ length: 12 }, (_, k) => line(k + 21, { state: "lost" })),
+		];
+		expect(opening([...runs, restore(33)])).toBe(
+			"Put back to an earlier copy on 2026-11-10: changes 1, 3, 5, 7, 9, 11, 13, 15, 17, 19 and 12 more are no longer in main.",
+		);
+		// Ten parts with the longest numbers a row may have: still one line, under 400 bytes.
+		const big = 2_147_483_000;
+		const far = Array.from({ length: 60 }, (_, k) => line(big + k, { state: k % 4 === 3 ? "landed" : "lost" }));
+		const said = opening([...far, restore(big + 60)]) ?? "";
+		expect(said).toMatch(/^Put back to an earlier copy on 2026-11-10: changes 2147483000 to 2147483002, /);
+		expect(said).toMatch(/, 2147483036 to 2147483038 and 15 more are no longer in main\.$/);
+		expect(bytes(said)).toBeLessThan(400);
+	});
+});
+
 describe("what the kernel is told of paths", () => {
 	it("sends the first fifty paths that fit the row, and counts the rest", () => {
 		const paths = Array.from({ length: 60 }, (_, at) => ({ path: `src/${at}.ts`, change: "changed" as const }));
@@ -1872,6 +2027,46 @@ describe("CodeChangeRecords", () => {
 			indexVersion: 9,
 			problem: null,
 		});
+	});
+
+	it("opens the list it writes with the line for a restore by its own clock, in a pass and inside a job", async () => {
+		const lines = [
+			{
+				n: 15,
+				createdAt: "2026-01-10T09:30:00+00:00",
+				state: "landed",
+				kind: "restore",
+				line: "Restored from the copy of 2026-01-09 02:14 UTC",
+			},
+			{ n: 14, createdAt: "2026-01-09T12:00:00+00:00", state: "lost", kind: "landing", line: "Free returns" },
+		];
+		const list = [
+			"- 15 · 2026-01-10 · in main · Restored from the copy of 2026-01-09 02:14 UTC",
+			"- 14 · 2026-01-09 · lost in a restore · Free returns",
+		];
+		const at = Date.parse("2026-01-10T09:30:00+00:00");
+		const t = setup({ now: () => at + 29 * 86_400_000 });
+		t.kernel.index = { version: 9, lines };
+		await expect(t.pass()).resolves.toEqual({ written: 1, failed: 0 });
+		expect(t.wrote[0]?.index).toBe(
+			text(
+				"# Changes in qorpera/shop",
+				"",
+				"Put back to an earlier copy on 2026-01-10: change 14 is no longer in main.",
+				"",
+				...list,
+			),
+		);
+		const inside = setup({ now: () => at });
+		inside.kernel.index = { version: 9, lines };
+		const signal = new AbortController().signal;
+		await inside.records.inJob({ shell: SHELL, layout: CODE_HOST_LAYOUT, signal }, TARGET, signal);
+		expect(inside.wrote[0]?.index).toBe(t.wrote[0]?.index);
+		// Without a clock of its own, the clock's time: long past January.
+		const clock = setup();
+		clock.kernel.index = { version: 9, lines };
+		await clock.pass();
+		expect(clock.wrote[0]?.index).toBe(text("# Changes in qorpera/shop", "", ...list));
 	});
 
 	it("tells the kernel of many rows with long diffs in several calls, each one the control can send", async () => {

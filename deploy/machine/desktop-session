@@ -1,16 +1,20 @@
 #!/bin/bash
 # The machine's desktop (qorpera-machine-desktop.service, started by `desktop start`): TigerVNC's X server on display
-# :1 and a plain XFCE session in it, as the account `desktop`. VNC listens on the machine's loopback only (port 5901),
-# for a live view through the machine's host; nothing outside the machine reaches the machine anyway (README, "What a
-# machine can reach"). Root, which runs the agents' commands, may use the display (xhost localuser:root).
+# :1 and an XFCE session in it, as the account `desktop`, with the look the office desktops had (desktop-look: one dark
+# dock with the browser, the files and a terminal, the agent's backdrop, tidy windows). VNC listens on the machine's
+# loopback only (port 5901), for a live view through the machine's host; nothing outside the machine reaches the
+# machine anyway (README, "What a machine can reach"). Root, which runs the agents' commands, may use the display
+# (xhost localuser:root).
 set -euo pipefail
 SIZE=${QORPERA_DESKTOP_SIZE:-1600x1000}
 [[ $SIZE =~ ^[0-9]{3,4}x[0-9]{3,4}$ ]] || { echo "invalid desktop size $SIZE" >&2; exit 1; }
 # A desktop nobody has used for this long stops by itself: a page left open would otherwise keep the machine awake.
 IDLE=${QORPERA_DESKTOP_IDLE_SECONDS:-3600}
 [[ $IDLE =~ ^[0-9]{2,6}$ ]] || { echo "invalid idle time $IDLE" >&2; exit 1; }
-LAST=$XDG_RUNTIME_DIR/last-use
-touch "$LAST"
+# The idle clock is root's note (the unit makes it before this starts, in root's folder beside this account's own:
+# qorpera-machine-desktop.service): every desktop command of root touches it, and this account only reads when.
+LAST=/run/qorpera-desktop/last-use
+STARTED=$(date +%s)
 Xvnc :1 -geometry "$SIZE" -depth 24 -SecurityTypes None -localhost yes -rfbport 5901 -nolisten tcp -AlwaysShared \
 	-desktop "Qorpera machine" &
 export DISPLAY=:1
@@ -20,16 +24,34 @@ xdpyinfo >/dev/null 2>&1 || { echo "the display did not start" >&2; exit 1; }
 xhost +SI:localuser:root >/dev/null
 # No screen saver, blanking or power saving: an agent's screenshot always shows the screen.
 xset s off -dpms s noblank
+# The desktop's look, written into the account at every start, before XFCE reads it: a desktop never drifts from the
+# image, and nothing that was changed or removed in the account can leave it bare. It is only a look: XFCE starts
+# whatever came of it.
+/opt/qorpera-machine/desktop-look write || echo "the desktop starts without its whole look" >&2
+# One still pointer of the image's icon set, where the image has it.
+if [[ -d /usr/share/icons/Adwaita/cursors ]]; then export XCURSOR_THEME=Adwaita XCURSOR_SIZE=24; fi
 # One session bus at a known address, so a program started later (desktop run, desktop open) joins it.
 export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
 dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --nofork --nopidfile &
 for _ in $(seq 1 50); do [[ -S $XDG_RUNTIME_DIR/bus ]] && break; sleep 0.1; done
 [[ -S $XDG_RUNTIME_DIR/bus ]] || { echo "the session bus did not start" >&2; exit 1; }
-startxfce4 &
-# Every desktop command touches LAST (deploy/machine/desktop, need).
+# The XFCE session is started with a milder protection than the X server and the session bus keep from the unit (-900,
+# qorpera-machine-desktop.service): its window manager and panel are still never ended before a real program, and a big
+# program someone starts from its menus, which inherits this, can still be the one that is ended when memory runs out.
+# Raising it needs no privilege; where it cannot be written the session starts all the same.
+(
+	printf %s -100 2>/dev/null >/proc/self/oom_score_adj || true
+	exec startxfce4
+) &
+# The dock's marks and the backdrop's hours (desktop-look watch) run beside the session and stop with the unit. Started
+# from a shell that ends at once, the watcher is none of this script's jobs: its end never ends the desktop.
+(/opt/qorpera-machine/desktop-look watch >/dev/null 2>&1 &)
+# Every desktop command touches LAST (deploy/machine/desktop, need). A clock that cannot be read counts from this start.
 (
 	while sleep 30; do
-		(( $(date +%s) - $(stat -c %Y "$LAST" 2>/dev/null || echo 0) < IDLE )) || { echo "no desktop command for $IDLE s: stopping"; exit 0; }
+		used=$(stat -c %Y "$LAST" 2>/dev/null) || used=$STARTED
+		[[ $used =~ ^[0-9]{1,12}$ ]] || used=$STARTED
+		(( $(date +%s) - used < IDLE )) || { echo "no desktop command for $IDLE s: stopping"; exit 0; }
 	done
 ) &
 # Any of them ending ends the desktop: systemd then stops what is left of it.

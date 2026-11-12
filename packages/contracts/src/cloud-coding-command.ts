@@ -1,5 +1,11 @@
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{64}$/;
+/** The most bytes one of the coding guest's helpers may have: the four programs in /opt/qorpera-coding (storage,
+ * command, Git, watchdog; scripts/package-coding-guest.mjs). The packager refuses a larger one, and the executor reads
+ * each from the machine within it before it compares the helper with its pin (the LXD client allows a read this large
+ * only of a helper). Twice the 64 KiB it was until 12 Nov 2026: the helpers bundle contracts, and the command guest was
+ * 64,835 bytes then. */
+export const CODING_GUEST_HELPER_MAX_BYTES = 131_072;
 export interface CloudCodingCommandScope {
 	readonly workerId: string;
 	readonly vmId: string;
