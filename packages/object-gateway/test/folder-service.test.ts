@@ -1178,14 +1178,67 @@ describe("run box views", () => {
 		expect((await served.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
 	});
 
-	it("closes a run view whose tree grows past the paths the node's run views may hold, and serves no hello of one too large", async () => {
-		const { core, service, path, root } = await box(undefined, { searchPaths: 2 });
+	it("closes a run view whose feed grows it past the paths the node's run views may hold, at the page that does", async () => {
+		const { core, service, path, root } = await box(undefined, { searchPaths: 3 });
 		const io = await Client.open(path);
 		expect((await io.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
-		// Its feed brings a third path: the view goes, and its run is told so at its next request.
-		core.write(await storeFile(root, "docs/more.md", "more", 2));
+		// Three change sets, a feed page each: the second takes the view to four paths, and no third page is asked.
+		core.feedPage = 1;
+		for (const [n, name] of ["a", "b", "c"].entries())
+			core.write(await storeFile(root, `docs/${name}.md`, name, n + 2));
+		const calls = core.feedCalls;
 		await service.poll();
 		await service.settled();
+		expect(core.feedCalls - calls).toBe(2);
+		io.send(Kind.search, {
+			query: "plan",
+			path: "",
+			glob: null,
+			namesOnly: false,
+			caseSensitive: false,
+			after: null,
+		});
+		expect((await io.json()).body).toMatchObject({
+			code: "VIEW_CLOSED",
+			message: expect.stringMatching(/^SEARCH_FULL: /),
+		});
+	});
+
+	it("counts a run view's trees while they are listed: distinct views at once, a listing again, and hellos that join", async () => {
+		const VIEW2 = "3a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4e";
+		const PASS2 = "boxpass_9876543210-abcdefghijklmnopqrstuvwx";
+		// Two views of four paths each (listed two a page), where the node's run views may hold six: one is served.
+		const root = await tempdir();
+		const core = new FakeCore();
+		core.seed([
+			folder("docs"),
+			await storeFile(root, "docs/a.md", "a", 1),
+			await storeFile(root, "docs/b.md", "b", 2),
+			await storeFile(root, "docs/plan.md", "the plan", 3),
+		]);
+		core.openView(VIEW, BOX_PASS);
+		core.openView(VIEW2, PASS2);
+		let open!: () => void;
+		core.listGate = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		const { path } = await serve(core, root, undefined, { searchPaths: 6 });
+		const first = await Client.open(path);
+		const second = await Client.open(path);
+		const answers = Promise.all([first.hello("io", BOX_PASS, EXEC, VIEW), second.hello("io", PASS2, EXEC, VIEW2)]);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		open();
+		const bodies = (await answers).map((a) => (a.kind === Kind.helloOk ? "served" : (a.body.message as string)));
+		expect(bodies.filter((b) => b === "served")).toHaveLength(1);
+		expect(bodies.filter((b) => b.startsWith("SEARCH_FULL: "))).toHaveLength(1);
+		// A listing again holds the old tree and the new one at once: a view of two paths where three fit is closed by it.
+		const clock = { now: Date.now() };
+		const again = await box(clock, { searchPaths: 3, reloadMs: 1_000 });
+		const io = await Client.open(again.path);
+		expect((await io.hello("io", BOX_PASS, EXEC, VIEW)).kind).toBe(Kind.helloOk);
+		clock.now += 2_000;
+		await again.service.poll();
+		await again.service.settled();
 		io.send(Kind.search, {
 			query: "plan",
 			path: "",
@@ -1201,13 +1254,12 @@ describe("run box views", () => {
 		// Two hellos at once on a view too large for the node: neither is served, the one that joined while it was
 		// listed included.
 		const small = await box(undefined, { searchPaths: 1 });
-		const first = await Client.open(small.path);
-		const second = await Client.open(small.path);
-		const answers = await Promise.all([
-			first.hello("io", BOX_PASS, EXEC, VIEW),
-			second.hello("io", BOX_PASS, EXEC, VIEW),
-		]);
-		for (const answer of answers)
+		const a = await Client.open(small.path);
+		const b = await Client.open(small.path);
+		for (const answer of await Promise.all([
+			a.hello("io", BOX_PASS, EXEC, VIEW),
+			b.hello("io", BOX_PASS, EXEC, VIEW),
+		]))
 			expect(answer.body).toMatchObject({ code: "UNAVAILABLE", message: expect.stringMatching(/^SEARCH_FULL: /) });
 	});
 

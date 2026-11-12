@@ -725,6 +725,25 @@ describe("folder search, version 2 (keyholes S4)", () => {
 		},
 	);
 
+	it.runIf(linearRegexAvailable())("judges a pattern's line by its own length, however the pieces fall", async () => {
+		// With lines of at most 40 bytes searched: 41 x's are too long, 40 are not, wherever the line starts.
+		const lines = (prefix: string) => `${prefix}${"x".repeat(41)}\n${"x".repeat(40)}\nb\n${"x".repeat(41)}`;
+		for (const prefix of ["", "a\n", "ab\n"])
+			for (const pieceBytes of [7, 16, 41, 64, 4096]) {
+				const { source } = stage({ "a.txt": lines(prefix) });
+				const page = await searchView(
+					{ ...source, pieceBytes, longestLine: 40 },
+					request2("^x+$", { regex: true }),
+				);
+				const at = prefix === "" ? 0 : 1;
+				expect(
+					page.hits.map((h) => h.line),
+					`${JSON.stringify(prefix)} in pieces of ${pieceBytes}`,
+				).toEqual([2 + at]);
+				expect(page.longLines).toBe(2);
+			}
+	});
+
 	it.runIf(linearRegexAvailable())("matches a pattern on empty lines too, and counts them", async () => {
 		const { source } = stage({ "a.txt": "a\n\nb\n\n\nc" });
 		expect((await searchView(source, request2("^$", { regex: true }))).hits.map((h) => h.line)).toEqual([2, 4, 5]);

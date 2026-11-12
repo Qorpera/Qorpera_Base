@@ -423,10 +423,11 @@ service, so the execution host stays small:
   company take about 1 GiB of the service's memory beside its object cache. There is no index: each page reads the
   files' text through the object cache (1 GiB by default, `cacheMiB`), and a tree is per run, not per company.
 - **Bounds for search in every run (keyholes S4).** The unit's `MemoryMax` is 3 GiB.
-  - The trees of the node's run views hold at most 1,500,000 paths in all (`SEARCH_PATHS`, about 1 GiB). A run view
-    is not listed while they hold that many. One whose tree takes them past it is closed (its tree goes at once):
-    after its listing, before any connection to it is served (the one that listed it and any that joined meanwhile),
-    and when its feed or a listing again grows it. A hello to such a view is answered `UNAVAILABLE` with
+  - The trees of the node's run views hold at most 1,500,000 paths in all (`SEARCH_PATHS`, about 1 GiB), counting the
+    trees being listed for them page by page (a first listing, and a listing again, which holds the old tree and the
+    new one at once). A run view is not listed while they hold that many. One whose trees take them past it is closed
+    (its trees go at once): at the listing page or feed page that does, and at any connection's hello (the one that
+    listed it and any that joined meanwhile). A hello to such a view is answered `UNAVAILABLE` with
     `SEARCH_FULL: …`; a request on a view closed so, `VIEW_CLOSED` with the same words, so the run opens another, which
     is refused while the node is full. The run tells the model the folder search is full now. Other views (desktops,
     coding machines) are not counted.

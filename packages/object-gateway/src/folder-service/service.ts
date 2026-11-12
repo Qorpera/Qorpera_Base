@@ -486,6 +486,9 @@ class View {
 	intentWork: Promise<void> = Promise.resolve();
 	/** Protocol-3 mounts distinguish disconnected streams from a dead program with an authenticated hello. */
 	persistentHandles = false;
+	/** A run box host presented it (keyholes S4): a run's own view, counted against the node's bound on run views'
+	 * paths (SEARCH_PATHS) from its first listing on, before the core has said its kind. */
+	searchHost = false;
 	/** Versions replaced on the feed, still readable by files opened before; newest last. */
 	readonly superseded = new Map<string, TreeEntry[]>();
 	/** The view may write (step 3: an operator mount configured so; step 4: a computer desktop). A core view's is set at
@@ -735,6 +738,9 @@ export class FolderService {
 	readonly #searchPaths: number;
 	/** Search pages running now, and the turns of those waiting (SEARCH_RUNNING). */
 	#searching = 0;
+	/** Paths of the trees being listed for run views (a first listing, or a listing again while the old tree serves),
+	 * counted against SEARCH_PATHS until each is the view's tree. */
+	readonly #listing = new Map<View, number>();
 	readonly #searchQueue: (() => void)[] = [];
 
 	constructor(options: FolderServiceOptions) {
@@ -1190,6 +1196,7 @@ export class FolderService {
 		try {
 			if (fresh && this.#searchHeld(view) >= this.#searchPaths)
 				throw new ProtocolError(ErrorCode.unavailable, SEARCH_FULL);
+			if (fresh) view.searchHost = true;
 			view.loading ??= this.#firstLoad(view);
 			await view.loading;
 			// A run's view closed for the node's bound (another connection's hello, or its growth) is full, not ended.
@@ -1202,9 +1209,8 @@ export class FolderService {
 			if (view.core && !view.access?.admits(bridge))
 				throw new ProtocolError(ErrorCode.viewRefused, "The view, its pass or this machine did not match");
 			// Any connection to a run's view, the one that listed it or one that joined while it was listed, is served only
-			// while the view fits beside the node's other run views; one that does not is closed (`#searchBound`).
-			this.#searchBound(view);
-			if (view.closed === SEARCH_FULL) throw new ProtocolError(ErrorCode.unavailable, SEARCH_FULL);
+			// while the view fits beside the node's other run views; one that does not is closed (`#searchOver`).
+			if (this.#searchOver(view)) throw new ProtocolError(ErrorCode.unavailable, SEARCH_FULL);
 			view.admitted = true;
 			if (view.core && hello.protocol >= 3) view.persistentHandles = true;
 			if (hello.previous) await this.#transfer(view, hello, bridge);
@@ -1836,7 +1842,11 @@ export class FolderService {
 				this.#close(view, "The view's owner may not read this folder");
 				return;
 			}
+			// Its listing took the node's run views past their bound: the view was closed for it (#searchOver).
+			if (view.closed === SEARCH_FULL) throw new ProtocolError(ErrorCode.unavailable, SEARCH_FULL);
 			throw new ProtocolError(ErrorCode.unavailable, "The folder could not be listed now");
+		} finally {
+			this.#listing.delete(view);
 		}
 		// Catch up from the first page's position: pages listed later are newer, and the feed's changes apply to
 		// them again harmlessly.
@@ -1844,9 +1854,12 @@ export class FolderService {
 		await view.work;
 	}
 
-	/** The view's whole tree, page by page, and the first page's position. */
+	/** The view's whole tree, page by page, and the first page's position. A run's view's tree counts against the
+	 * node's bound as it is listed (`#listing`, which its caller clears once the tree is the view's or is dropped): a
+	 * page that takes the run views past it closes the view, and the listing ends there (SEARCH_FULL). */
 	async #listAll(view: View): Promise<{ tree: ViewTree; seq: number }> {
 		const tree = new ViewTree();
+		const counted = this.#searchView(view);
 		let after: string | null = null;
 		let seq: number | undefined;
 		do {
@@ -1854,6 +1867,10 @@ export class FolderService {
 			seq ??= page.asOfSeq;
 			for (const entry of page.entries) tree.put(entry);
 			after = page.next;
+			if (counted) {
+				this.#listing.set(view, tree.size);
+				if (this.#searchOver(view, tree.size)) throw new ProtocolError(ErrorCode.unavailable, SEARCH_FULL);
+			}
 		} while (after !== null);
 		return { tree, seq: seq ?? 0 };
 	}
@@ -1887,6 +1904,8 @@ export class FolderService {
 				}
 				view.seq = page.next.afterSeq;
 				view.cursor = page.next.cursor;
+				// A run's view whose feed grows it past the node's bound goes, page by page (#searchOver).
+				if (this.#searchOver(view)) return;
 				if (!page.more) break;
 			}
 		} finally {
@@ -1894,7 +1913,6 @@ export class FolderService {
 			view.pending?.liveChanged(changed);
 			this.#gitSettle(view);
 			if (!told) this.#push(view, this.#shown(view, changed, own));
-			this.#searchBound(view);
 		}
 	}
 
@@ -1924,35 +1942,47 @@ export class FolderService {
 		const before = view.tree;
 		if (!before || view.closed) return;
 		if (why === "access changed") view.superseded.clear();
-		const { tree, seq } = await this.#listAll(view);
-		// Catch the new tree up to the end of the feed before it replaces the old one. An access change (or a
-		// position the core no longer serves) meanwhile makes the next round list again.
-		let position: { afterSeq: number; cursor: FeedCursor | null } = { afterSeq: seq, cursor: null };
-		let again = false;
-		for (;;) {
-			const page = await this.#core.feed(view.environmentId, view.actor, position.afterSeq, position.cursor);
-			if (page.resync || !page.next) {
-				again = true;
-				break;
+		// A run's view counts both trees while the new one is listed and caught up (#listAll): a page past the node's
+		// bound closes the view, and the old tree goes with it.
+		const counted = this.#searchView(view);
+		try {
+			const { tree, seq } = await this.#listAll(view);
+			// Catch the new tree up to the end of the feed before it replaces the old one. An access change (or a
+			// position the core no longer serves) meanwhile makes the next round list again.
+			let position: { afterSeq: number; cursor: FeedCursor | null } = { afterSeq: seq, cursor: null };
+			let again = false;
+			for (;;) {
+				const page = await this.#core.feed(view.environmentId, view.actor, position.afterSeq, position.cursor);
+				if (page.resync || !page.next) {
+					again = true;
+					break;
+				}
+				for (const event of page.events) {
+					if (event.kind === "authority") again = true;
+					else for (const change of event.changes) tree.apply(change);
+				}
+				position = page.next;
+				if (counted) {
+					this.#listing.set(view, tree.size);
+					if (this.#searchOver(view, tree.size)) return;
+				}
+				if (!page.more) break;
 			}
-			for (const event of page.events) {
-				if (event.kind === "authority") again = true;
-				else for (const change of event.changes) tree.apply(change);
-			}
-			position = page.next;
-			if (!page.more) break;
+			// A run's view the bound closed meanwhile keeps no tree.
+			if (counted && view.closed) return;
+			view.tree = tree;
+			view.seq = position.afterSeq;
+			view.cursor = position.cursor;
+			view.loadedAt = again ? 0 : this.#now();
+			for (const path of view.superseded.keys()) if (!tree.get(path)) view.superseded.delete(path);
+			const changed = [...alreadyChanged, ...ViewTree.diff(before, tree)];
+			view.pending?.liveChanged(changed);
+			this.#gitSettle(view);
+			this.#log(`folder-service: ${view.key} listed again (${why}): ${tree.size} paths, ${changed.length} changed`);
+			this.#push(view, changed);
+		} finally {
+			this.#listing.delete(view);
 		}
-		view.tree = tree;
-		view.seq = position.afterSeq;
-		view.cursor = position.cursor;
-		view.loadedAt = again ? 0 : this.#now();
-		for (const path of view.superseded.keys()) if (!tree.get(path)) view.superseded.delete(path);
-		const changed = [...alreadyChanged, ...ViewTree.diff(before, tree)];
-		view.pending?.liveChanged(changed);
-		this.#gitSettle(view);
-		this.#log(`folder-service: ${view.key} listed again (${why}): ${tree.size} paths, ${changed.length} changed`);
-		this.#push(view, changed);
-		this.#searchBound(view);
 	}
 
 	/** The view's own folders among `paths` (those it made or moved, still pending), each with the version it shows. */
@@ -2158,22 +2188,29 @@ export class FolderService {
 		return done;
 	}
 
-	/** A run's view whose tree takes the node's run views past the paths they may hold (at its listing, a listing
-	 * again, or its feed's changes) is closed: its tree goes at once. Its run is answered VIEW_CLOSED at its next
-	 * request, opens another, and is refused that one (`SEARCH_FULL`) while the node is full (SEARCH_PATHS). */
-	#searchBound(view: View): void {
-		if (view.identity?.kind !== "run_box" || !view.tree || view.closed) return;
-		if (this.#searchHeld(view) + view.tree.size <= this.#searchPaths) return;
-		this.#log(`folder-service: ${view.key}: closed: run views would hold over ${this.#searchPaths} paths`);
-		this.#close(view, SEARCH_FULL);
+	/** A run's own view: one the core says is a run box, or one a run box host presented before the core said so. */
+	#searchView(view: View): boolean {
+		return view.identity?.kind === "run_box" || view.searchHost;
 	}
 
-	/** Paths the trees of the node's run views hold, `view`'s own left out (SEARCH_PATHS). */
+	/** Whether a run's view, its tree and `listed` more paths being listed for it, takes the node's run views past the
+	 * paths they may hold (SEARCH_PATHS): at a page of its listing or of a listing again, a page of its feed, or a
+	 * connection's hello. Then it is closed and its trees go at once; its run is answered VIEW_CLOSED at its next
+	 * request, opens another, and is refused that one (`SEARCH_FULL`) while the node is full. */
+	#searchOver(view: View, listed = 0): boolean {
+		if (!this.#searchView(view) || view.closed) return false;
+		if (this.#searchHeld(view) + (view.tree?.size ?? 0) + listed <= this.#searchPaths) return false;
+		this.#log(`folder-service: ${view.key}: closed: run views would hold over ${this.#searchPaths} paths`);
+		this.#close(view, SEARCH_FULL);
+		return true;
+	}
+
+	/** Paths the node's run views hold, `view`'s own left out: their trees, and the trees being listed for them. */
 	#searchHeld(view: View): number {
 		let held = 0;
 		for (const other of this.#views.values())
-			if (other !== view && other.identity?.kind === "run_box" && other.tree && !other.closed)
-				held += other.tree.size;
+			if (other !== view && this.#searchView(other) && other.tree && !other.closed) held += other.tree.size;
+		for (const [other, size] of this.#listing) if (other !== view) held += size;
 		return held;
 	}
 

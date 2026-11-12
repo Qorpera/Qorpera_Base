@@ -49,8 +49,9 @@ const BINARY_PROBE = 8 * 1024;
 const PIECE_BYTES = 4 * 1024 * 1024;
 const LONGEST_LINE = 1024 * 1024;
 /** A regular expression reads smaller pieces: V8's linear engine runs a piece in one step, about 20 ms a MiB. It sees
- * whole lines only, so it never judges `$`, `^` or `\b` at a stretch's end: a line longer than LONGEST_LINE is not
- * searched by it, and the page counts such lines (`longLines`), so the run says so. */
+ * whole lines only, so it never judges `$`, `^` or `\b` at a stretch's end: a line of more than LONGEST_LINE bytes (its
+ * newline not counted) is not searched by it, however the pieces fall, and the page counts such lines (`longLines`),
+ * so the run says so. */
 const REGEX_PIECE_BYTES = 256 * 1024;
 /** Files whose first piece is asked for ahead of the one being searched. */
 const AHEAD = 8;
@@ -401,8 +402,14 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 		let carry: Buffer = Buffer.alloc(0);
 		let long = false;
 		let lineHit = false;
-		/** The line in hand is too long for a regular expression: read to its end, not searched. */
+		/** The line in hand is too long for a regular expression: read to its end, not searched (and counted). */
 		let unsearched = false;
+		/** A pattern's line, whole in hand: one longer than LONGEST_LINE is not searched. */
+		const tooLong = (lineBytes: Buffer): void => {
+			if (!regex || unsearched || lineBytes.byteLength <= longestLine) return;
+			unsearched = true;
+			longLines++;
+		};
 		/** A long line's start, as a context line shows it. */
 		let head = "";
 		let started = false;
@@ -520,11 +527,10 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 			} else {
 				let start = 0;
 				for (let stop = bytes.indexOf(0x0a); stop >= 0 && stop < cutAt; stop = bytes.indexOf(0x0a, start)) {
-					if (!stretch(bytes.subarray(start, stop))) return cut(here());
-					if (!lineHit) {
-						const lineBytes = bytes.subarray(start, stop);
-						ended(() => (long ? head : contextText(lineBytes)));
-					}
+					const lineBytes = bytes.subarray(start, stop);
+					tooLong(lineBytes);
+					if (!stretch(lineBytes)) return cut(here());
+					if (!lineHit) ended(() => (long ? head : contextText(lineBytes)));
 					line++;
 					lineStart = base + stop + 1;
 					long = false;
@@ -539,24 +545,23 @@ export async function searchView(source: SearchSource, request: SearchRequest): 
 			if (last) {
 				// The last line, with no newline after it.
 				if (rest.byteLength > 0) {
+					tooLong(rest);
 					if (!stretch(rest)) return cut(here());
 					if (!lineHit) ended(() => (long ? head : contextText(rest)));
 					line++;
 				}
 				break;
 			}
-			if (rest.byteLength >= longestLine) {
-				// A long line: searched as it comes up to its last whole character, keeping its end (with a character
-				// the piece cut in two) for a match across stretches.
+			// A long line, with no newline yet: for text more than LONGEST_LINE - 1 bytes of it, for a pattern more than
+			// LONGEST_LINE (it is then too long, whatever follows).
+			if (rest.byteLength >= longestLine + (regex ? 1 : 0)) {
+				// Searched as it comes up to its last whole character, keeping its end (with a character the piece cut in
+				// two) for a match across stretches; a pattern's, read to its end unsearched.
 				const whole = wholeUtf8(rest);
-				if (!long) {
-					if (regex) longLines++;
-					if (context > 0) head = contextText(rest.subarray(0, whole));
-				}
+				if (!long && context > 0) head = contextText(rest.subarray(0, whole));
 				long = true;
 				if (regex) {
-					// A pattern sees whole lines only: this one is read to its end, unsearched, and counted.
-					unsearched = true;
+					tooLong(rest);
 					carry = Buffer.alloc(0);
 				} else {
 					if (!stretch(rest.subarray(0, whole))) return cut(here());
