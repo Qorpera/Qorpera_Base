@@ -13,6 +13,7 @@ import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import {
 	type CodeDownload,
 	type CodeDownloadCalls,
+	type CodeImportAnswer,
 	type CodeRepositories,
 	codeDownloadCalls,
 	parseCodeDownload,
@@ -333,6 +334,12 @@ function callsFake(
 			): Promise<CodeDownload> => ready(file === "files" ? zip : history),
 		),
 		read: vi.fn(async (_requestId: string, _signal: AbortSignal): Promise<CodeDownload> => ready()),
+		bringIn: vi.fn(
+			async (_owner: string, _name: string, _github: string, _signal: AbortSignal): Promise<CodeImportAnswer> => ({
+				state: "refused",
+				reason: "failed",
+			}),
+		),
 	};
 }
 
@@ -404,8 +411,10 @@ async function storage(calls: CodeDownloadCalls | false = callsFake()) {
 		await settle();
 		await settle();
 	};
-	const button = () => host.querySelector<HTMLButtonElement>(".storage-code-button");
-	const line = () => host.querySelector<HTMLElement>(".storage-code-line")!;
+	const button = () => host.querySelector<HTMLButtonElement>(".storage-code-button:not(.storage-import-button)");
+	const line = () => host.querySelector<HTMLElement>(".storage-code-line:not(.storage-import-line)")!;
+	/** What the folder is, the line the import draws above the download's (code-import.ts). */
+	const importLine = () => host.querySelector<HTMLElement>(".storage-import-line")!;
 	/** Opens the menu and takes a choice by its label. */
 	const choose = async (label: string) => {
 		button()!.click();
@@ -414,7 +423,7 @@ async function storage(calls: CodeDownloadCalls | false = callsFake()) {
 			.click();
 		await settle();
 	};
-	return { fake, stop, host, browser, go, button, line, choose };
+	return { fake, stop, host, browser, go, button, line, importLine, choose };
 }
 
 describe("handing the browser a file as its pieces (member-web's WebFileDownloads)", () => {
@@ -469,12 +478,15 @@ describe("Download the code, on a repository's folder in Storage", () => {
 		expect(button()?.parentElement?.classList.contains("storage-toolbar")).toBe(true);
 		expect(button()?.previousElementSibling).toBe(host.querySelector(".storage-title"));
 		expect(button()?.hidden).toBe(true);
-		for (const path of ["notes", "code", "code/qorpera"]) {
+		await go("notes");
+		expect(button()?.hidden).toBe(true);
+		// Nothing was asked beside the code; the code's own folder asks once, for "Bring code in" (code-import.ts).
+		expect(calls.list).not.toHaveBeenCalled();
+		for (const path of ["code", "code/qorpera"]) {
 			await go(path);
 			expect(button()?.hidden).toBe(true);
 		}
-		// Nothing was asked for folders that can be no repository.
-		expect(calls.list).not.toHaveBeenCalled();
+		expect(calls.list).toHaveBeenCalledTimes(1);
 		await go("code/qorpera/shop");
 		expect(calls.list).toHaveBeenCalledTimes(1);
 		expect(button()?.hidden).toBe(false);
@@ -992,15 +1004,17 @@ describe("a GitHub project's working copy, named on its folder in Storage", () =
 	it("says what the folder is in one quiet line under the top line, to every member, there and below it", async () => {
 		for (const canDownload of [true, false]) {
 			const calls = callsFake(withCopies(canDownload));
-			const { go, button, line, host } = await storage(calls);
+			const { go, button, importLine: line, line: downloads, host } = await storage(calls);
 			await go("code/qorpera/saml-storefront");
 			expect(visibleText(line())).toBe("Copy of the GitHub project saml-storefront");
 			// The kept repository's own line, as it is: the status line under the top line, with no button in it, and
 			// no download to offer here.
 			expect(line().previousElementSibling?.classList.contains("storage-toolbar")).toBe(true);
+			expect(line().classList.contains("storage-code-line")).toBe(true);
 			expect(line().getAttribute("role")).toBe("status");
 			expect(line().querySelectorAll("*")).toHaveLength(1);
-			expect(host.querySelectorAll(".storage-code-line")).toHaveLength(1);
+			expect(visibleText(downloads())).toBe("");
+			expect(host.querySelectorAll(".storage-toolbar > button:not([hidden])")).toHaveLength(0);
 			expect(button()?.hidden).toBe(true);
 			// A founder reads it: no path, branch, commit or repository.
 			expect(line().textContent).not.toMatch(/\/|branch|commit|repositor|git(?!hub)/i);
@@ -1022,11 +1036,11 @@ describe("a GitHub project's working copy, named on its folder in Storage", () =
 		const spelled = { ...storefront, github: "Qorpera/SAML-Storefront" };
 		const english = await storage(callsFake(withCopies(true, [spelled])));
 		await english.go("code/qorpera/saml-storefront");
-		expect(visibleText(english.line())).toBe("Copy of the GitHub project SAML-Storefront");
+		expect(visibleText(english.importLine())).toBe("Copy of the GitHub project SAML-Storefront");
 		setLanguagePreference("da");
 		const danish = await storage(callsFake(withCopies()));
 		await danish.go("code/qorpera/saml-storefront");
-		expect(visibleText(danish.line())).toBe("Kopi af GitHub-projektet saml-storefront");
+		expect(visibleText(danish.importLine())).toBe("Kopi af GitHub-projektet saml-storefront");
 	});
 
 	it("leaves the code kept in Qorpera as it is, should the list name it both ways", async () => {
@@ -1035,27 +1049,32 @@ describe("a GitHub project's working copy, named on its folder in Storage", () =
 			repositories: [{ owner: "qorpera", name: "shop" }],
 			githubCopies: [{ owner: "qorpera", name: "shop", github: "Qorpera/shop" }],
 		});
-		const { go, button, line } = await storage(calls);
+		const { go, button, importLine } = await storage(calls);
 		await go("code/qorpera/shop");
 		expect(button()?.hidden).toBe(false);
-		expect(visibleText(line())).toBe("");
+		expect(visibleText(importLine())).toBe("");
 	});
 
-	it("gives the line to a download's end while one is said, and has it back in the next folder", async () => {
+	it("keeps saying what the folder is while a download's end is said under it, which goes in the next folder", async () => {
 		vi.useFakeTimers();
 		const calls = callsFake(withCopies());
 		calls.request.mockResolvedValueOnce(queued);
 		calls.read.mockResolvedValueOnce({ state: "failed", file: "files", reason: "busy" });
-		const { go, line, choose } = await storage(calls);
+		const { go, line, importLine, choose } = await storage(calls);
 		await go("code/qorpera/shop");
 		await choose("The files");
 		await go("code/qorpera/saml-storefront");
+		expect(visibleText(importLine())).toBe("Copy of the GitHub project saml-storefront");
 		expect(visibleText(line())).toBe("Getting the code ready…Cancel");
 		await vi.advanceTimersByTimeAsync(2000);
 		await settle();
+		expect(visibleText(importLine())).toBe("Copy of the GitHub project saml-storefront");
 		expect(visibleText(line())).toBe("The agents are working on the code right now. Try again in a little while.");
+		// The folder's line first, then the download's.
+		expect(importLine().nextElementSibling).toBe(line());
 		await go("code/qorpera/saml-storefront/repo.git");
-		expect(visibleText(line())).toBe("Copy of the GitHub project saml-storefront");
+		expect(visibleText(importLine())).toBe("Copy of the GitHub project saml-storefront");
+		expect(visibleText(line())).toBe("");
 	});
 
 	it("leaves Storage exactly as it was when the list has no such key, or one it cannot read", async () => {

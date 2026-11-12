@@ -7,7 +7,9 @@ import { array, boundedInteger, CloudShapeError, nonEmptyString, oneOf, record, 
  * makes the download as a file in the company folder, under code/<owner>/<name>/downloads/: `files` is the code as it
  * is now in one .zip, `history` the same with its whole history, for a developer. The web then reads that file from
  * the folder, piece by piece (app/views/code-download.ts). The list also names the company's GitHub copies (migration
- * 20260930735000): folders under code/ that hold a project's working copy from GitHub, not code kept in Qorpera. */
+ * 20260930735000): folders under code/ that hold a project's working copy from GitHub, not code kept in Qorpera. And
+ * with migration 20260930736000 an owner or admin brings code in from GitHub (app/views/code-import.ts): the list says
+ * what is being brought in, the last one that was not, and per repository where it came from. */
 
 export const CODE_DOWNLOAD_KINDS = ["files", "history"] as const;
 export type CodeDownloadKind = (typeof CODE_DOWNLOAD_KINDS)[number];
@@ -21,12 +23,64 @@ const CALL_MS = 15_000;
 const GITHUB_PROJECT = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/;
 
 export interface CodeRepositories {
-	/** The caller may ask for a download: owners and admins. */
+	/** The caller may ask for a download, and may bring code in: owners and admins. */
 	readonly canDownload: boolean;
-	readonly repositories: readonly { readonly owner: string; readonly name: string }[];
+	readonly repositories: readonly CodeRepository[];
 	/** None on a cloud from before the key, and when the key is not as this version reads it. */
 	readonly githubCopies: readonly CodeGitHubCopy[];
+	/** Absent on a cloud that cannot bring code in (from before its `bringing` key), and when that key is not as
+	 * this version reads it: then nothing of the import is offered. */
+	readonly imports?: CodeImports;
 }
+
+export interface CodeRepository {
+	readonly owner: string;
+	readonly name: string;
+	/** Where it came from, when it was brought in; absent for code that began in Qorpera. */
+	readonly imported?: CodeImported;
+}
+
+export interface CodeImported {
+	readonly from: "github" | "file";
+	readonly at: string;
+	/** The changes on its main line that came with it; null when the list does not say. */
+	readonly earlierChanges: number | null;
+}
+
+export interface CodeImports {
+	/** What is being brought in now (one at a time in a company). */
+	readonly bringing: readonly CodeBringing[];
+	/** The last one that was refused or failed, in the last 24 hours. */
+	readonly last: CodeImportEnd | null;
+}
+
+export interface CodeBringing {
+	/** Where it lands: code/<owner>/<name>. */
+	readonly owner: string;
+	readonly name: string;
+	/** The project on GitHub (Owner/Name), or null for a file. */
+	readonly github: string | null;
+	/** How far it is (`fetch`, `read`, `look`, `close`, …); null before it started. */
+	readonly step: string | null;
+	/** It waits for the company's agents to be done. */
+	readonly waiting: boolean;
+}
+
+export interface CodeImportEnd {
+	readonly owner: string;
+	readonly name: string;
+	/** Why: the outcome's code, as it came. */
+	readonly reason: string;
+	/** The project on GitHub (Owner/Name), when the list names where it came from; null otherwise. */
+	readonly github: string | null;
+}
+
+/** The answer to an owner's or admin's ask to bring code in. `queued`: it is on its way (or was already). `refused`:
+ * nothing was started, with why. `other`: an answer this version does not know (it was in already, say). */
+export type CodeImportAnswer =
+	| { readonly state: "queued"; readonly requestId: string }
+	| { readonly state: "refused"; readonly reason: string }
+	| { readonly state: "other" };
 
 /** A folder code/<owner>/<name> that holds the working copy of a project on GitHub. */
 export interface CodeGitHubCopy {
@@ -66,30 +120,92 @@ interface CodeDownloadEnded<State> {
 	readonly reason: string;
 }
 
-/** The three calls, for one company. */
+/** The member's code calls, for one company. */
 export interface CodeDownloadCalls {
 	list(signal: AbortSignal): Promise<CodeRepositories>;
 	/** Asks for a download: the one that is there when the code has not changed since, the one being made, or a new
 	 * one. */
 	request(owner: string, name: string, file: CodeDownloadKind, signal: AbortSignal): Promise<CodeDownload>;
 	read(requestId: string, signal: AbortSignal): Promise<CodeDownload>;
+	/** Asks to bring the GitHub project `github` (Owner/Name) in as code/<owner>/<name>. Asked again, it answers the
+	 * import already open for it. */
+	bringIn(owner: string, name: string, github: string, signal: AbortSignal): Promise<CodeImportAnswer>;
 }
 
 export function parseCodeRepositories(value: unknown): CodeRepositories {
 	const input = record(value, "code repositories");
 	if (input.schema !== "qorpera.code-repositories/v1" || typeof input.canDownload !== "boolean")
 		throw new CloudShapeError("code repositories");
+	const imports = codeImports(input.bringing, input.lastImport);
 	return {
 		canDownload: input.canDownload,
 		repositories: array(input.repositories, "code repositories").map((entry) => {
 			const item = record(entry, "code repository");
+			const imported = codeImported(item.importedFrom, item.importedAt, item.earlierChanges);
 			return {
 				owner: nonEmptyString(item.owner, "code repository owner", 256),
 				name: nonEmptyString(item.name, "code repository name", 256),
+				...(imported ? { imported } : {}),
 			};
 		}),
 		githubCopies: githubCopies(input.githubCopies),
+		...(imports ? { imports } : {}),
 	};
+}
+
+/** What is being brought in and the last that was not, or nothing when `bringing` is missing or anything in it is not
+ * as expected: the web goes live before the SQL, and then offers nothing of the import. A `lastImport` that is not as
+ * expected is left out alone. */
+function codeImports(bringing: unknown, last: unknown): CodeImports | null {
+	const entries = Array.isArray(bringing) ? bringing.map(codeBringing) : null;
+	if (!entries?.every((entry): entry is CodeBringing => entry !== null)) return null;
+	return { bringing: entries, last: codeImportEnd(last) };
+}
+
+function codeBringing(value: unknown): CodeBringing | null {
+	if (!value || typeof value !== "object") return null;
+	const { owner, name, from, step, waiting } = value as Record<string, unknown>;
+	if (typeof owner !== "string" || !owner || typeof name !== "string" || !name) return null;
+	if (step !== null && step !== undefined && typeof step !== "string") return null;
+	const source = from && typeof from === "object" ? (from as Record<string, unknown>) : {};
+	const github = typeof source.github === "string" && GITHUB_PROJECT.test(source.github) ? source.github : null;
+	if (!github && (typeof source.file !== "string" || !source.file)) return null;
+	return {
+		owner,
+		name,
+		github,
+		step: step || null,
+		waiting: waiting === true || (typeof waiting === "string" && !!waiting),
+	};
+}
+
+function codeImportEnd(value: unknown): CodeImportEnd | null {
+	if (!value || typeof value !== "object") return null;
+	const { owner, name, reason, from } = value as Record<string, unknown>;
+	const source = from && typeof from === "object" ? (from as Record<string, unknown>).github : undefined;
+	const github = typeof source === "string" && GITHUB_PROJECT.test(source) ? source : null;
+	return typeof owner === "string" && owner && typeof name === "string" && name && typeof reason === "string"
+		? { owner, name, reason, github }
+		: null;
+}
+
+/** Where a repository came from, or nothing for code that began here or a key that is not as expected. */
+function codeImported(from: unknown, at: unknown, earlier: unknown): CodeImported | null {
+	if (!from || typeof from !== "object" || typeof at !== "string" || Number.isNaN(Date.parse(at))) return null;
+	const kind = (from as Record<string, unknown>).kind;
+	if (kind !== "github" && kind !== "file") return null;
+	const earlierChanges = Number.isSafeInteger(earlier) && (earlier as number) >= 0 ? (earlier as number) : null;
+	return { from: kind, at, earlierChanges };
+}
+
+export function parseCodeImportAnswer(value: unknown): CodeImportAnswer {
+	const input = record(value, "code import");
+	if (input.schema !== "qorpera.code-import/v1" || typeof input.state !== "string")
+		throw new CloudShapeError("code import");
+	if (input.state === "queued") return { state: "queued", requestId: uuid(input.requestId, "code import id") };
+	if (input.state === "refused")
+		return { state: "refused", reason: typeof input.reason === "string" && input.reason ? input.reason : "failed" };
+	return { state: "other" };
 }
 
 /** The GitHub copies, or none when the key is missing or anything in it is not as expected: the web goes live before
@@ -135,5 +251,9 @@ export function codeDownloadCalls(cloud: Cloud, profileId: string): CodeDownload
 			),
 		read: async (requestId, signal) =>
 			parseCodeDownload(await call("qorpera_code_download", { p_request_id: requestId }, signal)),
+		bringIn: async (owner, name, github, signal) =>
+			parseCodeImportAnswer(
+				await call("qorpera_request_code_import", { p_owner: owner, p_name: name, p_github: github }, signal),
+			),
 	};
 }

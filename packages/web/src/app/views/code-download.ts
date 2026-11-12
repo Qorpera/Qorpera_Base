@@ -16,8 +16,8 @@ import { uiScale } from "../../ui/scale.ts";
  * as they are now, or the files with their full history for a developer. The code host then makes one file of it in
  * the company folder; the web waits for it, reads it piece by piece and hands it to the browser. One line under the
  * top line says what is happening and how it ended: once the file is handed over, that it is ready and the browser
- * saves it (the page cannot know when the browser has). On the folder of a GitHub copy the same line says what the
- * folder is, for every member. The member's words never name git's own. */
+ * saves it (the page cannot know when the browser has). The member's words never name git's own. The company's code
+ * list read here is the import's too (code-import.ts): it draws from what each read brings. */
 
 type Folder = Pick<CloudMemberFolderClient, "read" | "readFilePieces">;
 
@@ -82,8 +82,15 @@ export class CodeDownload {
 	#calls: CodeDownloadCalls | null | undefined;
 	#list: CodeRepositories | undefined;
 	#listing = false;
+	/** When the list was last read. */
+	#readAt = Number.NEGATIVE_INFINITY;
+	/** Reads asked so far, and which of them the list is from. */
+	#reads = 0;
+	#readNumber = 0;
 	/** When a repository's folder was last asked about and was not among the company's, by owner/name. */
 	readonly #missed = new Map<string, number>();
+	/** Told after each read of the list, whoever asked for it. */
+	onRead: (() => void) | undefined;
 	#dir: string | undefined;
 	/** The repository whose folder is open, if one is. */
 	#here: Repository | null = null;
@@ -162,27 +169,76 @@ export class CodeDownload {
 		if (here) void this.#ask(here);
 	}
 
+	/** The company's code as last read; undefined before a read answered. */
+	get list(): CodeRepositories | undefined {
+		return this.#list;
+	}
+
+	/** How long ago the list was last read, in milliseconds. */
+	get age(): number {
+		return Date.now() - this.#readAt;
+	}
+
+	/** The reads asked so far; `readNumber` above a count taken before tells that the list is from a later read. */
+	get reads(): number {
+		return this.#reads;
+	}
+
+	/** Which read the list is from: 0 before any answered. */
+	get readNumber(): number {
+		return this.#readNumber;
+	}
+
+	/** False once the cloud is known not to have the calls. */
+	get offered(): boolean {
+		return this.#calls !== null;
+	}
+
+	/** Reads the list again now, for the import, unless a read is out (its end tells the same). Answers whether it was
+	 * read; undefined when none was asked. */
+	async refresh(): Promise<boolean | undefined> {
+		if (this.#calls === null || this.#listing || this.#host.signal.aborted) return undefined;
+		const read = (await this.#read()) !== undefined;
+		if (this.#host.signal.aborted) return read;
+		this.#draw();
+		this.onRead?.();
+		return read;
+	}
+
+	/** One read of the list; undefined when it was not read. A cloud from before the calls offers nothing, for good;
+	 * anything else is asked again later. */
+	async #read(): Promise<CodeRepositories | undefined> {
+		this.#listing = true;
+		// A read tells what was so when it was asked: its age counts from then.
+		const asked = Date.now();
+		const number = ++this.#reads;
+		try {
+			this.#calls ??= this.#host.calls();
+			const list = await this.#calls.list(this.#host.signal);
+			this.#host.live();
+			this.#list = list;
+			this.#readAt = asked;
+			this.#readNumber = number;
+			return list;
+		} catch (error) {
+			if (error instanceof CloudRpcError && error.missing) this.#calls = null;
+			return undefined;
+		} finally {
+			this.#listing = false;
+		}
+	}
+
 	/** Reads the company's repositories, unless they are known to hold this one or were asked a moment ago. */
 	async #ask(here: Repository): Promise<void> {
 		if (this.#calls === null || this.#listing || this.#host.signal.aborted) return;
 		const key = keyOf(here);
 		if (this.#list?.repositories.some((repository) => keyOf(repository) === key)) return;
 		if (Date.now() - (this.#missed.get(key) ?? Number.NEGATIVE_INFINITY) < MISSED_MS) return;
-		this.#listing = true;
-		try {
-			this.#calls ??= this.#host.calls();
-			const list = await this.#calls.list(this.#host.signal);
-			this.#host.live();
-			this.#list = list;
-			if (!list.repositories.some((repository) => keyOf(repository) === key)) this.#missed.set(key, Date.now());
-		} catch (error) {
-			// A cloud from before the calls offers nothing, for good. Anything else is asked again at the next folder.
-			if (error instanceof CloudRpcError && error.missing) this.#calls = null;
-		} finally {
-			this.#listing = false;
-		}
+		const list = await this.#read();
+		if (list && !list.repositories.some((repository) => keyOf(repository) === key)) this.#missed.set(key, Date.now());
 		if (this.#host.signal.aborted) return;
 		this.#draw();
+		this.onRead?.();
 		// Another repository's folder was opened while this one was asked about.
 		if (this.#here && keyOf(this.#here) !== key) void this.#ask(this.#here);
 	}
@@ -199,24 +255,7 @@ export class CodeDownload {
 		// Not `disabled`: the button keeps the focus the menu handed back to it while the download runs.
 		if (this.#job) this.button.setAttribute("aria-disabled", "true");
 		else this.button.removeAttribute("aria-disabled");
-		if (this.#job) return;
-		// A folder that holds a GitHub project's working copy says so, unless the line has a download's end to say.
-		const copy =
-			key !== null && !this.#list?.repositories.some((repository) => keyOf(repository) === key)
-				? this.#list?.githubCopies.find((each) => keyOf(each) === key)
-				: undefined;
-		replace(
-			this.line,
-			this.#ended
-				? h("span", null, this.#ended.text)
-				: copy
-					? h(
-							"span",
-							null,
-							t("Copy of the GitHub project {name}", { name: copy.github.slice(copy.github.indexOf("/") + 1) }),
-						)
-					: null,
-		);
+		if (!this.#job) replace(this.line, this.#ended ? h("span", null, this.#ended.text) : null);
 	}
 
 	/** The line while a download runs: what is being done, and Cancel. Answers how to say how far a large file is,
