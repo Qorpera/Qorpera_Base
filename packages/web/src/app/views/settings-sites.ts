@@ -1,6 +1,6 @@
 import { CloudRpcError } from "../../cloud/client.ts";
 import type { CompanySite, CompanySitePassword, WebSites } from "../../cloud/sites.ts";
-import { openContextMenu } from "../../ui/context-menu.ts";
+import { openContextMenu, openMenu } from "../../ui/context-menu.ts";
 import { button, confirmDialog, fmtTime, h, icon, replace } from "../../ui/dom.ts";
 import { interfaceEmblem } from "../../ui/interface-emblem.ts";
 import { leave } from "../../ui/motion.ts";
@@ -22,6 +22,14 @@ import { listSkeleton } from "../../ui/skeleton.ts";
  * never see a password. An app link (v195) is a site too, at its own host. A project's site made from its code kept in
  * Qorpera (own code storage step 4) is listed once a member put it live in What's new; its source is the project's place
  * under code/, which no agent may publish from, and its row names the version What's new has live.
+ *
+ * Every answer that comes back late (a password read, a copy, a change, a take-offline, a read of the list, the version
+ * What's new read) acts only on the page it was asked from, by one rule in three parts: it carries the moment it left
+ * (`#moment`: its site, and the generation of what the page knew of that site's password) and acts only while `#still`
+ * holds (the page mounted, the site listed, and for a password the same generation: not shown, hidden, changed or taken
+ * away since); a password is put on screen only through `#reveal`, which refuses one the member may not see or one the
+ * list says was changed after it; and a draw moves the focus only while `#mayFocus` holds (the focus on this page or on
+ * nothing, and no question, confirmation or menu open over it).
  */
 
 type SitesClient = Pick<WebSites, "list" | "password" | "setPassword" | "unpublish">;
@@ -126,6 +134,17 @@ async function toClipboard(text: string | Promise<string>): Promise<boolean> {
 	}
 }
 
+/** A password the list says was changed after it (the kernel writes both times from one column, so they compare). */
+function outdated(site: CompanySite, password: CompanySitePassword): boolean {
+	return Date.parse(site.passwordChangedAt) > Date.parse(password.changedAt);
+}
+
+/** What a late answer was asked for: its site, and the generation of what the page knew of that site's password. */
+interface Moment {
+	readonly site: string;
+	readonly era: number;
+}
+
 /** The site's state as a dot and a word; when and by whom it was published as its tip. */
 function stateOf(site: CompanySite): HTMLElement {
 	const published = site.publishedAt
@@ -161,8 +180,10 @@ export class SitesView {
 	#error: string | undefined;
 	/** The site changing, and how, while it does: the password pills and the menus are off meanwhile. */
 	#working: { site: string; action: "show" | "copy" | "set" | "unpublish" } | undefined;
-	/** Passwords shown, by site, until hidden or the member's authority goes. */
+	/** Passwords shown, by site, until hidden or the member's authority goes. Only `#reveal` and `#forget` change it. */
 	readonly #passwords = new Map<string, CompanySitePassword>();
+	/** Each site's password generation: one more each time what the page knows of its password moves on (`#moment`). */
+	readonly #eras = new Map<string, number>();
 	/** A text the browser would not copy, shown whole in its pill as a field, selected for the member to copy by hand. */
 	#byHand: { key: string; text: string } | undefined;
 	/** Rows drawn before: only a new row moves in. */
@@ -199,8 +220,8 @@ export class SitesView {
 		const manage = this.#access.canManage();
 		if (manage === this.#drawn?.manage && this.#versions() === this.#drawn.versions) return;
 		if (!manage) {
-			this.#passwords.clear();
-			if (this.#byHand?.key.startsWith("password:")) this.#byHand = undefined;
+			for (const site of new Set([...this.#passwords.keys(), ...(this.#sites ?? []).map((item) => item.id)]))
+				this.#forget(site);
 			this.#asking?.close();
 		}
 		this.#draw();
@@ -209,9 +230,47 @@ export class SitesView {
 	dispose(): void {
 		this.#lifetime.abort();
 		this.#passwords.clear();
+		this.#byHand = undefined;
 		this.#asking?.close();
 		this.el.replaceChildren();
 		this.el.remove();
+	}
+
+	/** What a late answer was asked for, taken when it leaves. */
+	#moment(site: string): Moment {
+		return { site, era: this.#eras.get(site) ?? 0 };
+	}
+
+	/** Whether a late answer may still act: the page is mounted, its site still listed, and (`secret`) the site's password
+	 * is as the page knew it when the answer was asked for. */
+	#still(moment: Moment, secret: boolean): boolean {
+		if (this.#lifetime.signal.aborted) return false;
+		if (this.#sites && !this.#sites.some((site) => site.id === moment.site)) return false;
+		return !secret || (this.#eras.get(moment.site) ?? 0) === moment.era;
+	}
+
+	/** Puts a password on screen, unless the member may not see passwords or the list says it was changed after it. */
+	#reveal(site: string, password: CompanySitePassword): boolean {
+		const listed = this.#sites?.find((item) => item.id === site);
+		if (!this.#access.canManage() || !listed || outdated(listed, password)) return false;
+		this.#passwords.set(site, password);
+		this.#eras.set(site, (this.#eras.get(site) ?? 0) + 1);
+		return true;
+	}
+
+	/** Takes a site's password off the screen, with the field that held it to copy by hand. */
+	#forget(site: string): void {
+		this.#passwords.delete(site);
+		if (this.#byHand?.key === `password:${site}`) this.#byHand = undefined;
+		this.#eras.set(site, (this.#eras.get(site) ?? 0) + 1);
+	}
+
+	/** Whether a draw may move the focus: it is on this page or on nothing, and no question, confirmation or menu is
+	 * open over it (a late answer never pulls the focus out from under the member). */
+	#mayFocus(): boolean {
+		const active = document.activeElement;
+		const here = !active || active === document.body || this.el.contains(active);
+		return here && !this.#asking && !openMenu() && !document.querySelector(".modal-backdrop:not([data-leaving])");
 	}
 
 	#versions(): string {
@@ -252,12 +311,17 @@ export class SitesView {
 			this.#sites = sites;
 			this.#listed(sites);
 			this.#error = undefined;
-			// A site gone meanwhile (taken offline elsewhere) leaves nothing of its own behind.
-			const ids = new Set(sites.map((site) => site.id));
-			for (const id of this.#passwords.keys()) if (!ids.has(id)) this.#passwords.delete(id);
-			if (this.#byHand && !ids.has(this.#byHand.key.slice(this.#byHand.key.indexOf(":") + 1)))
+			// A site gone meanwhile (taken offline elsewhere) leaves nothing of its own behind, and a password changed
+			// since it was shown (elsewhere) leaves the screen.
+			const byId = new Map(sites.map((site) => [site.id, site]));
+			for (const [id, shown] of [...this.#passwords]) {
+				const site = byId.get(id);
+				if (!site || outdated(site, shown)) this.#forget(id);
+			}
+			for (const id of this.#eras.keys()) if (!byId.has(id)) this.#forget(id);
+			if (this.#byHand && !byId.has(this.#byHand.key.slice(this.#byHand.key.indexOf(":") + 1)))
 				this.#byHand = undefined;
-			if (this.#asking && !ids.has(this.#asking.site)) this.#asking.close();
+			if (this.#asking && !byId.has(this.#asking.site)) this.#asking.close();
 		} catch {
 			if (this.#lifetime.signal.aborted) return;
 			this.#error = t("The company's sites could not be read.");
@@ -295,10 +359,11 @@ export class SitesView {
 
 	/** The browser would not copy: the text is shown whole in its pill, selected, and the toast says what to press. */
 	#copyByHand(key: string, text: string, focusKey: string): void {
+		const free = this.#mayFocus();
 		this.#byHand = { key, text };
 		this.#draw(focusKey);
 		const field = this.#control(focusKey);
-		if (field instanceof HTMLInputElement) {
+		if (free && field instanceof HTMLInputElement) {
 			field.focus();
 			field.select();
 		}
@@ -307,8 +372,9 @@ export class SitesView {
 
 	async #copyLink(site: CompanySite): Promise<void> {
 		const focusKey = `site-copy-link:${site.id}`;
+		const moment = this.#moment(site.id);
 		const copied = await toClipboard(site.url);
-		if (this.#lifetime.signal.aborted) return;
+		if (!this.#still(moment, false)) return;
 		if (!copied) return this.#copyByHand(`link:${site.id}`, site.url, `site-by-hand:link:${site.id}`);
 		if (this.#byHand?.key === `link:${site.id}`) {
 			this.#byHand = undefined;
@@ -323,36 +389,41 @@ export class SitesView {
 		if (this.#working || this.#lifetime.signal.aborted) return;
 		const focusKey = `site-copy-password:${site.id}`;
 		const byHand = `site-by-hand:password:${site.id}`;
+		const moment = this.#moment(site.id);
 		const shown = this.#passwords.get(site.id);
 		if (shown) {
 			const copied = await toClipboard(shown.password);
-			if (this.#lifetime.signal.aborted) return;
+			// Hidden, changed or taken away meanwhile: nothing of that password comes back on screen.
+			if (!this.#still(moment, true)) return;
 			if (!copied) return this.#copyByHand(`password:${site.id}`, shown.password, byHand);
 			this.#copied(focusKey);
 			this.#say(t("The password is copied."));
 			return;
 		}
-		this.#working = { site: site.id, action: "copy" };
+		const working = { site: site.id, action: "copy" } as const;
+		this.#working = working;
 		this.#draw(focusKey);
 		const read = this.#client.password(site.id, this.#lifetime.signal);
 		const copied = await toClipboard(read.then((answer) => answer.password));
-		let password: CompanySitePassword;
+		let password: CompanySitePassword | undefined;
+		let failure: unknown;
 		try {
 			password = await read;
 		} catch (error) {
-			if (this.#lifetime.signal.aborted) return;
-			this.#working = undefined;
+			failure = error;
+		}
+		if (this.#working === working) this.#working = undefined;
+		if (this.#lifetime.signal.aborted) return;
+		if (!this.#still(moment, true)) return this.#draw(focusKey);
+		if (!password) {
 			this.#draw(focusKey);
-			this.#say(changeError(error, phrase("The password could not be read. Try again.")));
+			this.#say(changeError(failure, phrase("The password could not be read. Try again.")));
 			// The site may be gone (taken offline elsewhere): the read drops it.
 			void this.#refresh(focusKey);
 			return;
 		}
-		if (this.#lifetime.signal.aborted) return;
-		this.#working = undefined;
 		if (!copied) {
-			if (!this.#access.canManage()) return this.#draw(focusKey);
-			this.#passwords.set(site.id, password);
+			if (!this.#reveal(site.id, password)) return this.#draw(focusKey);
 			return this.#copyByHand(`password:${site.id}`, password.password, byHand);
 		}
 		this.#draw(focusKey);
@@ -363,27 +434,30 @@ export class SitesView {
 	async #showPassword(site: CompanySite): Promise<void> {
 		if (this.#working || this.#lifetime.signal.aborted) return;
 		const focusKey = `site-eye:${site.id}`;
-		this.#working = { site: site.id, action: "show" };
+		const moment = this.#moment(site.id);
+		const working = { site: site.id, action: "show" } as const;
+		this.#working = working;
 		this.#draw(focusKey);
-		let failed = false;
+		let password: CompanySitePassword | undefined;
+		let failure: unknown;
 		try {
-			const password = await this.#client.password(site.id, this.#lifetime.signal);
-			if (!this.#lifetime.signal.aborted && this.#access.canManage()) this.#passwords.set(site.id, password);
+			password = await this.#client.password(site.id, this.#lifetime.signal);
 		} catch (error) {
-			if (this.#lifetime.signal.aborted) return;
-			failed = true;
-			this.#say(changeError(error, phrase("The password could not be read. Try again.")));
-		} finally {
-			this.#working = undefined;
-			if (!this.#lifetime.signal.aborted) this.#draw(focusKey);
+			failure = error;
 		}
+		if (this.#working === working) this.#working = undefined;
+		if (this.#lifetime.signal.aborted) return;
+		// Its authority gone, or the site taken offline elsewhere meanwhile: the answer shows nothing.
+		if (password && this.#still(moment, true)) this.#reveal(site.id, password);
+		this.#draw(focusKey);
+		if (password || !this.#still(moment, false)) return;
+		this.#say(changeError(failure, phrase("The password could not be read. Try again.")));
 		// The site may be gone (taken offline elsewhere): the read drops it.
-		if (failed) await this.#refresh(focusKey);
+		await this.#refresh(focusKey);
 	}
 
 	#hidePassword(site: CompanySite): void {
-		this.#passwords.delete(site.id);
-		if (this.#byHand?.key === `password:${site.id}`) this.#byHand = undefined;
+		this.#forget(site.id);
 		this.#draw(`site-eye:${site.id}`);
 	}
 
@@ -474,31 +548,41 @@ export class SitesView {
 			const pressed = password === null ? randomLabel : save;
 			const words = pressed.textContent;
 			pressed.textContent = t("Working…");
-			this.#working = { site: site.id, action: "set" };
+			const moment = this.#moment(site.id);
+			const working = { site: site.id, action: "set" } as const;
+			this.#working = working;
 			this.#draw();
+			let next: CompanySitePassword | undefined;
+			let failure: unknown;
 			try {
-				const next = await this.#client.setPassword(site.id, password, signal);
-				if (signal.aborted) return;
-				this.#working = undefined;
-				// The new password is shown, ready to copy and share.
-				if (this.#access.canManage()) this.#passwords.set(site.id, next);
-				if (this.#byHand?.key === `password:${site.id}`) this.#byHand = undefined;
-				this.#draw();
-				close(`site-copy-password:${site.id}`);
-				this.#say(t("The password is changed."));
-				void this.#refresh(`site-copy-password:${site.id}`);
+				next = await this.#client.setPassword(site.id, password, signal);
 			} catch (error) {
-				if (signal.aborted) return;
-				this.#working = undefined;
-				this.#draw();
-				busy = false;
-				for (const control of controls) control.disabled = false;
-				pressed.textContent = words;
-				problem.textContent = changeError(error, phrase("The password could not be changed. Try again."));
-				if (!closed) input.focus();
-				// The site may be gone (taken offline elsewhere): the read drops it, and the question with it.
-				void this.#refresh();
+				failure = error;
 			}
+			if (this.#working === working) this.#working = undefined;
+			if (signal.aborted) return;
+			if (next) {
+				// The old password leaves the screen, and the new one stands in its place, ready to copy and share, unless
+				// the question was closed meanwhile (the member left, or lost their authority, or the site went) or the list
+				// says the password changed again since.
+				this.#forget(site.id);
+				const shown = !closed && this.#still(moment, false) && this.#reveal(site.id, next);
+				this.#draw();
+				close(shown ? `site-copy-password:${site.id}` : undefined);
+				if (this.#still(moment, false)) this.#say(t("The password is changed."));
+				void this.#refresh(shown ? `site-copy-password:${site.id}` : undefined);
+				return;
+			}
+			this.#draw();
+			// A question closed meanwhile (the member left it, lost their authority, or the site went) says nothing.
+			if (closed) return void this.#refresh();
+			busy = false;
+			for (const control of controls) control.disabled = false;
+			pressed.textContent = words;
+			problem.textContent = changeError(failure, phrase("The password could not be changed. Try again."));
+			input.focus();
+			// The site may be gone (taken offline elsewhere): the read drops it, and the question with it.
+			void this.#refresh();
 		};
 		const form = h(
 			"form",
@@ -549,47 +633,57 @@ export class SitesView {
 		if (this.#working || this.#lifetime.signal.aborted) return;
 		const name = nameOf(site);
 		const more = `site-more:${site.id}`;
-		if (
-			!(await confirmDialog(
-				site.kind === "app"
+		const moment = this.#moment(site.id);
+		// The question counts as open over the page while it is asked: no late draw moves the focus behind it.
+		const asking = { site: site.id, close: () => {} };
+		this.#asking ??= asking;
+		const yes = await confirmDialog(
+			site.kind === "app"
+				? t(
+						"Take {name} offline? Its link stops working and its password is deleted. The app keeps running on its machine.",
+						{ name },
+					)
+				: fromCode(site)
 					? t(
-							"Take {name} offline? Its link stops working and its password is deleted. The app keeps running on its machine.",
+							"Take {name} offline? Its earlier versions go with it. The newest one waits in What's new, with a new password, until you put it live.",
 							{ name },
 						)
-					: fromCode(site)
-						? t(
-								"Take {name} offline? Its earlier versions go with it. The newest one waits in What's new, with a new password, until you put it live.",
-								{ name },
-							)
-						: t(
-								"Take {name} offline? Its link stops working and its password is deleted. The files stay in the Company File.",
-								{ name },
-							),
-				t("Take offline"),
-				true,
-				undefined,
-				this.#lifetime.signal,
-			))
-		)
-			return;
-		if (this.#working || this.#lifetime.signal.aborted) return;
-		this.#working = { site: site.id, action: "unpublish" };
+					: t(
+							"Take {name} offline? Its link stops working and its password is deleted. The files stay in the Company File.",
+							{ name },
+						),
+			t("Take offline"),
+			true,
+			undefined,
+			this.#lifetime.signal,
+		);
+		if (this.#asking === asking) this.#asking = undefined;
+		// No; or while the question was open the site went (taken offline elsewhere), the member's authority went, or the
+		// page was left.
+		if (!yes || this.#working || !this.#still(moment, false) || !this.#access.canManage()) return;
+		const working = { site: site.id, action: "unpublish" } as const;
+		this.#working = working;
 		this.#draw(more);
+		let failure: unknown;
+		let done = false;
 		try {
 			await this.#client.unpublish(site.id, this.#lifetime.signal);
+			done = true;
 		} catch (error) {
-			if (this.#lifetime.signal.aborted) return;
-			this.#working = undefined;
+			failure = error;
+		}
+		if (this.#working === working) this.#working = undefined;
+		if (this.#lifetime.signal.aborted) return;
+		if (!done) {
 			this.#draw(more);
-			this.#say(changeError(error, phrase("The site could not be taken offline. Try again.")));
+			if (this.#still(moment, false))
+				this.#say(changeError(failure, phrase("The site could not be taken offline. Try again.")));
 			// Taken offline elsewhere meanwhile: the read after the failure drops it.
 			await this.#refresh(more);
 			return;
 		}
-		if (this.#lifetime.signal.aborted) return;
-		this.#working = undefined;
-		this.#passwords.delete(site.id);
-		if (this.#byHand?.key.endsWith(`:${site.id}`)) this.#byHand = undefined;
+		this.#forget(site.id);
+		if (this.#byHand?.key === `link:${site.id}`) this.#byHand = undefined;
 		// The focus goes to the next site's menu, else the one before, as the row leaves.
 		const list = this.#sites ?? [];
 		const at = list.findIndex((item) => item.id === site.id);
@@ -599,11 +693,12 @@ export class SitesView {
 		this.#draw(focusKey);
 		this.#say(t("{name} is offline.", { name }));
 		const gone = () => {
+			if (this.#lifetime.signal.aborted) return;
 			if (this.#leaving === site.id) this.#leaving = undefined;
 			// It leaves the list at once; the read after it confirms it.
 			this.#sites = this.#sites?.filter((item) => item.id !== site.id);
 			this.#listed(this.#sites ?? []);
-			if (!this.#lifetime.signal.aborted) this.#draw(focusKey);
+			this.#draw(focusKey);
 		};
 		const row = this.el.querySelector<HTMLElement>(`[data-site="${site.id}"]`);
 		if (row) leave(row, "is-leaving", gone);
@@ -791,6 +886,8 @@ export class SitesView {
 		this.#drawn = { manage, versions: this.#versions() };
 		const active = document.activeElement as HTMLElement | null;
 		const key = focusKey ?? (this.el.contains(active) ? active?.dataset.focusKey : undefined);
+		// Taken before the page is drawn again, while the focus is still where the member left it.
+		const free = this.#mayFocus();
 		let error: HTMLElement | null = null;
 		if (this.#error) {
 			const retry = h(
@@ -838,7 +935,7 @@ export class SitesView {
 						: null,
 			),
 		);
-		if (key) {
+		if (key && free) {
 			const target = this.#control(key);
 			if (target && !target.matches(":disabled")) target.focus();
 		}

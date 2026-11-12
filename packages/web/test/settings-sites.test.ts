@@ -638,6 +638,212 @@ describe("Sites: the menu and its questions", () => {
 	});
 });
 
+describe("Sites: answers that come back late", () => {
+	// Every answer that comes back after the page moved on acts only on the page it was asked from: never a password
+	// the member hid or that changed since, never the focus pulled out from under a question.
+	const later = "2026-09-05T10:05:00Z";
+	const refusal = () => Promise.reject(new Error("denied"));
+
+	it("never brings back a password the member hid while its copy was out (review F1)", async () => {
+		const copy = deferred<void>();
+		clipboard(() => copy.promise);
+		setup([shop]);
+		await settle();
+		press(shop.id, "eye");
+		await settle();
+		expect(secretOf(shop.id)).toBe(PASSWORD);
+		press(shop.id, "copy-password");
+		press(shop.id, "eye");
+		expect(secretOf(shop.id)).toBe(DOTS);
+		copy.reject(new Error("denied"));
+		await settle();
+		expect(view!.el.textContent).not.toContain(PASSWORD);
+		expect(view!.el.querySelector(".site-pill-field")).toBeNull();
+		expect(control(shop.id, "eye")?.getAttribute("aria-label")).toBe("Show password");
+		expect(toast()).toBeUndefined();
+	});
+
+	it("never brings back the old password when it was changed while its copy was out (review F1)", async () => {
+		const copy = deferred<void>();
+		clipboard(() => copy.promise);
+		setup([shop]);
+		await settle();
+		press(shop.id, "eye");
+		await settle();
+		press(shop.id, "copy-password");
+		press(shop.id, "more");
+		choose("Change password");
+		const form = question()!;
+		form.querySelector<HTMLInputElement>("input")!.value = "our friends only 2026";
+		form.requestSubmit();
+		await settle();
+		expect(secretOf(shop.id)).toBe("our friends only 2026");
+		copy.reject(new Error("denied"));
+		await settle();
+		expect(view!.el.textContent).not.toContain(PASSWORD);
+		expect(view!.el.querySelector(".site-pill-field")).toBeNull();
+		expect(secretOf(shop.id)).toBe("our friends only 2026");
+	});
+
+	it("never moves the focus behind a question when a read comes back (review F2)", async () => {
+		const { client, state } = setup([shop, draft]);
+		await settle();
+		const read = deferred<CompanySite[]>();
+		vi.mocked(client.list).mockImplementationOnce(() => read.promise);
+		press(shop.id, "more");
+		choose("Change password");
+		pressLabel(question()!, "Make a new password");
+		await settle();
+		expect(question()).toBeNull();
+		// The change's own read is still out when the member opens the other site's question.
+		press(draft.id, "more");
+		choose("Change password");
+		const field = question()!.querySelector("input")!;
+		expect(document.activeElement).toBe(field);
+		read.resolve([shop, draft]);
+		await settle();
+		expect(document.activeElement).toBe(field);
+		// The same behind the take-offline question, for a read that comes back and for a version What's new tells.
+		pressLabel(question()!, "Cancel");
+		const second = deferred<CompanySite[]>();
+		vi.mocked(client.list).mockImplementationOnce(() => second.promise);
+		vi.mocked(client.password).mockRejectedValueOnce(new Error("offline"));
+		// A read that fails reads the list again.
+		press(draft.id, "eye");
+		await settle();
+		press(shop.id, "more");
+		choose("Take offline");
+		const confirm = dialog().querySelector<HTMLButtonElement>("button.btn-danger")!;
+		expect(document.activeElement).toBe(confirm);
+		second.resolve([shop, draft, gift]);
+		await settle();
+		expect(document.activeElement).toBe(confirm);
+		state.versions = { "gift-message": 4 };
+		view!.update();
+		expect(rowOf(gift.id)?.querySelector(".site-from")?.textContent).toBe("Version 4 · What's new");
+		expect(document.activeElement).toBe(confirm);
+	});
+
+	it("shows nothing a read answers after the member's authority went or the page was left", async () => {
+		const role = { manage: true };
+		const read = deferred<CompanySitePassword>();
+		const { client } = setup([shop], { canManage: () => role.manage }, (client) => {
+			vi.mocked(client.password).mockImplementationOnce(() => read.promise);
+		});
+		await settle();
+		press(shop.id, "eye");
+		role.manage = false;
+		view!.update();
+		role.manage = true;
+		view!.update();
+		read.resolve({ siteId: shop.id, password: PASSWORD, changedAt: timestamp });
+		await settle();
+		expect(view!.el.textContent).not.toContain(PASSWORD);
+		expect(secretOf(shop.id)).toBe(DOTS);
+		// The page left while a read is out: its answer draws nothing.
+		const again = deferred<CompanySitePassword>();
+		vi.mocked(client.password).mockImplementationOnce(() => again.promise);
+		press(shop.id, "eye");
+		const el = view!.el;
+		view!.dispose();
+		again.resolve({ siteId: shop.id, password: PASSWORD, changedAt: timestamp });
+		await settle();
+		expect(el.textContent).toBe("");
+		expect(document.body.textContent).not.toContain(PASSWORD);
+	});
+
+	it("drops a hidden password's copy by hand when the member's authority went while it was read, even if it came back", async () => {
+		const role = { manage: true };
+		clipboard(refusal);
+		const read = deferred<CompanySitePassword>();
+		setup([shop], { canManage: () => role.manage }, (client) => {
+			vi.mocked(client.password).mockImplementationOnce(() => read.promise);
+		});
+		await settle();
+		press(shop.id, "copy-password");
+		role.manage = false;
+		view!.update();
+		role.manage = true;
+		view!.update();
+		read.resolve({ siteId: shop.id, password: PASSWORD, changedAt: timestamp });
+		await settle();
+		expect(document.body.textContent).not.toContain(PASSWORD);
+		expect(view!.el.querySelector(".site-pill-field")).toBeNull();
+		expect(toast()).toBeUndefined();
+	});
+
+	it("shows no new password when the member's authority went while it was being set", async () => {
+		const role = { manage: true };
+		const set = deferred<CompanySitePassword>();
+		setup([shop], { canManage: () => role.manage }, (client) => {
+			vi.mocked(client.setPassword).mockImplementationOnce(() => set.promise);
+		});
+		await settle();
+		press(shop.id, "more");
+		choose("Change password");
+		pressLabel(question()!, "Make a new password");
+		role.manage = false;
+		view!.update();
+		expect(question()).toBeNull();
+		role.manage = true;
+		view!.update();
+		set.resolve({ siteId: shop.id, password: "n3wp-4ss-w0rd", changedAt: later });
+		await settle();
+		expect(document.body.textContent).not.toContain("n3wp-4ss-w0rd");
+		expect(secretOf(shop.id)).toBe(DOTS);
+	});
+
+	it("takes a password off the screen when the list says it was changed since (elsewhere)", async () => {
+		const { state } = setup([shop, draft]);
+		await settle();
+		press(shop.id, "eye");
+		await settle();
+		expect(secretOf(shop.id)).toBe(PASSWORD);
+		// Another owner changed it; a read the page makes for its own reasons (here: the other site taken offline) says so.
+		state.sites = state.sites.map((site) => (site.id === shop.id ? { ...site, passwordChangedAt: later } : site));
+		press(draft.id, "more");
+		choose("Take offline");
+		pressLabel(dialog(), "Take offline");
+		await settle();
+		expect(ids()).toEqual([shop.id]);
+		expect(view!.el.textContent).not.toContain(PASSWORD);
+		expect(secretOf(shop.id)).toBe(DOTS);
+	});
+
+	it("leaves a link's copy by hand out once its site went, and never pulls the focus off another field", async () => {
+		const copy = deferred<void>();
+		clipboard(() => copy.promise);
+		const { client, state } = setup([shop, draft]);
+		await settle();
+		press(shop.id, "copy-link");
+		press(shop.id, "more");
+		choose("Take offline");
+		pressLabel(dialog(), "Take offline");
+		await settle();
+		expect(ids()).toEqual([draft.id]);
+		copy.reject(new Error("denied"));
+		await settle();
+		expect(view!.el.querySelector(".site-pill-field")).toBeNull();
+		expect(toast()).toBe("Wristband shop is offline.");
+
+		// Elsewhere: the member is typing in another field when the answer to the page's press comes back.
+		const outside = document.createElement("input");
+		document.body.append(outside);
+		const unpublish = deferred<boolean>();
+		vi.mocked(client.unpublish).mockImplementationOnce(() => unpublish.promise);
+		press(draft.id, "more");
+		choose("Take offline");
+		pressLabel(dialog(), "Take offline");
+		await settle();
+		outside.focus();
+		state.sites = [];
+		unpublish.resolve(true);
+		await settle();
+		expect(document.activeElement).toBe(outside);
+		expect(ids()).toEqual([]);
+	});
+});
+
 describe("Sites: who may do what", () => {
 	it("shows other members the sites and their links, without passwords or a menu", async () => {
 		const role = { manage: false };
