@@ -464,4 +464,47 @@ describe("member Company Computer transport", () => {
 		f.fetch.mockResolvedValueOnce(new Response("{}", { status: 403 }));
 		await expect(f.client.wakeMachine(id(20), signal)).rejects.toThrow();
 	});
+	it("starts a computer for an agent through the members' start (20260930730000), and reads only the closed answers", async () => {
+		const f = fixture(),
+			signal = new AbortController().signal;
+		const answer = (value: unknown) => f.fetch.mockResolvedValueOnce(Response.json(value));
+		const schema = "qorpera.member-agent-computer/v1";
+		answer({ schema, state: "started", machine: { machineId: id(20), name: "bob-desktop", state: "waiting" } });
+		expect(await f.client.startAgentComputer(id(30), signal)).toEqual({
+			kind: "started",
+			machineId: id(20),
+			name: "bob-desktop",
+			state: "waiting",
+		});
+		expect(f.fetch.mock.calls[0][0]).toBe("https://control.test/rest/v1/rpc/qorpera_member_start_agent_computer");
+		expect(JSON.parse(f.fetch.mock.calls[0][1]!.body as string)).toEqual({
+			p_profile_id: id(1),
+			p_staff_agent_id: id(30),
+		});
+		answer({ schema, state: "existing", machine: { machineId: id(21), name: "shared-desk", state: "stopped" } });
+		expect(await f.client.startAgentComputer(id(30), signal)).toMatchObject({ kind: "existing", machineId: id(21) });
+		for (const reason of ["AGENT_UNAVAILABLE", "START_TOO_SOON", "MACHINE_TOO_LARGE", "MACHINES_UNAVAILABLE"]) {
+			answer({ schema, state: "refused", reason });
+			expect(await f.client.startAgentComputer(id(30), signal)).toEqual({ kind: "refused", reason });
+		}
+		// Anything else is no answer: an unknown reason, a field more, a machine that is no machine, another schema.
+		for (const wrong of [
+			{ schema, state: "refused", reason: "SOMETHING_ELSE" },
+			{ schema, state: "refused", reason: "START_TOO_SOON", extra: 1 },
+			{ schema, state: "started", machine: { machineId: "m", name: "bob-desktop", state: "waiting" } },
+			{ schema, state: "started", machine: { machineId: id(20), name: "Bob Desktop", state: "waiting" } },
+			{ schema, state: "made", machine: { machineId: id(20), name: "bob-desktop", state: "waiting" } },
+			{
+				schema: "qorpera.machine-start/v1",
+				state: "started",
+				machine: { machineId: id(20), name: "b", state: "waiting" },
+			},
+		]) {
+			answer(wrong);
+			await expect(f.client.startAgentComputer(id(30), signal)).rejects.toThrow();
+		}
+		const calls = f.fetch.mock.calls.length;
+		await expect(f.client.startAgentComputer("agent", signal)).rejects.toThrow();
+		expect(f.fetch.mock.calls.length).toBe(calls);
+	});
 });

@@ -1422,6 +1422,37 @@ runs. Starting is not taking over: it needs no hold and takes none, and the agen
   renews the lease. Without them a task machine whose desktop a member only watched slept after its executor's
   `sleep_after_seconds` (an hour by default), and a hold kept by heartbeats alone could too.
 
+### A member starts a computer for an agent that has none (20260930730000_member_agent_computer)
+
+An owner, admin or contributor starts a desktop computer for an agent from its computer window (Jonas, 12 Nov 2026),
+when the agent has no machine or none big enough for a screen. One press; never on opening the window (a computer
+costs hours). The agent is told nothing: the machine is its own (its machine list shows it, started by it) and it uses,
+stops and deletes it as one it started.
+
+- `qorpera_member_start_agent_computer(profile, agent)` (authenticated): owners, admins and contributors
+  (`qorpera_can_write_profile`, as a member's wake). An agent of the company on staff and not deleted, else
+  `AGENT_UNAVAILABLE` (an unknown agent is 42501). Under the company's machine lock: a machine of the agent's (started by
+  it, or whose screen it drove last) big enough for a desktop and not being deleted is answered as `{state:
+  "existing", machine}` and nothing is made (the client wakes it when it sleeps); at most one new computer per agent a
+  minute (`START_TOO_SOON`); else ONE machine as the agent's own `machine_start` with desktop true and its defaults makes
+  it (2 cpus, 4 GiB, 40 GiB of disk, lifetime task, the standard image), named after the agent with `-desktop` (a
+  number added when taken), its purpose naming the member, the agent as the one it is started by and the member as the
+  one who asked, no run. It goes through machine_start's admission: `MACHINE_TOO_LARGE` (no server could ever hold it)
+  and `MACHINES_UNAVAILABLE` (no node runs machines) refuse and keep nothing; otherwise it waits in line for room or
+  hours as any wanted machine (only the service role reserves room on a node, so a member's start waits for the node
+  executor's next pass, as a member's wake does). Answers `{schema: "qorpera.member-agent-computer/v1", state:
+  "started" | "existing", machine: {machineId, name, state}}`, or `{state: "refused", reason}`.
+- Such a machine has no starting run: `started_by_run_id` and `started_by_receipt_id` are null together. Its folder view
+  acts as its agent and member, company-wide, as a view whose starter's run has ended; a save through it checks the
+  read sets of every run with a command or an authorized `machine_screen` action on its disk, as a starter's is checked
+  (`qorpera_company_machine_screen_runs` records the action's run once per placement; a look records nothing). The disk
+  is the placement's: a machine keeps it while it sleeps and wakes on its node, and a new placement starts empty.
+- The computer window's list (`qorpera_list_agent_machines`) takes the agent's machines big enough for a desktop first
+  into its 20, and `existing` is the first of them in the list's own order: the window always lists the machine a start
+  answers. A busy record moves its last use only
+  while a command whose conversation the busy check-in asks runs on it: with no one to ask, it sleeps after its quiet
+  window without use, busy or not.
+
 #### Member contacts' places (20260930717000_member_contact_places)
 
 A contact is a rail row like an agent's (Jonas, 10 Nov 2026: "not sure I like the member contacts at the top,
