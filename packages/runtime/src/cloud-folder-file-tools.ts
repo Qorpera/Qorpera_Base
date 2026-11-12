@@ -798,7 +798,7 @@ export function cloudFolderFileTools(options: {
 					limit: { type: "integer", minimum: 4, maximum: MAX_READ_BYTES },
 				},
 			},
-			parseArguments(value) {
+			parseArguments(value): JsonValue {
 				const input = someArgs(value, "company_read", [], ["path", "paths", "offset", "limit"]);
 				if ((input.path === undefined) === (input.paths === undefined))
 					throw new CloudToolArgumentRefusal("company_read takes path, or paths to read several files at once");
