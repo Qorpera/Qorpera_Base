@@ -9,6 +9,8 @@ reach what only root can) is proved by the image build.
 
   machine-desktop-files.py HELPER BASE cases               prints the cases' results as JSON
   machine-desktop-files.py HELPER BASE stopped             root's side asked to stop (SIGTERM) while a copy is being made
+  machine-desktop-files.py HELPER BASE stopped-at-the-spawn    the same, at the moment the account's side is started
+  machine-desktop-files.py HELPER BASE stopped-at-the-cleanup  the same, in the middle of ending what the side left
   machine-desktop-files.py HELPER BASE account ...         the account's side, as the program starts it
   machine-desktop-files.py HELPER BASE account:HOW ...     the same, held up or ended at one point (the cases say where)
 """
@@ -157,24 +159,50 @@ def listing(folder):
 	return found
 
 
-if sys.argv[3] == "stopped":
-	# Root's side is asked to stop while the account's side and its `cp` (still to begin) are there: both are ended
-	# and collected, and what was on its way is taken away, before root's side ends.
+if sys.argv[3].startswith("stopped"):
+	# Root's side is asked to stop (SIGTERM, once) while the account's side or its `cp` (still to write: it waits two
+	# seconds first) is there. Whenever the signal comes, both are ended and collected and what was on its way is
+	# taken away before root's side ends; three seconds later nothing has appeared.
 	make("")
 	make("/everyone", 0o1777)
 	make("/everyone/large")
 	write("/everyone/large/a.bin", "a" * 400000)
 	os.makedirs(desk)
-	how = "copying-then-held"
 	m.stoppable()
-	threading.Timer(1, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+	sent = []
+
+	def stop_once():
+		if not sent:
+			sent.append(True)
+			os.kill(os.getpid(), signal.SIGTERM)
+
+	if sys.argv[3] == "stopped":
+		# While the copy is being made: the account's side and its `cp` are both there.
+		how = "copying-then-held"
+		threading.Timer(1, stop_once).start()
+	if sys.argv[3] == "stopped-at-the-spawn":
+		# At the moment the account's side is started, before root's side has set anything up to end it.
+		how = "copying-then-held"
+
+		class Started(subprocess.Popen):
+			def __init__(self, *args, **more):
+				super().__init__(*args, **more)
+				stop_once()
+
+		subprocess.Popen = Started
+	if sys.argv[3] == "stopped-at-the-cleanup":
+		# The account's side has ended itself and its `cp` is still to write; the signal comes when root's side has
+		# cancelled its patience and has not yet ended what the side left (review r3 F1 of #1712).
+		how = "copying-then-failed"
+		cancel = threading.Timer.cancel
+		threading.Timer.cancel = lambda timer: (cancel(timer), stop_once())
 	try:
 		m.root_open("/everyone/large", True)
 		ended = "it went on"
 	except SystemExit as stop:
 		ended = stop.code
 	time.sleep(3)
-	print(json.dumps({"ended": ended, "calls": calls, "desk": listing(desk)}))
+	print(json.dumps({"ended": ended, "sent": len(sent), "calls": calls, "desk": listing(desk)}))
 	sys.exit(0)
 
 

@@ -307,47 +307,56 @@ def account_command(words):
 		"--reset-env", "--", "/usr/bin/python3", "-I", SELF, "account", *words]  # fmt: skip
 
 
+# The account's work that is under way (each: its process once it is started, and whether its end has begun), and
+# the signals that asked root's side to stop meanwhile. From before a piece of the account's work is started until
+# all of it is ended and collected, such a signal is only noted here: it ends the account's side at once, and root's
+# side stops for it after the collect, never in between (stoppable, as_account).
+UNDER_WAY = []
+NOTED = []
+
+
 def as_account(*words, feed=None):
 	"""Runs this program's account side as the account (account_command), in a session of its own, with `/` as its
 	folder and no descriptor but its three: nothing to read (or the pipe `feed` writes to), and two files in memory
 	for what it says. It is given PATIENCE seconds. However it ends (by itself, at root's patience, by another's
-	signal, by this program being stopped), everything it started that is still there is ended and collected before
-	this goes on: nothing of it can write any more. Answers its exit code, what it printed, what it complained of,
-	and what `feed` answered."""
+	signal, by this program being asked to stop), everything it started that is still there is ended and collected
+	before this goes on: nothing of it can write any more. Answers its exit code, what it printed, what it complained
+	of, and what `feed` answered."""
 	# What the account's side leaves behind when it ends before its own child (the copying `cp`) becomes this
 	# process's to collect, not init's (PR_SET_CHILD_SUBREAPER).
 	ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0)
 	out, err = os.memfd_create("answer"), os.memfd_create("complaint")
+	work = {"process": None, "over": False}
+	# Its number is its group's (a session of its own). The group is only ever signalled while that number is surely
+	# still its own: before the account's side is collected (the timer under this lock; the note of a stop signal in
+	# the main thread itself, which is not collecting while it notes).
+	turn, ended = threading.Lock(), []
+
+	def out_of_patience():
+		with turn:
+			if not work["over"]:
+				ended.append(True)
+				end_group(work["process"])
+
+	patience = threading.Timer(PATIENCE[words[0]], out_of_patience)
+	fed = failure = code = None
+	# From here until the account's side is ended and collected, a signal that asks root's side to stop is only noted.
+	UNDER_WAY.append(work)
 	try:
-		process = subprocess.Popen(
-			account_command(words),
-			stdin=subprocess.PIPE if feed else subprocess.DEVNULL,
-			stdout=out,
-			stderr=err,
-			close_fds=True,
-			start_new_session=True,
-			cwd="/",
-		)
-		# Its number is its group's (a session of its own). The group is only ever signalled while that number is
-		# surely still its own: before the account's side is collected, under this lock.
-		turn, over, ended = threading.Lock(), [], []
-
-		def end_group():
-			try:
-				os.killpg(process.pid, signal.SIGKILL)
-			except ProcessLookupError:
-				pass
-
-		def out_of_patience():
-			with turn:
-				if not over:
-					ended.append(True)
-					end_group()
-
-		patience = threading.Timer(PATIENCE[words[0]], out_of_patience)
-		patience.start()
-		fed = failure = None
 		try:
+			work["process"] = process = subprocess.Popen(
+				account_command(words),
+				stdin=subprocess.PIPE if feed else subprocess.DEVNULL,
+				stdout=out,
+				stderr=err,
+				close_fds=True,
+				start_new_session=True,
+				cwd="/",
+			)
+			patience.start()
+			# A stop that was asked for while it was being started ended nothing yet.
+			if NOTED:
+				end_group(process)
 			if feed:
 				try:
 					with process.stdin as pipe:
@@ -361,16 +370,26 @@ def as_account(*words, feed=None):
 			# Its end is waited for without collecting it yet.
 			os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
 		finally:
-			with turn:
-				over.append(True)
-				patience.cancel()
-				end_group()
-				code = process.wait()
-				while True:
-					try:
-						os.waitpid(-process.pid, 0)
-					except ChildProcessError:
-						break
+			process = work["process"]
+			if process is not None:
+				with turn:
+					work["over"] = True
+					patience.cancel()
+					end_group(process)
+					code = process.wait()
+					while True:
+						try:
+							os.waitpid(-process.pid, 0)
+						except ChildProcessError:
+							break
+	finally:
+		UNDER_WAY.remove(work)
+	try:
+		# Nothing of the account's side is left: now root's side stops, if it was asked to meanwhile.
+		if NOTED:
+			number = NOTED[0]
+			del NOTED[:]
+			sys.exit(128 + number)
 		if failure:
 			raise failure
 		if ended:
@@ -386,6 +405,14 @@ def as_account(*words, feed=None):
 	finally:
 		os.close(out)
 		os.close(err)
+
+
+def end_group(process):
+	"""Ends the account's side and all it started (its process group). Only ever called before the side is collected."""
+	try:
+		os.killpg(process.pid, signal.SIGKILL)
+	except ProcessLookupError:
+		pass
 
 
 def staged(work, *words, feed=None, beside=()):
@@ -406,10 +433,22 @@ def staged(work, *words, feed=None, beside=()):
 
 
 def stoppable():
-	"""A signal that asks this program to stop ends it the way an error does, so that what the account's side had
-	started is ended, collected and taken away first."""
-	for number in (signal.SIGTERM, signal.SIGHUP):
-		signal.signal(number, lambda number, _: sys.exit(128 + number))
+	"""A signal that asks this program to stop (SIGTERM, SIGHUP, an interrupt) ends it the way an error does. While a
+	piece of the account's work is under way it is only noted: the account's side is ended at once, and root's side
+	stops for it when that side and all it started are collected (as_account), so that what was on its way is taken
+	away after nothing can write any more, also when the signal comes in the middle of that ending."""
+
+	def asked(number, _):
+		if not UNDER_WAY:
+			sys.exit(128 + number)
+		NOTED.append(number)
+		for work in UNDER_WAY:
+			if work["process"] is not None and not work["over"]:
+				end_group(work["process"])
+
+	for number in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+		if signal.getsignal(number) is not signal.SIG_IGN:
+			signal.signal(number, asked)
 
 
 def answer_of(code, printed, complaint, target):
@@ -796,5 +835,3 @@ if __name__ == "__main__":
 	except OSError as error:
 		print(f"desktop-files: {error}", file=sys.stderr)
 		sys.exit(1)
-	except KeyboardInterrupt:
-		sys.exit(130)
