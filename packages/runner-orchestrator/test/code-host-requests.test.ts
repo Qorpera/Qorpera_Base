@@ -17,6 +17,7 @@ import {
 	type CodeRestoreRequest,
 } from "../src/code-host-requests.ts";
 import { CODE_HOST_LAYOUT, type CodeHostJobOptions, type CodeHostJobs } from "../src/code-host-views.ts";
+import { type CodeImportOutcome, type CodeImportRequest, codeImportRequestOf } from "../src/code-import.ts";
 import { CodingControlBusy } from "../src/coding-executor.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 
@@ -38,6 +39,8 @@ const SCHEMA = "qorpera.code-request-outcome/v1";
 const FINISH = "qorpera.code-request-finish/v1";
 const STEP = "qorpera.code-request-step/v1";
 const STRAND = "qorpera.code-restore-strand/v1";
+/** What a claim asks for without an import runner, or while an import runs. */
+const KINDS = ["undo", "download", "restore"];
 const REPOSITORY: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "shop", baseBranch: "main" };
 const TARGET: CodeChangeTarget = { companyId: COMPANY, environmentId: ENVIRONMENT, owner: "qorpera", name: "shop" };
 const WHERE = { companyId: COMPANY, environmentId: ENVIRONMENT, owner: "qorpera", name: "shop" };
@@ -234,6 +237,8 @@ describe("CodeHostRequests", () => {
 			"qorpera_code_request_finish",
 			"qorpera_code_restore_record",
 			"qorpera_code_restore_strand",
+			"qorpera_code_import_looked",
+			"qorpera_code_import_record",
 		]);
 	});
 
@@ -257,7 +262,9 @@ describe("CodeHostRequests", () => {
 	it("claims nothing and does nothing when no request waits", async () => {
 		const t = setup();
 		await expect(t.pass()).resolves.toEqual(NONE);
-		expect(t.calls).toEqual([{ method: "qorpera_code_requests_claim", args: { ...WHO, p_limit: 10 } }]);
+		expect(t.calls).toEqual([
+			{ method: "qorpera_code_requests_claim", args: { ...WHO, p_limit: 10, p_kinds: KINDS } },
+		]);
 		expect(t.runs).toEqual([]);
 		expect(t.events).toEqual([]);
 	});
@@ -986,6 +993,324 @@ describe("CodeHostRequests", () => {
 					expect(() => setup({ strandMs })).toThrow("INVALID_CODE_HOST_REQUESTS");
 				expect(() => setup({ strandMs: 1 })).not.toThrow();
 			});
+		});
+	});
+
+	describe("import", () => {
+		const COMPANY2 = "22222222-2222-4222-8222-222222222222";
+		const ENVIRONMENT2 = "44444444-4444-4444-8444-444444444444";
+		const R4 = "aaaaaaaa-0000-4000-8000-000000000004";
+		const T4 = "bbbbbbbb-0000-4000-8000-000000000004";
+		const R5 = "aaaaaaaa-0000-4000-8000-000000000005";
+		const T5 = "bbbbbbbb-0000-4000-8000-000000000005";
+		/** An import of another company, as the kernel hands it out (A2): a first claim, nothing done yet. */
+		const IMPORT = {
+			requestId: R4,
+			token: T4,
+			leaseUntil: "2026-11-12T15:15:00+00:00",
+			companyId: COMPANY2,
+			environmentId: ENVIRONMENT2,
+			owner: "qorpera",
+			name: "saml-storefront",
+			kind: "import",
+			input: {
+				from: { github: "Qorpera/saml-storefront" },
+				via: "connection",
+				look: false,
+				maximumBytes: 1_073_741_824,
+			},
+			progress: null,
+			looked: null,
+		};
+		const IMPORTED: CodeImportOutcome = {
+			schema: SCHEMA,
+			state: "done",
+			result: "imported",
+			change: 1,
+			mainSha: MAIN,
+			bundle: `20261112T150000Z-${MAIN.slice(0, 12)}`,
+			rawBundle: `import-20261112T145000Z-${MAIN.slice(0, 12)}`,
+			setAside: "code/_set-aside/qorpera/at-20261112T145500Z/saml-storefront",
+		};
+		const BUSY = { schema: SCHEMA, state: "busy" };
+		const ALL = [...KINDS, "import"];
+		const kinds = (t: ReturnType<typeof setup>) =>
+			t.calls.filter((call) => call.method === "qorpera_code_requests_claim").map((call) => call.args.p_kinds);
+
+		/** The requests with a stand-in of part C3's import runner: it says so in `order`, waits while `gate.held`
+		 * holds, then throws `gate.throws` or answers `gate.outcome`. */
+		function importing(options: Partial<CodeHostRequestsOptions> = {}) {
+			const taken: { request: CodeImportRequest; signal: AbortSignal }[] = [];
+			const gate = {
+				outcome: IMPORTED as unknown,
+				held: undefined as ReturnType<typeof held> | undefined,
+				throws: undefined as unknown,
+				run: undefined as ((signal: AbortSignal) => Promise<unknown>) | undefined,
+			};
+			const t = setup({
+				imports: {
+					run: async (request, signal) => {
+						taken.push({ request, signal });
+						t.order.push("import");
+						if (gate.run) return (await gate.run(signal)) as CodeImportOutcome;
+						if (gate.held) await gate.held.turn;
+						if (gate.throws !== undefined) throw gate.throws;
+						return gate.outcome as CodeImportOutcome;
+					},
+				},
+				...options,
+			});
+			return { ...t, taken, gate };
+		}
+
+		it("hands an import to the import runner as part C1 reads it, beside the passes, and finishes its outcome after the run", async () => {
+			const t = importing();
+			t.kernel.claims = [[IMPORT]];
+			await expect(t.whole()).resolves.toEqual({ ...NONE, done: 1 });
+			expect(t.taken.map((run) => run.request)).toEqual([codeImportRequestOf(IMPORT)]);
+			expect(t.taken[0]?.request).toMatchObject({
+				requestId: R4,
+				kind: "import",
+				input: { from: { github: "Qorpera/saml-storefront" }, via: "connection", look: false },
+				progress: {},
+				looked: null,
+			});
+			// The run is the request's whole work: no job, no step of this loop's own; the finish once it has ended.
+			expect(t.order).toEqual(["claim", "import", "finish", "claim"]);
+			expect(t.taken[0]?.signal.aborted).toBe(false);
+			expect(t.finishes()).toEqual([finishOf(R4, T4, IMPORTED)]);
+			expect(t.finished()).toEqual([
+				expect.objectContaining({
+					requestId: R4,
+					kind: "import",
+					companyId: COMPANY2,
+					repository: "qorpera/saml-storefront",
+					state: "done",
+					result: "imported",
+					recorded: true,
+				}),
+			]);
+			// Asked for again once it has ended.
+			expect(kinds(t)).toEqual([ALL, ALL]);
+			expect(t.errors()).toEqual([]);
+			// The progress and the look an earlier claim left are handed on as C1 reads them.
+			const again = importing();
+			const progress = { step: "look", relayRefused: 1 };
+			again.kernel.claims = [[{ ...IMPORT, progress }]];
+			await again.whole();
+			expect(again.taken[0]?.request.progress).toEqual(progress);
+		});
+
+		it("finishes each outcome as the run answered it, and anything else as a failure", async () => {
+			const outcomes: [unknown, keyof typeof NONE][] = [
+				[IMPORTED, "done"],
+				[{ schema: SCHEMA, state: "done", result: "looked" }, "done"],
+				[{ schema: SCHEMA, state: "refused", code: "IMPORT_SOURCE_REFUSED" }, "refused"],
+				[{ schema: SCHEMA, state: "failed", code: "IMPORT_NO_SPACE:PLACE_AS_BEFORE" }, "failed"],
+				[BUSY, "busy"],
+			];
+			for (const [outcome, ended] of outcomes) {
+				const t = importing();
+				t.gate.outcome = outcome;
+				t.kernel.claims = [[IMPORT]];
+				await expect(t.whole(), JSON.stringify(outcome)).resolves.toEqual({ ...NONE, [ended]: 1 });
+				expect(t.finishes()).toEqual([finishOf(R4, T4, outcome)]);
+				expect(t.errors()).toEqual([]);
+				// Busy or not, the request is the kernel's again: the next claim asks for an import.
+				expect(kinds(t)).toEqual([ALL, ALL]);
+			}
+			const invalid = { schema: SCHEMA, state: "failed", code: "CODE_REQUEST_ANSWER_INVALID" };
+			for (const outcome of [
+				{ schema: SCHEMA, state: "done", result: "imported" },
+				{ ...IMPORTED, extra: 1 },
+				{ ...IMPORTED, schema: "qorpera.code-import/v1" },
+				{ state: "busy" },
+				{ schema: SCHEMA, state: "refused", code: "not a code" },
+				{ schema: SCHEMA, state: "done", result: "restored" },
+				null,
+			]) {
+				const t = importing();
+				t.gate.outcome = outcome;
+				t.kernel.claims = [[IMPORT]];
+				await expect(t.whole(), JSON.stringify(outcome)).resolves.toEqual({ ...NONE, failed: 1 });
+				expect(t.finishes()).toEqual([finishOf(R4, T4, invalid)]);
+				expect(t.errors()).toEqual(["job:CODE_REQUEST_ANSWER_INVALID"]);
+			}
+			// A run that throws: failed with its code, or put off when its job gave way to a turn's.
+			const cases: [unknown, unknown, string[]][] = [
+				[
+					new CodeHostJobFailure("CODE_HOST_VIEW_UNAVAILABLE", "fetch failed"),
+					{ schema: SCHEMA, state: "failed", code: "CODE_HOST_VIEW_UNAVAILABLE" },
+					["job:CODE_HOST_VIEW_UNAVAILABLE: fetch failed"],
+				],
+				[
+					new Error("something else"),
+					{ schema: SCHEMA, state: "failed", code: "UNCLASSIFIED" },
+					["job:something else"],
+				],
+				[yielded(), BUSY, []],
+			];
+			for (const [error, outcome, errors] of cases) {
+				const t = importing();
+				t.gate.throws = error;
+				t.kernel.claims = [[IMPORT]];
+				await t.whole();
+				expect(t.finishes()).toEqual([finishOf(R4, T4, outcome)]);
+				expect(t.errors()).toEqual(errors);
+			}
+		});
+
+		it("ends an import item it cannot read as failed, as the other kinds, and runs nothing for it", async () => {
+			const { looked: _, ...lookless } = IMPORT;
+			for (const entry of [
+				{ ...IMPORT, extra: 1 },
+				lookless,
+				{ ...IMPORT, leaseUntil: "soon" },
+				{ ...IMPORT, input: { ...IMPORT.input, via: "file" } },
+				{ ...IMPORT, input: { ...IMPORT.input, maximumBytes: 3 * 1024 ** 3 } },
+				{ ...IMPORT, progress: { step: "elsewhere" } },
+				{ ...IMPORT, looked: { schema: "qorpera.code-import-look/v1" } },
+				{ ...IMPORT, owner: "Qorpera" },
+			]) {
+				const t = importing();
+				t.kernel.claims = [[entry]];
+				await expect(t.whole(), JSON.stringify(entry)).resolves.toEqual(NONE);
+				expect(t.taken).toEqual([]);
+				expect(t.finishes()).toEqual([
+					finishOf(R4, T4, { schema: SCHEMA, state: "failed", code: "REQUEST_INVALID" }),
+				]);
+				expect(t.errors()).toHaveLength(1);
+				// C1's own code says which part was wrong (the place's name is read before the kind, as for every kind).
+				expect(t.errors()[0]).toMatch(
+					/^claim:INVALID_(?:CODE_IMPORT_(?:REQUEST|INPUT|PROGRESS|LOOK)|CODING_REPOSITORY)$/,
+				);
+			}
+		});
+
+		it("runs one at a time: while one runs no claim asks for another, and one handed out anyway is put back", async () => {
+			const t = importing();
+			t.gate.held = held();
+			t.kernel.claims = [[IMPORT, { ...IMPORT, requestId: R5, token: T5, name: "shop" }], [], []];
+			const counts = [await t.pass(), await t.pass(), await t.pass()];
+			expect(kinds(t)).toEqual([ALL, KINDS, KINDS]);
+			expect(t.taken.map((run) => run.request.requestId)).toEqual([R4]);
+			// The second was not asked for (the kernel hands out one a claim): it goes back to wait, unrun.
+			await vi.waitFor(() => expect(t.finishes()).toEqual([finishOf(R5, T5, BUSY)]));
+			expect(t.errors()).toEqual(["claim:CODE_IMPORT_NOT_ASKED"]);
+			t.gate.held.give();
+			await t.requests.settled();
+			counts.push(await t.pass());
+			expect(kinds(t)).toEqual([ALL, KINDS, KINDS, ALL]);
+			expect(t.finishes()).toEqual([finishOf(R5, T5, BUSY), finishOf(R4, T4, IMPORTED)]);
+			expect(
+				counts.reduce((sum, count) => ({
+					done: sum.done + count.done,
+					refused: sum.refused + count.refused,
+					failed: sum.failed + count.failed,
+					busy: sum.busy + count.busy,
+				})),
+			).toEqual({ ...NONE, done: 1, busy: 1 });
+		});
+
+		it("never holds a pass up: other companies' undos, downloads and restores run to their finish while an import runs", async () => {
+			const verified = {
+				schema: SCHEMA,
+				state: "done",
+				result: "verified",
+				mainSha: MAIN,
+				refsSha256: "9".repeat(64),
+				refs: 4,
+			} as CodeRequestOutcome;
+			const t = importing({ restore: { run: async () => verified } });
+			t.gate.held = held();
+			t.kernel.claims = [[IMPORT], [UNDO], [DOWNLOAD], [RESTORE]];
+			let done = 0;
+			await expect(t.pass()).resolves.toEqual(NONE);
+			// The undo's pass ends when the undo is finished: in its own pass, with the import still running.
+			await expect(t.pass()).resolves.toEqual({ ...NONE, done: 1 });
+			done += 1;
+			done += (await t.pass()).done;
+			done += (await t.pass()).done;
+			await vi.waitFor(() => expect(t.finishes().map((call) => call.args.p_request_id)).toEqual([R1, R2, R3]));
+			expect(kinds(t)).toEqual([ALL, KINDS, KINDS, KINDS]);
+			// The import still runs, unfinished.
+			expect(t.taken).toHaveLength(1);
+			expect(t.taken[0]?.signal.aborted).toBe(false);
+			t.gate.held.give();
+			await t.requests.settled();
+			done += (await t.pass()).done;
+			expect(done).toBe(4);
+			expect(t.finishes().map((call) => call.args.p_request_id)).toEqual([R1, R2, R3, R4]);
+		});
+
+		it("asks for no import without an import runner, and puts one handed out anyway back", async () => {
+			const t = setup();
+			t.kernel.claims = [[IMPORT]];
+			await expect(t.whole()).resolves.toEqual({ ...NONE, busy: 1 });
+			expect(kinds(t)).toEqual([KINDS, KINDS]);
+			expect(t.order).toEqual(["claim", "finish", "claim"]);
+			expect(t.finishes()).toEqual([finishOf(R4, T4, BUSY)]);
+			expect(t.errors()).toEqual(["claim:CODE_IMPORT_NOT_ASKED"]);
+		});
+
+		it("stops the import with the executor: its signal ends, the pass does not wait, and its finish gets the few seconds", async () => {
+			const stopped = new AbortController();
+			const t = importing();
+			// As the runner stops: it ends at its signal, put off.
+			t.gate.run = (signal) =>
+				new Promise((resolve) => signal.addEventListener("abort", () => resolve(BUSY), { once: true }));
+			t.kernel.claims = [[IMPORT]];
+			await expect(t.requests.pass(stopped.signal)).resolves.toEqual(NONE);
+			expect(t.taken[0]?.signal.aborted).toBe(false);
+			stopped.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
+			expect(t.taken[0]?.signal.aborted).toBe(true);
+			await t.requests.settled();
+			// Finished busy with the stop's own time for it: the kernel puts it back for the next claim.
+			expect(t.finishes()).toEqual([finishOf(R4, T4, BUSY)]);
+			await expect(t.pass()).resolves.toEqual({ ...NONE, busy: 1 });
+			expect(t.errors()).toEqual([]);
+			// One that throws as it stops is put off too, with nothing reported; one that got to its end says so.
+			for (const [run, outcome] of [
+				[
+					async (signal: AbortSignal) => {
+						await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+						signal.throwIfAborted();
+					},
+					BUSY,
+				],
+				[
+					async (signal: AbortSignal) => {
+						await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+						return IMPORTED;
+					},
+					IMPORTED,
+				],
+			] as const) {
+				const stop = new AbortController();
+				const one = importing();
+				one.gate.run = run;
+				one.kernel.claims = [[IMPORT]];
+				await one.requests.pass(stop.signal);
+				stop.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
+				await one.requests.settled();
+				expect(one.finishes()).toEqual([finishOf(R4, T4, outcome)]);
+				expect(one.errors()).toEqual([]);
+			}
+			// A finish not heard as it stops leaves the request leased: it is claimed again when its lease runs out.
+			const unheard = importing();
+			const stop = new AbortController();
+			unheard.gate.run = (signal) =>
+				new Promise((resolve) => signal.addEventListener("abort", () => resolve(BUSY), { once: true }));
+			unheard.kernel.answer = (method) => {
+				if (method === "qorpera_code_request_finish") throw new Error("CODING_CONTROL_UNCONFIRMED");
+				return undefined;
+			};
+			unheard.kernel.claims = [[IMPORT]];
+			await unheard.requests.pass(stop.signal);
+			stop.abort(new Error("CODING_EXECUTOR_SHUTDOWN"));
+			await unheard.requests.settled();
+			expect(unheard.finishes()).toHaveLength(2);
+			expect(unheard.errors()).toEqual(["finish:CODING_CONTROL_UNCONFIRMED"]);
 		});
 	});
 
