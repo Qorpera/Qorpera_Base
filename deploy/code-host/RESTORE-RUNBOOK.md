@@ -244,10 +244,10 @@ restores until you end it:
    place and records a restore, change 2, at main as it was brought in.
    **One thing is not as in that row: this restore waits for quiet sessions.** `held` passes on from a failed
    restore to the next restore of the place, never from an import, so the restore you ask starts without it and
-   stays queued (`waiting`: `SESSIONS_BUSY`) while the company's sessions are working or one of this repository's
-   sessions is attached to a machine, with the place closed all the while. Before you ask, wait until their
-   machines sleep (ten quiet minutes) or archive those sessions, as "Before you start" says; then ask, and read
-   `progress` until it has `held: true`.
+   stays queued while the company's sessions are working (`waiting`: `SESSIONS_BUSY`) or one of this repository's
+   sessions is attached to a machine (`waiting`: `SESSIONS_ATTACHED`), with the place closed all the while. Before
+   you ask, wait until their machines sleep (ten quiet minutes) or archive those sessions, as "Before you start"
+   says; then ask, and read `progress` until it has `held: true`.
 4. If that restore fails at its open too, leave the place closed: nothing is lost (the source the import came from
    and both its bundles are kept). It needs a developer, as in "By hand".
 
