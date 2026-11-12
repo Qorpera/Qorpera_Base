@@ -86,6 +86,84 @@ const EMBLEMS: Readonly<Record<Emblem, readonly Part[]>> = {
 		["path", { d: "M10 4h20l10 10v26a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4V8a4 4 0 0 1 4-4z", fill: "solid" }],
 		["path", { d: "M14 22h20M14 29h20M14 36h12", stroke: "cut" }],
 	],
+	// 12 November 2026 (design page 6gSTTCcz3D8AjBpV3GmrH6): 14 more, so the drawer's picker has 24.
+	map: [
+		["path", { d: "M5 10l12-4 14 4 12-4v32l-12 4-14-4-12 4z", fill: "solid" }],
+		["path", { d: "M17 7v31M31 11v31", stroke: "cut-thin" }],
+	],
+	mountain: [
+		["path", { d: "M2.5 40 18 13l7.5 12 5.5-8L45.5 40z", fill: "solid" }],
+		["path", { d: "M13.5 21l4.5 3.5 4.5-3.5", stroke: "cut-thin" }],
+	],
+	tent: [
+		["path", { d: "M24 6 4 41h40z", fill: "solid" }],
+		["path", { d: "M24 23 17.5 41h13z", fill: "cut" }],
+	],
+	pin: [
+		["path", { d: "M24 44.5S9 30.5 9 19a15 15 0 0 1 30 0c0 11.5-15 25.5-15 25.5z", fill: "solid" }],
+		["circle", { cx: "24", cy: "19", r: "5.5", fill: "cut" }],
+	],
+	cart: [
+		["path", { d: "M11 12h33l-4.5 18h-24z", fill: "solid" }],
+		["path", { d: "M3.5 6h5.5l5.5 28h24", stroke: "solid-line" }],
+		["circle", { cx: "18", cy: "40", r: "3.6", fill: "solid" }],
+		["circle", { cx: "35", cy: "40", r: "3.6", fill: "solid" }],
+		["path", { d: "M22 17v8M30 17v8", stroke: "cut-thin" }],
+	],
+	box: [
+		["path", { d: "M24 4 43 13v22L24 44 5 35V13z", fill: "solid" }],
+		["path", { d: "M5.5 13.5 24 22l18.5-8.5M24 22v21", stroke: "cut" }],
+	],
+	truck: [
+		["rect", { x: "3", y: "10", width: "26", height: "23", rx: "3", fill: "solid" }],
+		["path", { d: "M29 17h8.5l6.5 8v8H29z", fill: "solid" }],
+		["path", { d: "M32.5 20.5h3.5l3.5 4.5h-7z", fill: "cut" }],
+		["circle", { cx: "13", cy: "36.5", r: "5", fill: "solid", stroke: "cut-thin" }],
+		["circle", { cx: "36", cy: "36.5", r: "5", fill: "solid", stroke: "cut-thin" }],
+	],
+	chat: [
+		[
+			"path",
+			{ d: "M9 6h30a5 5 0 0 1 5 5v18a5 5 0 0 1-5 5H21l-9.5 8v-8H9a5 5 0 0 1-5-5V11a5 5 0 0 1 5-5z", fill: "solid" },
+		],
+		["path", { d: "M13.5 16h21M13.5 24h13", stroke: "cut" }],
+	],
+	star: [
+		[
+			"path",
+			{
+				d: "M24 3.5l6.3 13.3 14.4 1.7-10.6 9.9 2.8 14.3L24 35.6l-12.9 7.1 2.8-14.3L3.3 18.5l14.4-1.7z",
+				fill: "solid",
+			},
+		],
+	],
+	heart: [
+		[
+			"path",
+			{ d: "M24 42S4.5 30 4.5 17A9.8 9.8 0 0 1 24 13.6 9.8 9.8 0 0 1 43.5 17C43.5 30 24 42 24 42z", fill: "solid" },
+		],
+	],
+	book: [
+		["path", { d: "M5 8h13.5a5.5 5.5 0 0 1 5.5 5.5V43a4.5 4.5 0 0 0-4.5-4.5H5z", fill: "solid" }],
+		["path", { d: "M43 8H29.5a5.5 5.5 0 0 0-5.5 5.5V43a4.5 4.5 0 0 1 4.5-4.5H43z", fill: "solid" }],
+		["path", { d: "M10 16h8M10 23h8M30 16h8M30 23h8", stroke: "cut-thin" }],
+	],
+	camera: [
+		["rect", { x: "3", y: "13", width: "42", height: "28", rx: "5", fill: "solid" }],
+		["path", { d: "M15.5 14l3.5-7h10l3.5 7z", fill: "solid" }],
+		["circle", { cx: "24", cy: "27", r: "7", stroke: "cut" }],
+		["path", { d: "M37.5 19.5h.01", stroke: "cut-dot" }],
+	],
+	code: [
+		["rect", { x: "3", y: "7", width: "42", height: "34", rx: "5", fill: "solid" }],
+		["path", { d: "M17 18l-6 6 6 6M31 18l6 6-6 6M26.5 15 21.5 33", stroke: "cut" }],
+	],
+	rocket: [
+		["path", { d: "M24 3c8.5 6.5 11.5 15.5 9.5 27h-19C12.5 18.5 15.5 9.5 24 3z", fill: "solid" }],
+		["path", { d: "M14.5 23l-6 8.5v6.5l7.5-4.5zM33.5 23l6 8.5v6.5l-7.5-4.5z", fill: "solid" }],
+		["path", { d: "M19.5 33.5h9L24 44z", fill: "solid" }],
+		["circle", { cx: "24", cy: "17", r: "4.2", fill: "cut" }],
+	],
 };
 
 /** Each drawing gets its own mask, as a mask is found by its id across the whole page. */
