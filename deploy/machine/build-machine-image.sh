@@ -502,9 +502,11 @@ lx exec "$BUILDER" -- env EXPECTED_FOLDER_PROGRAM_SHA256="$EXPECTED_FOLDER_PROGR
 	sleep 1.5
 	[[ $(pgrep -u desktop -o -x chrome) == "$browser" && $(desktop windows | grep -c "Chrome for Testing$") == 1 ]] ||
 		{ echo "a second press on the dock browser icon started a second browser" >&2; exit 1; }
-	# Opened and closed many times in a row, the dock still answers: no start limit of systemd switches it off (the
-	# sixth start of a service within ten seconds is refused unless its unit says otherwise).
+	# Opened and closed eight times in a row, the dock still answers: no start limit of systemd switches it off (the
+	# sixth start of a service within ten seconds is refused unless its unit says otherwise). Each window stays half a
+	# second, the least a person leaves it: the press that opened it has seen it by then and waits for nothing.
 	for round in 1 2 3 4 5 6 7 8; do
+		sleep 0.5
 		DISPLAY=:1 wmctrl -c Terminal
 		for _ in $(seq 1 50); do desktop windows | grep -q " Terminal$" || break; sleep 0.1; done
 		if desktop windows | grep -q " Terminal$"; then echo "the terminal did not close in round $round" >&2; exit 1; fi

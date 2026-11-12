@@ -516,10 +516,11 @@ watch() {
 # opens a dialog: the browser's icon shows an outlined mark and pulses for the first seconds, and a browser that did
 # not come turns it grey with an amber mark for a few seconds.
 press() { # app
-	local app=$1 attempt
+	local app=$1 attempt attempts=40
 	raise "$app" && return 0
 	[[ $app != browser ]] || show browser launching
-	# One wait at a time for a program: impatient presses do not stack up.
+	# One wait at a time for a program: impatient presses do not stack up. A press made while another waits does
+	# nothing, so the wait is short: the files and a terminal come in a quarter of a second, the browser in one.
 	exec 9>"$RUN/dock-$app.lock" || return 1
 	flock -n 9 || return 0
 	if [[ $app == browser ]]; then
@@ -527,8 +528,9 @@ press() { # app
 		trap 'rm -f -- "$RUN/dock-browser.launching"' EXIT
 	fi
 	: >"$ASK/$app" || { echo "the dock cannot ask for the $app: $ASK is not there" >&2; return 1; }
-	# A cold start on a busy machine takes its time: 20 s.
-	for ((attempt = 0; attempt < 80; attempt++)); do
+	# A cold start on a busy machine takes its time: 10 s for the files and a terminal, 20 s for the browser.
+	[[ $app != browser ]] || attempts=80
+	for ((attempt = 0; attempt < attempts; attempt++)); do
 		sleep 0.25
 		if raise "$app"; then
 			show "$app" running
