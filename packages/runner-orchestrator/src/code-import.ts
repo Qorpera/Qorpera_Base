@@ -7,6 +7,7 @@ import {
 	SHA256_HEX_PATTERN,
 } from "@qorpera/contracts";
 import { CODE_BUNDLE_NAME, type CodeBundleRef, type CodeBundleTarget, codeBundleName } from "./code-bundle-store.ts";
+import { CODE_FOLDER_CONTROL as CONTROL, codeImportFolderPathValid } from "./code-folder-names.ts";
 import {
 	CODE_AREA_IN_QORPERA_REF,
 	type CodeAreaRef,
@@ -325,27 +326,8 @@ export function codeImportBranchValid(branch: string): boolean {
 	);
 }
 
-const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
-/** The company folder's rule for a path under `code/` (`qorpera_company_path_valid`, migration 20260928569110, whose
- * code/ branch takes `%`, `:` and device names): 1 to 4,096 bytes, NFC; and the path, its folder key and its key by full
- * case mapping (stricter than the database's simple mapping wherever the two differ) each have as many parts as the
- * path, none empty, `.` or `..`, none ending in `.` or a space, no control character (C0, DEL, C1 and the line and
- * paragraph separators: stricter than the database's `[[:cntrl:]]` where it differs) and no backslash. A path outside
- * `code/` is no path this rule is for: false. No TypeScript copy of the rule was in `@qorpera/contracts`. */
-export function codeImportFolderPathValid(path: string): boolean {
-	if (typeof path !== "string" || !wellFormed(path)) return false;
-	const bytes = utf8(path);
-	if (bytes < 1 || bytes > 4096 || path.normalize("NFC") !== path) return false;
-	const key = folderKey(path);
-	if (key.split("/")[0] !== "code") return false;
-	const parts = path.split("/").length;
-	for (const candidate of [path, key, path.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFKC")]) {
-		if (CONTROL.test(candidate) || candidate.includes("\\") || candidate.split("/").length !== parts) return false;
-		if (candidate.split("/").some((part) => part === "" || part === "." || part === ".." || /[. ]$/.test(part)))
-			return false;
-	}
-	return true;
-}
+// The company folder's rule for a path under code/, which the landing asks too: code-folder-names.ts.
+export { codeImportFolderPathValid };
 
 const INCOMING = /^code\/_incoming\/([A-Za-z0-9][A-Za-z0-9._-]{0,99})\/[A-Za-z0-9][A-Za-z0-9._-]{0,92}\.bundle$/;
 /** A file source's path, as `from.file` names it: `code/_incoming/<folder>/<name>.bundle`, the folder 1 to 100 and the

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import type { CloudCodingRepository } from "@qorpera/contracts";
 import { CODE_BUNDLE_MAXIMUM_BYTES, type CodeBundleRef } from "./code-bundle-store.ts";
+import { codeFolderRefuses } from "./code-folder-names.ts";
 import {
 	type CodeAreaRef,
 	type CodeBundleSink,
@@ -51,7 +52,6 @@ import {
 	codeImportBundleHeaderOf,
 	codeImportEnvFile,
 	codeImportFileBranch,
-	codeImportFolderPathValid,
 	codeImportGitRefValid,
 	codeImportHistoryCode,
 	codeImportIncomingPathValid,
@@ -480,42 +480,11 @@ async function lfsPointers(run: Run, proof: string, blobs: { oid: string; size: 
 	return found;
 }
 
-/** The longest name the company folder takes: its program refuses a longer one (`valid_name`,
- * `crates/qorpera-folder/src/proto.rs`). Neither the folder's SQL rule nor C1's twin of it asks this. */
-const FOLDER_NAME_BYTES = 255;
-
-/** Main's paths the company folder would refuse where a restore's build checks main out, `code/<owner>/<name>/main/
- * <path>`: C1's twin of the folder's own rule there (`codeImportFolderPathValid`: NFC, no control character or
- * backslash, no part ending in `.` or a space, at most 4,096 bytes in all) and the folder program's bound on one name.
- * git takes such names and `Run.checkNames` asks none of these, so without this a restore would close the place and only
- * then find its build refused, every time it was tried. Each is named at the highest entry that breaks the rule: what is
- * below a refused folder is not named again. */
-function folderRefuses(area: string, records: ReturnType<typeof treeRecords>): string[] {
-	const refused: string[] = [],
-		below = new Set<string>();
-	for (const record of records) {
-		const path = record.path.toString("utf8"),
-			slash = path.lastIndexOf("/");
-		// `ls-tree -t` lists a folder before what is in it.
-		if (slash >= 0 && below.has(path.slice(0, slash))) {
-			if (record.type === "tree") below.add(path);
-			continue;
-		}
-		if (
-			codeImportFolderPathValid(`${area}/main/${path}`) &&
-			path.split("/").every((part) => Buffer.byteLength(part, "utf8") <= FOLDER_NAME_BYTES)
-		)
-			continue;
-		refused.push(path);
-		if (record.type === "tree") below.add(path);
-	}
-	return refused;
-}
-
 /** Main's tree (5.3 step 3): `Run.checkNames` (NFC, UTF-8, names one to the folder by case, files over 256 MiB), then
- * the company folder's own rule for each path where it will stand (`folderRefuses`, `CODE_HOST_NAMES_FOLDER_REFUSES`),
- * at most 9,000 entries, no LFS pointers, no gitlinks, in that order; the first rule broken is the look's refusal, with
- * its paths. And main's facts beside. */
+ * the company folder's own rule for each path where it will stand (`codeFolderRefuses`, as a session's landing asks it;
+ * `CODE_HOST_NAMES_FOLDER_REFUSES`), at most 9,000 entries, no LFS pointers, no gitlinks, in that order; the first rule
+ * broken is the look's refusal, with its paths. And main's facts beside. Without the folder's rule a restore would
+ * close the place and only then find its build refused, every time it was tried. */
 async function mainTree(run: Run, proof: string, mainSha: string): Promise<MainTree> {
 	let records: ReturnType<typeof treeRecords>,
 		refused: MainTree["refused"] = null;
@@ -535,7 +504,7 @@ async function mainTree(run: Run, proof: string, mainSha: string): Promise<MainT
 		);
 	}
 	if (refused === null) {
-		const paths = folderRefuses(run.area, records);
+		const paths = codeFolderRefuses(run.area, records);
 		if (paths.length) refused = { code: "CODE_HOST_NAMES_FOLDER_REFUSES", paths };
 	}
 	let files = 0,

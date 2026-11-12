@@ -177,11 +177,12 @@ export function withinBytes(text: string, bytes: number): string {
 }
 /** The paths a refused landing names, quoted: at most 20 of them and at most 2000 bytes, so that what to do about
  * them always fits the summary after them (a path may be 4 KiB, and its characters several bytes each); then how many
- * more there are. Empty when there is none. */
-function namedPaths(paths: readonly string[]): string {
+ * more there are. A null is a path counted and never named (the import look's rule, `codeImportShown`). Empty when there
+ * is none. */
+function namedPaths(paths: readonly (string | null)[]): string {
 	const shown: string[] = [];
 	let used = 0;
-	for (const path of paths.slice(0, 20)) {
+	for (const path of paths.filter((path) => path !== null).slice(0, 20)) {
 		const quoted = JSON.stringify(path);
 		const size = Buffer.byteLength(quoted) + 2;
 		if (used + size > 2000) break;
@@ -189,7 +190,10 @@ function namedPaths(paths: readonly string[]): string {
 		used += size;
 	}
 	const more = paths.length - shown.length;
-	if (!shown.length) return more ? `${more} path${more === 1 ? "" : "s"} too long to name here` : "";
+	if (!shown.length)
+		return more
+			? `${more} path${more === 1 ? "" : "s"} ${paths.includes(null) ? "not named here" : "too long to name here"}`
+			: "";
 	return `${shown.join(", ")}${more ? ` and ${more} more` : ""}`;
 }
 /** A landing that conflicts with the default branch of a repository kept in Qorpera: what to do, and where. */
@@ -216,10 +220,10 @@ export function prepareUnfinished(error: unknown): string {
  * log. */
 export const TURN_START_UNFINISHED =
 	"The coding turn could not start, so nothing ran and nothing was changed. The workspace is kept; a follow-up tries again. [code=CODING_TURN_START_UNFINISHED]";
-/** What to change after a landing the code host refused by rule (its code, and the paths it named), or whose refs it
- * could not read, or undefined for a code this does not know. Never a plain "finish again" for work that would be
- * refused the same way. */
-export function landRefusal(baseBranch: string, code: string, paths: readonly string[]): string | undefined {
+/** What to change after a landing the code host refused by rule (its code, and the paths it named, a null for one not
+ * to be named), or whose refs it could not read, or undefined for a code this does not know. Never a plain "finish
+ * again" for work that would be refused the same way. */
+export function landRefusal(baseBranch: string, code: string, paths: readonly (string | null)[]): string | undefined {
 	const named = paths.length ? `: ${namedPaths(paths)}` : "";
 	const not = `The change was not landed, and nothing changed on ${baseBranch}`;
 	switch (code) {
@@ -230,6 +234,9 @@ export function landRefusal(baseBranch: string, code: string, paths: readonly st
 		case "CODE_HOST_NAMES_NOT_UTF8":
 		case "CODE_HOST_NAMES_NOT_NFC":
 			return `${not}: it holds file names that are not plain Unicode text (UTF-8, in its composed form NFC)${named}. Rename them, commit and finish again.`;
+		case "CODE_HOST_NAMES_FOLDER_REFUSES":
+			// git takes such names; the company folder, which holds the repository's files, does not.
+			return `${not}: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes)${named}. Rename them, commit and finish again.`;
 		case "CODE_HOST_EXPORT_MOVED":
 		case "CODE_HOST_EXPORT_NO_BRANCH":
 			return `${not}: the commit handed in is not on this session's own branch. Commit the work on the branch the session's workspace has checked out, and finish with that commit.`;

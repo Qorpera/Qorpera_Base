@@ -400,6 +400,33 @@ describe("CodeHostRepositories", () => {
 			"The change was not landed, and nothing changed on main: the repository's own record of its branches could not be read. Finish again once; if that fails the same way, nothing can go into main until Qorpera has repaired the repository, so say so in your report. The work is kept on the session's branch.",
 		);
 	});
+	it("a landing with names the company folder does not take says to rename them, naming each as the import's look shows a path", async () => {
+		const f = await fixture();
+		const kept: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
+		const claim = { ...f.session.claim, repository: kept, baseSha: null };
+		const { baseSha } = await f.repositories.start({ claim, assertAuthorized: f.authorized }, signal());
+		const session = { ...f.session, claim, baseSha };
+		await f.repositories.prepare(session, signal());
+		// Committed as git takes them, a name too long for a disk too; one looks like a key.
+		const blob = await f.git(f.tree, "rev-parse", `${await f.commit(f.tree, "ok.txt")}:ok.txt`);
+		for (const path of ["bad.", "x /file", "a/b/c./d.txt", "a\\b.txt", "n".repeat(256), "AKIAQORPERATESTKEY01."])
+			await f.git(f.tree, "update-index", "--add", "--cacheinfo", `100644,${blob},${path}`);
+		await f.git(f.tree, "commit", "--quiet", "-m", "names");
+		const head = await f.git(f.tree, "rev-parse", "HEAD");
+		const refused = await f.repositories.land(session, head, signal()).catch((e) => e);
+		expect(refused).toBeInstanceOf(CodingLandRefused);
+		expect(refused.message).toBe("CODE_HOST_NAMES_FOLDER_REFUSES");
+		expect(refused.cause).toMatchObject({
+			paths: ["AKIAQORPERATESTKEY01.", "a/b/c.", "a\\b.txt", "bad.", "n".repeat(256), "x "],
+		});
+		// The 256-byte name (over 200 bytes) and the key are counted, never named.
+		expect(refused.summary).toBe(
+			'The change was not landed, and nothing changed on main: it holds file or folder names the company folder does not take (one that ends in a dot or a space, holds a backslash or a control character, or is longer than 255 bytes, or a path longer than 4,096 bytes): "a/b/c.", "a\\\\b.txt", "bad.", "x " and 2 more. Rename them, commit and finish again.',
+		);
+		const repo = join(f.companyRoot, "code/qorpera/example/repo.git");
+		expect(await f.git(repo, "rev-parse", "refs/heads/main")).toBe(baseSha);
+		expect(await readdir(join(f.companyRoot, "code/qorpera/example/main"))).toEqual([".git"]);
+	});
 	it("a landing that lost main to another one is made once more, and no more than that", async () => {
 		const f = await fixture();
 		const kept: CloudCodingRepository = { host: "qorpera", owner: "qorpera", name: "example", baseBranch: "main" };
